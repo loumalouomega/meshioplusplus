@@ -1509,6 +1509,101 @@ def test_fit_cad_tool_reports_the_capability(tmp_path):
     assert os.path.exists(tmp_path / "solid.vtu")
 
 
+def test_refine_patches_tool_refuses_bad_options_before_the_core(tmp_path):
+    from .analytic_surfaces import box_skin
+
+    # Segmented already, so every refusal is refine_patches' own.
+    src = str(tmp_path / "box.vtu")
+    meshioplusplus.write(src, meshioplusplus.segment(box_skin(2)))
+    for key, value in (
+        ("normal_weight", -1.0),
+        ("epsilon", -1.0),
+        ("feature_angle", 200.0),
+        ("max_iterations", -1),
+        ("min_patch_cells", 0),
+        ("ransac_seed", -1),
+        ("types", ["blob"]),
+        ("prefix", ""),
+    ):
+        bad = _dump(
+            _tools.call_tool(
+                "refine_patches",
+                {"input_path": src, "output_path": str(tmp_path / "x.vtu"), key: value},
+            )
+        )
+        assert bad["error_type"] == "ValueError", key
+        assert "refine_patches" in bad["error"], key
+
+
+@pytest.mark.skipif(
+    not hasattr(_core, "refine_patches"), reason="core predates refine_patches"
+)
+def test_refine_patches_tool_segments_then_refines(tmp_path):
+    from .analytic_surfaces import box_skin
+
+    src = str(tmp_path / "box.vtu")
+    meshioplusplus.write(src, box_skin(3))
+    out = _dump(
+        _tools.call_tool(
+            "refine_patches",
+            {"input_path": src, "output_path": str(tmp_path / "refined.vtu")},
+        )
+    )
+    # A box segmented by its creases is already six planes: nothing moves.
+    assert out["output_path"].endswith("refined.vtu")
+    assert out["num_patches"] == out["num_primitive"] == 6
+    assert out["num_freeform"] == out["num_facets"] == 0
+    assert out["explained_area_fraction"] == pytest.approx(1.0)
+    assert out["stop"] == "unchanged"
+    assert "segment:patch" in out["cell_data"]
+    assert "fit:type" in out["cell_data"]
+    for name in ("refine:patch_proxy", "refine:explained_area_fraction"):
+        assert name in out["field_data"]
+    # A feature angle above the box's right angles leaves one patch, which
+    # the RANSAC split takes apart into the six sides again.
+    split = _dump(
+        _tools.call_tool(
+            "refine_patches",
+            {
+                "input_path": src,
+                "output_path": str(tmp_path / "split.vtu"),
+                "feature_angle": 100.0,
+                "max_iterations": 20,
+            },
+        )
+    )
+    assert split["num_splits"] > 0
+    assert split["initial_explained_area_fraction"] == 0.0
+    assert split["num_primitive"] == 6
+    # fit_cad's own refinement adds its report keys only when it ran.
+    plain = _dump(
+        _tools.call_tool(
+            "fit_cad",
+            {
+                "input_path": src,
+                "output_path": str(tmp_path / "a.step"),
+                "backend": "native",
+            },
+        )
+    )
+    assert "refined" not in plain
+    refined = _dump(
+        _tools.call_tool(
+            "fit_cad",
+            {
+                "input_path": src,
+                "output_path": str(tmp_path / "b.step"),
+                "backend": "native",
+                "refine_segmentation": True,
+            },
+        )
+    )
+    assert refined["refined"] is True
+    assert refined["explained_area_fraction"] == pytest.approx(1.0)
+    for key in ("refine_iterations", "num_refine_splits", "num_refine_merges"):
+        assert key in refined
+
+
 def test_cad_json_brep_rides_through_convert(tmp_path):
     src = str(
         pathlib.Path(__file__).parent
@@ -3051,9 +3146,10 @@ def test_server_mirrors_the_train_start_and_predict_file_parameters():
             "train_start",
             "predict_file",
             "fit_cad",
+            "refine_patches",
         ):
             mirrored[node.name] = [a.arg for a in node.args.args]
-    for name in ("train_start", "predict_file", "fit_cad"):
+    for name in ("train_start", "predict_file", "fit_cad", "refine_patches"):
         pure = list(inspect.signature(getattr(_tools, f"tool_{name}")).parameters)
         assert mirrored[name] == pure, name
 

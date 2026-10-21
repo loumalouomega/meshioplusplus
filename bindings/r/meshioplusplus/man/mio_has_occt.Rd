@@ -10,6 +10,6 @@ mio_has_occt()
 `TRUE` or `FALSE`.
 }
 \description{
-`mio_fit_cad()` needs a library built with `-DMESHIOPLUSPLUS_WITH_OCCT=ON`;
-this reports whether the loaded one was.
+`mio_fit_cad(backend = "occt")` needs a library built with
+`-DMESHIOPLUSPLUS_WITH_OCCT=ON`; this reports whether the loaded one was.
 }

@@ -12,6 +12,7 @@ raises ``NotImplementedError``.
 from __future__ import annotations
 
 import math
+import operator
 import os
 
 from ._fit_primitives import TYPES
@@ -53,6 +54,10 @@ _REPORT_INTS = (
     "num_variable_pitch_thread",
 )
 
+# The refinement's report keys, added only when ``refine_segmentation`` is set.
+_REFINE_INTS = ("refine_iterations", "num_refine_splits", "num_refine_merges")
+_REFINE_FLOATS = ("initial_explained_area_fraction", "explained_area_fraction")
+
 
 def has_occt() -> bool:
     """Whether the compiled core carries the OpenCASCADE backend."""
@@ -63,7 +68,8 @@ def has_occt() -> bool:
     return bool(getattr(_core, "__has_occt__", False))
 
 
-def _types_mask(types) -> int:
+def _types_mask(types, prefix: str = _PREFIX) -> int:
+    """The ``1 << type`` bit mask of primitive type names (``None``: all of them)."""
     if types is None:
         return sum(1 << t for t in range(1, 6))
     if isinstance(types, str):
@@ -72,11 +78,28 @@ def _types_mask(types) -> int:
     for t in types:
         if t not in TYPES[1:]:
             raise ValueError(
-                f"{_PREFIX}unknown primitive type {t!r} "
+                f"{prefix}unknown primitive type {t!r} "
                 f"(expected one of {', '.join(TYPES[1:])})"
             )
         mask |= 1 << TYPES.index(t)
     return mask
+
+
+#: The default seed of the refinement's RANSAC split: the bytes of "meshio++".
+DEFAULT_RANSAC_SEED = 0x6D657368696F2B2B
+
+
+def _check_seed(seed, prefix: str) -> int:
+    """``seed`` as an int in ``[0, 2**64)``, else ``ValueError``."""
+    if isinstance(seed, bool):
+        raise ValueError(f"{prefix}ransac_seed must be an integer")
+    try:
+        value = operator.index(seed)
+    except TypeError:
+        raise ValueError(f"{prefix}ransac_seed must be an integer") from None
+    if not 0 <= value < 1 << 64:
+        raise ValueError(f"{prefix}ransac_seed must lie in [0, 2**64)")
+    return value
 
 
 def fit_cad(
@@ -97,6 +120,15 @@ def fit_cad(
     return_report: bool = False,
     merge_faces: bool = True,
     backend: str = "auto",
+    refine_segmentation: bool = False,
+    max_refine_iterations: int = 10,
+    refine_epsilon: float = 1e-3,
+    normal_weight: float = 1.0,
+    allow_merge: bool = True,
+    allow_split: bool = True,
+    ransac_seed: int = DEFAULT_RANSAC_SEED,
+    refine_tolerance: float = 1e-3,
+    relative_tolerance: bool = True,
 ):
     """Build a CAD solid from the fitted patches of a closed skin.
 
@@ -161,6 +193,27 @@ def fit_cad(
         returned mesh is the skin itself with the ``fit_cad:*`` cell data, its
         volumes NaN and ``brep`` empty); ``"auto"`` (the default) is
         ``"occt"`` when the core carries it, else ``"native"``.
+    :param refine_segmentation: first refine the patches with
+        :func:`refine_patches` (variational shape approximation: patch
+        boundaries move, freeform patches are split by RANSAC, neighbours one
+        primitive explains merge), after any segmentation and fit ``fit_cad``
+        runs itself, so more of the skin becomes analytic faces. Off by
+        default, so the output is what it was before the option existed.
+    :param max_refine_iterations: the refinement's most iterations, ``>= 0``.
+    :param refine_epsilon: stop refining when an iteration adds less than this
+        to the share of the area primitives explain, ``>= 0``.
+    :param normal_weight: the weight of the normal term in the refinement's
+        cell cost, ``>= 0``.
+    :param allow_merge: let the refinement merge neighbouring patches one
+        primitive explains.
+    :param allow_split: let the refinement split a primitive out of a patch
+        no primitive explains.
+    :param ransac_seed: the seed of the refinement's RANSAC split, in
+        ``[0, 2**64)``.
+    :param refine_tolerance: the distance every point of a refined patch must
+        lie within from its proxy.
+    :param relative_tolerance: ``refine_tolerance`` is a fraction of the
+        skin's bounding-box diagonal (default) rather than a length.
     :returns: the solid re-meshed as triangles with cell data ``fit_cad:face``,
         ``fit_cad:type`` (0 a facet, 6 a freeform B-spline, 7 a fillet,
         blend or conic blend, 8 a helical thread face, 9 a vertex blend, 10 a
@@ -179,7 +232,12 @@ def fit_cad(
         (``num_conic_blend``) and tapered and variable-pitch thread faces
         (``num_tapered_thread``, ``num_variable_pitch_thread``),
         ``num_split_patches``, the demoted patches and the exact and
-        approximated edges.
+        approximated edges. With ``refine_segmentation`` the report also holds
+        ``refined``, ``refine_iterations``, ``num_refine_splits``,
+        ``num_refine_merges`` and the area share primitives explain before and
+        after (``initial_explained_area_fraction``,
+        ``explained_area_fraction``), and the mesh the ``refine:*`` field data
+        of :func:`refine_patches`.
     :raises NotImplementedError: without the compiled core, or with
         ``backend="occt"`` when the core was built without OpenCASCADE.
     """
@@ -215,6 +273,29 @@ def fit_cad(
         raise ValueError(f"{_PREFIX}freeform_degree must be 3 to 8")
     if not 4 <= opts["freeform_max_control"] <= 1024:
         raise ValueError(f"{_PREFIX}freeform_max_control must be 4 to 1024")
+    refine = {
+        "refine_segmentation": bool(refine_segmentation),
+        "refine_tolerance": float(refine_tolerance),
+        "relative_tolerance": bool(relative_tolerance),
+        "normal_weight": float(normal_weight),
+        "refine_epsilon": float(refine_epsilon),
+        "max_refine_iterations": int(max_refine_iterations),
+        "allow_split": bool(allow_split),
+        "allow_merge": bool(allow_merge),
+        "ransac_seed": _check_seed(ransac_seed, _PREFIX),
+    }
+    if not (
+        refine["refine_tolerance"] > 0.0 and math.isfinite(refine["refine_tolerance"])
+    ):
+        raise ValueError(f"{_PREFIX}refine_tolerance must be finite and > 0")
+    if not (refine["normal_weight"] >= 0.0 and math.isfinite(refine["normal_weight"])):
+        raise ValueError(f"{_PREFIX}normal_weight must be finite and >= 0")
+    if not (
+        refine["refine_epsilon"] >= 0.0 and math.isfinite(refine["refine_epsilon"])
+    ):
+        raise ValueError(f"{_PREFIX}refine_epsilon must be finite and >= 0")
+    if refine["max_refine_iterations"] < 0:
+        raise ValueError(f"{_PREFIX}max_refine_iterations must be >= 0")
 
     try:
         from . import _core
@@ -244,6 +325,9 @@ def fit_cad(
         opts["threads"],
         opts["merge_faces"],
         opts["backend"],
+        # The defaults leave the core's refinement off; passed only when it
+        # runs, so a default call is the one the binding always took.
+        **(refine if refine["refine_segmentation"] else {}),
     )
     out = res["mesh"]
     info = out.info if isinstance(getattr(out, "info", None), dict) else {}
@@ -254,6 +338,10 @@ def fit_cad(
     report = {"valid": bool(res["valid"]), "backend": str(res["backend"])}
     report.update({k: float(res[k]) for k in _REPORT_FLOATS})
     report.update({k: int(res[k]) for k in _REPORT_INTS})
+    if refine["refine_segmentation"]:
+        report["refined"] = bool(res["refined"])
+        report.update({k: int(res[k]) for k in _REFINE_INTS})
+        report.update({k: float(res[k]) for k in _REFINE_FLOATS})
     return out, report
 
 

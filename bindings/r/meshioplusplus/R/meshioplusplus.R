@@ -1321,10 +1321,71 @@ mio_fit_primitives <- function(mesh, patch_data = "segment:patch", tolerance = 1
   )
 }
 
+#' Refine a segmentation until each patch is one surface
+#'
+#' Refines the `segment:patch` labels of a surface (from `mio_segment()`) by
+#' variational shape approximation (v17.11.0): patch boundaries move, a
+#' freeform patch is split where seeded RANSAC finds a primitive inside it, and
+#' two neighbouring patches one primitive explains are merged, until each patch
+#' is one plane, sphere, cylinder, cone or torus, or a freeform proxy. The
+#' result is the input with `segment:patch`, `segment:adjacency` and the
+#' `<prefix>:<k>` regions rewritten, the `fit:*` data of `mio_fit_primitives()`
+#' on the refined patches and per-patch `refine:*` field data, so
+#' `mio_fit_cad()` reads it unchanged. See `doc/refine_patches.md`.
+#'
+#' @param mesh A surface `mio_mesh` carrying `segment:patch`.
+#' @param tolerance How far every point of a patch may lie from its proxy.
+#' @param relative Whether `tolerance` is a fraction of the bounding-box diagonal.
+#' @param normal_weight The weight of the normal term in a cell's cost.
+#' @param epsilon Stop when an iteration adds less than this to the area share
+#'   primitives explain.
+#' @param feature_angle The dihedral angle, in degrees, above which an edge is
+#'   a feature edge no patch crosses.
+#' @param max_iterations The most iterations (0 rewrites the outputs of the
+#'   input partition).
+#' @param min_patch_cells A freeform or facets patch with fewer cells joins a
+#'   neighbour.
+#' @param ransac_seed The seed of the RANSAC split; `NULL` takes the default
+#'   (the bytes of `"meshio++"`, above 2^53). A number is a whole number taken
+#'   exactly below 2^53, since R numbers are doubles.
+#' @param types The primitives a proxy may be; `NULL` is every one.
+#' @param allow_split Whether a freeform patch may be split.
+#' @param allow_merge Whether two neighbouring patches may be merged.
+#' @param prefix The patch regions are named `<prefix>:<k>`.
+#' @return A list of `mesh`, `num_patches`, `num_iterations`, `num_splits`,
+#'   `num_merges`, `num_absorbed`, `num_primitive`, `num_freeform`,
+#'   `num_facets`, `tolerance` (the absolute tolerance applied),
+#'   `explained_area_fraction`, `initial_explained_area_fraction`,
+#'   `hausdorff_max`, `hausdorff_rms`, `initial_energy`, `energy` and `stop`
+#'   (`"unchanged"`, `"small_gain"`, `"iteration_cap"` or `"energy_rose"`).
+#' @export
+mio_refine_patches <- function(mesh, tolerance = 1e-3, relative = TRUE, normal_weight = 1,
+                               epsilon = 1e-3, feature_angle = 30, max_iterations = 10L,
+                               min_patch_cells = 3L, ransac_seed = NULL, types = NULL,
+                               allow_split = TRUE, allow_merge = TRUE, prefix = "patch") {
+  known <- c("plane", "sphere", "cylinder", "cone", "torus")
+  if (is.null(types)) {
+    mask <- 62
+  } else {
+    bad <- setdiff(types, known)
+    if (length(bad) > 0) {
+      stop("meshio++: refine_patches: unknown primitive type ", bad[[1]])
+    }
+    mask <- sum(2^match(unique(types), known))
+  }
+  .Call(
+    R_mio_refine_patches, mesh, as.numeric(tolerance), isTRUE(relative),
+    as.numeric(normal_weight), as.numeric(epsilon), as.numeric(feature_angle),
+    as.numeric(max_iterations), as.numeric(min_patch_cells),
+    if (is.null(ransac_seed)) NULL else as.numeric(ransac_seed), as.numeric(mask),
+    isTRUE(allow_split), isTRUE(allow_merge), as.character(prefix)
+  )
+}
+
 #' Whether the library carries the OpenCASCADE backend
 #'
-#' `mio_fit_cad()` needs a library built with `-DMESHIOPLUSPLUS_WITH_OCCT=ON`;
-#' this reports whether the loaded one was.
+#' `mio_fit_cad(backend = "occt")` needs a library built with
+#' `-DMESHIOPLUSPLUS_WITH_OCCT=ON`; this reports whether the loaded one was.
 #'
 #' @return `TRUE` or `FALSE`.
 #' @export
@@ -1344,8 +1405,9 @@ mio_has_occt <- function() {
 #' fit_primitives at its tolerance. Without OpenCASCADE (see `mio_has_occt()`)
 #' or with `backend = "native"`, the kernel-free backend writes the fitted
 #' patches as analytic STEP faces and returns the skin itself; `backend =
-#' "occt"` fails naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON` without it. See
-#' `doc/fit_cad.md`.
+#' "occt"` fails naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON` without it. Since
+#' v17.11.0, `refine_segmentation = TRUE` first refines the patches as
+#' `mio_refine_patches()` does. See `doc/fit_cad.md`.
 #'
 #' @param mesh A closed, consistently wound surface `mio_mesh`.
 #' @param step_path Write the solid here as AP214 STEP; `""` writes nothing.
@@ -1375,6 +1437,15 @@ mio_has_occt <- function() {
 #' @param merge_faces Whether faces on one surface are merged once the solid
 #'   is built (v17.9.0).
 #' @param backend `"auto"`, `"occt"` or `"native"` (v17.9.0).
+#' @param refine_segmentation Whether the patches are first refined by
+#'   variational shape approximation (v17.11.0); off by default.
+#' @param max_refine_iterations,refine_epsilon,normal_weight,allow_merge,allow_split
+#'   The refinement's `max_iterations`, `epsilon`, `normal_weight`,
+#'   `allow_merge` and `allow_split` (see `mio_refine_patches()`).
+#' @param ransac_seed The refinement's RANSAC seed; `NULL` takes the default,
+#'   and a number is taken exactly below 2^53.
+#' @param refine_tolerance,relative_tolerance The refinement's tolerance and
+#'   whether it is a fraction of the bounding-box diagonal.
 #' @return A list of `mesh` (the solid re-meshed, with cell data
 #'   `fit_cad:face`, `fit_cad:type` and `fit_cad:patch`), `valid`,
 #'   `tolerance`, `volume`, `skin_volume`, `volume_ratio`, `max_deviation`,
@@ -1383,8 +1454,11 @@ mio_has_occt <- function() {
 #'   `num_exact_edges`, `num_approx_edges`, `num_solids`, `num_bspline`,
 #'   `num_split_patches`, `num_fillet`, `num_helical`, `num_variable_fillet`,
 #'   `num_blend`, `num_rounded_thread`, `num_vertex_blend`, `num_chamfer`,
-#'   `num_conic_blend`, `num_tapered_thread`, `num_variable_pitch_thread`
-#'   and `backend` (the engine that ran).
+#'   `num_conic_blend`, `num_tapered_thread`, `num_variable_pitch_thread`,
+#'   `backend` (the engine that ran), `refined` (whether the refinement ran),
+#'   `refine_iterations`, `num_refine_splits`, `num_refine_merges`,
+#'   `initial_explained_area_fraction` and `explained_area_fraction` (zero
+#'   without refinement).
 #' @export
 mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
                         types = c("plane", "sphere", "cylinder", "cone", "torus"),
@@ -1392,7 +1466,11 @@ mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
                         freeform = TRUE, freeform_degree = 3,
                         freeform_max_control = 64, freeform_split = TRUE,
                         fillets = TRUE, threads = TRUE, merge_faces = TRUE,
-                        backend = "auto") {
+                        backend = "auto", refine_segmentation = FALSE,
+                        max_refine_iterations = 10L, refine_epsilon = 1e-3,
+                        normal_weight = 1, allow_merge = TRUE, allow_split = TRUE,
+                        ransac_seed = NULL, refine_tolerance = 1e-3,
+                        relative_tolerance = TRUE) {
   known <- c("plane", "sphere", "cylinder", "cone", "torus")
   bad <- setdiff(types, known)
   if (length(bad) > 0) {
@@ -1404,7 +1482,11 @@ mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
     isTRUE(exact_edges), as.numeric(mask), as.numeric(mesh_deflection),
     as.numeric(max_demotion_rounds), isTRUE(freeform), as.numeric(freeform_degree),
     as.numeric(freeform_max_control), isTRUE(freeform_split), isTRUE(fillets),
-    isTRUE(threads), isTRUE(merge_faces), as.character(backend)
+    isTRUE(threads), isTRUE(merge_faces), as.character(backend),
+    isTRUE(refine_segmentation), as.numeric(max_refine_iterations),
+    as.numeric(refine_epsilon), as.numeric(normal_weight), isTRUE(allow_merge),
+    isTRUE(allow_split), if (is.null(ransac_seed)) NULL else as.numeric(ransac_seed),
+    as.numeric(refine_tolerance), isTRUE(relative_tolerance)
   )
 }
 

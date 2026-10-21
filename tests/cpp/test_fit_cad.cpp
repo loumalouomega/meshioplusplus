@@ -185,6 +185,20 @@ TEST(FitCad, NativeBackendLeavesTypesOutAsPolygons) {
     EXPECT_GT(r.mNumFacetedFaces, 0);
 }
 
+TEST(FitCad, BadFreeformGeneralOptionsAreRefused) {
+    const auto bad = [](auto&& rSet) {
+        FitCadOptions o;
+        o.mBackend = FitCadBackend::Native;
+        rSet(o);
+        EXPECT_THROW(fit_cad(analytic::box_skin(2), "", o), std::invalid_argument);
+    };
+    bad([](FitCadOptions& o) { o.mFreeformTolerance = -1.0; });
+    bad([](FitCadOptions& o) { o.mFreeformSmoothing = -1.0; });
+    bad([](FitCadOptions& o) { o.mMaxFreeformPoles = 3; });
+    bad([](FitCadOptions& o) { o.mMaxFreeformIterations = 0; });
+    bad([](FitCadOptions& o) { o.mMaxFreeformSplits = -1; });
+}
+
 TEST(FitCad, BadBackendIsRefused) {
     FitCadOptions o;
     o.mBackend = static_cast<FitCadBackend>(5);
@@ -665,6 +679,62 @@ TEST(FitCad, RefinementExplainsTangentJunctions) {
     EXPECT_EQ(after.mNumDemoted, 0);
     EXPECT_NEAR(after.mVolumeRatio, 1.0, 1e-2);
     EXPECT_LE(after.mMaxDeviation, after.mTolerance);
+}
+
+// The general freeform face (v17.11.0): a wavy top the grid fit cannot reach
+// with at most four grid points a side comes back faceted; with the general
+// fit it is one B-spline face of a valid solid.
+TEST(FitCad, GeneralFreeformFitsWhatTheGridCannot) {
+    const Mesh skin = fitted(fcfix::wavy_top_box(24));
+    FitCadOptions o;
+    o.mFreeformMaxControl = 4;
+    const FitCadResult before = fit_cad(skin, "", o);
+    EXPECT_EQ(before.mNumBspline, 0);
+    EXPECT_GT(before.mNumFacetedFaces, 0);
+    EXPECT_EQ(before.mNumFreeformGeneral, 0);
+    o.mFreeformGeneral = true;
+    const FitCadResult after = fit_cad(skin, "", o);
+    EXPECT_TRUE(after.mValid);
+    EXPECT_EQ(after.mNumFreeformGeneral, 1);
+    EXPECT_EQ(after.mNumBspline, 1);
+    EXPECT_EQ(after.mNumPlane, 5);
+    EXPECT_EQ(after.mNumFacetedFaces, 0);
+    EXPECT_GT(after.mAvgFreeformPoles, 0.0);
+    EXPECT_NEAR(after.mVolumeRatio, 1.0, 1e-3);
+    EXPECT_LE(after.mMaxDeviation, after.mTolerance);
+    expect_brep_consistent(after);
+    // The general fit runs only where the grid fit fails: with the default
+    // grid the same top is the grid's face, as before.
+    FitCadOptions d;
+    d.mFreeformGeneral = true;
+    const FitCadResult dflt = fit_cad(skin, "", d);
+    EXPECT_EQ(dflt.mNumFreeformGeneral, 0);
+    EXPECT_EQ(dflt.mNumBspline, 1);
+}
+
+// Never silently wrong: with the grid fit starved, the freeform fixtures go
+// through the general path (the closed band through its halving too), and
+// every solid stays valid and within the tolerance; a face that fails comes
+// back as facets.
+TEST(FitCad, GeneralFreeformKeepsEverySolidValid) {
+    FitCadOptions o;
+    o.mFreeformMaxControl = 4;
+    o.mFreeformGeneral = true;
+    for (const fcfix::Fixture& f : fcfix::golden_fixtures()) {
+        if (f.mName != "saddle_box" && f.mName != "wavy_capped")
+            continue;  // the freeform ones; the rest have no freeform patch
+        SCOPED_TRACE(f.mName);
+        const FitCadResult r = fit_cad(f.mMesh, "", o);
+        EXPECT_TRUE(r.mValid);
+        EXPECT_LE(r.mMaxDeviation, r.mTolerance);
+        EXPECT_NEAR(r.mVolumeRatio, 1.0, 2e-2);
+        if (f.mName == "wavy_capped") {
+            // Starved, the grid fit leaves the wavy wall's halves faceted; the
+            // general fit makes them two B-spline faces.
+            EXPECT_EQ(r.mNumFreeformGeneral, 2);
+            EXPECT_EQ(r.mNumFacetedFaces, 0);
+        }
+    }
 }
 
 TEST(FitCad, WritesReproducibleStep) {

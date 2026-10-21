@@ -646,6 +646,66 @@ struct _CFitCadReportEx
     reserved::NTuple{10,Int64}
 end
 
+"""Mirror of C `mio_refine_patches_opts` (v17.11.0). ABI; build through
+[`refine_patches`](@ref). `types` is the bit mask `1 << type`; a NULL
+`prefix` means `"patch"`."""
+struct _CRefinePatchesOpts
+    tolerance::Cdouble
+    normal_weight::Cdouble
+    epsilon::Cdouble
+    feature_angle::Cdouble
+    max_iterations::Int64
+    min_patch_cells::Int64
+    ransac_seed::UInt64
+    types::UInt32
+    relative::Int32
+    allow_split::Int32
+    allow_merge::Int32
+    prefix::Cstring
+    reserved::NTuple{8,Int64}
+end
+
+"""Mirror of C `mio_refine_patches_report` (v17.11.0)."""
+struct _CRefinePatchesReport
+    num_patches::Int64
+    num_iterations::Int64
+    num_splits::Int64
+    num_merges::Int64
+    num_absorbed::Int64
+    num_primitive::Int64
+    num_freeform::Int64
+    num_facets::Int64
+    tolerance::Cdouble
+    explained_area_fraction::Cdouble
+    initial_explained_area_fraction::Cdouble
+    hausdorff_max::Cdouble
+    hausdorff_rms::Cdouble
+    initial_energy::Cdouble
+    energy::Cdouble
+    stop::Int32
+    reserved32::Int32
+    reserved::NTuple{8,Int64}
+end
+
+"""Mirror of C `mio_fit_cad_opts_ex` (v17.11.0). ABI; build through [`fit_cad`](@ref)."""
+struct _CFitCadOptsEx
+    refine_segmentation::Int32
+    reserved32::Int32
+    refine::_CRefinePatchesOpts
+    reserved::NTuple{16,Int64}
+end
+
+"""Mirror of C `mio_fit_cad_report_ex2` (v17.11.0)."""
+struct _CFitCadReportEx2
+    refined::Int64
+    refine_iterations::Int64
+    num_refine_splits::Int64
+    num_refine_merges::Int64
+    initial_explained_area_fraction::Cdouble
+    explained_area_fraction::Cdouble
+    reserved::NTuple{16,Int64}
+end
+
 """Mirror of C `mio_render_opts` (v16.34.0; cut-aways v16.36.0). ABI; fill it through [`render`](@ref),
 which initializes the defaults in C and sets only what the caller names."""
 struct _CRenderOpts
@@ -1059,6 +1119,17 @@ function _check_abi_layout()
         error("meshio++: mio_fit_cad_report layout mismatch ($(sizeof(_CFitCadReport)) bytes)")
     sizeof(_CFitCadReportEx) == 128 ||
         error("meshio++: mio_fit_cad_report_ex layout mismatch ($(sizeof(_CFitCadReportEx)) bytes)")
+    sizeof(_CRefinePatchesOpts) == 144 ||
+        error("meshio++: mio_refine_patches_opts layout mismatch " *
+              "($(sizeof(_CRefinePatchesOpts)) bytes)")
+    sizeof(_CRefinePatchesReport) == 192 ||
+        error("meshio++: mio_refine_patches_report layout mismatch " *
+              "($(sizeof(_CRefinePatchesReport)) bytes)")
+    sizeof(_CFitCadOptsEx) == 280 ||
+        error("meshio++: mio_fit_cad_opts_ex layout mismatch ($(sizeof(_CFitCadOptsEx)) bytes)")
+    sizeof(_CFitCadReportEx2) == 176 ||
+        error("meshio++: mio_fit_cad_report_ex2 layout mismatch " *
+              "($(sizeof(_CFitCadReportEx2)) bytes)")
     sizeof(_CRenderOpts) == 432 ||
         error("meshio++: mio_render_opts layout mismatch ($(sizeof(_CRenderOpts)) bytes)")
     sizeof(_CTextOpts) == 96 ||

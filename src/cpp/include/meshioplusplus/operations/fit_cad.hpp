@@ -249,6 +249,29 @@ struct FitCadOptions {
     bool mRefineSegmentation = false;
     /// The refinement's options, used when `mRefineSegmentation` is set.
     RefinePatchesOptions mRefine;
+    /// Whether a patch the plane and unrolled-cylinder freeform fit leaves
+    /// unexplained is tried as a general freeform B-spline face: a disc
+    /// parametrisation (least-squares conformal or mean-value) and an
+    /// iterative least-squares fit with parameter correction and knot
+    /// insertion, the patch halved up to `mMaxFreeformSplits` times when that
+    /// fails (v17.11.0). Off by default.
+    bool mFreeformGeneral = false;
+    /// The general fit's target at the vertices (a facet centre is held to the
+    /// larger of the tolerance and twice it); at most 0 takes a quarter of the
+    /// tolerance, room for the face's edges and its re-mesh. The face is then
+    /// accepted by the same test as any freeform face, half the tolerance at a
+    /// vertex and the tolerance at a facet centre, so a larger target never
+    /// loosens it.
+    double mFreeformTolerance = 0.0;
+    /// The thin-plate weight of the general fit, relative to the sample count
+    /// on a unit parameter square; >= 0. It only holds poles no sample reaches.
+    double mFreeformSmoothing = 1e-12;
+    /// The most poles per direction of a general freeform face, 4 to 1024.
+    std::int64_t mMaxFreeformPoles = 40;
+    /// The general fit's iteration budget, >= 1.
+    std::int64_t mMaxFreeformIterations = 30;
+    /// How many times a patch the general fit cannot explain is halved, >= 0.
+    std::int64_t mMaxFreeformSplits = 2;
 };
 
 /// The re-meshed solid and what was built.
@@ -325,6 +348,12 @@ struct FitCadResult {
     /// The area share primitives explain before and after the refinement.
     double mInitialExplainedAreaFraction = 0.0;
     double mExplainedAreaFraction = 0.0;
+    /// Of the B-spline faces, those the general freeform fit built (v17.11.0).
+    std::int64_t mNumFreeformGeneral = 0;
+    /// Their knot insertion rounds, summed.
+    std::int64_t mNumFreeformRefinements = 0;
+    /// Their mean pole count (0 without any).
+    double mAvgFreeformPoles = 0.0;
 };
 
 /**

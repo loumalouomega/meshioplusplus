@@ -17,6 +17,7 @@ from meshioplusplus._cli._main import main as cli_main
 
 from .analytic_surfaces import (
     box_skin,
+    filleted_plate,
     inclined_boss,
     rounded_box,
     rounded_thread_rod,
@@ -35,6 +36,13 @@ from .analytic_surfaces import (
 HAS_OCCT = _fit_cad.has_occt()
 needs_occt = pytest.mark.skipif(
     not HAS_OCCT, reason="core built without -DMESHIOPLUSPLUS_WITH_OCCT=ON"
+)
+try:
+    from meshioplusplus import _core
+except ImportError:  # pragma: no cover - a pure-Python install
+    _core = None
+needs_refine = pytest.mark.skipif(
+    not hasattr(_core, "refine_patches"), reason="core predates refine_patches"
 )
 
 
@@ -408,6 +416,78 @@ def test_pipeline_step_in_both_engines(tmp_path):
     bad = dict(settings, Operations=[{"Op": "FitCad", "Types": ["blob"]}])
     with pytest.raises(Exception, match="unknown primitive type 'blob'"):
         mio.run_pipeline(bad)
+
+
+@needs_refine
+def test_refine_segmentation_explains_the_fillets():
+    # Segmented by angles, the plate's corner fillet and the walls it is
+    # tangent to share a patch; refining separates them.
+    seg = mio.segment(filleted_plate())
+    _out, report = mio.fit_cad(
+        seg, refine_segmentation=True, backend="native", return_report=True
+    )
+    assert report["refined"] is True
+    assert report["explained_area_fraction"] == pytest.approx(1.0, abs=1e-9)
+    assert report["explained_area_fraction"] > report["initial_explained_area_fraction"]
+    assert report["num_refine_splits"] > 0
+    assert report["refine_iterations"] >= 0 and report["num_refine_merges"] >= 0
+    assert "refine:patch_proxy" in _out.field_data
+
+
+@needs_refine
+def test_default_report_has_no_refine_keys():
+    _out, report = mio.fit_cad(
+        mio.segment(filleted_plate()), backend="native", return_report=True
+    )
+    for key in (
+        "refined",
+        "refine_iterations",
+        "num_refine_splits",
+        "num_refine_merges",
+        "initial_explained_area_fraction",
+        "explained_area_fraction",
+    ):
+        assert key not in report
+
+
+@needs_refine
+def test_refine_segmentation_pipeline_step_in_both_engines(tmp_path):
+    src = tmp_path / "plate.vtu"
+    mio.write(src, filleted_plate(), compression=None)
+    settings = {
+        "Version": 1,
+        "Input": {"Path": str(src)},
+        "Operations": [
+            {"Op": "Segment"},
+            {
+                "Op": "FitCad",
+                "Path": str(tmp_path / "py.step"),
+                "Backend": "native",
+                "RefineSegmentation": True,
+                "RansacSeed": 7,
+            },
+        ],
+        "Output": {"Path": str(tmp_path / "out.vtu")},
+    }
+    reports = [mio.run_pipeline(settings)]
+    if hasattr(_core, "run_pipeline_json"):
+        settings["Operations"][-1]["Path"] = str(tmp_path / "cpp.step")
+        settings["Output"]["Path"] = str(tmp_path / "out_cpp.vtu")
+        reports.append(_core.run_pipeline_json(json.dumps(settings)))
+        assert (tmp_path / "py.step").read_bytes().replace(b"py.step", b"x") == (
+            tmp_path / "cpp.step"
+        ).read_bytes().replace(b"cpp.step", b"x")
+    for report in reports:
+        entry = report["steps"][-1]
+        assert entry["Refined"] == 1.0
+        assert entry["ExplainedAreaFraction"] == pytest.approx(1.0, abs=1e-9)
+        for key in ("NumRefineSplits", "NumRefineMerges"):
+            assert key in entry
+    # Without the option the step reports what it always did.
+    settings["Operations"][-1].pop("RefineSegmentation")
+    settings["Operations"][-1]["Path"] = str(tmp_path / "plain.step")
+    entry = mio.run_pipeline(settings)["steps"][-1]
+    assert "Refined" not in entry and "ExplainedAreaFraction" not in entry
 
 
 @needs_occt

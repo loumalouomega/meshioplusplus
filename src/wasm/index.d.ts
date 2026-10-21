@@ -2735,6 +2735,21 @@ export interface MeshioPlusPlusModule {
   fitCad(mesh: Mesh, options?: FitCadOptions): FitCadResult;
 
   /**
+   * Refine the `segment:patch` labels of a surface (the output of `segment`)
+   * by variational shape approximation (v17.11.0): patch boundaries move,
+   * freeform patches are split by seeded RANSAC and neighbours one primitive
+   * explains are merged, until a plane, sphere, cylinder, cone or torus
+   * explains each patch within `tolerance` where one can. Points,
+   * connectivity and block order are untouched; `segment:patch`, the patch
+   * regions and the `fit:*` data are rewritten and `refine:*` field data
+   * added. Needs no OpenCASCADE: both artifacts carry it. Deterministic for a
+   * seed on every thread count.
+   * @throws {Error} without `segment:patch`, on an unknown key or an option
+   *   out of range (`ransacSeed` beyond 2^53 included), or on a volume block.
+   */
+  refinePatches(mesh: Mesh, options?: RefinePatchesOptions): RefinePatchesResult;
+
+  /**
    * Refine every patch (every face surface of a B-rep) of a NURBS model
    * exactly: degree elevation by `elevate`, then knot insertion splitting each
    * knot span in `subdivisions` parts (a number, or one per direction; an
@@ -3470,6 +3485,80 @@ export interface FitCadOptions {
   mergeFaces?: boolean;
   /** The engine: OpenCASCADE when linked in (`'auto'`, the default), or none (v17.9.0). */
   backend?: 'auto' | 'occt' | 'native';
+  /** First refine the patches with `refinePatches` (default false; v17.11.0). */
+  refineSegmentation?: boolean;
+  /** The refinement's most iterations (default 10). */
+  maxRefineIterations?: number;
+  /** Stop refining when an iteration adds less than this to the explained area share (default 1e-3). */
+  refineEpsilon?: number;
+  /** The weight of the normal term in the refinement's cell cost (default 1). */
+  normalWeight?: number;
+  /** Let the refinement merge neighbours one primitive explains (default true). */
+  allowMerge?: boolean;
+  /** Let the refinement split a primitive out of a freeform patch (default true). */
+  allowSplit?: boolean;
+  /** The seed of the refinement's RANSAC split, an integer in [0, 2^53] (default `0x6d657368696f2b2b`, beyond 2^53). */
+  ransacSeed?: number;
+  /** How far a point may lie from its refined patch's primitive (default 1e-3). */
+  refineTolerance?: number;
+  /** `refineTolerance` is a fraction of the bounding-box diagonal (default true). */
+  relativeTolerance?: boolean;
+}
+
+/** The options of {@link MeshioPlusPlusModule.refinePatches}; every key is optional. */
+export interface RefinePatchesOptions {
+  /** How far a point may lie from its patch's proxy (default 1e-3). */
+  tolerance?: number;
+  /** `tolerance` is a fraction of the bounding-box diagonal (default true). */
+  relative?: boolean;
+  /** The weight of the normal term in a cell's cost, >= 0 (default 1). */
+  normalWeight?: number;
+  /** Stop when an iteration adds less than this to the explained area share (default 1e-3). */
+  epsilon?: number;
+  /** The dihedral angle in degrees above which an edge is a feature no patch crosses (default 30). */
+  featureAngle?: number;
+  /** The most iterations, >= 0 (default 10). */
+  maxIterations?: number;
+  /** A freeform or facets patch with fewer cells joins a neighbour, >= 1 (default 3). */
+  minPatchCells?: number;
+  /** The seed of the RANSAC split, an integer in [0, 2^53] (default `0x6d657368696f2b2b`, beyond 2^53). */
+  ransacSeed?: number;
+  /** The primitives a proxy may be (default: all five). */
+  types?: Array<'plane' | 'sphere' | 'cylinder' | 'cone' | 'torus'>;
+  /** Split a primitive out of a freeform patch (default true). */
+  allowSplit?: boolean;
+  /** Merge neighbouring patches one primitive explains (default true). */
+  allowMerge?: boolean;
+  /** The patch regions are named `<prefix>:<k>` (default `'patch'`). */
+  prefix?: string;
+}
+
+/** What {@link MeshioPlusPlusModule.refinePatches} did. */
+export interface RefinePatchesResult {
+  /** The input with the refined `segment:patch`, patch regions, `fit:*` and `refine:*` data. */
+  mesh: Mesh;
+  numPatches: number;
+  /** Lloyd steps kept. */
+  numIterations: number;
+  numSplits: number;
+  numMerges: number;
+  numAbsorbed: number;
+  /** Patches a primitive explains. */
+  numPrimitive: number;
+  numFreeform: number;
+  numFacets: number;
+  /** The absolute tolerance applied. */
+  tolerance: number;
+  /** The area share primitives explain, after and before. */
+  explainedAreaFraction: number;
+  initialExplainedAreaFraction: number;
+  /** The largest and the RMS distance of a skin point from its patch's proxy. */
+  hausdorffMax: number;
+  hausdorffRms: number;
+  initialEnergy: number;
+  energy: number;
+  /** Why refinement stopped. */
+  stop: 'unchanged' | 'small_gain' | 'iteration_cap' | 'energy_rose';
 }
 
 /** What {@link MeshioPlusPlusModule.fitCad} built. */
@@ -3515,6 +3604,14 @@ export interface FitCadResult {
   numVariablePitchThread: number;
   /** The engine that built the solid (v17.9.0). */
   backend: 'occt' | 'native';
+  /** Whether `refineSegmentation` refined the patches (v17.11.0); the refinement counts are zero when not. */
+  refined: boolean;
+  refineIterations: number;
+  numRefineSplits: number;
+  numRefineMerges: number;
+  /** The area share primitives explain before and after the refinement. */
+  initialExplainedAreaFraction: number;
+  explainedAreaFraction: number;
   /** The solid's B-rep, for `writeMesh(path, mesh, 'cad_json', {info})`. */
   info: CadJsonInfo;
 }

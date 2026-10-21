@@ -28270,6 +28270,29 @@ struct FitCadOptions {
     bool mRefineSegmentation = false;
     /// The refinement's options, used when `mRefineSegmentation` is set.
     RefinePatchesOptions mRefine;
+    /// Whether a patch the plane and unrolled-cylinder freeform fit leaves
+    /// unexplained is tried as a general freeform B-spline face: a disc
+    /// parametrisation (least-squares conformal or mean-value) and an
+    /// iterative least-squares fit with parameter correction and knot
+    /// insertion, the patch halved up to `mMaxFreeformSplits` times when that
+    /// fails (v17.11.0). Off by default.
+    bool mFreeformGeneral = false;
+    /// The general fit's target at the vertices (a facet centre is held to the
+    /// larger of the tolerance and twice it); at most 0 takes a quarter of the
+    /// tolerance, room for the face's edges and its re-mesh. The face is then
+    /// accepted by the same test as any freeform face, half the tolerance at a
+    /// vertex and the tolerance at a facet centre, so a larger target never
+    /// loosens it.
+    double mFreeformTolerance = 0.0;
+    /// The thin-plate weight of the general fit, relative to the sample count
+    /// on a unit parameter square; >= 0. It only holds poles no sample reaches.
+    double mFreeformSmoothing = 1e-12;
+    /// The most poles per direction of a general freeform face, 4 to 1024.
+    std::int64_t mMaxFreeformPoles = 40;
+    /// The general fit's iteration budget, >= 1.
+    std::int64_t mMaxFreeformIterations = 30;
+    /// How many times a patch the general fit cannot explain is halved, >= 0.
+    std::int64_t mMaxFreeformSplits = 2;
 };
 
 /// The re-meshed solid and what was built.
@@ -28346,6 +28369,12 @@ struct FitCadResult {
     /// The area share primitives explain before and after the refinement.
     double mInitialExplainedAreaFraction = 0.0;
     double mExplainedAreaFraction = 0.0;
+    /// Of the B-spline faces, those the general freeform fit built (v17.11.0).
+    std::int64_t mNumFreeformGeneral = 0;
+    /// Their knot insertion rounds, summed.
+    std::int64_t mNumFreeformRefinements = 0;
+    /// Their mean pole count (0 without any).
+    double mAvgFreeformPoles = 0.0;
 };
 
 /**
@@ -36281,6 +36310,9 @@ void skyline_solve(const SkylineMatrix& rLd, double* pB);
 namespace meshioplusplus {
 namespace detail {
 
+/// The highest degree these routines take (`fit_cad`'s freeform limit).
+inline constexpr int kBsplineMaxDegree = 8;
+
 /// A polynomial tensor-product B-spline surface in 3D.
 struct BsplineSurface {
     int mDegreeU = 3;
@@ -36303,7 +36335,8 @@ struct BsplineSurface {
 /**
  * @brief A clamped knot vector for `N` poles of degree `P` on `[Lo, Hi]`:
  * `P + 1` copies of each end and `N - P - 1` interior knots evenly spaced.
- * @throws std::invalid_argument unless `P >= 1`, `N >= P + 1` and `Lo < Hi`.
+ * @throws std::invalid_argument unless `1 <= P <= kBsplineMaxDegree`,
+ * `N >= P + 1` and `Lo < Hi`.
  */
 std::vector<double> bspline_clamped_knots(int P, std::size_t N, double Lo, double Hi);
 
@@ -36361,18 +36394,30 @@ SkylineMatrix bspline_normal_envelope(const BsplineSurface& rS);
 void bspline_add_thin_plate(const BsplineSurface& rS, double Weight, SkylineMatrix& rA);
 
 /**
+ * @brief The same with a weight per knot span: `rSpanWeight` holds one value
+ * per pair of non-empty spans, `u` fastest (`nurbs_spans` order in each
+ * direction), so a fit can bend freely where its samples are and keep its
+ * extension past them smooth.
+ */
+void bspline_add_thin_plate_spans(const BsplineSurface& rS, const std::vector<double>& rSpanWeight,
+                                  SkylineMatrix& rA);
+
+/**
  * @brief Fit the poles of `rS` (its degrees, knots and pole counts given) to
  * scattered samples by regularised least squares:
  * `min Σ w_k |S(u_k, v_k) - x_k|² + Smoothing · thin-plate energy`.
  * @param rU, rV the sample parameters (clamped to the domain).
  * @param rXyz `3 * rU.size()` coordinates.
  * @param pWeights per sample, or null for all ones.
+ * @param pSpanSmoothing when given, per knot span its thin-plate weight
+ *        (see `bspline_add_thin_plate_spans`), replacing `Smoothing`.
  * @return false (poles left as they were) when the normal matrix is singular:
  *         poles no sample touches and no smoothing to hold them.
  */
 bool bspline_lsq_fit(BsplineSurface& rS, const std::vector<double>& rU,
                      const std::vector<double>& rV, const std::vector<double>& rXyz,
-                     const std::vector<double>* pWeights, double Smoothing);
+                     const std::vector<double>* pWeights, double Smoothing,
+                     const std::vector<double>* pSpanSmoothing = nullptr);
 
 /**
  * @brief Project `pP` onto the surface by Newton's method on the
@@ -36385,6 +36430,11 @@ bool bspline_lsq_fit(BsplineSurface& rS, const std::vector<double>& rU,
 double bspline_project(const BsplineSurface& rS, const double* pP, double& rU, double& rV,
                        int MaxIterations = 20);
 
+/// The same with the foot point's parameters held inside `[U0, U1] x [V0, V1]`
+/// (a part of the domain, such as where a fit's samples lie).
+double bspline_project(const BsplineSurface& rS, const double* pP, double& rU, double& rV,
+                       double U0, double U1, double V0, double V1, int MaxIterations = 20);
+
 /**
  * @brief The `N` Gauss-Legendre nodes and weights on `[-1, 1]` (Newton on the
  * Legendre polynomial), exact for polynomials of degree `2N - 1`.
@@ -36394,6 +36444,217 @@ void gauss_legendre(int N, std::vector<double>& rNodes, std::vector<double>& rWe
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/bspline_lsq.hpp =====
+// ===== begin src/cpp/src/detail/patch_flatten.hpp =====
+/**
+ * @file patch_flatten.hpp
+ * @brief Flattening a triangulated surface patch over its best-fit plane or an
+ * unrolled cylinder, the fold test that says whether that flattening is a
+ * parametrisation, and splitting a patch no flattening parametrises into
+ * pieces that one does -- `fit_cad`'s freeform faces (roadmap 6.3.2), kept free
+ * of OpenCASCADE so it is testable in every build.
+ *
+ * Not installed: a core-private helper of `operations/fit_cad.cpp`.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+namespace meshioplusplus {
+namespace detail {
+
+using PatchVec = std::array<double, 3>;
+using PatchTri = std::array<std::size_t, 3>;
+
+/// A patch flattened: per vertex its `(s, t)` parameters and its offset `h`
+/// from the plane or cylinder it is flattened over, with the map back.
+struct PatchFlat {
+    bool mCylinder = false;
+    PatchVec mOrigin{}, mE1{}, mE2{}, mAxis{};  // plane: origin, in-plane axes, normal
+    double mRadius = 0.0;
+    double mTheta0 = 0.0;
+    std::vector<double> mS, mT, mH;
+
+    /// The point at parameters `(S, T)` and offset `H`.
+    PatchVec At(double S, double T, double H) const;
+};
+
+/**
+ * @brief Flatten over the best-fit plane (`Kind` 0) or unroll around the axis
+ * the normals are most perpendicular to (`Kind` 1), the cylinder cut in the
+ * widest gap between the points' angles.
+ * @param rPts the patch's points.
+ * @param rNormals its triangles' unit normals.
+ * @param rAreas its triangles' areas.
+ * @return false when that flattening is degenerate.
+ */
+bool patch_flatten(int Kind, const std::vector<PatchVec>& rPts,
+                   const std::vector<PatchVec>& rNormals, const std::vector<double>& rAreas,
+                   PatchFlat& rOut);
+
+/// Whether a flattening folds: triangles of both orientations (beyond
+/// `1e-9` of the largest), or no area at all.
+bool patch_flat_folds(const PatchFlat& rFlat, const std::vector<PatchTri>& rTris);
+
+/// Unit normals and areas of the triangles.
+void patch_normals(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+                   std::vector<PatchVec>& rNormals, std::vector<double>& rAreas);
+
+/// Whether the plane or the cylinder flattens the patch without folding.
+bool patch_flattenable(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris);
+
+/// How `patch_split_until_flat` splits.
+struct PatchSplitOptions {
+    /// Halvings before a piece is given up on: at most `2^depth` pieces per patch.
+    int mMaxDepth = 4;
+    /// A piece with fewer triangles stays facets.
+    std::size_t mMinTriangles = 16;
+};
+
+/**
+ * @brief Halve a patch once along the direction its normals spread most: at
+ * the area-weighted median of `n · e`, `patch_split_until_flat`'s cut,
+ * whether or not it flattens. Each half is split into its edge-connected
+ * components.
+ * @return per triangle its piece, numbered in the order of each piece's lowest
+ *         triangle; `rNumPieces` the count (0 for fewer than two triangles).
+ */
+std::vector<std::int64_t> patch_bisect(const std::vector<PatchVec>& rPts,
+                                       const std::vector<PatchTri>& rTris, std::size_t& rNumPieces);
+
+/**
+ * @brief Split a patch no flattening parametrises into pieces one does.
+ *
+ * The triangles are halved at the area-weighted median of `n . e`, `e` the
+ * direction their normals spread along most (the principal axis of the
+ * area-weighted normal covariance): a cut along an iso-line of the normal, a
+ * smooth curve on a smooth surface. Each half is split into its edge-connected
+ * components, and each component that does not flatten is halved again, up to
+ * `mMaxDepth` times. Deterministic: ties go by triangle index, and pieces are
+ * numbered in the order of their lowest triangle.
+ *
+ * @return per triangle, its piece (from 0), or -1 for one left as facets
+ *         (a piece under `mMinTriangles`, or still folding at the depth cap).
+ */
+std::vector<std::int64_t> patch_split_until_flat(const std::vector<PatchVec>& rPts,
+                                                 const std::vector<PatchTri>& rTris,
+                                                 const PatchSplitOptions& rOptions,
+                                                 std::size_t& rNumPieces);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/patch_flatten.hpp =====
+// ===== begin src/cpp/src/detail/bspline_fit.hpp =====
+/**
+ * @file detail/bspline_fit.hpp
+ * @brief Fit a tensor-product B-spline surface to a parametrised triangle
+ * patch within a tolerance, iteratively: the general freeform faces of
+ * `fit_cad`.
+ *
+ * The samples are the patch's vertices and its triangles' centroids, at the
+ * parameters `param_disc.hpp` gives (a centroid at the mean of its corners').
+ * The surface starts as a degree-`p` spline on uniform clamped knots over the
+ * parameters' bounding box (widened by `mMargin` on every side when asked),
+ * fitted by least squares with a thin-plate term (`bspline_lsq.hpp`) that is
+ * near zero over the knot spans holding samples and strong over those that
+ * hold none (the corners of a disc's parametrisation), so the surface runs on
+ * past the patch as the least-bending extension. Optional ghost samples of a
+ * coarse fit (`mGhostWeight`) hold such regions harder. Corrected parameters
+ * stay inside the samples' box. Then, each iteration:
+ *
+ *  1. **parameter correction**: every sample is projected onto the surface by
+ *     Newton's method (Hoschek's correction), and the poles are fitted again
+ *     at the new parameters -- point distance minimisation;
+ *  2. when that stalls (less than 10% better), **tangent distance
+ *     minimisation** steps (Wang, Pottmann and Liu, ACM TOG 2006): the poles
+ *     minimise the squared distances along each sample's foot-point normal
+ *     plus `mu` times the point distances, `mu` the Levenberg-Marquardt damping
+ *     (halved on a step that improves, multiplied by ten on one that does not);
+ *  3. **knot insertion**: a knot at the middle of every span, in `u` and in
+ *     `v`, whose largest sample distance is above the target.
+ *
+ * It stops once every vertex is within `mTolerance` and every centroid within
+ * `mCentroidTolerance`, or when the pole budget (`mMaxPoles` per direction) or the
+ * iteration budget is spent. A knot insertion always moves the fit on (a
+ * finer spline may need several before it pays), but the result is the best
+ * state seen, and the history records the best so far, so it never increases.
+ *
+ * A **core-private** header: nothing installed names it. Serial and
+ * deterministic.
+ */
+
+// System includes
+#include <cstddef>
+#include <vector>
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+
+/// What `bspline_fit_patch` aims for and may spend.
+struct BsplineFitOptions {
+    int mDegree = 3;
+    /// The largest distance of a vertex from the surface it aims for; > 0.
+    double mTolerance = 0.0;
+    /// The largest distance of a triangle's centroid, which lies its chordal
+    /// sag off a smooth surface; at most 0 takes twice `mTolerance`.
+    double mCentroidTolerance = 0.0;
+    /// The thin-plate weight over the knot spans that hold samples, relative to
+    /// the sample count on the unit parameter square, so it depends on neither.
+    double mSmoothing = 1e-12;
+    /// The weight over spans no sample reaches (the margin, a disc's corners):
+    /// strong, so the surface runs on past its patch as the least-bending
+    /// extension instead of wherever unconstrained poles fall.
+    double mEmptySmoothing = 1e-4;
+    /// The weight of a ghost sample (see the file comment) against a vertex's;
+    /// 0 (the default) adds none: they hold an extension smooth at some cost
+    /// in accuracy, and the span-wise smoothing usually suffices.
+    double mGhostWeight = 0.0;
+    /// The most poles per direction.
+    std::size_t mMaxPoles = 40;
+    /// The poles per direction to start from (at least the degree plus one).
+    std::size_t mStartPoles = 6;
+    int mMaxIterations = 30;
+    /// The widening of the parameter box on every side, as a share of its size
+    /// (0: the surface ends at the samples' box; `fit_cad` extends faces with
+    /// OpenCASCADE where an edge needs it).
+    double mMargin = 0.0;
+    /// The weight of a triangle's centroid against a vertex's in the fits: a
+    /// flat facet's centroid lies its chordal sag off a smooth surface.
+    double mCentroidWeight = 0.25;
+};
+
+/// The fitted surface and how it got there.
+struct BsplineFitResult {
+    bool mOk = false;  ///< the targets were met
+    BsplineSurface mSurface;
+    double mMaxVertexError = 0.0;
+    double mMaxCentroidError = 0.0;
+    double mRmsError = 0.0;
+    int mIterations = 0;
+    int mRefinements = 0;  ///< knot insertion rounds
+    /// The largest sample distance after each kept state, non-increasing.
+    std::vector<double> mHistory;
+    /// The vertices' foot-point parameters on the final surface.
+    std::vector<double> mU, mV;
+};
+
+/**
+ * @brief Fit a B-spline surface to a patch (see the file comment).
+ * @param rPts the patch's vertices; @param rTris its triangles.
+ * @param rU, rV the vertices' parameters (a flip-free parametrisation).
+ */
+BsplineFitResult bspline_fit_patch(const std::vector<PatchVec>& rPts,
+                                   const std::vector<PatchTri>& rTris,
+                                   const std::vector<double>& rU, const std::vector<double>& rV,
+                                   const BsplineFitOptions& rOptions);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/bspline_fit.hpp =====
 // ===== begin src/cpp/src/detail/closed_facets.hpp =====
 /**
  * @file detail/closed_facets.hpp
@@ -37584,97 +37845,6 @@ inline double drawing_number_value(std::string_view Token, const char* pFormat) 
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/drawing.hpp =====
-// ===== begin src/cpp/src/detail/patch_flatten.hpp =====
-/**
- * @file patch_flatten.hpp
- * @brief Flattening a triangulated surface patch over its best-fit plane or an
- * unrolled cylinder, the fold test that says whether that flattening is a
- * parametrisation, and splitting a patch no flattening parametrises into
- * pieces that one does -- `fit_cad`'s freeform faces (roadmap 6.3.2), kept free
- * of OpenCASCADE so it is testable in every build.
- *
- * Not installed: a core-private helper of `operations/fit_cad.cpp`.
- */
-
-// System includes
-#include <array>
-#include <cstddef>
-#include <cstdint>
-#include <vector>
-
-namespace meshioplusplus {
-namespace detail {
-
-using PatchVec = std::array<double, 3>;
-using PatchTri = std::array<std::size_t, 3>;
-
-/// A patch flattened: per vertex its `(s, t)` parameters and its offset `h`
-/// from the plane or cylinder it is flattened over, with the map back.
-struct PatchFlat {
-    bool mCylinder = false;
-    PatchVec mOrigin{}, mE1{}, mE2{}, mAxis{};  // plane: origin, in-plane axes, normal
-    double mRadius = 0.0;
-    double mTheta0 = 0.0;
-    std::vector<double> mS, mT, mH;
-
-    /// The point at parameters `(S, T)` and offset `H`.
-    PatchVec At(double S, double T, double H) const;
-};
-
-/**
- * @brief Flatten over the best-fit plane (`Kind` 0) or unroll around the axis
- * the normals are most perpendicular to (`Kind` 1), the cylinder cut in the
- * widest gap between the points' angles.
- * @param rPts the patch's points.
- * @param rNormals its triangles' unit normals.
- * @param rAreas its triangles' areas.
- * @return false when that flattening is degenerate.
- */
-bool patch_flatten(int Kind, const std::vector<PatchVec>& rPts,
-                   const std::vector<PatchVec>& rNormals, const std::vector<double>& rAreas,
-                   PatchFlat& rOut);
-
-/// Whether a flattening folds: triangles of both orientations (beyond
-/// `1e-9` of the largest), or no area at all.
-bool patch_flat_folds(const PatchFlat& rFlat, const std::vector<PatchTri>& rTris);
-
-/// Unit normals and areas of the triangles.
-void patch_normals(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
-                   std::vector<PatchVec>& rNormals, std::vector<double>& rAreas);
-
-/// Whether the plane or the cylinder flattens the patch without folding.
-bool patch_flattenable(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris);
-
-/// How `patch_split_until_flat` splits.
-struct PatchSplitOptions {
-    /// Halvings before a piece is given up on: at most `2^depth` pieces per patch.
-    int mMaxDepth = 4;
-    /// A piece with fewer triangles stays facets.
-    std::size_t mMinTriangles = 16;
-};
-
-/**
- * @brief Split a patch no flattening parametrises into pieces one does.
- *
- * The triangles are halved at the area-weighted median of `n . e`, `e` the
- * direction their normals spread along most (the principal axis of the
- * area-weighted normal covariance): a cut along an iso-line of the normal, a
- * smooth curve on a smooth surface. Each half is split into its edge-connected
- * components, and each component that does not flatten is halved again, up to
- * `mMaxDepth` times. Deterministic: ties go by triangle index, and pieces are
- * numbered in the order of their lowest triangle.
- *
- * @return per triangle, its piece (from 0), or -1 for one left as facets
- *         (a piece under `mMinTriangles`, or still folding at the depth cap).
- */
-std::vector<std::int64_t> patch_split_until_flat(const std::vector<PatchVec>& rPts,
-                                                 const std::vector<PatchTri>& rTris,
-                                                 const PatchSplitOptions& rOptions,
-                                                 std::size_t& rNumPieces);
-
-}  // namespace detail
-}  // namespace meshioplusplus
-// ===== end src/cpp/src/detail/patch_flatten.hpp =====
 // ===== begin src/cpp/src/detail/feature_fit.hpp =====
 /**
  * @file feature_fit.hpp
@@ -38886,6 +39056,84 @@ inline FileSource open_source(const std::string& rPath, const std::string& rMess
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/open_source.hpp =====
+// ===== begin src/cpp/src/detail/param_disc.hpp =====
+/**
+ * @file detail/param_disc.hpp
+ * @brief Parametrise a disc-shaped triangle patch over the plane, for the
+ * general freeform B-spline faces of `fit_cad`: least-squares conformal maps
+ * (Lévy, Petitjean, Ray and Maillot, ACM TOG 2002) with a free boundary, and
+ * mean-value coordinates (Floater, CAGD 2003) with the boundary on a circle,
+ * which is bijective for any disc. A patch whose boundary is not one loop
+ * (an annulus, a closed band, a sphere) is not a disc and is not
+ * parametrised here: `fit_cad` splits it first.
+ *
+ * A **core-private** header (the `patch_flatten.hpp` precedent): nothing
+ * installed names it. Deterministic: the linear systems are solved by the
+ * thread-count independent `sparse_solve.hpp` and every loop runs in index
+ * order.
+ */
+
+// System includes
+#include <cstddef>
+#include <vector>
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief The boundary loops of a triangle patch, each a vertex cycle in the
+ * direction the triangles run along it, in the order of their lowest vertex.
+ * @return empty when the patch has no boundary; `rOk` false when a vertex has
+ *         two boundary edges leaving it (a pinched or non-manifold boundary).
+ */
+std::vector<std::vector<std::size_t>> param_boundary_loops(const std::vector<PatchTri>& rTris,
+                                                           bool& rOk);
+
+/// Whether the patch is a topological disc: one boundary loop, Euler
+/// characteristic `V - E + F = 1` over the vertices the triangles use.
+bool param_is_disc(const std::vector<PatchTri>& rTris);
+
+/// A parametrisation: per vertex `(u, v)`, and the triangles it flips.
+struct DiscParam {
+    bool mOk = false;
+    std::vector<double> mU;
+    std::vector<double> mV;
+    /// Triangles whose orientation in the plane differs from the majority's
+    /// (or of no area): a parametrisation is usable only with none.
+    std::size_t mNumFlips = 0;
+};
+
+/**
+ * @brief Least-squares conformal map, its two most distant boundary vertices
+ * pinned at their 3-D distance apart (so lengths are roughly kept), solved by
+ * conjugate gradients on the normal equations. Oriented so the triangles keep
+ * the orientation they have in 3-D.
+ */
+DiscParam param_lscm(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris);
+
+/**
+ * @brief Mean-value coordinates with the boundary on a circle by arc length
+ * (radius: the loop's length over 2π), solved by BiCGSTAB (the weights are not
+ * symmetric). Bijective for a disc with positive weights.
+ */
+DiscParam param_mean_value(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris);
+
+/// The triangles whose signed area in `(u, v)` has the minority sign or is zero.
+std::size_t param_flips(const std::vector<PatchTri>& rTris, const std::vector<double>& rU,
+                        const std::vector<double>& rV);
+
+/**
+ * @brief The parametrisation `fit_cad` uses: least-squares conformal maps,
+ * then mean-value coordinates if those flip a triangle; `mOk` false for a
+ * patch that is not a disc or that both flip.
+ */
+DiscParam param_disc(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/param_disc.hpp =====
 // ===== begin src/cpp/src/detail/png_write.hpp =====
 /**
  * @file detail/png_write.hpp
@@ -58462,8 +58710,463 @@ AnsysElementTypes ansys_element_types(const Mesh& rMesh, std::string_view What) 
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/ansys_model.cpp =====
+// ===== begin src/cpp/src/detail/bspline_fit.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <map>
+#include <utility>
+#include <vector>
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+// TDM steps couple the three coordinates, a system three times the poles':
+// only taken while the surface has at most this many poles.
+constexpr std::size_t kBsfTdmMaxPoles = 400;
+// The fewest samples a span cell needs before it may be halved.
+constexpr std::size_t kBsfMinCellSamples = 8;
+
+// The samples: vertices then centroids, their points and parameters.
+struct BsfSamples {
+    std::vector<double> mXyz;
+    std::vector<double> mU, mV;
+    std::vector<double> mWeight;
+    std::size_t mNumVertices = 0;
+    std::size_t mNumData = 0;               // vertices and centroids; ghost samples follow
+    double mBox[4] = {0.0, 1.0, 0.0, 1.0};  // the samples' (u, v) box
+
+    std::size_t Size() const { return mU.size(); }
+};
+
+// The largest distances of the vertices and of the centroids, and the RMS.
+struct BsfErrors {
+    double mVertex = 0.0;
+    double mCentroid = 0.0;
+    double mRms = 0.0;
+    std::vector<double> mDist;
+
+    double mRatio = 0.5;  // the vertex tolerance over the centroid one
+
+    double Worst() const { return std::max(mVertex, mRatio * mCentroid); }
+};
+
+// Project every sample onto the surface, updating its parameters, the foot
+// points held inside the samples' own box: a boundary sample sliding into the
+// margin would claim spans the extension needs to keep smooth.
+BsfErrors bsf_project(const BsplineSurface& rS, BsfSamples& rSamples, double Ratio) {
+    BsfErrors e;
+    e.mRatio = Ratio;
+    e.mDist.resize(rSamples.mNumData);
+    double sum = 0.0;
+    for (std::size_t k = 0; k < rSamples.mNumData; ++k) {
+        const double d =
+            bspline_project(rS, &rSamples.mXyz[3 * k], rSamples.mU[k], rSamples.mV[k],
+                            rSamples.mBox[0], rSamples.mBox[1], rSamples.mBox[2], rSamples.mBox[3]);
+        e.mDist[k] = d;
+        sum += d * d;
+        if (k < rSamples.mNumVertices)
+            e.mVertex = std::max(e.mVertex, d);
+        else
+            e.mCentroid = std::max(e.mCentroid, d);
+    }
+    e.mRms = rSamples.mNumData ? std::sqrt(sum / static_cast<double>(rSamples.mNumData)) : 0.0;
+    return e;
+}
+
+// A shape with the given knot vectors and zero poles.
+BsplineSurface bsf_shape(int P, std::vector<double> rKu, std::vector<double> rKv) {
+    BsplineSurface s;
+    s.mDegreeU = s.mDegreeV = P;
+    s.mNu = rKu.size() - static_cast<std::size_t>(P) - 1;
+    s.mNv = rKv.size() - static_cast<std::size_t>(P) - 1;
+    s.mKnotsU = std::move(rKu);
+    s.mKnotsV = std::move(rKv);
+    s.mPoles.assign(s.mNu * s.mNv * 3, 0.0);
+    return s;
+}
+
+// Point distance minimisation: the poles fitted at the samples' parameters,
+// the thin-plate weight raised tenfold up to three times if the system is
+// singular.
+// Per knot span its thin-plate weight: `Lambda` where samples are, `Empty`
+// where none is.
+std::vector<double> bsf_span_weights(const BsplineSurface& rS, const BsfSamples& rSamples,
+                                     double Lambda, double Empty) {
+    const std::vector<std::size_t> su = nurbs_spans(rS.mDegreeU, rS.mKnotsU, rS.mNu);
+    const std::vector<std::size_t> sv = nurbs_spans(rS.mDegreeV, rS.mKnotsV, rS.mNv);
+    std::vector<double> w(su.size() * sv.size(), Empty);
+    for (std::size_t k = 0; k < rSamples.Size(); ++k) {
+        const double u = std::min(std::max(rSamples.mU[k], rS.U0()), rS.U1());
+        const double v = std::min(std::max(rSamples.mV[k], rS.V0()), rS.V1());
+        const std::size_t iu = static_cast<std::size_t>(
+            std::lower_bound(su.begin(), su.end(),
+                             nurbs_find_span(rS.mDegreeU, rS.mKnotsU, rS.mNu, u)) -
+            su.begin());
+        const std::size_t iv = static_cast<std::size_t>(
+            std::lower_bound(sv.begin(), sv.end(),
+                             nurbs_find_span(rS.mDegreeV, rS.mKnotsV, rS.mNv, v)) -
+            sv.begin());
+        if (iu < su.size() && iv < sv.size())
+            w[iu + su.size() * iv] = Lambda;
+    }
+    return w;
+}
+
+bool bsf_pdm(BsplineSurface& rS, const BsfSamples& rSamples, double Lambda, double Empty) {
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        const std::vector<double> w = bsf_span_weights(rS, rSamples, Lambda, Empty);
+        if (bspline_lsq_fit(rS, rSamples.mU, rSamples.mV, rSamples.mXyz, &rSamples.mWeight, Lambda,
+                            &w))
+            return true;
+        Lambda = Lambda > 0.0 ? Lambda * 10.0 : 1e-9 * static_cast<double>(rSamples.Size());
+    }
+    return false;
+}
+
+// One tangent distance minimisation step with damping Mu (Wang, Pottmann and
+// Liu 2006): min sum ((S(u_k) - x_k) . n_k)^2 + Mu |S(u_k) - x_k|^2
+// + Lambda * thin plate, the three coordinates coupled.
+bool bsf_tdm(BsplineSurface& rS, const BsfSamples& rSamples, double Lambda, double Empty,
+             double Mu) {
+    const std::size_t np = rS.NumPoles();
+    const SkylineMatrix pole_env = bspline_normal_envelope(rS);
+    std::vector<std::size_t> first(3 * np);
+    for (std::size_t i = 0; i < np; ++i)
+        for (std::size_t c = 0; c < 3; ++c)
+            first[3 * i + c] = 3 * pole_env.mFirst[i];
+    SkylineMatrix a = skyline_zero(first);
+    std::vector<double> rhs(3 * np, 0.0);
+    std::vector<std::size_t> cols;
+    std::vector<double> vals;
+    for (std::size_t k = 0; k < rSamples.Size(); ++k) {
+        BsplineEval e;
+        bspline_eval(rS, rSamples.mU[k], rSamples.mV[k], 1, e);
+        double n[3] = {e.mSu[1] * e.mSv[2] - e.mSu[2] * e.mSv[1],
+                       e.mSu[2] * e.mSv[0] - e.mSu[0] * e.mSv[2],
+                       e.mSu[0] * e.mSv[1] - e.mSu[1] * e.mSv[0]};
+        const double ln = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        if (ln > 0.0)
+            for (double& x : n)
+                x /= ln;
+        const double* x = &rSamples.mXyz[3 * k];
+        const double xn = x[0] * n[0] + x[1] * n[1] + x[2] * n[2];
+        const double w = rSamples.mWeight[k];
+        if (w == 0.0)
+            continue;
+        bspline_row(rS, rSamples.mU[k], rSamples.mV[k], cols, vals);
+        for (std::size_t ia = 0; ia < cols.size(); ++ia) {
+            for (std::size_t c = 0; c < 3; ++c)
+                rhs[3 * cols[ia] + c] += w * vals[ia] * (n[c] * xn + Mu * x[c]);
+            for (std::size_t ib = 0; ib < cols.size(); ++ib) {
+                if (cols[ib] > cols[ia])
+                    continue;
+                const double bb = w * vals[ia] * vals[ib];
+                for (std::size_t c = 0; c < 3; ++c)
+                    for (std::size_t d = 0; d < 3; ++d) {
+                        const std::size_t r = 3 * cols[ia] + c, s = 3 * cols[ib] + d;
+                        if (s > r)
+                            continue;
+                        a.At(r, s) += bb * (n[c] * n[d] + (c == d ? Mu : 0.0));
+                    }
+            }
+        }
+    }
+    {
+        SkylineMatrix k = bspline_normal_envelope(rS);
+        bspline_add_thin_plate_spans(rS, bsf_span_weights(rS, rSamples, Lambda, Empty), k);
+        for (std::size_t i = 0; i < np; ++i)
+            for (std::size_t j = k.mFirst[i]; j <= i; ++j)
+                for (std::size_t c = 0; c < 3; ++c)
+                    a.At(3 * i + c, 3 * j + c) += k.At(i, j);
+    }
+    if (!skyline_ldlt(a))
+        return false;
+    skyline_solve(a, rhs.data());
+    for (double v : rhs)
+        if (!std::isfinite(v))
+            return false;
+    rS.mPoles = std::move(rhs);
+    return true;
+}
+
+// The knot vector with the midpoint of each marked span inserted.
+std::vector<double> bsf_insert(const std::vector<double>& rK, int P,
+                               const std::vector<std::size_t>& rSpans) {
+    std::vector<double> mids;
+    for (std::size_t s : rSpans)
+        mids.push_back(0.5 * (rK[s] + rK[s + 1]));
+    std::vector<double> out = rK;
+    out.insert(out.end(), mids.begin(), mids.end());
+    std::sort(out.begin(), out.end());
+    (void)P;
+    return out;
+}
+
+}  // namespace
+
+BsplineFitResult bspline_fit_patch(const std::vector<PatchVec>& rPts,
+                                   const std::vector<PatchTri>& rTris,
+                                   const std::vector<double>& rU, const std::vector<double>& rV,
+                                   const BsplineFitOptions& rOptions) {
+    BsplineFitResult out;
+    const int p = rOptions.mDegree;
+    if (p < 1 || !(rOptions.mTolerance > 0.0) || rPts.empty() || rTris.empty())
+        return out;
+    const double tol = rOptions.mTolerance;
+    const double ctol =
+        rOptions.mCentroidTolerance > 0.0 ? rOptions.mCentroidTolerance : 2.0 * rOptions.mTolerance;
+
+    // The parameters' box, widened, mapped onto the unit square.
+    double lo[2] = {std::numeric_limits<double>::infinity(),
+                    std::numeric_limits<double>::infinity()};
+    double hi[2] = {-lo[0], -lo[1]};
+    std::vector<std::uint8_t> used(rPts.size(), 0);
+    for (const PatchTri& t : rTris)
+        for (std::size_t i : t)
+            used[i] = 1;
+    for (std::size_t i = 0; i < rPts.size(); ++i)
+        if (used[i]) {
+            lo[0] = std::min(lo[0], rU[i]);
+            hi[0] = std::max(hi[0], rU[i]);
+            lo[1] = std::min(lo[1], rV[i]);
+            hi[1] = std::max(hi[1], rV[i]);
+        }
+    double ext[2] = {hi[0] - lo[0], hi[1] - lo[1]};
+    if (!(ext[0] > 0.0) || !(ext[1] > 0.0))
+        return out;
+    for (int d = 0; d < 2; ++d) {
+        lo[d] -= rOptions.mMargin * ext[d];
+        ext[d] *= 1.0 + 2.0 * rOptions.mMargin;
+    }
+    BsfSamples smp;
+    std::vector<std::size_t> vert_of;
+    for (std::size_t i = 0; i < rPts.size(); ++i)
+        if (used[i]) {
+            vert_of.push_back(i);
+            smp.mXyz.insert(smp.mXyz.end(), rPts[i].begin(), rPts[i].end());
+            smp.mU.push_back((rU[i] - lo[0]) / ext[0]);
+            smp.mV.push_back((rV[i] - lo[1]) / ext[1]);
+            smp.mWeight.push_back(1.0);
+        }
+    smp.mNumVertices = smp.mU.size();
+    smp.mBox[0] = *std::min_element(smp.mU.begin(), smp.mU.end());
+    smp.mBox[1] = *std::max_element(smp.mU.begin(), smp.mU.end());
+    smp.mBox[2] = *std::min_element(smp.mV.begin(), smp.mV.end());
+    smp.mBox[3] = *std::max_element(smp.mV.begin(), smp.mV.end());
+    for (const PatchTri& t : rTris) {
+        for (std::size_t c = 0; c < 3; ++c)
+            smp.mXyz.push_back((rPts[t[0]][c] + rPts[t[1]][c] + rPts[t[2]][c]) / 3.0);
+        smp.mU.push_back(((rU[t[0]] + rU[t[1]] + rU[t[2]]) / 3.0 - lo[0]) / ext[0]);
+        smp.mV.push_back(((rV[t[0]] + rV[t[1]] + rV[t[2]]) / 3.0 - lo[1]) / ext[1]);
+        smp.mWeight.push_back(rOptions.mCentroidWeight);
+    }
+    smp.mNumData = smp.Size();
+    const double lambda = rOptions.mSmoothing * static_cast<double>(smp.Size());
+    const double empty = rOptions.mEmptySmoothing * static_cast<double>(smp.Size());
+
+    // Ghost samples where the parameter square holds no data (the margin, a
+    // disc's corners): a coarse, smooth fit evaluated there, lightly weighted,
+    // so the surface runs on past its patch as that smooth surface does
+    // instead of wherever poles no sample pins fall.
+    {
+        const std::size_t nc = std::min<std::size_t>(
+            6, std::max(rOptions.mStartPoles, std::size_t(static_cast<std::size_t>(p) + 1)));
+        BsplineSurface coarse = bsf_shape(p, bspline_clamped_knots(p, nc, 0.0, 1.0),
+                                          bspline_clamped_knots(p, nc, 0.0, 1.0));
+        if (bspline_lsq_fit(coarse, smp.mU, smp.mV, smp.mXyz, &smp.mWeight,
+                            1e-6 * static_cast<double>(smp.Size()))) {
+            // Covered: every cell within the data's own spacing (the median
+            // edge length in (u, v)) of a sample, so a gap between samples
+            // inside the patch never takes a ghost.
+            constexpr std::size_t kG = 128;
+            std::vector<double> lens;
+            for (const PatchTri& tr : rTris)
+                for (int c = 0; c < 3; ++c) {
+                    const std::size_t a = tr[static_cast<std::size_t>(c)];
+                    const std::size_t b = tr[static_cast<std::size_t>((c + 1) % 3)];
+                    lens.push_back(std::hypot((rU[a] - rU[b]) / ext[0], (rV[a] - rV[b]) / ext[1]));
+                }
+            std::nth_element(lens.begin(),
+                             lens.begin() + static_cast<std::ptrdiff_t>(lens.size() / 2),
+                             lens.end());
+            const double h = lens[lens.size() / 2];
+            const std::size_t reach = static_cast<std::size_t>(std::ceil(h * kG)) + 1;
+            std::vector<std::uint8_t> occupied(kG * kG, 0);
+            for (std::size_t k = 0; k < smp.mNumData; ++k) {
+                const std::size_t i =
+                    std::min(kG - 1, static_cast<std::size_t>(std::max(0.0, smp.mU[k]) * kG));
+                const std::size_t j =
+                    std::min(kG - 1, static_cast<std::size_t>(std::max(0.0, smp.mV[k]) * kG));
+                for (std::size_t jj = j > reach ? j - reach : 0; jj <= std::min(kG - 1, j + reach);
+                     ++jj)
+                    for (std::size_t ii = i > reach ? i - reach : 0;
+                         ii <= std::min(kG - 1, i + reach); ++ii)
+                        occupied[ii + kG * jj] = 1;
+            }
+            for (std::size_t j = 0; j < kG; ++j)
+                for (std::size_t i = 0; i < kG; ++i) {
+                    if (occupied[i + kG * j])
+                        continue;
+                    const double u = (static_cast<double>(i) + 0.5) / kG;
+                    const double v = (static_cast<double>(j) + 0.5) / kG;
+                    BsplineEval e;
+                    bspline_eval(coarse, u, v, 0, e);
+                    smp.mXyz.insert(smp.mXyz.end(), e.mS, e.mS + 3);
+                    smp.mU.push_back(u);
+                    smp.mV.push_back(v);
+                    smp.mWeight.push_back(rOptions.mGhostWeight);
+                }
+        }
+    }
+
+    // The start: uniform knots, as many poles as the samples and the budget allow.
+    const std::size_t pmin = static_cast<std::size_t>(p) + 1;
+    const std::size_t maxp = std::max(rOptions.mMaxPoles, pmin);
+    std::size_t n0 = std::min(std::max(rOptions.mStartPoles, pmin), maxp);
+    BsplineSurface s = bsf_shape(p, bspline_clamped_knots(p, n0, 0.0, 1.0),
+                                 bspline_clamped_knots(p, n0, 0.0, 1.0));
+    if (!bsf_pdm(s, smp, lambda, empty))
+        return out;
+    BsfErrors err = bsf_project(s, smp, tol / ctol);
+    out.mHistory.push_back(err.Worst());
+    const auto met = [&](const BsfErrors& rE) { return rE.mVertex <= tol && rE.mCentroid <= ctol; };
+
+    // The working state moves on; the best one seen is the result.
+    BsplineSurface best = s;
+    BsfSamples best_smp = smp;
+    BsfErrors best_err = err;
+    const auto keep_best = [&]() {
+        if (err.Worst() < best_err.Worst()) {
+            best = s;
+            best_smp = smp;
+            best_err = err;
+        }
+    };
+    double mu = 0.1;
+    for (int it = 1; it <= rOptions.mMaxIterations && !met(best_err); ++it) {
+        out.mIterations = it;
+        const double before = err.Worst();
+        bool progressed = false;
+        // 1. Point distance minimisation at the corrected parameters.
+        {
+            BsplineSurface t = s;
+            BsfSamples ts = smp;
+            if (bsf_pdm(t, ts, lambda, empty)) {
+                const BsfErrors te = bsf_project(t, ts, tol / ctol);
+                if (te.Worst() < err.Worst()) {
+                    progressed = te.Worst() < 0.9 * before;
+                    s = std::move(t);
+                    smp = std::move(ts);
+                    err = te;
+                }
+            }
+        }
+        // 2. Tangent distance minimisation once that stalls.
+        if (!progressed && !met(err) && s.NumPoles() <= kBsfTdmMaxPoles) {
+            for (int attempt = 0; attempt < 1 && !progressed; ++attempt) {
+                BsplineSurface t = s;
+                BsfSamples ts = smp;
+                if (!bsf_tdm(t, ts, lambda, empty, mu)) {
+                    mu *= 10.0;
+                    continue;
+                }
+                const BsfErrors te = bsf_project(t, ts, tol / ctol);
+                if (te.Worst() < err.Worst()) {
+                    progressed = te.Worst() < 0.9 * before;
+                    s = std::move(t);
+                    smp = std::move(ts);
+                    err = te;
+                    mu = std::max(mu * 0.5, 1e-2);
+                } else {
+                    mu *= 10.0;
+                }
+            }
+        }
+        // 3. Knot insertion where the samples are still too far.
+        if (!progressed && !met(err)) {
+            // A span is halved only while its cell holds enough samples: a
+            // spline finer than its data is free between them and oscillates.
+            std::map<std::pair<std::size_t, std::size_t>, std::size_t> in_cell;
+            std::vector<std::pair<std::size_t, std::size_t>> cell_of(smp.mNumData);
+            for (std::size_t k = 0; k < smp.mNumData; ++k) {
+                const double u = std::min(std::max(smp.mU[k], 0.0), 1.0);
+                const double v = std::min(std::max(smp.mV[k], 0.0), 1.0);
+                cell_of[k] = {nurbs_find_span(p, s.mKnotsU, s.mNu, u),
+                              nurbs_find_span(p, s.mKnotsV, s.mNv, v)};
+                ++in_cell[cell_of[k]];
+            }
+            std::map<std::size_t, double> bad_u, bad_v;
+            for (std::size_t k = 0; k < smp.mNumData; ++k) {
+                const double limit = k < smp.mNumVertices ? tol : ctol;
+                if (!(err.mDist[k] > limit) || in_cell[cell_of[k]] < kBsfMinCellSamples)
+                    continue;
+                const std::size_t su = cell_of[k].first, sv = cell_of[k].second;
+                bad_u[su] = std::max(bad_u[su], err.mDist[k]);
+                bad_v[sv] = std::max(bad_v[sv], err.mDist[k]);
+            }
+            // The worst spans first, within the pole budget.
+            const auto pick = [&](const std::map<std::size_t, double>& rBad, std::size_t N) {
+                std::vector<std::pair<double, std::size_t>> by;
+                for (const auto& kv : rBad)
+                    by.emplace_back(-kv.second, kv.first);
+                std::sort(by.begin(), by.end());
+                std::vector<std::size_t> spans;
+                for (const auto& b : by)
+                    if (N + spans.size() < maxp)
+                        spans.push_back(b.second);
+                return spans;
+            };
+            const std::vector<std::size_t> su = pick(bad_u, s.mNu);
+            const std::vector<std::size_t> sv = pick(bad_v, s.mNv);
+            if (su.empty() && sv.empty())
+                break;  // the pole budget is spent
+            BsplineSurface t =
+                bsf_shape(p, bsf_insert(s.mKnotsU, p, su), bsf_insert(s.mKnotsV, p, sv));
+            BsfSamples ts = smp;
+            if (!bsf_pdm(t, ts, lambda, empty))
+                break;
+            err = bsf_project(t, ts, tol / ctol);
+            s = std::move(t);
+            smp = std::move(ts);
+            ++out.mRefinements;
+            progressed = true;
+        }
+        keep_best();
+        out.mHistory.push_back(best_err.Worst());
+        if (!progressed)
+            break;
+    }
+    s = std::move(best);
+    smp = std::move(best_smp);
+    err = best_err;
+
+    out.mOk = met(err);
+    out.mSurface = std::move(s);
+    out.mMaxVertexError = err.mVertex;
+    out.mMaxCentroidError = err.mCentroid;
+    out.mRmsError = err.mRms;
+    out.mU.assign(rPts.size(), 0.0);
+    out.mV.assign(rPts.size(), 0.0);
+    for (std::size_t k = 0; k < vert_of.size(); ++k) {
+        out.mU[vert_of[k]] = smp.mU[k];
+        out.mV[vert_of[k]] = smp.mV[k];
+    }
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/bspline_fit.cpp =====
 // ===== begin src/cpp/src/detail/bspline_lsq.cpp =====
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <stdexcept>
@@ -58485,9 +59188,10 @@ double bsl_clamp(double X, double Lo, double Hi) {
 }  // namespace
 
 std::vector<double> bspline_clamped_knots(int P, std::size_t N, double Lo, double Hi) {
-    if (P < 1 || N < static_cast<std::size_t>(P) + 1 || !(Lo < Hi))
+    if (P < 1 || P > kBsplineMaxDegree || N < static_cast<std::size_t>(P) + 1 || !(Lo < Hi))
         throw std::invalid_argument(
-            "meshio++: bspline_clamped_knots: needs degree >= 1, poles > degree and Lo < Hi");
+            "meshio++: bspline_clamped_knots: needs a degree of 1 to 8, poles > degree and "
+            "Lo < Hi");
     const auto p = static_cast<std::size_t>(P);
     std::vector<double> k(N + p + 1);
     const std::size_t spans = N - p;
@@ -58515,9 +59219,11 @@ BsplineSurface bspline_shape(int P, int Q, std::size_t Nu, std::size_t Nv, doubl
 
 void bspline_basis_ders(std::size_t Span, double U, int P, int NDer,
                         const std::vector<double>& rKnots, double* pDers) {
+    // Fixed-size work arrays: no allocation on a path every projection takes.
     const auto p = static_cast<std::size_t>(P);
     const auto nd = static_cast<std::size_t>(std::max(NDer, 0));
-    std::vector<double> ndu((p + 1) * (p + 1), 0.0), left(p + 1, 0.0), right(p + 1, 0.0);
+    std::array<double, (kBsplineMaxDegree + 1) * (kBsplineMaxDegree + 1)> ndu{};
+    std::array<double, kBsplineMaxDegree + 1> left{}, right{};
     const auto at = [p](std::size_t R, std::size_t C) { return R * (p + 1) + C; };
     ndu[at(0, 0)] = 1.0;
     for (std::size_t j = 1; j <= p; ++j) {
@@ -58538,7 +59244,7 @@ void bspline_basis_ders(std::size_t Span, double U, int P, int NDer,
     for (std::size_t j = 0; j <= p; ++j)
         pDers[j] = ndu[at(j, p)];
     const std::size_t n = std::min(nd, p);
-    std::vector<double> a(2 * (p + 1), 0.0);
+    std::array<double, 2 * (kBsplineMaxDegree + 1)> a{};
     for (std::size_t r = 0; r <= p; ++r) {
         double* a0 = a.data();
         double* a1 = a.data() + (p + 1);
@@ -58590,7 +59296,7 @@ void bspline_eval(const BsplineSurface& rS, double U, double V, int NDer, Bsplin
     const std::size_t sv = nurbs_find_span(rS.mDegreeV, rS.mKnotsV, rS.mNv, V);
     const int nd = std::min(std::max(NDer, 0), 2);
     const auto ndz = static_cast<std::size_t>(nd);
-    std::vector<double> bu((ndz + 1) * (p + 1)), bv((ndz + 1) * (q + 1));
+    std::array<double, 3 * (kBsplineMaxDegree + 1)> bu{}, bv{};
     bspline_basis_ders(su, U, rS.mDegreeU, nd, rS.mKnotsU, bu.data());
     bspline_basis_ders(sv, V, rS.mDegreeV, nd, rS.mKnotsV, bv.data());
     double* outs[6] = {rOut.mS, rOut.mSu, rOut.mSv, rOut.mSuu, rOut.mSuv, rOut.mSvv};
@@ -58620,9 +59326,9 @@ void bspline_row(const BsplineSurface& rS, double U, double V, std::vector<std::
     V = bsl_clamp(V, rS.V0(), rS.V1());
     const std::size_t su = nurbs_find_span(rS.mDegreeU, rS.mKnotsU, rS.mNu, U);
     const std::size_t sv = nurbs_find_span(rS.mDegreeV, rS.mKnotsV, rS.mNv, V);
-    std::vector<double> bu(p + 1), bv(q + 1);
-    nurbs_basis(su, U, rS.mDegreeU, rS.mKnotsU, bu.data());
-    nurbs_basis(sv, V, rS.mDegreeV, rS.mKnotsV, bv.data());
+    std::array<double, kBsplineMaxDegree + 1> bu{}, bv{};
+    bspline_basis_ders(su, U, rS.mDegreeU, 0, rS.mKnotsU, bu.data());
+    bspline_basis_ders(sv, V, rS.mDegreeV, 0, rS.mKnotsV, bv.data());
     rCols.clear();
     rValues.clear();
     for (std::size_t l = 0; l <= q; ++l)
@@ -58669,9 +59375,8 @@ void gauss_legendre(int N, std::vector<double>& rNodes, std::vector<double>& rWe
     }
 }
 
-void bspline_add_thin_plate(const BsplineSurface& rS, double Weight, SkylineMatrix& rA) {
-    if (Weight == 0.0)
-        return;
+void bspline_add_thin_plate_spans(const BsplineSurface& rS, const std::vector<double>& rSpanWeight,
+                                  SkylineMatrix& rA) {
     const auto p = static_cast<std::size_t>(rS.mDegreeU);
     const auto q = static_cast<std::size_t>(rS.mDegreeV);
     // The integrand is a polynomial of degree 2p in u per span: p + 1 points are exact.
@@ -58684,9 +59389,14 @@ void bspline_add_thin_plate(const BsplineSurface& rS, double Weight, SkylineMatr
     const std::size_t nloc = (p + 1) * (q + 1);
     std::vector<std::size_t> idx(nloc);
     std::vector<double> duu(nloc), duv(nloc), dvv(nloc);
-    for (std::size_t sv : spans_v) {
+    for (std::size_t jv = 0; jv < spans_v.size(); ++jv) {
+        const std::size_t sv = spans_v[jv];
         const double v0 = rS.mKnotsV[sv], v1 = rS.mKnotsV[sv + 1];
-        for (std::size_t su : spans_u) {
+        for (std::size_t ju = 0; ju < spans_u.size(); ++ju) {
+            const std::size_t su = spans_u[ju];
+            const double Weight = rSpanWeight[ju + spans_u.size() * jv];
+            if (Weight == 0.0)
+                continue;
             const double u0 = rS.mKnotsU[su], u1 = rS.mKnotsU[su + 1];
             const double jac = 0.25 * (u1 - u0) * (v1 - v0);
             for (std::size_t gv = 0; gv < xv.size(); ++gv) {
@@ -58716,9 +59426,18 @@ void bspline_add_thin_plate(const BsplineSurface& rS, double Weight, SkylineMatr
     }
 }
 
+void bspline_add_thin_plate(const BsplineSurface& rS, double Weight, SkylineMatrix& rA) {
+    if (Weight == 0.0)
+        return;
+    const std::size_t n = nurbs_spans(rS.mDegreeU, rS.mKnotsU, rS.mNu).size() *
+                          nurbs_spans(rS.mDegreeV, rS.mKnotsV, rS.mNv).size();
+    bspline_add_thin_plate_spans(rS, std::vector<double>(n, Weight), rA);
+}
+
 bool bspline_lsq_fit(BsplineSurface& rS, const std::vector<double>& rU,
                      const std::vector<double>& rV, const std::vector<double>& rXyz,
-                     const std::vector<double>* pWeights, double Smoothing) {
+                     const std::vector<double>* pWeights, double Smoothing,
+                     const std::vector<double>* pSpanSmoothing) {
     const std::size_t n = rS.NumPoles();
     SkylineMatrix a = bspline_normal_envelope(rS);
     std::vector<double> rhs(3 * n, 0.0);
@@ -58737,7 +59456,10 @@ bool bspline_lsq_fit(BsplineSurface& rS, const std::vector<double>& rU,
                 rhs[c * n + cols[a1]] += w * vals[a1] * rXyz[3 * s + c];
         }
     }
-    bspline_add_thin_plate(rS, Smoothing, a);
+    if (pSpanSmoothing)
+        bspline_add_thin_plate_spans(rS, *pSpanSmoothing, a);
+    else
+        bspline_add_thin_plate(rS, Smoothing, a);
     if (!skyline_ldlt(a))
         return false;
     for (std::size_t c = 0; c < 3; ++c)
@@ -58756,7 +59478,13 @@ bool bspline_lsq_fit(BsplineSurface& rS, const std::vector<double>& rU,
 
 double bspline_project(const BsplineSurface& rS, const double* pP, double& rU, double& rV,
                        int MaxIterations) {
-    const double u0 = rS.U0(), u1 = rS.U1(), v0 = rS.V0(), v1 = rS.V1();
+    return bspline_project(rS, pP, rU, rV, rS.U0(), rS.U1(), rS.V0(), rS.V1(), MaxIterations);
+}
+
+double bspline_project(const BsplineSurface& rS, const double* pP, double& rU, double& rV,
+                       double U0, double U1, double V0, double V1, int MaxIterations) {
+    const double u0 = std::max(U0, rS.U0()), u1 = std::min(U1, rS.U1());
+    const double v0 = std::max(V0, rS.V0()), v1 = std::min(V1, rS.V1());
     const double eps_u = 1e-14 * std::max(1.0, u1 - u0), eps_v = 1e-14 * std::max(1.0, v1 - v0);
     rU = bsl_clamp(rU, u0, u1);
     rV = bsl_clamp(rV, v0, v1);
@@ -69096,6 +69824,411 @@ Mesh occt_tessellate(const TopoDS_Shape& rNurbs, const BrepInfo& rInfo, double D
 
 #endif  // MESHIOPLUSPLUS_HAS_OCCT
 // ===== end src/cpp/src/detail/occt_brep.cpp =====
+// ===== begin src/cpp/src/detail/param_disc.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <map>
+#include <set>
+#include <utility>
+#include <vector>
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+constexpr double kPdPi = 3.14159265358979323846;
+
+PatchVec pd_sub(const PatchVec& rA, const PatchVec& rB) {
+    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
+}
+double pd_dot(const PatchVec& rA, const PatchVec& rB) {
+    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
+}
+PatchVec pd_cross(const PatchVec& rA, const PatchVec& rB) {
+    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
+            rA[0] * rB[1] - rA[1] * rB[0]};
+}
+double pd_norm(const PatchVec& rA) {
+    return std::sqrt(pd_dot(rA, rA));
+}
+
+// The vertices the triangles use, ascending.
+std::vector<std::size_t> pd_used(const std::vector<PatchTri>& rTris) {
+    std::vector<std::size_t> v;
+    for (const PatchTri& t : rTris)
+        v.insert(v.end(), t.begin(), t.end());
+    std::sort(v.begin(), v.end());
+    v.erase(std::unique(v.begin(), v.end()), v.end());
+    return v;
+}
+
+}  // namespace
+
+std::vector<std::vector<std::size_t>> param_boundary_loops(const std::vector<PatchTri>& rTris,
+                                                           bool& rOk) {
+    rOk = true;
+    // Directed edges; a boundary edge is one whose reverse no triangle uses.
+    std::map<std::pair<std::size_t, std::size_t>, int> directed;
+    for (const PatchTri& t : rTris)
+        for (int k = 0; k < 3; ++k)
+            ++directed[{t[static_cast<std::size_t>(k)], t[static_cast<std::size_t>((k + 1) % 3)]}];
+    std::map<std::size_t, std::size_t> next;
+    for (const auto& kv : directed) {
+        if (kv.second > 1)
+            rOk = false;  // an edge used twice the same way: inconsistent or non-manifold
+        if (directed.count({kv.first.second, kv.first.first}))
+            continue;
+        if (next.count(kv.first.first))
+            rOk = false;  // a pinched boundary vertex
+        next[kv.first.first] = kv.first.second;
+    }
+    std::vector<std::vector<std::size_t>> loops;
+    std::set<std::size_t> done;
+    for (const auto& kv : next) {
+        if (done.count(kv.first))
+            continue;
+        std::vector<std::size_t> loop;
+        std::size_t v = kv.first;
+        while (!done.count(v)) {
+            done.insert(v);
+            loop.push_back(v);
+            const auto it = next.find(v);
+            if (it == next.end()) {
+                rOk = false;
+                break;
+            }
+            v = it->second;
+        }
+        if (v != kv.first)
+            rOk = false;
+        loops.push_back(std::move(loop));
+    }
+    return loops;
+}
+
+bool param_is_disc(const std::vector<PatchTri>& rTris) {
+    if (rTris.empty())
+        return false;
+    bool ok = true;
+    const std::vector<std::vector<std::size_t>> loops = param_boundary_loops(rTris, ok);
+    if (!ok || loops.size() != 1)
+        return false;
+    std::set<std::pair<std::size_t, std::size_t>> edges;
+    for (const PatchTri& t : rTris)
+        for (int k = 0; k < 3; ++k) {
+            std::size_t a = t[static_cast<std::size_t>(k)],
+                        b = t[static_cast<std::size_t>((k + 1) % 3)];
+            if (a > b)
+                std::swap(a, b);
+            edges.insert({a, b});
+        }
+    const long long v = static_cast<long long>(pd_used(rTris).size());
+    const long long e = static_cast<long long>(edges.size());
+    const long long f = static_cast<long long>(rTris.size());
+    return v - e + f == 1;
+}
+
+std::size_t param_flips(const std::vector<PatchTri>& rTris, const std::vector<double>& rU,
+                        const std::vector<double>& rV) {
+    std::size_t pos = 0, neg = 0, zero = 0;
+    for (const PatchTri& t : rTris) {
+        const double a = (rU[t[1]] - rU[t[0]]) * (rV[t[2]] - rV[t[0]]) -
+                         (rU[t[2]] - rU[t[0]]) * (rV[t[1]] - rV[t[0]]);
+        if (a > 0.0)
+            ++pos;
+        else if (a < 0.0)
+            ++neg;
+        else
+            ++zero;
+    }
+    return std::min(pos, neg) + zero;
+}
+
+DiscParam param_lscm(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris) {
+    DiscParam out;
+    bool ok = true;
+    const std::vector<std::vector<std::size_t>> loops = param_boundary_loops(rTris, ok);
+    if (!ok || loops.empty())
+        return out;
+    const std::size_t n = rPts.size();
+    // Pin the two boundary vertices farthest apart (ties to the lowest ids).
+    const std::vector<std::size_t>& loop = loops.front();
+    std::size_t pa = loop.front(), pb = loop.front();
+    double far = -1.0;
+    for (std::size_t i = 0; i < loop.size(); ++i)
+        for (std::size_t j = i + 1; j < loop.size(); ++j) {
+            const double d = pd_norm(pd_sub(rPts[loop[i]], rPts[loop[j]]));
+            if (d > far) {
+                far = d;
+                pa = loop[i];
+                pb = loop[j];
+            }
+        }
+    if (!(far > 0.0))
+        return out;
+    // Unknowns: u then v of every vertex but the pinned ones.
+    std::vector<std::ptrdiff_t> col(n, -1);
+    std::size_t nfree = 0;
+    for (std::size_t i : pd_used(rTris))
+        if (i != pa && i != pb)
+            col[i] = static_cast<std::ptrdiff_t>(nfree++);
+    const double pin_u[2] = {0.0, far}, pin_v[2] = {0.0, 0.0};
+    const std::size_t m = 2 * nfree;
+    std::vector<SparseTriplet> ata;
+    std::vector<double> atb(m, 0.0);
+    for (const PatchTri& t : rTris) {
+        const PatchVec e1 = pd_sub(rPts[t[1]], rPts[t[0]]);
+        const PatchVec e2 = pd_sub(rPts[t[2]], rPts[t[0]]);
+        const PatchVec nrm = pd_cross(e1, e2);
+        const double twice = pd_norm(nrm);
+        const double l1 = pd_norm(e1);
+        if (!(twice > 0.0) || !(l1 > 0.0))
+            continue;
+        // The triangle in its own plane, counter-clockwise.
+        const PatchVec ex = {e1[0] / l1, e1[1] / l1, e1[2] / l1};
+        const PatchVec nz = {nrm[0] / twice, nrm[1] / twice, nrm[2] / twice};
+        const PatchVec ey = pd_cross(nz, ex);
+        const double x[3] = {0.0, l1, pd_dot(e2, ex)};
+        const double y[3] = {0.0, 0.0, pd_dot(e2, ey)};
+        // The gradient of each hat function: the opposite edge turned 90 degrees.
+        double gx[3], gy[3];
+        for (int j = 0; j < 3; ++j) {
+            const int k = (j + 1) % 3, l = (j + 2) % 3;
+            gx[j] = -(y[l] - y[k]) / twice;
+            gy[j] = (x[l] - x[k]) / twice;
+        }
+        // Residual R90 grad u - grad v, two rows, weight sqrt(area).
+        const double w = std::sqrt(0.5 * twice);
+        // Row 0: -(grad u)_y - (grad v)_x; row 1: (grad u)_x - (grad v)_y.
+        for (int row = 0; row < 2; ++row) {
+            double cu[3], cv[3];
+            for (int j = 0; j < 3; ++j) {
+                cu[j] = w * (row == 0 ? -gy[j] : gx[j]);
+                cv[j] = w * (row == 0 ? -gx[j] : -gy[j]);
+            }
+            // The pinned vertices' contribution moves to the right-hand side.
+            double rhs = 0.0;
+            for (int j = 0; j < 3; ++j) {
+                const std::size_t vtx = t[static_cast<std::size_t>(j)];
+                if (vtx == pa || vtx == pb) {
+                    const int p = vtx == pa ? 0 : 1;
+                    rhs -= cu[j] * pin_u[p] + cv[j] * pin_v[p];
+                }
+            }
+            for (int a = 0; a < 3; ++a) {
+                const std::ptrdiff_t ca = col[t[static_cast<std::size_t>(a)]];
+                if (ca < 0)
+                    continue;
+                const std::size_t iu = static_cast<std::size_t>(ca);
+                const std::size_t iv = nfree + iu;
+                atb[iu] += cu[a] * rhs;
+                atb[iv] += cv[a] * rhs;
+                for (int b = 0; b < 3; ++b) {
+                    const std::ptrdiff_t cb = col[t[static_cast<std::size_t>(b)]];
+                    if (cb < 0)
+                        continue;
+                    const std::size_t ju = static_cast<std::size_t>(cb);
+                    const std::size_t jv = nfree + ju;
+                    ata.push_back({iu, ju, cu[a] * cu[b]});
+                    ata.push_back({iu, jv, cu[a] * cv[b]});
+                    ata.push_back({iv, ju, cv[a] * cu[b]});
+                    ata.push_back({iv, jv, cv[a] * cv[b]});
+                }
+            }
+        }
+    }
+    const SparseCsr a = csr_from_triplets(m, m, std::move(ata));
+    std::vector<double> x(m, 0.0);
+    const SparseSolveReport rep = csr_pcg(a, atb.data(), x.data(), 1e-12, 20 * m + 100);
+    if (!(rep.mRelativeResidual <= 1e-8))
+        return out;
+    out.mU.assign(n, 0.0);
+    out.mV.assign(n, 0.0);
+    for (std::size_t i = 0; i < n; ++i)
+        if (col[i] >= 0) {
+            out.mU[i] = x[static_cast<std::size_t>(col[i])];
+            out.mV[i] = x[nfree + static_cast<std::size_t>(col[i])];
+        }
+    out.mU[pa] = pin_u[0];
+    out.mV[pa] = pin_v[0];
+    out.mU[pb] = pin_u[1];
+    out.mV[pb] = pin_v[1];
+    // Keep the 3-D orientation: the majority of triangles counter-clockwise.
+    std::size_t pos = 0, neg = 0;
+    for (const PatchTri& t : rTris) {
+        const double s = (out.mU[t[1]] - out.mU[t[0]]) * (out.mV[t[2]] - out.mV[t[0]]) -
+                         (out.mU[t[2]] - out.mU[t[0]]) * (out.mV[t[1]] - out.mV[t[0]]);
+        (s >= 0.0 ? pos : neg) += 1;
+    }
+    if (neg > pos)
+        for (double& v : out.mV)
+            v = -v;
+    out.mNumFlips = param_flips(rTris, out.mU, out.mV);
+    out.mOk = true;
+    return out;
+}
+
+DiscParam param_mean_value(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris) {
+    DiscParam out;
+    bool ok = true;
+    const std::vector<std::vector<std::size_t>> loops = param_boundary_loops(rTris, ok);
+    if (!ok || loops.size() != 1)
+        return out;
+    const std::size_t n = rPts.size();
+    const std::vector<std::size_t>& loop = loops.front();
+    // The boundary on a circle by arc length.
+    std::vector<double> cum(loop.size() + 1, 0.0);
+    for (std::size_t i = 0; i < loop.size(); ++i)
+        cum[i + 1] = cum[i] + pd_norm(pd_sub(rPts[loop[(i + 1) % loop.size()]], rPts[loop[i]]));
+    const double len = cum.back();
+    if (!(len > 0.0))
+        return out;
+    const double radius = len / (2.0 * kPdPi);
+    out.mU.assign(n, 0.0);
+    out.mV.assign(n, 0.0);
+    std::vector<std::uint8_t> on_boundary(n, 0);
+    for (std::size_t i = 0; i < loop.size(); ++i) {
+        const double a = 2.0 * kPdPi * cum[i] / len;
+        out.mU[loop[i]] = radius * std::cos(a);
+        out.mV[loop[i]] = radius * std::sin(a);
+        on_boundary[loop[i]] = 1;
+    }
+    std::vector<std::ptrdiff_t> col(n, -1);
+    std::size_t nfree = 0;
+    for (std::size_t i : pd_used(rTris))
+        if (!on_boundary[i])
+            col[i] = static_cast<std::ptrdiff_t>(nfree++);
+    if (nfree > 0) {
+        // Floater's weights: w_ij = (tan(a/2) + tan(b/2)) / |p_i - p_j|, the
+        // angles at p_i in the two triangles beside the edge.
+        std::map<std::pair<std::size_t, std::size_t>, double> w;
+        for (const PatchTri& t : rTris)
+            for (int c = 0; c < 3; ++c) {
+                const std::size_t i = t[static_cast<std::size_t>(c)];
+                const std::size_t j = t[static_cast<std::size_t>((c + 1) % 3)];
+                const std::size_t k = t[static_cast<std::size_t>((c + 2) % 3)];
+                const PatchVec a = pd_sub(rPts[j], rPts[i]);
+                const PatchVec b = pd_sub(rPts[k], rPts[i]);
+                const double la = pd_norm(a), lb = pd_norm(b);
+                if (!(la > 0.0) || !(lb > 0.0))
+                    continue;
+                const double cosv = std::min(1.0, std::max(-1.0, pd_dot(a, b) / (la * lb)));
+                const double half = std::tan(0.5 * std::acos(cosv));
+                w[{i, j}] += half / la;
+                w[{i, k}] += half / lb;
+            }
+        std::vector<SparseTriplet> trip;
+        std::vector<double> bu(nfree, 0.0), bv(nfree, 0.0), diag(nfree, 0.0);
+        for (const auto& kv : w) {
+            const std::size_t i = kv.first.first, j = kv.first.second;
+            if (col[i] < 0)
+                continue;
+            const std::size_t r = static_cast<std::size_t>(col[i]);
+            diag[r] += kv.second;
+            if (col[j] >= 0) {
+                trip.push_back({r, static_cast<std::size_t>(col[j]), -kv.second});
+            } else {
+                bu[r] += kv.second * out.mU[j];
+                bv[r] += kv.second * out.mV[j];
+            }
+        }
+        for (std::size_t r = 0; r < nfree; ++r)
+            trip.push_back({r, r, diag[r]});
+        const SparseCsr a = csr_from_triplets(nfree, nfree, std::move(trip));
+        std::vector<double> xu(nfree, 0.0), xv(nfree, 0.0);
+        const SparseSolveReport ru = csr_bicgstab(a, bu.data(), xu.data(), 1e-12, 20 * nfree + 100);
+        const SparseSolveReport rv = csr_bicgstab(a, bv.data(), xv.data(), 1e-12, 20 * nfree + 100);
+        if (!(ru.mRelativeResidual <= 1e-8) || !(rv.mRelativeResidual <= 1e-8))
+            return out;
+        for (std::size_t i = 0; i < n; ++i)
+            if (col[i] >= 0) {
+                out.mU[i] = xu[static_cast<std::size_t>(col[i])];
+                out.mV[i] = xv[static_cast<std::size_t>(col[i])];
+            }
+    }
+    // The loop runs the way the triangles do, so they come out counter-
+    // clockwise when the loop is: flip v otherwise.
+    std::size_t pos = 0, neg = 0;
+    for (const PatchTri& t : rTris) {
+        const double s = (out.mU[t[1]] - out.mU[t[0]]) * (out.mV[t[2]] - out.mV[t[0]]) -
+                         (out.mU[t[2]] - out.mU[t[0]]) * (out.mV[t[1]] - out.mV[t[0]]);
+        (s >= 0.0 ? pos : neg) += 1;
+    }
+    if (neg > pos)
+        for (double& v : out.mV)
+            v = -v;
+    out.mNumFlips = param_flips(rTris, out.mU, out.mV);
+    out.mOk = true;
+    return out;
+}
+
+namespace {
+
+// Turn a parametrisation (a conformal map is one up to a rotation) so its
+// bounding box -- the spline's domain -- is the smallest: the boundary's box
+// over rotations in half-degree steps, the first smallest kept.
+void pd_align(const std::vector<PatchTri>& rTris, DiscParam& rP) {
+    bool ok = true;
+    const std::vector<std::vector<std::size_t>> loops = param_boundary_loops(rTris, ok);
+    if (!ok || loops.empty())
+        return;
+    const std::vector<std::size_t>& loop = loops.front();
+    double best_area = std::numeric_limits<double>::infinity();
+    double best = 0.0;
+    for (int k = 0; k < 180; ++k) {
+        const double a = static_cast<double>(k) * kPdPi / 360.0;
+        const double c = std::cos(a), s = std::sin(a);
+        double lo[2] = {std::numeric_limits<double>::infinity(),
+                        std::numeric_limits<double>::infinity()};
+        double hi[2] = {-lo[0], -lo[1]};
+        for (std::size_t i : loop) {
+            const double x = c * rP.mU[i] + s * rP.mV[i];
+            const double y = -s * rP.mU[i] + c * rP.mV[i];
+            lo[0] = std::min(lo[0], x);
+            hi[0] = std::max(hi[0], x);
+            lo[1] = std::min(lo[1], y);
+            hi[1] = std::max(hi[1], y);
+        }
+        const double area = (hi[0] - lo[0]) * (hi[1] - lo[1]);
+        if (area < best_area * (1.0 - 1e-12)) {
+            best_area = area;
+            best = a;
+        }
+    }
+    const double c = std::cos(best), s = std::sin(best);
+    for (std::size_t i = 0; i < rP.mU.size(); ++i) {
+        const double u = rP.mU[i], v = rP.mV[i];
+        rP.mU[i] = c * u + s * v;
+        rP.mV[i] = -s * u + c * v;
+    }
+}
+
+}  // namespace
+
+DiscParam param_disc(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris) {
+    if (!param_is_disc(rTris))
+        return DiscParam{};
+    DiscParam p = param_lscm(rPts, rTris);
+    if (p.mOk && p.mNumFlips == 0) {
+        pd_align(rTris, p);
+        return p;
+    }
+    p = param_mean_value(rPts, rTris);
+    if (p.mOk && p.mNumFlips == 0)
+        return p;
+    p.mOk = false;
+    return p;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/param_disc.cpp =====
 // ===== begin src/cpp/src/detail/patch_flatten.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -69431,6 +70564,56 @@ bool patch_flattenable(const std::vector<PatchVec>& rPts, const std::vector<Patc
             return true;
     }
     return false;
+}
+
+std::vector<std::int64_t> patch_bisect(const std::vector<PatchVec>& rPts,
+                                       const std::vector<PatchTri>& rTris,
+                                       std::size_t& rNumPieces) {
+    rNumPieces = 0;
+    std::vector<std::int64_t> out(rTris.size(), -1);
+    if (rTris.size() < 2)
+        return out;
+    std::vector<PatchVec> normals;
+    std::vector<double> areas;
+    patch_normals(rPts, rTris, normals, areas);
+    double m[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0}, w[3], v[9];
+    double total = 0.0;
+    for (std::size_t t = 0; t < rTris.size(); ++t) {
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                m[i * 3 + j] += areas[t] * normals[t][static_cast<std::size_t>(i)] *
+                                normals[t][static_cast<std::size_t>(j)];
+        total += areas[t];
+    }
+    lsq_sym3_eigen(m, w, v);
+    const PatchVec e{v[6], v[7], v[8]};
+    std::vector<std::pair<double, std::size_t>> keyed;
+    for (std::size_t t = 0; t < rTris.size(); ++t)
+        keyed.emplace_back(pf_dot(normals[t], e), t);
+    std::sort(keyed.begin(), keyed.end());
+    std::size_t k = 0;
+    double acc = 0.0;
+    while (k + 1 < keyed.size() && acc + areas[keyed[k].second] <= 0.5 * total) {
+        acc += areas[keyed[k].second];
+        ++k;
+    }
+    k = std::max<std::size_t>(k, 1);
+    std::vector<std::size_t> lo, hi;
+    for (std::size_t i = 0; i < keyed.size(); ++i)
+        (i < k ? lo : hi).push_back(keyed[i].second);
+    std::vector<std::vector<std::size_t>> pieces;
+    for (std::vector<std::size_t>* half : {&lo, &hi}) {
+        std::sort(half->begin(), half->end());
+        for (auto& comp : pf_components(rTris, *half))
+            pieces.push_back(std::move(comp));
+    }
+    std::sort(pieces.begin(), pieces.end(),
+              [](const auto& rA, const auto& rB) { return rA.front() < rB.front(); });
+    for (std::size_t p = 0; p < pieces.size(); ++p)
+        for (std::size_t t : pieces[p])
+            out[t] = static_cast<std::int64_t>(p);
+    rNumPieces = pieces.size();
+    return out;
 }
 
 std::vector<std::int64_t> patch_split_until_flat(const std::vector<PatchVec>& rPts,
@@ -187613,6 +188796,8 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
 #include <Geom_BSplineSurface.hxx>
 #include <GeomFill_Pipe.hxx>
 #include <Geom_OffsetSurface.hxx>
+#include <TColStd_Array1OfInteger.hxx>
+#include <TColStd_Array1OfReal.hxx>
 #include <TColgp_Array2OfPnt.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
@@ -189434,6 +190619,90 @@ bool fc_surface_fits(const FcHandle<Geom_Surface>& rS, const std::vector<gp_Pnt>
     return true;
 }
 
+// The general freeform face (v17.11.0): the patch parametrised as a disc
+// (detail/param_disc) and fitted by the iterative B-spline fit
+// (detail/bspline_fit), OpenCASCADE given only the final poles and knots.
+// Null when the patch is no disc, the fit misses its target, or the surface
+// fails the test every freeform face passes (half the tolerance at a vertex,
+// the tolerance at a facet centre, by projection).
+FcHandle<Geom_Surface> fc_freeform_general(const std::vector<gp_Pnt>& rPts,
+                                           const std::vector<std::array<std::size_t, 3>>& rTris,
+                                           double Tol, const FitCadOptions& rOptions,
+                                           std::int64_t& rRefinements, std::size_t& rPoles) {
+    std::vector<detail::PatchVec> pts(rPts.size());
+    for (std::size_t i = 0; i < rPts.size(); ++i)
+        pts[i] = {rPts[i].X(), rPts[i].Y(), rPts[i].Z()};
+    const std::vector<detail::PatchTri> tris(rTris.begin(), rTris.end());
+    const detail::DiscParam par = detail::param_disc(pts, tris);
+    if (!par.mOk) {
+        log::debug("fit_cad: a {}-triangle patch is no disc (or folds in every parametrisation)",
+                   tris.size());
+        return {};
+    }
+    detail::BsplineFitOptions o;
+    // A quarter of the tolerance at the vertices by default, so the face meets
+    // the half-tolerance acceptance with room for its edges and the re-mesh;
+    // a facet centre is held to the tolerance itself, its chordal sag allowed.
+    o.mTolerance = rOptions.mFreeformTolerance > 0.0 ? rOptions.mFreeformTolerance : 0.25 * Tol;
+    o.mCentroidTolerance = std::max(Tol, 2.0 * o.mTolerance);
+    o.mSmoothing = rOptions.mFreeformSmoothing;
+    o.mMaxPoles = static_cast<std::size_t>(rOptions.mMaxFreeformPoles);
+    o.mMaxIterations = static_cast<int>(rOptions.mMaxFreeformIterations);
+    const detail::BsplineFitResult fit = detail::bspline_fit_patch(pts, tris, par.mU, par.mV, o);
+    log::debug(
+        "fit_cad: general freeform fit of a {}-triangle patch: {} after {} iteration(s), "
+        "{}x{} poles, vertex {} / centroid {} for a target of {}",
+        tris.size(), fit.mOk ? "met" : "missed", fit.mIterations, fit.mSurface.mNu,
+        fit.mSurface.mNv, fit.mMaxVertexError, fit.mMaxCentroidError, o.mTolerance);
+    if (!fit.mOk)
+        return {};
+    const detail::BsplineSurface& s = fit.mSurface;
+    TColgp_Array2OfPnt poles(1, static_cast<int>(s.mNu), 1, static_cast<int>(s.mNv));
+    for (std::size_t j = 0; j < s.mNv; ++j)
+        for (std::size_t i = 0; i < s.mNu; ++i) {
+            const double* p = &s.mPoles[3 * (i + s.mNu * j)];
+            poles.SetValue(static_cast<int>(i) + 1, static_cast<int>(j) + 1,
+                           gp_Pnt(p[0], p[1], p[2]));
+        }
+    // The full clamped knot vectors as distinct knots and multiplicities.
+    auto distinct = [](const std::vector<double>& rK, std::vector<double>& rKnots,
+                       std::vector<int>& rMults) {
+        for (double k : rK) {
+            if (!rKnots.empty() && k == rKnots.back()) {
+                ++rMults.back();
+            } else {
+                rKnots.push_back(k);
+                rMults.push_back(1);
+            }
+        }
+    };
+    std::vector<double> ku, kv;
+    std::vector<int> mu, mv;
+    distinct(s.mKnotsU, ku, mu);
+    distinct(s.mKnotsV, kv, mv);
+    TColStd_Array1OfReal uk(1, static_cast<int>(ku.size())), vk(1, static_cast<int>(kv.size()));
+    TColStd_Array1OfInteger um(1, static_cast<int>(mu.size())), vm(1, static_cast<int>(mv.size()));
+    for (std::size_t i = 0; i < ku.size(); ++i) {
+        uk.SetValue(static_cast<int>(i) + 1, ku[i]);
+        um.SetValue(static_cast<int>(i) + 1, mu[i]);
+    }
+    for (std::size_t i = 0; i < kv.size(); ++i) {
+        vk.SetValue(static_cast<int>(i) + 1, kv[i]);
+        vm.SetValue(static_cast<int>(i) + 1, mv[i]);
+    }
+    FcHandle<Geom_Surface> surf =
+        new Geom_BSplineSurface(poles, uk, vk, um, vm, s.mDegreeU, s.mDegreeV);
+    // Through the cached projector: a projector per point samples the whole
+    // surface each time.
+    if (!fc_surface_fits(surf, rPts, rTris, Tol, false, true)) {
+        log::debug("fit_cad: the general freeform surface strays from its patch on projection");
+        return {};
+    }
+    rRefinements = fit.mRefinements;
+    rPoles = s.NumPoles();
+    return surf;
+}
+
 // @p rS moved by @p Offset along its normal, as the equivalent elementary
 // surface when there is one (a plane, or a cylinder of another radius), so
 // two offsets of primitives intersect exactly.
@@ -190205,7 +191474,7 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     };
     // What a fillet or thread face is, beyond its type, for the report.
     constexpr std::uint8_t kFcVariable = 1, kFcBlend = 2, kFcRounded = 4, kFcConic = 8,
-                           kFcTapered = 16, kFcVariablePitch = 32;
+                           kFcTapered = 16, kFcVariablePitch = 32, kFcGeneral = 64;
     std::vector<std::uint8_t> feature(m, 0);
     auto accept = [&](std::size_t R, const FcHandle<Geom_Surface>& rS, std::int64_t Type,
                       std::uint8_t Feature) {
@@ -190462,6 +191731,9 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     for (const FcPatch& p : skin.mPatches)
         next_label = std::max(next_label, p.mLabel + 1);
     std::vector<std::uint8_t> is_piece(m, 0);
+    // The general freeform stage's halvings so far, and what it built per row.
+    std::vector<std::int64_t> general_depth(m, 0);
+    std::vector<std::int64_t> general_refinements(m, 0), general_poles(m, 0);
     for (std::size_t r = 0; rOptions.mFreeform && r < skin.mPatches.size(); ++r) {
         bool finite = true;
         for (double x : skin.mPatches[r].mParams)
@@ -190492,9 +191764,67 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         try {
             FcHandle<Geom_Surface> s =
                 fc_freeform(pts, tris, tol, rOptions.mFreeformDegree, rOptions.mFreeformMaxControl);
+            if (s.IsNull() && rOptions.mFreeformGeneral) {
+                // The general freeform face, only where the plane and the
+                // unrolled cylinder fall short, so every earlier face stays.
+                std::int64_t refinements = 0;
+                std::size_t poles = 0;
+                s = fc_freeform_general(pts, tris, tol, rOptions, refinements, poles);
+                if (!s.IsNull()) {
+                    feature.resize(skin.mPatches.size(), 0);
+                    feature[r] = static_cast<std::uint8_t>(feature[r] | kFcGeneral);
+                    general_refinements.resize(skin.mPatches.size(), 0);
+                    general_poles.resize(skin.mPatches.size(), 0);
+                    general_refinements[r] = refinements;
+                    general_poles[r] = static_cast<std::int64_t>(poles);
+                } else if (general_depth[r] < rOptions.mMaxFreeformSplits && tris.size() >= 32) {
+                    // Halve it along its normals' spread and fit the halves.
+                    std::vector<detail::PatchVec> flat_pts(pts.size());
+                    for (std::size_t i = 0; i < pts.size(); ++i)
+                        flat_pts[i] = {pts[i].X(), pts[i].Y(), pts[i].Z()};
+                    std::size_t num_pieces = 0;
+                    const std::vector<std::int64_t> piece =
+                        detail::patch_bisect(flat_pts, tris, num_pieces);
+                    if (num_pieces >= 2) {
+                        // A facet goes with its first triangle's piece.
+                        std::vector<std::vector<std::size_t>> piece_facets(num_pieces);
+                        for (std::size_t tt = 0; tt < tris.size(); ++tt) {
+                            if (tt > 0 && tri_facet[tt] == tri_facet[tt - 1])
+                                continue;
+                            piece_facets[static_cast<std::size_t>(piece[tt])].push_back(
+                                tri_facet[tt]);
+                        }
+                        log::debug(
+                            "fit_cad: patch {} has no general freeform face; halved "
+                            "into {} piece(s)",
+                            skin.mPatches[r].mLabel, num_pieces);
+                        facets_of[r].clear();
+                        for (std::vector<std::size_t>& pf : piece_facets) {
+                            FcPatch np;
+                            np.mLabel = next_label++;
+                            np.mType = 0;
+                            np.mParams.fill(std::numeric_limits<double>::quiet_NaN());
+                            np.mTolerance = skin.mPatches[r].mTolerance;
+                            const std::int64_t row =
+                                static_cast<std::int64_t>(skin.mPatches.size());
+                            for (std::size_t f : pf)
+                                skin.mRow[f] = row;
+                            skin.mPatches.push_back(np);
+                            facets_of.push_back(std::move(pf));
+                            surface.emplace_back();
+                            analytic.push_back(0);
+                            is_piece.push_back(1);
+                            general_depth.push_back(general_depth[r] + 1);
+                        }
+                        result.mNumSplitPatches += static_cast<std::int64_t>(num_pieces);
+                        continue;
+                    }
+                }
+            }
             if (s.IsNull()) {
                 if (!rOptions.mFreeformSplit || is_piece[r])
                     continue;
+
                 std::vector<detail::PatchVec> flat_pts(pts.size());
                 for (std::size_t i = 0; i < pts.size(); ++i)
                     flat_pts[i] = {pts[i].X(), pts[i].Y(), pts[i].Z()};
@@ -190534,6 +191864,7 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                     surface.emplace_back();
                     analytic.push_back(0);
                     is_piece.push_back(1);
+                    general_depth.push_back(general_depth[r]);
                 }
                 result.mNumSplitPatches += static_cast<std::int64_t>(num_pieces);
                 continue;
@@ -190933,6 +192264,14 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                 break;
             case kFitCadBsplineType:
                 ++result.mNumBspline;
+                if (feat & kFcGeneral) {
+                    const std::size_t gr = static_cast<std::size_t>(g);
+                    ++result.mNumFreeformGeneral;
+                    result.mNumFreeformRefinements +=
+                        gr < general_refinements.size() ? general_refinements[gr] : 0;
+                    result.mAvgFreeformPoles +=
+                        static_cast<double>(gr < general_poles.size() ? general_poles[gr] : 0);
+                }
                 break;
             case kFitCadFilletType:
                 ++result.mNumFillet;
@@ -190957,6 +192296,8 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                 break;
         }
     }
+    if (result.mNumFreeformGeneral > 0)
+        result.mAvgFreeformPoles /= static_cast<double>(result.mNumFreeformGeneral);
 
     // The re-meshed solid.
     result.mMesh = fc_triangle_mesh(tri.mXyz, tri.mTri);
@@ -191016,6 +192357,21 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         rOptions.mBackend != FitCadBackend::Native)
         throw std::invalid_argument(std::string(kFcnPrefix) +
                                     "backend must be 'auto', 'occt' or 'native'");
+    // The general freeform options (v17.11.0), checked whether or not they are used.
+    if (!(rOptions.mFreeformTolerance >= 0.0) || std::isinf(rOptions.mFreeformTolerance))
+        throw std::invalid_argument(std::string(kFcnPrefix) +
+                                    "freeform_tolerance must be finite and >= 0");
+    if (!(rOptions.mFreeformSmoothing >= 0.0) || std::isinf(rOptions.mFreeformSmoothing))
+        throw std::invalid_argument(std::string(kFcnPrefix) +
+                                    "freeform_smoothing must be finite and >= 0");
+    if (rOptions.mMaxFreeformPoles < 4 || rOptions.mMaxFreeformPoles > 1024)
+        throw std::invalid_argument(std::string(kFcnPrefix) +
+                                    "max_freeform_poles must be 4 to 1024");
+    if (rOptions.mMaxFreeformIterations < 1)
+        throw std::invalid_argument(std::string(kFcnPrefix) +
+                                    "max_freeform_iterations must be >= 1");
+    if (rOptions.mMaxFreeformSplits < 0)
+        throw std::invalid_argument(std::string(kFcnPrefix) + "max_freeform_splits must be >= 0");
 #ifdef MESHIOPLUSPLUS_HAS_OCCT
     if (rOptions.mBackend != FitCadBackend::Native)
         return fc_occt_fit_cad(rMesh, rStepPath, rOptions);
@@ -200371,6 +201727,34 @@ std::uint32_t pipe_fit_types(const PipelineStep& rStep) {
     return mask;
 }
 
+/// A `RansacSeed`: a non-negative integer no larger than 2^53, the largest a
+/// JSON number (a double) carries exactly; absent, `fallback`.
+std::uint64_t pipe_seed(const PipelineStep& rStep, const char* pKey, std::uint64_t fallback) {
+    const PipelineValue* v = pipe_find(rStep, pKey);
+    if (!v)
+        return fallback;
+    constexpr double kMaxSeed = 9007199254740992.0;  // 2^53
+    const std::string what =
+        std::string("parameter '") + pKey + "' must be an integer in [0, 2^53] (9007199254740992)";
+    if (const auto* i = std::get_if<std::int64_t>(v)) {
+        if (*i < 0 || *i > (std::int64_t{1} << 53))
+            throw std::invalid_argument(pipe_err(rStep, what));
+        return static_cast<std::uint64_t>(*i);
+    }
+    if (const auto* d = std::get_if<double>(v)) {
+        if (!(*d >= 0.0 && *d <= kMaxSeed) || *d != std::floor(*d))
+            throw std::invalid_argument(pipe_err(rStep, what));
+        return static_cast<std::uint64_t>(*d);
+    }
+    throw std::invalid_argument(pipe_err(rStep, what));
+}
+
+/// The `RefineStop` code a report carries as `Stop` (counters are numbers):
+/// 0 unchanged, 1 small_gain, 2 iteration_cap, 3 energy_rose.
+double pipe_refine_stop(RefineStop stop) {
+    return static_cast<double>(static_cast<std::int32_t>(stop));
+}
+
 /// A required 3-vector (`Point`, `Normal`, `Translate`, ...).
 void pipe_vec3(const PipelineStep& rStep, const char* pKey, double* pOut) {
     std::vector<double> v = pipe_dvec(rStep, pKey);
@@ -200443,9 +201827,32 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"FitPrimitives",
          {"PatchData", "Tolerance", "Relative", "MinInlierFraction", "Types", "MaxIterations"}},
         {"FitCad",
-         {"Path", "Tolerance", "ExactEdges", "Types", "MeshDeflection", "MaxDemotionRounds",
-          "Freeform", "FreeformDegree", "FreeformMaxControl", "FreeformSplit", "Fillets", "Threads",
-          "MergeFaces", "Backend"}},
+         {"Path",
+          "Tolerance",
+          "ExactEdges",
+          "Types",
+          "MeshDeflection",
+          "MaxDemotionRounds",
+          "Freeform",
+          "FreeformDegree",
+          "FreeformMaxControl",
+          "FreeformSplit",
+          "Fillets",
+          "Threads",
+          "MergeFaces",
+          "Backend",
+          "RefineSegmentation",
+          "MaxRefineIterations",
+          "RefineEpsilon",
+          "NormalWeight",
+          "AllowMerge",
+          "AllowSplit",
+          "RansacSeed",
+          "RefineTolerance",
+          "RelativeTolerance"}},
+        {"RefinePatches",
+         {"Tolerance", "Relative", "NormalWeight", "Epsilon", "FeatureAngle", "MaxIterations",
+          "MinPatchCells", "RansacSeed", "Types", "AllowSplit", "AllowMerge", "Prefix"}},
         {"EditRegions", {"Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"}},
         {"RegionAdjacency", {"Regions"}},
         {"FindInterface",
@@ -201178,28 +202585,76 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         else if (backend != "auto")
             throw std::invalid_argument(
                 pipe_err(rStep, "'Backend' must be 'auto', 'occt' or 'native'"));
+        opts.mRefineSegmentation = pipe_flag(rStep, "RefineSegmentation", false);
+        opts.mRefine.mMaxIterations =
+            static_cast<std::int64_t>(pipe_number(rStep, "MaxRefineIterations", 10.0));
+        opts.mRefine.mEpsilon = pipe_number(rStep, "RefineEpsilon", 1e-3);
+        opts.mRefine.mNormalWeight = pipe_number(rStep, "NormalWeight", 1.0);
+        opts.mRefine.mAllowMerge = pipe_flag(rStep, "AllowMerge", true);
+        opts.mRefine.mAllowSplit = pipe_flag(rStep, "AllowSplit", true);
+        opts.mRefine.mRansacSeed = pipe_seed(rStep, "RansacSeed", kRefineDefaultSeed);
+        opts.mRefine.mTolerance = pipe_number(rStep, "RefineTolerance", 1e-3);
+        opts.mRefine.mRelative = pipe_flag(rStep, "RelativeTolerance", true);
         FitCadResult cr = fit_cad(mesh, pipe_text(rStep, "Path", ""), opts);
-        pipe_push_step(rReport, rStep,
-                       {{"Valid", cr.mValid ? 1.0 : 0.0},
-                        {"Native", cr.mBackend == FitCadBackend::Native ? 1.0 : 0.0},
-                        {"VolumeRatio", cr.mVolumeRatio},
-                        {"MaxDeviation", cr.mMaxDeviation},
-                        {"NumFaces", static_cast<double>(cr.mNumFaces)},
-                        {"NumFacetedFaces", static_cast<double>(cr.mNumFacetedFaces)},
-                        {"NumBspline", static_cast<double>(cr.mNumBspline)},
-                        {"NumSplitPatches", static_cast<double>(cr.mNumSplitPatches)},
-                        {"NumFillet", static_cast<double>(cr.mNumFillet)},
-                        {"NumHelical", static_cast<double>(cr.mNumHelical)},
-                        {"NumVariableFillet", static_cast<double>(cr.mNumVariableFillet)},
-                        {"NumBlend", static_cast<double>(cr.mNumBlend)},
-                        {"NumRoundedThread", static_cast<double>(cr.mNumRoundedThread)},
-                        {"NumVertexBlend", static_cast<double>(cr.mNumVertexBlend)},
-                        {"NumChamfer", static_cast<double>(cr.mNumChamfer)},
-                        {"NumConicBlend", static_cast<double>(cr.mNumConicBlend)},
-                        {"NumTaperedThread", static_cast<double>(cr.mNumTaperedThread)},
-                        {"NumVariablePitchThread", static_cast<double>(cr.mNumVariablePitchThread)},
-                        {"NumDemoted", static_cast<double>(cr.mNumDemoted)}});
+        std::vector<std::pair<std::string, double>> counters = {
+            {"Valid", cr.mValid ? 1.0 : 0.0},
+            {"Native", cr.mBackend == FitCadBackend::Native ? 1.0 : 0.0},
+            {"VolumeRatio", cr.mVolumeRatio},
+            {"MaxDeviation", cr.mMaxDeviation},
+            {"NumFaces", static_cast<double>(cr.mNumFaces)},
+            {"NumFacetedFaces", static_cast<double>(cr.mNumFacetedFaces)},
+            {"NumBspline", static_cast<double>(cr.mNumBspline)},
+            {"NumSplitPatches", static_cast<double>(cr.mNumSplitPatches)},
+            {"NumFillet", static_cast<double>(cr.mNumFillet)},
+            {"NumHelical", static_cast<double>(cr.mNumHelical)},
+            {"NumVariableFillet", static_cast<double>(cr.mNumVariableFillet)},
+            {"NumBlend", static_cast<double>(cr.mNumBlend)},
+            {"NumRoundedThread", static_cast<double>(cr.mNumRoundedThread)},
+            {"NumVertexBlend", static_cast<double>(cr.mNumVertexBlend)},
+            {"NumChamfer", static_cast<double>(cr.mNumChamfer)},
+            {"NumConicBlend", static_cast<double>(cr.mNumConicBlend)},
+            {"NumTaperedThread", static_cast<double>(cr.mNumTaperedThread)},
+            {"NumVariablePitchThread", static_cast<double>(cr.mNumVariablePitchThread)},
+            {"NumDemoted", static_cast<double>(cr.mNumDemoted)}};
+        // Only a run that refined reports the refinement, so a report without
+        // `RefineSegmentation` stays what it was before the option existed.
+        if (cr.mRefined) {
+            counters.emplace_back("Refined", 1.0);
+            counters.emplace_back("NumRefineSplits", static_cast<double>(cr.mNumRefineSplits));
+            counters.emplace_back("NumRefineMerges", static_cast<double>(cr.mNumRefineMerges));
+            counters.emplace_back("ExplainedAreaFraction", cr.mExplainedAreaFraction);
+        }
+        pipe_push_step(rReport, rStep, std::move(counters));
         return std::move(cr.mMesh);
+    }
+    if (op == "RefinePatches") {
+        // A data step: the `segment:patch` labels are refined, the cells never move.
+        RefinePatchesOptions opts;
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 1e-3);
+        opts.mRelative = pipe_flag(rStep, "Relative", true);
+        opts.mNormalWeight = pipe_number(rStep, "NormalWeight", 1.0);
+        opts.mEpsilon = pipe_number(rStep, "Epsilon", 1e-3);
+        opts.mFeatureAngleDeg = pipe_number(rStep, "FeatureAngle", 30.0);
+        opts.mMaxIterations = static_cast<std::int64_t>(pipe_number(rStep, "MaxIterations", 10.0));
+        opts.mMinPatchCells = static_cast<std::int64_t>(pipe_number(rStep, "MinPatchCells", 3.0));
+        opts.mRansacSeed = pipe_seed(rStep, "RansacSeed", kRefineDefaultSeed);
+        if (pipe_find(rStep, "Types"))
+            opts.mTypes = pipe_fit_types(rStep);
+        opts.mAllowSplit = pipe_flag(rStep, "AllowSplit", true);
+        opts.mAllowMerge = pipe_flag(rStep, "AllowMerge", true);
+        opts.mPrefix = pipe_text(rStep, "Prefix", "patch");
+        RefinePatchesResult rr = refine_patches(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumPatches", static_cast<double>(rr.mNumPatches)},
+                        {"NumIterations", static_cast<double>(rr.mNumIterations)},
+                        {"NumSplits", static_cast<double>(rr.mNumSplits)},
+                        {"NumMerges", static_cast<double>(rr.mNumMerges)},
+                        {"NumPrimitive", static_cast<double>(rr.mNumPrimitive)},
+                        {"NumFreeform", static_cast<double>(rr.mNumFreeform)},
+                        {"ExplainedAreaFraction", rr.mExplainedAreaFraction},
+                        {"HausdorffMax", rr.mHausdorffMax},
+                        {"Stop", pipe_refine_stop(rr.mStop)}});
+        return std::move(rr.mMesh);
     }
     if (op == "Snapshot") {
         // A side output, not a transform: the mesh passes through untouched and

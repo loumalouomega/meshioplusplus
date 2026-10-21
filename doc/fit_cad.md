@@ -28,6 +28,10 @@ Unlike the faceted [`step`](/formats/step) writer, whose solid is one flat face 
 - **Vertices.** A junction among analytic faces only is moved onto all of their surfaces; one beside a facet keeps the mesh position.
 - **Solid.** Each face gets parameter-space curves that are continuous around its loops (so a boundary running along a cylinder's seam or a torus's equator does not fall apart), OpenCASCADE adds the seams and repairs the faces, sews them and closes each shell into a solid, one per edge-connected piece of the skin. A patch with no boundary at all, a whole sphere or torus, is its surface's natural face.
 
+## Refining the patches first
+
+With `refine_segmentation=True` (C++ `mRefineSegmentation`, v17.11.0; off by default, so the output is what it was before the option existed) the patches are refined by [`refine_patches`](/refine_patches) before the solid is built, after any segmentation and fit `fit_cad` runs itself: a variational shape approximation (Cohen-Steiner, Alliez and Desbrun 2004, with the primitive proxies of Wu and Kobbelt 2005) moves patch boundaries to the surfaces, splits a primitive out of a patch no primitive explains by seeded RANSAC (Schnabel, Wahl and Klein 2007) and merges neighbours one primitive explains, so a fillet strip an angle segmentation gave to the plane beside it, or a cylinder cut in two at a smooth edge, becomes the analytic face it is. The refinement's options are `max_refine_iterations` (10), `refine_epsilon` (`1e-3`, the least gain in explained area worth another iteration), `normal_weight` (1), `allow_merge` and `allow_split` (on), `ransac_seed` (a fixed default, so the output is reproducible) and `refine_tolerance` with `relative_tolerance` (`1e-3` of the bounding-box diagonal). The report then holds `refined`, `refine_iterations`, `num_refine_splits`, `num_refine_merges` and the area share primitives explain before and after (`initial_explained_area_fraction`, `explained_area_fraction`), and the returned mesh carries the per-patch `refine:*` field data. On an angle-segmented turned part the refinement raises the explained area from 38% to 100% and every surface becomes an analytic face of a valid solid.
+
 ## Freeform faces
 
 A patch `fit_primitives` left unexplained (no accepted primitive, or one with non-finite parameters) gets a B-spline surface fitted to it, so a smooth blend, a dent or a styled panel becomes one CAD face instead of hundreds of facets:
@@ -44,6 +48,17 @@ A patch `fit_primitives` left unexplained (no accepted primitive, or one with no
 A patch that folds over both flattenings is halved at the area-weighted median of `n · e`, where `e` is the direction its normals spread along most (the principal axis of the area-weighted Σ nnᵀ): a cut along an iso-line of the normal, a smooth curve on a smooth surface. Each half is split into its edge-connected components, and a component that still folds is halved again, up to four times. Each piece that now flattens becomes its own freeform face under a new patch label, numbered after the largest existing one in the order of its lowest facet, so `fit_cad:patch` tells the pieces apart; a piece under 16 triangles, or one still folding at the fourth halving, stays faceted. The edges between pieces are approximated B-splines like any other tangent junction. The split is deterministic and needs no OpenCASCADE (`detail/patch_flatten`); `num_split_patches` counts the pieces, and `freeform_split=False` keeps such a patch faceted, as before.
 
 ![A capped band whose radius waves along its axis: the wall, closed around the axis, is split into two freeform B-spline faces between two planar caps](/images/fit_cad_split.png)
+
+### General freeform faces
+
+With `freeform_general=True` (C++ `mFreeformGeneral`, v17.11.0; off by default) a patch the plane and unrolled-cylinder fit leaves unexplained gets a second, general attempt before it is split or faceted, so every face the earlier fit built stays as it was:
+
+1. **A disc parametrisation.** A patch with one boundary loop is mapped to the plane by least-squares conformal maps (Lévy, Petitjean, Ray and Maillot, ACM TOG 2002, [doi:10.1145/566654.566590](https://doi.org/10.1145/566654.566590)), its two farthest boundary vertices pinned, or, if that flips a triangle, by mean-value coordinates with the boundary on a circle (Floater, CAGD 2003), which is bijective for a disc; the map is turned so its bounding box is the smallest. Both are solved by OpenCASCADE-free sparse iterative solvers whose results do not depend on the thread count.
+2. **The fit.** A cubic B-spline on uniform knots over that box is fitted by least squares to the vertices and, at a quarter of their weight, the facet centroids, with a thin-plate term near zero where the samples are and strong where none are, so the surface runs on past the patch as the least-bending extension. Each iteration then corrects the samples' parameters by projecting them onto the surface (Hoschek's parameter correction) and fits again; when that gains less than 10% it takes a damped tangent-distance step (Wang, Pottmann and Liu, ACM TOG 2006, [doi:10.1145/1138450.1138453](https://doi.org/10.1145/1138450.1138453)), and when that stalls too it inserts a knot at the middle of every knot span whose samples are still too far, as long as the span holds enough samples. It stops at the target (`freeform_tolerance`, a quarter of the tolerance by default, at the vertices; the tolerance at the centroids), at `max_freeform_poles` per direction (40) or after `max_freeform_iterations` (30), keeping the best state it reached.
+3. **The face.** OpenCASCADE gets only the poles and knots (`Geom_BSplineSurface`, never `GeomAPI_PointsToBSplineSurface`), and the face is accepted by the test every freeform face passes, half the tolerance at a vertex and the tolerance at a facet centre, then trimmed, sewn, checked and, if it fails, [demoted](#checks-and-demotion) like any other.
+
+A patch that is no disc, or that the fit cannot explain, is halved along its normals' spread, up to `max_freeform_splits` times (2), and each half tried in turn; whatever is left is facets. `freeform_smoothing` (`1e-12`, relative to the sample count) is the thin-plate weight over the spans that hold samples. The report counts `num_freeform_general` (of the B-spline faces, those this path built), `num_freeform_refinements` (their knot insertion rounds) and `avg_freeform_poles`. A closed wavy band whose halves the grid fit cannot reach at four grid points a side comes back as two general B-spline faces instead of nearly six thousand facets.
+
 
 ## Fillets, blends and threads
 
@@ -111,6 +126,8 @@ The return value is the solid re-meshed by OpenCASCADE as one `triangle` block, 
 | `num_patches`, `num_demoted` | patches in the fit table, and accepted ones demoted to facets |
 | `num_exact_edges`, `num_approx_edges` | edges between analytic faces built as exact intersections and as B-splines |
 | `num_solids` | solids written, one per piece of the skin |
+| `refined`, `refine_iterations`, `num_refine_splits`, `num_refine_merges`, `initial_explained_area_fraction`, `explained_area_fraction` | with `refine_segmentation` only: the [refinement](#refining-the-patches-first) (v17.11.0) |
+| `num_freeform_general`, `num_freeform_refinements`, `avg_freeform_poles` | with `freeform_general` only: the [general freeform faces](#general-freeform-faces) (v17.11.0) |
 
 The STEP file is AP214 in millimetres. Its header timestamp is pinned and its product is named `meshio++ fit_cad`, so the same input writes the same bytes; the bytes do depend on the OpenCASCADE version. The work is serial, so nothing depends on the thread count.
 
@@ -149,14 +166,19 @@ meshioplusplus to-cad IN OUT.step [--curvature-tolerance C] [--min-patch-cells N
     [--mesh-deflection D] [--max-demotion-rounds N] [--no-freeform] [--freeform-degree P] \
     [--freeform-max-control N] [--no-freeform-split] [--no-fillets] [--no-threads] \
     [--segment-method primitive|angle] [--segment-tolerance T] [--no-merge-faces] \
-    [--backend auto|occt|native] [--mesh-out FILE] [--cad-json FILE] [--json] [--quiet]
+    [--backend auto|occt|native] [--refine] [--max-refine-iterations N] [--refine-epsilon E] \
+    [--normal-weight W] [--no-refine-merge] [--no-refine-split] [--ransac-seed S] \
+    [--refine-tolerance T] [--mesh-out FILE] [--cad-json FILE] [--json] [--quiet]
 ```
 
 A skin without `segment:patch` is segmented by `--segment-method` (default `primitive`, at `--segment-tolerance` of the diagonal, default `1e-3`; `angle` uses `--curvature-tolerance` and `--min-patch-cells`) and fitted, at the segmentation's own tolerance as a length after the primitive method, or with `--fit-tolerance` (relative, as in `fit-primitives`) when given, before the solid is built. `--backend` picks the engine and `--no-merge-faces` keeps faces on one surface apart; the summary and `--json` name the backend. `--mesh-out` also writes the re-meshed solid, `--cad-json` the solid as Kratos CAD JSON; `--no-freeform`, `--freeform-degree`, `--freeform-max-control` and `--no-freeform-split` are the [freeform](#freeform-faces) options, `--no-fillets` and `--no-threads` the [feature](#fillets-blends-and-threads) ones. Both CLIs exit with 2 when the solid fails the B-rep check, as `check` does for a failed gate.
 
+`--refine` (v17.11.0) first refines the patches by variational shape approximation (`refine_patches`, `refine_segmentation=True`), so more of the skin becomes analytic faces: `--max-refine-iterations` (default `10`) caps the iterations, `--refine-epsilon` (default `1e-3`) stops them when one adds less than that to the area share primitives explain, `--normal-weight` (default `1`) weighs the normal term of a cell's cost, `--no-refine-merge` and `--no-refine-split` turn off merging neighbours one primitive explains and splitting a primitive out of a freeform patch, `--ransac-seed` (default `0x6d657368696f2b2b`; the native CLI also takes `0x` hexadecimal) seeds the split, and `--refine-tolerance` (default `1e-3` of the diagonal) is how far a point may lie from its refined patch's primitive. Only with `--refine` does the summary add a `refined:` line and `--json` add `refined`, `refine_iterations`, `num_refine_splits`, `num_refine_merges`, `initial_explained_area_fraction` and `explained_area_fraction`. The `refine-patches` verb of both CLIs runs the refinement alone ([CLI reference](/cli#meshioplusplus-refine-patches)).
+
 ```sh
 meshioplusplus to-cad bracket.stl bracket.step
 meshioplusplus to-cad scan.stl scan.step --segment-method angle --curvature-tolerance 1 --min-patch-cells 20 --fit-tolerance 2e-3
+meshioplusplus to-cad scan.stl scan.step --refine --ransac-seed 7 --json
 ```
 
 ## Pipeline

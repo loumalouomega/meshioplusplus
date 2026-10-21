@@ -16,6 +16,7 @@
 //
 // System includes
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <stdexcept>
@@ -39,9 +40,10 @@ double bsl_clamp(double X, double Lo, double Hi) {
 }  // namespace
 
 std::vector<double> bspline_clamped_knots(int P, std::size_t N, double Lo, double Hi) {
-    if (P < 1 || N < static_cast<std::size_t>(P) + 1 || !(Lo < Hi))
+    if (P < 1 || P > kBsplineMaxDegree || N < static_cast<std::size_t>(P) + 1 || !(Lo < Hi))
         throw std::invalid_argument(
-            "meshio++: bspline_clamped_knots: needs degree >= 1, poles > degree and Lo < Hi");
+            "meshio++: bspline_clamped_knots: needs a degree of 1 to 8, poles > degree and "
+            "Lo < Hi");
     const auto p = static_cast<std::size_t>(P);
     std::vector<double> k(N + p + 1);
     const std::size_t spans = N - p;
@@ -69,9 +71,11 @@ BsplineSurface bspline_shape(int P, int Q, std::size_t Nu, std::size_t Nv, doubl
 
 void bspline_basis_ders(std::size_t Span, double U, int P, int NDer,
                         const std::vector<double>& rKnots, double* pDers) {
+    // Fixed-size work arrays: no allocation on a path every projection takes.
     const auto p = static_cast<std::size_t>(P);
     const auto nd = static_cast<std::size_t>(std::max(NDer, 0));
-    std::vector<double> ndu((p + 1) * (p + 1), 0.0), left(p + 1, 0.0), right(p + 1, 0.0);
+    std::array<double, (kBsplineMaxDegree + 1) * (kBsplineMaxDegree + 1)> ndu{};
+    std::array<double, kBsplineMaxDegree + 1> left{}, right{};
     const auto at = [p](std::size_t R, std::size_t C) { return R * (p + 1) + C; };
     ndu[at(0, 0)] = 1.0;
     for (std::size_t j = 1; j <= p; ++j) {
@@ -92,7 +96,7 @@ void bspline_basis_ders(std::size_t Span, double U, int P, int NDer,
     for (std::size_t j = 0; j <= p; ++j)
         pDers[j] = ndu[at(j, p)];
     const std::size_t n = std::min(nd, p);
-    std::vector<double> a(2 * (p + 1), 0.0);
+    std::array<double, 2 * (kBsplineMaxDegree + 1)> a{};
     for (std::size_t r = 0; r <= p; ++r) {
         double* a0 = a.data();
         double* a1 = a.data() + (p + 1);
@@ -144,7 +148,7 @@ void bspline_eval(const BsplineSurface& rS, double U, double V, int NDer, Bsplin
     const std::size_t sv = nurbs_find_span(rS.mDegreeV, rS.mKnotsV, rS.mNv, V);
     const int nd = std::min(std::max(NDer, 0), 2);
     const auto ndz = static_cast<std::size_t>(nd);
-    std::vector<double> bu((ndz + 1) * (p + 1)), bv((ndz + 1) * (q + 1));
+    std::array<double, 3 * (kBsplineMaxDegree + 1)> bu{}, bv{};
     bspline_basis_ders(su, U, rS.mDegreeU, nd, rS.mKnotsU, bu.data());
     bspline_basis_ders(sv, V, rS.mDegreeV, nd, rS.mKnotsV, bv.data());
     double* outs[6] = {rOut.mS, rOut.mSu, rOut.mSv, rOut.mSuu, rOut.mSuv, rOut.mSvv};
@@ -174,9 +178,9 @@ void bspline_row(const BsplineSurface& rS, double U, double V, std::vector<std::
     V = bsl_clamp(V, rS.V0(), rS.V1());
     const std::size_t su = nurbs_find_span(rS.mDegreeU, rS.mKnotsU, rS.mNu, U);
     const std::size_t sv = nurbs_find_span(rS.mDegreeV, rS.mKnotsV, rS.mNv, V);
-    std::vector<double> bu(p + 1), bv(q + 1);
-    nurbs_basis(su, U, rS.mDegreeU, rS.mKnotsU, bu.data());
-    nurbs_basis(sv, V, rS.mDegreeV, rS.mKnotsV, bv.data());
+    std::array<double, kBsplineMaxDegree + 1> bu{}, bv{};
+    bspline_basis_ders(su, U, rS.mDegreeU, 0, rS.mKnotsU, bu.data());
+    bspline_basis_ders(sv, V, rS.mDegreeV, 0, rS.mKnotsV, bv.data());
     rCols.clear();
     rValues.clear();
     for (std::size_t l = 0; l <= q; ++l)
@@ -223,9 +227,8 @@ void gauss_legendre(int N, std::vector<double>& rNodes, std::vector<double>& rWe
     }
 }
 
-void bspline_add_thin_plate(const BsplineSurface& rS, double Weight, SkylineMatrix& rA) {
-    if (Weight == 0.0)
-        return;
+void bspline_add_thin_plate_spans(const BsplineSurface& rS, const std::vector<double>& rSpanWeight,
+                                  SkylineMatrix& rA) {
     const auto p = static_cast<std::size_t>(rS.mDegreeU);
     const auto q = static_cast<std::size_t>(rS.mDegreeV);
     // The integrand is a polynomial of degree 2p in u per span: p + 1 points are exact.
@@ -238,9 +241,14 @@ void bspline_add_thin_plate(const BsplineSurface& rS, double Weight, SkylineMatr
     const std::size_t nloc = (p + 1) * (q + 1);
     std::vector<std::size_t> idx(nloc);
     std::vector<double> duu(nloc), duv(nloc), dvv(nloc);
-    for (std::size_t sv : spans_v) {
+    for (std::size_t jv = 0; jv < spans_v.size(); ++jv) {
+        const std::size_t sv = spans_v[jv];
         const double v0 = rS.mKnotsV[sv], v1 = rS.mKnotsV[sv + 1];
-        for (std::size_t su : spans_u) {
+        for (std::size_t ju = 0; ju < spans_u.size(); ++ju) {
+            const std::size_t su = spans_u[ju];
+            const double Weight = rSpanWeight[ju + spans_u.size() * jv];
+            if (Weight == 0.0)
+                continue;
             const double u0 = rS.mKnotsU[su], u1 = rS.mKnotsU[su + 1];
             const double jac = 0.25 * (u1 - u0) * (v1 - v0);
             for (std::size_t gv = 0; gv < xv.size(); ++gv) {
@@ -270,9 +278,18 @@ void bspline_add_thin_plate(const BsplineSurface& rS, double Weight, SkylineMatr
     }
 }
 
+void bspline_add_thin_plate(const BsplineSurface& rS, double Weight, SkylineMatrix& rA) {
+    if (Weight == 0.0)
+        return;
+    const std::size_t n = nurbs_spans(rS.mDegreeU, rS.mKnotsU, rS.mNu).size() *
+                          nurbs_spans(rS.mDegreeV, rS.mKnotsV, rS.mNv).size();
+    bspline_add_thin_plate_spans(rS, std::vector<double>(n, Weight), rA);
+}
+
 bool bspline_lsq_fit(BsplineSurface& rS, const std::vector<double>& rU,
                      const std::vector<double>& rV, const std::vector<double>& rXyz,
-                     const std::vector<double>* pWeights, double Smoothing) {
+                     const std::vector<double>* pWeights, double Smoothing,
+                     const std::vector<double>* pSpanSmoothing) {
     const std::size_t n = rS.NumPoles();
     SkylineMatrix a = bspline_normal_envelope(rS);
     std::vector<double> rhs(3 * n, 0.0);
@@ -291,7 +308,10 @@ bool bspline_lsq_fit(BsplineSurface& rS, const std::vector<double>& rU,
                 rhs[c * n + cols[a1]] += w * vals[a1] * rXyz[3 * s + c];
         }
     }
-    bspline_add_thin_plate(rS, Smoothing, a);
+    if (pSpanSmoothing)
+        bspline_add_thin_plate_spans(rS, *pSpanSmoothing, a);
+    else
+        bspline_add_thin_plate(rS, Smoothing, a);
     if (!skyline_ldlt(a))
         return false;
     for (std::size_t c = 0; c < 3; ++c)
@@ -310,7 +330,13 @@ bool bspline_lsq_fit(BsplineSurface& rS, const std::vector<double>& rU,
 
 double bspline_project(const BsplineSurface& rS, const double* pP, double& rU, double& rV,
                        int MaxIterations) {
-    const double u0 = rS.U0(), u1 = rS.U1(), v0 = rS.V0(), v1 = rS.V1();
+    return bspline_project(rS, pP, rU, rV, rS.U0(), rS.U1(), rS.V0(), rS.V1(), MaxIterations);
+}
+
+double bspline_project(const BsplineSurface& rS, const double* pP, double& rU, double& rV,
+                       double U0, double U1, double V0, double V1, int MaxIterations) {
+    const double u0 = std::max(U0, rS.U0()), u1 = std::min(U1, rS.U1());
+    const double v0 = std::max(V0, rS.V0()), v1 = std::min(V1, rS.V1());
     const double eps_u = 1e-14 * std::max(1.0, u1 - u0), eps_v = 1e-14 * std::max(1.0, v1 - v0);
     rU = bsl_clamp(rU, u0, u1);
     rV = bsl_clamp(rV, v0, v1);

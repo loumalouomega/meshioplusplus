@@ -45,6 +45,7 @@ from . import (
     _proximity,
     _quality,
     _refine,
+    _refine_patches,
     _region_adjacency,
     _regions,
     _remesh,
@@ -161,6 +162,14 @@ def main(argv=None):
     )
     _fit_primitives.add_args(parser)
     parser.set_defaults(func=_fit_primitives.fit_primitives_cmd)
+
+    parser = subparsers.add_parser(
+        "refine-patches",
+        help="Refine segment:patch until one surface explains each patch "
+        "(variational shape approximation)",
+    )
+    _refine_patches.add_args(parser)
+    parser.set_defaults(func=_refine_patches.refine_patches_cmd)
 
     parser = subparsers.add_parser(
         "iga-refine",

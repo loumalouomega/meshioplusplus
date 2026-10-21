@@ -80,6 +80,8 @@
 #include "../detail/lsq_fit.hpp"
 #include "../detail/feature_fit.hpp"
 #include "../detail/occt_brep.hpp"
+#include "../detail/bspline_fit.hpp"
+#include "../detail/param_disc.hpp"
 #include "../detail/patch_flatten.hpp"
 #include "../detail/primitive_geom.hpp"
 
@@ -111,6 +113,8 @@
 #include <Geom_BSplineSurface.hxx>
 #include <GeomFill_Pipe.hxx>
 #include <Geom_OffsetSurface.hxx>
+#include <TColStd_Array1OfInteger.hxx>
+#include <TColStd_Array1OfReal.hxx>
 #include <TColgp_Array2OfPnt.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
@@ -1932,6 +1936,90 @@ bool fc_surface_fits(const FcHandle<Geom_Surface>& rS, const std::vector<gp_Pnt>
     return true;
 }
 
+// The general freeform face (v17.11.0): the patch parametrised as a disc
+// (detail/param_disc) and fitted by the iterative B-spline fit
+// (detail/bspline_fit), OpenCASCADE given only the final poles and knots.
+// Null when the patch is no disc, the fit misses its target, or the surface
+// fails the test every freeform face passes (half the tolerance at a vertex,
+// the tolerance at a facet centre, by projection).
+FcHandle<Geom_Surface> fc_freeform_general(const std::vector<gp_Pnt>& rPts,
+                                           const std::vector<std::array<std::size_t, 3>>& rTris,
+                                           double Tol, const FitCadOptions& rOptions,
+                                           std::int64_t& rRefinements, std::size_t& rPoles) {
+    std::vector<detail::PatchVec> pts(rPts.size());
+    for (std::size_t i = 0; i < rPts.size(); ++i)
+        pts[i] = {rPts[i].X(), rPts[i].Y(), rPts[i].Z()};
+    const std::vector<detail::PatchTri> tris(rTris.begin(), rTris.end());
+    const detail::DiscParam par = detail::param_disc(pts, tris);
+    if (!par.mOk) {
+        log::debug("fit_cad: a {}-triangle patch is no disc (or folds in every parametrisation)",
+                   tris.size());
+        return {};
+    }
+    detail::BsplineFitOptions o;
+    // A quarter of the tolerance at the vertices by default, so the face meets
+    // the half-tolerance acceptance with room for its edges and the re-mesh;
+    // a facet centre is held to the tolerance itself, its chordal sag allowed.
+    o.mTolerance = rOptions.mFreeformTolerance > 0.0 ? rOptions.mFreeformTolerance : 0.25 * Tol;
+    o.mCentroidTolerance = std::max(Tol, 2.0 * o.mTolerance);
+    o.mSmoothing = rOptions.mFreeformSmoothing;
+    o.mMaxPoles = static_cast<std::size_t>(rOptions.mMaxFreeformPoles);
+    o.mMaxIterations = static_cast<int>(rOptions.mMaxFreeformIterations);
+    const detail::BsplineFitResult fit = detail::bspline_fit_patch(pts, tris, par.mU, par.mV, o);
+    log::debug(
+        "fit_cad: general freeform fit of a {}-triangle patch: {} after {} iteration(s), "
+        "{}x{} poles, vertex {} / centroid {} for a target of {}",
+        tris.size(), fit.mOk ? "met" : "missed", fit.mIterations, fit.mSurface.mNu,
+        fit.mSurface.mNv, fit.mMaxVertexError, fit.mMaxCentroidError, o.mTolerance);
+    if (!fit.mOk)
+        return {};
+    const detail::BsplineSurface& s = fit.mSurface;
+    TColgp_Array2OfPnt poles(1, static_cast<int>(s.mNu), 1, static_cast<int>(s.mNv));
+    for (std::size_t j = 0; j < s.mNv; ++j)
+        for (std::size_t i = 0; i < s.mNu; ++i) {
+            const double* p = &s.mPoles[3 * (i + s.mNu * j)];
+            poles.SetValue(static_cast<int>(i) + 1, static_cast<int>(j) + 1,
+                           gp_Pnt(p[0], p[1], p[2]));
+        }
+    // The full clamped knot vectors as distinct knots and multiplicities.
+    auto distinct = [](const std::vector<double>& rK, std::vector<double>& rKnots,
+                       std::vector<int>& rMults) {
+        for (double k : rK) {
+            if (!rKnots.empty() && k == rKnots.back()) {
+                ++rMults.back();
+            } else {
+                rKnots.push_back(k);
+                rMults.push_back(1);
+            }
+        }
+    };
+    std::vector<double> ku, kv;
+    std::vector<int> mu, mv;
+    distinct(s.mKnotsU, ku, mu);
+    distinct(s.mKnotsV, kv, mv);
+    TColStd_Array1OfReal uk(1, static_cast<int>(ku.size())), vk(1, static_cast<int>(kv.size()));
+    TColStd_Array1OfInteger um(1, static_cast<int>(mu.size())), vm(1, static_cast<int>(mv.size()));
+    for (std::size_t i = 0; i < ku.size(); ++i) {
+        uk.SetValue(static_cast<int>(i) + 1, ku[i]);
+        um.SetValue(static_cast<int>(i) + 1, mu[i]);
+    }
+    for (std::size_t i = 0; i < kv.size(); ++i) {
+        vk.SetValue(static_cast<int>(i) + 1, kv[i]);
+        vm.SetValue(static_cast<int>(i) + 1, mv[i]);
+    }
+    FcHandle<Geom_Surface> surf =
+        new Geom_BSplineSurface(poles, uk, vk, um, vm, s.mDegreeU, s.mDegreeV);
+    // Through the cached projector: a projector per point samples the whole
+    // surface each time.
+    if (!fc_surface_fits(surf, rPts, rTris, Tol, false, true)) {
+        log::debug("fit_cad: the general freeform surface strays from its patch on projection");
+        return {};
+    }
+    rRefinements = fit.mRefinements;
+    rPoles = s.NumPoles();
+    return surf;
+}
+
 // @p rS moved by @p Offset along its normal, as the equivalent elementary
 // surface when there is one (a plane, or a cylinder of another radius), so
 // two offsets of primitives intersect exactly.
@@ -2703,7 +2791,7 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     };
     // What a fillet or thread face is, beyond its type, for the report.
     constexpr std::uint8_t kFcVariable = 1, kFcBlend = 2, kFcRounded = 4, kFcConic = 8,
-                           kFcTapered = 16, kFcVariablePitch = 32;
+                           kFcTapered = 16, kFcVariablePitch = 32, kFcGeneral = 64;
     std::vector<std::uint8_t> feature(m, 0);
     auto accept = [&](std::size_t R, const FcHandle<Geom_Surface>& rS, std::int64_t Type,
                       std::uint8_t Feature) {
@@ -2960,6 +3048,9 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     for (const FcPatch& p : skin.mPatches)
         next_label = std::max(next_label, p.mLabel + 1);
     std::vector<std::uint8_t> is_piece(m, 0);
+    // The general freeform stage's halvings so far, and what it built per row.
+    std::vector<std::int64_t> general_depth(m, 0);
+    std::vector<std::int64_t> general_refinements(m, 0), general_poles(m, 0);
     for (std::size_t r = 0; rOptions.mFreeform && r < skin.mPatches.size(); ++r) {
         bool finite = true;
         for (double x : skin.mPatches[r].mParams)
@@ -2990,9 +3081,67 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         try {
             FcHandle<Geom_Surface> s =
                 fc_freeform(pts, tris, tol, rOptions.mFreeformDegree, rOptions.mFreeformMaxControl);
+            if (s.IsNull() && rOptions.mFreeformGeneral) {
+                // The general freeform face, only where the plane and the
+                // unrolled cylinder fall short, so every earlier face stays.
+                std::int64_t refinements = 0;
+                std::size_t poles = 0;
+                s = fc_freeform_general(pts, tris, tol, rOptions, refinements, poles);
+                if (!s.IsNull()) {
+                    feature.resize(skin.mPatches.size(), 0);
+                    feature[r] = static_cast<std::uint8_t>(feature[r] | kFcGeneral);
+                    general_refinements.resize(skin.mPatches.size(), 0);
+                    general_poles.resize(skin.mPatches.size(), 0);
+                    general_refinements[r] = refinements;
+                    general_poles[r] = static_cast<std::int64_t>(poles);
+                } else if (general_depth[r] < rOptions.mMaxFreeformSplits && tris.size() >= 32) {
+                    // Halve it along its normals' spread and fit the halves.
+                    std::vector<detail::PatchVec> flat_pts(pts.size());
+                    for (std::size_t i = 0; i < pts.size(); ++i)
+                        flat_pts[i] = {pts[i].X(), pts[i].Y(), pts[i].Z()};
+                    std::size_t num_pieces = 0;
+                    const std::vector<std::int64_t> piece =
+                        detail::patch_bisect(flat_pts, tris, num_pieces);
+                    if (num_pieces >= 2) {
+                        // A facet goes with its first triangle's piece.
+                        std::vector<std::vector<std::size_t>> piece_facets(num_pieces);
+                        for (std::size_t tt = 0; tt < tris.size(); ++tt) {
+                            if (tt > 0 && tri_facet[tt] == tri_facet[tt - 1])
+                                continue;
+                            piece_facets[static_cast<std::size_t>(piece[tt])].push_back(
+                                tri_facet[tt]);
+                        }
+                        log::debug(
+                            "fit_cad: patch {} has no general freeform face; halved "
+                            "into {} piece(s)",
+                            skin.mPatches[r].mLabel, num_pieces);
+                        facets_of[r].clear();
+                        for (std::vector<std::size_t>& pf : piece_facets) {
+                            FcPatch np;
+                            np.mLabel = next_label++;
+                            np.mType = 0;
+                            np.mParams.fill(std::numeric_limits<double>::quiet_NaN());
+                            np.mTolerance = skin.mPatches[r].mTolerance;
+                            const std::int64_t row =
+                                static_cast<std::int64_t>(skin.mPatches.size());
+                            for (std::size_t f : pf)
+                                skin.mRow[f] = row;
+                            skin.mPatches.push_back(np);
+                            facets_of.push_back(std::move(pf));
+                            surface.emplace_back();
+                            analytic.push_back(0);
+                            is_piece.push_back(1);
+                            general_depth.push_back(general_depth[r] + 1);
+                        }
+                        result.mNumSplitPatches += static_cast<std::int64_t>(num_pieces);
+                        continue;
+                    }
+                }
+            }
             if (s.IsNull()) {
                 if (!rOptions.mFreeformSplit || is_piece[r])
                     continue;
+
                 std::vector<detail::PatchVec> flat_pts(pts.size());
                 for (std::size_t i = 0; i < pts.size(); ++i)
                     flat_pts[i] = {pts[i].X(), pts[i].Y(), pts[i].Z()};
@@ -3032,6 +3181,7 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                     surface.emplace_back();
                     analytic.push_back(0);
                     is_piece.push_back(1);
+                    general_depth.push_back(general_depth[r]);
                 }
                 result.mNumSplitPatches += static_cast<std::int64_t>(num_pieces);
                 continue;
@@ -3431,6 +3581,14 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                 break;
             case kFitCadBsplineType:
                 ++result.mNumBspline;
+                if (feat & kFcGeneral) {
+                    const std::size_t gr = static_cast<std::size_t>(g);
+                    ++result.mNumFreeformGeneral;
+                    result.mNumFreeformRefinements +=
+                        gr < general_refinements.size() ? general_refinements[gr] : 0;
+                    result.mAvgFreeformPoles +=
+                        static_cast<double>(gr < general_poles.size() ? general_poles[gr] : 0);
+                }
                 break;
             case kFitCadFilletType:
                 ++result.mNumFillet;
@@ -3455,6 +3613,8 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                 break;
         }
     }
+    if (result.mNumFreeformGeneral > 0)
+        result.mAvgFreeformPoles /= static_cast<double>(result.mNumFreeformGeneral);
 
     // The re-meshed solid.
     result.mMesh = fc_triangle_mesh(tri.mXyz, tri.mTri);
@@ -3514,6 +3674,21 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         rOptions.mBackend != FitCadBackend::Native)
         throw std::invalid_argument(std::string(kFcnPrefix) +
                                     "backend must be 'auto', 'occt' or 'native'");
+    // The general freeform options (v17.11.0), checked whether or not they are used.
+    if (!(rOptions.mFreeformTolerance >= 0.0) || std::isinf(rOptions.mFreeformTolerance))
+        throw std::invalid_argument(std::string(kFcnPrefix) +
+                                    "freeform_tolerance must be finite and >= 0");
+    if (!(rOptions.mFreeformSmoothing >= 0.0) || std::isinf(rOptions.mFreeformSmoothing))
+        throw std::invalid_argument(std::string(kFcnPrefix) +
+                                    "freeform_smoothing must be finite and >= 0");
+    if (rOptions.mMaxFreeformPoles < 4 || rOptions.mMaxFreeformPoles > 1024)
+        throw std::invalid_argument(std::string(kFcnPrefix) +
+                                    "max_freeform_poles must be 4 to 1024");
+    if (rOptions.mMaxFreeformIterations < 1)
+        throw std::invalid_argument(std::string(kFcnPrefix) +
+                                    "max_freeform_iterations must be >= 1");
+    if (rOptions.mMaxFreeformSplits < 0)
+        throw std::invalid_argument(std::string(kFcnPrefix) + "max_freeform_splits must be >= 0");
 #ifdef MESHIOPLUSPLUS_HAS_OCCT
     if (rOptions.mBackend != FitCadBackend::Native)
         return fc_occt_fit_cad(rMesh, rStepPath, rOptions);

@@ -19,7 +19,16 @@ mio_fit_cad(
   fillets = TRUE,
   threads = TRUE,
   merge_faces = TRUE,
-  backend = "auto"
+  backend = "auto",
+  refine_segmentation = FALSE,
+  max_refine_iterations = 10L,
+  refine_epsilon = 0.001,
+  normal_weight = 1,
+  allow_merge = TRUE,
+  allow_split = TRUE,
+  ransac_seed = NULL,
+  refine_tolerance = 0.001,
+  relative_tolerance = TRUE
 )
 }
 \arguments{
@@ -65,6 +74,18 @@ or varying pitch and cut on a taper.}
 is built (v17.9.0).}
 
 \item{backend}{`"auto"`, `"occt"` or `"native"` (v17.9.0).}
+
+\item{refine_segmentation}{Whether the patches are first refined by
+variational shape approximation (v17.11.0); off by default.}
+
+\item{max_refine_iterations, refine_epsilon, normal_weight, allow_merge, allow_split}{The refinement's `max_iterations`, `epsilon`, `normal_weight`,
+`allow_merge` and `allow_split` (see `mio_refine_patches()`).}
+
+\item{ransac_seed}{The refinement's RANSAC seed; `NULL` takes the default,
+and a number is taken exactly below 2^53.}
+
+\item{refine_tolerance, relative_tolerance}{The refinement's tolerance and
+whether it is a fraction of the bounding-box diagonal.}
 }
 \value{
 A list of `mesh` (the solid re-meshed, with cell data
@@ -75,8 +96,11 @@ A list of `mesh` (the solid re-meshed, with cell data
   `num_exact_edges`, `num_approx_edges`, `num_solids`, `num_bspline`,
   `num_split_patches`, `num_fillet`, `num_helical`, `num_variable_fillet`,
   `num_blend`, `num_rounded_thread`, `num_vertex_blend`, `num_chamfer`,
-  `num_conic_blend`, `num_tapered_thread`, `num_variable_pitch_thread`
-  and `backend` (the engine that ran).
+  `num_conic_blend`, `num_tapered_thread`, `num_variable_pitch_thread`,
+  `backend` (the engine that ran), `refined` (whether the refinement ran),
+  `refine_iterations`, `num_refine_splits`, `num_refine_merges`,
+  `initial_explained_area_fraction` and `explained_area_fraction` (zero
+  without refinement).
 }
 \description{
 Builds a CAD solid from the fitted patches of a closed skin through the
@@ -89,6 +113,7 @@ check or strays beyond `tolerance` is demoted to facets. Without
 fit_primitives at its tolerance. Without OpenCASCADE (see `mio_has_occt()`)
 or with `backend = "native"`, the kernel-free backend writes the fitted
 patches as analytic STEP faces and returns the skin itself; `backend =
-"occt"` fails naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON` without it. See
-`doc/fit_cad.md`.
+"occt"` fails naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON` without it. Since
+v17.11.0, `refine_segmentation = TRUE` first refines the patches as
+`mio_refine_patches()` does. See `doc/fit_cad.md`.
 }

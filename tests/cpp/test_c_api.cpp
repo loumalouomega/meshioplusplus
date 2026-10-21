@@ -5245,6 +5245,205 @@ TEST(CApi, FitCadBuildsOrNamesTheBackend) {
     mio_mesh_free(m);
 }
 
+namespace {
+
+/// The unit cube's skin as n x n quads per side, outward-wound (the core
+/// tests' analytic::box_skin, through the C surface).
+mio_mesh* capi_box_skin(int n) {
+    const int m = n + 1;
+    std::vector<std::int64_t> ids(static_cast<std::size_t>(m) * m * m, -1);
+    std::vector<double> pts;
+    const auto pid = [&](const int x[3]) {
+        std::int64_t& id = ids[(static_cast<std::size_t>(x[0]) * m + x[1]) * m + x[2]];
+        if (id < 0) {
+            id = static_cast<std::int64_t>(pts.size() / 3);
+            for (int d = 0; d < 3; ++d)
+                pts.push_back(double(x[d]) / n);
+        }
+        return id;
+    };
+    std::vector<std::int64_t> quads;
+    for (int axis = 0; axis < 3; ++axis)
+        for (int side = 0; side < 2; ++side) {
+            const int u = (axis + 1) % 3, v = (axis + 2) % 3;
+            for (int a = 0; a < n; ++a)
+                for (int b = 0; b < n; ++b) {
+                    const int corners[4][2] = {{a, b}, {a + 1, b}, {a + 1, b + 1}, {a, b + 1}};
+                    std::int64_t ring[4];
+                    for (int c = 0; c < 4; ++c) {
+                        int x[3];
+                        x[axis] = side * n;
+                        x[u] = corners[c][0];
+                        x[v] = corners[c][1];
+                        ring[c] = pid(x);
+                    }
+                    // (u, v, axis) is right-handed, so this ring faces +axis.
+                    if (side == 0)
+                        std::swap(ring[1], ring[3]);
+                    quads.insert(quads.end(), ring, ring + 4);
+                }
+        }
+    mio_mesh* mesh = mio_mesh_create();
+    EXPECT_EQ(mio_mesh_set_points(mesh, MIO_FLOAT64, static_cast<std::int64_t>(pts.size() / 3), 3,
+                                  pts.data()),
+              MIO_OK);
+    EXPECT_EQ(mio_mesh_add_cell_block(mesh, "quad", static_cast<std::int64_t>(quads.size() / 4), 4,
+                                      MIO_INT64, quads.data()),
+              MIO_OK);
+    return mesh;
+}
+
+}  // namespace
+
+TEST(CApi, RefinePatches) {
+    mio_refine_patches_opts opts;
+    std::memset(&opts, 0xff, sizeof opts);
+    mio_refine_patches_opts_init(&opts);
+    EXPECT_DOUBLE_EQ(opts.tolerance, 1e-3);
+    EXPECT_DOUBLE_EQ(opts.normal_weight, 1.0);
+    EXPECT_DOUBLE_EQ(opts.epsilon, 1e-3);
+    EXPECT_DOUBLE_EQ(opts.feature_angle, 30.0);
+    EXPECT_EQ(opts.max_iterations, 10);
+    EXPECT_EQ(opts.min_patch_cells, 3);
+    EXPECT_EQ(opts.ransac_seed, MIO_REFINE_DEFAULT_SEED);
+    EXPECT_EQ(opts.ransac_seed, 0x6d657368696f2b2bull);
+    EXPECT_EQ(opts.types, MIO_FIT_ALL_TYPES);
+    EXPECT_EQ(opts.relative, 1);
+    EXPECT_EQ(opts.allow_split, 1);
+    EXPECT_EQ(opts.allow_merge, 1);
+    EXPECT_EQ(opts.prefix, nullptr);
+    for (int64_t r : opts.reserved)
+        EXPECT_EQ(r, 0);
+
+    // With a feature angle above the box's 90 degrees the whole box is one
+    // patch; refinement splits the six planes out of it.
+    mio_mesh* box = capi_box_skin(3);
+    mio_segment_opts sopts;
+    mio_segment_opts_init(&sopts);
+    sopts.feature_angle = 100.0;
+    mio_segment_report sreport;
+    mio_mesh* seg = mio_segment(box, &sopts, &sreport);
+    ASSERT_NE(seg, nullptr) << mio_last_error();
+    EXPECT_EQ(sreport.num_patches, 1);
+
+    opts.feature_angle = 100.0;
+    opts.max_iterations = 20;
+    mio_refine_patches_report report;
+    std::memset(&report, 0xff, sizeof report);
+    mio_mesh* out = mio_refine_patches(seg, &opts, &report);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(report.num_patches, 6);
+    EXPECT_EQ(report.num_primitive, 6);
+    EXPECT_GT(report.num_splits, 0);
+    EXPECT_NEAR(report.explained_area_fraction, 1.0, 1e-12);
+    EXPECT_EQ(report.initial_explained_area_fraction, 0.0);
+    EXPECT_GT(report.tolerance, 0.0);
+    EXPECT_LE(report.hausdorff_max, report.tolerance * (1.0 + 1e-12));
+    EXPECT_GE(report.stop, MIO_REFINE_UNCHANGED);
+    EXPECT_LE(report.stop, MIO_REFINE_ENERGY_ROSE);
+    EXPECT_EQ(report.reserved32, 0);
+    for (int64_t r : report.reserved)
+        EXPECT_EQ(r, 0);
+    EXPECT_EQ(mio_mesh_get_cell_data(out, "segment:patch", 0, nullptr, nullptr, nullptr, nullptr),
+              MIO_OK);
+    mio_regions* regions = mio_regions_create(out);
+    EXPECT_EQ(mio_regions_count(regions), 6);
+    mio_regions_free(regions);
+    mio_mesh_free(out);
+
+    // A partition segmented at the creases is already six planes; NULL
+    // options are the defaults.
+    mio_mesh_free(seg);
+    mio_segment_opts_init(&sopts);
+    seg = mio_segment(box, &sopts, nullptr);
+    ASSERT_NE(seg, nullptr) << mio_last_error();
+    out = mio_refine_patches(seg, nullptr, &report);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(report.stop, MIO_REFINE_UNCHANGED);
+    EXPECT_EQ(report.num_patches, 6);
+    EXPECT_EQ(report.num_splits + report.num_merges + report.num_absorbed, 0);
+    mio_mesh_free(out);
+
+    // A NULL mesh, a mesh without "segment:patch" and an option out of range
+    // fail with an error.
+    EXPECT_EQ(mio_refine_patches(nullptr, nullptr, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()), "");
+    EXPECT_EQ(mio_refine_patches(box, nullptr, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("segment"), std::string::npos) << mio_last_error();
+    mio_refine_patches_opts_init(&opts);
+    opts.tolerance = 0.0;
+    EXPECT_EQ(mio_refine_patches(seg, &opts, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("tolerance"), std::string::npos)
+        << mio_last_error();
+    mio_mesh_free(seg);
+    mio_mesh_free(box);
+}
+
+TEST(CApi, FitCad2Refines) {
+    mio_fit_cad_opts_ex ex;
+    std::memset(&ex, 0xff, sizeof ex);
+    mio_fit_cad_opts_ex_init(&ex);
+    EXPECT_EQ(ex.refine_segmentation, 0);
+    EXPECT_EQ(ex.reserved32, 0);
+    EXPECT_DOUBLE_EQ(ex.refine.tolerance, 1e-3);
+    EXPECT_EQ(ex.refine.max_iterations, 10);
+    EXPECT_EQ(ex.refine.ransac_seed, MIO_REFINE_DEFAULT_SEED);
+    EXPECT_EQ(ex.refine.prefix, nullptr);
+    for (int64_t r : ex.reserved)
+        EXPECT_EQ(r, 0);
+
+    // The native backend runs in every build.
+    mio_mesh* m = capi_cube_surface();
+    mio_fit_cad_opts opts;
+    mio_fit_cad_opts_init(&opts);
+    opts.backend = MIO_FIT_CAD_NATIVE;
+    ex.refine_segmentation = 1;
+    mio_fit_cad_report report;
+    mio_fit_cad_report_ex report_ex;
+    mio_fit_cad_report_ex2 report_ex2;
+    std::memset(&report_ex2, 0xff, sizeof report_ex2);
+    mio_mesh* skin = mio_fit_cad2(m, nullptr, &opts, &ex, &report, &report_ex, &report_ex2);
+    ASSERT_NE(skin, nullptr) << mio_last_error();
+    EXPECT_EQ(report_ex2.refined, 1);
+    EXPECT_GE(report_ex2.refine_iterations, 0);
+    EXPECT_NEAR(report_ex2.explained_area_fraction, 1.0, 1e-12);
+    EXPECT_EQ(report_ex.backend, MIO_FIT_CAD_NATIVE);
+    EXPECT_EQ(report.num_plane, 6);
+    for (int64_t r : report_ex2.reserved)
+        EXPECT_EQ(r, 0);
+    mio_mesh_free(skin);
+
+    // NULL opts_ex leaves refinement off, and every report is optional.
+    std::memset(&report_ex2, 0xff, sizeof report_ex2);
+    skin = mio_fit_cad2(m, nullptr, &opts, nullptr, nullptr, nullptr, &report_ex2);
+    ASSERT_NE(skin, nullptr) << mio_last_error();
+    EXPECT_EQ(report_ex2.refined, 0);
+    EXPECT_EQ(report_ex2.refine_iterations, 0);
+    EXPECT_EQ(report_ex2.num_refine_splits, 0);
+    EXPECT_EQ(report_ex2.num_refine_merges, 0);
+    EXPECT_EQ(report_ex2.explained_area_fraction, 0.0);
+    mio_mesh_free(skin);
+
+    // mio_fit_cad_ex forwards to mio_fit_cad2 unchanged.
+    skin = mio_fit_cad_ex(m, nullptr, &opts, &report, &report_ex);
+    ASSERT_NE(skin, nullptr) << mio_last_error();
+    EXPECT_EQ(report.num_plane, 6);
+    EXPECT_EQ(report_ex.backend, MIO_FIT_CAD_NATIVE);
+    mio_mesh_free(skin);
+
+    // A refinement option out of range fails only when refinement is on.
+    ex.refine.min_patch_cells = 0;
+    EXPECT_EQ(mio_fit_cad2(m, nullptr, &opts, &ex, nullptr, nullptr, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("min_patch_cells"), std::string::npos)
+        << mio_last_error();
+    ex.refine_segmentation = 0;
+    skin = mio_fit_cad2(m, nullptr, &opts, &ex, nullptr, nullptr, nullptr);
+    ASSERT_NE(skin, nullptr) << mio_last_error();
+    mio_mesh_free(skin);
+    EXPECT_EQ(mio_fit_cad2(nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, BrepSideChannel) {
     // A degree-(1, 1) face with one outer loop of one trim, and an edge on it.
     const auto path = mt::temp_path(".cad.json");

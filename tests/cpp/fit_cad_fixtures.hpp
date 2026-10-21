@@ -24,6 +24,7 @@
  *        `fit_cad`, so no fixture file (LFS or otherwise) is involved.
  */
 
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -64,6 +65,24 @@ inline Mesh saddle_box(int n) {
         q.As<double>()[i * 3] = x;
         q.As<double>()[i * 3 + 1] = y;
         q.As<double>()[i * 3 + 2] = z;
+    }
+    box.AssignPoints(std::move(q));
+    return box;
+}
+
+/// A closed box whose top waves as z = 1 + A sin(2 pi x) sin(2 pi y): the
+/// sides stay planes (the factor is 1 on them), the top is no primitive.
+inline Mesh wavy_top_box(int n, double A = 0.05) {
+    Mesh box = analytic::box_skin(n);
+    const NDArray& p = box.Points();
+    NDArray q = NDArray::Uninit(DType::Float64, {box.NumPoints(), 3});
+    constexpr double kTwoPi = 6.28318530717958647692;
+    for (std::size_t i = 0; i < box.NumPoints(); ++i) {
+        const double x = p.As<double>()[i * 3], y = p.As<double>()[i * 3 + 1];
+        q.As<double>()[i * 3] = x;
+        q.As<double>()[i * 3 + 1] = y;
+        q.As<double>()[i * 3 + 2] =
+            p.As<double>()[i * 3 + 2] * (1.0 + A * std::sin(kTwoPi * x) * std::sin(kTwoPi * y));
     }
     box.AssignPoints(std::move(q));
     return box;

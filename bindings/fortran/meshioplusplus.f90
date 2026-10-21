@@ -334,6 +334,70 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(10) = 0
     end type
 
+    !> Interop mirror of C `mio_refine_patches_opts` (v17.11.0, 144 bytes;
+    !> `types` is the C `uint32_t` bit mask and `ransac_seed` the C `uint64_t`
+    !> seed, held here as a signed integer of the same bits). The defaults
+    !> mirror `mio_refine_patches_opts_init` (called anyway).
+    type, bind(c) :: mio_refine_patches_opts_t
+        real(c_double) :: tolerance = 1.0e-3_c_double
+        real(c_double) :: normal_weight = 1.0_c_double
+        real(c_double) :: epsilon = 1.0e-3_c_double
+        real(c_double) :: feature_angle = 30.0_c_double
+        integer(c_int64_t) :: max_iterations = 10
+        integer(c_int64_t) :: min_patch_cells = 3
+        integer(c_int64_t) :: ransac_seed = 7882833615064607531_c_int64_t
+        integer(c_int32_t) :: types = 62
+        integer(c_int32_t) :: relative = 1
+        integer(c_int32_t) :: allow_split = 1
+        integer(c_int32_t) :: allow_merge = 1
+        type(c_ptr) :: prefix = c_null_ptr
+        integer(c_int64_t) :: reserved(8) = 0
+    end type
+
+    !> Interop mirror of C `mio_refine_patches_report` (v17.11.0, 192 bytes).
+    !> `stop` is a `mio_refine_stop`: 0 unchanged, 1 small gain, 2 iteration
+    !> cap, 3 energy rose.
+    type, bind(c) :: mio_refine_patches_report_t
+        integer(c_int64_t) :: num_patches = 0
+        integer(c_int64_t) :: num_iterations = 0
+        integer(c_int64_t) :: num_splits = 0
+        integer(c_int64_t) :: num_merges = 0
+        integer(c_int64_t) :: num_absorbed = 0
+        integer(c_int64_t) :: num_primitive = 0
+        integer(c_int64_t) :: num_freeform = 0
+        integer(c_int64_t) :: num_facets = 0
+        real(c_double) :: tolerance = 0.0_c_double
+        real(c_double) :: explained_area_fraction = 0.0_c_double
+        real(c_double) :: initial_explained_area_fraction = 0.0_c_double
+        real(c_double) :: hausdorff_max = 0.0_c_double
+        real(c_double) :: hausdorff_rms = 0.0_c_double
+        real(c_double) :: initial_energy = 0.0_c_double
+        real(c_double) :: energy = 0.0_c_double
+        integer(c_int32_t) :: stop = 0
+        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int64_t) :: reserved(8) = 0
+    end type
+
+    !> Interop mirror of C `mio_fit_cad_opts_ex` (v17.11.0, 280 bytes): the
+    !> fit_cad options `mio_fit_cad_opts` has no room for.
+    type, bind(c) :: mio_fit_cad_opts_ex_t
+        integer(c_int32_t) :: refine_segmentation = 0
+        integer(c_int32_t) :: reserved32 = 0
+        type(mio_refine_patches_opts_t) :: refine
+        integer(c_int64_t) :: reserved(16) = 0
+    end type
+
+    !> Interop mirror of C `mio_fit_cad_report_ex2` (v17.11.0, 176 bytes).
+    type, bind(c) :: mio_fit_cad_report_ex2_t
+        integer(c_int64_t) :: refined = 0
+        integer(c_int64_t) :: refine_iterations = 0
+        integer(c_int64_t) :: num_refine_splits = 0
+        integer(c_int64_t) :: num_refine_merges = 0
+        real(c_double) :: initial_explained_area_fraction = 0.0_c_double
+        real(c_double) :: explained_area_fraction = 0.0_c_double
+        integer(c_int64_t) :: reserved(16) = 0
+    end type
+
     !> Interop mirror of C `mio_iga_opts` (the subdivisions default to 1 and
     !> `trim_samples` to 16: an all-zero struct is not the default).
     type, bind(c) :: mio_iga_opts_t
@@ -1159,6 +1223,7 @@ module meshioplusplus
         procedure :: feature_edges => mesh_feature_edges
         procedure :: segment => mesh_segment
         procedure :: fit_primitives => mesh_fit_primitives
+        procedure :: refine_patches => mesh_refine_patches
         procedure :: fit_cad => mesh_fit_cad
         procedure :: render => mesh_render
         procedure :: render_text => mesh_render_text
@@ -2296,6 +2361,40 @@ module meshioplusplus
             type(mio_fit_cad_opts_t), intent(in) :: opts
             type(mio_fit_cad_report_t), intent(out) :: report
             type(mio_fit_cad_report_ex_t), intent(out) :: report_ex
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_refine_patches_opts_init(opts) &
+                bind(c, name="mio_refine_patches_opts_init")
+            import :: mio_refine_patches_opts_t
+            type(mio_refine_patches_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_refine_patches(h, opts, report) &
+                bind(c, name="mio_refine_patches") result(r)
+            import :: c_ptr, mio_refine_patches_opts_t, mio_refine_patches_report_t
+            type(c_ptr), value :: h
+            type(mio_refine_patches_opts_t), intent(in) :: opts
+            type(mio_refine_patches_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_fit_cad_opts_ex_init(opts) &
+                bind(c, name="mio_fit_cad_opts_ex_init")
+            import :: mio_fit_cad_opts_ex_t
+            type(mio_fit_cad_opts_ex_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_fit_cad2(h, path, opts, opts_ex, report, report_ex, report_ex2) &
+                bind(c, name="mio_fit_cad2") result(r)
+            import :: c_ptr, mio_fit_cad_opts_t, mio_fit_cad_opts_ex_t, mio_fit_cad_report_t, &
+                      mio_fit_cad_report_ex_t, mio_fit_cad_report_ex2_t
+            type(c_ptr), value :: h, path
+            type(mio_fit_cad_opts_t), intent(in) :: opts
+            type(mio_fit_cad_opts_ex_t), intent(in) :: opts_ex
+            type(mio_fit_cad_report_t), intent(out) :: report
+            type(mio_fit_cad_report_ex_t), intent(out) :: report_ex
+            type(mio_fit_cad_report_ex2_t), intent(out) :: report_ex2
             type(c_ptr) :: r
         end function
 
@@ -6020,11 +6119,12 @@ contains
         call clear_status(stat, errmsg)
     end function
 
-    !> Build a CAD solid from the fitted patches of this closed skin (needs a
-    !> library built with -DMESHIOPLUSPLUS_WITH_OCCT=ON; mio_has_occt() tells):
-    !> accepted fits become plane, sphere, cylinder, cone and torus faces, the
-    !> rest planar facets, and a face that fails OpenCASCADE's check or strays
-    !> beyond `tolerance` is demoted to facets. Writes AP214 STEP to
+    !> Build a CAD solid from the fitted patches of this closed skin: with
+    !> OpenCASCADE (a library built with -DMESHIOPLUSPLUS_WITH_OCCT=ON;
+    !> mio_has_occt() tells), accepted fits become plane, sphere, cylinder,
+    !> cone and torus faces, the rest planar facets, and a face that fails
+    !> OpenCASCADE's check or strays beyond `tolerance` is demoted to facets;
+    !> without it, the native backend below runs instead (since v17.9.0). Writes AP214 STEP to
     !> `step_path` when given; returns the solid re-meshed as triangles with
     !> cell data `fit_cad:face`, `fit_cad:type` and `fit_cad:patch`. A patch no
     !> primitive explains becomes, with `fillets` (default on), a rolling-ball
@@ -6046,7 +6146,13 @@ contains
     !> ('auto' by default, 'occt' or 'native') picks the engine: 'native' needs
     !> no CAD kernel and writes the fitted patches as analytic STEP faces
     !> (`used_native` says which one ran), and `merge_faces` (default on)
-    !> merges faces on one surface. See doc/fit_cad.md.
+    !> merges faces on one surface. Since v17.11.0, `refine_segmentation`
+    !> (default off) first refines the patches as `refine_patches` does, with
+    !> `refine_tolerance` (default 1e-3, of the diagonal when
+    !> `relative_tolerance`, the default), `normal_weight`, `refine_epsilon`,
+    !> `max_refine_iterations`, `allow_split`, `allow_merge` and `ransac_seed`;
+    !> `refined`, `num_refine_splits`, `num_refine_merges` and
+    !> `explained_area_fraction` report it. See doc/fit_cad.md.
     function mesh_fit_cad(self, step_path, tolerance, exact_edges, types, &
                           mesh_deflection, max_demotion_rounds, valid, volume_ratio, &
                           max_deviation, num_faces, num_faceted_faces, num_demoted, &
@@ -6056,7 +6162,11 @@ contains
                           num_variable_fillet, num_blend, num_rounded_thread, &
                           num_vertex_blend, num_chamfer, num_conic_blend, &
                           num_tapered_thread, num_variable_pitch_thread, &
-                          merge_faces, backend, used_native) result(out)
+                          merge_faces, backend, used_native, refine_segmentation, &
+                          max_refine_iterations, refine_epsilon, normal_weight, &
+                          allow_merge, allow_split, ransac_seed, refine_tolerance, &
+                          relative_tolerance, refined, num_refine_splits, &
+                          num_refine_merges, explained_area_fraction) result(out)
         class(mio_mesh), intent(in) :: self
         character(*), intent(in), optional :: step_path
         real(real64), intent(in), optional :: tolerance, mesh_deflection
@@ -6080,14 +6190,43 @@ contains
         logical, intent(in), optional :: merge_faces
         character(*), intent(in), optional :: backend
         logical, intent(out), optional :: used_native
+        logical, intent(in), optional :: refine_segmentation
+        integer(int64), intent(in), optional :: max_refine_iterations
+        real(real64), intent(in), optional :: refine_epsilon, normal_weight
+        logical, intent(in), optional :: allow_merge, allow_split
+        integer(int64), intent(in), optional :: ransac_seed
+        real(real64), intent(in), optional :: refine_tolerance
+        logical, intent(in), optional :: relative_tolerance
+        logical, intent(out), optional :: refined
+        integer(int64), intent(out), optional :: num_refine_splits, num_refine_merges
+        real(real64), intent(out), optional :: explained_area_fraction
         type(mio_mesh) :: out
         type(c_ptr) :: res, path_ptr
         type(mio_fit_cad_opts_t) :: opts
+        type(mio_fit_cad_opts_ex_t) :: opts_ex
         type(mio_fit_cad_report_t) :: report
         type(mio_fit_cad_report_ex_t) :: report_ex
+        type(mio_fit_cad_report_ex2_t) :: report_ex2
         character(kind=c_char, len=STRBUF_LEN), target :: path_buf
 
+        call check_refine_patches_layout()
         call c_mio_fit_cad_opts_init(opts)
+        call c_mio_fit_cad_opts_ex_init(opts_ex)
+        if (present(refine_segmentation)) &
+            opts_ex%refine_segmentation = merge(1_c_int32_t, 0_c_int32_t, refine_segmentation)
+        if (present(max_refine_iterations)) &
+            opts_ex%refine%max_iterations = int(max_refine_iterations, c_int64_t)
+        if (present(refine_epsilon)) opts_ex%refine%epsilon = real(refine_epsilon, c_double)
+        if (present(normal_weight)) opts_ex%refine%normal_weight = real(normal_weight, c_double)
+        if (present(allow_merge)) &
+            opts_ex%refine%allow_merge = merge(1_c_int32_t, 0_c_int32_t, allow_merge)
+        if (present(allow_split)) &
+            opts_ex%refine%allow_split = merge(1_c_int32_t, 0_c_int32_t, allow_split)
+        if (present(ransac_seed)) opts_ex%refine%ransac_seed = int(ransac_seed, c_int64_t)
+        if (present(refine_tolerance)) &
+            opts_ex%refine%tolerance = real(refine_tolerance, c_double)
+        if (present(relative_tolerance)) &
+            opts_ex%refine%relative = merge(1_c_int32_t, 0_c_int32_t, relative_tolerance)
         path_ptr = c_null_ptr
         if (present(step_path)) then
             path_buf = trim(step_path)//c_null_char
@@ -6123,7 +6262,7 @@ contains
                 return
             end select
         end if
-        res = c_mio_fit_cad_ex(self%handle, path_ptr, opts, report, report_ex)
+        res = c_mio_fit_cad2(self%handle, path_ptr, opts, opts_ex, report, report_ex, report_ex2)
         if (.not. c_associated(res)) then
             call handle_failure('fit_cad', mio_error_message(), stat, errmsg)
             return
@@ -6151,6 +6290,104 @@ contains
         if (present(num_variable_pitch_thread)) &
             num_variable_pitch_thread = int(report_ex%num_variable_pitch_thread, int64)
         if (present(used_native)) used_native = report_ex%backend == 2
+        if (present(refined)) refined = report_ex2%refined /= 0
+        if (present(num_refine_splits)) &
+            num_refine_splits = int(report_ex2%num_refine_splits, int64)
+        if (present(num_refine_merges)) &
+            num_refine_merges = int(report_ex2%num_refine_merges, int64)
+        if (present(explained_area_fraction)) &
+            explained_area_fraction = real(report_ex2%explained_area_fraction, real64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The layouts of the refine_patches and fit_cad extension mirrors against
+    !> the C structs (144, 192, 280 and 176 bytes), checked once per process.
+    subroutine check_refine_patches_layout()
+        logical, save :: checked = .false.
+        type(mio_refine_patches_opts_t) :: opts
+        type(mio_refine_patches_report_t) :: report
+        type(mio_fit_cad_opts_ex_t) :: opts_ex
+        type(mio_fit_cad_report_ex2_t) :: report_ex2
+        if (checked) return
+        checked = .true.
+        if (c_sizeof(opts) /= 144_c_size_t .or. c_sizeof(report) /= 192_c_size_t .or. &
+            c_sizeof(opts_ex) /= 280_c_size_t .or. c_sizeof(report_ex2) /= 176_c_size_t) then
+            write (error_unit, '(a,4(i0,1x),a)') &
+                'meshio++: refine_patches layout mismatch (', c_sizeof(opts), c_sizeof(report), &
+                c_sizeof(opts_ex), c_sizeof(report_ex2), 'bytes)'
+            error stop 1
+        end if
+    end subroutine
+
+    !> Refine the `segment:patch` labels of this surface by variational shape
+    !> approximation (v17.11.0): patch boundaries move, a freeform patch is
+    !> split where seeded RANSAC finds a primitive inside it, and neighbouring
+    !> patches one primitive explains merge, until each patch is one plane,
+    !> sphere, cylinder, cone or torus, or a freeform proxy. Returns the input
+    !> with `segment:patch`, `segment:adjacency` and the `<prefix>:<k>`
+    !> regions rewritten, the `fit:*` data of `fit_primitives` on the refined
+    !> patches and per-patch `refine:*` field data. `tolerance` (default 1e-3)
+    !> is a fraction of the diagonal when `relative` (default); `normal_weight`
+    !> defaults to 1, `epsilon` to 1e-3, `feature_angle` to 30, `max_iterations`
+    !> to 10, `min_patch_cells` to 3, `types` to 62 (every primitive), `prefix`
+    !> to 'patch' and `ransac_seed` to the bytes of "meshio++"; `allow_split`
+    !> and `allow_merge` are on. See doc/refine_patches.md.
+    function mesh_refine_patches(self, tolerance, relative, normal_weight, epsilon, &
+                                 feature_angle, max_iterations, min_patch_cells, &
+                                 ransac_seed, allow_split, allow_merge, num_patches, &
+                                 num_splits, num_merges, explained_area_fraction, stat, &
+                                 errmsg, types, prefix, num_iterations, num_primitive) &
+                                 result(out)
+        class(mio_mesh), intent(in) :: self
+        real(real64), intent(in), optional :: tolerance
+        logical, intent(in), optional :: relative
+        real(real64), intent(in), optional :: normal_weight, epsilon, feature_angle
+        integer(int64), intent(in), optional :: max_iterations, min_patch_cells
+        integer(c_int64_t), intent(in), optional :: ransac_seed
+        logical, intent(in), optional :: allow_split, allow_merge
+        integer(int64), intent(out), optional :: num_patches, num_splits, num_merges
+        real(real64), intent(out), optional :: explained_area_fraction
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer, intent(in), optional :: types
+        character(*), intent(in), optional :: prefix
+        integer(int64), intent(out), optional :: num_iterations, num_primitive
+        type(mio_mesh) :: out
+        type(c_ptr) :: res
+        type(mio_refine_patches_opts_t) :: opts
+        type(mio_refine_patches_report_t) :: report
+        character(kind=c_char, len=STRBUF_LEN), target :: prefix_buf
+
+        call check_refine_patches_layout()
+        call c_mio_refine_patches_opts_init(opts)
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(relative)) opts%relative = merge(1_c_int32_t, 0_c_int32_t, relative)
+        if (present(normal_weight)) opts%normal_weight = real(normal_weight, c_double)
+        if (present(epsilon)) opts%epsilon = real(epsilon, c_double)
+        if (present(feature_angle)) opts%feature_angle = real(feature_angle, c_double)
+        if (present(max_iterations)) opts%max_iterations = int(max_iterations, c_int64_t)
+        if (present(min_patch_cells)) opts%min_patch_cells = int(min_patch_cells, c_int64_t)
+        if (present(ransac_seed)) opts%ransac_seed = ransac_seed
+        if (present(allow_split)) opts%allow_split = merge(1_c_int32_t, 0_c_int32_t, allow_split)
+        if (present(allow_merge)) opts%allow_merge = merge(1_c_int32_t, 0_c_int32_t, allow_merge)
+        if (present(types)) opts%types = int(types, c_int32_t)
+        if (present(prefix)) then
+            prefix_buf = trim(prefix)//c_null_char
+            opts%prefix = c_loc(prefix_buf(1:1))
+        end if
+        res = c_mio_refine_patches(self%handle, opts, report)
+        if (.not. c_associated(res)) then
+            call handle_failure('refine_patches', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = res
+        if (present(num_patches)) num_patches = int(report%num_patches, int64)
+        if (present(num_splits)) num_splits = int(report%num_splits, int64)
+        if (present(num_merges)) num_merges = int(report%num_merges, int64)
+        if (present(explained_area_fraction)) &
+            explained_area_fraction = real(report%explained_area_fraction, real64)
+        if (present(num_iterations)) num_iterations = int(report%num_iterations, int64)
+        if (present(num_primitive)) num_primitive = int(report%num_primitive, int64)
         call clear_status(stat, errmsg)
     end function
 

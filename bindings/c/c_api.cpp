@@ -120,6 +120,7 @@
 #include "meshioplusplus/operations/blend.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/fit_cad.hpp"
+#include "meshioplusplus/operations/refine_patches.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/iga.hpp"
 #include "meshioplusplus/operations/segment.hpp"
@@ -6428,6 +6429,18 @@ static_assert(sizeof(mio_fit_cad_report) == 192,
               "mio_fit_cad_report grew outside its reserved tail");
 static_assert(sizeof(mio_fit_cad_report_ex) == 128,
               "mio_fit_cad_report_ex grew outside its reserved tail");
+static_assert(sizeof(mio_refine_patches_opts) == 144,
+              "mio_refine_patches_opts grew outside its reserved tail");
+static_assert(sizeof(mio_refine_patches_report) == 192,
+              "mio_refine_patches_report grew outside its reserved tail");
+static_assert(sizeof(mio_fit_cad_opts_ex) == 280,
+              "mio_fit_cad_opts_ex grew outside its reserved tail");
+static_assert(sizeof(mio_fit_cad_report_ex2) == 176,
+              "mio_fit_cad_report_ex2 grew outside its reserved tail");
+static_assert(MIO_REFINE_DEFAULT_SEED == meshioplusplus::kRefineDefaultSeed,
+              "MIO_REFINE_DEFAULT_SEED must match kRefineDefaultSeed");
+static_assert(MIO_REFINE_ENERGY_ROSE == static_cast<int>(meshioplusplus::RefineStop::EnergyRose),
+              "mio_refine_stop must match RefineStop");
 static_assert(MIO_FIT_ALL_TYPES == meshioplusplus::kFitAllTypes,
               "MIO_FIT_ALL_TYPES must match kFitAllTypes");
 static_assert(MIO_FIT_TORUS == static_cast<int>(meshioplusplus::FitPrimitiveType::Torus),
@@ -6574,6 +6587,81 @@ mio_mesh* mio_fit_primitives(const mio_mesh* mesh, const mio_fit_primitives_opts
     });
 }
 
+void mio_refine_patches_opts_init(mio_refine_patches_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_refine_patches_opts{};
+    const meshioplusplus::RefinePatchesOptions d;
+    opts->tolerance = d.mTolerance;
+    opts->normal_weight = d.mNormalWeight;
+    opts->epsilon = d.mEpsilon;
+    opts->feature_angle = d.mFeatureAngleDeg;
+    opts->max_iterations = d.mMaxIterations;
+    opts->min_patch_cells = d.mMinPatchCells;
+    opts->ransac_seed = d.mRansacSeed;
+    opts->types = d.mTypes;
+    opts->relative = d.mRelative ? 1 : 0;
+    opts->allow_split = d.mAllowSplit ? 1 : 0;
+    opts->allow_merge = d.mAllowMerge ? 1 : 0;
+    opts->prefix = nullptr;  // "patch"
+}
+
+namespace {
+
+// The C refine options as the C++ ones; a NULL or "" prefix keeps "patch".
+meshioplusplus::RefinePatchesOptions capi_refine_patches_options(
+    const mio_refine_patches_opts& rOpts) {
+    meshioplusplus::RefinePatchesOptions options;
+    options.mTolerance = rOpts.tolerance;
+    options.mNormalWeight = rOpts.normal_weight;
+    options.mEpsilon = rOpts.epsilon;
+    options.mFeatureAngleDeg = rOpts.feature_angle;
+    options.mMaxIterations = rOpts.max_iterations;
+    options.mMinPatchCells = rOpts.min_patch_cells;
+    options.mRansacSeed = rOpts.ransac_seed;
+    options.mTypes = rOpts.types;
+    options.mRelative = rOpts.relative != 0;
+    options.mAllowSplit = rOpts.allow_split != 0;
+    options.mAllowMerge = rOpts.allow_merge != 0;
+    if (rOpts.prefix && rOpts.prefix[0] != '\0')
+        options.mPrefix = rOpts.prefix;
+    return options;
+}
+
+}  // namespace
+
+mio_mesh* mio_refine_patches(const mio_mesh* mesh, const mio_refine_patches_opts* opts,
+                             mio_refine_patches_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        const meshioplusplus::RefinePatchesOptions options =
+            opts ? capi_refine_patches_options(*opts) : meshioplusplus::RefinePatchesOptions{};
+        meshioplusplus::RefinePatchesResult r =
+            meshioplusplus::refine_patches(mesh->mMesh, options);
+        if (report) {
+            *report = mio_refine_patches_report{};
+            report->num_patches = r.mNumPatches;
+            report->num_iterations = r.mNumIterations;
+            report->num_splits = r.mNumSplits;
+            report->num_merges = r.mNumMerges;
+            report->num_absorbed = r.mNumAbsorbed;
+            report->num_primitive = r.mNumPrimitive;
+            report->num_freeform = r.mNumFreeform;
+            report->num_facets = r.mNumFacets;
+            report->tolerance = r.mTolerance;
+            report->explained_area_fraction = r.mExplainedAreaFraction;
+            report->initial_explained_area_fraction = r.mInitialExplainedAreaFraction;
+            report->hausdorff_max = r.mHausdorffMax;
+            report->hausdorff_rms = r.mHausdorffRms;
+            report->initial_energy = r.mInitialEnergy;
+            report->energy = r.mEnergy;
+            report->stop = static_cast<std::int32_t>(r.mStop);
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
 void mio_fit_cad_opts_init(mio_fit_cad_opts* opts) {
     if (!opts)
         return;
@@ -6589,6 +6677,14 @@ void mio_fit_cad_opts_init(mio_fit_cad_opts* opts) {
     opts->threads = 1;
     opts->merge_faces = 1;
     opts->backend = MIO_FIT_CAD_AUTO;
+}
+
+void mio_fit_cad_opts_ex_init(mio_fit_cad_opts_ex* opts) {
+    if (!opts)
+        return;
+    *opts = mio_fit_cad_opts_ex{};
+    opts->refine_segmentation = 0;
+    mio_refine_patches_opts_init(&opts->refine);
 }
 
 void mio_iga_opts_init(mio_iga_opts* opts) {
@@ -6790,11 +6886,17 @@ int mio_has_occt(void) {
 
 mio_mesh* mio_fit_cad(const mio_mesh* mesh, const char* step_path, const mio_fit_cad_opts* opts,
                       mio_fit_cad_report* report) {
-    return mio_fit_cad_ex(mesh, step_path, opts, report, nullptr);
+    return mio_fit_cad2(mesh, step_path, opts, nullptr, report, nullptr, nullptr);
 }
 
 mio_mesh* mio_fit_cad_ex(const mio_mesh* mesh, const char* step_path, const mio_fit_cad_opts* opts,
                          mio_fit_cad_report* report, mio_fit_cad_report_ex* report_ex) {
+    return mio_fit_cad2(mesh, step_path, opts, nullptr, report, report_ex, nullptr);
+}
+
+mio_mesh* mio_fit_cad2(const mio_mesh* mesh, const char* step_path, const mio_fit_cad_opts* opts,
+                       const mio_fit_cad_opts_ex* opts_ex, mio_fit_cad_report* report,
+                       mio_fit_cad_report_ex* report_ex, mio_fit_cad_report_ex2* report_ex2) {
     return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
         if (!mesh)
             throw meshioplusplus::ReadError("meshio++: mesh is NULL");
@@ -6822,6 +6924,10 @@ mio_mesh* mio_fit_cad_ex(const mio_mesh* mesh, const char* step_path, const mio_
                 return nullptr;
             }
             options.mBackend = static_cast<meshioplusplus::FitCadBackend>(opts->backend);
+        }
+        if (opts_ex) {
+            options.mRefineSegmentation = opts_ex->refine_segmentation != 0;
+            options.mRefine = capi_refine_patches_options(opts_ex->refine);
         }
         meshioplusplus::FitCadResult r =
             meshioplusplus::fit_cad(mesh->mMesh, step_path ? step_path : "", options);
@@ -6864,6 +6970,15 @@ mio_mesh* mio_fit_cad_ex(const mio_mesh* mesh, const char* step_path, const mio_
             report_ex->backend = r.mBackend == meshioplusplus::FitCadBackend::Native
                                      ? MIO_FIT_CAD_NATIVE
                                      : MIO_FIT_CAD_OCCT;
+        }
+        if (report_ex2) {
+            *report_ex2 = mio_fit_cad_report_ex2{};
+            report_ex2->refined = r.mRefined ? 1 : 0;
+            report_ex2->refine_iterations = r.mRefineIterations;
+            report_ex2->num_refine_splits = r.mNumRefineSplits;
+            report_ex2->num_refine_merges = r.mNumRefineMerges;
+            report_ex2->initial_explained_area_fraction = r.mInitialExplainedAreaFraction;
+            report_ex2->explained_area_fraction = r.mExplainedAreaFraction;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });

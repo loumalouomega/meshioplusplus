@@ -50,6 +50,7 @@
 #include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
+#include "meshioplusplus/operations/refine_patches.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/tessellate.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
@@ -232,6 +233,34 @@ std::uint32_t pipe_fit_types(const PipelineStep& rStep) {
     return mask;
 }
 
+/// A `RansacSeed`: a non-negative integer no larger than 2^53, the largest a
+/// JSON number (a double) carries exactly; absent, `fallback`.
+std::uint64_t pipe_seed(const PipelineStep& rStep, const char* pKey, std::uint64_t fallback) {
+    const PipelineValue* v = pipe_find(rStep, pKey);
+    if (!v)
+        return fallback;
+    constexpr double kMaxSeed = 9007199254740992.0;  // 2^53
+    const std::string what =
+        std::string("parameter '") + pKey + "' must be an integer in [0, 2^53] (9007199254740992)";
+    if (const auto* i = std::get_if<std::int64_t>(v)) {
+        if (*i < 0 || *i > (std::int64_t{1} << 53))
+            throw std::invalid_argument(pipe_err(rStep, what));
+        return static_cast<std::uint64_t>(*i);
+    }
+    if (const auto* d = std::get_if<double>(v)) {
+        if (!(*d >= 0.0 && *d <= kMaxSeed) || *d != std::floor(*d))
+            throw std::invalid_argument(pipe_err(rStep, what));
+        return static_cast<std::uint64_t>(*d);
+    }
+    throw std::invalid_argument(pipe_err(rStep, what));
+}
+
+/// The `RefineStop` code a report carries as `Stop` (counters are numbers):
+/// 0 unchanged, 1 small_gain, 2 iteration_cap, 3 energy_rose.
+double pipe_refine_stop(RefineStop stop) {
+    return static_cast<double>(static_cast<std::int32_t>(stop));
+}
+
 /// A required 3-vector (`Point`, `Normal`, `Translate`, ...).
 void pipe_vec3(const PipelineStep& rStep, const char* pKey, double* pOut) {
     std::vector<double> v = pipe_dvec(rStep, pKey);
@@ -304,9 +333,32 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"FitPrimitives",
          {"PatchData", "Tolerance", "Relative", "MinInlierFraction", "Types", "MaxIterations"}},
         {"FitCad",
-         {"Path", "Tolerance", "ExactEdges", "Types", "MeshDeflection", "MaxDemotionRounds",
-          "Freeform", "FreeformDegree", "FreeformMaxControl", "FreeformSplit", "Fillets", "Threads",
-          "MergeFaces", "Backend"}},
+         {"Path",
+          "Tolerance",
+          "ExactEdges",
+          "Types",
+          "MeshDeflection",
+          "MaxDemotionRounds",
+          "Freeform",
+          "FreeformDegree",
+          "FreeformMaxControl",
+          "FreeformSplit",
+          "Fillets",
+          "Threads",
+          "MergeFaces",
+          "Backend",
+          "RefineSegmentation",
+          "MaxRefineIterations",
+          "RefineEpsilon",
+          "NormalWeight",
+          "AllowMerge",
+          "AllowSplit",
+          "RansacSeed",
+          "RefineTolerance",
+          "RelativeTolerance"}},
+        {"RefinePatches",
+         {"Tolerance", "Relative", "NormalWeight", "Epsilon", "FeatureAngle", "MaxIterations",
+          "MinPatchCells", "RansacSeed", "Types", "AllowSplit", "AllowMerge", "Prefix"}},
         {"EditRegions", {"Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"}},
         {"RegionAdjacency", {"Regions"}},
         {"FindInterface",
@@ -1039,28 +1091,76 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         else if (backend != "auto")
             throw std::invalid_argument(
                 pipe_err(rStep, "'Backend' must be 'auto', 'occt' or 'native'"));
+        opts.mRefineSegmentation = pipe_flag(rStep, "RefineSegmentation", false);
+        opts.mRefine.mMaxIterations =
+            static_cast<std::int64_t>(pipe_number(rStep, "MaxRefineIterations", 10.0));
+        opts.mRefine.mEpsilon = pipe_number(rStep, "RefineEpsilon", 1e-3);
+        opts.mRefine.mNormalWeight = pipe_number(rStep, "NormalWeight", 1.0);
+        opts.mRefine.mAllowMerge = pipe_flag(rStep, "AllowMerge", true);
+        opts.mRefine.mAllowSplit = pipe_flag(rStep, "AllowSplit", true);
+        opts.mRefine.mRansacSeed = pipe_seed(rStep, "RansacSeed", kRefineDefaultSeed);
+        opts.mRefine.mTolerance = pipe_number(rStep, "RefineTolerance", 1e-3);
+        opts.mRefine.mRelative = pipe_flag(rStep, "RelativeTolerance", true);
         FitCadResult cr = fit_cad(mesh, pipe_text(rStep, "Path", ""), opts);
-        pipe_push_step(rReport, rStep,
-                       {{"Valid", cr.mValid ? 1.0 : 0.0},
-                        {"Native", cr.mBackend == FitCadBackend::Native ? 1.0 : 0.0},
-                        {"VolumeRatio", cr.mVolumeRatio},
-                        {"MaxDeviation", cr.mMaxDeviation},
-                        {"NumFaces", static_cast<double>(cr.mNumFaces)},
-                        {"NumFacetedFaces", static_cast<double>(cr.mNumFacetedFaces)},
-                        {"NumBspline", static_cast<double>(cr.mNumBspline)},
-                        {"NumSplitPatches", static_cast<double>(cr.mNumSplitPatches)},
-                        {"NumFillet", static_cast<double>(cr.mNumFillet)},
-                        {"NumHelical", static_cast<double>(cr.mNumHelical)},
-                        {"NumVariableFillet", static_cast<double>(cr.mNumVariableFillet)},
-                        {"NumBlend", static_cast<double>(cr.mNumBlend)},
-                        {"NumRoundedThread", static_cast<double>(cr.mNumRoundedThread)},
-                        {"NumVertexBlend", static_cast<double>(cr.mNumVertexBlend)},
-                        {"NumChamfer", static_cast<double>(cr.mNumChamfer)},
-                        {"NumConicBlend", static_cast<double>(cr.mNumConicBlend)},
-                        {"NumTaperedThread", static_cast<double>(cr.mNumTaperedThread)},
-                        {"NumVariablePitchThread", static_cast<double>(cr.mNumVariablePitchThread)},
-                        {"NumDemoted", static_cast<double>(cr.mNumDemoted)}});
+        std::vector<std::pair<std::string, double>> counters = {
+            {"Valid", cr.mValid ? 1.0 : 0.0},
+            {"Native", cr.mBackend == FitCadBackend::Native ? 1.0 : 0.0},
+            {"VolumeRatio", cr.mVolumeRatio},
+            {"MaxDeviation", cr.mMaxDeviation},
+            {"NumFaces", static_cast<double>(cr.mNumFaces)},
+            {"NumFacetedFaces", static_cast<double>(cr.mNumFacetedFaces)},
+            {"NumBspline", static_cast<double>(cr.mNumBspline)},
+            {"NumSplitPatches", static_cast<double>(cr.mNumSplitPatches)},
+            {"NumFillet", static_cast<double>(cr.mNumFillet)},
+            {"NumHelical", static_cast<double>(cr.mNumHelical)},
+            {"NumVariableFillet", static_cast<double>(cr.mNumVariableFillet)},
+            {"NumBlend", static_cast<double>(cr.mNumBlend)},
+            {"NumRoundedThread", static_cast<double>(cr.mNumRoundedThread)},
+            {"NumVertexBlend", static_cast<double>(cr.mNumVertexBlend)},
+            {"NumChamfer", static_cast<double>(cr.mNumChamfer)},
+            {"NumConicBlend", static_cast<double>(cr.mNumConicBlend)},
+            {"NumTaperedThread", static_cast<double>(cr.mNumTaperedThread)},
+            {"NumVariablePitchThread", static_cast<double>(cr.mNumVariablePitchThread)},
+            {"NumDemoted", static_cast<double>(cr.mNumDemoted)}};
+        // Only a run that refined reports the refinement, so a report without
+        // `RefineSegmentation` stays what it was before the option existed.
+        if (cr.mRefined) {
+            counters.emplace_back("Refined", 1.0);
+            counters.emplace_back("NumRefineSplits", static_cast<double>(cr.mNumRefineSplits));
+            counters.emplace_back("NumRefineMerges", static_cast<double>(cr.mNumRefineMerges));
+            counters.emplace_back("ExplainedAreaFraction", cr.mExplainedAreaFraction);
+        }
+        pipe_push_step(rReport, rStep, std::move(counters));
         return std::move(cr.mMesh);
+    }
+    if (op == "RefinePatches") {
+        // A data step: the `segment:patch` labels are refined, the cells never move.
+        RefinePatchesOptions opts;
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 1e-3);
+        opts.mRelative = pipe_flag(rStep, "Relative", true);
+        opts.mNormalWeight = pipe_number(rStep, "NormalWeight", 1.0);
+        opts.mEpsilon = pipe_number(rStep, "Epsilon", 1e-3);
+        opts.mFeatureAngleDeg = pipe_number(rStep, "FeatureAngle", 30.0);
+        opts.mMaxIterations = static_cast<std::int64_t>(pipe_number(rStep, "MaxIterations", 10.0));
+        opts.mMinPatchCells = static_cast<std::int64_t>(pipe_number(rStep, "MinPatchCells", 3.0));
+        opts.mRansacSeed = pipe_seed(rStep, "RansacSeed", kRefineDefaultSeed);
+        if (pipe_find(rStep, "Types"))
+            opts.mTypes = pipe_fit_types(rStep);
+        opts.mAllowSplit = pipe_flag(rStep, "AllowSplit", true);
+        opts.mAllowMerge = pipe_flag(rStep, "AllowMerge", true);
+        opts.mPrefix = pipe_text(rStep, "Prefix", "patch");
+        RefinePatchesResult rr = refine_patches(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumPatches", static_cast<double>(rr.mNumPatches)},
+                        {"NumIterations", static_cast<double>(rr.mNumIterations)},
+                        {"NumSplits", static_cast<double>(rr.mNumSplits)},
+                        {"NumMerges", static_cast<double>(rr.mNumMerges)},
+                        {"NumPrimitive", static_cast<double>(rr.mNumPrimitive)},
+                        {"NumFreeform", static_cast<double>(rr.mNumFreeform)},
+                        {"ExplainedAreaFraction", rr.mExplainedAreaFraction},
+                        {"HausdorffMax", rr.mHausdorffMax},
+                        {"Stop", pipe_refine_stop(rr.mStop)}});
+        return std::move(rr.mMesh);
     }
     if (op == "Snapshot") {
         // A side output, not a transform: the mesh passes through untouched and

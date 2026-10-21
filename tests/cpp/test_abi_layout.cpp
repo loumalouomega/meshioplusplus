@@ -399,9 +399,9 @@ MIO_ABI_LAYOUT(meshioplusplus::FitPrimitivesOptions, 72, 8);
 // ABI 30 grew it by five more (roadmap 6.3, v17.2.0), the options again unchanged.
 // ABI 31 put mMergeFaces and mBackend in the tail padding (same size, new
 // members) and grew FitCadResult by mBackend. ABI 32 appended
-// mRefineSegmentation and mRefine (a RefinePatchesOptions): 56 -> 160, and
-// grew FitCadResult by the refinement's report.
-MIO_ABI_LAYOUT(meshioplusplus::FitCadOptions, 160, 8);
+// mRefineSegmentation and mRefine (a RefinePatchesOptions) and the general
+// freeform options: 56 -> 208, and grew FitCadResult by both reports.
+MIO_ABI_LAYOUT(meshioplusplus::FitCadOptions, 208, 8);
 static_assert(offsetof(meshioplusplus::FitCadOptions, mMergeFaces) == 51,
               "FitCadOptions::mMergeFaces moved");
 static_assert(offsetof(meshioplusplus::FitCadOptions, mBackend) == 52,
@@ -410,6 +410,10 @@ static_assert(offsetof(meshioplusplus::FitCadOptions, mRefineSegmentation) == 56
               "FitCadOptions::mRefineSegmentation moved");
 static_assert(offsetof(meshioplusplus::FitCadOptions, mRefine) == 64,
               "FitCadOptions::mRefine moved");
+static_assert(offsetof(meshioplusplus::FitCadOptions, mFreeformGeneral) == 160,
+              "FitCadOptions::mFreeformGeneral moved");
+static_assert(offsetof(meshioplusplus::FitCadOptions, mMaxFreeformSplits) == 200,
+              "FitCadOptions::mMaxFreeformSplits moved");
 // refine_patches' options (operations/refine_patches.hpp, ABI 32).
 MIO_ABI_LAYOUT(meshioplusplus::RefinePatchesOptions, 96, 8);
 // The kernel-free STEP writer's options (formats/step.hpp), from ABI 31.

@@ -2073,6 +2073,77 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def refine_patches(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        segment_method: str = "angle",
+        segment_tolerance: float = 1e-3,
+        feature_angle: float = 30.0,
+        tolerance: float = 1e-3,
+        relative: bool = True,
+        normal_weight: float = 1.0,
+        epsilon: float = 1e-3,
+        max_iterations: int = 10,
+        min_patch_cells: int = 3,
+        ransac_seed: int = 0x6D657368696F2B2B,
+        types: Optional[List[str]] = None,
+        allow_split: bool = True,
+        allow_merge: bool = True,
+        prefix: str = "patch",
+    ) -> dict:
+        """Refine a segmentation until one plane, sphere, cylinder, cone or
+        torus explains each patch -- between segment and fit_primitives /
+        fit_cad, so more of a skin becomes real CAD faces (a fillet strip a
+        plane claimed, a cylinder cut in two, a cylinder inside a freeform
+        patch).
+
+        Hybrid variational shape approximation: each patch is explained by a
+        primitive holding every point within tolerance (a fraction of the
+        bounding-box diagonal unless relative is false; types narrows which),
+        else a freeform quadric; patches grow back from their best-explained
+        cells, cheapest first (cost: squared distance over tolerance squared
+        plus normal_weight times the normal deviation), never across a
+        feature edge above feature_angle degrees; with allow_split a primitive
+        is found inside a freeform patch by RANSAC seeded by ransac_seed (the
+        output is byte-identical for a seed), with allow_merge neighbours one
+        primitive explains merge, and a freeform patch under min_patch_cells
+        cells joins a neighbour. Stops when nothing changes, an iteration adds
+        less than epsilon to the explained area share, or after max_iterations.
+        A surface without segment:patch is segmented first (segment_method
+        "angle" by default, feature_angle, segment_tolerance for "primitive").
+        The mesh is written with segment:patch, the <prefix>:<k> regions and
+        the fit:* data rewritten (fit_cad reads it unchanged) and refine:*
+        per-patch field data. The report gives num_patches, num_iterations,
+        num_splits, num_merges, num_absorbed, num_primitive, num_freeform,
+        num_facets, the absolute tolerance, explained_area_fraction and
+        initial_explained_area_fraction, hausdorff_max / hausdorff_rms,
+        initial_energy / energy and stop (unchanged, small_gain,
+        iteration_cap, energy_rose). Needs the compiled core."""
+        return _guard(
+            _tools.tool_refine_patches,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            segment_method=segment_method,
+            segment_tolerance=segment_tolerance,
+            feature_angle=feature_angle,
+            tolerance=tolerance,
+            relative=relative,
+            normal_weight=normal_weight,
+            epsilon=epsilon,
+            max_iterations=max_iterations,
+            min_patch_cells=min_patch_cells,
+            ransac_seed=ransac_seed,
+            types=types,
+            allow_split=allow_split,
+            allow_merge=allow_merge,
+            prefix=prefix,
+        )
+
+    @server.tool()
     def region_adjacency(
         input_path: str,
         output_path: str,
@@ -3773,6 +3844,15 @@ def _register_gated(server: FastMCP) -> None:
         segment_tolerance: float = 1e-3,
         merge_faces: bool = True,
         backend: str = "auto",
+        refine_segmentation: bool = False,
+        max_refine_iterations: int = 10,
+        refine_epsilon: float = 1e-3,
+        normal_weight: float = 1.0,
+        allow_merge: bool = True,
+        allow_split: bool = True,
+        ransac_seed: int = 0x6D657368696F2B2B,
+        refine_tolerance: float = 1e-3,
+        relative_tolerance: bool = True,
     ) -> dict:
         """Turn a closed triangle skin into a CAD solid with analytic faces,
         written to output_path as AP214 STEP -- the last step of skin to CAD
@@ -3816,7 +3896,14 @@ def _register_gated(server: FastMCP) -> None:
         patches become analytic STEP faces bounded by line, circle and
         polyline edges, the rest coplanar polygons, no freeform or feature
         faces, NaN volumes; "auto" (the default) is "occt" when the core
-        carries it (occt_available), else "native"."""
+        carries it (occt_available), else "native". refine_segmentation (off
+        by default) first refines the patches as the refine_patches tool does
+        (max_refine_iterations, refine_epsilon, normal_weight, allow_merge,
+        allow_split, ransac_seed, refine_tolerance relative to the diagonal
+        unless relative_tolerance is false), so more of the skin becomes
+        analytic faces; the report then adds refined, refine_iterations,
+        num_refine_splits, num_refine_merges, initial_explained_area_fraction
+        and explained_area_fraction."""
         return _guard(
             _tools.tool_fit_cad,
             input_path=input_path,
@@ -3842,6 +3929,15 @@ def _register_gated(server: FastMCP) -> None:
             segment_tolerance=segment_tolerance,
             merge_faces=merge_faces,
             backend=backend,
+            refine_segmentation=refine_segmentation,
+            max_refine_iterations=max_refine_iterations,
+            refine_epsilon=refine_epsilon,
+            normal_weight=normal_weight,
+            allow_merge=allow_merge,
+            allow_split=allow_split,
+            ransac_seed=ransac_seed,
+            refine_tolerance=refine_tolerance,
+            relative_tolerance=relative_tolerance,
         )
 
     @server.tool()

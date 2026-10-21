@@ -1584,9 +1584,35 @@ end
     fit = fit_primitives(seg.mesh)
     @test fit.num_plane == 6
     close(fit.mesh)
+    # refine_patches (v17.11.0): six planes are already one patch each.
+    ref = refine_patches(seg.mesh)
+    @test ref.num_patches == 6
+    @test ref.num_primitive == 6
+    @test ref.num_splits == 0 && ref.num_merges == 0
+    @test isapprox(ref.explained_area_fraction, 1.0; atol=1e-12)
+    @test ref.stop in (:unchanged, :small_gain, :iteration_cap, :energy_rose)
+    @test ref.tolerance > 0
+    close(ref.mesh)
+    ref = refine_patches(seg.mesh; types=("plane",), ransac_seed=UInt64(42), max_iterations=0)
+    @test ref.stop == :iteration_cap
+    @test ref.num_iterations == 0
+    close(ref.mesh)
+    @test_throws ArgumentError refine_patches(seg.mesh; types=("blob",))
+    @test_throws MeshioError refine_patches(seg.mesh; tolerance=0)
     close(seg.mesh)
     @test_throws MeshioError segment(cube; feature_angle=200)
     @test_throws MeshioError fit_primitives(cube)  # no segment:patch labels
+    @test_throws MeshioError refine_patches(cube)  # no segment:patch labels
+    # fit_cad refines the segmentation on request, on every backend.
+    refined = fit_cad(cube; backend="native", refine_segmentation=true, max_refine_iterations=5)
+    @test refined.refined
+    @test refined.num_plane == 6
+    @test isapprox(refined.explained_area_fraction, 1.0; atol=1e-12)
+    close(refined.mesh)
+    plain = fit_cad(cube; backend="native")
+    @test !plain.refined
+    @test plain.num_refine_splits == 0 && plain.explained_area_fraction == 0.0
+    close(plain.mesh)
     if has_occt()
         cad = fit_cad(cube)
         @test cad.valid

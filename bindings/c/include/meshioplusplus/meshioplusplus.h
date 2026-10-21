@@ -4805,6 +4805,107 @@ MIO_API mio_mesh* mio_fit_primitives(const mio_mesh* mesh, const mio_fit_primiti
                                      mio_fit_primitives_report* report);
 
 /**
+ * Options for mio_refine_patches (v17.11.0). Same ABI rules as above; always
+ * initialize through mio_refine_patches_opts_init(): the tolerance, normal
+ * weight, epsilon, feature angle, iteration and cell counts, seed, types and
+ * the three switches are not zero by default, so an all-zero struct is NOT the
+ * default (and is refused: a zero tolerance and min_patch_cells are out of
+ * range).
+ */
+typedef struct mio_refine_patches_opts {
+    /** The tolerance every point of a patch must lie within its proxy; > 0. A
+     *  fraction of the surface's bounding-box diagonal when `relative` is set. */
+    double tolerance;
+    /** The weight of the normal term in a cell's cost; >= 0. */
+    double normal_weight;
+    /** Stop when an iteration adds less than this to the area share
+     *  primitives explain; >= 0. */
+    double epsilon;
+    /** The dihedral angle, in degrees, above which an edge is a feature edge
+     *  no patch crosses; [0, 180]. */
+    double feature_angle;
+    /** The most iterations; >= 0 (0 rewrites the outputs of the input partition). */
+    int64_t max_iterations;
+    /** A freeform or facets patch with fewer cells joins a neighbour; >= 1. */
+    int64_t min_patch_cells;
+    /** The seed of the RANSAC split's splitmix64 generator. */
+    uint64_t ransac_seed;
+    /** The primitives a proxy may be, as `1 << mio_fit_type` bits; MIO_FIT_ALL_TYPES by default. */
+    uint32_t types;
+    /** Nonzero: tolerance is a fraction of the bounding-box diagonal. */
+    int32_t relative;
+    /** Nonzero: a freeform patch is searched for a primitive inside it and split. */
+    int32_t allow_split;
+    /** Nonzero: two neighbouring patches one primitive explains are merged. */
+    int32_t allow_merge;
+    /** The patch regions are named "<prefix>:<k>"; NULL or "" means "patch". */
+    const char* prefix;
+    int64_t reserved[8]; /**< must be zero; room for additive growth */
+} mio_refine_patches_opts;
+
+/** The default mio_refine_patches_opts.ransac_seed: the bytes of "meshio++". */
+#define MIO_REFINE_DEFAULT_SEED 0x6d657368696f2b2bull
+
+/** Initialize refine options: tolerance 1e-3 relative, normal weight 1,
+ *  epsilon 1e-3, 30 degrees, 10 iterations, min_patch_cells 3, the default
+ *  seed, every type, splitting and merging on, the "patch" prefix. */
+MIO_API void mio_refine_patches_opts_init(mio_refine_patches_opts* opts);
+
+/** mio_refine_patches_report.stop: why refinement stopped (v17.11.0). */
+typedef enum mio_refine_stop {
+    /** The partition did not change. */
+    MIO_REFINE_UNCHANGED = 0,
+    /** An iteration added less than epsilon to the explained area share. */
+    MIO_REFINE_SMALL_GAIN = 1,
+    /** max_iterations iterations ran. */
+    MIO_REFINE_ITERATION_CAP = 2,
+    /** The Lloyd step would have raised the energy (undone) and no move applied. */
+    MIO_REFINE_ENERGY_ROSE = 3
+} mio_refine_stop;
+
+/** What mio_refine_patches did (v17.11.0). */
+typedef struct mio_refine_patches_report {
+    int64_t num_patches;
+    int64_t num_iterations; /**< Lloyd steps kept */
+    int64_t num_splits;
+    int64_t num_merges;
+    int64_t num_absorbed;
+    int64_t num_primitive; /**< patches a primitive explains */
+    int64_t num_freeform;
+    int64_t num_facets;
+    double tolerance;                       /**< the absolute tolerance applied */
+    double explained_area_fraction;         /**< the area share primitives explain */
+    double initial_explained_area_fraction; /**< the same, before refinement */
+    double hausdorff_max; /**< the largest distance of a skin point from its proxy */
+    double hausdorff_rms;
+    double initial_energy;
+    double energy;
+    int32_t stop;        /**< a mio_refine_stop */
+    int32_t reserved32;  /**< zero */
+    int64_t reserved[8]; /**< zero; room for additive growth */
+} mio_refine_patches_report;
+
+/**
+ * Refine the "segment:patch" labels of a surface by variational shape
+ * approximation (v17.11.0): patch boundaries move, a freeform patch is split
+ * where seeded RANSAC finds a primitive inside it, and two neighbouring
+ * patches one primitive explains are merged, until each patch is explained by
+ * one plane, sphere, cylinder, cone or torus, or a freeform proxy. Returns the
+ * input -- points, connectivity, block order, data and regions bit-identical
+ * -- with "segment:patch", "segment:adjacency" and the "<prefix>:<k>" regions
+ * rewritten, the "fit:*" data of mio_fit_primitives on the refined patches,
+ * and per-patch "refine:*" field data. See doc/refine_patches.md.
+ *
+ * @param mesh   a surface mesh carrying "segment:patch" (from mio_segment).
+ * @param opts   options; NULL means every mio_refine_patches_opts_init() default.
+ * @param report optional out: what was done.
+ * @return the refined mesh (free with mio_mesh_free), or NULL on failure
+ *         (no "segment:patch", an option out of range, a volume block).
+ */
+MIO_API mio_mesh* mio_refine_patches(const mio_mesh* mesh, const mio_refine_patches_opts* opts,
+                                     mio_refine_patches_report* report);
+
+/**
  * Options for mio_fit_cad. Same ABI rules as above; always initialize through
  * mio_fit_cad_opts_init(): exact_edges, types and max_demotion_rounds are not
  * zero by default.
@@ -4969,6 +5070,57 @@ MIO_API mio_mesh* mio_fit_cad(const mio_mesh* mesh, const char* step_path,
 MIO_API mio_mesh* mio_fit_cad_ex(const mio_mesh* mesh, const char* step_path,
                                  const mio_fit_cad_opts* opts, mio_fit_cad_report* report,
                                  mio_fit_cad_report_ex* report_ex);
+
+/**
+ * Options of mio_fit_cad2 beyond mio_fit_cad_opts (v17.11.0), whose reserved
+ * tail is spent. Same ABI rules as above; always initialize through
+ * mio_fit_cad_opts_ex_init(): `refine` holds mio_refine_patches_opts_init()
+ * defaults, which are not zero. The reserved tail is where later options grow.
+ */
+typedef struct mio_fit_cad_opts_ex {
+    /** Nonzero: the patches are refined by mio_refine_patches, with `refine`,
+     *  after any segmentation and fit fit_cad runs itself, before the faces
+     *  are built. Off by default, so the output is what it was without it. */
+    int32_t refine_segmentation;
+    int32_t reserved32; /**< must be zero */
+    /** The refinement's options, read when refine_segmentation is nonzero; a
+     *  NULL or "" prefix means "patch". */
+    mio_refine_patches_opts refine;
+    int64_t reserved[16]; /**< must be zero; room for additive growth */
+} mio_fit_cad_opts_ex;
+
+/** Initialize the extended fit_cad options: no refinement, and the refinement's
+ *  options at their mio_refine_patches_opts_init() defaults. */
+MIO_API void mio_fit_cad_opts_ex_init(mio_fit_cad_opts_ex* opts);
+
+/** What mio_fit_cad2 reports beyond mio_fit_cad_report and
+ *  mio_fit_cad_report_ex (v17.11.0). Zero what you pass. */
+typedef struct mio_fit_cad_report_ex2 {
+    /** 1 when refine_segmentation refined the patches, else 0 (and the counts
+     *  below are zero). */
+    int64_t refined;
+    int64_t refine_iterations; /**< the refinement's Lloyd steps kept */
+    int64_t num_refine_splits;
+    int64_t num_refine_merges;
+    /** The area share primitives explain before and after the refinement. */
+    double initial_explained_area_fraction;
+    double explained_area_fraction;
+    int64_t reserved[16]; /**< zero; room for additive growth */
+} mio_fit_cad_report_ex2;
+
+/**
+ * mio_fit_cad with the options mio_fit_cad_opts has no room for (v17.11.0):
+ * the segmentation refinement, and its report. Every pointer but `mesh` is
+ * optional: NULL `opts` means every mio_fit_cad_opts_init() default and NULL
+ * `opts_ex` every mio_fit_cad_opts_ex_init() default (no refinement).
+ * mio_fit_cad_ex(mesh, path, opts, report, report_ex) is mio_fit_cad2(mesh,
+ * path, opts, NULL, report, report_ex, NULL). With refinement on, the result
+ * also carries the refinement's "refine:*" field data.
+ */
+MIO_API mio_mesh* mio_fit_cad2(const mio_mesh* mesh, const char* step_path,
+                               const mio_fit_cad_opts* opts, const mio_fit_cad_opts_ex* opts_ex,
+                               mio_fit_cad_report* report, mio_fit_cad_report_ex* report_ex,
+                               mio_fit_cad_report_ex2* report_ex2);
 
 /* ---------------------------------------------------------------------
  * Isogeometric layer (v16.43.0): evaluate, refine and sample the NURBS model

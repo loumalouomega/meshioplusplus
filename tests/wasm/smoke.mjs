@@ -2484,6 +2484,7 @@ step('every binding is reachable through the wrapper', () => {
         'hasBzip2',
         'buildFlavour',
         'fitCad',
+        'refinePatches',
         'withProvenance',
         'provenanceBegin',
         'provenanceEnd',
@@ -2702,6 +2703,22 @@ step('the stays-out set is exactly what this artifact reports (roadmap 6.2.4)', 
         assert.equal(native.numPlane, 6);
         assert.ok(m.FS.readFile('/lean_cube.step', { encoding: 'utf8' }).includes('PLANE('));
     }
+    // fitCad's refinement (v17.11.0) needs no OpenCASCADE: both artifacts.
+    const plain = m.fitCad(cubeSurface, { backend: 'native' });
+    assert.equal(plain.refined, false);
+    assert.equal(plain.numRefineSplits, 0);
+    const refined = m.fitCad(cubeSurface, {
+        backend: 'native',
+        refineSegmentation: true,
+        maxRefineIterations: 5,
+        ransacSeed: 3,
+        allowMerge: true,
+        allowSplit: true,
+    });
+    assert.equal(refined.refined, true);
+    assert.equal(refined.numPlane, 6);
+    assert.ok(Math.abs(refined.explainedAreaFraction - 1) < 1e-12);
+    assert.throws(() => m.fitCad(cubeSurface, { ransacSeed: 0.5 }), /2\^53/);
 });
 
 step('.h5 is MSC Nastran HDF5: another HDF5 file under that name is refused, not misread', () => {
@@ -5283,6 +5300,19 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.equal(fp.numPlane, 6);
     assert.throws(() => m.segment(cubeSurface, 200));
     assert.throws(() => m.fitPrimitives(sg.mesh, 'segment:patch', 1e-3, true, 0.9, ['blob']));
+
+    // refinePatches (both artifacts): a box segmented at its creases is left
+    // alone, six planes explaining all of it.
+    const rp = m.refinePatches(sg.mesh, { ransacSeed: 7, types: ['plane'] });
+    assert.equal(rp.numPatches, 6);
+    assert.equal(rp.numPrimitive, 6);
+    assert.ok(Math.abs(rp.explainedAreaFraction - 1) < 1e-12);
+    assert.equal(rp.stop, 'unchanged');
+    assert.ok('segment:patch' in rp.mesh.cell_data);
+    assert.throws(() => m.refinePatches(cubeSurface), /segment:patch/);
+    assert.throws(() => m.refinePatches(sg.mesh, { bogus: 1 }), /bogus/);
+    assert.throws(() => m.refinePatches(sg.mesh, { ransacSeed: 2 ** 53 + 2 }), /2\^53/);
+    assert.throws(() => m.refinePatches(sg.mesh, { ransacSeed: -1 }), /2\^53/);
 
     const h = m.hausdorffDistance(cubeSurface, cubeSurface, 2);
     assert.ok(Math.abs(h.distance) < 1e-12); // face samples: rounding, not exactly 0

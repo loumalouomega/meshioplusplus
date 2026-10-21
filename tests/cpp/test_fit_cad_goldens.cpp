@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -136,11 +137,17 @@ struct FcgDigest {
 };
 
 // The fixture through fit_cad, its STEP written under a fixed basename (the
-// header names the file).
+// header names the file), in a directory of the running test's own, since
+// ctest runs these tests in parallel.
 FcgDigest fcg_run(const Mesh& rSkin, FitCadBackend Backend) {
     FitCadOptions o;
     o.mBackend = Backend;
-    const std::string path = ::testing::TempDir() + "fit_cad_golden.step";
+    const ::testing::TestInfo* info = ::testing::UnitTest::GetInstance()->current_test_info();
+    const std::filesystem::path dir =
+        std::filesystem::path(::testing::TempDir()) /
+        (std::string("fcg_") + (info ? info->name() : "run"));
+    std::filesystem::create_directories(dir);
+    const std::string path = (dir / "fit_cad_golden.step").string();
     const FitCadResult r = fit_cad(rSkin, path, o);
     const std::string bytes = fcg_read(path);
     std::remove(path.c_str());
