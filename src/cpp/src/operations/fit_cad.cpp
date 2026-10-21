@@ -3386,7 +3386,7 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
                 const bool folds = !is_piece[r] && !detail::patch_flattenable(flat_pts, tris);
                 if (folds) {
                     piece = detail::patch_split_until_flat(flat_pts, tris, {}, num_pieces);
-                } else if (tile_depth[r] < kFcTileMaxDepth) {
+                } else if (rOptions.mFreeformGeneral && tile_depth[r] < kFcTileMaxDepth) {
                     piece = detail::patch_bisect(flat_pts, tris, kFcTileMinTriangles, num_pieces);
                     piece_depth = static_cast<std::uint8_t>(tile_depth[r] + 1);
                 }

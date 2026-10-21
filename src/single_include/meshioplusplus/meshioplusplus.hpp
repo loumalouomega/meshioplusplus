@@ -28076,11 +28076,12 @@ MESHIOPLUSPLUS_API RefinePatchesResult refine_patches(const Mesh& rMesh,
  *    direction its normals spread along most, up to four times -- and each
  *    piece becomes its own freeform face under a new patch label, numbered
  *    after the largest existing one; a piece under 16 triangles, or still
- *    folding, is left to facets. A patch that flattens but that no single
- *    B-spline follows within the tolerance (a large organic surface, say a
- *    topology-optimised part's) is likewise halved across its longest
- *    extent, each half tried in turn, up to nine times: a tile under 24
- *    triangles, or still unfitted at the last halving, stays facets. Its
+ *    folding, is left to facets. With `mFreeformGeneral`, a patch that
+ *    flattens but that no single B-spline follows within the tolerance (a
+ *    large organic surface, say a topology-optimised part's) is likewise
+ *    halved across its longest extent, each half tried in turn, up to nine
+ *    times: a tile under 24 triangles, or still unfitted at the last halving,
+ *    stays facets. Its
  *    offset from that plane or cylinder is
  *    resampled on a grid (inside the patch by interpolation over its facets,
  *    outside it from the nearest boundary point), approximated by a C2
@@ -192317,7 +192318,7 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
                 const bool folds = !is_piece[r] && !detail::patch_flattenable(flat_pts, tris);
                 if (folds) {
                     piece = detail::patch_split_until_flat(flat_pts, tris, {}, num_pieces);
-                } else if (tile_depth[r] < kFcTileMaxDepth) {
+                } else if (rOptions.mFreeformGeneral && tile_depth[r] < kFcTileMaxDepth) {
                     piece = detail::patch_bisect(flat_pts, tris, kFcTileMinTriangles, num_pieces);
                     piece_depth = static_cast<std::uint8_t>(tile_depth[r] + 1);
                 }
