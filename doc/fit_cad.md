@@ -112,10 +112,12 @@ A record holds `patch`, `face` (the B-rep face, -1 when demoted), `kind` (the `f
 | Fixture | OpenCASCADE 7.6.3, legacy | adaptive | network | auto |
 | --- | --- | --- | --- | --- |
 | monkey saddle | 0.661 | 0.490 | 0.490 (16 network patches) | 0.490 |
-| car hood | 0.375 | 0.118 | 0.141 (20 network patches) | 0.126 |
-| Catmull-Clark valence 3 | 1 | 1 | 0 (40 network patches, a valid solid) | 0 |
+| car hood | 0.375 | 0.112 | 0.141 (20 network patches) | 0.126 |
+| Catmull-Clark valence 3 | 1 | 0.937 | 0 (40 network patches, a valid solid) | 0 |
 
-The native backend writes every face the fit accepts; OpenCASCADE must also trim, sew and check it. Two rungs of the ladder therefore come after the B-rep is built, in the round that checks it: an adaptive face the checks demote is quartered across its longest extent and each quarter fitted again (down to the tile depth, at most three such rounds), and under `auto` it first goes into the network of its region, whose patches that miss are fitted as adaptive faces in turn. The edge between two B-spline faces is built from the chain moved onto both rather than from their intersection, which is slow, unstable where they meet tangentially and no truer to the skin. The monkey saddle's box sides keep failing their checks along a sliver patch next to the saddle, in every mode; the hood's top, segmented together with a side across a 25-degree crease, fails its corners in the adaptive mode until it is quartered.
+On the topology-optimised hook of [the CAD-quality notebook](https://github.com/loumalouomega/meshioplusplus/blob/master/example/python/39_cad_quality_check.ipynb) (22,236 triangles, a tolerance of 0.816), `freeform_general` leaves 0.247 of the area as facets; `adaptive` leaves 0.002 (99 faces), `network` 0.004 (164 faces) and `auto` 0.018, each a valid solid within the tolerance (27 to 45 minutes each, three runs sharing a four-core machine).
+
+The native backend writes every face the fit accepts; OpenCASCADE must also trim, sew and check it. Two rungs of the ladder therefore come after the B-rep is built, in the round that checks it: an adaptive face the checks demote is quartered across its longest extent and each quarter fitted again (down to the tile depth, in at most `max_demotion_rounds` such rounds), and under `auto` it first goes into the network of its region, whose patches that miss are fitted as adaptive faces in turn. The edge between two B-spline faces is built from the chain moved onto both rather than from their intersection, which is slow, unstable where they meet tangentially and no truer to the skin. The monkey saddle's box sides keep failing their checks along a sliver patch next to the saddle, in every mode; the hood's top, segmented together with a side across a 25-degree crease, fails its corners in the adaptive mode until it is quartered.
 
 ### The patch network
 

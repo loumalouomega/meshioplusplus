@@ -1095,8 +1095,6 @@ constexpr double kFcPi = 3.14159265358979323846;
 // Freeform tiles: a patch no single B-spline follows is halved up to this many
 // times (at most 2^depth tiles), and a tile with fewer triangles stays facets.
 constexpr int kFcTileMaxDepth = 9;
-// The rounds in which faces the checks demote climb a rung (v17.12.0).
-constexpr int kFcMaxEscalationRounds = 3;
 constexpr std::size_t kFcTileMinTriangles = 24;
 
 template <class T>
@@ -5122,7 +5120,7 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
         // halves, each fitted in turn, down to the tile depth. Such a round
         // is not a demotion round: each rung is climbed once per row.
         if (rOptions.mFreeform && rOptions.mFreeformMode != FitCadFreeformMode::Legacy &&
-            !escalate.empty() && escalation_rounds < kFcMaxEscalationRounds) {
+            !escalate.empty() && escalation_rounds < rOptions.mMaxDemotionRounds) {
             ++escalation_rounds;
             const std::size_t before = skin.mPatches.size();
             std::vector<std::size_t> halve;
