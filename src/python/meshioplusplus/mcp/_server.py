@@ -3863,6 +3863,17 @@ def _register_gated(server: FastMCP) -> None:
         extend_surfaces: bool = False,
         snap_junctions: bool = False,
         face_deviation: bool = False,
+        freeform_mode: str = "legacy",
+        freeform_parameterization: str = "auto",
+        extraordinary_vertex: str = "g1x",
+        local_refine: str = "knots",
+        freeform_g1_tolerance_deg: float = 1.0,
+        freeform_max_control_points: int = 400,
+        layout_target_patch_size: float = 0.1,
+        layout_max_valence_deviation: int = 2,
+        resegment_rounds: int = 2,
+        layout_snap_to_features: bool = True,
+        validate_by_surface_sampling: bool = True,
     ) -> dict:
         """Turn a closed triangle skin into a CAD solid with analytic faces,
         written to output_path as AP214 STEP -- the last step of skin to CAD
@@ -3932,7 +3943,25 @@ def _register_gated(server: FastMCP) -> None:
         two-sided distance to the skin as fit_cad:face_hausdorff and
         fit_cad:face_rms field data and adds hausdorff_max and hausdorff_rms
         (null when not measured). The report always holds closed (every shell
-        edge borders two faces)."""
+        edge borders two faces). freeform_mode picks how the patches no
+        primitive or feature fit explains are treated: "legacy" (the default,
+        every output as before), "adaptive" (the general fit with the
+        freeform_parameterization ladder "auto" | "projection" | "lscm" |
+        "harmonic", surface sampling when validate_by_surface_sampling, at most
+        freeform_max_control_points poles per face, and an escalation ladder
+        before demotion with resegment_rounds re-segmentation rounds),
+        "network" (a quad-layout B-spline patch network per residual region:
+        layout_target_patch_size of the diagonal, layout_max_valence_deviation,
+        layout_snap_to_features, G1 within freeform_g1_tolerance_deg, and
+        extraordinary_vertex "g0" | "g1" | "g1x" | "g1xx") or "auto" (adaptive,
+        then a network for what still fails); local_refine "knots" or "thb"
+        (experimental). Outside "legacy" the report adds freeform_mode,
+        brep_checked, facet_area_fraction (the share of the area left on facet
+        faces), num_freeform_adaptive, num_network_patches, num_network_edges,
+        num_extraordinary_vertices, num_resegmented, num_escalations,
+        max_g1_angle_deg, max_freeform_distance, rms_freeform_distance and
+        faces (per patch tried: param_method, num_ctrl, iterations,
+        refinements, distances, escalation_steps, demotion_reason)."""
         return _guard(
             _tools.tool_fit_cad,
             input_path=input_path,
@@ -3977,6 +4006,17 @@ def _register_gated(server: FastMCP) -> None:
             extend_surfaces=extend_surfaces,
             snap_junctions=snap_junctions,
             face_deviation=face_deviation,
+            freeform_mode=freeform_mode,
+            freeform_parameterization=freeform_parameterization,
+            extraordinary_vertex=extraordinary_vertex,
+            local_refine=local_refine,
+            freeform_g1_tolerance_deg=freeform_g1_tolerance_deg,
+            freeform_max_control_points=freeform_max_control_points,
+            layout_target_patch_size=layout_target_patch_size,
+            layout_max_valence_deviation=layout_max_valence_deviation,
+            resegment_rounds=resegment_rounds,
+            layout_snap_to_features=layout_snap_to_features,
+            validate_by_surface_sampling=validate_by_surface_sampling,
         )
 
     @server.tool()

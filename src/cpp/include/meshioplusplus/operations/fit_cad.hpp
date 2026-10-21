@@ -159,6 +159,7 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <vector>
 
 // Project includes
 #include "meshioplusplus/brep.hpp"
@@ -197,6 +198,104 @@ inline constexpr std::int64_t kFitCadVertexBlendType = 9;
 /// `fit_cad:type` of a chamfer: a blend of straight cross-sections, of
 /// constant or varying width, that is no plane or cone (v17.2.0).
 inline constexpr std::int64_t kFitCadChamferType = 10;
+/// Field data outside `FitCadFreeformMode::Legacy`: one row per patch tried
+/// as a surface, the columns of `FitCadFaceRecord` in declaration order as
+/// float64 (`(n, 13)`, v17.12.0).
+inline constexpr const char* kFitCadFaceTableName = "fit_cad:face_table";
+
+/// How `fit_cad` treats the patches no primitive or feature fit explains
+/// (v17.12.0). Every mode but `Legacy` implies `mFreeformGeneral`.
+enum class FitCadFreeformMode : std::int32_t {
+    /// The freeform stages as before the option existed (the default).
+    Legacy = 0,
+    /// The general freeform fit with the parametrisation ladder, surface
+    /// sampling validation and the escalation ladder before demotion.
+    Adaptive = 1,
+    /// A quad-layout B-spline patch network for every residual region.
+    Network = 2,
+    /// `Adaptive` first, a network for the regions that still fail.
+    Auto = 3,
+};
+
+/// The parametrisation a freeform face is fitted over (v17.12.0).
+enum class FitCadParameterization : std::int32_t {
+    /// Projection, then least-squares conformal maps, then mean-value
+    /// coordinates, then a split.
+    Auto = 0,
+    /// The best-fit plane or the unrolled cylinder only.
+    Projection = 1,
+    /// Least-squares conformal maps only (Lévy et al. 2002).
+    Lscm = 2,
+    /// Mean-value coordinates with the boundary on a circle by chord length
+    /// (Floater 2003): a harmonic-type map that is bijective on any disc.
+    Harmonic = 3,
+};
+
+/// The continuity a patch network aims for at an extraordinary vertex, as
+/// Rhino's ToNURBS `ExtraordinaryVertex` options (v17.12.0).
+enum class FitCadExtraordinaryVertex : std::int32_t {
+    G0 = 0,    ///< positions only
+    G1 = 1,    ///< the first ring of poles in one tangent plane
+    G1x = 2,   ///< G1 and a smoothed second ring (the default)
+    G1xx = 3,  ///< G1x and a double knot next to the vertex
+};
+
+/// How a freeform patch is refined where its residual is large (v17.12.0).
+enum class FitCadLocalRefine : std::int32_t {
+    Knots = 0,  ///< full knot lines (tensor-product insertion)
+    Thb = 1,    ///< truncated hierarchical B-splines, flattened (experimental)
+};
+
+/// Why a patch tried as a surface was demoted to facets (v17.12.0).
+enum class FitCadDemotionReason : std::int32_t {
+    None = 0,               ///< not demoted
+    ParamNotInjective = 1,  ///< every parametrisation folds
+    HausdorffExceeded = 2,  ///< the face or its patch lies beyond the tolerance
+    TrimFailed = 3,         ///< an edge, a loop or the face itself could not be built
+    SewFailed = 4,          ///< sewing left a free or multiple edge on it
+    BRepCheckFailed = 5,    ///< the B-rep check rejects it
+    TooSmall = 6,           ///< too few triangles to fit
+    NonDisc = 7,            ///< not a topological disc, and no cut made it one
+    KernelMeshCoarse = 8,   ///< the kernel could not mesh its face
+    BudgetExceeded = 9,     ///< the pole or iteration budget ran out first
+    Other = 10,             ///< a kernel exception, or a demoted neighbour
+};
+
+/// The parametrisation a freeform face was fitted over (v17.12.0).
+enum class FitCadParamMethod : std::int32_t {
+    None = 0,       ///< no parametrisation (an analytic or feature face)
+    Plane = 1,      ///< the best-fit plane
+    Cylinder = 2,   ///< the unrolled cylinder
+    Lscm = 3,       ///< least-squares conformal maps
+    MeanValue = 4,  ///< mean-value coordinates on a circle
+    Square = 5,     ///< a quad-layout patch over the unit square
+};
+
+/// One patch `fit_cad` tried as a surface (v17.12.0); `FitCadResult::mFaces`.
+struct FitCadFaceRecord {
+    /// The `segment:patch` label (or the label a split gave it).
+    std::int64_t mPatch = -1;
+    /// Its first B-rep face (`fit_cad:face`), or -1 when it was demoted.
+    std::int64_t mFace = -1;
+    /// Its `fit_cad:type`: 0 when demoted.
+    std::int64_t mKind = 0;
+    FitCadParamMethod mParamMethod = FitCadParamMethod::None;
+    FitCadDemotionReason mDemotionReason = FitCadDemotionReason::None;
+    /// The freeform surface's poles (0 for an analytic or feature face).
+    std::int64_t mNumControl = 0;
+    std::int64_t mIterations = 0;
+    std::int64_t mRefinements = 0;
+    /// The rungs of the escalation ladder it climbed.
+    std::int64_t mEscalationSteps = 0;
+    /// The largest and root-mean-square distance of its patch from the
+    /// surface, and the largest distance of the surface's samples from the
+    /// skin (NaN where not measured).
+    double mMaxDist = std::numeric_limits<double>::quiet_NaN();
+    double mRmsDist = std::numeric_limits<double>::quiet_NaN();
+    double mReverseMaxDist = std::numeric_limits<double>::quiet_NaN();
+    /// The largest normal jump to a neighbouring network face, in degrees.
+    double mMaxG1AngleDeg = std::numeric_limits<double>::quiet_NaN();
+};
 
 /// Which engine `fit_cad` builds the solid with (since v17.9.0).
 enum class FitCadBackend : std::int32_t {
@@ -306,6 +405,34 @@ struct FitCadOptions {
     /// data and `FitCadResult::mHausdorffMax`/`mHausdorffRms` (v17.11.0).
     /// OpenCASCADE backend only; off by default.
     bool mFaceDeviation = false;
+    /// How the patches no primitive or feature fit explains are treated
+    /// (v17.12.0); `Legacy` keeps every output byte as it was.
+    FitCadFreeformMode mFreeformMode = FitCadFreeformMode::Legacy;
+    /// The freeform parametrisation outside `Legacy`.
+    FitCadParameterization mFreeformParameterization = FitCadParameterization::Auto;
+    /// The continuity a patch network aims for at an extraordinary vertex.
+    FitCadExtraordinaryVertex mExtraordinaryVertex = FitCadExtraordinaryVertex::G1x;
+    /// How a freeform patch is refined outside `Legacy`.
+    FitCadLocalRefine mLocalRefine = FitCadLocalRefine::Knots;
+    /// The largest normal jump, in degrees, across an edge between two
+    /// network faces; > 0.
+    double mFreeformG1ToleranceDeg = 1.0;
+    /// The most poles of one freeform face outside `Legacy` (on top of
+    /// `mMaxFreeformPoles` per direction), 16 to 1048576.
+    std::int64_t mFreeformMaxControlPoints = 400;
+    /// A quad-layout patch's target size, relative to the bounding-box
+    /// diagonal; > 0.
+    double mLayoutTargetPatchSize = 0.1;
+    /// The largest departure from valence 4 of a layout vertex, 1 to 3.
+    std::int64_t mLayoutMaxValenceDeviation = 2;
+    /// Re-segmentation rounds of a residual region in the escalation
+    /// ladder, >= 0.
+    std::int64_t mResegmentRounds = 2;
+    /// Whether layout edges snap to feature edges.
+    bool mLayoutSnapToFeatures = true;
+    /// Whether, outside `Legacy`, a freeform face is accepted only once
+    /// samples of its surface lie within the tolerance of the skin too.
+    bool mValidateBySurfaceSampling = true;
 };
 
 /// The re-meshed solid and what was built.
@@ -408,6 +535,31 @@ struct FitCadResult {
     /// Whether every shell is closed: every edge borders two faces
     /// (v17.11.0). The native backend reports its writer's closed-loop check.
     bool mClosed = false;
+    /// Whether OpenCASCADE's B-rep check ran on the solid (v17.12.0): false
+    /// from the native backend, whose `mValid` is its writer's topology check.
+    bool mBrepChecked = false;
+    /// The freeform mode applied (v17.12.0).
+    FitCadFreeformMode mFreeformMode = FitCadFreeformMode::Legacy;
+    /// Freeform faces the adaptive stage built, and network patches, edges and
+    /// extraordinary vertices (v17.12.0).
+    std::int64_t mNumFreeformAdaptive = 0;
+    std::int64_t mNumNetworkPatches = 0;
+    std::int64_t mNumNetworkEdges = 0;
+    std::int64_t mNumExtraordinaryVertices = 0;
+    /// Residual regions re-segmented, and escalation rungs climbed in all.
+    std::int64_t mNumResegmented = 0;
+    std::int64_t mNumEscalations = 0;
+    /// The share of the result's surface area on facet faces (`fit_cad:type`
+    /// 0): the measure the freeform modes drive down.
+    double mFacetAreaFraction = 0.0;
+    /// The largest normal jump across an edge between network faces, in
+    /// degrees (0 without any), and the largest and root-mean-square distance
+    /// of a freeform face's patch from it (0 without any).
+    double mMaxG1AngleDeg = 0.0;
+    double mMaxFreeformDistance = 0.0;
+    double mRmsFreeformDistance = 0.0;
+    /// One record per patch tried as a surface, in patch-row order.
+    std::vector<FitCadFaceRecord> mFaces;
 };
 
 /**

@@ -365,7 +365,18 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "SewTolerance",
           "ExtendSurfaces",
           "SnapJunctions",
-          "FaceDeviation"}},
+          "FaceDeviation",
+          "FreeformMode",
+          "FreeformParameterization",
+          "ExtraordinaryVertex",
+          "LocalRefine",
+          "FreeformG1ToleranceDeg",
+          "FreeformMaxControlPoints",
+          "LayoutTargetPatchSize",
+          "LayoutMaxValenceDeviation",
+          "ResegmentRounds",
+          "LayoutSnapToFeatures",
+          "ValidateBySurfaceSampling"}},
         {"RefinePatches",
          {"Tolerance", "Relative", "NormalWeight", "Epsilon", "FeatureAngle", "MaxIterations",
           "MinPatchCells", "RansacSeed", "Types", "AllowSplit", "AllowMerge", "Prefix"}},
@@ -1124,6 +1135,37 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.mExtendSurfaces = pipe_flag(rStep, "ExtendSurfaces", false);
         opts.mSnapJunctions = pipe_flag(rStep, "SnapJunctions", false);
         opts.mFaceDeviation = pipe_flag(rStep, "FaceDeviation", false);
+        // The freeform modes (v17.12.0): a keyword's position in its list.
+        const auto keyword = [&](const char* pKey, const char* pDefault,
+                                 std::initializer_list<const char*> Words) {
+            const std::string v = pipe_text(rStep, pKey, pDefault);
+            std::int32_t i = 0;
+            for (const char* w : Words) {
+                if (v == w)
+                    return i;
+                ++i;
+            }
+            throw std::invalid_argument(
+                pipe_err(rStep, std::string("unknown '") + pKey + "' '" + v + "'"));
+        };
+        opts.mFreeformMode = static_cast<FitCadFreeformMode>(
+            keyword("FreeformMode", "legacy", {"legacy", "adaptive", "network", "auto"}));
+        opts.mFreeformParameterization = static_cast<FitCadParameterization>(keyword(
+            "FreeformParameterization", "auto", {"auto", "projection", "lscm", "harmonic"}));
+        opts.mExtraordinaryVertex = static_cast<FitCadExtraordinaryVertex>(
+            keyword("ExtraordinaryVertex", "g1x", {"g0", "g1", "g1x", "g1xx"}));
+        opts.mLocalRefine =
+            static_cast<FitCadLocalRefine>(keyword("LocalRefine", "knots", {"knots", "thb"}));
+        opts.mFreeformG1ToleranceDeg = pipe_number(rStep, "FreeformG1ToleranceDeg", 1.0);
+        opts.mFreeformMaxControlPoints =
+            static_cast<std::int64_t>(pipe_number(rStep, "FreeformMaxControlPoints", 400.0));
+        opts.mLayoutTargetPatchSize = pipe_number(rStep, "LayoutTargetPatchSize", 0.1);
+        opts.mLayoutMaxValenceDeviation =
+            static_cast<std::int64_t>(pipe_number(rStep, "LayoutMaxValenceDeviation", 2.0));
+        opts.mResegmentRounds =
+            static_cast<std::int64_t>(pipe_number(rStep, "ResegmentRounds", 2.0));
+        opts.mLayoutSnapToFeatures = pipe_flag(rStep, "LayoutSnapToFeatures", true);
+        opts.mValidateBySurfaceSampling = pipe_flag(rStep, "ValidateBySurfaceSampling", true);
         FitCadResult cr = fit_cad(mesh, pipe_text(rStep, "Path", ""), opts);
         std::vector<std::pair<std::string, double>> counters = {
             {"Valid", cr.mValid ? 1.0 : 0.0},
@@ -1171,6 +1213,20 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         if (opts.mFaceDeviation) {
             counters.emplace_back("HausdorffMax", cr.mHausdorffMax);
             counters.emplace_back("HausdorffRms", cr.mHausdorffRms);
+        }
+        // The freeform modes (v17.12.0) report only outside the legacy mode.
+        if (opts.mFreeformMode != FitCadFreeformMode::Legacy) {
+            counters.emplace_back("BrepChecked", cr.mBrepChecked ? 1.0 : 0.0);
+            counters.emplace_back("FacetAreaFraction", cr.mFacetAreaFraction);
+            counters.emplace_back("NumFreeformAdaptive",
+                                  static_cast<double>(cr.mNumFreeformAdaptive));
+            counters.emplace_back("NumNetworkPatches", static_cast<double>(cr.mNumNetworkPatches));
+            counters.emplace_back("NumNetworkEdges", static_cast<double>(cr.mNumNetworkEdges));
+            counters.emplace_back("NumExtraordinaryVertices",
+                                  static_cast<double>(cr.mNumExtraordinaryVertices));
+            counters.emplace_back("NumResegmented", static_cast<double>(cr.mNumResegmented));
+            counters.emplace_back("NumEscalations", static_cast<double>(cr.mNumEscalations));
+            counters.emplace_back("MaxG1AngleDeg", cr.mMaxG1AngleDeg);
         }
         pipe_push_step(rReport, rStep, std::move(counters));
         return std::move(cr.mMesh);

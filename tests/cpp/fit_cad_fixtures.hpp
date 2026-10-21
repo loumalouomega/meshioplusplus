@@ -24,6 +24,7 @@
  *        `fit_cad`, so no fixture file (LFS or otherwise) is involved.
  */
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -128,6 +129,85 @@ inline std::vector<Fixture> golden_fixtures() {
     f.push_back(
         {"noisy_turned_part", fitted(jittered(analytic::turned_part(), 1e-3), 1.0, 2e-3, 20)});
     return f;
+}
+
+/// One input of the freeform-mode set (v17.12.0): a fitted skin and the
+/// absolute tolerance its patches were fitted at and `fit_cad` runs at.
+struct FreeformFixture {
+    std::string mName;
+    Mesh mMesh;
+    double mTolerance = 0.0;
+};
+
+/// The bounding-box diagonal of a mesh's points.
+inline double diagonal(const Mesh& rMesh) {
+    const NDArray& p = rMesh.Points();
+    double lo[3] = {1e300, 1e300, 1e300}, hi[3] = {-1e300, -1e300, -1e300};
+    for (std::size_t i = 0; i < rMesh.NumPoints(); ++i)
+        for (int j = 0; j < 3; ++j) {
+            lo[j] = std::min(lo[j], p.As<double>()[i * 3 + j]);
+            hi[j] = std::max(hi[j], p.As<double>()[i * 3 + j]);
+        }
+    return std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+                     (hi[2] - lo[2]) * (hi[2] - lo[2]));
+}
+
+/// `segment` by angles, then `fit_primitives` at the absolute `Tolerance`.
+inline Mesh fitted_abs(const Mesh& rSkin, double Tolerance, std::int64_t MinPatchCells = 1) {
+    meshioplusplus::SegmentOptions so;
+    so.mMinPatchCells = MinPatchCells;
+    meshioplusplus::FitPrimitivesOptions fo;
+    fo.mTolerance = Tolerance;
+    fo.mRelative = false;
+    return meshioplusplus::fit_primitives(meshioplusplus::segment(rSkin, so).mMesh, fo).mMesh;
+}
+
+/**
+ * @brief The freeform-mode set: skins whose faces no primitive explains (a
+ * monkey saddle, a Gaussian bump, an S band and a hood over planar boxes, a
+ * genus-1 organic torus, a sphere with a handle, a genus-2 double torus,
+ * Catmull-Clark limit surfaces with extraordinary vertices of valence 3, 5
+ * and 6, and a loaf whose top and sides meet G1). With `Variants`, each also
+ * with Gaussian noise of 0.1 and 0.5 times the tolerance (`_noise01`,
+ * `_noise05`) and the boxes on a graded, anisotropic triangulation
+ * (`_warped`). The tolerance is `2e-3` of each skin's diagonal; noisy skins
+ * segment with a minimum patch of 20 cells, as a scan would. Names are
+ * stable: they key the facet-area tables in doc/fit_cad.md.
+ */
+inline std::vector<FreeformFixture> freeform_fixtures(bool Variants = true) {
+    struct Base {
+        const char* mName;
+        Mesh (*mMake)(bool Warp);
+        bool mBox;
+    };
+    const Base bases[] = {
+        {"monkey_saddle", [](bool W) { return analytic::monkey_saddle_box(24, W); }, true},
+        {"gaussian_bump", [](bool W) { return analytic::gaussian_bump_box(24, W); }, true},
+        {"s_band", [](bool W) { return analytic::s_band_box(24, W); }, true},
+        {"hood", [](bool W) { return analytic::hood_box(24, W); }, true},
+        {"organic_torus", [](bool) { return analytic::organic_torus(); }, false},
+        {"sphere_handle", [](bool) { return analytic::sphere_with_handle(); }, false},
+        {"double_torus", [](bool) { return analytic::double_torus(); }, false},
+        {"cc_valence3", [](bool) { return analytic::cc_cage(3); }, false},
+        {"cc_valence5", [](bool) { return analytic::cc_cage(5); }, false},
+        {"cc_valence6", [](bool) { return analytic::cc_cage(6); }, false},
+        {"g1_loaf", [](bool) { return analytic::g1_loaf(); }, false},
+    };
+    std::vector<FreeformFixture> out;
+    for (const Base& b : bases) {
+        const Mesh skin = b.mMake(false);
+        const double tol = 2e-3 * diagonal(skin);
+        out.push_back({b.mName, fitted_abs(skin, tol), tol});
+        if (!Variants)
+            continue;
+        out.push_back({std::string(b.mName) + "_noise01",
+                       fitted_abs(analytic::gaussian_noise(skin, 0.1 * tol), tol, 20), tol});
+        out.push_back({std::string(b.mName) + "_noise05",
+                       fitted_abs(analytic::gaussian_noise(skin, 0.5 * tol), tol, 20), tol});
+        if (b.mBox)
+            out.push_back({std::string(b.mName) + "_warped", fitted_abs(b.mMake(true), tol), tol});
+    }
+    return out;
 }
 
 }  // namespace fcfix

@@ -107,6 +107,8 @@ struct SbRow {
     // twin row.
     std::int64_t mTwin = -1;  // this row's twin (on an input row)
     bool mSplit = false;
+    // A freeform face's index in `StepBrepOptions::mFreeform` (type 6), else -1.
+    std::int64_t mFreeform = -1;
     double mSplitNormal[3] = {1.0, 0.0, 0.0};
 };
 
@@ -316,9 +318,31 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
             if (it != by_label.end())
                 row_of[f] = it->second;
         }
+        // Freeform faces (v17.12.0) take their patches' rows as type 6.
+        if (rOptions.mFreeform != nullptr)
+            for (std::size_t i = 0; i < rOptions.mFreeform->size(); ++i) {
+                auto it = by_label.find((*rOptions.mFreeform)[i].mLabel);
+                if (it == by_label.end())
+                    continue;
+                SbRow& row = rows[static_cast<std::size_t>(it->second)];
+                row.mType = 6;
+                row.mAccepted = true;
+                row.mFreeform = static_cast<std::int64_t>(i);
+            }
     }
     res.mNumPatches = static_cast<std::int64_t>(rows.size());
     const std::size_t num_input_rows = rows.size();
+    res.mRowLabel.resize(num_input_rows);
+    res.mRowReason.assign(num_input_rows, 0);
+    for (std::size_t r = 0; r < num_input_rows; ++r)
+        res.mRowLabel[r] = rows[r].mLabel;
+    // The input row a twin (the second half of a split sphere or torus) stands for.
+    auto sb_input_row = [&](std::int64_t G) {
+        for (std::size_t r = 0; r < num_input_rows; ++r)
+            if (static_cast<std::int64_t>(r) == G || rows[r].mTwin == G)
+                return static_cast<std::int64_t>(r);
+        return std::int64_t{-1};
+    };
     for (std::size_t r = 0; r < num_input_rows; ++r) {
         if (!rows[r].mAccepted || (rows[r].mType != 2 && rows[r].mType != 5))
             continue;
@@ -344,13 +368,21 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
     // tolerance; its sense from the facets' normals.
     {
         std::vector<double> worst(rows.size(), 0.0), agree(rows.size(), 0.0);
-        std::vector<std::uint8_t> present(rows.size(), 0);
+        std::vector<std::uint8_t> present(rows.size(), 0), reversed(rows.size(), 0);
         for (std::size_t f = 0; f < nf; ++f) {
             const std::int64_t r = row_of[f];
             if (r < 0 || !rows[static_cast<std::size_t>(r)].mAccepted)
                 continue;
             const SbRow& row = rows[static_cast<std::size_t>(r)];
             present[static_cast<std::size_t>(r)] = 1;
+            // A freeform face's fit already holds its patch within allowance;
+            // its sense was taken against the facets before a piece wound
+            // inwards was turned outwards.
+            if (row.mType == 6) {
+                if (volume[piece[f]] < 0.0)
+                    reversed[static_cast<std::size_t>(r)] = 1;
+                continue;
+            }
             double c[3] = {0.0, 0.0, 0.0};
             const std::int64_t b = start[f], s = start[f + 1] - b;
             for (std::int64_t k = 0; k < s; ++k) {
@@ -367,10 +399,18 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                 agree[static_cast<std::size_t>(r)] += sb_dot(n, &normals[f * 3]);
         }
         for (std::size_t r = 0; r < rows.size(); ++r) {
-            rows[r].mAnalytic = rows[r].mAccepted && present[r] && worst[r] <= tol;
-            rows[r].mSense = agree[r] >= 0.0;
-            if (rows[r].mAccepted && present[r] && !rows[r].mAnalytic)
+            const bool freeform = rows[r].mType == 6;
+            rows[r].mAnalytic = rows[r].mAccepted && present[r] && (freeform || worst[r] <= tol);
+            rows[r].mSense =
+                freeform
+                    ? (*rOptions.mFreeform)[static_cast<std::size_t>(rows[r].mFreeform)].mSense !=
+                          (reversed[r] != 0)
+                    : agree[r] >= 0.0;
+            if (rows[r].mAccepted && present[r] && !rows[r].mAnalytic) {
                 ++res.mNumDemoted;
+                if (r < num_input_rows)
+                    res.mRowReason[r] = 2;
+            }
         }
     }
 
@@ -478,6 +518,8 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                         if (best >= 0 && g >= best)
                             continue;
                         const SbRow& row = rows[static_cast<std::size_t>(g)];
+                        if (row.mType == 6)
+                            continue;  // a primitive's distance only
                         bool on = true;
                         for (std::size_t h : kv.second)
                             for (std::int64_t j = start[h]; j < start[h + 1] && on; ++j)
@@ -510,7 +552,10 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
         std::vector<double> pos = xyz;
         for (std::size_t v = 0; v < npts; ++v) {
             const std::vector<std::int64_t>& g = groups_at[v];
-            if (g.empty() || !std::all_of(g.begin(), g.end(), analytic_group))
+            if (g.empty() || !std::all_of(g.begin(), g.end(), analytic_group) ||
+                std::any_of(g.begin(), g.end(), [&](std::int64_t G) {
+                    return rows[static_cast<std::size_t>(G)].mType == 6;
+                }))
                 continue;
             double q[3] = {xyz[v * 3], xyz[v * 3 + 1], xyz[v * 3 + 2]};
             for (int it = 0; it < (g.size() > 1 ? 8 : 1); ++it)
@@ -669,7 +714,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
             std::vector<std::array<double, 6>> axes;
             for (std::int64_t g : {c.mFwd, c.mBwd}) {
                 const SbRow& r = rows[static_cast<std::size_t>(g)];
-                if (r.mType >= 3)
+                if (r.mType >= 3 && r.mType <= 5)
                     axes.push_back({r.mParams[0], r.mParams[1], r.mParams[2], r.mParams[3],
                                     r.mParams[4], r.mParams[5]});
             }
@@ -850,6 +895,8 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                 rows[static_cast<std::size_t>(rows[static_cast<std::size_t>(g)].mTwin)].mAnalytic =
                     false;
             ++res.mNumDemoted;
+            if (const std::int64_t ir = sb_input_row(g); ir >= 0)
+                res.mRowReason[static_cast<std::size_t>(ir)] = 3;
             retry = true;
         }
         // A face with no boundary at all (a whole sphere or torus) has no STEP
@@ -873,6 +920,8 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                 if (row.mTwin >= 0)
                     rows[static_cast<std::size_t>(row.mTwin)].mAnalytic = false;
                 ++res.mNumDemoted;
+                if (const std::int64_t ir = sb_input_row(g); ir >= 0)
+                    res.mRowReason[static_cast<std::size_t>(ir)] = 3;
             }
             retry = true;
         }
@@ -1039,6 +1088,44 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                                    "," + step_real(hm * std::tan(a)) + "," + step_real(a) + ")");
                         break;
                     }
+                    case 6: {
+                        // A freeform face (v17.12.0): its poles row by row in u.
+                        const BsplineSurface& bs =
+                            (*rOptions.mFreeform)[static_cast<std::size_t>(row->mFreeform)]
+                                .mSurface;
+                        std::string grid;
+                        for (std::size_t i = 0; i < bs.mNu; ++i) {
+                            std::string line;
+                            for (std::size_t j = 0; j < bs.mNv; ++j) {
+                                const std::int64_t q = st.Ent(
+                                    "CARTESIAN_POINT(''," +
+                                    StepStream::Triple(&bs.mPoles[3 * (i + bs.mNu * j)]) + ")");
+                                line += (j == 0 ? "" : ",") + StepStream::Ref(q);
+                            }
+                            grid += (i == 0 ? "(" : ",(") + line + ")";
+                        }
+                        const auto knots = [](const std::vector<double>& rK, std::string& rMults,
+                                              std::string& rValues) {
+                            std::size_t i = 0;
+                            while (i < rK.size()) {
+                                std::size_t j = i;
+                                while (j < rK.size() && rK[j] == rK[i])
+                                    ++j;
+                                rMults += (rMults.empty() ? "" : ",") + std::to_string(j - i);
+                                rValues += (rValues.empty() ? "" : ",") + step_real(rK[i]);
+                                i = j;
+                            }
+                        };
+                        std::string um, uk, vm, vk;
+                        knots(bs.mKnotsU, um, uk);
+                        knots(bs.mKnotsV, vm, vk);
+                        surface =
+                            st.Ent("B_SPLINE_SURFACE_WITH_KNOTS(''," + std::to_string(bs.mDegreeU) +
+                                   "," + std::to_string(bs.mDegreeV) + ",(" + grid +
+                                   "),.UNSPECIFIED.,.F.,.F.,.F.,(" + um + "),(" + vm + "),(" + uk +
+                                   "),(" + vk + "),.UNSPECIFIED.)");
+                        break;
+                    }
                     default:
                         surface =
                             st.Ent("TOROIDAL_SURFACE(''," + StepStream::Ref(placement(p, p + 3)) +
@@ -1114,6 +1201,9 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                     case 4:
                         ++res.mNumCone;
                         break;
+                    case 6:
+                        ++res.mNumBspline;
+                        break;
                     default:
                         ++res.mNumTorus;
                         break;
@@ -1146,6 +1236,8 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
             if (analytic_group(g)) {
                 const SbRow& row = rows[static_cast<std::size_t>(g)];
                 res.mTypeOfFacet[f] = row.mType;
+                if (row.mType == 6)
+                    continue;  // its fit measured it
                 for (std::int64_t k = start[f]; k < start[f + 1]; ++k)
                     res.mMaxDeviation = std::max(
                         res.mMaxDeviation,

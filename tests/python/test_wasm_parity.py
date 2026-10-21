@@ -109,6 +109,9 @@ _C_WITHOUT_JS = {
     # no room for; the JS `fitCad` already takes every one of them (and
     # reports every field) as object keys, so there is no second wrapper.
     "fit_cad2",
+    # `mio_fit_cad3` adds the freeform-mode options and report (v17.12.0) the
+    # same way: `fitCad` takes them as keys too.
+    "fit_cad3",
 }
 
 

@@ -6454,6 +6454,25 @@ static_assert(offsetof(mio_fit_cad_report_ex2, refinement_kept) == 112,
               "mio_fit_cad_report_ex2: refinement_kept moved");
 static_assert(offsetof(mio_fit_cad_report_ex2, reserved) == 120,
               "mio_fit_cad_report_ex2: the reserved tail moved");
+static_assert(sizeof(mio_fit_cad_opts_ex2) == 128,
+              "mio_fit_cad_opts_ex2 grew outside its reserved tail");
+static_assert(sizeof(mio_fit_cad_report_ex3) == 184,
+              "mio_fit_cad_report_ex3 grew outside its reserved tail");
+static_assert(offsetof(mio_fit_cad_opts_ex2, reserved) == 64,
+              "mio_fit_cad_opts_ex2: the reserved tail moved");
+static_assert(offsetof(mio_fit_cad_report_ex3, reserved) == 104,
+              "mio_fit_cad_report_ex3: the reserved tail moved");
+static_assert(MIO_FREEFORM_AUTO == static_cast<int>(meshioplusplus::FitCadFreeformMode::Auto),
+              "mio_fit_cad_freeform_mode must match FitCadFreeformMode");
+static_assert(MIO_PARAM_HARMONIC ==
+                  static_cast<int>(meshioplusplus::FitCadParameterization::Harmonic),
+              "mio_fit_cad_parameterization must match FitCadParameterization");
+static_assert(MIO_EV_G1XX == static_cast<int>(meshioplusplus::FitCadExtraordinaryVertex::G1xx),
+              "mio_fit_cad_extraordinary_vertex must match FitCadExtraordinaryVertex");
+static_assert(MIO_LOCAL_REFINE_THB == static_cast<int>(meshioplusplus::FitCadLocalRefine::Thb),
+              "mio_fit_cad_local_refine must match FitCadLocalRefine");
+static_assert(MIO_DEMOTION_OTHER == static_cast<int>(meshioplusplus::FitCadDemotionReason::Other),
+              "mio_fit_cad_demotion_reason must match FitCadDemotionReason");
 static_assert(MIO_REFINE_DEFAULT_SEED == meshioplusplus::kRefineDefaultSeed,
               "MIO_REFINE_DEFAULT_SEED must match kRefineDefaultSeed");
 static_assert(MIO_REFINE_ENERGY_ROSE == static_cast<int>(meshioplusplus::RefineStop::EnergyRose),
@@ -6715,6 +6734,24 @@ void mio_fit_cad_opts_ex_init(mio_fit_cad_opts_ex* opts) {
     opts->face_deviation = defaults.mFaceDeviation ? 1 : 0;
 }
 
+void mio_fit_cad_opts_ex2_init(mio_fit_cad_opts_ex2* opts) {
+    if (!opts)
+        return;
+    *opts = mio_fit_cad_opts_ex2{};
+    const meshioplusplus::FitCadOptions defaults;
+    opts->freeform_mode = static_cast<std::int32_t>(defaults.mFreeformMode);
+    opts->freeform_parameterization = static_cast<std::int32_t>(defaults.mFreeformParameterization);
+    opts->extraordinary_vertex = static_cast<std::int32_t>(defaults.mExtraordinaryVertex);
+    opts->local_refine = static_cast<std::int32_t>(defaults.mLocalRefine);
+    opts->freeform_g1_tolerance_deg = defaults.mFreeformG1ToleranceDeg;
+    opts->freeform_max_control_points = defaults.mFreeformMaxControlPoints;
+    opts->layout_target_patch_size = defaults.mLayoutTargetPatchSize;
+    opts->layout_max_valence_deviation = defaults.mLayoutMaxValenceDeviation;
+    opts->resegment_rounds = defaults.mResegmentRounds;
+    opts->layout_snap_to_features = defaults.mLayoutSnapToFeatures ? 1 : 0;
+    opts->validate_by_surface_sampling = defaults.mValidateBySurfaceSampling ? 1 : 0;
+}
+
 void mio_iga_opts_init(mio_iga_opts* opts) {
     if (!opts)
         return;
@@ -6925,6 +6962,14 @@ mio_mesh* mio_fit_cad_ex(const mio_mesh* mesh, const char* step_path, const mio_
 mio_mesh* mio_fit_cad2(const mio_mesh* mesh, const char* step_path, const mio_fit_cad_opts* opts,
                        const mio_fit_cad_opts_ex* opts_ex, mio_fit_cad_report* report,
                        mio_fit_cad_report_ex* report_ex, mio_fit_cad_report_ex2* report_ex2) {
+    return mio_fit_cad3(mesh, step_path, opts, opts_ex, nullptr, report, report_ex, report_ex2,
+                        nullptr);
+}
+
+mio_mesh* mio_fit_cad3(const mio_mesh* mesh, const char* step_path, const mio_fit_cad_opts* opts,
+                       const mio_fit_cad_opts_ex* opts_ex, const mio_fit_cad_opts_ex2* opts_ex2,
+                       mio_fit_cad_report* report, mio_fit_cad_report_ex* report_ex,
+                       mio_fit_cad_report_ex2* report_ex2, mio_fit_cad_report_ex3* report_ex3) {
     return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
         if (!mesh)
             throw meshioplusplus::ReadError("meshio++: mesh is NULL");
@@ -6970,6 +7015,29 @@ mio_mesh* mio_fit_cad2(const mio_mesh* mesh, const char* step_path, const mio_fi
             options.mExtendSurfaces = opts_ex->extend_surfaces != 0;
             options.mSnapJunctions = opts_ex->snap_junctions != 0;
             options.mFaceDeviation = opts_ex->face_deviation != 0;
+        }
+        if (opts_ex2) {
+            // Enumerations out of range are refused by fit_cad, naming them.
+            options.mFreeformMode =
+                static_cast<meshioplusplus::FitCadFreeformMode>(opts_ex2->freeform_mode);
+            options.mFreeformParameterization = static_cast<meshioplusplus::FitCadParameterization>(
+                opts_ex2->freeform_parameterization);
+            options.mExtraordinaryVertex = static_cast<meshioplusplus::FitCadExtraordinaryVertex>(
+                opts_ex2->extraordinary_vertex);
+            options.mLocalRefine =
+                static_cast<meshioplusplus::FitCadLocalRefine>(opts_ex2->local_refine);
+            // Zero reads as the default for the tolerances, budgets and sizes.
+            if (opts_ex2->freeform_g1_tolerance_deg != 0.0)
+                options.mFreeformG1ToleranceDeg = opts_ex2->freeform_g1_tolerance_deg;
+            if (opts_ex2->freeform_max_control_points != 0)
+                options.mFreeformMaxControlPoints = opts_ex2->freeform_max_control_points;
+            if (opts_ex2->layout_target_patch_size != 0.0)
+                options.mLayoutTargetPatchSize = opts_ex2->layout_target_patch_size;
+            if (opts_ex2->layout_max_valence_deviation != 0)
+                options.mLayoutMaxValenceDeviation = opts_ex2->layout_max_valence_deviation;
+            options.mResegmentRounds = opts_ex2->resegment_rounds;
+            options.mLayoutSnapToFeatures = opts_ex2->layout_snap_to_features != 0;
+            options.mValidateBySurfaceSampling = opts_ex2->validate_by_surface_sampling != 0;
         }
         meshioplusplus::FitCadResult r =
             meshioplusplus::fit_cad(mesh->mMesh, step_path ? step_path : "", options);
@@ -7030,6 +7098,22 @@ mio_mesh* mio_fit_cad2(const mio_mesh* mesh, const char* step_path, const mio_fi
             report_ex2->hausdorff_rms = r.mHausdorffRms;
             report_ex2->closed = r.mClosed ? 1 : 0;
             report_ex2->refinement_kept = r.mRefinementKept ? 1 : 0;
+        }
+        if (report_ex3) {
+            *report_ex3 = mio_fit_cad_report_ex3{};
+            report_ex3->brep_checked = r.mBrepChecked ? 1 : 0;
+            report_ex3->freeform_mode = static_cast<std::int32_t>(r.mFreeformMode);
+            report_ex3->num_freeform_adaptive = r.mNumFreeformAdaptive;
+            report_ex3->num_network_patches = r.mNumNetworkPatches;
+            report_ex3->num_network_edges = r.mNumNetworkEdges;
+            report_ex3->num_extraordinary_vertices = r.mNumExtraordinaryVertices;
+            report_ex3->num_resegmented = r.mNumResegmented;
+            report_ex3->num_escalations = r.mNumEscalations;
+            report_ex3->facet_area_fraction = r.mFacetAreaFraction;
+            report_ex3->max_g1_angle_deg = r.mMaxG1AngleDeg;
+            report_ex3->max_freeform_distance = r.mMaxFreeformDistance;
+            report_ex3->rms_freeform_distance = r.mRmsFreeformDistance;
+            report_ex3->num_face_records = static_cast<std::int64_t>(r.mFaces.size());
         }
         return new mio_mesh{std::move(r.mMesh)};
     });

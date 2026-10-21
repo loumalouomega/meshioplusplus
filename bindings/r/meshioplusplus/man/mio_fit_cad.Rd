@@ -38,7 +38,18 @@ mio_fit_cad(
   sew_tolerance = 0,
   extend_surfaces = FALSE,
   snap_junctions = FALSE,
-  face_deviation = FALSE
+  face_deviation = FALSE,
+  freeform_mode = "legacy",
+  freeform_parameterization = "auto",
+  extraordinary_vertex = "g1x",
+  local_refine = "knots",
+  freeform_g1_tolerance_deg = 1,
+  freeform_max_control_points = 400L,
+  layout_target_patch_size = 0.1,
+  layout_max_valence_deviation = 2L,
+  resegment_rounds = 2L,
+  layout_snap_to_features = TRUE,
+  validate_by_surface_sampling = TRUE
 )
 }
 \arguments{
@@ -124,6 +135,38 @@ only).}
 \item{face_deviation}{Whether each face's two-sided distance to the skin is
 measured, as the `fit_cad:face_hausdorff` and `fit_cad:face_rms` field
 data and `hausdorff_max` / `hausdorff_rms` (OpenCASCADE only).}
+
+\item{freeform_mode}{How the patches no primitive or feature fit explains
+are treated (v17.12.0): `"legacy"` (the default, every output as before),
+`"adaptive"`, `"network"` or `"auto"`.}
+
+\item{freeform_parameterization}{`"auto"`, `"projection"`, `"lscm"` or
+`"harmonic"`.}
+
+\item{extraordinary_vertex}{A patch network's continuity at an
+extraordinary vertex: `"g0"`, `"g1"`, `"g1x"` (default) or `"g1xx"`.}
+
+\item{local_refine}{`"knots"` (default) or `"thb"` (experimental).}
+
+\item{freeform_g1_tolerance_deg}{The largest normal jump across an edge
+between network faces, in degrees (default 1).}
+
+\item{freeform_max_control_points}{The most poles of one freeform face
+(default 400).}
+
+\item{layout_target_patch_size}{A layout patch's target size relative to
+the bounding-box diagonal (default 0.1).}
+
+\item{layout_max_valence_deviation}{The largest departure from valence 4 of
+a layout vertex, 1 to 3 (default 2).}
+
+\item{resegment_rounds}{Re-segmentation rounds of a residual region
+(default 2).}
+
+\item{layout_snap_to_features}{Whether layout edges snap to feature edges.}
+
+\item{validate_by_surface_sampling}{Whether a freeform face's surface is
+sampled against the skin too, outside the legacy mode.}
 }
 \value{
 A list of `mesh` (the solid re-meshed, with cell data
@@ -144,7 +187,14 @@ A list of `mesh` (the solid re-meshed, with cell data
   `hausdorff_rms` (`NaN` unless `face_deviation` measured them), and
   `refinement_kept` (whether the solid was built from the refined patches;
   OpenCASCADE also builds it from the patches as given and keeps the
-  better).
+  better), `brep_checked` (whether OpenCASCADE checked the solid),
+  `freeform_mode`, `facet_area_fraction` (the share of the result's area on
+  facet faces), `num_freeform_adaptive`, `num_network_patches`,
+  `num_network_edges`, `num_extraordinary_vertices`, `num_resegmented`,
+  `num_escalations`, `max_g1_angle_deg`, `max_freeform_distance`,
+  `rms_freeform_distance` and `num_face_records` (the rows of the
+  `fit_cad:face_table` field data the mesh carries outside the legacy
+  mode).
 }
 \description{
 Builds a CAD solid from the fitted patches of a closed skin through the

@@ -86,6 +86,9 @@ struct BsplineFitOptions {
     double mGhostWeight = 0.0;
     /// The most poles per direction.
     std::size_t mMaxPoles = 40;
+    /// The most poles in all (`mNu * mNv`); 0 (the default) sets no such cap,
+    /// as before the option existed (v17.12.0).
+    std::size_t mMaxTotalPoles = 0;
     /// The poles per direction to start from (at least the degree plus one).
     std::size_t mStartPoles = 6;
     int mMaxIterations = 30;

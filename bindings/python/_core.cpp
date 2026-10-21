@@ -3855,7 +3855,25 @@ PYBIND11_MODULE(_core, m) {
            std::uint64_t ransac_seed, bool freeform_general, double freeform_tolerance,
            double freeform_smoothing, std::int64_t max_freeform_poles,
            std::int64_t max_freeform_iterations, std::int64_t max_freeform_splits,
-           double sew_tolerance, bool extend_surfaces, bool snap_junctions, bool face_deviation) {
+           double sew_tolerance, bool extend_surfaces, bool snap_junctions, bool face_deviation,
+           const std::string& freeform_mode, const std::string& freeform_parameterization,
+           const std::string& extraordinary_vertex, const std::string& local_refine,
+           double freeform_g1_tolerance_deg, std::int64_t freeform_max_control_points,
+           double layout_target_patch_size, std::int64_t layout_max_valence_deviation,
+           std::int64_t resegment_rounds, bool layout_snap_to_features,
+           bool validate_by_surface_sampling) {
+            // A keyword option's position in its list, or a ValueError naming it.
+            const auto keyword = [](const std::string& rValue, const char* pName,
+                                    std::initializer_list<const char*> Words) {
+                std::int32_t i = 0;
+                for (const char* w : Words) {
+                    if (rValue == w)
+                        return i;
+                    ++i;
+                }
+                throw py::value_error(std::string("meshio++: fit_cad: unknown ") + pName + " '" +
+                                      rValue + "'");
+            };
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
                 pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
@@ -3900,6 +3918,22 @@ PYBIND11_MODULE(_core, m) {
             options.mExtendSurfaces = extend_surfaces;
             options.mSnapJunctions = snap_junctions;
             options.mFaceDeviation = face_deviation;
+            options.mFreeformMode = static_cast<meshioplusplus::FitCadFreeformMode>(
+                keyword(freeform_mode, "freeform_mode", {"legacy", "adaptive", "network", "auto"}));
+            options.mFreeformParameterization = static_cast<meshioplusplus::FitCadParameterization>(
+                keyword(freeform_parameterization, "freeform_parameterization",
+                        {"auto", "projection", "lscm", "harmonic"}));
+            options.mExtraordinaryVertex = static_cast<meshioplusplus::FitCadExtraordinaryVertex>(
+                keyword(extraordinary_vertex, "extraordinary_vertex", {"g0", "g1", "g1x", "g1xx"}));
+            options.mLocalRefine = static_cast<meshioplusplus::FitCadLocalRefine>(
+                keyword(local_refine, "local_refine", {"knots", "thb"}));
+            options.mFreeformG1ToleranceDeg = freeform_g1_tolerance_deg;
+            options.mFreeformMaxControlPoints = freeform_max_control_points;
+            options.mLayoutTargetPatchSize = layout_target_patch_size;
+            options.mLayoutMaxValenceDeviation = layout_max_valence_deviation;
+            options.mResegmentRounds = resegment_rounds;
+            options.mLayoutSnapToFeatures = layout_snap_to_features;
+            options.mValidateBySurfaceSampling = validate_by_surface_sampling;
             meshioplusplus::FitCadResult r =
                 core_nogil([&] { return meshioplusplus::fit_cad(cpp, path, options); });
             py::dict out;
@@ -3952,6 +3986,52 @@ PYBIND11_MODULE(_core, m) {
             out["hausdorff_max"] = r.mHausdorffMax;
             out["hausdorff_rms"] = r.mHausdorffRms;
             out["closed"] = r.mClosed;
+            // The freeform-mode report (v17.12.0).
+            static const char* const kModes[] = {"legacy", "adaptive", "network", "auto"};
+            static const char* const kParams[] = {"none", "plane",      "cylinder",
+                                                  "lscm", "mean_value", "square"};
+            static const char* const kReasons[] = {"none",
+                                                   "param_not_injective",
+                                                   "hausdorff_exceeded",
+                                                   "trim_failed",
+                                                   "sew_failed",
+                                                   "brep_check_failed",
+                                                   "too_small",
+                                                   "non_disc",
+                                                   "kernel_mesh_coarse",
+                                                   "budget_exceeded",
+                                                   "other"};
+            out["brep_checked"] = r.mBrepChecked;
+            out["freeform_mode"] = kModes[static_cast<int>(r.mFreeformMode) & 3];
+            out["facet_area_fraction"] = r.mFacetAreaFraction;
+            out["num_freeform_adaptive"] = r.mNumFreeformAdaptive;
+            out["num_network_patches"] = r.mNumNetworkPatches;
+            out["num_network_edges"] = r.mNumNetworkEdges;
+            out["num_extraordinary_vertices"] = r.mNumExtraordinaryVertices;
+            out["num_resegmented"] = r.mNumResegmented;
+            out["num_escalations"] = r.mNumEscalations;
+            out["max_g1_angle_deg"] = r.mMaxG1AngleDeg;
+            out["max_freeform_distance"] = r.mMaxFreeformDistance;
+            out["rms_freeform_distance"] = r.mRmsFreeformDistance;
+            py::list faces;
+            for (const meshioplusplus::FitCadFaceRecord& f : r.mFaces) {
+                py::dict row;
+                row["patch"] = f.mPatch;
+                row["face"] = f.mFace;
+                row["kind"] = f.mKind;
+                row["param_method"] = kParams[static_cast<int>(f.mParamMethod)];
+                row["num_ctrl"] = f.mNumControl;
+                row["iterations"] = f.mIterations;
+                row["refinements"] = f.mRefinements;
+                row["max_dist"] = f.mMaxDist;
+                row["rms_dist"] = f.mRmsDist;
+                row["reverse_max_dist"] = f.mReverseMaxDist;
+                row["max_g1_angle_deg"] = f.mMaxG1AngleDeg;
+                row["escalation_steps"] = f.mEscalationSteps;
+                row["demotion_reason"] = kReasons[static_cast<int>(f.mDemotionReason)];
+                faces.append(std::move(row));
+            }
+            out["faces"] = std::move(faces);
             return out;
         },
         py::arg("mesh"), py::arg("path") = "", py::arg("tolerance") = 0.0,
@@ -3969,7 +4049,13 @@ PYBIND11_MODULE(_core, m) {
         py::arg("freeform_smoothing") = 1e-12, py::arg("max_freeform_poles") = 40,
         py::arg("max_freeform_iterations") = 30, py::arg("max_freeform_splits") = 2,
         py::arg("sew_tolerance") = 0.0, py::arg("extend_surfaces") = false,
-        py::arg("snap_junctions") = false, py::arg("face_deviation") = false);
+        py::arg("snap_junctions") = false, py::arg("face_deviation") = false,
+        py::arg("freeform_mode") = "legacy", py::arg("freeform_parameterization") = "auto",
+        py::arg("extraordinary_vertex") = "g1x", py::arg("local_refine") = "knots",
+        py::arg("freeform_g1_tolerance_deg") = 1.0, py::arg("freeform_max_control_points") = 400,
+        py::arg("layout_target_patch_size") = 0.1, py::arg("layout_max_valence_deviation") = 2,
+        py::arg("resegment_rounds") = 2, py::arg("layout_snap_to_features") = true,
+        py::arg("validate_by_surface_sampling") = true);
 
     // Conforming shared facets between named Cell regions. `regions` is an
     // optional list of strings or selector dictionaries. See

@@ -400,8 +400,11 @@ MIO_ABI_LAYOUT(meshioplusplus::FitPrimitivesOptions, 72, 8);
 // ABI 31 put mMergeFaces and mBackend in the tail padding (same size, new
 // members) and grew FitCadResult by mBackend. ABI 32 appended
 // mRefineSegmentation and mRefine (a RefinePatchesOptions) and the general
-// freeform options: 56 -> 208, and grew FitCadResult by both reports.
-MIO_ABI_LAYOUT(meshioplusplus::FitCadOptions, 224, 8);
+// freeform options: 56 -> 224, and grew FitCadResult by both reports. ABI 33
+// appended the freeform modes (mFreeformMode .. mValidateBySurfaceSampling):
+// 224 -> 288, grew FitCadResult by their report and added FitCadFaceRecord.
+MIO_ABI_LAYOUT(meshioplusplus::FitCadOptions, 288, 8);
+MIO_ABI_LAYOUT(meshioplusplus::FitCadFaceRecord, 96, 8);
 static_assert(offsetof(meshioplusplus::FitCadOptions, mMergeFaces) == 51,
               "FitCadOptions::mMergeFaces moved");
 static_assert(offsetof(meshioplusplus::FitCadOptions, mBackend) == 52,
@@ -418,6 +421,14 @@ static_assert(offsetof(meshioplusplus::FitCadOptions, mSewTolerance) == 208,
               "FitCadOptions::mSewTolerance moved");
 static_assert(offsetof(meshioplusplus::FitCadOptions, mFaceDeviation) == 218,
               "FitCadOptions::mFaceDeviation moved");
+static_assert(offsetof(meshioplusplus::FitCadOptions, mFreeformMode) == 220,
+              "FitCadOptions::mFreeformMode moved");
+static_assert(offsetof(meshioplusplus::FitCadOptions, mFreeformG1ToleranceDeg) == 240,
+              "FitCadOptions::mFreeformG1ToleranceDeg moved");
+static_assert(offsetof(meshioplusplus::FitCadOptions, mResegmentRounds) == 272,
+              "FitCadOptions::mResegmentRounds moved");
+static_assert(offsetof(meshioplusplus::FitCadOptions, mValidateBySurfaceSampling) == 281,
+              "FitCadOptions::mValidateBySurfaceSampling moved");
 // refine_patches' options (operations/refine_patches.hpp, ABI 32).
 MIO_ABI_LAYOUT(meshioplusplus::RefinePatchesOptions, 96, 8);
 // The kernel-free STEP writer's options (formats/step.hpp), from ABI 31.

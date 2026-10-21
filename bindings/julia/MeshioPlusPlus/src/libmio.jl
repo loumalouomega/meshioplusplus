@@ -725,6 +725,41 @@ struct _CFitCadReportEx2
     reserved::NTuple{7,Int64}
 end
 
+"""Mirror of C `mio_fit_cad_opts_ex2` (v17.12.0): the freeform-mode options."""
+struct _CFitCadOptsEx2
+    freeform_mode::Int32
+    freeform_parameterization::Int32
+    extraordinary_vertex::Int32
+    local_refine::Int32
+    freeform_g1_tolerance_deg::Cdouble
+    freeform_max_control_points::Int64
+    layout_target_patch_size::Cdouble
+    layout_max_valence_deviation::Int64
+    resegment_rounds::Int64
+    layout_snap_to_features::Int32
+    validate_by_surface_sampling::Int32
+    reserved::NTuple{8,Int64}
+end
+
+"""Mirror of C `mio_fit_cad_report_ex3` (v17.12.0)."""
+struct _CFitCadReportEx3
+    brep_checked::Int64
+    freeform_mode::Int32
+    reserved32::Int32
+    num_freeform_adaptive::Int64
+    num_network_patches::Int64
+    num_network_edges::Int64
+    num_extraordinary_vertices::Int64
+    num_resegmented::Int64
+    num_escalations::Int64
+    facet_area_fraction::Cdouble
+    max_g1_angle_deg::Cdouble
+    max_freeform_distance::Cdouble
+    rms_freeform_distance::Cdouble
+    num_face_records::Int64
+    reserved::NTuple{10,Int64}
+end
+
 """Mirror of C `mio_render_opts` (v16.34.0; cut-aways v16.36.0). ABI; fill it through [`render`](@ref),
 which initializes the defaults in C and sets only what the caller names."""
 struct _CRenderOpts
@@ -1155,6 +1190,15 @@ function _check_abi_layout()
     (fieldoffset(_CFitCadReportEx2, 7) == 48 && fieldoffset(_CFitCadReportEx2, 14) == 104 &&
      fieldoffset(_CFitCadReportEx2, 15) == 112) ||
         error("meshio++: mio_fit_cad_report_ex2 field offsets mismatch")
+    sizeof(_CFitCadOptsEx2) == 128 ||
+        error("meshio++: mio_fit_cad_opts_ex2 layout mismatch ($(sizeof(_CFitCadOptsEx2)) bytes)")
+    (fieldoffset(_CFitCadOptsEx2, 5) == 16 && fieldoffset(_CFitCadOptsEx2, 12) == 64) ||
+        error("meshio++: mio_fit_cad_opts_ex2 field offsets mismatch")
+    sizeof(_CFitCadReportEx3) == 184 ||
+        error("meshio++: mio_fit_cad_report_ex3 layout mismatch " *
+              "($(sizeof(_CFitCadReportEx3)) bytes)")
+    (fieldoffset(_CFitCadReportEx3, 10) == 64 && fieldoffset(_CFitCadReportEx3, 15) == 104) ||
+        error("meshio++: mio_fit_cad_report_ex3 field offsets mismatch")
     sizeof(_CRenderOpts) == 432 ||
         error("meshio++: mio_render_opts layout mismatch ($(sizeof(_CRenderOpts)) bytes)")
     sizeof(_CTextOpts) == 96 ||

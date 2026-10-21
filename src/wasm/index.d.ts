@@ -3523,6 +3523,58 @@ export interface FitCadOptions {
   snapJunctions?: boolean;
   /** Measure each face's two-sided distance to the skin: `fit_cad:face_hausdorff`, `fit_cad:face_rms` (default false; OpenCASCADE only). */
   faceDeviation?: boolean;
+  /** How the patches no primitive or feature fit explains are treated (v17.12.0; default 'legacy', every output as before). */
+  freeformMode?: 'legacy' | 'adaptive' | 'network' | 'auto';
+  /** The freeform parametrisation outside the legacy mode (default 'auto'). */
+  freeformParameterization?: 'auto' | 'projection' | 'lscm' | 'harmonic';
+  /** A patch network's continuity at an extraordinary vertex (default 'g1x'). */
+  extraordinaryVertex?: 'g0' | 'g1' | 'g1x' | 'g1xx';
+  /** How a freeform patch is refined (default 'knots'; 'thb' is experimental). */
+  localRefine?: 'knots' | 'thb';
+  /** The largest normal jump across an edge between network faces, in degrees (default 1). */
+  freeformG1ToleranceDeg?: number;
+  /** The most poles of one freeform face (default 400). */
+  freeformMaxControlPoints?: number;
+  /** A layout patch's target size relative to the bounding-box diagonal (default 0.1). */
+  layoutTargetPatchSize?: number;
+  /** The largest departure from valence 4 of a layout vertex, 1 to 3 (default 2). */
+  layoutMaxValenceDeviation?: number;
+  /** Re-segmentation rounds of a residual region (default 2). */
+  resegmentRounds?: number;
+  /** Whether layout edges snap to feature edges (default true). */
+  layoutSnapToFeatures?: boolean;
+  /** Whether a freeform face's surface is sampled against the skin too, outside the legacy mode (default true). */
+  validateBySurfaceSampling?: boolean;
+}
+
+/** One patch {@link MeshioPlusPlusModule.fitCad} tried as a surface (v17.12.0). */
+export interface FitCadFaceRecord {
+  patch: number;
+  /** Its first B-rep face, or -1 when it was demoted. */
+  face: number;
+  /** Its `fit_cad:type`, 0 when demoted. */
+  kind: number;
+  paramMethod: 'none' | 'plane' | 'cylinder' | 'lscm' | 'meanValue' | 'square';
+  numCtrl: number;
+  iterations: number;
+  refinements: number;
+  maxDist: number;
+  rmsDist: number;
+  reverseMaxDist: number;
+  maxG1AngleDeg: number;
+  escalationSteps: number;
+  demotionReason:
+    | 'none'
+    | 'paramNotInjective'
+    | 'hausdorffExceeded'
+    | 'trimFailed'
+    | 'sewFailed'
+    | 'brepCheckFailed'
+    | 'tooSmall'
+    | 'nonDisc'
+    | 'kernelMeshCoarse'
+    | 'budgetExceeded'
+    | 'other';
 }
 
 /** The options of {@link MeshioPlusPlusModule.refinePatches}; every key is optional. */
@@ -3650,6 +3702,23 @@ export interface FitCadResult {
   hausdorffRms: number;
   /** Whether every shell is closed: every edge borders two faces (v17.11.0). */
   closed: boolean;
+  /** Whether OpenCASCADE's B-rep check ran on the solid (v17.12.0); false from the native backend. */
+  brepChecked: boolean;
+  /** The freeform mode applied (v17.12.0). */
+  freeformMode: 'legacy' | 'adaptive' | 'network' | 'auto';
+  /** The share of the result's area on facet faces (`fit_cad:type` 0). */
+  facetAreaFraction: number;
+  numFreeformAdaptive: number;
+  numNetworkPatches: number;
+  numNetworkEdges: number;
+  numExtraordinaryVertices: number;
+  numResegmented: number;
+  numEscalations: number;
+  maxG1AngleDeg: number;
+  maxFreeformDistance: number;
+  rmsFreeformDistance: number;
+  /** Outside the legacy mode: one record per patch tried as a surface. */
+  faces?: FitCadFaceRecord[];
   /** The solid's B-rep, for `writeMesh(path, mesh, 'cad_json', {info})`. */
   info: CadJsonInfo;
 }

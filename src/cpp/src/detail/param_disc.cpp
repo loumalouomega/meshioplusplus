@@ -16,6 +16,7 @@
 //
 // System includes
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -266,31 +267,15 @@ DiscParam param_lscm(const std::vector<PatchVec>& rPts, const std::vector<PatchT
     return out;
 }
 
-DiscParam param_mean_value(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris) {
-    DiscParam out;
-    bool ok = true;
-    const std::vector<std::vector<std::size_t>> loops = param_boundary_loops(rTris, ok);
-    if (!ok || loops.size() != 1)
-        return out;
+namespace {
+
+// Floater's mean-value map of the interior, the boundary vertices (flagged in
+// `rOnBoundary`) held where `rOut` has them: false when the solve fails.
+bool pd_mean_value_interior(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+                            const std::vector<std::uint8_t>& rOnBoundary, DiscParam& rOut) {
     const std::size_t n = rPts.size();
-    const std::vector<std::size_t>& loop = loops.front();
-    // The boundary on a circle by arc length.
-    std::vector<double> cum(loop.size() + 1, 0.0);
-    for (std::size_t i = 0; i < loop.size(); ++i)
-        cum[i + 1] = cum[i] + pd_norm(pd_sub(rPts[loop[(i + 1) % loop.size()]], rPts[loop[i]]));
-    const double len = cum.back();
-    if (!(len > 0.0))
-        return out;
-    const double radius = len / (2.0 * kPdPi);
-    out.mU.assign(n, 0.0);
-    out.mV.assign(n, 0.0);
-    std::vector<std::uint8_t> on_boundary(n, 0);
-    for (std::size_t i = 0; i < loop.size(); ++i) {
-        const double a = 2.0 * kPdPi * cum[i] / len;
-        out.mU[loop[i]] = radius * std::cos(a);
-        out.mV[loop[i]] = radius * std::sin(a);
-        on_boundary[loop[i]] = 1;
-    }
+    DiscParam& out = rOut;
+    const std::vector<std::uint8_t>& on_boundary = rOnBoundary;
     std::vector<std::ptrdiff_t> col(n, -1);
     std::size_t nfree = 0;
     for (std::size_t i : pd_used(rTris))
@@ -337,13 +322,45 @@ DiscParam param_mean_value(const std::vector<PatchVec>& rPts, const std::vector<
         const SparseSolveReport ru = csr_bicgstab(a, bu.data(), xu.data(), 1e-12, 20 * nfree + 100);
         const SparseSolveReport rv = csr_bicgstab(a, bv.data(), xv.data(), 1e-12, 20 * nfree + 100);
         if (!(ru.mRelativeResidual <= 1e-8) || !(rv.mRelativeResidual <= 1e-8))
-            return out;
+            return false;
         for (std::size_t i = 0; i < n; ++i)
             if (col[i] >= 0) {
                 out.mU[i] = xu[static_cast<std::size_t>(col[i])];
                 out.mV[i] = xv[static_cast<std::size_t>(col[i])];
             }
     }
+    return true;
+}
+
+}  // namespace
+
+DiscParam param_mean_value(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris) {
+    DiscParam out;
+    bool ok = true;
+    const std::vector<std::vector<std::size_t>> loops = param_boundary_loops(rTris, ok);
+    if (!ok || loops.size() != 1)
+        return out;
+    const std::size_t n = rPts.size();
+    const std::vector<std::size_t>& loop = loops.front();
+    // The boundary on a circle by arc length.
+    std::vector<double> cum(loop.size() + 1, 0.0);
+    for (std::size_t i = 0; i < loop.size(); ++i)
+        cum[i + 1] = cum[i] + pd_norm(pd_sub(rPts[loop[(i + 1) % loop.size()]], rPts[loop[i]]));
+    const double len = cum.back();
+    if (!(len > 0.0))
+        return out;
+    const double radius = len / (2.0 * kPdPi);
+    out.mU.assign(n, 0.0);
+    out.mV.assign(n, 0.0);
+    std::vector<std::uint8_t> on_boundary(n, 0);
+    for (std::size_t i = 0; i < loop.size(); ++i) {
+        const double a = 2.0 * kPdPi * cum[i] / len;
+        out.mU[loop[i]] = radius * std::cos(a);
+        out.mV[loop[i]] = radius * std::sin(a);
+        on_boundary[loop[i]] = 1;
+    }
+    if (!pd_mean_value_interior(rPts, rTris, on_boundary, out))
+        return out;
     // The loop runs the way the triangles do, so they come out counter-
     // clockwise when the loop is: flip v otherwise.
     std::size_t pos = 0, neg = 0;
@@ -356,6 +373,50 @@ DiscParam param_mean_value(const std::vector<PatchVec>& rPts, const std::vector<
         for (double& v : out.mV)
             v = -v;
     out.mNumFlips = param_flips(rTris, out.mU, out.mV);
+    out.mOk = true;
+    return out;
+}
+
+DiscParam param_square(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+                       const std::vector<std::size_t>& rLoop,
+                       const std::array<std::size_t, 4>& rCorners) {
+    DiscParam out;
+    const std::size_t nb = rLoop.size();
+    if (nb < 4)
+        return out;
+    for (std::size_t j = 0; j < 4; ++j)
+        if (rCorners[j] >= nb || (j > 0 && rCorners[j] <= rCorners[j - 1]))
+            return out;
+    const std::size_t n = rPts.size();
+    out.mU.assign(n, 0.0);
+    out.mV.assign(n, 0.0);
+    std::vector<std::uint8_t> on_boundary(n, 0);
+    // Side j runs from corner j to corner j + 1 along the square's edge j, by
+    // chord length.
+    static const double kCorner[5][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}, {0, 0}};
+    for (std::size_t j = 0; j < 4; ++j) {
+        const std::size_t a = rCorners[j];
+        const std::size_t b = j + 1 < 4 ? rCorners[j + 1] : rCorners[0] + nb;
+        std::vector<double> cum(b - a + 1, 0.0);
+        for (std::size_t t = a; t < b; ++t)
+            cum[t - a + 1] =
+                cum[t - a] + pd_norm(pd_sub(rPts[rLoop[(t + 1) % nb]], rPts[rLoop[t % nb]]));
+        const double len = cum.back();
+        if (!(len > 0.0))
+            return out;
+        for (std::size_t t = a; t < b; ++t) {
+            const double f = cum[t - a] / len;
+            const std::size_t v = rLoop[t % nb];
+            out.mU[v] = (1.0 - f) * kCorner[j][0] + f * kCorner[j + 1][0];
+            out.mV[v] = (1.0 - f) * kCorner[j][1] + f * kCorner[j + 1][1];
+            on_boundary[v] = 1;
+        }
+    }
+    if (!pd_mean_value_interior(rPts, rTris, on_boundary, out))
+        return out;
+    out.mNumFlips = param_flips(rTris, out.mU, out.mV);
+    out.mMethod = 5;
+    out.mDisc = true;
     out.mOk = true;
     return out;
 }
@@ -407,15 +468,74 @@ DiscParam param_disc(const std::vector<PatchVec>& rPts, const std::vector<PatchT
     if (!param_is_disc(rTris))
         return DiscParam{};
     DiscParam p = param_lscm(rPts, rTris);
+    p.mDisc = true;
     if (p.mOk && p.mNumFlips == 0) {
         pd_align(rTris, p);
+        p.mMethod = 1;
         return p;
     }
     p = param_mean_value(rPts, rTris);
-    if (p.mOk && p.mNumFlips == 0)
+    p.mDisc = true;
+    if (p.mOk && p.mNumFlips == 0) {
+        p.mMethod = 2;
         return p;
+    }
     p.mOk = false;
     return p;
+}
+
+DiscParam param_ladder(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+                       ParamLadder Which) {
+    DiscParam out;
+    if (Which == ParamLadder::Auto || Which == ParamLadder::Projection) {
+        std::vector<PatchVec> normals;
+        std::vector<double> areas;
+        patch_normals(rPts, rTris, normals, areas);
+        for (int kind = 0; kind < 2; ++kind) {
+            PatchFlat flat;
+            if (!patch_flatten(kind, rPts, normals, areas, flat) || patch_flat_folds(flat, rTris))
+                continue;
+            out.mOk = true;
+            out.mU = flat.mS;
+            out.mV = flat.mT;
+            out.mNumFlips = 0;
+            out.mMethod = kind == 0 ? 3 : 4;
+            out.mDisc = param_is_disc(rTris);
+            // A projection's axes may lie along a near-square patch's
+            // diagonals (a plane's PCA axes, a cylinder's axis picked from
+            // nearly isotropic normals): turn it to its smallest box, the
+            // spline's domain, as the conformal map is. An unrolled
+            // rectangle's smallest box is the one it has.
+            pd_align(rTris, out);
+            return out;
+        }
+        if (Which == ParamLadder::Projection)
+            return out;
+    }
+    if (!param_is_disc(rTris))
+        return out;
+    if (Which == ParamLadder::Auto || Which == ParamLadder::Lscm) {
+        out = param_lscm(rPts, rTris);
+        out.mDisc = true;
+        if (out.mOk && out.mNumFlips == 0) {
+            pd_align(rTris, out);
+            out.mMethod = 1;
+            return out;
+        }
+        if (Which == ParamLadder::Lscm) {
+            out.mOk = false;
+            return out;
+        }
+    }
+    out = param_mean_value(rPts, rTris);
+    out.mDisc = true;
+    if (out.mOk && out.mNumFlips == 0) {
+        pd_align(rTris, out);
+        out.mMethod = 2;
+        return out;
+    }
+    out.mOk = false;
+    return out;
 }
 
 }  // namespace detail

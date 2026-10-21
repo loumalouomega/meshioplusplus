@@ -62,6 +62,71 @@ With `freeform_general=True` (C++ `mFreeformGeneral`, v17.11.0; off by default) 
 A patch that is no disc, or that the fit cannot explain, is halved along its normals' spread, up to `max_freeform_splits` times (2), and each half tried in turn; whatever is left is facets. `freeform_smoothing` (`1e-12`, relative to the sample count) is the thin-plate weight over the spans that hold samples. The report counts `num_freeform_general` (of the B-spline faces, those this path built), `num_freeform_refinements` (their knot insertion rounds) and `avg_freeform_poles`. A closed wavy band whose halves the grid fit cannot reach at four grid points a side comes back as two general B-spline faces instead of nearly six thousand facets.
 
 
+## Freeform modes
+
+`freeform_mode` (C++ `mFreeformMode`, v17.12.0) chooses how a patch no primitive, fillet, blend, chamfer or thread explains becomes a face. `"legacy"`, the default, is everything above, byte for byte. The other modes build on the [general freeform faces](#general-freeform-faces) (they imply `freeform_general` and `extend_surfaces`), climb an escalation ladder before a patch is demoted, and give every demotion a reason:
+
+| Mode | What it adds |
+| --- | --- |
+| `"adaptive"` | each freeform patch as one adaptive B-spline face, or pieces of one; with the native backend too |
+| `"network"` | the [patch network](#the-patch-network): a quad layout of each freeform region, fitted as B-spline patches that share their edge curves exactly, G1 across them; a patch it cannot fit falls back to an adaptive face (native backend; with OpenCASCADE, adaptive faces for now) |
+| `"auto"` | adaptive faces first, the network for what they leave |
+
+### The adaptive face
+
+1. **Discs first.** A patch that is not a disc is cut along its topology before anything is halved (`detail/cut_graph`): an annulus by two shortest paths between its loops, a sphere with more holes by a cycle of shortest paths through every loop, a closed genus-0 patch along the median level of the geodesic distance difference to its two farthest vertices. A patch of higher genus is halved across its longest extent.
+2. **The parametrisation ladder** (`freeform_parameterization`: `"auto"`, `"projection"`, `"lscm"`, `"harmonic"`): the best-fit plane, then the cylinder unrolled around the axis the normals are most perpendicular to, each kept only when it folds no triangle; then least-squares conformal maps; then mean-value coordinates with the boundary on a circle. Every map is turned so its bounding box, the spline's domain, is the smallest.
+3. **The fit**: the general fit's cubic B-spline, with the poles of a face capped at `freeform_max_control_points` (default 400, valid 16 to 1048576) on top of `max_freeform_poles` per direction, and a domain five per cent wider than the patch's, so the face runs on past its trim as the least-bending extension.
+4. **The rungs**: the given budgets, then twice the poles per direction and twice the iterations (refine knots), then, under `"auto"`, conformal maps and mean-value coordinates explicitly (re-parametrise), then the topology cut and the halving (split). `escalation_steps` counts the rungs a patch climbed.
+5. **Acceptance.** Every vertex within half the tolerance and every facet centre within the tolerance, by projection onto the surface, and, with `validate_by_surface_sampling` (the default), the surface's Greville points and a grid per knot span inside the trim within the tolerance of the patch. A clean patch is never held looser. Only on a skin that shows noise (each vertex's residual from the quadric through its two-ring, above a twentieth of the tolerance), whose strict fit fails with residuals that do not correlate across the patch's edges, does a rung try again at `min(4.5 sigma, 3 tol)`: a scanned skin is no more accurate than its noise, as a coarse tessellation is no more accurate than its chordal sag, and a structured misfit is shape, not noise.
+
+The native backend writes the accepted faces as `B_SPLINE_SURFACE_WITH_KNOTS` faces bounded by polylines on the skin's points, so `adaptive` needs no OpenCASCADE; `brep_checked` is then false. With OpenCASCADE the faces are trimmed, sewn and checked like any other, and a failing round demotes the freeform faces involved before an analytic neighbour, so no mode leaves a face `legacy` would have kept.
+
+### Report and records
+
+Outside `legacy` the report adds:
+
+| Key | Meaning |
+| --- | --- |
+| `freeform_mode` | the mode that ran |
+| `brep_checked` | OpenCASCADE's B-rep check ran (false for the native backend) |
+| `facet_area_fraction` | the share of the skin's area left as facets, the measure the modes lower |
+| `num_freeform_adaptive` | adaptive B-spline faces |
+| `num_network_patches`, `num_network_edges`, `num_extraordinary_vertices`, `max_g1_angle_deg` | the patch network's patches, shared edge curves, vertices where other than four patches meet, and the largest angle between neighbouring normals along a shared edge |
+| `num_resegmented`, `num_escalations` | regions re-segmented on the ladder, and rungs climbed in all |
+| `max_freeform_distance`, `rms_freeform_distance` | the largest and the RMS vertex distance from a freeform face |
+| `faces` | one record per patch tried as a surface |
+
+A record holds `patch`, `face` (the B-rep face, -1 when demoted), `kind` (the `fit_cad:type`), `param_method` (`none`, `plane`, `cylinder`, `lscm`, `mean_value`, `square`), `demotion_reason` (`none`, `param_not_injective`, `hausdorff_exceeded`, `trim_failed`, `sew_failed`, `brep_check_failed`, `too_small`, `non_disc`, `kernel_mesh_coarse`, `budget_exceeded` or `other`), `num_ctrl`, `iterations`, `refinements`, `escalation_steps`, `max_dist`, `rms_dist`, `reverse_max_dist` and `max_g1_angle_deg`. The same table is the `fit_cad:face_table` field data, an `(n, 13)` float64 array with its columns in that order and the enums as their integer values. In `legacy` the C++ `FitCadResult` carries all of it, and the Python report and the field data are as before.
+
+### The faceted area
+
+`facet_area_fraction` on the freeform fixtures (`tests/cpp/fit_cad_fixtures.hpp`, tolerance `2e-3` of the diagonal; `MESHIOPLUSPLUS_FIT_CAD_KPI=1` runs the full set):
+
+| Fixture | Native, legacy | Native, adaptive | Native, network | Native, auto | OpenCASCADE 7.6.3, legacy | OpenCASCADE 7.6.3, adaptive |
+| --- | --- | --- | --- | --- | --- | --- |
+| monkey saddle | 0.182 | 0 | 0 (16 network patches) | 0 | 0.661 | 0.490 |
+| car hood | 0.375 | 0 | 0.005 (25 network patches, 10 adaptive faces) | 0 | 0.375 | 0.375 |
+| Catmull-Clark valence 3 | 1 | 0 | 0 (40 network patches, 8 extraordinary vertices) | 0 | 1 | 1 |
+
+The native backend writes every face the fit accepts; OpenCASCADE must also trim, sew and check it, and the hood's top, segmented together with a side across a 25-degree crease, still fails its corners there.
+
+### The patch network
+
+`network` (and `auto`, for what the adaptive faces leave) groups the unexplained patches into edge-connected regions and builds each as one network, in the native backend:
+
+1. **The cross field and the layout** (`detail/cross_field`, `detail/quad_layout`). The smoothest cross field of the region (Knöppel, Crane, Pinkall and Schröder, "Globally optimal direction fields", SIGGRAPH 2013) is aligned with its boundary and its creases, and its singularities' indices sum to the Euler characteristic. The layout cuts along the creases (`layout_snap_to_features`) and the topology (discs first), splits a piece at its one singularity along the separatrices traced from it, turns a three-cornered piece into three quads round its centre and a disc without real corners into an O-grid, and refines to `layout_target_patch_size` (relative to the diagonal, default 0.1; at least about 48 triangles a patch) in strips that conform across shared sides. Valences stay within `layout_max_valence_deviation` (2) of four. The cube cage's limit surface becomes 24 patches with its eight valence-3 vertices and no T-junction; regions of genus one and two get valid layouts, with T-junctions where their topology cuts meet.
+2. **Shared edges** (`detail/patch_network`, `detail/bspline_curve`). Every layout chain is fitted once as a cubic B-spline. A crease or the region's boundary is fitted through its vertices; a cut of the layout's own, a zigzag of mesh edges, is smoothed and moved onto free fits of the patches beside it, so it lies on the smooth surface, not on the facets. Each patch's four boundary rows of poles are exact pieces of those curves (knot insertion), so neighbours meet exactly (G0) whatever their interiors.
+3. **Interiors and G1.** The interior poles are fitted by least squares to the patch's vertices, facet centres and edge middles on its unit-square map, more strongly smoothed where little data holds them. Knots are inserted at the worst spans until each patch passes. G1 sweeps then pull each patch's cross-boundary derivative into its neighbours' tangent planes (block Gauss-Seidel, the weight doubling to eight times while the largest angle exceeds `freeform_g1_tolerance_deg`), and a patch a sweep pushes out of the tolerance keeps its accurate surface.
+4. **Extraordinary vertices** (`extraordinary_vertex`). `g0` leaves them alone (the G1 measure skips their first span); `g1` puts the second pole of every edge curve leaving one, and every corner's twist pole, in a common tangent plane (after Peters, "Patching Catmull-Clark meshes", SIGGRAPH 2000); `g1x` (the default) also smooths the poles round it; `g1xx` adds a double knot in the first span towards it (after Loop and Schaefer, ACM TOG 2008).
+5. **Acceptance.** A patch is held to the tolerance against the network (a vertex just across a smooth edge may lie on the neighbour): every vertex within half of it and every facet centre within it, no fold (the surface's normal on a grid agrees with the skin's), and the surface's samples within it of its own and its neighbours' triangles. A patch that fails becomes an adaptive face or, failing that, facets with its reason.
+
+On the cube cage with one more subdivision level, every patch passes in `g0`, `g1` and `g1x` (largest G1 angle 1.3 degrees away from the extraordinary vertices, 11.5 degrees with them), and 17 of 24 in `g1xx`. On the monkey saddle the network is 16 patches whose largest G1 angle is 1.2 degrees. A torus's eight patches from its topology cuts are too long and twisted to fit and fall back to adaptive faces. `resegment_rounds` (2) and `local_refine` (`"knots"`, `"thb"`) are validated and reach every surface, for the rungs still to come.
+
+### Provenance
+
+The algorithms are reimplemented from the papers cited, in MIT-licensed code; no GPL code (QuadWild, libigl's GPL parts, CGAL's GPL packages) is used or ported, and nothing is vendored. Instant Meshes (BSD-3) and QuadriFlow (MIT) were read as references only.
+
 ## Fillets, blends and threads
 
 Features that no primitive explains are recognised from the patches around them, before the freeform fallback or, for a blend, after it. The fits need no OpenCASCADE (`detail/feature_fit`); the faces they give are then trimmed, sewn, checked and demoted like any other.
@@ -173,7 +238,7 @@ Without the kernel, `fit_cad` falls back to the [native backend](#the-native-bac
 
 `backend="native"` (C++ `FitCadBackend::Native`), and `"auto"` (the default) in a build that found no OpenCASCADE, needs no CAD kernel: it segments and fits the skin as above when it has no patches, then writes the [`step`](/formats/step) writer's `faces="fitted"` B-rep. Every accepted plane, sphere, cylinder, cone and torus patch whose type is in `types` is one analytic face on its fitted surface, bounded by `LINE`, `CIRCLE` and polyline edges, its corners moved onto the surfaces they lie on; every other cell is part of a coplanar planar face. A patch with a point further than `tolerance` from its surface, or whose boundary does not close into loops, is written as planar faces and counted in `num_demoted`. On a CAD-exported bracket it gives the same twelve planes and four cylinders as the OpenCASCADE backend, which OpenCASCADE reads back as one valid solid of the exact volume.
 
-What it does not do: freeform, fillet, blend and thread faces (`freeform`, `fillets`, `threads`, `exact_edges`, `mesh_deflection`, `max_demotion_rounds` and `merge_faces` are ignored), sewing and the B-rep check, and re-meshing. The returned mesh is the input skin with the `fit_cad:*` cell data, `info["brep"]` is empty, `volume` and `volume_ratio` are NaN, `max_deviation` is the largest distance of a skin point from its analytic face, and `valid` says the shell was written closed, every edge used once each way. Its STEP bytes do not depend on any library version.
+In the [freeform modes](#freeform-modes) it also writes adaptive B-spline faces (`B_SPLINE_SURFACE_WITH_KNOTS`). What it does not do: legacy freeform, fillet, blend and thread faces (`freeform`, `fillets`, `threads`, `exact_edges`, `mesh_deflection`, `max_demotion_rounds` and `merge_faces` are ignored), sewing and the B-rep check, and re-meshing. The returned mesh is the input skin with the `fit_cad:*` cell data, `info["brep"]` is empty, `volume` and `volume_ratio` are NaN, `max_deviation` is the largest distance of a skin point from its analytic face, and `valid` says the shell was written closed, every edge used once each way. Its STEP bytes do not depend on any library version.
 
 ## CLI
 
@@ -185,12 +250,19 @@ meshioplusplus to-cad IN OUT.step [--curvature-tolerance C] [--min-patch-cells N
     [--segment-method primitive|angle] [--segment-tolerance T] [--no-merge-faces] \
     [--backend auto|occt|native] [--refine] [--max-refine-iterations N] [--refine-epsilon E] \
     [--normal-weight W] [--no-refine-merge] [--no-refine-split] [--ransac-seed S] \
-    [--refine-tolerance T] [--mesh-out FILE] [--cad-json FILE] [--json] [--quiet]
+    [--refine-tolerance T] [--freeform-mode legacy|adaptive|network|auto] \
+    [--freeform-parameterization auto|projection|lscm|harmonic] [--g1-tolerance DEG] \
+    [--extraordinary-vertex g0|g1|g1x|g1xx] [--local-refine knots|thb] \
+    [--freeform-max-control-points N] [--layout-target-patch-size S] \
+    [--layout-max-valence-deviation N] [--resegment-rounds N] [--no-layout-snap-to-features] \
+    [--no-validate-by-surface-sampling] [--mesh-out FILE] [--cad-json FILE] [--json] [--quiet]
 ```
 
 A skin without `segment:patch` is segmented by `--segment-method` (default `primitive`, at `--segment-tolerance` of the diagonal, default `1e-3`; `angle` uses `--curvature-tolerance` and `--min-patch-cells`) and fitted, at the segmentation's own tolerance as a length after the primitive method, or with `--fit-tolerance` (relative, as in `fit-primitives`) when given, before the solid is built. `--backend` picks the engine and `--no-merge-faces` keeps faces on one surface apart; the summary and `--json` name the backend. `--mesh-out` also writes the re-meshed solid, `--cad-json` the solid as Kratos CAD JSON; `--no-freeform`, `--freeform-degree`, `--freeform-max-control` and `--no-freeform-split` are the [freeform](#freeform-faces) options, `--no-fillets` and `--no-threads` the [feature](#fillets-blends-and-threads) ones. Both CLIs exit with 2 when the solid fails the B-rep check, as `check` does for a failed gate.
 
 `--refine` (v17.11.0) first refines the patches by variational shape approximation (`refine_patches`, `refine_segmentation=True`), so more of the skin becomes analytic faces: `--max-refine-iterations` (default `10`) caps the iterations, `--refine-epsilon` (default `1e-3`) stops them when one adds less than that to the area share primitives explain, `--normal-weight` (default `1`) weighs the normal term of a cell's cost, `--no-refine-merge` and `--no-refine-split` turn off merging neighbours one primitive explains and splitting a primitive out of a freeform patch, `--ransac-seed` (default `0x6d657368696f2b2b`; the native CLI also takes `0x` hexadecimal) seeds the split, and `--refine-tolerance` (default `1e-3` of the diagonal) is how far a point may lie from its refined patch's primitive. Only with `--refine` does the summary add a `refined:` line and `--json` add `refined`, `refine_iterations`, `num_refine_splits`, `num_refine_merges`, `initial_explained_area_fraction` and `explained_area_fraction`. The `refine-patches` verb of both CLIs runs the refinement alone ([CLI reference](/cli#meshioplusplus-refine-patches)).
+
+`--freeform-mode` and the flags after it are the [freeform modes](#freeform-modes)' options (v17.12.0); outside `legacy` the summary adds a `freeform:` line with the mode, the faceted area and the adaptive and network faces, and `--json` adds the mode's report keys and `faces`.
 
 ```sh
 meshioplusplus to-cad bracket.stl bracket.step
@@ -207,6 +279,8 @@ meshioplusplus to-cad scan.stl scan.step --refine --ransac-seed 7 --json
  "FreeformSplit": true, "Fillets": true, "Threads": true, "MergeFaces": true,
  "Backend": "auto"}
 ```
+
+The [freeform modes](#freeform-modes) take `FreeformMode`, `FreeformParameterization`, `FreeformG1ToleranceDeg`, `FreeformMaxControlPoints`, `LayoutTargetPatchSize`, `LayoutMaxValenceDeviation`, `LayoutSnapToFeatures`, `ExtraordinaryVertex`, `ResegmentRounds`, `LocalRefine` and `ValidateBySurfaceSampling`, and outside `legacy` the step also reports `BrepChecked`, `FacetAreaFraction`, `NumFreeformAdaptive`, `NumNetworkPatches`, `NumNetworkEdges`, `NumExtraordinaryVertices`, `NumResegmented`, `NumEscalations` and `MaxG1AngleDeg`.
 
 The step writes the solid to `Path` when given, and the mesh continues as the re-meshed solid; it reports `Native` (whether the native backend built it), `Valid`, `VolumeRatio`, `MaxDeviation`, `NumFaces`, `NumBspline`, `NumFillet`, `NumHelical`, `NumVariableFillet`, `NumBlend`, `NumRoundedThread`, `NumVertexBlend`, `NumChamfer`, `NumConicBlend`, `NumTaperedThread`, `NumVariablePitchThread`, `NumSplitPatches`, `NumFacetedFaces` and `NumDemoted`. A `Tolerance` or `MeshDeflection` of 0 is automatic; an empty `Types` facets everything.
 
@@ -235,6 +309,8 @@ r = fit_cad(fit; step_path="part.step"); r.valid, r.backend
 cad <- mio_fit_cad(fit, step_path = "part.step"); cad$backend
 ```
 
+The freeform modes are `mio_fit_cad3` (v17.12.0) with `mio_fit_cad_opts_ex2` (`freeform_mode`, `freeform_parameterization`, `extraordinary_vertex`, `local_refine` as the `MIO_FREEFORM_*`, `MIO_PARAM_*`, `MIO_EV_*` and `MIO_LOCAL_REFINE_*` constants, and the layout options; a zero in `freeform_g1_tolerance_deg`, `freeform_max_control_points`, `layout_target_patch_size` or `layout_max_valence_deviation` reads as its default, the enums' zero is their first value and the flags' zero is off, so `mio_fit_cad_opts_ex2_init` is the way to get every default) and `mio_fit_cad_report_ex3` (the mode's counts and measures, and `num_face_records`; the records themselves are the `fit_cad:face_table` field data, `demotion_reason` as `MIO_DEMOTION_*`); `mio_fit_cad2` forwards to it with the defaults. Fortran's `fit_cad` takes them as optional arguments (the enums as strings), Julia's and R's as keyword arguments, and WASM's `fitCad` in camelCase, returning `faces` outside `legacy`.
+
 The C report carries `num_bspline`, `num_fillet`, `num_helical`, `num_variable_fillet`, `num_blend`, `num_rounded_thread` and `num_split_patches`, and `mio_fit_cad_ex`'s extended report (`mio_fit_cad_report_ex`, v17.2.0, as `mio_fit_cad_report` has no room left) `num_vertex_blend`, `num_chamfer`, `num_conic_blend`, `num_tapered_thread` and `num_variable_pitch_thread`; Fortran's, Julia's and R's results carry all of them (`freeform`, `freeform_degree`, `freeform_max_control`, `freeform_split`, `fillets`, `threads`, `merge_faces` and `backend` are their options; a zero-filled C struct keeps `freeform_split`, `fillets`, `threads` and `merge_faces` off, `mio_fit_cad_opts_init` turns them on, and `backend` 0 is auto), and `report_ex.backend` (Julia's and R's `backend`, Fortran's `used_native`) names the engine. The MCP server's `fit_cad` tool takes the same options plus `segment_method`, `segment_tolerance`, `curvature_tolerance`, `min_patch_cells`, `fit_tolerance` and `cad_json_output_path`, and reports `backend` and `occt_available`. In the browser, `fitCad(mesh, {stepPath, mergeFaces, backend, ...})` runs the native backend in the lean artifact, and the [full WASM artifact](/wasm#lean-and-full-builds) links OpenCASCADE, with the same options and report in camelCase and the solid's B-rep as `info`; `backend: 'occt'` throws by name in the lean one.
 
 ## Not supported
@@ -243,4 +319,4 @@ The C report carries `num_bspline`, `num_fillet`, `num_helical`, `num_variable_f
 - **Threads whose depth varies along them**, or whose pitch varies other than linearly, and a tapered or variable-pitch thread with no cylinder or cone beside it that is also too far from one screw for the axis to be found from the patch itself: freeform or faceted, as is a thread patch spanning less than half a turn.
 - **A whole thread as one patch**: a thread surface whose profile spans the full pitch (one patch over root, flanks and crest) has no single trimmed face to be; [`segment`](/segment) it at its creases or with a curvature test first.
 - **Fitting a STEP or IGES model**: those are [read](/formats/step#reading) as their own NURBS B-rep, not refitted.
-- **Freeform and feature faces without OpenCASCADE**: the [native backend](#the-native-backend) writes planes, spheres, cylinders, cones and tori only.
+- **Feature faces without OpenCASCADE**: the [native backend](#the-native-backend) writes planes, spheres, cylinders, cones and tori, and, in the [freeform modes](#freeform-modes), adaptive B-spline faces only.

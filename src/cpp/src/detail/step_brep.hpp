@@ -65,10 +65,23 @@
 #include "meshioplusplus/mesh.hpp"
 
 // Project includes (private, not installed)
+#include "bspline_lsq.hpp"
 #include "closed_facets.hpp"
 
 namespace meshioplusplus {
 namespace detail {
+
+/// A freeform B-spline face for a patch (v17.12.0, `fit_cad`'s native
+/// backend outside the legacy mode): written as a `B_SPLINE_SURFACE_WITH_KNOTS`
+/// face, its edges polylines through the skin's points, which the fit holds
+/// within the patch's allowance.
+struct StepFreeformFace {
+    /// The `segment:patch` label; its row of the fit table becomes the face.
+    std::int64_t mLabel = -1;
+    BsplineSurface mSurface;
+    /// Whether the surface's normal (`S_u x S_v`) agrees with the facets'.
+    bool mSense = true;
+};
 
 /// How the B-rep writer builds its faces.
 struct StepBrepOptions {
@@ -78,12 +91,15 @@ struct StepBrepOptions {
     /// surface. At most 0 takes three times the largest accepted
     /// `fit:patch_tolerance`, else `1e-3` of the bounding-box diagonal.
     double mTolerance = 0.0;
+    /// Freeform faces for patches the fit table leaves unexplained (only with
+    /// `mFitted`); null or empty writes none, as before the option existed.
+    const std::vector<StepFreeformFace>* mFreeform = nullptr;
 };
 
 /// What the B-rep writer wrote.
 struct StepBrepResult {
     std::vector<std::int64_t> mFaceOfFacet;   ///< per facet: its face (writing order)
-    std::vector<std::int64_t> mTypeOfFacet;   ///< per facet: 0 a coplanar group, else 1..5
+    std::vector<std::int64_t> mTypeOfFacet;   ///< per facet: 0 a coplanar group, else 1..5, 6
     std::vector<std::int64_t> mPatchOfFacet;  ///< per facet: its `segment:patch`, or -1
     double mTolerance = 0.0;
     double mMaxDeviation = 0.0;  ///< the largest distance of a point from its face's surface
@@ -102,6 +118,14 @@ struct StepBrepResult {
     std::int64_t mNumLineEdges = 0;
     std::int64_t mNumCircleEdges = 0;
     std::int64_t mNumSplineEdges = 0;
+    /// Faces written from `StepBrepOptions::mFreeform` (`fit_cad:type` 6).
+    std::int64_t mNumBspline = 0;
+    /// Per row of the fit table (its order): the `segment:patch` label, and
+    /// why an accepted patch was written as coplanar groups (a
+    /// `FitCadDemotionReason` value: 2 a point beyond the tolerance, 3 loops
+    /// that do not close or no boundary at all), else 0.
+    std::vector<std::int64_t> mRowLabel;
+    std::vector<std::int32_t> mRowReason;
 };
 
 /**
@@ -118,7 +142,8 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
 /// (left as constructed for `StepFaces::Facet`). Implemented in
 /// `formats/step.cpp`; `fit_cad`'s native backend reads the report.
 void write_step_report(const std::string& rPath, const Mesh& rMesh,
-                       const StepWriteOptions& rOptions, StepBrepResult* pReport);
+                       const StepWriteOptions& rOptions, StepBrepResult* pReport,
+                       const std::vector<StepFreeformFace>* pFreeform = nullptr);
 
 }  // namespace detail
 }  // namespace meshioplusplus

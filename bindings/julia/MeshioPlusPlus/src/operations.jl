@@ -2290,7 +2290,12 @@ has_occt() = ccall(_sym(:mio_has_occt), Cint, ()) != 0
             relative_tolerance=true, freeform_general=false, freeform_tolerance=0.0,
             freeform_smoothing=1e-12, max_freeform_poles=40, max_freeform_iterations=30,
             max_freeform_splits=2, sew_tolerance=0.0, extend_surfaces=false,
-            snap_junctions=false, face_deviation=false)
+            snap_junctions=false, face_deviation=false, freeform_mode="legacy",
+            freeform_parameterization="auto", extraordinary_vertex="g1x",
+            local_refine="knots", freeform_g1_tolerance_deg=1.0,
+            freeform_max_control_points=400, layout_target_patch_size=0.1,
+            layout_max_valence_deviation=2, resegment_rounds=2,
+            layout_snap_to_features=true, validate_by_surface_sampling=true)
         -> (; mesh, backend, valid, closed, tolerance, volume, skin_volume, volume_ratio,
              max_deviation, num_faces, num_plane, num_sphere, num_cylinder,
              num_cone, num_torus, num_faceted_faces, num_patches, num_demoted,
@@ -2301,7 +2306,11 @@ has_occt() = ccall(_sym(:mio_has_occt), Cint, ()) != 0
              refined, refinement_kept, refine_iterations, num_refine_splits,
              num_refine_merges, initial_explained_area_fraction, explained_area_fraction,
              num_freeform_general, num_freeform_refinements, avg_freeform_poles,
-             num_extended_edges, num_snapped_junctions, hausdorff_max, hausdorff_rms)
+             num_extended_edges, num_snapped_junctions, hausdorff_max, hausdorff_rms,
+             brep_checked, freeform_mode, facet_area_fraction, num_freeform_adaptive,
+             num_network_patches, num_network_edges, num_extraordinary_vertices,
+             num_resegmented, num_escalations, max_g1_angle_deg, max_freeform_distance,
+             rms_freeform_distance, num_face_records)
 
 Build a CAD solid from the fitted patches of a closed skin through the
 OpenCASCADE backend: accepted fits become analytic faces, a patch no primitive
@@ -2345,7 +2354,18 @@ tolerance, `extend_surfaces` extends freeform surfaces past their patches
 faces meet by least squares (`num_snapped_junctions`), and `face_deviation`
 measures each face against the skin, as the `fit_cad:face_hausdorff` and
 `fit_cad:face_rms` field data and `hausdorff_max` / `hausdorff_rms` (`NaN` when
-not measured). `closed` says whether every shell is closed. See
+not measured). `closed` says whether every shell is closed. Since v17.12.0,
+`freeform_mode` (`"legacy"`, `"adaptive"`, `"network"` or `"auto"`) picks how
+the patches no primitive or feature fit explains are treated, with
+`freeform_parameterization` (`"auto"`, `"projection"`, `"lscm"`,
+`"harmonic"`), `extraordinary_vertex` (`"g0"`, `"g1"`, `"g1x"`, `"g1xx"`),
+`local_refine` (`"knots"`, `"thb"`), `freeform_g1_tolerance_deg`,
+`freeform_max_control_points`, `layout_target_patch_size`,
+`layout_max_valence_deviation`, `resegment_rounds`, `layout_snap_to_features`
+and `validate_by_surface_sampling`; `facet_area_fraction` is the share of the
+result's area left on facet faces, `brep_checked` whether OpenCASCADE checked
+the solid, and outside the legacy mode the mesh carries the
+`fit_cad:face_table` field data (one row per patch tried as a surface). See
 `doc/fit_cad.md`.
 """
 function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
@@ -2364,7 +2384,26 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                  max_freeform_poles::Integer=40, max_freeform_iterations::Integer=30,
                  max_freeform_splits::Integer=2, sew_tolerance::Real=0.0,
                  extend_surfaces::Bool=false, snap_junctions::Bool=false,
-                 face_deviation::Bool=false)
+                 face_deviation::Bool=false, freeform_mode::AbstractString="legacy",
+                 freeform_parameterization::AbstractString="auto",
+                 extraordinary_vertex::AbstractString="g1x",
+                 local_refine::AbstractString="knots", freeform_g1_tolerance_deg::Real=1.0,
+                 freeform_max_control_points::Integer=400,
+                 layout_target_patch_size::Real=0.1,
+                 layout_max_valence_deviation::Integer=2, resegment_rounds::Integer=2,
+                 layout_snap_to_features::Bool=true,
+                 validate_by_surface_sampling::Bool=true)
+    pick(name, value, words) = begin
+        k = findfirst(==(String(value)), words)
+        k === nothing && throw(ArgumentError("meshio++: fit_cad: $(name) must be one of " *
+                                             join(repr.(words), ", ")))
+        Int32(k - 1)
+    end
+    mode_c = pick("freeform_mode", freeform_mode, ("legacy", "adaptive", "network", "auto"))
+    param_c = pick("freeform_parameterization", freeform_parameterization,
+                   ("auto", "projection", "lscm", "harmonic"))
+    ev_c = pick("extraordinary_vertex", extraordinary_vertex, ("g0", "g1", "g1x", "g1xx"))
+    refine_c = pick("local_refine", local_refine, ("knots", "thb"))
     backend_c = backend == "auto" ? Int32(0) : backend == "occt" ? Int32(1) :
                 backend == "native" ? Int32(2) :
                 throw(ArgumentError("meshio++: fit_cad: backend must be \"auto\", \"occt\" or \"native\""))
@@ -2377,6 +2416,7 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
     report = Ref{_CFitCadReport}()
     report_ex = Ref{_CFitCadReportEx}()
     report_ex2 = Ref{_CFitCadReportEx2}()
+    report_ex3 = Ref{_CFitCadReportEx3}()
     opts = _CFitCadOpts(Float64(tolerance), Float64(mesh_deflection),
                         Int64(max_demotion_rounds), Int32(exact_edges), mask,
                         Int32(freeform), Int32(freeform_degree), Int64(freeform_max_control),
@@ -2394,15 +2434,24 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                              Int64(max_freeform_splits), Float64(sew_tolerance),
                              Int32(extend_surfaces), Int32(snap_junctions),
                              Int32(face_deviation), Int32(0), ntuple(_ -> Int64(0), 8))
-    ptr = ccall(_sym(:mio_fit_cad2), Ptr{Cvoid},
+    opts_ex2 = _CFitCadOptsEx2(mode_c, param_c, ev_c, refine_c,
+                               Float64(freeform_g1_tolerance_deg),
+                               Int64(freeform_max_control_points),
+                               Float64(layout_target_patch_size),
+                               Int64(layout_max_valence_deviation), Int64(resegment_rounds),
+                               Int32(layout_snap_to_features),
+                               Int32(validate_by_surface_sampling), ntuple(_ -> Int64(0), 8))
+    ptr = ccall(_sym(:mio_fit_cad3), Ptr{Cvoid},
                 (Ptr{Cvoid}, Cstring, Ref{_CFitCadOpts}, Ref{_CFitCadOptsEx},
-                 Ptr{_CFitCadReport}, Ptr{_CFitCadReportEx}, Ptr{_CFitCadReportEx2}),
-                _handle(m), String(step_path), Ref(opts), Ref(opts_ex), report, report_ex,
-                report_ex2)
+                 Ref{_CFitCadOptsEx2}, Ptr{_CFitCadReport}, Ptr{_CFitCadReportEx},
+                 Ptr{_CFitCadReportEx2}, Ptr{_CFitCadReportEx3}),
+                _handle(m), String(step_path), Ref(opts), Ref(opts_ex), Ref(opts_ex2), report,
+                report_ex, report_ex2, report_ex3)
     r = _check_ptr(ptr)
     rep = report[]
     ex = report_ex[]
     ex2 = report_ex2[]
+    ex3 = report_ex3[]
     (mesh=Mesh(r), backend=ex.backend == 2 ? "native" : "occt", valid=rep.valid != 0,
      closed=ex2.closed != 0, tolerance=rep.tolerance, volume=rep.volume,
      skin_volume=rep.skin_volume, volume_ratio=rep.volume_ratio,
@@ -2430,7 +2479,18 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
      avg_freeform_poles=ex2.avg_freeform_poles,
      num_extended_edges=Int(ex2.num_extended_edges),
      num_snapped_junctions=Int(ex2.num_snapped_junctions),
-     hausdorff_max=ex2.hausdorff_max, hausdorff_rms=ex2.hausdorff_rms)
+     hausdorff_max=ex2.hausdorff_max, hausdorff_rms=ex2.hausdorff_rms,
+     brep_checked=ex3.brep_checked != 0,
+     freeform_mode=("legacy", "adaptive", "network", "auto")[ex3.freeform_mode + 1],
+     facet_area_fraction=ex3.facet_area_fraction,
+     num_freeform_adaptive=Int(ex3.num_freeform_adaptive),
+     num_network_patches=Int(ex3.num_network_patches),
+     num_network_edges=Int(ex3.num_network_edges),
+     num_extraordinary_vertices=Int(ex3.num_extraordinary_vertices),
+     num_resegmented=Int(ex3.num_resegmented), num_escalations=Int(ex3.num_escalations),
+     max_g1_angle_deg=ex3.max_g1_angle_deg, max_freeform_distance=ex3.max_freeform_distance,
+     rms_freeform_distance=ex3.rms_freeform_distance,
+     num_face_records=Int(ex3.num_face_records))
 end
 
 """

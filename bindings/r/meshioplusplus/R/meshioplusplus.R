@@ -1470,6 +1470,27 @@ mio_has_occt <- function() {
 #' @param face_deviation Whether each face's two-sided distance to the skin is
 #'   measured, as the `fit_cad:face_hausdorff` and `fit_cad:face_rms` field
 #'   data and `hausdorff_max` / `hausdorff_rms` (OpenCASCADE only).
+#' @param freeform_mode How the patches no primitive or feature fit explains
+#'   are treated (v17.12.0): `"legacy"` (the default, every output as before),
+#'   `"adaptive"`, `"network"` or `"auto"`.
+#' @param freeform_parameterization `"auto"`, `"projection"`, `"lscm"` or
+#'   `"harmonic"`.
+#' @param extraordinary_vertex A patch network's continuity at an
+#'   extraordinary vertex: `"g0"`, `"g1"`, `"g1x"` (default) or `"g1xx"`.
+#' @param local_refine `"knots"` (default) or `"thb"` (experimental).
+#' @param freeform_g1_tolerance_deg The largest normal jump across an edge
+#'   between network faces, in degrees (default 1).
+#' @param freeform_max_control_points The most poles of one freeform face
+#'   (default 400).
+#' @param layout_target_patch_size A layout patch's target size relative to
+#'   the bounding-box diagonal (default 0.1).
+#' @param layout_max_valence_deviation The largest departure from valence 4 of
+#'   a layout vertex, 1 to 3 (default 2).
+#' @param resegment_rounds Re-segmentation rounds of a residual region
+#'   (default 2).
+#' @param layout_snap_to_features Whether layout edges snap to feature edges.
+#' @param validate_by_surface_sampling Whether a freeform face's surface is
+#'   sampled against the skin too, outside the legacy mode.
 #' @return A list of `mesh` (the solid re-meshed, with cell data
 #'   `fit_cad:face`, `fit_cad:type` and `fit_cad:patch`), `valid`,
 #'   `tolerance`, `volume`, `skin_volume`, `volume_ratio`, `max_deviation`,
@@ -1488,7 +1509,14 @@ mio_has_occt <- function() {
 #'   `hausdorff_rms` (`NaN` unless `face_deviation` measured them), and
 #'   `refinement_kept` (whether the solid was built from the refined patches;
 #'   OpenCASCADE also builds it from the patches as given and keeps the
-#'   better).
+#'   better), `brep_checked` (whether OpenCASCADE checked the solid),
+#'   `freeform_mode`, `facet_area_fraction` (the share of the result's area on
+#'   facet faces), `num_freeform_adaptive`, `num_network_patches`,
+#'   `num_network_edges`, `num_extraordinary_vertices`, `num_resegmented`,
+#'   `num_escalations`, `max_g1_angle_deg`, `max_freeform_distance`,
+#'   `rms_freeform_distance` and `num_face_records` (the rows of the
+#'   `fit_cad:face_table` field data the mesh carries outside the legacy
+#'   mode).
 #' @export
 mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
                         types = c("plane", "sphere", "cylinder", "cone", "torus"),
@@ -1505,7 +1533,13 @@ mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
                         max_freeform_poles = 40L, max_freeform_iterations = 30L,
                         max_freeform_splits = 2L, sew_tolerance = 0,
                         extend_surfaces = FALSE, snap_junctions = FALSE,
-                        face_deviation = FALSE) {
+                        face_deviation = FALSE, freeform_mode = "legacy",
+                        freeform_parameterization = "auto", extraordinary_vertex = "g1x",
+                        local_refine = "knots", freeform_g1_tolerance_deg = 1,
+                        freeform_max_control_points = 400L, layout_target_patch_size = 0.1,
+                        layout_max_valence_deviation = 2L, resegment_rounds = 2L,
+                        layout_snap_to_features = TRUE,
+                        validate_by_surface_sampling = TRUE) {
   known <- c("plane", "sphere", "cylinder", "cone", "torus")
   bad <- setdiff(types, known)
   if (length(bad) > 0) {
@@ -1526,7 +1560,12 @@ mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
     as.numeric(freeform_smoothing), as.numeric(max_freeform_poles),
     as.numeric(max_freeform_iterations), as.numeric(max_freeform_splits),
     as.numeric(sew_tolerance), isTRUE(extend_surfaces), isTRUE(snap_junctions),
-    isTRUE(face_deviation)
+    isTRUE(face_deviation), as.character(freeform_mode),
+    as.character(freeform_parameterization), as.character(extraordinary_vertex),
+    as.character(local_refine), as.numeric(freeform_g1_tolerance_deg),
+    as.numeric(freeform_max_control_points), as.numeric(layout_target_patch_size),
+    as.numeric(layout_max_valence_deviation), as.numeric(resegment_rounds),
+    isTRUE(layout_snap_to_features), isTRUE(validate_by_surface_sampling)
   )
 }
 
