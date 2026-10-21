@@ -86,6 +86,24 @@ def test_mode_adds_its_keys_and_the_face_table():
 
 
 @needs_core
+def test_native_modes_return_the_solid_as_nurbs(tmp_path):
+    # Outside the legacy mode the native solid is trimmed NURBS faces too,
+    # so Kratos CAD JSON needs no CAD kernel; the legacy mode leaves it empty.
+    out, report = mio.fit_cad(
+        _box(), backend="native", freeform_mode="adaptive", return_report=True
+    )
+    brep = out.info["brep"]
+    assert len(brep["faces"]) == report["num_faces"] == 6
+    assert all(f["trimmed"] for f in brep["faces"])
+    assert len(brep["edges"]) == 12
+    mio.write(tmp_path / "box.cad.json", out, file_format="cad_json")
+    back = mio.read(tmp_path / "box.cad.json").info["brep"]
+    assert len(back["faces"]) == 6
+    legacy = mio.fit_cad(_box(), backend="native")
+    assert not legacy.info["brep"] or not legacy.info["brep"].get("faces")
+
+
+@needs_core
 def test_demotion_reason_is_recorded():
     from .analytic_surfaces import jitter
 

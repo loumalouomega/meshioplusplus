@@ -36,6 +36,8 @@
 #include <omp.h>
 #endif
 
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/formats/cad_json.hpp"
 #include "meshioplusplus/operations/fit_cad.hpp"
 #include "analytic_surfaces.hpp"
 #include "fit_cad_fixtures.hpp"
@@ -297,6 +299,79 @@ TEST(FitCadModes, NativeNetworkWritesSharedEdges) {
     EXPECT_EQ(bytes, b2);
 }
 
+namespace {
+
+// The area of a mesh's polygons (fanned), by blocks of fixed width.
+double polygon_area(const Mesh& rMesh) {
+    const double* xyz = rMesh.Points().As<double>();
+    double area = 0.0;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cells = rMesh.Cells(b);
+        const NDArray& conn = cells.Conn();
+        const std::size_t w = cells.NodesPerCell();
+        // Lagrange quadrilaterals: their four corners.
+        const std::size_t n = w >= 4 && w != 6 ? 4 : w;
+        for (std::size_t c = 0; c < cells.NumCells(); ++c) {
+            const double* p0 = xyz + 3 * detail::read_int(conn, c * w);
+            for (std::size_t k = 1; k + 1 < n; ++k) {
+                const double* p1 = xyz + 3 * detail::read_int(conn, c * w + k);
+                const double* p2 = xyz + 3 * detail::read_int(conn, c * w + k + 1);
+                const double u[3] = {p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]};
+                const double v[3] = {p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]};
+                const double x[3] = {u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
+                                     u[0] * v[1] - u[1] * v[0]};
+                area += 0.5 * std::sqrt(x[0] * x[0] + x[1] * x[1] + x[2] * x[2]);
+            }
+        }
+    }
+    return area;
+}
+
+}  // namespace
+
+TEST(FitCadModes, NativeModesReturnTheSolidAsNurbs) {
+    std::vector<fcfix::Fixture> set = fcfix::golden_fixtures();
+    {
+        const Mesh skin = analytic::monkey_saddle_box(24);
+        set.push_back(
+            {"monkey_saddle_network", fcfix::fitted_abs(skin, 2e-3 * fcfix::diagonal(skin))});
+    }
+    for (const fcfix::Fixture& f : set) {
+        FitCadOptions o;
+        o.mBackend = FitCadBackend::Native;
+        o.mFreeformMode = f.mName == "monkey_saddle_network" ? FitCadFreeformMode::Network
+                                                             : FitCadFreeformMode::Adaptive;
+        if (f.mName == "monkey_saddle_network")
+            o.mTolerance = 2e-3 * fcfix::diagonal(f.mMesh);
+        const FitCadResult r = fit_cad(f.mMesh, "", o);
+        ASSERT_EQ(static_cast<std::int64_t>(r.mBrep.mFaces.size()), r.mNumFaces) << f.mName;
+        ASSERT_EQ(r.mBrep.mPatches.size(), r.mBrep.mFaces.size()) << f.mName;
+        // Every edge between two faces, or a seam of one, is used twice.
+        for (const BrepEdge& e : r.mBrep.mEdges)
+            EXPECT_TRUE(e.mTopology.size() == 2 || (!e.mHasCurve && e.mTopology.size() == 1))
+                << f.mName << " edge " << e.mId;
+        // Sampled, the faces cover the skin's area.
+        CadJsonReadOptions so;
+        so.mSubdivisions = 32;
+        so.mEdges = false;
+        const double sampled = polygon_area(sample_brep(r.mBrep, so));
+        const double skin = polygon_area(f.mMesh);
+        EXPECT_NEAR(sampled, skin, 0.03 * skin) << f.mName;
+        std::printf("%-24s faces %zu edges %zu area ratio %.5f\n", f.mName.c_str(),
+                    r.mBrep.mFaces.size(), r.mBrep.mEdges.size(), sampled / skin);
+        // And Kratos CAD JSON round-trips it.
+        const std::string path = temp_step((f.mName + ".cad.json").c_str());
+        write_cad_json(path, r.mMesh, r.mBrep);
+        const BrepInfo back = read_cad_json_info(path);
+        EXPECT_EQ(back.mFaces.size(), r.mBrep.mFaces.size()) << f.mName;
+        EXPECT_EQ(back.mEdges.size(), r.mBrep.mEdges.size()) << f.mName;
+    }
+    // The legacy mode leaves it empty, as before.
+    FitCadOptions legacy;
+    legacy.mBackend = FitCadBackend::Native;
+    EXPECT_TRUE(fit_cad(set.front().mMesh, "", legacy).mBrep.mFaces.empty());
+}
+
 // The same bytes at every thread count, and run after run.
 TEST(FitCadModes, NativeAdaptiveIsDeterministic) {
     const Mesh skin = analytic::monkey_saddle_box(16, true);
@@ -379,6 +454,36 @@ TEST(FitCadModes, OcctAdaptiveReducesFacetArea) {
         if (legacy.mFacetAreaFraction > 0.0)
             EXPECT_LT(adaptive.mFacetAreaFraction, legacy.mFacetAreaFraction);
         EXPECT_TRUE(adaptive.mValid);
+    }
+}
+
+// The patch network in the OpenCASCADE backend: the Catmull-Clark cage's
+// limit surface, which the adaptive faces leave as facets, becomes a valid
+// solid of network faces, and the auto mode rebuilds its demoted adaptive
+// faces in the network.
+TEST(FitCadModes, OcctNetworkBuildsTheCage) {
+    for (const fcfix::FreeformFixture& f : fcfix::freeform_fixtures(false)) {
+        if (f.mName != "cc_valence3")
+            continue;
+        FitCadOptions o;
+        o.mTolerance = f.mTolerance;
+        const FitCadResult legacy = fit_cad(f.mMesh, "", o);
+        for (FitCadFreeformMode mode : {FitCadFreeformMode::Network, FitCadFreeformMode::Auto}) {
+            o.mFreeformMode = mode;
+            const FitCadResult r = fit_cad(f.mMesh, "", o);
+            EXPECT_TRUE(r.mValid);
+            EXPECT_TRUE(r.mBrepChecked);
+            EXPECT_LT(r.mFacetAreaFraction, legacy.mFacetAreaFraction);
+            EXPECT_EQ(r.mFacetAreaFraction, 0.0);
+            EXPECT_EQ(r.mNumNetworkPatches, r.mNumFaces);
+            EXPECT_EQ(r.mNumExtraordinaryVertices, 8);
+            EXPECT_GT(r.mNumNetworkEdges, 0);
+            for (const FitCadFaceRecord& rec : r.mFaces) {
+                EXPECT_GE(rec.mFace, 0);
+                EXPECT_EQ(rec.mParamMethod, FitCadParamMethod::Square);
+                EXPECT_TRUE(std::isfinite(rec.mMaxG1AngleDeg));
+            }
+        }
     }
 }
 

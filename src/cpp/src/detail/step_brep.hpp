@@ -61,6 +61,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/brep.hpp"
 #include "meshioplusplus/formats/step.hpp"
 #include "meshioplusplus/mesh.hpp"
 
@@ -109,6 +110,9 @@ struct StepBrepOptions {
     const std::vector<StepFreeformFace>* mFreeform = nullptr;
     /// The networks' shared edge curves; null writes polyline edges, as before.
     const std::vector<StepEdgeCurve>* mEdgeCurves = nullptr;
+    /// Also build the solid as trimmed NURBS faces (`StepBrepResult::mBrep`,
+    /// `detail/brep_nurbs`), the file unchanged.
+    bool mBrep = false;
 };
 
 /// What the B-rep writer wrote.
@@ -143,6 +147,10 @@ struct StepBrepResult {
     /// that do not close or no boundary at all), else 0.
     std::vector<std::int64_t> mRowLabel;
     std::vector<std::int32_t> mRowReason;
+    /// With `StepBrepOptions::mBrep`: the solid as NURBS, its faces in the
+    /// file's order (id `i + 1`), complete or empty with `mBrepWhy`.
+    BrepInfo mBrep;
+    std::string mBrepWhy;
 };
 
 /**
@@ -161,7 +169,8 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
 void write_step_report(const std::string& rPath, const Mesh& rMesh,
                        const StepWriteOptions& rOptions, StepBrepResult* pReport,
                        const std::vector<StepFreeformFace>* pFreeform = nullptr,
-                       const std::vector<StepEdgeCurve>* pEdgeCurves = nullptr);
+                       const std::vector<StepEdgeCurve>* pEdgeCurves = nullptr,
+                       bool BuildBrep = false);
 
 }  // namespace detail
 }  // namespace meshioplusplus

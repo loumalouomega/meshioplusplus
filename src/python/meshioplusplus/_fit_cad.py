@@ -267,7 +267,8 @@ def fit_cad(
         cone and torus patch becomes one analytic STEP face, bounded by line,
         circle and polyline edges, and the rest coplanar polygons (the
         returned mesh is the skin itself with the ``fit_cad:*`` cell data, its
-        volumes NaN and ``brep`` empty); ``"auto"`` (the default) is
+        volumes NaN, and ``brep`` empty in the legacy freeform mode and the
+        solid as trimmed NURBS faces outside it); ``"auto"`` (the default) is
         ``"occt"`` when the core carries it, else ``"native"``.
     :param refine_segmentation: first refine the patches with
         :func:`refine_patches` (variational shape approximation: patch

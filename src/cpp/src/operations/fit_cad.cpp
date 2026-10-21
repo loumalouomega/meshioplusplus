@@ -922,10 +922,19 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     detail::StepBrepResult brep;
     detail::write_step_report(rStepPath, *pSource, opts, &brep,
                               freeform.mFaces.empty() ? nullptr : &freeform.mFaces,
-                              freeform.mEdgeCurves.empty() ? nullptr : &freeform.mEdgeCurves);
+                              freeform.mEdgeCurves.empty() ? nullptr : &freeform.mEdgeCurves,
+                              rOptions.mFreeformMode != FitCadFreeformMode::Legacy);
 
     FitCadResult result;
     result.mBackend = FitCadBackend::Native;
+    // Outside the legacy mode, the solid as NURBS too (v17.12.0), for
+    // `write_cad_json`; empty, with a warning, where a face cannot be one.
+    if (rOptions.mFreeformMode != FitCadFreeformMode::Legacy) {
+        result.mBrep = std::move(brep.mBrep);
+        if (!brep.mBrepWhy.empty())
+            log::warn("fit_cad: the native solid has no NURBS form ({}); the B-rep is empty",
+                      brep.mBrepWhy);
+    }
     result.mValid = brep.mValid;
     result.mTolerance = brep.mTolerance;
     result.mSkinVolume = brep.mVolume;
@@ -1404,6 +1413,7 @@ struct FcRowInfo {
     double mMaxDist = std::numeric_limits<double>::quiet_NaN();
     double mRmsDist = std::numeric_limits<double>::quiet_NaN();
     double mReverseMaxDist = std::numeric_limits<double>::quiet_NaN();
+    double mMaxG1AngleDeg = std::numeric_limits<double>::quiet_NaN();
     // Outside the legacy mode: the distance the face may lie from its patch
     // (the tolerance, or the patch's noise floor when larger); 0 otherwise.
     double mAllowance = 0.0;
@@ -1448,7 +1458,10 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface>>&
                  const std::vector<std::uint8_t>& rAnalytic, double Tol, bool ExactEdges,
                  bool MergeFaces, const std::vector<std::uint8_t>& rNoMerge, double SewTol = 0.0,
                  bool SnapJunctions = false,
-                 const std::vector<FcHandle<Geom_Surface>>* pExtended = nullptr) {
+                 const std::vector<FcHandle<Geom_Surface>>* pExtended = nullptr,
+                 const std::vector<detail::StepEdgeCurve>* pNetworkCurves = nullptr,
+                 const std::vector<std::uint8_t>* pNetworkRow = nullptr,
+                 bool FreeformApprox = false) {
     const detail::ClosedFacets& fc = rSkin.mFacets;
     const std::vector<double>& xyz = fc.mXyz;
     const std::size_t nf = fc.NumFacets();
@@ -1745,11 +1758,88 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface>>&
             builder.UpdateVertex(rV, 1.01 * d);
     };
 
+    // The patch networks' shared curves, by the mesh edges they run along
+    // (v17.12.0): the edge between two network patches is a piece of one.
+    std::unordered_map<std::uint64_t, std::pair<std::size_t, std::size_t>> curve_at;
+    if (pNetworkCurves != nullptr)
+        for (std::size_t k = 0; k < pNetworkCurves->size(); ++k) {
+            const detail::StepEdgeCurve& ec = (*pNetworkCurves)[k];
+            for (std::size_t i = 0; i + 1 < ec.mVerts.size(); ++i)
+                curve_at.emplace(fc_edge_key(ec.mVerts[i], ec.mVerts[i + 1]), std::make_pair(k, i));
+        }
+    const auto network_group = [&](std::int64_t G) {
+        return pNetworkRow != nullptr && G >= 0 && G < np &&
+               static_cast<std::size_t>(G) < pNetworkRow->size() &&
+               (*pNetworkRow)[static_cast<std::size_t>(G)] != 0;
+    };
+
     // Edges.
     for (FcChain& c : chains) {
         const TopoDS_Vertex& va = vertex.at(c.mVerts.front());
         const TopoDS_Vertex& vb = vertex.at(c.mVerts.back());
         try {
+            // Between two network patches along one shared curve: its exact
+            // piece, which both patches' boundaries are.
+            if (!curve_at.empty() && c.mVerts.front() != c.mVerts.back() &&
+                network_group(c.mGroupFwd) && network_group(c.mGroupBwd)) {
+                bool one = true;
+                std::size_t curve = 0;
+                std::vector<double> ts;
+                for (std::size_t i = 0; i + 1 < c.mVerts.size() && one; ++i) {
+                    const auto it = curve_at.find(fc_edge_key(c.mVerts[i], c.mVerts[i + 1]));
+                    if (it == curve_at.end() || (i > 0 && it->second.first != curve)) {
+                        one = false;
+                        break;
+                    }
+                    curve = it->second.first;
+                    const detail::StepEdgeCurve& ec = (*pNetworkCurves)[curve];
+                    const std::size_t at = it->second.second;
+                    const bool fwd = ec.mVerts[at] == c.mVerts[i];
+                    if (i == 0)
+                        ts.push_back(ec.mParams[fwd ? at : at + 1]);
+                    ts.push_back(ec.mParams[fwd ? at + 1 : at]);
+                }
+                for (std::size_t i = 2; one && i < ts.size(); ++i)
+                    one = (ts[i] - ts[i - 1]) * (ts[1] - ts[0]) > 0.0;
+                if (one && ts.size() >= 2 && ts.front() != ts.back()) {
+                    const detail::BsplineCurve piece = detail::bspline_curve_segment(
+                        (*pNetworkCurves)[curve].mCurve, ts.front(), ts.back());
+                    const int n = static_cast<int>(piece.mPoles.size());
+                    TColgp_Array1OfPnt poles(1, n);
+                    for (int i = 0; i < n; ++i) {
+                        const detail::PatchVec& q = piece.mPoles[static_cast<std::size_t>(i)];
+                        poles.SetValue(i + 1, gp_Pnt(q[0], q[1], q[2]));
+                    }
+                    std::vector<double> kv;
+                    std::vector<int> mv;
+                    for (double k : piece.mKnots) {
+                        if (!kv.empty() && k == kv.back())
+                            ++mv.back();
+                        else {
+                            kv.push_back(k);
+                            mv.push_back(1);
+                        }
+                    }
+                    TColStd_Array1OfReal knots(1, static_cast<int>(kv.size()));
+                    TColStd_Array1OfInteger mults(1, static_cast<int>(kv.size()));
+                    for (std::size_t i = 0; i < kv.size(); ++i) {
+                        knots.SetValue(static_cast<int>(i) + 1, kv[i]);
+                        mults.SetValue(static_cast<int>(i) + 1, mv[i]);
+                    }
+                    const FcHandle<Geom_Curve> cv =
+                        new Geom_BSplineCurve(poles, knots, mults, piece.mDegree);
+                    fit_vertex(va, cv->Value(piece.T0()));
+                    fit_vertex(vb, cv->Value(piece.T1()));
+                    BRepBuilderAPI_MakeEdge me(cv, va, vb, piece.T0(), piece.T1());
+                    if (me.IsDone()) {
+                        c.mEdge = me.Edge();
+                        c.mFromStart = true;
+                        c.mOk = true;
+                        ++out.mNumExact;
+                        continue;
+                    }
+                }
+            }
             if (!is_analytic(c.mGroupFwd) || !is_analytic(c.mGroupBwd)) {
                 if (c.mVerts.size() != 2)
                     throw Standard_Failure("a facet chain spans several mesh edges");
@@ -1775,7 +1865,18 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface>>&
                 return t == kFitCadFilletType || t == kFitCadHelicalType ||
                        t == kFitCadVertexBlendType || t == kFitCadChamferType;
             };
-            if (ExactEdges && !swept(c.mGroupFwd) && !swept(c.mGroupBwd)) {
+            // Two B-splines (a network patch and its freeform neighbours, which
+            // meet it tangentially or nearly so, and in the freeform modes any
+            // two) intersect slowly and unstably, and their intersection is
+            // no truer to the skin than the chain moved onto both: those
+            // edges go straight to the approximation.
+            const auto bspline = [&](std::int64_t G) {
+                return rSkin.mPatches[static_cast<std::size_t>(G)].mType == kFitCadBsplineType;
+            };
+            const bool network_pair =
+                (FreeformApprox || network_group(c.mGroupFwd) || network_group(c.mGroupBwd)) &&
+                bspline(c.mGroupFwd) && bspline(c.mGroupBwd);
+            if (ExactEdges && !swept(c.mGroupFwd) && !swept(c.mGroupBwd) && !network_pair) {
                 FcHandle<Geom_Curve> best;
                 double best_dev = std::numeric_limits<double>::infinity();
                 // The intersection branch nearest the chain, kept when nearer
@@ -4114,6 +4215,131 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
     // The general freeform stage's halvings so far, and what it built per row.
     std::vector<std::int64_t> general_depth(m, 0);
     std::vector<std::int64_t> general_refinements(m, 0), general_poles(m, 0);
+    // The patch network (v17.12.0; network mode before the freeform faces,
+    // auto mode for the patches they leave): the rows grouped into regions,
+    // each laid out and fitted as one network, as the native backend does
+    // (`fcn_networks`). A region with a layout gives every layout patch a row
+    // of its own: one within the tolerance with its surface, the rest for the
+    // freeform faces (`network`) or as facets with their reason (`auto`).
+    // Neighbouring patches share their boundary curves exactly, so the edges
+    // between them are built from surfaces that meet.
+    std::vector<std::uint8_t> network_row(m, 0), network_tried(m, 0);
+    std::vector<detail::StepEdgeCurve> network_curves;
+    std::int64_t num_network_edges = 0, num_network_ev = 0;
+    double network_g1 = 0.0;
+    const auto occt_network = [&](const std::vector<std::size_t>& rRows, bool AsFacets) {
+        std::vector<std::vector<std::size_t>> items;
+        for (std::size_t r : rRows)
+            items.push_back(facets_of[r]);
+        for (const FcnRegionNetwork& reg : fcn_networks(fc, items, rOptions, tol)) {
+            if (!reg.mLayout.mOk)
+                continue;
+            bool any = false;
+            for (const detail::NetworkPatch& np : reg.mNet.mPatches)
+                any = any || np.mOk;
+            // Auto: a region the network fits nowhere keeps the adaptive
+            // faces' rows and reasons.
+            if (!any && AsFacets)
+                continue;
+            const std::size_t first = rRows[reg.mItems.front()];
+            const double ptol = skin.mPatches[first].mTolerance;
+            const std::int64_t escalations = fc_row(row_info, first).mEscalations + 1;
+            for (std::size_t i : reg.mItems)
+                facets_of[rRows[i]].clear();
+            for (std::size_t i = 0; i < reg.mLayout.mPatches.size(); ++i) {
+                const std::vector<std::size_t>& pf = reg.mPatchFacets[i];
+                if (pf.empty())
+                    continue;
+                const detail::NetworkPatch& np = reg.mNet.mPatches[i];
+                FcPatch piece;
+                piece.mLabel = next_label++;
+                piece.mType = 0;
+                piece.mParams.fill(std::numeric_limits<double>::quiet_NaN());
+                piece.mTolerance = ptol;
+                const std::size_t row = skin.mPatches.size();
+                for (std::size_t f : pf)
+                    skin.mRow[f] = static_cast<std::int64_t>(row);
+                skin.mPatches.push_back(piece);
+                facets_of.push_back(pf);
+                surface.emplace_back();
+                analytic.push_back(0);
+                is_piece.push_back(1);
+                tile_depth.push_back(0);
+                general_depth.push_back(0);
+                network_row.resize(row + 1, 0);
+                network_tried.resize(row + 1, 1);
+                feature.resize(row + 1, 0);
+                FcRowInfo& info = fc_row(row_info, row);
+                info.mEscalations = escalations;
+                FcHandle<Geom_Surface> s;
+                if (np.mOk) {
+                    try {
+                        s = fc_occt_bspline(np.mSurface);
+                    } catch (const Standard_Failure& rErr) {
+                        log::debug("fit_cad: network patch {} has no OpenCASCADE surface: {}",
+                                   piece.mLabel, rErr.GetMessageString());
+                    }
+                }
+                if (s.IsNull()) {
+                    if (AsFacets) {
+                        info.mTried = true;
+                        info.mReason =
+                            static_cast<std::uint8_t>(np.mReason == FitCadDemotionReason::None
+                                                          ? FitCadDemotionReason::HausdorffExceeded
+                                                          : np.mReason);
+                    }
+                    continue;
+                }
+                surface[row] = orient(row, s);
+                analytic[row] = 1;
+                skin.mPatches[row].mType = static_cast<std::int32_t>(kFitCadBsplineType);
+                skin.mPatches[row].mAccepted = true;
+                feature[row] = kFcAdaptive;
+                network_row[row] = 1;
+                info.mTried = true;
+                info.mParam = FitCadParamMethod::Square;
+                info.mNumControl = static_cast<std::int64_t>(np.mSurface.NumPoles());
+                info.mIterations = np.mIterations;
+                info.mRefinements = np.mRefinements;
+                info.mMaxDist = np.mMaxDist;
+                info.mRmsDist = np.mRmsDist;
+                info.mReverseMaxDist = np.mReverseMaxDist;
+                info.mMaxG1AngleDeg = np.mMaxG1AngleDeg;
+                info.mAllowance = np.mAllowance > tol ? np.mAllowance : 0.0;
+            }
+            if (any) {
+                for (std::size_t c = 0; c < reg.mLayout.mChains.size(); ++c) {
+                    if (reg.mNet.mChains[c].mPoles.size() < 2)
+                        continue;
+                    detail::StepEdgeCurve ec;
+                    for (std::size_t v : reg.mLayout.mChains[c].mVerts)
+                        ec.mVerts.push_back(reg.mGlobal[v]);
+                    ec.mParams = reg.mNet.mChainParams[c];
+                    ec.mCurve = reg.mNet.mChains[c];
+                    network_curves.push_back(std::move(ec));
+                }
+                num_network_edges += static_cast<std::int64_t>(reg.mNet.mNumEdges);
+                num_network_ev += static_cast<std::int64_t>(reg.mNet.mNumExtraordinary);
+                network_g1 = std::max(network_g1, reg.mNet.mMaxG1AngleDeg);
+            }
+        }
+    };
+    const auto freeform_rows = [&](bool Tried) {
+        std::vector<std::size_t> rows;
+        for (std::size_t r = 0; r < skin.mPatches.size(); ++r) {
+            bool finite = true;
+            for (double x : skin.mPatches[r].mParams)
+                finite = finite && std::isfinite(x);
+            const std::int32_t type = skin.mPatches[r].mType;
+            if (facets_of[r].empty() || analytic[r] || (type >= 1 && type <= 5 && finite))
+                continue;
+            if (!Tried || (r < row_info.size() && row_info[r].mTried))
+                rows.push_back(r);
+        }
+        return rows;
+    };
+    if (rOptions.mFreeform && rOptions.mFreeformMode == FitCadFreeformMode::Network)
+        occt_network(freeform_rows(false), false);
     for (std::size_t r = 0; rOptions.mFreeform && r < skin.mPatches.size(); ++r) {
         bool finite = true;
         for (double x : skin.mPatches[r].mParams)
@@ -4316,10 +4542,20 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
                        rErr.GetMessageString());
         }
     }
+    if (rOptions.mFreeform && rOptions.mFreeformMode == FitCadFreeformMode::Auto) {
+        const std::vector<std::size_t> rows = freeform_rows(true);
+        network_tried.resize(skin.mPatches.size(), 0);
+        for (std::size_t r : rows)
+            network_tried[r] = 1;
+        if (!rows.empty())
+            occt_network(rows, true);
+    }
     m = skin.mPatches.size();
     if (num_freeform_tried > 0)
         log::debug("fit_cad: {} patch(es) tried as freeform B-spline faces", num_freeform_tried);
     feature.resize(m, 0);
+    network_row.resize(m, 0);
+    network_tried.resize(m, 0);
 
     // Blends (roadmap 6.3.1): a patch between two fitted faces, one of them a
     // freeform B-spline, tried as a rolling-ball blend of constant or varying
@@ -4343,7 +4579,8 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
             const bool freeform =
                 analytic_before[r] && type == static_cast<std::int32_t>(kFitCadBsplineType);
             const bool unexplained = !analytic_before[r] && !(type >= 1 && type <= 5 && finite);
-            if (facets_of[r].empty() || (!freeform && !unexplained))
+            // A network patch is a face of its own network, not a blend.
+            if (facets_of[r].empty() || (!freeform && !unexplained) || network_row[r])
                 continue;
             double perimeter = 0.0;
             const std::vector<std::pair<double, std::int64_t>> by_length = neighbours(r, perimeter);
@@ -4355,6 +4592,9 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
             const std::int32_t bs = static_cast<std::int32_t>(kFitCadBsplineType);
             if (!fitted(q1) || !fitted(q2) || along < 0.6 * perimeter ||
                 (type_before[q1] != bs && type_before[q2] != bs))
+                continue;
+            // Nor is a gap left inside a network, between two of its patches.
+            if (network_row[q1] && network_row[q2])
                 continue;
             std::vector<gp_Pnt> pts;
             std::vector<std::array<std::size_t, 3>> tris;
@@ -4404,7 +4644,9 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
             const bool freeform =
                 analytic[r] && type == static_cast<std::int32_t>(kFitCadBsplineType);
             const bool unexplained = !analytic[r] && !(type >= 1 && type <= 5 && finite);
-            if (facets_of[r].empty() || (!freeform && !unexplained))
+            // A network patch is a face of its own network, not a blend.
+            if (facets_of[r].empty() || (!freeform && !unexplained) ||
+                (r < network_row.size() && network_row[r]))
                 continue;
             std::vector<gp_Pnt> pts;
             std::vector<std::array<std::size_t, 3>> tris;
@@ -4567,6 +4809,89 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
             }
         }
 
+    // An adaptive face the checks demote, halved across its longest extent and
+    // each half fitted in turn (v17.12.0): the tiles of the general faces,
+    // reached from the checks rather than the fit.
+    const auto halve_and_refit = [&](std::size_t R) {
+        if (R >= tile_depth.size() || tile_depth[R] >= kFcTileMaxDepth)
+            return;
+        std::vector<gp_Pnt> pts;
+        std::vector<std::array<std::size_t, 3>> tris;
+        std::vector<detail::PatchVec> flat;
+        patch_mesh(R, pts, tris, flat);
+        std::size_t num = 0;
+        const std::vector<std::int64_t> piece =
+            detail::patch_bisect(flat, tris, kFcTileMinTriangles, num);
+        if (num < 2)
+            return;
+        // A facet goes with its first triangle's piece.
+        std::vector<std::vector<std::size_t>> pf(num);
+        std::vector<std::size_t> kept;
+        std::size_t t = 0;
+        for (std::size_t f : facets_of[R]) {
+            const std::int64_t n = fc.mStart[f + 1] - fc.mStart[f];
+            const std::int64_t at = piece[t];
+            if (at >= 0)
+                pf[static_cast<std::size_t>(at)].push_back(f);
+            else
+                kept.push_back(f);
+            t += static_cast<std::size_t>(std::max<std::int64_t>(n - 2, 0));
+        }
+        facets_of[R] = std::move(kept);
+        fc_row(row_info, R).mReason = static_cast<std::uint8_t>(FitCadDemotionReason::TooSmall);
+        const std::int64_t escalations = fc_row(row_info, R).mEscalations + 1;
+        for (std::vector<std::size_t>& facets : pf) {
+            if (facets.empty())
+                continue;
+            FcPatch np;
+            np.mLabel = next_label++;
+            np.mType = 0;
+            np.mParams.fill(std::numeric_limits<double>::quiet_NaN());
+            np.mTolerance = skin.mPatches[R].mTolerance;
+            const std::size_t row = skin.mPatches.size();
+            for (std::size_t f : facets)
+                skin.mRow[f] = static_cast<std::int64_t>(row);
+            skin.mPatches.push_back(np);
+            facets_of.push_back(std::move(facets));
+            surface.emplace_back();
+            analytic.push_back(0);
+            is_piece.push_back(1);
+            tile_depth.push_back(static_cast<std::uint8_t>(tile_depth[R] + 1));
+            general_depth.push_back(general_depth[R]);
+            feature.resize(row + 1, 0);
+            network_row.resize(row + 1, 0);
+            network_tried.resize(row + 1, 1);
+            ++result.mNumSplitPatches;
+            std::vector<gp_Pnt> ppts;
+            std::vector<std::array<std::size_t, 3>> ptris;
+            std::vector<detail::PatchVec> pflat;
+            patch_mesh(row, ppts, ptris, pflat);
+            FcRowInfo info;
+            info.mEscalations = escalations;
+            FcHandle<Geom_Surface> srf;
+            try {
+                srf = fc_freeform_adaptive(ppts, ptris, tol, rOptions, info);
+            } catch (const Standard_Failure& rErr) {
+                log::debug("fit_cad: no adaptive face for a half of patch {}: {}",
+                           skin.mPatches[R].mLabel, rErr.GetMessageString());
+            }
+            info.mTried = true;
+            if (srf.IsNull()) {
+                if (!info.mReason)
+                    info.mReason =
+                        static_cast<std::uint8_t>(FitCadDemotionReason::HausdorffExceeded);
+                fc_row(row_info, row) = info;
+                continue;
+            }
+            fc_row(row_info, row) = info;
+            surface[row] = orient(row, srf);
+            analytic[row] = 1;
+            skin.mPatches[row].mType = static_cast<std::int32_t>(kFitCadBsplineType);
+            skin.mPatches[row].mAccepted = true;
+            feature[row] = kFcAdaptive;
+        }
+    };
+
     // Build, check, demote and rebuild.
     FcBuild build;
     FcTriangulation tri;
@@ -4578,7 +4903,9 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
         try {
             build = fc_build(skin, surface, analytic, tol, rOptions.mExactEdges,
                              rOptions.mMergeFaces, no_merge, rOptions.mSewTolerance,
-                             rOptions.mSnapJunctions, extended.empty() ? nullptr : &extended);
+                             rOptions.mSnapJunctions, extended.empty() ? nullptr : &extended,
+                             network_curves.empty() ? nullptr : &network_curves, &network_row,
+                             rOptions.mFreeformMode != FitCadFreeformMode::Legacy);
         } catch (const Standard_Failure& rErr) {
             build = FcBuild{};
             build.mBadRow.assign(m, 0);
@@ -4717,11 +5044,54 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
                     if (!freeform(r))
                         drop[r] = 0;
         }
+        std::vector<std::size_t> escalate;
         for (std::size_t r = 0; r < m; ++r)
             if (drop[r] && analytic[r]) {
                 analytic[r] = 0;
                 fc_row(row_info, r).mReason = drop[r];
+                if ((feature[r] & kFcAdaptive) != 0 && !network_row[r])
+                    escalate.push_back(r);
             }
+        // Outside the legacy mode (v17.12.0), an adaptive face the checks
+        // demote climbs one more rung before it is facets: under `auto` the
+        // patch network of its region, then (and in the other modes) its
+        // halves, each fitted in turn, down to the tile depth. Such a round
+        // is not a demotion round: each rung is climbed once per row.
+        if (rOptions.mFreeform && rOptions.mFreeformMode != FitCadFreeformMode::Legacy &&
+            !escalate.empty()) {
+            const std::size_t before = skin.mPatches.size();
+            std::vector<std::size_t> halve;
+            std::vector<std::size_t> fresh;
+            if (rOptions.mFreeformMode == FitCadFreeformMode::Auto)
+                for (std::size_t r : escalate)
+                    if (!network_tried[r]) {
+                        network_tried[r] = 1;
+                        fresh.push_back(r);
+                    }
+            if (!fresh.empty())
+                occt_network(fresh, true);
+            for (std::size_t r : escalate)
+                if (!facets_of[r].empty())
+                    halve.push_back(r);
+            const std::size_t networked = skin.mPatches.size();
+            for (std::size_t r : halve)
+                halve_and_refit(r);
+            m = skin.mPatches.size();
+            allowance.resize(m, tol);
+            for (std::size_t r = before; r < m; ++r)
+                if (r < row_info.size() && row_info[r].mAllowance > tol)
+                    allowance[r] = row_info[r].mAllowance;
+            feature.resize(m, 0);
+            network_row.resize(m, 0);
+            network_tried.resize(m, 1);
+            if (m > before) {
+                log::debug(
+                    "fit_cad: {} demoted adaptive face(s) rebuilt as {} network row(s) and {} "
+                    "half(s)",
+                    escalate.size(), networked - before, m - networked);
+                --round;
+            }
+        }
     }
     if (build.mShape.IsNull())
         throw std::runtime_error(std::string(kFcPrefix) +
@@ -4781,7 +5151,9 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
                 break;
             case kFitCadBsplineType:
                 ++result.mNumBspline;
-                if (feat & kFcAdaptive)
+                if (g >= 0 && g < mi && network_row[static_cast<std::size_t>(g)])
+                    ++result.mNumNetworkPatches;
+                else if (feat & kFcAdaptive)
                     ++result.mNumFreeformAdaptive;
                 if (feat & kFcGeneral) {
                     const std::size_t gr = static_cast<std::size_t>(g);
@@ -4849,6 +5221,11 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
     // The freeform-mode report (v17.12.0): the facet area share of the
     // re-mesh, and a record per patch tried as a surface.
     result.mBrepChecked = true;
+    if (result.mNumNetworkPatches > 0) {
+        result.mNumNetworkEdges = num_network_edges;
+        result.mNumExtraordinaryVertices = num_network_ev;
+        result.mMaxG1AngleDeg = network_g1;
+    }
     result.mFreeformMode = rOptions.mFreeformMode;
     {
         std::vector<std::int64_t> tri_type(nt);
@@ -4878,6 +5255,7 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
             rec.mMaxDist = info.mMaxDist;
             rec.mRmsDist = info.mRmsDist;
             rec.mReverseMaxDist = info.mReverseMaxDist;
+            rec.mMaxG1AngleDeg = info.mMaxG1AngleDeg;
             if (analytic[r] && first_face[r] >= 0) {
                 rec.mFace = first_face[r];
                 rec.mKind = skin.mPatches[r].mType;

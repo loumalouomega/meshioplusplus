@@ -147,7 +147,8 @@
  * `StepFaces::Fitted`. A patch whose corners cannot be moved onto its
  * surface within the tolerance is demoted to polygons. There are no
  * freeform, fillet or thread faces and no re-meshing: the returned mesh is
- * the skin itself with the `fit_cad:*` cell data, `mBrep` is empty,
+ * the skin itself with the `fit_cad:*` cell data, `mBrep` is empty in the
+ * legacy freeform mode (outside it, the solid as trimmed NURBS faces),
  * `mVolume` and `mVolumeRatio` are NaN (`mSkinVolume` is the skin's), and
  * `mValid` is the writer's topological check (a closed shell, every edge
  * used twice in opposite senses).
