@@ -17,6 +17,7 @@
 
 // System includes
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -446,7 +447,8 @@ TEST(Pipeline, FitCadRefineKeys) {
     EXPECT_NEAR(*pipeline_counter(entry, "ExplainedAreaFraction"), 1.0, 1e-12);
     // The existing counters come first, in their old order.
     EXPECT_EQ(entry.mCounters.front().first, "Valid");
-    EXPECT_EQ(entry.mCounters.size(), plain.mSteps[0].mCounters.size() + 4);
+    ASSERT_NE(pipeline_counter(entry, "RefinementKept"), nullptr);
+    EXPECT_EQ(entry.mCounters.size(), plain.mSteps[0].mCounters.size() + 5);
 
     PipelineReport bad;
     EXPECT_THROW(
@@ -454,6 +456,60 @@ TEST(Pipeline, FitCadRefineKeys) {
                                            {step("FitCad", {{"Backend", std::string("native")},
                                                             {"RansacSeed", std::int64_t{-3}}})},
                                            bad),
+        std::invalid_argument);
+}
+
+TEST(Pipeline, FitCadPhaseThreeKeys) {
+    // `Closed` is always reported; each Phase 3 option adds its counters only
+    // when it is set, so an existing report gains just the one key.
+    PipelineReport plain;
+    meshioplusplus::run_pipeline_steps(
+        analytic::box_skin(2), {step("FitCad", {{"Backend", std::string("native")}})}, plain);
+    ASSERT_EQ(plain.mSteps.size(), 1u);
+    ASSERT_NE(pipeline_counter(plain.mSteps[0], "Closed"), nullptr);
+    EXPECT_EQ(*pipeline_counter(plain.mSteps[0], "Closed"), 1.0);
+    EXPECT_EQ(plain.mSteps[0].mCounters.back().first, "Closed");
+    for (const char* key :
+         {"NumFreeformGeneral", "NumFreeformRefinements", "AvgFreeformPoles", "NumExtendedEdges",
+          "NumSnappedJunctions", "HausdorffMax", "HausdorffRms"})
+        EXPECT_EQ(pipeline_counter(plain.mSteps[0], key), nullptr) << key;
+
+    PipelineReport all;
+    meshioplusplus::run_pipeline_steps(analytic::box_skin(2),
+                                       {step("FitCad", {{"Backend", std::string("native")},
+                                                        {"FreeformGeneral", true},
+                                                        {"FreeformTolerance", 0.0},
+                                                        {"FreeformSmoothing", 1e-10},
+                                                        {"MaxFreeformPoles", std::int64_t{20}},
+                                                        {"MaxFreeformIterations", std::int64_t{5}},
+                                                        {"MaxFreeformSplits", std::int64_t{1}},
+                                                        {"SewTolerance", 0.0},
+                                                        {"ExtendSurfaces", true},
+                                                        {"SnapJunctions", true},
+                                                        {"FaceDeviation", true}})},
+                                       all);
+    ASSERT_EQ(all.mSteps.size(), 1u);
+    const auto& entry = all.mSteps[0];
+    for (const char* key :
+         {"NumFreeformGeneral", "NumFreeformRefinements", "AvgFreeformPoles", "NumExtendedEdges",
+          "NumSnappedJunctions", "HausdorffMax", "HausdorffRms"})
+        EXPECT_NE(pipeline_counter(entry, key), nullptr) << key;
+    EXPECT_EQ(entry.mCounters.size(), plain.mSteps[0].mCounters.size() + 7);
+    // The native backend builds no freeform faces and measures nothing.
+    EXPECT_EQ(*pipeline_counter(entry, "NumFreeformGeneral"), 0.0);
+    EXPECT_TRUE(std::isnan(*pipeline_counter(entry, "HausdorffMax")));
+
+    PipelineReport bad;
+    EXPECT_THROW(meshioplusplus::run_pipeline_steps(
+                     analytic::box_skin(2),
+                     {step("FitCad", {{"Backend", std::string("native")},
+                                      {"MaxFreeformPoles", std::int64_t{3}}})},
+                     bad),
+                 std::invalid_argument);
+    EXPECT_THROW(
+        meshioplusplus::run_pipeline_steps(
+            analytic::box_skin(2),
+            {step("FitCad", {{"Backend", std::string("native")}, {"SewTolerance", -1.0}})}, bad),
         std::invalid_argument);
 }
 

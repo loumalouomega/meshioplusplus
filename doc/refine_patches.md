@@ -27,11 +27,11 @@ solid = mp.fit_cad(skin, "bracket.step", refine_segmentation=True)  # the same, 
 
 The method is a hybrid variational shape approximation: the Lloyd iteration over surface proxies of Cohen-Steiner, Alliez and Desbrun ([*Variational shape approximation*, SIGGRAPH 2004](https://doi.org/10.1145/1015706.1015817)), with the plane, sphere, cylinder and other primitive proxies of Wu and Kobbelt ([*Structure recovery via hybrid variational surface approximation*, Computer Graphics Forum 2005](https://doi.org/10.1111/j.1467-8659.2005.00852.x)). With `t` the `tolerance` (times the surface's bounding-box diagonal when `relative`):
 
-- **Proxies.** Each patch is explained by a plane, sphere, cylinder, cone or torus — [`fit_primitives`](/fit_primitives)' fit with every point within `t` — or else by a *freeform* proxy, a quadric height field over its best-fit plane, or, for an isolated patch too small to fit anything, a *facets* proxy.
+- **Proxies.** Each patch is explained by a plane, sphere, cylinder, cone or torus — [`fit_primitives`](/fit_primitives)' fit, accepted as `fit_primitives` accepts one (RMS distance within `t`, nine points in ten within it), so the refinement's verdict and the fit table it writes agree — or else by a *freeform* proxy, a quadric height field over its best-fit plane, or, for an isolated patch too small to fit anything, a *facets* proxy.
 - **Lloyd step.** Each patch keeps the cell its proxy explains best as its seed, and the patches grow back from their seeds together, one cell at a time, cheapest first. A cell's cost against a proxy is its area times `d² / t² + w (1 - |n · n_p|)`, with `d` its centroid's distance to the proxy, `n` its normal, `n_p` the proxy's normal there and `w` the `normal_weight`. Growth never crosses a feature edge (a dihedral angle above `feature_angle`, as in `segment`), an open, non-manifold or inconsistently wound edge, or a cell outside every patch (`-1`), so a patch stays edge-connected and inside the smooth area it started in. The proxies are refitted, and a step that raised the energy (the sum of the costs) is undone.
 - **Split** (`allow_split`). A freeform patch is searched for a primitive inside it by seeded RANSAC (Schnabel, Wahl and Klein, [*Efficient RANSAC for point-cloud shape detection*, Computer Graphics Forum 2007](https://doi.org/10.1111/j.1467-8659.2007.01016.x)): hypotheses fitted to the neighbourhoods of cells drawn by a splitmix64 generator seeded by `ransac_seed`, each scored by the area of the connected cells it explains within `t`. The best becomes its own patch, the rest of the freeform patch its connected pieces. A split is kept when the cells the primitive takes cost less under it than under the freeform proxy they leave.
 - **Merge** (`allow_merge`). Two neighbouring patches one primitive explains together are merged, cheapest first (by the union's RMS), each patch in at most one merge per iteration, when the union costs no more than the two patches.
-- **Absorb.** A freeform or facets patch with fewer than `min_patch_cells` cells joins the neighbour it shares the most smooth edges with (ties to the lowest patch). A small patch a primitive explains stays.
+- **Absorb.** A patch with fewer than `min_patch_cells` cells joins the neighbour it shares the most smooth edges with (ties to the lowest patch), whatever its proxy: two triangles always lie on a plane, so a fragment the flooding left is not a face. A small patch bounded by creases has no smooth neighbour and stays.
 
 Refinement stops when the partition no longer changes (`unchanged`, or `energy_rose` when the Lloyd step was undone and no split or merge applied), when an iteration adds less than `epsilon` to the share of the area primitives explain (`small_gain`), or after `max_iterations` iterations (`iteration_cap`).
 
@@ -43,7 +43,7 @@ Refinement stops when the partition no longer changes (`unchanged`, or `energy_r
 | `epsilon` | `1e-3` | stop when an iteration adds less than this to the explained area share; >= 0 |
 | `feature_angle` | `30` | the dihedral angle, in degrees, above which an edge is a feature no patch crosses; [0, 180] |
 | `max_iterations` | `10` | the most iterations; >= 0 (`0` rewrites the outputs of the input partition) |
-| `min_patch_cells` | `3` | a freeform or facets patch with fewer cells joins a neighbour; >= 1 |
+| `min_patch_cells` | `3` | a patch with fewer cells joins a smooth neighbour; >= 1 |
 | `ransac_seed` | `0x6d657368696f2b2b` | the seed of the RANSAC split (the bytes of `"meshio++"`); in [0, 2⁶⁴) |
 | `types` | all | the primitives a proxy may be, from `plane`, `sphere`, `cylinder`, `cone`, `torus`; an empty list leaves every patch freeform |
 | `allow_split` | `True` | split a primitive out of a freeform patch |
@@ -67,7 +67,7 @@ The input — points, connectivity, block order, data and other regions bit-iden
 | `refine:patch_cells` | `int64` | the patch's cells |
 | `refine:patch_demotion` | `int64` | why the patch has no primitive: 0 none (a primitive explains it), 1 too small to fit with no neighbour to join, 2 no primitive within the tolerance |
 | `refine:explained_area_fraction` | `float64`, one value | the share of the area primitives explain |
-| `refine:hausdorff` | `float64`, two values | the largest and the RMS distance of a skin point from its patch's proxy |
+| `refine:hausdorff` | `float64`, two values | the largest and the RMS distance of a skin point from its patch's proxy; the largest can exceed the tolerance, since a primitive is accepted with one point in ten beyond it |
 
 With `return_report=True` the report holds `num_patches`, `num_iterations` (the Lloyd steps kept), `num_splits`, `num_merges`, `num_absorbed`, `num_primitive`, `num_freeform` and `num_facets` (patches by proxy), the absolute `tolerance` applied, `explained_area_fraction` and `initial_explained_area_fraction` (before and after), `hausdorff_max` and `hausdorff_rms`, `initial_energy` and `energy`, and `stop` (`"unchanged"`, `"small_gain"`, `"iteration_cap"` or `"energy_rose"`).
 
@@ -84,6 +84,7 @@ The proxies of the patches a step changed are refitted in parallel, each seriall
 ## Limitations
 
 - **A genuinely freeform surface can be cut into strips.** Within a tolerance, a smooth freeform region is covered by many narrow planes, cylinders or tori, and the split takes them one by one; the explained area share rises but the faces are not what a designer drew. `allow_split=False` keeps such a region one freeform patch, which [`fit_cad`](/fit_cad#freeform-faces) turns into one B-spline face; general freeform faces, the second phase of this work, are the eventual alternative.
+- **Blends and corners are not primitives.** A rolling-ball fillet of varying section, a vertex blend or a thread flank is explained by `fit_cad`'s feature fits, not by a primitive, so refinement treats it as freeform and may split it into tori and cones. `fit_cad(refine_segmentation=True)` guards against this by building the solid both ways and keeping the better one ([refining the patches first](/fit_cad#refining-the-patches-first)); a standalone `refine_patches` call does not.
 - **The energy guarantee covers the Lloyd step only.** A Lloyd step never raises the energy and a merge never does; a split trades the freeform rest's cost for the cells a primitive takes, and absorbing a small patch is not an energy move at all, so the final energy can exceed the initial one when either applies.
 - **Boundaries move within smooth areas only.** Growth never crosses a feature edge, so a boundary on one stays where `segment` put it, and a surface segmented at a `feature_angle` other than refinement's can keep boundaries refinement cannot move.
 

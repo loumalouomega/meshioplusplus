@@ -57,6 +57,27 @@ _REPORT_INTS = (
 # The refinement's report keys, added only when ``refine_segmentation`` is set.
 _REFINE_INTS = ("refine_iterations", "num_refine_splits", "num_refine_merges")
 _REFINE_FLOATS = ("initial_explained_area_fraction", "explained_area_fraction")
+# The general freeform fit's, only with ``freeform_general``; the extended
+# surfaces, only with ``extend_surfaces``; the snapped junctions, only with
+# ``snap_junctions``; the Hausdorff distances, only with ``face_deviation``.
+_FREEFORM_INTS = ("num_freeform_general", "num_freeform_refinements")
+_FREEFORM_FLOATS = ("avg_freeform_poles",)
+_DEVIATION_FLOATS = ("hausdorff_max", "hausdorff_rms")
+
+# The Phase 3 options and their defaults: passed to the core only when one
+# differs, so a default call is the one the binding always took.
+_PHASE3_DEFAULTS = {
+    "freeform_general": False,
+    "freeform_tolerance": 0.0,
+    "freeform_smoothing": 1e-12,
+    "max_freeform_poles": 40,
+    "max_freeform_iterations": 30,
+    "max_freeform_splits": 2,
+    "sew_tolerance": 0.0,
+    "extend_surfaces": False,
+    "snap_junctions": False,
+    "face_deviation": False,
+}
 
 
 def has_occt() -> bool:
@@ -129,6 +150,16 @@ def fit_cad(
     ransac_seed: int = DEFAULT_RANSAC_SEED,
     refine_tolerance: float = 1e-3,
     relative_tolerance: bool = True,
+    freeform_general: bool = False,
+    freeform_tolerance: float = 0.0,
+    freeform_smoothing: float = 1e-12,
+    max_freeform_poles: int = 40,
+    max_freeform_iterations: int = 30,
+    max_freeform_splits: int = 2,
+    sew_tolerance: float = 0.0,
+    extend_surfaces: bool = False,
+    snap_junctions: bool = False,
+    face_deviation: bool = False,
 ):
     """Build a CAD solid from the fitted patches of a closed skin.
 
@@ -214,6 +245,36 @@ def fit_cad(
         lie within from its proxy.
     :param relative_tolerance: ``refine_tolerance`` is a fraction of the
         skin's bounding-box diagonal (default) rather than a length.
+    :param freeform_general: try a patch the plane and unrolled-cylinder
+        freeform fit leaves unexplained as a general freeform B-spline face: a
+        disc parametrisation (least-squares conformal, else mean-value) and an
+        iterative least-squares fit with parameter correction and knot
+        insertion, the patch halved up to ``max_freeform_splits`` times when
+        that fails. Off by default.
+    :param freeform_tolerance: the general fit's target at the vertices,
+        ``>= 0``; 0 takes a quarter of the tolerance. The face is accepted by
+        the same test as any freeform face, so a larger target never loosens
+        it.
+    :param freeform_smoothing: the general fit's thin-plate weight, relative
+        to the sample count on a unit parameter square, ``>= 0``.
+    :param max_freeform_poles: the most poles per direction of a general
+        freeform face, 4 to 1024.
+    :param max_freeform_iterations: the general fit's iteration budget,
+        ``>= 1``.
+    :param max_freeform_splits: how many times a patch the general fit cannot
+        explain is halved, ``>= 0``.
+    :param sew_tolerance: the tolerance the faces are sewn at, ``>= 0``; 0
+        (the default) sews at the tolerance itself. OpenCASCADE only.
+    :param extend_surfaces: extend every freeform B-spline surface past its
+        patch before the edges are built, so an intersection with a neighbour
+        just outside the fitted area is still found. OpenCASCADE only.
+    :param snap_junctions: place the B-rep vertices where analytic faces meet
+        by a least-squares solve on the surfaces' tangent planes before the
+        averaged projection. OpenCASCADE only.
+    :param face_deviation: measure the two-sided distance between each face
+        and the skin, as the field data ``fit_cad:face_hausdorff`` (per face,
+        an ``(n, 2)`` array: the face's re-mesh to the skin, and the skin it
+        stands for to the solid) and ``fit_cad:face_rms``. OpenCASCADE only.
     :returns: the solid re-meshed as triangles with cell data ``fit_cad:face``,
         ``fit_cad:type`` (0 a facet, 6 a freeform B-spline, 7 a fillet,
         blend or conic blend, 8 a helical thread face, 9 a vertex blend, 10 a
@@ -233,11 +294,21 @@ def fit_cad(
         (``num_tapered_thread``, ``num_variable_pitch_thread``),
         ``num_split_patches``, the demoted patches and the exact and
         approximated edges. With ``refine_segmentation`` the report also holds
-        ``refined``, ``refine_iterations``, ``num_refine_splits``,
+        ``refined``, ``refinement_kept`` (whether the solid was built from the
+        refined patches: the OpenCASCADE backend also builds it from the
+        patches as given and keeps that one when it is better),
+        ``refine_iterations``, ``num_refine_splits``,
         ``num_refine_merges`` and the area share primitives explain before and
         after (``initial_explained_area_fraction``,
         ``explained_area_fraction``), and the mesh the ``refine:*`` field data
-        of :func:`refine_patches`.
+        of :func:`refine_patches`. The report always holds ``closed`` (every
+        shell's edges border two faces); with ``freeform_general`` also
+        ``num_freeform_general``, ``num_freeform_refinements`` and
+        ``avg_freeform_poles``; with ``extend_surfaces``
+        ``num_extended_edges``; with ``snap_junctions``
+        ``num_snapped_junctions``; and with ``face_deviation`` the two-sided
+        ``hausdorff_max`` and ``hausdorff_rms`` (NaN when not measured, as from
+        the native backend).
     :raises NotImplementedError: without the compiled core, or with
         ``backend="occt"`` when the core was built without OpenCASCADE.
     """
@@ -296,6 +367,27 @@ def fit_cad(
         raise ValueError(f"{_PREFIX}refine_epsilon must be finite and >= 0")
     if refine["max_refine_iterations"] < 0:
         raise ValueError(f"{_PREFIX}max_refine_iterations must be >= 0")
+    phase3 = {
+        "freeform_general": bool(freeform_general),
+        "freeform_tolerance": float(freeform_tolerance),
+        "freeform_smoothing": float(freeform_smoothing),
+        "max_freeform_poles": int(max_freeform_poles),
+        "max_freeform_iterations": int(max_freeform_iterations),
+        "max_freeform_splits": int(max_freeform_splits),
+        "sew_tolerance": float(sew_tolerance),
+        "extend_surfaces": bool(extend_surfaces),
+        "snap_junctions": bool(snap_junctions),
+        "face_deviation": bool(face_deviation),
+    }
+    for key in ("freeform_tolerance", "freeform_smoothing", "sew_tolerance"):
+        if not (phase3[key] >= 0.0 and math.isfinite(phase3[key])):
+            raise ValueError(f"{_PREFIX}{key} must be finite and >= 0")
+    if not 4 <= phase3["max_freeform_poles"] <= 1024:
+        raise ValueError(f"{_PREFIX}max_freeform_poles must be 4 to 1024")
+    if phase3["max_freeform_iterations"] < 1:
+        raise ValueError(f"{_PREFIX}max_freeform_iterations must be >= 1")
+    if phase3["max_freeform_splits"] < 0:
+        raise ValueError(f"{_PREFIX}max_freeform_splits must be >= 0")
 
     try:
         from . import _core
@@ -328,6 +420,7 @@ def fit_cad(
         # The defaults leave the core's refinement off; passed only when it
         # runs, so a default call is the one the binding always took.
         **(refine if refine["refine_segmentation"] else {}),
+        **{k: v for k, v in phase3.items() if v != _PHASE3_DEFAULTS[k]},
     )
     out = res["mesh"]
     info = out.info if isinstance(getattr(out, "info", None), dict) else {}
@@ -335,13 +428,27 @@ def fit_cad(
     out.info = info
     if not return_report:
         return out
-    report = {"valid": bool(res["valid"]), "backend": str(res["backend"])}
+    report = {
+        "valid": bool(res["valid"]),
+        "backend": str(res["backend"]),
+        "closed": bool(res["closed"]),
+    }
     report.update({k: float(res[k]) for k in _REPORT_FLOATS})
     report.update({k: int(res[k]) for k in _REPORT_INTS})
     if refine["refine_segmentation"]:
         report["refined"] = bool(res["refined"])
+        report["refinement_kept"] = bool(res["refinement_kept"])
         report.update({k: int(res[k]) for k in _REFINE_INTS})
         report.update({k: float(res[k]) for k in _REFINE_FLOATS})
+    if phase3["freeform_general"]:
+        report.update({k: int(res[k]) for k in _FREEFORM_INTS})
+        report.update({k: float(res[k]) for k in _FREEFORM_FLOATS})
+    if phase3["extend_surfaces"]:
+        report["num_extended_edges"] = int(res["num_extended_edges"])
+    if phase3["snap_junctions"]:
+        report["num_snapped_junctions"] = int(res["num_snapped_junctions"])
+    if phase3["face_deviation"]:
+        report.update({k: float(res[k]) for k in _DEVIATION_FLOATS})
     return out, report
 
 

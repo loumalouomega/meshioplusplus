@@ -239,6 +239,7 @@ def test_to_cad_refine_flags(tmp_path, capsys):
     assert cli_main(base + flags) in (0, 2)
     refined = json.loads(capsys.readouterr().out)
     assert refined["refined"] is True
+    assert refined["refinement_kept"] is True
     assert (
         refined["explained_area_fraction"] >= refined["initial_explained_area_fraction"]
     )

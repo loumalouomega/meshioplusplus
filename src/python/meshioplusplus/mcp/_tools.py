@@ -2558,6 +2558,16 @@ def tool_fit_cad(
     ransac_seed=0x6D657368696F2B2B,
     refine_tolerance=1e-3,
     relative_tolerance=True,
+    freeform_general=False,
+    freeform_tolerance=0.0,
+    freeform_smoothing=1e-12,
+    max_freeform_poles=40,
+    max_freeform_iterations=30,
+    max_freeform_splits=2,
+    sew_tolerance=0.0,
+    extend_surfaces=False,
+    snap_junctions=False,
+    face_deviation=False,
 ):
     """Turn the fitted patches of a closed skin into a CAD solid with analytic
     faces (and, through OpenCASCADE, rolling-ball fillet, thread flank and
@@ -2570,9 +2580,17 @@ def tool_fit_cad(
     refine_segmentation first refines the patches by variational shape
     approximation (refine_patches: max_refine_iterations, refine_epsilon,
     normal_weight, allow_merge, allow_split, ransac_seed, refine_tolerance,
-    relative_tolerance) and adds refined, refine_iterations,
+    relative_tolerance) and adds refined, refinement_kept, refine_iterations,
     num_refine_splits, num_refine_merges and the explained area share before
-    and after to the report."""
+    and after to the report. freeform_general tries what the plane and
+    cylinder freeform fit leaves as a general B-spline face (freeform_tolerance,
+    freeform_smoothing, max_freeform_poles, max_freeform_iterations,
+    max_freeform_splits) and adds num_freeform_general,
+    num_freeform_refinements and avg_freeform_poles; sew_tolerance sets the
+    sewing tolerance; extend_surfaces adds num_extended_edges,
+    snap_junctions num_snapped_junctions, and face_deviation hausdorff_max,
+    hausdorff_rms and the fit_cad:face_hausdorff / fit_cad:face_rms field
+    data. The report always holds closed."""
     from .._fit_cad import has_occt
 
     occt = has_occt()
@@ -2630,6 +2648,16 @@ def tool_fit_cad(
         ransac_seed=ransac_seed,
         refine_tolerance=refine_tolerance,
         relative_tolerance=relative_tolerance,
+        freeform_general=freeform_general,
+        freeform_tolerance=freeform_tolerance,
+        freeform_smoothing=freeform_smoothing,
+        max_freeform_poles=max_freeform_poles,
+        max_freeform_iterations=max_freeform_iterations,
+        max_freeform_splits=max_freeform_splits,
+        sew_tolerance=sew_tolerance,
+        extend_surfaces=extend_surfaces,
+        snap_junctions=snap_junctions,
+        face_deviation=face_deviation,
     )
     _cache_invalidate(step_path)
     extra = {"step_path": step_path, "occt_available": occt, **report}

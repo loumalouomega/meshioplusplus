@@ -5082,15 +5082,50 @@ typedef struct mio_fit_cad_opts_ex {
      *  after any segmentation and fit fit_cad runs itself, before the faces
      *  are built. Off by default, so the output is what it was without it. */
     int32_t refine_segmentation;
-    int32_t reserved32; /**< must be zero */
+    /** Nonzero: a patch the plane and unrolled-cylinder freeform fit leaves
+     *  unexplained is tried as a general freeform B-spline face (a disc
+     *  parametrisation and an iterative least-squares fit), halved up to
+     *  max_freeform_splits times when that fails (v17.11.0). Off by default. */
+    int32_t freeform_general;
     /** The refinement's options, read when refine_segmentation is nonzero; a
      *  NULL or "" prefix means "patch". */
     mio_refine_patches_opts refine;
-    int64_t reserved[16]; /**< must be zero; room for additive growth */
+    /** The general fit's target at the vertices, >= 0; 0 takes a quarter of
+     *  the tolerance (v17.11.0). */
+    double freeform_tolerance;
+    /** The general fit's thin-plate weight, >= 0 (default 1e-12; 0 is taken
+     *  as given). */
+    double freeform_smoothing;
+    /** The most poles per direction of a general freeform face, 4 to 1024;
+     *  0 reads as the default 40. */
+    int64_t max_freeform_poles;
+    /** The general fit's iteration budget, >= 1; 0 reads as the default 30. */
+    int64_t max_freeform_iterations;
+    /** How many times a patch the general fit cannot explain is halved, >= 0
+     *  (default 2; 0 is taken as given: never halved). */
+    int64_t max_freeform_splits;
+    /** The tolerance the faces are sewn at, >= 0; 0 sews at the tolerance
+     *  itself. OpenCASCADE backend only. */
+    double sew_tolerance;
+    /** Nonzero: freeform B-spline surfaces are extended past their patches
+     *  before the edges are built. OpenCASCADE backend only. */
+    int32_t extend_surfaces;
+    /** Nonzero: the vertices where analytic faces meet are placed by a
+     *  least-squares solve on their tangent planes. OpenCASCADE backend only. */
+    int32_t snap_junctions;
+    /** Nonzero: each face's two-sided distance to the skin is measured, as the
+     *  "fit_cad:face_hausdorff" and "fit_cad:face_rms" field data and the
+     *  report's hausdorff_max / hausdorff_rms. OpenCASCADE backend only. */
+    int32_t face_deviation;
+    int32_t reserved32b; /**< must be zero */
+    int64_t reserved[8]; /**< must be zero; room for additive growth */
 } mio_fit_cad_opts_ex;
 
-/** Initialize the extended fit_cad options: no refinement, and the refinement's
- *  options at their mio_refine_patches_opts_init() defaults. */
+/** Initialize the extended fit_cad options: no refinement, the refinement's
+ *  options at their mio_refine_patches_opts_init() defaults, no general
+ *  freeform fit (freeform_smoothing 1e-12, max_freeform_poles 40,
+ *  max_freeform_iterations 30, max_freeform_splits 2), and sew_tolerance,
+ *  extend_surfaces, snap_junctions and face_deviation off. */
 MIO_API void mio_fit_cad_opts_ex_init(mio_fit_cad_opts_ex* opts);
 
 /** What mio_fit_cad2 reports beyond mio_fit_cad_report and
@@ -5105,17 +5140,39 @@ typedef struct mio_fit_cad_report_ex2 {
     /** The area share primitives explain before and after the refinement. */
     double initial_explained_area_fraction;
     double explained_area_fraction;
-    int64_t reserved[16]; /**< zero; room for additive growth */
+    /** Of the B-spline faces, those the general freeform fit built (v17.11.0). */
+    int64_t num_freeform_general;
+    /** Their knot insertion rounds, summed. */
+    int64_t num_freeform_refinements;
+    /** Their mean pole count (0 without any). */
+    double avg_freeform_poles;
+    /** Exact edges found by intersecting extend_surfaces' extended surfaces. */
+    int64_t num_extended_edges;
+    /** B-rep vertices snap_junctions placed by its least-squares solve. */
+    int64_t num_snapped_junctions;
+    /** With face_deviation: the two-sided Hausdorff distance between the
+     *  re-meshed solid and the skin, and the root mean square of those
+     *  distances; NaN when they were not measured. */
+    double hausdorff_max;
+    double hausdorff_rms;
+    /** 1 when every shell is closed (every edge borders two faces), else 0. */
+    int64_t closed;
+    /** 1 when the solid was built from the refined patches, else 0 (always 0
+     *  without refine_segmentation): the OpenCASCADE backend also builds it
+     *  from the patches as given and keeps that one when it is better. */
+    int64_t refinement_kept;
+    int64_t reserved[7]; /**< zero; room for additive growth */
 } mio_fit_cad_report_ex2;
 
 /**
  * mio_fit_cad with the options mio_fit_cad_opts has no room for (v17.11.0):
- * the segmentation refinement, and its report. Every pointer but `mesh` is
- * optional: NULL `opts` means every mio_fit_cad_opts_init() default and NULL
- * `opts_ex` every mio_fit_cad_opts_ex_init() default (no refinement).
- * mio_fit_cad_ex(mesh, path, opts, report, report_ex) is mio_fit_cad2(mesh,
- * path, opts, NULL, report, report_ex, NULL). With refinement on, the result
- * also carries the refinement's "refine:*" field data.
+ * the segmentation refinement, the general freeform fit, the sewing tolerance,
+ * extended surfaces, junction snapping and face deviation, and their report. Every pointer but
+ * `mesh` is optional: NULL `opts` means every mio_fit_cad_opts_init() default and NULL `opts_ex`
+ * every mio_fit_cad_opts_ex_init() default (no refinement). mio_fit_cad_ex(mesh, path, opts,
+ * report, report_ex) is mio_fit_cad2(mesh, path, opts, NULL, report, report_ex, NULL). With
+ * refinement on, the result also carries the refinement's "refine:*" field data, and with
+ * face_deviation the "fit_cad:face_hausdorff" and "fit_cad:face_rms" field data.
  */
 MIO_API mio_mesh* mio_fit_cad2(const mio_mesh* mesh, const char* step_path,
                                const mio_fit_cad_opts* opts, const mio_fit_cad_opts_ex* opts_ex,

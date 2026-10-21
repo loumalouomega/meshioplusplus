@@ -223,6 +223,16 @@ _OP_TABLE = {
         "RansacSeed",
         "RefineTolerance",
         "RelativeTolerance",
+        "FreeformGeneral",
+        "FreeformTolerance",
+        "FreeformSmoothing",
+        "MaxFreeformPoles",
+        "MaxFreeformIterations",
+        "MaxFreeformSplits",
+        "SewTolerance",
+        "ExtendSurfaces",
+        "SnapJunctions",
+        "FaceDeviation",
     ),
     "RefinePatches": (
         "Tolerance",
@@ -1367,6 +1377,16 @@ def _apply_step(mesh, step, steps, warnings):
             ransac_seed=_seed(step, "RansacSeed", DEFAULT_RANSAC_SEED),
             refine_tolerance=_number(step, "RefineTolerance", 1e-3),
             relative_tolerance=_flag(step, "RelativeTolerance", True),
+            freeform_general=_flag(step, "FreeformGeneral", False),
+            freeform_tolerance=_number(step, "FreeformTolerance", 0.0),
+            freeform_smoothing=_number(step, "FreeformSmoothing", 1e-12),
+            max_freeform_poles=int(_number(step, "MaxFreeformPoles", 40.0)),
+            max_freeform_iterations=int(_number(step, "MaxFreeformIterations", 30.0)),
+            max_freeform_splits=int(_number(step, "MaxFreeformSplits", 2.0)),
+            sew_tolerance=_number(step, "SewTolerance", 0.0),
+            extend_surfaces=_flag(step, "ExtendSurfaces", False),
+            snap_junctions=_flag(step, "SnapJunctions", False),
+            face_deviation=_flag(step, "FaceDeviation", False),
         )
         entry["Valid"] = 1.0 if report["valid"] else 0.0
         entry["Native"] = 1.0 if report["backend"] == "native" else 0.0
@@ -1387,6 +1407,7 @@ def _apply_step(mesh, step, steps, warnings):
         entry["NumTaperedThread"] = report["num_tapered_thread"]
         entry["NumVariablePitchThread"] = report["num_variable_pitch_thread"]
         entry["NumDemoted"] = report["num_demoted"]
+        entry["Closed"] = 1.0 if report["closed"] else 0.0
         # Only a run that refined reports the refinement, so a report without
         # `RefineSegmentation` stays what it was before the option existed.
         if report.get("refined"):
@@ -1394,6 +1415,19 @@ def _apply_step(mesh, step, steps, warnings):
             entry["NumRefineSplits"] = report["num_refine_splits"]
             entry["NumRefineMerges"] = report["num_refine_merges"]
             entry["ExplainedAreaFraction"] = report["explained_area_fraction"]
+            entry["RefinementKept"] = 1.0 if report["refinement_kept"] else 0.0
+        # Likewise each Phase 3 option reports only when it is set.
+        if "num_freeform_general" in report:
+            entry["NumFreeformGeneral"] = report["num_freeform_general"]
+            entry["NumFreeformRefinements"] = report["num_freeform_refinements"]
+            entry["AvgFreeformPoles"] = report["avg_freeform_poles"]
+        if "num_extended_edges" in report:
+            entry["NumExtendedEdges"] = report["num_extended_edges"]
+        if "num_snapped_junctions" in report:
+            entry["NumSnappedJunctions"] = report["num_snapped_junctions"]
+        if "hausdorff_max" in report:
+            entry["HausdorffMax"] = report["hausdorff_max"]
+            entry["HausdorffRms"] = report["hausdorff_rms"]
     elif op == "RefinePatches":
         # A data step: the `segment:patch` labels are refined, the cells never move.
         types = _svec(step, "Types") if "Types" in step else None

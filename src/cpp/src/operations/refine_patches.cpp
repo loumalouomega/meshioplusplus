@@ -54,6 +54,8 @@ constexpr double kRpPi = 3.14159265358979323846;
 // hypothesis is fitted to.
 constexpr int kRpHypotheses = 24;
 constexpr std::size_t kRpNeighbourhood = 64;
+// fit_primitives' default share of a patch's points within the tolerance.
+constexpr double kRpMinInlierFraction = 0.9;
 // Relative slack on the energy comparisons (Lloyd step, merge).
 constexpr double kRpEnergySlack = 1e-12;
 
@@ -185,15 +187,18 @@ void rp_errors(const RpProxy& rP, const std::vector<double>& rPts, double& rRms,
     rMax = m;
 }
 
-// A primitive every point of the samples lies within the tolerance of, and
-// not a curved surface so flat or so large it stands in for a plane
-// (segment's sanity rule).
+// A primitive the samples lie on as `fit_primitives` accepts one (RMS within
+// the tolerance, nine points in ten within it), so the refinement's verdict
+// and the fit table it writes agree, and not a curved surface so flat or so
+// large it stands in for a plane (segment's sanity rule). The points outside
+// the tolerance are cells the primitive does not take in the Lloyd step.
 bool rp_fit_primitive(const RpSurface& rS, const std::vector<double>& rPts,
                       const std::vector<double>& rNormals, const std::vector<double>& rCentres,
                       std::uint32_t Types, detail::PrimitiveFit& rFit) {
     if (rPts.size() < 9 || Types == 0)
         return false;
-    rFit = detail::fit_primitive_samples(rPts, rNormals, rCentres, rS.mTol, Types, 1.0, 50);
+    rFit = detail::fit_primitive_samples(rPts, rNormals, rCentres, rS.mTol, Types,
+                                         kRpMinInlierFraction, 50);
     if (rFit.mType <= 0)
         return false;
     for (int k = 0; k < detail::kPrimitiveParams; ++k)
@@ -941,11 +946,11 @@ RefinePatchesResult refine_patches(const Mesh& rMesh, const RefinePatchesOptions
             }
         }
 
-        // Absorb: a small patch no primitive explains joins a neighbour.
+        // Absorb: a small patch joins the smooth neighbour it shares most edges
+        // with -- a fragment the flooding left, whatever proxy two triangles fit.
         if (min_cells > 1) {
             for (std::size_t r = 0; r < st.mFaces.size(); ++r) {
-                if (st.mFaces[r].empty() || st.mFaces[r].size() >= min_cells ||
-                    rp_is_primitive(st.mProxy[r]))
+                if (st.mFaces[r].empty() || st.mFaces[r].size() >= min_cells)
                     continue;
                 std::map<std::int64_t, std::int64_t> shared;
                 for (std::int64_t f : st.mFaces[r]) {

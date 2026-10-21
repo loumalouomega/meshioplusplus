@@ -2313,6 +2313,16 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
                                   {"no-refine-split", {}, false},
                                   {"ransac-seed", {}, true},
                                   {"refine-tolerance", {}, true},
+                                  {"freeform-general", {}, false},
+                                  {"freeform-tolerance", {}, true},
+                                  {"freeform-smoothing", {}, true},
+                                  {"max-freeform-poles", {}, true},
+                                  {"max-freeform-iterations", {}, true},
+                                  {"max-freeform-splits", {}, true},
+                                  {"sew-tolerance", {}, true},
+                                  {"extend-surfaces", {}, false},
+                                  {"snap-junctions", {}, false},
+                                  {"face-deviation", {}, false},
                                   {"mesh-out", {}, true},
                                   {"cad-json", {}, true},
                                   {"json", {}, false},
@@ -2408,6 +2418,24 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
     if (has_opt(p, "refine-tolerance"))
         options.mRefine.mTolerance =
             meshioplusplus::detail::stod_c(opt_value(p, "refine-tolerance"));
+    options.mFreeformGeneral = has_flag(p, "freeform-general");
+    if (has_opt(p, "freeform-tolerance"))
+        options.mFreeformTolerance =
+            meshioplusplus::detail::stod_c(opt_value(p, "freeform-tolerance"));
+    if (has_opt(p, "freeform-smoothing"))
+        options.mFreeformSmoothing =
+            meshioplusplus::detail::stod_c(opt_value(p, "freeform-smoothing"));
+    if (has_opt(p, "max-freeform-poles"))
+        options.mMaxFreeformPoles = std::stoll(opt_value(p, "max-freeform-poles"));
+    if (has_opt(p, "max-freeform-iterations"))
+        options.mMaxFreeformIterations = std::stoll(opt_value(p, "max-freeform-iterations"));
+    if (has_opt(p, "max-freeform-splits"))
+        options.mMaxFreeformSplits = std::stoll(opt_value(p, "max-freeform-splits"));
+    if (has_opt(p, "sew-tolerance"))
+        options.mSewTolerance = meshioplusplus::detail::stod_c(opt_value(p, "sew-tolerance"));
+    options.mExtendSurfaces = has_flag(p, "extend-surfaces");
+    options.mSnapJunctions = has_flag(p, "snap-junctions");
+    options.mFaceDeviation = has_flag(p, "face-deviation");
     meshioplusplus::FitCadResult r = meshioplusplus::fit_cad(mesh, p.positionals[1], options);
     const char* engine = r.mBackend == meshioplusplus::FitCadBackend::Native ? "native" : "occt";
     if (has_opt(p, "mesh-out"))
@@ -2419,6 +2447,7 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         json.BeginObject();
         json.Field("valid", r.mValid);
         json.Field("backend", std::string(engine));
+        json.Field("closed", r.mClosed);
         json.Field("tolerance", r.mTolerance);
         json.Field("volume", r.mVolume);
         json.Field("skin_volume", r.mSkinVolume);
@@ -2456,11 +2485,27 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
             json.Field("num_refine_merges", r.mNumRefineMerges);
             json.Field("initial_explained_area_fraction", r.mInitialExplainedAreaFraction);
             json.Field("explained_area_fraction", r.mExplainedAreaFraction);
+            json.Field("refinement_kept", r.mRefinementKept);
+        }
+        // Likewise each Phase 3 option reports only when it is set.
+        if (options.mFreeformGeneral) {
+            json.Field("num_freeform_general", r.mNumFreeformGeneral);
+            json.Field("num_freeform_refinements", r.mNumFreeformRefinements);
+            json.Field("avg_freeform_poles", r.mAvgFreeformPoles);
+        }
+        if (options.mExtendSurfaces)
+            json.Field("num_extended_edges", r.mNumExtendedEdges);
+        if (options.mSnapJunctions)
+            json.Field("num_snapped_junctions", r.mNumSnappedJunctions);
+        if (options.mFaceDeviation) {
+            json.Field("hausdorff_max", r.mHausdorffMax);
+            json.Field("hausdorff_rms", r.mHausdorffRms);
         }
         json.EndObject();
     } else if (!has_flag(p, "quiet")) {
-        std::cout << "to-cad (" << engine << "): " << r.mNumFaces << " face(s) in "
-                  << r.mNumSolids << " solid(s), " << (r.mValid ? "valid" : "NOT valid") << "\n";
+        std::cout << "to-cad (" << engine << "): " << r.mNumFaces << " face(s) in " << r.mNumSolids
+                  << " solid(s), " << (r.mValid ? "valid" : "NOT valid") << ", "
+                  << (r.mClosed ? "closed" : "NOT closed") << "\n";
         std::cout << "  plane:     " << r.mNumPlane << "\n";
         std::cout << "  sphere:    " << r.mNumSphere << "\n";
         std::cout << "  cylinder:  " << r.mNumCylinder << "\n";
@@ -2492,7 +2537,19 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
             std::cout << "  refined: " << r.mNumRefineSplits << " split(s), " << r.mNumRefineMerges
                       << " merge(s) in " << r.mRefineIterations << " iteration(s); explained area "
                       << r.mInitialExplainedAreaFraction << " -> " << r.mExplainedAreaFraction
+                      << (r.mRefinementKept ? "; refined patches kept" : "; original patches kept")
                       << "\n";
+        if (options.mFreeformGeneral)
+            std::cout << "  general freeform: " << r.mNumFreeformGeneral << " face(s), "
+                      << r.mNumFreeformRefinements << " knot insertion round(s), "
+                      << r.mAvgFreeformPoles << " pole(s) on average\n";
+        if (options.mExtendSurfaces)
+            std::cout << "  extended: " << r.mNumExtendedEdges << " surface(s)\n";
+        if (options.mSnapJunctions)
+            std::cout << "  snapped:  " << r.mNumSnappedJunctions << " junction(s)\n";
+        if (options.mFaceDeviation)
+            std::cout << "  face deviation: Hausdorff " << r.mHausdorffMax << ", RMS "
+                      << r.mHausdorffRms << "\n";
         std::cout << "  volume ratio " << r.mVolumeRatio << ", max deviation " << r.mMaxDeviation
                   << " (tolerance " << r.mTolerance << ")\n";
     }

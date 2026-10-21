@@ -3852,7 +3852,10 @@ PYBIND11_MODULE(_core, m) {
            const std::string& backend, bool refine_segmentation, double refine_tolerance,
            bool relative_tolerance, double normal_weight, double refine_epsilon,
            std::int64_t max_refine_iterations, bool allow_split, bool allow_merge,
-           std::uint64_t ransac_seed) {
+           std::uint64_t ransac_seed, bool freeform_general, double freeform_tolerance,
+           double freeform_smoothing, std::int64_t max_freeform_poles,
+           std::int64_t max_freeform_iterations, std::int64_t max_freeform_splits,
+           double sew_tolerance, bool extend_surfaces, bool snap_junctions, bool face_deviation) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
                 pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
@@ -3887,6 +3890,16 @@ PYBIND11_MODULE(_core, m) {
             options.mRefine.mAllowSplit = allow_split;
             options.mRefine.mAllowMerge = allow_merge;
             options.mRefine.mRansacSeed = ransac_seed;
+            options.mFreeformGeneral = freeform_general;
+            options.mFreeformTolerance = freeform_tolerance;
+            options.mFreeformSmoothing = freeform_smoothing;
+            options.mMaxFreeformPoles = max_freeform_poles;
+            options.mMaxFreeformIterations = max_freeform_iterations;
+            options.mMaxFreeformSplits = max_freeform_splits;
+            options.mSewTolerance = sew_tolerance;
+            options.mExtendSurfaces = extend_surfaces;
+            options.mSnapJunctions = snap_junctions;
+            options.mFaceDeviation = face_deviation;
             meshioplusplus::FitCadResult r =
                 core_nogil([&] { return meshioplusplus::fit_cad(cpp, path, options); });
             py::dict out;
@@ -3925,11 +3938,20 @@ PYBIND11_MODULE(_core, m) {
             out["backend"] =
                 r.mBackend == meshioplusplus::FitCadBackend::Native ? "native" : "occt";
             out["refined"] = r.mRefined;
+            out["refinement_kept"] = r.mRefinementKept;
             out["refine_iterations"] = r.mRefineIterations;
             out["num_refine_splits"] = r.mNumRefineSplits;
             out["num_refine_merges"] = r.mNumRefineMerges;
             out["initial_explained_area_fraction"] = r.mInitialExplainedAreaFraction;
             out["explained_area_fraction"] = r.mExplainedAreaFraction;
+            out["num_freeform_general"] = r.mNumFreeformGeneral;
+            out["num_freeform_refinements"] = r.mNumFreeformRefinements;
+            out["avg_freeform_poles"] = r.mAvgFreeformPoles;
+            out["num_extended_edges"] = r.mNumExtendedEdges;
+            out["num_snapped_junctions"] = r.mNumSnappedJunctions;
+            out["hausdorff_max"] = r.mHausdorffMax;
+            out["hausdorff_rms"] = r.mHausdorffRms;
+            out["closed"] = r.mClosed;
             return out;
         },
         py::arg("mesh"), py::arg("path") = "", py::arg("tolerance") = 0.0,
@@ -3942,7 +3964,12 @@ PYBIND11_MODULE(_core, m) {
         py::arg("refine_tolerance") = 1e-3, py::arg("relative_tolerance") = true,
         py::arg("normal_weight") = 1.0, py::arg("refine_epsilon") = 1e-3,
         py::arg("max_refine_iterations") = 10, py::arg("allow_split") = true,
-        py::arg("allow_merge") = true, py::arg("ransac_seed") = meshioplusplus::kRefineDefaultSeed);
+        py::arg("allow_merge") = true, py::arg("ransac_seed") = meshioplusplus::kRefineDefaultSeed,
+        py::arg("freeform_general") = false, py::arg("freeform_tolerance") = 0.0,
+        py::arg("freeform_smoothing") = 1e-12, py::arg("max_freeform_poles") = 40,
+        py::arg("max_freeform_iterations") = 30, py::arg("max_freeform_splits") = 2,
+        py::arg("sew_tolerance") = 0.0, py::arg("extend_surfaces") = false,
+        py::arg("snap_junctions") = false, py::arg("face_deviation") = false);
 
     // Conforming shared facets between named Cell regions. `regions` is an
     // optional list of strings or selector dictionaries. See

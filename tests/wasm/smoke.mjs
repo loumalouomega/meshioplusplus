@@ -2706,6 +2706,7 @@ step('the stays-out set is exactly what this artifact reports (roadmap 6.2.4)', 
     // fitCad's refinement (v17.11.0) needs no OpenCASCADE: both artifacts.
     const plain = m.fitCad(cubeSurface, { backend: 'native' });
     assert.equal(plain.refined, false);
+    assert.equal(plain.refinementKept, false);
     assert.equal(plain.numRefineSplits, 0);
     const refined = m.fitCad(cubeSurface, {
         backend: 'native',
@@ -2719,6 +2720,35 @@ step('the stays-out set is exactly what this artifact reports (roadmap 6.2.4)', 
     assert.equal(refined.numPlane, 6);
     assert.ok(Math.abs(refined.explainedAreaFraction - 1) < 1e-12);
     assert.throws(() => m.fitCad(cubeSurface, { ransacSeed: 0.5 }), /2\^53/);
+    // The Phase 3 options and report (v17.11.0): closed on every backend,
+    // the deviation NaN unless measured, and an option out of range refused.
+    assert.equal(plain.closed, true);
+    assert.ok(Number.isNaN(plain.hausdorffMax));
+    assert.equal(plain.numSnappedJunctions, 0);
+    const general = m.fitCad(cubeSurface, {
+        backend: 'native',
+        freeformGeneral: true,
+        freeformTolerance: 0,
+        freeformSmoothing: 1e-10,
+        maxFreeformPoles: 20,
+        maxFreeformIterations: 5,
+        maxFreeformSplits: 0,
+        sewTolerance: 0,
+        extendSurfaces: true,
+        snapJunctions: true,
+        faceDeviation: true,
+    });
+    assert.equal(general.closed, true);
+    assert.equal(general.numFreeformGeneral, 0);
+    assert.throws(() => m.fitCad(cubeSurface, { maxFreeformPoles: 3 }), /max_freeform_poles/);
+    assert.throws(() => m.fitCad(cubeSurface, { sewTolerance: -1 }), /sew_tolerance/);
+    if (m.hasOcct()) {
+        const snapped = m.fitCad(cubeSurface, { snapJunctions: true, faceDeviation: true });
+        assert.equal(snapped.closed, true);
+        assert.ok(snapped.numSnappedJunctions > 0);
+        assert.ok(Number.isFinite(snapped.hausdorffMax));
+        assert.ok('fit_cad:face_hausdorff' in snapped.mesh.field_data);
+    }
 });
 
 step('.h5 is MSC Nastran HDF5: another HDF5 file under that name is refused, not misread', () => {

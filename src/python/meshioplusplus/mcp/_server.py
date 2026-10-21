@@ -3853,6 +3853,16 @@ def _register_gated(server: FastMCP) -> None:
         ransac_seed: int = 0x6D657368696F2B2B,
         refine_tolerance: float = 1e-3,
         relative_tolerance: bool = True,
+        freeform_general: bool = False,
+        freeform_tolerance: float = 0.0,
+        freeform_smoothing: float = 1e-12,
+        max_freeform_poles: int = 40,
+        max_freeform_iterations: int = 30,
+        max_freeform_splits: int = 2,
+        sew_tolerance: float = 0.0,
+        extend_surfaces: bool = False,
+        snap_junctions: bool = False,
+        face_deviation: bool = False,
     ) -> dict:
         """Turn a closed triangle skin into a CAD solid with analytic faces,
         written to output_path as AP214 STEP -- the last step of skin to CAD
@@ -3901,9 +3911,28 @@ def _register_gated(server: FastMCP) -> None:
         (max_refine_iterations, refine_epsilon, normal_weight, allow_merge,
         allow_split, ransac_seed, refine_tolerance relative to the diagonal
         unless relative_tolerance is false), so more of the skin becomes
-        analytic faces; the report then adds refined, refine_iterations,
+        analytic faces; the report then adds refined, refinement_kept (whether
+        the solid was built from the refined patches; OpenCASCADE also builds
+        it from the patches as given and keeps the better), refine_iterations,
         num_refine_splits, num_refine_merges, initial_explained_area_fraction
-        and explained_area_fraction."""
+        and explained_area_fraction. freeform_general (off by default) tries a
+        patch the plane and unrolled-cylinder freeform fit leaves unexplained
+        as a general B-spline face (a disc parametrisation and an iterative
+        fit to freeform_tolerance, 0 a quarter of the tolerance, with
+        thin-plate weight freeform_smoothing, at most max_freeform_poles per
+        direction and max_freeform_iterations, halved up to
+        max_freeform_splits times) and adds num_freeform_general,
+        num_freeform_refinements and avg_freeform_poles to the report.
+        OpenCASCADE only: sew_tolerance sews at that tolerance (0, the
+        default, at tolerance); extend_surfaces extends freeform surfaces past
+        their patches before the edges are built (adds
+        num_extended_edges); snap_junctions places the vertices where
+        analytic faces meet by a least-squares solve on their tangent planes
+        (adds num_snapped_junctions); face_deviation measures each face's
+        two-sided distance to the skin as fit_cad:face_hausdorff and
+        fit_cad:face_rms field data and adds hausdorff_max and hausdorff_rms
+        (null when not measured). The report always holds closed (every shell
+        edge borders two faces)."""
         return _guard(
             _tools.tool_fit_cad,
             input_path=input_path,
@@ -3938,6 +3967,16 @@ def _register_gated(server: FastMCP) -> None:
             ransac_seed=ransac_seed,
             refine_tolerance=refine_tolerance,
             relative_tolerance=relative_tolerance,
+            freeform_general=freeform_general,
+            freeform_tolerance=freeform_tolerance,
+            freeform_smoothing=freeform_smoothing,
+            max_freeform_poles=max_freeform_poles,
+            max_freeform_iterations=max_freeform_iterations,
+            max_freeform_splits=max_freeform_splits,
+            sew_tolerance=sew_tolerance,
+            extend_surfaces=extend_surfaces,
+            snap_junctions=snap_junctions,
+            face_deviation=face_deviation,
         )
 
     @server.tool()

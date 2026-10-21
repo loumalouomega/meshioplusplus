@@ -2287,16 +2287,21 @@ has_occt() = ccall(_sym(:mio_has_occt), Cint, ()) != 0
             refine_segmentation=false, max_refine_iterations=10, refine_epsilon=1e-3,
             normal_weight=1.0, allow_merge=true, allow_split=true,
             ransac_seed=0x6d657368696f2b2b, refine_tolerance=1e-3,
-            relative_tolerance=true)
-        -> (; mesh, backend, valid, tolerance, volume, skin_volume, volume_ratio,
+            relative_tolerance=true, freeform_general=false, freeform_tolerance=0.0,
+            freeform_smoothing=1e-12, max_freeform_poles=40, max_freeform_iterations=30,
+            max_freeform_splits=2, sew_tolerance=0.0, extend_surfaces=false,
+            snap_junctions=false, face_deviation=false)
+        -> (; mesh, backend, valid, closed, tolerance, volume, skin_volume, volume_ratio,
              max_deviation, num_faces, num_plane, num_sphere, num_cylinder,
              num_cone, num_torus, num_faceted_faces, num_patches, num_demoted,
              num_exact_edges, num_approx_edges, num_solids, num_bspline,
              num_split_patches, num_fillet, num_helical, num_variable_fillet,
              num_blend, num_rounded_thread, num_vertex_blend, num_chamfer,
              num_conic_blend, num_tapered_thread, num_variable_pitch_thread,
-             refined, refine_iterations, num_refine_splits, num_refine_merges,
-             initial_explained_area_fraction, explained_area_fraction)
+             refined, refinement_kept, refine_iterations, num_refine_splits,
+             num_refine_merges, initial_explained_area_fraction, explained_area_fraction,
+             num_freeform_general, num_freeform_refinements, avg_freeform_poles,
+             num_extended_edges, num_snapped_junctions, hausdorff_max, hausdorff_rms)
 
 Build a CAD solid from the fitted patches of a closed skin through the
 OpenCASCADE backend: accepted fits become analytic faces, a patch no primitive
@@ -2325,7 +2330,22 @@ v17.11.0, `refine_segmentation=true` first refines the patches as
 diagonal when `relative_tolerance`), `normal_weight`, `refine_epsilon`,
 `max_refine_iterations`, `allow_split`, `allow_merge` and `ransac_seed`;
 `refined` says whether it ran and the `refine_*`, `num_refine_*` and
-`*explained_area_fraction` fields report it (zero when it did not). See
+`*explained_area_fraction` fields report it (zero when it did not);
+`refinement_kept` says whether the solid was built from the refined patches (the
+OpenCASCADE backend also builds it from the patches as given and keeps the
+better). Also since
+v17.11.0, `freeform_general=true` tries a patch the plane and cylinder freeform
+fit leaves unexplained as a general B-spline face (`freeform_tolerance`, 0 a
+quarter of the tolerance; `freeform_smoothing`; `max_freeform_poles`,
+`max_freeform_iterations`, `max_freeform_splits`), reported by
+`num_freeform_general`, `num_freeform_refinements` and `avg_freeform_poles`;
+and, OpenCASCADE only, `sew_tolerance` (0: the tolerance) sets the sewing
+tolerance, `extend_surfaces` extends freeform surfaces past their patches
+(`num_extended_edges`), `snap_junctions` places the corners where analytic
+faces meet by least squares (`num_snapped_junctions`), and `face_deviation`
+measures each face against the skin, as the `fit_cad:face_hausdorff` and
+`fit_cad:face_rms` field data and `hausdorff_max` / `hausdorff_rms` (`NaN` when
+not measured). `closed` says whether every shell is closed. See
 `doc/fit_cad.md`.
 """
 function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
@@ -2339,7 +2359,12 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                  max_refine_iterations::Integer=10, refine_epsilon::Real=1e-3,
                  normal_weight::Real=1.0, allow_merge::Bool=true, allow_split::Bool=true,
                  ransac_seed::Integer=_REFINE_DEFAULT_SEED, refine_tolerance::Real=1e-3,
-                 relative_tolerance::Bool=true)
+                 relative_tolerance::Bool=true, freeform_general::Bool=false,
+                 freeform_tolerance::Real=0.0, freeform_smoothing::Real=1e-12,
+                 max_freeform_poles::Integer=40, max_freeform_iterations::Integer=30,
+                 max_freeform_splits::Integer=2, sew_tolerance::Real=0.0,
+                 extend_surfaces::Bool=false, snap_junctions::Bool=false,
+                 face_deviation::Bool=false)
     backend_c = backend == "auto" ? Int32(0) : backend == "occt" ? Int32(1) :
                 backend == "native" ? Int32(2) :
                 throw(ArgumentError("meshio++: fit_cad: backend must be \"auto\", \"occt\" or \"native\""))
@@ -2363,8 +2388,12 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                                  Int64(3), UInt64(ransac_seed), _FIT_ALL_TYPES,
                                  Int32(relative_tolerance), Int32(allow_split),
                                  Int32(allow_merge), Cstring(C_NULL), ntuple(_ -> Int64(0), 8))
-    opts_ex = _CFitCadOptsEx(Int32(refine_segmentation), Int32(0), refine,
-                             ntuple(_ -> Int64(0), 16))
+    opts_ex = _CFitCadOptsEx(Int32(refine_segmentation), Int32(freeform_general), refine,
+                             Float64(freeform_tolerance), Float64(freeform_smoothing),
+                             Int64(max_freeform_poles), Int64(max_freeform_iterations),
+                             Int64(max_freeform_splits), Float64(sew_tolerance),
+                             Int32(extend_surfaces), Int32(snap_junctions),
+                             Int32(face_deviation), Int32(0), ntuple(_ -> Int64(0), 8))
     ptr = ccall(_sym(:mio_fit_cad2), Ptr{Cvoid},
                 (Ptr{Cvoid}, Cstring, Ref{_CFitCadOpts}, Ref{_CFitCadOptsEx},
                  Ptr{_CFitCadReport}, Ptr{_CFitCadReportEx}, Ptr{_CFitCadReportEx2}),
@@ -2375,7 +2404,7 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
     ex = report_ex[]
     ex2 = report_ex2[]
     (mesh=Mesh(r), backend=ex.backend == 2 ? "native" : "occt", valid=rep.valid != 0,
-     tolerance=rep.tolerance, volume=rep.volume,
+     closed=ex2.closed != 0, tolerance=rep.tolerance, volume=rep.volume,
      skin_volume=rep.skin_volume, volume_ratio=rep.volume_ratio,
      max_deviation=rep.max_deviation, num_faces=Int(rep.num_faces),
      num_plane=Int(rep.num_plane), num_sphere=Int(rep.num_sphere),
@@ -2390,11 +2419,18 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
      num_vertex_blend=Int(ex.num_vertex_blend), num_chamfer=Int(ex.num_chamfer),
      num_conic_blend=Int(ex.num_conic_blend), num_tapered_thread=Int(ex.num_tapered_thread),
      num_variable_pitch_thread=Int(ex.num_variable_pitch_thread),
-     refined=ex2.refined != 0, refine_iterations=Int(ex2.refine_iterations),
+     refined=ex2.refined != 0, refinement_kept=ex2.refinement_kept != 0,
+     refine_iterations=Int(ex2.refine_iterations),
      num_refine_splits=Int(ex2.num_refine_splits),
      num_refine_merges=Int(ex2.num_refine_merges),
      initial_explained_area_fraction=ex2.initial_explained_area_fraction,
-     explained_area_fraction=ex2.explained_area_fraction)
+     explained_area_fraction=ex2.explained_area_fraction,
+     num_freeform_general=Int(ex2.num_freeform_general),
+     num_freeform_refinements=Int(ex2.num_freeform_refinements),
+     avg_freeform_poles=ex2.avg_freeform_poles,
+     num_extended_edges=Int(ex2.num_extended_edges),
+     num_snapped_junctions=Int(ex2.num_snapped_junctions),
+     hausdorff_max=ex2.hausdorff_max, hausdorff_rms=ex2.hausdorff_rms)
 end
 
 """

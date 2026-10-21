@@ -690,9 +690,19 @@ end
 """Mirror of C `mio_fit_cad_opts_ex` (v17.11.0). ABI; build through [`fit_cad`](@ref)."""
 struct _CFitCadOptsEx
     refine_segmentation::Int32
-    reserved32::Int32
+    freeform_general::Int32
     refine::_CRefinePatchesOpts
-    reserved::NTuple{16,Int64}
+    freeform_tolerance::Cdouble
+    freeform_smoothing::Cdouble
+    max_freeform_poles::Int64
+    max_freeform_iterations::Int64
+    max_freeform_splits::Int64
+    sew_tolerance::Cdouble
+    extend_surfaces::Int32
+    snap_junctions::Int32
+    face_deviation::Int32
+    reserved32b::Int32
+    reserved::NTuple{8,Int64}
 end
 
 """Mirror of C `mio_fit_cad_report_ex2` (v17.11.0)."""
@@ -703,7 +713,16 @@ struct _CFitCadReportEx2
     num_refine_merges::Int64
     initial_explained_area_fraction::Cdouble
     explained_area_fraction::Cdouble
-    reserved::NTuple{16,Int64}
+    num_freeform_general::Int64
+    num_freeform_refinements::Int64
+    avg_freeform_poles::Cdouble
+    num_extended_edges::Int64
+    num_snapped_junctions::Int64
+    hausdorff_max::Cdouble
+    hausdorff_rms::Cdouble
+    closed::Int64
+    refinement_kept::Int64
+    reserved::NTuple{7,Int64}
 end
 
 """Mirror of C `mio_render_opts` (v16.34.0; cut-aways v16.36.0). ABI; fill it through [`render`](@ref),
@@ -1127,9 +1146,15 @@ function _check_abi_layout()
               "($(sizeof(_CRefinePatchesReport)) bytes)")
     sizeof(_CFitCadOptsEx) == 280 ||
         error("meshio++: mio_fit_cad_opts_ex layout mismatch ($(sizeof(_CFitCadOptsEx)) bytes)")
+    (fieldoffset(_CFitCadOptsEx, 4) == 152 && fieldoffset(_CFitCadOptsEx, 9) == 192 &&
+     fieldoffset(_CFitCadOptsEx, 14) == 216) ||
+        error("meshio++: mio_fit_cad_opts_ex field offsets mismatch")
     sizeof(_CFitCadReportEx2) == 176 ||
         error("meshio++: mio_fit_cad_report_ex2 layout mismatch " *
               "($(sizeof(_CFitCadReportEx2)) bytes)")
+    (fieldoffset(_CFitCadReportEx2, 7) == 48 && fieldoffset(_CFitCadReportEx2, 14) == 104 &&
+     fieldoffset(_CFitCadReportEx2, 15) == 112) ||
+        error("meshio++: mio_fit_cad_report_ex2 field offsets mismatch")
     sizeof(_CRenderOpts) == 432 ||
         error("meshio++: mio_render_opts layout mismatch ($(sizeof(_CRenderOpts)) bytes)")
     sizeof(_CTextOpts) == 96 ||

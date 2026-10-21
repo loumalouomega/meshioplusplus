@@ -5384,7 +5384,17 @@ TEST(CApi, FitCad2Refines) {
     std::memset(&ex, 0xff, sizeof ex);
     mio_fit_cad_opts_ex_init(&ex);
     EXPECT_EQ(ex.refine_segmentation, 0);
-    EXPECT_EQ(ex.reserved32, 0);
+    EXPECT_EQ(ex.freeform_general, 0);
+    EXPECT_EQ(ex.freeform_tolerance, 0.0);
+    EXPECT_DOUBLE_EQ(ex.freeform_smoothing, 1e-12);
+    EXPECT_EQ(ex.max_freeform_poles, 40);
+    EXPECT_EQ(ex.max_freeform_iterations, 30);
+    EXPECT_EQ(ex.max_freeform_splits, 2);
+    EXPECT_EQ(ex.sew_tolerance, 0.0);
+    EXPECT_EQ(ex.extend_surfaces, 0);
+    EXPECT_EQ(ex.snap_junctions, 0);
+    EXPECT_EQ(ex.face_deviation, 0);
+    EXPECT_EQ(ex.reserved32b, 0);
     EXPECT_DOUBLE_EQ(ex.refine.tolerance, 1e-3);
     EXPECT_EQ(ex.refine.max_iterations, 10);
     EXPECT_EQ(ex.refine.ransac_seed, MIO_REFINE_DEFAULT_SEED);
@@ -5405,6 +5415,7 @@ TEST(CApi, FitCad2Refines) {
     mio_mesh* skin = mio_fit_cad2(m, nullptr, &opts, &ex, &report, &report_ex, &report_ex2);
     ASSERT_NE(skin, nullptr) << mio_last_error();
     EXPECT_EQ(report_ex2.refined, 1);
+    EXPECT_TRUE(report_ex2.refinement_kept == 0 || report_ex2.refinement_kept == 1);
     EXPECT_GE(report_ex2.refine_iterations, 0);
     EXPECT_NEAR(report_ex2.explained_area_fraction, 1.0, 1e-12);
     EXPECT_EQ(report_ex.backend, MIO_FIT_CAD_NATIVE);
@@ -5422,6 +5433,15 @@ TEST(CApi, FitCad2Refines) {
     EXPECT_EQ(report_ex2.num_refine_splits, 0);
     EXPECT_EQ(report_ex2.num_refine_merges, 0);
     EXPECT_EQ(report_ex2.explained_area_fraction, 0.0);
+    // The Phase 3 fields are filled on every run; nothing measured is NaN.
+    EXPECT_EQ(report_ex2.closed, 1);
+    EXPECT_EQ(report_ex2.refinement_kept, 0);
+    EXPECT_EQ(report_ex2.num_freeform_general, 0);
+    EXPECT_EQ(report_ex2.num_snapped_junctions, 0);
+    EXPECT_TRUE(std::isnan(report_ex2.hausdorff_max));
+    EXPECT_TRUE(std::isnan(report_ex2.hausdorff_rms));
+    for (int64_t r : report_ex2.reserved)
+        EXPECT_EQ(r, 0);
     mio_mesh_free(skin);
 
     // mio_fit_cad_ex forwards to mio_fit_cad2 unchanged.
@@ -5441,6 +5461,76 @@ TEST(CApi, FitCad2Refines) {
     ASSERT_NE(skin, nullptr) << mio_last_error();
     mio_mesh_free(skin);
     EXPECT_EQ(mio_fit_cad2(nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, FitCad2PhaseThreeOptions) {
+    mio_mesh* m = capi_cube_surface();
+    mio_fit_cad_opts_ex ex;
+    mio_fit_cad_opts_ex_init(&ex);
+    // A struct zero-filled before the fields existed: zero poles and
+    // iterations read as their defaults, so the call runs.
+    ex.max_freeform_poles = 0;
+    ex.max_freeform_iterations = 0;
+    ex.freeform_smoothing = 0.0;
+    ex.max_freeform_splits = 0;
+    mio_fit_cad_opts opts;
+    mio_fit_cad_opts_init(&opts);
+    opts.backend = MIO_FIT_CAD_NATIVE;
+    mio_mesh* skin = mio_fit_cad2(m, nullptr, &opts, &ex, nullptr, nullptr, nullptr);
+    ASSERT_NE(skin, nullptr) << mio_last_error();
+    mio_mesh_free(skin);
+    // Any other value out of range is refused, as given.
+    ex.max_freeform_poles = 3;
+    EXPECT_EQ(mio_fit_cad2(m, nullptr, &opts, &ex, nullptr, nullptr, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("max_freeform_poles"), std::string::npos)
+        << mio_last_error();
+    ex.max_freeform_poles = 40;
+    ex.sew_tolerance = -1.0;
+    EXPECT_EQ(mio_fit_cad2(m, nullptr, &opts, &ex, nullptr, nullptr, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("sew_tolerance"), std::string::npos)
+        << mio_last_error();
+    ex.sew_tolerance = 0.0;
+
+    if (!mio_has_occt()) {
+        mio_mesh_free(m);
+        GTEST_SKIP() << "built without OpenCASCADE";
+    }
+    // Snapped corners and the measured deviation, on the box's six planes.
+    opts.backend = MIO_FIT_CAD_OCCT;
+    ex.snap_junctions = 1;
+    ex.face_deviation = 1;
+    mio_fit_cad_report report;
+    mio_fit_cad_report_ex2 report_ex2;
+    std::memset(&report_ex2, 0xff, sizeof report_ex2);
+    skin = mio_fit_cad2(m, nullptr, &opts, &ex, &report, nullptr, &report_ex2);
+    ASSERT_NE(skin, nullptr) << mio_last_error();
+    EXPECT_EQ(report.valid, 1);
+    EXPECT_EQ(report_ex2.closed, 1);
+    EXPECT_GT(report_ex2.num_snapped_junctions, 0);
+    EXPECT_TRUE(std::isfinite(report_ex2.hausdorff_max));
+    EXPECT_TRUE(std::isfinite(report_ex2.hausdorff_rms));
+    EXPECT_LE(report_ex2.hausdorff_rms, report_ex2.hausdorff_max);
+    EXPECT_EQ(report_ex2.num_extended_edges, 0);
+    EXPECT_EQ(report_ex2.num_freeform_general, 0);
+    for (int64_t r : report_ex2.reserved)
+        EXPECT_EQ(r, 0);
+    // The per-face deviation travels as field data, (faces, 2) and (faces).
+    const void* data = nullptr;
+    mio_dtype dt;
+    int32_t ndim = 0;
+    int64_t shape[8] = {};
+    ASSERT_EQ(mio_mesh_get_field_data(skin, "fit_cad:face_hausdorff", &data, &dt, &ndim, shape),
+              MIO_OK)
+        << mio_last_error();
+    EXPECT_EQ(dt, MIO_FLOAT64);
+    ASSERT_EQ(ndim, 2);
+    EXPECT_EQ(shape[0], report.num_faces);
+    EXPECT_EQ(shape[1], 2);
+    ASSERT_EQ(mio_mesh_get_field_data(skin, "fit_cad:face_rms", &data, &dt, &ndim, shape), MIO_OK)
+        << mio_last_error();
+    EXPECT_EQ(shape[0], report.num_faces);
+    mio_mesh_free(skin);
     mio_mesh_free(m);
 }
 

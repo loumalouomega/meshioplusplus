@@ -355,7 +355,17 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "AllowSplit",
           "RansacSeed",
           "RefineTolerance",
-          "RelativeTolerance"}},
+          "RelativeTolerance",
+          "FreeformGeneral",
+          "FreeformTolerance",
+          "FreeformSmoothing",
+          "MaxFreeformPoles",
+          "MaxFreeformIterations",
+          "MaxFreeformSplits",
+          "SewTolerance",
+          "ExtendSurfaces",
+          "SnapJunctions",
+          "FaceDeviation"}},
         {"RefinePatches",
          {"Tolerance", "Relative", "NormalWeight", "Epsilon", "FeatureAngle", "MaxIterations",
           "MinPatchCells", "RansacSeed", "Types", "AllowSplit", "AllowMerge", "Prefix"}},
@@ -1101,6 +1111,19 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.mRefine.mRansacSeed = pipe_seed(rStep, "RansacSeed", kRefineDefaultSeed);
         opts.mRefine.mTolerance = pipe_number(rStep, "RefineTolerance", 1e-3);
         opts.mRefine.mRelative = pipe_flag(rStep, "RelativeTolerance", true);
+        opts.mFreeformGeneral = pipe_flag(rStep, "FreeformGeneral", false);
+        opts.mFreeformTolerance = pipe_number(rStep, "FreeformTolerance", 0.0);
+        opts.mFreeformSmoothing = pipe_number(rStep, "FreeformSmoothing", 1e-12);
+        opts.mMaxFreeformPoles =
+            static_cast<std::int64_t>(pipe_number(rStep, "MaxFreeformPoles", 40.0));
+        opts.mMaxFreeformIterations =
+            static_cast<std::int64_t>(pipe_number(rStep, "MaxFreeformIterations", 30.0));
+        opts.mMaxFreeformSplits =
+            static_cast<std::int64_t>(pipe_number(rStep, "MaxFreeformSplits", 2.0));
+        opts.mSewTolerance = pipe_number(rStep, "SewTolerance", 0.0);
+        opts.mExtendSurfaces = pipe_flag(rStep, "ExtendSurfaces", false);
+        opts.mSnapJunctions = pipe_flag(rStep, "SnapJunctions", false);
+        opts.mFaceDeviation = pipe_flag(rStep, "FaceDeviation", false);
         FitCadResult cr = fit_cad(mesh, pipe_text(rStep, "Path", ""), opts);
         std::vector<std::pair<std::string, double>> counters = {
             {"Valid", cr.mValid ? 1.0 : 0.0},
@@ -1121,7 +1144,8 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
             {"NumConicBlend", static_cast<double>(cr.mNumConicBlend)},
             {"NumTaperedThread", static_cast<double>(cr.mNumTaperedThread)},
             {"NumVariablePitchThread", static_cast<double>(cr.mNumVariablePitchThread)},
-            {"NumDemoted", static_cast<double>(cr.mNumDemoted)}};
+            {"NumDemoted", static_cast<double>(cr.mNumDemoted)},
+            {"Closed", cr.mClosed ? 1.0 : 0.0}};
         // Only a run that refined reports the refinement, so a report without
         // `RefineSegmentation` stays what it was before the option existed.
         if (cr.mRefined) {
@@ -1129,6 +1153,24 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
             counters.emplace_back("NumRefineSplits", static_cast<double>(cr.mNumRefineSplits));
             counters.emplace_back("NumRefineMerges", static_cast<double>(cr.mNumRefineMerges));
             counters.emplace_back("ExplainedAreaFraction", cr.mExplainedAreaFraction);
+            counters.emplace_back("RefinementKept", cr.mRefinementKept ? 1.0 : 0.0);
+        }
+        // Likewise each Phase 3 option reports only when it is set.
+        if (opts.mFreeformGeneral) {
+            counters.emplace_back("NumFreeformGeneral",
+                                  static_cast<double>(cr.mNumFreeformGeneral));
+            counters.emplace_back("NumFreeformRefinements",
+                                  static_cast<double>(cr.mNumFreeformRefinements));
+            counters.emplace_back("AvgFreeformPoles", cr.mAvgFreeformPoles);
+        }
+        if (opts.mExtendSurfaces)
+            counters.emplace_back("NumExtendedEdges", static_cast<double>(cr.mNumExtendedEdges));
+        if (opts.mSnapJunctions)
+            counters.emplace_back("NumSnappedJunctions",
+                                  static_cast<double>(cr.mNumSnappedJunctions));
+        if (opts.mFaceDeviation) {
+            counters.emplace_back("HausdorffMax", cr.mHausdorffMax);
+            counters.emplace_back("HausdorffRms", cr.mHausdorffRms);
         }
         pipe_push_step(rReport, rStep, std::move(counters));
         return std::move(cr.mMesh);

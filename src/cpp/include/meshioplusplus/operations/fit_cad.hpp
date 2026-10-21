@@ -283,11 +283,12 @@ struct FitCadOptions {
     /// The tolerance the faces are sewn at; 0 sews at the tolerance itself,
     /// as before the option existed (v17.11.0). OpenCASCADE backend only.
     double mSewTolerance = 0.0;
-    /// Whether every freeform B-spline face's surface is extended past its
-    /// patch on all four sides before the edges are built, so an
-    /// intersection with a neighbour that runs just outside the fitted area is
-    /// still found (`GeomLib::ExtendSurfByLength`, by a tenth of the patch's
-    /// size). OpenCASCADE backend only; off by default (v17.11.0).
+    /// Whether a freeform B-spline face's surface, extended past its patch on
+    /// every open side (`GeomLib::ExtendSurfByLength`, by a tenth of the
+    /// patch's size), is intersected with a neighbour where the surfaces
+    /// themselves give no branch along their shared chain, so an edge that runs
+    /// just outside the fitted area is still exact. The face keeps its own
+    /// surface. OpenCASCADE backend only; off by default (v17.11.0).
     bool mExtendSurfaces = false;
     /// Whether the B-rep vertices where analytic faces meet are placed by a
     /// least-squares solve on the surfaces' tangent planes (Gauss-Newton,
@@ -368,6 +369,12 @@ struct FitCadResult {
     /// Whether `mRefineSegmentation` refined the patches (v17.11.0); the
     /// counts below are zero when it did not.
     bool mRefined = false;
+    /// Whether the solid was built from the refined patches (v17.11.0). The
+    /// OpenCASCADE backend also builds it from the patches as given and keeps
+    /// that one when it is better (valid where the other is not, then fewer
+    /// facet faces, demotions and faces); the refinement's counts still
+    /// describe what it did. False without `mRefineSegmentation`.
+    bool mRefinementKept = false;
     /// The refinement's Lloyd steps kept, splits and merges.
     std::int64_t mRefineIterations = 0;
     std::int64_t mNumRefineSplits = 0;
@@ -381,8 +388,9 @@ struct FitCadResult {
     std::int64_t mNumFreeformRefinements = 0;
     /// Their mean pole count (0 without any).
     double mAvgFreeformPoles = 0.0;
-    /// Freeform B-spline surfaces `mExtendSurfaces` extended (v17.11.0).
-    std::int64_t mNumExtendedSurfaces = 0;
+    /// Exact edges found by intersecting the surfaces `mExtendSurfaces`
+    /// extended, where the surfaces themselves gave no branch (v17.11.0).
+    std::int64_t mNumExtendedEdges = 0;
     /// B-rep vertices `mSnapJunctions` placed by its least-squares solve.
     std::int64_t mNumSnappedJunctions = 0;
     /// With `mFaceDeviation`: the two-sided Hausdorff distance between the

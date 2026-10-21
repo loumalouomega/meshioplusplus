@@ -505,7 +505,22 @@ def test_check_exit_codes(files, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "flags", [[], ["--no-freeform-split", "--no-fillets", "--no-threads"]]
+    "flags",
+    [
+        [],
+        ["--no-freeform-split", "--no-fillets", "--no-threads"],
+        [
+            "--freeform-general",
+            "--max-freeform-poles",
+            "20",
+            "--sew-tolerance",
+            "0",
+            "--extend-surfaces",
+            "--snap-junctions",
+            "--face-deviation",
+            "--refine",
+        ],
+    ],
 )
 def test_to_cad_json_agrees(tmp_path, flags):
     from meshioplusplus._fit_cad import has_occt

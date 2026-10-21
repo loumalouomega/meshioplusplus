@@ -1599,6 +1599,7 @@ def test_refine_patches_tool_segments_then_refines(tmp_path):
         )
     )
     assert refined["refined"] is True
+    assert "refinement_kept" in refined
     assert refined["explained_area_fraction"] == pytest.approx(1.0)
     for key in ("refine_iterations", "num_refine_splits", "num_refine_merges"):
         assert key in refined

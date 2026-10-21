@@ -1407,7 +1407,11 @@ mio_has_occt <- function() {
 #' patches as analytic STEP faces and returns the skin itself; `backend =
 #' "occt"` fails naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON` without it. Since
 #' v17.11.0, `refine_segmentation = TRUE` first refines the patches as
-#' `mio_refine_patches()` does. See `doc/fit_cad.md`.
+#' `mio_refine_patches()` does, `freeform_general = TRUE` tries what the plane
+#' and cylinder freeform fit leaves as a general B-spline face, and, through
+#' OpenCASCADE, `sew_tolerance`, `extend_surfaces`, `snap_junctions` and
+#' `face_deviation` tune the sewing, the edges, the corners and the
+#' measurement. See `doc/fit_cad.md`.
 #'
 #' @param mesh A closed, consistently wound surface `mio_mesh`.
 #' @param step_path Write the solid here as AP214 STEP; `""` writes nothing.
@@ -1446,6 +1450,26 @@ mio_has_occt <- function() {
 #'   and a number is taken exactly below 2^53.
 #' @param refine_tolerance,relative_tolerance The refinement's tolerance and
 #'   whether it is a fraction of the bounding-box diagonal.
+#' @param freeform_general Whether a patch the plane and unrolled-cylinder
+#'   freeform fit leaves unexplained is tried as a general freeform B-spline
+#'   face (a disc parametrisation and an iterative fit, v17.11.0); off by
+#'   default.
+#' @param freeform_tolerance The general fit's target at the vertices; 0 takes
+#'   a quarter of the tolerance.
+#' @param freeform_smoothing The general fit's thin-plate weight, >= 0.
+#' @param max_freeform_poles,max_freeform_iterations,max_freeform_splits The
+#'   general fit's most poles per direction (4 to 1024), its iteration budget
+#'   (>= 1) and how many times a patch it cannot explain is halved (>= 0).
+#' @param sew_tolerance The tolerance the faces are sewn at; 0 sews at the
+#'   tolerance (OpenCASCADE only, v17.11.0).
+#' @param extend_surfaces Whether freeform B-spline surfaces are extended past
+#'   their patches before the edges are built (OpenCASCADE only).
+#' @param snap_junctions Whether the corners where analytic faces meet are
+#'   placed by a least-squares solve on their tangent planes (OpenCASCADE
+#'   only).
+#' @param face_deviation Whether each face's two-sided distance to the skin is
+#'   measured, as the `fit_cad:face_hausdorff` and `fit_cad:face_rms` field
+#'   data and `hausdorff_max` / `hausdorff_rms` (OpenCASCADE only).
 #' @return A list of `mesh` (the solid re-meshed, with cell data
 #'   `fit_cad:face`, `fit_cad:type` and `fit_cad:patch`), `valid`,
 #'   `tolerance`, `volume`, `skin_volume`, `volume_ratio`, `max_deviation`,
@@ -1458,7 +1482,13 @@ mio_has_occt <- function() {
 #'   `backend` (the engine that ran), `refined` (whether the refinement ran),
 #'   `refine_iterations`, `num_refine_splits`, `num_refine_merges`,
 #'   `initial_explained_area_fraction` and `explained_area_fraction` (zero
-#'   without refinement).
+#'   without refinement), `closed` (whether every shell is closed),
+#'   `num_freeform_general`, `num_freeform_refinements`, `avg_freeform_poles`,
+#'   `num_extended_edges`, `num_snapped_junctions`, and `hausdorff_max` and
+#'   `hausdorff_rms` (`NaN` unless `face_deviation` measured them), and
+#'   `refinement_kept` (whether the solid was built from the refined patches;
+#'   OpenCASCADE also builds it from the patches as given and keeps the
+#'   better).
 #' @export
 mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
                         types = c("plane", "sphere", "cylinder", "cone", "torus"),
@@ -1470,7 +1500,12 @@ mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
                         max_refine_iterations = 10L, refine_epsilon = 1e-3,
                         normal_weight = 1, allow_merge = TRUE, allow_split = TRUE,
                         ransac_seed = NULL, refine_tolerance = 1e-3,
-                        relative_tolerance = TRUE) {
+                        relative_tolerance = TRUE, freeform_general = FALSE,
+                        freeform_tolerance = 0, freeform_smoothing = 1e-12,
+                        max_freeform_poles = 40L, max_freeform_iterations = 30L,
+                        max_freeform_splits = 2L, sew_tolerance = 0,
+                        extend_surfaces = FALSE, snap_junctions = FALSE,
+                        face_deviation = FALSE) {
   known <- c("plane", "sphere", "cylinder", "cone", "torus")
   bad <- setdiff(types, known)
   if (length(bad) > 0) {
@@ -1486,7 +1521,12 @@ mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
     isTRUE(refine_segmentation), as.numeric(max_refine_iterations),
     as.numeric(refine_epsilon), as.numeric(normal_weight), isTRUE(allow_merge),
     isTRUE(allow_split), if (is.null(ransac_seed)) NULL else as.numeric(ransac_seed),
-    as.numeric(refine_tolerance), isTRUE(relative_tolerance)
+    as.numeric(refine_tolerance), isTRUE(relative_tolerance),
+    isTRUE(freeform_general), as.numeric(freeform_tolerance),
+    as.numeric(freeform_smoothing), as.numeric(max_freeform_poles),
+    as.numeric(max_freeform_iterations), as.numeric(max_freeform_splits),
+    as.numeric(sew_tolerance), isTRUE(extend_surfaces), isTRUE(snap_junctions),
+    isTRUE(face_deviation)
   )
 }
 

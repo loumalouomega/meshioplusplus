@@ -1470,7 +1470,27 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
   pc <- mio_fit_cad(m, backend = "native")
   on.exit(mio_release(pc$mesh), add = TRUE)
   expect_false(pc$refined)
+  expect_false(pc$refinement_kept)
   expect_equal(pc$num_refine_splits, 0)
+  # The Phase 3 report (v17.11.0): closed on every backend, NaN unmeasured.
+  expect_true(pc$closed)
+  expect_true(is.nan(pc$hausdorff_max))
+  expect_equal(pc$num_snapped_junctions, 0)
+  expect_error(mio_fit_cad(m, backend = "native", max_freeform_poles = 3L),
+               "max_freeform_poles")
+  expect_error(mio_fit_cad(m, backend = "native", sew_tolerance = -1), "sew_tolerance")
+  gc <- mio_fit_cad(m, backend = "native", freeform_general = TRUE,
+                    max_freeform_splits = 0L)
+  on.exit(mio_release(gc$mesh), add = TRUE)
+  expect_true(gc$closed)
+  expect_equal(gc$num_freeform_general, 0)
+  if (mio_has_occt()) {
+    sc <- mio_fit_cad(m, snap_junctions = TRUE, face_deviation = TRUE)
+    on.exit(mio_release(sc$mesh), add = TRUE)
+    expect_true(sc$closed)
+    expect_gt(sc$num_snapped_junctions, 0)
+    expect_true(is.finite(sc$hausdorff_max))
+  }
 
   if (mio_has_occt()) {
     cad <- mio_fit_cad(m)

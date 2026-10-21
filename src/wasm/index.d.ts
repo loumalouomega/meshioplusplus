@@ -3503,6 +3503,26 @@ export interface FitCadOptions {
   refineTolerance?: number;
   /** `refineTolerance` is a fraction of the bounding-box diagonal (default true). */
   relativeTolerance?: boolean;
+  /** Try what the plane and cylinder freeform fit leaves as a general B-spline face (default false; v17.11.0). */
+  freeformGeneral?: boolean;
+  /** The general fit's target at the vertices, >= 0; 0 takes a quarter of the tolerance (default 0). */
+  freeformTolerance?: number;
+  /** The general fit's thin-plate weight, >= 0 (default 1e-12). */
+  freeformSmoothing?: number;
+  /** The most poles per direction of a general freeform face, 4 to 1024 (default 40). */
+  maxFreeformPoles?: number;
+  /** The general fit's iteration budget, >= 1 (default 30). */
+  maxFreeformIterations?: number;
+  /** How many times a patch the general fit cannot explain is halved, >= 0 (default 2). */
+  maxFreeformSplits?: number;
+  /** The tolerance the faces are sewn at; 0 sews at the tolerance (default 0; OpenCASCADE only). */
+  sewTolerance?: number;
+  /** Extend freeform B-spline surfaces past their patches before the edges are built (default false; OpenCASCADE only). */
+  extendSurfaces?: boolean;
+  /** Place the corners where analytic faces meet by least squares on their tangent planes (default false; OpenCASCADE only). */
+  snapJunctions?: boolean;
+  /** Measure each face's two-sided distance to the skin: `fit_cad:face_hausdorff`, `fit_cad:face_rms` (default false; OpenCASCADE only). */
+  faceDeviation?: boolean;
 }
 
 /** The options of {@link MeshioPlusPlusModule.refinePatches}; every key is optional. */
@@ -3606,12 +3626,30 @@ export interface FitCadResult {
   backend: 'occt' | 'native';
   /** Whether `refineSegmentation` refined the patches (v17.11.0); the refinement counts are zero when not. */
   refined: boolean;
+  /** Whether the solid was built from the refined patches: the OpenCASCADE backend also builds it from the patches as given and keeps that one when it is better (false without `refineSegmentation`). */
+  refinementKept: boolean;
   refineIterations: number;
   numRefineSplits: number;
   numRefineMerges: number;
   /** The area share primitives explain before and after the refinement. */
   initialExplainedAreaFraction: number;
   explainedAreaFraction: number;
+  /** Of the B-spline faces, those the general freeform fit built (v17.11.0; 0 without `freeformGeneral`). */
+  numFreeformGeneral: number;
+  /** Their knot insertion rounds, summed. */
+  numFreeformRefinements: number;
+  /** Their mean pole count (0 without any). */
+  avgFreeformPoles: number;
+  /** Exact edges found on the surfaces `extendSurfaces` extended. */
+  numExtendedEdges: number;
+  /** B-rep vertices `snapJunctions` placed by its least-squares solve. */
+  numSnappedJunctions: number;
+  /** With `faceDeviation`, the two-sided Hausdorff distance between solid and skin; NaN when not measured. */
+  hausdorffMax: number;
+  /** With `faceDeviation`, the root mean square of those distances; NaN when not measured. */
+  hausdorffRms: number;
+  /** Whether every shell is closed: every edge borders two faces (v17.11.0). */
+  closed: boolean;
   /** The solid's B-rep, for `writeMesh(path, mesh, 'cad_json', {info})`. */
   info: CadJsonInfo;
 }

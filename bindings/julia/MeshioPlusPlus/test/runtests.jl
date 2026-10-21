@@ -1610,9 +1610,26 @@ end
     @test isapprox(refined.explained_area_fraction, 1.0; atol=1e-12)
     close(refined.mesh)
     plain = fit_cad(cube; backend="native")
-    @test !plain.refined
+    @test !plain.refined && !plain.refinement_kept
     @test plain.num_refine_splits == 0 && plain.explained_area_fraction == 0.0
+    # The Phase 3 report (v17.11.0): closed on every backend, NaN unmeasured.
+    @test plain.closed
+    @test isnan(plain.hausdorff_max) && isnan(plain.hausdorff_rms)
+    @test plain.num_freeform_general == 0 && plain.num_snapped_junctions == 0
     close(plain.mesh)
+    @test_throws MeshioError fit_cad(cube; backend="native", max_freeform_poles=3)
+    @test_throws MeshioError fit_cad(cube; backend="native", sew_tolerance=-1.0)
+    general = fit_cad(cube; backend="native", freeform_general=true, max_freeform_splits=0,
+                      freeform_smoothing=1e-10)
+    @test general.closed && general.num_plane == 6
+    close(general.mesh)
+    if has_occt()
+        snapped = fit_cad(cube; snap_junctions=true, face_deviation=true)
+        @test snapped.valid && snapped.closed
+        @test snapped.num_snapped_junctions > 0
+        @test isfinite(snapped.hausdorff_max) && snapped.hausdorff_rms <= snapped.hausdorff_max
+        close(snapped.mesh)
+    end
     if has_occt()
         cad = fit_cad(cube)
         @test cad.valid

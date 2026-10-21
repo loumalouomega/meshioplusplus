@@ -382,9 +382,19 @@ module meshioplusplus
     !> fit_cad options `mio_fit_cad_opts` has no room for.
     type, bind(c) :: mio_fit_cad_opts_ex_t
         integer(c_int32_t) :: refine_segmentation = 0
-        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int32_t) :: freeform_general = 0
         type(mio_refine_patches_opts_t) :: refine
-        integer(c_int64_t) :: reserved(16) = 0
+        real(c_double) :: freeform_tolerance = 0.0_c_double
+        real(c_double) :: freeform_smoothing = 1.0e-12_c_double
+        integer(c_int64_t) :: max_freeform_poles = 40
+        integer(c_int64_t) :: max_freeform_iterations = 30
+        integer(c_int64_t) :: max_freeform_splits = 2
+        real(c_double) :: sew_tolerance = 0.0_c_double
+        integer(c_int32_t) :: extend_surfaces = 0
+        integer(c_int32_t) :: snap_junctions = 0
+        integer(c_int32_t) :: face_deviation = 0
+        integer(c_int32_t) :: reserved32b = 0
+        integer(c_int64_t) :: reserved(8) = 0
     end type
 
     !> Interop mirror of C `mio_fit_cad_report_ex2` (v17.11.0, 176 bytes).
@@ -395,7 +405,16 @@ module meshioplusplus
         integer(c_int64_t) :: num_refine_merges = 0
         real(c_double) :: initial_explained_area_fraction = 0.0_c_double
         real(c_double) :: explained_area_fraction = 0.0_c_double
-        integer(c_int64_t) :: reserved(16) = 0
+        integer(c_int64_t) :: num_freeform_general = 0
+        integer(c_int64_t) :: num_freeform_refinements = 0
+        real(c_double) :: avg_freeform_poles = 0.0_c_double
+        integer(c_int64_t) :: num_extended_edges = 0
+        integer(c_int64_t) :: num_snapped_junctions = 0
+        real(c_double) :: hausdorff_max = 0.0_c_double
+        real(c_double) :: hausdorff_rms = 0.0_c_double
+        integer(c_int64_t) :: closed = 0
+        integer(c_int64_t) :: refinement_kept = 0
+        integer(c_int64_t) :: reserved(7) = 0
     end type
 
     !> Interop mirror of C `mio_iga_opts` (the subdivisions default to 1 and
@@ -6152,7 +6171,22 @@ contains
     !> `relative_tolerance`, the default), `normal_weight`, `refine_epsilon`,
     !> `max_refine_iterations`, `allow_split`, `allow_merge` and `ransac_seed`;
     !> `refined`, `num_refine_splits`, `num_refine_merges` and
-    !> `explained_area_fraction` report it. See doc/fit_cad.md.
+    !> `explained_area_fraction` report it, and `refinement_kept` whether the
+    !> solid was built from the refined patches (OpenCASCADE also builds it from
+    !> the patches as given and keeps the better). Also since v17.11.0,
+    !> `freeform_general` (default off) tries a patch the plane and cylinder
+    !> freeform fit leaves unexplained as a general B-spline face
+    !> (`freeform_tolerance`, `freeform_smoothing`, `max_freeform_poles`,
+    !> `max_freeform_iterations`, `max_freeform_splits`; reported by
+    !> `num_freeform_general`, `num_freeform_refinements`, `avg_freeform_poles`),
+    !> and, OpenCASCADE only, `sew_tolerance` (0: the tolerance) sets the sewing
+    !> tolerance, `extend_surfaces` extends freeform surfaces past their patches
+    !> (`num_extended_edges`), `snap_junctions` places the corners where
+    !> analytic faces meet by least squares (`num_snapped_junctions`) and
+    !> `face_deviation` measures each face against the skin (the
+    !> `fit_cad:face_hausdorff` and `fit_cad:face_rms` field data and
+    !> `hausdorff_max` / `hausdorff_rms`, NaN when not measured). `closed` says
+    !> whether every shell is closed. See doc/fit_cad.md.
     function mesh_fit_cad(self, step_path, tolerance, exact_edges, types, &
                           mesh_deflection, max_demotion_rounds, valid, volume_ratio, &
                           max_deviation, num_faces, num_faceted_faces, num_demoted, &
@@ -6166,7 +6200,14 @@ contains
                           max_refine_iterations, refine_epsilon, normal_weight, &
                           allow_merge, allow_split, ransac_seed, refine_tolerance, &
                           relative_tolerance, refined, num_refine_splits, &
-                          num_refine_merges, explained_area_fraction) result(out)
+                          num_refine_merges, explained_area_fraction, freeform_general, &
+                          freeform_tolerance, freeform_smoothing, max_freeform_poles, &
+                          max_freeform_iterations, max_freeform_splits, sew_tolerance, &
+                          extend_surfaces, snap_junctions, face_deviation, closed, &
+                          num_freeform_general, num_freeform_refinements, &
+                          avg_freeform_poles, num_extended_edges, &
+                          num_snapped_junctions, hausdorff_max, hausdorff_rms, &
+                          refinement_kept) result(out)
         class(mio_mesh), intent(in) :: self
         character(*), intent(in), optional :: step_path
         real(real64), intent(in), optional :: tolerance, mesh_deflection
@@ -6200,6 +6241,18 @@ contains
         logical, intent(out), optional :: refined
         integer(int64), intent(out), optional :: num_refine_splits, num_refine_merges
         real(real64), intent(out), optional :: explained_area_fraction
+        logical, intent(in), optional :: freeform_general
+        real(real64), intent(in), optional :: freeform_tolerance, freeform_smoothing
+        integer(int64), intent(in), optional :: max_freeform_poles, max_freeform_iterations
+        integer(int64), intent(in), optional :: max_freeform_splits
+        real(real64), intent(in), optional :: sew_tolerance
+        logical, intent(in), optional :: extend_surfaces, snap_junctions, face_deviation
+        logical, intent(out), optional :: closed
+        integer(int64), intent(out), optional :: num_freeform_general, num_freeform_refinements
+        real(real64), intent(out), optional :: avg_freeform_poles
+        integer(int64), intent(out), optional :: num_extended_edges, num_snapped_junctions
+        real(real64), intent(out), optional :: hausdorff_max, hausdorff_rms
+        logical, intent(out), optional :: refinement_kept
         type(mio_mesh) :: out
         type(c_ptr) :: res, path_ptr
         type(mio_fit_cad_opts_t) :: opts
@@ -6227,6 +6280,25 @@ contains
             opts_ex%refine%tolerance = real(refine_tolerance, c_double)
         if (present(relative_tolerance)) &
             opts_ex%refine%relative = merge(1_c_int32_t, 0_c_int32_t, relative_tolerance)
+        if (present(freeform_general)) &
+            opts_ex%freeform_general = merge(1_c_int32_t, 0_c_int32_t, freeform_general)
+        if (present(freeform_tolerance)) &
+            opts_ex%freeform_tolerance = real(freeform_tolerance, c_double)
+        if (present(freeform_smoothing)) &
+            opts_ex%freeform_smoothing = real(freeform_smoothing, c_double)
+        if (present(max_freeform_poles)) &
+            opts_ex%max_freeform_poles = int(max_freeform_poles, c_int64_t)
+        if (present(max_freeform_iterations)) &
+            opts_ex%max_freeform_iterations = int(max_freeform_iterations, c_int64_t)
+        if (present(max_freeform_splits)) &
+            opts_ex%max_freeform_splits = int(max_freeform_splits, c_int64_t)
+        if (present(sew_tolerance)) opts_ex%sew_tolerance = real(sew_tolerance, c_double)
+        if (present(extend_surfaces)) &
+            opts_ex%extend_surfaces = merge(1_c_int32_t, 0_c_int32_t, extend_surfaces)
+        if (present(snap_junctions)) &
+            opts_ex%snap_junctions = merge(1_c_int32_t, 0_c_int32_t, snap_junctions)
+        if (present(face_deviation)) &
+            opts_ex%face_deviation = merge(1_c_int32_t, 0_c_int32_t, face_deviation)
         path_ptr = c_null_ptr
         if (present(step_path)) then
             path_buf = trim(step_path)//c_null_char
@@ -6297,6 +6369,20 @@ contains
             num_refine_merges = int(report_ex2%num_refine_merges, int64)
         if (present(explained_area_fraction)) &
             explained_area_fraction = real(report_ex2%explained_area_fraction, real64)
+        if (present(closed)) closed = report_ex2%closed /= 0
+        if (present(refinement_kept)) refinement_kept = report_ex2%refinement_kept /= 0
+        if (present(num_freeform_general)) &
+            num_freeform_general = int(report_ex2%num_freeform_general, int64)
+        if (present(num_freeform_refinements)) &
+            num_freeform_refinements = int(report_ex2%num_freeform_refinements, int64)
+        if (present(avg_freeform_poles)) &
+            avg_freeform_poles = real(report_ex2%avg_freeform_poles, real64)
+        if (present(num_extended_edges)) &
+            num_extended_edges = int(report_ex2%num_extended_edges, int64)
+        if (present(num_snapped_junctions)) &
+            num_snapped_junctions = int(report_ex2%num_snapped_junctions, int64)
+        if (present(hausdorff_max)) hausdorff_max = real(report_ex2%hausdorff_max, real64)
+        if (present(hausdorff_rms)) hausdorff_rms = real(report_ex2%hausdorff_rms, real64)
         call clear_status(stat, errmsg)
     end function
 

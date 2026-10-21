@@ -4960,14 +4960,20 @@ val refine_patches_js(const val& rMeshObj, const val& rOptions) {
  *   maxDemotionRounds, freeform, freeformDegree, freeformMaxControl,
  *   freeformSplit, fillets, threads, mergeFaces, backend, refineSegmentation,
  *   maxRefineIterations, refineEpsilon, normalWeight, allowMerge, allowSplit,
- *   ransacSeed, refineTolerance, relativeTolerance}`, every key optional;
+ *   ransacSeed, refineTolerance, relativeTolerance, freeformGeneral,
+ *   freeformTolerance, freeformSmoothing, maxFreeformPoles,
+ *   maxFreeformIterations, maxFreeformSplits, sewTolerance, extendSurfaces,
+ *   snapJunctions, faceDeviation}`, every key optional;
  *   `types` is an array of `'plane'`, `'sphere'`, `'cylinder'`, `'cone'`,
  *   `'torus'`, `backend` one of `'auto'`, `'occt'`, `'native'`; the
  *   `refine*` keys, `normalWeight`, `allow*` and `ransacSeed` set
- *   `FitCadOptions::mRefine`, used when `refineSegmentation` is true.
+ *   `FitCadOptions::mRefine`, used when `refineSegmentation` is true; the
+ *   rest set the `FitCadOptions` members of the same name (v17.11.0).
  * @return every `FitCadResult` counter in camelCase, `mesh` (the solid
- *   re-meshed, with the `fit_cad:*` cell data) and `info` (its B-rep, in CAD
- *   JSON's shape, for `writeMesh(path, mesh, 'cad_json', {info})`).
+ *   re-meshed, with the `fit_cad:*` cell data, and with `faceDeviation` the
+ *   `fit_cad:face_hausdorff` and `fit_cad:face_rms` field data) and `info`
+ *   (its B-rep, in CAD JSON's shape, for `writeMesh(path, mesh, 'cad_json',
+ *   {info})`).
  */
 val fit_cad_js(const val& rMeshObj, const val& rOptions) {
     return with_js_errors([&]() -> val {
@@ -4997,7 +5003,17 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
                                  "allowSplit",
                                  "ransacSeed",
                                  "refineTolerance",
-                                 "relativeTolerance"});
+                                 "relativeTolerance",
+                                 "freeformGeneral",
+                                 "freeformTolerance",
+                                 "freeformSmoothing",
+                                 "maxFreeformPoles",
+                                 "maxFreeformIterations",
+                                 "maxFreeformSplits",
+                                 "sewTolerance",
+                                 "extendSurfaces",
+                                 "snapJunctions",
+                                 "faceDeviation"});
             const auto has = [&](const char* pKey) {
                 return rOptions.hasOwnProperty(pKey) && !rOptions[pKey].isUndefined();
             };
@@ -5061,6 +5077,29 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
                 options.mRefine.mTolerance = rOptions["refineTolerance"].as<double>();
             if (has("relativeTolerance"))
                 options.mRefine.mRelative = rOptions["relativeTolerance"].as<bool>();
+            if (has("freeformGeneral"))
+                options.mFreeformGeneral = rOptions["freeformGeneral"].as<bool>();
+            if (has("freeformTolerance"))
+                options.mFreeformTolerance = rOptions["freeformTolerance"].as<double>();
+            if (has("freeformSmoothing"))
+                options.mFreeformSmoothing = rOptions["freeformSmoothing"].as<double>();
+            if (has("maxFreeformPoles"))
+                options.mMaxFreeformPoles =
+                    static_cast<std::int64_t>(rOptions["maxFreeformPoles"].as<double>());
+            if (has("maxFreeformIterations"))
+                options.mMaxFreeformIterations =
+                    static_cast<std::int64_t>(rOptions["maxFreeformIterations"].as<double>());
+            if (has("maxFreeformSplits"))
+                options.mMaxFreeformSplits =
+                    static_cast<std::int64_t>(rOptions["maxFreeformSplits"].as<double>());
+            if (has("sewTolerance"))
+                options.mSewTolerance = rOptions["sewTolerance"].as<double>();
+            if (has("extendSurfaces"))
+                options.mExtendSurfaces = rOptions["extendSurfaces"].as<bool>();
+            if (has("snapJunctions"))
+                options.mSnapJunctions = rOptions["snapJunctions"].as<bool>();
+            if (has("faceDeviation"))
+                options.mFaceDeviation = rOptions["faceDeviation"].as<bool>();
         }
         if (options.mBackend == meshioplusplus::FitCadBackend::Occt &&
             !meshioplusplus::fit_cad_has_occt())
@@ -5105,13 +5144,24 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
             {"refineIterations", r.mRefineIterations},
             {"numRefineSplits", r.mNumRefineSplits},
             {"numRefineMerges", r.mNumRefineMerges},
+            {"numFreeformGeneral", r.mNumFreeformGeneral},
+            {"numFreeformRefinements", r.mNumFreeformRefinements},
+            {"numExtendedEdges", r.mNumExtendedEdges},
+            {"numSnappedJunctions", r.mNumSnappedJunctions},
         };
         for (const auto& [name, value] : counters)
             out.set(name, static_cast<double>(value));
         // The refinement's report: false and zeros when it did not run.
         out.set("refined", r.mRefined);
+        out.set("refinementKept", r.mRefinementKept);
         out.set("initialExplainedAreaFraction", r.mInitialExplainedAreaFraction);
         out.set("explainedAreaFraction", r.mExplainedAreaFraction);
+        // The Phase 3 report (v17.11.0): zeros when an option is off, and the
+        // Hausdorff distances NaN unless `faceDeviation` measured them.
+        out.set("avgFreeformPoles", r.mAvgFreeformPoles);
+        out.set("hausdorffMax", r.mHausdorffMax);
+        out.set("hausdorffRms", r.mHausdorffRms);
+        out.set("closed", r.mClosed);
         out.set("info", brep_info_to_val(r.mBrep));
         out.set("backend",
                 std::string(r.mBackend == meshioplusplus::FitCadBackend::Native ? "native"

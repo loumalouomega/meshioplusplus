@@ -114,7 +114,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `iga-refine`, `iga-sample` | `operation`, `model` (`nurbs` or `brep`), `num_patches`, `num_points`, `num_cells` and `cell_blocks` |
 | `iga-evaluate` | `num_points`, `space_dim`, `points`, `fields` (`components`, `values`), and with `--derivatives 1` `derivatives` and `normals`; for a B-rep face `inside`; arrays flattened row-major |
 | `tessellate` | `Tessellation.schema` without `version`: `levels`, `curved`, the source and output counts, `stencil_width` and the `watertight` facet counts |
-| `to-cad` | `backend` (`occt` or `native`, v17.9.0), `valid`, `tolerance`, the volumes and their ratio, `max_deviation`, the faces by type (`num_bspline`, `num_fillet` and `num_helical` among them, and of those `num_variable_fillet`, `num_blend` and `num_rounded_thread`), `num_vertex_blend` and `num_chamfer` (v17.2.0) and, of the fillets and threads, `num_conic_blend`, `num_tapered_thread` and `num_variable_pitch_thread`, `num_faceted_faces`, `num_patches`, `num_demoted`, the exact and approximated edges, `num_solids` and `num_split_patches`; with `--refine` (v17.11.0) also `refined`, `refine_iterations`, `num_refine_splits`, `num_refine_merges`, `initial_explained_area_fraction` and `explained_area_fraction` |
+| `to-cad` | `backend` (`occt` or `native`, v17.9.0), `valid`, `tolerance`, the volumes and their ratio, `max_deviation`, the faces by type (`num_bspline`, `num_fillet` and `num_helical` among them, and of those `num_variable_fillet`, `num_blend` and `num_rounded_thread`), `num_vertex_blend` and `num_chamfer` (v17.2.0) and, of the fillets and threads, `num_conic_blend`, `num_tapered_thread` and `num_variable_pitch_thread`, `num_faceted_faces`, `num_patches`, `num_demoted`, the exact and approximated edges, `num_solids` and `num_split_patches`; `closed` (v17.11.0, always); with `--refine` (v17.11.0) also `refined`, `refine_iterations`, `num_refine_splits`, `num_refine_merges`, `initial_explained_area_fraction`, `explained_area_fraction` and `refinement_kept`; with `--freeform-general` `num_freeform_general`, `num_freeform_refinements` and `avg_freeform_poles`; with `--extend-surfaces` `num_extended_edges`; with `--snap-junctions` `num_snapped_junctions`; with `--face-deviation` `hausdorff_max` and `hausdorff_rms` |
 | `region-adjacency` | `facets` and `measure` |
 | `find-interface` | pair counts, area, maximum gap, unmatched counts and both Side-entry lists |
 | `contact-pairs` | `num_pairs`, the pair table and unmatched slave-point ids |
@@ -1197,6 +1197,16 @@ meshioplusplus to-cad [options] INFILE OUTFILE.step
 | `--no-refine-merge`, `--no-refine-split` | `--refine`: do not merge neighbours one primitive explains, or split a primitive out of a freeform patch |
 | `--ransac-seed S` | `--refine`: the seed of the RANSAC split (default `0x6d657368696f2b2b`) |
 | `--refine-tolerance T` | `--refine`: how far a point may lie from its refined patch's primitive, relative to the diagonal (default `1e-3`) |
+| `--freeform-general` | Try a patch the plane and cylinder freeform fit leaves unexplained as a general B-spline face (disc parametrisation, iterative fit; v17.11.0) |
+| `--freeform-tolerance T` | `--freeform-general`: the fit's target at the vertices (default `0`: a quarter of the tolerance) |
+| `--freeform-smoothing W` | `--freeform-general`: the thin-plate weight (default `1e-12`) |
+| `--max-freeform-poles N` | `--freeform-general`: the most poles per direction, 4 to 1024 (default `40`) |
+| `--max-freeform-iterations N` | `--freeform-general`: the iteration budget (default `30`) |
+| `--max-freeform-splits N` | `--freeform-general`: how many times a patch the fit cannot explain is halved (default `2`) |
+| `--sew-tolerance T` | The tolerance the faces are sewn at (default `0`: the tolerance; OpenCASCADE only) |
+| `--extend-surfaces` | Extend freeform B-spline surfaces past their patches before the edges are built (OpenCASCADE only) |
+| `--snap-junctions` | Place the corners where analytic faces meet by least squares on their tangent planes (OpenCASCADE only) |
+| `--face-deviation` | Measure each face's two-sided distance to the skin: `fit_cad:face_hausdorff` / `fit_cad:face_rms` field data and `hausdorff_max` / `hausdorff_rms` (OpenCASCADE only) |
 | `--mesh-out FILE` | Also write the re-meshed solid |
 | `--cad-json FILE` | Also write the solid as [Kratos CAD JSON](formats/cad_json.md) (its faces as trimmed NURBS) |
 | `--json`, `-q/--quiet` | Machine-readable report, or no summary |

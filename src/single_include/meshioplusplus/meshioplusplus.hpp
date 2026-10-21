@@ -28304,11 +28304,12 @@ struct FitCadOptions {
     /// The tolerance the faces are sewn at; 0 sews at the tolerance itself,
     /// as before the option existed (v17.11.0). OpenCASCADE backend only.
     double mSewTolerance = 0.0;
-    /// Whether every freeform B-spline face's surface is extended past its
-    /// patch on all four sides before the edges are built, so an
-    /// intersection with a neighbour that runs just outside the fitted area is
-    /// still found (`GeomLib::ExtendSurfByLength`, by a tenth of the patch's
-    /// size). OpenCASCADE backend only; off by default (v17.11.0).
+    /// Whether a freeform B-spline face's surface, extended past its patch on
+    /// every open side (`GeomLib::ExtendSurfByLength`, by a tenth of the
+    /// patch's size), is intersected with a neighbour where the surfaces
+    /// themselves give no branch along their shared chain, so an edge that runs
+    /// just outside the fitted area is still exact. The face keeps its own
+    /// surface. OpenCASCADE backend only; off by default (v17.11.0).
     bool mExtendSurfaces = false;
     /// Whether the B-rep vertices where analytic faces meet are placed by a
     /// least-squares solve on the surfaces' tangent planes (Gauss-Newton,
@@ -28389,6 +28390,12 @@ struct FitCadResult {
     /// Whether `mRefineSegmentation` refined the patches (v17.11.0); the
     /// counts below are zero when it did not.
     bool mRefined = false;
+    /// Whether the solid was built from the refined patches (v17.11.0). The
+    /// OpenCASCADE backend also builds it from the patches as given and keeps
+    /// that one when it is better (valid where the other is not, then fewer
+    /// facet faces, demotions and faces); the refinement's counts still
+    /// describe what it did. False without `mRefineSegmentation`.
+    bool mRefinementKept = false;
     /// The refinement's Lloyd steps kept, splits and merges.
     std::int64_t mRefineIterations = 0;
     std::int64_t mNumRefineSplits = 0;
@@ -28402,8 +28409,9 @@ struct FitCadResult {
     std::int64_t mNumFreeformRefinements = 0;
     /// Their mean pole count (0 without any).
     double mAvgFreeformPoles = 0.0;
-    /// Freeform B-spline surfaces `mExtendSurfaces` extended (v17.11.0).
-    std::int64_t mNumExtendedSurfaces = 0;
+    /// Exact edges found by intersecting the surfaces `mExtendSurfaces`
+    /// extended, where the surfaces themselves gave no branch (v17.11.0).
+    std::int64_t mNumExtendedEdges = 0;
     /// B-rep vertices `mSnapJunctions` placed by its least-squares solve.
     std::int64_t mNumSnappedJunctions = 0;
     /// With `mFaceDeviation`: the two-sided Hausdorff distance between the
@@ -188906,6 +188914,7 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
 #include <map>
 #include <numeric>
 #include <stdexcept>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -189093,6 +189102,7 @@ void fcn_report_refined(const FcnRefined& rRefined, const Mesh& rWork, FitCadRes
         return;
     const RefinePatchesResult& r = rRefined.mResult;
     rResult.mRefined = true;
+    rResult.mRefinementKept = true;
     rResult.mRefineIterations = r.mNumIterations;
     rResult.mNumRefineSplits = r.mNumSplits;
     rResult.mNumRefineMerges = r.mNumMerges;
@@ -189124,18 +189134,36 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         log::warn("fit_cad: {} cell(s) that are not surface facets (lines, vertices) are ignored",
                   fc.mNumSkipped);
 
-    // The patches whose type is left out are written as coplanar groups.
+    // The patches whose type is left out, or that a refinement found no
+    // primitive for, are written as coplanar groups.
     Mesh typed;
     const Mesh* pSource = &work;
-    if ((rOptions.mTypes & kFitAllTypes) != kFitAllTypes && work.HasFieldData("fit:patch_type")) {
+    const bool verdicts = refined.mRan && work.HasFieldData(kRefinePatchProxyName) &&
+                          work.HasFieldData(kRefinePatchIdName) &&
+                          work.HasFieldData("fit:patch_id");
+    if (((rOptions.mTypes & kFitAllTypes) != kFitAllTypes || verdicts) &&
+        work.HasFieldData("fit:patch_type")) {
         typed = detail::clone_mesh(
             work, [](DataLocation, const std::string&, std::string&) { return true; });
         const NDArray& types = work.FieldData("fit:patch_type");
+        std::unordered_map<std::int64_t, std::int64_t> proxy_of;
+        if (verdicts) {
+            const NDArray& kinds = work.FieldData(kRefinePatchProxyName);
+            const NDArray& labels = work.FieldData(kRefinePatchIdName);
+            for (std::size_t i = 0; i < std::min(kinds.Size(), labels.Size()); ++i)
+                proxy_of.emplace(detail::read_int(labels, i), detail::read_int(kinds, i));
+        }
         NDArray kept = NDArray::Uninit(DType::Int64, {types.Size()});
         for (std::size_t r = 0; r < types.Size(); ++r) {
             const std::int64_t t = detail::read_int(types, r);
-            kept.As<std::int64_t>()[r] =
-                t >= 1 && t <= 5 && !(rOptions.mTypes & (1u << static_cast<unsigned>(t))) ? 0 : t;
+            bool drop = t >= 1 && t <= 5 && !(rOptions.mTypes & (1u << static_cast<unsigned>(t)));
+            if (verdicts && r < work.FieldData("fit:patch_id").Size()) {
+                const auto k = proxy_of.find(detail::read_int(work.FieldData("fit:patch_id"), r));
+                drop = drop || (k != proxy_of.end() &&
+                                (k->second == static_cast<std::int64_t>(RefineProxy::Facets) ||
+                                 k->second == static_cast<std::int64_t>(RefineProxy::Freeform)));
+            }
+            kept.As<std::int64_t>()[r] = drop ? 0 : t;
         }
         typed.AddFieldData("fit:patch_type", std::move(kept));
         pSource = &typed;
@@ -189530,7 +189558,8 @@ struct FcBuild {
     std::vector<std::size_t> mUnmerge;
     std::int64_t mNumExact = 0;
     std::int64_t mNumApprox = 0;
-    std::int64_t mNumSnapped = 0;  // vertices the least-squares junction solve placed
+    std::int64_t mNumSnapped = 0;   // vertices the least-squares junction solve placed
+    std::int64_t mNumExtended = 0;  // exact edges found on extended surfaces
     bool mValid = false;
 };
 
@@ -189550,7 +189579,8 @@ struct FcChain {
 FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface>>& rSurface,
                  const std::vector<std::uint8_t>& rAnalytic, double Tol, bool ExactEdges,
                  bool MergeFaces, const std::vector<std::uint8_t>& rNoMerge, double SewTol = 0.0,
-                 bool SnapJunctions = false) {
+                 bool SnapJunctions = false,
+                 const std::vector<FcHandle<Geom_Surface>>* pExtended = nullptr) {
     const detail::ClosedFacets& fc = rSkin.mFacets;
     const std::vector<double>& xyz = fc.mXyz;
     const std::size_t nf = fc.NumFacets();
@@ -189876,10 +189906,15 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface>>&
                        t == kFitCadVertexBlendType || t == kFitCadChamferType;
             };
             if (ExactEdges && !swept(c.mGroupFwd) && !swept(c.mGroupBwd)) {
-                GeomAPI_IntSS inter(s1, s2, Precision::Confusion());
                 FcHandle<Geom_Curve> best;
                 double best_dev = std::numeric_limits<double>::infinity();
-                if (inter.IsDone())
+                // The intersection branch nearest the chain, kept when nearer
+                // than the best so far.
+                auto intersect = [&](const FcHandle<Geom_Surface>& rA,
+                                     const FcHandle<Geom_Surface>& rB) {
+                    GeomAPI_IntSS inter(rA, rB, Precision::Confusion());
+                    if (!inter.IsDone())
+                        return;
                     for (int i = 1; i <= inter.NbLines(); ++i) {
                         FcHandle<Geom_Curve> cv = inter.Line(i);
                         // A trimmed circle or ellipse: its periodic basis, so
@@ -189900,6 +189935,22 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface>>&
                             best = cv;
                         }
                     }
+                };
+                intersect(s1, s2);
+                bool extended_branch = false;
+                if ((best.IsNull() || best_dev > Tol) && pExtended) {
+                    // No branch along the chain: a freeform surface may stop
+                    // short of it. Its extension's branch, when one fits.
+                    const auto ext = [&](std::int64_t G) {
+                        const std::size_t g = static_cast<std::size_t>(G);
+                        return g < pExtended->size() ? (*pExtended)[g] : FcHandle<Geom_Surface>();
+                    };
+                    const FcHandle<Geom_Surface> e1 = ext(c.mGroupFwd), e2 = ext(c.mGroupBwd);
+                    if (!e1.IsNull() || !e2.IsNull()) {
+                        intersect(e1.IsNull() ? s1 : e1, e2.IsNull() ? s2 : e2);
+                        extended_branch = !best.IsNull() && best_dev <= Tol;
+                    }
+                }
                 if (!best.IsNull() && best_dev <= Tol) {
                     // A point inside the chain picks which arc of a closed
                     // curve it is; a single mesh edge has only its midpoint.
@@ -189936,6 +189987,19 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface>>&
                             from_start = false;
                             ok = true;
                         }
+                        // A branch of the extensions is kept only where it
+                        // stays on both faces' own surfaces: the faces are
+                        // trimmed on those, not on the extensions.
+                        for (int k = 0; ok && extended_branch && k <= 16; ++k) {
+                            const gp_Pnt at = best->Value(lo + (hi - lo) * k / 16.0);
+                            for (const auto& srf : {s1, s2}) {
+                                gp_Pnt on;
+                                if (!fc_project(srf, at, on) || on.Distance(at) > Tol) {
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                        }
                         if (ok) {
                             const TopoDS_Vertex& v0 = from_start ? va : vb;
                             const TopoDS_Vertex& v1 = from_start ? vb : va;
@@ -189947,6 +190011,7 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface>>&
                                 c.mFromStart = from_start;
                                 c.mOk = true;
                                 ++out.mNumExact;
+                                out.mNumExtended += extended_branch ? 1 : 0;
                                 continue;
                             }
                         }
@@ -191435,8 +191500,9 @@ FcHandle<Geom_Surface> fc_helical_surface(const detail::HelicalFit& rH, double T
     return FcHandle<Geom_Surface>(fit.Surface());
 }
 
-FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
-                             const FitCadOptions& rOptions) {
+// One build; the solid also goes to @p pShape when given.
+FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPath,
+                                  const FitCadOptions& rOptions, TopoDS_Shape* pShape) {
     const FcProjectorScope projectors;
     if (std::isnan(rOptions.mTolerance) || std::isinf(rOptions.mTolerance))
         throw std::invalid_argument(std::string(kFcPrefix) + "tolerance must be finite");
@@ -191487,12 +191553,28 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     if (types.Size() != m || tols.Size() != m || params.Size() != m * kFcParams)
         throw std::invalid_argument(std::string(kFcPrefix) +
                                     "the fit:patch_* arrays disagree on the number of patches");
+    // After `refine_patches`, its verdict stands: a patch it found no
+    // primitive for within the tolerance (a freeform or facets proxy) is
+    // unexplained here too, even when `fit_primitives`, by its own measure,
+    // accepts one (a torus's inner side for a saddle, say).
+    std::unordered_map<std::int64_t, std::int64_t> refine_proxy;
+    if (work.HasFieldData(kRefinePatchProxyName) && work.HasFieldData(kRefinePatchIdName)) {
+        const NDArray& kinds = work.FieldData(kRefinePatchProxyName);
+        const NDArray& labels = work.FieldData(kRefinePatchIdName);
+        for (std::size_t i = 0; i < std::min(kinds.Size(), labels.Size()); ++i)
+            refine_proxy.emplace(detail::read_int(labels, i), detail::read_int(kinds, i));
+    }
     std::unordered_map<std::int64_t, std::int64_t> row_of;
     skin.mPatches.resize(m);
     for (std::size_t r = 0; r < m; ++r) {
         FcPatch& p = skin.mPatches[r];
         p.mLabel = detail::read_int(ids, r);
         p.mType = static_cast<std::int32_t>(detail::read_int(types, r));
+        const auto verdict = refine_proxy.find(p.mLabel);
+        if (verdict != refine_proxy.end() &&
+            (verdict->second == static_cast<std::int64_t>(RefineProxy::Facets) ||
+             verdict->second == static_cast<std::int64_t>(RefineProxy::Freeform)))
+            p.mType = 0;
         bool finite = true;
         for (std::size_t k = 0; k < kFcParams; ++k) {
             p.mParams[k] = detail::read_double(params, r * kFcParams + k);
@@ -192385,7 +192467,10 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     }
 
     // Freeform surfaces run on past their patches, so an edge with a
-    // neighbour just outside the fitted area is still an intersection.
+    // neighbour just outside the fitted area is still an intersection; the
+    // extensions are intersected only where the surfaces themselves find no
+    // branch along a chain, and each face keeps its own surface.
+    std::vector<FcHandle<Geom_Surface>> extended;
     if (rOptions.mExtendSurfaces)
         for (std::size_t r = 0; r < m; ++r) {
             if (skin.mPatches[r].mType != kFitCadBsplineType || surface[r].IsNull() ||
@@ -192424,8 +192509,8 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                         GeomLib::ExtendSurfByLength(ext, len, 1, in_u, after);
                 }
                 if (!ext.IsNull()) {
-                    surface[r] = ext;
-                    ++result.mNumExtendedSurfaces;
+                    extended.resize(m);
+                    extended[r] = ext;
                 }
             } catch (const Standard_Failure& rErr) {
                 log::debug("fit_cad: patch {}'s B-spline surface could not be extended: {}",
@@ -192442,9 +192527,9 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         for (std::uint8_t a : analytic)
             any = any || a;
         try {
-            build =
-                fc_build(skin, surface, analytic, tol, rOptions.mExactEdges, rOptions.mMergeFaces,
-                         no_merge, rOptions.mSewTolerance, rOptions.mSnapJunctions);
+            build = fc_build(skin, surface, analytic, tol, rOptions.mExactEdges,
+                             rOptions.mMergeFaces, no_merge, rOptions.mSewTolerance,
+                             rOptions.mSnapJunctions, extended.empty() ? nullptr : &extended);
         } catch (const Standard_Failure& rErr) {
             build = FcBuild{};
             build.mBadRow.assign(m, 0);
@@ -192567,6 +192652,7 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     result.mNumExactEdges = build.mNumExact;
     result.mNumApproxEdges = build.mNumApprox;
     result.mNumSnappedJunctions = build.mNumSnapped;
+    result.mNumExtendedEdges = build.mNumExtended;
     result.mClosed = fc_closed(build.mShape);
     for (std::size_t r = 0; r < m; ++r)
         if (skin.mPatches[r].mAccepted && !facets_of[r].empty() && !analytic[r])
@@ -192690,8 +192776,54 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     }
     if (!rStepPath.empty())
         fc_write_step(build.mShape, rStepPath);
+    if (pShape)
+        *pShape = build.mShape;
     fcn_report_refined(refined, work, result);
     return result;
+}
+
+// The OpenCASCADE backend. With `mRefineSegmentation`, the solid is built from
+// the refined patches and from the patches as given, and the refined one is
+// kept unless the other is better -- valid where it is not, then fewer facet
+// faces, fewer demotions, fewer faces: the refinement knows primitives only,
+// and may cut into strips a blend or a corner the feature fits explain whole.
+FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
+                             const FitCadOptions& rOptions) {
+    if (!rOptions.mRefineSegmentation)
+        return fc_occt_fit_cad_once(rMesh, rStepPath, rOptions, nullptr);
+    TopoDS_Shape refined_shape, plain_shape;
+    FitCadResult refined = fc_occt_fit_cad_once(rMesh, "", rOptions, &refined_shape);
+    FitCadOptions plain_options = rOptions;
+    plain_options.mRefineSegmentation = false;
+    FitCadResult plain = fc_occt_fit_cad_once(rMesh, "", plain_options, &plain_shape);
+    const auto rank = [](const FitCadResult& rR) {
+        return std::make_tuple(rR.mValid ? 0 : 1, rR.mNumFacetedFaces, rR.mNumDemoted,
+                               rR.mNumFaces);
+    };
+    const bool keep = rank(refined) <= rank(plain);
+    log::info(
+        "fit_cad: the refined patches build {} face(s), {} faceted; the patches as given "
+        "{}, {} faceted: {} kept",
+        refined.mNumFaces, refined.mNumFacetedFaces, plain.mNumFaces, plain.mNumFacetedFaces,
+        keep ? "the refinement" : "the patches as given");
+    if (!keep) {
+        // The refinement's report stays, its per-patch data does not: it
+        // describes patches the solid was not built from.
+        plain.mRefined = refined.mRefined;
+        plain.mRefineIterations = refined.mRefineIterations;
+        plain.mNumRefineSplits = refined.mNumRefineSplits;
+        plain.mNumRefineMerges = refined.mNumRefineMerges;
+        plain.mInitialExplainedAreaFraction = refined.mInitialExplainedAreaFraction;
+        plain.mExplainedAreaFraction = refined.mExplainedAreaFraction;
+    }
+    FitCadResult& out = keep ? refined : plain;
+    out.mRefinementKept = keep;
+    if (!rStepPath.empty()) {
+        detail::LibraryLock lock;
+        FcQuietMessenger quiet;
+        fc_write_step(keep ? refined_shape : plain_shape, rStepPath);
+    }
+    return std::move(out);
 }
 
 }  // namespace
@@ -202204,7 +202336,17 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "AllowSplit",
           "RansacSeed",
           "RefineTolerance",
-          "RelativeTolerance"}},
+          "RelativeTolerance",
+          "FreeformGeneral",
+          "FreeformTolerance",
+          "FreeformSmoothing",
+          "MaxFreeformPoles",
+          "MaxFreeformIterations",
+          "MaxFreeformSplits",
+          "SewTolerance",
+          "ExtendSurfaces",
+          "SnapJunctions",
+          "FaceDeviation"}},
         {"RefinePatches",
          {"Tolerance", "Relative", "NormalWeight", "Epsilon", "FeatureAngle", "MaxIterations",
           "MinPatchCells", "RansacSeed", "Types", "AllowSplit", "AllowMerge", "Prefix"}},
@@ -202950,6 +203092,19 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         opts.mRefine.mRansacSeed = pipe_seed(rStep, "RansacSeed", kRefineDefaultSeed);
         opts.mRefine.mTolerance = pipe_number(rStep, "RefineTolerance", 1e-3);
         opts.mRefine.mRelative = pipe_flag(rStep, "RelativeTolerance", true);
+        opts.mFreeformGeneral = pipe_flag(rStep, "FreeformGeneral", false);
+        opts.mFreeformTolerance = pipe_number(rStep, "FreeformTolerance", 0.0);
+        opts.mFreeformSmoothing = pipe_number(rStep, "FreeformSmoothing", 1e-12);
+        opts.mMaxFreeformPoles =
+            static_cast<std::int64_t>(pipe_number(rStep, "MaxFreeformPoles", 40.0));
+        opts.mMaxFreeformIterations =
+            static_cast<std::int64_t>(pipe_number(rStep, "MaxFreeformIterations", 30.0));
+        opts.mMaxFreeformSplits =
+            static_cast<std::int64_t>(pipe_number(rStep, "MaxFreeformSplits", 2.0));
+        opts.mSewTolerance = pipe_number(rStep, "SewTolerance", 0.0);
+        opts.mExtendSurfaces = pipe_flag(rStep, "ExtendSurfaces", false);
+        opts.mSnapJunctions = pipe_flag(rStep, "SnapJunctions", false);
+        opts.mFaceDeviation = pipe_flag(rStep, "FaceDeviation", false);
         FitCadResult cr = fit_cad(mesh, pipe_text(rStep, "Path", ""), opts);
         std::vector<std::pair<std::string, double>> counters = {
             {"Valid", cr.mValid ? 1.0 : 0.0},
@@ -202970,7 +203125,8 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
             {"NumConicBlend", static_cast<double>(cr.mNumConicBlend)},
             {"NumTaperedThread", static_cast<double>(cr.mNumTaperedThread)},
             {"NumVariablePitchThread", static_cast<double>(cr.mNumVariablePitchThread)},
-            {"NumDemoted", static_cast<double>(cr.mNumDemoted)}};
+            {"NumDemoted", static_cast<double>(cr.mNumDemoted)},
+            {"Closed", cr.mClosed ? 1.0 : 0.0}};
         // Only a run that refined reports the refinement, so a report without
         // `RefineSegmentation` stays what it was before the option existed.
         if (cr.mRefined) {
@@ -202978,6 +203134,24 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
             counters.emplace_back("NumRefineSplits", static_cast<double>(cr.mNumRefineSplits));
             counters.emplace_back("NumRefineMerges", static_cast<double>(cr.mNumRefineMerges));
             counters.emplace_back("ExplainedAreaFraction", cr.mExplainedAreaFraction);
+            counters.emplace_back("RefinementKept", cr.mRefinementKept ? 1.0 : 0.0);
+        }
+        // Likewise each Phase 3 option reports only when it is set.
+        if (opts.mFreeformGeneral) {
+            counters.emplace_back("NumFreeformGeneral",
+                                  static_cast<double>(cr.mNumFreeformGeneral));
+            counters.emplace_back("NumFreeformRefinements",
+                                  static_cast<double>(cr.mNumFreeformRefinements));
+            counters.emplace_back("AvgFreeformPoles", cr.mAvgFreeformPoles);
+        }
+        if (opts.mExtendSurfaces)
+            counters.emplace_back("NumExtendedEdges", static_cast<double>(cr.mNumExtendedEdges));
+        if (opts.mSnapJunctions)
+            counters.emplace_back("NumSnappedJunctions",
+                                  static_cast<double>(cr.mNumSnappedJunctions));
+        if (opts.mFaceDeviation) {
+            counters.emplace_back("HausdorffMax", cr.mHausdorffMax);
+            counters.emplace_back("HausdorffRms", cr.mHausdorffRms);
         }
         pipe_push_step(rReport, rStep, std::move(counters));
         return std::move(cr.mMesh);
@@ -208380,6 +208554,8 @@ constexpr double kRpPi = 3.14159265358979323846;
 // hypothesis is fitted to.
 constexpr int kRpHypotheses = 24;
 constexpr std::size_t kRpNeighbourhood = 64;
+// fit_primitives' default share of a patch's points within the tolerance.
+constexpr double kRpMinInlierFraction = 0.9;
 // Relative slack on the energy comparisons (Lloyd step, merge).
 constexpr double kRpEnergySlack = 1e-12;
 
@@ -208511,15 +208687,18 @@ void rp_errors(const RpProxy& rP, const std::vector<double>& rPts, double& rRms,
     rMax = m;
 }
 
-// A primitive every point of the samples lies within the tolerance of, and
-// not a curved surface so flat or so large it stands in for a plane
-// (segment's sanity rule).
+// A primitive the samples lie on as `fit_primitives` accepts one (RMS within
+// the tolerance, nine points in ten within it), so the refinement's verdict
+// and the fit table it writes agree, and not a curved surface so flat or so
+// large it stands in for a plane (segment's sanity rule). The points outside
+// the tolerance are cells the primitive does not take in the Lloyd step.
 bool rp_fit_primitive(const RpSurface& rS, const std::vector<double>& rPts,
                       const std::vector<double>& rNormals, const std::vector<double>& rCentres,
                       std::uint32_t Types, detail::PrimitiveFit& rFit) {
     if (rPts.size() < 9 || Types == 0)
         return false;
-    rFit = detail::fit_primitive_samples(rPts, rNormals, rCentres, rS.mTol, Types, 1.0, 50);
+    rFit = detail::fit_primitive_samples(rPts, rNormals, rCentres, rS.mTol, Types,
+                                         kRpMinInlierFraction, 50);
     if (rFit.mType <= 0)
         return false;
     for (int k = 0; k < detail::kPrimitiveParams; ++k)
@@ -209267,11 +209446,11 @@ RefinePatchesResult refine_patches(const Mesh& rMesh, const RefinePatchesOptions
             }
         }
 
-        // Absorb: a small patch no primitive explains joins a neighbour.
+        // Absorb: a small patch joins the smooth neighbour it shares most edges
+        // with -- a fragment the flooding left, whatever proxy two triangles fit.
         if (min_cells > 1) {
             for (std::size_t r = 0; r < st.mFaces.size(); ++r) {
-                if (st.mFaces[r].empty() || st.mFaces[r].size() >= min_cells ||
-                    rp_is_primitive(st.mProxy[r]))
+                if (st.mFaces[r].empty() || st.mFaces[r].size() >= min_cells)
                     continue;
                 std::map<std::int64_t, std::int64_t> shared;
                 for (std::int64_t f : st.mFaces[r]) {

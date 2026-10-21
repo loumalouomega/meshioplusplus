@@ -6437,6 +6437,23 @@ static_assert(sizeof(mio_fit_cad_opts_ex) == 280,
               "mio_fit_cad_opts_ex grew outside its reserved tail");
 static_assert(sizeof(mio_fit_cad_report_ex2) == 176,
               "mio_fit_cad_report_ex2 grew outside its reserved tail");
+// The v17.11.0 Phase 3 fields were carved from the front of the reserved tails.
+static_assert(offsetof(mio_fit_cad_opts_ex, freeform_general) == 4,
+              "mio_fit_cad_opts_ex: freeform_general replaced reserved32");
+static_assert(offsetof(mio_fit_cad_opts_ex, freeform_tolerance) == 152,
+              "mio_fit_cad_opts_ex: the Phase 3 options start where reserved[16] did");
+static_assert(offsetof(mio_fit_cad_opts_ex, sew_tolerance) == 192,
+              "mio_fit_cad_opts_ex: sew_tolerance moved");
+static_assert(offsetof(mio_fit_cad_opts_ex, reserved) == 216,
+              "mio_fit_cad_opts_ex: the reserved tail moved");
+static_assert(offsetof(mio_fit_cad_report_ex2, num_freeform_general) == 48,
+              "mio_fit_cad_report_ex2: the Phase 3 fields start where reserved[16] did");
+static_assert(offsetof(mio_fit_cad_report_ex2, closed) == 104,
+              "mio_fit_cad_report_ex2: closed moved");
+static_assert(offsetof(mio_fit_cad_report_ex2, refinement_kept) == 112,
+              "mio_fit_cad_report_ex2: refinement_kept moved");
+static_assert(offsetof(mio_fit_cad_report_ex2, reserved) == 120,
+              "mio_fit_cad_report_ex2: the reserved tail moved");
 static_assert(MIO_REFINE_DEFAULT_SEED == meshioplusplus::kRefineDefaultSeed,
               "MIO_REFINE_DEFAULT_SEED must match kRefineDefaultSeed");
 static_assert(MIO_REFINE_ENERGY_ROSE == static_cast<int>(meshioplusplus::RefineStop::EnergyRose),
@@ -6685,6 +6702,17 @@ void mio_fit_cad_opts_ex_init(mio_fit_cad_opts_ex* opts) {
     *opts = mio_fit_cad_opts_ex{};
     opts->refine_segmentation = 0;
     mio_refine_patches_opts_init(&opts->refine);
+    const meshioplusplus::FitCadOptions defaults;
+    opts->freeform_general = defaults.mFreeformGeneral ? 1 : 0;
+    opts->freeform_tolerance = defaults.mFreeformTolerance;
+    opts->freeform_smoothing = defaults.mFreeformSmoothing;
+    opts->max_freeform_poles = defaults.mMaxFreeformPoles;
+    opts->max_freeform_iterations = defaults.mMaxFreeformIterations;
+    opts->max_freeform_splits = defaults.mMaxFreeformSplits;
+    opts->sew_tolerance = defaults.mSewTolerance;
+    opts->extend_surfaces = defaults.mExtendSurfaces ? 1 : 0;
+    opts->snap_junctions = defaults.mSnapJunctions ? 1 : 0;
+    opts->face_deviation = defaults.mFaceDeviation ? 1 : 0;
 }
 
 void mio_iga_opts_init(mio_iga_opts* opts) {
@@ -6928,6 +6956,20 @@ mio_mesh* mio_fit_cad2(const mio_mesh* mesh, const char* step_path, const mio_fi
         if (opts_ex) {
             options.mRefineSegmentation = opts_ex->refine_segmentation != 0;
             options.mRefine = capi_refine_patches_options(opts_ex->refine);
+            options.mFreeformGeneral = opts_ex->freeform_general != 0;
+            options.mFreeformTolerance = opts_ex->freeform_tolerance;
+            options.mFreeformSmoothing = opts_ex->freeform_smoothing;
+            // Zero, from a struct filled before these fields existed, reads as
+            // the default; any other value is taken as given.
+            if (opts_ex->max_freeform_poles != 0)
+                options.mMaxFreeformPoles = opts_ex->max_freeform_poles;
+            if (opts_ex->max_freeform_iterations != 0)
+                options.mMaxFreeformIterations = opts_ex->max_freeform_iterations;
+            options.mMaxFreeformSplits = opts_ex->max_freeform_splits;
+            options.mSewTolerance = opts_ex->sew_tolerance;
+            options.mExtendSurfaces = opts_ex->extend_surfaces != 0;
+            options.mSnapJunctions = opts_ex->snap_junctions != 0;
+            options.mFaceDeviation = opts_ex->face_deviation != 0;
         }
         meshioplusplus::FitCadResult r =
             meshioplusplus::fit_cad(mesh->mMesh, step_path ? step_path : "", options);
@@ -6979,6 +7021,15 @@ mio_mesh* mio_fit_cad2(const mio_mesh* mesh, const char* step_path, const mio_fi
             report_ex2->num_refine_merges = r.mNumRefineMerges;
             report_ex2->initial_explained_area_fraction = r.mInitialExplainedAreaFraction;
             report_ex2->explained_area_fraction = r.mExplainedAreaFraction;
+            report_ex2->num_freeform_general = r.mNumFreeformGeneral;
+            report_ex2->num_freeform_refinements = r.mNumFreeformRefinements;
+            report_ex2->avg_freeform_poles = r.mAvgFreeformPoles;
+            report_ex2->num_extended_edges = r.mNumExtendedEdges;
+            report_ex2->num_snapped_junctions = r.mNumSnappedJunctions;
+            report_ex2->hausdorff_max = r.mHausdorffMax;
+            report_ex2->hausdorff_rms = r.mHausdorffRms;
+            report_ex2->closed = r.mClosed ? 1 : 0;
+            report_ex2->refinement_kept = r.mRefinementKept ? 1 : 0;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });

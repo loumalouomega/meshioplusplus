@@ -192,7 +192,7 @@ TEST(FitCad, NativeBackendReportsAClosedSolid) {
     const FitCadResult r = fit_cad(fitted(analytic::box_skin(3)), "", o);
     EXPECT_TRUE(r.mClosed);
     EXPECT_TRUE(std::isnan(r.mHausdorffMax));
-    EXPECT_EQ(r.mNumExtendedSurfaces, 0);
+    EXPECT_EQ(r.mNumExtendedEdges, 0);
     EXPECT_EQ(r.mNumSnappedJunctions, 0);
 }
 
@@ -820,6 +820,28 @@ TEST(FitCad, RefusesOpenSkinsAndBadOptions) {
     EXPECT_THROW(fit_cad(analytic::box_skin(2), "", o), std::invalid_argument);
 }
 
+TEST(FitCad, RefinementVerdictOverridesALooserPrimitive) {
+    // refine_patches finds no primitive for the saddle top within the
+    // tolerance, while fit_primitives, by its own measure, accepts a torus's
+    // inner side for it; that torus's edges fail and its demotion took the
+    // box's planes with it. fit_cad takes the refinement's verdict.
+    FitCadOptions o;
+    o.mRefineSegmentation = true;
+    for (const FitCadBackend b : {FitCadBackend::Occt, FitCadBackend::Native}) {
+        o.mBackend = b;
+        const FitCadResult r = fit_cad(fitted(saddle_box(24)), "", o);
+        EXPECT_TRUE(r.mValid);
+        EXPECT_TRUE(r.mRefined);
+        EXPECT_EQ(r.mNumPlane, 5);
+        EXPECT_EQ(r.mNumTorus, 0);
+        EXPECT_EQ(r.mNumDemoted, 0);
+        if (b == FitCadBackend::Occt) {
+            EXPECT_EQ(r.mNumFaces, 6);
+            EXPECT_EQ(r.mNumBspline, 1);
+        }
+    }
+}
+
 TEST(FitCad, SewToleranceAtTheToleranceIsTheDefault) {
     const Mesh skin = fitted(analytic::capped_cylinder());
     const std::string a = ::testing::TempDir() + "fit_cad_sew.step";
@@ -884,22 +906,26 @@ TEST(FitCad, FaceHausdorffBoundsGlobal) {
     EXPECT_EQ(plain.mMaxDeviation, r.mMaxDeviation);
 }
 
-TEST(FitCad, ExtendedSurfacesKeepFreeformSolidsValid) {
+TEST(FitCad, ExtendedSurfacesLeaveFoundEdgesAlone) {
+    // Where the surfaces' own intersection has a branch along every chain, the
+    // extensions are never intersected: the solid is the one built without.
     FitCadOptions o;
     o.mFreeformMaxControl = 4;
     o.mFreeformGeneral = true;
-    o.mExtendSurfaces = true;
-    o.mFaceDeviation = true;
     for (const fcfix::Fixture& f : fcfix::golden_fixtures()) {
         if (f.mName != "saddle_box" && f.mName != "wavy_capped")
             continue;
         SCOPED_TRACE(f.mName);
+        o.mExtendSurfaces = false;
+        const FitCadResult plain = fit_cad(f.mMesh, "", o);
+        o.mExtendSurfaces = true;
         const FitCadResult r = fit_cad(f.mMesh, "", o);
         EXPECT_TRUE(r.mValid);
         EXPECT_TRUE(r.mClosed);
-        EXPECT_GT(r.mNumExtendedSurfaces, 0);
-        EXPECT_LE(r.mMaxDeviation, r.mTolerance);
-        EXPECT_NEAR(r.mVolumeRatio, 1.0, 2e-2);
+        EXPECT_EQ(r.mNumExtendedEdges, 0);
+        EXPECT_EQ(r.mNumFaces, plain.mNumFaces);
+        EXPECT_EQ(r.mNumExactEdges, plain.mNumExactEdges);
+        EXPECT_EQ(r.mVolume, plain.mVolume);
     }
 }
 
