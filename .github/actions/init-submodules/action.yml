@@ -3,7 +3,10 @@ description: >-
   `git submodule update --init` with retries. A checkout runs with submodules
   off and this follows it, because actions/checkout cannot retry a clone and
   one of the submodules (Eigen) is hosted on GitLab, which now and then answers
-  "unable to handle this request due to load" for a minute or more.
+  "unable to handle this request due to load" for a minute or more. The first
+  attempt uses the URL recorded in .gitmodules; the later ones fetch Eigen from
+  the loumalouomega/eigen fork on GitHub (the same commits) instead, so a GitLab
+  outage cannot fail the job.
 inputs:
   paths:
     description: >-
@@ -24,10 +27,19 @@ runs:
         # owned by another user, and git refuses it as "dubious ownership".
         git config --global --add safe.directory "$GITHUB_WORKSPACE"
         attempt=1
+        # From the second attempt on, Eigen comes from the GitHub fork. The
+        # rewrite lives in this process's config only: .gitmodules and the
+        # recorded upstream stay GitLab's.
+        mirror=(-c "url.https://github.com/loumalouomega/eigen.git.insteadOf=https://gitlab.com/libeigen/eigen.git")
         while true; do
+          flags=()
+          if [ "$attempt" -gt 1 ]; then
+            flags=("${mirror[@]}")
+            echo "::notice::fetching Eigen from the loumalouomega/eigen fork (attempt $attempt)"
+          fi
           # shellcheck disable=SC2086  # the paths are meant to word-split
-          if git submodule sync --recursive &&
-             git submodule update --init --recursive --force $MIO_SUBMODULE_PATHS; then
+          if git "${flags[@]}" submodule sync --recursive &&
+             git "${flags[@]}" submodule update --init --recursive --force $MIO_SUBMODULE_PATHS; then
             exit 0
           fi
           if [ "$attempt" -ge 3 ]; then

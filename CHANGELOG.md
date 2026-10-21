@@ -8,6 +8,10 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## Unreleased
+
+- **Added**: `fit_cad` halves a patch that flattens but that no single B-spline follows within the tolerance (a large organic surface, such as a topology-optimised part's) across its longest extent, and fits each half in turn, up to nine halvings and 24 triangles per tile (`freeform_split`; no option, report or ABI change). On `example/data/hook.mdpa` the solid goes from 20,892 faces with none freeform to 8,714 with 35 freeform B-spline faces, still valid and inside the tolerance (`example/python/39_cad_quality_check.ipynb`). The pinned `threaded_rod` digests of the OpenCASCADE backend moved.
+
 ## v17.11.0 (2026-10-21)
 
 - **Security:** the viewer's development dependency `vite` is 6.4.4, closing GHSA-587h-7wmj-h5pm (high) and GHSA-r825-w8mm-5pxw and GHSA-698v-4r3x-3vcv (medium), three `launch-editor` advisories (arbitrary command execution for some editors, an `fs.existsSync()` bypass and missing `%` escaping on Windows) that affect Vite 6.4.3 and earlier. The advisories are in the development server only: the built viewer and the npm package do not change. `src/viewer/package-lock.json` is regenerated with npm 10.

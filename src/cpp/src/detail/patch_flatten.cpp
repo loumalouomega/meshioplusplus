@@ -426,5 +426,73 @@ std::vector<std::int64_t> patch_split_until_flat(const std::vector<PatchVec>& rP
     return out;
 }
 
+std::vector<std::int64_t> patch_bisect(const std::vector<PatchVec>& rPts,
+                                       const std::vector<PatchTri>& rTris,
+                                       std::size_t MinTriangles, std::size_t& rNumPieces) {
+    rNumPieces = 0;
+    const std::size_t nt = rTris.size();
+    if (nt < 2 || nt < 2 * MinTriangles)
+        return {};
+    std::vector<PatchVec> normals, centroids(nt);
+    std::vector<double> areas;
+    patch_normals(rPts, rTris, normals, areas);
+    PatchVec mean{0.0, 0.0, 0.0};
+    double total = 0.0;
+    for (std::size_t t = 0; t < nt; ++t) {
+        for (int j = 0; j < 3; ++j) {
+            double c = 0.0;
+            for (std::size_t v : rTris[t])
+                c += rPts[v][static_cast<std::size_t>(j)];
+            centroids[t][static_cast<std::size_t>(j)] = c / 3.0;
+            mean[static_cast<std::size_t>(j)] += areas[t] * c / 3.0;
+        }
+        total += areas[t];
+    }
+    if (!(total > 0.0))
+        return {};
+    for (double& x : mean)
+        x /= total;
+    // The direction the centroids spread along most.
+    double m[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0}, w[3], v[9];
+    for (std::size_t t = 0; t < nt; ++t) {
+        const PatchVec d = pf_sub(centroids[t], mean);
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                m[i * 3 + j] += areas[t] * d[static_cast<std::size_t>(i)] * d[static_cast<std::size_t>(j)];
+    }
+    lsq_sym3_eigen(m, w, v);
+    const PatchVec e{v[6], v[7], v[8]};
+    std::vector<std::pair<double, std::size_t>> keyed;
+    keyed.reserve(nt);
+    for (std::size_t t = 0; t < nt; ++t)
+        keyed.emplace_back(pf_dot(pf_sub(centroids[t], mean), e), t);
+    std::sort(keyed.begin(), keyed.end());
+    std::size_t k = 0;
+    double acc = 0.0;
+    while (k + 1 < keyed.size() && acc + areas[keyed[k].second] <= 0.5 * total) {
+        acc += areas[keyed[k].second];
+        ++k;
+    }
+    k = std::max<std::size_t>(k, 1);
+    std::vector<std::size_t> lo, hi;
+    for (std::size_t i = 0; i < keyed.size(); ++i)
+        (i < k ? lo : hi).push_back(keyed[i].second);
+    std::vector<std::vector<std::size_t>> pieces;
+    for (std::vector<std::size_t>* half : {&lo, &hi}) {
+        std::sort(half->begin(), half->end());
+        for (auto& comp : pf_components(rTris, *half))
+            if (comp.size() >= MinTriangles)
+                pieces.push_back(std::move(comp));
+    }
+    std::sort(pieces.begin(), pieces.end(),
+              [](const auto& rA, const auto& rB) { return rA.front() < rB.front(); });
+    std::vector<std::int64_t> out(nt, -1);
+    for (std::size_t p = 0; p < pieces.size(); ++p)
+        for (std::size_t t : pieces[p])
+            out[t] = static_cast<std::int64_t>(p);
+    rNumPieces = pieces.size();
+    return out;
+}
+
 }  // namespace detail
 }  // namespace meshioplusplus

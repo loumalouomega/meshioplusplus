@@ -160,3 +160,42 @@ TEST(PatchFlatten, SplittingIsDeterministicAndRespectsItsLimits) {
     patch_split_until_flat(band.mPts, band.mTris, huge, n);
     EXPECT_EQ(n, 0u);
 }
+
+TEST(PatchFlatten, BisectingHalvesAPatchAcrossItsLongestExtent) {
+    // A 40 x 10 sheet, long in x: the cut is across x, so each half is 20 x 10.
+    const Patch sheet = grid(40, 10, false, [](double U, double V) {
+        return PatchVec{40.0 * U, 10.0 * V, 0.2 * std::sin(6.0 * U)};
+    });
+    std::size_t n = 0;
+    const std::vector<std::int64_t> piece = patch_bisect(sheet.mPts, sheet.mTris, 16, n);
+    ASSERT_EQ(n, 2u);
+    ASSERT_EQ(piece.size(), sheet.mTris.size());
+    std::size_t count[2] = {0, 0};
+    double max_x[2] = {-1e300, -1e300}, min_x[2] = {1e300, 1e300};
+    for (std::size_t t = 0; t < piece.size(); ++t) {
+        ASSERT_GE(piece[t], 0);
+        ++count[piece[t]];
+        for (std::size_t v : sheet.mTris[t]) {
+            max_x[piece[t]] = std::max(max_x[piece[t]], sheet.mPts[v][0]);
+            min_x[piece[t]] = std::min(min_x[piece[t]], sheet.mPts[v][0]);
+        }
+    }
+    EXPECT_EQ(count[0] + count[1], piece.size());
+    EXPECT_NEAR(static_cast<double>(count[0]), static_cast<double>(count[1]), 20.0);
+    // Pieces are numbered by their lowest triangle, so piece 0 holds triangle 0 (x = 0).
+    EXPECT_EQ(piece[0], 0);
+    EXPECT_LE(max_x[0], 21.0);
+    EXPECT_GE(min_x[1], 19.0);
+}
+
+TEST(PatchFlatten, BisectingIsDeterministicAndRespectsItsMinimum) {
+    const Patch band = wavy_band();
+    std::size_t a = 0, b = 0;
+    EXPECT_EQ(patch_bisect(band.mPts, band.mTris, 16, a), patch_bisect(band.mPts, band.mTris, 16, b));
+    EXPECT_EQ(a, b);
+    EXPECT_GE(a, 2u);
+    // A patch under twice the minimum is not halved.
+    std::size_t n = 7;
+    EXPECT_TRUE(patch_bisect(band.mPts, band.mTris, band.mTris.size(), n).empty());
+    EXPECT_EQ(n, 0u);
+}
