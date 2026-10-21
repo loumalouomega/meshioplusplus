@@ -355,6 +355,7 @@ struct FcnFreeform {
     // The patch network's (network and auto modes): its patches' labels, its
     // shared edges and extraordinary vertices, and its largest G1 angle.
     std::set<std::int64_t> mNetworkLabels;
+    std::vector<detail::StepEdgeCurve> mEdgeCurves;
     std::int64_t mNumNetworkEdges = 0;
     std::int64_t mNumExtraordinary = 0;
     double mMaxG1AngleDeg = 0.0;
@@ -391,6 +392,175 @@ double fcn_tolerance(const Mesh& rMesh, const detail::ClosedFacets& rFc, double 
         }
     return 1e-3 * std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
                             (hi[2] - lo[2]) * (hi[2] - lo[2]));
+}
+
+// Facets as local triangles (polygons fanned), points renumbered in the order
+// they are first used; with `pGlobal`, each local point's skin point.
+void fcn_local_triangles(const detail::ClosedFacets& rFc, const std::vector<std::size_t>& rFacets,
+                         std::vector<detail::PatchVec>& rPts, std::vector<detail::PatchTri>& rTris,
+                         std::vector<std::size_t>& rTriFacet, std::vector<std::int64_t>* pGlobal) {
+    std::unordered_map<std::int64_t, std::size_t> local;
+    const auto vid = [&](std::int64_t V) {
+        auto ins = local.emplace(V, rPts.size());
+        if (ins.second) {
+            const std::size_t v = static_cast<std::size_t>(V);
+            rPts.push_back({rFc.mXyz[v * 3], rFc.mXyz[v * 3 + 1], rFc.mXyz[v * 3 + 2]});
+            if (pGlobal)
+                pGlobal->push_back(V);
+        }
+        return ins.first->second;
+    };
+    for (std::size_t f : rFacets) {
+        const std::int64_t b = rFc.mStart[f], n = rFc.mStart[f + 1] - b;
+        const std::size_t a0 = vid(rFc.mNodes[static_cast<std::size_t>(b)]);
+        for (std::int64_t k = 1; k + 1 < n; ++k) {
+            rTris.push_back({a0, vid(rFc.mNodes[static_cast<std::size_t>(b + k)]),
+                             vid(rFc.mNodes[static_cast<std::size_t>(b + k + 1)])});
+            rTriFacet.push_back(f);
+        }
+    }
+}
+
+// A face's sense: its surface normal against the facets', area-weighted;
+// `rU`, `rV` the local points' parameters on it.
+bool fcn_sense(const detail::ClosedFacets& rFc, const detail::BsplineSurface& rS,
+               const std::vector<detail::PatchTri>& rTris,
+               const std::vector<std::size_t>& rTriFacet, const std::vector<double>& rU,
+               const std::vector<double>& rV) {
+    double agree = 0.0;
+    for (std::size_t t = 0; t < rTris.size(); ++t) {
+        const std::size_t f = rTriFacet[t];
+        double u = 0.0, v = 0.0;
+        for (std::size_t c : rTris[t]) {
+            u += rU[c] / 3.0;
+            v += rV[c] / 3.0;
+        }
+        detail::BsplineEval e;
+        detail::bspline_eval(rS, u, v, 1, e);
+        const double n[3] = {e.mSu[1] * e.mSv[2] - e.mSu[2] * e.mSv[1],
+                             e.mSu[2] * e.mSv[0] - e.mSu[0] * e.mSv[2],
+                             e.mSu[0] * e.mSv[1] - e.mSu[1] * e.mSv[0]};
+        agree += n[0] * rFc.mNormals[f * 3] + n[1] * rFc.mNormals[f * 3 + 1] +
+                 n[2] * rFc.mNormals[f * 3 + 2];
+    }
+    return agree >= 0.0;
+}
+
+// A freeform region's patch network (network and auto modes): the items it
+// joins, its facets as local triangles, its quad layout (`mLayout.mOk` false:
+// none, and no network), its fitted network, and per layout patch its facets
+// (each facet with its first triangle's patch).
+struct FcnRegionNetwork {
+    std::vector<std::size_t> mItems;
+    std::vector<detail::PatchVec> mPts;
+    std::vector<detail::PatchTri> mTris;
+    std::vector<std::size_t> mTriFacet;
+    std::vector<std::int64_t> mGlobal;
+    detail::QuadLayout mLayout;
+    detail::PatchNetwork mNet;
+    std::vector<std::vector<std::size_t>> mPatchFacets;
+};
+
+// The items (patches, as facet lists) grouped into regions -- items sharing a
+// facet edge -- and each laid out and fitted as one network, in the order of
+// each region's first item. Free of OpenCASCADE: both backends build on it.
+std::vector<FcnRegionNetwork> fcn_networks(const detail::ClosedFacets& rFc,
+                                           const std::vector<std::vector<std::size_t>>& rItems,
+                                           const FitCadOptions& rOptions, double Tol) {
+    double diag = 0.0;
+    {
+        double lo[3] = {1e300, 1e300, 1e300}, hi[3] = {-1e300, -1e300, -1e300};
+        for (std::int64_t v : rFc.mNodes)
+            for (int j = 0; j < 3; ++j) {
+                lo[j] = std::min(lo[j], rFc.mXyz[static_cast<std::size_t>(v) * 3 + j]);
+                hi[j] = std::max(hi[j], rFc.mXyz[static_cast<std::size_t>(v) * 3 + j]);
+            }
+        diag = std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+                         (hi[2] - lo[2]) * (hi[2] - lo[2]));
+    }
+    std::map<std::pair<std::int64_t, std::int64_t>, std::size_t> edge_item;
+    std::vector<std::size_t> parent(rItems.size());
+    std::iota(parent.begin(), parent.end(), std::size_t{0});
+    const auto find = [&](std::size_t A) {
+        while (parent[A] != A)
+            A = parent[A] = parent[parent[A]];
+        return A;
+    };
+    for (std::size_t i = 0; i < rItems.size(); ++i)
+        for (std::size_t f : rItems[i]) {
+            const std::int64_t b = rFc.mStart[f], n = rFc.mStart[f + 1] - b;
+            for (std::int64_t k = 0; k < n; ++k) {
+                const std::int64_t a = rFc.mNodes[static_cast<std::size_t>(b + k)];
+                const std::int64_t c = rFc.mNodes[static_cast<std::size_t>(b + (k + 1) % n)];
+                const auto key = std::make_pair(std::min(a, c), std::max(a, c));
+                const auto ins = edge_item.emplace(key, i);
+                if (!ins.second) {
+                    const std::size_t x = find(ins.first->second), y = find(i);
+                    if (x != y)
+                        parent[std::max(x, y)] = std::min(x, y);
+                }
+            }
+        }
+    std::map<std::size_t, std::vector<std::size_t>> regions;
+    for (std::size_t i = 0; i < rItems.size(); ++i)
+        regions[find(i)].push_back(i);
+    std::vector<FcnRegionNetwork> out;
+    for (const auto& kv : regions) {
+        FcnRegionNetwork reg;
+        reg.mItems = kv.second;
+        std::vector<std::size_t> facets;
+        for (std::size_t i : kv.second)
+            facets.insert(facets.end(), rItems[i].begin(), rItems[i].end());
+        std::sort(facets.begin(), facets.end());
+        fcn_local_triangles(rFc, facets, reg.mPts, reg.mTris, reg.mTriFacet, &reg.mGlobal);
+        detail::QuadLayoutOptions lo;
+        lo.mTargetSize = rOptions.mLayoutTargetPatchSize * diag;
+        lo.mMaxValenceDeviation = static_cast<int>(rOptions.mLayoutMaxValenceDeviation);
+        lo.mSnapToFeatures = rOptions.mLayoutSnapToFeatures;
+        reg.mLayout = detail::quad_layout(reg.mPts, reg.mTris, lo);
+        if (!reg.mLayout.mOk) {
+            log::debug("fit_cad: no quad layout of a {}-triangle freeform region (failure {})",
+                       reg.mTris.size(), static_cast<int>(reg.mLayout.mFailure));
+            out.push_back(std::move(reg));
+            continue;
+        }
+        detail::PatchNetworkOptions no;
+        no.mTolerance = Tol;
+        no.mFreeformTolerance = rOptions.mFreeformTolerance;
+        no.mMaxPolesPerDirection = static_cast<std::size_t>(rOptions.mMaxFreeformPoles);
+        no.mMaxTotalPoles = static_cast<std::size_t>(rOptions.mFreeformMaxControlPoints);
+        no.mG1ToleranceDeg = rOptions.mFreeformG1ToleranceDeg;
+        no.mExtraordinary = rOptions.mExtraordinaryVertex;
+        no.mValidate = rOptions.mValidateBySurfaceSampling;
+        reg.mNet = detail::patch_network_fit(reg.mPts, reg.mTris, reg.mLayout, no);
+        log::debug(
+            "fit_cad: patch network of a {}-triangle freeform region: {} patch(es), {} "
+            "edge(s), {} extraordinary vertex(es), G1 {} degrees",
+            reg.mTris.size(), reg.mLayout.mPatches.size(), reg.mNet.mNumEdges,
+            reg.mNet.mNumExtraordinary, reg.mNet.mMaxG1AngleDeg);
+        reg.mPatchFacets.assign(reg.mLayout.mPatches.size(), {});
+        for (std::size_t t = 0; t < reg.mTris.size(); ++t)
+            if (t == 0 || reg.mTriFacet[t] != reg.mTriFacet[t - 1])
+                reg.mPatchFacets[static_cast<std::size_t>(reg.mLayout.mPatchOfTri[t])].push_back(
+                    reg.mTriFacet[t]);
+        out.push_back(std::move(reg));
+    }
+    return out;
+}
+
+// The record of an accepted network patch.
+FitCadFaceRecord fcn_network_record(std::int64_t Label, const detail::NetworkPatch& rP) {
+    FitCadFaceRecord rec;
+    rec.mPatch = Label;
+    rec.mParamMethod = FitCadParamMethod::Square;
+    rec.mNumControl = static_cast<std::int64_t>(rP.mSurface.NumPoles());
+    rec.mIterations = rP.mIterations;
+    rec.mRefinements = rP.mRefinements;
+    rec.mMaxDist = rP.mMaxDist;
+    rec.mRmsDist = rP.mRmsDist;
+    rec.mReverseMaxDist = rP.mReverseMaxDist;
+    rec.mMaxG1AngleDeg = rP.mMaxG1AngleDeg;
+    return rec;
 }
 
 // The adaptive freeform pass of the native backend: every patch the fit table
@@ -431,177 +601,64 @@ FcnFreeform fcn_freeform(const Mesh& rSource, const detail::ClosedFacets& rFc,
     std::vector<std::pair<std::int64_t, std::vector<std::size_t>>> pieces;  // new labels
     std::map<std::int64_t, double> piece_tol;
 
-    // Facets as local triangles (polygons fanned), points renumbered.
-    const auto local_of =
-        [&](const std::vector<std::size_t>& rFacets, std::vector<detail::PatchVec>& rPts,
-            std::vector<detail::PatchTri>& rTris, std::vector<std::size_t>& rTriFacet) {
-            std::unordered_map<std::int64_t, std::size_t> local;
-            const auto vid = [&](std::int64_t V) {
-                auto ins = local.emplace(V, rPts.size());
-                if (ins.second) {
-                    const std::size_t v = static_cast<std::size_t>(V);
-                    rPts.push_back({rFc.mXyz[v * 3], rFc.mXyz[v * 3 + 1], rFc.mXyz[v * 3 + 2]});
-                }
-                return ins.first->second;
-            };
-            for (std::size_t f : rFacets) {
-                const std::int64_t b = rFc.mStart[f], n = rFc.mStart[f + 1] - b;
-                const std::size_t a0 = vid(rFc.mNodes[static_cast<std::size_t>(b)]);
-                for (std::int64_t k = 1; k + 1 < n; ++k) {
-                    rTris.push_back({a0, vid(rFc.mNodes[static_cast<std::size_t>(b + k)]),
-                                     vid(rFc.mNodes[static_cast<std::size_t>(b + k + 1)])});
-                    rTriFacet.push_back(f);
-                }
-            }
-        };
-    // A face's sense: its surface normal against the facets', area-weighted.
-    const auto sense_of = [&](const detail::BsplineSurface& rS,
-                              const std::vector<detail::PatchTri>& rTris,
-                              const std::vector<std::size_t>& rTriFacet,
-                              const std::vector<double>& rU, const std::vector<double>& rV) {
-        double agree = 0.0;
-        for (std::size_t t = 0; t < rTris.size(); ++t) {
-            const std::size_t f = rTriFacet[t];
-            double u = 0.0, v = 0.0;
-            for (std::size_t c : rTris[t]) {
-                u += rU[c] / 3.0;
-                v += rV[c] / 3.0;
-            }
-            detail::BsplineEval e;
-            detail::bspline_eval(rS, u, v, 1, e);
-            const double n[3] = {e.mSu[1] * e.mSv[2] - e.mSu[2] * e.mSv[1],
-                                 e.mSu[2] * e.mSv[0] - e.mSu[0] * e.mSv[2],
-                                 e.mSu[0] * e.mSv[1] - e.mSu[1] * e.mSv[0]};
-            agree += n[0] * rFc.mNormals[f * 3] + n[1] * rFc.mNormals[f * 3 + 1] +
-                     n[2] * rFc.mNormals[f * 3 + 2];
-        }
-        return agree >= 0.0;
-    };
-
     // The patch network (network and auto modes): the given patches grouped
-    // into regions (edge-connected), each laid out and fitted as one network;
-    // a patch of it within the tolerance becomes a face under a new label,
-    // and the rest come back (as new labels and their facets).
-    double diag = 0.0;
-    {
-        double lo[3] = {1e300, 1e300, 1e300}, hi[3] = {-1e300, -1e300, -1e300};
-        for (std::int64_t v : rFc.mNodes)
-            for (int j = 0; j < 3; ++j) {
-                lo[j] = std::min(lo[j], rFc.mXyz[static_cast<std::size_t>(v) * 3 + j]);
-                hi[j] = std::max(hi[j], rFc.mXyz[static_cast<std::size_t>(v) * 3 + j]);
-            }
-        diag = std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
-                         (hi[2] - lo[2]) * (hi[2] - lo[2]));
-    }
+    // into regions, each laid out and fitted as one network; a patch of it
+    // within the tolerance becomes a face under a new label, and the rest
+    // come back (as new labels and their facets).
     const auto network =
         [&](const std::vector<std::pair<std::int64_t, std::vector<std::size_t>>>& rItems) {
             std::vector<std::pair<std::int64_t, std::vector<std::size_t>>> left;
-            // Regions: items sharing a facet edge.
-            std::map<std::pair<std::int64_t, std::int64_t>, std::size_t> edge_item;
-            std::vector<std::size_t> parent(rItems.size());
-            std::iota(parent.begin(), parent.end(), std::size_t{0});
-            const auto find = [&](std::size_t A) {
-                while (parent[A] != A)
-                    A = parent[A] = parent[parent[A]];
-                return A;
-            };
-            for (std::size_t i = 0; i < rItems.size(); ++i)
-                for (std::size_t f : rItems[i].second) {
-                    const std::int64_t b = rFc.mStart[f], n = rFc.mStart[f + 1] - b;
-                    for (std::int64_t k = 0; k < n; ++k) {
-                        const std::int64_t a = rFc.mNodes[static_cast<std::size_t>(b + k)];
-                        const std::int64_t c =
-                            rFc.mNodes[static_cast<std::size_t>(b + (k + 1) % n)];
-                        const auto key = std::make_pair(std::min(a, c), std::max(a, c));
-                        const auto ins = edge_item.emplace(key, i);
-                        if (!ins.second) {
-                            const std::size_t x = find(ins.first->second), y = find(i);
-                            if (x != y)
-                                parent[std::max(x, y)] = std::min(x, y);
-                        }
-                    }
-                }
-            std::map<std::size_t, std::vector<std::size_t>> regions;
-            for (std::size_t i = 0; i < rItems.size(); ++i)
-                regions[find(i)].push_back(i);
-            for (const auto& kv : regions) {
-                std::vector<std::size_t> facets;
-                for (std::size_t i : kv.second)
-                    facets.insert(facets.end(), rItems[i].second.begin(), rItems[i].second.end());
-                std::sort(facets.begin(), facets.end());
-                std::vector<detail::PatchVec> pts;
-                std::vector<detail::PatchTri> tris;
-                std::vector<std::size_t> tri_facet;
-                local_of(facets, pts, tris, tri_facet);
-                detail::QuadLayoutOptions lo;
-                lo.mTargetSize = rOptions.mLayoutTargetPatchSize * diag;
-                lo.mMaxValenceDeviation = static_cast<int>(rOptions.mLayoutMaxValenceDeviation);
-                lo.mSnapToFeatures = rOptions.mLayoutSnapToFeatures;
-                const detail::QuadLayout layout = detail::quad_layout(pts, tris, lo);
-                if (!layout.mOk) {
-                    log::debug(
-                        "fit_cad: no quad layout of a {}-triangle freeform region (failure {})",
-                        tris.size(), static_cast<int>(layout.mFailure));
-                    for (std::size_t i : kv.second)
+            std::vector<std::vector<std::size_t>> item_facets;
+            for (const auto& it : rItems)
+                item_facets.push_back(it.second);
+            for (const FcnRegionNetwork& reg : fcn_networks(rFc, item_facets, rOptions, Tol)) {
+                if (!reg.mLayout.mOk) {
+                    for (std::size_t i : reg.mItems)
                         left.push_back(rItems[i]);
                     continue;
                 }
-                detail::PatchNetworkOptions no;
-                no.mTolerance = Tol;
-                no.mFreeformTolerance = rOptions.mFreeformTolerance;
-                no.mMaxPolesPerDirection = static_cast<std::size_t>(rOptions.mMaxFreeformPoles);
-                no.mMaxTotalPoles = static_cast<std::size_t>(rOptions.mFreeformMaxControlPoints);
-                no.mG1ToleranceDeg = rOptions.mFreeformG1ToleranceDeg;
-                no.mExtraordinary = rOptions.mExtraordinaryVertex;
-                no.mValidate = rOptions.mValidateBySurfaceSampling;
-                const detail::PatchNetwork net = detail::patch_network_fit(pts, tris, layout, no);
-                log::debug(
-                    "fit_cad: patch network of a {}-triangle freeform region: {} patch(es), {} "
-                    "edge(s), {} extraordinary vertex(es), G1 {} degrees",
-                    tris.size(), layout.mPatches.size(), net.mNumEdges, net.mNumExtraordinary,
-                    net.mMaxG1AngleDeg);
-                // Each facet goes with the patch of its first triangle.
-                std::vector<std::vector<std::size_t>> pf(layout.mPatches.size());
-                for (std::size_t t = 0; t < tris.size(); ++t)
-                    if (t == 0 || tri_facet[t] != tri_facet[t - 1])
-                        pf[static_cast<std::size_t>(layout.mPatchOfTri[t])].push_back(tri_facet[t]);
+                const detail::QuadLayout& layout = reg.mLayout;
+                const detail::PatchNetwork& net = reg.mNet;
                 bool any = false;
                 for (std::size_t i = 0; i < layout.mPatches.size(); ++i) {
-                    if (pf[i].empty())
+                    const std::vector<std::size_t>& pf = reg.mPatchFacets[i];
+                    if (pf.empty())
                         continue;
                     const detail::NetworkPatch& np = net.mPatches[i];
                     const std::int64_t label = next_label++;
-                    pieces.emplace_back(label, pf[i]);
+                    pieces.emplace_back(label, pf);
                     if (!np.mOk) {
-                        left.emplace_back(label, pf[i]);
+                        left.emplace_back(label, pf);
                         continue;
                     }
                     any = true;
                     std::vector<detail::PatchTri> ptris;
                     std::vector<std::size_t> pfac;
                     for (std::size_t t : layout.mPatches[i].mTris) {
-                        ptris.push_back(tris[t]);
-                        pfac.push_back(tri_facet[t]);
+                        ptris.push_back(reg.mTris[t]);
+                        pfac.push_back(reg.mTriFacet[t]);
                     }
                     detail::StepFreeformFace face;
                     face.mLabel = label;
                     face.mSurface = np.mSurface;
-                    face.mSense = sense_of(np.mSurface, ptris, pfac, np.mU, np.mV);
+                    face.mSense = fcn_sense(rFc, np.mSurface, ptris, pfac, np.mU, np.mV);
+                    face.mNetwork = true;
                     out.mFaces.push_back(std::move(face));
-                    FitCadFaceRecord rec;
-                    rec.mPatch = label;
-                    rec.mParamMethod = FitCadParamMethod::Square;
-                    rec.mNumControl = static_cast<std::int64_t>(np.mSurface.NumPoles());
-                    rec.mIterations = np.mIterations;
-                    rec.mRefinements = np.mRefinements;
-                    rec.mMaxDist = np.mMaxDist;
-                    rec.mRmsDist = np.mRmsDist;
-                    rec.mReverseMaxDist = np.mReverseMaxDist;
-                    rec.mMaxG1AngleDeg = np.mMaxG1AngleDeg;
-                    out.mRecords[label] = rec;
+                    out.mRecords[label] = fcn_network_record(label, np);
                     out.mNetworkLabels.insert(label);
                 }
                 if (any) {
+                    // Its shared edge curves, for the writer.
+                    for (std::size_t c = 0; c < layout.mChains.size(); ++c) {
+                        if (net.mChains[c].mPoles.size() < 2)
+                            continue;
+                        detail::StepEdgeCurve ec;
+                        for (std::size_t v : layout.mChains[c].mVerts)
+                            ec.mVerts.push_back(reg.mGlobal[v]);
+                        ec.mParams = net.mChainParams[c];
+                        ec.mCurve = net.mChains[c];
+                        out.mEdgeCurves.push_back(std::move(ec));
+                    }
                     out.mNumNetworkEdges += static_cast<std::int64_t>(net.mNumEdges);
                     out.mNumExtraordinary += static_cast<std::int64_t>(net.mNumExtraordinary);
                     out.mMaxG1AngleDeg = std::max(out.mMaxG1AngleDeg, net.mMaxG1AngleDeg);
@@ -639,29 +696,10 @@ FcnFreeform fcn_freeform(const Mesh& rSource, const detail::ClosedFacets& rFc,
     for (std::size_t w = 0; w < work.size(); ++w) {
         const Item item = work[w];
         // The patch as local triangles (polygons fanned), points renumbered.
-        std::unordered_map<std::int64_t, std::size_t> local;
         std::vector<detail::PatchVec> pts;
         std::vector<detail::PatchTri> tris;
         std::vector<std::size_t> tri_facet;
-        std::vector<std::int64_t> global;
-        const auto vid = [&](std::int64_t V) {
-            auto ins = local.emplace(V, pts.size());
-            if (ins.second) {
-                const std::size_t v = static_cast<std::size_t>(V);
-                pts.push_back({rFc.mXyz[v * 3], rFc.mXyz[v * 3 + 1], rFc.mXyz[v * 3 + 2]});
-                global.push_back(V);
-            }
-            return ins.first->second;
-        };
-        for (std::size_t f : item.mFacets) {
-            const std::int64_t b = rFc.mStart[f], n = rFc.mStart[f + 1] - b;
-            const std::size_t a0 = vid(rFc.mNodes[static_cast<std::size_t>(b)]);
-            for (std::int64_t k = 1; k + 1 < n; ++k) {
-                tris.push_back({a0, vid(rFc.mNodes[static_cast<std::size_t>(b + k)]),
-                                vid(rFc.mNodes[static_cast<std::size_t>(b + k + 1)])});
-                tri_facet.push_back(f);
-            }
-        }
+        fcn_local_triangles(rFc, item.mFacets, pts, tris, tri_facet, nullptr);
         const detail::FreeformAdaptiveResult fit = detail::freeform_adaptive_fit(pts, tris, o);
         log::debug(
             "fit_cad: adaptive freeform fit of patch {} ({} triangles): {}, {} pole(s), vertex "
@@ -680,27 +718,10 @@ FcnFreeform fcn_freeform(const Mesh& rSource, const detail::ClosedFacets& rFc,
         rec.mRmsDist = fit.mRmsDist;
         rec.mReverseMaxDist = fit.mReverseMaxDist;
         if (fit.mOk) {
-            // Its sense: the surface normal against the facets', area-weighted.
-            double agree = 0.0;
-            for (std::size_t t = 0; t < tris.size(); ++t) {
-                const std::size_t f = tri_facet[t];
-                double u = 0.0, v = 0.0;
-                for (std::size_t c : tris[t]) {
-                    u += fit.mU[c] / 3.0;
-                    v += fit.mV[c] / 3.0;
-                }
-                detail::BsplineEval e;
-                detail::bspline_eval(fit.mSurface, u, v, 1, e);
-                const double n[3] = {e.mSu[1] * e.mSv[2] - e.mSu[2] * e.mSv[1],
-                                     e.mSu[2] * e.mSv[0] - e.mSu[0] * e.mSv[2],
-                                     e.mSu[0] * e.mSv[1] - e.mSu[1] * e.mSv[0]};
-                agree += n[0] * rFc.mNormals[f * 3] + n[1] * rFc.mNormals[f * 3 + 1] +
-                         n[2] * rFc.mNormals[f * 3 + 2];
-            }
             detail::StepFreeformFace face;
             face.mLabel = item.mLabel;
             face.mSurface = fit.mSurface;
-            face.mSense = agree >= 0.0;
+            face.mSense = fcn_sense(rFc, fit.mSurface, tris, tri_facet, fit.mU, fit.mV);
             out.mFaces.push_back(std::move(face));
             out.mRecords[item.mLabel] = rec;
             continue;
@@ -900,7 +921,8 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     opts.mTolerance = rOptions.mTolerance;
     detail::StepBrepResult brep;
     detail::write_step_report(rStepPath, *pSource, opts, &brep,
-                              freeform.mFaces.empty() ? nullptr : &freeform.mFaces);
+                              freeform.mFaces.empty() ? nullptr : &freeform.mFaces,
+                              freeform.mEdgeCurves.empty() ? nullptr : &freeform.mEdgeCurves);
 
     FitCadResult result;
     result.mBackend = FitCadBackend::Native;
@@ -5003,7 +5025,14 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                                     "layout_max_valence_deviation must be 1 to 3");
     if (rOptions.mResegmentRounds < 0)
         throw std::invalid_argument(std::string(kFcnPrefix) + "resegment_rounds must be >= 0");
-    // Every freeform mode but the legacy one builds on the general fit.
+    // Truncated hierarchical refinement is not there yet: say so rather than
+    // run knot insertion under its name.
+    if (rOptions.mLocalRefine == FitCadLocalRefine::Thb &&
+        rOptions.mFreeformMode != FitCadFreeformMode::Legacy &&
+        (rOptions.mFreeformGeneral && rOptions.mExtendSurfaces))
+        log::warn(
+            "fit_cad: local_refine='thb' is not implemented yet; the freeform faces refine "
+            "by knot insertion ('knots')");
     // The freeform modes build on the general fit, and their faces run on
     // past their patches so an edge with an analytic neighbour is still an
     // intersection.

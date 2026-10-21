@@ -124,7 +124,9 @@ struct SbSegment {
     std::size_t mChain = 0;
     std::size_t mFrom = 0;
     std::size_t mTo = 0;
-    int mKind = 0;  // 0 line, 1 circle, 2 polyline B-spline
+    int mKind = 0;           // 0 line, 1 circle, 2 polyline B-spline, 3 a shared network curve
+    std::size_t mCurve = 0;  // kind 3: the StepEdgeCurve, and its parameters at both ends
+    double mT0 = 0.0, mT1 = 0.0;
     double mCentre[3] = {0, 0, 0};
     double mAxis[3] = {0, 0, 1};
     double mRadius = 0.0;
@@ -660,6 +662,19 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
             return !analytic_group(G) || rows[static_cast<std::size_t>(G)].mType == 1;
         };
         std::vector<SbSegment> segs;
+        // The networks' shared curves, by the mesh edges they run along.
+        std::unordered_map<std::uint64_t, std::pair<std::size_t, std::size_t>> curve_at;
+        if (rOptions.mEdgeCurves != nullptr)
+            for (std::size_t k = 0; k < rOptions.mEdgeCurves->size(); ++k) {
+                const StepEdgeCurve& ec = (*rOptions.mEdgeCurves)[k];
+                for (std::size_t i = 0; i + 1 < ec.mVerts.size(); ++i)
+                    curve_at.emplace(sb_key(ec.mVerts[i], ec.mVerts[i + 1]), std::make_pair(k, i));
+            }
+        const auto network_group = [&](std::int64_t G) {
+            const SbRow& r = rows[static_cast<std::size_t>(G)];
+            return r.mAnalytic && r.mFreeform >= 0 && rOptions.mFreeform != nullptr &&
+                   (*rOptions.mFreeform)[static_cast<std::size_t>(r.mFreeform)].mNetwork;
+        };
         for (std::size_t ci = 0; ci < chains.size(); ++ci) {
             const SbChain& c = chains[ci];
             const std::vector<std::int64_t>& vs = c.mVerts;
@@ -698,6 +713,37 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                 for (std::size_t i = 0; i + 1 < cut.size(); ++i)
                     add(cut[i], cut[i + 1], 0);
             };
+            // Between two network faces, along one shared curve: its exact
+            // piece, which both faces' boundaries are.
+            if (!curve_at.empty() && !closed && network_group(c.mFwd) && network_group(c.mBwd)) {
+                bool one = true;
+                std::size_t curve = 0;
+                std::vector<double> ts;
+                for (std::size_t i = 0; i + 1 < vs.size() && one; ++i) {
+                    const auto it = curve_at.find(sb_key(vs[i], vs[i + 1]));
+                    if (it == curve_at.end() || (i > 0 && it->second.first != curve)) {
+                        one = false;
+                        break;
+                    }
+                    curve = it->second.first;
+                    const StepEdgeCurve& ec = (*rOptions.mEdgeCurves)[curve];
+                    const std::size_t at = it->second.second;
+                    // This mesh edge's two ends' parameters, in the chain's order.
+                    const bool fwd = ec.mVerts[at] == vs[i];
+                    if (i == 0)
+                        ts.push_back(ec.mParams[fwd ? at : at + 1]);
+                    ts.push_back(ec.mParams[fwd ? at + 1 : at]);
+                }
+                for (std::size_t i = 2; one && i < ts.size(); ++i)
+                    one = (ts[i] - ts[i - 1]) * (ts[1] - ts[0]) > 0.0;
+                if (one && ts.size() >= 2 && ts.front() != ts.back()) {
+                    const std::size_t k = add(0, last, 3);
+                    segs[k].mCurve = curve;
+                    segs[k].mT0 = ts.front();
+                    segs[k].mT1 = ts.back();
+                    continue;
+                }
+            }
             const bool flat_side = !analytic_group(c.mFwd) || !analytic_group(c.mBwd);
             if (planar_group(c.mFwd) && planar_group(c.mBwd)) {
                 lines(flat_side ? eps : tol);
@@ -993,6 +1039,36 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                 }
                 sense = turn >= 0.0;
                 ++res.mNumCircleEdges;
+            } else if (s.mKind == 3) {
+                // The piece of the shared curve, from vertex a to vertex b.
+                const BsplineCurve piece =
+                    bspline_curve_segment((*rOptions.mEdgeCurves)[s.mCurve].mCurve, s.mT0, s.mT1);
+                std::string pts, mults, knots;
+                for (std::size_t i = 0; i < piece.mPoles.size(); ++i) {
+                    const double q[3] = {piece.mPoles[i][0], piece.mPoles[i][1],
+                                         piece.mPoles[i][2]};
+                    // The ends are the vertices' points exactly.
+                    const double* at = i == 0 ? &pos[static_cast<std::size_t>(a) * 3]
+                                              : (i + 1 == piece.mPoles.size()
+                                                     ? &pos[static_cast<std::size_t>(b) * 3]
+                                                     : q);
+                    const std::int64_t p =
+                        st.Ent("CARTESIAN_POINT(''," + StepStream::Triple(at) + ")");
+                    pts += (i == 0 ? "" : ",") + StepStream::Ref(p);
+                }
+                for (std::size_t i = 0; i < piece.mKnots.size();) {
+                    std::size_t j = i;
+                    while (j < piece.mKnots.size() && piece.mKnots[j] == piece.mKnots[i])
+                        ++j;
+                    mults += (i == 0 ? "" : ",") + std::to_string(j - i);
+                    knots += (i == 0 ? "" : ",") + step_real(piece.mKnots[i]);
+                    i = j;
+                }
+                curve = st.Ent("B_SPLINE_CURVE_WITH_KNOTS(''," + std::to_string(piece.mDegree) +
+                               ",(" + pts + "),.UNSPECIFIED.,.F.,.F.,(" + mults + "),(" + knots +
+                               "),.UNSPECIFIED.)");
+                ++res.mNumSplineEdges;
+                ++res.mNumSharedEdges;
             } else {
                 std::string pts, mults, knots;
                 const std::size_t n = s.mTo - s.mFrom + 1;

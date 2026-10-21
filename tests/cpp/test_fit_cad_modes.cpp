@@ -264,6 +264,39 @@ TEST(FitCadModes, NativeAdaptiveBuildsBsplineFaces) {
     }
 }
 
+// The native network: B-spline patches whose shared edges are written as
+// the cubic curves both patches' boundaries are, and the same bytes again.
+TEST(FitCadModes, NativeNetworkWritesSharedEdges) {
+    const Mesh skin = analytic::monkey_saddle_box(24);
+    const double tol = 2e-3 * fcfix::diagonal(skin);
+    const Mesh fitted = fcfix::fitted_abs(skin, tol);
+    FitCadOptions o;
+    o.mBackend = FitCadBackend::Native;
+    o.mTolerance = tol;
+    o.mFreeformMode = FitCadFreeformMode::Network;
+    const std::string path = temp_step("network_native.step");
+    const FitCadResult r = fit_cad(fitted, path, o);
+    EXPECT_GE(r.mNumNetworkPatches, 4);
+    EXPECT_GT(r.mNumNetworkEdges, 0);
+    EXPECT_EQ(r.mFacetAreaFraction, 0.0);
+    EXPECT_TRUE(r.mValid);
+    EXPECT_LE(r.mMaxG1AngleDeg, 5.0);
+    const std::string bytes = slurp(path);
+    std::size_t cubic = 0;
+    for (std::size_t at = bytes.find("B_SPLINE_CURVE_WITH_KNOTS('',3,"); at != std::string::npos;
+         at = bytes.find("B_SPLINE_CURVE_WITH_KNOTS('',3,", at + 1))
+        ++cubic;
+    EXPECT_GT(cubic, 0U);
+    const std::string again = temp_step("network_native_again.step");
+    fit_cad(fitted, again, o);
+    std::string b2 = slurp(again);
+    // Only the file name, which the header and the product carry, differs.
+    for (std::size_t at = b2.find("network_native_again.step"); at != std::string::npos;
+         at = b2.find("network_native_again.step"))
+        b2.replace(at, std::string("network_native_again.step").size(), "network_native.step");
+    EXPECT_EQ(bytes, b2);
+}
+
 // The same bytes at every thread count, and run after run.
 TEST(FitCadModes, NativeAdaptiveIsDeterministic) {
     const Mesh skin = analytic::monkey_saddle_box(16, true);

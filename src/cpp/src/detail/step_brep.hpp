@@ -65,6 +65,7 @@
 #include "meshioplusplus/mesh.hpp"
 
 // Project includes (private, not installed)
+#include "bspline_curve.hpp"
 #include "bspline_lsq.hpp"
 #include "closed_facets.hpp"
 
@@ -81,6 +82,18 @@ struct StepFreeformFace {
     BsplineSurface mSurface;
     /// Whether the surface's normal (`S_u x S_v`) agrees with the facets'.
     bool mSense = true;
+    /// A patch of a network: its boundary rows are pieces of `StepEdgeCurve`s.
+    bool mNetwork = false;
+};
+
+/// A patch network's shared edge curve (v17.12.0): the mesh points of the
+/// chain it stands for, their parameters on it, and the curve. An edge
+/// between two network faces that runs along one of these is written as the
+/// exact piece of it both faces' boundaries are.
+struct StepEdgeCurve {
+    std::vector<std::int64_t> mVerts;
+    std::vector<double> mParams;
+    BsplineCurve mCurve;
 };
 
 /// How the B-rep writer builds its faces.
@@ -94,6 +107,8 @@ struct StepBrepOptions {
     /// Freeform faces for patches the fit table leaves unexplained (only with
     /// `mFitted`); null or empty writes none, as before the option existed.
     const std::vector<StepFreeformFace>* mFreeform = nullptr;
+    /// The networks' shared edge curves; null writes polyline edges, as before.
+    const std::vector<StepEdgeCurve>* mEdgeCurves = nullptr;
 };
 
 /// What the B-rep writer wrote.
@@ -118,6 +133,8 @@ struct StepBrepResult {
     std::int64_t mNumLineEdges = 0;
     std::int64_t mNumCircleEdges = 0;
     std::int64_t mNumSplineEdges = 0;
+    /// Of those, the networks' shared cubic edge curves.
+    std::int64_t mNumSharedEdges = 0;
     /// Faces written from `StepBrepOptions::mFreeform` (`fit_cad:type` 6).
     std::int64_t mNumBspline = 0;
     /// Per row of the fit table (its order): the `segment:patch` label, and
@@ -143,7 +160,8 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
 /// `formats/step.cpp`; `fit_cad`'s native backend reads the report.
 void write_step_report(const std::string& rPath, const Mesh& rMesh,
                        const StepWriteOptions& rOptions, StepBrepResult* pReport,
-                       const std::vector<StepFreeformFace>* pFreeform = nullptr);
+                       const std::vector<StepFreeformFace>* pFreeform = nullptr,
+                       const std::vector<StepEdgeCurve>* pEdgeCurves = nullptr);
 
 }  // namespace detail
 }  // namespace meshioplusplus
