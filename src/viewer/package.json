@@ -22,7 +22,7 @@
   "devDependencies": {
     "@playwright/test": "1.61.1",
     "typescript": "^5.7.2",
-    "vite": "6.4.3",
+    "vite": "6.4.4",
     "vite-plugin-singlefile": "2.3.3"
   },
   "overrides": {
