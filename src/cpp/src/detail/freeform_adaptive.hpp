@@ -92,6 +92,11 @@ struct FreeformAdaptiveOptions {
     /// the face runs on past its patch (the least-bending extension) and an
     /// edge on its boundary projects onto its own surface.
     double mMargin = 0.05;
+    /// Refine by truncated hierarchical B-splines (`thb_fit_patch`,
+    /// `local_refine="thb"`, experimental) instead of knot lines where that
+    /// meets the target (the face is the flattened surface), else by knot
+    /// lines as without it.
+    bool mThb = false;
 };
 
 /// The face, and how it got there.
@@ -108,6 +113,10 @@ struct FreeformAdaptiveResult {
     std::int64_t mRefinements = 0;
     /// The rungs climbed past the first.
     std::int64_t mEscalations = 0;
+    /// With `mThb`, the hierarchical degrees of freedom the surface was
+    /// fitted with (its flattened poles are `mSurface.NumPoles()`); 0 for a
+    /// knot-line fit.
+    std::size_t mNumDofs = 0;
     double mMaxDist = 0.0;  ///< largest vertex distance from the surface
     double mRmsDist = 0.0;
     double mMaxCentroidDist = 0.0;

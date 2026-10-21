@@ -23,6 +23,7 @@
 #include "bspline_fit.hpp"
 #include "freeform_adaptive.hpp"
 #include "surface_validate.hpp"
+#include "thb_spline.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -196,7 +197,16 @@ FreeformAdaptiveResult freeform_adaptive_fit(const std::vector<PatchVec>& rPts,
             o.mMaxIterations = rungs[r].mIterations;
             o.mMaxTotalPoles = rOptions.mMaxTotalPoles;
             o.mMargin = rOptions.mMargin;
-            const BsplineFitResult fit = bspline_fit_patch(rPts, rTris, par.mU, par.mV, o);
+            // THB (experimental) where it meets the target, else knot lines,
+            // so it never loses a face the knots would keep.
+            ThbFitInfo thb;
+            BsplineFitResult fit;
+            if (rOptions.mThb)
+                fit = thb_fit_patch(rPts, rTris, par.mU, par.mV, o, &thb);
+            if (!fit.mOk) {
+                thb.mNumDofs = 0;
+                fit = bspline_fit_patch(rPts, rTris, par.mU, par.mV, o);
+            }
             out.mParam = fa_method(par.mMethod);
             out.mIterations += fit.mIterations;
             out.mRefinements += fit.mRefinements;
@@ -221,6 +231,7 @@ FreeformAdaptiveResult freeform_adaptive_fit(const std::vector<PatchVec>& rPts,
                 out.mOk = true;
                 out.mReason = FitCadDemotionReason::None;
                 out.mSurface = fit.mSurface;
+                out.mNumDofs = thb.mNumDofs;
                 out.mU = std::move(fu);
                 out.mV = std::move(fv);
                 return out;

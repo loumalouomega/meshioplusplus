@@ -329,6 +329,36 @@ double polygon_area(const Mesh& rMesh) {
 
 }  // namespace
 
+// `local_refine="thb"` (experimental): the adaptive faces fitted with
+// truncated hierarchical B-splines and flattened, their records counting the
+// hierarchical degrees of freedom.
+TEST(FitCadModes, NativeThbRefinementFitsTheBump) {
+    const Mesh skin = analytic::gaussian_bump_box(24);
+    const double tol = 2e-3 * fcfix::diagonal(skin);
+    const Mesh fitted = fcfix::fitted_abs(skin, tol);
+    FitCadOptions o;
+    o.mBackend = FitCadBackend::Native;
+    o.mTolerance = tol;
+    o.mFreeformMode = FitCadFreeformMode::Adaptive;
+    const FitCadResult knots = fit_cad(fitted, "", o);
+    o.mLocalRefine = FitCadLocalRefine::Thb;
+    const FitCadResult thb = fit_cad(fitted, "", o);
+    EXPECT_TRUE(thb.mValid);
+    EXPECT_GT(thb.mNumFreeformAdaptive, 0);
+    EXPECT_LE(thb.mFacetAreaFraction, knots.mFacetAreaFraction + 1e-12);
+    for (const FitCadFaceRecord& rec : thb.mFaces)
+        if (rec.mKind == kFitCadBsplineType) {
+            EXPECT_GT(rec.mNumControl, 0);
+            EXPECT_LE(rec.mMaxDist, 0.5 * tol);
+        }
+    // Deterministic, as every freeform face.
+    const FitCadResult again = fit_cad(fitted, "", o);
+    EXPECT_EQ(again.mFacetAreaFraction, thb.mFacetAreaFraction);
+    ASSERT_EQ(again.mFaces.size(), thb.mFaces.size());
+    for (std::size_t i = 0; i < thb.mFaces.size(); ++i)
+        EXPECT_EQ(again.mFaces[i].mNumControl, thb.mFaces[i].mNumControl);
+}
+
 TEST(FitCadModes, NativeModesReturnTheSolidAsNurbs) {
     std::vector<fcfix::Fixture> set = fcfix::golden_fixtures();
     {

@@ -693,6 +693,7 @@ FcnFreeform fcn_freeform(const Mesh& rSource, const detail::ClosedFacets& rFc,
     o.mMaxTotalPoles = static_cast<std::size_t>(rOptions.mFreeformMaxControlPoints);
     o.mParameterization = static_cast<detail::ParamLadder>(rOptions.mFreeformParameterization);
     o.mValidate = rOptions.mValidateBySurfaceSampling;
+    o.mThb = rOptions.mLocalRefine == FitCadLocalRefine::Thb;
     for (std::size_t w = 0; w < work.size(); ++w) {
         const Item item = work[w];
         // The patch as local triangles (polygons fanned), points renumbered.
@@ -710,7 +711,8 @@ FcnFreeform fcn_freeform(const Mesh& rSource, const detail::ClosedFacets& rFc,
         FitCadFaceRecord rec;
         rec.mPatch = item.mLabel;
         rec.mParamMethod = fit.mParam;
-        rec.mNumControl = static_cast<std::int64_t>(fit.mSurface.NumPoles());
+        rec.mNumControl =
+            static_cast<std::int64_t>(fit.mNumDofs > 0 ? fit.mNumDofs : fit.mSurface.NumPoles());
         rec.mIterations = fit.mIterations;
         rec.mRefinements = fit.mRefinements;
         rec.mEscalationSteps = item.mEscalations + fit.mEscalations;
@@ -1093,6 +1095,8 @@ constexpr double kFcPi = 3.14159265358979323846;
 // Freeform tiles: a patch no single B-spline follows is halved up to this many
 // times (at most 2^depth tiles), and a tile with fewer triangles stays facets.
 constexpr int kFcTileMaxDepth = 9;
+// The rounds in which faces the checks demote climb a rung (v17.12.0).
+constexpr int kFcMaxEscalationRounds = 3;
 constexpr std::size_t kFcTileMinTriangles = 24;
 
 template <class T>
@@ -3041,12 +3045,14 @@ FcHandle<Geom_Surface> fc_freeform_adaptive(const std::vector<gp_Pnt>& rPts,
     o.mMaxTotalPoles = static_cast<std::size_t>(rOptions.mFreeformMaxControlPoints);
     o.mParameterization = static_cast<detail::ParamLadder>(rOptions.mFreeformParameterization);
     o.mValidate = rOptions.mValidateBySurfaceSampling;
+    o.mThb = rOptions.mLocalRefine == FitCadLocalRefine::Thb;
     const detail::FreeformAdaptiveResult fit = detail::freeform_adaptive_fit(pts, tris, o);
     rInfo.mParam = fit.mParam;
     rInfo.mIterations = fit.mIterations;
     rInfo.mRefinements = fit.mRefinements;
     rInfo.mEscalations += fit.mEscalations;
-    rInfo.mNumControl = static_cast<std::int64_t>(fit.mSurface.NumPoles());
+    rInfo.mNumControl =
+        static_cast<std::int64_t>(fit.mNumDofs > 0 ? fit.mNumDofs : fit.mSurface.NumPoles());
     rInfo.mMaxDist = fit.mMaxDist;
     rInfo.mRmsDist = fit.mRmsDist;
     rInfo.mReverseMaxDist = fit.mReverseMaxDist;
@@ -4812,31 +4818,71 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
     // An adaptive face the checks demote, halved across its longest extent and
     // each half fitted in turn (v17.12.0): the tiles of the general faces,
     // reached from the checks rather than the fit.
-    const auto halve_and_refit = [&](std::size_t R) {
-        if (R >= tile_depth.size() || tile_depth[R] >= kFcTileMaxDepth)
-            return;
-        std::vector<gp_Pnt> pts;
-        std::vector<std::array<std::size_t, 3>> tris;
+    // Facets halved across their longest extent: the pieces, and the facets
+    // of the pieces under the size floor left out (false: no halving).
+    const auto bisect_facets = [&](const std::vector<std::size_t>& rFacets,
+                                   std::vector<std::vector<std::size_t>>& rPieces,
+                                   std::vector<std::size_t>& rKept) {
+        std::unordered_map<std::int64_t, std::size_t> local;
         std::vector<detail::PatchVec> flat;
-        patch_mesh(R, pts, tris, flat);
+        std::vector<std::array<std::size_t, 3>> tris;
+        const auto vid = [&](std::int64_t V) {
+            auto ins = local.emplace(V, flat.size());
+            if (ins.second) {
+                const std::size_t v = static_cast<std::size_t>(V);
+                flat.push_back({fc.mXyz[v * 3], fc.mXyz[v * 3 + 1], fc.mXyz[v * 3 + 2]});
+            }
+            return ins.first->second;
+        };
+        for (std::size_t f : rFacets) {
+            const std::int64_t b = fc.mStart[f], n = fc.mStart[f + 1] - b;
+            const std::size_t a0 = vid(fc.mNodes[static_cast<std::size_t>(b)]);
+            for (std::int64_t k = 1; k + 1 < n; ++k)
+                tris.push_back({a0, vid(fc.mNodes[static_cast<std::size_t>(b + k)]),
+                                vid(fc.mNodes[static_cast<std::size_t>(b + k + 1)])});
+        }
         std::size_t num = 0;
         const std::vector<std::int64_t> piece =
             detail::patch_bisect(flat, tris, kFcTileMinTriangles, num);
         if (num < 2)
-            return;
+            return false;
         // A facet goes with its first triangle's piece.
-        std::vector<std::vector<std::size_t>> pf(num);
-        std::vector<std::size_t> kept;
+        rPieces.assign(num, {});
         std::size_t t = 0;
-        for (std::size_t f : facets_of[R]) {
+        for (std::size_t f : rFacets) {
             const std::int64_t n = fc.mStart[f + 1] - fc.mStart[f];
             const std::int64_t at = piece[t];
             if (at >= 0)
-                pf[static_cast<std::size_t>(at)].push_back(f);
+                rPieces[static_cast<std::size_t>(at)].push_back(f);
             else
-                kept.push_back(f);
+                rKept.push_back(f);
             t += static_cast<std::size_t>(std::max<std::int64_t>(n - 2, 0));
         }
+        return true;
+    };
+    // An adaptive face the checks demote, cut across its longest extent into
+    // halves and those again into quarters where they are large enough, each
+    // piece fitted in turn (v17.12.0): the tiles of the general faces,
+    // reached from the checks rather than the fit, two tile levels a round.
+    const auto halve_and_refit = [&](std::size_t R) {
+        if (R >= tile_depth.size() || tile_depth[R] >= kFcTileMaxDepth)
+            return;
+        std::vector<std::vector<std::size_t>> halves, pf;
+        std::vector<std::size_t> kept;
+        if (!bisect_facets(facets_of[R], halves, kept))
+            return;
+        std::uint8_t depth = static_cast<std::uint8_t>(tile_depth[R] + 1);
+        for (std::vector<std::size_t>& h : halves) {
+            std::vector<std::vector<std::size_t>> quarters;
+            if (depth < kFcTileMaxDepth && bisect_facets(h, quarters, kept)) {
+                for (std::vector<std::size_t>& q : quarters)
+                    pf.push_back(std::move(q));
+            } else {
+                pf.push_back(std::move(h));
+            }
+        }
+        if (pf.size() > halves.size())
+            depth = static_cast<std::uint8_t>(depth + 1);
         facets_of[R] = std::move(kept);
         fc_row(row_info, R).mReason = static_cast<std::uint8_t>(FitCadDemotionReason::TooSmall);
         const std::int64_t escalations = fc_row(row_info, R).mEscalations + 1;
@@ -4856,7 +4902,7 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
             surface.emplace_back();
             analytic.push_back(0);
             is_piece.push_back(1);
-            tile_depth.push_back(static_cast<std::uint8_t>(tile_depth[R] + 1));
+            tile_depth.push_back(depth);
             general_depth.push_back(general_depth[R]);
             feature.resize(row + 1, 0);
             network_row.resize(row + 1, 0);
@@ -4893,6 +4939,7 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
     };
 
     // Build, check, demote and rebuild.
+    int escalation_rounds = 0;
     FcBuild build;
     FcTriangulation tri;
     std::vector<std::uint8_t> no_merge(nf, 0);
@@ -5058,7 +5105,8 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
         // halves, each fitted in turn, down to the tile depth. Such a round
         // is not a demotion round: each rung is climbed once per row.
         if (rOptions.mFreeform && rOptions.mFreeformMode != FitCadFreeformMode::Legacy &&
-            !escalate.empty()) {
+            !escalate.empty() && escalation_rounds < kFcMaxEscalationRounds) {
+            ++escalation_rounds;
             const std::size_t before = skin.mPatches.size();
             std::vector<std::size_t> halve;
             std::vector<std::size_t> fresh;
@@ -5403,14 +5451,6 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                                     "layout_max_valence_deviation must be 1 to 3");
     if (rOptions.mResegmentRounds < 0)
         throw std::invalid_argument(std::string(kFcnPrefix) + "resegment_rounds must be >= 0");
-    // Truncated hierarchical refinement is not there yet: say so rather than
-    // run knot insertion under its name.
-    if (rOptions.mLocalRefine == FitCadLocalRefine::Thb &&
-        rOptions.mFreeformMode != FitCadFreeformMode::Legacy &&
-        (rOptions.mFreeformGeneral && rOptions.mExtendSurfaces))
-        log::warn(
-            "fit_cad: local_refine='thb' is not implemented yet; the freeform faces refine "
-            "by knot insertion ('knots')");
     // The freeform modes build on the general fit, and their faces run on
     // past their patches so an edge with an analytic neighbour is still an
     // intersection.
