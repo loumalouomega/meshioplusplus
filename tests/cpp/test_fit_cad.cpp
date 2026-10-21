@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -185,6 +186,16 @@ TEST(FitCad, NativeBackendLeavesTypesOutAsPolygons) {
     EXPECT_GT(r.mNumFacetedFaces, 0);
 }
 
+TEST(FitCad, NativeBackendReportsAClosedSolid) {
+    FitCadOptions o;
+    o.mBackend = FitCadBackend::Native;
+    const FitCadResult r = fit_cad(fitted(analytic::box_skin(3)), "", o);
+    EXPECT_TRUE(r.mClosed);
+    EXPECT_TRUE(std::isnan(r.mHausdorffMax));
+    EXPECT_EQ(r.mNumExtendedSurfaces, 0);
+    EXPECT_EQ(r.mNumSnappedJunctions, 0);
+}
+
 TEST(FitCad, BadFreeformGeneralOptionsAreRefused) {
     const auto bad = [](auto&& rSet) {
         FitCadOptions o;
@@ -197,6 +208,8 @@ TEST(FitCad, BadFreeformGeneralOptionsAreRefused) {
     bad([](FitCadOptions& o) { o.mMaxFreeformPoles = 3; });
     bad([](FitCadOptions& o) { o.mMaxFreeformIterations = 0; });
     bad([](FitCadOptions& o) { o.mMaxFreeformSplits = -1; });
+    bad([](FitCadOptions& o) { o.mSewTolerance = -1.0; });
+    bad([](FitCadOptions& o) { o.mSewTolerance = std::numeric_limits<double>::infinity(); });
 }
 
 TEST(FitCad, BadBackendIsRefused) {
@@ -805,6 +818,89 @@ TEST(FitCad, RefusesOpenSkinsAndBadOptions) {
     o = FitCadOptions{};
     o.mFreeformMaxControl = 3;
     EXPECT_THROW(fit_cad(analytic::box_skin(2), "", o), std::invalid_argument);
+}
+
+TEST(FitCad, SewToleranceAtTheToleranceIsTheDefault) {
+    const Mesh skin = fitted(analytic::capped_cylinder());
+    const std::string a = ::testing::TempDir() + "fit_cad_sew.step";
+    const FitCadResult r = fit_cad(skin, a);
+    const std::string bytes = read_bytes(a);
+    FitCadOptions o;
+    o.mSewTolerance = r.mTolerance;
+    fit_cad(skin, a, o);
+    EXPECT_EQ(bytes, read_bytes(a));
+    // A tighter sewing still closes a solid whose edges are shared already.
+    o.mSewTolerance = 1e-3 * r.mTolerance;
+    const FitCadResult t = fit_cad(skin, a, o);
+    EXPECT_TRUE(t.mValid);
+    EXPECT_TRUE(t.mClosed);
+    std::remove(a.c_str());
+}
+
+TEST(FitCad, ClosedSolidReported) {
+    const FitCadResult r = fit_cad(fitted(analytic::box_skin(3)));
+    EXPECT_TRUE(r.mClosed);
+    EXPECT_TRUE(std::isnan(r.mHausdorffMax));  // not measured unless asked
+    EXPECT_FALSE(r.mMesh.HasFieldData(kFitCadFaceHausdorffName));
+}
+
+TEST(FitCad, JunctionSnapPlacesTheCorners) {
+    FitCadOptions o;
+    o.mSnapJunctions = true;
+    const FitCadResult r = fit_cad(fitted(analytic::box_skin(3)), "", o);
+    EXPECT_TRUE(r.mValid);
+    EXPECT_EQ(r.mNumSnappedJunctions, 8);  // the box's corners, three planes each
+    EXPECT_NEAR(r.mVolume, 1.0, 1e-9);
+    EXPECT_LT(r.mMaxDeviation, 1e-9);
+    const FitCadResult t = fit_cad(fitted(analytic::turned_part()), "", o);
+    EXPECT_TRUE(t.mValid);
+    EXPECT_LE(t.mMaxDeviation, t.mTolerance);
+}
+
+TEST(FitCad, FaceHausdorffBoundsGlobal) {
+    FitCadOptions o;
+    o.mFaceDeviation = true;
+    const FitCadResult r = fit_cad(fitted(analytic::turned_part()), "", o);
+    ASSERT_TRUE(r.mMesh.HasFieldData(kFitCadFaceHausdorffName));
+    ASSERT_TRUE(r.mMesh.HasFieldData(kFitCadFaceRmsName));
+    const NDArray& h = r.mMesh.FieldData(kFitCadFaceHausdorffName);
+    const NDArray& rms = r.mMesh.FieldData(kFitCadFaceRmsName);
+    ASSERT_EQ(h.Shape().size(), 2u);
+    EXPECT_EQ(h.Shape()[0], static_cast<std::size_t>(r.mNumFaces));
+    EXPECT_EQ(h.Shape()[1], 2u);
+    EXPECT_EQ(rms.Size(), static_cast<std::size_t>(r.mNumFaces));
+    double worst = 0.0;
+    for (std::size_t i = 0; i < h.Size(); ++i)
+        worst = std::max(worst, h.As<double>()[i]);
+    EXPECT_EQ(worst, r.mHausdorffMax);
+    EXPECT_LE(r.mHausdorffRms, r.mHausdorffMax);
+    for (std::size_t f = 0; f < rms.Size(); ++f)
+        EXPECT_LE(rms.As<double>()[f], std::max(h.As<double>()[f * 2], h.As<double>()[f * 2 + 1]));
+    // Every face stands within the tolerance of the skin, both ways.
+    EXPECT_LE(r.mHausdorffMax, r.mTolerance);
+    // The measure does not touch the solid.
+    const FitCadResult plain = fit_cad(fitted(analytic::turned_part()));
+    EXPECT_EQ(plain.mNumFaces, r.mNumFaces);
+    EXPECT_EQ(plain.mMaxDeviation, r.mMaxDeviation);
+}
+
+TEST(FitCad, ExtendedSurfacesKeepFreeformSolidsValid) {
+    FitCadOptions o;
+    o.mFreeformMaxControl = 4;
+    o.mFreeformGeneral = true;
+    o.mExtendSurfaces = true;
+    o.mFaceDeviation = true;
+    for (const fcfix::Fixture& f : fcfix::golden_fixtures()) {
+        if (f.mName != "saddle_box" && f.mName != "wavy_capped")
+            continue;
+        SCOPED_TRACE(f.mName);
+        const FitCadResult r = fit_cad(f.mMesh, "", o);
+        EXPECT_TRUE(r.mValid);
+        EXPECT_TRUE(r.mClosed);
+        EXPECT_GT(r.mNumExtendedSurfaces, 0);
+        EXPECT_LE(r.mMaxDeviation, r.mTolerance);
+        EXPECT_NEAR(r.mVolumeRatio, 1.0, 2e-2);
+    }
 }
 
 #endif

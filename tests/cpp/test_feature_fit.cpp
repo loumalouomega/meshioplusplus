@@ -568,3 +568,49 @@ TEST(FeatureFit, VertexBlendBoundaryNeedsOneLoopAndThreeRuns) {
                      return std::min(A, B) == 3 ? -1 : by_pair(A, B);
                  }).mOk);
 }
+
+TEST(FeatureFit, JunctionClosestPointConverges) {
+    // Three planes through (1, 2, 3): their corner, from well off it.
+    const auto plane = [](PatchVec N, double D) {
+        return std::make_pair(ClosestPoint([N, D](const PatchVec& rX, PatchVec& rF) {
+                                  const double s = rX[0] * N[0] + rX[1] * N[1] + rX[2] * N[2] - D;
+                                  rF = {rX[0] - s * N[0], rX[1] - s * N[1], rX[2] - s * N[2]};
+                                  return true;
+                              }),
+                              NormalAt([N](const PatchVec&, PatchVec& rN) {
+                                  rN = N;
+                                  return true;
+                              }));
+    };
+    const double r = std::sqrt(0.5);
+    const auto a = plane({1, 0, 0}, 1.0), b = plane({0, 1, 0}, 2.0), c = plane({r, 0, r}, 4.0 * r);
+    JunctionPoint p = junction_closest({a.first, b.first, c.first}, {a.second, b.second, c.second},
+                                       {1.3, 1.6, 3.4}, 10.0);
+    ASSERT_TRUE(p.mOk);
+    EXPECT_NEAR(p.mPoint[0], 1.0, 1e-9);
+    EXPECT_NEAR(p.mPoint[1], 2.0, 1e-9);
+    EXPECT_NEAR(p.mPoint[2], 3.0, 1e-9);
+    EXPECT_LT(p.mMaxDistance, 1e-9);
+
+    // A sphere and a plane meet on a circle: the point lands on both, near
+    // where it started (the normals come from the foot points).
+    const ClosestPoint sphere = [](const PatchVec& rX, PatchVec& rF) {
+        const double len = std::sqrt(rX[0] * rX[0] + rX[1] * rX[1] + rX[2] * rX[2]);
+        if (!(len > 0.0))
+            return false;
+        rF = {rX[0] / len, rX[1] / len, rX[2] / len};
+        return true;
+    };
+    const auto z = plane({0, 0, 1}, 0.5);
+    p = junction_closest({sphere, z.first}, {NormalAt(), z.second}, {0.9, 0.0, 0.45}, 1.0);
+    ASSERT_TRUE(p.mOk);
+    EXPECT_LT(p.mMaxDistance, 1e-9);
+    EXPECT_NEAR(p.mPoint[2], 0.5, 1e-9);
+    EXPECT_NEAR(std::hypot(p.mPoint[0], p.mPoint[1]), std::sqrt(0.75), 1e-9);
+    EXPECT_NEAR(p.mPoint[1], 0.0, 1e-6);  // the start's own meridian
+
+    // A missing foot point is reported, not guessed.
+    const ClosestPoint none = [](const PatchVec&, PatchVec&) { return false; };
+    EXPECT_FALSE(junction_closest({none, z.first}, {NormalAt(), z.second}, {0, 0, 0}, 1.0).mOk);
+    EXPECT_FALSE(junction_closest({}, {}, {0, 0, 0}, 1.0).mOk);
+}

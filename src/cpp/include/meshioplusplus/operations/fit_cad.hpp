@@ -151,6 +151,7 @@
 
 // System includes
 #include <cstdint>
+#include <limits>
 #include <string>
 
 // Project includes
@@ -168,6 +169,13 @@ inline constexpr const char* kFitCadFaceName = "fit_cad:face";
 inline constexpr const char* kFitCadTypeName = "fit_cad:type";
 /// Cell data (Int64): the `segment:patch` label the face was built from, or -1.
 inline constexpr const char* kFitCadPatchName = "fit_cad:patch";
+/// Field data, with `FitCadOptions::mFaceDeviation`: per face (`fit_cad:face`
+/// order) the largest distance from the face's re-mesh to the skin and from
+/// the skin it stands for to the solid, an `(n, 2)` float64 array (v17.11.0).
+inline constexpr const char* kFitCadFaceHausdorffName = "fit_cad:face_hausdorff";
+/// Field data, with `FitCadOptions::mFaceDeviation`: per face, the root mean
+/// square of both sides' distances.
+inline constexpr const char* kFitCadFaceRmsName = "fit_cad:face_rms";
 /// `fit_cad:type` of a freeform B-spline face.
 inline constexpr std::int64_t kFitCadBsplineType = 6;
 /// `fit_cad:type` of a rolling-ball fillet or blend face, of constant or
@@ -272,6 +280,25 @@ struct FitCadOptions {
     std::int64_t mMaxFreeformIterations = 30;
     /// How many times a patch the general fit cannot explain is halved, >= 0.
     std::int64_t mMaxFreeformSplits = 2;
+    /// The tolerance the faces are sewn at; 0 sews at the tolerance itself,
+    /// as before the option existed (v17.11.0). OpenCASCADE backend only.
+    double mSewTolerance = 0.0;
+    /// Whether every freeform B-spline face's surface is extended past its
+    /// patch on all four sides before the edges are built, so an
+    /// intersection with a neighbour that runs just outside the fitted area is
+    /// still found (`GeomLib::ExtendSurfByLength`, by a tenth of the patch's
+    /// size). OpenCASCADE backend only; off by default (v17.11.0).
+    bool mExtendSurfaces = false;
+    /// Whether the B-rep vertices where analytic faces meet are placed by a
+    /// least-squares solve on the surfaces' tangent planes (Gauss-Newton,
+    /// OpenCASCADE-free) before the averaged alternating projection; the same
+    /// acceptance applies. OpenCASCADE backend only; off by default (v17.11.0).
+    bool mSnapJunctions = false;
+    /// Whether the two-sided distance between each face and the skin is
+    /// measured, as the `fit_cad:face_hausdorff` and `fit_cad:face_rms` field
+    /// data and `FitCadResult::mHausdorffMax`/`mHausdorffRms` (v17.11.0).
+    /// OpenCASCADE backend only; off by default.
+    bool mFaceDeviation = false;
 };
 
 /// The re-meshed solid and what was built.
@@ -354,6 +381,19 @@ struct FitCadResult {
     std::int64_t mNumFreeformRefinements = 0;
     /// Their mean pole count (0 without any).
     double mAvgFreeformPoles = 0.0;
+    /// Freeform B-spline surfaces `mExtendSurfaces` extended (v17.11.0).
+    std::int64_t mNumExtendedSurfaces = 0;
+    /// B-rep vertices `mSnapJunctions` placed by its least-squares solve.
+    std::int64_t mNumSnappedJunctions = 0;
+    /// With `mFaceDeviation`: the two-sided Hausdorff distance between the
+    /// re-meshed solid and the skin, over the re-mesh's vertices and triangle
+    /// centres and the skin's vertices and facet centres, and the root mean
+    /// square of those distances; NaN when it was not measured.
+    double mHausdorffMax = std::numeric_limits<double>::quiet_NaN();
+    double mHausdorffRms = std::numeric_limits<double>::quiet_NaN();
+    /// Whether every shell is closed: every edge borders two faces
+    /// (v17.11.0). The native backend reports its writer's closed-loop check.
+    bool mClosed = false;
 };
 
 /**

@@ -28177,6 +28177,7 @@ MESHIOPLUSPLUS_API RefinePatchesResult refine_patches(const Mesh& rMesh,
 
 // System includes
 #include <cstdint>
+#include <limits>
 #include <string>
 
 // Project includes
@@ -28189,6 +28190,13 @@ inline constexpr const char* kFitCadFaceName = "fit_cad:face";
 inline constexpr const char* kFitCadTypeName = "fit_cad:type";
 /// Cell data (Int64): the `segment:patch` label the face was built from, or -1.
 inline constexpr const char* kFitCadPatchName = "fit_cad:patch";
+/// Field data, with `FitCadOptions::mFaceDeviation`: per face (`fit_cad:face`
+/// order) the largest distance from the face's re-mesh to the skin and from
+/// the skin it stands for to the solid, an `(n, 2)` float64 array (v17.11.0).
+inline constexpr const char* kFitCadFaceHausdorffName = "fit_cad:face_hausdorff";
+/// Field data, with `FitCadOptions::mFaceDeviation`: per face, the root mean
+/// square of both sides' distances.
+inline constexpr const char* kFitCadFaceRmsName = "fit_cad:face_rms";
 /// `fit_cad:type` of a freeform B-spline face.
 inline constexpr std::int64_t kFitCadBsplineType = 6;
 /// `fit_cad:type` of a rolling-ball fillet or blend face, of constant or
@@ -28293,6 +28301,25 @@ struct FitCadOptions {
     std::int64_t mMaxFreeformIterations = 30;
     /// How many times a patch the general fit cannot explain is halved, >= 0.
     std::int64_t mMaxFreeformSplits = 2;
+    /// The tolerance the faces are sewn at; 0 sews at the tolerance itself,
+    /// as before the option existed (v17.11.0). OpenCASCADE backend only.
+    double mSewTolerance = 0.0;
+    /// Whether every freeform B-spline face's surface is extended past its
+    /// patch on all four sides before the edges are built, so an
+    /// intersection with a neighbour that runs just outside the fitted area is
+    /// still found (`GeomLib::ExtendSurfByLength`, by a tenth of the patch's
+    /// size). OpenCASCADE backend only; off by default (v17.11.0).
+    bool mExtendSurfaces = false;
+    /// Whether the B-rep vertices where analytic faces meet are placed by a
+    /// least-squares solve on the surfaces' tangent planes (Gauss-Newton,
+    /// OpenCASCADE-free) before the averaged alternating projection; the same
+    /// acceptance applies. OpenCASCADE backend only; off by default (v17.11.0).
+    bool mSnapJunctions = false;
+    /// Whether the two-sided distance between each face and the skin is
+    /// measured, as the `fit_cad:face_hausdorff` and `fit_cad:face_rms` field
+    /// data and `FitCadResult::mHausdorffMax`/`mHausdorffRms` (v17.11.0).
+    /// OpenCASCADE backend only; off by default.
+    bool mFaceDeviation = false;
 };
 
 /// The re-meshed solid and what was built.
@@ -28375,6 +28402,19 @@ struct FitCadResult {
     std::int64_t mNumFreeformRefinements = 0;
     /// Their mean pole count (0 without any).
     double mAvgFreeformPoles = 0.0;
+    /// Freeform B-spline surfaces `mExtendSurfaces` extended (v17.11.0).
+    std::int64_t mNumExtendedSurfaces = 0;
+    /// B-rep vertices `mSnapJunctions` placed by its least-squares solve.
+    std::int64_t mNumSnappedJunctions = 0;
+    /// With `mFaceDeviation`: the two-sided Hausdorff distance between the
+    /// re-meshed solid and the skin, over the re-mesh's vertices and triangle
+    /// centres and the skin's vertices and facet centres, and the root mean
+    /// square of those distances; NaN when it was not measured.
+    double mHausdorffMax = std::numeric_limits<double>::quiet_NaN();
+    double mHausdorffRms = std::numeric_limits<double>::quiet_NaN();
+    /// Whether every shell is closed: every edge borders two faces
+    /// (v17.11.0). The native backend reports its writer's closed-loop check.
+    bool mClosed = false;
 };
 
 /**
@@ -37867,6 +37907,7 @@ inline double drawing_number_value(std::string_view Token, const char* pFormat) 
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <vector>
 
 // Project includes
@@ -38214,6 +38255,34 @@ struct VertexBlendBoundary {
 VertexBlendBoundary vertex_blend_boundary(
     const std::vector<PatchTri>& rTris,
     const std::function<std::int64_t(std::size_t, std::size_t)>& rAcross);
+
+/// Where `junction_closest` put a point that should lie on several surfaces.
+struct JunctionPoint {
+    bool mOk = false;  ///< every foot point and normal was found
+    PatchVec mPoint{};
+    /// The largest distance from the point to any of the surfaces.
+    double mMaxDistance = std::numeric_limits<double>::infinity();
+    int mIterations = 0;
+};
+
+/**
+ * @brief The point nearest `rStart` at which surfaces meet, by least squares:
+ * each Gauss-Newton step replaces every surface by its tangent plane at the
+ * foot of the current point and minimises the summed squared distances to
+ * those planes, plus `1e-6` times the squared length of the step (Levenberg
+ * damping, which vanishes at the solution and leaves a direction no plane
+ * constrains where it was, so two surfaces' shared curve is met near the
+ * start). A step
+ * that raises the largest distance is halved (at most ten times). The
+ * OpenCASCADE-free junction snap of `fit_cad(snap_junctions=True)`.
+ * @param rSurfaces the surfaces' closest points; @param rNormals their unit
+ *        normals, one per surface (an empty function: the direction to the
+ *        foot point stands in).
+ * @param Scale the model's size: a step below `1e-13 Scale` ends the solve.
+ */
+JunctionPoint junction_closest(const std::vector<ClosestPoint>& rSurfaces,
+                               const std::vector<NormalAt>& rNormals, const PatchVec& rStart,
+                               double Scale, int MaxIterations = 50);
 
 }  // namespace detail
 }  // namespace meshioplusplus
@@ -64448,6 +64517,83 @@ VertexBlendBoundary vertex_blend_boundary(
         out.mNeighbours.push_back(out.mAcross[i]);
     }
     out.mOk = out.mNeighbours.size() >= 3;
+    return out;
+}
+
+JunctionPoint junction_closest(const std::vector<ClosestPoint>& rSurfaces,
+                               const std::vector<NormalAt>& rNormals, const PatchVec& rStart,
+                               double Scale, int MaxIterations) {
+    JunctionPoint out;
+    const std::size_t n = rSurfaces.size();
+    if (n == 0 || rNormals.size() != n)
+        return out;
+    constexpr double kMu = 1e-6;
+    // The largest distance to the surfaces from @p rX, and their feet and
+    // normals there; false when a foot or a normal is missing.
+    std::vector<PatchVec> foot(n), normal(n);
+    auto measure = [&](const PatchVec& rX, double& rWorst) {
+        rWorst = 0.0;
+        for (std::size_t i = 0; i < n; ++i) {
+            if (!rSurfaces[i](rX, foot[i]))
+                return false;
+            const PatchVec d{rX[0] - foot[i][0], rX[1] - foot[i][1], rX[2] - foot[i][2]};
+            const double len = ff_norm(d);
+            rWorst = std::max(rWorst, len);
+            if (rNormals[i] && rNormals[i](rX, normal[i]))
+                continue;
+            if (!(len > 0.0))
+                return false;
+            normal[i] = {d[0] / len, d[1] / len, d[2] / len};
+        }
+        return true;
+    };
+    PatchVec p = rStart;
+    double worst = 0.0;
+    if (!measure(p, worst))
+        return out;
+    int it = 0;
+    for (; it < MaxIterations; ++it) {
+        std::vector<double> a(9, 0.0);
+        double b[3];
+        for (int r = 0; r < 3; ++r) {
+            a[static_cast<std::size_t>(r * 3 + r)] = kMu;
+            b[r] = kMu * p[static_cast<std::size_t>(r)];
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            const PatchVec& nn = normal[i];
+            const double off = ff_dot(nn, foot[i]);
+            for (std::size_t r = 0; r < 3; ++r) {
+                for (std::size_t c = 0; c < 3; ++c)
+                    a[r * 3 + c] += nn[r] * nn[c];
+                b[r] += nn[r] * off;
+            }
+        }
+        if (!chol_factor(a, 3))
+            break;
+        chol_solve(a, 3, b);
+        PatchVec step{b[0] - p[0], b[1] - p[1], b[2] - p[2]};
+        bool moved = false;
+        for (int half = 0; half <= 10; ++half) {
+            const PatchVec q{p[0] + step[0], p[1] + step[1], p[2] + step[2]};
+            double w = 0.0;
+            if (measure(q, w) && w <= worst) {
+                moved = ff_norm(step) > 1e-13 * Scale;
+                p = q;
+                worst = w;
+                break;
+            }
+            step = {0.5 * step[0], 0.5 * step[1], 0.5 * step[2]};
+        }
+        if (!moved)
+            break;
+    }
+    // The feet and normals at the point kept (a rejected trial overwrote them).
+    if (!measure(p, worst))
+        return out;
+    out.mOk = true;
+    out.mPoint = p;
+    out.mMaxDistance = worst;
+    out.mIterations = it;
     return out;
 }
 
@@ -188794,6 +188940,8 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
 #include <Approx_ParametrizationType.hxx>
 #include <GeomAPI_PointsToBSplineSurface.hxx>
 #include <Geom_BSplineSurface.hxx>
+#include <Geom_BoundedSurface.hxx>
+#include <GeomLib.hxx>
 #include <GeomFill_Pipe.hxx>
 #include <Geom_OffsetSurface.hxx>
 #include <TColStd_Array1OfInteger.hxx>
@@ -189018,6 +189166,7 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     result.mNumExactEdges = brep.mNumLineEdges + brep.mNumCircleEdges;
     result.mNumApproxEdges = brep.mNumSplineEdges;
     result.mNumSolids = brep.mNumSolids;
+    result.mClosed = brep.mValid;
 
     // The skin itself, each cell with the face it was written into.
     result.mMesh = detail::clone_mesh(
@@ -189381,6 +189530,7 @@ struct FcBuild {
     std::vector<std::size_t> mUnmerge;
     std::int64_t mNumExact = 0;
     std::int64_t mNumApprox = 0;
+    std::int64_t mNumSnapped = 0;  // vertices the least-squares junction solve placed
     bool mValid = false;
 };
 
@@ -189399,7 +189549,8 @@ struct FcChain {
 // recorded against the patch rows it touches in `mBadRow`, never thrown.
 FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface>>& rSurface,
                  const std::vector<std::uint8_t>& rAnalytic, double Tol, bool ExactEdges,
-                 bool MergeFaces, const std::vector<std::uint8_t>& rNoMerge) {
+                 bool MergeFaces, const std::vector<std::uint8_t>& rNoMerge, double SewTol = 0.0,
+                 bool SnapJunctions = false) {
     const detail::ClosedFacets& fc = rSkin.mFacets;
     const std::vector<double>& xyz = fc.mXyz;
     const std::size_t nf = fc.NumFacets();
@@ -189634,6 +189785,39 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface>>&
                 std::vector<FcHandle<Geom_Surface>> surfs;
                 for (std::int64_t g : groups_at(v))
                     surfs.push_back(rSurface[static_cast<std::size_t>(g)]);
+                if (SnapJunctions && surfs.size() >= 2) {
+                    // The least-squares junction point first; the averaged
+                    // projection below when it misses the same acceptance.
+                    std::vector<detail::ClosestPoint> closest;
+                    std::vector<detail::NormalAt> normal;
+                    for (const auto& srf : surfs) {
+                        closest.emplace_back(
+                            [srf](const detail::PatchVec& rX, detail::PatchVec& rFoot) {
+                                gp_Pnt f;
+                                if (!fc_project(srf, gp_Pnt(rX[0], rX[1], rX[2]), f))
+                                    return false;
+                                rFoot = {f.X(), f.Y(), f.Z()};
+                                return true;
+                            });
+                        normal.emplace_back(
+                            [srf](const detail::PatchVec& rX, detail::PatchVec& rN) {
+                                const gp_Vec n = fc_normal_at(srf, gp_Pnt(rX[0], rX[1], rX[2]));
+                                const double len = n.Magnitude();
+                                if (!(len > 0.0))
+                                    return false;
+                                rN = {n.X() / len, n.Y() / len, n.Z() / len};
+                                return true;
+                            });
+                    }
+                    const detail::JunctionPoint jp = detail::junction_closest(
+                        closest, normal, {p.X(), p.Y(), p.Z()}, rSkin.mScale);
+                    const gp_Pnt q(jp.mPoint[0], jp.mPoint[1], jp.mPoint[2]);
+                    if (jp.mOk && jp.mMaxDistance <= Tol && q.Distance(p) <= Tol) {
+                        builder.MakeVertex(vertex[v], q, std::max(vtol, 1.5 * jp.mMaxDistance));
+                        ++out.mNumSnapped;
+                        continue;
+                    }
+                }
                 gp_Pnt q = p;
                 const double d = fc_onto_all(surfs, q, rSkin.mScale);
                 if (d <= Tol && q.Distance(p) <= Tol) {
@@ -190052,7 +190236,7 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface>>&
 
     // Sew the faces (their edges are shared already; sewing closes what the
     // face repair re-made) and close each shell into a solid.
-    BRepBuilderAPI_Sewing sew(Tol);
+    BRepBuilderAPI_Sewing sew(SewTol > 0.0 ? SewTol : Tol);
     for (const auto& f : faces)
         sew.Add(f.first);
     sew.Perform();
@@ -190363,6 +190547,120 @@ std::vector<double> fc_unsigned_distances(const Mesh& rTo, const std::vector<dou
     for (std::size_t i = 0; i < hits.size(); ++i)
         d[i] = std::fabs(hits[i].mSignedDistance);
     return d;
+}
+
+// Whether every shell of @p rShape is closed: no edge borders one face only
+// (a seam, used twice by its face, counts as closed).
+bool fc_closed(const TopoDS_Shape& rShape) {
+    if (rShape.IsNull())
+        return false;
+    bool any = false;
+    for (TopExp_Explorer sh(rShape, TopAbs_SHELL); sh.More(); sh.Next()) {
+        any = true;
+        TopTools_IndexedDataMapOfShapeListOfShape faces_of;
+        TopExp::MapShapesAndAncestors(sh.Current(), TopAbs_EDGE, TopAbs_FACE, faces_of);
+        for (int i = 1; i <= faces_of.Extent(); ++i) {
+            const TopoDS_Edge& e = TopoDS::Edge(faces_of.FindKey(i));
+            if (BRep_Tool::Degenerated(e))
+                continue;
+            const TopTools_ListOfShape& fl = faces_of.FindFromIndex(i);
+            if (fl.Extent() >= 2)
+                continue;
+            if (fl.Extent() == 1 && BRep_Tool::IsClosed(e, TopoDS::Face(fl.First())))
+                continue;
+            return false;
+        }
+    }
+    return any;
+}
+
+// The two-sided distance between each face's re-mesh and the skin: from the
+// re-mesh's vertices and triangle centres to the skin, and from the skin's
+// vertices and triangle centres to the solid, each skin sample charged to the
+// face of the triangle nearest it. Field data `fit_cad:face_hausdorff` (per
+// face: solid to skin, skin to solid) and `fit_cad:face_rms`, and the global
+// maximum and root mean square on @p rResult.
+void fc_face_deviation(const std::vector<double>& rSkinXyz,
+                       const std::vector<std::int64_t>& rSkinTri, const FcTriangulation& rTri,
+                       std::size_t NumFaces, FitCadResult& rResult) {
+    SurfaceDistanceOptions opt;
+    opt.mSign = SdfSign::Unsigned;
+    opt.mWatertightCheck = SdfWatertightCheck::Off;
+    // Every vertex, then every triangle's centre.
+    auto samples = [](const std::vector<double>& rXyz, const std::vector<std::int64_t>& rTris) {
+        std::vector<detail::Vec3> pts(rXyz.size() / 3);
+        for (std::size_t i = 0; i < pts.size(); ++i)
+            pts[i] = {rXyz[i * 3], rXyz[i * 3 + 1], rXyz[i * 3 + 2]};
+        for (std::size_t t = 0; t + 2 < rTris.size(); t += 3) {
+            detail::Vec3 c{0.0, 0.0, 0.0};
+            for (std::size_t k = 0; k < 3; ++k)
+                for (std::size_t j = 0; j < 3; ++j)
+                    c[j] += rXyz[static_cast<std::size_t>(rTris[t + k]) * 3 + j] / 3.0;
+            pts.push_back(c);
+        }
+        return pts;
+    };
+    auto hits_on = [&](const std::vector<double>& rToXyz, const std::vector<std::int64_t>& rToTri,
+                       const std::vector<detail::Vec3>& rPts) {
+        const Mesh to = fc_triangle_mesh(rToXyz, rToTri);
+        const detail::TriangleSoup soup = detail::build_triangle_soup(to, "");
+        const detail::DistanceQuery q = detail::build_distance_query(soup, opt);
+        return detail::query_distances(q, rPts, opt);
+    };
+    std::vector<double> hmax(NumFaces * 2, 0.0), sq(NumFaces, 0.0);
+    std::vector<std::size_t> cnt(NumFaces, 0);
+    double gmax = 0.0, gsq = 0.0;
+    std::size_t gcnt = 0;
+    auto add = [&](std::int64_t Face, std::size_t Side, double D) {
+        if (Face < 0 || static_cast<std::size_t>(Face) >= NumFaces || !std::isfinite(D))
+            return;
+        const std::size_t f = static_cast<std::size_t>(Face);
+        hmax[f * 2 + Side] = std::max(hmax[f * 2 + Side], D);
+        sq[f] += D * D;
+        ++cnt[f];
+        gmax = std::max(gmax, D);
+        gsq += D * D;
+        ++gcnt;
+    };
+    const std::size_t nv = rTri.mXyz.size() / 3, nt = rTri.mFace.size();
+    // The solid against the skin; a vertex is charged to its first triangle's face.
+    {
+        const std::vector<detail::DistanceHit> hits =
+            hits_on(rSkinXyz, rSkinTri, samples(rTri.mXyz, rTri.mTri));
+        std::vector<std::int64_t> face_of(nv, -1);
+        for (std::size_t t = 0; t < nt; ++t)
+            for (std::size_t k = 0; k < 3; ++k) {
+                const std::size_t v = static_cast<std::size_t>(rTri.mTri[t * 3 + k]);
+                if (face_of[v] < 0)
+                    face_of[v] = rTri.mFace[t];
+            }
+        for (std::size_t i = 0; i < nv; ++i)
+            add(face_of[i], 0, std::fabs(hits[i].mSignedDistance));
+        for (std::size_t t = 0; t < nt; ++t)
+            add(rTri.mFace[t], 0, std::fabs(hits[nv + t].mSignedDistance));
+    }
+    // The skin against the solid, each sample charged to its nearest triangle's face.
+    {
+        const std::vector<detail::DistanceHit> hits =
+            hits_on(rTri.mXyz, rTri.mTri, samples(rSkinXyz, rSkinTri));
+        for (const detail::DistanceHit& h : hits)
+            if (h.mSourceCell >= 0 && static_cast<std::size_t>(h.mSourceCell) < nt)
+                add(rTri.mFace[static_cast<std::size_t>(h.mSourceCell)], 1,
+                    std::fabs(h.mSignedDistance));
+    }
+    NDArray fh = NDArray::Uninit(DType::Float64, {NumFaces, 2});
+    NDArray fr = NDArray::Uninit(DType::Float64, {NumFaces});
+    for (std::size_t f = 0; f < NumFaces; ++f) {
+        fh.As<double>()[f * 2] = hmax[f * 2];
+        fh.As<double>()[f * 2 + 1] = hmax[f * 2 + 1];
+        fr.As<double>()[f] = cnt[f] > 0 ? std::sqrt(sq[f] / static_cast<double>(cnt[f]))
+                                        : std::numeric_limits<double>::quiet_NaN();
+    }
+    rResult.mMesh.AddFieldData(kFitCadFaceHausdorffName, std::move(fh));
+    rResult.mMesh.AddFieldData(kFitCadFaceRmsName, std::move(fr));
+    rResult.mHausdorffMax = gmax;
+    rResult.mHausdorffRms = gcnt > 0 ? std::sqrt(gsq / static_cast<double>(gcnt))
+                                     : std::numeric_limits<double>::quiet_NaN();
 }
 
 void fc_write_step(const TopoDS_Shape& rShape, const std::string& rPath) {
@@ -192086,6 +192384,55 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
             allowance[r] = std::max(tol, 1.05 * sag);
     }
 
+    // Freeform surfaces run on past their patches, so an edge with a
+    // neighbour just outside the fitted area is still an intersection.
+    if (rOptions.mExtendSurfaces)
+        for (std::size_t r = 0; r < m; ++r) {
+            if (skin.mPatches[r].mType != kFitCadBsplineType || surface[r].IsNull() ||
+                facets_of[r].empty())
+                continue;
+            const FcHandle<Geom_BSplineSurface> bs =
+                FcHandle<Geom_BSplineSurface>::DownCast(surface[r]);
+            if (bs.IsNull())
+                continue;
+            double blo[3] = {std::numeric_limits<double>::infinity(),
+                             std::numeric_limits<double>::infinity(),
+                             std::numeric_limits<double>::infinity()};
+            double bhi[3] = {-blo[0], -blo[1], -blo[2]};
+            for (std::size_t f : facets_of[r])
+                for (std::int64_t k = fc.mStart[f]; k < fc.mStart[f + 1]; ++k) {
+                    const std::size_t a =
+                        static_cast<std::size_t>(fc.mNodes[static_cast<std::size_t>(k)]);
+                    for (int j = 0; j < 3; ++j) {
+                        blo[j] = std::min(blo[j], fc.mXyz[a * 3 + static_cast<std::size_t>(j)]);
+                        bhi[j] = std::max(bhi[j], fc.mXyz[a * 3 + static_cast<std::size_t>(j)]);
+                    }
+                }
+            const double len = 0.1 * std::sqrt((bhi[0] - blo[0]) * (bhi[0] - blo[0]) +
+                                               (bhi[1] - blo[1]) * (bhi[1] - blo[1]) +
+                                               (bhi[2] - blo[2]) * (bhi[2] - blo[2]));
+            if (!(len > 0.0))
+                continue;
+            try {
+                FcHandle<Geom_BoundedSurface> ext =
+                    FcHandle<Geom_BoundedSurface>::DownCast(bs->Copy());
+                for (const bool in_u : {true, false}) {
+                    if (in_u ? (bs->IsUPeriodic() || bs->IsUClosed())
+                             : (bs->IsVPeriodic() || bs->IsVClosed()))
+                        continue;
+                    for (const bool after : {true, false})
+                        GeomLib::ExtendSurfByLength(ext, len, 1, in_u, after);
+                }
+                if (!ext.IsNull()) {
+                    surface[r] = ext;
+                    ++result.mNumExtendedSurfaces;
+                }
+            } catch (const Standard_Failure& rErr) {
+                log::debug("fit_cad: patch {}'s B-spline surface could not be extended: {}",
+                           skin.mPatches[r].mLabel, rErr.GetMessageString());
+            }
+        }
+
     // Build, check, demote and rebuild.
     FcBuild build;
     FcTriangulation tri;
@@ -192095,8 +192442,9 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         for (std::uint8_t a : analytic)
             any = any || a;
         try {
-            build = fc_build(skin, surface, analytic, tol, rOptions.mExactEdges,
-                             rOptions.mMergeFaces, no_merge);
+            build =
+                fc_build(skin, surface, analytic, tol, rOptions.mExactEdges, rOptions.mMergeFaces,
+                         no_merge, rOptions.mSewTolerance, rOptions.mSnapJunctions);
         } catch (const Standard_Failure& rErr) {
             build = FcBuild{};
             build.mBadRow.assign(m, 0);
@@ -192218,6 +192566,8 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     result.mNumPatches = static_cast<std::int64_t>(num_input_patches);
     result.mNumExactEdges = build.mNumExact;
     result.mNumApproxEdges = build.mNumApprox;
+    result.mNumSnappedJunctions = build.mNumSnapped;
+    result.mClosed = fc_closed(build.mShape);
     for (std::size_t r = 0; r < m; ++r)
         if (skin.mPatches[r].mAccepted && !facets_of[r].empty() && !analytic[r])
             ++result.mNumDemoted;
@@ -192324,6 +192674,8 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         result.mMaxDeviation = hausdorff_distance(skin_mesh, result.mMesh).mDistance;
     else
         result.mMaxDeviation = std::numeric_limits<double>::infinity();
+    if (rOptions.mFaceDeviation && nt > 0)
+        fc_face_deviation(fc.mXyz, skin_tri, tri, build.mFaces.size(), result);
 
     if (!result.mValid)
         log::warn("fit_cad: the solid does not pass OpenCASCADE's B-rep check");
@@ -192372,6 +192724,9 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                                     "max_freeform_iterations must be >= 1");
     if (rOptions.mMaxFreeformSplits < 0)
         throw std::invalid_argument(std::string(kFcnPrefix) + "max_freeform_splits must be >= 0");
+    if (!(rOptions.mSewTolerance >= 0.0) || std::isinf(rOptions.mSewTolerance))
+        throw std::invalid_argument(std::string(kFcnPrefix) +
+                                    "sew_tolerance must be finite and >= 0");
 #ifdef MESHIOPLUSPLUS_HAS_OCCT
     if (rOptions.mBackend != FitCadBackend::Native)
         return fc_occt_fit_cad(rMesh, rStepPath, rOptions);

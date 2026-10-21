@@ -28,6 +28,7 @@
 #include <utility>
 
 // Project includes
+#include "dense_chol.hpp"
 #include "feature_fit.hpp"
 #include "lsq_fit.hpp"
 
@@ -1843,6 +1844,83 @@ VertexBlendBoundary vertex_blend_boundary(
         out.mNeighbours.push_back(out.mAcross[i]);
     }
     out.mOk = out.mNeighbours.size() >= 3;
+    return out;
+}
+
+JunctionPoint junction_closest(const std::vector<ClosestPoint>& rSurfaces,
+                               const std::vector<NormalAt>& rNormals, const PatchVec& rStart,
+                               double Scale, int MaxIterations) {
+    JunctionPoint out;
+    const std::size_t n = rSurfaces.size();
+    if (n == 0 || rNormals.size() != n)
+        return out;
+    constexpr double kMu = 1e-6;
+    // The largest distance to the surfaces from @p rX, and their feet and
+    // normals there; false when a foot or a normal is missing.
+    std::vector<PatchVec> foot(n), normal(n);
+    auto measure = [&](const PatchVec& rX, double& rWorst) {
+        rWorst = 0.0;
+        for (std::size_t i = 0; i < n; ++i) {
+            if (!rSurfaces[i](rX, foot[i]))
+                return false;
+            const PatchVec d{rX[0] - foot[i][0], rX[1] - foot[i][1], rX[2] - foot[i][2]};
+            const double len = ff_norm(d);
+            rWorst = std::max(rWorst, len);
+            if (rNormals[i] && rNormals[i](rX, normal[i]))
+                continue;
+            if (!(len > 0.0))
+                return false;
+            normal[i] = {d[0] / len, d[1] / len, d[2] / len};
+        }
+        return true;
+    };
+    PatchVec p = rStart;
+    double worst = 0.0;
+    if (!measure(p, worst))
+        return out;
+    int it = 0;
+    for (; it < MaxIterations; ++it) {
+        std::vector<double> a(9, 0.0);
+        double b[3];
+        for (int r = 0; r < 3; ++r) {
+            a[static_cast<std::size_t>(r * 3 + r)] = kMu;
+            b[r] = kMu * p[static_cast<std::size_t>(r)];
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            const PatchVec& nn = normal[i];
+            const double off = ff_dot(nn, foot[i]);
+            for (std::size_t r = 0; r < 3; ++r) {
+                for (std::size_t c = 0; c < 3; ++c)
+                    a[r * 3 + c] += nn[r] * nn[c];
+                b[r] += nn[r] * off;
+            }
+        }
+        if (!chol_factor(a, 3))
+            break;
+        chol_solve(a, 3, b);
+        PatchVec step{b[0] - p[0], b[1] - p[1], b[2] - p[2]};
+        bool moved = false;
+        for (int half = 0; half <= 10; ++half) {
+            const PatchVec q{p[0] + step[0], p[1] + step[1], p[2] + step[2]};
+            double w = 0.0;
+            if (measure(q, w) && w <= worst) {
+                moved = ff_norm(step) > 1e-13 * Scale;
+                p = q;
+                worst = w;
+                break;
+            }
+            step = {0.5 * step[0], 0.5 * step[1], 0.5 * step[2]};
+        }
+        if (!moved)
+            break;
+    }
+    // The feet and normals at the point kept (a rejected trial overwrote them).
+    if (!measure(p, worst))
+        return out;
+    out.mOk = true;
+    out.mPoint = p;
+    out.mMaxDistance = worst;
+    out.mIterations = it;
     return out;
 }
 
