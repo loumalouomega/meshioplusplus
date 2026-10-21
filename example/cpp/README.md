@@ -138,6 +138,13 @@ absolute ones.
   expression cannot have a capture-default", a restriction real translation-unit
   compilation doesn't have. Wrap such logic in a captureless lambda, an
   ordinary loop, or a `{ }` block that is itself inside a function.
+- **No `std::call_once` in code the single header compiles.** libstdc++'s
+  `call_once` reaches its thread-locals `__once_call`/`__once_callable` in the
+  shared library, which clang-repl's emulated TLS cannot resolve: the header
+  then fails to load at all with `JIT session error: Symbols not found:
+  [__emutls_v._ZSt11__once_call, ...]`. A `static std::atomic<bool>` flag
+  with `exchange(true)` does the same once-only job (as `fit_cad`'s fallback
+  notice does); `thread_local` variables defined in the header itself are fine.
 - **Confirm a fast way to catch both of the above before spending a slow
   nbconvert cycle on them**: concatenate every code cell's source into one
   `int main() { ... }` (top-level `#include`/`#define`/`using` lines stay

@@ -21,10 +21,10 @@
 
 // System includes
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <limits>
-#include <mutex>
 #include <stdexcept>
 #include <vector>
 
@@ -4032,16 +4032,17 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
             "binaries carry it); rebuild with -DMESHIOPLUSPLUS_WITH_OCCT=ON (OpenCASCADE 7.6 or "
             "later, build/build-occt.sh builds one), or use the native backend");
     // OpenCASCADE is what the result is meant to be built with: say once that
-    // this build falls back, and what that costs.
+    // this build falls back, and what that costs. An atomic flag rather than
+    // std::call_once, whose libstdc++ thread-locals the xeus-cpp JIT running
+    // the C++ notebooks on the single header cannot resolve.
     if (rOptions.mBackend == FitCadBackend::Auto) {
-        static std::once_flag s_fcn_fallback_warned;
-        std::call_once(s_fcn_fallback_warned, [] {
+        static std::atomic<bool> s_fcn_fallback_warned{false};
+        if (!s_fcn_fallback_warned.exchange(true))
             log::warn(
                 "fit_cad: this build has no OpenCASCADE, so the kernel-free native backend "
                 "is used: no freeform, fillet or thread faces, no B-rep check and no solid "
                 "volume. The PyPI wheels and the release binaries carry OpenCASCADE; a "
                 "source build finds one with -DMESHIOPLUSPLUS_WITH_OCCT=ON (the default)");
-        });
     }
 #endif
     return fcn_native_fit_cad(rMesh, rStepPath, rOptions);
