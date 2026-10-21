@@ -28080,7 +28080,8 @@ MESHIOPLUSPLUS_API RefinePatchesResult refine_patches(const Mesh& rMesh,
  *    B-spline follows within the tolerance (a large organic surface, say a
  *    topology-optimised part's) is likewise halved across its longest
  *    extent, each half tried in turn, up to nine times: a tile under 24
- *    triangles, or still unfitted at the last halving, stays facets. Its offset from that plane or cylinder is
+ *    triangles, or still unfitted at the last halving, stays facets. Its
+ *    offset from that plane or cylinder is
  *    resampled on a grid (inside the patch by interpolation over its facets,
  *    outside it from the nearest boundary point), approximated by a C2
  *    B-spline of degree `mFreeformDegree` (`GeomAPI_PointsToBSplineSurface`)
