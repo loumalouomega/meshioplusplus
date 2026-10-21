@@ -137,6 +137,7 @@
 #include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/iga.hpp"
+#include "meshioplusplus/operations/refine_patches.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/tessellate.hpp"
 #include "meshioplusplus/operations/render.hpp"
@@ -1435,6 +1436,8 @@ PYBIND11_MODULE(_core, m) {
 #else
     m.attr("__has_occt__") = false;
 #endif
+    // The kernel version fit_cad's STEP bytes depend on ("" without it).
+    m.attr("__occt_version__") = std::string(meshioplusplus::fit_cad_occt_version());
 #ifdef MESHIOPLUSPLUS_HAS_GIDPOST
     m.attr("__has_gidpost__") = true;
 #else
@@ -2816,6 +2819,76 @@ PYBIND11_MODULE(_core, m) {
         py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}},
         py::arg("cell_type") = "hexahedron", py::arg("order") = 1, py::arg("max_cells") = 20000000);
     m.def(
+        "reference_triangle",
+        [](std::int64_t n, const std::array<double, 2>& size, const std::array<double, 3>& origin,
+           int order, std::int64_t max_cells) {
+            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
+                return meshioplusplus::reference_triangle(n, size, origin, order, max_cells);
+            }));
+        },
+        py::arg("n") = 4, py::arg("size") = std::array<double, 2>{{1.0, 1.0}},
+        py::arg("origin") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("order") = 1,
+        py::arg("max_cells") = 20000000);
+    m.def(
+        "ngon",
+        [](std::int64_t sides, double radius, std::int64_t rings,
+           const std::array<double, 3>& center, int order, std::int64_t max_cells) {
+            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
+                return meshioplusplus::ngon(sides, radius, rings, center, order, max_cells);
+            }));
+        },
+        py::arg("sides") = 6, py::arg("radius") = 1.0, py::arg("rings") = 1,
+        py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("order") = 1,
+        py::arg("max_cells") = 20000000);
+    m.def(
+        "annulus",
+        [](double inner_radius, double outer_radius, std::int64_t ntheta, std::int64_t nr,
+           double angle, const std::array<double, 3>& center, const std::string& cell_type,
+           int order, std::int64_t max_cells) {
+            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
+                return meshioplusplus::annulus(inner_radius, outer_radius, ntheta, nr, angle,
+                                               center, cell_type, order, max_cells);
+            }));
+        },
+        py::arg("inner_radius") = 0.5, py::arg("outer_radius") = 1.0, py::arg("ntheta") = 16,
+        py::arg("nr") = 4, py::arg("angle") = 6.283185307179586,
+        py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("cell_type") = "quad",
+        py::arg("order") = 1, py::arg("max_cells") = 20000000);
+    m.def(
+        "lshape",
+        [](std::int64_t n, double size, const std::array<double, 3>& center,
+           const std::string& cell_type, int order, std::int64_t max_cells) {
+            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
+                return meshioplusplus::lshape(n, size, center, cell_type, order, max_cells);
+            }));
+        },
+        py::arg("n") = 4, py::arg("size") = 2.0,
+        py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("cell_type") = "quad",
+        py::arg("order") = 1, py::arg("max_cells") = 20000000);
+    m.def(
+        "plate_with_hole",
+        [](double radius, double size, std::int64_t nt, std::int64_t nr,
+           const std::array<double, 3>& center, const std::string& cell_type, int order,
+           std::int64_t max_cells) {
+            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
+                return meshioplusplus::plate_with_hole(radius, size, nt, nr, center, cell_type,
+                                                       order, max_cells);
+            }));
+        },
+        py::arg("radius") = 0.25, py::arg("size") = 1.0, py::arg("nt") = 8, py::arg("nr") = 4,
+        py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("cell_type") = "quad",
+        py::arg("order") = 1, py::arg("max_cells") = 20000000);
+    m.def(
+        "honeycomb",
+        [](const std::array<std::int64_t, 2>& dims, double edge,
+           const std::array<double, 3>& origin, std::int64_t max_cells) {
+            return meshioplusplus_py::mesh_to_py(core_nogil(
+                [&] { return meshioplusplus::honeycomb(dims, edge, origin, max_cells); }));
+        },
+        py::arg("dims") = std::array<std::int64_t, 2>{{4, 4}}, py::arg("edge") = 1.0,
+        py::arg("origin") = std::array<double, 3>{{0.0, 0.0, 0.0}},
+        py::arg("max_cells") = 20000000);
+    m.def(
         "reference_cells",
         [](const std::vector<std::string>& types, bool pairs) {
             return meshioplusplus_py::mesh_to_py(
@@ -3703,6 +3776,72 @@ PYBIND11_MODULE(_core, m) {
         py::arg("relative") = true, py::arg("min_inlier_fraction") = 0.9,
         py::arg("types") = meshioplusplus::kFitAllTypes, py::arg("max_iterations") = 50);
 
+    // Variational shape approximation of a segmentation. See
+    // operations/refine_patches.hpp.
+    m.def(
+        "refine_patches",
+        [](py::object pymesh, double tolerance, bool relative, double normal_weight, double epsilon,
+           double feature_angle, std::int64_t max_iterations, std::int64_t min_patch_cells,
+           std::uint64_t ransac_seed, std::uint32_t types, bool allow_split, bool allow_merge,
+           const std::string& prefix) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::RefinePatchesOptions options;
+            options.mTolerance = tolerance;
+            options.mRelative = relative;
+            options.mNormalWeight = normal_weight;
+            options.mEpsilon = epsilon;
+            options.mFeatureAngleDeg = feature_angle;
+            options.mMaxIterations = max_iterations;
+            options.mMinPatchCells = min_patch_cells;
+            options.mRansacSeed = ransac_seed;
+            options.mTypes = types;
+            options.mAllowSplit = allow_split;
+            options.mAllowMerge = allow_merge;
+            options.mPrefix = prefix;
+            meshioplusplus::RefinePatchesResult r =
+                core_nogil([&] { return meshioplusplus::refine_patches(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_patches"] = r.mNumPatches;
+            out["num_iterations"] = r.mNumIterations;
+            out["num_splits"] = r.mNumSplits;
+            out["num_merges"] = r.mNumMerges;
+            out["num_absorbed"] = r.mNumAbsorbed;
+            out["num_primitive"] = r.mNumPrimitive;
+            out["num_freeform"] = r.mNumFreeform;
+            out["num_facets"] = r.mNumFacets;
+            out["tolerance"] = r.mTolerance;
+            out["explained_area_fraction"] = r.mExplainedAreaFraction;
+            out["initial_explained_area_fraction"] = r.mInitialExplainedAreaFraction;
+            out["hausdorff_max"] = r.mHausdorffMax;
+            out["hausdorff_rms"] = r.mHausdorffRms;
+            out["initial_energy"] = r.mInitialEnergy;
+            out["energy"] = r.mEnergy;
+            switch (r.mStop) {
+                case meshioplusplus::RefineStop::Unchanged:
+                    out["stop"] = "unchanged";
+                    break;
+                case meshioplusplus::RefineStop::SmallGain:
+                    out["stop"] = "small_gain";
+                    break;
+                case meshioplusplus::RefineStop::IterationCap:
+                    out["stop"] = "iteration_cap";
+                    break;
+                case meshioplusplus::RefineStop::EnergyRose:
+                    out["stop"] = "energy_rose";
+                    break;
+            }
+            return out;
+        },
+        py::arg("mesh"), py::arg("tolerance") = 1e-3, py::arg("relative") = true,
+        py::arg("normal_weight") = 1.0, py::arg("epsilon") = 1e-3, py::arg("feature_angle") = 30.0,
+        py::arg("max_iterations") = 10, py::arg("min_patch_cells") = 3,
+        py::arg("ransac_seed") = meshioplusplus::kRefineDefaultSeed,
+        py::arg("types") = meshioplusplus::kFitAllTypes, py::arg("allow_split") = true,
+        py::arg("allow_merge") = true, py::arg("prefix") = "patch");
+
     // Analytic CAD faces sewn into a solid (OpenCASCADE). See operations/fit_cad.hpp.
     m.def(
         "fit_cad",
@@ -3710,7 +3849,13 @@ PYBIND11_MODULE(_core, m) {
            std::uint32_t types, double mesh_deflection, std::int64_t max_demotion_rounds,
            bool freeform, std::int32_t freeform_degree, std::int64_t freeform_max_control,
            bool freeform_split, bool fillets, bool threads, bool merge_faces,
-           const std::string& backend) {
+           const std::string& backend, bool refine_segmentation, double refine_tolerance,
+           bool relative_tolerance, double normal_weight, double refine_epsilon,
+           std::int64_t max_refine_iterations, bool allow_split, bool allow_merge,
+           std::uint64_t ransac_seed, bool freeform_general, double freeform_tolerance,
+           double freeform_smoothing, std::int64_t max_freeform_poles,
+           std::int64_t max_freeform_iterations, std::int64_t max_freeform_splits,
+           double sew_tolerance, bool extend_surfaces, bool snap_junctions, bool face_deviation) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
                 pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
@@ -3736,6 +3881,25 @@ PYBIND11_MODULE(_core, m) {
             else
                 throw py::value_error(
                     "meshio++: fit_cad: backend must be 'auto', 'occt' or 'native'");
+            options.mRefineSegmentation = refine_segmentation;
+            options.mRefine.mTolerance = refine_tolerance;
+            options.mRefine.mRelative = relative_tolerance;
+            options.mRefine.mNormalWeight = normal_weight;
+            options.mRefine.mEpsilon = refine_epsilon;
+            options.mRefine.mMaxIterations = max_refine_iterations;
+            options.mRefine.mAllowSplit = allow_split;
+            options.mRefine.mAllowMerge = allow_merge;
+            options.mRefine.mRansacSeed = ransac_seed;
+            options.mFreeformGeneral = freeform_general;
+            options.mFreeformTolerance = freeform_tolerance;
+            options.mFreeformSmoothing = freeform_smoothing;
+            options.mMaxFreeformPoles = max_freeform_poles;
+            options.mMaxFreeformIterations = max_freeform_iterations;
+            options.mMaxFreeformSplits = max_freeform_splits;
+            options.mSewTolerance = sew_tolerance;
+            options.mExtendSurfaces = extend_surfaces;
+            options.mSnapJunctions = snap_junctions;
+            options.mFaceDeviation = face_deviation;
             meshioplusplus::FitCadResult r =
                 core_nogil([&] { return meshioplusplus::fit_cad(cpp, path, options); });
             py::dict out;
@@ -3773,6 +3937,21 @@ PYBIND11_MODULE(_core, m) {
             out["brep"] = core_brep_to_py(std::move(r.mBrep));
             out["backend"] =
                 r.mBackend == meshioplusplus::FitCadBackend::Native ? "native" : "occt";
+            out["refined"] = r.mRefined;
+            out["refinement_kept"] = r.mRefinementKept;
+            out["refine_iterations"] = r.mRefineIterations;
+            out["num_refine_splits"] = r.mNumRefineSplits;
+            out["num_refine_merges"] = r.mNumRefineMerges;
+            out["initial_explained_area_fraction"] = r.mInitialExplainedAreaFraction;
+            out["explained_area_fraction"] = r.mExplainedAreaFraction;
+            out["num_freeform_general"] = r.mNumFreeformGeneral;
+            out["num_freeform_refinements"] = r.mNumFreeformRefinements;
+            out["avg_freeform_poles"] = r.mAvgFreeformPoles;
+            out["num_extended_edges"] = r.mNumExtendedEdges;
+            out["num_snapped_junctions"] = r.mNumSnappedJunctions;
+            out["hausdorff_max"] = r.mHausdorffMax;
+            out["hausdorff_rms"] = r.mHausdorffRms;
+            out["closed"] = r.mClosed;
             return out;
         },
         py::arg("mesh"), py::arg("path") = "", py::arg("tolerance") = 0.0,
@@ -3781,7 +3960,16 @@ PYBIND11_MODULE(_core, m) {
         py::arg("freeform") = true, py::arg("freeform_degree") = 3,
         py::arg("freeform_max_control") = 64, py::arg("freeform_split") = true,
         py::arg("fillets") = true, py::arg("threads") = true, py::arg("merge_faces") = true,
-        py::arg("backend") = "auto");
+        py::arg("backend") = "auto", py::arg("refine_segmentation") = false,
+        py::arg("refine_tolerance") = 1e-3, py::arg("relative_tolerance") = true,
+        py::arg("normal_weight") = 1.0, py::arg("refine_epsilon") = 1e-3,
+        py::arg("max_refine_iterations") = 10, py::arg("allow_split") = true,
+        py::arg("allow_merge") = true, py::arg("ransac_seed") = meshioplusplus::kRefineDefaultSeed,
+        py::arg("freeform_general") = false, py::arg("freeform_tolerance") = 0.0,
+        py::arg("freeform_smoothing") = 1e-12, py::arg("max_freeform_poles") = 40,
+        py::arg("max_freeform_iterations") = 30, py::arg("max_freeform_splits") = 2,
+        py::arg("sew_tolerance") = 0.0, py::arg("extend_surfaces") = false,
+        py::arg("snap_junctions") = false, py::arg("face_deviation") = false);
 
     // Conforming shared facets between named Cell regions. `regions` is an
     // optional list of strings or selector dictionaries. See

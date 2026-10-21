@@ -2103,6 +2103,41 @@ export interface MeshioPlusPlusModule {
            center?: number[] | null, cellType?: string, order?: number,
            maxCells?: number): Mesh;
 
+  /** The reference triangle `(0,0) (1,0) (0,1)`, scaled by `size` and refined into
+   * `n * n` triangles in barycentric lattice order. Side regions `ymin`, `xmin`,
+   * `hypotenuse`. */
+  referenceTriangle(n?: number, size?: number[] | null, origin?: number[] | null,
+                    order?: number, maxCells?: number): Mesh;
+
+  /** A regular polygon fanned from its centre (`rings: 1`), or refined into
+   * `rings` rings of triangles. Side region `rim`. */
+  ngon(sides?: number, radius?: number, rings?: number, center?: number[] | null,
+       order?: number, maxCells?: number): Mesh;
+
+  /** An annulus, or a sector of `angle` radians whose two end rays stay separate
+   * node chains (the seam pair `periodic` links). Side regions `inner`, `outer`
+   * and, for a sector, `start` and `end`. */
+  annulus(innerRadius?: number, outerRadius?: number, ntheta?: number, nr?: number,
+          angle?: number, center?: number[] | null, cellType?: string, order?: number,
+          maxCells?: number): Mesh;
+
+  /** The square of side `size` minus its fourth quadrant (`x > 0`, `y < 0`), the
+   * re-entrant corner at `center`. Side regions `xmin`, `xmax`, `ymin`, `ymax`,
+   * `notch_x`, `notch_y`. */
+  lshape(n?: number, size?: number, center?: number[] | null, cellType?: string,
+         order?: number, maxCells?: number): Mesh;
+
+  /** A square plate of side `size` around a circular hole, in four quad blocks of
+   * `nt x nr` cells. Side regions `hole`, `xmin`, `xmax`, `ymin`, `ymax`. */
+  plateWithHole(radius?: number, size?: number, nt?: number, nr?: number,
+                center?: number[] | null, cellType?: string, order?: number,
+                maxCells?: number): Mesh;
+
+  /** A tiling of pointy-top hexagons as one ragged `polygon` block. Side region
+   * `boundary`. */
+  honeycomb(dims?: number[] | null, edge?: number, origin?: number[] | null,
+            maxCells?: number): Mesh;
+
   /** One cell of each requested meshio type in its reference coordinates, side
    * by side (every supported type when `types` is omitted); `pairs` gives two
    * cells sharing a facet, for linear types. */
@@ -2698,6 +2733,21 @@ export interface MeshioPlusPlusModule {
    *   `{full: true}`), on a bad option, or on a skin that is not closed.
    */
   fitCad(mesh: Mesh, options?: FitCadOptions): FitCadResult;
+
+  /**
+   * Refine the `segment:patch` labels of a surface (the output of `segment`)
+   * by variational shape approximation (v17.11.0): patch boundaries move,
+   * freeform patches are split by seeded RANSAC and neighbours one primitive
+   * explains are merged, until a plane, sphere, cylinder, cone or torus
+   * explains each patch within `tolerance` where one can. Points,
+   * connectivity and block order are untouched; `segment:patch`, the patch
+   * regions and the `fit:*` data are rewritten and `refine:*` field data
+   * added. Needs no OpenCASCADE: both artifacts carry it. Deterministic for a
+   * seed on every thread count.
+   * @throws {Error} without `segment:patch`, on an unknown key or an option
+   *   out of range (`ransacSeed` beyond 2^53 included), or on a volume block.
+   */
+  refinePatches(mesh: Mesh, options?: RefinePatchesOptions): RefinePatchesResult;
 
   /**
    * Refine every patch (every face surface of a B-rep) of a NURBS model
@@ -3435,6 +3485,100 @@ export interface FitCadOptions {
   mergeFaces?: boolean;
   /** The engine: OpenCASCADE when linked in (`'auto'`, the default), or none (v17.9.0). */
   backend?: 'auto' | 'occt' | 'native';
+  /** First refine the patches with `refinePatches` (default false; v17.11.0). */
+  refineSegmentation?: boolean;
+  /** The refinement's most iterations (default 10). */
+  maxRefineIterations?: number;
+  /** Stop refining when an iteration adds less than this to the explained area share (default 1e-3). */
+  refineEpsilon?: number;
+  /** The weight of the normal term in the refinement's cell cost (default 1). */
+  normalWeight?: number;
+  /** Let the refinement merge neighbours one primitive explains (default true). */
+  allowMerge?: boolean;
+  /** Let the refinement split a primitive out of a freeform patch (default true). */
+  allowSplit?: boolean;
+  /** The seed of the refinement's RANSAC split, an integer in [0, 2^53] (default `0x6d657368696f2b2b`, beyond 2^53). */
+  ransacSeed?: number;
+  /** How far a point may lie from its refined patch's primitive (default 1e-3). */
+  refineTolerance?: number;
+  /** `refineTolerance` is a fraction of the bounding-box diagonal (default true). */
+  relativeTolerance?: boolean;
+  /** Try what the plane and cylinder freeform fit leaves as a general B-spline face (default false; v17.11.0). */
+  freeformGeneral?: boolean;
+  /** The general fit's target at the vertices, >= 0; 0 takes a quarter of the tolerance (default 0). */
+  freeformTolerance?: number;
+  /** The general fit's thin-plate weight, >= 0 (default 1e-12). */
+  freeformSmoothing?: number;
+  /** The most poles per direction of a general freeform face, 4 to 1024 (default 40). */
+  maxFreeformPoles?: number;
+  /** The general fit's iteration budget, >= 1 (default 30). */
+  maxFreeformIterations?: number;
+  /** How many times a patch the general fit cannot explain is halved, >= 0 (default 2). */
+  maxFreeformSplits?: number;
+  /** The tolerance the faces are sewn at; 0 sews at the tolerance (default 0; OpenCASCADE only). */
+  sewTolerance?: number;
+  /** Extend freeform B-spline surfaces past their patches before the edges are built (default false; OpenCASCADE only). */
+  extendSurfaces?: boolean;
+  /** Place the corners where analytic faces meet by least squares on their tangent planes (default false; OpenCASCADE only). */
+  snapJunctions?: boolean;
+  /** Measure each face's two-sided distance to the skin: `fit_cad:face_hausdorff`, `fit_cad:face_rms` (default false; OpenCASCADE only). */
+  faceDeviation?: boolean;
+}
+
+/** The options of {@link MeshioPlusPlusModule.refinePatches}; every key is optional. */
+export interface RefinePatchesOptions {
+  /** How far a point may lie from its patch's proxy (default 1e-3). */
+  tolerance?: number;
+  /** `tolerance` is a fraction of the bounding-box diagonal (default true). */
+  relative?: boolean;
+  /** The weight of the normal term in a cell's cost, >= 0 (default 1). */
+  normalWeight?: number;
+  /** Stop when an iteration adds less than this to the explained area share (default 1e-3). */
+  epsilon?: number;
+  /** The dihedral angle in degrees above which an edge is a feature no patch crosses (default 30). */
+  featureAngle?: number;
+  /** The most iterations, >= 0 (default 10). */
+  maxIterations?: number;
+  /** A freeform or facets patch with fewer cells joins a neighbour, >= 1 (default 3). */
+  minPatchCells?: number;
+  /** The seed of the RANSAC split, an integer in [0, 2^53] (default `0x6d657368696f2b2b`, beyond 2^53). */
+  ransacSeed?: number;
+  /** The primitives a proxy may be (default: all five). */
+  types?: Array<'plane' | 'sphere' | 'cylinder' | 'cone' | 'torus'>;
+  /** Split a primitive out of a freeform patch (default true). */
+  allowSplit?: boolean;
+  /** Merge neighbouring patches one primitive explains (default true). */
+  allowMerge?: boolean;
+  /** The patch regions are named `<prefix>:<k>` (default `'patch'`). */
+  prefix?: string;
+}
+
+/** What {@link MeshioPlusPlusModule.refinePatches} did. */
+export interface RefinePatchesResult {
+  /** The input with the refined `segment:patch`, patch regions, `fit:*` and `refine:*` data. */
+  mesh: Mesh;
+  numPatches: number;
+  /** Lloyd steps kept. */
+  numIterations: number;
+  numSplits: number;
+  numMerges: number;
+  numAbsorbed: number;
+  /** Patches a primitive explains. */
+  numPrimitive: number;
+  numFreeform: number;
+  numFacets: number;
+  /** The absolute tolerance applied. */
+  tolerance: number;
+  /** The area share primitives explain, after and before. */
+  explainedAreaFraction: number;
+  initialExplainedAreaFraction: number;
+  /** The largest and the RMS distance of a skin point from its patch's proxy. */
+  hausdorffMax: number;
+  hausdorffRms: number;
+  initialEnergy: number;
+  energy: number;
+  /** Why refinement stopped. */
+  stop: 'unchanged' | 'small_gain' | 'iteration_cap' | 'energy_rose';
 }
 
 /** What {@link MeshioPlusPlusModule.fitCad} built. */
@@ -3480,6 +3624,32 @@ export interface FitCadResult {
   numVariablePitchThread: number;
   /** The engine that built the solid (v17.9.0). */
   backend: 'occt' | 'native';
+  /** Whether `refineSegmentation` refined the patches (v17.11.0); the refinement counts are zero when not. */
+  refined: boolean;
+  /** Whether the solid was built from the refined patches: the OpenCASCADE backend also builds it from the patches as given and keeps that one when it is better (false without `refineSegmentation`). */
+  refinementKept: boolean;
+  refineIterations: number;
+  numRefineSplits: number;
+  numRefineMerges: number;
+  /** The area share primitives explain before and after the refinement. */
+  initialExplainedAreaFraction: number;
+  explainedAreaFraction: number;
+  /** Of the B-spline faces, those the general freeform fit built (v17.11.0; 0 without `freeformGeneral`). */
+  numFreeformGeneral: number;
+  /** Their knot insertion rounds, summed. */
+  numFreeformRefinements: number;
+  /** Their mean pole count (0 without any). */
+  avgFreeformPoles: number;
+  /** Exact edges found on the surfaces `extendSurfaces` extended. */
+  numExtendedEdges: number;
+  /** B-rep vertices `snapJunctions` placed by its least-squares solve. */
+  numSnappedJunctions: number;
+  /** With `faceDeviation`, the two-sided Hausdorff distance between solid and skin; NaN when not measured. */
+  hausdorffMax: number;
+  /** With `faceDeviation`, the root mean square of those distances; NaN when not measured. */
+  hausdorffRms: number;
+  /** Whether every shell is closed: every edge borders two faces (v17.11.0). */
+  closed: boolean;
   /** The solid's B-rep, for `writeMesh(path, mesh, 'cad_json', {info})`. */
   info: CadJsonInfo;
 }

@@ -96,7 +96,7 @@ Converting a 3D volume mesh to STL, PLY or glTF writes its extracted boundary sk
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -109,11 +109,12 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `agglomerate` | `cells_in`, `cells_out`, `num_faces_merged` and `num_rejected` |
 | `resample` | `method`, `num_steps` and the target `times` |
 | `segment` | `num_patches`, `num_merged`, `num_feature_edges`, `num_boundary_edges` and `num_non_manifold_edges` |
+| `refine-patches` | `num_patches`, `num_iterations`, `num_splits`, `num_merges`, `num_absorbed`, `num_primitive`, `num_freeform`, `num_facets`, `tolerance`, `explained_area_fraction`, `initial_explained_area_fraction`, `hausdorff_max`, `hausdorff_rms`, `initial_energy`, `energy` and `stop` (`unchanged`, `small_gain`, `iteration_cap` or `energy_rose`) |
 | `fit-primitives` | `num_patches`, one count per type (`num_plane` … `num_torus`) and `num_unfitted` |
 | `iga-refine`, `iga-sample` | `operation`, `model` (`nurbs` or `brep`), `num_patches`, `num_points`, `num_cells` and `cell_blocks` |
 | `iga-evaluate` | `num_points`, `space_dim`, `points`, `fields` (`components`, `values`), and with `--derivatives 1` `derivatives` and `normals`; for a B-rep face `inside`; arrays flattened row-major |
 | `tessellate` | `Tessellation.schema` without `version`: `levels`, `curved`, the source and output counts, `stencil_width` and the `watertight` facet counts |
-| `to-cad` | `backend` (`occt` or `native`, v17.9.0), `valid`, `tolerance`, the volumes and their ratio, `max_deviation`, the faces by type (`num_bspline`, `num_fillet` and `num_helical` among them, and of those `num_variable_fillet`, `num_blend` and `num_rounded_thread`), `num_vertex_blend` and `num_chamfer` (v17.2.0) and, of the fillets and threads, `num_conic_blend`, `num_tapered_thread` and `num_variable_pitch_thread`, `num_faceted_faces`, `num_patches`, `num_demoted`, the exact and approximated edges, `num_solids` and `num_split_patches` |
+| `to-cad` | `backend` (`occt` or `native`, v17.9.0), `valid`, `tolerance`, the volumes and their ratio, `max_deviation`, the faces by type (`num_bspline`, `num_fillet` and `num_helical` among them, and of those `num_variable_fillet`, `num_blend` and `num_rounded_thread`), `num_vertex_blend` and `num_chamfer` (v17.2.0) and, of the fillets and threads, `num_conic_blend`, `num_tapered_thread` and `num_variable_pitch_thread`, `num_faceted_faces`, `num_patches`, `num_demoted`, the exact and approximated edges, `num_solids` and `num_split_patches`; `closed` (v17.11.0, always); with `--refine` (v17.11.0) also `refined`, `refine_iterations`, `num_refine_splits`, `num_refine_merges`, `initial_explained_area_fraction`, `explained_area_fraction` and `refinement_kept`; with `--freeform-general` `num_freeform_general`, `num_freeform_refinements` and `avg_freeform_poles`; with `--extend-surfaces` `num_extended_edges`; with `--snap-junctions` `num_snapped_junctions`; with `--face-deviation` `hausdorff_max` and `hausdorff_rms` |
 | `region-adjacency` | `facets` and `measure` |
 | `find-interface` | pair counts, area, maximum gap, unmatched counts and both Side-entry lists |
 | `contact-pairs` | `num_pairs`, the pair table and unmatched slave-point ids |
@@ -1048,6 +1049,37 @@ meshioplusplus segment bracket.stl bracket_patches.vtu --method primitive
 
 ---
 
+## meshioplusplus refine-patches
+
+Refine a segmentation by variational shape approximation (v17.11.0): patch boundaries move, a freeform patch is split by seeded RANSAC around the primitive inside it, and neighbours one primitive explains are merged, until a plane, sphere, cylinder, cone or torus explains each patch within the tolerance where one can. A surface without `segment:patch` is segmented first (`segment`'s defaults, at `--feature-angle`). Writes the input with `segment:patch`, `segment:adjacency`, the patch regions and the `fit:*` data of [fit primitives](/fit_primitives) rewritten, and `refine:*` field data added; points and connectivity are untouched. The output is the same on every thread count for a seed. `to-cad --refine` runs the same refinement before building the solid ([fit CAD](/fit_cad#cli)).
+
+```text
+meshioplusplus refine-patches [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|---|---|
+| `-i/--input-format` | Explicit input format |
+| `--tolerance T` | How far a point may lie from its patch's proxy, relative to the diagonal (default `1e-3`) |
+| `--absolute` | `T` is a length, not a fraction of the diagonal |
+| `--normal-weight W` | The weight of the normal term in a cell's cost (default `1`) |
+| `--epsilon E` | Stop when an iteration adds less than `E` to the area share primitives explain (default `1e-3`) |
+| `--feature-angle DEG` | Dihedral angle above which an edge is a feature no patch crosses, also the segmentation's (default `30`) |
+| `--max-iterations N` | The most iterations (default `10`) |
+| `--min-patch-cells N` | A freeform patch with fewer cells joins a neighbour (default `3`) |
+| `--ransac-seed S` | The seed of the RANSAC split, decimal or `0x` hexadecimal (default `0x6d657368696f2b2b`) |
+| `--types LIST` | Comma-separated primitives a patch may be, from `plane,sphere,cylinder,cone,torus` (default all) |
+| `--no-split`, `--no-merge` | Do not split a primitive out of a freeform patch, or merge neighbours |
+| `--prefix NAME` | Patch regions are named `NAME:k` (default `patch`) |
+| `--json`, `-q/--quiet` | Machine-readable report, or no summary |
+
+```sh
+meshioplusplus refine-patches part.stl part_refined.vtu --feature-angle 40 --json
+meshioplusplus refine-patches part_patches.vtu part_refined.vtu --types plane,cylinder --ransac-seed 7
+```
+
+---
+
 ## meshioplusplus fit-primitives
 
 Fit a plane, sphere, cylinder, cone or torus to each patch and write the input with `fit:*` cell data and `fit:patch_*` field data (see [fit primitives](/fit_primitives)).
@@ -1158,6 +1190,23 @@ meshioplusplus to-cad [options] INFILE OUTFILE.step
 | `--no-threads` | Do not try a patch as a [helical thread face](/fit_cad#fillets-blends-and-threads) |
 | `--no-merge-faces` | Keep faces on one surface apart once the solid is built |
 | `--backend auto\|occt\|native` | The engine (default `auto`: OpenCASCADE when the build carries it, else native) |
+| `--refine` | First [refine the patches](#meshioplusplus-refine-patches) by variational shape approximation (v17.11.0) |
+| `--max-refine-iterations N` | `--refine`: the most iterations (default `10`) |
+| `--refine-epsilon E` | `--refine`: stop when an iteration adds less than `E` to the explained area share (default `1e-3`) |
+| `--normal-weight W` | `--refine`: the weight of the normal term in a cell's cost (default `1`) |
+| `--no-refine-merge`, `--no-refine-split` | `--refine`: do not merge neighbours one primitive explains, or split a primitive out of a freeform patch |
+| `--ransac-seed S` | `--refine`: the seed of the RANSAC split (default `0x6d657368696f2b2b`) |
+| `--refine-tolerance T` | `--refine`: how far a point may lie from its refined patch's primitive, relative to the diagonal (default `1e-3`) |
+| `--freeform-general` | Try a patch the plane and cylinder freeform fit leaves unexplained as a general B-spline face (disc parametrisation, iterative fit; v17.11.0) |
+| `--freeform-tolerance T` | `--freeform-general`: the fit's target at the vertices (default `0`: a quarter of the tolerance) |
+| `--freeform-smoothing W` | `--freeform-general`: the thin-plate weight (default `1e-12`) |
+| `--max-freeform-poles N` | `--freeform-general`: the most poles per direction, 4 to 1024 (default `40`) |
+| `--max-freeform-iterations N` | `--freeform-general`: the iteration budget (default `30`) |
+| `--max-freeform-splits N` | `--freeform-general`: how many times a patch the fit cannot explain is halved (default `2`) |
+| `--sew-tolerance T` | The tolerance the faces are sewn at (default `0`: the tolerance; OpenCASCADE only) |
+| `--extend-surfaces` | Extend freeform B-spline surfaces past their patches before the edges are built (OpenCASCADE only) |
+| `--snap-junctions` | Place the corners where analytic faces meet by least squares on their tangent planes (OpenCASCADE only) |
+| `--face-deviation` | Measure each face's two-sided distance to the skin: `fit_cad:face_hausdorff` / `fit_cad:face_rms` field data and `hausdorff_max` / `hausdorff_rms` (OpenCASCADE only) |
 | `--mesh-out FILE` | Also write the re-meshed solid |
 | `--cad-json FILE` | Also write the solid as [Kratos CAD JSON](formats/cad_json.md) (its faces as trimmed NURBS) |
 | `--json`, `-q/--quiet` | Machine-readable report, or no summary |
@@ -1908,19 +1957,21 @@ meshioplusplus generate uv-sphere ball.vtu --radius 2 --nu 32 --nv 16 --cell-typ
 meshioplusplus generate reference-cells cells.vtu --types tetra,hexahedron20,polyhedron
 ```
 
-Build a mesh from parameters, in both CLIs. `SHAPE` is `rectangle`, `box`, `disk`, `uv-sphere`, `icosa-sphere`, `cylinder` or `reference-cells`, and `OUTFILE` is written in the format its extension names (`-o/--output-format` overrides it). Vector flags take comma-separated values, and negatives need the `=` form (`--origin=-1,-1,0`).
+Build a mesh from parameters, in both CLIs. `SHAPE` is `rectangle`, `box`, `disk`, `uv-sphere`, `icosa-sphere`, `cylinder`, `reference-triangle`, `ngon`, `annulus`, `lshape`, `plate-with-hole`, `honeycomb` or `reference-cells`, and `OUTFILE` is written in the format its extension names (`-o/--output-format` overrides it). Vector flags take comma-separated values, and negatives need the `=` form (`--origin=-1,-1,0`).
 
 | flag | shapes | meaning |
 |---|---|---|
-| `--dims nx,ny[,nz]` | `rectangle`, `box` | cell counts |
-| `--size lx,ly[,lz]` | `rectangle`, `box` | side lengths |
-| `--origin x,y[,z]` | `rectangle`, `box` | lo corner |
-| `--center x,y,z` | `disk`, `uv-sphere`, `icosa-sphere`, `cylinder` | centre |
-| `--radius R` / `--height H` | round shapes / `cylinder` | radius and height |
-| `--n N` / `--nu N --nv N` / `--subdivisions N` / `--nxy N --nz N` | `disk` / `uv-sphere` / `icosa-sphere` / `cylinder` | the counts of each shape |
-| `--cell-type T` | all but `icosa-sphere`, `reference-cells` | `quad`, `triangle`, `hexahedron`, `tetra` or `wedge`, as the shape allows |
+| `--dims nx,ny[,nz]` | `rectangle`, `box`, `honeycomb` | cell counts |
+| `--size lx,ly[,lz]` / `--size L` | `rectangle`, `box`, `reference-triangle` / `lshape`, `plate-with-hole` | side lengths / one side |
+| `--origin x,y[,z]` | `rectangle`, `box`, `reference-triangle`, `honeycomb` | lo corner |
+| `--center x,y,z` | the round shapes, `ngon`, `annulus`, `lshape`, `plate-with-hole` | centre |
+| `--radius R` / `--height H` | round shapes, `ngon`, `plate-with-hole` (the hole) / `cylinder` | radius and height |
+| `--inner-radius R --outer-radius R --ntheta N --nr N --angle A` | `annulus` | radii, cells around and across, opening angle in radians (a sector keeps its seam pair) |
+| `--n N` / `--nu N --nv N` / `--subdivisions N` / `--nxy N --nz N` | `disk`, `reference-triangle`, `lshape` / `uv-sphere` / `icosa-sphere` / `cylinder` | the counts of each shape |
+| `--sides N --rings N` / `--nt N --nr N` / `--edge L` | `ngon` / `plate-with-hole` / `honeycomb` | the counts and the hexagon edge |
+| `--cell-type T` | the shapes that build more than one cell type | `quad`, `triangle`, `hexahedron`, `tetra` or `wedge`, as the shape allows |
 | `--split S` | `rectangle` | `zigzag`, `up`, `down` or `center` triangle layout |
-| `--order 2` | all but `reference-cells` | quadratic cells with mid-edge nodes on the exact geometry |
+| `--order 2` | all but `reference-cells`, `honeycomb` | quadratic cells with mid-edge nodes on the exact geometry |
 | `--max-cells N` | all but `reference-cells` | refuse above this many cells (default 20 000 000, 0 lifts it) |
 | `--types a,b` / `--pairs` | `reference-cells` | the cell types (all by default) / two cells sharing a facet |
 

@@ -34,8 +34,12 @@ from conan.tools.files import copy
 
 class MeshioplusplusConan(ConanFile):
     name = "meshioplusplus"
-    version = "17.10.0"
-    license = "MIT"
+    version = "17.11.0"
+    # MIT for meshio++ itself. The default build links OpenCASCADE (with_occt,
+    # LGPL-2.1 with the OCCT exception), so the package declares that combined
+    # licence. A -o with_occt=False build contains no OpenCASCADE and is MIT,
+    # but this is one class attribute, so every option set declares the same.
+    license = "MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)"
     description = "C++ core for the meshio++ mesh I/O library (installable C API)"
     homepage = "https://github.com/loumalouomega/meshioplusplus"
     url = "https://github.com/loumalouomega/meshioplusplus"
@@ -123,6 +127,8 @@ class MeshioplusplusConan(ConanFile):
     exports_sources = (
         "CMakeLists.txt",
         "LICENSE",
+        "LICENSE-BINARIES.md",
+        "THIRD_PARTY_NOTICES.md",
         "src/cpp/include/*",
         "src/cpp/src/*",
         "src/cpp/third_party/pugixml/*",
@@ -219,12 +225,17 @@ class MeshioplusplusConan(ConanFile):
     def package(self):
         cmake = CMake(self)
         cmake.install()
-        copy(
-            self,
+        for license_file in (
             "LICENSE",
-            src=self.source_folder,
-            dst=os.path.join(self.package_folder, "licenses"),
-        )
+            "LICENSE-BINARIES.md",
+            "THIRD_PARTY_NOTICES.md",
+        ):
+            copy(
+                self,
+                license_file,
+                src=self.source_folder,
+                dst=os.path.join(self.package_folder, "licenses"),
+            )
 
     def package_info(self):
         # Match the installed find_package config so downstream

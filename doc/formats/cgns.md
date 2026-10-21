@@ -122,7 +122,7 @@ A CGNS file records time series through two optional SIDS nodes: `BaseIterativeD
 
 ## Polyhedral cells (`NGON_n` / `NFACE_n`)
 
-Since v9.21.0 meshio++ reads and writes CGNS's face-based sections itself, with no optional dependency — so polyhedral CGNS works in the default build, the PyPI wheels and the WASM artifact. A `polyhedron<N>` block becomes an `NGON_n` face list plus an `NFACE_n` cell list of **signed** face element ids (the sign meaning "traverse this face reversed"); a jagged `polygon<N>` block is itself a face list, so it becomes an `NGON_n` on its own.
+Since v9.21.0 meshio++ reads and writes CGNS's face-based sections itself, in the native HDF5 build (the default wherever HDF5 is found, and the WASM artifact), so polyhedral CGNS works there. The PyPI wheels are built without HDF5, and their Python reference reader and writer cannot handle these sections, so polyhedral CGNS is unavailable in the wheels. A `polyhedron<N>` block becomes an `NGON_n` face list plus an `NFACE_n` cell list of **signed** face element ids (the sign meaning "traverse this face reversed"); a jagged `polygon<N>` block is itself a face list, so it becomes an `NGON_n` on its own.
 
 Three rules are worth knowing:
 

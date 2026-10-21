@@ -105,6 +105,10 @@ _C_WITHOUT_JS = {
     # already exposes the per-cell metrics as cell_data, and
     # `surfaceWatertightCheck` covers the surface-quality summary case.
     "quality_counts",
+    # `mio_fit_cad2` is `mio_fit_cad` with the options its fixed struct has
+    # no room for; the JS `fitCad` already takes every one of them (and
+    # reports every field) as object keys, so there is no second wrapper.
+    "fit_cad2",
 }
 
 

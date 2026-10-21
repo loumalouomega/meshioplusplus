@@ -19,7 +19,26 @@ mio_fit_cad(
   fillets = TRUE,
   threads = TRUE,
   merge_faces = TRUE,
-  backend = "auto"
+  backend = "auto",
+  refine_segmentation = FALSE,
+  max_refine_iterations = 10L,
+  refine_epsilon = 0.001,
+  normal_weight = 1,
+  allow_merge = TRUE,
+  allow_split = TRUE,
+  ransac_seed = NULL,
+  refine_tolerance = 0.001,
+  relative_tolerance = TRUE,
+  freeform_general = FALSE,
+  freeform_tolerance = 0,
+  freeform_smoothing = 1e-12,
+  max_freeform_poles = 40L,
+  max_freeform_iterations = 30L,
+  max_freeform_splits = 2L,
+  sew_tolerance = 0,
+  extend_surfaces = FALSE,
+  snap_junctions = FALSE,
+  face_deviation = FALSE
 )
 }
 \arguments{
@@ -65,6 +84,46 @@ or varying pitch and cut on a taper.}
 is built (v17.9.0).}
 
 \item{backend}{`"auto"`, `"occt"` or `"native"` (v17.9.0).}
+
+\item{refine_segmentation}{Whether the patches are first refined by
+variational shape approximation (v17.11.0); off by default.}
+
+\item{max_refine_iterations, refine_epsilon, normal_weight, allow_merge, allow_split}{The refinement's `max_iterations`, `epsilon`, `normal_weight`,
+`allow_merge` and `allow_split` (see `mio_refine_patches()`).}
+
+\item{ransac_seed}{The refinement's RANSAC seed; `NULL` takes the default,
+and a number is taken exactly below 2^53.}
+
+\item{refine_tolerance, relative_tolerance}{The refinement's tolerance and
+whether it is a fraction of the bounding-box diagonal.}
+
+\item{freeform_general}{Whether a patch the plane and unrolled-cylinder
+freeform fit leaves unexplained is tried as a general freeform B-spline
+face (a disc parametrisation and an iterative fit, v17.11.0); off by
+default.}
+
+\item{freeform_tolerance}{The general fit's target at the vertices; 0 takes
+a quarter of the tolerance.}
+
+\item{freeform_smoothing}{The general fit's thin-plate weight, >= 0.}
+
+\item{max_freeform_poles, max_freeform_iterations, max_freeform_splits}{The
+general fit's most poles per direction (4 to 1024), its iteration budget
+(>= 1) and how many times a patch it cannot explain is halved (>= 0).}
+
+\item{sew_tolerance}{The tolerance the faces are sewn at; 0 sews at the
+tolerance (OpenCASCADE only, v17.11.0).}
+
+\item{extend_surfaces}{Whether freeform B-spline surfaces are extended past
+their patches before the edges are built (OpenCASCADE only).}
+
+\item{snap_junctions}{Whether the corners where analytic faces meet are
+placed by a least-squares solve on their tangent planes (OpenCASCADE
+only).}
+
+\item{face_deviation}{Whether each face's two-sided distance to the skin is
+measured, as the `fit_cad:face_hausdorff` and `fit_cad:face_rms` field
+data and `hausdorff_max` / `hausdorff_rms` (OpenCASCADE only).}
 }
 \value{
 A list of `mesh` (the solid re-meshed, with cell data
@@ -75,8 +134,17 @@ A list of `mesh` (the solid re-meshed, with cell data
   `num_exact_edges`, `num_approx_edges`, `num_solids`, `num_bspline`,
   `num_split_patches`, `num_fillet`, `num_helical`, `num_variable_fillet`,
   `num_blend`, `num_rounded_thread`, `num_vertex_blend`, `num_chamfer`,
-  `num_conic_blend`, `num_tapered_thread`, `num_variable_pitch_thread`
-  and `backend` (the engine that ran).
+  `num_conic_blend`, `num_tapered_thread`, `num_variable_pitch_thread`,
+  `backend` (the engine that ran), `refined` (whether the refinement ran),
+  `refine_iterations`, `num_refine_splits`, `num_refine_merges`,
+  `initial_explained_area_fraction` and `explained_area_fraction` (zero
+  without refinement), `closed` (whether every shell is closed),
+  `num_freeform_general`, `num_freeform_refinements`, `avg_freeform_poles`,
+  `num_extended_edges`, `num_snapped_junctions`, and `hausdorff_max` and
+  `hausdorff_rms` (`NaN` unless `face_deviation` measured them), and
+  `refinement_kept` (whether the solid was built from the refined patches;
+  OpenCASCADE also builds it from the patches as given and keeps the
+  better).
 }
 \description{
 Builds a CAD solid from the fitted patches of a closed skin through the
@@ -89,6 +157,11 @@ check or strays beyond `tolerance` is demoted to facets. Without
 fit_primitives at its tolerance. Without OpenCASCADE (see `mio_has_occt()`)
 or with `backend = "native"`, the kernel-free backend writes the fitted
 patches as analytic STEP faces and returns the skin itself; `backend =
-"occt"` fails naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON` without it. See
-`doc/fit_cad.md`.
+"occt"` fails naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON` without it. Since
+v17.11.0, `refine_segmentation = TRUE` first refines the patches as
+`mio_refine_patches()` does, `freeform_general = TRUE` tries what the plane
+and cylinder freeform fit leaves as a general B-spline face, and, through
+OpenCASCADE, `sew_tolerance`, `extend_surfaces`, `snap_junctions` and
+`face_deviation` tune the sewing, the edges, the corners and the
+measurement. See `doc/fit_cad.md`.
 }

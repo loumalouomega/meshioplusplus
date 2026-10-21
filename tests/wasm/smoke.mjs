@@ -2289,6 +2289,16 @@ step('the parametric generators build meshes and refuse bad requests', () => {
     assert.deepEqual(m.referenceCells(['tetra', 'wedge']).cells.map((c) => c.type),
         ['tetra', 'wedge']);
     assert.equal(m.referenceCells(null, true).cells.length, 7);
+    // The planar domains: closed-form point counts, and an annulus sector keeps
+    // its seam apart where a full ring welds it.
+    assert.equal(m.referenceTriangle(3).points.length, 10 * 3);
+    assert.equal(m.ngon(5, 1, 2).points.length, 16 * 3);
+    assert.equal(m.annulus(0.5, 1, 12, 3).points.length, 48 * 3);
+    assert.equal(m.annulus(0.5, 1, 6, 2, Math.PI / 2).points.length, 21 * 3);
+    assert.equal(m.lshape(3).points.length, 40 * 3);
+    assert.equal(m.plateWithHole(0.25, 1, 3, 2).points.length, 36 * 3);
+    assert.equal(m.honeycomb([3, 2]).points.length, 22 * 3);
+    assert.throws(() => m.plateWithHole(0.9));
     assert.throws(() => m.box([2, 2, 2], null, null, 'blob'));
     assert.throws(() => m.box([100, 100, 100], null, null, 'hexahedron', 1, 1000));
 });
@@ -2474,6 +2484,7 @@ step('every binding is reachable through the wrapper', () => {
         'hasBzip2',
         'buildFlavour',
         'fitCad',
+        'refinePatches',
         'withProvenance',
         'provenanceBegin',
         'provenanceEnd',
@@ -2691,6 +2702,52 @@ step('the stays-out set is exactly what this artifact reports (roadmap 6.2.4)', 
         assert.equal(native.valid, true);
         assert.equal(native.numPlane, 6);
         assert.ok(m.FS.readFile('/lean_cube.step', { encoding: 'utf8' }).includes('PLANE('));
+    }
+    // fitCad's refinement (v17.11.0) needs no OpenCASCADE: both artifacts.
+    const plain = m.fitCad(cubeSurface, { backend: 'native' });
+    assert.equal(plain.refined, false);
+    assert.equal(plain.refinementKept, false);
+    assert.equal(plain.numRefineSplits, 0);
+    const refined = m.fitCad(cubeSurface, {
+        backend: 'native',
+        refineSegmentation: true,
+        maxRefineIterations: 5,
+        ransacSeed: 3,
+        allowMerge: true,
+        allowSplit: true,
+    });
+    assert.equal(refined.refined, true);
+    assert.equal(refined.numPlane, 6);
+    assert.ok(Math.abs(refined.explainedAreaFraction - 1) < 1e-12);
+    assert.throws(() => m.fitCad(cubeSurface, { ransacSeed: 0.5 }), /2\^53/);
+    // The Phase 3 options and report (v17.11.0): closed on every backend,
+    // the deviation NaN unless measured, and an option out of range refused.
+    assert.equal(plain.closed, true);
+    assert.ok(Number.isNaN(plain.hausdorffMax));
+    assert.equal(plain.numSnappedJunctions, 0);
+    const general = m.fitCad(cubeSurface, {
+        backend: 'native',
+        freeformGeneral: true,
+        freeformTolerance: 0,
+        freeformSmoothing: 1e-10,
+        maxFreeformPoles: 20,
+        maxFreeformIterations: 5,
+        maxFreeformSplits: 0,
+        sewTolerance: 0,
+        extendSurfaces: true,
+        snapJunctions: true,
+        faceDeviation: true,
+    });
+    assert.equal(general.closed, true);
+    assert.equal(general.numFreeformGeneral, 0);
+    assert.throws(() => m.fitCad(cubeSurface, { maxFreeformPoles: 3 }), /max_freeform_poles/);
+    assert.throws(() => m.fitCad(cubeSurface, { sewTolerance: -1 }), /sew_tolerance/);
+    if (m.hasOcct()) {
+        const snapped = m.fitCad(cubeSurface, { snapJunctions: true, faceDeviation: true });
+        assert.equal(snapped.closed, true);
+        assert.ok(snapped.numSnappedJunctions > 0);
+        assert.ok(Number.isFinite(snapped.hausdorffMax));
+        assert.ok('fit_cad:face_hausdorff' in snapped.mesh.field_data);
     }
 });
 
@@ -5273,6 +5330,19 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.equal(fp.numPlane, 6);
     assert.throws(() => m.segment(cubeSurface, 200));
     assert.throws(() => m.fitPrimitives(sg.mesh, 'segment:patch', 1e-3, true, 0.9, ['blob']));
+
+    // refinePatches (both artifacts): a box segmented at its creases is left
+    // alone, six planes explaining all of it.
+    const rp = m.refinePatches(sg.mesh, { ransacSeed: 7, types: ['plane'] });
+    assert.equal(rp.numPatches, 6);
+    assert.equal(rp.numPrimitive, 6);
+    assert.ok(Math.abs(rp.explainedAreaFraction - 1) < 1e-12);
+    assert.equal(rp.stop, 'unchanged');
+    assert.ok('segment:patch' in rp.mesh.cell_data);
+    assert.throws(() => m.refinePatches(cubeSurface), /segment:patch/);
+    assert.throws(() => m.refinePatches(sg.mesh, { bogus: 1 }), /bogus/);
+    assert.throws(() => m.refinePatches(sg.mesh, { ransacSeed: 2 ** 53 + 2 }), /2\^53/);
+    assert.throws(() => m.refinePatches(sg.mesh, { ransacSeed: -1 }), /2\^53/);
 
     const h = m.hausdorffDistance(cubeSurface, cubeSurface, 2);
     assert.ok(Math.abs(h.distance) < 1e-12); // face samples: rounding, not exactly 0

@@ -254,7 +254,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 17
-#define MIO_VERSION_MINOR 10
+#define MIO_VERSION_MINOR 11
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -2690,13 +2690,16 @@ MIO_API mio_mesh* mio_grid(const int64_t dims[3], const double origin[3], const 
 /* Parametric generators                                                     */
 /*                                                                           */
 /* mio_rectangle, mio_box, mio_disk, mio_uv_sphere, mio_icosa_sphere and      */
-/* mio_cylinder build a shape from parameters, like mio_grid, and              */
+/* mio_cylinder build a shape from parameters, like mio_grid, and the planar  */
+/* domains mio_reference_triangle, mio_ngon, mio_annulus, mio_lshape,         */
+/* mio_plate_with_hole and mio_honeycomb do the same at z = origin[2];       */
 /* mio_reference_cells builds one cell of each type in reference coordinates. */
 /* They share one options struct; each shape reads the fields its name        */
 /* suggests and ignores the rest. Boundaries come back as named side regions  */
-/* (xmin..zmax on a box, rim on a disk, side/top/bottom on a cylinder) and    */
-/* order 2 places the mid-edge nodes on the exact geometry. See               */
-/* doc/primitives.md for the point and cell order of every shape.             */
+/* (xmin..zmax on a box, rim on a disk, side/top/bottom on a cylinder,        */
+/* inner/outer on an annulus, hole on a plate) and order 2 places the         */
+/* mid-edge nodes on the exact geometry. See doc/primitives.md for the point  */
+/* and cell order of every shape.                                             */
 /* ------------------------------------------------------------------------- */
 
 /** Which cell type a generator builds (MIO_GEN_DEFAULT is the shape's own default). */
@@ -2735,7 +2738,26 @@ typedef enum mio_gen_split {
  *  - mio_icosa_sphere: radius, counts[0] (subdivisions), origin (centre).
  *  - mio_cylinder:    radius, height, counts[0..1] (nxy, nz), origin (centre);
  *                     cell_type HEXAHEDRON or WEDGE.
+ *  - mio_reference_triangle: counts[0] (n), size[0..1] (legs), origin (the
+ *                     right-angle corner).
+ *  - mio_ngon:        counts[0..1] (sides, rings), radius (circumradius),
+ *                     origin (centre).
+ *  - mio_annulus:     radius (OUTER radius), radius2 (inner radius), counts[0..1]
+ *                     (ntheta, nr), angle, origin (centre); cell_type QUAD or
+ *                     TRIANGLE.
+ *  - mio_lshape:      counts[0] (n), size[0] (side of the bounding square),
+ *                     origin (its centre); cell_type QUAD or TRIANGLE.
+ *  - mio_plate_with_hole: radius (hole radius), size[0] (plate side; the hole
+ *                     must be smaller than half of it, so the init defaults of 1
+ *                     must be changed), counts[0..1] (nt, nr), origin (hole
+ *                     centre); cell_type QUAD or TRIANGLE.
+ *  - mio_honeycomb:   counts[0..1] (nx, ny), size[0] (edge length), origin (lower-
+ *                     left corner of the bounding box); order must be 1.
  * Every shape reads order and max_cells.
+ *
+ * radius2 and angle were carved out of the reserved tail, so a struct filled by
+ * an older caller (both zero) reads as "use the default": radius2 = 0.5 and
+ * angle = 2 pi.
  */
 typedef struct mio_gen_opts {
     int64_t counts[3];   /**< cell or division counts; see the table above */
@@ -2748,10 +2770,15 @@ typedef struct mio_gen_opts {
     int32_t split;       /**< a mio_gen_split */
     int32_t order;       /**< 1 (or 0) for linear cells, 2 for quadratic ones */
     int32_t pad;         /**< must be zero */
-    int64_t reserved[6]; /**< must be zero; room for additive growth */
+    double radius2;      /**< inner radius of an annulus; 0 means 0.5 */
+    double angle;        /**< opening angle of an annulus in radians; 0 means 2 pi */
+    int64_t reserved[4]; /**< must be zero; room for additive growth */
 } mio_gen_opts;
 
-/** Zero-initialize generator options: counts 8, unit size and radius, order 1. */
+/**
+ * Zero-initialize generator options: counts 8, unit size and radius, order 1,
+ * annulus inner radius 0.5 and opening angle 2 pi.
+ */
 MIO_API void mio_gen_opts_init(mio_gen_opts* opts);
 
 /** A regular 2-D grid of quads or triangles at z = origin[2]. @p opts NULL means defaults. */
@@ -2766,6 +2793,18 @@ MIO_API mio_mesh* mio_uv_sphere(const mio_gen_opts* opts);
 MIO_API mio_mesh* mio_icosa_sphere(const mio_gen_opts* opts);
 /** A solid cylinder along z. */
 MIO_API mio_mesh* mio_cylinder(const mio_gen_opts* opts);
+/** The reference triangle, scaled and refined into n * n triangles. */
+MIO_API mio_mesh* mio_reference_triangle(const mio_gen_opts* opts);
+/** A regular polygon fanned from its centre, or refined into rings. */
+MIO_API mio_mesh* mio_ngon(const mio_gen_opts* opts);
+/** An annulus or a sector of one, with the seam pair of a sector kept apart. */
+MIO_API mio_mesh* mio_annulus(const mio_gen_opts* opts);
+/** The square minus its fourth quadrant, the re-entrant corner at the centre. */
+MIO_API mio_mesh* mio_lshape(const mio_gen_opts* opts);
+/** A square plate around a circular hole, in four quad blocks. */
+MIO_API mio_mesh* mio_plate_with_hole(const mio_gen_opts* opts);
+/** A tiling of pointy-top hexagons as one ragged polygon block. */
+MIO_API mio_mesh* mio_honeycomb(const mio_gen_opts* opts);
 /**
  * One cell of each requested type in reference coordinates, side by side.
  *
@@ -4766,6 +4805,107 @@ MIO_API mio_mesh* mio_fit_primitives(const mio_mesh* mesh, const mio_fit_primiti
                                      mio_fit_primitives_report* report);
 
 /**
+ * Options for mio_refine_patches (v17.11.0). Same ABI rules as above; always
+ * initialize through mio_refine_patches_opts_init(): the tolerance, normal
+ * weight, epsilon, feature angle, iteration and cell counts, seed, types and
+ * the three switches are not zero by default, so an all-zero struct is NOT the
+ * default (and is refused: a zero tolerance and min_patch_cells are out of
+ * range).
+ */
+typedef struct mio_refine_patches_opts {
+    /** The tolerance every point of a patch must lie within its proxy; > 0. A
+     *  fraction of the surface's bounding-box diagonal when `relative` is set. */
+    double tolerance;
+    /** The weight of the normal term in a cell's cost; >= 0. */
+    double normal_weight;
+    /** Stop when an iteration adds less than this to the area share
+     *  primitives explain; >= 0. */
+    double epsilon;
+    /** The dihedral angle, in degrees, above which an edge is a feature edge
+     *  no patch crosses; [0, 180]. */
+    double feature_angle;
+    /** The most iterations; >= 0 (0 rewrites the outputs of the input partition). */
+    int64_t max_iterations;
+    /** A freeform or facets patch with fewer cells joins a neighbour; >= 1. */
+    int64_t min_patch_cells;
+    /** The seed of the RANSAC split's splitmix64 generator. */
+    uint64_t ransac_seed;
+    /** The primitives a proxy may be, as `1 << mio_fit_type` bits; MIO_FIT_ALL_TYPES by default. */
+    uint32_t types;
+    /** Nonzero: tolerance is a fraction of the bounding-box diagonal. */
+    int32_t relative;
+    /** Nonzero: a freeform patch is searched for a primitive inside it and split. */
+    int32_t allow_split;
+    /** Nonzero: two neighbouring patches one primitive explains are merged. */
+    int32_t allow_merge;
+    /** The patch regions are named "<prefix>:<k>"; NULL or "" means "patch". */
+    const char* prefix;
+    int64_t reserved[8]; /**< must be zero; room for additive growth */
+} mio_refine_patches_opts;
+
+/** The default mio_refine_patches_opts.ransac_seed: the bytes of "meshio++". */
+#define MIO_REFINE_DEFAULT_SEED 0x6d657368696f2b2bull
+
+/** Initialize refine options: tolerance 1e-3 relative, normal weight 1,
+ *  epsilon 1e-3, 30 degrees, 10 iterations, min_patch_cells 3, the default
+ *  seed, every type, splitting and merging on, the "patch" prefix. */
+MIO_API void mio_refine_patches_opts_init(mio_refine_patches_opts* opts);
+
+/** mio_refine_patches_report.stop: why refinement stopped (v17.11.0). */
+typedef enum mio_refine_stop {
+    /** The partition did not change. */
+    MIO_REFINE_UNCHANGED = 0,
+    /** An iteration added less than epsilon to the explained area share. */
+    MIO_REFINE_SMALL_GAIN = 1,
+    /** max_iterations iterations ran. */
+    MIO_REFINE_ITERATION_CAP = 2,
+    /** The Lloyd step would have raised the energy (undone) and no move applied. */
+    MIO_REFINE_ENERGY_ROSE = 3
+} mio_refine_stop;
+
+/** What mio_refine_patches did (v17.11.0). */
+typedef struct mio_refine_patches_report {
+    int64_t num_patches;
+    int64_t num_iterations; /**< Lloyd steps kept */
+    int64_t num_splits;
+    int64_t num_merges;
+    int64_t num_absorbed;
+    int64_t num_primitive; /**< patches a primitive explains */
+    int64_t num_freeform;
+    int64_t num_facets;
+    double tolerance;                       /**< the absolute tolerance applied */
+    double explained_area_fraction;         /**< the area share primitives explain */
+    double initial_explained_area_fraction; /**< the same, before refinement */
+    double hausdorff_max; /**< the largest distance of a skin point from its proxy */
+    double hausdorff_rms;
+    double initial_energy;
+    double energy;
+    int32_t stop;        /**< a mio_refine_stop */
+    int32_t reserved32;  /**< zero */
+    int64_t reserved[8]; /**< zero; room for additive growth */
+} mio_refine_patches_report;
+
+/**
+ * Refine the "segment:patch" labels of a surface by variational shape
+ * approximation (v17.11.0): patch boundaries move, a freeform patch is split
+ * where seeded RANSAC finds a primitive inside it, and two neighbouring
+ * patches one primitive explains are merged, until each patch is explained by
+ * one plane, sphere, cylinder, cone or torus, or a freeform proxy. Returns the
+ * input -- points, connectivity, block order, data and regions bit-identical
+ * -- with "segment:patch", "segment:adjacency" and the "<prefix>:<k>" regions
+ * rewritten, the "fit:*" data of mio_fit_primitives on the refined patches,
+ * and per-patch "refine:*" field data. See doc/refine_patches.md.
+ *
+ * @param mesh   a surface mesh carrying "segment:patch" (from mio_segment).
+ * @param opts   options; NULL means every mio_refine_patches_opts_init() default.
+ * @param report optional out: what was done.
+ * @return the refined mesh (free with mio_mesh_free), or NULL on failure
+ *         (no "segment:patch", an option out of range, a volume block).
+ */
+MIO_API mio_mesh* mio_refine_patches(const mio_mesh* mesh, const mio_refine_patches_opts* opts,
+                                     mio_refine_patches_report* report);
+
+/**
  * Options for mio_fit_cad. Same ABI rules as above; always initialize through
  * mio_fit_cad_opts_init(): exact_edges, types and max_demotion_rounds are not
  * zero by default.
@@ -4930,6 +5070,114 @@ MIO_API mio_mesh* mio_fit_cad(const mio_mesh* mesh, const char* step_path,
 MIO_API mio_mesh* mio_fit_cad_ex(const mio_mesh* mesh, const char* step_path,
                                  const mio_fit_cad_opts* opts, mio_fit_cad_report* report,
                                  mio_fit_cad_report_ex* report_ex);
+
+/**
+ * Options of mio_fit_cad2 beyond mio_fit_cad_opts (v17.11.0), whose reserved
+ * tail is spent. Same ABI rules as above; always initialize through
+ * mio_fit_cad_opts_ex_init(): `refine` holds mio_refine_patches_opts_init()
+ * defaults, which are not zero. The reserved tail is where later options grow.
+ */
+typedef struct mio_fit_cad_opts_ex {
+    /** Nonzero: the patches are refined by mio_refine_patches, with `refine`,
+     *  after any segmentation and fit fit_cad runs itself, before the faces
+     *  are built. Off by default, so the output is what it was without it. */
+    int32_t refine_segmentation;
+    /** Nonzero: a patch the plane and unrolled-cylinder freeform fit leaves
+     *  unexplained is tried as a general freeform B-spline face (a disc
+     *  parametrisation and an iterative least-squares fit), halved up to
+     *  max_freeform_splits times when that fails (v17.11.0). Off by default. */
+    int32_t freeform_general;
+    /** The refinement's options, read when refine_segmentation is nonzero; a
+     *  NULL or "" prefix means "patch". */
+    mio_refine_patches_opts refine;
+    /** The general fit's target at the vertices, >= 0; 0 takes a quarter of
+     *  the tolerance (v17.11.0). */
+    double freeform_tolerance;
+    /** The general fit's thin-plate weight, >= 0 (default 1e-12; 0 is taken
+     *  as given). */
+    double freeform_smoothing;
+    /** The most poles per direction of a general freeform face, 4 to 1024;
+     *  0 reads as the default 40. */
+    int64_t max_freeform_poles;
+    /** The general fit's iteration budget, >= 1; 0 reads as the default 30. */
+    int64_t max_freeform_iterations;
+    /** How many times a patch the general fit cannot explain is halved, >= 0
+     *  (default 2; 0 is taken as given: never halved). */
+    int64_t max_freeform_splits;
+    /** The tolerance the faces are sewn at, >= 0; 0 sews at the tolerance
+     *  itself. OpenCASCADE backend only. */
+    double sew_tolerance;
+    /** Nonzero: freeform B-spline surfaces are extended past their patches
+     *  before the edges are built. OpenCASCADE backend only. */
+    int32_t extend_surfaces;
+    /** Nonzero: the vertices where analytic faces meet are placed by a
+     *  least-squares solve on their tangent planes. OpenCASCADE backend only. */
+    int32_t snap_junctions;
+    /** Nonzero: each face's two-sided distance to the skin is measured, as the
+     *  "fit_cad:face_hausdorff" and "fit_cad:face_rms" field data and the
+     *  report's hausdorff_max / hausdorff_rms. OpenCASCADE backend only. */
+    int32_t face_deviation;
+    int32_t reserved32b; /**< must be zero */
+    int64_t reserved[8]; /**< must be zero; room for additive growth */
+} mio_fit_cad_opts_ex;
+
+/** Initialize the extended fit_cad options: no refinement, the refinement's
+ *  options at their mio_refine_patches_opts_init() defaults, no general
+ *  freeform fit (freeform_smoothing 1e-12, max_freeform_poles 40,
+ *  max_freeform_iterations 30, max_freeform_splits 2), and sew_tolerance,
+ *  extend_surfaces, snap_junctions and face_deviation off. */
+MIO_API void mio_fit_cad_opts_ex_init(mio_fit_cad_opts_ex* opts);
+
+/** What mio_fit_cad2 reports beyond mio_fit_cad_report and
+ *  mio_fit_cad_report_ex (v17.11.0). Zero what you pass. */
+typedef struct mio_fit_cad_report_ex2 {
+    /** 1 when refine_segmentation refined the patches, else 0 (and the counts
+     *  below are zero). */
+    int64_t refined;
+    int64_t refine_iterations; /**< the refinement's Lloyd steps kept */
+    int64_t num_refine_splits;
+    int64_t num_refine_merges;
+    /** The area share primitives explain before and after the refinement. */
+    double initial_explained_area_fraction;
+    double explained_area_fraction;
+    /** Of the B-spline faces, those the general freeform fit built (v17.11.0). */
+    int64_t num_freeform_general;
+    /** Their knot insertion rounds, summed. */
+    int64_t num_freeform_refinements;
+    /** Their mean pole count (0 without any). */
+    double avg_freeform_poles;
+    /** Exact edges found by intersecting extend_surfaces' extended surfaces. */
+    int64_t num_extended_edges;
+    /** B-rep vertices snap_junctions placed by its least-squares solve. */
+    int64_t num_snapped_junctions;
+    /** With face_deviation: the two-sided Hausdorff distance between the
+     *  re-meshed solid and the skin, and the root mean square of those
+     *  distances; NaN when they were not measured. */
+    double hausdorff_max;
+    double hausdorff_rms;
+    /** 1 when every shell is closed (every edge borders two faces), else 0. */
+    int64_t closed;
+    /** 1 when the solid was built from the refined patches, else 0 (always 0
+     *  without refine_segmentation): the OpenCASCADE backend also builds it
+     *  from the patches as given and keeps that one when it is better. */
+    int64_t refinement_kept;
+    int64_t reserved[7]; /**< zero; room for additive growth */
+} mio_fit_cad_report_ex2;
+
+/**
+ * mio_fit_cad with the options mio_fit_cad_opts has no room for (v17.11.0):
+ * the segmentation refinement, the general freeform fit, the sewing tolerance,
+ * extended surfaces, junction snapping and face deviation, and their report. Every pointer but
+ * `mesh` is optional: NULL `opts` means every mio_fit_cad_opts_init() default and NULL `opts_ex`
+ * every mio_fit_cad_opts_ex_init() default (no refinement). mio_fit_cad_ex(mesh, path, opts,
+ * report, report_ex) is mio_fit_cad2(mesh, path, opts, NULL, report, report_ex, NULL). With
+ * refinement on, the result also carries the refinement's "refine:*" field data, and with
+ * face_deviation the "fit_cad:face_hausdorff" and "fit_cad:face_rms" field data.
+ */
+MIO_API mio_mesh* mio_fit_cad2(const mio_mesh* mesh, const char* step_path,
+                               const mio_fit_cad_opts* opts, const mio_fit_cad_opts_ex* opts_ex,
+                               mio_fit_cad_report* report, mio_fit_cad_report_ex* report_ex,
+                               mio_fit_cad_report_ex2* report_ex2);
 
 /* ---------------------------------------------------------------------
  * Isogeometric layer (v16.43.0): evaluate, refine and sample the NURBS model

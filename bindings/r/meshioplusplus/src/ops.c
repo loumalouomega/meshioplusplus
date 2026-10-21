@@ -12,6 +12,7 @@
 static SEXP quality_list(const mio_surface_quality *q); /* defined below; used earlier */
 
 #include <limits.h>
+#include <math.h>
 #include <string.h>
 
 /* --- surface / skin / quality ------------------------------------------- */
@@ -525,16 +526,140 @@ SEXP R_mio_has_occt(void) {
     return Rf_ScalarLogical(mio_has_occt() != 0);
 }
 
+/* A RANSAC seed: NULL takes the default; a number must be a whole number in
+ * [0, 2^64), held exactly below 2^53 (R numbers are doubles). */
+static uint64_t ops_refine_seed(SEXP s) {
+    double v;
+    if (s == R_NilValue)
+        return MIO_REFINE_DEFAULT_SEED;
+    if (Rf_length(s) != 1 || (TYPEOF(s) != REALSXP && TYPEOF(s) != INTSXP))
+        Rf_error("`ransac_seed` must be NULL or a single number");
+    v = Rf_asReal(s);
+    if (ISNAN(v) || v < 0.0 || v >= 18446744073709551616.0 || v != floor(v))
+        Rf_error("`ransac_seed` must be a whole number in [0, 2^64)");
+    return (uint64_t)v;
+}
+
+/* The mio_refine_stop code as a string. */
+static const char* ops_refine_stop_name(int32_t stop) {
+    switch (stop) {
+        case MIO_REFINE_UNCHANGED:
+            return "unchanged";
+        case MIO_REFINE_SMALL_GAIN:
+            return "small_gain";
+        case MIO_REFINE_ITERATION_CAP:
+            return "iteration_cap";
+        case MIO_REFINE_ENERGY_ROSE:
+            return "energy_rose";
+        default:
+            return "unknown";
+    }
+}
+
+SEXP R_mio_refine_patches(SEXP mesh, SEXP tolerance, SEXP relative, SEXP normal_weight,
+                          SEXP epsilon, SEXP feature_angle, SEXP max_iterations,
+                          SEXP min_patch_cells, SEXP ransac_seed, SEXP types, SEXP allow_split,
+                          SEXP allow_merge, SEXP prefix) {
+    mio_refine_patches_opts opts;
+    mio_refine_patches_report report;
+    mio_mesh* out;
+
+    mio_refine_patches_opts_init(&opts);
+    opts.tolerance = mio_r_double(tolerance, "tolerance");
+    opts.relative = mio_r_bool(relative, "relative") ? 1 : 0;
+    opts.normal_weight = mio_r_double(normal_weight, "normal_weight");
+    opts.epsilon = mio_r_double(epsilon, "epsilon");
+    opts.feature_angle = mio_r_double(feature_angle, "feature_angle");
+    opts.max_iterations = mio_r_int64(max_iterations, "max_iterations");
+    opts.min_patch_cells = mio_r_int64(min_patch_cells, "min_patch_cells");
+    opts.ransac_seed = ops_refine_seed(ransac_seed);
+    opts.types = (uint32_t)mio_r_int(types, "types");
+    opts.allow_split = mio_r_bool(allow_split, "allow_split") ? 1 : 0;
+    opts.allow_merge = mio_r_bool(allow_merge, "allow_merge") ? 1 : 0;
+    opts.prefix = mio_r_opt_string(prefix);
+
+    out = mio_refine_patches(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL)
+        mio_r_fail("refine_patches");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP np = PROTECT(Rf_ScalarReal((double)report.num_patches));
+    SEXP ni = PROTECT(Rf_ScalarReal((double)report.num_iterations));
+    SEXP ns = PROTECT(Rf_ScalarReal((double)report.num_splits));
+    SEXP nm = PROTECT(Rf_ScalarReal((double)report.num_merges));
+    SEXP na = PROTECT(Rf_ScalarReal((double)report.num_absorbed));
+    SEXP npr = PROTECT(Rf_ScalarReal((double)report.num_primitive));
+    SEXP nff = PROTECT(Rf_ScalarReal((double)report.num_freeform));
+    SEXP nfa = PROTECT(Rf_ScalarReal((double)report.num_facets));
+    SEXP tol = PROTECT(Rf_ScalarReal(report.tolerance));
+    SEXP ex = PROTECT(Rf_ScalarReal(report.explained_area_fraction));
+    SEXP ex0 = PROTECT(Rf_ScalarReal(report.initial_explained_area_fraction));
+    SEXP hmax = PROTECT(Rf_ScalarReal(report.hausdorff_max));
+    SEXP hrms = PROTECT(Rf_ScalarReal(report.hausdorff_rms));
+    SEXP e0 = PROTECT(Rf_ScalarReal(report.initial_energy));
+    SEXP e1 = PROTECT(Rf_ScalarReal(report.energy));
+    SEXP st = PROTECT(Rf_mkString(ops_refine_stop_name(report.stop)));
+    const char* names[] = {"mesh",
+                           "num_patches",
+                           "num_iterations",
+                           "num_splits",
+                           "num_merges",
+                           "num_absorbed",
+                           "num_primitive",
+                           "num_freeform",
+                           "num_facets",
+                           "tolerance",
+                           "explained_area_fraction",
+                           "initial_explained_area_fraction",
+                           "hausdorff_max",
+                           "hausdorff_rms",
+                           "initial_energy",
+                           "energy",
+                           "stop"};
+    SEXP values[] = {mo, np, ni, ns, nm, na, npr, nff, nfa, tol, ex, ex0, hmax, hrms, e0, e1, st};
+    SEXP res = PROTECT(mio_r_named_list(17, names, values));
+    UNPROTECT(18);
+    return res;
+}
+
 SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, SEXP types,
                    SEXP mesh_deflection, SEXP max_demotion_rounds, SEXP freeform,
                    SEXP freeform_degree, SEXP freeform_max_control, SEXP freeform_split,
-                   SEXP fillets, SEXP threads, SEXP merge_faces, SEXP backend) {
+                   SEXP fillets, SEXP threads, SEXP merge_faces, SEXP backend,
+                   SEXP refine_segmentation, SEXP max_refine_iterations, SEXP refine_epsilon,
+                   SEXP normal_weight, SEXP allow_merge, SEXP allow_split, SEXP ransac_seed,
+                   SEXP refine_tolerance, SEXP relative_tolerance, SEXP freeform_general,
+                   SEXP freeform_tolerance, SEXP freeform_smoothing, SEXP max_freeform_poles,
+                   SEXP max_freeform_iterations, SEXP max_freeform_splits, SEXP sew_tolerance,
+                   SEXP extend_surfaces, SEXP snap_junctions, SEXP face_deviation) {
     mio_fit_cad_opts opts;
+    mio_fit_cad_opts_ex opts_ex;
     mio_fit_cad_report report;
     mio_fit_cad_report_ex report_ex;
+    mio_fit_cad_report_ex2 report_ex2;
     mio_mesh *out;
 
     mio_fit_cad_opts_init(&opts);
+    mio_fit_cad_opts_ex_init(&opts_ex);
+    opts_ex.refine_segmentation = mio_r_bool(refine_segmentation, "refine_segmentation") ? 1 : 0;
+    opts_ex.refine.max_iterations = mio_r_int64(max_refine_iterations, "max_refine_iterations");
+    opts_ex.refine.epsilon = mio_r_double(refine_epsilon, "refine_epsilon");
+    opts_ex.refine.normal_weight = mio_r_double(normal_weight, "normal_weight");
+    opts_ex.refine.allow_merge = mio_r_bool(allow_merge, "allow_merge") ? 1 : 0;
+    opts_ex.refine.allow_split = mio_r_bool(allow_split, "allow_split") ? 1 : 0;
+    opts_ex.refine.ransac_seed = ops_refine_seed(ransac_seed);
+    opts_ex.refine.tolerance = mio_r_double(refine_tolerance, "refine_tolerance");
+    opts_ex.refine.relative = mio_r_bool(relative_tolerance, "relative_tolerance") ? 1 : 0;
+    opts_ex.freeform_general = mio_r_bool(freeform_general, "freeform_general") ? 1 : 0;
+    opts_ex.freeform_tolerance = mio_r_double(freeform_tolerance, "freeform_tolerance");
+    opts_ex.freeform_smoothing = mio_r_double(freeform_smoothing, "freeform_smoothing");
+    opts_ex.max_freeform_poles = mio_r_int64(max_freeform_poles, "max_freeform_poles");
+    opts_ex.max_freeform_iterations =
+        mio_r_int64(max_freeform_iterations, "max_freeform_iterations");
+    opts_ex.max_freeform_splits = mio_r_int64(max_freeform_splits, "max_freeform_splits");
+    opts_ex.sew_tolerance = mio_r_double(sew_tolerance, "sew_tolerance");
+    opts_ex.extend_surfaces = mio_r_bool(extend_surfaces, "extend_surfaces") ? 1 : 0;
+    opts_ex.snap_junctions = mio_r_bool(snap_junctions, "snap_junctions") ? 1 : 0;
+    opts_ex.face_deviation = mio_r_bool(face_deviation, "face_deviation") ? 1 : 0;
     opts.tolerance = mio_r_double(tolerance, "tolerance");
     opts.exact_edges = mio_r_bool(exact_edges, "exact_edges") ? 1 : 0;
     opts.types = (uint32_t)mio_r_int(types, "types");
@@ -559,8 +684,8 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
             Rf_error("meshio++: fit_cad: backend must be \"auto\", \"occt\" or \"native\"");
     }
 
-    out = mio_fit_cad_ex(mio_r_mesh(mesh), mio_r_string(step_path, "step_path"), &opts, &report,
-                         &report_ex);
+    out = mio_fit_cad2(mio_r_mesh(mesh), mio_r_string(step_path, "step_path"), &opts, &opts_ex,
+                       &report, &report_ex, &report_ex2);
     if (out == NULL) mio_r_fail("fit_cad");
     SEXP mo = PROTECT(mio_r_wrap_mesh(out));
     SEXP valid = PROTECT(Rf_ScalarLogical(report.valid != 0));
@@ -595,24 +720,77 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
     SEXP nvarpitch = PROTECT(Rf_ScalarReal((double)report_ex.num_variable_pitch_thread));
     SEXP engine = PROTECT(
         Rf_mkString(report_ex.backend == MIO_FIT_CAD_NATIVE ? "native" : "occt"));
-    const char *names[] = {"mesh",          "valid",         "tolerance",
-                           "volume",        "skin_volume",   "volume_ratio",
-                           "max_deviation", "num_faces",     "num_plane",
-                           "num_sphere",    "num_cylinder",  "num_cone",
-                           "num_torus",     "num_faceted_faces", "num_patches",
-                           "num_demoted",   "num_exact_edges", "num_approx_edges",
-                           "num_solids",    "num_bspline",   "num_split_patches",
-                           "num_fillet",    "num_helical",   "num_variable_fillet",
-                           "num_blend",     "num_rounded_thread", "num_vertex_blend",
-                           "num_chamfer",   "num_conic_blend", "num_tapered_thread",
-                           "num_variable_pitch_thread", "backend"};
-    SEXP values[] = {mo,      valid,   tol,      vol,      svol,    ratio,   dev,
-                     nfaces,  nplane,  nsphere,  ncyl,     ncone,   ntorus,  nfacet,
-                     npatch,  ndem,    nexact,   napprox,  nsolid,  nbspline, nsplit,
-                     nfillet, nhelical, nvariable, nblend, nrounded, nvertex,
-                     nchamfer, nconic, ntapered, nvarpitch, engine};
-    SEXP res = PROTECT(mio_r_named_list(32, names, values));
-    UNPROTECT(33);
+    SEXP refined = PROTECT(Rf_ScalarLogical(report_ex2.refined != 0));
+    SEXP riter = PROTECT(Rf_ScalarReal((double)report_ex2.refine_iterations));
+    SEXP rsplit = PROTECT(Rf_ScalarReal((double)report_ex2.num_refine_splits));
+    SEXP rmerge = PROTECT(Rf_ScalarReal((double)report_ex2.num_refine_merges));
+    SEXP rex0 = PROTECT(Rf_ScalarReal(report_ex2.initial_explained_area_fraction));
+    SEXP rex = PROTECT(Rf_ScalarReal(report_ex2.explained_area_fraction));
+    SEXP closed = PROTECT(Rf_ScalarLogical(report_ex2.closed != 0));
+    SEXP kept = PROTECT(Rf_ScalarLogical(report_ex2.refinement_kept != 0));
+    SEXP ngeneral = PROTECT(Rf_ScalarReal((double)report_ex2.num_freeform_general));
+    SEXP nrefinements = PROTECT(Rf_ScalarReal((double)report_ex2.num_freeform_refinements));
+    SEXP avgpoles = PROTECT(Rf_ScalarReal(report_ex2.avg_freeform_poles));
+    SEXP nextended = PROTECT(Rf_ScalarReal((double)report_ex2.num_extended_edges));
+    SEXP nsnapped = PROTECT(Rf_ScalarReal((double)report_ex2.num_snapped_junctions));
+    SEXP hmax = PROTECT(Rf_ScalarReal(report_ex2.hausdorff_max));
+    SEXP hrms = PROTECT(Rf_ScalarReal(report_ex2.hausdorff_rms));
+    const char* names[] = {"mesh",
+                           "valid",
+                           "tolerance",
+                           "volume",
+                           "skin_volume",
+                           "volume_ratio",
+                           "max_deviation",
+                           "num_faces",
+                           "num_plane",
+                           "num_sphere",
+                           "num_cylinder",
+                           "num_cone",
+                           "num_torus",
+                           "num_faceted_faces",
+                           "num_patches",
+                           "num_demoted",
+                           "num_exact_edges",
+                           "num_approx_edges",
+                           "num_solids",
+                           "num_bspline",
+                           "num_split_patches",
+                           "num_fillet",
+                           "num_helical",
+                           "num_variable_fillet",
+                           "num_blend",
+                           "num_rounded_thread",
+                           "num_vertex_blend",
+                           "num_chamfer",
+                           "num_conic_blend",
+                           "num_tapered_thread",
+                           "num_variable_pitch_thread",
+                           "backend",
+                           "refined",
+                           "refine_iterations",
+                           "num_refine_splits",
+                           "num_refine_merges",
+                           "initial_explained_area_fraction",
+                           "explained_area_fraction",
+                           "closed",
+                           "num_freeform_general",
+                           "num_freeform_refinements",
+                           "avg_freeform_poles",
+                           "num_extended_edges",
+                           "num_snapped_junctions",
+                           "hausdorff_max",
+                           "hausdorff_rms",
+                           "refinement_kept"};
+    SEXP values[] = {mo,        valid,    tol,       vol,     svol,     ratio,        dev,
+                     nfaces,    nplane,   nsphere,   ncyl,    ncone,    ntorus,       nfacet,
+                     npatch,    ndem,     nexact,    napprox, nsolid,   nbspline,     nsplit,
+                     nfillet,   nhelical, nvariable, nblend,  nrounded, nvertex,      nchamfer,
+                     nconic,    ntapered, nvarpitch, engine,  refined,  riter,        rsplit,
+                     rmerge,    rex0,     rex,       closed,  ngeneral, nrefinements, avgpoles,
+                     nextended, nsnapped, hmax,      hrms,    kept};
+    SEXP res = PROTECT(mio_r_named_list(47, names, values));
+    UNPROTECT(48);
     return res;
 }
 
@@ -2103,7 +2281,8 @@ static int32_t mio_r_gen_split(const char *name) {
 }
 
 SEXP R_mio_generate(SEXP shape, SEXP counts, SEXP size, SEXP origin, SEXP radius, SEXP height,
-                    SEXP cell_type, SEXP split, SEXP order, SEXP max_cells) {
+                    SEXP cell_type, SEXP split, SEXP order, SEXP max_cells, SEXP radius2,
+                    SEXP angle) {
     mio_gen_opts opts;
     mio_gen_opts_init(&opts);
     SEXP c = PROTECT(Rf_coerceVector(counts, REALSXP));
@@ -2118,6 +2297,8 @@ SEXP R_mio_generate(SEXP shape, SEXP counts, SEXP size, SEXP origin, SEXP radius
     mio_r_vec3(origin, opts.origin, "origin");
     opts.radius = mio_r_double(radius, "radius");
     opts.height = mio_r_double(height, "height");
+    opts.radius2 = mio_r_double(radius2, "radius2");
+    opts.angle = mio_r_double(angle, "angle");
     opts.cell_type = mio_r_gen_cell(mio_r_string(cell_type, "cell_type"));
     opts.split = mio_r_gen_split(mio_r_string(split, "split"));
     opts.order = (int32_t)mio_r_int(order, "order");
@@ -2131,6 +2312,12 @@ SEXP R_mio_generate(SEXP shape, SEXP counts, SEXP size, SEXP origin, SEXP radius
     else if (strcmp(name, "uv_sphere") == 0) out = mio_uv_sphere(&opts);
     else if (strcmp(name, "icosa_sphere") == 0) out = mio_icosa_sphere(&opts);
     else if (strcmp(name, "cylinder") == 0) out = mio_cylinder(&opts);
+    else if (strcmp(name, "reference_triangle") == 0) out = mio_reference_triangle(&opts);
+    else if (strcmp(name, "ngon") == 0) out = mio_ngon(&opts);
+    else if (strcmp(name, "annulus") == 0) out = mio_annulus(&opts);
+    else if (strcmp(name, "lshape") == 0) out = mio_lshape(&opts);
+    else if (strcmp(name, "plate_with_hole") == 0) out = mio_plate_with_hole(&opts);
+    else if (strcmp(name, "honeycomb") == 0) out = mio_honeycomb(&opts);
     else Rf_error("unknown shape '%s'", name);
     if (out == NULL) mio_r_fail(name);
     return mio_r_wrap_mesh(out);

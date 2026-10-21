@@ -17,6 +17,7 @@ from meshioplusplus._cli._main import main as cli_main
 
 from .analytic_surfaces import (
     box_skin,
+    filleted_plate,
     inclined_boss,
     rounded_box,
     rounded_thread_rod,
@@ -35,6 +36,13 @@ from .analytic_surfaces import (
 HAS_OCCT = _fit_cad.has_occt()
 needs_occt = pytest.mark.skipif(
     not HAS_OCCT, reason="core built without -DMESHIOPLUSPLUS_WITH_OCCT=ON"
+)
+try:
+    from meshioplusplus import _core
+except ImportError:  # pragma: no cover - a pure-Python install
+    _core = None
+needs_refine = pytest.mark.skipif(
+    not hasattr(_core, "refine_patches"), reason="core predates refine_patches"
 )
 
 
@@ -410,6 +418,235 @@ def test_pipeline_step_in_both_engines(tmp_path):
         mio.run_pipeline(bad)
 
 
+@needs_refine
+def test_refine_segmentation_explains_the_fillets():
+    # Segmented by angles, the plate's corner fillet and the walls it is
+    # tangent to share a patch; refining separates them.
+    seg = mio.segment(filleted_plate())
+    _out, report = mio.fit_cad(
+        seg, refine_segmentation=True, backend="native", return_report=True
+    )
+    assert report["refined"] is True
+    # The native backend builds only from the refined patches.
+    assert report["refinement_kept"] is True
+    assert report["explained_area_fraction"] == pytest.approx(1.0, abs=1e-9)
+    assert report["explained_area_fraction"] > report["initial_explained_area_fraction"]
+    assert report["num_refine_splits"] > 0
+    assert report["refine_iterations"] >= 0 and report["num_refine_merges"] >= 0
+    assert "refine:patch_proxy" in _out.field_data
+
+
+@needs_refine
+def test_default_report_has_no_refine_keys():
+    _out, report = mio.fit_cad(
+        mio.segment(filleted_plate()), backend="native", return_report=True
+    )
+    for key in (
+        "refined",
+        "refinement_kept",
+        "refine_iterations",
+        "num_refine_splits",
+        "num_refine_merges",
+        "initial_explained_area_fraction",
+        "explained_area_fraction",
+    ):
+        assert key not in report
+
+
+@needs_refine
+def test_refine_segmentation_pipeline_step_in_both_engines(tmp_path):
+    src = tmp_path / "plate.vtu"
+    mio.write(src, filleted_plate(), compression=None)
+    settings = {
+        "Version": 1,
+        "Input": {"Path": str(src)},
+        "Operations": [
+            {"Op": "Segment"},
+            {
+                "Op": "FitCad",
+                "Path": str(tmp_path / "py.step"),
+                "Backend": "native",
+                "RefineSegmentation": True,
+                "RansacSeed": 7,
+            },
+        ],
+        "Output": {"Path": str(tmp_path / "out.vtu")},
+    }
+    reports = [mio.run_pipeline(settings)]
+    if hasattr(_core, "run_pipeline_json"):
+        settings["Operations"][-1]["Path"] = str(tmp_path / "cpp.step")
+        settings["Output"]["Path"] = str(tmp_path / "out_cpp.vtu")
+        reports.append(_core.run_pipeline_json(json.dumps(settings)))
+        assert (tmp_path / "py.step").read_bytes().replace(b"py.step", b"x") == (
+            tmp_path / "cpp.step"
+        ).read_bytes().replace(b"cpp.step", b"x")
+    for report in reports:
+        entry = report["steps"][-1]
+        assert entry["Refined"] == 1.0
+        assert entry["ExplainedAreaFraction"] == pytest.approx(1.0, abs=1e-9)
+        for key in ("NumRefineSplits", "NumRefineMerges", "RefinementKept"):
+            assert key in entry
+    if len(reports) == 2:
+        assert list(reports[0]["steps"][-1]) == list(reports[1]["steps"][-1])
+    # Without the option the step reports what it always did.
+    settings["Operations"][-1].pop("RefineSegmentation")
+    settings["Operations"][-1]["Path"] = str(tmp_path / "plain.step")
+    entry = mio.run_pipeline(settings)["steps"][-1]
+    assert "Refined" not in entry and "ExplainedAreaFraction" not in entry
+    assert "RefinementKept" not in entry
+
+
+_PHASE3_KEYS = {
+    "freeform_general": (
+        "num_freeform_general",
+        "num_freeform_refinements",
+        "avg_freeform_poles",
+    ),
+    "extend_surfaces": ("num_extended_edges",),
+    "snap_junctions": ("num_snapped_junctions",),
+    "face_deviation": ("hausdorff_max", "hausdorff_rms"),
+}
+
+
+def test_phase_three_report_keys_appear_only_when_asked():
+    skin = box_skin(2)
+    _out, plain = mio.fit_cad(skin, backend="native", return_report=True)
+    # `closed` is always there; every other Phase 3 key only with its option.
+    assert plain["closed"] is True
+    for keys in _PHASE3_KEYS.values():
+        for key in keys:
+            assert key not in plain
+    for option, keys in _PHASE3_KEYS.items():
+        _out, report = mio.fit_cad(
+            skin, backend="native", return_report=True, **{option: True}
+        )
+        assert set(report) - set(plain) == set(keys), option
+    # The native backend builds no freeform faces and measures nothing.
+    _out, report = mio.fit_cad(
+        skin,
+        backend="native",
+        return_report=True,
+        freeform_general=True,
+        face_deviation=True,
+    )
+    assert report["num_freeform_general"] == 0
+    assert report["avg_freeform_poles"] == 0.0
+    assert np.isnan(report["hausdorff_max"]) and np.isnan(report["hausdorff_rms"])
+    assert "fit_cad:face_hausdorff" not in _out.field_data
+
+
+@pytest.mark.parametrize(
+    "key, value",
+    [
+        ("freeform_tolerance", -1.0),
+        ("freeform_tolerance", float("inf")),
+        ("freeform_smoothing", -1.0),
+        ("max_freeform_poles", 3),
+        ("max_freeform_poles", 1025),
+        ("max_freeform_iterations", 0),
+        ("max_freeform_splits", -1),
+        ("sew_tolerance", -1.0),
+        ("sew_tolerance", float("nan")),
+    ],
+)
+def test_phase_three_bad_options_are_refused(key, value):
+    with pytest.raises(ValueError, match=key):
+        mio.fit_cad(box_skin(2), backend="native", **{key: value})
+
+
+def test_phase_three_options_reach_the_core():
+    # Values in range but off their defaults pass through; the core's own
+    # checks would refuse what the wrapper let by.
+    _out, report = mio.fit_cad(
+        box_skin(2),
+        backend="native",
+        return_report=True,
+        freeform_general=True,
+        freeform_tolerance=1e-4,
+        freeform_smoothing=0.0,
+        max_freeform_poles=4,
+        max_freeform_iterations=1,
+        max_freeform_splits=0,
+        sew_tolerance=1e-6,
+    )
+    assert report["num_plane"] == 6 and report["closed"] is True
+
+
+@needs_occt
+def test_face_deviation_and_snapped_junctions():
+    out, report = mio.fit_cad(
+        _fitted(box_skin(3)),
+        snap_junctions=True,
+        face_deviation=True,
+        return_report=True,
+    )
+    assert report["valid"] is True and report["closed"] is True
+    assert report["num_snapped_junctions"] == 8  # the box's corners
+    assert np.isfinite(report["hausdorff_max"])
+    assert report["hausdorff_rms"] <= report["hausdorff_max"]
+    # The per-face field data survives the conversion to a Python mesh.
+    hausdorff = out.field_data["fit_cad:face_hausdorff"]
+    rms = out.field_data["fit_cad:face_rms"]
+    assert hausdorff.dtype == np.float64
+    assert hausdorff.shape == (report["num_faces"], 2)
+    assert rms.shape[0] == report["num_faces"]
+    assert hausdorff.max() == report["hausdorff_max"]
+    assert np.all(rms <= hausdorff.max(axis=1) + 1e-15)
+
+
+def test_phase_three_pipeline_keys_in_both_engines(tmp_path):
+    src = tmp_path / "box.vtu"
+    mio.write(src, box_skin(2), compression=None)
+    step = {
+        "Op": "FitCad",
+        "Backend": "native",
+        "FreeformGeneral": True,
+        "FreeformTolerance": 0.0,
+        "FreeformSmoothing": 1e-10,
+        "MaxFreeformPoles": 20,
+        "MaxFreeformIterations": 5,
+        "MaxFreeformSplits": 1,
+        "SewTolerance": 0.0,
+        "ExtendSurfaces": True,
+        "SnapJunctions": True,
+        "FaceDeviation": True,
+    }
+    settings = {
+        "Version": 1,
+        "Input": {"Path": str(src)},
+        "Operations": [step],
+        "Output": {"Path": str(tmp_path / "out.vtu")},
+    }
+    plain_settings = dict(settings, Operations=[{"Op": "FitCad", "Backend": "native"}])
+    engines = [mio.run_pipeline]
+    if hasattr(_core, "run_pipeline_json"):
+        engines.append(lambda s: _core.run_pipeline_json(json.dumps(s)))
+    entries = []
+    for run in engines:
+        plain = run(plain_settings)["steps"][-1]
+        full = run(settings)["steps"][-1]
+        # `Closed` is always reported, last of the unconditional counters.
+        assert plain["Closed"] == 1.0
+        assert list(plain)[-1] == "Closed"
+        added = [k for k in full if k not in plain]
+        assert added == [
+            "NumFreeformGeneral",
+            "NumFreeformRefinements",
+            "AvgFreeformPoles",
+            "NumExtendedEdges",
+            "NumSnappedJunctions",
+            "HausdorffMax",
+            "HausdorffRms",
+        ]
+        entries.append((list(plain), list(full)))
+    # The two engines agree key for key, in order.
+    assert all(e == entries[0] for e in entries)
+    bad = dict(settings, Operations=[dict(step, MaxFreeformPoles=3)])
+    for run in engines:
+        with pytest.raises(Exception, match="max_freeform_poles"):
+            run(bad)
+
+
 @needs_occt
 def test_to_cad_cli_json(tmp_path, capsys):
     src = tmp_path / "box.vtu"
@@ -422,8 +659,16 @@ def test_to_cad_cli_json(tmp_path, capsys):
     )
     report = json.loads(capsys.readouterr().out)
     assert report["valid"] is True
+    assert report["closed"] is True
     assert report["num_plane"] == 6
     assert dst.exists() and solid.exists()
+    assert "num_snapped_junctions" not in report and "hausdorff_max" not in report
+    args = ["to-cad", str(src), str(dst), "--json", "--snap-junctions"]
+    assert cli_main(args + ["--face-deviation", "--sew-tolerance", "0"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["num_snapped_junctions"] == 8
+    assert report["hausdorff_max"] >= 0.0
+    assert "num_freeform_general" not in report
 
 
 @needs_occt

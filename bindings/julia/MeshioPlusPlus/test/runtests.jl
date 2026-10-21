@@ -1417,6 +1417,17 @@ end
     @test num_cell_blocks(reference_cells(["tetra", "wedge"])) == 2
     @test num_cell_blocks(reference_cells(pairs=true)) == 7
 
+    # The planar domains: closed-form point counts, and an annulus sector keeps its
+    # seam apart where a full ring welds it.
+    @test num_points(reference_triangle(n=3)) == 10
+    @test num_points(ngon(sides=5, rings=2)) == 16
+    @test num_points(annulus(ntheta=12, nr=3)) == 48
+    @test num_points(annulus(ntheta=6, nr=2, angle=pi / 2)) == 21
+    @test num_points(lshape(n=3)) == 40
+    @test num_points(plate_with_hole(nt=3, nr=2)) == 36
+    @test num_points(honeycomb(dims=(3, 2))) == 22
+    @test_throws Exception plate_with_hole(radius=0.9)
+
     # An unknown cell type is refused by name, a bad count by the core.
     @test_throws ArgumentError box(cell_type="blob")
     @test_throws Exception box(dims=(-1, 2, 2))
@@ -1573,9 +1584,52 @@ end
     fit = fit_primitives(seg.mesh)
     @test fit.num_plane == 6
     close(fit.mesh)
+    # refine_patches (v17.11.0): six planes are already one patch each.
+    ref = refine_patches(seg.mesh)
+    @test ref.num_patches == 6
+    @test ref.num_primitive == 6
+    @test ref.num_splits == 0 && ref.num_merges == 0
+    @test isapprox(ref.explained_area_fraction, 1.0; atol=1e-12)
+    @test ref.stop in (:unchanged, :small_gain, :iteration_cap, :energy_rose)
+    @test ref.tolerance > 0
+    close(ref.mesh)
+    ref = refine_patches(seg.mesh; types=("plane",), ransac_seed=UInt64(42), max_iterations=0)
+    @test ref.stop == :iteration_cap
+    @test ref.num_iterations == 0
+    close(ref.mesh)
+    @test_throws ArgumentError refine_patches(seg.mesh; types=("blob",))
+    @test_throws MeshioError refine_patches(seg.mesh; tolerance=0)
     close(seg.mesh)
     @test_throws MeshioError segment(cube; feature_angle=200)
     @test_throws MeshioError fit_primitives(cube)  # no segment:patch labels
+    @test_throws MeshioError refine_patches(cube)  # no segment:patch labels
+    # fit_cad refines the segmentation on request, on every backend.
+    refined = fit_cad(cube; backend="native", refine_segmentation=true, max_refine_iterations=5)
+    @test refined.refined
+    @test refined.num_plane == 6
+    @test isapprox(refined.explained_area_fraction, 1.0; atol=1e-12)
+    close(refined.mesh)
+    plain = fit_cad(cube; backend="native")
+    @test !plain.refined && !plain.refinement_kept
+    @test plain.num_refine_splits == 0 && plain.explained_area_fraction == 0.0
+    # The Phase 3 report (v17.11.0): closed on every backend, NaN unmeasured.
+    @test plain.closed
+    @test isnan(plain.hausdorff_max) && isnan(plain.hausdorff_rms)
+    @test plain.num_freeform_general == 0 && plain.num_snapped_junctions == 0
+    close(plain.mesh)
+    @test_throws MeshioError fit_cad(cube; backend="native", max_freeform_poles=3)
+    @test_throws MeshioError fit_cad(cube; backend="native", sew_tolerance=-1.0)
+    general = fit_cad(cube; backend="native", freeform_general=true, max_freeform_splits=0,
+                      freeform_smoothing=1e-10)
+    @test general.closed && general.num_plane == 6
+    close(general.mesh)
+    if has_occt()
+        snapped = fit_cad(cube; snap_junctions=true, face_deviation=true)
+        @test snapped.valid && snapped.closed
+        @test snapped.num_snapped_junctions > 0
+        @test isfinite(snapped.hausdorff_max) && snapped.hausdorff_rms <= snapped.hausdorff_max
+        close(snapped.mesh)
+    end
     if has_occt()
         cad = fit_cad(cube)
         @test cad.valid

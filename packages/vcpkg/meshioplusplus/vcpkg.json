@@ -1,9 +1,9 @@
 {
   "name": "meshioplusplus",
-  "version": "17.10.0",
+  "version": "17.11.0",
   "description": "C++ core for the meshio++ mesh I/O library (installable C API).",
   "homepage": "https://github.com/loumalouomega/meshioplusplus",
-  "license": "MIT",
+  "license": "MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)",
   "supports": "!uwp",
   "dependencies": [
     {

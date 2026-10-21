@@ -37,6 +37,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <vector>
 
 // Project includes
@@ -385,6 +386,34 @@ struct VertexBlendBoundary {
 VertexBlendBoundary vertex_blend_boundary(
     const std::vector<PatchTri>& rTris,
     const std::function<std::int64_t(std::size_t, std::size_t)>& rAcross);
+
+/// Where `junction_closest` put a point that should lie on several surfaces.
+struct JunctionPoint {
+    bool mOk = false;  ///< every foot point and normal was found
+    PatchVec mPoint{};
+    /// The largest distance from the point to any of the surfaces.
+    double mMaxDistance = std::numeric_limits<double>::infinity();
+    int mIterations = 0;
+};
+
+/**
+ * @brief The point nearest `rStart` at which surfaces meet, by least squares:
+ * each Gauss-Newton step replaces every surface by its tangent plane at the
+ * foot of the current point and minimises the summed squared distances to
+ * those planes, plus `1e-6` times the squared length of the step (Levenberg
+ * damping, which vanishes at the solution and leaves a direction no plane
+ * constrains where it was, so two surfaces' shared curve is met near the
+ * start). A step
+ * that raises the largest distance is halved (at most ten times). The
+ * OpenCASCADE-free junction snap of `fit_cad(snap_junctions=True)`.
+ * @param rSurfaces the surfaces' closest points; @param rNormals their unit
+ *        normals, one per surface (an empty function: the direction to the
+ *        foot point stands in).
+ * @param Scale the model's size: a step below `1e-13 Scale` ends the solve.
+ */
+JunctionPoint junction_closest(const std::vector<ClosestPoint>& rSurfaces,
+                               const std::vector<NormalAt>& rNormals, const PatchVec& rStart,
+                               double Scale, int MaxIterations = 50);
 
 }  // namespace detail
 }  // namespace meshioplusplus

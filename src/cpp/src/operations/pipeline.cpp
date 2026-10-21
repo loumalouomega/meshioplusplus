@@ -50,6 +50,7 @@
 #include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
+#include "meshioplusplus/operations/refine_patches.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/tessellate.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
@@ -232,6 +233,34 @@ std::uint32_t pipe_fit_types(const PipelineStep& rStep) {
     return mask;
 }
 
+/// A `RansacSeed`: a non-negative integer no larger than 2^53, the largest a
+/// JSON number (a double) carries exactly; absent, `fallback`.
+std::uint64_t pipe_seed(const PipelineStep& rStep, const char* pKey, std::uint64_t fallback) {
+    const PipelineValue* v = pipe_find(rStep, pKey);
+    if (!v)
+        return fallback;
+    constexpr double kMaxSeed = 9007199254740992.0;  // 2^53
+    const std::string what =
+        std::string("parameter '") + pKey + "' must be an integer in [0, 2^53] (9007199254740992)";
+    if (const auto* i = std::get_if<std::int64_t>(v)) {
+        if (*i < 0 || *i > (std::int64_t{1} << 53))
+            throw std::invalid_argument(pipe_err(rStep, what));
+        return static_cast<std::uint64_t>(*i);
+    }
+    if (const auto* d = std::get_if<double>(v)) {
+        if (!(*d >= 0.0 && *d <= kMaxSeed) || *d != std::floor(*d))
+            throw std::invalid_argument(pipe_err(rStep, what));
+        return static_cast<std::uint64_t>(*d);
+    }
+    throw std::invalid_argument(pipe_err(rStep, what));
+}
+
+/// The `RefineStop` code a report carries as `Stop` (counters are numbers):
+/// 0 unchanged, 1 small_gain, 2 iteration_cap, 3 energy_rose.
+double pipe_refine_stop(RefineStop stop) {
+    return static_cast<double>(static_cast<std::int32_t>(stop));
+}
+
 /// A required 3-vector (`Point`, `Normal`, `Translate`, ...).
 void pipe_vec3(const PipelineStep& rStep, const char* pKey, double* pOut) {
     std::vector<double> v = pipe_dvec(rStep, pKey);
@@ -304,9 +333,42 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"FitPrimitives",
          {"PatchData", "Tolerance", "Relative", "MinInlierFraction", "Types", "MaxIterations"}},
         {"FitCad",
-         {"Path", "Tolerance", "ExactEdges", "Types", "MeshDeflection", "MaxDemotionRounds",
-          "Freeform", "FreeformDegree", "FreeformMaxControl", "FreeformSplit", "Fillets",
-          "Threads", "MergeFaces", "Backend"}},
+         {"Path",
+          "Tolerance",
+          "ExactEdges",
+          "Types",
+          "MeshDeflection",
+          "MaxDemotionRounds",
+          "Freeform",
+          "FreeformDegree",
+          "FreeformMaxControl",
+          "FreeformSplit",
+          "Fillets",
+          "Threads",
+          "MergeFaces",
+          "Backend",
+          "RefineSegmentation",
+          "MaxRefineIterations",
+          "RefineEpsilon",
+          "NormalWeight",
+          "AllowMerge",
+          "AllowSplit",
+          "RansacSeed",
+          "RefineTolerance",
+          "RelativeTolerance",
+          "FreeformGeneral",
+          "FreeformTolerance",
+          "FreeformSmoothing",
+          "MaxFreeformPoles",
+          "MaxFreeformIterations",
+          "MaxFreeformSplits",
+          "SewTolerance",
+          "ExtendSurfaces",
+          "SnapJunctions",
+          "FaceDeviation"}},
+        {"RefinePatches",
+         {"Tolerance", "Relative", "NormalWeight", "Epsilon", "FeatureAngle", "MaxIterations",
+          "MinPatchCells", "RansacSeed", "Types", "AllowSplit", "AllowMerge", "Prefix"}},
         {"EditRegions", {"Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"}},
         {"RegionAdjacency", {"Regions"}},
         {"FindInterface",
@@ -315,18 +377,18 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"SplitInterface", {"Region", "AddCohesive"}},
         {"QualityGate", {"Require", "MaxInverted", "MaxDegenerate"}},
         {"Snapshot",
-         {"Path",           "Width",       "Height",       "Supersample",   "Cols",
-          "Rows",           "Encoding",    "ColorDepth",   "PngCompress",   "View",
-          "Azimuth",        "Elevation",   "Roll",         "Perspective",   "Fov",
-          "Zoom",           "Shading",     "Edges",        "FeatureAngle",  "Background",
-          "FillColor",      "ColorBy",     "Component",    "Cmap",          "VMin",
-          "VMax",           "Colorbar",    "Axes",         "ScaleBar",      "Reduce",
-          "Expr",           "ClipLow",     "ClipHigh",     "Symmetric",     "Scale",
-          "ScaleThreshold", "Categorical", "ColorRegions", "CategoryEdges", "Isolines",
-          "IsoLevels",      "Vectors",     "VectorCount",  "Warp",          "WarpScale",
-          "WarpOutline",    "Diagnostic",  "QualityMetric", "Cutaway",
-          "CutawayTint",    "Streamlines", "StreamSeeds",   "StreamLength", "StreamColor",
-          "Theme",          "Scanlines",   "Bloom",         "Fringe",       "GridFloor"}},
+         {"Path",           "Width",       "Height",        "Supersample",   "Cols",
+          "Rows",           "Encoding",    "ColorDepth",    "PngCompress",   "View",
+          "Azimuth",        "Elevation",   "Roll",          "Perspective",   "Fov",
+          "Zoom",           "Shading",     "Edges",         "FeatureAngle",  "Background",
+          "FillColor",      "ColorBy",     "Component",     "Cmap",          "VMin",
+          "VMax",           "Colorbar",    "Axes",          "ScaleBar",      "Reduce",
+          "Expr",           "ClipLow",     "ClipHigh",      "Symmetric",     "Scale",
+          "ScaleThreshold", "Categorical", "ColorRegions",  "CategoryEdges", "Isolines",
+          "IsoLevels",      "Vectors",     "VectorCount",   "Warp",          "WarpScale",
+          "WarpOutline",    "Diagnostic",  "QualityMetric", "Cutaway",       "CutawayTint",
+          "Streamlines",    "StreamSeeds", "StreamLength",  "StreamColor",   "Theme",
+          "Scanlines",      "Bloom",       "Fringe",        "GridFloor"}},
         {"Repair",
          {"FixOrientation", "OrientOutward", "FillHoles", "SplitNonManifold", "MaxHoleEdges",
           "WeldTolerance", "RecordProvenance"}},
@@ -347,13 +409,17 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
           "AttachOccupancy", "MaxCells", "Sign"}},
         {"Generate",
-         {"Shape", "Dims", "Size", "Origin", "Center", "Radius", "Height", "N", "Nu", "Nv", "Nxy",
-          "Nz", "Subdivisions", "CellType", "Split", "Order", "MaxCells", "Types", "Pairs"}},
-        {"Octree",
-         {"RootCells", "MinLevel", "MaxLevel", "Bounds", "Padding", "PaddingRelative", "Dimension",
-          "SampleDistance", "Balance", "Fill", "AttachDistance", "EvenOdd", "MaxCells", "Sign",
-          "Transition", "Snap", "SurfaceLevel", "CurvatureThreshold", "FeatureAngle", "SizeArray",
-          "Plane"}},
+         {"Shape", "Dims",        "Size",        "Origin", "Center",   "Radius",       "Height",
+          "N",     "Nu",          "Nv",          "Nxy",    "Nz",       "Subdivisions", "Sides",
+          "Rings", "InnerRadius", "OuterRadius", "Ntheta", "Nr",       "Nt",           "Angle",
+          "Edge",  "CellType",    "Split",       "Order",  "MaxCells", "Types",        "Pairs"}},
+        {"Octree", {"RootCells",    "MinLevel",       "MaxLevel",
+                    "Bounds",       "Padding",        "PaddingRelative",
+                    "Dimension",    "SampleDistance", "Balance",
+                    "Fill",         "AttachDistance", "EvenOdd",
+                    "MaxCells",     "Sign",           "Transition",
+                    "Snap",         "SurfaceLevel",   "CurvatureThreshold",
+                    "FeatureAngle", "SizeArray",      "Plane"}},
         {"ComputeSdf",
          {"Structure", "Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative",
           "RootResolution", "MaxDepth", "BandCells", "RecordLevels", "MaxCells", "Sign", "Location",
@@ -1035,28 +1101,108 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         else if (backend != "auto")
             throw std::invalid_argument(
                 pipe_err(rStep, "'Backend' must be 'auto', 'occt' or 'native'"));
+        opts.mRefineSegmentation = pipe_flag(rStep, "RefineSegmentation", false);
+        opts.mRefine.mMaxIterations =
+            static_cast<std::int64_t>(pipe_number(rStep, "MaxRefineIterations", 10.0));
+        opts.mRefine.mEpsilon = pipe_number(rStep, "RefineEpsilon", 1e-3);
+        opts.mRefine.mNormalWeight = pipe_number(rStep, "NormalWeight", 1.0);
+        opts.mRefine.mAllowMerge = pipe_flag(rStep, "AllowMerge", true);
+        opts.mRefine.mAllowSplit = pipe_flag(rStep, "AllowSplit", true);
+        opts.mRefine.mRansacSeed = pipe_seed(rStep, "RansacSeed", kRefineDefaultSeed);
+        opts.mRefine.mTolerance = pipe_number(rStep, "RefineTolerance", 1e-3);
+        opts.mRefine.mRelative = pipe_flag(rStep, "RelativeTolerance", true);
+        opts.mFreeformGeneral = pipe_flag(rStep, "FreeformGeneral", false);
+        opts.mFreeformTolerance = pipe_number(rStep, "FreeformTolerance", 0.0);
+        opts.mFreeformSmoothing = pipe_number(rStep, "FreeformSmoothing", 1e-12);
+        opts.mMaxFreeformPoles =
+            static_cast<std::int64_t>(pipe_number(rStep, "MaxFreeformPoles", 40.0));
+        opts.mMaxFreeformIterations =
+            static_cast<std::int64_t>(pipe_number(rStep, "MaxFreeformIterations", 30.0));
+        opts.mMaxFreeformSplits =
+            static_cast<std::int64_t>(pipe_number(rStep, "MaxFreeformSplits", 2.0));
+        opts.mSewTolerance = pipe_number(rStep, "SewTolerance", 0.0);
+        opts.mExtendSurfaces = pipe_flag(rStep, "ExtendSurfaces", false);
+        opts.mSnapJunctions = pipe_flag(rStep, "SnapJunctions", false);
+        opts.mFaceDeviation = pipe_flag(rStep, "FaceDeviation", false);
         FitCadResult cr = fit_cad(mesh, pipe_text(rStep, "Path", ""), opts);
-        pipe_push_step(rReport, rStep,
-                       {{"Valid", cr.mValid ? 1.0 : 0.0},
-                        {"Native", cr.mBackend == FitCadBackend::Native ? 1.0 : 0.0},
-                        {"VolumeRatio", cr.mVolumeRatio},
-                        {"MaxDeviation", cr.mMaxDeviation},
-                        {"NumFaces", static_cast<double>(cr.mNumFaces)},
-                        {"NumFacetedFaces", static_cast<double>(cr.mNumFacetedFaces)},
-                        {"NumBspline", static_cast<double>(cr.mNumBspline)},
-                        {"NumSplitPatches", static_cast<double>(cr.mNumSplitPatches)},
-                        {"NumFillet", static_cast<double>(cr.mNumFillet)},
-                        {"NumHelical", static_cast<double>(cr.mNumHelical)},
-                        {"NumVariableFillet", static_cast<double>(cr.mNumVariableFillet)},
-                        {"NumBlend", static_cast<double>(cr.mNumBlend)},
-                        {"NumRoundedThread", static_cast<double>(cr.mNumRoundedThread)},
-                        {"NumVertexBlend", static_cast<double>(cr.mNumVertexBlend)},
-                        {"NumChamfer", static_cast<double>(cr.mNumChamfer)},
-                        {"NumConicBlend", static_cast<double>(cr.mNumConicBlend)},
-                        {"NumTaperedThread", static_cast<double>(cr.mNumTaperedThread)},
-                        {"NumVariablePitchThread", static_cast<double>(cr.mNumVariablePitchThread)},
-                        {"NumDemoted", static_cast<double>(cr.mNumDemoted)}});
+        std::vector<std::pair<std::string, double>> counters = {
+            {"Valid", cr.mValid ? 1.0 : 0.0},
+            {"Native", cr.mBackend == FitCadBackend::Native ? 1.0 : 0.0},
+            {"VolumeRatio", cr.mVolumeRatio},
+            {"MaxDeviation", cr.mMaxDeviation},
+            {"NumFaces", static_cast<double>(cr.mNumFaces)},
+            {"NumFacetedFaces", static_cast<double>(cr.mNumFacetedFaces)},
+            {"NumBspline", static_cast<double>(cr.mNumBspline)},
+            {"NumSplitPatches", static_cast<double>(cr.mNumSplitPatches)},
+            {"NumFillet", static_cast<double>(cr.mNumFillet)},
+            {"NumHelical", static_cast<double>(cr.mNumHelical)},
+            {"NumVariableFillet", static_cast<double>(cr.mNumVariableFillet)},
+            {"NumBlend", static_cast<double>(cr.mNumBlend)},
+            {"NumRoundedThread", static_cast<double>(cr.mNumRoundedThread)},
+            {"NumVertexBlend", static_cast<double>(cr.mNumVertexBlend)},
+            {"NumChamfer", static_cast<double>(cr.mNumChamfer)},
+            {"NumConicBlend", static_cast<double>(cr.mNumConicBlend)},
+            {"NumTaperedThread", static_cast<double>(cr.mNumTaperedThread)},
+            {"NumVariablePitchThread", static_cast<double>(cr.mNumVariablePitchThread)},
+            {"NumDemoted", static_cast<double>(cr.mNumDemoted)},
+            {"Closed", cr.mClosed ? 1.0 : 0.0}};
+        // Only a run that refined reports the refinement, so a report without
+        // `RefineSegmentation` stays what it was before the option existed.
+        if (cr.mRefined) {
+            counters.emplace_back("Refined", 1.0);
+            counters.emplace_back("NumRefineSplits", static_cast<double>(cr.mNumRefineSplits));
+            counters.emplace_back("NumRefineMerges", static_cast<double>(cr.mNumRefineMerges));
+            counters.emplace_back("ExplainedAreaFraction", cr.mExplainedAreaFraction);
+            counters.emplace_back("RefinementKept", cr.mRefinementKept ? 1.0 : 0.0);
+        }
+        // Likewise each Phase 3 option reports only when it is set.
+        if (opts.mFreeformGeneral) {
+            counters.emplace_back("NumFreeformGeneral",
+                                  static_cast<double>(cr.mNumFreeformGeneral));
+            counters.emplace_back("NumFreeformRefinements",
+                                  static_cast<double>(cr.mNumFreeformRefinements));
+            counters.emplace_back("AvgFreeformPoles", cr.mAvgFreeformPoles);
+        }
+        if (opts.mExtendSurfaces)
+            counters.emplace_back("NumExtendedEdges", static_cast<double>(cr.mNumExtendedEdges));
+        if (opts.mSnapJunctions)
+            counters.emplace_back("NumSnappedJunctions",
+                                  static_cast<double>(cr.mNumSnappedJunctions));
+        if (opts.mFaceDeviation) {
+            counters.emplace_back("HausdorffMax", cr.mHausdorffMax);
+            counters.emplace_back("HausdorffRms", cr.mHausdorffRms);
+        }
+        pipe_push_step(rReport, rStep, std::move(counters));
         return std::move(cr.mMesh);
+    }
+    if (op == "RefinePatches") {
+        // A data step: the `segment:patch` labels are refined, the cells never move.
+        RefinePatchesOptions opts;
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 1e-3);
+        opts.mRelative = pipe_flag(rStep, "Relative", true);
+        opts.mNormalWeight = pipe_number(rStep, "NormalWeight", 1.0);
+        opts.mEpsilon = pipe_number(rStep, "Epsilon", 1e-3);
+        opts.mFeatureAngleDeg = pipe_number(rStep, "FeatureAngle", 30.0);
+        opts.mMaxIterations = static_cast<std::int64_t>(pipe_number(rStep, "MaxIterations", 10.0));
+        opts.mMinPatchCells = static_cast<std::int64_t>(pipe_number(rStep, "MinPatchCells", 3.0));
+        opts.mRansacSeed = pipe_seed(rStep, "RansacSeed", kRefineDefaultSeed);
+        if (pipe_find(rStep, "Types"))
+            opts.mTypes = pipe_fit_types(rStep);
+        opts.mAllowSplit = pipe_flag(rStep, "AllowSplit", true);
+        opts.mAllowMerge = pipe_flag(rStep, "AllowMerge", true);
+        opts.mPrefix = pipe_text(rStep, "Prefix", "patch");
+        RefinePatchesResult rr = refine_patches(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumPatches", static_cast<double>(rr.mNumPatches)},
+                        {"NumIterations", static_cast<double>(rr.mNumIterations)},
+                        {"NumSplits", static_cast<double>(rr.mNumSplits)},
+                        {"NumMerges", static_cast<double>(rr.mNumMerges)},
+                        {"NumPrimitive", static_cast<double>(rr.mNumPrimitive)},
+                        {"NumFreeform", static_cast<double>(rr.mNumFreeform)},
+                        {"ExplainedAreaFraction", rr.mExplainedAreaFraction},
+                        {"HausdorffMax", rr.mHausdorffMax},
+                        {"Stop", pipe_refine_stop(rr.mStop)}});
+        return std::move(rr.mMesh);
     }
     if (op == "Snapshot") {
         // A side output, not a transform: the mesh passes through untouched and
@@ -1438,13 +1584,45 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
             out = cylinder(pipe_number(rStep, "Radius", 1.0), pipe_number(rStep, "Height", 1.0),
                            count("Nxy", 8), count("Nz", 8), triple("Center", zero, false),
                            pipe_text(rStep, "CellType", "hexahedron"), order, max_cells);
+        } else if (shape == "reference_triangle") {
+            const std::vector<double> size = pipe_dvec(rStep, "Size");
+            if (!size.empty() && size.size() != 2)
+                throw std::invalid_argument(pipe_err(rStep, "'Size' expects two values"));
+            out = reference_triangle(count("N", 4),
+                                     size.empty() ? std::array<double, 2>{{1.0, 1.0}}
+                                                  : std::array<double, 2>{{size[0], size[1]}},
+                                     triple("Origin", zero, true), order, max_cells);
+        } else if (shape == "ngon") {
+            out = ngon(count("Sides", 6), pipe_number(rStep, "Radius", 1.0), count("Rings", 1),
+                       triple("Center", zero, false), order, max_cells);
+        } else if (shape == "annulus") {
+            out = annulus(pipe_number(rStep, "InnerRadius", 0.5),
+                          pipe_number(rStep, "OuterRadius", 1.0), count("Ntheta", 16),
+                          count("Nr", 4), pipe_number(rStep, "Angle", 6.283185307179586),
+                          triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"),
+                          order, max_cells);
+        } else if (shape == "lshape") {
+            out = lshape(count("N", 4), pipe_number(rStep, "Size", 2.0),
+                         triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"), order,
+                         max_cells);
+        } else if (shape == "plate_with_hole") {
+            out =
+                plate_with_hole(pipe_number(rStep, "Radius", 0.25), pipe_number(rStep, "Size", 1.0),
+                                count("Nt", 8), count("Nr", 4), triple("Center", zero, false),
+                                pipe_text(rStep, "CellType", "quad"), order, max_cells);
+        } else if (shape == "honeycomb") {
+            const auto d = dims_of(2, 4);
+            out = honeycomb({{d[0], d[1]}}, pipe_number(rStep, "Edge", 1.0),
+                            triple("Origin", zero, true), max_cells);
         } else if (shape == "reference_cells") {
             out = reference_cells(pipe_svec(rStep, "Types"), pipe_flag(rStep, "Pairs", false));
         } else {
-            throw std::invalid_argument(pipe_err(
-                rStep, "'Shape' must be one of rectangle, box, disk, uv_sphere, icosa_sphere, "
-                       "cylinder, reference_cells, not '" +
-                           shape + "'"));
+            throw std::invalid_argument(
+                pipe_err(rStep,
+                         "'Shape' must be one of rectangle, box, disk, uv_sphere, icosa_sphere, "
+                         "cylinder, reference_triangle, ngon, annulus, lshape, plate_with_hole, "
+                         "honeycomb, reference_cells, not '" +
+                             shape + "'"));
         }
         std::size_t cells = 0;
         for (std::size_t b = 0; b < out.NumCellBlocks(); ++b)

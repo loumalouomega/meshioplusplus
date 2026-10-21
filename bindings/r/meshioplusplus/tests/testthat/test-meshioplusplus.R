@@ -1090,6 +1090,21 @@ test_that("the parametric generators build meshes and refuse bad requests", {
   on.exit(mio_release(ref), add = TRUE)
   expect_equal(mio_num_cell_blocks(ref), 2)
 
+  # The planar domains: closed-form point counts, and an annulus sector keeps its
+  # seam apart where a full ring welds it.
+  expect_point_count <- function(m, n) {
+    on.exit(mio_release(m), add = TRUE)
+    expect_equal(mio_num_points(m), n)
+  }
+  expect_point_count(mio_reference_triangle(n = 3), 10)
+  expect_point_count(mio_ngon(sides = 5, rings = 2), 16)
+  expect_point_count(mio_annulus(ntheta = 12, nr = 3), 48)
+  expect_point_count(mio_annulus(ntheta = 6, nr = 2, angle = pi / 2), 21)
+  expect_point_count(mio_lshape(n = 3), 40)
+  expect_point_count(mio_plate_with_hole(nt = 3, nr = 2), 36)
+  expect_point_count(mio_honeycomb(dims = c(3, 2)), 22)
+  expect_error(mio_plate_with_hole(radius = 0.9))
+
   expect_error(mio_box(cell_type = "blob"))
   expect_error(mio_box(dims = c(100, 100, 100), max_cells = 1000))
 })
@@ -1426,6 +1441,57 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
   expect_error(mio_segment(m, feature_angle = 200))
   expect_error(mio_fit_primitives(m))
   expect_error(mio_fit_primitives(sg$mesh, types = "blob"))
+
+  # refine_patches (v17.11.0): six planes are already one patch each.
+  rp <- mio_refine_patches(sg$mesh)
+  on.exit(mio_release(rp$mesh), add = TRUE)
+  expect_equal(rp$num_patches, 6)
+  expect_equal(rp$num_primitive, 6)
+  expect_equal(rp$num_splits + rp$num_merges, 0)
+  expect_equal(rp$explained_area_fraction, 1, tolerance = 1e-12)
+  expect_true(rp$stop %in% c("unchanged", "small_gain", "iteration_cap", "energy_rose"))
+  rp0 <- mio_refine_patches(sg$mesh, max_iterations = 0L, ransac_seed = 42, types = "plane")
+  on.exit(mio_release(rp0$mesh), add = TRUE)
+  expect_equal(rp0$stop, "iteration_cap")
+  expect_equal(rp0$num_iterations, 0)
+  expect_error(mio_refine_patches(m), "segment")
+  expect_error(mio_refine_patches(sg$mesh, tolerance = 0))
+  expect_error(mio_refine_patches(sg$mesh, types = "blob"))
+  expect_error(mio_refine_patches(sg$mesh, ransac_seed = -1), "ransac_seed")
+  expect_error(mio_refine_patches(sg$mesh, ransac_seed = 1.5), "ransac_seed")
+
+  # fit_cad refines the segmentation on request, on every backend.
+  rc <- mio_fit_cad(m, backend = "native", refine_segmentation = TRUE,
+                    max_refine_iterations = 5L)
+  on.exit(mio_release(rc$mesh), add = TRUE)
+  expect_true(rc$refined)
+  expect_equal(rc$num_plane, 6)
+  expect_equal(rc$explained_area_fraction, 1, tolerance = 1e-12)
+  pc <- mio_fit_cad(m, backend = "native")
+  on.exit(mio_release(pc$mesh), add = TRUE)
+  expect_false(pc$refined)
+  expect_false(pc$refinement_kept)
+  expect_equal(pc$num_refine_splits, 0)
+  # The Phase 3 report (v17.11.0): closed on every backend, NaN unmeasured.
+  expect_true(pc$closed)
+  expect_true(is.nan(pc$hausdorff_max))
+  expect_equal(pc$num_snapped_junctions, 0)
+  expect_error(mio_fit_cad(m, backend = "native", max_freeform_poles = 3L),
+               "max_freeform_poles")
+  expect_error(mio_fit_cad(m, backend = "native", sew_tolerance = -1), "sew_tolerance")
+  gc <- mio_fit_cad(m, backend = "native", freeform_general = TRUE,
+                    max_freeform_splits = 0L)
+  on.exit(mio_release(gc$mesh), add = TRUE)
+  expect_true(gc$closed)
+  expect_equal(gc$num_freeform_general, 0)
+  if (mio_has_occt()) {
+    sc <- mio_fit_cad(m, snap_junctions = TRUE, face_deviation = TRUE)
+    on.exit(mio_release(sc$mesh), add = TRUE)
+    expect_true(sc$closed)
+    expect_gt(sc$num_snapped_junctions, 0)
+    expect_true(is.finite(sc$hausdorff_max))
+  }
+
   if (mio_has_occt()) {
     cad <- mio_fit_cad(m)
     on.exit(mio_release(cad$mesh), add = TRUE)

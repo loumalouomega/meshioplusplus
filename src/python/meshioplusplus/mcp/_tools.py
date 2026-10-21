@@ -47,6 +47,7 @@ from .. import (
     GridArray,
     GridSpec,
     agglomerate,
+    annulus,
     attach_quality,
     box,
     cell_data_to_point_data,
@@ -86,17 +87,21 @@ from .. import (
     grid,
     hausdorff_distance,
     hessian,
+    honeycomb,
     icosa_sphere,
     iga_evaluate,
     iga_refine,
     iga_sample,
     interpolate,
     isosurface,
+    lshape,
     match_periodic_nodes,
     merge,
+    ngon,
     octree,
     optimize_volume,
     partition,
+    plate_with_hole,
     point_data_to_cell_data,
     power_spectrum,
     proximity_graph,
@@ -104,7 +109,9 @@ from .. import (
     read_metadata,
     rectangle,
     reference_cells,
+    reference_triangle,
     refine,
+    refine_patches,
     region_adjacency,
     remesh,
     remesh_volume,
@@ -1538,6 +1545,142 @@ def tool_cylinder(
     return _result(_store(out, output_path, output_format), out)
 
 
+def tool_reference_triangle(
+    output_path,
+    output_format=None,
+    n=4,
+    size=None,
+    origin=None,
+    order=1,
+    max_cells=20000000,
+):
+    """Generate the reference triangle refined into n*n triangles; reads no input."""
+    out = reference_triangle(
+        n=n,
+        size=(1.0, 1.0) if size is None else size,
+        origin=(0.0, 0.0, 0.0) if origin is None else origin,
+        order=order,
+        max_cells=max_cells,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_ngon(
+    output_path,
+    output_format=None,
+    sides=6,
+    radius=1.0,
+    rings=1,
+    center=None,
+    order=1,
+    max_cells=20000000,
+):
+    """Generate a regular polygon fanned from its centre; reads no input."""
+    out = ngon(
+        sides=sides,
+        radius=radius,
+        rings=rings,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        order=order,
+        max_cells=max_cells,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_annulus(
+    output_path,
+    output_format=None,
+    inner_radius=0.5,
+    outer_radius=1.0,
+    ntheta=16,
+    nr=4,
+    angle=2.0 * np.pi,
+    center=None,
+    cell_type="quad",
+    order=1,
+    max_cells=20000000,
+):
+    """Generate an annulus, or a sector of one with a seam pair; reads no input."""
+    out = annulus(
+        inner_radius=inner_radius,
+        outer_radius=outer_radius,
+        ntheta=ntheta,
+        nr=nr,
+        angle=angle,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        cell_type=cell_type,
+        order=order,
+        max_cells=max_cells,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_lshape(
+    output_path,
+    output_format=None,
+    n=4,
+    size=2.0,
+    center=None,
+    cell_type="quad",
+    order=1,
+    max_cells=20000000,
+):
+    """Generate the L-shaped domain (a square minus a quadrant); reads no input."""
+    out = lshape(
+        n=n,
+        size=size,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        cell_type=cell_type,
+        order=order,
+        max_cells=max_cells,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_plate_with_hole(
+    output_path,
+    output_format=None,
+    radius=0.25,
+    size=1.0,
+    nt=8,
+    nr=4,
+    center=None,
+    cell_type="quad",
+    order=1,
+    max_cells=20000000,
+):
+    """Generate a square plate around a circular hole; reads no input."""
+    out = plate_with_hole(
+        radius=radius,
+        size=size,
+        nt=nt,
+        nr=nr,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        cell_type=cell_type,
+        order=order,
+        max_cells=max_cells,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_honeycomb(
+    output_path,
+    output_format=None,
+    dims=None,
+    edge=1.0,
+    origin=None,
+    max_cells=20000000,
+):
+    """Generate a tiling of hexagons as one polygon block; reads no input."""
+    out = honeycomb(
+        dims=(4, 4) if dims is None else dims,
+        edge=edge,
+        origin=(0.0, 0.0, 0.0) if origin is None else origin,
+        max_cells=max_cells,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
 def tool_reference_cells(output_path, output_format=None, types=None, pairs=False):
     """Generate one cell of each requested type in reference coordinates; reads no input."""
     out = reference_cells(types=types, pairs=pairs)
@@ -2227,6 +2370,62 @@ def tool_fit_primitives(
     )
 
 
+def tool_refine_patches(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    segment_method="angle",
+    segment_tolerance=1e-3,
+    feature_angle=30.0,
+    tolerance=1e-3,
+    relative=True,
+    normal_weight=1.0,
+    epsilon=1e-3,
+    max_iterations=10,
+    min_patch_cells=3,
+    ransac_seed=0x6D657368696F2B2B,
+    types=None,
+    allow_split=True,
+    allow_merge=True,
+    prefix="patch",
+):
+    """Refine the segment:patch labels of a surface by variational shape
+    approximation until one plane, sphere, cylinder, cone or torus explains
+    each patch within tolerance: boundaries move, a primitive is split out of
+    a freeform patch by seeded RANSAC, neighbours one primitive explains
+    merge. A surface without segment:patch is segmented first (segment_method,
+    segment_tolerance, feature_angle). Written with segment:patch, the patch
+    regions and the fit:* data rewritten, and refine:* per-patch field data;
+    the report carries the counts, the explained area share before and after,
+    the Hausdorff distance and why refinement stopped."""
+    mesh = _load(input_path, input_format)
+    if "segment:patch" not in mesh.cell_data:
+        mesh = segment(
+            mesh,
+            feature_angle=feature_angle,
+            method=segment_method,
+            tolerance=segment_tolerance,
+        )
+    out, report = refine_patches(
+        mesh,
+        tolerance=tolerance,
+        relative=relative,
+        normal_weight=normal_weight,
+        epsilon=epsilon,
+        feature_angle=feature_angle,
+        max_iterations=max_iterations,
+        min_patch_cells=min_patch_cells,
+        ransac_seed=ransac_seed,
+        types=list(types) if types is not None else None,
+        allow_split=allow_split,
+        allow_merge=allow_merge,
+        prefix=prefix,
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
 def tool_iga_refine(
     input_path,
     output_path,
@@ -2350,6 +2549,25 @@ def tool_fit_cad(
     segment_tolerance=1e-3,
     merge_faces=True,
     backend="auto",
+    refine_segmentation=False,
+    max_refine_iterations=10,
+    refine_epsilon=1e-3,
+    normal_weight=1.0,
+    allow_merge=True,
+    allow_split=True,
+    ransac_seed=0x6D657368696F2B2B,
+    refine_tolerance=1e-3,
+    relative_tolerance=True,
+    freeform_general=False,
+    freeform_tolerance=0.0,
+    freeform_smoothing=1e-12,
+    max_freeform_poles=40,
+    max_freeform_iterations=30,
+    max_freeform_splits=2,
+    sew_tolerance=0.0,
+    extend_surfaces=False,
+    snap_junctions=False,
+    face_deviation=False,
 ):
     """Turn the fitted patches of a closed skin into a CAD solid with analytic
     faces (and, through OpenCASCADE, rolling-ball fillet, thread flank and
@@ -2358,7 +2576,21 @@ def tool_fit_cad(
     without segment:patch is segmented (segment_method, segment_tolerance,
     curvature_tolerance, min_patch_cells) and fitted (fit_tolerance, by
     default the primitive segmentation's own as a length) first. backend
-    "native" (and "auto" without OpenCASCADE) needs no CAD kernel."""
+    "native" (and "auto" without OpenCASCADE) needs no CAD kernel.
+    refine_segmentation first refines the patches by variational shape
+    approximation (refine_patches: max_refine_iterations, refine_epsilon,
+    normal_weight, allow_merge, allow_split, ransac_seed, refine_tolerance,
+    relative_tolerance) and adds refined, refinement_kept, refine_iterations,
+    num_refine_splits, num_refine_merges and the explained area share before
+    and after to the report. freeform_general tries what the plane and
+    cylinder freeform fit leaves as a general B-spline face (freeform_tolerance,
+    freeform_smoothing, max_freeform_poles, max_freeform_iterations,
+    max_freeform_splits) and adds num_freeform_general,
+    num_freeform_refinements and avg_freeform_poles; sew_tolerance sets the
+    sewing tolerance; extend_surfaces adds num_extended_edges,
+    snap_junctions num_snapped_junctions, and face_deviation hausdorff_max,
+    hausdorff_rms and the fit_cad:face_hausdorff / fit_cad:face_rms field
+    data. The report always holds closed."""
     from .._fit_cad import has_occt
 
     occt = has_occt()
@@ -2407,6 +2639,25 @@ def tool_fit_cad(
         return_report=True,
         merge_faces=merge_faces,
         backend=backend,
+        refine_segmentation=refine_segmentation,
+        max_refine_iterations=max_refine_iterations,
+        refine_epsilon=refine_epsilon,
+        normal_weight=normal_weight,
+        allow_merge=allow_merge,
+        allow_split=allow_split,
+        ransac_seed=ransac_seed,
+        refine_tolerance=refine_tolerance,
+        relative_tolerance=relative_tolerance,
+        freeform_general=freeform_general,
+        freeform_tolerance=freeform_tolerance,
+        freeform_smoothing=freeform_smoothing,
+        max_freeform_poles=max_freeform_poles,
+        max_freeform_iterations=max_freeform_iterations,
+        max_freeform_splits=max_freeform_splits,
+        sew_tolerance=sew_tolerance,
+        extend_surfaces=extend_surfaces,
+        snap_junctions=snap_junctions,
+        face_deviation=face_deviation,
     )
     _cache_invalidate(step_path)
     extra = {"step_path": step_path, "occt_available": occt, **report}
@@ -4855,6 +5106,10 @@ TOOL_REGISTRY = OrderedDict(
             {"fn": tool_fit_primitives, "wraps": ("fit_primitives",), "gated": None},
         ),
         (
+            "refine_patches",
+            {"fn": tool_refine_patches, "wraps": ("refine_patches",), "gated": None},
+        ),
+        (
             "fit_cad",
             {"fn": tool_fit_cad, "wraps": ("fit_cad",), "gated": None},
         ),
@@ -4941,6 +5196,26 @@ TOOL_REGISTRY = OrderedDict(
             {"fn": tool_icosa_sphere, "wraps": ("icosa_sphere",), "gated": None},
         ),
         ("cylinder", {"fn": tool_cylinder, "wraps": ("cylinder",), "gated": None}),
+        (
+            "reference_triangle",
+            {
+                "fn": tool_reference_triangle,
+                "wraps": ("reference_triangle",),
+                "gated": None,
+            },
+        ),
+        ("ngon", {"fn": tool_ngon, "wraps": ("ngon",), "gated": None}),
+        ("annulus", {"fn": tool_annulus, "wraps": ("annulus",), "gated": None}),
+        ("lshape", {"fn": tool_lshape, "wraps": ("lshape",), "gated": None}),
+        (
+            "plate_with_hole",
+            {
+                "fn": tool_plate_with_hole,
+                "wraps": ("plate_with_hole",),
+                "gated": None,
+            },
+        ),
+        ("honeycomb", {"fn": tool_honeycomb, "wraps": ("honeycomb",), "gated": None}),
         (
             "reference_cells",
             {"fn": tool_reference_cells, "wraps": ("reference_cells",), "gated": None},

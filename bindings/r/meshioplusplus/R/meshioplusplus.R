@@ -1321,10 +1321,71 @@ mio_fit_primitives <- function(mesh, patch_data = "segment:patch", tolerance = 1
   )
 }
 
+#' Refine a segmentation until each patch is one surface
+#'
+#' Refines the `segment:patch` labels of a surface (from `mio_segment()`) by
+#' variational shape approximation (v17.11.0): patch boundaries move, a
+#' freeform patch is split where seeded RANSAC finds a primitive inside it, and
+#' two neighbouring patches one primitive explains are merged, until each patch
+#' is one plane, sphere, cylinder, cone or torus, or a freeform proxy. The
+#' result is the input with `segment:patch`, `segment:adjacency` and the
+#' `<prefix>:<k>` regions rewritten, the `fit:*` data of `mio_fit_primitives()`
+#' on the refined patches and per-patch `refine:*` field data, so
+#' `mio_fit_cad()` reads it unchanged. See `doc/refine_patches.md`.
+#'
+#' @param mesh A surface `mio_mesh` carrying `segment:patch`.
+#' @param tolerance How far every point of a patch may lie from its proxy.
+#' @param relative Whether `tolerance` is a fraction of the bounding-box diagonal.
+#' @param normal_weight The weight of the normal term in a cell's cost.
+#' @param epsilon Stop when an iteration adds less than this to the area share
+#'   primitives explain.
+#' @param feature_angle The dihedral angle, in degrees, above which an edge is
+#'   a feature edge no patch crosses.
+#' @param max_iterations The most iterations (0 rewrites the outputs of the
+#'   input partition).
+#' @param min_patch_cells A freeform or facets patch with fewer cells joins a
+#'   neighbour.
+#' @param ransac_seed The seed of the RANSAC split; `NULL` takes the default
+#'   (the bytes of `"meshio++"`, above 2^53). A number is a whole number taken
+#'   exactly below 2^53, since R numbers are doubles.
+#' @param types The primitives a proxy may be; `NULL` is every one.
+#' @param allow_split Whether a freeform patch may be split.
+#' @param allow_merge Whether two neighbouring patches may be merged.
+#' @param prefix The patch regions are named `<prefix>:<k>`.
+#' @return A list of `mesh`, `num_patches`, `num_iterations`, `num_splits`,
+#'   `num_merges`, `num_absorbed`, `num_primitive`, `num_freeform`,
+#'   `num_facets`, `tolerance` (the absolute tolerance applied),
+#'   `explained_area_fraction`, `initial_explained_area_fraction`,
+#'   `hausdorff_max`, `hausdorff_rms`, `initial_energy`, `energy` and `stop`
+#'   (`"unchanged"`, `"small_gain"`, `"iteration_cap"` or `"energy_rose"`).
+#' @export
+mio_refine_patches <- function(mesh, tolerance = 1e-3, relative = TRUE, normal_weight = 1,
+                               epsilon = 1e-3, feature_angle = 30, max_iterations = 10L,
+                               min_patch_cells = 3L, ransac_seed = NULL, types = NULL,
+                               allow_split = TRUE, allow_merge = TRUE, prefix = "patch") {
+  known <- c("plane", "sphere", "cylinder", "cone", "torus")
+  if (is.null(types)) {
+    mask <- 62
+  } else {
+    bad <- setdiff(types, known)
+    if (length(bad) > 0) {
+      stop("meshio++: refine_patches: unknown primitive type ", bad[[1]])
+    }
+    mask <- sum(2^match(unique(types), known))
+  }
+  .Call(
+    R_mio_refine_patches, mesh, as.numeric(tolerance), isTRUE(relative),
+    as.numeric(normal_weight), as.numeric(epsilon), as.numeric(feature_angle),
+    as.numeric(max_iterations), as.numeric(min_patch_cells),
+    if (is.null(ransac_seed)) NULL else as.numeric(ransac_seed), as.numeric(mask),
+    isTRUE(allow_split), isTRUE(allow_merge), as.character(prefix)
+  )
+}
+
 #' Whether the library carries the OpenCASCADE backend
 #'
-#' `mio_fit_cad()` needs a library built with `-DMESHIOPLUSPLUS_WITH_OCCT=ON`;
-#' this reports whether the loaded one was.
+#' `mio_fit_cad(backend = "occt")` needs a library built with
+#' `-DMESHIOPLUSPLUS_WITH_OCCT=ON`; this reports whether the loaded one was.
 #'
 #' @return `TRUE` or `FALSE`.
 #' @export
@@ -1344,8 +1405,13 @@ mio_has_occt <- function() {
 #' fit_primitives at its tolerance. Without OpenCASCADE (see `mio_has_occt()`)
 #' or with `backend = "native"`, the kernel-free backend writes the fitted
 #' patches as analytic STEP faces and returns the skin itself; `backend =
-#' "occt"` fails naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON` without it. See
-#' `doc/fit_cad.md`.
+#' "occt"` fails naming `-DMESHIOPLUSPLUS_WITH_OCCT=ON` without it. Since
+#' v17.11.0, `refine_segmentation = TRUE` first refines the patches as
+#' `mio_refine_patches()` does, `freeform_general = TRUE` tries what the plane
+#' and cylinder freeform fit leaves as a general B-spline face, and, through
+#' OpenCASCADE, `sew_tolerance`, `extend_surfaces`, `snap_junctions` and
+#' `face_deviation` tune the sewing, the edges, the corners and the
+#' measurement. See `doc/fit_cad.md`.
 #'
 #' @param mesh A closed, consistently wound surface `mio_mesh`.
 #' @param step_path Write the solid here as AP214 STEP; `""` writes nothing.
@@ -1375,6 +1441,35 @@ mio_has_occt <- function() {
 #' @param merge_faces Whether faces on one surface are merged once the solid
 #'   is built (v17.9.0).
 #' @param backend `"auto"`, `"occt"` or `"native"` (v17.9.0).
+#' @param refine_segmentation Whether the patches are first refined by
+#'   variational shape approximation (v17.11.0); off by default.
+#' @param max_refine_iterations,refine_epsilon,normal_weight,allow_merge,allow_split
+#'   The refinement's `max_iterations`, `epsilon`, `normal_weight`,
+#'   `allow_merge` and `allow_split` (see `mio_refine_patches()`).
+#' @param ransac_seed The refinement's RANSAC seed; `NULL` takes the default,
+#'   and a number is taken exactly below 2^53.
+#' @param refine_tolerance,relative_tolerance The refinement's tolerance and
+#'   whether it is a fraction of the bounding-box diagonal.
+#' @param freeform_general Whether a patch the plane and unrolled-cylinder
+#'   freeform fit leaves unexplained is tried as a general freeform B-spline
+#'   face (a disc parametrisation and an iterative fit, v17.11.0); off by
+#'   default.
+#' @param freeform_tolerance The general fit's target at the vertices; 0 takes
+#'   a quarter of the tolerance.
+#' @param freeform_smoothing The general fit's thin-plate weight, >= 0.
+#' @param max_freeform_poles,max_freeform_iterations,max_freeform_splits The
+#'   general fit's most poles per direction (4 to 1024), its iteration budget
+#'   (>= 1) and how many times a patch it cannot explain is halved (>= 0).
+#' @param sew_tolerance The tolerance the faces are sewn at; 0 sews at the
+#'   tolerance (OpenCASCADE only, v17.11.0).
+#' @param extend_surfaces Whether freeform B-spline surfaces are extended past
+#'   their patches before the edges are built (OpenCASCADE only).
+#' @param snap_junctions Whether the corners where analytic faces meet are
+#'   placed by a least-squares solve on their tangent planes (OpenCASCADE
+#'   only).
+#' @param face_deviation Whether each face's two-sided distance to the skin is
+#'   measured, as the `fit_cad:face_hausdorff` and `fit_cad:face_rms` field
+#'   data and `hausdorff_max` / `hausdorff_rms` (OpenCASCADE only).
 #' @return A list of `mesh` (the solid re-meshed, with cell data
 #'   `fit_cad:face`, `fit_cad:type` and `fit_cad:patch`), `valid`,
 #'   `tolerance`, `volume`, `skin_volume`, `volume_ratio`, `max_deviation`,
@@ -1383,8 +1478,17 @@ mio_has_occt <- function() {
 #'   `num_exact_edges`, `num_approx_edges`, `num_solids`, `num_bspline`,
 #'   `num_split_patches`, `num_fillet`, `num_helical`, `num_variable_fillet`,
 #'   `num_blend`, `num_rounded_thread`, `num_vertex_blend`, `num_chamfer`,
-#'   `num_conic_blend`, `num_tapered_thread`, `num_variable_pitch_thread`
-#'   and `backend` (the engine that ran).
+#'   `num_conic_blend`, `num_tapered_thread`, `num_variable_pitch_thread`,
+#'   `backend` (the engine that ran), `refined` (whether the refinement ran),
+#'   `refine_iterations`, `num_refine_splits`, `num_refine_merges`,
+#'   `initial_explained_area_fraction` and `explained_area_fraction` (zero
+#'   without refinement), `closed` (whether every shell is closed),
+#'   `num_freeform_general`, `num_freeform_refinements`, `avg_freeform_poles`,
+#'   `num_extended_edges`, `num_snapped_junctions`, and `hausdorff_max` and
+#'   `hausdorff_rms` (`NaN` unless `face_deviation` measured them), and
+#'   `refinement_kept` (whether the solid was built from the refined patches;
+#'   OpenCASCADE also builds it from the patches as given and keeps the
+#'   better).
 #' @export
 mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
                         types = c("plane", "sphere", "cylinder", "cone", "torus"),
@@ -1392,7 +1496,16 @@ mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
                         freeform = TRUE, freeform_degree = 3,
                         freeform_max_control = 64, freeform_split = TRUE,
                         fillets = TRUE, threads = TRUE, merge_faces = TRUE,
-                        backend = "auto") {
+                        backend = "auto", refine_segmentation = FALSE,
+                        max_refine_iterations = 10L, refine_epsilon = 1e-3,
+                        normal_weight = 1, allow_merge = TRUE, allow_split = TRUE,
+                        ransac_seed = NULL, refine_tolerance = 1e-3,
+                        relative_tolerance = TRUE, freeform_general = FALSE,
+                        freeform_tolerance = 0, freeform_smoothing = 1e-12,
+                        max_freeform_poles = 40L, max_freeform_iterations = 30L,
+                        max_freeform_splits = 2L, sew_tolerance = 0,
+                        extend_surfaces = FALSE, snap_junctions = FALSE,
+                        face_deviation = FALSE) {
   known <- c("plane", "sphere", "cylinder", "cone", "torus")
   bad <- setdiff(types, known)
   if (length(bad) > 0) {
@@ -1404,7 +1517,16 @@ mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
     isTRUE(exact_edges), as.numeric(mask), as.numeric(mesh_deflection),
     as.numeric(max_demotion_rounds), isTRUE(freeform), as.numeric(freeform_degree),
     as.numeric(freeform_max_control), isTRUE(freeform_split), isTRUE(fillets),
-    isTRUE(threads), isTRUE(merge_faces), as.character(backend)
+    isTRUE(threads), isTRUE(merge_faces), as.character(backend),
+    isTRUE(refine_segmentation), as.numeric(max_refine_iterations),
+    as.numeric(refine_epsilon), as.numeric(normal_weight), isTRUE(allow_merge),
+    isTRUE(allow_split), if (is.null(ransac_seed)) NULL else as.numeric(ransac_seed),
+    as.numeric(refine_tolerance), isTRUE(relative_tolerance),
+    isTRUE(freeform_general), as.numeric(freeform_tolerance),
+    as.numeric(freeform_smoothing), as.numeric(max_freeform_poles),
+    as.numeric(max_freeform_iterations), as.numeric(max_freeform_splits),
+    as.numeric(sew_tolerance), isTRUE(extend_surfaces), isTRUE(snap_junctions),
+    isTRUE(face_deviation)
   )
 }
 
@@ -2825,7 +2947,14 @@ mio_grid <- function(dims, origin = c(0, 0, 0), spacing = c(1, 1, 1),
 #' @param nu,nv Points per ring and latitude bands of `mio_uv_sphere()`.
 #' @param nxy,nz Cells across and layers of `mio_cylinder()`.
 #' @param subdivisions 1-to-4 splits of `mio_icosa_sphere()`.
-#' @param center Centre of a disk, sphere or cylinder.
+#' @param center Centre of a disk, sphere, cylinder or planar domain.
+#' @param sides,rings Sides and radial rings of `mio_ngon()`.
+#' @param inner_radius,outer_radius,ntheta,nr,angle Radii, cells around, cells
+#'   across the gap and opening angle (radians) of `mio_annulus()`; `ntheta`
+#'   and `nr` are also the divisions of `mio_plate_with_hole()` (as `nt`, `nr`).
+#' @param nt Cells around the hole per 90 degree block of
+#'   `mio_plate_with_hole()`.
+#' @param edge Side length of a `mio_honeycomb()` hexagon.
 #' @param cell_type `"quad"`, `"triangle"`, `"hexahedron"`, `"tetra"` or
 #'   `"wedge"`, as the shape allows; `""` is the shape's default.
 #' @param split Triangle layout of `mio_rectangle()`: `"zigzag"`, `"up"`,
@@ -2841,12 +2970,13 @@ NULL
 
 mio_generate_ <- function(shape, counts, size = c(1, 1, 1), origin = c(0, 0, 0),
                           radius = 1, height = 1, cell_type = "", split = "zigzag",
-                          order = 1, max_cells = 20000000) {
+                          order = 1, max_cells = 20000000, radius2 = 0.5,
+                          angle = 2 * pi) {
   .Call(
     R_mio_generate, as.character(shape), as.numeric(counts), as.numeric(size),
     as.numeric(origin), as.numeric(radius), as.numeric(height),
     as.character(cell_type), as.character(split), as.integer(order),
-    as.numeric(max_cells)
+    as.numeric(max_cells), as.numeric(radius2), as.numeric(angle)
   )
 }
 
@@ -2899,6 +3029,56 @@ mio_cylinder <- function(radius = 1, height = 1, nxy = 8, nz = 8,
   mio_generate_("cylinder", c(nxy, nz), origin = center, radius = radius,
                 height = height, cell_type = cell_type, order = order,
                 max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_reference_triangle <- function(n = 4, size = c(1, 1), origin = c(0, 0, 0),
+                                   order = 1, max_cells = 20000000) {
+  mio_generate_("reference_triangle", n, c(size, 1)[1:3], origin, order = order,
+                max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_ngon <- function(sides = 6, radius = 1, rings = 1, center = c(0, 0, 0),
+                     order = 1, max_cells = 20000000) {
+  mio_generate_("ngon", c(sides, rings), origin = center, radius = radius,
+                order = order, max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_annulus <- function(inner_radius = 0.5, outer_radius = 1, ntheta = 16, nr = 4,
+                        angle = 2 * pi, center = c(0, 0, 0), cell_type = "quad",
+                        order = 1, max_cells = 20000000) {
+  mio_generate_("annulus", c(ntheta, nr), origin = center, radius = outer_radius,
+                radius2 = inner_radius, angle = angle, cell_type = cell_type,
+                order = order, max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_lshape <- function(n = 4, size = 2, center = c(0, 0, 0), cell_type = "quad",
+                       order = 1, max_cells = 20000000) {
+  mio_generate_("lshape", n, rep(size, 3), center, cell_type = cell_type,
+                order = order, max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_plate_with_hole <- function(radius = 0.25, size = 1, nt = 8, nr = 4,
+                                center = c(0, 0, 0), cell_type = "quad", order = 1,
+                                max_cells = 20000000) {
+  mio_generate_("plate_with_hole", c(nt, nr), rep(size, 3), center, radius = radius,
+                cell_type = cell_type, order = order, max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_honeycomb <- function(dims = c(4, 4), edge = 1, origin = c(0, 0, 0),
+                          max_cells = 20000000) {
+  mio_generate_("honeycomb", dims, rep(edge, 3), origin, max_cells = max_cells)
 }
 
 #' @rdname mio_generators

@@ -115,6 +115,7 @@ export default defineConfig({
               { text: "Hausdorff distance", link: "/hausdorff" },
               { text: "Feature edges", link: "/feature_edges" },
               { text: "Segment (smooth patches)", link: "/segment" },
+              { text: "Refine patches", link: "/refine_patches" },
               { text: "Fit primitives", link: "/fit_primitives" },
               { text: "Fit CAD", link: "/fit_cad" },
               { text: "Skin to CAD", link: "/cad_fit" },

@@ -1,5 +1,7 @@
 """Parametric generators: rectangle, box, disk, uv_sphere, icosa_sphere, cylinder,
-reference_cells (``meshioplusplus._primitives`` and ``operations/primitives.cpp``).
+the planar domains (reference_triangle, ngon, annulus, lshape, plate_with_hole,
+honeycomb) and reference_cells (``meshioplusplus._primitives`` and
+``operations/primitives.cpp``).
 """
 
 import numpy as np
@@ -109,6 +111,12 @@ def test_public_names():
         "uv_sphere",
         "icosa_sphere",
         "cylinder",
+        "reference_triangle",
+        "ngon",
+        "annulus",
+        "lshape",
+        "plate_with_hole",
+        "honeycomb",
         "reference_cells",
     ):
         assert name in mp.__all__
@@ -123,6 +131,16 @@ def test_public_names():
         lambda: mp.disk(n=0),
         lambda: mp.uv_sphere(nu=0),
         lambda: mp.cylinder(nz=0),
+        lambda: mp.reference_triangle(n=0),
+        lambda: mp.ngon(sides=0),
+        lambda: mp.ngon(rings=0),
+        lambda: mp.annulus(ntheta=0),
+        lambda: mp.annulus(nr=0),
+        lambda: mp.lshape(n=0),
+        lambda: mp.plate_with_hole(nt=0),
+        lambda: mp.plate_with_hole(nr=0),
+        lambda: mp.honeycomb(dims=(0, 3)),
+        lambda: mp.honeycomb(dims=(3, 0)),
     ],
 )
 def test_zero_count_is_an_empty_mesh(call):
@@ -145,6 +163,22 @@ def test_zero_count_is_an_empty_mesh(call):
         (lambda: mp.uv_sphere(nv=1), "nv must be at least 2"),
         (lambda: mp.icosa_sphere(subdivisions=-1), "must not be negative"),
         (lambda: mp.cylinder(height=0.0), "height must be positive"),
+        (lambda: mp.reference_triangle(n=-1), "must not be negative"),
+        (lambda: mp.reference_triangle(size=(1.0, 0.0)), "size must be positive"),
+        (lambda: mp.ngon(sides=2), "sides must be at least 3"),
+        (lambda: mp.ngon(radius=-1.0), "radius must be positive"),
+        (lambda: mp.annulus(inner_radius=1.0, outer_radius=0.5), "must exceed"),
+        (lambda: mp.annulus(inner_radius=0.0), "inner_radius must be positive"),
+        (lambda: mp.annulus(ntheta=2), "at least 3 for a full ring"),
+        (lambda: mp.annulus(angle=7.0), r"angle must be in \(0, 2\*pi\]"),
+        (lambda: mp.annulus(ntheta=1, angle=4.0), "must span less than pi"),
+        (lambda: mp.annulus(cell_type="hexahedron"), "unknown cell_type"),
+        (lambda: mp.lshape(size=0.0), "size must be positive"),
+        (lambda: mp.lshape(cell_type="wedge"), "unknown cell_type 'wedge'"),
+        (lambda: mp.plate_with_hole(radius=0.6, size=1.0), "less than half the size"),
+        (lambda: mp.plate_with_hole(order=3), "order must be 1 or 2"),
+        (lambda: mp.honeycomb(dims=(2, -1)), "must not be negative"),
+        (lambda: mp.honeycomb(edge=0.0), "edge must be positive"),
         (lambda: mp.reference_cells(["blob"]), "unknown cell type 'blob'"),
         (lambda: mp.reference_cells(["quad", "quad"]), "listed twice"),
         (lambda: mp.reference_cells(["tetra10"], pairs=True), "pairs=True supports"),
@@ -164,6 +198,12 @@ def test_bad_arguments_raise_by_name(call, text):
         lambda: mp.uv_sphere(nu=64, nv=64, max_cells=50),
         lambda: mp.icosa_sphere(subdivisions=6, max_cells=50),
         lambda: mp.cylinder(nxy=10, nz=10, max_cells=50),
+        lambda: mp.reference_triangle(n=20, max_cells=50),
+        lambda: mp.ngon(rings=10, max_cells=50),
+        lambda: mp.annulus(ntheta=20, nr=20, max_cells=50),
+        lambda: mp.lshape(n=10, max_cells=50),
+        lambda: mp.plate_with_hole(nt=8, nr=8, max_cells=50),
+        lambda: mp.honeycomb(dims=(10, 10), max_cells=50),
     ],
 )
 def test_max_cells_budget(call):
@@ -437,6 +477,10 @@ _QUADRATIC = {
         (lambda: mp.box(dims=(2, 2, 2), order=2), "hexahedron"),
         (lambda: mp.box(dims=(2, 2, 2), cell_type="tetra", order=2), "tetra"),
         (lambda: mp.box(dims=(2, 2, 2), cell_type="wedge", order=2), "wedge"),
+        (lambda: mp.reference_triangle(n=3, order=2), "triangle"),
+        (lambda: mp.ngon(sides=5, rings=2, order=2), "triangle"),
+        (lambda: mp.lshape(n=2, order=2), "quad"),
+        (lambda: mp.lshape(n=2, cell_type="triangle", order=2), "triangle"),
     ],
 )
 def test_straight_shapes_get_exact_midpoints(call, base):
@@ -504,6 +548,216 @@ def test_uv_sphere_pole_midnode_stays_on_its_meridian():
         # edge 2 of triangle6 is (2, 0): ring i + 1 -> pole; node 5 is its midpoint
         mid, ring = m.points[row[5]], m.points[row[2]]
         assert np.isclose(np.arctan2(mid[1], mid[0]), np.arctan2(ring[1], ring[0]))
+
+
+# --------------------------------------------------------------------------- #
+# planar domains                                                              #
+# --------------------------------------------------------------------------- #
+
+
+def _euler(mesh):
+    """V - E + F of the corner graph (corner nodes only)."""
+    corners = {"triangle": 3, "triangle6": 3, "quad": 4, "quad8": 4}
+    edges = set()
+    faces = 0
+    for block in mesh.cells:
+        conn = np.asarray(block.data)
+        k = corners.get(block.type, conn.shape[1])
+        faces += len(conn)
+        for row in conn:
+            for i in range(k):
+                a, b = int(row[i]), int(row[(i + 1) % k])
+                edges.add((min(a, b), max(a, b)))
+    return len(mesh.points) - len(edges) + faces
+
+
+def _total_area(mesh):
+    return sum(float(a.sum()) for a in _planar_area(mesh).values())
+
+
+@pytest.mark.parametrize("n", [1, 2, 5])
+def test_reference_triangle_counts_area_and_regions(n):
+    m = mp.reference_triangle(n=n, size=(2.0, 3.0), origin=(1.0, -1.0, 4.0))
+    assert m.points.shape == ((n + 1) * (n + 2) // 2, 3)
+    assert len(m.cells[0].data) == n * n
+    assert (_planar_area(m)["triangle"] > 0).all()
+    assert abs(_total_area(m) - 3.0) < 1e-12
+    assert {r.name for r in m.regions} == {"ymin", "xmin", "hypotenuse"}
+    assert all(len(r.entries) == n and r.dim == 1 for r in m.regions)
+    assert _euler(m) == 1
+    assert m.points[0].tolist() == [1.0, -1.0, 4.0]
+
+
+def test_reference_triangle_barycentric_order():
+    m = mp.reference_triangle(n=2)
+    np.testing.assert_array_equal(
+        m.points[:, :2],
+        [[0, 0], [0.5, 0], [1, 0], [0, 0.5], [0.5, 0.5], [0, 1]],
+    )
+    # row 0 holds two lattice triangles and the inverted one between them
+    assert m.cells[0].data[0].tolist() == [0, 1, 3]
+    assert m.cells[0].data[1].tolist() == [1, 4, 3]
+
+
+@pytest.mark.parametrize("sides", [3, 5, 8])
+@pytest.mark.parametrize("rings", [1, 3])
+def test_ngon_fans_and_rings(sides, rings):
+    m = mp.ngon(sides=sides, radius=2.0, rings=rings, center=(1.0, 1.0, 0.0))
+    assert len(m.cells[0].data) == sides * rings * rings
+    assert len(m.points) == 1 + sides * rings * (rings + 1) // 2
+    assert (_planar_area(m)["triangle"] > 0).all()
+    want = 0.5 * sides * 4.0 * np.sin(2 * np.pi / sides)
+    assert abs(_total_area(m) - want) < 1e-12
+    assert len(_region(m, "rim").entries) == sides * rings
+    assert np.unique(m.points.round(10), axis=0).shape[0] == len(m.points)
+    assert _euler(m) == 1
+
+
+@pytest.mark.parametrize("cell_type", ["quad", "triangle"])
+def test_annulus_full_ring_is_welded(cell_type):
+    m = mp.annulus(0.5, 1.5, 12, 3, center=(1.0, 2.0, 3.0), cell_type=cell_type)
+    assert len(m.points) == 12 * 4
+    assert len(m.cells[0].data) == (36 if cell_type == "quad" else 72)
+    assert np.unique(m.points.round(10), axis=0).shape[0] == len(m.points)
+    assert all(a.min() > 0 for a in _planar_area(m).values())
+    assert _euler(m) == 0
+    assert {r.name for r in m.regions} == {"inner", "outer"}
+    assert all(len(r.entries) == 12 for r in m.regions)
+    r = np.linalg.norm(m.points[:, :2] - [1.0, 2.0], axis=1)
+    assert r.min() > 0.5 - 1e-12 and r.max() < 1.5 + 1e-12
+    assert (m.points[:, 2] == 3.0).all()
+    rings = 0.5 + np.arange(4) / 3
+    area = sum(
+        6 * (b * b - a * a) * np.sin(np.pi / 6) for a, b in zip(rings, rings[1:])
+    )
+    assert abs(_total_area(m) - area) < 1e-12
+
+
+def test_annulus_sector_keeps_its_seam_apart():
+    m = mp.annulus(1.0, 2.0, 6, 2, angle=np.pi / 2)
+    assert len(m.points) == 7 * 3 and len(m.cells[0].data) == 12
+    assert {r.name for r in m.regions} == {"inner", "outer", "start", "end"}
+    assert [len(_region(m, n).entries) for n in ("start", "end")] == [2, 2]
+    assert _euler(m) == 1
+    np.testing.assert_allclose(m.points[0], [1.0, 0.0, 0.0], atol=1e-15)
+    np.testing.assert_allclose(m.points[6], [0.0, 1.0, 0.0], atol=1e-15)
+
+
+def test_annulus_sector_seams_link_with_periodic():
+    m = mp.annulus(1.0, 2.0, 4, 3, angle=np.pi / 2)
+    start = {tuple(m.points[i].round(12)) for i in np.unique(_edge_nodes(m, "start"))}
+    end = {tuple(m.points[i].round(12)) for i in np.unique(_edge_nodes(m, "end"))}
+    # a quarter turn about the origin maps the start ray onto the end ray
+    turned = {(-y, x, z) for x, y, z in start}
+    assert {tuple(np.round(p, 12)) for p in turned} == end
+
+
+def _edge_nodes(mesh, name):
+    conn = np.asarray(mesh.cells[0].data)
+    nodes = []
+    for c, f in _region(mesh, name).entries.tolist():
+        nodes += [conn[c, f], conn[c, (f + 1) % conn.shape[1]]]
+    return np.array(nodes)
+
+
+@pytest.mark.parametrize("cell_type", ["quad", "triangle"])
+def test_lshape_loses_a_quadrant(cell_type):
+    m = mp.lshape(n=3, size=2.0, center=(0.0, 0.0, 1.0), cell_type=cell_type)
+    assert len(m.cells[0].data) == (27 if cell_type == "quad" else 54)
+    assert len(m.points) == 7 * 7 - 9
+    assert all(a.min() > 0 for a in _planar_area(m).values())
+    assert abs(_total_area(m) - 3.0) < 1e-12
+    counts = {r.name: len(r.entries) for r in m.regions}
+    assert counts == {
+        "xmin": 6,
+        "xmax": 3,
+        "ymin": 3,
+        "ymax": 6,
+        "notch_x": 3,
+        "notch_y": 3,
+    }
+    assert _euler(m) == 1
+    inside = (m.points[:, 0] > 1e-12) & (m.points[:, 1] < -1e-12)
+    assert not inside.any()
+    assert ((m.points[:, 0] == 0.0) & (m.points[:, 1] == 0.0)).sum() == 1
+
+
+@pytest.mark.parametrize("cell_type", ["quad", "triangle"])
+def test_plate_with_hole_surrounds_the_hole(cell_type):
+    m = mp.plate_with_hole(
+        radius=0.25, size=2.0, nt=3, nr=2, center=(1.0, 1.0, 0.0), cell_type=cell_type
+    )
+    assert len(m.cells[0].data) == (24 if cell_type == "quad" else 48)
+    assert len(m.points) == 3 * 12
+    assert np.unique(m.points.round(10), axis=0).shape[0] == len(m.points)
+    assert all(a.min() > 0 for a in _planar_area(m).values())
+    assert _euler(m) == 0
+    counts = {r.name: len(r.entries) for r in m.regions}
+    assert counts == {"hole": 12, "xmin": 3, "xmax": 3, "ymin": 3, "ymax": 3}
+    hole = 0.5 * 12 * 0.0625 * np.sin(2 * np.pi / 12)
+    assert abs(_total_area(m) - (4.0 - hole)) < 1e-12
+    assert np.abs(m.points[:, :2] - 1.0).max() <= 1.0 + 1e-12
+
+
+def test_plate_with_hole_quadratic_hole_is_circular():
+    m = mp.plate_with_hole(radius=0.5, size=2.0, nt=2, nr=3, order=2)
+    assert m.cells[0].type == "quad8"
+    conn = np.asarray(m.cells[0].data)
+    for c, f in _region(m, "hole").entries.tolist():
+        for node in (conn[c, f], conn[c, 4 + f]):
+            assert np.isclose(np.hypot(*m.points[node, :2]), 0.5)
+    for c, f in _region(m, "xmax").entries.tolist():
+        assert m.points[conn[c, 4 + f], 0] == 1.0
+
+
+@pytest.mark.parametrize("dims", [(1, 1), (3, 2), (4, 5)])
+def test_honeycomb_is_a_hexagon_polygon_block(dims):
+    m = mp.honeycomb(dims=dims, edge=2.0, origin=(1.0, 2.0, 0.0))
+    cells = dims[0] * dims[1]
+    assert len(m.cells) == 1 and m.cells[0].type.startswith("polygon")
+    conn = np.asarray(m.cells[0].data)
+    assert conn.shape == (cells, 6)
+    p = m.points[:, :2]
+    area = 0.0
+    for row in conn:
+        ring = p[row]
+        nxt = np.roll(ring, -1, axis=0)
+        twice = float((ring[:, 0] * nxt[:, 1] - nxt[:, 0] * ring[:, 1]).sum())
+        assert twice > 0
+        assert np.allclose(np.linalg.norm(nxt - ring, axis=1), 2.0)
+        area += twice / 2
+    assert np.isclose(area, cells * 1.5 * np.sqrt(3) * 4.0)
+    assert np.unique(p.round(10), axis=0).shape[0] == len(p)
+    assert p.min(axis=0).tolist() == [1.0, 2.0]
+    assert _euler(m) == 1
+    boundary = _region(m, "boundary")
+    assert boundary.dim == 1
+    edges = {
+        (min(int(r[i]), int(r[(i + 1) % 6])), max(int(r[i]), int(r[(i + 1) % 6])))
+        for r in conn
+        for i in range(6)
+    }
+    assert len(boundary.entries) == 2 * len(edges) - 6 * cells
+
+
+def test_honeycomb_numbers_nodes_by_first_appearance():
+    m = mp.honeycomb(dims=(2, 2))
+    assert np.asarray(m.cells[0].data)[0].tolist() == [0, 1, 2, 3, 4, 5]
+    assert len(m.points) == 16
+
+
+def test_planar_shapes_run_through_operations():
+    """The domains feed refine, quality, the writers and the ragged paths."""
+    for m in (
+        mp.reference_triangle(n=3),
+        mp.ngon(sides=6, rings=2),
+        mp.annulus(),
+        mp.lshape(n=2),
+        mp.plate_with_hole(nt=4, nr=2),
+    ):
+        mp.compute_quality(m)
+    out = mp.refine(mp.lshape(n=2))
+    assert len(out.cells[0].data) > 12
 
 
 # --------------------------------------------------------------------------- #
@@ -636,6 +890,22 @@ _CASES = [
     ),
     ("cylinder", dict(nxy=2, nz=2, order=2), False),
     ("cylinder", dict(nxy=2, nz=3, cell_type="wedge", order=2), False),
+    (
+        "reference_triangle",
+        dict(n=5, size=(2.0, 0.5), origin=(0.1, 0.2, 0.3)),
+        True,
+    ),
+    ("reference_triangle", dict(n=3, order=2), True),
+    ("ngon", dict(sides=7, radius=1.4, rings=3, center=(0.5, 0.25, 1.0)), False),
+    ("ngon", dict(sides=5, rings=2, order=2), False),
+    ("annulus", dict(inner_radius=0.4, outer_radius=1.7, ntheta=9, nr=3), False),
+    ("annulus", dict(ntheta=8, nr=2, cell_type="triangle", order=2), False),
+    ("annulus", dict(ntheta=5, nr=2, angle=2.5, order=2), False),
+    ("lshape", dict(n=3, size=1.3, center=(0.1, 0.2, 0.3)), True),
+    ("lshape", dict(n=2, cell_type="triangle", order=2), True),
+    ("plate_with_hole", dict(radius=0.3, size=1.7, nt=3, nr=2), False),
+    ("plate_with_hole", dict(nt=2, nr=2, cell_type="triangle", order=2), False),
+    ("honeycomb", dict(dims=(3, 2), edge=1.3, origin=(0.1, 0.2, 0.3)), True),
 ]
 
 
@@ -680,7 +950,36 @@ def _twin(name, kwargs):
             cell_type="hexahedron",
             order=1,
         ),
+        "reference_triangle": dict(
+            n=4, size=(1.0, 1.0), origin=(0.0, 0.0, 0.0), order=1
+        ),
+        "ngon": dict(sides=6, radius=1.0, rings=1, center=(0.0, 0.0, 0.0), order=1),
+        "annulus": dict(
+            inner=0.5,
+            outer=1.0,
+            ntheta=16,
+            nr=4,
+            angle=2.0 * np.pi,
+            center=(0.0, 0.0, 0.0),
+            cell_type="quad",
+            order=1,
+        ),
+        "lshape": dict(
+            n=4, size=2.0, center=(0.0, 0.0, 0.0), cell_type="quad", order=1
+        ),
+        "plate_with_hole": dict(
+            radius=0.25,
+            size=1.0,
+            nt=8,
+            nr=4,
+            center=(0.0, 0.0, 0.0),
+            cell_type="quad",
+            order=1,
+        ),
+        "honeycomb": dict(dims=(4, 4), edge=1.0, origin=(0.0, 0.0, 0.0)),
     }
+    renames = {"annulus": {"inner_radius": "inner", "outer_radius": "outer"}}
+    kwargs = {renames.get(name, {}).get(k, k): v for k, v in kwargs.items()}
     if name == "reference_cells":
         types = kwargs.get("types") or list(
             prim._PAIR_TYPES if kwargs.get("pairs") else prim._ALL_TYPES
@@ -688,7 +987,7 @@ def _twin(name, kwargs):
         return prim._reference_cells_py(types, kwargs.get("pairs", False))
     a = {**defaults[name], **kwargs}
     for key in ("dims", "size", "origin", "center"):
-        if key in a:
+        if key in a and not np.isscalar(a[key]):
             a[key] = np.asarray(a[key], dtype=np.int64 if key == "dims" else np.float64)
     fn = {
         "rectangle": prim._rectangle_py,
@@ -697,6 +996,12 @@ def _twin(name, kwargs):
         "uv_sphere": prim._uv_sphere_py,
         "icosa_sphere": prim._icosa_sphere_py,
         "cylinder": prim._cylinder_py,
+        "reference_triangle": prim._reference_triangle_py,
+        "ngon": prim._ngon_py,
+        "annulus": prim._annulus_py,
+        "lshape": prim._lshape_py,
+        "plate_with_hole": prim._plate_py,
+        "honeycomb": prim._honeycomb_py,
     }[name]
     return fn(**a)
 

@@ -45,6 +45,10 @@ A triangle skin exported from CAD meets a fillet's tangent planes at smooth edge
 
 The strict 2% bound is what a CAD tessellation meets, its points lying exactly on its surfaces, and what keeps a plane from taking the first strip of a fillet tangent to it; a scan wants a `tolerance` some fifty times its noise. The method is deterministic (serial growth, ties to the lowest cell) and has no numpy twin: without the core the Python function raises `NotImplementedError`. [`fit_cad`](/fit_cad) runs it on a skin that has no `segment:patch` yet.
 
+## Refining the patches
+
+`segment` draws its boundaries once: segmented by angles, a fillet tangent to a wall shares the wall's patch, and a cylinder cut at a smooth edge stays in two. [`refine_patches`](/refine_patches) takes the `segment:patch` labels as they come out and refines them by variational shape approximation — boundaries move to where one surface ends, a primitive is split out of a patch no primitive explains, and neighbours one primitive explains merge — then rewrites `segment:patch`, `segment:adjacency` and the patch regions in the same layout, so [`fit_primitives`](/fit_primitives) and [`fit_cad`](/fit_cad) read the result unchanged. Pass it the `feature_angle` the surface was segmented with.
+
 ## Output
 
 The input, unchanged — points, connectivity, block order, data and existing regions are bit-identical — plus:

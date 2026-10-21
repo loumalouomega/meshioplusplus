@@ -42,7 +42,7 @@ from ._decimate import decimate
 from ._decimate_volume import decimate_volume
 from ._error import estimate_error
 from ._feature_edges import feature_edges
-from ._fit_cad import fit_cad
+from ._fit_cad import DEFAULT_RANSAC_SEED, fit_cad
 from ._fit_primitives import TYPES, fit_primitives, types_mask
 from ._gradient import gradient
 from ._helpers import _filetypes_from_path, _write_format_for_path, read, write
@@ -57,12 +57,18 @@ from ._octree import octree
 from ._optimize_volume import optimize_volume
 from ._partition import partition, partition_labels
 from ._primitives import (
+    annulus,
     box,
     cylinder,
     disk,
+    honeycomb,
     icosa_sphere,
+    lshape,
+    ngon,
+    plate_with_hole,
     rectangle,
     reference_cells,
+    reference_triangle,
     uv_sphere,
 )
 from ._provenance import add_operation as _prov_add_operation
@@ -71,6 +77,8 @@ from ._provenance import set_target as _prov_set_target
 from ._quality import attach_quality
 from ._quality_gate import check_quality, format_quality_gate
 from ._refine import refine
+from ._refine_patches import STOPS as REFINE_STOPS
+from ._refine_patches import refine_patches
 from ._region_ops import edit_regions
 from ._remesh import remesh
 from ._remesh_volume import remesh_volume
@@ -206,6 +214,39 @@ _OP_TABLE = {
         "Threads",
         "MergeFaces",
         "Backend",
+        "RefineSegmentation",
+        "MaxRefineIterations",
+        "RefineEpsilon",
+        "NormalWeight",
+        "AllowMerge",
+        "AllowSplit",
+        "RansacSeed",
+        "RefineTolerance",
+        "RelativeTolerance",
+        "FreeformGeneral",
+        "FreeformTolerance",
+        "FreeformSmoothing",
+        "MaxFreeformPoles",
+        "MaxFreeformIterations",
+        "MaxFreeformSplits",
+        "SewTolerance",
+        "ExtendSurfaces",
+        "SnapJunctions",
+        "FaceDeviation",
+    ),
+    "RefinePatches": (
+        "Tolerance",
+        "Relative",
+        "NormalWeight",
+        "Epsilon",
+        "FeatureAngle",
+        "MaxIterations",
+        "MinPatchCells",
+        "RansacSeed",
+        "Types",
+        "AllowSplit",
+        "AllowMerge",
+        "Prefix",
     ),
     "EditRegions": ("Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"),
     "RegionAdjacency": ("Regions",),
@@ -357,6 +398,15 @@ _OP_TABLE = {
         "Nxy",
         "Nz",
         "Subdivisions",
+        "Sides",
+        "Rings",
+        "InnerRadius",
+        "OuterRadius",
+        "Ntheta",
+        "Nr",
+        "Nt",
+        "Angle",
+        "Edge",
         "CellType",
         "Split",
         "Order",
@@ -542,6 +592,22 @@ def _fit_cad_backend(step):
     if backend not in ("auto", "occt", "native"):
         raise _err(step["Op"], "'Backend' must be 'auto', 'occt' or 'native'")
     return backend
+
+
+def _seed(step, key, fallback):
+    """A ``RansacSeed``: an integer in ``[0, 2**53]``, the largest a JSON
+    number (a double, in the C++ engine) carries exactly."""
+    v = step.get(key)
+    if v is None:
+        return fallback
+    what = f"parameter '{key}' must be an integer in [0, 2^53] (9007199254740992)"
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        raise _err(step["Op"], what)
+    if isinstance(v, float) and not v.is_integer():
+        raise _err(step["Op"], what)
+    if not 0 <= v <= 1 << 53:
+        raise _err(step["Op"], what)
+    return int(v)
 
 
 def _text(step, key, fallback):
@@ -853,6 +919,12 @@ _GENERATE_SHAPES = (
     "uv_sphere",
     "icosa_sphere",
     "cylinder",
+    "reference_triangle",
+    "ngon",
+    "annulus",
+    "lshape",
+    "plate_with_hole",
+    "honeycomb",
     "reference_cells",
 )
 
@@ -944,6 +1016,65 @@ def _generate(step):
             center=triple("Center", zero),
             cell_type=_text(step, "CellType", "hexahedron"),
             order=order,
+            max_cells=max_cells,
+        )
+    if shape == "reference_triangle":
+        size = _dvec(step, "Size")
+        if size and len(size) != 2:
+            raise _err("Generate", "'Size' expects two values")
+        return reference_triangle(
+            n=count("N", 4),
+            size=list(size) if size else [1.0, 1.0],
+            origin=triple("Origin", zero, True),
+            order=order,
+            max_cells=max_cells,
+        )
+    if shape == "ngon":
+        return ngon(
+            sides=count("Sides", 6),
+            radius=_number(step, "Radius", 1.0),
+            rings=count("Rings", 1),
+            center=triple("Center", zero),
+            order=order,
+            max_cells=max_cells,
+        )
+    if shape == "annulus":
+        return annulus(
+            inner_radius=_number(step, "InnerRadius", 0.5),
+            outer_radius=_number(step, "OuterRadius", 1.0),
+            ntheta=count("Ntheta", 16),
+            nr=count("Nr", 4),
+            angle=_number(step, "Angle", 6.283185307179586),
+            center=triple("Center", zero),
+            cell_type=_text(step, "CellType", "quad"),
+            order=order,
+            max_cells=max_cells,
+        )
+    if shape == "lshape":
+        return lshape(
+            n=count("N", 4),
+            size=_number(step, "Size", 2.0),
+            center=triple("Center", zero),
+            cell_type=_text(step, "CellType", "quad"),
+            order=order,
+            max_cells=max_cells,
+        )
+    if shape == "plate_with_hole":
+        return plate_with_hole(
+            radius=_number(step, "Radius", 0.25),
+            size=_number(step, "Size", 1.0),
+            nt=count("Nt", 8),
+            nr=count("Nr", 4),
+            center=triple("Center", zero),
+            cell_type=_text(step, "CellType", "quad"),
+            order=order,
+            max_cells=max_cells,
+        )
+    if shape == "honeycomb":
+        return honeycomb(
+            dims=dims_of(2, 4),
+            edge=_number(step, "Edge", 1.0),
+            origin=triple("Origin", zero, True),
             max_cells=max_cells,
         )
     if shape == "reference_cells":
@@ -1219,6 +1350,7 @@ def _apply_step(mesh, step, steps, warnings):
             raise _err(op, f"unknown primitive type '{bad[0]}' in 'Types'")
         tolerance = _number(step, "Tolerance", 0.0)
         deflection = _number(step, "MeshDeflection", 0.0)
+        refine_seg = _flag(step, "RefineSegmentation", False)
         mesh, report = fit_cad(
             mesh,
             _text(step, "Path", "") or None,
@@ -1236,6 +1368,25 @@ def _apply_step(mesh, step, steps, warnings):
             return_report=True,
             merge_faces=_flag(step, "MergeFaces", True),
             backend=_fit_cad_backend(step),
+            refine_segmentation=refine_seg,
+            max_refine_iterations=int(_number(step, "MaxRefineIterations", 10.0)),
+            refine_epsilon=_number(step, "RefineEpsilon", 1e-3),
+            normal_weight=_number(step, "NormalWeight", 1.0),
+            allow_merge=_flag(step, "AllowMerge", True),
+            allow_split=_flag(step, "AllowSplit", True),
+            ransac_seed=_seed(step, "RansacSeed", DEFAULT_RANSAC_SEED),
+            refine_tolerance=_number(step, "RefineTolerance", 1e-3),
+            relative_tolerance=_flag(step, "RelativeTolerance", True),
+            freeform_general=_flag(step, "FreeformGeneral", False),
+            freeform_tolerance=_number(step, "FreeformTolerance", 0.0),
+            freeform_smoothing=_number(step, "FreeformSmoothing", 1e-12),
+            max_freeform_poles=int(_number(step, "MaxFreeformPoles", 40.0)),
+            max_freeform_iterations=int(_number(step, "MaxFreeformIterations", 30.0)),
+            max_freeform_splits=int(_number(step, "MaxFreeformSplits", 2.0)),
+            sew_tolerance=_number(step, "SewTolerance", 0.0),
+            extend_surfaces=_flag(step, "ExtendSurfaces", False),
+            snap_junctions=_flag(step, "SnapJunctions", False),
+            face_deviation=_flag(step, "FaceDeviation", False),
         )
         entry["Valid"] = 1.0 if report["valid"] else 0.0
         entry["Native"] = 1.0 if report["backend"] == "native" else 0.0
@@ -1256,6 +1407,60 @@ def _apply_step(mesh, step, steps, warnings):
         entry["NumTaperedThread"] = report["num_tapered_thread"]
         entry["NumVariablePitchThread"] = report["num_variable_pitch_thread"]
         entry["NumDemoted"] = report["num_demoted"]
+        entry["Closed"] = 1.0 if report["closed"] else 0.0
+        # Only a run that refined reports the refinement, so a report without
+        # `RefineSegmentation` stays what it was before the option existed.
+        if report.get("refined"):
+            entry["Refined"] = 1.0
+            entry["NumRefineSplits"] = report["num_refine_splits"]
+            entry["NumRefineMerges"] = report["num_refine_merges"]
+            entry["ExplainedAreaFraction"] = report["explained_area_fraction"]
+            entry["RefinementKept"] = 1.0 if report["refinement_kept"] else 0.0
+        # Likewise each Phase 3 option reports only when it is set.
+        if "num_freeform_general" in report:
+            entry["NumFreeformGeneral"] = report["num_freeform_general"]
+            entry["NumFreeformRefinements"] = report["num_freeform_refinements"]
+            entry["AvgFreeformPoles"] = report["avg_freeform_poles"]
+        if "num_extended_edges" in report:
+            entry["NumExtendedEdges"] = report["num_extended_edges"]
+        if "num_snapped_junctions" in report:
+            entry["NumSnappedJunctions"] = report["num_snapped_junctions"]
+        if "hausdorff_max" in report:
+            entry["HausdorffMax"] = report["hausdorff_max"]
+            entry["HausdorffRms"] = report["hausdorff_rms"]
+    elif op == "RefinePatches":
+        # A data step: the `segment:patch` labels are refined, the cells never move.
+        types = _svec(step, "Types") if "Types" in step else None
+        bad = [t for t in (types or ()) if t not in TYPES[1:]]
+        if bad:
+            raise _err(op, f"unknown primitive type '{bad[0]}' in 'Types'")
+        mesh, report = refine_patches(
+            mesh,
+            tolerance=_number(step, "Tolerance", 1e-3),
+            relative=_flag(step, "Relative", True),
+            normal_weight=_number(step, "NormalWeight", 1.0),
+            epsilon=_number(step, "Epsilon", 1e-3),
+            feature_angle=_number(step, "FeatureAngle", 30.0),
+            max_iterations=int(_number(step, "MaxIterations", 10.0)),
+            min_patch_cells=int(_number(step, "MinPatchCells", 3.0)),
+            ransac_seed=_seed(step, "RansacSeed", DEFAULT_RANSAC_SEED),
+            types=types,
+            allow_split=_flag(step, "AllowSplit", True),
+            allow_merge=_flag(step, "AllowMerge", True),
+            prefix=_text(step, "Prefix", "patch"),
+            return_report=True,
+        )
+        entry["NumPatches"] = report["num_patches"]
+        entry["NumIterations"] = report["num_iterations"]
+        entry["NumSplits"] = report["num_splits"]
+        entry["NumMerges"] = report["num_merges"]
+        entry["NumPrimitive"] = report["num_primitive"]
+        entry["NumFreeform"] = report["num_freeform"]
+        entry["ExplainedAreaFraction"] = report["explained_area_fraction"]
+        entry["HausdorffMax"] = report["hausdorff_max"]
+        # Counters are numbers: the `RefineStop` code, 0 unchanged, 1 small_gain,
+        # 2 iteration_cap, 3 energy_rose.
+        entry["Stop"] = float(REFINE_STOPS.index(report["stop"]))
     elif op == "Snapshot":
         # A side output, not a transform: the mesh passes through untouched and
         # the frame is written to `Path` (.png, .txt, .ansi, .html or .cast).

@@ -132,7 +132,7 @@ Install with
 pip install meshioplusplus[all]
 ```
 
-(`[all]` pulls in all optional dependencies. By default, meshio++ only uses numpy.) The wheels carry the compiled core with OpenCASCADE linked in, so CAD output (`fit_cad`, `to-cad`) and STEP/IGES reading work out of the box; that kernel is LGPL-2.1 with the OCCT exception (see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)). You can then use the command-line tool
+(`[all]` adds the h5py and netCDF4 runtime extras and the polyscope desktop viewer. By default, meshio++ uses numpy and rich.) The wheels carry the compiled core with OpenCASCADE linked in, so CAD output (`fit_cad`, `to-cad`) and STEP/IGES reading work out of the box. The wheels are licensed `MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)`, because that kernel is LGPL-2.1 with the OCCT exception; see [`LICENSE-BINARIES.md`](LICENSE-BINARIES.md) and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). You can then use the command-line tool
 
 <!--pytest-codeblocks:skip-->
 
@@ -387,7 +387,7 @@ pairs = meshioplusplus.match_periodic_nodes(mesh, "inlet", "outlet", translate=(
 
 #### Skin to CAD: segment, fit primitives, STEP, CAD faces
 
-The mesh-side half of reverse engineering a triangle skin into a CAD model, with no CAD kernel in the loop, on every surface — Python, C++, C, Fortran, Julia, R, WASM, both CLIs, MCP and the pipeline. **`meshioplusplus.segment(mesh)`** splits a surface into smooth patches by region growing, bounded by its feature edges, with a curvature test that separates a fillet from the planes it is tangent to, or, with `method="primitive"`, one patch per plane, cylinder, cone, sphere or torus its facets lie on; the patches come back as `segment:patch` cell data, a patch-adjacency table and one cell region each. **`meshioplusplus.fit_primitives(mesh)`** fits a plane, sphere, cylinder, cone or torus to each patch, deterministically, and keeps the simplest within tolerance — a fit outside it is reported as `none` with its residual, never rounded to a neat primitive. The **`step`** writer hands a closed skin to CAD as an AP214 B-rep solid with no CAD kernel, validated against OpenCASCADE: each fitted patch one analytic face (plane, cylinder, cone, sphere, torus) bounded by lines and circles, each flat region one planar face with its holes, not one face per triangle (`faces="facet"` keeps that layout). **`meshioplusplus.fit_cad(mesh, path)`** runs the chain on a raw skin and builds the solid: without a CAD kernel through its native backend (the analytic faces above), and with OpenCASCADE (included in the PyPI wheels and the release binaries, on by default from source; LGPL-2.1 with the OCCT exception) doing the whole CAD half: each fitted patch becomes an analytic face trimmed by its boundary, a rolling-ball fillet (of one radius or a radius varying along it, also between freeform faces) or a helical thread face (straight or rounded, with or without a cylinder beside it) its own face, and any other patch no primitive explains a freeform B-spline face (split first into pieces a plane or an unrolled cylinder parametrises), sewn into a checked solid and written as STEP a CAD tool can edit (or as Kratos CAD JSON), with anything the kernel cannot build demoted to facets, never silently wrong; since v17.2.0 a chamfer, a conic blend, a tapered or variable-pitch thread and a corner where blends meet (a vertex blend) get their own faces too (every surface, WASM through its full artifact; `to-cad` in both CLIs). See [skin to CAD](https://loumalouomega.github.io/meshioplusplus/cad_fit) and [fit CAD](https://loumalouomega.github.io/meshioplusplus/fit_cad).
+The mesh-side half of reverse engineering a triangle skin into a CAD model, with no CAD kernel in the loop, on every surface — Python, C++, C, Fortran, Julia, R, WASM, both CLIs, MCP and the pipeline. **`meshioplusplus.segment(mesh)`** splits a surface into smooth patches by region growing, bounded by its feature edges, with a curvature test that separates a fillet from the planes it is tangent to, or, with `method="primitive"`, one patch per plane, cylinder, cone, sphere or torus its facets lie on; the patches come back as `segment:patch` cell data, a patch-adjacency table and one cell region each. **`meshioplusplus.fit_primitives(mesh)`** fits a plane, sphere, cylinder, cone or torus to each patch, deterministically, and keeps the simplest within tolerance — a fit outside it is reported as `none` with its residual, never rounded to a neat primitive. The **`step`** writer hands a closed skin to CAD as an AP214 B-rep solid with no CAD kernel, validated against OpenCASCADE: each fitted patch one analytic face (plane, cylinder, cone, sphere, torus) bounded by lines and circles, each flat region one planar face with its holes, not one face per triangle (`faces="facet"` keeps that layout). **`meshioplusplus.fit_cad(mesh, path)`** runs the chain on a raw skin and builds the solid: without a CAD kernel through its native backend (the analytic faces above), and with OpenCASCADE (included in the PyPI wheels and the release binaries, on by default from source; LGPL-2.1 with the OCCT exception) doing the whole CAD half: each fitted patch becomes an analytic face trimmed by its boundary, a rolling-ball fillet (of one radius or a radius varying along it, also between freeform faces) or a helical thread face (straight or rounded, with or without a cylinder beside it) its own face, and any other patch no primitive explains a freeform B-spline face (split first into pieces a plane or an unrolled cylinder parametrises), sewn into a checked solid and written as STEP a CAD tool can edit (or as Kratos CAD JSON), with anything the kernel cannot build demoted to facets, never silently wrong; since v17.2.0 a chamfer, a conic blend, a tapered or variable-pitch thread and a corner where blends meet (a vertex blend) get their own faces too (every surface, WASM through its full artifact; `to-cad` in both CLIs). Since v17.11.0 the loop is iterative and tolerance-driven, each stage off by default: **`meshioplusplus.refine_patches(mesh)`** (or `fit_cad(refine_segmentation=True)`) refines a segmentation by variational shape approximation, splitting by seeded RANSAC, merging and absorbing until the patches stop moving; `freeform_general=True` fits a patch the height-field B-spline cannot hold over a conformal disc parametrisation with parameter correction and knot insertion; and `snap_junctions`, `extend_surfaces`, `sew_tolerance` and `face_deviation` tighten the edges and measure each face's two-sided distance to the skin. See [skin to CAD](https://loumalouomega.github.io/meshioplusplus/cad_fit) and [fit CAD](https://loumalouomega.github.io/meshioplusplus/fit_cad).
 
 <!--pytest-codeblocks:skip-->
 
@@ -758,7 +758,7 @@ Six operations built for the physics-ML surface, each with its own CLI verb, MCP
 
 #### Parametric primitives (rectangle, box, disk, spheres, cylinder, reference cells)
 
-Seven generators build a shape from parameters, so a test, a notebook or a demo needs no fixture file: `meshioplusplus.rectangle`, `box`, `disk`, `uv_sphere`, `icosa_sphere`, `cylinder` and `reference_cells` (one cell of each type in its reference coordinates). Surfaces come out oriented outward, volumes positive, the boundary as named side regions (`xmin` … `zmax`, `rim`, `side`/`top`/`bottom`), and `order=2` places the mid-edge nodes on the exact geometry, so a quadratic sphere or cylinder is genuinely curved. The same generators are on every surface — C, Fortran, Julia, R, WASM, both CLIs (`meshioplusplus generate box block.vtu --dims 8,8,8 --cell-type tetra`), MCP and the pipeline (`{"Op": "Generate", ...}`, which needs no `Input`). See [parametric primitives](doc/primitives.md).
+Thirteen generators build a shape from parameters, so a test, a notebook or a demo needs no fixture file: `meshioplusplus.rectangle`, `box`, `disk`, `uv_sphere`, `icosa_sphere`, `cylinder`, the planar domains `reference_triangle`, `ngon`, `annulus` (or a sector of one, with a seam pair), `lshape`, `plate_with_hole` and `honeycomb` (a ragged `polygon` block of hexagons), and `reference_cells` (one cell of each type in its reference coordinates). Surfaces come out oriented outward, volumes positive, the boundary as named side regions (`xmin` … `zmax`, `rim`, `side`/`top`/`bottom`, `inner`/`outer`, `hole`), and `order=2` places the mid-edge nodes on the exact geometry, so a quadratic sphere or cylinder is genuinely curved. The same generators are on every surface — C, Fortran, Julia, R, WASM, both CLIs (`meshioplusplus generate box block.vtu --dims 8,8,8 --cell-type tetra`), MCP and the pipeline (`{"Op": "Generate", ...}`, which needs no `Input`). See [parametric primitives](doc/primitives.md).
 
 ```python
 block = meshioplusplus.box(dims=(4, 4, 4), cell_type="tetra", order=2)   # tetra10, six side regions
@@ -1191,7 +1191,7 @@ For JavaScript / browser use, the C++ core also ships as a WebAssembly npm packa
 npm install @meshioplusplus/wasm
 ```
 
-See the [WebAssembly / JavaScript](https://loumalouomega.github.io/meshioplusplus/wasm) doc page for usage and the format-support table. Beside that lean, MIT artifact the package carries a full one (v17.2.0), loaded with `loadMeshioPlusPlus({}, {full: true})`: it links OpenCASCADE (STEP and IGES reading, `fitCad`), zstd, lz4 and bzip2, and is LGPL-2.1 with the OCCT exception for its OpenCASCADE part ([lean and full builds](https://loumalouomega.github.io/meshioplusplus/wasm#lean-and-full-builds)).
+See the [WebAssembly / JavaScript](https://loumalouomega.github.io/meshioplusplus/wasm) doc page for usage and the format-support table. Beside that lean artifact (MIT; Eigen is MPL-2.0) the package carries a full one (v17.2.0), loaded with `loadMeshioPlusPlus({}, {full: true})`: it links OpenCASCADE (STEP and IGES reading, `fitCad`), zstd, lz4 and bzip2, and is LGPL-2.1 with the OCCT exception for its OpenCASCADE part ([lean and full builds](https://loumalouomega.github.io/meshioplusplus/wasm#lean-and-full-builds)).
 
 meshio++ is also on [Spack](https://spack.io), upstream in [`spack/spack-packages`](https://github.com/spack/spack-packages/pull/5624) — no checkout of this repo required:
 
@@ -1216,7 +1216,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 17.10.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 17.11.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 
@@ -1373,7 +1373,7 @@ ctest --test-dir build --output-on-failure
 
 ### License
 
-meshio++ is published under the [MIT license](https://en.wikipedia.org/wiki/MIT_License), with **one exception**: the Julia binding in [`bindings/julia/`](bindings/julia) is released under the [GNU General Public License, version 3](bindings/julia/LICENSE) (GPL-3.0). GPL-3.0 is copyleft, not permission-required: anyone may use, modify or sell it commercially without asking, but distributing it (or a modified version) must be under GPL-3.0 too, with source available; purely private/internal use carries no obligation at all. Nothing else is affected: the C++ core, the C API that binding calls, and the R binding are all MIT.
+meshio++ is published under the [MIT license](https://en.wikipedia.org/wiki/MIT_License), with **one exception**: the Julia binding in [`bindings/julia/`](bindings/julia) is released under the [GNU General Public License, version 3](bindings/julia/LICENSE) (GPL-3.0). GPL-3.0 is copyleft, not permission-required: anyone may use, modify or sell it commercially without asking, but distributing it (or a modified version) must be under GPL-3.0 too, with source available; purely private/internal use carries no obligation at all. Nothing else is affected at the source level: the C++ core, the C API that binding calls, and the R binding are all MIT. The PyPI wheels, the release command-line binaries, the Blender extension zip (which carries the wheel) and the Conan and vcpkg packages built with OpenCASCADE, which is their default, contain LGPL-2.1 code, so they are licensed `MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)`, as [`LICENSE-BINARIES.md`](LICENSE-BINARIES.md) and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) state. A build from source without OpenCASCADE is MIT.
 
 ### Acknowledgements
 
@@ -1381,7 +1381,7 @@ meshio++ is published under the [MIT license](https://en.wikipedia.org/wiki/MIT_
 
 Some code and test fixtures also come from [Simvia's `meshlane` fork](https://github.com/simvia-tech/meshlane) of meshio (MIT), credited per-change in [`CITATION.cff`](CITATION.cff) and [`CHANGELOG.md`](CHANGELOG.md).
 
-The C++ core is dependency-free by design. Everything below is either optional, bundled, or confined to one binding or tool.
+The C++ core has no mandatory dependency. Everything below is either optional, bundled, or confined to one binding or tool; the PyPI wheels and the release CLI binaries link OpenCASCADE, zlib, gidpost, pugixml and nlohmann/json statically ([`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)).
 
 <details>
 <summary><b>Dependency and credit tables</b> (click to expand)</summary>
@@ -1397,7 +1397,7 @@ The C++ core is dependency-free by design. Everything below is either optional, 
 
 | Project | Extra | Used for | License |
 | --- | --- | --- | --- |
-| [Polyscope](https://polyscope.run/) | `[viewer]` | the desktop viewer and `screenshot()` | MIT |
+| [Polyscope](https://polyscope.run/) | `[viewer]`, `[all]` | the desktop viewer and `screenshot()` | MIT |
 | [PyVista](https://pyvista.org/) | `[pyvista]` / `[interop]` | `to_pyvista()` / `from_pyvista()` | BSD-3-Clause |
 | [trimesh](https://trimesh.org/) | `[trimesh]` / `[interop]` | `to_trimesh()` / `from_trimesh()` | MIT |
 | [pyarrow](https://arrow.apache.org/) | `[arrow]` / `[interop]` | the Arrow/Parquet data export | Apache-2.0 |
@@ -1409,20 +1409,23 @@ The C++ core is dependency-free by design. Everything below is either optional, 
 | [h5py](https://www.h5py.org/) | `[all]` | the Python fallback for CGNS, H5M, MED, XDMF | BSD-3-Clause |
 | [netCDF4](https://unidata.github.io/netcdf4-python/) | `[all]` | the Python fallback for Exodus | MIT |
 | [KaHIP](https://kahip.github.io/) | `[kahip]` / CMake | the quality graph-partitioning backend | MIT |
-| [Open CASCADE Technology](https://github.com/Open-Cascade-SAS/OCCT) | CMake (`-DMESHIOPLUSPLUS_WITH_OCCT=ON`) | `fit_cad`: analytic, freeform, fillet and thread CAD faces sewn into a STEP solid; STEP/IGES reading; on by default and auto-detected, linked statically into the PyPI wheels, the release CLI binaries and the full WASM artifact (`build/build-occt.sh`, [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)) | LGPL-2.1 with the OCCT exception |
+| [Open CASCADE Technology](https://github.com/Open-Cascade-SAS/OCCT) | CMake (`-DMESHIOPLUSPLUS_WITH_OCCT=ON`) | `fit_cad`: analytic, freeform, fillet and thread CAD faces sewn into a STEP solid; STEP/IGES reading; on by default and auto-detected, linked statically into the PyPI wheels, the release CLI binaries, the Blender extension, the Conan and vcpkg packages (by default) and the full WASM artifact (`build/build-occt.sh`, [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)) | LGPL-2.1 with the OCCT exception |
 | [zstandard](https://github.com/indygreg/python-zstandard), [lz4](https://github.com/python-lz4/python-lz4) | `[codecs]` | the Python fallback for the optional VTK block codecs | BSD-3-Clause / BSD-2-Clause |
 
 #### Bundled and build-time
 
 | Project | Used for | License |
 | --- | --- | --- |
-| [pugixml](https://pugixml.org/) | XML parsing in the C++ core (vendored in `src/cpp/third_party/`) | MIT |
-| [Eigen](https://eigen.tuxfamily.org/) | the MED Fortran↔C transpose (git submodule, optional) | MPL-2.0 |
+| [pugixml](https://pugixml.org/) (vendored, 1.14) | XML parsing in the C++ core (vendored in `src/cpp/third_party/`); statically linked into the wheels and CLI binaries | MIT |
+| [gidpost](https://www.gidsimulation.com/) (vendored, 2.14) | the GiD postprocess writer; statically linked into the wheels, the CLI binaries and both WASM pairs | BSD-2-Clause-Views |
+| [nlohmann/json](https://github.com/nlohmann/json) (git submodule, v3.12.0) | the JSON pipeline parser; header-only, statically linked into the wheels and CLI binaries | MIT |
+| [Eigen](https://eigen.tuxfamily.org/) | the MED Fortran↔C transpose (git submodule, optional); compiled only where HDF5 is built, so only into the lean WASM build | MPL-2.0 |
 | [pybind11](https://github.com/pybind/pybind11) | the Python bindings | BSD-3-Clause |
 | [scikit-build-core](https://github.com/scikit-build/scikit-build-core) | the CMake-driven build backend | Apache-2.0 |
 | [Emscripten](https://emscripten.org/) | the WebAssembly build | MIT / NCSA |
 | [GoogleTest](https://github.com/google/googletest) | the C++ test suite | BSD-3-Clause |
-| [zlib](https://zlib.net/), [Zstandard](https://facebook.github.io/zstd/), [LZ4](https://lz4.org/) | optional compression codecs | zlib / BSD-3-Clause / BSD-2-Clause |
+| [zlib](https://zlib.net/) (vendored, 1.3.1) | statically linked into the wheels and CLI binaries, where it backs VTU compression and the GiD writer; a source build uses the system zlib | Zlib |
+| [Zstandard](https://facebook.github.io/zstd/), [LZ4](https://lz4.org/) | optional compression codecs | BSD-3-Clause / BSD-2-Clause |
 | [HDF5](https://www.hdfgroup.org/solutions/hdf5/), [netCDF](https://www.unidata.ucar.edu/software/netcdf/) | optional native paths for HDF5/netCDF-backed formats | BSD-3-Clause / MIT-like |
 
 #### Browser viewer (isolated under [`src/viewer/`](src/viewer/))

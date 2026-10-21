@@ -1,14 +1,14 @@
 [build-system]
-requires = ["scikit-build-core>=0.8", "pybind11>=2.11"]
+requires = ["scikit-build-core>=0.11", "pybind11>=2.11"]
 build-backend = "scikit_build_core.build"
 
 [project]
 name = "meshioplusplus"
-version = "17.10.0"
+version = "17.11.0"
 description = "meshio++: I/O for many mesh formats (C++20 core + Python bindings)"
 readme = "README.md"
 requires-python = ">=3.8"
-license = {file = "LICENSE"}
+license = "MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)"
 keywords = [
   "mesh",
   "file formats",
@@ -25,8 +25,6 @@ classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Programming Language :: Python",
   "Intended Audience :: Science/Research",
-  "License :: OSI Approved :: MIT License",
-  "License :: OSI Approved :: GNU Lesser General Public License v2 (LGPLv2)",
   "Operating System :: OS Independent",
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
@@ -54,13 +52,15 @@ kahip = ["kahip"]
 # Polyscope (MIT): the desktop backend of `view()` and all of `screenshot()`.
 # Python-only and strictly optional -- it never reaches the C++/WASM/C/Fortran
 # core, and the browser backend of `view()` needs nothing from this extra.
+# It is also part of `[all]`.
 viewer = ["polyscope>=2.4"]
 # In-memory interoperability (src/python/meshioplusplus/_interop.py). Python-only
 # and strictly optional: none of these reaches the C++/WASM/C/Fortran core, and
 # every import is lazy, so the package works exactly as before without them.
-# Deliberately NOT in `all`, which means "the optional deps the FORMATS need"
-# (h5py/netCDF4) -- quietly adding a PyVista-sized dependency there would
-# surprise people. `viewer`/`kahip`/`codecs` stand apart for the same reason.
+# Deliberately NOT in `all`, which holds the format runtime dependencies (h5py,
+# netCDF4) and the desktop viewer backend (polyscope). Quietly adding a
+# PyVista-sized dependency there would surprise people, so `kahip`, `codecs`
+# and the interop extras stand apart.
 pyvista = ["pyvista>=0.44"]
 trimesh = ["trimesh>=4.0"]
 arrow = ["pyarrow>=14"]
@@ -136,13 +136,19 @@ meshioplusplus-mcp = "meshioplusplus.mcp:main"
 [tool.scikit-build]
 # scikit-build-core drives the CMake build of the meshioplusplus._core
 # extension and bundles it next to the pure-Python package (src layout).
-minimum-version = "0.8"
+minimum-version = "0.11"
 build-dir = "build/{wheel_tag}"
 wheel.packages = ["src/python/meshioplusplus"]
-# The wheels link OpenCASCADE statically (LGPL-2.1 with the OCCT exception;
-# build/build-occt.sh): its notice and licence texts ship in .dist-info.
+# The wheels link OpenCASCADE statically, so their licence is the combined
+# expression in [project]. LICENSE-BINARIES.md states it, and the notices and
+# OpenCASCADE's licence texts (build/build-occt.sh) ship in .dist-info/licenses.
+# This is wheel.license-files, not project.license-files: scikit-build-core
+# requires every project.license-files pattern to match, and a source build
+# without OpenCASCADE has no OCCT texts, so the metadata gets no License-File
+# lines.
 wheel.license-files = [
   "LICENSE",
+  "LICENSE-BINARIES.md",
   "THIRD_PARTY_NOTICES.md",
   "build/occt/share/licenses/opencascade/*.txt",
 ]

@@ -354,6 +354,56 @@ bool patch_flattenable(const std::vector<PatchVec>& rPts, const std::vector<Patc
     return false;
 }
 
+std::vector<std::int64_t> patch_bisect(const std::vector<PatchVec>& rPts,
+                                       const std::vector<PatchTri>& rTris,
+                                       std::size_t& rNumPieces) {
+    rNumPieces = 0;
+    std::vector<std::int64_t> out(rTris.size(), -1);
+    if (rTris.size() < 2)
+        return out;
+    std::vector<PatchVec> normals;
+    std::vector<double> areas;
+    patch_normals(rPts, rTris, normals, areas);
+    double m[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0}, w[3], v[9];
+    double total = 0.0;
+    for (std::size_t t = 0; t < rTris.size(); ++t) {
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                m[i * 3 + j] += areas[t] * normals[t][static_cast<std::size_t>(i)] *
+                                normals[t][static_cast<std::size_t>(j)];
+        total += areas[t];
+    }
+    lsq_sym3_eigen(m, w, v);
+    const PatchVec e{v[6], v[7], v[8]};
+    std::vector<std::pair<double, std::size_t>> keyed;
+    for (std::size_t t = 0; t < rTris.size(); ++t)
+        keyed.emplace_back(pf_dot(normals[t], e), t);
+    std::sort(keyed.begin(), keyed.end());
+    std::size_t k = 0;
+    double acc = 0.0;
+    while (k + 1 < keyed.size() && acc + areas[keyed[k].second] <= 0.5 * total) {
+        acc += areas[keyed[k].second];
+        ++k;
+    }
+    k = std::max<std::size_t>(k, 1);
+    std::vector<std::size_t> lo, hi;
+    for (std::size_t i = 0; i < keyed.size(); ++i)
+        (i < k ? lo : hi).push_back(keyed[i].second);
+    std::vector<std::vector<std::size_t>> pieces;
+    for (std::vector<std::size_t>* half : {&lo, &hi}) {
+        std::sort(half->begin(), half->end());
+        for (auto& comp : pf_components(rTris, *half))
+            pieces.push_back(std::move(comp));
+    }
+    std::sort(pieces.begin(), pieces.end(),
+              [](const auto& rA, const auto& rB) { return rA.front() < rB.front(); });
+    for (std::size_t p = 0; p < pieces.size(); ++p)
+        for (std::size_t t : pieces[p])
+            out[t] = static_cast<std::int64_t>(p);
+    rNumPieces = pieces.size();
+    return out;
+}
+
 std::vector<std::int64_t> patch_split_until_flat(const std::vector<PatchVec>& rPts,
                                                  const std::vector<PatchTri>& rTris,
                                                  const PatchSplitOptions& rOptions,

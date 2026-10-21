@@ -650,12 +650,13 @@ jobs:
           python -m pytest tests/python/test_partition.py -v
 
   # The OpenCASCADE backend of fit_cad (roadmap 6.3). Its own job, like
-  # KaHIP's: OCCT is LGPL-2.1 and bring-your-own, so no default leg, wheel,
-  # lean WASM build or release CLI binary carries it, and those legs exercise
-  # the named "rebuild with -DMESHIOPLUSPLUS_WITH_OCCT=ON" error instead (the
-  # full WASM artifact links it, and wasm.yml tests that). Ubuntu
-  # 24.04's packages are OCCT 7.6, the supported floor; they export toolkit
-  # targets that link TBB, hence libtbb-dev.
+  # KaHIP's: OCCT is LGPL-2.1 and bring-your-own for source builds, so no
+  # default leg and no lean WASM build carries it, and those legs exercise
+  # the named "rebuild with -DMESHIOPLUSPLUS_WITH_OCCT=ON" error instead. The
+  # PyPI wheels, the release CLI binaries and the full WASM artifact link a
+  # static OpenCASCADE (wheels.yml, cli.yml, wasm.yml); this job tests the
+  # system-package route. Ubuntu 24.04's packages are OCCT 7.6, the supported
+  # floor; they export toolkit targets that link TBB, hence libtbb-dev.
   occt:
     name: OpenCASCADE fit_cad backend
     needs: [lint]
@@ -693,7 +694,7 @@ jobs:
       - name: Build
         run: cmake --build build-occt
       - name: Run the fit_cad suites (OpenCASCADE cases live)
-        run: ctest --test-dir build-occt -R "FitCad|CApi.FitCad|CApi.StepAndIges|CApi.Brep|Step|CadRead|CadJson|AbiLayout|Pipeline|Registry" --output-on-failure
+        run: ctest --test-dir build-occt -R "FitCad|CApi.FitCad|CApi.StepAndIges|CApi.Brep|Step|CadRead|CadJson|AbiLayout|Pipeline|Registry|SparseSolve|BsplineLsq" --output-on-failure
       - name: Run the native to-cad verb
         run: |
           python - <<'PY'
@@ -713,9 +714,72 @@ jobs:
       - name: Install meshioplusplus with OpenCASCADE
         run: CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_OCCT=ON" pip install . -v
       - name: Run the Python fit_cad suite
+        env:
+          MESHIOPLUSPLUS_FIT_CAD_GOLDENS: "1"
         run: |
           python -c "from meshioplusplus import _core; assert _core.__has_occt__"
-          python -m pytest tests/python/test_fit_cad.py tests/python/test_step.py tests/python/test_cad_json.py -v
+          python -m pytest tests/python/test_fit_cad.py tests/python/test_fit_cad_goldens.py tests/python/test_step.py tests/python/test_cad_json.py -v
+
+  # fit_cad on the newest OpenCASCADE 7.x the backend supports (7.9, pinned in
+  # build/occt-recipe.sh as MIO_OCCT_PIN=7.9), built static from source into a
+  # cached prefix the way the release artifacts build 7.6. 7.6 and 7.9 differ
+  # where it shows (doc/spikes.md, "The OpenCASCADE dependency"), so every
+  # fit_cad change is checked on both; the golden digests are per version.
+  occt-79:
+    name: OpenCASCADE 7.9 fit_cad backend
+    needs: [lint]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build tools
+        run: |
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          # From 7.8 the STEP and IGES toolkits sit on XCAF, whose closure
+          # reaches TKService, which includes X11 headers on Linux.
+          sudo apt-get install -y zlib1g-dev pkg-config libx11-dev
+          python -m pip install --upgrade pip pybind11 cmake ninja pytest
+      - name: Cache OpenCASCADE 7.9
+        id: occt79-cache
+        uses: actions/cache@v4
+        with:
+          path: occt79
+          key: occt-ci-7.9-${{ hashFiles('build/occt-recipe.sh', 'build/build-occt.sh', 'build/patches/OCCT-*.patch') }}
+      - name: Build OpenCASCADE 7.9
+        if: steps.occt79-cache.outputs.cache-hit != 'true'
+        env:
+          MIO_OCCT_PIN: "7.9"
+        run: sh build/build-occt.sh "$PWD/occt79"
+      - name: Configure C++ tests with OpenCASCADE 7.9
+        run: >-
+          cmake -S . -B build-occt -G Ninja
+          -DMESHIOPLUSPLUS_BUILD_TESTS=ON
+          -DMESHIOPLUSPLUS_BUILD_C_API=ON
+          -DMESHIOPLUSPLUS_BUILD_CLI=ON
+          -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF
+          -DMESHIOPLUSPLUS_WITH_HDF5=OFF
+          -DMESHIOPLUSPLUS_WITH_NETCDF=OFF
+          -DMESHIOPLUSPLUS_REQUIRE_OCCT=ON
+          -DOpenCASCADE_DIR=$PWD/occt79/lib/cmake/opencascade
+      - name: Build
+        run: cmake --build build-occt
+      - name: Run the fit_cad suites (OpenCASCADE 7.9)
+        run: ctest --test-dir build-occt -R "FitCad|CApi.FitCad|CApi.StepAndIges|CApi.Brep|Step|CadRead|CadJson|AbiLayout|Pipeline|Registry|SparseSolve|BsplineLsq" --output-on-failure
+      - name: Install meshioplusplus with OpenCASCADE 7.9
+        run: CMAKE_ARGS="-DMESHIOPLUSPLUS_REQUIRE_OCCT=ON -DOpenCASCADE_DIR=$PWD/occt79/lib/cmake/opencascade" pip install . -v
+      - name: Run the Python fit_cad suite
+        env:
+          MESHIOPLUSPLUS_FIT_CAD_GOLDENS: "1"
+        run: |
+          python -c "from meshioplusplus import _core; assert _core.__occt_version__.startswith('7.9')"
+          python -m pytest tests/python/test_fit_cad.py tests/python/test_fit_cad_goldens.py tests/python/test_step.py tests/python/test_cad_json.py -v
 
   # The two read-only formats behind a library that is never a default
   # (v16.13.0): DOLFINx VTX `.bp` through ADIOS2 (Ubuntu's serial package) and

@@ -120,7 +120,7 @@ See [mesh backends](/cpp_backends) for `KratosMesh` and the `ModelPart` material
 
 ## Dependencies
 
-Unlike the C API — whose HDF5/netCDF/zlib are private to its shared object and resolved by the dynamic linker — the C++ targets propagate their dependencies, because you compile the real headers and, in a static build, link the real dependency graph. The generated config issues the matching `find_dependency()` calls (`ZLIB`, `zstd`, `lz4`, `netCDF`, `KaHIP`, `OpenMP`/`TBB`/`Kokkos`) and installs `FindKaHIP.cmake` beside itself so a KaHIP build resolves for a consumer with no copy of its own.
+Unlike the C API — whose HDF5/netCDF/zlib are private to its shared object and resolved by the dynamic linker — the C++ targets propagate their dependencies, because you compile the real headers and, in a static build, link the real dependency graph. The generated config issues the matching `find_dependency()` calls (`ZLIB`, `zstd`, `lz4`, `LibLZMA`, `BZip2`, `ADIOS2`, `Threads` (with TecIO), `OpenCASCADE`, `KaHIP`, `HDF5` and `MPI` (both need C enabled), `netCDF`, and `OpenMP`, `TBB` or `Kokkos` for the parallel backend, each only when its option is on) and installs `FindKaHIP.cmake` beside itself so a KaHIP build resolves for a consumer with no copy of its own.
 
 HDF5 and MPI reach you as the imported targets `HDF5::HDF5` / `MPI::MPI_C`, so no absolute library path is baked into `meshioplusplusTargets.cmake` and the prefix can be moved to a machine whose HDF5 lives somewhere else. The price is that both Find modules need the **C language enabled**, which a C++-only project otherwise has no reason to do:
 
@@ -226,7 +226,7 @@ endif()
 The conservative pin is still fully supported, and is the right choice if you would rather not reason about any of this:
 
 ```cmake
-find_package(meshioplusplus 17.10.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 17.11.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 ```
 
 **All three components are required.** Under `SameMajorVersion`, `EXACT` is a full *string* comparison against the package version, so `9.4 EXACT` does not match an installed `9.5.0` — it fails with "no configuration file … exactly matches requested version". (Through v9.1.0 this page printed the two-component form, which could never succeed.)

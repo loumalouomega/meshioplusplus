@@ -859,6 +859,173 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def reference_triangle(
+        output_path: str,
+        output_format: Optional[str] = None,
+        n: int = 4,
+        size: Optional[List[float]] = None,
+        origin: Optional[List[float]] = None,
+        order: int = 1,
+        max_cells: int = 20000000,
+    ) -> dict:
+        """Generate the reference triangle (0,0) (1,0) (0,1), scaled by size and
+        refined into n*n triangles in barycentric lattice order. The mesh carries
+        side regions ymin, xmin and hypotenuse. Reads no input mesh: it creates
+        one."""
+        return _guard(
+            _tools.tool_reference_triangle,
+            output_path=output_path,
+            output_format=output_format,
+            n=n,
+            size=size,
+            origin=origin,
+            order=order,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
+    def ngon(
+        output_path: str,
+        output_format: Optional[str] = None,
+        sides: int = 6,
+        radius: float = 1.0,
+        rings: int = 1,
+        center: Optional[List[float]] = None,
+        order: int = 1,
+        max_cells: int = 20000000,
+    ) -> dict:
+        """Generate a regular polygon of `sides` sides fanned from its centre
+        (rings=1), or refined into `rings` rings of triangles. The mesh carries a
+        side region rim. Reads no input mesh: it creates one."""
+        return _guard(
+            _tools.tool_ngon,
+            output_path=output_path,
+            output_format=output_format,
+            sides=sides,
+            radius=radius,
+            rings=rings,
+            center=center,
+            order=order,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
+    def annulus(
+        output_path: str,
+        output_format: Optional[str] = None,
+        inner_radius: float = 0.5,
+        outer_radius: float = 1.0,
+        ntheta: int = 16,
+        nr: int = 4,
+        angle: float = 6.283185307179586,
+        center: Optional[List[float]] = None,
+        cell_type: str = "quad",
+        order: int = 1,
+        max_cells: int = 20000000,
+    ) -> dict:
+        """Generate an annulus of ntheta x nr quads or triangles, or a sector of
+        `angle` radians whose two end rays stay separate node chains (the seam
+        pair periodic links). order=2 curves the rims. The mesh carries side
+        regions inner, outer and, for a sector, start and end. Reads no input
+        mesh: it creates one."""
+        return _guard(
+            _tools.tool_annulus,
+            output_path=output_path,
+            output_format=output_format,
+            inner_radius=inner_radius,
+            outer_radius=outer_radius,
+            ntheta=ntheta,
+            nr=nr,
+            angle=angle,
+            center=center,
+            cell_type=cell_type,
+            order=order,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
+    def lshape(
+        output_path: str,
+        output_format: Optional[str] = None,
+        n: int = 4,
+        size: float = 2.0,
+        center: Optional[List[float]] = None,
+        cell_type: str = "quad",
+        order: int = 1,
+        max_cells: int = 20000000,
+    ) -> dict:
+        """Generate the L-shaped domain: the square of side `size` minus its
+        fourth quadrant, with the re-entrant corner at the centre (a singular
+        solution for refine and error estimation). The mesh carries side regions
+        xmin, xmax, ymin, ymax, notch_x and notch_y. Reads no input mesh: it
+        creates one."""
+        return _guard(
+            _tools.tool_lshape,
+            output_path=output_path,
+            output_format=output_format,
+            n=n,
+            size=size,
+            center=center,
+            cell_type=cell_type,
+            order=order,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
+    def plate_with_hole(
+        output_path: str,
+        output_format: Optional[str] = None,
+        radius: float = 0.25,
+        size: float = 1.0,
+        nt: int = 8,
+        nr: int = 4,
+        center: Optional[List[float]] = None,
+        cell_type: str = "quad",
+        order: int = 1,
+        max_cells: int = 20000000,
+    ) -> dict:
+        """Generate a square plate of side `size` around a circular hole of
+        `radius`, in four quad blocks (the stress-concentration benchmark).
+        order=2 makes the hole circular. The mesh carries side regions hole, xmin,
+        xmax, ymin and ymax. Reads no input mesh: it creates one."""
+        return _guard(
+            _tools.tool_plate_with_hole,
+            output_path=output_path,
+            output_format=output_format,
+            radius=radius,
+            size=size,
+            nt=nt,
+            nr=nr,
+            center=center,
+            cell_type=cell_type,
+            order=order,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
+    def honeycomb(
+        output_path: str,
+        output_format: Optional[str] = None,
+        dims: Optional[List[int]] = None,
+        edge: float = 1.0,
+        origin: Optional[List[float]] = None,
+        max_cells: int = 20000000,
+    ) -> dict:
+        """Generate a tiling of pointy-top hexagons (dims = nx, ny) as one
+        polygon block, a parametric fixture for the ragged polygon paths. The
+        mesh carries a side region boundary. Reads no input mesh: it creates
+        one."""
+        return _guard(
+            _tools.tool_honeycomb,
+            output_path=output_path,
+            output_format=output_format,
+            dims=dims,
+            edge=edge,
+            origin=origin,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
     def reference_cells(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1903,6 +2070,77 @@ def _register_operations(server: FastMCP) -> None:
             min_inlier_fraction=min_inlier_fraction,
             types=types,
             max_iterations=max_iterations,
+        )
+
+    @server.tool()
+    def refine_patches(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        segment_method: str = "angle",
+        segment_tolerance: float = 1e-3,
+        feature_angle: float = 30.0,
+        tolerance: float = 1e-3,
+        relative: bool = True,
+        normal_weight: float = 1.0,
+        epsilon: float = 1e-3,
+        max_iterations: int = 10,
+        min_patch_cells: int = 3,
+        ransac_seed: int = 0x6D657368696F2B2B,
+        types: Optional[List[str]] = None,
+        allow_split: bool = True,
+        allow_merge: bool = True,
+        prefix: str = "patch",
+    ) -> dict:
+        """Refine a segmentation until one plane, sphere, cylinder, cone or
+        torus explains each patch -- between segment and fit_primitives /
+        fit_cad, so more of a skin becomes real CAD faces (a fillet strip a
+        plane claimed, a cylinder cut in two, a cylinder inside a freeform
+        patch).
+
+        Hybrid variational shape approximation: each patch is explained by a
+        primitive holding every point within tolerance (a fraction of the
+        bounding-box diagonal unless relative is false; types narrows which),
+        else a freeform quadric; patches grow back from their best-explained
+        cells, cheapest first (cost: squared distance over tolerance squared
+        plus normal_weight times the normal deviation), never across a
+        feature edge above feature_angle degrees; with allow_split a primitive
+        is found inside a freeform patch by RANSAC seeded by ransac_seed (the
+        output is byte-identical for a seed), with allow_merge neighbours one
+        primitive explains merge, and a freeform patch under min_patch_cells
+        cells joins a neighbour. Stops when nothing changes, an iteration adds
+        less than epsilon to the explained area share, or after max_iterations.
+        A surface without segment:patch is segmented first (segment_method
+        "angle" by default, feature_angle, segment_tolerance for "primitive").
+        The mesh is written with segment:patch, the <prefix>:<k> regions and
+        the fit:* data rewritten (fit_cad reads it unchanged) and refine:*
+        per-patch field data. The report gives num_patches, num_iterations,
+        num_splits, num_merges, num_absorbed, num_primitive, num_freeform,
+        num_facets, the absolute tolerance, explained_area_fraction and
+        initial_explained_area_fraction, hausdorff_max / hausdorff_rms,
+        initial_energy / energy and stop (unchanged, small_gain,
+        iteration_cap, energy_rose). Needs the compiled core."""
+        return _guard(
+            _tools.tool_refine_patches,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            segment_method=segment_method,
+            segment_tolerance=segment_tolerance,
+            feature_angle=feature_angle,
+            tolerance=tolerance,
+            relative=relative,
+            normal_weight=normal_weight,
+            epsilon=epsilon,
+            max_iterations=max_iterations,
+            min_patch_cells=min_patch_cells,
+            ransac_seed=ransac_seed,
+            types=types,
+            allow_split=allow_split,
+            allow_merge=allow_merge,
+            prefix=prefix,
         )
 
     @server.tool()
@@ -3606,6 +3844,25 @@ def _register_gated(server: FastMCP) -> None:
         segment_tolerance: float = 1e-3,
         merge_faces: bool = True,
         backend: str = "auto",
+        refine_segmentation: bool = False,
+        max_refine_iterations: int = 10,
+        refine_epsilon: float = 1e-3,
+        normal_weight: float = 1.0,
+        allow_merge: bool = True,
+        allow_split: bool = True,
+        ransac_seed: int = 0x6D657368696F2B2B,
+        refine_tolerance: float = 1e-3,
+        relative_tolerance: bool = True,
+        freeform_general: bool = False,
+        freeform_tolerance: float = 0.0,
+        freeform_smoothing: float = 1e-12,
+        max_freeform_poles: int = 40,
+        max_freeform_iterations: int = 30,
+        max_freeform_splits: int = 2,
+        sew_tolerance: float = 0.0,
+        extend_surfaces: bool = False,
+        snap_junctions: bool = False,
+        face_deviation: bool = False,
     ) -> dict:
         """Turn a closed triangle skin into a CAD solid with analytic faces,
         written to output_path as AP214 STEP -- the last step of skin to CAD
@@ -3649,7 +3906,33 @@ def _register_gated(server: FastMCP) -> None:
         patches become analytic STEP faces bounded by line, circle and
         polyline edges, the rest coplanar polygons, no freeform or feature
         faces, NaN volumes; "auto" (the default) is "occt" when the core
-        carries it (occt_available), else "native"."""
+        carries it (occt_available), else "native". refine_segmentation (off
+        by default) first refines the patches as the refine_patches tool does
+        (max_refine_iterations, refine_epsilon, normal_weight, allow_merge,
+        allow_split, ransac_seed, refine_tolerance relative to the diagonal
+        unless relative_tolerance is false), so more of the skin becomes
+        analytic faces; the report then adds refined, refinement_kept (whether
+        the solid was built from the refined patches; OpenCASCADE also builds
+        it from the patches as given and keeps the better), refine_iterations,
+        num_refine_splits, num_refine_merges, initial_explained_area_fraction
+        and explained_area_fraction. freeform_general (off by default) tries a
+        patch the plane and unrolled-cylinder freeform fit leaves unexplained
+        as a general B-spline face (a disc parametrisation and an iterative
+        fit to freeform_tolerance, 0 a quarter of the tolerance, with
+        thin-plate weight freeform_smoothing, at most max_freeform_poles per
+        direction and max_freeform_iterations, halved up to
+        max_freeform_splits times) and adds num_freeform_general,
+        num_freeform_refinements and avg_freeform_poles to the report.
+        OpenCASCADE only: sew_tolerance sews at that tolerance (0, the
+        default, at tolerance); extend_surfaces extends freeform surfaces past
+        their patches before the edges are built (adds
+        num_extended_edges); snap_junctions places the vertices where
+        analytic faces meet by a least-squares solve on their tangent planes
+        (adds num_snapped_junctions); face_deviation measures each face's
+        two-sided distance to the skin as fit_cad:face_hausdorff and
+        fit_cad:face_rms field data and adds hausdorff_max and hausdorff_rms
+        (null when not measured). The report always holds closed (every shell
+        edge borders two faces)."""
         return _guard(
             _tools.tool_fit_cad,
             input_path=input_path,
@@ -3675,6 +3958,25 @@ def _register_gated(server: FastMCP) -> None:
             segment_tolerance=segment_tolerance,
             merge_faces=merge_faces,
             backend=backend,
+            refine_segmentation=refine_segmentation,
+            max_refine_iterations=max_refine_iterations,
+            refine_epsilon=refine_epsilon,
+            normal_weight=normal_weight,
+            allow_merge=allow_merge,
+            allow_split=allow_split,
+            ransac_seed=ransac_seed,
+            refine_tolerance=refine_tolerance,
+            relative_tolerance=relative_tolerance,
+            freeform_general=freeform_general,
+            freeform_tolerance=freeform_tolerance,
+            freeform_smoothing=freeform_smoothing,
+            max_freeform_poles=max_freeform_poles,
+            max_freeform_iterations=max_freeform_iterations,
+            max_freeform_splits=max_freeform_splits,
+            sew_tolerance=sew_tolerance,
+            extend_surfaces=extend_surfaces,
+            snap_junctions=snap_junctions,
+            face_deviation=face_deviation,
         )
 
     @server.tool()

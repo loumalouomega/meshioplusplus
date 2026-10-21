@@ -120,6 +120,7 @@
 #include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
+#include "meshioplusplus/operations/refine_patches.hpp"
 #include "meshioplusplus/operations/iga.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/tessellate.hpp"
@@ -4043,6 +4044,69 @@ val cylinder_js(double radius, double height, double nxy, double nz, const val& 
     });
 }
 
+val reference_triangle_js(double n, const val& rSize, const val& rOrigin, int order,
+                          double maxCells) {
+    return with_js_errors([&]() -> val {
+        std::array<double, 2> size{{1.0, 1.0}};
+        if (!rSize.isUndefined() && !rSize.isNull()) {
+            if (rSize["length"].as<unsigned>() != 2)
+                throw std::invalid_argument("meshio++: size expects two numbers");
+            size = {{rSize[0].as<double>(), rSize[1].as<double>()}};
+        }
+        return mesh_to_val(meshioplusplus::reference_triangle(
+            static_cast<std::int64_t>(n), size, prim_js_vec3(rOrigin, {{0.0, 0.0, 0.0}}, true),
+            order, static_cast<std::int64_t>(maxCells)));
+    });
+}
+
+val ngon_js(double sides, double radius, double rings, const val& rCenter, int order,
+            double maxCells) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::ngon(static_cast<std::int64_t>(sides), radius,
+                                                static_cast<std::int64_t>(rings),
+                                                prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false),
+                                                order, static_cast<std::int64_t>(maxCells)));
+    });
+}
+
+val annulus_js(double innerRadius, double outerRadius, double ntheta, double nr, double angle,
+               const val& rCenter, const std::string& rCellType, int order, double maxCells) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::annulus(
+            innerRadius, outerRadius, static_cast<std::int64_t>(ntheta),
+            static_cast<std::int64_t>(nr), angle, prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false),
+            rCellType, order, static_cast<std::int64_t>(maxCells)));
+    });
+}
+
+val lshape_js(double n, double size, const val& rCenter, const std::string& rCellType, int order,
+              double maxCells) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::lshape(
+            static_cast<std::int64_t>(n), size, prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false),
+            rCellType, order, static_cast<std::int64_t>(maxCells)));
+    });
+}
+
+val plate_with_hole_js(double radius, double size, double nt, double nr, const val& rCenter,
+                       const std::string& rCellType, int order, double maxCells) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::plate_with_hole(
+            radius, size, static_cast<std::int64_t>(nt), static_cast<std::int64_t>(nr),
+            prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false), rCellType, order,
+            static_cast<std::int64_t>(maxCells)));
+    });
+}
+
+val honeycomb_js(const val& rDims, double edge, const val& rOrigin, double maxCells) {
+    return with_js_errors([&]() -> val {
+        const auto d = prim_js_counts(rDims, 2, 4);
+        return mesh_to_val(meshioplusplus::honeycomb({{d[0], d[1]}}, edge,
+                                                     prim_js_vec3(rOrigin, {{0.0, 0.0, 0.0}}, true),
+                                                     static_cast<std::int64_t>(maxCells)));
+    });
+}
+
 val reference_cells_js(const val& rTypes, bool pairs) {
     return with_js_errors([&]() -> val {
         std::vector<std::string> types;
@@ -4769,6 +4833,123 @@ val fit_primitives_js(const val& rMeshObj, const std::string& rPatchData, double
     });
 }
 
+/// The `1 << FitPrimitiveType` mask of a JS array of primitive names.
+std::uint32_t js_fit_types(const val& rTypes, const char* pOp) {
+    static const char* const kNames[] = {"plane", "sphere", "cylinder", "cone", "torus"};
+    std::uint32_t mask = 0;
+    const unsigned n = rTypes["length"].as<unsigned>();
+    for (unsigned i = 0; i < n; ++i) {
+        const std::string name = rTypes[i].as<std::string>();
+        bool found = false;
+        for (int t = 0; t < 5; ++t)
+            if (name == kNames[t]) {
+                mask |= 1u << (t + 1);
+                found = true;
+            }
+        if (!found)
+            throw std::invalid_argument(std::string("meshio++: ") + pOp +
+                                        ": unknown primitive type '" + name + "'");
+    }
+    return mask;
+}
+
+/// A `ransacSeed`: a JS number holds an integer exactly only up to 2^53.
+std::uint64_t js_ransac_seed(const val& rSeed, const char* pOp) {
+    const double v = rSeed.as<double>();
+    if (!(v >= 0.0 && v <= 9007199254740992.0) || v != std::floor(v))
+        throw std::invalid_argument(std::string("meshio++: ") + pOp +
+                                    ": ransacSeed must be an integer in [0, 2^53]");
+    return static_cast<std::uint64_t>(v);
+}
+
+/// Why refinement stopped, as the reports name it.
+const char* js_refine_stop_name(meshioplusplus::RefineStop Stop) {
+    switch (Stop) {
+        case meshioplusplus::RefineStop::Unchanged:
+            return "unchanged";
+        case meshioplusplus::RefineStop::SmallGain:
+            return "small_gain";
+        case meshioplusplus::RefineStop::IterationCap:
+            return "iteration_cap";
+        case meshioplusplus::RefineStop::EnergyRose:
+            return "energy_rose";
+    }
+    return "unchanged";
+}
+
+/**
+ * @brief Refine the `segment:patch` labels of a surface by variational shape
+ * approximation: `refine_patches`. See operations/refine_patches.hpp. Needs
+ * no OpenCASCADE, so both artifacts carry it.
+ *
+ * @param rOptions `{tolerance, relative, normalWeight, epsilon, featureAngle,
+ *   maxIterations, minPatchCells, ransacSeed, types, allowSplit, allowMerge,
+ *   prefix}`, every key optional; `ransacSeed` an integer in [0, 2^53].
+ * @return `mesh` and every `RefinePatchesResult` counter in camelCase, `stop`
+ *   one of `'unchanged'`, `'small_gain'`, `'iteration_cap'`, `'energy_rose'`.
+ */
+val refine_patches_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::RefinePatchesOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the refinePatches options",
+                                {"tolerance", "relative", "normalWeight", "epsilon", "featureAngle",
+                                 "maxIterations", "minPatchCells", "ransacSeed", "types",
+                                 "allowSplit", "allowMerge", "prefix"});
+            const auto has = [&](const char* pKey) {
+                return rOptions.hasOwnProperty(pKey) && !rOptions[pKey].isUndefined();
+            };
+            if (has("tolerance"))
+                options.mTolerance = rOptions["tolerance"].as<double>();
+            if (has("relative"))
+                options.mRelative = rOptions["relative"].as<bool>();
+            if (has("normalWeight"))
+                options.mNormalWeight = rOptions["normalWeight"].as<double>();
+            if (has("epsilon"))
+                options.mEpsilon = rOptions["epsilon"].as<double>();
+            if (has("featureAngle"))
+                options.mFeatureAngleDeg = rOptions["featureAngle"].as<double>();
+            if (has("maxIterations"))
+                options.mMaxIterations =
+                    static_cast<std::int64_t>(rOptions["maxIterations"].as<double>());
+            if (has("minPatchCells"))
+                options.mMinPatchCells =
+                    static_cast<std::int64_t>(rOptions["minPatchCells"].as<double>());
+            if (has("ransacSeed"))
+                options.mRansacSeed = js_ransac_seed(rOptions["ransacSeed"], "refine_patches");
+            if (has("types"))
+                options.mTypes = js_fit_types(rOptions["types"], "refine_patches");
+            if (has("allowSplit"))
+                options.mAllowSplit = rOptions["allowSplit"].as<bool>();
+            if (has("allowMerge"))
+                options.mAllowMerge = rOptions["allowMerge"].as<bool>();
+            if (has("prefix"))
+                options.mPrefix = rOptions["prefix"].as<std::string>();
+        }
+        const meshioplusplus::RefinePatchesResult r =
+            meshioplusplus::refine_patches(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        const std::pair<const char*, std::int64_t> counters[] = {
+            {"numPatches", r.mNumPatches},   {"numIterations", r.mNumIterations},
+            {"numSplits", r.mNumSplits},     {"numMerges", r.mNumMerges},
+            {"numAbsorbed", r.mNumAbsorbed}, {"numPrimitive", r.mNumPrimitive},
+            {"numFreeform", r.mNumFreeform}, {"numFacets", r.mNumFacets},
+        };
+        for (const auto& [name, value] : counters)
+            out.set(name, static_cast<double>(value));
+        out.set("tolerance", r.mTolerance);
+        out.set("explainedAreaFraction", r.mExplainedAreaFraction);
+        out.set("initialExplainedAreaFraction", r.mInitialExplainedAreaFraction);
+        out.set("hausdorffMax", r.mHausdorffMax);
+        out.set("hausdorffRms", r.mHausdorffRms);
+        out.set("initialEnergy", r.mInitialEnergy);
+        out.set("energy", r.mEnergy);
+        out.set("stop", std::string(js_refine_stop_name(r.mStop)));
+        return out;
+    });
+}
+
 /**
  * @brief A CAD solid from the fitted patches of a closed skin: `fit_cad`. See
  * operations/fit_cad.hpp and doc/fit_cad.md. The full artifact links
@@ -4777,12 +4958,22 @@ val fit_primitives_js(const val& rMeshObj, const std::string& rPatchData, double
  *
  * @param rOptions `{stepPath, tolerance, exactEdges, types, meshDeflection,
  *   maxDemotionRounds, freeform, freeformDegree, freeformMaxControl,
- *   freeformSplit, fillets, threads, mergeFaces, backend}`, every key
- *   optional; `types` is an array of `'plane'`, `'sphere'`, `'cylinder'`,
- *   `'cone'`, `'torus'`, `backend` one of `'auto'`, `'occt'`, `'native'`.
+ *   freeformSplit, fillets, threads, mergeFaces, backend, refineSegmentation,
+ *   maxRefineIterations, refineEpsilon, normalWeight, allowMerge, allowSplit,
+ *   ransacSeed, refineTolerance, relativeTolerance, freeformGeneral,
+ *   freeformTolerance, freeformSmoothing, maxFreeformPoles,
+ *   maxFreeformIterations, maxFreeformSplits, sewTolerance, extendSurfaces,
+ *   snapJunctions, faceDeviation}`, every key optional;
+ *   `types` is an array of `'plane'`, `'sphere'`, `'cylinder'`, `'cone'`,
+ *   `'torus'`, `backend` one of `'auto'`, `'occt'`, `'native'`; the
+ *   `refine*` keys, `normalWeight`, `allow*` and `ransacSeed` set
+ *   `FitCadOptions::mRefine`, used when `refineSegmentation` is true; the
+ *   rest set the `FitCadOptions` members of the same name (v17.11.0).
  * @return every `FitCadResult` counter in camelCase, `mesh` (the solid
- *   re-meshed, with the `fit_cad:*` cell data) and `info` (its B-rep, in CAD
- *   JSON's shape, for `writeMesh(path, mesh, 'cad_json', {info})`).
+ *   re-meshed, with the `fit_cad:*` cell data, and with `faceDeviation` the
+ *   `fit_cad:face_hausdorff` and `fit_cad:face_rms` field data) and `info`
+ *   (its B-rep, in CAD JSON's shape, for `writeMesh(path, mesh, 'cad_json',
+ *   {info})`).
  */
 val fit_cad_js(const val& rMeshObj, const val& rOptions) {
     return with_js_errors([&]() -> val {
@@ -4790,10 +4981,39 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
         std::string step_path;
         if (!rOptions.isUndefined() && !rOptions.isNull()) {
             check_settings_keys(rOptions, "the fitCad options",
-                                {"stepPath", "tolerance", "exactEdges", "types", "meshDeflection",
-                                 "maxDemotionRounds", "freeform", "freeformDegree",
-                                 "freeformMaxControl", "freeformSplit", "fillets", "threads",
-                                 "mergeFaces", "backend"});
+                                {"stepPath",
+                                 "tolerance",
+                                 "exactEdges",
+                                 "types",
+                                 "meshDeflection",
+                                 "maxDemotionRounds",
+                                 "freeform",
+                                 "freeformDegree",
+                                 "freeformMaxControl",
+                                 "freeformSplit",
+                                 "fillets",
+                                 "threads",
+                                 "mergeFaces",
+                                 "backend",
+                                 "refineSegmentation",
+                                 "maxRefineIterations",
+                                 "refineEpsilon",
+                                 "normalWeight",
+                                 "allowMerge",
+                                 "allowSplit",
+                                 "ransacSeed",
+                                 "refineTolerance",
+                                 "relativeTolerance",
+                                 "freeformGeneral",
+                                 "freeformTolerance",
+                                 "freeformSmoothing",
+                                 "maxFreeformPoles",
+                                 "maxFreeformIterations",
+                                 "maxFreeformSplits",
+                                 "sewTolerance",
+                                 "extendSurfaces",
+                                 "snapJunctions",
+                                 "faceDeviation"});
             const auto has = [&](const char* pKey) {
                 return rOptions.hasOwnProperty(pKey) && !rOptions[pKey].isUndefined();
             };
@@ -4836,25 +5056,50 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
                     throw std::invalid_argument(
                         "meshio++: fit_cad: backend must be 'auto', 'occt' or 'native'");
             }
-            if (has("types")) {
-                static const char* const kNames[] = {"plane", "sphere", "cylinder", "cone",
-                                                     "torus"};
-                const val types = rOptions["types"];
-                options.mTypes = 0;
-                const unsigned n = types["length"].as<unsigned>();
-                for (unsigned i = 0; i < n; ++i) {
-                    const std::string name = types[i].as<std::string>();
-                    bool found = false;
-                    for (int t = 0; t < 5; ++t)
-                        if (name == kNames[t]) {
-                            options.mTypes |= 1u << (t + 1);
-                            found = true;
-                        }
-                    if (!found)
-                        throw std::invalid_argument("meshio++: fit_cad: unknown primitive type '" +
-                                                    name + "'");
-                }
-            }
+            if (has("types"))
+                options.mTypes = js_fit_types(rOptions["types"], "fit_cad");
+            if (has("refineSegmentation"))
+                options.mRefineSegmentation = rOptions["refineSegmentation"].as<bool>();
+            if (has("maxRefineIterations"))
+                options.mRefine.mMaxIterations =
+                    static_cast<std::int64_t>(rOptions["maxRefineIterations"].as<double>());
+            if (has("refineEpsilon"))
+                options.mRefine.mEpsilon = rOptions["refineEpsilon"].as<double>();
+            if (has("normalWeight"))
+                options.mRefine.mNormalWeight = rOptions["normalWeight"].as<double>();
+            if (has("allowMerge"))
+                options.mRefine.mAllowMerge = rOptions["allowMerge"].as<bool>();
+            if (has("allowSplit"))
+                options.mRefine.mAllowSplit = rOptions["allowSplit"].as<bool>();
+            if (has("ransacSeed"))
+                options.mRefine.mRansacSeed = js_ransac_seed(rOptions["ransacSeed"], "fit_cad");
+            if (has("refineTolerance"))
+                options.mRefine.mTolerance = rOptions["refineTolerance"].as<double>();
+            if (has("relativeTolerance"))
+                options.mRefine.mRelative = rOptions["relativeTolerance"].as<bool>();
+            if (has("freeformGeneral"))
+                options.mFreeformGeneral = rOptions["freeformGeneral"].as<bool>();
+            if (has("freeformTolerance"))
+                options.mFreeformTolerance = rOptions["freeformTolerance"].as<double>();
+            if (has("freeformSmoothing"))
+                options.mFreeformSmoothing = rOptions["freeformSmoothing"].as<double>();
+            if (has("maxFreeformPoles"))
+                options.mMaxFreeformPoles =
+                    static_cast<std::int64_t>(rOptions["maxFreeformPoles"].as<double>());
+            if (has("maxFreeformIterations"))
+                options.mMaxFreeformIterations =
+                    static_cast<std::int64_t>(rOptions["maxFreeformIterations"].as<double>());
+            if (has("maxFreeformSplits"))
+                options.mMaxFreeformSplits =
+                    static_cast<std::int64_t>(rOptions["maxFreeformSplits"].as<double>());
+            if (has("sewTolerance"))
+                options.mSewTolerance = rOptions["sewTolerance"].as<double>();
+            if (has("extendSurfaces"))
+                options.mExtendSurfaces = rOptions["extendSurfaces"].as<bool>();
+            if (has("snapJunctions"))
+                options.mSnapJunctions = rOptions["snapJunctions"].as<bool>();
+            if (has("faceDeviation"))
+                options.mFaceDeviation = rOptions["faceDeviation"].as<bool>();
         }
         if (options.mBackend == meshioplusplus::FitCadBackend::Occt &&
             !meshioplusplus::fit_cad_has_occt())
@@ -4896,9 +5141,27 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
             {"numConicBlend", r.mNumConicBlend},
             {"numTaperedThread", r.mNumTaperedThread},
             {"numVariablePitchThread", r.mNumVariablePitchThread},
+            {"refineIterations", r.mRefineIterations},
+            {"numRefineSplits", r.mNumRefineSplits},
+            {"numRefineMerges", r.mNumRefineMerges},
+            {"numFreeformGeneral", r.mNumFreeformGeneral},
+            {"numFreeformRefinements", r.mNumFreeformRefinements},
+            {"numExtendedEdges", r.mNumExtendedEdges},
+            {"numSnappedJunctions", r.mNumSnappedJunctions},
         };
         for (const auto& [name, value] : counters)
             out.set(name, static_cast<double>(value));
+        // The refinement's report: false and zeros when it did not run.
+        out.set("refined", r.mRefined);
+        out.set("refinementKept", r.mRefinementKept);
+        out.set("initialExplainedAreaFraction", r.mInitialExplainedAreaFraction);
+        out.set("explainedAreaFraction", r.mExplainedAreaFraction);
+        // The Phase 3 report (v17.11.0): zeros when an option is off, and the
+        // Hausdorff distances NaN unless `faceDeviation` measured them.
+        out.set("avgFreeformPoles", r.mAvgFreeformPoles);
+        out.set("hausdorffMax", r.mHausdorffMax);
+        out.set("hausdorffRms", r.mHausdorffRms);
+        out.set("closed", r.mClosed);
         out.set("info", brep_info_to_val(r.mBrep));
         out.set("backend",
                 std::string(r.mBackend == meshioplusplus::FitCadBackend::Native ? "native"
@@ -7081,6 +7344,12 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("uvSphere", &uv_sphere_js);
     emscripten::function("icosaSphere", &icosa_sphere_js);
     emscripten::function("cylinder", &cylinder_js);
+    emscripten::function("referenceTriangle", &reference_triangle_js);
+    emscripten::function("ngon", &ngon_js);
+    emscripten::function("annulus", &annulus_js);
+    emscripten::function("lshape", &lshape_js);
+    emscripten::function("plateWithHole", &plate_with_hole_js);
+    emscripten::function("honeycomb", &honeycomb_js);
     emscripten::function("referenceCells", &reference_cells_js);
     emscripten::function("voxelize", &voxelize_js);
     emscripten::function("octree", &octree_js);
@@ -7100,6 +7369,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("segment", &segment_js);
     emscripten::function("fitPrimitives", &fit_primitives_js);
     emscripten::function("fitCad", &fit_cad_js);
+    emscripten::function("refinePatches", &refine_patches_js);
     emscripten::function("tessellate", &tessellate_js);
     emscripten::function("igaRefine", &iga_refine_js);
     emscripten::function("igaSample", &iga_sample_js);

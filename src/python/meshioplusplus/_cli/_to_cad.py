@@ -1,10 +1,11 @@
 import numpy as np
 
-from .._fit_cad import fit_cad
+from .._fit_cad import DEFAULT_RANSAC_SEED, fit_cad
 from .._fit_primitives import TYPES, fit_primitives
 from .._helpers import read, reader_map, write
 from .._segment import segment
 from ._json import emit_json
+from ._refine_patches import parse_seed
 
 
 def add_args(parser):
@@ -134,6 +135,128 @@ def add_args(parser):
         "OpenCASCADE when the core carries it)",
     )
     parser.add_argument(
+        "--refine",
+        action="store_true",
+        help="first refine the patches by variational shape approximation "
+        "(refine_patches), so more of the skin becomes analytic faces",
+    )
+    parser.add_argument(
+        "--max-refine-iterations",
+        type=int,
+        default=10,
+        metavar="N",
+        help="--refine: the most iterations (default: 10)",
+    )
+    parser.add_argument(
+        "--refine-epsilon",
+        type=float,
+        default=1e-3,
+        metavar="E",
+        help="--refine: stop when an iteration adds less than this to the area "
+        "share primitives explain (default: 1e-3)",
+    )
+    parser.add_argument(
+        "--normal-weight",
+        type=float,
+        default=1.0,
+        metavar="W",
+        help="--refine: the weight of the normal term in a cell's cost (default: 1)",
+    )
+    parser.add_argument(
+        "--no-refine-merge",
+        action="store_true",
+        help="--refine: do not merge neighbouring patches one primitive explains",
+    )
+    parser.add_argument(
+        "--no-refine-split",
+        action="store_true",
+        help="--refine: do not split a primitive out of a freeform patch",
+    )
+    parser.add_argument(
+        "--ransac-seed",
+        type=parse_seed,
+        default=DEFAULT_RANSAC_SEED,
+        metavar="S",
+        help="--refine: the seed of the RANSAC split (default: 0x6d657368696f2b2b)",
+    )
+    parser.add_argument(
+        "--refine-tolerance",
+        type=float,
+        default=1e-3,
+        metavar="T",
+        help="--refine: how far a point may lie from its patch's primitive, "
+        "relative to the diagonal (default: 1e-3)",
+    )
+    parser.add_argument(
+        "--freeform-general",
+        action="store_true",
+        help="try a patch the plane and cylinder freeform fit leaves unexplained "
+        "as a general freeform B-spline face (disc parametrisation, iterative fit)",
+    )
+    parser.add_argument(
+        "--freeform-tolerance",
+        type=float,
+        default=0.0,
+        metavar="T",
+        help="--freeform-general: the fit's target at the vertices (default: 0, "
+        "a quarter of the tolerance)",
+    )
+    parser.add_argument(
+        "--freeform-smoothing",
+        type=float,
+        default=1e-12,
+        metavar="W",
+        help="--freeform-general: the thin-plate weight (default: 1e-12)",
+    )
+    parser.add_argument(
+        "--max-freeform-poles",
+        type=int,
+        default=40,
+        metavar="N",
+        help="--freeform-general: the most poles per direction, 4 to 1024 "
+        "(default: 40)",
+    )
+    parser.add_argument(
+        "--max-freeform-iterations",
+        type=int,
+        default=30,
+        metavar="N",
+        help="--freeform-general: the iteration budget (default: 30)",
+    )
+    parser.add_argument(
+        "--max-freeform-splits",
+        type=int,
+        default=2,
+        metavar="N",
+        help="--freeform-general: how many times a patch the fit cannot explain "
+        "is halved (default: 2)",
+    )
+    parser.add_argument(
+        "--sew-tolerance",
+        type=float,
+        default=0.0,
+        metavar="T",
+        help="the tolerance the faces are sewn at (default: 0, the tolerance)",
+    )
+    parser.add_argument(
+        "--extend-surfaces",
+        action="store_true",
+        help="extend freeform B-spline surfaces past their patches before the "
+        "edges are built",
+    )
+    parser.add_argument(
+        "--snap-junctions",
+        action="store_true",
+        help="place the vertices where analytic faces meet by a least-squares "
+        "solve on their tangent planes",
+    )
+    parser.add_argument(
+        "--face-deviation",
+        action="store_true",
+        help="measure each face's two-sided distance to the skin "
+        "(fit_cad:face_hausdorff, fit_cad:face_rms, hausdorff_max/_rms)",
+    )
+    parser.add_argument(
         "--mesh-out", type=str, default=None, help="also write the re-meshed solid here"
     )
     parser.add_argument(
@@ -190,6 +313,24 @@ def to_cad_cmd(args):
         return_report=True,
         merge_faces=not args.no_merge_faces,
         backend=args.backend,
+        refine_segmentation=args.refine,
+        max_refine_iterations=args.max_refine_iterations,
+        refine_epsilon=args.refine_epsilon,
+        normal_weight=args.normal_weight,
+        allow_merge=not args.no_refine_merge,
+        allow_split=not args.no_refine_split,
+        ransac_seed=args.ransac_seed,
+        refine_tolerance=args.refine_tolerance,
+        freeform_general=args.freeform_general,
+        freeform_tolerance=args.freeform_tolerance,
+        freeform_smoothing=args.freeform_smoothing,
+        max_freeform_poles=args.max_freeform_poles,
+        max_freeform_iterations=args.max_freeform_iterations,
+        max_freeform_splits=args.max_freeform_splits,
+        sew_tolerance=args.sew_tolerance,
+        extend_surfaces=args.extend_surfaces,
+        snap_junctions=args.snap_junctions,
+        face_deviation=args.face_deviation,
     )
     if args.mesh_out:
         write(args.mesh_out, out)
@@ -201,7 +342,8 @@ def to_cad_cmd(args):
         print(
             f"to-cad ({report['backend']}): {report['num_faces']} face(s) in "
             f"{report['num_solids']} solid(s), "
-            f"{'valid' if report['valid'] else 'NOT valid'}"
+            f"{'valid' if report['valid'] else 'NOT valid'}, "
+            f"{'closed' if report['closed'] else 'NOT closed'}"
         )
         for t in TYPES[1:]:
             print(f"  {t + ':':10s} {report['num_' + t]}")
@@ -237,6 +379,34 @@ def to_cad_cmd(args):
         print(f"  {'vertex:':10s} {report['num_vertex_blend']} vertex blend(s)")
         print(f"  {'facets:':10s} {report['num_faceted_faces']}")
         print(f"  {'demoted:':10s} {report['num_demoted']} patch(es)")
+        if report.get("refined"):
+            print(
+                f"  refined: {report['num_refine_splits']} split(s), "
+                f"{report['num_refine_merges']} merge(s) in "
+                f"{report['refine_iterations']} iteration(s); explained area "
+                f"{report['initial_explained_area_fraction']:.6g} -> "
+                f"{report['explained_area_fraction']:.6g}; "
+                + (
+                    "refined patches kept"
+                    if report["refinement_kept"]
+                    else "original patches kept"
+                )
+            )
+        if "num_freeform_general" in report:
+            print(
+                f"  general freeform: {report['num_freeform_general']} face(s), "
+                f"{report['num_freeform_refinements']} knot insertion round(s), "
+                f"{report['avg_freeform_poles']:.6g} pole(s) on average"
+            )
+        if "num_extended_edges" in report:
+            print(f"  extended: {report['num_extended_edges']} surface(s)")
+        if "num_snapped_junctions" in report:
+            print(f"  snapped:  {report['num_snapped_junctions']} junction(s)")
+        if "hausdorff_max" in report:
+            print(
+                f"  face deviation: Hausdorff {report['hausdorff_max']:.6g}, "
+                f"RMS {report['hausdorff_rms']:.6g}"
+            )
         print(
             f"  volume ratio {report['volume_ratio']:.6g}, max deviation "
             f"{report['max_deviation']:.6g} (tolerance {report['tolerance']:.6g})"

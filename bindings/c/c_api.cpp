@@ -120,6 +120,7 @@
 #include "meshioplusplus/operations/blend.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/fit_cad.hpp"
+#include "meshioplusplus/operations/refine_patches.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/iga.hpp"
 #include "meshioplusplus/operations/segment.hpp"
@@ -5738,6 +5739,8 @@ void mio_gen_opts_init(mio_gen_opts* opts) {
     opts->size[0] = opts->size[1] = opts->size[2] = 1.0;
     opts->radius = 1.0;
     opts->height = 1.0;
+    opts->radius2 = 0.5;
+    opts->angle = 6.283185307179586;
     opts->max_cells = 20000000;
     opts->order = 1;
 }
@@ -5961,6 +5964,78 @@ mio_mesh* mio_cylinder(const mio_gen_opts* opts) {
         return new mio_mesh{meshioplusplus::cylinder(
             o.radius, o.height, o.counts[0], o.counts[1],
             {{o.origin[0], o.origin[1], o.origin[2]}}, type, o.order, o.max_cells)};
+    });
+}
+
+mio_mesh* mio_reference_triangle(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        if (o.cell_type != MIO_GEN_DEFAULT && o.cell_type != MIO_GEN_TRIANGLE)
+            throw meshioplusplus::ReadError(
+                "meshio++: reference_triangle: cell_type is not built by this shape");
+        return new mio_mesh{meshioplusplus::reference_triangle(
+            o.counts[0], {{o.size[0], o.size[1]}}, {{o.origin[0], o.origin[1], o.origin[2]}},
+            o.order, o.max_cells)};
+    });
+}
+
+mio_mesh* mio_ngon(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        if (o.cell_type != MIO_GEN_DEFAULT && o.cell_type != MIO_GEN_TRIANGLE)
+            throw meshioplusplus::ReadError("meshio++: ngon: cell_type is not built by this shape");
+        return new mio_mesh{meshioplusplus::ngon(o.counts[0], o.radius, o.counts[1],
+                                                 {{o.origin[0], o.origin[1], o.origin[2]}}, o.order,
+                                                 o.max_cells)};
+    });
+}
+
+mio_mesh* mio_annulus(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        const std::string type = capi_gen_cell(
+            o, "annulus", "quad", {{MIO_GEN_QUAD, "quad"}, {MIO_GEN_TRIANGLE, "triangle"}});
+        return new mio_mesh{meshioplusplus::annulus(
+            o.radius2 == 0.0 ? 0.5 : o.radius2, o.radius, o.counts[0], o.counts[1],
+            o.angle == 0.0 ? 6.283185307179586 : o.angle, {{o.origin[0], o.origin[1], o.origin[2]}},
+            type, o.order, o.max_cells)};
+    });
+}
+
+mio_mesh* mio_lshape(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        const std::string type = capi_gen_cell(
+            o, "lshape", "quad", {{MIO_GEN_QUAD, "quad"}, {MIO_GEN_TRIANGLE, "triangle"}});
+        return new mio_mesh{meshioplusplus::lshape(o.counts[0], o.size[0],
+                                                   {{o.origin[0], o.origin[1], o.origin[2]}}, type,
+                                                   o.order, o.max_cells)};
+    });
+}
+
+mio_mesh* mio_plate_with_hole(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        const std::string type = capi_gen_cell(
+            o, "plate_with_hole", "quad", {{MIO_GEN_QUAD, "quad"}, {MIO_GEN_TRIANGLE, "triangle"}});
+        return new mio_mesh{meshioplusplus::plate_with_hole(
+            o.radius, o.size[0], o.counts[0], o.counts[1],
+            {{o.origin[0], o.origin[1], o.origin[2]}}, type, o.order, o.max_cells)};
+    });
+}
+
+mio_mesh* mio_honeycomb(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        if (o.cell_type != MIO_GEN_DEFAULT)
+            throw meshioplusplus::ReadError(
+                "meshio++: honeycomb: cell_type is not built by this shape");
+        if (o.order != 1)
+            throw meshioplusplus::ReadError(
+                "meshio++: honeycomb: order must be 1, a hexagon has no quadratic form");
+        return new mio_mesh{meshioplusplus::honeycomb({{o.counts[0], o.counts[1]}}, o.size[0],
+                                                      {{o.origin[0], o.origin[1], o.origin[2]}},
+                                                      o.max_cells)};
     });
 }
 
@@ -6354,6 +6429,35 @@ static_assert(sizeof(mio_fit_cad_report) == 192,
               "mio_fit_cad_report grew outside its reserved tail");
 static_assert(sizeof(mio_fit_cad_report_ex) == 128,
               "mio_fit_cad_report_ex grew outside its reserved tail");
+static_assert(sizeof(mio_refine_patches_opts) == 144,
+              "mio_refine_patches_opts grew outside its reserved tail");
+static_assert(sizeof(mio_refine_patches_report) == 192,
+              "mio_refine_patches_report grew outside its reserved tail");
+static_assert(sizeof(mio_fit_cad_opts_ex) == 280,
+              "mio_fit_cad_opts_ex grew outside its reserved tail");
+static_assert(sizeof(mio_fit_cad_report_ex2) == 176,
+              "mio_fit_cad_report_ex2 grew outside its reserved tail");
+// The v17.11.0 Phase 3 fields were carved from the front of the reserved tails.
+static_assert(offsetof(mio_fit_cad_opts_ex, freeform_general) == 4,
+              "mio_fit_cad_opts_ex: freeform_general replaced reserved32");
+static_assert(offsetof(mio_fit_cad_opts_ex, freeform_tolerance) == 152,
+              "mio_fit_cad_opts_ex: the Phase 3 options start where reserved[16] did");
+static_assert(offsetof(mio_fit_cad_opts_ex, sew_tolerance) == 192,
+              "mio_fit_cad_opts_ex: sew_tolerance moved");
+static_assert(offsetof(mio_fit_cad_opts_ex, reserved) == 216,
+              "mio_fit_cad_opts_ex: the reserved tail moved");
+static_assert(offsetof(mio_fit_cad_report_ex2, num_freeform_general) == 48,
+              "mio_fit_cad_report_ex2: the Phase 3 fields start where reserved[16] did");
+static_assert(offsetof(mio_fit_cad_report_ex2, closed) == 104,
+              "mio_fit_cad_report_ex2: closed moved");
+static_assert(offsetof(mio_fit_cad_report_ex2, refinement_kept) == 112,
+              "mio_fit_cad_report_ex2: refinement_kept moved");
+static_assert(offsetof(mio_fit_cad_report_ex2, reserved) == 120,
+              "mio_fit_cad_report_ex2: the reserved tail moved");
+static_assert(MIO_REFINE_DEFAULT_SEED == meshioplusplus::kRefineDefaultSeed,
+              "MIO_REFINE_DEFAULT_SEED must match kRefineDefaultSeed");
+static_assert(MIO_REFINE_ENERGY_ROSE == static_cast<int>(meshioplusplus::RefineStop::EnergyRose),
+              "mio_refine_stop must match RefineStop");
 static_assert(MIO_FIT_ALL_TYPES == meshioplusplus::kFitAllTypes,
               "MIO_FIT_ALL_TYPES must match kFitAllTypes");
 static_assert(MIO_FIT_TORUS == static_cast<int>(meshioplusplus::FitPrimitiveType::Torus),
@@ -6500,6 +6604,81 @@ mio_mesh* mio_fit_primitives(const mio_mesh* mesh, const mio_fit_primitives_opts
     });
 }
 
+void mio_refine_patches_opts_init(mio_refine_patches_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_refine_patches_opts{};
+    const meshioplusplus::RefinePatchesOptions d;
+    opts->tolerance = d.mTolerance;
+    opts->normal_weight = d.mNormalWeight;
+    opts->epsilon = d.mEpsilon;
+    opts->feature_angle = d.mFeatureAngleDeg;
+    opts->max_iterations = d.mMaxIterations;
+    opts->min_patch_cells = d.mMinPatchCells;
+    opts->ransac_seed = d.mRansacSeed;
+    opts->types = d.mTypes;
+    opts->relative = d.mRelative ? 1 : 0;
+    opts->allow_split = d.mAllowSplit ? 1 : 0;
+    opts->allow_merge = d.mAllowMerge ? 1 : 0;
+    opts->prefix = nullptr;  // "patch"
+}
+
+namespace {
+
+// The C refine options as the C++ ones; a NULL or "" prefix keeps "patch".
+meshioplusplus::RefinePatchesOptions capi_refine_patches_options(
+    const mio_refine_patches_opts& rOpts) {
+    meshioplusplus::RefinePatchesOptions options;
+    options.mTolerance = rOpts.tolerance;
+    options.mNormalWeight = rOpts.normal_weight;
+    options.mEpsilon = rOpts.epsilon;
+    options.mFeatureAngleDeg = rOpts.feature_angle;
+    options.mMaxIterations = rOpts.max_iterations;
+    options.mMinPatchCells = rOpts.min_patch_cells;
+    options.mRansacSeed = rOpts.ransac_seed;
+    options.mTypes = rOpts.types;
+    options.mRelative = rOpts.relative != 0;
+    options.mAllowSplit = rOpts.allow_split != 0;
+    options.mAllowMerge = rOpts.allow_merge != 0;
+    if (rOpts.prefix && rOpts.prefix[0] != '\0')
+        options.mPrefix = rOpts.prefix;
+    return options;
+}
+
+}  // namespace
+
+mio_mesh* mio_refine_patches(const mio_mesh* mesh, const mio_refine_patches_opts* opts,
+                             mio_refine_patches_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        const meshioplusplus::RefinePatchesOptions options =
+            opts ? capi_refine_patches_options(*opts) : meshioplusplus::RefinePatchesOptions{};
+        meshioplusplus::RefinePatchesResult r =
+            meshioplusplus::refine_patches(mesh->mMesh, options);
+        if (report) {
+            *report = mio_refine_patches_report{};
+            report->num_patches = r.mNumPatches;
+            report->num_iterations = r.mNumIterations;
+            report->num_splits = r.mNumSplits;
+            report->num_merges = r.mNumMerges;
+            report->num_absorbed = r.mNumAbsorbed;
+            report->num_primitive = r.mNumPrimitive;
+            report->num_freeform = r.mNumFreeform;
+            report->num_facets = r.mNumFacets;
+            report->tolerance = r.mTolerance;
+            report->explained_area_fraction = r.mExplainedAreaFraction;
+            report->initial_explained_area_fraction = r.mInitialExplainedAreaFraction;
+            report->hausdorff_max = r.mHausdorffMax;
+            report->hausdorff_rms = r.mHausdorffRms;
+            report->initial_energy = r.mInitialEnergy;
+            report->energy = r.mEnergy;
+            report->stop = static_cast<std::int32_t>(r.mStop);
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
 void mio_fit_cad_opts_init(mio_fit_cad_opts* opts) {
     if (!opts)
         return;
@@ -6515,6 +6694,25 @@ void mio_fit_cad_opts_init(mio_fit_cad_opts* opts) {
     opts->threads = 1;
     opts->merge_faces = 1;
     opts->backend = MIO_FIT_CAD_AUTO;
+}
+
+void mio_fit_cad_opts_ex_init(mio_fit_cad_opts_ex* opts) {
+    if (!opts)
+        return;
+    *opts = mio_fit_cad_opts_ex{};
+    opts->refine_segmentation = 0;
+    mio_refine_patches_opts_init(&opts->refine);
+    const meshioplusplus::FitCadOptions defaults;
+    opts->freeform_general = defaults.mFreeformGeneral ? 1 : 0;
+    opts->freeform_tolerance = defaults.mFreeformTolerance;
+    opts->freeform_smoothing = defaults.mFreeformSmoothing;
+    opts->max_freeform_poles = defaults.mMaxFreeformPoles;
+    opts->max_freeform_iterations = defaults.mMaxFreeformIterations;
+    opts->max_freeform_splits = defaults.mMaxFreeformSplits;
+    opts->sew_tolerance = defaults.mSewTolerance;
+    opts->extend_surfaces = defaults.mExtendSurfaces ? 1 : 0;
+    opts->snap_junctions = defaults.mSnapJunctions ? 1 : 0;
+    opts->face_deviation = defaults.mFaceDeviation ? 1 : 0;
 }
 
 void mio_iga_opts_init(mio_iga_opts* opts) {
@@ -6716,11 +6914,17 @@ int mio_has_occt(void) {
 
 mio_mesh* mio_fit_cad(const mio_mesh* mesh, const char* step_path, const mio_fit_cad_opts* opts,
                       mio_fit_cad_report* report) {
-    return mio_fit_cad_ex(mesh, step_path, opts, report, nullptr);
+    return mio_fit_cad2(mesh, step_path, opts, nullptr, report, nullptr, nullptr);
 }
 
 mio_mesh* mio_fit_cad_ex(const mio_mesh* mesh, const char* step_path, const mio_fit_cad_opts* opts,
                          mio_fit_cad_report* report, mio_fit_cad_report_ex* report_ex) {
+    return mio_fit_cad2(mesh, step_path, opts, nullptr, report, report_ex, nullptr);
+}
+
+mio_mesh* mio_fit_cad2(const mio_mesh* mesh, const char* step_path, const mio_fit_cad_opts* opts,
+                       const mio_fit_cad_opts_ex* opts_ex, mio_fit_cad_report* report,
+                       mio_fit_cad_report_ex* report_ex, mio_fit_cad_report_ex2* report_ex2) {
     return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
         if (!mesh)
             throw meshioplusplus::ReadError("meshio++: mesh is NULL");
@@ -6748,6 +6952,24 @@ mio_mesh* mio_fit_cad_ex(const mio_mesh* mesh, const char* step_path, const mio_
                 return nullptr;
             }
             options.mBackend = static_cast<meshioplusplus::FitCadBackend>(opts->backend);
+        }
+        if (opts_ex) {
+            options.mRefineSegmentation = opts_ex->refine_segmentation != 0;
+            options.mRefine = capi_refine_patches_options(opts_ex->refine);
+            options.mFreeformGeneral = opts_ex->freeform_general != 0;
+            options.mFreeformTolerance = opts_ex->freeform_tolerance;
+            options.mFreeformSmoothing = opts_ex->freeform_smoothing;
+            // Zero, from a struct filled before these fields existed, reads as
+            // the default; any other value is taken as given.
+            if (opts_ex->max_freeform_poles != 0)
+                options.mMaxFreeformPoles = opts_ex->max_freeform_poles;
+            if (opts_ex->max_freeform_iterations != 0)
+                options.mMaxFreeformIterations = opts_ex->max_freeform_iterations;
+            options.mMaxFreeformSplits = opts_ex->max_freeform_splits;
+            options.mSewTolerance = opts_ex->sew_tolerance;
+            options.mExtendSurfaces = opts_ex->extend_surfaces != 0;
+            options.mSnapJunctions = opts_ex->snap_junctions != 0;
+            options.mFaceDeviation = opts_ex->face_deviation != 0;
         }
         meshioplusplus::FitCadResult r =
             meshioplusplus::fit_cad(mesh->mMesh, step_path ? step_path : "", options);
@@ -6790,6 +7012,24 @@ mio_mesh* mio_fit_cad_ex(const mio_mesh* mesh, const char* step_path, const mio_
             report_ex->backend = r.mBackend == meshioplusplus::FitCadBackend::Native
                                      ? MIO_FIT_CAD_NATIVE
                                      : MIO_FIT_CAD_OCCT;
+        }
+        if (report_ex2) {
+            *report_ex2 = mio_fit_cad_report_ex2{};
+            report_ex2->refined = r.mRefined ? 1 : 0;
+            report_ex2->refine_iterations = r.mRefineIterations;
+            report_ex2->num_refine_splits = r.mNumRefineSplits;
+            report_ex2->num_refine_merges = r.mNumRefineMerges;
+            report_ex2->initial_explained_area_fraction = r.mInitialExplainedAreaFraction;
+            report_ex2->explained_area_fraction = r.mExplainedAreaFraction;
+            report_ex2->num_freeform_general = r.mNumFreeformGeneral;
+            report_ex2->num_freeform_refinements = r.mNumFreeformRefinements;
+            report_ex2->avg_freeform_poles = r.mAvgFreeformPoles;
+            report_ex2->num_extended_edges = r.mNumExtendedEdges;
+            report_ex2->num_snapped_junctions = r.mNumSnappedJunctions;
+            report_ex2->hausdorff_max = r.mHausdorffMax;
+            report_ex2->hausdorff_rms = r.mHausdorffRms;
+            report_ex2->closed = r.mClosed ? 1 : 0;
+            report_ex2->refinement_kept = r.mRefinementKept ? 1 : 0;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });
