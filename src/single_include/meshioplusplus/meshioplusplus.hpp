@@ -75085,7 +75085,10 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
         std::vector<PnG1Sample> out_s;
         const PnPatch& p = patches[I];
         for (std::size_t j = 0; j < 4; ++j)
-            for (const PnSegment& seg : p.mSides[j].mSegments)
+            for (const PnSegment& seg : p.mSides[j].mSegments) {
+                // A crease is no G1 edge: neither measured nor pulled flat.
+                if (!rLayout.mChains[seg.mChain].mSmooth)
+                    continue;
                 for (const PnUse& use : chain_uses[seg.mChain]) {
                     if (use.mPatch == I || !active[use.mPatch])
                         continue;
@@ -75121,6 +75124,7 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
                         out_s.push_back(g);
                     }
                 }
+            }
         return out_s;
     };
     const auto g1_angle = [&](std::size_t I, bool SkipEv) {
@@ -78594,13 +78598,20 @@ QuadLayout quad_layout(const std::vector<PatchVec>& rPts, const std::vector<Patc
         groups[uf.Find(a)].push_back(a);
     std::vector<std::size_t> chain_of(arcs.size(), 0);
     std::vector<std::unordered_map<std::size_t, std::size_t>> chain_pos;
-    // The crease edges, for the chains along them.
+    // The crease edges, for the chains along them: the cuts' features and
+    // every edge sharper than the feature angle, eroded or not (a sharp edge
+    // the erosion dropped as a cut is still no smooth curve).
     std::set<std::pair<std::size_t, std::size_t>> crease;
     for (std::size_t f = 0; f < nt; ++f)
-        for (std::size_t k = 0; k < 3; ++k)
-            if (feature[f][k])
+        for (std::size_t k = 0; k < 3; ++k) {
+            const std::int64_t g = st.mMesh.mNbr[f][k];
+            const bool sharp =
+                g >= 0 && ql_angle_deg(normal[f], normal[static_cast<std::size_t>(g)]) >
+                              rOptions.mFeatureAngleDeg;
+            if (feature[f][k] || sharp)
                 crease.insert({std::min(rTris[f][k], rTris[f][(k + 1) % 3]),
                                std::max(rTris[f][k], rTris[f][(k + 1) % 3])});
+        }
     // The arcs `rG` as one simple path, or false.
     const auto make_chain = [&](const std::vector<std::size_t>& rG) {
         std::map<std::size_t, std::vector<std::size_t>> ends;  // vertex -> arcs ending there
@@ -200851,6 +200862,7 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
     std::int64_t num_network_edges = 0, num_network_ev = 0;
     double network_g1 = 0.0;
     const auto occt_network = [&](const std::vector<std::size_t>& rRows, bool AsFacets) {
+        std::vector<std::size_t> failed;
         std::vector<std::vector<std::size_t>> items;
         for (std::size_t r : rRows)
             items.push_back(facets_of[r]);
@@ -200910,6 +200922,7 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
                             static_cast<std::uint8_t>(np.mReason == FitCadDemotionReason::None
                                                           ? FitCadDemotionReason::HausdorffExceeded
                                                           : np.mReason);
+                        failed.push_back(row);
                     }
                     continue;
                 }
@@ -200946,6 +200959,7 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
                 network_g1 = std::max(network_g1, reg.mNet.mMaxG1AngleDeg);
             }
         }
+        return failed;
     };
     const auto freeform_rows = [&](bool Tried) {
         std::vector<std::size_t> rows;
@@ -200961,6 +200975,137 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
         }
         return rows;
     };
+    // A row (a piece of a demoted face, a patch of a network) fitted as an
+    // adaptive face; true when it is one.
+    const auto refit_row = [&](std::size_t R, std::int64_t Escalations) {
+        std::vector<gp_Pnt> ppts;
+        std::vector<std::array<std::size_t, 3>> ptris;
+        std::vector<detail::PatchVec> pflat;
+        patch_mesh(R, ppts, ptris, pflat);
+        FcRowInfo info;
+        info.mEscalations = Escalations;
+        FcHandle<Geom_Surface> srf;
+        try {
+            srf = fc_freeform_adaptive(ppts, ptris, tol, rOptions, info);
+        } catch (const Standard_Failure& rErr) {
+            log::debug("fit_cad: no adaptive face for patch {}: {}", skin.mPatches[R].mLabel,
+                       rErr.GetMessageString());
+        }
+        info.mTried = true;
+        if (srf.IsNull()) {
+            if (!info.mReason)
+                info.mReason = static_cast<std::uint8_t>(FitCadDemotionReason::HausdorffExceeded);
+            fc_row(row_info, R) = info;
+            return false;
+        }
+        fc_row(row_info, R) = info;
+        surface[R] = orient(R, srf);
+        analytic[R] = 1;
+        skin.mPatches[R].mType = static_cast<std::int32_t>(kFitCadBsplineType);
+        skin.mPatches[R].mAccepted = true;
+        feature.resize(std::max(feature.size(), R + 1), 0);
+        feature[R] = kFcAdaptive;
+        return true;
+    };
+    // Facets halved across their longest extent: the pieces, and the facets
+    // of the pieces under the size floor left out (false: no halving).
+    const auto bisect_facets = [&](const std::vector<std::size_t>& rFacets,
+                                   std::vector<std::vector<std::size_t>>& rPieces,
+                                   std::vector<std::size_t>& rKept) {
+        std::unordered_map<std::int64_t, std::size_t> local;
+        std::vector<detail::PatchVec> flat;
+        std::vector<std::array<std::size_t, 3>> tris;
+        const auto vid = [&](std::int64_t V) {
+            auto ins = local.emplace(V, flat.size());
+            if (ins.second) {
+                const std::size_t v = static_cast<std::size_t>(V);
+                flat.push_back({fc.mXyz[v * 3], fc.mXyz[v * 3 + 1], fc.mXyz[v * 3 + 2]});
+            }
+            return ins.first->second;
+        };
+        for (std::size_t f : rFacets) {
+            const std::int64_t b = fc.mStart[f], n = fc.mStart[f + 1] - b;
+            const std::size_t a0 = vid(fc.mNodes[static_cast<std::size_t>(b)]);
+            for (std::int64_t k = 1; k + 1 < n; ++k)
+                tris.push_back({a0, vid(fc.mNodes[static_cast<std::size_t>(b + k)]),
+                                vid(fc.mNodes[static_cast<std::size_t>(b + k + 1)])});
+        }
+        std::size_t num = 0;
+        const std::vector<std::int64_t> piece =
+            detail::patch_bisect(flat, tris, kFcTileMinTriangles, num);
+        if (num < 2)
+            return false;
+        // A facet goes with its first triangle's piece.
+        rPieces.assign(num, {});
+        std::size_t t = 0;
+        for (std::size_t f : rFacets) {
+            const std::int64_t n = fc.mStart[f + 1] - fc.mStart[f];
+            const std::int64_t at = piece[t];
+            if (at >= 0)
+                rPieces[static_cast<std::size_t>(at)].push_back(f);
+            else
+                rKept.push_back(f);
+            t += static_cast<std::size_t>(std::max<std::int64_t>(n - 2, 0));
+        }
+        return true;
+    };
+    // An adaptive face the checks demote, cut across its longest extent into
+    // halves and those again into quarters where they are large enough, each
+    // piece fitted in turn (v17.12.0): the tiles of the general faces,
+    // reached from the checks rather than the fit, two tile levels a round.
+    const auto halve_and_refit = [&](std::size_t R) {
+        if (R >= tile_depth.size() || tile_depth[R] >= kFcTileMaxDepth)
+            return;
+        std::vector<std::vector<std::size_t>> halves, pf;
+        std::vector<std::size_t> kept;
+        if (!bisect_facets(facets_of[R], halves, kept))
+            return;
+        std::uint8_t depth = static_cast<std::uint8_t>(tile_depth[R] + 1);
+        for (std::vector<std::size_t>& h : halves) {
+            std::vector<std::vector<std::size_t>> quarters;
+            if (depth < kFcTileMaxDepth && bisect_facets(h, quarters, kept)) {
+                for (std::vector<std::size_t>& q : quarters)
+                    pf.push_back(std::move(q));
+            } else {
+                pf.push_back(std::move(h));
+            }
+        }
+        if (pf.size() > halves.size())
+            depth = static_cast<std::uint8_t>(depth + 1);
+        facets_of[R] = std::move(kept);
+        fc_row(row_info, R).mReason = static_cast<std::uint8_t>(FitCadDemotionReason::TooSmall);
+        const std::int64_t escalations = fc_row(row_info, R).mEscalations + 1;
+        for (std::vector<std::size_t>& facets : pf) {
+            if (facets.empty())
+                continue;
+            FcPatch np;
+            np.mLabel = next_label++;
+            np.mType = 0;
+            np.mParams.fill(std::numeric_limits<double>::quiet_NaN());
+            np.mTolerance = skin.mPatches[R].mTolerance;
+            const std::size_t row = skin.mPatches.size();
+            for (std::size_t f : facets)
+                skin.mRow[f] = static_cast<std::int64_t>(row);
+            skin.mPatches.push_back(np);
+            facets_of.push_back(std::move(facets));
+            surface.emplace_back();
+            analytic.push_back(0);
+            is_piece.push_back(1);
+            tile_depth.push_back(depth);
+            general_depth.push_back(general_depth[R]);
+            feature.resize(row + 1, 0);
+            network_row.resize(row + 1, 0);
+            network_tried.resize(row + 1, 1);
+            ++result.mNumSplitPatches;
+            refit_row(row, escalations);
+        }
+    };
+    // A row with no face fitted again as it is; failing that, halved.
+    const auto refit_or_halve = [&](std::size_t R) {
+        if (!refit_row(R, fc_row(row_info, R).mEscalations + 1))
+            halve_and_refit(R);
+    };
+
     if (rOptions.mFreeform && rOptions.mFreeformMode == FitCadFreeformMode::Network)
         occt_network(freeform_rows(false), false);
     for (std::size_t r = 0; rOptions.mFreeform && r < skin.mPatches.size(); ++r) {
@@ -201170,8 +201315,11 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
         network_tried.resize(skin.mPatches.size(), 0);
         for (std::size_t r : rows)
             network_tried[r] = 1;
+        // A patch of the network that misses is a cleaner piece than the
+        // tile it came from: fitted as an adaptive face, or halved, first.
         if (!rows.empty())
-            occt_network(rows, true);
+            for (std::size_t r : occt_network(rows, true))
+                refit_or_halve(r);
     }
     m = skin.mPatches.size();
     if (num_freeform_tried > 0)
@@ -201435,126 +201583,6 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
     // An adaptive face the checks demote, halved across its longest extent and
     // each half fitted in turn (v17.12.0): the tiles of the general faces,
     // reached from the checks rather than the fit.
-    // Facets halved across their longest extent: the pieces, and the facets
-    // of the pieces under the size floor left out (false: no halving).
-    const auto bisect_facets = [&](const std::vector<std::size_t>& rFacets,
-                                   std::vector<std::vector<std::size_t>>& rPieces,
-                                   std::vector<std::size_t>& rKept) {
-        std::unordered_map<std::int64_t, std::size_t> local;
-        std::vector<detail::PatchVec> flat;
-        std::vector<std::array<std::size_t, 3>> tris;
-        const auto vid = [&](std::int64_t V) {
-            auto ins = local.emplace(V, flat.size());
-            if (ins.second) {
-                const std::size_t v = static_cast<std::size_t>(V);
-                flat.push_back({fc.mXyz[v * 3], fc.mXyz[v * 3 + 1], fc.mXyz[v * 3 + 2]});
-            }
-            return ins.first->second;
-        };
-        for (std::size_t f : rFacets) {
-            const std::int64_t b = fc.mStart[f], n = fc.mStart[f + 1] - b;
-            const std::size_t a0 = vid(fc.mNodes[static_cast<std::size_t>(b)]);
-            for (std::int64_t k = 1; k + 1 < n; ++k)
-                tris.push_back({a0, vid(fc.mNodes[static_cast<std::size_t>(b + k)]),
-                                vid(fc.mNodes[static_cast<std::size_t>(b + k + 1)])});
-        }
-        std::size_t num = 0;
-        const std::vector<std::int64_t> piece =
-            detail::patch_bisect(flat, tris, kFcTileMinTriangles, num);
-        if (num < 2)
-            return false;
-        // A facet goes with its first triangle's piece.
-        rPieces.assign(num, {});
-        std::size_t t = 0;
-        for (std::size_t f : rFacets) {
-            const std::int64_t n = fc.mStart[f + 1] - fc.mStart[f];
-            const std::int64_t at = piece[t];
-            if (at >= 0)
-                rPieces[static_cast<std::size_t>(at)].push_back(f);
-            else
-                rKept.push_back(f);
-            t += static_cast<std::size_t>(std::max<std::int64_t>(n - 2, 0));
-        }
-        return true;
-    };
-    // An adaptive face the checks demote, cut across its longest extent into
-    // halves and those again into quarters where they are large enough, each
-    // piece fitted in turn (v17.12.0): the tiles of the general faces,
-    // reached from the checks rather than the fit, two tile levels a round.
-    const auto halve_and_refit = [&](std::size_t R) {
-        if (R >= tile_depth.size() || tile_depth[R] >= kFcTileMaxDepth)
-            return;
-        std::vector<std::vector<std::size_t>> halves, pf;
-        std::vector<std::size_t> kept;
-        if (!bisect_facets(facets_of[R], halves, kept))
-            return;
-        std::uint8_t depth = static_cast<std::uint8_t>(tile_depth[R] + 1);
-        for (std::vector<std::size_t>& h : halves) {
-            std::vector<std::vector<std::size_t>> quarters;
-            if (depth < kFcTileMaxDepth && bisect_facets(h, quarters, kept)) {
-                for (std::vector<std::size_t>& q : quarters)
-                    pf.push_back(std::move(q));
-            } else {
-                pf.push_back(std::move(h));
-            }
-        }
-        if (pf.size() > halves.size())
-            depth = static_cast<std::uint8_t>(depth + 1);
-        facets_of[R] = std::move(kept);
-        fc_row(row_info, R).mReason = static_cast<std::uint8_t>(FitCadDemotionReason::TooSmall);
-        const std::int64_t escalations = fc_row(row_info, R).mEscalations + 1;
-        for (std::vector<std::size_t>& facets : pf) {
-            if (facets.empty())
-                continue;
-            FcPatch np;
-            np.mLabel = next_label++;
-            np.mType = 0;
-            np.mParams.fill(std::numeric_limits<double>::quiet_NaN());
-            np.mTolerance = skin.mPatches[R].mTolerance;
-            const std::size_t row = skin.mPatches.size();
-            for (std::size_t f : facets)
-                skin.mRow[f] = static_cast<std::int64_t>(row);
-            skin.mPatches.push_back(np);
-            facets_of.push_back(std::move(facets));
-            surface.emplace_back();
-            analytic.push_back(0);
-            is_piece.push_back(1);
-            tile_depth.push_back(depth);
-            general_depth.push_back(general_depth[R]);
-            feature.resize(row + 1, 0);
-            network_row.resize(row + 1, 0);
-            network_tried.resize(row + 1, 1);
-            ++result.mNumSplitPatches;
-            std::vector<gp_Pnt> ppts;
-            std::vector<std::array<std::size_t, 3>> ptris;
-            std::vector<detail::PatchVec> pflat;
-            patch_mesh(row, ppts, ptris, pflat);
-            FcRowInfo info;
-            info.mEscalations = escalations;
-            FcHandle<Geom_Surface> srf;
-            try {
-                srf = fc_freeform_adaptive(ppts, ptris, tol, rOptions, info);
-            } catch (const Standard_Failure& rErr) {
-                log::debug("fit_cad: no adaptive face for a half of patch {}: {}",
-                           skin.mPatches[R].mLabel, rErr.GetMessageString());
-            }
-            info.mTried = true;
-            if (srf.IsNull()) {
-                if (!info.mReason)
-                    info.mReason =
-                        static_cast<std::uint8_t>(FitCadDemotionReason::HausdorffExceeded);
-                fc_row(row_info, row) = info;
-                continue;
-            }
-            fc_row(row_info, row) = info;
-            surface[row] = orient(row, srf);
-            analytic[row] = 1;
-            skin.mPatches[row].mType = static_cast<std::int32_t>(kFitCadBsplineType);
-            skin.mPatches[row].mAccepted = true;
-            feature[row] = kFcAdaptive;
-        }
-    };
-
     // Build, check, demote and rebuild.
     int escalation_rounds = 0;
     FcBuild build;
@@ -201733,14 +201761,17 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
                         network_tried[r] = 1;
                         fresh.push_back(r);
                     }
+            std::vector<std::size_t> missed;
             if (!fresh.empty())
-                occt_network(fresh, true);
+                missed = occt_network(fresh, true);
             for (std::size_t r : escalate)
                 if (!facets_of[r].empty())
                     halve.push_back(r);
             const std::size_t networked = skin.mPatches.size();
             for (std::size_t r : halve)
                 halve_and_refit(r);
+            for (std::size_t r : missed)
+                refit_or_halve(r);
             m = skin.mPatches.size();
             allowance.resize(m, tol);
             for (std::size_t r = before; r < m; ++r)

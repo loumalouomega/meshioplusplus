@@ -536,7 +536,10 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
         std::vector<PnG1Sample> out_s;
         const PnPatch& p = patches[I];
         for (std::size_t j = 0; j < 4; ++j)
-            for (const PnSegment& seg : p.mSides[j].mSegments)
+            for (const PnSegment& seg : p.mSides[j].mSegments) {
+                // A crease is no G1 edge: neither measured nor pulled flat.
+                if (!rLayout.mChains[seg.mChain].mSmooth)
+                    continue;
                 for (const PnUse& use : chain_uses[seg.mChain]) {
                     if (use.mPatch == I || !active[use.mPatch])
                         continue;
@@ -572,6 +575,7 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
                         out_s.push_back(g);
                     }
                 }
+            }
         return out_s;
     };
     const auto g1_angle = [&](std::size_t I, bool SkipEv) {

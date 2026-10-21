@@ -103,13 +103,19 @@ A record holds `patch`, `face` (the B-rep face, -1 when demoted), `kind` (the `f
 
 `facet_area_fraction` on the freeform fixtures (`tests/cpp/fit_cad_fixtures.hpp`, tolerance `2e-3` of the diagonal; `MESHIOPLUSPLUS_FIT_CAD_KPI=1` runs the full set):
 
-| Fixture | Native, legacy | Native, adaptive | Native, network | Native, auto | OpenCASCADE 7.6.3, legacy | OpenCASCADE 7.6.3, adaptive |
-| --- | --- | --- | --- | --- | --- | --- |
-| monkey saddle | 0.182 | 0 | 0 (16 network patches) | 0 | 0.661 | 0.490 |
-| car hood | 0.375 | 0 | 0.005 (25 network patches, 10 adaptive faces) | 0 | 0.375 | 0.375 |
-| Catmull-Clark valence 3 | 1 | 0 | 0 (40 network patches, 8 extraordinary vertices) | 0 | 1 | 1 |
+| Fixture | Native, legacy | Native, adaptive | Native, network | Native, auto |
+| --- | --- | --- | --- | --- |
+| monkey saddle | 0.182 | 0 | 0 (16 network patches) | 0 |
+| car hood | 0.375 | 0 | 0.005 (25 network patches, 10 adaptive faces) | 0 |
+| Catmull-Clark valence 3 | 1 | 0 | 0 (40 network patches, 8 extraordinary vertices) | 0 |
 
-The native backend writes every face the fit accepts; OpenCASCADE must also trim, sew and check it, and the hood's top, segmented together with a side across a 25-degree crease, still fails its corners there.
+| Fixture | OpenCASCADE 7.6.3, legacy | adaptive | network | auto |
+| --- | --- | --- | --- | --- |
+| monkey saddle | 0.661 | 0.490 | 0.490 (16 network patches) | 0.490 |
+| car hood | 0.375 | 0.118 | 0.141 (20 network patches) | 0.126 |
+| Catmull-Clark valence 3 | 1 | 1 | 0 (40 network patches, a valid solid) | 0 |
+
+The native backend writes every face the fit accepts; OpenCASCADE must also trim, sew and check it. Two rungs of the ladder therefore come after the B-rep is built, in the round that checks it: an adaptive face the checks demote is quartered across its longest extent and each quarter fitted again (down to the tile depth, at most three such rounds), and under `auto` it first goes into the network of its region, whose patches that miss are fitted as adaptive faces in turn. The edge between two B-spline faces is built from the chain moved onto both rather than from their intersection, which is slow, unstable where they meet tangentially and no truer to the skin. The monkey saddle's box sides keep failing their checks along a sliver patch next to the saddle, in every mode; the hood's top, segmented together with a side across a 25-degree crease, fails its corners in the adaptive mode until it is quartered.
 
 ### The patch network
 

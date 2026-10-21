@@ -1557,13 +1557,20 @@ QuadLayout quad_layout(const std::vector<PatchVec>& rPts, const std::vector<Patc
         groups[uf.Find(a)].push_back(a);
     std::vector<std::size_t> chain_of(arcs.size(), 0);
     std::vector<std::unordered_map<std::size_t, std::size_t>> chain_pos;
-    // The crease edges, for the chains along them.
+    // The crease edges, for the chains along them: the cuts' features and
+    // every edge sharper than the feature angle, eroded or not (a sharp edge
+    // the erosion dropped as a cut is still no smooth curve).
     std::set<std::pair<std::size_t, std::size_t>> crease;
     for (std::size_t f = 0; f < nt; ++f)
-        for (std::size_t k = 0; k < 3; ++k)
-            if (feature[f][k])
+        for (std::size_t k = 0; k < 3; ++k) {
+            const std::int64_t g = st.mMesh.mNbr[f][k];
+            const bool sharp =
+                g >= 0 && ql_angle_deg(normal[f], normal[static_cast<std::size_t>(g)]) >
+                              rOptions.mFeatureAngleDeg;
+            if (feature[f][k] || sharp)
                 crease.insert({std::min(rTris[f][k], rTris[f][(k + 1) % 3]),
                                std::max(rTris[f][k], rTris[f][(k + 1) % 3])});
+        }
     // The arcs `rG` as one simple path, or false.
     const auto make_chain = [&](const std::vector<std::size_t>& rG) {
         std::map<std::size_t, std::vector<std::size_t>> ends;  // vertex -> arcs ending there
