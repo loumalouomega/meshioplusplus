@@ -369,29 +369,34 @@ bool brep_nurbs_face(const BrepNurbsSurface& rSurface,
                     best = bspline_project(*bs, rP.data(), u, v);
                 }
                 if (!(best <= 4.0 * Tol + tiny)) {
-                    // A global start: the nearest of a grid over the domain.
+                    // Global starts: the eight nearest nodes of a grid over the
+                    // domain, each projected (a strongly curved face can bring
+                    // another part of itself nearer to a grid node than the
+                    // part the point lies on).
                     constexpr int kGrid = 24;
-                    double bu = bs->U0(), bv = bs->V0(),
-                           bd = std::numeric_limits<double>::infinity();
+                    constexpr std::size_t kStarts = 8;
+                    std::vector<std::pair<double, std::pair<double, double>>> nodes;
+                    nodes.reserve((kGrid + 1) * (kGrid + 1));
                     for (int i = 0; i <= kGrid; ++i)
                         for (int j = 0; j <= kGrid; ++j) {
                             const double gu = bs->U0() + (bs->U1() - bs->U0()) * i / kGrid;
                             const double gv = bs->V0() + (bs->V1() - bs->V0()) * j / kGrid;
                             BsplineEval e;
                             bspline_eval(*bs, gu, gv, 0, e);
-                            const double dd = bn_dist({e.mS[0], e.mS[1], e.mS[2]}, rP);
-                            if (dd < bd) {
-                                bd = dd;
-                                bu = gu;
-                                bv = gv;
-                            }
+                            nodes.push_back({bn_dist({e.mS[0], e.mS[1], e.mS[2]}, rP), {gu, gv}});
                         }
-                    double u2 = bu, v2 = bv;
-                    const double d2 = bspline_project(*bs, rP.data(), u2, v2);
-                    if (d2 < best) {
-                        best = d2;
-                        u = u2;
-                        v = v2;
+                    const std::size_t starts = std::min(kStarts, nodes.size());
+                    std::partial_sort(nodes.begin(),
+                                      nodes.begin() + static_cast<std::ptrdiff_t>(starts),
+                                      nodes.end());
+                    for (std::size_t k = 0; k < starts; ++k) {
+                        double u2 = nodes[k].second.first, v2 = nodes[k].second.second;
+                        const double d2 = bspline_project(*bs, rP.data(), u2, v2);
+                        if (d2 < best) {
+                            best = d2;
+                            u = u2;
+                            v = v2;
+                        }
                     }
                 }
                 pX[0] = u;

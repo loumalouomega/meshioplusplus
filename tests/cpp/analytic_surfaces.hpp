@@ -998,8 +998,11 @@ inline meshioplusplus::Mesh triangle_box(int n, bool Warp = false) {
     return b.Build();
 }
 
-// A closed box whose top (z = 1) is lifted to z = 1 + F(x, y); only the top's
-// points move, and only in z, so the four sides and the bottom stay planar.
+// A closed box whose top (z = 1) is lifted to z = 1 + F(x, y). The sides'
+// points follow in proportion (z (1 + F)), only in z, so the four sides and
+// the bottom stay planar and a top lowered by more than a row's height does
+// not fold its sides' top row over (v17.12.0; a point of the top and of a
+// side where F = 0 is where it was).
 template <class Height>
 inline meshioplusplus::Mesh heightfield_box(int n, Height F, bool Warp = false) {
     meshioplusplus::Mesh m = triangle_box(n, Warp);
@@ -1008,8 +1011,8 @@ inline meshioplusplus::Mesh heightfield_box(int n, Height F, bool Warp = false) 
     double* a = q.As<double>();
     std::copy(m.Points().As<double>(), m.Points().As<double>() + m.NumPoints() * 3, a);
     for (std::size_t i = 0; i < m.NumPoints(); ++i)
-        if (a[i * 3 + 2] == 1.0)
-            a[i * 3 + 2] = 1.0 + F(a[i * 3], a[i * 3 + 1]);
+        if (a[i * 3 + 2] > 0.0)
+            a[i * 3 + 2] = a[i * 3 + 2] * (1.0 + F(a[i * 3], a[i * 3 + 1]));
     m.AssignPoints(std::move(q));
     return m;
 }

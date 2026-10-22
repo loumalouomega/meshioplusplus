@@ -584,7 +584,10 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
             if (SkipEv && g.mNearEv)
                 continue;
             const PatchVec n = pn_normal(patches[I].mSurface, g.mU, g.mV);
-            const double c = std::max(-1.0, std::min(1.0, pn_dot(n, g.mNormal)));
+            // The angle between the tangent planes: two patches whose
+            // parameters turn opposite ways have opposite normals on one
+            // smooth surface (the face's sense is set apart).
+            const double c = std::min(1.0, std::fabs(pn_dot(n, g.mNormal)));
             worst = std::max(worst, std::acos(c) * 180.0 / kPnPi);
         }
         return worst;

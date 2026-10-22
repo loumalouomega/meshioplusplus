@@ -210,8 +210,8 @@ TEST(FitCadModes, FixturesMatchPython) {
             h = (h ^ p[i]) * 0x100000001b3ull;
         return h;
     };
-    EXPECT_EQ(digest(analytic::monkey_saddle_box(24)), 0x1b4f3a52c6d6f26cull);
-    EXPECT_EQ(digest(analytic::s_band_box(24)), 0xe77136aca0de5eafull);
+    EXPECT_EQ(digest(analytic::monkey_saddle_box(24)), 0x06c59d1fc5a203c4ull);
+    EXPECT_EQ(digest(analytic::s_band_box(24)), 0x04808850ab51bf6dull);
     EXPECT_EQ(digest(analytic::hood_box(24, true)), 0x4b1fe1e9066260d6ull);
     EXPECT_EQ(digest(analytic::cc_cage(3)), 0x85f0b2dd4c5350e1ull);
     EXPECT_EQ(digest(analytic::gaussian_noise(analytic::hood_box(12), 1e-3, 11)),
@@ -502,6 +502,23 @@ TEST(FitCadModes, ResegmentationCutsAMissedCrease) {
     }
 }
 
+// A torus resolved finely enough for the tolerance keeps network patches:
+// the default organic torus's facets sag from any smooth surface by about the
+// tolerance in its tube's tight bends, so no patch through its vertices also
+// holds its facet centres, and it falls back to adaptive faces.
+TEST(FitCadModes, NetworkOnAResolvedTorus) {
+    const Mesh skin = analytic::organic_torus(72, 36);
+    const double tol = 2e-3 * fcfix::diagonal(skin);
+    FitCadOptions o;
+    o.mBackend = FitCadBackend::Native;
+    o.mTolerance = tol;
+    o.mFreeformMode = FitCadFreeformMode::Network;
+    const FitCadResult r = fit_cad(fcfix::fitted_abs(skin, tol), "", o);
+    EXPECT_GT(r.mNumNetworkPatches, 0);
+    EXPECT_LT(r.mFacetAreaFraction, 0.01);
+    EXPECT_TRUE(r.mValid);
+}
+
 // A rounded cube (|x|^4 + |y|^4 + |z|^4 = 1): next to its layout's valence-3
 // vertices the tangent-plane treatment once bent the edges between them
 // (G1 angles near 180 degrees); the network keeps G0 there now, so every
@@ -578,6 +595,25 @@ TEST(FitCadModes, OcctAdaptiveReducesFacetArea) {
         if (legacy.mFacetAreaFraction > 0.0)
             EXPECT_LT(adaptive.mFacetAreaFraction, legacy.mFacetAreaFraction);
         EXPECT_TRUE(adaptive.mValid);
+    }
+}
+
+// The saddle box through OpenCASCADE: its flat sides survive the checks and
+// the saddle is a B-spline face in every freeform mode (its sides once folded
+// over where the saddle dips more than a row, and failed with it).
+TEST(FitCadModes, OcctSaddleBoxKeepsItsSides) {
+    const Mesh skin = analytic::monkey_saddle_box(24);
+    const double tol = 2e-3 * fcfix::diagonal(skin);
+    const Mesh fitted = fcfix::fitted_abs(skin, tol);
+    FitCadOptions o;
+    o.mTolerance = tol;
+    for (const auto mode :
+         {FitCadFreeformMode::Adaptive, FitCadFreeformMode::Network, FitCadFreeformMode::Auto}) {
+        SCOPED_TRACE(static_cast<int>(mode));
+        o.mFreeformMode = mode;
+        const FitCadResult r = fit_cad(fitted, "", o);
+        EXPECT_TRUE(r.mValid);
+        EXPECT_LT(r.mFacetAreaFraction, 1e-6);
     }
 }
 

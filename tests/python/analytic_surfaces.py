@@ -779,12 +779,16 @@ def triangle_box(n, warp=False):
 
 
 def heightfield_box(n, height, warp=False):
-    """A box whose top (z = 1) is lifted to ``1 + height(x, y)``."""
+    """A box whose top (z = 1) is lifted to ``1 + height(x, y)``, its sides'
+    points following in proportion (``z (1 + height)``) so they stay planar
+    and never fold (``analytic::heightfield_box``)."""
     m = triangle_box(n, warp)
     pts = m.points.copy()
     for i in range(len(pts)):
-        if pts[i, 2] == 1.0:
-            pts[i, 2] = 1.0 + height(float(pts[i, 0]), float(pts[i, 1]))
+        if pts[i, 2] > 0.0:
+            pts[i, 2] = float(pts[i, 2]) * (
+                1.0 + height(float(pts[i, 0]), float(pts[i, 1]))
+            )
     m.points = pts
     return m
 

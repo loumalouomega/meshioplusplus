@@ -233,8 +233,8 @@ def _fnv1a(data: bytes) -> int:
 # The trig-free fixtures' points, bit for bit the C++ ones: the same digests
 # are pinned in tests/cpp/test_fit_cad_modes.cpp (FitCadModes.FixturesMatchPython).
 _POINT_DIGESTS = {
-    "monkey_saddle_box": 0x1B4F3A52C6D6F26C,
-    "s_band_box": 0xE77136ACA0DE5EAF,
+    "monkey_saddle_box": 0x06C59D1FC5A203C4,
+    "s_band_box": 0x04808850AB51BF6D,
     "hood_box": 0x4B1FE1E9066260D6,
     "cc_cage3": 0x85F0B2DD4C5350E1,
     "noisy_hood": 0x6BE481CC0438D8C3,

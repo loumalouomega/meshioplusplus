@@ -60,6 +60,7 @@
 #include <set>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 
 #ifdef MESHIOPLUSPLUS_HAS_OCCT
 // System includes
@@ -603,7 +604,8 @@ FitCadFaceRecord fcn_network_record(std::int64_t Label, const detail::NetworkPat
 // facet nearest their proxy, for at most ten Lloyd steps, then the cuts
 // smoothed. A cell fanned into several facets stays whole. Empty when no cut
 // leaves every piece at least four facets.
-// `OnlyAcrossCreases`: none for a region with fewer than three sharp edges.
+// `OnlyAcrossCreases`: none for a region with fewer than three sharp edges
+// on curves that close or end on its boundary.
 std::vector<std::vector<std::size_t>> fcn_resegment(const detail::ClosedFacets& rFc,
                                                     const std::vector<std::size_t>& rFacets,
                                                     std::size_t K, bool OnlyAcrossCreases = false) {
@@ -641,6 +643,7 @@ std::vector<std::vector<std::size_t>> fcn_resegment(const detail::ClosedFacets& 
     std::size_t num_creases = 0;
     {
         std::unordered_map<std::uint64_t, std::size_t> first;
+        std::vector<std::pair<std::uint64_t, std::uint64_t>> crease_edges;
         for (std::size_t i = 0; i < n; ++i) {
             const std::size_t f = rFacets[i];
             const std::int64_t b = rFc.mStart[f], m = rFc.mStart[f + 1] - b;
@@ -662,9 +665,49 @@ std::vector<std::vector<std::size_t>> fcn_resegment(const detail::ClosedFacets& 
                     ++tens;
                 adj[i].emplace_back(j, tens);
                 adj[j].emplace_back(i, tens);
-                num_creases += tens >= 3;
+                ins.first->second = n;  // matched: an inner edge
+                if (tens >= 3)
+                    crease_edges.emplace_back(a, c);
             }
         }
+        // A crease must run somewhere: a group of connected sharp edges that
+        // neither reaches the region's boundary nor closes (a coarse or noisy
+        // skin's scattered ones) is not counted; one that starts at the
+        // boundary and fades out inside (a crease partly under the angle) is.
+        std::unordered_set<std::uint64_t> on_boundary;
+        for (const auto& kv : first)
+            if (kv.second != n) {
+                on_boundary.insert(kv.first >> 32);
+                on_boundary.insert(kv.first & 0xffffffffu);
+            }
+        std::unordered_map<std::uint64_t, std::uint64_t> parent;
+        const auto find = [&](std::uint64_t V) {
+            auto it = parent.emplace(V, V).first;
+            while (it->second != it->first) {
+                auto up = parent.find(it->second);
+                it->second = parent.find(up->second)->first;
+                it = up;
+            }
+            return it->first;
+        };
+        for (const auto& e : crease_edges) {
+            const std::uint64_t ra = find(e.first), rb = find(e.second);
+            if (ra != rb)
+                parent[std::max(ra, rb)] = std::min(ra, rb);
+        }
+        std::unordered_map<std::uint64_t, std::size_t> edges_of, verts_of;
+        std::unordered_set<std::uint64_t> touches;
+        for (const auto& e : crease_edges)
+            ++edges_of[find(e.first)];
+        for (const auto& kv : parent) {
+            const std::uint64_t r = find(kv.first);
+            ++verts_of[r];
+            if (on_boundary.count(kv.first))
+                touches.insert(r);
+        }
+        for (const auto& kv : edges_of)
+            if (touches.count(kv.first) || kv.second >= verts_of[kv.first])  // or a cycle
+                num_creases += kv.second;
     }
     // A fanned cell takes its first facet's piece.
     const auto pieces = [&](std::vector<std::size_t> Label, std::size_t NumPieces) {
@@ -870,6 +913,7 @@ FcnFreeform fcn_freeform(const Mesh& rSource, const detail::ClosedFacets& rFc,
         std::vector<std::size_t> mFacets;
         std::int64_t mDepth;
         std::int64_t mEscalations;
+        std::int64_t mCuts = 0;  // early re-segmentation cuts in its line
     };
     std::vector<std::pair<std::int64_t, std::vector<std::size_t>>> pieces;  // new labels
     std::map<std::int64_t, double> piece_tol;
@@ -949,7 +993,7 @@ FcnFreeform fcn_freeform(const Mesh& rSource, const detail::ClosedFacets& rFc,
                 items.emplace_back(label, it->second);
         }
         for (auto& it : network(items))
-            work.push_back({it.first, std::move(it.second), 0, 1});
+            work.push_back({it.first, std::move(it.second), 0, 1, rOptions.mResegmentRounds});
     } else {
         for (std::int64_t label : rCandidates) {
             const auto it = facets_of.find(label);
@@ -1007,9 +1051,12 @@ FcnFreeform fcn_freeform(const Mesh& rSource, const detail::ClosedFacets& rFc,
             // Not a face: cut into discs, else halve, else facets.
             std::size_t num = 0;
             std::vector<std::int64_t> piece;
-            if (rOptions.mResegmentRounds > 0) {
-                // A patch across sharp edges is cut along them first: the
-                // re-segmentation rung, where the segmentation left a crease.
+            bool cut_here = false;
+            if (item.mCuts < rOptions.mResegmentRounds) {
+                // A patch across sharp edges is cut along them first (at most
+                // `mResegmentRounds` times in its line): the re-segmentation
+                // rung, where the segmentation left a crease. Its pieces keep
+                // the halvings left.
                 const auto cut = fcn_resegment(rFc, item.mFacets, 2, true);
                 if (!cut.empty()) {
                     std::unordered_map<std::size_t, std::int64_t> of_facet;
@@ -1020,6 +1067,7 @@ FcnFreeform fcn_freeform(const Mesh& rSource, const detail::ClosedFacets& rFc,
                     for (std::size_t t = 0; t < tris.size(); ++t)
                         piece[t] = of_facet[tri_facet[t]];
                     num = cut.size();
+                    cut_here = true;
                     ++out.mNumResegmented;
                 }
             }
@@ -1043,7 +1091,8 @@ FcnFreeform fcn_freeform(const Mesh& rSource, const detail::ClosedFacets& rFc,
             }
             for (std::vector<std::size_t>& facets : pf) {
                 const std::int64_t label = next_label++;
-                work.push_back({label, facets, item.mDepth + 1, rec.mEscalationSteps + 1});
+                work.push_back({label, facets, cut_here ? item.mDepth : item.mDepth + 1,
+                                rec.mEscalationSteps + 1, item.mCuts + (cut_here ? 1 : 0)});
                 pieces.emplace_back(label, std::move(facets));
             }
             out.mNumSplit += static_cast<std::int64_t>(num);
@@ -1113,7 +1162,8 @@ FcnFreeform fcn_freeform(const Mesh& rSource, const detail::ClosedFacets& rFc,
             ++out.mNumResegmented;
             for (std::vector<std::size_t>& facets : cut) {
                 const std::int64_t piece = next_label++;
-                work.push_back({piece, facets, rOptions.mMaxFreeformSplits, steps + 1});
+                work.push_back({piece, facets, rOptions.mMaxFreeformSplits, steps + 1,
+                                rOptions.mResegmentRounds});
                 pieces.emplace_back(piece, std::move(facets));
             }
         }
@@ -4812,6 +4862,8 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
     // normals (fcn_resegment) and each piece fitted as an adaptive face, at
     // most `mResegmentRounds` cuts deep; true when it was cut.
     std::vector<std::uint8_t> reseg_depth;
+    // Per row, the early re-segmentation cuts in its line.
+    std::vector<std::uint8_t> early_cut;
     const auto resegment_and_refit = [&](std::size_t R) {
         const std::uint8_t depth = R < reseg_depth.size() ? reseg_depth[R] : 0;
         if (depth >= rOptions.mResegmentRounds || facets_of[R].empty())
@@ -4917,9 +4969,13 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
                         flat_pts[i] = {pts[i].X(), pts[i].Y(), pts[i].Z()};
                     std::size_t num_pieces = 0;
                     std::vector<std::int64_t> piece;
-                    if (adaptive && rOptions.mResegmentRounds > 0) {
-                        // Across sharp edges, cut along them first (the
-                        // re-segmentation rung).
+                    const std::uint8_t cuts = r < early_cut.size() ? early_cut[r] : 0;
+                    bool cut_here = false;
+                    if (adaptive && cuts < rOptions.mResegmentRounds) {
+                        // Across sharp edges, cut along them first (at most
+                        // `mResegmentRounds` times in its line: the
+                        // re-segmentation rung); the pieces keep the halvings
+                        // left.
                         const auto cut = fcn_resegment(fc, facets_of[r], 2, true);
                         if (!cut.empty()) {
                             std::unordered_map<std::size_t, std::int64_t> of_facet;
@@ -4930,6 +4986,7 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
                             for (std::size_t tt = 0; tt < tris.size(); ++tt)
                                 piece[tt] = of_facet[tri_facet[tt]];
                             num_pieces = cut.size();
+                            cut_here = true;
                             ++result.mNumResegmented;
                         }
                     }
@@ -4972,7 +5029,10 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
                             // A piece is as deep in tiles as its parent (the
                             // depth was missing here before v17.12.0).
                             tile_depth.push_back(tile_depth[r]);
-                            general_depth.push_back(general_depth[r] + 1);
+                            general_depth.push_back(general_depth[r] + (cut_here ? 0 : 1));
+                            early_cut.resize(static_cast<std::size_t>(row) + 1, 0);
+                            early_cut[static_cast<std::size_t>(row)] =
+                                static_cast<std::uint8_t>(cuts + (cut_here ? 1 : 0));
                             fc_row(row_info, static_cast<std::size_t>(row)).mEscalations =
                                 escalations;
                         }
