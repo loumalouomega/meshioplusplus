@@ -10,6 +10,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Fix:** the MCP server runs on the `mcp` SDK 2.x as well as 1.x. 2.x removed `mcp.server.fastmcp` (the server failed to import there) in favour of `mcp.server.mcpserver.MCPServer`; `_server.py` now imports whichever exists, and the `host` that keeps a non-loopback `--http` bind from being rejected is passed to the HTTP app on 2.x instead of the constructor. The `[mcp]` and `[dashboard]` extras allow `mcp>=1.2,<3`, and CI tests both majors.
 - **Added**: `fit_cad` halves a patch that flattens but that no single B-spline follows within the tolerance (a large organic surface, such as a topology-optimised part's) across its longest extent, and fits each half in turn, up to nine halvings and 24 triangles per tile (`freeform_split`; no option, report or ABI change). On `example/data/hook.mdpa` the solid goes from 20,892 faces with none freeform to 8,714 with 35 freeform B-spline faces, still valid and inside the tolerance (`example/python/39_cad_quality_check.ipynb`). The pinned `threaded_rod` digests of the OpenCASCADE backend moved.
 
 ## v17.11.0 (2026-10-21)
