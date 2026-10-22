@@ -318,26 +318,49 @@ AdaptiveOctree octree_adaptive_build(const OctreeFrame& rFrame,
     for (std::size_t p = 0; p < rPrims.size(); ++p)
         prim_level[p] = rFrame.LevelFor(rPrims[p].mSize);
     const std::int32_t volume_level = rFrame.LevelFor(rFrame.mMaxSize);
-    // Roots, each with the primitives that reach it.
+    // Roots, each with the primitives that reach it: each primitive is tested
+    // against the roots its bounding box spans only, then scattered in
+    // ascending primitive order, so every list is ascending.
     std::vector<SzfLeaf> active;
     const std::int64_t root = std::int64_t{1} << L;
-    for (std::int64_t z = 0; z < rFrame.mRoots[2]; ++z)
-        for (std::int64_t y = 0; y < rFrame.mRoots[1]; ++y)
-            for (std::int64_t x = 0; x < rFrame.mRoots[0]; ++x) {
-                SzfLeaf leaf;
+    const std::int64_t nx = rFrame.mRoots[0], ny = rFrame.mRoots[1], nz = rFrame.mRoots[2];
+    active.resize(static_cast<std::size_t>(nx * ny * nz));
+    for (std::int64_t z = 0; z < nz; ++z)
+        for (std::int64_t y = 0; y < ny; ++y)
+            for (std::int64_t x = 0; x < nx; ++x) {
+                SzfLeaf& leaf = active[static_cast<std::size_t>((z * ny + y) * nx + x)];
                 leaf.mX = x * root;
                 leaf.mY = y * root;
                 leaf.mZ = z * root;
-                std::vector<std::uint8_t> hit(rPrims.size(), 0);
-                const std::array<std::int64_t, 3> lo{{leaf.mX, leaf.mY, leaf.mZ}};
-                parallel_for(rPrims.size(), [&](std::size_t p) {
-                    hit[p] = octree_prim_hits(rFrame, rPrims[p], lo, root);
-                });
-                for (std::size_t p = 0; p < rPrims.size(); ++p)
-                    if (hit[p])
-                        leaf.mCand.push_back(static_cast<std::int32_t>(p));
-                active.push_back(std::move(leaf));
             }
+    std::vector<std::vector<std::int64_t>> reach(rPrims.size());
+    parallel_for(
+        rPrims.size(),
+        [&](std::size_t p) {
+            const SizedPrim& prim = rPrims[p];
+            std::array<std::int64_t, 3> r0{}, r1{};
+            for (std::size_t k = 0; k < 3; ++k) {
+                const double a = std::min({prim.mA[k], prim.mB[k], prim.mC[k]});
+                const double b = std::max({prim.mA[k], prim.mB[k], prim.mC[k]});
+                // One root of slack each way: the overlap test decides.
+                r0[k] = std::max<std::int64_t>(0, static_cast<std::int64_t>(std::floor(
+                                                      (a - rFrame.mOrigin[k]) / rFrame.mRootSize)) -
+                                                      1);
+                r1[k] = std::min<std::int64_t>(rFrame.mRoots[k] - 1,
+                                               static_cast<std::int64_t>(std::floor(
+                                                   (b - rFrame.mOrigin[k]) / rFrame.mRootSize)) +
+                                                   1);
+            }
+            for (std::int64_t z = r0[2]; z <= r1[2]; ++z)
+                for (std::int64_t y = r0[1]; y <= r1[1]; ++y)
+                    for (std::int64_t x = r0[0]; x <= r1[0]; ++x)
+                        if (octree_prim_hits(rFrame, prim, {{x * root, y * root, z * root}}, root))
+                            reach[p].push_back((z * ny + y) * nx + x);
+        },
+        64);
+    for (std::size_t p = 0; p < rPrims.size(); ++p)
+        for (std::int64_t r : reach[p])
+            active[static_cast<std::size_t>(r)].mCand.push_back(static_cast<std::int32_t>(p));
     std::vector<SzfLeaf> done;
     for (std::int32_t level = 0; !active.empty(); ++level) {
         std::vector<std::uint8_t> split(active.size(), 0);

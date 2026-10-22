@@ -30611,6 +30611,8 @@ struct OctreeMeshResult {
     std::int64_t mNumFeatureChains = 0;             ///< Feature chains of the skin.
     std::int64_t mNumFeatureChainsMissed = 0;       ///< Chains not recovered by the boundary.
     std::int64_t mNumFeatureMoves = 0;              ///< Boundary nodes moved onto features.
+    std::int64_t mNumOptimizedMoves = 0;            ///< Nodes the optimisation moved.
+    std::int64_t mNumFlips = 0;                     ///< Flips the optimisation kept.
     /// The Labelle-Shewchuk dihedral bound applies to every tetrahedron:
     /// `Uniform` grading, nothing snapped to features, nothing refused.
     bool mGuaranteeApplies = false;
@@ -47247,6 +47249,11 @@ void octree_mesh_stuffed_lattice(OctreeMeshSetup& rSetup, const OctreeMeshOption
 /// Snap the tetrahedra's boundary onto the skin's feature corners and chains.
 void octree_mesh_snap_features(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions,
                                OctreeMeshResult& rResult, OctreeMeshTets& rTets);
+
+/// Fit the skin's nodes along it and optimise the tetrahedra (ODT relocation,
+/// flips) under the dihedral-floor guard.
+void octree_mesh_optimize(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions,
+                          OctreeMeshResult& rResult, OctreeMeshTets& rTets);
 
 /// The edge of the leaf holding @p rP (clamped into the forest).
 double octree_mesh_local_size(const OctreeMeshSetup& rSetup, const Vec3& rP);
@@ -69409,6 +69416,44 @@ std::pair<Vec3, double> featsnap_on_polyline(const std::vector<Vec3>& rSkin,
     return {best, best_d};
 }
 
+// The arc length along a polyline of its nearest point to `rP`.
+double featsnap_arc(const std::vector<Vec3>& rSkin, const std::vector<std::int64_t>& rChain,
+                    const Vec3& rP) {
+    double best_d = std::numeric_limits<double>::infinity(), best_s = 0.0, s = 0.0;
+    for (std::size_t i = 0; i + 1 < rChain.size(); ++i) {
+        const Vec3& a = rSkin[static_cast<std::size_t>(rChain[i])];
+        const Vec3& b = rSkin[static_cast<std::size_t>(rChain[i + 1])];
+        const Vec3 ab = vec3_sub(b, a);
+        const double len2 = vec3_norm_sq(ab), len = std::sqrt(len2);
+        const double t =
+            len2 > 0.0 ? std::clamp(vec3_dot(vec3_sub(rP, a), ab) / len2, 0.0, 1.0) : 0.0;
+        const double d = vec3_norm(vec3_sub(rP, vec3_add(a, vec3_scale(ab, t))));
+        if (d < best_d) {
+            best_d = d;
+            best_s = s + t * len;
+        }
+        s += len;
+    }
+    return best_s;
+}
+
+// The point of a polyline at arc length `S`.
+Vec3 featsnap_at_arc(const std::vector<Vec3>& rSkin, const std::vector<std::int64_t>& rChain,
+                     double S) {
+    double s = 0.0;
+    for (std::size_t i = 0; i + 1 < rChain.size(); ++i) {
+        const Vec3& a = rSkin[static_cast<std::size_t>(rChain[i])];
+        const Vec3& b = rSkin[static_cast<std::size_t>(rChain[i + 1])];
+        const double len = vec3_norm(vec3_sub(b, a));
+        if (S <= s + len || i + 2 == rChain.size()) {
+            const double t = len > 0.0 ? std::clamp((S - s) / len, 0.0, 1.0) : 0.0;
+            return vec3_add(a, vec3_scale(vec3_sub(b, a), t));
+        }
+        s += len;
+    }
+    return rSkin[static_cast<std::size_t>(rChain.back())];
+}
+
 }  // namespace
 
 FeatureGraph feature_graph(const std::vector<Vec3>& rPoints,
@@ -69541,6 +69586,8 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
         badj[static_cast<std::size_t>(e[0])].push_back(e[1]);
         badj[static_cast<std::size_t>(e[1])].push_back(e[0]);
     }
+    for (auto& a : badj)
+        std::sort(a.begin(), a.end());
     // Every tetrahedron around each point.
     std::vector<std::vector<std::int64_t>> inc(np);
     for (std::size_t t = 0; t < rTets.size(); ++t)
@@ -69563,14 +69610,72 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
         }
         return lo;
     };
+    // Whether every tetrahedron around `U` stays positive with `V` at `rAt`.
+    auto star_positive = [&](std::int64_t U, std::int64_t V, const Vec3& rAt) {
+        for (std::int64_t t : inc[static_cast<std::size_t>(U)]) {
+            Vec3 p[4];
+            for (std::size_t c = 0; c < 4; ++c) {
+                const std::int64_t q = rTets[static_cast<std::size_t>(t)][c];
+                p[c] = q == V ? rAt : rPoints[static_cast<std::size_t>(q)];
+            }
+            if (featsnap_volume(p[0], p[1], p[2], p[3]) <= MinVolume)
+                return false;
+        }
+        return true;
+    };
     auto try_move = [&](std::int64_t V, const Vec3& rTarget) {
         bool positive = true;
         const double before = min_dihedral(V, rPoints[static_cast<std::size_t>(V)], positive);
-        const double after = min_dihedral(V, rTarget, positive);
-        if (!positive || after < std::min(before, kFeatsnapFloorDeg))
+        double after = min_dihedral(V, rTarget, positive);
+        if (!positive) {
+            // Make room: move the free interior nodes of the tetrahedra the
+            // move would invert to the centroid of their stars.
+            std::vector<std::pair<std::int64_t, Vec3>> undo;
+            for (int pass = 0; pass < 2 && !positive; ++pass) {
+                for (std::int64_t t : inc[static_cast<std::size_t>(V)])
+                    for (std::int64_t u : rTets[static_cast<std::size_t>(t)]) {
+                        const auto ui = static_cast<std::size_t>(u);
+                        if (u == V || boundary[ui] || rPinned[ui])
+                            continue;
+                        Vec3 c{0.0, 0.0, 0.0};
+                        double w = 0.0;
+                        for (std::int64_t s : inc[ui])
+                            for (std::int64_t q : rTets[static_cast<std::size_t>(s)])
+                                if (q != u) {
+                                    c = vec3_add(
+                                        c, q == V ? rTarget : rPoints[static_cast<std::size_t>(q)]);
+                                    w += 1.0;
+                                }
+                        const Vec3 old = rPoints[ui];
+                        rPoints[ui] = vec3_scale(c, 1.0 / w);
+                        if (star_positive(u, V, rTarget) &&
+                            star_positive(u, V, rPoints[static_cast<std::size_t>(V)]))
+                            undo.emplace_back(u, old);
+                        else
+                            rPoints[ui] = old;
+                    }
+                positive = true;
+                after = min_dihedral(V, rTarget, positive);
+            }
+            if (!positive || after < std::min(before, kFeatsnapFloorDeg)) {
+                for (auto it = undo.rbegin(); it != undo.rend(); ++it)
+                    rPoints[static_cast<std::size_t>(it->first)] = it->second;
+                return false;
+            }
+        } else if (after < std::min(before, kFeatsnapFloorDeg)) {
             return false;
+        }
         rPoints[static_cast<std::size_t>(V)] = rTarget;
         ++report.mNumMoved;
+        return true;
+    };
+    // A move in four steps, each making room around it as it goes; a refused
+    // step keeps the steps before it.
+    auto move_by_steps = [&](std::int64_t V, const Vec3& rTarget) {
+        const Vec3 at = rPoints[static_cast<std::size_t>(V)];
+        for (int k = 1; k <= 4; ++k)
+            if (!try_move(V, vec3_add(at, vec3_scale(vec3_sub(rTarget, at), 0.25 * k))))
+                return false;
         return true;
     };
     // Corners: the nearest boundary vertex within reach that can take it.
@@ -69591,20 +69696,25 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
                 cand.emplace_back(d, v);
         }
         std::sort(cand.begin(), cand.end());
-        for (const auto& [d, v] : cand)
-            if (try_move(v, cp)) {
-                rPinned[static_cast<std::size_t>(v)] = 1;
-                rFeature[static_cast<std::size_t>(v)] = 1;
-                snapped_at[static_cast<std::size_t>(c)] = v;
-                ++report.mNumCornersSnapped;
-                break;
+        for (const auto& [d, v] : cand) {
+            const Vec3 was = rPoints[static_cast<std::size_t>(v)];
+            if (!move_by_steps(v, cp)) {
+                rPoints[static_cast<std::size_t>(v)] = was;
+                continue;
             }
+            rPinned[static_cast<std::size_t>(v)] = 1;
+            rFeature[static_cast<std::size_t>(v)] = 1;
+            snapped_at[static_cast<std::size_t>(c)] = v;
+            ++report.mNumCornersSnapped;
+            break;
+        }
     }
     // Chains: a shortest boundary path in a tube around the polyline.
     for (const auto& chain : rGraph.mChains) {
         const std::int64_t from = snapped_at[static_cast<std::size_t>(chain.front())];
         const std::int64_t to = snapped_at[static_cast<std::size_t>(chain.back())];
         if (from < 0 || to < 0 || from == to) {
+            log::debug("feature_snap: a chain's ends are not snapped ({}, {})", from, to);
             ++report.mNumChainsMissed;
             continue;
         }
@@ -69629,7 +69739,7 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
                 const double du = featsnap_on_polyline(rSkinPoints, chain, pu).second;
                 if (u != to && du > 1.25 * h)
                     continue;
-                const double w = vec3_norm(vec3_sub(pu, pv)) * (1.0 + 4.0 * (du + dv) / h);
+                const double w = vec3_norm(vec3_sub(pu, pv)) * (1.0 + 16.0 * (du + dv) / h);
                 const double nd = d + w;
                 const auto ui = static_cast<std::size_t>(u);
                 if (nd < dist[ui] || (nd == dist[ui] && v < prev[ui])) {
@@ -69640,6 +69750,7 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
             }
         }
         if (prev[static_cast<std::size_t>(to)] < 0) {
+            log::debug("feature_snap: no path for a chain of {} points", chain.size());
             ++report.mNumChainsMissed;
             continue;
         }
@@ -69648,24 +69759,65 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
              v = prev[static_cast<std::size_t>(v)])
             path.push_back(v);
         std::reverse(path.begin(), path.end());
-        bool all = true;
-        for (std::int64_t v : path) {
-            const Vec3 target =
-                featsnap_on_polyline(rSkinPoints, chain, rPoints[static_cast<std::size_t>(v)])
-                    .first;
-            const Vec3 at = rPoints[static_cast<std::size_t>(v)];
-            bool moved = false;
-            for (double f : {1.0, 0.5, 0.25})
-                if (try_move(v, vec3_add(at, vec3_scale(vec3_sub(target, at), f)))) {
-                    moved = f == 1.0;
-                    break;
+        // A node whose neighbours on the path share an edge is a detour
+        // through a triangle (projecting all three onto the chain would make
+        // the triangle flat): drop it from the path.
+        {
+            std::vector<std::int64_t> full{from};
+            full.insert(full.end(), path.begin(), path.end());
+            full.push_back(to);
+            for (bool changed = true; changed;) {
+                changed = false;
+                for (std::size_t i = 1; i + 1 < full.size(); ++i) {
+                    const auto& a = badj[static_cast<std::size_t>(full[i - 1])];
+                    if (std::binary_search(a.begin(), a.end(), full[i + 1])) {
+                        full.erase(full.begin() + static_cast<std::ptrdiff_t>(i));
+                        changed = true;
+                        break;
+                    }
                 }
+            }
+            path.assign(full.begin() + 1, full.end() - 1);
+        }
+        // Targets in order along the chain: each node's nearest arc length,
+        // made increasing; when two land closer than a fifth of the local
+        // size, or out of order, the nodes are spread evenly instead.
+        double total = 0.0;
+        for (std::size_t i = 0; i + 1 < chain.size(); ++i)
+            total += vec3_norm(vec3_sub(rSkinPoints[static_cast<std::size_t>(chain[i + 1])],
+                                        rSkinPoints[static_cast<std::size_t>(chain[i])]));
+        std::vector<double> arc(path.size());
+        bool even = false;
+        double last = 0.0;
+        for (std::size_t i = 0; i < path.size(); ++i) {
+            const Vec3& pv = rPoints[static_cast<std::size_t>(path[i])];
+            arc[i] = featsnap_arc(rSkinPoints, chain, pv);
+            const double gap = 0.2 * rLocalSize(pv);
+            if (arc[i] < last + gap || arc[i] > total - gap)
+                even = true;
+            last = arc[i];
+        }
+        if (even)
+            for (std::size_t i = 0; i < path.size(); ++i)
+                arc[i] = total * static_cast<double>(i + 1) / static_cast<double>(path.size() + 1);
+        bool all = true;
+        std::int64_t refused = 0;
+        for (std::size_t i = 0; i < path.size(); ++i) {
+            const std::int64_t v = path[i];
+            const Vec3 target = featsnap_at_arc(rSkinPoints, chain, arc[i]);
+            const Vec3 at = rPoints[static_cast<std::size_t>(v)];
+            (void)at;
+            const bool moved = move_by_steps(v, target);
             all = all && moved;
+            refused += !moved;
             rPinned[static_cast<std::size_t>(v)] = 1;
             rFeature[static_cast<std::size_t>(v)] = 2;
         }
-        if (!all)
+        if (!all) {
+            log::debug("feature_snap: a chain of {} points ({} nodes) kept {} off it", chain.size(),
+                       path.size(), refused);
             ++report.mNumChainsMissed;
+        }
     }
     return report;
 }
@@ -76313,26 +76465,49 @@ AdaptiveOctree octree_adaptive_build(const OctreeFrame& rFrame,
     for (std::size_t p = 0; p < rPrims.size(); ++p)
         prim_level[p] = rFrame.LevelFor(rPrims[p].mSize);
     const std::int32_t volume_level = rFrame.LevelFor(rFrame.mMaxSize);
-    // Roots, each with the primitives that reach it.
+    // Roots, each with the primitives that reach it: each primitive is tested
+    // against the roots its bounding box spans only, then scattered in
+    // ascending primitive order, so every list is ascending.
     std::vector<SzfLeaf> active;
     const std::int64_t root = std::int64_t{1} << L;
-    for (std::int64_t z = 0; z < rFrame.mRoots[2]; ++z)
-        for (std::int64_t y = 0; y < rFrame.mRoots[1]; ++y)
-            for (std::int64_t x = 0; x < rFrame.mRoots[0]; ++x) {
-                SzfLeaf leaf;
+    const std::int64_t nx = rFrame.mRoots[0], ny = rFrame.mRoots[1], nz = rFrame.mRoots[2];
+    active.resize(static_cast<std::size_t>(nx * ny * nz));
+    for (std::int64_t z = 0; z < nz; ++z)
+        for (std::int64_t y = 0; y < ny; ++y)
+            for (std::int64_t x = 0; x < nx; ++x) {
+                SzfLeaf& leaf = active[static_cast<std::size_t>((z * ny + y) * nx + x)];
                 leaf.mX = x * root;
                 leaf.mY = y * root;
                 leaf.mZ = z * root;
-                std::vector<std::uint8_t> hit(rPrims.size(), 0);
-                const std::array<std::int64_t, 3> lo{{leaf.mX, leaf.mY, leaf.mZ}};
-                parallel_for(rPrims.size(), [&](std::size_t p) {
-                    hit[p] = octree_prim_hits(rFrame, rPrims[p], lo, root);
-                });
-                for (std::size_t p = 0; p < rPrims.size(); ++p)
-                    if (hit[p])
-                        leaf.mCand.push_back(static_cast<std::int32_t>(p));
-                active.push_back(std::move(leaf));
             }
+    std::vector<std::vector<std::int64_t>> reach(rPrims.size());
+    parallel_for(
+        rPrims.size(),
+        [&](std::size_t p) {
+            const SizedPrim& prim = rPrims[p];
+            std::array<std::int64_t, 3> r0{}, r1{};
+            for (std::size_t k = 0; k < 3; ++k) {
+                const double a = std::min({prim.mA[k], prim.mB[k], prim.mC[k]});
+                const double b = std::max({prim.mA[k], prim.mB[k], prim.mC[k]});
+                // One root of slack each way: the overlap test decides.
+                r0[k] = std::max<std::int64_t>(0, static_cast<std::int64_t>(std::floor(
+                                                      (a - rFrame.mOrigin[k]) / rFrame.mRootSize)) -
+                                                      1);
+                r1[k] = std::min<std::int64_t>(rFrame.mRoots[k] - 1,
+                                               static_cast<std::int64_t>(std::floor(
+                                                   (b - rFrame.mOrigin[k]) / rFrame.mRootSize)) +
+                                                   1);
+            }
+            for (std::int64_t z = r0[2]; z <= r1[2]; ++z)
+                for (std::int64_t y = r0[1]; y <= r1[1]; ++y)
+                    for (std::int64_t x = r0[0]; x <= r1[0]; ++x)
+                        if (octree_prim_hits(rFrame, prim, {{x * root, y * root, z * root}}, root))
+                            reach[p].push_back((z * ny + y) * nx + x);
+        },
+        64);
+    for (std::size_t p = 0; p < rPrims.size(); ++p)
+        for (std::int64_t r : reach[p])
+            active[static_cast<std::size_t>(r)].mCand.push_back(static_cast<std::int32_t>(p));
     std::vector<SzfLeaf> done;
     for (std::int32_t level = 0; !active.empty(); ++level) {
         std::vector<std::uint8_t> split(active.size(), 0);
@@ -213848,6 +214023,16 @@ void octm_report_mesh(const OctreeMeshOptions& rO, OctreeMeshResult& rResult) {
         else if (name == "quality:max_dihedral")
             rResult.mMaxDihedral = summary.mMax;
     }
+    if (rResult.mNumTetrahedra > 0 && rResult.mMinDihedral < 5.0)
+        detail::octree_mesh_warn(rResult, std::string(detail::kOctreeMeshPrefix) +
+                                              "the smallest dihedral angle is " +
+                                              std::to_string(rResult.mMinDihedral) + " degrees");
+    if (rResult.mNumBoundaryEdgesOpen > 0 || rResult.mNumNonManifoldBoundaryEdges > 0)
+        detail::octree_mesh_warn(rResult,
+                                 std::string(detail::kOctreeMeshPrefix) + "the boundary has " +
+                                     std::to_string(rResult.mNumBoundaryEdgesOpen) + " open and " +
+                                     std::to_string(rResult.mNumNonManifoldBoundaryEdges) +
+                                     " non-manifold edges");
     if (rResult.mNumInverted > 0)
         detail::octree_mesh_warn(rResult, std::string(detail::kOctreeMeshPrefix) +
                                               std::to_string(rResult.mNumInverted) +
@@ -213999,9 +214184,13 @@ OctreeMeshResult octree_mesh(const Mesh& rSkin, const OctreeMeshOptions& rOption
             clock.Lap(result, "stuffing");
             detail::octree_mesh_snap_features(*setup, rOptions, result, tets);
             clock.Lap(result, "features");
+            detail::octree_mesh_optimize(*setup, rOptions, result, tets);
+            clock.Lap(result, "optimize");
             detail::octree_mesh_emit_tets(*setup, rOptions, result, tets);
             result.mGuaranteeApplies = rOptions.mSkinGrading == OctreeMeshSkinGrading::Uniform &&
-                                       result.mNumWarpRefused == 0 && result.mNumFeatureMoves == 0;
+                                       result.mNumWarpRefused == 0 &&
+                                       result.mNumFeatureMoves == 0 &&
+                                       (result.mNumFlips == 0 || rOptions.mDihedralFloorGuard);
             break;
         }
         case OctreeMeshOutput::Hexa:
@@ -214255,6 +214444,326 @@ void octree_mesh_castellated(OctreeMeshSetup& rS, const OctreeMeshOptions& rO,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/octree_mesh_castellated.cpp =====
+// ===== begin src/cpp/src/operations/octree_mesh_optimize.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+constexpr int kOctmoFace[4][3] = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}, {0, 2, 1}};
+
+double octmo_min_dihedral(const std::vector<Vec3>& rP, const std::array<std::int64_t, 4>& rT) {
+    const Vec3& a = rP[static_cast<std::size_t>(rT[0])];
+    const Vec3& b = rP[static_cast<std::size_t>(rT[1])];
+    const Vec3& c = rP[static_cast<std::size_t>(rT[2])];
+    const Vec3& d = rP[static_cast<std::size_t>(rT[3])];
+    if (triple_product(vec3_sub(b, a), vec3_sub(c, a), vec3_sub(d, a)) <= 0.0)
+        return -1.0;
+    return tet_dihedral_angles(a, b, c, d)[0];
+}
+
+double octmo_max_dihedral(const std::vector<Vec3>& rP, const std::array<std::int64_t, 4>& rT) {
+    const Vec3& a = rP[static_cast<std::size_t>(rT[0])];
+    const Vec3& b = rP[static_cast<std::size_t>(rT[1])];
+    const Vec3& c = rP[static_cast<std::size_t>(rT[2])];
+    const Vec3& d = rP[static_cast<std::size_t>(rT[3])];
+    if (triple_product(vec3_sub(b, a), vec3_sub(c, a), vec3_sub(d, a)) <= 0.0)
+        return 181.0;
+    return tet_dihedral_angles(a, b, c, d)[5];
+}
+
+// The worst dihedral angle of every tetrahedron, and its minimum.
+double octmo_angles(const std::vector<Vec3>& rP, const std::vector<std::array<std::int64_t, 4>>& rT,
+                    std::vector<double>& rOut) {
+    rOut.resize(rT.size());
+    parallel_for(rT.size(), [&](std::size_t t) { rOut[t] = octmo_min_dihedral(rP, rT[t]); });
+    double lo = 180.0;
+    for (double a : rOut)
+        lo = std::min(lo, a);
+    return lo;
+}
+
+// The largest dihedral angle of every tetrahedron, and its maximum.
+double octmo_max_angles(const std::vector<Vec3>& rP,
+                        const std::vector<std::array<std::int64_t, 4>>& rT,
+                        std::vector<double>& rOut) {
+    rOut.resize(rT.size());
+    parallel_for(rT.size(), [&](std::size_t t) { rOut[t] = octmo_max_dihedral(rP, rT[t]); });
+    double hi = 0.0;
+    for (double a : rOut)
+        hi = std::max(hi, a);
+    return hi;
+}
+
+std::vector<std::vector<std::int64_t>> octmo_incidence(
+    std::size_t Np, const std::vector<std::array<std::int64_t, 4>>& rT) {
+    std::vector<std::vector<std::int64_t>> inc(Np);
+    for (std::size_t t = 0; t < rT.size(); ++t)
+        for (std::int64_t v : rT[t])
+            inc[static_cast<std::size_t>(v)].push_back(static_cast<std::int64_t>(t));
+    return inc;
+}
+
+}  // namespace
+
+void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, OctreeMeshResult& rR,
+                          OctreeMeshTets& rTets) {
+    if (rO.mFitIterations <= 0)
+        return;
+    // The tetrahedra that are kept, as their own mesh.
+    std::vector<std::size_t> kept;
+    std::int32_t lo_mat = 1 << 30, hi_mat = -1;
+    for (std::size_t t = 0; t < rTets.mTets.size(); ++t)
+        if (rTets.mMaterial[t] > 0 || rO.mKeepOutside) {
+            kept.push_back(t);
+            lo_mat = std::min(lo_mat, rTets.mMaterial[t]);
+            hi_mat = std::max(hi_mat, rTets.mMaterial[t]);
+        }
+    if (kept.empty())
+        return;
+    const bool one_material = lo_mat == hi_mat;
+    std::vector<std::array<std::int64_t, 4>> tets(kept.size());
+    for (std::size_t n = 0; n < kept.size(); ++n)
+        tets[n] = rTets.mTets[kept[n]];
+    std::vector<Vec3>& pts = rTets.mPoints;
+    const std::size_t np = pts.size();
+    // The faces used once (the mesh's boundary: the skin, and the box with
+    // keep_outside), and the skin's surface graph.
+    std::vector<std::pair<std::array<std::int64_t, 3>, std::int64_t>> faces;
+    for (std::size_t n = 0; n < tets.size(); ++n)
+        for (const auto& f : kOctmoFace) {
+            std::array<std::int64_t, 3> k{tets[n][f[0]], tets[n][f[1]], tets[n][f[2]]};
+            std::sort(k.begin(), k.end());
+            faces.emplace_back(k, rTets.mMaterial[kept[n]]);
+        }
+    std::sort(faces.begin(), faces.end());
+    std::vector<std::uint8_t> boundary(np, 0);
+    std::vector<std::vector<std::int64_t>> surf_adj(np);
+    auto link = [&](const std::array<std::int64_t, 3>& rF) {
+        for (int e = 0; e < 3; ++e) {
+            surf_adj[static_cast<std::size_t>(rF[e])].push_back(rF[(e + 1) % 3]);
+            surf_adj[static_cast<std::size_t>(rF[(e + 1) % 3])].push_back(rF[e]);
+        }
+    };
+    for (std::size_t i = 0; i < faces.size();) {
+        std::size_t j = i;
+        while (j < faces.size() && faces[j].first == faces[i].first)
+            ++j;
+        const bool once = j - i == 1;
+        const bool interface = j - i == 2 && faces[i].second != faces[i + 1].second;
+        if (once)
+            for (std::int64_t v : faces[i].first)
+                boundary[static_cast<std::size_t>(v)] = 1;
+        // The skin: an inside face used once, or one between two materials.
+        if ((once && faces[i].second > 0) || interface)
+            link(faces[i].first);
+        i = j;
+    }
+    for (auto& a : surf_adj) {
+        std::sort(a.begin(), a.end());
+        a.erase(std::unique(a.begin(), a.end()), a.end());
+    }
+    // What never moves: features, the box, the interfaces of several materials,
+    // and (for the interior pass) every node on the skin.
+    std::vector<std::uint8_t> frozen(np, 0), slide(np, 0);
+    for (std::size_t p = 0; p < np; ++p) {
+        const bool on_skin = !surf_adj[p].empty();
+        const bool feature = !rTets.mFeature.empty() && rTets.mFeature[p];
+        frozen[p] = boundary[p] || on_skin || feature || rTets.mOnSkin[p];
+        slide[p] = on_skin && !feature && one_material && rTets.mOnSkin[p];
+        if (boundary[p] && !on_skin)
+            slide[p] = 0;  // the box
+    }
+    std::vector<std::uint8_t> moved(np, 0);
+    SmoothOptions so;
+    so.mMethod = SmoothMethod::Odt;
+    // The dihedral floor below already puts back every node that inverts a
+    // tetrahedron, so the pass's own guard (and its log line per sweep) is
+    // only needed without it.
+    so.mGuardInversion = !rO.mDihedralFloorGuard;
+    so.mLambda = 0.9;
+    std::int64_t flips = 0;
+    for (std::int64_t round = 0; round < rO.mFitIterations; ++round) {
+        std::vector<double> angle, big;
+        const double floor = octmo_angles(pts, tets, angle);
+        const double ceiling = octmo_max_angles(pts, tets, big);
+        const std::vector<Vec3> before = pts;
+        // 1. ODT relocation of the interior nodes.
+        std::vector<double> xyz(np * 3);
+        for (std::size_t p = 0; p < np; ++p)
+            for (std::size_t k = 0; k < 3; ++k)
+                xyz[p * 3 + k] = pts[p][k];
+        smooth_odt_pass(xyz, tets, frozen, so);
+        for (std::size_t p = 0; p < np; ++p)
+            for (std::size_t k = 0; k < 3; ++k)
+                pts[p][k] = xyz[p * 3 + k];
+        // 2. The skin's nodes slide along it, where that helps.
+        const auto inc = octmo_incidence(np, tets);
+        octmo_angles(pts, tets, angle);
+        std::vector<std::size_t> sliders;
+        for (std::size_t p = 0; p < np; ++p)
+            if (slide[p])
+                sliders.push_back(p);
+        std::vector<Vec3> target(sliders.size());
+        for (std::size_t k = 0; k < sliders.size(); ++k) {
+            Vec3 c{0.0, 0.0, 0.0};
+            for (std::int64_t q : surf_adj[sliders[k]])
+                c = vec3_add(c, pts[static_cast<std::size_t>(q)]);
+            target[k] = vec3_scale(c, 1.0 / static_cast<double>(surf_adj[sliders[k]].size()));
+        }
+        const auto hits = query_closest_points(rS.mQuery, target);
+        for (std::size_t k = 0; k < sliders.size(); ++k) {
+            const std::size_t p = sliders[k];
+            // The node's worst angle: the smaller of its smallest dihedral
+            // and 180 minus its largest.
+            auto worst_at = [&]() {
+                double w = 180.0;
+                for (std::int64_t t : inc[p]) {
+                    const auto& tt = tets[static_cast<std::size_t>(t)];
+                    w = std::min(
+                        {w, octmo_min_dihedral(pts, tt), 180.0 - octmo_max_dihedral(pts, tt)});
+                }
+                return w;
+            };
+            const double worst = worst_at();
+            const Vec3 keep = pts[p];
+            pts[p] = hits[k].mPoint;
+            const double after = worst_at();
+            if (after <= worst) {
+                pts[p] = keep;
+                continue;
+            }
+        }
+        // 3. The dihedral floor: put back every node whose worst angle fell
+        // below the mesh's worst before the round, until none does.
+        if (rO.mDihedralFloorGuard) {
+            for (int sweep = 0; sweep < 64; ++sweep) {
+                octmo_angles(pts, tets, angle);
+                octmo_max_angles(pts, tets, big);
+                bool any = false;
+                for (std::size_t p = 0; p < np; ++p) {
+                    if (pts[p] == before[p])
+                        continue;
+                    for (std::int64_t t : inc[p])
+                        if (angle[static_cast<std::size_t>(t)] < floor ||
+                            big[static_cast<std::size_t>(t)] > ceiling) {
+                            pts[p] = before[p];
+                            any = true;
+                            break;
+                        }
+                }
+                if (!any)
+                    break;
+                if (sweep == 63)
+                    pts = before;  // never left below the floor
+            }
+        }
+        for (std::size_t p = 0; p < np; ++p)
+            if (pts[p] != before[p])
+                moved[p] = 1;
+        // 4. Flips, for one material, kept when the worst angle holds.
+        if (one_material) {
+            Mesh m;
+            NDArray xyzs = NDArray::Uninit(DType::Float64, {np, std::size_t{3}});
+            for (std::size_t p = 0; p < np; ++p)
+                for (std::size_t k = 0; k < 3; ++k)
+                    xyzs.As<double>()[p * 3 + k] = pts[p][k];
+            NDArray conn = NDArray::Uninit(DType::Int64, {tets.size(), std::size_t{4}});
+            for (std::size_t n = 0; n < tets.size(); ++n)
+                for (std::size_t c = 0; c < 4; ++c)
+                    conn.As<std::int64_t>()[n * 4 + c] = tets[n][c];
+            m.AssignPoints(std::move(xyzs));
+            m.AddCellBlock("tetra", std::move(conn));
+            OptimizeVolumeOptions oo;
+            oo.mMaxIterations = 1;
+            oo.mRelocate = false;
+            oo.mFlip = true;
+            oo.mPreserveBoundary = true;
+            oo.mFrozen = frozen;
+            const OptimizeVolumeResult r = optimize_volume(m, oo);
+            if (r.mNumFlips > 0 && r.mMesh.NumPoints() == np) {
+                const auto block = r.mMesh.Cells(0);
+                const std::int64_t* c = block.Conn().As<std::int64_t>();
+                std::vector<std::array<std::int64_t, 4>> flipped(block.NumCells());
+                for (std::size_t n = 0; n < flipped.size(); ++n)
+                    for (std::size_t k = 0; k < 4; ++k)
+                        flipped[n][k] = c[n * 4 + k];
+                std::vector<double> fa, fb;
+                const double now = octmo_angles(pts, tets, angle);
+                const double now_hi = octmo_max_angles(pts, tets, big);
+                if (octmo_angles(pts, flipped, fa) >= std::min(now, floor) &&
+                    octmo_max_angles(pts, flipped, fb) <= std::max(now_hi, ceiling)) {
+                    tets.swap(flipped);
+                    flips += r.mNumFlips;
+                }
+            }
+        }
+    }
+    // Write back: tetrahedra that kept their vertices and did not move keep
+    // their lattice shape; the rest are optimised shapes.
+    std::map<std::array<std::int64_t, 4>, std::size_t> old;
+    for (std::size_t n = 0; n < kept.size(); ++n) {
+        auto k = rTets.mTets[kept[n]];
+        std::sort(k.begin(), k.end());
+        old.emplace(k, kept[n]);
+    }
+    OctreeMeshTets out;
+    out.mPoints = rTets.mPoints;
+    out.mOnSkin = rTets.mOnSkin;
+    out.mFeature = rTets.mFeature;
+    out.mNumMaterials = rTets.mNumMaterials;
+    const LinearOctree& tree = rS.mOctree.mTree;
+    for (const auto& t : tets) {
+        auto k = t;
+        std::sort(k.begin(), k.end());
+        const auto it = old.find(k);
+        bool still = it != old.end();
+        for (std::int64_t v : t)
+            still = still && !moved[static_cast<std::size_t>(v)];
+        out.mTets.push_back(t);
+        if (it != old.end()) {
+            out.mMaterial.push_back(rTets.mMaterial[it->second]);
+            out.mLevel.push_back(rTets.mLevel[it->second]);
+        } else {
+            out.mMaterial.push_back(lo_mat);
+            // The level of the leaf holding the centroid.
+            Vec3 c{0.0, 0.0, 0.0};
+            for (std::int64_t v : t)
+                c = vec3_add(c, vec3_scale(pts[static_cast<std::size_t>(v)], 0.25));
+            const double fine = rS.mFrame.Fine();
+            std::int64_t x[3];
+            for (std::size_t q = 0; q < 3; ++q)
+                x[q] = std::clamp<std::int64_t>(
+                    static_cast<std::int64_t>(std::floor((c[q] - rS.mFrame.mOrigin[q]) / fine)), 0,
+                    tree.Extent(q) - 1);
+            const std::int64_t j = tree.Locate(x[0], x[1], x[2]);
+            out.mLevel.push_back(j < 0 ? 0 : tree.mLevel[static_cast<std::size_t>(j)]);
+        }
+        out.mShape.push_back(still ? rTets.mShape[it->second] : 0);
+        out.mCut.push_back(still ? rTets.mCut[it->second] : std::uint8_t{1});
+    }
+    std::int64_t nmoved = 0;
+    for (std::uint8_t m : moved)
+        nmoved += m;
+    rR.mNumOptimizedMoves = nmoved;
+    rR.mNumFlips = flips;
+    rTets = std::move(out);
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/octree_mesh_optimize.cpp =====
 // ===== begin src/cpp/src/operations/octree_mesh_tetra.cpp =====
 #include <algorithm>
 #include <array>
@@ -214572,6 +215081,73 @@ void octree_mesh_emit_tets(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
         }
     }
     m.AddRegion(Region(kOctreeMeshBoundaryRegion, RegionKind::Side, 2, -1, octmt_ids(sides, 2)));
+    // The skin of the inside: its faces that no other inside tetrahedron
+    // shares. Its edges must each lie on two of its faces, and its distance
+    // to the input skin is the report's Hausdorff distance.
+    {
+        std::vector<std::array<std::int64_t, 3>> skin_faces;
+        for (std::size_t i = 0; i < faces.size();) {
+            std::size_t j = i;
+            std::int64_t inside_uses = 0, last = -1;
+            while (j < faces.size() && faces[j].first == faces[i].first) {
+                const auto n = static_cast<std::size_t>(faces[j].second / 4);
+                if (rIn.mMaterial[kept[n]] > 0) {
+                    ++inside_uses;
+                    last = faces[j].second;
+                }
+                ++j;
+            }
+            if (inside_uses == 1) {
+                const auto n = static_cast<std::size_t>(last / 4);
+                const auto f = static_cast<std::size_t>(last % 4);
+                skin_faces.push_back({cp[n * 4 + kOctmtFacet[f][0]], cp[n * 4 + kOctmtFacet[f][1]],
+                                      cp[n * 4 + kOctmtFacet[f][2]]});
+            }
+            i = j;
+        }
+        std::vector<std::array<std::int64_t, 2>> edges;
+        for (const auto& f : skin_faces)
+            for (int e = 0; e < 3; ++e)
+                edges.push_back({std::min(f[e], f[(e + 1) % 3]), std::max(f[e], f[(e + 1) % 3])});
+        std::sort(edges.begin(), edges.end());
+        for (std::size_t i = 0; i < edges.size();) {
+            std::size_t j = i;
+            while (j < edges.size() && edges[j] == edges[i])
+                ++j;
+            if (j - i == 1)
+                ++rR.mNumBoundaryEdgesOpen;
+            else if (j - i > 2)
+                ++rR.mNumNonManifoldBoundaryEdges;
+            i = j;
+        }
+        if (!skin_faces.empty()) {
+            Mesh out_skin;
+            NDArray sp = NDArray::Uninit(DType::Float64, {pts.size(), std::size_t{3}});
+            for (std::size_t q = 0; q < pts.size(); ++q)
+                for (std::size_t k = 0; k < 3; ++k)
+                    sp.As<double>()[q * 3 + k] = pts[q][k];
+            NDArray sc = NDArray::Uninit(DType::Int64, {skin_faces.size(), std::size_t{3}});
+            for (std::size_t q = 0; q < skin_faces.size(); ++q)
+                for (std::size_t k = 0; k < 3; ++k)
+                    sc.As<std::int64_t>()[q * 3 + k] = skin_faces[q][k];
+            out_skin.AssignPoints(std::move(sp));
+            out_skin.AddCellBlock("triangle", std::move(sc));
+            Mesh in_skin;
+            NDArray ip = NDArray::Uninit(DType::Float64, {rS.mSkin.mPoints.size(), std::size_t{3}});
+            for (std::size_t q = 0; q < rS.mSkin.mPoints.size(); ++q)
+                for (std::size_t k = 0; k < 3; ++k)
+                    ip.As<double>()[q * 3 + k] = rS.mSkin.mPoints[q][k];
+            NDArray ic = NDArray::Uninit(DType::Int64, {rS.mSkin.mTris.size(), std::size_t{3}});
+            for (std::size_t q = 0; q < rS.mSkin.mTris.size(); ++q)
+                for (std::size_t k = 0; k < 3; ++k)
+                    ic.As<std::int64_t>()[q * 3 + k] = rS.mSkin.mTris[q][k];
+            in_skin.AssignPoints(std::move(ip));
+            in_skin.AddCellBlock("triangle", std::move(ic));
+            HausdorffOptions ho;
+            ho.mFaceSamples = 2;
+            rR.mHausdorffToSkin = hausdorff_distance(out_skin, in_skin, ho).mDistance;
+        }
+    }
     if (std::any_of(rIn.mFeature.begin(), rIn.mFeature.end(),
                     [](std::uint8_t f) { return f != 0; })) {
         std::vector<std::int64_t> corners, chains;

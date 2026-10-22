@@ -245,6 +245,16 @@ void octm_report_mesh(const OctreeMeshOptions& rO, OctreeMeshResult& rResult) {
         else if (name == "quality:max_dihedral")
             rResult.mMaxDihedral = summary.mMax;
     }
+    if (rResult.mNumTetrahedra > 0 && rResult.mMinDihedral < 5.0)
+        detail::octree_mesh_warn(rResult, std::string(detail::kOctreeMeshPrefix) +
+                                              "the smallest dihedral angle is " +
+                                              std::to_string(rResult.mMinDihedral) + " degrees");
+    if (rResult.mNumBoundaryEdgesOpen > 0 || rResult.mNumNonManifoldBoundaryEdges > 0)
+        detail::octree_mesh_warn(rResult,
+                                 std::string(detail::kOctreeMeshPrefix) + "the boundary has " +
+                                     std::to_string(rResult.mNumBoundaryEdgesOpen) + " open and " +
+                                     std::to_string(rResult.mNumNonManifoldBoundaryEdges) +
+                                     " non-manifold edges");
     if (rResult.mNumInverted > 0)
         detail::octree_mesh_warn(rResult, std::string(detail::kOctreeMeshPrefix) +
                                               std::to_string(rResult.mNumInverted) +
@@ -396,9 +406,13 @@ OctreeMeshResult octree_mesh(const Mesh& rSkin, const OctreeMeshOptions& rOption
             clock.Lap(result, "stuffing");
             detail::octree_mesh_snap_features(*setup, rOptions, result, tets);
             clock.Lap(result, "features");
+            detail::octree_mesh_optimize(*setup, rOptions, result, tets);
+            clock.Lap(result, "optimize");
             detail::octree_mesh_emit_tets(*setup, rOptions, result, tets);
             result.mGuaranteeApplies = rOptions.mSkinGrading == OctreeMeshSkinGrading::Uniform &&
-                                       result.mNumWarpRefused == 0 && result.mNumFeatureMoves == 0;
+                                       result.mNumWarpRefused == 0 &&
+                                       result.mNumFeatureMoves == 0 &&
+                                       (result.mNumFlips == 0 || rOptions.mDihedralFloorGuard);
             break;
         }
         case OctreeMeshOutput::Hexa:

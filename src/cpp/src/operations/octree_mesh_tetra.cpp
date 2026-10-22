@@ -35,6 +35,7 @@
 #include "../detail/isosurface_stuffing.hpp"
 #include "octree_mesh_internal.hpp"
 #include "meshioplusplus/ndarray.hpp"
+#include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/octree.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
@@ -344,6 +345,73 @@ void octree_mesh_emit_tets(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
         }
     }
     m.AddRegion(Region(kOctreeMeshBoundaryRegion, RegionKind::Side, 2, -1, octmt_ids(sides, 2)));
+    // The skin of the inside: its faces that no other inside tetrahedron
+    // shares. Its edges must each lie on two of its faces, and its distance
+    // to the input skin is the report's Hausdorff distance.
+    {
+        std::vector<std::array<std::int64_t, 3>> skin_faces;
+        for (std::size_t i = 0; i < faces.size();) {
+            std::size_t j = i;
+            std::int64_t inside_uses = 0, last = -1;
+            while (j < faces.size() && faces[j].first == faces[i].first) {
+                const auto n = static_cast<std::size_t>(faces[j].second / 4);
+                if (rIn.mMaterial[kept[n]] > 0) {
+                    ++inside_uses;
+                    last = faces[j].second;
+                }
+                ++j;
+            }
+            if (inside_uses == 1) {
+                const auto n = static_cast<std::size_t>(last / 4);
+                const auto f = static_cast<std::size_t>(last % 4);
+                skin_faces.push_back({cp[n * 4 + kOctmtFacet[f][0]], cp[n * 4 + kOctmtFacet[f][1]],
+                                      cp[n * 4 + kOctmtFacet[f][2]]});
+            }
+            i = j;
+        }
+        std::vector<std::array<std::int64_t, 2>> edges;
+        for (const auto& f : skin_faces)
+            for (int e = 0; e < 3; ++e)
+                edges.push_back({std::min(f[e], f[(e + 1) % 3]), std::max(f[e], f[(e + 1) % 3])});
+        std::sort(edges.begin(), edges.end());
+        for (std::size_t i = 0; i < edges.size();) {
+            std::size_t j = i;
+            while (j < edges.size() && edges[j] == edges[i])
+                ++j;
+            if (j - i == 1)
+                ++rR.mNumBoundaryEdgesOpen;
+            else if (j - i > 2)
+                ++rR.mNumNonManifoldBoundaryEdges;
+            i = j;
+        }
+        if (!skin_faces.empty()) {
+            Mesh out_skin;
+            NDArray sp = NDArray::Uninit(DType::Float64, {pts.size(), std::size_t{3}});
+            for (std::size_t q = 0; q < pts.size(); ++q)
+                for (std::size_t k = 0; k < 3; ++k)
+                    sp.As<double>()[q * 3 + k] = pts[q][k];
+            NDArray sc = NDArray::Uninit(DType::Int64, {skin_faces.size(), std::size_t{3}});
+            for (std::size_t q = 0; q < skin_faces.size(); ++q)
+                for (std::size_t k = 0; k < 3; ++k)
+                    sc.As<std::int64_t>()[q * 3 + k] = skin_faces[q][k];
+            out_skin.AssignPoints(std::move(sp));
+            out_skin.AddCellBlock("triangle", std::move(sc));
+            Mesh in_skin;
+            NDArray ip = NDArray::Uninit(DType::Float64, {rS.mSkin.mPoints.size(), std::size_t{3}});
+            for (std::size_t q = 0; q < rS.mSkin.mPoints.size(); ++q)
+                for (std::size_t k = 0; k < 3; ++k)
+                    ip.As<double>()[q * 3 + k] = rS.mSkin.mPoints[q][k];
+            NDArray ic = NDArray::Uninit(DType::Int64, {rS.mSkin.mTris.size(), std::size_t{3}});
+            for (std::size_t q = 0; q < rS.mSkin.mTris.size(); ++q)
+                for (std::size_t k = 0; k < 3; ++k)
+                    ic.As<std::int64_t>()[q * 3 + k] = rS.mSkin.mTris[q][k];
+            in_skin.AssignPoints(std::move(ip));
+            in_skin.AddCellBlock("triangle", std::move(ic));
+            HausdorffOptions ho;
+            ho.mFaceSamples = 2;
+            rR.mHausdorffToSkin = hausdorff_distance(out_skin, in_skin, ho).mDistance;
+        }
+    }
     if (std::any_of(rIn.mFeature.begin(), rIn.mFeature.end(),
                     [](std::uint8_t f) { return f != 0; })) {
         std::vector<std::int64_t> corners, chains;

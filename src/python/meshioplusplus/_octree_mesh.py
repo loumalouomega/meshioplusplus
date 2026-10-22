@@ -50,6 +50,8 @@ _REPORT_INTS = (
     "num_feature_chains",
     "num_feature_chains_missed",
     "num_feature_moves",
+    "num_optimized_moves",
+    "num_flips",
     "num_winding_rechecks",
 )
 _REPORT_FLOATS = (
@@ -169,9 +171,10 @@ def octree_mesh(
     :param alpha_long: stuffing's threshold on long lattice edges.
     :param alpha_short: stuffing's threshold on short lattice edges.
     :param preserve_features: snap the boundary to feature corners and edges.
-    :param fit_iterations: rounds of fitting and optimisation; 0 disables them.
+    :param fit_iterations: rounds of optimisation (ODT relocation, sliding
+        along the skin, flips); 0 disables them.
     :param dihedral_floor_guard: undo optimisation moves that lower the
-        minimum dihedral.
+        minimum dihedral or raise the maximum.
     :param fill: castellated output: keep ``"all"`` leaves, the ``"inside"``
         ones, or ``"cover"`` (inside or cut).
     :param keep_outside: tetrahedral output: also mesh the outside, as the
@@ -197,8 +200,8 @@ def octree_mesh(
         ``num_non_manifold_boundary_edges``, ``quality`` with its histograms),
         the features (``num_corners``, ``num_corners_snapped``,
         ``num_feature_chains``, ``num_feature_chains_missed``,
-        ``num_feature_moves``),
-        ``guarantee_applies``, ``num_winding_rechecks``, ``timings`` (seconds
+        ``num_feature_moves``), the optimisation (``num_optimized_moves``,
+        ``num_flips``), ``guarantee_applies``, ``num_winding_rechecks``, ``timings`` (seconds
         per stage) and ``warnings``.
     :raises ValueError: on an option out of range.
     :raises NotImplementedError: without the compiled core.

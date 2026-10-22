@@ -257,6 +257,8 @@ struct OctreeMeshResult {
     std::int64_t mNumFeatureChains = 0;             ///< Feature chains of the skin.
     std::int64_t mNumFeatureChainsMissed = 0;       ///< Chains not recovered by the boundary.
     std::int64_t mNumFeatureMoves = 0;              ///< Boundary nodes moved onto features.
+    std::int64_t mNumOptimizedMoves = 0;            ///< Nodes the optimisation moved.
+    std::int64_t mNumFlips = 0;                     ///< Flips the optimisation kept.
     /// The Labelle-Shewchuk dihedral bound applies to every tetrahedron:
     /// `Uniform` grading, nothing snapped to features, nothing refused.
     bool mGuaranteeApplies = false;

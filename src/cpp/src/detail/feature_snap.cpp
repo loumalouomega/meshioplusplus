@@ -33,6 +33,7 @@
 // Project includes
 #include "bcc_octree_tets.hpp"
 #include "feature_snap.hpp"
+#include "meshioplusplus/log.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -67,6 +68,44 @@ std::pair<Vec3, double> featsnap_on_polyline(const std::vector<Vec3>& rSkin,
         }
     }
     return {best, best_d};
+}
+
+// The arc length along a polyline of its nearest point to `rP`.
+double featsnap_arc(const std::vector<Vec3>& rSkin, const std::vector<std::int64_t>& rChain,
+                    const Vec3& rP) {
+    double best_d = std::numeric_limits<double>::infinity(), best_s = 0.0, s = 0.0;
+    for (std::size_t i = 0; i + 1 < rChain.size(); ++i) {
+        const Vec3& a = rSkin[static_cast<std::size_t>(rChain[i])];
+        const Vec3& b = rSkin[static_cast<std::size_t>(rChain[i + 1])];
+        const Vec3 ab = vec3_sub(b, a);
+        const double len2 = vec3_norm_sq(ab), len = std::sqrt(len2);
+        const double t =
+            len2 > 0.0 ? std::clamp(vec3_dot(vec3_sub(rP, a), ab) / len2, 0.0, 1.0) : 0.0;
+        const double d = vec3_norm(vec3_sub(rP, vec3_add(a, vec3_scale(ab, t))));
+        if (d < best_d) {
+            best_d = d;
+            best_s = s + t * len;
+        }
+        s += len;
+    }
+    return best_s;
+}
+
+// The point of a polyline at arc length `S`.
+Vec3 featsnap_at_arc(const std::vector<Vec3>& rSkin, const std::vector<std::int64_t>& rChain,
+                     double S) {
+    double s = 0.0;
+    for (std::size_t i = 0; i + 1 < rChain.size(); ++i) {
+        const Vec3& a = rSkin[static_cast<std::size_t>(rChain[i])];
+        const Vec3& b = rSkin[static_cast<std::size_t>(rChain[i + 1])];
+        const double len = vec3_norm(vec3_sub(b, a));
+        if (S <= s + len || i + 2 == rChain.size()) {
+            const double t = len > 0.0 ? std::clamp((S - s) / len, 0.0, 1.0) : 0.0;
+            return vec3_add(a, vec3_scale(vec3_sub(b, a), t));
+        }
+        s += len;
+    }
+    return rSkin[static_cast<std::size_t>(rChain.back())];
 }
 
 }  // namespace
@@ -201,6 +240,8 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
         badj[static_cast<std::size_t>(e[0])].push_back(e[1]);
         badj[static_cast<std::size_t>(e[1])].push_back(e[0]);
     }
+    for (auto& a : badj)
+        std::sort(a.begin(), a.end());
     // Every tetrahedron around each point.
     std::vector<std::vector<std::int64_t>> inc(np);
     for (std::size_t t = 0; t < rTets.size(); ++t)
@@ -223,14 +264,72 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
         }
         return lo;
     };
+    // Whether every tetrahedron around `U` stays positive with `V` at `rAt`.
+    auto star_positive = [&](std::int64_t U, std::int64_t V, const Vec3& rAt) {
+        for (std::int64_t t : inc[static_cast<std::size_t>(U)]) {
+            Vec3 p[4];
+            for (std::size_t c = 0; c < 4; ++c) {
+                const std::int64_t q = rTets[static_cast<std::size_t>(t)][c];
+                p[c] = q == V ? rAt : rPoints[static_cast<std::size_t>(q)];
+            }
+            if (featsnap_volume(p[0], p[1], p[2], p[3]) <= MinVolume)
+                return false;
+        }
+        return true;
+    };
     auto try_move = [&](std::int64_t V, const Vec3& rTarget) {
         bool positive = true;
         const double before = min_dihedral(V, rPoints[static_cast<std::size_t>(V)], positive);
-        const double after = min_dihedral(V, rTarget, positive);
-        if (!positive || after < std::min(before, kFeatsnapFloorDeg))
+        double after = min_dihedral(V, rTarget, positive);
+        if (!positive) {
+            // Make room: move the free interior nodes of the tetrahedra the
+            // move would invert to the centroid of their stars.
+            std::vector<std::pair<std::int64_t, Vec3>> undo;
+            for (int pass = 0; pass < 2 && !positive; ++pass) {
+                for (std::int64_t t : inc[static_cast<std::size_t>(V)])
+                    for (std::int64_t u : rTets[static_cast<std::size_t>(t)]) {
+                        const auto ui = static_cast<std::size_t>(u);
+                        if (u == V || boundary[ui] || rPinned[ui])
+                            continue;
+                        Vec3 c{0.0, 0.0, 0.0};
+                        double w = 0.0;
+                        for (std::int64_t s : inc[ui])
+                            for (std::int64_t q : rTets[static_cast<std::size_t>(s)])
+                                if (q != u) {
+                                    c = vec3_add(
+                                        c, q == V ? rTarget : rPoints[static_cast<std::size_t>(q)]);
+                                    w += 1.0;
+                                }
+                        const Vec3 old = rPoints[ui];
+                        rPoints[ui] = vec3_scale(c, 1.0 / w);
+                        if (star_positive(u, V, rTarget) &&
+                            star_positive(u, V, rPoints[static_cast<std::size_t>(V)]))
+                            undo.emplace_back(u, old);
+                        else
+                            rPoints[ui] = old;
+                    }
+                positive = true;
+                after = min_dihedral(V, rTarget, positive);
+            }
+            if (!positive || after < std::min(before, kFeatsnapFloorDeg)) {
+                for (auto it = undo.rbegin(); it != undo.rend(); ++it)
+                    rPoints[static_cast<std::size_t>(it->first)] = it->second;
+                return false;
+            }
+        } else if (after < std::min(before, kFeatsnapFloorDeg)) {
             return false;
+        }
         rPoints[static_cast<std::size_t>(V)] = rTarget;
         ++report.mNumMoved;
+        return true;
+    };
+    // A move in four steps, each making room around it as it goes; a refused
+    // step keeps the steps before it.
+    auto move_by_steps = [&](std::int64_t V, const Vec3& rTarget) {
+        const Vec3 at = rPoints[static_cast<std::size_t>(V)];
+        for (int k = 1; k <= 4; ++k)
+            if (!try_move(V, vec3_add(at, vec3_scale(vec3_sub(rTarget, at), 0.25 * k))))
+                return false;
         return true;
     };
     // Corners: the nearest boundary vertex within reach that can take it.
@@ -251,20 +350,25 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
                 cand.emplace_back(d, v);
         }
         std::sort(cand.begin(), cand.end());
-        for (const auto& [d, v] : cand)
-            if (try_move(v, cp)) {
-                rPinned[static_cast<std::size_t>(v)] = 1;
-                rFeature[static_cast<std::size_t>(v)] = 1;
-                snapped_at[static_cast<std::size_t>(c)] = v;
-                ++report.mNumCornersSnapped;
-                break;
+        for (const auto& [d, v] : cand) {
+            const Vec3 was = rPoints[static_cast<std::size_t>(v)];
+            if (!move_by_steps(v, cp)) {
+                rPoints[static_cast<std::size_t>(v)] = was;
+                continue;
             }
+            rPinned[static_cast<std::size_t>(v)] = 1;
+            rFeature[static_cast<std::size_t>(v)] = 1;
+            snapped_at[static_cast<std::size_t>(c)] = v;
+            ++report.mNumCornersSnapped;
+            break;
+        }
     }
     // Chains: a shortest boundary path in a tube around the polyline.
     for (const auto& chain : rGraph.mChains) {
         const std::int64_t from = snapped_at[static_cast<std::size_t>(chain.front())];
         const std::int64_t to = snapped_at[static_cast<std::size_t>(chain.back())];
         if (from < 0 || to < 0 || from == to) {
+            log::debug("feature_snap: a chain's ends are not snapped ({}, {})", from, to);
             ++report.mNumChainsMissed;
             continue;
         }
@@ -289,7 +393,7 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
                 const double du = featsnap_on_polyline(rSkinPoints, chain, pu).second;
                 if (u != to && du > 1.25 * h)
                     continue;
-                const double w = vec3_norm(vec3_sub(pu, pv)) * (1.0 + 4.0 * (du + dv) / h);
+                const double w = vec3_norm(vec3_sub(pu, pv)) * (1.0 + 16.0 * (du + dv) / h);
                 const double nd = d + w;
                 const auto ui = static_cast<std::size_t>(u);
                 if (nd < dist[ui] || (nd == dist[ui] && v < prev[ui])) {
@@ -300,6 +404,7 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
             }
         }
         if (prev[static_cast<std::size_t>(to)] < 0) {
+            log::debug("feature_snap: no path for a chain of {} points", chain.size());
             ++report.mNumChainsMissed;
             continue;
         }
@@ -308,24 +413,65 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
              v = prev[static_cast<std::size_t>(v)])
             path.push_back(v);
         std::reverse(path.begin(), path.end());
-        bool all = true;
-        for (std::int64_t v : path) {
-            const Vec3 target =
-                featsnap_on_polyline(rSkinPoints, chain, rPoints[static_cast<std::size_t>(v)])
-                    .first;
-            const Vec3 at = rPoints[static_cast<std::size_t>(v)];
-            bool moved = false;
-            for (double f : {1.0, 0.5, 0.25})
-                if (try_move(v, vec3_add(at, vec3_scale(vec3_sub(target, at), f)))) {
-                    moved = f == 1.0;
-                    break;
+        // A node whose neighbours on the path share an edge is a detour
+        // through a triangle (projecting all three onto the chain would make
+        // the triangle flat): drop it from the path.
+        {
+            std::vector<std::int64_t> full{from};
+            full.insert(full.end(), path.begin(), path.end());
+            full.push_back(to);
+            for (bool changed = true; changed;) {
+                changed = false;
+                for (std::size_t i = 1; i + 1 < full.size(); ++i) {
+                    const auto& a = badj[static_cast<std::size_t>(full[i - 1])];
+                    if (std::binary_search(a.begin(), a.end(), full[i + 1])) {
+                        full.erase(full.begin() + static_cast<std::ptrdiff_t>(i));
+                        changed = true;
+                        break;
+                    }
                 }
+            }
+            path.assign(full.begin() + 1, full.end() - 1);
+        }
+        // Targets in order along the chain: each node's nearest arc length,
+        // made increasing; when two land closer than a fifth of the local
+        // size, or out of order, the nodes are spread evenly instead.
+        double total = 0.0;
+        for (std::size_t i = 0; i + 1 < chain.size(); ++i)
+            total += vec3_norm(vec3_sub(rSkinPoints[static_cast<std::size_t>(chain[i + 1])],
+                                        rSkinPoints[static_cast<std::size_t>(chain[i])]));
+        std::vector<double> arc(path.size());
+        bool even = false;
+        double last = 0.0;
+        for (std::size_t i = 0; i < path.size(); ++i) {
+            const Vec3& pv = rPoints[static_cast<std::size_t>(path[i])];
+            arc[i] = featsnap_arc(rSkinPoints, chain, pv);
+            const double gap = 0.2 * rLocalSize(pv);
+            if (arc[i] < last + gap || arc[i] > total - gap)
+                even = true;
+            last = arc[i];
+        }
+        if (even)
+            for (std::size_t i = 0; i < path.size(); ++i)
+                arc[i] = total * static_cast<double>(i + 1) / static_cast<double>(path.size() + 1);
+        bool all = true;
+        std::int64_t refused = 0;
+        for (std::size_t i = 0; i < path.size(); ++i) {
+            const std::int64_t v = path[i];
+            const Vec3 target = featsnap_at_arc(rSkinPoints, chain, arc[i]);
+            const Vec3 at = rPoints[static_cast<std::size_t>(v)];
+            (void)at;
+            const bool moved = move_by_steps(v, target);
             all = all && moved;
+            refused += !moved;
             rPinned[static_cast<std::size_t>(v)] = 1;
             rFeature[static_cast<std::size_t>(v)] = 2;
         }
-        if (!all)
+        if (!all) {
+            log::debug("feature_snap: a chain of {} points ({} nodes) kept {} off it", chain.size(),
+                       path.size(), refused);
             ++report.mNumChainsMissed;
+        }
     }
     return report;
 }

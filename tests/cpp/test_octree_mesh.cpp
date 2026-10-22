@@ -608,3 +608,51 @@ TEST(OctreeMeshTet, IsTheSameOnEveryThreadCount) {
     omp_set_num_threads(saved);
 #endif
 }
+
+TEST(OctreeMeshTet, OptimisationNeverWorsensTheExtremeAngles) {
+    const double lo[3] = {-0.61, -0.67, -0.7}, L = 1.37;
+    const mio::Mesh skins[] = {
+        mio::icosa_sphere(1.0, 4), analytic::torus(1.0, 0.4, 64, 32),
+        mio::convert_cells(
+            mio::extract_surface(mio::box({{8, 8, 8}}, {{L, L, L}}, {{lo[0], lo[1], lo[2]}})),
+            {mio::ConvertCellsMode::Simplexify, false})
+            .mMesh};
+    for (const mio::Mesh& skin : skins)
+        for (bool uniform : {true, false}) {
+            auto o = om_tet(0.5, 0.05, uniform);
+            o.mFitIterations = 0;
+            const auto before = mio::octree_mesh(skin, o);
+            o.mFitIterations = 5;
+            const auto after = mio::octree_mesh(skin, o);
+            const OmTetCheck c = om_check_tets(after.mMesh);
+            EXPECT_EQ(after.mNumInverted, 0);
+            EXPECT_GE(c.mMinDihedral, before.mMinDihedral - 1e-9);
+            EXPECT_LE(c.mMaxDihedral, before.mMaxDihedral + 1e-9);
+            EXPECT_GT(after.mNumOptimizedMoves + after.mNumFlips, 0);
+            EXPECT_EQ(before.mNumOptimizedMoves, 0);
+            EXPECT_NEAR(c.mVolume, om_enclosed(skin), 0.02 * std::abs(om_enclosed(skin)));
+            // A uniform skin keeps the stuffing bounds through optimisation.
+            if (uniform && before.mGuaranteeApplies) {
+                EXPECT_GE(c.mMinDihedral, 10.7);
+                EXPECT_LE(c.mMaxDihedral, 164.8);
+                EXPECT_TRUE(after.mGuaranteeApplies);
+            }
+        }
+}
+
+TEST(OctreeMeshTet, ReportsTheBoundarysDistanceAndManifoldness) {
+    const mio::Mesh skin = mio::icosa_sphere(1.0, 4);
+    const auto r = mio::octree_mesh(skin, om_tet(0.5, 0.05, false));
+    om_check_tets(r.mMesh);
+    EXPECT_EQ(r.mNumBoundaryEdgesOpen, 0);
+    EXPECT_EQ(r.mNumNonManifoldBoundaryEdges, 0);
+    EXPECT_GT(r.mHausdorffToSkin, 0.0);
+    EXPECT_LT(r.mHausdorffToSkin, 0.5 * r.mMinSize + 0.02);
+    EXPECT_GT(r.mQuality.mNumCells, 0);
+    for (const char* stage : {"skin", "size_field", "octree", "stuffing", "optimize", "output"}) {
+        bool found = false;
+        for (const auto& [name, seconds] : r.mTimings)
+            found = found || name == stage;
+        EXPECT_TRUE(found) << stage;
+    }
+}

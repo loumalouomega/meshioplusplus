@@ -122,6 +122,11 @@ void octree_mesh_stuffed_lattice(OctreeMeshSetup& rSetup, const OctreeMeshOption
 void octree_mesh_snap_features(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions,
                                OctreeMeshResult& rResult, OctreeMeshTets& rTets);
 
+/// Fit the skin's nodes along it and optimise the tetrahedra (ODT relocation,
+/// flips) under the dihedral-floor guard.
+void octree_mesh_optimize(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions,
+                          OctreeMeshResult& rResult, OctreeMeshTets& rTets);
+
 /// The edge of the leaf holding @p rP (clamped into the forest).
 double octree_mesh_local_size(const OctreeMeshSetup& rSetup, const Vec3& rP);
 

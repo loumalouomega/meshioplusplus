@@ -84,6 +84,8 @@
 #include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/normals.hpp"
+#include "meshioplusplus/operations/octree.hpp"
+#include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
 #include "meshioplusplus/operations/partition.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
@@ -982,6 +984,30 @@ int main(int argc, char** argv) {
             mio::RemeshVolumeOptions o;
             o.mCellSize = 1.5 / static_cast<double>(n);
             of(pD, mio::remesh_volume(surface, o).mMesh);
+        });
+        // The octree around the cube's surface (the baseline of the next two
+        // rows), and `octree_mesh`'s castellated and tetrahedral outputs on a
+        // size field from one to eight lattice steps.
+        const double octree_step = 1.0 / static_cast<double>(n);
+        row("octree", [&](MeshDigest* pD) {
+            mio::OctreeOptions o;
+            o.mMaxLevel =
+                static_cast<std::int64_t>(std::ceil(std::log2(static_cast<double>(n)))) + 1;
+            o.mFill = mio::VoxelFill::Inside;
+            of(pD, mio::octree(surface, o).mMesh);
+        });
+        row("octree_mesh_castellated", [&](MeshDigest* pD) {
+            mio::OctreeMeshOptions o;
+            o.mOutput = mio::OctreeMeshOutput::Castellated;
+            o.mMinSize = octree_step;
+            o.mMaxSize = 8.0 * octree_step;
+            of(pD, mio::octree_mesh(surface, o).mMesh);
+        });
+        row("octree_mesh_tet", [&](MeshDigest* pD) {
+            mio::OctreeMeshOptions o;
+            o.mMinSize = octree_step;
+            o.mMaxSize = 8.0 * octree_step;
+            of(pD, mio::octree_mesh(surface, o).mMesh);
         });
         row("sample_distance", [&](MeshDigest* pD) {
             const NDArray d = mio::sample_distance(surface, jittered->Points());

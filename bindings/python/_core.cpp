@@ -3091,6 +3091,8 @@ PYBIND11_MODULE(_core, m) {
             out["num_feature_chains"] = r.mNumFeatureChains;
             out["num_feature_chains_missed"] = r.mNumFeatureChainsMissed;
             out["num_feature_moves"] = r.mNumFeatureMoves;
+            out["num_optimized_moves"] = r.mNumOptimizedMoves;
+            out["num_flips"] = r.mNumFlips;
             out["guarantee_applies"] = r.mGuaranteeApplies;
             out["num_winding_rechecks"] = r.mNumWindingRechecks;
             py::dict quality;

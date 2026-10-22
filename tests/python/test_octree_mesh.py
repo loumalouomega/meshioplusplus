@@ -149,6 +149,19 @@ def test_tetrahedral_output():
     )
     assert np.all(vol > 0)
     assert vol.sum() / 6 == pytest.approx(4 / 3 * np.pi, rel=0.05)
+    # The quality gate: a watertight boundary near the skin, and the
+    # optimisation's counts.
+    assert report["num_boundary_edges_open"] == 0
+    assert report["num_non_manifold_boundary_edges"] == 0
+    assert 0 < report["hausdorff_to_skin"] < 0.1
+    assert report["num_optimized_moves"] > 0
+    assert report["num_flips"] >= 0
+    _, raw = mio.octree_mesh(
+        _sphere(), max_size=0.5, min_size=0.0625, fit_iterations=0, return_report=True
+    )
+    assert raw["num_optimized_moves"] == 0
+    assert report["min_dihedral"] >= raw["min_dihedral"] - 1e-9
+    assert report["max_dihedral"] <= raw["max_dihedral"] + 1e-9
 
 
 @needs_core
