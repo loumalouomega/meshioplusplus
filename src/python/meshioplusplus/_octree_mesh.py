@@ -49,6 +49,7 @@ _REPORT_INTS = (
     "num_corners_snapped",
     "num_feature_chains",
     "num_feature_chains_missed",
+    "num_feature_moves",
     "num_winding_rechecks",
 )
 _REPORT_FLOATS = (
@@ -195,7 +196,8 @@ def octree_mesh(
         ``hausdorff_to_skin``, ``num_boundary_edges_open``,
         ``num_non_manifold_boundary_edges``, ``quality`` with its histograms),
         the features (``num_corners``, ``num_corners_snapped``,
-        ``num_feature_chains``, ``num_feature_chains_missed``),
+        ``num_feature_chains``, ``num_feature_chains_missed``,
+        ``num_feature_moves``),
         ``guarantee_applies``, ``num_winding_rechecks``, ``timings`` (seconds
         per stage) and ``warnings``.
     :raises ValueError: on an option out of range.

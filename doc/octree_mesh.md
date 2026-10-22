@@ -10,7 +10,7 @@ cells, report = mp.octree_mesh(skin, output="castellated", min_size=0.5, max_siz
 mp.write("bracket_cells.vtu", cells)
 ```
 
-Three outputs are planned ([plan](octree_mesh_3d_plan.md)); this release ships the castellated one, and `output="tet"` and `output="hex"` raise `NotImplementedError` by name until their phases land.
+Three outputs are planned ([plan](octree_mesh_3d_plan.md)); the castellated and tetrahedral ones are here, and `output="hex"` raises `NotImplementedError` by name until its phase lands.
 
 | `output` | what it is |
 |---|---|
@@ -53,9 +53,35 @@ The kept leaves (`fill`: `"inside"`, the default, those whose centre is inside; 
 
 An inside leaf beside a finer leaf that is not inside is split until every face of the surrogate boundary is a whole face of an inside cell, so the side region describes it exactly; the surrogate faces enclose the inside cells' volume (the tests check the divergence theorem). `attach_distance=False` skips the two `sdf:*` arrays.
 
+## The tetrahedral output
+
+The default output is a conforming, graded tetrahedral mesh of the skin's inside, in three stages.
+
+**The lattice.** The balanced octree is tetrahedralised as a graded body-centred cubic (BCC) lattice on the doubled integer lattice, so every vertex is exact: each leaf is a cone from its centre over fans of its face portions (a face shared with four finer leaves is four portions), and across a face between two leaves of the same size the two cones become the BCC tetrahedra around the segment between the centres. Six shapes occur, with dihedral angles between 35.26° and 125.26°; a region of equal leaves is all BCC tetrahedra (60°–90°). This is our own construction after Labelle and Shewchuk's lattice, and the tests pin its angle table.
+
+**Stuffing.** Isosurface stuffing (Labelle and Shewchuk, SIGGRAPH 2007) cuts the lattice to the skin: a lattice edge whose ends lie on either side gets a cut point where it crosses the skin (exactly, through the winding-number tree, or by bisection where it passes through a hole); a lattice vertex closer to a cut point than `alpha_short` (edges between a leaf centre and another vertex) or `alpha_long` (the others) times the edge is *warped* onto it; then every tetrahedron the skin crosses is cut by a stencil. Quadrilaterals take the diagonal through their lower-numbered lattice vertex on lattice faces and their shorter diagonal on the skin, so both sides of every face agree. With the paper's `alpha_long = 0.24799` and `alpha_short = 0.40173`, every tetrahedron of a uniform lattice has dihedral angles between 10.7° and 164.8°; the tests check this on spheres, tori and random ellipsoids. The lattice's own boundary is never warped, so `keep_outside=True`, which also keeps the tetrahedra outside the skin as the `outside` region, fills the root lattice exactly.
+
+**Features.** With `preserve_features` (the default), the skin's edges sharper than `feature_angle` form a graph of corners (where it branches, ends, or turns by more than `corner_angle`) and chains between them. Each corner moves the nearest boundary node within reach onto itself, exactly; each chain is traced on the boundary by a shortest path in a tube around it, whose nodes move onto the chain. Every move is refused if it would invert a tetrahedron or create a dihedral angle below 2° that was not already there; a corner or chain that cannot be recovered is counted (`num_corners_snapped`, `num_feature_chains_missed`) and reported in `warnings`. The output carries the `feature_corners` and `feature_edges` point regions.
+
+`conformity="cleaving"` meshes nested shells (a skin whose winding number reaches 2 or more, such as a sphere inside a sphere): the interface at each winding level `winding_threshold + k` is stuffed in turn through the tetrahedra between the previous interfaces, with the earlier interfaces held fixed, so the materials conform. It follows the idea of lattice cleaving (Bronson, Levine and Whitaker, IEEE TVCG 2014), one interface at a time rather than with its multi-material stencils. The materials are the `octree_mesh:material` cell data and the `material_<k>` cell regions.
+
+| name | kind | meaning |
+|---|---|---|
+| `inside` | cell region | the tetrahedra inside the skin |
+| `outside` | cell region | `keep_outside`: the tetrahedra outside it |
+| `boundary` | side region | the boundary faces |
+| `feature_corners`, `feature_edges` | point regions | the nodes on the skin's corners and feature chains |
+| `material_<k>` | cell regions | cleaving: each material |
+| `octree:level` | cell data | the level of the leaf a tetrahedron came from |
+| `octree_mesh:shape` | cell data | the lattice shape (1–6), 0 for a tetrahedron stuffing cut |
+| `octree_mesh:material` | cell data | the material, when there is more than one |
+| `sdf:distance` | point data | the signed distance to the skin |
+
+`guarantee_applies` in the report is true when the 10.7°–164.8° bound covers the whole mesh: uniform skin grading, no warp refused, and no node moved onto a feature. Otherwise the actual angles are in `min_dihedral` and `max_dihedral`; snapping to a sharp corner can lower them locally, and graded skins cut transition shapes.
+
 ## Report
 
-`return_report=True` returns the frame (`origin`, `root_size`, `root_cells`, `max_level`, `finest_level`, `surface_level`, `min_size`, `max_size`), the tree (`num_leaves`, `leaves_per_level`), the counts (`num_points`, `num_cells`, `num_hexahedra`, `num_tetrahedra`, `num_inside`, `num_boundary_cells`, `num_surrogate_faces`, `num_hanging`), the quality (`min_scaled_jacobian`, `min_dihedral`, `max_dihedral`, `num_inverted` and `quality`, the [`compute_quality`](mesh_quality.md) summary with its histograms), `num_winding_rechecks`, `timings` (seconds per stage) and `warnings`. Anything that misses its target is reported in `warnings`, never hidden.
+`return_report=True` returns the frame (`origin`, `root_size`, `root_cells`, `max_level`, `finest_level`, `surface_level`, `min_size`, `max_size`), the tree (`num_leaves`, `leaves_per_level`), the counts (`num_points`, `num_cells`, `num_hexahedra`, `num_tetrahedra`, `num_inside`, `num_boundary_cells`, `num_surrogate_faces`, `num_hanging`, `num_cut_points`, `num_warped`, `num_warp_refused`), the features (`num_corners`, `num_corners_snapped`, `num_feature_chains`, `num_feature_chains_missed`, `num_feature_moves`), `guarantee_applies`, the quality (`min_scaled_jacobian`, `min_dihedral`, `max_dihedral`, `num_inverted` and `quality`, the [`compute_quality`](mesh_quality.md) summary with its histograms), `num_winding_rechecks`, `timings` (seconds per stage) and `warnings`. Anything that misses its target is reported in `warnings`, never hidden.
 
 ## Determinism
 

@@ -110,9 +110,70 @@ def test_fills_nest():
 
 
 @needs_core
-def test_tetrahedral_output_is_not_available_yet():
+def test_hexahedral_output_is_not_available_yet():
     with pytest.raises(NotImplementedError, match="not available yet"):
-        mio.octree_mesh(_sphere(), output="tet")
+        mio.octree_mesh(_sphere(), output="hex")
+
+
+@needs_core
+def test_tetrahedral_output():
+    out, report = mio.octree_mesh(
+        _sphere(), max_size=0.5, min_size=0.0625, return_report=True
+    )
+    assert out.cells[0].type == "tetra"
+    assert report["output"] == "tet"
+    assert report["num_tetrahedra"] == len(out.cells[0].data)
+    assert report["num_inverted"] == 0
+    assert report["min_dihedral"] > 10.0
+    names = {r.name: r for r in out.regions}
+    assert names["boundary"].kind == "side"
+    assert len(names["inside"].entries) == len(out.cells[0].data)
+    assert "sdf:distance" in out.point_data
+    # The boundary nodes lie on the skin.
+    assert (
+        np.max(
+            np.abs(
+                out.point_data["sdf:distance"][
+                    np.unique(out.cells[0].data[names["boundary"].entries[:, 0]])
+                ]
+            )
+        )
+        < 0.6
+    )
+    p = out.points
+    t = out.cells[0].data
+    vol = np.einsum(
+        "ij,ij->i",
+        p[t[:, 1]] - p[t[:, 0]],
+        np.cross(p[t[:, 2]] - p[t[:, 0]], p[t[:, 3]] - p[t[:, 0]]),
+    )
+    assert np.all(vol > 0)
+    assert vol.sum() / 6 == pytest.approx(4 / 3 * np.pi, rel=0.05)
+
+
+@needs_core
+def test_cube_corners_are_snapped():
+    lo, size = np.array([-0.61, -0.67, -0.7]), 1.37
+    cube = mio.convert_cells(
+        mio.extract_surface(mio.box([8, 8, 8], [size] * 3, list(lo))),
+        mode="simplexify",
+    )
+    out, report = mio.octree_mesh(cube, max_size=0.5, min_size=0.05, return_report=True)
+    assert report["num_corners"] == report["num_corners_snapped"] == 8
+    assert report["num_feature_chains_missed"] == 0
+    assert report["guarantee_applies"] is False
+    corners = np.array(
+        [
+            lo + size * np.array([i, j, k])
+            for i in (0, 1)
+            for j in (0, 1)
+            for k in (0, 1)
+        ]
+    )
+    d = np.linalg.norm(out.points[None, :, :] - corners[:, None, :], axis=2).min(axis=1)
+    assert np.all(d < 1e-12)
+    names = {r.name: r for r in out.regions}
+    assert len(names["feature_corners"].entries) == 8
 
 
 @needs_core

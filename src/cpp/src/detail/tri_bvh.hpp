@@ -126,5 +126,19 @@ struct TriRayHit {
 TriRayHit tri_bvh_ray(const TriBvh& rTree, const Vec3& rOrigin, const Vec3& rDir, double TMin,
                       double TMax, std::int64_t Skip = -1);
 
+/// Where a segment crosses the skin.
+struct TriSegmentHit {
+    double mT = 0.0;  ///< Segment parameter in [0, 1].
+    /// +1 when the segment leaves through the triangle's front (its normal
+    /// side), -1 when it enters: the winding number drops or rises by one.
+    double mSide = 0.0;
+};
+
+/// Every crossing of the segment `rA` to `rB` with the skin, ascending in `t`;
+/// crossings of several triangles at one point (a shared edge or vertex) count
+/// once, with the side their triangles agree on.
+std::vector<TriSegmentHit> tri_bvh_segment_hits(const TriBvh& rTree, const Vec3& rA,
+                                                const Vec3& rB);
+
 }  // namespace detail
 }  // namespace meshioplusplus

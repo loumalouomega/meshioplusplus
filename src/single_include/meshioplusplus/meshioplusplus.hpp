@@ -30431,6 +30431,9 @@ inline constexpr const char* kOctreeMeshClosestPointName = "sdf:closest_point";
 /// Cell data (Int64): the lattice shape class of a tetrahedron (1-6), 0 for a
 /// cell the stuffing or the optimiser created.
 inline constexpr const char* kOctreeMeshShapeName = "octree_mesh:shape";
+/// Cell data (Int64): the material of a tetrahedron (0 outside the skin, 1
+/// inside, higher for nested shells under cleaving), when there is more than one.
+inline constexpr const char* kOctreeMeshMaterialName = "octree_mesh:material";
 /// Cell region: the cells inside the skin.
 inline constexpr const char* kOctreeMeshInsideRegion = "inside";
 /// Cell region: the cells outside the skin (`mKeepOutside`).
@@ -30607,6 +30610,7 @@ struct OctreeMeshResult {
     std::int64_t mNumCornersSnapped = 0;            ///< Corners an output node was snapped to.
     std::int64_t mNumFeatureChains = 0;             ///< Feature chains of the skin.
     std::int64_t mNumFeatureChainsMissed = 0;       ///< Chains not recovered by the boundary.
+    std::int64_t mNumFeatureMoves = 0;              ///< Boundary nodes moved onto features.
     /// The Labelle-Shewchuk dihedral bound applies to every tetrahedron:
     /// `Uniform` grading, nothing snapped to features, nothing refused.
     bool mGuaranteeApplies = false;
@@ -39423,6 +39427,86 @@ JunctionPoint junction_closest(const std::vector<ClosestPoint>& rSurfaces,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/feature_fit.hpp =====
+// ===== begin src/cpp/src/detail/feature_snap.hpp =====
+/**
+ * @file detail/feature_snap.hpp
+ * @brief The sharp features of a skin as corners and chains, and snapping a
+ * volume mesh's boundary onto them, for `octree_mesh`.
+ *
+ * **The feature graph.** A skin's sharp and non-manifold edges form a graph; a
+ * vertex where it branches, ends, or turns by more than the corner angle is a
+ * *corner*, and the paths between corners are *chains* (a closed loop with no
+ * corner is cut at its lowest-numbered vertex and half way round).
+ *
+ * **Snapping.** Each corner, in ascending order, moves the nearest boundary
+ * vertex within reach (1.5 local sizes) that can take it onto itself, exactly,
+ * and pins it. Each chain whose ends are snapped is then traced on the
+ * boundary's edges by a shortest path that stays within a tube around the
+ * polyline (Dijkstra, ties by vertex id, edge cost growing with the distance
+ * from the polyline), and the path's inner vertices are moved onto the
+ * polyline and pinned. Every move goes through one guard: no tetrahedron
+ * around the vertex may lose its volume or drop below a two-degree dihedral
+ * angle it did not already have; a refused chain vertex tries a half and a
+ * quarter of the move, a refused corner the next candidate. A corner or chain
+ * that cannot be recovered is counted, never silently dropped.
+ *
+ * A **core-private** header: nothing installed names it.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <functional>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// The corners and chains of a skin's feature graph.
+struct FeatureGraph {
+    /// Corner points (skin point ids), ascending.
+    std::vector<std::int64_t> mCorners;
+    /// Chains of skin point ids, each from a corner to a corner.
+    std::vector<std::vector<std::int64_t>> mChains;
+};
+
+/// The feature graph of the edges @p rEdges (pairs of skin point ids) over
+/// the skin points @p rPoints.
+FeatureGraph feature_graph(const std::vector<Vec3>& rPoints,
+                           const std::vector<std::array<std::int64_t, 2>>& rEdges,
+                           double CornerAngleDeg);
+
+/// What `feature_snap` recovered.
+struct FeatureSnapReport {
+    std::int64_t mNumCorners = 0;
+    std::int64_t mNumCornersSnapped = 0;
+    std::int64_t mNumChains = 0;
+    std::int64_t mNumChainsMissed = 0;
+    std::int64_t mNumMoved = 0;  ///< boundary vertices moved
+};
+
+/**
+ * @brief Snap the boundary of the tetrahedra @p rTets (faces of the tetrahedra
+ * with `rInside[t]` that no other such tetrahedron shares) onto the features.
+ * @param rPoints the mesh points, moved in place.
+ * @param rPinned per point; snapped points are set to 1 and pinned points are
+ *        never moved.
+ * @param rFeature per point, set to 1 on a corner and 2 on a chain.
+ * @param rLocalSize the local mesh size at a point in space.
+ */
+FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
+                               const std::vector<std::array<std::int64_t, 4>>& rTets,
+                               const std::vector<std::uint8_t>& rInside, const FeatureGraph& rGraph,
+                               const std::vector<Vec3>& rSkinPoints,
+                               const std::function<double(const Vec3&)>& rLocalSize,
+                               double MinVolume, std::vector<std::uint8_t>& rPinned,
+                               std::vector<std::uint8_t>& rFeature);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/feature_snap.hpp =====
 // ===== begin src/cpp/src/detail/param_disc.hpp =====
 /**
  * @file detail/param_disc.hpp
@@ -40157,6 +40241,107 @@ inline void iga_eval_point(const IgaEvalNet& rNet, const std::size_t* pSpan, con
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/iga_kernels.hpp =====
+// ===== begin src/cpp/src/detail/isosurface_stuffing.hpp =====
+/**
+ * @file detail/isosurface_stuffing.hpp
+ * @brief Isosurface stuffing of one interface through a tetrahedral mesh, for
+ * `octree_mesh`.
+ *
+ * Every vertex carries a sign: -1 on the near side of the interface (inside),
+ * +1 on the far side, 0 on it. Stuffing (Labelle and Shewchuk 2007) then:
+ *
+ *  1. places a *cut point* on every edge whose endpoints have opposite signs,
+ *     where the interface crosses it (the caller's `StuffCut`); the point is
+ *     keyed by the edge, so every tetrahedron around the edge sees the same one;
+ *  2. *warps*: a cut point closer to an endpoint than `α` times the edge
+ *     (`α_short` on an edge between a lattice centre and another vertex,
+ *     `α_long` otherwise) violates that endpoint, and each violated vertex, in
+ *     ascending order, moves onto its nearest violating cut point and takes the
+ *     sign 0, which removes the cut points on its edges; a warp that would
+ *     invert a tetrahedron around the vertex is refused and counted;
+ *  3. cuts every tetrahedron of the material being split by a stencil chosen
+ *     by the counts of its negative, zero and positive vertices: a tetrahedron
+ *     with no positive vertex is kept whole, one with no negative vertex goes
+ *     to the far side, and the others are cut into at most three tetrahedra on
+ *     each side. A quadrilateral piece of a mesh face is split by the diagonal
+ *     through the lower-numbered of its two mesh vertices, which both
+ *     tetrahedra sharing the face choose alike; a quadrilateral on the
+ *     interface by its shorter diagonal (ties by cut-point number), which both
+ *     sides choose alike.
+ *
+ * The near side's pieces take material `Material + 1`, the far side's keep
+ * `Material`; tetrahedra of other materials pass through unchanged (their
+ * vertices can still be warped, under the same inversion guard, unless they
+ * are pinned). Running it once per interface of a nested family of
+ * interfaces gives a conforming multi-material mesh. Everything is serial or
+ * writes disjoint slots in a fixed order: the result does not depend on the
+ * thread count.
+ *
+ * A **core-private** header: nothing installed names it.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// A tetrahedral mesh with a material per tetrahedron.
+struct StuffMesh {
+    std::vector<Vec3> mPoints;
+    std::vector<std::array<std::int64_t, 4>> mTets;
+    /// Per tetrahedron, its material.
+    std::vector<std::int32_t> mMaterial;
+    /// Per tetrahedron, the lattice tetrahedron it was cut from.
+    std::vector<std::int64_t> mParent;
+    /// Per tetrahedron, 1 when stuffing cut it (it is no longer a lattice shape).
+    std::vector<std::uint8_t> mCut;
+    /// Per point, 1 for a lattice centre (the short-edge rule).
+    std::vector<std::uint8_t> mCentre;
+    /// Per point, 1 when it may not be warped (it lies on an earlier interface).
+    std::vector<std::uint8_t> mPinned;
+};
+
+/// Where the interface crosses the edge from point @p A (sign -1) to @p B
+/// (sign +1).
+using StuffCut = std::function<Vec3(std::int64_t A, std::int64_t B)>;
+
+/// Options for `isosurface_stuff`.
+struct StuffOptions {
+    double mAlphaLong = 0.24799;
+    double mAlphaShort = 0.40173;
+    /// The material being split.
+    std::int32_t mMaterial = 0;
+    /// Refuse warps that would leave a tetrahedron with a volume below this.
+    double mMinVolume = 0.0;
+};
+
+/// What `isosurface_stuff` did.
+struct StuffReport {
+    std::int64_t mNumCutPoints = 0;    ///< cut points that survived warping
+    std::int64_t mNumWarped = 0;       ///< vertices moved onto the interface
+    std::int64_t mNumWarpRefused = 0;  ///< warps refused by the inversion guard
+    std::int64_t mNumDegenerate = 0;   ///< output tetrahedra with a volume below the floor
+};
+
+/**
+ * @brief Stuff one interface through @p rMesh, in place: warped points move,
+ * cut points are appended, and the tetrahedra of `rOptions.mMaterial` are
+ * replaced by their pieces. @p rSign is per point (resized for the cut points,
+ * which are 0); points that end on the interface are pinned.
+ */
+StuffReport isosurface_stuff(StuffMesh& rMesh, std::vector<std::int8_t>& rSign,
+                             const StuffCut& rCut, const StuffOptions& rOptions);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/isosurface_stuffing.hpp =====
 // ===== begin src/cpp/src/detail/json_value.hpp =====
 /**
  * @file detail/json_value.hpp
@@ -40593,6 +40778,20 @@ struct TriRayHit {
 /// does not slip between its triangles.
 TriRayHit tri_bvh_ray(const TriBvh& rTree, const Vec3& rOrigin, const Vec3& rDir, double TMin,
                       double TMax, std::int64_t Skip = -1);
+
+/// Where a segment crosses the skin.
+struct TriSegmentHit {
+    double mT = 0.0;  ///< Segment parameter in [0, 1].
+    /// +1 when the segment leaves through the triangle's front (its normal
+    /// side), -1 when it enters: the winding number drops or rises by one.
+    double mSide = 0.0;
+};
+
+/// Every crossing of the segment `rA` to `rB` with the skin, ascending in `t`;
+/// crossings of several triangles at one point (a shared edge or vertex) count
+/// once, with the side their triangles agree on.
+std::vector<TriSegmentHit> tri_bvh_segment_hits(const TriBvh& rTree, const Vec3& rA,
+                                                const Vec3& rB);
 
 }  // namespace detail
 }  // namespace meshioplusplus
@@ -46957,6 +47156,7 @@ void xdmf_write_sets(pugi::xml_node grid, xdmfcommon::DataItemStore& rStore, con
  */
 
 // System includes
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <string>
@@ -47020,6 +47220,41 @@ void octree_mesh_report_tree(const LinearOctree& rTree, OctreeMeshResult& rResul
 /// The castellated output.
 void octree_mesh_castellated(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions,
                              OctreeMeshResult& rResult);
+
+/// A tetrahedral mesh between the stages of the tetrahedral output.
+struct OctreeMeshTets {
+    std::vector<Vec3> mPoints;
+    std::vector<std::array<std::int64_t, 4>> mTets;
+    /// Per tetrahedron, its material (0 outside, 1 inside, higher for nested shells).
+    std::vector<std::int32_t> mMaterial;
+    /// Per tetrahedron, 1 when stuffing or optimisation changed it.
+    std::vector<std::uint8_t> mCut;
+    /// Per tetrahedron, the level of the leaf it lies in.
+    std::vector<std::int64_t> mLevel;
+    /// Per tetrahedron, its lattice shape class (0 when cut).
+    std::vector<std::int64_t> mShape;
+    /// Per point, 1 when it lies on the skin or an interface.
+    std::vector<std::uint8_t> mOnSkin;
+    /// Per point, 1 on a feature corner, 2 on a feature chain.
+    std::vector<std::uint8_t> mFeature;
+    std::int32_t mNumMaterials = 2;
+};
+
+/// The lattice of the balanced octree, stuffed (or cleaved) to the skin.
+void octree_mesh_stuffed_lattice(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions,
+                                 OctreeMeshResult& rResult, OctreeMeshTets& rOut);
+
+/// Snap the tetrahedra's boundary onto the skin's feature corners and chains.
+void octree_mesh_snap_features(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions,
+                               OctreeMeshResult& rResult, OctreeMeshTets& rTets);
+
+/// The edge of the leaf holding @p rP (clamped into the forest).
+double octree_mesh_local_size(const OctreeMeshSetup& rSetup, const Vec3& rP);
+
+/// Write the tetrahedra (the inside materials, and the outside on request) to
+/// the result's mesh, with their regions and data.
+void octree_mesh_emit_tets(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions,
+                           OctreeMeshResult& rResult, const OctreeMeshTets& rIn);
 
 }  // namespace detail
 }  // namespace meshioplusplus
@@ -69125,6 +69360,319 @@ JunctionPoint junction_closest(const std::vector<ClosestPoint>& rSurfaces,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/feature_fit.cpp =====
+// ===== begin src/cpp/src/detail/feature_snap.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <limits>
+#include <queue>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+constexpr double kFeatsnapPi = 3.14159265358979323846;
+constexpr double kFeatsnapFloorDeg = 2.0;
+
+double featsnap_volume(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Vec3& rD) {
+    return triple_product(vec3_sub(rB, rA), vec3_sub(rC, rA), vec3_sub(rD, rA)) / 6.0;
+}
+
+// The nearest point of a polyline (skin point ids) to `rP`, and its distance.
+std::pair<Vec3, double> featsnap_on_polyline(const std::vector<Vec3>& rSkin,
+                                             const std::vector<std::int64_t>& rChain,
+                                             const Vec3& rP) {
+    Vec3 best = rSkin[static_cast<std::size_t>(rChain[0])];
+    double best_d = std::numeric_limits<double>::infinity();
+    for (std::size_t i = 0; i + 1 < rChain.size(); ++i) {
+        const Vec3& a = rSkin[static_cast<std::size_t>(rChain[i])];
+        const Vec3& b = rSkin[static_cast<std::size_t>(rChain[i + 1])];
+        const Vec3 ab = vec3_sub(b, a);
+        const double len2 = vec3_norm_sq(ab);
+        const double t =
+            len2 > 0.0 ? std::clamp(vec3_dot(vec3_sub(rP, a), ab) / len2, 0.0, 1.0) : 0.0;
+        const Vec3 q = vec3_add(a, vec3_scale(ab, t));
+        const double d = vec3_norm(vec3_sub(rP, q));
+        if (d < best_d) {
+            best_d = d;
+            best = q;
+        }
+    }
+    return {best, best_d};
+}
+
+}  // namespace
+
+FeatureGraph feature_graph(const std::vector<Vec3>& rPoints,
+                           const std::vector<std::array<std::int64_t, 2>>& rEdges,
+                           double CornerAngleDeg) {
+    FeatureGraph g;
+    const std::size_t np = rPoints.size();
+    std::vector<std::vector<std::int64_t>> adj(np);
+    std::vector<std::array<std::int64_t, 2>> edges;
+    for (const auto& e : rEdges)
+        if (e[0] != e[1])
+            edges.push_back({std::min(e[0], e[1]), std::max(e[0], e[1])});
+    std::sort(edges.begin(), edges.end());
+    edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+    for (const auto& e : edges) {
+        adj[static_cast<std::size_t>(e[0])].push_back(e[1]);
+        adj[static_cast<std::size_t>(e[1])].push_back(e[0]);
+    }
+    for (auto& a : adj)
+        std::sort(a.begin(), a.end());
+    std::vector<std::uint8_t> corner(np, 0);
+    for (std::size_t p = 0; p < np; ++p) {
+        const auto& a = adj[p];
+        if (a.empty())
+            continue;
+        if (a.size() != 2) {
+            corner[p] = 1;
+            continue;
+        }
+        const Vec3 u = vec3_sub(rPoints[static_cast<std::size_t>(a[0])], rPoints[p]);
+        const Vec3 v = vec3_sub(rPoints[static_cast<std::size_t>(a[1])], rPoints[p]);
+        const double c = vec3_dot(u, v) / std::sqrt(vec3_norm_sq(u) * vec3_norm_sq(v));
+        const double turn = 180.0 - std::acos(std::clamp(c, -1.0, 1.0)) * 180.0 / kFeatsnapPi;
+        corner[p] = turn > CornerAngleDeg;
+    }
+    auto edge_index = [&](std::int64_t A, std::int64_t B) {
+        const std::array<std::int64_t, 2> k{std::min(A, B), std::max(A, B)};
+        return static_cast<std::size_t>(std::lower_bound(edges.begin(), edges.end(), k) -
+                                        edges.begin());
+    };
+    std::vector<std::uint8_t> used(edges.size(), 0);
+    auto walk = [&](std::int64_t Start, std::int64_t Next) {
+        std::vector<std::int64_t> chain{Start, Next};
+        used[edge_index(Start, Next)] = 1;
+        std::int64_t prev = Start, cur = Next;
+        while (!corner[static_cast<std::size_t>(cur)]) {
+            const auto& a = adj[static_cast<std::size_t>(cur)];
+            const std::int64_t nxt = a[0] == prev ? a[1] : a[0];
+            if (used[edge_index(cur, nxt)])
+                break;
+            used[edge_index(cur, nxt)] = 1;
+            chain.push_back(nxt);
+            prev = cur;
+            cur = nxt;
+        }
+        return chain;
+    };
+    for (std::size_t p = 0; p < np; ++p)
+        if (corner[p])
+            for (std::int64_t n : adj[p])
+                if (!used[edge_index(static_cast<std::int64_t>(p), n)])
+                    g.mChains.push_back(walk(static_cast<std::int64_t>(p), n));
+    // Closed loops with no corner: cut at the lowest vertex and half way round.
+    for (std::size_t e = 0; e < edges.size(); ++e) {
+        if (used[e])
+            continue;
+        const std::int64_t v0 = edges[e][0];
+        corner[static_cast<std::size_t>(v0)] = 1;
+        std::vector<std::int64_t> loop = walk(v0, edges[e][1]);
+        if (loop.size() < 3 || loop.back() != v0) {
+            g.mChains.push_back(std::move(loop));
+            continue;
+        }
+        const std::size_t mid = loop.size() / 2;
+        corner[static_cast<std::size_t>(loop[mid])] = 1;
+        g.mChains.emplace_back(loop.begin(), loop.begin() + static_cast<std::ptrdiff_t>(mid) + 1);
+        g.mChains.emplace_back(loop.begin() + static_cast<std::ptrdiff_t>(mid), loop.end());
+    }
+    for (std::size_t p = 0; p < np; ++p)
+        if (corner[p])
+            g.mCorners.push_back(static_cast<std::int64_t>(p));
+    return g;
+}
+
+FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
+                               const std::vector<std::array<std::int64_t, 4>>& rTets,
+                               const std::vector<std::uint8_t>& rInside, const FeatureGraph& rGraph,
+                               const std::vector<Vec3>& rSkinPoints,
+                               const std::function<double(const Vec3&)>& rLocalSize,
+                               double MinVolume, std::vector<std::uint8_t>& rPinned,
+                               std::vector<std::uint8_t>& rFeature) {
+    FeatureSnapReport report;
+    report.mNumCorners = static_cast<std::int64_t>(rGraph.mCorners.size());
+    report.mNumChains = static_cast<std::int64_t>(rGraph.mChains.size());
+    const std::size_t np = rPoints.size();
+    rFeature.resize(np, 0);
+    // The boundary faces of the inside tetrahedra, their vertices and edges.
+    constexpr int kFace[4][3] = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}, {0, 2, 1}};
+    std::vector<std::array<std::int64_t, 3>> faces;
+    for (std::size_t t = 0; t < rTets.size(); ++t) {
+        if (!rInside[t])
+            continue;
+        for (const auto& f : kFace) {
+            std::array<std::int64_t, 3> k{rTets[t][f[0]], rTets[t][f[1]], rTets[t][f[2]]};
+            std::sort(k.begin(), k.end());
+            faces.push_back(k);
+        }
+    }
+    std::sort(faces.begin(), faces.end());
+    std::vector<std::uint8_t> boundary(np, 0);
+    std::vector<std::array<std::int64_t, 2>> bedges;
+    for (std::size_t i = 0; i < faces.size();) {
+        std::size_t j = i;
+        while (j < faces.size() && faces[j] == faces[i])
+            ++j;
+        if (j - i == 1) {
+            const auto& f = faces[i];
+            for (std::int64_t v : f)
+                boundary[static_cast<std::size_t>(v)] = 1;
+            bedges.push_back({f[0], f[1]});
+            bedges.push_back({f[1], f[2]});
+            bedges.push_back({f[0], f[2]});
+        }
+        i = j;
+    }
+    std::sort(bedges.begin(), bedges.end());
+    bedges.erase(std::unique(bedges.begin(), bedges.end()), bedges.end());
+    std::vector<std::vector<std::int64_t>> badj(np);
+    for (const auto& e : bedges) {
+        badj[static_cast<std::size_t>(e[0])].push_back(e[1]);
+        badj[static_cast<std::size_t>(e[1])].push_back(e[0]);
+    }
+    // Every tetrahedron around each point.
+    std::vector<std::vector<std::int64_t>> inc(np);
+    for (std::size_t t = 0; t < rTets.size(); ++t)
+        for (std::int64_t v : rTets[t])
+            inc[static_cast<std::size_t>(v)].push_back(static_cast<std::int64_t>(t));
+    auto min_dihedral = [&](std::int64_t V, const Vec3& rAt, bool& rPositive) {
+        double lo = 180.0;
+        rPositive = true;
+        for (std::int64_t t : inc[static_cast<std::size_t>(V)]) {
+            Vec3 p[4];
+            for (std::size_t c = 0; c < 4; ++c) {
+                const std::int64_t q = rTets[static_cast<std::size_t>(t)][c];
+                p[c] = q == V ? rAt : rPoints[static_cast<std::size_t>(q)];
+            }
+            if (featsnap_volume(p[0], p[1], p[2], p[3]) <= MinVolume) {
+                rPositive = false;
+                return 0.0;
+            }
+            lo = std::min(lo, tet_dihedral_angles(p[0], p[1], p[2], p[3])[0]);
+        }
+        return lo;
+    };
+    auto try_move = [&](std::int64_t V, const Vec3& rTarget) {
+        bool positive = true;
+        const double before = min_dihedral(V, rPoints[static_cast<std::size_t>(V)], positive);
+        const double after = min_dihedral(V, rTarget, positive);
+        if (!positive || after < std::min(before, kFeatsnapFloorDeg))
+            return false;
+        rPoints[static_cast<std::size_t>(V)] = rTarget;
+        ++report.mNumMoved;
+        return true;
+    };
+    // Corners: the nearest boundary vertex within reach that can take it.
+    std::vector<std::int64_t> bverts;
+    for (std::size_t p = 0; p < np; ++p)
+        if (boundary[p])
+            bverts.push_back(static_cast<std::int64_t>(p));
+    std::vector<std::int64_t> snapped_at(rSkinPoints.size(), -1);
+    for (std::int64_t c : rGraph.mCorners) {
+        const Vec3& cp = rSkinPoints[static_cast<std::size_t>(c)];
+        const double reach = 1.5 * rLocalSize(cp);
+        std::vector<std::pair<double, std::int64_t>> cand;
+        for (std::int64_t v : bverts) {
+            if (rPinned[static_cast<std::size_t>(v)])
+                continue;
+            const double d = vec3_norm(vec3_sub(rPoints[static_cast<std::size_t>(v)], cp));
+            if (d <= reach)
+                cand.emplace_back(d, v);
+        }
+        std::sort(cand.begin(), cand.end());
+        for (const auto& [d, v] : cand)
+            if (try_move(v, cp)) {
+                rPinned[static_cast<std::size_t>(v)] = 1;
+                rFeature[static_cast<std::size_t>(v)] = 1;
+                snapped_at[static_cast<std::size_t>(c)] = v;
+                ++report.mNumCornersSnapped;
+                break;
+            }
+    }
+    // Chains: a shortest boundary path in a tube around the polyline.
+    for (const auto& chain : rGraph.mChains) {
+        const std::int64_t from = snapped_at[static_cast<std::size_t>(chain.front())];
+        const std::int64_t to = snapped_at[static_cast<std::size_t>(chain.back())];
+        if (from < 0 || to < 0 || from == to) {
+            ++report.mNumChainsMissed;
+            continue;
+        }
+        std::vector<double> dist(np, std::numeric_limits<double>::infinity());
+        std::vector<std::int64_t> prev(np, -1);
+        using Item = std::pair<double, std::int64_t>;
+        std::priority_queue<Item, std::vector<Item>, std::greater<Item>> heap;
+        dist[static_cast<std::size_t>(from)] = 0.0;
+        heap.emplace(0.0, from);
+        while (!heap.empty()) {
+            const auto [d, v] = heap.top();
+            heap.pop();
+            if (d > dist[static_cast<std::size_t>(v)] || v == to)
+                continue;
+            const Vec3& pv = rPoints[static_cast<std::size_t>(v)];
+            const double dv = featsnap_on_polyline(rSkinPoints, chain, pv).second;
+            for (std::int64_t u : badj[static_cast<std::size_t>(v)]) {
+                if (u != to && rPinned[static_cast<std::size_t>(u)])
+                    continue;
+                const Vec3& pu = rPoints[static_cast<std::size_t>(u)];
+                const double h = rLocalSize(pu);
+                const double du = featsnap_on_polyline(rSkinPoints, chain, pu).second;
+                if (u != to && du > 1.25 * h)
+                    continue;
+                const double w = vec3_norm(vec3_sub(pu, pv)) * (1.0 + 4.0 * (du + dv) / h);
+                const double nd = d + w;
+                const auto ui = static_cast<std::size_t>(u);
+                if (nd < dist[ui] || (nd == dist[ui] && v < prev[ui])) {
+                    dist[ui] = nd;
+                    prev[ui] = v;
+                    heap.emplace(nd, u);
+                }
+            }
+        }
+        if (prev[static_cast<std::size_t>(to)] < 0) {
+            ++report.mNumChainsMissed;
+            continue;
+        }
+        std::vector<std::int64_t> path;
+        for (std::int64_t v = prev[static_cast<std::size_t>(to)]; v != from;
+             v = prev[static_cast<std::size_t>(v)])
+            path.push_back(v);
+        std::reverse(path.begin(), path.end());
+        bool all = true;
+        for (std::int64_t v : path) {
+            const Vec3 target =
+                featsnap_on_polyline(rSkinPoints, chain, rPoints[static_cast<std::size_t>(v)])
+                    .first;
+            const Vec3 at = rPoints[static_cast<std::size_t>(v)];
+            bool moved = false;
+            for (double f : {1.0, 0.5, 0.25})
+                if (try_move(v, vec3_add(at, vec3_scale(vec3_sub(target, at), f)))) {
+                    moved = f == 1.0;
+                    break;
+                }
+            all = all && moved;
+            rPinned[static_cast<std::size_t>(v)] = 1;
+            rFeature[static_cast<std::size_t>(v)] = 2;
+        }
+        if (!all)
+            ++report.mNumChainsMissed;
+    }
+    return report;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/feature_snap.cpp =====
 // ===== begin src/cpp/src/detail/fortran_records.cpp =====
 #include <cstdint>
 #include <cstring>
@@ -70986,6 +71534,298 @@ NDArray read_compound_member(hid_t loc, const std::string& rName, const std::str
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
 // ===== end src/cpp/src/detail/hdf5_util.cpp =====
+// ===== begin src/cpp/src/detail/isosurface_stuffing.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+using IsostuffEdge = std::pair<std::int64_t, std::int64_t>;
+
+double isostuff_volume(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Vec3& rD) {
+    return triple_product(vec3_sub(rB, rA), vec3_sub(rC, rA), vec3_sub(rD, rA)) / 6.0;
+}
+
+// The pieces of one tetrahedron on the side whose vertices have sign `Target`.
+struct IsostuffCutter {
+    const std::vector<Vec3>* pPoints = nullptr;
+    const std::vector<IsostuffEdge>* pEdges = nullptr;  // the surviving cut edges, sorted
+    std::int64_t mFirstCut = 0;                         // the id of the first cut point
+    const std::vector<Vec3>* pCutPos = nullptr;
+
+    std::int64_t Cut(std::int64_t A, std::int64_t B) const {
+        const IsostuffEdge e{std::min(A, B), std::max(A, B)};
+        const auto it = std::lower_bound(pEdges->begin(), pEdges->end(), e);
+        return mFirstCut + static_cast<std::int64_t>(it - pEdges->begin());
+    }
+    const Vec3& Pos(std::int64_t V) const {
+        return V < mFirstCut ? (*pPoints)[static_cast<std::size_t>(V)]
+                             : (*pCutPos)[static_cast<std::size_t>(V - mFirstCut)];
+    }
+
+    void Pieces(const std::array<std::int64_t, 4>& rV, const std::array<std::int8_t, 4>& rS,
+                std::int8_t Target, std::vector<std::array<std::int64_t, 4>>& rOut) const {
+        std::array<std::int64_t, 4> nr{}, zr{}, fr{};
+        std::size_t nn = 0, nz = 0, nf = 0;
+        for (std::size_t i = 0; i < 4; ++i) {
+            if (rS[i] == Target)
+                nr[nn++] = rV[i];
+            else if (rS[i] == 0)
+                zr[nz++] = rV[i];
+            else
+                fr[nf++] = rV[i];
+        }
+        std::sort(nr.begin(), nr.begin() + static_cast<std::ptrdiff_t>(nn));
+        std::sort(zr.begin(), zr.begin() + static_cast<std::ptrdiff_t>(nz));
+        std::sort(fr.begin(), fr.begin() + static_cast<std::ptrdiff_t>(nf));
+        if (nn == 0)
+            return;
+        if (nf == 0) {
+            rOut.push_back(rV);
+            return;
+        }
+        if (nn == 1) {
+            const std::int64_t a = nr[0];
+            if (nz == 0)
+                rOut.push_back({a, Cut(a, fr[0]), Cut(a, fr[1]), Cut(a, fr[2])});
+            else if (nz == 1)
+                rOut.push_back({a, zr[0], Cut(a, fr[0]), Cut(a, fr[1])});
+            else
+                rOut.push_back({a, zr[0], zr[1], Cut(a, fr[0])});
+            return;
+        }
+        if (nn == 2 && nf == 2) {
+            // A prism: the mesh faces' quadrilaterals take the diagonal through
+            // the lower near vertex `x`; the interface's its shorter one.
+            const std::int64_t x = nr[0], y = nr[1], c = fr[0], d = fr[1];
+            const std::int64_t xc = Cut(x, c), xd = Cut(x, d), yc = Cut(y, c), yd = Cut(y, d);
+            rOut.push_back({x, y, yc, yd});
+            const double l1 = vec3_norm_sq(vec3_sub(Pos(xc), Pos(yd)));
+            const double l2 = vec3_norm_sq(vec3_sub(Pos(yc), Pos(xd)));
+            const bool first = l1 < l2 || (l1 == l2 && std::min(xc, yd) < std::min(yc, xd));
+            if (first) {
+                rOut.push_back({x, xc, yc, yd});
+                rOut.push_back({x, xc, yd, xd});
+            } else {
+                rOut.push_back({x, xc, yc, xd});
+                rOut.push_back({x, yc, yd, xd});
+            }
+            return;
+        }
+        if (nn == 2) {  // (2, 1, 1): a pyramid on the zero vertex
+            const std::int64_t x = nr[0], y = nr[1], z = zr[0], d = fr[0];
+            const std::int64_t xd = Cut(x, d), yd = Cut(y, d);
+            rOut.push_back({z, x, y, yd});
+            rOut.push_back({z, x, yd, xd});
+            return;
+        }
+        // (3, 0, 1): a prism under the far vertex.
+        const std::int64_t a = nr[0], b = nr[1], c = nr[2], d = fr[0];
+        const std::int64_t ad = Cut(a, d), bd = Cut(b, d), cd = Cut(c, d);
+        rOut.push_back({a, b, c, cd});
+        rOut.push_back({a, b, cd, bd});
+        rOut.push_back({a, ad, bd, cd});
+    }
+};
+
+}  // namespace
+
+StuffReport isosurface_stuff(StuffMesh& rMesh, std::vector<std::int8_t>& rSign,
+                             const StuffCut& rCut, const StuffOptions& rOptions) {
+    StuffReport report;
+    const std::size_t nt = rMesh.mTets.size();
+    const std::size_t np = rMesh.mPoints.size();
+    // The crossing edges of the material being split, sorted.
+    std::vector<IsostuffEdge> edges;
+    for (std::size_t t = 0; t < nt; ++t) {
+        if (rMesh.mMaterial[t] != rOptions.mMaterial)
+            continue;
+        const auto& v = rMesh.mTets[t];
+        for (std::size_t a = 0; a < 4; ++a)
+            for (std::size_t b = a + 1; b < 4; ++b) {
+                const auto sa = rSign[static_cast<std::size_t>(v[a])];
+                const auto sb = rSign[static_cast<std::size_t>(v[b])];
+                if (sa * sb < 0)
+                    edges.emplace_back(std::min(v[a], v[b]), std::max(v[a], v[b]));
+            }
+    }
+    parallel_sort(edges.begin(), edges.end());
+    edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+    // Their cut points, and where along each edge (from its lower end) they lie.
+    std::vector<Vec3> cut(edges.size());
+    std::vector<double> frac(edges.size());
+    parallel_for(
+        edges.size(),
+        [&](std::size_t e) {
+            const auto [lo, hi] = edges[e];
+            const bool lo_neg = rSign[static_cast<std::size_t>(lo)] < 0;
+            cut[e] = lo_neg ? rCut(lo, hi) : rCut(hi, lo);
+            const Vec3& a = rMesh.mPoints[static_cast<std::size_t>(lo)];
+            const Vec3 ab = vec3_sub(rMesh.mPoints[static_cast<std::size_t>(hi)], a);
+            const double len2 = vec3_norm_sq(ab);
+            frac[e] =
+                len2 > 0.0 ? std::clamp(vec3_dot(vec3_sub(cut[e], a), ab) / len2, 0.0, 1.0) : 0.5;
+        },
+        64);
+    // Which vertices each cut point violates.
+    std::vector<std::pair<std::int64_t, std::int64_t>> violates;  // (vertex, edge)
+    for (std::size_t e = 0; e < edges.size(); ++e) {
+        const auto [lo, hi] = edges[e];
+        const bool short_edge = rMesh.mCentre[static_cast<std::size_t>(lo)] !=
+                                rMesh.mCentre[static_cast<std::size_t>(hi)];
+        const double alpha = short_edge ? rOptions.mAlphaShort : rOptions.mAlphaLong;
+        if (frac[e] < alpha && !rMesh.mPinned[static_cast<std::size_t>(lo)])
+            violates.emplace_back(lo, static_cast<std::int64_t>(e));
+        if (1.0 - frac[e] < alpha && !rMesh.mPinned[static_cast<std::size_t>(hi)])
+            violates.emplace_back(hi, static_cast<std::int64_t>(e));
+    }
+    std::sort(violates.begin(), violates.end());
+    // Every tetrahedron around each vertex, for the inversion guard.
+    std::vector<std::int64_t> inc_start(np + 1, 0), inc;
+    for (const auto& t : rMesh.mTets)
+        for (std::int64_t v : t)
+            ++inc_start[static_cast<std::size_t>(v) + 1];
+    for (std::size_t p = 0; p < np; ++p)
+        inc_start[p + 1] += inc_start[p];
+    inc.resize(static_cast<std::size_t>(inc_start[np]));
+    {
+        std::vector<std::int64_t> fill(inc_start.begin(), inc_start.end() - 1);
+        for (std::size_t t = 0; t < nt; ++t)
+            for (std::int64_t v : rMesh.mTets[t])
+                inc[static_cast<std::size_t>(fill[static_cast<std::size_t>(v)]++)] =
+                    static_cast<std::int64_t>(t);
+    }
+    // Warp, vertex by vertex in ascending order, onto the nearest live cut point.
+    for (std::size_t k = 0; k < violates.size();) {
+        const std::int64_t v = violates[k].first;
+        std::size_t end = k;
+        while (end < violates.size() && violates[end].first == v)
+            ++end;
+        const auto vi = static_cast<std::size_t>(v);
+        std::int64_t best = -1;
+        double best_d = 0.0;
+        for (std::size_t j = k; j < end; ++j) {
+            const auto e = static_cast<std::size_t>(violates[j].second);
+            const auto [lo, hi] = edges[e];
+            if (rSign[static_cast<std::size_t>(lo)] * rSign[static_cast<std::size_t>(hi)] >= 0)
+                continue;  // a warp at its other end removed it
+            const double d = vec3_norm_sq(vec3_sub(cut[e], rMesh.mPoints[vi]));
+            if (best < 0 || d < best_d) {
+                best = static_cast<std::int64_t>(e);
+                best_d = d;
+            }
+        }
+        k = end;
+        if (best < 0 || rSign[vi] == 0)
+            continue;
+        const Vec3 target = cut[static_cast<std::size_t>(best)];
+        bool ok = true;
+        for (std::int64_t q = inc_start[vi]; q < inc_start[vi + 1] && ok; ++q) {
+            const auto& t = rMesh.mTets[static_cast<std::size_t>(inc[static_cast<std::size_t>(q)])];
+            Vec3 p[4];
+            for (std::size_t c = 0; c < 4; ++c)
+                p[c] = t[c] == v ? target : rMesh.mPoints[static_cast<std::size_t>(t[c])];
+            ok = isostuff_volume(p[0], p[1], p[2], p[3]) > rOptions.mMinVolume;
+        }
+        if (!ok) {
+            ++report.mNumWarpRefused;
+            continue;
+        }
+        rMesh.mPoints[vi] = target;
+        rSign[vi] = 0;
+        rMesh.mPinned[vi] = 1;
+        ++report.mNumWarped;
+    }
+    // The surviving cut points become points.
+    std::vector<IsostuffEdge> live;
+    std::vector<Vec3> live_pos;
+    for (std::size_t e = 0; e < edges.size(); ++e) {
+        const auto [lo, hi] = edges[e];
+        if (rSign[static_cast<std::size_t>(lo)] * rSign[static_cast<std::size_t>(hi)] < 0) {
+            live.push_back(edges[e]);
+            live_pos.push_back(cut[e]);
+        }
+    }
+    report.mNumCutPoints = static_cast<std::int64_t>(live.size());
+    IsostuffCutter cutter;
+    cutter.pPoints = &rMesh.mPoints;
+    cutter.pEdges = &live;
+    cutter.mFirstCut = static_cast<std::int64_t>(np);
+    cutter.pCutPos = &live_pos;
+    // The pieces, tetrahedron by tetrahedron.
+    std::vector<std::vector<std::array<std::int64_t, 4>>> near(nt), far(nt);
+    parallel_for(
+        nt,
+        [&](std::size_t t) {
+            if (rMesh.mMaterial[t] != rOptions.mMaterial)
+                return;
+            const auto& v = rMesh.mTets[t];
+            std::array<std::int8_t, 4> s{};
+            std::size_t nonzero = 0;
+            for (std::size_t c = 0; c < 4; ++c) {
+                s[c] = rSign[static_cast<std::size_t>(v[c])];
+                nonzero += s[c] != 0;
+            }
+            if (nonzero == 0) {
+                near[t].push_back(v);  // on the interface: the near side's
+                return;
+            }
+            cutter.Pieces(v, s, -1, near[t]);
+            cutter.Pieces(v, s, +1, far[t]);
+        },
+        256);
+    StuffMesh out;
+    out.mPoints = rMesh.mPoints;
+    out.mPoints.insert(out.mPoints.end(), live_pos.begin(), live_pos.end());
+    out.mCentre = rMesh.mCentre;
+    out.mCentre.resize(out.mPoints.size(), 0);
+    out.mPinned = rMesh.mPinned;
+    out.mPinned.resize(out.mPoints.size(), 1);
+    for (std::size_t t = 0; t < nt; ++t) {
+        auto push = [&](std::array<std::int64_t, 4> rT, std::int32_t Material, bool Whole) {
+            Vec3 p[4];
+            for (std::size_t c = 0; c < 4; ++c)
+                p[c] = out.mPoints[static_cast<std::size_t>(rT[c])];
+            const double vol = isostuff_volume(p[0], p[1], p[2], p[3]);
+            if (vol < 0.0)
+                std::swap(rT[2], rT[3]);
+            if (std::abs(vol) <= rOptions.mMinVolume)
+                ++report.mNumDegenerate;
+            out.mTets.push_back(rT);
+            out.mMaterial.push_back(Material);
+            out.mParent.push_back(rMesh.mParent[t]);
+            out.mCut.push_back(Whole ? rMesh.mCut[t] : std::uint8_t{1});
+        };
+        if (rMesh.mMaterial[t] != rOptions.mMaterial) {
+            push(rMesh.mTets[t], rMesh.mMaterial[t], true);
+            continue;
+        }
+        const bool whole_near =
+            near[t].size() == 1 && far[t].empty() && near[t][0] == rMesh.mTets[t];
+        const bool whole_far = far[t].size() == 1 && near[t].empty() && far[t][0] == rMesh.mTets[t];
+        for (const auto& piece : near[t])
+            push(piece, rOptions.mMaterial + 1, whole_near);
+        for (const auto& piece : far[t])
+            push(piece, rOptions.mMaterial, whole_far);
+    }
+    rSign.resize(out.mPoints.size(), 0);
+    rMesh = std::move(out);
+    return report;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/isosurface_stuffing.cpp =====
 // ===== begin src/cpp/src/detail/json_value.cpp =====
 #include <cmath>
 #include <cstdint>
@@ -87808,6 +88648,7 @@ BsplineFitResult thb_fit_patch(const std::vector<PatchVec>& rPts,
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <utility>
 #include <vector>
 
 // Project includes
@@ -88141,6 +88982,66 @@ TriRayHit tri_bvh_ray(const TriBvh& rTree, const Vec3& rOrigin, const Vec3& rDir
         }
     }
     return best;
+}
+
+std::vector<TriSegmentHit> tri_bvh_segment_hits(const TriBvh& rTree, const Vec3& rA,
+                                                const Vec3& rB) {
+    std::vector<std::pair<double, double>> raw;  // (t, side)
+    if (rTree.mNodes.empty())
+        return {};
+    const TriangleSoup& soup = *rTree.mpSoup;
+    const Vec3 dir = vec3_sub(rB, rA);
+    std::int32_t stack[128];
+    int top = 0;
+    stack[top++] = 0;
+    constexpr double kEps = 1e-10;
+    while (top > 0) {
+        const auto i = static_cast<std::size_t>(stack[--top]);
+        const TriBvhNode& node = rTree.mNodes[i];
+        if (!tribvh_slab(node.mLo, node.mHi, rA, dir, 0.0, 1.0))
+            continue;
+        if (node.mRight >= 0) {
+            stack[top++] = node.mRight;
+            stack[top++] = static_cast<std::int32_t>(i + 1);
+            continue;
+        }
+        for (std::int32_t k = 0; k < node.mCount; ++k) {
+            const Vec3* c =
+                &soup.mCorners[3 * static_cast<std::size_t>(rTree.mOrder[node.mBegin + k])];
+            const Vec3 e1 = vec3_sub(c[1], c[0]), e2 = vec3_sub(c[2], c[0]);
+            const Vec3 p = vec3_cross(dir, e2);
+            const double det = vec3_dot(e1, p);
+            if (std::abs(det) < 1e-300)
+                continue;
+            const double inv = 1.0 / det;
+            const Vec3 s = vec3_sub(rA, c[0]);
+            const double u = vec3_dot(s, p) * inv;
+            if (u < -kEps || u > 1.0 + kEps)
+                continue;
+            const Vec3 q = vec3_cross(s, e1);
+            const double v = vec3_dot(dir, q) * inv;
+            if (v < -kEps || u + v > 1.0 + kEps)
+                continue;
+            const double th = vec3_dot(e2, q) * inv;
+            if (th < 0.0 || th > 1.0)
+                continue;
+            raw.emplace_back(th, vec3_dot(vec3_cross(e1, e2), dir) > 0.0 ? 1.0 : -1.0);
+        }
+    }
+    std::sort(raw.begin(), raw.end());
+    std::vector<TriSegmentHit> out;
+    for (std::size_t i = 0; i < raw.size();) {
+        std::size_t j = i;
+        double side = 0.0;
+        while (j < raw.size() && raw[j].first - raw[i].first <= 1e-9) {
+            side += raw[j].second;
+            ++j;
+        }
+        if (side != 0.0)
+            out.push_back({raw[i].first, side > 0.0 ? 1.0 : -1.0});
+        i = j;
+    }
+    return out;
 }
 
 }  // namespace detail
@@ -213092,7 +213993,17 @@ OctreeMeshResult octree_mesh(const Mesh& rSkin, const OctreeMeshOptions& rOption
         case OctreeMeshOutput::Castellated:
             detail::octree_mesh_castellated(*setup, rOptions, result);
             break;
-        case OctreeMeshOutput::Tetra:
+        case OctreeMeshOutput::Tetra: {
+            detail::OctreeMeshTets tets;
+            detail::octree_mesh_stuffed_lattice(*setup, rOptions, result, tets);
+            clock.Lap(result, "stuffing");
+            detail::octree_mesh_snap_features(*setup, rOptions, result, tets);
+            clock.Lap(result, "features");
+            detail::octree_mesh_emit_tets(*setup, rOptions, result, tets);
+            result.mGuaranteeApplies = rOptions.mSkinGrading == OctreeMeshSkinGrading::Uniform &&
+                                       result.mNumWarpRefused == 0 && result.mNumFeatureMoves == 0;
+            break;
+        }
         case OctreeMeshOutput::Hexa:
             throw Unsupported(std::string(detail::kOctreeMeshPrefix) + "output '" +
                               octree_mesh_output_name(rOptions.mOutput) +
@@ -213344,6 +214255,351 @@ void octree_mesh_castellated(OctreeMeshSetup& rS, const OctreeMeshOptions& rO,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/octree_mesh_castellated.cpp =====
+// ===== begin src/cpp/src/operations/octree_mesh_tetra.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+// The tetrahedron's facets (detail/cell_faces), each outward.
+constexpr int kOctmtFacet[4][3] = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}, {0, 2, 1}};
+
+NDArray octmt_ids(const std::vector<std::int64_t>& rIds, std::size_t Stride) {
+    NDArray a = Stride == 1 ? NDArray::Uninit(DType::Int64, {rIds.size()})
+                            : NDArray::Uninit(DType::Int64, {rIds.size() / Stride, Stride});
+    std::copy(rIds.begin(), rIds.end(), a.As<std::int64_t>());
+    return a;
+}
+
+}  // namespace
+
+void octree_mesh_stuffed_lattice(OctreeMeshSetup& rS, const OctreeMeshOptions& rO,
+                                 OctreeMeshResult& rR, OctreeMeshTets& rOut) {
+    const LinearOctree& tree = rS.mOctree.mTree;
+    octree_mesh_report_tree(tree, rR);
+    const BccLattice lattice = bcc_octree_lattice(tree, rO.mMaxTets);
+    const double half_fine = 0.5 * rS.mFrame.Fine();
+    StuffMesh mesh;
+    const std::size_t nv = lattice.mKey.size();
+    mesh.mPoints.resize(nv);
+    mesh.mCentre.resize(nv);
+    mesh.mPinned.assign(nv, 0);
+    for (std::size_t p = 0; p < nv; ++p) {
+        for (std::size_t k = 0; k < 3; ++k)
+            mesh.mPoints[p][k] =
+                rS.mFrame.mOrigin[k] + static_cast<double>(lattice.mIjk2[p][k]) * half_fine;
+        mesh.mCentre[p] = lattice.mType[p] == BccVertexType::Centre;
+        // The forest's boundary stays where it is: a warp would move it off
+        // its box.
+        for (std::size_t k = 0; k < 3; ++k)
+            if (lattice.mIjk2[p][k] == 0 || lattice.mIjk2[p][k] == 2 * tree.Extent(k))
+                mesh.mPinned[p] = 1;
+    }
+    mesh.mTets = lattice.mTets;
+    mesh.mMaterial.assign(mesh.mTets.size(), 0);
+    mesh.mParent.resize(mesh.mTets.size());
+    for (std::size_t t = 0; t < mesh.mTets.size(); ++t)
+        mesh.mParent[t] = static_cast<std::int64_t>(t);
+    mesh.mCut.assign(mesh.mTets.size(), 0);
+
+    // The winding number at every lattice vertex; a vertex on the skin is 0.
+    std::vector<double> w = octree_mesh_winding(rS, mesh.mPoints, rO, rR);
+    std::vector<std::uint8_t> on_skin(nv, 0);
+    {
+        std::vector<std::size_t> near;
+        for (std::size_t p = 0; p < nv; ++p)
+            if (std::abs(w[p] - std::round(w[p])) > 0.25)
+                near.push_back(p);
+        std::vector<Vec3> pts(near.size());
+        for (std::size_t k = 0; k < near.size(); ++k)
+            pts[k] = mesh.mPoints[near[k]];
+        const auto hits = query_closest_points(rS.mQuery, pts);
+        for (std::size_t k = 0; k < near.size(); ++k)
+            on_skin[near[k]] = hits[k].mDistance <= rS.mOnSkin;
+    }
+    // The levels to stuff: the threshold, and with cleaving every level above
+    // it some vertex reaches (nested shells).
+    std::int32_t levels = 1;
+    if (rO.mConformity == OctreeMeshConformity::Cleaving) {
+        double wmax = 0.0;
+        for (double v : w)
+            wmax = std::max(wmax, v);
+        levels = std::max<std::int32_t>(
+            1, static_cast<std::int32_t>(std::floor(wmax - rO.mWindingThreshold)) + 1);
+        levels = std::min<std::int32_t>(levels, 16);
+    }
+    const double step = 1e-12 * rS.mDiagonal;
+    std::vector<std::uint8_t> on_interface(nv, 0);
+    for (std::int32_t level = 0; level < levels; ++level) {
+        const double thr = rO.mWindingThreshold + static_cast<double>(level);
+        std::vector<std::int8_t> sign(mesh.mPoints.size(), 1);
+        for (std::size_t p = 0; p < nv; ++p) {
+            if (on_interface[p])
+                continue;  // on an earlier interface: below this one
+            sign[p] = (on_skin[p] && std::abs(w[p] - thr) < 0.25) ? 0 : (w[p] > thr ? -1 : 1);
+            if (sign[p] == 0) {
+                mesh.mPinned[p] = 1;
+                on_interface[p] = 1;
+            }
+        }
+        // The interface on an edge: the first skin crossing from the inside
+        // end that takes the winding number below the threshold, else (a hole)
+        // bisection on the winding number.
+        const std::vector<double>* pW = &w;
+        StuffCut cut = [&, pW, thr](std::int64_t A, std::int64_t B) {
+            const Vec3& a = mesh.mPoints[static_cast<std::size_t>(A)];
+            const Vec3& b = mesh.mPoints[static_cast<std::size_t>(B)];
+            const Vec3 ab = vec3_sub(b, a);
+            double wa = static_cast<std::size_t>(A) < pW->size()
+                            ? (*pW)[static_cast<std::size_t>(A)]
+                            : thr + 0.5;
+            const auto hits = tri_bvh_segment_hits(rS.mBvh, a, b);
+            for (const TriSegmentHit& h : hits) {
+                wa -= h.mSide * rS.mWindingSign;
+                if (wa <= thr)
+                    return vec3_add(a, vec3_scale(ab, h.mT));
+            }
+            double lo = 0.0, hi = 1.0;
+            for (int it = 0; it < 40 && (hi - lo) * vec3_norm(ab) > step; ++it) {
+                const double mid = 0.5 * (lo + hi);
+                const double wm =
+                    rS.mWindingSign * fast_winding(rS.mBvh, vec3_add(a, vec3_scale(ab, mid)), 0.0);
+                (wm > thr ? lo : hi) = mid;
+            }
+            return vec3_add(a, vec3_scale(ab, 0.5 * (lo + hi)));
+        };
+        StuffOptions so;
+        so.mAlphaLong = rO.mAlphaLong;
+        so.mAlphaShort = rO.mAlphaShort;
+        so.mMaterial = level;
+        so.mMinVolume = 1e-12 * std::pow(rS.mFrame.mMinSize, 3.0);
+        const StuffReport rep = isosurface_stuff(mesh, sign, cut, so);
+        rR.mNumCutPoints += rep.mNumCutPoints;
+        rR.mNumWarped += rep.mNumWarped;
+        rR.mNumWarpRefused += rep.mNumWarpRefused;
+        if (rep.mNumDegenerate > 0)
+            octree_mesh_warn(
+                rR, std::string(kOctreeMeshPrefix) + std::to_string(rep.mNumDegenerate) +
+                        " stuffed tetrahedra are flat at interface " + std::to_string(level));
+        // Warped vertices and cut points now lie on this interface.
+        on_interface.resize(mesh.mPoints.size(), 1);
+        for (std::size_t p = 0; p < nv; ++p)
+            if (sign[p] == 0)
+                on_interface[p] = 1;
+        w.resize(mesh.mPoints.size(), rO.mWindingThreshold + static_cast<double>(level));
+        on_skin.resize(mesh.mPoints.size(), 1);
+    }
+    if (rR.mNumWarpRefused > 0)
+        octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(rR.mNumWarpRefused) +
+                                 " warps were refused to keep the tetrahedra positive");
+    rOut.mPoints = std::move(mesh.mPoints);
+    rOut.mTets = std::move(mesh.mTets);
+    rOut.mMaterial = std::move(mesh.mMaterial);
+    rOut.mCut = std::move(mesh.mCut);
+    rOut.mLevel.resize(rOut.mTets.size());
+    rOut.mShape.resize(rOut.mTets.size());
+    for (std::size_t t = 0; t < rOut.mTets.size(); ++t) {
+        const auto parent = static_cast<std::size_t>(mesh.mParent[t]);
+        rOut.mLevel[t] = tree.mLevel[static_cast<std::size_t>(lattice.mLeaf[parent])];
+        rOut.mShape[t] = rOut.mCut[t] ? 0 : lattice.mShape[parent];
+    }
+    rOut.mOnSkin = std::move(on_interface);
+    rOut.mNumMaterials = levels + 1;
+}
+
+double octree_mesh_local_size(const OctreeMeshSetup& rS, const Vec3& rP) {
+    const LinearOctree& tree = rS.mOctree.mTree;
+    const double fine = rS.mFrame.Fine();
+    std::int64_t x[3];
+    for (std::size_t k = 0; k < 3; ++k)
+        x[k] = std::clamp<std::int64_t>(
+            static_cast<std::int64_t>(std::floor((rP[k] - rS.mFrame.mOrigin[k]) / fine)), 0,
+            tree.Extent(k) - 1);
+    const std::int64_t j = tree.Locate(x[0], x[1], x[2]);
+    return j < 0 ? rS.mFrame.mMinSize
+                 : static_cast<double>(tree.Span(static_cast<std::size_t>(j))) * fine;
+}
+
+void octree_mesh_snap_features(OctreeMeshSetup& rS, const OctreeMeshOptions& rO,
+                               OctreeMeshResult& rR, OctreeMeshTets& rTets) {
+    rTets.mFeature.assign(rTets.mPoints.size(), 0);
+    if (!rO.mPreserveFeatures || rS.mFeatures.empty())
+        return;
+    std::vector<std::array<std::int64_t, 2>> edges;
+    for (const OctreeFeatureEdge& e : rS.mFeatures)
+        edges.push_back({e.mA, e.mB});
+    const FeatureGraph graph = feature_graph(rS.mSkin.mPoints, edges, rO.mCornerAngle);
+    std::vector<std::uint8_t> inside(rTets.mTets.size());
+    for (std::size_t t = 0; t < inside.size(); ++t)
+        inside[t] = rTets.mMaterial[t] > 0;
+    std::vector<std::uint8_t> claimed(rTets.mPoints.size(), 0);
+    const FeatureSnapReport rep = feature_snap(
+        rTets.mPoints, rTets.mTets, inside, graph, rS.mSkin.mPoints,
+        [&](const Vec3& rP) { return octree_mesh_local_size(rS, rP); },
+        1e-12 * std::pow(rS.mFrame.mMinSize, 3.0), claimed, rTets.mFeature);
+    rR.mNumCorners = rep.mNumCorners;
+    rR.mNumCornersSnapped = rep.mNumCornersSnapped;
+    rR.mNumFeatureChains = rep.mNumChains;
+    rR.mNumFeatureChainsMissed = rep.mNumChainsMissed;
+    rR.mNumFeatureMoves = rep.mNumMoved;
+    for (std::size_t p = 0; p < claimed.size(); ++p)
+        if (claimed[p])
+            rTets.mOnSkin[p] = 1;
+    if (rep.mNumCornersSnapped < rep.mNumCorners)
+        octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) +
+                                 std::to_string(rep.mNumCorners - rep.mNumCornersSnapped) + " of " +
+                                 std::to_string(rep.mNumCorners) +
+                                 " feature corners not recovered");
+    if (rep.mNumChainsMissed > 0)
+        octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(rep.mNumChainsMissed) +
+                                 " of " + std::to_string(rep.mNumChains) +
+                                 " feature chains not recovered");
+}
+
+void octree_mesh_emit_tets(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, OctreeMeshResult& rR,
+                           const OctreeMeshTets& rIn) {
+    // Keep the inside materials (and the outside on request), compact the points.
+    std::vector<std::size_t> kept;
+    for (std::size_t t = 0; t < rIn.mTets.size(); ++t)
+        if (rIn.mMaterial[t] > 0 || rO.mKeepOutside)
+            kept.push_back(t);
+    std::vector<std::int64_t> remap(rIn.mPoints.size(), -1);
+    for (std::size_t t : kept)
+        for (std::int64_t v : rIn.mTets[t])
+            remap[static_cast<std::size_t>(v)] = 0;
+    std::int64_t np = 0;
+    for (std::int64_t& r : remap)
+        if (r == 0)
+            r = np++;
+    NDArray points =
+        NDArray::Uninit(DType::Float64, {static_cast<std::size_t>(np), std::size_t{3}});
+    std::vector<Vec3> pts(static_cast<std::size_t>(np));
+    for (std::size_t p = 0; p < rIn.mPoints.size(); ++p)
+        if (remap[p] >= 0) {
+            pts[static_cast<std::size_t>(remap[p])] = rIn.mPoints[p];
+            for (std::size_t k = 0; k < 3; ++k)
+                points.As<double>()[static_cast<std::size_t>(remap[p]) * 3 + k] = rIn.mPoints[p][k];
+        }
+    NDArray conn = NDArray::Uninit(DType::Int64, {kept.size(), std::size_t{4}});
+    NDArray level = NDArray::Uninit(DType::Int64, {kept.size()});
+    NDArray shape = NDArray::Uninit(DType::Int64, {kept.size()});
+    NDArray material = NDArray::Uninit(DType::Int64, {kept.size()});
+    std::vector<std::vector<std::int64_t>> by_material(static_cast<std::size_t>(rIn.mNumMaterials));
+    for (std::size_t n = 0; n < kept.size(); ++n) {
+        const std::size_t t = kept[n];
+        for (std::size_t c = 0; c < 4; ++c)
+            conn.As<std::int64_t>()[n * 4 + c] = remap[static_cast<std::size_t>(rIn.mTets[t][c])];
+        level.As<std::int64_t>()[n] = rIn.mLevel[t];
+        shape.As<std::int64_t>()[n] = rIn.mShape[t];
+        material.As<std::int64_t>()[n] = rIn.mMaterial[t];
+        by_material[static_cast<std::size_t>(rIn.mMaterial[t])].push_back(
+            static_cast<std::int64_t>(n));
+    }
+    Mesh& m = rR.mMesh;
+    m.AssignPoints(std::move(points));
+    m.AddCellBlock("tetra", std::move(conn));
+    {
+        std::vector<NDArray> lv, sh, mt;
+        lv.push_back(std::move(level));
+        sh.push_back(std::move(shape));
+        mt.push_back(std::move(material));
+        m.AddCellData(kOctreeLevelName, std::move(lv));
+        m.AddCellData(kOctreeMeshShapeName, std::move(sh));
+        if (rIn.mNumMaterials > 2 || rO.mKeepOutside)
+            m.AddCellData(kOctreeMeshMaterialName, std::move(mt));
+    }
+    // Regions: inside (every material above 0), outside, each material, and
+    // the boundary faces.
+    std::vector<std::int64_t> inside;
+    for (std::size_t mat = 1; mat < by_material.size(); ++mat)
+        inside.insert(inside.end(), by_material[mat].begin(), by_material[mat].end());
+    std::sort(inside.begin(), inside.end());
+    rR.mNumInside = static_cast<std::int64_t>(inside.size());
+    m.AddRegion(Region(kOctreeMeshInsideRegion, RegionKind::Cell, 3, -1, octmt_ids(inside, 1)));
+    if (rO.mKeepOutside)
+        m.AddRegion(Region(kOctreeMeshOutsideRegion, RegionKind::Cell, 3, -1,
+                           octmt_ids(by_material[0], 1)));
+    if (rIn.mNumMaterials > 2)
+        for (std::size_t mat = 0; mat < by_material.size(); ++mat)
+            if (mat > 0 || rO.mKeepOutside)
+                m.AddRegion(Region("material_" + std::to_string(mat), RegionKind::Cell, 3,
+                                   static_cast<std::int64_t>(mat), octmt_ids(by_material[mat], 1)));
+    // Boundary faces: used once.
+    std::vector<std::pair<std::array<std::int64_t, 3>, std::int64_t>> faces;
+    const std::int64_t* cp = m.Cells(0).Conn().As<std::int64_t>();
+    faces.reserve(kept.size() * 4);
+    for (std::size_t n = 0; n < kept.size(); ++n)
+        for (std::int64_t f = 0; f < 4; ++f) {
+            std::array<std::int64_t, 3> key{cp[n * 4 + kOctmtFacet[f][0]],
+                                            cp[n * 4 + kOctmtFacet[f][1]],
+                                            cp[n * 4 + kOctmtFacet[f][2]]};
+            std::sort(key.begin(), key.end());
+            faces.emplace_back(key, static_cast<std::int64_t>(n) * 4 + f);
+        }
+    parallel_sort(faces.begin(), faces.end());
+    std::vector<std::int64_t> sides;
+    for (std::size_t i = 0; i < faces.size();) {
+        std::size_t j = i;
+        while (j < faces.size() && faces[j].first == faces[i].first)
+            ++j;
+        if (j - i == 1) {
+            sides.push_back(faces[i].second / 4);
+            sides.push_back(faces[i].second % 4);
+        }
+        i = j;
+    }
+    {
+        // Ascending (cell, facet).
+        std::vector<std::pair<std::int64_t, std::int64_t>> pairs;
+        for (std::size_t s = 0; s < sides.size(); s += 2)
+            pairs.emplace_back(sides[s], sides[s + 1]);
+        std::sort(pairs.begin(), pairs.end());
+        sides.clear();
+        for (const auto& [c, f] : pairs) {
+            sides.push_back(c);
+            sides.push_back(f);
+        }
+    }
+    m.AddRegion(Region(kOctreeMeshBoundaryRegion, RegionKind::Side, 2, -1, octmt_ids(sides, 2)));
+    if (std::any_of(rIn.mFeature.begin(), rIn.mFeature.end(),
+                    [](std::uint8_t f) { return f != 0; })) {
+        std::vector<std::int64_t> corners, chains;
+        for (std::size_t p = 0; p < rIn.mPoints.size(); ++p)
+            if (remap[p] >= 0 && rIn.mFeature[p])
+                (rIn.mFeature[p] == 1 ? corners : chains).push_back(remap[p]);
+        std::sort(corners.begin(), corners.end());
+        std::sort(chains.begin(), chains.end());
+        m.AddRegion(
+            Region(kOctreeMeshCornersRegion, RegionKind::Point, 0, -1, octmt_ids(corners, 1)));
+        chains.insert(chains.end(), corners.begin(), corners.end());
+        std::sort(chains.begin(), chains.end());
+        m.AddRegion(
+            Region(kOctreeMeshFeatureEdgesRegion, RegionKind::Point, 1, -1, octmt_ids(chains, 1)));
+    }
+    if (rO.mAttachDistance) {
+        std::vector<double> dist;
+        std::vector<Vec3> closest;
+        octree_mesh_signed_distance(rS, pts, rO, rR, dist, closest);
+        NDArray d = NDArray::Uninit(DType::Float64, {pts.size()});
+        std::copy(dist.begin(), dist.end(), d.As<double>());
+        m.AddPointData(kOctreeMeshDistanceName, std::move(d));
+    }
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/octree_mesh_tetra.cpp =====
 // ===== begin src/cpp/src/operations/optimize_volume.cpp =====
 #include <algorithm>
 #include <array>

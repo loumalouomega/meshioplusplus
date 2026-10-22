@@ -25,6 +25,7 @@
  */
 
 // System includes
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <string>
@@ -93,6 +94,41 @@ void octree_mesh_report_tree(const LinearOctree& rTree, OctreeMeshResult& rResul
 /// The castellated output.
 void octree_mesh_castellated(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions,
                              OctreeMeshResult& rResult);
+
+/// A tetrahedral mesh between the stages of the tetrahedral output.
+struct OctreeMeshTets {
+    std::vector<Vec3> mPoints;
+    std::vector<std::array<std::int64_t, 4>> mTets;
+    /// Per tetrahedron, its material (0 outside, 1 inside, higher for nested shells).
+    std::vector<std::int32_t> mMaterial;
+    /// Per tetrahedron, 1 when stuffing or optimisation changed it.
+    std::vector<std::uint8_t> mCut;
+    /// Per tetrahedron, the level of the leaf it lies in.
+    std::vector<std::int64_t> mLevel;
+    /// Per tetrahedron, its lattice shape class (0 when cut).
+    std::vector<std::int64_t> mShape;
+    /// Per point, 1 when it lies on the skin or an interface.
+    std::vector<std::uint8_t> mOnSkin;
+    /// Per point, 1 on a feature corner, 2 on a feature chain.
+    std::vector<std::uint8_t> mFeature;
+    std::int32_t mNumMaterials = 2;
+};
+
+/// The lattice of the balanced octree, stuffed (or cleaved) to the skin.
+void octree_mesh_stuffed_lattice(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions,
+                                 OctreeMeshResult& rResult, OctreeMeshTets& rOut);
+
+/// Snap the tetrahedra's boundary onto the skin's feature corners and chains.
+void octree_mesh_snap_features(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions,
+                               OctreeMeshResult& rResult, OctreeMeshTets& rTets);
+
+/// The edge of the leaf holding @p rP (clamped into the forest).
+double octree_mesh_local_size(const OctreeMeshSetup& rSetup, const Vec3& rP);
+
+/// Write the tetrahedra (the inside materials, and the outside on request) to
+/// the result's mesh, with their regions and data.
+void octree_mesh_emit_tets(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions,
+                           OctreeMeshResult& rResult, const OctreeMeshTets& rIn);
 
 }  // namespace detail
 }  // namespace meshioplusplus

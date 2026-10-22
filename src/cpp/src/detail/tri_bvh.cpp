@@ -25,6 +25,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <utility>
 #include <vector>
 
 // Project includes
@@ -361,6 +362,66 @@ TriRayHit tri_bvh_ray(const TriBvh& rTree, const Vec3& rOrigin, const Vec3& rDir
         }
     }
     return best;
+}
+
+std::vector<TriSegmentHit> tri_bvh_segment_hits(const TriBvh& rTree, const Vec3& rA,
+                                                const Vec3& rB) {
+    std::vector<std::pair<double, double>> raw;  // (t, side)
+    if (rTree.mNodes.empty())
+        return {};
+    const TriangleSoup& soup = *rTree.mpSoup;
+    const Vec3 dir = vec3_sub(rB, rA);
+    std::int32_t stack[128];
+    int top = 0;
+    stack[top++] = 0;
+    constexpr double kEps = 1e-10;
+    while (top > 0) {
+        const auto i = static_cast<std::size_t>(stack[--top]);
+        const TriBvhNode& node = rTree.mNodes[i];
+        if (!tribvh_slab(node.mLo, node.mHi, rA, dir, 0.0, 1.0))
+            continue;
+        if (node.mRight >= 0) {
+            stack[top++] = node.mRight;
+            stack[top++] = static_cast<std::int32_t>(i + 1);
+            continue;
+        }
+        for (std::int32_t k = 0; k < node.mCount; ++k) {
+            const Vec3* c =
+                &soup.mCorners[3 * static_cast<std::size_t>(rTree.mOrder[node.mBegin + k])];
+            const Vec3 e1 = vec3_sub(c[1], c[0]), e2 = vec3_sub(c[2], c[0]);
+            const Vec3 p = vec3_cross(dir, e2);
+            const double det = vec3_dot(e1, p);
+            if (std::abs(det) < 1e-300)
+                continue;
+            const double inv = 1.0 / det;
+            const Vec3 s = vec3_sub(rA, c[0]);
+            const double u = vec3_dot(s, p) * inv;
+            if (u < -kEps || u > 1.0 + kEps)
+                continue;
+            const Vec3 q = vec3_cross(s, e1);
+            const double v = vec3_dot(dir, q) * inv;
+            if (v < -kEps || u + v > 1.0 + kEps)
+                continue;
+            const double th = vec3_dot(e2, q) * inv;
+            if (th < 0.0 || th > 1.0)
+                continue;
+            raw.emplace_back(th, vec3_dot(vec3_cross(e1, e2), dir) > 0.0 ? 1.0 : -1.0);
+        }
+    }
+    std::sort(raw.begin(), raw.end());
+    std::vector<TriSegmentHit> out;
+    for (std::size_t i = 0; i < raw.size();) {
+        std::size_t j = i;
+        double side = 0.0;
+        while (j < raw.size() && raw[j].first - raw[i].first <= 1e-9) {
+            side += raw[j].second;
+            ++j;
+        }
+        if (side != 0.0)
+            out.push_back({raw[i].first, side > 0.0 ? 1.0 : -1.0});
+        i = j;
+    }
+    return out;
 }
 
 }  // namespace detail

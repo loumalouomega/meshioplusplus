@@ -77,6 +77,9 @@ inline constexpr const char* kOctreeMeshClosestPointName = "sdf:closest_point";
 /// Cell data (Int64): the lattice shape class of a tetrahedron (1-6), 0 for a
 /// cell the stuffing or the optimiser created.
 inline constexpr const char* kOctreeMeshShapeName = "octree_mesh:shape";
+/// Cell data (Int64): the material of a tetrahedron (0 outside the skin, 1
+/// inside, higher for nested shells under cleaving), when there is more than one.
+inline constexpr const char* kOctreeMeshMaterialName = "octree_mesh:material";
 /// Cell region: the cells inside the skin.
 inline constexpr const char* kOctreeMeshInsideRegion = "inside";
 /// Cell region: the cells outside the skin (`mKeepOutside`).
@@ -253,6 +256,7 @@ struct OctreeMeshResult {
     std::int64_t mNumCornersSnapped = 0;            ///< Corners an output node was snapped to.
     std::int64_t mNumFeatureChains = 0;             ///< Feature chains of the skin.
     std::int64_t mNumFeatureChainsMissed = 0;       ///< Chains not recovered by the boundary.
+    std::int64_t mNumFeatureMoves = 0;              ///< Boundary nodes moved onto features.
     /// The Labelle-Shewchuk dihedral bound applies to every tetrahedron:
     /// `Uniform` grading, nothing snapped to features, nothing refused.
     bool mGuaranteeApplies = false;

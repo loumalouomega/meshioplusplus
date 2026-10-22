@@ -390,7 +390,17 @@ OctreeMeshResult octree_mesh(const Mesh& rSkin, const OctreeMeshOptions& rOption
         case OctreeMeshOutput::Castellated:
             detail::octree_mesh_castellated(*setup, rOptions, result);
             break;
-        case OctreeMeshOutput::Tetra:
+        case OctreeMeshOutput::Tetra: {
+            detail::OctreeMeshTets tets;
+            detail::octree_mesh_stuffed_lattice(*setup, rOptions, result, tets);
+            clock.Lap(result, "stuffing");
+            detail::octree_mesh_snap_features(*setup, rOptions, result, tets);
+            clock.Lap(result, "features");
+            detail::octree_mesh_emit_tets(*setup, rOptions, result, tets);
+            result.mGuaranteeApplies = rOptions.mSkinGrading == OctreeMeshSkinGrading::Uniform &&
+                                       result.mNumWarpRefused == 0 && result.mNumFeatureMoves == 0;
+            break;
+        }
         case OctreeMeshOutput::Hexa:
             throw Unsupported(std::string(detail::kOctreeMeshPrefix) + "output '" +
                               octree_mesh_output_name(rOptions.mOutput) +

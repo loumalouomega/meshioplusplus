@@ -23,10 +23,12 @@
 // by name.
 
 // System includes
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -44,10 +46,13 @@
 #include "../../src/cpp/benchmark/mesh_digest.hpp"
 #include "meshioplusplus/detail/surface_distance.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/operations/convert_cells.hpp"
+#include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/octree.hpp"
 #include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/primitives.hpp"
 #include "meshioplusplus/operations/surface.hpp"
+#include "../../src/cpp/src/detail/bcc_octree_tets.hpp"
 #include "../../src/cpp/src/detail/tri_bvh.hpp"
 
 namespace {
@@ -373,4 +378,233 @@ TEST(OctreeMesh, RefusesBadOptionsByName) {
     EXPECT_THROW(mio::octree_mesh(mt::line_mesh(), o), std::invalid_argument);
     EXPECT_THROW(mio::octree_mesh_output_from_name("quad"), std::invalid_argument);
     EXPECT_EQ(mio::octree_mesh_output_from_name("tet"), mio::OctreeMeshOutput::Tetra);
+}
+
+namespace {
+
+// The checks every tetrahedral output must pass: positive volumes, every
+// interior triangle shared by two tetrahedra with opposite orientations, and
+// a boundary that is a closed 2-manifold (every boundary edge on exactly two
+// boundary triangles).
+struct OmTetCheck {
+    double mVolume = 0.0;
+    double mMinDihedral = 180.0, mMaxDihedral = 0.0;
+    std::size_t mBoundaryFaces = 0;
+};
+
+OmTetCheck om_check_tets(const mio::Mesh& rM) {
+    OmTetCheck out;
+    const double* p = rM.Points().As<double>();
+    const auto block = rM.Cells(0);
+    EXPECT_EQ(block.Type(), "tetra");
+    const std::int64_t* c = block.Conn().As<std::int64_t>();
+    auto at = [&](std::int64_t v) { return Vec3{p[3 * v], p[3 * v + 1], p[3 * v + 2]}; };
+    std::map<std::array<std::int64_t, 3>, int> faces;
+    constexpr int kFace[4][3] = {{1, 2, 3}, {0, 3, 2}, {0, 1, 3}, {0, 2, 1}};
+    for (std::size_t t = 0; t < block.NumCells(); ++t) {
+        const std::int64_t* v = c + 4 * t;
+        const double vol = mio::detail::triple_product(mio::detail::vec3_sub(at(v[1]), at(v[0])),
+                                                       mio::detail::vec3_sub(at(v[2]), at(v[0])),
+                                                       mio::detail::vec3_sub(at(v[3]), at(v[0]))) /
+                           6.0;
+        EXPECT_GT(vol, 0.0) << "tet " << t;
+        out.mVolume += vol;
+        const auto a = mio::detail::tet_dihedral_angles(at(v[0]), at(v[1]), at(v[2]), at(v[3]));
+        out.mMinDihedral = std::min(out.mMinDihedral, a[0]);
+        out.mMaxDihedral = std::max(out.mMaxDihedral, a[5]);
+        for (const auto& f : kFace) {
+            std::array<std::int64_t, 3> k{v[f[0]], v[f[1]], v[f[2]]};
+            int parity = 0;
+            for (int x = 0; x < 3; ++x)
+                for (int y = x + 1; y < 3; ++y)
+                    parity ^= k[x] > k[y];
+            std::sort(k.begin(), k.end());
+            const int s = parity ? -1 : 1;
+            auto [it, fresh] = faces.emplace(k, s);
+            if (!fresh) {
+                EXPECT_EQ(it->second, -s) << "a triangle seen twice the same way";
+                it->second = 2;  // matched
+            }
+        }
+    }
+    std::map<std::array<std::int64_t, 2>, int> edges;
+    for (const auto& [k, s] : faces) {
+        if (s == 2)
+            continue;
+        ++out.mBoundaryFaces;
+        for (int e = 0; e < 3; ++e)
+            ++edges[{std::min(k[e], k[(e + 1) % 3]), std::max(k[e], k[(e + 1) % 3])}];
+    }
+    for (const auto& [e, n] : edges)
+        EXPECT_EQ(n, 2) << "boundary edge " << e[0] << "-" << e[1] << " on " << n << " triangles";
+    return out;
+}
+
+mio::OctreeMeshOptions om_tet(double MaxSize, double MinSize, bool Uniform) {
+    mio::OctreeMeshOptions o;
+    o.mOutput = mio::OctreeMeshOutput::Tetra;
+    o.mMaxSize = MaxSize;
+    o.mMinSize = MinSize;
+    o.mPaddingRelative = 0.05;
+    if (Uniform) {
+        o.mSkinGrading = mio::OctreeMeshSkinGrading::Uniform;
+        o.mSurfaceSize = 2.0 * MinSize;
+    }
+    return o;
+}
+
+// The volume a closed, outward surface encloses.
+double om_enclosed(const mio::Mesh& rSkin) {
+    const auto soup = mio::detail::build_triangle_soup(rSkin, "");
+    double v = 0.0;
+    for (std::size_t t = 0; t < soup.NumTriangles(); ++t)
+        v += mio::detail::vec3_dot(
+                 soup.mCorners[3 * t],
+                 mio::detail::vec3_cross(soup.mCorners[3 * t + 1], soup.mCorners[3 * t + 2])) /
+             6.0;
+    return v;
+}
+
+}  // namespace
+
+TEST(OctreeMeshTet, UniformSkinsKeepTheStuffingAngleBounds) {
+    const mio::Mesh skins[] = {mio::icosa_sphere(1.0, 4), analytic::torus(1.0, 0.4, 64, 32)};
+    for (const mio::Mesh& skin : skins) {
+        auto o = om_tet(0.5, 0.05, true);
+        o.mFitIterations = 0;
+        const auto r = mio::octree_mesh(skin, o);
+        const OmTetCheck c = om_check_tets(r.mMesh);
+        EXPECT_GE(c.mMinDihedral, 10.7);
+        EXPECT_LE(c.mMaxDihedral, 164.8);
+        EXPECT_TRUE(r.mGuaranteeApplies);
+        EXPECT_EQ(r.mNumInverted, 0);
+        EXPECT_NEAR(c.mVolume, om_enclosed(skin), 0.02 * om_enclosed(skin));
+        EXPECT_GT(r.mNumWarped, 0);
+        EXPECT_NEAR(r.mMinDihedral, c.mMinDihedral, 1e-9);
+    }
+}
+
+TEST(OctreeMeshTet, CubeCornersAndEdgesArePreserved) {
+    const double lo[3] = {-0.61, -0.67, -0.7}, L = 1.37;
+    const mio::Mesh cube =
+        mio::convert_cells(
+            mio::extract_surface(mio::box({{8, 8, 8}}, {{L, L, L}}, {{lo[0], lo[1], lo[2]}})),
+            {mio::ConvertCellsMode::Simplexify, false})
+            .mMesh;
+    for (bool uniform : {true, false}) {
+        auto o = om_tet(0.5, 0.05, uniform);
+        const auto r = mio::octree_mesh(cube, o);
+        om_check_tets(r.mMesh);
+        EXPECT_EQ(r.mNumCorners, 8);
+        EXPECT_EQ(r.mNumCornersSnapped, 8);
+        EXPECT_EQ(r.mNumFeatureChains, 12);
+        EXPECT_EQ(r.mNumFeatureChainsMissed, 0);
+        EXPECT_FALSE(r.mGuaranteeApplies);
+        const double* p = r.mMesh.Points().As<double>();
+        for (int i = 0; i < 8; ++i) {
+            const Vec3 corner{lo[0] + ((i & 1) ? L : 0.0), lo[1] + ((i & 2) ? L : 0.0),
+                              lo[2] + ((i & 4) ? L : 0.0)};
+            double best = 1e300;
+            for (std::size_t v = 0; v < r.mMesh.NumPoints(); ++v)
+                best = std::min(best, mio::detail::vec3_norm(mio::detail::vec3_sub(
+                                          Vec3{p[3 * v], p[3 * v + 1], p[3 * v + 2]}, corner)));
+            EXPECT_LE(best, 1e-12);
+        }
+        // The feature-edge nodes lie on the cube's edges.
+        for (std::int64_t v :
+             om_region(r.mMesh, mio::kOctreeMeshFeatureEdgesRegion, mio::RegionKind::Point)) {
+            int on = 0;
+            for (int k = 0; k < 3; ++k) {
+                const double x = p[3 * v + k];
+                on += std::abs(x - lo[k]) < 1e-12 || std::abs(x - lo[k] - L) < 1e-12;
+            }
+            EXPECT_GE(on, 2) << "node " << v;
+        }
+    }
+}
+
+TEST(OctreeMeshTet, CleavingNestedSpheresGivesTwoConformingMaterials) {
+    const mio::Mesh a = mio::icosa_sphere(1.0, 4);
+    const mio::Mesh b = mio::icosa_sphere(0.5, 3);
+    const mio::Mesh both = mio::merge({&a, &b}, mio::MergeOptions{}).mMesh;
+    auto o = om_tet(0.4, 0.05, false);
+    o.mConformity = mio::OctreeMeshConformity::Cleaving;
+    const auto r = mio::octree_mesh(both, o);
+    const OmTetCheck c = om_check_tets(r.mMesh);
+    EXPECT_NEAR(c.mVolume, om_enclosed(a), 0.02 * om_enclosed(a));
+    const auto m1 = om_region(r.mMesh, "material_1", mio::RegionKind::Cell);
+    const auto m2 = om_region(r.mMesh, "material_2", mio::RegionKind::Cell);
+    EXPECT_GT(m1.size(), 0u);
+    EXPECT_GT(m2.size(), 0u);
+    EXPECT_EQ(m1.size() + m2.size(), r.mMesh.Cells(0).NumCells());
+    EXPECT_EQ(r.mNumInverted, 0);
+}
+
+TEST(OctreeMeshTet, KeepOutsideFillsTheLattice) {
+    const mio::Mesh skin = mio::icosa_sphere(1.0, 3);
+    auto o = om_tet(0.4, 0.05, false);
+    o.mKeepOutside = true;
+    const auto r = mio::octree_mesh(skin, o);
+    const OmTetCheck c = om_check_tets(r.mMesh);
+    double box = 1.0;
+    for (int k = 0; k < 3; ++k)
+        box *= static_cast<double>(r.mRootCells[static_cast<std::size_t>(k)]) * r.mRootSize;
+    EXPECT_NEAR(c.mVolume, box, 1e-9 * box);
+    const auto in = om_region(r.mMesh, mio::kOctreeMeshInsideRegion, mio::RegionKind::Cell);
+    const auto out = om_region(r.mMesh, mio::kOctreeMeshOutsideRegion, mio::RegionKind::Cell);
+    EXPECT_EQ(in.size() + out.size(), r.mMesh.Cells(0).NumCells());
+}
+
+TEST(OctreeMeshTet, DirtyAndGradedSkinsStillGiveValidMeshes) {
+    const mio::Mesh sphere = mio::icosa_sphere(1.0, 4);
+    std::vector<std::vector<double>> pts;
+    const double* p = sphere.Points().As<double>();
+    for (std::size_t i = 0; i < sphere.NumPoints(); ++i)
+        pts.push_back({p[3 * i], p[3 * i + 1], p[3 * i + 2]});
+    std::vector<std::vector<std::int64_t>> holed;
+    const std::int64_t* c = sphere.Cells(0).Conn().As<std::int64_t>();
+    for (std::size_t t = 0; t < sphere.Cells(0).NumCells(); ++t)
+        if (t % 13 != 0)
+            holed.push_back({c[3 * t], c[3 * t + 1], c[3 * t + 2]});
+    const auto h =
+        mio::octree_mesh(mt::make_mesh(pts, "triangle", holed), om_tet(0.4, 0.05, false));
+    const OmTetCheck hc = om_check_tets(h.mMesh);
+    EXPECT_NEAR(hc.mVolume, om_enclosed(sphere), 0.05 * om_enclosed(sphere));
+    // A graded skin: sizes from a point array varying along the skin.
+    mio::Mesh graded = mio::icosa_sphere(1.0, 4);
+    mio::NDArray size = mio::NDArray::Uninit(mio::DType::Float64, {graded.NumPoints()});
+    const double* gp = graded.Points().As<double>();
+    for (std::size_t i = 0; i < graded.NumPoints(); ++i)
+        size.As<double>()[i] = 0.05 + 0.15 * (gp[3 * i] + 1.0);
+    graded.AddPointData("h", std::move(size));
+    auto o = om_tet(0.4, 0.04, false);
+    o.mSizeArray = "h";
+    const auto g = mio::octree_mesh(graded, o);
+    const OmTetCheck gc = om_check_tets(g.mMesh);
+    EXPECT_GT(gc.mMinDihedral, 0.0);
+    EXPECT_GT(g.mFinestLevel, g.mLeavesPerLevel.size() > 0 ? 0 : -1);
+    EXPECT_EQ(g.mNumInverted, 0);
+}
+
+TEST(OctreeMeshTet, IsTheSameOnEveryThreadCount) {
+    const mio::Mesh skin = analytic::torus(1.0, 0.4, 32, 16);
+    std::uint64_t ref = 0;
+#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
+    const int saved = omp_get_max_threads();
+    for (int threads : {1, 2, 4}) {
+        omp_set_num_threads(threads);
+#else
+    for (int threads : {1}) {
+        (void)threads;
+#endif
+        const auto r = mio::octree_mesh(skin, om_tet(0.5, 0.05, false));
+        mio::bench::MeshDigest d;
+        d.Of(r.mMesh);
+        if (ref == 0)
+            ref = d.Value();
+        EXPECT_EQ(d.Value(), ref);
+    }
+#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
+    omp_set_num_threads(saved);
+#endif
 }

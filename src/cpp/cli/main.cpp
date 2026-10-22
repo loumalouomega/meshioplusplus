@@ -4175,6 +4175,7 @@ int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
         json.Field("num_corners_snapped", r.mNumCornersSnapped);
         json.Field("num_feature_chains", r.mNumFeatureChains);
         json.Field("num_feature_chains_missed", r.mNumFeatureChainsMissed);
+        json.Field("num_feature_moves", r.mNumFeatureMoves);
         json.Field("num_winding_rechecks", r.mNumWindingRechecks);
         json.Field("root_size", r.mRootSize);
         json.Field("min_size", r.mMinSize);
