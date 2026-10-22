@@ -1458,8 +1458,12 @@ jobs:
           # hdf5=1.14: conda-forge paraview 6.1.1 links libhdf5.so.310 but does
           # not constrain hdf5, so the solver picks 2.x (libhdf5.so.320) and
           # pvpython cannot start.
+          # vtk-base: the py312h1393585_1 build (picked from 2026-10-22) lacks
+          # libvtkcgns-9.7.so.1, which paraview 6.2.0 links, so pvpython exits
+          # 127. Pin the build that passed on master (2026-10-21) until
+          # conda-forge ships a fixed vtk-base; drop the pin then.
           create-args: >-
-            -c conda-forge python=3.12 paraview hdf5=1.14 cxx-compiler cmake ninja pybind11 scikit-build-core numpy pytest
+            -c conda-forge python=3.12 paraview hdf5=1.14 vtk-base=9.7.0=py312h3887a20_1 cxx-compiler cmake ninja pybind11 scikit-build-core numpy pytest
       - name: Build meshio++ into ParaView's environment
         env:
           CMAKE_ARGS: -DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF
