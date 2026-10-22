@@ -1,9 +1,9 @@
-"""FastMCP registration layer: typed wrappers over :mod:`._tools`.
+"""MCP registration layer: typed wrappers over :mod:`._tools`.
 
 This is the only module in the package that imports the ``mcp`` SDK, so it is
 only importable with the ``[mcp]`` extra installed (which needs Python >= 3.10
 — the SDK's own floor, not meshio++'s). All behaviour lives in the pure layer;
-each wrapper here contributes exactly two things: the typed signature FastMCP
+each wrapper here contributes exactly two things: the typed signature the SDK
 derives the tool's JSON schema from, and the docstring the client shows the
 model. Wrappers never leak tracebacks — every call is guarded and failures
 come back as ``{"error", "error_type"}`` payloads the model can act on.
@@ -16,7 +16,15 @@ import json
 import os
 from typing import Dict, List, Optional, Union
 
-from mcp.server.fastmcp import FastMCP, Image
+try:  # mcp >= 2 renamed FastMCP to MCPServer (and moved it)
+    from mcp.server.mcpserver import Image
+    from mcp.server.mcpserver import MCPServer as FastMCP
+
+    _HOST_IN_CTOR = False
+except ImportError:  # mcp 1.x
+    from mcp.server.fastmcp import FastMCP, Image
+
+    _HOST_IN_CTOR = True
 
 from ..__about__ import __version__
 from . import _tools
@@ -42,17 +50,20 @@ _guard = _tools.guard
 
 
 def create_server(root: Optional[str] = None, host: Optional[str] = None) -> FastMCP:
-    """Build the FastMCP server with every tool and resource registered.
+    """Build the MCP server with every tool and resource registered.
 
-    ``host`` matters only for the HTTP front-end: FastMCP enables its
+    ``host`` matters only for the HTTP front-end: the SDK enables its
     DNS-rebinding protection (Host/Origin allow-lists) when the host is a
     loopback name, so a ``--host 0.0.0.0`` server must be told, or the
-    ``/mcp`` endpoint would reject every non-loopback ``Host`` header.
+    ``/mcp`` endpoint would reject every non-loopback ``Host`` header. mcp 1.x
+    takes it in the constructor; 2.x takes it when the HTTP app is built, so
+    it is remembered on the server for :func:`http_app`.
     """
     if root is not None:
         _tools.set_root(root)
-    kwargs = {"host": host} if host is not None else {}
+    kwargs = {"host": host} if host is not None and _HOST_IN_CTOR else {}
     server = FastMCP("meshioplusplus", instructions=_INSTRUCTIONS, **kwargs)
+    server._meshioplusplus_host = host
     _register_inspection(server)
     _register_conversion(server)
     _register_operations(server)
@@ -62,6 +73,16 @@ def create_server(root: Optional[str] = None, host: Optional[str] = None) -> Fas
     _register_gated(server)
     _register_resources(server)
     return server
+
+
+def http_app(server: FastMCP):
+    """The server's ASGI app and its transport name (``streamable-http``, or
+    ``sse`` on an SDK older than streamable HTTP)."""
+    host = None if _HOST_IN_CTOR else getattr(server, "_meshioplusplus_host", None)
+    kwargs = {"host": host} if host is not None else {}
+    if hasattr(server, "streamable_http_app"):
+        return server.streamable_http_app(**kwargs), "streamable-http"
+    return server.sse_app(**kwargs), "sse"  # pragma: no cover
 
 
 # --------------------------------------------------------------------------- #

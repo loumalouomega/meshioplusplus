@@ -88,21 +88,19 @@ interop = [
 # itself requires Python >= 3.10 while the package floor stays 3.8 -- the pure
 # tool layer works everywhere, only running the server needs this extra.
 #
-# Upper-bounded at <2 deliberately: the SDK's 2.0.0 removed `mcp.server.fastmcp`
-# outright, replacing it with a different server API (`mcp.server.mcpserver`), so
-# `_server.py`'s `from mcp.server.fastmcp import FastMCP` raises ModuleNotFound
-# there. The bound is not caution about an unseen release -- it was an unbounded
-# `>=1.2` that let CI resolve 2.0.0 and fail. Porting to the 2.x API is a
-# separate piece of work; until then this pins the SDK the server is written
-# against. The pure tool layer (`_tools.py`) imports no SDK and is unaffected.
-mcp = ["mcp>=1.2,<2"]
+# Both SDK majors are supported: 1.x serves through `mcp.server.fastmcp.FastMCP`
+# and 2.x, which removed that module, through `mcp.server.mcpserver.MCPServer`
+# (`_server.py` imports whichever exists). The bound is `<3` so the next major
+# is not picked up before it has been tested; CI runs both majors. The pure
+# tool layer (`_tools.py`) imports no SDK and is unaffected.
+mcp = ["mcp>=1.2,<3"]
 # The companion process (`meshioplusplus-mcp --http`, src/python/meshioplusplus/
 # mcp/_http.py): the JSON API the browser dataset manager talks to, plus MCP
 # over HTTP. Starlette/uvicorn arrive transitively with the mcp SDK today, but
 # _http.py imports them directly, so they are declared here rather than
 # borrowed from the SDK's own dependency list. Same Python floor and same
 # NOT-in-`all` reasoning as [mcp].
-dashboard = ["mcp>=1.2,<2", "starlette>=0.27", "uvicorn>=0.31"]
+dashboard = ["mcp>=1.2,<3", "starlette>=0.27", "uvicorn>=0.31"]
 # OpenUSD, for the `usd` format (src/python/meshioplusplus/usd/). `usd-core` is
 # Pixar's self-contained PyPI build of USD -- no Omniverse install -- and it is
 # a ~30 MB wheel, so it stays out of `all` like every other interop-sized
