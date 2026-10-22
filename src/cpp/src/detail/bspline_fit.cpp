@@ -430,8 +430,17 @@ BsplineFitResult bspline_fit_patch(const std::vector<PatchVec>& rPts,
                         spans.push_back(b.second);
                 return spans;
             };
-            const std::vector<std::size_t> su = pick(bad_u, s.mNu);
-            const std::vector<std::size_t> sv = pick(bad_v, s.mNv);
+            std::vector<std::size_t> su = pick(bad_u, s.mNu);
+            std::vector<std::size_t> sv = pick(bad_v, s.mNv);
+            // Within the total budget too: the least bad spans go first, from
+            // the direction that would add the most.
+            while (rOptions.mMaxTotalPoles > 0 && (!su.empty() || !sv.empty()) &&
+                   (s.mNu + su.size()) * (s.mNv + sv.size()) > rOptions.mMaxTotalPoles) {
+                if (su.size() > sv.size())
+                    su.pop_back();
+                else
+                    sv.pop_back();
+            }
             if (su.empty() && sv.empty())
                 break;  // the pole budget is spent
             BsplineSurface t =

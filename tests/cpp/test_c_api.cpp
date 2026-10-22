@@ -6349,3 +6349,66 @@ TEST(CApi, DetectColorDepth) {
     EXPECT_EQ(mio_detect_color_depth(nullptr, nullptr, "xterm-256color"), MIO_COLOR_256);
     EXPECT_EQ(mio_detect_color_depth(nullptr, nullptr, "xterm"), MIO_COLOR_16);
 }
+
+// mio_fit_cad3 (v17.12.0): the freeform-mode options and report. The legacy
+// default reports a facet area of 0 on the cube's six planes and no table;
+// another mode adds the "fit_cad:face_table" field data; an option out of
+// range is refused, naming it. mio_fit_cad2 forwards with the defaults.
+TEST(CApi, FitCad3FreeformModes) {
+    mio_mesh* m = capi_cube_surface();
+    mio_fit_cad_opts opts;
+    mio_fit_cad_opts_init(&opts);
+    opts.backend = MIO_FIT_CAD_NATIVE;
+    mio_fit_cad_opts_ex2 ex2;
+    mio_fit_cad_opts_ex2_init(&ex2);
+    EXPECT_EQ(ex2.freeform_mode, MIO_FREEFORM_LEGACY);
+    EXPECT_EQ(ex2.extraordinary_vertex, MIO_EV_G1X);
+    EXPECT_EQ(ex2.freeform_max_control_points, 400);
+    EXPECT_EQ(ex2.layout_snap_to_features, 1);
+    mio_fit_cad_report_ex3 report_ex3;
+    std::memset(&report_ex3, 0xff, sizeof report_ex3);
+    mio_mesh* skin =
+        mio_fit_cad3(m, nullptr, &opts, nullptr, &ex2, nullptr, nullptr, nullptr, &report_ex3);
+    ASSERT_NE(skin, nullptr) << mio_last_error();
+    EXPECT_EQ(report_ex3.brep_checked, 0);
+    EXPECT_EQ(report_ex3.freeform_mode, MIO_FREEFORM_LEGACY);
+    EXPECT_EQ(report_ex3.facet_area_fraction, 0.0);
+    EXPECT_EQ(report_ex3.num_face_records, 6);
+    for (int64_t r : report_ex3.reserved)
+        EXPECT_EQ(r, 0);
+    const void* data = nullptr;
+    mio_dtype dt;
+    int32_t ndim = 0;
+    int64_t shape[8] = {};
+    EXPECT_NE(mio_mesh_get_field_data(skin, "fit_cad:face_table", &data, &dt, &ndim, shape),
+              MIO_OK);
+    mio_mesh_free(skin);
+
+    ex2.freeform_mode = MIO_FREEFORM_ADAPTIVE;
+    skin = mio_fit_cad3(m, nullptr, &opts, nullptr, &ex2, nullptr, nullptr, nullptr, &report_ex3);
+    ASSERT_NE(skin, nullptr) << mio_last_error();
+    EXPECT_EQ(report_ex3.freeform_mode, MIO_FREEFORM_ADAPTIVE);
+    ASSERT_EQ(mio_mesh_get_field_data(skin, "fit_cad:face_table", &data, &dt, &ndim, shape), MIO_OK)
+        << mio_last_error();
+    EXPECT_EQ(dt, MIO_FLOAT64);
+    ASSERT_EQ(ndim, 2);
+    EXPECT_EQ(shape[0], 6);
+    EXPECT_EQ(shape[1], 13);
+    mio_mesh_free(skin);
+
+    ex2.freeform_mode = 9;
+    EXPECT_EQ(mio_fit_cad3(m, nullptr, &opts, nullptr, &ex2, nullptr, nullptr, nullptr, nullptr),
+              nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("freeform_mode"), std::string::npos)
+        << mio_last_error();
+    // Zero reads as the default for the tolerances and budgets.
+    mio_fit_cad_opts_ex2_init(&ex2);
+    ex2.freeform_g1_tolerance_deg = 0.0;
+    ex2.freeform_max_control_points = 0;
+    ex2.layout_target_patch_size = 0.0;
+    ex2.layout_max_valence_deviation = 0;
+    skin = mio_fit_cad3(m, nullptr, &opts, nullptr, &ex2, nullptr, nullptr, nullptr, nullptr);
+    ASSERT_NE(skin, nullptr) << mio_last_error();
+    mio_mesh_free(skin);
+    mio_mesh_free(m);
+}

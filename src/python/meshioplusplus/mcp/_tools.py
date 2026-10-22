@@ -2568,6 +2568,17 @@ def tool_fit_cad(
     extend_surfaces=False,
     snap_junctions=False,
     face_deviation=False,
+    freeform_mode="legacy",
+    freeform_parameterization="auto",
+    extraordinary_vertex="g1x",
+    local_refine="knots",
+    freeform_g1_tolerance_deg=1.0,
+    freeform_max_control_points=400,
+    layout_target_patch_size=0.1,
+    layout_max_valence_deviation=2,
+    resegment_rounds=2,
+    layout_snap_to_features=True,
+    validate_by_surface_sampling=True,
 ):
     """Turn the fitted patches of a closed skin into a CAD solid with analytic
     faces (and, through OpenCASCADE, rolling-ball fillet, thread flank and
@@ -2590,7 +2601,19 @@ def tool_fit_cad(
     sewing tolerance; extend_surfaces adds num_extended_edges,
     snap_junctions num_snapped_junctions, and face_deviation hausdorff_max,
     hausdorff_rms and the fit_cad:face_hausdorff / fit_cad:face_rms field
-    data. The report always holds closed."""
+    data. The report always holds closed. freeform_mode ("legacy" by default;
+    "adaptive", "network" or "auto") picks how the patches no primitive or
+    feature fit explains are treated (freeform_parameterization,
+    extraordinary_vertex, local_refine, freeform_g1_tolerance_deg,
+    freeform_max_control_points, layout_target_patch_size,
+    layout_max_valence_deviation, resegment_rounds, layout_snap_to_features,
+    validate_by_surface_sampling); outside "legacy" the report adds
+    freeform_mode, brep_checked, facet_area_fraction (the area share left on
+    facet faces), num_freeform_adaptive, num_network_patches,
+    num_network_edges, num_extraordinary_vertices, num_resegmented,
+    num_escalations, max_g1_angle_deg, max_freeform_distance,
+    rms_freeform_distance and faces (per patch: param_method, num_ctrl,
+    distances, escalation_steps and demotion_reason)."""
     from .._fit_cad import has_occt
 
     occt = has_occt()
@@ -2658,6 +2681,17 @@ def tool_fit_cad(
         extend_surfaces=extend_surfaces,
         snap_junctions=snap_junctions,
         face_deviation=face_deviation,
+        freeform_mode=freeform_mode,
+        freeform_parameterization=freeform_parameterization,
+        extraordinary_vertex=extraordinary_vertex,
+        local_refine=local_refine,
+        freeform_g1_tolerance_deg=freeform_g1_tolerance_deg,
+        freeform_max_control_points=freeform_max_control_points,
+        layout_target_patch_size=layout_target_patch_size,
+        layout_max_valence_deviation=layout_max_valence_deviation,
+        resegment_rounds=resegment_rounds,
+        layout_snap_to_features=layout_snap_to_features,
+        validate_by_surface_sampling=validate_by_surface_sampling,
     )
     _cache_invalidate(step_path)
     extra = {"step_path": step_path, "occt_available": occt, **report}

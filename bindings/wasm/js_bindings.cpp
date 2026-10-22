@@ -5013,7 +5013,18 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
                                  "sewTolerance",
                                  "extendSurfaces",
                                  "snapJunctions",
-                                 "faceDeviation"});
+                                 "faceDeviation",
+                                 "freeformMode",
+                                 "freeformParameterization",
+                                 "extraordinaryVertex",
+                                 "localRefine",
+                                 "freeformG1ToleranceDeg",
+                                 "freeformMaxControlPoints",
+                                 "layoutTargetPatchSize",
+                                 "layoutMaxValenceDeviation",
+                                 "resegmentRounds",
+                                 "layoutSnapToFeatures",
+                                 "validateBySurfaceSampling"});
             const auto has = [&](const char* pKey) {
                 return rOptions.hasOwnProperty(pKey) && !rOptions[pKey].isUndefined();
             };
@@ -5100,6 +5111,52 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
                 options.mSnapJunctions = rOptions["snapJunctions"].as<bool>();
             if (has("faceDeviation"))
                 options.mFaceDeviation = rOptions["faceDeviation"].as<bool>();
+            // The freeform modes (v17.12.0): keywords by position.
+            const auto keyword = [&](const char* pKey, std::initializer_list<const char*> Words) {
+                const std::string v = rOptions[pKey].as<std::string>();
+                std::int32_t i = 0;
+                std::string list;
+                for (const char* w : Words) {
+                    if (v == w)
+                        return i;
+                    list += (i ? ", '" : "'") + std::string(w) + "'";
+                    ++i;
+                }
+                throw std::invalid_argument(std::string("meshio++: fit_cad: ") + pKey +
+                                            " must be one of " + list);
+            };
+            if (has("freeformMode"))
+                options.mFreeformMode = static_cast<meshioplusplus::FitCadFreeformMode>(
+                    keyword("freeformMode", {"legacy", "adaptive", "network", "auto"}));
+            if (has("freeformParameterization"))
+                options.mFreeformParameterization =
+                    static_cast<meshioplusplus::FitCadParameterization>(keyword(
+                        "freeformParameterization", {"auto", "projection", "lscm", "harmonic"}));
+            if (has("extraordinaryVertex"))
+                options.mExtraordinaryVertex =
+                    static_cast<meshioplusplus::FitCadExtraordinaryVertex>(
+                        keyword("extraordinaryVertex", {"g0", "g1", "g1x", "g1xx"}));
+            if (has("localRefine"))
+                options.mLocalRefine = static_cast<meshioplusplus::FitCadLocalRefine>(
+                    keyword("localRefine", {"knots", "thb"}));
+            if (has("freeformG1ToleranceDeg"))
+                options.mFreeformG1ToleranceDeg = rOptions["freeformG1ToleranceDeg"].as<double>();
+            if (has("freeformMaxControlPoints"))
+                options.mFreeformMaxControlPoints =
+                    static_cast<std::int64_t>(rOptions["freeformMaxControlPoints"].as<double>());
+            if (has("layoutTargetPatchSize"))
+                options.mLayoutTargetPatchSize = rOptions["layoutTargetPatchSize"].as<double>();
+            if (has("layoutMaxValenceDeviation"))
+                options.mLayoutMaxValenceDeviation =
+                    static_cast<std::int64_t>(rOptions["layoutMaxValenceDeviation"].as<double>());
+            if (has("resegmentRounds"))
+                options.mResegmentRounds =
+                    static_cast<std::int64_t>(rOptions["resegmentRounds"].as<double>());
+            if (has("layoutSnapToFeatures"))
+                options.mLayoutSnapToFeatures = rOptions["layoutSnapToFeatures"].as<bool>();
+            if (has("validateBySurfaceSampling"))
+                options.mValidateBySurfaceSampling =
+                    rOptions["validateBySurfaceSampling"].as<bool>();
         }
         if (options.mBackend == meshioplusplus::FitCadBackend::Occt &&
             !meshioplusplus::fit_cad_has_occt())
@@ -5148,6 +5205,12 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
             {"numFreeformRefinements", r.mNumFreeformRefinements},
             {"numExtendedEdges", r.mNumExtendedEdges},
             {"numSnappedJunctions", r.mNumSnappedJunctions},
+            {"numFreeformAdaptive", r.mNumFreeformAdaptive},
+            {"numNetworkPatches", r.mNumNetworkPatches},
+            {"numNetworkEdges", r.mNumNetworkEdges},
+            {"numExtraordinaryVertices", r.mNumExtraordinaryVertices},
+            {"numResegmented", r.mNumResegmented},
+            {"numEscalations", r.mNumEscalations},
         };
         for (const auto& [name, value] : counters)
             out.set(name, static_cast<double>(value));
@@ -5162,6 +5225,49 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
         out.set("hausdorffMax", r.mHausdorffMax);
         out.set("hausdorffRms", r.mHausdorffRms);
         out.set("closed", r.mClosed);
+        // The freeform-mode report (v17.12.0); `faces` outside the legacy mode.
+        static const char* const kModes[] = {"legacy", "adaptive", "network", "auto"};
+        static const char* const kParams[] = {"none", "plane",     "cylinder",
+                                              "lscm", "meanValue", "square"};
+        static const char* const kReasons[] = {"none",
+                                               "paramNotInjective",
+                                               "hausdorffExceeded",
+                                               "trimFailed",
+                                               "sewFailed",
+                                               "brepCheckFailed",
+                                               "tooSmall",
+                                               "nonDisc",
+                                               "kernelMeshCoarse",
+                                               "budgetExceeded",
+                                               "other"};
+        out.set("brepChecked", r.mBrepChecked);
+        out.set("freeformMode", std::string(kModes[static_cast<int>(r.mFreeformMode) & 3]));
+        out.set("facetAreaFraction", r.mFacetAreaFraction);
+        out.set("maxG1AngleDeg", r.mMaxG1AngleDeg);
+        out.set("maxFreeformDistance", r.mMaxFreeformDistance);
+        out.set("rmsFreeformDistance", r.mRmsFreeformDistance);
+        if (r.mFreeformMode != meshioplusplus::FitCadFreeformMode::Legacy) {
+            val faces = val::array();
+            for (std::size_t i = 0; i < r.mFaces.size(); ++i) {
+                const meshioplusplus::FitCadFaceRecord& f = r.mFaces[i];
+                val o = val::object();
+                o.set("patch", static_cast<double>(f.mPatch));
+                o.set("face", static_cast<double>(f.mFace));
+                o.set("kind", static_cast<double>(f.mKind));
+                o.set("paramMethod", std::string(kParams[static_cast<int>(f.mParamMethod)]));
+                o.set("numCtrl", static_cast<double>(f.mNumControl));
+                o.set("iterations", static_cast<double>(f.mIterations));
+                o.set("refinements", static_cast<double>(f.mRefinements));
+                o.set("maxDist", f.mMaxDist);
+                o.set("rmsDist", f.mRmsDist);
+                o.set("reverseMaxDist", f.mReverseMaxDist);
+                o.set("maxG1AngleDeg", f.mMaxG1AngleDeg);
+                o.set("escalationSteps", static_cast<double>(f.mEscalationSteps));
+                o.set("demotionReason", std::string(kReasons[static_cast<int>(f.mDemotionReason)]));
+                faces.set(static_cast<unsigned>(i), o);
+            }
+            out.set("faces", faces);
+        }
         out.set("info", brep_info_to_val(r.mBrep));
         out.set("backend",
                 std::string(r.mBackend == meshioplusplus::FitCadBackend::Native ? "native"

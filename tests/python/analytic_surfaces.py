@@ -5,6 +5,8 @@ so every point lies on its surface (up to rounding). The C++ tests build the
 same shapes in ``tests/cpp/analytic_surfaces.hpp``.
 """
 
+import math
+
 import numpy as np
 
 import meshioplusplus as mio
@@ -748,3 +750,374 @@ def filleted_plate(a=2.0, h=0.5, r=0.6, rc=0.8, n=48, k=8):
         b.quad(ob, ob2, ot2, ot, d)
         b.quad(hb, hb2, ht2, ht, -d)
     return b.mesh()
+
+
+# ---------------------------------------------------------------------------
+# Freeform fixtures (v17.12.0): the shapes ``analytic_surfaces.hpp`` builds for
+# fit_cad's freeform modes, with the same arithmetic in the same order on
+# Python floats (``math``, not NumPy, whose SIMD kernels may differ in the last
+# bits), so the points match the C++ ones bit for bit on one platform.
+# ---------------------------------------------------------------------------
+
+
+def triangle_box(n, warp=False):
+    """The unit cube's skin as triangles (``analytic::triangle_box``)."""
+    quads = box_skin(n)
+    pts = []
+    for x, y, z in quads.points.tolist():
+        if warp:
+            x += 0.35 * x * (1.0 - x) * (1.0 - 2.0 * x)
+            y += 0.35 * y * (1.0 - y) * (1.0 - 2.0 * y)
+        pts.append([x, y, z])
+    tris = []
+    for a, b, c, d in quads.cells[0].data.tolist():
+        tris.append([a, b, c])
+        tris.append([a, c, d])
+    return mio.Mesh(
+        np.array(pts, dtype=float), [("triangle", np.array(tris, dtype=np.int64))]
+    )
+
+
+def heightfield_box(n, height, warp=False):
+    """A box whose top (z = 1) is lifted to ``1 + height(x, y)``, its sides'
+    points following in proportion (``z (1 + height)``) so they stay planar
+    and never fold (``analytic::heightfield_box``)."""
+    m = triangle_box(n, warp)
+    pts = m.points.copy()
+    for i in range(len(pts)):
+        if pts[i, 2] > 0.0:
+            pts[i, 2] = float(pts[i, 2]) * (
+                1.0 + height(float(pts[i, 0]), float(pts[i, 1]))
+            )
+    m.points = pts
+    return m
+
+
+def monkey_saddle_box(n=24, warp=False):
+    def f(x, y):
+        u, v = 2.0 * x - 1.0, 2.0 * y - 1.0
+        return 0.15 * (u * u * u - 3.0 * u * v * v)
+
+    return heightfield_box(n, f, warp)
+
+
+def gaussian_bump_box(n=24, warp=False):
+    def f(x, y):
+        r2 = (x - 0.5) * (x - 0.5) + (y - 0.5) * (y - 0.5)
+        return 0.3 * math.exp(-r2 / 0.03)
+
+    return heightfield_box(n, f, warp)
+
+
+def s_band_box(n=24, warp=False):
+    def f(x, y):
+        s = x * x * x * (x * (6.0 * x - 15.0) + 10.0)
+        return 0.25 * (s - 0.5) * (1.0 + 0.5 * (y - 0.5))
+
+    return heightfield_box(n, f, warp)
+
+
+def hood_box(n=24, warp=False):
+    def f(x, y):
+        return 0.35 * 16.0 * x * (1.0 - x) * y * (1.0 - y) * (1.0 + 0.4 * x)
+
+    return heightfield_box(n, f, warp)
+
+
+def organic_torus(n=48, m=24):
+    """A genus-1 blob: a torus whose tube radius ripples around it."""
+    pts, tris = [], []
+    for i in range(m):
+        t = 2.0 * math.pi * i / m
+        for k in range(n):
+            a = 2.0 * math.pi * k / n
+            r = 0.35 * (1.0 + 0.2 * math.cos(2.0 * t) * math.sin(3.0 * a))
+            rr = 1.0 + r * math.cos(t)
+            pts.append([rr * math.cos(a), rr * math.sin(a), 0.7 * r * math.sin(t)])
+    for i in range(m):
+        for k in range(n):
+            i1, k1 = (i + 1) % m, (k + 1) % n
+            a, b, c, d = i * n + k, i * n + k1, i1 * n + k1, i1 * n + k
+            tris.append([a, b, c])
+            tris.append([a, c, d])
+    return mio.Mesh(np.array(pts), [("triangle", np.array(tris, dtype=np.int64))])
+
+
+def implicit_skin(field, lo, hi, n):
+    """The zero level of ``field`` (negative inside) by marching tetrahedra on
+    the six Kuhn tetrahedra of each grid cube (``analytic::implicit_skin``)."""
+    m = n + 1
+
+    def node(i, j, k):
+        return (k * m + j) * m + i
+
+    xyz = [None] * (m * m * m)
+    f = [0.0] * (m * m * m)
+    for k in range(m):
+        for j in range(m):
+            for i in range(m):
+                p = [
+                    lo[0] + (hi[0] - lo[0]) * float(i) / float(n),
+                    lo[1] + (hi[1] - lo[1]) * float(j) / float(n),
+                    lo[2] + (hi[2] - lo[2]) * float(k) / float(n),
+                ]
+                xyz[node(i, j, k)] = p
+                f[node(i, j, k)] = field(*p)
+    b = _Skin()
+    crossing = {}
+
+    def cross(a, c):
+        key = (min(a, c), max(a, c))
+        if key not in crossing:
+            inside = key[0] if f[key[0]] < 0.0 else key[1]
+            outside = key[1] if inside == key[0] else key[0]
+            fi, fo = f[inside], f[outside]
+            t = fi / (fi - fo)
+            p, q = xyz[inside], xyz[outside]
+            crossing[key] = b.add([p[a2] + t * (q[a2] - p[a2]) for a2 in range(3)])
+        return crossing[key]
+
+    orders = ((0, 1, 2), (0, 2, 1), (1, 0, 2), (1, 2, 0), (2, 0, 1), (2, 1, 0))
+    for k in range(n):
+        for j in range(n):
+            for i in range(n):
+                for o in orders:
+                    c = [i, j, k]
+                    v = [node(*c)]
+                    for axis in o:
+                        c[axis] += 1
+                        v.append(node(*c))
+                    ins = [x for x in v if f[x] < 0.0]
+                    outs = [x for x in v if f[x] >= 0.0]
+                    if not ins or not outs:
+                        continue
+                    out = [0.0, 0.0, 0.0]
+                    for a in range(3):
+                        out[o[a]] = (f[v[a + 1]] - f[v[a]]) / (hi[o[a]] - lo[o[a]])
+                    if len(ins) == 1 or len(outs) == 1:
+                        apex, rest = (ins[0], outs) if len(ins) == 1 else (outs[0], ins)
+                        b.tri(
+                            cross(apex, rest[0]),
+                            cross(apex, rest[1]),
+                            cross(apex, rest[2]),
+                            out,
+                        )
+                    else:
+                        b.quad(
+                            cross(ins[0], outs[0]),
+                            cross(ins[0], outs[1]),
+                            cross(ins[1], outs[1]),
+                            cross(ins[1], outs[0]),
+                            out,
+                        )
+    return b.mesh()
+
+
+def sphere_with_handle(n=32):
+    def f(x, y, z):
+        sphere = math.sqrt(x * x + y * y + z * z) - 0.6
+        q = math.sqrt((x - 0.6) * (x - 0.6) + z * z) - 0.42
+        ring = math.sqrt(q * q + y * y) - 0.11
+        k = 0.08
+        h = max(k - abs(sphere - ring), 0.0) / k
+        return min(sphere, ring) - h * h * k * 0.25
+
+    return implicit_skin(f, (-0.8123, -0.8077, -0.7951), (1.2111, 0.8173, 0.8029), n)
+
+
+def double_torus(n=40):
+    def f(x, y, z):
+        r2 = x * x + y * y
+        lem = r2 * r2 - x * x + y * y
+        return lem * lem + 4.0 * z * z - 0.02
+
+    return implicit_skin(f, (-1.3117, -0.6531, -0.4073), (1.3089, 0.6563, 0.4049), n)
+
+
+def catmull_clark_limit(points, faces, levels):
+    """Catmull-Clark steps, then the limit stencil (``analytic::catmull_clark_limit``)."""
+    P = [list(map(float, p)) for p in points]
+    F = [list(f) for f in faces]
+    for _ in range(levels):
+        nv = len(P)
+        fp = []
+        for f in F:
+            c = [0.0, 0.0, 0.0]
+            for v in f:
+                for j in range(3):
+                    c[j] += P[v][j]
+            fp.append([c[j] / len(f) for j in range(3)])
+        edges = {}
+        for fi, f in enumerate(F):
+            for k in range(len(f)):
+                a, b = f[k], f[(k + 1) % len(f)]
+                edges.setdefault((min(a, b), max(a, b)), []).append(fi)
+        nxt = [None] * (nv + len(F) + len(edges))
+        for fi in range(len(F)):
+            nxt[nv + fi] = fp[fi]
+        edge_id = {}
+        e = nv + len(F)
+        fsum = [[0.0, 0.0, 0.0] for _ in range(nv)]
+        rsum = [[0.0, 0.0, 0.0] for _ in range(nv)]
+        valence, nfaces = [0] * nv, [0] * nv
+        for key in sorted(edges):
+            fa, fb = edges[key]
+            a, b = P[key[0]], P[key[1]]
+            nxt[e] = [0.25 * (a[j] + b[j] + fp[fa][j] + fp[fb][j]) for j in range(3)]
+            edge_id[key] = e
+            e += 1
+            for v in key:
+                valence[v] += 1
+                for j in range(3):
+                    rsum[v][j] += 0.5 * (a[j] + b[j])
+        for fi, f in enumerate(F):
+            for v in f:
+                nfaces[v] += 1
+                for j in range(3):
+                    fsum[v][j] += fp[fi][j]
+        for v in range(nv):
+            n = float(valence[v])
+            nxt[v] = [
+                (fsum[v][j] / nfaces[v] + 2.0 * rsum[v][j] / n + (n - 3.0) * P[v][j])
+                / n
+                for j in range(3)
+            ]
+        quads = []
+        for fi, f in enumerate(F):
+            k = len(f)
+            for i in range(k):
+                prev, cur, nx = f[(i + k - 1) % k], f[i], f[(i + 1) % k]
+                quads.append(
+                    [
+                        cur,
+                        edge_id[(min(cur, nx), max(cur, nx))],
+                        nv + fi,
+                        edge_id[(min(prev, cur), max(prev, cur))],
+                    ]
+                )
+        P, F = nxt, quads
+    esum = [[0.0, 0.0, 0.0] for _ in P]
+    dsum = [[0.0, 0.0, 0.0] for _ in P]
+    val = [0] * len(P)
+    for q in F:
+        for i in range(4):
+            v, nb, dg = q[i], P[q[(i + 1) % 4]], P[q[(i + 2) % 4]]
+            val[v] += 1
+            for j in range(3):
+                esum[v][j] += nb[j]
+                dsum[v][j] += dg[j]
+    pts = []
+    for v in range(len(P)):
+        n = float(val[v])
+        pts.append(
+            [
+                (n * n * P[v][j] + 4.0 * esum[v][j] + dsum[v][j]) / (n * (n + 5.0))
+                for j in range(3)
+            ]
+        )
+    tris = []
+    for q in F:
+        tris.append([q[0], q[1], q[2]])
+        tris.append([q[0], q[2], q[3]])
+    return mio.Mesh(np.array(pts), [("triangle", np.array(tris, dtype=np.int64))])
+
+
+def cc_cage(valence, levels=4):
+    """A Catmull-Clark limit surface with extraordinary vertices of ``valence``."""
+    if valence == 3:
+        P = [
+            [-1, -1, -1],
+            [1, -1, -1],
+            [1, 1, -1],
+            [-1, 1, -1],
+            [-1, -1, 1],
+            [1, -1, 1],
+            [1, 1, 1],
+            [-1, 1, 1],
+        ]
+        F = [
+            [0, 3, 2, 1],
+            [4, 5, 6, 7],
+            [0, 1, 5, 4],
+            [1, 2, 6, 5],
+            [2, 3, 7, 6],
+            [3, 0, 4, 7],
+        ]
+    else:
+        n = valence
+        P = []
+        for z in (0, 1):
+            for k in range(n):
+                a = 2.0 * math.pi * float(k) / float(n)
+                P.append([math.cos(a), math.sin(a), 0.8 if z else -0.8])
+        F = [[n - 1 - k for k in range(n)], [n + k for k in range(n)]]
+        F += [[k, (k + 1) % n, n + (k + 1) % n, n + k] for k in range(n)]
+    return catmull_clark_limit(P, F, levels)
+
+
+def g1_loaf(n=32, length=24):
+    """A superellipse loaf: top and curved sides meeting G1 (``analytic::g1_loaf``)."""
+    b = _Skin()
+    rings = []
+    for j in range(length + 1):
+        y = float(j) / length
+        swell = 1.0 + 0.25 * 4.0 * y * (1.0 - y)
+        ring = []
+        for i in range(n + 1):
+            t = math.pi * i / n
+            c, s = math.cos(t), math.sin(t)
+            x = (-1.0 if c < 0.0 else 1.0) * math.sqrt(abs(c))
+            z = math.sqrt(abs(s))
+            ring.append(b.add([0.5 * x, 2.0 * y, 0.6 * swell * z]))
+        rings.append(ring)
+    for j in range(length):
+        for i in range(n):
+            t = math.pi * (i + 0.5) / n
+            b.quad(
+                rings[j][i],
+                rings[j][i + 1],
+                rings[j + 1][i + 1],
+                rings[j + 1][i],
+                [math.cos(t), 0.0, math.sin(t)],
+            )
+    for j in range(length):
+        b.quad(
+            rings[j][0], rings[j][n], rings[j + 1][n], rings[j + 1][0], [0.0, 0.0, -1.0]
+        )
+    for e in (0, 1):
+        j = length if e else 0
+        y = 2.0 * j / length
+        frac = float(j) / length
+        swell = 1.0 + 0.25 * 4.0 * frac * (1.0 - frac)
+        c = b.add([0.0, y, 0.3 * swell])
+        out = [0.0, 1.0 if e else -1.0, 0.0]
+        for i in range(n):
+            b.tri(c, rings[j][i], rings[j][i + 1], out)
+        b.tri(c, rings[j][n], rings[j][0], out)
+    return b.mesh()
+
+
+_MASK64 = (1 << 64) - 1
+
+
+def _splitmix64(state):
+    """One splitmix64 step: ``(new_state, value)``."""
+    state = (state + 0x9E3779B97F4A7C15) & _MASK64
+    z = state
+    z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & _MASK64
+    z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & _MASK64
+    return state, z ^ (z >> 31)
+
+
+def gaussian_noise(mesh, sigma, seed=7):
+    """Irwin-Hall Gaussian noise on every coordinate (``analytic::gaussian_noise``)."""
+    pts = np.asarray(mesh.points, dtype=float).reshape(-1).tolist()
+    state = seed
+    for i in range(len(pts)):
+        g = -6.0
+        for _ in range(12):
+            state, z = _splitmix64(state)
+            g += float(z >> 11) * 2.0**-53
+        pts[i] += sigma * g
+    out = mio.Mesh(np.array(pts).reshape(-1, 3), [(b.type, b.data) for b in mesh.cells])
+    return out

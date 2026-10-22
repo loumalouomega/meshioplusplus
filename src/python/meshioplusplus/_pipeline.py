@@ -233,6 +233,17 @@ _OP_TABLE = {
         "ExtendSurfaces",
         "SnapJunctions",
         "FaceDeviation",
+        "FreeformMode",
+        "FreeformParameterization",
+        "ExtraordinaryVertex",
+        "LocalRefine",
+        "FreeformG1ToleranceDeg",
+        "FreeformMaxControlPoints",
+        "LayoutTargetPatchSize",
+        "LayoutMaxValenceDeviation",
+        "ResegmentRounds",
+        "LayoutSnapToFeatures",
+        "ValidateBySurfaceSampling",
     ),
     "RefinePatches": (
         "Tolerance",
@@ -1387,6 +1398,21 @@ def _apply_step(mesh, step, steps, warnings):
             extend_surfaces=_flag(step, "ExtendSurfaces", False),
             snap_junctions=_flag(step, "SnapJunctions", False),
             face_deviation=_flag(step, "FaceDeviation", False),
+            freeform_mode=_text(step, "FreeformMode", "legacy"),
+            freeform_parameterization=_text(step, "FreeformParameterization", "auto"),
+            extraordinary_vertex=_text(step, "ExtraordinaryVertex", "g1x"),
+            local_refine=_text(step, "LocalRefine", "knots"),
+            freeform_g1_tolerance_deg=_number(step, "FreeformG1ToleranceDeg", 1.0),
+            freeform_max_control_points=int(
+                _number(step, "FreeformMaxControlPoints", 400.0)
+            ),
+            layout_target_patch_size=_number(step, "LayoutTargetPatchSize", 0.1),
+            layout_max_valence_deviation=int(
+                _number(step, "LayoutMaxValenceDeviation", 2.0)
+            ),
+            resegment_rounds=int(_number(step, "ResegmentRounds", 2.0)),
+            layout_snap_to_features=_flag(step, "LayoutSnapToFeatures", True),
+            validate_by_surface_sampling=_flag(step, "ValidateBySurfaceSampling", True),
         )
         entry["Valid"] = 1.0 if report["valid"] else 0.0
         entry["Native"] = 1.0 if report["backend"] == "native" else 0.0
@@ -1428,6 +1454,17 @@ def _apply_step(mesh, step, steps, warnings):
         if "hausdorff_max" in report:
             entry["HausdorffMax"] = report["hausdorff_max"]
             entry["HausdorffRms"] = report["hausdorff_rms"]
+        # The freeform modes (v17.12.0) report only outside the legacy mode.
+        if "freeform_mode" in report:
+            entry["BrepChecked"] = 1.0 if report["brep_checked"] else 0.0
+            entry["FacetAreaFraction"] = report["facet_area_fraction"]
+            entry["NumFreeformAdaptive"] = report["num_freeform_adaptive"]
+            entry["NumNetworkPatches"] = report["num_network_patches"]
+            entry["NumNetworkEdges"] = report["num_network_edges"]
+            entry["NumExtraordinaryVertices"] = report["num_extraordinary_vertices"]
+            entry["NumResegmented"] = report["num_resegmented"]
+            entry["NumEscalations"] = report["num_escalations"]
+            entry["MaxG1AngleDeg"] = report["max_g1_angle_deg"]
     elif op == "RefinePatches":
         # A data step: the `segment:patch` labels are refined, the cells never move.
         types = _svec(step, "Types") if "Types" in step else None

@@ -79,6 +79,7 @@
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
@@ -830,6 +831,36 @@ int main(int argc, char** argv) {
         row("segment", [&](MeshDigest* pD) { of(pD, mio::segment(surface).mMesh); });
         row("fit_primitives",
             [&](MeshDigest* pD) { of(pD, mio::fit_primitives(segmented).mMesh); });
+        // Rows for fit_cad's freeform modes (v17.12.0): the same skin with a
+        // monkey saddle lifted onto its top, fitted kernel-free, the saddle as
+        // one adaptive B-spline face and as a patch network.
+        const BenchLazyMesh saddle_fitted([&] {
+            const double* q = surface.Points().As<double>();
+            double lo[3] = {1e300, 1e300, 1e300}, hi[3] = {-1e300, -1e300, -1e300};
+            for (std::size_t i = 0; i < surface.NumPoints(); ++i)
+                for (int j = 0; j < 3; ++j) {
+                    lo[j] = std::min(lo[j], q[3 * i + j]);
+                    hi[j] = std::max(hi[j], q[3 * i + j]);
+                }
+            const Mesh lifted = bench_ops_moved(surface, [&](std::size_t, double* pP) {
+                if (pP[2] < hi[2])
+                    return;
+                const double u = 2.0 * (pP[0] - lo[0]) / (hi[0] - lo[0]) - 1.0;
+                const double v = 2.0 * (pP[1] - lo[1]) / (hi[1] - lo[1]) - 1.0;
+                pP[2] += 0.15 * (hi[2] - lo[2]) * (u * u * u - 3.0 * u * v * v);
+            });
+            return mio::fit_primitives(mio::segment(lifted).mMesh).mMesh;
+        });
+        for (const auto mode :
+             {mio::FitCadFreeformMode::Adaptive, mio::FitCadFreeformMode::Network}) {
+            row(mode == mio::FitCadFreeformMode::Adaptive ? "fit_cad_adaptive" : "fit_cad_network",
+                [&, mode](MeshDigest* pD) {
+                    mio::FitCadOptions o;
+                    o.mBackend = mio::FitCadBackend::Native;
+                    o.mFreeformMode = mode;
+                    of(pD, mio::fit_cad(saddle_fitted, "", o).mMesh);
+                });
+        }
         // Rows for roadmap §7's software rasterizer (v16.33.0): a terminal-sized
         // frame of the volume (its skin extraction is part of the cost), and a
         // 4x-supersampled image of the field mesh with smooth shading, a mapped

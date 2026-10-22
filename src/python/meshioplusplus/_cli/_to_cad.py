@@ -257,6 +257,71 @@ def add_args(parser):
         "(fit_cad:face_hausdorff, fit_cad:face_rms, hausdorff_max/_rms)",
     )
     parser.add_argument(
+        "--freeform-mode",
+        choices=["legacy", "adaptive", "network", "auto"],
+        default="legacy",
+        help="how patches no primitive or feature fit explains are treated "
+        "(default legacy: every output as before)",
+    )
+    parser.add_argument(
+        "--freeform-parameterization",
+        choices=["auto", "projection", "lscm", "harmonic"],
+        default="auto",
+        help="the freeform parametrisation outside the legacy mode",
+    )
+    parser.add_argument(
+        "--g1-tolerance",
+        type=float,
+        default=1.0,
+        help="largest normal jump across an edge between network faces, degrees",
+    )
+    parser.add_argument(
+        "--extraordinary-vertex",
+        choices=["g0", "g1", "g1x", "g1xx"],
+        default="g1x",
+        help="a patch network's continuity at an extraordinary vertex",
+    )
+    parser.add_argument(
+        "--local-refine",
+        choices=["knots", "thb"],
+        default="knots",
+        help="how a freeform patch is refined (thb is experimental)",
+    )
+    parser.add_argument(
+        "--freeform-max-control-points",
+        type=int,
+        default=400,
+        help="the most poles of one freeform face outside the legacy mode",
+    )
+    parser.add_argument(
+        "--layout-target-patch-size",
+        type=float,
+        default=0.1,
+        help="a quad-layout patch's target size relative to the diagonal",
+    )
+    parser.add_argument(
+        "--layout-max-valence-deviation",
+        type=int,
+        default=2,
+        help="the largest departure from valence 4 of a layout vertex (1 to 3)",
+    )
+    parser.add_argument(
+        "--resegment-rounds",
+        type=int,
+        default=2,
+        help="re-segmentation rounds of a residual region before demotion",
+    )
+    parser.add_argument(
+        "--no-layout-snap-to-features",
+        action="store_true",
+        help="do not snap layout edges to feature edges",
+    )
+    parser.add_argument(
+        "--no-validate-by-surface-sampling",
+        action="store_true",
+        help="accept a freeform face without sampling its surface against the skin",
+    )
+    parser.add_argument(
         "--mesh-out", type=str, default=None, help="also write the re-meshed solid here"
     )
     parser.add_argument(
@@ -331,6 +396,17 @@ def to_cad_cmd(args):
         extend_surfaces=args.extend_surfaces,
         snap_junctions=args.snap_junctions,
         face_deviation=args.face_deviation,
+        freeform_mode=args.freeform_mode,
+        freeform_parameterization=args.freeform_parameterization,
+        extraordinary_vertex=args.extraordinary_vertex,
+        local_refine=args.local_refine,
+        freeform_g1_tolerance_deg=args.g1_tolerance,
+        freeform_max_control_points=args.freeform_max_control_points,
+        layout_target_patch_size=args.layout_target_patch_size,
+        layout_max_valence_deviation=args.layout_max_valence_deviation,
+        resegment_rounds=args.resegment_rounds,
+        layout_snap_to_features=not args.no_layout_snap_to_features,
+        validate_by_surface_sampling=not args.no_validate_by_surface_sampling,
     )
     if args.mesh_out:
         write(args.mesh_out, out)
@@ -406,6 +482,14 @@ def to_cad_cmd(args):
             print(
                 f"  face deviation: Hausdorff {report['hausdorff_max']:.6g}, "
                 f"RMS {report['hausdorff_rms']:.6g}"
+            )
+        if "freeform_mode" in report:
+            print(
+                f"  freeform ({report['freeform_mode']}): "
+                f"{report['num_freeform_adaptive']} adaptive face(s), "
+                f"{report['num_network_patches']} network patch(es), "
+                f"{report['num_escalations']} escalation(s), facet area "
+                f"{report['facet_area_fraction']:.4g}"
             )
         print(
             f"  volume ratio {report['volume_ratio']:.6g}, max deviation "

@@ -79,6 +79,40 @@ _PHASE3_DEFAULTS = {
     "face_deviation": False,
 }
 
+# The freeform-mode options (v17.12.0) and their defaults, passed to the core
+# only when one differs; their report keys appear only outside the legacy mode.
+_FREEFORM_MODES = ("legacy", "adaptive", "network", "auto")
+_PARAMETERIZATIONS = ("auto", "projection", "lscm", "harmonic")
+_EXTRAORDINARY_VERTEX = ("g0", "g1", "g1x", "g1xx")
+_LOCAL_REFINE = ("knots", "thb")
+_MODE_DEFAULTS = {
+    "freeform_mode": "legacy",
+    "freeform_parameterization": "auto",
+    "extraordinary_vertex": "g1x",
+    "local_refine": "knots",
+    "freeform_g1_tolerance_deg": 1.0,
+    "freeform_max_control_points": 400,
+    "layout_target_patch_size": 0.1,
+    "layout_max_valence_deviation": 2,
+    "resegment_rounds": 2,
+    "layout_snap_to_features": True,
+    "validate_by_surface_sampling": True,
+}
+_MODE_INTS = (
+    "num_freeform_adaptive",
+    "num_network_patches",
+    "num_network_edges",
+    "num_extraordinary_vertices",
+    "num_resegmented",
+    "num_escalations",
+)
+_MODE_FLOATS = (
+    "facet_area_fraction",
+    "max_g1_angle_deg",
+    "max_freeform_distance",
+    "rms_freeform_distance",
+)
+
 
 def has_occt() -> bool:
     """Whether the compiled core carries the OpenCASCADE backend."""
@@ -160,6 +194,17 @@ def fit_cad(
     extend_surfaces: bool = False,
     snap_junctions: bool = False,
     face_deviation: bool = False,
+    freeform_mode: str = "legacy",
+    freeform_parameterization: str = "auto",
+    extraordinary_vertex: str = "g1x",
+    local_refine: str = "knots",
+    freeform_g1_tolerance_deg: float = 1.0,
+    freeform_max_control_points: int = 400,
+    layout_target_patch_size: float = 0.1,
+    layout_max_valence_deviation: int = 2,
+    resegment_rounds: int = 2,
+    layout_snap_to_features: bool = True,
+    validate_by_surface_sampling: bool = True,
 ):
     """Build a CAD solid from the fitted patches of a closed skin.
 
@@ -222,7 +267,8 @@ def fit_cad(
         cone and torus patch becomes one analytic STEP face, bounded by line,
         circle and polyline edges, and the rest coplanar polygons (the
         returned mesh is the skin itself with the ``fit_cad:*`` cell data, its
-        volumes NaN and ``brep`` empty); ``"auto"`` (the default) is
+        volumes NaN, and ``brep`` empty in the legacy freeform mode and the
+        solid as trimmed NURBS faces outside it); ``"auto"`` (the default) is
         ``"occt"`` when the core carries it, else ``"native"``.
     :param refine_segmentation: first refine the patches with
         :func:`refine_patches` (variational shape approximation: patch
@@ -275,6 +321,36 @@ def fit_cad(
         and the skin, as the field data ``fit_cad:face_hausdorff`` (per face,
         an ``(n, 2)`` array: the face's re-mesh to the skin, and the skin it
         stands for to the solid) and ``fit_cad:face_rms``. OpenCASCADE only.
+    :param freeform_mode: how the patches no primitive or feature fit explains
+        are treated (v17.12.0): ``"legacy"`` (the default) keeps every output
+        byte as before; ``"adaptive"`` runs the general freeform fit with the
+        parametrisation ladder, surface-sampling validation and the escalation
+        ladder before demotion; ``"network"`` fits a quad-layout B-spline patch
+        network to every residual region; ``"auto"`` is adaptive first and a
+        network for what still fails. Every mode but ``"legacy"`` implies
+        ``freeform_general``.
+    :param freeform_parameterization: ``"auto"`` (projection, then
+        least-squares conformal maps, then mean-value coordinates, then a
+        split), ``"projection"``, ``"lscm"`` or ``"harmonic"``.
+    :param extraordinary_vertex: a patch network's continuity at an
+        extraordinary vertex: ``"g0"``, ``"g1"``, ``"g1x"`` (the default) or
+        ``"g1xx"``.
+    :param local_refine: ``"knots"`` (full knot lines, the default) or
+        ``"thb"`` (truncated hierarchical B-splines, flattened; experimental).
+    :param freeform_g1_tolerance_deg: the largest normal jump, in degrees,
+        across an edge between two network faces, ``> 0``.
+    :param freeform_max_control_points: the most poles of one freeform face
+        outside the legacy mode, 16 to 1048576.
+    :param layout_target_patch_size: a quad-layout patch's target size,
+        relative to the bounding-box diagonal, ``> 0``.
+    :param layout_max_valence_deviation: the largest departure from valence 4
+        of a layout vertex, 1 to 3.
+    :param resegment_rounds: re-segmentation rounds of a residual region in
+        the escalation ladder, ``>= 0``.
+    :param layout_snap_to_features: snap layout edges to feature edges.
+    :param validate_by_surface_sampling: outside the legacy mode, accept a
+        freeform face only once samples of its surface lie within the
+        tolerance of the skin too.
     :returns: the solid re-meshed as triangles with cell data ``fit_cad:face``,
         ``fit_cad:type`` (0 a facet, 6 a freeform B-spline, 7 a fillet,
         blend or conic blend, 8 a helical thread face, 9 a vertex blend, 10 a
@@ -308,7 +384,19 @@ def fit_cad(
         ``num_extended_edges``; with ``snap_junctions``
         ``num_snapped_junctions``; and with ``face_deviation`` the two-sided
         ``hausdorff_max`` and ``hausdorff_rms`` (NaN when not measured, as from
-        the native backend).
+        the native backend). Outside the legacy ``freeform_mode`` the report
+        also holds ``freeform_mode``, ``brep_checked`` (whether OpenCASCADE's
+        B-rep check ran), ``facet_area_fraction`` (the share of the result's
+        area left on facet faces), ``num_freeform_adaptive``,
+        ``num_network_patches``, ``num_network_edges``,
+        ``num_extraordinary_vertices``, ``num_resegmented``,
+        ``num_escalations``, ``max_g1_angle_deg``, ``max_freeform_distance``,
+        ``rms_freeform_distance`` and ``faces``: one dict per patch tried as a
+        surface (``patch``, ``face``, ``kind``, ``param_method``, ``num_ctrl``,
+        ``iterations``, ``refinements``, ``max_dist``, ``rms_dist``,
+        ``reverse_max_dist``, ``max_g1_angle_deg``, ``escalation_steps`` and
+        ``demotion_reason``), which the mesh also carries as the
+        ``fit_cad:face_table`` field data.
     :raises NotImplementedError: without the compiled core, or with
         ``backend="occt"`` when the core was built without OpenCASCADE.
     """
@@ -388,6 +476,38 @@ def fit_cad(
         raise ValueError(f"{_PREFIX}max_freeform_iterations must be >= 1")
     if phase3["max_freeform_splits"] < 0:
         raise ValueError(f"{_PREFIX}max_freeform_splits must be >= 0")
+    modes = {
+        "freeform_mode": str(freeform_mode),
+        "freeform_parameterization": str(freeform_parameterization),
+        "extraordinary_vertex": str(extraordinary_vertex),
+        "local_refine": str(local_refine),
+        "freeform_g1_tolerance_deg": float(freeform_g1_tolerance_deg),
+        "freeform_max_control_points": int(freeform_max_control_points),
+        "layout_target_patch_size": float(layout_target_patch_size),
+        "layout_max_valence_deviation": int(layout_max_valence_deviation),
+        "resegment_rounds": int(resegment_rounds),
+        "layout_snap_to_features": bool(layout_snap_to_features),
+        "validate_by_surface_sampling": bool(validate_by_surface_sampling),
+    }
+    for key, words in (
+        ("freeform_mode", _FREEFORM_MODES),
+        ("freeform_parameterization", _PARAMETERIZATIONS),
+        ("extraordinary_vertex", _EXTRAORDINARY_VERTEX),
+        ("local_refine", _LOCAL_REFINE),
+    ):
+        if modes[key] not in words:
+            raise ValueError(
+                f"{_PREFIX}{key} must be one of {', '.join(repr(w) for w in words)}"
+            )
+    for key in ("freeform_g1_tolerance_deg", "layout_target_patch_size"):
+        if not (modes[key] > 0.0 and math.isfinite(modes[key])):
+            raise ValueError(f"{_PREFIX}{key} must be finite and > 0")
+    if not 16 <= modes["freeform_max_control_points"] <= 1048576:
+        raise ValueError(f"{_PREFIX}freeform_max_control_points must be 16 to 1048576")
+    if not 1 <= modes["layout_max_valence_deviation"] <= 3:
+        raise ValueError(f"{_PREFIX}layout_max_valence_deviation must be 1 to 3")
+    if modes["resegment_rounds"] < 0:
+        raise ValueError(f"{_PREFIX}resegment_rounds must be >= 0")
 
     try:
         from . import _core
@@ -421,6 +541,7 @@ def fit_cad(
         # runs, so a default call is the one the binding always took.
         **(refine if refine["refine_segmentation"] else {}),
         **{k: v for k, v in phase3.items() if v != _PHASE3_DEFAULTS[k]},
+        **{k: v for k, v in modes.items() if v != _MODE_DEFAULTS[k]},
     )
     out = res["mesh"]
     info = out.info if isinstance(getattr(out, "info", None), dict) else {}
@@ -449,6 +570,12 @@ def fit_cad(
         report["num_snapped_junctions"] = int(res["num_snapped_junctions"])
     if phase3["face_deviation"]:
         report.update({k: float(res[k]) for k in _DEVIATION_FLOATS})
+    if modes["freeform_mode"] != "legacy":
+        report["freeform_mode"] = str(res["freeform_mode"])
+        report["brep_checked"] = bool(res["brep_checked"])
+        report.update({k: int(res[k]) for k in _MODE_INTS})
+        report.update({k: float(res[k]) for k in _MODE_FLOATS})
+        report["faces"] = [dict(row) for row in res["faces"]]
     return out, report
 
 

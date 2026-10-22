@@ -621,6 +621,17 @@ SEXP R_mio_refine_patches(SEXP mesh, SEXP tolerance, SEXP relative, SEXP normal_
     return res;
 }
 
+/* The 0-based position of a keyword option in a NULL-terminated list. */
+static int32_t ops_fit_cad_keyword(SEXP value, const char* name, const char* const* words) {
+    const char* v = mio_r_string(value, name);
+    int32_t i;
+    for (i = 0; words[i] != NULL; ++i)
+        if (strcmp(v, words[i]) == 0)
+            return i;
+    Rf_error("meshio++: fit_cad: %s: unknown value \"%s\"", name, v);
+    return 0;
+}
+
 SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, SEXP types,
                    SEXP mesh_deflection, SEXP max_demotion_rounds, SEXP freeform,
                    SEXP freeform_degree, SEXP freeform_max_control, SEXP freeform_split,
@@ -630,16 +641,47 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
                    SEXP refine_tolerance, SEXP relative_tolerance, SEXP freeform_general,
                    SEXP freeform_tolerance, SEXP freeform_smoothing, SEXP max_freeform_poles,
                    SEXP max_freeform_iterations, SEXP max_freeform_splits, SEXP sew_tolerance,
-                   SEXP extend_surfaces, SEXP snap_junctions, SEXP face_deviation) {
+                   SEXP extend_surfaces, SEXP snap_junctions, SEXP face_deviation,
+                   SEXP freeform_mode, SEXP freeform_parameterization, SEXP extraordinary_vertex,
+                   SEXP local_refine, SEXP freeform_g1_tolerance_deg,
+                   SEXP freeform_max_control_points, SEXP layout_target_patch_size,
+                   SEXP layout_max_valence_deviation, SEXP resegment_rounds,
+                   SEXP layout_snap_to_features, SEXP validate_by_surface_sampling) {
     mio_fit_cad_opts opts;
     mio_fit_cad_opts_ex opts_ex;
+    mio_fit_cad_opts_ex2 opts_ex2;
     mio_fit_cad_report report;
     mio_fit_cad_report_ex report_ex;
     mio_fit_cad_report_ex2 report_ex2;
+    mio_fit_cad_report_ex3 report_ex3;
     mio_mesh *out;
+    static const char* const modes[] = {"legacy", "adaptive", "network", "auto", NULL};
+    static const char* const params[] = {"auto", "projection", "lscm", "harmonic", NULL};
+    static const char* const evs[] = {"g0", "g1", "g1x", "g1xx", NULL};
+    static const char* const refines[] = {"knots", "thb", NULL};
 
     mio_fit_cad_opts_init(&opts);
     mio_fit_cad_opts_ex_init(&opts_ex);
+    mio_fit_cad_opts_ex2_init(&opts_ex2);
+    opts_ex2.freeform_mode = ops_fit_cad_keyword(freeform_mode, "freeform_mode", modes);
+    opts_ex2.freeform_parameterization =
+        ops_fit_cad_keyword(freeform_parameterization, "freeform_parameterization", params);
+    opts_ex2.extraordinary_vertex =
+        ops_fit_cad_keyword(extraordinary_vertex, "extraordinary_vertex", evs);
+    opts_ex2.local_refine = ops_fit_cad_keyword(local_refine, "local_refine", refines);
+    opts_ex2.freeform_g1_tolerance_deg =
+        mio_r_double(freeform_g1_tolerance_deg, "freeform_g1_tolerance_deg");
+    opts_ex2.freeform_max_control_points =
+        mio_r_int64(freeform_max_control_points, "freeform_max_control_points");
+    opts_ex2.layout_target_patch_size =
+        mio_r_double(layout_target_patch_size, "layout_target_patch_size");
+    opts_ex2.layout_max_valence_deviation =
+        mio_r_int64(layout_max_valence_deviation, "layout_max_valence_deviation");
+    opts_ex2.resegment_rounds = mio_r_int64(resegment_rounds, "resegment_rounds");
+    opts_ex2.layout_snap_to_features =
+        mio_r_bool(layout_snap_to_features, "layout_snap_to_features") ? 1 : 0;
+    opts_ex2.validate_by_surface_sampling =
+        mio_r_bool(validate_by_surface_sampling, "validate_by_surface_sampling") ? 1 : 0;
     opts_ex.refine_segmentation = mio_r_bool(refine_segmentation, "refine_segmentation") ? 1 : 0;
     opts_ex.refine.max_iterations = mio_r_int64(max_refine_iterations, "max_refine_iterations");
     opts_ex.refine.epsilon = mio_r_double(refine_epsilon, "refine_epsilon");
@@ -684,8 +726,8 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
             Rf_error("meshio++: fit_cad: backend must be \"auto\", \"occt\" or \"native\"");
     }
 
-    out = mio_fit_cad2(mio_r_mesh(mesh), mio_r_string(step_path, "step_path"), &opts, &opts_ex,
-                       &report, &report_ex, &report_ex2);
+    out = mio_fit_cad3(mio_r_mesh(mesh), mio_r_string(step_path, "step_path"), &opts, &opts_ex,
+                       &opts_ex2, &report, &report_ex, &report_ex2, &report_ex3);
     if (out == NULL) mio_r_fail("fit_cad");
     SEXP mo = PROTECT(mio_r_wrap_mesh(out));
     SEXP valid = PROTECT(Rf_ScalarLogical(report.valid != 0));
@@ -735,6 +777,21 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
     SEXP nsnapped = PROTECT(Rf_ScalarReal((double)report_ex2.num_snapped_junctions));
     SEXP hmax = PROTECT(Rf_ScalarReal(report_ex2.hausdorff_max));
     SEXP hrms = PROTECT(Rf_ScalarReal(report_ex2.hausdorff_rms));
+    SEXP checked = PROTECT(Rf_ScalarLogical(report_ex3.brep_checked != 0));
+    SEXP mode = PROTECT(Rf_mkString(report_ex3.freeform_mode >= 0 && report_ex3.freeform_mode <= 3
+                                        ? modes[report_ex3.freeform_mode]
+                                        : "legacy"));
+    SEXP faf = PROTECT(Rf_ScalarReal(report_ex3.facet_area_fraction));
+    SEXP nadaptive = PROTECT(Rf_ScalarReal((double)report_ex3.num_freeform_adaptive));
+    SEXP nnetpatch = PROTECT(Rf_ScalarReal((double)report_ex3.num_network_patches));
+    SEXP nnetedge = PROTECT(Rf_ScalarReal((double)report_ex3.num_network_edges));
+    SEXP nev = PROTECT(Rf_ScalarReal((double)report_ex3.num_extraordinary_vertices));
+    SEXP nreseg = PROTECT(Rf_ScalarReal((double)report_ex3.num_resegmented));
+    SEXP nesc = PROTECT(Rf_ScalarReal((double)report_ex3.num_escalations));
+    SEXP g1 = PROTECT(Rf_ScalarReal(report_ex3.max_g1_angle_deg));
+    SEXP fmax = PROTECT(Rf_ScalarReal(report_ex3.max_freeform_distance));
+    SEXP frms = PROTECT(Rf_ScalarReal(report_ex3.rms_freeform_distance));
+    SEXP nrec = PROTECT(Rf_ScalarReal((double)report_ex3.num_face_records));
     const char* names[] = {"mesh",
                            "valid",
                            "tolerance",
@@ -781,16 +838,31 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
                            "num_snapped_junctions",
                            "hausdorff_max",
                            "hausdorff_rms",
-                           "refinement_kept"};
-    SEXP values[] = {mo,        valid,    tol,       vol,     svol,     ratio,        dev,
-                     nfaces,    nplane,   nsphere,   ncyl,    ncone,    ntorus,       nfacet,
-                     npatch,    ndem,     nexact,    napprox, nsolid,   nbspline,     nsplit,
-                     nfillet,   nhelical, nvariable, nblend,  nrounded, nvertex,      nchamfer,
-                     nconic,    ntapered, nvarpitch, engine,  refined,  riter,        rsplit,
-                     rmerge,    rex0,     rex,       closed,  ngeneral, nrefinements, avgpoles,
-                     nextended, nsnapped, hmax,      hrms,    kept};
-    SEXP res = PROTECT(mio_r_named_list(47, names, values));
-    UNPROTECT(48);
+                           "refinement_kept",
+                           "brep_checked",
+                           "freeform_mode",
+                           "facet_area_fraction",
+                           "num_freeform_adaptive",
+                           "num_network_patches",
+                           "num_network_edges",
+                           "num_extraordinary_vertices",
+                           "num_resegmented",
+                           "num_escalations",
+                           "max_g1_angle_deg",
+                           "max_freeform_distance",
+                           "rms_freeform_distance",
+                           "num_face_records"};
+    SEXP values[] = {mo,        valid,     tol,       vol,      svol,     ratio,        dev,
+                     nfaces,    nplane,    nsphere,   ncyl,     ncone,    ntorus,       nfacet,
+                     npatch,    ndem,      nexact,    napprox,  nsolid,   nbspline,     nsplit,
+                     nfillet,   nhelical,  nvariable, nblend,   nrounded, nvertex,      nchamfer,
+                     nconic,    ntapered,  nvarpitch, engine,   refined,  riter,        rsplit,
+                     rmerge,    rex0,      rex,       closed,   ngeneral, nrefinements, avgpoles,
+                     nextended, nsnapped,  hmax,      hrms,     kept,     checked,      mode,
+                     faf,       nadaptive, nnetpatch, nnetedge, nev,      nreseg,       nesc,
+                     g1,        fmax,      frms,      nrec};
+    SEXP res = PROTECT(mio_r_named_list(60, names, values));
+    UNPROTECT(61);
     return res;
 }
 

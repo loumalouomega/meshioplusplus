@@ -417,6 +417,42 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(7) = 0
     end type
 
+    !> Interop mirror of C `mio_fit_cad_opts_ex2` (v17.12.0, 128 bytes): the
+    !> freeform-mode options.
+    type, bind(c) :: mio_fit_cad_opts_ex2_t
+        integer(c_int32_t) :: freeform_mode = 0
+        integer(c_int32_t) :: freeform_parameterization = 0
+        integer(c_int32_t) :: extraordinary_vertex = 2
+        integer(c_int32_t) :: local_refine = 0
+        real(c_double) :: freeform_g1_tolerance_deg = 1.0_c_double
+        integer(c_int64_t) :: freeform_max_control_points = 400
+        real(c_double) :: layout_target_patch_size = 0.1_c_double
+        integer(c_int64_t) :: layout_max_valence_deviation = 2
+        integer(c_int64_t) :: resegment_rounds = 2
+        integer(c_int32_t) :: layout_snap_to_features = 1
+        integer(c_int32_t) :: validate_by_surface_sampling = 1
+        integer(c_int64_t) :: reserved(8) = 0
+    end type
+
+    !> Interop mirror of C `mio_fit_cad_report_ex3` (v17.12.0, 184 bytes).
+    type, bind(c) :: mio_fit_cad_report_ex3_t
+        integer(c_int64_t) :: brep_checked = 0
+        integer(c_int32_t) :: freeform_mode = 0
+        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int64_t) :: num_freeform_adaptive = 0
+        integer(c_int64_t) :: num_network_patches = 0
+        integer(c_int64_t) :: num_network_edges = 0
+        integer(c_int64_t) :: num_extraordinary_vertices = 0
+        integer(c_int64_t) :: num_resegmented = 0
+        integer(c_int64_t) :: num_escalations = 0
+        real(c_double) :: facet_area_fraction = 0.0_c_double
+        real(c_double) :: max_g1_angle_deg = 0.0_c_double
+        real(c_double) :: max_freeform_distance = 0.0_c_double
+        real(c_double) :: rms_freeform_distance = 0.0_c_double
+        integer(c_int64_t) :: num_face_records = 0
+        integer(c_int64_t) :: reserved(10) = 0
+    end type
+
     !> Interop mirror of C `mio_iga_opts` (the subdivisions default to 1 and
     !> `trim_samples` to 16: an all-zero struct is not the default).
     type, bind(c) :: mio_iga_opts_t
@@ -2414,6 +2450,28 @@ module meshioplusplus
             type(mio_fit_cad_report_t), intent(out) :: report
             type(mio_fit_cad_report_ex_t), intent(out) :: report_ex
             type(mio_fit_cad_report_ex2_t), intent(out) :: report_ex2
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_fit_cad_opts_ex2_init(opts) &
+                bind(c, name="mio_fit_cad_opts_ex2_init")
+            import :: mio_fit_cad_opts_ex2_t
+            type(mio_fit_cad_opts_ex2_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_fit_cad3(h, path, opts, opts_ex, opts_ex2, report, report_ex, &
+                                report_ex2, report_ex3) bind(c, name="mio_fit_cad3") result(r)
+            import :: c_ptr, mio_fit_cad_opts_t, mio_fit_cad_opts_ex_t, mio_fit_cad_opts_ex2_t, &
+                      mio_fit_cad_report_t, mio_fit_cad_report_ex_t, mio_fit_cad_report_ex2_t, &
+                      mio_fit_cad_report_ex3_t
+            type(c_ptr), value :: h, path
+            type(mio_fit_cad_opts_t), intent(in) :: opts
+            type(mio_fit_cad_opts_ex_t), intent(in) :: opts_ex
+            type(mio_fit_cad_opts_ex2_t), intent(in) :: opts_ex2
+            type(mio_fit_cad_report_t), intent(out) :: report
+            type(mio_fit_cad_report_ex_t), intent(out) :: report_ex
+            type(mio_fit_cad_report_ex2_t), intent(out) :: report_ex2
+            type(mio_fit_cad_report_ex3_t), intent(out) :: report_ex3
             type(c_ptr) :: r
         end function
 
@@ -6207,7 +6265,16 @@ contains
                           num_freeform_general, num_freeform_refinements, &
                           avg_freeform_poles, num_extended_edges, &
                           num_snapped_junctions, hausdorff_max, hausdorff_rms, &
-                          refinement_kept) result(out)
+                          refinement_kept, freeform_mode, freeform_parameterization, &
+                          extraordinary_vertex, local_refine, freeform_g1_tolerance_deg, &
+                          freeform_max_control_points, layout_target_patch_size, &
+                          layout_max_valence_deviation, resegment_rounds, &
+                          layout_snap_to_features, validate_by_surface_sampling, &
+                          brep_checked, facet_area_fraction, num_freeform_adaptive, &
+                          num_network_patches, num_network_edges, &
+                          num_extraordinary_vertices, num_resegmented, num_escalations, &
+                          max_g1_angle_deg, max_freeform_distance, rms_freeform_distance, &
+                          num_face_records) result(out)
         class(mio_mesh), intent(in) :: self
         character(*), intent(in), optional :: step_path
         real(real64), intent(in), optional :: tolerance, mesh_deflection
@@ -6253,10 +6320,26 @@ contains
         integer(int64), intent(out), optional :: num_extended_edges, num_snapped_junctions
         real(real64), intent(out), optional :: hausdorff_max, hausdorff_rms
         logical, intent(out), optional :: refinement_kept
+        character(*), intent(in), optional :: freeform_mode, freeform_parameterization
+        character(*), intent(in), optional :: extraordinary_vertex, local_refine
+        real(real64), intent(in), optional :: freeform_g1_tolerance_deg, layout_target_patch_size
+        integer(int64), intent(in), optional :: freeform_max_control_points
+        integer(int64), intent(in), optional :: layout_max_valence_deviation, resegment_rounds
+        logical, intent(in), optional :: layout_snap_to_features, validate_by_surface_sampling
+        logical, intent(out), optional :: brep_checked
+        real(real64), intent(out), optional :: facet_area_fraction, max_g1_angle_deg
+        real(real64), intent(out), optional :: max_freeform_distance, rms_freeform_distance
+        integer(int64), intent(out), optional :: num_freeform_adaptive, num_network_patches
+        integer(int64), intent(out), optional :: num_network_edges, num_extraordinary_vertices
+        integer(int64), intent(out), optional :: num_resegmented, num_escalations
+        integer(int64), intent(out), optional :: num_face_records
         type(mio_mesh) :: out
         type(c_ptr) :: res, path_ptr
         type(mio_fit_cad_opts_t) :: opts
         type(mio_fit_cad_opts_ex_t) :: opts_ex
+        type(mio_fit_cad_opts_ex2_t) :: opts_ex2
+        type(mio_fit_cad_report_ex3_t) :: report_ex3
+        integer :: code
         type(mio_fit_cad_report_t) :: report
         type(mio_fit_cad_report_ex_t) :: report_ex
         type(mio_fit_cad_report_ex2_t) :: report_ex2
@@ -6265,6 +6348,60 @@ contains
         call check_refine_patches_layout()
         call c_mio_fit_cad_opts_init(opts)
         call c_mio_fit_cad_opts_ex_init(opts_ex)
+        call c_mio_fit_cad_opts_ex2_init(opts_ex2)
+        if (present(freeform_mode)) then
+            code = keyword_index(freeform_mode, [character(8) :: 'legacy', 'adaptive', &
+                                                 'network', 'auto'])
+            if (code < 0) then
+                call handle_failure('fit_cad', &
+                    "freeform_mode must be 'legacy', 'adaptive', 'network' or 'auto'", &
+                    stat, errmsg)
+                return
+            end if
+            opts_ex2%freeform_mode = int(code, c_int32_t)
+        end if
+        if (present(freeform_parameterization)) then
+            code = keyword_index(freeform_parameterization, [character(10) :: 'auto', &
+                                 'projection', 'lscm', 'harmonic'])
+            if (code < 0) then
+                call handle_failure('fit_cad', "freeform_parameterization must be 'auto', " // &
+                    "'projection', 'lscm' or 'harmonic'", stat, errmsg)
+                return
+            end if
+            opts_ex2%freeform_parameterization = int(code, c_int32_t)
+        end if
+        if (present(extraordinary_vertex)) then
+            code = keyword_index(extraordinary_vertex, [character(4) :: 'g0', 'g1', 'g1x', 'g1xx'])
+            if (code < 0) then
+                call handle_failure('fit_cad', &
+                    "extraordinary_vertex must be 'g0', 'g1', 'g1x' or 'g1xx'", stat, errmsg)
+                return
+            end if
+            opts_ex2%extraordinary_vertex = int(code, c_int32_t)
+        end if
+        if (present(local_refine)) then
+            code = keyword_index(local_refine, [character(5) :: 'knots', 'thb'])
+            if (code < 0) then
+                call handle_failure('fit_cad', "local_refine must be 'knots' or 'thb'", &
+                                    stat, errmsg)
+                return
+            end if
+            opts_ex2%local_refine = int(code, c_int32_t)
+        end if
+        if (present(freeform_g1_tolerance_deg)) &
+            opts_ex2%freeform_g1_tolerance_deg = real(freeform_g1_tolerance_deg, c_double)
+        if (present(freeform_max_control_points)) &
+            opts_ex2%freeform_max_control_points = int(freeform_max_control_points, c_int64_t)
+        if (present(layout_target_patch_size)) &
+            opts_ex2%layout_target_patch_size = real(layout_target_patch_size, c_double)
+        if (present(layout_max_valence_deviation)) &
+            opts_ex2%layout_max_valence_deviation = int(layout_max_valence_deviation, c_int64_t)
+        if (present(resegment_rounds)) &
+            opts_ex2%resegment_rounds = int(resegment_rounds, c_int64_t)
+        if (present(layout_snap_to_features)) opts_ex2%layout_snap_to_features = &
+            merge(1_c_int32_t, 0_c_int32_t, layout_snap_to_features)
+        if (present(validate_by_surface_sampling)) opts_ex2%validate_by_surface_sampling = &
+            merge(1_c_int32_t, 0_c_int32_t, validate_by_surface_sampling)
         if (present(refine_segmentation)) &
             opts_ex%refine_segmentation = merge(1_c_int32_t, 0_c_int32_t, refine_segmentation)
         if (present(max_refine_iterations)) &
@@ -6334,7 +6471,8 @@ contains
                 return
             end select
         end if
-        res = c_mio_fit_cad2(self%handle, path_ptr, opts, opts_ex, report, report_ex, report_ex2)
+        res = c_mio_fit_cad3(self%handle, path_ptr, opts, opts_ex, opts_ex2, report, report_ex, &
+                             report_ex2, report_ex3)
         if (.not. c_associated(res)) then
             call handle_failure('fit_cad', mio_error_message(), stat, errmsg)
             return
@@ -6383,7 +6521,39 @@ contains
             num_snapped_junctions = int(report_ex2%num_snapped_junctions, int64)
         if (present(hausdorff_max)) hausdorff_max = real(report_ex2%hausdorff_max, real64)
         if (present(hausdorff_rms)) hausdorff_rms = real(report_ex2%hausdorff_rms, real64)
+        if (present(brep_checked)) brep_checked = report_ex3%brep_checked /= 0
+        if (present(facet_area_fraction)) &
+            facet_area_fraction = real(report_ex3%facet_area_fraction, real64)
+        if (present(num_freeform_adaptive)) &
+            num_freeform_adaptive = int(report_ex3%num_freeform_adaptive, int64)
+        if (present(num_network_patches)) &
+            num_network_patches = int(report_ex3%num_network_patches, int64)
+        if (present(num_network_edges)) num_network_edges = int(report_ex3%num_network_edges, int64)
+        if (present(num_extraordinary_vertices)) &
+            num_extraordinary_vertices = int(report_ex3%num_extraordinary_vertices, int64)
+        if (present(num_resegmented)) num_resegmented = int(report_ex3%num_resegmented, int64)
+        if (present(num_escalations)) num_escalations = int(report_ex3%num_escalations, int64)
+        if (present(max_g1_angle_deg)) max_g1_angle_deg = real(report_ex3%max_g1_angle_deg, real64)
+        if (present(max_freeform_distance)) &
+            max_freeform_distance = real(report_ex3%max_freeform_distance, real64)
+        if (present(rms_freeform_distance)) &
+            rms_freeform_distance = real(report_ex3%rms_freeform_distance, real64)
+        if (present(num_face_records)) num_face_records = int(report_ex3%num_face_records, int64)
         call clear_status(stat, errmsg)
+    end function
+
+    !> The 0-based position of `word` (trimmed) in `words`, or -1.
+    pure function keyword_index(word, words) result(idx)
+        character(*), intent(in) :: word
+        character(*), intent(in) :: words(:)
+        integer :: idx, i
+        idx = -1
+        do i = 1, size(words)
+            if (trim(word) == trim(words(i))) then
+                idx = i - 1
+                return
+            end if
+        end do
     end function
 
     !> The layouts of the refine_patches and fit_cad extension mirrors against
@@ -6394,13 +6564,17 @@ contains
         type(mio_refine_patches_report_t) :: report
         type(mio_fit_cad_opts_ex_t) :: opts_ex
         type(mio_fit_cad_report_ex2_t) :: report_ex2
+        type(mio_fit_cad_opts_ex2_t) :: opts_ex2
+        type(mio_fit_cad_report_ex3_t) :: report_ex3
         if (checked) return
         checked = .true.
         if (c_sizeof(opts) /= 144_c_size_t .or. c_sizeof(report) /= 192_c_size_t .or. &
-            c_sizeof(opts_ex) /= 280_c_size_t .or. c_sizeof(report_ex2) /= 176_c_size_t) then
-            write (error_unit, '(a,4(i0,1x),a)') &
+            c_sizeof(opts_ex) /= 280_c_size_t .or. c_sizeof(report_ex2) /= 176_c_size_t .or. &
+            c_sizeof(opts_ex2) /= 128_c_size_t .or. c_sizeof(report_ex3) /= 184_c_size_t) then
+            write (error_unit, '(a,6(i0,1x),a)') &
                 'meshio++: refine_patches layout mismatch (', c_sizeof(opts), c_sizeof(report), &
-                c_sizeof(opts_ex), c_sizeof(report_ex2), 'bytes)'
+                c_sizeof(opts_ex), c_sizeof(report_ex2), c_sizeof(opts_ex2), &
+                c_sizeof(report_ex3), 'bytes)'
             error stop 1
         end if
     end subroutine

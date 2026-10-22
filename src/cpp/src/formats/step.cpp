@@ -76,7 +76,9 @@ void write_step(const std::string& rPath, const Mesh& rMesh, const StepWriteOpti
 }
 
 void detail::write_step_report(const std::string& rPath, const Mesh& rMesh,
-                               const StepWriteOptions& rOptions, StepBrepResult* pReport) {
+                               const StepWriteOptions& rOptions, StepBrepResult* pReport,
+                               const std::vector<StepFreeformFace>* pFreeform,
+                               const std::vector<StepEdgeCurve>* pEdgeCurves, bool BuildBrep) {
     if (rOptions.mFaces != StepFaces::Auto && rOptions.mFaces != StepFaces::Planar &&
         rOptions.mFaces != StepFaces::Fitted && rOptions.mFaces != StepFaces::Facet)
         throw WriteError(std::string(kStepPrefix) +
@@ -113,6 +115,9 @@ void detail::write_step_report(const std::string& rPath, const Mesh& rMesh,
         detail::StepBrepOptions brep;
         brep.mFitted = faces == StepFaces::Fitted;
         brep.mTolerance = rOptions.mTolerance;
+        brep.mFreeform = pFreeform;
+        brep.mEdgeCurves = pEdgeCurves;
+        brep.mBrep = BuildBrep;
         detail::StepBrepResult r = detail::step_brep_write(rPath, surface, shell, brep);
         if (pReport != nullptr)
             *pReport = std::move(r);

@@ -34,6 +34,7 @@
 
 // External includes (OpenCASCADE)
 #include <BRepBndLib.hxx>
+#include <BRepBuilderAPI_Copy.hxx>
 #include <BRepBuilderAPI_NurbsConvert.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepTools.hxx>
@@ -507,7 +508,11 @@ bool ob_trims_inside(const TopoDS_Face& rFace, const Geom_BSplineSurface& rS) {
 OcctNurbs occt_nurbs(const TopoDS_Shape& rShape) {
     OcctNurbs out;
     try {
-        BRepBuilderAPI_NurbsConvert convert(rShape, Standard_True);
+        // Convert a copy with its own geometry: OpenCASCADE 7.9 crashes
+        // converting the patch network's solid in place (in
+        // BRepTools_NurbsConvertModification), not a copy of it.
+        BRepBuilderAPI_Copy copy(rShape, Standard_True);
+        BRepBuilderAPI_NurbsConvert convert(copy.Shape(), Standard_True);
         if (convert.IsDone()) {
             // Complete only when every face keeps a surface, a B-spline, whose
             // parameter range holds the face's trims (along a direction that

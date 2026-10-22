@@ -417,7 +417,8 @@ void print_usage(std::ostream& os) {
           "  to-cad                  Fitted patches as a STEP solid with analytic and\n"
           "                            freeform B-spline, fillet and thread faces (--cad-json: as\n"
           "                            Kratos CAD JSON too; without OpenCASCADE, analytic\n"
-          "                            faces only; --refine refines the patches first)\n"
+          "                            faces, and B-spline faces in the freeform modes;\n"
+          "                            --refine refines the patches first)\n"
           "  region-adjacency        Shared facets between Cell regions or cell blocks\n"
           "  find-interface         Match boundary facets of two Cell regions\n"
           "  contact-pairs          Project slave Point regions onto master facets\n"
@@ -2323,6 +2324,17 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
                                   {"extend-surfaces", {}, false},
                                   {"snap-junctions", {}, false},
                                   {"face-deviation", {}, false},
+                                  {"freeform-mode", {}, true},
+                                  {"freeform-parameterization", {}, true},
+                                  {"g1-tolerance", {}, true},
+                                  {"extraordinary-vertex", {}, true},
+                                  {"local-refine", {}, true},
+                                  {"freeform-max-control-points", {}, true},
+                                  {"layout-target-patch-size", {}, true},
+                                  {"layout-max-valence-deviation", {}, true},
+                                  {"resegment-rounds", {}, true},
+                                  {"no-layout-snap-to-features", {}, false},
+                                  {"no-validate-by-surface-sampling", {}, false},
                                   {"mesh-out", {}, true},
                                   {"cad-json", {}, true},
                                   {"json", {}, false},
@@ -2436,6 +2448,48 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
     options.mExtendSurfaces = has_flag(p, "extend-surfaces");
     options.mSnapJunctions = has_flag(p, "snap-junctions");
     options.mFaceDeviation = has_flag(p, "face-deviation");
+    // The freeform modes (v17.12.0): a keyword's position in its list.
+    const auto keyword = [&](const char* pFlag, std::initializer_list<const char*> Words) {
+        const std::string v = opt_value(p, pFlag);
+        std::int32_t i = 0;
+        std::string list;
+        for (const char* w : Words) {
+            if (v == w)
+                return i;
+            list += (i ? ", " : "") + std::string(w);
+            ++i;
+        }
+        throw std::runtime_error(std::string("to-cad: --") + pFlag + " must be one of " + list);
+    };
+    if (has_opt(p, "freeform-mode"))
+        options.mFreeformMode = static_cast<meshioplusplus::FitCadFreeformMode>(
+            keyword("freeform-mode", {"legacy", "adaptive", "network", "auto"}));
+    if (has_opt(p, "freeform-parameterization"))
+        options.mFreeformParameterization = static_cast<meshioplusplus::FitCadParameterization>(
+            keyword("freeform-parameterization", {"auto", "projection", "lscm", "harmonic"}));
+    if (has_opt(p, "extraordinary-vertex"))
+        options.mExtraordinaryVertex = static_cast<meshioplusplus::FitCadExtraordinaryVertex>(
+            keyword("extraordinary-vertex", {"g0", "g1", "g1x", "g1xx"}));
+    if (has_opt(p, "local-refine"))
+        options.mLocalRefine = static_cast<meshioplusplus::FitCadLocalRefine>(
+            keyword("local-refine", {"knots", "thb"}));
+    if (has_opt(p, "g1-tolerance"))
+        options.mFreeformG1ToleranceDeg =
+            meshioplusplus::detail::stod_c(opt_value(p, "g1-tolerance"));
+    if (has_opt(p, "freeform-max-control-points"))
+        options.mFreeformMaxControlPoints = std::stoll(opt_value(p, "freeform-max-control-points"));
+    if (has_opt(p, "layout-target-patch-size"))
+        options.mLayoutTargetPatchSize =
+            meshioplusplus::detail::stod_c(opt_value(p, "layout-target-patch-size"));
+    if (has_opt(p, "layout-max-valence-deviation"))
+        options.mLayoutMaxValenceDeviation =
+            std::stoll(opt_value(p, "layout-max-valence-deviation"));
+    if (has_opt(p, "resegment-rounds"))
+        options.mResegmentRounds = std::stoll(opt_value(p, "resegment-rounds"));
+    options.mLayoutSnapToFeatures = !has_flag(p, "no-layout-snap-to-features");
+    options.mValidateBySurfaceSampling = !has_flag(p, "no-validate-by-surface-sampling");
+    const bool modes = options.mFreeformMode != meshioplusplus::FitCadFreeformMode::Legacy;
+    static const char* const kModes[] = {"legacy", "adaptive", "network", "auto"};
     meshioplusplus::FitCadResult r = meshioplusplus::fit_cad(mesh, p.positionals[1], options);
     const char* engine = r.mBackend == meshioplusplus::FitCadBackend::Native ? "native" : "occt";
     if (has_opt(p, "mesh-out"))
@@ -2501,6 +2555,54 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
             json.Field("hausdorff_max", r.mHausdorffMax);
             json.Field("hausdorff_rms", r.mHausdorffRms);
         }
+        // The freeform modes report only outside the legacy mode.
+        if (modes) {
+            static const char* const kParams[] = {"none", "plane",      "cylinder",
+                                                  "lscm", "mean_value", "square"};
+            static const char* const kReasons[] = {"none",
+                                                   "param_not_injective",
+                                                   "hausdorff_exceeded",
+                                                   "trim_failed",
+                                                   "sew_failed",
+                                                   "brep_check_failed",
+                                                   "too_small",
+                                                   "non_disc",
+                                                   "kernel_mesh_coarse",
+                                                   "budget_exceeded",
+                                                   "other"};
+            json.Field("freeform_mode", std::string(kModes[static_cast<int>(r.mFreeformMode) & 3]));
+            json.Field("brep_checked", r.mBrepChecked);
+            json.Field("num_freeform_adaptive", r.mNumFreeformAdaptive);
+            json.Field("num_network_patches", r.mNumNetworkPatches);
+            json.Field("num_network_edges", r.mNumNetworkEdges);
+            json.Field("num_extraordinary_vertices", r.mNumExtraordinaryVertices);
+            json.Field("num_resegmented", r.mNumResegmented);
+            json.Field("num_escalations", r.mNumEscalations);
+            json.Field("facet_area_fraction", r.mFacetAreaFraction);
+            json.Field("max_g1_angle_deg", r.mMaxG1AngleDeg);
+            json.Field("max_freeform_distance", r.mMaxFreeformDistance);
+            json.Field("rms_freeform_distance", r.mRmsFreeformDistance);
+            json.Key("faces");
+            json.BeginArray();
+            for (const meshioplusplus::FitCadFaceRecord& f : r.mFaces) {
+                json.BeginObject();
+                json.Field("patch", f.mPatch);
+                json.Field("face", f.mFace);
+                json.Field("kind", f.mKind);
+                json.Field("param_method", kParams[static_cast<int>(f.mParamMethod)]);
+                json.Field("num_ctrl", f.mNumControl);
+                json.Field("iterations", f.mIterations);
+                json.Field("refinements", f.mRefinements);
+                json.Field("max_dist", f.mMaxDist);
+                json.Field("rms_dist", f.mRmsDist);
+                json.Field("reverse_max_dist", f.mReverseMaxDist);
+                json.Field("max_g1_angle_deg", f.mMaxG1AngleDeg);
+                json.Field("escalation_steps", f.mEscalationSteps);
+                json.Field("demotion_reason", kReasons[static_cast<int>(f.mDemotionReason)]);
+                json.EndObject();
+            }
+            json.EndArray();
+        }
         json.EndObject();
     } else if (!has_flag(p, "quiet")) {
         std::cout << "to-cad (" << engine << "): " << r.mNumFaces << " face(s) in " << r.mNumSolids
@@ -2550,6 +2652,11 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         if (options.mFaceDeviation)
             std::cout << "  face deviation: Hausdorff " << r.mHausdorffMax << ", RMS "
                       << r.mHausdorffRms << "\n";
+        if (modes)
+            std::cout << "  freeform (" << kModes[static_cast<int>(r.mFreeformMode) & 3]
+                      << "): " << r.mNumFreeformAdaptive << " adaptive face(s), "
+                      << r.mNumNetworkPatches << " network patch(es), " << r.mNumEscalations
+                      << " escalation(s), facet area " << r.mFacetAreaFraction << "\n";
         std::cout << "  volume ratio " << r.mVolumeRatio << ", max deviation " << r.mMaxDeviation
                   << " (tolerance " << r.mTolerance << ")\n";
     }

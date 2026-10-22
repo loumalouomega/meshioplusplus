@@ -5179,6 +5179,126 @@ MIO_API mio_mesh* mio_fit_cad2(const mio_mesh* mesh, const char* step_path,
                                mio_fit_cad_report* report, mio_fit_cad_report_ex* report_ex,
                                mio_fit_cad_report_ex2* report_ex2);
 
+/** fit_cad's freeform modes (v17.12.0), FitCadFreeformMode's values. */
+typedef enum mio_fit_cad_freeform_mode {
+    MIO_FREEFORM_LEGACY = 0,   /**< the freeform stages as before v17.12.0 (the default) */
+    MIO_FREEFORM_ADAPTIVE = 1, /**< general fit, parametrisation and escalation ladders */
+    MIO_FREEFORM_NETWORK = 2,  /**< a quad-layout B-spline patch network per residual region */
+    MIO_FREEFORM_AUTO = 3      /**< adaptive first, a network for what still fails */
+} mio_fit_cad_freeform_mode;
+
+/** FitCadParameterization's values. */
+typedef enum mio_fit_cad_parameterization {
+    MIO_PARAM_AUTO = 0,
+    MIO_PARAM_PROJECTION = 1,
+    MIO_PARAM_LSCM = 2,
+    MIO_PARAM_HARMONIC = 3
+} mio_fit_cad_parameterization;
+
+/** FitCadExtraordinaryVertex's values. */
+typedef enum mio_fit_cad_extraordinary_vertex {
+    MIO_EV_G0 = 0,
+    MIO_EV_G1 = 1,
+    MIO_EV_G1X = 2,
+    MIO_EV_G1XX = 3
+} mio_fit_cad_extraordinary_vertex;
+
+/** FitCadLocalRefine's values. */
+typedef enum mio_fit_cad_local_refine {
+    MIO_LOCAL_REFINE_KNOTS = 0,
+    MIO_LOCAL_REFINE_THB = 1
+} mio_fit_cad_local_refine;
+
+/** FitCadDemotionReason's values: column 4 of the "fit_cad:face_table" field data. */
+typedef enum mio_fit_cad_demotion_reason {
+    MIO_DEMOTION_NONE = 0,
+    MIO_DEMOTION_PARAM_NOT_INJECTIVE = 1,
+    MIO_DEMOTION_HAUSDORFF_EXCEEDED = 2,
+    MIO_DEMOTION_TRIM_FAILED = 3,
+    MIO_DEMOTION_SEW_FAILED = 4,
+    MIO_DEMOTION_BREP_CHECK_FAILED = 5,
+    MIO_DEMOTION_TOO_SMALL = 6,
+    MIO_DEMOTION_NON_DISC = 7,
+    MIO_DEMOTION_KERNEL_MESH_COARSE = 8,
+    MIO_DEMOTION_BUDGET_EXCEEDED = 9,
+    MIO_DEMOTION_OTHER = 10
+} mio_fit_cad_demotion_reason;
+
+/**
+ * fit_cad's freeform-mode options (v17.12.0), beyond mio_fit_cad_opts and
+ * mio_fit_cad_opts_ex. Always initialize through mio_fit_cad_opts_ex2_init():
+ * an all-zero struct is the legacy mode, but turns layout_snap_to_features and
+ * validate_by_surface_sampling off and resegment_rounds to 0. 128 bytes.
+ */
+typedef struct mio_fit_cad_opts_ex2 {
+    int32_t freeform_mode;             /**< a mio_fit_cad_freeform_mode */
+    int32_t freeform_parameterization; /**< a mio_fit_cad_parameterization */
+    int32_t extraordinary_vertex;      /**< a mio_fit_cad_extraordinary_vertex */
+    int32_t local_refine;              /**< a mio_fit_cad_local_refine */
+    /** The largest normal jump across an edge between network faces, in
+     *  degrees; 0 reads as the default, 1. */
+    double freeform_g1_tolerance_deg;
+    /** The most poles of one freeform face; 0 reads as the default, 400. */
+    int64_t freeform_max_control_points;
+    /** A layout patch's target size relative to the bounding-box diagonal; 0
+     *  reads as the default, 0.1. */
+    double layout_target_patch_size;
+    /** The largest departure from valence 4 of a layout vertex, 1 to 3; 0
+     *  reads as the default, 2. */
+    int64_t layout_max_valence_deviation;
+    /** Re-segmentation rounds of a residual region, >= 0 (default 2). */
+    int64_t resegment_rounds;
+    int32_t layout_snap_to_features;      /**< nonzero: layout edges snap to feature edges */
+    int32_t validate_by_surface_sampling; /**< nonzero: freeform faces are sampled too */
+    int64_t reserved[8];                  /**< must be zero; room for additive growth */
+} mio_fit_cad_opts_ex2;
+
+/** Initialize the freeform-mode options to fit_cad's defaults (legacy mode). */
+MIO_API void mio_fit_cad_opts_ex2_init(mio_fit_cad_opts_ex2* opts);
+
+/**
+ * What mio_fit_cad3 reports beyond mio_fit_cad_report, mio_fit_cad_report_ex
+ * and mio_fit_cad_report_ex2 (v17.12.0). 184 bytes.
+ */
+typedef struct mio_fit_cad_report_ex3 {
+    /** 1 when OpenCASCADE's B-rep check ran on the solid (0 from the native
+     *  backend, whose `valid` is its writer's topology check). */
+    int64_t brep_checked;
+    int32_t freeform_mode; /**< the mio_fit_cad_freeform_mode applied */
+    int32_t reserved32;
+    int64_t num_freeform_adaptive;
+    int64_t num_network_patches;
+    int64_t num_network_edges;
+    int64_t num_extraordinary_vertices;
+    int64_t num_resegmented;
+    int64_t num_escalations;
+    /** The share of the result's area on facet faces (fit_cad:type 0). */
+    double facet_area_fraction;
+    double max_g1_angle_deg;
+    double max_freeform_distance;
+    double rms_freeform_distance;
+    /** Patches tried as a surface: the rows of "fit_cad:face_table", which the
+     *  result carries as field data outside the legacy mode. */
+    int64_t num_face_records;
+    int64_t reserved[10]; /**< zero; room for additive growth */
+} mio_fit_cad_report_ex3;
+
+/**
+ * mio_fit_cad2 with the freeform-mode options and report (v17.12.0). NULL
+ * `opts_ex2` means every mio_fit_cad_opts_ex2_init() default (the legacy
+ * mode); mio_fit_cad2(...) is mio_fit_cad3(..., NULL opts_ex2, ..., NULL
+ * report_ex3). Outside the legacy mode the result carries the
+ * "fit_cad:face_table" field data: one row per patch tried as a surface, the
+ * columns patch, face, kind, param_method, demotion_reason, num_ctrl,
+ * iterations, refinements, escalation_steps, max_dist, rms_dist,
+ * reverse_max_dist and max_g1_angle_deg.
+ */
+MIO_API mio_mesh* mio_fit_cad3(const mio_mesh* mesh, const char* step_path,
+                               const mio_fit_cad_opts* opts, const mio_fit_cad_opts_ex* opts_ex,
+                               const mio_fit_cad_opts_ex2* opts_ex2, mio_fit_cad_report* report,
+                               mio_fit_cad_report_ex* report_ex, mio_fit_cad_report_ex2* report_ex2,
+                               mio_fit_cad_report_ex3* report_ex3);
+
 /* ---------------------------------------------------------------------
  * Isogeometric layer (v16.43.0): evaluate, refine and sample the NURBS model
  * a reader kept in a mio_format_info handle -- an "mfem" NURBS mesh's patches
