@@ -372,6 +372,94 @@ struct _COctreeReport
 end
 
 """
+Mirror of C `mio_octree_mesh_opts`. Always filled from
+`mio_octree_mesh_opts_init`, so the defaults come from the C side.
+"""
+struct _COctreeMeshOpts
+    bounds::Ptr{Cdouble}
+    size_array::Cstring
+    surface_region::Cstring
+    min_size::Cdouble
+    max_size::Cdouble
+    padding::Cdouble
+    padding_relative::Cdouble
+    curvature_angle::Cdouble
+    feature_angle::Cdouble
+    corner_angle::Cdouble
+    feature_size::Cdouble
+    gap_cells::Cdouble
+    surface_size::Cdouble
+    winding_threshold::Cdouble
+    winding_beta::Cdouble
+    alpha_long::Cdouble
+    alpha_short::Cdouble
+    max_level::Int64
+    grading_layers::Int64
+    fit_iterations::Int64
+    untangle_iterations::Int64
+    max_cells::Int64
+    max_tets::Int64
+    output::Int32
+    conformity::Int32
+    skin_grading::Int32
+    fill::Int32
+    gap_outside::Int32
+    preserve_features::Int32
+    dihedral_floor_guard::Int32
+    keep_outside::Int32
+    attach_distance::Int32
+    attach_quality::Int32
+    pillow::Int32
+    reserved32::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""
+Mirror of C `mio_octree_mesh_report`.
+"""
+struct _COctreeMeshReport
+    output::Int32
+    guarantee_applies::Int32
+    origin::NTuple{3,Cdouble}
+    root_size::Cdouble
+    root_cells::NTuple{3,Int64}
+    max_level::Int64
+    finest_level::Int64
+    surface_level::Int64
+    min_size::Cdouble
+    max_size::Cdouble
+    num_leaves::Int64
+    num_points::Int64
+    num_cells::Int64
+    num_hexahedra::Int64
+    num_tetrahedra::Int64
+    num_inside::Int64
+    num_boundary_cells::Int64
+    num_surrogate_faces::Int64
+    num_hanging::Int64
+    num_cut_points::Int64
+    num_warped::Int64
+    num_warp_refused::Int64
+    min_dihedral::Cdouble
+    max_dihedral::Cdouble
+    min_scaled_jacobian::Cdouble
+    hausdorff_to_skin::Cdouble
+    num_inverted::Int64
+    num_boundary_edges_open::Int64
+    num_non_manifold_boundary_edges::Int64
+    num_corners::Int64
+    num_corners_snapped::Int64
+    num_feature_chains::Int64
+    num_feature_chains_missed::Int64
+    num_feature_moves::Int64
+    num_optimized_moves::Int64
+    num_flips::Int64
+    num_winding_rechecks::Int64
+    num_warnings::Int64
+    reserved::NTuple{8,Int64}
+end
+
+"""
 Mirror of C `mio_voxel_opts`.
 
 Note it carries `sign`/`watertight_check` as its own fields rather than
@@ -1138,6 +1226,12 @@ function _check_abi_layout()
         error("meshio++: mio_octree_opts layout mismatch ($(sizeof(_COctreeOpts)) bytes)")
     sizeof(_COctreeReport) == 96 ||
         error("meshio++: mio_octree_report layout mismatch ($(sizeof(_COctreeReport)) bytes)")
+    sizeof(_COctreeMeshOpts) == 264 ||
+        error("meshio++: mio_octree_mesh_opts layout mismatch " *
+              "($(sizeof(_COctreeMeshOpts)) bytes)")
+    sizeof(_COctreeMeshReport) == 392 ||
+        error("meshio++: mio_octree_mesh_report layout mismatch " *
+              "($(sizeof(_COctreeMeshReport)) bytes)")
     sizeof(_CComputeSdfOpts) == 232 ||
         error("meshio++: mio_compute_sdf_opts layout mismatch " *
               "($(sizeof(_CComputeSdfOpts)) bytes)")

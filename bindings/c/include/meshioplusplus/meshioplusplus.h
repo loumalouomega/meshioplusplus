@@ -2931,6 +2931,147 @@ MIO_API void mio_octree_opts_init(mio_octree_opts* opts);
 MIO_API mio_mesh* mio_octree(const mio_mesh* mesh, const mio_octree_opts* opts,
                              mio_octree_report* report);
 
+/** What mio_octree_mesh produces. */
+typedef enum mio_octree_mesh_output {
+    MIO_OCTREE_MESH_CASTELLATED = 0, /**< the inside leaves as hexahedra, surrogate-boundary tags */
+    MIO_OCTREE_MESH_TET = 1,         /**< conforming graded tetrahedra fitted to the skin */
+    MIO_OCTREE_MESH_HEX = 2          /**< all-hexahedra by the octree dual */
+} mio_octree_mesh_output;
+
+/** How a tetrahedral mio_octree_mesh output conforms to the skin. */
+typedef enum mio_octree_mesh_conformity {
+    MIO_OCTREE_MESH_STUFFING = 0, /**< isosurface stuffing */
+    MIO_OCTREE_MESH_CLEAVING = 1  /**< one interface per winding level (nested shells) */
+} mio_octree_mesh_conformity;
+
+/** How mio_octree_mesh's size field may vary along the skin. */
+typedef enum mio_octree_mesh_skin_grading {
+    MIO_OCTREE_MESH_GRADED = 0, /**< graded along the skin; the actual angles are reported */
+    MIO_OCTREE_MESH_UNIFORM = 1 /**< one level along the skin: the 10.7-164.8 degree bound */
+} mio_octree_mesh_skin_grading;
+
+/** Which leaves a castellated mio_octree_mesh output keeps. */
+typedef enum mio_octree_mesh_fill {
+    MIO_OCTREE_MESH_FILL_ALL = 0,    /**< every leaf */
+    MIO_OCTREE_MESH_FILL_INSIDE = 1, /**< the leaves whose centre is inside */
+    MIO_OCTREE_MESH_FILL_COVER = 2   /**< the inside leaves and every leaf the skin cuts */
+} mio_octree_mesh_fill;
+
+/**
+ * Options for mio_octree_mesh; see doc/octree_mesh.md for every field.
+ *
+ * ABI NOTE: the same append-only discipline as mio_octree_opts. Always
+ * initialize through mio_octree_mesh_opts_init(), which sets the defaults
+ * (several are not zero).
+ */
+typedef struct mio_octree_mesh_opts {
+    /** Explicit bounds {xlo, ylo, zlo, xhi, yhi, zhi}, or NULL for the padded skin box. */
+    const double* bounds;
+    /** Name of a point_data array of target sizes on the skin, or NULL. */
+    const char* size_array;
+    /** Mesh only this region of the skin, or NULL for all of it. */
+    const char* surface_region;
+    double min_size;              /**< smallest leaf edge; 0: max_size / 32 */
+    double max_size;              /**< largest leaf edge; 0: an eighth of the skin's diagonal */
+    double padding;               /**< grow the box by this on every side */
+    double padding_relative;      /**< ... and by this fraction of its diagonal (0.1) */
+    double curvature_angle;       /**< degrees a leaf edge may subtend on the skin (15; 0 off) */
+    double feature_angle;         /**< sharper edges are features, in degrees (30) */
+    double corner_angle;          /**< a feature turning by more is a corner, in degrees (30) */
+    double feature_size;          /**< size along features; 0: min_size */
+    double gap_cells;             /**< leaves across a thin gap (2; 0 off) */
+    double surface_size;          /**< the skin size under uniform grading; 0: the field's */
+    double winding_threshold;     /**< inside where the winding number exceeds this (0.5) */
+    double winding_beta;          /**< fast winding number accuracy (2); 0 sums every triangle */
+    double alpha_long;            /**< stuffing threshold on long lattice edges (0.24799) */
+    double alpha_short;           /**< stuffing threshold on short lattice edges (0.40173) */
+    int64_t max_level;            /**< cap on the tree depth; -1 from the sizes */
+    int64_t grading_layers;       /**< rings kept at a cut leaf's level (1) */
+    int64_t fit_iterations;       /**< optimisation rounds (5); 0 disables them */
+    int64_t untangle_iterations;  /**< hexahedral output: untangling iterations (50) */
+    int64_t max_cells;            /**< refuse an octree with more leaves (20000000) */
+    int64_t max_tets;             /**< refuse an output with more cells (100000000) */
+    int32_t output;               /**< a mio_octree_mesh_output (MIO_OCTREE_MESH_TET) */
+    int32_t conformity;           /**< a mio_octree_mesh_conformity */
+    int32_t skin_grading;         /**< a mio_octree_mesh_skin_grading */
+    int32_t fill;                 /**< a mio_octree_mesh_fill (castellated; INSIDE) */
+    int32_t gap_outside;          /**< nonzero: the gap term also resolves gaps between parts */
+    int32_t preserve_features;    /**< nonzero (default): snap the boundary to features */
+    int32_t dihedral_floor_guard; /**< nonzero (default): optimisation never worsens the angles */
+    int32_t keep_outside;         /**< nonzero: also mesh the outside (tetrahedral) */
+    int32_t attach_distance;      /**< nonzero (default): attach sdf:distance */
+    int32_t attach_quality;       /**< nonzero: attach the quality:* cell data */
+    int32_t pillow;               /**< nonzero (default): hexahedral output's boundary layer */
+    int32_t reserved32;           /**< must be zero */
+    int64_t reserved[4];          /**< must be zero; room for additive growth */
+} mio_octree_mesh_opts;
+
+/** What mio_octree_mesh reports; see doc/octree_mesh.md for every field. */
+typedef struct mio_octree_mesh_report {
+    int32_t output;            /**< the mio_octree_mesh_output produced */
+    int32_t guarantee_applies; /**< nonzero: the 10.7-164.8 degree bound covers every tet */
+    double origin[3];          /**< lo corner of the root lattice */
+    double root_size;          /**< edge of a root cell */
+    int64_t root_cells[3];     /**< root cells per axis */
+    int64_t max_level;         /**< the finest level allowed */
+    int64_t finest_level;      /**< the deepest level present */
+    int64_t surface_level;     /**< the skin level under uniform grading, else -1 */
+    double min_size;           /**< the resolved smallest leaf edge */
+    double max_size;           /**< the resolved largest leaf edge */
+    int64_t num_leaves;
+    int64_t num_points;
+    int64_t num_cells;
+    int64_t num_hexahedra;
+    int64_t num_tetrahedra;
+    int64_t num_inside;
+    int64_t num_boundary_cells;
+    int64_t num_surrogate_faces;
+    int64_t num_hanging;
+    int64_t num_cut_points;
+    int64_t num_warped;
+    int64_t num_warp_refused;
+    double min_dihedral; /**< degrees (tetrahedra) */
+    double max_dihedral; /**< degrees (tetrahedra) */
+    double min_scaled_jacobian;
+    double hausdorff_to_skin; /**< -1 when not measured (castellated) */
+    int64_t num_inverted;
+    int64_t num_boundary_edges_open;
+    int64_t num_non_manifold_boundary_edges;
+    int64_t num_corners;
+    int64_t num_corners_snapped;
+    int64_t num_feature_chains;
+    int64_t num_feature_chains_missed;
+    int64_t num_feature_moves;
+    int64_t num_optimized_moves;
+    int64_t num_flips;
+    int64_t num_winding_rechecks;
+    int64_t num_warnings; /**< see mio_octree_mesh_warnings() */
+    int64_t reserved[8];  /**< zeroed */
+} mio_octree_mesh_report;
+
+/** Initialize octree_mesh options to their defaults. */
+MIO_API void mio_octree_mesh_opts_init(mio_octree_mesh_opts* opts);
+
+/**
+ * Mesh the inside of a skin on a balanced octree (doc/octree_mesh.md): conforming
+ * graded tetrahedra by default, or the castellated leaves with surrogate-boundary
+ * regions and sdf:distance / sdf:closest_point.
+ *
+ * @param mesh   the skin (any surface; the boundary of a volume mesh is taken).
+ * @param opts   options, or NULL for the defaults.
+ * @param report receives the summary, or NULL.
+ * @return the volume mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_octree_mesh(const mio_mesh* mesh, const mio_octree_mesh_opts* opts,
+                                  mio_octree_mesh_report* report);
+
+/**
+ * The warnings of this thread's last mio_octree_mesh call, one per line.
+ * String rule 5: required byte length excluding NUL, -1 on error; the buffer
+ * may be NULL/zero to query the length.
+ */
+MIO_API int64_t mio_octree_mesh_warnings(char* buf, int64_t buflen);
+
 /**
  * Report what is wrong with a surface, without computing any distances.
  * @param surface a triangle (or triangulatable) surface mesh.

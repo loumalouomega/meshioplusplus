@@ -110,7 +110,7 @@ export hessian
 export estimate_error
 export remesh
 export remesh_volume
-export grid, voxelize, octree
+export grid, voxelize, octree, octree_mesh
 export rectangle, box, disk, uv_sphere, icosa_sphere, cylinder, reference_cells
 export reference_triangle, ngon, annulus, lshape, plate_with_hole, honeycomb
 export sample_distance, distance_to_surface, surface_watertight_check, compute_sdf

@@ -4418,6 +4418,50 @@ TEST(CApi, OctreeConformingTransitionsHaveNoHangingNodes) {
     mio_mesh_free(cube);
 }
 
+TEST(CApi, OctreeMeshTetrahedraAndCastellatedCells) {
+    mio_mesh* cube = capi_cube_surface();
+    mio_octree_mesh_opts opts;
+    mio_octree_mesh_opts_init(&opts);
+    EXPECT_EQ(opts.output, MIO_OCTREE_MESH_TET);
+    EXPECT_EQ(opts.preserve_features, 1);
+    EXPECT_DOUBLE_EQ(opts.alpha_long, 0.24799);
+    opts.max_size = 0.5;
+    opts.min_size = 0.125;
+    mio_octree_mesh_report report;
+    mio_mesh* tets = mio_octree_mesh(cube, &opts, &report);
+    ASSERT_NE(tets, nullptr) << mio_last_error();
+    EXPECT_EQ(report.output, MIO_OCTREE_MESH_TET);
+    EXPECT_GT(report.num_tetrahedra, 0);
+    EXPECT_EQ(report.num_inverted, 0);
+    EXPECT_EQ(report.num_corners, 8);
+    EXPECT_EQ(report.num_corners_snapped, 8);
+    EXPECT_EQ(report.num_boundary_edges_open, 0);
+    std::int64_t nc = 0, npc = 0;
+    ASSERT_EQ(mio_mesh_cell_block_info(tets, 0, &nc, &npc, nullptr), MIO_OK);
+    EXPECT_EQ(nc, report.num_tetrahedra);
+    EXPECT_EQ(npc, 4);
+    // The warnings accessor follows string rule 5.
+    const std::int64_t need = mio_octree_mesh_warnings(nullptr, 0);
+    EXPECT_GE(need, 0);
+    EXPECT_EQ(need == 0, report.num_warnings == 0);
+    mio_mesh_free(tets);
+
+    opts.output = MIO_OCTREE_MESH_CASTELLATED;
+    mio_mesh* cells = mio_octree_mesh(cube, &opts, &report);
+    ASSERT_NE(cells, nullptr) << mio_last_error();
+    EXPECT_GT(report.num_hexahedra, 0);
+    EXPECT_GT(report.num_surrogate_faces, 0);
+    mio_mesh_free(cells);
+
+    // Out-of-range enums and the not-yet-available hexahedral output fail.
+    opts.output = 99;
+    EXPECT_EQ(mio_octree_mesh(cube, &opts, nullptr), nullptr);
+    opts.output = MIO_OCTREE_MESH_HEX;
+    EXPECT_EQ(mio_octree_mesh(cube, &opts, nullptr), nullptr);
+    EXPECT_EQ(mio_octree_mesh(nullptr, nullptr, nullptr), nullptr);
+    mio_mesh_free(cube);
+}
+
 TEST(CApi, OctreeRejectsAnUnknownBalance) {
     mio_mesh* cube = capi_cube_surface();
     mio_octree_opts opts;

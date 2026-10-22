@@ -2537,6 +2537,174 @@ SEXP R_mio_octree(SEXP mesh, SEXP root_cells, SEXP min_level, SEXP max_level, SE
     return res_list;
 }
 
+/* mio_r_getstring adapter: the warnings of this thread's last octree_mesh call. */
+static int64_t r_octree_mesh_warnings(void *ctx, char *buf, int64_t buflen) {
+    (void)ctx;
+    return mio_octree_mesh_warnings(buf, buflen);
+}
+
+/* Every option is NULL for "keep mio_octree_mesh_opts_init's default", so the
+ * defaults come from the C side; the R wrapper maps the enum strings. */
+SEXP R_mio_octree_mesh(SEXP mesh, SEXP output, SEXP conformity, SEXP skin_grading, SEXP fill,
+                       SEXP bounds, SEXP size_array, SEXP surface_region, SEXP min_size,
+                       SEXP max_size, SEXP padding, SEXP padding_relative,
+                       SEXP curvature_angle, SEXP feature_angle, SEXP corner_angle,
+                       SEXP feature_size, SEXP gap_cells, SEXP surface_size,
+                       SEXP winding_threshold, SEXP winding_beta, SEXP alpha_long,
+                       SEXP alpha_short, SEXP max_level, SEXP grading_layers,
+                       SEXP fit_iterations, SEXP untangle_iterations, SEXP max_cells,
+                       SEXP max_tets, SEXP gap_outside, SEXP preserve_features,
+                       SEXP dihedral_floor_guard, SEXP keep_outside, SEXP attach_distance,
+                       SEXP attach_quality, SEXP pillow) {
+    mio_octree_mesh_opts opts;
+    mio_octree_mesh_opts_init(&opts);
+
+#define R_OCTREE_MESH_ENUM(f) \
+    if (!Rf_isNull(f)) opts.f = (int32_t)mio_r_int(f, #f)
+#define R_OCTREE_MESH_DOUBLE(f) \
+    if (!Rf_isNull(f)) opts.f = mio_r_double(f, #f)
+#define R_OCTREE_MESH_INT64(f) \
+    if (!Rf_isNull(f)) opts.f = mio_r_int64(f, #f)
+#define R_OCTREE_MESH_BOOL(f) \
+    if (!Rf_isNull(f)) opts.f = (int32_t)mio_r_bool(f, #f)
+    R_OCTREE_MESH_ENUM(output);
+    R_OCTREE_MESH_ENUM(conformity);
+    R_OCTREE_MESH_ENUM(skin_grading);
+    R_OCTREE_MESH_ENUM(fill);
+    R_OCTREE_MESH_DOUBLE(min_size);
+    R_OCTREE_MESH_DOUBLE(max_size);
+    R_OCTREE_MESH_DOUBLE(padding);
+    R_OCTREE_MESH_DOUBLE(padding_relative);
+    R_OCTREE_MESH_DOUBLE(curvature_angle);
+    R_OCTREE_MESH_DOUBLE(feature_angle);
+    R_OCTREE_MESH_DOUBLE(corner_angle);
+    R_OCTREE_MESH_DOUBLE(feature_size);
+    R_OCTREE_MESH_DOUBLE(gap_cells);
+    R_OCTREE_MESH_DOUBLE(surface_size);
+    R_OCTREE_MESH_DOUBLE(winding_threshold);
+    R_OCTREE_MESH_DOUBLE(winding_beta);
+    R_OCTREE_MESH_DOUBLE(alpha_long);
+    R_OCTREE_MESH_DOUBLE(alpha_short);
+    R_OCTREE_MESH_INT64(max_level);
+    R_OCTREE_MESH_INT64(grading_layers);
+    R_OCTREE_MESH_INT64(fit_iterations);
+    R_OCTREE_MESH_INT64(untangle_iterations);
+    R_OCTREE_MESH_INT64(max_cells);
+    R_OCTREE_MESH_INT64(max_tets);
+    R_OCTREE_MESH_BOOL(gap_outside);
+    R_OCTREE_MESH_BOOL(preserve_features);
+    R_OCTREE_MESH_BOOL(dihedral_floor_guard);
+    R_OCTREE_MESH_BOOL(keep_outside);
+    R_OCTREE_MESH_BOOL(attach_distance);
+    R_OCTREE_MESH_BOOL(attach_quality);
+    R_OCTREE_MESH_BOOL(pillow);
+#undef R_OCTREE_MESH_ENUM
+#undef R_OCTREE_MESH_DOUBLE
+#undef R_OCTREE_MESH_INT64
+#undef R_OCTREE_MESH_BOOL
+
+    /* The buffers the option pointers reference must outlive the call; the
+     * names are owned by the caller's character vectors. */
+    double bnd[6];
+    if (Rf_xlength(bounds) > 0) {
+        SEXP b = PROTECT(Rf_coerceVector(bounds, REALSXP));
+        if (Rf_xlength(b) != 6) {
+            UNPROTECT(1);
+            Rf_error("`bounds` must have exactly 6 elements");
+        }
+        memcpy(bnd, REAL(b), 6 * sizeof(double));
+        UNPROTECT(1);
+        opts.bounds = bnd;
+    }
+    const char *size_name = mio_r_opt_string(size_array);
+    if (size_name != NULL && size_name[0] != '\0') opts.size_array = size_name;
+    const char *region_name = mio_r_opt_string(surface_region);
+    if (region_name != NULL && region_name[0] != '\0') opts.surface_region = region_name;
+
+    mio_octree_mesh_report report;
+    mio_mesh *out = mio_octree_mesh(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL) mio_r_fail("octree_mesh");
+
+    /* Wrap the mesh first: once it has a finalizer nothing below can leak it. */
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP warnings = PROTECT(mio_r_getstring(r_octree_mesh_warnings, NULL, "octree_mesh"));
+    static const char *outputs[] = {"castellated", "tet", "hex"};
+    const char *output_name =
+        (report.output >= 0 && report.output <= 2) ? outputs[report.output] : "unknown";
+
+    enum { R_OCTREE_MESH_N = 40 };
+    SEXP res = PROTECT(Rf_allocVector(VECSXP, R_OCTREE_MESH_N));
+    SEXP nm = PROTECT(Rf_allocVector(STRSXP, R_OCTREE_MESH_N));
+    int k = 0;
+#define R_OCTREE_MESH_SET(name, value)                \
+    do {                                              \
+        SET_STRING_ELT(nm, k, Rf_mkChar(name));       \
+        SET_VECTOR_ELT(res, k, (value));              \
+        ++k;                                          \
+    } while (0)
+#define R_OCTREE_MESH_NUM(f) R_OCTREE_MESH_SET(#f, Rf_ScalarReal((double)report.f))
+    R_OCTREE_MESH_SET("mesh", mo);
+    R_OCTREE_MESH_SET("output", Rf_mkString(output_name));
+    R_OCTREE_MESH_SET("guarantee_applies", Rf_ScalarLogical(report.guarantee_applies != 0));
+    {
+        SEXP so = Rf_allocVector(REALSXP, 3);
+        SET_VECTOR_ELT(res, k, so); /* protected by `res` from here on */
+        memcpy(REAL(so), report.origin, 3 * sizeof(double));
+        SET_STRING_ELT(nm, k, Rf_mkChar("origin"));
+        ++k;
+    }
+    R_OCTREE_MESH_NUM(root_size);
+    {
+        SEXP sr = Rf_allocVector(REALSXP, 3);
+        SET_VECTOR_ELT(res, k, sr);
+        for (int i = 0; i < 3; ++i) REAL(sr)[i] = (double)report.root_cells[i];
+        SET_STRING_ELT(nm, k, Rf_mkChar("root_cells"));
+        ++k;
+    }
+    R_OCTREE_MESH_NUM(max_level);
+    R_OCTREE_MESH_NUM(finest_level);
+    R_OCTREE_MESH_NUM(surface_level);
+    R_OCTREE_MESH_NUM(min_size);
+    R_OCTREE_MESH_NUM(max_size);
+    R_OCTREE_MESH_NUM(num_leaves);
+    R_OCTREE_MESH_NUM(num_points);
+    R_OCTREE_MESH_NUM(num_cells);
+    R_OCTREE_MESH_NUM(num_hexahedra);
+    R_OCTREE_MESH_NUM(num_tetrahedra);
+    R_OCTREE_MESH_NUM(num_inside);
+    R_OCTREE_MESH_NUM(num_boundary_cells);
+    R_OCTREE_MESH_NUM(num_surrogate_faces);
+    R_OCTREE_MESH_NUM(num_hanging);
+    R_OCTREE_MESH_NUM(num_cut_points);
+    R_OCTREE_MESH_NUM(num_warped);
+    R_OCTREE_MESH_NUM(num_warp_refused);
+    R_OCTREE_MESH_NUM(min_dihedral);
+    R_OCTREE_MESH_NUM(max_dihedral);
+    R_OCTREE_MESH_NUM(min_scaled_jacobian);
+    R_OCTREE_MESH_NUM(hausdorff_to_skin);
+    R_OCTREE_MESH_NUM(num_inverted);
+    R_OCTREE_MESH_NUM(num_boundary_edges_open);
+    R_OCTREE_MESH_NUM(num_non_manifold_boundary_edges);
+    R_OCTREE_MESH_NUM(num_corners);
+    R_OCTREE_MESH_NUM(num_corners_snapped);
+    R_OCTREE_MESH_NUM(num_feature_chains);
+    R_OCTREE_MESH_NUM(num_feature_chains_missed);
+    R_OCTREE_MESH_NUM(num_feature_moves);
+    R_OCTREE_MESH_NUM(num_optimized_moves);
+    R_OCTREE_MESH_NUM(num_flips);
+    R_OCTREE_MESH_NUM(num_winding_rechecks);
+    R_OCTREE_MESH_NUM(num_warnings);
+    /* One string, newline-separated; the R wrapper splits it. */
+    R_OCTREE_MESH_SET("warnings", warnings);
+#undef R_OCTREE_MESH_NUM
+#undef R_OCTREE_MESH_SET
+    if (k != R_OCTREE_MESH_N) Rf_error("octree_mesh: report has %d fields, expected %d", k,
+                                       (int)R_OCTREE_MESH_N);
+    Rf_setAttrib(res, R_NamesSymbol, nm);
+    UNPROTECT(4);
+    return res;
+}
+
 SEXP R_mio_compute_sdf(SEXP mesh, SEXP structure, SEXP resolution, SEXP cell_size,
                        SEXP bounds, SEXP padding, SEXP padding_relative,
                        SEXP root_resolution, SEXP max_depth, SEXP band_cells,

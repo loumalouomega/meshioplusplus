@@ -161,6 +161,7 @@
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/primitives.hpp"
 #include "meshioplusplus/operations/octree.hpp"
+#include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/hessian.hpp"
@@ -4240,6 +4241,228 @@ val octree_js(const val& rMeshObj, const val& rRootCells, double minLevel, doubl
     });
 }
 
+/**
+ * @brief Mesh the inside of a skin on a balanced octree: `octree_mesh`. See
+ * operations/octree_mesh.hpp and doc/octree_mesh.md.
+ *
+ * @param rOptions `{output, minSize, maxSize, maxLevel, bounds, padding,
+ *   paddingRelative, curvatureAngle, featureAngle, cornerAngle, featureSize,
+ *   gapCells, gapOutside, sizeArray, surfaceRegion, gradingLayers,
+ *   skinGrading, surfaceSize, windingThreshold, windingBeta, conformity,
+ *   alphaLong, alphaShort, preserveFeatures, fitIterations,
+ *   dihedralFloorGuard, fill, keepOutside, attachDistance, attachQuality,
+ *   pillow, untangleIterations, maxCells, maxTets}`, every key optional
+ *   (an unknown key is an error) and defaulting to `OctreeMeshOptions`;
+ *   `output` is `'tet'`, `'castellated'` or `'hex'`, `skinGrading`
+ *   `'graded'` or `'uniform'`, `conformity` `'stuffing'` or `'cleaving'`,
+ *   `fill` `'inside'`, `'all'` or `'cover'`, `bounds` six numbers.
+ * @return `mesh` and every scalar `OctreeMeshResult` field in camelCase, plus
+ *   `rootCells`, `leavesPerLevel`, `origin`, `timings` (`[stage, seconds]`
+ *   pairs) and `warnings` as arrays.
+ */
+val octree_mesh_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::OctreeMeshOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the octreeMesh options",
+                                {"output",
+                                 "minSize",
+                                 "maxSize",
+                                 "maxLevel",
+                                 "bounds",
+                                 "padding",
+                                 "paddingRelative",
+                                 "curvatureAngle",
+                                 "featureAngle",
+                                 "cornerAngle",
+                                 "featureSize",
+                                 "gapCells",
+                                 "gapOutside",
+                                 "sizeArray",
+                                 "surfaceRegion",
+                                 "gradingLayers",
+                                 "skinGrading",
+                                 "surfaceSize",
+                                 "windingThreshold",
+                                 "windingBeta",
+                                 "conformity",
+                                 "alphaLong",
+                                 "alphaShort",
+                                 "preserveFeatures",
+                                 "fitIterations",
+                                 "dihedralFloorGuard",
+                                 "fill",
+                                 "keepOutside",
+                                 "attachDistance",
+                                 "attachQuality",
+                                 "pillow",
+                                 "untangleIterations",
+                                 "maxCells",
+                                 "maxTets"});
+            const auto has = [&](const char* pKey) {
+                return rOptions.hasOwnProperty(pKey) && !rOptions[pKey].isUndefined() &&
+                       !rOptions[pKey].isNull();
+            };
+            const auto number = [&](const char* pKey) { return rOptions[pKey].as<double>(); };
+            const auto integer = [&](const char* pKey) {
+                return static_cast<std::int64_t>(rOptions[pKey].as<double>());
+            };
+            const auto flag = [&](const char* pKey) { return rOptions[pKey].as<bool>(); };
+            const auto text = [&](const char* pKey) { return rOptions[pKey].as<std::string>(); };
+            if (has("output"))
+                options.mOutput = meshioplusplus::octree_mesh_output_from_name(text("output"));
+            if (has("minSize"))
+                options.mMinSize = number("minSize");
+            if (has("maxSize"))
+                options.mMaxSize = number("maxSize");
+            if (has("maxLevel"))
+                options.mMaxLevel = integer("maxLevel");
+            if (has("bounds")) {
+                const val bounds = rOptions["bounds"];
+                if (bounds["length"].as<unsigned>() != 6)
+                    throw std::invalid_argument(
+                        "meshio++: octree_mesh: bounds must be six numbers "
+                        "[xmin, ymin, zmin, xmax, ymax, zmax]");
+                std::array<double, 6> b{};
+                for (unsigned i = 0; i < 6; ++i)
+                    b[i] = bounds[i].as<double>();
+                options.mBounds = b;
+            }
+            if (has("padding"))
+                options.mPadding = number("padding");
+            if (has("paddingRelative"))
+                options.mPaddingRelative = number("paddingRelative");
+            if (has("curvatureAngle"))
+                options.mCurvatureAngle = number("curvatureAngle");
+            if (has("featureAngle"))
+                options.mFeatureAngle = number("featureAngle");
+            if (has("cornerAngle"))
+                options.mCornerAngle = number("cornerAngle");
+            if (has("featureSize"))
+                options.mFeatureSize = number("featureSize");
+            if (has("gapCells"))
+                options.mGapCells = number("gapCells");
+            if (has("gapOutside"))
+                options.mGapOutside = flag("gapOutside");
+            if (has("sizeArray"))
+                options.mSizeArray = text("sizeArray");
+            if (has("surfaceRegion"))
+                options.mSurfaceRegion = text("surfaceRegion");
+            if (has("gradingLayers"))
+                options.mGradingLayers = integer("gradingLayers");
+            if (has("skinGrading"))
+                options.mSkinGrading =
+                    meshioplusplus::octree_mesh_skin_grading_from_name(text("skinGrading"));
+            if (has("surfaceSize"))
+                options.mSurfaceSize = number("surfaceSize");
+            if (has("windingThreshold"))
+                options.mWindingThreshold = number("windingThreshold");
+            if (has("windingBeta"))
+                options.mWindingBeta = number("windingBeta");
+            if (has("conformity"))
+                options.mConformity =
+                    meshioplusplus::octree_mesh_conformity_from_name(text("conformity"));
+            if (has("alphaLong"))
+                options.mAlphaLong = number("alphaLong");
+            if (has("alphaShort"))
+                options.mAlphaShort = number("alphaShort");
+            if (has("preserveFeatures"))
+                options.mPreserveFeatures = flag("preserveFeatures");
+            if (has("fitIterations"))
+                options.mFitIterations = integer("fitIterations");
+            if (has("dihedralFloorGuard"))
+                options.mDihedralFloorGuard = flag("dihedralFloorGuard");
+            if (has("fill"))
+                options.mFill = meshioplusplus::octree_mesh_fill_from_name(text("fill"));
+            if (has("keepOutside"))
+                options.mKeepOutside = flag("keepOutside");
+            if (has("attachDistance"))
+                options.mAttachDistance = flag("attachDistance");
+            if (has("attachQuality"))
+                options.mAttachQuality = flag("attachQuality");
+            if (has("pillow"))
+                options.mPillow = flag("pillow");
+            if (has("untangleIterations"))
+                options.mUntangleIterations = integer("untangleIterations");
+            if (has("maxCells"))
+                options.mMaxCells = integer("maxCells");
+            if (has("maxTets"))
+                options.mMaxTets = integer("maxTets");
+        }
+
+        meshioplusplus::OctreeMeshResult r =
+            meshioplusplus::octree_mesh(val_to_mesh(rMeshObj), options);
+        val origin = val::array();
+        for (int i = 0; i < 3; ++i)
+            origin.call<void>("push", r.mOrigin[static_cast<std::size_t>(i)]);
+        val root_cells = val::array();
+        for (int i = 0; i < 3; ++i)
+            root_cells.call<void>("push",
+                                  static_cast<double>(r.mRootCells[static_cast<std::size_t>(i)]));
+        val leaves_per_level = val::array();
+        for (const std::int64_t n : r.mLeavesPerLevel)
+            leaves_per_level.call<void>("push", static_cast<double>(n));
+        val timings = val::array();
+        for (const auto& [stage, seconds] : r.mTimings) {
+            val pair = val::array();
+            pair.call<void>("push", stage);
+            pair.call<void>("push", seconds);
+            timings.call<void>("push", pair);
+        }
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("output", std::string(meshioplusplus::octree_mesh_output_name(r.mOutput)));
+        out.set("origin", origin);
+        out.set("rootSize", r.mRootSize);
+        out.set("rootCells", root_cells);
+        out.set("leavesPerLevel", leaves_per_level);
+        const std::pair<const char*, std::int64_t> counters[] = {
+            {"maxLevel", r.mMaxLevel},
+            {"finestLevel", r.mFinestLevel},
+            {"surfaceLevel", r.mSurfaceLevel},
+            {"numLeaves", r.mNumLeaves},
+            {"numPoints", r.mNumPoints},
+            {"numCells", r.mNumCells},
+            {"numHexahedra", r.mNumHexahedra},
+            {"numTetrahedra", r.mNumTetrahedra},
+            {"numInside", r.mNumInside},
+            {"numBoundaryCells", r.mNumBoundaryCells},
+            {"numSurrogateFaces", r.mNumSurrogateFaces},
+            {"numHanging", r.mNumHanging},
+            {"numCutPoints", r.mNumCutPoints},
+            {"numWarped", r.mNumWarped},
+            {"numWarpRefused", r.mNumWarpRefused},
+            {"numInverted", r.mNumInverted},
+            {"numBoundaryEdgesOpen", r.mNumBoundaryEdgesOpen},
+            {"numNonManifoldBoundaryEdges", r.mNumNonManifoldBoundaryEdges},
+            {"numCorners", r.mNumCorners},
+            {"numCornersSnapped", r.mNumCornersSnapped},
+            {"numFeatureChains", r.mNumFeatureChains},
+            {"numFeatureChainsMissed", r.mNumFeatureChainsMissed},
+            {"numFeatureMoves", r.mNumFeatureMoves},
+            {"numOptimizedMoves", r.mNumOptimizedMoves},
+            {"numFlips", r.mNumFlips},
+            {"numWindingRechecks", r.mNumWindingRechecks},
+        };
+        for (const auto& [name, value] : counters)
+            out.set(name, static_cast<double>(value));
+        out.set("minSize", r.mMinSize);
+        out.set("maxSize", r.mMaxSize);
+        out.set("minDihedral", r.mMinDihedral);
+        out.set("maxDihedral", r.mMaxDihedral);
+        out.set("minScaledJacobian", r.mMinScaledJacobian);
+        out.set("hausdorffToSkin", r.mHausdorffToSkin);
+        out.set("guaranteeApplies", r.mGuaranteeApplies);
+        out.set("timings", timings);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
 /// @brief What is wrong with a surface, in numbers.
 val surface_watertight_check_js(const val& rMeshObj) {
     return with_js_errors([&]() -> val {
@@ -7459,6 +7682,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("referenceCells", &reference_cells_js);
     emscripten::function("voxelize", &voxelize_js);
     emscripten::function("octree", &octree_js);
+    emscripten::function("octreeMesh", &octree_mesh_js);
     emscripten::function("surfaceWatertightCheck", &surface_watertight_check_js);
     emscripten::function("sampleDistance", &sample_distance_js);
     emscripten::function("distanceToSurface", &distance_to_surface_js);
