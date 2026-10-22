@@ -36,7 +36,6 @@
 // Project includes
 #include "octree_mesh_internal.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
-#include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/quality.hpp"
@@ -416,9 +415,8 @@ OctreeMeshResult octree_mesh(const Mesh& rSkin, const OctreeMeshOptions& rOption
             break;
         }
         case OctreeMeshOutput::Hexa:
-            throw Unsupported(std::string(detail::kOctreeMeshPrefix) + "output '" +
-                              octree_mesh_output_name(rOptions.mOutput) +
-                              "' is not available yet; use 'castellated'");
+            detail::octree_mesh_hexahedra(*setup, rOptions, result);
+            break;
     }
     clock.Lap(result, "output");
     octm_report_mesh(rOptions, result);

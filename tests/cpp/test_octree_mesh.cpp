@@ -53,6 +53,7 @@
 #include "meshioplusplus/operations/primitives.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "../../src/cpp/src/detail/bcc_octree_tets.hpp"
+#include "../../src/cpp/src/detail/hex_fit.hpp"
 #include "../../src/cpp/src/detail/tri_bvh.hpp"
 
 namespace {
@@ -654,5 +655,146 @@ TEST(OctreeMeshTet, ReportsTheBoundarysDistanceAndManifoldness) {
         for (const auto& [name, seconds] : r.mTimings)
             found = found || name == stage;
         EXPECT_TRUE(found) << stage;
+    }
+}
+
+namespace {
+
+struct OmHexCheck {
+    double mVolume = 0.0;
+    double mMinScaledJacobian = 1.0;
+};
+
+// Every cell a positive hexahedron; the boundary closed and edge-manifold.
+OmHexCheck om_check_hexes(const mio::Mesh& rM) {
+    OmHexCheck out;
+    EXPECT_EQ(rM.NumCellBlocks(), 1u);
+    const auto block = rM.Cells(0);
+    EXPECT_EQ(block.Type(), "hexahedron");
+    mio::detail::HexMesh hm;
+    const double* p = rM.Points().As<double>();
+    for (std::size_t v = 0; v < rM.NumPoints(); ++v)
+        hm.mPoints.push_back({p[3 * v], p[3 * v + 1], p[3 * v + 2]});
+    const std::int64_t* c = block.Conn().As<std::int64_t>();
+    for (std::size_t h = 0; h < block.NumCells(); ++h) {
+        std::array<std::int64_t, 8> hex{};
+        for (std::size_t k = 0; k < 8; ++k)
+            hex[k] = c[8 * h + k];
+        hm.mHexes.push_back(hex);
+        out.mMinScaledJacobian =
+            std::min(out.mMinScaledJacobian, mio::detail::hex_min_scaled_jacobian(hm.mPoints, hex));
+    }
+    const mio::detail::HexBoundary b = mio::detail::hex_boundary(hm);
+    EXPECT_EQ(b.mNumOpenEdges, 0);
+    EXPECT_EQ(b.mNumNonManifoldEdges, 0);
+    for (const auto& q : b.mQuads) {
+        const Vec3& a = hm.mPoints[static_cast<std::size_t>(q[0])];
+        out.mVolume += (mio::detail::triple_product(a, hm.mPoints[static_cast<std::size_t>(q[1])],
+                                                    hm.mPoints[static_cast<std::size_t>(q[2])]) +
+                        mio::detail::triple_product(a, hm.mPoints[static_cast<std::size_t>(q[2])],
+                                                    hm.mPoints[static_cast<std::size_t>(q[3])])) /
+                       6.0;
+    }
+    return out;
+}
+
+mio::OctreeMeshOptions om_hex(double SurfaceSize) {
+    mio::OctreeMeshOptions o;
+    o.mOutput = mio::OctreeMeshOutput::Hexa;
+    o.mSurfaceSize = SurfaceSize;
+    return o;
+}
+
+}  // namespace
+
+TEST(OctreeMeshHex, SpheresAndToriAreAllHexahedraFittedToTheSkin) {
+    const mio::Mesh skins[] = {mio::icosa_sphere(1.0, 4), analytic::torus(1.0, 0.4, 64, 32)};
+    for (const mio::Mesh& skin : skins)
+        for (bool pillow : {true, false}) {
+            auto o = om_hex(0.15);
+            o.mPillow = pillow;
+            const auto r = mio::octree_mesh(skin, o);
+            const OmHexCheck c = om_check_hexes(r.mMesh);
+            if (pillow) {
+                EXPECT_GE(c.mMinScaledJacobian, 0.4);
+                EXPECT_TRUE(r.mWarnings.empty());
+            } else if (c.mMinScaledJacobian < 0.2) {
+                // Without a pillow, cells with several faces on the skin can
+                // stay poor; that is reported, never silent.
+                EXPECT_FALSE(r.mWarnings.empty());
+            }
+            EXPECT_EQ(r.mNumInverted, 0);
+            EXPECT_EQ(r.mNumHexahedra, static_cast<std::int64_t>(r.mMesh.Cells(0).NumCells()));
+            EXPECT_EQ(r.mNumBoundaryEdgesOpen, 0);
+            EXPECT_EQ(r.mNumNonManifoldBoundaryEdges, 0);
+            EXPECT_LT(r.mHausdorffToSkin, 0.05);
+            EXPECT_NEAR(c.mVolume, om_enclosed(skin), 0.03 * om_enclosed(skin));
+            EXPECT_NEAR(r.mMinScaledJacobian, c.mMinScaledJacobian, 0.05);
+        }
+}
+
+TEST(OctreeMeshHex, CubeCornersAndEdgesArePreserved) {
+    const double lo[3] = {-0.61, -0.67, -0.7}, L = 1.37;
+    const mio::Mesh cube =
+        mio::convert_cells(
+            mio::extract_surface(mio::box({{8, 8, 8}}, {{L, L, L}}, {{lo[0], lo[1], lo[2]}})),
+            {mio::ConvertCellsMode::Simplexify, false})
+            .mMesh;
+    const auto r = mio::octree_mesh(cube, om_hex(0.15));
+    const OmHexCheck c = om_check_hexes(r.mMesh);
+    EXPECT_GE(c.mMinScaledJacobian, 0.2);
+    EXPECT_EQ(r.mNumCorners, 8);
+    EXPECT_EQ(r.mNumCornersSnapped, 8);
+    EXPECT_EQ(r.mNumFeatureChains, 12);
+    EXPECT_EQ(r.mNumFeatureChainsMissed, 0);
+    EXPECT_NEAR(c.mVolume, L * L * L, 1e-9);
+    const double* p = r.mMesh.Points().As<double>();
+    for (std::int64_t v :
+         om_region(r.mMesh, mio::kOctreeMeshCornersRegion, mio::RegionKind::Point)) {
+        int on = 0;
+        for (int k = 0; k < 3; ++k) {
+            const double x = p[3 * v + k];
+            on += std::abs(x - lo[k]) < 1e-12 || std::abs(x - lo[k] - L) < 1e-12;
+        }
+        EXPECT_EQ(on, 3) << "corner node " << v;
+    }
+    // The pillow layer is tagged, and the boundary region is its outer faces.
+    const auto boundary = om_region(r.mMesh, mio::kOctreeMeshBoundaryRegion, mio::RegionKind::Side);
+    EXPECT_FALSE(boundary.empty());
+    for (std::size_t s = 1; s < boundary.size(); s += 2)
+        EXPECT_EQ(boundary[s], 5);
+}
+
+TEST(OctreeMeshHex, IsTheSameOnEveryThreadCount) {
+    const mio::Mesh skin = analytic::torus(1.0, 0.4, 32, 16);
+    std::uint64_t ref = 0;
+#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
+    const int saved = omp_get_max_threads();
+    for (int threads : {1, 2, 4}) {
+        omp_set_num_threads(threads);
+#else
+    for (int threads : {1}) {
+        (void)threads;
+#endif
+        const auto r = mio::octree_mesh(skin, om_hex(0.12));
+        mio::bench::MeshDigest d;
+        d.Of(r.mMesh);
+        if (ref == 0)
+            ref = d.Value();
+        EXPECT_EQ(d.Value(), ref);
+    }
+#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
+    omp_set_num_threads(saved);
+#endif
+}
+
+TEST(OctreeMeshHex, RefusesAGridAboveMaxCellsByName) {
+    auto o = om_hex(0.01);
+    o.mMaxCells = 1000;
+    try {
+        (void)mio::octree_mesh(mio::icosa_sphere(1.0, 3), o);
+        FAIL() << "expected a refusal";
+    } catch (const std::invalid_argument& rE) {
+        EXPECT_NE(std::string(rE.what()).find("max_cells"), std::string::npos);
     }
 }

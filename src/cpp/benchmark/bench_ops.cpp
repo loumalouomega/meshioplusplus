@@ -1009,6 +1009,13 @@ int main(int argc, char** argv) {
             o.mMaxSize = 8.0 * octree_step;
             of(pD, mio::octree_mesh(surface, o).mMesh);
         });
+        row("octree_mesh_hex", [&](MeshDigest* pD) {
+            mio::OctreeMeshOptions o;
+            o.mOutput = mio::OctreeMeshOutput::Hexa;
+            o.mSurfaceSize = 2.0 * octree_step;
+            o.mMaxSize = 8.0 * octree_step;
+            of(pD, mio::octree_mesh(surface, o).mMesh);
+        });
         row("sample_distance", [&](MeshDigest* pD) {
             const NDArray d = mio::sample_distance(surface, jittered->Points());
             if (pD)

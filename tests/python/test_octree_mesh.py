@@ -110,9 +110,28 @@ def test_fills_nest():
 
 
 @needs_core
-def test_hexahedral_output_is_not_available_yet():
-    with pytest.raises(NotImplementedError, match="not available yet"):
-        mio.octree_mesh(_sphere(), output="hex")
+def test_hexahedral_output():
+    out, report = mio.octree_mesh(
+        _sphere(), output="hex", surface_size=0.15, return_report=True
+    )
+    assert [c.type for c in out.cells] == ["hexahedron"]
+    assert report["output"] == "hex"
+    assert report["num_hexahedra"] == len(out.cells[0].data)
+    assert report["num_inverted"] == 0
+    assert report["min_scaled_jacobian"] >= 0.2
+    assert report["num_boundary_edges_open"] == 0
+    assert report["num_non_manifold_boundary_edges"] == 0
+    assert 0 < report["hausdorff_to_skin"] < 0.05
+    assert report["warnings"] == []
+    pillow = np.asarray(out.cell_data["octree_mesh:pillow"][0])
+    names = {r.name: r for r in out.regions}
+    sides = np.asarray(names["boundary"].entries)
+    # The boundary is the pillow layer's outer faces.
+    assert np.all(pillow[sides[:, 0]] == 1) and np.all(sides[:, 1] == 5)
+    assert "sdf:distance" in out.point_data
+    # Without the pillow the grid's own cells meet the skin.
+    bare = mio.octree_mesh(_sphere(), output="hex", surface_size=0.15, pillow=False)
+    assert not np.any(np.asarray(bare.cell_data["octree_mesh:pillow"][0]))
 
 
 @needs_core

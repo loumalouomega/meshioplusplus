@@ -80,6 +80,9 @@ inline constexpr const char* kOctreeMeshShapeName = "octree_mesh:shape";
 /// Cell data (Int64): the material of a tetrahedron (0 outside the skin, 1
 /// inside, higher for nested shells under cleaving), when there is more than one.
 inline constexpr const char* kOctreeMeshMaterialName = "octree_mesh:material";
+/// Cell data (Int64): 1 for a hexahedron of the pillow layer along the
+/// boundary of a hexahedral output, 0 for the grid's own.
+inline constexpr const char* kOctreeMeshPillowName = "octree_mesh:pillow";
 /// Cell region: the cells inside the skin.
 inline constexpr const char* kOctreeMeshInsideRegion = "inside";
 /// Cell region: the cells outside the skin (`mKeepOutside`).

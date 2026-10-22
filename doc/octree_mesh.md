@@ -10,13 +10,13 @@ cells, report = mp.octree_mesh(skin, output="castellated", min_size=0.5, max_siz
 mp.write("bracket_cells.vtu", cells)
 ```
 
-Three outputs are planned ([plan](octree_mesh_3d_plan.md)); the castellated and tetrahedral ones are here, and `output="hex"` raises `NotImplementedError` by name until its phase lands.
+There are three outputs ([plan](octree_mesh_3d_plan.md)):
 
 | `output` | what it is |
 |---|---|
 | `"castellated"` | the leaves inside the skin as `hexahedron` cells, with surrogate-boundary tags, for embedded and Shifted Boundary Method solvers |
 | `"tet"` (default) | conforming graded tetrahedra fitted to the skin, sharp features preserved |
-| `"hex"` | all-hexahedra by the octree dual |
+| `"hex"` | all-hexahedra: a grid at the skin size, made manifold, pillowed, fitted to the skin and untangled |
 
 ## The size field
 
@@ -91,9 +91,34 @@ The default output is a conforming, graded tetrahedral mesh of the skin's inside
 
 `guarantee_applies` in the report is true when the 10.7°–164.8° bound covers the whole mesh: uniform skin grading, no warp refused, and no node moved onto a feature. Otherwise the actual angles are in `min_dihedral` and `max_dihedral`; snapping to a sharp corner can lower them locally, and graded skins cut transition shapes.
 
+## The hexahedral output
+
+`output="hex"` gives a mesh of hexahedra only, in four stages.
+
+**The grid.** The cells of edge `h` (the skin size: `surface_size`, or the smallest size the field asks for on the skin, rounded down to a level of the frame) whose centre is inside are kept. The grid is uniform: the octree's grading is not carried into the hexahedra yet (the graded dual of Livesu, Pitzalis and Cherchi's templates is [roadmap](roadmap.md) work). `max_cells` caps its cell count.
+
+**Manifold repair.** Kept cells may touch along an edge or at a corner only, which no hexahedral mesh with a manifold boundary can have. Around every grid vertex the kept and the empty cells of its 2×2×2 block must each be face-connected; where they are not, the empty cell with the largest winding number is added, until every block passes. The boundary is then a closed 2-manifold of quadrilaterals (the tests check every block by brute force and the boundary's volume by the divergence theorem).
+
+**Pillow and fit.** With `pillow` (the default), a layer of hexahedra goes along the boundary (Mitchell and Tautges 1995), so no hexahedron has two faces on the skin: each boundary node gets a copy on its closest skin point, and the node itself moves half a cell inside along the skin's normal. Without it, the boundary nodes move onto the skin themselves, and cells with several faces on the skin can stay poor. With `preserve_features`, each feature corner takes the nearest boundary node within 1.5 cells exactly, and each chain the shortest path between its corners' nodes on the boundary's quadrilateral edges, in a tube of 1.25 cells around it.
+
+**Untangling.** `untangle_iterations` sweeps (default 50) raise each node's worst corner scaled Jacobian: every node below 0.6 tries the mean of its edge neighbours and six axis steps (a fifth of its mean edge, halving every ten sweeps) and takes the best, the skin nodes sliding along the skin and the feature nodes held. The sweeps run in ascending node order, so the result does not depend on the thread count.
+
+| name | kind | meaning |
+|---|---|---|
+| `inside` | cell region | every hexahedron |
+| `boundary` | side region | the boundary faces (with `pillow`, the outer face, facet 5, of each pillow cell) |
+| `feature_corners`, `feature_edges` | point regions | the nodes on the skin's corners and feature chains |
+| `octree:level` | cell data | the grid's level |
+| `octree_mesh:pillow` | cell data | 1 for a pillow cell |
+| `sdf:distance` | point data | the signed distance to the skin |
+
+The report's `min_scaled_jacobian` is the smallest over the cells, `surface_level` is the grid's level, and `num_optimized_moves` counts the untangler's moves; a smallest corner scaled Jacobian below 0.2, or a corner left inverted, is reported in `warnings`. On a sphere, a torus and a cube the tests find it above 0.4 with the pillow (0.28 on the cube, whose pillow cells bend round its edges), every corner and edge kept, the boundary closed and within 0.05 of the skin.
+
+![A sphere's hexahedra, cut open, coloured by pillow layer](/images/octree_mesh_hex.png)
+
 ## Report
 
-`return_report=True` returns the frame (`origin`, `root_size`, `root_cells`, `max_level`, `finest_level`, `surface_level`, `min_size`, `max_size`), the tree (`num_leaves`, `leaves_per_level`), the counts (`num_points`, `num_cells`, `num_hexahedra`, `num_tetrahedra`, `num_inside`, `num_boundary_cells`, `num_surrogate_faces`, `num_hanging`, `num_cut_points`, `num_warped`, `num_warp_refused`), the features (`num_corners`, `num_corners_snapped`, `num_feature_chains`, `num_feature_chains_missed`, `num_feature_moves`), the optimisation (`num_optimized_moves`, `num_flips`), `guarantee_applies`, the quality (`min_scaled_jacobian`, `min_dihedral`, `max_dihedral`, `num_inverted`, `hausdorff_to_skin` (the two-sided distance between the mesh's boundary and the skin), `num_boundary_edges_open` and `num_non_manifold_boundary_edges` (of the boundary, both 0 for a watertight one), and `quality`, the [`compute_quality`](mesh_quality.md) summary with its histograms), `num_winding_rechecks`, `timings` (seconds per stage) and `warnings`. Anything that misses its target is reported in `warnings`, never hidden.
+`return_report=True` returns the frame (`origin`, `root_size`, `root_cells`, `max_level`, `finest_level`, `surface_level`, `min_size`, `max_size`), the tree (`num_leaves`, `leaves_per_level`), the counts (`num_points`, `num_cells`, `num_hexahedra`, `num_tetrahedra`, `num_inside`, `num_boundary_cells`, `num_surrogate_faces`, `num_hanging`, `num_cut_points`, `num_warped`, `num_warp_refused`), the features (`num_corners`, `num_corners_snapped`, `num_feature_chains`, `num_feature_chains_missed`, `num_feature_moves`), the optimisation or untangling (`num_optimized_moves`, `num_flips`), `guarantee_applies`, the quality (`min_scaled_jacobian`, `min_dihedral`, `max_dihedral`, `num_inverted`, `hausdorff_to_skin` (the two-sided distance between the mesh's boundary and the skin), `num_boundary_edges_open` and `num_non_manifold_boundary_edges` (of the boundary, both 0 for a watertight one), and `quality`, the [`compute_quality`](mesh_quality.md) summary with its histograms), `num_winding_rechecks`, `timings` (seconds per stage) and `warnings`. Anything that misses its target is reported in `warnings`, never hidden.
 
 ## Determinism
 

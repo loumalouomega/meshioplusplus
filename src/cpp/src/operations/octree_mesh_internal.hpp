@@ -127,6 +127,16 @@ void octree_mesh_snap_features(OctreeMeshSetup& rSetup, const OctreeMeshOptions&
 void octree_mesh_optimize(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions,
                           OctreeMeshResult& rResult, OctreeMeshTets& rTets);
 
+/// The two-sided distance between the triangles @p rFaces over @p rPoints
+/// (an output's boundary) and the skin.
+double octree_mesh_hausdorff_to_skin(const OctreeMeshSetup& rSetup,
+                                     const std::vector<Vec3>& rPoints,
+                                     const std::vector<std::array<std::int64_t, 3>>& rFaces);
+
+/// The hexahedral output.
+void octree_mesh_hexahedra(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions,
+                           OctreeMeshResult& rResult);
+
 /// The edge of the leaf holding @p rP (clamped into the forest).
 double octree_mesh_local_size(const OctreeMeshSetup& rSetup, const Vec3& rP);
 

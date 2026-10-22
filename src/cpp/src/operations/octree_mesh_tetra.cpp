@@ -240,6 +240,35 @@ void octree_mesh_snap_features(OctreeMeshSetup& rS, const OctreeMeshOptions& rO,
                                  " feature chains not recovered");
 }
 
+double octree_mesh_hausdorff_to_skin(const OctreeMeshSetup& rS, const std::vector<Vec3>& rPoints,
+                                     const std::vector<std::array<std::int64_t, 3>>& rFaces) {
+    Mesh out_skin;
+    NDArray sp = NDArray::Uninit(DType::Float64, {rPoints.size(), std::size_t{3}});
+    for (std::size_t q = 0; q < rPoints.size(); ++q)
+        for (std::size_t k = 0; k < 3; ++k)
+            sp.As<double>()[q * 3 + k] = rPoints[q][k];
+    NDArray sc = NDArray::Uninit(DType::Int64, {rFaces.size(), std::size_t{3}});
+    for (std::size_t q = 0; q < rFaces.size(); ++q)
+        for (std::size_t k = 0; k < 3; ++k)
+            sc.As<std::int64_t>()[q * 3 + k] = rFaces[q][k];
+    out_skin.AssignPoints(std::move(sp));
+    out_skin.AddCellBlock("triangle", std::move(sc));
+    Mesh in_skin;
+    NDArray ip = NDArray::Uninit(DType::Float64, {rS.mSkin.mPoints.size(), std::size_t{3}});
+    for (std::size_t q = 0; q < rS.mSkin.mPoints.size(); ++q)
+        for (std::size_t k = 0; k < 3; ++k)
+            ip.As<double>()[q * 3 + k] = rS.mSkin.mPoints[q][k];
+    NDArray ic = NDArray::Uninit(DType::Int64, {rS.mSkin.mTris.size(), std::size_t{3}});
+    for (std::size_t q = 0; q < rS.mSkin.mTris.size(); ++q)
+        for (std::size_t k = 0; k < 3; ++k)
+            ic.As<std::int64_t>()[q * 3 + k] = rS.mSkin.mTris[q][k];
+    in_skin.AssignPoints(std::move(ip));
+    in_skin.AddCellBlock("triangle", std::move(ic));
+    HausdorffOptions ho;
+    ho.mFaceSamples = 2;
+    return hausdorff_distance(out_skin, in_skin, ho).mDistance;
+}
+
 void octree_mesh_emit_tets(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, OctreeMeshResult& rR,
                            const OctreeMeshTets& rIn) {
     // Keep the inside materials (and the outside on request), compact the points.
@@ -384,33 +413,8 @@ void octree_mesh_emit_tets(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
                 ++rR.mNumNonManifoldBoundaryEdges;
             i = j;
         }
-        if (!skin_faces.empty()) {
-            Mesh out_skin;
-            NDArray sp = NDArray::Uninit(DType::Float64, {pts.size(), std::size_t{3}});
-            for (std::size_t q = 0; q < pts.size(); ++q)
-                for (std::size_t k = 0; k < 3; ++k)
-                    sp.As<double>()[q * 3 + k] = pts[q][k];
-            NDArray sc = NDArray::Uninit(DType::Int64, {skin_faces.size(), std::size_t{3}});
-            for (std::size_t q = 0; q < skin_faces.size(); ++q)
-                for (std::size_t k = 0; k < 3; ++k)
-                    sc.As<std::int64_t>()[q * 3 + k] = skin_faces[q][k];
-            out_skin.AssignPoints(std::move(sp));
-            out_skin.AddCellBlock("triangle", std::move(sc));
-            Mesh in_skin;
-            NDArray ip = NDArray::Uninit(DType::Float64, {rS.mSkin.mPoints.size(), std::size_t{3}});
-            for (std::size_t q = 0; q < rS.mSkin.mPoints.size(); ++q)
-                for (std::size_t k = 0; k < 3; ++k)
-                    ip.As<double>()[q * 3 + k] = rS.mSkin.mPoints[q][k];
-            NDArray ic = NDArray::Uninit(DType::Int64, {rS.mSkin.mTris.size(), std::size_t{3}});
-            for (std::size_t q = 0; q < rS.mSkin.mTris.size(); ++q)
-                for (std::size_t k = 0; k < 3; ++k)
-                    ic.As<std::int64_t>()[q * 3 + k] = rS.mSkin.mTris[q][k];
-            in_skin.AssignPoints(std::move(ip));
-            in_skin.AddCellBlock("triangle", std::move(ic));
-            HausdorffOptions ho;
-            ho.mFaceSamples = 2;
-            rR.mHausdorffToSkin = hausdorff_distance(out_skin, in_skin, ho).mDistance;
-        }
+        if (!skin_faces.empty())
+            rR.mHausdorffToSkin = octree_mesh_hausdorff_to_skin(rS, pts, skin_faces);
     }
     if (std::any_of(rIn.mFeature.begin(), rIn.mFeature.end(),
                     [](std::uint8_t f) { return f != 0; })) {

@@ -10,6 +10,13 @@ The operation has three outputs:
 
 The 2-D quadtree path and every existing operation keep their behaviour and their output byte for byte.
 
+**Status (v17.12.0).** Phases 1–8 have landed and the contract is [`doc/octree_mesh.md`](./octree_mesh.md). Three things differ from the plan below:
+- **Phase 5's `volume_fit`.** It became the operation's own optimisation stage: ODT relocation, sliding along the skin and flips under a guard on the smallest and largest dihedral angle.
+- **Phase 7 (C1) is not done.** The graded dual with transition templates is still to come: the hexahedral output is phase 7's uniform grid (C0), made manifold, pillowed, snapped and untangled.
+- **Feature recovery.** A cylinder's rims at a small `min_size` are reported missed rather than recovered.
+
+What remains is [roadmap](./roadmap.md) §3.1.4.3.
+
 ## What exists: `octree` (v17.8.0, PR #168)
 
 `operations/octree.hpp` / `src/cpp/src/operations/octree.cpp` build a `hexahedron` octree around a surface, or a `quad` quadtree around a closed planar polyline. They reach Python (`_octree.py`, with a numpy twin of the hanging-node tree), C (`mio_octree`), Fortran, Julia, R, WASM, both CLIs' `octree` verb, the `Octree` pipeline step and the MCP `octree` tool.

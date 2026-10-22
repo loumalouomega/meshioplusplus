@@ -4453,10 +4453,19 @@ TEST(CApi, OctreeMeshTetrahedraAndCastellatedCells) {
     EXPECT_GT(report.num_surrogate_faces, 0);
     mio_mesh_free(cells);
 
-    // Out-of-range enums and the not-yet-available hexahedral output fail.
-    opts.output = 99;
-    EXPECT_EQ(mio_octree_mesh(cube, &opts, nullptr), nullptr);
     opts.output = MIO_OCTREE_MESH_HEX;
+    opts.surface_size = 0.25;
+    mio_mesh* hexes = mio_octree_mesh(cube, &opts, &report);
+    ASSERT_NE(hexes, nullptr) << mio_last_error();
+    EXPECT_EQ(report.output, MIO_OCTREE_MESH_HEX);
+    EXPECT_GT(report.num_hexahedra, 0);
+    EXPECT_EQ(report.num_tetrahedra, 0);
+    EXPECT_EQ(report.num_inverted, 0);
+    EXPECT_EQ(report.num_boundary_edges_open, 0);
+    mio_mesh_free(hexes);
+
+    // Out-of-range enums fail.
+    opts.output = 99;
     EXPECT_EQ(mio_octree_mesh(cube, &opts, nullptr), nullptr);
     EXPECT_EQ(mio_octree_mesh(nullptr, nullptr, nullptr), nullptr);
     mio_mesh_free(cube);
