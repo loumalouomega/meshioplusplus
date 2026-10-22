@@ -139,6 +139,9 @@ struct StepBrepResult {
     std::int64_t mNumSplineEdges = 0;
     /// Of those, the networks' shared cubic edge curves.
     std::int64_t mNumSharedEdges = 0;
+    /// Of those, the ones between two network faces written as a
+    /// SURFACE_CURVE with a p-curve on each.
+    std::int64_t mNumPcurveEdges = 0;
     /// Faces written from `StepBrepOptions::mFreeform` (`fit_cad:type` 6).
     std::int64_t mNumBspline = 0;
     /// Per row of the fit table (its order): the `segment:patch` label, and

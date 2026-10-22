@@ -104,6 +104,27 @@ def test_native_modes_return_the_solid_as_nurbs(tmp_path):
 
 
 @needs_core
+def test_native_network_brep_is_written_alike_by_both_engines(tmp_path):
+    # The native patch network's NURBS B-rep: the core and the Python CAD
+    # JSON writers give the same bytes, and a read and rewrite gives them again.
+    from meshioplusplus.cad_json import _cad_json as ref
+
+    out = mio.fit_cad(
+        mio.fit_primitives(mio.segment(monkey_saddle_box(16)), tolerance=2e-3),
+        backend="native",
+        freeform_mode="network",
+    )
+    assert len(out.info["brep"]["faces"]) > 6
+    mio.cad_json.write(tmp_path / "core.cad.json", out)
+    ref.write(tmp_path / "py.cad.json", out)
+    core = (tmp_path / "core.cad.json").read_bytes()
+    assert core == (tmp_path / "py.cad.json").read_bytes()
+    back = mio.cad_json.read(tmp_path / "core.cad.json")
+    mio.cad_json.write(tmp_path / "again.cad.json", back)
+    assert (tmp_path / "again.cad.json").read_bytes() == core
+
+
+@needs_core
 def test_demotion_reason_is_recorded():
     from .analytic_surfaces import jitter
 
@@ -285,3 +306,55 @@ def test_native_legacy_still_facets_the_freeform_top():
     )
     assert report["num_bspline"] == 0
     assert report["num_faceted_faces"] >= 1
+
+
+def _merged_side(fitted):
+    """The fitted box with its planar side at the smallest x merged into its
+    freeform (type 0) patch, as a segmentation that missed the creases leaves
+    it; the side's fit-table row dropped (tests/cpp/fit_cad_fixtures.hpp)."""
+    pts = np.asarray(fitted.points)
+    lo = pts[:, 0].min()
+    ids = np.asarray(fitted.field_data["fit:patch_id"])
+    types = np.asarray(fitted.field_data["fit:patch_type"])
+    freeform = int(ids[types == 0][0])
+    side = None
+    labels = []
+    for block, data in zip(fitted.cells, fitted.cell_data["segment:patch"]):
+        lab = np.asarray(data, dtype=np.int64).copy()
+        on = np.all(pts[block.data][:, :, 0] == lo, axis=1)
+        if on.any():
+            side = int(lab[on][0])
+        lab[on] = freeform
+        labels.append(lab)
+    out = mio.Mesh(
+        fitted.points,
+        fitted.cells,
+        cell_data={**fitted.cell_data, "segment:patch": labels},
+        field_data=dict(fitted.field_data),
+    )
+    keep = ids != side
+    for key in (
+        "fit:patch_id",
+        "fit:patch_type",
+        "fit:patch_params",
+        "fit:patch_tolerance",
+    ):
+        out.field_data[key] = np.asarray(fitted.field_data[key])[keep]
+    return out
+
+
+@needs_core
+def test_resegmentation_cuts_a_missed_crease():
+    skin = hood_box(16)
+    tol = 2e-3 * _diag(skin)
+    merged = _merged_side(_fitted_abs(skin, tol))
+    kw = dict(
+        backend="native", tolerance=tol, freeform_mode="adaptive", return_report=True
+    )
+    _, off = mio.fit_cad(merged, resegment_rounds=0, **kw)
+    _, on = mio.fit_cad(merged, resegment_rounds=2, **kw)
+    assert off["num_resegmented"] == 0
+    assert on["num_resegmented"] > 0
+    assert off["facet_area_fraction"] > 0.04
+    assert on["facet_area_fraction"] < 0.01
+    assert on["num_faces"] < off["num_faces"]

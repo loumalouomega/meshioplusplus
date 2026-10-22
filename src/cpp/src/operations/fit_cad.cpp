@@ -52,9 +52,13 @@
 #include "../detail/surface_rings.hpp"
 
 // System includes
+#include <array>
+#include <functional>
 #include <map>
 #include <numeric>
+#include <queue>
 #include <set>
+#include <tuple>
 #include <unordered_map>
 
 #ifdef MESHIOPLUSPLUS_HAS_OCCT
@@ -352,6 +356,7 @@ struct FcnFreeform {
     Mesh mMesh;  // with the pieces' labels and fit-table rows, when split
     bool mSplit = false;
     std::int64_t mNumSplit = 0;
+    std::int64_t mNumResegmented = 0;  // regions the re-segmentation rung cut
     // The patch network's (network and auto modes): its patches' labels, its
     // shared edges and extraordinary vertices, and its largest G1 angle.
     std::set<std::int64_t> mNetworkLabels;
@@ -533,6 +538,30 @@ std::vector<FcnRegionNetwork> fcn_networks(const detail::ClosedFacets& rFc,
         no.mExtraordinary = rOptions.mExtraordinaryVertex;
         no.mValidate = rOptions.mValidateBySurfaceSampling;
         reg.mNet = detail::patch_network_fit(reg.mPts, reg.mTris, reg.mLayout, no);
+        // The tangent-plane treatment of the extraordinary vertices kept only
+        // where it does better there than leaving them alone (`g0`) and fits
+        // as much: next to a vertex where the patches' corners meet at very
+        // unequal angles, its constraint can bend the edges between them.
+        if (no.mExtraordinary != FitCadExtraordinaryVertex::G0 && reg.mNet.mNumExtraordinary > 0) {
+            detail::PatchNetworkOptions g0 = no;
+            g0.mExtraordinary = FitCadExtraordinaryVertex::G0;
+            detail::PatchNetwork plain =
+                detail::patch_network_fit(reg.mPts, reg.mTris, reg.mLayout, g0);
+            const auto fitted = [&](const detail::PatchNetwork& rN) {
+                std::size_t n = 0;
+                for (std::size_t i = 0; i < reg.mLayout.mPatches.size(); ++i)
+                    n += rN.mPatches[i].mOk ? reg.mLayout.mPatches[i].mTris.size() : 0;
+                return n;
+            };
+            if (plain.mMaxG1AngleEvDeg < reg.mNet.mMaxG1AngleEvDeg &&
+                fitted(plain) >= fitted(reg.mNet)) {
+                log::debug(
+                    "fit_cad: the extraordinary vertices of a {}-triangle region left G0: "
+                    "{} degrees next to them instead of {}",
+                    reg.mTris.size(), plain.mMaxG1AngleEvDeg, reg.mNet.mMaxG1AngleEvDeg);
+                reg.mNet = std::move(plain);
+            }
+        }
         log::debug(
             "fit_cad: patch network of a {}-triangle freeform region: {} patch(es), {} "
             "edge(s), {} extraordinary vertex(es), G1 {} degrees",
@@ -561,6 +590,250 @@ FitCadFaceRecord fcn_network_record(std::int64_t Label, const detail::NetworkPat
     rec.mReverseMaxDist = rP.mReverseMaxDist;
     rec.mMaxG1AngleDeg = rP.mMaxG1AngleDeg;
     return rec;
+}
+
+// The re-segmentation rung: a region the adaptive faces and the network left
+// as facets cut into pieces. Where edges sharper than 30 degrees already cut
+// it, the pieces between them; otherwise `K` pieces by variational shape
+// approximation on the L2,1 normal metric (Cohen-Steiner, Alliez and Desbrun
+// 2004, the energy refine_patches' Lloyd step uses): proxies seeded farthest
+// apart in normal, grown together through one priority queue that crosses an
+// edge (in steps of ten degrees) only once every gentler one is taken, so the
+// pieces meet at the sharpest ridge between their seeds, re-seeded at the
+// facet nearest their proxy, for at most ten Lloyd steps, then the cuts
+// smoothed. A cell fanned into several facets stays whole. Empty when no cut
+// leaves every piece at least four facets.
+// `OnlyAcrossCreases`: none for a region with fewer than three sharp edges.
+std::vector<std::vector<std::size_t>> fcn_resegment(const detail::ClosedFacets& rFc,
+                                                    const std::vector<std::size_t>& rFacets,
+                                                    std::size_t K, bool OnlyAcrossCreases = false) {
+    const std::size_t n = rFacets.size();
+    if (K < 2 || n < 4 * K)
+        return {};
+    const auto normal = [&](std::size_t I) { return &rFc.mNormals[rFacets[I] * 3]; };
+    std::vector<double> area(n, 0.0);
+    for (std::size_t i = 0; i < n; ++i) {
+        const std::size_t f = rFacets[i];
+        const std::int64_t b = rFc.mStart[f], m = rFc.mStart[f + 1] - b;
+        const double* p0 =
+            &rFc.mXyz[static_cast<std::size_t>(rFc.mNodes[static_cast<std::size_t>(b)]) * 3];
+        for (std::int64_t k = 1; k + 1 < m; ++k) {
+            const double* p1 =
+                &rFc.mXyz[static_cast<std::size_t>(rFc.mNodes[static_cast<std::size_t>(b + k)]) *
+                          3];
+            const double* p2 = &rFc.mXyz[static_cast<std::size_t>(
+                                             rFc.mNodes[static_cast<std::size_t>(b + k + 1)]) *
+                                         3];
+            const double u[3] = {p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]};
+            const double v[3] = {p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]};
+            const double c[3] = {u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
+                                 u[0] * v[1] - u[1] * v[0]};
+            area[i] += 0.5 * std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
+        }
+    }
+    // Neighbours across shared edges, with the edge's dihedral angle in
+    // tens of degrees (from 3, 30 degrees, it is a crease).
+    static constexpr double kCosTens[9] = {
+        0.98480775301220806, 0.93969262078590838, 0.86602540378443865,
+        0.76604444311897804, 0.64278760968653933, 0.5,
+        0.34202014332566873, 0.17364817766693035, 0.0};
+    std::vector<std::vector<std::pair<std::size_t, std::uint8_t>>> adj(n);
+    std::size_t num_creases = 0;
+    {
+        std::unordered_map<std::uint64_t, std::size_t> first;
+        for (std::size_t i = 0; i < n; ++i) {
+            const std::size_t f = rFacets[i];
+            const std::int64_t b = rFc.mStart[f], m = rFc.mStart[f + 1] - b;
+            for (std::int64_t k = 0; k < m; ++k) {
+                const std::uint64_t a =
+                    static_cast<std::uint64_t>(rFc.mNodes[static_cast<std::size_t>(b + k)]);
+                const std::uint64_t c = static_cast<std::uint64_t>(
+                    rFc.mNodes[static_cast<std::size_t>(b + (k + 1) % m)]);
+                const std::uint64_t key = (std::min(a, c) << 32) | std::max(a, c);
+                const auto ins = first.emplace(key, i);
+                if (ins.second || ins.first->second == i)
+                    continue;
+                const std::size_t j = ins.first->second;
+                const double* ni = normal(i);
+                const double* nj = normal(j);
+                const double dot = ni[0] * nj[0] + ni[1] * nj[1] + ni[2] * nj[2];
+                std::uint8_t tens = 0;
+                while (tens < 9 && dot < kCosTens[tens])
+                    ++tens;
+                adj[i].emplace_back(j, tens);
+                adj[j].emplace_back(i, tens);
+                num_creases += tens >= 3;
+            }
+        }
+    }
+    // A fanned cell takes its first facet's piece.
+    const auto pieces = [&](std::vector<std::size_t> Label, std::size_t NumPieces) {
+        std::unordered_map<std::int64_t, std::size_t> of_cell;
+        for (std::size_t i = 0; i < n; ++i)
+            Label[i] = of_cell.emplace(rFc.mCell[rFacets[i]], Label[i]).first->second;
+        std::vector<std::vector<std::size_t>> out(NumPieces);
+        for (std::size_t i = 0; i < n; ++i)
+            out[Label[i]].push_back(rFacets[i]);
+        for (const auto& piece : out)
+            if (piece.size() < 4)
+                return std::vector<std::vector<std::size_t>>{};
+        return out;
+    };
+    // A region whose creases already cut it: its pieces between them.
+    {
+        std::vector<std::size_t> comp(n, n);
+        std::size_t num = 0;
+        for (std::size_t i = 0; i < n; ++i) {
+            if (comp[i] != n)
+                continue;
+            std::vector<std::size_t> stack{i};
+            comp[i] = num;
+            while (!stack.empty()) {
+                const std::size_t a = stack.back();
+                stack.pop_back();
+                for (const auto& [j, tens] : adj[a])
+                    if (tens < 3 && comp[j] == n) {
+                        comp[j] = num;
+                        stack.push_back(j);
+                    }
+            }
+            ++num;
+        }
+        // A piece under four facets (a corner between two creases) joins the
+        // piece it touches first, then the pieces are numbered again.
+        std::vector<std::size_t> size(num, 0);
+        for (std::size_t c : comp)
+            ++size[c];
+        for (bool changed = true; changed;) {
+            changed = false;
+            for (std::size_t i = 0; i < n; ++i)
+                if (size[comp[i]] < 4)
+                    for (const auto& nb : adj[i])
+                        if (comp[nb.first] != comp[i] && size[comp[nb.first]] >= 4) {
+                            const std::size_t from = comp[i], to = comp[nb.first];
+                            for (std::size_t& c : comp)
+                                if (c == from)
+                                    c = to;
+                            size[to] += size[from];
+                            size[from] = 0;
+                            changed = true;
+                            break;
+                        }
+        }
+        std::vector<std::size_t> renum(num, num);
+        std::size_t kept = 0;
+        for (std::size_t& c : comp) {
+            if (renum[c] == num)
+                renum[c] = kept++;
+            c = renum[c];
+        }
+        num = kept;
+        if (num >= 2) {
+            auto cut = pieces(std::move(comp), num);
+            if (!cut.empty())
+                return cut;
+        }
+    }
+    if (OnlyAcrossCreases && num_creases < 3)
+        return {};
+    const auto error = [&](std::size_t I, const std::array<double, 3>& rN) {
+        const double* q = normal(I);
+        const double d[3] = {q[0] - rN[0], q[1] - rN[1], q[2] - rN[2]};
+        return area[I] * (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    };
+    // Seeds: farthest from the mean normal, then farthest from those taken.
+    std::array<double, 3> mean = {0.0, 0.0, 0.0};
+    for (std::size_t i = 0; i < n; ++i)
+        for (int j = 0; j < 3; ++j)
+            mean[j] += area[i] * normal(i)[j];
+    const double len = std::sqrt(mean[0] * mean[0] + mean[1] * mean[1] + mean[2] * mean[2]);
+    if (!(len > 0.0))
+        return {};
+    for (double& c : mean)
+        c /= len;
+    std::vector<std::array<double, 3>> proxy;
+    std::vector<std::size_t> seed;
+    std::vector<double> nearest(n, 0.0);
+    for (std::size_t i = 0; i < n; ++i)
+        nearest[i] = error(i, mean) / std::max(area[i], 1e-300);
+    while (seed.size() < K) {
+        const std::size_t s = static_cast<std::size_t>(
+            std::max_element(nearest.begin(), nearest.end()) - nearest.begin());
+        if (!(nearest[s] > 1e-12))
+            return {};
+        seed.push_back(s);
+        const double* q = normal(s);
+        proxy.push_back({q[0], q[1], q[2]});
+        for (std::size_t i = 0; i < n; ++i)
+            nearest[i] = std::min(nearest[i], error(i, proxy.back()) / std::max(area[i], 1e-300));
+    }
+    std::vector<std::size_t> label(n);
+    for (int step = 0; step < 10; ++step) {
+        // Grow: (sharpest edge crossed, error, facet, proxy), smallest first,
+        // so the pieces meet at the sharpest ridge between their seeds.
+        using Entry = std::tuple<std::uint8_t, double, std::size_t, std::size_t>;
+        std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> queue;
+        std::vector<std::size_t> grown(n, K);
+        for (std::size_t p = 0; p < K; ++p)
+            queue.emplace(std::uint8_t{0}, 0.0, seed[p], p);
+        while (!queue.empty()) {
+            const auto [sharpest, e, i, p] = queue.top();
+            queue.pop();
+            if (grown[i] != K)
+                continue;
+            grown[i] = p;
+            for (const auto& [j, tens] : adj[i])
+                if (grown[j] == K)
+                    queue.emplace(std::max(sharpest, tens), error(j, proxy[p]), j, p);
+        }
+        // A facet no seed reaches (a region in pieces) joins the first proxy.
+        for (std::size_t& g : grown)
+            if (g == K)
+                g = 0;
+        const bool same = step > 0 && grown == label;
+        label = std::move(grown);
+        if (same)
+            break;
+        // Refit the proxies, and re-seed each at its facet nearest to it.
+        for (std::size_t p = 0; p < K; ++p) {
+            std::array<double, 3> s = {0.0, 0.0, 0.0};
+            for (std::size_t i = 0; i < n; ++i)
+                if (label[i] == p)
+                    for (int j = 0; j < 3; ++j)
+                        s[j] += area[i] * normal(i)[j];
+            const double l = std::sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]);
+            if (!(l > 0.0))
+                return {};
+            for (double& c : s)
+                c /= l;
+            proxy[p] = s;
+            double best = std::numeric_limits<double>::infinity();
+            for (std::size_t i = 0; i < n; ++i)
+                if (label[i] == p && error(i, s) / std::max(area[i], 1e-300) < best) {
+                    best = error(i, s) / std::max(area[i], 1e-300);
+                    seed[p] = i;
+                }
+        }
+    }
+    // Smooth the cuts: a facet with more sides on one other piece than on its
+    // own moves there (a few passes), so no piece keeps a jagged spur.
+    for (int pass = 0; pass < 4; ++pass) {
+        bool changed = false;
+        for (std::size_t i = 0; i < n; ++i) {
+            std::vector<std::size_t> votes(K, 0);
+            for (const auto& nb : adj[i])
+                ++votes[label[nb.first]];
+            for (std::size_t p = 0; p < K; ++p)
+                if (p != label[i] && votes[p] > votes[label[i]] && votes[p] >= 2) {
+                    label[i] = p;
+                    changed = true;
+                    break;
+                }
+        }
+        if (!changed)
+            break;
+    }
+    return pieces(std::move(label), K);
 }
 
 // The adaptive freeform pass of the native backend: every patch the fit table
@@ -694,68 +967,89 @@ FcnFreeform fcn_freeform(const Mesh& rSource, const detail::ClosedFacets& rFc,
     o.mParameterization = static_cast<detail::ParamLadder>(rOptions.mFreeformParameterization);
     o.mValidate = rOptions.mValidateBySurfaceSampling;
     o.mThb = rOptions.mLocalRefine == FitCadLocalRefine::Thb;
-    for (std::size_t w = 0; w < work.size(); ++w) {
-        const Item item = work[w];
-        // The patch as local triangles (polygons fanned), points renumbered.
-        std::vector<detail::PatchVec> pts;
-        std::vector<detail::PatchTri> tris;
-        std::vector<std::size_t> tri_facet;
-        fcn_local_triangles(rFc, item.mFacets, pts, tris, tri_facet, nullptr);
-        const detail::FreeformAdaptiveResult fit = detail::freeform_adaptive_fit(pts, tris, o);
-        log::debug(
-            "fit_cad: adaptive freeform fit of patch {} ({} triangles): {}, {} pole(s), vertex "
-            "{} / centroid {} / samples {}, allowance {} (noise {}), {} escalation(s)",
-            item.mLabel, tris.size(), fit.mOk ? "accepted" : "rejected", fit.mSurface.NumPoles(),
-            fit.mMaxDist, fit.mMaxCentroidDist, fit.mReverseMaxDist, fit.mAllowance, fit.mSigma,
-            fit.mEscalations);
-        FitCadFaceRecord rec;
-        rec.mPatch = item.mLabel;
-        rec.mParamMethod = fit.mParam;
-        rec.mNumControl =
-            static_cast<std::int64_t>(fit.mNumDofs > 0 ? fit.mNumDofs : fit.mSurface.NumPoles());
-        rec.mIterations = fit.mIterations;
-        rec.mRefinements = fit.mRefinements;
-        rec.mEscalationSteps = item.mEscalations + fit.mEscalations;
-        rec.mMaxDist = fit.mMaxDist;
-        rec.mRmsDist = fit.mRmsDist;
-        rec.mReverseMaxDist = fit.mReverseMaxDist;
-        if (fit.mOk) {
-            detail::StepFreeformFace face;
-            face.mLabel = item.mLabel;
-            face.mSurface = fit.mSurface;
-            face.mSense = fcn_sense(rFc, fit.mSurface, tris, tri_facet, fit.mU, fit.mV);
-            out.mFaces.push_back(std::move(face));
-            out.mRecords[item.mLabel] = rec;
-            continue;
-        }
-        // Not a face: cut into discs, else halve, else facets.
-        std::size_t num = 0;
-        std::vector<std::int64_t> piece;
-        if (item.mDepth < rOptions.mMaxFreeformSplits && tris.size() >= 32) {
-            piece = detail::patch_split_to_discs(pts, tris, 24, num);
-            if (num < 2)
-                piece = detail::patch_bisect(pts, tris, num);
-        }
-        if (num < 2) {
-            rec.mDemotionReason = fit.mReason == FitCadDemotionReason::None
-                                      ? FitCadDemotionReason::Other
-                                      : fit.mReason;
-            out.mRecords[item.mLabel] = rec;
-            continue;
-        }
-        std::vector<std::vector<std::size_t>> pf(num);
-        for (std::size_t t = 0; t < tris.size(); ++t) {
-            if (t > 0 && tri_facet[t] == tri_facet[t - 1])
+    // The work list from `From` on: each item a face, or cut into pieces that
+    // join the list's end, or facets with its reason.
+    const auto run = [&](std::size_t From) {
+        for (std::size_t w = From; w < work.size(); ++w) {
+            const Item item = work[w];
+            // The patch as local triangles (polygons fanned), points renumbered.
+            std::vector<detail::PatchVec> pts;
+            std::vector<detail::PatchTri> tris;
+            std::vector<std::size_t> tri_facet;
+            fcn_local_triangles(rFc, item.mFacets, pts, tris, tri_facet, nullptr);
+            const detail::FreeformAdaptiveResult fit = detail::freeform_adaptive_fit(pts, tris, o);
+            log::debug(
+                "fit_cad: adaptive freeform fit of patch {} ({} triangles): {}, {} pole(s), vertex "
+                "{} / centroid {} / samples {}, allowance {} (noise {}), {} escalation(s)",
+                item.mLabel, tris.size(), fit.mOk ? "accepted" : "rejected",
+                fit.mSurface.NumPoles(), fit.mMaxDist, fit.mMaxCentroidDist, fit.mReverseMaxDist,
+                fit.mAllowance, fit.mSigma, fit.mEscalations);
+            FitCadFaceRecord rec;
+            rec.mPatch = item.mLabel;
+            rec.mParamMethod = fit.mParam;
+            rec.mNumControl = static_cast<std::int64_t>(fit.mNumDofs > 0 ? fit.mNumDofs
+                                                                         : fit.mSurface.NumPoles());
+            rec.mIterations = fit.mIterations;
+            rec.mRefinements = fit.mRefinements;
+            rec.mEscalationSteps = item.mEscalations + fit.mEscalations;
+            rec.mMaxDist = fit.mMaxDist;
+            rec.mRmsDist = fit.mRmsDist;
+            rec.mReverseMaxDist = fit.mReverseMaxDist;
+            if (fit.mOk) {
+                detail::StepFreeformFace face;
+                face.mLabel = item.mLabel;
+                face.mSurface = fit.mSurface;
+                face.mSense = fcn_sense(rFc, fit.mSurface, tris, tri_facet, fit.mU, fit.mV);
+                out.mFaces.push_back(std::move(face));
+                out.mRecords[item.mLabel] = rec;
                 continue;
-            pf[static_cast<std::size_t>(piece[t])].push_back(tri_facet[t]);
+            }
+            // Not a face: cut into discs, else halve, else facets.
+            std::size_t num = 0;
+            std::vector<std::int64_t> piece;
+            if (rOptions.mResegmentRounds > 0) {
+                // A patch across sharp edges is cut along them first: the
+                // re-segmentation rung, where the segmentation left a crease.
+                const auto cut = fcn_resegment(rFc, item.mFacets, 2, true);
+                if (!cut.empty()) {
+                    std::unordered_map<std::size_t, std::int64_t> of_facet;
+                    for (std::size_t k = 0; k < cut.size(); ++k)
+                        for (std::size_t f : cut[k])
+                            of_facet[f] = static_cast<std::int64_t>(k);
+                    piece.resize(tris.size());
+                    for (std::size_t t = 0; t < tris.size(); ++t)
+                        piece[t] = of_facet[tri_facet[t]];
+                    num = cut.size();
+                    ++out.mNumResegmented;
+                }
+            }
+            if (num < 2 && item.mDepth < rOptions.mMaxFreeformSplits && tris.size() >= 32) {
+                piece = detail::patch_split_to_discs(pts, tris, 24, num);
+                if (num < 2)
+                    piece = detail::patch_bisect(pts, tris, num);
+            }
+            if (num < 2) {
+                rec.mDemotionReason = fit.mReason == FitCadDemotionReason::None
+                                          ? FitCadDemotionReason::Other
+                                          : fit.mReason;
+                out.mRecords[item.mLabel] = rec;
+                continue;
+            }
+            std::vector<std::vector<std::size_t>> pf(num);
+            for (std::size_t t = 0; t < tris.size(); ++t) {
+                if (t > 0 && tri_facet[t] == tri_facet[t - 1])
+                    continue;
+                pf[static_cast<std::size_t>(piece[t])].push_back(tri_facet[t]);
+            }
+            for (std::vector<std::size_t>& facets : pf) {
+                const std::int64_t label = next_label++;
+                work.push_back({label, facets, item.mDepth + 1, rec.mEscalationSteps + 1});
+                pieces.emplace_back(label, std::move(facets));
+            }
+            out.mNumSplit += static_cast<std::int64_t>(num);
         }
-        for (std::vector<std::size_t>& facets : pf) {
-            const std::int64_t label = next_label++;
-            work.push_back({label, facets, item.mDepth + 1, rec.mEscalationSteps + 1});
-            pieces.emplace_back(label, std::move(facets));
-        }
-        out.mNumSplit += static_cast<std::int64_t>(num);
-    }
+    };
+    run(0);
     // Auto: what the adaptive faces leave goes through the network.
     if (rOptions.mFreeformMode == FitCadFreeformMode::Auto) {
         std::vector<std::pair<std::int64_t, std::vector<std::size_t>>> items;
@@ -786,6 +1080,44 @@ FcnFreeform fcn_freeform(const Mesh& rSource, const detail::ClosedFacets& rFc,
                     }
             }
         }
+    }
+    // The re-segmentation rung: up to `mResegmentRounds` times, every region
+    // still left as facets is cut by its normals (fcn_resegment, two pieces)
+    // and the pieces climb the adaptive rungs again; one that fails is cut
+    // again in the next round, never halved.
+    for (std::int64_t round = 0; round < rOptions.mResegmentRounds; ++round) {
+        std::map<std::int64_t, const std::vector<std::size_t>*> facets_by_label;
+        for (const auto& it : facets_of)
+            facets_by_label[it.first] = &it.second;
+        for (const auto& p : pieces)
+            facets_by_label[p.first] = &p.second;
+        std::vector<std::tuple<std::int64_t, std::int64_t, std::vector<std::vector<std::size_t>>>>
+            cuts;  // (label, escalation steps, pieces)
+        for (const auto& [label, rec] : out.mRecords) {
+            if (rec.mDemotionReason == FitCadDemotionReason::None)
+                continue;
+            const auto f = facets_by_label.find(label);
+            if (f == facets_by_label.end())
+                continue;
+            auto cut = fcn_resegment(rFc, *f->second, 2);
+            if (!cut.empty())
+                cuts.emplace_back(label, rec.mEscalationSteps, std::move(cut));
+        }
+        if (cuts.empty())
+            break;
+        const std::size_t from = work.size();
+        for (auto& [label, steps, cut] : cuts) {
+            log::debug("fit_cad: re-segmentation round {} cuts patch {} into {} piece(s)",
+                       round + 1, label, cut.size());
+            out.mRecords.erase(label);
+            ++out.mNumResegmented;
+            for (std::vector<std::size_t>& facets : cut) {
+                const std::int64_t piece = next_label++;
+                work.push_back({piece, facets, rOptions.mMaxFreeformSplits, steps + 1});
+                pieces.emplace_back(piece, std::move(facets));
+            }
+        }
+        run(from);
     }
     if (pieces.empty())
         return out;
@@ -955,6 +1287,7 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     result.mNumExtraordinaryVertices = freeform.mNumExtraordinary;
     result.mMaxG1AngleDeg = freeform.mMaxG1AngleDeg;
     result.mNumSplitPatches = freeform.mNumSplit;
+    result.mNumResegmented = freeform.mNumResegmented;
     result.mNumFacetedFaces = brep.mNumFacetedFaces;
     result.mNumPatches = brep.mNumPatches;
     result.mNumDemoted = brep.mNumDemoted;
@@ -4475,6 +4808,47 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
         if (!refit_row(R, fc_row(row_info, R).mEscalations + 1))
             halve_and_refit(R);
     };
+    // The re-segmentation rung (v17.12.0): a row left as facets cut by its
+    // normals (fcn_resegment) and each piece fitted as an adaptive face, at
+    // most `mResegmentRounds` cuts deep; true when it was cut.
+    std::vector<std::uint8_t> reseg_depth;
+    const auto resegment_and_refit = [&](std::size_t R) {
+        const std::uint8_t depth = R < reseg_depth.size() ? reseg_depth[R] : 0;
+        if (depth >= rOptions.mResegmentRounds || facets_of[R].empty())
+            return false;
+        std::vector<std::vector<std::size_t>> cut = fcn_resegment(fc, facets_of[R], 2);
+        if (cut.empty())
+            return false;
+        log::debug("fit_cad: patch {} re-segmented into {} piece(s)", skin.mPatches[R].mLabel,
+                   cut.size());
+        ++result.mNumResegmented;
+        facets_of[R].clear();
+        const std::int64_t escalations = fc_row(row_info, R).mEscalations + 1;
+        for (std::vector<std::size_t>& facets : cut) {
+            FcPatch np;
+            np.mLabel = next_label++;
+            np.mType = 0;
+            np.mParams.fill(std::numeric_limits<double>::quiet_NaN());
+            np.mTolerance = skin.mPatches[R].mTolerance;
+            const std::size_t row = skin.mPatches.size();
+            for (std::size_t f : facets)
+                skin.mRow[f] = static_cast<std::int64_t>(row);
+            skin.mPatches.push_back(np);
+            facets_of.push_back(std::move(facets));
+            surface.emplace_back();
+            analytic.push_back(0);
+            is_piece.push_back(1);
+            tile_depth.push_back(tile_depth[R]);
+            general_depth.push_back(general_depth[R]);
+            feature.resize(row + 1, 0);
+            network_row.resize(row + 1, 0);
+            network_tried.resize(row + 1, 1);
+            reseg_depth.resize(row + 1, 0);
+            reseg_depth[row] = static_cast<std::uint8_t>(depth + 1);
+            refit_row(row, escalations);
+        }
+        return true;
+    };
 
     if (rOptions.mFreeform && rOptions.mFreeformMode == FitCadFreeformMode::Network)
         occt_network(freeform_rows(false), false);
@@ -4543,7 +4917,23 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
                         flat_pts[i] = {pts[i].X(), pts[i].Y(), pts[i].Z()};
                     std::size_t num_pieces = 0;
                     std::vector<std::int64_t> piece;
-                    if (adaptive)
+                    if (adaptive && rOptions.mResegmentRounds > 0) {
+                        // Across sharp edges, cut along them first (the
+                        // re-segmentation rung).
+                        const auto cut = fcn_resegment(fc, facets_of[r], 2, true);
+                        if (!cut.empty()) {
+                            std::unordered_map<std::size_t, std::int64_t> of_facet;
+                            for (std::size_t k = 0; k < cut.size(); ++k)
+                                for (std::size_t f : cut[k])
+                                    of_facet[f] = static_cast<std::int64_t>(k);
+                            piece.resize(tris.size());
+                            for (std::size_t tt = 0; tt < tris.size(); ++tt)
+                                piece[tt] = of_facet[tri_facet[tt]];
+                            num_pieces = cut.size();
+                            ++result.mNumResegmented;
+                        }
+                    }
+                    if (adaptive && num_pieces < 2)
                         piece = detail::patch_split_to_discs(flat_pts, tris, kFcTileMinTriangles,
                                                              num_pieces);
                     if (num_pieces < 2)
@@ -4691,6 +5081,20 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
             for (std::size_t r : occt_network(rows, true))
                 refit_or_halve(r);
     }
+    // What the adaptive faces and the network leave as facets is re-segmented
+    // and fitted again; a piece that fails is cut again, up to the rounds.
+    if (rOptions.mFreeform && rOptions.mFreeformMode != FitCadFreeformMode::Legacy)
+        for (const std::size_t r0 : freeform_rows(true))
+            for (std::vector<std::size_t> todo{r0}; !todo.empty();) {
+                const std::size_t r = todo.back();
+                todo.pop_back();
+                if (analytic[r] || (r < network_row.size() && network_row[r]))
+                    continue;
+                const std::size_t from = skin.mPatches.size();
+                if (resegment_and_refit(r))
+                    for (std::size_t q = skin.mPatches.size(); q-- > from;)
+                        todo.push_back(q);
+            }
     m = skin.mPatches.size();
     if (num_freeform_tried > 0)
         log::debug("fit_cad: {} patch(es) tried as freeform B-spline faces", num_freeform_tried);

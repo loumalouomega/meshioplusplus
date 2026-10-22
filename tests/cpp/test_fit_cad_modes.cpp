@@ -38,7 +38,10 @@
 
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/formats/cad_json.hpp"
+#include "meshioplusplus/formats/step.hpp"
+#include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/fit_cad.hpp"
+#include "meshioplusplus/operations/primitives.hpp"
 #include "analytic_surfaces.hpp"
 #include "fit_cad_fixtures.hpp"
 
@@ -289,6 +292,10 @@ TEST(FitCadModes, NativeNetworkWritesSharedEdges) {
          at = bytes.find("B_SPLINE_CURVE_WITH_KNOTS('',3,", at + 1))
         ++cubic;
     EXPECT_GT(cubic, 0U);
+    // Between two network faces, each edge carries a p-curve on both.
+    EXPECT_NE(bytes.find("SURFACE_CURVE("), std::string::npos);
+    EXPECT_NE(bytes.find("PCURVE("), std::string::npos);
+    EXPECT_NE(bytes.find("PARAMETRIC_REPRESENTATION_CONTEXT"), std::string::npos);
     const std::string again = temp_step("network_native_again.step");
     fit_cad(fitted, again, o);
     std::string b2 = slurp(again);
@@ -464,6 +471,93 @@ TEST(FitCadModes, DegeneratePatchesDemoteWithAReason) {
             EXPECT_NE(f.mDemotionReason, FitCadDemotionReason::None);
 }
 
+// The re-segmentation rung: a hood whose segmentation missed the creases
+// around one side (merged into the freeform top) is cut along them and its
+// normals, and the pieces become faces, where without the rung the region is
+// halved and partly left as facets.
+TEST(FitCadModes, ResegmentationCutsAMissedCrease) {
+    const Mesh skin = analytic::hood_box(16);
+    const double tol = 2e-3 * fcfix::diagonal(skin);
+    const Mesh merged = fcfix::merged_side(fcfix::fitted_abs(skin, tol));
+    for (const auto mode : {FitCadFreeformMode::Adaptive, FitCadFreeformMode::Auto}) {
+        SCOPED_TRACE(static_cast<int>(mode));
+        FitCadOptions o;
+        o.mBackend = FitCadBackend::Native;
+        o.mTolerance = tol;
+        o.mFreeformMode = mode;
+        o.mResegmentRounds = 0;
+        const FitCadResult off = fit_cad(merged, "", o);
+        o.mResegmentRounds = 2;
+        const FitCadResult on = fit_cad(merged, "", o);
+        EXPECT_EQ(off.mNumResegmented, 0);
+        EXPECT_GT(on.mNumResegmented, 0);
+        EXPECT_GT(off.mFacetAreaFraction, 0.04);
+        EXPECT_LT(on.mFacetAreaFraction, 0.01);
+        EXPECT_LT(on.mNumFaces, off.mNumFaces);
+        EXPECT_TRUE(on.mValid);
+        // And the same result again.
+        const FitCadResult again = fit_cad(merged, "", o);
+        EXPECT_EQ(again.mNumFaces, on.mNumFaces);
+        EXPECT_EQ(again.mFacetAreaFraction, on.mFacetAreaFraction);
+    }
+}
+
+// A rounded cube (|x|^4 + |y|^4 + |z|^4 = 1): next to its layout's valence-3
+// vertices the tangent-plane treatment once bent the edges between them
+// (G1 angles near 180 degrees); the network keeps G0 there now, so every
+// mode gives a network whose angles stay those of G0.
+TEST(FitCadModes, NetworkKeepsG0WhereTheTangentPlaneBends) {
+    Mesh skin = icosa_sphere(1.0, 4);
+    NDArray p = skin.Points();
+    double* q = p.As<double>();
+    for (std::size_t i = 0; i < skin.NumPoints(); ++i) {
+        double s = 0.0;
+        for (int j = 0; j < 3; ++j)
+            s += q[3 * i + j] * q[3 * i + j] * q[3 * i + j] * q[3 * i + j];
+        const double k = 1.0 / std::sqrt(std::sqrt(s));
+        for (int j = 0; j < 3; ++j)
+            q[3 * i + j] *= k;
+    }
+    skin.AssignPoints(std::move(p));
+    const double tol = 2e-3 * fcfix::diagonal(skin);
+    const Mesh fitted = fcfix::fitted_abs(skin, tol);
+    FitCadOptions o;
+    o.mBackend = FitCadBackend::Native;
+    o.mTolerance = tol;
+    o.mFreeformMode = FitCadFreeformMode::Network;
+    o.mExtraordinaryVertex = FitCadExtraordinaryVertex::G0;
+    const FitCadResult g0 = fit_cad(fitted, "", o);
+    ASSERT_GT(g0.mNumExtraordinaryVertices, 0);
+    for (const auto ev : {FitCadExtraordinaryVertex::G1, FitCadExtraordinaryVertex::G1x,
+                          FitCadExtraordinaryVertex::G1xx}) {
+        SCOPED_TRACE(static_cast<int>(ev));
+        o.mExtraordinaryVertex = ev;
+        const FitCadResult r = fit_cad(fitted, "", o);
+        EXPECT_LT(r.mMaxG1AngleDeg, 90.0);
+        EXPECT_LE(r.mMaxG1AngleDeg, g0.mMaxG1AngleDeg + 1e-9);
+        EXPECT_EQ(r.mNumNetworkPatches, g0.mNumNetworkPatches);
+    }
+}
+
+// A genus-2 skin in the network mode: its layout (cut along its handles)
+// keeps network patches, the patches that miss become adaptive faces, and it
+// leaves less area as facets than the adaptive faces alone.
+TEST(FitCadModes, NetworkOnAGenusTwoSkin) {
+    const Mesh skin = analytic::double_torus(20);
+    const double tol = 2e-3 * fcfix::diagonal(skin);
+    const Mesh fitted = fcfix::fitted_abs(skin, tol);
+    FitCadOptions o;
+    o.mBackend = FitCadBackend::Native;
+    o.mTolerance = tol;
+    o.mFreeformMode = FitCadFreeformMode::Network;
+    const FitCadResult net = fit_cad(fitted, "", o);
+    o.mFreeformMode = FitCadFreeformMode::Adaptive;
+    const FitCadResult adaptive = fit_cad(fitted, "", o);
+    EXPECT_GT(net.mNumNetworkPatches, 0);
+    EXPECT_TRUE(net.mValid);
+    EXPECT_LT(net.mFacetAreaFraction, adaptive.mFacetAreaFraction);
+}
+
 #ifdef MESHIOPLUSPLUS_HAS_OCCT
 
 // The adaptive mode through OpenCASCADE: checked B-spline faces, no more facet
@@ -485,6 +579,25 @@ TEST(FitCadModes, OcctAdaptiveReducesFacetArea) {
             EXPECT_LT(adaptive.mFacetAreaFraction, legacy.mFacetAreaFraction);
         EXPECT_TRUE(adaptive.mValid);
     }
+}
+
+// The re-segmentation rung through OpenCASCADE: the missed crease is cut and
+// the faceted share falls.
+TEST(FitCadModes, OcctResegmentationCutsAMissedCrease) {
+    const Mesh skin = analytic::hood_box(16);
+    const double tol = 2e-3 * fcfix::diagonal(skin);
+    const Mesh merged = fcfix::merged_side(fcfix::fitted_abs(skin, tol));
+    FitCadOptions o;
+    o.mTolerance = tol;
+    o.mFreeformMode = FitCadFreeformMode::Auto;
+    o.mResegmentRounds = 0;
+    const FitCadResult off = fit_cad(merged, "", o);
+    o.mResegmentRounds = 2;
+    const FitCadResult on = fit_cad(merged, "", o);
+    EXPECT_EQ(off.mNumResegmented, 0);
+    EXPECT_GT(on.mNumResegmented, 0);
+    EXPECT_LT(on.mFacetAreaFraction, off.mFacetAreaFraction);
+    EXPECT_TRUE(on.mValid);
 }
 
 // The patch network in the OpenCASCADE backend: the Catmull-Clark cage's
@@ -515,6 +628,33 @@ TEST(FitCadModes, OcctNetworkBuildsTheCage) {
             }
         }
     }
+}
+
+// The native patch network's STEP file read back by OpenCASCADE: every face,
+// its B-spline faces as B-splines, and the triangulation within the tolerance
+// of the skin both ways.
+TEST(FitCadModes, NativeNetworkStepReadsBack) {
+    const Mesh skin = analytic::monkey_saddle_box(24);
+    const double tol = 2e-3 * fcfix::diagonal(skin);
+    FitCadOptions o;
+    o.mBackend = FitCadBackend::Native;
+    o.mTolerance = tol;
+    o.mFreeformMode = FitCadFreeformMode::Network;
+    const std::string path = temp_step("network_readback.step");
+    const FitCadResult r = fit_cad(fcfix::fitted_abs(skin, tol), path, o);
+    ASSERT_GT(r.mNumNetworkPatches, 0);
+    BrepInfo info;
+    CadReadOptions ro;
+    ro.mDeflection = 0.1 * tol;
+    const Mesh back = read_step(path, info, ro);
+    EXPECT_EQ(static_cast<std::int64_t>(info.mFaces.size()), r.mNumFaces);
+    std::int64_t cubic = 0;
+    for (const BrepFace& f : info.mFaces) {
+        const NurbsPatch& p = info.mPatches[static_cast<std::size_t>(f.mPatch)];
+        cubic += p.mDegrees[0] == 3 && p.mDegrees[1] == 3 ? 1 : 0;
+    }
+    EXPECT_GE(cubic, r.mNumNetworkPatches);
+    EXPECT_LE(hausdorff_distance(back, skin).mDistance, 1.5 * tol);
 }
 
 // The OpenCASCADE backend records each patch it tried as a surface: a freeform

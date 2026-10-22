@@ -1013,6 +1013,117 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
             return st.Ent("AXIS2_PLACEMENT_3D(''," + StepStream::Ref(p) + "," + StepStream::Ref(z) +
                           "," + StepStream::Ref(xd) + ")");
         };
+        // A freeform face's surface (v17.12.0): its poles row by row in u.
+        // Written once, when its face or a p-curve on it first needs it.
+        std::map<std::int64_t, std::int64_t> surface_of;
+        const auto bspline_surface = [&](std::int64_t G) {
+            const auto found = surface_of.find(G);
+            if (found != surface_of.end())
+                return found->second;
+            const SbRow* row = &rows[static_cast<std::size_t>(G)];
+            const BsplineSurface& bs =
+                (*rOptions.mFreeform)[static_cast<std::size_t>(row->mFreeform)].mSurface;
+            std::string grid;
+            for (std::size_t i = 0; i < bs.mNu; ++i) {
+                std::string line;
+                for (std::size_t j = 0; j < bs.mNv; ++j) {
+                    const std::int64_t q =
+                        st.Ent("CARTESIAN_POINT(''," +
+                               StepStream::Triple(&bs.mPoles[3 * (i + bs.mNu * j)]) + ")");
+                    line += (j == 0 ? "" : ",") + StepStream::Ref(q);
+                }
+                grid += (i == 0 ? "(" : ",(") + line + ")";
+            }
+            const auto knots = [](const std::vector<double>& rK, std::string& rMults,
+                                  std::string& rValues) {
+                std::size_t i = 0;
+                while (i < rK.size()) {
+                    std::size_t j = i;
+                    while (j < rK.size() && rK[j] == rK[i])
+                        ++j;
+                    rMults += (rMults.empty() ? "" : ",") + std::to_string(j - i);
+                    rValues += (rValues.empty() ? "" : ",") + step_real(rK[i]);
+                    i = j;
+                }
+            };
+            std::string um, uk, vm, vk;
+            knots(bs.mKnotsU, um, uk);
+            knots(bs.mKnotsV, vm, vk);
+            const std::int64_t id =
+                st.Ent("B_SPLINE_SURFACE_WITH_KNOTS(''," + std::to_string(bs.mDegreeU) + "," +
+                       std::to_string(bs.mDegreeV) + ",(" + grid + "),.UNSPECIFIED.,.F.,.F.,.F.,(" +
+                       um + "),(" + vm + "),(" + uk + "),(" + vk + "),.UNSPECIFIED.)");
+            surface_of.emplace(G, id);
+            return id;
+        };
+        // The p-curve of a shared network curve on a network face: the side is
+        // a parameter line of its patch, so a straight segment in (u, v) over
+        // the curve's own parameter, the ends projected and snapped; 0 when the
+        // segment does not follow the curve.
+        std::int64_t context_2d = 0;
+        const auto network_pcurve = [&](std::int64_t G,
+                                        const BsplineCurve& rPiece) -> std::int64_t {
+            const BsplineSurface& bs =
+                (*rOptions.mFreeform)[static_cast<std::size_t>(
+                                          rows[static_cast<std::size_t>(G)].mFreeform)]
+                    .mSurface;
+            double uv[2][2];
+            for (int e = 0; e < 2; ++e) {
+                const PatchVec p = bspline_curve_eval(rPiece, e == 0 ? rPiece.T0() : rPiece.T1());
+                double best = std::numeric_limits<double>::infinity(), bu = bs.U0(), bv = bs.V0();
+                for (int i = 0; i <= 16; ++i)
+                    for (int j = 0; j <= 16; ++j) {
+                        const double gu = bs.U0() + (bs.U1() - bs.U0()) * i / 16.0;
+                        const double gv = bs.V0() + (bs.V1() - bs.V0()) * j / 16.0;
+                        BsplineEval ev;
+                        bspline_eval(bs, gu, gv, 0, ev);
+                        const double d[3] = {ev.mS[0] - p[0], ev.mS[1] - p[1], ev.mS[2] - p[2]};
+                        const double dd = sb_dot(d, d);
+                        if (dd < best) {
+                            best = dd;
+                            bu = gu;
+                            bv = gv;
+                        }
+                    }
+                bspline_project(bs, p.data(), bu, bv);
+                const auto snap = [](double X, double Lo, double Hi) {
+                    const double eps = 1e-9 * (Hi - Lo);
+                    return std::fabs(X - Lo) <= eps ? Lo : (std::fabs(X - Hi) <= eps ? Hi : X);
+                };
+                uv[e][0] = snap(bu, bs.U0(), bs.U1());
+                uv[e][1] = snap(bv, bs.V0(), bs.V1());
+            }
+            // The segment must follow the curve on the surface.
+            for (int k = 1; k < 8; ++k) {
+                const double f = k / 8.0;
+                BsplineEval ev;
+                bspline_eval(bs, uv[0][0] + f * (uv[1][0] - uv[0][0]),
+                             uv[0][1] + f * (uv[1][1] - uv[0][1]), 0, ev);
+                const PatchVec q =
+                    bspline_curve_eval(rPiece, rPiece.T0() + f * (rPiece.T1() - rPiece.T0()));
+                const double d[3] = {ev.mS[0] - q[0], ev.mS[1] - q[1], ev.mS[2] - q[2]};
+                if (std::sqrt(sb_dot(d, d)) > 1e-3 * tol)
+                    return 0;
+            }
+            if (context_2d == 0)
+                context_2d = st.Ent(
+                    "(GEOMETRIC_REPRESENTATION_CONTEXT(2)PARAMETRIC_REPRESENTATION_CONTEXT()"
+                    "REPRESENTATION_CONTEXT('2D SPACE',''))");
+            const std::int64_t srf = bspline_surface(G);
+            std::string pts;
+            for (int e = 0; e < 2; ++e) {
+                const std::int64_t q = st.Ent("CARTESIAN_POINT('',(" + step_real(uv[e][0]) + "," +
+                                              step_real(uv[e][1]) + "))");
+                pts += (e == 0 ? "" : ",") + StepStream::Ref(q);
+            }
+            const std::int64_t line = st.Ent(
+                "B_SPLINE_CURVE_WITH_KNOTS('',1,(" + pts + "),.UNSPECIFIED.,.F.,.F.,(2,2),(" +
+                step_real(rPiece.T0()) + "," + step_real(rPiece.T1()) + "),.UNSPECIFIED.)");
+            const std::int64_t rep =
+                st.Ent("DEFINITIONAL_REPRESENTATION('',(" + StepStream::Ref(line) + ")," +
+                       StepStream::Ref(context_2d) + ")");
+            return st.Ent("PCURVE(''," + StepStream::Ref(srf) + "," + StepStream::Ref(rep) + ")");
+        };
         for (SbSegment& s : segs) {
             const std::vector<std::int64_t>& vs = chains[s.mChain].mVerts;
             const std::int64_t a = vs[s.mFrom], b = vs[s.mTo];
@@ -1080,6 +1191,19 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                 curve = st.Ent("B_SPLINE_CURVE_WITH_KNOTS(''," + std::to_string(piece.mDegree) +
                                ",(" + pts + "),.UNSPECIFIED.,.F.,.F.,(" + mults + "),(" + knots +
                                "),.UNSPECIFIED.)");
+                // Between two network faces, the curve with its p-curve on
+                // each (v17.12.0): a SURFACE_CURVE, the 3-D curve the master.
+                const SbChain& ch = chains[s.mChain];
+                if (network_group(ch.mFwd) && network_group(ch.mBwd)) {
+                    const std::int64_t p1 = network_pcurve(ch.mFwd, piece);
+                    const std::int64_t p2 = p1 != 0 ? network_pcurve(ch.mBwd, piece) : 0;
+                    if (p1 != 0 && p2 != 0) {
+                        curve = st.Ent("SURFACE_CURVE(''," + StepStream::Ref(curve) + ",(" +
+                                       StepStream::Ref(p1) + "," + StepStream::Ref(p2) +
+                                       "),.CURVE_3D.)");
+                        ++res.mNumPcurveEdges;
+                    }
+                }
                 ++res.mNumSplineEdges;
                 ++res.mNumSharedEdges;
             } else {
@@ -1177,44 +1301,9 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                                    "," + step_real(hm * std::tan(a)) + "," + step_real(a) + ")");
                         break;
                     }
-                    case 6: {
-                        // A freeform face (v17.12.0): its poles row by row in u.
-                        const BsplineSurface& bs =
-                            (*rOptions.mFreeform)[static_cast<std::size_t>(row->mFreeform)]
-                                .mSurface;
-                        std::string grid;
-                        for (std::size_t i = 0; i < bs.mNu; ++i) {
-                            std::string line;
-                            for (std::size_t j = 0; j < bs.mNv; ++j) {
-                                const std::int64_t q = st.Ent(
-                                    "CARTESIAN_POINT(''," +
-                                    StepStream::Triple(&bs.mPoles[3 * (i + bs.mNu * j)]) + ")");
-                                line += (j == 0 ? "" : ",") + StepStream::Ref(q);
-                            }
-                            grid += (i == 0 ? "(" : ",(") + line + ")";
-                        }
-                        const auto knots = [](const std::vector<double>& rK, std::string& rMults,
-                                              std::string& rValues) {
-                            std::size_t i = 0;
-                            while (i < rK.size()) {
-                                std::size_t j = i;
-                                while (j < rK.size() && rK[j] == rK[i])
-                                    ++j;
-                                rMults += (rMults.empty() ? "" : ",") + std::to_string(j - i);
-                                rValues += (rValues.empty() ? "" : ",") + step_real(rK[i]);
-                                i = j;
-                            }
-                        };
-                        std::string um, uk, vm, vk;
-                        knots(bs.mKnotsU, um, uk);
-                        knots(bs.mKnotsV, vm, vk);
-                        surface =
-                            st.Ent("B_SPLINE_SURFACE_WITH_KNOTS(''," + std::to_string(bs.mDegreeU) +
-                                   "," + std::to_string(bs.mDegreeV) + ",(" + grid +
-                                   "),.UNSPECIFIED.,.F.,.F.,.F.,(" + um + "),(" + vm + "),(" + uk +
-                                   "),(" + vk + "),.UNSPECIFIED.)");
+                    case 6:
+                        surface = bspline_surface(g);
                         break;
-                    }
                     default:
                         surface =
                             st.Ent("TOROIDAL_SURFACE(''," + StepStream::Ref(placement(p, p + 3)) +

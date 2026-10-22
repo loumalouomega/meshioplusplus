@@ -31,6 +31,7 @@
 #include <utility>
 #include <vector>
 
+#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 #include "analytic_surfaces.hpp"
@@ -160,6 +161,65 @@ inline Mesh fitted_abs(const Mesh& rSkin, double Tolerance, std::int64_t MinPatc
     fo.mTolerance = Tolerance;
     fo.mRelative = false;
     return meshioplusplus::fit_primitives(meshioplusplus::segment(rSkin, so).mMesh, fo).mMesh;
+}
+
+/**
+ * @brief A segmentation that missed a crease: `rFitted` (a box from
+ * `fitted_abs`) with its planar side at the smallest x merged into its type-0
+ * (freeform) patch, the side's fit-table row dropped.
+ */
+inline Mesh merged_side(Mesh rFitted) {
+    using meshioplusplus::detail::read_double;
+    using meshioplusplus::detail::read_int;
+    const double* p = rFitted.Points().As<double>();
+    double lo = 1e300;
+    for (std::size_t i = 0; i < rFitted.NumPoints(); ++i)
+        lo = std::min(lo, p[3 * i]);
+    const NDArray& ids = rFitted.FieldData("fit:patch_id");
+    const NDArray& types = rFitted.FieldData("fit:patch_type");
+    std::int64_t freeform = -1, side = -1;
+    for (std::size_t r = 0; r < ids.Size(); ++r)
+        if (read_int(types, r) == 0)
+            freeform = read_int(ids, r);
+    std::vector<NDArray> blocks;
+    for (std::size_t b = 0; b < rFitted.NumCellBlocks(); ++b) {
+        const NDArray& label = rFitted.CellData("segment:patch", b);
+        const NDArray& conn = rFitted.Cells(b).Conn();
+        const std::size_t k = rFitted.Cells(b).NodesPerCell(), nc = rFitted.Cells(b).NumCells();
+        NDArray out = NDArray::Uninit(DType::Int64, {nc});
+        for (std::size_t c = 0; c < nc; ++c) {
+            bool on = true;
+            for (std::size_t j = 0; j < k; ++j)
+                on = on && p[3 * read_int(conn, c * k + j)] == lo;
+            out.As<std::int64_t>()[c] = on ? freeform : read_int(label, c);
+            if (on)
+                side = read_int(label, c);
+        }
+        blocks.push_back(std::move(out));
+    }
+    rFitted.AddCellData("segment:patch", std::move(blocks));
+    const NDArray& params = rFitted.FieldData("fit:patch_params");
+    const NDArray& tols = rFitted.FieldData("fit:patch_tolerance");
+    const std::size_t rows = ids.Size(), np = params.Size() / rows;
+    NDArray nid = NDArray::Uninit(DType::Int64, {rows - 1});
+    NDArray ntype = NDArray::Uninit(DType::Int64, {rows - 1});
+    NDArray nparam = NDArray::Uninit(DType::Float64, {rows - 1, np});
+    NDArray ntol = NDArray::Uninit(DType::Float64, {rows - 1});
+    for (std::size_t r = 0, w = 0; r < rows; ++r) {
+        if (read_int(ids, r) == side)
+            continue;
+        nid.As<std::int64_t>()[w] = read_int(ids, r);
+        ntype.As<std::int64_t>()[w] = read_int(types, r);
+        for (std::size_t k = 0; k < np; ++k)
+            nparam.As<double>()[w * np + k] = read_double(params, r * np + k);
+        ntol.As<double>()[w] = read_double(tols, r);
+        ++w;
+    }
+    rFitted.AddFieldData("fit:patch_id", std::move(nid));
+    rFitted.AddFieldData("fit:patch_type", std::move(ntype));
+    rFitted.AddFieldData("fit:patch_params", std::move(nparam));
+    rFitted.AddFieldData("fit:patch_tolerance", std::move(ntol));
+    return rFitted;
 }
 
 /**

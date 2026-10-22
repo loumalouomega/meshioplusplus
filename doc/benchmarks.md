@@ -833,6 +833,17 @@ CMAKE_BUILD_PARALLEL_LEVEL=4 tools/bench_ops.sh benchmark/results_ops.csv "SEQ O
 build/bench-ops-seq/meshioplusplus_bench_ops --tier XL --runs 1 --ops feature_edges
 ```
 
+### fit_cad's freeform rows at scale
+
+`fit_cad_adaptive` and `fit_cad_network` run the native backend over the cube's skin (12 n² triangles) with a monkey saddle lifted onto its top face, which becomes one adaptive B-spline face or a patch network. Single-threaded on the OpenMP backend, one run each:
+
+| Tier | Skin triangles (saddle top) | `fit_cad_adaptive` | `fit_cad_network` |
+| --- | --- | --- | --- |
+| L | 30,000 (5,000) | 0.11 s | 0.96 s |
+| XL | 172,800 (28,800) | 0.69 s | 4.1 s |
+
+The digests agree at 1 and 4 threads and on the `NATIVE` mesh backend (tiers S to L). The rows never fail CI on time.
+
 ### Determinism check
 
 Every operation's output is meant to be byte-identical across parallel backends and thread counts; the serial phases in several operations exist to guarantee that. `--hash` makes each row carry a 64-bit digest of its result — points, connectivity, point/cell/field data and regions in block and sorted-name order, plus the result's index maps and counters — taken from the untimed warmup run, and `tools/bench_ops.sh` then fails if one row's digest differs between any two backends or thread counts. With `BASELINE=<earlier.csv>` it also fails if a digest differs from that earlier sweep, which is how a change that must not alter output proves it:

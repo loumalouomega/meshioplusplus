@@ -123,6 +123,10 @@ struct PatchNetwork {
     std::vector<BsplineCurve> mChains;
     std::vector<std::vector<double>> mChainParams;
     double mMaxG1AngleDeg = 0.0;
+    /// The largest G1 angle over the accepted patches with the samples next
+    /// to extraordinary vertices included, whatever the mode: the measure
+    /// two modes are compared by.
+    double mMaxG1AngleEvDeg = 0.0;
     /// Chains shared by two patches.
     std::size_t mNumEdges = 0;
     std::size_t mNumExtraordinary = 0;

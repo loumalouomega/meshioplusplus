@@ -859,10 +859,27 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
             return false;
         // No fold: the surface's normal on a grid agrees with the skin's at
         // the nearest vertex in the parameters (a fold back along an edge
-        // stays near the skin, so the distances above do not see it).
-        for (int a2 = 0; a2 <= 8; ++a2)
-            for (int b2 = 0; b2 <= 8; ++b2) {
-                const double u = a2 / 8.0, w = b2 / 8.0;
+        // stays near the skin, so the distances above do not see it). The
+        // grid is denser in the two spans next to each side, where the
+        // corners' constraints bend the surface most.
+        const auto fold_params = [](const std::vector<double>& rK) {
+            std::vector<double> t;
+            for (int a2 = 0; a2 <= 8; ++a2)
+                t.push_back(a2 / 8.0);
+            std::vector<double> k(rK.begin(), rK.end());
+            k.erase(std::unique(k.begin(), k.end()), k.end());
+            const std::size_t spans = k.size() > 1 ? k.size() - 1 : 0;
+            for (std::size_t sp = 0; sp < spans; ++sp)
+                if (sp < 2 || sp + 2 >= spans)
+                    for (double f : {0.1, 0.35, 0.65, 0.9})
+                        t.push_back(k[sp] + f * (k[sp + 1] - k[sp]));
+            std::sort(t.begin(), t.end());
+            return t;
+        };
+        const std::vector<double> fu = fold_params(p.mSurface.mKnotsU);
+        const std::vector<double> fv = fold_params(p.mSurface.mKnotsV);
+        for (double u : fu)
+            for (double w : fv) {
                 std::size_t near_v = p.mVerts.front();
                 double bd = 1e300;
                 for (std::size_t v : p.mVerts) {
@@ -1009,6 +1026,7 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
         NetworkPatch& r = out.mPatches[i];
         r.mMaxG1AngleDeg = g1_angle(i, !g1_ev);
         out.mMaxG1AngleDeg = std::max(out.mMaxG1AngleDeg, r.mMaxG1AngleDeg);
+        out.mMaxG1AngleEvDeg = std::max(out.mMaxG1AngleEvDeg, g1_angle(i, false));
     }
     return out;
 }
