@@ -30299,6 +30299,339 @@ MESHIOPLUSPLUS_API OctreeResult octree(const Mesh& rMesh, const OctreeOptions& r
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/octree.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/quality.hpp =====
+/**
+ * @file operations/quality.hpp
+ * @brief Per-cell mesh quality metrics + inverted-element detection, part of
+ * the dependency-free mesh-operations layer.
+ *
+ * `compute_quality` scores every cell of every block on a fixed set of
+ * geometric metrics (area/volume, scaled Jacobian, aspect ratio, skewness,
+ * interior/dihedral angles, warpage) evaluated on the cell's *corner* nodes
+ * (quadratic variants reduce to their linear parent), and aggregates a
+ * per-metric summary plus counts of inverted (negative signed volume) and
+ * degenerate (near-zero) cells. `attach_quality` returns a copy of the mesh
+ * with every metric attached as `cell_data` (name `"quality:<metric>"`), ready
+ * to write out and visualise. All metrics use only standard C++ math and the
+ * uniform mesh API, so they run under every mesh backend.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Aggregate statistics for one quality metric over all cells that have
+ * a finite value for it.
+ */
+struct QualityMetricSummary {
+    /// Number of histogram bins spanning `[mMin, mMax]`.
+    static constexpr int K = 10;
+    double mMin = std::numeric_limits<double>::quiet_NaN();
+    double mMax = std::numeric_limits<double>::quiet_NaN();
+    double mMean = std::numeric_limits<double>::quiet_NaN();
+    /// Cells contributing a finite value.
+    std::int64_t mCount = 0;
+    /// Counts per bin over `[mMin, mMax]`; all zero when `mCount == 0`.
+    std::array<std::int64_t, K> mHistogram{};
+};
+
+/**
+ * @brief The result of `compute_quality`: per-metric summaries, per-cell metric
+ * arrays (ready to attach as `cell_data`), and inverted/degenerate counts.
+ */
+struct QualityReport {
+    /// Total cells scored (across all blocks, including unsupported ones).
+    std::int64_t mNumCells = 0;
+    /// Cells with negative signed volume/area.
+    std::int64_t mNumInverted = 0;
+    /// Cells that are degenerate (near-zero volume/edge/Jacobian).
+    std::int64_t mNumDegenerate = 0;
+    /// Metric name -> summary, in the fixed metric order (see `quality.cpp`).
+    std::vector<std::pair<std::string, QualityMetricSummary>> mMetrics;
+    /// Metric name -> one `Float64` array of shape `(num_cells_in_block, 1)`
+    /// per cell block (NaN where the metric does not apply), in the same order.
+    std::vector<std::pair<std::string, std::vector<NDArray>>> mCellArrays;
+};
+
+/**
+ * @brief Compute per-cell quality metrics and their aggregate report.
+ * @param rMesh the mesh to evaluate
+ * @return the filled `QualityReport`
+ */
+MESHIOPLUSPLUS_API QualityReport compute_quality(const Mesh& rMesh);
+
+/**
+ * @brief A copy of @p rMesh with every quality metric attached as `cell_data`.
+ *
+ * Each metric becomes a `cell_data` entry named `"quality:<metric>"` with one
+ * array per cell block (NaN where the metric does not apply to that block's
+ * cell type).
+ * @param rMesh the mesh to score
+ * @return a copy carrying the metric arrays
+ */
+MESHIOPLUSPLUS_API Mesh attach_quality(const Mesh& rMesh);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/quality.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/octree_mesh.hpp =====
+/**
+ * @file operations/octree_mesh.hpp
+ * @brief A volume mesh of the inside of a skin on a balanced octree: castellated
+ * hexahedra, conforming graded tetrahedra fitted to the skin (the default), or
+ * all-hexahedra.
+ *
+ * The skin is any surface (`triangle`, `quad`, `polygon` blocks), closed or
+ * slightly dirty: inside and outside come from the fast generalised winding
+ * number, so holes, self-intersections and non-manifold edges are tolerated.
+ * A size field (`h_min` ≤ h ≤ `h_max`, driven by curvature, sharp features,
+ * the local thickness and an optional array) refines a linear octree, which
+ * is 2:1-balanced across faces, edges and corners. Then:
+ *
+ *  - `Castellated`: the leaves inside the skin as `hexahedron` cells, with
+ *    hanging nodes flagged, the `inside` and `boundary_cells` cell regions,
+ *    the `surrogate_boundary` side region (the faces between inside and
+ *    outside leaves) and `sdf:distance` / `sdf:closest_point` at every node,
+ *    for embedded and Shifted Boundary Method solvers;
+ *  - `Tetra`: a conforming graded BCC tetrahedralisation of the octree, cut
+ *    to the skin by isosurface stuffing (or cleaving), sharp features
+ *    snapped, then fitted, untangled and optimised;
+ *  - `Hexa`: all-hexahedra by the octree dual, projected, pillowed and
+ *    untangled.
+ *
+ * `octree` (operations/octree.hpp) is a separate operation and is not
+ * affected. Every output is byte-identical across parallel backends and
+ * thread counts. See doc/octree_mesh.md.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Point data: the signed distance to the skin (negative inside).
+inline constexpr const char* kOctreeMeshDistanceName = "sdf:distance";
+/// Point data (3 components): the nearest point on the skin.
+inline constexpr const char* kOctreeMeshClosestPointName = "sdf:closest_point";
+/// Cell data (Int64): the lattice shape class of a tetrahedron (1-6), 0 for a
+/// cell the stuffing or the optimiser created.
+inline constexpr const char* kOctreeMeshShapeName = "octree_mesh:shape";
+/// Cell region: the cells inside the skin.
+inline constexpr const char* kOctreeMeshInsideRegion = "inside";
+/// Cell region: the cells outside the skin (`mKeepOutside`).
+inline constexpr const char* kOctreeMeshOutsideRegion = "outside";
+/// Cell region: the castellated leaves the skin passes through.
+inline constexpr const char* kOctreeMeshBoundaryCellsRegion = "boundary_cells";
+/// Side region: the faces between inside and outside castellated leaves.
+inline constexpr const char* kOctreeMeshSurrogateRegion = "surrogate_boundary";
+/// Side region: the boundary faces of a tetrahedral or hexahedral output.
+inline constexpr const char* kOctreeMeshBoundaryRegion = "boundary";
+/// Point region: the output nodes on the skin's feature corners.
+inline constexpr const char* kOctreeMeshCornersRegion = "feature_corners";
+/// Point region: the output nodes on the skin's feature edges.
+inline constexpr const char* kOctreeMeshFeatureEdgesRegion = "feature_edges";
+
+/// What `octree_mesh` produces.
+enum class OctreeMeshOutput {
+    Castellated = 0,  ///< the leaves as hexahedra, with surrogate-boundary tags
+    Tetra = 1,        ///< conforming tetrahedra fitted to the skin
+    Hexa = 2,         ///< all-hexahedra by the octree dual
+};
+
+/// How a tetrahedral output conforms to the skin.
+enum class OctreeMeshConformity {
+    Stuffing = 0,  ///< isosurface stuffing (Labelle and Shewchuk 2007)
+    Cleaving = 1,  ///< lattice cleaving of the winding-number regions (Bronson et al. 2014)
+};
+
+/// How the size field may vary along the skin.
+enum class OctreeMeshSkinGrading {
+    /// The size field grades along the skin too; the tetrahedra cut where the
+    /// level changes are transition shapes, and the minimum dihedral is reported.
+    Graded = 0,
+    /// Every leaf the skin cuts is at one level, with two rings of leaves at
+    /// that level around them: every tetrahedron stuffing touches is a BCC
+    /// tetrahedron and the 10.7°-164.8° dihedral bound applies.
+    Uniform = 1,
+};
+
+/// Which leaves a castellated output keeps.
+enum class OctreeMeshFill {
+    All = 0,     ///< every leaf
+    Inside = 1,  ///< the leaves whose centre is inside
+    Cover = 2,   ///< the inside leaves and every leaf the skin cuts
+};
+
+/// Parse an `OctreeMeshOutput` name (`castellated`, `tet`, `hex`).
+MESHIOPLUSPLUS_API OctreeMeshOutput octree_mesh_output_from_name(const std::string& rName);
+/// Parse an `OctreeMeshConformity` name (`stuffing`, `cleaving`).
+MESHIOPLUSPLUS_API OctreeMeshConformity octree_mesh_conformity_from_name(const std::string& rName);
+/// Parse an `OctreeMeshSkinGrading` name (`graded`, `uniform`).
+MESHIOPLUSPLUS_API OctreeMeshSkinGrading
+octree_mesh_skin_grading_from_name(const std::string& rName);
+/// Parse an `OctreeMeshFill` name (`all`, `inside`, `cover`).
+MESHIOPLUSPLUS_API OctreeMeshFill octree_mesh_fill_from_name(const std::string& rName);
+/// The name of an `OctreeMeshOutput` (`castellated`, `tet`, `hex`).
+MESHIOPLUSPLUS_API const char* octree_mesh_output_name(OctreeMeshOutput Output);
+
+/// Options for `octree_mesh`.
+struct OctreeMeshOptions {
+    /// What to produce.
+    OctreeMeshOutput mOutput = OctreeMeshOutput::Tetra;
+    /// The smallest leaf edge; 0: `mMaxSize / 32`.
+    double mMinSize = 0.0;
+    /// The largest leaf edge; 0: an eighth of the skin's bounding-box diagonal.
+    double mMaxSize = 0.0;
+    /// Cap on the finest level (at most 19); -1: from the sizes.
+    std::int64_t mMaxLevel = -1;
+    /// Explicit bounds `{lo[3], hi[3]}`; unset uses the skin's bounding box.
+    std::optional<std::array<double, 6>> mBounds;
+    /// Padding added to every side, in world units.
+    double mPadding = 0.0;
+    /// Padding added to every side, as a fraction of the bounding-box diagonal.
+    double mPaddingRelative = 0.1;
+    /// The angle (degrees) a leaf edge may subtend on a curved skin:
+    /// `h <= 2 sin(θ/2) / κ_max`; 0 disables the curvature term.
+    double mCurvatureAngle = 15.0;
+    /// Edges sharper than this dihedral (degrees) are features; 0 disables
+    /// features.
+    double mFeatureAngle = 30.0;
+    /// A feature vertex where the feature turns by more than this (degrees) is
+    /// a corner, as is one where the feature branches or ends.
+    double mCornerAngle = 30.0;
+    /// The size along feature edges; 0: `mMinSize`.
+    double mFeatureSize = 0.0;
+    /// Leaves across the local thickness of the skin (an inward ray cast); 0
+    /// disables the thickness term.
+    double mGapCells = 2.0;
+    /// Also measure the gaps outside the skin (between separate parts).
+    bool mGapOutside = false;
+    /// Name of a `point_data` array of target sizes on the skin; empty: none.
+    std::string mSizeArray;
+    /// Restrict the skin to this named cell region; empty: every surface block.
+    std::string mSurfaceRegion;
+    /// Rings of leaves around every cut leaf kept at its level.
+    std::int64_t mGradingLayers = 1;
+    /// How the size field may vary along the skin.
+    OctreeMeshSkinGrading mSkinGrading = OctreeMeshSkinGrading::Graded;
+    /// The skin size under `Uniform` grading; 0: the smallest size the field
+    /// asks for on the skin.
+    double mSurfaceSize = 0.0;
+    /// A point is inside where the winding number exceeds this.
+    double mWindingThreshold = 0.5;
+    /// Accuracy of the fast winding number (Barill et al.'s β); 0 sums every
+    /// triangle exactly.
+    double mWindingBeta = 2.0;
+    /// How a tetrahedral output conforms to the skin.
+    OctreeMeshConformity mConformity = OctreeMeshConformity::Stuffing;
+    /// Stuffing's violation threshold on long lattice edges.
+    double mAlphaLong = 0.24799;
+    /// Stuffing's violation threshold on short lattice edges.
+    double mAlphaShort = 0.40173;
+    /// Snap the boundary to the skin's feature corners and edges.
+    bool mPreserveFeatures = true;
+    /// Rounds of fitting, untangling and optimisation; 0 disables them.
+    std::int64_t mFitIterations = 5;
+    /// Undo any optimisation move that lowers a node's minimum dihedral below
+    /// the mesh's minimum before the pass.
+    bool mDihedralFloorGuard = true;
+    /// Which leaves a castellated output keeps.
+    OctreeMeshFill mFill = OctreeMeshFill::Inside;
+    /// Also mesh the space between the skin and the bounds (tetrahedral
+    /// output), as the `outside` region.
+    bool mKeepOutside = false;
+    /// Attach `sdf:distance` (and, castellated, `sdf:closest_point`).
+    bool mAttachDistance = true;
+    /// Attach the `quality:*` cell data of `attach_quality`.
+    bool mAttachQuality = false;
+    /// Hexahedral output: insert a layer of hexahedra along the boundary.
+    bool mPillow = true;
+    /// Hexahedral output: untangling iterations.
+    std::int64_t mUntangleIterations = 50;
+    /// Refuse an octree with more leaves than this.
+    std::int64_t mMaxCells = 20000000;
+    /// Refuse an output with more cells than this.
+    std::int64_t mMaxTets = 100000000;
+};
+
+/// The result of `octree_mesh`.
+struct OctreeMeshResult {
+    Mesh mMesh;                                          ///< The volume mesh.
+    OctreeMeshOutput mOutput = OctreeMeshOutput::Tetra;  ///< What it is.
+    std::array<double, 3> mOrigin{{0.0, 0.0, 0.0}};      ///< Lo corner of the root lattice.
+    double mRootSize = 0.0;                              ///< Edge of a root cell.
+    std::array<std::int64_t, 3> mRootCells{{1, 1, 1}};   ///< Root cells per axis.
+    std::int64_t mMaxLevel = 0;                          ///< The finest level allowed.
+    std::int64_t mFinestLevel = 0;                       ///< The deepest level present.
+    std::int64_t mSurfaceLevel = -1;  ///< The skin level under `Uniform` grading, else -1.
+    double mMinSize = 0.0;            ///< The resolved smallest leaf edge.
+    double mMaxSize = 0.0;            ///< The resolved largest leaf edge.
+    std::int64_t mNumLeaves = 0;      ///< Leaves of the balanced octree.
+    std::vector<std::int64_t> mLeavesPerLevel;  ///< Leaves at each level.
+    std::int64_t mNumPoints = 0;                ///< Output points.
+    std::int64_t mNumCells = 0;                 ///< Output cells.
+    std::int64_t mNumHexahedra = 0;             ///< Output hexahedra.
+    std::int64_t mNumTetrahedra = 0;            ///< Output tetrahedra.
+    std::int64_t mNumInside = 0;                ///< Cells in the `inside` region.
+    std::int64_t mNumBoundaryCells = 0;         ///< Castellated cells the skin cuts.
+    std::int64_t mNumSurrogateFaces = 0;        ///< Faces in the `surrogate_boundary` region.
+    std::int64_t mNumHanging = 0;               ///< Hanging nodes of a castellated output.
+    std::int64_t mNumCutPoints = 0;             ///< Points stuffing placed on lattice edges.
+    std::int64_t mNumWarped = 0;                ///< Lattice vertices stuffing moved onto the skin.
+    std::int64_t mNumWarpRefused = 0;           ///< Warps refused to keep a tetrahedron valid.
+    double mMinDihedral = 0.0;                  ///< Smallest dihedral angle (tetrahedra), degrees.
+    double mMaxDihedral = 0.0;                  ///< Largest dihedral angle (tetrahedra), degrees.
+    double mMinScaledJacobian = 0.0;            ///< Smallest scaled Jacobian over the cells.
+    std::int64_t mNumInverted = 0;              ///< Cells with a non-positive volume.
+    /// The two-sided distance between the output's boundary and the skin; -1
+    /// when not measured (castellated output).
+    double mHausdorffToSkin = -1.0;
+    std::int64_t mNumBoundaryEdgesOpen = 0;         ///< Output boundary edges used once.
+    std::int64_t mNumNonManifoldBoundaryEdges = 0;  ///< Output boundary edges used 3+ times.
+    std::int64_t mNumCorners = 0;                   ///< Feature corners of the skin.
+    std::int64_t mNumCornersSnapped = 0;            ///< Corners an output node was snapped to.
+    std::int64_t mNumFeatureChains = 0;             ///< Feature chains of the skin.
+    std::int64_t mNumFeatureChainsMissed = 0;       ///< Chains not recovered by the boundary.
+    /// The Labelle-Shewchuk dihedral bound applies to every tetrahedron:
+    /// `Uniform` grading, nothing snapped to features, nothing refused.
+    bool mGuaranteeApplies = false;
+    std::int64_t mNumWindingRechecks = 0;  ///< Winding numbers re-evaluated near 0.5.
+    QualityReport mQuality;                ///< `compute_quality` of the output.
+    /// Seconds spent in each stage, in order.
+    std::vector<std::pair<std::string, double>> mTimings;
+    /// Everything that did not meet its target, in order.
+    std::vector<std::string> mWarnings;
+};
+
+/**
+ * @brief Mesh the inside of the skin @p rSkin on a balanced octree.
+ * @throws std::invalid_argument on a skin with no surface cells, sizes that are
+ *         not positive or `mMinSize > mMaxSize`, a lattice too fine for the
+ *         63-bit keys (`root_cells << max_level >= 2^20` on an axis), more
+ *         leaves than `mMaxCells`, more output cells than `mMaxTets`, an
+ *         unknown `mSizeArray` or `mSurfaceRegion`, and out-of-range options,
+ *         each naming the option.
+ */
+MESHIOPLUSPLUS_API OctreeMeshResult octree_mesh(const Mesh& rSkin,
+                                                const OctreeMeshOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/octree_mesh.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/optimize_volume.hpp =====
 /**
  * @file optimize_volume.hpp
@@ -31409,89 +31742,6 @@ MESHIOPLUSPLUS_API Mesh reference_cells(const std::vector<std::string>& rTypes =
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/primitives.hpp =====
-// ===== begin src/cpp/include/meshioplusplus/operations/quality.hpp =====
-/**
- * @file operations/quality.hpp
- * @brief Per-cell mesh quality metrics + inverted-element detection, part of
- * the dependency-free mesh-operations layer.
- *
- * `compute_quality` scores every cell of every block on a fixed set of
- * geometric metrics (area/volume, scaled Jacobian, aspect ratio, skewness,
- * interior/dihedral angles, warpage) evaluated on the cell's *corner* nodes
- * (quadratic variants reduce to their linear parent), and aggregates a
- * per-metric summary plus counts of inverted (negative signed volume) and
- * degenerate (near-zero) cells. `attach_quality` returns a copy of the mesh
- * with every metric attached as `cell_data` (name `"quality:<metric>"`), ready
- * to write out and visualise. All metrics use only standard C++ math and the
- * uniform mesh API, so they run under every mesh backend.
- */
-
-// System includes
-#include <array>
-#include <cstdint>
-#include <limits>
-#include <string>
-#include <utility>
-#include <vector>
-
-// Project includes
-
-namespace meshioplusplus {
-
-/**
- * @brief Aggregate statistics for one quality metric over all cells that have
- * a finite value for it.
- */
-struct QualityMetricSummary {
-    /// Number of histogram bins spanning `[mMin, mMax]`.
-    static constexpr int K = 10;
-    double mMin = std::numeric_limits<double>::quiet_NaN();
-    double mMax = std::numeric_limits<double>::quiet_NaN();
-    double mMean = std::numeric_limits<double>::quiet_NaN();
-    /// Cells contributing a finite value.
-    std::int64_t mCount = 0;
-    /// Counts per bin over `[mMin, mMax]`; all zero when `mCount == 0`.
-    std::array<std::int64_t, K> mHistogram{};
-};
-
-/**
- * @brief The result of `compute_quality`: per-metric summaries, per-cell metric
- * arrays (ready to attach as `cell_data`), and inverted/degenerate counts.
- */
-struct QualityReport {
-    /// Total cells scored (across all blocks, including unsupported ones).
-    std::int64_t mNumCells = 0;
-    /// Cells with negative signed volume/area.
-    std::int64_t mNumInverted = 0;
-    /// Cells that are degenerate (near-zero volume/edge/Jacobian).
-    std::int64_t mNumDegenerate = 0;
-    /// Metric name -> summary, in the fixed metric order (see `quality.cpp`).
-    std::vector<std::pair<std::string, QualityMetricSummary>> mMetrics;
-    /// Metric name -> one `Float64` array of shape `(num_cells_in_block, 1)`
-    /// per cell block (NaN where the metric does not apply), in the same order.
-    std::vector<std::pair<std::string, std::vector<NDArray>>> mCellArrays;
-};
-
-/**
- * @brief Compute per-cell quality metrics and their aggregate report.
- * @param rMesh the mesh to evaluate
- * @return the filled `QualityReport`
- */
-MESHIOPLUSPLUS_API QualityReport compute_quality(const Mesh& rMesh);
-
-/**
- * @brief A copy of @p rMesh with every quality metric attached as `cell_data`.
- *
- * Each metric becomes a `cell_data` entry named `"quality:<metric>"` with one
- * array per cell block (NaN where the metric does not apply to that block's
- * cell type).
- * @param rMesh the mesh to score
- * @return a copy carrying the metric arrays
- */
-MESHIOPLUSPLUS_API Mesh attach_quality(const Mesh& rMesh);
-
-}  // namespace meshioplusplus
-// ===== end src/cpp/include/meshioplusplus/operations/quality.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/quality_gate.hpp =====
 /**
  * @file operations/quality_gate.hpp
@@ -40137,6 +40387,290 @@ private:
 
 #endif  // MESHIOPLUSPLUS_HAS_OCCT
 // ===== end src/cpp/src/detail/occt_brep.hpp =====
+// ===== begin src/cpp/src/detail/tri_bvh.hpp =====
+/**
+ * @file detail/tri_bvh.hpp
+ * @brief A bounding-volume hierarchy over a triangle soup, for the fast
+ * generalised winding number and for ray casts, used by `octree_mesh`.
+ *
+ * **The winding number.** `w(q) = (1/4π) Σ Ω_t(q)`, the solid angles of the
+ * triangles seen from `q` (Van Oosterom and Strackee, IEEE Trans. Biomed.
+ * Eng. 30(2), 1983), is 1 inside a closed, outward-wound surface and 0
+ * outside, and degrades gracefully on holes, self-intersections and
+ * non-manifold edges (Jacobson, Kavan and Sorkine-Hornung, "Robust
+ * inside-outside segmentation using generalized winding numbers", SIGGRAPH
+ * 2013). Evaluated directly it is O(T) per query; the tree makes it
+ * O(log T) for points away from the surface (Barill, Dickson, Schmidt, Levin
+ * and Jacobson, "Fast winding numbers for soups and clouds", SIGGRAPH 2018):
+ * a node whose centre `p` is farther than `β` times its radius from `q` is
+ * replaced by the far-field expansion of its triangles' dipoles,
+ *
+ *     Ω ≈ N·F(r) + J(r):M + ½ H(r)⋮C,   r = p - q,   F(r) = r / |r|^3,
+ *
+ * the Taylor expansion of `F` to second order (`J` and `H` its first and
+ * second derivatives), where `N = Σ a_t n_t` is the area-weighted normal,
+ * `M = Σ_t a_t n_t (c_t - p)^T` the first moment and
+ * `C = Σ_t n_t ⊗ ∫_t (x - p)(x - p)^T dA` the second, integrated exactly over
+ * each triangle (`∫ (x - c)(x - c)^T = (a / 12) Σ_v (v - c)(v - c)^T`); nearer
+ * nodes are opened, and leaves sum the exact solid angles.
+ *
+ * **Determinism.** The tree is built over the triangles sorted by the Morton
+ * key of their centroids (ties by triangle id) and split at the median count,
+ * so its shape is a function of the triangle count alone; node data is
+ * accumulated bottom-up in a fixed (left, right) order, and every query
+ * traverses left first and adds in traversal order. A query's value is
+ * therefore the same bits on every backend and thread count. The ray cast
+ * keeps the nearest hit with ties broken by triangle id, so which node is
+ * visited first is unobservable (the reason `surface_distance.hpp` gives for
+ * not using a BVH for its own nearest-point search does not apply).
+ *
+ * A **core-private** header: nothing installed names it.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// One node in preorder: the left child is the next node, the right child is
+/// `mRight` (-1 for a leaf, whose triangles are `mOrder[mBegin, mBegin + mCount)`).
+struct TriBvhNode {
+    Vec3 mLo{0.0, 0.0, 0.0};
+    Vec3 mHi{0.0, 0.0, 0.0};
+    std::int32_t mBegin = 0;
+    std::int32_t mCount = 0;
+    std::int32_t mRight = -1;
+};
+
+/// The tree, and the far-field data of every node.
+struct TriBvh {
+    const TriangleSoup* mpSoup = nullptr;
+    /// Soup triangle ids in leaf order.
+    std::vector<std::int32_t> mOrder;
+    std::vector<TriBvhNode> mNodes;
+    /// Per node, the area-weighted centroid of its triangles.
+    std::vector<Vec3> mCentre;
+    /// Per node, `Σ a_t n_t` = `Σ ½ (b - a) × (c - a)`.
+    std::vector<Vec3> mNormalSum;
+    /// Per node, `Σ a_t n_t (c_t - p)^T`, row-major.
+    std::vector<std::array<double, 9>> mMoment;
+    /// Per node, `Σ n_t ⊗ ∫ (x - p)(x - p)^T dA`, index `9 i + 3 j + k`.
+    std::vector<std::array<double, 27>> mSecond;
+    /// Per node, an upper bound of the distance from `mCentre` to its corners.
+    std::vector<double> mRadius;
+};
+
+/// Build the tree over @p rSoup (kept by pointer: it must outlive the tree).
+TriBvh build_tri_bvh(const TriangleSoup& rSoup, std::int32_t LeafSize = 8);
+
+/// The signed solid angle of triangle `(A, B, C)` seen from @p rQ: positive
+/// when `rQ` lies behind it, on the side opposite `cross(B - A, C - A)`.
+double tri_solid_angle(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Vec3& rQ);
+
+/// The generalised winding number at @p rQ; @p Beta <= 0 sums every triangle
+/// exactly.
+double fast_winding(const TriBvh& rTree, const Vec3& rQ, double Beta);
+
+/// `fast_winding` at every point, in parallel.
+std::vector<double> fast_windings(const TriBvh& rTree, const std::vector<Vec3>& rPoints,
+                                  double Beta);
+
+/// The nearest hit of a ray.
+struct TriRayHit {
+    double mT = 0.0;              ///< Ray parameter of the hit.
+    std::int64_t mTriangle = -1;  ///< Soup triangle id; -1 when nothing was hit.
+    Vec3 mNormal{0.0, 0.0, 0.0};  ///< The triangle's unnormalised normal.
+};
+
+/// The nearest triangle hit by `rOrigin + t rDir` with `TMin < t <= TMax`
+/// (Möller and Trumbore, JGT 2(1), 1997), skipping triangle @p Skip; ties
+/// go to the lower triangle id. Barycentric coordinates within 1e-10 of a
+/// triangle's edge count as a hit, so a ray through a shared edge or vertex
+/// does not slip between its triangles.
+TriRayHit tri_bvh_ray(const TriBvh& rTree, const Vec3& rOrigin, const Vec3& rDir, double TMin,
+                      double TMax, std::int64_t Skip = -1);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/tri_bvh.hpp =====
+// ===== begin src/cpp/src/detail/octree_size_field.hpp =====
+/**
+ * @file detail/octree_size_field.hpp
+ * @brief The skin of `octree_mesh` (welded, with normals and features), its
+ * size field, and the adaptive linear octree that size field refines.
+ *
+ * The size field is evaluated per skin primitive, as the smallest size its
+ * vertices ask for:
+ *
+ *     h = clamp(min(h_max, h_curv, h_feat, h_gap, h_user), h_min, h_max)
+ *
+ *  - `h_curv = 2 sin(θ/2) / κ_max`, the chord that subtends the angle θ on a
+ *    circle of the largest principal curvature `κ_max = |H| + sqrt(H² - K)`;
+ *  - `h_feat`, the size along sharp and non-manifold edges (segment primitives);
+ *  - `h_gap = t / gap_cells`, `t` the distance an inward ray from the vertex
+ *    travels before it leaves the skin through its far wall;
+ *  - `h_user`, a `point_data` array.
+ *
+ * The root lattice has `L = ceil(log2(h_max / h_min))` levels and a root edge
+ * `R = h_min 2^L`, so the finest leaf is `h_min` exactly and a leaf at level
+ * `lev(h) = ceil(log2(R / h))` is no larger than `h`. The octree is built top
+ * down as `octree` builds its own: each leaf keeps the primitives whose exact
+ * triangle-box overlap (Akenine-Möller, JGT 6(1), 2001) hits it, and splits
+ * while it is coarser than the finest level its primitives ask for. Leaves
+ * come out sorted by Morton key, so the result does not depend on the order of
+ * the work.
+ *
+ * A **core-private** header: nothing installed names it.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// The skin as welded triangles.
+struct OctreeSkin {
+    /// The triangle soup (as `build_triangle_soup` reduces the input).
+    TriangleSoup mSoup;
+    /// Welded points: exactly coincident input points are one.
+    std::vector<Vec3> mPoints;
+    /// Per soup triangle, its welded vertices.
+    std::vector<std::array<std::int64_t, 3>> mTris;
+    /// Per welded point, the input point it was first seen as.
+    std::vector<std::int64_t> mSourcePoint;
+    /// Per welded point, the area-weighted unit normal of its triangles.
+    std::vector<Vec3> mNormal;
+    /// The bounding box of the triangles' corners.
+    Vec3 mLo{0.0, 0.0, 0.0};
+    Vec3 mHi{0.0, 0.0, 0.0};
+    /// The boundary of a volume input (empty for a surface input).
+    Mesh mExtracted;
+    bool mFromVolume = false;
+    /// The surface the soup was taken from: @p rInput itself, or its boundary.
+    const Mesh& Surface(const Mesh& rInput) const { return mFromVolume ? mExtracted : rInput; }
+};
+
+/// Reduce @p rMesh (restricted to @p rRegion) to an `OctreeSkin`.
+/// @throws std::invalid_argument when no surface triangle remains.
+OctreeSkin octree_skin(const Mesh& rMesh, const std::string& rRegion, const char* pPrefix);
+
+/// A sharp or non-manifold edge of the skin, between welded points.
+struct OctreeFeatureEdge {
+    std::int64_t mA = 0;
+    std::int64_t mB = 0;
+};
+
+/// The sharp (dihedral above @p FeatureAngleDeg) and non-manifold edges of
+/// the skin, ascending; empty when @p FeatureAngleDeg is not positive.
+std::vector<OctreeFeatureEdge> octree_skin_features(const OctreeSkin& rSkin,
+                                                    double FeatureAngleDeg);
+
+/// The root lattice of the octree.
+struct OctreeFrame {
+    std::array<double, 3> mOrigin{{0.0, 0.0, 0.0}};
+    double mRootSize = 0.0;
+    std::array<std::int64_t, 3> mRoots{{1, 1, 1}};
+    std::int32_t mMaxLevel = 0;
+    double mMinSize = 0.0;  ///< the finest leaf edge, `mRootSize / 2^mMaxLevel`
+    double mMaxSize = 0.0;  ///< the largest leaf edge allowed
+    /// Edge of a finest cell.
+    double Fine() const { return mRootSize / static_cast<double>(std::int64_t{1} << mMaxLevel); }
+    /// The level whose leaves are no larger than @p Size.
+    std::int32_t LevelFor(double Size) const;
+    /// World coordinates of a finest-lattice point.
+    Vec3 Position(std::int64_t X, std::int64_t Y, std::int64_t Z) const;
+};
+
+/**
+ * @brief The root lattice over the box `[rLo, rHi]` (already padded): root
+ * edge `MinSize * 2^L` with `L = ceil(log2(MaxSize / MinSize))` (capped at
+ * @p MaxLevelCap when it is not negative), roots per axis covering the box,
+ * centred on it.
+ * @throws std::invalid_argument when the lattice needs `2^20` or more finest
+ *         cells on an axis.
+ */
+OctreeFrame octree_frame(const Vec3& rLo, const Vec3& rHi, double MinSize, double MaxSize,
+                         std::int64_t MaxLevelCap, const char* pPrefix);
+
+/// A skin primitive with its target size: a triangle, or a feature segment
+/// `(A, B, B)`.
+struct SizedPrim {
+    Vec3 mA{0.0, 0.0, 0.0};
+    Vec3 mB{0.0, 0.0, 0.0};
+    Vec3 mC{0.0, 0.0, 0.0};
+    double mSize = 0.0;
+};
+
+/// What drives the size field.
+struct SizeFieldSpec {
+    double mMinSize = 0.0;
+    double mMaxSize = 0.0;
+    double mCurvatureAngleDeg = 0.0;  ///< 0: off
+    double mFeatureSize = 0.0;        ///< 0: off (no feature primitives)
+    double mGapCells = 0.0;           ///< 0: off
+    bool mGapOutside = false;
+    const double* pUserSize = nullptr;  ///< per input point, or null
+};
+
+/// The size each welded point asks for (before clamping), and the primitives.
+struct SizeField {
+    std::vector<double> mPointSize;
+    std::vector<SizedPrim> mPrims;
+    /// The smallest size any primitive asks for (after clamping).
+    double mSkinMinSize = 0.0;
+};
+
+/// Evaluate the size field on the skin.
+SizeField octree_size_field(const OctreeSkin& rSkin, const TriBvh& rTree,
+                            const std::vector<OctreeFeatureEdge>& rFeatures,
+                            const SizeFieldSpec& rSpec);
+
+/// A refined octree with, per leaf, the primitives that reach it.
+struct AdaptiveOctree {
+    LinearOctree mTree;
+    /// Per leaf, 1 when a primitive overlaps it.
+    std::vector<std::uint8_t> mCut;
+    /// Per leaf, the indices of the primitives that overlap it.
+    std::vector<std::vector<std::int32_t>> mCand;
+};
+
+/**
+ * @brief Refine the frame's roots top down until every leaf is at the level
+ * its primitives ask for: `max(lev(size))` over the primitives that overlap
+ * it (or @p SurfaceLevel for every cut leaf when it is not negative), and at
+ * least `lev(MaxSize)` everywhere.
+ */
+AdaptiveOctree octree_adaptive_build(const OctreeFrame& rFrame,
+                                     const std::vector<SizedPrim>& rPrims,
+                                     std::int32_t SurfaceLevel, std::int64_t MaxCells);
+
+/// After the tree was refined further (`rOrigin[i]` the old leaf new leaf `i`
+/// came from), recompute the candidates and the cut flags of the new leaves.
+void octree_adaptive_refresh(AdaptiveOctree& rOctree, const OctreeFrame& rFrame,
+                             const std::vector<SizedPrim>& rPrims,
+                             const std::vector<std::int64_t>& rOrigin,
+                             std::vector<std::vector<std::int32_t>> OldCand);
+
+/// Whether primitive @p rPrim overlaps the closed box of a leaf.
+bool octree_prim_hits(const OctreeFrame& rFrame, const SizedPrim& rPrim,
+                      const std::array<std::int64_t, 3>& rLo, std::int64_t Span);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/octree_size_field.hpp =====
 // ===== begin src/cpp/src/detail/open_source.hpp =====
 /**
  * @file detail/open_source.hpp
@@ -46315,6 +46849,83 @@ void xdmf_write_sets(pugi::xml_node grid, xdmfcommon::DataItemStore& rStore, con
 
 }  // namespace meshioplusplus::xdmfdetail
 // ===== end src/cpp/src/formats/xdmf_sets.hpp =====
+// ===== begin src/cpp/src/operations/octree_mesh_internal.hpp =====
+/**
+ * @file operations/octree_mesh_internal.hpp
+ * @brief What the stages of `octree_mesh` share: the prepared skin, its trees,
+ * the frame and the balanced octree, and one entry point per output.
+ *
+ * A **core-private** header: nothing installed names it.
+ */
+
+// System includes
+#include <chrono>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// The prefix of every `octree_mesh` message.
+inline constexpr const char* kOctreeMeshPrefix = "meshio++: octree_mesh: ";
+
+/// Everything the outputs are built from. Not movable once built: the trees
+/// point into the skin's soup.
+struct OctreeMeshSetup {
+    OctreeSkin mSkin;
+    TriBvh mBvh;
+    DistanceQuery mQuery;
+    OctreeFrame mFrame;
+    std::vector<OctreeFeatureEdge> mFeatures;
+    SizeField mField;
+    /// The balanced octree, with per-leaf candidates and cut flags.
+    AdaptiveOctree mOctree;
+    /// The skin's bounding-box diagonal.
+    double mDiagonal = 0.0;
+    /// -1 when the skin is wound inside out (its winding numbers are negated).
+    double mWindingSign = 1.0;
+    /// Points at most this far from the skin are on it.
+    double mOnSkin = 0.0;
+};
+
+/// A stopwatch that records each stage's seconds in the result.
+struct OctreeMeshClock {
+    std::chrono::steady_clock::time_point mStart = std::chrono::steady_clock::now();
+    void Lap(OctreeMeshResult& rResult, const char* pStage);
+};
+
+/// Log a warning and keep it in the result.
+void octree_mesh_warn(OctreeMeshResult& rResult, const std::string& rMessage);
+
+/// The winding number at every point (the skin's orientation applied), with
+/// the values near the threshold re-evaluated more accurately.
+std::vector<double> octree_mesh_winding(const OctreeMeshSetup& rSetup,
+                                        const std::vector<Vec3>& rPoints,
+                                        const OctreeMeshOptions& rOptions,
+                                        OctreeMeshResult& rResult);
+
+/// The centre of every leaf of a tree.
+std::vector<Vec3> octree_mesh_leaf_centres(const OctreeFrame& rFrame, const LinearOctree& rTree);
+
+/// The signed distance (negative inside, 0 on the skin) and the closest skin
+/// point of every point.
+void octree_mesh_signed_distance(const OctreeMeshSetup& rSetup, const std::vector<Vec3>& rPoints,
+                                 const OctreeMeshOptions& rOptions, OctreeMeshResult& rResult,
+                                 std::vector<double>& rDistance, std::vector<Vec3>& rClosest);
+
+/// Fill the report's octree counters (leaves per level, finest level).
+void octree_mesh_report_tree(const LinearOctree& rTree, OctreeMeshResult& rResult);
+
+/// The castellated output.
+void octree_mesh_castellated(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions,
+                             OctreeMeshResult& rResult);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/octree_mesh_internal.hpp =====
 // ===== begin src/cpp/src/operations/smooth_odt.hpp =====
 /**
  * @file operations/smooth_odt.hpp
@@ -74176,6 +74787,424 @@ Mesh occt_tessellate(const TopoDS_Shape& rNurbs, const BrepInfo& rInfo, double D
 
 #endif  // MESHIOPLUSPLUS_HAS_OCCT
 // ===== end src/cpp/src/detail/occt_brep.cpp =====
+// ===== begin src/cpp/src/detail/octree_size_field.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+constexpr double kSzfPi = 3.14159265358979323846;
+
+bool szf_has_volume_cells(const Mesh& rMesh) {
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+        if (cell_type_dimension(cell_type_from_name(rMesh.Cells(b).Type())) == 3)
+            return true;
+    return false;
+}
+
+// A leaf under construction.
+struct SzfLeaf {
+    std::int64_t mX = 0, mY = 0, mZ = 0;
+    std::int32_t mLevel = 0;
+    std::vector<std::int32_t> mCand;
+};
+
+}  // namespace
+
+OctreeSkin octree_skin(const Mesh& rMesh, const std::string& rRegion, const char* pPrefix) {
+    OctreeSkin skin;
+    // A volume mesh contributes its boundary.
+    if (szf_has_volume_cells(rMesh)) {
+        skin.mExtracted = extract_surface(rMesh);
+        skin.mFromVolume = true;
+        skin.mSoup = build_triangle_soup(skin.mExtracted, rRegion);
+    } else
+        skin.mSoup = build_triangle_soup(rMesh, rRegion);
+    const TriangleSoup& soup = skin.mSoup;
+    const std::size_t nt = soup.NumTriangles();
+    if (nt == 0)
+        throw std::invalid_argument(std::string(pPrefix) +
+                                    "the skin has no surface triangles (a mesh of `line` cells is "
+                                    "a planar skin: use `octree`)");
+    // Weld exactly coincident points: sort the referenced points by their
+    // coordinates, then their id; a group's representative is its lowest id,
+    // and welded ids follow the representatives' input order.
+    std::vector<std::int64_t> used;
+    used.reserve(nt * 3);
+    for (const auto& tri : soup.mVertices)
+        for (std::int64_t v : tri)
+            used.push_back(v);
+    std::sort(used.begin(), used.end());
+    used.erase(std::unique(used.begin(), used.end()), used.end());
+    std::vector<std::int64_t> by_coord = used;
+    auto coord = [&](std::int64_t v) -> const Vec3& {
+        return soup.mPoints[static_cast<std::size_t>(v)];
+    };
+    parallel_sort(by_coord.begin(), by_coord.end(), [&](std::int64_t a, std::int64_t b) {
+        const Vec3 &pa = coord(a), &pb = coord(b);
+        if (pa != pb)
+            return pa < pb;
+        return a < b;
+    });
+    std::vector<std::int64_t> rep(soup.mPoints.size(), -1);
+    for (std::size_t i = 0; i < by_coord.size(); ++i) {
+        const std::int64_t v = by_coord[i];
+        if (i > 0 && coord(by_coord[i - 1]) == coord(v))
+            rep[static_cast<std::size_t>(v)] = rep[static_cast<std::size_t>(by_coord[i - 1])];
+        else
+            rep[static_cast<std::size_t>(v)] = v;
+    }
+    std::vector<std::int64_t> welded(soup.mPoints.size(), -1);
+    for (std::int64_t v : used)
+        if (rep[static_cast<std::size_t>(v)] == v) {
+            welded[static_cast<std::size_t>(v)] = static_cast<std::int64_t>(skin.mPoints.size());
+            skin.mPoints.push_back(coord(v));
+            skin.mSourcePoint.push_back(v);
+        }
+    skin.mTris.resize(nt);
+    for (std::size_t t = 0; t < nt; ++t)
+        for (std::size_t k = 0; k < 3; ++k)
+            skin.mTris[t][k] = welded[static_cast<std::size_t>(
+                rep[static_cast<std::size_t>(soup.mVertices[t][k])])];
+    // Area-weighted vertex normals, accumulated in triangle order.
+    skin.mNormal.assign(skin.mPoints.size(), {0.0, 0.0, 0.0});
+    for (std::size_t t = 0; t < nt; ++t) {
+        const Vec3* c = &soup.mCorners[3 * t];
+        const Vec3 n = vec3_cross(vec3_sub(c[1], c[0]), vec3_sub(c[2], c[0]));
+        for (std::int64_t v : skin.mTris[t])
+            skin.mNormal[static_cast<std::size_t>(v)] =
+                vec3_add(skin.mNormal[static_cast<std::size_t>(v)], n);
+    }
+    for (auto& n : skin.mNormal)
+        n = vec3_normalize(n);
+    skin.mLo = soup.mCorners[0];
+    skin.mHi = soup.mCorners[0];
+    for (const Vec3& c : soup.mCorners)
+        for (std::size_t k = 0; k < 3; ++k) {
+            skin.mLo[k] = std::min(skin.mLo[k], c[k]);
+            skin.mHi[k] = std::max(skin.mHi[k], c[k]);
+        }
+    return skin;
+}
+
+std::vector<OctreeFeatureEdge> octree_skin_features(const OctreeSkin& rSkin,
+                                                    double FeatureAngleDeg) {
+    std::vector<OctreeFeatureEdge> out;
+    if (!(FeatureAngleDeg > 0.0))
+        return out;
+    const std::size_t nt = rSkin.mTris.size();
+    std::vector<std::int64_t> corners(nt * 3);
+    std::vector<double> normal(nt * 3);
+    for (std::size_t t = 0; t < nt; ++t) {
+        const Vec3* c = &rSkin.mSoup.mCorners[3 * t];
+        const Vec3 n = vec3_normalize(vec3_cross(vec3_sub(c[1], c[0]), vec3_sub(c[2], c[0])));
+        for (std::size_t k = 0; k < 3; ++k) {
+            corners[3 * t + k] = rSkin.mTris[t][k];
+            normal[3 * t + k] = n[k];
+        }
+    }
+    for (const CreaseEdge& e : crease_edges_triangles(corners, normal, FeatureAngleDeg))
+        if (e.IsCrease())
+            out.push_back({e.mLo, e.mHi});
+    return out;
+}
+
+std::int32_t OctreeFrame::LevelFor(double Size) const {
+    if (!(Size < mRootSize))
+        return 0;
+    const double l = std::ceil(std::log2(mRootSize / Size) - 1e-9);
+    return static_cast<std::int32_t>(std::clamp(l, 0.0, static_cast<double>(mMaxLevel)));
+}
+
+Vec3 OctreeFrame::Position(std::int64_t X, std::int64_t Y, std::int64_t Z) const {
+    const double fine = Fine();
+    return {mOrigin[0] + static_cast<double>(X) * fine, mOrigin[1] + static_cast<double>(Y) * fine,
+            mOrigin[2] + static_cast<double>(Z) * fine};
+}
+
+OctreeFrame octree_frame(const Vec3& rLo, const Vec3& rHi, double MinSize, double MaxSize,
+                         std::int64_t MaxLevelCap, const char* pPrefix) {
+    if (!(MinSize > 0.0) || !(MaxSize >= MinSize) || !std::isfinite(MaxSize))
+        throw std::invalid_argument(
+            std::string(pPrefix) +
+            "min_size and max_size must be positive with min_size <= max_size");
+    OctreeFrame f;
+    const double ratio = MaxSize / MinSize;
+    std::int32_t levels = static_cast<std::int32_t>(std::ceil(std::log2(ratio) - 1e-9));
+    levels = std::max(levels, 0);
+    if (levels > 19)
+        throw std::invalid_argument(std::string(pPrefix) + "max_size / min_size needs " +
+                                    std::to_string(levels) + " octree levels, more than 19");
+    f.mRootSize = MinSize * static_cast<double>(std::int64_t{1} << levels);
+    f.mMaxLevel = levels;
+    if (MaxLevelCap >= 0 && MaxLevelCap < levels)
+        f.mMaxLevel = static_cast<std::int32_t>(MaxLevelCap);
+    f.mMinSize = f.mRootSize / static_cast<double>(std::int64_t{1} << f.mMaxLevel);
+    f.mMaxSize = MaxSize;
+    for (std::size_t k = 0; k < 3; ++k) {
+        const double ext = std::max(rHi[k] - rLo[k], 0.0);
+        const double roots = std::max(1.0, std::ceil(ext / f.mRootSize - 1e-12));
+        if (roots * static_cast<double>(std::int64_t{1} << f.mMaxLevel) >= 1048576.0)
+            throw std::invalid_argument(std::string(pPrefix) +
+                                        "the lattice needs 2^20 or more finest cells on an axis "
+                                        "(raise min_size or lower max_level)");
+        f.mRoots[k] = static_cast<std::int64_t>(roots);
+        f.mOrigin[k] = 0.5 * (rLo[k] + rHi[k]) - 0.5 * roots * f.mRootSize;
+    }
+    return f;
+}
+
+SizeField octree_size_field(const OctreeSkin& rSkin, const TriBvh& rTree,
+                            const std::vector<OctreeFeatureEdge>& rFeatures,
+                            const SizeFieldSpec& rSpec) {
+    SizeField out;
+    const std::size_t np = rSkin.mPoints.size();
+    const double inf = std::numeric_limits<double>::infinity();
+    out.mPointSize.assign(np, inf);
+    // Curvature: the chord subtending the angle on the largest principal curvature.
+    if (rSpec.mCurvatureAngleDeg > 0.0) {
+        NDArray pts = NDArray::Uninit(DType::Float64, {np, std::size_t{3}});
+        for (std::size_t i = 0; i < np; ++i)
+            for (std::size_t k = 0; k < 3; ++k)
+                pts.As<double>()[i * 3 + k] = rSkin.mPoints[i][k];
+        NDArray conn = NDArray::Uninit(DType::Int64, {rSkin.mTris.size(), std::size_t{3}});
+        for (std::size_t t = 0; t < rSkin.mTris.size(); ++t)
+            for (std::size_t k = 0; k < 3; ++k)
+                conn.As<std::int64_t>()[t * 3 + k] = rSkin.mTris[t][k];
+        Mesh tri;
+        tri.AssignPoints(std::move(pts));
+        tri.AddCellBlock("triangle", std::move(conn));
+        CurvatureOptions co;
+        co.mRecordPrincipal = true;
+        const CurvatureResult cr = compute_curvature(tri, co);
+        const double* k12 = cr.mMesh.PointData(kCurvaturePrincipalName).As<double>();
+        const double chord = 2.0 * std::sin(0.5 * rSpec.mCurvatureAngleDeg * kSzfPi / 180.0);
+        for (std::size_t i = 0; i < np; ++i) {
+            const double kappa = std::max(std::abs(k12[2 * i]), std::abs(k12[2 * i + 1]));
+            if (std::isfinite(kappa) && kappa > 0.0)
+                out.mPointSize[i] = std::min(out.mPointSize[i], chord / kappa);
+        }
+    }
+    // Thickness: an inward ray that leaves through the far wall.
+    if (rSpec.mGapCells > 0.0) {
+        const double tmin = 1e-3 * rSpec.mMinSize;
+        const double tmax = std::numeric_limits<double>::infinity();
+        std::vector<double> gap(np, inf);
+        parallel_for(
+            np,
+            [&](std::size_t i) {
+                const Vec3& n = rSkin.mNormal[i];
+                if (vec3_norm_sq(n) == 0.0)
+                    return;
+                const Vec3 in = vec3_scale(n, -1.0);
+                const TriRayHit h = tri_bvh_ray(rTree, rSkin.mPoints[i], in, tmin, tmax);
+                if (h.mTriangle >= 0 && vec3_dot(h.mNormal, in) > 0.0)
+                    gap[i] = h.mT;
+                if (rSpec.mGapOutside) {
+                    const TriRayHit o = tri_bvh_ray(rTree, rSkin.mPoints[i], n, tmin, tmax);
+                    if (o.mTriangle >= 0 && vec3_dot(o.mNormal, n) < 0.0)
+                        gap[i] = std::min(gap[i], o.mT);
+                }
+            },
+            256);
+        for (std::size_t i = 0; i < np; ++i)
+            if (std::isfinite(gap[i]))
+                out.mPointSize[i] = std::min(out.mPointSize[i], gap[i] / rSpec.mGapCells);
+    }
+    if (rSpec.pUserSize)
+        for (std::size_t i = 0; i < np; ++i) {
+            const double h = rSpec.pUserSize[static_cast<std::size_t>(rSkin.mSourcePoint[i])];
+            if (std::isfinite(h) && h > 0.0)
+                out.mPointSize[i] = std::min(out.mPointSize[i], h);
+        }
+    auto clamp = [&](double h) {
+        return std::clamp(std::min(h, rSpec.mMaxSize), rSpec.mMinSize, rSpec.mMaxSize);
+    };
+    const auto& soup = rSkin.mSoup;
+    out.mPrims.resize(rSkin.mTris.size());
+    out.mSkinMinSize = rSpec.mMaxSize;
+    for (std::size_t t = 0; t < rSkin.mTris.size(); ++t) {
+        double h = inf;
+        for (std::int64_t v : rSkin.mTris[t])
+            h = std::min(h, out.mPointSize[static_cast<std::size_t>(v)]);
+        SizedPrim& p = out.mPrims[t];
+        p.mA = soup.mCorners[3 * t];
+        p.mB = soup.mCorners[3 * t + 1];
+        p.mC = soup.mCorners[3 * t + 2];
+        p.mSize = clamp(h);
+        out.mSkinMinSize = std::min(out.mSkinMinSize, p.mSize);
+    }
+    if (rSpec.mFeatureSize > 0.0)
+        for (const OctreeFeatureEdge& e : rFeatures) {
+            SizedPrim p;
+            p.mA = rSkin.mPoints[static_cast<std::size_t>(e.mA)];
+            p.mB = rSkin.mPoints[static_cast<std::size_t>(e.mB)];
+            p.mC = p.mB;
+            p.mSize = clamp(rSpec.mFeatureSize);
+            out.mSkinMinSize = std::min(out.mSkinMinSize, p.mSize);
+            out.mPrims.push_back(p);
+        }
+    return out;
+}
+
+bool octree_prim_hits(const OctreeFrame& rFrame, const SizedPrim& rPrim,
+                      const std::array<std::int64_t, 3>& rLo, std::int64_t Span) {
+    const double half_fine = 0.5 * rFrame.Fine();
+    Vec3 centre, half;
+    for (std::size_t k = 0; k < 3; ++k) {
+        centre[k] = rFrame.mOrigin[k] + static_cast<double>(2 * rLo[k] + Span) * half_fine;
+        half[k] = static_cast<double>(Span) * half_fine;
+    }
+    return tri_box_overlap(centre, half, rPrim.mA, rPrim.mB, rPrim.mC);
+}
+
+AdaptiveOctree octree_adaptive_build(const OctreeFrame& rFrame,
+                                     const std::vector<SizedPrim>& rPrims,
+                                     std::int32_t SurfaceLevel, std::int64_t MaxCells) {
+    const std::int32_t L = rFrame.mMaxLevel;
+    std::vector<std::int32_t> prim_level(rPrims.size());
+    for (std::size_t p = 0; p < rPrims.size(); ++p)
+        prim_level[p] = rFrame.LevelFor(rPrims[p].mSize);
+    const std::int32_t volume_level = rFrame.LevelFor(rFrame.mMaxSize);
+    // Roots, each with the primitives that reach it.
+    std::vector<SzfLeaf> active;
+    const std::int64_t root = std::int64_t{1} << L;
+    for (std::int64_t z = 0; z < rFrame.mRoots[2]; ++z)
+        for (std::int64_t y = 0; y < rFrame.mRoots[1]; ++y)
+            for (std::int64_t x = 0; x < rFrame.mRoots[0]; ++x) {
+                SzfLeaf leaf;
+                leaf.mX = x * root;
+                leaf.mY = y * root;
+                leaf.mZ = z * root;
+                std::vector<std::uint8_t> hit(rPrims.size(), 0);
+                const std::array<std::int64_t, 3> lo{{leaf.mX, leaf.mY, leaf.mZ}};
+                parallel_for(rPrims.size(), [&](std::size_t p) {
+                    hit[p] = octree_prim_hits(rFrame, rPrims[p], lo, root);
+                });
+                for (std::size_t p = 0; p < rPrims.size(); ++p)
+                    if (hit[p])
+                        leaf.mCand.push_back(static_cast<std::int32_t>(p));
+                active.push_back(std::move(leaf));
+            }
+    std::vector<SzfLeaf> done;
+    for (std::int32_t level = 0; !active.empty(); ++level) {
+        std::vector<std::uint8_t> split(active.size(), 0);
+        parallel_for(active.size(), [&](std::size_t i) {
+            const SzfLeaf& leaf = active[i];
+            if (level >= L)
+                return;
+            std::int32_t target = volume_level;
+            if (!leaf.mCand.empty()) {
+                if (SurfaceLevel >= 0)
+                    target = std::max(target, SurfaceLevel);
+                else
+                    for (std::int32_t p : leaf.mCand)
+                        target = std::max(target, prim_level[static_cast<std::size_t>(p)]);
+            }
+            split[i] = level < target;
+        });
+        std::size_t nsplit = 0;
+        for (std::uint8_t s : split)
+            nsplit += s;
+        if (MaxCells > 0 &&
+            done.size() + active.size() - nsplit + 8 * nsplit > static_cast<std::size_t>(MaxCells))
+            throw std::invalid_argument(
+                "meshio++: octree_mesh: the octree would have more than "
+                "max_cells (" +
+                std::to_string(MaxCells) + ") leaves; raise min_size or max_cells");
+        std::vector<std::array<SzfLeaf, 8>> kids(active.size());
+        const std::int64_t half = std::int64_t{1} << (L - level - 1 >= 0 ? L - level - 1 : 0);
+        parallel_for(
+            active.size(),
+            [&](std::size_t i) {
+                if (!split[i])
+                    return;
+                const SzfLeaf& leaf = active[i];
+                for (std::int64_t c = 0; c < 8; ++c) {
+                    SzfLeaf& kid = kids[i][static_cast<std::size_t>(c)];
+                    kid.mX = leaf.mX + (c & 1) * half;
+                    kid.mY = leaf.mY + ((c >> 1) & 1) * half;
+                    kid.mZ = leaf.mZ + ((c >> 2) & 1) * half;
+                    kid.mLevel = level + 1;
+                    const std::array<std::int64_t, 3> lo{{kid.mX, kid.mY, kid.mZ}};
+                    for (std::int32_t p : leaf.mCand)
+                        if (octree_prim_hits(rFrame, rPrims[static_cast<std::size_t>(p)], lo, half))
+                            kid.mCand.push_back(p);
+                }
+            },
+            64);
+        std::vector<SzfLeaf> next;
+        next.reserve(8 * nsplit);
+        for (std::size_t i = 0; i < active.size(); ++i) {
+            if (split[i])
+                for (auto& kid : kids[i])
+                    next.push_back(std::move(kid));
+            else
+                done.push_back(std::move(active[i]));
+        }
+        active.swap(next);
+    }
+    // Key order.
+    std::vector<std::pair<std::uint64_t, std::size_t>> order(done.size());
+    for (std::size_t i = 0; i < done.size(); ++i)
+        order[i] = {linoct_key(done[i].mX, done[i].mY, done[i].mZ), i};
+    parallel_sort(order.begin(), order.end());
+    AdaptiveOctree out;
+    out.mTree.mMaxLevel = L;
+    out.mTree.mRoots = rFrame.mRoots;
+    out.mTree.mKey.resize(done.size());
+    out.mTree.mLevel.resize(done.size());
+    out.mCut.resize(done.size());
+    out.mCand.resize(done.size());
+    for (std::size_t i = 0; i < done.size(); ++i) {
+        SzfLeaf& leaf = done[order[i].second];
+        out.mTree.mKey[i] = order[i].first;
+        out.mTree.mLevel[i] = static_cast<std::uint8_t>(leaf.mLevel);
+        out.mCut[i] = !leaf.mCand.empty();
+        out.mCand[i] = std::move(leaf.mCand);
+    }
+    return out;
+}
+
+void octree_adaptive_refresh(AdaptiveOctree& rOctree, const OctreeFrame& rFrame,
+                             const std::vector<SizedPrim>& rPrims,
+                             const std::vector<std::int64_t>& rOrigin,
+                             std::vector<std::vector<std::int32_t>> OldCand) {
+    const LinearOctree& tree = rOctree.mTree;
+    std::vector<std::vector<std::int32_t>> cand(tree.Size());
+    parallel_for(
+        tree.Size(),
+        [&](std::size_t i) {
+            const auto& from = OldCand[static_cast<std::size_t>(rOrigin[i])];
+            const auto lo = tree.Lo(i);
+            const std::int64_t s = tree.Span(i);
+            for (std::int32_t p : from)
+                if (octree_prim_hits(rFrame, rPrims[static_cast<std::size_t>(p)], lo, s))
+                    cand[i].push_back(p);
+        },
+        64);
+    rOctree.mCut.assign(tree.Size(), 0);
+    for (std::size_t i = 0; i < tree.Size(); ++i)
+        rOctree.mCut[i] = !cand[i].empty();
+    rOctree.mCand.swap(cand);
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/octree_size_field.cpp =====
 // ===== begin src/cpp/src/detail/param_disc.cpp =====
 #include <algorithm>
 #include <array>
@@ -86378,6 +87407,351 @@ BsplineFitResult thb_fit_patch(const std::vector<PatchVec>& rPts,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/thb_spline.cpp =====
+// ===== begin src/cpp/src/detail/tri_bvh.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+constexpr double kTribvhFourPi = 12.566370614359172953850573533118;
+
+std::int32_t tribvh_build_nodes(TriBvh& rTree, std::int32_t Begin, std::int32_t End,
+                                std::int32_t LeafSize) {
+    const auto at = static_cast<std::int32_t>(rTree.mNodes.size());
+    rTree.mNodes.emplace_back();
+    rTree.mNodes.back().mBegin = Begin;
+    rTree.mNodes.back().mCount = End - Begin;
+    if (End - Begin <= LeafSize)
+        return at;
+    const std::int32_t mid = Begin + (End - Begin) / 2;
+    tribvh_build_nodes(rTree, Begin, mid, LeafSize);
+    const std::int32_t right = tribvh_build_nodes(rTree, mid, End, LeafSize);
+    rTree.mNodes[static_cast<std::size_t>(at)].mRight = right;
+    return at;
+}
+
+// The far-field solid angle of node `I` from a point at `r = p - q`.
+double tribvh_far(const TriBvh& rTree, std::size_t I, const Vec3& rR) {
+    const double d2 = vec3_norm_sq(rR);
+    const double d = std::sqrt(d2);
+    const double inv3 = 1.0 / (d2 * d);
+    const double inv5 = inv3 / d2;
+    const Vec3& n = rTree.mNormalSum[I];
+    double omega = (n[0] * rR[0] + n[1] * rR[1] + n[2] * rR[2]) * inv3;
+    const auto& m = rTree.mMoment[I];
+    for (std::size_t i = 0; i < 3; ++i)
+        for (std::size_t j = 0; j < 3; ++j) {
+            const double jij = (i == j ? inv3 : 0.0) - 3.0 * rR[i] * rR[j] * inv5;
+            omega += m[i * 3 + j] * jij;
+        }
+    // ½ H:C with H_ijk = -3 (δ_ij r_k + δ_ik r_j + δ_jk r_i) / |r|^5
+    // + 15 r_i r_j r_k / |r|^7, C symmetric in (j, k).
+    const auto& c = rTree.mSecond[I];
+    const double inv7 = inv5 / d2;
+    double diag = 0.0, cubic = 0.0;
+    for (std::size_t i = 0; i < 3; ++i)
+        for (std::size_t k = 0; k < 3; ++k) {
+            diag += 2.0 * c[9 * i + 3 * i + k] * rR[k] + c[9 * k + 3 * i + i] * rR[k];
+            for (std::size_t j = 0; j < 3; ++j)
+                cubic += c[9 * i + 3 * j + k] * rR[i] * rR[j] * rR[k];
+        }
+    omega += 0.5 * (-3.0 * inv5 * diag + 15.0 * inv7 * cubic);
+    return omega;
+}
+
+// Whether the ray reaches the box no later than `TMax`, and from where.
+bool tribvh_slab(const Vec3& rLo, const Vec3& rHi, const Vec3& rOrigin, const Vec3& rDir,
+                 double TMin, double TMax) {
+    double t0 = TMin, t1 = TMax;
+    for (std::size_t k = 0; k < 3; ++k) {
+        if (rDir[k] == 0.0) {
+            if (rOrigin[k] < rLo[k] || rOrigin[k] > rHi[k])
+                return false;
+            continue;
+        }
+        const double inv = 1.0 / rDir[k];
+        double a = (rLo[k] - rOrigin[k]) * inv, b = (rHi[k] - rOrigin[k]) * inv;
+        if (a > b)
+            std::swap(a, b);
+        t0 = std::max(t0, a);
+        t1 = std::min(t1, b);
+        if (t0 > t1)
+            return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+double tri_solid_angle(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Vec3& rQ) {
+    const Vec3 a = vec3_sub(rA, rQ), b = vec3_sub(rB, rQ), c = vec3_sub(rC, rQ);
+    const double la = vec3_norm(a), lb = vec3_norm(b), lc = vec3_norm(c);
+    const double num = vec3_dot(a, vec3_cross(b, c));
+    const double den =
+        la * lb * lc + vec3_dot(a, b) * lc + vec3_dot(a, c) * lb + vec3_dot(b, c) * la;
+    return 2.0 * std::atan2(num, den);
+}
+
+TriBvh build_tri_bvh(const TriangleSoup& rSoup, std::int32_t LeafSize) {
+    TriBvh tree;
+    tree.mpSoup = &rSoup;
+    const std::size_t n = rSoup.NumTriangles();
+    if (n == 0)
+        return tree;
+    // Morton order of the centroids over their bounding box.
+    std::vector<Vec3> centroid(n);
+    Vec3 lo{std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity(),
+            std::numeric_limits<double>::infinity()};
+    Vec3 hi{-lo[0], -lo[1], -lo[2]};
+    for (std::size_t t = 0; t < n; ++t) {
+        const Vec3* c = &rSoup.mCorners[3 * t];
+        for (std::size_t k = 0; k < 3; ++k) {
+            centroid[t][k] = (c[0][k] + c[1][k] + c[2][k]) / 3.0;
+            lo[k] = std::min(lo[k], centroid[t][k]);
+            hi[k] = std::max(hi[k], centroid[t][k]);
+        }
+    }
+    const double scale = static_cast<double>((std::uint32_t{1} << sfc_bits) - 1);
+    std::vector<std::uint64_t> key(n);
+    for (std::size_t t = 0; t < n; ++t) {
+        std::uint32_t q[3];
+        for (std::size_t k = 0; k < 3; ++k) {
+            const double ext = hi[k] - lo[k];
+            const double f = ext > 0.0 ? (centroid[t][k] - lo[k]) / ext : 0.0;
+            q[k] = static_cast<std::uint32_t>(std::clamp(f, 0.0, 1.0) * scale);
+        }
+        key[t] = sfc_morton_key(q);
+    }
+    const std::vector<std::int64_t> order = sfc_stable_argsort(key);
+    tree.mOrder.resize(n);
+    for (std::size_t i = 0; i < n; ++i)
+        tree.mOrder[i] = static_cast<std::int32_t>(order[i]);
+    tribvh_build_nodes(tree, 0, static_cast<std::int32_t>(n), std::max<std::int32_t>(LeafSize, 1));
+
+    // Node data, children before parents (they come later in preorder).
+    const std::size_t nn = tree.mNodes.size();
+    tree.mCentre.assign(nn, {0.0, 0.0, 0.0});
+    tree.mNormalSum.assign(nn, {0.0, 0.0, 0.0});
+    tree.mMoment.assign(nn, {});
+    tree.mSecond.assign(nn, {});
+    tree.mRadius.assign(nn, 0.0);
+    std::vector<double> area(nn, 0.0);
+    for (std::size_t i = nn; i-- > 0;) {
+        TriBvhNode& node = tree.mNodes[i];
+        if (node.mRight < 0) {
+            Vec3 sum{0.0, 0.0, 0.0}, plain{0.0, 0.0, 0.0}, nsum{0.0, 0.0, 0.0};
+            Vec3 blo = rSoup.mCorners[3 * static_cast<std::size_t>(tree.mOrder[node.mBegin])];
+            Vec3 bhi = blo;
+            double a = 0.0;
+            for (std::int32_t k = 0; k < node.mCount; ++k) {
+                const auto t = static_cast<std::size_t>(tree.mOrder[node.mBegin + k]);
+                const Vec3* c = &rSoup.mCorners[3 * t];
+                const Vec3 nt =
+                    vec3_scale(vec3_cross(vec3_sub(c[1], c[0]), vec3_sub(c[2], c[0])), 0.5);
+                const double at = vec3_norm(nt);
+                a += at;
+                nsum = vec3_add(nsum, nt);
+                sum = vec3_add(sum, vec3_scale(centroid[t], at));
+                plain = vec3_add(plain, centroid[t]);
+                for (std::size_t v = 0; v < 3; ++v)
+                    for (std::size_t d = 0; d < 3; ++d) {
+                        blo[d] = std::min(blo[d], c[v][d]);
+                        bhi[d] = std::max(bhi[d], c[v][d]);
+                    }
+            }
+            const Vec3 p = a > 0.0 ? vec3_scale(sum, 1.0 / a)
+                                   : vec3_scale(plain, 1.0 / static_cast<double>(node.mCount));
+            std::array<double, 9> m{};
+            std::array<double, 27> sec{};
+            double r = 0.0;
+            for (std::int32_t k = 0; k < node.mCount; ++k) {
+                const auto t = static_cast<std::size_t>(tree.mOrder[node.mBegin + k]);
+                const Vec3* c = &rSoup.mCorners[3 * t];
+                const Vec3 nt =
+                    vec3_scale(vec3_cross(vec3_sub(c[1], c[0]), vec3_sub(c[2], c[0])), 0.5);
+                const double at = vec3_norm(nt);
+                const Vec3 dc = vec3_sub(centroid[t], p);
+                // ∫ (x - p)(x - p)^T dA / a = dc dc^T + (1/12) Σ_v (v - g)(v - g)^T.
+                std::array<double, 9> s{};
+                for (std::size_t y = 0; y < 3; ++y)
+                    for (std::size_t z = 0; z < 3; ++z)
+                        s[y * 3 + z] = dc[y] * dc[z];
+                for (std::size_t v = 0; v < 3; ++v) {
+                    const Vec3 e = vec3_sub(c[v], centroid[t]);
+                    for (std::size_t y = 0; y < 3; ++y)
+                        for (std::size_t z = 0; z < 3; ++z)
+                            s[y * 3 + z] += e[y] * e[z] / 12.0;
+                }
+                const Vec3 un = at > 0.0 ? vec3_scale(nt, 1.0 / at) : Vec3{0.0, 0.0, 0.0};
+                for (std::size_t x = 0; x < 3; ++x) {
+                    for (std::size_t y = 0; y < 3; ++y) {
+                        m[x * 3 + y] += nt[x] * dc[y];
+                        for (std::size_t z = 0; z < 3; ++z)
+                            sec[9 * x + 3 * y + z] += un[x] * at * s[y * 3 + z];
+                    }
+                }
+                for (std::size_t v = 0; v < 3; ++v)
+                    r = std::max(r, vec3_norm(vec3_sub(c[v], p)));
+            }
+            node.mLo = blo;
+            node.mHi = bhi;
+            area[i] = a;
+            tree.mCentre[i] = p;
+            tree.mNormalSum[i] = nsum;
+            tree.mMoment[i] = m;
+            tree.mSecond[i] = sec;
+            tree.mRadius[i] = r;
+            continue;
+        }
+        const std::size_t l = i + 1, rr = static_cast<std::size_t>(node.mRight);
+        const double a = area[l] + area[rr];
+        const Vec3 p = a > 0.0 ? vec3_scale(vec3_add(vec3_scale(tree.mCentre[l], area[l]),
+                                                     vec3_scale(tree.mCentre[rr], area[rr])),
+                                            1.0 / a)
+                               : vec3_scale(vec3_add(tree.mCentre[l], tree.mCentre[rr]), 0.5);
+        std::array<double, 9> m{};
+        std::array<double, 27> sec{};
+        for (std::size_t child : {l, rr}) {
+            // With y = x - p_child and s = p_child - p: ∫ n (y + s)(y + s)^T
+            // = C + M s^T + (M s^T)^T + N s s^T, M and N the child's.
+            const Vec3 shift = vec3_sub(tree.mCentre[child], p);
+            const Vec3& nc = tree.mNormalSum[child];
+            const auto& mc = tree.mMoment[child];
+            const auto& cc = tree.mSecond[child];
+            for (std::size_t x = 0; x < 3; ++x)
+                for (std::size_t y = 0; y < 3; ++y) {
+                    m[x * 3 + y] += mc[x * 3 + y] + nc[x] * shift[y];
+                    for (std::size_t z = 0; z < 3; ++z)
+                        sec[9 * x + 3 * y + z] += cc[9 * x + 3 * y + z] + mc[x * 3 + y] * shift[z] +
+                                                  mc[x * 3 + z] * shift[y] +
+                                                  nc[x] * shift[y] * shift[z];
+                }
+        }
+        for (std::size_t d = 0; d < 3; ++d) {
+            node.mLo[d] = std::min(tree.mNodes[l].mLo[d], tree.mNodes[rr].mLo[d]);
+            node.mHi[d] = std::max(tree.mNodes[l].mHi[d], tree.mNodes[rr].mHi[d]);
+        }
+        area[i] = a;
+        tree.mCentre[i] = p;
+        tree.mNormalSum[i] = vec3_add(tree.mNormalSum[l], tree.mNormalSum[rr]);
+        tree.mMoment[i] = m;
+        tree.mSecond[i] = sec;
+        tree.mRadius[i] = std::max(vec3_norm(vec3_sub(tree.mCentre[l], p)) + tree.mRadius[l],
+                                   vec3_norm(vec3_sub(tree.mCentre[rr], p)) + tree.mRadius[rr]);
+    }
+    return tree;
+}
+
+double fast_winding(const TriBvh& rTree, const Vec3& rQ, double Beta) {
+    if (rTree.mNodes.empty())
+        return 0.0;
+    const TriangleSoup& soup = *rTree.mpSoup;
+    double omega = 0.0;
+    std::int32_t stack[128];
+    int top = 0;
+    stack[top++] = 0;
+    while (top > 0) {
+        const auto i = static_cast<std::size_t>(stack[--top]);
+        const TriBvhNode& node = rTree.mNodes[i];
+        if (Beta > 0.0) {
+            const Vec3 r = vec3_sub(rTree.mCentre[i], rQ);
+            if (vec3_norm(r) > Beta * rTree.mRadius[i]) {
+                omega += tribvh_far(rTree, i, r);
+                continue;
+            }
+        }
+        if (node.mRight < 0) {
+            for (std::int32_t k = 0; k < node.mCount; ++k) {
+                const Vec3* c =
+                    &soup.mCorners[3 * static_cast<std::size_t>(rTree.mOrder[node.mBegin + k])];
+                omega += tri_solid_angle(c[0], c[1], c[2], rQ);
+            }
+            continue;
+        }
+        stack[top++] = node.mRight;
+        stack[top++] = static_cast<std::int32_t>(i + 1);
+    }
+    return omega / kTribvhFourPi;
+}
+
+std::vector<double> fast_windings(const TriBvh& rTree, const std::vector<Vec3>& rPoints,
+                                  double Beta) {
+    std::vector<double> out(rPoints.size(), 0.0);
+    parallel_for(
+        rPoints.size(), [&](std::size_t i) { out[i] = fast_winding(rTree, rPoints[i], Beta); },
+        256);
+    return out;
+}
+
+TriRayHit tri_bvh_ray(const TriBvh& rTree, const Vec3& rOrigin, const Vec3& rDir, double TMin,
+                      double TMax, std::int64_t Skip) {
+    TriRayHit best;
+    if (rTree.mNodes.empty())
+        return best;
+    const TriangleSoup& soup = *rTree.mpSoup;
+    double best_t = TMax;
+    std::int32_t stack[128];
+    int top = 0;
+    stack[top++] = 0;
+    while (top > 0) {
+        const auto i = static_cast<std::size_t>(stack[--top]);
+        const TriBvhNode& node = rTree.mNodes[i];
+        if (!tribvh_slab(node.mLo, node.mHi, rOrigin, rDir, TMin, best_t))
+            continue;
+        if (node.mRight >= 0) {
+            stack[top++] = node.mRight;
+            stack[top++] = static_cast<std::int32_t>(i + 1);
+            continue;
+        }
+        for (std::int32_t k = 0; k < node.mCount; ++k) {
+            const std::int64_t t = rTree.mOrder[node.mBegin + k];
+            if (t == Skip)
+                continue;
+            const Vec3* c = &soup.mCorners[3 * static_cast<std::size_t>(t)];
+            const Vec3 e1 = vec3_sub(c[1], c[0]), e2 = vec3_sub(c[2], c[0]);
+            const Vec3 p = vec3_cross(rDir, e2);
+            const double det = vec3_dot(e1, p);
+            if (std::abs(det) < 1e-300)
+                continue;
+            const double inv = 1.0 / det;
+            const Vec3 s = vec3_sub(rOrigin, c[0]);
+            // A ray through a shared edge or vertex must not slip between
+            // the triangles there: the barycentric tests allow a sliver.
+            constexpr double kEps = 1e-10;
+            const double u = vec3_dot(s, p) * inv;
+            if (u < -kEps || u > 1.0 + kEps)
+                continue;
+            const Vec3 q = vec3_cross(s, e1);
+            const double v = vec3_dot(rDir, q) * inv;
+            if (v < -kEps || u + v > 1.0 + kEps)
+                continue;
+            const double th = vec3_dot(e2, q) * inv;
+            if (th <= TMin || th > best_t)
+                continue;
+            if (th < best_t || best.mTriangle < 0 || t < best.mTriangle) {
+                best_t = th;
+                best.mT = th;
+                best.mTriangle = t;
+                best.mNormal = vec3_cross(e1, e2);
+            }
+        }
+    }
+    return best;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/tri_bvh.cpp =====
 // ===== begin src/cpp/src/detail/vtk_cells.cpp =====
 #include <algorithm>
 #include <cstring>
@@ -210961,6 +212335,621 @@ OctreeResult octree(const Mesh& rMesh, const OctreeOptions& rOptions) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/octree.cpp =====
+// ===== begin src/cpp/src/operations/octree_mesh.cpp =====
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+[[noreturn]] void octm_fail(const std::string& rWhat) {
+    throw std::invalid_argument(std::string(detail::kOctreeMeshPrefix) + rWhat);
+}
+
+void octm_check_options(const OctreeMeshOptions& rO) {
+    auto finite_nonneg = [](double v) { return std::isfinite(v) && v >= 0.0; };
+    if (!finite_nonneg(rO.mMinSize))
+        octm_fail("min_size must be finite and not negative");
+    if (!finite_nonneg(rO.mMaxSize))
+        octm_fail("max_size must be finite and not negative");
+    if (rO.mMinSize > 0.0 && rO.mMaxSize > 0.0 && rO.mMinSize > rO.mMaxSize)
+        octm_fail("min_size must not exceed max_size");
+    if (rO.mMaxLevel < -1 || rO.mMaxLevel > 19)
+        octm_fail("max_level must be -1 (automatic) or in [0, 19]");
+    if (!finite_nonneg(rO.mPadding) || !finite_nonneg(rO.mPaddingRelative))
+        octm_fail("padding and padding_relative must be finite and not negative");
+    if (!(rO.mCurvatureAngle >= 0.0 && rO.mCurvatureAngle < 180.0))
+        octm_fail("curvature_angle must be in [0, 180) degrees");
+    if (!(rO.mFeatureAngle >= 0.0 && rO.mFeatureAngle <= 180.0))
+        octm_fail("feature_angle must be in [0, 180] degrees");
+    if (!(rO.mCornerAngle >= 0.0 && rO.mCornerAngle <= 180.0))
+        octm_fail("corner_angle must be in [0, 180] degrees");
+    if (!finite_nonneg(rO.mFeatureSize))
+        octm_fail("feature_size must be finite and not negative");
+    if (!finite_nonneg(rO.mGapCells))
+        octm_fail("gap_cells must be finite and not negative");
+    if (rO.mGradingLayers < 0 || rO.mGradingLayers > 8)
+        octm_fail("grading_layers must be in [0, 8]");
+    if (!finite_nonneg(rO.mSurfaceSize))
+        octm_fail("surface_size must be finite and not negative");
+    if (!(rO.mWindingThreshold > 0.0 && rO.mWindingThreshold < 1.0))
+        octm_fail("winding_threshold must be in (0, 1)");
+    if (!finite_nonneg(rO.mWindingBeta))
+        octm_fail("winding_beta must be finite and not negative");
+    if (!(rO.mAlphaLong > 0.0 && rO.mAlphaLong < 0.5) ||
+        !(rO.mAlphaShort > 0.0 && rO.mAlphaShort < 0.5))
+        octm_fail("alpha_long and alpha_short must be in (0, 0.5)");
+    if (rO.mFitIterations < 0)
+        octm_fail("fit_iterations must not be negative");
+    if (rO.mUntangleIterations < 0)
+        octm_fail("untangle_iterations must not be negative");
+    if (rO.mMaxCells < 1 || rO.mMaxTets < 1)
+        octm_fail("max_cells and max_tets must be positive");
+    if (rO.mBounds) {
+        const auto& b = *rO.mBounds;
+        for (std::size_t k = 0; k < 3; ++k)
+            if (!(std::isfinite(b[k]) && std::isfinite(b[k + 3]) && b[k] < b[k + 3]))
+                octm_fail("bounds must be finite with lo < hi on every axis");
+    }
+}
+
+// Prepare everything the outputs share, in place (the trees point into the skin).
+void octm_prepare(const Mesh& rMesh, const OctreeMeshOptions& rO, detail::OctreeMeshSetup& rS,
+                  OctreeMeshResult& rResult, detail::OctreeMeshClock& rClock) {
+    using namespace detail;
+    rS.mSkin = octree_skin(rMesh, rO.mSurfaceRegion, kOctreeMeshPrefix);
+    const OctreeSkin& skin = rS.mSkin;
+    rS.mDiagonal = vec3_norm(vec3_sub(skin.mHi, skin.mLo));
+    if (!(rS.mDiagonal > 0.0))
+        octm_fail("the skin has no extent");
+    rS.mOnSkin = 1e-12 * rS.mDiagonal;
+    rS.mBvh = build_tri_bvh(skin.mSoup);
+    SurfaceDistanceOptions dopt;
+    dopt.mWatertightCheck = SdfWatertightCheck::Off;
+    rS.mQuery = build_distance_query(skin.mSoup, dopt);
+    // A skin wound inside out has negative volume: its winding numbers are -1
+    // inside, so they are negated.
+    double volume = 0.0;
+    for (std::size_t t = 0; t < skin.mSoup.NumTriangles(); ++t) {
+        const Vec3* c = &skin.mSoup.mCorners[3 * t];
+        volume += vec3_dot(c[0], vec3_cross(c[1], c[2])) / 6.0;
+    }
+    if (volume < 0.0) {
+        rS.mWindingSign = -1.0;
+        octree_mesh_warn(rResult, std::string(kOctreeMeshPrefix) +
+                                      "the skin is wound inside out (negative volume); its "
+                                      "winding numbers are negated");
+    }
+    rClock.Lap(rResult, "skin");
+
+    // Sizes.
+    const double hmax = rO.mMaxSize > 0.0 ? rO.mMaxSize : rS.mDiagonal / 8.0;
+    const double hmin = rO.mMinSize > 0.0 ? rO.mMinSize : hmax / 32.0;
+    if (hmin > hmax)
+        octm_fail(
+            "min_size must not exceed max_size (max_size defaults to an eighth of the "
+            "skin's diagonal)");
+    rS.mFeatures = octree_skin_features(
+        skin, rO.mPreserveFeatures || rO.mFeatureSize > 0.0 ? rO.mFeatureAngle : 0.0);
+    SizeFieldSpec spec;
+    spec.mMinSize = hmin;
+    spec.mMaxSize = hmax;
+    spec.mCurvatureAngleDeg = rO.mCurvatureAngle;
+    spec.mFeatureSize =
+        rO.mFeatureAngle > 0.0 ? (rO.mFeatureSize > 0.0 ? rO.mFeatureSize : hmin) : 0.0;
+    spec.mGapCells = rO.mGapCells;
+    spec.mGapOutside = rO.mGapOutside;
+    std::vector<double> user;
+    if (!rO.mSizeArray.empty()) {
+        const Mesh& surface = skin.Surface(rMesh);
+        if (!surface.HasPointData(rO.mSizeArray))
+            octm_fail("size_array '" + rO.mSizeArray + "' is not a point_data array");
+        const NDArray& a = surface.PointData(rO.mSizeArray);
+        if (a.Size() != surface.NumPoints())
+            octm_fail("size_array '" + rO.mSizeArray + "' must have one value per point");
+        user.resize(a.Size());
+        for (std::size_t i = 0; i < a.Size(); ++i)
+            user[i] = read_double(a, i);
+        spec.pUserSize = user.data();
+    }
+    rS.mField = octree_size_field(skin, rS.mBvh, rS.mFeatures, spec);
+    rClock.Lap(rResult, "size_field");
+
+    // The frame, over the padded box.
+    const bool uniform = rO.mSkinGrading == OctreeMeshSkinGrading::Uniform;
+    const double hs =
+        rO.mSurfaceSize > 0.0 ? std::clamp(rO.mSurfaceSize, hmin, hmax) : rS.mField.mSkinMinSize;
+    double pad = rO.mPadding + rO.mPaddingRelative * rS.mDiagonal;
+    Vec3 lo = skin.mLo, hi = skin.mHi;
+    if (rO.mBounds) {
+        for (std::size_t k = 0; k < 3; ++k) {
+            lo[k] = (*rO.mBounds)[k];
+            hi[k] = (*rO.mBounds)[k + 3];
+        }
+    } else {
+        if (uniform && pad < 3.0 * hs) {
+            log::info("{}padding raised to {} (three skin sizes) for uniform skin grading",
+                      kOctreeMeshPrefix, 3.0 * hs);
+            pad = 3.0 * hs;
+        }
+        for (std::size_t k = 0; k < 3; ++k) {
+            lo[k] -= pad;
+            hi[k] += pad;
+        }
+    }
+    rS.mFrame = octree_frame(lo, hi, hmin, hmax, rO.mMaxLevel, kOctreeMeshPrefix);
+    if (rS.mFrame.mMinSize > hmin * (1.0 + 1e-12))
+        octree_mesh_warn(rResult, std::string(kOctreeMeshPrefix) + "max_level " +
+                                      std::to_string(rO.mMaxLevel) + " coarsens min_size to " +
+                                      std::to_string(rS.mFrame.mMinSize));
+    const std::int32_t surface_level = uniform ? rS.mFrame.LevelFor(hs) : -1;
+    if (uniform && rS.mFrame.mRootSize / static_cast<double>(std::int64_t{1} << surface_level) >
+                       hs * (1.0 + 1e-9))
+        octree_mesh_warn(rResult, std::string(kOctreeMeshPrefix) +
+                                      "uniform skin grading: the skin size is coarser than asked");
+
+    // The octree: refined by the size field, the cut leaves dilated, balanced.
+    rS.mOctree = octree_adaptive_build(rS.mFrame, rS.mField.mPrims, surface_level, rO.mMaxCells);
+    const std::int32_t rings =
+        uniform ? std::max<std::int32_t>(2, static_cast<std::int32_t>(rO.mGradingLayers))
+                : static_cast<std::int32_t>(rO.mGradingLayers);
+    if (rings > 0) {
+        std::vector<std::int64_t> origin;
+        linear_octree_dilate(rS.mOctree.mTree, rS.mOctree.mCut, rings, rO.mMaxCells, &origin);
+        octree_adaptive_refresh(rS.mOctree, rS.mFrame, rS.mField.mPrims, origin,
+                                std::move(rS.mOctree.mCand));
+    }
+    std::vector<std::int64_t> origin;
+    linear_octree_balance(rS.mOctree.mTree, OctreeAdjacency::Full, rO.mMaxCells, &origin);
+    octree_adaptive_refresh(rS.mOctree, rS.mFrame, rS.mField.mPrims, origin,
+                            std::move(rS.mOctree.mCand));
+    rResult.mOrigin = rS.mFrame.mOrigin;
+    rResult.mRootSize = rS.mFrame.mRootSize;
+    rResult.mRootCells = rS.mFrame.mRoots;
+    rResult.mMaxLevel = rS.mFrame.mMaxLevel;
+    rResult.mSurfaceLevel = surface_level;
+    rResult.mMinSize = rS.mFrame.mMinSize;
+    rResult.mMaxSize = hmax;
+    rClock.Lap(rResult, "octree");
+}
+
+// The output-independent part of the report.
+void octm_report_mesh(const OctreeMeshOptions& rO, OctreeMeshResult& rResult) {
+    const Mesh& m = rResult.mMesh;
+    rResult.mNumPoints = static_cast<std::int64_t>(m.NumPoints());
+    rResult.mNumCells = 0;
+    rResult.mNumHexahedra = 0;
+    rResult.mNumTetrahedra = 0;
+    for (std::size_t b = 0; b < m.NumCellBlocks(); ++b) {
+        const auto block = m.Cells(b);
+        const auto n = static_cast<std::int64_t>(block.NumCells());
+        rResult.mNumCells += n;
+        if (block.Type() == "hexahedron")
+            rResult.mNumHexahedra += n;
+        else if (block.Type() == "tetra")
+            rResult.mNumTetrahedra += n;
+    }
+    rResult.mQuality = compute_quality(m);
+    rResult.mNumInverted = rResult.mQuality.mNumInverted;
+    for (const auto& [name, summary] : rResult.mQuality.mMetrics) {
+        if (summary.mCount == 0)
+            continue;
+        if (name == "quality:scaled_jacobian")
+            rResult.mMinScaledJacobian = summary.mMin;
+        else if (name == "quality:min_dihedral")
+            rResult.mMinDihedral = summary.mMin;
+        else if (name == "quality:max_dihedral")
+            rResult.mMaxDihedral = summary.mMax;
+    }
+    if (rResult.mNumInverted > 0)
+        detail::octree_mesh_warn(rResult, std::string(detail::kOctreeMeshPrefix) +
+                                              std::to_string(rResult.mNumInverted) +
+                                              " cells have a non-positive volume");
+    if (rO.mAttachQuality)
+        rResult.mMesh = attach_quality(rResult.mMesh);
+}
+
+}  // namespace
+
+namespace detail {
+
+void OctreeMeshClock::Lap(OctreeMeshResult& rResult, const char* pStage) {
+    const auto now = std::chrono::steady_clock::now();
+    rResult.mTimings.emplace_back(pStage, std::chrono::duration<double>(now - mStart).count());
+    mStart = now;
+}
+
+void octree_mesh_warn(OctreeMeshResult& rResult, const std::string& rMessage) {
+    log::warn("{}", rMessage);
+    rResult.mWarnings.push_back(rMessage);
+}
+
+std::vector<double> octree_mesh_winding(const OctreeMeshSetup& rSetup,
+                                        const std::vector<Vec3>& rPoints,
+                                        const OctreeMeshOptions& rOptions,
+                                        OctreeMeshResult& rResult) {
+    std::vector<double> w = fast_windings(rSetup.mBvh, rPoints, rOptions.mWindingBeta);
+    for (double& v : w)
+        v *= rSetup.mWindingSign;
+    if (rOptions.mWindingBeta > 0.0) {
+        std::vector<std::size_t> near;
+        for (std::size_t i = 0; i < w.size(); ++i)
+            if (std::abs(w[i] - rOptions.mWindingThreshold) < 0.1)
+                near.push_back(i);
+        const double beta = std::max(8.0, 4.0 * rOptions.mWindingBeta);
+        parallel_for(
+            near.size(),
+            [&](std::size_t k) {
+                w[near[k]] =
+                    rSetup.mWindingSign * fast_winding(rSetup.mBvh, rPoints[near[k]], beta);
+            },
+            64);
+        rResult.mNumWindingRechecks += static_cast<std::int64_t>(near.size());
+    }
+    return w;
+}
+
+std::vector<Vec3> octree_mesh_leaf_centres(const OctreeFrame& rFrame, const LinearOctree& rTree) {
+    std::vector<Vec3> c(rTree.Size());
+    const double half_fine = 0.5 * rFrame.Fine();
+    parallel_for(rTree.Size(), [&](std::size_t i) {
+        const auto lo = rTree.Lo(i);
+        const std::int64_t s = rTree.Span(i);
+        for (std::size_t k = 0; k < 3; ++k)
+            c[i][k] = rFrame.mOrigin[k] + static_cast<double>(2 * lo[k] + s) * half_fine;
+    });
+    return c;
+}
+
+void octree_mesh_signed_distance(const OctreeMeshSetup& rSetup, const std::vector<Vec3>& rPoints,
+                                 const OctreeMeshOptions& rOptions, OctreeMeshResult& rResult,
+                                 std::vector<double>& rDistance, std::vector<Vec3>& rClosest) {
+    const std::vector<ClosestPointHit> hits = query_closest_points(rSetup.mQuery, rPoints);
+    const std::vector<double> w = octree_mesh_winding(rSetup, rPoints, rOptions, rResult);
+    rDistance.resize(rPoints.size());
+    rClosest.resize(rPoints.size());
+    for (std::size_t i = 0; i < rPoints.size(); ++i) {
+        rClosest[i] = hits[i].mPoint;
+        const double d = hits[i].mDistance;
+        rDistance[i] = d <= rSetup.mOnSkin ? 0.0 : (w[i] > rOptions.mWindingThreshold ? -d : d);
+    }
+}
+
+void octree_mesh_report_tree(const LinearOctree& rTree, OctreeMeshResult& rResult) {
+    rResult.mNumLeaves = static_cast<std::int64_t>(rTree.Size());
+    rResult.mLeavesPerLevel.assign(static_cast<std::size_t>(rTree.mMaxLevel) + 1, 0);
+    rResult.mFinestLevel = 0;
+    for (std::uint8_t l : rTree.mLevel) {
+        ++rResult.mLeavesPerLevel[l];
+        rResult.mFinestLevel = std::max<std::int64_t>(rResult.mFinestLevel, l);
+    }
+}
+
+}  // namespace detail
+
+OctreeMeshOutput octree_mesh_output_from_name(const std::string& rName) {
+    if (rName == "castellated")
+        return OctreeMeshOutput::Castellated;
+    if (rName == "tet" || rName == "tetra")
+        return OctreeMeshOutput::Tetra;
+    if (rName == "hex" || rName == "hexa")
+        return OctreeMeshOutput::Hexa;
+    octm_fail("unknown output '" + rName + "' (expected 'castellated', 'tet' or 'hex')");
+}
+
+const char* octree_mesh_output_name(OctreeMeshOutput Output) {
+    switch (Output) {
+        case OctreeMeshOutput::Castellated:
+            return "castellated";
+        case OctreeMeshOutput::Tetra:
+            return "tet";
+        case OctreeMeshOutput::Hexa:
+            return "hex";
+    }
+    return "tet";
+}
+
+OctreeMeshConformity octree_mesh_conformity_from_name(const std::string& rName) {
+    if (rName == "stuffing")
+        return OctreeMeshConformity::Stuffing;
+    if (rName == "cleaving")
+        return OctreeMeshConformity::Cleaving;
+    octm_fail("unknown conformity '" + rName + "' (expected 'stuffing' or 'cleaving')");
+}
+
+OctreeMeshSkinGrading octree_mesh_skin_grading_from_name(const std::string& rName) {
+    if (rName == "graded")
+        return OctreeMeshSkinGrading::Graded;
+    if (rName == "uniform")
+        return OctreeMeshSkinGrading::Uniform;
+    octm_fail("unknown skin_grading '" + rName + "' (expected 'graded' or 'uniform')");
+}
+
+OctreeMeshFill octree_mesh_fill_from_name(const std::string& rName) {
+    if (rName == "all")
+        return OctreeMeshFill::All;
+    if (rName == "inside")
+        return OctreeMeshFill::Inside;
+    if (rName == "cover")
+        return OctreeMeshFill::Cover;
+    octm_fail("unknown fill '" + rName + "' (expected 'all', 'inside' or 'cover')");
+}
+
+OctreeMeshResult octree_mesh(const Mesh& rSkin, const OctreeMeshOptions& rOptions) {
+    octm_check_options(rOptions);
+    OctreeMeshResult result;
+    result.mOutput = rOptions.mOutput;
+    detail::OctreeMeshClock clock;
+    auto setup = std::make_unique<detail::OctreeMeshSetup>();
+    octm_prepare(rSkin, rOptions, *setup, result, clock);
+    switch (rOptions.mOutput) {
+        case OctreeMeshOutput::Castellated:
+            detail::octree_mesh_castellated(*setup, rOptions, result);
+            break;
+        case OctreeMeshOutput::Tetra:
+        case OctreeMeshOutput::Hexa:
+            throw Unsupported(std::string(detail::kOctreeMeshPrefix) + "output '" +
+                              octree_mesh_output_name(rOptions.mOutput) +
+                              "' is not available yet; use 'castellated'");
+    }
+    clock.Lap(result, "output");
+    octm_report_mesh(rOptions, result);
+    clock.Lap(result, "quality");
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/octree_mesh.cpp =====
+// ===== begin src/cpp/src/operations/octree_mesh_castellated.cpp =====
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+// The local hexahedron facet (detail/cell_faces) on each face direction, in
+// the order of `linear_octree_directions(Face)`: -z, -y, -x, +x, +y, +z.
+constexpr std::int64_t kOctmcFacet[6] = {4, 2, 0, 1, 3, 5};
+
+NDArray octmc_ids(const std::vector<std::int64_t>& rIds, std::size_t Stride) {
+    NDArray a = Stride == 1 ? NDArray::Uninit(DType::Int64, {rIds.size()})
+                            : NDArray::Uninit(DType::Int64, {rIds.size() / Stride, Stride});
+    std::copy(rIds.begin(), rIds.end(), a.As<std::int64_t>());
+    return a;
+}
+
+// Classify every leaf whose (key, level) changed since the last pass.
+void octmc_classify(const OctreeMeshSetup& rS, const OctreeMeshOptions& rO, OctreeMeshResult& rR,
+                    const LinearOctree& rTree, const std::vector<std::size_t>& rWhich,
+                    std::vector<std::uint8_t>& rInside) {
+    const std::vector<Vec3> all = octree_mesh_leaf_centres(rS.mFrame, rTree);
+    std::vector<Vec3> pts(rWhich.size());
+    for (std::size_t k = 0; k < rWhich.size(); ++k)
+        pts[k] = all[rWhich[k]];
+    const std::vector<double> w = octree_mesh_winding(rS, pts, rO, rR);
+    for (std::size_t k = 0; k < rWhich.size(); ++k)
+        rInside[rWhich[k]] = w[k] > rO.mWindingThreshold;
+}
+
+}  // namespace
+
+void octree_mesh_castellated(OctreeMeshSetup& rS, const OctreeMeshOptions& rO,
+                             OctreeMeshResult& rR) {
+    AdaptiveOctree& oct = rS.mOctree;
+    LinearOctree& tree = oct.mTree;
+    const auto faces = linear_octree_directions(OctreeAdjacency::Face);
+
+    // Inside by the winding number at the leaf centres.
+    std::vector<std::uint8_t> inside(tree.Size(), 0);
+    {
+        std::vector<std::size_t> every(tree.Size());
+        for (std::size_t i = 0; i < every.size(); ++i)
+            every[i] = i;
+        octmc_classify(rS, rO, rR, tree, every, inside);
+    }
+    // Split an inside leaf beside a finer leaf that is not inside until every
+    // exposed face of an inside leaf is a whole face of it.
+    for (;;) {
+        std::vector<std::uint8_t> mark(tree.Size(), 0);
+        bool any = false;
+        parallel_for(tree.Size(), [&](std::size_t i) {
+            if (!inside[i])
+                return;
+            for (const auto& d : faces)
+                for (std::int64_t j : linear_octree_neighbours(tree, i, d[0], d[1], d[2]))
+                    if (tree.mLevel[static_cast<std::size_t>(j)] > tree.mLevel[i] &&
+                        !inside[static_cast<std::size_t>(j)]) {
+                        mark[i] = 1;
+                        return;
+                    }
+        });
+        for (std::uint8_t m : mark)
+            any = any || m;
+        if (!any)
+            break;
+        const std::vector<std::uint64_t> old_key = tree.mKey;
+        const std::vector<std::uint8_t> old_level = tree.mLevel;
+        std::vector<std::int64_t> split_origin, balance_origin;
+        linear_octree_split(tree, mark, rO.mMaxCells, &split_origin);
+        linear_octree_balance(tree, OctreeAdjacency::Full, rO.mMaxCells, &balance_origin);
+        std::vector<std::int64_t> origin(tree.Size());
+        for (std::size_t i = 0; i < tree.Size(); ++i)
+            origin[i] = split_origin[static_cast<std::size_t>(balance_origin[i])];
+        octree_adaptive_refresh(oct, rS.mFrame, rS.mField.mPrims, origin, std::move(oct.mCand));
+        std::vector<std::uint8_t> next(tree.Size(), 0);
+        std::vector<std::size_t> changed;
+        for (std::size_t i = 0; i < tree.Size(); ++i) {
+            const auto o = static_cast<std::size_t>(origin[i]);
+            if (old_key[o] == tree.mKey[i] && old_level[o] == tree.mLevel[i])
+                next[i] = inside[o];
+            else
+                changed.push_back(i);
+        }
+        inside.swap(next);
+        octmc_classify(rS, rO, rR, tree, changed, inside);
+    }
+    octree_mesh_report_tree(tree, rR);
+
+    // The kept leaves, in key order.
+    std::vector<std::size_t> kept;
+    for (std::size_t i = 0; i < tree.Size(); ++i) {
+        const bool keep = rO.mFill == OctreeMeshFill::All ||
+                          (rO.mFill == OctreeMeshFill::Inside && inside[i]) ||
+                          (rO.mFill == OctreeMeshFill::Cover && (inside[i] || oct.mCut[i]));
+        if (keep)
+            kept.push_back(i);
+    }
+    if (static_cast<std::int64_t>(kept.size()) > rO.mMaxTets)
+        throw std::invalid_argument(std::string(kOctreeMeshPrefix) + "the output would have " +
+                                    std::to_string(kept.size()) + " cells, more than max_tets");
+    std::vector<std::int64_t> cell_of(tree.Size(), -1);
+    for (std::size_t n = 0; n < kept.size(); ++n)
+        cell_of[kept[n]] = static_cast<std::int64_t>(n);
+
+    // Points: the kept leaves' corners on the finest lattice, in key order.
+    constexpr std::int64_t kCorner[8][3] = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0},
+                                            {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}};
+    std::vector<std::uint64_t> corner_key(kept.size() * 8);
+    parallel_for(kept.size(), [&](std::size_t n) {
+        const auto lo = tree.Lo(kept[n]);
+        const std::int64_t s = tree.Span(kept[n]);
+        for (std::size_t c = 0; c < 8; ++c)
+            corner_key[n * 8 + c] = linoct_key(lo[0] + kCorner[c][0] * s, lo[1] + kCorner[c][1] * s,
+                                               lo[2] + kCorner[c][2] * s);
+    });
+    std::vector<std::uint64_t> point_key = corner_key;
+    parallel_sort(point_key.begin(), point_key.end());
+    point_key.erase(std::unique(point_key.begin(), point_key.end()), point_key.end());
+    const std::size_t np = point_key.size();
+    std::vector<Vec3> pts(np);
+    parallel_for(np, [&](std::size_t p) {
+        const auto x = linoct_decode(point_key[p]);
+        pts[p] = rS.mFrame.Position(x[0], x[1], x[2]);
+    });
+    NDArray points = NDArray::Uninit(DType::Float64, {np, std::size_t{3}});
+    for (std::size_t p = 0; p < np; ++p)
+        for (std::size_t k = 0; k < 3; ++k)
+            points.As<double>()[p * 3 + k] = pts[p][k];
+    NDArray conn = NDArray::Uninit(DType::Int64, {kept.size(), std::size_t{8}});
+    std::int64_t* cp = conn.As<std::int64_t>();
+    parallel_for(corner_key.size(), [&](std::size_t i) {
+        cp[i] = static_cast<std::int64_t>(
+            std::lower_bound(point_key.begin(), point_key.end(), corner_key[i]) -
+            point_key.begin());
+    });
+    Mesh& m = rR.mMesh;
+    m.AssignPoints(std::move(points));
+    m.AddCellBlock("hexahedron", std::move(conn));
+
+    // Cell data.
+    NDArray level = NDArray::Uninit(DType::Int64, {kept.size()});
+    NDArray cut = NDArray::Uninit(DType::Int64, {kept.size()});
+    for (std::size_t n = 0; n < kept.size(); ++n) {
+        level.As<std::int64_t>()[n] = tree.mLevel[kept[n]];
+        cut.As<std::int64_t>()[n] = oct.mCut[kept[n]];
+    }
+    {
+        std::vector<NDArray> lv, ct;
+        lv.push_back(std::move(level));
+        ct.push_back(std::move(cut));
+        m.AddCellData(kOctreeLevelName, std::move(lv));
+        m.AddCellData(kOctreeCutName, std::move(ct));
+    }
+
+    // Hanging nodes: on a kept leaf's boundary without being its corner.
+    NDArray hanging = NDArray::Uninit(DType::Int64, {np});
+    std::int64_t* hp = hanging.As<std::int64_t>();
+    parallel_for(np, [&](std::size_t p) {
+        const auto x = linoct_decode(point_key[p]);
+        hp[p] = 0;
+        for (std::int64_t c = 0; c < 8 && !hp[p]; ++c) {
+            const std::int64_t q[3] = {x[0] - (c & 1), x[1] - ((c >> 1) & 1),
+                                       x[2] - ((c >> 2) & 1)};
+            const std::int64_t j = tree.Locate(q[0], q[1], q[2]);
+            if (j < 0 || cell_of[static_cast<std::size_t>(j)] < 0)
+                continue;
+            const auto lo = tree.Lo(static_cast<std::size_t>(j));
+            const std::int64_t s = tree.Span(static_cast<std::size_t>(j));
+            for (std::size_t k = 0; k < 3; ++k)
+                if (x[k] != lo[k] && x[k] != lo[k] + s)
+                    hp[p] = 1;
+        }
+    });
+    rR.mNumHanging = 0;
+    for (std::size_t p = 0; p < np; ++p)
+        rR.mNumHanging += hp[p];
+    m.AddPointData(kOctreeHangingName, std::move(hanging));
+
+    // Regions.
+    std::vector<std::int64_t> in_cells, cut_cells, sides;
+    for (std::size_t n = 0; n < kept.size(); ++n) {
+        const std::size_t i = kept[n];
+        if (oct.mCut[i])
+            cut_cells.push_back(static_cast<std::int64_t>(n));
+        if (!inside[i])
+            continue;
+        in_cells.push_back(static_cast<std::int64_t>(n));
+        for (std::size_t f = 0; f < faces.size(); ++f) {
+            const auto nb =
+                linear_octree_neighbours(tree, i, faces[f][0], faces[f][1], faces[f][2]);
+            bool exposed = true;
+            for (std::int64_t j : nb)
+                exposed = exposed && !inside[static_cast<std::size_t>(j)];
+            if (exposed) {
+                sides.push_back(static_cast<std::int64_t>(n));
+                sides.push_back(kOctmcFacet[f]);
+            }
+        }
+    }
+    rR.mNumInside = static_cast<std::int64_t>(in_cells.size());
+    rR.mNumBoundaryCells = static_cast<std::int64_t>(cut_cells.size());
+    rR.mNumSurrogateFaces = static_cast<std::int64_t>(sides.size() / 2);
+    m.AddRegion(Region(kOctreeMeshInsideRegion, RegionKind::Cell, 3, -1, octmc_ids(in_cells, 1)));
+    m.AddRegion(
+        Region(kOctreeMeshBoundaryCellsRegion, RegionKind::Cell, 3, -1, octmc_ids(cut_cells, 1)));
+    m.AddRegion(Region(kOctreeMeshSurrogateRegion, RegionKind::Side, 2, -1, octmc_ids(sides, 2)));
+
+    // The signed distance and the closest skin point at every node.
+    if (rO.mAttachDistance) {
+        std::vector<double> dist;
+        std::vector<Vec3> closest;
+        octree_mesh_signed_distance(rS, pts, rO, rR, dist, closest);
+        NDArray d = NDArray::Uninit(DType::Float64, {np});
+        NDArray c = NDArray::Uninit(DType::Float64, {np, std::size_t{3}});
+        for (std::size_t p = 0; p < np; ++p) {
+            d.As<double>()[p] = dist[p];
+            for (std::size_t k = 0; k < 3; ++k)
+                c.As<double>()[p * 3 + k] = closest[p][k];
+        }
+        m.AddPointData(kOctreeMeshDistanceName, std::move(d));
+        m.AddPointData(kOctreeMeshClosestPointName, std::move(c));
+    }
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/octree_mesh_castellated.cpp =====
 // ===== begin src/cpp/src/operations/optimize_volume.cpp =====
 #include <algorithm>
 #include <array>
@@ -212846,6 +214835,41 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
                     "MaxCells",     "Sign",           "Transition",
                     "Snap",         "SurfaceLevel",   "CurvatureThreshold",
                     "FeatureAngle", "SizeArray",      "Plane"}},
+        {"OctreeMesh",
+         {"Output",
+          "MinSize",
+          "MaxSize",
+          "MaxLevel",
+          "Bounds",
+          "Padding",
+          "PaddingRelative",
+          "CurvatureAngle",
+          "FeatureAngle",
+          "CornerAngle",
+          "FeatureSize",
+          "GapCells",
+          "GapOutside",
+          "SizeArray",
+          "SurfaceRegion",
+          "GradingLayers",
+          "SkinGrading",
+          "SurfaceSize",
+          "WindingThreshold",
+          "WindingBeta",
+          "Conformity",
+          "AlphaLong",
+          "AlphaShort",
+          "PreserveFeatures",
+          "FitIterations",
+          "DihedralFloorGuard",
+          "Fill",
+          "KeepOutside",
+          "AttachDistance",
+          "AttachQuality",
+          "Pillow",
+          "UntangleIterations",
+          "MaxCells",
+          "MaxTets"}},
         {"ComputeSdf",
          {"Structure", "Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative",
           "RootResolution", "MaxDepth", "BandCells", "RecordLevels", "MaxCells", "Sign", "Location",
@@ -214131,6 +216155,61 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         return std::move(r.mMesh);
     }
 
+    if (op == "OctreeMesh") {
+        // A volume mesh of the skin's inside: it replaces its input's geometry.
+        OctreeMeshOptions opts;
+        opts.mOutput = octree_mesh_output_from_name(pipe_text(rStep, "Output", "tet"));
+        opts.mMinSize = pipe_number(rStep, "MinSize", 0.0);
+        opts.mMaxSize = pipe_number(rStep, "MaxSize", 0.0);
+        opts.mMaxLevel = static_cast<std::int64_t>(pipe_number(rStep, "MaxLevel", -1.0));
+        const std::vector<double> bounds = pipe_dvec(rStep, "Bounds");
+        if (bounds.size() == 6)
+            opts.mBounds = std::array<double, 6>{
+                {bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]}};
+        opts.mPadding = pipe_number(rStep, "Padding", 0.0);
+        opts.mPaddingRelative = pipe_number(rStep, "PaddingRelative", 0.1);
+        opts.mCurvatureAngle = pipe_number(rStep, "CurvatureAngle", 15.0);
+        opts.mFeatureAngle = pipe_number(rStep, "FeatureAngle", 30.0);
+        opts.mCornerAngle = pipe_number(rStep, "CornerAngle", 30.0);
+        opts.mFeatureSize = pipe_number(rStep, "FeatureSize", 0.0);
+        opts.mGapCells = pipe_number(rStep, "GapCells", 2.0);
+        opts.mGapOutside = pipe_flag(rStep, "GapOutside", false);
+        opts.mSizeArray = pipe_text(rStep, "SizeArray", "");
+        opts.mSurfaceRegion = pipe_text(rStep, "SurfaceRegion", "");
+        opts.mGradingLayers = static_cast<std::int64_t>(pipe_number(rStep, "GradingLayers", 1.0));
+        opts.mSkinGrading =
+            octree_mesh_skin_grading_from_name(pipe_text(rStep, "SkinGrading", "graded"));
+        opts.mSurfaceSize = pipe_number(rStep, "SurfaceSize", 0.0);
+        opts.mWindingThreshold = pipe_number(rStep, "WindingThreshold", 0.5);
+        opts.mWindingBeta = pipe_number(rStep, "WindingBeta", 2.0);
+        opts.mConformity =
+            octree_mesh_conformity_from_name(pipe_text(rStep, "Conformity", "stuffing"));
+        opts.mAlphaLong = pipe_number(rStep, "AlphaLong", 0.24799);
+        opts.mAlphaShort = pipe_number(rStep, "AlphaShort", 0.40173);
+        opts.mPreserveFeatures = pipe_flag(rStep, "PreserveFeatures", true);
+        opts.mFitIterations = static_cast<std::int64_t>(pipe_number(rStep, "FitIterations", 5.0));
+        opts.mDihedralFloorGuard = pipe_flag(rStep, "DihedralFloorGuard", true);
+        opts.mFill = octree_mesh_fill_from_name(pipe_text(rStep, "Fill", "inside"));
+        opts.mKeepOutside = pipe_flag(rStep, "KeepOutside", false);
+        opts.mAttachDistance = pipe_flag(rStep, "AttachDistance", true);
+        opts.mAttachQuality = pipe_flag(rStep, "AttachQuality", false);
+        opts.mPillow = pipe_flag(rStep, "Pillow", true);
+        opts.mUntangleIterations =
+            static_cast<std::int64_t>(pipe_number(rStep, "UntangleIterations", 50.0));
+        opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
+        opts.mMaxTets = static_cast<std::int64_t>(pipe_number(rStep, "MaxTets", 100000000.0));
+        OctreeMeshResult r = octree_mesh(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumLeaves", static_cast<double>(r.mNumLeaves)},
+                        {"NumCells", static_cast<double>(r.mNumCells)},
+                        {"NumInside", static_cast<double>(r.mNumInside)},
+                        {"NumSurrogateFaces", static_cast<double>(r.mNumSurrogateFaces)},
+                        {"NumHanging", static_cast<double>(r.mNumHanging)},
+                        {"NumInverted", static_cast<double>(r.mNumInverted)},
+                        {"MinDihedral", r.mMinDihedral},
+                        {"MinScaledJacobian", r.mMinScaledJacobian}});
+        return std::move(r.mMesh);
+    }
     if (op == "Octree") {
         // Voxelize's adaptive sibling: it likewise replaces its input's geometry.
         OctreeOptions opts;

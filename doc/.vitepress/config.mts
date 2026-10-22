@@ -177,6 +177,7 @@ export default defineConfig({
               { text: "Regular grids / voxelize", link: "/voxelize" },
               { text: "Parametric primitives", link: "/primitives" },
               { text: "Octrees / quadtrees from a skin", link: "/octree" },
+              { text: "Volume meshes on an octree", link: "/octree_mesh" },
               { text: "Signed distance", link: "/sdf" },
             ],
           },

@@ -76,6 +76,7 @@
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/primitives.hpp"
 #include "meshioplusplus/operations/octree.hpp"
+#include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/partition.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/interpolate.hpp"
@@ -431,6 +432,41 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
                     "MaxCells",     "Sign",           "Transition",
                     "Snap",         "SurfaceLevel",   "CurvatureThreshold",
                     "FeatureAngle", "SizeArray",      "Plane"}},
+        {"OctreeMesh",
+         {"Output",
+          "MinSize",
+          "MaxSize",
+          "MaxLevel",
+          "Bounds",
+          "Padding",
+          "PaddingRelative",
+          "CurvatureAngle",
+          "FeatureAngle",
+          "CornerAngle",
+          "FeatureSize",
+          "GapCells",
+          "GapOutside",
+          "SizeArray",
+          "SurfaceRegion",
+          "GradingLayers",
+          "SkinGrading",
+          "SurfaceSize",
+          "WindingThreshold",
+          "WindingBeta",
+          "Conformity",
+          "AlphaLong",
+          "AlphaShort",
+          "PreserveFeatures",
+          "FitIterations",
+          "DihedralFloorGuard",
+          "Fill",
+          "KeepOutside",
+          "AttachDistance",
+          "AttachQuality",
+          "Pillow",
+          "UntangleIterations",
+          "MaxCells",
+          "MaxTets"}},
         {"ComputeSdf",
          {"Structure", "Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative",
           "RootResolution", "MaxDepth", "BandCells", "RecordLevels", "MaxCells", "Sign", "Location",
@@ -1716,6 +1752,61 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
         return std::move(r.mMesh);
     }
 
+    if (op == "OctreeMesh") {
+        // A volume mesh of the skin's inside: it replaces its input's geometry.
+        OctreeMeshOptions opts;
+        opts.mOutput = octree_mesh_output_from_name(pipe_text(rStep, "Output", "tet"));
+        opts.mMinSize = pipe_number(rStep, "MinSize", 0.0);
+        opts.mMaxSize = pipe_number(rStep, "MaxSize", 0.0);
+        opts.mMaxLevel = static_cast<std::int64_t>(pipe_number(rStep, "MaxLevel", -1.0));
+        const std::vector<double> bounds = pipe_dvec(rStep, "Bounds");
+        if (bounds.size() == 6)
+            opts.mBounds = std::array<double, 6>{
+                {bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5]}};
+        opts.mPadding = pipe_number(rStep, "Padding", 0.0);
+        opts.mPaddingRelative = pipe_number(rStep, "PaddingRelative", 0.1);
+        opts.mCurvatureAngle = pipe_number(rStep, "CurvatureAngle", 15.0);
+        opts.mFeatureAngle = pipe_number(rStep, "FeatureAngle", 30.0);
+        opts.mCornerAngle = pipe_number(rStep, "CornerAngle", 30.0);
+        opts.mFeatureSize = pipe_number(rStep, "FeatureSize", 0.0);
+        opts.mGapCells = pipe_number(rStep, "GapCells", 2.0);
+        opts.mGapOutside = pipe_flag(rStep, "GapOutside", false);
+        opts.mSizeArray = pipe_text(rStep, "SizeArray", "");
+        opts.mSurfaceRegion = pipe_text(rStep, "SurfaceRegion", "");
+        opts.mGradingLayers = static_cast<std::int64_t>(pipe_number(rStep, "GradingLayers", 1.0));
+        opts.mSkinGrading =
+            octree_mesh_skin_grading_from_name(pipe_text(rStep, "SkinGrading", "graded"));
+        opts.mSurfaceSize = pipe_number(rStep, "SurfaceSize", 0.0);
+        opts.mWindingThreshold = pipe_number(rStep, "WindingThreshold", 0.5);
+        opts.mWindingBeta = pipe_number(rStep, "WindingBeta", 2.0);
+        opts.mConformity =
+            octree_mesh_conformity_from_name(pipe_text(rStep, "Conformity", "stuffing"));
+        opts.mAlphaLong = pipe_number(rStep, "AlphaLong", 0.24799);
+        opts.mAlphaShort = pipe_number(rStep, "AlphaShort", 0.40173);
+        opts.mPreserveFeatures = pipe_flag(rStep, "PreserveFeatures", true);
+        opts.mFitIterations = static_cast<std::int64_t>(pipe_number(rStep, "FitIterations", 5.0));
+        opts.mDihedralFloorGuard = pipe_flag(rStep, "DihedralFloorGuard", true);
+        opts.mFill = octree_mesh_fill_from_name(pipe_text(rStep, "Fill", "inside"));
+        opts.mKeepOutside = pipe_flag(rStep, "KeepOutside", false);
+        opts.mAttachDistance = pipe_flag(rStep, "AttachDistance", true);
+        opts.mAttachQuality = pipe_flag(rStep, "AttachQuality", false);
+        opts.mPillow = pipe_flag(rStep, "Pillow", true);
+        opts.mUntangleIterations =
+            static_cast<std::int64_t>(pipe_number(rStep, "UntangleIterations", 50.0));
+        opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
+        opts.mMaxTets = static_cast<std::int64_t>(pipe_number(rStep, "MaxTets", 100000000.0));
+        OctreeMeshResult r = octree_mesh(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumLeaves", static_cast<double>(r.mNumLeaves)},
+                        {"NumCells", static_cast<double>(r.mNumCells)},
+                        {"NumInside", static_cast<double>(r.mNumInside)},
+                        {"NumSurrogateFaces", static_cast<double>(r.mNumSurrogateFaces)},
+                        {"NumHanging", static_cast<double>(r.mNumHanging)},
+                        {"NumInverted", static_cast<double>(r.mNumInverted)},
+                        {"MinDihedral", r.mMinDihedral},
+                        {"MinScaledJacobian", r.mMinScaledJacobian}});
+        return std::move(r.mMesh);
+    }
     if (op == "Octree") {
         // Voxelize's adaptive sibling: it likewise replaces its input's geometry.
         OctreeOptions opts;

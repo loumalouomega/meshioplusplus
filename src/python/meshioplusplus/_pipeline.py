@@ -54,6 +54,7 @@ from ._merge import merge
 from ._mesh import Mesh
 from ._normals import compute_normals
 from ._octree import octree
+from ._octree_mesh import octree_mesh
 from ._optimize_volume import optimize_volume
 from ._partition import partition, partition_labels
 from ._primitives import (
@@ -424,6 +425,42 @@ _OP_TABLE = {
         "MaxCells",
         "Types",
         "Pairs",
+    ),
+    "OctreeMesh": (
+        "Output",
+        "MinSize",
+        "MaxSize",
+        "MaxLevel",
+        "Bounds",
+        "Padding",
+        "PaddingRelative",
+        "CurvatureAngle",
+        "FeatureAngle",
+        "CornerAngle",
+        "FeatureSize",
+        "GapCells",
+        "GapOutside",
+        "SizeArray",
+        "SurfaceRegion",
+        "GradingLayers",
+        "SkinGrading",
+        "SurfaceSize",
+        "WindingThreshold",
+        "WindingBeta",
+        "Conformity",
+        "AlphaLong",
+        "AlphaShort",
+        "PreserveFeatures",
+        "FitIterations",
+        "DihedralFloorGuard",
+        "Fill",
+        "KeepOutside",
+        "AttachDistance",
+        "AttachQuality",
+        "Pillow",
+        "UntangleIterations",
+        "MaxCells",
+        "MaxTets",
     ),
     "Octree": (
         "RootCells",
@@ -1780,6 +1817,56 @@ def _apply_step(mesh, step, steps, warnings):
             return_report=True,
         )
         entry["NumOccupied"] = float(rep["num_occupied"])
+
+    elif op == "OctreeMesh":
+        # A volume mesh of the skin's inside: it REPLACES the input's geometry.
+        bounds = _dvec(step, "Bounds")
+        mesh, rep = octree_mesh(
+            mesh,
+            output=_text(step, "Output", "tet"),
+            min_size=_number(step, "MinSize", 0.0),
+            max_size=_number(step, "MaxSize", 0.0),
+            max_level=int(_number(step, "MaxLevel", -1.0)),
+            bounds=None if not bounds else list(bounds),
+            padding=_number(step, "Padding", 0.0),
+            padding_relative=_number(step, "PaddingRelative", 0.1),
+            curvature_angle=_number(step, "CurvatureAngle", 15.0),
+            feature_angle=_number(step, "FeatureAngle", 30.0),
+            corner_angle=_number(step, "CornerAngle", 30.0),
+            feature_size=_number(step, "FeatureSize", 0.0),
+            gap_cells=_number(step, "GapCells", 2.0),
+            gap_outside=_flag(step, "GapOutside", False),
+            size_array=_text(step, "SizeArray", "") or None,
+            surface_region=_text(step, "SurfaceRegion", "") or None,
+            grading_layers=int(_number(step, "GradingLayers", 1.0)),
+            skin_grading=_text(step, "SkinGrading", "graded"),
+            surface_size=_number(step, "SurfaceSize", 0.0),
+            winding_threshold=_number(step, "WindingThreshold", 0.5),
+            winding_beta=_number(step, "WindingBeta", 2.0),
+            conformity=_text(step, "Conformity", "stuffing"),
+            alpha_long=_number(step, "AlphaLong", 0.24799),
+            alpha_short=_number(step, "AlphaShort", 0.40173),
+            preserve_features=_flag(step, "PreserveFeatures", True),
+            fit_iterations=int(_number(step, "FitIterations", 5.0)),
+            dihedral_floor_guard=_flag(step, "DihedralFloorGuard", True),
+            fill=_text(step, "Fill", "inside"),
+            keep_outside=_flag(step, "KeepOutside", False),
+            attach_distance=_flag(step, "AttachDistance", True),
+            attach_quality=_flag(step, "AttachQuality", False),
+            pillow=_flag(step, "Pillow", True),
+            untangle_iterations=int(_number(step, "UntangleIterations", 50.0)),
+            max_cells=int(_number(step, "MaxCells", 20000000.0)),
+            max_tets=int(_number(step, "MaxTets", 100000000.0)),
+            return_report=True,
+        )
+        entry["NumLeaves"] = float(rep["num_leaves"])
+        entry["NumCells"] = float(rep["num_cells"])
+        entry["NumInside"] = float(rep["num_inside"])
+        entry["NumSurrogateFaces"] = float(rep["num_surrogate_faces"])
+        entry["NumHanging"] = float(rep["num_hanging"])
+        entry["NumInverted"] = float(rep["num_inverted"])
+        entry["MinDihedral"] = float(rep["min_dihedral"])
+        entry["MinScaledJacobian"] = float(rep["min_scaled_jacobian"])
 
     elif op == "Octree":
         # Voxelize's adaptive sibling: it likewise REPLACES the input's geometry.

@@ -174,6 +174,7 @@
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/primitives.hpp"
 #include "meshioplusplus/operations/octree.hpp"
+#include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/hessian.hpp"
@@ -2998,6 +2999,142 @@ PYBIND11_MODULE(_core, m) {
         py::arg("snap") = false, py::arg("surface_level") = -1,
         py::arg("curvature_threshold") = 0.0, py::arg("feature_angle") = 0.0,
         py::arg("size_array") = "", py::arg("plane") = "auto");
+
+    // A volume mesh of the inside of a skin on a balanced octree.
+    m.def(
+        "octree_mesh",
+        [](py::object pymesh, const std::string& output, double min_size, double max_size,
+           std::int64_t max_level, py::object bounds, double padding, double padding_relative,
+           double curvature_angle, double feature_angle, double corner_angle, double feature_size,
+           double gap_cells, bool gap_outside, const std::string& size_array,
+           const std::string& surface_region, std::int64_t grading_layers,
+           const std::string& skin_grading, double surface_size, double winding_threshold,
+           double winding_beta, const std::string& conformity, double alpha_long,
+           double alpha_short, bool preserve_features, std::int64_t fit_iterations,
+           bool dihedral_floor_guard, const std::string& fill, bool keep_outside,
+           bool attach_distance, bool attach_quality, bool pillow, std::int64_t untangle_iterations,
+           std::int64_t max_cells, std::int64_t max_tets) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::OctreeMeshOptions o;
+            o.mOutput = meshioplusplus::octree_mesh_output_from_name(output);
+            o.mMinSize = min_size;
+            o.mMaxSize = max_size;
+            o.mMaxLevel = max_level;
+            if (!bounds.is_none())
+                o.mBounds = bounds.cast<std::array<double, 6>>();
+            o.mPadding = padding;
+            o.mPaddingRelative = padding_relative;
+            o.mCurvatureAngle = curvature_angle;
+            o.mFeatureAngle = feature_angle;
+            o.mCornerAngle = corner_angle;
+            o.mFeatureSize = feature_size;
+            o.mGapCells = gap_cells;
+            o.mGapOutside = gap_outside;
+            o.mSizeArray = size_array;
+            o.mSurfaceRegion = surface_region;
+            o.mGradingLayers = grading_layers;
+            o.mSkinGrading = meshioplusplus::octree_mesh_skin_grading_from_name(skin_grading);
+            o.mSurfaceSize = surface_size;
+            o.mWindingThreshold = winding_threshold;
+            o.mWindingBeta = winding_beta;
+            o.mConformity = meshioplusplus::octree_mesh_conformity_from_name(conformity);
+            o.mAlphaLong = alpha_long;
+            o.mAlphaShort = alpha_short;
+            o.mPreserveFeatures = preserve_features;
+            o.mFitIterations = fit_iterations;
+            o.mDihedralFloorGuard = dihedral_floor_guard;
+            o.mFill = meshioplusplus::octree_mesh_fill_from_name(fill);
+            o.mKeepOutside = keep_outside;
+            o.mAttachDistance = attach_distance;
+            o.mAttachQuality = attach_quality;
+            o.mPillow = pillow;
+            o.mUntangleIterations = untangle_iterations;
+            o.mMaxCells = max_cells;
+            o.mMaxTets = max_tets;
+            meshioplusplus::OctreeMeshResult r =
+                core_nogil([&] { return meshioplusplus::octree_mesh(cpp, o); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["output"] = meshioplusplus::octree_mesh_output_name(r.mOutput);
+            out["origin"] = r.mOrigin;
+            out["root_size"] = r.mRootSize;
+            out["root_cells"] = r.mRootCells;
+            out["max_level"] = r.mMaxLevel;
+            out["finest_level"] = r.mFinestLevel;
+            out["surface_level"] = r.mSurfaceLevel;
+            out["min_size"] = r.mMinSize;
+            out["max_size"] = r.mMaxSize;
+            out["num_leaves"] = r.mNumLeaves;
+            out["leaves_per_level"] = r.mLeavesPerLevel;
+            out["num_points"] = r.mNumPoints;
+            out["num_cells"] = r.mNumCells;
+            out["num_hexahedra"] = r.mNumHexahedra;
+            out["num_tetrahedra"] = r.mNumTetrahedra;
+            out["num_inside"] = r.mNumInside;
+            out["num_boundary_cells"] = r.mNumBoundaryCells;
+            out["num_surrogate_faces"] = r.mNumSurrogateFaces;
+            out["num_hanging"] = r.mNumHanging;
+            out["num_cut_points"] = r.mNumCutPoints;
+            out["num_warped"] = r.mNumWarped;
+            out["num_warp_refused"] = r.mNumWarpRefused;
+            out["min_dihedral"] = r.mMinDihedral;
+            out["max_dihedral"] = r.mMaxDihedral;
+            out["min_scaled_jacobian"] = r.mMinScaledJacobian;
+            out["num_inverted"] = r.mNumInverted;
+            out["hausdorff_to_skin"] = r.mHausdorffToSkin;
+            out["num_boundary_edges_open"] = r.mNumBoundaryEdgesOpen;
+            out["num_non_manifold_boundary_edges"] = r.mNumNonManifoldBoundaryEdges;
+            out["num_corners"] = r.mNumCorners;
+            out["num_corners_snapped"] = r.mNumCornersSnapped;
+            out["num_feature_chains"] = r.mNumFeatureChains;
+            out["num_feature_chains_missed"] = r.mNumFeatureChainsMissed;
+            out["guarantee_applies"] = r.mGuaranteeApplies;
+            out["num_winding_rechecks"] = r.mNumWindingRechecks;
+            py::dict quality;
+            quality["num_cells"] = r.mQuality.mNumCells;
+            quality["num_inverted"] = r.mQuality.mNumInverted;
+            quality["num_degenerate"] = r.mQuality.mNumDegenerate;
+            py::dict metrics;
+            for (const auto& entry : r.mQuality.mMetrics) {
+                const meshioplusplus::QualityMetricSummary& s = entry.second;
+                py::dict d;
+                d["min"] = s.mMin;
+                d["max"] = s.mMax;
+                d["mean"] = s.mMean;
+                d["count"] = s.mCount;
+                py::list hist;
+                for (std::int64_t h : s.mHistogram)
+                    hist.append(h);
+                d["histogram"] = hist;
+                metrics[py::str(entry.first)] = d;
+            }
+            quality["metrics"] = metrics;
+            out["quality"] = quality;
+            py::list timings;
+            for (const auto& t : r.mTimings)
+                timings.append(py::make_tuple(t.first, t.second));
+            out["timings"] = timings;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("mesh"), py::arg("output") = "tet", py::arg("min_size") = 0.0,
+        py::arg("max_size") = 0.0, py::arg("max_level") = -1, py::arg("bounds") = py::none(),
+        py::arg("padding") = 0.0, py::arg("padding_relative") = 0.1,
+        py::arg("curvature_angle") = 15.0, py::arg("feature_angle") = 30.0,
+        py::arg("corner_angle") = 30.0, py::arg("feature_size") = 0.0, py::arg("gap_cells") = 2.0,
+        py::arg("gap_outside") = false, py::arg("size_array") = "", py::arg("surface_region") = "",
+        py::arg("grading_layers") = 1, py::arg("skin_grading") = "graded",
+        py::arg("surface_size") = 0.0, py::arg("winding_threshold") = 0.5,
+        py::arg("winding_beta") = 2.0, py::arg("conformity") = "stuffing",
+        py::arg("alpha_long") = 0.24799, py::arg("alpha_short") = 0.40173,
+        py::arg("preserve_features") = true, py::arg("fit_iterations") = 5,
+        py::arg("dihedral_floor_guard") = true, py::arg("fill") = "inside",
+        py::arg("keep_outside") = false, py::arg("attach_distance") = true,
+        py::arg("attach_quality") = false, py::arg("pillow") = true,
+        py::arg("untangle_iterations") = 50, py::arg("max_cells") = 20000000,
+        py::arg("max_tets") = 100000000);
 
     // Distance to a surface. `sample_distance` takes bare query points;
     // `distance_to_surface` attaches the result to a mesh as ordinary data.

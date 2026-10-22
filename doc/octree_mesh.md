@@ -1,0 +1,66 @@
+# Volume meshes on an octree — `octree_mesh`
+
+`octree_mesh` meshes the inside of a skin on a balanced octree. The skin is any surface (`triangle`, `quad` and `polygon` blocks, read from STL, OBJ, PLY or any other format; the boundary of a volume mesh is taken), closed or slightly dirty: inside and outside come from the fast generalised winding number, so holes, self-intersections and non-manifold edges are tolerated. It is the volume-meshing sibling of [`octree`](octree.md), which builds the tree around a skin without meshing its inside; `octree` itself is unchanged.
+
+```python
+import meshioplusplus as mp
+
+skin = mp.read("bracket.stl")
+cells, report = mp.octree_mesh(skin, output="castellated", min_size=0.5, max_size=4.0, return_report=True)
+mp.write("bracket_cells.vtu", cells)
+```
+
+Three outputs are planned ([plan](octree_mesh_3d_plan.md)); this release ships the castellated one, and `output="tet"` and `output="hex"` raise `NotImplementedError` by name until their phases land.
+
+| `output` | what it is |
+|---|---|
+| `"castellated"` | the leaves inside the skin as `hexahedron` cells, with surrogate-boundary tags, for embedded and Shifted Boundary Method solvers |
+| `"tet"` (default) | conforming graded tetrahedra fitted to the skin, sharp features preserved |
+| `"hex"` | all-hexahedra by the octree dual |
+
+## The size field
+
+Leaves are no larger than the size field `h(x) = clamp(min(h_max, h_curv, h_feat, h_gap, h_user), min_size, max_size)`, evaluated on every skin triangle as the smallest size its vertices ask for:
+
+| option | term |
+|---|---|
+| `max_size` | the size away from the skin (default: an eighth of the skin's bounding-box diagonal) |
+| `curvature_angle` | `h_curv = 2 sin(θ/2) / κ_max`: a leaf edge subtends at most `θ` degrees on the skin's largest principal curvature (default 15; 0 disables) |
+| `feature_angle`, `feature_size` | `h_feat` along edges sharper than `feature_angle` degrees (default 30) and non-manifold edges (default: `min_size`) |
+| `gap_cells` | `h_gap = t / gap_cells`, `t` the distance an inward ray from a skin vertex travels to the far wall (default 2; 0 disables); `gap_outside` also resolves the gaps between separate parts |
+| `size_array` | `h_user`, a `point_data` array of target sizes on the skin |
+| `min_size` | the floor (default `max_size / 32`) |
+
+The root lattice has `L = ceil(log2(max_size / min_size))` levels (at most 19; `max_level` caps it) with root cells of edge `min_size · 2^L`, centred on the padded box (`padding`, `padding_relative`, or `bounds`). A leaf the skin cuts (exact triangle–box overlap) is split until it is no larger than the size its triangles ask for, every other leaf until it is no larger than `max_size`; then `grading_layers` rings of leaves around every cut leaf are kept at its level, and the tree is 2:1-balanced across faces, edges and corners. `skin_grading="uniform"` puts every cut leaf at one level instead (`surface_size`, by default the smallest size the field asks for on the skin), with two rings around it and at least three skin sizes of padding.
+
+## Inside and outside
+
+A point is inside where its generalised winding number exceeds `winding_threshold` (0.5). The winding number is evaluated with the tree approximation of Barill et al. (2018): far triangles are replaced by their area-weighted dipoles and first and second moments when they are more than `winding_beta` (2) times their extent away, which gives about three correct digits; values within 0.1 of the threshold are evaluated again at a quarter of the error. `winding_beta=0` sums every triangle exactly. A skin wound inside out is detected by its negative volume, its winding numbers negated, and a warning reported.
+
+## The castellated output
+
+The kept leaves (`fill`: `"inside"`, the default, those whose centre is inside; `"cover"`, those and every leaf the skin cuts; `"all"`) are one `hexahedron` block in Morton order, with:
+
+| name | kind | meaning |
+|---|---|---|
+| `inside` | cell region | the cells whose centre is inside |
+| `boundary_cells` | cell region | the cells the skin passes through |
+| `surrogate_boundary` | side region | the faces of inside cells with no inside cell across them: the surrogate boundary of the Shifted Boundary Method |
+| `sdf:distance` | point data | the signed distance to the skin (negative inside, 0 on it) |
+| `sdf:closest_point` | point data, 3 components | the nearest point on the skin |
+| `octree:hanging` | point data | 1 for a node in the interior of a face or edge of a cell |
+| `octree:level`, `octree:cut` | cell data | as for [`octree`](octree.md) |
+
+An inside leaf beside a finer leaf that is not inside is split until every face of the surrogate boundary is a whole face of an inside cell, so the side region describes it exactly; the surrogate faces enclose the inside cells' volume (the tests check the divergence theorem). `attach_distance=False` skips the two `sdf:*` arrays.
+
+## Report
+
+`return_report=True` returns the frame (`origin`, `root_size`, `root_cells`, `max_level`, `finest_level`, `surface_level`, `min_size`, `max_size`), the tree (`num_leaves`, `leaves_per_level`), the counts (`num_points`, `num_cells`, `num_hexahedra`, `num_tetrahedra`, `num_inside`, `num_boundary_cells`, `num_surrogate_faces`, `num_hanging`), the quality (`min_scaled_jacobian`, `min_dihedral`, `max_dihedral`, `num_inverted` and `quality`, the [`compute_quality`](mesh_quality.md) summary with its histograms), `num_winding_rechecks`, `timings` (seconds per stage) and `warnings`. Anything that misses its target is reported in `warnings`, never hidden.
+
+## Determinism
+
+Every leaf and point is an integer coordinate on the finest lattice, deduplicated by sorting, and every parallel loop writes disjoint slots: the output is byte-identical across parallel backends and thread counts.
+
+## Bindings
+
+Python `mp.octree_mesh`, the pipeline step `OctreeMesh`, the CLI verb `octree-mesh` (both CLIs) and the MCP tool `octree_mesh` take the same options; see [pipelines](pipeline.md), [CLI](cli.md) and [MCP](mcp.md). The C, Fortran, Julia, R and WASM bindings follow with the tetrahedral output.
