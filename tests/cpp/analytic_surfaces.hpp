@@ -29,6 +29,7 @@
 #include <tuple>
 #include <vector>
 
+#include "meshioplusplus/detail/data_ops.hpp"
 #include "mesh_fixtures.hpp"
 
 namespace analytic {
@@ -1390,8 +1391,9 @@ inline std::uint64_t splitmix64(std::uint64_t& rState) {
 
 // Gaussian noise of deviation `Sigma` on every coordinate: the Irwin-Hall sum
 // of twelve uniforms less six per draw, no libm call, so the C++ and NumPy
-// fixtures carry the same noise.
-inline meshioplusplus::Mesh gaussian_noise(meshioplusplus::Mesh rSkin, double Sigma,
+// fixtures carry the same noise. A clone of `rSkin` with the moved points (the
+// KRATOS backend's meshes are not copy-constructible).
+inline meshioplusplus::Mesh gaussian_noise(const meshioplusplus::Mesh& rSkin, double Sigma,
                                            std::uint64_t Seed = 7) {
     meshioplusplus::NDArray q =
         meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Float64, {rSkin.NumPoints(), 3});
@@ -1404,8 +1406,9 @@ inline meshioplusplus::Mesh gaussian_noise(meshioplusplus::Mesh rSkin, double Si
             g += static_cast<double>(splitmix64(state) >> 11) * 0x1.0p-53;
         a[i] += Sigma * g;
     }
-    rSkin.AssignPoints(std::move(q));
-    return rSkin;
+    meshioplusplus::Mesh out = meshioplusplus::detail::clone_mesh(rSkin);
+    out.AssignPoints(std::move(q));
+    return out;
 }
 
 }  // namespace analytic
