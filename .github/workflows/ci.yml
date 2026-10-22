@@ -1197,14 +1197,13 @@ jobs:
       - name: Install build and test deps
         run: |
           python -m pip install --upgrade pip
-          # `mcp<2` must match pyproject's [mcp] extra: this list installs the
+          # `mcp<3` must match pyproject's [mcp] extra: this list installs the
           # SDK directly rather than through the extra, so the bound there does
-          # NOT apply here and an unbounded `mcp` resolves 2.0.0, which removed
-          # mcp.server.fastmcp. Keep the two in step. `hypothesis` runs
+          # NOT apply here. Keep the two in step. `hypothesis` runs
           # test_properties.py, which importorskips it everywhere else
           # (roadmap §3: the determinism properties need one leg that runs them).
           pip install pytest pytest-codeblocks pytest-cov h5py netCDF4 pybind11 scikit-build-core cmake ninja \
-            pyvista trimesh pyarrow pandas polars zarr usd-core "mcp<2" starlette uvicorn httpx foamlib \
+            pyvista trimesh pyarrow pandas polars zarr usd-core "mcp<3" starlette uvicorn httpx foamlib \
             hypothesis
 
       # Cache the two Debug -O0 core builds (build-cpp-cov + the editable _core)
@@ -1459,8 +1458,12 @@ jobs:
           # hdf5=1.14: conda-forge paraview 6.1.1 links libhdf5.so.310 but does
           # not constrain hdf5, so the solver picks 2.x (libhdf5.so.320) and
           # pvpython cannot start.
+          # vtk-base: the py312h1393585_1 build (picked from 2026-10-22) lacks
+          # libvtkcgns-9.7.so.1, which paraview 6.2.0 links, so pvpython exits
+          # 127. Pin the build that passed on master (2026-10-21) until
+          # conda-forge ships a fixed vtk-base; drop the pin then.
           create-args: >-
-            -c conda-forge python=3.12 paraview hdf5=1.14 cxx-compiler cmake ninja pybind11 scikit-build-core numpy pytest
+            -c conda-forge python=3.12 paraview hdf5=1.14 vtk-base=9.7.0=py312h3887a20_1 cxx-compiler cmake ninja pybind11 scikit-build-core numpy pytest
       - name: Build meshio++ into ParaView's environment
         env:
           CMAKE_ARGS: -DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF
@@ -1518,9 +1521,14 @@ jobs:
   # job adds the gated half: FastMCP registration, tool calls, resources.
   # --------------------------------------------------------------------------
   mcp:
-    name: MCP server
+    name: MCP server (${{ matrix.sdk }})
     needs: [lint]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The server supports both SDK majors (FastMCP in 1.x, MCPServer in 2.x).
+        sdk: ["mcp>=1.2,<2", "mcp>=2,<3"]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1552,7 +1560,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           # httpx is Starlette's TestClient transport, used by test_mcp_http.py
-          pip install ".[mcp,dashboard]" pytest httpx
+          pip install ".[mcp,dashboard]" "${{ matrix.sdk }}" pytest httpx
 
       - name: MCP and HTTP front-end tests
         if: steps.lfs.outputs.available != 'false'

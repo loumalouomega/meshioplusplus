@@ -6,7 +6,7 @@ Two halves, mirroring test_interop.py's split:
   which imports no third-party library beyond numpy — it runs in the default
   CI matrix with the ``mcp`` SDK absent. Every report is asserted to be
   strict JSON (``json.dumps(..., allow_nan=False)``).
-* The **gated half** (``pytest.importorskip("mcp")``) builds the FastMCP
+* The **gated half** (``pytest.importorskip("mcp")``) builds the MCP
   server and exercises tool listing, tool calls, resources and the error
   payload shape.
 
@@ -2447,7 +2447,7 @@ def test_crop_tool_takes_a_data_predicate(mesh_file, tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# Gated half: the FastMCP server (needs the [mcp] extra)                      #
+# Gated half: the MCP server (needs the [mcp] extra)                      #
 # --------------------------------------------------------------------------- #
 
 
@@ -2464,10 +2464,16 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def _content(result):
+    # call_tool returns a content list (mcp 1.x, older), a (content,
+    # structured) tuple (1.x, newer) or a CallToolResult (2.x).
+    if hasattr(result, "content"):
+        return result.content
+    return result[0] if isinstance(result, tuple) else result
+
+
 def _tool_json(result):
-    # FastMCP.call_tool returns a content list (older SDKs) or a
-    # (content, structured) tuple (newer); normalize to the parsed JSON.
-    content = result[0] if isinstance(result, tuple) else result
+    content = _content(result)
     text = next(c.text for c in content if getattr(c, "type", "") == "text")
     return json.loads(text)
 
@@ -2478,7 +2484,8 @@ def test_server_lists_every_registered_tool():
     assert sorted(t.name for t in tools) == sorted(TOOL_REGISTRY)
     for t in tools:
         assert (t.description or "").strip(), f"tool '{t.name}' has no description"
-        assert t.inputSchema, f"tool '{t.name}' has no input schema"
+        schema = getattr(t, "input_schema", None) or getattr(t, "inputSchema", None)
+        assert schema, f"tool '{t.name}' has no input schema"
 
 
 def test_server_render_mesh_returns_an_image(mesh_file, tmp_path):
@@ -2495,7 +2502,7 @@ def test_server_render_mesh_returns_an_image(mesh_file, tmp_path):
             },
         )
     )
-    content = result[0] if isinstance(result, tuple) else result
+    content = _content(result)
     assert any(getattr(c, "type", "") == "image" for c in content)
     text = _tool_json(
         _run(server.call_tool("render_mesh", {"input_path": mesh_file, "rows": 5}))
@@ -2541,7 +2548,7 @@ def test_server_screenshot_falls_back_to_the_software_rasterizer(
     result = _run(
         server.call_tool("screenshot", {"input_path": mesh_file, "output_path": out})
     )
-    content = result[0] if isinstance(result, tuple) else result
+    content = _content(result)
     assert any(getattr(c, "type", "") == "image" for c in content)
     assert open(out, "rb").read(8) == b"\x89PNG\r\n\x1a\n"
 
@@ -3127,7 +3134,7 @@ def test_server_mirrors_the_train_start_and_predict_file_parameters():
 
     Deliberately never ``from meshioplusplus.mcp import _server`` (or
     ``importlib.import_module``): that line executes the module, whose own
-    top-level ``from mcp.server.fastmcp import FastMCP`` raises
+    top-level ``from mcp.server.mcpserver import ...`` raises
     ``ModuleNotFoundError`` on the SDK-absent default matrix this test is
     meant to run in -- the same pure/gated split `_tools.py`'s import chain
     already keeps. Reading the ``.py`` file's text directly is what actually

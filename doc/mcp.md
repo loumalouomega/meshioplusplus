@@ -19,7 +19,7 @@ XDMF series reads and conversions preserve fixed shared point/cell/side regions,
 Expose every meshio++ operation to AI agents over the [Model Context Protocol](https://modelcontextprotocol.io/): reading and writing 80+ mesh formats, conversion, and the full mesh- and data-operation suite become **tools** any MCP client (Claude Code, Claude Desktop, the MCP inspector, …) can call.
 
 ```bash
-pip install "meshioplusplus[mcp]"          # the mcp SDK needs Python >= 3.10
+pip install "meshioplusplus[mcp]"          # the mcp SDK needs Python >= 3.10; SDK 1.x and 2.x both work
 claude mcp add meshioplusplus -- meshioplusplus-mcp
 ```
 
@@ -86,7 +86,7 @@ claude mcp add --transport http meshioplusplus http://127.0.0.1:8765/mcp \
   --header "Authorization: Bearer <token>"
 ```
 
-Flags: `--host` (default `127.0.0.1`; binding elsewhere prints a warning), `--port` (default `8765`), `--token` to fix the bearer token instead of generating one, `--no-token` to require none (only on a machine you alone use), `--allow-origin ORIGIN` (repeatable; loopback origins on any port and the hosted docs site are always admitted), `--runs-dir` (where training runs land) and `--webhook URL` (POSTed once per job when it finishes, fails or is stopped — see [the dashboard](./dashboard#being-told-when-a-run-ends); server-side by design, since a client-supplied URL the server then fetches is server-side request forgery). Every `/api/*` and `/mcp*` request needs `Authorization: Bearer <token>`; a missing or wrong token is a `401` `{"error", "error_type": "PermissionError"}` payload. FastMCP's own DNS-rebinding protection stays on for `/mcp`; on an SDK older than streamable HTTP the endpoint is the SSE transport instead (`GET /api/health` reports which).
+Flags: `--host` (default `127.0.0.1`; binding elsewhere prints a warning), `--port` (default `8765`), `--token` to fix the bearer token instead of generating one, `--no-token` to require none (only on a machine you alone use), `--allow-origin ORIGIN` (repeatable; loopback origins on any port and the hosted docs site are always admitted), `--runs-dir` (where training runs land) and `--webhook URL` (POSTed once per job when it finishes, fails or is stopped — see [the dashboard](./dashboard#being-told-when-a-run-ends); server-side by design, since a client-supplied URL the server then fetches is server-side request forgery). Every `/api/*` and `/mcp*` request needs `Authorization: Bearer <token>`; a missing or wrong token is a `401` `{"error", "error_type": "PermissionError"}` payload. The SDK's own DNS-rebinding protection stays on for `/mcp`; on an SDK older than streamable HTTP the endpoint is the SSE transport instead (`GET /api/health` reports which).
 
 ## Path sandbox
 
@@ -208,6 +208,6 @@ Every response survives `json.dumps(..., allow_nan=False)`: numpy scalars and ar
 
 ## Architecture: the pure payload layer
 
-`src/python/meshioplusplus/mcp/` is split exactly the way [`_interop.py`](./interop) is, and for the same reason. Everything a tool *does* lives in the pure layer `_tools.py` — imports only meshioplusplus + numpy + stdlib, runs on every supported Python, tested in the default CI matrix with the `mcp` SDK absent. The FastMCP layer `_server.py` contributes only typed signatures (the JSON schemas) and docstrings (the tool descriptions), and is the one module importing the SDK.
+`src/python/meshioplusplus/mcp/` is split exactly the way [`_interop.py`](./interop) is, and for the same reason. Everything a tool *does* lives in the pure layer `_tools.py` — imports only meshioplusplus + numpy + stdlib, runs on every supported Python, tested in the default CI matrix with the `mcp` SDK absent. The registration layer `_server.py` contributes only typed signatures (the JSON schemas) and docstrings (the tool descriptions), and is the one module importing the SDK. It supports the `mcp` SDK 1.x (`mcp.server.fastmcp.FastMCP`) and 2.x (`mcp.server.mcpserver.MCPServer`, which replaced it), importing whichever exists.
 
 `_tools.TOOL_REGISTRY` is the single source of truth: the server registers from it, and the **parity guard** in `tests/python/test_mcp.py` asserts every public operation in `meshioplusplus.__all__` is claimed by some tool — a new operation fails CI until it gets a tool (or a conscious exemption). That test is what keeps this page's tool table honest as the library grows.

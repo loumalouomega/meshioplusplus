@@ -12,7 +12,7 @@ extra). It serves two things from one process:
 * MCP over HTTP at ``/mcp`` for agents (FastMCP's streamable-HTTP app when
   the installed SDK has it, its SSE app otherwise).
 
-The FastMCP app is the **root** ASGI application and our routes are added to
+The MCP app is the **root** ASGI application and our routes are added to
 it, not the other way round: its own lifespan starts the streamable session
 manager, and mounting it under a parent Starlette would silently skip that
 lifespan. Both middlewares below are plain ASGI (not
@@ -159,19 +159,16 @@ def build_app(
     runs_dir: Optional[str] = None,
     watch_jobs: bool = False,
 ) -> Starlette:
-    """The ASGI app: FastMCP's HTTP app plus the ``/api`` routes and auth.
+    """The ASGI app: the SDK's HTTP app plus the ``/api`` routes and auth.
 
     ``watch_jobs`` starts the job watcher, which polls live training jobs so
     a terminal transition -- and its webhook -- is noticed with nobody
     asking; only worth running when a webhook is configured, since every
     request already re-derives the jobs it touches.
     """
-    if hasattr(server, "streamable_http_app"):
-        app = server.streamable_http_app()
-        transport = "streamable-http"
-    else:  # pragma: no cover - older SDKs in the >=1.2 range
-        app = server.sse_app()
-        transport = "sse"
+    from ._server import http_app
+
+    app, transport = http_app(server)
     if runs_dir:
         _tools.set_runs_dir(runs_dir)
     runs = _tools.get_runs_dir()
