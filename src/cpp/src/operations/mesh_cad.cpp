@@ -392,10 +392,6 @@ void mcad_check_options(const MeshCadSurfaceOptions& rO) {
     if (rO.mSmoothMethod != MeshCadSmoothing::Laplacian &&
         rO.mSmoothMethod != MeshCadSmoothing::Odt)
         mcad_fail("smooth_method must be laplacian or odt");
-    if (rO.mSmoothIterations != 0)
-        mcad_fail(
-            "smooth_iterations is not implemented yet (roadmap 6.2.5); leave it at its "
-            "default");
     // In the layout, not yet implemented: refused rather than ignored.
     const auto not_yet = [](const char* pOption, const char* pItem) {
         mcad_fail(std::string(pOption) + " is not implemented yet (roadmap " + pItem +
@@ -1121,6 +1117,83 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             corner_angle[id] = r_a.mAngleDeg;
             corner_x[id] = cdt.Point(r_a.mVertex);
         }
+    }
+
+    // Guarded smoothing (6.2.5): each interior point toward its star's
+    // centroid (Laplacian) or area-weighted circumcentre (ODT, Chen and Xu
+    // 2004), in the plane, kept only when no triangle of its star inverts
+    // (MoveVertex's exact orient2d) and the star's smallest angle on the
+    // surface does not drop (Field 1988). Lawson's flips follow, judged on
+    // the surface (the larger smallest angle), so a pass never undoes what
+    // the guard kept. Boundary points stay, so shared edges stay shared; a
+    // star within h of a pole is left.
+    for (std::int64_t pass = 0; pass < rQ.mSmoothIterations; ++pass) {
+        for (std::int64_t v = detail::Cdt2d::kFirstVertex; v < cdt.NumVertices(); ++v) {
+            const auto it = mesh_of.find(v);
+            if (it == mesh_of.end() || it->second >= 0 || cdt.OnConstraint(v))
+                continue;
+            const std::vector<detail::Cdt2d::Tri> star = cdt.Star(v);
+            bool skip = false;
+            double before = 180.0;
+            for (const auto& r_t : star) {
+                std::array<std::int64_t, 3> ids{};
+                if (exempt(r_t, ids)) {
+                    skip = true;
+                    break;
+                }
+                before = std::min(before, mcad_min_angle(pos(ids[0]), pos(ids[1]), pos(ids[2])));
+            }
+            if (skip || star.empty())
+                continue;
+            detail::Cdt2d::Vec2 target{0.0, 0.0};
+            if (rQ.mSmoothMethod == MeshCadSmoothing::Laplacian) {
+                const std::vector<std::int64_t> nbrs = cdt.Neighbours(v);
+                for (const std::int64_t w : nbrs) {
+                    target[0] += cdt.Point(w)[0];
+                    target[1] += cdt.Point(w)[1];
+                }
+                target[0] /= double(nbrs.size());
+                target[1] /= double(nbrs.size());
+            } else {
+                double total = 0.0;
+                for (const auto& r_t : star) {
+                    const auto& a = cdt.Point(r_t[0]);
+                    const auto& b = cdt.Point(r_t[1]);
+                    const auto& c = cdt.Point(r_t[2]);
+                    const double bx = b[0] - a[0], by = b[1] - a[1];
+                    const double cx = c[0] - a[0], cy = c[1] - a[1];
+                    const double d = 2.0 * (bx * cy - by * cx);
+                    if (!(d > 0.0))
+                        continue;
+                    const double b2 = bx * bx + by * by;
+                    const double c2 = cx * cx + cy * cy;
+                    const double area = 0.25 * d;
+                    target[0] += area * (a[0] + (cy * b2 - by * c2) / d);
+                    target[1] += area * (a[1] + (bx * c2 - cx * b2) / d);
+                    total += area;
+                }
+                if (!(total > 0.0))
+                    continue;
+                target[0] /= total;
+                target[1] /= total;
+            }
+            const Vec3 moved = lift(target);
+            const std::int64_t self = it->second;
+            double after = 180.0;
+            for (const auto& r_t : star) {
+                Vec3 p[3];
+                for (int k = 0; k < 3; ++k)
+                    p[k] = r_t[static_cast<std::size_t>(k)] == v
+                               ? moved
+                               : pos(mesh_of.at(r_t[static_cast<std::size_t>(k)]));
+                after = std::min(after, mcad_min_angle(p[0], p[1], p[2]));
+            }
+            if (!(after >= before) || !cdt.MoveVertex(v, target, false))
+                continue;
+            rF.mInterior[static_cast<std::size_t>(-self - 1)] = moved;
+            ++r_rec.mNumSmoothed;
+        }
+        surface_flips();
     }
 
     // Lift, drop what a pole collapses, orient along the face's normal.

@@ -17,7 +17,7 @@
 // mesh_cad_surface's quality options (roadmap 6.2): Delaunay refinement to
 // a minimum angle measured on the surface, boundary splits shared across
 // faces, small input angles and poles reported with the triangles they
-// force, the order faces are processed in, and the
+// force, guarded smoothing, the order faces are processed in, and the
 // options not implemented yet refused. Each probe of roadmap 6.2.7 is a
 // named test; 0 keeping the unrefined mesh is pinned in test_op_goldens.
 
@@ -383,11 +383,11 @@ TEST(MeshCadQuality, TheMeshDoesNotDependOnTheFaceOrderOrThreads) {
     const mio::BrepInfo cyl = brep_solids::capped_cylinder(1.0, 2.0);
     const mio::BrepInfo box = brep_solids::box(2, 1, 3);
     const std::uint64_t ref_cyl = digest(mio::mesh_cad_surface(cyl, quality(0.2, 30.0)).mMesh);
-    const std::uint64_t ref_box = digest(mio::mesh_cad_surface(box, quality(0.3, 30.0)).mMesh);
+    const std::uint64_t ref_box = digest(mio::mesh_cad_surface(box, quality(0.3, 30.0, 2)).mMesh);
     for (const std::uint64_t seed : {1u, 7u, 12345u}) {
         mio::detail::mesh_cad_set_face_order_seed(seed);
         EXPECT_EQ(digest(mio::mesh_cad_surface(cyl, quality(0.2, 30.0)).mMesh), ref_cyl) << seed;
-        EXPECT_EQ(digest(mio::mesh_cad_surface(box, quality(0.3, 30.0)).mMesh), ref_box) << seed;
+        EXPECT_EQ(digest(mio::mesh_cad_surface(box, quality(0.3, 30.0, 2)).mMesh), ref_box) << seed;
     }
     mio::detail::mesh_cad_set_face_order_seed(0);
 #ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
@@ -398,6 +398,40 @@ TEST(MeshCadQuality, TheMeshDoesNotDependOnTheFaceOrderOrThreads) {
     }
     omp_set_num_threads(saved);
 #endif
+}
+
+TEST(MeshCadQuality, SmoothingKeepsTheBoundaryAndNeverLowersAStar) {
+    // Roadmap 6.2.5: interior points move (Laplacian or ODT), boundary
+    // points stay where they were, every point stays on the sphere, and the
+    // smallest angle away from the poles does not drop.
+    const auto plain = mio::mesh_cad_surface(brep_solids::sphere(1.0), quality(0.2, 0.0));
+    const double* x0 = plain.mMesh.Points().As<double>();
+    for (const auto method : {mio::MeshCadSmoothing::Laplacian, mio::MeshCadSmoothing::Odt}) {
+        MeshCadSurfaceOptions o = quality(0.2, 0.0, 3);
+        o.mSmoothMethod = method;
+        const auto r = mio::mesh_cad_surface(brep_solids::sphere(1.0), o);
+        expect_closed(r);
+        EXPECT_GT(r.mNumSmoothed, 0);
+        ASSERT_EQ(r.mNumPoints, plain.mNumPoints);
+        const double* x = r.mMesh.Points().As<double>();
+        // The boundary (seam, equator, poles) comes first and is shared.
+        const std::size_t boundary =
+            static_cast<std::size_t>(plain.mNumPoints - plain.mFaces[0].mNumInteriorPoints -
+                                     plain.mFaces[1].mNumInteriorPoints);
+        for (std::size_t i = 0; i < 3 * boundary; ++i)
+            ASSERT_EQ(x[i], x0[i]);
+        for (std::size_t i = 0; i < r.mMesh.NumPoints(); ++i)
+            EXPECT_NEAR(std::sqrt(x[3 * i] * x[3 * i] + x[3 * i + 1] * x[3 * i + 1] +
+                                  x[3 * i + 2] * x[3 * i + 2]),
+                        1.0, 1e-12);
+        for (std::size_t f = 0; f < 2; ++f)
+            EXPECT_GE(r.mFaces[f].mBoundDeg, plain.mFaces[f].mBoundDeg) << f;
+        EXPECT_NEAR(measure(r.mMesh).mVolume, measure(plain.mMesh).mVolume, 0.01);
+    }
+    // On a plane, refinement then smoothing still meets the bound.
+    const auto r = mio::mesh_cad_surface(trimmed_plate(), quality(0.2, 25.0, 3));
+    EXPECT_GE(r.mMinAngleDeg, 25.0 - 1e-9);
+    EXPECT_NEAR(measure(r.mMesh).mArea, 16.0 - 2.88, 1e-12);
 }
 
 TEST(MeshCadQuality, TheHistogramCountsEveryAngle) {
@@ -453,7 +487,6 @@ TEST(MeshCadQuality, OptionsNotImplementedYetAreRefused) {
             << bad;
     EXPECT_THROW((void)mio::mesh_cad_surface(brep_solids::box(), quality(0.5, 0.0, -1)),
                  std::invalid_argument);
-    refused(quality(0.5, 0.0, 1), "6.2.5");
 }
 
 TEST(MeshCadQuality, TriangulatePolygonTakesTheSameMinAngle) {
