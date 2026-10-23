@@ -1051,6 +1051,78 @@ int main(int argc, char** argv) {
             o.mTargetSize = octree_step;
             of(pD, mio::mesh_cad_surface(box, o).mMesh);
         });
+        // mesh_cad_surface on trimmed geometry (v17.14.0): a disc plate of
+        // radius 2 with a hole of radius 1 whose edge comes within 0.02 of the
+        // rim, and an embedded line across the plate. At h = 1.1 the coarse
+        // loops cross and are split until they do not; at the tier's step
+        // the plate is filled around the embedded edge.
+        row("mesh_cad_surface_trimmed", [&](MeshDigest* pD) {
+            constexpr double kTwoPi = 6.283185307179586;
+            // A full circle in the plane's parameters: four rational quarters
+            // from angle A0, run counter-clockwise or not.
+            const auto circle = [&](double Cx, double Cy, double R, double A0, bool Ccw) {
+                mio::BrepTrim t;
+                t.mDirection = Ccw;
+                mio::BrepCurve& c = t.mCurve;
+                c.mDegree = 2;
+                c.mRational = true;
+                const double q = 0.25 * kTwoPi;
+                c.mKnots = {0, 0, 0, q, q, 2 * q, 2 * q, 3 * q, 3 * q, 4 * q, 4 * q, 4 * q};
+                c.mControlPoints = NDArray(mio::DType::Float64, {9, 3});
+                c.mWeights = NDArray(mio::DType::Float64, {9});
+                const double w = std::sqrt(0.5);
+                for (int k = 0; k < 9; ++k) {
+                    const double a = A0 + 0.5 * q * k;
+                    const double r = k % 2 ? R / w : R;
+                    double* p = c.mControlPoints.As<double>() + 3 * k;
+                    p[0] = Cx + r * std::cos(a);
+                    p[1] = Cy + r * std::sin(a);
+                    p[2] = 0.0;
+                    c.mWeights.As<double>()[k] = k % 2 ? w : 1.0;
+                }
+                return t;
+            };
+            mio::BrepInfo plate;
+            mio::NurbsPatch p;
+            p.mDegrees = {1, 1};
+            p.mKnots = {{-2.5, -2.5, 2.5, 2.5}, {-2.5, -2.5, 2.5, 2.5}};
+            p.mControlPoints = NDArray(mio::DType::Float64, {4, 3});
+            p.mWeights = NDArray(mio::DType::Float64, {4});
+            for (int j = 0; j < 2; ++j)
+                for (int i = 0; i < 2; ++i) {
+                    double* x = p.mControlPoints.As<double>() + 3 * (2 * j + i);
+                    x[0] = i ? 2.5 : -2.5;
+                    x[1] = j ? 2.5 : -2.5;
+                    x[2] = 0.0;
+                    p.mWeights.As<double>()[2 * j + i] = 1.0;
+                }
+            plate.mPatches.push_back(p);
+            mio::BrepFace face;
+            face.mId = 1;
+            face.mPatch = 0;
+            face.mTrimmed = true;
+            face.mRational = true;
+            face.mLoops.resize(2);
+            face.mLoops[0].mTrims.push_back(circle(0.0, 0.0, 2.0, 0.625 * kTwoPi, true));
+            face.mLoops[1].mType = "inner";
+            face.mLoops[1].mTrims.push_back(circle(0.98, 0.0, 1.0, 0.0, false));
+            mio::BrepTrim line;
+            line.mCurve.mDegree = 1;
+            line.mCurve.mKnots = {0, 0, 1, 1};
+            line.mCurve.mControlPoints = NDArray(mio::DType::Float64, {2, 3});
+            line.mCurve.mWeights = NDArray(mio::DType::Float64, {2});
+            const double ends[6] = {-1.6, -0.6, 0.0, -0.4, 1.2, 0.0};
+            std::copy(ends, ends + 6, line.mCurve.mControlPoints.As<double>());
+            line.mCurve.mWeights.As<double>()[0] = 1.0;
+            line.mCurve.mWeights.As<double>()[1] = 1.0;
+            face.mEmbeddedEdges.push_back(line);
+            plate.mFaces.push_back(face);
+            for (const double h : {1.1, 4.0 * octree_step}) {
+                mio::MeshCadSurfaceOptions o;
+                o.mTargetSize = h;
+                of(pD, mio::mesh_cad_surface(plate, o).mMesh);
+            }
+        });
         row("sample_distance", [&](MeshDigest* pD) {
             const NDArray d = mio::sample_distance(surface, jittered->Points());
             if (pD)
