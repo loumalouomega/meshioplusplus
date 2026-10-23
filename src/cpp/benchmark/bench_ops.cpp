@@ -1017,17 +1017,14 @@ int main(int argc, char** argv) {
             o.mMaxSize = 8.0 * octree_step;
             of(pD, mio::octree_mesh(surface, o).mMesh);
         });
-        // mesh_cad_surface (v17.13.0): the unit box as six untrimmed bilinear
-        // patches with no edge topology (the trims are paired by their
-        // images), meshed at one lattice step.
-        row("mesh_cad_surface", [&](MeshDigest* pD) {
+        // The CAD models of the mesh_cad_surface rows, built inside each row's
+        // timed body as before.
+        const auto cad_box = [&]() {
             mio::BrepInfo box;
-            const double sides[6][3][3] = {{{0, 0, 0}, {0, 1, 0}, {1, 0, 0}},
-                                           {{0, 0, 1}, {1, 0, 0}, {0, 1, 0}},
-                                           {{0, 0, 0}, {1, 0, 0}, {0, 0, 1}},
-                                           {{0, 1, 0}, {0, 0, 1}, {1, 0, 0}},
-                                           {{0, 0, 0}, {0, 0, 1}, {0, 1, 0}},
-                                           {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
+            const double sides[6][3][3] = {
+                {{0, 0, 0}, {0, 1, 0}, {1, 0, 0}}, {{0, 0, 1}, {1, 0, 0}, {0, 1, 0}},
+                {{0, 0, 0}, {1, 0, 0}, {0, 0, 1}}, {{0, 1, 0}, {0, 0, 1}, {1, 0, 0}},
+                {{0, 0, 0}, {0, 0, 1}, {0, 1, 0}}, {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
             for (int f = 0; f < 6; ++f) {
                 mio::NurbsPatch p;
                 p.mDegrees = {1, 1};
@@ -1047,16 +1044,9 @@ int main(int argc, char** argv) {
                 face.mPatch = f;
                 box.mFaces.push_back(face);
             }
-            mio::MeshCadSurfaceOptions o;
-            o.mTargetSize = octree_step;
-            of(pD, mio::mesh_cad_surface(box, o).mMesh);
-        });
-        // mesh_cad_surface on trimmed geometry (v17.14.0): a disc plate of
-        // radius 2 with a hole of radius 1 whose edge comes within 0.02 of the
-        // rim, and an embedded line across the plate. At h = 1.1 the coarse
-        // loops cross and are split until they do not; at the tier's step
-        // the plate is filled around the embedded edge.
-        row("mesh_cad_surface_trimmed", [&](MeshDigest* pD) {
+            return box;
+        };
+        const auto cad_plate = [&]() {
             constexpr double kTwoPi = 6.283185307179586;
             // A full circle in the plane's parameters: four rational quarters
             // from angle A0, run counter-clockwise or not.
@@ -1117,9 +1107,43 @@ int main(int argc, char** argv) {
             line.mCurve.mWeights.As<double>()[1] = 1.0;
             face.mEmbeddedEdges.push_back(line);
             plate.mFaces.push_back(face);
+            return plate;
+        };
+        // mesh_cad_surface (v17.13.0): the unit box as six untrimmed bilinear
+        // patches with no edge topology (the trims are paired by their
+        // images), meshed at one lattice step.
+        row("mesh_cad_surface", [&](MeshDigest* pD) {
+            const mio::BrepInfo box = cad_box();
+            mio::MeshCadSurfaceOptions o;
+            o.mTargetSize = octree_step;
+            of(pD, mio::mesh_cad_surface(box, o).mMesh);
+        });
+        // mesh_cad_surface on trimmed geometry (v17.14.0): a disc plate of
+        // radius 2 with a hole of radius 1 whose edge comes within 0.02 of the
+        // rim, and an embedded line across the plate. At h = 1.1 the coarse
+        // loops cross and are split until they do not; at the tier's step
+        // the plate is filled around the embedded edge.
+        row("mesh_cad_surface_trimmed", [&](MeshDigest* pD) {
+            const mio::BrepInfo plate = cad_plate();
             for (const double h : {1.1, 4.0 * octree_step}) {
                 mio::MeshCadSurfaceOptions o;
                 o.mTargetSize = h;
+                of(pD, mio::mesh_cad_surface(plate, o).mMesh);
+            }
+        });
+        // Delaunay refinement (v17.15.0): the same two models refined to 25
+        // degrees on the surface (the plate also smoothed twice), against
+        // the two rows above at the same sizes for refinement's cost.
+        row("mesh_cad_surface_refined", [&](MeshDigest* pD) {
+            const mio::BrepInfo box = cad_box();
+            const mio::BrepInfo plate = cad_plate();
+            mio::MeshCadSurfaceOptions o;
+            o.mTargetSize = octree_step;
+            o.mMinAngleDeg = 25.0;
+            of(pD, mio::mesh_cad_surface(box, o).mMesh);
+            for (const double h : {1.1, 4.0 * octree_step}) {
+                o.mTargetSize = h;
+                o.mSmoothIterations = 2;
                 of(pD, mio::mesh_cad_surface(plate, o).mMesh);
             }
         });
