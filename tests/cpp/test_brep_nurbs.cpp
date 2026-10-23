@@ -32,6 +32,7 @@
 
 // Project includes (private, not installed)
 #include "../../src/cpp/src/detail/brep_nurbs.hpp"
+#include "../../src/cpp/src/detail/edge_sampler.hpp"
 
 namespace {
 
@@ -71,6 +72,22 @@ double trim_deviation(const BrepNurbsFace& rF, F&& rDistance) {
                 worst = std::max(worst, rDistance(p));
             }
         }
+    return worst;
+}
+
+// The largest distance from the circle of radius R about the origin of a
+// trim's image through the face's patch, evaluated as the mesher does (its
+// parameters clamped to the patch).
+double circle_deviation(const BrepNurbsFace& rF, const meshioplusplus::BrepTrim& rTrim, double R) {
+    const meshioplusplus::detail::BrepSurfaceEval s(rF.mPatch, rF.mFace.mRational);
+    const meshioplusplus::detail::BrepCurveEval c(rTrim.mCurve);
+    double worst = 0.0;
+    for (int i = 0; i <= 2000; ++i) {
+        double uv[3], d[3], x[3];
+        c.Eval(c.T0() + (c.T1() - c.T0()) * i / 2000.0, uv, d);
+        s.Eval(uv[0], uv[1], x, nullptr, nullptr);
+        worst = std::max(worst, std::fabs(std::hypot(x[0], x[1]) - R));
+    }
     return worst;
 }
 
@@ -283,6 +300,64 @@ TEST(BrepNurbs, PlaneWithAHoleKeepsItsCircleExact) {
         EXPECT_NEAR(std::hypot(p[0], p[1]), 1.0, 1e-12);
     }
     EXPECT_NEAR(sampled_area(one_face(face)), 16.0 - kPi, 0.01 * (16.0 - kPi));
+}
+
+TEST(BrepNurbs, PlaneCircleStartedAnywhereStaysOnItsPatch) {
+    // Started between the 16 samples' axis extremes, the exact circle still
+    // lies within the plane's patch, which clamps its parameters.
+    const double a0 = std::sqrt(2.0);
+    BrepNurbsSurface s;
+    s.mKind = 1;
+    std::string why;
+    {
+        // A disc.
+        std::vector<std::vector<BrepNurbsTrim>> loops(1);
+        loops[0].push_back(circle_trim(1.0, 0.0, a0, 2 * kPi));
+        loops[0][0].mCircle = true;
+        loops[0][0].mRadius = 1.0;
+        BrepNurbsFace face;
+        ASSERT_TRUE(meshioplusplus::detail::brep_nurbs_face(s, loops, true, 1e-4, face, why))
+            << why;
+        EXPECT_LT(circle_deviation(face, face.mFace.mLoops[0].mTrims[0], 1.0), 1e-12);
+    }
+    {
+        // A square with a clockwise hole.
+        std::vector<std::vector<BrepNurbsTrim>> loops(2);
+        const PatchVec c[4] = {{-2, -2, 0}, {2, -2, 0}, {2, 2, 0}, {-2, 2, 0}};
+        for (int i = 0; i < 4; ++i) {
+            BrepNurbsTrim t;
+            t.mPoints = {c[i], c[(i + 1) % 4]};
+            loops[0].push_back(t);
+        }
+        loops[1].push_back(circle_trim(1.0, 0.0, a0, -2 * kPi));
+        loops[1][0].mCircle = true;
+        loops[1][0].mRadius = 1.0;
+        BrepNurbsFace face;
+        ASSERT_TRUE(meshioplusplus::detail::brep_nurbs_face(s, loops, true, 1e-4, face, why))
+            << why;
+        ASSERT_EQ(face.mFace.mLoops.size(), 2u);
+        EXPECT_LT(circle_deviation(face, face.mFace.mLoops[1].mTrims[0], 1.0), 1e-12);
+    }
+    {
+        // Three quarters of a disc: an arc across three axis extremes, closed
+        // by a chord.
+        const double sweep = 1.5 * kPi;
+        std::vector<std::vector<BrepNurbsTrim>> loops(1);
+        loops[0].push_back(circle_trim(2.0, 0.0, a0, sweep));
+        loops[0][0].mCircle = true;
+        loops[0][0].mRadius = 2.0;
+        BrepNurbsTrim chord;
+        chord.mPoints = {{2.0 * std::cos(a0 + sweep), 2.0 * std::sin(a0 + sweep), 0.0},
+                         {2.0 * std::cos(a0), 2.0 * std::sin(a0), 0.0}};
+        loops[0].push_back(chord);
+        BrepNurbsFace face;
+        ASSERT_TRUE(meshioplusplus::detail::brep_nurbs_face(s, loops, true, 1e-4, face, why))
+            << why;
+        EXPECT_LT(circle_deviation(face, face.mFace.mLoops[0].mTrims[0], 2.0), 1e-12);
+        // A circular segment: R^2 (theta - sin theta) / 2.
+        const double area = 2.0 * (sweep - std::sin(sweep));
+        EXPECT_NEAR(sampled_area(one_face(face)), area, 0.01 * area);
+    }
 }
 
 TEST(BrepNurbs, InwardNormalSwapsTheLoops) {
