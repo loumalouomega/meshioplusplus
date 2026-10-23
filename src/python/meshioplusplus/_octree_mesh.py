@@ -162,8 +162,8 @@ def octree_mesh(
     :param skin_grading: ``"graded"`` (the size field also varies along the
         skin) or ``"uniform"`` (one level along the skin, so the stuffing
         angle bound applies).
-    :param surface_size: the skin size under uniform grading; 0: the smallest
-        the field asks for.
+    :param surface_size: the skin size under uniform grading, and the cell
+        size of the hexahedral output; 0: the smallest the field asks for.
     :param winding_threshold: inside where the winding number exceeds this.
     :param winding_beta: accuracy of the fast winding number; 0 sums every
         triangle.

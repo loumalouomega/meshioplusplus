@@ -2044,6 +2044,7 @@ See [`doc/octree.md`](octree.md).
 ```bash
 meshioplusplus octree-mesh part.stl part.vtu --min-size 0.01 --max-size 0.2
 meshioplusplus octree-mesh part.stl cells.vtu --output castellated --fill cover --json
+meshioplusplus octree-mesh part.stl hexes.vtu --output hex --surface-size 0.05
 ```
 
 | flag | meaning |
@@ -2057,7 +2058,7 @@ meshioplusplus octree-mesh part.stl cells.vtu --output castellated --fill cover 
 | `--gap-cells N` / `--gap-outside` | leaves across the local thickness (0: off), also between parts |
 | `--size-array NAME` / `--surface-region NAME` | target sizes from a `point_data` array / mesh only this region's skin |
 | `--grading-layers N` | rings of leaves around the skin at its level |
-| `--skin-grading graded\|uniform` / `--surface-size H` | let the size vary along the skin, or keep it at one level |
+| `--skin-grading graded\|uniform` / `--surface-size H` | let the size vary along the skin, or keep it at one level; `H` is also the hexahedral output's cell size |
 | `--winding-threshold W` / `--winding-beta B` | inside where the winding number exceeds `W`; its accuracy (0: exact) |
 | `--conformity stuffing\|cleaving`, `--alpha-long`, `--alpha-short` | how tetrahedra conform to the skin |
 | `--no-preserve-features`, `--fit-iterations N`, `--no-dihedral-floor-guard` | feature snapping and optimisation |
