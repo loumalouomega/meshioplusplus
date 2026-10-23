@@ -530,6 +530,9 @@ const char* pipe_excluded_hint(const std::string& rOp) {
     if (rOp == "ConservativeInterpolate")
         return "'ConservativeInterpolate' needs a second (source) mesh and is not "
                "a pipeline step; use the `conservative-interpolate` CLI verb";
+    if (rOp == "MeshCadSurface")
+        return "'MeshCadSurface' meshes a CAD model, which the pipeline does not "
+               "carry, and is not a pipeline step; use the `mesh-cad-surface` CLI verb";
     return nullptr;
 }
 

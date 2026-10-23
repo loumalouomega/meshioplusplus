@@ -602,6 +602,9 @@ _EXCLUDED_OPS = {
     "ConservativeInterpolate": "'ConservativeInterpolate' needs a second "
     "(source) mesh and is not a pipeline step; use the "
     "`conservative-interpolate` CLI verb",
+    "MeshCadSurface": "'MeshCadSurface' meshes a CAD model, which the pipeline "
+    "does not carry, and is not a pipeline step; use the `mesh-cad-surface` "
+    "CLI verb",
 }
 
 

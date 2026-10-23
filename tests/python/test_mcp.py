@@ -2047,6 +2047,9 @@ _NOT_TOOLS = {
     "has_open3d",
     "has_dolfinx",
     "edge_index",  # in-memory (2, E) array; no path-based form
+    # Its input is polygons as in-memory (n, 2) arrays, not a file; the
+    # mesh_cad_surface tool covers meshing a CAD file.
+    "triangulate_polygon_2d",
     "feature_matrix",  # in-memory matrix + schema; no path-based form
     "FeatureMatrix",
     # An in-memory value (the mesh plus its provenance arrays); the
@@ -2231,6 +2234,26 @@ def test_octree_mesh_tool(tmp_path):
         _tools.tool_octree_mesh(str(skin), str(out), output="bogus")
     with pytest.raises(ValueError, match="winding_threshold"):
         _tools.tool_octree_mesh(str(skin), str(out), winding_threshold=2.0)
+
+
+def test_mesh_cad_surface_tool(tmp_path):
+    if not hasattr(_core, "mesh_cad_surface"):
+        pytest.skip("core predates mesh_cad_surface")
+    src = pathlib.Path(__file__).parent / "meshes" / "cad_json" / "unit_cube.cad.json"
+    out = tmp_path / "cube.vtu"
+    report = _tools.tool_mesh_cad_surface(str(src), str(out), 0.25)
+    assert out.exists()
+    assert report["num_faces"] == 6
+    assert report["num_failed"] == 0
+    assert report["num_open_edges"] == 0
+    assert report["num_misoriented_edges"] == 0
+    assert len(report["faces"]) == 6
+    assert all(f["status"] == "ok" for f in report["faces"])
+    assert "warnings" in report
+    written = meshioplusplus.read(out)
+    assert "cad:face" in written.cell_data
+    with pytest.raises(ValueError, match="target_size"):
+        _tools.tool_mesh_cad_surface(str(src), str(out), 0.0)
 
 
 def test_octree_tool(tmp_path):

@@ -21,6 +21,13 @@ meshio++'s own writer, so they are canonical (a rewrite gives the same bytes):
 - ``import_square.json``: the ``ImportNurbsSbmModeler`` dialect: a bilinear
   surface whose weights are all zero (that modeler reads no surface weights)
   and four boundary lines plus a rational quarter circle.
+- ``unit_cube.cad.json``, ``capped_cylinder.cad.json`` and ``sphere.cad.json``:
+  closed solids with shared edges, for ``mesh_cad_surface``: six bilinear
+  faces and twelve edges; a rational cylinder band closed through a seam and
+  two planar caps trimmed by exact circles that start where the band's rims
+  do; two rational hemispheres sharing the equator, each closed through a
+  seam and a degenerate pole edge with no 3-D curve. Every face's normal
+  ``dS/du x dS/dv`` points outward.
 
     python tools/gen_cad_json_fixtures.py
 """
@@ -399,12 +406,218 @@ def import_square():
     return json.dumps(doc, indent=4) + "\n"
 
 
+# The control polygon of the unit circle in four rational quarters, from
+# angle 0 counter-clockwise, and its knots.
+CIRCLE = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1), (1, 0)]
+CIRCLE_W = [1, W, 1, W, 1, W, 1, W, 1]
+CIRCLE_KNOTS = [0, 0, 0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1, 1, 1]
+
+
+def circle_curve(centre, r, z=None, sense=1, ids=None):
+    """The full circle about ``centre`` (2-D, or 3-D at height ``z``) from
+    angle 0, counter-clockwise for ``sense`` 1 and clockwise for -1."""
+    pts = []
+    for x, y in CIRCLE:
+        q = (centre[0] + r * x, centre[1] + sense * r * y)
+        pts.append(q if z is None else (q[0], q[1], z))
+    return curve(
+        2,
+        CIRCLE_KNOTS,
+        pts,
+        weights=CIRCLE_W,
+        active=[0, 1],
+        ids=None if ids is None else ids.take(len(pts)),
+    )
+
+
+def _closed_solid(patches, faces, edges):
+    return {
+        "patches": patches,
+        "breps": [
+            {
+                "id": 1,
+                "name": "",
+                "faces": list(range(len(faces))),
+                "edges": list(range(len(edges))),
+                "vertices": [],
+                "extra": "",
+            }
+        ],
+        "faces": faces,
+        "edges": edges,
+        "vertices": [],
+        "extra": '{"version_number":1}',
+    }
+
+
+def _loop(trims):
+    return {"type": "outer", "trims": trims, "extra": ""}
+
+
+def unit_cube():
+    # Each face: its origin and the two directions of u and v, u x v outward.
+    sides = [
+        ((0, 0, 0), (0, 1, 0), (1, 0, 0)),
+        ((0, 0, 1), (1, 0, 0), (0, 1, 0)),
+        ((0, 0, 0), (1, 0, 0), (0, 0, 1)),
+        ((0, 1, 0), (0, 0, 1), (1, 0, 0)),
+        ((0, 0, 0), (0, 0, 1), (0, 1, 0)),
+        ((1, 0, 0), (0, 1, 0), (0, 0, 1)),
+    ]
+    square = [(0, 0), (1, 0), (1, 1), (0, 1)]
+    ids = Ids()
+    patches, faces, refs = [], [], {}
+
+    def point(side, u, v):
+        o, a, b = side
+        return tuple(o[k] + u * a[k] + v * b[k] for k in range(3))
+
+    for f, side in enumerate(sides):
+
+        def at(u, v, side=side):
+            return point(side, u, v)
+
+        patches.append(
+            patch(
+                [1, 1],
+                [[0, 0, 1, 1], [0, 0, 1, 1]],
+                [at(u, v) for v in (0, 1) for u in (0, 1)],
+            )
+        )
+        trims = []
+        for k in range(4):
+            p, q = square[k], square[(k + 1) % 4]
+            trims.append(trim(k, line(p, q, None)))
+            pa, pb = at(*p), at(*q)
+            key = tuple(sorted((pa, pb)))
+            refs.setdefault(key, []).append(ref(2 + f, k, 1 if (pa, pb) == key else 0))
+        faces.append(face(2 + f, f, loops=[_loop(trims)], ids=ids.take(4)))
+    edges = [
+        edge(
+            8 + i,
+            curve(1, [0, 0, 1, 1], list(key), active=[0, 1], ids=ids.take(2)),
+            refs[key],
+        )
+        for i, key in enumerate(sorted(refs))
+    ]
+    return _closed_solid(patches, faces, edges)
+
+
+def capped_cylinder():
+    r, h = 1.0, 2.0
+    band = patch(
+        [2, 1],
+        [CIRCLE_KNOTS, [0, 0, 1, 1]],
+        [(r * x, r * y, z) for z in (0.0, h) for x, y in CIRCLE],
+        CIRCLE_W * 2,
+    )
+    # The caps as planes over [-r, r]^2: the bottom one's v runs along -y so
+    # its normal is -z; in its parameters the circle runs counter-clockwise,
+    # which is clockwise seen from above.
+    bottom = patch(
+        [1, 1],
+        [[0, 0, 1, 1], [0, 0, 1, 1]],
+        [(-r, r, 0), (r, r, 0), (-r, -r, 0), (r, -r, 0)],
+    )
+    top = patch(
+        [1, 1],
+        [[0, 0, 1, 1], [0, 0, 1, 1]],
+        [(-r, -r, h), (r, -r, h), (-r, r, h), (r, r, h)],
+    )
+    band_loop = [
+        trim(0, line((0, 0), (1, 0), None)),
+        trim(1, line((1, 0), (1, 1), None)),
+        trim(2, line((1, 1), (0, 1), None)),
+        trim(3, line((0, 1), (0, 0), None)),
+    ]
+    ids = Ids()
+    faces = [
+        face(2, 0, loops=[_loop(band_loop)], rational=True, ids=ids.take(18)),
+        face(
+            3,
+            1,
+            loops=[_loop([trim(0, circle_curve((0.5, 0.5), 0.5))])],
+            ids=ids.take(4),
+        ),
+        face(
+            4,
+            2,
+            loops=[_loop([trim(0, circle_curve((0.5, 0.5), 0.5))])],
+            ids=ids.take(4),
+        ),
+    ]
+    seam = curve(
+        1, [0, 0, 1, 1], [(r, 0, 0), (r, 0, h)], active=[0, 1], ids=ids.take(2)
+    )
+    edges = [
+        edge(5, circle_curve((0, 0), r, 0.0, ids=ids), [ref(2, 0, 1), ref(3, 0, 0)]),
+        edge(6, circle_curve((0, 0), r, h, ids=ids), [ref(2, 2, 0), ref(4, 0, 1)]),
+        edge(7, seam, [ref(2, 1, 1), ref(2, 3, 0)]),
+    ]
+    return _closed_solid([band, bottom, top], faces, edges)
+
+
+def sphere():
+    r = 1.0
+    # Profiles (radius, height, weight) from the equator up to the north
+    # pole, and from the south pole up to the equator.
+    north = [(r, 0.0, 1.0), (r, r, W), (0.0, r, 1.0)]
+    south = [(0.0, -r, 1.0), (r, -r, W), (r, 0.0, 1.0)]
+    patches = []
+    for prof in (north, south):
+        pts, w = [], []
+        for rho, z, wp in prof:
+            for (x, y), wc in zip(CIRCLE, CIRCLE_W):
+                pts.append((rho * x, rho * y, z))
+                w.append(wc * wp)
+        patches.append(patch([2, 2], [CIRCLE_KNOTS, [0, 0, 0, 1, 1, 1]], pts, w))
+    loop = [
+        trim(0, line((0, 0), (1, 0), None)),
+        trim(1, line((1, 0), (1, 1), None)),
+        trim(2, line((1, 1), (0, 1), None)),
+        trim(3, line((0, 1), (0, 0), None)),
+    ]
+    ids = Ids()
+    faces = [
+        face(2, 0, loops=[_loop(loop)], rational=True, ids=ids.take(27)),
+        face(3, 1, loops=[_loop(loop)], rational=True, ids=ids.take(27)),
+    ]
+    meridian = curve(
+        2,
+        [0, 0, 0, 1, 1, 1],
+        [(r, 0, 0), (r, 0, r), (0, 0, r)],
+        weights=[1, W, 1],
+        active=[0, 1],
+        ids=ids.take(3),
+    )
+    meridian_s = curve(
+        2,
+        [0, 0, 0, 1, 1, 1],
+        [(0, 0, -r), (r, 0, -r), (r, 0, 0)],
+        weights=[1, W, 1],
+        active=[0, 1],
+        ids=ids.take(3),
+    )
+    edges = [
+        # The equator: the north face's trim 0, the south face's trim 2.
+        edge(4, circle_curve((0, 0), r, 0.0, ids=ids), [ref(2, 0, 1), ref(3, 2, 0)]),
+        edge(5, meridian, [ref(2, 1, 1), ref(2, 3, 0)]),
+        edge(6, None, [ref(2, 2, 1)]),
+        edge(7, meridian_s, [ref(3, 1, 1), ref(3, 3, 0)]),
+        edge(8, None, [ref(3, 0, 1)]),
+    ]
+    return _closed_solid(patches, faces, edges)
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     for name, build in (
         ("plate_with_hole.cad.json", plate_with_hole),
         ("cylindrical_roof.cad.json", cylindrical_roof),
         ("two_patch_beam.cad.json", two_patch_beam),
+        ("unit_cube.cad.json", unit_cube),
+        ("capped_cylinder.cad.json", capped_cylinder),
+        ("sphere.cad.json", sphere),
     ):
         (OUT / name).write_text(render(build()), encoding="utf-8")
     (OUT / "import_square.json").write_text(import_square(), encoding="utf-8")
