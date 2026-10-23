@@ -274,6 +274,7 @@ export default defineConfig({
           { text: "Roadmap", link: "/roadmap" },
           { text: "Long-run spikes: findings", link: "/spikes" },
           { text: "3-D octree mesher: plan", link: "/octree_mesh_3d_plan" },
+          { text: "Mesh generation from CAD: plan", link: "/mesh_cad_plan" },
         ],
       },
       {
