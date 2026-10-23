@@ -45,6 +45,12 @@
  *    from its arc-length fraction, monotonically between its neighbours. The
  *    caller keeps the master's 3-D points and takes only the parameters (so
  *    the faces share the points exactly); the largest residual is reported.
+ *  - **Closed edges started elsewhere.** A closed edge's other use may begin
+ *    at another point of the loop (a cap's circle listed from another angle
+ *    than the cylinder's rim). `edge_closest_length` finds where on it the
+ *    master begins, and `edge_project` and `edge_same_direction` take that
+ *    arc length as the use's new start, running past its end and round from
+ *    its start: the use is rotated onto the master's corner.
  *
  * A **core-private** header: nothing installed names it. Pure functions of
  * their inputs; evaluators are read-only after construction, so traces of
@@ -130,6 +136,9 @@ public:
     double Length() const { return mCum.empty() ? 0.0 : mCum.back(); }
     /// The parameter at arc length `L` from the start (clamped to the trace).
     double ParamAtLength(double L) const;
+    /// The arc length from the start to the parameter `T` (clamped to the
+    /// trace): the inverse of `ParamAtLength`.
+    double LengthAt(double T) const;
     /// The arc lengths of the curve's corners from the start, ascending.
     std::vector<double> CornerLengths() const;
     const BrepSurfaceEval& Surface() const { return *pSurface; }
@@ -166,8 +175,14 @@ struct EdgeSamples {
 EdgeSamples edge_sample(const TrimTrace& rTrace, const EdgeSampleOptions& rOptions);
 
 /// Whether two traces of one edge run the same way (compared at both ends and
-/// at a quarter and three quarters of their lengths).
-bool edge_same_direction(const TrimTrace& rA, const TrimTrace& rB);
+/// at a quarter and three quarters of their lengths). With `StartLengthB` at
+/// least 0, `rB` is a closed trace taken to start that far along it: only
+/// the quarter points are compared, measured from there.
+bool edge_same_direction(const TrimTrace& rA, const TrimTrace& rB, double StartLengthB = -1.0);
+
+/// The arc length along a trace of its point closest to `rP`: the best of 64
+/// equal steps of arc length, refined by Newton on the squared distance.
+double edge_closest_length(const TrimTrace& rTrace, const EdgeVec3& rP);
 
 struct EdgeProjection {
     std::vector<double> mParams;  ///< on the other trace, in its own order
@@ -176,8 +191,11 @@ struct EdgeProjection {
 
 /// Carry a master's samples to another trace of the same edge; `SameDirection`
 /// as `edge_same_direction` says. The ends map to the other trace's ends.
-EdgeProjection edge_project(const TrimTrace& rOther, const EdgeSamples& rMaster,
-                            bool SameDirection);
+/// With `StartLength` at least 0, `rOther` is a closed trace rotated to start
+/// that far along it (`edge_closest_length` of the master's start): both ends
+/// map there, and the samples run to the trace's end and on from its start.
+EdgeProjection edge_project(const TrimTrace& rOther, const EdgeSamples& rMaster, bool SameDirection,
+                            double StartLength = -1.0);
 
 }  // namespace detail
 }  // namespace meshioplusplus

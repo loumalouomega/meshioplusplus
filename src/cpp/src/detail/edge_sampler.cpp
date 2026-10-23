@@ -24,6 +24,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -300,6 +301,20 @@ double TrimTrace::ParamAtLength(double L) const {
     return ta + s * (tb - ta);
 }
 
+double TrimTrace::LengthAt(double T) const {
+    if (mT.size() < 2)
+        return 0.0;
+    const bool up = mT.back() > mT.front();
+    if (up ? T <= mT.front() : T >= mT.front())
+        return 0.0;
+    if (up ? T >= mT.back() : T <= mT.back())
+        return Length();
+    const auto it = up ? std::upper_bound(mT.begin(), mT.end(), T)
+                       : std::upper_bound(mT.begin(), mT.end(), T, std::greater<double>());
+    const auto j = static_cast<std::size_t>(std::max<std::ptrdiff_t>(1, it - mT.begin())) - 1;
+    return mCum[j] + Gauss(mT[j], T);
+}
+
 std::vector<double> TrimTrace::CornerLengths() const {
     // Every knot is a node of the table, so a corner's arc length is exact.
     std::vector<double> out;
@@ -387,9 +402,24 @@ EdgeSamples edge_sample(const TrimTrace& rTrace, const EdgeSampleOptions& rOptio
     return out;
 }
 
-bool edge_same_direction(const TrimTrace& rA, const TrimTrace& rB) {
+bool edge_same_direction(const TrimTrace& rA, const TrimTrace& rB, double StartLengthB) {
     const double la = rA.Length();
     const double lb = rB.Length();
+    if (StartLengthB >= 0.0) {
+        // A rotated closed trace: its ends are the master's start, so only
+        // the quarter points tell the directions apart.
+        const auto at_b = [&](double F) {
+            double s = StartLengthB + F * lb;
+            if (s >= lb)
+                s -= lb;
+            return rB.Point(rB.ParamAtLength(s));
+        };
+        const EdgeVec3 a1 = rA.Point(rA.ParamAtLength(0.25 * la));
+        const EdgeVec3 a3 = rA.Point(rA.ParamAtLength(0.75 * la));
+        const EdgeVec3 b1 = at_b(0.25);
+        const EdgeVec3 b3 = at_b(0.75);
+        return edgs_dist(a1, b1) + edgs_dist(a3, b3) <= edgs_dist(a1, b3) + edgs_dist(a3, b1);
+    }
     double same = edgs_dist(rA.Point(rA.Start()), rB.Point(rB.Start())) +
                   edgs_dist(rA.Point(rA.End()), rB.Point(rB.End()));
     double opposite = edgs_dist(rA.Point(rA.Start()), rB.Point(rB.End())) +
@@ -405,8 +435,48 @@ bool edge_same_direction(const TrimTrace& rA, const TrimTrace& rB) {
     return same <= opposite;
 }
 
-EdgeProjection edge_project(const TrimTrace& rOther, const EdgeSamples& rMaster,
-                            bool SameDirection) {
+double edge_closest_length(const TrimTrace& rTrace, const EdgeVec3& rP) {
+    const double length = rTrace.Length();
+    if (!(length > 0.0))
+        return 0.0;
+    constexpr int kSteps = 64;
+    double best_l = 0.0;
+    double best_d = edgs_dist(rTrace.Point(rTrace.Start()), rP);
+    for (int i = 1; i < kSteps; ++i) {
+        const double l = length * double(i) / double(kSteps);
+        const double d = edgs_dist(rTrace.Point(rTrace.ParamAtLength(l)), rP);
+        if (d < best_d) {
+            best_d = d;
+            best_l = l;
+        }
+    }
+    // Newton on (X - p) . X' = 0 within the two neighbouring steps.
+    const double step = length / double(kSteps);
+    const double t_lo = rTrace.ParamAtLength(std::max(0.0, best_l - step));
+    const double t_hi = rTrace.ParamAtLength(std::min(length, best_l + step));
+    const double lo = std::min(t_lo, t_hi);
+    const double hi = std::max(t_lo, t_hi);
+    double t = rTrace.ParamAtLength(best_l);
+    for (int it = 0; it < 30; ++it) {
+        const EdgeVec3 x = rTrace.Point(t);
+        const EdgeVec3 v = rTrace.Velocity(t);
+        const double vv = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+        if (!(vv > 0.0))
+            break;
+        const double dt =
+            -((x[0] - rP[0]) * v[0] + (x[1] - rP[1]) * v[1] + (x[2] - rP[2]) * v[2]) / vv;
+        const double next = std::clamp(t + dt, lo, hi);
+        if (std::fabs(next - t) <= 1e-15 * (hi - lo)) {
+            t = next;
+            break;
+        }
+        t = next;
+    }
+    return edgs_dist(rTrace.Point(t), rP) <= best_d ? rTrace.LengthAt(t) : best_l;
+}
+
+EdgeProjection edge_project(const TrimTrace& rOther, const EdgeSamples& rMaster, bool SameDirection,
+                            double StartLength) {
     EdgeProjection out;
     const std::size_t m = rMaster.mParams.size();
     out.mParams.assign(m, 0.0);
@@ -418,20 +488,37 @@ EdgeProjection edge_project(const TrimTrace& rOther, const EdgeSamples& rMaster,
     const auto fraction_at = [&](std::size_t K) {
         return SameDirection ? rMaster.mFractions[K] : 1.0 - rMaster.mFractions[m - 1 - K];
     };
-    const double start = rOther.Start();
-    const double end = rOther.End();
+    const double length = rOther.Length();
+    const bool rotated = StartLength >= 0.0;
+    const double s0 = rotated ? std::clamp(StartLength, 0.0, length) : 0.0;
+    // A rotated trace starts and ends at s0, and runs past its own end and on
+    // from its own start: two monotone pieces.
+    const double start = rotated ? rOther.ParamAtLength(s0) : rOther.Start();
+    const double end = rotated ? start : rOther.End();
+    const double span = std::fabs(rOther.End() - rOther.Start());
     out.mParams.front() = start;
     out.mParams.back() = end;
     out.mMaxGap = std::max(edgs_dist(rOther.Point(start), point_at(0)),
                            edgs_dist(rOther.Point(end), point_at(m - 1)));
-    const double length = rOther.Length();
-    const double span = std::fabs(end - start);
     double prev = start;
+    bool wrapped = false;
     for (std::size_t k = 1; k + 1 < m; ++k) {
         const EdgeVec3& p = point_at(k);
-        double t = rOther.ParamAtLength(fraction_at(k) * length);
-        const double lo = std::min(prev, end);
-        const double hi = std::max(prev, end);
+        double s = s0 + fraction_at(k) * length;
+        double piece_end = rOther.End();
+        if (rotated && s >= length) {
+            s -= length;
+            piece_end = start;
+            if (!wrapped) {
+                wrapped = true;
+                prev = rOther.Start();
+            }
+        } else if (!rotated) {
+            piece_end = end;
+        }
+        double t = rOther.ParamAtLength(s);
+        const double lo = std::min(prev, piece_end);
+        const double hi = std::max(prev, piece_end);
         t = std::clamp(t, lo, hi);
         for (int it = 0; it < 30; ++it) {
             const EdgeVec3 x = rOther.Point(t);

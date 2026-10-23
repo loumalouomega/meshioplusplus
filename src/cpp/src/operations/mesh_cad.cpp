@@ -261,7 +261,10 @@ struct McadUse {
     bool mForward = true;
     std::size_t mLoopSize = 1;  ///< trims in its loop
     std::int64_t mEdge = -1;
-    bool mSame = true;               ///< runs the way its edge's master does
+    bool mSame = true;  ///< runs the way its edge's master does
+    /// A closed use rotated onto its master's corner: the arc length along
+    /// its trace where it now starts and ends; -1 for none (6.1.2).
+    double mStartLength = -1.0;
     std::vector<double> mParams;     ///< along this use, ends included
     std::vector<std::int64_t> mIds;  ///< mesh points along this use, ends included
     MeshCadFaceStatus mFail = MeshCadFaceStatus::Ok;
@@ -270,7 +273,10 @@ struct McadUse {
 
 struct McadEdge {
     std::int64_t mBrepEdge = -1;
-    std::vector<std::size_t> mUses;  ///< ascending; the first is the master
+    std::vector<std::size_t> mUses;  ///< ascending
+    /// The use sampled, whose points the others share: the first, unless a
+    /// closed edge's uses start apart and a later one cannot be rotated.
+    std::size_t mMaster = 0;
     detail::EdgeSamples mSamples;
     std::int64_t mFirstInterior = 0;
     MeshCadFaceStatus mFail = MeshCadFaceStatus::Ok;
@@ -785,6 +791,7 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
         if (ed.mUses.empty())
             continue;
         std::sort(ed.mUses.begin(), ed.mUses.end());
+        ed.mMaster = ed.mUses.front();
         edges.push_back(std::move(ed));
     }
     {
@@ -827,9 +834,77 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
             }
             for (const std::size_t u : ed.mUses)
                 uses[u].mEdge = static_cast<std::int64_t>(edges.size());
+            ed.mMaster = ed.mUses.front();
             edges.push_back(std::move(ed));
         }
     }
+
+    // Closed edges whose uses start at different points (a cap's circle
+    // listed from another angle than the cylinder's rim): a use alone in its
+    // loop and closed in its face's parameters can start anywhere, so it is
+    // rotated onto the corner where the edge's anchor starts. The anchor is
+    // the first use that cannot be rotated (its loop has other trims), or the
+    // first use. Models whose uses start together are not touched.
+    const auto closed_3d = [&](std::size_t U) {
+        const detail::TrimTrace& r_t = *traces[U];
+        return r_t.Length() > tol && mcad_dist(r_t.Point(r_t.Start()), r_t.Point(r_t.End())) <= tol;
+    };
+    const auto rotatable = [&](std::size_t U) {
+        if (uses[U].mLoopSize != 1 || !closed_3d(U))
+            return false;
+        const detail::TrimTrace& r_t = *traces[U];
+        const Vec2 a = r_t.Uv(r_t.Start());
+        const Vec2 b = r_t.Uv(r_t.End());
+        const auto& r_box = faces[uses[U].mFace].pSurface->Box();
+        const double extent = std::hypot(r_box[1] - r_box[0], r_box[3] - r_box[2]);
+        return std::hypot(a[0] - b[0], a[1] - b[1]) <= 1e-9 * extent;
+    };
+    for (std::size_t e = 0; e < edges.size(); ++e) {
+        McadEdge& r_e = edges[e];
+        if (r_e.mUses.size() < 2 || !closed_3d(r_e.mUses.front()))
+            continue;
+        const auto start_of = [&](std::size_t U) { return traces[U]->Point(traces[U]->Start()); };
+        bool apart = false;
+        for (const std::size_t u : r_e.mUses)
+            apart = apart || mcad_dist(start_of(u), start_of(r_e.mUses.front())) > tol;
+        if (!apart)
+            continue;
+        std::size_t anchor = r_e.mUses.front();
+        for (const std::size_t u : r_e.mUses)
+            if (!rotatable(u)) {
+                anchor = u;
+                break;
+            }
+        r_e.mMaster = anchor;
+        const Vec3 p = start_of(anchor);
+        for (const std::size_t u : r_e.mUses) {
+            if (u == anchor || mcad_dist(start_of(u), p) <= tol)
+                continue;
+            if (rotatable(u)) {
+                uses[u].mStartLength = detail::edge_closest_length(*traces[u], p);
+                continue;
+            }
+            // Its whole face fails with this reason, rather than with the
+            // corner gaps it causes along its loop.
+            for (const auto& r_loop : faces[uses[u].mFace].mLoops)
+                for (const std::size_t l : r_loop)
+                    if (uses[l].mFail == MeshCadFaceStatus::Ok) {
+                        uses[l].mFail = MeshCadFaceStatus::ProjectionFailed;
+                        uses[l].mWhy =
+                            "the uses of a closed edge start at different points, and "
+                            "this one cannot be started elsewhere (its loop has other "
+                            "trims)";
+                    }
+        }
+    }
+    // Where a use's ends are: a rotated use starts and ends where it was
+    // rotated to.
+    const auto end_point = [&](std::size_t U, int End) {
+        const detail::TrimTrace& r_t = *traces[U];
+        if (uses[U].mStartLength >= 0.0)
+            return r_t.Point(r_t.ParamAtLength(uses[U].mStartLength));
+        return r_t.Point(End == 0 ? r_t.Start() : r_t.End());
+    };
 
     // Corners from the topology: a trim's end is the next trim's start; an
     // edge's ends are the same at every use; a degenerate edge is one corner.
@@ -843,14 +918,16 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
                 corners.Join(slot(r_loop[k], 1), slot(r_loop[(k + 1) % r_loop.size()], 0));
     }
     for (McadEdge& r_e : edges) {
-        const std::size_t m = r_e.mUses.front();
+        const std::size_t m = r_e.mMaster;
         const detail::TrimTrace& r_m = *traces[m];
         const bool degenerate = !(r_m.Length() > tol);
         if (degenerate)
             corners.Join(slot(m, 0), slot(m, 1));
-        for (std::size_t i = 1; i < r_e.mUses.size(); ++i) {
-            const std::size_t o = r_e.mUses[i];
-            uses[o].mSame = degenerate || detail::edge_same_direction(r_m, *traces[o]);
+        for (const std::size_t o : r_e.mUses) {
+            if (o == m)
+                continue;
+            uses[o].mSame =
+                degenerate || detail::edge_same_direction(r_m, *traces[o], uses[o].mStartLength);
             corners.Join(slot(m, 0), slot(o, uses[o].mSame ? 0 : 1));
             corners.Join(slot(m, 1), slot(o, uses[o].mSame ? 1 : 0));
             if (degenerate)
@@ -864,9 +941,8 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
             continue;
         const std::size_t root = corners.Find(s);
         if (corner_id[root] < 0) {
-            const detail::TrimTrace& r_t = *traces[s / 2];
             corner_id[root] = static_cast<std::int64_t>(boundary.size());
-            boundary.push_back(r_t.Point(s % 2 == 0 ? r_t.Start() : r_t.End()));
+            boundary.push_back(end_point(s / 2, static_cast<int>(s % 2)));
         }
         corner_id[s] = corner_id[root];
     }
@@ -874,8 +950,7 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
     for (std::size_t s = 0; s < 2 * uses.size(); ++s) {
         if (!live(s / 2))
             continue;
-        const detail::TrimTrace& r_t = *traces[s / 2];
-        const double gap = mcad_dist(r_t.Point(s % 2 == 0 ? r_t.Start() : r_t.End()),
+        const double gap = mcad_dist(end_point(s / 2, static_cast<int>(s % 2)),
                                      boundary[static_cast<std::size_t>(corner_id[s])]);
         max_gap = std::max(max_gap, gap);
         if (gap > gap_fail && uses[s / 2].mFail == MeshCadFaceStatus::Ok) {
@@ -899,7 +974,7 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
         [&](std::size_t e) {
             McadEdge& r_e = edges[e];
             try {
-                const std::size_t m = r_e.mUses.front();
+                const std::size_t m = r_e.mMaster;
                 // Enough pieces that every loop through the edge has three
                 // points: a closed edge alone in its loop needs three.
                 detail::EdgeSampleOptions eo = so;
@@ -909,17 +984,17 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
                         static_cast<std::int64_t>((3 + uses[u].mLoopSize - 1) / uses[u].mLoopSize));
                 r_e.mSamples = detail::edge_sample(*traces[m], eo);
                 uses[m].mParams = r_e.mSamples.mParams;
-                for (std::size_t i = 1; i < r_e.mUses.size(); ++i) {
-                    const std::size_t o = r_e.mUses[i];
-                    const detail::EdgeProjection p =
-                        detail::edge_project(*traces[o], r_e.mSamples, uses[o].mSame);
+                for (const std::size_t o : r_e.mUses) {
+                    if (o == m)
+                        continue;
+                    const detail::EdgeProjection p = detail::edge_project(
+                        *traces[o], r_e.mSamples, uses[o].mSame, uses[o].mStartLength);
                     uses[o].mParams = p.mParams;
                     edge_gap[e] = std::max(edge_gap[e], p.mMaxGap);
-                    if (p.mMaxGap > gap_fail) {
+                    if (p.mMaxGap > gap_fail && uses[o].mFail == MeshCadFaceStatus::Ok) {
                         uses[o].mFail = MeshCadFaceStatus::ProjectionFailed;
-                        uses[o].mWhy = "the trims of one edge are " + std::to_string(p.mMaxGap) +
-                                       " apart (are the uses of a closed edge started at "
-                                       "different points?)";
+                        uses[o].mWhy =
+                            "the trims of one edge are " + std::to_string(p.mMaxGap) + " apart";
                     }
                 }
             } catch (const std::length_error& r_x) {
@@ -1055,7 +1130,7 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
         for (const McadEdge& r_e : edges) {
             if (r_e.mFail != MeshCadFaceStatus::Ok)
                 continue;
-            const std::vector<std::int64_t>& r_ids = uses[r_e.mUses.front()].mIds;
+            const std::vector<std::int64_t>& r_ids = uses[r_e.mMaster].mIds;
             for (std::size_t k = 0; k + 1 < r_ids.size(); ++k) {
                 if (r_ids[k] == r_ids[k + 1])
                     continue;

@@ -427,19 +427,93 @@ TEST(MeshCad, AFailedFaceIsReportedNeverMeshed) {
     EXPECT_THROW(mio::mesh_cad_surface(info, strict), std::runtime_error);
 }
 
-TEST(MeshCad, AClosedEdgeStartedElsewhereIsReported) {
-    // The top cap's rim starts a quarter turn away from the band's: the
-    // topology joins two points that are not one corner.
-    mio::BrepInfo info = brep_solids::capped_cylinder(1.0, 2.0, /*TopCapStart=*/0.5 * kPi);
-    const auto r = mio::mesh_cad_surface(info, size(0.2));
+TEST(MeshCad, AClosedEdgeStartedElsewhereIsMeshed) {
+    // Roadmap 6.1.2: the top cap's rim starts a quarter turn, a half turn and
+    // three sixteenths of a turn away from the band's. The cap's circle is a loop of
+    // its own, so it is rotated onto the band's corner and the solid closes,
+    // converging at second order as the consistent model does.
+    const double R = 1.0, H = 2.0;
+    const double area = 2.0 * kPi * R * H + 2.0 * kPi * R * R;
+    const double volume = kPi * R * R * H;
+    // (Starts whose 16 builder samples include the circle's axis extremes:
+    // brep_nurbs_face sizes a plane's patch from those samples.)
+    for (const double start : {0.5 * kPi, kPi, 0.375 * kPi}) {
+        double prev_area = 0.0;
+        for (const double h : {0.2, 0.1}) {
+            const auto r =
+                mio::mesh_cad_surface(brep_solids::capped_cylinder(R, H, start), size(h));
+            expect_watertight(r);
+            EXPECT_LT(r.mMaxEdgeGap, 1e-12) << start;
+            const Surface s = measure(r.mMesh);
+            const double ea = std::fabs(s.mArea - area);
+            EXPECT_LT(ea, 0.5 * h * h * area) << start << " " << h;
+            EXPECT_LT(std::fabs(s.mVolume - volume), 0.5 * h * h * volume) << start << " " << h;
+            if (prev_area > 0.0)
+                EXPECT_LT(ea, prev_area / 2.5) << start;
+            prev_area = ea;
+        }
+    }
+}
+
+TEST(MeshCad, AClosedEdgeIsAnchoredOnTheUseThatCannotMove) {
+    // The discs are listed first, so each rim's first use is a disc's; the
+    // band's use runs between its seams and cannot start elsewhere, so it
+    // becomes the master and the discs are rotated onto it.
+    const double R = 1.0, H = 2.0;
+    const auto r =
+        mio::mesh_cad_surface(brep_solids::capped_cylinder(R, H, 0.5 * kPi, true), size(0.2));
+    expect_watertight(r);
+    const Surface s = measure(r.mMesh);
+    EXPECT_NEAR(s.mVolume, kPi * R * R * H, 0.5 * 0.04 * kPi * R * R * H);
+    // A model whose uses start together is untouched by the reordering apart
+    // from the face order.
+    const auto a = mio::mesh_cad_surface(brep_solids::capped_cylinder(R, H, 0.0, true), size(0.2));
+    const auto b = mio::mesh_cad_surface(brep_solids::capped_cylinder(R, H), size(0.2));
+    expect_watertight(a);
+    EXPECT_EQ(a.mNumPoints, b.mNumPoints);
+    EXPECT_EQ(a.mNumTriangles, b.mNumTriangles);
+}
+
+TEST(MeshCad, AClosedEdgeNoRotationResolvesIsReported) {
+    // Both uses of the shared rim run between their bands' seams, a quarter
+    // turn apart: the faces that cannot be carried are reported, never
+    // meshed wrong, and the reason says why.
+    const auto r = mio::mesh_cad_surface(brep_solids::stacked_bands(1.0, 1.0), size(0.2));
     EXPECT_GE(r.mNumFailed, 1);
-    bool reported = false;
+    bool named = false;
     for (const auto& f : r.mFaces)
         if (f.mStatus != MeshCadFaceStatus::Ok) {
-            reported = true;
-            EXPECT_FALSE(f.mReason.empty());
+            EXPECT_EQ(f.mStatus, MeshCadFaceStatus::ProjectionFailed) << f.mReason;
+            EXPECT_EQ(f.mNumTriangles, 0);
+            named = named || f.mReason.find("start at different points") != std::string::npos;
         }
-    EXPECT_TRUE(reported);
+    EXPECT_TRUE(named);
+    EXPECT_GT(r.mNumOpenEdges, 0);
+}
+
+TEST(MeshCad, ASeamListedFromEitherEndIsTheSameSeam) {
+    // The band's seam is used twice, once up and once down (that is what a
+    // seam is); listing one of its trims from the other end of its curve,
+    // with the direction flag flipped to match, describes the same loop.
+    const double R = 1.0, H = 2.0;
+    mio::BrepInfo info = brep_solids::capped_cylinder(R, H);
+    bool flipped = false;
+    for (mio::BrepTrim& t : info.mFaces[0].mLoops[0].mTrims) {
+        const double* p = t.mCurve.mControlPoints.As<double>();
+        const std::size_t n = t.mCurve.mControlPoints.Shape()[0];
+        if (!flipped && n >= 2 && p[0] == p[3 * (n - 1)]) {  // constant u: a seam
+            t.mCurve = mio::detail::brep_curve_reverse(t.mCurve);
+            t.mDirection = !t.mDirection;
+            flipped = true;
+        }
+    }
+    ASSERT_TRUE(flipped);
+    const auto r = mio::mesh_cad_surface(info, size(0.2));
+    const auto ref = mio::mesh_cad_surface(brep_solids::capped_cylinder(R, H), size(0.2));
+    expect_watertight(r);
+    EXPECT_EQ(r.mNumPoints, ref.mNumPoints);
+    EXPECT_EQ(r.mNumTriangles, ref.mNumTriangles);
+    EXPECT_NEAR(measure(r.mMesh).mVolume, measure(ref.mMesh).mVolume, 1e-12);
 }
 
 TEST(MeshCad, ChordalDeviationCapsTheBoundary) {

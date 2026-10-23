@@ -24,6 +24,7 @@
 // `BrepRef` per use of an edge, the seams and poles edges of their face alone.
 
 // System includes
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -187,9 +188,12 @@ inline mio::BrepInfo box(double Sx = 1.0, double Sy = 1.0, double Sz = 1.0) {
 }
 
 // The cylinder of radius R from z = 0 to z = H, capped: a band closed through
-// a seam and two discs, sharing the two rims (closed edges from angle 0;
-// `TopCapStart` starts the top disc's rim elsewhere, an inconsistent model).
-inline mio::BrepInfo capped_cylinder(double R = 1.0, double H = 2.0, double TopCapStart = 0.0) {
+// a seam and two discs, sharing the two rims (closed edges from angle 0).
+// `TopCapStart` starts the top disc's rim elsewhere, which a model may do: the
+// disc's circle is a loop of its own. `CapsFirst` lists the discs before the
+// band, so the first use of each rim is a disc's.
+inline mio::BrepInfo capped_cylinder(double R = 1.0, double H = 2.0, double TopCapStart = 0.0,
+                                     bool CapsFirst = false) {
     std::vector<mio::BrepCurve> curves = {
         mio::detail::brep_curve_arc({0, 0, 0}, {1, 0, 0}, {0, 1, 0}, R, 0.0, 2 * kPi),
         mio::detail::brep_curve_arc({0, 0, H}, {1, 0, 0}, {0, 1, 0}, R, 0.0, 2 * kPi)};
@@ -202,6 +206,37 @@ inline mio::BrepInfo capped_cylinder(double R = 1.0, double H = 2.0, double TopC
     faces[1].mLoops = {{circle_trim(R, 0.0, -2 * kPi, 0, false, true)}};
     faces[2].mSurface = plane({0, 0, H}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1});
     faces[2].mLoops = {{circle_trim(R, H, 2 * kPi, 1, true, true, TopCapStart)}};
+    if (CapsFirst)
+        std::rotate(faces.begin(), faces.begin() + 1, faces.end());
+    return assemble(faces, curves);
+}
+
+// Two bands of radius R stacked from z = 0 to H and H to 2H, sharing the rim
+// at z = H, capped. The upper band's seam is a quarter turn round from the
+// lower's, so the shared rim's two uses start at different points and
+// neither is a loop of its own (each runs between its band's seams): an
+// inconsistency no rotation resolves.
+inline mio::BrepInfo stacked_bands(double R = 1.0, double H = 1.0) {
+    std::vector<mio::BrepCurve> curves = {
+        mio::detail::brep_curve_arc({0, 0, 0}, {1, 0, 0}, {0, 1, 0}, R, 0.0, 2 * kPi),
+        mio::detail::brep_curve_arc({0, 0, H}, {1, 0, 0}, {0, 1, 0}, R, 0.0, 2 * kPi),
+        mio::detail::brep_curve_arc({0, 0, 2 * H}, {1, 0, 0}, {0, 1, 0}, R, 0.0, 2 * kPi)};
+    const double q = 0.5 * kPi;
+    std::vector<SolidFace> faces(4);
+    faces[0].mSurface.mKind = 3;
+    faces[0].mSurface.mRadius = R;
+    faces[0].mLoops = {{circle_trim(R, 0.0, 2 * kPi, 0, true, false)},
+                       {circle_trim(R, H, -2 * kPi, 1, false, false)}};
+    faces[1].mSurface.mKind = 3;
+    faces[1].mSurface.mRadius = R;
+    faces[1].mSurface.mX = {0, 1, 0};
+    faces[1].mSurface.mY = {-1, 0, 0};
+    faces[1].mLoops = {{circle_trim(R, H, 2 * kPi, 1, true, false, q)},
+                       {circle_trim(R, 2 * H, -2 * kPi, 2, false, false, q)}};
+    faces[2].mSurface = plane({0, 0, 0}, {1, 0, 0}, {0, -1, 0}, {0, 0, -1});
+    faces[2].mLoops = {{circle_trim(R, 0.0, -2 * kPi, 0, false, true)}};
+    faces[3].mSurface = plane({0, 0, 2 * H}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1});
+    faces[3].mLoops = {{circle_trim(R, 2 * H, 2 * kPi, 2, true, true)}};
     return assemble(faces, curves);
 }
 
