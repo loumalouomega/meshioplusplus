@@ -311,6 +311,20 @@ end
         @test r.faces[1].status == "ok" && r.faces[1].reason == ""
         @test isempty(r.warnings)
         @test_throws MeshioError mesh_cad_surface(info; target_size=0.0)
+        @test r.min_input_angle_deg == 180.0 && isempty(r.corners)
+        # v17.15.0: refined to 25 degrees and smoothed; the two 45-degree
+        # corners are reported.
+        q = mesh_cad_surface(info; target_size=0.1, min_angle=25, smooth_iterations=2,
+                             smooth_method="odt")
+        @test q.min_angle_deg >= 25 - 1e-9
+        @test q.num_smoothed > 0
+        @test isapprox(q.min_input_angle_deg, 45; atol=1e-9)
+        @test sum(q.angle_histogram) == 3 * q.num_triangles
+        @test length(q.corners) == 2
+        @test all(c -> c.face == 1 && !c.pole && isapprox(c.angle_deg, 45; atol=1e-9), q.corners)
+        @test_throws ArgumentError mesh_cad_surface(info; target_size=0.1, smooth_method="none")
+        @test_throws MeshioError mesh_cad_surface(info; target_size=0.1, min_angle=60)
+        close(q.mesh)
         close(r.mesh); close(mesh); close(info)
     end
 end

@@ -2592,23 +2592,38 @@ mio_iga_evaluate <- function(info, patch, params, derivatives = 0L, trim_samples
 #' @param match_unreferenced_trims Pair trims no edge names by their images.
 #' @param strict Fail when any face cannot be meshed.
 #' @param max_points The most points in the result.
+#' @param min_angle Refine until every triangle's smallest angle on the surface
+#'   is at least this (degrees, under 60); 0 keeps the unrefined mesh.
+#' @param smooth_iterations Passes of guarded smoothing; 0 is none.
+#' @param smooth_method `"laplacian"` or `"odt"`.
 #' @return A list: `mesh`, the counts (`num_points`, `num_triangles`,
 #'   `num_edge_segments`, `num_faces`, `num_failed`, `num_edges`,
 #'   `num_open_edges`, `num_non_manifold_edges`, `num_misoriented_edges`,
 #'   `num_degenerate_dropped`), `tolerance`, the extreme angles and edge
 #'   lengths, `max_edge_gap`, `face_status` and `face_reason` (one entry per
-#'   face) and `warnings` (a character vector).
+#'   face), `warnings` (a character vector), refinement's
+#'   `num_refinement_points`, `num_faces_below_bound`, `num_smoothed` and
+#'   `min_input_angle_deg`, `angle_histogram` (18 ten-degree bins) and
+#'   `corners`, a data frame of the corners under 60 degrees and poles (1-based
+#'   `face` and `point`, `u`, `v`, `x`, `y`, `z`, `angle_deg`, `min_forced_deg`,
+#'   `reach`, `pole`).
 #' @export
 mio_mesh_cad_surface <- function(info, target_size, max_chordal_deviation = 0,
                                  min_points_per_edge = 0, tolerance = 0,
                                  record_face_ids = TRUE, edges = TRUE,
                                  match_unreferenced_trims = TRUE, strict = FALSE,
-                                 max_points = 50000000) {
+                                 max_points = 50000000, min_angle = 0,
+                                 smooth_iterations = 0,
+                                 smooth_method = c("laplacian", "odt")) {
+  smooth_method <- match.arg(smooth_method)
   r <- .Call(R_mio_mesh_cad_surface, info, as.numeric(target_size),
              as.numeric(max_chordal_deviation), as.numeric(min_points_per_edge),
              as.numeric(tolerance), isTRUE(record_face_ids), isTRUE(edges),
-             isTRUE(match_unreferenced_trims), isTRUE(strict), as.numeric(max_points))
+             isTRUE(match_unreferenced_trims), isTRUE(strict), as.numeric(max_points),
+             as.numeric(min_angle), as.numeric(smooth_iterations),
+             as.numeric(match(smooth_method, c("laplacian", "odt")) - 1L))
   r$warnings <- if (nzchar(r$warnings)) strsplit(r$warnings, "\n", fixed = TRUE)[[1]] else character(0)
+  r$corners <- as.data.frame(r$corners)
   r
 }
 

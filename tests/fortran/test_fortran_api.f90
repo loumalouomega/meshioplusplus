@@ -346,6 +346,32 @@ program test_fortran_api
                 call check(len(warnings) == 0, 'mesh_cad_surface no warnings')
                 call tris%free()
             end if
+            ! v17.15.0: refined to 25 degrees and smoothed; the two 45-degree
+            ! corners are reported.
+            tris = info%mesh_cad_surface(0.1_real64, report=report, min_angle=25.0_real64, &
+                                         smooth_iterations=2, &
+                                         smooth_method=MIO_MESH_CAD_SMOOTH_ODT, &
+                                         stat=ierr, errmsg=msg)
+            call check(ierr == 0, 'mesh_cad_surface refines')
+            if (ierr == 0) then
+                call check(report%min_angle_deg >= 25.0_real64 - 1.0e-9_real64, &
+                           'mesh_cad_surface meets min_angle')
+                call check(abs(report%min_input_angle_deg - 45.0_real64) < 1.0e-9_real64, &
+                           'mesh_cad_surface reports the sharpest corner')
+                call check(sum(mio_mesh_cad_angle_histogram()) == 3*report%num_triangles, &
+                           'mesh_cad_surface angle histogram')
+                call check(mio_mesh_cad_num_corners() == 2, 'mesh_cad_surface two corners')
+                block
+                    type(mio_mesh_cad_corner) :: corner
+                    corner = mio_mesh_cad_get_corner(1, stat=ierr)
+                    call check(ierr == 0 .and. corner%face == 1 .and. corner%pole == 0 .and. &
+                               abs(corner%angle_deg - 45.0_real64) < 1.0e-9_real64, &
+                               'mesh_cad_surface first corner')
+                    corner = mio_mesh_cad_get_corner(3, stat=ierr)
+                    call check(ierr /= 0, 'mesh_cad_surface corner out of range')
+                end block
+                call tris%free()
+            end if
             tris = info%mesh_cad_surface(0.0_real64, stat=ierr)
             call check(ierr /= 0, 'mesh_cad_surface refuses a zero size')
         end if

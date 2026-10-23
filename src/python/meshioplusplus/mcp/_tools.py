@@ -1820,9 +1820,13 @@ def tool_mesh_cad_surface(
     match_unreferenced_trims=True,
     strict=False,
     max_points=50000000,
+    min_angle=0.0,
+    smooth_iterations=0,
+    smooth_method="laplacian",
 ):
     """Triangulate a CAD model's faces (CAD JSON, STEP, IGES) into one
-    conforming surface mesh at a target edge size."""
+    conforming surface mesh at a target edge size, optionally refined to a
+    minimum angle and smoothed."""
     mesh = _load(input_path, input_format)
     out, report = mesh_cad_surface(
         mesh,
@@ -1835,6 +1839,9 @@ def tool_mesh_cad_surface(
         match_unreferenced_trims=match_unreferenced_trims,
         strict=strict,
         max_points=max_points,
+        min_angle=min_angle,
+        smooth_iterations=smooth_iterations,
+        smooth_method=smooth_method,
         return_report=True,
     )
     return _result(_store(out, output_path, output_format), out, **report)

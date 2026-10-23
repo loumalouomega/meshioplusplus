@@ -1725,6 +1725,23 @@ test_that("mesh_cad_surface meshes a trimmed face and reports it", {
   expect_equal(out$face_reason, "")
   expect_length(out$warnings, 0)
   expect_error(mio_mesh_cad_surface(r$info, target_size = 0))
+  expect_equal(out$min_input_angle_deg, 180)
+  expect_equal(nrow(out$corners), 0)
+  # v17.15.0: refined to 25 degrees and smoothed; the two 45-degree corners
+  # are reported.
+  q <- mio_mesh_cad_surface(r$info, target_size = 0.1, min_angle = 25,
+                            smooth_iterations = 2, smooth_method = "odt")
+  on.exit(mio_release(q$mesh), add = TRUE)
+  expect_gte(q$min_angle_deg, 25 - 1e-9)
+  expect_gt(q$num_smoothed, 0)
+  expect_equal(q$min_input_angle_deg, 45, tolerance = 1e-9)
+  expect_length(q$angle_histogram, 18)
+  expect_equal(sum(q$angle_histogram), 3 * q$num_triangles)
+  expect_equal(nrow(q$corners), 2)
+  expect_true(all(q$corners$face == 1 & !q$corners$pole))
+  expect_equal(q$corners$angle_deg, c(45, 45), tolerance = 1e-9)
+  expect_error(mio_mesh_cad_surface(r$info, target_size = 0.1, smooth_method = "none"))
+  expect_error(mio_mesh_cad_surface(r$info, target_size = 0.1, min_angle = 60))
 })
 test_that("PCD compressed binary is reachable through write options", {
   m <- mio_mesh()

@@ -457,7 +457,8 @@ void print_usage(std::ostream& os) {
           "                            --min-size H --max-size H [--json]\n"
           "  mesh-cad-surface        Conforming triangle mesh of a CAD model's faces\n"
           "                            (CAD JSON, STEP, IGES): --size H [--deflection D]\n"
-          "                            [--strict] [--json]\n"
+          "                            [--min-angle DEG] [--smooth N]\n"
+          "                            [--smooth-method laplacian|odt] [--strict] [--json]\n"
           "  isosurface              Level set of a scalar point_data field (contours)\n"
           "                            --array NAME --values v1,v2 [--component I]\n"
           "  sdf                     Signed distance field: a grid over a surface,\n"
@@ -2111,6 +2112,9 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
                                   {"no-match", {}, false},
                                   {"strict", {}, false},
                                   {"max-points", {}, true},
+                                  {"min-angle", {}, true},
+                                  {"smooth", {}, true},
+                                  {"smooth-method", {}, true},
                                   {"json", {}, false},
                                   {"quiet", {"-q"}, false},
                               });
@@ -2136,6 +2140,19 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
     o.mStrict = has_flag(p, "strict");
     if (has_opt(p, "max-points"))
         o.mMaxPoints = std::stoll(opt_value(p, "max-points"));
+    if (has_opt(p, "min-angle"))
+        o.mMinAngleDeg = meshioplusplus::detail::stod_c(opt_value(p, "min-angle"));
+    if (has_opt(p, "smooth"))
+        o.mSmoothIterations = std::stoll(opt_value(p, "smooth"));
+    if (has_opt(p, "smooth-method")) {
+        const std::string m = opt_value(p, "smooth-method");
+        if (m == "laplacian")
+            o.mSmoothMethod = meshioplusplus::MeshCadSmoothing::Laplacian;
+        else if (m == "odt")
+            o.mSmoothMethod = meshioplusplus::MeshCadSmoothing::Odt;
+        else
+            throw std::runtime_error("mesh-cad-surface: --smooth-method must be laplacian or odt");
+    }
     const meshioplusplus::MeshCadSurfaceResult r =
         meshioplusplus::mesh_cad_surface(*model.mBrep, o);
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
@@ -2173,6 +2190,31 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
             json.Field("max_angle_deg", f.mMaxAngleDeg);
             json.Field("min_edge", f.mMinEdge);
             json.Field("max_edge", f.mMaxEdge);
+            json.Field("num_refinement_points", f.mNumRefinementPoints);
+            json.Field("num_smoothed", f.mNumSmoothed);
+            json.Field("min_input_angle_deg", f.mMinInputAngleDeg);
+            json.Field("below_bound", f.mBelowBound);
+            json.Field("bound_deg", f.mBoundDeg);
+            json.Key("corners");
+            json.BeginArray();
+            for (const meshioplusplus::MeshCadCorner& c : f.mSmallAngleCorners) {
+                json.BeginObject();
+                json.Field("face", c.mFace);
+                json.Field("point", c.mPoint);
+                json.Field("u", c.mU);
+                json.Field("v", c.mV);
+                json.Key("x");
+                json.BeginArray();
+                for (const double x : c.mX)
+                    json.Number(x);
+                json.EndArray();
+                json.Field("angle_deg", c.mAngleDeg);
+                json.Field("min_forced_deg", c.mMinForcedDeg);
+                json.Field("reach", c.mReach);
+                json.Field("pole", c.mPole);
+                json.EndObject();
+            }
+            json.EndArray();
             json.EndObject();
         }
         json.EndArray();
@@ -2181,6 +2223,15 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
         for (const std::string& w : r.mWarnings)
             json.String(w);
         json.EndArray();
+        json.Field("num_refinement_points", r.mNumRefinementPoints);
+        json.Field("num_faces_below_bound", r.mNumFacesBelowBound);
+        json.Field("num_smoothed", r.mNumSmoothed);
+        json.Key("angle_histogram");
+        json.BeginArray();
+        for (const std::int64_t b : r.mAngleHistogram)
+            json.Int(b);
+        json.EndArray();
+        json.Field("num_curved_straightened", r.mNumCurvedStraightened);
         json.EndObject();
     } else if (!has_flag(p, "quiet")) {
         std::cout << "mesh_cad_surface\n"
@@ -2189,11 +2240,27 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
                   << "  triangles:      " << r.mNumTriangles << "\n"
                   << "  edge segments:  " << r.mNumEdgeSegments << "\n"
                   << "  open edges:     " << r.mNumOpenEdges << "\n";
-        for (const meshioplusplus::MeshCadFaceRecord& f : r.mFaces)
+        if (o.mMinAngleDeg > 0.0 || o.mSmoothIterations > 0)
+            std::cout << "  refinement:     " << r.mNumRefinementPoints << " points, "
+                      << r.mNumSmoothed << " smoothing moves, " << r.mNumFacesBelowBound
+                      << " faces below the bound\n";
+        for (const meshioplusplus::MeshCadFaceRecord& f : r.mFaces) {
             if (f.mStatus != meshioplusplus::MeshCadFaceStatus::Ok)
                 std::cout << "  face " << f.mFace << ": "
                           << meshioplusplus::mesh_cad_face_status_name(f.mStatus) << ": "
                           << f.mReason << "\n";
+            for (const meshioplusplus::MeshCadCorner& c : f.mSmallAngleCorners) {
+                char angle[32];
+                char forced[32];
+                meshioplusplus::detail::snprintf_c(angle, sizeof(angle), "%.2f", c.mAngleDeg);
+                meshioplusplus::detail::snprintf_c(forced, sizeof(forced), "%.2f", c.mMinForcedDeg);
+                std::cout << "  face " << f.mFace << ": "
+                          << (c.mPole ? std::string("pole")
+                                      : std::string("corner of ") + angle + " degrees")
+                          << " at point " << c.mPoint << " keeps triangles down to " << forced
+                          << " degrees\n";
+            }
+        }
     }
     return 0;
 }

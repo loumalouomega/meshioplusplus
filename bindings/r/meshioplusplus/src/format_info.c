@@ -528,10 +528,39 @@ static int64_t r_mesh_cad_reason(void *ctx, char *buf, int64_t buflen) {
     return mio_mesh_cad_surface_face_reason(*(const int64_t *)ctx, buf, buflen);
 }
 
+/* The corners (v17.15.0) of the last call as named column vectors: 1-based
+ * face and point, the parameters, the point, the angles, the reach and
+ * whether it is a pole. */
+static SEXP r_mesh_cad_corners(void) {
+    const int64_t n = mio_mesh_cad_surface_num_corners();
+    static const char *names[] = {"face", "point", "u", "v", "x", "y", "z",
+                                  "angle_deg", "min_forced_deg", "reach", "pole"};
+    enum { R_CORNER_N = 11 };
+    SEXP cols = PROTECT(Rf_allocVector(VECSXP, R_CORNER_N));
+    SEXP nm = PROTECT(Rf_allocVector(STRSXP, R_CORNER_N));
+    for (int c = 0; c < R_CORNER_N; ++c) {
+        SET_STRING_ELT(nm, c, Rf_mkChar(names[c]));
+        SET_VECTOR_ELT(cols, c, Rf_allocVector(c == 10 ? LGLSXP : REALSXP, (R_xlen_t)n));
+    }
+    for (int64_t k = 0; k < n; ++k) {
+        mio_mesh_cad_corner corner;
+        if (mio_mesh_cad_surface_corner(k, &corner) != MIO_OK) mio_r_fail("mesh_cad_surface");
+        const double v[10] = {(double)corner.face + 1.0, (double)corner.point + 1.0, corner.u,
+                              corner.v, corner.x[0], corner.x[1], corner.x[2], corner.angle_deg,
+                              corner.min_forced_deg, corner.reach};
+        for (int c = 0; c < 10; ++c) REAL(VECTOR_ELT(cols, c))[k] = v[c];
+        LOGICAL(VECTOR_ELT(cols, 10))[k] = corner.pole != 0;
+    }
+    Rf_setAttrib(cols, R_NamesSymbol, nm);
+    UNPROTECT(2);
+    return cols;
+}
+
 SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation,
                             SEXP min_points_per_edge, SEXP tolerance, SEXP record_face_ids,
                             SEXP edges, SEXP match_unreferenced_trims, SEXP strict,
-                            SEXP max_points) {
+                            SEXP max_points, SEXP min_angle, SEXP smooth_iterations,
+                            SEXP smooth_method) {
     const mio_format_info *info = info_of(x, 0);
     mio_mesh_cad_surface_opts opts;
     mio_mesh_cad_surface_opts_init(&opts);
@@ -545,6 +574,9 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
         mio_r_bool(match_unreferenced_trims, "match_unreferenced_trims") ? 1 : 0;
     opts.strict = mio_r_bool(strict, "strict") ? 1 : 0;
     opts.max_points = mio_r_int64(max_points, "max_points");
+    opts.min_angle_deg = mio_r_double(min_angle, "min_angle");
+    opts.smooth_iterations = (int32_t)mio_r_int64(smooth_iterations, "smooth_iterations");
+    opts.smooth_method = (int32_t)mio_r_int64(smooth_method, "smooth_method");
     mio_mesh_cad_surface_report report;
     mio_mesh *out = mio_mesh_cad_surface(info, &opts, &report);
     if (out == NULL) mio_r_fail("mesh_cad_surface");
@@ -567,7 +599,15 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
         UNPROTECT(1);
     }
 
-    enum { R_MESH_CAD_N = 20 };
+    SEXP histogram = PROTECT(Rf_allocVector(REALSXP, MIO_MESH_CAD_ANGLE_BINS));
+    {
+        int64_t bins[MIO_MESH_CAD_ANGLE_BINS] = {0};
+        mio_mesh_cad_surface_angle_histogram(bins, MIO_MESH_CAD_ANGLE_BINS);
+        for (int b = 0; b < MIO_MESH_CAD_ANGLE_BINS; ++b) REAL(histogram)[b] = (double)bins[b];
+    }
+    SEXP corners = PROTECT(r_mesh_cad_corners());
+
+    enum { R_MESH_CAD_N = 26 };
     SEXP res = PROTECT(Rf_allocVector(VECSXP, R_MESH_CAD_N));
     SEXP nm = PROTECT(Rf_allocVector(STRSXP, R_MESH_CAD_N));
     int k = 0;
@@ -599,12 +639,19 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
     R_MESH_CAD_SET("face_reason", reason);
     /* One string, newline-separated; the R wrapper splits it. */
     R_MESH_CAD_SET("warnings", warnings);
+    R_MESH_CAD_NUM(num_refinement_points);
+    R_MESH_CAD_NUM(num_faces_below_bound);
+    R_MESH_CAD_NUM(num_smoothed);
+    R_MESH_CAD_NUM(min_input_angle_deg);
+    R_MESH_CAD_SET("angle_histogram", histogram);
+    /* Named columns; the R wrapper makes a data frame. */
+    R_MESH_CAD_SET("corners", corners);
 #undef R_MESH_CAD_NUM
 #undef R_MESH_CAD_SET
     if (k != R_MESH_CAD_N)
         Rf_error("mesh_cad_surface: report has %d fields, expected %d", k, (int)R_MESH_CAD_N);
     Rf_setAttrib(res, R_NamesSymbol, nm);
-    UNPROTECT(6);
+    UNPROTECT(8);
     return res;
 }
 

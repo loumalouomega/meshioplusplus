@@ -1860,6 +1860,50 @@ TEST(CApi, MeshCadSurfaceMeshesABrepAndReportsItsFaces) {
     EXPECT_EQ(mio_mesh_cad_surface_face_status(1), -1);
     EXPECT_EQ(mio_mesh_cad_surface_face_reason(0, nullptr, 0), 0);
     EXPECT_EQ(mio_mesh_cad_surface_warnings(nullptr, 0), 0);
+    EXPECT_EQ(opts.min_angle_deg, 0.0);
+    EXPECT_EQ(opts.smooth_iterations, 0);
+    EXPECT_EQ(opts.smooth_method, MIO_MESH_CAD_SMOOTH_LAPLACIAN);
+    EXPECT_EQ(report.num_refinement_points, 0);
+    EXPECT_EQ(report.min_input_angle_deg, 180.0);
+    mio_mesh_free(mesh);
+    // v17.15.0: refined to 25 degrees and smoothed. The triangle's two
+    // 45-degree corners are reported; every angle is counted.
+    opts.min_angle_deg = 25.0;
+    opts.smooth_iterations = 2;
+    opts.smooth_method = MIO_MESH_CAD_SMOOTH_ODT;
+    mesh = mio_mesh_cad_surface(info, &opts, &report);
+    ASSERT_NE(mesh, nullptr) << mio_last_error();
+    EXPECT_EQ(report.num_failed, 0);
+    EXPECT_GE(report.min_angle_deg, 25.0 - 1e-9);
+    EXPECT_GT(report.num_smoothed, 0);
+    EXPECT_NEAR(report.min_input_angle_deg, 45.0, 1e-9);
+    std::int64_t bins[MIO_MESH_CAD_ANGLE_BINS] = {};
+    EXPECT_EQ(mio_mesh_cad_surface_angle_histogram(bins, MIO_MESH_CAD_ANGLE_BINS),
+              MIO_MESH_CAD_ANGLE_BINS);
+    std::int64_t total = 0;
+    for (const std::int64_t b : bins)
+        total += b;
+    EXPECT_EQ(total, 3 * report.num_triangles);
+    EXPECT_EQ(mio_mesh_cad_surface_angle_histogram(nullptr, 0), MIO_MESH_CAD_ANGLE_BINS);
+    EXPECT_EQ(mio_mesh_cad_surface_angle_histogram(nullptr, 3), -1);
+    ASSERT_EQ(mio_mesh_cad_surface_num_corners(), 2);
+    for (std::int64_t k = 0; k < 2; ++k) {
+        mio_mesh_cad_corner c;
+        ASSERT_EQ(mio_mesh_cad_surface_corner(k, &c), MIO_OK) << mio_last_error();
+        EXPECT_EQ(c.face, 0);
+        EXPECT_EQ(c.pole, 0);
+        EXPECT_NEAR(c.angle_deg, 45.0, 1e-9);
+        EXPECT_GE(c.point, 0);
+    }
+    mio_mesh_cad_corner c;
+    EXPECT_EQ(mio_mesh_cad_surface_corner(2, &c), MIO_ERR_INVALID_ARG);
+    EXPECT_EQ(mio_mesh_cad_surface_corner(0, nullptr), MIO_ERR_INVALID_ARG);
+    // Not implemented yet, or out of range: refused.
+    opts.smooth_method = 7;
+    EXPECT_EQ(mio_mesh_cad_surface(info, &opts, nullptr), nullptr);
+    opts.smooth_method = MIO_MESH_CAD_SMOOTH_LAPLACIAN;
+    opts.min_angle_deg = 60.0;
+    EXPECT_EQ(mio_mesh_cad_surface(info, &opts, nullptr), nullptr);
     mio_mesh_free(mesh);
     mio_format_info_free(info);
 }

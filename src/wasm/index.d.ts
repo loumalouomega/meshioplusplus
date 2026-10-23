@@ -375,6 +375,32 @@ export interface MeshCadSurfaceOptions {
   strict?: boolean;
   /** The most points in the result (default 50000000). */
   maxPoints?: number;
+  /**
+   * Refine until every triangle's smallest angle on the surface is at least
+   * this (degrees, under 60); 0 (default) keeps the unrefined mesh.
+   */
+  minAngle?: number;
+  /** Passes of guarded smoothing (default 0). */
+  smoothIterations?: number;
+  /** How smoothing moves a point (default 'laplacian'). */
+  smoothMethod?: 'laplacian' | 'odt';
+}
+
+/** A corner that keeps triangles under `minAngle`: under 60 degrees, or a pole. */
+export interface MeshCadCorner {
+  face: number;
+  /** The mesh point at it. */
+  point: number;
+  u: number;
+  v: number;
+  x: [number, number, number];
+  /** In the face's plane; 0 at a pole. */
+  angleDeg: number;
+  /** The smallest angle of the triangles it forces. */
+  minForcedDeg: number;
+  /** A pole's reach on the surface; 0 for a small angle. */
+  reach: number;
+  pole: boolean;
 }
 
 /** One face's outcome in `meshCadSurface`'s report. */
@@ -399,6 +425,14 @@ export interface MeshCadFaceRecord {
   maxAngleDeg: number;
   minEdge: number;
   maxEdge: number;
+  numRefinementPoints: number;
+  numSmoothed: number;
+  /** Its sharpest corner under 60 degrees; 180 for none. */
+  minInputAngleDeg: number;
+  belowBound: boolean;
+  /** The smallest angle of its triangles no corner forces. */
+  boundDeg: number;
+  corners: MeshCadCorner[];
 }
 
 /** What `meshCadSurface` returns. */
@@ -422,6 +456,11 @@ export interface MeshCadSurfaceResult {
   maxEdgeGap: number;
   faces: MeshCadFaceRecord[];
   warnings: string[];
+  numRefinementPoints: number;
+  numFacesBelowBound: number;
+  numSmoothed: number;
+  /** Every angle of every triangle on the surface, in 18 bins of 10 degrees. */
+  angleHistogram: number[];
 }
 
 /** Sampling options of `igaRefine` / `igaSample`. */

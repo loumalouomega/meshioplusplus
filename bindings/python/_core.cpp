@@ -3008,7 +3008,8 @@ PYBIND11_MODULE(_core, m) {
         "mesh_cad_surface",
         [](py::object brep, double target_size, double max_chordal_deviation,
            std::int64_t min_points_per_edge, double tolerance, bool record_face_ids, bool edges,
-           bool match_unreferenced_trims, bool strict, std::int64_t max_points) {
+           bool match_unreferenced_trims, bool strict, std::int64_t max_points, double min_angle,
+           std::int64_t smooth_iterations, const std::string& smooth_method) {
             const meshioplusplus::BrepInfo info = core_brep_from_py(brep);
             meshioplusplus::MeshCadSurfaceOptions o;
             o.mTargetSize = target_size;
@@ -3020,6 +3021,15 @@ PYBIND11_MODULE(_core, m) {
             o.mMatchUnreferencedTrims = match_unreferenced_trims;
             o.mStrict = strict;
             o.mMaxPoints = max_points;
+            o.mMinAngleDeg = min_angle;
+            o.mSmoothIterations = smooth_iterations;
+            if (smooth_method == "laplacian")
+                o.mSmoothMethod = meshioplusplus::MeshCadSmoothing::Laplacian;
+            else if (smooth_method == "odt")
+                o.mSmoothMethod = meshioplusplus::MeshCadSmoothing::Odt;
+            else
+                throw std::invalid_argument(
+                    "meshio++: mesh_cad_surface: smooth_method must be 'laplacian' or 'odt'");
             meshioplusplus::MeshCadSurfaceResult r =
                 core_nogil([&] { return meshioplusplus::mesh_cad_surface(info, o); });
             py::dict out;
@@ -3054,20 +3064,47 @@ PYBIND11_MODULE(_core, m) {
                 d["max_angle_deg"] = f.mMaxAngleDeg;
                 d["min_edge"] = f.mMinEdge;
                 d["max_edge"] = f.mMaxEdge;
+                d["num_refinement_points"] = f.mNumRefinementPoints;
+                d["num_smoothed"] = f.mNumSmoothed;
+                d["min_input_angle_deg"] = f.mMinInputAngleDeg;
+                d["below_bound"] = f.mBelowBound;
+                d["bound_deg"] = f.mBoundDeg;
+                py::list corners;
+                for (const meshioplusplus::MeshCadCorner& c : f.mSmallAngleCorners) {
+                    py::dict cd;
+                    cd["face"] = c.mFace;
+                    cd["point"] = c.mPoint;
+                    cd["u"] = c.mU;
+                    cd["v"] = c.mV;
+                    cd["x"] = py::make_tuple(c.mX[0], c.mX[1], c.mX[2]);
+                    cd["angle_deg"] = c.mAngleDeg;
+                    cd["min_forced_deg"] = c.mMinForcedDeg;
+                    cd["reach"] = c.mReach;
+                    cd["pole"] = c.mPole;
+                    corners.append(cd);
+                }
+                d["corners"] = corners;
                 faces.append(d);
             }
             out["faces"] = faces;
             out["warnings"] = r.mWarnings;
+            out["num_refinement_points"] = r.mNumRefinementPoints;
+            out["num_faces_below_bound"] = r.mNumFacesBelowBound;
+            out["num_smoothed"] = r.mNumSmoothed;
+            out["angle_histogram"] =
+                std::vector<std::int64_t>(r.mAngleHistogram.begin(), r.mAngleHistogram.end());
+            out["num_curved_straightened"] = r.mNumCurvedStraightened;
             return out;
         },
         py::arg("brep"), py::arg("target_size"), py::arg("max_chordal_deviation") = 0.0,
         py::arg("min_points_per_edge") = 0, py::arg("tolerance") = 0.0,
         py::arg("record_face_ids") = true, py::arg("edges") = true,
         py::arg("match_unreferenced_trims") = true, py::arg("strict") = false,
-        py::arg("max_points") = 50000000);
+        py::arg("max_points") = 50000000, py::arg("min_angle") = 0.0,
+        py::arg("smooth_iterations") = 0, py::arg("smooth_method") = "laplacian");
     m.def(
         "triangulate_polygon_2d",
-        [](py::list loops, double target_size) {
+        [](py::list loops, double target_size, double min_angle, std::int64_t max_points) {
             std::vector<std::vector<std::array<double, 2>>> in;
             for (py::handle h : loops) {
                 auto a = py::array_t<double, py::array::c_style | py::array::forcecast>::ensure(h);
@@ -3079,10 +3116,15 @@ PYBIND11_MODULE(_core, m) {
                     loop[static_cast<std::size_t>(i)] = {a.at(i, 0), a.at(i, 1)};
                 in.push_back(std::move(loop));
             }
+            meshioplusplus::TriangulatePolygon2dOptions o;
+            o.mTargetSize = target_size;
+            o.mMinAngleDeg = min_angle;
+            o.mMaxPoints = max_points;
             return meshioplusplus_py::mesh_to_py(
-                core_nogil([&] { return meshioplusplus::triangulate_polygon_2d(in, target_size); }));
+                core_nogil([&] { return meshioplusplus::triangulate_polygon_2d(in, o); }));
         },
-        py::arg("loops"), py::arg("target_size") = 0.0);
+        py::arg("loops"), py::arg("target_size") = 0.0, py::arg("min_angle") = 0.0,
+        py::arg("max_points") = 1000000);
 
     // A volume mesh of the inside of a skin on a balanced octree.
     m.def(

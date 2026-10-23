@@ -304,6 +304,90 @@ def test_triangulate_polygon_2d():
         mio.triangulate_polygon_2d([[5e-299, -8.9e304], [-8.9e304, 1e-323], [0, 0]])
 
 
+def _min_angles(mesh):
+    """The smallest angle (degrees) of every triangle."""
+    tri = [c for c in mesh.cells if c.type == "triangle"][0].data
+    p = mesh.points[tri]
+    out = np.full(len(tri), 180.0)
+    for k in range(3):
+        u = p[:, (k + 1) % 3] - p[:, k]
+        v = p[:, (k + 2) % 3] - p[:, k]
+        ang = np.degrees(
+            np.arctan2(
+                np.linalg.norm(np.cross(u, v), axis=1), np.einsum("ij,ij->i", u, v)
+            )
+        )
+        out = np.minimum(out, ang)
+    return out
+
+
+@needs_core
+@pytest.mark.parametrize(
+    "name", ["plate_with_hole.cad.json", "capped_cylinder.cad.json", "sphere.cad.json"]
+)
+def test_refinement_meets_the_bound_or_reports_the_corner(name):
+    """Roadmap 6.2.7 on the CAD JSON fixtures: every triangle meets 25 degrees
+    except within the reach of a reported pole; 0 keeps the unrefined mesh."""
+    model = _read(name)
+    plain = mio.mesh_cad_surface(model, 0.2)
+    zero = mio.mesh_cad_surface(model, 0.2, min_angle=0.0)
+    np.testing.assert_array_equal(plain.points, zero.points)
+    out, report = mio.mesh_cad_surface(model, 0.2, min_angle=25.0, return_report=True)
+    assert report["num_failed"] == 0
+    poles = [c for f in report["faces"] for c in f["corners"] if c["pole"]]
+    assert all(not c["pole"] or c["reach"] >= 0.2 for c in poles)
+    tri = [c for c in out.cells if c.type == "triangle"][0].data
+    below = _min_angles(out) < 25.0 - 1e-9
+    for t in np.nonzero(below)[0]:
+        x = out.points[tri[t]]
+        assert any(
+            np.min(np.linalg.norm(x - np.asarray(c["x"]), axis=1)) <= c["reach"] + 1e-12
+            for c in poles
+        ), "a triangle under the bound touches no reported corner"
+    assert sum(report["angle_histogram"]) == 3 * report["num_triangles"]
+    assert report["num_faces_below_bound"] == sum(
+        f["below_bound"] for f in report["faces"]
+    )
+    if name.startswith("sphere"):
+        assert len(poles) == 2
+    else:
+        assert not poles and report["num_faces_below_bound"] == 0
+
+
+@needs_core
+def test_smoothing_moves_the_inside_only():
+    model = _read("sphere.cad.json")
+    plain, r0 = mio.mesh_cad_surface(model, 0.2, return_report=True)
+    for method in ("laplacian", "odt"):
+        out, report = mio.mesh_cad_surface(
+            model, 0.2, smooth_iterations=2, smooth_method=method, return_report=True
+        )
+        _watertight(report)
+        assert report["num_smoothed"] > 0
+        boundary = r0["num_points"] - sum(f["num_interior_points"] for f in r0["faces"])
+        np.testing.assert_array_equal(out.points[:boundary], plain.points[:boundary])
+        np.testing.assert_allclose(np.linalg.norm(out.points, axis=1), 1.0, atol=1e-12)
+    with pytest.raises(ValueError, match="smooth_method"):
+        mio.mesh_cad_surface(model, 0.2, smooth_method="none")
+    with pytest.raises(ValueError, match="min_angle"):
+        mio.mesh_cad_surface(model, 0.2, min_angle=60.0)
+
+
+@needs_core
+def test_triangulate_polygon_2d_refines_to_a_min_angle():
+    outer = [[0, 0], [2, 0], [2, 1], [1, 1], [1, 2], [0, 2]]
+    m = mio.triangulate_polygon_2d(outer, target_size=0.3, min_angle=30.0)
+    assert _measure(m)[0] == pytest.approx(3.0, rel=1e-12)
+    assert _min_angles(m).min() >= 30.0 - 1e-9
+    plain = mio.triangulate_polygon_2d(outer, target_size=0.3)
+    np.testing.assert_array_equal(
+        plain.points,
+        mio.triangulate_polygon_2d(outer, target_size=0.3, min_angle=0).points,
+    )
+    with pytest.raises(ValueError, match="min_angle"):
+        mio.triangulate_polygon_2d(outer, min_angle=75.0)
+
+
 @needs_core
 def test_cli_verb(tmp_path, capsys):
     out = tmp_path / "cube.vtu"

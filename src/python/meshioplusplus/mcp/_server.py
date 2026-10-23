@@ -1180,6 +1180,9 @@ def _register_operations(server: FastMCP) -> None:
         match_unreferenced_trims: bool = True,
         strict: bool = False,
         max_points: int = 50000000,
+        min_angle: float = 0.0,
+        smooth_iterations: int = 0,
+        smooth_method: str = "laplacian",
     ) -> dict:
         """Triangulate the faces of a CAD model (Kratos CAD JSON; STEP and
         IGES where OpenCASCADE is linked) into one conforming surface mesh with
@@ -1197,7 +1200,16 @@ def _register_operations(server: FastMCP) -> None:
         rather than meshed wrong; strict=True makes that an error. Reports the
         counts (failed faces, open, non-manifold and misoriented edges), the
         extreme angles and edge lengths, max_edge_gap, one record per face and
-        the warnings. No quality guarantee yet (no Delaunay refinement)."""
+        the warnings. min_angle (degrees, under 60; 0: off) refines every face
+        by Delaunay refinement until its triangles' smallest angles on the
+        surface reach it (guaranteed up to 20.7 away from corners under 60
+        degrees, a target with a reported shortfall above); the corners under
+        60 degrees and the poles that keep triangles below it are listed per
+        face (corners, below_bound, bound_deg), with num_refinement_points,
+        num_faces_below_bound and an angle_histogram of 10-degree bins.
+        smooth_iterations passes of guarded smoothing (smooth_method
+        'laplacian' or 'odt') move interior points only where no triangle
+        inverts and no star's smallest angle drops."""
         return _guard(
             _tools.tool_mesh_cad_surface,
             input_path=input_path,
@@ -1213,6 +1225,9 @@ def _register_operations(server: FastMCP) -> None:
             match_unreferenced_trims=match_unreferenced_trims,
             strict=strict,
             max_points=max_points,
+            min_angle=min_angle,
+            smooth_iterations=smooth_iterations,
+            smooth_method=smooth_method,
         )
 
     @server.tool()
