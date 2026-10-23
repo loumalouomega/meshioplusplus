@@ -162,6 +162,38 @@ TEST(EdgeSampler, RationalQuarterCircle) {
     }
 }
 
+TEST(EdgeSampler, RefineSplitsPiecesByArcLengthAtAChosenFraction) {
+    // Halving (a crossing to separate) and a split a quarter of the way along
+    // (a concentric shell, a power of two from a sharp corner) both land at
+    // that fraction of the piece's arc length, on the rational arc.
+    const mio::NurbsPatch p = plane(0, 0, 2, 2);
+    const BrepSurfaceEval s(p, false);
+    const TrimTrace t(&s, BrepCurveEval(quarter(0.5, 0.5, 0.375)), true);
+    const double r = 0.75;
+    EdgeSampleOptions o;
+    o.mTargetSize = 0.4;
+    auto e = mio::detail::edge_sample(t, o);
+    const std::size_t n = e.mPoints.size() - 1;
+    ASSERT_GE(n, 3u);
+    const double piece = 0.5 * M_PI * r / double(n);
+    mio::detail::edge_refine(t, e, {0, n - 1}, {0.5, 0.25});
+    ASSERT_EQ(e.mPoints.size(), n + 3);
+    const auto arc = [&](std::size_t A, std::size_t B) {
+        // The angle between two points on the arc, times its radius.
+        const EdgeVec3& a = e.mPoints[A];
+        const EdgeVec3& b = e.mPoints[B];
+        const double ca = std::atan2(a[1] - 1.0, a[0] - 1.0);
+        const double cb = std::atan2(b[1] - 1.0, b[0] - 1.0);
+        return r * std::fabs(cb - ca);
+    };
+    EXPECT_NEAR(arc(0, 1), 0.5 * piece, 1e-10);
+    EXPECT_NEAR(arc(1, 2), 0.5 * piece, 1e-10);
+    EXPECT_NEAR(arc(n, n + 1), 0.25 * piece, 1e-10);
+    EXPECT_NEAR(arc(n + 1, n + 2), 0.75 * piece, 1e-10);
+    for (std::size_t k = 0; k + 1 < e.mFractions.size(); ++k)
+        EXPECT_LT(e.mFractions[k], e.mFractions[k + 1]);
+}
+
 TEST(EdgeSampler, ChordalCapIsHonoured) {
     const mio::NurbsPatch p = plane(0, 0, 2, 2);
     const BrepSurfaceEval s(p, false);

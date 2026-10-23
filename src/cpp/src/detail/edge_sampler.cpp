@@ -404,6 +404,11 @@ EdgeSamples edge_sample(const TrimTrace& rTrace, const EdgeSampleOptions& rOptio
 
 void edge_refine(const TrimTrace& rTrace, EdgeSamples& rSamples,
                  const std::vector<std::size_t>& rPieces) {
+    edge_refine(rTrace, rSamples, rPieces, std::vector<double>(rPieces.size(), 0.5));
+}
+
+void edge_refine(const TrimTrace& rTrace, EdgeSamples& rSamples,
+                 const std::vector<std::size_t>& rPieces, const std::vector<double>& rAt) {
     if (rPieces.empty() || rSamples.mDegenerate)
         return;
     const double length = rSamples.mLength;
@@ -415,7 +420,8 @@ void edge_refine(const TrimTrace& rTrace, EdgeSamples& rSamples,
         out.mPoints.push_back(rSamples.mPoints[k]);
         out.mFractions.push_back(rSamples.mFractions[k]);
         if (next < rPieces.size() && rPieces[next] == k && k + 1 < rSamples.mParams.size()) {
-            const double f = 0.5 * (rSamples.mFractions[k] + rSamples.mFractions[k + 1]);
+            const double a = rAt[next];
+            const double f = (1.0 - a) * rSamples.mFractions[k] + a * rSamples.mFractions[k + 1];
             const double t = rTrace.ParamAtLength(f * length);
             out.mParams.push_back(t);
             out.mPoints.push_back(rTrace.Point(t));

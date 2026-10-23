@@ -182,6 +182,12 @@ EdgeSamples edge_sample(const TrimTrace& rTrace, const EdgeSampleOptions& rOptio
 void edge_refine(const TrimTrace& rTrace, EdgeSamples& rSamples,
                  const std::vector<std::size_t>& rPieces);
 
+/// The same, piece `rPieces[i]` split at arc-length fraction `rAt[i]` of
+/// the piece (0.5 its midpoint): Delaunay refinement's concentric shells,
+/// a power-of-two distance from a sharp corner at one end.
+void edge_refine(const TrimTrace& rTrace, EdgeSamples& rSamples,
+                 const std::vector<std::size_t>& rPieces, const std::vector<double>& rAt);
+
 /// Whether two traces of one edge run the same way (compared at both ends and
 /// at a quarter and three quarters of their lengths). With `StartLengthB` at
 /// least 0, `rB` is a closed trace taken to start that far along it: only
