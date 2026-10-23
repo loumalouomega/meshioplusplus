@@ -26,6 +26,7 @@
 // BRepMesh's triangulation of the same STEP solid.
 
 // System includes
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -514,6 +515,100 @@ TEST(MeshCad, ASeamListedFromEitherEndIsTheSameSeam) {
     EXPECT_EQ(r.mNumPoints, ref.mNumPoints);
     EXPECT_EQ(r.mNumTriangles, ref.mNumTriangles);
     EXPECT_NEAR(measure(r.mMesh).mVolume, measure(ref.mMesh).mVolume, 1e-12);
+}
+
+// Twice the signed area of the line block's segments of one B-rep edge
+// (the shoelace sum over the edge as its master runs).
+double shoelace(const mio::Mesh& rM, std::int64_t Edge) {
+    const double* x = rM.Points().As<double>();
+    const auto lines = rM.Cells(1);
+    const mio::NDArray& c = lines.Conn();
+    const mio::NDArray& ids = rM.CellData("cad:edge", 1);
+    double sum = 0.0;
+    for (std::size_t s = 0; s < lines.NumCells(); ++s) {
+        if (mio::detail::read_int(ids, s) != Edge)
+            continue;
+        const double* a = x + 3 * mio::detail::read_int(c, 2 * s);
+        const double* b = x + 3 * mio::detail::read_int(c, 2 * s + 1);
+        sum += a[0] * b[1] - b[0] * a[1];
+    }
+    return sum;
+}
+
+TEST(MeshCad, ABoundaryCrossingAtACoarseSizeIsSplit) {
+    // Roadmap 6.1.3's probe: a plate with a hole 0.02 from its rim, meshed at
+    // h = 1.1. The rim's coarse chord passes inside the hole's sample, so the
+    // sampled loops cross; the pieces involved are halved until they do not,
+    // and the plate is meshed, its area exactly that of its boundary polygon
+    // (the rim counter-clockwise, the hole clockwise, as the loops run).
+    const double R = 2.0, Rh = 1.0, Cx = 0.98;
+    const auto r = mio::mesh_cad_surface(brep_solids::disc_with_hole(R, Rh, Cx), size(1.1));
+    ASSERT_EQ(r.mNumFailed, 0) << r.mFaces[0].mReason;
+    EXPECT_EQ(r.mNumNonManifoldEdges, 0);
+    EXPECT_EQ(r.mNumMisorientedEdges, 0);
+    const Surface s = measure(r.mMesh);
+    const double polygon = 0.5 * (shoelace(r.mMesh, 0) + shoelace(r.mMesh, 1));
+    EXPECT_GT(shoelace(r.mMesh, 0), 0.0);
+    EXPECT_LT(shoelace(r.mMesh, 1), 0.0);
+    EXPECT_NEAR(s.mArea, polygon, 1e-12 * polygon);
+    EXPECT_LT(s.mArea, kPi * (R * R - Rh * Rh));
+    EXPECT_GT(s.mArea, 0.9 * kPi * (R * R - Rh * Rh));
+    // Both curves gained points where they come close, and every boundary
+    // point is on its circle.
+    const double* x = r.mMesh.Points().As<double>();
+    std::size_t near_rim = 0;  // rim points beside the hole: 345 and 15 degrees, and 0
+    for (std::size_t i = 0; i < r.mMesh.NumPoints(); ++i) {
+        EXPECT_EQ(x[3 * i + 2], 0.0);
+        const double ro = std::hypot(x[3 * i], x[3 * i + 1]);
+        const double rh = std::hypot(x[3 * i] - Cx, x[3 * i + 1]);
+        EXPECT_LE(ro, R + 1e-12);
+        EXPECT_GE(rh, Rh - 1e-12);
+        if (std::fabs(ro - R) < 1e-12 && x[3 * i] > 1.9)
+            ++near_rim;
+    }
+    EXPECT_GE(near_rim, 3u);
+    // The same mesh on every run and thread count.
+    const std::uint64_t ref = digest(r.mMesh);
+#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
+    const int saved = omp_get_max_threads();
+    for (int threads : {1, 2, 4}) {
+        omp_set_num_threads(threads);
+        EXPECT_EQ(
+            digest(mio::mesh_cad_surface(brep_solids::disc_with_hole(R, Rh, Cx), size(1.1)).mMesh),
+            ref)
+            << threads;
+    }
+    omp_set_num_threads(saved);
+#endif
+    EXPECT_EQ(
+        digest(mio::mesh_cad_surface(brep_solids::disc_with_hole(R, Rh, Cx), size(1.1)).mMesh),
+        ref);
+}
+
+TEST(MeshCad, ACrossingIsSplitInEveryFaceThatUsesTheEdge) {
+    // The same plate with a thickness: the caps' loops cross, and the rims
+    // their splits move are shared with the bands, which take the same new
+    // points, so the solid stays closed.
+    const double R = 2.0, Rh = 1.0, Cx = 0.98, T = 0.5;
+    const auto r =
+        mio::mesh_cad_surface(brep_solids::thick_disc_with_hole(R, Rh, Cx, T), size(1.1));
+    for (const auto& f : r.mFaces)
+        EXPECT_EQ(f.mStatus, MeshCadFaceStatus::Ok) << f.mFace << ": " << f.mReason;
+    expect_watertight(r);
+    const double volume = kPi * (R * R - Rh * Rh) * T;
+    EXPECT_NEAR(measure(r.mMesh).mVolume, volume, 0.1 * volume);
+}
+
+TEST(MeshCad, CurvesThatTouchStaySelfIntersecting) {
+    // The hole touches the rim: no split separates the loops, and the
+    // splitting stops once the pieces at the touch are within the tolerance.
+    const auto r = mio::mesh_cad_surface(brep_solids::disc_with_hole(2.0, 1.0, 1.0), size(1.1));
+    ASSERT_EQ(r.mNumFailed, 1);
+    EXPECT_EQ(r.mFaces[0].mStatus, MeshCadFaceStatus::SelfIntersecting);
+    EXPECT_NE(r.mFaces[0].mReason.find("curves themselves meet"), std::string::npos)
+        << r.mFaces[0].mReason;
+    EXPECT_EQ(r.mNumTriangles, 0);
+    EXPECT_LT(r.mNumPoints, 400);  // the halving stopped near the touch
 }
 
 TEST(MeshCad, ChordalDeviationCapsTheBoundary) {

@@ -402,6 +402,30 @@ EdgeSamples edge_sample(const TrimTrace& rTrace, const EdgeSampleOptions& rOptio
     return out;
 }
 
+void edge_refine(const TrimTrace& rTrace, EdgeSamples& rSamples,
+                 const std::vector<std::size_t>& rPieces) {
+    if (rPieces.empty() || rSamples.mDegenerate)
+        return;
+    const double length = rSamples.mLength;
+    EdgeSamples out;
+    out.mLength = length;
+    std::size_t next = 0;
+    for (std::size_t k = 0; k < rSamples.mParams.size(); ++k) {
+        out.mParams.push_back(rSamples.mParams[k]);
+        out.mPoints.push_back(rSamples.mPoints[k]);
+        out.mFractions.push_back(rSamples.mFractions[k]);
+        if (next < rPieces.size() && rPieces[next] == k && k + 1 < rSamples.mParams.size()) {
+            const double f = 0.5 * (rSamples.mFractions[k] + rSamples.mFractions[k + 1]);
+            const double t = rTrace.ParamAtLength(f * length);
+            out.mParams.push_back(t);
+            out.mPoints.push_back(rTrace.Point(t));
+            out.mFractions.push_back(f);
+            ++next;
+        }
+    }
+    rSamples = std::move(out);
+}
+
 bool edge_same_direction(const TrimTrace& rA, const TrimTrace& rB, double StartLengthB) {
     const double la = rA.Length();
     const double lb = rB.Length();

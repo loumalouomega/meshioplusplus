@@ -38,7 +38,8 @@
  *    piece whose sagitta (the distance of the curve at a quarter, half and
  *    three quarters of the piece from its chord) exceeds the chordal cap: the
  *    "linear deflection" of OpenCASCADE's mesher. A trace shorter than the
- *    tolerance (a pole) keeps its two ends.
+ *    tolerance (a pole) keeps its two ends. `edge_refine` halves chosen
+ *    pieces by arc length afterwards (a crossing to separate).
  *  - **Sharing.** `edge_project` carries a master trace's samples to another
  *    use of the same edge (the neighbouring face, or the same face across a
  *    seam): each point is projected onto the other trace by Gauss-Newton
@@ -173,6 +174,13 @@ struct EdgeSamples {
 };
 
 EdgeSamples edge_sample(const TrimTrace& rTrace, const EdgeSampleOptions& rOptions);
+
+/// Split pieces of a sampling at their arc-length midpoints: `rPieces` are
+/// piece indices (piece k runs from sample k to k + 1), ascending and
+/// distinct. Splitting by arc length rather than by parameter keeps the
+/// halves equal on the edge, whatever its parameterisation.
+void edge_refine(const TrimTrace& rTrace, EdgeSamples& rSamples,
+                 const std::vector<std::size_t>& rPieces);
 
 /// Whether two traces of one edge run the same way (compared at both ends and
 /// at a quarter and three quarters of their lengths). With `StartLengthB` at

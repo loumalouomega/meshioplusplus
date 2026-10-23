@@ -409,6 +409,85 @@ McadPlane mcad_face_plane(const McadFace& rF, const std::vector<McadUse>& rUses,
     return pl;
 }
 
+/// What the crossing search asks of one face.
+struct McadCrossings {
+    std::vector<std::array<std::size_t, 2>> mAsks;  ///< (edge, master piece) to halve
+    bool mStuck = false;  ///< its loops meet where the curves themselves meet
+};
+
+/**
+ * @brief Find where a face's sampled loops meet in its plane (6.1.3), so they
+ * can be split before the triangulation refuses them.
+ *
+ * Each segment of a crossing pair asks for its edge's master piece to be
+ * halved. When a piece involved is already within the tolerance, the curves
+ * themselves meet there and the face is stuck (it stays self_intersecting).
+ * A face whose uses failed is skipped. Two samples are one vertex when they
+ * are one mesh point at the same place, as the triangulation would merge
+ * them.
+ */
+McadCrossings mcad_face_crossings(const McadFace& rF, const std::vector<McadUse>& rUses,
+                                  const std::vector<std::optional<detail::TrimTrace>>& rTraces,
+                                  const std::vector<McadEdge>& rEdges, double Tol) {
+    McadCrossings out;
+    for (const auto& r_loop : rF.mLoops)
+        for (const std::size_t u : r_loop)
+            if (rUses[u].mFail != MeshCadFaceStatus::Ok)
+                return out;
+    const McadPlane pl = mcad_face_plane(rF, rUses, rTraces);
+    if (pl.mTotal < 3)
+        return out;
+    std::vector<Vec2> pts;
+    std::vector<std::array<std::int64_t, 2>> segs;
+    std::vector<std::array<std::size_t, 2>> origin;  // (use, sample) a segment starts at
+    std::map<std::pair<std::int64_t, Vec2>, std::int64_t> vertex;
+    const auto vertex_of = [&](std::int64_t Id, const Vec2& rX) {
+        const auto [it, fresh] =
+            vertex.emplace(std::make_pair(Id, rX), static_cast<std::int64_t>(pts.size()));
+        if (fresh)
+            pts.push_back(rX);
+        return it->second;
+    };
+    std::size_t at = 0;
+    for (const auto& r_poly : pl.mLoops) {
+        std::vector<std::int64_t> idx(r_poly.size());
+        for (std::size_t i = 0; i < r_poly.size(); ++i)
+            idx[i] = vertex_of(r_poly[i].mId, pl.mXs[at + i]);
+        for (std::size_t i = 0; i < r_poly.size(); ++i) {
+            const std::int64_t a = idx[i];
+            const std::int64_t b = idx[(i + 1) % r_poly.size()];
+            if (a == b)
+                continue;
+            segs.push_back({a, b});
+            origin.push_back({r_poly[i].mUse, r_poly[i].mK});
+        }
+        at += r_poly.size();
+    }
+    for (const auto& r_c : detail::cdt2d_find_crossings(pts, segs)) {
+        std::array<std::size_t, 2> ask[2];
+        bool tiny[2];
+        for (int i = 0; i < 2; ++i) {
+            const auto& r_o = origin[static_cast<std::size_t>(r_c[static_cast<std::size_t>(i)])];
+            const McadUse& r_u = rUses[r_o[0]];
+            const auto edge = static_cast<std::size_t>(r_u.mEdge);
+            const std::size_t n = r_u.mParams.size();
+            const std::size_t piece = r_u.mSame ? r_o[1] : n - 2 - r_o[1];
+            const auto& r_pts = rEdges[edge].mSamples.mPoints;
+            ask[i] = {edge, piece};
+            tiny[i] = !(mcad_dist(r_pts[piece], r_pts[piece + 1]) > Tol);
+        }
+        if (tiny[0] || tiny[1]) {
+            out.mStuck = true;
+            continue;
+        }
+        out.mAsks.push_back(ask[0]);
+        out.mAsks.push_back(ask[1]);
+    }
+    if (out.mStuck)
+        out.mAsks.clear();
+    return out;
+}
+
 /// Mesh one face in its parameters (see the file comment of mesh_cad.hpp).
 void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<McadUse>& rUses,
                     const std::vector<std::optional<detail::TrimTrace>>& rTraces,
@@ -969,12 +1048,28 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
     so.mTolerance = tol;
     so.mMaxSegments = rOptions.mMaxPoints;
     std::vector<double> edge_gap(edges.size(), 0.0);
+    const auto carry = [&](std::size_t E) {
+        McadEdge& r_e = edges[E];
+        const std::size_t m = r_e.mMaster;
+        uses[m].mParams = r_e.mSamples.mParams;
+        for (const std::size_t o : r_e.mUses) {
+            if (o == m)
+                continue;
+            const detail::EdgeProjection p =
+                detail::edge_project(*traces[o], r_e.mSamples, uses[o].mSame, uses[o].mStartLength);
+            uses[o].mParams = p.mParams;
+            edge_gap[E] = std::max(edge_gap[E], p.mMaxGap);
+            if (p.mMaxGap > gap_fail && uses[o].mFail == MeshCadFaceStatus::Ok) {
+                uses[o].mFail = MeshCadFaceStatus::ProjectionFailed;
+                uses[o].mWhy = "the trims of one edge are " + std::to_string(p.mMaxGap) + " apart";
+            }
+        }
+    };
     parallel_for(
         edges.size(),
         [&](std::size_t e) {
             McadEdge& r_e = edges[e];
             try {
-                const std::size_t m = r_e.mMaster;
                 // Enough pieces that every loop through the edge has three
                 // points: a closed edge alone in its loop needs three.
                 detail::EdgeSampleOptions eo = so;
@@ -982,21 +1077,8 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
                     eo.mMinSegments = std::max<std::int64_t>(
                         eo.mMinSegments,
                         static_cast<std::int64_t>((3 + uses[u].mLoopSize - 1) / uses[u].mLoopSize));
-                r_e.mSamples = detail::edge_sample(*traces[m], eo);
-                uses[m].mParams = r_e.mSamples.mParams;
-                for (const std::size_t o : r_e.mUses) {
-                    if (o == m)
-                        continue;
-                    const detail::EdgeProjection p = detail::edge_project(
-                        *traces[o], r_e.mSamples, uses[o].mSame, uses[o].mStartLength);
-                    uses[o].mParams = p.mParams;
-                    edge_gap[e] = std::max(edge_gap[e], p.mMaxGap);
-                    if (p.mMaxGap > gap_fail && uses[o].mFail == MeshCadFaceStatus::Ok) {
-                        uses[o].mFail = MeshCadFaceStatus::ProjectionFailed;
-                        uses[o].mWhy =
-                            "the trims of one edge are " + std::to_string(p.mMaxGap) + " apart";
-                    }
-                }
+                r_e.mSamples = detail::edge_sample(*traces[r_e.mMaster], eo);
+                carry(e);
             } catch (const std::length_error& r_x) {
                 r_e.mFail = MeshCadFaceStatus::BudgetExceeded;
                 r_e.mWhy = mcad_why(r_x);
@@ -1006,42 +1088,126 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
             }
         },
         1);
+
+    // Point ids: corners, then each edge's interior samples.
+    const std::size_t num_corners = boundary.size();
+    const auto assign_ids = [&]() {
+        boundary.resize(num_corners);
+        for (McadEdge& r_e : edges) {
+            r_e.mFirstInterior = static_cast<std::int64_t>(boundary.size());
+            if (r_e.mFail != MeshCadFaceStatus::Ok) {
+                for (const std::size_t u : r_e.mUses)
+                    if (uses[u].mFail == MeshCadFaceStatus::Ok) {
+                        uses[u].mFail = r_e.mFail;
+                        uses[u].mWhy = r_e.mWhy;
+                    }
+                continue;
+            }
+            const auto& r_pts = r_e.mSamples.mPoints;
+            if (static_cast<std::int64_t>(boundary.size() + r_pts.size()) > rOptions.mMaxPoints)
+                throw std::length_error(std::string(kMcadPrefix) +
+                                        "the edges alone need more than " +
+                                        std::to_string(rOptions.mMaxPoints) + " points");
+            for (std::size_t k = 1; k + 1 < r_pts.size(); ++k)
+                boundary.push_back(r_pts[k]);
+            const std::size_t n = r_pts.size();
+            for (const std::size_t u : r_e.mUses) {
+                McadUse& r_u = uses[u];
+                r_u.mIds.assign(n, 0);
+                r_u.mIds.front() = corner_id[slot(u, 0)];
+                r_u.mIds.back() = corner_id[slot(u, 1)];
+                for (std::size_t k = 1; k + 1 < n; ++k) {
+                    const std::size_t j = r_u.mSame ? k : n - 1 - k;
+                    r_u.mIds[k] = r_e.mFirstInterior + static_cast<std::int64_t>(j - 1);
+                }
+            }
+        }
+    };
+    assign_ids();
+
+    // Boundaries that cross at this size (6.1.3): the sampled loops of a face
+    // can cross in its parameters where the exact curves do not (two close
+    // loops, a thin slot). Every crossing found exactly is separated by
+    // halving, by arc length, the master pieces of the edges involved, in
+    // every face that uses them, until no face has one. The requests of all
+    // faces are merged in (edge, piece) order, so the result does not depend
+    // on the thread count. A crossing whose pieces are already within the
+    // tolerance is where the curves themselves meet: that face stays
+    // self_intersecting, as does one still crossing after the last round.
+    const auto fail_face = [&](std::size_t F, MeshCadFaceStatus S, const std::string& rWhy) {
+        for (const auto& r_loop : faces[F].mLoops)
+            for (const std::size_t u : r_loop)
+                if (uses[u].mFail == MeshCadFaceStatus::Ok) {
+                    uses[u].mFail = S;
+                    uses[u].mWhy = rWhy;
+                }
+    };
+    {
+        constexpr int kMaxRounds = 64;
+        std::vector<char> check(nf, 1);
+        for (int round = 0;; ++round) {
+            std::vector<McadCrossings> found(nf);
+            parallel_for(
+                nf,
+                [&](std::size_t f) {
+                    if (check[f] && faces[f].mUsable)
+                        found[f] = mcad_face_crossings(faces[f], uses, traces, edges, tol);
+                },
+                1);
+            std::map<std::size_t, std::vector<std::size_t>> split;
+            std::vector<std::size_t> asking;
+            std::fill(check.begin(), check.end(), 0);
+            for (std::size_t f = 0; f < nf; ++f) {
+                const McadCrossings& r_c = found[f];
+                if (r_c.mStuck) {
+                    fail_face(f, MeshCadFaceStatus::SelfIntersecting,
+                              "its boundary meets itself in the face's parameters where the "
+                              "curves themselves meet (no split separates them)");
+                    continue;
+                }
+                if (r_c.mAsks.empty())
+                    continue;
+                asking.push_back(f);
+                for (const auto& r_a : r_c.mAsks)
+                    split[r_a[0]].push_back(r_a[1]);
+            }
+            if (split.empty())
+                break;
+            std::size_t added = 0;
+            for (auto& [e, r_pieces] : split) {
+                std::sort(r_pieces.begin(), r_pieces.end());
+                r_pieces.erase(std::unique(r_pieces.begin(), r_pieces.end()), r_pieces.end());
+                added += r_pieces.size();
+            }
+            if (round >= kMaxRounds ||
+                static_cast<std::int64_t>(boundary.size() + added) > rOptions.mMaxPoints) {
+                for (const std::size_t f : asking)
+                    if (round >= kMaxRounds)
+                        fail_face(f, MeshCadFaceStatus::SelfIntersecting,
+                                  "its boundary still crosses itself in the face's parameters "
+                                  "after " +
+                                      std::to_string(kMaxRounds) + " rounds of splits");
+                    else
+                        fail_face(f, MeshCadFaceStatus::BudgetExceeded,
+                                  "separating its crossing boundary would exceed max_points");
+                break;
+            }
+            for (const auto& [e, r_pieces] : split) {
+                McadEdge& r_e = edges[e];
+                detail::edge_refine(*traces[r_e.mMaster], r_e.mSamples, r_pieces);
+                carry(e);
+                for (const std::size_t u : r_e.mUses)
+                    check[uses[u].mFace] = 1;
+            }
+            assign_ids();
+        }
+    }
     for (const double g : edge_gap)
         max_gap = std::max(max_gap, g);
     result.mMaxEdgeGap = max_gap;
     if (max_gap > 0.01 * h)
         warn("the trims of some edges or corners disagree by up to " + std::to_string(max_gap) +
              " (the mesh shares their points regardless)");
-
-    // Point ids: corners, then each edge's interior samples.
-    for (McadEdge& r_e : edges) {
-        r_e.mFirstInterior = static_cast<std::int64_t>(boundary.size());
-        if (r_e.mFail != MeshCadFaceStatus::Ok) {
-            for (const std::size_t u : r_e.mUses)
-                if (uses[u].mFail == MeshCadFaceStatus::Ok) {
-                    uses[u].mFail = r_e.mFail;
-                    uses[u].mWhy = r_e.mWhy;
-                }
-            continue;
-        }
-        const auto& r_pts = r_e.mSamples.mPoints;
-        if (static_cast<std::int64_t>(boundary.size() + r_pts.size()) > rOptions.mMaxPoints)
-            throw std::length_error(std::string(kMcadPrefix) + "the edges alone need more than " +
-                                    std::to_string(rOptions.mMaxPoints) + " points");
-        for (std::size_t k = 1; k + 1 < r_pts.size(); ++k)
-            boundary.push_back(r_pts[k]);
-        const std::size_t n = r_pts.size();
-        for (const std::size_t u : r_e.mUses) {
-            McadUse& r_u = uses[u];
-            r_u.mIds.assign(n, 0);
-            r_u.mIds.front() = corner_id[slot(u, 0)];
-            r_u.mIds.back() = corner_id[slot(u, 1)];
-            for (std::size_t k = 1; k + 1 < n; ++k) {
-                const std::size_t j = r_u.mSame ? k : n - 1 - k;
-                r_u.mIds[k] = r_e.mFirstInterior + static_cast<std::int64_t>(j - 1);
-            }
-        }
-    }
 
     // Faces, each in its own parameters.
     parallel_for(

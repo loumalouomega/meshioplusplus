@@ -255,6 +255,104 @@ inline mio::BrepInfo sphere(double R = 1.0) {
     return assemble(faces, curves);
 }
 
+// The circle of radius R about (Cx, Cy) in the plane z = 0, from angle A0
+// by Sweep, as a trim of a plane.
+inline BrepNurbsTrim disc_trim(double Cx, double Cy, double R, double A0, double Sweep,
+                               std::int64_t Edge, bool Along) {
+    BrepNurbsTrim t;
+    t.mAt = [=](double T) {
+        const double a = A0 + Sweep * T;
+        return PatchVec{Cx + R * std::cos(a), Cy + R * std::sin(a), 0.0};
+    };
+    t.mEdge = Edge;
+    t.mAlong = Along;
+    t.mCircle = true;
+    t.mCentre = {Cx, Cy, 0.0};
+    t.mRadius = R;
+    return t;
+}
+
+// A disc of radius R in the plane z = 0 (normal +z) with a circular hole of
+// radius Rh about (Cx, 0): with Cx + Rh close to R the hole is closer to
+// the rim than a coarse size, and with Cx + Rh = R it touches the rim. The
+// rim starts at 225 degrees and the hole at 0. A rational circle is C0 at
+// its quarters, so the sampler keeps them: at h = 1.1 (R = 2) each quarter
+// of the rim takes three pieces of 30 degrees, one rim chord is centred at
+// angle 0, where the hole comes closest, and the hole's sample there lies
+// beyond it.
+constexpr double kRimStart = 1.25 * kPi;
+inline mio::BrepInfo disc_with_hole(double R = 2.0, double Rh = 1.0, double Cx = 0.98) {
+    std::vector<mio::BrepCurve> curves = {
+        mio::detail::brep_curve_arc({0, 0, 0}, {1, 0, 0}, {0, 1, 0}, R, kRimStart,
+                                    kRimStart + 2 * kPi),
+        mio::detail::brep_curve_arc({Cx, 0, 0}, {1, 0, 0}, {0, 1, 0}, Rh, 0.0, 2 * kPi)};
+    SolidFace f;
+    f.mSurface = plane({0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1});
+    f.mLoops = {{disc_trim(0, 0, R, kRimStart, 2 * kPi, 0, true)},
+                {disc_trim(Cx, 0, Rh, 0.0, -2 * kPi, 1, false)}};
+    return assemble({f}, curves);
+}
+
+// disc_with_hole's plate given a thickness T: the plate between z = 0 and
+// z = T, its rim and its hole closed by cylinder bands. The thin wall
+// between the hole and the rim is where the caps' coarse loops cross, and
+// the rims the split moves are shared with the bands.
+inline mio::BrepInfo thick_disc_with_hole(double R = 2.0, double Rh = 1.0, double Cx = 0.98,
+                                          double T = 0.5) {
+    std::vector<mio::BrepCurve> curves = {
+        mio::detail::brep_curve_arc({0, 0, 0}, {1, 0, 0}, {0, 1, 0}, R, kRimStart,
+                                    kRimStart + 2 * kPi),
+        mio::detail::brep_curve_arc({0, 0, T}, {1, 0, 0}, {0, 1, 0}, R, kRimStart,
+                                    kRimStart + 2 * kPi),
+        mio::detail::brep_curve_arc({Cx, 0, 0}, {1, 0, 0}, {0, 1, 0}, Rh, 0.0, 2 * kPi),
+        mio::detail::brep_curve_arc({Cx, 0, T}, {1, 0, 0}, {0, 1, 0}, Rh, 0.0, 2 * kPi)};
+    const auto ring = [](double Cx0, double Rr, double Z, double A0, double Sweep, std::int64_t E,
+                         bool Along) {
+        BrepNurbsTrim t;
+        t.mAt = [=](double U) {
+            const double a = A0 + Sweep * U;
+            return PatchVec{Cx0 + Rr * std::cos(a), Rr * std::sin(a), Z};
+        };
+        t.mEdge = E;
+        t.mAlong = Along;
+        return t;
+    };
+    std::vector<SolidFace> faces(4);
+    // The top (+z) and the bottom (-z).
+    faces[0].mSurface = plane({0, 0, T}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1});
+    faces[0].mLoops = {{disc_trim(0, 0, R, kRimStart, 2 * kPi, 1, true)},
+                       {disc_trim(Cx, 0, Rh, 0.0, -2 * kPi, 3, false)}};
+    for (auto& r_l : faces[0].mLoops)
+        for (auto& r_t : r_l) {
+            const auto at = r_t.mAt;
+            r_t.mAt = [=](double U) {
+                PatchVec p = at(U);
+                p[2] = T;
+                return p;
+            };
+            r_t.mCentre[2] = T;
+        }
+    faces[1].mSurface = plane({0, 0, 0}, {1, 0, 0}, {0, -1, 0}, {0, 0, -1});
+    faces[1].mLoops = {{disc_trim(0, 0, R, kRimStart, -2 * kPi, 0, false)},
+                       {disc_trim(Cx, 0, Rh, 0.0, 2 * kPi, 2, true)}};
+    // The outer band, its seam at 225 degrees where the rims start.
+    const double c = std::cos(kRimStart), sn = std::sin(kRimStart);
+    faces[2].mSurface.mKind = 3;
+    faces[2].mSurface.mRadius = R;
+    faces[2].mSurface.mX = {c, sn, 0};
+    faces[2].mSurface.mY = {-sn, c, 0};
+    faces[2].mLoops = {{ring(0, R, 0.0, kRimStart, 2 * kPi, 0, true)},
+                       {ring(0, R, T, kRimStart, -2 * kPi, 1, false)}};
+    // The hole's band, facing its axis.
+    faces[3].mSurface.mKind = 3;
+    faces[3].mSurface.mRadius = Rh;
+    faces[3].mSurface.mOrigin = {Cx, 0, 0};
+    faces[3].mLoops = {{ring(Cx, Rh, 0.0, 0.0, -2 * kPi, 2, false)},
+                       {ring(Cx, Rh, T, 0.0, 2 * kPi, 3, true)}};
+    faces[3].mSense = false;
+    return assemble(faces, curves);
+}
+
 // One planar square face [0, S]^2 at z = 0 (normal +z), its four edges.
 inline mio::BrepInfo square(double S = 1.0) {
     const std::array<PatchVec, 4> v = {{{0, 0, 0}, {S, 0, 0}, {S, S, 0}, {0, S, 0}}};
