@@ -300,6 +300,109 @@ void mcad_check_options(const MeshCadSurfaceOptions& rO) {
         mcad_fail("max_points must be positive");
 }
 
+/// One loop sample of a face: its mesh point, its parameters, and the use
+/// and sample index it comes from.
+struct McadEntry {
+    std::int64_t mId;
+    Vec2 mUv;
+    std::size_t mUse;
+    std::size_t mK;
+};
+
+/// A face's loops as closed polylines in its parameters, and the plane they
+/// are triangulated in: x = L (u, v), L the Cholesky factor of the mean first
+/// fundamental form over the loops' box, so a triangulation Delaunay in x is
+/// Delaunay in (an average of) the surface's own metric. In raw parameters,
+/// whose scales can differ by orders of magnitude, a Delaunay triangulation
+/// links points far apart on the surface.
+struct McadPlane {
+    std::vector<std::vector<McadEntry>> mLoops;
+    std::size_t mTotal = 0;
+    std::vector<std::array<Vec3, 2>> mJac;  ///< (S_u, S_v) on a 9 x 9 grid of the box
+    double mL11 = 1.0;
+    double mL12 = 0.0;
+    double mL22 = 1.0;
+    std::vector<Vec2> mXs;  ///< the loops' samples in x, loop after loop
+    double mXlo[2] = {0.0, 0.0};
+    double mXhi[2] = {0.0, 0.0};
+
+    Vec2 ToX(const Vec2& rUv) const { return {mL11 * rUv[0] + mL12 * rUv[1], mL22 * rUv[1]}; }
+    Vec2 ToUv(const Vec2& rX) const {
+        const double v = rX[1] / mL22;
+        return {(rX[0] - mL12 * v) / mL11, v};
+    }
+};
+
+/// Build a face's plane from its uses' current samples (`mParams`, `mIds`).
+McadPlane mcad_face_plane(const McadFace& rF, const std::vector<McadUse>& rUses,
+                          const std::vector<std::optional<detail::TrimTrace>>& rTraces) {
+    McadPlane pl;
+    double lo[2] = {std::numeric_limits<double>::infinity(),
+                    std::numeric_limits<double>::infinity()};
+    double hi[2] = {-lo[0], -lo[1]};
+    for (const auto& r_loop : rF.mLoops) {
+        std::vector<McadEntry> poly;
+        for (const std::size_t u : r_loop) {
+            const McadUse& r_u = rUses[u];
+            const detail::TrimTrace& r_t = *rTraces[u];
+            for (std::size_t j = 0; j + 1 < r_u.mIds.size(); ++j) {
+                const Vec2 uv = r_t.Uv(r_u.mParams[j]);
+                poly.push_back({r_u.mIds[j], uv, u, j});
+                for (int k = 0; k < 2; ++k) {
+                    lo[k] = std::min(lo[k], uv[k]);
+                    hi[k] = std::max(hi[k], uv[k]);
+                }
+            }
+        }
+        if (!poly.empty()) {
+            pl.mTotal += poly.size();
+            pl.mLoops.push_back(std::move(poly));
+        }
+    }
+    if (pl.mTotal < 3)
+        return pl;
+
+    const detail::BrepSurfaceEval& r_s = *rF.pSurface;
+    constexpr int kSamples = 9;
+    double me = 0.0;
+    double mf = 0.0;
+    double mg = 0.0;
+    for (int j = 0; j < kSamples; ++j)
+        for (int i = 0; i < kSamples; ++i) {
+            const double u = lo[0] + (hi[0] - lo[0]) * double(i) / double(kSamples - 1);
+            const double v = lo[1] + (hi[1] - lo[1]) * double(j) / double(kSamples - 1);
+            double x[3];
+            Vec3 su{};
+            Vec3 sv{};
+            r_s.Eval(u, v, x, su.data(), sv.data());
+            pl.mJac.push_back({su, sv});
+            me += su[0] * su[0] + su[1] * su[1] + su[2] * su[2];
+            mf += su[0] * sv[0] + su[1] * sv[1] + su[2] * sv[2];
+            mg += sv[0] * sv[0] + sv[1] * sv[1] + sv[2] * sv[2];
+        }
+    const double ns = double(pl.mJac.size());
+    me /= ns;
+    mf /= ns;
+    mg /= ns;
+    if (me > 0.0 && mg > 0.0 && me - mf * mf / mg > 1e-12 * me) {
+        pl.mL11 = std::sqrt(me);
+        pl.mL12 = mf / pl.mL11;
+        pl.mL22 = std::sqrt(mg - pl.mL12 * pl.mL12);
+    }
+    pl.mXs.reserve(pl.mTotal);
+    pl.mXlo[0] = pl.mXlo[1] = std::numeric_limits<double>::infinity();
+    pl.mXhi[0] = pl.mXhi[1] = -std::numeric_limits<double>::infinity();
+    for (const auto& r_poly : pl.mLoops)
+        for (const McadEntry& r_e : r_poly) {
+            pl.mXs.push_back(pl.ToX(r_e.mUv));
+            for (int k = 0; k < 2; ++k) {
+                pl.mXlo[k] = std::min(pl.mXlo[k], pl.mXs.back()[static_cast<std::size_t>(k)]);
+                pl.mXhi[k] = std::max(pl.mXhi[k], pl.mXs.back()[static_cast<std::size_t>(k)]);
+            }
+        }
+    return pl;
+}
+
 /// Mesh one face in its parameters (see the file comment of mesh_cad.hpp).
 void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<McadUse>& rUses,
                     const std::vector<std::optional<detail::TrimTrace>>& rTraces,
@@ -317,103 +420,26 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 return fail(rUses[u].mFail, rUses[u].mWhy);
     const double h = rO.mTargetSize;
 
-    // The loops as closed polylines of (mesh point, parameters).
-    struct Entry {
-        std::int64_t mId;
-        Vec2 mUv;
-    };
-    std::vector<std::vector<Entry>> loops;
-    double lo[2] = {std::numeric_limits<double>::infinity(),
-                    std::numeric_limits<double>::infinity()};
-    double hi[2] = {-lo[0], -lo[1]};
-    std::size_t total = 0;
-    for (const auto& r_loop : rF.mLoops) {
-        std::vector<Entry> poly;
-        for (const std::size_t u : r_loop) {
-            const McadUse& r_u = rUses[u];
-            const detail::TrimTrace& r_t = *rTraces[u];
-            for (std::size_t j = 0; j + 1 < r_u.mIds.size(); ++j) {
-                const Vec2 uv = r_t.Uv(r_u.mParams[j]);
-                poly.push_back({r_u.mIds[j], uv});
-                for (int k = 0; k < 2; ++k) {
-                    lo[k] = std::min(lo[k], uv[k]);
-                    hi[k] = std::max(hi[k], uv[k]);
-                }
-            }
-        }
-        if (!poly.empty()) {
-            total += poly.size();
-            loops.push_back(std::move(poly));
-        }
-    }
-    if (total < 3)
+    const McadPlane pl = mcad_face_plane(rF, rUses, rTraces);
+    if (pl.mTotal < 3)
         return fail(MeshCadFaceStatus::Empty, "its loops have fewer than three points");
-
-    // The parameters through one affine map x = L (u, v), L the Cholesky
-    // factor of the mean first fundamental form over the face's box, so the
-    // triangulation is Delaunay in (an average of) the surface's own metric:
-    // in raw parameters, whose scales can differ by orders of magnitude, a
-    // Delaunay triangulation links points far apart on the surface.
+    const auto& loops = pl.mLoops;
+    const auto& jac = pl.mJac;
+    const double l11 = pl.mL11;
+    const double l12 = pl.mL12;
+    const double l22 = pl.mL22;
+    const double* xlo = pl.mXlo;
+    const double* xhi = pl.mXhi;
     const detail::BrepSurfaceEval& r_s = *rF.pSurface;
-    constexpr int kSamples = 9;
-    std::vector<std::array<Vec3, 2>> jac;
-    double me = 0.0;
-    double mf = 0.0;
-    double mg = 0.0;
-    for (int j = 0; j < kSamples; ++j)
-        for (int i = 0; i < kSamples; ++i) {
-            const double u = lo[0] + (hi[0] - lo[0]) * double(i) / double(kSamples - 1);
-            const double v = lo[1] + (hi[1] - lo[1]) * double(j) / double(kSamples - 1);
-            double x[3];
-            Vec3 su{};
-            Vec3 sv{};
-            r_s.Eval(u, v, x, su.data(), sv.data());
-            jac.push_back({su, sv});
-            me += su[0] * su[0] + su[1] * su[1] + su[2] * su[2];
-            mf += su[0] * sv[0] + su[1] * sv[1] + su[2] * sv[2];
-            mg += sv[0] * sv[0] + sv[1] * sv[1] + sv[2] * sv[2];
-        }
-    const double ns = double(jac.size());
-    me /= ns;
-    mf /= ns;
-    mg /= ns;
-    double l11 = 1.0;
-    double l12 = 0.0;
-    double l22 = 1.0;
-    if (me > 0.0 && mg > 0.0 && me - mf * mf / mg > 1e-12 * me) {
-        l11 = std::sqrt(me);
-        l12 = mf / l11;
-        l22 = std::sqrt(mg - l12 * l12);
-    }
-    const auto to_x = [&](const Vec2& rUv) -> Vec2 {
-        return {l11 * rUv[0] + l12 * rUv[1], l22 * rUv[1]};
-    };
-    const auto to_uv = [&](const Vec2& rX) -> Vec2 {
-        const double v = rX[1] / l22;
-        return {(rX[0] - l12 * v) / l11, v};
-    };
-    std::vector<Vec2> xs;
-    xs.reserve(total);
-    double xlo[2] = {std::numeric_limits<double>::infinity(),
-                     std::numeric_limits<double>::infinity()};
-    double xhi[2] = {-xlo[0], -xlo[1]};
-    for (const auto& r_poly : loops)
-        for (const Entry& r_e : r_poly) {
-            xs.push_back(to_x(r_e.mUv));
-            for (int k = 0; k < 2; ++k) {
-                xlo[k] = std::min(xlo[k], xs.back()[static_cast<std::size_t>(k)]);
-                xhi[k] = std::max(xhi[k], xs.back()[static_cast<std::size_t>(k)]);
-            }
-        }
     detail::Cdt2d cdt(xlo[0], xlo[1], xhi[0], xhi[1]);
-    const std::vector<std::int64_t> vid = cdt.InsertBatch(xs);
+    const std::vector<std::int64_t> vid = cdt.InsertBatch(pl.mXs);
     // Each triangulation vertex is one mesh point: a boundary vertex holds
     // its id, an interior one -(1 + its index in mInterior).
     std::unordered_map<std::int64_t, std::int64_t> mesh_of;
     {
         std::size_t at = 0;
         for (const auto& r_poly : loops)
-            for (const Entry& r_e : r_poly) {
+            for (const McadEntry& r_e : r_poly) {
                 const auto [it, fresh] = mesh_of.emplace(vid[at++], r_e.mId);
                 if (!fresh && it->second != r_e.mId)
                     return fail(MeshCadFaceStatus::Degenerate,
@@ -487,7 +513,7 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 const Vec2 xp{xlo[0] + (double(i) + 0.5 * double(j % 2)) * dx, y};
                 if (!(xp[0] > xlo[0] && xp[0] < xhi[0]))
                     continue;
-                const Vec2 uv = to_uv(xp);
+                const Vec2 uv = pl.ToUv(xp);
                 Vec3 x{};
                 r_s.Eval(uv[0], uv[1], x.data(), nullptr, nullptr);
                 if (grid.Near(x, 0.5 * h, 0.4 * h))
