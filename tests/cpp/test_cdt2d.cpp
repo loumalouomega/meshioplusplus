@@ -717,6 +717,24 @@ TEST(Cdt2dRefine, AskingForSplitsLeavesTheBoundaryToTheCaller) {
     EXPECT_EQ(rep2.mNumForced, 1);
 }
 
+TEST(Cdt2dRefine, ASplitTheTriangulationRefusesDeclinesItsTriangle) {
+    // Found by the fuzz target (tests/fuzz/regressions/op_triangulate_polygon_2d):
+    // a sliver whose corners lie a few ulps off the line y = x / 3. The
+    // rounded midpoint of the long side makes the triangles beside it turn
+    // clockwise, so the split is refused; the triangle was queued again and
+    // refused again forever. It is now declined and counted unresolved.
+    const Loops l = {
+        {{-0.0625, -0.020833333333333332}, {0.125, 0.041666666666666664}, {-5.8125, -1.9375}}};
+    for (const double ang : {20.7, 25.0, 30.0}) {
+        const auto t = refined(l, 0.0, ang, 100);
+        ASSERT_EQ(t.mStatus, mio::detail::Cdt2dStatus::Ok) << t.mWhy;
+        EXPECT_EQ(t.mPoints.size(), 3u) << ang;
+        EXPECT_EQ(t.mTriangles.size(), 1u) << ang;
+        EXPECT_FALSE(t.mRefine.mBudgetReached) << ang;
+        EXPECT_GE(t.mRefine.mNumUnresolved + t.mRefine.mNumForced, 1) << ang;
+    }
+}
+
 TEST(Cdt2dRefine, FlipEdgeNeedsAConvexQuadrilateralAndNoConstraint) {
     // A caller judging triangles by its own measure flips edges itself: only
     // an unconstrained edge between two triangles forming a strictly convex

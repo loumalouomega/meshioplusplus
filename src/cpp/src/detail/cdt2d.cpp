@@ -1329,8 +1329,11 @@ void Cdt2dRefiner::HandleEncroached(const std::vector<std::array<std::int64_t, 2
             declined_apex = mCluster[static_cast<std::size_t>(s)][0] ? r_in[0] : r_in[1];
             continue;
         }
-        acted = true;
-        SplitOrAsk(r_s[0], r_s[1]);
+        // A split the triangulation refuses (its midpoint rounds off the
+        // segment) leaves the triangle declined, not queued again: the same
+        // attempt would refuse it forever. Asking always acts.
+        if (SplitOrAsk(r_s[0], r_s[1]) || !mO.mSplitSegments)
+            acted = true;
         if (mBudget <= 0)
             return;
     }
