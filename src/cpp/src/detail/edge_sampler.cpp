@@ -150,9 +150,17 @@ BrepCurveEval::BrepCurveEval(const BrepCurve& rCurve) : mDegree(rCurve.mDegree) 
     }
     if (!(mT1 > mT0))
         edgs_bad("a trimming curve has an empty parameter range");
-    for (const double k : mKnots)
-        if (k > mT0 && k < mT1 && (mBreaks.empty() || mBreaks.back() != k))
-            mBreaks.push_back(k);
+    for (std::size_t i = 0; i < mKnots.size(); ++i) {
+        const double k = mKnots[i];
+        if (!(k > mT0 && k < mT1) || (!mBreaks.empty() && mBreaks.back() == k))
+            continue;
+        mBreaks.push_back(k);
+        std::size_t mult = 0;
+        for (std::size_t j = i; j < mKnots.size() && mKnots[j] == k; ++j)
+            ++mult;
+        if (mult >= p)
+            mCorners.push_back(k);
+    }
     mNet.mDim = 1;
     mNet.mDegrees[0] = mDegree;
     mNet.mKnots[0] = &mKnots;
@@ -292,6 +300,19 @@ double TrimTrace::ParamAtLength(double L) const {
     return ta + s * (tb - ta);
 }
 
+std::vector<double> TrimTrace::CornerLengths() const {
+    // Every knot is a node of the table, so a corner's arc length is exact.
+    std::vector<double> out;
+    for (const double c : mCurve.Corners())
+        for (std::size_t i = 0; i < mT.size(); ++i)
+            if (mT[i] == c) {
+                out.push_back(mCum[i]);
+                break;
+            }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
 EdgeSamples edge_sample(const TrimTrace& rTrace, const EdgeSampleOptions& rOptions) {
     EdgeSamples out;
     const double length = rTrace.Length();
@@ -313,8 +334,12 @@ EdgeSamples edge_sample(const TrimTrace& rTrace, const EdgeSampleOptions& rOptio
     if (!(pieces <= double(rOptions.mMaxSegments)))
         throw std::length_error("meshio++: mesh_cad_surface: an edge needs more than " +
                                 std::to_string(rOptions.mMaxSegments) + " segments");
-    const std::int64_t n = std::max<std::int64_t>(
-        {std::int64_t{1}, rOptions.mMinSegments, static_cast<std::int64_t>(pieces)});
+    // The stretches between the corners, each in equal parts.
+    std::vector<double> cuts{0.0};
+    for (const double c : rTrace.CornerLengths())
+        if (c > cuts.back() + rOptions.mTolerance && c < length - rOptions.mTolerance)
+            cuts.push_back(c);
+    cuts.push_back(length);
     std::vector<double> ends;  // arc lengths of the pieces' ends, after the first point
     const double dev = rOptions.mMaxChordalDeviation;
     std::int64_t budget = rOptions.mMaxSegments;
@@ -342,10 +367,18 @@ EdgeSamples edge_sample(const TrimTrace& rTrace, const EdgeSampleOptions& rOptio
         }
         ends.push_back(Lb);
     };
-    for (std::int64_t k = 0; k < n; ++k) {
-        const double la = length * double(k) / double(n);
-        const double lb = k + 1 == n ? length : length * double(k + 1) / double(n);
-        split(split, la, lb, 0);
+    for (std::size_t c = 0; c + 1 < cuts.size(); ++c) {
+        const double l0 = cuts[c];
+        const double l1 = cuts[c + 1];
+        const double part = l1 - l0;
+        const std::int64_t n = std::max<std::int64_t>(
+            {std::int64_t{1}, static_cast<std::int64_t>(std::ceil(part / rOptions.mTargetSize)),
+             static_cast<std::int64_t>(std::ceil(double(rOptions.mMinSegments) * part / length))});
+        for (std::int64_t k = 0; k < n; ++k) {
+            const double la = l0 + part * double(k) / double(n);
+            const double lb = k + 1 == n ? l1 : l0 + part * double(k + 1) / double(n);
+            split(split, la, lb, 0);
+        }
     }
     push(rTrace.Start(), 0.0);
     for (std::size_t i = 0; i + 1 < ends.size(); ++i)

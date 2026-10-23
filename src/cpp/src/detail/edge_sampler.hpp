@@ -31,8 +31,10 @@
  *    arc length is integrated with five-point Gauss-Legendre on the knot
  *    intervals of the curve, bisected until halving changes an interval's
  *    length by less than `1e-12` of it, and inverted by safeguarded Newton.
- *  - **Sampling.** `edge_sample` splits a trace into `max(1, ceil(L / h))`
- *    pieces of equal arc length (at least `mMinSegments`), then halves any
+ *  - **Sampling.** `edge_sample` splits a trace at its corners (the knots
+ *    where the trim is only C0, a polyline's vertices), each piece into
+ *    `max(1, ceil(L / h))` parts of equal arc length (at least
+ *    `mMinSegments` in all), then halves any
  *    piece whose sagitta (the distance of the curve at a quarter, half and
  *    three quarters of the piece from its chord) exceeds the chordal cap: the
  *    "linear deflection" of OpenCASCADE's mesher. A trace shorter than the
@@ -96,6 +98,9 @@ public:
     double T1() const { return mT1; }
     /// The distinct knots strictly inside `(T0, T1)`, ascending.
     const std::vector<double>& Breaks() const { return mBreaks; }
+    /// Those of them where the curve is only C0 (multiplicity at least the
+    /// degree): its corners, which a sampling must keep.
+    const std::vector<double>& Corners() const { return mCorners; }
 
 private:
     std::int32_t mDegree = 1;
@@ -106,6 +111,7 @@ private:
     double mT0 = 0.0;
     double mT1 = 0.0;
     std::vector<double> mBreaks;
+    std::vector<double> mCorners;
     IgaEvalNet mNet;
 };
 
@@ -124,6 +130,8 @@ public:
     double Length() const { return mCum.empty() ? 0.0 : mCum.back(); }
     /// The parameter at arc length `L` from the start (clamped to the trace).
     double ParamAtLength(double L) const;
+    /// The arc lengths of the curve's corners from the start, ascending.
+    std::vector<double> CornerLengths() const;
     const BrepSurfaceEval& Surface() const { return *pSurface; }
 
 private:
