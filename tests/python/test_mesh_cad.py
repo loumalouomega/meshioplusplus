@@ -195,6 +195,8 @@ def test_a_failed_face_is_reported_and_strict_raises():
     bad = report["faces"][2]
     assert bad["status"] == "unsupported" and bad["reason"]
     assert report["num_open_edges"] > 0  # the hole is visible
+    # The refusal says why; the edges naming the face's trims add nothing.
+    assert not any("does not exist" in w for w in report["warnings"])
     assert 2 not in set(out.cell_data["cad:face"][0])
     with pytest.raises(RuntimeError, match="face 2"):
         mio.mesh_cad_surface(brep, 0.25, strict=True)

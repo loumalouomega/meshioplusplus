@@ -640,6 +640,17 @@ print(report["num_tetrahedra"], report["min_dihedral"], report["warnings"])
 cells = meshioplusplus.octree_mesh(skin, output="castellated", min_size=0.02)
 ```
 
+#### Surface meshes from CAD (conforming triangulation of a B-rep)
+
+**`meshioplusplus.mesh_cad_surface`** triangulates the faces of a CAD model (a Kratos CAD JSON read, or STEP and IGES through OpenCASCADE) into one conforming surface mesh at a target edge size, with no CAD kernel: every B-rep edge is sampled once and shared by the faces that use it, so a closed solid comes out watertight, and each face is a constrained Delaunay triangulation of its parameters on Shewchuk's exact predicates, lifted onto the surface. A face that cannot be meshed is reported by index and reason, never meshed wrong, and the output is identical across backends and thread counts. `triangulate_polygon_2d` exposes the planar triangulator. The same operation is in C++, C, Fortran, Julia, R, WASM, both CLIs (`mesh-cad-surface`) and MCP. See `doc/mesh_cad.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+surface, report = meshioplusplus.mesh_cad_surface(meshioplusplus.read("part.cad.json"), 0.1, return_report=True)
+print(report["num_failed"], report["num_open_edges"], report["min_angle_deg"])
+```
+
 #### ODT remeshing (relocate + flip connectivity)
 
 **`meshioplusplus.optimize_volume`** raises a tetrahedral mesh's worst element quality by *ODT remeshing* — relocating vertices AND changing connectivity. It is the genuine "ODT remeshing" and the third member of a trio whose other two each do half the job: `smooth(method="odt")` moves points on *fixed* connectivity, `remesh_volume` discards the input's tets for a fresh lattice mesh. It alternates the ODT vertex relocation with quality-improving topological **flips** (2-3 and 3-2), **predicate-free** — a flip is applied only when a pure signed-volume test finds the local configuration convex and the minimum scaled Jacobian strictly improves (no in-sphere/Delaunay predicate). See `doc/optimize_volume.md`.

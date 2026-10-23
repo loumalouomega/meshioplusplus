@@ -735,6 +735,9 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
                 warn("edge " + std::to_string(e) + " refers to a face that does not exist");
                 continue;
             }
+            // A face already refused has no trims; its refusal says why.
+            if (faces[*f].mRecord.mStatus != MeshCadFaceStatus::Ok)
+                continue;
             const auto it = use_by_trim.find({*f, r_r.mTrimIndex});
             if (it == use_by_trim.end()) {
                 warn("edge " + std::to_string(e) + " refers to trim " +

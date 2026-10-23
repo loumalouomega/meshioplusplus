@@ -178,6 +178,7 @@ export default defineConfig({
               { text: "Parametric primitives", link: "/primitives" },
               { text: "Octrees / quadtrees from a skin", link: "/octree" },
               { text: "Volume meshes on an octree", link: "/octree_mesh" },
+              { text: "Surface meshes from CAD", link: "/mesh_cad" },
               { text: "Signed distance", link: "/sdf" },
             ],
           },

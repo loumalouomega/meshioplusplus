@@ -1059,6 +1059,17 @@ def roadmap_map():
             ],
             [],
         ),
+        (
+            "§6 mesh generation",
+            [
+                ("refinement · smoothing", "M"),
+                ("size fields", "M"),
+                ("anisotropic metrics · poles", "M"),
+                ("tetrahedra (backends)", "L"),
+                ("quads · layers · adaptation", "L"),
+            ],
+            [(0, 1)],
+        ),
     ]
     per_row = 4
     col_w = 176

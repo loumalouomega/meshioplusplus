@@ -119,6 +119,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `find-interface` | pair counts, area, maximum gap, unmatched counts and both Side-entry lists |
 | `contact-pairs` | `num_pairs`, the pair table and unmatched slave-point ids |
 | `split-interface` | duplicated-point and cohesive-cell counts |
+| `mesh-cad-surface` | `mesh_cad_surface`'s report: the counts, the open, non-manifold and misoriented edges, the extreme angles and edge lengths, `tolerance`, `max_edge_gap`, `faces` (`status`, `reason`, counts and extremes per face) and `warnings` |
 
 The exit codes are unchanged by `--json`.
 
@@ -2069,6 +2070,30 @@ meshioplusplus octree-mesh part.stl hexes.vtu --output hex --surface-size 0.05
 | `--json` | the report as JSON (without the timings, which vary from run to run) |
 
 See [`doc/octree_mesh.md`](octree_mesh.md).
+
+## `mesh-cad-surface`
+
+Triangulate a CAD model's faces into one conforming surface mesh at a target edge size, with no CAD kernel (see [mesh generation from CAD](mesh_cad.md)). The input is anything that reads with a B-rep side channel: Kratos CAD JSON, or STEP and IGES where OpenCASCADE is linked.
+
+```bash
+meshioplusplus mesh-cad-surface part.cad.json part.vtu --size 0.1
+meshioplusplus mesh-cad-surface part.step part.msh -o gmsh --size 2 --deflection 0.01 --strict --json
+```
+
+| flag | meaning |
+|---|---|
+| `-i/--input-format`, `-o/--output-format` | explicit formats |
+| `-s/--size H` | the target edge length (required, > 0) |
+| `--deflection D` | the largest distance of a boundary segment from its edge (0: off) |
+| `--min-points-per-edge N` | at least this many points inside every edge |
+| `--tolerance T` | geometric tolerance (0: `1e-7` of the control nets' diagonal) |
+| `--no-face-ids` / `--no-edges` | no `cad:face` data and `face:<k>` regions / no `line` block of the edges |
+| `--no-match` | do not pair the trims no edge references |
+| `--strict` | fail (exit 1) when any face cannot be meshed, instead of reporting it |
+| `--max-points N` | the most points in the result (default 50000000) |
+| `--json` / `-q/--quiet` | the report as JSON / no summary |
+
+A face that cannot be meshed is left out and named in the summary with its reason; the exit code is 0 unless `--strict` is given.
 
 ## `grid-sample`, `grid-scatter`, `grid-resample`, `grid-spectrum`
 
