@@ -1066,7 +1066,7 @@ def roadmap_map():
                 ("size fields", "M"),
                 ("anisotropic metrics · poles", "M"),
                 ("tetrahedra (backends)", "L"),
-                ("quads · layers · adaptation", "L"),
+                ("quads · layers: design first", "L"),
             ],
             [(0, 1)],
         ),
