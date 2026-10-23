@@ -97,6 +97,7 @@ from .. import (
     lshape,
     match_periodic_nodes,
     merge,
+    mesh_cad_surface,
     ngon,
     octree,
     octree_mesh,
@@ -1800,6 +1801,40 @@ def tool_octree_mesh(
         untangle_iterations=untangle_iterations,
         max_cells=max_cells,
         max_tets=max_tets,
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
+def tool_mesh_cad_surface(
+    input_path,
+    output_path,
+    target_size,
+    input_format=None,
+    output_format=None,
+    max_chordal_deviation=0.0,
+    min_points_per_edge=0,
+    tolerance=0.0,
+    record_face_ids=True,
+    edges=True,
+    match_unreferenced_trims=True,
+    strict=False,
+    max_points=50000000,
+):
+    """Triangulate a CAD model's faces (CAD JSON, STEP, IGES) into one
+    conforming surface mesh at a target edge size."""
+    mesh = _load(input_path, input_format)
+    out, report = mesh_cad_surface(
+        mesh,
+        target_size,
+        max_chordal_deviation=max_chordal_deviation,
+        min_points_per_edge=min_points_per_edge,
+        tolerance=tolerance,
+        record_face_ids=record_face_ids,
+        edges=edges,
+        match_unreferenced_trims=match_unreferenced_trims,
+        strict=strict,
+        max_points=max_points,
         return_report=True,
     )
     return _result(_store(out, output_path, output_format), out, **report)
@@ -5343,6 +5378,14 @@ TOOL_REGISTRY = OrderedDict(
         (
             "octree_mesh",
             {"fn": tool_octree_mesh, "wraps": ("octree_mesh",), "gated": None},
+        ),
+        (
+            "mesh_cad_surface",
+            {
+                "fn": tool_mesh_cad_surface,
+                "wraps": ("mesh_cad_surface",),
+                "gated": None,
+            },
         ),
         (
             "grid_sample",

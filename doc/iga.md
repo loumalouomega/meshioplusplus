@@ -69,7 +69,7 @@ The operations take and return models, which the [pipeline](/pipeline) does not 
 ## What this is not
 
 - **Not a second entity kind in `Mesh`.** Operations on a mesh (`refine`, `smooth`, `partition`, …) still see only the sampling; the model changes only through these three operations. Putting patches and trims inside `Mesh` itself (every backend, binding and the ABI) is a recorded [non-goal](/roadmap#non-goals-and-decisions-taken) that a consumer needing it can reopen.
-- **No constrained trimmed triangulation.** A trimmed face is sampled to the cells whose centre its loops contain; the loops themselves stay exact.
+- **Not a mesher.** `iga_sample` keeps the cells of a trimmed face whose centre its loops contain, so its trimmed edges are staircases; the loops themselves stay exact. A conforming triangulation that follows the trims is [`mesh_cad_surface`](/mesh_cad), on the same side channel.
 - **Not yet:** Bézier extraction, knot removal as an operation, second derivatives, closest-point projection, and refinement of one patch of an MFEM model (the patch-level `iga_insert_knots` and `iga_elevate_degree` act on a single `NurbsPatch`, leaving the neighbours to the caller).
 
 ## Verification

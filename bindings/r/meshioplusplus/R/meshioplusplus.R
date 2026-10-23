@@ -2572,6 +2572,46 @@ mio_iga_evaluate <- function(info, patch, params, derivatives = 0L, trim_samples
         as.integer(trim_samples))
 }
 
+#' Triangulate a CAD model's faces
+#'
+#' Mesh generation from CAD (v17.13.0): a conforming triangle mesh of the faces
+#' of the B-rep a format-info handle holds (Kratos CAD JSON, STEP or IGES, from
+#' [mio_read_with_info()]) with edges of about `target_size`, with no CAD
+#' kernel. Every edge is sampled once and shared by the faces that use it, so a
+#' closed solid comes out watertight; each face is a constrained Delaunay
+#' triangulation of its parameters lifted onto its surface. A face that cannot
+#' be meshed is left out and reported in `face_status` / `face_reason`, never
+#' meshed wrong; `strict = TRUE` makes that an error. See `doc/mesh_cad.md`.
+#' @param info A format-info handle holding a B-rep.
+#' @param target_size The target edge length (required, > 0).
+#' @param max_chordal_deviation Sagitta cap of the boundary segments; 0 is off.
+#' @param min_points_per_edge At least this many points inside every edge.
+#' @param tolerance Geometric tolerance; 0 is 1e-7 of the model's size.
+#' @param record_face_ids `cad:face` cell data and a `face:<k>` region per face.
+#' @param edges A line block of the edges, with `cad:edge`.
+#' @param match_unreferenced_trims Pair trims no edge names by their images.
+#' @param strict Fail when any face cannot be meshed.
+#' @param max_points The most points in the result.
+#' @return A list: `mesh`, the counts (`num_points`, `num_triangles`,
+#'   `num_edge_segments`, `num_faces`, `num_failed`, `num_edges`,
+#'   `num_open_edges`, `num_non_manifold_edges`, `num_misoriented_edges`,
+#'   `num_degenerate_dropped`), `tolerance`, the extreme angles and edge
+#'   lengths, `max_edge_gap`, `face_status` and `face_reason` (one entry per
+#'   face) and `warnings` (a character vector).
+#' @export
+mio_mesh_cad_surface <- function(info, target_size, max_chordal_deviation = 0,
+                                 min_points_per_edge = 0, tolerance = 0,
+                                 record_face_ids = TRUE, edges = TRUE,
+                                 match_unreferenced_trims = TRUE, strict = FALSE,
+                                 max_points = 50000000) {
+  r <- .Call(R_mio_mesh_cad_surface, info, as.numeric(target_size),
+             as.numeric(max_chordal_deviation), as.numeric(min_points_per_edge),
+             as.numeric(tolerance), isTRUE(record_face_ids), isTRUE(edges),
+             isTRUE(match_unreferenced_trims), isTRUE(strict), as.numeric(max_points))
+  r$warnings <- if (nzchar(r$warnings)) strsplit(r$warnings, "\n", fixed = TRUE)[[1]] else character(0)
+  r
+}
+
 #' Copy a B-rep side channel
 #'
 #' The trimmed NURBS faces, loops, edges and vertices of a Kratos CAD JSON

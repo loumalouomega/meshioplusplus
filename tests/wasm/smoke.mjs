@@ -3487,6 +3487,44 @@ step('igaRefine, igaSample, igaEvaluate: a NURBS model refined exactly and writt
     assert.equal(s.mesh.cells[0].type, 'quad9');
 });
 
+step('meshCadSurface: a trimmed CAD JSON face triangulated and reported', () => {
+    m.FS.writeFile('/triangle.cad.json', JSON.stringify({
+        breps: [{
+            brep_id: 1,
+            faces: [{
+                brep_id: 2,
+                surface: {
+                    is_trimmed: true, degrees: [1, 1], knot_vectors: [[0, 2], [0, 2]],
+                    control_points: [[1, [0, 0, 0, 1]], [2, [2, 0, 0, 1]], [3, [0, 2, 0, 1]], [4, [2, 2, 0, 1]]],
+                },
+                boundary_loops: [{
+                    loop_type: 'outer',
+                    trimming_curves: [[[0, 0], [1.5, 0]], [[1.5, 0], [0, 1.5]], [[0, 1.5], [0, 0]]].map(([a, b], i) => ({
+                        trim_index: i, curve_direction: true,
+                        parameter_curve: {
+                            degree: 1, knot_vector: [0, 0, 1, 1], active_range: [0, 1],
+                            control_points: [[[a[0], a[1], 0, 1]], [[b[0], b[1], 0, 1]]],
+                        },
+                    })),
+                }],
+            }],
+            edges: [],
+        }],
+    }));
+    const read = m.readMeshSelective('/triangle.cad.json', { info: true });
+    const r = m.meshCadSurface(read.info, { targetSize: 0.1 });
+    assert.equal(r.numFaces, 1);
+    assert.equal(r.numFailed, 0);
+    assert.ok(r.numTriangles > 100);
+    assert.equal(r.numPoints, r.mesh.points.length / 3);
+    assert.ok(r.minAngleDeg > 10);
+    assert.equal(r.faces[0].status, 'ok');
+    assert.deepEqual(r.warnings, []);
+    assert.equal(r.mesh.cells[0].type, 'triangle');
+    assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0 }), /target_size/);
+    assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, bogus: 1 }), /bogus/);
+});
+
 step('info: the mdpa blocks a mesh cannot hold round-trip through info', () => {
     m.FS.writeFile('/side.mdpa', [
         'Begin ModelPartData', '    SOLVER_TYPE static', 'End ModelPartData',

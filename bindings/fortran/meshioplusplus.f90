@@ -54,6 +54,12 @@ module meshioplusplus
     public :: mio_exodus_series
     public :: mio_format_info
     public :: mio_iga_evaluation
+    public :: mio_mesh_cad_surface_report
+    public :: mio_mesh_cad_face_status, mio_mesh_cad_face_reason
+    public :: MIO_MESH_CAD_OK, MIO_MESH_CAD_EMPTY, MIO_MESH_CAD_OPEN_LOOP
+    public :: MIO_MESH_CAD_SELF_INTERSECTING, MIO_MESH_CAD_DEGENERATE
+    public :: MIO_MESH_CAD_PROJECTION_FAILED, MIO_MESH_CAD_BUDGET_EXCEEDED
+    public :: MIO_MESH_CAD_UNSUPPORTED, MIO_MESH_CAD_OTHER
     public :: mio_gltf_options
     public :: MIO_MDPA_PROPERTIES, MIO_MDPA_ENTITY_NAMES, MIO_MDPA_SKIPPED
     public :: MIO_MDPA_MODEL_PART_DATA, MIO_MDPA_TABLES, MIO_MDPA_GEOMETRIES
@@ -465,6 +471,52 @@ module meshioplusplus
         integer(c_int32_t) :: trim = 1
         integer(c_int32_t) :: reserved32(2) = 0
         integer(c_int64_t) :: reserved(6) = 0
+    end type
+
+    !> Why `info%mesh_cad_surface` left a face out (C `mio_mesh_cad_face_status`).
+    integer, parameter :: MIO_MESH_CAD_OK = 0, MIO_MESH_CAD_EMPTY = 1, &
+                          MIO_MESH_CAD_OPEN_LOOP = 2, MIO_MESH_CAD_SELF_INTERSECTING = 3, &
+                          MIO_MESH_CAD_DEGENERATE = 4, MIO_MESH_CAD_PROJECTION_FAILED = 5, &
+                          MIO_MESH_CAD_BUDGET_EXCEEDED = 6, MIO_MESH_CAD_UNSUPPORTED = 7, &
+                          MIO_MESH_CAD_OTHER = 8
+
+    !> Interop mirror of C `mio_mesh_cad_surface_opts` (104 bytes, checked once
+    !> per process by `check_mesh_cad_layout`). Filled by
+    !> `mio_mesh_cad_surface_opts_init` and the optional arguments.
+    type, bind(c) :: mio_mesh_cad_surface_opts_t
+        real(c_double) :: target_size = 0.0_c_double
+        real(c_double) :: max_chordal_deviation = 0.0_c_double
+        real(c_double) :: tolerance = 0.0_c_double
+        integer(c_int64_t) :: min_points_per_edge = 0
+        integer(c_int64_t) :: max_points = 50000000_c_int64_t
+        integer(c_int32_t) :: record_face_ids = 1
+        integer(c_int32_t) :: edges = 1
+        integer(c_int32_t) :: match_unreferenced_trims = 1
+        integer(c_int32_t) :: strict = 0
+        integer(c_int64_t) :: reserved(6) = 0
+    end type
+
+    !> `mio_mesh_cad_surface_report` (200 bytes; field order and types are ABI,
+    !> see doc/mesh_cad.md for every field). Counts are counts, not indices.
+    type, bind(c) :: mio_mesh_cad_surface_report
+        integer(c_int64_t) :: num_points = 0
+        integer(c_int64_t) :: num_triangles = 0
+        integer(c_int64_t) :: num_edge_segments = 0
+        integer(c_int64_t) :: num_faces = 0
+        integer(c_int64_t) :: num_failed = 0
+        integer(c_int64_t) :: num_edges = 0
+        integer(c_int64_t) :: num_open_edges = 0
+        integer(c_int64_t) :: num_non_manifold_edges = 0
+        integer(c_int64_t) :: num_misoriented_edges = 0
+        integer(c_int64_t) :: num_degenerate_dropped = 0
+        real(c_double) :: tolerance = 0.0_c_double
+        real(c_double) :: min_angle_deg = 0.0_c_double
+        real(c_double) :: max_angle_deg = 0.0_c_double
+        real(c_double) :: min_edge = 0.0_c_double
+        real(c_double) :: max_edge = 0.0_c_double
+        real(c_double) :: max_edge_gap = 0.0_c_double
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(8) = 0
     end type
 
     !> Interop mirror of C `mio_hausdorff_opts`.
@@ -1749,6 +1801,7 @@ module meshioplusplus
         procedure :: iga_refine => format_info_iga_refine
         procedure :: iga_sample => format_info_iga_sample
         procedure :: iga_evaluate => format_info_iga_evaluate
+        procedure :: mesh_cad_surface => format_info_mesh_cad_surface
     end type mio_format_info
 
     !> The result of `info%iga_evaluate`: points (and, with `derivatives`, their
@@ -4301,6 +4354,45 @@ module meshioplusplus
             type(mio_iga_opts_t), intent(in) :: opts
             type(c_ptr), intent(out) :: refined
             type(c_ptr) :: h
+        end function
+
+        subroutine c_mio_mesh_cad_surface_opts_init(opts) &
+                bind(c, name="mio_mesh_cad_surface_opts_init")
+            import :: mio_mesh_cad_surface_opts_t
+            type(mio_mesh_cad_surface_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_mesh_cad_surface(info, opts, report) &
+                bind(c, name="mio_mesh_cad_surface") result(h)
+            import :: c_ptr, mio_mesh_cad_surface_opts_t, mio_mesh_cad_surface_report
+            type(c_ptr), value :: info
+            type(mio_mesh_cad_surface_opts_t), intent(in) :: opts
+            type(mio_mesh_cad_surface_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_mesh_cad_surface_face_status(face) &
+                bind(c, name="mio_mesh_cad_surface_face_status") result(st)
+            import :: c_int32_t, c_int64_t
+            integer(c_int64_t), value :: face
+            integer(c_int32_t) :: st
+        end function
+
+        function c_mio_mesh_cad_surface_face_reason(face, buf, buflen) &
+                bind(c, name="mio_mesh_cad_surface_face_reason") result(n)
+            import :: c_char, c_int64_t
+            integer(c_int64_t), value :: face
+            character(c_char), intent(out) :: buf(*)
+            integer(c_int64_t), value :: buflen
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_mesh_cad_surface_warnings(buf, buflen) &
+                bind(c, name="mio_mesh_cad_surface_warnings") result(n)
+            import :: c_char, c_int64_t
+            character(c_char), intent(out) :: buf(*)
+            integer(c_int64_t), value :: buflen
+            integer(c_int64_t) :: n
         end function
 
         function c_mio_iga_sample(info, opts, mapped) bind(c, name="mio_iga_sample") result(h)
@@ -11878,6 +11970,113 @@ contains
         end if
         call clear_status(stat, errmsg)
     end function
+
+    !> Triangulate the faces of this B-rep (`info` from `m%read_with_info` of
+    !> 'cad_json', 'step' or 'iges') into one conforming surface mesh with edges
+    !> of about `target_size` (doc/mesh_cad.md): every edge sampled once and
+    !> shared by its faces, each face a constrained Delaunay triangulation of
+    !> its parameters. A face that cannot be meshed is left out and recorded
+    !> (`mio_mesh_cad_face_status` / `mio_mesh_cad_face_reason`), never meshed
+    !> wrong; with `strict` the call fails instead. The summary comes back
+    !> through the optional `report`, the warnings one per line in `warnings`.
+    function format_info_mesh_cad_surface(self, target_size, max_chordal_deviation, &
+                                          min_points_per_edge, tolerance, record_face_ids, &
+                                          edges, match_unreferenced_trims, strict, max_points, &
+                                          report, warnings, stat, errmsg) result(out)
+        class(mio_format_info), intent(in) :: self
+        real(real64), intent(in) :: target_size
+        real(real64), intent(in), optional :: max_chordal_deviation, tolerance
+        integer(int64), intent(in), optional :: min_points_per_edge, max_points
+        logical, intent(in), optional :: record_face_ids, edges, match_unreferenced_trims, strict
+        type(mio_mesh_cad_surface_report), intent(out), optional :: report
+        character(:), allocatable, intent(out), optional :: warnings
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_mesh_cad_surface_opts_t) :: opts
+        type(mio_mesh_cad_surface_report) :: crep
+        character(kind=c_char), allocatable :: wbuf(:)
+        integer(c_int64_t) :: n
+
+        call check_mesh_cad_layout()
+        if (present(warnings)) warnings = ''
+        call c_mio_mesh_cad_surface_opts_init(opts)
+        opts%target_size = real(target_size, c_double)
+        if (present(max_chordal_deviation)) &
+            opts%max_chordal_deviation = real(max_chordal_deviation, c_double)
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(min_points_per_edge)) &
+            opts%min_points_per_edge = int(min_points_per_edge, c_int64_t)
+        if (present(max_points)) opts%max_points = int(max_points, c_int64_t)
+        if (present(record_face_ids)) &
+            opts%record_face_ids = merge(1_c_int32_t, 0_c_int32_t, record_face_ids)
+        if (present(edges)) opts%edges = merge(1_c_int32_t, 0_c_int32_t, edges)
+        if (present(match_unreferenced_trims)) &
+            opts%match_unreferenced_trims = merge(1_c_int32_t, 0_c_int32_t, &
+                                                  match_unreferenced_trims)
+        if (present(strict)) opts%strict = merge(1_c_int32_t, 0_c_int32_t, strict)
+
+        out%handle = c_mio_mesh_cad_surface(self%handle, opts, crep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('mesh_cad_surface', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = crep
+        if (present(warnings)) then
+            ! String rule 5: query the length with an empty buffer, then copy.
+            allocate (wbuf(1))
+            n = c_mio_mesh_cad_surface_warnings(wbuf, 0_c_int64_t)
+            if (n > 0 .and. n < int(huge(0) - 1, c_int64_t)) then
+                deallocate (wbuf)
+                allocate (wbuf(int(n) + 1))
+                n = c_mio_mesh_cad_surface_warnings(wbuf, n + 1)
+                if (n > 0) warnings = from_c_buf(wbuf, int(n))
+            end if
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The status (`MIO_MESH_CAD_*`) of face `face` (1-based) in this thread's
+    !> last `info%mesh_cad_surface` call, or -1 when out of range.
+    integer function mio_mesh_cad_face_status(face) result(st)
+        integer, intent(in) :: face
+        st = int(c_mio_mesh_cad_surface_face_status(int(face - 1, c_int64_t)))
+    end function
+
+    !> Why face `face` (1-based) of this thread's last `info%mesh_cad_surface`
+    !> call was left out; empty when it was meshed or is out of range.
+    function mio_mesh_cad_face_reason(face) result(reason)
+        integer, intent(in) :: face
+        character(:), allocatable :: reason
+        character(kind=c_char), allocatable :: buf(:)
+        integer(c_int64_t) :: n
+        reason = ''
+        allocate (buf(1))
+        n = c_mio_mesh_cad_surface_face_reason(int(face - 1, c_int64_t), buf, 0_c_int64_t)
+        if (n > 0 .and. n < int(huge(0) - 1, c_int64_t)) then
+            deallocate (buf)
+            allocate (buf(int(n) + 1))
+            n = c_mio_mesh_cad_surface_face_reason(int(face - 1, c_int64_t), buf, n + 1)
+            if (n > 0) reason = from_c_buf(buf, int(n))
+        end if
+    end function
+
+    !> The layouts of `mio_mesh_cad_surface_opts_t` and
+    !> `mio_mesh_cad_surface_report` against the C structs (104 and 200
+    !> bytes), checked once per process.
+    subroutine check_mesh_cad_layout()
+        logical, save :: checked = .false.
+        type(mio_mesh_cad_surface_opts_t) :: opts
+        type(mio_mesh_cad_surface_report) :: report
+        if (checked) return
+        checked = .true.
+        if (c_sizeof(opts) /= 104_c_size_t .or. c_sizeof(report) /= 200_c_size_t) then
+            write (error_unit, '(a,2(i0,1x),a)') &
+                'meshio++: mesh_cad_surface layout mismatch (', c_sizeof(opts), &
+                c_sizeof(report), 'bytes)'
+            error stop 1
+        end if
+    end subroutine
 
     !> Evaluate patch `patch` (1-based; the face of a B-rep) at the parametric
     !> coordinates `params(d, N)` (one column per point, `d` the parametric

@@ -12359,7 +12359,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 17
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 12
+#define MESHIOPLUSPLUS_VERSION_MINOR 13
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -12369,7 +12369,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "17.12.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "17.13.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -29837,6 +29837,169 @@ MESHIOPLUSPLUS_API MergeResult merge(const std::vector<const Mesh*>& rMeshes, co
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/merge.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/mesh_cad.hpp =====
+/**
+ * @file operations/mesh_cad.hpp
+ * @brief Mesh generation from CAD: a conforming triangulation of a B-rep's
+ * faces at one global target edge size (`mesh_cad_surface`), and the planar
+ * constrained Delaunay triangulation it is built on (`triangulate_polygon_2d`).
+ *
+ * `mesh_cad_surface` takes the `BrepInfo` a CAD JSON, STEP or IGES read
+ * returns (Python's `mesh.info["brep"]`) and needs no CAD kernel:
+ *
+ *  - each B-rep edge is sampled **once**, by arc length into pieces of about
+ *    the target size (and under the optional chordal cap), and every face that
+ *    uses it, or the same face across a seam, reuses those 3-D points: the
+ *    faces conform by construction;
+ *  - corners come from the topology (a trim's end is the next trim's start,
+ *    an edge's ends are the same at each use), not from comparing
+ *    coordinates;
+ *  - each face is triangulated in its own parameters by a constrained
+ *    Delaunay triangulation with exact predicates, the inside an equilateral
+ *    lattice scaled by the surface's first derivatives, and lifted onto the
+ *    surface; triangles follow the surface normal, reversed for a face with a
+ *    swapped normal.
+ *
+ * A face that cannot be meshed (its loops cross at this size, a loop does not
+ * close, its surface is invalid, an edge cannot be carried to it) is left out
+ * and reported by index and reason, never meshed wrong; `mStrict` turns that
+ * into an exception. There are no quality guarantees (no Delaunay
+ * refinement), no size field beyond the chordal cap and no anisotropic metric
+ * in this first milestone. The output is byte-identical across parallel
+ * backends and thread counts. See doc/mesh_cad.md.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Cell data: the index of the B-rep face a triangle meshes (-1 on edge cells).
+inline constexpr const char* kMeshCadFaceName = "cad:face";
+/// Cell data: the index of the B-rep edge a line cell discretises (-1 on
+/// triangles, and on an edge no `BrepEdge` names: an unreferenced trim, or the
+/// boundary of an untrimmed face).
+inline constexpr const char* kMeshCadEdgeName = "cad:edge";
+/// The prefix of the per-face cell regions: `face:<k>`.
+inline constexpr const char* kMeshCadFaceRegionPrefix = "face:";
+
+/// Why a face was left out; explicit values (mirrored by the C enum).
+enum class MeshCadFaceStatus : std::int32_t {
+    Ok = 0,
+    Empty = 1,             ///< its loops enclose nothing
+    OpenLoop = 2,          ///< its loops do not bound a domain consistently
+    SelfIntersecting = 3,  ///< its boundary crosses itself in the parameters at this size
+    Degenerate = 4,        ///< distinct boundary samples coincide in the parameters
+    ProjectionFailed = 5,  ///< an edge could not be carried to this face's trim
+    BudgetExceeded = 6,    ///< more points than `mMaxPoints`
+    Unsupported = 7,       ///< an invalid surface or trim
+    Other = 8,
+};
+
+/// `"ok"`, `"empty"`, `"open_loop"`, `"self_intersecting"`, `"degenerate"`,
+/// `"projection_failed"`, `"budget_exceeded"`, `"unsupported"`, `"other"`.
+MESHIOPLUSPLUS_API const char* mesh_cad_face_status_name(MeshCadFaceStatus Status);
+
+struct MeshCadSurfaceOptions {
+    /// The target edge length `h` (required, > 0).
+    double mTargetSize = 0.0;
+    /// The largest distance a boundary segment may sit from its edge (its
+    /// sagitta; OpenCASCADE's linear deflection); 0 is off.
+    double mMaxChordalDeviation = 0.0;
+    /// At least this many points inside every edge.
+    std::int64_t mMinPointsPerEdge = 0;
+    /// Shorter edges are degenerate (a pole) and unreferenced trims closer
+    /// than this are paired; 0 is `1e-7` times the diagonal of the control
+    /// nets' box.
+    double mGeometricTolerance = 0.0;
+    /// Record `cad:face` cell data and a `face:<k>` cell region per face.
+    bool mRecordFaceIds = true;
+    /// Add a `line` block of the discretised edges, with `cad:edge`.
+    bool mEdges = true;
+    /// Pair trims no edge references whose 3-D images coincide (ends and
+    /// middle within the tolerance), for models without edge topology.
+    bool mMatchUnreferencedTrims = true;
+    /// Throw (`std::runtime_error`) when any face fails, instead of reporting it.
+    bool mStrict = false;
+    /// The most points in the result; a face or edge that would exceed it fails.
+    std::int64_t mMaxPoints = 50000000;
+};
+
+/// One face's outcome.
+struct MeshCadFaceRecord {
+    std::int64_t mFace = -1;  ///< index into `BrepInfo::mFaces`
+    std::int64_t mId = -1;    ///< its `BrepFace::mId`
+    MeshCadFaceStatus mStatus = MeshCadFaceStatus::Ok;
+    std::string mReason;  ///< empty when meshed
+    std::int64_t mNumTriangles = 0;
+    std::int64_t mNumInteriorPoints = 0;
+    std::int64_t mNumDegenerateDropped = 0;  ///< triangles a pole collapsed
+    double mMinAngleDeg = 0.0;
+    double mMaxAngleDeg = 0.0;
+    double mMinEdge = 0.0;
+    double mMaxEdge = 0.0;
+};
+
+struct MeshCadSurfaceResult {
+    /// Points, one `triangle` block (and a `line` block of the edges).
+    Mesh mMesh;
+    std::int64_t mNumPoints = 0;
+    std::int64_t mNumTriangles = 0;
+    std::int64_t mNumEdgeSegments = 0;
+    std::int64_t mNumFaces = 0;
+    std::int64_t mNumFailed = 0;
+    std::int64_t mNumEdges = 0;  ///< edges discretised (named and implicit)
+    /// Triangle edges used once (a hole, or the model's own boundary), more
+    /// than twice, and twice the same way round.
+    std::int64_t mNumOpenEdges = 0;
+    std::int64_t mNumNonManifoldEdges = 0;
+    std::int64_t mNumMisorientedEdges = 0;
+    std::int64_t mNumDegenerateDropped = 0;
+    double mTolerance = 0.0;  ///< the geometric tolerance used
+    double mMinAngleDeg = 0.0;
+    double mMaxAngleDeg = 0.0;
+    double mMinEdge = 0.0;
+    double mMaxEdge = 0.0;
+    /// The largest distance between two uses of one edge or corner: how far
+    /// the faces' own trims disagree (the mesh shares the points regardless).
+    double mMaxEdgeGap = 0.0;
+    std::vector<MeshCadFaceRecord> mFaces;
+    std::vector<std::string> mWarnings;
+};
+
+/**
+ * @brief Triangulate a B-rep's faces into one conforming surface mesh.
+ * @throws std::invalid_argument for invalid options (`mTargetSize` not
+ *         positive, a negative deviation, tolerance or count) or a B-rep with
+ *         no faces; std::runtime_error naming the first failed face when
+ *         `mStrict` is set.
+ */
+MESHIOPLUSPLUS_API MeshCadSurfaceResult
+mesh_cad_surface(const BrepInfo& rBrep, const MeshCadSurfaceOptions& rOptions = {});
+
+/**
+ * @brief The constrained Delaunay triangulation of a polygon with holes, as a
+ * `triangle` mesh in the plane z = 0.
+ * @param rLoops the outer boundary first, then the holes; each a closed
+ *        polyline whose last point is not repeated, in either orientation
+ *        (the even-odd rule decides the domain).
+ * @param TargetSize 0 keeps the boundary as given and adds no interior point;
+ *        `h > 0` splits boundary segments longer than `h` and fills the inside
+ *        with an equilateral lattice of spacing `h`.
+ * @throws std::invalid_argument for a negative or non-finite size, a
+ *         non-finite point, or a boundary that is degenerate, open or crosses
+ *         itself.
+ */
+MESHIOPLUSPLUS_API Mesh triangulate_polygon_2d(
+    const std::vector<std::vector<std::array<double, 2>>>& rLoops, double TargetSize = 0.0);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/mesh_cad.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/neighbors.hpp =====
 /**
  * @file operations/neighbors.hpp
@@ -37660,6 +37823,183 @@ BsplineFitResult bspline_fit_patch(const std::vector<PatchVec>& rPts,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/bspline_fit.hpp =====
+// ===== begin src/cpp/src/detail/cdt2d.hpp =====
+/**
+ * @file detail/cdt2d.hpp
+ * @brief A constrained Delaunay triangulation of a planar straight-line graph,
+ * the substrate of `mesh_cad_surface` (one per face, in its parameters) and
+ * of `triangulate_polygon_2d`.
+ *
+ *  - **Insertion.** Points go into a triangle enclosing their box (the
+ *    "super triangle", vertices 0, 1, 2), each located by a walk from the
+ *    last triangle made, split in three (or in four on an edge), and the
+ *    Delaunay property restored by Lawson's flips (C. L. Lawson, "Software for
+ *    C1 surface interpolation", 1977). A batch is inserted in Hilbert order
+ *    (`detail/space_filling.hpp`), so walks are short.
+ *  - **Constraints.** A segment that is not an edge is recovered as in M. V.
+ *    Anglada, "An improved incremental algorithm for constructing restricted
+ *    Delaunay triangulations", Computers & Graphics 21(2), 1997: the
+ *    triangles it crosses are removed and the two pseudo-polygons on either
+ *    side re-triangulated, each by the vertex no other vertex of it lies in
+ *    the circle of. A segment through a vertex is split there; one that
+ *    crosses a constrained edge is refused as `SelfIntersecting`.
+ *  - **Domain.** `Classify` marks the triangles reached from the super
+ *    triangle across an odd number of constrained edges as inside (the
+ *    even-odd rule of `detail/brep_trim.hpp`'s inside test), so holes need no
+ *    orientation; a dangling segment, which makes the parity inconsistent,
+ *    is refused as `OpenLoop`.
+ *  - **Steiner points.** After `Classify`, `InsertSteiner` adds a point
+ *    strictly inside the domain and restores the constrained Delaunay
+ *    property, never flipping a constrained edge; a point outside, on a
+ *    constrained edge or on a vertex is refused.
+ *
+ * Every orientation and in-circle decision is one of the exact predicates of
+ * `detail/predicates.hpp`, and no coordinate is ever compared to another with
+ * a tolerance: a point is a duplicate only when it coincides exactly (merging
+ * near-duplicates is the caller's choice, as `cdt2d_triangulate_polygon`
+ * does). Triangles are counter-clockwise. Everything is sequential and the
+ * output depends only on the input, so it is deterministic.
+ *
+ * A **core-private** header: nothing installed names it.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace meshioplusplus {
+namespace detail {
+
+enum class Cdt2dStatus : int {
+    Ok = 0,
+    SelfIntersecting = 1,  ///< two constrained segments cross
+    OpenLoop = 2,          ///< the constraints do not bound a domain consistently
+    Degenerate = 3,        ///< too few distinct points, or a zero-area domain
+};
+
+const char* cdt2d_status_name(Cdt2dStatus Status);
+
+class Cdt2d {
+public:
+    using Vec2 = std::array<double, 2>;
+    using Tri = std::array<std::int64_t, 3>;
+
+    /// The first vertex id of an inserted point (0, 1 and 2 are the super
+    /// triangle's).
+    static constexpr std::int64_t kFirstVertex = 3;
+
+    /// A triangulation whose super triangle encloses the box, generously.
+    Cdt2d(double MinU, double MinV, double MaxU, double MaxV);
+
+    /// Insert one point; returns its vertex id, or the id of the vertex it
+    /// coincides with exactly. The point must lie in the box given at
+    /// construction (or close to it).
+    std::int64_t Insert(const Vec2& rP);
+
+    /// Insert many, in Hilbert order; the ids come back in input order.
+    std::vector<std::int64_t> InsertBatch(const std::vector<Vec2>& rPoints);
+
+    /// Make the segment between two vertices an edge and constrain it.
+    Cdt2dStatus InsertSegment(std::int64_t A, std::int64_t B);
+
+    /// Mark the inside triangles by the even-odd rule over the constraints.
+    Cdt2dStatus Classify();
+
+    /// After `Classify`: insert a point strictly inside the domain, or
+    /// return -1 (outside, on a constrained edge or on a vertex).
+    std::int64_t InsertSteiner(const Vec2& rP);
+
+    /// The inside triangles (after `Classify`), counter-clockwise, in
+    /// triangle-slot order.
+    std::vector<Tri> InsideTriangles() const;
+
+    /// Every live triangle, the super triangle's vertices included.
+    std::vector<Tri> AllTriangles() const;
+
+    /// Whether the edge between two vertices exists and is constrained.
+    bool IsConstrainedEdge(std::int64_t A, std::int64_t B) const;
+
+    const Vec2& Point(std::int64_t V) const { return mPoints[static_cast<std::size_t>(V)]; }
+    std::int64_t NumVertices() const { return static_cast<std::int64_t>(mPoints.size()); }
+
+private:
+    struct Triangle {
+        std::array<std::int64_t, 3> mV{};  ///< counter-clockwise
+        std::array<std::int64_t, 3> mN{};  ///< the neighbour across the edge opposite mV[i]
+        std::array<bool, 3> mC{};          ///< whether that edge is constrained
+        bool mInside = false;
+        bool mAlive = true;
+    };
+    struct Location {
+        std::int64_t mTri = -1;
+        int mKind = 0;  ///< 0 strictly inside, 1 on edge mIndex, 2 on vertex mVertex
+        int mIndex = -1;
+        std::int64_t mVertex = -1;
+    };
+    struct Boundary {
+        std::int64_t mFrom = -1;
+        std::int64_t mTo = -1;
+        std::int64_t mOut = -1;
+        bool mConstrained = false;
+    };
+
+    std::vector<Vec2> mPoints;
+    std::vector<Triangle> mTris;
+    std::vector<std::int64_t> mVertTri;
+    std::vector<std::int64_t> mFree;
+    std::int64_t mLast = 0;
+    std::uint64_t mWalkState = 0x9E3779B97F4A7C15ull;
+    bool mClassified = false;
+
+    Location Locate(const Vec2& rP);
+    Location LocateBruteForce(const Vec2& rP) const;
+    std::int64_t InsertAt(const Vec2& rP, const Location& rLoc, bool Inside);
+    std::vector<std::int64_t> ReplaceCavity(const std::vector<std::int64_t>& rRemoved,
+                                            const std::vector<Tri>& rNew, bool Inside);
+    void Legalize(std::vector<std::pair<std::int64_t, int>>& rStack);
+    void Flip(std::int64_t T, int E);
+    int IndexOf(std::int64_t T, std::int64_t V) const;
+    int NeighbourIndex(std::int64_t T, std::int64_t Of) const;
+    void SetConstrained(std::int64_t T, int E);
+    void TriangulatePseudoPolygon(std::int64_t A, std::int64_t B,
+                                  const std::vector<std::int64_t>& rChain,
+                                  std::vector<Tri>& rOut) const;
+    double Orient(std::int64_t A, std::int64_t B, std::int64_t C) const;
+    double Orient(std::int64_t A, std::int64_t B, const Vec2& rC) const;
+    double InCircle(std::int64_t A, std::int64_t B, std::int64_t C, std::int64_t D) const;
+};
+
+/// A polygon with holes, triangulated: `rLoops[0]` the outer boundary, the
+/// rest holes (any orientation; the even-odd rule decides the domain). Each
+/// loop is a closed polyline whose last point is not repeated.
+struct Cdt2dPolygon {
+    Cdt2dStatus mStatus = Cdt2dStatus::Ok;
+    std::string mWhy;
+    std::vector<Cdt2d::Vec2> mPoints;    ///< boundary points first, then interior ones
+    std::vector<Cdt2d::Tri> mTriangles;  ///< counter-clockwise, into mPoints
+    std::vector<std::array<std::int64_t, 2>> mSegments;  ///< the constrained boundary edges
+    std::int64_t mNumBoundary = 0;  ///< how many of mPoints are on the boundary
+};
+
+/**
+ * @brief Triangulate a polygon with holes.
+ * @param TargetSize 0 keeps the boundary as given and adds no interior point;
+ *        `h > 0` splits every boundary segment longer than `h` into equal
+ *        parts and fills the inside with an equilateral lattice of spacing
+ *        `h`, keeping only points farther than `h / 2` from the boundary
+ *        points and from every point already kept, and than `0.4 h` from
+ *        the boundary segments.
+ * @param MergeTolerance points closer than this are merged into the first
+ *        (negative: `1e-12` times the box diagonal).
+ */
+Cdt2dPolygon cdt2d_triangulate_polygon(const std::vector<std::vector<Cdt2d::Vec2>>& rLoops,
+                                       double TargetSize, double MergeTolerance = -1.0);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/cdt2d.hpp =====
 // ===== begin src/cpp/src/detail/closed_facets.hpp =====
 /**
  * @file detail/closed_facets.hpp
@@ -39030,6 +39370,644 @@ inline double drawing_number_value(std::string_view Token, const char* pFormat) 
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/drawing.hpp =====
+// ===== begin src/cpp/src/detail/iga_kernels.hpp =====
+/**
+ * @file detail/iga_kernels.hpp
+ * @brief The isogeometric kernels behind `operations/iga.hpp`: exact knot
+ * insertion and degree elevation of a tensor-product NURBS net, and its
+ * evaluation with first derivatives (The NURBS Book, algorithms A2.3, A5.4
+ * and A5.9).
+ *
+ * A net is held *homogeneous*: every control point is a row of `C` doubles
+ * `(w x, w f..., w)`, so the geometry, the weights and every NURBS field
+ * refine with one kernel and one rounding. A non-rational net drops the
+ * weight column and the weights stay exactly 1. Control nets list direction 0
+ * fastest. The arithmetic is the order the Python twin
+ * (`meshioplusplus/_iga.py`) follows, so the two give the same bits; the
+ * kernels are scalar per column, which is what lets the twin vectorise over
+ * lines and columns without changing a bit (`-ffp-contract=off`).
+ *
+ * Core-private (not installed).
+ */
+
+// System includes
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus::detail {
+
+/// A tensor-product control net in homogeneous form.
+struct IgaNet {
+    std::size_t mDim = 0;
+    std::array<int, 3> mDegrees{0, 0, 0};
+    std::array<std::vector<double>, 3> mKnots;
+    std::array<std::size_t, 3> mCounts{1, 1, 1};
+    /// Columns per control point.
+    std::size_t mColumns = 0;
+    /// `prod(mCounts)` rows of `mColumns` values, direction 0 fastest.
+    std::vector<double> mValues;
+
+    std::size_t NumPoints() const { return mCounts[0] * mCounts[1] * mCounts[2]; }
+};
+
+inline std::int64_t iga_binomial(int N, int K) {
+    if (K < 0 || K > N)
+        return 0;
+    std::int64_t r = 1;
+    for (int i = 1; i <= K; ++i)
+        r = r * (N - K + i) / i;
+    return r;
+}
+
+/// The knots of one direction that split every nonzero span in `S` equal
+/// parts (the interior ones only), ascending.
+inline std::vector<double> iga_split_knots(int P, const std::vector<double>& rKnots, int S) {
+    std::vector<double> x;
+    if (S <= 1)
+        return x;
+    const std::size_t n = rKnots.size() - static_cast<std::size_t>(P) - 1;
+    for (const std::size_t i : nurbs_spans(P, rKnots, n)) {
+        const double k0 = rKnots[i], k1 = rKnots[i + 1];
+        for (int j = 1; j < S; ++j)
+            x.push_back(k0 + (k1 - k0) * (static_cast<double>(j) / S));
+    }
+    return x;
+}
+
+/// A5.4: refine the knot vector of one curve of `C`-column control rows with
+/// the ascending knots `rX` (at least one).
+inline void iga_refine_line(int P, const std::vector<double>& rU, const double* pPw,
+                            std::size_t Count, std::size_t C, const std::vector<double>& rX,
+                            std::vector<double>& rUbar, std::vector<double>& rQw) {
+    using I = std::ptrdiff_t;
+    const I p = P, n = static_cast<I>(Count) - 1, m = n + p + 1;
+    const I r = static_cast<I>(rX.size()) - 1;
+    const I a = static_cast<I>(nurbs_find_span(P, rU, Count, rX[0]));
+    const I b = static_cast<I>(nurbs_find_span(P, rU, Count, rX[static_cast<std::size_t>(r)])) + 1;
+    rUbar.assign(static_cast<std::size_t>(m + r + 2), 0.0);
+    rQw.assign((Count + static_cast<std::size_t>(r) + 1) * C, 0.0);
+    const auto row = [C](std::vector<double>& rV, I Index) {
+        return rV.data() + static_cast<std::size_t>(Index) * C;
+    };
+    for (I j = 0; j <= a - p; ++j)
+        for (std::size_t c = 0; c < C; ++c)
+            row(rQw, j)[c] = pPw[static_cast<std::size_t>(j) * C + c];
+    for (I j = b - 1; j <= n; ++j)
+        for (std::size_t c = 0; c < C; ++c)
+            row(rQw, j + r + 1)[c] = pPw[static_cast<std::size_t>(j) * C + c];
+    for (I j = 0; j <= a; ++j)
+        rUbar[static_cast<std::size_t>(j)] = rU[static_cast<std::size_t>(j)];
+    for (I j = b + p; j <= m; ++j)
+        rUbar[static_cast<std::size_t>(j + r + 1)] = rU[static_cast<std::size_t>(j)];
+    I i = b + p - 1, k = b + p + r;
+    for (I j = r; j >= 0; --j) {
+        const double xj = rX[static_cast<std::size_t>(j)];
+        while (xj <= rU[static_cast<std::size_t>(i)] && i > a) {
+            for (std::size_t c = 0; c < C; ++c)
+                row(rQw, k - p - 1)[c] = pPw[static_cast<std::size_t>(i - p - 1) * C + c];
+            rUbar[static_cast<std::size_t>(k)] = rU[static_cast<std::size_t>(i)];
+            --k;
+            --i;
+        }
+        for (std::size_t c = 0; c < C; ++c)
+            row(rQw, k - p - 1)[c] = row(rQw, k - p)[c];
+        for (I l = 1; l <= p; ++l) {
+            const I ind = k - p + l;
+            double alfa = rUbar[static_cast<std::size_t>(k + l)] - xj;
+            if (std::fabs(alfa) == 0.0) {
+                for (std::size_t c = 0; c < C; ++c)
+                    row(rQw, ind - 1)[c] = row(rQw, ind)[c];
+            } else {
+                alfa = alfa / (rUbar[static_cast<std::size_t>(k + l)] -
+                               rU[static_cast<std::size_t>(i - p + l)]);
+                for (std::size_t c = 0; c < C; ++c)
+                    row(rQw, ind - 1)[c] =
+                        alfa * row(rQw, ind - 1)[c] + (1.0 - alfa) * row(rQw, ind)[c];
+            }
+        }
+        rUbar[static_cast<std::size_t>(k)] = xj;
+        --k;
+    }
+}
+
+/// A5.9: raise the degree of one curve of `C`-column control rows by `T`
+/// (at least one), keeping every knot's continuity.
+inline void iga_elevate_line(int P, const std::vector<double>& rU, const double* pPw,
+                             std::size_t Count, std::size_t C, int T, std::vector<double>& rUh,
+                             std::vector<double>& rQw) {
+    using I = std::ptrdiff_t;
+    const I p = P, t = T, ph = p + t, ph2 = ph / 2;
+    const I n = static_cast<I>(Count) - 1, m = n + p + 1;
+    // The distinct interior knots bound the segments: the output holds at most
+    // (Count + t * (segments + 1)) rows and that many + ph + 1 knots.
+    I distinct = 0;
+    for (I i = p + 1; i <= n; ++i)
+        if (rU[static_cast<std::size_t>(i)] != rU[static_cast<std::size_t>(i - 1)])
+            ++distinct;
+    const I max_rows = n + 1 + t * (distinct + 1);
+    rQw.assign(static_cast<std::size_t>(max_rows) * C, 0.0);
+    rUh.assign(static_cast<std::size_t>(max_rows + ph + 1), 0.0);
+    std::vector<std::vector<double>> bezalfs(
+        static_cast<std::size_t>(ph + 1),
+        std::vector<double>(static_cast<std::size_t>(p + 1), 0.0));
+    bezalfs[0][0] = 1.0;
+    bezalfs[static_cast<std::size_t>(ph)][static_cast<std::size_t>(p)] = 1.0;
+    for (I i = 1; i <= ph2; ++i) {
+        const double inv =
+            1.0 / static_cast<double>(iga_binomial(static_cast<int>(ph), static_cast<int>(i)));
+        const I mpi = std::min(p, i);
+        for (I j = std::max<I>(0, i - t); j <= mpi; ++j)
+            bezalfs[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)] =
+                inv * static_cast<double>(iga_binomial(static_cast<int>(p), static_cast<int>(j))) *
+                static_cast<double>(iga_binomial(static_cast<int>(t), static_cast<int>(i - j)));
+    }
+    for (I i = ph2 + 1; i <= ph - 1; ++i) {
+        const I mpi = std::min(p, i);
+        for (I j = std::max<I>(0, i - t); j <= mpi; ++j)
+            bezalfs[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)] =
+                bezalfs[static_cast<std::size_t>(ph - i)][static_cast<std::size_t>(p - j)];
+    }
+    std::vector<double> bpts(static_cast<std::size_t>(p + 1) * C),
+        ebpts(static_cast<std::size_t>(ph + 1) * C),
+        nextbpts(static_cast<std::size_t>(std::max<I>(p - 1, 1)) * C),
+        alfs(static_cast<std::size_t>(std::max<I>(p - 1, 1)));
+    const auto brow = [C](std::vector<double>& rV, I Index) {
+        return rV.data() + static_cast<std::size_t>(Index) * C;
+    };
+    const auto U = [&rU](I Index) { return rU[static_cast<std::size_t>(Index)]; };
+    const auto Uh = [&rUh](I Index) -> double& { return rUh[static_cast<std::size_t>(Index)]; };
+    I mh = ph, kind = ph + 1, r = -1, a = p, b = p + 1, cind = 1;
+    double ua = U(0);
+    for (std::size_t c = 0; c < C; ++c)
+        brow(rQw, 0)[c] = pPw[c];
+    for (I i = 0; i <= ph; ++i)
+        Uh(i) = ua;
+    for (I i = 0; i <= p; ++i)
+        for (std::size_t c = 0; c < C; ++c)
+            brow(bpts, i)[c] = pPw[static_cast<std::size_t>(i) * C + c];
+    while (b < m) {
+        I i = b;
+        while (b < m && U(b) == U(b + 1))
+            ++b;
+        const I mul = b - i + 1;
+        mh = mh + mul + t;
+        const double ub = U(b);
+        const I oldr = r;
+        r = p - mul;
+        const I lbz = oldr > 0 ? (oldr + 2) / 2 : 1;
+        const I rbz = r > 0 ? ph - (r + 1) / 2 : ph;
+        if (r > 0) {
+            const double numer = ub - ua;
+            for (I k = p; k > mul; --k)
+                alfs[static_cast<std::size_t>(k - mul - 1)] = numer / (U(a + k) - ua);
+            for (I j = 1; j <= r; ++j) {
+                const I save = r - j, s = mul + j;
+                for (I k = p; k >= s; --k) {
+                    const double al = alfs[static_cast<std::size_t>(k - s)];
+                    for (std::size_t c = 0; c < C; ++c)
+                        brow(bpts, k)[c] =
+                            al * brow(bpts, k)[c] + (1.0 - al) * brow(bpts, k - 1)[c];
+                }
+                for (std::size_t c = 0; c < C; ++c)
+                    brow(nextbpts, save)[c] = brow(bpts, p)[c];
+            }
+        }
+        for (I k = lbz; k <= ph; ++k) {
+            for (std::size_t c = 0; c < C; ++c)
+                brow(ebpts, k)[c] = 0.0;
+            const I mpi = std::min(p, k);
+            for (I j = std::max<I>(0, k - t); j <= mpi; ++j) {
+                const double bz = bezalfs[static_cast<std::size_t>(k)][static_cast<std::size_t>(j)];
+                for (std::size_t c = 0; c < C; ++c)
+                    brow(ebpts, k)[c] = brow(ebpts, k)[c] + bz * brow(bpts, j)[c];
+            }
+        }
+        if (oldr > 1) {
+            I first = kind - 2, last = kind;
+            const double den = ub - ua;
+            const double bet = (ub - Uh(kind - 1)) / den;
+            for (I tr = 1; tr < oldr; ++tr) {
+                I ii = first, j = last, kj = j - kind + 1;
+                while (j - ii > tr) {
+                    if (ii < cind) {
+                        const double alf = (ub - Uh(ii)) / (ua - Uh(ii));
+                        for (std::size_t c = 0; c < C; ++c)
+                            brow(rQw, ii)[c] =
+                                alf * brow(rQw, ii)[c] + (1.0 - alf) * brow(rQw, ii - 1)[c];
+                    }
+                    if (j >= lbz) {
+                        if (j - tr <= kind - ph + oldr) {
+                            const double gam = (ub - Uh(j - tr)) / den;
+                            for (std::size_t c = 0; c < C; ++c)
+                                brow(ebpts, kj)[c] =
+                                    gam * brow(ebpts, kj)[c] + (1.0 - gam) * brow(ebpts, kj + 1)[c];
+                        } else {
+                            for (std::size_t c = 0; c < C; ++c)
+                                brow(ebpts, kj)[c] =
+                                    bet * brow(ebpts, kj)[c] + (1.0 - bet) * brow(ebpts, kj + 1)[c];
+                        }
+                    }
+                    ++ii;
+                    --j;
+                    --kj;
+                }
+                --first;
+                ++last;
+            }
+        }
+        if (a != p)
+            for (I k = 0; k < ph - oldr; ++k) {
+                Uh(kind) = ua;
+                ++kind;
+            }
+        for (I j = lbz; j <= rbz; ++j) {
+            for (std::size_t c = 0; c < C; ++c)
+                brow(rQw, cind)[c] = brow(ebpts, j)[c];
+            ++cind;
+        }
+        if (b < m) {
+            for (I j = 0; j < r; ++j)
+                for (std::size_t c = 0; c < C; ++c)
+                    brow(bpts, j)[c] = brow(nextbpts, j)[c];
+            for (I j = r; j <= p; ++j)
+                for (std::size_t c = 0; c < C; ++c)
+                    brow(bpts, j)[c] = pPw[static_cast<std::size_t>(b - p + j) * C + c];
+            a = b;
+            ++b;
+            ua = ub;
+        } else {
+            for (I k = 0; k <= ph; ++k)
+                Uh(kind + k) = ub;
+        }
+    }
+    const I nh = mh - ph - 1;
+    rQw.resize(static_cast<std::size_t>(nh + 1) * C);
+    rUh.resize(static_cast<std::size_t>(nh + ph + 2));
+}
+
+/// Apply a line operation `Op(line values, count, out knots, out values)` along
+/// direction `Dir` of every line of the net.
+template <class Op>
+inline void iga_apply_direction(IgaNet& rNet, std::size_t Dir, std::size_t NewCount, Op&& rOp) {
+    const std::size_t C = rNet.mColumns;
+    std::size_t inner = 1, outer = 1;
+    for (std::size_t e = 0; e < Dir; ++e)
+        inner *= rNet.mCounts[e];
+    for (std::size_t e = Dir + 1; e < 3; ++e)
+        outer *= rNet.mCounts[e];
+    const std::size_t n = rNet.mCounts[Dir];
+    std::vector<double> out(inner * NewCount * outer * C);
+    std::vector<double> line(n * C);
+    for (std::size_t o = 0; o < outer; ++o)
+        for (std::size_t in = 0; in < inner; ++in) {
+            for (std::size_t k = 0; k < n; ++k)
+                for (std::size_t c = 0; c < C; ++c)
+                    line[k * C + c] = rNet.mValues[(in + inner * (k + n * o)) * C + c];
+            const std::vector<double>& res = rOp(line);
+            for (std::size_t k = 0; k < NewCount; ++k)
+                for (std::size_t c = 0; c < C; ++c)
+                    out[(in + inner * (k + NewCount * o)) * C + c] = res[k * C + c];
+        }
+    rNet.mValues = std::move(out);
+    rNet.mCounts[Dir] = NewCount;
+}
+
+/// Insert `rX` (ascending) into direction `Dir`'s knot vector.
+inline void iga_net_insert(IgaNet& rNet, std::size_t Dir, const std::vector<double>& rX) {
+    if (rX.empty())
+        return;
+    const int p = rNet.mDegrees[Dir];
+    const std::size_t n = rNet.mCounts[Dir];
+    const double lo = rNet.mKnots[Dir][static_cast<std::size_t>(p)], hi = rNet.mKnots[Dir][n];
+    for (std::size_t i = 0; i < rX.size(); ++i)
+        if (!(rX[i] > lo && rX[i] < hi) || (i && rX[i] < rX[i - 1]))
+            throw std::invalid_argument(
+                "meshio++: iga: knots to insert must be ascending and inside the parameter range");
+    std::vector<double> ubar, res;
+    iga_apply_direction(rNet, Dir, n + rX.size(),
+                        [&](const std::vector<double>& rLine) -> const std::vector<double>& {
+                            iga_refine_line(p, rNet.mKnots[Dir], rLine.data(), n, rNet.mColumns, rX,
+                                            ubar, res);
+                            return res;
+                        });
+    rNet.mKnots[Dir] = ubar;
+}
+
+/// Raise direction `Dir`'s degree by `T`.
+inline void iga_net_elevate(IgaNet& rNet, std::size_t Dir, int T) {
+    if (T <= 0)
+        return;
+    const int p = rNet.mDegrees[Dir];
+    const std::size_t n = rNet.mCounts[Dir];
+    std::vector<double> uh, res;
+    std::vector<double> uh_first;
+    std::size_t new_count = 0;
+    // The new count and knot vector depend on the knots only: take them from
+    // a first, zero line.
+    {
+        std::vector<double> zero(n * rNet.mColumns, 0.0);
+        iga_elevate_line(p, rNet.mKnots[Dir], zero.data(), n, rNet.mColumns, T, uh_first, res);
+        new_count = res.size() / rNet.mColumns;
+    }
+    iga_apply_direction(
+        rNet, Dir, new_count, [&](const std::vector<double>& rLine) -> const std::vector<double>& {
+            iga_elevate_line(p, rNet.mKnots[Dir], rLine.data(), n, rNet.mColumns, T, uh, res);
+            return res;
+        });
+    rNet.mKnots[Dir] = uh_first;
+    rNet.mDegrees[Dir] = p + T;
+}
+
+/// A2.3 for first derivatives: `pDers` is `(NDer + 1)` rows of `P + 1`
+/// values, row 0 the basis functions, row 1 their derivatives.
+inline void iga_basis_ders(std::size_t Span, double U, int P, int NDer,
+                           const std::vector<double>& rKnots, double* pDers) {
+    const auto p = static_cast<std::size_t>(P);
+    std::vector<double> ndu((p + 1) * (p + 1), 0.0), left(p + 1, 0.0), right(p + 1, 0.0);
+    const auto at = [p](std::size_t R, std::size_t Cc) { return R * (p + 1) + Cc; };
+    ndu[at(0, 0)] = 1.0;
+    for (std::size_t j = 1; j <= p; ++j) {
+        left[j] = U - rKnots[Span + 1 - j];
+        right[j] = rKnots[Span + j] - U;
+        double saved = 0.0;
+        for (std::size_t r = 0; r < j; ++r) {
+            ndu[at(j, r)] = right[r + 1] + left[j - r];
+            const double temp = ndu[at(r, j - 1)] / ndu[at(j, r)];
+            ndu[at(r, j)] = saved + right[r + 1] * temp;
+            saved = left[j - r] * temp;
+        }
+        ndu[at(j, j)] = saved;
+    }
+    for (std::size_t j = 0; j <= p; ++j)
+        pDers[j] = ndu[at(j, p)];
+    if (NDer < 1)
+        return;
+    // The first derivatives (A2.3 with k = 1: its inner loop is empty, and the
+    // work table's entry (0, 0) is exactly 1).
+    const double factor = static_cast<double>(P);
+    for (std::size_t r = 0; r <= p; ++r) {
+        double d = 0.0;
+        if (r >= 1)
+            d = (1.0 / ndu[at(p, r - 1)]) * ndu[at(r - 1, p - 1)];
+        if (r + 1 <= p)
+            d += (-1.0 / ndu[at(p, r)]) * ndu[at(r, p - 1)];
+        pDers[(p + 1) + r] = d;
+    }
+    for (std::size_t j = 0; j <= p; ++j)
+        pDers[(p + 1) + j] *= factor;
+}
+
+/// A tensor-product net to evaluate: `NV` columns per control point, weights
+/// optional (null: polynomial).
+struct IgaEvalNet {
+    std::size_t mDim = 0;
+    std::array<int, 3> mDegrees{0, 0, 0};
+    std::array<const std::vector<double>*, 3> mKnots{nullptr, nullptr, nullptr};
+    std::array<std::size_t, 3> mCounts{1, 1, 1};
+    const double* mValues = nullptr;
+    std::size_t mColumns = 0;
+    const double* mWeights = nullptr;
+};
+
+/// The `NV` values at the parameters `pU[0 .. dim)` in knot spans `pSpan`, and
+/// with `NDer == 1` their derivatives along each direction (`pDer`, row-major
+/// `(dim, NV)`).
+inline void iga_eval_point(const IgaEvalNet& rNet, const std::size_t* pSpan, const double* pU,
+                           int NDer, double* pOut, double* pDer) {
+    const std::size_t dim = rNet.mDim, NV = rNet.mColumns;
+    std::array<std::vector<double>, 3> ders;
+    for (std::size_t d = 0; d < dim; ++d) {
+        ders[d].assign(
+            static_cast<std::size_t>(NDer + 1) * (static_cast<std::size_t>(rNet.mDegrees[d]) + 1),
+            0.0);
+        iga_basis_ders(pSpan[d], pU[d], rNet.mDegrees[d], NDer, *rNet.mKnots[d], ders[d].data());
+    }
+    std::vector<double> acc(NV, 0.0), dacc(dim * NV, 0.0);
+    double wsum = 0.0;
+    std::array<double, 3> dwsum{0.0, 0.0, 0.0};
+    std::array<std::size_t, 3> np1{1, 1, 1}, base{0, 0, 0};
+    for (std::size_t d = 0; d < dim; ++d) {
+        np1[d] = static_cast<std::size_t>(rNet.mDegrees[d]) + 1;
+        base[d] = pSpan[d] - static_cast<std::size_t>(rNet.mDegrees[d]);
+    }
+    for (std::size_t j2 = 0; j2 < np1[2]; ++j2)
+        for (std::size_t j1 = 0; j1 < np1[1]; ++j1)
+            for (std::size_t j0 = 0; j0 < np1[0]; ++j0) {
+                const std::array<std::size_t, 3> j{j0, j1, j2};
+                const std::size_t idx =
+                    (base[0] + j0) +
+                    rNet.mCounts[0] * ((base[1] + j1) + rNet.mCounts[1] * (base[2] + j2));
+                const double w = rNet.mWeights ? rNet.mWeights[idx] : 1.0;
+                const double* v = rNet.mValues + idx * NV;
+                double b = 1.0;
+                for (std::size_t d = 0; d < dim; ++d)
+                    b *= ders[d][j[d]];
+                const double cc = w * b;
+                for (std::size_t c = 0; c < NV; ++c)
+                    acc[c] += cc * v[c];
+                wsum += cc;
+                if (NDer >= 1)
+                    for (std::size_t k = 0; k < dim; ++k) {
+                        double bk = 1.0;
+                        for (std::size_t d = 0; d < dim; ++d)
+                            bk *= d == k ? ders[d][np1[d] + j[d]] : ders[d][j[d]];
+                        const double ck = w * bk;
+                        for (std::size_t c = 0; c < NV; ++c)
+                            dacc[k * NV + c] += ck * v[c];
+                        dwsum[k] += ck;
+                    }
+            }
+    if (rNet.mWeights) {
+        for (std::size_t c = 0; c < NV; ++c)
+            pOut[c] = acc[c] / wsum;
+        if (NDer >= 1)
+            for (std::size_t k = 0; k < dim; ++k)
+                for (std::size_t c = 0; c < NV; ++c)
+                    pDer[k * NV + c] = (dacc[k * NV + c] - dwsum[k] * pOut[c]) / wsum;
+    } else {
+        for (std::size_t c = 0; c < NV; ++c)
+            pOut[c] = acc[c];
+        if (NDer >= 1)
+            for (std::size_t k = 0; k < dim; ++k)
+                for (std::size_t c = 0; c < NV; ++c)
+                    pDer[k * NV + c] = dacc[k * NV + c];
+    }
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/iga_kernels.hpp =====
+// ===== begin src/cpp/src/detail/edge_sampler.hpp =====
+/**
+ * @file detail/edge_sampler.hpp
+ * @brief Evaluating a B-rep face's surface and trimming curves, and sampling
+ * a trimmed edge once so every face that uses it shares the same 3-D points:
+ * the 1-D half of `mesh_cad_surface`.
+ *
+ *  - **Evaluation.** `BrepSurfaceEval` and `BrepCurveEval` wrap a
+ *    `NurbsPatch` and a `BrepCurve` (a trim's curve in the face's
+ *    parameters) for `detail/iga_kernels.hpp`'s rational evaluator, with
+ *    first derivatives, at any degree.
+ *  - **A trace** is one use of an edge: the face's surface composed with the
+ *    trim's curve, `X(t) = S(c(t))`, run along the loop (`mDirection`). Its
+ *    arc length is integrated with five-point Gauss-Legendre on the knot
+ *    intervals of the curve, bisected until halving changes an interval's
+ *    length by less than `1e-12` of it, and inverted by safeguarded Newton.
+ *  - **Sampling.** `edge_sample` splits a trace at its corners (the knots
+ *    where the trim is only C0, a polyline's vertices), each piece into
+ *    `max(1, ceil(L / h))` parts of equal arc length (at least
+ *    `mMinSegments` in all), then halves any
+ *    piece whose sagitta (the distance of the curve at a quarter, half and
+ *    three quarters of the piece from its chord) exceeds the chordal cap: the
+ *    "linear deflection" of OpenCASCADE's mesher. A trace shorter than the
+ *    tolerance (a pole) keeps its two ends.
+ *  - **Sharing.** `edge_project` carries a master trace's samples to another
+ *    use of the same edge (the neighbouring face, or the same face across a
+ *    seam): each point is projected onto the other trace by Gauss-Newton
+ *    from its arc-length fraction, monotonically between its neighbours. The
+ *    caller keeps the master's 3-D points and takes only the parameters (so
+ *    the faces share the points exactly); the largest residual is reported.
+ *
+ * A **core-private** header: nothing installed names it. Pure functions of
+ * their inputs; evaluators are read-only after construction, so traces of
+ * different edges may be sampled concurrently.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+
+using EdgeVec3 = std::array<double, 3>;
+using EdgeVec2 = std::array<double, 2>;
+
+/// A two-parameter `NurbsPatch` with first derivatives; parameters outside
+/// its knot range are clamped to it.
+class BrepSurfaceEval {
+public:
+    /// @throws std::invalid_argument when the patch is not a valid surface.
+    BrepSurfaceEval(const NurbsPatch& rPatch, bool Rational);
+    /// `pX` (3) and, when not null, `pSu` and `pSv` (3 each).
+    void Eval(double U, double V, double* pX, double* pSu, double* pSv) const;
+    /// The knot range: `{u0, u1, v0, v1}`.
+    const std::array<double, 4>& Box() const { return mBox; }
+
+private:
+    const NurbsPatch* pPatch = nullptr;
+    IgaEvalNet mNet;
+    std::array<std::size_t, 2> mCounts{0, 0};
+    std::array<double, 4> mBox{0, 0, 0, 0};
+};
+
+/// A `BrepCurve` (its first two coordinates are the face's parameters for a
+/// trim) with its derivative, over its active range or else its knot range.
+class BrepCurveEval {
+public:
+    /// @throws std::invalid_argument when the curve is not valid.
+    explicit BrepCurveEval(const BrepCurve& rCurve);
+    void Eval(double T, double* pX, double* pD) const;
+    double T0() const { return mT0; }
+    double T1() const { return mT1; }
+    /// The distinct knots strictly inside `(T0, T1)`, ascending.
+    const std::vector<double>& Breaks() const { return mBreaks; }
+    /// Those of them where the curve is only C0 (multiplicity at least the
+    /// degree): its corners, which a sampling must keep.
+    const std::vector<double>& Corners() const { return mCorners; }
+
+private:
+    std::int32_t mDegree = 1;
+    std::vector<double> mKnots;
+    std::vector<double> mValues;
+    std::vector<double> mWeights;
+    std::size_t mCount = 0;
+    double mT0 = 0.0;
+    double mT1 = 0.0;
+    std::vector<double> mBreaks;
+    std::vector<double> mCorners;
+    IgaEvalNet mNet;
+};
+
+/// One use of an edge: `X(t) = S(c(t))` run along the loop, with its arc
+/// length table.
+class TrimTrace {
+public:
+    TrimTrace(const BrepSurfaceEval* pSurface, BrepCurveEval Curve, bool Forward);
+    /// The curve parameters at the start and the end of the trace.
+    double Start() const { return mForward ? mCurve.T0() : mCurve.T1(); }
+    double End() const { return mForward ? mCurve.T1() : mCurve.T0(); }
+    EdgeVec2 Uv(double T) const;
+    EdgeVec3 Point(double T) const;
+    /// `dX / dt`.
+    EdgeVec3 Velocity(double T) const;
+    double Length() const { return mCum.empty() ? 0.0 : mCum.back(); }
+    /// The parameter at arc length `L` from the start (clamped to the trace).
+    double ParamAtLength(double L) const;
+    /// The arc lengths of the curve's corners from the start, ascending.
+    std::vector<double> CornerLengths() const;
+    const BrepSurfaceEval& Surface() const { return *pSurface; }
+
+private:
+    const BrepSurfaceEval* pSurface = nullptr;
+    BrepCurveEval mCurve;
+    bool mForward = true;
+    std::vector<double> mT;    ///< table parameters, in trace order
+    std::vector<double> mCum;  ///< arc length from the start at each
+
+    double Speed(double T) const;
+    double Gauss(double A, double B) const;
+    void Refine(double A, double B, double Whole, double La, int Depth, std::vector<double>& rT,
+                std::vector<double>& rL) const;
+};
+
+struct EdgeSampleOptions {
+    double mTargetSize = 0.0;              ///< h > 0
+    double mMaxChordalDeviation = 0.0;     ///< 0: off
+    std::int64_t mMinSegments = 1;         ///< at least this many pieces
+    double mTolerance = 0.0;               ///< a trace this short is degenerate
+    std::int64_t mMaxSegments = 10000000;  ///< refused (std::length_error) above
+};
+
+struct EdgeSamples {
+    std::vector<double> mParams;     ///< curve parameters, start to end, ends included
+    std::vector<EdgeVec3> mPoints;   ///< `X` at each
+    std::vector<double> mFractions;  ///< arc-length fraction of each, 0 to 1
+    double mLength = 0.0;
+    bool mDegenerate = false;  ///< shorter than the tolerance: its two ends only
+};
+
+EdgeSamples edge_sample(const TrimTrace& rTrace, const EdgeSampleOptions& rOptions);
+
+/// Whether two traces of one edge run the same way (compared at both ends and
+/// at a quarter and three quarters of their lengths).
+bool edge_same_direction(const TrimTrace& rA, const TrimTrace& rB);
+
+struct EdgeProjection {
+    std::vector<double> mParams;  ///< on the other trace, in its own order
+    double mMaxGap = 0.0;         ///< the largest distance from a sample to the other trace
+};
+
+/// Carry a master's samples to another trace of the same edge; `SameDirection`
+/// as `edge_same_direction` says. The ends map to the other trace's ends.
+EdgeProjection edge_project(const TrimTrace& rOther, const EdgeSamples& rMaster,
+                            bool SameDirection);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/edge_sampler.hpp =====
 // ===== begin src/cpp/src/detail/feature_fit.hpp =====
 /**
  * @file feature_fit.hpp
@@ -39882,480 +40860,6 @@ HexUntangleReport hex_untangle(std::vector<Vec3>& rPoints,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/hex_fit.hpp =====
-// ===== begin src/cpp/src/detail/iga_kernels.hpp =====
-/**
- * @file detail/iga_kernels.hpp
- * @brief The isogeometric kernels behind `operations/iga.hpp`: exact knot
- * insertion and degree elevation of a tensor-product NURBS net, and its
- * evaluation with first derivatives (The NURBS Book, algorithms A2.3, A5.4
- * and A5.9).
- *
- * A net is held *homogeneous*: every control point is a row of `C` doubles
- * `(w x, w f..., w)`, so the geometry, the weights and every NURBS field
- * refine with one kernel and one rounding. A non-rational net drops the
- * weight column and the weights stay exactly 1. Control nets list direction 0
- * fastest. The arithmetic is the order the Python twin
- * (`meshioplusplus/_iga.py`) follows, so the two give the same bits; the
- * kernels are scalar per column, which is what lets the twin vectorise over
- * lines and columns without changing a bit (`-ffp-contract=off`).
- *
- * Core-private (not installed).
- */
-
-// System includes
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstddef>
-#include <cstdint>
-#include <stdexcept>
-#include <string>
-#include <vector>
-
-// Project includes (private, not installed)
-
-namespace meshioplusplus::detail {
-
-/// A tensor-product control net in homogeneous form.
-struct IgaNet {
-    std::size_t mDim = 0;
-    std::array<int, 3> mDegrees{0, 0, 0};
-    std::array<std::vector<double>, 3> mKnots;
-    std::array<std::size_t, 3> mCounts{1, 1, 1};
-    /// Columns per control point.
-    std::size_t mColumns = 0;
-    /// `prod(mCounts)` rows of `mColumns` values, direction 0 fastest.
-    std::vector<double> mValues;
-
-    std::size_t NumPoints() const { return mCounts[0] * mCounts[1] * mCounts[2]; }
-};
-
-inline std::int64_t iga_binomial(int N, int K) {
-    if (K < 0 || K > N)
-        return 0;
-    std::int64_t r = 1;
-    for (int i = 1; i <= K; ++i)
-        r = r * (N - K + i) / i;
-    return r;
-}
-
-/// The knots of one direction that split every nonzero span in `S` equal
-/// parts (the interior ones only), ascending.
-inline std::vector<double> iga_split_knots(int P, const std::vector<double>& rKnots, int S) {
-    std::vector<double> x;
-    if (S <= 1)
-        return x;
-    const std::size_t n = rKnots.size() - static_cast<std::size_t>(P) - 1;
-    for (const std::size_t i : nurbs_spans(P, rKnots, n)) {
-        const double k0 = rKnots[i], k1 = rKnots[i + 1];
-        for (int j = 1; j < S; ++j)
-            x.push_back(k0 + (k1 - k0) * (static_cast<double>(j) / S));
-    }
-    return x;
-}
-
-/// A5.4: refine the knot vector of one curve of `C`-column control rows with
-/// the ascending knots `rX` (at least one).
-inline void iga_refine_line(int P, const std::vector<double>& rU, const double* pPw,
-                            std::size_t Count, std::size_t C, const std::vector<double>& rX,
-                            std::vector<double>& rUbar, std::vector<double>& rQw) {
-    using I = std::ptrdiff_t;
-    const I p = P, n = static_cast<I>(Count) - 1, m = n + p + 1;
-    const I r = static_cast<I>(rX.size()) - 1;
-    const I a = static_cast<I>(nurbs_find_span(P, rU, Count, rX[0]));
-    const I b = static_cast<I>(nurbs_find_span(P, rU, Count, rX[static_cast<std::size_t>(r)])) + 1;
-    rUbar.assign(static_cast<std::size_t>(m + r + 2), 0.0);
-    rQw.assign((Count + static_cast<std::size_t>(r) + 1) * C, 0.0);
-    const auto row = [C](std::vector<double>& rV, I Index) {
-        return rV.data() + static_cast<std::size_t>(Index) * C;
-    };
-    for (I j = 0; j <= a - p; ++j)
-        for (std::size_t c = 0; c < C; ++c)
-            row(rQw, j)[c] = pPw[static_cast<std::size_t>(j) * C + c];
-    for (I j = b - 1; j <= n; ++j)
-        for (std::size_t c = 0; c < C; ++c)
-            row(rQw, j + r + 1)[c] = pPw[static_cast<std::size_t>(j) * C + c];
-    for (I j = 0; j <= a; ++j)
-        rUbar[static_cast<std::size_t>(j)] = rU[static_cast<std::size_t>(j)];
-    for (I j = b + p; j <= m; ++j)
-        rUbar[static_cast<std::size_t>(j + r + 1)] = rU[static_cast<std::size_t>(j)];
-    I i = b + p - 1, k = b + p + r;
-    for (I j = r; j >= 0; --j) {
-        const double xj = rX[static_cast<std::size_t>(j)];
-        while (xj <= rU[static_cast<std::size_t>(i)] && i > a) {
-            for (std::size_t c = 0; c < C; ++c)
-                row(rQw, k - p - 1)[c] = pPw[static_cast<std::size_t>(i - p - 1) * C + c];
-            rUbar[static_cast<std::size_t>(k)] = rU[static_cast<std::size_t>(i)];
-            --k;
-            --i;
-        }
-        for (std::size_t c = 0; c < C; ++c)
-            row(rQw, k - p - 1)[c] = row(rQw, k - p)[c];
-        for (I l = 1; l <= p; ++l) {
-            const I ind = k - p + l;
-            double alfa = rUbar[static_cast<std::size_t>(k + l)] - xj;
-            if (std::fabs(alfa) == 0.0) {
-                for (std::size_t c = 0; c < C; ++c)
-                    row(rQw, ind - 1)[c] = row(rQw, ind)[c];
-            } else {
-                alfa = alfa / (rUbar[static_cast<std::size_t>(k + l)] -
-                               rU[static_cast<std::size_t>(i - p + l)]);
-                for (std::size_t c = 0; c < C; ++c)
-                    row(rQw, ind - 1)[c] =
-                        alfa * row(rQw, ind - 1)[c] + (1.0 - alfa) * row(rQw, ind)[c];
-            }
-        }
-        rUbar[static_cast<std::size_t>(k)] = xj;
-        --k;
-    }
-}
-
-/// A5.9: raise the degree of one curve of `C`-column control rows by `T`
-/// (at least one), keeping every knot's continuity.
-inline void iga_elevate_line(int P, const std::vector<double>& rU, const double* pPw,
-                             std::size_t Count, std::size_t C, int T, std::vector<double>& rUh,
-                             std::vector<double>& rQw) {
-    using I = std::ptrdiff_t;
-    const I p = P, t = T, ph = p + t, ph2 = ph / 2;
-    const I n = static_cast<I>(Count) - 1, m = n + p + 1;
-    // The distinct interior knots bound the segments: the output holds at most
-    // (Count + t * (segments + 1)) rows and that many + ph + 1 knots.
-    I distinct = 0;
-    for (I i = p + 1; i <= n; ++i)
-        if (rU[static_cast<std::size_t>(i)] != rU[static_cast<std::size_t>(i - 1)])
-            ++distinct;
-    const I max_rows = n + 1 + t * (distinct + 1);
-    rQw.assign(static_cast<std::size_t>(max_rows) * C, 0.0);
-    rUh.assign(static_cast<std::size_t>(max_rows + ph + 1), 0.0);
-    std::vector<std::vector<double>> bezalfs(
-        static_cast<std::size_t>(ph + 1),
-        std::vector<double>(static_cast<std::size_t>(p + 1), 0.0));
-    bezalfs[0][0] = 1.0;
-    bezalfs[static_cast<std::size_t>(ph)][static_cast<std::size_t>(p)] = 1.0;
-    for (I i = 1; i <= ph2; ++i) {
-        const double inv =
-            1.0 / static_cast<double>(iga_binomial(static_cast<int>(ph), static_cast<int>(i)));
-        const I mpi = std::min(p, i);
-        for (I j = std::max<I>(0, i - t); j <= mpi; ++j)
-            bezalfs[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)] =
-                inv * static_cast<double>(iga_binomial(static_cast<int>(p), static_cast<int>(j))) *
-                static_cast<double>(iga_binomial(static_cast<int>(t), static_cast<int>(i - j)));
-    }
-    for (I i = ph2 + 1; i <= ph - 1; ++i) {
-        const I mpi = std::min(p, i);
-        for (I j = std::max<I>(0, i - t); j <= mpi; ++j)
-            bezalfs[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)] =
-                bezalfs[static_cast<std::size_t>(ph - i)][static_cast<std::size_t>(p - j)];
-    }
-    std::vector<double> bpts(static_cast<std::size_t>(p + 1) * C),
-        ebpts(static_cast<std::size_t>(ph + 1) * C),
-        nextbpts(static_cast<std::size_t>(std::max<I>(p - 1, 1)) * C),
-        alfs(static_cast<std::size_t>(std::max<I>(p - 1, 1)));
-    const auto brow = [C](std::vector<double>& rV, I Index) {
-        return rV.data() + static_cast<std::size_t>(Index) * C;
-    };
-    const auto U = [&rU](I Index) { return rU[static_cast<std::size_t>(Index)]; };
-    const auto Uh = [&rUh](I Index) -> double& { return rUh[static_cast<std::size_t>(Index)]; };
-    I mh = ph, kind = ph + 1, r = -1, a = p, b = p + 1, cind = 1;
-    double ua = U(0);
-    for (std::size_t c = 0; c < C; ++c)
-        brow(rQw, 0)[c] = pPw[c];
-    for (I i = 0; i <= ph; ++i)
-        Uh(i) = ua;
-    for (I i = 0; i <= p; ++i)
-        for (std::size_t c = 0; c < C; ++c)
-            brow(bpts, i)[c] = pPw[static_cast<std::size_t>(i) * C + c];
-    while (b < m) {
-        I i = b;
-        while (b < m && U(b) == U(b + 1))
-            ++b;
-        const I mul = b - i + 1;
-        mh = mh + mul + t;
-        const double ub = U(b);
-        const I oldr = r;
-        r = p - mul;
-        const I lbz = oldr > 0 ? (oldr + 2) / 2 : 1;
-        const I rbz = r > 0 ? ph - (r + 1) / 2 : ph;
-        if (r > 0) {
-            const double numer = ub - ua;
-            for (I k = p; k > mul; --k)
-                alfs[static_cast<std::size_t>(k - mul - 1)] = numer / (U(a + k) - ua);
-            for (I j = 1; j <= r; ++j) {
-                const I save = r - j, s = mul + j;
-                for (I k = p; k >= s; --k) {
-                    const double al = alfs[static_cast<std::size_t>(k - s)];
-                    for (std::size_t c = 0; c < C; ++c)
-                        brow(bpts, k)[c] =
-                            al * brow(bpts, k)[c] + (1.0 - al) * brow(bpts, k - 1)[c];
-                }
-                for (std::size_t c = 0; c < C; ++c)
-                    brow(nextbpts, save)[c] = brow(bpts, p)[c];
-            }
-        }
-        for (I k = lbz; k <= ph; ++k) {
-            for (std::size_t c = 0; c < C; ++c)
-                brow(ebpts, k)[c] = 0.0;
-            const I mpi = std::min(p, k);
-            for (I j = std::max<I>(0, k - t); j <= mpi; ++j) {
-                const double bz = bezalfs[static_cast<std::size_t>(k)][static_cast<std::size_t>(j)];
-                for (std::size_t c = 0; c < C; ++c)
-                    brow(ebpts, k)[c] = brow(ebpts, k)[c] + bz * brow(bpts, j)[c];
-            }
-        }
-        if (oldr > 1) {
-            I first = kind - 2, last = kind;
-            const double den = ub - ua;
-            const double bet = (ub - Uh(kind - 1)) / den;
-            for (I tr = 1; tr < oldr; ++tr) {
-                I ii = first, j = last, kj = j - kind + 1;
-                while (j - ii > tr) {
-                    if (ii < cind) {
-                        const double alf = (ub - Uh(ii)) / (ua - Uh(ii));
-                        for (std::size_t c = 0; c < C; ++c)
-                            brow(rQw, ii)[c] =
-                                alf * brow(rQw, ii)[c] + (1.0 - alf) * brow(rQw, ii - 1)[c];
-                    }
-                    if (j >= lbz) {
-                        if (j - tr <= kind - ph + oldr) {
-                            const double gam = (ub - Uh(j - tr)) / den;
-                            for (std::size_t c = 0; c < C; ++c)
-                                brow(ebpts, kj)[c] =
-                                    gam * brow(ebpts, kj)[c] + (1.0 - gam) * brow(ebpts, kj + 1)[c];
-                        } else {
-                            for (std::size_t c = 0; c < C; ++c)
-                                brow(ebpts, kj)[c] =
-                                    bet * brow(ebpts, kj)[c] + (1.0 - bet) * brow(ebpts, kj + 1)[c];
-                        }
-                    }
-                    ++ii;
-                    --j;
-                    --kj;
-                }
-                --first;
-                ++last;
-            }
-        }
-        if (a != p)
-            for (I k = 0; k < ph - oldr; ++k) {
-                Uh(kind) = ua;
-                ++kind;
-            }
-        for (I j = lbz; j <= rbz; ++j) {
-            for (std::size_t c = 0; c < C; ++c)
-                brow(rQw, cind)[c] = brow(ebpts, j)[c];
-            ++cind;
-        }
-        if (b < m) {
-            for (I j = 0; j < r; ++j)
-                for (std::size_t c = 0; c < C; ++c)
-                    brow(bpts, j)[c] = brow(nextbpts, j)[c];
-            for (I j = r; j <= p; ++j)
-                for (std::size_t c = 0; c < C; ++c)
-                    brow(bpts, j)[c] = pPw[static_cast<std::size_t>(b - p + j) * C + c];
-            a = b;
-            ++b;
-            ua = ub;
-        } else {
-            for (I k = 0; k <= ph; ++k)
-                Uh(kind + k) = ub;
-        }
-    }
-    const I nh = mh - ph - 1;
-    rQw.resize(static_cast<std::size_t>(nh + 1) * C);
-    rUh.resize(static_cast<std::size_t>(nh + ph + 2));
-}
-
-/// Apply a line operation `Op(line values, count, out knots, out values)` along
-/// direction `Dir` of every line of the net.
-template <class Op>
-inline void iga_apply_direction(IgaNet& rNet, std::size_t Dir, std::size_t NewCount, Op&& rOp) {
-    const std::size_t C = rNet.mColumns;
-    std::size_t inner = 1, outer = 1;
-    for (std::size_t e = 0; e < Dir; ++e)
-        inner *= rNet.mCounts[e];
-    for (std::size_t e = Dir + 1; e < 3; ++e)
-        outer *= rNet.mCounts[e];
-    const std::size_t n = rNet.mCounts[Dir];
-    std::vector<double> out(inner * NewCount * outer * C);
-    std::vector<double> line(n * C);
-    for (std::size_t o = 0; o < outer; ++o)
-        for (std::size_t in = 0; in < inner; ++in) {
-            for (std::size_t k = 0; k < n; ++k)
-                for (std::size_t c = 0; c < C; ++c)
-                    line[k * C + c] = rNet.mValues[(in + inner * (k + n * o)) * C + c];
-            const std::vector<double>& res = rOp(line);
-            for (std::size_t k = 0; k < NewCount; ++k)
-                for (std::size_t c = 0; c < C; ++c)
-                    out[(in + inner * (k + NewCount * o)) * C + c] = res[k * C + c];
-        }
-    rNet.mValues = std::move(out);
-    rNet.mCounts[Dir] = NewCount;
-}
-
-/// Insert `rX` (ascending) into direction `Dir`'s knot vector.
-inline void iga_net_insert(IgaNet& rNet, std::size_t Dir, const std::vector<double>& rX) {
-    if (rX.empty())
-        return;
-    const int p = rNet.mDegrees[Dir];
-    const std::size_t n = rNet.mCounts[Dir];
-    const double lo = rNet.mKnots[Dir][static_cast<std::size_t>(p)], hi = rNet.mKnots[Dir][n];
-    for (std::size_t i = 0; i < rX.size(); ++i)
-        if (!(rX[i] > lo && rX[i] < hi) || (i && rX[i] < rX[i - 1]))
-            throw std::invalid_argument(
-                "meshio++: iga: knots to insert must be ascending and inside the parameter range");
-    std::vector<double> ubar, res;
-    iga_apply_direction(rNet, Dir, n + rX.size(),
-                        [&](const std::vector<double>& rLine) -> const std::vector<double>& {
-                            iga_refine_line(p, rNet.mKnots[Dir], rLine.data(), n, rNet.mColumns, rX,
-                                            ubar, res);
-                            return res;
-                        });
-    rNet.mKnots[Dir] = ubar;
-}
-
-/// Raise direction `Dir`'s degree by `T`.
-inline void iga_net_elevate(IgaNet& rNet, std::size_t Dir, int T) {
-    if (T <= 0)
-        return;
-    const int p = rNet.mDegrees[Dir];
-    const std::size_t n = rNet.mCounts[Dir];
-    std::vector<double> uh, res;
-    std::vector<double> uh_first;
-    std::size_t new_count = 0;
-    // The new count and knot vector depend on the knots only: take them from
-    // a first, zero line.
-    {
-        std::vector<double> zero(n * rNet.mColumns, 0.0);
-        iga_elevate_line(p, rNet.mKnots[Dir], zero.data(), n, rNet.mColumns, T, uh_first, res);
-        new_count = res.size() / rNet.mColumns;
-    }
-    iga_apply_direction(
-        rNet, Dir, new_count, [&](const std::vector<double>& rLine) -> const std::vector<double>& {
-            iga_elevate_line(p, rNet.mKnots[Dir], rLine.data(), n, rNet.mColumns, T, uh, res);
-            return res;
-        });
-    rNet.mKnots[Dir] = uh_first;
-    rNet.mDegrees[Dir] = p + T;
-}
-
-/// A2.3 for first derivatives: `pDers` is `(NDer + 1)` rows of `P + 1`
-/// values, row 0 the basis functions, row 1 their derivatives.
-inline void iga_basis_ders(std::size_t Span, double U, int P, int NDer,
-                           const std::vector<double>& rKnots, double* pDers) {
-    const auto p = static_cast<std::size_t>(P);
-    std::vector<double> ndu((p + 1) * (p + 1), 0.0), left(p + 1, 0.0), right(p + 1, 0.0);
-    const auto at = [p](std::size_t R, std::size_t Cc) { return R * (p + 1) + Cc; };
-    ndu[at(0, 0)] = 1.0;
-    for (std::size_t j = 1; j <= p; ++j) {
-        left[j] = U - rKnots[Span + 1 - j];
-        right[j] = rKnots[Span + j] - U;
-        double saved = 0.0;
-        for (std::size_t r = 0; r < j; ++r) {
-            ndu[at(j, r)] = right[r + 1] + left[j - r];
-            const double temp = ndu[at(r, j - 1)] / ndu[at(j, r)];
-            ndu[at(r, j)] = saved + right[r + 1] * temp;
-            saved = left[j - r] * temp;
-        }
-        ndu[at(j, j)] = saved;
-    }
-    for (std::size_t j = 0; j <= p; ++j)
-        pDers[j] = ndu[at(j, p)];
-    if (NDer < 1)
-        return;
-    // The first derivatives (A2.3 with k = 1: its inner loop is empty, and the
-    // work table's entry (0, 0) is exactly 1).
-    const double factor = static_cast<double>(P);
-    for (std::size_t r = 0; r <= p; ++r) {
-        double d = 0.0;
-        if (r >= 1)
-            d = (1.0 / ndu[at(p, r - 1)]) * ndu[at(r - 1, p - 1)];
-        if (r + 1 <= p)
-            d += (-1.0 / ndu[at(p, r)]) * ndu[at(r, p - 1)];
-        pDers[(p + 1) + r] = d;
-    }
-    for (std::size_t j = 0; j <= p; ++j)
-        pDers[(p + 1) + j] *= factor;
-}
-
-/// A tensor-product net to evaluate: `NV` columns per control point, weights
-/// optional (null: polynomial).
-struct IgaEvalNet {
-    std::size_t mDim = 0;
-    std::array<int, 3> mDegrees{0, 0, 0};
-    std::array<const std::vector<double>*, 3> mKnots{nullptr, nullptr, nullptr};
-    std::array<std::size_t, 3> mCounts{1, 1, 1};
-    const double* mValues = nullptr;
-    std::size_t mColumns = 0;
-    const double* mWeights = nullptr;
-};
-
-/// The `NV` values at the parameters `pU[0 .. dim)` in knot spans `pSpan`, and
-/// with `NDer == 1` their derivatives along each direction (`pDer`, row-major
-/// `(dim, NV)`).
-inline void iga_eval_point(const IgaEvalNet& rNet, const std::size_t* pSpan, const double* pU,
-                           int NDer, double* pOut, double* pDer) {
-    const std::size_t dim = rNet.mDim, NV = rNet.mColumns;
-    std::array<std::vector<double>, 3> ders;
-    for (std::size_t d = 0; d < dim; ++d) {
-        ders[d].assign(
-            static_cast<std::size_t>(NDer + 1) * (static_cast<std::size_t>(rNet.mDegrees[d]) + 1),
-            0.0);
-        iga_basis_ders(pSpan[d], pU[d], rNet.mDegrees[d], NDer, *rNet.mKnots[d], ders[d].data());
-    }
-    std::vector<double> acc(NV, 0.0), dacc(dim * NV, 0.0);
-    double wsum = 0.0;
-    std::array<double, 3> dwsum{0.0, 0.0, 0.0};
-    std::array<std::size_t, 3> np1{1, 1, 1}, base{0, 0, 0};
-    for (std::size_t d = 0; d < dim; ++d) {
-        np1[d] = static_cast<std::size_t>(rNet.mDegrees[d]) + 1;
-        base[d] = pSpan[d] - static_cast<std::size_t>(rNet.mDegrees[d]);
-    }
-    for (std::size_t j2 = 0; j2 < np1[2]; ++j2)
-        for (std::size_t j1 = 0; j1 < np1[1]; ++j1)
-            for (std::size_t j0 = 0; j0 < np1[0]; ++j0) {
-                const std::array<std::size_t, 3> j{j0, j1, j2};
-                const std::size_t idx =
-                    (base[0] + j0) +
-                    rNet.mCounts[0] * ((base[1] + j1) + rNet.mCounts[1] * (base[2] + j2));
-                const double w = rNet.mWeights ? rNet.mWeights[idx] : 1.0;
-                const double* v = rNet.mValues + idx * NV;
-                double b = 1.0;
-                for (std::size_t d = 0; d < dim; ++d)
-                    b *= ders[d][j[d]];
-                const double cc = w * b;
-                for (std::size_t c = 0; c < NV; ++c)
-                    acc[c] += cc * v[c];
-                wsum += cc;
-                if (NDer >= 1)
-                    for (std::size_t k = 0; k < dim; ++k) {
-                        double bk = 1.0;
-                        for (std::size_t d = 0; d < dim; ++d)
-                            bk *= d == k ? ders[d][np1[d] + j[d]] : ders[d][j[d]];
-                        const double ck = w * bk;
-                        for (std::size_t c = 0; c < NV; ++c)
-                            dacc[k * NV + c] += ck * v[c];
-                        dwsum[k] += ck;
-                    }
-            }
-    if (rNet.mWeights) {
-        for (std::size_t c = 0; c < NV; ++c)
-            pOut[c] = acc[c] / wsum;
-        if (NDer >= 1)
-            for (std::size_t k = 0; k < dim; ++k)
-                for (std::size_t c = 0; c < NV; ++c)
-                    pDer[k * NV + c] = (dacc[k * NV + c] - dwsum[k] * pOut[c]) / wsum;
-    } else {
-        for (std::size_t c = 0; c < NV; ++c)
-            pOut[c] = acc[c];
-        if (NDer >= 1)
-            for (std::size_t k = 0; k < dim; ++k)
-                for (std::size_t c = 0; c < NV; ++c)
-                    pDer[k * NV + c] = dacc[k * NV + c];
-    }
-}
-
-}  // namespace meshioplusplus::detail
-// ===== end src/cpp/src/detail/iga_kernels.hpp =====
 // ===== begin src/cpp/src/detail/isosurface_stuffing.hpp =====
 /**
  * @file detail/isosurface_stuffing.hpp
@@ -41544,6 +42048,75 @@ inline std::vector<PolyhedronGroup> group_polyhedra_by_node_count(
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/polyhedron_groups.hpp =====
+// ===== begin src/cpp/src/detail/predicates.hpp =====
+/**
+ * @file detail/predicates.hpp
+ * @brief Robust geometric predicates: the exact sign of `orient2d`,
+ * `incircle`, `orient3d` and `insphere` for any finite double input, used by
+ * the constrained Delaunay triangulation of `detail/cdt2d` (`mesh_cad_surface`).
+ *
+ * The method is J. R. Shewchuk's, "Adaptive Precision Floating-Point
+ * Arithmetic and Fast Robust Geometric Predicates", Discrete & Computational
+ * Geometry 18(3), 1997, whose reference code is in the public domain:
+ *
+ *  - **A filter.** Each determinant is first evaluated in plain floating
+ *    point together with its permanent (the same expression on absolute
+ *    values); when `|det|` exceeds the paper's a-priori bound (stage A:
+ *    `(3 + 16ε)ε`, `(10 + 96ε)ε`, `(7 + 56ε)ε` and `(16 + 224ε)ε` times the
+ *    permanent) its sign is certain and is returned at once.
+ *  - **Exact evaluation.** Otherwise the coordinate differences are formed
+ *    exactly as two-term expansions (`two_diff`) and the determinant is
+ *    evaluated exactly in expansion arithmetic (`two_sum`, `two_product` by
+ *    Dekker's split, zero-eliminating expansion sums and scalings, sections
+ *    2.4-2.8 of the paper). Its largest component has the sign of the exact
+ *    value. The paper's intermediate adaptive stages (B, C) are folded into
+ *    this exact stage: the answer is the same, at some cost on inputs that
+ *    are near-degenerate.
+ *
+ * This is a re-implementation from the paper, not a copy of `predicates.c`.
+ * It needs IEEE-754 binary64 with round-to-nearest-even (checked at compile
+ * time). Floating-point contraction is switched off inside `predicates.cpp`
+ * (GCC's `optimize` pragma, clang's `fp contract(off)`; the core is built
+ * with `-ffp-contract=off` anyway), so a single-header consumer compiled with
+ * `-mfma` gets the arithmetic the paper analyses. The design does not depend
+ * on it: the exact stage multiplies only half-width operands, whose products
+ * are exact fused or not, and a fused evaluation of a filter has fewer
+ * roundings than the bound allows for; `test_predicates.cpp` passes built
+ * with `-mfma -ffp-contract=fast`, which clang applies over the pragma.
+ * Overflow and underflow of the intermediate products are outside the
+ * guarantee, as in the paper.
+ *
+ * Each predicate returns a value whose **sign** is exact and whose magnitude
+ * approximates the determinant:
+ *
+ *  - `orient2d(a, b, c)` > 0 when `a, b, c` turn counter-clockwise;
+ *  - `incircle(a, b, c, d)` > 0 when `d` lies inside the circle through the
+ *    counter-clockwise `a, b, c`;
+ *  - `orient3d(a, b, c, d)` > 0 when `d` lies below the plane of `a, b, c`
+ *    (those counter-clockwise seen from above), Shewchuk's convention;
+ *  - `insphere(a, b, c, d, e)` > 0 when `e` lies inside the sphere through
+ *    `a, b, c, d` with `orient3d(a, b, c, d)` > 0.
+ *
+ * A **core-private** header: nothing installed names it. Pure functions with
+ * no state, so safe from any thread.
+ */
+
+namespace meshioplusplus {
+namespace detail {
+
+double orient2d(const double* pA, const double* pB, const double* pC);
+double incircle(const double* pA, const double* pB, const double* pC, const double* pD);
+double orient3d(const double* pA, const double* pB, const double* pC, const double* pD);
+double insphere(const double* pA, const double* pB, const double* pC, const double* pD,
+                const double* pE);
+
+/// The exact-stage arithmetic, exposed for its own tests: `x + y == a * b`
+/// exactly, `x` the rounded product.
+void predicates_two_product(double A, double B, double& rX, double& rY);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/predicates.hpp =====
 // ===== begin src/cpp/src/detail/primitive_geom.hpp =====
 /**
  * @file detail/primitive_geom.hpp
@@ -63838,6 +64411,928 @@ double bspline_project(const BsplineSurface& rS, const double* pP, double& rU, d
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/bspline_lsq.cpp =====
+// ===== begin src/cpp/src/detail/cdt2d.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+constexpr int cdt2d_next(int I) {
+    return I == 2 ? 0 : I + 1;
+}
+constexpr int cdt2d_prev(int I) {
+    return I == 0 ? 2 : I - 1;
+}
+
+[[noreturn]] void cdt2d_internal(const char* pWhat) {
+    throw std::logic_error(std::string("meshio++: cdt2d: internal error: ") + pWhat);
+}
+
+/// A uniform hash grid of 2-D points for the merge and spacing tests.
+class Cdt2dGrid {
+public:
+    Cdt2dGrid(double MinU, double MinV, double Cell) : mU0(MinU), mV0(MinV), mCell(Cell) {}
+    std::int64_t Key(double U, double V) const {
+        const auto i = static_cast<std::int64_t>(std::floor((U - mU0) / mCell));
+        const auto j = static_cast<std::int64_t>(std::floor((V - mV0) / mCell));
+        return (i << 32) ^ (j & 0xffffffffll);
+    }
+    std::pair<std::int64_t, std::int64_t> Cell(double U, double V) const {
+        return {static_cast<std::int64_t>(std::floor((U - mU0) / mCell)),
+                static_cast<std::int64_t>(std::floor((V - mV0) / mCell))};
+    }
+    static std::int64_t Join(std::int64_t I, std::int64_t J) {
+        return (I << 32) ^ (J & 0xffffffffll);
+    }
+    void Add(double U, double V, std::int64_t Id) { mCells[Key(U, V)].push_back(Id); }
+    const std::vector<std::int64_t>* At(std::int64_t K) const {
+        const auto it = mCells.find(K);
+        return it == mCells.end() ? nullptr : &it->second;
+    }
+
+private:
+    double mU0;
+    double mV0;
+    double mCell;
+    std::unordered_map<std::int64_t, std::vector<std::int64_t>> mCells;
+};
+
+double cdt2d_segment_distance2(const Cdt2d::Vec2& rP, const Cdt2d::Vec2& rA,
+                               const Cdt2d::Vec2& rB) {
+    const double dx = rB[0] - rA[0];
+    const double dy = rB[1] - rA[1];
+    const double len2 = dx * dx + dy * dy;
+    double t = 0.0;
+    if (len2 > 0.0)
+        t = std::clamp(((rP[0] - rA[0]) * dx + (rP[1] - rA[1]) * dy) / len2, 0.0, 1.0);
+    const double ex = rA[0] + t * dx - rP[0];
+    const double ey = rA[1] + t * dy - rP[1];
+    return ex * ex + ey * ey;
+}
+
+}  // namespace
+
+const char* cdt2d_status_name(Cdt2dStatus Status) {
+    switch (Status) {
+        case Cdt2dStatus::Ok:
+            return "ok";
+        case Cdt2dStatus::SelfIntersecting:
+            return "self-intersecting boundary";
+        case Cdt2dStatus::OpenLoop:
+            return "open boundary loop";
+        case Cdt2dStatus::Degenerate:
+            return "degenerate domain";
+    }
+    return "unknown";
+}
+
+Cdt2d::Cdt2d(double MinU, double MinV, double MaxU, double MaxV) {
+    const double cu = 0.5 * (MinU + MaxU);
+    const double cv = 0.5 * (MinV + MaxV);
+    double m = std::max(MaxU - MinU, MaxV - MinV);
+    if (!(m > 0.0) || !std::isfinite(m))
+        m = std::max({1.0, std::fabs(cu), std::fabs(cv)});
+    const double r = 32.0 * m;
+    mPoints = {{cu - r, cv - r}, {cu + r, cv - r}, {cu, cv + r}};
+    Triangle t;
+    t.mV = {0, 1, 2};
+    t.mN = {-1, -1, -1};
+    t.mC = {false, false, false};
+    mTris.push_back(t);
+    mVertTri = {0, 0, 0};
+}
+
+double Cdt2d::Orient(std::int64_t A, std::int64_t B, std::int64_t C) const {
+    return orient2d(Point(A).data(), Point(B).data(), Point(C).data());
+}
+
+double Cdt2d::Orient(std::int64_t A, std::int64_t B, const Vec2& rC) const {
+    return orient2d(Point(A).data(), Point(B).data(), rC.data());
+}
+
+double Cdt2d::InCircle(std::int64_t A, std::int64_t B, std::int64_t C, std::int64_t D) const {
+    return incircle(Point(A).data(), Point(B).data(), Point(C).data(), Point(D).data());
+}
+
+int Cdt2d::IndexOf(std::int64_t T, std::int64_t V) const {
+    const auto& r_t = mTris[static_cast<std::size_t>(T)];
+    for (int i = 0; i < 3; ++i)
+        if (r_t.mV[i] == V)
+            return i;
+    return -1;
+}
+
+int Cdt2d::NeighbourIndex(std::int64_t T, std::int64_t Of) const {
+    const auto& r_t = mTris[static_cast<std::size_t>(T)];
+    for (int i = 0; i < 3; ++i)
+        if (r_t.mN[i] == Of)
+            return i;
+    return -1;
+}
+
+void Cdt2d::SetConstrained(std::int64_t T, int E) {
+    auto& r_t = mTris[static_cast<std::size_t>(T)];
+    r_t.mC[E] = true;
+    const std::int64_t u = r_t.mN[E];
+    if (u >= 0) {
+        const int f = NeighbourIndex(u, T);
+        if (f < 0)
+            cdt2d_internal("broken adjacency");
+        mTris[static_cast<std::size_t>(u)].mC[f] = true;
+    }
+}
+
+Cdt2d::Location Cdt2d::LocateBruteForce(const Vec2& rP) const {
+    for (std::size_t t = 0; t < mTris.size(); ++t) {
+        const auto& r_t = mTris[t];
+        if (!r_t.mAlive)
+            continue;
+        double o[3];
+        bool in = true;
+        for (int e = 0; e < 3 && in; ++e) {
+            o[e] = Orient(r_t.mV[cdt2d_next(e)], r_t.mV[cdt2d_prev(e)], rP);
+            in = o[e] >= 0.0;
+        }
+        if (!in)
+            continue;
+        Location loc;
+        loc.mTri = static_cast<std::int64_t>(t);
+        int zeros = 0;
+        for (int e = 0; e < 3; ++e)
+            zeros += o[e] == 0.0;
+        if (zeros == 0) {
+            loc.mKind = 0;
+        } else if (zeros == 1) {
+            loc.mKind = 1;
+            for (int e = 0; e < 3; ++e)
+                if (o[e] == 0.0)
+                    loc.mIndex = e;
+        } else {
+            loc.mKind = 2;
+            for (int e = 0; e < 3; ++e)
+                if (o[e] != 0.0)
+                    loc.mVertex = r_t.mV[e];
+        }
+        return loc;
+    }
+    cdt2d_internal("point outside the super triangle");
+}
+
+Cdt2d::Location Cdt2d::Locate(const Vec2& rP) {
+    std::int64_t t = mLast;
+    if (t < 0 || t >= static_cast<std::int64_t>(mTris.size()) ||
+        !mTris[static_cast<std::size_t>(t)].mAlive) {
+        t = 0;
+        while (!mTris[static_cast<std::size_t>(t)].mAlive)
+            ++t;
+    }
+    const std::size_t budget = 4 * mTris.size() + 64;
+    for (std::size_t step = 0; step < budget; ++step) {
+        const auto& r_t = mTris[static_cast<std::size_t>(t)];
+        // A deterministic pseudo-random first edge (a stochastic walk), so the
+        // walk cannot cycle in a triangulation that is not Delaunay.
+        mWalkState ^= mWalkState << 13;
+        mWalkState ^= mWalkState >> 7;
+        mWalkState ^= mWalkState << 17;
+        const int first = static_cast<int>(mWalkState % 3);
+        bool moved = false;
+        double o[3];
+        for (int k = 0; k < 3; ++k) {
+            const int e = (first + k) % 3;
+            o[e] = Orient(r_t.mV[cdt2d_next(e)], r_t.mV[cdt2d_prev(e)], rP);
+            if (o[e] < 0.0) {
+                if (r_t.mN[e] < 0)
+                    cdt2d_internal("point outside the super triangle");
+                t = r_t.mN[e];
+                moved = true;
+                break;
+            }
+        }
+        if (moved)
+            continue;
+        Location loc;
+        loc.mTri = t;
+        int zeros = 0;
+        for (int e = 0; e < 3; ++e)
+            zeros += o[e] == 0.0;
+        if (zeros == 0) {
+            loc.mKind = 0;
+        } else if (zeros == 1) {
+            loc.mKind = 1;
+            for (int e = 0; e < 3; ++e)
+                if (o[e] == 0.0)
+                    loc.mIndex = e;
+        } else {
+            loc.mKind = 2;
+            for (int e = 0; e < 3; ++e)
+                if (o[e] != 0.0)
+                    loc.mVertex = r_t.mV[e];
+        }
+        return loc;
+    }
+    return LocateBruteForce(rP);
+}
+
+std::vector<std::int64_t> Cdt2d::ReplaceCavity(const std::vector<std::int64_t>& rRemoved,
+                                               const std::vector<Tri>& rNew, bool Inside) {
+    // The cavity's boundary: the removed triangles' edges whose neighbour
+    // was not removed, with that neighbour and the edge's constraint.
+    std::vector<Boundary> boundary;
+    for (const std::int64_t r : rRemoved) {
+        const auto& r_t = mTris[static_cast<std::size_t>(r)];
+        for (int e = 0; e < 3; ++e) {
+            const std::int64_t nb = r_t.mN[e];
+            if (nb >= 0 && std::find(rRemoved.begin(), rRemoved.end(), nb) != rRemoved.end())
+                continue;
+            boundary.push_back({r_t.mV[cdt2d_next(e)], r_t.mV[cdt2d_prev(e)], nb, r_t.mC[e]});
+        }
+    }
+    for (const std::int64_t r : rRemoved)
+        mTris[static_cast<std::size_t>(r)].mAlive = false;
+    std::vector<std::int64_t> ids;
+    ids.reserve(rNew.size());
+    std::size_t reuse = 0;
+    for (const Tri& r_v : rNew) {
+        std::int64_t id = -1;
+        if (reuse < rRemoved.size()) {
+            id = rRemoved[reuse++];
+        } else if (!mFree.empty()) {
+            id = mFree.back();
+            mFree.pop_back();
+        } else {
+            id = static_cast<std::int64_t>(mTris.size());
+            mTris.emplace_back();
+        }
+        auto& r_t = mTris[static_cast<std::size_t>(id)];
+        r_t.mV = r_v;
+        r_t.mN = {-1, -1, -1};
+        r_t.mC = {false, false, false};
+        r_t.mInside = Inside;
+        r_t.mAlive = true;
+        ids.push_back(id);
+    }
+    for (; reuse < rRemoved.size(); ++reuse)
+        mFree.push_back(rRemoved[reuse]);
+    // Link the new triangles to each other (twin edges) and to the outside.
+    for (std::size_t a = 0; a < ids.size(); ++a) {
+        auto& r_t = mTris[static_cast<std::size_t>(ids[a])];
+        for (int e = 0; e < 3; ++e) {
+            if (r_t.mN[e] >= 0)
+                continue;
+            const std::int64_t x = r_t.mV[cdt2d_next(e)];
+            const std::int64_t y = r_t.mV[cdt2d_prev(e)];
+            bool linked = false;
+            for (std::size_t b = 0; b < ids.size() && !linked; ++b) {
+                if (b == a)
+                    continue;
+                auto& r_u = mTris[static_cast<std::size_t>(ids[b])];
+                for (int f = 0; f < 3; ++f) {
+                    if (r_u.mV[cdt2d_next(f)] == y && r_u.mV[cdt2d_prev(f)] == x) {
+                        r_t.mN[e] = ids[b];
+                        r_u.mN[f] = ids[a];
+                        linked = true;
+                        break;
+                    }
+                }
+            }
+            if (linked)
+                continue;
+            for (const Boundary& r_b : boundary) {
+                if (r_b.mFrom != x || r_b.mTo != y)
+                    continue;
+                r_t.mN[e] = r_b.mOut;
+                r_t.mC[e] = r_b.mConstrained;
+                if (r_b.mOut >= 0) {
+                    auto& r_o = mTris[static_cast<std::size_t>(r_b.mOut)];
+                    int g = -1;
+                    for (int k = 0; k < 3; ++k)
+                        if (r_o.mV[cdt2d_next(k)] == y && r_o.mV[cdt2d_prev(k)] == x)
+                            g = k;
+                    if (g < 0)
+                        cdt2d_internal("cavity boundary does not match");
+                    r_o.mN[g] = ids[a];
+                }
+                linked = true;
+                break;
+            }
+            if (!linked)
+                cdt2d_internal("cavity edge without a match");
+        }
+        for (int i = 0; i < 3; ++i)
+            mVertTri[static_cast<std::size_t>(r_t.mV[i])] = ids[a];
+    }
+    if (!ids.empty())
+        mLast = ids.back();
+    return ids;
+}
+
+void Cdt2d::Flip(std::int64_t T, int E) {
+    const std::int64_t u = mTris[static_cast<std::size_t>(T)].mN[E];
+    const int f = NeighbourIndex(u, T);
+    if (f < 0)
+        cdt2d_internal("broken adjacency in a flip");
+    Triangle& r_t = mTris[static_cast<std::size_t>(T)];
+    Triangle& r_u = mTris[static_cast<std::size_t>(u)];
+    // t = (a, b, c) with the flipped edge (b, c) opposite a; u = (d, c, b).
+    const std::int64_t a = r_t.mV[E];
+    const std::int64_t b = r_t.mV[cdt2d_next(E)];
+    const std::int64_t c = r_t.mV[cdt2d_prev(E)];
+    const std::int64_t d = r_u.mV[f];
+    const std::int64_t n_ca = r_t.mN[cdt2d_next(E)];
+    const bool c_ca = r_t.mC[cdt2d_next(E)];
+    const std::int64_t n_ab = r_t.mN[cdt2d_prev(E)];
+    const bool c_ab = r_t.mC[cdt2d_prev(E)];
+    const std::int64_t n_bd = r_u.mN[cdt2d_next(f)];
+    const bool c_bd = r_u.mC[cdt2d_next(f)];
+    const std::int64_t n_dc = r_u.mN[cdt2d_prev(f)];
+    const bool c_dc = r_u.mC[cdt2d_prev(f)];
+    // t = (a, b, d), u = (a, d, c).
+    r_t.mV = {a, b, d};
+    r_t.mN = {n_bd, u, n_ab};
+    r_t.mC = {c_bd, false, c_ab};
+    r_u.mV = {a, d, c};
+    r_u.mN = {n_dc, n_ca, T};
+    r_u.mC = {c_dc, c_ca, false};
+    if (n_bd >= 0) {
+        const int g = NeighbourIndex(n_bd, u);
+        if (g < 0)
+            cdt2d_internal("broken adjacency in a flip");
+        mTris[static_cast<std::size_t>(n_bd)].mN[g] = T;
+    }
+    if (n_ca >= 0) {
+        const int g = NeighbourIndex(n_ca, T);
+        if (g < 0)
+            cdt2d_internal("broken adjacency in a flip");
+        mTris[static_cast<std::size_t>(n_ca)].mN[g] = u;
+    }
+    mVertTri[static_cast<std::size_t>(a)] = T;
+    mVertTri[static_cast<std::size_t>(b)] = T;
+    mVertTri[static_cast<std::size_t>(d)] = T;
+    mVertTri[static_cast<std::size_t>(c)] = u;
+}
+
+void Cdt2d::Legalize(std::vector<std::pair<std::int64_t, int>>& rStack) {
+    while (!rStack.empty()) {
+        const auto [t, e] = rStack.back();
+        rStack.pop_back();
+        const auto& r_t = mTris[static_cast<std::size_t>(t)];
+        if (!r_t.mAlive || r_t.mC[e])
+            continue;
+        const std::int64_t u = r_t.mN[e];
+        if (u < 0)
+            continue;
+        const int f = NeighbourIndex(u, t);
+        if (f < 0)
+            cdt2d_internal("broken adjacency while legalising");
+        const std::int64_t d = mTris[static_cast<std::size_t>(u)].mV[f];
+        if (InCircle(r_t.mV[0], r_t.mV[1], r_t.mV[2], d) > 0.0) {
+            Flip(t, e);
+            rStack.emplace_back(t, 0);
+            rStack.emplace_back(u, 0);
+        }
+    }
+}
+
+std::int64_t Cdt2d::InsertAt(const Vec2& rP, const Location& rLoc, bool Inside) {
+    const auto v = static_cast<std::int64_t>(mPoints.size());
+    mPoints.push_back(rP);
+    mVertTri.push_back(rLoc.mTri);
+    std::vector<std::int64_t> removed{rLoc.mTri};
+    std::vector<Tri> fresh;
+    std::int64_t split_a = -1;
+    std::int64_t split_b = -1;
+    bool split_constrained = false;
+    const auto& r_t = mTris[static_cast<std::size_t>(rLoc.mTri)];
+    if (rLoc.mKind == 0) {
+        for (int e = 0; e < 3; ++e)
+            fresh.push_back({r_t.mV[cdt2d_next(e)], r_t.mV[cdt2d_prev(e)], v});
+    } else {
+        const int e = rLoc.mIndex;
+        split_a = r_t.mV[cdt2d_next(e)];
+        split_b = r_t.mV[cdt2d_prev(e)];
+        split_constrained = r_t.mC[e];
+        const std::int64_t u = r_t.mN[e];
+        // The two edges of t that stay, then u's.
+        fresh.push_back({r_t.mV[e], split_a, v});
+        fresh.push_back({split_b, r_t.mV[e], v});
+        if (u >= 0) {
+            removed.push_back(u);
+            const int f = NeighbourIndex(u, rLoc.mTri);
+            const auto& r_u = mTris[static_cast<std::size_t>(u)];
+            fresh.push_back({r_u.mV[f], split_b, v});
+            fresh.push_back({split_a, r_u.mV[f], v});
+        } else {
+            fresh.push_back({split_a, split_b, v});  // never: points stay inside the super triangle
+        }
+    }
+    const std::vector<std::int64_t> ids = ReplaceCavity(removed, fresh, Inside);
+    if (split_constrained) {
+        for (const std::int64_t id : ids) {
+            for (int e = 0; e < 3; ++e) {
+                const auto& r_n = mTris[static_cast<std::size_t>(id)];
+                const std::int64_t x = r_n.mV[cdt2d_next(e)];
+                const std::int64_t y = r_n.mV[cdt2d_prev(e)];
+                if ((x == v && (y == split_a || y == split_b)) ||
+                    (y == v && (x == split_a || x == split_b)))
+                    SetConstrained(id, e);
+            }
+        }
+    }
+    std::vector<std::pair<std::int64_t, int>> stack;
+    for (const std::int64_t id : ids)
+        stack.emplace_back(id, 2);
+    Legalize(stack);
+    mLast = mVertTri[static_cast<std::size_t>(v)];
+    return v;
+}
+
+std::int64_t Cdt2d::Insert(const Vec2& rP) {
+    const Location loc = Locate(rP);
+    if (loc.mKind == 2)
+        return loc.mVertex;
+    return InsertAt(rP, loc,
+                    mClassified ? mTris[static_cast<std::size_t>(loc.mTri)].mInside : false);
+}
+
+std::vector<std::int64_t> Cdt2d::InsertBatch(const std::vector<Vec2>& rPoints) {
+    std::vector<std::int64_t> ids(rPoints.size(), -1);
+    if (rPoints.empty())
+        return ids;
+    double lo[2] = {rPoints[0][0], rPoints[0][1]};
+    double hi[2] = {lo[0], lo[1]};
+    for (const Vec2& r_p : rPoints)
+        for (int k = 0; k < 2; ++k) {
+            lo[k] = std::min(lo[k], r_p[k]);
+            hi[k] = std::max(hi[k], r_p[k]);
+        }
+    const double span = std::max({hi[0] - lo[0], hi[1] - lo[1], 0.0});
+    const double scale = span > 0.0 ? double((1u << sfc_bits) - 1) / span : 0.0;
+    std::vector<std::uint64_t> keys(rPoints.size());
+    for (std::size_t i = 0; i < rPoints.size(); ++i) {
+        const std::uint32_t q[3] = {static_cast<std::uint32_t>((rPoints[i][0] - lo[0]) * scale),
+                                    static_cast<std::uint32_t>((rPoints[i][1] - lo[1]) * scale),
+                                    0u};
+        keys[i] = sfc_hilbert_key(q, sfc_bits);
+    }
+    for (const std::int64_t i : sfc_stable_argsort(keys))
+        ids[static_cast<std::size_t>(i)] = Insert(rPoints[static_cast<std::size_t>(i)]);
+    return ids;
+}
+
+void Cdt2d::TriangulatePseudoPolygon(std::int64_t A, std::int64_t B,
+                                     const std::vector<std::int64_t>& rChain,
+                                     std::vector<Tri>& rOut) const {
+    // The chain lies left of A -> B, in order from A to B.
+    if (rChain.empty())
+        return;
+    std::size_t c = 0;
+    for (std::size_t i = 1; i < rChain.size(); ++i)
+        if (InCircle(A, B, rChain[c], rChain[i]) > 0.0)
+            c = i;
+    const std::vector<std::int64_t> before(rChain.begin(), rChain.begin() + std::ptrdiff_t(c));
+    const std::vector<std::int64_t> after(rChain.begin() + std::ptrdiff_t(c) + 1, rChain.end());
+    TriangulatePseudoPolygon(A, rChain[c], before, rOut);
+    TriangulatePseudoPolygon(rChain[c], B, after, rOut);
+    rOut.push_back({A, B, rChain[c]});
+}
+
+bool Cdt2d::IsConstrainedEdge(std::int64_t A, std::int64_t B) const {
+    for (const Triangle& r_t : mTris) {
+        if (!r_t.mAlive)
+            continue;
+        for (int e = 0; e < 3; ++e)
+            if (r_t.mV[cdt2d_next(e)] == A && r_t.mV[cdt2d_prev(e)] == B)
+                return r_t.mC[e];
+    }
+    return false;
+}
+
+Cdt2dStatus Cdt2d::InsertSegment(std::int64_t A, std::int64_t B) {
+    while (A != B) {
+        // Find the triangle around A whose wedge holds the direction to B.
+        const std::int64_t t0 = mVertTri[static_cast<std::size_t>(A)];
+        std::int64_t t = t0;
+        std::int64_t next_a = -1;
+        bool crossing = false;
+        int ia = -1;
+        for (std::size_t guard = 0; guard < mTris.size() + 3; ++guard) {
+            ia = IndexOf(t, A);
+            if (ia < 0)
+                cdt2d_internal("vertex-triangle map is stale");
+            const auto& r_t = mTris[static_cast<std::size_t>(t)];
+            const std::int64_t p = r_t.mV[cdt2d_next(ia)];
+            const std::int64_t q = r_t.mV[cdt2d_prev(ia)];
+            if (p == B || q == B) {
+                SetConstrained(t, p == B ? cdt2d_prev(ia) : cdt2d_next(ia));
+                return Cdt2dStatus::Ok;
+            }
+            const double o1 = Orient(A, p, B);
+            const double o2 = Orient(A, q, B);
+            const Vec2& r_a = Point(A);
+            const Vec2& r_b = Point(B);
+            const auto ahead = [&](std::int64_t W) {
+                const Vec2& r_w = Point(W);
+                return (r_w[0] - r_a[0]) * (r_b[0] - r_a[0]) +
+                           (r_w[1] - r_a[1]) * (r_b[1] - r_a[1]) >
+                       0.0;
+            };
+            if (o1 == 0.0 && ahead(p)) {
+                SetConstrained(t, cdt2d_prev(ia));
+                next_a = p;
+                break;
+            }
+            if (o2 == 0.0 && ahead(q)) {
+                SetConstrained(t, cdt2d_next(ia));
+                next_a = q;
+                break;
+            }
+            if (o1 > 0.0 && o2 < 0.0) {
+                crossing = true;
+                break;
+            }
+            // Rotate counter-clockwise around A: across the edge (q, A).
+            t = r_t.mN[cdt2d_next(ia)];
+            if (t < 0 || t == t0)
+                cdt2d_internal("no triangle around a vertex faces the segment");
+        }
+        if (next_a >= 0) {
+            A = next_a;
+            continue;
+        }
+        if (!crossing)
+            cdt2d_internal("segment walk did not start");
+        // Walk the triangles the segment crosses, collecting both chains.
+        std::vector<std::int64_t> crossed{t};
+        std::vector<std::int64_t> left;
+        std::vector<std::int64_t> right;
+        const auto& r_t0 = mTris[static_cast<std::size_t>(t)];
+        std::int64_t p = r_t0.mV[cdt2d_next(ia)];  // right of A -> B
+        std::int64_t q = r_t0.mV[cdt2d_prev(ia)];  // left of A -> B
+        if (r_t0.mC[ia])
+            return Cdt2dStatus::SelfIntersecting;
+        right.push_back(p);
+        left.push_back(q);
+        std::int64_t cur = t;
+        int edge = ia;
+        std::int64_t end = -1;
+        for (std::size_t guard = 0; guard < mTris.size() + 3; ++guard) {
+            const std::int64_t u = mTris[static_cast<std::size_t>(cur)].mN[edge];
+            if (u < 0)
+                cdt2d_internal("segment left the triangulation");
+            const int f = NeighbourIndex(u, cur);
+            const std::int64_t w = mTris[static_cast<std::size_t>(u)].mV[f];
+            crossed.push_back(u);
+            if (w == B) {
+                end = B;
+                break;
+            }
+            const double ow = Orient(A, B, w);
+            if (ow == 0.0) {
+                end = w;
+                break;
+            }
+            // u = (w, q, p) counter-clockwise: the segment leaves through
+            // (p, w) when w is left of A -> B, else through (w, q).
+            const auto& r_u = mTris[static_cast<std::size_t>(u)];
+            int next_edge = -1;
+            if (ow > 0.0) {
+                left.push_back(w);
+                // The edge (p, w) is opposite q.
+                next_edge = IndexOf(u, q);
+                q = w;
+            } else {
+                right.push_back(w);
+                next_edge = IndexOf(u, p);
+                p = w;
+            }
+            if (next_edge < 0)
+                cdt2d_internal("segment walk lost its edge");
+            if (r_u.mC[next_edge])
+                return Cdt2dStatus::SelfIntersecting;
+            cur = u;
+            edge = next_edge;
+        }
+        if (end < 0)
+            cdt2d_internal("segment walk did not end");
+        // Re-triangulate both sides of (A, end).
+        std::vector<Tri> fresh;
+        TriangulatePseudoPolygon(A, end, left, fresh);
+        std::vector<std::int64_t> right_rev(right.rbegin(), right.rend());
+        TriangulatePseudoPolygon(end, A, right_rev, fresh);
+        const bool inside = mClassified && mTris[static_cast<std::size_t>(t)].mInside;
+        const std::vector<std::int64_t> ids = ReplaceCavity(crossed, fresh, inside);
+        bool marked = false;
+        for (const std::int64_t id : ids) {
+            for (int e = 0; e < 3 && !marked; ++e) {
+                const auto& r_n = mTris[static_cast<std::size_t>(id)];
+                if (r_n.mV[cdt2d_next(e)] == A && r_n.mV[cdt2d_prev(e)] == end) {
+                    SetConstrained(id, e);
+                    marked = true;
+                }
+            }
+        }
+        if (!marked)
+            cdt2d_internal("recovered segment is not an edge");
+        A = end;
+    }
+    return Cdt2dStatus::Ok;
+}
+
+Cdt2dStatus Cdt2d::Classify() {
+    std::vector<int> parity(mTris.size(), -1);
+    std::vector<std::int64_t> queue;
+    for (std::size_t t = 0; t < mTris.size(); ++t) {
+        const auto& r_t = mTris[t];
+        if (!r_t.mAlive)
+            continue;
+        if (r_t.mV[0] < kFirstVertex || r_t.mV[1] < kFirstVertex || r_t.mV[2] < kFirstVertex) {
+            parity[t] = 0;
+            queue.push_back(static_cast<std::int64_t>(t));
+        }
+    }
+    Cdt2dStatus status = Cdt2dStatus::Ok;
+    for (std::size_t head = 0; head < queue.size(); ++head) {
+        const std::int64_t t = queue[head];
+        const auto& r_t = mTris[static_cast<std::size_t>(t)];
+        for (int e = 0; e < 3; ++e) {
+            const std::int64_t u = r_t.mN[e];
+            if (u < 0)
+                continue;
+            const int want = parity[static_cast<std::size_t>(t)] ^ (r_t.mC[e] ? 1 : 0);
+            int& r_p = parity[static_cast<std::size_t>(u)];
+            if (r_p < 0) {
+                r_p = want;
+                queue.push_back(u);
+            } else if (r_p != want) {
+                status = Cdt2dStatus::OpenLoop;
+            }
+        }
+    }
+    for (std::size_t t = 0; t < mTris.size(); ++t)
+        mTris[t].mInside = mTris[t].mAlive && parity[t] == 1;
+    mClassified = true;
+    return status;
+}
+
+std::int64_t Cdt2d::InsertSteiner(const Vec2& rP) {
+    if (!mClassified)
+        cdt2d_internal("InsertSteiner before Classify");
+    const Location loc = Locate(rP);
+    if (loc.mKind == 2)
+        return -1;
+    const auto& r_t = mTris[static_cast<std::size_t>(loc.mTri)];
+    if (!r_t.mInside)
+        return -1;
+    if (loc.mKind == 1 && r_t.mC[loc.mIndex])
+        return -1;
+    return InsertAt(rP, loc, true);
+}
+
+std::vector<Cdt2d::Tri> Cdt2d::InsideTriangles() const {
+    std::vector<Tri> out;
+    for (const Triangle& r_t : mTris)
+        if (r_t.mAlive && r_t.mInside && r_t.mV[0] >= kFirstVertex && r_t.mV[1] >= kFirstVertex &&
+            r_t.mV[2] >= kFirstVertex)
+            out.push_back(r_t.mV);
+    return out;
+}
+
+std::vector<Cdt2d::Tri> Cdt2d::AllTriangles() const {
+    std::vector<Tri> out;
+    for (const Triangle& r_t : mTris)
+        if (r_t.mAlive)
+            out.push_back(r_t.mV);
+    return out;
+}
+
+Cdt2dPolygon cdt2d_triangulate_polygon(const std::vector<std::vector<Cdt2d::Vec2>>& rLoops,
+                                       double TargetSize, double MergeTolerance) {
+    using Vec2 = Cdt2d::Vec2;
+    Cdt2dPolygon out;
+    double lo[2] = {std::numeric_limits<double>::infinity(),
+                    std::numeric_limits<double>::infinity()};
+    double hi[2] = {-lo[0], -lo[1]};
+    std::size_t total = 0;
+    for (const auto& r_loop : rLoops) {
+        for (const Vec2& r_p : r_loop) {
+            if (!std::isfinite(r_p[0]) || !std::isfinite(r_p[1]))
+                throw std::invalid_argument("meshio++: triangulate_polygon_2d: a non-finite point");
+            for (int k = 0; k < 2; ++k) {
+                lo[k] = std::min(lo[k], r_p[k]);
+                hi[k] = std::max(hi[k], r_p[k]);
+            }
+        }
+        total += r_loop.size();
+    }
+    if (total < 3) {
+        out.mStatus = Cdt2dStatus::Degenerate;
+        out.mWhy = "fewer than three boundary points";
+        return out;
+    }
+    const double diag = std::hypot(hi[0] - lo[0], hi[1] - lo[1]);
+    const double tol = MergeTolerance >= 0.0 ? MergeTolerance : 1e-12 * diag;
+
+    // Merge near-duplicates (first point wins), then split long segments.
+    std::vector<Vec2>& r_pts = out.mPoints;
+    Cdt2dGrid merge(lo[0], lo[1], tol > 0.0 ? tol : std::max(diag, 1.0));
+    const auto add_point = [&](const Vec2& rP) -> std::int64_t {
+        if (tol > 0.0) {
+            const auto [ci, cj] = merge.Cell(rP[0], rP[1]);
+            for (std::int64_t di = -1; di <= 1; ++di)
+                for (std::int64_t dj = -1; dj <= 1; ++dj)
+                    if (const auto* p_ids = merge.At(Cdt2dGrid::Join(ci + di, cj + dj)))
+                        for (const std::int64_t id : *p_ids) {
+                            const Vec2& r_q = r_pts[static_cast<std::size_t>(id)];
+                            if (std::hypot(r_q[0] - rP[0], r_q[1] - rP[1]) <= tol)
+                                return id;
+                        }
+        }
+        const auto id = static_cast<std::int64_t>(r_pts.size());
+        r_pts.push_back(rP);
+        if (tol > 0.0)
+            merge.Add(rP[0], rP[1], id);
+        return id;
+    };
+    std::vector<std::array<std::int64_t, 2>> segments;
+    for (const auto& r_loop : rLoops) {
+        std::vector<std::int64_t> ids;
+        for (const Vec2& r_p : r_loop) {
+            const std::int64_t id = add_point(r_p);
+            if (ids.empty() || ids.back() != id)
+                ids.push_back(id);
+        }
+        while (ids.size() > 1 && ids.front() == ids.back())
+            ids.pop_back();
+        if (ids.size() < 3)
+            continue;
+        for (std::size_t i = 0; i < ids.size(); ++i) {
+            const std::int64_t a = ids[i];
+            const std::int64_t b = ids[(i + 1) % ids.size()];
+            const Vec2 pa = r_pts[static_cast<std::size_t>(a)];
+            const Vec2 pb = r_pts[static_cast<std::size_t>(b)];
+            const double len = std::hypot(pb[0] - pa[0], pb[1] - pa[1]);
+            std::int64_t n = 1;
+            if (TargetSize > 0.0)
+                n = std::max<std::int64_t>(1,
+                                           static_cast<std::int64_t>(std::ceil(len / TargetSize)));
+            std::int64_t prev = a;
+            for (std::int64_t k = 1; k <= n; ++k) {
+                std::int64_t id = b;
+                if (k < n) {
+                    const double s = double(k) / double(n);
+                    id = add_point({pa[0] + s * (pb[0] - pa[0]), pa[1] + s * (pb[1] - pa[1])});
+                }
+                if (id != prev)
+                    segments.push_back({prev, id});
+                prev = id;
+            }
+        }
+    }
+    out.mNumBoundary = static_cast<std::int64_t>(r_pts.size());
+    if (segments.size() < 3) {
+        out.mStatus = Cdt2dStatus::Degenerate;
+        out.mWhy = "fewer than three distinct boundary segments";
+        return out;
+    }
+    bool flat = true;
+    for (std::size_t i = 2; i < r_pts.size() && flat; ++i)
+        flat = orient2d(r_pts[0].data(), r_pts[1].data(), r_pts[i].data()) == 0.0;
+    if (flat) {
+        out.mStatus = Cdt2dStatus::Degenerate;
+        out.mWhy = "the boundary points are collinear";
+        return out;
+    }
+
+    Cdt2d cdt(lo[0], lo[1], hi[0], hi[1]);
+    std::vector<std::int64_t> vid = cdt.InsertBatch(r_pts);
+    std::vector<std::int64_t> point_of(static_cast<std::size_t>(cdt.NumVertices()), -1);
+    for (std::size_t i = 0; i < vid.size(); ++i) {
+        // Exact duplicates left by the merge (tolerance 0) share a vertex.
+        if (point_of[static_cast<std::size_t>(vid[i])] < 0)
+            point_of[static_cast<std::size_t>(vid[i])] = static_cast<std::int64_t>(i);
+    }
+    for (const auto& r_s : segments) {
+        const std::int64_t a = vid[static_cast<std::size_t>(r_s[0])];
+        const std::int64_t b = vid[static_cast<std::size_t>(r_s[1])];
+        if (a == b)
+            continue;
+        const Cdt2dStatus st = cdt.InsertSegment(a, b);
+        if (st != Cdt2dStatus::Ok) {
+            out.mStatus = st;
+            out.mWhy = cdt2d_status_name(st);
+            out.mTriangles.clear();
+            return out;
+        }
+    }
+    const Cdt2dStatus st = cdt.Classify();
+    if (st != Cdt2dStatus::Ok) {
+        out.mStatus = st;
+        out.mWhy = cdt2d_status_name(st);
+        return out;
+    }
+
+    if (TargetSize > 0.0) {
+        // An equilateral lattice, kept farther than h / 2 from the boundary
+        // points and every point already kept, and than 0.4 h from the
+        // boundary segments (closer would leave edges near h / 2 at the
+        // middle of a segment; farther, gaps longer than 1.5 h by it).
+        const double h = TargetSize;
+        const double r2 = 0.25 * h * h;
+        const double rs2 = 0.16 * h * h;
+        Cdt2dGrid near(lo[0], lo[1], h);
+        for (std::size_t i = 0; i < r_pts.size(); ++i)
+            near.Add(r_pts[i][0], r_pts[i][1], static_cast<std::int64_t>(i));
+        Cdt2dGrid segs(lo[0], lo[1], h);
+        for (std::size_t s = 0; s < segments.size(); ++s) {
+            const Vec2& r_a = r_pts[static_cast<std::size_t>(segments[s][0])];
+            const Vec2& r_b = r_pts[static_cast<std::size_t>(segments[s][1])];
+            segs.Add(0.5 * (r_a[0] + r_b[0]), 0.5 * (r_a[1] + r_b[1]),
+                     static_cast<std::int64_t>(s));
+        }
+        const double dy = h * std::sqrt(3.0) / 2.0;
+        const auto rows = static_cast<std::int64_t>(std::floor((hi[1] - lo[1]) / dy));
+        const auto cols = static_cast<std::int64_t>(std::floor((hi[0] - lo[0]) / h)) + 1;
+        for (std::int64_t j = 1; j <= rows; ++j) {
+            const double v = lo[1] + double(j) * dy;
+            for (std::int64_t i = 0; i <= cols; ++i) {
+                const Vec2 p{lo[0] + (double(i) + 0.5 * double(j % 2)) * h, v};
+                if (p[0] <= lo[0] || p[0] >= hi[0])
+                    continue;
+                const auto [ci, cj] = near.Cell(p[0], p[1]);
+                bool close = false;
+                for (std::int64_t di = -1; di <= 1 && !close; ++di)
+                    for (std::int64_t dj = -1; dj <= 1 && !close; ++dj) {
+                        if (const auto* p_ids = near.At(Cdt2dGrid::Join(ci + di, cj + dj)))
+                            for (const std::int64_t id : *p_ids) {
+                                const Vec2& r_q = r_pts[static_cast<std::size_t>(id)];
+                                const double ex = r_q[0] - p[0];
+                                const double ey = r_q[1] - p[1];
+                                if (ex * ex + ey * ey < r2) {
+                                    close = true;
+                                    break;
+                                }
+                            }
+                        if (close)
+                            break;
+                        if (const auto* p_ids = segs.At(Cdt2dGrid::Join(ci + di, cj + dj)))
+                            for (const std::int64_t s : *p_ids) {
+                                const auto& r_s = segments[static_cast<std::size_t>(s)];
+                                if (cdt2d_segment_distance2(
+                                        p, r_pts[static_cast<std::size_t>(r_s[0])],
+                                        r_pts[static_cast<std::size_t>(r_s[1])]) < rs2) {
+                                    close = true;
+                                    break;
+                                }
+                            }
+                    }
+                if (close)
+                    continue;
+                const std::int64_t v_id = cdt.InsertSteiner(p);
+                if (v_id < 0)
+                    continue;
+                const auto id = static_cast<std::int64_t>(r_pts.size());
+                r_pts.push_back(p);
+                near.Add(p[0], p[1], id);
+                if (point_of.size() <= static_cast<std::size_t>(v_id))
+                    point_of.resize(static_cast<std::size_t>(v_id) + 1, -1);
+                point_of[static_cast<std::size_t>(v_id)] = id;
+            }
+        }
+    }
+
+    for (const auto& r_t : cdt.InsideTriangles()) {
+        Cdt2d::Tri tri{};
+        for (int k = 0; k < 3; ++k)
+            tri[k] = point_of[static_cast<std::size_t>(r_t[k])];
+        out.mTriangles.push_back(tri);
+    }
+    for (const auto& r_s : segments)
+        if (r_s[0] != r_s[1])
+            out.mSegments.push_back(r_s);
+    if (out.mTriangles.empty()) {
+        out.mStatus = Cdt2dStatus::Degenerate;
+        out.mWhy = "the boundary encloses no area";
+    }
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/cdt2d.cpp =====
 // ===== begin src/cpp/src/detail/cell_adjacency.cpp =====
 #include <algorithm>
 
@@ -66921,6 +68416,444 @@ void skyline_solve(const SkylineMatrix& rLd, double* pB) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/dense_chol.cpp =====
+// ===== begin src/cpp/src/detail/edge_sampler.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+constexpr double kEdgsGaussX[5] = {
+    -0.906179845938663992797626878299, -0.538469310105683091036314420700, 0.0,
+    0.538469310105683091036314420700, 0.906179845938663992797626878299};
+constexpr double kEdgsGaussW[5] = {
+    0.236926885056189087514264040720, 0.478628670499366468041291514836,
+    0.568888888888888888888888888889, 0.478628670499366468041291514836,
+    0.236926885056189087514264040720};
+
+[[noreturn]] void edgs_bad(const std::string& rWhat) {
+    throw std::invalid_argument("meshio++: mesh_cad_surface: " + rWhat);
+}
+
+double edgs_dist(const EdgeVec3& rA, const EdgeVec3& rB) {
+    return std::sqrt((rA[0] - rB[0]) * (rA[0] - rB[0]) + (rA[1] - rB[1]) * (rA[1] - rB[1]) +
+                     (rA[2] - rB[2]) * (rA[2] - rB[2]));
+}
+
+/// The distance from `rP` to the segment `rA rB`.
+double edgs_segment_distance(const EdgeVec3& rP, const EdgeVec3& rA, const EdgeVec3& rB) {
+    EdgeVec3 d{rB[0] - rA[0], rB[1] - rA[1], rB[2] - rA[2]};
+    const double len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    double t = 0.0;
+    if (len2 > 0.0)
+        t = std::clamp(
+            ((rP[0] - rA[0]) * d[0] + (rP[1] - rA[1]) * d[1] + (rP[2] - rA[2]) * d[2]) / len2, 0.0,
+            1.0);
+    const EdgeVec3 q{rA[0] + t * d[0], rA[1] + t * d[1], rA[2] + t * d[2]};
+    return edgs_dist(rP, q);
+}
+
+}  // namespace
+
+BrepSurfaceEval::BrepSurfaceEval(const NurbsPatch& rPatch, bool Rational) : pPatch(&rPatch) {
+    if (rPatch.mDegrees.size() != 2 || rPatch.mKnots.size() != 2)
+        edgs_bad("a face's surface is not a two-parameter patch");
+    std::size_t total = 1;
+    for (std::size_t d = 0; d < 2; ++d) {
+        const int p = rPatch.mDegrees[d];
+        const std::size_t nk = rPatch.mKnots[d].size();
+        if (p < 1 || p > 32 || nk < 2 * static_cast<std::size_t>(p) + 2)
+            edgs_bad("a face's surface has an invalid degree or knot vector");
+        for (std::size_t i = 1; i < nk; ++i)
+            if (!(rPatch.mKnots[d][i] >= rPatch.mKnots[d][i - 1]))
+                edgs_bad("a face's surface has a decreasing knot vector");
+        mCounts[d] = nk - static_cast<std::size_t>(p) - 1;
+        total *= mCounts[d];
+        mBox[2 * d] = rPatch.mKnots[d][static_cast<std::size_t>(p)];
+        mBox[2 * d + 1] = rPatch.mKnots[d][mCounts[d]];
+        if (!(mBox[2 * d + 1] > mBox[2 * d]))
+            edgs_bad("a face's surface has an empty parameter range");
+    }
+    const NDArray& r_cp = rPatch.mControlPoints;
+    if (r_cp.Dtype() != DType::Float64 || r_cp.Shape().size() != 2 || r_cp.Shape()[0] != total ||
+        r_cp.Shape()[1] != 3)
+        edgs_bad("a face's surface control points are not Float64 (n, 3)");
+    const bool weighted =
+        Rational && rPatch.mWeights.Size() == total && rPatch.mWeights.Dtype() == DType::Float64;
+    mNet.mDim = 2;
+    for (std::size_t d = 0; d < 2; ++d) {
+        mNet.mDegrees[d] = rPatch.mDegrees[d];
+        mNet.mKnots[d] = &rPatch.mKnots[d];
+        mNet.mCounts[d] = mCounts[d];
+    }
+    mNet.mValues = r_cp.As<double>();
+    mNet.mColumns = 3;
+    mNet.mWeights = weighted ? rPatch.mWeights.As<double>() : nullptr;
+}
+
+void BrepSurfaceEval::Eval(double U, double V, double* pX, double* pSu, double* pSv) const {
+    const double u[2] = {std::clamp(U, mBox[0], mBox[1]), std::clamp(V, mBox[2], mBox[3])};
+    std::size_t span[2];
+    for (std::size_t d = 0; d < 2; ++d)
+        span[d] = nurbs_find_span(pPatch->mDegrees[d], pPatch->mKnots[d], mCounts[d], u[d]);
+    double der[6];
+    const bool want = pSu != nullptr || pSv != nullptr;
+    iga_eval_point(mNet, span, u, want ? 1 : 0, pX, want ? der : nullptr);
+    if (pSu)
+        for (int k = 0; k < 3; ++k)
+            pSu[k] = der[k];
+    if (pSv)
+        for (int k = 0; k < 3; ++k)
+            pSv[k] = der[3 + k];
+}
+
+BrepCurveEval::BrepCurveEval(const BrepCurve& rCurve) : mDegree(rCurve.mDegree) {
+    mCount = rCurve.mControlPoints.Shape().empty() ? 0 : rCurve.mControlPoints.Shape()[0];
+    const auto p = static_cast<std::size_t>(mDegree);
+    if (mDegree < 1 || mDegree > 32 || rCurve.mControlPoints.Dtype() != DType::Float64 ||
+        rCurve.mControlPoints.Shape().size() != 2 || rCurve.mControlPoints.Shape()[1] != 3 ||
+        mCount < p + 1 || rCurve.mKnots.size() != mCount + p + 1)
+        edgs_bad("a trimming curve has an invalid degree, control points or knot vector");
+    mKnots = rCurve.mKnots;
+    for (std::size_t i = 1; i < mKnots.size(); ++i)
+        if (!(mKnots[i] >= mKnots[i - 1]))
+            edgs_bad("a trimming curve has a decreasing knot vector");
+    const double* cp = rCurve.mControlPoints.As<double>();
+    mValues.assign(cp, cp + 3 * mCount);
+    if (rCurve.mRational && rCurve.mWeights.Size() == mCount &&
+        rCurve.mWeights.Dtype() == DType::Float64) {
+        const double* w = rCurve.mWeights.As<double>();
+        mWeights.assign(w, w + mCount);
+    }
+    const double k0 = mKnots[p];
+    const double k1 = mKnots[mCount];
+    mT0 = k0;
+    mT1 = k1;
+    if (rCurve.mActiveRange.size() == 2) {
+        mT0 = std::max(k0, std::min(rCurve.mActiveRange[0], rCurve.mActiveRange[1]));
+        mT1 = std::min(k1, std::max(rCurve.mActiveRange[0], rCurve.mActiveRange[1]));
+    }
+    if (!(mT1 > mT0))
+        edgs_bad("a trimming curve has an empty parameter range");
+    for (std::size_t i = 0; i < mKnots.size(); ++i) {
+        const double k = mKnots[i];
+        if (!(k > mT0 && k < mT1) || (!mBreaks.empty() && mBreaks.back() == k))
+            continue;
+        mBreaks.push_back(k);
+        std::size_t mult = 0;
+        for (std::size_t j = i; j < mKnots.size() && mKnots[j] == k; ++j)
+            ++mult;
+        if (mult >= p)
+            mCorners.push_back(k);
+    }
+    mNet.mDim = 1;
+    mNet.mDegrees[0] = mDegree;
+    mNet.mKnots[0] = &mKnots;
+    mNet.mCounts[0] = mCount;
+    mNet.mValues = mValues.data();
+    mNet.mColumns = 3;
+    mNet.mWeights = mWeights.empty() ? nullptr : mWeights.data();
+}
+
+void BrepCurveEval::Eval(double T, double* pX, double* pD) const {
+    // The net points into this object's own vectors, which a copy or move
+    // does not carry: rebuild the pointers on the stack.
+    IgaEvalNet net = mNet;
+    net.mKnots[0] = &mKnots;
+    net.mValues = mValues.data();
+    net.mWeights = mWeights.empty() ? nullptr : mWeights.data();
+    const double t = std::clamp(T, mT0, mT1);
+    const std::size_t span = nurbs_find_span(mDegree, mKnots, mCount, t);
+    double der[3];
+    iga_eval_point(net, &span, &t, pD ? 1 : 0, pX, pD ? der : nullptr);
+    if (pD)
+        for (int k = 0; k < 3; ++k)
+            pD[k] = der[k];
+}
+
+TrimTrace::TrimTrace(const BrepSurfaceEval* pSurface, BrepCurveEval Curve, bool Forward)
+    : pSurface(pSurface), mCurve(std::move(Curve)), mForward(Forward) {
+    std::vector<double> breaks{mCurve.T0()};
+    breaks.insert(breaks.end(), mCurve.Breaks().begin(), mCurve.Breaks().end());
+    breaks.push_back(mCurve.T1());
+    if (!mForward)
+        std::reverse(breaks.begin(), breaks.end());
+    mT.push_back(breaks.front());
+    mCum.push_back(0.0);
+    for (std::size_t i = 0; i + 1 < breaks.size(); ++i) {
+        const double a = breaks[i];
+        const double b = breaks[i + 1];
+        constexpr int kStart = 4;
+        for (int j = 0; j < kStart; ++j) {
+            const double sa = a + (b - a) * (double(j) / kStart);
+            const double sb = j + 1 == kStart ? b : a + (b - a) * (double(j + 1) / kStart);
+            Refine(sa, sb, Gauss(sa, sb), mCum.back(), 0, mT, mCum);
+        }
+    }
+}
+
+EdgeVec2 TrimTrace::Uv(double T) const {
+    double x[3];
+    mCurve.Eval(T, x, nullptr);
+    return {x[0], x[1]};
+}
+
+EdgeVec3 TrimTrace::Point(double T) const {
+    const EdgeVec2 uv = Uv(T);
+    EdgeVec3 p{};
+    pSurface->Eval(uv[0], uv[1], p.data(), nullptr, nullptr);
+    return p;
+}
+
+EdgeVec3 TrimTrace::Velocity(double T) const {
+    double c[3];
+    double dc[3];
+    mCurve.Eval(T, c, dc);
+    double x[3];
+    double su[3];
+    double sv[3];
+    pSurface->Eval(c[0], c[1], x, su, sv);
+    return {su[0] * dc[0] + sv[0] * dc[1], su[1] * dc[0] + sv[1] * dc[1],
+            su[2] * dc[0] + sv[2] * dc[1]};
+}
+
+double TrimTrace::Speed(double T) const {
+    const EdgeVec3 v = Velocity(T);
+    return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+}
+
+double TrimTrace::Gauss(double A, double B) const {
+    const double h = 0.5 * (B - A);
+    const double c = 0.5 * (A + B);
+    double s = 0.0;
+    for (int i = 0; i < 5; ++i)
+        s += kEdgsGaussW[i] * Speed(c + h * kEdgsGaussX[i]);
+    return s * std::fabs(h);
+}
+
+void TrimTrace::Refine(double A, double B, double Whole, double La, int Depth,
+                       std::vector<double>& rT, std::vector<double>& rL) const {
+    const double m = 0.5 * (A + B);
+    const double left = Gauss(A, m);
+    const double right = Gauss(m, B);
+    const double halves = left + right;
+    if (Depth < 30 && std::fabs(Whole - halves) > 1e-12 * halves && m != A && m != B) {
+        Refine(A, m, left, La, Depth + 1, rT, rL);
+        Refine(m, B, right, rL.back(), Depth + 1, rT, rL);
+        return;
+    }
+    rT.push_back(m);
+    rL.push_back(La + left);
+    rT.push_back(B);
+    rL.push_back(La + halves);
+}
+
+double TrimTrace::ParamAtLength(double L) const {
+    const double total = Length();
+    if (!(total > 0.0) || L <= 0.0)
+        return mT.front();
+    if (L >= total)
+        return mT.back();
+    const auto it = std::upper_bound(mCum.begin(), mCum.end(), L);
+    const auto j = static_cast<std::size_t>(std::max<std::ptrdiff_t>(1, it - mCum.begin())) - 1;
+    const double ta = mT[j];
+    const double tb = mT[j + 1];
+    const double ca = mCum[j];
+    const double cb = mCum[j + 1];
+    if (!(cb > ca))
+        return ta;
+    double s = (L - ca) / (cb - ca);
+    double lo = 0.0;
+    double hi = 1.0;
+    for (int it2 = 0; it2 < 40; ++it2) {
+        const double t = ta + s * (tb - ta);
+        const double g = ca + Gauss(ta, t) - L;
+        if (std::fabs(g) <= 1e-14 * total)
+            break;
+        if (g > 0.0)
+            hi = s;
+        else
+            lo = s;
+        const double dg = Speed(t) * std::fabs(tb - ta);
+        double next = dg > 0.0 ? s - g / dg : 0.5 * (lo + hi);
+        if (!(next > lo && next < hi))
+            next = 0.5 * (lo + hi);
+        if (next == s)
+            break;
+        s = next;
+    }
+    return ta + s * (tb - ta);
+}
+
+std::vector<double> TrimTrace::CornerLengths() const {
+    // Every knot is a node of the table, so a corner's arc length is exact.
+    std::vector<double> out;
+    for (const double c : mCurve.Corners())
+        for (std::size_t i = 0; i < mT.size(); ++i)
+            if (mT[i] == c) {
+                out.push_back(mCum[i]);
+                break;
+            }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+EdgeSamples edge_sample(const TrimTrace& rTrace, const EdgeSampleOptions& rOptions) {
+    EdgeSamples out;
+    const double length = rTrace.Length();
+    out.mLength = length;
+    const auto push = [&](double T, double F) {
+        out.mParams.push_back(T);
+        out.mPoints.push_back(rTrace.Point(T));
+        out.mFractions.push_back(F);
+    };
+    if (!(length > rOptions.mTolerance)) {
+        out.mDegenerate = true;
+        push(rTrace.Start(), 0.0);
+        push(rTrace.End(), 1.0);
+        return out;
+    }
+    if (!(rOptions.mTargetSize > 0.0))
+        edgs_bad("target_size must be positive");
+    const double pieces = std::ceil(length / rOptions.mTargetSize);
+    if (!(pieces <= double(rOptions.mMaxSegments)))
+        throw std::length_error("meshio++: mesh_cad_surface: an edge needs more than " +
+                                std::to_string(rOptions.mMaxSegments) + " segments");
+    // The stretches between the corners, each in equal parts.
+    std::vector<double> cuts{0.0};
+    for (const double c : rTrace.CornerLengths())
+        if (c > cuts.back() + rOptions.mTolerance && c < length - rOptions.mTolerance)
+            cuts.push_back(c);
+    cuts.push_back(length);
+    std::vector<double> ends;  // arc lengths of the pieces' ends, after the first point
+    const double dev = rOptions.mMaxChordalDeviation;
+    std::int64_t budget = rOptions.mMaxSegments;
+    // Halve a piece while its sagitta exceeds the cap (depth-first, so the
+    // ends come out in order).
+    const auto split = [&](auto&& rSelf, double La, double Lb, int Depth) -> void {
+        if (dev > 0.0 && Depth < 40) {
+            const EdgeVec3 a = rTrace.Point(rTrace.ParamAtLength(La));
+            const EdgeVec3 b = rTrace.Point(rTrace.ParamAtLength(Lb));
+            double sag = 0.0;
+            for (const double f : {0.25, 0.5, 0.75})
+                sag = std::max(sag,
+                               edgs_segment_distance(
+                                   rTrace.Point(rTrace.ParamAtLength(La + f * (Lb - La))), a, b));
+            if (sag > dev) {
+                if (--budget < 0)
+                    throw std::length_error(
+                        "meshio++: mesh_cad_surface: the chordal deviation needs more than " +
+                        std::to_string(rOptions.mMaxSegments) + " segments on an edge");
+                const double m = 0.5 * (La + Lb);
+                rSelf(rSelf, La, m, Depth + 1);
+                rSelf(rSelf, m, Lb, Depth + 1);
+                return;
+            }
+        }
+        ends.push_back(Lb);
+    };
+    for (std::size_t c = 0; c + 1 < cuts.size(); ++c) {
+        const double l0 = cuts[c];
+        const double l1 = cuts[c + 1];
+        const double part = l1 - l0;
+        const std::int64_t n = std::max<std::int64_t>(
+            {std::int64_t{1}, static_cast<std::int64_t>(std::ceil(part / rOptions.mTargetSize)),
+             static_cast<std::int64_t>(std::ceil(double(rOptions.mMinSegments) * part / length))});
+        for (std::int64_t k = 0; k < n; ++k) {
+            const double la = l0 + part * double(k) / double(n);
+            const double lb = k + 1 == n ? l1 : l0 + part * double(k + 1) / double(n);
+            split(split, la, lb, 0);
+        }
+    }
+    push(rTrace.Start(), 0.0);
+    for (std::size_t i = 0; i + 1 < ends.size(); ++i)
+        push(rTrace.ParamAtLength(ends[i]), ends[i] / length);
+    push(rTrace.End(), 1.0);
+    return out;
+}
+
+bool edge_same_direction(const TrimTrace& rA, const TrimTrace& rB) {
+    const double la = rA.Length();
+    const double lb = rB.Length();
+    double same = edgs_dist(rA.Point(rA.Start()), rB.Point(rB.Start())) +
+                  edgs_dist(rA.Point(rA.End()), rB.Point(rB.End()));
+    double opposite = edgs_dist(rA.Point(rA.Start()), rB.Point(rB.End())) +
+                      edgs_dist(rA.Point(rA.End()), rB.Point(rB.Start()));
+    if (la > 0.0 && lb > 0.0) {
+        const EdgeVec3 a1 = rA.Point(rA.ParamAtLength(0.25 * la));
+        const EdgeVec3 a3 = rA.Point(rA.ParamAtLength(0.75 * la));
+        const EdgeVec3 b1 = rB.Point(rB.ParamAtLength(0.25 * lb));
+        const EdgeVec3 b3 = rB.Point(rB.ParamAtLength(0.75 * lb));
+        same += edgs_dist(a1, b1) + edgs_dist(a3, b3);
+        opposite += edgs_dist(a1, b3) + edgs_dist(a3, b1);
+    }
+    return same <= opposite;
+}
+
+EdgeProjection edge_project(const TrimTrace& rOther, const EdgeSamples& rMaster,
+                            bool SameDirection) {
+    EdgeProjection out;
+    const std::size_t m = rMaster.mParams.size();
+    out.mParams.assign(m, 0.0);
+    if (m == 0)
+        return out;
+    const auto point_at = [&](std::size_t K) -> const EdgeVec3& {
+        return SameDirection ? rMaster.mPoints[K] : rMaster.mPoints[m - 1 - K];
+    };
+    const auto fraction_at = [&](std::size_t K) {
+        return SameDirection ? rMaster.mFractions[K] : 1.0 - rMaster.mFractions[m - 1 - K];
+    };
+    const double start = rOther.Start();
+    const double end = rOther.End();
+    out.mParams.front() = start;
+    out.mParams.back() = end;
+    out.mMaxGap = std::max(edgs_dist(rOther.Point(start), point_at(0)),
+                           edgs_dist(rOther.Point(end), point_at(m - 1)));
+    const double length = rOther.Length();
+    const double span = std::fabs(end - start);
+    double prev = start;
+    for (std::size_t k = 1; k + 1 < m; ++k) {
+        const EdgeVec3& p = point_at(k);
+        double t = rOther.ParamAtLength(fraction_at(k) * length);
+        const double lo = std::min(prev, end);
+        const double hi = std::max(prev, end);
+        t = std::clamp(t, lo, hi);
+        for (int it = 0; it < 30; ++it) {
+            const EdgeVec3 x = rOther.Point(t);
+            const EdgeVec3 v = rOther.Velocity(t);
+            const double vv = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+            if (!(vv > 0.0))
+                break;
+            const double dt =
+                -((x[0] - p[0]) * v[0] + (x[1] - p[1]) * v[1] + (x[2] - p[2]) * v[2]) / vv;
+            const double next = std::clamp(t + dt, lo, hi);
+            if (std::fabs(next - t) <= 1e-15 * span) {
+                t = next;
+                break;
+            }
+            t = next;
+        }
+        out.mParams[k] = t;
+        out.mMaxGap = std::max(out.mMaxGap, edgs_dist(rOther.Point(t), p));
+        prev = t;
+    }
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/edge_sampler.cpp =====
 // ===== begin src/cpp/src/detail/face_color.cpp =====
 
 #include <cmath>
@@ -79768,6 +81701,439 @@ std::size_t FacetKeyHash::operator()(const FacetKey& rKey) const {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/polyhedron.cpp =====
+// ===== begin src/cpp/src/detail/predicates.cpp =====
+#include <cmath>
+#include <cstddef>
+#include <limits>
+#include <vector>
+
+// Project includes
+
+// The error-free transforms below are exact only when every product is
+// rounded on its own: switch floating-point contraction (fused multiply-add)
+// off for this file, whatever flags the including translation unit uses.
+// MSVC does not contract under its default /fp:precise.
+#if defined(__clang__)
+#define MESHIOPLUSPLUS_PRED_NO_CONTRACT _Pragma("clang fp contract(off)")
+#elif defined(__GNUC__)
+#pragma GCC push_options
+#pragma GCC optimize("fp-contract=off")
+#define MESHIOPLUSPLUS_PRED_NO_CONTRACT
+#else
+#define MESHIOPLUSPLUS_PRED_NO_CONTRACT
+#endif
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+static_assert(std::numeric_limits<double>::is_iec559 && std::numeric_limits<double>::digits == 53,
+              "the robust predicates need IEEE-754 binary64");
+
+/// Half an ulp of 1 (2^-53) and Dekker's splitter (2^27 + 1).
+constexpr double kPredEps = 1.1102230246251565404236316680908203125e-16;
+constexpr double kPredSplitter = 134217729.0;
+
+/// Shewchuk's stage-A bounds, relative to each determinant's permanent.
+constexpr double kPredCcwBound = (3.0 + 16.0 * kPredEps) * kPredEps;
+constexpr double kPredIccBound = (10.0 + 96.0 * kPredEps) * kPredEps;
+constexpr double kPredO3dBound = (7.0 + 56.0 * kPredEps) * kPredEps;
+constexpr double kPredIspBound = (16.0 + 224.0 * kPredEps) * kPredEps;
+
+/// An expansion: nonoverlapping components in increasing magnitude, zeros
+/// eliminated; empty is zero.
+using PredExpansion = std::vector<double>;
+
+inline void pred_two_sum(double A, double B, double& rX, double& rY) {
+    MESHIOPLUSPLUS_PRED_NO_CONTRACT
+    rX = A + B;
+    const double bv = rX - A;
+    const double av = rX - bv;
+    const double br = B - bv;
+    const double ar = A - av;
+    rY = ar + br;
+}
+
+inline void pred_two_diff(double A, double B, double& rX, double& rY) {
+    MESHIOPLUSPLUS_PRED_NO_CONTRACT
+    rX = A - B;
+    const double bv = A - rX;
+    const double av = rX + bv;
+    const double br = bv - B;
+    const double ar = A - av;
+    rY = ar + br;
+}
+
+inline void pred_split(double A, double& rHi, double& rLo) {
+    MESHIOPLUSPLUS_PRED_NO_CONTRACT
+    const double c = kPredSplitter * A;
+    const double abig = c - A;
+    rHi = c - abig;
+    rLo = A - rHi;
+}
+
+inline void pred_two_product(double A, double B, double& rX, double& rY) {
+    MESHIOPLUSPLUS_PRED_NO_CONTRACT
+    rX = A * B;
+    double ahi = 0.0;
+    double alo = 0.0;
+    double bhi = 0.0;
+    double blo = 0.0;
+    pred_split(A, ahi, alo);
+    pred_split(B, bhi, blo);
+    const double err1 = rX - (ahi * bhi);
+    const double err2 = err1 - (alo * bhi);
+    const double err3 = err2 - (ahi * blo);
+    rY = (alo * blo) - err3;
+}
+
+/// `A - B` exactly, as an expansion.
+PredExpansion pred_diff(double A, double B) {
+    double x = 0.0;
+    double y = 0.0;
+    pred_two_diff(A, B, x, y);
+    PredExpansion e;
+    if (y != 0.0)
+        e.push_back(y);
+    if (x != 0.0)
+        e.push_back(x);
+    return e;
+}
+
+/// `e + f` (Shewchuk's FAST-EXPANSION-SUM with zero elimination): merge by
+/// magnitude, then a chain of two-sums.
+PredExpansion pred_sum(const PredExpansion& rE, const PredExpansion& rF) {
+    if (rE.empty())
+        return rF;
+    if (rF.empty())
+        return rE;
+    std::vector<double> g;
+    g.reserve(rE.size() + rF.size());
+    std::size_t i = 0;
+    std::size_t j = 0;
+    while (i < rE.size() && j < rF.size()) {
+        if (std::fabs(rE[i]) <= std::fabs(rF[j]))
+            g.push_back(rE[i++]);
+        else
+            g.push_back(rF[j++]);
+    }
+    while (i < rE.size())
+        g.push_back(rE[i++]);
+    while (j < rF.size())
+        g.push_back(rF[j++]);
+    PredExpansion h;
+    h.reserve(g.size());
+    double q = g[0];
+    for (std::size_t k = 1; k < g.size(); ++k) {
+        double qnew = 0.0;
+        double hh = 0.0;
+        pred_two_sum(q, g[k], qnew, hh);
+        if (hh != 0.0)
+            h.push_back(hh);
+        q = qnew;
+    }
+    if (q != 0.0)
+        h.push_back(q);
+    return h;
+}
+
+PredExpansion pred_negate(PredExpansion E) {
+    for (double& r_c : E)
+        r_c = -r_c;
+    return E;
+}
+
+PredExpansion pred_sub(const PredExpansion& rE, const PredExpansion& rF) {
+    return pred_sum(rE, pred_negate(rF));
+}
+
+/// `e * b` (SCALE-EXPANSION with zero elimination).
+PredExpansion pred_scale(const PredExpansion& rE, double B) {
+    PredExpansion h;
+    if (rE.empty() || B == 0.0)
+        return h;
+    h.reserve(2 * rE.size());
+    double q = 0.0;
+    double hh = 0.0;
+    pred_two_product(rE[0], B, q, hh);
+    if (hh != 0.0)
+        h.push_back(hh);
+    for (std::size_t i = 1; i < rE.size(); ++i) {
+        double p1 = 0.0;
+        double p0 = 0.0;
+        pred_two_product(rE[i], B, p1, p0);
+        double sum = 0.0;
+        pred_two_sum(q, p0, sum, hh);
+        if (hh != 0.0)
+            h.push_back(hh);
+        pred_two_sum(p1, sum, q, hh);
+        if (hh != 0.0)
+            h.push_back(hh);
+    }
+    if (q != 0.0)
+        h.push_back(q);
+    return h;
+}
+
+/// `e * f`, one scaling per component of `f`.
+PredExpansion pred_mul(const PredExpansion& rE, const PredExpansion& rF) {
+    PredExpansion acc;
+    for (const double c : rF)
+        acc = pred_sum(acc, pred_scale(rE, c));
+    return acc;
+}
+
+/// The expansion's value rounded to a double: its sign is the sign of the
+/// largest component, the exact sign of the expansion.
+double pred_estimate(const PredExpansion& rE) {
+    double s = 0.0;
+    for (const double c : rE)
+        s += c;
+    if (s == 0.0 && !rE.empty())
+        return rE.back();
+    return s;
+}
+
+/// `a * d - b * c` of four expansions.
+PredExpansion pred_minor(const PredExpansion& rA, const PredExpansion& rD, const PredExpansion& rB,
+                         const PredExpansion& rC) {
+    return pred_sub(pred_mul(rA, rD), pred_mul(rB, rC));
+}
+
+double pred_orient2d_exact(const double* pA, const double* pB, const double* pC) {
+    const PredExpansion acx = pred_diff(pA[0], pC[0]);
+    const PredExpansion acy = pred_diff(pA[1], pC[1]);
+    const PredExpansion bcx = pred_diff(pB[0], pC[0]);
+    const PredExpansion bcy = pred_diff(pB[1], pC[1]);
+    return pred_estimate(pred_minor(acx, bcy, acy, bcx));
+}
+
+double pred_incircle_exact(const double* pA, const double* pB, const double* pC, const double* pD) {
+    const PredExpansion adx = pred_diff(pA[0], pD[0]);
+    const PredExpansion ady = pred_diff(pA[1], pD[1]);
+    const PredExpansion bdx = pred_diff(pB[0], pD[0]);
+    const PredExpansion bdy = pred_diff(pB[1], pD[1]);
+    const PredExpansion cdx = pred_diff(pC[0], pD[0]);
+    const PredExpansion cdy = pred_diff(pC[1], pD[1]);
+    const PredExpansion alift = pred_sum(pred_mul(adx, adx), pred_mul(ady, ady));
+    const PredExpansion blift = pred_sum(pred_mul(bdx, bdx), pred_mul(bdy, bdy));
+    const PredExpansion clift = pred_sum(pred_mul(cdx, cdx), pred_mul(cdy, cdy));
+    PredExpansion det = pred_mul(alift, pred_minor(bdx, cdy, cdx, bdy));
+    det = pred_sum(det, pred_mul(blift, pred_minor(cdx, ady, adx, cdy)));
+    det = pred_sum(det, pred_mul(clift, pred_minor(adx, bdy, bdx, ady)));
+    return pred_estimate(det);
+}
+
+double pred_orient3d_exact(const double* pA, const double* pB, const double* pC, const double* pD) {
+    const PredExpansion adx = pred_diff(pA[0], pD[0]);
+    const PredExpansion ady = pred_diff(pA[1], pD[1]);
+    const PredExpansion adz = pred_diff(pA[2], pD[2]);
+    const PredExpansion bdx = pred_diff(pB[0], pD[0]);
+    const PredExpansion bdy = pred_diff(pB[1], pD[1]);
+    const PredExpansion bdz = pred_diff(pB[2], pD[2]);
+    const PredExpansion cdx = pred_diff(pC[0], pD[0]);
+    const PredExpansion cdy = pred_diff(pC[1], pD[1]);
+    const PredExpansion cdz = pred_diff(pC[2], pD[2]);
+    PredExpansion det = pred_mul(adz, pred_minor(bdx, cdy, cdx, bdy));
+    det = pred_sum(det, pred_mul(bdz, pred_minor(cdx, ady, adx, cdy)));
+    det = pred_sum(det, pred_mul(cdz, pred_minor(adx, bdy, bdx, ady)));
+    return pred_estimate(det);
+}
+
+double pred_insphere_exact(const double* pA, const double* pB, const double* pC, const double* pD,
+                           const double* pE) {
+    PredExpansion d[4][3];
+    const double* pts[4] = {pA, pB, pC, pD};
+    for (int i = 0; i < 4; ++i)
+        for (int k = 0; k < 3; ++k)
+            d[i][k] = pred_diff(pts[i][k], pE[k]);
+    // The 2x2 minors of the (x, y) columns, then the 3x3 cofactors and the
+    // lifted determinant in the paper's arrangement.
+    const auto xy = [&](int I, int J) { return pred_minor(d[I][0], d[J][1], d[J][0], d[I][1]); };
+    const PredExpansion ab = xy(0, 1);
+    const PredExpansion bc = xy(1, 2);
+    const PredExpansion cd = xy(2, 3);
+    const PredExpansion da = xy(3, 0);
+    const PredExpansion ac = xy(0, 2);
+    const PredExpansion bd = xy(1, 3);
+    const PredExpansion abc =
+        pred_sum(pred_sub(pred_mul(d[0][2], bc), pred_mul(d[1][2], ac)), pred_mul(d[2][2], ab));
+    const PredExpansion bcd =
+        pred_sum(pred_sub(pred_mul(d[1][2], cd), pred_mul(d[2][2], bd)), pred_mul(d[3][2], bc));
+    const PredExpansion cda =
+        pred_sum(pred_sum(pred_mul(d[2][2], da), pred_mul(d[3][2], ac)), pred_mul(d[0][2], cd));
+    const PredExpansion dab =
+        pred_sum(pred_sum(pred_mul(d[3][2], ab), pred_mul(d[0][2], bd)), pred_mul(d[1][2], da));
+    PredExpansion lift[4];
+    for (int i = 0; i < 4; ++i)
+        lift[i] = pred_sum(pred_sum(pred_mul(d[i][0], d[i][0]), pred_mul(d[i][1], d[i][1])),
+                           pred_mul(d[i][2], d[i][2]));
+    const PredExpansion det = pred_sum(pred_sub(pred_mul(lift[3], abc), pred_mul(lift[2], dab)),
+                                       pred_sub(pred_mul(lift[1], cda), pred_mul(lift[0], bcd)));
+    return pred_estimate(det);
+}
+
+}  // namespace
+
+void predicates_two_product(double A, double B, double& rX, double& rY) {
+    pred_two_product(A, B, rX, rY);
+}
+
+double orient2d(const double* pA, const double* pB, const double* pC) {
+    MESHIOPLUSPLUS_PRED_NO_CONTRACT
+    const double detleft = (pA[0] - pC[0]) * (pB[1] - pC[1]);
+    const double detright = (pA[1] - pC[1]) * (pB[0] - pC[0]);
+    const double det = detleft - detright;
+    double detsum = 0.0;
+    if (detleft > 0.0) {
+        if (detright <= 0.0)
+            return det;
+        detsum = detleft + detright;
+    } else if (detleft < 0.0) {
+        if (detright >= 0.0)
+            return det;
+        detsum = -detleft - detright;
+    } else {
+        return det;
+    }
+    const double errbound = kPredCcwBound * detsum;
+    if (det >= errbound || -det >= errbound)
+        return det;
+    return pred_orient2d_exact(pA, pB, pC);
+}
+
+double incircle(const double* pA, const double* pB, const double* pC, const double* pD) {
+    MESHIOPLUSPLUS_PRED_NO_CONTRACT
+    const double adx = pA[0] - pD[0];
+    const double bdx = pB[0] - pD[0];
+    const double cdx = pC[0] - pD[0];
+    const double ady = pA[1] - pD[1];
+    const double bdy = pB[1] - pD[1];
+    const double cdy = pC[1] - pD[1];
+    const double bdxcdy = bdx * cdy;
+    const double cdxbdy = cdx * bdy;
+    const double alift = adx * adx + ady * ady;
+    const double cdxady = cdx * ady;
+    const double adxcdy = adx * cdy;
+    const double blift = bdx * bdx + bdy * bdy;
+    const double adxbdy = adx * bdy;
+    const double bdxady = bdx * ady;
+    const double clift = cdx * cdx + cdy * cdy;
+    const double det =
+        alift * (bdxcdy - cdxbdy) + blift * (cdxady - adxcdy) + clift * (adxbdy - bdxady);
+    const double permanent = (std::fabs(bdxcdy) + std::fabs(cdxbdy)) * alift +
+                             (std::fabs(cdxady) + std::fabs(adxcdy)) * blift +
+                             (std::fabs(adxbdy) + std::fabs(bdxady)) * clift;
+    const double errbound = kPredIccBound * permanent;
+    if (det > errbound || -det > errbound)
+        return det;
+    return pred_incircle_exact(pA, pB, pC, pD);
+}
+
+double orient3d(const double* pA, const double* pB, const double* pC, const double* pD) {
+    MESHIOPLUSPLUS_PRED_NO_CONTRACT
+    const double adx = pA[0] - pD[0];
+    const double bdx = pB[0] - pD[0];
+    const double cdx = pC[0] - pD[0];
+    const double ady = pA[1] - pD[1];
+    const double bdy = pB[1] - pD[1];
+    const double cdy = pC[1] - pD[1];
+    const double adz = pA[2] - pD[2];
+    const double bdz = pB[2] - pD[2];
+    const double cdz = pC[2] - pD[2];
+    const double bdxcdy = bdx * cdy;
+    const double cdxbdy = cdx * bdy;
+    const double cdxady = cdx * ady;
+    const double adxcdy = adx * cdy;
+    const double adxbdy = adx * bdy;
+    const double bdxady = bdx * ady;
+    const double det = adz * (bdxcdy - cdxbdy) + bdz * (cdxady - adxcdy) + cdz * (adxbdy - bdxady);
+    const double permanent = (std::fabs(bdxcdy) + std::fabs(cdxbdy)) * std::fabs(adz) +
+                             (std::fabs(cdxady) + std::fabs(adxcdy)) * std::fabs(bdz) +
+                             (std::fabs(adxbdy) + std::fabs(bdxady)) * std::fabs(cdz);
+    const double errbound = kPredO3dBound * permanent;
+    if (det > errbound || -det > errbound)
+        return det;
+    return pred_orient3d_exact(pA, pB, pC, pD);
+}
+
+double insphere(const double* pA, const double* pB, const double* pC, const double* pD,
+                const double* pE) {
+    MESHIOPLUSPLUS_PRED_NO_CONTRACT
+    const double aex = pA[0] - pE[0];
+    const double bex = pB[0] - pE[0];
+    const double cex = pC[0] - pE[0];
+    const double dex = pD[0] - pE[0];
+    const double aey = pA[1] - pE[1];
+    const double bey = pB[1] - pE[1];
+    const double cey = pC[1] - pE[1];
+    const double dey = pD[1] - pE[1];
+    const double aez = pA[2] - pE[2];
+    const double bez = pB[2] - pE[2];
+    const double cez = pC[2] - pE[2];
+    const double dez = pD[2] - pE[2];
+
+    const double aexbey = aex * bey;
+    const double bexaey = bex * aey;
+    const double ab = aexbey - bexaey;
+    const double bexcey = bex * cey;
+    const double cexbey = cex * bey;
+    const double bc = bexcey - cexbey;
+    const double cexdey = cex * dey;
+    const double dexcey = dex * cey;
+    const double cd = cexdey - dexcey;
+    const double dexaey = dex * aey;
+    const double aexdey = aex * dey;
+    const double da = dexaey - aexdey;
+    const double aexcey = aex * cey;
+    const double cexaey = cex * aey;
+    const double ac = aexcey - cexaey;
+    const double bexdey = bex * dey;
+    const double dexbey = dex * bey;
+    const double bd = bexdey - dexbey;
+
+    const double abc = aez * bc - bez * ac + cez * ab;
+    const double bcd = bez * cd - cez * bd + dez * bc;
+    const double cda = cez * da + dez * ac + aez * cd;
+    const double dab = dez * ab + aez * bd + bez * da;
+
+    const double alift = aex * aex + aey * aey + aez * aez;
+    const double blift = bex * bex + bey * bey + bez * bez;
+    const double clift = cex * cex + cey * cey + cez * cez;
+    const double dlift = dex * dex + dey * dey + dez * dez;
+
+    const double det = (dlift * abc - clift * dab) + (blift * cda - alift * bcd);
+
+    const double ab_p = std::fabs(aexbey) + std::fabs(bexaey);
+    const double bc_p = std::fabs(bexcey) + std::fabs(cexbey);
+    const double cd_p = std::fabs(cexdey) + std::fabs(dexcey);
+    const double da_p = std::fabs(dexaey) + std::fabs(aexdey);
+    const double ac_p = std::fabs(aexcey) + std::fabs(cexaey);
+    const double bd_p = std::fabs(bexdey) + std::fabs(dexbey);
+    const double aezp = std::fabs(aez);
+    const double bezp = std::fabs(bez);
+    const double cezp = std::fabs(cez);
+    const double dezp = std::fabs(dez);
+    const double permanent = (aezp * bc_p + bezp * ac_p + cezp * ab_p) * dlift +
+                             (dezp * ab_p + aezp * bd_p + bezp * da_p) * clift +
+                             (cezp * da_p + dezp * ac_p + aezp * cd_p) * blift +
+                             (bezp * cd_p + cezp * bd_p + dezp * bc_p) * alift;
+    // Twice the paper's bound: conservative, the exact stage decides the rest.
+    const double errbound = 2.0 * kPredIspBound * permanent;
+    if (det > errbound || -det > errbound)
+        return det;
+    return pred_insphere_exact(pA, pB, pC, pD, pE);
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC pop_options
+#endif
+#undef MESHIOPLUSPLUS_PRED_NO_CONTRACT
+// ===== end src/cpp/src/detail/predicates.cpp =====
 // ===== begin src/cpp/src/detail/primitive_geom.cpp =====
 #include <cmath>
 #include <cstdint>
@@ -212474,6 +214840,1116 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/merge.cpp =====
+// ===== begin src/cpp/src/operations/mesh_cad.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <exception>
+#include <limits>
+#include <map>
+#include <memory>
+#include <numeric>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kMcadPrefix = "meshio++: mesh_cad_surface: ";
+
+using Vec2 = detail::EdgeVec2;
+using Vec3 = detail::EdgeVec3;
+
+[[noreturn]] void mcad_fail(const std::string& rWhat) {
+    throw std::invalid_argument(std::string(kMcadPrefix) + rWhat);
+}
+
+/// An exception's text without the operation's prefix.
+std::string mcad_why(const std::exception& rE) {
+    std::string s = rE.what();
+    const std::string p = kMcadPrefix;
+    if (s.rfind(p, 0) == 0)
+        s.erase(0, p.size());
+    return s;
+}
+
+double mcad_dist(const Vec3& rA, const Vec3& rB) {
+    return std::sqrt((rA[0] - rB[0]) * (rA[0] - rB[0]) + (rA[1] - rB[1]) * (rA[1] - rB[1]) +
+                     (rA[2] - rB[2]) * (rA[2] - rB[2]));
+}
+
+double mcad_segment_distance(const Vec3& rP, const Vec3& rA, const Vec3& rB) {
+    const Vec3 d{rB[0] - rA[0], rB[1] - rA[1], rB[2] - rA[2]};
+    const double len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    double t = 0.0;
+    if (len2 > 0.0)
+        t = std::clamp(
+            ((rP[0] - rA[0]) * d[0] + (rP[1] - rA[1]) * d[1] + (rP[2] - rA[2]) * d[2]) / len2, 0.0,
+            1.0);
+    return mcad_dist(rP, {rA[0] + t * d[0], rA[1] + t * d[1], rA[2] + t * d[2]});
+}
+
+/// A straight trim in the parameters, for the boundary of an untrimmed face.
+BrepCurve mcad_line(double U0, double V0, double U1, double V1) {
+    BrepCurve c;
+    c.mDegree = 1;
+    c.mKnots = {0.0, 0.0, 1.0, 1.0};
+    c.mControlPoints = NDArray(DType::Float64, {2, 3});
+    double* p = c.mControlPoints.As<double>();
+    p[0] = U0;
+    p[1] = V0;
+    p[2] = 0.0;
+    p[3] = U1;
+    p[4] = V1;
+    p[5] = 0.0;
+    c.mWeights = NDArray(DType::Float64, {2});
+    c.mWeights.As<double>()[0] = 1.0;
+    c.mWeights.As<double>()[1] = 1.0;
+    return c;
+}
+
+/// The order to walk a loop's trims in: head to tail by their ends in the
+/// face's parameters. The listed order is kept wherever it connects (to a
+/// billionth of the loop's extent); elsewhere the next trim is the one whose
+/// start is nearest the current end, so a loop listed out of order (a hole
+/// whose trims run backwards but are listed forwards) still closes. A trim
+/// that cannot be evaluated keeps the listed order; the trace fails later.
+std::vector<std::size_t> mcad_chain(const BrepLoop& rLoop) {
+    const std::size_t n = rLoop.mTrims.size();
+    std::vector<std::size_t> order(n);
+    std::iota(order.begin(), order.end(), std::size_t{0});
+    if (n < 3)
+        return order;
+    std::vector<Vec2> start(n);
+    std::vector<Vec2> end(n);
+    double lo[2] = {std::numeric_limits<double>::infinity(),
+                    std::numeric_limits<double>::infinity()};
+    double hi[2] = {-lo[0], -lo[1]};
+    try {
+        for (std::size_t k = 0; k < n; ++k) {
+            const detail::BrepCurveEval c(rLoop.mTrims[k].mCurve);
+            double a[3];
+            double b[3];
+            c.Eval(c.T0(), a, nullptr);
+            c.Eval(c.T1(), b, nullptr);
+            start[k] = {a[0], a[1]};
+            end[k] = {b[0], b[1]};
+            if (!rLoop.mTrims[k].mDirection)
+                std::swap(start[k], end[k]);
+            for (const Vec2* p : {&start[k], &end[k]})
+                for (int d = 0; d < 2; ++d) {
+                    lo[d] = std::min(lo[d], (*p)[static_cast<std::size_t>(d)]);
+                    hi[d] = std::max(hi[d], (*p)[static_cast<std::size_t>(d)]);
+                }
+        }
+    } catch (const std::exception&) {
+        return order;
+    }
+    const double tol = 1e-9 * std::hypot(hi[0] - lo[0], hi[1] - lo[1]);
+    const auto gap = [&](std::size_t A, std::size_t B) {
+        return std::hypot(end[A][0] - start[B][0], end[A][1] - start[B][1]);
+    };
+    std::vector<bool> used(n, false);
+    order.clear();
+    order.push_back(0);
+    used[0] = true;
+    for (std::size_t step = 1; step < n; ++step) {
+        const std::size_t cur = order.back();
+        std::size_t next = cur + 1 < n && !used[cur + 1] && gap(cur, cur + 1) <= tol ? cur + 1 : n;
+        if (next == n) {
+            double best = std::numeric_limits<double>::infinity();
+            for (std::size_t k = 0; k < n; ++k)
+                if (!used[k] && gap(cur, k) < best) {
+                    best = gap(cur, k);
+                    next = k;
+                }
+        }
+        used[next] = true;
+        order.push_back(next);
+    }
+    return order;
+}
+
+class McadUnionFind {
+public:
+    explicit McadUnionFind(std::size_t N) : mParent(N) {
+        std::iota(mParent.begin(), mParent.end(), 0);
+    }
+    std::size_t Find(std::size_t X) {
+        while (mParent[X] != X) {
+            mParent[X] = mParent[mParent[X]];
+            X = mParent[X];
+        }
+        return X;
+    }
+    // The smaller root wins, so the classes do not depend on the union order.
+    void Join(std::size_t A, std::size_t B) {
+        A = Find(A);
+        B = Find(B);
+        if (A != B)
+            mParent[std::max(A, B)] = std::min(A, B);
+    }
+
+private:
+    std::vector<std::size_t> mParent;
+};
+
+/// A uniform hash grid of 3-D points and segments, for the spacing test.
+class McadGrid {
+public:
+    explicit McadGrid(double Cell) : mCell(Cell) {}
+    using Key = std::array<std::int64_t, 3>;
+    Key KeyOf(const Vec3& rP) const {
+        return {static_cast<std::int64_t>(std::floor(rP[0] / mCell)),
+                static_cast<std::int64_t>(std::floor(rP[1] / mCell)),
+                static_cast<std::int64_t>(std::floor(rP[2] / mCell))};
+    }
+    void AddPoint(const Vec3& rP) { mPoints[KeyOf(rP)].push_back(rP); }
+    void AddSegment(const Vec3& rA, const Vec3& rB) {
+        const Vec3 m{0.5 * (rA[0] + rB[0]), 0.5 * (rA[1] + rB[1]), 0.5 * (rA[2] + rB[2])};
+        mSegments[KeyOf(m)].push_back({rA, rB});
+        mLongest = std::max(mLongest, mcad_dist(rA, rB));
+    }
+    /// Whether a point lies within `Rp` of a point or `Rs` of a segment.
+    bool Near(const Vec3& rP, double Rp, double Rs) const {
+        const Key k = KeyOf(rP);
+        const auto reach = [&](double R) {
+            return static_cast<std::int64_t>(std::ceil(R / mCell));
+        };
+        const std::int64_t rp = reach(Rp);
+        for (std::int64_t i = -rp; i <= rp; ++i)
+            for (std::int64_t j = -rp; j <= rp; ++j)
+                for (std::int64_t l = -rp; l <= rp; ++l) {
+                    const auto it = mPoints.find({k[0] + i, k[1] + j, k[2] + l});
+                    if (it == mPoints.end())
+                        continue;
+                    for (const Vec3& r_q : it->second)
+                        if (mcad_dist(r_q, rP) < Rp)
+                            return true;
+                }
+        // A segment within Rs has its midpoint within Rs + half its length.
+        const std::int64_t rs = reach(Rs + 0.5 * mLongest);
+        for (std::int64_t i = -rs; i <= rs; ++i)
+            for (std::int64_t j = -rs; j <= rs; ++j)
+                for (std::int64_t l = -rs; l <= rs; ++l) {
+                    const auto it = mSegments.find({k[0] + i, k[1] + j, k[2] + l});
+                    if (it == mSegments.end())
+                        continue;
+                    for (const auto& r_s : it->second)
+                        if (mcad_segment_distance(rP, r_s[0], r_s[1]) < Rs)
+                            return true;
+                }
+        return false;
+    }
+
+private:
+    struct KeyHash {
+        std::size_t operator()(const Key& rK) const {
+            std::uint64_t h = 1469598103934665603ull;
+            for (const std::int64_t v : rK) {
+                h ^= static_cast<std::uint64_t>(v);
+                h *= 1099511628211ull;
+            }
+            return static_cast<std::size_t>(h);
+        }
+    };
+    double mCell;
+    double mLongest = 0.0;
+    std::unordered_map<Key, std::vector<Vec3>, KeyHash> mPoints;
+    std::unordered_map<Key, std::vector<std::array<Vec3, 2>>, KeyHash> mSegments;
+};
+
+/// One trim of a face's loop: a use of an edge.
+struct McadUse {
+    std::size_t mFace = 0;
+    std::int64_t mTrimIndex = -1;
+    const BrepCurve* pCurve = nullptr;
+    bool mForward = true;
+    std::size_t mLoopSize = 1;  ///< trims in its loop
+    std::int64_t mEdge = -1;
+    bool mSame = true;               ///< runs the way its edge's master does
+    std::vector<double> mParams;     ///< along this use, ends included
+    std::vector<std::int64_t> mIds;  ///< mesh points along this use, ends included
+    MeshCadFaceStatus mFail = MeshCadFaceStatus::Ok;
+    std::string mWhy;
+};
+
+struct McadEdge {
+    std::int64_t mBrepEdge = -1;
+    std::vector<std::size_t> mUses;  ///< ascending; the first is the master
+    detail::EdgeSamples mSamples;
+    std::int64_t mFirstInterior = 0;
+    MeshCadFaceStatus mFail = MeshCadFaceStatus::Ok;
+    std::string mWhy;
+};
+
+struct McadFace {
+    bool mUsable = false;
+    std::unique_ptr<detail::BrepSurfaceEval> pSurface;
+    std::vector<BrepCurve> mSynthetic;
+    std::vector<std::vector<std::size_t>> mLoops;  ///< use indices per loop
+    MeshCadFaceRecord mRecord;
+    std::vector<Vec3> mInterior;
+    std::vector<std::array<std::int64_t, 3>> mTriangles;  ///< < 0: -(1 + interior index)
+};
+
+void mcad_check_options(const MeshCadSurfaceOptions& rO) {
+    if (!(std::isfinite(rO.mTargetSize) && rO.mTargetSize > 0.0))
+        mcad_fail("target_size must be positive and finite");
+    if (!(std::isfinite(rO.mMaxChordalDeviation) && rO.mMaxChordalDeviation >= 0.0))
+        mcad_fail("max_chordal_deviation must be finite and not negative");
+    if (rO.mMinPointsPerEdge < 0)
+        mcad_fail("min_points_per_edge must not be negative");
+    if (!(std::isfinite(rO.mGeometricTolerance) && rO.mGeometricTolerance >= 0.0))
+        mcad_fail("tolerance must be finite and not negative");
+    if (rO.mMaxPoints < 1)
+        mcad_fail("max_points must be positive");
+}
+
+/// Mesh one face in its parameters (see the file comment of mesh_cad.hpp).
+void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<McadUse>& rUses,
+                    const std::vector<std::optional<detail::TrimTrace>>& rTraces,
+                    const std::vector<Vec3>& rBoundary, const MeshCadSurfaceOptions& rO) {
+    MeshCadFaceRecord& r_rec = rF.mRecord;
+    const auto fail = [&](MeshCadFaceStatus S, const std::string& rWhy) {
+        r_rec.mStatus = S;
+        r_rec.mReason = rWhy;
+        rF.mTriangles.clear();
+        rF.mInterior.clear();
+    };
+    for (const auto& r_loop : rF.mLoops)
+        for (const std::size_t u : r_loop)
+            if (rUses[u].mFail != MeshCadFaceStatus::Ok)
+                return fail(rUses[u].mFail, rUses[u].mWhy);
+    const double h = rO.mTargetSize;
+
+    // The loops as closed polylines of (mesh point, parameters).
+    struct Entry {
+        std::int64_t mId;
+        Vec2 mUv;
+    };
+    std::vector<std::vector<Entry>> loops;
+    double lo[2] = {std::numeric_limits<double>::infinity(),
+                    std::numeric_limits<double>::infinity()};
+    double hi[2] = {-lo[0], -lo[1]};
+    std::size_t total = 0;
+    for (const auto& r_loop : rF.mLoops) {
+        std::vector<Entry> poly;
+        for (const std::size_t u : r_loop) {
+            const McadUse& r_u = rUses[u];
+            const detail::TrimTrace& r_t = *rTraces[u];
+            for (std::size_t j = 0; j + 1 < r_u.mIds.size(); ++j) {
+                const Vec2 uv = r_t.Uv(r_u.mParams[j]);
+                poly.push_back({r_u.mIds[j], uv});
+                for (int k = 0; k < 2; ++k) {
+                    lo[k] = std::min(lo[k], uv[k]);
+                    hi[k] = std::max(hi[k], uv[k]);
+                }
+            }
+        }
+        if (!poly.empty()) {
+            total += poly.size();
+            loops.push_back(std::move(poly));
+        }
+    }
+    if (total < 3)
+        return fail(MeshCadFaceStatus::Empty, "its loops have fewer than three points");
+
+    // The parameters through one affine map x = L (u, v), L the Cholesky
+    // factor of the mean first fundamental form over the face's box, so the
+    // triangulation is Delaunay in (an average of) the surface's own metric:
+    // in raw parameters, whose scales can differ by orders of magnitude, a
+    // Delaunay triangulation links points far apart on the surface.
+    const detail::BrepSurfaceEval& r_s = *rF.pSurface;
+    constexpr int kSamples = 9;
+    std::vector<std::array<Vec3, 2>> jac;
+    double me = 0.0;
+    double mf = 0.0;
+    double mg = 0.0;
+    for (int j = 0; j < kSamples; ++j)
+        for (int i = 0; i < kSamples; ++i) {
+            const double u = lo[0] + (hi[0] - lo[0]) * double(i) / double(kSamples - 1);
+            const double v = lo[1] + (hi[1] - lo[1]) * double(j) / double(kSamples - 1);
+            double x[3];
+            Vec3 su{};
+            Vec3 sv{};
+            r_s.Eval(u, v, x, su.data(), sv.data());
+            jac.push_back({su, sv});
+            me += su[0] * su[0] + su[1] * su[1] + su[2] * su[2];
+            mf += su[0] * sv[0] + su[1] * sv[1] + su[2] * sv[2];
+            mg += sv[0] * sv[0] + sv[1] * sv[1] + sv[2] * sv[2];
+        }
+    const double ns = double(jac.size());
+    me /= ns;
+    mf /= ns;
+    mg /= ns;
+    double l11 = 1.0;
+    double l12 = 0.0;
+    double l22 = 1.0;
+    if (me > 0.0 && mg > 0.0 && me - mf * mf / mg > 1e-12 * me) {
+        l11 = std::sqrt(me);
+        l12 = mf / l11;
+        l22 = std::sqrt(mg - l12 * l12);
+    }
+    const auto to_x = [&](const Vec2& rUv) -> Vec2 {
+        return {l11 * rUv[0] + l12 * rUv[1], l22 * rUv[1]};
+    };
+    const auto to_uv = [&](const Vec2& rX) -> Vec2 {
+        const double v = rX[1] / l22;
+        return {(rX[0] - l12 * v) / l11, v};
+    };
+    std::vector<Vec2> xs;
+    xs.reserve(total);
+    double xlo[2] = {std::numeric_limits<double>::infinity(),
+                     std::numeric_limits<double>::infinity()};
+    double xhi[2] = {-xlo[0], -xlo[1]};
+    for (const auto& r_poly : loops)
+        for (const Entry& r_e : r_poly) {
+            xs.push_back(to_x(r_e.mUv));
+            for (int k = 0; k < 2; ++k) {
+                xlo[k] = std::min(xlo[k], xs.back()[static_cast<std::size_t>(k)]);
+                xhi[k] = std::max(xhi[k], xs.back()[static_cast<std::size_t>(k)]);
+            }
+        }
+    detail::Cdt2d cdt(xlo[0], xlo[1], xhi[0], xhi[1]);
+    const std::vector<std::int64_t> vid = cdt.InsertBatch(xs);
+    // Each triangulation vertex is one mesh point: a boundary vertex holds
+    // its id, an interior one -(1 + its index in mInterior).
+    std::unordered_map<std::int64_t, std::int64_t> mesh_of;
+    {
+        std::size_t at = 0;
+        for (const auto& r_poly : loops)
+            for (const Entry& r_e : r_poly) {
+                const auto [it, fresh] = mesh_of.emplace(vid[at++], r_e.mId);
+                if (!fresh && it->second != r_e.mId)
+                    return fail(MeshCadFaceStatus::Degenerate,
+                                "two distinct boundary points have the same parameters");
+            }
+    }
+    {
+        std::size_t at = 0;
+        for (const auto& r_poly : loops) {
+            for (std::size_t i = 0; i < r_poly.size(); ++i) {
+                const std::int64_t a = vid[at + i];
+                const std::int64_t b = vid[at + (i + 1) % r_poly.size()];
+                if (a == b)
+                    continue;
+                const detail::Cdt2dStatus st = cdt.InsertSegment(a, b);
+                if (st == detail::Cdt2dStatus::SelfIntersecting)
+                    return fail(MeshCadFaceStatus::SelfIntersecting,
+                                "its boundary crosses itself in the face's parameters at this "
+                                "target size");
+                if (st != detail::Cdt2dStatus::Ok)
+                    return fail(MeshCadFaceStatus::Other, detail::cdt2d_status_name(st));
+            }
+            at += r_poly.size();
+        }
+    }
+    if (cdt.Classify() != detail::Cdt2dStatus::Ok)
+        return fail(MeshCadFaceStatus::OpenLoop, "its loops do not bound a domain consistently");
+    if (cdt.InsideTriangles().empty())
+        return fail(MeshCadFaceStatus::Empty, "its loops enclose no area");
+
+    // Interior points: an equilateral lattice in the mapped plane, its
+    // spacing h over the largest stretch of the surface against the map (the
+    // largest singular value of J L^-1 on the samples), so no lattice step is
+    // longer than h on the surface.
+    double kappa = 0.0;
+    for (const auto& r_j : jac) {
+        Vec3 c1{};
+        Vec3 c2{};
+        for (std::size_t k = 0; k < 3; ++k) {
+            c1[k] = r_j[0][k] / l11;
+            c2[k] = r_j[1][k] / l22 - r_j[0][k] * l12 / (l11 * l22);
+        }
+        const double a = c1[0] * c1[0] + c1[1] * c1[1] + c1[2] * c1[2];
+        const double b = c1[0] * c2[0] + c1[1] * c2[1] + c1[2] * c2[2];
+        const double d = c2[0] * c2[0] + c2[1] * c2[1] + c2[2] * c2[2];
+        const double lmax = 0.5 * (a + d + std::sqrt((a - d) * (a - d) + 4.0 * b * b));
+        kappa = std::max(kappa, std::sqrt(lmax));
+    }
+    if (kappa > 0.0 && xhi[0] > xlo[0] && xhi[1] > xlo[1]) {
+        const double dx = h / kappa;
+        const double dy = dx * std::sqrt(3.0) / 2.0;
+        const double rows = std::floor((xhi[1] - xlo[1]) / dy);
+        const double cols = std::floor((xhi[0] - xlo[0]) / dx) + 1.0;
+        if (rows * cols > double(rO.mMaxPoints))
+            return fail(MeshCadFaceStatus::BudgetExceeded,
+                        "its interior lattice would exceed max_points");
+        McadGrid grid(h);
+        for (const auto& r_poly : loops)
+            for (std::size_t i = 0; i < r_poly.size(); ++i) {
+                const Vec3& a = rBoundary[static_cast<std::size_t>(r_poly[i].mId)];
+                const Vec3& b =
+                    rBoundary[static_cast<std::size_t>(r_poly[(i + 1) % r_poly.size()].mId)];
+                grid.AddPoint(a);
+                grid.AddSegment(a, b);
+            }
+        const auto nrows = static_cast<std::int64_t>(rows);
+        const auto ncols = static_cast<std::int64_t>(cols);
+        for (std::int64_t j = 1; j <= nrows; ++j) {
+            const double y = xlo[1] + double(j) * dy;
+            for (std::int64_t i = 0; i <= ncols; ++i) {
+                const Vec2 xp{xlo[0] + (double(i) + 0.5 * double(j % 2)) * dx, y};
+                if (!(xp[0] > xlo[0] && xp[0] < xhi[0]))
+                    continue;
+                const Vec2 uv = to_uv(xp);
+                Vec3 x{};
+                r_s.Eval(uv[0], uv[1], x.data(), nullptr, nullptr);
+                if (grid.Near(x, 0.5 * h, 0.4 * h))
+                    continue;
+                const std::int64_t v_id = cdt.InsertSteiner(xp);
+                if (v_id < 0)
+                    continue;
+                mesh_of[v_id] = -(1 + static_cast<std::int64_t>(rF.mInterior.size()));
+                rF.mInterior.push_back(x);
+                grid.AddPoint(x);
+            }
+        }
+    }
+
+    // Lift, drop what a pole collapses, orient along the face's normal.
+    const auto pos = [&](std::int64_t Id) -> const Vec3& {
+        return Id >= 0 ? rBoundary[static_cast<std::size_t>(Id)]
+                       : rF.mInterior[static_cast<std::size_t>(-Id - 1)];
+    };
+    double min_angle = 180.0;
+    double max_angle = 0.0;
+    double min_edge = std::numeric_limits<double>::infinity();
+    double max_edge = 0.0;
+    for (const auto& r_t : cdt.InsideTriangles()) {
+        std::array<std::int64_t, 3> tri{};
+        for (int k = 0; k < 3; ++k)
+            tri[k] = mesh_of.at(r_t[k]);
+        if (tri[0] == tri[1] || tri[1] == tri[2] || tri[0] == tri[2]) {
+            ++r_rec.mNumDegenerateDropped;
+            continue;
+        }
+        if (rBrepFace.mSwappedNormal)
+            std::swap(tri[1], tri[2]);
+        for (int k = 0; k < 3; ++k) {
+            const Vec3& o = pos(tri[k]);
+            const Vec3& p = pos(tri[(k + 1) % 3]);
+            const Vec3& q = pos(tri[(k + 2) % 3]);
+            const Vec3 a{p[0] - o[0], p[1] - o[1], p[2] - o[2]};
+            const Vec3 b{q[0] - o[0], q[1] - o[1], q[2] - o[2]};
+            const Vec3 c{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+                         a[0] * b[1] - a[1] * b[0]};
+            const double ang = std::atan2(std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]),
+                                          a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) *
+                               (180.0 / 3.14159265358979323846);
+            min_angle = std::min(min_angle, ang);
+            max_angle = std::max(max_angle, ang);
+            const double e = mcad_dist(o, p);
+            min_edge = std::min(min_edge, e);
+            max_edge = std::max(max_edge, e);
+        }
+        rF.mTriangles.push_back(tri);
+    }
+    if (rF.mTriangles.empty())
+        return fail(MeshCadFaceStatus::Empty, "every triangle collapses on the surface");
+    r_rec.mNumTriangles = static_cast<std::int64_t>(rF.mTriangles.size());
+    r_rec.mNumInteriorPoints = static_cast<std::int64_t>(rF.mInterior.size());
+    r_rec.mMinAngleDeg = min_angle;
+    r_rec.mMaxAngleDeg = max_angle;
+    r_rec.mMinEdge = min_edge;
+    r_rec.mMaxEdge = max_edge;
+}
+
+}  // namespace
+
+const char* mesh_cad_face_status_name(MeshCadFaceStatus Status) {
+    switch (Status) {
+        case MeshCadFaceStatus::Ok:
+            return "ok";
+        case MeshCadFaceStatus::Empty:
+            return "empty";
+        case MeshCadFaceStatus::OpenLoop:
+            return "open_loop";
+        case MeshCadFaceStatus::SelfIntersecting:
+            return "self_intersecting";
+        case MeshCadFaceStatus::Degenerate:
+            return "degenerate";
+        case MeshCadFaceStatus::ProjectionFailed:
+            return "projection_failed";
+        case MeshCadFaceStatus::BudgetExceeded:
+            return "budget_exceeded";
+        case MeshCadFaceStatus::Unsupported:
+            return "unsupported";
+        case MeshCadFaceStatus::Other:
+            return "other";
+    }
+    return "other";
+}
+
+MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
+                                      const MeshCadSurfaceOptions& rOptions) {
+    mcad_check_options(rOptions);
+    if (rBrep.mFaces.empty())
+        mcad_fail("the B-rep has no faces");
+    const double h = rOptions.mTargetSize;
+    MeshCadSurfaceResult result;
+    const auto warn = [&](const std::string& rMsg) {
+        log::warn("mesh_cad_surface: {}", rMsg);
+        result.mWarnings.push_back(rMsg);
+    };
+
+    // The tolerance: relative to the control nets' box unless given.
+    double lo[3] = {std::numeric_limits<double>::infinity(),
+                    std::numeric_limits<double>::infinity(),
+                    std::numeric_limits<double>::infinity()};
+    double hi[3] = {-lo[0], -lo[1], -lo[2]};
+    for (const NurbsPatch& r_p : rBrep.mPatches) {
+        if (r_p.mControlPoints.Dtype() != DType::Float64 ||
+            r_p.mControlPoints.Shape().size() != 2 || r_p.mControlPoints.Shape()[1] != 3)
+            continue;
+        const double* c = r_p.mControlPoints.As<double>();
+        for (std::size_t i = 0; i < r_p.mControlPoints.Shape()[0]; ++i)
+            for (int k = 0; k < 3; ++k)
+                if (std::isfinite(c[3 * i + k])) {
+                    lo[k] = std::min(lo[k], c[3 * i + k]);
+                    hi[k] = std::max(hi[k], c[3 * i + k]);
+                }
+    }
+    double diag = 0.0;
+    if (lo[0] <= hi[0])
+        diag = std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+                         (hi[2] - lo[2]) * (hi[2] - lo[2]));
+    const double tol = rOptions.mGeometricTolerance > 0.0 ? rOptions.mGeometricTolerance
+                                                          : (diag > 0.0 ? 1e-7 * diag : 1e-12);
+    result.mTolerance = tol;
+    // Two uses of an edge or corner farther apart than this mean the B-rep's
+    // topology does not describe its geometry: the faces using them fail.
+    const double gap_fail = std::max(0.25 * h, 10.0 * tol);
+
+    // Faces, their surfaces and their trims (one use each).
+    const std::size_t nf = rBrep.mFaces.size();
+    std::vector<McadFace> faces(nf);
+    std::vector<McadUse> uses;
+    for (std::size_t f = 0; f < nf; ++f) {
+        const BrepFace& r_bf = rBrep.mFaces[f];
+        McadFace& r_f = faces[f];
+        r_f.mRecord.mFace = static_cast<std::int64_t>(f);
+        r_f.mRecord.mId = r_bf.mId;
+        const auto unsupported = [&](const std::string& rWhy) {
+            r_f.mRecord.mStatus = MeshCadFaceStatus::Unsupported;
+            r_f.mRecord.mReason = rWhy;
+        };
+        if (r_bf.mPatch < 0 || static_cast<std::size_t>(r_bf.mPatch) >= rBrep.mPatches.size()) {
+            unsupported("its patch index is out of range");
+            continue;
+        }
+        try {
+            r_f.pSurface = std::make_unique<detail::BrepSurfaceEval>(
+                rBrep.mPatches[static_cast<std::size_t>(r_bf.mPatch)], r_bf.mRational);
+        } catch (const std::invalid_argument& r_e) {
+            unsupported(mcad_why(r_e));
+            continue;
+        }
+        if (!r_bf.mEmbeddedEdges.empty())
+            warn("face " + std::to_string(f) + ": its embedded edges are not meshed");
+        const auto add_use = [&](const BrepCurve* pC, bool Forward, std::int64_t TrimIndex) {
+            McadUse u;
+            u.mFace = f;
+            u.pCurve = pC;
+            u.mForward = Forward;
+            u.mTrimIndex = TrimIndex;
+            uses.push_back(std::move(u));
+            return uses.size() - 1;
+        };
+        bool any_trim = false;
+        for (const BrepLoop& r_l : r_bf.mLoops)
+            any_trim = any_trim || !r_l.mTrims.empty();
+        if (!any_trim) {
+            // An untrimmed face: its parameter rectangle, counter-clockwise.
+            const auto& b = r_f.pSurface->Box();
+            r_f.mSynthetic = {mcad_line(b[0], b[2], b[1], b[2]), mcad_line(b[1], b[2], b[1], b[3]),
+                              mcad_line(b[1], b[3], b[0], b[3]), mcad_line(b[0], b[3], b[0], b[2])};
+            std::vector<std::size_t> loop;
+            for (const BrepCurve& r_c : r_f.mSynthetic)
+                loop.push_back(add_use(&r_c, true, -1));
+            for (const std::size_t u : loop)
+                uses[u].mLoopSize = loop.size();
+            r_f.mLoops.push_back(std::move(loop));
+        } else {
+            for (const BrepLoop& r_l : r_bf.mLoops) {
+                std::vector<std::size_t> loop;
+                for (const std::size_t k : mcad_chain(r_l))
+                    loop.push_back(add_use(&r_l.mTrims[k].mCurve, r_l.mTrims[k].mDirection,
+                                           r_l.mTrims[k].mTrimIndex));
+                for (const std::size_t u : loop)
+                    uses[u].mLoopSize = loop.size();
+                if (!loop.empty())
+                    r_f.mLoops.push_back(std::move(loop));
+            }
+        }
+        r_f.mUsable = true;
+    }
+    std::vector<std::optional<detail::TrimTrace>> traces(uses.size());
+    std::vector<std::string> trace_why(uses.size());
+    parallel_for(
+        uses.size(),
+        [&](std::size_t u) {
+            try {
+                traces[u].emplace(faces[uses[u].mFace].pSurface.get(),
+                                  detail::BrepCurveEval(*uses[u].pCurve), uses[u].mForward);
+            } catch (const std::exception& r_e) {
+                trace_why[u] = mcad_why(r_e);
+            }
+        },
+        1);
+    for (std::size_t u = 0; u < uses.size(); ++u) {
+        McadFace& r_f = faces[uses[u].mFace];
+        if (!trace_why[u].empty() && r_f.mUsable) {
+            r_f.mUsable = false;
+            r_f.mRecord.mStatus = MeshCadFaceStatus::Unsupported;
+            r_f.mRecord.mReason = trace_why[u];
+        }
+    }
+    const auto live = [&](std::size_t U) { return faces[uses[U].mFace].mUsable; };
+
+    // Edges: the B-rep's own, then the trims none names (paired when their
+    // images coincide), each with its uses in ascending order.
+    std::unordered_map<std::int64_t, std::size_t> face_by_id;
+    std::unordered_map<std::string, std::size_t> face_by_name;
+    for (std::size_t f = 0; f < nf; ++f) {
+        if (rBrep.mFaces[f].mId >= 0)
+            face_by_id.emplace(rBrep.mFaces[f].mId, f);
+        if (!rBrep.mFaces[f].mName.empty())
+            face_by_name.emplace(rBrep.mFaces[f].mName, f);
+    }
+    std::map<std::pair<std::size_t, std::int64_t>, std::size_t> use_by_trim;
+    for (std::size_t u = 0; u < uses.size(); ++u)
+        if (uses[u].mTrimIndex >= 0)
+            use_by_trim.emplace(std::make_pair(uses[u].mFace, uses[u].mTrimIndex), u);
+    std::vector<McadEdge> edges;
+    for (std::size_t e = 0; e < rBrep.mEdges.size(); ++e) {
+        McadEdge ed;
+        ed.mBrepEdge = static_cast<std::int64_t>(e);
+        for (const BrepRef& r_r : rBrep.mEdges[e].mTopology) {
+            std::optional<std::size_t> f;
+            if (r_r.mId >= 0) {
+                const auto it = face_by_id.find(r_r.mId);
+                if (it != face_by_id.end())
+                    f = it->second;
+            } else if (!r_r.mName.empty()) {
+                const auto it = face_by_name.find(r_r.mName);
+                if (it != face_by_name.end())
+                    f = it->second;
+            }
+            if (!f) {
+                warn("edge " + std::to_string(e) + " refers to a face that does not exist");
+                continue;
+            }
+            // A face already refused has no trims; its refusal says why.
+            if (faces[*f].mRecord.mStatus != MeshCadFaceStatus::Ok)
+                continue;
+            const auto it = use_by_trim.find({*f, r_r.mTrimIndex});
+            if (it == use_by_trim.end()) {
+                warn("edge " + std::to_string(e) + " refers to trim " +
+                     std::to_string(r_r.mTrimIndex) + " of face " + std::to_string(*f) +
+                     ", which does not exist");
+                continue;
+            }
+            McadUse& r_u = uses[it->second];
+            if (!live(it->second))
+                continue;
+            if (r_u.mEdge >= 0) {
+                warn("trim " + std::to_string(r_r.mTrimIndex) + " of face " + std::to_string(*f) +
+                     " is used by two edges; the first is kept");
+                continue;
+            }
+            r_u.mEdge = static_cast<std::int64_t>(edges.size());
+            ed.mUses.push_back(it->second);
+        }
+        if (ed.mUses.empty())
+            continue;
+        std::sort(ed.mUses.begin(), ed.mUses.end());
+        edges.push_back(std::move(ed));
+    }
+    {
+        std::vector<std::size_t> free_uses;
+        for (std::size_t u = 0; u < uses.size(); ++u)
+            if (live(u) && uses[u].mEdge < 0)
+                free_uses.push_back(u);
+        struct Probe {
+            Vec3 mStart, mMid, mEnd;
+            bool mDegenerate;
+        };
+        std::vector<Probe> probe(free_uses.size());
+        for (std::size_t i = 0; i < free_uses.size(); ++i) {
+            const detail::TrimTrace& r_t = *traces[free_uses[i]];
+            probe[i] = {r_t.Point(r_t.Start()), r_t.Point(r_t.ParamAtLength(0.5 * r_t.Length())),
+                        r_t.Point(r_t.End()), !(r_t.Length() > tol)};
+        }
+        std::vector<bool> taken(free_uses.size(), false);
+        for (std::size_t i = 0; i < free_uses.size(); ++i) {
+            if (taken[i])
+                continue;
+            taken[i] = true;
+            McadEdge ed;
+            ed.mUses.push_back(free_uses[i]);
+            if (rOptions.mMatchUnreferencedTrims && !probe[i].mDegenerate) {
+                for (std::size_t j = i + 1; j < free_uses.size(); ++j) {
+                    if (taken[j] || probe[j].mDegenerate)
+                        continue;
+                    const Probe& a = probe[i];
+                    const Probe& b = probe[j];
+                    const bool ends =
+                        (mcad_dist(a.mStart, b.mStart) <= tol &&
+                         mcad_dist(a.mEnd, b.mEnd) <= tol) ||
+                        (mcad_dist(a.mStart, b.mEnd) <= tol && mcad_dist(a.mEnd, b.mStart) <= tol);
+                    if (ends && mcad_dist(a.mMid, b.mMid) <= tol) {
+                        taken[j] = true;
+                        ed.mUses.push_back(free_uses[j]);
+                    }
+                }
+            }
+            for (const std::size_t u : ed.mUses)
+                uses[u].mEdge = static_cast<std::int64_t>(edges.size());
+            edges.push_back(std::move(ed));
+        }
+    }
+
+    // Corners from the topology: a trim's end is the next trim's start; an
+    // edge's ends are the same at every use; a degenerate edge is one corner.
+    const auto slot = [](std::size_t U, int End) { return 2 * U + static_cast<std::size_t>(End); };
+    McadUnionFind corners(2 * uses.size());
+    for (const McadFace& r_f : faces) {
+        if (!r_f.mUsable)
+            continue;
+        for (const auto& r_loop : r_f.mLoops)
+            for (std::size_t k = 0; k < r_loop.size(); ++k)
+                corners.Join(slot(r_loop[k], 1), slot(r_loop[(k + 1) % r_loop.size()], 0));
+    }
+    for (McadEdge& r_e : edges) {
+        const std::size_t m = r_e.mUses.front();
+        const detail::TrimTrace& r_m = *traces[m];
+        const bool degenerate = !(r_m.Length() > tol);
+        if (degenerate)
+            corners.Join(slot(m, 0), slot(m, 1));
+        for (std::size_t i = 1; i < r_e.mUses.size(); ++i) {
+            const std::size_t o = r_e.mUses[i];
+            uses[o].mSame = degenerate || detail::edge_same_direction(r_m, *traces[o]);
+            corners.Join(slot(m, 0), slot(o, uses[o].mSame ? 0 : 1));
+            corners.Join(slot(m, 1), slot(o, uses[o].mSame ? 1 : 0));
+            if (degenerate)
+                corners.Join(slot(o, 0), slot(o, 1));
+        }
+    }
+    std::vector<std::int64_t> corner_id(2 * uses.size(), -1);
+    std::vector<Vec3> boundary;
+    for (std::size_t s = 0; s < 2 * uses.size(); ++s) {
+        if (!live(s / 2))
+            continue;
+        const std::size_t root = corners.Find(s);
+        if (corner_id[root] < 0) {
+            const detail::TrimTrace& r_t = *traces[s / 2];
+            corner_id[root] = static_cast<std::int64_t>(boundary.size());
+            boundary.push_back(r_t.Point(s % 2 == 0 ? r_t.Start() : r_t.End()));
+        }
+        corner_id[s] = corner_id[root];
+    }
+    double max_gap = 0.0;
+    for (std::size_t s = 0; s < 2 * uses.size(); ++s) {
+        if (!live(s / 2))
+            continue;
+        const detail::TrimTrace& r_t = *traces[s / 2];
+        const double gap = mcad_dist(r_t.Point(s % 2 == 0 ? r_t.Start() : r_t.End()),
+                                     boundary[static_cast<std::size_t>(corner_id[s])]);
+        max_gap = std::max(max_gap, gap);
+        if (gap > gap_fail && uses[s / 2].mFail == MeshCadFaceStatus::Ok) {
+            uses[s / 2].mFail = MeshCadFaceStatus::OpenLoop;
+            uses[s / 2].mWhy = "a corner of its loop is " + std::to_string(gap) +
+                               " from the corner the topology joins it to";
+        }
+    }
+
+    // Sample each edge once on its master, then carry the samples to the
+    // other uses.
+    detail::EdgeSampleOptions so;
+    so.mTargetSize = h;
+    so.mMaxChordalDeviation = rOptions.mMaxChordalDeviation;
+    so.mMinSegments = rOptions.mMinPointsPerEdge + 1;
+    so.mTolerance = tol;
+    so.mMaxSegments = rOptions.mMaxPoints;
+    std::vector<double> edge_gap(edges.size(), 0.0);
+    parallel_for(
+        edges.size(),
+        [&](std::size_t e) {
+            McadEdge& r_e = edges[e];
+            try {
+                const std::size_t m = r_e.mUses.front();
+                // Enough pieces that every loop through the edge has three
+                // points: a closed edge alone in its loop needs three.
+                detail::EdgeSampleOptions eo = so;
+                for (const std::size_t u : r_e.mUses)
+                    eo.mMinSegments = std::max<std::int64_t>(
+                        eo.mMinSegments,
+                        static_cast<std::int64_t>((3 + uses[u].mLoopSize - 1) / uses[u].mLoopSize));
+                r_e.mSamples = detail::edge_sample(*traces[m], eo);
+                uses[m].mParams = r_e.mSamples.mParams;
+                for (std::size_t i = 1; i < r_e.mUses.size(); ++i) {
+                    const std::size_t o = r_e.mUses[i];
+                    const detail::EdgeProjection p =
+                        detail::edge_project(*traces[o], r_e.mSamples, uses[o].mSame);
+                    uses[o].mParams = p.mParams;
+                    edge_gap[e] = std::max(edge_gap[e], p.mMaxGap);
+                    if (p.mMaxGap > gap_fail) {
+                        uses[o].mFail = MeshCadFaceStatus::ProjectionFailed;
+                        uses[o].mWhy = "the trims of one edge are " + std::to_string(p.mMaxGap) +
+                                       " apart (are the uses of a closed edge started at "
+                                       "different points?)";
+                    }
+                }
+            } catch (const std::length_error& r_x) {
+                r_e.mFail = MeshCadFaceStatus::BudgetExceeded;
+                r_e.mWhy = mcad_why(r_x);
+            } catch (const std::exception& r_x) {
+                r_e.mFail = MeshCadFaceStatus::Other;
+                r_e.mWhy = mcad_why(r_x);
+            }
+        },
+        1);
+    for (const double g : edge_gap)
+        max_gap = std::max(max_gap, g);
+    result.mMaxEdgeGap = max_gap;
+    if (max_gap > 0.01 * h)
+        warn("the trims of some edges or corners disagree by up to " + std::to_string(max_gap) +
+             " (the mesh shares their points regardless)");
+
+    // Point ids: corners, then each edge's interior samples.
+    for (McadEdge& r_e : edges) {
+        r_e.mFirstInterior = static_cast<std::int64_t>(boundary.size());
+        if (r_e.mFail != MeshCadFaceStatus::Ok) {
+            for (const std::size_t u : r_e.mUses)
+                if (uses[u].mFail == MeshCadFaceStatus::Ok) {
+                    uses[u].mFail = r_e.mFail;
+                    uses[u].mWhy = r_e.mWhy;
+                }
+            continue;
+        }
+        const auto& r_pts = r_e.mSamples.mPoints;
+        if (static_cast<std::int64_t>(boundary.size() + r_pts.size()) > rOptions.mMaxPoints)
+            throw std::length_error(std::string(kMcadPrefix) + "the edges alone need more than " +
+                                    std::to_string(rOptions.mMaxPoints) + " points");
+        for (std::size_t k = 1; k + 1 < r_pts.size(); ++k)
+            boundary.push_back(r_pts[k]);
+        const std::size_t n = r_pts.size();
+        for (const std::size_t u : r_e.mUses) {
+            McadUse& r_u = uses[u];
+            r_u.mIds.assign(n, 0);
+            r_u.mIds.front() = corner_id[slot(u, 0)];
+            r_u.mIds.back() = corner_id[slot(u, 1)];
+            for (std::size_t k = 1; k + 1 < n; ++k) {
+                const std::size_t j = r_u.mSame ? k : n - 1 - k;
+                r_u.mIds[k] = r_e.mFirstInterior + static_cast<std::int64_t>(j - 1);
+            }
+        }
+    }
+
+    // Faces, each in its own parameters.
+    parallel_for(
+        nf,
+        [&](std::size_t f) {
+            McadFace& r_f = faces[f];
+            if (!r_f.mUsable)
+                return;
+            try {
+                mcad_mesh_face(r_f, rBrep.mFaces[f], uses, traces, boundary, rOptions);
+            } catch (const std::exception& r_x) {
+                r_f.mRecord.mStatus = MeshCadFaceStatus::Other;
+                r_f.mRecord.mReason = mcad_why(r_x);
+                r_f.mTriangles.clear();
+                r_f.mInterior.clear();
+            }
+        },
+        1);
+
+    // Assemble in face order.
+    std::size_t np = boundary.size();
+    std::vector<std::int64_t> interior_base(nf, 0);
+    for (std::size_t f = 0; f < nf; ++f) {
+        interior_base[f] = static_cast<std::int64_t>(np);
+        if (faces[f].mRecord.mStatus == MeshCadFaceStatus::Ok)
+            np += faces[f].mInterior.size();
+    }
+    if (static_cast<std::int64_t>(np) > rOptions.mMaxPoints)
+        throw std::length_error(std::string(kMcadPrefix) + "the mesh would have more than " +
+                                std::to_string(rOptions.mMaxPoints) + " points");
+    NDArray points = NDArray::Uninit(DType::Float64, {np, std::size_t{3}});
+    double* px = points.As<double>();
+    for (std::size_t i = 0; i < boundary.size(); ++i)
+        for (int k = 0; k < 3; ++k)
+            px[3 * i + static_cast<std::size_t>(k)] = boundary[i][static_cast<std::size_t>(k)];
+    std::vector<std::array<std::int64_t, 3>> tris;
+    std::vector<std::int64_t> tri_face;
+    std::vector<std::vector<std::int64_t>> face_cells(nf);
+    result.mMinAngleDeg = 180.0;
+    result.mMinEdge = std::numeric_limits<double>::infinity();
+    for (std::size_t f = 0; f < nf; ++f) {
+        McadFace& r_f = faces[f];
+        if (r_f.mRecord.mStatus != MeshCadFaceStatus::Ok) {
+            ++result.mNumFailed;
+            if (r_f.mRecord.mStatus == MeshCadFaceStatus::Empty && r_f.mRecord.mReason.empty())
+                r_f.mRecord.mReason = "nothing to mesh";
+            warn("face " + std::to_string(f) + " is not meshed (" +
+                 mesh_cad_face_status_name(r_f.mRecord.mStatus) + "): " + r_f.mRecord.mReason);
+            continue;
+        }
+        const std::int64_t base = interior_base[f];
+        for (std::size_t i = 0; i < r_f.mInterior.size(); ++i)
+            for (int k = 0; k < 3; ++k)
+                px[3 * (static_cast<std::size_t>(base) + i) + static_cast<std::size_t>(k)] =
+                    r_f.mInterior[i][static_cast<std::size_t>(k)];
+        for (auto tri : r_f.mTriangles) {
+            for (std::int64_t& r_v : tri)
+                if (r_v < 0)
+                    r_v = base + (-r_v - 1);
+            face_cells[f].push_back(static_cast<std::int64_t>(tris.size()));
+            tris.push_back(tri);
+            tri_face.push_back(static_cast<std::int64_t>(f));
+        }
+        result.mNumDegenerateDropped += r_f.mRecord.mNumDegenerateDropped;
+        result.mMinAngleDeg = std::min(result.mMinAngleDeg, r_f.mRecord.mMinAngleDeg);
+        result.mMaxAngleDeg = std::max(result.mMaxAngleDeg, r_f.mRecord.mMaxAngleDeg);
+        result.mMinEdge = std::min(result.mMinEdge, r_f.mRecord.mMinEdge);
+        result.mMaxEdge = std::max(result.mMaxEdge, r_f.mRecord.mMaxEdge);
+    }
+    if (tris.empty()) {
+        result.mMinAngleDeg = 0.0;
+        result.mMinEdge = 0.0;
+    }
+
+    Mesh& r_m = result.mMesh;
+    r_m.AssignPoints(std::move(points));
+    NDArray conn = NDArray::Uninit(DType::Int64, {tris.size(), std::size_t{3}});
+    std::int64_t* pc = conn.As<std::int64_t>();
+    for (std::size_t t = 0; t < tris.size(); ++t)
+        for (int k = 0; k < 3; ++k)
+            pc[3 * t + static_cast<std::size_t>(k)] = tris[t][static_cast<std::size_t>(k)];
+    r_m.AddCellBlock("triangle", std::move(conn));
+    std::vector<std::array<std::int64_t, 2>> segs;
+    std::vector<std::int64_t> seg_edge;
+    if (rOptions.mEdges) {
+        for (const McadEdge& r_e : edges) {
+            if (r_e.mFail != MeshCadFaceStatus::Ok)
+                continue;
+            const std::vector<std::int64_t>& r_ids = uses[r_e.mUses.front()].mIds;
+            for (std::size_t k = 0; k + 1 < r_ids.size(); ++k) {
+                if (r_ids[k] == r_ids[k + 1])
+                    continue;
+                segs.push_back({r_ids[k], r_ids[k + 1]});
+                seg_edge.push_back(r_e.mBrepEdge);
+            }
+        }
+        NDArray lines = NDArray::Uninit(DType::Int64, {segs.size(), std::size_t{2}});
+        std::int64_t* pl = lines.As<std::int64_t>();
+        for (std::size_t s = 0; s < segs.size(); ++s) {
+            pl[2 * s] = segs[s][0];
+            pl[2 * s + 1] = segs[s][1];
+        }
+        r_m.AddCellBlock("line", std::move(lines));
+    }
+    const auto column = [](const std::vector<std::int64_t>& rV) {
+        NDArray a = NDArray::Uninit(DType::Int64, {rV.size()});
+        std::copy(rV.begin(), rV.end(), a.As<std::int64_t>());
+        return a;
+    };
+    if (rOptions.mRecordFaceIds) {
+        std::vector<NDArray> blocks;
+        blocks.push_back(column(tri_face));
+        if (rOptions.mEdges)
+            blocks.push_back(column(std::vector<std::int64_t>(segs.size(), -1)));
+        r_m.AddCellData(kMeshCadFaceName, std::move(blocks));
+    }
+    if (rOptions.mEdges) {
+        std::vector<NDArray> blocks;
+        blocks.push_back(column(std::vector<std::int64_t>(tris.size(), -1)));
+        blocks.push_back(column(seg_edge));
+        r_m.AddCellData(kMeshCadEdgeName, std::move(blocks));
+    }
+    if (rOptions.mRecordFaceIds)
+        for (std::size_t f = 0; f < nf; ++f)
+            r_m.AddRegion(Region(kMeshCadFaceRegionPrefix + std::to_string(f), RegionKind::Cell, 2,
+                                 -1, column(face_cells[f])));
+
+    // Conformity: every triangle edge's uses.
+    std::unordered_map<std::uint64_t, std::array<std::int64_t, 2>> uses_of;  // count, net direction
+    uses_of.reserve(3 * tris.size());
+    for (const auto& r_t : tris)
+        for (int k = 0; k < 3; ++k) {
+            const std::int64_t a = r_t[static_cast<std::size_t>(k)];
+            const std::int64_t b = r_t[static_cast<std::size_t>((k + 1) % 3)];
+            const auto key = (static_cast<std::uint64_t>(std::min(a, b)) << 32) ^
+                             static_cast<std::uint64_t>(std::max(a, b));
+            auto& r_c = uses_of[key];
+            r_c[0] += 1;
+            r_c[1] += a < b ? 1 : -1;
+        }
+    for (const auto& [key, r_c] : uses_of) {
+        (void)key;
+        if (r_c[0] == 1)
+            ++result.mNumOpenEdges;
+        else if (r_c[0] > 2)
+            ++result.mNumNonManifoldEdges;
+        else if (r_c[1] != 0)
+            ++result.mNumMisorientedEdges;
+    }
+    result.mNumPoints = static_cast<std::int64_t>(np);
+    result.mNumTriangles = static_cast<std::int64_t>(tris.size());
+    result.mNumEdgeSegments = static_cast<std::int64_t>(segs.size());
+    result.mNumFaces = static_cast<std::int64_t>(nf);
+    result.mNumEdges = static_cast<std::int64_t>(edges.size());
+    for (McadFace& r_f : faces)
+        result.mFaces.push_back(std::move(r_f.mRecord));
+    if (rOptions.mStrict && result.mNumFailed > 0)
+        for (const MeshCadFaceRecord& r_r : result.mFaces)
+            if (r_r.mStatus != MeshCadFaceStatus::Ok)
+                throw std::runtime_error(std::string(kMcadPrefix) + "face " +
+                                         std::to_string(r_r.mFace) + " is not meshed (" +
+                                         mesh_cad_face_status_name(r_r.mStatus) +
+                                         "): " + r_r.mReason);
+    return result;
+}
+
+Mesh triangulate_polygon_2d(const std::vector<std::vector<std::array<double, 2>>>& rLoops,
+                            double TargetSize) {
+    if (!(std::isfinite(TargetSize) && TargetSize >= 0.0))
+        throw std::invalid_argument(
+            "meshio++: triangulate_polygon_2d: target_size must be finite and not negative");
+    const detail::Cdt2dPolygon t = detail::cdt2d_triangulate_polygon(rLoops, TargetSize);
+    if (t.mStatus != detail::Cdt2dStatus::Ok)
+        throw std::invalid_argument("meshio++: triangulate_polygon_2d: " + t.mWhy);
+    Mesh m;
+    NDArray points = NDArray::Uninit(DType::Float64, {t.mPoints.size(), std::size_t{3}});
+    double* px = points.As<double>();
+    for (std::size_t i = 0; i < t.mPoints.size(); ++i) {
+        px[3 * i] = t.mPoints[i][0];
+        px[3 * i + 1] = t.mPoints[i][1];
+        px[3 * i + 2] = 0.0;
+    }
+    m.AssignPoints(std::move(points));
+    NDArray conn = NDArray::Uninit(DType::Int64, {t.mTriangles.size(), std::size_t{3}});
+    std::int64_t* pc = conn.As<std::int64_t>();
+    for (std::size_t i = 0; i < t.mTriangles.size(); ++i)
+        for (int k = 0; k < 3; ++k)
+            pc[3 * i + static_cast<std::size_t>(k)] = t.mTriangles[i][static_cast<std::size_t>(k)];
+    m.AddCellBlock("triangle", std::move(conn));
+    return m;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/mesh_cad.cpp =====
 // ===== begin src/cpp/src/operations/neighbors.cpp =====
 #include <algorithm>
 #include <array>
@@ -217965,6 +221441,9 @@ const char* pipe_excluded_hint(const std::string& rOp) {
     if (rOp == "ConservativeInterpolate")
         return "'ConservativeInterpolate' needs a second (source) mesh and is not "
                "a pipeline step; use the `conservative-interpolate` CLI verb";
+    if (rOp == "MeshCadSurface")
+        return "'MeshCadSurface' meshes a CAD model, which the pipeline does not "
+               "carry, and is not a pipeline step; use the `mesh-cad-surface` CLI verb";
     return nullptr;
 }
 

@@ -1166,6 +1166,56 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def mesh_cad_surface(
+        input_path: str,
+        output_path: str,
+        target_size: float,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        max_chordal_deviation: float = 0.0,
+        min_points_per_edge: int = 0,
+        tolerance: float = 0.0,
+        record_face_ids: bool = True,
+        edges: bool = True,
+        match_unreferenced_trims: bool = True,
+        strict: bool = False,
+        max_points: int = 50000000,
+    ) -> dict:
+        """Triangulate the faces of a CAD model (Kratos CAD JSON; STEP and
+        IGES where OpenCASCADE is linked) into one conforming surface mesh with
+        edges of about target_size, without a CAD kernel: every B-rep edge is
+        sampled once and shared by the faces that use it (so closed solids come
+        out watertight), and each face is a constrained Delaunay triangulation
+        of its parameter domain lifted onto its surface. max_chordal_deviation
+        caps the sagitta of the boundary segments (0: off); min_points_per_edge
+        puts at least that many points inside every edge; tolerance (0: 1e-7 of
+        the model's size) decides degenerate edges and pairs trims no edge
+        names when match_unreferenced_trims. The output has one triangle block
+        with cad:face cell data and a face:<k> cell region per face
+        (record_face_ids) and a line block of the edges with cad:edge (edges).
+        A face that cannot be meshed is left out and reported (status, reason)
+        rather than meshed wrong; strict=True makes that an error. Reports the
+        counts (failed faces, open, non-manifold and misoriented edges), the
+        extreme angles and edge lengths, max_edge_gap, one record per face and
+        the warnings. No quality guarantee yet (no Delaunay refinement)."""
+        return _guard(
+            _tools.tool_mesh_cad_surface,
+            input_path=input_path,
+            output_path=output_path,
+            target_size=target_size,
+            input_format=input_format,
+            output_format=output_format,
+            max_chordal_deviation=max_chordal_deviation,
+            min_points_per_edge=min_points_per_edge,
+            tolerance=tolerance,
+            record_face_ids=record_face_ids,
+            edges=edges,
+            match_unreferenced_trims=match_unreferenced_trims,
+            strict=strict,
+            max_points=max_points,
+        )
+
+    @server.tool()
     def octree(
         input_path: str,
         output_path: str,

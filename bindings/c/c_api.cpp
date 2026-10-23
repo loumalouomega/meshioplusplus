@@ -115,6 +115,7 @@
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/primitives.hpp"
 #include "meshioplusplus/operations/octree.hpp"
+#include "meshioplusplus/operations/mesh_cad.hpp"
 #include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
@@ -6613,6 +6614,13 @@ static_assert(sizeof(mio_fit_primitives_report) == 96,
               "mio_fit_primitives_report grew outside its reserved tail");
 static_assert(sizeof(mio_fit_cad_opts) == 80, "mio_fit_cad_opts grew outside its reserved tail");
 static_assert(sizeof(mio_iga_opts) == 96, "mio_iga_opts grew outside its reserved tail");
+static_assert(sizeof(mio_mesh_cad_surface_opts) == 104,
+              "mio_mesh_cad_surface_opts grew outside its reserved tail");
+static_assert(sizeof(mio_mesh_cad_surface_report) == 200,
+              "mio_mesh_cad_surface_report grew outside its reserved tail");
+static_assert(static_cast<int>(MIO_MESH_CAD_OTHER) ==
+                  static_cast<int>(meshioplusplus::MeshCadFaceStatus::Other),
+              "mio_mesh_cad_face_status drifted from MeshCadFaceStatus");
 static_assert(sizeof(mio_fit_cad_report) == 192,
               "mio_fit_cad_report grew outside its reserved tail");
 static_assert(sizeof(mio_fit_cad_report_ex) == 128,
@@ -6994,6 +7002,16 @@ mio_format_info* capi_iga_handle(const std::string& rFormat, Info&& rInfo) {
 
 const char* const kCapiIgaNotNurbs = "meshio++: iga: the side channel is not a NURBS model";
 
+// This thread's last mesh_cad_surface call: its per-face records and warnings.
+struct CapiMeshCadState {
+    std::vector<meshioplusplus::MeshCadFaceRecord> mFaces;
+    std::string mWarnings;
+};
+CapiMeshCadState& capi_mesh_cad_state() {
+    thread_local CapiMeshCadState state;
+    return state;
+}
+
 }  // namespace
 
 extern "C" {
@@ -7131,6 +7149,105 @@ mio_status mio_iga_evaluation_array(const mio_iga_evaluation* evaluation, int32_
 
 void mio_iga_evaluation_free(mio_iga_evaluation* evaluation) {
     delete evaluation;
+}
+
+void mio_mesh_cad_surface_opts_init(mio_mesh_cad_surface_opts* opts) {
+    if (!opts)
+        return;
+    const meshioplusplus::MeshCadSurfaceOptions d;
+    *opts = mio_mesh_cad_surface_opts{};
+    opts->target_size = d.mTargetSize;
+    opts->max_chordal_deviation = d.mMaxChordalDeviation;
+    opts->tolerance = d.mGeometricTolerance;
+    opts->min_points_per_edge = d.mMinPointsPerEdge;
+    opts->max_points = d.mMaxPoints;
+    opts->record_face_ids = d.mRecordFaceIds ? 1 : 0;
+    opts->edges = d.mEdges ? 1 : 0;
+    opts->match_unreferenced_trims = d.mMatchUnreferencedTrims ? 1 : 0;
+    opts->strict = d.mStrict ? 1 : 0;
+}
+
+mio_mesh* mio_mesh_cad_surface(const mio_format_info* info, const mio_mesh_cad_surface_opts* opts,
+                               mio_mesh_cad_surface_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        CapiMeshCadState& state = capi_mesh_cad_state();
+        state.mFaces.clear();
+        state.mWarnings.clear();
+        if (!info)
+            throw std::invalid_argument("meshio++: format info handle is NULL");
+        if (!opts)
+            throw std::invalid_argument(
+                "meshio++: mesh_cad_surface: options are required (target_size)");
+        const auto* p_brep = std::get_if<meshioplusplus::BrepInfo>(&info->mInfo);
+        if (!p_brep)
+            throw std::invalid_argument(
+                "meshio++: mesh_cad_surface: the side channel is not a B-rep (read a "
+                "\"cad_json\", \"step\" or \"iges\" file)");
+        meshioplusplus::MeshCadSurfaceOptions o;
+        o.mTargetSize = opts->target_size;
+        o.mMaxChordalDeviation = opts->max_chordal_deviation;
+        o.mGeometricTolerance = opts->tolerance;
+        o.mMinPointsPerEdge = opts->min_points_per_edge;
+        o.mMaxPoints = opts->max_points;
+        o.mRecordFaceIds = opts->record_face_ids != 0;
+        o.mEdges = opts->edges != 0;
+        o.mMatchUnreferencedTrims = opts->match_unreferenced_trims != 0;
+        o.mStrict = opts->strict != 0;
+        meshioplusplus::MeshCadSurfaceResult r = meshioplusplus::mesh_cad_surface(*p_brep, o);
+        for (const std::string& w : r.mWarnings) {
+            if (!state.mWarnings.empty())
+                state.mWarnings += '\n';
+            state.mWarnings += w;
+        }
+        state.mFaces = r.mFaces;
+        if (report) {
+            *report = mio_mesh_cad_surface_report{};
+            report->num_points = r.mNumPoints;
+            report->num_triangles = r.mNumTriangles;
+            report->num_edge_segments = r.mNumEdgeSegments;
+            report->num_faces = r.mNumFaces;
+            report->num_failed = r.mNumFailed;
+            report->num_edges = r.mNumEdges;
+            report->num_open_edges = r.mNumOpenEdges;
+            report->num_non_manifold_edges = r.mNumNonManifoldEdges;
+            report->num_misoriented_edges = r.mNumMisorientedEdges;
+            report->num_degenerate_dropped = r.mNumDegenerateDropped;
+            report->tolerance = r.mTolerance;
+            report->min_angle_deg = r.mMinAngleDeg;
+            report->max_angle_deg = r.mMaxAngleDeg;
+            report->min_edge = r.mMinEdge;
+            report->max_edge = r.mMaxEdge;
+            report->max_edge_gap = r.mMaxEdgeGap;
+            report->num_warnings = static_cast<std::int64_t>(r.mWarnings.size());
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+int32_t mio_mesh_cad_surface_face_status(int64_t face) {
+    const auto& faces = capi_mesh_cad_state().mFaces;
+    if (face < 0 || static_cast<std::size_t>(face) >= faces.size())
+        return -1;
+    return static_cast<int32_t>(faces[static_cast<std::size_t>(face)].mStatus);
+}
+
+int64_t mio_mesh_cad_surface_face_reason(int64_t face, char* buf, int64_t buflen) {
+    return guarded_ptr(int64_t{-1}, [&]() {
+        const auto& faces = capi_mesh_cad_state().mFaces;
+        if (face < 0 || static_cast<std::size_t>(face) >= faces.size())
+            throw std::invalid_argument("meshio++: mesh_cad_surface: face index out of range");
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative reason buffer length");
+        return copy_string(faces[static_cast<std::size_t>(face)].mReason, buf, buflen);
+    });
+}
+
+int64_t mio_mesh_cad_surface_warnings(char* buf, int64_t buflen) {
+    return guarded_ptr(int64_t{-1}, [&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative warnings buffer length");
+        return copy_string(capi_mesh_cad_state().mWarnings, buf, buflen);
+    });
 }
 
 int mio_has_occt(void) {

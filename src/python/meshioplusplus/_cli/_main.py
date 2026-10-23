@@ -34,6 +34,7 @@ from . import (
     _interpolate,
     _isosurface,
     _merge,
+    _mesh_cad,
     _normals,
     _octree,
     _octree_mesh,
@@ -353,6 +354,14 @@ def main(argv=None):
     )
     _octree_mesh.add_args(parser)
     parser.set_defaults(func=_octree_mesh.octree_mesh_cmd)
+
+    parser = subparsers.add_parser(
+        "mesh-cad-surface",
+        help="Conforming triangle mesh of a CAD model's faces "
+        "(CAD JSON, STEP, IGES) at a target edge size",
+    )
+    _mesh_cad.add_args(parser)
+    parser.set_defaults(func=_mesh_cad.mesh_cad_surface_cmd)
 
     parser = subparsers.add_parser(
         "grid-sample",

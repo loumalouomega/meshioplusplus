@@ -13,6 +13,10 @@ meshio++ itself is MIT ([LICENSE](LICENSE)). The binaries the project publishes 
 
 **OpenCASCADE is LGPL-2.1 with the OCCT exception**, so the published binaries are not plain MIT: their licence is `MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)`, as [`LICENSE-BINARIES.md`](LICENSE-BINARIES.md) states in every artifact. The meshio++ sources, and a build from source that does not link OpenCASCADE (`-DMESHIOPLUSPLUS_WITH_OCCT=OFF`, or no OpenCASCADE found), are MIT.
 
+## Robust geometric predicates
+
+The exact `orient2d`, `incircle`, `orient3d` and `insphere` tests of `mesh_cad_surface`'s triangulator (`src/cpp/src/detail/predicates.cpp`) implement the method of J. R. Shewchuk, *Adaptive Precision Floating-Point Arithmetic and Fast Robust Geometric Predicates* (Discrete & Computational Geometry 18, 1997), whose reference code Shewchuk placed in the public domain. They are written from the paper, are MIT like the rest of meshio++, and add no component to the table above; the attribution is recorded here and in `CITATION.cff`. No code from Triangle, TetGen, Gmsh, CGAL or the CDT library is used.
+
 ## OpenCASCADE and the LGPL
 
 OpenCASCADE's licence is the GNU Lesser General Public License 2.1 (`LICENSE_LGPL_21.txt`) with the additional exception in `OCCT_LGPL_EXCEPTION.txt`, which permits using its headers' inline code and templates without the resulting object code becoming a "work based on the library". Both texts ship beside this notice in every wheel (its `.dist-info/licenses`), every CLI archive and the Blender extension, which carries the wheel.

@@ -184,6 +184,7 @@ if TYPE_CHECKING:
     from ._interpolate import interpolate
     from ._isosurface import isosurface
     from ._merge import merge
+    from ._mesh_cad import mesh_cad_surface, triangulate_polygon_2d
     from ._ml import FeatureMatrix, edge_index, feature_matrix, has_zarr, write_dataset
     from ._normals import compute_normals
     from ._octree import octree
@@ -424,6 +425,8 @@ _LAZY_ATTRS = {
     "voxelize": "_voxelize",
     "octree": "_octree",
     "octree_mesh": "_octree_mesh",
+    "mesh_cad_surface": "_mesh_cad",
+    "triangulate_polygon_2d": "_mesh_cad",
 }
 
 __all__ = [
@@ -593,6 +596,8 @@ __all__ = [
     "voxelize",
     "octree",
     "octree_mesh",
+    "mesh_cad_surface",
+    "triangulate_polygon_2d",
     "sample_distance",
     "distance_to_surface",
     "surface_watertight_check",

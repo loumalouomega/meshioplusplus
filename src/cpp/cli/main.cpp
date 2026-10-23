@@ -93,6 +93,7 @@
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/primitives.hpp"
 #include "meshioplusplus/operations/octree.hpp"
+#include "meshioplusplus/operations/mesh_cad.hpp"
 #include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
@@ -454,6 +455,9 @@ void print_usage(std::ostream& os) {
           "  octree-mesh             Volume mesh of a skin's inside on a balanced\n"
           "                            octree: --output castellated|tet|hex\n"
           "                            --min-size H --max-size H [--json]\n"
+          "  mesh-cad-surface        Conforming triangle mesh of a CAD model's faces\n"
+          "                            (CAD JSON, STEP, IGES): --size H [--deflection D]\n"
+          "                            [--strict] [--json]\n"
           "  isosurface              Level set of a scalar point_data field (contours)\n"
           "                            --array NAME --values v1,v2 [--component I]\n"
           "  sdf                     Signed distance field: a grid over a surface,\n"
@@ -2089,6 +2093,108 @@ int cmd_iga_sample(const std::vector<std::string>& rArgs) {
     }
     cli_iga_write(p.positionals[1], opt_value(p, "output-format"), mesh, mapped, model.mBrep);
     cli_iga_summary(p, "iga_sample", model.mNurbs ? "nurbs" : "brep", mesh, patches);
+    return 0;
+}
+
+// --- mesh generation from CAD: mesh-cad-surface ----------------------------------------
+
+int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"size", {"-s"}, true},
+                                  {"deflection", {}, true},
+                                  {"min-points-per-edge", {}, true},
+                                  {"tolerance", {}, true},
+                                  {"no-face-ids", {}, false},
+                                  {"no-edges", {}, false},
+                                  {"no-match", {}, false},
+                                  {"strict", {}, false},
+                                  {"max-points", {}, true},
+                                  {"json", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("mesh-cad-surface requires exactly INFILE and OUTFILE");
+    if (!has_opt(p, "size"))
+        throw std::runtime_error("mesh-cad-surface requires --size H");
+    CliIgaModel model = cli_iga_read(p.positionals[0], opt_value(p, "input-format"));
+    if (!model.mBrep)
+        throw std::runtime_error("mesh-cad-surface needs a B-rep (CAD JSON, STEP or IGES), not '" +
+                                 model.mFormat + "'");
+    meshioplusplus::MeshCadSurfaceOptions o;
+    o.mTargetSize = meshioplusplus::detail::stod_c(opt_value(p, "size"));
+    if (has_opt(p, "deflection"))
+        o.mMaxChordalDeviation = meshioplusplus::detail::stod_c(opt_value(p, "deflection"));
+    if (has_opt(p, "min-points-per-edge"))
+        o.mMinPointsPerEdge = std::stoll(opt_value(p, "min-points-per-edge"));
+    if (has_opt(p, "tolerance"))
+        o.mGeometricTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    o.mRecordFaceIds = !has_flag(p, "no-face-ids");
+    o.mEdges = !has_flag(p, "no-edges");
+    o.mMatchUnreferencedTrims = !has_flag(p, "no-match");
+    o.mStrict = has_flag(p, "strict");
+    if (has_opt(p, "max-points"))
+        o.mMaxPoints = std::stoll(opt_value(p, "max-points"));
+    const meshioplusplus::MeshCadSurfaceResult r =
+        meshioplusplus::mesh_cad_surface(*model.mBrep, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_points", r.mNumPoints);
+        json.Field("num_triangles", r.mNumTriangles);
+        json.Field("num_edge_segments", r.mNumEdgeSegments);
+        json.Field("num_faces", r.mNumFaces);
+        json.Field("num_failed", r.mNumFailed);
+        json.Field("num_edges", r.mNumEdges);
+        json.Field("num_open_edges", r.mNumOpenEdges);
+        json.Field("num_non_manifold_edges", r.mNumNonManifoldEdges);
+        json.Field("num_misoriented_edges", r.mNumMisorientedEdges);
+        json.Field("num_degenerate_dropped", r.mNumDegenerateDropped);
+        json.Field("tolerance", r.mTolerance);
+        json.Field("min_angle_deg", r.mMinAngleDeg);
+        json.Field("max_angle_deg", r.mMaxAngleDeg);
+        json.Field("min_edge", r.mMinEdge);
+        json.Field("max_edge", r.mMaxEdge);
+        json.Field("max_edge_gap", r.mMaxEdgeGap);
+        json.Key("faces");
+        json.BeginArray();
+        for (const meshioplusplus::MeshCadFaceRecord& f : r.mFaces) {
+            json.BeginObject();
+            json.Field("face", f.mFace);
+            json.Field("id", f.mId);
+            json.Field("status", meshioplusplus::mesh_cad_face_status_name(f.mStatus));
+            json.Field("reason", f.mReason);
+            json.Field("num_triangles", f.mNumTriangles);
+            json.Field("num_interior_points", f.mNumInteriorPoints);
+            json.Field("num_degenerate_dropped", f.mNumDegenerateDropped);
+            json.Field("min_angle_deg", f.mMinAngleDeg);
+            json.Field("max_angle_deg", f.mMaxAngleDeg);
+            json.Field("min_edge", f.mMinEdge);
+            json.Field("max_edge", f.mMaxEdge);
+            json.EndObject();
+        }
+        json.EndArray();
+        json.Key("warnings");
+        json.BeginArray();
+        for (const std::string& w : r.mWarnings)
+            json.String(w);
+        json.EndArray();
+        json.EndObject();
+    } else if (!has_flag(p, "quiet")) {
+        std::cout << "mesh_cad_surface\n"
+                  << "  faces:          " << r.mNumFaces << " (" << r.mNumFailed << " failed)\n"
+                  << "  points:         " << r.mNumPoints << "\n"
+                  << "  triangles:      " << r.mNumTriangles << "\n"
+                  << "  edge segments:  " << r.mNumEdgeSegments << "\n"
+                  << "  open edges:     " << r.mNumOpenEdges << "\n";
+        for (const meshioplusplus::MeshCadFaceRecord& f : r.mFaces)
+            if (f.mStatus != meshioplusplus::MeshCadFaceStatus::Ok)
+                std::cout << "  face " << f.mFace << ": "
+                          << meshioplusplus::mesh_cad_face_status_name(f.mStatus) << ": "
+                          << f.mReason << "\n";
+    }
     return 0;
 }
 
@@ -6874,6 +6980,8 @@ int main(int argc, char** argv) {
             return cmd_octree(rest);
         if (cmd == "octree-mesh")
             return cmd_octree_mesh(rest);
+        if (cmd == "mesh-cad-surface")
+            return cmd_mesh_cad_surface(rest);
         if (cmd == "sdf")
             return cmd_sdf(rest);
         if (cmd == "split")

@@ -161,6 +161,7 @@
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/primitives.hpp"
 #include "meshioplusplus/operations/octree.hpp"
+#include "meshioplusplus/operations/mesh_cad.hpp"
 #include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
@@ -5604,6 +5605,91 @@ val iga_sample_js(const val& rInfo, const val& rOptions) {
     });
 }
 
+// Mesh generation from CAD (v17.13.0): `meshCadSurface` triangulates the faces
+// of the B-rep side-channel object `readMeshSelective(path, {info: true}).info`
+// of a Kratos CAD JSON file (or STEP/IGES in the full build). See
+// operations/mesh_cad.hpp and doc/mesh_cad.md.
+val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        if (rInfo.isUndefined() || rInfo.isNull() || !rInfo.hasOwnProperty("faces"))
+            throw std::invalid_argument(
+                "meshio++: mesh_cad_surface: the info object is not a B-rep (no 'faces')");
+        if (rOptions.isUndefined() || rOptions.isNull())
+            throw std::invalid_argument(
+                "meshio++: mesh_cad_surface: the options need 'targetSize'");
+        check_settings_keys(rOptions, "the meshCadSurface options",
+                            {"targetSize", "maxChordalDeviation", "minPointsPerEdge", "tolerance",
+                             "recordFaceIds", "edges", "matchUnreferencedTrims", "strict",
+                             "maxPoints"});
+        const auto has = [&](const char* pKey) {
+            return rOptions.hasOwnProperty(pKey) && !rOptions[pKey].isUndefined() &&
+                   !rOptions[pKey].isNull();
+        };
+        meshioplusplus::MeshCadSurfaceOptions o;
+        if (has("targetSize"))
+            o.mTargetSize = rOptions["targetSize"].as<double>();
+        if (has("maxChordalDeviation"))
+            o.mMaxChordalDeviation = rOptions["maxChordalDeviation"].as<double>();
+        if (has("minPointsPerEdge"))
+            o.mMinPointsPerEdge = static_cast<std::int64_t>(rOptions["minPointsPerEdge"].as<double>());
+        if (has("tolerance"))
+            o.mGeometricTolerance = rOptions["tolerance"].as<double>();
+        if (has("recordFaceIds"))
+            o.mRecordFaceIds = rOptions["recordFaceIds"].as<bool>();
+        if (has("edges"))
+            o.mEdges = rOptions["edges"].as<bool>();
+        if (has("matchUnreferencedTrims"))
+            o.mMatchUnreferencedTrims = rOptions["matchUnreferencedTrims"].as<bool>();
+        if (has("strict"))
+            o.mStrict = rOptions["strict"].as<bool>();
+        if (has("maxPoints"))
+            o.mMaxPoints = static_cast<std::int64_t>(rOptions["maxPoints"].as<double>());
+        meshioplusplus::MeshCadSurfaceResult r =
+            meshioplusplus::mesh_cad_surface(val_to_brep_info(rInfo), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numPoints", static_cast<double>(r.mNumPoints));
+        out.set("numTriangles", static_cast<double>(r.mNumTriangles));
+        out.set("numEdgeSegments", static_cast<double>(r.mNumEdgeSegments));
+        out.set("numFaces", static_cast<double>(r.mNumFaces));
+        out.set("numFailed", static_cast<double>(r.mNumFailed));
+        out.set("numEdges", static_cast<double>(r.mNumEdges));
+        out.set("numOpenEdges", static_cast<double>(r.mNumOpenEdges));
+        out.set("numNonManifoldEdges", static_cast<double>(r.mNumNonManifoldEdges));
+        out.set("numMisorientedEdges", static_cast<double>(r.mNumMisorientedEdges));
+        out.set("numDegenerateDropped", static_cast<double>(r.mNumDegenerateDropped));
+        out.set("tolerance", r.mTolerance);
+        out.set("minAngleDeg", r.mMinAngleDeg);
+        out.set("maxAngleDeg", r.mMaxAngleDeg);
+        out.set("minEdge", r.mMinEdge);
+        out.set("maxEdge", r.mMaxEdge);
+        out.set("maxEdgeGap", r.mMaxEdgeGap);
+        val faces = val::array();
+        for (std::size_t i = 0; i < r.mFaces.size(); ++i) {
+            const meshioplusplus::MeshCadFaceRecord& f = r.mFaces[i];
+            val d = val::object();
+            d.set("face", static_cast<double>(f.mFace));
+            d.set("id", static_cast<double>(f.mId));
+            d.set("status", std::string(meshioplusplus::mesh_cad_face_status_name(f.mStatus)));
+            d.set("reason", f.mReason);
+            d.set("numTriangles", static_cast<double>(f.mNumTriangles));
+            d.set("numInteriorPoints", static_cast<double>(f.mNumInteriorPoints));
+            d.set("numDegenerateDropped", static_cast<double>(f.mNumDegenerateDropped));
+            d.set("minAngleDeg", f.mMinAngleDeg);
+            d.set("maxAngleDeg", f.mMaxAngleDeg);
+            d.set("minEdge", f.mMinEdge);
+            d.set("maxEdge", f.mMaxEdge);
+            faces.set(static_cast<unsigned>(i), d);
+        }
+        out.set("faces", faces);
+        val warnings = val::array();
+        for (std::size_t i = 0; i < r.mWarnings.size(); ++i)
+            warnings.set(static_cast<unsigned>(i), r.mWarnings[i]);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
 val iga_evaluate_js(const val& rInfo, double patch, const val& rParams, const val& rOptions) {
     return with_js_errors([&]() -> val {
         const std::string fmt = iga_js_format(rInfo);
@@ -7703,6 +7789,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("tessellate", &tessellate_js);
     emscripten::function("igaRefine", &iga_refine_js);
     emscripten::function("igaSample", &iga_sample_js);
+    emscripten::function("meshCadSurface", &mesh_cad_surface_js);
     emscripten::function("igaEvaluate", &iga_evaluate_js);
     emscripten::function("render", &render_js);
     emscripten::function("renderText", &render_text_js);

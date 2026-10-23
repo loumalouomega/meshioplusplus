@@ -303,6 +303,58 @@ program test_fortran_api
         close (unit, status='delete')
     end block
 
+    ! ---- mesh generation from CAD: a trimmed triangle face ----------------
+    block
+        type(mio_mesh) :: cad_mesh, tris
+        type(mio_format_info) :: info
+        type(mio_mesh_cad_surface_report) :: report
+        integer :: unit
+        character(:), allocatable :: input_path, warnings
+
+        input_path = prefix//'_mesh_cad.cad.json'
+        open (newunit=unit, file=input_path, status='replace')
+        write (unit, '(a)') '{"breps": [{"brep_id": 1, "faces": [{"brep_id": 2, "surface": {', &
+            '"is_trimmed": true, "degrees": [1, 1], "knot_vectors": [[0, 2], [0, 2]],', &
+            '"control_points": [[1, [0, 0, 0, 1]], [2, [2, 0, 0, 1]], [3, [0, 2, 0, 1]], [4, [2, 2, 0, 1]]]},', &
+            '"boundary_loops": [{"loop_type": "outer", "trimming_curves": [', &
+            '{"trim_index": 0, "curve_direction": true, "parameter_curve": {"degree": 1,', &
+            '"knot_vector": [0, 0, 1, 1], "active_range": [0, 1],', &
+            '"control_points": [[[0, 0, 0, 1]], [[1.5, 0, 0, 1]]]}},', &
+            '{"trim_index": 1, "curve_direction": true, "parameter_curve": {"degree": 1,', &
+            '"knot_vector": [0, 0, 1, 1], "active_range": [0, 1],', &
+            '"control_points": [[[1.5, 0, 0, 1]], [[0, 1.5, 0, 1]]]}},', &
+            '{"trim_index": 2, "curve_direction": true, "parameter_curve": {"degree": 1,', &
+            '"knot_vector": [0, 0, 1, 1], "active_range": [0, 1],', &
+            '"control_points": [[[0, 1.5, 0, 1]], [[0, 0, 0, 1]]]}}]}]}], "edges": []}]}'
+        close (unit)
+        call cad_mesh%read_with_info(input_path, info, 'cad_json', stat=ierr, errmsg=msg)
+        call check(ierr == 0, 'mesh_cad read_with_info succeeds')
+        if (ierr == 0) then
+            tris = info%mesh_cad_surface(0.1_real64, report=report, warnings=warnings, &
+                                         stat=ierr, errmsg=msg)
+            call check(ierr == 0, 'mesh_cad_surface succeeds')
+            if (ierr == 0) then
+                call check(report%num_faces == 1 .and. report%num_failed == 0, &
+                           'mesh_cad_surface meshes the face')
+                call check(report%num_triangles > 100, 'mesh_cad_surface triangle count')
+                call check(report%num_points == tris%num_points(), 'mesh_cad_surface points')
+                call check(report%min_angle_deg > 10.0_real64, 'mesh_cad_surface min angle')
+                call check(mio_mesh_cad_face_status(1) == MIO_MESH_CAD_OK, &
+                           'mesh_cad_surface face status')
+                call check(mio_mesh_cad_face_status(2) == -1, 'mesh_cad_surface out of range')
+                call check(mio_mesh_cad_face_reason(1) == '', 'mesh_cad_surface no reason')
+                call check(len(warnings) == 0, 'mesh_cad_surface no warnings')
+                call tris%free()
+            end if
+            tris = info%mesh_cad_surface(0.0_real64, stat=ierr)
+            call check(ierr /= 0, 'mesh_cad_surface refuses a zero size')
+        end if
+        call cad_mesh%free()
+        call info%free()
+        open (newunit=unit, file=input_path, status='old')
+        close (unit, status='delete')
+    end block
+
     points = reshape([0.0_real64, 0.0_real64, 0.0_real64, &
                       1.1_real64, 0.2_real64, 0.3_real64, &
                       0.4_real64, 1.2_real64, 0.5_real64, &

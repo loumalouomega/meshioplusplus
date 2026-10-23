@@ -85,6 +85,7 @@
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/octree.hpp"
+#include "meshioplusplus/operations/mesh_cad.hpp"
 #include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
 #include "meshioplusplus/operations/partition.hpp"
@@ -1015,6 +1016,40 @@ int main(int argc, char** argv) {
             o.mSurfaceSize = 2.0 * octree_step;
             o.mMaxSize = 8.0 * octree_step;
             of(pD, mio::octree_mesh(surface, o).mMesh);
+        });
+        // mesh_cad_surface (v17.13.0): the unit box as six untrimmed bilinear
+        // patches with no edge topology (the trims are paired by their
+        // images), meshed at one lattice step.
+        row("mesh_cad_surface", [&](MeshDigest* pD) {
+            mio::BrepInfo box;
+            const double sides[6][3][3] = {{{0, 0, 0}, {0, 1, 0}, {1, 0, 0}},
+                                           {{0, 0, 1}, {1, 0, 0}, {0, 1, 0}},
+                                           {{0, 0, 0}, {1, 0, 0}, {0, 0, 1}},
+                                           {{0, 1, 0}, {0, 0, 1}, {1, 0, 0}},
+                                           {{0, 0, 0}, {0, 0, 1}, {0, 1, 0}},
+                                           {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
+            for (int f = 0; f < 6; ++f) {
+                mio::NurbsPatch p;
+                p.mDegrees = {1, 1};
+                p.mKnots = {{0, 0, 1, 1}, {0, 0, 1, 1}};
+                p.mControlPoints = NDArray(mio::DType::Float64, {4, 3});
+                p.mWeights = NDArray(mio::DType::Float64, {4});
+                for (int j = 0; j < 2; ++j)
+                    for (int i = 0; i < 2; ++i)
+                        for (int k = 0; k < 3; ++k)
+                            p.mControlPoints.As<double>()[3 * (2 * j + i) + k] =
+                                sides[f][0][k] + i * sides[f][1][k] + j * sides[f][2][k];
+                for (int i = 0; i < 4; ++i)
+                    p.mWeights.As<double>()[i] = 1.0;
+                box.mPatches.push_back(p);
+                mio::BrepFace face;
+                face.mId = f + 1;
+                face.mPatch = f;
+                box.mFaces.push_back(face);
+            }
+            mio::MeshCadSurfaceOptions o;
+            o.mTargetSize = octree_step;
+            of(pD, mio::mesh_cad_surface(box, o).mMesh);
         });
         row("sample_distance", [&](MeshDigest* pD) {
             const NDArray d = mio::sample_distance(surface, jittered->Points());

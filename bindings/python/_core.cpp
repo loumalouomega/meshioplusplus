@@ -15,6 +15,7 @@
 //
 //
 // System includes
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -174,6 +175,7 @@
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/primitives.hpp"
 #include "meshioplusplus/operations/octree.hpp"
+#include "meshioplusplus/operations/mesh_cad.hpp"
 #include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
@@ -2999,6 +3001,88 @@ PYBIND11_MODULE(_core, m) {
         py::arg("snap") = false, py::arg("surface_level") = -1,
         py::arg("curvature_threshold") = 0.0, py::arg("feature_angle") = 0.0,
         py::arg("size_array") = "", py::arg("plane") = "auto");
+
+    // Mesh generation from CAD: a conforming triangulation of a B-rep's faces
+    // (the BrepInfo dict of mesh.info["brep"]), and the planar CDT under it.
+    m.def(
+        "mesh_cad_surface",
+        [](py::object brep, double target_size, double max_chordal_deviation,
+           std::int64_t min_points_per_edge, double tolerance, bool record_face_ids, bool edges,
+           bool match_unreferenced_trims, bool strict, std::int64_t max_points) {
+            const meshioplusplus::BrepInfo info = core_brep_from_py(brep);
+            meshioplusplus::MeshCadSurfaceOptions o;
+            o.mTargetSize = target_size;
+            o.mMaxChordalDeviation = max_chordal_deviation;
+            o.mMinPointsPerEdge = min_points_per_edge;
+            o.mGeometricTolerance = tolerance;
+            o.mRecordFaceIds = record_face_ids;
+            o.mEdges = edges;
+            o.mMatchUnreferencedTrims = match_unreferenced_trims;
+            o.mStrict = strict;
+            o.mMaxPoints = max_points;
+            meshioplusplus::MeshCadSurfaceResult r =
+                core_nogil([&] { return meshioplusplus::mesh_cad_surface(info, o); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_points"] = r.mNumPoints;
+            out["num_triangles"] = r.mNumTriangles;
+            out["num_edge_segments"] = r.mNumEdgeSegments;
+            out["num_faces"] = r.mNumFaces;
+            out["num_failed"] = r.mNumFailed;
+            out["num_edges"] = r.mNumEdges;
+            out["num_open_edges"] = r.mNumOpenEdges;
+            out["num_non_manifold_edges"] = r.mNumNonManifoldEdges;
+            out["num_misoriented_edges"] = r.mNumMisorientedEdges;
+            out["num_degenerate_dropped"] = r.mNumDegenerateDropped;
+            out["tolerance"] = r.mTolerance;
+            out["min_angle_deg"] = r.mMinAngleDeg;
+            out["max_angle_deg"] = r.mMaxAngleDeg;
+            out["min_edge"] = r.mMinEdge;
+            out["max_edge"] = r.mMaxEdge;
+            out["max_edge_gap"] = r.mMaxEdgeGap;
+            py::list faces;
+            for (const meshioplusplus::MeshCadFaceRecord& f : r.mFaces) {
+                py::dict d;
+                d["face"] = f.mFace;
+                d["id"] = f.mId;
+                d["status"] = meshioplusplus::mesh_cad_face_status_name(f.mStatus);
+                d["reason"] = f.mReason;
+                d["num_triangles"] = f.mNumTriangles;
+                d["num_interior_points"] = f.mNumInteriorPoints;
+                d["num_degenerate_dropped"] = f.mNumDegenerateDropped;
+                d["min_angle_deg"] = f.mMinAngleDeg;
+                d["max_angle_deg"] = f.mMaxAngleDeg;
+                d["min_edge"] = f.mMinEdge;
+                d["max_edge"] = f.mMaxEdge;
+                faces.append(d);
+            }
+            out["faces"] = faces;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("brep"), py::arg("target_size"), py::arg("max_chordal_deviation") = 0.0,
+        py::arg("min_points_per_edge") = 0, py::arg("tolerance") = 0.0,
+        py::arg("record_face_ids") = true, py::arg("edges") = true,
+        py::arg("match_unreferenced_trims") = true, py::arg("strict") = false,
+        py::arg("max_points") = 50000000);
+    m.def(
+        "triangulate_polygon_2d",
+        [](py::list loops, double target_size) {
+            std::vector<std::vector<std::array<double, 2>>> in;
+            for (py::handle h : loops) {
+                auto a = py::array_t<double, py::array::c_style | py::array::forcecast>::ensure(h);
+                if (!a || a.ndim() != 2 || a.shape(1) != 2)
+                    throw std::invalid_argument(
+                        "meshio++: triangulate_polygon_2d: every loop must be an (n, 2) array");
+                std::vector<std::array<double, 2>> loop(static_cast<std::size_t>(a.shape(0)));
+                for (py::ssize_t i = 0; i < a.shape(0); ++i)
+                    loop[static_cast<std::size_t>(i)] = {a.at(i, 0), a.at(i, 1)};
+                in.push_back(std::move(loop));
+            }
+            return meshioplusplus_py::mesh_to_py(
+                core_nogil([&] { return meshioplusplus::triangulate_polygon_2d(in, target_size); }));
+        },
+        py::arg("loops"), py::arg("target_size") = 0.0);
 
     // A volume mesh of the inside of a skin on a balanced octree.
     m.def(

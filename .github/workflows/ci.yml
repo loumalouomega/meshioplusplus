@@ -693,8 +693,8 @@ jobs:
           -DMESHIOPLUSPLUS_WITH_OCCT=ON
       - name: Build
         run: cmake --build build-occt
-      - name: Run the fit_cad suites (OpenCASCADE cases live)
-        run: ctest --test-dir build-occt -R "FitCad|CApi.FitCad|CApi.StepAndIges|CApi.Brep|Step|CadRead|CadJson|AbiLayout|Pipeline|Registry|SparseSolve|BsplineLsq" --output-on-failure
+      - name: Run the CAD suites (fit_cad, mesh_cad; OpenCASCADE cases live)
+        run: ctest --test-dir build-occt -R "FitCad|CApi.FitCad|CApi.StepAndIges|CApi.Brep|Step|CadRead|CadJson|AbiLayout|Pipeline|Registry|SparseSolve|BsplineLsq|MeshCad|Cdt2d|EdgeSampler|Predicates|TriangulatePolygon2d" --output-on-failure
       - name: Run the native to-cad verb
         run: |
           python - <<'PY'
@@ -718,7 +718,7 @@ jobs:
           MESHIOPLUSPLUS_FIT_CAD_GOLDENS: "1"
         run: |
           python -c "from meshioplusplus import _core; assert _core.__has_occt__"
-          python -m pytest tests/python/test_fit_cad.py tests/python/test_fit_cad_goldens.py tests/python/test_step.py tests/python/test_cad_json.py -v
+          python -m pytest tests/python/test_fit_cad.py tests/python/test_fit_cad_goldens.py tests/python/test_step.py tests/python/test_cad_json.py tests/python/test_mesh_cad.py -v
 
   # fit_cad on the newest OpenCASCADE 7.x the backend supports (7.9, pinned in
   # build/occt-recipe.sh as MIO_OCCT_PIN=7.9), built static from source into a
@@ -770,8 +770,8 @@ jobs:
           -DOpenCASCADE_DIR=$PWD/occt79/lib/cmake/opencascade
       - name: Build
         run: cmake --build build-occt
-      - name: Run the fit_cad suites (OpenCASCADE 7.9)
-        run: ctest --test-dir build-occt -R "FitCad|CApi.FitCad|CApi.StepAndIges|CApi.Brep|Step|CadRead|CadJson|AbiLayout|Pipeline|Registry|SparseSolve|BsplineLsq" --output-on-failure
+      - name: Run the CAD suites (fit_cad, mesh_cad; OpenCASCADE 7.9)
+        run: ctest --test-dir build-occt -R "FitCad|CApi.FitCad|CApi.StepAndIges|CApi.Brep|Step|CadRead|CadJson|AbiLayout|Pipeline|Registry|SparseSolve|BsplineLsq|MeshCad|Cdt2d|EdgeSampler|Predicates|TriangulatePolygon2d" --output-on-failure
       - name: Install meshioplusplus with OpenCASCADE 7.9
         run: CMAKE_ARGS="-DMESHIOPLUSPLUS_REQUIRE_OCCT=ON -DOpenCASCADE_DIR=$PWD/occt79/lib/cmake/opencascade" pip install . -v
       - name: Run the Python fit_cad suite
@@ -779,7 +779,7 @@ jobs:
           MESHIOPLUSPLUS_FIT_CAD_GOLDENS: "1"
         run: |
           python -c "from meshioplusplus import _core; assert _core.__occt_version__.startswith('7.9')"
-          python -m pytest tests/python/test_fit_cad.py tests/python/test_fit_cad_goldens.py tests/python/test_step.py tests/python/test_cad_json.py -v
+          python -m pytest tests/python/test_fit_cad.py tests/python/test_fit_cad_goldens.py tests/python/test_step.py tests/python/test_cad_json.py tests/python/test_mesh_cad.py -v
 
   # The two read-only formats behind a library that is never a default
   # (v16.13.0): DOLFINx VTX `.bp` through ADIOS2 (Ubuntu's serial package) and

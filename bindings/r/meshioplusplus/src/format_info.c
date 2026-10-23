@@ -517,6 +517,97 @@ SEXP R_mio_iga_sample(SEXP x, SEXP sample_subdivisions, SEXP trim_samples, SEXP 
     return iga_mesh_and_info(mesh, mapped, "iga_sample");
 }
 
+/* --- mesh generation from CAD (v17.13.0; doc/mesh_cad.md) ----------------- */
+
+static int64_t r_mesh_cad_warnings(void *ctx, char *buf, int64_t buflen) {
+    (void)ctx;
+    return mio_mesh_cad_surface_warnings(buf, buflen);
+}
+
+static int64_t r_mesh_cad_reason(void *ctx, char *buf, int64_t buflen) {
+    return mio_mesh_cad_surface_face_reason(*(const int64_t *)ctx, buf, buflen);
+}
+
+SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation,
+                            SEXP min_points_per_edge, SEXP tolerance, SEXP record_face_ids,
+                            SEXP edges, SEXP match_unreferenced_trims, SEXP strict,
+                            SEXP max_points) {
+    const mio_format_info *info = info_of(x, 0);
+    mio_mesh_cad_surface_opts opts;
+    mio_mesh_cad_surface_opts_init(&opts);
+    opts.target_size = mio_r_double(target_size, "target_size");
+    opts.max_chordal_deviation = mio_r_double(max_chordal_deviation, "max_chordal_deviation");
+    opts.min_points_per_edge = mio_r_int64(min_points_per_edge, "min_points_per_edge");
+    opts.tolerance = mio_r_double(tolerance, "tolerance");
+    opts.record_face_ids = mio_r_bool(record_face_ids, "record_face_ids") ? 1 : 0;
+    opts.edges = mio_r_bool(edges, "edges") ? 1 : 0;
+    opts.match_unreferenced_trims =
+        mio_r_bool(match_unreferenced_trims, "match_unreferenced_trims") ? 1 : 0;
+    opts.strict = mio_r_bool(strict, "strict") ? 1 : 0;
+    opts.max_points = mio_r_int64(max_points, "max_points");
+    mio_mesh_cad_surface_report report;
+    mio_mesh *out = mio_mesh_cad_surface(info, &opts, &report);
+    if (out == NULL) mio_r_fail("mesh_cad_surface");
+
+    /* Wrap the mesh first: once it has a finalizer nothing below can leak it. */
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP warnings = PROTECT(mio_r_getstring(r_mesh_cad_warnings, NULL, "mesh_cad_surface"));
+    static const char *statuses[] = {"ok",           "empty",           "open_loop",
+                                     "self_intersecting", "degenerate", "projection_failed",
+                                     "budget_exceeded", "unsupported",  "other"};
+    const R_xlen_t nf = (R_xlen_t)report.num_faces;
+    SEXP status = PROTECT(Rf_allocVector(STRSXP, nf));
+    SEXP reason = PROTECT(Rf_allocVector(STRSXP, nf));
+    for (R_xlen_t f = 0; f < nf; ++f) {
+        const int32_t st = mio_mesh_cad_surface_face_status((int64_t)f);
+        SET_STRING_ELT(status, f, Rf_mkChar(st >= 0 && st <= 8 ? statuses[st] : "other"));
+        int64_t face = (int64_t)f;
+        SEXP why = PROTECT(mio_r_getstring(r_mesh_cad_reason, &face, "mesh_cad_surface"));
+        SET_STRING_ELT(reason, f, STRING_ELT(why, 0));
+        UNPROTECT(1);
+    }
+
+    enum { R_MESH_CAD_N = 20 };
+    SEXP res = PROTECT(Rf_allocVector(VECSXP, R_MESH_CAD_N));
+    SEXP nm = PROTECT(Rf_allocVector(STRSXP, R_MESH_CAD_N));
+    int k = 0;
+#define R_MESH_CAD_SET(name, value)              \
+    do {                                         \
+        SET_STRING_ELT(nm, k, Rf_mkChar(name));  \
+        SET_VECTOR_ELT(res, k, (value));         \
+        ++k;                                     \
+    } while (0)
+#define R_MESH_CAD_NUM(f) R_MESH_CAD_SET(#f, Rf_ScalarReal((double)report.f))
+    R_MESH_CAD_SET("mesh", mo);
+    R_MESH_CAD_NUM(num_points);
+    R_MESH_CAD_NUM(num_triangles);
+    R_MESH_CAD_NUM(num_edge_segments);
+    R_MESH_CAD_NUM(num_faces);
+    R_MESH_CAD_NUM(num_failed);
+    R_MESH_CAD_NUM(num_edges);
+    R_MESH_CAD_NUM(num_open_edges);
+    R_MESH_CAD_NUM(num_non_manifold_edges);
+    R_MESH_CAD_NUM(num_misoriented_edges);
+    R_MESH_CAD_NUM(num_degenerate_dropped);
+    R_MESH_CAD_NUM(tolerance);
+    R_MESH_CAD_NUM(min_angle_deg);
+    R_MESH_CAD_NUM(max_angle_deg);
+    R_MESH_CAD_NUM(min_edge);
+    R_MESH_CAD_NUM(max_edge);
+    R_MESH_CAD_NUM(max_edge_gap);
+    R_MESH_CAD_SET("face_status", status);
+    R_MESH_CAD_SET("face_reason", reason);
+    /* One string, newline-separated; the R wrapper splits it. */
+    R_MESH_CAD_SET("warnings", warnings);
+#undef R_MESH_CAD_NUM
+#undef R_MESH_CAD_SET
+    if (k != R_MESH_CAD_N)
+        Rf_error("mesh_cad_surface: report has %d fields, expected %d", k, (int)R_MESH_CAD_N);
+    Rf_setAttrib(res, R_NamesSymbol, nm);
+    UNPROTECT(6);
+    return res;
+}
+
 /* One array of an evaluation as an R array with its dimensions reversed (the
  * C layout (N, d, sdim) is R's (sdim, d, N)); R_NilValue when it is absent. */
 static SEXP iga_array(const mio_iga_evaluation *ev, int32_t which, int64_t index, int as_logical) {

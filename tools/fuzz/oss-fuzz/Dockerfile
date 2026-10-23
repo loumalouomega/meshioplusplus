@@ -14,8 +14,7 @@
 
 FROM gcr.io/oss-fuzz-base/base-builder
 RUN apt-get update && apt-get install -y cmake ninja-build python3
-# Temporary until the external-engine and seed-generator changes land on master.
-RUN git clone --depth 1 --branch tier-2 https://github.com/loumalouomega/meshioplusplus.git $SRC/meshioplusplus && \
+RUN git clone --depth 1 https://github.com/loumalouomega/meshioplusplus.git $SRC/meshioplusplus && \
     git -C $SRC/meshioplusplus submodule update --init --depth 1 \
         src/cpp/third_party/eigen src/cpp/third_party/json
 WORKDIR $SRC/meshioplusplus

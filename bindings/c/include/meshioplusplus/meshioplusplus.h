@@ -254,7 +254,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 17
-#define MIO_VERSION_MINOR 12
+#define MIO_VERSION_MINOR 13
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -5551,6 +5551,105 @@ MIO_API mio_status mio_iga_evaluation_array(const mio_iga_evaluation* evaluation
 
 /** Destroy an evaluation. NULL is a no-op. */
 MIO_API void mio_iga_evaluation_free(mio_iga_evaluation* evaluation);
+
+/* ---------------------------------------------------------------------
+ * Mesh generation from CAD (v17.13.0): a conforming triangle mesh of the
+ * faces of the B-rep a "cad_json", "step" or "iges" reader kept in a
+ * mio_format_info handle, at one target edge size, with no CAD kernel.
+ * See doc/mesh_cad.md.
+ * --------------------------------------------------------------------- */
+
+/** Why a face was left out (MeshCadFaceStatus). */
+typedef enum mio_mesh_cad_face_status {
+    MIO_MESH_CAD_OK = 0,
+    MIO_MESH_CAD_EMPTY = 1,             /**< its loops enclose nothing */
+    MIO_MESH_CAD_OPEN_LOOP = 2,         /**< its loops do not bound a domain consistently */
+    MIO_MESH_CAD_SELF_INTERSECTING = 3, /**< its boundary crosses itself at this size */
+    MIO_MESH_CAD_DEGENERATE = 4,        /**< distinct boundary samples coincide */
+    MIO_MESH_CAD_PROJECTION_FAILED = 5, /**< an edge could not be carried to its trim */
+    MIO_MESH_CAD_BUDGET_EXCEEDED = 6,   /**< more points than max_points */
+    MIO_MESH_CAD_UNSUPPORTED = 7,       /**< an invalid surface or trim */
+    MIO_MESH_CAD_OTHER = 8
+} mio_mesh_cad_face_status;
+
+/**
+ * Options for mio_mesh_cad_surface. Same ABI rules as above; always initialize
+ * through mio_mesh_cad_surface_opts_init() (the flags default on and
+ * max_points to 50000000, so an all-zero struct is NOT the default), then set
+ * target_size, which is required.
+ */
+typedef struct mio_mesh_cad_surface_opts {
+    double target_size;           /**< the target edge length h; required, > 0 */
+    double max_chordal_deviation; /**< sagitta cap of the boundary segments; 0 is off */
+    double tolerance;             /**< 0: 1e-7 of the control nets' box diagonal */
+    int64_t min_points_per_edge;  /**< at least this many points inside every edge */
+    int64_t max_points;           /**< the most points in the result */
+    int32_t record_face_ids;      /**< nonzero: "cad:face" cell data and a face:<k> region per face */
+    int32_t edges;                /**< nonzero: a line block of the edges with "cad:edge" */
+    int32_t match_unreferenced_trims; /**< nonzero: pair trims no edge names by their images */
+    int32_t strict;               /**< nonzero: fail when any face cannot be meshed */
+    int64_t reserved[6];          /**< must be zero; room for additive growth */
+} mio_mesh_cad_surface_opts;
+
+/** What mio_mesh_cad_surface did. */
+typedef struct mio_mesh_cad_surface_report {
+    int64_t num_points;
+    int64_t num_triangles;
+    int64_t num_edge_segments;
+    int64_t num_faces;
+    int64_t num_failed;
+    int64_t num_edges;               /**< edges discretised, named and implicit */
+    int64_t num_open_edges;          /**< triangle edges used once */
+    int64_t num_non_manifold_edges;  /**< used more than twice */
+    int64_t num_misoriented_edges;   /**< used twice the same way round */
+    int64_t num_degenerate_dropped;  /**< triangles a pole collapsed */
+    double tolerance;                /**< the geometric tolerance used */
+    double min_angle_deg;
+    double max_angle_deg;
+    double min_edge;
+    double max_edge;
+    double max_edge_gap;             /**< how far two uses of one edge or corner disagree */
+    int64_t num_warnings;            /**< see mio_mesh_cad_surface_warnings() */
+    int64_t reserved[8];             /**< zeroed */
+} mio_mesh_cad_surface_report;
+
+/** Initialize mesh_cad_surface options: every flag on, no deflection, automatic tolerance. */
+MIO_API void mio_mesh_cad_surface_opts_init(mio_mesh_cad_surface_opts* opts);
+
+/**
+ * Triangulate the faces of a B-rep into one conforming surface mesh: each edge
+ * sampled once and shared by the faces that use it, each face a constrained
+ * Delaunay triangulation of its parameters lifted onto its surface. A face
+ * that cannot be meshed is left out and recorded (mio_mesh_cad_surface_face_status
+ * and _reason), never meshed wrong; with `strict` the call fails instead.
+ *
+ * @param info   a "cad_json", "step" or "iges" handle from mio_read_with_info();
+ *               anything else fails with MIO_ERR_INVALID_ARG.
+ * @param opts   options (target_size set); NULL fails, since the size is required.
+ * @param report receives the summary, or NULL.
+ * @return the surface mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_mesh_cad_surface(const mio_format_info* info,
+                                       const mio_mesh_cad_surface_opts* opts,
+                                       mio_mesh_cad_surface_report* report);
+
+/**
+ * The status (mio_mesh_cad_face_status) of face `face` in this thread's last
+ * mio_mesh_cad_surface call, or -1 when out of range.
+ */
+MIO_API int32_t mio_mesh_cad_surface_face_status(int64_t face);
+
+/**
+ * Why face `face` of this thread's last call was left out (empty when meshed).
+ * String rule 5: required byte length excluding NUL, -1 on error.
+ */
+MIO_API int64_t mio_mesh_cad_surface_face_reason(int64_t face, char* buf, int64_t buflen);
+
+/**
+ * The warnings of this thread's last mio_mesh_cad_surface call, one per line.
+ * String rule 5: required byte length excluding NUL, -1 on error.
+ */
+MIO_API int64_t mio_mesh_cad_surface_warnings(char* buf, int64_t buflen);
 
 /**
  * Options for mio_hausdorff_distance. Same ABI rules as above; an all-zero

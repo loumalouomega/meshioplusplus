@@ -1816,6 +1816,54 @@ TEST(CApi, IgaRefinesAndEvaluatesTheNurbsModel) {
     std::remove(output.c_str());
 }
 
+TEST(CApi, MeshCadSurfaceMeshesABrepAndReportsItsFaces) {
+    const auto path = mt::temp_path(".cad.json");
+    std::ofstream(path, std::ios::binary) << R"({"breps": [{"brep_id": 1, "faces": [{"brep_id": 2,
+        "surface": {"is_trimmed": true, "degrees": [1, 1], "knot_vectors": [[0, 2], [0, 2]],
+          "control_points": [[1, [0, 0, 0, 1]], [2, [2, 0, 0, 1]], [3, [0, 2, 0, 1]], [4, [2, 2, 0, 1]]]},
+        "boundary_loops": [{"loop_type": "outer", "trimming_curves": [
+          {"trim_index": 0, "curve_direction": true, "parameter_curve": {"degree": 1,
+           "knot_vector": [0, 0, 1, 1], "active_range": [0, 1], "control_points": [[[0, 0, 0, 1]], [[1.5, 0, 0, 1]]]}},
+          {"trim_index": 1, "curve_direction": true, "parameter_curve": {"degree": 1,
+           "knot_vector": [0, 0, 1, 1], "active_range": [0, 1], "control_points": [[[1.5, 0, 0, 1]], [[0, 1.5, 0, 1]]]}},
+          {"trim_index": 2, "curve_direction": true, "parameter_curve": {"degree": 1,
+           "knot_vector": [0, 0, 1, 1], "active_range": [0, 1], "control_points": [[[0, 1.5, 0, 1]], [[0, 0, 0, 1]]]}}]}]}],
+        "edges": []}]})";
+    mio_format_info* info = nullptr;
+    mio_mesh* sampled = mio_read_with_info(path.c_str(), nullptr, nullptr, &info);
+    ASSERT_NE(sampled, nullptr) << mio_last_error();
+    mio_mesh_free(sampled);
+
+    mio_mesh_cad_surface_opts opts;
+    mio_mesh_cad_surface_opts_init(&opts);
+    EXPECT_EQ(opts.target_size, 0.0);
+    EXPECT_EQ(opts.edges, 1);
+    EXPECT_EQ(opts.record_face_ids, 1);
+    EXPECT_EQ(opts.max_points, 50000000);
+    EXPECT_EQ(opts.reserved[0], 0);
+    // The size is required.
+    EXPECT_EQ(mio_mesh_cad_surface(info, &opts, nullptr), nullptr);
+    EXPECT_EQ(mio_mesh_cad_surface(info, nullptr, nullptr), nullptr);
+    opts.target_size = 0.1;
+    mio_mesh_cad_surface_report report;
+    mio_mesh* mesh = mio_mesh_cad_surface(info, &opts, &report);
+    ASSERT_NE(mesh, nullptr) << mio_last_error();
+    EXPECT_EQ(report.num_faces, 1);
+    EXPECT_EQ(report.num_failed, 0);
+    EXPECT_EQ(report.num_misoriented_edges, 0);
+    EXPECT_GT(report.num_triangles, 100);
+    EXPECT_EQ(report.num_points, mio_mesh_num_points(mesh));
+    EXPECT_GT(report.min_angle_deg, 10.0);
+    EXPECT_LE(report.max_edge, 0.16);  // up to 1.6 h beside the 45-degree corners
+    EXPECT_EQ(report.reserved[0], 0);
+    EXPECT_EQ(mio_mesh_cad_surface_face_status(0), MIO_MESH_CAD_OK);
+    EXPECT_EQ(mio_mesh_cad_surface_face_status(1), -1);
+    EXPECT_EQ(mio_mesh_cad_surface_face_reason(0, nullptr, 0), 0);
+    EXPECT_EQ(mio_mesh_cad_surface_warnings(nullptr, 0), 0);
+    mio_mesh_free(mesh);
+    mio_format_info_free(info);
+}
+
 TEST(CApi, IgaOnABrepKeepsItsTrimsAndReportsInside) {
     // The same square face as BrepSideChannel with an outer loop of four trims.
     const auto path = mt::temp_path(".cad.json");
