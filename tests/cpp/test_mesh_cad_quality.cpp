@@ -552,6 +552,48 @@ TEST(MeshCadQuality, AStretchedCornerDoesNotRunAway) {
     }
 }
 
+TEST(MeshCadQuality, AFaceWhoseRefinementRunsAwayIsMeshedUnrefined) {
+    // Found by the fuzz target (tests/fuzz/regressions/op_mesh_cad_surface):
+    // the Scordelis-Lo roof with one corner's weight 2 and z lowered by 1,
+    // refined to 30 degrees (past the 20.7 Ruppert guarantees), crowds the
+    // edge u = 0 without end, and every round of boundary splits spent the
+    // whole of max_points again. Refinement now stops at 8 times the face's
+    // unrefined points; the face is meshed unrefined, byte for byte what
+    // min_angle = 0 gives, and warned. At 25 degrees it refines normally.
+    const char* roof = R"({"breps": [{"brep_id": 1, "faces": [{"brep_id": 2,
+        "swapped_surface_normal": false, "surface": {"is_trimmed": false, "is_rational": true,
+        "degrees": [2, 1], "knot_vectors": [[0, 0, 1, 1], [0, 50]],
+        "control_points": [[1, [-16.06969024216348, 0, 19.151111077974452, 2]],
+          [2, [0, 0, 32.63518223330696, 0.766044443118978]],
+          [3, [16.06969024216348, 0, 19.151111077974452, 1]],
+          [4, [-16.06969024216348, 50, 18.151111077974452, 1]],
+          [5, [0, 50, 32.63518223330696, 0.766044443118978]],
+          [6, [16.06969024216348, 50, 19.151111077974452, 1]]]},
+        "boundary_loops": [], "embedded_edges": []}], "edges": [], "vertices": []}]})";
+    const std::string path = mt::temp_path(".cad.json");
+    std::ofstream(path) << roof;
+    const mio::BrepInfo info = mio::read_cad_json_info(path);
+    const double h = 1.054790343148405;
+    auto o = quality(h, 30.0, 2);
+    o.mMaxChordalDeviation = 0.01 * h;
+    const auto r = mio::mesh_cad_surface(info, o);
+    ASSERT_EQ(r.mNumFailed, 0);
+    bool warned = false;
+    for (const std::string& r_w : r.mWarnings)
+        warned = warned || r_w.find("meshed unrefined") != std::string::npos;
+    EXPECT_TRUE(warned);
+    EXPECT_EQ(r.mFaces[0].mNumRefinementPoints, 0);
+    auto u = o;
+    u.mMinAngleDeg = 0.0;
+    EXPECT_EQ(digest(r.mMesh), digest(mio::mesh_cad_surface(info, u).mMesh));
+    o.mMinAngleDeg = 25.0;
+    const auto q = mio::mesh_cad_surface(info, o);
+    EXPECT_GE(q.mMinAngleDeg, 25.0 - 1e-9);
+    EXPECT_GT(q.mNumRefinementPoints, 0);
+    for (const std::string& r_w : q.mWarnings)
+        EXPECT_EQ(r_w.find("meshed unrefined"), std::string::npos) << r_w;
+}
+
 TEST(MeshCadQuality, TriangulatePolygonTakesTheSameMinAngle) {
     // Roadmap 6.2.6: the planar triangulator refines too; 0 is unchanged.
     const std::vector<std::vector<Vec2>> l = {{{0, 0}, {2, 0}, {2, 1}, {1, 1}, {1, 2}, {0, 2}}};

@@ -326,6 +326,10 @@ struct McadFace {
     /// Triangles under min_angle that refinement leaves where the face's
     /// metric departs too far from its plane's, warned in face order.
     std::int64_t mNumStretched = 0;
+    /// Refinement spent the face's share of max_points; the face is then
+    /// meshed unrefined (`mUnrefined`) and warned.
+    bool mRefineBudgetReached = false;
+    bool mUnrefined = false;
 };
 
 /// What refinement and smoothing ask of every face.
@@ -1028,11 +1032,21 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         ro.mMinAngleDeg = rQ.mMinAngleDeg;
         ro.mSplitSegments = false;
         // An equal share of what max_points leaves after the boundary, so
-        // the faces together stay within it whatever each one needs.
-        ro.mMaxPoints = std::max<std::int64_t>(
-            0, (rO.mMaxPoints - static_cast<std::int64_t>(rBoundary.size())) /
-                       std::max<std::int64_t>(1, rQ.mNumFaces) -
-                   static_cast<std::int64_t>(rF.mInterior.size()));
+        // the faces together stay within it whatever each one needs; and at
+        // most 8 times the face's unrefined points (256 at least). On a
+        // surface termination is not the plane's theorem, and a face that
+        // runs away (at 30 degrees, past the 20.7 Ruppert guarantees) would
+        // otherwise fill max_points, 50 million by default; refinement adds
+        // at most 5.7 times on the fixtures (the near-hole plate at its
+        // coarsest size, its 0.02 gap far below h). A face that reaches
+        // either is meshed unrefined and warned.
+        const auto unrefined_points = static_cast<std::int64_t>(rF.mInterior.size() + pl.mTotal);
+        ro.mMaxPoints = std::min<std::int64_t>(
+            std::max<std::int64_t>(0,
+                                   (rO.mMaxPoints - static_cast<std::int64_t>(rBoundary.size())) /
+                                           std::max<std::int64_t>(1, rQ.mNumFaces) -
+                                       static_cast<std::int64_t>(rF.mInterior.size())),
+            std::max<std::int64_t>(256, 8 * unrefined_points));
         ro.mRatio = [&](const detail::Cdt2d::Tri& rT) {
             std::array<std::int64_t, 3> ids{};
             if (exempt(rT, ids))
@@ -1145,6 +1159,8 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             asked.insert(refined.mRequests.begin(), refined.mRequests.end());
             r_rec.mNumRefinementPoints += refined.mNumCircumcentres;
             ro.mMaxPoints -= refined.mNumCircumcentres;
+            if (refined.mBudgetReached && refined.mNumCircumcentres > 0)
+                rF.mRefineBudgetReached = true;
             if (ro.mMaxPoints <= 0 || surface_flips() == 0)
                 break;
         }
@@ -2031,13 +2047,22 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
                 r_f.mAsks.clear();
                 r_f.mHistogram.fill(0);
                 r_f.mNumStretched = 0;
+                r_f.mRefineBudgetReached = false;
                 // What meshing adds to the skipped embedded edges is added
                 // again by the next meshing.
                 if (r_f.mSkippedBefore == std::string::npos)
                     r_f.mSkippedBefore = r_f.mSkipped.size();
                 r_f.mSkipped.resize(r_f.mSkippedBefore);
                 try {
-                    mcad_mesh_face(r_f, rBrep.mFaces[f], uses, traces, boundary, rOptions, quality);
+                    if (r_f.mUnrefined) {
+                        McadQuality unrefined = quality;
+                        unrefined.mMinAngleDeg = 0.0;
+                        mcad_mesh_face(r_f, rBrep.mFaces[f], uses, traces, boundary, rOptions,
+                                       unrefined);
+                    } else {
+                        mcad_mesh_face(r_f, rBrep.mFaces[f], uses, traces, boundary, rOptions,
+                                       quality);
+                    }
                 } catch (const std::exception& r_x) {
                     r_f.mRecord.mStatus = MeshCadFaceStatus::Other;
                     r_f.mRecord.mReason = mcad_why(r_x);
@@ -2062,6 +2087,24 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
     if (rOptions.mMinAngleDeg > 0.0) {
         constexpr int kMaxRefineRounds = 32;
         for (int round = 0;; ++round) {
+            // A face whose refinement spent its points is not refined
+            // further, since every round would spend them again: it is
+            // meshed unrefined on its current boundary, which stays shared,
+            // and warned; the rounds stop.
+            bool spent = false;
+            for (std::size_t f = 0; f < nf; ++f)
+                if (faces[f].mRefineBudgetReached && !faces[f].mUnrefined) {
+                    faces[f].mUnrefined = true;
+                    spent = true;
+                    warn("face " + std::to_string(f) +
+                         ": refinement did not finish within its points (its share of "
+                         "max_points, at most 8 times its unrefined ones); the face is "
+                         "meshed unrefined");
+                }
+            if (spent) {
+                mesh_faces();
+                break;
+            }
             std::map<std::size_t, std::map<std::size_t, std::size_t>> split;
             for (std::size_t f = 0; f < nf; ++f)
                 for (const auto& r_a : faces[f].mAsks) {
