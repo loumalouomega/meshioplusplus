@@ -102,6 +102,68 @@ BrepCurve mcad_line(double U0, double V0, double U1, double V1) {
     return c;
 }
 
+/// The order to walk a loop's trims in: head to tail by their ends in the
+/// face's parameters. The listed order is kept wherever it connects (to a
+/// billionth of the loop's extent); elsewhere the next trim is the one whose
+/// start is nearest the current end, so a loop listed out of order (a hole
+/// whose trims run backwards but are listed forwards) still closes. A trim
+/// that cannot be evaluated keeps the listed order; the trace fails later.
+std::vector<std::size_t> mcad_chain(const BrepLoop& rLoop) {
+    const std::size_t n = rLoop.mTrims.size();
+    std::vector<std::size_t> order(n);
+    std::iota(order.begin(), order.end(), std::size_t{0});
+    if (n < 3)
+        return order;
+    std::vector<Vec2> start(n);
+    std::vector<Vec2> end(n);
+    double lo[2] = {std::numeric_limits<double>::infinity(),
+                    std::numeric_limits<double>::infinity()};
+    double hi[2] = {-lo[0], -lo[1]};
+    try {
+        for (std::size_t k = 0; k < n; ++k) {
+            const detail::BrepCurveEval c(rLoop.mTrims[k].mCurve);
+            double a[3];
+            double b[3];
+            c.Eval(c.T0(), a, nullptr);
+            c.Eval(c.T1(), b, nullptr);
+            start[k] = {a[0], a[1]};
+            end[k] = {b[0], b[1]};
+            if (!rLoop.mTrims[k].mDirection)
+                std::swap(start[k], end[k]);
+            for (const Vec2* p : {&start[k], &end[k]})
+                for (int d = 0; d < 2; ++d) {
+                    lo[d] = std::min(lo[d], (*p)[static_cast<std::size_t>(d)]);
+                    hi[d] = std::max(hi[d], (*p)[static_cast<std::size_t>(d)]);
+                }
+        }
+    } catch (const std::exception&) {
+        return order;
+    }
+    const double tol = 1e-9 * std::hypot(hi[0] - lo[0], hi[1] - lo[1]);
+    const auto gap = [&](std::size_t A, std::size_t B) {
+        return std::hypot(end[A][0] - start[B][0], end[A][1] - start[B][1]);
+    };
+    std::vector<bool> used(n, false);
+    order.clear();
+    order.push_back(0);
+    used[0] = true;
+    for (std::size_t step = 1; step < n; ++step) {
+        const std::size_t cur = order.back();
+        std::size_t next = cur + 1 < n && !used[cur + 1] && gap(cur, cur + 1) <= tol ? cur + 1 : n;
+        if (next == n) {
+            double best = std::numeric_limits<double>::infinity();
+            for (std::size_t k = 0; k < n; ++k)
+                if (!used[k] && gap(cur, k) < best) {
+                    best = gap(cur, k);
+                    next = k;
+                }
+        }
+        used[next] = true;
+        order.push_back(next);
+    }
+    return order;
+}
+
 class McadUnionFind {
 public:
     explicit McadUnionFind(std::size_t N) : mParent(N) {
@@ -287,13 +349,64 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
     if (total < 3)
         return fail(MeshCadFaceStatus::Empty, "its loops have fewer than three points");
 
-    detail::Cdt2d cdt(lo[0], lo[1], hi[0], hi[1]);
-    std::vector<Vec2> uvs;
-    uvs.reserve(total);
+    // The parameters through one affine map x = L (u, v), L the Cholesky
+    // factor of the mean first fundamental form over the face's box, so the
+    // triangulation is Delaunay in (an average of) the surface's own metric:
+    // in raw parameters, whose scales can differ by orders of magnitude, a
+    // Delaunay triangulation links points far apart on the surface.
+    const detail::BrepSurfaceEval& r_s = *rF.pSurface;
+    constexpr int kSamples = 9;
+    std::vector<std::array<Vec3, 2>> jac;
+    double me = 0.0;
+    double mf = 0.0;
+    double mg = 0.0;
+    for (int j = 0; j < kSamples; ++j)
+        for (int i = 0; i < kSamples; ++i) {
+            const double u = lo[0] + (hi[0] - lo[0]) * double(i) / double(kSamples - 1);
+            const double v = lo[1] + (hi[1] - lo[1]) * double(j) / double(kSamples - 1);
+            double x[3];
+            Vec3 su{};
+            Vec3 sv{};
+            r_s.Eval(u, v, x, su.data(), sv.data());
+            jac.push_back({su, sv});
+            me += su[0] * su[0] + su[1] * su[1] + su[2] * su[2];
+            mf += su[0] * sv[0] + su[1] * sv[1] + su[2] * sv[2];
+            mg += sv[0] * sv[0] + sv[1] * sv[1] + sv[2] * sv[2];
+        }
+    const double ns = double(jac.size());
+    me /= ns;
+    mf /= ns;
+    mg /= ns;
+    double l11 = 1.0;
+    double l12 = 0.0;
+    double l22 = 1.0;
+    if (me > 0.0 && mg > 0.0 && me - mf * mf / mg > 1e-12 * me) {
+        l11 = std::sqrt(me);
+        l12 = mf / l11;
+        l22 = std::sqrt(mg - l12 * l12);
+    }
+    const auto to_x = [&](const Vec2& rUv) -> Vec2 {
+        return {l11 * rUv[0] + l12 * rUv[1], l22 * rUv[1]};
+    };
+    const auto to_uv = [&](const Vec2& rX) -> Vec2 {
+        const double v = rX[1] / l22;
+        return {(rX[0] - l12 * v) / l11, v};
+    };
+    std::vector<Vec2> xs;
+    xs.reserve(total);
+    double xlo[2] = {std::numeric_limits<double>::infinity(),
+                     std::numeric_limits<double>::infinity()};
+    double xhi[2] = {-xlo[0], -xlo[1]};
     for (const auto& r_poly : loops)
-        for (const Entry& r_e : r_poly)
-            uvs.push_back(r_e.mUv);
-    const std::vector<std::int64_t> vid = cdt.InsertBatch(uvs);
+        for (const Entry& r_e : r_poly) {
+            xs.push_back(to_x(r_e.mUv));
+            for (int k = 0; k < 2; ++k) {
+                xlo[k] = std::min(xlo[k], xs.back()[static_cast<std::size_t>(k)]);
+                xhi[k] = std::max(xhi[k], xs.back()[static_cast<std::size_t>(k)]);
+            }
+        }
+    detail::Cdt2d cdt(xlo[0], xlo[1], xhi[0], xhi[1]);
+    const std::vector<std::int64_t> vid = cdt.InsertBatch(xs);
     // Each triangulation vertex is one mesh point: a boundary vertex holds
     // its id, an interior one -(1 + its index in mInterior).
     std::unordered_map<std::int64_t, std::int64_t> mesh_of;
@@ -331,28 +444,29 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
     if (cdt.InsideTriangles().empty())
         return fail(MeshCadFaceStatus::Empty, "its loops enclose no area");
 
-    // Interior points: an equilateral lattice, its spacing in each parameter
-    // `h` over the largest first derivative along it on the face's box.
-    const detail::BrepSurfaceEval& r_s = *rF.pSurface;
-    double gu = 0.0;
-    double gv = 0.0;
-    constexpr int kSamples = 9;
-    for (int j = 0; j < kSamples; ++j)
-        for (int i = 0; i < kSamples; ++i) {
-            const double u = lo[0] + (hi[0] - lo[0]) * double(i) / double(kSamples - 1);
-            const double v = lo[1] + (hi[1] - lo[1]) * double(j) / double(kSamples - 1);
-            double x[3];
-            double su[3];
-            double sv[3];
-            r_s.Eval(u, v, x, su, sv);
-            gu = std::max(gu, std::sqrt(su[0] * su[0] + su[1] * su[1] + su[2] * su[2]));
-            gv = std::max(gv, std::sqrt(sv[0] * sv[0] + sv[1] * sv[1] + sv[2] * sv[2]));
+    // Interior points: an equilateral lattice in the mapped plane, its
+    // spacing h over the largest stretch of the surface against the map (the
+    // largest singular value of J L^-1 on the samples), so no lattice step is
+    // longer than h on the surface.
+    double kappa = 0.0;
+    for (const auto& r_j : jac) {
+        Vec3 c1{};
+        Vec3 c2{};
+        for (std::size_t k = 0; k < 3; ++k) {
+            c1[k] = r_j[0][k] / l11;
+            c2[k] = r_j[1][k] / l22 - r_j[0][k] * l12 / (l11 * l22);
         }
-    if (gu > 0.0 && gv > 0.0 && hi[0] > lo[0] && hi[1] > lo[1]) {
-        const double du = h / gu;
-        const double dv = (h / gv) * std::sqrt(3.0) / 2.0;
-        const double rows = std::floor((hi[1] - lo[1]) / dv);
-        const double cols = std::floor((hi[0] - lo[0]) / du) + 1.0;
+        const double a = c1[0] * c1[0] + c1[1] * c1[1] + c1[2] * c1[2];
+        const double b = c1[0] * c2[0] + c1[1] * c2[1] + c1[2] * c2[2];
+        const double d = c2[0] * c2[0] + c2[1] * c2[1] + c2[2] * c2[2];
+        const double lmax = 0.5 * (a + d + std::sqrt((a - d) * (a - d) + 4.0 * b * b));
+        kappa = std::max(kappa, std::sqrt(lmax));
+    }
+    if (kappa > 0.0 && xhi[0] > xlo[0] && xhi[1] > xlo[1]) {
+        const double dx = h / kappa;
+        const double dy = dx * std::sqrt(3.0) / 2.0;
+        const double rows = std::floor((xhi[1] - xlo[1]) / dy);
+        const double cols = std::floor((xhi[0] - xlo[0]) / dx) + 1.0;
         if (rows * cols > double(rO.mMaxPoints))
             return fail(MeshCadFaceStatus::BudgetExceeded,
                         "its interior lattice would exceed max_points");
@@ -368,16 +482,17 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         const auto nrows = static_cast<std::int64_t>(rows);
         const auto ncols = static_cast<std::int64_t>(cols);
         for (std::int64_t j = 1; j <= nrows; ++j) {
-            const double v = lo[1] + double(j) * dv;
+            const double y = xlo[1] + double(j) * dy;
             for (std::int64_t i = 0; i <= ncols; ++i) {
-                const double u = lo[0] + (double(i) + 0.5 * double(j % 2)) * du;
-                if (!(u > lo[0] && u < hi[0]))
+                const Vec2 xp{xlo[0] + (double(i) + 0.5 * double(j % 2)) * dx, y};
+                if (!(xp[0] > xlo[0] && xp[0] < xhi[0]))
                     continue;
+                const Vec2 uv = to_uv(xp);
                 Vec3 x{};
-                r_s.Eval(u, v, x.data(), nullptr, nullptr);
+                r_s.Eval(uv[0], uv[1], x.data(), nullptr, nullptr);
                 if (grid.Near(x, 0.5 * h, 0.4 * h))
                     continue;
-                const std::int64_t v_id = cdt.InsertSteiner({u, v});
+                const std::int64_t v_id = cdt.InsertSteiner(xp);
                 if (v_id < 0)
                     continue;
                 mesh_of[v_id] = -(1 + static_cast<std::int64_t>(rF.mInterior.size()));
@@ -553,8 +668,9 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
         } else {
             for (const BrepLoop& r_l : r_bf.mLoops) {
                 std::vector<std::size_t> loop;
-                for (const BrepTrim& r_t : r_l.mTrims)
-                    loop.push_back(add_use(&r_t.mCurve, r_t.mDirection, r_t.mTrimIndex));
+                for (const std::size_t k : mcad_chain(r_l))
+                    loop.push_back(add_use(&r_l.mTrims[k].mCurve, r_l.mTrims[k].mDirection,
+                                           r_l.mTrims[k].mTrimIndex));
                 for (const std::size_t u : loop)
                     uses[u].mLoopSize = loop.size();
                 if (!loop.empty())

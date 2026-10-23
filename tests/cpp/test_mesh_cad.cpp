@@ -328,14 +328,15 @@ TEST(MeshCad, TrimmedPlateWithAHole) {
     }
 }
 
-TEST(MeshCad, UntrimmedPatchUsesItsParameterRectangle) {
-    // A quarter of a cylinder of radius 2 and length 3 as one rational patch,
-    // no loops: the face is its whole parameter rectangle.
-    const double R = 2.0, L = 3.0, w = std::sqrt(0.5);
+// A quarter of a cylinder of radius R and length L as one rational patch with
+// no loops (the face is its whole parameter rectangle), its second parameter
+// running over [0, V].
+mio::BrepInfo quarter_cylinder(double R, double L, double V) {
+    const double w = std::sqrt(0.5);
     mio::BrepInfo info;
     mio::NurbsPatch p;
     p.mDegrees = {2, 1};
-    p.mKnots = {{0, 0, 0, 1, 1, 1}, {0, 0, 1, 1}};
+    p.mKnots = {{0, 0, 0, 1, 1, 1}, {0, 0, V, V}};
     p.mControlPoints = mio::NDArray(mio::DType::Float64, {6, 3});
     p.mWeights = mio::NDArray(mio::DType::Float64, {6});
     const double ring[3][3] = {{R, 0, 1}, {R, R, w}, {0, R, 1}};
@@ -353,16 +354,32 @@ TEST(MeshCad, UntrimmedPatchUsesItsParameterRectangle) {
     f.mPatch = 0;
     f.mRational = true;
     info.mFaces.push_back(f);
-    double prev = 0.0;
-    for (const double h : {0.2, 0.1}) {
-        const auto r = mio::mesh_cad_surface(info, size(h));
-        ASSERT_EQ(r.mNumFailed, 0) << r.mFaces[0].mReason;
-        EXPECT_EQ(r.mNumMisorientedEdges, 0);
-        const double e = std::fabs(measure(r.mMesh).mArea - 0.5 * kPi * R * L);
-        EXPECT_LT(e, 0.5 * h * h * 0.5 * kPi * R * L);
-        if (prev > 0.0)
-            EXPECT_LT(e, prev / 2.5);
-        prev = e;
+    return info;
+}
+
+TEST(MeshCad, UntrimmedPatchUsesItsParameterRectangle) {
+    // The second case has the Scordelis-Lo roof's proportions: |dS/du| about
+    // 40 times |dS/dv|, which a Delaunay triangulation in raw parameters turns
+    // into triangles across the whole roof.
+    struct Case {
+        double mR, mL, mV, mH;
+    };
+    for (const Case c : {Case{2.0, 3.0, 1.0, 0.2}, Case{25.0, 50.0, 50.0, 4.0}}) {
+        const mio::BrepInfo info = quarter_cylinder(c.mR, c.mL, c.mV);
+        const double exact = 0.5 * kPi * c.mR * c.mL;
+        double prev = 0.0;
+        for (const double h : {c.mH, 0.5 * c.mH}) {
+            const auto r = mio::mesh_cad_surface(info, size(h));
+            ASSERT_EQ(r.mNumFailed, 0) << r.mFaces[0].mReason;
+            EXPECT_EQ(r.mNumMisorientedEdges, 0);
+            EXPECT_GT(r.mMinAngleDeg, 10.0) << c.mR << " " << h;
+            EXPECT_LE(r.mMaxEdge, 1.5 * h) << c.mR << " " << h;
+            const double e = std::fabs(measure(r.mMesh).mArea - exact);
+            EXPECT_LT(e, 0.5 * (h / c.mR) * (h / c.mR) * exact) << c.mR << " " << h;
+            if (prev > 0.0)
+                EXPECT_LT(e, prev / 2.5) << c.mR << " " << h;
+            prev = e;
+        }
     }
 }
 
