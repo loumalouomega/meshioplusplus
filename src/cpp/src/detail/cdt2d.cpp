@@ -834,6 +834,14 @@ std::vector<Cdt2d::Tri> Cdt2d::Star(std::int64_t V) const {
     return out;
 }
 
+std::vector<Cdt2d::Tri> Cdt2d::InsideStar(std::int64_t V) const {
+    std::vector<Tri> out;
+    for (const std::int64_t t : TrianglesAround(V))
+        if (mTris[static_cast<std::size_t>(t)].mInside)
+            out.push_back(mTris[static_cast<std::size_t>(t)].mV);
+    return out;
+}
+
 bool Cdt2d::FindEdge(std::int64_t A, std::int64_t B, std::int64_t& rT, int& rE) const {
     for (const std::int64_t t : TrianglesAround(A)) {
         const int i = IndexOf(t, A);

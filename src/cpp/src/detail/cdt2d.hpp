@@ -281,6 +281,9 @@ public:
     /// The triangles around `V`, counter-clockwise.
     std::vector<Tri> Star(std::int64_t V) const;
 
+    /// The inside triangles (after `Classify`) around `V`.
+    std::vector<Tri> InsideStar(std::int64_t V) const;
+
     /// The inside triangles (after `Classify`), counter-clockwise, in
     /// triangle-slot order.
     std::vector<Tri> InsideTriangles() const;

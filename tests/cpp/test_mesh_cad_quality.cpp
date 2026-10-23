@@ -557,7 +557,7 @@ TEST(MeshCadQuality, AFaceWhoseRefinementRunsAwayIsMeshedUnrefined) {
     // the Scordelis-Lo roof with one corner's weight 2 and z lowered by 1,
     // refined to 30 degrees (past the 20.7 Ruppert guarantees), crowds the
     // edge u = 0 without end, and every round of boundary splits spent the
-    // whole of max_points again. Refinement now stops at 8 times the face's
+    // whole of max_points again. Refinement now stops at 4 times the face's
     // unrefined points; the face is meshed unrefined, byte for byte what
     // min_angle = 0 gives, and warned. At 25 degrees it refines normally.
     const char* roof = R"({"breps": [{"brep_id": 1, "faces": [{"brep_id": 2,

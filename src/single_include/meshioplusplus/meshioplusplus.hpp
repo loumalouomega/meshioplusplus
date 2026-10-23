@@ -38215,6 +38215,9 @@ public:
     /// The triangles around `V`, counter-clockwise.
     std::vector<Tri> Star(std::int64_t V) const;
 
+    /// The inside triangles (after `Classify`) around `V`.
+    std::vector<Tri> InsideStar(std::int64_t V) const;
+
     /// The inside triangles (after `Classify`), counter-clockwise, in
     /// triangle-slot order.
     std::vector<Tri> InsideTriangles() const;
@@ -65626,6 +65629,14 @@ std::vector<Cdt2d::Tri> Cdt2d::Star(std::int64_t V) const {
     std::vector<Tri> out;
     for (const std::int64_t t : TrianglesAround(V))
         out.push_back(mTris[static_cast<std::size_t>(t)].mV);
+    return out;
+}
+
+std::vector<Cdt2d::Tri> Cdt2d::InsideStar(std::int64_t V) const {
+    std::vector<Tri> out;
+    for (const std::int64_t t : TrianglesAround(V))
+        if (mTris[static_cast<std::size_t>(t)].mInside)
+            out.push_back(mTris[static_cast<std::size_t>(t)].mV);
     return out;
 }
 
@@ -216663,6 +216674,9 @@ struct McadFace {
     /// meshed unrefined (`mUnrefined`) and warned.
     bool mRefineBudgetReached = false;
     bool mUnrefined = false;
+    /// Points refinement inserted in the face over every round so far: each
+    /// round meshes the face again, so the bound is on their sum.
+    std::int64_t mRefinedSoFar = 0;
 };
 
 /// What refinement and smoothing ask of every face.
@@ -217319,50 +217333,94 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
     // and refinement runs again on the new triangles.
     const auto surface_flips = [&]() {
         std::int64_t flips = 0;
+        // Every inside edge (a < b), in key order: the apex left of a->b,
+        // the apex right, and the last quadrilateral judged there and not
+        // flipped, which is judged the same until a flip changes it (no
+        // corner moves here). Built once; after each sweep only the edges
+        // of the triangles around a flipped quadrilateral are written again.
+        struct Side {
+            std::array<std::int64_t, 2> mApex{-1, -1};
+            std::array<std::int64_t, 4> mKept{-1, -1, -1, -1};
+        };
+        std::map<std::pair<std::int64_t, std::int64_t>, Side> sides;
+        // The edges a sweep judges, in key order: every one at first, then
+        // those written again or put off; the rest would be skipped as kept.
+        std::set<std::pair<std::int64_t, std::int64_t>> pending;
+        const auto write = [&](const detail::Cdt2d::Tri& rT) {
+            for (int k = 0; k < 3; ++k) {
+                const std::int64_t x = rT[static_cast<std::size_t>((k + 1) % 3)];
+                const std::int64_t y = rT[static_cast<std::size_t>((k + 2) % 3)];
+                sides[seg_key(x, y)].mApex[x < y ? 0 : 1] = rT[static_cast<std::size_t>(k)];
+                pending.insert(seg_key(x, y));
+            }
+        };
+        for (const auto& r_t : cdt.InsideTriangles())
+            write(r_t);
+        const auto fixed = cdt.ConstrainedEdges();
         for (int sweep = 0; sweep < 32; ++sweep) {
-            const auto fixed = cdt.ConstrainedEdges();
-            std::map<std::pair<std::int64_t, std::int64_t>, std::array<std::int64_t, 2>>
-                sides;  // (a < b) -> apex left of a->b, apex right
-            for (const auto& r_t : cdt.InsideTriangles())
-                for (int k = 0; k < 3; ++k) {
-                    const std::int64_t x = r_t[static_cast<std::size_t>((k + 1) % 3)];
-                    const std::int64_t y = r_t[static_cast<std::size_t>((k + 2) % 3)];
-                    auto& r_s =
-                        sides.try_emplace(seg_key(x, y), std::array<std::int64_t, 2>{-1, -1})
-                            .first->second;
-                    r_s[x < y ? 0 : 1] = r_t[static_cast<std::size_t>(k)];
-                }
             // A flip changes the two triangles beside its edge, so the sides
             // recorded for the other edges of its quadrilateral are stale
             // until the next sweep.
-            std::set<std::int64_t> touched;
-            std::int64_t done = 0;
-            for (const auto& [r_e, r_s] : sides) {
-                if (touched.count(r_e.first) > 0 && touched.count(r_e.second) > 0)
+            std::vector<char> touched(static_cast<std::size_t>(cdt.NumVertices()), 0);
+            const auto was_touched = [&](std::int64_t V) {
+                return V >= 0 && static_cast<std::size_t>(V) < touched.size() &&
+                       touched[static_cast<std::size_t>(V)] != 0;
+            };
+            std::vector<std::array<std::int64_t, 4>> flipped;
+            const std::vector<std::pair<std::int64_t, std::int64_t>> judge(pending.begin(),
+                                                                           pending.end());
+            pending.clear();
+            for (const auto& r_e : judge) {
+                Side& r_side = sides.at(r_e);
+                const auto& r_s = r_side.mApex;
+                if (was_touched(r_e.first) && was_touched(r_e.second)) {
+                    pending.insert(r_e);
+                    continue;
+                }
+                const std::array<std::int64_t, 4> quad{r_e.first, r_e.second, r_s[0], r_s[1]};
+                if (r_side.mKept == quad)
                     continue;
                 if (r_s[0] < 0 || r_s[1] < 0 ||
                     std::binary_search(fixed.begin(), fixed.end(),
-                                       std::array<std::int64_t, 2>{r_e.first, r_e.second}))
+                                       std::array<std::int64_t, 2>{r_e.first, r_e.second})) {
+                    r_side.mKept = quad;
                     continue;
+                }
                 const detail::Cdt2d::Tri t1{r_s[0], r_e.first, r_e.second};
                 const detail::Cdt2d::Tri t2{r_s[1], r_e.second, r_e.first};
                 const detail::Cdt2d::Tri n1{r_s[0], r_e.first, r_s[1]};
                 const detail::Cdt2d::Tri n2{r_s[0], r_s[1], r_e.second};
                 std::array<std::int64_t, 3> i1{}, i2{}, j1{}, j2{};
-                if (exempt(t1, i1) || exempt(t2, i2) || exempt(n1, j1) || exempt(n2, j2))
+                if (exempt(t1, i1) || exempt(t2, i2) || exempt(n1, j1) || exempt(n2, j2)) {
+                    r_side.mKept = quad;
                     continue;
+                }
                 const double now = std::min(mcad_min_angle(pos(i1[0]), pos(i1[1]), pos(i1[2])),
                                             mcad_min_angle(pos(i2[0]), pos(i2[1]), pos(i2[2])));
                 const double then = std::min(mcad_min_angle(pos(j1[0]), pos(j1[1]), pos(j1[2])),
                                              mcad_min_angle(pos(j2[0]), pos(j2[1]), pos(j2[2])));
                 if (then > now + 1e-9 && cdt.FlipEdge(r_e.first, r_e.second)) {
-                    ++done;
-                    touched.insert({r_e.first, r_e.second, r_s[0], r_s[1]});
+                    flipped.push_back(quad);
+                    for (const std::int64_t v : quad)
+                        if (v >= 0 && static_cast<std::size_t>(v) < touched.size())
+                            touched[static_cast<std::size_t>(v)] = 1;
+                } else {
+                    r_side.mKept = quad;
                 }
             }
-            flips += done;
-            if (done == 0)
+            flips += static_cast<std::int64_t>(flipped.size());
+            if (flipped.empty())
                 break;
+            // The next sweep's sides: a flipped edge is gone, its new
+            // diagonal and the edges around its corners are written again.
+            for (const auto& r_q : flipped) {
+                sides.erase(seg_key(r_q[0], r_q[1]));
+                pending.erase(seg_key(r_q[0], r_q[1]));
+            }
+            for (const auto& r_q : flipped)
+                for (const std::int64_t v : r_q)
+                    for (const auto& r_t : cdt.InsideStar(v))
+                        write(r_t);
         }
         return flips;
     };
@@ -217380,20 +217438,25 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         ro.mSplitSegments = false;
         // An equal share of what max_points leaves after the boundary, so
         // the faces together stay within it whatever each one needs; and at
-        // most 8 times the face's unrefined points (256 at least). On a
-        // surface termination is not the plane's theorem, and a face that
-        // runs away (at 30 degrees, past the 20.7 Ruppert guarantees) would
-        // otherwise fill max_points, 50 million by default; refinement adds
-        // at most 5.7 times on the fixtures (the near-hole plate at its
-        // coarsest size, its 0.02 gap far below h). A face that reaches
-        // either is meshed unrefined and warned.
+        // most 4 times the face's unrefined points (256 at least) summed over
+        // every round, since each round meshes the face again. On a surface
+        // termination is not the plane's theorem, and a face that runs away
+        // (the sphere at 30 degrees, past the 20.7 Ruppert guarantees) would
+        // otherwise fill max_points, 50 million by default, in every round;
+        // on the fixtures refinement adds at most 1.45 times over all rounds
+        // (5.7 times in a round on the near-hole plate's 13 points, under the
+        // 256). A face that reaches either is meshed unrefined and warned.
         const auto unrefined_points = static_cast<std::int64_t>(rF.mInterior.size() + pl.mTotal);
+        const std::int64_t cap_left =
+            std::max<std::int64_t>(256, 4 * unrefined_points) - rF.mRefinedSoFar;
+        if (cap_left <= 0)
+            rF.mRefineBudgetReached = true;
         ro.mMaxPoints = std::min<std::int64_t>(
             std::max<std::int64_t>(0,
                                    (rO.mMaxPoints - static_cast<std::int64_t>(rBoundary.size())) /
                                            std::max<std::int64_t>(1, rQ.mNumFaces) -
                                        static_cast<std::int64_t>(rF.mInterior.size())),
-            std::max<std::int64_t>(256, 8 * unrefined_points));
+            std::max<std::int64_t>(0, cap_left));
         ro.mRatio = [&](const detail::Cdt2d::Tri& rT) {
             std::array<std::int64_t, 3> ids{};
             if (exempt(rT, ids))
@@ -217505,6 +217568,7 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             catch_up();
             asked.insert(refined.mRequests.begin(), refined.mRequests.end());
             r_rec.mNumRefinementPoints += refined.mNumCircumcentres;
+            rF.mRefinedSoFar += refined.mNumCircumcentres;
             ro.mMaxPoints -= refined.mNumCircumcentres;
             if (refined.mBudgetReached && refined.mNumCircumcentres > 0)
                 rF.mRefineBudgetReached = true;
@@ -218445,7 +218509,7 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
                     spent = true;
                     warn("face " + std::to_string(f) +
                          ": refinement did not finish within its points (its share of "
-                         "max_points, at most 8 times its unrefined ones); the face is "
+                         "max_points, at most 4 times its unrefined ones); the face is "
                          "meshed unrefined");
                 }
             if (spent) {
