@@ -323,6 +323,9 @@ struct McadFace {
     /// end at a sharp corner: 0 none, 1 the piece's start, 2 its end).
     std::vector<std::array<std::size_t, 3>> mAsks;
     std::array<std::int64_t, kMeshCadAngleBins> mHistogram{};
+    /// Triangles under min_angle that refinement leaves where the face's
+    /// metric departs too far from its plane's, warned in face order.
+    std::int64_t mNumStretched = 0;
 };
 
 /// What refinement and smoothing ask of every face.
@@ -449,6 +452,26 @@ struct McadPlane {
         return {(rX[0] - mL12 * v) / mL11, v};
     }
 };
+
+/// Whether the surface's metric at a point, (S_u, S_v) there, departs more
+/// than twofold from the face's plane: the condition number of J L^-1 above
+/// 2, where one affine map cannot follow the surface (a varying metric,
+/// roadmap 6.4.1, is what can).
+bool mcad_stretched(const Vec3& rSu, const Vec3& rSv, const McadPlane& rPl) {
+    Vec3 c1{};
+    Vec3 c2{};
+    for (std::size_t i = 0; i < 3; ++i) {
+        c1[i] = rSu[i] / rPl.mL11;
+        c2[i] = rSv[i] / rPl.mL22 - rSu[i] * rPl.mL12 / (rPl.mL11 * rPl.mL22);
+    }
+    const double a = c1[0] * c1[0] + c1[1] * c1[1] + c1[2] * c1[2];
+    const double b = c1[0] * c2[0] + c1[1] * c2[1] + c1[2] * c2[2];
+    const double d = c2[0] * c2[0] + c2[1] * c2[1] + c2[2] * c2[2];
+    const double root = std::sqrt((a - d) * (a - d) + 4.0 * b * b);
+    const double lmax = 0.5 * (a + d + root);
+    const double lmin = 0.5 * (a + d - root);
+    return !(lmin > 0.0 && lmax <= 4.0 * lmin);
+}
 
 /// Build a face's plane from its uses' current samples (`mParams`, `mIds`).
 McadPlane mcad_face_plane(const McadFace& rF, const std::vector<McadUse>& rUses,
@@ -867,20 +890,7 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
     double pole_reach = h;
     if (!face_poles.empty())
         for (std::size_t k = 0; k < pl.mJac.size(); ++k) {
-            const auto& r_j = pl.mJac[k];
-            Vec3 c1{};
-            Vec3 c2{};
-            for (std::size_t i = 0; i < 3; ++i) {
-                c1[i] = r_j[0][i] / pl.mL11;
-                c2[i] = r_j[1][i] / pl.mL22 - r_j[0][i] * pl.mL12 / (pl.mL11 * pl.mL22);
-            }
-            const double a = c1[0] * c1[0] + c1[1] * c1[1] + c1[2] * c1[2];
-            const double b = c1[0] * c2[0] + c1[1] * c2[1] + c1[2] * c2[2];
-            const double d = c2[0] * c2[0] + c2[1] * c2[1] + c2[2] * c2[2];
-            const double root = std::sqrt((a - d) * (a - d) + 4.0 * b * b);
-            const double lmax = 0.5 * (a + d + root);
-            const double lmin = 0.5 * (a + d - root);
-            if (lmin > 0.0 && lmax <= 4.0 * lmin)
+            if (!mcad_stretched(pl.mJac[k][0], pl.mJac[k][1], pl))
                 continue;
             double nearest = std::numeric_limits<double>::infinity();
             for (const std::int64_t p : face_poles)
@@ -899,13 +909,57 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         }
         return best;
     };
-    // A triangle judged on the surface; one a pole collapses, or within h
-    // of a pole, is exempt (negative).
+    // Whether a triangle lies where the surface stretches its plane more
+    // than twofold (at its centroid). There a point placed for the surface
+    // can leave triangles as bad on the surface as the one it replaced,
+    // each smaller, and refinement need not stop (a planar bilinear patch
+    // whose corner stretches 2.4-fold ran away to max_points). Such a
+    // triangle is refined only while its shortest edge on the surface is
+    // h / 4 or more, and no point it adds there lands closer than h / 4 to
+    // its cavity: finitely many such points fit, and what stays under the
+    // bound there is reported, until a varying metric (6.4.1).
+    const auto stretched_at = [&](const detail::Cdt2d::Vec2& rX) {
+        const Vec2 uv = pl.ToUv(rX);
+        Vec3 x{};
+        Vec3 su{};
+        Vec3 sv{};
+        r_s.Eval(uv[0], uv[1], x.data(), su.data(), sv.data());
+        return mcad_stretched(su, sv, pl);
+    };
+    std::map<std::array<std::int64_t, 3>, bool> stretched_cache;
+    const auto stretched = [&](const detail::Cdt2d::Tri& rT) {
+        std::array<std::int64_t, 3> key = rT;
+        std::sort(key.begin(), key.end());
+        const auto it = stretched_cache.find(key);
+        if (it != stretched_cache.end())
+            return it->second;
+        const auto& xa = cdt.Point(rT[0]);
+        const auto& xb = cdt.Point(rT[1]);
+        const auto& xc = cdt.Point(rT[2]);
+        const bool out =
+            stretched_at({(xa[0] + xb[0] + xc[0]) / 3.0, (xa[1] + xb[1] + xc[1]) / 3.0});
+        stretched_cache.emplace(key, out);
+        return out;
+    };
+    const auto left_stretched = [&](const detail::Cdt2d::Tri& rT,
+                                    const std::array<std::int64_t, 3>& rIds) {
+        if (!(rQ.mMinAngleDeg > 0.0))
+            return false;
+        const double shortest =
+            std::min({mcad_dist(pos(rIds[0]), pos(rIds[1])), mcad_dist(pos(rIds[1]), pos(rIds[2])),
+                      mcad_dist(pos(rIds[2]), pos(rIds[0]))});
+        return shortest < 0.25 * h && stretched(rT);
+    };
+    // A triangle judged on the surface; one a pole collapses, within h of a
+    // pole, or under h / 4 where the surface stretches the plane, is exempt
+    // (negative).
     const auto exempt = [&](const detail::Cdt2d::Tri& rT, std::array<std::int64_t, 3>& rIds) {
         for (int k = 0; k < 3; ++k)
             rIds[static_cast<std::size_t>(k)] = mesh_of.at(rT[static_cast<std::size_t>(k)]);
-        return rIds[0] == rIds[1] || rIds[1] == rIds[2] || rIds[0] == rIds[2] ||
-               pole_near(rIds[0]) >= 0 || pole_near(rIds[1]) >= 0 || pole_near(rIds[2]) >= 0;
+        if (rIds[0] == rIds[1] || rIds[1] == rIds[2] || rIds[0] == rIds[2] ||
+            pole_near(rIds[0]) >= 0 || pole_near(rIds[1]) >= 0 || pole_near(rIds[2]) >= 0)
+            return true;
+        return left_stretched(rT, rIds);
     };
     // Delaunay in the plane is not Delaunay on the surface where the
     // face's metric departs from its mean: an edge whose flip raises the
@@ -1025,6 +1079,12 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         // so points do not pile up there, and the triangle is reported.
         const double ratio_bound = 1.0 / (2.0 * std::sin(rQ.mMinAngleDeg * (kMcadPi / 180.0)));
         const double slack = 0.5;
+        // Where the surface stretches the plane, no point closer than h / 4
+        // (see `stretched`), wherever its triangle is: refinement there does
+        // not make the triangles it would then have to leave.
+        const auto stretched_floor = [&](const detail::Cdt2d::Vec2& rX) {
+            return stretched_at(rX) ? 0.25 * h : 0.0;
+        };
         ro.mAccept = [&](const detail::Cdt2d::Tri& rT, const detail::Cdt2d::Vec2& rC,
                          const std::vector<std::int64_t>& rAround) {
             const Vec3& pa = pos(mesh_of.at(rT[0]));
@@ -1032,11 +1092,11 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             const Vec3& pc = pos(mesh_of.at(rT[2]));
             const double shortest =
                 std::min({mcad_dist(pa, pb), mcad_dist(pb, pc), mcad_dist(pc, pa)});
+            const double radius = std::max(slack * ratio_bound * shortest, stretched_floor(rC));
             const Vec3 x = lift(rC);
             for (const std::int64_t w : rAround) {
                 const auto it = mesh_of.find(w);
-                if (it != mesh_of.end() &&
-                    mcad_dist(pos(it->second), x) < slack * ratio_bound * shortest)
+                if (it != mesh_of.end() && mcad_dist(pos(it->second), x) < radius)
                     return false;
             }
             return true;
@@ -1047,8 +1107,11 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             const Vec3& pc = pos(mesh_of.at(rT[2]));
             const double shortest =
                 std::min({mcad_dist(pa, pb), mcad_dist(pb, pc), mcad_dist(pc, pa)});
+            const auto& xa = cdt.Point(A);
+            const auto& xb = cdt.Point(B);
+            const detail::Cdt2d::Vec2 mid{0.5 * (xa[0] + xb[0]), 0.5 * (xa[1] + xb[1])};
             return 0.5 * mcad_dist(pos(mesh_of.at(A)), pos(mesh_of.at(B))) >=
-                   slack * ratio_bound * shortest / std::sqrt(2.0);
+                   std::max(slack * ratio_bound * shortest / std::sqrt(2.0), stretched_floor(mid));
         };
         ro.mMinAngle = [&](const detail::Cdt2d::Tri& rT) {
             std::array<std::int64_t, 3> ids{};
@@ -1232,6 +1295,10 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                     at_corner = true;
                 }
                 at_corner = at_corner || corner_angle.count(id) > 0;
+            }
+            if (!at_corner && rQ.mMinAngleDeg > 0.0 && m < rQ.mMinAngleDeg && stretched(r_t)) {
+                at_corner = true;
+                ++rF.mNumStretched;
             }
             if (!at_corner)
                 bound = std::min(bound, m);
@@ -1963,6 +2030,7 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
                 r_f.mTriangles.clear();
                 r_f.mAsks.clear();
                 r_f.mHistogram.fill(0);
+                r_f.mNumStretched = 0;
                 // What meshing adds to the skipped embedded edges is added
                 // again by the next meshing.
                 if (r_f.mSkippedBefore == std::string::npos)
@@ -2078,6 +2146,11 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
         for (const auto& [u, r_why] : r_f.mSkipped)
             warn("face " + std::to_string(f) + ": an embedded edge (trim " +
                  std::to_string(uses[u].mTrimIndex) + ") is not meshed: " + r_why);
+        if (r_f.mNumStretched > 0)
+            warn("face " + std::to_string(f) + ": " + std::to_string(r_f.mNumStretched) +
+                 " triangles stay under min_angle where its parameters stretch the surface "
+                 "more than twofold against the face's plane; refinement leaves them to a "
+                 "varying metric (roadmap 6.4.1)");
         if (r_f.mRecord.mStatus != MeshCadFaceStatus::Ok) {
             ++result.mNumFailed;
             if (r_f.mRecord.mStatus == MeshCadFaceStatus::Empty && r_f.mRecord.mReason.empty())

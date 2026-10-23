@@ -26,6 +26,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <fstream>
 #include <map>
 #include <sstream>
@@ -170,6 +171,24 @@ mio::BrepInfo planar_face(const std::vector<std::vector<Vec2>>& rLoops, double S
         j << "]}";
     }
     j << R"(], "embedded_edges": []}], "edges": [], "vertices": []}]})";
+    const std::string path = mt::temp_path(".cad.json");
+    std::ofstream(path) << j.str();
+    return mio::read_cad_json_info(path);
+}
+
+// An untrimmed planar bilinear patch on [0, 1]^2 with corners (0, 0),
+// (1, 0), (0, 2) and `rCorner`: (1, 2) is a rectangle, its parameters
+// affine; (1, 1) gives x = u, y = v (2 - u), which the face's one affine
+// map stretches 2.4-fold at that corner.
+mio::BrepInfo bilinear_patch(const Vec2& rCorner) {
+    std::ostringstream j;
+    j.precision(17);
+    j << R"({"breps": [{"brep_id": 1, "faces": [{"brep_id": 2, "swapped_surface_normal": false,
+        "surface": {"is_trimmed": false, "is_rational": false, "degrees": [1, 1],
+        "knot_vectors": [[0, 1], [0, 1]], "control_points": [[1, [0, 0, 0, 1]],
+        [2, [1, 0, 0, 1]], [3, [0, 2, 0, 1]], [4, [)"
+      << rCorner[0] << ", " << rCorner[1] << R"(, 0, 1]]]}, "boundary_loops": [],
+        "embedded_edges": []}], "edges": [], "vertices": []}]})";
     const std::string path = mt::temp_path(".cad.json");
     std::ofstream(path) << j.str();
     return mio::read_cad_json_info(path);
@@ -487,6 +506,50 @@ TEST(MeshCadQuality, OptionsNotImplementedYetAreRefused) {
             << bad;
     EXPECT_THROW((void)mio::mesh_cad_surface(brep_solids::box(), quality(0.5, 0.0, -1)),
                  std::invalid_argument);
+}
+
+TEST(MeshCadQuality, AStretchedCornerDoesNotRunAway) {
+    // Found by the fuzz target (tests/fuzz/regressions/op_mesh_cad_surface):
+    // where the face's metric departs more than twofold from its plane's,
+    // a point placed for the surface can leave triangles as bad as the one
+    // it replaced, each smaller, and refinement ran away (198853 points at
+    // max_points 200000, h = 0.0588...). There no point lands closer than
+    // h / 4 and no triangle under h / 4 is refined; one left under the
+    // bound is warned and kept out of bound_deg, as a pole's are. The
+    // rectangle, whose parameters are affine, is the other side.
+    const auto warned = [](const MeshCadSurfaceResult& rR) {
+        for (const std::string& r_w : rR.mWarnings)
+            if (r_w.find("roadmap 6.4.1") != std::string::npos)
+                return true;
+        return false;
+    };
+    for (const double h : {0.2, 0.1, 0.05884389414473131, 0.05}) {
+        for (const double ang : {20.7, 25.0}) {
+            const auto flat = mio::mesh_cad_surface(bilinear_patch({1.0, 2.0}), quality(h, ang));
+            ASSERT_EQ(flat.mNumFailed, 0);
+            EXPECT_GE(flat.mMinAngleDeg, ang - 1e-9) << h << " " << ang;
+            EXPECT_FALSE(warned(flat)) << h << " " << ang;
+
+            const auto unrefined =
+                mio::mesh_cad_surface(bilinear_patch({1.0, 1.0}), quality(h, 0.0));
+            const auto r = mio::mesh_cad_surface(bilinear_patch({1.0, 1.0}), quality(h, ang));
+            ASSERT_EQ(r.mNumFailed, 0);
+            EXPECT_LT(r.mNumPoints, unrefined.mNumPoints + unrefined.mNumPoints / 10)
+                << h << " " << ang;
+            for (const std::string& r_w : r.mWarnings)
+                EXPECT_EQ(r_w.find("refinement stopped"), std::string::npos) << r_w;
+            // Here refinement meets the bound everywhere; a triangle it
+            // leaves under the bound would be warned.
+            EXPECT_GE(r.mFaces[0].mBoundDeg, ang - 1e-9) << h << " " << ang;
+            EXPECT_EQ(r.mMinAngleDeg < ang, warned(r)) << h << " " << ang;
+            std::printf(
+                "[stretched] h %-8.4g min_angle %4.1f  points %lld (unrefined %lld)  "
+                "smallest %.2f  bound_deg %.2f  warned %d\n",
+                h, ang, static_cast<long long>(r.mNumPoints),
+                static_cast<long long>(unrefined.mNumPoints), r.mMinAngleDeg, r.mFaces[0].mBoundDeg,
+                warned(r) ? 1 : 0);
+        }
+    }
 }
 
 TEST(MeshCadQuality, TriangulatePolygonTakesTheSameMinAngle) {
