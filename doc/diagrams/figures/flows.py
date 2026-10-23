@@ -1025,6 +1025,7 @@ def roadmap_map():
             "§2 quality",
             [
                 ("OSS-Fuzz submission", "S"),
+                ("CalculiX validators in CI", "S"),
             ],
             [],
         ),
@@ -1045,7 +1046,7 @@ def roadmap_map():
             [
                 ("registries (calendar-bound)", "S"),
                 ("Rust bindings over the C API", "M"),
-                ("interop phase 2 (Open3D, GPU)", "S"),
+                ("interop phase 2 (Open3D, DOLFINx)", "S"),
                 ("CLI chatbot over MCP tools", "M"),
                 ("viewer look · MDPA preview", "M"),
                 ("manager shows thumbnails", "S"),
@@ -1056,19 +1057,25 @@ def roadmap_map():
             "§5 full WASM build",
             [
                 ("MMG under Emscripten (after §3.3)", "M"),
+                ("skin to CAD: constraints · G1", "L"),
             ],
             [],
         ),
         (
             "§6 mesh generation",
             [
+                ("milestone-1 leftovers", "S"),
                 ("refinement · smoothing", "M"),
-                ("size fields", "M"),
-                ("anisotropic metrics · poles", "M"),
-                ("tetrahedra (backends)", "L"),
-                ("quads · layers: design first", "L"),
+                ("size fields · grading", "M"),
+                ("metrics · poles · folds", "M"),
+                ("real CAD input · corpus", "M"),
+                ("curved (high-order) meshes", "M"),
+                ("tetrahedra (octree, backends)", "L"),
+                ("quads: design first", "L"),
+                ("boundary layers: design first", "L"),
+                ("adaptation on the CAD", "M"),
             ],
-            [(0, 1)],
+            [(1, 2)],
         ),
     ]
     per_row = 4
