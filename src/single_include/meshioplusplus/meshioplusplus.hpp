@@ -39207,6 +39207,636 @@ inline double drawing_number_value(std::string_view Token, const char* pFormat) 
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/drawing.hpp =====
+// ===== begin src/cpp/src/detail/iga_kernels.hpp =====
+/**
+ * @file detail/iga_kernels.hpp
+ * @brief The isogeometric kernels behind `operations/iga.hpp`: exact knot
+ * insertion and degree elevation of a tensor-product NURBS net, and its
+ * evaluation with first derivatives (The NURBS Book, algorithms A2.3, A5.4
+ * and A5.9).
+ *
+ * A net is held *homogeneous*: every control point is a row of `C` doubles
+ * `(w x, w f..., w)`, so the geometry, the weights and every NURBS field
+ * refine with one kernel and one rounding. A non-rational net drops the
+ * weight column and the weights stay exactly 1. Control nets list direction 0
+ * fastest. The arithmetic is the order the Python twin
+ * (`meshioplusplus/_iga.py`) follows, so the two give the same bits; the
+ * kernels are scalar per column, which is what lets the twin vectorise over
+ * lines and columns without changing a bit (`-ffp-contract=off`).
+ *
+ * Core-private (not installed).
+ */
+
+// System includes
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus::detail {
+
+/// A tensor-product control net in homogeneous form.
+struct IgaNet {
+    std::size_t mDim = 0;
+    std::array<int, 3> mDegrees{0, 0, 0};
+    std::array<std::vector<double>, 3> mKnots;
+    std::array<std::size_t, 3> mCounts{1, 1, 1};
+    /// Columns per control point.
+    std::size_t mColumns = 0;
+    /// `prod(mCounts)` rows of `mColumns` values, direction 0 fastest.
+    std::vector<double> mValues;
+
+    std::size_t NumPoints() const { return mCounts[0] * mCounts[1] * mCounts[2]; }
+};
+
+inline std::int64_t iga_binomial(int N, int K) {
+    if (K < 0 || K > N)
+        return 0;
+    std::int64_t r = 1;
+    for (int i = 1; i <= K; ++i)
+        r = r * (N - K + i) / i;
+    return r;
+}
+
+/// The knots of one direction that split every nonzero span in `S` equal
+/// parts (the interior ones only), ascending.
+inline std::vector<double> iga_split_knots(int P, const std::vector<double>& rKnots, int S) {
+    std::vector<double> x;
+    if (S <= 1)
+        return x;
+    const std::size_t n = rKnots.size() - static_cast<std::size_t>(P) - 1;
+    for (const std::size_t i : nurbs_spans(P, rKnots, n)) {
+        const double k0 = rKnots[i], k1 = rKnots[i + 1];
+        for (int j = 1; j < S; ++j)
+            x.push_back(k0 + (k1 - k0) * (static_cast<double>(j) / S));
+    }
+    return x;
+}
+
+/// A5.4: refine the knot vector of one curve of `C`-column control rows with
+/// the ascending knots `rX` (at least one).
+inline void iga_refine_line(int P, const std::vector<double>& rU, const double* pPw,
+                            std::size_t Count, std::size_t C, const std::vector<double>& rX,
+                            std::vector<double>& rUbar, std::vector<double>& rQw) {
+    using I = std::ptrdiff_t;
+    const I p = P, n = static_cast<I>(Count) - 1, m = n + p + 1;
+    const I r = static_cast<I>(rX.size()) - 1;
+    const I a = static_cast<I>(nurbs_find_span(P, rU, Count, rX[0]));
+    const I b = static_cast<I>(nurbs_find_span(P, rU, Count, rX[static_cast<std::size_t>(r)])) + 1;
+    rUbar.assign(static_cast<std::size_t>(m + r + 2), 0.0);
+    rQw.assign((Count + static_cast<std::size_t>(r) + 1) * C, 0.0);
+    const auto row = [C](std::vector<double>& rV, I Index) {
+        return rV.data() + static_cast<std::size_t>(Index) * C;
+    };
+    for (I j = 0; j <= a - p; ++j)
+        for (std::size_t c = 0; c < C; ++c)
+            row(rQw, j)[c] = pPw[static_cast<std::size_t>(j) * C + c];
+    for (I j = b - 1; j <= n; ++j)
+        for (std::size_t c = 0; c < C; ++c)
+            row(rQw, j + r + 1)[c] = pPw[static_cast<std::size_t>(j) * C + c];
+    for (I j = 0; j <= a; ++j)
+        rUbar[static_cast<std::size_t>(j)] = rU[static_cast<std::size_t>(j)];
+    for (I j = b + p; j <= m; ++j)
+        rUbar[static_cast<std::size_t>(j + r + 1)] = rU[static_cast<std::size_t>(j)];
+    I i = b + p - 1, k = b + p + r;
+    for (I j = r; j >= 0; --j) {
+        const double xj = rX[static_cast<std::size_t>(j)];
+        while (xj <= rU[static_cast<std::size_t>(i)] && i > a) {
+            for (std::size_t c = 0; c < C; ++c)
+                row(rQw, k - p - 1)[c] = pPw[static_cast<std::size_t>(i - p - 1) * C + c];
+            rUbar[static_cast<std::size_t>(k)] = rU[static_cast<std::size_t>(i)];
+            --k;
+            --i;
+        }
+        for (std::size_t c = 0; c < C; ++c)
+            row(rQw, k - p - 1)[c] = row(rQw, k - p)[c];
+        for (I l = 1; l <= p; ++l) {
+            const I ind = k - p + l;
+            double alfa = rUbar[static_cast<std::size_t>(k + l)] - xj;
+            if (std::fabs(alfa) == 0.0) {
+                for (std::size_t c = 0; c < C; ++c)
+                    row(rQw, ind - 1)[c] = row(rQw, ind)[c];
+            } else {
+                alfa = alfa / (rUbar[static_cast<std::size_t>(k + l)] -
+                               rU[static_cast<std::size_t>(i - p + l)]);
+                for (std::size_t c = 0; c < C; ++c)
+                    row(rQw, ind - 1)[c] =
+                        alfa * row(rQw, ind - 1)[c] + (1.0 - alfa) * row(rQw, ind)[c];
+            }
+        }
+        rUbar[static_cast<std::size_t>(k)] = xj;
+        --k;
+    }
+}
+
+/// A5.9: raise the degree of one curve of `C`-column control rows by `T`
+/// (at least one), keeping every knot's continuity.
+inline void iga_elevate_line(int P, const std::vector<double>& rU, const double* pPw,
+                             std::size_t Count, std::size_t C, int T, std::vector<double>& rUh,
+                             std::vector<double>& rQw) {
+    using I = std::ptrdiff_t;
+    const I p = P, t = T, ph = p + t, ph2 = ph / 2;
+    const I n = static_cast<I>(Count) - 1, m = n + p + 1;
+    // The distinct interior knots bound the segments: the output holds at most
+    // (Count + t * (segments + 1)) rows and that many + ph + 1 knots.
+    I distinct = 0;
+    for (I i = p + 1; i <= n; ++i)
+        if (rU[static_cast<std::size_t>(i)] != rU[static_cast<std::size_t>(i - 1)])
+            ++distinct;
+    const I max_rows = n + 1 + t * (distinct + 1);
+    rQw.assign(static_cast<std::size_t>(max_rows) * C, 0.0);
+    rUh.assign(static_cast<std::size_t>(max_rows + ph + 1), 0.0);
+    std::vector<std::vector<double>> bezalfs(
+        static_cast<std::size_t>(ph + 1),
+        std::vector<double>(static_cast<std::size_t>(p + 1), 0.0));
+    bezalfs[0][0] = 1.0;
+    bezalfs[static_cast<std::size_t>(ph)][static_cast<std::size_t>(p)] = 1.0;
+    for (I i = 1; i <= ph2; ++i) {
+        const double inv =
+            1.0 / static_cast<double>(iga_binomial(static_cast<int>(ph), static_cast<int>(i)));
+        const I mpi = std::min(p, i);
+        for (I j = std::max<I>(0, i - t); j <= mpi; ++j)
+            bezalfs[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)] =
+                inv * static_cast<double>(iga_binomial(static_cast<int>(p), static_cast<int>(j))) *
+                static_cast<double>(iga_binomial(static_cast<int>(t), static_cast<int>(i - j)));
+    }
+    for (I i = ph2 + 1; i <= ph - 1; ++i) {
+        const I mpi = std::min(p, i);
+        for (I j = std::max<I>(0, i - t); j <= mpi; ++j)
+            bezalfs[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)] =
+                bezalfs[static_cast<std::size_t>(ph - i)][static_cast<std::size_t>(p - j)];
+    }
+    std::vector<double> bpts(static_cast<std::size_t>(p + 1) * C),
+        ebpts(static_cast<std::size_t>(ph + 1) * C),
+        nextbpts(static_cast<std::size_t>(std::max<I>(p - 1, 1)) * C),
+        alfs(static_cast<std::size_t>(std::max<I>(p - 1, 1)));
+    const auto brow = [C](std::vector<double>& rV, I Index) {
+        return rV.data() + static_cast<std::size_t>(Index) * C;
+    };
+    const auto U = [&rU](I Index) { return rU[static_cast<std::size_t>(Index)]; };
+    const auto Uh = [&rUh](I Index) -> double& { return rUh[static_cast<std::size_t>(Index)]; };
+    I mh = ph, kind = ph + 1, r = -1, a = p, b = p + 1, cind = 1;
+    double ua = U(0);
+    for (std::size_t c = 0; c < C; ++c)
+        brow(rQw, 0)[c] = pPw[c];
+    for (I i = 0; i <= ph; ++i)
+        Uh(i) = ua;
+    for (I i = 0; i <= p; ++i)
+        for (std::size_t c = 0; c < C; ++c)
+            brow(bpts, i)[c] = pPw[static_cast<std::size_t>(i) * C + c];
+    while (b < m) {
+        I i = b;
+        while (b < m && U(b) == U(b + 1))
+            ++b;
+        const I mul = b - i + 1;
+        mh = mh + mul + t;
+        const double ub = U(b);
+        const I oldr = r;
+        r = p - mul;
+        const I lbz = oldr > 0 ? (oldr + 2) / 2 : 1;
+        const I rbz = r > 0 ? ph - (r + 1) / 2 : ph;
+        if (r > 0) {
+            const double numer = ub - ua;
+            for (I k = p; k > mul; --k)
+                alfs[static_cast<std::size_t>(k - mul - 1)] = numer / (U(a + k) - ua);
+            for (I j = 1; j <= r; ++j) {
+                const I save = r - j, s = mul + j;
+                for (I k = p; k >= s; --k) {
+                    const double al = alfs[static_cast<std::size_t>(k - s)];
+                    for (std::size_t c = 0; c < C; ++c)
+                        brow(bpts, k)[c] =
+                            al * brow(bpts, k)[c] + (1.0 - al) * brow(bpts, k - 1)[c];
+                }
+                for (std::size_t c = 0; c < C; ++c)
+                    brow(nextbpts, save)[c] = brow(bpts, p)[c];
+            }
+        }
+        for (I k = lbz; k <= ph; ++k) {
+            for (std::size_t c = 0; c < C; ++c)
+                brow(ebpts, k)[c] = 0.0;
+            const I mpi = std::min(p, k);
+            for (I j = std::max<I>(0, k - t); j <= mpi; ++j) {
+                const double bz = bezalfs[static_cast<std::size_t>(k)][static_cast<std::size_t>(j)];
+                for (std::size_t c = 0; c < C; ++c)
+                    brow(ebpts, k)[c] = brow(ebpts, k)[c] + bz * brow(bpts, j)[c];
+            }
+        }
+        if (oldr > 1) {
+            I first = kind - 2, last = kind;
+            const double den = ub - ua;
+            const double bet = (ub - Uh(kind - 1)) / den;
+            for (I tr = 1; tr < oldr; ++tr) {
+                I ii = first, j = last, kj = j - kind + 1;
+                while (j - ii > tr) {
+                    if (ii < cind) {
+                        const double alf = (ub - Uh(ii)) / (ua - Uh(ii));
+                        for (std::size_t c = 0; c < C; ++c)
+                            brow(rQw, ii)[c] =
+                                alf * brow(rQw, ii)[c] + (1.0 - alf) * brow(rQw, ii - 1)[c];
+                    }
+                    if (j >= lbz) {
+                        if (j - tr <= kind - ph + oldr) {
+                            const double gam = (ub - Uh(j - tr)) / den;
+                            for (std::size_t c = 0; c < C; ++c)
+                                brow(ebpts, kj)[c] =
+                                    gam * brow(ebpts, kj)[c] + (1.0 - gam) * brow(ebpts, kj + 1)[c];
+                        } else {
+                            for (std::size_t c = 0; c < C; ++c)
+                                brow(ebpts, kj)[c] =
+                                    bet * brow(ebpts, kj)[c] + (1.0 - bet) * brow(ebpts, kj + 1)[c];
+                        }
+                    }
+                    ++ii;
+                    --j;
+                    --kj;
+                }
+                --first;
+                ++last;
+            }
+        }
+        if (a != p)
+            for (I k = 0; k < ph - oldr; ++k) {
+                Uh(kind) = ua;
+                ++kind;
+            }
+        for (I j = lbz; j <= rbz; ++j) {
+            for (std::size_t c = 0; c < C; ++c)
+                brow(rQw, cind)[c] = brow(ebpts, j)[c];
+            ++cind;
+        }
+        if (b < m) {
+            for (I j = 0; j < r; ++j)
+                for (std::size_t c = 0; c < C; ++c)
+                    brow(bpts, j)[c] = brow(nextbpts, j)[c];
+            for (I j = r; j <= p; ++j)
+                for (std::size_t c = 0; c < C; ++c)
+                    brow(bpts, j)[c] = pPw[static_cast<std::size_t>(b - p + j) * C + c];
+            a = b;
+            ++b;
+            ua = ub;
+        } else {
+            for (I k = 0; k <= ph; ++k)
+                Uh(kind + k) = ub;
+        }
+    }
+    const I nh = mh - ph - 1;
+    rQw.resize(static_cast<std::size_t>(nh + 1) * C);
+    rUh.resize(static_cast<std::size_t>(nh + ph + 2));
+}
+
+/// Apply a line operation `Op(line values, count, out knots, out values)` along
+/// direction `Dir` of every line of the net.
+template <class Op>
+inline void iga_apply_direction(IgaNet& rNet, std::size_t Dir, std::size_t NewCount, Op&& rOp) {
+    const std::size_t C = rNet.mColumns;
+    std::size_t inner = 1, outer = 1;
+    for (std::size_t e = 0; e < Dir; ++e)
+        inner *= rNet.mCounts[e];
+    for (std::size_t e = Dir + 1; e < 3; ++e)
+        outer *= rNet.mCounts[e];
+    const std::size_t n = rNet.mCounts[Dir];
+    std::vector<double> out(inner * NewCount * outer * C);
+    std::vector<double> line(n * C);
+    for (std::size_t o = 0; o < outer; ++o)
+        for (std::size_t in = 0; in < inner; ++in) {
+            for (std::size_t k = 0; k < n; ++k)
+                for (std::size_t c = 0; c < C; ++c)
+                    line[k * C + c] = rNet.mValues[(in + inner * (k + n * o)) * C + c];
+            const std::vector<double>& res = rOp(line);
+            for (std::size_t k = 0; k < NewCount; ++k)
+                for (std::size_t c = 0; c < C; ++c)
+                    out[(in + inner * (k + NewCount * o)) * C + c] = res[k * C + c];
+        }
+    rNet.mValues = std::move(out);
+    rNet.mCounts[Dir] = NewCount;
+}
+
+/// Insert `rX` (ascending) into direction `Dir`'s knot vector.
+inline void iga_net_insert(IgaNet& rNet, std::size_t Dir, const std::vector<double>& rX) {
+    if (rX.empty())
+        return;
+    const int p = rNet.mDegrees[Dir];
+    const std::size_t n = rNet.mCounts[Dir];
+    const double lo = rNet.mKnots[Dir][static_cast<std::size_t>(p)], hi = rNet.mKnots[Dir][n];
+    for (std::size_t i = 0; i < rX.size(); ++i)
+        if (!(rX[i] > lo && rX[i] < hi) || (i && rX[i] < rX[i - 1]))
+            throw std::invalid_argument(
+                "meshio++: iga: knots to insert must be ascending and inside the parameter range");
+    std::vector<double> ubar, res;
+    iga_apply_direction(rNet, Dir, n + rX.size(),
+                        [&](const std::vector<double>& rLine) -> const std::vector<double>& {
+                            iga_refine_line(p, rNet.mKnots[Dir], rLine.data(), n, rNet.mColumns, rX,
+                                            ubar, res);
+                            return res;
+                        });
+    rNet.mKnots[Dir] = ubar;
+}
+
+/// Raise direction `Dir`'s degree by `T`.
+inline void iga_net_elevate(IgaNet& rNet, std::size_t Dir, int T) {
+    if (T <= 0)
+        return;
+    const int p = rNet.mDegrees[Dir];
+    const std::size_t n = rNet.mCounts[Dir];
+    std::vector<double> uh, res;
+    std::vector<double> uh_first;
+    std::size_t new_count = 0;
+    // The new count and knot vector depend on the knots only: take them from
+    // a first, zero line.
+    {
+        std::vector<double> zero(n * rNet.mColumns, 0.0);
+        iga_elevate_line(p, rNet.mKnots[Dir], zero.data(), n, rNet.mColumns, T, uh_first, res);
+        new_count = res.size() / rNet.mColumns;
+    }
+    iga_apply_direction(
+        rNet, Dir, new_count, [&](const std::vector<double>& rLine) -> const std::vector<double>& {
+            iga_elevate_line(p, rNet.mKnots[Dir], rLine.data(), n, rNet.mColumns, T, uh, res);
+            return res;
+        });
+    rNet.mKnots[Dir] = uh_first;
+    rNet.mDegrees[Dir] = p + T;
+}
+
+/// A2.3 for first derivatives: `pDers` is `(NDer + 1)` rows of `P + 1`
+/// values, row 0 the basis functions, row 1 their derivatives.
+inline void iga_basis_ders(std::size_t Span, double U, int P, int NDer,
+                           const std::vector<double>& rKnots, double* pDers) {
+    const auto p = static_cast<std::size_t>(P);
+    std::vector<double> ndu((p + 1) * (p + 1), 0.0), left(p + 1, 0.0), right(p + 1, 0.0);
+    const auto at = [p](std::size_t R, std::size_t Cc) { return R * (p + 1) + Cc; };
+    ndu[at(0, 0)] = 1.0;
+    for (std::size_t j = 1; j <= p; ++j) {
+        left[j] = U - rKnots[Span + 1 - j];
+        right[j] = rKnots[Span + j] - U;
+        double saved = 0.0;
+        for (std::size_t r = 0; r < j; ++r) {
+            ndu[at(j, r)] = right[r + 1] + left[j - r];
+            const double temp = ndu[at(r, j - 1)] / ndu[at(j, r)];
+            ndu[at(r, j)] = saved + right[r + 1] * temp;
+            saved = left[j - r] * temp;
+        }
+        ndu[at(j, j)] = saved;
+    }
+    for (std::size_t j = 0; j <= p; ++j)
+        pDers[j] = ndu[at(j, p)];
+    if (NDer < 1)
+        return;
+    // The first derivatives (A2.3 with k = 1: its inner loop is empty, and the
+    // work table's entry (0, 0) is exactly 1).
+    const double factor = static_cast<double>(P);
+    for (std::size_t r = 0; r <= p; ++r) {
+        double d = 0.0;
+        if (r >= 1)
+            d = (1.0 / ndu[at(p, r - 1)]) * ndu[at(r - 1, p - 1)];
+        if (r + 1 <= p)
+            d += (-1.0 / ndu[at(p, r)]) * ndu[at(r, p - 1)];
+        pDers[(p + 1) + r] = d;
+    }
+    for (std::size_t j = 0; j <= p; ++j)
+        pDers[(p + 1) + j] *= factor;
+}
+
+/// A tensor-product net to evaluate: `NV` columns per control point, weights
+/// optional (null: polynomial).
+struct IgaEvalNet {
+    std::size_t mDim = 0;
+    std::array<int, 3> mDegrees{0, 0, 0};
+    std::array<const std::vector<double>*, 3> mKnots{nullptr, nullptr, nullptr};
+    std::array<std::size_t, 3> mCounts{1, 1, 1};
+    const double* mValues = nullptr;
+    std::size_t mColumns = 0;
+    const double* mWeights = nullptr;
+};
+
+/// The `NV` values at the parameters `pU[0 .. dim)` in knot spans `pSpan`, and
+/// with `NDer == 1` their derivatives along each direction (`pDer`, row-major
+/// `(dim, NV)`).
+inline void iga_eval_point(const IgaEvalNet& rNet, const std::size_t* pSpan, const double* pU,
+                           int NDer, double* pOut, double* pDer) {
+    const std::size_t dim = rNet.mDim, NV = rNet.mColumns;
+    std::array<std::vector<double>, 3> ders;
+    for (std::size_t d = 0; d < dim; ++d) {
+        ders[d].assign(
+            static_cast<std::size_t>(NDer + 1) * (static_cast<std::size_t>(rNet.mDegrees[d]) + 1),
+            0.0);
+        iga_basis_ders(pSpan[d], pU[d], rNet.mDegrees[d], NDer, *rNet.mKnots[d], ders[d].data());
+    }
+    std::vector<double> acc(NV, 0.0), dacc(dim * NV, 0.0);
+    double wsum = 0.0;
+    std::array<double, 3> dwsum{0.0, 0.0, 0.0};
+    std::array<std::size_t, 3> np1{1, 1, 1}, base{0, 0, 0};
+    for (std::size_t d = 0; d < dim; ++d) {
+        np1[d] = static_cast<std::size_t>(rNet.mDegrees[d]) + 1;
+        base[d] = pSpan[d] - static_cast<std::size_t>(rNet.mDegrees[d]);
+    }
+    for (std::size_t j2 = 0; j2 < np1[2]; ++j2)
+        for (std::size_t j1 = 0; j1 < np1[1]; ++j1)
+            for (std::size_t j0 = 0; j0 < np1[0]; ++j0) {
+                const std::array<std::size_t, 3> j{j0, j1, j2};
+                const std::size_t idx =
+                    (base[0] + j0) +
+                    rNet.mCounts[0] * ((base[1] + j1) + rNet.mCounts[1] * (base[2] + j2));
+                const double w = rNet.mWeights ? rNet.mWeights[idx] : 1.0;
+                const double* v = rNet.mValues + idx * NV;
+                double b = 1.0;
+                for (std::size_t d = 0; d < dim; ++d)
+                    b *= ders[d][j[d]];
+                const double cc = w * b;
+                for (std::size_t c = 0; c < NV; ++c)
+                    acc[c] += cc * v[c];
+                wsum += cc;
+                if (NDer >= 1)
+                    for (std::size_t k = 0; k < dim; ++k) {
+                        double bk = 1.0;
+                        for (std::size_t d = 0; d < dim; ++d)
+                            bk *= d == k ? ders[d][np1[d] + j[d]] : ders[d][j[d]];
+                        const double ck = w * bk;
+                        for (std::size_t c = 0; c < NV; ++c)
+                            dacc[k * NV + c] += ck * v[c];
+                        dwsum[k] += ck;
+                    }
+            }
+    if (rNet.mWeights) {
+        for (std::size_t c = 0; c < NV; ++c)
+            pOut[c] = acc[c] / wsum;
+        if (NDer >= 1)
+            for (std::size_t k = 0; k < dim; ++k)
+                for (std::size_t c = 0; c < NV; ++c)
+                    pDer[k * NV + c] = (dacc[k * NV + c] - dwsum[k] * pOut[c]) / wsum;
+    } else {
+        for (std::size_t c = 0; c < NV; ++c)
+            pOut[c] = acc[c];
+        if (NDer >= 1)
+            for (std::size_t k = 0; k < dim; ++k)
+                for (std::size_t c = 0; c < NV; ++c)
+                    pDer[k * NV + c] = dacc[k * NV + c];
+    }
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/iga_kernels.hpp =====
+// ===== begin src/cpp/src/detail/edge_sampler.hpp =====
+/**
+ * @file detail/edge_sampler.hpp
+ * @brief Evaluating a B-rep face's surface and trimming curves, and sampling
+ * a trimmed edge once so every face that uses it shares the same 3-D points:
+ * the 1-D half of `mesh_cad_surface`.
+ *
+ *  - **Evaluation.** `BrepSurfaceEval` and `BrepCurveEval` wrap a
+ *    `NurbsPatch` and a `BrepCurve` (a trim's curve in the face's
+ *    parameters) for `detail/iga_kernels.hpp`'s rational evaluator, with
+ *    first derivatives, at any degree.
+ *  - **A trace** is one use of an edge: the face's surface composed with the
+ *    trim's curve, `X(t) = S(c(t))`, run along the loop (`mDirection`). Its
+ *    arc length is integrated with five-point Gauss-Legendre on the knot
+ *    intervals of the curve, bisected until halving changes an interval's
+ *    length by less than `1e-12` of it, and inverted by safeguarded Newton.
+ *  - **Sampling.** `edge_sample` splits a trace into `max(1, ceil(L / h))`
+ *    pieces of equal arc length (at least `mMinSegments`), then halves any
+ *    piece whose sagitta (the distance of the curve at a quarter, half and
+ *    three quarters of the piece from its chord) exceeds the chordal cap: the
+ *    "linear deflection" of OpenCASCADE's mesher. A trace shorter than the
+ *    tolerance (a pole) keeps its two ends.
+ *  - **Sharing.** `edge_project` carries a master trace's samples to another
+ *    use of the same edge (the neighbouring face, or the same face across a
+ *    seam): each point is projected onto the other trace by Gauss-Newton
+ *    from its arc-length fraction, monotonically between its neighbours. The
+ *    caller keeps the master's 3-D points and takes only the parameters (so
+ *    the faces share the points exactly); the largest residual is reported.
+ *
+ * A **core-private** header: nothing installed names it. Pure functions of
+ * their inputs; evaluators are read-only after construction, so traces of
+ * different edges may be sampled concurrently.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+
+using EdgeVec3 = std::array<double, 3>;
+using EdgeVec2 = std::array<double, 2>;
+
+/// A two-parameter `NurbsPatch` with first derivatives; parameters outside
+/// its knot range are clamped to it.
+class BrepSurfaceEval {
+public:
+    /// @throws std::invalid_argument when the patch is not a valid surface.
+    BrepSurfaceEval(const NurbsPatch& rPatch, bool Rational);
+    /// `pX` (3) and, when not null, `pSu` and `pSv` (3 each).
+    void Eval(double U, double V, double* pX, double* pSu, double* pSv) const;
+    /// The knot range: `{u0, u1, v0, v1}`.
+    const std::array<double, 4>& Box() const { return mBox; }
+
+private:
+    const NurbsPatch* pPatch = nullptr;
+    IgaEvalNet mNet;
+    std::array<std::size_t, 2> mCounts{0, 0};
+    std::array<double, 4> mBox{0, 0, 0, 0};
+};
+
+/// A `BrepCurve` (its first two coordinates are the face's parameters for a
+/// trim) with its derivative, over its active range or else its knot range.
+class BrepCurveEval {
+public:
+    /// @throws std::invalid_argument when the curve is not valid.
+    explicit BrepCurveEval(const BrepCurve& rCurve);
+    void Eval(double T, double* pX, double* pD) const;
+    double T0() const { return mT0; }
+    double T1() const { return mT1; }
+    /// The distinct knots strictly inside `(T0, T1)`, ascending.
+    const std::vector<double>& Breaks() const { return mBreaks; }
+
+private:
+    std::int32_t mDegree = 1;
+    std::vector<double> mKnots;
+    std::vector<double> mValues;
+    std::vector<double> mWeights;
+    std::size_t mCount = 0;
+    double mT0 = 0.0;
+    double mT1 = 0.0;
+    std::vector<double> mBreaks;
+    IgaEvalNet mNet;
+};
+
+/// One use of an edge: `X(t) = S(c(t))` run along the loop, with its arc
+/// length table.
+class TrimTrace {
+public:
+    TrimTrace(const BrepSurfaceEval* pSurface, BrepCurveEval Curve, bool Forward);
+    /// The curve parameters at the start and the end of the trace.
+    double Start() const { return mForward ? mCurve.T0() : mCurve.T1(); }
+    double End() const { return mForward ? mCurve.T1() : mCurve.T0(); }
+    EdgeVec2 Uv(double T) const;
+    EdgeVec3 Point(double T) const;
+    /// `dX / dt`.
+    EdgeVec3 Velocity(double T) const;
+    double Length() const { return mCum.empty() ? 0.0 : mCum.back(); }
+    /// The parameter at arc length `L` from the start (clamped to the trace).
+    double ParamAtLength(double L) const;
+    const BrepSurfaceEval& Surface() const { return *pSurface; }
+
+private:
+    const BrepSurfaceEval* pSurface = nullptr;
+    BrepCurveEval mCurve;
+    bool mForward = true;
+    std::vector<double> mT;    ///< table parameters, in trace order
+    std::vector<double> mCum;  ///< arc length from the start at each
+
+    double Speed(double T) const;
+    double Gauss(double A, double B) const;
+    void Refine(double A, double B, double Whole, double La, int Depth, std::vector<double>& rT,
+                std::vector<double>& rL) const;
+};
+
+struct EdgeSampleOptions {
+    double mTargetSize = 0.0;              ///< h > 0
+    double mMaxChordalDeviation = 0.0;     ///< 0: off
+    std::int64_t mMinSegments = 1;         ///< at least this many pieces
+    double mTolerance = 0.0;               ///< a trace this short is degenerate
+    std::int64_t mMaxSegments = 10000000;  ///< refused (std::length_error) above
+};
+
+struct EdgeSamples {
+    std::vector<double> mParams;     ///< curve parameters, start to end, ends included
+    std::vector<EdgeVec3> mPoints;   ///< `X` at each
+    std::vector<double> mFractions;  ///< arc-length fraction of each, 0 to 1
+    double mLength = 0.0;
+    bool mDegenerate = false;  ///< shorter than the tolerance: its two ends only
+};
+
+EdgeSamples edge_sample(const TrimTrace& rTrace, const EdgeSampleOptions& rOptions);
+
+/// Whether two traces of one edge run the same way (compared at both ends and
+/// at a quarter and three quarters of their lengths).
+bool edge_same_direction(const TrimTrace& rA, const TrimTrace& rB);
+
+struct EdgeProjection {
+    std::vector<double> mParams;  ///< on the other trace, in its own order
+    double mMaxGap = 0.0;         ///< the largest distance from a sample to the other trace
+};
+
+/// Carry a master's samples to another trace of the same edge; `SameDirection`
+/// as `edge_same_direction` says. The ends map to the other trace's ends.
+EdgeProjection edge_project(const TrimTrace& rOther, const EdgeSamples& rMaster,
+                            bool SameDirection);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/edge_sampler.hpp =====
 // ===== begin src/cpp/src/detail/feature_fit.hpp =====
 /**
  * @file feature_fit.hpp
@@ -40059,480 +40689,6 @@ HexUntangleReport hex_untangle(std::vector<Vec3>& rPoints,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/hex_fit.hpp =====
-// ===== begin src/cpp/src/detail/iga_kernels.hpp =====
-/**
- * @file detail/iga_kernels.hpp
- * @brief The isogeometric kernels behind `operations/iga.hpp`: exact knot
- * insertion and degree elevation of a tensor-product NURBS net, and its
- * evaluation with first derivatives (The NURBS Book, algorithms A2.3, A5.4
- * and A5.9).
- *
- * A net is held *homogeneous*: every control point is a row of `C` doubles
- * `(w x, w f..., w)`, so the geometry, the weights and every NURBS field
- * refine with one kernel and one rounding. A non-rational net drops the
- * weight column and the weights stay exactly 1. Control nets list direction 0
- * fastest. The arithmetic is the order the Python twin
- * (`meshioplusplus/_iga.py`) follows, so the two give the same bits; the
- * kernels are scalar per column, which is what lets the twin vectorise over
- * lines and columns without changing a bit (`-ffp-contract=off`).
- *
- * Core-private (not installed).
- */
-
-// System includes
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstddef>
-#include <cstdint>
-#include <stdexcept>
-#include <string>
-#include <vector>
-
-// Project includes (private, not installed)
-
-namespace meshioplusplus::detail {
-
-/// A tensor-product control net in homogeneous form.
-struct IgaNet {
-    std::size_t mDim = 0;
-    std::array<int, 3> mDegrees{0, 0, 0};
-    std::array<std::vector<double>, 3> mKnots;
-    std::array<std::size_t, 3> mCounts{1, 1, 1};
-    /// Columns per control point.
-    std::size_t mColumns = 0;
-    /// `prod(mCounts)` rows of `mColumns` values, direction 0 fastest.
-    std::vector<double> mValues;
-
-    std::size_t NumPoints() const { return mCounts[0] * mCounts[1] * mCounts[2]; }
-};
-
-inline std::int64_t iga_binomial(int N, int K) {
-    if (K < 0 || K > N)
-        return 0;
-    std::int64_t r = 1;
-    for (int i = 1; i <= K; ++i)
-        r = r * (N - K + i) / i;
-    return r;
-}
-
-/// The knots of one direction that split every nonzero span in `S` equal
-/// parts (the interior ones only), ascending.
-inline std::vector<double> iga_split_knots(int P, const std::vector<double>& rKnots, int S) {
-    std::vector<double> x;
-    if (S <= 1)
-        return x;
-    const std::size_t n = rKnots.size() - static_cast<std::size_t>(P) - 1;
-    for (const std::size_t i : nurbs_spans(P, rKnots, n)) {
-        const double k0 = rKnots[i], k1 = rKnots[i + 1];
-        for (int j = 1; j < S; ++j)
-            x.push_back(k0 + (k1 - k0) * (static_cast<double>(j) / S));
-    }
-    return x;
-}
-
-/// A5.4: refine the knot vector of one curve of `C`-column control rows with
-/// the ascending knots `rX` (at least one).
-inline void iga_refine_line(int P, const std::vector<double>& rU, const double* pPw,
-                            std::size_t Count, std::size_t C, const std::vector<double>& rX,
-                            std::vector<double>& rUbar, std::vector<double>& rQw) {
-    using I = std::ptrdiff_t;
-    const I p = P, n = static_cast<I>(Count) - 1, m = n + p + 1;
-    const I r = static_cast<I>(rX.size()) - 1;
-    const I a = static_cast<I>(nurbs_find_span(P, rU, Count, rX[0]));
-    const I b = static_cast<I>(nurbs_find_span(P, rU, Count, rX[static_cast<std::size_t>(r)])) + 1;
-    rUbar.assign(static_cast<std::size_t>(m + r + 2), 0.0);
-    rQw.assign((Count + static_cast<std::size_t>(r) + 1) * C, 0.0);
-    const auto row = [C](std::vector<double>& rV, I Index) {
-        return rV.data() + static_cast<std::size_t>(Index) * C;
-    };
-    for (I j = 0; j <= a - p; ++j)
-        for (std::size_t c = 0; c < C; ++c)
-            row(rQw, j)[c] = pPw[static_cast<std::size_t>(j) * C + c];
-    for (I j = b - 1; j <= n; ++j)
-        for (std::size_t c = 0; c < C; ++c)
-            row(rQw, j + r + 1)[c] = pPw[static_cast<std::size_t>(j) * C + c];
-    for (I j = 0; j <= a; ++j)
-        rUbar[static_cast<std::size_t>(j)] = rU[static_cast<std::size_t>(j)];
-    for (I j = b + p; j <= m; ++j)
-        rUbar[static_cast<std::size_t>(j + r + 1)] = rU[static_cast<std::size_t>(j)];
-    I i = b + p - 1, k = b + p + r;
-    for (I j = r; j >= 0; --j) {
-        const double xj = rX[static_cast<std::size_t>(j)];
-        while (xj <= rU[static_cast<std::size_t>(i)] && i > a) {
-            for (std::size_t c = 0; c < C; ++c)
-                row(rQw, k - p - 1)[c] = pPw[static_cast<std::size_t>(i - p - 1) * C + c];
-            rUbar[static_cast<std::size_t>(k)] = rU[static_cast<std::size_t>(i)];
-            --k;
-            --i;
-        }
-        for (std::size_t c = 0; c < C; ++c)
-            row(rQw, k - p - 1)[c] = row(rQw, k - p)[c];
-        for (I l = 1; l <= p; ++l) {
-            const I ind = k - p + l;
-            double alfa = rUbar[static_cast<std::size_t>(k + l)] - xj;
-            if (std::fabs(alfa) == 0.0) {
-                for (std::size_t c = 0; c < C; ++c)
-                    row(rQw, ind - 1)[c] = row(rQw, ind)[c];
-            } else {
-                alfa = alfa / (rUbar[static_cast<std::size_t>(k + l)] -
-                               rU[static_cast<std::size_t>(i - p + l)]);
-                for (std::size_t c = 0; c < C; ++c)
-                    row(rQw, ind - 1)[c] =
-                        alfa * row(rQw, ind - 1)[c] + (1.0 - alfa) * row(rQw, ind)[c];
-            }
-        }
-        rUbar[static_cast<std::size_t>(k)] = xj;
-        --k;
-    }
-}
-
-/// A5.9: raise the degree of one curve of `C`-column control rows by `T`
-/// (at least one), keeping every knot's continuity.
-inline void iga_elevate_line(int P, const std::vector<double>& rU, const double* pPw,
-                             std::size_t Count, std::size_t C, int T, std::vector<double>& rUh,
-                             std::vector<double>& rQw) {
-    using I = std::ptrdiff_t;
-    const I p = P, t = T, ph = p + t, ph2 = ph / 2;
-    const I n = static_cast<I>(Count) - 1, m = n + p + 1;
-    // The distinct interior knots bound the segments: the output holds at most
-    // (Count + t * (segments + 1)) rows and that many + ph + 1 knots.
-    I distinct = 0;
-    for (I i = p + 1; i <= n; ++i)
-        if (rU[static_cast<std::size_t>(i)] != rU[static_cast<std::size_t>(i - 1)])
-            ++distinct;
-    const I max_rows = n + 1 + t * (distinct + 1);
-    rQw.assign(static_cast<std::size_t>(max_rows) * C, 0.0);
-    rUh.assign(static_cast<std::size_t>(max_rows + ph + 1), 0.0);
-    std::vector<std::vector<double>> bezalfs(
-        static_cast<std::size_t>(ph + 1),
-        std::vector<double>(static_cast<std::size_t>(p + 1), 0.0));
-    bezalfs[0][0] = 1.0;
-    bezalfs[static_cast<std::size_t>(ph)][static_cast<std::size_t>(p)] = 1.0;
-    for (I i = 1; i <= ph2; ++i) {
-        const double inv =
-            1.0 / static_cast<double>(iga_binomial(static_cast<int>(ph), static_cast<int>(i)));
-        const I mpi = std::min(p, i);
-        for (I j = std::max<I>(0, i - t); j <= mpi; ++j)
-            bezalfs[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)] =
-                inv * static_cast<double>(iga_binomial(static_cast<int>(p), static_cast<int>(j))) *
-                static_cast<double>(iga_binomial(static_cast<int>(t), static_cast<int>(i - j)));
-    }
-    for (I i = ph2 + 1; i <= ph - 1; ++i) {
-        const I mpi = std::min(p, i);
-        for (I j = std::max<I>(0, i - t); j <= mpi; ++j)
-            bezalfs[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)] =
-                bezalfs[static_cast<std::size_t>(ph - i)][static_cast<std::size_t>(p - j)];
-    }
-    std::vector<double> bpts(static_cast<std::size_t>(p + 1) * C),
-        ebpts(static_cast<std::size_t>(ph + 1) * C),
-        nextbpts(static_cast<std::size_t>(std::max<I>(p - 1, 1)) * C),
-        alfs(static_cast<std::size_t>(std::max<I>(p - 1, 1)));
-    const auto brow = [C](std::vector<double>& rV, I Index) {
-        return rV.data() + static_cast<std::size_t>(Index) * C;
-    };
-    const auto U = [&rU](I Index) { return rU[static_cast<std::size_t>(Index)]; };
-    const auto Uh = [&rUh](I Index) -> double& { return rUh[static_cast<std::size_t>(Index)]; };
-    I mh = ph, kind = ph + 1, r = -1, a = p, b = p + 1, cind = 1;
-    double ua = U(0);
-    for (std::size_t c = 0; c < C; ++c)
-        brow(rQw, 0)[c] = pPw[c];
-    for (I i = 0; i <= ph; ++i)
-        Uh(i) = ua;
-    for (I i = 0; i <= p; ++i)
-        for (std::size_t c = 0; c < C; ++c)
-            brow(bpts, i)[c] = pPw[static_cast<std::size_t>(i) * C + c];
-    while (b < m) {
-        I i = b;
-        while (b < m && U(b) == U(b + 1))
-            ++b;
-        const I mul = b - i + 1;
-        mh = mh + mul + t;
-        const double ub = U(b);
-        const I oldr = r;
-        r = p - mul;
-        const I lbz = oldr > 0 ? (oldr + 2) / 2 : 1;
-        const I rbz = r > 0 ? ph - (r + 1) / 2 : ph;
-        if (r > 0) {
-            const double numer = ub - ua;
-            for (I k = p; k > mul; --k)
-                alfs[static_cast<std::size_t>(k - mul - 1)] = numer / (U(a + k) - ua);
-            for (I j = 1; j <= r; ++j) {
-                const I save = r - j, s = mul + j;
-                for (I k = p; k >= s; --k) {
-                    const double al = alfs[static_cast<std::size_t>(k - s)];
-                    for (std::size_t c = 0; c < C; ++c)
-                        brow(bpts, k)[c] =
-                            al * brow(bpts, k)[c] + (1.0 - al) * brow(bpts, k - 1)[c];
-                }
-                for (std::size_t c = 0; c < C; ++c)
-                    brow(nextbpts, save)[c] = brow(bpts, p)[c];
-            }
-        }
-        for (I k = lbz; k <= ph; ++k) {
-            for (std::size_t c = 0; c < C; ++c)
-                brow(ebpts, k)[c] = 0.0;
-            const I mpi = std::min(p, k);
-            for (I j = std::max<I>(0, k - t); j <= mpi; ++j) {
-                const double bz = bezalfs[static_cast<std::size_t>(k)][static_cast<std::size_t>(j)];
-                for (std::size_t c = 0; c < C; ++c)
-                    brow(ebpts, k)[c] = brow(ebpts, k)[c] + bz * brow(bpts, j)[c];
-            }
-        }
-        if (oldr > 1) {
-            I first = kind - 2, last = kind;
-            const double den = ub - ua;
-            const double bet = (ub - Uh(kind - 1)) / den;
-            for (I tr = 1; tr < oldr; ++tr) {
-                I ii = first, j = last, kj = j - kind + 1;
-                while (j - ii > tr) {
-                    if (ii < cind) {
-                        const double alf = (ub - Uh(ii)) / (ua - Uh(ii));
-                        for (std::size_t c = 0; c < C; ++c)
-                            brow(rQw, ii)[c] =
-                                alf * brow(rQw, ii)[c] + (1.0 - alf) * brow(rQw, ii - 1)[c];
-                    }
-                    if (j >= lbz) {
-                        if (j - tr <= kind - ph + oldr) {
-                            const double gam = (ub - Uh(j - tr)) / den;
-                            for (std::size_t c = 0; c < C; ++c)
-                                brow(ebpts, kj)[c] =
-                                    gam * brow(ebpts, kj)[c] + (1.0 - gam) * brow(ebpts, kj + 1)[c];
-                        } else {
-                            for (std::size_t c = 0; c < C; ++c)
-                                brow(ebpts, kj)[c] =
-                                    bet * brow(ebpts, kj)[c] + (1.0 - bet) * brow(ebpts, kj + 1)[c];
-                        }
-                    }
-                    ++ii;
-                    --j;
-                    --kj;
-                }
-                --first;
-                ++last;
-            }
-        }
-        if (a != p)
-            for (I k = 0; k < ph - oldr; ++k) {
-                Uh(kind) = ua;
-                ++kind;
-            }
-        for (I j = lbz; j <= rbz; ++j) {
-            for (std::size_t c = 0; c < C; ++c)
-                brow(rQw, cind)[c] = brow(ebpts, j)[c];
-            ++cind;
-        }
-        if (b < m) {
-            for (I j = 0; j < r; ++j)
-                for (std::size_t c = 0; c < C; ++c)
-                    brow(bpts, j)[c] = brow(nextbpts, j)[c];
-            for (I j = r; j <= p; ++j)
-                for (std::size_t c = 0; c < C; ++c)
-                    brow(bpts, j)[c] = pPw[static_cast<std::size_t>(b - p + j) * C + c];
-            a = b;
-            ++b;
-            ua = ub;
-        } else {
-            for (I k = 0; k <= ph; ++k)
-                Uh(kind + k) = ub;
-        }
-    }
-    const I nh = mh - ph - 1;
-    rQw.resize(static_cast<std::size_t>(nh + 1) * C);
-    rUh.resize(static_cast<std::size_t>(nh + ph + 2));
-}
-
-/// Apply a line operation `Op(line values, count, out knots, out values)` along
-/// direction `Dir` of every line of the net.
-template <class Op>
-inline void iga_apply_direction(IgaNet& rNet, std::size_t Dir, std::size_t NewCount, Op&& rOp) {
-    const std::size_t C = rNet.mColumns;
-    std::size_t inner = 1, outer = 1;
-    for (std::size_t e = 0; e < Dir; ++e)
-        inner *= rNet.mCounts[e];
-    for (std::size_t e = Dir + 1; e < 3; ++e)
-        outer *= rNet.mCounts[e];
-    const std::size_t n = rNet.mCounts[Dir];
-    std::vector<double> out(inner * NewCount * outer * C);
-    std::vector<double> line(n * C);
-    for (std::size_t o = 0; o < outer; ++o)
-        for (std::size_t in = 0; in < inner; ++in) {
-            for (std::size_t k = 0; k < n; ++k)
-                for (std::size_t c = 0; c < C; ++c)
-                    line[k * C + c] = rNet.mValues[(in + inner * (k + n * o)) * C + c];
-            const std::vector<double>& res = rOp(line);
-            for (std::size_t k = 0; k < NewCount; ++k)
-                for (std::size_t c = 0; c < C; ++c)
-                    out[(in + inner * (k + NewCount * o)) * C + c] = res[k * C + c];
-        }
-    rNet.mValues = std::move(out);
-    rNet.mCounts[Dir] = NewCount;
-}
-
-/// Insert `rX` (ascending) into direction `Dir`'s knot vector.
-inline void iga_net_insert(IgaNet& rNet, std::size_t Dir, const std::vector<double>& rX) {
-    if (rX.empty())
-        return;
-    const int p = rNet.mDegrees[Dir];
-    const std::size_t n = rNet.mCounts[Dir];
-    const double lo = rNet.mKnots[Dir][static_cast<std::size_t>(p)], hi = rNet.mKnots[Dir][n];
-    for (std::size_t i = 0; i < rX.size(); ++i)
-        if (!(rX[i] > lo && rX[i] < hi) || (i && rX[i] < rX[i - 1]))
-            throw std::invalid_argument(
-                "meshio++: iga: knots to insert must be ascending and inside the parameter range");
-    std::vector<double> ubar, res;
-    iga_apply_direction(rNet, Dir, n + rX.size(),
-                        [&](const std::vector<double>& rLine) -> const std::vector<double>& {
-                            iga_refine_line(p, rNet.mKnots[Dir], rLine.data(), n, rNet.mColumns, rX,
-                                            ubar, res);
-                            return res;
-                        });
-    rNet.mKnots[Dir] = ubar;
-}
-
-/// Raise direction `Dir`'s degree by `T`.
-inline void iga_net_elevate(IgaNet& rNet, std::size_t Dir, int T) {
-    if (T <= 0)
-        return;
-    const int p = rNet.mDegrees[Dir];
-    const std::size_t n = rNet.mCounts[Dir];
-    std::vector<double> uh, res;
-    std::vector<double> uh_first;
-    std::size_t new_count = 0;
-    // The new count and knot vector depend on the knots only: take them from
-    // a first, zero line.
-    {
-        std::vector<double> zero(n * rNet.mColumns, 0.0);
-        iga_elevate_line(p, rNet.mKnots[Dir], zero.data(), n, rNet.mColumns, T, uh_first, res);
-        new_count = res.size() / rNet.mColumns;
-    }
-    iga_apply_direction(
-        rNet, Dir, new_count, [&](const std::vector<double>& rLine) -> const std::vector<double>& {
-            iga_elevate_line(p, rNet.mKnots[Dir], rLine.data(), n, rNet.mColumns, T, uh, res);
-            return res;
-        });
-    rNet.mKnots[Dir] = uh_first;
-    rNet.mDegrees[Dir] = p + T;
-}
-
-/// A2.3 for first derivatives: `pDers` is `(NDer + 1)` rows of `P + 1`
-/// values, row 0 the basis functions, row 1 their derivatives.
-inline void iga_basis_ders(std::size_t Span, double U, int P, int NDer,
-                           const std::vector<double>& rKnots, double* pDers) {
-    const auto p = static_cast<std::size_t>(P);
-    std::vector<double> ndu((p + 1) * (p + 1), 0.0), left(p + 1, 0.0), right(p + 1, 0.0);
-    const auto at = [p](std::size_t R, std::size_t Cc) { return R * (p + 1) + Cc; };
-    ndu[at(0, 0)] = 1.0;
-    for (std::size_t j = 1; j <= p; ++j) {
-        left[j] = U - rKnots[Span + 1 - j];
-        right[j] = rKnots[Span + j] - U;
-        double saved = 0.0;
-        for (std::size_t r = 0; r < j; ++r) {
-            ndu[at(j, r)] = right[r + 1] + left[j - r];
-            const double temp = ndu[at(r, j - 1)] / ndu[at(j, r)];
-            ndu[at(r, j)] = saved + right[r + 1] * temp;
-            saved = left[j - r] * temp;
-        }
-        ndu[at(j, j)] = saved;
-    }
-    for (std::size_t j = 0; j <= p; ++j)
-        pDers[j] = ndu[at(j, p)];
-    if (NDer < 1)
-        return;
-    // The first derivatives (A2.3 with k = 1: its inner loop is empty, and the
-    // work table's entry (0, 0) is exactly 1).
-    const double factor = static_cast<double>(P);
-    for (std::size_t r = 0; r <= p; ++r) {
-        double d = 0.0;
-        if (r >= 1)
-            d = (1.0 / ndu[at(p, r - 1)]) * ndu[at(r - 1, p - 1)];
-        if (r + 1 <= p)
-            d += (-1.0 / ndu[at(p, r)]) * ndu[at(r, p - 1)];
-        pDers[(p + 1) + r] = d;
-    }
-    for (std::size_t j = 0; j <= p; ++j)
-        pDers[(p + 1) + j] *= factor;
-}
-
-/// A tensor-product net to evaluate: `NV` columns per control point, weights
-/// optional (null: polynomial).
-struct IgaEvalNet {
-    std::size_t mDim = 0;
-    std::array<int, 3> mDegrees{0, 0, 0};
-    std::array<const std::vector<double>*, 3> mKnots{nullptr, nullptr, nullptr};
-    std::array<std::size_t, 3> mCounts{1, 1, 1};
-    const double* mValues = nullptr;
-    std::size_t mColumns = 0;
-    const double* mWeights = nullptr;
-};
-
-/// The `NV` values at the parameters `pU[0 .. dim)` in knot spans `pSpan`, and
-/// with `NDer == 1` their derivatives along each direction (`pDer`, row-major
-/// `(dim, NV)`).
-inline void iga_eval_point(const IgaEvalNet& rNet, const std::size_t* pSpan, const double* pU,
-                           int NDer, double* pOut, double* pDer) {
-    const std::size_t dim = rNet.mDim, NV = rNet.mColumns;
-    std::array<std::vector<double>, 3> ders;
-    for (std::size_t d = 0; d < dim; ++d) {
-        ders[d].assign(
-            static_cast<std::size_t>(NDer + 1) * (static_cast<std::size_t>(rNet.mDegrees[d]) + 1),
-            0.0);
-        iga_basis_ders(pSpan[d], pU[d], rNet.mDegrees[d], NDer, *rNet.mKnots[d], ders[d].data());
-    }
-    std::vector<double> acc(NV, 0.0), dacc(dim * NV, 0.0);
-    double wsum = 0.0;
-    std::array<double, 3> dwsum{0.0, 0.0, 0.0};
-    std::array<std::size_t, 3> np1{1, 1, 1}, base{0, 0, 0};
-    for (std::size_t d = 0; d < dim; ++d) {
-        np1[d] = static_cast<std::size_t>(rNet.mDegrees[d]) + 1;
-        base[d] = pSpan[d] - static_cast<std::size_t>(rNet.mDegrees[d]);
-    }
-    for (std::size_t j2 = 0; j2 < np1[2]; ++j2)
-        for (std::size_t j1 = 0; j1 < np1[1]; ++j1)
-            for (std::size_t j0 = 0; j0 < np1[0]; ++j0) {
-                const std::array<std::size_t, 3> j{j0, j1, j2};
-                const std::size_t idx =
-                    (base[0] + j0) +
-                    rNet.mCounts[0] * ((base[1] + j1) + rNet.mCounts[1] * (base[2] + j2));
-                const double w = rNet.mWeights ? rNet.mWeights[idx] : 1.0;
-                const double* v = rNet.mValues + idx * NV;
-                double b = 1.0;
-                for (std::size_t d = 0; d < dim; ++d)
-                    b *= ders[d][j[d]];
-                const double cc = w * b;
-                for (std::size_t c = 0; c < NV; ++c)
-                    acc[c] += cc * v[c];
-                wsum += cc;
-                if (NDer >= 1)
-                    for (std::size_t k = 0; k < dim; ++k) {
-                        double bk = 1.0;
-                        for (std::size_t d = 0; d < dim; ++d)
-                            bk *= d == k ? ders[d][np1[d] + j[d]] : ders[d][j[d]];
-                        const double ck = w * bk;
-                        for (std::size_t c = 0; c < NV; ++c)
-                            dacc[k * NV + c] += ck * v[c];
-                        dwsum[k] += ck;
-                    }
-            }
-    if (rNet.mWeights) {
-        for (std::size_t c = 0; c < NV; ++c)
-            pOut[c] = acc[c] / wsum;
-        if (NDer >= 1)
-            for (std::size_t k = 0; k < dim; ++k)
-                for (std::size_t c = 0; c < NV; ++c)
-                    pDer[k * NV + c] = (dacc[k * NV + c] - dwsum[k] * pOut[c]) / wsum;
-    } else {
-        for (std::size_t c = 0; c < NV; ++c)
-            pOut[c] = acc[c];
-        if (NDer >= 1)
-            for (std::size_t k = 0; k < dim; ++k)
-                for (std::size_t c = 0; c < NV; ++c)
-                    pDer[k * NV + c] = dacc[k * NV + c];
-    }
-}
-
-}  // namespace meshioplusplus::detail
-// ===== end src/cpp/src/detail/iga_kernels.hpp =====
 // ===== begin src/cpp/src/detail/isosurface_stuffing.hpp =====
 /**
  * @file detail/isosurface_stuffing.hpp
@@ -68089,6 +68245,411 @@ void skyline_solve(const SkylineMatrix& rLd, double* pB) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/dense_chol.cpp =====
+// ===== begin src/cpp/src/detail/edge_sampler.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+constexpr double kEdgsGaussX[5] = {
+    -0.906179845938663992797626878299, -0.538469310105683091036314420700, 0.0,
+    0.538469310105683091036314420700, 0.906179845938663992797626878299};
+constexpr double kEdgsGaussW[5] = {
+    0.236926885056189087514264040720, 0.478628670499366468041291514836,
+    0.568888888888888888888888888889, 0.478628670499366468041291514836,
+    0.236926885056189087514264040720};
+
+[[noreturn]] void edgs_bad(const std::string& rWhat) {
+    throw std::invalid_argument("meshio++: mesh_cad_surface: " + rWhat);
+}
+
+double edgs_dist(const EdgeVec3& rA, const EdgeVec3& rB) {
+    return std::sqrt((rA[0] - rB[0]) * (rA[0] - rB[0]) + (rA[1] - rB[1]) * (rA[1] - rB[1]) +
+                     (rA[2] - rB[2]) * (rA[2] - rB[2]));
+}
+
+/// The distance from `rP` to the segment `rA rB`.
+double edgs_segment_distance(const EdgeVec3& rP, const EdgeVec3& rA, const EdgeVec3& rB) {
+    EdgeVec3 d{rB[0] - rA[0], rB[1] - rA[1], rB[2] - rA[2]};
+    const double len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    double t = 0.0;
+    if (len2 > 0.0)
+        t = std::clamp(
+            ((rP[0] - rA[0]) * d[0] + (rP[1] - rA[1]) * d[1] + (rP[2] - rA[2]) * d[2]) / len2, 0.0,
+            1.0);
+    const EdgeVec3 q{rA[0] + t * d[0], rA[1] + t * d[1], rA[2] + t * d[2]};
+    return edgs_dist(rP, q);
+}
+
+}  // namespace
+
+BrepSurfaceEval::BrepSurfaceEval(const NurbsPatch& rPatch, bool Rational) : pPatch(&rPatch) {
+    if (rPatch.mDegrees.size() != 2 || rPatch.mKnots.size() != 2)
+        edgs_bad("a face's surface is not a two-parameter patch");
+    std::size_t total = 1;
+    for (std::size_t d = 0; d < 2; ++d) {
+        const int p = rPatch.mDegrees[d];
+        const std::size_t nk = rPatch.mKnots[d].size();
+        if (p < 1 || p > 32 || nk < 2 * static_cast<std::size_t>(p) + 2)
+            edgs_bad("a face's surface has an invalid degree or knot vector");
+        for (std::size_t i = 1; i < nk; ++i)
+            if (!(rPatch.mKnots[d][i] >= rPatch.mKnots[d][i - 1]))
+                edgs_bad("a face's surface has a decreasing knot vector");
+        mCounts[d] = nk - static_cast<std::size_t>(p) - 1;
+        total *= mCounts[d];
+        mBox[2 * d] = rPatch.mKnots[d][static_cast<std::size_t>(p)];
+        mBox[2 * d + 1] = rPatch.mKnots[d][mCounts[d]];
+        if (!(mBox[2 * d + 1] > mBox[2 * d]))
+            edgs_bad("a face's surface has an empty parameter range");
+    }
+    const NDArray& r_cp = rPatch.mControlPoints;
+    if (r_cp.Dtype() != DType::Float64 || r_cp.Shape().size() != 2 || r_cp.Shape()[0] != total ||
+        r_cp.Shape()[1] != 3)
+        edgs_bad("a face's surface control points are not Float64 (n, 3)");
+    const bool weighted =
+        Rational && rPatch.mWeights.Size() == total && rPatch.mWeights.Dtype() == DType::Float64;
+    mNet.mDim = 2;
+    for (std::size_t d = 0; d < 2; ++d) {
+        mNet.mDegrees[d] = rPatch.mDegrees[d];
+        mNet.mKnots[d] = &rPatch.mKnots[d];
+        mNet.mCounts[d] = mCounts[d];
+    }
+    mNet.mValues = r_cp.As<double>();
+    mNet.mColumns = 3;
+    mNet.mWeights = weighted ? rPatch.mWeights.As<double>() : nullptr;
+}
+
+void BrepSurfaceEval::Eval(double U, double V, double* pX, double* pSu, double* pSv) const {
+    const double u[2] = {std::clamp(U, mBox[0], mBox[1]), std::clamp(V, mBox[2], mBox[3])};
+    std::size_t span[2];
+    for (std::size_t d = 0; d < 2; ++d)
+        span[d] = nurbs_find_span(pPatch->mDegrees[d], pPatch->mKnots[d], mCounts[d], u[d]);
+    double der[6];
+    const bool want = pSu != nullptr || pSv != nullptr;
+    iga_eval_point(mNet, span, u, want ? 1 : 0, pX, want ? der : nullptr);
+    if (pSu)
+        for (int k = 0; k < 3; ++k)
+            pSu[k] = der[k];
+    if (pSv)
+        for (int k = 0; k < 3; ++k)
+            pSv[k] = der[3 + k];
+}
+
+BrepCurveEval::BrepCurveEval(const BrepCurve& rCurve) : mDegree(rCurve.mDegree) {
+    mCount = rCurve.mControlPoints.Shape().empty() ? 0 : rCurve.mControlPoints.Shape()[0];
+    const auto p = static_cast<std::size_t>(mDegree);
+    if (mDegree < 1 || mDegree > 32 || rCurve.mControlPoints.Dtype() != DType::Float64 ||
+        rCurve.mControlPoints.Shape().size() != 2 || rCurve.mControlPoints.Shape()[1] != 3 ||
+        mCount < p + 1 || rCurve.mKnots.size() != mCount + p + 1)
+        edgs_bad("a trimming curve has an invalid degree, control points or knot vector");
+    mKnots = rCurve.mKnots;
+    for (std::size_t i = 1; i < mKnots.size(); ++i)
+        if (!(mKnots[i] >= mKnots[i - 1]))
+            edgs_bad("a trimming curve has a decreasing knot vector");
+    const double* cp = rCurve.mControlPoints.As<double>();
+    mValues.assign(cp, cp + 3 * mCount);
+    if (rCurve.mRational && rCurve.mWeights.Size() == mCount &&
+        rCurve.mWeights.Dtype() == DType::Float64) {
+        const double* w = rCurve.mWeights.As<double>();
+        mWeights.assign(w, w + mCount);
+    }
+    const double k0 = mKnots[p];
+    const double k1 = mKnots[mCount];
+    mT0 = k0;
+    mT1 = k1;
+    if (rCurve.mActiveRange.size() == 2) {
+        mT0 = std::max(k0, std::min(rCurve.mActiveRange[0], rCurve.mActiveRange[1]));
+        mT1 = std::min(k1, std::max(rCurve.mActiveRange[0], rCurve.mActiveRange[1]));
+    }
+    if (!(mT1 > mT0))
+        edgs_bad("a trimming curve has an empty parameter range");
+    for (const double k : mKnots)
+        if (k > mT0 && k < mT1 && (mBreaks.empty() || mBreaks.back() != k))
+            mBreaks.push_back(k);
+    mNet.mDim = 1;
+    mNet.mDegrees[0] = mDegree;
+    mNet.mKnots[0] = &mKnots;
+    mNet.mCounts[0] = mCount;
+    mNet.mValues = mValues.data();
+    mNet.mColumns = 3;
+    mNet.mWeights = mWeights.empty() ? nullptr : mWeights.data();
+}
+
+void BrepCurveEval::Eval(double T, double* pX, double* pD) const {
+    // The net points into this object's own vectors, which a copy or move
+    // does not carry: rebuild the pointers on the stack.
+    IgaEvalNet net = mNet;
+    net.mKnots[0] = &mKnots;
+    net.mValues = mValues.data();
+    net.mWeights = mWeights.empty() ? nullptr : mWeights.data();
+    const double t = std::clamp(T, mT0, mT1);
+    const std::size_t span = nurbs_find_span(mDegree, mKnots, mCount, t);
+    double der[3];
+    iga_eval_point(net, &span, &t, pD ? 1 : 0, pX, pD ? der : nullptr);
+    if (pD)
+        for (int k = 0; k < 3; ++k)
+            pD[k] = der[k];
+}
+
+TrimTrace::TrimTrace(const BrepSurfaceEval* pSurface, BrepCurveEval Curve, bool Forward)
+    : pSurface(pSurface), mCurve(std::move(Curve)), mForward(Forward) {
+    std::vector<double> breaks{mCurve.T0()};
+    breaks.insert(breaks.end(), mCurve.Breaks().begin(), mCurve.Breaks().end());
+    breaks.push_back(mCurve.T1());
+    if (!mForward)
+        std::reverse(breaks.begin(), breaks.end());
+    mT.push_back(breaks.front());
+    mCum.push_back(0.0);
+    for (std::size_t i = 0; i + 1 < breaks.size(); ++i) {
+        const double a = breaks[i];
+        const double b = breaks[i + 1];
+        constexpr int kStart = 4;
+        for (int j = 0; j < kStart; ++j) {
+            const double sa = a + (b - a) * (double(j) / kStart);
+            const double sb = j + 1 == kStart ? b : a + (b - a) * (double(j + 1) / kStart);
+            Refine(sa, sb, Gauss(sa, sb), mCum.back(), 0, mT, mCum);
+        }
+    }
+}
+
+EdgeVec2 TrimTrace::Uv(double T) const {
+    double x[3];
+    mCurve.Eval(T, x, nullptr);
+    return {x[0], x[1]};
+}
+
+EdgeVec3 TrimTrace::Point(double T) const {
+    const EdgeVec2 uv = Uv(T);
+    EdgeVec3 p{};
+    pSurface->Eval(uv[0], uv[1], p.data(), nullptr, nullptr);
+    return p;
+}
+
+EdgeVec3 TrimTrace::Velocity(double T) const {
+    double c[3];
+    double dc[3];
+    mCurve.Eval(T, c, dc);
+    double x[3];
+    double su[3];
+    double sv[3];
+    pSurface->Eval(c[0], c[1], x, su, sv);
+    return {su[0] * dc[0] + sv[0] * dc[1], su[1] * dc[0] + sv[1] * dc[1],
+            su[2] * dc[0] + sv[2] * dc[1]};
+}
+
+double TrimTrace::Speed(double T) const {
+    const EdgeVec3 v = Velocity(T);
+    return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+}
+
+double TrimTrace::Gauss(double A, double B) const {
+    const double h = 0.5 * (B - A);
+    const double c = 0.5 * (A + B);
+    double s = 0.0;
+    for (int i = 0; i < 5; ++i)
+        s += kEdgsGaussW[i] * Speed(c + h * kEdgsGaussX[i]);
+    return s * std::fabs(h);
+}
+
+void TrimTrace::Refine(double A, double B, double Whole, double La, int Depth,
+                       std::vector<double>& rT, std::vector<double>& rL) const {
+    const double m = 0.5 * (A + B);
+    const double left = Gauss(A, m);
+    const double right = Gauss(m, B);
+    const double halves = left + right;
+    if (Depth < 30 && std::fabs(Whole - halves) > 1e-12 * halves && m != A && m != B) {
+        Refine(A, m, left, La, Depth + 1, rT, rL);
+        Refine(m, B, right, rL.back(), Depth + 1, rT, rL);
+        return;
+    }
+    rT.push_back(m);
+    rL.push_back(La + left);
+    rT.push_back(B);
+    rL.push_back(La + halves);
+}
+
+double TrimTrace::ParamAtLength(double L) const {
+    const double total = Length();
+    if (!(total > 0.0) || L <= 0.0)
+        return mT.front();
+    if (L >= total)
+        return mT.back();
+    const auto it = std::upper_bound(mCum.begin(), mCum.end(), L);
+    const auto j = static_cast<std::size_t>(std::max<std::ptrdiff_t>(1, it - mCum.begin())) - 1;
+    const double ta = mT[j];
+    const double tb = mT[j + 1];
+    const double ca = mCum[j];
+    const double cb = mCum[j + 1];
+    if (!(cb > ca))
+        return ta;
+    double s = (L - ca) / (cb - ca);
+    double lo = 0.0;
+    double hi = 1.0;
+    for (int it2 = 0; it2 < 40; ++it2) {
+        const double t = ta + s * (tb - ta);
+        const double g = ca + Gauss(ta, t) - L;
+        if (std::fabs(g) <= 1e-14 * total)
+            break;
+        if (g > 0.0)
+            hi = s;
+        else
+            lo = s;
+        const double dg = Speed(t) * std::fabs(tb - ta);
+        double next = dg > 0.0 ? s - g / dg : 0.5 * (lo + hi);
+        if (!(next > lo && next < hi))
+            next = 0.5 * (lo + hi);
+        if (next == s)
+            break;
+        s = next;
+    }
+    return ta + s * (tb - ta);
+}
+
+EdgeSamples edge_sample(const TrimTrace& rTrace, const EdgeSampleOptions& rOptions) {
+    EdgeSamples out;
+    const double length = rTrace.Length();
+    out.mLength = length;
+    const auto push = [&](double T, double F) {
+        out.mParams.push_back(T);
+        out.mPoints.push_back(rTrace.Point(T));
+        out.mFractions.push_back(F);
+    };
+    if (!(length > rOptions.mTolerance)) {
+        out.mDegenerate = true;
+        push(rTrace.Start(), 0.0);
+        push(rTrace.End(), 1.0);
+        return out;
+    }
+    if (!(rOptions.mTargetSize > 0.0))
+        edgs_bad("target_size must be positive");
+    const double pieces = std::ceil(length / rOptions.mTargetSize);
+    if (!(pieces <= double(rOptions.mMaxSegments)))
+        throw std::length_error("meshio++: mesh_cad_surface: an edge needs more than " +
+                                std::to_string(rOptions.mMaxSegments) + " segments");
+    const std::int64_t n = std::max<std::int64_t>(
+        {std::int64_t{1}, rOptions.mMinSegments, static_cast<std::int64_t>(pieces)});
+    std::vector<double> ends;  // arc lengths of the pieces' ends, after the first point
+    const double dev = rOptions.mMaxChordalDeviation;
+    std::int64_t budget = rOptions.mMaxSegments;
+    // Halve a piece while its sagitta exceeds the cap (depth-first, so the
+    // ends come out in order).
+    const auto split = [&](auto&& rSelf, double La, double Lb, int Depth) -> void {
+        if (dev > 0.0 && Depth < 40) {
+            const EdgeVec3 a = rTrace.Point(rTrace.ParamAtLength(La));
+            const EdgeVec3 b = rTrace.Point(rTrace.ParamAtLength(Lb));
+            double sag = 0.0;
+            for (const double f : {0.25, 0.5, 0.75})
+                sag = std::max(sag,
+                               edgs_segment_distance(
+                                   rTrace.Point(rTrace.ParamAtLength(La + f * (Lb - La))), a, b));
+            if (sag > dev) {
+                if (--budget < 0)
+                    throw std::length_error(
+                        "meshio++: mesh_cad_surface: the chordal deviation needs more than " +
+                        std::to_string(rOptions.mMaxSegments) + " segments on an edge");
+                const double m = 0.5 * (La + Lb);
+                rSelf(rSelf, La, m, Depth + 1);
+                rSelf(rSelf, m, Lb, Depth + 1);
+                return;
+            }
+        }
+        ends.push_back(Lb);
+    };
+    for (std::int64_t k = 0; k < n; ++k) {
+        const double la = length * double(k) / double(n);
+        const double lb = k + 1 == n ? length : length * double(k + 1) / double(n);
+        split(split, la, lb, 0);
+    }
+    push(rTrace.Start(), 0.0);
+    for (std::size_t i = 0; i + 1 < ends.size(); ++i)
+        push(rTrace.ParamAtLength(ends[i]), ends[i] / length);
+    push(rTrace.End(), 1.0);
+    return out;
+}
+
+bool edge_same_direction(const TrimTrace& rA, const TrimTrace& rB) {
+    const double la = rA.Length();
+    const double lb = rB.Length();
+    double same = edgs_dist(rA.Point(rA.Start()), rB.Point(rB.Start())) +
+                  edgs_dist(rA.Point(rA.End()), rB.Point(rB.End()));
+    double opposite = edgs_dist(rA.Point(rA.Start()), rB.Point(rB.End())) +
+                      edgs_dist(rA.Point(rA.End()), rB.Point(rB.Start()));
+    if (la > 0.0 && lb > 0.0) {
+        const EdgeVec3 a1 = rA.Point(rA.ParamAtLength(0.25 * la));
+        const EdgeVec3 a3 = rA.Point(rA.ParamAtLength(0.75 * la));
+        const EdgeVec3 b1 = rB.Point(rB.ParamAtLength(0.25 * lb));
+        const EdgeVec3 b3 = rB.Point(rB.ParamAtLength(0.75 * lb));
+        same += edgs_dist(a1, b1) + edgs_dist(a3, b3);
+        opposite += edgs_dist(a1, b3) + edgs_dist(a3, b1);
+    }
+    return same <= opposite;
+}
+
+EdgeProjection edge_project(const TrimTrace& rOther, const EdgeSamples& rMaster,
+                            bool SameDirection) {
+    EdgeProjection out;
+    const std::size_t m = rMaster.mParams.size();
+    out.mParams.assign(m, 0.0);
+    if (m == 0)
+        return out;
+    const auto point_at = [&](std::size_t K) -> const EdgeVec3& {
+        return SameDirection ? rMaster.mPoints[K] : rMaster.mPoints[m - 1 - K];
+    };
+    const auto fraction_at = [&](std::size_t K) {
+        return SameDirection ? rMaster.mFractions[K] : 1.0 - rMaster.mFractions[m - 1 - K];
+    };
+    const double start = rOther.Start();
+    const double end = rOther.End();
+    out.mParams.front() = start;
+    out.mParams.back() = end;
+    out.mMaxGap = std::max(edgs_dist(rOther.Point(start), point_at(0)),
+                           edgs_dist(rOther.Point(end), point_at(m - 1)));
+    const double length = rOther.Length();
+    const double span = std::fabs(end - start);
+    double prev = start;
+    for (std::size_t k = 1; k + 1 < m; ++k) {
+        const EdgeVec3& p = point_at(k);
+        double t = rOther.ParamAtLength(fraction_at(k) * length);
+        const double lo = std::min(prev, end);
+        const double hi = std::max(prev, end);
+        t = std::clamp(t, lo, hi);
+        for (int it = 0; it < 30; ++it) {
+            const EdgeVec3 x = rOther.Point(t);
+            const EdgeVec3 v = rOther.Velocity(t);
+            const double vv = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+            if (!(vv > 0.0))
+                break;
+            const double dt =
+                -((x[0] - p[0]) * v[0] + (x[1] - p[1]) * v[1] + (x[2] - p[2]) * v[2]) / vv;
+            const double next = std::clamp(t + dt, lo, hi);
+            if (std::fabs(next - t) <= 1e-15 * span) {
+                t = next;
+                break;
+            }
+            t = next;
+        }
+        out.mParams[k] = t;
+        out.mMaxGap = std::max(out.mMaxGap, edgs_dist(rOther.Point(t), p));
+        prev = t;
+    }
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/edge_sampler.cpp =====
 // ===== begin src/cpp/src/detail/face_color.cpp =====
 
 #include <cmath>
