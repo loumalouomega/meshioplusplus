@@ -594,6 +594,24 @@ TEST(MeshCadQuality, AFaceWhoseRefinementRunsAwayIsMeshedUnrefined) {
         EXPECT_EQ(r_w.find("meshed unrefined"), std::string::npos) << r_w;
 }
 
+TEST(MeshCadQuality, ATrimLeavingItsSurfaceIsReported) {
+    // Found by the fuzz target (tests/fuzz/regressions/op_mesh_cad_surface):
+    // a trim that leaves its patch's knot range puts points where the patch
+    // is evaluated clamped, off the face, and refinement there ran all its
+    // rounds (87 s at 30 degrees). Such a face is unsupported, refined or
+    // not; within a thousandth of the range it is still meshed.
+    for (const double ang : {0.0, 30.0}) {
+        const auto far = mio::mesh_cad_surface(planar_face({{{0, 0}, {4, 0}, {5, 4}, {0, 4}}}, 4.0),
+                                               quality(0.25, ang));
+        ASSERT_EQ(far.mNumFailed, 1) << ang;
+        EXPECT_EQ(far.mFaces[0].mStatus, mio::MeshCadFaceStatus::Unsupported);
+        EXPECT_NE(far.mFaces[0].mReason.find("parameter range"), std::string::npos);
+        const auto near = mio::mesh_cad_surface(
+            planar_face({{{0, 0}, {4.002, 0}, {4.002, 4}, {0, 4}}}, 4.0), quality(0.25, ang));
+        EXPECT_EQ(near.mNumFailed, 0) << ang;
+    }
+}
+
 TEST(MeshCadQuality, TriangulatePolygonTakesTheSameMinAngle) {
     // Roadmap 6.2.6: the planar triangulator refines too; 0 is unchanged.
     const std::vector<std::vector<Vec2>> l = {{{0, 0}, {2, 0}, {2, 1}, {1, 1}, {1, 2}, {0, 2}}};

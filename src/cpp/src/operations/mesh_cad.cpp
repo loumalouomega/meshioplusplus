@@ -685,6 +685,20 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
     if (!pl.mInRange)
         return fail(MeshCadFaceStatus::Unsupported,
                     "its parameters lie outside the range the exact predicates hold in");
+    {
+        // The surface exists on its knot range only: past it the patch is
+        // evaluated clamped, so a trim that leaves the range by more than a
+        // thousandth of it would put points off the face.
+        const auto& r_box = rF.pSurface->Box();
+        const double du = 1e-3 * (r_box[1] - r_box[0]);
+        const double dv = 1e-3 * (r_box[3] - r_box[2]);
+        for (const auto& r_poly : pl.mLoops)
+            for (const McadEntry& r_e : r_poly)
+                if (!(r_e.mUv[0] >= r_box[0] - du && r_e.mUv[0] <= r_box[1] + du &&
+                      r_e.mUv[1] >= r_box[2] - dv && r_e.mUv[1] <= r_box[3] + dv))
+                    return fail(MeshCadFaceStatus::Unsupported,
+                                "its trims leave its surface's parameter range");
+    }
     const auto& loops = pl.mLoops;
     const auto& jac = pl.mJac;
     const double l11 = pl.mL11;
@@ -2085,7 +2099,7 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
     // split: its face keeps the triangles it has and reports them.
     std::int64_t boundary_refinement = 0;
     if (rOptions.mMinAngleDeg > 0.0) {
-        constexpr int kMaxRefineRounds = 32;
+        constexpr int kMaxRefineRounds = 16;
         for (int round = 0;; ++round) {
             // A face whose refinement spent its points is not refined
             // further, since every round would spend them again: it is
