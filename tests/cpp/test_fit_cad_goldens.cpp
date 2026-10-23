@@ -79,15 +79,15 @@ const std::vector<std::pair<const char*, std::uint64_t>> kFcgInputs = {
 // Native backend (every build), recorded with MESHIOPLUSPLUS_RECORD_GOLDENS=1.
 const std::vector<FcgRow> kFcgNative = {
     // clang-format off
-    {"native", "box", 0x80628bab3cedc3a2ull, 0x041bc38bff060516ull, 0x4d89933e194a3081ull},
-    {"native", "capped_cylinder", 0x42d30e4b287234bfull, 0xc85679404821d2c9ull, 0xa1416e12e3b60778ull},
-    {"native", "turned_part", 0xb7a72a9a20a131dfull, 0x5b6613001c187538ull, 0x6394f6a1719495f7ull},
-    {"native", "filleted_plate", 0xdfb45216203cf4c8ull, 0xa1fbfd1fb6894ee9ull, 0x84bca80af59d7a4aull},
-    {"native", "saddle_box", 0x3d04bf26cc501006ull, 0x28b7caf6375d5072ull, 0x6bf83615b0b506acull},
-    {"native", "wavy_capped", 0x8277deef78bd3745ull, 0x5f9aa9b2e7379ba8ull, 0x1b2f18e6d0fdbc57ull},
-    {"native", "threaded_rod", 0x00b62ac63c92117full, 0x7180517275d1fd5bull, 0xc2bfba07afac00b2ull},
-    {"native", "rounded_box", 0xe3001feb238f8615ull, 0xb9bb8a6bf508af15ull, 0xef43d32d4d262246ull},
-    {"native", "noisy_turned_part", 0xb5d32e9457bd6815ull, 0xe4ae427a6fc0e40bull, 0xdf51b734edfe0278ull},
+    {"native", "box", 0x9882b817ddee0745ull, 0x041bc38bff060516ull, 0x4d89933e194a3081ull},
+    {"native", "capped_cylinder", 0x222d9bce5705aadeull, 0xc85679404821d2c9ull, 0xa1416e12e3b60778ull},
+    {"native", "turned_part", 0xba4b0cd705dd5288ull, 0x5b6613001c187538ull, 0x6394f6a1719495f7ull},
+    {"native", "filleted_plate", 0x7f4dfb705b6ffcabull, 0xa1fbfd1fb6894ee9ull, 0x84bca80af59d7a4aull},
+    {"native", "saddle_box", 0x997c0f288f73fe95ull, 0x28b7caf6375d5072ull, 0x6bf83615b0b506acull},
+    {"native", "wavy_capped", 0x02cbf55a2a6e88b8ull, 0x5f9aa9b2e7379ba8ull, 0x1b2f18e6d0fdbc57ull},
+    {"native", "threaded_rod", 0xbcdca6158022deecull, 0x7180517275d1fd5bull, 0xc2bfba07afac00b2ull},
+    {"native", "rounded_box", 0x074a7bfb15bbcfa0ull, 0xb9bb8a6bf508af15ull, 0xef43d32d4d262246ull},
+    {"native", "noisy_turned_part", 0x8acd871d883464e2ull, 0xe4ae427a6fc0e40bull, 0xdf51b734edfe0278ull},
     // clang-format on
 };
 
