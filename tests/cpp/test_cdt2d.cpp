@@ -23,6 +23,10 @@
 // the exact in-circle test (the constrained Delaunay property). The crossing
 // finder is checked case by case and against a test of every pair, and a
 // segment inserted after classification against the inside it leaves alone.
+// Refinement is checked for its bound above 60-degree input angles, its
+// termination on adversarial domains, the small input angles it reports and
+// leaves, the order it takes triangles in, the splits it asks a caller for,
+// and the guarded vertex moves smoothing uses.
 
 // System includes
 #include <algorithm>
@@ -474,6 +478,282 @@ TEST(Cdt2d, CoordinatesOutsideThePredicatesRangeAreRefused) {
             EXPECT_NE(std::string(e.what()).find("exact predicates"), std::string::npos);
         }
     }
+}
+
+// --- Delaunay refinement (Ruppert 1995, Chew's circumcentres) -------------
+
+mio::detail::Cdt2dPolygon refined(const Loops& rLoops, double H, double MinAngle,
+                                  std::int64_t MaxPoints = 200000) {
+    mio::detail::Cdt2dPolygonQuality q;
+    q.mMinAngleDeg = MinAngle;
+    q.mMaxPoints = MaxPoints;
+    return mio::detail::cdt2d_triangulate_polygon(rLoops, H, -1.0, q);
+}
+
+double triangle_min_angle(const mio::detail::Cdt2dPolygon& rT, std::size_t T) {
+    double m = 180.0;
+    const auto& tri = rT.mTriangles[T];
+    for (int k = 0; k < 3; ++k) {
+        const Vec2& o = rT.mPoints[tri[k]];
+        const Vec2& p = rT.mPoints[tri[(k + 1) % 3]];
+        const Vec2& q = rT.mPoints[tri[(k + 2) % 3]];
+        const double ux = p[0] - o[0], uy = p[1] - o[1], vx = q[0] - o[0], vy = q[1] - o[1];
+        m = std::min(m, std::atan2(std::fabs(ux * vy - uy * vx), ux * vx + uy * vy) * 180.0 / M_PI);
+    }
+    return m;
+}
+
+std::vector<Vec2> regular(double Cx, double Cy, double R, int N, double A0 = 0.0) {
+    std::vector<Vec2> p;
+    for (int i = 0; i < N; ++i) {
+        const double a = A0 + 2.0 * M_PI * double(i) / double(N);
+        p.push_back({Cx + R * std::cos(a), Cy + R * std::sin(a)});
+    }
+    return p;
+}
+
+TEST(Cdt2dRefine, ZeroMinAngleKeepsTheTriangulation) {
+    const Loops l = {square(0, 0, 10), square(1, 1, 2), square(5, 6, 3, false)};
+    const auto a = mio::detail::cdt2d_triangulate_polygon(l, 0.5);
+    const auto b = refined(l, 0.5, 0.0);
+    EXPECT_EQ(a.mPoints, b.mPoints);
+    EXPECT_EQ(a.mTriangles, b.mTriangles);
+    EXPECT_EQ(a.mSegments, b.mSegments);
+}
+
+TEST(Cdt2dRefine, InputAnglesOfSixtyDegreesOrMoreMeetTheBound) {
+    // Ruppert's guarantee at B = sqrt(2) (20.7 degrees) for input angles of
+    // at least 60 degrees; 25 and 30 are what it reaches in practice here.
+    const std::vector<std::pair<Loops, std::pair<double, int>>> domains = {
+        {{square(0, 0, 1)}, {0.1, 0}},
+        {{{{0, 0}, {2, 0}, {2, 1}, {1, 1}, {1, 2}, {0, 2}}}, {0.2, 0}},
+        {{square(0, 0, 10), square(1, 1, 2), square(5, 6, 3, false)}, {0.5, 2}},
+        {{regular(0, 0, 3, 40), regular(0, 0, 1, 6)}, {0.4, 1}},
+        {{regular(0, 0, 1, 5)}, {0.0, 0}},
+        {{regular(0, 0, 1, 6), regular(0.2, 0.1, 0.3, 5)}, {0.0, 1}},
+    };
+    for (const double ang : {20.7, 25.0, 30.0}) {
+        for (const auto& [l, hh] : domains) {
+            const auto t = refined(l, hh.first, ang);
+            double area = 0.0;
+            for (std::size_t k = 0; k < l.size(); ++k)
+                area += (k == 0 ? 1.0 : -1.0) * std::fabs(polygon_area(l[k]));
+            const Checked c = check_triangulation(t, area, hh.second);
+            EXPECT_GE(c.mMinAngleDeg, ang - 1e-9) << "min_angle " << ang << ", h " << hh.first;
+            EXPECT_TRUE(t.mRefine.mSmallAngles.empty());
+            EXPECT_EQ(t.mRefine.mNumUnresolved, 0);
+            EXPECT_EQ(t.mRefine.mNumForced, 0);
+            EXPECT_FALSE(t.mRefine.mBudgetReached);
+        }
+    }
+}
+
+TEST(Cdt2dRefine, AdversarialDomainsTerminateUnderMaxPoints) {
+    // Slivers: a strip of width w along 20 boundary pieces; refinement fills
+    // it to the bound, or stops at max_points with a valid triangulation.
+    for (const double w : {1e-2, 1e-3, 1e-6}) {
+        std::vector<Vec2> loop;
+        for (int i = 0; i <= 20; ++i)
+            loop.push_back({double(i) / 20.0, 0.0});
+        loop.push_back({1.0, w});
+        for (int i = 19; i >= 1; --i)
+            loop.push_back({double(i) / 20.0, w});
+        loop.push_back({0.0, w});
+        const auto t = refined({loop}, 0.0, 25.0, 5000);
+        const Checked c = check_triangulation(t, w, 0);
+        if (w >= 1e-3) {
+            EXPECT_FALSE(t.mRefine.mBudgetReached);
+            EXPECT_GE(c.mMinAngleDeg, 25.0 - 1e-9);
+        } else {
+            EXPECT_TRUE(t.mRefine.mBudgetReached);
+            EXPECT_LE(t.mPoints.size(), 42u + 5000u);
+        }
+    }
+    // Near-collinear holes: a needle hole whose apex angles are tiny, in a
+    // square; and random star polygons, whose corners are often sharp.
+    {
+        const Loops l = {square(0, 0, 4), {{1, 1}, {3, 1.001}, {1, 1.002}}};
+        const auto t = refined(l, 0.25, 25.0);
+        check_triangulation(t, 16.0 - std::fabs(polygon_area(l[1])), 1);
+        EXPECT_FALSE(t.mRefine.mBudgetReached);
+        EXPECT_EQ(t.mRefine.mNumUnresolved, 0);
+        // The needle's tips are reflex corners of the domain, not small ones.
+        EXPECT_TRUE(t.mRefine.mSmallAngles.empty());
+    }
+    std::mt19937_64 rng(31);
+    std::uniform_real_distribution<double> radius(1.0, 2.0);
+    for (int it = 0; it < 40; ++it) {
+        const int n = 8 + it * 7;
+        std::vector<Vec2> outer;
+        for (int i = 0; i < n; ++i) {
+            const double a = 2.0 * M_PI * double(i) / double(n);
+            const double r = radius(rng);
+            outer.push_back({r * std::cos(a), r * std::sin(a)});
+        }
+        const Loops l = {outer, regular(0, 0, 0.5, 6)};
+        const double area = polygon_area(outer) - std::fabs(polygon_area(l[1]));
+        for (const double h : {0.0, 0.15}) {
+            const auto t = refined(l, h, 25.0);
+            check_triangulation(t, area, 1);
+            EXPECT_FALSE(t.mRefine.mBudgetReached);
+            // Every triangle left below the bound is one a small input
+            // angle forces.
+            EXPECT_EQ(t.mRefine.mNumUnresolved, 0) << "polygon " << it << ", h " << h;
+            std::size_t bad = 0;
+            for (std::size_t k = 0; k < t.mTriangles.size(); ++k)
+                bad += triangle_min_angle(t, k) < 25.0 - 1e-9;
+            EXPECT_EQ(std::int64_t(bad), t.mRefine.mNumForced);
+            if (bad > 0)
+                EXPECT_FALSE(t.mRefine.mSmallAngles.empty());
+        }
+    }
+}
+
+TEST(Cdt2dRefine, SmallInputAnglesAreReportedAndTheirTrianglesLeft) {
+    // A triangle with a sharp apex at the origin and a quadrilateral with
+    // two sharp corners. Below 60 degrees the corner is reported with its
+    // angle; every triangle under the bound holds the apex or has its
+    // shortest edge between the apex's two segments (the angle forces it),
+    // and the smallest angle those keep is reported per corner.
+    for (const double phi : {45.0, 30.0, 15.0, 5.0}) {
+        const double r = phi * M_PI / 180.0;
+        const Loops l = {{{0, 0}, {2, 0}, {2, 2}, {1.8 * std::cos(r), 1.8 * std::sin(r)}}};
+        const auto t = refined(l, 0.0, 25.0);
+        check_triangulation(t, std::fabs(polygon_area(l[0])), 0);
+        EXPECT_FALSE(t.mRefine.mBudgetReached);
+        EXPECT_EQ(t.mRefine.mNumUnresolved, 0);
+        bool found = false;
+        double forced_min = 180.0;
+        for (const auto& r_a : t.mRefine.mSmallAngles) {
+            if (r_a.mVertex == 0) {
+                found = true;
+                EXPECT_NEAR(r_a.mAngleDeg, phi, 1e-9);
+            }
+            forced_min = std::min(forced_min, r_a.mMinForcedDeg);
+        }
+        EXPECT_TRUE(found);
+        const Vec2 apex{0, 0};
+        const Vec2 dir[2] = {{1, 0}, {std::cos(r), std::sin(r)}};
+        const auto on_segment = [&](const Vec2& rP) {
+            int which = -1;
+            for (int k = 0; k < 2; ++k)
+                if (std::fabs(rP[0] * dir[k][1] - rP[1] * dir[k][0]) <= 1e-12 &&
+                    rP[0] * dir[k][0] + rP[1] * dir[k][1] > 0.0)
+                    which = k;
+            return which;
+        };
+        double seen_min = 180.0;
+        for (std::size_t k = 0; k < t.mTriangles.size(); ++k) {
+            const double m = triangle_min_angle(t, k);
+            if (m >= 25.0 - 1e-9)
+                continue;
+            seen_min = std::min(seen_min, m);
+            const auto& tri = t.mTriangles[k];
+            bool holds = false;
+            int sides = 0;
+            for (int j = 0; j < 3; ++j) {
+                const Vec2& p = t.mPoints[tri[j]];
+                holds = holds || p == apex;
+                const int w = on_segment(p);
+                sides |= w >= 0 ? (1 << w) : 0;
+            }
+            // The other sharp corner (2, 2)-(1.8 cos, 1.8 sin)-... is not at
+            // the origin: those triangles are attributed to it instead.
+            if (!holds && sides != 3)
+                EXPECT_EQ(t.mRefine.mSmallAngles.size(), 2u) << "phi " << phi;
+        }
+        if (seen_min < 180.0)
+            EXPECT_NEAR(forced_min, seen_min, 1e-9);
+    }
+}
+
+TEST(Cdt2dRefine, TheOrderDependsOnTheInputAlone) {
+    // The worst triangle first, ties broken by sorted vertex ids, never a
+    // slot: two runs give the same points and triangles.
+    const Loops l = {regular(0, 0, 3, 40), regular(0.3, -0.2, 1, 7)};
+    const auto a = refined(l, 0.4, 30.0);
+    const auto b = refined(l, 0.4, 30.0);
+    EXPECT_EQ(a.mPoints, b.mPoints);
+    EXPECT_EQ(a.mTriangles, b.mTriangles);
+    EXPECT_GT(a.mRefine.mNumCircumcentres, 0);
+}
+
+TEST(Cdt2dRefine, AskingForSplitsLeavesTheBoundaryToTheCaller) {
+    // A square whose bottom side has one piece and an interior vertex just
+    // above its middle, inside its diametral circle: asked, not split.
+    mio::detail::Cdt2d cdt(0, 0, 4, 4);
+    const auto ids = cdt.InsertBatch({{0, 0}, {4, 0}, {4, 4}, {0, 4}});
+    for (int k = 0; k < 4; ++k)
+        ASSERT_EQ(cdt.InsertSegment(ids[std::size_t(k)], ids[std::size_t((k + 1) % 4)]),
+                  Cdt2dStatus::Ok);
+    ASSERT_EQ(cdt.Classify(), Cdt2dStatus::Ok);
+    ASSERT_GE(cdt.InsertSteiner({2.0, 0.5}), 0);
+    const auto before = cdt.ConstrainedEdges();
+    mio::detail::Cdt2dRefineOptions o;
+    o.mMinAngleDeg = 25.0;
+    o.mSplitSegments = false;
+    const auto rep = cdt.Refine(o);
+    EXPECT_EQ(cdt.ConstrainedEdges(), before);
+    EXPECT_EQ(rep.mNumSplits, 0);
+    const auto bottom = std::minmax(ids[0], ids[1]);
+    bool asked = false;
+    for (const auto& r_q : rep.mRequests) {
+        EXPECT_EQ(r_q.mApex, -1);
+        asked = asked || (r_q.mA == bottom.first && r_q.mB == bottom.second);
+    }
+    EXPECT_TRUE(asked);
+    // The caller's own measure: exempting every triangle refines nothing
+    // (an acute needle, so no vertex encroaches a side).
+    mio::detail::Cdt2d cdt2(0, 0, 4, 4);
+    const auto ids2 = cdt2.InsertBatch({{0, 0}, {0.7, 0}, {0.35, 4}});
+    for (int k = 0; k < 3; ++k)
+        ASSERT_EQ(cdt2.InsertSegment(ids2[std::size_t(k)], ids2[std::size_t((k + 1) % 3)]),
+                  Cdt2dStatus::Ok);
+    ASSERT_EQ(cdt2.Classify(), Cdt2dStatus::Ok);
+    o.mSplitSegments = true;
+    o.mRatio = [](const mio::detail::Cdt2d::Tri&) { return -1.0; };
+    const auto rep2 = cdt2.Refine(o);
+    EXPECT_EQ(rep2.mNumCircumcentres + rep2.mNumSplits, 0);
+    EXPECT_EQ(rep2.mNumForced, 1);
+}
+
+TEST(Cdt2dRefine, MoveVertexRefusesAnInversionAndKeepsDelaunay) {
+    mio::detail::Cdt2d cdt(0, 0, 4, 4);
+    std::vector<Vec2> pts = {{0, 0}, {4, 0}, {4, 4}, {0, 4}};
+    for (int j = 1; j < 4; ++j)
+        for (int i = 1; i < 4; ++i)
+            pts.push_back({double(i), double(j)});
+    const auto ids = cdt.InsertBatch(pts);
+    for (int k = 0; k < 4; ++k)
+        ASSERT_EQ(cdt.InsertSegment(ids[std::size_t(k)], ids[std::size_t((k + 1) % 4)]),
+                  Cdt2dStatus::Ok);
+    ASSERT_EQ(cdt.Classify(), Cdt2dStatus::Ok);
+    const std::int64_t centre = ids[8];  // (2, 2)
+    EXPECT_FALSE(cdt.OnConstraint(centre));
+    EXPECT_TRUE(cdt.OnConstraint(ids[0]));
+    EXPECT_EQ(cdt.Neighbours(centre).size(), cdt.Star(centre).size());
+    // Out of its star (past a neighbour): refused, nothing moves.
+    EXPECT_FALSE(cdt.MoveVertex(centre, {3.5, 2.0}));
+    EXPECT_EQ(cdt.Point(centre), (Vec2{2.0, 2.0}));
+    // A boundary vertex never moves.
+    EXPECT_FALSE(cdt.MoveVertex(ids[0], {0.1, 0.1}));
+    // Within its star: moved, then flipped back to Delaunay.
+    EXPECT_TRUE(cdt.MoveVertex(centre, {2.6, 2.3}));
+    EXPECT_EQ(cdt.Point(centre), (Vec2{2.6, 2.3}));
+    double area = 0.0;
+    const auto tris = cdt.InsideTriangles();
+    for (const auto& t : tris) {
+        const double o = mio::detail::orient2d(cdt.Point(t[0]).data(), cdt.Point(t[1]).data(),
+                                               cdt.Point(t[2]).data());
+        EXPECT_GT(o, 0.0);
+        area += 0.5 * o;
+        for (std::int64_t v = mio::detail::Cdt2d::kFirstVertex; v < cdt.NumVertices(); ++v)
+            if (v != t[0] && v != t[1] && v != t[2])
+                EXPECT_LE(mio::detail::incircle(cdt.Point(t[0]).data(), cdt.Point(t[1]).data(),
+                                                cdt.Point(t[2]).data(), cdt.Point(v).data()),
+                          0.0);
+    }
+    EXPECT_NEAR(area, 16.0, 1e-12);
 }
 
 }  // namespace

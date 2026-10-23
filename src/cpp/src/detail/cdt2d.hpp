@@ -51,6 +51,41 @@
  *    changes which triangles are inside. `Where` says, without inserting,
  *    whether a point is inside, outside, on a constrained edge or on a
  *    vertex, so a caller can check a curve before committing to it.
+ *  - **Refinement.** `Refine` is Ruppert's algorithm (J. Ruppert, "A
+ *    Delaunay refinement algorithm for quality 2-dimensional mesh
+ *    generation", J. Algorithms 18(3), 1995) with Chew's circumcentre
+ *    insertion (L. P. Chew, "Guaranteed-quality triangular meshes", 1989;
+ *    "Guaranteed-quality mesh generation for curved surfaces", SoCG 1993):
+ *    a triangle whose circumradius-to-shortest-edge ratio exceeds
+ *    `B = 1 / (2 sin(min_angle))` gets its circumcentre, unless that point
+ *    encroaches a subsegment (lies strictly inside its diametral circle,
+ *    the exact `diametral` predicate) or lies beyond one, which is split
+ *    instead; a subsegment encroached by a vertex is split first. With
+ *    input angles of at least 60 degrees this bounds every angle by about
+ *    20.7 degrees at `B = sqrt(2)` (Ruppert 1995; J. R. Shewchuk, "Delaunay
+ *    refinement algorithms for triangular mesh generation", Comput. Geom.
+ *    22, 2002); past that `min_angle` is a target with a reported shortfall
+ *    (it usually succeeds to about 33 degrees). Bad triangles are taken worst first
+ *    (Shewchuk 2002), from a priority queue keyed by the ratio and broken by
+ *    the sorted vertex ids, never by a slot or a counter, so the order is
+ *    the input's alone. Input angles below 60 degrees (Ruppert's algorithm
+ *    need not terminate there) are handled as in Shewchuk (2002) and G. L.
+ *    Miller, S. E. Pav and N. J. Walkington, "When and why Ruppert's
+ *    algorithm works" (IMR 2003): a subsegment at the apex of such an angle
+ *    splits on concentric shells (at a power-of-two distance from the apex,
+ *    so the subsegments of a cluster stay equal), a skinny triangle whose
+ *    shortest edge spans the angle (or that holds it) is left as the angle
+ *    forces it, and a subsegment of the cluster is not split when its
+ *    halves would be shorter than the skinny triangle's shortest edge. The
+ *    smallest angle those forced triangles keep is measured and reported
+ *    per corner (`Cdt2dSmallAngle::mMinForcedDeg`). Every
+ *    insertion counts against `max_points`. A caller that shares its
+ *    boundary with others (`mesh_cad_surface`'s edges) asks for the splits
+ *    instead of making them, and may judge triangles by its own measure
+ *    (the surface's); the plane stays where the points are found.
+ *  - **Moving a vertex.** `MoveVertex` moves an interior vertex inside its
+ *    star, refusing a move that would invert a triangle (exact `orient2d`),
+ *    then restores the Delaunay property by flips (smoothing).
  *  - **Crossings.** `cdt2d_find_crossings` lists the pairs of segments of a
  *    straight-line graph that meet anywhere but at a shared endpoint (a
  *    proper crossing, a touch, an overlap, a fold-back), with exact
@@ -74,6 +109,7 @@
 // System includes
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -106,6 +142,58 @@ enum class Cdt2dPlace : int {
 struct Cdt2dWhere {
     Cdt2dPlace mPlace = Cdt2dPlace::Outside;
     std::int64_t mVertex = -1;  ///< the vertex, for `OnVertex`
+};
+
+/// What `Cdt2d::Refine` is asked for.
+struct Cdt2dRefineOptions {
+    /// The angle sought, in degrees (0, 60): a triangle is bad when its
+    /// circumradius-to-shortest-edge ratio exceeds 1 / (2 sin(min_angle)).
+    double mMinAngleDeg = 20.7;
+    /// The most vertices the pass may insert (splits and circumcentres).
+    std::int64_t mMaxPoints = 1000000;
+    /// Split an encroached subsegment here (a planar domain), or only ask
+    /// for it (`Cdt2dRefineReport::mRequests`), when the caller owns the
+    /// boundary (a curved edge shared with other faces).
+    bool mSplitSegments = true;
+    /// The ratio to judge a triangle (its vertex ids) by; null: in the
+    /// plane. A negative value exempts the triangle (counted as forced).
+    std::function<double(const std::array<std::int64_t, 3>&)> mRatio;
+};
+
+/// A corner where two segments meet at less than 60 degrees inside the
+/// domain (in the plane): Ruppert's small input angle.
+struct Cdt2dSmallAngle {
+    std::int64_t mVertex = -1;
+    double mAngleDeg = 0.0;  ///< the smallest wedge at it
+    /// The smallest angle of the bad triangles it forces (holding it, or
+    /// whose shortest edge spans it) after refinement; 180 for none.
+    double mMinForcedDeg = 180.0;
+};
+
+/// A subsegment the caller is asked to split (`mSplitSegments` false), its
+/// vertices in ascending order; `mApex` the end at a small input angle that
+/// its split should keep a power-of-two distance from, or -1.
+struct Cdt2dSplitRequest {
+    std::int64_t mA = -1;
+    std::int64_t mB = -1;
+    std::int64_t mApex = -1;
+    bool operator<(const Cdt2dSplitRequest& rO) const {
+        return mA != rO.mA ? mA < rO.mA : mB < rO.mB;
+    }
+    bool operator==(const Cdt2dSplitRequest& rO) const { return mA == rO.mA && mB == rO.mB; }
+};
+
+struct Cdt2dRefineReport {
+    std::int64_t mNumCircumcentres = 0;         ///< circumcentres inserted
+    std::int64_t mNumSplits = 0;                ///< subsegments split here
+    std::vector<Cdt2dSplitRequest> mRequests;   ///< sorted, distinct
+    std::vector<Cdt2dSmallAngle> mSmallAngles;  ///< by vertex
+    /// Bad triangles left because a small input angle forces them (or the
+    /// caller exempted them), and those left otherwise (the budget, a
+    /// split asked for, a circumcentre on a vertex).
+    std::int64_t mNumForced = 0;
+    std::int64_t mNumUnresolved = 0;
+    bool mBudgetReached = false;
 };
 
 class Cdt2d {
@@ -141,6 +229,27 @@ public:
 
     /// After `Classify`: where a point lies, decided exactly; inserts nothing.
     Cdt2dWhere Where(const Vec2& rP);
+
+    /// After `Classify`: Delaunay refinement of the inside (see the file
+    /// comment). New vertices take ids from `NumVertices()` on.
+    Cdt2dRefineReport Refine(const Cdt2dRefineOptions& rOptions);
+
+    /// After `Classify`: move vertex `V` (not on a constrained edge) to
+    /// `rP`; refused (false, nothing changed) when `rP` is outside the star
+    /// of `V`'s triangles or would invert one of them. Flips follow.
+    bool MoveVertex(std::int64_t V, const Vec2& rP);
+
+    /// Every constrained edge, its vertices ascending, sorted.
+    std::vector<std::array<std::int64_t, 2>> ConstrainedEdges() const;
+
+    /// Whether `V` is an endpoint of a constrained edge.
+    bool OnConstraint(std::int64_t V) const;
+
+    /// The vertices joined to `V` by an edge, counter-clockwise.
+    std::vector<std::int64_t> Neighbours(std::int64_t V) const;
+
+    /// The triangles around `V`, counter-clockwise.
+    std::vector<Tri> Star(std::int64_t V) const;
 
     /// The inside triangles (after `Classify`), counter-clockwise, in
     /// triangle-slot order.
@@ -200,6 +309,11 @@ private:
     double Orient(std::int64_t A, std::int64_t B, std::int64_t C) const;
     double Orient(std::int64_t A, std::int64_t B, const Vec2& rC) const;
     double InCircle(std::int64_t A, std::int64_t B, std::int64_t C, std::int64_t D) const;
+    std::vector<std::int64_t> TrianglesAround(std::int64_t V) const;
+    bool FindEdge(std::int64_t A, std::int64_t B, std::int64_t& rT, int& rE) const;
+    std::int64_t SplitConstrained(std::int64_t T, int E, const Vec2& rP);
+
+    friend class Cdt2dRefiner;
 };
 
 /**
@@ -223,8 +337,16 @@ struct Cdt2dPolygon {
     std::string mWhy;
     std::vector<Cdt2d::Vec2> mPoints;    ///< boundary points first, then interior ones
     std::vector<Cdt2d::Tri> mTriangles;  ///< counter-clockwise, into mPoints
-    std::vector<std::array<std::int64_t, 2>> mSegments;  ///< the constrained boundary edges
-    std::int64_t mNumBoundary = 0;  ///< how many of mPoints are on the boundary
+    /// The constrained boundary edges (after refinement, its subsegments).
+    std::vector<std::array<std::int64_t, 2>> mSegments;
+    std::int64_t mNumBoundary = 0;  ///< how many of mPoints are on the given boundary
+    Cdt2dRefineReport mRefine;      ///< what refinement did, when asked for
+};
+
+/// Quality asked of `cdt2d_triangulate_polygon`: 0 keeps today's output.
+struct Cdt2dPolygonQuality {
+    double mMinAngleDeg = 0.0;
+    std::int64_t mMaxPoints = 1000000;  ///< the most points refinement adds
 };
 
 /**
@@ -240,6 +362,12 @@ struct Cdt2dPolygon {
  */
 Cdt2dPolygon cdt2d_triangulate_polygon(const std::vector<std::vector<Cdt2d::Vec2>>& rLoops,
                                        double TargetSize, double MergeTolerance = -1.0);
+
+/// The same, then refined (`Cdt2d::Refine`, splitting the boundary here)
+/// when `rQuality.mMinAngleDeg` > 0; the points it adds follow the lattice's.
+Cdt2dPolygon cdt2d_triangulate_polygon(const std::vector<std::vector<Cdt2d::Vec2>>& rLoops,
+                                       double TargetSize, double MergeTolerance,
+                                       const Cdt2dPolygonQuality& rQuality);
 
 }  // namespace detail
 }  // namespace meshioplusplus

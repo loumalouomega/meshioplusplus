@@ -25,6 +25,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <map>
+#include <queue>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -483,6 +486,9 @@ std::int64_t Cdt2d::InsertAt(const Vec2& rP, const Location& rLoc, bool Inside) 
     std::int64_t split_b = -1;
     bool split_constrained = false;
     const auto& r_t = mTris[static_cast<std::size_t>(rLoc.mTri)];
+    // A constrained edge split after the classification divides inside
+    // from outside (or a hole): each side keeps its own flag.
+    bool side_inside[2] = {Inside, Inside};
     if (rLoc.mKind == 0) {
         for (int e = 0; e < 3; ++e)
             fresh.push_back({r_t.mV[cdt2d_next(e)], r_t.mV[cdt2d_prev(e)], v});
@@ -492,6 +498,10 @@ std::int64_t Cdt2d::InsertAt(const Vec2& rP, const Location& rLoc, bool Inside) 
         split_b = r_t.mV[cdt2d_prev(e)];
         split_constrained = r_t.mC[e];
         const std::int64_t u = r_t.mN[e];
+        if (mClassified && split_constrained) {
+            side_inside[0] = r_t.mInside;
+            side_inside[1] = u >= 0 && mTris[static_cast<std::size_t>(u)].mInside;
+        }
         // The two edges of t that stay, then u's.
         fresh.push_back({r_t.mV[e], split_a, v});
         fresh.push_back({split_b, r_t.mV[e], v});
@@ -506,6 +516,9 @@ std::int64_t Cdt2d::InsertAt(const Vec2& rP, const Location& rLoc, bool Inside) 
         }
     }
     const std::vector<std::int64_t> ids = ReplaceCavity(removed, fresh, Inside);
+    if (mClassified && split_constrained)
+        for (std::size_t k = 0; k < ids.size(); ++k)
+            mTris[static_cast<std::size_t>(ids[k])].mInside = side_inside[k < 2 ? 0 : 1];
     if (split_constrained) {
         for (const std::int64_t id : ids) {
             for (int e = 0; e < 3; ++e) {
@@ -788,6 +801,721 @@ std::int64_t Cdt2d::InsertSteiner(const Vec2& rP) {
     return InsertAt(rP, loc, true);
 }
 
+std::vector<std::int64_t> Cdt2d::TrianglesAround(std::int64_t V) const {
+    std::vector<std::int64_t> out;
+    const std::int64_t t0 = mVertTri[static_cast<std::size_t>(V)];
+    std::int64_t t = t0;
+    for (std::size_t guard = 0; guard < mTris.size() + 3; ++guard) {
+        out.push_back(t);
+        const int i = IndexOf(t, V);
+        if (i < 0)
+            cdt2d_internal("vertex-triangle map is stale");
+        // Counter-clockwise: across the edge from V to the previous vertex.
+        t = mTris[static_cast<std::size_t>(t)].mN[cdt2d_next(i)];
+        if (t < 0)
+            cdt2d_internal("a vertex's star is not closed");
+        if (t == t0)
+            return out;
+    }
+    cdt2d_internal("a vertex's star does not close");
+}
+
+std::vector<std::int64_t> Cdt2d::Neighbours(std::int64_t V) const {
+    std::vector<std::int64_t> out;
+    for (const std::int64_t t : TrianglesAround(V))
+        out.push_back(mTris[static_cast<std::size_t>(t)].mV[cdt2d_next(IndexOf(t, V))]);
+    return out;
+}
+
+std::vector<Cdt2d::Tri> Cdt2d::Star(std::int64_t V) const {
+    std::vector<Tri> out;
+    for (const std::int64_t t : TrianglesAround(V))
+        out.push_back(mTris[static_cast<std::size_t>(t)].mV);
+    return out;
+}
+
+bool Cdt2d::FindEdge(std::int64_t A, std::int64_t B, std::int64_t& rT, int& rE) const {
+    for (const std::int64_t t : TrianglesAround(A)) {
+        const int i = IndexOf(t, A);
+        if (mTris[static_cast<std::size_t>(t)].mV[cdt2d_next(i)] == B) {
+            rT = t;
+            rE = cdt2d_prev(i);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Cdt2d::OnConstraint(std::int64_t V) const {
+    for (const std::int64_t t : TrianglesAround(V)) {
+        const int i = IndexOf(t, V);
+        const auto& r_t = mTris[static_cast<std::size_t>(t)];
+        if (r_t.mC[cdt2d_next(i)] || r_t.mC[cdt2d_prev(i)])
+            return true;
+    }
+    return false;
+}
+
+std::vector<std::array<std::int64_t, 2>> Cdt2d::ConstrainedEdges() const {
+    std::vector<std::array<std::int64_t, 2>> out;
+    for (const Triangle& r_t : mTris) {
+        if (!r_t.mAlive)
+            continue;
+        for (int e = 0; e < 3; ++e) {
+            const std::int64_t a = r_t.mV[cdt2d_next(e)];
+            const std::int64_t b = r_t.mV[cdt2d_prev(e)];
+            if (r_t.mC[e] && a < b)
+                out.push_back({a, b});
+        }
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+std::int64_t Cdt2d::SplitConstrained(std::int64_t T, int E, const Vec2& rP) {
+    // The point is the subsegment's split, computed in floating point, so it
+    // may lie an ulp off the line: it splits the edge regardless, provided
+    // the four new triangles turn counter-clockwise (exact orient2d).
+    if (!cdt2d_in_range(rP[0]) || !cdt2d_in_range(rP[1]))
+        return -1;
+    const auto& r_t = mTris[static_cast<std::size_t>(T)];
+    const std::int64_t o = r_t.mV[E];
+    const std::int64_t a = r_t.mV[cdt2d_next(E)];
+    const std::int64_t b = r_t.mV[cdt2d_prev(E)];
+    const std::int64_t u = r_t.mN[E];
+    if (u < 0 || !(Orient(o, a, rP) > 0.0) || !(Orient(b, o, rP) > 0.0))
+        return -1;
+    const std::int64_t w = mTris[static_cast<std::size_t>(u)].mV[NeighbourIndex(u, T)];
+    if (!(Orient(w, b, rP) > 0.0) || !(Orient(a, w, rP) > 0.0))
+        return -1;
+    Location loc;
+    loc.mTri = T;
+    loc.mKind = 1;
+    loc.mIndex = E;
+    return InsertAt(rP, loc, r_t.mInside);
+}
+
+bool Cdt2d::MoveVertex(std::int64_t V, const Vec2& rP) {
+    if (!mClassified)
+        cdt2d_internal("MoveVertex before Classify");
+    if (V < kFirstVertex || V >= NumVertices() || OnConstraint(V))
+        return false;
+    if (!cdt2d_in_range(rP[0]) || !cdt2d_in_range(rP[1]))
+        return false;
+    const std::vector<std::int64_t> star = TrianglesAround(V);
+    for (const std::int64_t t : star) {
+        const auto& r_t = mTris[static_cast<std::size_t>(t)];
+        const int i = IndexOf(t, V);
+        // The new place must see every edge of the link strictly inside.
+        if (!(Orient(r_t.mV[cdt2d_next(i)], r_t.mV[cdt2d_prev(i)], rP) > 0.0))
+            return false;
+    }
+    mPoints[static_cast<std::size_t>(V)] = rP;
+    // Lawson's flips over every edge the move touched, each flip's two
+    // triangles checked again on all their edges.
+    std::vector<std::pair<std::int64_t, int>> stack;
+    for (const std::int64_t t : star)
+        for (int e = 0; e < 3; ++e)
+            stack.emplace_back(t, e);
+    std::size_t budget = 64 * mTris.size() + 64;
+    while (!stack.empty()) {
+        if (budget-- == 0)
+            cdt2d_internal("flips after a move did not end");
+        const auto [t, e] = stack.back();
+        stack.pop_back();
+        const auto& r_t = mTris[static_cast<std::size_t>(t)];
+        if (!r_t.mAlive || r_t.mC[e])
+            continue;
+        const std::int64_t u = r_t.mN[e];
+        if (u < 0)
+            continue;
+        const int f = NeighbourIndex(u, t);
+        if (f < 0)
+            cdt2d_internal("broken adjacency while legalising");
+        const std::int64_t d = mTris[static_cast<std::size_t>(u)].mV[f];
+        if (InCircle(r_t.mV[0], r_t.mV[1], r_t.mV[2], d) > 0.0) {
+            Flip(t, e);
+            for (int k = 0; k < 3; ++k) {
+                stack.emplace_back(t, k);
+                stack.emplace_back(u, k);
+            }
+        }
+    }
+    mLast = mVertTri[static_cast<std::size_t>(V)];
+    return true;
+}
+
+namespace {
+
+/// A bad triangle in the refinement queue.
+struct Cdt2dBad {
+    double mRatio = 0.0;
+    Cdt2d::Tri mKey{};  ///< its vertex ids, ascending
+    std::int64_t mSlot = -1;
+};
+
+/// The worst ratio first; among equal ratios the smallest vertex ids, so
+/// the order depends on the input alone.
+struct Cdt2dBadOrder {
+    bool operator()(const Cdt2dBad& rA, const Cdt2dBad& rB) const {
+        if (rA.mRatio != rB.mRatio)
+            return rA.mRatio < rB.mRatio;
+        return rA.mKey > rB.mKey;
+    }
+};
+
+std::uint64_t cdt2d_edge_key(std::int64_t A, std::int64_t B) {
+    return (static_cast<std::uint64_t>(std::min(A, B)) << 32) ^
+           static_cast<std::uint64_t>(std::max(A, B));
+}
+
+Cdt2d::Tri cdt2d_sorted(Cdt2d::Tri T) {
+    std::sort(T.begin(), T.end());
+    return T;
+}
+
+double cdt2d_length(const Cdt2d::Vec2& rA, const Cdt2d::Vec2& rB) {
+    return std::hypot(rB[0] - rA[0], rB[1] - rA[1]);
+}
+
+}  // namespace
+
+/// Ruppert's refinement over a classified Cdt2d (see Cdt2d::Refine).
+class Cdt2dRefiner {
+public:
+    Cdt2dRefiner(Cdt2d& rC, const Cdt2dRefineOptions& rO) : mC(rC), mO(rO) {}
+
+    Cdt2dRefineReport Run();
+
+private:
+    using Vec2 = Cdt2d::Vec2;
+    using Tri = Cdt2d::Tri;
+
+    Cdt2d& mC;
+    const Cdt2dRefineOptions& mO;
+    double mBound = 0.0;
+    std::int64_t mBudget = 0;
+    Cdt2dRefineReport mRep;
+    /// The input segments (the constrained edges at the start), the input
+    /// segment of every subsegment, and of every vertex a split made.
+    std::vector<std::array<std::int64_t, 2>> mInput;
+    std::unordered_map<std::uint64_t, std::int64_t> mSegOf;
+    std::unordered_map<std::int64_t, std::int64_t> mVertexSeg;
+    /// Small input angles: the apex's smallest wedge, and per input segment
+    /// whether each end is the apex of a small wedge it bounds.
+    std::map<std::int64_t, double> mApex;
+    std::vector<std::array<bool, 2>> mCluster;
+    std::priority_queue<Cdt2dBad, std::vector<Cdt2dBad>, Cdt2dBadOrder> mBad;
+    std::set<std::array<std::int64_t, 2>> mEncroached;
+    std::set<Cdt2dSplitRequest> mRequests;
+    std::map<Tri, std::int64_t> mDeclined;  ///< left by the terminator, with the apex
+
+    const Vec2& P(std::int64_t V) const { return mC.Point(V); }
+    bool Real(const Tri& rT) const {
+        return rT[0] >= Cdt2d::kFirstVertex && rT[1] >= Cdt2d::kFirstVertex &&
+               rT[2] >= Cdt2d::kFirstVertex;
+    }
+    double PlaneRatio(const Tri& rT) const;
+    double Ratio(const Tri& rT) const { return mO.mRatio ? mO.mRatio(rT) : PlaneRatio(rT); }
+    double Shortest(const Tri& rT) const;
+    /// Ruppert's encroachment: strictly inside the diametral circle. (A
+    /// diametral lens admits more circumcentres, but on the suite's
+    /// domains it let refinement past 30 degrees run away where the circle
+    /// does not.)
+    bool Encroaches(std::int64_t A, std::int64_t B, const Vec2& rP) const {
+        return diametral(P(A).data(), P(B).data(), rP.data()) < 0.0;
+    }
+    std::int64_t SegmentOf(std::int64_t A, std::int64_t B) const {
+        const auto it = mSegOf.find(cdt2d_edge_key(A, B));
+        return it == mSegOf.end() ? -1 : it->second;
+    }
+    /// The end of a subsegment at a small input angle of its segment, or -1.
+    std::int64_t ApexOf(std::int64_t A, std::int64_t B) const;
+    /// The small-angle apexes a vertex lies on a cluster segment of.
+    std::vector<std::int64_t> ClustersOf(std::int64_t V) const;
+    /// The small-angle apex that forces a triangle (it holds the angle, or
+    /// its shortest edge spans it), or -1.
+    std::int64_t ForcedBy(const Tri& rT) const;
+    bool Forced(const Tri& rT) const { return ForcedBy(rT) >= 0; }
+    double MinAngleDeg(const Tri& rT) const;
+    void FindSmallAngles();
+    void PushTriangle(std::int64_t Slot);
+    void CheckSubsegment(std::int64_t A, std::int64_t B);
+    void AfterInsert(std::int64_t V);
+    bool SplitOrAsk(std::int64_t A, std::int64_t B);
+    void HandleEncroached(const std::vector<std::array<std::int64_t, 2>>& rSegments,
+                          const Tri& rBad, std::int64_t Slot);
+    void Attempt(const Cdt2dBad& rBad);
+};
+
+double Cdt2dRefiner::PlaneRatio(const Tri& rT) const {
+    const double la = cdt2d_length(P(rT[1]), P(rT[2]));
+    const double lb = cdt2d_length(P(rT[2]), P(rT[0]));
+    const double lc = cdt2d_length(P(rT[0]), P(rT[1]));
+    const double twice_area =
+        std::fabs(orient2d(P(rT[0]).data(), P(rT[1]).data(), P(rT[2]).data()));
+    if (!(twice_area > 0.0))
+        return std::numeric_limits<double>::infinity();
+    // R = la lb lc / (4 area): the ratio R / shortest is the product of the
+    // two longer edges over twice the doubled area.
+    return la * lb * lc / (2.0 * twice_area * std::min({la, lb, lc}));
+}
+
+double Cdt2dRefiner::Shortest(const Tri& rT) const {
+    return std::min({cdt2d_length(P(rT[1]), P(rT[2])), cdt2d_length(P(rT[2]), P(rT[0])),
+                     cdt2d_length(P(rT[0]), P(rT[1]))});
+}
+
+std::int64_t Cdt2dRefiner::ApexOf(std::int64_t A, std::int64_t B) const {
+    const std::int64_t s = SegmentOf(A, B);
+    if (s < 0)
+        return -1;
+    const auto& r_in = mInput[static_cast<std::size_t>(s)];
+    const bool at0 = mCluster[static_cast<std::size_t>(s)][0] && (A == r_in[0] || B == r_in[0]);
+    const bool at1 = mCluster[static_cast<std::size_t>(s)][1] && (A == r_in[1] || B == r_in[1]);
+    if (at0 == at1)
+        return -1;  // neither, or the whole segment between two apexes: its midpoint
+    return at0 ? r_in[0] : r_in[1];
+}
+
+std::vector<std::int64_t> Cdt2dRefiner::ClustersOf(std::int64_t V) const {
+    std::vector<std::int64_t> out;
+    const auto it = mVertexSeg.find(V);
+    if (it == mVertexSeg.end())
+        return out;
+    const auto s = static_cast<std::size_t>(it->second);
+    for (int k = 0; k < 2; ++k)
+        if (mCluster[s][static_cast<std::size_t>(k)])
+            out.push_back(mInput[s][static_cast<std::size_t>(k)]);
+    return out;
+}
+
+double Cdt2dRefiner::MinAngleDeg(const Tri& rT) const {
+    double m = 180.0;
+    for (int k = 0; k < 3; ++k) {
+        const Vec2& o = P(rT[static_cast<std::size_t>(k)]);
+        const Vec2& p = P(rT[static_cast<std::size_t>((k + 1) % 3)]);
+        const Vec2& q = P(rT[static_cast<std::size_t>((k + 2) % 3)]);
+        const double ux = p[0] - o[0], uy = p[1] - o[1];
+        const double vx = q[0] - o[0], vy = q[1] - o[1];
+        m = std::min(m, std::atan2(std::fabs(ux * vy - uy * vx), ux * vx + uy * vy) *
+                            (180.0 / 3.14159265358979323846));
+    }
+    return m;
+}
+
+std::int64_t Cdt2dRefiner::ForcedBy(const Tri& rT) const {
+    if (mApex.empty())
+        return -1;
+    // The triangle holding a small input angle: its two edges at the apex
+    // are subsegments of the cluster.
+    for (int k = 0; k < 3; ++k) {
+        const std::int64_t v = rT[static_cast<std::size_t>(k)];
+        if (mApex.count(v) == 0)
+            continue;
+        const std::int64_t a = rT[static_cast<std::size_t>((k + 1) % 3)];
+        const std::int64_t b = rT[static_cast<std::size_t>((k + 2) % 3)];
+        if (ApexOf(v, a) == v && ApexOf(v, b) == v)
+            return v;
+    }
+    // A shortest edge spanning a small input angle: its ends on two
+    // segments of one cluster.
+    int sk = 0;
+    double best = std::numeric_limits<double>::infinity();
+    for (int k = 0; k < 3; ++k) {
+        const double l = cdt2d_length(P(rT[static_cast<std::size_t>((k + 1) % 3)]),
+                                      P(rT[static_cast<std::size_t>((k + 2) % 3)]));
+        if (l < best) {
+            best = l;
+            sk = k;
+        }
+    }
+    const std::int64_t p = rT[static_cast<std::size_t>((sk + 1) % 3)];
+    const std::int64_t q = rT[static_cast<std::size_t>((sk + 2) % 3)];
+    const auto it_p = mVertexSeg.find(p);
+    const auto it_q = mVertexSeg.find(q);
+    if (it_p == mVertexSeg.end() || it_q == mVertexSeg.end() || it_p->second == it_q->second)
+        return -1;
+    for (const std::int64_t a : ClustersOf(p))
+        for (const std::int64_t b : ClustersOf(q))
+            if (a == b)
+                return a;
+    return -1;
+}
+
+void Cdt2dRefiner::FindSmallAngles() {
+    std::map<std::int64_t, std::vector<std::int64_t>> incident;
+    for (const auto& r_e : mC.ConstrainedEdges()) {
+        const auto s = static_cast<std::int64_t>(mInput.size());
+        mInput.push_back(r_e);
+        mSegOf[cdt2d_edge_key(r_e[0], r_e[1])] = s;
+        incident[r_e[0]].push_back(s);
+        incident[r_e[1]].push_back(s);
+    }
+    mCluster.assign(mInput.size(), {false, false});
+    for (const auto& [v, r_segs] : incident) {
+        if (r_segs.size() < 2)
+            continue;
+        // The constrained neighbours of v, counter-clockwise, and whether
+        // the wedge after each (to the next) is inside the domain.
+        const std::vector<std::int64_t> around = mC.TrianglesAround(v);
+        std::vector<std::int64_t> nbrs;
+        std::vector<bool> wedge_inside;
+        for (const std::int64_t t : around) {
+            const auto& r_t = mC.mTris[static_cast<std::size_t>(t)];
+            const int i = mC.IndexOf(t, v);
+            // The edge (v, p) opens this triangle, p its next vertex.
+            if (r_t.mC[cdt2d_prev(i)]) {
+                nbrs.push_back(r_t.mV[cdt2d_next(i)]);
+                wedge_inside.push_back(r_t.mInside);
+            }
+        }
+        const std::size_t n = nbrs.size();
+        for (std::size_t k = 0; k < n && n >= 2; ++k) {
+            if (!wedge_inside[k])
+                continue;
+            const std::int64_t a = nbrs[k];
+            const std::int64_t b = nbrs[(k + 1) % n];
+            const double* pv = P(v).data();
+            // Below 60 degrees: turning left (under 180), acute, and in the
+            // lens_angle region (below 60 or above 120).
+            if (!(orient2d(pv, P(a).data(), P(b).data()) > 0.0) ||
+                !(diametral(P(a).data(), P(b).data(), pv) > 0.0) ||
+                !(lens_angle(P(a).data(), P(b).data(), pv) > 0.0))
+                continue;
+            const double ax = P(a)[0] - P(v)[0], ay = P(a)[1] - P(v)[1];
+            const double bx = P(b)[0] - P(v)[0], by = P(b)[1] - P(v)[1];
+            const double deg =
+                std::atan2(ax * by - ay * bx, ax * bx + ay * by) * (180.0 / 3.14159265358979323846);
+            auto [it, fresh] = mApex.emplace(v, deg);
+            if (!fresh)
+                it->second = std::min(it->second, deg);
+            for (const std::int64_t w : {a, b}) {
+                const std::int64_t s = SegmentOf(v, w);
+                if (s >= 0)
+                    mCluster[static_cast<std::size_t>(s)]
+                            [mInput[static_cast<std::size_t>(s)][0] == v ? 0 : 1] = true;
+            }
+        }
+    }
+    for (const auto& [v, deg] : mApex)
+        mRep.mSmallAngles.push_back({v, deg});
+}
+
+void Cdt2dRefiner::PushTriangle(std::int64_t Slot) {
+    const auto& r_t = mC.mTris[static_cast<std::size_t>(Slot)];
+    if (!r_t.mAlive || !r_t.mInside || !Real(r_t.mV))
+        return;
+    const double r = Ratio(r_t.mV);
+    if (r > mBound)
+        mBad.push({r, cdt2d_sorted(r_t.mV), Slot});
+}
+
+void Cdt2dRefiner::CheckSubsegment(std::int64_t A, std::int64_t B) {
+    std::int64_t t = -1;
+    int e = -1;
+    if (!mC.FindEdge(A, B, t, e))
+        return;
+    const auto& r_t = mC.mTris[static_cast<std::size_t>(t)];
+    if (!r_t.mC[e])
+        return;
+    for (const std::int64_t side : {t, r_t.mN[e]}) {
+        if (side < 0)
+            continue;
+        const auto& r_s = mC.mTris[static_cast<std::size_t>(side)];
+        if (!r_s.mInside || !Real(r_s.mV))
+            continue;
+        for (const std::int64_t apex : r_s.mV)
+            if (apex != A && apex != B && Encroaches(A, B, P(apex))) {
+                mEncroached.insert({std::min(A, B), std::max(A, B)});
+                return;
+            }
+    }
+}
+
+void Cdt2dRefiner::AfterInsert(std::int64_t V) {
+    for (const std::int64_t t : mC.TrianglesAround(V)) {
+        PushTriangle(t);
+        const auto& r_t = mC.mTris[static_cast<std::size_t>(t)];
+        const int i = mC.IndexOf(t, V);
+        const std::int64_t a = r_t.mV[cdt2d_next(i)];
+        const std::int64_t b = r_t.mV[cdt2d_prev(i)];
+        if (r_t.mC[i])
+            CheckSubsegment(a, b);  // the link edge, now facing V
+        if (r_t.mC[cdt2d_prev(i)])
+            CheckSubsegment(V, a);  // a subsegment at V
+    }
+}
+
+bool Cdt2dRefiner::SplitOrAsk(std::int64_t A, std::int64_t B) {
+    const std::int64_t apex = ApexOf(A, B);
+    if (!mO.mSplitSegments) {
+        mRequests.insert({std::min(A, B), std::max(A, B), apex});
+        return false;
+    }
+    std::int64_t t = -1;
+    int e = -1;
+    if (!mC.FindEdge(A, B, t, e) || !mC.mTris[static_cast<std::size_t>(t)].mC[e])
+        return false;
+    Vec2 m{0.5 * (P(A)[0] + P(B)[0]), 0.5 * (P(A)[1] + P(B)[1])};
+    if (apex >= 0) {
+        // Concentric shells: a power-of-two distance from the apex in
+        // (L / 3, 2 L / 3], so the subsegments of a cluster stay equal.
+        const std::int64_t far = apex == A ? B : A;
+        const double len = cdt2d_length(P(apex), P(far));
+        int ex = 0;
+        std::frexp(2.0 * len / 3.0, &ex);
+        const double r = std::ldexp(1.0, ex - 1);
+        if (r > len / 3.0 && r <= 2.0 * len / 3.0) {
+            const double f = r / len;
+            m = {P(apex)[0] + f * (P(far)[0] - P(apex)[0]),
+                 P(apex)[1] + f * (P(far)[1] - P(apex)[1])};
+        }
+    }
+    const std::int64_t s = SegmentOf(A, B);
+    const std::int64_t v = mC.SplitConstrained(t, e, m);
+    if (v < 0)
+        return false;
+    --mBudget;
+    ++mRep.mNumSplits;
+    if (s >= 0) {
+        mSegOf.erase(cdt2d_edge_key(A, B));
+        mSegOf[cdt2d_edge_key(A, v)] = s;
+        mSegOf[cdt2d_edge_key(v, B)] = s;
+        mVertexSeg[v] = s;
+    }
+    AfterInsert(v);
+    return true;
+}
+
+void Cdt2dRefiner::HandleEncroached(const std::vector<std::array<std::int64_t, 2>>& rSegments,
+                                    const Tri& rBad, std::int64_t Slot) {
+    const double shortest = Shortest(rBad);
+    bool acted = false;
+    std::int64_t declined_apex = -1;
+    for (const auto& r_s : rSegments) {
+        // The terminator: a subsegment of a small-angle cluster is not split
+        // when its pieces would be shorter than the skinny triangle's
+        // shortest edge; the triangle is what the angle forces.
+        const std::int64_t s = SegmentOf(r_s[0], r_s[1]);
+        const bool cluster = s >= 0 && (mCluster[static_cast<std::size_t>(s)][0] ||
+                                        mCluster[static_cast<std::size_t>(s)][1]);
+        if (cluster && 0.5 * cdt2d_length(P(r_s[0]), P(r_s[1])) < shortest) {
+            const auto& r_in = mInput[static_cast<std::size_t>(s)];
+            declined_apex = mCluster[static_cast<std::size_t>(s)][0] ? r_in[0] : r_in[1];
+            continue;
+        }
+        acted = true;
+        SplitOrAsk(r_s[0], r_s[1]);
+        if (mBudget <= 0)
+            return;
+    }
+    if (!acted) {
+        mDeclined.emplace(cdt2d_sorted(rBad), declined_apex);
+        return;
+    }
+    if (mO.mSplitSegments) {
+        const auto& r_t = mC.mTris[static_cast<std::size_t>(Slot)];
+        if (r_t.mAlive && cdt2d_sorted(r_t.mV) == cdt2d_sorted(rBad))
+            PushTriangle(Slot);
+    }
+}
+
+void Cdt2dRefiner::Attempt(const Cdt2dBad& rBad) {
+    const auto& r_t = mC.mTris[static_cast<std::size_t>(rBad.mSlot)];
+    if (!r_t.mAlive || !r_t.mInside || cdt2d_sorted(r_t.mV) != rBad.mKey)
+        return;  // gone since it was queued
+    const Tri tri = r_t.mV;
+    if (Forced(tri))
+        return;
+    // The circumcentre, relative to the first vertex.
+    const Vec2& a = P(tri[0]);
+    const double bx = P(tri[1])[0] - a[0], by = P(tri[1])[1] - a[1];
+    const double cx = P(tri[2])[0] - a[0], cy = P(tri[2])[1] - a[1];
+    const double d = 2.0 * orient2d(a.data(), P(tri[1]).data(), P(tri[2]).data());
+    const double b2 = bx * bx + by * by;
+    const double c2 = cx * cx + cy * cy;
+    const Vec2 c{a[0] + (cy * b2 - by * c2) / d, a[1] + (bx * c2 - cx * b2) / d};
+    if (!(d != 0.0) || !std::isfinite(c[0]) || !std::isfinite(c[1]) || !cdt2d_in_range(c[0]) ||
+        !cdt2d_in_range(c[1]))
+        return;
+    // Walk from the centroid toward it; a constrained edge on the way hides
+    // it, and is split instead (Chew 1993; Shewchuk 2002).
+    const Vec2 g{(a[0] + P(tri[1])[0] + P(tri[2])[0]) / 3.0,
+                 (a[1] + P(tri[1])[1] + P(tri[2])[1]) / 3.0};
+    std::int64_t cur = rBad.mSlot;
+    std::int64_t prev = -1;
+    std::int64_t reached = -1;
+    for (std::size_t guard = 0; guard < mC.mTris.size() + 3 && reached < 0; ++guard) {
+        const auto& r_c = mC.mTris[static_cast<std::size_t>(cur)];
+        // Leave through an edge the point lies beyond, preferring the one
+        // the line from the centroid crosses, then one not walked back over.
+        int exit = -1;
+        int forward = -1;
+        int any = -1;
+        for (int e = 0; e < 3; ++e) {
+            const std::int64_t x = r_c.mV[cdt2d_next(e)];
+            const std::int64_t y = r_c.mV[cdt2d_prev(e)];
+            if (!(mC.Orient(x, y, c) < 0.0))
+                continue;
+            if (any < 0)
+                any = e;
+            if (r_c.mN[e] == prev)
+                continue;
+            if (forward < 0)
+                forward = e;
+            const double ox = orient2d(g.data(), c.data(), P(x).data());
+            const double oy = orient2d(g.data(), c.data(), P(y).data());
+            if (exit < 0 && ((ox <= 0.0 && oy >= 0.0) || (ox >= 0.0 && oy <= 0.0)))
+                exit = e;
+        }
+        if (any < 0) {
+            reached = cur;
+            break;
+        }
+        if (exit < 0)
+            exit = forward >= 0 ? forward : any;
+        if (r_c.mC[exit]) {
+            HandleEncroached({{r_c.mV[cdt2d_next(exit)], r_c.mV[cdt2d_prev(exit)]}}, tri,
+                             rBad.mSlot);
+            return;
+        }
+        prev = cur;
+        cur = r_c.mN[exit];
+        if (cur < 0)
+            return;
+    }
+    if (reached < 0)
+        return;
+    const auto& r_r = mC.mTris[static_cast<std::size_t>(reached)];
+    if (!r_r.mInside)
+        return;
+    int zeros = 0;
+    int on = -1;
+    for (int e = 0; e < 3; ++e)
+        if (mC.Orient(r_r.mV[cdt2d_next(e)], r_r.mV[cdt2d_prev(e)], c) == 0.0) {
+            ++zeros;
+            on = e;
+        }
+    if (zeros >= 2)
+        return;  // on a vertex
+    if (zeros == 1 && r_r.mC[on]) {
+        HandleEncroached({{r_r.mV[cdt2d_next(on)], r_r.mV[cdt2d_prev(on)]}}, tri, rBad.mSlot);
+        return;
+    }
+    // The cavity the point would open (triangles whose circumcircle holds
+    // it, not across a constraint): the subsegments on its boundary are the
+    // ones it can encroach.
+    std::vector<std::int64_t> cavity{reached};
+    std::vector<std::array<std::int64_t, 2>> encroached;
+    for (std::size_t k = 0; k < cavity.size(); ++k) {
+        const auto& r_k = mC.mTris[static_cast<std::size_t>(cavity[k])];
+        for (int e = 0; e < 3; ++e) {
+            const std::int64_t x = r_k.mV[cdt2d_next(e)];
+            const std::int64_t y = r_k.mV[cdt2d_prev(e)];
+            if (r_k.mC[e]) {
+                if (Encroaches(x, y, c))
+                    encroached.push_back({std::min(x, y), std::max(x, y)});
+                continue;
+            }
+            const std::int64_t n = r_k.mN[e];
+            if (n < 0 || std::find(cavity.begin(), cavity.end(), n) != cavity.end())
+                continue;
+            const auto& r_n = mC.mTris[static_cast<std::size_t>(n)];
+            if (incircle(P(r_n.mV[0]).data(), P(r_n.mV[1]).data(), P(r_n.mV[2]).data(), c.data()) >
+                0.0)
+                cavity.push_back(n);
+        }
+    }
+    if (!encroached.empty()) {
+        std::sort(encroached.begin(), encroached.end());
+        encroached.erase(std::unique(encroached.begin(), encroached.end()), encroached.end());
+        HandleEncroached(encroached, tri, rBad.mSlot);
+        return;
+    }
+    const std::int64_t v = mC.InsertSteiner(c);
+    if (v < 0)
+        return;
+    --mBudget;
+    ++mRep.mNumCircumcentres;
+    AfterInsert(v);
+}
+
+Cdt2dRefineReport Cdt2dRefiner::Run() {
+    if (!mC.mClassified)
+        cdt2d_internal("Refine before Classify");
+    if (!(mO.mMinAngleDeg > 0.0 && mO.mMinAngleDeg < 60.0))
+        throw std::invalid_argument("meshio++: cdt2d: min_angle must lie in (0, 60) degrees");
+    mBound = 1.0 / (2.0 * std::sin(mO.mMinAngleDeg * (3.14159265358979323846 / 180.0)));
+    mBudget = mO.mMaxPoints;
+    FindSmallAngles();
+    for (const auto& r_s : mInput)
+        CheckSubsegment(r_s[0], r_s[1]);
+    for (std::size_t t = 0; t < mC.mTris.size(); ++t)
+        PushTriangle(static_cast<std::int64_t>(t));
+    while (true) {
+        if (mBudget <= 0) {
+            mRep.mBudgetReached = true;
+            break;
+        }
+        if (!mEncroached.empty()) {
+            const auto s = *mEncroached.begin();
+            mEncroached.erase(mEncroached.begin());
+            // Still a subsegment, and still encroached by an apex?
+            const std::size_t before = mEncroached.size();
+            CheckSubsegment(s[0], s[1]);
+            if (mEncroached.size() > before) {
+                mEncroached.erase(s);
+                SplitOrAsk(s[0], s[1]);
+            }
+            continue;
+        }
+        if (mBad.empty())
+            break;
+        const Cdt2dBad bad = mBad.top();
+        mBad.pop();
+        Attempt(bad);
+    }
+    std::map<std::int64_t, double> forced_min;
+    for (const auto& r_t : mC.mTris) {
+        if (!r_t.mAlive || !r_t.mInside || !Real(r_t.mV))
+            continue;
+        const double r = Ratio(r_t.mV);
+        if (r < 0.0) {
+            ++mRep.mNumForced;
+            continue;
+        }
+        if (!(r > mBound))
+            continue;
+        std::int64_t apex = ForcedBy(r_t.mV);
+        if (apex < 0) {
+            const auto it = mDeclined.find(cdt2d_sorted(r_t.mV));
+            if (it != mDeclined.end())
+                apex = it->second;
+        }
+        if (apex < 0) {
+            ++mRep.mNumUnresolved;
+            continue;
+        }
+        ++mRep.mNumForced;
+        auto [it, fresh] = forced_min.emplace(apex, MinAngleDeg(r_t.mV));
+        if (!fresh)
+            it->second = std::min(it->second, MinAngleDeg(r_t.mV));
+    }
+    for (Cdt2dSmallAngle& r_a : mRep.mSmallAngles) {
+        const auto it = forced_min.find(r_a.mVertex);
+        if (it != forced_min.end())
+            r_a.mMinForcedDeg = it->second;
+    }
+    mRep.mRequests.assign(mRequests.begin(), mRequests.end());
+    return mRep;
+}
+
+Cdt2dRefineReport Cdt2d::Refine(const Cdt2dRefineOptions& rOptions) {
+    Cdt2dRefiner refiner(*this, rOptions);
+    return refiner.Run();
+}
+
 std::vector<Cdt2d::Tri> Cdt2d::InsideTriangles() const {
     std::vector<Tri> out;
     for (const Triangle& r_t : mTris)
@@ -863,6 +1591,12 @@ std::vector<std::array<std::int64_t, 2>> cdt2d_find_crossings(
 
 Cdt2dPolygon cdt2d_triangulate_polygon(const std::vector<std::vector<Cdt2d::Vec2>>& rLoops,
                                        double TargetSize, double MergeTolerance) {
+    return cdt2d_triangulate_polygon(rLoops, TargetSize, MergeTolerance, Cdt2dPolygonQuality{});
+}
+
+Cdt2dPolygon cdt2d_triangulate_polygon(const std::vector<std::vector<Cdt2d::Vec2>>& rLoops,
+                                       double TargetSize, double MergeTolerance,
+                                       const Cdt2dPolygonQuality& rQuality) {
     using Vec2 = Cdt2d::Vec2;
     Cdt2dPolygon out;
     double lo[2] = {std::numeric_limits<double>::infinity(),
@@ -1058,6 +1792,27 @@ Cdt2dPolygon cdt2d_triangulate_polygon(const std::vector<std::vector<Cdt2d::Vec2
                 point_of[static_cast<std::size_t>(v_id)] = id;
             }
         }
+    }
+
+    if (rQuality.mMinAngleDeg > 0.0) {
+        Cdt2dRefineOptions ro;
+        ro.mMinAngleDeg = rQuality.mMinAngleDeg;
+        ro.mMaxPoints = rQuality.mMaxPoints;
+        const std::int64_t first = cdt.NumVertices();
+        out.mRefine = cdt.Refine(ro);
+        if (point_of.size() < static_cast<std::size_t>(cdt.NumVertices()))
+            point_of.resize(static_cast<std::size_t>(cdt.NumVertices()), -1);
+        for (std::int64_t v = first; v < cdt.NumVertices(); ++v) {
+            point_of[static_cast<std::size_t>(v)] = static_cast<std::int64_t>(r_pts.size());
+            r_pts.push_back(cdt.Point(v));
+        }
+        // The report in point ids, like the rest of the result.
+        for (Cdt2dSmallAngle& r_a : out.mRefine.mSmallAngles)
+            r_a.mVertex = point_of[static_cast<std::size_t>(r_a.mVertex)];
+        segments.clear();
+        for (const auto& r_e : cdt.ConstrainedEdges())
+            segments.push_back({point_of[static_cast<std::size_t>(r_e[0])],
+                                point_of[static_cast<std::size_t>(r_e[1])]});
     }
 
     for (const auto& r_t : cdt.InsideTriangles()) {
