@@ -102,6 +102,69 @@ jobs:
             library-findings/**/oom-*
             library-findings/summary.txt
 
+  fuzz-ops:
+    # The mesh generator rather than a reader (roadmap 6.1.5): mutated CAD JSON
+    # fixtures through mesh_cad_surface, and near-degenerate polygons through
+    # triangulate_polygon_2d (tests/fuzz/fuzz_mesh_cad.cpp).
+    name: Fuzz mesh generation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
+      - name: Install native libraries
+        run: |
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          sudo apt-get install -y clang zlib1g-dev ninja-build
+      - name: Configure and build the fuzz targets
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DMESHIOPLUSPLUS_BUILD_FUZZERS=ON -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF \
+            -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ
+          cmake --build build --target meshioplusplus_fuzz_mesh_cad_surface \
+            meshioplusplus_fuzz_triangulate_polygon_2d
+      - name: Build the seed corpora
+        run: |
+          mkdir -p seeds/op_mesh_cad_surface seeds/op_triangulate_polygon_2d
+          cp tests/python/meshes/cad_json/*.json seeds/op_mesh_cad_surface/
+          for op in mesh_cad_surface triangulate_polygon_2d; do
+            cp tests/fuzz/regressions/op_$op/* seeds/op_$op/
+          done
+      - name: Fuzz
+        env:
+          ASAN_OPTIONS: detect_leaks=1:allocator_may_return_null=0
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          secs="${{ github.event.inputs.seconds }}"
+          [ "${{ github.event_name }}" = pull_request ] && secs=10
+          status=0
+          for op in mesh_cad_surface triangulate_polygon_2d; do
+            FORMATS=op_$op FUZZ_BINARY=meshioplusplus_fuzz_$op \
+              tools/fuzz/run_campaign.sh build seeds findings-$op "${secs:-60}" || status=1
+          done
+          exit $status
+      - name: Job summary
+        if: always()
+        run: |
+          echo "### Fuzz mesh generation" >> "$GITHUB_STEP_SUMMARY"
+          cat findings-*/summary.txt | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY" || true
+      - name: Upload findings
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-findings-ops
+          path: |
+            findings-*/*/crash-*
+            findings-*/*/leak-*
+            findings-*/*/timeout-*
+            findings-*/*/oom-*
+
   fuzz:
     name: Fuzz readers (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
