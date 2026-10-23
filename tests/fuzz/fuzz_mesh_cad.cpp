@@ -168,6 +168,13 @@ void fuzz_mesh_cad_surface(const std::uint8_t* pData, std::size_t Size) {
         o.mTargetSize = 1.0;
     if ((hash >> 8) & 1)
         o.mMaxChordalDeviation = 0.01 * o.mTargetSize;
+    // Refinement (v17.15.0) for three inputs in four, smoothing for two in
+    // three, so the refinement loop and the guarded moves see mutated models.
+    static constexpr double kAngles[4] = {0.0, 20.0, 25.0, 30.0};
+    o.mMinAngleDeg = kAngles[(hash >> 16) % 4];
+    o.mSmoothIterations = static_cast<std::int64_t>((hash >> 20) % 3);
+    o.mSmoothMethod = ((hash >> 24) & 1) ? meshioplusplus::MeshCadSmoothing::Odt
+                                         : meshioplusplus::MeshCadSmoothing::Laplacian;
     o.mMaxPoints = 200000;
     try {
         const meshioplusplus::MeshCadSurfaceResult r = meshioplusplus::mesh_cad_surface(info, o);
@@ -256,8 +263,15 @@ void fuzz_triangulate_polygon_2d(const std::uint8_t* pData, std::size_t Size) {
         h = diag / double(4 << (size_sel - 1));
     if (!std::isfinite(h))
         h = 0.0;
+    // A byte past the loops (0 past the end, so older inputs keep their
+    // meaning) asks for refinement (v17.15.0), bounded by max_points.
+    static constexpr double kAngles[4] = {0.0, 20.7, 25.0, 30.0};
+    meshioplusplus::TriangulatePolygon2dOptions o;
+    o.mTargetSize = h;
+    o.mMinAngleDeg = kAngles[in.Byte() % 4];
+    o.mMaxPoints = 20000;
     try {
-        const meshioplusplus::Mesh m = meshioplusplus::triangulate_polygon_2d(poly, h);
+        const meshioplusplus::Mesh m = meshioplusplus::triangulate_polygon_2d(poly, o);
         const double* x = m.Points().As<double>();
         const auto cells = m.Cells(0);
         const meshioplusplus::NDArray& c = cells.Conn();
