@@ -111,6 +111,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace meshioplusplus {
@@ -158,6 +159,24 @@ struct Cdt2dRefineOptions {
     /// The ratio to judge a triangle (its vertex ids) by; null: in the
     /// plane. A negative value exempts the triangle (counted as forced).
     std::function<double(const std::array<std::int64_t, 3>&)> mRatio;
+    /// The point to insert for a bad triangle; null: its circumcentre in
+    /// the plane. (A caller judging triangles by another measure gives the
+    /// plane image of that measure's circumcentre.)
+    std::function<std::array<double, 2>(const std::array<std::int64_t, 3>&)> mCentre;
+    /// Whether to insert the point found for a bad triangle, given the
+    /// vertices of the cavity it would open; null: always. A declined
+    /// triangle is left (counted unresolved).
+    std::function<bool(const std::array<std::int64_t, 3>&, const std::array<double, 2>&,
+                       const std::vector<std::int64_t>&)>
+        mAccept;
+    /// Whether to split (or ask for) the subsegment `A`-`B` a bad triangle's
+    /// point encroaches; null: always. A declined triangle is left
+    /// (counted unresolved).
+    std::function<bool(std::int64_t, std::int64_t, const std::array<std::int64_t, 3>&)>
+        mAcceptSplit;
+    /// The smallest angle (degrees) to report a forced triangle by; null:
+    /// in the plane.
+    std::function<double(const std::array<std::int64_t, 3>&)> mMinAngle;
 };
 
 /// A corner where two segments meet at less than 60 degrees inside the
@@ -194,6 +213,9 @@ struct Cdt2dRefineReport {
     std::int64_t mNumForced = 0;
     std::int64_t mNumUnresolved = 0;
     bool mBudgetReached = false;
+    /// The bad triangles a small input angle forces (vertex ids ascending),
+    /// with that angle's apex, sorted.
+    std::vector<std::pair<std::array<std::int64_t, 3>, std::int64_t>> mForced;
 };
 
 class Cdt2d {
@@ -236,11 +258,19 @@ public:
 
     /// After `Classify`: move vertex `V` (not on a constrained edge) to
     /// `rP`; refused (false, nothing changed) when `rP` is outside the star
-    /// of `V`'s triangles or would invert one of them. Flips follow.
-    bool MoveVertex(std::int64_t V, const Vec2& rP);
+    /// of `V`'s triangles or would invert one of them. Lawson's flips
+    /// follow, unless `Legalize` is false (the caller flips by its own
+    /// measure, `FlipEdge`).
+    bool MoveVertex(std::int64_t V, const Vec2& rP, bool Legalize = true);
 
     /// Every constrained edge, its vertices ascending, sorted.
     std::vector<std::array<std::int64_t, 2>> ConstrainedEdges() const;
+
+    /// Flip the unconstrained edge between `A` and `B` when the two
+    /// triangles beside it form a strictly convex quadrilateral (exact
+    /// orient2d); false (nothing changed) otherwise. No flips follow: the
+    /// caller decides by its own measure (a surface's angles).
+    bool FlipEdge(std::int64_t A, std::int64_t B);
 
     /// Whether `V` is an endpoint of a constrained edge.
     bool OnConstraint(std::int64_t V) const;

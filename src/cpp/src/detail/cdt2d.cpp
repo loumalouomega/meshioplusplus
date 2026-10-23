@@ -846,6 +846,24 @@ bool Cdt2d::FindEdge(std::int64_t A, std::int64_t B, std::int64_t& rT, int& rE) 
     return false;
 }
 
+bool Cdt2d::FlipEdge(std::int64_t A, std::int64_t B) {
+    std::int64_t t = -1;
+    int e = -1;
+    if (!FindEdge(A, B, t, e))
+        return false;
+    const auto& r_t = mTris[static_cast<std::size_t>(t)];
+    const std::int64_t u = r_t.mN[e];
+    if (r_t.mC[e] || u < 0)
+        return false;
+    const std::int64_t a = r_t.mV[e];
+    const std::int64_t d = mTris[static_cast<std::size_t>(u)].mV[NeighbourIndex(u, t)];
+    // t = (a, A, B), u = (d, B, A): the new edge (a, d) must cross (A, B).
+    if (!(Orient(a, A, d) > 0.0) || !(Orient(a, d, B) > 0.0))
+        return false;
+    Flip(t, e);
+    return true;
+}
+
 bool Cdt2d::OnConstraint(std::int64_t V) const {
     for (const std::int64_t t : TrianglesAround(V)) {
         const int i = IndexOf(t, V);
@@ -895,7 +913,7 @@ std::int64_t Cdt2d::SplitConstrained(std::int64_t T, int E, const Vec2& rP) {
     return InsertAt(rP, loc, r_t.mInside);
 }
 
-bool Cdt2d::MoveVertex(std::int64_t V, const Vec2& rP) {
+bool Cdt2d::MoveVertex(std::int64_t V, const Vec2& rP, bool Legalize) {
     if (!mClassified)
         cdt2d_internal("MoveVertex before Classify");
     if (V < kFirstVertex || V >= NumVertices() || OnConstraint(V))
@@ -911,6 +929,8 @@ bool Cdt2d::MoveVertex(std::int64_t V, const Vec2& rP) {
             return false;
     }
     mPoints[static_cast<std::size_t>(V)] = rP;
+    if (!Legalize)
+        return true;
     // Lawson's flips over every edge the move touched, each flip's two
     // triangles checked again on all their edges.
     std::vector<std::pair<std::int64_t, int>> stack;
@@ -1091,6 +1111,8 @@ std::vector<std::int64_t> Cdt2dRefiner::ClustersOf(std::int64_t V) const {
 }
 
 double Cdt2dRefiner::MinAngleDeg(const Tri& rT) const {
+    if (mO.mMinAngle)
+        return mO.mMinAngle(rT);
     double m = 180.0;
     for (int k = 0; k < 3; ++k) {
         const Vec2& o = P(rT[static_cast<std::size_t>(k)]);
@@ -1300,6 +1322,8 @@ void Cdt2dRefiner::HandleEncroached(const std::vector<std::array<std::int64_t, 2
         const std::int64_t s = SegmentOf(r_s[0], r_s[1]);
         const bool cluster = s >= 0 && (mCluster[static_cast<std::size_t>(s)][0] ||
                                         mCluster[static_cast<std::size_t>(s)][1]);
+        if (mO.mAcceptSplit && !mO.mAcceptSplit(r_s[0], r_s[1], rBad))
+            continue;
         if (cluster && 0.5 * cdt2d_length(P(r_s[0]), P(r_s[1])) < shortest) {
             const auto& r_in = mInput[static_cast<std::size_t>(s)];
             declined_apex = mCluster[static_cast<std::size_t>(s)][0] ? r_in[0] : r_in[1];
@@ -1328,15 +1352,20 @@ void Cdt2dRefiner::Attempt(const Cdt2dBad& rBad) {
     const Tri tri = r_t.mV;
     if (Forced(tri))
         return;
-    // The circumcentre, relative to the first vertex.
+    // The circumcentre, relative to the first vertex (or the caller's).
     const Vec2& a = P(tri[0]);
-    const double bx = P(tri[1])[0] - a[0], by = P(tri[1])[1] - a[1];
-    const double cx = P(tri[2])[0] - a[0], cy = P(tri[2])[1] - a[1];
-    const double d = 2.0 * orient2d(a.data(), P(tri[1]).data(), P(tri[2]).data());
-    const double b2 = bx * bx + by * by;
-    const double c2 = cx * cx + cy * cy;
-    const Vec2 c{a[0] + (cy * b2 - by * c2) / d, a[1] + (bx * c2 - cx * b2) / d};
-    if (!(d != 0.0) || !std::isfinite(c[0]) || !std::isfinite(c[1]) || !cdt2d_in_range(c[0]) ||
+    Vec2 c{};
+    if (mO.mCentre) {
+        c = mO.mCentre(tri);
+    } else {
+        const double bx = P(tri[1])[0] - a[0], by = P(tri[1])[1] - a[1];
+        const double cx = P(tri[2])[0] - a[0], cy = P(tri[2])[1] - a[1];
+        const double d = 2.0 * orient2d(a.data(), P(tri[1]).data(), P(tri[2]).data());
+        const double b2 = bx * bx + by * by;
+        const double c2 = cx * cx + cy * cy;
+        c = {a[0] + (cy * b2 - by * c2) / d, a[1] + (bx * c2 - cx * b2) / d};
+    }
+    if (!std::isfinite(c[0]) || !std::isfinite(c[1]) || !cdt2d_in_range(c[0]) ||
         !cdt2d_in_range(c[1]))
         return;
     // Walk from the centroid toward it; a constrained edge on the way hides
@@ -1433,6 +1462,16 @@ void Cdt2dRefiner::Attempt(const Cdt2dBad& rBad) {
         HandleEncroached(encroached, tri, rBad.mSlot);
         return;
     }
+    if (mO.mAccept) {
+        std::vector<std::int64_t> around;
+        for (const std::int64_t t : cavity)
+            for (const std::int64_t w : mC.mTris[static_cast<std::size_t>(t)].mV)
+                around.push_back(w);
+        std::sort(around.begin(), around.end());
+        around.erase(std::unique(around.begin(), around.end()), around.end());
+        if (!mO.mAccept(tri, c, around))
+            return;
+    }
     const std::int64_t v = mC.InsertSteiner(c);
     if (v < 0)
         return;
@@ -1498,10 +1537,13 @@ Cdt2dRefineReport Cdt2dRefiner::Run() {
             continue;
         }
         ++mRep.mNumForced;
-        auto [it, fresh] = forced_min.emplace(apex, MinAngleDeg(r_t.mV));
+        mRep.mForced.emplace_back(cdt2d_sorted(r_t.mV), apex);
+        const double m = MinAngleDeg(r_t.mV);
+        auto [it, fresh] = forced_min.emplace(apex, m);
         if (!fresh)
-            it->second = std::min(it->second, MinAngleDeg(r_t.mV));
+            it->second = std::min(it->second, m);
     }
+    std::sort(mRep.mForced.begin(), mRep.mForced.end());
     for (Cdt2dSmallAngle& r_a : mRep.mSmallAngles) {
         const auto it = forced_min.find(r_a.mVertex);
         if (it != forced_min.end())

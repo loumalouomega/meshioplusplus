@@ -717,6 +717,40 @@ TEST(Cdt2dRefine, AskingForSplitsLeavesTheBoundaryToTheCaller) {
     EXPECT_EQ(rep2.mNumForced, 1);
 }
 
+TEST(Cdt2dRefine, FlipEdgeNeedsAConvexQuadrilateralAndNoConstraint) {
+    // A caller judging triangles by its own measure flips edges itself: only
+    // an unconstrained edge between two triangles forming a strictly convex
+    // quadrilateral (exact orient2d).
+    mio::detail::Cdt2d cdt(0, 0, 4, 4);
+    const auto ids = cdt.InsertBatch({{0, 0}, {4, 0}, {4, 4}, {0, 4}, {3, 1}});
+    for (int k = 0; k < 4; ++k)
+        ASSERT_EQ(cdt.InsertSegment(ids[std::size_t(k)], ids[std::size_t((k + 1) % 4)]),
+                  Cdt2dStatus::Ok);
+    ASSERT_EQ(cdt.Classify(), Cdt2dStatus::Ok);
+    EXPECT_FALSE(cdt.FlipEdge(ids[0], ids[1]));  // constrained
+    // Every interior edge of the star of (3, 1): flipping one whose
+    // quadrilateral is convex keeps four triangles of total area 16.
+    int flipped = 0;
+    for (const std::int64_t w : cdt.Neighbours(ids[4])) {
+        if (!cdt.FlipEdge(ids[4], w))
+            continue;
+        ++flipped;
+        double area = 0.0;
+        for (const auto& t : cdt.InsideTriangles()) {
+            const double o = mio::detail::orient2d(cdt.Point(t[0]).data(), cdt.Point(t[1]).data(),
+                                                   cdt.Point(t[2]).data());
+            EXPECT_GT(o, 0.0);
+            area += 0.5 * o;
+        }
+        EXPECT_NEAR(area, 16.0, 1e-12);
+        EXPECT_EQ(cdt.InsideTriangles().size(), 4u);
+        break;
+    }
+    EXPECT_EQ(flipped, 1);
+    // (3, 1) is now joined to three corners: the edge to the fourth is gone.
+    EXPECT_EQ(cdt.Neighbours(ids[4]).size(), 3u);
+}
+
 TEST(Cdt2dRefine, MoveVertexRefusesAnInversionAndKeepsDelaunay) {
     mio::detail::Cdt2d cdt(0, 0, 4, 4);
     std::vector<Vec2> pts = {{0, 0}, {4, 0}, {4, 4}, {0, 4}};
