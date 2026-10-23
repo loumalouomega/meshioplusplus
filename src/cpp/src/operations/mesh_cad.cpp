@@ -260,11 +260,11 @@ struct McadUse {
     const BrepCurve* pCurve = nullptr;
     bool mForward = true;
     std::size_t mLoopSize = 1;  ///< trims in its loop
-    bool mEmbedded = false;     ///< a curve inside the face, not on a loop (6.1.1)
+    bool mEmbedded = false;     ///< a curve inside the face, not on a loop
     std::int64_t mEdge = -1;
     bool mSame = true;  ///< runs the way its edge's master does
     /// A closed use rotated onto its master's corner: the arc length along
-    /// its trace where it now starts and ends; -1 for none (6.1.2).
+    /// its trace where it now starts and ends; -1 for none.
     double mStartLength = -1.0;
     std::vector<double> mParams;     ///< along this use, ends included
     std::vector<std::int64_t> mIds;  ///< mesh points along this use, ends included
@@ -422,7 +422,7 @@ struct McadCrossings {
 
 /**
  * @brief Find where a face's sampled loops and embedded edges meet in its
- * plane (6.1.3), so they can be split before the triangulation refuses them.
+ * plane, so they can be split before the triangulation refuses them.
  *
  * Each segment of a crossing pair of loops asks for its edge's master piece
  * to be halved. When a piece involved is already within the tolerance, the
@@ -1249,7 +1249,7 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
     };
     assign_ids();
 
-    // Boundaries that cross at this size (6.1.3): the sampled loops of a face
+    // Boundaries that cross at this size: the sampled loops of a face
     // can cross in its parameters where the exact curves do not (two close
     // loops, a thin slot). Every crossing found exactly is separated by
     // halving, by arc length, the master pieces of the edges involved, in

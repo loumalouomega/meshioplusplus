@@ -39,16 +39,22 @@
  *    faces conform by construction;
  *  - corners come from the topology (a trim's end is the next trim's start,
  *    an edge's ends are the same at each use), not from comparing
- *    coordinates;
+ *    coordinates; a closed edge whose uses start at different points is
+ *    rotated onto one corner where a use is a loop of its own;
+ *  - boundary pieces whose samples cross in a face's parameters at this size
+ *    are halved by arc length, in every face that uses their edge, until
+ *    they do not;
  *  - each face is triangulated in its own parameters by a constrained
  *    Delaunay triangulation with exact predicates, the inside an equilateral
  *    lattice scaled by the surface's first derivatives, and lifted onto the
  *    surface; triangles follow the surface normal, reversed for a face with a
- *    swapped normal.
+ *    swapped normal. A face's embedded edges are constrained segments of its
+ *    triangulation, so the mesh carries them as edges.
  *
- * A face that cannot be meshed (its loops cross at this size, a loop does not
- * close, its surface is invalid, an edge cannot be carried to it) is left out
- * and reported by index and reason, never meshed wrong; `mStrict` turns that
+ * A face that cannot be meshed (its loops meet where the curves themselves
+ * meet, a loop does not close, its surface is invalid, an edge cannot be
+ * carried to it) is left out and reported by index and reason, never meshed
+ * wrong; an embedded edge that cannot be inserted is left out with a warning; `mStrict` turns that
  * into an exception. There are no quality guarantees (no Delaunay
  * refinement), no size field beyond the chordal cap and no anisotropic metric
  * in this first milestone. The output is byte-identical across parallel
@@ -71,8 +77,8 @@ namespace meshioplusplus {
 /// Cell data: the index of the B-rep face a triangle meshes (-1 on edge cells).
 inline constexpr const char* kMeshCadFaceName = "cad:face";
 /// Cell data: the index of the B-rep edge a line cell discretises (-1 on
-/// triangles, and on an edge no `BrepEdge` names: an unreferenced trim, or the
-/// boundary of an untrimmed face).
+/// triangles, and on an edge no `BrepEdge` names: an unreferenced trim or
+/// embedded edge, or the boundary of an untrimmed face).
 inline constexpr const char* kMeshCadEdgeName = "cad:edge";
 /// The prefix of the per-face cell regions: `face:<k>`.
 inline constexpr const char* kMeshCadFaceRegionPrefix = "face:";
@@ -82,7 +88,7 @@ enum class MeshCadFaceStatus : std::int32_t {
     Ok = 0,
     Empty = 1,             ///< its loops enclose nothing
     OpenLoop = 2,          ///< its loops do not bound a domain consistently
-    SelfIntersecting = 3,  ///< its boundary crosses itself in the parameters at this size
+    SelfIntersecting = 3,  ///< its boundary meets itself in the parameters, even after splitting
     Degenerate = 4,        ///< distinct boundary samples coincide in the parameters
     ProjectionFailed = 5,  ///< an edge could not be carried to this face's trim
     BudgetExceeded = 6,    ///< more points than `mMaxPoints`

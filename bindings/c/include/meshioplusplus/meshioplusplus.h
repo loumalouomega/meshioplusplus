@@ -5564,7 +5564,7 @@ typedef enum mio_mesh_cad_face_status {
     MIO_MESH_CAD_OK = 0,
     MIO_MESH_CAD_EMPTY = 1,             /**< its loops enclose nothing */
     MIO_MESH_CAD_OPEN_LOOP = 2,         /**< its loops do not bound a domain consistently */
-    MIO_MESH_CAD_SELF_INTERSECTING = 3, /**< its boundary crosses itself at this size */
+    MIO_MESH_CAD_SELF_INTERSECTING = 3, /**< its boundary meets itself, even after splitting */
     MIO_MESH_CAD_DEGENERATE = 4,        /**< distinct boundary samples coincide */
     MIO_MESH_CAD_PROJECTION_FAILED = 5, /**< an edge could not be carried to its trim */
     MIO_MESH_CAD_BUDGET_EXCEEDED = 6,   /**< more points than max_points */
