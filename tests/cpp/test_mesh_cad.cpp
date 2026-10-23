@@ -30,8 +30,10 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -609,6 +611,159 @@ TEST(MeshCad, CurvesThatTouchStaySelfIntersecting) {
         << r.mFaces[0].mReason;
     EXPECT_EQ(r.mNumTriangles, 0);
     EXPECT_LT(r.mNumPoints, 400);  // the halving stopped near the touch
+}
+
+// How many triangles use each undirected edge.
+std::map<std::pair<std::int64_t, std::int64_t>, int> triangle_edge_uses(const mio::Mesh& rM) {
+    std::map<std::pair<std::int64_t, std::int64_t>, int> n;
+    const auto cells = rM.Cells(0);
+    const mio::NDArray& c = cells.Conn();
+    for (std::size_t t = 0; t < cells.NumCells(); ++t)
+        for (std::size_t k = 0; k < 3; ++k) {
+            const std::int64_t a = mio::detail::read_int(c, 3 * t + k);
+            const std::int64_t b = mio::detail::read_int(c, 3 * t + (k + 1) % 3);
+            ++n[{std::min(a, b), std::max(a, b)}];
+        }
+    return n;
+}
+
+// The line block's segments of one B-rep edge (cad:edge), as point pairs.
+std::vector<std::pair<std::int64_t, std::int64_t>> edge_segments(const mio::Mesh& rM,
+                                                                 std::int64_t Edge) {
+    std::vector<std::pair<std::int64_t, std::int64_t>> out;
+    const auto lines = rM.Cells(1);
+    const mio::NDArray& c = lines.Conn();
+    const mio::NDArray& ids = rM.CellData("cad:edge", 1);
+    for (std::size_t s = 0; s < lines.NumCells(); ++s)
+        if (mio::detail::read_int(ids, s) == Edge) {
+            const std::int64_t a = mio::detail::read_int(c, 2 * s);
+            const std::int64_t b = mio::detail::read_int(c, 2 * s + 1);
+            out.emplace_back(std::min(a, b), std::max(a, b));
+        }
+    return out;
+}
+
+bool any_warning_with(const MeshCadSurfaceResult& rR, const std::string& rText) {
+    for (const std::string& w : rR.mWarnings)
+        if (w.find(rText) != std::string::npos)
+            return true;
+    return false;
+}
+
+TEST(MeshCad, TwoPatchBeamMeshesItsEmbeddedCurve) {
+    // Roadmap 6.1.1's probe: the two-patch beam's first face carries an
+    // embedded edge (trim 4, a line across it that no BrepEdge names). It is
+    // now constrained into the face's triangulation, so it is a run of mesh
+    // edges, interior to the face, and the warning is gone.
+    const std::filesystem::path input = std::filesystem::path(__FILE__).parent_path() / ".." /
+                                        "python" / "meshes" / "cad_json" /
+                                        "two_patch_beam.cad.json";
+    ASSERT_TRUE(std::filesystem::exists(input)) << input;
+    const mio::BrepInfo info = mio::read_cad_json_info(input.string());
+    const auto r = mio::mesh_cad_surface(info, size(0.2));
+    EXPECT_EQ(r.mNumFailed, 0);
+    EXPECT_FALSE(any_warning_with(r, "embedded")) << r.mWarnings.front();
+    EXPECT_EQ(r.mNumNonManifoldEdges, 0);
+    EXPECT_EQ(r.mNumMisorientedEdges, 0);
+    // The same model without the embedded edge: the extra line cells are the
+    // curve, and each is an edge of two triangles of the first face.
+    mio::BrepInfo bare = info;
+    for (mio::BrepFace& f : bare.mFaces)
+        f.mEmbeddedEdges.clear();
+    const auto b = mio::mesh_cad_surface(bare, size(0.2));
+    const auto extra = edge_segments(r.mMesh, -1).size() - edge_segments(b.mMesh, -1).size();
+    EXPECT_GE(extra, 5u);  // the line is about 3.0 long in a patch 5 long: h = 0.2
+    const auto uses = triangle_edge_uses(r.mMesh);
+    std::size_t interior = 0;
+    for (const auto& seg : edge_segments(r.mMesh, -1)) {
+        const auto it = uses.find(seg);
+        ASSERT_TRUE(it != uses.end()) << seg.first << "-" << seg.second << " is not a mesh edge";
+        interior += it->second == 2;
+    }
+    EXPECT_GE(interior, extra);
+    EXPECT_NEAR(measure(r.mMesh).mArea, measure(b.mMesh).mArea, 1e-3 * measure(b.mMesh).mArea);
+}
+
+TEST(MeshCad, AnEmbeddedEdgeSharedWithAnotherFaceSharesItsPoints) {
+    // A fin standing on a plate: the fin's bottom edge (BrepEdge 4) is an
+    // embedded edge of the plate. Both faces use its points, so the fin is
+    // attached to the plate along it: each of its segments is an edge of two
+    // plate triangles and one fin triangle (a T, by design non-manifold).
+    const auto r = mio::mesh_cad_surface(brep_solids::plate_with_fin(), size(0.1));
+    ASSERT_EQ(r.mNumFailed, 0);
+    EXPECT_TRUE(r.mWarnings.empty()) << r.mWarnings.front();
+    const auto segs = edge_segments(r.mMesh, 4);
+    ASSERT_GE(segs.size(), 6u);
+    const auto uses = triangle_edge_uses(r.mMesh);
+    for (const auto& seg : segs) {
+        const auto it = uses.find(seg);
+        ASSERT_TRUE(it != uses.end());
+        EXPECT_EQ(it->second, 3) << seg.first << "-" << seg.second;
+    }
+    EXPECT_EQ(r.mNumNonManifoldEdges, static_cast<std::int64_t>(segs.size()));
+    EXPECT_EQ(r.mNumMisorientedEdges, 0);
+    EXPECT_NEAR(measure(r.mMesh).mArea, 1.0 + 0.6 * 0.5, 1e-12);
+}
+
+TEST(MeshCad, AClosedEmbeddedCurveIsMeshed) {
+    // A circle inside a square plate, named by an edge: a closed curve with
+    // no loop of its own, one corner, constrained into the plate.
+    mio::BrepInfo info = brep_solids::square(4.0);
+    mio::BrepTrim t;
+    t.mTrimIndex = 100;
+    t.mCurve = mio::detail::brep_curve_arc({2, 2, 0}, {1, 0, 0}, {0, 1, 0}, 1.0, 0.0, 2 * kPi);
+    const std::int64_t e = brep_solids::embed(info, 0, t);
+    const auto r = mio::mesh_cad_surface(info, size(0.25));
+    ASSERT_EQ(r.mNumFailed, 0);
+    EXPECT_TRUE(r.mWarnings.empty()) << r.mWarnings.front();
+    const auto segs = edge_segments(r.mMesh, e);
+    EXPECT_GE(segs.size(), 25u);
+    const auto uses = triangle_edge_uses(r.mMesh);
+    for (const auto& seg : segs) {
+        const auto it = uses.find(seg);
+        ASSERT_TRUE(it != uses.end());
+        EXPECT_EQ(it->second, 2);
+    }
+    EXPECT_NEAR(measure(r.mMesh).mArea, 16.0, 1e-12);
+    // Closed: as many segments as distinct points.
+    std::set<std::int64_t> pts;
+    for (const auto& seg : segs) {
+        pts.insert(seg.first);
+        pts.insert(seg.second);
+    }
+    EXPECT_EQ(pts.size(), segs.size());
+}
+
+TEST(MeshCad, AnEmbeddedEdgeThatCannotBeInsertedIsLeftOut) {
+    // Outside the plate, ending on its boundary away from a corner, and
+    // crossing it: each is left out with a warning naming it, and the plate
+    // is still meshed (the face is not lost for a bad curve).
+    for (const auto& ends : std::vector<std::array<double, 4>>{
+             {5.0, 5.0, 6.0, 6.0}, {1.0, 1.0, 2.0, 0.0}, {1.0, 1.0, 2.0, -1.0}}) {
+        mio::BrepInfo info = brep_solids::square(4.0);
+        brep_solids::embed(info, 0,
+                           brep_solids::param_line(ends[0], ends[1], ends[2], ends[3], 100));
+        const auto r = mio::mesh_cad_surface(info, size(0.5));
+        EXPECT_EQ(r.mNumFailed, 0);
+        EXPECT_TRUE(any_warning_with(r, "embedded edge (trim 100) is not meshed"))
+            << ends[2] << "," << ends[3];
+        EXPECT_NEAR(measure(r.mMesh).mArea, 16.0, 1e-12);
+        EXPECT_EQ(r.mNumNonManifoldEdges, 0);
+    }
+}
+
+TEST(MeshCad, EmbeddedEdgesAreTheSameOnEveryThreadCount) {
+    const mio::BrepInfo info = brep_solids::plate_with_fin();
+    const std::uint64_t ref = digest(mio::mesh_cad_surface(info, size(0.05)).mMesh);
+#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
+    const int saved = omp_get_max_threads();
+    for (int threads : {1, 2, 4}) {
+        omp_set_num_threads(threads);
+        EXPECT_EQ(digest(mio::mesh_cad_surface(info, size(0.05)).mMesh), ref) << threads;
+    }
+    omp_set_num_threads(saved);
+#endif
+    EXPECT_EQ(digest(mio::mesh_cad_surface(info, size(0.05)).mMesh), ref);
 }
 
 TEST(MeshCad, ChordalDeviationCapsTheBoundary) {

@@ -367,6 +367,63 @@ inline mio::BrepInfo square(double S = 1.0) {
     return assemble({f}, curves);
 }
 
+// A trim of a face's parameters: the straight line from (U0, V0) to (U1, V1).
+inline mio::BrepTrim param_line(double U0, double V0, double U1, double V1, std::int64_t Index) {
+    mio::BrepTrim t;
+    t.mTrimIndex = Index;
+    t.mCurve = mio::detail::brep_curve_line({U0, V0, 0.0}, {U1, V1, 0.0});
+    return t;
+}
+
+// A face's embedded edge, named by a new BrepEdge (its index is returned).
+inline std::int64_t embed(mio::BrepInfo& rInfo, std::size_t Face, mio::BrepTrim Trim) {
+    mio::BrepFace& r_f = rInfo.mFaces[Face];
+    mio::BrepEdge e;
+    e.mId = 1000 + static_cast<std::int64_t>(rInfo.mEdges.size());
+    mio::BrepRef r;
+    r.mId = r_f.mId;
+    r.mTrimIndex = Trim.mTrimIndex;
+    e.mTopology.push_back(r);
+    r_f.mEmbeddedEdges.push_back(std::move(Trim));
+    rInfo.mEdges.push_back(e);
+    return static_cast<std::int64_t>(rInfo.mEdges.size()) - 1;
+}
+
+// A unit plate (z = 0) and a fin standing on it: the fin's bottom edge, the
+// segment x = 0.5, y in [0.2, 0.8], is an embedded edge of the plate, so the
+// two meet along it (a stiffener). The plate is face 0, the fin face 1; the
+// fin's bottom edge is BrepEdge 4, also named by the plate's embedded trim.
+inline mio::BrepInfo plate_with_fin() {
+    const std::array<PatchVec, 4> p = {{{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}}};
+    const std::array<PatchVec, 4> q = {
+        {{0.5, 0.2, 0}, {0.5, 0.8, 0}, {0.5, 0.8, 0.5}, {0.5, 0.2, 0.5}}};
+    std::vector<mio::BrepCurve> curves;
+    SolidFace plate;
+    plate.mSurface = plane(p[0], {1, 0, 0}, {0, 1, 0}, {0, 0, 1});
+    plate.mLoops.emplace_back();
+    for (std::size_t k = 0; k < 4; ++k) {
+        curves.push_back(mio::detail::brep_curve_line(p[k], p[(k + 1) % 4]));
+        plate.mLoops[0].push_back(
+            line_trim(p[k], p[(k + 1) % 4], static_cast<std::int64_t>(k), true));
+    }
+    SolidFace fin;
+    fin.mSurface = plane(q[0], {0, 1, 0}, {0, 0, 1}, {1, 0, 0});
+    fin.mLoops.emplace_back();
+    for (std::size_t k = 0; k < 4; ++k) {
+        curves.push_back(mio::detail::brep_curve_line(q[k], q[(k + 1) % 4]));
+        fin.mLoops[0].push_back(
+            line_trim(q[k], q[(k + 1) % 4], static_cast<std::int64_t>(4 + k), true));
+    }
+    mio::BrepInfo info = assemble({plate, fin}, curves);
+    mio::BrepTrim t = param_line(0.5, 0.2, 0.5, 0.8, 100);
+    mio::BrepRef r;
+    r.mId = info.mFaces[0].mId;
+    r.mTrimIndex = 100;
+    info.mEdges[4].mTopology.push_back(r);
+    info.mFaces[0].mEmbeddedEdges.push_back(t);
+    return info;
+}
+
 // The unit box as six untrimmed bilinear patches and no edges or loops: each
 // face is its parameter rectangle, oriented outward (a x b along the
 // outward normal), and only the trims' images tie the faces together.

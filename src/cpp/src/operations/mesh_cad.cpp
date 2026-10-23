@@ -260,6 +260,7 @@ struct McadUse {
     const BrepCurve* pCurve = nullptr;
     bool mForward = true;
     std::size_t mLoopSize = 1;  ///< trims in its loop
+    bool mEmbedded = false;     ///< a curve inside the face, not on a loop (6.1.1)
     std::int64_t mEdge = -1;
     bool mSame = true;  ///< runs the way its edge's master does
     /// A closed use rotated onto its master's corner: the arc length along
@@ -288,6 +289,9 @@ struct McadFace {
     std::unique_ptr<detail::BrepSurfaceEval> pSurface;
     std::vector<BrepCurve> mSynthetic;
     std::vector<std::vector<std::size_t>> mLoops;  ///< use indices per loop
+    std::vector<std::size_t> mEmbedded;            ///< use indices of its embedded edges
+    /// Embedded edges left out, with why, warned in face order.
+    std::vector<std::pair<std::size_t, std::string>> mSkipped;
     MeshCadFaceRecord mRecord;
     std::vector<Vec3> mInterior;
     std::vector<std::array<std::int64_t, 3>> mTriangles;  ///< < 0: -(1 + interior index)
@@ -412,19 +416,25 @@ McadPlane mcad_face_plane(const McadFace& rF, const std::vector<McadUse>& rUses,
 /// What the crossing search asks of one face.
 struct McadCrossings {
     std::vector<std::array<std::size_t, 2>> mAsks;  ///< (edge, master piece) to halve
+    std::vector<std::size_t> mDrop;                 ///< embedded uses that cannot be separated
     bool mStuck = false;  ///< its loops meet where the curves themselves meet
 };
 
 /**
- * @brief Find where a face's sampled loops meet in its plane (6.1.3), so they
- * can be split before the triangulation refuses them.
+ * @brief Find where a face's sampled loops and embedded edges meet in its
+ * plane (6.1.3), so they can be split before the triangulation refuses them.
  *
- * Each segment of a crossing pair asks for its edge's master piece to be
- * halved. When a piece involved is already within the tolerance, the curves
- * themselves meet there and the face is stuck (it stays self_intersecting).
- * A face whose uses failed is skipped. Two samples are one vertex when they
- * are one mesh point at the same place, as the triangulation would merge
- * them.
+ * Each segment of a crossing pair of loops asks for its edge's master piece
+ * to be halved. When a piece involved is already within the tolerance, the
+ * curves themselves meet there and the face is stuck (it stays
+ * self_intersecting). A pair with an embedded edge is not split: that edge
+ * (the later of two embedded edges) is dropped, since refining the loops
+ * around a curve that really crosses them or another embedded curve (two
+ * stiffeners crossing, a curve leaving its face) would only crowd points on
+ * boundaries the neighbouring faces share. A face whose loop uses failed is
+ * skipped, as is an embedded use that failed. Two samples are one vertex
+ * when they are one mesh point at the same place, as the triangulation
+ * would merge them.
  */
 McadCrossings mcad_face_crossings(const McadFace& rF, const std::vector<McadUse>& rUses,
                                   const std::vector<std::optional<detail::TrimTrace>>& rTraces,
@@ -463,9 +473,25 @@ McadCrossings mcad_face_crossings(const McadFace& rF, const std::vector<McadUse>
         }
         at += r_poly.size();
     }
+    for (const std::size_t u : rF.mEmbedded) {
+        const McadUse& r_u = rUses[u];
+        if (!rTraces[u] || r_u.mFail != MeshCadFaceStatus::Ok || r_u.mIds.empty())
+            continue;
+        std::int64_t prev = -1;
+        for (std::size_t j = 0; j < r_u.mIds.size(); ++j) {
+            const std::int64_t v = vertex_of(r_u.mIds[j], pl.ToX(rTraces[u]->Uv(r_u.mParams[j])));
+            if (j > 0 && v != prev) {
+                segs.push_back({prev, v});
+                origin.push_back({u, j - 1});
+            }
+            prev = v;
+        }
+    }
     for (const auto& r_c : detail::cdt2d_find_crossings(pts, segs)) {
         std::array<std::size_t, 2> ask[2];
         bool tiny[2];
+        bool embedded[2];
+        std::size_t use[2];
         for (int i = 0; i < 2; ++i) {
             const auto& r_o = origin[static_cast<std::size_t>(r_c[static_cast<std::size_t>(i)])];
             const McadUse& r_u = rUses[r_o[0]];
@@ -475,6 +501,12 @@ McadCrossings mcad_face_crossings(const McadFace& rF, const std::vector<McadUse>
             const auto& r_pts = rEdges[edge].mSamples.mPoints;
             ask[i] = {edge, piece};
             tiny[i] = !(mcad_dist(r_pts[piece], r_pts[piece + 1]) > Tol);
+            embedded[i] = r_u.mEmbedded;
+            use[i] = r_o[0];
+        }
+        if (embedded[0] || embedded[1]) {
+            out.mDrop.push_back(embedded[1] && (!embedded[0] || use[1] > use[0]) ? use[1] : use[0]);
+            continue;
         }
         if (tiny[0] || tiny[1]) {
             out.mStuck = true;
@@ -483,7 +515,7 @@ McadCrossings mcad_face_crossings(const McadFace& rF, const std::vector<McadUse>
         out.mAsks.push_back(ask[0]);
         out.mAsks.push_back(ask[1]);
     }
-    if (out.mStuck)
+    if (out.mStuck || !out.mDrop.empty())
         out.mAsks.clear();
     return out;
 }
@@ -555,6 +587,54 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
     if (cdt.InsideTriangles().empty())
         return fail(MeshCadFaceStatus::Empty, "its loops enclose no area");
 
+    // Embedded edges, after the classification so the even-odd rule counted
+    // the loops alone: every sample strictly inside the domain or on the
+    // loop vertex that is its own mesh point, then recovered as constrained
+    // segments like the loops (Anglada 1997). One that is not is left out,
+    // and the face is meshed without it.
+    std::vector<std::array<Vec3, 2>> embedded_segments;
+    for (const std::size_t u : rF.mEmbedded) {
+        const McadUse& r_u = rUses[u];
+        if (!rTraces[u])
+            continue;  // already in mSkipped
+        if (r_u.mFail != MeshCadFaceStatus::Ok) {
+            rF.mSkipped.emplace_back(u, r_u.mWhy);
+            continue;
+        }
+        std::vector<Vec2> xs;
+        bool inside = true;
+        for (std::size_t j = 0; j < r_u.mIds.size() && inside; ++j) {
+            xs.push_back(pl.ToX(rTraces[u]->Uv(r_u.mParams[j])));
+            const detail::Cdt2dWhere w = cdt.Where(xs.back());
+            if (w.mPlace == detail::Cdt2dPlace::OnVertex) {
+                const auto it = mesh_of.find(w.mVertex);
+                inside = it != mesh_of.end() && it->second == r_u.mIds[j];
+            } else {
+                inside = w.mPlace == detail::Cdt2dPlace::Inside;
+            }
+        }
+        if (!inside) {
+            rF.mSkipped.emplace_back(u,
+                                     "it leaves the face's domain, or meets its boundary "
+                                     "away from a corner");
+            continue;
+        }
+        std::int64_t prev = -1;
+        for (std::size_t j = 0; j < xs.size(); ++j) {
+            const std::int64_t v = cdt.Insert(xs[j]);
+            const auto [it, fresh] = mesh_of.emplace(v, r_u.mIds[j]);
+            if (!fresh && it->second != r_u.mIds[j])
+                return fail(MeshCadFaceStatus::Other,
+                            "an embedded edge has two points at one place in the parameters");
+            if (prev >= 0 && v != prev && cdt.InsertSegment(prev, v) != detail::Cdt2dStatus::Ok)
+                return fail(MeshCadFaceStatus::Other, "an embedded edge could not be recovered");
+            if (j > 0)
+                embedded_segments.push_back({rBoundary[static_cast<std::size_t>(r_u.mIds[j - 1])],
+                                             rBoundary[static_cast<std::size_t>(r_u.mIds[j])]});
+            prev = v;
+        }
+    }
+
     // Interior points: an equilateral lattice in the mapped plane, its
     // spacing h over the largest stretch of the surface against the map (the
     // largest singular value of J L^-1 on the samples), so no lattice step is
@@ -590,6 +670,11 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 grid.AddPoint(a);
                 grid.AddSegment(a, b);
             }
+        for (const auto& r_seg : embedded_segments) {
+            grid.AddPoint(r_seg[0]);
+            grid.AddPoint(r_seg[1]);
+            grid.AddSegment(r_seg[0], r_seg[1]);
+        }
         const auto nrows = static_cast<std::int64_t>(rows);
         const auto ncols = static_cast<std::int64_t>(cols);
         for (std::int64_t j = 1; j <= nrows; ++j) {
@@ -751,8 +836,6 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
             unsupported(mcad_why(r_e));
             continue;
         }
-        if (!r_bf.mEmbeddedEdges.empty())
-            warn("face " + std::to_string(f) + ": its embedded edges are not meshed");
         const auto add_use = [&](const BrepCurve* pC, bool Forward, std::int64_t TrimIndex) {
             McadUse u;
             u.mFace = f;
@@ -788,6 +871,13 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
                     r_f.mLoops.push_back(std::move(loop));
             }
         }
+        // Embedded edges (a coupling or load curve): uses with no loop,
+        // inserted as constrained segments once the loops are classified.
+        for (const BrepTrim& r_t : r_bf.mEmbeddedEdges) {
+            const std::size_t u = add_use(&r_t.mCurve, r_t.mDirection, r_t.mTrimIndex);
+            uses[u].mEmbedded = true;
+            r_f.mEmbedded.push_back(u);
+        }
         r_f.mUsable = true;
     }
     std::vector<std::optional<detail::TrimTrace>> traces(uses.size());
@@ -805,13 +895,20 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
         1);
     for (std::size_t u = 0; u < uses.size(); ++u) {
         McadFace& r_f = faces[uses[u].mFace];
-        if (!trace_why[u].empty() && r_f.mUsable) {
+        if (trace_why[u].empty())
+            continue;
+        if (uses[u].mEmbedded) {
+            // An invalid embedded curve is left out; the face is meshed.
+            r_f.mSkipped.emplace_back(u, trace_why[u]);
+        } else if (r_f.mUsable) {
             r_f.mUsable = false;
             r_f.mRecord.mStatus = MeshCadFaceStatus::Unsupported;
             r_f.mRecord.mReason = trace_why[u];
         }
     }
-    const auto live = [&](std::size_t U) { return faces[uses[U].mFace].mUsable; };
+    const auto live = [&](std::size_t U) {
+        return faces[uses[U].mFace].mUsable && traces[U].has_value();
+    };
 
     // Edges: the B-rep's own, then the trims none names (paired when their
     // images coincide), each with its uses in ascending order.
@@ -1013,6 +1110,30 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
                 corners.Join(slot(o, 0), slot(o, 1));
         }
     }
+    // An embedded edge has no loop to close it: a closed one is one corner,
+    // and an end within the tolerance of a corner of its face's loops is that
+    // corner (a curve from boundary to boundary).
+    for (const McadFace& r_f : faces) {
+        if (!r_f.mUsable)
+            continue;
+        for (const std::size_t u : r_f.mEmbedded) {
+            if (!live(u))
+                continue;
+            if (closed_3d(u))
+                corners.Join(slot(u, 0), slot(u, 1));
+            for (int end = 0; end < 2; ++end) {
+                const Vec3 p = end_point(u, end);
+                bool joined = false;
+                for (const auto& r_loop : r_f.mLoops)
+                    for (const std::size_t l : r_loop)
+                        for (int k = 0; k < 2 && !joined; ++k)
+                            if (mcad_dist(end_point(l, k), p) <= tol) {
+                                corners.Join(slot(u, end), slot(l, k));
+                                joined = true;
+                            }
+            }
+        }
+    }
     std::vector<std::int64_t> corner_id(2 * uses.size(), -1);
     std::vector<Vec3> boundary;
     for (std::size_t s = 0; s < 2 * uses.size(); ++s) {
@@ -1073,10 +1194,13 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
                 // Enough pieces that every loop through the edge has three
                 // points: a closed edge alone in its loop needs three.
                 detail::EdgeSampleOptions eo = so;
-                for (const std::size_t u : r_e.mUses)
+                // An open embedded curve needs one piece.
+                for (const std::size_t u : r_e.mUses) {
+                    const std::size_t loop =
+                        uses[u].mEmbedded && !closed_3d(u) ? 3 : uses[u].mLoopSize;
                     eo.mMinSegments = std::max<std::int64_t>(
-                        eo.mMinSegments,
-                        static_cast<std::int64_t>((3 + uses[u].mLoopSize - 1) / uses[u].mLoopSize));
+                        eo.mMinSegments, static_cast<std::int64_t>((3 + loop - 1) / loop));
+                }
                 r_e.mSamples = detail::edge_sample(*traces[r_e.mMaster], eo);
                 carry(e);
             } catch (const std::length_error& r_x) {
@@ -1165,14 +1289,29 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
                               "curves themselves meet (no split separates them)");
                     continue;
                 }
+                if (!r_c.mDrop.empty()) {
+                    // Left out, then the face is searched again without it.
+                    for (const std::size_t u : r_c.mDrop)
+                        if (uses[u].mFail == MeshCadFaceStatus::Ok) {
+                            uses[u].mFail = MeshCadFaceStatus::SelfIntersecting;
+                            uses[u].mWhy =
+                                "it crosses or touches the face's boundary or "
+                                "another embedded edge at this size";
+                        }
+                    check[f] = 1;
+                    continue;
+                }
                 if (r_c.mAsks.empty())
                     continue;
                 asking.push_back(f);
                 for (const auto& r_a : r_c.mAsks)
                     split[r_a[0]].push_back(r_a[1]);
             }
-            if (split.empty())
-                break;
+            if (split.empty()) {
+                if (std::find(check.begin(), check.end(), 1) == check.end())
+                    break;
+                continue;
+            }
             std::size_t added = 0;
             for (auto& [e, r_pieces] : split) {
                 std::sort(r_pieces.begin(), r_pieces.end());
@@ -1250,6 +1389,9 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
     result.mMinEdge = std::numeric_limits<double>::infinity();
     for (std::size_t f = 0; f < nf; ++f) {
         McadFace& r_f = faces[f];
+        for (const auto& [u, r_why] : r_f.mSkipped)
+            warn("face " + std::to_string(f) + ": an embedded edge (trim " +
+                 std::to_string(uses[u].mTrimIndex) + ") is not meshed: " + r_why);
         if (r_f.mRecord.mStatus != MeshCadFaceStatus::Ok) {
             ++result.mNumFailed;
             if (r_f.mRecord.mStatus == MeshCadFaceStatus::Empty && r_f.mRecord.mReason.empty())

@@ -6,9 +6,10 @@ The CAD JSON fixtures through the Python wrapper: the closed solids
 their area and enclosed volume converging at second order, the trimmed plate
 keeps its hole, the Scordelis-Lo roof (an untrimmed patch whose parameter
 scales differ fortyfold) and the two-patch beam (a coupling edge shared by
-two faces) mesh conformingly; the report, the refusals before the core,
-strict mode, a bare B-rep dict, round trips through VTU and Gmsh, both CLI
-verbs and the pipeline's refusal by name. With OpenCASCADE, a STEP solid.
+two faces, and an embedded edge meshed as mesh edges) mesh conformingly;
+the report, the refusals before the core, strict mode, a bare B-rep dict,
+round trips through VTU and Gmsh, both CLI verbs and the pipeline's refusal
+by name. With OpenCASCADE, a STEP solid.
 The algorithm itself is tested in the core (``tests/cpp/test_mesh_cad.cpp``,
 ``test_cdt2d.cpp``, ``test_edge_sampler.cpp``, ``test_predicates.cpp``).
 """
@@ -135,7 +136,17 @@ def test_two_patch_beam_shares_its_coupling_edge():
     on0 = set(tri[face == 0].ravel())
     on1 = set(tri[face == 1].ravel())
     assert len(on0 & on1) > 2
-    assert any("embedded" in w for w in report["warnings"])
+    # Roadmap 6.1.1: the first face's embedded edge is meshed, not warned
+    # about: its line cells are edges of two triangles of that face.
+    assert not any("embedded" in w for w in report["warnings"])
+    uses = {}
+    for t in tri[face == 0]:
+        for a, b in ((t[0], t[1]), (t[1], t[2]), (t[2], t[0])):
+            key = (min(a, b), max(a, b))
+            uses[key] = uses.get(key, 0) + 1
+    lines = out.cells[1].data
+    interior = [(a, b) for a, b in lines if uses.get((min(a, b), max(a, b)), 0) == 2]
+    assert len(interior) >= 5  # the curve is about 3 long; h = 0.2
 
 
 @needs_core
