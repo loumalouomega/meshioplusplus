@@ -150,6 +150,37 @@ def test_two_patch_beam_shares_its_coupling_edge():
 
 
 @needs_core
+def test_closed_edge_started_elsewhere_is_rotated():
+    # Roadmap 6.1.2: the top cap's circle starts a quarter turn after the
+    # band's rim; the cap is a loop of its own, so it is rotated onto the
+    # rim's corner and the solid closes.
+    out, report = mio.mesh_cad_surface(
+        _read("capped_cylinder_offset.cad.json"), 0.2, return_report=True
+    )
+    _watertight(report)
+    assert report["max_edge_gap"] < 1e-12
+    area, volume = _measure(out)
+    assert abs(volume - 2 * math.pi) < 0.02 * 2 * math.pi
+    assert abs(area - 6 * math.pi) < 0.02 * 6 * math.pi
+
+
+@needs_core
+def test_loops_crossing_at_a_coarse_size_are_split():
+    # Roadmap 6.1.3: the hole comes within 0.02 of the rim, and at h = 1.1 a
+    # rim chord passes inside the hole's sample. The pieces involved are
+    # halved until the loops do not cross, and the plate is meshed.
+    model = _read("plate_with_near_hole.cad.json")
+    out, report = mio.mesh_cad_surface(model, 1.1, return_report=True)
+    assert report["num_failed"] == 0, report["faces"]
+    assert report["num_non_manifold_edges"] == 0
+    area, _ = _measure(out)
+    assert 0.9 * 3 * math.pi < area < 3 * math.pi
+    # The same at a size that never crossed: nothing to split.
+    fine = mio.mesh_cad_surface(model, 0.1)
+    assert 0.99 * 3 * math.pi < _measure(fine)[0] < 3 * math.pi
+
+
+@needs_core
 def test_report_layout_and_regions():
     out, report = mio.mesh_cad_surface(
         _read("unit_cube.cad.json"), 0.25, return_report=True

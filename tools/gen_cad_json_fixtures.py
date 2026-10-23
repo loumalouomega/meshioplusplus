@@ -28,6 +28,13 @@ meshio++'s own writer, so they are canonical (a rewrite gives the same bytes):
   do; two rational hemispheres sharing the equator, each closed through a
   seam and a degenerate pole edge with no 3-D curve. Every face's normal
   ``dS/du x dS/dv`` points outward.
+- ``capped_cylinder_offset.cad.json``: the capped cylinder with its top cap's
+  circle started a quarter turn after the band's rim, a closed edge whose
+  uses start at different points (``mesh_cad_surface`` rotates the cap's).
+- ``plate_with_near_hole.cad.json``: a disc of radius 2 with a hole of radius
+  1 whose edge comes within 0.02 of the rim, the rim's circle started at 225
+  degrees: at ``h = 1.1`` its coarse loops cross (``mesh_cad_surface`` splits
+  them).
 
     python tools/gen_cad_json_fixtures.py
 """
@@ -430,6 +437,18 @@ def circle_curve(centre, r, z=None, sense=1, ids=None):
     )
 
 
+def circle_from(centre, r, a0, sense=1):
+    """The full circle about the 2-D ``centre`` from angle ``a0`` in four
+    rational quarters, counter-clockwise for ``sense`` 1."""
+    pts = []
+    for k in range(9):
+        a = a0 + sense * k * math.pi / 4
+        rk = r if k % 2 == 0 else r / W
+        pts.append((centre[0] + rk * math.cos(a), centre[1] + rk * math.sin(a)))
+    pts[8] = pts[0]
+    return curve(2, CIRCLE_KNOTS, pts, weights=CIRCLE_W, active=[0, 1])
+
+
 def _closed_solid(patches, faces, edges):
     return {
         "patches": patches,
@@ -503,7 +522,7 @@ def unit_cube():
     return _closed_solid(patches, faces, edges)
 
 
-def capped_cylinder():
+def capped_cylinder(top_start=0.0):
     r, h = 1.0, 2.0
     band = patch(
         [2, 1],
@@ -542,7 +561,20 @@ def capped_cylinder():
         face(
             4,
             2,
-            loops=[_loop([trim(0, circle_curve((0.5, 0.5), 0.5))])],
+            loops=[
+                _loop(
+                    [
+                        trim(
+                            0,
+                            (
+                                circle_from((0.5, 0.5), 0.5, top_start)
+                                if top_start
+                                else circle_curve((0.5, 0.5), 0.5)
+                            ),
+                        )
+                    ]
+                )
+            ],
             ids=ids.take(4),
         ),
     ]
@@ -609,6 +641,30 @@ def sphere():
     return _closed_solid(patches, faces, edges)
 
 
+def capped_cylinder_offset():
+    return capped_cylinder(top_start=math.pi / 2)
+
+
+def plate_with_near_hole():
+    s = 2.5
+    plate = patch(
+        [1, 1],
+        [[0, 0, 1, 1], [0, 0, 1, 1]],
+        [(x, y, 0.0) for y in (-s, s) for x in (-s, s)],
+    )
+
+    def uv(x, y):
+        return ((x + s) / (2 * s), (y + s) / (2 * s))
+
+    rim = circle_from(uv(0.0, 0.0), 2.0 / (2 * s), 1.25 * math.pi)
+    hole = circle_from(uv(0.98, 0.0), 1.0 / (2 * s), 0.0)
+    loops = [
+        _loop([trim(0, rim)]),
+        {"type": "inner", "trims": [trim(1, hole, direction=False)], "extra": ""},
+    ]
+    return _closed_solid([plate], [face(2, 0, loops=loops, ids=Ids().take(4))], [])
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     for name, build in (
@@ -618,6 +674,8 @@ def main():
         ("unit_cube.cad.json", unit_cube),
         ("capped_cylinder.cad.json", capped_cylinder),
         ("sphere.cad.json", sphere),
+        ("capped_cylinder_offset.cad.json", capped_cylinder_offset),
+        ("plate_with_near_hole.cad.json", plate_with_near_hole),
     ):
         (OUT / name).write_text(render(build()), encoding="utf-8")
     (OUT / "import_square.json").write_text(import_square(), encoding="utf-8")
