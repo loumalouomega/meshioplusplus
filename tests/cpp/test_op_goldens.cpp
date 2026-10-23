@@ -25,8 +25,11 @@
  * `remesh_volume`, `sample_distance`, `distance_to_surface`, the marching
  * kernel behind `isosurface` and `slice`, `convert_cells`, `interpolate`,
  * `repair`, `diff`, `sobolev_deform`, `gradient`, and the duplicate-cell
- * passes over mixed, polyhedral and ragged blocks). The digests were taken
- * from the implementation before each rewrite; the repeated-run checks hold
+ * passes over mixed, polyhedral and ragged blocks), and `mesh_cad_surface`
+ * (its solids and its v17.14.0 paths: crossing splits, rotated closed edges,
+ * embedded edges), which mesh generation's refinement must leave byte for
+ * byte at its defaults. The digests were taken from the implementation
+ * before each rewrite; the repeated-run checks hold
  * everywhere, the golden digests on x86-64 GCC/Clang only (no FMA contraction
  * there).
  */
@@ -36,6 +39,7 @@
 
 #include <gtest/gtest.h>
 
+#include "brep_solids.hpp"
 #include "golden_fixtures.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/clean.hpp"
@@ -49,6 +53,7 @@
 #include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/merge.hpp"
+#include "meshioplusplus/operations/mesh_cad.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
@@ -549,6 +554,35 @@ std::uint64_t og_merge_mixed() {
     return d.Value();
 }
 
+// mesh_cad_surface: the mesh and the counts of its report, per model.
+void og_mesh_cad_into(MeshDigest& rD, const mio::BrepInfo& rInfo, double H) {
+    mio::MeshCadSurfaceOptions o;
+    o.mTargetSize = H;
+    const auto r = mio::mesh_cad_surface(rInfo, o);
+    rD.Of(r.mMesh);
+    for (const std::int64_t v : {r.mNumFailed, r.mNumOpenEdges, r.mNumNonManifoldEdges,
+                                 r.mNumMisorientedEdges, r.mNumDegenerateDropped})
+        rD.Bytes(&v, sizeof v);
+}
+
+std::uint64_t og_mesh_cad_solids() {
+    MeshDigest d;
+    og_mesh_cad_into(d, brep_solids::box(1.0, 2.0, 3.0), 0.3);
+    og_mesh_cad_into(d, brep_solids::capped_cylinder(1.0, 2.0), 0.1);
+    og_mesh_cad_into(d, brep_solids::sphere(1.0), 0.2);
+    og_mesh_cad_into(d, brep_solids::patch_box(), 0.25);
+    return d.Value();
+}
+
+std::uint64_t og_mesh_cad_v17_14() {
+    MeshDigest d;
+    og_mesh_cad_into(d, brep_solids::disc_with_hole(), 1.1);
+    og_mesh_cad_into(d, brep_solids::thick_disc_with_hole(), 1.1);
+    og_mesh_cad_into(d, brep_solids::capped_cylinder(1.0, 2.0, 0.5 * brep_solids::kPi), 0.2);
+    og_mesh_cad_into(d, brep_solids::plate_with_fin(), 0.1);
+    return d.Value();
+}
+
 struct OgCase {
     const char* mName;
     std::uint64_t (*mRun)();
@@ -588,6 +622,8 @@ const OgCase kOgCases[] = {
     {"gradient", og_gradient, 0xc3a947740b3221bcull},
     {"clean_mixed", og_clean_mixed, 0x7a70d94cd8d6e8feull},
     {"merge_mixed", og_merge_mixed, 0x275bb867891ac42bull},
+    {"mesh_cad_solids", og_mesh_cad_solids, 0xc896bd5d97ba996bull},
+    {"mesh_cad_v17_14", og_mesh_cad_v17_14, 0x4f46d9ad572f5749ull},
 };
 
 TEST(OpGoldens, ResultsAreStableAcrossRepeatedRuns) {
