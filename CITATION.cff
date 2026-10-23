@@ -156,6 +156,18 @@ license: MIT
 # pinned rather than transcribed. See doc/remesh_volume.md for the full
 # attribution and licence reasoning.
 #
+# The robust geometric predicates (src/cpp/src/detail/predicates.cpp:
+# orient2d, incircle, orient3d, insphere) behind `mesh_cad_surface`'s
+# constrained Delaunay triangulation follow the PUBLISHED METHOD of:
+#   J. R. Shewchuk, "Adaptive Precision Floating-Point Arithmetic and Fast
+#   Robust Geometric Predicates", Discrete & Computational Geometry 18(3),
+#   1997, pp. 305-363.
+# Shewchuk's reference code (predicates.c) is in the public domain; this is
+# a re-implementation from the paper (its error-free transforms, expansion
+# arithmetic and stage-A error bounds), and no code of Triangle (whose
+# licence restricts commercial distribution) or TetGen (AGPL-3.0) is read
+# or vendored. See doc/mesh_cad_plan.md.
+#
 # SmoothMethod::Odt (src/cpp/src/operations/smooth.cpp) cites the
 # variational-tetrahedral-meshing literature (e.g. P. Alliez et al.,
 # "Variational Tetrahedral Meshing", SIGGRAPH 2005) for the optimal-Delaunay-
