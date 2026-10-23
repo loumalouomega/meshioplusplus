@@ -59,10 +59,14 @@
  *
  * Every orientation and in-circle decision is one of the exact predicates of
  * `detail/predicates.hpp`, and no coordinate is ever compared to another with
- * a tolerance: a point is a duplicate only when it coincides exactly (merging
- * near-duplicates is the caller's choice, as `cdt2d_triangulate_polygon`
- * does). Triangles are counter-clockwise. Everything is sequential and the
- * output depends only on the input, so it is deterministic.
+ * a tolerance. The predicates are exact only while no product inside them
+ * overflows or underflows (Shewchuk 1997), and `incircle` raises coordinate
+ * differences to the fourth power, so the coordinates must lie in the range
+ * `cdt2d_in_range` accepts (zero, or a magnitude in [2^-128, 2^128]); callers
+ * refuse anything outside it by name: a point is a duplicate only when it coincides exactly
+ * (merging near-duplicates is the caller's choice, as `cdt2d_triangulate_polygon` does). Triangles
+ * are counter-clockwise. Everything is sequential and the output depends only on the input, so it
+ * is deterministic.
  *
  * A **core-private** header: nothing installed names it.
  */
@@ -84,6 +88,12 @@ enum class Cdt2dStatus : int {
 };
 
 const char* cdt2d_status_name(Cdt2dStatus Status);
+
+/// Whether a coordinate is one the triangulation stays exact for: zero, or
+/// finite with a magnitude in [2^-128, 2^128] (about 2.9e-39 to 3.4e38).
+/// Beyond it the super triangle's fourth powers inside `incircle` overflow;
+/// below it, the tails of its products underflow.
+bool cdt2d_in_range(double X);
 
 /// Where a point lies in a classified triangulation (`Cdt2d::Where`).
 enum class Cdt2dPlace : int {
@@ -125,7 +135,8 @@ public:
     Cdt2dStatus Classify();
 
     /// After `Classify`: insert a point strictly inside the domain, or
-    /// return -1 (outside, on a constrained edge or on a vertex).
+    /// return -1 (outside, on a constrained edge or on a vertex, or outside
+    /// `cdt2d_in_range`).
     std::int64_t InsertSteiner(const Vec2& rP);
 
     /// After `Classify`: where a point lies, decided exactly; inserts nothing.

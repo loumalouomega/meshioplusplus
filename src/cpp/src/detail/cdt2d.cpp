@@ -147,6 +147,11 @@ bool cdt2d_segments_meet(const std::vector<Cdt2d::Vec2>& rPoints,
 
 }  // namespace
 
+bool cdt2d_in_range(double X) {
+    const double a = std::fabs(X);
+    return a == 0.0 || (a >= 0x1p-128 && a <= 0x1p128);
+}
+
 const char* cdt2d_status_name(Cdt2dStatus Status) {
     switch (Status) {
         case Cdt2dStatus::Ok:
@@ -770,6 +775,8 @@ Cdt2dWhere Cdt2d::Where(const Vec2& rP) {
 std::int64_t Cdt2d::InsertSteiner(const Vec2& rP) {
     if (!mClassified)
         cdt2d_internal("InsertSteiner before Classify");
+    if (!cdt2d_in_range(rP[0]) || !cdt2d_in_range(rP[1]))
+        return -1;
     const Location loc = Locate(rP);
     if (loc.mKind == 2)
         return -1;
@@ -866,6 +873,10 @@ Cdt2dPolygon cdt2d_triangulate_polygon(const std::vector<std::vector<Cdt2d::Vec2
         for (const Vec2& r_p : r_loop) {
             if (!std::isfinite(r_p[0]) || !std::isfinite(r_p[1]))
                 throw std::invalid_argument("meshio++: triangulate_polygon_2d: a non-finite point");
+            if (!cdt2d_in_range(r_p[0]) || !cdt2d_in_range(r_p[1]))
+                throw std::invalid_argument(
+                    "meshio++: triangulate_polygon_2d: a coordinate outside the range the exact "
+                    "predicates hold in (zero, or a magnitude in [2^-128, 2^128])");
             for (int k = 0; k < 2; ++k) {
                 lo[k] = std::min(lo[k], r_p[k]);
                 hi[k] = std::max(hi[k], r_p[k]);

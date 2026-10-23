@@ -17,7 +17,7 @@ meshioplusplus mesh-cad-surface part.cad.json part.vtu --size 0.1 --deflection 0
 
 ![A unit cube, a capped cylinder and a sphere from CAD JSON, meshed watertight at h = 0.2 and coloured by source face](/images/mesh_cad_solids.png)
 
-The planar triangulator underneath is public too: `triangulate_polygon_2d(outer, holes=(), target_size=0)` triangulates a polygon with holes in the plane z = 0.
+The planar triangulator underneath is public too: `triangulate_polygon_2d(outer, holes=(), target_size=0)` triangulates a polygon with holes in the plane z = 0. Its coordinates must be zero or of magnitude within `[2^-128, 2^128]`, where the exact predicates stay exact (a product inside them would otherwise overflow or underflow); anything else is refused by name.
 
 ## How it works
 
@@ -57,7 +57,7 @@ The mesh has the points and one `triangle` block (and the `line` block of the ed
 
 The report (`return_report=True`; `MeshCadSurfaceResult` in C++) has the counts (`num_points`, `num_triangles`, `num_edge_segments`, `num_faces`, `num_failed`, `num_edges`), the conformity of the result (`num_open_edges`, triangle edges used once: zero on a closed solid, the model's own boundary on an open one; `num_non_manifold_edges`; `num_misoriented_edges`, used twice the same way round), `num_degenerate_dropped`, the extreme angles and edge lengths, `tolerance`, `max_edge_gap`, one record per face (`status`, `reason`, counts, extremes) and the warnings.
 
-**A face that cannot be meshed is left out and reported, never meshed wrong.** Its status names why: `unsupported` (an invalid surface or trim), `open_loop` (its loops do not close, or a corner the topology joins it to lies elsewhere), `self_intersecting` (its boundary meets itself in its parameters where the curves themselves meet, such as a hole tangent to the rim, or still crosses after 64 rounds of splits), `degenerate`, `projection_failed` (an edge's uses lie farther apart than `h / 4`, or a closed edge's uses start at different points and none of them can be started elsewhere), `budget_exceeded`, `empty`. The face's edges stay in the `line` block, and `num_open_edges` shows the hole.
+**A face that cannot be meshed is left out and reported, never meshed wrong.** Its status names why: `unsupported` (an invalid surface or trim, or parameters that, mapped to the face's plane, fall outside the range `[2^-128, 2^128]` the exact predicates hold in), `open_loop` (its loops do not close, or a corner the topology joins it to lies elsewhere), `self_intersecting` (its boundary meets itself in its parameters where the curves themselves meet, such as a hole tangent to the rim, or still crosses after 64 rounds of splits), `degenerate`, `projection_failed` (an edge's uses lie farther apart than `h / 4`, or a closed edge's uses start at different points and none of them can be started elsewhere), `budget_exceeded`, `empty`. The face's edges stay in the `line` block, and `num_open_edges` shows the hole.
 
 An embedded edge that cannot be inserted is left out with a warning naming the face and the trim, and the face is meshed without it: one that leaves the face's domain or ends on its boundary away from a corner, and one that crosses or touches the boundary or another embedded edge at this size. Those are not split, since refining the loops around a curve that really crosses them would only crowd boundaries the neighbouring faces share. Its line cells stay in the `line` block.
 

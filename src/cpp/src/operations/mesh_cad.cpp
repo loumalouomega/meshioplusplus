@@ -335,6 +335,7 @@ struct McadPlane {
     std::vector<Vec2> mXs;  ///< the loops' samples in x, loop after loop
     double mXlo[2] = {0.0, 0.0};
     double mXhi[2] = {0.0, 0.0};
+    bool mInRange = true;  ///< every mapped sample within the exact predicates' range
 
     Vec2 ToX(const Vec2& rUv) const { return {mL11 * rUv[0] + mL12 * rUv[1], mL22 * rUv[1]}; }
     Vec2 ToUv(const Vec2& rX) const {
@@ -405,6 +406,8 @@ McadPlane mcad_face_plane(const McadFace& rF, const std::vector<McadUse>& rUses,
     for (const auto& r_poly : pl.mLoops)
         for (const McadEntry& r_e : r_poly) {
             pl.mXs.push_back(pl.ToX(r_e.mUv));
+            pl.mInRange = pl.mInRange && detail::cdt2d_in_range(pl.mXs.back()[0]) &&
+                          detail::cdt2d_in_range(pl.mXs.back()[1]);
             for (int k = 0; k < 2; ++k) {
                 pl.mXlo[k] = std::min(pl.mXlo[k], pl.mXs.back()[static_cast<std::size_t>(k)]);
                 pl.mXhi[k] = std::max(pl.mXhi[k], pl.mXs.back()[static_cast<std::size_t>(k)]);
@@ -445,8 +448,8 @@ McadCrossings mcad_face_crossings(const McadFace& rF, const std::vector<McadUse>
             if (rUses[u].mFail != MeshCadFaceStatus::Ok)
                 return out;
     const McadPlane pl = mcad_face_plane(rF, rUses, rTraces);
-    if (pl.mTotal < 3)
-        return out;
+    if (pl.mTotal < 3 || !pl.mInRange)
+        return out;  // the triangulation refuses the face
     std::vector<Vec2> pts;
     std::vector<std::array<std::int64_t, 2>> segs;
     std::vector<std::array<std::size_t, 2>> origin;  // (use, sample) a segment starts at
@@ -479,7 +482,10 @@ McadCrossings mcad_face_crossings(const McadFace& rF, const std::vector<McadUse>
             continue;
         std::int64_t prev = -1;
         for (std::size_t j = 0; j < r_u.mIds.size(); ++j) {
-            const std::int64_t v = vertex_of(r_u.mIds[j], pl.ToX(rTraces[u]->Uv(r_u.mParams[j])));
+            const Vec2 x = pl.ToX(rTraces[u]->Uv(r_u.mParams[j]));
+            if (!detail::cdt2d_in_range(x[0]) || !detail::cdt2d_in_range(x[1]))
+                break;  // left out when the face is meshed
+            const std::int64_t v = vertex_of(r_u.mIds[j], x);
             if (j > 0 && v != prev) {
                 segs.push_back({prev, v});
                 origin.push_back({u, j - 1});
@@ -540,6 +546,9 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
     const McadPlane pl = mcad_face_plane(rF, rUses, rTraces);
     if (pl.mTotal < 3)
         return fail(MeshCadFaceStatus::Empty, "its loops have fewer than three points");
+    if (!pl.mInRange)
+        return fail(MeshCadFaceStatus::Unsupported,
+                    "its parameters lie outside the range the exact predicates hold in");
     const auto& loops = pl.mLoops;
     const auto& jac = pl.mJac;
     const double l11 = pl.mL11;
@@ -605,6 +614,10 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         bool inside = true;
         for (std::size_t j = 0; j < r_u.mIds.size() && inside; ++j) {
             xs.push_back(pl.ToX(rTraces[u]->Uv(r_u.mParams[j])));
+            if (!detail::cdt2d_in_range(xs.back()[0]) || !detail::cdt2d_in_range(xs.back()[1])) {
+                inside = false;
+                break;
+            }
             const detail::Cdt2dWhere w = cdt.Where(xs.back());
             if (w.mPlace == detail::Cdt2dPlace::OnVertex) {
                 const auto it = mesh_of.find(w.mVertex);

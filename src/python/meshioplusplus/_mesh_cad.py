@@ -179,8 +179,10 @@ def triangulate_polygon_2d(outer, holes=(), target_size: float = 0.0):
         the inside with an equilateral lattice of spacing ``h``.
     :returns: a ``triangle`` mesh in the plane z = 0, triangles
         counter-clockwise.
-    :raises ValueError: for a negative size, non-finite points, or a
-        boundary that is degenerate, open or crosses itself.
+    :raises ValueError: for a negative size, non-finite points, a coordinate
+        outside the range the exact predicates hold in (zero, or a magnitude
+        in ``[2**-128, 2**128]``), or a boundary that is degenerate, open or
+        crosses itself.
     :raises NotImplementedError: without the compiled core.
     """
     loops = []

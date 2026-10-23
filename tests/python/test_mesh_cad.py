@@ -299,6 +299,9 @@ def test_triangulate_polygon_2d():
         mio.triangulate_polygon_2d(outer, target_size=-1.0)
     with pytest.raises(ValueError, match=r"\(n, 2\)"):
         mio.triangulate_polygon_2d([[0, 0, 0], [1, 0, 0], [0, 1, 0]])
+    # Beyond the range the exact predicates hold in (a fuzz finding).
+    with pytest.raises(ValueError, match="exact predicates"):
+        mio.triangulate_polygon_2d([[5e-299, -8.9e304], [-8.9e304, 1e-323], [0, 0]])
 
 
 @needs_core

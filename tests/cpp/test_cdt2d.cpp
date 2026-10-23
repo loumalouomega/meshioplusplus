@@ -32,6 +32,8 @@
 #include <map>
 #include <random>
 #include <set>
+#include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -444,6 +446,34 @@ TEST(Cdt2d, ASegmentAfterClassifyLeavesTheDomainAlone) {
         EXPECT_GT(mio::detail::orient2d(cdt.Point(t[0]).data(), cdt.Point(t[1]).data(),
                                         cdt.Point(t[2]).data()),
                   0.0);
+}
+
+TEST(Cdt2d, CoordinatesOutsideThePredicatesRangeAreRefused) {
+    // The predicates are exact while no product inside them overflows or
+    // underflows; incircle takes coordinate differences to the fourth power.
+    // A square of side 2^127 still triangulates; coordinates near 1e305 or
+    // subnormal ones (found by the triangulate_polygon_2d fuzz target, whose
+    // walk then failed with an internal error) are refused by name.
+    using mio::detail::cdt2d_in_range;
+    EXPECT_TRUE(cdt2d_in_range(0.0));
+    EXPECT_TRUE(cdt2d_in_range(-0.0));
+    EXPECT_TRUE(cdt2d_in_range(0x1p128));
+    EXPECT_TRUE(cdt2d_in_range(-0x1p-128));
+    EXPECT_FALSE(cdt2d_in_range(std::nextafter(0x1p128, 1e300)));
+    EXPECT_FALSE(cdt2d_in_range(std::nextafter(0x1p-128, 0.0)));
+    EXPECT_FALSE(cdt2d_in_range(1e-323));
+    const double s = 0x1p127;
+    check_triangulation(mio::detail::cdt2d_triangulate_polygon({square(-s, -s, s)}, 0.0), s * s, 0);
+    for (const std::vector<Vec2>& bad :
+         {std::vector<Vec2>{{5e-299, -8.9e304}, {-8.9e304, 1e-323}, {0.0, 0.0}},
+          std::vector<Vec2>{{0, 0}, {1, 0}, {0.5, 1e-300}}}) {
+        try {
+            (void)mio::detail::cdt2d_triangulate_polygon({bad}, 0.0);
+            ADD_FAILURE() << "not refused";
+        } catch (const std::invalid_argument& e) {
+            EXPECT_NE(std::string(e.what()).find("exact predicates"), std::string::npos);
+        }
+    }
 }
 
 }  // namespace

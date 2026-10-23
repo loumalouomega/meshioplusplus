@@ -766,6 +766,19 @@ TEST(MeshCad, EmbeddedEdgesAreTheSameOnEveryThreadCount) {
     EXPECT_EQ(digest(mio::mesh_cad_surface(info, size(0.05)).mMesh), ref);
 }
 
+TEST(MeshCad, AFaceBeyondThePredicatesRangeIsReported) {
+    // A box 1e40 on a side: every face's plane coordinates exceed 2^128, where
+    // the exact predicates stop being exact, so every face is reported as
+    // unsupported, by name, rather than triangulated wrong.
+    const auto r = mio::mesh_cad_surface(brep_solids::box(1e40, 1e40, 1e40), size(1e40));
+    EXPECT_EQ(r.mNumFailed, 6);
+    for (const auto& f : r.mFaces) {
+        EXPECT_EQ(f.mStatus, MeshCadFaceStatus::Unsupported);
+        EXPECT_NE(f.mReason.find("exact predicates"), std::string::npos) << f.mReason;
+    }
+    EXPECT_EQ(r.mNumTriangles, 0);
+}
+
 TEST(MeshCad, ChordalDeviationCapsTheBoundary) {
     // With a target size larger than the cylinder, the rims are cut by the
     // sagitta alone: every boundary chord within the cap.
