@@ -4,7 +4,8 @@ comment: no
 # uploads: the Python package (coverage.xml, pytest-cov) and the C++20 core
 # (cpp-coverage.info, lcov). Both are produced in the same job, so the C++
 # numbers include the format code reached through the pybind11 shims rather
-# than only what the GoogleTest binary touches.
+# than only what the GoogleTest binary touches. That job runs on pushes to
+# `master` and on `v*` release tags only; pull requests upload nothing.
 
 codecov:
   notify:
@@ -34,9 +35,9 @@ coverage:
   round: down
   range: "60...90"
   status:
-    # Blocking on PRs. `target: auto` compares against the base commit, so the
-    # first upload just sets the baseline; later PRs only fail on a real drop
-    # beyond `threshold`. Per-flag project checks gate Python and C++ separately.
+    # Reported for the commits that actually carry a coverage upload: pushes to
+    # master and v* release tags. A PR has no report of its own, so it gets no
+    # Codecov status from this configuration.
     project:
       default:
         target: auto
@@ -49,11 +50,10 @@ coverage:
         flags: [cpp]
         target: auto
         threshold: 1%
-    # New/changed lines must carry tests; modest bar so trivial diffs don't stall.
-    patch:
-      default:
-        target: 70%
-        threshold: 1%
+    # A patch status needs the PR's own coverage report, which this repository
+    # no longer produces (the coverage job is master/tag only). Leave it off
+    # rather than show a permanently "missing" check on every PR.
+    patch: false
 
 ignore:
   - "tests/python/"

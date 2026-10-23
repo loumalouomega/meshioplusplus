@@ -3,6 +3,7 @@ name: ci
 on:
   push:
     branches: [master]
+    tags: ["v*"]
   pull_request:
     branches: [master]
 
@@ -1124,6 +1125,12 @@ jobs:
   # (most C++ format code is reached through the pybind11 shims, so measuring
   # only the gtest binary would badly under-report it).
   #
+  # It runs only on pushes to `master` and on `v*` release tags, never on a
+  # pull request: the instrumented build is expensive, and its uploads exist
+  # for the Codecov baseline and badge rather than to gate a review. The job's
+  # `if:` is the enforcement; the `tags:` trigger above keeps release tags
+  # covered.
+  #
   # This works because pyproject.toml pins a persistent
   # `build-dir = "build/{wheel_tag}"`: the .gcno/.gcda files survive the pip
   # build instead of being discarded with a temporary directory.
@@ -1131,6 +1138,7 @@ jobs:
   coverage:
     name: Coverage (Python + C++)
     needs: [lint]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     # The `secrets` context is not allowed in step-level `if:` expressions
     # (referencing it there makes the whole workflow file invalid and GitHub
@@ -1155,9 +1163,9 @@ jobs:
           key: lfs-${{ hashFiles('.lfs-assets-id') }}
       # See tools/fetch-lfs.sh: this degrades gracefully (available=false,
       # not a failure) when the account's Git LFS budget is exhausted, so a
-      # billing condition does not turn an unrelated PR's CI red. Coverage
-      # is meaningless without the real fixtures, so every step below that
-      # needs them (through the two upload steps) is gated on this output.
+      # billing condition does not turn the run red. Coverage is meaningless
+      # without the real fixtures, so every step below that needs them
+      # (through the two upload steps) is gated on this output.
       - name: Fetch Git LFS content
         id: lfs
         run: bash tools/fetch-lfs.sh
@@ -1189,7 +1197,7 @@ jobs:
       # to_polars/write_dataset -- are exercised under coverage
       # instrumentation. The `interop` job runs the same tests but uploads no
       # coverage; without these installed here, that code is real and tested
-      # but shows up as 0% in the Codecov patch check, since instrumented +
+      # but shows up as 0% in the uploaded report, since instrumented +
       # uploaded is the only thing that counts. torch/jax are deliberately
       # absent (heavyweight wheels; to_torch/to_jax tests importorskip -- the
       # CuPy pattern, doc/ml.md).
@@ -1237,9 +1245,9 @@ jobs:
       # the extension on first import during pytest -- that rebuild would race
       # the instrumented objects lcov is about to capture.
       # The OpenCASCADE backend is on in this job too: its code (and the Python
-      # and binding paths that only run with it) is part of the patch Codecov
-      # measures, and the occt job is where those suites run without
-      # instrumentation.
+      # and binding paths that only run with it) is part of what Codecov
+      # measures on master and release tags, and the occt job is where those
+      # suites run without instrumentation.
       - name: Build instrumented _core and run the Python tests
         if: steps.lfs.outputs.available != 'false'
         env:

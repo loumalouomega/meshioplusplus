@@ -125,7 +125,7 @@ Honestly scoped: pinned staging pays off for **repeated** transfers of large buf
 
 The pure payload builder and the DLPack **host** round-trip (export, re-adopt with `np.from_dlpack`, assert values and that sharing really held) run in the default CI matrix and the `interop` job — no GPU involved, and that half is real coverage of the export machinery, not a mock.
 
-**The device path is not covered by public CI.** GitHub-hosted runners have no CUDA device, so the gated tests in `tests/python/test_gpu.py` — guarded by `pytest.importorskip("cupy")` *plus* an actual `getDeviceCount() > 0` check — skip there, and the CuPy-only lines read as uncovered on the Codecov patch check by design. To run the device suite, use any machine with a CUDA device and a matching CuPy wheel (a self-hosted or cloud GPU runner does fine):
+**The device path is not covered by public CI.** GitHub-hosted runners have no CUDA device, so the gated tests in `tests/python/test_gpu.py` — guarded by `pytest.importorskip("cupy")` *plus* an actual `getDeviceCount() > 0` check — skip there, and the CuPy-only lines read as uncovered in the uploaded coverage report by design. To run the device suite, use any machine with a CUDA device and a matching CuPy wheel (a self-hosted or cloud GPU runner does fine):
 
 ```bash
 pip install -e . cupy-cuda13x pytest    # or the wheel matching your toolkit
