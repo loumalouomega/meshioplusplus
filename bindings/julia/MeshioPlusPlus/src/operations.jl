@@ -2019,6 +2019,132 @@ function octree(m::Mesh; root_cells=(1, 1, 1), min_level::Integer=0,
      num_snapped=Int(r.num_snapped), num_refused=Int(r.num_refused))
 end
 
+const _OCTREE_MESH_OUTPUTS = Dict("castellated" => Int32(0), "tet" => Int32(1),
+                                  "hex" => Int32(2))
+const _OCTREE_MESH_OUTPUT_NAMES = ("castellated", "tet", "hex")
+const _OCTREE_MESH_CONFORMITIES = Dict("stuffing" => Int32(0), "cleaving" => Int32(1))
+const _OCTREE_MESH_SKIN_GRADINGS = Dict("graded" => Int32(0), "uniform" => Int32(1))
+const _OCTREE_MESH_FILLS = Dict("all" => Int32(0), "inside" => Int32(1), "cover" => Int32(2))
+
+"""
+    octree_mesh(m; output=:tet, min_size=0.0, max_size=0.0, max_level=-1, bounds=nothing,
+                padding=0.0, padding_relative=0.1, curvature_angle=15.0,
+                feature_angle=30.0, corner_angle=30.0, feature_size=0.0, gap_cells=2.0,
+                gap_outside=false, size_array=nothing, surface_region=nothing,
+                grading_layers=1, skin_grading=:graded, surface_size=0.0,
+                winding_threshold=0.5, winding_beta=2.0, conformity=:stuffing,
+                alpha_long=0.24799, alpha_short=0.40173, preserve_features=true,
+                fit_iterations=5, dihedral_floor_guard=true, fill=:inside,
+                keep_outside=false, attach_distance=true, attach_quality=false,
+                pillow=true, untangle_iterations=50, max_cells=20_000_000,
+                max_tets=100_000_000) -> NamedTuple
+
+Mesh the inside of the skin `m` on a balanced octree: conforming graded
+tetrahedra by default (`output=:tet`), or the castellated leaves
+(`output=:castellated`) with surrogate-boundary regions and `sdf:distance` /
+`sdf:closest_point`; `:hex` is the all-hexahedral dual. `conformity` is
+`:stuffing` or `:cleaving`, `skin_grading` `:graded` or `:uniform`, and `fill`
+(castellated output) `:all`, `:inside` or `:cover`; an unknown one throws
+`ArgumentError`. Every keyword left at `nothing` takes its default from
+`mio_octree_mesh_opts_init`, i.e. from the C side; the defaults shown above are
+those. See `doc/octree_mesh.md` for every option and report field.
+
+Returns `(; mesh, output, guarantee_applies, origin, root_size, root_cells,
+max_level, finest_level, surface_level, min_size, max_size, num_leaves,
+num_points, num_cells, num_hexahedra, num_tetrahedra, num_inside,
+num_boundary_cells, num_surrogate_faces, num_hanging, num_cut_points,
+num_warped, num_warp_refused, min_dihedral, max_dihedral, min_scaled_jacobian,
+hausdorff_to_skin, num_inverted, num_boundary_edges_open,
+num_non_manifold_boundary_edges, num_corners, num_corners_snapped,
+num_feature_chains, num_feature_chains_missed, num_feature_moves,
+num_optimized_moves, num_flips, num_winding_rechecks, num_warnings, warnings)`,
+with `output` the name of the output produced and `warnings` a
+`Vector{String}`, one entry per warning.
+"""
+function octree_mesh(m::Mesh; output=nothing, min_size=nothing, max_size=nothing,
+                     max_level=nothing, bounds=nothing, padding=nothing,
+                     padding_relative=nothing, curvature_angle=nothing,
+                     feature_angle=nothing, corner_angle=nothing, feature_size=nothing,
+                     gap_cells=nothing, gap_outside=nothing, size_array=nothing,
+                     surface_region=nothing, grading_layers=nothing, skin_grading=nothing,
+                     surface_size=nothing, winding_threshold=nothing, winding_beta=nothing,
+                     conformity=nothing, alpha_long=nothing, alpha_short=nothing,
+                     preserve_features=nothing, fit_iterations=nothing,
+                     dihedral_floor_guard=nothing, fill=nothing, keep_outside=nothing,
+                     attach_distance=nothing, attach_quality=nothing, pillow=nothing,
+                     untangle_iterations=nothing, max_cells=nothing, max_tets=nothing)
+    bnd = bounds === nothing ? Cdouble[] : Cdouble[Cdouble(v) for v in bounds]
+    (bounds === nothing || length(bnd) == 6) ||
+        throw(ArgumentError("bounds must have six entries"))
+    size_name = size_array === nothing ? "" : String(size_array)
+    region_name = surface_region === nothing ? "" : String(surface_region)
+
+    opts = Ref{_COctreeMeshOpts}()
+    ccall(_sym(:mio_octree_mesh_opts_init), Cvoid, (Ref{_COctreeMeshOpts},), opts)
+    output === nothing ||
+        _setopt!(opts, :output, _code(_OCTREE_MESH_OUTPUTS, output, "output"))
+    conformity === nothing ||
+        _setopt!(opts, :conformity, _code(_OCTREE_MESH_CONFORMITIES, conformity, "conformity"))
+    skin_grading === nothing ||
+        _setopt!(opts, :skin_grading,
+                 _code(_OCTREE_MESH_SKIN_GRADINGS, skin_grading, "skin grading"))
+    fill === nothing || _setopt!(opts, :fill, _code(_OCTREE_MESH_FILLS, fill, "fill"))
+    scalars = (; min_size, max_size, padding, padding_relative, curvature_angle,
+               feature_angle, corner_angle, feature_size, gap_cells, surface_size,
+               winding_threshold, winding_beta, alpha_long, alpha_short, max_level,
+               grading_layers, fit_iterations, untangle_iterations, max_cells, max_tets)
+    for (k, v) in pairs(scalars)
+        v === nothing || _setopt!(opts, k, v)
+    end
+    flags = (; gap_outside, preserve_features, dihedral_floor_guard, keep_outside,
+             attach_distance, attach_quality, pillow)
+    for (k, v) in pairs(flags)
+        v === nothing || _setopt!(opts, k, Bool(v) ? Int32(1) : Int32(0))
+    end
+
+    report = Ref{_COctreeMeshReport}()
+    ptr = GC.@preserve bnd size_name region_name begin
+        isempty(bnd) || _setopt!(opts, :bounds, pointer(bnd))
+        isempty(size_name) ||
+            _setopt!(opts, :size_array, Base.unsafe_convert(Cstring, size_name))
+        isempty(region_name) ||
+            _setopt!(opts, :surface_region, Base.unsafe_convert(Cstring, region_name))
+        ccall(_sym(:mio_octree_mesh), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_COctreeMeshOpts}, Ref{_COctreeMeshReport}),
+              _handle(m), opts, report)
+    end
+    mesh = Mesh(_check_ptr(ptr))
+    text = _getstring((buf, n) -> ccall(_sym(:mio_octree_mesh_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    r = report[]
+    (mesh=mesh,
+     output=0 <= r.output < length(_OCTREE_MESH_OUTPUT_NAMES) ?
+            _OCTREE_MESH_OUTPUT_NAMES[r.output + 1] : string(r.output),
+     guarantee_applies=r.guarantee_applies != 0, origin=Tuple(Float64.(r.origin)),
+     root_size=Float64(r.root_size), root_cells=Tuple(Int.(r.root_cells)),
+     max_level=Int(r.max_level), finest_level=Int(r.finest_level),
+     surface_level=Int(r.surface_level), min_size=Float64(r.min_size),
+     max_size=Float64(r.max_size), num_leaves=Int(r.num_leaves),
+     num_points=Int(r.num_points), num_cells=Int(r.num_cells),
+     num_hexahedra=Int(r.num_hexahedra), num_tetrahedra=Int(r.num_tetrahedra),
+     num_inside=Int(r.num_inside), num_boundary_cells=Int(r.num_boundary_cells),
+     num_surrogate_faces=Int(r.num_surrogate_faces), num_hanging=Int(r.num_hanging),
+     num_cut_points=Int(r.num_cut_points), num_warped=Int(r.num_warped),
+     num_warp_refused=Int(r.num_warp_refused), min_dihedral=Float64(r.min_dihedral),
+     max_dihedral=Float64(r.max_dihedral),
+     min_scaled_jacobian=Float64(r.min_scaled_jacobian),
+     hausdorff_to_skin=Float64(r.hausdorff_to_skin), num_inverted=Int(r.num_inverted),
+     num_boundary_edges_open=Int(r.num_boundary_edges_open),
+     num_non_manifold_boundary_edges=Int(r.num_non_manifold_boundary_edges),
+     num_corners=Int(r.num_corners), num_corners_snapped=Int(r.num_corners_snapped),
+     num_feature_chains=Int(r.num_feature_chains),
+     num_feature_chains_missed=Int(r.num_feature_chains_missed),
+     num_feature_moves=Int(r.num_feature_moves),
+     num_optimized_moves=Int(r.num_optimized_moves), num_flips=Int(r.num_flips),
+     num_winding_rechecks=Int(r.num_winding_rechecks), num_warnings=Int(r.num_warnings),
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
 const _CURVATURE_DUAL_AREAS = Dict(:mixed_voronoi => Int32(0), :barycentric => Int32(1))
 
 """

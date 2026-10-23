@@ -2039,6 +2039,37 @@ meshioplusplus octree circle.vtu quadtree.vtu --max-level 7 --fill inside
 
 See [`doc/octree.md`](octree.md).
 
+## `octree-mesh`
+
+```bash
+meshioplusplus octree-mesh part.stl part.vtu --min-size 0.01 --max-size 0.2
+meshioplusplus octree-mesh part.stl cells.vtu --output castellated --fill cover --json
+meshioplusplus octree-mesh part.stl hexes.vtu --output hex --surface-size 0.05
+```
+
+| flag | meaning |
+|---|---|
+| `--output castellated\|tet\|hex` | castellated hexahedra with surrogate-boundary tags, conforming tetrahedra (default) or all-hexahedra |
+| `--min-size H` / `--max-size H` | smallest / largest leaf edge (0: `max-size / 32` / an eighth of the skin's diagonal) |
+| `--max-level N` | cap on the finest level (at most 19) |
+| `--bounds=xlo,...,zhi` / `--padding` / `--padding-relative` | the box to mesh (negatives need the `=` form) |
+| `--curvature-angle D` | degrees a leaf edge may subtend on the skin (0: off) |
+| `--feature-angle D` / `--corner-angle D` / `--feature-size H` | sharp features: edges sharper than `D`, corners turning by more than `D`, the size along them |
+| `--gap-cells N` / `--gap-outside` | leaves across the local thickness (0: off), also between parts |
+| `--size-array NAME` / `--surface-region NAME` | target sizes from a `point_data` array / mesh only this region's skin |
+| `--grading-layers N` | rings of leaves around the skin at its level |
+| `--skin-grading graded\|uniform` / `--surface-size H` | let the size vary along the skin, or keep it at one level; `H` is also the hexahedral output's cell size |
+| `--winding-threshold W` / `--winding-beta B` | inside where the winding number exceeds `W`; its accuracy (0: exact) |
+| `--conformity stuffing\|cleaving`, `--alpha-long`, `--alpha-short` | how tetrahedra conform to the skin |
+| `--no-preserve-features`, `--fit-iterations N`, `--no-dihedral-floor-guard` | feature snapping and optimisation |
+| `--fill all\|inside\|cover` | castellated output: every leaf, the inside ones, or inside and cut |
+| `--keep-outside`, `--no-distance`, `--attach-quality` | also mesh the outside; skip `sdf:*`; attach `quality:*` |
+| `--no-pillow`, `--untangle-iterations N` | hexahedral output |
+| `--max-cells N` / `--max-tets N` | refuse above this many leaves / output cells |
+| `--json` | the report as JSON (without the timings, which vary from run to run) |
+
+See [`doc/octree_mesh.md`](octree_mesh.md).
+
 ## `grid-sample`, `grid-scatter`, `grid-resample`, `grid-spectrum`
 
 *(Python only — no native equivalent.)* The mesh-to-grid data path a convolutional or superresolution model needs.

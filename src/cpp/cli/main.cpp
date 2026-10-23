@@ -93,6 +93,7 @@
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/primitives.hpp"
 #include "meshioplusplus/operations/octree.hpp"
+#include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/hessian.hpp"
@@ -450,6 +451,9 @@ void print_usage(std::ostream& os) {
           "  octree                  Octree / quadtree around a skin, fine only where\n"
           "                            the skin is: --max-level N --balance none|face|full\n"
           "                            --fill all|surface|inside\n"
+          "  octree-mesh             Volume mesh of a skin's inside on a balanced\n"
+          "                            octree: --output castellated|tet|hex\n"
+          "                            --min-size H --max-size H [--json]\n"
           "  isosurface              Level set of a scalar point_data field (contours)\n"
           "                            --array NAME --values v1,v2 [--component I]\n"
           "  sdf                     Signed distance field: a grid over a surface,\n"
@@ -4037,6 +4041,207 @@ int cmd_octree(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"output", {}, true},
+                                  {"min-size", {}, true},
+                                  {"max-size", {}, true},
+                                  {"max-level", {}, true},
+                                  {"bounds", {}, true},
+                                  {"padding", {}, true},
+                                  {"padding-relative", {}, true},
+                                  {"curvature-angle", {}, true},
+                                  {"feature-angle", {}, true},
+                                  {"corner-angle", {}, true},
+                                  {"feature-size", {}, true},
+                                  {"gap-cells", {}, true},
+                                  {"gap-outside", {}, false},
+                                  {"size-array", {}, true},
+                                  {"surface-region", {}, true},
+                                  {"grading-layers", {}, true},
+                                  {"skin-grading", {}, true},
+                                  {"surface-size", {}, true},
+                                  {"winding-threshold", {}, true},
+                                  {"winding-beta", {}, true},
+                                  {"conformity", {}, true},
+                                  {"alpha-long", {}, true},
+                                  {"alpha-short", {}, true},
+                                  {"no-preserve-features", {}, false},
+                                  {"fit-iterations", {}, true},
+                                  {"no-dihedral-floor-guard", {}, false},
+                                  {"fill", {}, true},
+                                  {"keep-outside", {}, false},
+                                  {"no-distance", {}, false},
+                                  {"attach-quality", {}, false},
+                                  {"no-pillow", {}, false},
+                                  {"untangle-iterations", {}, true},
+                                  {"max-cells", {}, true},
+                                  {"max-tets", {}, true},
+                                  {"json", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("octree-mesh requires exactly INFILE and OUTFILE");
+    namespace mio = meshioplusplus;
+    auto num = [&](const char* pName, double Default) {
+        return p.values.count(pName) ? mio::detail::stod_c(opt_value(p, pName)) : Default;
+    };
+    auto integer = [&](const char* pName, std::int64_t Default) {
+        return p.values.count(pName) ? std::stoll(opt_value(p, pName)) : Default;
+    };
+    mio::OctreeMeshOptions o;
+    o.mOutput = mio::octree_mesh_output_from_name(opt_value(p, "output", "tet"));
+    o.mMinSize = num("min-size", o.mMinSize);
+    o.mMaxSize = num("max-size", o.mMaxSize);
+    o.mMaxLevel = integer("max-level", o.mMaxLevel);
+    // Negatives need the --bounds= form (the parser rule shared with --bbox).
+    if (p.values.count("bounds")) {
+        auto v = parse_doubles(opt_value(p, "bounds"));
+        if (v.size() != 6)
+            throw std::runtime_error("octree-mesh: --bounds expects 'xlo,ylo,zlo,xhi,yhi,zhi'");
+        o.mBounds = std::array<double, 6>{{v[0], v[1], v[2], v[3], v[4], v[5]}};
+    }
+    o.mPadding = num("padding", o.mPadding);
+    o.mPaddingRelative = num("padding-relative", o.mPaddingRelative);
+    o.mCurvatureAngle = num("curvature-angle", o.mCurvatureAngle);
+    o.mFeatureAngle = num("feature-angle", o.mFeatureAngle);
+    o.mCornerAngle = num("corner-angle", o.mCornerAngle);
+    o.mFeatureSize = num("feature-size", o.mFeatureSize);
+    o.mGapCells = num("gap-cells", o.mGapCells);
+    o.mGapOutside = has_flag(p, "gap-outside");
+    o.mSizeArray = opt_value(p, "size-array", "");
+    o.mSurfaceRegion = opt_value(p, "surface-region", "");
+    o.mGradingLayers = integer("grading-layers", o.mGradingLayers);
+    o.mSkinGrading =
+        mio::octree_mesh_skin_grading_from_name(opt_value(p, "skin-grading", "graded"));
+    o.mSurfaceSize = num("surface-size", o.mSurfaceSize);
+    o.mWindingThreshold = num("winding-threshold", o.mWindingThreshold);
+    o.mWindingBeta = num("winding-beta", o.mWindingBeta);
+    o.mConformity = mio::octree_mesh_conformity_from_name(opt_value(p, "conformity", "stuffing"));
+    o.mAlphaLong = num("alpha-long", o.mAlphaLong);
+    o.mAlphaShort = num("alpha-short", o.mAlphaShort);
+    o.mPreserveFeatures = !has_flag(p, "no-preserve-features");
+    o.mFitIterations = integer("fit-iterations", o.mFitIterations);
+    o.mDihedralFloorGuard = !has_flag(p, "no-dihedral-floor-guard");
+    o.mFill = mio::octree_mesh_fill_from_name(opt_value(p, "fill", "inside"));
+    o.mKeepOutside = has_flag(p, "keep-outside");
+    o.mAttachDistance = !has_flag(p, "no-distance");
+    o.mAttachQuality = has_flag(p, "attach-quality");
+    o.mPillow = !has_flag(p, "no-pillow");
+    o.mUntangleIterations = integer("untangle-iterations", o.mUntangleIterations);
+    o.mMaxCells = integer("max-cells", o.mMaxCells);
+    o.mMaxTets = integer("max-tets", o.mMaxTets);
+
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    mio::OctreeMeshResult r = mio::octree_mesh(mesh, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+
+    if (has_flag(p, "json")) {
+        // Timings differ from run to run; the JSON holds what is reproducible.
+        mio::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", mio::octree_mesh_output_name(r.mOutput));
+        json.Key("origin");
+        json.BeginArray();
+        for (double v : r.mOrigin)
+            json.Number(v);
+        json.EndArray();
+        json.Key("root_cells");
+        json.BeginArray();
+        for (std::int64_t v : r.mRootCells)
+            json.Int(v);
+        json.EndArray();
+        json.Field("max_level", r.mMaxLevel);
+        json.Field("finest_level", r.mFinestLevel);
+        json.Field("surface_level", r.mSurfaceLevel);
+        json.Field("num_leaves", r.mNumLeaves);
+        json.Field("num_points", r.mNumPoints);
+        json.Field("num_cells", r.mNumCells);
+        json.Field("num_hexahedra", r.mNumHexahedra);
+        json.Field("num_tetrahedra", r.mNumTetrahedra);
+        json.Field("num_inside", r.mNumInside);
+        json.Field("num_boundary_cells", r.mNumBoundaryCells);
+        json.Field("num_surrogate_faces", r.mNumSurrogateFaces);
+        json.Field("num_hanging", r.mNumHanging);
+        json.Field("num_cut_points", r.mNumCutPoints);
+        json.Field("num_warped", r.mNumWarped);
+        json.Field("num_warp_refused", r.mNumWarpRefused);
+        json.Field("num_inverted", r.mNumInverted);
+        json.Field("num_boundary_edges_open", r.mNumBoundaryEdgesOpen);
+        json.Field("num_non_manifold_boundary_edges", r.mNumNonManifoldBoundaryEdges);
+        json.Field("num_corners", r.mNumCorners);
+        json.Field("num_corners_snapped", r.mNumCornersSnapped);
+        json.Field("num_feature_chains", r.mNumFeatureChains);
+        json.Field("num_feature_chains_missed", r.mNumFeatureChainsMissed);
+        json.Field("num_feature_moves", r.mNumFeatureMoves);
+        json.Field("num_optimized_moves", r.mNumOptimizedMoves);
+        json.Field("num_flips", r.mNumFlips);
+        json.Field("num_winding_rechecks", r.mNumWindingRechecks);
+        json.Field("root_size", r.mRootSize);
+        json.Field("min_size", r.mMinSize);
+        json.Field("max_size", r.mMaxSize);
+        json.Field("min_dihedral", r.mMinDihedral);
+        json.Field("max_dihedral", r.mMaxDihedral);
+        json.Field("min_scaled_jacobian", r.mMinScaledJacobian);
+        json.Field("hausdorff_to_skin", r.mHausdorffToSkin);
+        json.Key("leaves_per_level");
+        json.BeginArray();
+        for (std::int64_t v : r.mLeavesPerLevel)
+            json.Int(v);
+        json.EndArray();
+        json.Field("guarantee_applies", r.mGuaranteeApplies);
+        json.Key("quality");
+        json.BeginObject();
+        json.Field("num_cells", r.mQuality.mNumCells);
+        json.Field("num_inverted", r.mQuality.mNumInverted);
+        json.Field("num_degenerate", r.mQuality.mNumDegenerate);
+        json.Key("metrics");
+        json.BeginObject();
+        for (const auto& [name, s] : r.mQuality.mMetrics) {
+            json.Key(name);
+            json.BeginObject();
+            json.Field("min", s.mMin);
+            json.Field("max", s.mMax);
+            json.Field("mean", s.mMean);
+            json.Field("count", s.mCount);
+            json.Key("histogram");
+            json.BeginArray();
+            for (std::int64_t h : s.mHistogram)
+                json.Int(h);
+            json.EndArray();
+            json.EndObject();
+        }
+        json.EndObject();
+        json.EndObject();
+        json.Key("warnings");
+        json.BeginArray();
+        for (const std::string& w : r.mWarnings)
+            json.String(w);
+        json.EndArray();
+        json.EndObject();
+    } else if (!has_flag(p, "quiet")) {
+        std::cout << "octree mesh (" << mio::octree_mesh_output_name(r.mOutput) << ")\n";
+        std::cout << "  root size:      " << r.mRootSize << "\n";
+        std::cout << "  levels:         " << r.mFinestLevel << " of " << r.mMaxLevel << "\n";
+        std::cout << "  leaves:         " << r.mNumLeaves << "\n";
+        std::cout << "  cells:          " << r.mNumCells << "\n";
+        if (r.mOutput == mio::OctreeMeshOutput::Castellated) {
+            std::cout << "  inside:         " << r.mNumInside << "\n";
+            std::cout << "  surrogate faces:" << r.mNumSurrogateFaces << "\n";
+            std::cout << "  hanging nodes:  " << r.mNumHanging << "\n";
+        } else {
+            std::cout << "  dihedral:       " << r.mMinDihedral << " .. " << r.mMaxDihedral
+                      << " deg\n";
+        }
+        std::cout << "  min scaled Jacobian: " << r.mMinScaledJacobian << "\n";
+        for (const std::string& w : r.mWarnings)
+            std::cout << "  warning: " << w << "\n";
+    }
+    return 0;
+}
+
 int cmd_sdf(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -6667,6 +6872,8 @@ int main(int argc, char** argv) {
             return cmd_generate(rest);
         if (cmd == "octree")
             return cmd_octree(rest);
+        if (cmd == "octree-mesh")
+            return cmd_octree_mesh(rest);
         if (cmd == "sdf")
             return cmd_sdf(rest);
         if (cmd == "split")

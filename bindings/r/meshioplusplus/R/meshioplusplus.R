@@ -3166,6 +3166,123 @@ mio_octree <- function(mesh, root_cells = NULL, min_level = 0, max_level = 4,
   )
 }
 
+#' Mesh the inside of a skin on a balanced octree
+#'
+#' Conforming graded tetrahedra by default (`output = "tet"`), or the
+#' castellated leaves (`output = "castellated"`) with surrogate-boundary regions
+#' and `sdf:distance` / `sdf:closest_point`; `"hex"` is the all-hexahedral dual.
+#' Every option left `NULL` keeps the default `mio_octree_mesh_opts_init()` sets
+#' on the C side; the defaults below are those. See `doc/octree_mesh.md` for
+#' every option and report field.
+#'
+#' @param mesh The skin (any surface; the boundary of a volume mesh is taken).
+#' @param output `"tet"` (default), `"castellated"` or `"hex"`.
+#' @param min_size Smallest leaf edge; `0` (default) is `max_size / 32`.
+#' @param max_size Largest leaf edge; `0` (default) is an eighth of the skin's
+#'   bounding-box diagonal.
+#' @param max_level Cap on the finest level (at most 19); `-1` (default) from
+#'   the sizes.
+#' @param bounds `c(xlo, ylo, zlo, xhi, yhi, zhi)` to mesh instead of the padded
+#'   bounding box.
+#' @param padding,padding_relative Padding on every side, in world units
+#'   (default `0`) and as a fraction of the diagonal (default `0.1`).
+#' @param curvature_angle Degrees a leaf edge may subtend on the skin (default
+#'   `15`); `0` disables the curvature size.
+#' @param feature_angle Edges sharper than this dihedral, in degrees, are
+#'   features (default `30`).
+#' @param corner_angle A feature turning by more than this is a corner (default
+#'   `30`).
+#' @param feature_size Size along feature edges; `0` (default) is `min_size`.
+#' @param gap_cells Leaves across the local thickness (default `2`); `0`
+#'   disables it.
+#' @param gap_outside Also resolve gaps outside the skin (default `FALSE`).
+#' @param size_array A `point_data` array of target sizes on the skin.
+#' @param surface_region Restrict the skin to this cell region.
+#' @param grading_layers Rings of leaves around every cut leaf at its level
+#'   (default `1`).
+#' @param skin_grading `"graded"` (default) or `"uniform"`.
+#' @param surface_size The skin size under uniform grading; `0` (default) is the
+#'   smallest the field asks for.
+#' @param winding_threshold Inside where the winding number exceeds this
+#'   (default `0.5`).
+#' @param winding_beta Fast winding number accuracy (default `2`); `0` sums
+#'   every triangle.
+#' @param conformity `"stuffing"` (default) or `"cleaving"` (tetrahedral output).
+#' @param alpha_long,alpha_short Stuffing thresholds on long and short lattice
+#'   edges (defaults `0.24799` and `0.40173`).
+#' @param preserve_features Snap the boundary to feature corners and edges
+#'   (default `TRUE`).
+#' @param fit_iterations Rounds of optimisation (default `5`); `0` disables
+#'   them.
+#' @param dihedral_floor_guard Undo optimisation moves that worsen the dihedral
+#'   angles (default `TRUE`).
+#' @param fill Castellated output: `"inside"` (default), `"all"` or `"cover"`.
+#' @param keep_outside Tetrahedral output: also mesh the outside (default
+#'   `FALSE`).
+#' @param attach_distance Attach `sdf:distance` (default `TRUE`).
+#' @param attach_quality Attach the `quality:*` cell data (default `FALSE`).
+#' @param pillow Hexahedral output: a boundary layer of hexahedra (default
+#'   `TRUE`).
+#' @param untangle_iterations Hexahedral output: untangling iterations (default
+#'   `50`).
+#' @param max_cells Refuse an octree with more leaves (default `20000000`).
+#' @param max_tets Refuse an output with more cells (default `100000000`).
+#' @return A named list: `mesh`, the report fields of `mio_octree_mesh_report`
+#'   (`output` as its name, `guarantee_applies` as a logical, `origin` and
+#'   `root_cells` as length-3 vectors, every count as a double) and `warnings`,
+#'   a character vector with one entry per warning.
+#' @export
+mio_octree_mesh <- function(mesh, output = NULL, min_size = NULL, max_size = NULL,
+                            max_level = NULL, bounds = NULL, padding = NULL,
+                            padding_relative = NULL, curvature_angle = NULL,
+                            feature_angle = NULL, corner_angle = NULL,
+                            feature_size = NULL, gap_cells = NULL, gap_outside = NULL,
+                            size_array = NULL, surface_region = NULL,
+                            grading_layers = NULL, skin_grading = NULL,
+                            surface_size = NULL, winding_threshold = NULL,
+                            winding_beta = NULL, conformity = NULL, alpha_long = NULL,
+                            alpha_short = NULL, preserve_features = NULL,
+                            fit_iterations = NULL, dihedral_floor_guard = NULL,
+                            fill = NULL, keep_outside = NULL, attach_distance = NULL,
+                            attach_quality = NULL, pillow = NULL,
+                            untangle_iterations = NULL, max_cells = NULL,
+                            max_tets = NULL) {
+  code <- function(value, table, what) {
+    if (is.null(value)) {
+      return(NULL)
+    }
+    if (length(value) != 1 || !value %in% names(table)) {
+      stop("unknown ", what, " '", paste(value, collapse = ","), "'")
+    }
+    table[[value]]
+  }
+  num <- function(x) if (is.null(x)) NULL else as.numeric(x)
+  flag <- function(x) if (is.null(x)) NULL else isTRUE(x)
+  name <- function(x) if (is.null(x)) NULL else as.character(x)
+  res <- .Call(
+    R_mio_octree_mesh, mesh,
+    code(output, c(castellated = 0L, tet = 1L, hex = 2L), "output"),
+    code(conformity, c(stuffing = 0L, cleaving = 1L), "conformity"),
+    code(skin_grading, c(graded = 0L, uniform = 1L), "skin grading"),
+    code(fill, c(all = 0L, inside = 1L, cover = 2L), "fill"),
+    if (is.null(bounds)) numeric(0) else as.numeric(bounds),
+    name(size_array), name(surface_region),
+    num(min_size), num(max_size), num(padding), num(padding_relative),
+    num(curvature_angle), num(feature_angle), num(corner_angle), num(feature_size),
+    num(gap_cells), num(surface_size), num(winding_threshold), num(winding_beta),
+    num(alpha_long), num(alpha_short), num(max_level), num(grading_layers),
+    num(fit_iterations), num(untangle_iterations), num(max_cells), num(max_tets),
+    flag(gap_outside), flag(preserve_features), flag(dihedral_floor_guard),
+    flag(keep_outside), flag(attach_distance), flag(attach_quality), flag(pillow)
+  )
+  res$warnings <- if (nzchar(res$warnings)) {
+    strsplit(res$warnings, "\n", fixed = TRUE)[[1]]
+  } else {
+    character(0)
+  }
+  res
+}
+
 #' @rdname mio_extract_surface
 #' @export
 mio_voxelize <- function(mesh, resolution = NULL, cell_size = 0, bounds = NULL,

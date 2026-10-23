@@ -36,6 +36,7 @@ from . import (
     _merge,
     _normals,
     _octree,
+    _octree_mesh,
     _optimize_volume,
     _partition,
     _periodic,
@@ -344,6 +345,14 @@ def main(argv=None):
     )
     _octree.add_args(parser)
     parser.set_defaults(func=_octree.octree_cmd)
+
+    parser = subparsers.add_parser(
+        "octree-mesh",
+        help="Volume mesh of a skin's inside on a balanced octree "
+        "(castellated hexahedra, conforming tetrahedra or all-hexahedra)",
+    )
+    _octree_mesh.add_args(parser)
+    parser.set_defaults(func=_octree_mesh.octree_mesh_cmd)
 
     parser = subparsers.add_parser(
         "grid-sample",

@@ -115,6 +115,7 @@
 #include "meshioplusplus/operations/voxelize.hpp"
 #include "meshioplusplus/operations/primitives.hpp"
 #include "meshioplusplus/operations/octree.hpp"
+#include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/blend.hpp"
@@ -5511,6 +5512,25 @@ static_assert(sizeof(mio_voxel_opts) == 112, "mio_voxel_opts grew outside its re
 static_assert(sizeof(mio_gen_opts) == 160, "mio_gen_opts grew outside its reserved tail");
 static_assert(sizeof(mio_octree_opts) == 176, "mio_octree_opts grew outside its reserved tail");
 static_assert(sizeof(mio_octree_report) == 96, "mio_octree_report layout changed");
+static_assert(sizeof(mio_octree_mesh_opts) == 264,
+              "mio_octree_mesh_opts grew outside its reserved tail");
+static_assert(sizeof(mio_octree_mesh_report) == 392, "mio_octree_mesh_report layout changed");
+static_assert(
+    static_cast<int>(meshioplusplus::OctreeMeshOutput::Castellated) ==
+            MIO_OCTREE_MESH_CASTELLATED &&
+        static_cast<int>(meshioplusplus::OctreeMeshOutput::Tetra) == MIO_OCTREE_MESH_TET &&
+        static_cast<int>(meshioplusplus::OctreeMeshOutput::Hexa) == MIO_OCTREE_MESH_HEX &&
+        static_cast<int>(meshioplusplus::OctreeMeshConformity::Stuffing) ==
+            MIO_OCTREE_MESH_STUFFING &&
+        static_cast<int>(meshioplusplus::OctreeMeshConformity::Cleaving) ==
+            MIO_OCTREE_MESH_CLEAVING &&
+        static_cast<int>(meshioplusplus::OctreeMeshSkinGrading::Graded) == MIO_OCTREE_MESH_GRADED &&
+        static_cast<int>(meshioplusplus::OctreeMeshSkinGrading::Uniform) ==
+            MIO_OCTREE_MESH_UNIFORM &&
+        static_cast<int>(meshioplusplus::OctreeMeshFill::All) == MIO_OCTREE_MESH_FILL_ALL &&
+        static_cast<int>(meshioplusplus::OctreeMeshFill::Inside) == MIO_OCTREE_MESH_FILL_INSIDE &&
+        static_cast<int>(meshioplusplus::OctreeMeshFill::Cover) == MIO_OCTREE_MESH_FILL_COVER,
+    "mio_octree_mesh enums drifted from the core's");
 static_assert(static_cast<int>(meshioplusplus::OctreeTransition::Hanging) == MIO_OCTREE_HANGING &&
                   static_cast<int>(meshioplusplus::OctreeTransition::Polyhedra) ==
                       MIO_OCTREE_POLYHEDRA &&
@@ -5646,6 +5666,67 @@ meshioplusplus::OctreeOptions capi_octree_options(const mio_octree_opts& rOpts) 
     return options;
 }
 
+/// Translate the flat option struct into the core's OctreeMeshOptions.
+meshioplusplus::OctreeMeshOptions capi_octree_mesh_options(const mio_octree_mesh_opts& rOpts) {
+    meshioplusplus::OctreeMeshOptions options;
+    auto check = [](std::int32_t Value, std::int32_t Max, const char* pWhat) {
+        if (Value < 0 || Value > Max)
+            throw meshioplusplus::ReadError(std::string("meshio++: octree_mesh: unknown ") + pWhat +
+                                            " " + std::to_string(Value));
+        return Value;
+    };
+    options.mOutput = static_cast<meshioplusplus::OctreeMeshOutput>(
+        check(rOpts.output, MIO_OCTREE_MESH_HEX, "output"));
+    options.mConformity = static_cast<meshioplusplus::OctreeMeshConformity>(
+        check(rOpts.conformity, MIO_OCTREE_MESH_CLEAVING, "conformity"));
+    options.mSkinGrading = static_cast<meshioplusplus::OctreeMeshSkinGrading>(
+        check(rOpts.skin_grading, MIO_OCTREE_MESH_UNIFORM, "skin grading"));
+    options.mFill = static_cast<meshioplusplus::OctreeMeshFill>(
+        check(rOpts.fill, MIO_OCTREE_MESH_FILL_COVER, "fill"));
+    if (rOpts.bounds != nullptr)
+        options.mBounds =
+            std::array<double, 6>{{rOpts.bounds[0], rOpts.bounds[1], rOpts.bounds[2],
+                                   rOpts.bounds[3], rOpts.bounds[4], rOpts.bounds[5]}};
+    if (rOpts.size_array != nullptr)
+        options.mSizeArray = rOpts.size_array;
+    if (rOpts.surface_region != nullptr)
+        options.mSurfaceRegion = rOpts.surface_region;
+    options.mMinSize = rOpts.min_size;
+    options.mMaxSize = rOpts.max_size;
+    options.mPadding = rOpts.padding;
+    options.mPaddingRelative = rOpts.padding_relative;
+    options.mCurvatureAngle = rOpts.curvature_angle;
+    options.mFeatureAngle = rOpts.feature_angle;
+    options.mCornerAngle = rOpts.corner_angle;
+    options.mFeatureSize = rOpts.feature_size;
+    options.mGapCells = rOpts.gap_cells;
+    options.mSurfaceSize = rOpts.surface_size;
+    options.mWindingThreshold = rOpts.winding_threshold;
+    options.mWindingBeta = rOpts.winding_beta;
+    options.mAlphaLong = rOpts.alpha_long;
+    options.mAlphaShort = rOpts.alpha_short;
+    options.mMaxLevel = rOpts.max_level;
+    options.mGradingLayers = rOpts.grading_layers;
+    options.mFitIterations = rOpts.fit_iterations;
+    options.mUntangleIterations = rOpts.untangle_iterations;
+    options.mMaxCells = rOpts.max_cells;
+    options.mMaxTets = rOpts.max_tets;
+    options.mGapOutside = rOpts.gap_outside != 0;
+    options.mPreserveFeatures = rOpts.preserve_features != 0;
+    options.mDihedralFloorGuard = rOpts.dihedral_floor_guard != 0;
+    options.mKeepOutside = rOpts.keep_outside != 0;
+    options.mAttachDistance = rOpts.attach_distance != 0;
+    options.mAttachQuality = rOpts.attach_quality != 0;
+    options.mPillow = rOpts.pillow != 0;
+    return options;
+}
+
+/// The warnings of this thread's last mio_octree_mesh call.
+std::string& capi_octree_mesh_warnings() {
+    thread_local std::string warnings;
+    return warnings;
+}
+
 /// Translate the flat option struct into the core's SdfOptions.
 meshioplusplus::SdfOptions capi_compute_sdf_options(const mio_compute_sdf_opts& rOpts) {
     meshioplusplus::SdfOptions options;
@@ -5755,6 +5836,39 @@ void mio_octree_opts_init(mio_octree_opts* opts) {
     opts->surface_level = -1;
     opts->sign = MIO_SDF_PSEUDONORMAL;
     opts->watertight_check = MIO_SDF_WATERTIGHT_WARN;
+}
+
+void mio_octree_mesh_opts_init(mio_octree_mesh_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_octree_mesh_opts{};
+    const meshioplusplus::OctreeMeshOptions d;
+    opts->padding_relative = d.mPaddingRelative;
+    opts->curvature_angle = d.mCurvatureAngle;
+    opts->feature_angle = d.mFeatureAngle;
+    opts->corner_angle = d.mCornerAngle;
+    opts->gap_cells = d.mGapCells;
+    opts->winding_threshold = d.mWindingThreshold;
+    opts->winding_beta = d.mWindingBeta;
+    opts->alpha_long = d.mAlphaLong;
+    opts->alpha_short = d.mAlphaShort;
+    opts->max_level = d.mMaxLevel;
+    opts->grading_layers = d.mGradingLayers;
+    opts->fit_iterations = d.mFitIterations;
+    opts->untangle_iterations = d.mUntangleIterations;
+    opts->max_cells = d.mMaxCells;
+    opts->max_tets = d.mMaxTets;
+    opts->output = static_cast<std::int32_t>(d.mOutput);
+    opts->conformity = static_cast<std::int32_t>(d.mConformity);
+    opts->skin_grading = static_cast<std::int32_t>(d.mSkinGrading);
+    opts->fill = static_cast<std::int32_t>(d.mFill);
+    opts->gap_outside = d.mGapOutside ? 1 : 0;
+    opts->preserve_features = d.mPreserveFeatures ? 1 : 0;
+    opts->dihedral_floor_guard = d.mDihedralFloorGuard ? 1 : 0;
+    opts->keep_outside = d.mKeepOutside ? 1 : 0;
+    opts->attach_distance = d.mAttachDistance ? 1 : 0;
+    opts->attach_quality = d.mAttachQuality ? 1 : 0;
+    opts->pillow = d.mPillow ? 1 : 0;
 }
 
 void mio_compute_sdf_opts_init(mio_compute_sdf_opts* opts) {
@@ -6110,6 +6224,80 @@ mio_mesh* mio_octree(const mio_mesh* mesh, const mio_octree_opts* opts,
             report->num_refused = r.mNumRefused;
         }
         return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+mio_mesh* mio_octree_mesh(const mio_mesh* mesh, const mio_octree_mesh_opts* opts,
+                          mio_octree_mesh_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        capi_octree_mesh_warnings().clear();
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        mio_octree_mesh_opts defaults;
+        if (!opts) {
+            mio_octree_mesh_opts_init(&defaults);
+            opts = &defaults;
+        }
+        meshioplusplus::OctreeMeshResult r =
+            meshioplusplus::octree_mesh(mesh->mMesh, capi_octree_mesh_options(*opts));
+        std::string& warnings = capi_octree_mesh_warnings();
+        for (const std::string& w : r.mWarnings) {
+            if (!warnings.empty())
+                warnings += '\n';
+            warnings += w;
+        }
+        if (report) {
+            *report = mio_octree_mesh_report{};
+            report->output = static_cast<std::int32_t>(r.mOutput);
+            report->guarantee_applies = r.mGuaranteeApplies ? 1 : 0;
+            for (std::size_t k = 0; k < 3; ++k) {
+                report->origin[k] = r.mOrigin[k];
+                report->root_cells[k] = r.mRootCells[k];
+            }
+            report->root_size = r.mRootSize;
+            report->max_level = r.mMaxLevel;
+            report->finest_level = r.mFinestLevel;
+            report->surface_level = r.mSurfaceLevel;
+            report->min_size = r.mMinSize;
+            report->max_size = r.mMaxSize;
+            report->num_leaves = r.mNumLeaves;
+            report->num_points = r.mNumPoints;
+            report->num_cells = r.mNumCells;
+            report->num_hexahedra = r.mNumHexahedra;
+            report->num_tetrahedra = r.mNumTetrahedra;
+            report->num_inside = r.mNumInside;
+            report->num_boundary_cells = r.mNumBoundaryCells;
+            report->num_surrogate_faces = r.mNumSurrogateFaces;
+            report->num_hanging = r.mNumHanging;
+            report->num_cut_points = r.mNumCutPoints;
+            report->num_warped = r.mNumWarped;
+            report->num_warp_refused = r.mNumWarpRefused;
+            report->min_dihedral = r.mMinDihedral;
+            report->max_dihedral = r.mMaxDihedral;
+            report->min_scaled_jacobian = r.mMinScaledJacobian;
+            report->hausdorff_to_skin = r.mHausdorffToSkin;
+            report->num_inverted = r.mNumInverted;
+            report->num_boundary_edges_open = r.mNumBoundaryEdgesOpen;
+            report->num_non_manifold_boundary_edges = r.mNumNonManifoldBoundaryEdges;
+            report->num_corners = r.mNumCorners;
+            report->num_corners_snapped = r.mNumCornersSnapped;
+            report->num_feature_chains = r.mNumFeatureChains;
+            report->num_feature_chains_missed = r.mNumFeatureChainsMissed;
+            report->num_feature_moves = r.mNumFeatureMoves;
+            report->num_optimized_moves = r.mNumOptimizedMoves;
+            report->num_flips = r.mNumFlips;
+            report->num_winding_rechecks = r.mNumWindingRechecks;
+            report->num_warnings = static_cast<std::int64_t>(r.mWarnings.size());
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+int64_t mio_octree_mesh_warnings(char* buf, int64_t buflen) {
+    return guarded_ptr(int64_t{-1}, [&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative warnings buffer length");
+        return copy_string(capi_octree_mesh_warnings(), buf, buflen);
     });
 }
 

@@ -2210,6 +2210,29 @@ def test_generator_tools(tmp_path):
         _tools.tool_plate_with_hole(str(tmp_path / "hole.vtu"), radius=0.9)
 
 
+def test_octree_mesh_tool(tmp_path):
+    skin = tmp_path / "skin.vtu"
+    meshioplusplus.write(skin, meshioplusplus.icosa_sphere(1.0, 2))
+    out = tmp_path / "volume.vtu"
+    report = _tools.tool_octree_mesh(
+        str(skin), str(out), output="castellated", max_size=0.5, min_size=0.125
+    )
+    assert out.exists()
+    assert report["output"] == "castellated"
+    assert report["num_inside"] == report["num_cells"] > 0
+    assert report["num_surrogate_faces"] > 0
+    assert report["quality"]["num_inverted"] == 0
+    assert "warnings" in report and "timings" in report
+    written = meshioplusplus.read(out)
+    assert "sdf:distance" in written.point_data
+    assert "sdf:closest_point" in written.point_data
+
+    with pytest.raises(ValueError, match="output"):
+        _tools.tool_octree_mesh(str(skin), str(out), output="bogus")
+    with pytest.raises(ValueError, match="winding_threshold"):
+        _tools.tool_octree_mesh(str(skin), str(out), winding_threshold=2.0)
+
+
 def test_octree_tool(tmp_path):
     skin = tmp_path / "skin.vtu"
     meshioplusplus.write(

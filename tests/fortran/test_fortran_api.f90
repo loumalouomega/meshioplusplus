@@ -1820,6 +1820,8 @@ contains
     subroutine check_grids_and_distance()
         type(mio_mesh) :: g, cube, vox, field, sdf, kept
         type(mio_surface_quality) :: q
+        type(mio_octree_mesh_report) :: omrep
+        character(:), allocatable :: omwarn
         real(real64) :: pts(3, 8), query(3, 3), d(3)
         real(real64) :: origin(3), spacing(3)
         integer(int64) :: tri(3, 12), dims(3), occupied, depth
@@ -1938,6 +1940,37 @@ contains
         call vox%free()
         vox = cube%octree(transition='wedges', stat=ierr)
         call check(ierr /= 0, 'an unknown transition is refused')
+
+        ! octree_mesh: graded tetrahedra inside the cube, then its castellated
+        ! leaves; an unknown option string fails by name.
+        vox = cube%octree_mesh(max_size=0.5d0, min_size=0.125d0, report=omrep, &
+                               warnings=omwarn, stat=ierr)
+        call check(ierr == 0, 'octree_mesh ran')
+        call check(vox%cell_block_type(1) == 'tetra', 'octree_mesh produced tetrahedra')
+        call check(omrep%output == 1, 'octree_mesh reported the tet output')
+        call check(omrep%num_tetrahedra > 0_int64, 'octree_mesh counted its tetrahedra')
+        call check(omrep%num_inverted == 0_int64, 'octree_mesh inverted nothing')
+        call check(allocated(omwarn), 'octree_mesh returned its warnings')
+        call check((len(omwarn) == 0) .eqv. (omrep%num_warnings == 0_int64), &
+                   'octree_mesh warnings agree with the report')
+        call vox%free()
+        vox = cube%octree_mesh(output='castellated', max_size=0.5d0, min_size=0.125d0, &
+                               report=omrep, stat=ierr)
+        call check(ierr == 0, 'castellated octree_mesh ran')
+        call check(vox%cell_block_type(1) == 'hexahedron', 'castellated output is hexahedra')
+        call check(omrep%num_hexahedra > 0_int64, 'castellated output counted hexahedra')
+        call vox%free()
+        ! A max_level too coarse for min_size is a warning.
+        vox = cube%octree_mesh(max_size=0.5d0, min_size=0.125d0, max_level=1_int64, &
+                               report=omrep, warnings=omwarn, stat=ierr)
+        call check(ierr == 0, 'coarse octree_mesh ran')
+        call check(omrep%num_warnings == 1_int64, 'a coarse max_level warns once')
+        call check(index(omwarn, 'coarsens min_size') > 0, 'the warning text came back')
+        call vox%free()
+        vox = cube%octree_mesh(output='prisms', stat=ierr)
+        call check(ierr /= 0, 'an unknown octree_mesh output is refused')
+        vox = cube%octree_mesh(fill='surface', stat=ierr)
+        call check(ierr /= 0, 'an unknown octree_mesh fill is refused')
 
         ! An unknown fill fails by name rather than silently defaulting.
         vox = cube%voxelize(resolution=[2, 2, 2], fill='solid', stat=ierr)

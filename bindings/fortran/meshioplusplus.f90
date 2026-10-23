@@ -60,6 +60,7 @@ module meshioplusplus
     public :: MIO_MDPA_MESH_BLOCKS, MIO_MDPA_SUBMODELPARTS, MIO_MDPA_RAW_BLOCKS
     public :: MIO_MDPA_VALUE_NUMBER, MIO_MDPA_VALUE_TEXT, MIO_MDPA_VALUE_TABLE
     public :: mio_stats_report
+    public :: mio_octree_mesh_report
     public :: mio_surface_quality
     public :: mio_find_interface_result, mio_contact_pairs_result
     public :: mio_grid
@@ -746,6 +747,96 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(2) = 0
     end type
 
+    !> Interop mirror of C `mio_octree_mesh_opts`. Same ABI rules as above: 264
+    !> bytes, checked once per process (`check_octree_mesh_layout`). Always
+    !> filled by `mio_octree_mesh_opts_init`, so the defaults come from C.
+    type, bind(c) :: mio_octree_mesh_opts_t
+        type(c_ptr) :: bounds = c_null_ptr
+        type(c_ptr) :: size_array = c_null_ptr
+        type(c_ptr) :: surface_region = c_null_ptr
+        real(c_double) :: min_size = 0.0_c_double
+        real(c_double) :: max_size = 0.0_c_double
+        real(c_double) :: padding = 0.0_c_double
+        real(c_double) :: padding_relative = 0.1_c_double
+        real(c_double) :: curvature_angle = 15.0_c_double
+        real(c_double) :: feature_angle = 30.0_c_double
+        real(c_double) :: corner_angle = 30.0_c_double
+        real(c_double) :: feature_size = 0.0_c_double
+        real(c_double) :: gap_cells = 2.0_c_double
+        real(c_double) :: surface_size = 0.0_c_double
+        real(c_double) :: winding_threshold = 0.5_c_double
+        real(c_double) :: winding_beta = 2.0_c_double
+        real(c_double) :: alpha_long = 0.24799_c_double
+        real(c_double) :: alpha_short = 0.40173_c_double
+        integer(c_int64_t) :: max_level = -1
+        integer(c_int64_t) :: grading_layers = 1
+        integer(c_int64_t) :: fit_iterations = 5
+        integer(c_int64_t) :: untangle_iterations = 50
+        integer(c_int64_t) :: max_cells = 20000000
+        integer(c_int64_t) :: max_tets = 100000000
+        integer(c_int32_t) :: output = 1
+        integer(c_int32_t) :: conformity = 0
+        integer(c_int32_t) :: skin_grading = 0
+        integer(c_int32_t) :: fill = 1
+        integer(c_int32_t) :: gap_outside = 0
+        integer(c_int32_t) :: preserve_features = 1
+        integer(c_int32_t) :: dihedral_floor_guard = 1
+        integer(c_int32_t) :: keep_outside = 0
+        integer(c_int32_t) :: attach_distance = 1
+        integer(c_int32_t) :: attach_quality = 0
+        integer(c_int32_t) :: pillow = 1
+        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> What `m%octree_mesh` reports: an interop mirror of C
+    !> `mio_octree_mesh_report` (392 bytes; field order and types are ABI, see
+    !> doc/octree_mesh.md for every field). `output` is 0 (castellated), 1 (tet)
+    !> or 2 (hex); `guarantee_applies` is nonzero when the 10.7-164.8 degree
+    !> bound covers every tetrahedron. Counts are counts, not indices: nothing
+    !> here is shifted to 1-based.
+    type, bind(c) :: mio_octree_mesh_report
+        integer(c_int32_t) :: output = 0
+        integer(c_int32_t) :: guarantee_applies = 0
+        real(c_double) :: origin(3) = 0.0_c_double
+        real(c_double) :: root_size = 0.0_c_double
+        integer(c_int64_t) :: root_cells(3) = 0
+        integer(c_int64_t) :: max_level = 0
+        integer(c_int64_t) :: finest_level = 0
+        integer(c_int64_t) :: surface_level = -1
+        real(c_double) :: min_size = 0.0_c_double
+        real(c_double) :: max_size = 0.0_c_double
+        integer(c_int64_t) :: num_leaves = 0
+        integer(c_int64_t) :: num_points = 0
+        integer(c_int64_t) :: num_cells = 0
+        integer(c_int64_t) :: num_hexahedra = 0
+        integer(c_int64_t) :: num_tetrahedra = 0
+        integer(c_int64_t) :: num_inside = 0
+        integer(c_int64_t) :: num_boundary_cells = 0
+        integer(c_int64_t) :: num_surrogate_faces = 0
+        integer(c_int64_t) :: num_hanging = 0
+        integer(c_int64_t) :: num_cut_points = 0
+        integer(c_int64_t) :: num_warped = 0
+        integer(c_int64_t) :: num_warp_refused = 0
+        real(c_double) :: min_dihedral = 0.0_c_double
+        real(c_double) :: max_dihedral = 0.0_c_double
+        real(c_double) :: min_scaled_jacobian = 0.0_c_double
+        real(c_double) :: hausdorff_to_skin = -1.0_c_double
+        integer(c_int64_t) :: num_inverted = 0
+        integer(c_int64_t) :: num_boundary_edges_open = 0
+        integer(c_int64_t) :: num_non_manifold_boundary_edges = 0
+        integer(c_int64_t) :: num_corners = 0
+        integer(c_int64_t) :: num_corners_snapped = 0
+        integer(c_int64_t) :: num_feature_chains = 0
+        integer(c_int64_t) :: num_feature_chains_missed = 0
+        integer(c_int64_t) :: num_feature_moves = 0
+        integer(c_int64_t) :: num_optimized_moves = 0
+        integer(c_int64_t) :: num_flips = 0
+        integer(c_int64_t) :: num_winding_rechecks = 0
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(8) = 0
+    end type
+
     !> Interop mirror of C `mio_compute_sdf_opts`. Same ABI rules as above. For
     !> `structure = 0` (voxel) exactly one of `resolution` and `cell_size` may be
     !> given; for `structure = 1` (octree) NEITHER may be -- its finest cell is
@@ -1303,6 +1394,7 @@ module meshioplusplus
         procedure :: stats => mesh_stats
         procedure :: voxelize => mesh_voxelize
         procedure :: octree => mesh_octree
+        procedure :: octree_mesh => mesh_octree_mesh
         procedure :: compute_sdf => mesh_compute_sdf
         procedure :: watertight_check => mesh_watertight_check
         procedure :: sample_distance => mesh_sample_distance
@@ -2963,6 +3055,27 @@ module meshioplusplus
             type(mio_octree_opts_t), intent(in) :: opts
             type(mio_octree_report_t), intent(out) :: report
             type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_octree_mesh_opts_init(opts) bind(c, name="mio_octree_mesh_opts_init")
+            import :: mio_octree_mesh_opts_t
+            type(mio_octree_mesh_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_octree_mesh(h, opts, report) bind(c, name="mio_octree_mesh") result(r)
+            import :: c_ptr, mio_octree_mesh_opts_t, mio_octree_mesh_report
+            type(c_ptr), value :: h
+            type(mio_octree_mesh_opts_t), intent(in) :: opts
+            type(mio_octree_mesh_report), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_octree_mesh_warnings(buf, buflen) &
+                bind(c, name="mio_octree_mesh_warnings") result(n)
+            import :: c_char, c_int64_t
+            character(c_char), intent(out) :: buf(*)
+            integer(c_int64_t), value :: buflen
+            integer(c_int64_t) :: n
         end function
 
         function c_mio_grid(dims, origin, spacing, max_cells) bind(c, name="mio_grid") result(r)
@@ -8476,6 +8589,192 @@ contains
         if (present(num_refused)) num_refused = int(report%num_refused, int64)
         call clear_status(stat, errmsg)
     end function
+
+    !> Mesh the inside of a skin on a balanced octree (see
+    !> doc/octree_mesh.md): conforming graded tetrahedra by default, or the
+    !> castellated leaves with surrogate-boundary regions and `sdf:distance` /
+    !> `sdf:closest_point`. Every option is optional and takes its default
+    !> from `mio_octree_mesh_opts_init`, i.e. from the C side. The string
+    !> options are `output` ('tet' default, 'castellated' or 'hex'),
+    !> `conformity` ('stuffing' default or 'cleaving'), `skin_grading`
+    !> ('graded' default or 'uniform') and `fill` ('inside' default, 'all' or
+    !> 'cover'); an unknown one fails by name. The whole summary comes back
+    !> through the optional `report` (a `mio_octree_mesh_report`), and the
+    !> run's warnings, one per line, through the optional `warnings`.
+    function mesh_octree_mesh(self, output, min_size, max_size, max_level, bounds, padding, &
+                              padding_relative, curvature_angle, feature_angle, &
+                              corner_angle, feature_size, gap_cells, gap_outside, &
+                              size_array, surface_region, grading_layers, skin_grading, &
+                              surface_size, winding_threshold, winding_beta, conformity, &
+                              alpha_long, alpha_short, preserve_features, fit_iterations, &
+                              dihedral_floor_guard, fill, keep_outside, attach_distance, &
+                              attach_quality, pillow, untangle_iterations, max_cells, &
+                              max_tets, report, warnings, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in), optional :: output, skin_grading, conformity, fill
+        character(*), intent(in), optional :: size_array, surface_region
+        real(real64), intent(in), optional :: min_size, max_size, bounds(6)
+        real(real64), intent(in), optional :: padding, padding_relative
+        real(real64), intent(in), optional :: curvature_angle, feature_angle, corner_angle
+        real(real64), intent(in), optional :: feature_size, gap_cells, surface_size
+        real(real64), intent(in), optional :: winding_threshold, winding_beta
+        real(real64), intent(in), optional :: alpha_long, alpha_short
+        integer(int64), intent(in), optional :: max_level, grading_layers, fit_iterations
+        integer(int64), intent(in), optional :: untangle_iterations, max_cells, max_tets
+        logical, intent(in), optional :: gap_outside, preserve_features
+        logical, intent(in), optional :: dihedral_floor_guard, keep_outside
+        logical, intent(in), optional :: attach_distance, attach_quality, pillow
+        type(mio_octree_mesh_report), intent(out), optional :: report
+        character(:), allocatable, intent(out), optional :: warnings
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_octree_mesh_opts_t) :: opts
+        type(mio_octree_mesh_report) :: crep
+        ! The buffers the option pointers reference must outlive the call.
+        real(c_double), target :: bounds_buf(6)
+        character(kind=c_char), allocatable, target :: size_buf(:), region_buf(:)
+        character(kind=c_char), allocatable :: wbuf(:)
+        integer(c_int64_t) :: n
+        integer :: i
+
+        call check_octree_mesh_layout()
+        if (present(warnings)) warnings = ''
+        call c_mio_octree_mesh_opts_init(opts)
+        if (present(output)) then
+            select case (trim(output))
+            case ('castellated'); opts%output = 0
+            case ('', 'tet'); opts%output = 1
+            case ('hex'); opts%output = 2
+            case default
+                call handle_failure('octree_mesh', 'unknown output '//trim(output), stat, errmsg)
+                return
+            end select
+        end if
+        if (present(conformity)) then
+            select case (trim(conformity))
+            case ('', 'stuffing'); opts%conformity = 0
+            case ('cleaving'); opts%conformity = 1
+            case default
+                call handle_failure('octree_mesh', 'unknown conformity '//trim(conformity), &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+        if (present(skin_grading)) then
+            select case (trim(skin_grading))
+            case ('', 'graded'); opts%skin_grading = 0
+            case ('uniform'); opts%skin_grading = 1
+            case default
+                call handle_failure('octree_mesh', 'unknown skin grading '//trim(skin_grading), &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+        if (present(fill)) then
+            select case (trim(fill))
+            case ('all'); opts%fill = 0
+            case ('', 'inside'); opts%fill = 1
+            case ('cover'); opts%fill = 2
+            case default
+                call handle_failure('octree_mesh', 'unknown fill '//trim(fill), stat, errmsg)
+                return
+            end select
+        end if
+        if (present(bounds)) then
+            bounds_buf = real(bounds, c_double)
+            opts%bounds = c_loc(bounds_buf(1))
+        end if
+        if (present(size_array)) then
+            if (len_trim(size_array) > 0) then
+                allocate (size_buf(len_trim(size_array) + 1))
+                do i = 1, len_trim(size_array)
+                    size_buf(i) = size_array(i:i)
+                end do
+                size_buf(len_trim(size_array) + 1) = c_null_char
+                opts%size_array = c_loc(size_buf(1))
+            end if
+        end if
+        if (present(surface_region)) then
+            if (len_trim(surface_region) > 0) then
+                allocate (region_buf(len_trim(surface_region) + 1))
+                do i = 1, len_trim(surface_region)
+                    region_buf(i) = surface_region(i:i)
+                end do
+                region_buf(len_trim(surface_region) + 1) = c_null_char
+                opts%surface_region = c_loc(region_buf(1))
+            end if
+        end if
+        if (present(min_size)) opts%min_size = real(min_size, c_double)
+        if (present(max_size)) opts%max_size = real(max_size, c_double)
+        if (present(padding)) opts%padding = real(padding, c_double)
+        if (present(padding_relative)) opts%padding_relative = real(padding_relative, c_double)
+        if (present(curvature_angle)) opts%curvature_angle = real(curvature_angle, c_double)
+        if (present(feature_angle)) opts%feature_angle = real(feature_angle, c_double)
+        if (present(corner_angle)) opts%corner_angle = real(corner_angle, c_double)
+        if (present(feature_size)) opts%feature_size = real(feature_size, c_double)
+        if (present(gap_cells)) opts%gap_cells = real(gap_cells, c_double)
+        if (present(surface_size)) opts%surface_size = real(surface_size, c_double)
+        if (present(winding_threshold)) &
+            opts%winding_threshold = real(winding_threshold, c_double)
+        if (present(winding_beta)) opts%winding_beta = real(winding_beta, c_double)
+        if (present(alpha_long)) opts%alpha_long = real(alpha_long, c_double)
+        if (present(alpha_short)) opts%alpha_short = real(alpha_short, c_double)
+        if (present(max_level)) opts%max_level = int(max_level, c_int64_t)
+        if (present(grading_layers)) opts%grading_layers = int(grading_layers, c_int64_t)
+        if (present(fit_iterations)) opts%fit_iterations = int(fit_iterations, c_int64_t)
+        if (present(untangle_iterations)) &
+            opts%untangle_iterations = int(untangle_iterations, c_int64_t)
+        if (present(max_cells)) opts%max_cells = int(max_cells, c_int64_t)
+        if (present(max_tets)) opts%max_tets = int(max_tets, c_int64_t)
+        if (present(gap_outside)) opts%gap_outside = merge(1_c_int32_t, 0_c_int32_t, gap_outside)
+        if (present(preserve_features)) &
+            opts%preserve_features = merge(1_c_int32_t, 0_c_int32_t, preserve_features)
+        if (present(dihedral_floor_guard)) &
+            opts%dihedral_floor_guard = merge(1_c_int32_t, 0_c_int32_t, dihedral_floor_guard)
+        if (present(keep_outside)) &
+            opts%keep_outside = merge(1_c_int32_t, 0_c_int32_t, keep_outside)
+        if (present(attach_distance)) &
+            opts%attach_distance = merge(1_c_int32_t, 0_c_int32_t, attach_distance)
+        if (present(attach_quality)) &
+            opts%attach_quality = merge(1_c_int32_t, 0_c_int32_t, attach_quality)
+        if (present(pillow)) opts%pillow = merge(1_c_int32_t, 0_c_int32_t, pillow)
+
+        out%handle = c_mio_octree_mesh(self%handle, opts, crep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('octree_mesh', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = crep
+        if (present(warnings)) then
+            ! String rule 5: query the length with an empty buffer, then copy.
+            allocate (wbuf(1))
+            n = c_mio_octree_mesh_warnings(wbuf, 0_c_int64_t)
+            if (n > 0 .and. n < int(huge(0) - 1, c_int64_t)) then
+                deallocate (wbuf)
+                allocate (wbuf(int(n) + 1))
+                n = c_mio_octree_mesh_warnings(wbuf, n + 1)
+                if (n > 0) warnings = from_c_buf(wbuf, int(n))
+            end if
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The layouts of `mio_octree_mesh_opts_t` and `mio_octree_mesh_report`
+    !> against the C structs (264 and 392 bytes), checked once per process.
+    subroutine check_octree_mesh_layout()
+        logical, save :: checked = .false.
+        type(mio_octree_mesh_opts_t) :: opts
+        type(mio_octree_mesh_report) :: report
+        if (checked) return
+        checked = .true.
+        if (c_sizeof(opts) /= 264_c_size_t .or. c_sizeof(report) /= 392_c_size_t) then
+            write (error_unit, '(a,2(i0,1x),a)') &
+                'meshio++: octree_mesh layout mismatch (', c_sizeof(opts), c_sizeof(report), &
+                'bytes)'
+            error stop 1
+        end if
+    end subroutine
 
     !> Crop to the cells whose value in a scalar cell_data array satisfies a
     !> comparison. `compare` is one of '<', '<=', '>', '>=', '==', '!=' -- the

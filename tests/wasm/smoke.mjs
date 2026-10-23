@@ -2320,6 +2320,45 @@ step('octree is fine only where the skin is', () => {
         'pseudonormal', false, false, 20000000, 'off', 'wedges'));
 });
 
+step('octreeMesh meshes the inside of a skin', () => {
+    // The default output: conforming tetrahedra fitted to the closed cube.
+    const tet = m.octreeMesh(cubeSurface, { maxSize: 0.5, minSize: 0.125 });
+    assert.equal(tet.output, 'tet');
+    assert.ok(tet.mesh.cells.length > 0);
+    for (const block of tet.mesh.cells) assert.equal(block.type, 'tetra');
+    assert.ok(tet.numTetrahedra > 0);
+    assert.equal(tet.numHexahedra, 0);
+    assert.equal(tet.numCells, tet.numTetrahedra);
+    assert.equal(tet.numInverted, 0);
+    assert.ok(tet.minDihedral > 0);
+    assert.ok(tet.numLeaves > 0);
+    assert.ok(Array.isArray(tet.leavesPerLevel) && tet.leavesPerLevel.length > 0);
+    assert.equal(tet.rootCells.length, 3);
+    assert.equal(tet.origin.length, 3);
+    assert.ok(Array.isArray(tet.warnings));
+    assert.ok(Array.isArray(tet.timings));
+    for (const t of tet.timings) {
+        assert.equal(typeof t[0], 'string');
+        assert.equal(typeof t[1], 'number');
+    }
+    assert.equal(typeof tet.guaranteeApplies, 'boolean');
+    assert.ok('sdf:distance' in tet.mesh.point_data);
+
+    // Castellated: the inside leaves as hexahedra.
+    const cast = m.octreeMesh(cubeSurface,
+        { output: 'castellated', maxSize: 0.5, minSize: 0.125 });
+    assert.equal(cast.output, 'castellated');
+    assert.equal(cast.mesh.cells[0].type, 'hexahedron');
+    assert.ok(cast.numHexahedra > 0);
+    assert.equal(cast.numTetrahedra, 0);
+    assert.equal(cast.hausdorffToSkin, -1);
+
+    assert.throws(() => m.octreeMesh(cubeSurface, { bogus: 1 }), /bogus/);
+    assert.throws(() => m.octreeMesh(cubeSurface, { output: 'prism' }));
+    assert.throws(() => m.octreeMesh(cubeSurface, { minSize: 1, maxSize: 0.5 }));
+    assert.throws(() => m.octreeMesh(cubeSurface, { bounds: [0, 0, 0] }), /bounds/);
+});
+
 step('voxelize keeps the whole box, the shell, or the interior', () => {
     const q = m.surfaceWatertightCheck(cubeSurface);
     assert.equal(q.watertight, true);
@@ -2541,6 +2580,7 @@ step('every binding is reachable through the wrapper', () => {
         'grid',
         'voxelize',
         'octree',
+        'octreeMesh',
         'surfaceWatertightCheck',
         'sampleDistance',
         'distanceToSurface',

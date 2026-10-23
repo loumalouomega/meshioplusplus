@@ -1147,6 +1147,28 @@ test_that("voxelize builds a grid around a surface", {
   expect_equal(templ$num_hanging, 0)
   mio_release(templ$mesh)
 
+  # octree_mesh: graded tetrahedra inside the cube, then its castellated leaves.
+  tets <- mio_octree_mesh(cube, max_size = 0.5, min_size = 0.125)
+  expect_equal(tets$output, "tet")
+  expect_true("tetra" %in% mio_cell_block_types(tets$mesh))
+  expect_true(tets$num_tetrahedra > 0)
+  expect_equal(tets$num_inverted, 0)
+  expect_type(tets$warnings, "character")
+  expect_equal(length(tets$warnings), tets$num_warnings)
+  mio_release(tets$mesh)
+  cells <- mio_octree_mesh(cube, output = "castellated", max_size = 0.5, min_size = 0.125)
+  expect_equal(cells$output, "castellated")
+  expect_true("hexahedron" %in% mio_cell_block_types(cells$mesh))
+  expect_true(cells$num_hexahedra > 0)
+  mio_release(cells$mesh)
+  # A max_level too coarse for min_size is a warning, one entry per line.
+  coarse <- mio_octree_mesh(cube, max_size = 0.5, min_size = 0.125, max_level = 1)
+  expect_equal(coarse$num_warnings, 1)
+  expect_match(coarse$warnings[[1]], "coarsens min_size")
+  mio_release(coarse$mesh)
+  expect_error(mio_octree_mesh(cube, output = "prisms"))
+  expect_error(mio_octree_mesh(cube, fill = "surface"))
+
   # An unknown fill fails by name rather than silently defaulting.
   expect_error(mio_voxelize(cube, resolution = c(2, 2, 2), fill = "solid"))
 })

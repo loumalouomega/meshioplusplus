@@ -932,6 +932,16 @@ export type OpSpec =
       sizeArray?: string;
       plane?: PlanarPlane;
     }
+  | ({
+      /**
+       * A volume mesh of the skin's inside on a balanced octree (the core
+       * `OctreeMesh` step). Like `voxelize` it replaces the geometry; the
+       * step report carries `numLeaves`, `numCells`, `numInside`,
+       * `numSurrogateFaces`, `numHanging`, `numInverted`, `minDihedral` and
+       * `minScaledJacobian`. See {@link MeshioPlusPlusModule.octreeMesh}.
+       */
+      op: 'octreeMesh';
+    } & OctreeMeshOptions)
   | {
       /**
        * A signed distance field: a grid over the mesh's surface, filled. Like
@@ -1006,6 +1016,18 @@ export type OctreeBalance = 'none' | 'face' | 'full';
 
 /** What `octree` emits where a fine leaf meets a coarse one. See doc/octree.md. */
 export type OctreeTransition = 'hanging' | 'polyhedra' | 'templates';
+
+/** What `octreeMesh` produces. See doc/octree_mesh.md. */
+export type OctreeMeshOutput = 'tet' | 'castellated' | 'hex';
+
+/** How a tetrahedral `octreeMesh` output conforms to the skin. */
+export type OctreeMeshConformity = 'stuffing' | 'cleaving';
+
+/** How `octreeMesh`'s size field may vary along the skin. */
+export type OctreeMeshSkinGrading = 'graded' | 'uniform';
+
+/** Which leaves a castellated `octreeMesh` output keeps. */
+export type OctreeMeshFill = 'inside' | 'all' | 'cover';
 
 /** The plane of a 2-D skin. */
 export type PlanarPlane = 'auto' | 'xy' | 'xz' | 'yz';
@@ -2214,6 +2236,24 @@ export interface MeshioPlusPlusModule {
     numSnapped: number;
     numRefused: number;
   };
+
+  /**
+   * Mesh the inside of a skin on a balanced octree (`octree_mesh`): conforming
+   * graded tetrahedra fitted to the skin (`output: 'tet'`, the default),
+   * castellated hexahedral leaves with surrogate-boundary tags
+   * (`'castellated'`), or all-hexahedra by the octree dual (`'hex'`). The skin
+   * is any `triangle`/`quad`/`polygon` surface, closed or slightly dirty:
+   * inside and outside come from the fast generalised winding number. A
+   * separate operation from {@link MeshioPlusPlusModule.octree}. Every key of
+   * `options` is optional and defaults to `OctreeMeshOptions`. The output is
+   * byte-identical across thread counts. See doc/octree_mesh.md.
+   * @throws {Error} on an unknown key, a skin with no surface cells, sizes
+   *   that are not positive or `minSize > maxSize`, a lattice too fine for the
+   *   63-bit keys, more leaves than `maxCells` or output cells than `maxTets`,
+   *   an unknown `sizeArray` or `surfaceRegion`, an unknown enum name, or an
+   *   out-of-range option.
+   */
+  octreeMesh(mesh: Mesh, options?: OctreeMeshOptions): OctreeMeshResult;
 
   /** What is wrong with a surface, in numbers rather than a bare flag. */
   surfaceWatertightCheck(mesh: Mesh): {
@@ -3575,6 +3615,177 @@ export interface FitCadFaceRecord {
     | 'kernelMeshCoarse'
     | 'budgetExceeded'
     | 'other';
+}
+
+/**
+ * The options of {@link MeshioPlusPlusModule.octreeMesh}; every key is
+ * optional, `null` included, and defaults to `OctreeMeshOptions`. An unknown
+ * key is an error. See doc/octree_mesh.md.
+ */
+export interface OctreeMeshOptions {
+  /** What to produce (default `'tet'`). */
+  output?: OctreeMeshOutput;
+  /** The smallest leaf edge; 0: `maxSize / 32` (default 0). */
+  minSize?: number;
+  /** The largest leaf edge; 0: an eighth of the skin's bounding-box diagonal (default 0). */
+  maxSize?: number;
+  /** A cap on the finest level (at most 19); -1: from the sizes (default -1). */
+  maxLevel?: number;
+  /** `[xmin, ymin, zmin, xmax, ymax, zmax]` to mesh instead of the padded bounding box (default: unset). */
+  bounds?: number[] | null;
+  /** Padding added to every side, in world units (default 0). */
+  padding?: number;
+  /** Padding added to every side, as a fraction of the bounding-box diagonal (default 0.1). */
+  paddingRelative?: number;
+  /** The angle in degrees a leaf edge may subtend on a curved skin; 0 disables the curvature term (default 15). */
+  curvatureAngle?: number;
+  /** Edges sharper than this dihedral (degrees) are features; 0 disables features (default 30). */
+  featureAngle?: number;
+  /** A feature vertex where the feature turns by more than this (degrees) is a corner, as is one where it branches or ends (default 30). */
+  cornerAngle?: number;
+  /** The size along feature edges; 0: `minSize` (default 0). */
+  featureSize?: number;
+  /** Leaves across the local thickness of the skin; 0 disables the thickness term (default 2). */
+  gapCells?: number;
+  /** Also measure the gaps outside the skin, between separate parts (default false). */
+  gapOutside?: boolean;
+  /** Name of a `point_data` array of target sizes on the skin; empty: none (default `''`). */
+  sizeArray?: string;
+  /** Restrict the skin to this named cell region; empty: every surface block (default `''`). */
+  surfaceRegion?: string;
+  /** Rings of leaves around every cut leaf kept at its level (default 1). */
+  gradingLayers?: number;
+  /**
+   * `'graded'` lets the size field vary along the skin too; `'uniform'` keeps
+   * every cut leaf at one level, so the 10.7°-164.8° stuffing dihedral bound
+   * applies (default `'graded'`).
+   */
+  skinGrading?: OctreeMeshSkinGrading;
+  /** The skin size under `'uniform'` grading; 0: the smallest size the field asks for on the skin (default 0). */
+  surfaceSize?: number;
+  /** A point is inside where the winding number exceeds this (default 0.5). */
+  windingThreshold?: number;
+  /** Accuracy of the fast winding number (Barill et al.'s β); 0 sums every triangle exactly (default 2). */
+  windingBeta?: number;
+  /** How a tetrahedral output conforms to the skin (default `'stuffing'`). */
+  conformity?: OctreeMeshConformity;
+  /** Stuffing's violation threshold on long lattice edges (default 0.24799). */
+  alphaLong?: number;
+  /** Stuffing's violation threshold on short lattice edges (default 0.40173). */
+  alphaShort?: number;
+  /** Snap the boundary to the skin's feature corners and edges (default true). */
+  preserveFeatures?: boolean;
+  /** Rounds of fitting, untangling and optimisation; 0 disables them (default 5). */
+  fitIterations?: number;
+  /** Undo any optimisation move that lowers a node's minimum dihedral below the mesh's minimum before the pass (default true). */
+  dihedralFloorGuard?: boolean;
+  /** Which leaves a castellated output keeps (default `'inside'`). */
+  fill?: OctreeMeshFill;
+  /** Tetrahedral output: also mesh the space between the skin and the bounds, as the `outside` region (default false). */
+  keepOutside?: boolean;
+  /** Attach `sdf:distance` (and, castellated, `sdf:closest_point`) point data (default true). */
+  attachDistance?: boolean;
+  /** Attach the `quality:*` cell data of `attachQuality` (default false). */
+  attachQuality?: boolean;
+  /** Hexahedral output: insert a layer of hexahedra along the boundary (default true). */
+  pillow?: boolean;
+  /** Hexahedral output: untangling iterations (default 50). */
+  untangleIterations?: number;
+  /** Refuse an octree with more leaves than this (default 20000000). */
+  maxCells?: number;
+  /** Refuse an output with more cells than this (default 100000000). */
+  maxTets?: number;
+}
+
+/** What {@link MeshioPlusPlusModule.octreeMesh} built. See doc/octree_mesh.md#report. */
+export interface OctreeMeshResult {
+  /**
+   * The volume mesh: tetrahedra or hexahedra with the `inside` (and
+   * `outside`, `boundary_cells`) cell regions, the `boundary` or
+   * `surrogate_boundary` side region, the `feature_corners`/`feature_edges`
+   * point regions and, unless `attachDistance: false`, `sdf:distance`.
+   */
+  mesh: Mesh;
+  /** What `mesh` is. */
+  output: OctreeMeshOutput;
+  /** The lo corner of the root lattice. */
+  origin: number[];
+  /** The edge of a root cell. */
+  rootSize: number;
+  /** Root cells per axis. */
+  rootCells: number[];
+  /** The finest level allowed. */
+  maxLevel: number;
+  /** The deepest level present. */
+  finestLevel: number;
+  /** The skin level under `'uniform'` grading, else -1. */
+  surfaceLevel: number;
+  /** The resolved smallest leaf edge. */
+  minSize: number;
+  /** The resolved largest leaf edge. */
+  maxSize: number;
+  /** Leaves of the balanced octree. */
+  numLeaves: number;
+  /** Leaves at each level, from the root down. */
+  leavesPerLevel: number[];
+  /** Output points. */
+  numPoints: number;
+  /** Output cells. */
+  numCells: number;
+  /** Output hexahedra. */
+  numHexahedra: number;
+  /** Output tetrahedra. */
+  numTetrahedra: number;
+  /** Cells in the `inside` region. */
+  numInside: number;
+  /** Castellated cells the skin cuts. */
+  numBoundaryCells: number;
+  /** Faces in the `surrogate_boundary` region. */
+  numSurrogateFaces: number;
+  /** Hanging nodes of a castellated output. */
+  numHanging: number;
+  /** Points stuffing placed on lattice edges. */
+  numCutPoints: number;
+  /** Lattice vertices stuffing moved onto the skin. */
+  numWarped: number;
+  /** Warps refused to keep a tetrahedron valid. */
+  numWarpRefused: number;
+  /** Smallest dihedral angle over the tetrahedra, degrees. */
+  minDihedral: number;
+  /** Largest dihedral angle over the tetrahedra, degrees. */
+  maxDihedral: number;
+  /** Smallest scaled Jacobian over the cells. */
+  minScaledJacobian: number;
+  /** Cells with a non-positive volume. */
+  numInverted: number;
+  /** The two-sided distance between the output's boundary and the skin; -1 when not measured (castellated output). */
+  hausdorffToSkin: number;
+  /** Output boundary edges used once (0 for a watertight boundary). */
+  numBoundaryEdgesOpen: number;
+  /** Output boundary edges used three or more times. */
+  numNonManifoldBoundaryEdges: number;
+  /** Feature corners of the skin. */
+  numCorners: number;
+  /** Corners an output node was snapped to. */
+  numCornersSnapped: number;
+  /** Feature chains of the skin. */
+  numFeatureChains: number;
+  /** Chains the boundary did not recover. */
+  numFeatureChainsMissed: number;
+  /** Boundary nodes moved onto features. */
+  numFeatureMoves: number;
+  /** Nodes the optimisation moved. */
+  numOptimizedMoves: number;
+  /** Flips the optimisation kept. */
+  numFlips: number;
+  /** The Labelle-Shewchuk dihedral bound applies to every tetrahedron: `'uniform'` grading, nothing snapped to features, nothing refused. */
+  guaranteeApplies: boolean;
+  /** Winding numbers re-evaluated near the threshold. */
+  numWindingRechecks: number;
+  /** Seconds spent in each stage, in order, as `[stage, seconds]` pairs. */
+  timings: Array<[string, number]>;
+  /** Everything that did not meet its target, in order. */
+  warnings: string[];
 }
 
 /** The options of {@link MeshioPlusPlusModule.refinePatches}; every key is optional. */

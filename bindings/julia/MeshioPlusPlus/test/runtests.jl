@@ -1482,6 +1482,28 @@ end
     @test templ.num_hanging == 0
     close(templ.mesh)
 
+    # octree_mesh: graded tetrahedra inside the cube, then its castellated leaves.
+    tets = octree_mesh(cube; max_size=0.5, min_size=0.125)
+    @test tets.output == "tet"
+    @test "tetra" in cell_block_types(tets.mesh)
+    @test tets.num_tetrahedra > 0
+    @test tets.num_inverted == 0
+    @test tets.warnings isa Vector{String}
+    @test length(tets.warnings) == tets.num_warnings
+    close(tets.mesh)
+    cells = octree_mesh(cube; output=:castellated, max_size=0.5, min_size=0.125)
+    @test cells.output == "castellated"
+    @test "hexahedron" in cell_block_types(cells.mesh)
+    @test cells.num_hexahedra > 0
+    close(cells.mesh)
+    # A max_level too coarse for min_size is a warning, one entry per line.
+    coarse = octree_mesh(cube; max_size=0.5, min_size=0.125, max_level=1)
+    @test coarse.num_warnings == 1
+    @test occursin("coarsens min_size", coarse.warnings[1])
+    close(coarse.mesh)
+    @test_throws ArgumentError octree_mesh(cube; output=:prisms)
+    @test_throws ArgumentError octree_mesh(cube; fill=:surface)
+
     # An unknown fill fails by name rather than silently defaulting.
     @test_throws ArgumentError voxelize(cube; resolution=[2, 2, 2], fill=:solid)
 

@@ -444,6 +444,23 @@ WRITING = [
             "--json",
         ],
     ),
+    (
+        "octree_mesh_castellated",
+        lambda f, out: [
+            "octree-mesh",
+            f["hexes"],
+            out + ".vtu",
+            "--output",
+            "castellated",
+            "--max-size",
+            "1",
+            "--min-size",
+            "0.25",
+            "--fill",
+            "cover",
+            "--json",
+        ],
+    ),
 ]
 
 

@@ -291,6 +291,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   referenceCells: (types?: string[], pairs?: boolean) => Mesh,
  *   voxelize: (mesh: Mesh, resolution?: number[], cellSize?: number, bounds?: number[], padding?: number, paddingRelative?: number, fill?: string, sign?: string, attachOccupancy?: boolean, maxCells?: number, watertightCheck?: string) => {mesh: Mesh, dims: number[], origin: number[], spacing: number[], numOccupied: number},
  *   octree: (mesh: Mesh, rootCells?: number[], minLevel?: number, maxLevel?: number, bounds?: number[], padding?: number, paddingRelative?: number, dimension?: number, sampleDistance?: number, balance?: string, fill?: string, sign?: string, attachDistance?: boolean, evenOdd?: boolean, maxCells?: number, watertightCheck?: string, transition?: string, snap?: boolean, surfaceLevel?: number, curvatureThreshold?: number, featureAngle?: number, sizeArray?: string, plane?: string) => {mesh: Mesh, dimension: number, numLeaves: number, numHanging: number, finestLevel: number, origin: number[], rootSize: number, numSnapped: number, numRefused: number},
+ *   octreeMesh: (mesh: Mesh, options?: {output?: 'tet' | 'castellated' | 'hex', minSize?: number, maxSize?: number, maxLevel?: number, bounds?: number[], padding?: number, paddingRelative?: number, curvatureAngle?: number, featureAngle?: number, cornerAngle?: number, featureSize?: number, gapCells?: number, gapOutside?: boolean, sizeArray?: string, surfaceRegion?: string, gradingLayers?: number, skinGrading?: 'graded' | 'uniform', surfaceSize?: number, windingThreshold?: number, windingBeta?: number, conformity?: 'stuffing' | 'cleaving', alphaLong?: number, alphaShort?: number, preserveFeatures?: boolean, fitIterations?: number, dihedralFloorGuard?: boolean, fill?: 'inside' | 'all' | 'cover', keepOutside?: boolean, attachDistance?: boolean, attachQuality?: boolean, pillow?: boolean, untangleIterations?: number, maxCells?: number, maxTets?: number}) => object,
  *   surfaceWatertightCheck: (mesh: Mesh) => {boundaryEdges: number, nonManifoldEdges: number, inconsistentPairs: number, degenerateTriangles: number, watertight: boolean},
  *   sampleDistance: (surface: Mesh, points: number[], sign?: string, band?: number, watertightCheck?: string) => Float64Array,
  *   distanceToSurface: (query: Mesh, surface: Mesh, sign?: string, location?: string, band?: number, recordInside?: boolean, watertightCheck?: string) => {mesh: Mesh, numBanded: number, quality: object},
@@ -843,6 +844,8 @@ export async function loadMeshioPlusPlus(
                 dimension, sampleDistance, balance, fill, sign, attachDistance, evenOdd, maxCells,
                 watertightCheck, transition, snap, surfaceLevel, curvatureThreshold, featureAngle,
                 sizeArray, plane),
+        // Options object: every key optional, the defaults of OctreeMeshOptions.
+        octreeMesh: (mesh, options = {}) => Module.octreeMesh(mesh, options),
         surfaceWatertightCheck: (mesh) => Module.surfaceWatertightCheck(mesh),
         sampleDistance: (surface, points, sign = 'pseudonormal', band = 0, watertightCheck = 'warn') =>
             Module.sampleDistance(surface, points, sign, band, watertightCheck),

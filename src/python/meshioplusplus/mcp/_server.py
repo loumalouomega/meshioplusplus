@@ -1066,6 +1066,106 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def octree_mesh(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        output: str = "tet",
+        min_size: float = 0.0,
+        max_size: float = 0.0,
+        max_level: int = -1,
+        bounds: Optional[List[float]] = None,
+        padding: float = 0.0,
+        padding_relative: float = 0.1,
+        curvature_angle: float = 15.0,
+        feature_angle: float = 30.0,
+        corner_angle: float = 30.0,
+        feature_size: float = 0.0,
+        gap_cells: float = 2.0,
+        gap_outside: bool = False,
+        size_array: Optional[str] = None,
+        surface_region: Optional[str] = None,
+        grading_layers: int = 1,
+        skin_grading: str = "graded",
+        surface_size: float = 0.0,
+        winding_threshold: float = 0.5,
+        winding_beta: float = 2.0,
+        conformity: str = "stuffing",
+        alpha_long: float = 0.24799,
+        alpha_short: float = 0.40173,
+        preserve_features: bool = True,
+        fit_iterations: int = 5,
+        dihedral_floor_guard: bool = True,
+        fill: str = "inside",
+        keep_outside: bool = False,
+        attach_distance: bool = True,
+        attach_quality: bool = False,
+        pillow: bool = True,
+        untangle_iterations: int = 50,
+        max_cells: int = 20000000,
+        max_tets: int = 100000000,
+    ) -> dict:
+        """Mesh the inside of a skin (any closed or slightly dirty surface:
+        STL/OBJ/PLY/...) on a 2:1-balanced octree. output='castellated' gives
+        the inside leaves as hexahedra with the 'inside' and 'boundary_cells'
+        cell regions, the 'surrogate_boundary' side region (faces between
+        inside and outside leaves) and sdf:distance / sdf:closest_point at the
+        nodes, for embedded and Shifted Boundary Method solvers; output='tet'
+        (default) conforming graded tetrahedra fitted to the skin; output='hex'
+        all-hexahedra. Leaves are at most max_size, and near the skin the
+        smallest of the curvature size (curvature_angle degrees per leaf), the
+        feature size along edges sharper than feature_angle, the thickness over
+        gap_cells and size_array, never below min_size (0: derived from the
+        skin's diagonal). Inside is the fast winding number above
+        winding_threshold, so holes and self-intersections are tolerated.
+        skin_grading='uniform' keeps the skin at one level (the stuffing angle
+        guarantee). fill='all'/'inside'/'cover' chooses the castellated leaves.
+        Reports the frame, leaf and cell counts, the quality (dihedral angles,
+        scaled Jacobian, histograms), feature recovery, timings and warnings."""
+        return _guard(
+            _tools.tool_octree_mesh,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            output=output,
+            min_size=min_size,
+            max_size=max_size,
+            max_level=max_level,
+            bounds=bounds,
+            padding=padding,
+            padding_relative=padding_relative,
+            curvature_angle=curvature_angle,
+            feature_angle=feature_angle,
+            corner_angle=corner_angle,
+            feature_size=feature_size,
+            gap_cells=gap_cells,
+            gap_outside=gap_outside,
+            size_array=size_array,
+            surface_region=surface_region,
+            grading_layers=grading_layers,
+            skin_grading=skin_grading,
+            surface_size=surface_size,
+            winding_threshold=winding_threshold,
+            winding_beta=winding_beta,
+            conformity=conformity,
+            alpha_long=alpha_long,
+            alpha_short=alpha_short,
+            preserve_features=preserve_features,
+            fit_iterations=fit_iterations,
+            dihedral_floor_guard=dihedral_floor_guard,
+            fill=fill,
+            keep_outside=keep_outside,
+            attach_distance=attach_distance,
+            attach_quality=attach_quality,
+            pillow=pillow,
+            untangle_iterations=untangle_iterations,
+            max_cells=max_cells,
+            max_tets=max_tets,
+        )
+
+    @server.tool()
     def octree(
         input_path: str,
         output_path: str,
