@@ -329,8 +329,25 @@ MIO_ABI_LAYOUT(meshioplusplus::SdfOptions, 248, 8);
 MIO_ABI_LAYOUT(meshioplusplus::VoxelOptions, 216, 8);
 MIO_ABI_LAYOUT(meshioplusplus::OctreeOptions, 304, 8);
 MIO_ABI_LAYOUT(meshioplusplus::OctreeMeshOptions, 336, 8);
-MIO_ABI_LAYOUT(meshioplusplus::MeshCadSurfaceOptions, 48, 8);
-MIO_ABI_LAYOUT(meshioplusplus::MeshCadFaceRecord, 112, 8);
+// ABI 34 (v17.15.0): the quality options of roadmap 6.2 and the fields 6.3,
+// 6.4 and 6.6 will use, appended in one layout (refused until their items
+// land), and the face record's refinement report.
+MIO_ABI_LAYOUT(meshioplusplus::MeshCadSurfaceOptions, 120, 8);
+static_assert(offsetof(meshioplusplus::MeshCadSurfaceOptions, mMinAngleDeg) == 48,
+              "MeshCadSurfaceOptions::mMinAngleDeg moved");
+static_assert(offsetof(meshioplusplus::MeshCadSurfaceOptions, mSmoothMethod) == 64,
+              "MeshCadSurfaceOptions::mSmoothMethod moved");
+static_assert(offsetof(meshioplusplus::MeshCadSurfaceOptions, mGrading) == 72,
+              "MeshCadSurfaceOptions::mGrading moved");
+static_assert(offsetof(meshioplusplus::MeshCadSurfaceOptions, mMetric) == 96,
+              "MeshCadSurfaceOptions::mMetric moved");
+static_assert(offsetof(meshioplusplus::MeshCadSurfaceOptions, mReparamConditionNumber) == 104,
+              "MeshCadSurfaceOptions::mReparamConditionNumber moved");
+static_assert(offsetof(meshioplusplus::MeshCadSurfaceOptions, mOrder) == 112,
+              "MeshCadSurfaceOptions::mOrder moved");
+MIO_ABI_LAYOUT(meshioplusplus::MeshCadFaceRecord, 176, 8);
+MIO_ABI_LAYOUT(meshioplusplus::MeshCadCorner, 88, 8);
+MIO_ABI_LAYOUT(meshioplusplus::TriangulatePolygon2dOptions, 24, 8);
 MIO_ABI_LAYOUT(meshioplusplus::detail::LatticeSpec, 72, 8);
 
 // RefineOptions is passed by const-ref through the exported `refine()`,

@@ -294,9 +294,9 @@ TEST(MeshCad, SphereThroughThePoles) {
     }
 }
 
-TEST(MeshCad, TrimmedPlateWithAHole) {
-    // tests/cpp/test_iga.cpp's plate: a 4 x 4 plane with a diamond hole, a
-    // single degree-1 trim whose corners are knots (kept as samples).
+// tests/cpp/test_iga.cpp's plate: a 4 x 4 plane with a diamond hole, a
+// single degree-1 trim whose corners are knots (kept as samples).
+mio::BrepInfo trimmed_plate() {
     const char* plate = R"({"breps": [{"brep_id": 1, "faces": [{"brep_id": 2,
         "swapped_surface_normal": false, "surface": {"is_trimmed": true, "is_rational": false,
         "degrees": [1, 1], "knot_vectors": [[0, 4], [0, 4]],
@@ -318,7 +318,11 @@ TEST(MeshCad, TrimmedPlateWithAHole) {
         "embedded_edges": []}], "edges": [], "vertices": []}]})";
     const std::string path = mt::temp_path(".cad.json");
     std::ofstream(path) << plate;
-    const mio::BrepInfo info = mio::read_cad_json_info(path);
+    return mio::read_cad_json_info(path);
+}
+
+TEST(MeshCad, TrimmedPlateWithAHole) {
+    const mio::BrepInfo info = trimmed_plate();
     for (const double h : {0.5, 0.2, 0.1}) {
         const auto r = mio::mesh_cad_surface(info, size(h));
         ASSERT_EQ(r.mNumFailed, 0) << r.mFaces[0].mReason;
