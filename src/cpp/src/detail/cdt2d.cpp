@@ -94,6 +94,57 @@ double cdt2d_segment_distance2(const Cdt2d::Vec2& rP, const Cdt2d::Vec2& rA,
     return ex * ex + ey * ey;
 }
 
+/// Whether `rP`, collinear with the segment (A, B), lies on its closed box.
+bool cdt2d_in_box(const Cdt2d::Vec2& rA, const Cdt2d::Vec2& rB, const Cdt2d::Vec2& rP) {
+    return std::min(rA[0], rB[0]) <= rP[0] && rP[0] <= std::max(rA[0], rB[0]) &&
+           std::min(rA[1], rB[1]) <= rP[1] && rP[1] <= std::max(rA[1], rB[1]);
+}
+
+/// Whether D, collinear with A and B and distinct from A, lies on the ray
+/// from A through B: exact comparisons of coordinates, no subtraction.
+bool cdt2d_same_ray(const Cdt2d::Vec2& rA, const Cdt2d::Vec2& rB, const Cdt2d::Vec2& rD) {
+    const int k = rA[0] != rB[0] ? 0 : 1;
+    if (rD[k] == rA[k])
+        return false;
+    return (rB[k] > rA[k]) == (rD[k] > rA[k]);
+}
+
+/// Whether two segments (indices into rPoints) meet anywhere but at an
+/// endpoint they share (see cdt2d_find_crossings).
+bool cdt2d_segments_meet(const std::vector<Cdt2d::Vec2>& rPoints,
+                         const std::array<std::int64_t, 2>& rS,
+                         const std::array<std::int64_t, 2>& rT) {
+    const auto at = [&](std::int64_t I) -> const Cdt2d::Vec2& {
+        return rPoints[static_cast<std::size_t>(I)];
+    };
+    const Cdt2d::Vec2& a = at(rS[0]);
+    const Cdt2d::Vec2& b = at(rS[1]);
+    const Cdt2d::Vec2& c = at(rT[0]);
+    const Cdt2d::Vec2& d = at(rT[1]);
+    if (a == b || c == d)
+        return false;
+    const int shared =
+        int(rS[0] == rT[0]) + int(rS[0] == rT[1]) + int(rS[1] == rT[0]) + int(rS[1] == rT[1]);
+    if (shared >= 2)
+        return true;
+    if (shared == 1) {
+        // Only a fold-back: the other ends on one ray from the shared one.
+        const std::int64_t p = (rS[0] == rT[0] || rS[0] == rT[1]) ? rS[0] : rS[1];
+        const Cdt2d::Vec2& q = at(rS[0] == p ? rS[1] : rS[0]);
+        const Cdt2d::Vec2& r = at(rT[0] == p ? rT[1] : rT[0]);
+        return orient2d(at(p).data(), q.data(), r.data()) == 0.0 && cdt2d_same_ray(at(p), q, r);
+    }
+    const double o1 = orient2d(a.data(), b.data(), c.data());
+    const double o2 = orient2d(a.data(), b.data(), d.data());
+    const double o3 = orient2d(c.data(), d.data(), a.data());
+    const double o4 = orient2d(c.data(), d.data(), b.data());
+    if (((o1 > 0.0 && o2 < 0.0) || (o1 < 0.0 && o2 > 0.0)) &&
+        ((o3 > 0.0 && o4 < 0.0) || (o3 < 0.0 && o4 > 0.0)))
+        return true;
+    return (o1 == 0.0 && cdt2d_in_box(a, b, c)) || (o2 == 0.0 && cdt2d_in_box(a, b, d)) ||
+           (o3 == 0.0 && cdt2d_in_box(c, d, a)) || (o4 == 0.0 && cdt2d_in_box(c, d, b));
+}
+
 }  // namespace
 
 const char* cdt2d_status_name(Cdt2dStatus Status) {
@@ -698,6 +749,24 @@ Cdt2dStatus Cdt2d::Classify() {
     return status;
 }
 
+Cdt2dWhere Cdt2d::Where(const Vec2& rP) {
+    if (!mClassified)
+        cdt2d_internal("Where before Classify");
+    const Location loc = Locate(rP);
+    Cdt2dWhere w;
+    if (loc.mKind == 2) {
+        w.mPlace = Cdt2dPlace::OnVertex;
+        w.mVertex = loc.mVertex;
+        return w;
+    }
+    const auto& r_t = mTris[static_cast<std::size_t>(loc.mTri)];
+    if (loc.mKind == 1 && r_t.mC[loc.mIndex])
+        w.mPlace = Cdt2dPlace::OnConstraint;
+    else
+        w.mPlace = r_t.mInside ? Cdt2dPlace::Inside : Cdt2dPlace::Outside;
+    return w;
+}
+
 std::int64_t Cdt2d::InsertSteiner(const Vec2& rP) {
     if (!mClassified)
         cdt2d_internal("InsertSteiner before Classify");
@@ -726,6 +795,62 @@ std::vector<Cdt2d::Tri> Cdt2d::AllTriangles() const {
     for (const Triangle& r_t : mTris)
         if (r_t.mAlive)
             out.push_back(r_t.mV);
+    return out;
+}
+
+std::vector<std::array<std::int64_t, 2>> cdt2d_find_crossings(
+    const std::vector<Cdt2d::Vec2>& rPoints,
+    const std::vector<std::array<std::int64_t, 2>>& rSegments) {
+    using Vec2 = Cdt2d::Vec2;
+    std::vector<std::array<std::int64_t, 2>> out;
+    const std::size_t ns = rSegments.size();
+    if (ns < 2)
+        return out;
+    double lo[2] = {std::numeric_limits<double>::infinity(),
+                    std::numeric_limits<double>::infinity()};
+    double hi[2] = {-lo[0], -lo[1]};
+    for (const auto& r_s : rSegments)
+        for (const std::int64_t v : r_s)
+            for (int k = 0; k < 2; ++k) {
+                lo[k] = std::min(lo[k], rPoints[static_cast<std::size_t>(v)][k]);
+                hi[k] = std::max(hi[k], rPoints[static_cast<std::size_t>(v)][k]);
+            }
+    // Square cells, about sqrt(n) of them along the longer side; a segment
+    // is in every cell its box touches, so two that meet share a cell.
+    const double per = std::ceil(std::sqrt(double(ns)));
+    const double side = std::max(hi[0] - lo[0], hi[1] - lo[1]);
+    const double cell = side > 0.0 && std::isfinite(side) ? side / per : 1.0;
+    const auto index = [&](double X, int K) {
+        const double c = std::floor((X - lo[K]) / cell);
+        return static_cast<std::int64_t>(std::clamp(c, 0.0, per));
+    };
+    const auto nc = static_cast<std::int64_t>(per) + 1;
+    std::vector<std::vector<std::uint32_t>> cells(static_cast<std::size_t>(nc * nc));
+    for (std::size_t s = 0; s < ns; ++s) {
+        const Vec2& a = rPoints[static_cast<std::size_t>(rSegments[s][0])];
+        const Vec2& b = rPoints[static_cast<std::size_t>(rSegments[s][1])];
+        const std::int64_t i0 = index(std::min(a[0], b[0]), 0);
+        const std::int64_t i1 = index(std::max(a[0], b[0]), 0);
+        const std::int64_t j0 = index(std::min(a[1], b[1]), 1);
+        const std::int64_t j1 = index(std::max(a[1], b[1]), 1);
+        for (std::int64_t j = j0; j <= j1; ++j)
+            for (std::int64_t i = i0; i <= i1; ++i)
+                cells[static_cast<std::size_t>(j * nc + i)].push_back(
+                    static_cast<std::uint32_t>(s));
+    }
+    std::vector<std::uint64_t> pairs;
+    for (const auto& r_c : cells)
+        for (std::size_t x = 0; x < r_c.size(); ++x)
+            for (std::size_t y = x + 1; y < r_c.size(); ++y)
+                pairs.push_back((static_cast<std::uint64_t>(r_c[x]) << 32) | r_c[y]);
+    std::sort(pairs.begin(), pairs.end());
+    pairs.erase(std::unique(pairs.begin(), pairs.end()), pairs.end());
+    for (const std::uint64_t key : pairs) {
+        const auto s = static_cast<std::size_t>(key >> 32);
+        const auto t = static_cast<std::size_t>(key & 0xffffffffull);
+        if (cdt2d_segments_meet(rPoints, rSegments[s], rSegments[t]))
+            out.push_back({static_cast<std::int64_t>(s), static_cast<std::int64_t>(t)});
+    }
     return out;
 }
 

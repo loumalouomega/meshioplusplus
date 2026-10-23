@@ -20,7 +20,9 @@
 // the exact orient2d), every constrained boundary segment is an edge and the
 // boundary edges of the triangulation are exactly those segments, the Euler
 // characteristic V - E + F is 1 - holes, and every unconstrained edge passes
-// the exact in-circle test (the constrained Delaunay property).
+// the exact in-circle test (the constrained Delaunay property). The crossing
+// finder is checked case by case and against a test of every pair, and a
+// segment inserted after classification against the inside it leaves alone.
 
 // System includes
 #include <algorithm>
@@ -303,6 +305,145 @@ TEST(Cdt2d, LargeRefinement) {
     EXPECT_LE(c.mMaxEdge, 1.5 * h);
     EXPECT_GE(c.mMinEdge, 0.3 * h);
     EXPECT_GT(c.mMinAngleDeg, 10.0);
+}
+
+// The crossings of a set of segments, in the plane: every pair that meets
+// anywhere but at a shared endpoint, by exact orientation tests alone.
+std::vector<std::array<std::int64_t, 2>> crossings(
+    const std::vector<Vec2>& rPoints, const std::vector<std::array<std::int64_t, 2>>& rSegs) {
+    return mio::detail::cdt2d_find_crossings(rPoints, rSegs);
+}
+
+TEST(Cdt2dCrossings, ClassifiesEveryWayTwoSegmentsMeet) {
+    using Pairs = std::vector<std::array<std::int64_t, 2>>;
+    // An X.
+    EXPECT_EQ(crossings({{0, 0}, {2, 2}, {0, 2}, {2, 0}}, {{0, 1}, {2, 3}}), (Pairs{{0, 1}}));
+    // A T: an endpoint in the other's interior.
+    EXPECT_EQ(crossings({{0, 0}, {2, 0}, {1, 0}, {1, 1}}, {{0, 1}, {2, 3}}), (Pairs{{0, 1}}));
+    // Collinear and overlapping.
+    EXPECT_EQ(crossings({{0, 0}, {2, 0}, {1, 0}, {3, 0}}, {{0, 1}, {2, 3}}), (Pairs{{0, 1}}));
+    // Collinear and apart.
+    EXPECT_TRUE(crossings({{0, 0}, {1, 0}, {2, 0}, {3, 0}}, {{0, 1}, {2, 3}}).empty());
+    // Two distinct points at the same place touch.
+    EXPECT_EQ(crossings({{0, 0}, {1, 0}, {1, 0}, {1, 1}}, {{0, 1}, {2, 3}}), (Pairs{{0, 1}}));
+    // Adjacent segments of a polyline meet only at their shared point...
+    EXPECT_TRUE(crossings({{0, 0}, {1, 0}, {1, 1}}, {{0, 1}, {1, 2}}).empty());
+    // ... and straight on is fine too, but folding back is not.
+    EXPECT_TRUE(crossings({{0, 0}, {1, 0}, {2, 0}}, {{0, 1}, {1, 2}}).empty());
+    EXPECT_EQ(crossings({{0, 0}, {2, 0}, {1, 0}}, {{0, 1}, {1, 2}}), (Pairs{{0, 1}}));
+    // The same segment twice, either way round.
+    EXPECT_EQ(crossings({{0, 0}, {1, 1}}, {{0, 1}, {1, 0}}), (Pairs{{0, 1}}));
+    // A segment of zero length meets nothing.
+    EXPECT_TRUE(crossings({{0, 0}, {2, 2}, {1, 1}, {1, 1}}, {{0, 1}, {2, 3}}).empty());
+}
+
+TEST(Cdt2dCrossings, NearMissesAreDecidedExactly) {
+    // An endpoint one ulp off the other segment, either side: a crossing on
+    // one side only. A tolerance would call both (or neither) a crossing.
+    const double y = 0.1 + 0.2;  // not 0.3: the segment's line is exact anyway
+    const Vec2 below{1.0, std::nextafter(y, 0.0)};
+    const Vec2 above{1.0, std::nextafter(y, 1.0)};
+    using Pairs = std::vector<std::array<std::int64_t, 2>>;
+    // The segment (0, y)-(2, y) and one from (1, -1) up to just below/above it.
+    EXPECT_TRUE(crossings({{0, y}, {2, y}, {1, -1}, below}, {{0, 1}, {2, 3}}).empty());
+    EXPECT_EQ(crossings({{0, y}, {2, y}, {1, -1}, above}, {{0, 1}, {2, 3}}), (Pairs{{0, 1}}));
+    EXPECT_EQ(crossings({{0, y}, {2, y}, {1, -1}, {1.0, y}}, {{0, 1}, {2, 3}}), (Pairs{{0, 1}}));
+}
+
+TEST(Cdt2dCrossings, AgreesWithEveryPairOnRandomPolygons) {
+    // Random closed polylines (star polygons with noisy radii, some of them
+    // crossing): the bucketed search finds exactly the pairs a test of every
+    // pair finds.
+    std::mt19937_64 rng(20261023);
+    std::uniform_real_distribution<double> u01(0.0, 1.0);
+    std::size_t found = 0;
+    for (int trial = 0; trial < 40; ++trial) {
+        std::vector<Vec2> pts;
+        std::vector<std::array<std::int64_t, 2>> segs;
+        const int loops = 1 + trial % 3;
+        for (int l = 0; l < loops; ++l) {
+            const int n = 5 + static_cast<int>(u01(rng) * 40);
+            const double cx = u01(rng) * 3, cy = u01(rng) * 3;
+            const auto base = static_cast<std::int64_t>(pts.size());
+            for (int i = 0; i < n; ++i) {
+                const double a = 2 * M_PI * (i + 0.5 * u01(rng)) / n;
+                const double r = 0.5 + u01(rng);
+                pts.push_back({cx + r * std::cos(a), cy + r * std::sin(a)});
+            }
+            for (int i = 0; i < n; ++i)
+                segs.push_back({base + i, base + (i + 1) % n});
+        }
+        std::vector<std::array<std::int64_t, 2>> brute;
+        for (std::size_t s = 0; s < segs.size(); ++s)
+            for (std::size_t t = s + 1; t < segs.size(); ++t)
+                if (!crossings(pts, {segs[s], segs[t]}).empty())
+                    brute.push_back({static_cast<std::int64_t>(s), static_cast<std::int64_t>(t)});
+        EXPECT_EQ(crossings(pts, segs), brute) << "trial " << trial;
+        found += brute.size();
+    }
+    EXPECT_GT(found, 100u);  // the overlapping loops do cross
+}
+
+TEST(Cdt2d, WhereLocatesAPointExactly) {
+    mio::detail::Cdt2d cdt(0, 0, 4, 4);
+    const auto ids = cdt.InsertBatch({{0, 0}, {4, 0}, {4, 4}, {0, 4}});
+    for (int k = 0; k < 4; ++k)
+        ASSERT_EQ(cdt.InsertSegment(ids[std::size_t(k)], ids[std::size_t((k + 1) % 4)]),
+                  Cdt2dStatus::Ok);
+    ASSERT_EQ(cdt.Classify(), Cdt2dStatus::Ok);
+    using Place = mio::detail::Cdt2dPlace;
+    EXPECT_EQ(cdt.Where({1, 1}).mPlace, Place::Inside);
+    EXPECT_EQ(cdt.Where({5, 1}).mPlace, Place::Outside);
+    EXPECT_EQ(cdt.Where({2, 0}).mPlace, Place::OnConstraint);
+    EXPECT_EQ(cdt.Where({std::nextafter(4.0, 5.0), 2}).mPlace, Place::Outside);
+    EXPECT_EQ(cdt.Where({std::nextafter(4.0, 0.0), 2}).mPlace, Place::Inside);
+    const auto v = cdt.Where({4, 4});
+    EXPECT_EQ(v.mPlace, Place::OnVertex);
+    EXPECT_EQ(v.mVertex, ids[2]);
+    // Where inserts nothing.
+    EXPECT_EQ(cdt.NumVertices(), mio::detail::Cdt2d::kFirstVertex + 4);
+}
+
+TEST(Cdt2d, ASegmentAfterClassifyLeavesTheDomainAlone) {
+    // A square with a square hole; then, after classification, a dangling
+    // segment and a chord between two boundary vertices are constrained.
+    // Classification counted the loops alone, so the inside is the same
+    // area, and nothing is an open loop.
+    mio::detail::Cdt2d cdt(0, 0, 4, 4);
+    const std::vector<Vec2> outer = {{0, 0}, {4, 0}, {4, 4}, {0, 4}};
+    const std::vector<Vec2> hole = {{1, 1}, {1, 2}, {2, 2}, {2, 1}};
+    std::vector<Vec2> all = outer;
+    all.insert(all.end(), hole.begin(), hole.end());
+    const auto ids = cdt.InsertBatch(all);
+    for (int l = 0; l < 2; ++l)
+        for (int k = 0; k < 4; ++k)
+            ASSERT_EQ(cdt.InsertSegment(ids[std::size_t(4 * l + k)],
+                                        ids[std::size_t(4 * l + (k + 1) % 4)]),
+                      Cdt2dStatus::Ok);
+    ASSERT_EQ(cdt.Classify(), Cdt2dStatus::Ok);
+    const auto area = [&] {
+        double a = 0.0;
+        for (const auto& t : cdt.InsideTriangles()) {
+            const Vec2& p = cdt.Point(t[0]);
+            const Vec2& q = cdt.Point(t[1]);
+            const Vec2& r = cdt.Point(t[2]);
+            a += 0.5 * ((q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]));
+        }
+        return a;
+    };
+    EXPECT_DOUBLE_EQ(area(), 15.0);
+    const std::int64_t a = cdt.Insert({2.5, 3.0});
+    const std::int64_t b = cdt.Insert({3.5, 0.5});
+    ASSERT_GE(a, mio::detail::Cdt2d::kFirstVertex);
+    EXPECT_EQ(cdt.InsertSegment(a, b), Cdt2dStatus::Ok);            // dangling, inside
+    EXPECT_EQ(cdt.InsertSegment(ids[3], ids[6]), Cdt2dStatus::Ok);  // a chord to the hole
+    EXPECT_TRUE(cdt.IsConstrainedEdge(a, b) || cdt.IsConstrainedEdge(b, a));
+    EXPECT_TRUE(cdt.IsConstrainedEdge(ids[3], ids[6]) || cdt.IsConstrainedEdge(ids[6], ids[3]));
+    EXPECT_DOUBLE_EQ(area(), 15.0);
+    for (const auto& t : cdt.InsideTriangles())
+        EXPECT_GT(mio::detail::orient2d(cdt.Point(t[0]).data(), cdt.Point(t[1]).data(),
+                                        cdt.Point(t[2]).data()),
+                  0.0);
 }
 
 }  // namespace

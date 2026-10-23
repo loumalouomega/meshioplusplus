@@ -44,6 +44,18 @@
  *    strictly inside the domain and restores the constrained Delaunay
  *    property, never flipping a constrained edge; a point outside, on a
  *    constrained edge or on a vertex is refused.
+ *  - **Segments inside the domain.** After `Classify`, `Insert` and
+ *    `InsertSegment` add a curve embedded in the domain (`mesh_cad_surface`'s
+ *    embedded edges): it is recovered like a boundary segment, but the
+ *    classification has already been made from the loops alone, so it never
+ *    changes which triangles are inside. `Where` says, without inserting,
+ *    whether a point is inside, outside, on a constrained edge or on a
+ *    vertex, so a caller can check a curve before committing to it.
+ *  - **Crossings.** `cdt2d_find_crossings` lists the pairs of segments of a
+ *    straight-line graph that meet anywhere but at a shared endpoint (a
+ *    proper crossing, a touch, an overlap, a fold-back), with exact
+ *    orientation tests over a bucket grid, so a caller can split them before
+ *    the triangulation would refuse them as `SelfIntersecting`.
  *
  * Every orientation and in-circle decision is one of the exact predicates of
  * `detail/predicates.hpp`, and no coordinate is ever compared to another with
@@ -72,6 +84,19 @@ enum class Cdt2dStatus : int {
 };
 
 const char* cdt2d_status_name(Cdt2dStatus Status);
+
+/// Where a point lies in a classified triangulation (`Cdt2d::Where`).
+enum class Cdt2dPlace : int {
+    Outside = 0,       ///< outside the domain (or in a hole)
+    Inside = 1,        ///< strictly inside an inside triangle, or on an unconstrained edge
+    OnConstraint = 2,  ///< on a constrained edge, away from its ends
+    OnVertex = 3,      ///< exactly on a vertex
+};
+
+struct Cdt2dWhere {
+    Cdt2dPlace mPlace = Cdt2dPlace::Outside;
+    std::int64_t mVertex = -1;  ///< the vertex, for `OnVertex`
+};
 
 class Cdt2d {
 public:
@@ -102,6 +127,9 @@ public:
     /// After `Classify`: insert a point strictly inside the domain, or
     /// return -1 (outside, on a constrained edge or on a vertex).
     std::int64_t InsertSteiner(const Vec2& rP);
+
+    /// After `Classify`: where a point lies, decided exactly; inserts nothing.
+    Cdt2dWhere Where(const Vec2& rP);
 
     /// The inside triangles (after `Classify`), counter-clockwise, in
     /// triangle-slot order.
@@ -162,6 +190,19 @@ private:
     double Orient(std::int64_t A, std::int64_t B, const Vec2& rC) const;
     double InCircle(std::int64_t A, std::int64_t B, std::int64_t C, std::int64_t D) const;
 };
+
+/**
+ * @brief The pairs of segments (indices into `rSegments`, the first smaller,
+ * ascending) that meet anywhere but at an endpoint they share: a proper
+ * crossing, an endpoint on the other's interior, a collinear overlap, or two
+ * segments sharing an endpoint and folding back along each other. Two
+ * distinct points at the same place touch. A segment of zero length meets
+ * nothing. Exact (`orient2d` and coordinate comparisons only); the
+ * candidates come from a uniform bucket grid over the segments' box.
+ */
+std::vector<std::array<std::int64_t, 2>> cdt2d_find_crossings(
+    const std::vector<Cdt2d::Vec2>& rPoints,
+    const std::vector<std::array<std::int64_t, 2>>& rSegments);
 
 /// A polygon with holes, triangulated: `rLoops[0]` the outer boundary, the
 /// rest holes (any orientation; the even-odd rule decides the domain). Each
