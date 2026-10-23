@@ -355,6 +355,75 @@ export interface BrepRef {
  * ids are -1 where an entity is named by `name` instead. `writeMesh` writes it
  * back as CAD JSON.
  */
+/** Options of `meshCadSurface` (doc/mesh_cad.md). */
+export interface MeshCadSurfaceOptions {
+  /** The target edge length (required, > 0). */
+  targetSize: number;
+  /** Sagitta cap of the boundary segments; 0 (default) is off. */
+  maxChordalDeviation?: number;
+  /** At least this many points inside every edge (default 0). */
+  minPointsPerEdge?: number;
+  /** Geometric tolerance; 0 (default) is 1e-7 of the control nets' diagonal. */
+  tolerance?: number;
+  /** `cad:face` cell data and a `face:<k>` cell region per face (default true). */
+  recordFaceIds?: boolean;
+  /** A line block of the edges with `cad:edge` (default true). */
+  edges?: boolean;
+  /** Pair trims no edge names by their images (default true). */
+  matchUnreferencedTrims?: boolean;
+  /** Throw when any face cannot be meshed (default false). */
+  strict?: boolean;
+  /** The most points in the result (default 50000000). */
+  maxPoints?: number;
+}
+
+/** One face's outcome in `meshCadSurface`'s report. */
+export interface MeshCadFaceRecord {
+  face: number;
+  id: number;
+  status:
+    | 'ok'
+    | 'empty'
+    | 'open_loop'
+    | 'self_intersecting'
+    | 'degenerate'
+    | 'projection_failed'
+    | 'budget_exceeded'
+    | 'unsupported'
+    | 'other';
+  reason: string;
+  numTriangles: number;
+  numInteriorPoints: number;
+  numDegenerateDropped: number;
+  minAngleDeg: number;
+  maxAngleDeg: number;
+  minEdge: number;
+  maxEdge: number;
+}
+
+/** What `meshCadSurface` returns. */
+export interface MeshCadSurfaceResult {
+  mesh: Mesh;
+  numPoints: number;
+  numTriangles: number;
+  numEdgeSegments: number;
+  numFaces: number;
+  numFailed: number;
+  numEdges: number;
+  numOpenEdges: number;
+  numNonManifoldEdges: number;
+  numMisorientedEdges: number;
+  numDegenerateDropped: number;
+  tolerance: number;
+  minAngleDeg: number;
+  maxAngleDeg: number;
+  minEdge: number;
+  maxEdge: number;
+  maxEdgeGap: number;
+  faces: MeshCadFaceRecord[];
+  warnings: string[];
+}
+
 /** Sampling options of `igaRefine` / `igaSample`. */
 export interface IgaOptions {
   /** Cells per knot span and direction of the sampling; 0 is automatic. */
@@ -2814,6 +2883,17 @@ export interface MeshioPlusPlusModule {
     info: MfemInfo | CadJsonInfo,
     options?: IgaOptions,
   ): { mesh: Mesh; info: MfemInfo | CadJsonInfo };
+
+  /**
+   * Triangulate the faces of a B-rep (`readMeshSelective(path, {info:
+   * true}).info` of a CAD JSON file, or STEP/IGES in the full artifact) into
+   * one conforming surface mesh with edges of about `targetSize`, with no CAD
+   * kernel: every edge is sampled once and shared by its faces. A face that
+   * cannot be meshed is listed in `faces` with its status and reason, never
+   * meshed wrong; `strict` throws instead. See doc/mesh_cad.md.
+   * @throws {Error} on a bad option or an info object that is not a B-rep.
+   */
+  meshCadSurface(info: CadJsonInfo, options: MeshCadSurfaceOptions): MeshCadSurfaceResult;
 
   /**
    * Evaluate patch `patch` (0-based; the face of a B-rep) at `params`, a flat

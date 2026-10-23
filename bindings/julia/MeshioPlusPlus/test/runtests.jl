@@ -288,6 +288,33 @@ end
     end
 end
 
+@testset "mesh_cad_surface" begin
+    mktempdir() do dir
+        path = joinpath(dir, "triangle.cad.json")
+        write(path, """{"breps": [{"brep_id": 1, "faces": [{"brep_id": 2,
+            "surface": {"is_trimmed": true, "degrees": [1, 1], "knot_vectors": [[0, 2], [0, 2]],
+              "control_points": [[1, [0, 0, 0, 1]], [2, [2, 0, 0, 1]], [3, [0, 2, 0, 1]], [4, [2, 2, 0, 1]]]},
+            "boundary_loops": [{"loop_type": "outer", "trimming_curves": [
+              {"trim_index": 0, "curve_direction": true, "parameter_curve": {"degree": 1,
+               "knot_vector": [0, 0, 1, 1], "active_range": [0, 1], "control_points": [[[0, 0, 0, 1]], [[1.5, 0, 0, 1]]]}},
+              {"trim_index": 1, "curve_direction": true, "parameter_curve": {"degree": 1,
+               "knot_vector": [0, 0, 1, 1], "active_range": [0, 1], "control_points": [[[1.5, 0, 0, 1]], [[0, 1.5, 0, 1]]]}},
+              {"trim_index": 2, "curve_direction": true, "parameter_curve": {"degree": 1,
+               "knot_vector": [0, 0, 1, 1], "active_range": [0, 1], "control_points": [[[0, 1.5, 0, 1]], [[0, 0, 0, 1]]]}}]}]}],
+            "edges": []}]}""")
+        mesh, info = read_with_info(path)
+        r = mesh_cad_surface(info; target_size=0.1)
+        @test r.num_faces == 1 && r.num_failed == 0
+        @test r.num_triangles > 100
+        @test r.num_points == num_points(r.mesh)
+        @test r.min_angle_deg > 10
+        @test r.faces[1].status == "ok" && r.faces[1].reason == ""
+        @test isempty(r.warnings)
+        @test_throws MeshioError mesh_cad_surface(info; target_size=0.0)
+        close(r.mesh); close(mesh); close(info)
+    end
+end
+
 @testset "column-major shape identity" begin
     m = fixture()
     p = points(m)

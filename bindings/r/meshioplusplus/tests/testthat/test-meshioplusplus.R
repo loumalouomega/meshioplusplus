@@ -1695,6 +1695,37 @@ test_that("an mdpa side channel survives read_with_info / write_with_info", {
   expect_null(r3$info)
   mio_release(r3$mesh)
 })
+test_that("mesh_cad_surface meshes a trimmed face and reports it", {
+  dir <- tempfile("mesh_cad")
+  dir.create(dir)
+  path <- file.path(dir, "triangle.cad.json")
+  writeLines(c(
+    '{"breps": [{"brep_id": 1, "faces": [{"brep_id": 2,',
+    ' "surface": {"is_trimmed": true, "degrees": [1, 1], "knot_vectors": [[0, 2], [0, 2]],',
+    '  "control_points": [[1, [0, 0, 0, 1]], [2, [2, 0, 0, 1]], [3, [0, 2, 0, 1]], [4, [2, 2, 0, 1]]]},',
+    ' "boundary_loops": [{"loop_type": "outer", "trimming_curves": [',
+    '  {"trim_index": 0, "curve_direction": true, "parameter_curve": {"degree": 1,',
+    '   "knot_vector": [0, 0, 1, 1], "active_range": [0, 1], "control_points": [[[0, 0, 0, 1]], [[1.5, 0, 0, 1]]]}},',
+    '  {"trim_index": 1, "curve_direction": true, "parameter_curve": {"degree": 1,',
+    '   "knot_vector": [0, 0, 1, 1], "active_range": [0, 1], "control_points": [[[1.5, 0, 0, 1]], [[0, 1.5, 0, 1]]]}},',
+    '  {"trim_index": 2, "curve_direction": true, "parameter_curve": {"degree": 1,',
+    '   "knot_vector": [0, 0, 1, 1], "active_range": [0, 1], "control_points": [[[0, 1.5, 0, 1]], [[0, 0, 0, 1]]]}}]}]}],',
+    ' "edges": []}]}'
+  ), path)
+  r <- mio_read_with_info(path)
+  on.exit({ mio_release(r$mesh); mio_format_info_release(r$info) }, add = TRUE)
+  out <- mio_mesh_cad_surface(r$info, target_size = 0.1)
+  on.exit(mio_release(out$mesh), add = TRUE)
+  expect_equal(out$num_faces, 1)
+  expect_equal(out$num_failed, 0)
+  expect_gt(out$num_triangles, 100)
+  expect_equal(out$num_points, mio_num_points(out$mesh))
+  expect_gt(out$min_angle_deg, 10)
+  expect_equal(out$face_status, "ok")
+  expect_equal(out$face_reason, "")
+  expect_length(out$warnings, 0)
+  expect_error(mio_mesh_cad_surface(r$info, target_size = 0))
+})
 test_that("PCD compressed binary is reachable through write options", {
   m <- mio_mesh()
   on.exit(mio_release(m))

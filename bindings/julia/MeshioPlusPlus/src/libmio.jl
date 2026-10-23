@@ -675,6 +675,43 @@ struct _CIgaOpts
     reserved::NTuple{6,Int64}
 end
 
+"""Mirror of C `mio_mesh_cad_surface_opts`. ABI; build through
+[`mesh_cad_surface`](@ref)."""
+struct _CMeshCadSurfaceOpts
+    target_size::Cdouble
+    max_chordal_deviation::Cdouble
+    tolerance::Cdouble
+    min_points_per_edge::Int64
+    max_points::Int64
+    record_face_ids::Int32
+    edges::Int32
+    match_unreferenced_trims::Int32
+    strict::Int32
+    reserved::NTuple{6,Int64}
+end
+
+"""Mirror of C `mio_mesh_cad_surface_report`."""
+struct _CMeshCadSurfaceReport
+    num_points::Int64
+    num_triangles::Int64
+    num_edge_segments::Int64
+    num_faces::Int64
+    num_failed::Int64
+    num_edges::Int64
+    num_open_edges::Int64
+    num_non_manifold_edges::Int64
+    num_misoriented_edges::Int64
+    num_degenerate_dropped::Int64
+    tolerance::Cdouble
+    min_angle_deg::Cdouble
+    max_angle_deg::Cdouble
+    min_edge::Cdouble
+    max_edge::Cdouble
+    max_edge_gap::Cdouble
+    num_warnings::Int64
+    reserved::NTuple{8,Int64}
+end
+
 """Mirror of C `mio_fit_cad_opts`. ABI; build through [`fit_cad`](@ref)."""
 struct _CFitCadOpts
     tolerance::Cdouble
@@ -1261,6 +1298,12 @@ function _check_abi_layout()
               "($(sizeof(_CFitPrimitivesReport)) bytes)")
     sizeof(_CIgaOpts) == 96 ||
         error("meshio++: mio_iga_opts layout mismatch ($(sizeof(_CIgaOpts)) bytes)")
+    sizeof(_CMeshCadSurfaceOpts) == 104 ||
+        error("meshio++: mio_mesh_cad_surface_opts layout mismatch " *
+              "($(sizeof(_CMeshCadSurfaceOpts)) bytes)")
+    sizeof(_CMeshCadSurfaceReport) == 200 ||
+        error("meshio++: mio_mesh_cad_surface_report layout mismatch " *
+              "($(sizeof(_CMeshCadSurfaceReport)) bytes)")
     sizeof(_CFitCadOpts) == 80 ||
         error("meshio++: mio_fit_cad_opts layout mismatch ($(sizeof(_CFitCadOpts)) bytes)")
     sizeof(_CFitCadReport) == 192 ||

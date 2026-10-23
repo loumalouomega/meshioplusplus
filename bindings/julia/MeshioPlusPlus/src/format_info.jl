@@ -448,6 +448,66 @@ function iga_sample(info::FormatInfo; kwargs...)
     mesh, FormatInfo(mapped[])
 end
 
+# --- mesh generation from CAD (v17.13.0; doc/mesh_cad.md) ----------------------
+
+const _MESH_CAD_FACE_STATUS_NAMES = ("ok", "empty", "open_loop", "self_intersecting",
+                                     "degenerate", "projection_failed", "budget_exceeded",
+                                     "unsupported", "other")
+
+"""
+    mesh_cad_surface(info; target_size, max_chordal_deviation=0.0,
+                     min_points_per_edge=0, tolerance=0.0, record_face_ids=true,
+                     edges=true, match_unreferenced_trims=true, strict=false,
+                     max_points=50_000_000)
+        -> (; mesh, num_points, num_triangles, ..., faces, warnings)
+
+Triangulate the faces of a B-rep (`info` from [`read_with_info`](@ref) of Kratos
+CAD JSON, STEP or IGES) into one conforming surface mesh with edges of about
+`target_size`: every edge sampled once and shared by the faces that use it, each
+face a constrained Delaunay triangulation of its parameters lifted onto its
+surface. A face that cannot be meshed is left out and listed in `faces` (its
+`status` and `reason`), never meshed wrong; `strict=true` throws instead. See
+`doc/mesh_cad.md`.
+"""
+function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_deviation::Real=0.0,
+                          min_points_per_edge::Integer=0, tolerance::Real=0.0,
+                          record_face_ids::Bool=true, edges::Bool=true,
+                          match_unreferenced_trims::Bool=true, strict::Bool=false,
+                          max_points::Integer=50_000_000)
+    opts = _CMeshCadSurfaceOpts(Cdouble(target_size), Cdouble(max_chordal_deviation),
+                                Cdouble(tolerance), Int64(min_points_per_edge),
+                                Int64(max_points), Int32(record_face_ids), Int32(edges),
+                                Int32(match_unreferenced_trims), Int32(strict),
+                                ntuple(_ -> Int64(0), 6))
+    report = Ref{_CMeshCadSurfaceReport}()
+    ptr = ccall(_sym(:mio_mesh_cad_surface), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CMeshCadSurfaceOpts}, Ref{_CMeshCadSurfaceReport}),
+                _handle(info), Ref(opts), report)
+    mesh = Mesh(_check_ptr(ptr))
+    r = report[]
+    faces = map(0:r.num_faces-1) do f
+        st = ccall(_sym(:mio_mesh_cad_surface_face_status), Int32, (Int64,), f)
+        reason = _getstring((buf, n) -> ccall(_sym(:mio_mesh_cad_surface_face_reason), Int64,
+                                              (Int64, Ptr{UInt8}, Int64), f, buf, n))
+        (face=Int(f) + 1,
+         status=0 <= st < length(_MESH_CAD_FACE_STATUS_NAMES) ?
+                _MESH_CAD_FACE_STATUS_NAMES[st + 1] : string(st),
+         reason=reason)
+    end
+    text = _getstring((buf, n) -> ccall(_sym(:mio_mesh_cad_surface_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    (mesh=mesh, num_points=Int(r.num_points), num_triangles=Int(r.num_triangles),
+     num_edge_segments=Int(r.num_edge_segments), num_faces=Int(r.num_faces),
+     num_failed=Int(r.num_failed), num_edges=Int(r.num_edges),
+     num_open_edges=Int(r.num_open_edges), num_non_manifold_edges=Int(r.num_non_manifold_edges),
+     num_misoriented_edges=Int(r.num_misoriented_edges),
+     num_degenerate_dropped=Int(r.num_degenerate_dropped), tolerance=Float64(r.tolerance),
+     min_angle_deg=Float64(r.min_angle_deg), max_angle_deg=Float64(r.max_angle_deg),
+     min_edge=Float64(r.min_edge), max_edge=Float64(r.max_edge),
+     max_edge_gap=Float64(r.max_edge_gap), faces=faces,
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
 const MIO_IGA_POINTS = Int32(0)
 const MIO_IGA_DERIVATIVES = Int32(1)
 const MIO_IGA_NORMALS = Int32(2)
