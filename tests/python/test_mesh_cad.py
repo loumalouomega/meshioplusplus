@@ -355,6 +355,27 @@ def test_refinement_meets_the_bound_or_reports_the_corner(name):
 
 
 @needs_core
+@pytest.mark.parametrize("order", [2, 3])
+def test_curved_elements_put_every_node_on_the_sphere(order):
+    """Roadmap 6.6: order 2 and 3 give triangle6/line3 and triangle10/line4
+    whose corners are the linear mesh and whose every node is on the sphere."""
+    model = _read("sphere.cad.json")
+    linear = mio.mesh_cad_surface(model, 0.3)
+    out, report = mio.mesh_cad_surface(model, 0.3, order=order, return_report=True)
+    _watertight(report)
+    assert [c.type for c in out.cells] == (
+        ["triangle6", "line3"] if order == 2 else ["triangle10", "line4"]
+    )
+    assert report["num_curved_straightened"] == 0
+    np.testing.assert_array_equal(out.points[: len(linear.points)], linear.points)
+    np.testing.assert_array_equal(out.cells[0].data[:, :3], linear.cells[0].data)
+    np.testing.assert_allclose(np.linalg.norm(out.points, axis=1), 1.0, atol=1e-12)
+    for bad in (0, 4, True):
+        with pytest.raises(ValueError, match="order"):
+            mio.mesh_cad_surface(model, 0.3, order=bad)
+
+
+@needs_core
 def test_smoothing_moves_the_inside_only():
     model = _read("sphere.cad.json")
     plain, r0 = mio.mesh_cad_surface(model, 0.2, return_report=True)

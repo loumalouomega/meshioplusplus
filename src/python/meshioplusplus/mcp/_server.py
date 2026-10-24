@@ -1183,6 +1183,7 @@ def _register_operations(server: FastMCP) -> None:
         min_angle: float = 0.0,
         smooth_iterations: int = 0,
         smooth_method: str = "laplacian",
+        order: int = 1,
     ) -> dict:
         """Triangulate the faces of a CAD model (Kratos CAD JSON; STEP and
         IGES where OpenCASCADE is linked) into one conforming surface mesh with
@@ -1209,7 +1210,11 @@ def _register_operations(server: FastMCP) -> None:
         num_faces_below_bound and an angle_histogram of 10-degree bins.
         smooth_iterations passes of guarded smoothing (smooth_method
         'laplacian' or 'odt') move interior points only where no triangle
-        inverts and no star's smallest angle drops."""
+        inverts and no star's smallest angle drops. order 2 or 3 writes curved
+        triangle6 or triangle10 elements (line3, line4 for the edges) whose
+        nodes lie on the surface and the edges; an element whose Jacobian is
+        not positive everywhere is written straight-sided and counted in
+        num_curved_straightened."""
         return _guard(
             _tools.tool_mesh_cad_surface,
             input_path=input_path,
@@ -1228,6 +1233,7 @@ def _register_operations(server: FastMCP) -> None:
             min_angle=min_angle,
             smooth_iterations=smooth_iterations,
             smooth_method=smooth_method,
+            order=order,
         )
 
     @server.tool()

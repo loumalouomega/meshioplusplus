@@ -6627,6 +6627,10 @@ static_assert(offsetof(mio_mesh_cad_surface_opts, min_angle_deg) == 56,
               "mio_mesh_cad_surface_opts::min_angle_deg moved");
 static_assert(offsetof(mio_mesh_cad_surface_report, num_refinement_points) == 136,
               "mio_mesh_cad_surface_report::num_refinement_points moved");
+static_assert(offsetof(mio_mesh_cad_surface_opts, order) == 72,
+              "mio_mesh_cad_surface_opts::order moved");
+static_assert(offsetof(mio_mesh_cad_surface_report, num_curved_straightened) == 168,
+              "mio_mesh_cad_surface_report::num_curved_straightened moved");
 static_assert(static_cast<int>(MIO_MESH_CAD_SMOOTH_ODT) ==
                   static_cast<int>(meshioplusplus::MeshCadSmoothing::Odt),
               "mio_mesh_cad_smoothing drifted from MeshCadSmoothing");
@@ -7181,6 +7185,7 @@ void mio_mesh_cad_surface_opts_init(mio_mesh_cad_surface_opts* opts) {
     opts->min_angle_deg = d.mMinAngleDeg;
     opts->smooth_iterations = static_cast<int32_t>(d.mSmoothIterations);
     opts->smooth_method = static_cast<int32_t>(d.mSmoothMethod);
+    opts->order = d.mOrder;
 }
 
 mio_mesh* mio_mesh_cad_surface(const mio_format_info* info, const mio_mesh_cad_surface_opts* opts,
@@ -7219,6 +7224,7 @@ mio_mesh* mio_mesh_cad_surface(const mio_format_info* info, const mio_mesh_cad_s
         o.mMinAngleDeg = opts->min_angle_deg;
         o.mSmoothIterations = opts->smooth_iterations;
         o.mSmoothMethod = static_cast<meshioplusplus::MeshCadSmoothing>(opts->smooth_method);
+        o.mOrder = opts->order == 0 ? 1 : opts->order;
         meshioplusplus::MeshCadSurfaceResult r = meshioplusplus::mesh_cad_surface(*p_brep, o);
         for (const std::string& w : r.mWarnings) {
             if (!state.mWarnings.empty())
@@ -7256,6 +7262,7 @@ mio_mesh* mio_mesh_cad_surface(const mio_format_info* info, const mio_mesh_cad_s
             report->num_faces_below_bound = r.mNumFacesBelowBound;
             report->num_smoothed = r.mNumSmoothed;
             report->min_input_angle_deg = min_input;
+            report->num_curved_straightened = r.mNumCurvedStraightened;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });

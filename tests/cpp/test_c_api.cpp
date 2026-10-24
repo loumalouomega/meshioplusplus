@@ -1865,6 +1865,30 @@ TEST(CApi, MeshCadSurfaceMeshesABrepAndReportsItsFaces) {
     EXPECT_EQ(opts.smooth_method, MIO_MESH_CAD_SMOOTH_LAPLACIAN);
     EXPECT_EQ(report.num_refinement_points, 0);
     EXPECT_EQ(report.min_input_angle_deg, 180.0);
+    EXPECT_EQ(opts.order, 1);
+    EXPECT_EQ(report.num_curved_straightened, 0);
+    const std::int64_t linear_points = mio_mesh_num_points(mesh);
+    mio_mesh_free(mesh);
+    // v17.16.0: curved elements, quadratic and cubic; 0 is linear.
+    for (const int order : {2, 3, 0}) {
+        opts.order = order;
+        mesh = mio_mesh_cad_surface(info, &opts, &report);
+        ASSERT_NE(mesh, nullptr) << mio_last_error();
+        char type[32] = {};
+        ASSERT_GT(mio_mesh_cell_block_type(mesh, 0, type, sizeof type), 0);
+        EXPECT_STREQ(type, order == 2 ? "triangle6" : order == 3 ? "triangle10" : "triangle");
+        if (order == 0)
+            EXPECT_EQ(mio_mesh_num_points(mesh), linear_points);
+        else
+            EXPECT_GT(mio_mesh_num_points(mesh), linear_points);
+        EXPECT_EQ(report.num_curved_straightened, 0);
+        mio_mesh_free(mesh);
+    }
+    opts.order = 4;
+    EXPECT_EQ(mio_mesh_cad_surface(info, &opts, nullptr), nullptr);
+    opts.order = 1;
+    mesh = mio_mesh_cad_surface(info, &opts, &report);
+    ASSERT_NE(mesh, nullptr) << mio_last_error();
     mio_mesh_free(mesh);
     // v17.15.0: refined to 25 degrees and smoothed. The triangle's two
     // 45-degree corners are reported; every angle is counted.

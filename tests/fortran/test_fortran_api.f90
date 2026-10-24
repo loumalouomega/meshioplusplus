@@ -372,6 +372,25 @@ program test_fortran_api
                 end block
                 call tris%free()
             end if
+            ! v17.16.0: curved quadratic triangles, their nodes on the geometry.
+            block
+                integer(int64) :: linear_points
+                tris = info%mesh_cad_surface(0.1_real64, report=report, stat=ierr)
+                linear_points = report%num_points
+                if (ierr == 0) call tris%free()
+                tris = info%mesh_cad_surface(0.1_real64, report=report, order=2, &
+                                             stat=ierr, errmsg=msg)
+                call check(ierr == 0, 'mesh_cad_surface order 2')
+                if (ierr == 0) then
+                    call check(report%num_points > linear_points, &
+                               'mesh_cad_surface order 2 adds nodes')
+                    call check(report%num_curved_straightened == 0, &
+                               'mesh_cad_surface order 2 all valid')
+                    call tris%free()
+                end if
+                tris = info%mesh_cad_surface(0.1_real64, order=4, stat=ierr)
+                call check(ierr /= 0, 'mesh_cad_surface order 4 refused')
+            end block
             tris = info%mesh_cad_surface(0.0_real64, stat=ierr)
             call check(ierr /= 0, 'mesh_cad_surface refuses a zero size')
         end if

@@ -1742,6 +1742,15 @@ test_that("mesh_cad_surface meshes a trimmed face and reports it", {
   expect_equal(q$corners$angle_deg, c(45, 45), tolerance = 1e-9)
   expect_error(mio_mesh_cad_surface(r$info, target_size = 0.1, smooth_method = "none"))
   expect_error(mio_mesh_cad_surface(r$info, target_size = 0.1, min_angle = 60))
+  # v17.16.0: curved triangles, their nodes on the geometry.
+  for (o in 2:3) {
+    c2 <- mio_mesh_cad_surface(r$info, target_size = 0.1, order = o)
+    expect_equal(c2$num_triangles, out$num_triangles)
+    expect_gt(c2$num_points, out$num_points)
+    expect_equal(c2$num_curved_straightened, 0)
+    mio_release(c2$mesh)
+  }
+  expect_error(mio_mesh_cad_surface(r$info, target_size = 0.1, order = 4))
 })
 test_that("PCD compressed binary is reachable through write options", {
   m <- mio_mesh()

@@ -5,7 +5,8 @@
 mio_mesh_cad_surface(info, target_size, max_chordal_deviation = 0,
   min_points_per_edge = 0, tolerance = 0, record_face_ids = TRUE, edges = TRUE,
   match_unreferenced_trims = TRUE, strict = FALSE, max_points = 50000000,
-  min_angle = 0, smooth_iterations = 0, smooth_method = c("laplacian", "odt"))
+  min_angle = 0, smooth_iterations = 0, smooth_method = c("laplacian", "odt"),
+  order = 1)
 }
 \arguments{
 \item{info}{A format-info handle holding a B-rep.}
@@ -22,6 +23,10 @@ mio_mesh_cad_surface(info, target_size, max_chordal_deviation = 0,
 at least this (degrees, under 60); 0 keeps the unrefined mesh.}
 \item{smooth_iterations}{Passes of guarded smoothing; 0 is none.}
 \item{smooth_method}{\code{"laplacian"} or \code{"odt"}.}
+\item{order}{1 linear triangles; 2 or 3 curved \code{triangle6} or
+\code{triangle10} elements (and \code{line3} or \code{line4} edges) whose nodes
+lie on the surfaces and edges; an element whose Jacobian is not positive
+everywhere is kept straight-sided and counted in \code{num_curved_straightened}.}
 }
 \description{Mesh generation from CAD (v17.13.0): a conforming triangle mesh of
 the faces of the B-rep a format-info handle holds (Kratos CAD JSON, STEP or IGES,
@@ -38,7 +43,7 @@ that an error.}
 lengths, \code{max_edge_gap}, \code{face_status} and \code{face_reason} (one entry
 per face), \code{warnings} (a character vector), refinement's
 \code{num_refinement_points}, \code{num_faces_below_bound}, \code{num_smoothed} and
-\code{min_input_angle_deg}, \code{angle_histogram} (18 ten-degree bins) and
-\code{corners}, a data frame of the corners under 60 degrees and poles (1-based
+\code{min_input_angle_deg}, \code{angle_histogram} (18 ten-degree bins),
+\code{num_curved_straightened} and \code{corners}, a data frame of the corners under 60 degrees and poles (1-based
 \code{face} and \code{point}, \code{u}, \code{v}, \code{x}, \code{y}, \code{z},
 \code{angle_deg}, \code{min_forced_deg}, \code{reach}, \code{pole}).}

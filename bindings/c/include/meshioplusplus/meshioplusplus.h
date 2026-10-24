@@ -5602,7 +5602,11 @@ typedef struct mio_mesh_cad_surface_opts {
     double min_angle_deg;
     int32_t smooth_iterations;    /**< v17.15.0: passes of guarded smoothing; 0 is none */
     int32_t smooth_method;        /**< v17.15.0: a mio_mesh_cad_smoothing */
-    int64_t reserved[4];          /**< must be zero; room for additive growth */
+    /** v17.16.0: 1 linear triangles; 2 and 3 curved triangle6 and triangle10
+     *  (and line3, line4), their nodes on the surface and edges; 0 is 1. */
+    int32_t order;
+    int32_t reserved_pad; /**< must be zero */
+    int64_t reserved[3];  /**< must be zero; room for additive growth */
 } mio_mesh_cad_surface_opts;
 
 /** What mio_mesh_cad_surface did. */
@@ -5629,7 +5633,10 @@ typedef struct mio_mesh_cad_surface_report {
     int64_t num_faces_below_bound;   /**< faces with a triangle under min_angle_deg */
     int64_t num_smoothed;            /**< moves smoothing kept */
     double min_input_angle_deg;      /**< the sharpest corner under 60 degrees; 180 for none */
-    int64_t reserved[4];             /**< zeroed */
+    /** v17.16.0: curved elements whose Jacobian was not positive everywhere,
+     *  written straight-sided. */
+    int64_t num_curved_straightened;
+    int64_t reserved[3]; /**< zeroed */
 } mio_mesh_cad_surface_report;
 
 /**

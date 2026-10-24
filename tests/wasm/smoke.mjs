@@ -3542,6 +3542,16 @@ step('meshCadSurface: a trimmed CAD JSON face triangulated and reported', () => 
                   /smoothMethod/);
     assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, minAngle: 60 }),
                   /min_angle/);
+    // v17.16.0: curved triangles, their nodes on the geometry.
+    for (const [order, type] of [[2, 'triangle6'], [3, 'triangle10']]) {
+        const c = m.meshCadSurface(read.info, { targetSize: 0.1, order });
+        assert.equal(c.numTriangles, r.numTriangles);
+        assert.ok(c.numPoints > r.numPoints);
+        assert.equal(c.numCurvedStraightened, 0);
+        assert.ok(c.mesh.cells.some((b) => b.type === type));
+    }
+    assert.equal(r.numCurvedStraightened, 0);
+    assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, order: 4 }), /order/);
 });
 
 step('info: the mdpa blocks a mesh cannot hold round-trip through info', () => {

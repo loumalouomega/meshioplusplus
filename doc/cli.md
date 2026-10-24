@@ -2079,6 +2079,7 @@ Triangulate a CAD model's faces into one conforming surface mesh at a target edg
 meshioplusplus mesh-cad-surface part.cad.json part.vtu --size 0.1
 meshioplusplus mesh-cad-surface part.step part.msh -o gmsh --size 2 --deflection 0.01 --strict --json
 meshioplusplus mesh-cad-surface part.cad.json part.vtu --size 0.1 --min-angle 25 --smooth 3
+meshioplusplus mesh-cad-surface part.cad.json part.msh -o gmsh --size 0.2 --order 2
 ```
 
 | flag | meaning |
@@ -2094,6 +2095,7 @@ meshioplusplus mesh-cad-surface part.cad.json part.vtu --size 0.1 --min-angle 25
 | `--max-points N` | the most points in the result (default 50000000) |
 | `--min-angle DEG` | refine every face until its triangles' smallest angles on the surface reach `DEG` (under 60; 0, the default, is off) |
 | `--smooth N` / `--smooth-method laplacian\|odt` | passes of guarded smoothing (default 0) and how a point moves |
+| `--order 1\|2\|3` | 1 (the default) linear triangles; 2 or 3 curved `triangle6`/`triangle10` with `line3`/`line4` edges, every node on the surface and the edges; an element whose Jacobian is not positive everywhere is written straight-sided and counted |
 | `--json` / `-q/--quiet` | the report as JSON / no summary |
 
 A face that cannot be meshed is left out and named in the summary with its reason; the exit code is 0 unless `--strict` is given. With `--min-angle`, the summary also names each corner under 60 degrees and each pole that keeps triangles below the bound.

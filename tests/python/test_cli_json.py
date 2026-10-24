@@ -381,6 +381,19 @@ WRITING = [
         ],
     ),
     (
+        "mesh_cad_surface_curved",
+        lambda f, out: [
+            "mesh-cad-surface",
+            f["plate"],
+            out + ".msh",
+            "--size",
+            "0.5",
+            "--order",
+            "3",
+            "--json",
+        ],
+    ),
+    (
         "region_adjacency",
         lambda f, out: ["region-adjacency", f["tagged"], out + ".vtu", "--json"],
     ),

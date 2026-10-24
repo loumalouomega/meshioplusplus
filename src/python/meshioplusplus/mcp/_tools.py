@@ -1823,10 +1823,11 @@ def tool_mesh_cad_surface(
     min_angle=0.0,
     smooth_iterations=0,
     smooth_method="laplacian",
+    order=1,
 ):
     """Triangulate a CAD model's faces (CAD JSON, STEP, IGES) into one
     conforming surface mesh at a target edge size, optionally refined to a
-    minimum angle and smoothed."""
+    minimum angle, smoothed, and curved (order 2 or 3)."""
     mesh = _load(input_path, input_format)
     out, report = mesh_cad_surface(
         mesh,
@@ -1842,6 +1843,7 @@ def tool_mesh_cad_surface(
         min_angle=min_angle,
         smooth_iterations=smooth_iterations,
         smooth_method=smooth_method,
+        order=order,
         return_report=True,
     )
     return _result(_store(out, output_path, output_format), out, **report)

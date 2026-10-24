@@ -325,6 +325,16 @@ end
         @test_throws ArgumentError mesh_cad_surface(info; target_size=0.1, smooth_method="none")
         @test_throws MeshioError mesh_cad_surface(info; target_size=0.1, min_angle=60)
         close(q.mesh)
+        # v17.16.0: curved triangles, their nodes on the geometry.
+        for (order, tri) in ((2, "triangle6"), (3, "triangle10"))
+            c = mesh_cad_surface(info; target_size=0.1, order=order)
+            @test c.num_triangles == r.num_triangles
+            @test c.num_points > r.num_points
+            @test c.num_curved_straightened == 0
+            @test tri in cell_block_types(c.mesh)
+            close(c.mesh)
+        end
+        @test_throws MeshioError mesh_cad_surface(info; target_size=0.1, order=4)
         close(r.mesh); close(mesh); close(info)
     end
 end

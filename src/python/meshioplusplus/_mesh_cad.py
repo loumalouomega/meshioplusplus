@@ -108,6 +108,7 @@ def mesh_cad_surface(
     min_angle: float = 0.0,
     smooth_iterations: int = 0,
     smooth_method: str = "laplacian",
+    order: int = 1,
     return_report: bool = False,
 ):
     """Triangulate a B-rep's faces into one conforming surface mesh.
@@ -136,8 +137,14 @@ def mesh_cad_surface(
         degrees; above, a target whose shortfall is reported.
     :param smooth_iterations: passes of guarded smoothing; 0 is none.
     :param smooth_method: ``"laplacian"`` or ``"odt"``.
+    :param order: 1 for linear triangles; 2 or 3 for curved ``triangle6`` or
+        ``triangle10`` elements (and ``line3``, ``line4``) whose nodes lie on
+        the surface and the edges. An element whose Jacobian is not positive
+        everywhere inside is written straight-sided and counted
+        (``num_curved_straightened``).
     :param return_report: also return the report.
-    :returns: the surface mesh (``triangle`` and ``line`` blocks), or
+    :returns: the surface mesh (``triangle`` and ``line`` blocks, or their
+        curved forms with ``order`` 2 or 3), or
         ``(mesh, report)``. The report has the counts (``num_failed``,
         ``num_open_edges``, ``num_non_manifold_edges``,
         ``num_misoriented_edges``, ...), the extreme angles and edge lengths,
@@ -145,7 +152,8 @@ def mesh_cad_surface(
         (one dict per face: ``status``, ``reason``, counts and extremes,
         ``below_bound``, ``bound_deg``, ``min_input_angle_deg`` and its
         ``corners``), ``warnings``, refinement's ``num_refinement_points``,
-        ``num_faces_below_bound`` and ``num_smoothed``, and
+        ``num_faces_below_bound`` and ``num_smoothed``,
+        ``num_curved_straightened``, and
         ``angle_histogram`` (every angle on the surface in 18 bins of 10
         degrees).
     :raises ValueError: on an option out of range or a mesh with no B-rep.
@@ -174,6 +182,8 @@ def mesh_cad_surface(
         raise ValueError(f"{_PREFIX}smooth_iterations must not be negative")
     if smooth_method not in SMOOTH_METHODS:
         raise ValueError(f"{_PREFIX}smooth_method must be one of {SMOOTH_METHODS}")
+    if isinstance(order, bool) or int(order) not in (1, 2, 3):
+        raise ValueError(f"{_PREFIX}order must be 1, 2 or 3")
 
     _core = _core_or_raise("mesh_cad_surface")
     res = _core.mesh_cad_surface(
@@ -190,6 +200,7 @@ def mesh_cad_surface(
         min_angle=min_angle,
         smooth_iterations=int(smooth_iterations),
         smooth_method=smooth_method,
+        order=int(order),
     )
     out = res["mesh"]
     if not return_report:

@@ -92,6 +92,14 @@ def add_args(parser):
         default="laplacian",
         help="how smoothing moves a point (default: laplacian)",
     )
+    parser.add_argument(
+        "--order",
+        type=int,
+        choices=(1, 2, 3),
+        default=1,
+        help="1: linear triangles; 2 or 3: curved triangle6 or triangle10 whose "
+        "nodes lie on the surface and edges (default: 1)",
+    )
     parser.add_argument("--json", action="store_true", help="emit the report as JSON")
     parser.add_argument(
         "--quiet", "-q", action="store_true", help="suppress the summary"
@@ -114,6 +122,7 @@ def mesh_cad_surface_cmd(args):
         min_angle=args.min_angle,
         smooth_iterations=args.smooth,
         smooth_method=args.smooth_method,
+        order=args.order,
         return_report=True,
     )
     write(args.outfile, out, file_format=args.output_format)
@@ -138,6 +147,11 @@ def mesh_cad_surface_cmd(args):
                 f"  refinement:     {report['num_refinement_points']} points, "
                 f"{report['num_smoothed']} smoothing moves, "
                 f"{report['num_faces_below_bound']} faces below {args.min_angle:g} degrees"
+            )
+        if args.order > 1:
+            print(
+                f"  curved:         order {args.order}, "
+                f"{report['num_curved_straightened']} kept straight-sided"
             )
         for f in report["faces"]:
             if f["status"] != "ok":

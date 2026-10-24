@@ -504,7 +504,9 @@ module meshioplusplus
         real(c_double) :: min_angle_deg = 0.0_c_double
         integer(c_int32_t) :: smooth_iterations = 0
         integer(c_int32_t) :: smooth_method = 0
-        integer(c_int64_t) :: reserved(4) = 0
+        integer(c_int32_t) :: order = 1
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(3) = 0
     end type
 
     !> `mio_mesh_cad_surface_report` (200 bytes; field order and types are ABI,
@@ -531,7 +533,8 @@ module meshioplusplus
         integer(c_int64_t) :: num_faces_below_bound = 0
         integer(c_int64_t) :: num_smoothed = 0
         real(c_double) :: min_input_angle_deg = 0.0_c_double
-        integer(c_int64_t) :: reserved(4) = 0
+        integer(c_int64_t) :: num_curved_straightened = 0
+        integer(c_int64_t) :: reserved(3) = 0
     end type
 
     !> A corner that keeps triangles under `min_angle` (C `mio_mesh_cad_corner`,
@@ -12038,15 +12041,17 @@ contains
     !> smallest angles on the surface reach it, corners under 60 degrees and
     !> poles reported (`mio_mesh_cad_get_corner`); `smooth_iterations` passes
     !> of guarded smoothing (`smooth_method`, `MIO_MESH_CAD_SMOOTH_*`) follow.
+    !> `order` 2 or 3 writes curved triangle6 or triangle10 elements, their
+    !> nodes on the surface and edges (`report%num_curved_straightened`).
     function format_info_mesh_cad_surface(self, target_size, max_chordal_deviation, &
                                           min_points_per_edge, tolerance, record_face_ids, &
                                           edges, match_unreferenced_trims, strict, max_points, &
                                           report, warnings, stat, errmsg, min_angle, &
-                                          smooth_iterations, smooth_method) result(out)
+                                          smooth_iterations, smooth_method, order) result(out)
         class(mio_format_info), intent(in) :: self
         real(real64), intent(in) :: target_size
         real(real64), intent(in), optional :: max_chordal_deviation, tolerance, min_angle
-        integer, intent(in), optional :: smooth_iterations, smooth_method
+        integer, intent(in), optional :: smooth_iterations, smooth_method, order
         integer(int64), intent(in), optional :: min_points_per_edge, max_points
         logical, intent(in), optional :: record_face_ids, edges, match_unreferenced_trims, strict
         type(mio_mesh_cad_surface_report), intent(out), optional :: report
@@ -12080,6 +12085,7 @@ contains
         if (present(smooth_iterations)) &
             opts%smooth_iterations = int(smooth_iterations, c_int32_t)
         if (present(smooth_method)) opts%smooth_method = int(smooth_method, c_int32_t)
+        if (present(order)) opts%order = int(order, c_int32_t)
 
         out%handle = c_mio_mesh_cad_surface(self%handle, opts, crep)
         if (.not. c_associated(out%handle)) then

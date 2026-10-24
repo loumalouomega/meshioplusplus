@@ -560,7 +560,7 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
                             SEXP min_points_per_edge, SEXP tolerance, SEXP record_face_ids,
                             SEXP edges, SEXP match_unreferenced_trims, SEXP strict,
                             SEXP max_points, SEXP min_angle, SEXP smooth_iterations,
-                            SEXP smooth_method) {
+                            SEXP smooth_method, SEXP order) {
     const mio_format_info *info = info_of(x, 0);
     mio_mesh_cad_surface_opts opts;
     mio_mesh_cad_surface_opts_init(&opts);
@@ -577,6 +577,7 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
     opts.min_angle_deg = mio_r_double(min_angle, "min_angle");
     opts.smooth_iterations = (int32_t)mio_r_int64(smooth_iterations, "smooth_iterations");
     opts.smooth_method = (int32_t)mio_r_int64(smooth_method, "smooth_method");
+    opts.order = (int32_t)mio_r_int64(order, "order");
     mio_mesh_cad_surface_report report;
     mio_mesh *out = mio_mesh_cad_surface(info, &opts, &report);
     if (out == NULL) mio_r_fail("mesh_cad_surface");
@@ -607,7 +608,7 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
     }
     SEXP corners = PROTECT(r_mesh_cad_corners());
 
-    enum { R_MESH_CAD_N = 26 };
+    enum { R_MESH_CAD_N = 27 };
     SEXP res = PROTECT(Rf_allocVector(VECSXP, R_MESH_CAD_N));
     SEXP nm = PROTECT(Rf_allocVector(STRSXP, R_MESH_CAD_N));
     int k = 0;
@@ -646,6 +647,7 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
     R_MESH_CAD_SET("angle_histogram", histogram);
     /* Named columns; the R wrapper makes a data frame. */
     R_MESH_CAD_SET("corners", corners);
+    R_MESH_CAD_NUM(num_curved_straightened);
 #undef R_MESH_CAD_NUM
 #undef R_MESH_CAD_SET
     if (k != R_MESH_CAD_N)

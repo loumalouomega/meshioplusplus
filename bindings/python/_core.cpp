@@ -3009,7 +3009,7 @@ PYBIND11_MODULE(_core, m) {
         [](py::object brep, double target_size, double max_chordal_deviation,
            std::int64_t min_points_per_edge, double tolerance, bool record_face_ids, bool edges,
            bool match_unreferenced_trims, bool strict, std::int64_t max_points, double min_angle,
-           std::int64_t smooth_iterations, const std::string& smooth_method) {
+           std::int64_t smooth_iterations, const std::string& smooth_method, int order) {
             const meshioplusplus::BrepInfo info = core_brep_from_py(brep);
             meshioplusplus::MeshCadSurfaceOptions o;
             o.mTargetSize = target_size;
@@ -3030,6 +3030,7 @@ PYBIND11_MODULE(_core, m) {
             else
                 throw std::invalid_argument(
                     "meshio++: mesh_cad_surface: smooth_method must be 'laplacian' or 'odt'");
+            o.mOrder = order;
             meshioplusplus::MeshCadSurfaceResult r =
                 core_nogil([&] { return meshioplusplus::mesh_cad_surface(info, o); });
             py::dict out;
@@ -3101,7 +3102,8 @@ PYBIND11_MODULE(_core, m) {
         py::arg("record_face_ids") = true, py::arg("edges") = true,
         py::arg("match_unreferenced_trims") = true, py::arg("strict") = false,
         py::arg("max_points") = 50000000, py::arg("min_angle") = 0.0,
-        py::arg("smooth_iterations") = 0, py::arg("smooth_method") = "laplacian");
+        py::arg("smooth_iterations") = 0, py::arg("smooth_method") = "laplacian",
+        py::arg("order") = 1);
     m.def(
         "triangulate_polygon_2d",
         [](py::list loops, double target_size, double min_angle, std::int64_t max_points) {

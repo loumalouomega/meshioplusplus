@@ -384,6 +384,12 @@ export interface MeshCadSurfaceOptions {
   smoothIterations?: number;
   /** How smoothing moves a point (default 'laplacian'). */
   smoothMethod?: 'laplacian' | 'odt';
+  /**
+   * 1 (default) linear triangles; 2 or 3 curved `triangle6` or `triangle10`
+   * elements (and `line3` or `line4` edges) whose nodes lie on the surfaces
+   * and edges.
+   */
+  order?: 1 | 2 | 3;
 }
 
 /** A corner that keeps triangles under `minAngle`: under 60 degrees, or a pole. */
@@ -459,6 +465,8 @@ export interface MeshCadSurfaceResult {
   numRefinementPoints: number;
   numFacesBelowBound: number;
   numSmoothed: number;
+  /** Curved elements whose Jacobian was not positive everywhere, kept straight-sided. */
+  numCurvedStraightened: number;
   /** Every angle of every triangle on the surface, in 18 bins of 10 degrees. */
   angleHistogram: number[];
 }

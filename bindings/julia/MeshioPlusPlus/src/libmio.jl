@@ -690,7 +690,9 @@ struct _CMeshCadSurfaceOpts
     min_angle_deg::Cdouble
     smooth_iterations::Int32
     smooth_method::Int32
-    reserved::NTuple{4,Int64}
+    order::Int32
+    reserved_pad::Int32
+    reserved::NTuple{3,Int64}
 end
 
 """Mirror of C `mio_mesh_cad_surface_report`."""
@@ -716,7 +718,8 @@ struct _CMeshCadSurfaceReport
     num_faces_below_bound::Int64
     num_smoothed::Int64
     min_input_angle_deg::Cdouble
-    reserved::NTuple{4,Int64}
+    num_curved_straightened::Int64
+    reserved::NTuple{3,Int64}
 end
 
 """Mirror of C `mio_mesh_cad_corner`."""

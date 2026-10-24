@@ -458,7 +458,8 @@ void print_usage(std::ostream& os) {
           "  mesh-cad-surface        Conforming triangle mesh of a CAD model's faces\n"
           "                            (CAD JSON, STEP, IGES): --size H [--deflection D]\n"
           "                            [--min-angle DEG] [--smooth N]\n"
-          "                            [--smooth-method laplacian|odt] [--strict] [--json]\n"
+          "                            [--smooth-method laplacian|odt] [--order 1|2|3]\n"
+          "                            [--strict] [--json]\n"
           "  isosurface              Level set of a scalar point_data field (contours)\n"
           "                            --array NAME --values v1,v2 [--component I]\n"
           "  sdf                     Signed distance field: a grid over a surface,\n"
@@ -2115,6 +2116,7 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
                                   {"min-angle", {}, true},
                                   {"smooth", {}, true},
                                   {"smooth-method", {}, true},
+                                  {"order", {}, true},
                                   {"json", {}, false},
                                   {"quiet", {"-q"}, false},
                               });
@@ -2153,6 +2155,8 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
         else
             throw std::runtime_error("mesh-cad-surface: --smooth-method must be laplacian or odt");
     }
+    if (has_opt(p, "order"))
+        o.mOrder = static_cast<std::int32_t>(std::stoi(opt_value(p, "order")));
     const meshioplusplus::MeshCadSurfaceResult r =
         meshioplusplus::mesh_cad_surface(*model.mBrep, o);
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
@@ -2244,6 +2248,9 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
             std::cout << "  refinement:     " << r.mNumRefinementPoints << " points, "
                       << r.mNumSmoothed << " smoothing moves, " << r.mNumFacesBelowBound
                       << " faces below the bound\n";
+        if (o.mOrder > 1)
+            std::cout << "  curved:         order " << o.mOrder << ", " << r.mNumCurvedStraightened
+                      << " kept straight-sided\n";
         for (const meshioplusplus::MeshCadFaceRecord& f : r.mFaces) {
             if (f.mStatus != meshioplusplus::MeshCadFaceStatus::Ok)
                 std::cout << "  face " << f.mFace << ": "

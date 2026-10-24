@@ -2269,6 +2269,12 @@ def test_mesh_cad_surface_tool(tmp_path):
     assert all(f["corners"] == [] for f in refined["faces"])
     with pytest.raises(ValueError, match="smooth_method"):
         _tools.tool_mesh_cad_surface(str(src), str(out), 0.25, smooth_method="none")
+    # Curved: quadratic triangles, every element valid.
+    curved = _tools.tool_mesh_cad_surface(str(src), str(out), 0.25, order=2)
+    assert curved["num_curved_straightened"] == 0
+    assert [c.type for c in meshioplusplus.read(out).cells][0] == "triangle6"
+    with pytest.raises(ValueError, match="order"):
+        _tools.tool_mesh_cad_surface(str(src), str(out), 0.25, order=4)
 
 
 def test_octree_tool(tmp_path):
