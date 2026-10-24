@@ -62,7 +62,7 @@ Notebook [42](https://github.com/loumalouomega/meshioplusplus/blob/main/example/
 | `min_angle=0` | `mMinAngleDeg` | Refine until every triangle's smallest angle on the surface is at least this (degrees, under 60); 0 keeps the unrefined mesh. Guaranteed up to 20.7 degrees away from corners under 60 degrees and poles; above, a target whose shortfall is reported (it usually reaches about 30 here) |
 | `smooth_iterations=0` | `mSmoothIterations` | Passes of guarded smoothing |
 | `smooth_method="laplacian"` | `mSmoothMethod` | `laplacian` or `odt` |
-| — | `mInsertion`, `mGrading`, `mCurvatureDeviation`, `mCellsAcrossGaps`, `mMetric`, `mPoleRings`, `mReparamConditionNumber`, `mOrder` | Laid out (ABI 34) for off-centres (6.2.9), size fields (6.3), metrics and poles (6.4) and curved meshes (6.6); refused unless left at their defaults until those land |
+| — | `mInsertion`, `mGrading`, `mCurvatureDeviation`, `mCellsAcrossGaps`, `mMetric`, `mPoleRings`, `mReparamConditionNumber`, `mOrder` | Laid out (ABI 34) for off-centres (6.2.9), size fields (6.3), metrics and poles (6.4) and curved meshes (6.6); refused unless left at their defaults until those land. Off-centres were measured and parked: on lattice-seeded faces they change nothing ([roadmap 6.2.9](roadmap.md#_6-mesh-generation)) |
 
 ## Output and report
 
