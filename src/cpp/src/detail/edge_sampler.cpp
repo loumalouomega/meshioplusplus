@@ -105,6 +105,9 @@ BrepSurfaceEval::BrepSurfaceEval(const NurbsPatch& rPatch, bool Rational) : pPat
     mNet.mValues = r_cp.As<double>();
     mNet.mColumns = 3;
     mNet.mWeights = weighted ? rPatch.mWeights.As<double>() : nullptr;
+    for (std::size_t i = 0; i < 3 * total; ++i)
+        if (std::isfinite(mNet.mValues[i]))
+            mScale = std::max(mScale, std::fabs(mNet.mValues[i]));
 }
 
 void BrepSurfaceEval::Eval(double U, double V, double* pX, double* pSu, double* pSv) const {
@@ -234,12 +237,29 @@ TrimTrace::TrimTrace(const BrepSurfaceEval* pSurface, BrepCurveEval Curve, bool 
     breaks.push_back(mCurve.T1());
     if (!mForward)
         std::reverse(breaks.begin(), breaks.end());
+    constexpr int kStart = 4;
+    // The speed carries round-off relative to the coordinates, not to the
+    // trace: on a short trace far from the origin, or one whose image is a
+    // point (a pole's trim), no relative tolerance is met and the pieces
+    // halve to the depth limit. A piece is accurate enough within 1e-14 of
+    // the whole trace's length, or shorter than round-off at the surface's
+    // size.
+    double estimate = 0.0;
+    for (std::size_t i = 0; i + 1 < breaks.size(); ++i)
+        for (int j = 0; j < kStart; ++j) {
+            const double sa = breaks[i] + (breaks[i + 1] - breaks[i]) * (double(j) / kStart);
+            const double sb = j + 1 == kStart ? breaks[i + 1]
+                                              : breaks[i] + (breaks[i + 1] - breaks[i]) *
+                                                                (double(j + 1) / kStart);
+            estimate += Gauss(sa, sb);
+        }
+    mNegligible = 1e-15 * pSurface->Scale();
+    mAbsTolerance = 1e-14 * estimate;
     mT.push_back(breaks.front());
     mCum.push_back(0.0);
     for (std::size_t i = 0; i + 1 < breaks.size(); ++i) {
         const double a = breaks[i];
         const double b = breaks[i + 1];
-        constexpr int kStart = 4;
         for (int j = 0; j < kStart; ++j) {
             const double sa = a + (b - a) * (double(j) / kStart);
             const double sb = j + 1 == kStart ? b : a + (b - a) * (double(j + 1) / kStart);
@@ -293,7 +313,11 @@ void TrimTrace::Refine(double A, double B, double Whole, double La, int Depth,
     const double left = Gauss(A, m);
     const double right = Gauss(m, B);
     const double halves = left + right;
-    if (Depth < 30 && std::fabs(Whole - halves) > 1e-12 * halves && m != A && m != B) {
+    // And never past a table of 2^15 entries, where heavier round-off (a
+    // short trace on a patch far from the origin) would still halve on:
+    // depth first, so the cap falls the same way every time.
+    if (Depth < 30 && std::fabs(Whole - halves) > std::max(1e-12 * halves, mAbsTolerance) &&
+        halves > mNegligible && rT.size() < (std::size_t(1) << 15) && m != A && m != B) {
         Refine(A, m, left, La, Depth + 1, rT, rL);
         Refine(m, B, right, rL.back(), Depth + 1, rT, rL);
         return;

@@ -40513,12 +40513,16 @@ public:
     double MaxCurvature(double U, double V) const;
     /// The knot range: `{u0, u1, v0, v1}`.
     const std::array<double, 4>& Box() const { return mBox; }
+    /// The largest absolute control point coordinate: the size round-off in
+    /// a point or a derivative is relative to.
+    double Scale() const { return mScale; }
 
 private:
     const NurbsPatch* pPatch = nullptr;
     IgaEvalNet mNet;
     std::array<std::size_t, 2> mCounts{0, 0};
     std::array<double, 4> mBox{0, 0, 0, 0};
+    double mScale = 0.0;
 };
 
 /// A `BrepCurve` (its first two coordinates are the face's parameters for a
@@ -40582,6 +40586,9 @@ private:
     double Gauss(double A, double B) const;
     void Refine(double A, double B, double Whole, double La, int Depth, std::vector<double>& rT,
                 std::vector<double>& rL) const;
+
+    double mNegligible = 0.0;    ///< a piece no longer than this needs no accuracy
+    double mAbsTolerance = 0.0;  ///< nor one whose halves agree within this
 };
 
 struct EdgeSampleOptions {
@@ -70543,6 +70550,9 @@ BrepSurfaceEval::BrepSurfaceEval(const NurbsPatch& rPatch, bool Rational) : pPat
     mNet.mValues = r_cp.As<double>();
     mNet.mColumns = 3;
     mNet.mWeights = weighted ? rPatch.mWeights.As<double>() : nullptr;
+    for (std::size_t i = 0; i < 3 * total; ++i)
+        if (std::isfinite(mNet.mValues[i]))
+            mScale = std::max(mScale, std::fabs(mNet.mValues[i]));
 }
 
 void BrepSurfaceEval::Eval(double U, double V, double* pX, double* pSu, double* pSv) const {
@@ -70672,12 +70682,29 @@ TrimTrace::TrimTrace(const BrepSurfaceEval* pSurface, BrepCurveEval Curve, bool 
     breaks.push_back(mCurve.T1());
     if (!mForward)
         std::reverse(breaks.begin(), breaks.end());
+    constexpr int kStart = 4;
+    // The speed carries round-off relative to the coordinates, not to the
+    // trace: on a short trace far from the origin, or one whose image is a
+    // point (a pole's trim), no relative tolerance is met and the pieces
+    // halve to the depth limit. A piece is accurate enough within 1e-14 of
+    // the whole trace's length, or shorter than round-off at the surface's
+    // size.
+    double estimate = 0.0;
+    for (std::size_t i = 0; i + 1 < breaks.size(); ++i)
+        for (int j = 0; j < kStart; ++j) {
+            const double sa = breaks[i] + (breaks[i + 1] - breaks[i]) * (double(j) / kStart);
+            const double sb = j + 1 == kStart ? breaks[i + 1]
+                                              : breaks[i] + (breaks[i + 1] - breaks[i]) *
+                                                                (double(j + 1) / kStart);
+            estimate += Gauss(sa, sb);
+        }
+    mNegligible = 1e-15 * pSurface->Scale();
+    mAbsTolerance = 1e-14 * estimate;
     mT.push_back(breaks.front());
     mCum.push_back(0.0);
     for (std::size_t i = 0; i + 1 < breaks.size(); ++i) {
         const double a = breaks[i];
         const double b = breaks[i + 1];
-        constexpr int kStart = 4;
         for (int j = 0; j < kStart; ++j) {
             const double sa = a + (b - a) * (double(j) / kStart);
             const double sb = j + 1 == kStart ? b : a + (b - a) * (double(j + 1) / kStart);
@@ -70731,7 +70758,11 @@ void TrimTrace::Refine(double A, double B, double Whole, double La, int Depth,
     const double left = Gauss(A, m);
     const double right = Gauss(m, B);
     const double halves = left + right;
-    if (Depth < 30 && std::fabs(Whole - halves) > 1e-12 * halves && m != A && m != B) {
+    // And never past a table of 2^15 entries, where heavier round-off (a
+    // short trace on a patch far from the origin) would still halve on:
+    // depth first, so the cap falls the same way every time.
+    if (Depth < 30 && std::fabs(Whole - halves) > std::max(1e-12 * halves, mAbsTolerance) &&
+        halves > mNegligible && rT.size() < (std::size_t(1) << 15) && m != A && m != B) {
         Refine(A, m, left, La, Depth + 1, rT, rL);
         Refine(m, B, right, rL.back(), Depth + 1, rT, rL);
         return;
@@ -80831,71 +80862,83 @@ BrepInfo ob_brep_info(const TopoDS_Shape& rNurbs, double ApproxTol) {
     Brep brep;
     brep.mId = nf + ne + 1;
     for (int fi = 1; fi <= faces.Extent(); ++fi) {
-        const TopoDS_Face face = TopoDS::Face(faces(fi));
-        const ObHandle<Geom_BSplineSurface> bs = ob_surface(face, ApproxTol);
-        if (bs.IsNull())
-            continue;
+        // The face's references, kept only once all of it converts: a face
+        // OpenCASCADE throws on (a surface trimmed to an empty range, an
+        // approximation that fails) is left out, as one with no surface is.
+        std::vector<std::pair<int, BrepRef> > refs;
         NurbsPatch patch;
-        patch.mDegrees = {bs->UDegree(), bs->VDegree()};
-        patch.mKnots = {ob_knots(bs->UKnotSequence()), ob_knots(bs->VKnotSequence())};
-        const auto nu = static_cast<std::size_t>(bs->NbUPoles());
-        const auto nv = static_cast<std::size_t>(bs->NbVPoles());
-        patch.mControlPoints = NDArray(DType::Float64, {nu * nv, 3});
-        patch.mWeights = NDArray(DType::Float64, {nu * nv});
-        for (std::size_t j = 0; j < nv; ++j)
-            for (std::size_t i = 0; i < nu; ++i) {
-                const gp_Pnt p = bs->Pole(static_cast<int>(i) + 1, static_cast<int>(j) + 1);
-                const std::size_t k = j * nu + i;
-                patch.mControlPoints.As<double>()[k * 3] = p.X();
-                patch.mControlPoints.As<double>()[k * 3 + 1] = p.Y();
-                patch.mControlPoints.As<double>()[k * 3 + 2] = p.Z();
-                patch.mWeights.As<double>()[k] =
-                    bs->Weight(static_cast<int>(i) + 1, static_cast<int>(j) + 1);
-            }
         BrepFace f;
-        f.mId = fi;
-        f.mPatch = static_cast<std::int64_t>(info.mPatches.size());
-        f.mSwappedNormal = face.Orientation() == TopAbs_REVERSED;
-        f.mRational = bs->IsURational() || bs->IsVRational();
-        f.mControlPointIds = ob_ids(next_id, nu * nv);
-        // Loops in the surface's own orientation: the outer one first.
-        const TopoDS_Face fwd = TopoDS::Face(face.Oriented(TopAbs_FORWARD));
-        const TopoDS_Wire outer = BRepTools::OuterWire(fwd);
-        std::vector<TopoDS_Wire> wires;
-        if (!outer.IsNull())
-            wires.push_back(outer);
-        for (TopExp_Explorer ex(fwd, TopAbs_WIRE); ex.More(); ex.Next())
-            if (!ex.Current().IsSame(outer))
-                wires.push_back(TopoDS::Wire(ex.Current()));
-        std::int64_t trim_index = 0;
-        for (const TopoDS_Wire& w : wires) {
-            BrepLoop loop;
-            loop.mType = w.IsSame(outer) ? "outer" : "inner";
-            for (BRepTools_WireExplorer we(w, fwd); we.More(); we.Next()) {
-                const TopoDS_Edge& e = we.Current();
-                double a = 0.0, b = 0.0;
-                const ObHandle<Geom2d_BSplineCurve> pc = ob_pcurve(e, fwd, a, b, ApproxTol);
-                if (pc.IsNull())
-                    continue;
-                BrepTrim t;
-                t.mTrimIndex = trim_index++;
-                t.mDirection = e.Orientation() != TopAbs_REVERSED;
-                t.mCurve = ob_curve(pc, a, b);
-                const int ei = edges.FindIndex(e);
-                if (ei > 0) {
-                    BrepRef r;
-                    r.mId = f.mId;
-                    r.mTrimIndex = t.mTrimIndex;
-                    // Edge and trim share their parameter in OpenCASCADE.
-                    r.mRelativeDirection = 1;
-                    edge_refs[static_cast<std::size_t>(ei - 1)].push_back(std::move(r));
+        try {
+            const TopoDS_Face face = TopoDS::Face(faces(fi));
+            const ObHandle<Geom_BSplineSurface> bs = ob_surface(face, ApproxTol);
+            if (bs.IsNull())
+                continue;
+            patch.mDegrees = {bs->UDegree(), bs->VDegree()};
+            patch.mKnots = {ob_knots(bs->UKnotSequence()), ob_knots(bs->VKnotSequence())};
+            const auto nu = static_cast<std::size_t>(bs->NbUPoles());
+            const auto nv = static_cast<std::size_t>(bs->NbVPoles());
+            patch.mControlPoints = NDArray(DType::Float64, {nu * nv, 3});
+            patch.mWeights = NDArray(DType::Float64, {nu * nv});
+            for (std::size_t j = 0; j < nv; ++j)
+                for (std::size_t i = 0; i < nu; ++i) {
+                    const gp_Pnt p = bs->Pole(static_cast<int>(i) + 1, static_cast<int>(j) + 1);
+                    const std::size_t k = j * nu + i;
+                    patch.mControlPoints.As<double>()[k * 3] = p.X();
+                    patch.mControlPoints.As<double>()[k * 3 + 1] = p.Y();
+                    patch.mControlPoints.As<double>()[k * 3 + 2] = p.Z();
+                    patch.mWeights.As<double>()[k] =
+                        bs->Weight(static_cast<int>(i) + 1, static_cast<int>(j) + 1);
                 }
-                loop.mTrims.push_back(std::move(t));
+            f.mId = fi;
+            f.mPatch = static_cast<std::int64_t>(info.mPatches.size());
+            f.mSwappedNormal = face.Orientation() == TopAbs_REVERSED;
+            f.mRational = bs->IsURational() || bs->IsVRational();
+            f.mControlPointIds = ob_ids(next_id, nu * nv);
+            // Loops in the surface's own orientation: the outer one first.
+            const TopoDS_Face fwd = TopoDS::Face(face.Oriented(TopAbs_FORWARD));
+            const TopoDS_Wire outer = BRepTools::OuterWire(fwd);
+            std::vector<TopoDS_Wire> wires;
+            if (!outer.IsNull())
+                wires.push_back(outer);
+            for (TopExp_Explorer ex(fwd, TopAbs_WIRE); ex.More(); ex.Next())
+                if (!ex.Current().IsSame(outer))
+                    wires.push_back(TopoDS::Wire(ex.Current()));
+            std::int64_t trim_index = 0;
+            for (const TopoDS_Wire& w : wires) {
+                BrepLoop loop;
+                loop.mType = w.IsSame(outer) ? "outer" : "inner";
+                for (BRepTools_WireExplorer we(w, fwd); we.More(); we.Next()) {
+                    const TopoDS_Edge& e = we.Current();
+                    double a = 0.0, b = 0.0;
+                    const ObHandle<Geom2d_BSplineCurve> pc = ob_pcurve(e, fwd, a, b, ApproxTol);
+                    if (pc.IsNull())
+                        continue;
+                    BrepTrim t;
+                    t.mTrimIndex = trim_index++;
+                    t.mDirection = e.Orientation() != TopAbs_REVERSED;
+                    t.mCurve = ob_curve(pc, a, b);
+                    const int ei = edges.FindIndex(e);
+                    if (ei > 0) {
+                        BrepRef r;
+                        r.mId = f.mId;
+                        r.mTrimIndex = t.mTrimIndex;
+                        // Edge and trim share their parameter in OpenCASCADE.
+                        r.mRelativeDirection = 1;
+                        refs.emplace_back(ei, std::move(r));
+                    }
+                    loop.mTrims.push_back(std::move(t));
+                }
+                if (!loop.mTrims.empty())
+                    f.mLoops.push_back(std::move(loop));
             }
-            if (!loop.mTrims.empty())
-                f.mLoops.push_back(std::move(loop));
+            f.mTrimmed = !f.mLoops.empty();
+        } catch (const Standard_Failure& rErr) {
+            log::warn("occt: face {} could not be converted ({}); left out", fi,
+                      rErr.GetMessageString());
+            continue;
         }
-        f.mTrimmed = !f.mLoops.empty();
+        for (auto& [ei, r] : refs)
+            edge_refs[static_cast<std::size_t>(ei - 1)].push_back(std::move(r));
         info.mPatches.push_back(std::move(patch));
         brep.mFaces.push_back(static_cast<std::int64_t>(info.mFaces.size()));
         info.mFaces.push_back(std::move(f));
@@ -80905,7 +80948,14 @@ BrepInfo ob_brep_info(const TopoDS_Shape& rNurbs, double ApproxTol) {
         BrepEdge e;
         e.mId = nf + ei;
         double a = 0.0, b = 0.0;
-        const ObHandle<Geom_BSplineCurve> c = ob_edge_curve(edge, a, b, ApproxTol);
+        ObHandle<Geom_BSplineCurve> c;
+        try {
+            c = ob_edge_curve(edge, a, b, ApproxTol);
+        } catch (const Standard_Failure& rErr) {
+            // Its uses still pair through their trims.
+            log::warn("occt: edge {} could not be converted ({}); its curve is left out", ei,
+                      rErr.GetMessageString());
+        }
         if (!c.IsNull()) {
             e.mHasCurve = true;
             e.mCurve = ob_curve(c, a, b);
@@ -106589,6 +106639,9 @@ void write_cad_json(const std::string& rPath, const Mesh& rMesh, const BrepInfo&
 
 #ifdef MESHIOPLUSPLUS_HAS_OCCT
 // Project includes (private, not installed)
+
+// External includes
+#include <Standard_Failure.hxx>
 #endif
 
 namespace meshioplusplus {
@@ -106606,11 +106659,17 @@ Mesh cad_read_shape(const std::string& rPath, bool Iges, BrepInfo& rInfo,
                                     "deflection positive");
     detail::LibraryLock lock;
     detail::OcctQuiet quiet;
-    detail::OcctNurbs nurbs = detail::occt_nurbs(detail::occt_read_cad_file(rPath, Iges, fmt));
-    Mesh mesh = detail::occt_tessellate(nurbs.mShape, nurbs.mInfo, rOptions.mDeflection,
-                                        rOptions.mAngularDeflection);
-    rInfo = std::move(nurbs.mInfo);
-    return mesh;
+    try {
+        detail::OcctNurbs nurbs = detail::occt_nurbs(detail::occt_read_cad_file(rPath, Iges, fmt));
+        Mesh mesh = detail::occt_tessellate(nurbs.mShape, nurbs.mInfo, rOptions.mDeflection,
+                                            rOptions.mAngularDeflection);
+        rInfo = std::move(nurbs.mInfo);
+        return mesh;
+    } catch (const Standard_Failure& rErr) {
+        // Never OpenCASCADE's own exception, which is no std::exception.
+        throw ReadError(std::string("meshio++: ") + fmt + ": OpenCASCADE failed converting '" +
+                        rPath + "': " + rErr.GetMessageString());
+    }
 }
 #else
 [[noreturn]] void cad_read_unsupported(const char* pFormat) {

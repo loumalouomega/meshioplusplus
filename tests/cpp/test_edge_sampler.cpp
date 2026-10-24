@@ -330,6 +330,21 @@ TEST(EdgeSampler, ZeroLengthEdge) {
     EXPECT_EQ(dist(e.mPoints[0], e.mPoints[1]), 0.0);
 }
 
+// A short trace on a patch far from the origin: its speed carries round-off
+// of 1e-6 of itself, which no relative tolerance meets. Its table halved to
+// the depth limit (2^30 pieces per span, hours) before v17.18.0; now it stops
+// at the cap and its length is still right to the round-off.
+TEST(EdgeSampler, RoundOffInTheSpeedDoesNotHalveForever) {
+    const mio::NurbsPatch p = plane(1e6, 1e6, 1e-4, 1e-4);
+    const BrepSurfaceEval s(p, false);
+    const TrimTrace t(&s, BrepCurveEval(curve(1, {0, 0, 1, 1}, {{0.1, 0.2}, {0.7, 0.9}})), true);
+    const double length = 1e-4 * std::hypot(0.6, 0.7);
+    EXPECT_NEAR(t.Length(), length, length * 1e-5);
+    EdgeSampleOptions o;
+    o.mTargetSize = 0.25 * length * (1.0 + 1e-3);
+    EXPECT_EQ(mio::detail::edge_sample(t, o).mParams.size(), 5u);
+}
+
 TEST(EdgeSampler, CornersAreKept) {
     // A polyline (0, 0) -> (1, 0) -> (1, 0.3): its corner at the knot 0.5 is
     // a sample whatever the spacing, so no chord cuts it.

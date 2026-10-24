@@ -2277,8 +2277,11 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
                 std::cout << "  face " << f.mFace << ": "
                           << (c.mPole ? std::string("pole")
                                       : std::string("corner of ") + angle + " degrees")
-                          << " at point " << c.mPoint << " keeps triangles down to " << forced
-                          << " degrees\n";
+                          << " at point " << c.mPoint
+                          << (c.mMinForcedDeg < 180.0
+                                  ? std::string(" keeps triangles down to ") + forced + " degrees"
+                                  : std::string(" forces no triangle"))
+                          << "\n";
             }
         }
     }

@@ -94,12 +94,16 @@ public:
     double MaxCurvature(double U, double V) const;
     /// The knot range: `{u0, u1, v0, v1}`.
     const std::array<double, 4>& Box() const { return mBox; }
+    /// The largest absolute control point coordinate: the size round-off in
+    /// a point or a derivative is relative to.
+    double Scale() const { return mScale; }
 
 private:
     const NurbsPatch* pPatch = nullptr;
     IgaEvalNet mNet;
     std::array<std::size_t, 2> mCounts{0, 0};
     std::array<double, 4> mBox{0, 0, 0, 0};
+    double mScale = 0.0;
 };
 
 /// A `BrepCurve` (its first two coordinates are the face's parameters for a
@@ -163,6 +167,9 @@ private:
     double Gauss(double A, double B) const;
     void Refine(double A, double B, double Whole, double La, int Depth, std::vector<double>& rT,
                 std::vector<double>& rL) const;
+
+    double mNegligible = 0.0;    ///< a piece no longer than this needs no accuracy
+    double mAbsTolerance = 0.0;  ///< nor one whose halves agree within this
 };
 
 struct EdgeSampleOptions {
