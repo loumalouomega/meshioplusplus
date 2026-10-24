@@ -24,8 +24,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <map>
-#include <utility>
 #include <string>
+#include <utility>
 #include <vector>
 
 // External includes
@@ -40,7 +40,9 @@
 #include "../../src/cpp/benchmark/mesh_digest.hpp"
 #include "../../src/cpp/src/detail/curved_triangle.hpp"
 #include "../../src/cpp/src/operations/mesh_cad_testing.hpp"
+#include "meshioplusplus/brep.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/operations/mesh_cad.hpp"
 
 namespace {
