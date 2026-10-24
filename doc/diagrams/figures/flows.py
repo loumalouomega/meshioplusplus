@@ -1064,13 +1064,12 @@ def roadmap_map():
         (
             "§6 mesh generation",
             [
-                ("milestone-1 leftovers", "S"),
                 ("off-centres · corner lopping", "S"),
                 ("size fields · grading", "M"),
                 ("metrics · poles · folds", "M"),
                 ("real CAD input · corpus", "M"),
-                ("curved (high-order) meshes", "M"),
-                ("tetrahedra (octree, backends)", "L"),
+                ("curved meshes: untangling", "M"),
+                ("tetrahedra: backends", "L"),
                 ("quads: design first", "L"),
                 ("boundary layers: design first", "L"),
                 ("adaptation on the CAD", "M"),
