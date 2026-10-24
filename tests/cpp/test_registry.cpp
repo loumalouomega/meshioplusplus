@@ -174,16 +174,18 @@ TEST(Registry, Gmsh22RoundTripsRegionMembershipThroughTheRegistryDispatch) {
     EXPECT_EQ(back.Region(0).mTag, 7);
 
     // The 4.1 writer records membership through $Entities, one entity per
-    // CELL BLOCK (v11.5.0, roadmap §1 tier B3): a region covering only PART
+    // cell block (v11.5.0, roadmap §1 tier B3). A region covering only part
     // of a block (as here -- "solid" tags cell 0 of the mesh's two
-    // tetrahedra) cannot be represented that way and is dropped with a
-    // warning, keeping only the $PhysicalNames row (see
-    // Gmsh.RegionTagAllocation* in test_gmsh.cpp for the block-aligned case,
-    // where 4.1 now does keep membership).
+    // tetrahedra) splits the block into one per tag first (v17.17.0, roadmap
+    // 6.1.2), so membership survives 4.1 too.
     const std::string path41 = mt::temp_path(".msh");
     registry_writers().at("gmsh")(path41, mesh);
     Mesh back41 = registry_readers().at("gmsh")(path41);
-    EXPECT_EQ(back41.NumRegions(), 0u);
+    ASSERT_EQ(back41.NumRegions(), 1u);
+    EXPECT_EQ(back41.Region(0).mName, "solid");
+    EXPECT_EQ(back41.Region(0).mTag, 7);
+    EXPECT_EQ(back41.Region(0).NumEntries(), 1u);
+    EXPECT_EQ(back41.NumCellBlocks(), 2u);
 }
 
 TEST(Registry, ExtensionDefaultsMapCommonExtensions) {

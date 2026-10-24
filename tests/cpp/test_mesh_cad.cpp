@@ -850,6 +850,47 @@ TEST(MeshCad, RoundTripsThroughVtuAndGmsh) {
         EXPECT_EQ(mio::detail::read_int(ca, i), mio::detail::read_int(cb, i));
 }
 
+// Roadmap 6.1.2: every face of the one triangle block is a `face:<k>` region,
+// and Gmsh 4.1 places a physical group on an entity, so the writer splits the
+// block into one per face; the box opens with six named physical surfaces.
+TEST(MeshCad, GmshFourOneGivesEachFaceItsPhysicalGroup) {
+    const auto r = mio::mesh_cad_surface(brep_solids::box(), size(0.25));
+    ASSERT_EQ(r.mNumFailed, 0);
+    const mio::NDArray& faces = r.mMesh.CellData(mio::kMeshCadFaceName, 0);
+    std::map<std::int64_t, std::size_t> per_face;
+    for (std::size_t i = 0; i < faces.Size(); ++i)
+        ++per_face[mio::detail::read_int(faces, i)];
+    ASSERT_EQ(per_face.size(), 6u);
+    for (const bool binary : {false, true}) {
+        const std::string msh = mt::temp_path(".msh");
+        mio::write_gmsh41(msh, r.mMesh, binary);
+        const mio::Mesh g = mio::read_gmsh(msh);
+        std::size_t named = 0;
+        for (std::size_t i = 0; i < g.NumRegions(); ++i) {
+            const mio::Region& reg = g.Region(i);
+            if (reg.mName.rfind("face:", 0) != 0)
+                continue;
+            ++named;
+            EXPECT_EQ(reg.mKind, mio::RegionKind::Cell);
+            EXPECT_EQ(reg.mDim, 2);
+            const std::int64_t k = std::stoll(reg.mName.substr(5));
+            EXPECT_EQ(reg.NumEntries(), per_face.at(k)) << reg.mName << " binary " << binary;
+        }
+        EXPECT_EQ(named, 6u) << "binary " << binary;
+        // The triangles still carry their face, now one block per face.
+        std::size_t tris = 0;
+        for (std::size_t b = 0; b < g.NumCellBlocks(); ++b) {
+            if (g.Cells(b).Type() != "triangle")
+                continue;
+            tris += g.Cells(b).NumCells();
+            const mio::NDArray& f = g.CellData(mio::kMeshCadFaceName, b);
+            for (std::size_t i = 1; i < f.Size(); ++i)
+                ASSERT_EQ(mio::detail::read_int(f, i), mio::detail::read_int(f, 0));
+        }
+        EXPECT_EQ(tris, r.mMesh.Cells(0).NumCells());
+    }
+}
+
 TEST(MeshCad, Refusals) {
     const mio::BrepInfo box = brep_solids::box();
     for (const double h : {0.0, -1.0, std::nan("")})

@@ -276,11 +276,26 @@ def test_round_trip(tmp_path, ext, fmt):
     path = tmp_path / f"sphere{ext}"
     mio.write(path, out, file_format=fmt)
     back = mio.read(path, file_format=fmt)
-    np.testing.assert_array_equal(back.points, out.points)
-    tri = np.concatenate([c.data for c in back.cells if c.type == "triangle"])
-    np.testing.assert_array_equal(
-        np.sort(tri, axis=0), np.sort(out.cells[0].data, axis=0)
-    )
+    if fmt == "vtu":
+        np.testing.assert_array_equal(back.points, out.points)
+        tri = np.concatenate([c.data for c in back.cells if c.type == "triangle"])
+        np.testing.assert_array_equal(
+            np.sort(tri, axis=0), np.sort(out.cells[0].data, axis=0)
+        )
+        return
+
+    # Gmsh 4.1 writes one entity per face (roadmap 6.1.2) and groups $Nodes by
+    # entity, so the points come back grouped by face: the same triangles,
+    # point for point, and every face its own physical surface.
+    def triangles(mesh):
+        tri = np.concatenate([c.data for c in mesh.cells if c.type == "triangle"])
+        xyz = mesh.points[tri]
+        xyz = np.array([t[np.lexsort(t.T[::-1])] for t in xyz]).reshape(len(tri), 9)
+        return xyz[np.lexsort(xyz.T[::-1])]
+
+    np.testing.assert_array_equal(triangles(back), triangles(out))
+    faces = sorted(r.name for r in back.regions if r.name.startswith("face:"))
+    assert faces == sorted(r.name for r in out.regions)
 
 
 @needs_core
@@ -385,6 +400,22 @@ def test_curved_elements_survive_a_file(tmp_path, order, ext):
     path = tmp_path / ("curved" + ext)
     mio.write(path, out, file_format="gmsh" if ext == ".msh" else None)
     back = mio.read(path, file_format="gmsh" if ext == ".msh" else None)
+    if ext == ".msh":
+        # One entity per face (roadmap 6.1.2): Gmsh 4.1 groups $Nodes by
+        # entity, so the points come back grouped by face. Each element keeps
+        # its nodes, in their order, point for point.
+        for kind in {c.type for c in out.cells}:
+            got = np.concatenate(
+                [back.points[c.data] for c in back.cells if c.type == kind]
+            )
+            want = np.concatenate(
+                [out.points[c.data] for c in out.cells if c.type == kind]
+            )
+            got, want = got.reshape(len(got), -1), want.reshape(len(want), -1)
+            np.testing.assert_array_equal(
+                got[np.lexsort(got.T[::-1])], want[np.lexsort(want.T[::-1])]
+            )
+        return
     by_type = {c.type: c.data for c in back.cells}
     for c in out.cells:
         np.testing.assert_array_equal(by_type[c.type], c.data)

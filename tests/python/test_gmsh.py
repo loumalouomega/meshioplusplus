@@ -715,6 +715,48 @@ def test_gmsh41_one_region_over_two_blocks_gets_two_entities(tmp_path):
     assert plate.dim == 2
 
 
+@pytest.mark.parametrize("binary", [False, True])
+def test_gmsh41_regions_sharing_a_block_get_an_entity_each(tmp_path, binary):
+    """Roadmap 6.1.2: two regions that share one triangle block become two
+    blocks, so each is an entity with its own physical group; both engines
+    write the same entities, nodes and elements, and the regions read back
+    with their cells (cell data split alongside)."""
+    from meshioplusplus.gmsh import main as gmsh_main
+
+    points = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]]
+    )
+    tris = np.array([[0, 1, 2], [0, 2, 3], [1, 2, 0], [2, 3, 0]])
+    mesh = meshioplusplus.Mesh(
+        points,
+        [("triangle", tris)],
+        cell_data={"id": [np.array([10, 20, 30, 40])]},
+    )
+    mesh.regions = [
+        meshioplusplus.Region("left", "cell", [1, 3]),
+        meshioplusplus.Region("right", "cell", [0, 2]),
+    ]
+    core = tmp_path / "core.msh"
+    py = tmp_path / "py.msh"
+    meshioplusplus.write(str(core), mesh, file_format="gmsh", binary=binary)
+    gmsh_main.write(str(py), mesh, "4.1", binary=binary)
+    a, b = core.read_bytes(), py.read_bytes()
+    # $ElementData differs between the engines in how it spells the time
+    # value ("0" and "0.0"), as it did before; everything before it agrees.
+    assert a[: a.index(b"$ElementData")] == b[: b.index(b"$ElementData")]
+    for path in (core, py):
+        back = meshioplusplus.read(str(path))
+        assert [(c.type, len(c)) for c in back.cells] == [
+            ("triangle", 2),
+            ("triangle", 2),
+        ]
+        groups = {r.name: list(r.entries) for r in back.regions if r.kind == "cell"}
+        # "right" (tag 2) holds the first cell, so its block comes first.
+        assert groups["right"] == [0, 1]
+        assert groups["left"] == [2, 3]
+        assert [list(d) for d in back.cell_data["id"]] == [[10, 30], [20, 40]]
+
+
 def test_gmsh41_python_twin_allocates_entities_for_a_mixed_mesh(tmp_path):
     """The pure-Python 4.1 writer gives every block of a mixed mesh its own
     entity, byte for byte as the C++ writer does (roadmap 3.4.12)."""

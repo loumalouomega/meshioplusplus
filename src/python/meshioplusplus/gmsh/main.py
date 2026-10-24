@@ -110,10 +110,12 @@ def _with_region_groups(mesh):
     ``Cell`` regions (a region's own tag, else a fresh one per dimension, in
     region order), and each group a ``field_data`` entry does not already
     describe is added to ``$PhysicalNames``. The mesh itself is not modified.
+    Returns the mesh and whether ``gmsh:physical`` was synthesised, which the
+    4.1 writer needs to build entities from it.
     """
     regions = [r for r in mesh.regions if r.kind == "cell"]
     if not regions or "gmsh:physical" in mesh.cell_data:
-        return mesh
+        return mesh, False
     ends = np.cumsum([len(c) for c in mesh.cells], dtype=np.int64)
     max_tag = {}
     for value in mesh.field_data.values():
@@ -169,7 +171,7 @@ def _with_region_groups(mesh):
         starts = np.concatenate([[0], ends[:-1]]) if len(ends) else ends
         out.cell_data = dict(mesh.cell_data)
         out.cell_data["gmsh:physical"] = [flat[a:b] for a, b in zip(starts, ends)]
-    return out
+    return out, any_tagged
 
 
 def write(filename, mesh, fmt_version="4.1", binary=True, float_fmt=".16e"):
@@ -187,9 +189,17 @@ def write(filename, mesh, fmt_version="4.1", binary=True, float_fmt=".16e"):
                 )
             )
 
-    writer.write(
-        filename, _with_region_groups(mesh), binary=binary, float_fmt=float_fmt
-    )
+    out, from_regions = _with_region_groups(mesh)
+    if writer is _gmsh41:
+        writer.write(
+            filename,
+            out,
+            binary=binary,
+            float_fmt=float_fmt,
+            region_groups=from_regions,
+        )
+    else:
+        writer.write(filename, out, binary=binary, float_fmt=float_fmt)
 
 
 # NOTE: format registration now lives in meshioplusplus/gmsh/__init__.py, which wraps the

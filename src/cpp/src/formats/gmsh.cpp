@@ -44,6 +44,7 @@
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
+#include "meshioplusplus/detail/subset.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/types.hpp"
 #include "meshioplusplus/detail/file_source.hpp"
@@ -2015,6 +2016,102 @@ struct GmshSynthesizedTags {
 };
 
 /**
+ * @brief Split every cell block whose cells carry more than one resolved
+ * physical tag into one block per tag, for format 4.1 (roadmap 6.1.2).
+ *
+ * A 4.1 element block lives on one entity and an entity has one physical
+ * group, so a block that several regions share (every face of a
+ * `mesh_cad_surface` result is in one triangle block, a `face:<k>` region
+ * each) has to become several blocks before any entity can be synthesized.
+ * The sub-blocks of a block follow the order in which their tags first appear,
+ * and each keeps its cells in their original order; every cell data array is
+ * split the same way, and the points and their data are untouched. A mesh
+ * whose blocks are all uniform is left alone, so its bytes do not change.
+ * @param rFlatTags per-cell resolved tag, block-major (#gmsh_flat_tags_from_regions).
+ * @param rOut receives the split mesh (geometry and data, no regions: the
+ *        writer takes the group names from the input mesh).
+ * @param rOutTags receives @p rFlatTags in the split mesh's block order.
+ * @return true when some block was split; false leaves @p rOut untouched. A
+ *         ragged block or a cell data array whose length is not the block's
+ *         disables the split, and the caller warns as before.
+ */
+bool gmsh_split_blocks_by_tag_41(const Mesh& rMesh, const std::vector<std::int64_t>& rFlatTags,
+                                 Mesh& rOut, std::vector<std::int64_t>& rOutTags) {
+    if (rFlatTags.empty())
+        return false;
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    std::vector<std::vector<std::vector<std::int64_t>>> groups(nblocks);
+    bool any = false;
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const std::size_t start = static_cast<std::size_t>(bases[b]);
+        const std::size_t end = static_cast<std::size_t>(bases[b + 1]);
+        std::unordered_map<std::int64_t, std::size_t> slot;
+        for (std::size_t c = start; c < end; ++c) {
+            const auto [it, fresh] = slot.emplace(rFlatTags[c], groups[b].size());
+            if (fresh)
+                groups[b].emplace_back();
+            groups[b][it->second].push_back(static_cast<std::int64_t>(c - start));
+        }
+        if (groups[b].size() > 1) {
+            if (rMesh.Cells(b).IsRagged())
+                return false;
+            any = true;
+        }
+    }
+    if (!any)
+        return false;
+    const std::vector<std::string> cell_names = rMesh.CellDataNames();
+    for (const std::string& name : cell_names) {
+        if (rMesh.CellDataNumBlocks(name) != nblocks)
+            return false;
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const NDArray& d = rMesh.CellData(name, b);
+            if (groups[b].size() > 1 &&
+                (d.Shape().empty() || d.Shape()[0] != rMesh.Cells(b).NumCells()))
+                return false;
+        }
+    }
+
+    Mesh out;
+    out.AssignPoints(detail::data_owned_copy(rMesh.Points()));
+    for (const std::string& name : rMesh.PointDataNames())
+        out.AddPointData(name, detail::data_owned_copy(rMesh.PointData(name)));
+    for (const std::string& name : rMesh.FieldDataNames())
+        out.AddFieldData(name, detail::data_owned_copy(rMesh.FieldData(name)));
+    rOutTags.clear();
+    rOutTags.reserve(rFlatTags.size());
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::string type(cb.Type());
+        if (groups[b].size() <= 1) {
+            out.AddCellBlock(type, detail::data_owned_copy(cb.Conn()));
+        } else {
+            for (const auto& r_idx : groups[b])
+                out.AddCellBlock(type, detail::subset_gather_rows(cb.Conn(), r_idx));
+        }
+        for (const auto& r_idx : groups[b])
+            for (const std::int64_t c : r_idx)
+                rOutTags.push_back(rFlatTags[static_cast<std::size_t>(bases[b] + c)]);
+    }
+    for (const std::string& name : cell_names) {
+        std::vector<NDArray> blocks;
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const NDArray& d = rMesh.CellData(name, b);
+            if (groups[b].size() <= 1) {
+                blocks.push_back(detail::data_owned_copy(d));
+                continue;
+            }
+            for (const auto& r_idx : groups[b])
+                blocks.push_back(detail::subset_gather_rows(d, r_idx));
+        }
+        out.AddCellData(name, std::move(blocks));
+    }
+    rOut = std::move(out);
+    return true;
+}
+
+/**
  * @brief Synthesize 4.1 entity tag data for a mesh that carries no
  * `gmsh:dim_tags` of its own: from its `Cell` regions (v11.5.0, roadmap §1 tier
  * B3), or, with none, from the cell blocks alone.
@@ -2023,9 +2120,9 @@ struct GmshSynthesizedTags {
  * a tag alone (as 2.2's per-element column carries) is not enough here. One
  * entity per cell block: this writer's `$Elements` model is one gmsh element
  * block per meshio++ cell block, so a block whose cells do not all agree on
- * the same resolved tag cannot be split further here -- it keeps physical group
- * 0 (none), and a warning names it, a documented scope limit rather than a
- * silent drop.
+ * the same resolved tag is split first (#gmsh_split_blocks_by_tag_41); one
+ * that cannot be (a ragged block, a cell array of the wrong length) keeps
+ * physical group 0 (none), and a warning names it.
  *
  * An entity is the pair (dimension, tag), so two blocks of one dimension need
  * two tags. A block keeps its region tag as its entity tag while that tag is
@@ -2350,18 +2447,30 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
     const std::vector<GmshRegionTag> region_tags = gmsh_resolve_region_tags(rMeshIn);
     Mesh gmsh41_synth;
     bool synthesized = false;
+    Mesh gmsh41_split;
+    const Mesh* p_source = &rMeshIn;
     if (!rMeshIn.HasPointData("gmsh:dim_tags")) {
-        const std::vector<std::int64_t> flat = gmsh_flat_tags_from_regions(rMeshIn, region_tags);
+        std::vector<std::int64_t> flat = gmsh_flat_tags_from_regions(rMeshIn, region_tags);
+        // A block several regions share becomes one block per region first
+        // (roadmap 6.1.2), so each can be its own entity with its own group.
+        std::vector<std::int64_t> split_flat;
+        if (gmsh_split_blocks_by_tag_41(rMeshIn, flat, gmsh41_split, split_flat)) {
+            p_source = &gmsh41_split;
+            flat = std::move(split_flat);
+        }
+        const Mesh& r_source = *p_source;
         // Without regions a mesh of several cell blocks (a mixed mesh) still
         // needs one entity per block, or its blocks would share an entity; a
         // single block keeps the legacy one-block output, and so does a mesh
         // that brings its own entity tags.
-        const bool blocks_only = flat.empty() && rMeshIn.NumCellBlocks() > 1 &&
-                                 rMeshIn.NumPoints() > 0 &&
-                                 !rMeshIn.HasCellData("gmsh:geometrical");
+        const bool blocks_only = flat.empty() && r_source.NumCellBlocks() > 1 &&
+                                 r_source.NumPoints() > 0 &&
+                                 !r_source.HasCellData("gmsh:geometrical");
         if (!flat.empty() || blocks_only) {
-            const GmshSynthesizedTags synth = gmsh_synthesize_tags_41(rMeshIn, flat, cell_dim);
-            gmsh41_synth = detail::clone_mesh(rMeshIn);
+            const GmshSynthesizedTags synth = gmsh_synthesize_tags_41(r_source, flat, cell_dim);
+            // The split mesh is already a private copy; anything else is cloned.
+            gmsh41_synth =
+                p_source == &gmsh41_split ? std::move(gmsh41_split) : detail::clone_mesh(rMeshIn);
             gmsh41_synth.AddPointData("gmsh:dim_tags", synth.mDimTags);
             gmsh41_synth.AddCellData("gmsh:geometrical", synth.mGeometrical);
             if (!synth.mPhysical.empty())
