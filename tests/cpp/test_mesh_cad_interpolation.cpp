@@ -25,7 +25,10 @@
 // D. A. Dunavant, IJNME 21, 1985), the field evaluated in space at its
 // points. A smooth field converges at order 2 in both norms, pinned for the
 // unrefined meshes and for min_angle = 25; a field with a sharp layer is
-// measured beside it, for the size fields of 6.3 to improve on.
+// measured beside it, for the size fields of 6.3 to improve on. The curved
+// elements of 6.6 are measured the same way, the interpolant their own
+// Lagrange one on the curved element and the quadrature a collapsed 8 x 8
+// Gauss-Legendre rule on it: quadratic and cubic elements converge faster.
 
 // System includes
 #include <algorithm>
@@ -43,6 +46,7 @@
 #include <gtest/gtest.h>
 
 // Project includes
+#include "../../src/cpp/src/detail/curved_triangle.hpp"
 #include "brep_solids.hpp"
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/brep.hpp"
@@ -238,11 +242,11 @@ TEST(MeshCadInterpolation, TheSphereConvergesAtSecondOrder) {
     EXPECT_LT(layer.mErrors.back().mL2, layer.mErrors.front().mL2);
 }
 
-TEST(MeshCadInterpolation, TheScordelisLoRoofConvergesAtSecondOrder) {
-    // The roof (radius 25, length 50, 80 degrees): an untrimmed rational
-    // patch whose parameter scales differ fortyfold, written in-test (the C++
-    // suite has no fixture path) with the control net of
-    // tests/python/meshes/cad_json/cylindrical_roof.cad.json.
+// The roof (radius 25, length 50, 80 degrees): an untrimmed rational patch
+// whose parameter scales differ fortyfold, written in-test (the C++ suite has
+// no fixture path) with the control net of
+// tests/python/meshes/cad_json/cylindrical_roof.cad.json.
+mio::BrepInfo scordelis_lo_roof() {
     const std::string path = mt::temp_path(".cad.json");
     {
         const double c = std::cos(40.0 * 3.14159265358979323846 / 180.0);
@@ -263,11 +267,17 @@ TEST(MeshCadInterpolation, TheScordelisLoRoofConvergesAtSecondOrder) {
             -r * s, r * c, r / c, c, r * s, r * c, -r * s, r * c, r / c, c, r * s, r * c);
         std::ofstream(path) << json;
     }
-    const mio::BrepInfo roof = mio::read_cad_json_info(path);
-    // On the cylinder of radius 25 about the y axis.
-    const Field smooth = [](const double* pX) {
-        return std::sin(pX[0] / 8.0) * std::cos(pX[1] / 10.0) + std::exp(pX[2] / 40.0);
-    };
+    return mio::read_cad_json_info(path);
+}
+
+// Smooth on the roof, the cylinder of radius 25 about the y axis.
+double roof_smooth(const double* pX) {
+    return std::sin(pX[0] / 8.0) * std::cos(pX[1] / 10.0) + std::exp(pX[2] / 40.0);
+}
+
+TEST(MeshCadInterpolation, TheScordelisLoRoofConvergesAtSecondOrder) {
+    const mio::BrepInfo roof = scordelis_lo_roof();
+    const Field smooth = roof_smooth;
     const std::vector<double> sizes = {4.0, 2.0, 1.0};
     for (const double ang : {0.0, 25.0}) {
         const Study s = study(roof, sizes, ang, smooth);
@@ -275,6 +285,141 @@ TEST(MeshCadInterpolation, TheScordelisLoRoofConvergesAtSecondOrder) {
         for (std::size_t k = 0; k < s.mL2Orders.size(); ++k) {
             EXPECT_NEAR(s.mL2Orders[k], 2.0, 0.2) << "L2, min_angle " << ang;
             EXPECT_NEAR(s.mMaxOrders[k], 2.0, 0.35) << "max, min_angle " << ang;
+        }
+    }
+}
+
+/// The L2 and maximum errors of the Lagrange interpolant of `rF` on the
+/// curved elements of order `Order` of the mesh's first block, against `rF`
+/// at the points of a collapsed 8 x 8 Gauss-Legendre rule on each element
+/// (the area element's components are J against the three axes); then both
+/// again over the elements out of every pole's reach.
+std::array<double, 4> curved_interpolation_errors(const mio::Mesh& rM, int Order, const Field& rF,
+                                                  const Poles& rPoles) {
+    namespace mdt = mio::detail;
+    static const double kX[8] = {0.0198550717512319, 0.1016667612931866, 0.2372337950418355,
+                                 0.4082826787521751, 0.5917173212478249, 0.7627662049581645,
+                                 0.8983332387068134, 0.9801449282487681};
+    static const double kW[8] = {0.0506142681451881, 0.1111905172266872, 0.1568533229389436,
+                                 0.1813418916891810, 0.1813418916891810, 0.1568533229389436,
+                                 0.1111905172266872, 0.0506142681451881};
+    const auto cells = rM.Cells(0);
+    const std::size_t nn = static_cast<std::size_t>(mdt::curved_triangle_num_nodes(Order));
+    const double* x = rM.Points().As<double>();
+    double sum = 0.0, max = 0.0, sum_away = 0.0, max_away = 0.0;
+    std::vector<mdt::CurvedVec3> nodes(nn), values(nn);
+    for (std::size_t c = 0; c < cells.NumCells(); ++c) {
+        bool near_pole = false;
+        for (std::size_t i = 0; i < nn; ++i) {
+            const auto id = static_cast<std::size_t>(mdt::read_int(cells.Conn(), nn * c + i));
+            nodes[i] = {x[3 * id], x[3 * id + 1], x[3 * id + 2]};
+            // The interpolant is linear in its nodal values: the element's
+            // own map with the values as first coordinates.
+            values[i] = {rF(nodes[i].data()), 0.0, 0.0};
+            for (const auto& [r_x, reach] : rPoles)
+                near_pole = near_pole || std::hypot(nodes[i][0] - r_x[0], nodes[i][1] - r_x[1],
+                                                    nodes[i][2] - r_x[2]) <= reach;
+        }
+        for (int i = 0; i < 8; ++i)
+            for (int j = 0; j < 8; ++j) {
+                const double xi = kX[i], eta = kX[j] * (1.0 - kX[i]);
+                const double w = kW[i] * kW[j] * (1.0 - kX[i]);
+                mdt::CurvedVec3 n{};
+                for (std::size_t k = 0; k < 3; ++k) {
+                    mdt::CurvedVec3 axis{0.0, 0.0, 0.0};
+                    axis[k] = 1.0;
+                    n[k] = mdt::curved_triangle_jacobian(Order, nodes.data(), axis, xi, eta);
+                }
+                const auto xq = mdt::curved_triangle_point(Order, nodes.data(), xi, eta);
+                const double err =
+                    rF(xq.data()) - mdt::curved_triangle_point(Order, values.data(), xi, eta)[0];
+                const double e2 =
+                    w * std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]) * err * err;
+                sum += e2;
+                max = std::max(max, std::fabs(err));
+                if (!near_pole) {
+                    sum_away += e2;
+                    max_away = std::max(max_away, std::fabs(err));
+                }
+            }
+    }
+    return {std::sqrt(sum), max, std::sqrt(sum_away), max_away};
+}
+
+TEST(MeshCadInterpolation, CurvedElementsConvergeFaster) {
+    // Roadmap 6.6 against 6.11: on the sphere and the roof, the L2 error of
+    // quadratic and cubic interpolation under halving of h, unrefined.
+    // Measured: on the roof 2.0, 3.1 and 4.1 to 3.9 for orders 1 to 3; on
+    // the sphere away from the poles 2.0, 3.0 and 3.7 to 3.8, and over all of
+    // it 2.0, 2.8 to 2.5 and 3.7 to 3.4, the poles' fans (left to graded
+    // poles, 6.4.2) holding the curved elements back. Pinned with margin.
+    struct Case {
+        const char* mName;
+        mio::BrepInfo mBrep;
+        Field mField;
+        std::vector<double> mSizes;
+        std::array<double, 3> mMinOrderAll;   ///< per order, the L2 over the mesh
+        std::array<double, 3> mMinOrderAway;  ///< per order, away from the poles
+    };
+    const Case cases[] = {{"sphere, smooth field",
+                           brep_solids::sphere(1.0),
+                           sphere_smooth,
+                           {0.2, 0.1, 0.05},
+                           {1.8, 2.3, 3.2},
+                           {1.8, 2.8, 3.5}},
+                          {"Scordelis-Lo roof, smooth",
+                           scordelis_lo_roof(),
+                           roof_smooth,
+                           {4.0, 2.0, 1.0},
+                           {1.8, 2.8, 3.6},
+                           {1.8, 2.8, 3.6}}};
+    for (const Case& r_c : cases) {
+        std::vector<std::array<double, 4>> previous;
+        for (const int order : {1, 2, 3}) {
+            std::vector<std::array<double, 4>> errors;
+            for (const double h : r_c.mSizes) {
+                mio::MeshCadSurfaceOptions o;
+                o.mTargetSize = h;
+                o.mOrder = order;
+                o.mEdges = false;
+                const auto r = mio::mesh_cad_surface(r_c.mBrep, o);
+                ASSERT_EQ(r.mNumFailed, 0);
+                // The poles' reach as refinement reports it, as in study().
+                mio::MeshCadSurfaceOptions q = o;
+                q.mMinAngleDeg = 20.0;
+                q.mOrder = 1;
+                Poles poles;
+                for (const auto& r_f : mio::mesh_cad_surface(r_c.mBrep, q).mFaces)
+                    for (const auto& r_p : r_f.mSmallAngleCorners)
+                        if (r_p.mPole)
+                            poles.emplace_back(r_p.mX, r_p.mReach);
+                errors.push_back(curved_interpolation_errors(r.mMesh, order, r_c.mField, poles));
+                const std::size_t k = errors.size() - 1;
+                std::printf(
+                    "[6.11] %-28s order %d  h %-6g points %-7zu L2 %.4e  max %.4e  "
+                    "away from poles L2 %.4e max %.4e",
+                    r_c.mName, order, h, r.mMesh.NumPoints(), errors[k][0], errors[k][1],
+                    errors[k][2], errors[k][3]);
+                if (k > 0)
+                    std::printf("  orders %.2f %.2f %.2f %.2f",
+                                std::log2(errors[k - 1][0] / errors[k][0]),
+                                std::log2(errors[k - 1][1] / errors[k][1]),
+                                std::log2(errors[k - 1][2] / errors[k][2]),
+                                std::log2(errors[k - 1][3] / errors[k][3]));
+                std::printf("\n");
+                if (k > 0) {
+                    const auto index = static_cast<std::size_t>(order - 1);
+                    EXPECT_GT(std::log2(errors[k - 1][0] / errors[k][0]), r_c.mMinOrderAll[index])
+                        << r_c.mName << ", order " << order << ", h " << h;
+                    EXPECT_GT(std::log2(errors[k - 1][2] / errors[k][2]), r_c.mMinOrderAway[index])
+                        << r_c.mName << ", order " << order << ", h " << h;
+                }
+                // A higher order is more accurate at every size.
+                if (!previous.empty())
+                    EXPECT_LT(errors[k][0], previous[k][0])
+                        << r_c.mName << ", order " << order << ", h " << h;
+            }
+            previous = errors;
         }
     }
 }
