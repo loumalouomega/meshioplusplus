@@ -41,11 +41,11 @@ v0 v1 v2 ref                  # n rows, 1-based
 End
 ```
 
-Recognized element keywords: `Edges`, `Triangles`, `Quadrilaterals`, `Tetrahedra`, `Prisms`, `Pyramids`, `Hexahedra` (and the alternate spelling `Hexaedra`). Every keyword listed above is followed by a count then that many rows of `<node ids> <ref>`. Several other keywords are recognized but discarded on read: `Normals`, `NormalAtVertices`, `SubDomainFromMesh`, `VertexOnGeometricVertex`/`Edge`, `EdgeOnGeometricEdge`, `Identifier`, `Geometry`, `TangentAtVertices`, `Tangents`, `Ridges`.
+Recognized element keywords: `Edges`, `Triangles`, `Quadrilaterals`, `Tetrahedra`, `Prisms`, `Pyramids`, `Hexahedra` (and the alternate spelling `Hexaedra`), and since v17.16.0 the high-order `EdgesP2`, `EdgesP3`, `TrianglesP2`, `TrianglesP3` and `TetrahedraP2` with their `<Keyword>Ordering` sections ([below](#high-order-elements)). Every element keyword is followed by a count then that many rows of `<node ids> <ref>`. Several other keywords are recognized but discarded on read: `Normals`, `NormalAtVertices`, `SubDomainFromMesh`, `VertexOnGeometricVertex`/`Edge`, `EdgeOnGeometricEdge`, `Identifier`, `Geometry`, `TangentAtVertices`, `Tangents`; the id lists `Corners`, `RequiredVertices`, `Ridges`, `RequiredEdges` and `RequiredTriangles` are kept as regions (see below).
 
 ### Binary (`.meshb`, libMeshb GMF)
 
-A leading `int32` magic code — `1` for native byte order, or its byte-swap (`16777216`) to signal the opposite endianness, which flips every subsequent typed read. Then an `int32` version (1-4), which fixes the integer/float/ position field widths: v1 → 4-byte int, 4-byte float; v2 → 4-byte int, 8-byte float; v3 → 4-byte int, 8-byte float, 8-byte positions; v4 → 8-byte int, 8-byte float, 8-byte positions. The rest of the file is a sequence of `(keyword_code, [position], [count], payload)` records, each keyed by a numeric GMF field code (from a large internal table of ~200 known libMeshb field codes — only a handful are meaningful to meshio++: `GmfVertices` (4), `GmfEdges` (5), `GmfTriangles` (6), `GmfQuadrilaterals` (7), `GmfTetrahedra` (8), `GmfPrisms` (9), `GmfPyramids` (49), plus `GmfMeshVersionFormatted` (1), `GmfDimension` (3) and `GmfEnd` (54)). Records with any other code are skipped with a warning.
+A leading `int32` magic code — `1` for native byte order, or its byte-swap (`16777216`) to signal the opposite endianness, which flips every subsequent typed read. Then an `int32` version (1-4), which fixes the integer/float/ position field widths: v1 → 4-byte int, 4-byte float; v2 → 4-byte int, 8-byte float; v3 → 4-byte int, 8-byte float, 8-byte positions; v4 → 8-byte int, 8-byte float, 8-byte positions. The rest of the file is a sequence of `(keyword_code, [position], [count], payload)` records, each keyed by a numeric GMF field code (from a large internal table of ~200 known libMeshb field codes — only a handful are meaningful to meshio++: `GmfVertices` (4), `GmfEdges` (5), `GmfTriangles` (6), `GmfQuadrilaterals` (7), `GmfTetrahedra` (8), `GmfPrisms` (9), `GmfHexahedra` (10), `GmfPyramids` (49), the id lists `GmfCorners` … `GmfRequiredTriangles` (13–17), the high-order `GmfTrianglesP2` (24), `GmfEdgesP2` (25), `GmfTetrahedraP2` (30), `GmfTrianglesP3` (90) and `GmfEdgesP3` (92) with their orderings (127, 128, 129, 130 and 133), plus `GmfMeshVersionFormatted` (1), `GmfDimension` (3) and `GmfEnd` (54)). Records with any other code are skipped with a warning.
 
 ## Cell types
 
@@ -58,6 +58,25 @@ A leading `int32` magic code — `1` for native byte order, or its byte-swap (`1
 | `Prisms` | `wedge` | 6 |
 | `Pyramids` | `pyramid` | 5 |
 | `Hexahedra` / `Hexaedra` | `hexahedron` | 8 |
+| `EdgesP2` | `line3` | 3 |
+| `EdgesP3` | `line4` | 4 |
+| `TrianglesP2` | `triangle6` | 6 |
+| `TrianglesP3` | `triangle10` | 10 |
+| `TetrahedraP2` | `tetra10` | 10 |
+
+A cell type with no keyword (`quad8`, `hexahedron20`, a polygon ...) is skipped with a warning by every writer; the C++ ASCII writer skipped it silently before v17.16.0.
+
+### High-order elements
+
+libMeshb defines no node order for its high-order elements ("as many HO nodes ordering … as there are programmers"): a file states its own in a `<Keyword>Ordering` section (`EdgesP2Ordering`, `TrianglesP3Ordering`, …), a count equal to the element's nodes followed by one integer tuple per node, and a reader maps it onto its own order by matching tuples (libMeshb's `GmfSetHONodesOrdering`). meshio++'s tuples are meshio's node order, with these meanings:
+
+- **Simplices.** The tuple is the barycentric multiplicities, component k counting vertex k. `triangle6` is `2 0 0`, `0 2 0`, `0 0 2`, `1 1 0`, `0 1 1`, `1 0 1`. `triangle10` lists its corners, then each edge's two nodes from the edge's first vertex, then `1 1 1`. `tetra10` lists its corners, then the edges 01, 12, 20, 03, 13, 23.
+- **Edges.** The tuple is the node's position from the first vertex: `0 2 1` for `line3`, `0 3 1 2` for `line4`.
+
+How the engines handle the orderings:
+
+- **Writers.** Both engines emit the ordering before a type's first section, in ASCII and binary. A mesh with only linear cells is written exactly as before.
+- **Readers.** They apply a file's ordering wherever in the file it comes. A section with no ordering is read in meshio's order, which is the order libMeshb's own example writes `TrianglesP2` in. An ordering that is not a permutation of meshio++'s tuples (a tuple listed twice, one of the wrong degree, the wrong node count) is refused rather than guessed at.
 
 ## Data mapping
 
@@ -72,7 +91,7 @@ A leading `int32` magic code — `1` for native byte order, or its byte-swap (`1
 - Binary record headers embed **absolute byte offsets** (`pos` fields) that the writer must track precisely while emitting records — a strict requirement for libMeshb compatibility, not merely a convenience field.
 - `Normals`/`Tangents`/etc. sections are read but discarded. `Corners`, `RequiredVertices` (point regions `medit:Corners`, `medit:RequiredVertices`), `Ridges` and `RequiredEdges` (cell regions `medit:Ridges`, `medit:RequiredEdges` over the file's Edges) and `RequiredTriangles` (cell region `medit:RequiredTriangles` over its Triangles) are kept as regions and written back as those keywords, in the ASCII variant of both engines. The binary `.meshb` path carries them as the libMeshb sections `GmfCorners`, `GmfRidges`, `GmfRequiredVertices`, `GmfRequiredEdges` and `GmfRequiredTriangles`. A cell region is written relative to the first block of its type, so entries elsewhere are dropped with a warning.
 - Both variants, ASCII `.mesh` and binary `.meshb` (including its little/big-endian variants), are read and written by the C++ core and by the Python twin, which write the same bytes. The binary reader skips the sections it has no home for (solutions, normals ...) through their next-section position, with a warning, and refuses a file whose position is outside it.
-- Cells are written one section per cell block, in block order.
+- Cells are written one section per cell block: in block order by the binary writers and the Python ASCII writer, grouped by keyword (in the order of the table above) by the C++ ASCII writer.
 
 ## Notes
 

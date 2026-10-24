@@ -25,8 +25,13 @@
  * tokenized, `MeshVersionFormatted`/`Dimension` header, then `Vertices`
  * (`x1 x2 [x3] ref` rows, 1-based) and element keyword sections
  * (`Edges`/`Triangles`/`Quadrilaterals`/`Tetrahedra`/`Prisms`/`Pyramids`/
- * `Hexahedra`/`Hexaedra`), each a count followed by that many
- * `<node ids> ref` rows. The trailing per-row integer becomes
+ * `Hexahedra`/`Hexaedra`, and the high-order `EdgesP2`/`EdgesP3`/
+ * `TrianglesP2`/`TrianglesP3`/`TetrahedraP2` as `line3`/`line4`/
+ * `triangle6`/`triangle10`/`tetra10`), each a count followed by that many
+ * `<node ids> ref` rows. libMeshb defines no node order for the high-order
+ * sections: a file states its own in a `<Keyword>Ordering` section (one
+ * integer tuple per node), which the readers apply and the writers emit
+ * (doc/formats/medit.md). The trailing per-row integer becomes
  * `point_data["medit:ref"]`/`cell_data["medit:ref"]`; Medit stores at most
  * one such integer column, so only the first int-dtype point/cell data
  * array is kept on write (extras are dropped with a warning).
@@ -52,16 +57,18 @@ namespace meshioplusplus {
  * Emits `MeshVersionFormatted 2` (float64 coordinates) and `Dimension`,
  * then one keyword section per cell type present (`Vertices` is always
  * written; `Edges`/`Triangles`/`Quadrilaterals`/`Tetrahedra`/`Prisms`/
- * `Pyramids`/`Hexahedra` as applicable), each row 1-based node ids
+ * `Pyramids`/`Hexahedra` and the high-order sections, each after its
+ * `<Keyword>Ordering`, as applicable), each row 1-based node ids
  * followed by a trailing reference integer. At most one int-dtype
  * point_data array and one int-dtype cell_data array are used to populate
  * the `ref` columns (Medit's single-reference-column limitation); if
  * `point_data`/`cell_data` contain more than one integer candidate, the
  * first is used and the rest are dropped with a warning. Ends with `End`.
  *
+ * A cell type Medit has no keyword for is skipped with a warning.
+ *
  * @param path filesystem path to the .mesh file to create/overwrite
  * @param mesh the mesh to write
- * @throws WriteError on an unsupported cell type
  * @note reads `point_data`/`cell_data` key `"medit:ref"` if present
  *       (preferred over other int-dtype arrays for the ref column)
  */
@@ -75,8 +82,12 @@ MESHIOPLUSPLUS_API void write_medit_ascii(const std::string& rPath, const Mesh& 
  * 1-based node ids to 0-based. Sections such as `Corners`, `Normals`,
  * `NormalAtVertices`, `SubDomainFromMesh`, `VertexOnGeometricVertex`/
  * `Edge`, `EdgeOnGeometricEdge`, `Identifier`, `Geometry`,
- * `RequiredVertices`, `TangentAtVertices`, `Tangents`, `Ridges` are
- * recognized only enough to be token-skipped, and are otherwise discarded.
+ * `TangentAtVertices`, `Tangents` are recognized only enough to be
+ * token-skipped, and are otherwise discarded; `Corners`,
+ * `RequiredVertices`, `Ridges`, `RequiredEdges` and `RequiredTriangles`
+ * become regions. A high-order section is put in meshio's node order by
+ * the file's `<Keyword>Ordering` (meshio's order without one); an ordering
+ * that is not a permutation of meshio++'s tuples throws.
  *
  * @param path filesystem path to the .mesh file to read
  * @return the read Mesh, with `point_data["medit:ref"]` and
