@@ -46,7 +46,9 @@ The planar triangulator underneath is public too: `triangulate_polygon_2d(outer,
 
 ![Angle histograms of the same three meshes, unrefined and at min_angle = 25: refinement empties the bins under 25 degrees except at the sphere's two poles](/images/mesh_cad_quality_histogram.png)
 
-Notebook [42](https://github.com/loumalouomega/meshioplusplus/blob/main/example/python/42_mesh_cad_surface.ipynb) renders these meshes and the Scordelis–Lo roof, checks their convergence, and measures refinement, smoothing and the interpolation error.
+![The unit sphere at h = 0.6 as linear, quadratic and cubic elements, each curved element drawn through its own map](/images/mesh_cad_curved.png)
+
+Notebook [42](https://github.com/loumalouomega/meshioplusplus/blob/main/example/python/42_mesh_cad_surface.ipynb) renders these meshes and the Scordelis–Lo roof, checks their convergence, and measures refinement, smoothing, curved elements and the interpolation error.
 
 ## Options
 
