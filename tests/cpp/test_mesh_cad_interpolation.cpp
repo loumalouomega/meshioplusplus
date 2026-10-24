@@ -424,4 +424,45 @@ TEST(MeshCadInterpolation, CurvedElementsConvergeFaster) {
     }
 }
 
+TEST(MeshCadInterpolation, PoleRingsLiftTheWholeSphere) {
+    // Roadmap 6.4.2 against 6.11: with two rings at each pole, measured over
+    // every element. Measured: the L2 orders 2.08 and 2.12, 2.74 and 3.11,
+    // 3.05 and 4.41 for orders 1 to 3 (without rings 2.01 and 2.03, 2.76 and
+    // 2.53, 3.73 and 3.43), and the linear maximum's 1.93 and 1.87 (without,
+    // 2.07 and 1.34). The curved maximum stays at the pole's own fan (1.15 at
+    // order 2 at the last halving), whose nodes keep the degenerate
+    // parameters' placement: measured, not pinned.
+    const mio::BrepInfo sphere = brep_solids::sphere(1.0);
+    const std::vector<double> sizes = {0.2, 0.1, 0.05};
+    const double min_l2_order[3] = {1.9, 2.5, 2.8};
+    for (const int order : {1, 2, 3}) {
+        std::vector<std::array<double, 4>> errors;
+        for (const double h : sizes) {
+            mio::MeshCadSurfaceOptions o;
+            o.mTargetSize = h;
+            o.mOrder = order;
+            o.mPoleRings = 2;
+            o.mEdges = false;
+            const auto r = mio::mesh_cad_surface(sphere, o);
+            ASSERT_EQ(r.mNumFailed, 0);
+            errors.push_back(curved_interpolation_errors(r.mMesh, order, sphere_smooth, {}));
+            const std::size_t k = errors.size() - 1;
+            std::printf("[6.11] %-28s order %d  h %-6g points %-7zu L2 %.4e  max %.4e",
+                        "sphere, pole rings 2", order, h, r.mMesh.NumPoints(), errors[k][0],
+                        errors[k][1]);
+            if (k > 0)
+                std::printf("  orders %.2f %.2f", std::log2(errors[k - 1][0] / errors[k][0]),
+                            std::log2(errors[k - 1][1] / errors[k][1]));
+            std::printf("\n");
+            if (k > 0) {
+                EXPECT_GT(std::log2(errors[k - 1][0] / errors[k][0]),
+                          min_l2_order[static_cast<std::size_t>(order - 1)])
+                    << "order " << order << ", h " << h;
+                if (order == 1)
+                    EXPECT_GT(std::log2(errors[k - 1][1] / errors[k][1]), 1.6) << "h " << h;
+            }
+        }
+    }
+}
+
 }  // namespace

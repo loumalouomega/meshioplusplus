@@ -218109,6 +218109,9 @@ struct McadFace {
     std::vector<Vec3> mHighOrder;
     /// Pole rings (6.4.2) were placed in the face's latest meshing.
     bool mPoleRingsPlaced = false;
+    /// Its unrefined triangulation folded on the surface in some meshing
+    /// (6.4.3), so it was refined until it did not.
+    bool mFolded = false;
     /// The first meshing of a sized run (6.3): each point of the face with
     /// the surface's normal and largest principal curvature there.
     std::vector<detail::MeshCadSizeSample> mSizeSamples;
@@ -219125,6 +219128,57 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             sides_upto = -1;
         return flips;
     };
+    // Folds (6.4.3): on a small, strongly curved face a triangle valid in
+    // the plane can lift with its normal against S_u x S_v (both taken with
+    // the plane's counter-clockwise winding, which the plane's map keeps).
+    // One that turns more than 120 degrees from the surface's normal at its
+    // centroid is folded; the margin keeps a sliver across a narrow strip,
+    // whose normal is near perpendicular to the surface's, from counting on
+    // rounding. A pole's collapsed triangles are not folds.
+    const auto folded = [&](const detail::Cdt2d::Tri& rT) {
+        std::array<std::int64_t, 3> ids{};
+        for (int k = 0; k < 3; ++k)
+            ids[static_cast<std::size_t>(k)] = mesh_of.at(rT[static_cast<std::size_t>(k)]);
+        if (ids[0] == ids[1] || ids[1] == ids[2] || ids[0] == ids[2])
+            return false;
+        const Vec3& pa = pos(ids[0]);
+        const Vec3& pb = pos(ids[1]);
+        const Vec3& pc = pos(ids[2]);
+        const Vec3 e1{pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]};
+        const Vec3 e2{pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]};
+        const Vec3 nt{e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
+                      e1[0] * e2[1] - e1[1] * e2[0]};
+        const double nt2 = nt[0] * nt[0] + nt[1] * nt[1] + nt[2] * nt[2];
+        const auto against = [&](const detail::Cdt2d::Vec2& rX) {
+            const Vec2 uv = pl.ToUv(rX);
+            Vec3 x{}, su{}, sv{};
+            r_s.Eval(uv[0], uv[1], x.data(), su.data(), sv.data());
+            const Vec3 ns{su[1] * sv[2] - su[2] * sv[1], su[2] * sv[0] - su[0] * sv[2],
+                          su[0] * sv[1] - su[1] * sv[0]};
+            const double dot = nt[0] * ns[0] + nt[1] * ns[1] + nt[2] * ns[2];
+            return dot < -0.5 * std::sqrt(nt2 * (ns[0] * ns[0] + ns[1] * ns[1] + ns[2] * ns[2]));
+        };
+        const auto& xa = cdt.Point(rT[0]);
+        const auto& xb = cdt.Point(rT[1]);
+        const auto& xc = cdt.Point(rT[2]);
+        // Against the surface at its centroid in the parameters, or at every
+        // corner: a triangle spanning most of a closed curve can lift onto
+        // the short way round, backwards there, while its parameter
+        // centroid lies on the far side.
+        return against({(xa[0] + xb[0] + xc[0]) / 3.0, (xa[1] + xb[1] + xc[1]) / 3.0}) ||
+               (against(xa) && against(xb) && against(xc));
+    };
+    // A face that folds is refined even with no angle or size sought: a
+    // folded triangle is bad, split at its centroid in the plane, until none
+    // is left (the real STEP models of doc/benchmarks.md#cad-corpus fold on
+    // small fillets and holes; none of the fixtures does).
+    bool fold_refine = false;
+    for (const auto& r_t : cdt.InsideTriangles())
+        if (folded(r_t)) {
+            fold_refine = true;
+            break;
+        }
+    rF.mFolded = rF.mFolded || fold_refine;
     detail::Cdt2dRefineReport refined;
     std::set<std::array<std::int64_t, 3>> forced;  // mesh ids, ascending
     std::map<std::int64_t, double> corner_angle;   // mesh point -> plane angle
@@ -219132,7 +219186,7 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
     // A size field refines too (6.3): with no angle sought, a bound so
     // small no triangle misses it, so only size makes a triangle bad.
     const double refine_deg = rQ.mMinAngleDeg > 0.0 ? rQ.mMinAngleDeg : 1e-3;
-    if (rQ.mMinAngleDeg > 0.0 || rQ.pSize) {
+    if (rQ.mMinAngleDeg > 0.0 || rQ.pSize || fold_refine) {
         // Ruppert's refinement in the plane, every triangle judged on the
         // surface (Chew 1993; Boissonnat and Oudot 2005): the plane is only
         // where the point is found. The boundary is the edges', shared with
@@ -219208,6 +219262,14 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         };
         ro.mRatio = [&](const detail::Cdt2d::Tri& rT) {
             std::array<std::int64_t, 3> ids{};
+            // A fold first of all, even where the triangles a pole or a
+            // stretched region keeps are exempt.
+            if (folded(rT)) {
+                for (int k = 0; k < 3; ++k)
+                    ids[static_cast<std::size_t>(k)] = mesh_of.at(rT[static_cast<std::size_t>(k)]);
+                return std::max(mcad_ratio(pos(ids[0]), pos(ids[1]), pos(ids[2])),
+                                4.0 * ratio_bound);
+            }
             if (exempt(rT, ids))
                 return -1.0;
             const double q = mcad_ratio(pos(ids[0]), pos(ids[1]), pos(ids[2]));
@@ -219221,6 +219283,14 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         // circumcentre is not that where the surface stretches the plane
         // unevenly (near a pole), and refinement on it need not stop there.
         ro.mCentre = [&](const detail::Cdt2d::Tri& rT) -> detail::Cdt2d::Vec2 {
+            // A fold's lifted circumcentre means nothing: its centroid in
+            // the plane, always inside it, splits it.
+            if (folded(rT)) {
+                const auto& xa = cdt.Point(rT[0]);
+                const auto& xb = cdt.Point(rT[1]);
+                const auto& xc = cdt.Point(rT[2]);
+                return {(xa[0] + xb[0] + xc[0]) / 3.0, (xa[1] + xb[1] + xc[1]) / 3.0};
+            }
             const Vec3& pa = pos(mesh_of.at(rT[0]));
             const Vec3& pb = pos(mesh_of.at(rT[1]));
             const Vec3& pc = pos(mesh_of.at(rT[2]));
@@ -219280,9 +219350,12 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             const double shortest =
                 std::min({mcad_dist(pa, pb), mcad_dist(pb, pc), mcad_dist(pc, pa)});
             const Vec3 x = lift(rC);
+            // A fold's centroid keeps a quarter of its shortest edge from
+            // the cavity's vertices.
             const double radius =
-                size_only(rT) ? std::max(rQ.pSize->At(x) / 3.0, stretched_floor(rC))
-                              : std::max(slack * ratio_bound * shortest, stretched_floor(rC));
+                folded(rT)      ? std::max(0.25 * shortest, stretched_floor(rC))
+                : size_only(rT) ? std::max(rQ.pSize->At(x) / 3.0, stretched_floor(rC))
+                                : std::max(slack * ratio_bound * shortest, stretched_floor(rC));
             for (const std::int64_t w : rAround) {
                 const auto it = mesh_of.find(w);
                 if (it != mesh_of.end() && mcad_dist(pos(it->second), x) < radius)
@@ -219291,6 +219364,20 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             return true;
         };
         ro.mAcceptSplit = [&](std::int64_t A, std::int64_t B, const detail::Cdt2d::Tri& rT) {
+            // A fold whose centroid encroaches a boundary piece splits it,
+            // down to a quarter of the fold's shortest edge.
+            if (folded(rT)) {
+                const Vec3& pa = pos(mesh_of.at(rT[0]));
+                const Vec3& pb = pos(mesh_of.at(rT[1]));
+                const Vec3& pc = pos(mesh_of.at(rT[2]));
+                const double shortest =
+                    std::min({mcad_dist(pa, pb), mcad_dist(pb, pc), mcad_dist(pc, pa)});
+                const auto& xa = cdt.Point(A);
+                const auto& xb = cdt.Point(B);
+                const detail::Cdt2d::Vec2 mid{0.5 * (xa[0] + xb[0]), 0.5 * (xa[1] + xb[1])};
+                return 0.5 * mcad_dist(pos(mesh_of.at(A)), pos(mesh_of.at(B))) >=
+                       std::max(0.25 * shortest, stretched_floor(mid));
+            }
             // A boundary piece is sized by the field already: a triangle bad
             // by its size alone asks to split one only when the piece is
             // itself half again too long.
@@ -219465,49 +219552,25 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         surface_flips();
     }
 
-    // Folds (6.4.3): on a small, strongly curved face a triangle valid in
-    // the plane could lift with its normal against S_u x S_v (both taken with
-    // the plane's counter-clockwise winding, which L keeps). One that turns
-    // more than 120 degrees from the surface's normal at its centroid fails
-    // the face as degenerate rather than being written folded; the margin
-    // keeps a sliver across a narrow strip, whose normal is near
-    // perpendicular to the surface's, from failing on rounding. None of the
-    // fixtures folds (doc/mesh_cad.md); a pole's collapsed triangles are not
-    // folds.
+    // A fold refinement could not remove fails the face as degenerate
+    // rather than being written folded. The boundary splits it asked for
+    // are kept: the next round meshes it again on them, and only a fold
+    // left after the last round (one past the face's points, or that no
+    // split reaches) stays a failure.
     {
         std::int64_t folds = 0;
-        for (const auto& r_t : cdt.InsideTriangles()) {
-            std::array<std::int64_t, 3> ids{};
-            for (int k = 0; k < 3; ++k)
-                ids[static_cast<std::size_t>(k)] = mesh_of.at(r_t[static_cast<std::size_t>(k)]);
-            if (ids[0] == ids[1] || ids[1] == ids[2] || ids[0] == ids[2])
-                continue;
-            const Vec3& pa = pos(ids[0]);
-            const Vec3& pb = pos(ids[1]);
-            const Vec3& pc = pos(ids[2]);
-            const Vec3 e1{pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]};
-            const Vec3 e2{pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]};
-            const Vec3 nt{e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
-                          e1[0] * e2[1] - e1[1] * e2[0]};
-            const auto& xa = cdt.Point(r_t[0]);
-            const auto& xb = cdt.Point(r_t[1]);
-            const auto& xc = cdt.Point(r_t[2]);
-            const Vec2 uv = pl.ToUv({(xa[0] + xb[0] + xc[0]) / 3.0, (xa[1] + xb[1] + xc[1]) / 3.0});
-            Vec3 x{}, su{}, sv{};
-            r_s.Eval(uv[0], uv[1], x.data(), su.data(), sv.data());
-            const Vec3 ns{su[1] * sv[2] - su[2] * sv[1], su[2] * sv[0] - su[0] * sv[2],
-                          su[0] * sv[1] - su[1] * sv[0]};
-            const double dot = nt[0] * ns[0] + nt[1] * ns[1] + nt[2] * ns[2];
-            const double norms = std::sqrt((nt[0] * nt[0] + nt[1] * nt[1] + nt[2] * nt[2]) *
-                                           (ns[0] * ns[0] + ns[1] * ns[1] + ns[2] * ns[2]));
-            if (dot < -0.5 * norms)
+        for (const auto& r_t : cdt.InsideTriangles())
+            if (folded(r_t))
                 ++folds;
+        if (folds > 0) {
+            std::vector<std::array<std::size_t, 3>> asks = std::move(rF.mAsks);
+            fail(MeshCadFaceStatus::Degenerate,
+                 std::to_string(folds) +
+                     " triangles fold on the surface (their normals turn more than 120 "
+                     "degrees from the surface's)");
+            rF.mAsks = std::move(asks);
+            return;
         }
-        if (folds > 0)
-            return fail(MeshCadFaceStatus::Degenerate,
-                        std::to_string(folds) +
-                            " triangles fold on the surface (their normals turn more than 120 "
-                            "degrees from the surface's)");
     }
 
     // Lift, drop what a pole collapses, orient along the face's normal.
@@ -220493,13 +220556,17 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
     // count. A piece within the tolerance, or a degenerate edge, is not
     // split: its face keeps the triangles it has and reports them.
     std::int64_t boundary_refinement = 0;
-    if (rOptions.mMinAngleDeg > 0.0 || pSize) {
+    // A face that folds asks for splits as refinement does (6.4.3).
+    const bool any_fold =
+        std::any_of(faces.begin(), faces.end(), [](const McadFace& rF) { return rF.mFolded; });
+    if (rOptions.mMinAngleDeg > 0.0 || pSize || any_fold) {
         constexpr int kMaxRefineRounds = 16;
         for (int round = 0;; ++round) {
             // A face whose refinement spent its points is not refined
             // further, since every round would spend them again: it is
             // meshed unrefined on its current boundary, which stays shared,
-            // and warned; the rounds stop.
+            // and warned; the rounds go on for the others, whose asks are
+            // still to be split (a fold's among them).
             bool spent = false;
             for (std::size_t f = 0; f < nf; ++f)
                 if (faces[f].mRefineBudgetReached && !faces[f].mUnrefined) {
@@ -220511,8 +220578,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                          "meshed unrefined");
                 }
             if (spent) {
-                mesh_faces(false, false);
-                break;
+                mesh_faces(true, false);
+                continue;
             }
             std::map<std::size_t, std::map<std::size_t, std::size_t>> split;
             for (std::size_t f = 0; f < nf; ++f)

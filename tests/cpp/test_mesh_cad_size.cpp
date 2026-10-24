@@ -280,3 +280,70 @@ TEST(MeshCadSize, ANarrowTorusBandDoesNotFold) {
             EXPECT_EQ(r.mNumMisorientedEdges, 0);
         }
 }
+
+namespace {
+
+// A cylindrical band of radius R and height H swept by Sweep from the x
+// axis, one open face whose four edges are its two arcs and two rulings.
+mio::BrepInfo partial_band(double R, double H, double Sweep) {
+    using namespace brep_solids;
+    const double c = std::cos(Sweep), s = std::sin(Sweep);
+    std::vector<mio::BrepCurve> curves = {
+        mio::detail::brep_curve_arc({0, 0, 0}, {1, 0, 0}, {0, 1, 0}, R, 0.0, Sweep),
+        mio::detail::brep_curve_line({R * c, R * s, 0}, {R * c, R * s, H}),
+        mio::detail::brep_curve_arc({0, 0, H}, {1, 0, 0}, {0, 1, 0}, R, 0.0, Sweep),
+        mio::detail::brep_curve_line({R, 0, 0}, {R, 0, H})};
+    std::vector<SolidFace> faces(1);
+    faces[0].mSurface.mKind = 3;
+    faces[0].mSurface.mRadius = R;
+    faces[0].mLoops = {{circle_trim(R, 0.0, Sweep, 0, true, false),
+                        line_trim({R * c, R * s, 0}, {R * c, R * s, H}, 1, true),
+                        circle_trim(R, H, -Sweep, 2, false, false, Sweep),
+                        line_trim({R, 0, H}, {R, 0, 0}, 3, false)}};
+    return assemble(faces, curves);
+}
+
+}  // namespace
+
+// Roadmap 6.4.3: meshed coarser than itself, a band swept 270 degrees or
+// more gets one boundary piece per arc, and its two triangles cover the
+// short way round, backwards: folded (on the real STEP models of the corpus
+// the same happens on small fillets and blade faces). Before v17.18.0 they
+// were written; the guard alone failed the face. Now refinement splits a
+// fold, asking its arcs to be split across the faces that share them, until
+// none is left: every triangle faces out at its corners, the band meshes.
+TEST(MeshCadFolds, ABandSweptPastHalfATurnIsUnfolded) {
+    for (const double sweep : {270.0, 300.0, 340.0})
+        for (const double height : {0.05, 0.3})
+            for (const double h : {8.0, 16.0})
+                for (const double min_angle : {0.0, 25.0}) {
+                    mio::MeshCadSurfaceOptions o;
+                    o.mTargetSize = h;
+                    o.mMinAngleDeg = min_angle;
+                    const auto r =
+                        mio::mesh_cad_surface(partial_band(1.0, height, sweep * kPi / 180.0), o);
+                    ASSERT_EQ(r.mNumFailed, 0)
+                        << "sweep " << sweep << ", h " << h << ": " << r.mFaces[0].mReason;
+                    const auto& m = r.mMesh;
+                    for (std::size_t b = 0; b < m.NumCellBlocks(); ++b) {
+                        if (m.Cells(b).Type() != "triangle")
+                            continue;
+                        const auto& conn = m.Cells(b).Conn();
+                        for (std::size_t c = 0; c < m.Cells(b).NumCells(); ++c) {
+                            std::array<Vec3, 3> p{};
+                            for (std::size_t k = 0; k < 3; ++k)
+                                p[k] = point(m, mio::detail::read_int(conn, 3 * c + k));
+                            const std::array<double, 3> e1{p[1][0] - p[0][0], p[1][1] - p[0][1],
+                                                           p[1][2] - p[0][2]};
+                            const std::array<double, 3> e2{p[2][0] - p[0][0], p[2][1] - p[0][1],
+                                                           p[2][2] - p[0][2]};
+                            const double nx = e1[1] * e2[2] - e1[2] * e2[1];
+                            const double ny = e1[2] * e2[0] - e1[0] * e2[2];
+                            // The outward normal at each corner is radial.
+                            for (std::size_t k = 0; k < 3; ++k)
+                                EXPECT_GT(nx * p[k][0] + ny * p[k][1], 0.0)
+                                    << "sweep " << sweep << ", h " << h << ", triangle " << c;
+                        }
+                    }
+                }
+}
