@@ -71,14 +71,14 @@
 <rect x="269.33" y="380" width="176" height="40" rx="5" fill="#86b6ef" fill-opacity="0.55" stroke="#86b6ef" stroke-width="1.2"/>
 <text x="275.33" y="397" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">off-centres · corner lopping</text>
 <text x="275.33" y="411" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">S</text>
-<rect x="269.33" y="430" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2"/>
-<text x="275.33" y="447" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">size fields · grading</text>
-<text x="275.33" y="461" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
+<rect x="269.33" y="430" width="176" height="40" rx="5" fill="#86b6ef" fill-opacity="0.55" stroke="#86b6ef" stroke-width="1.2"/>
+<text x="275.33" y="447" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">sizes given · background field</text>
+<text x="275.33" y="461" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">S</text>
 <rect x="269.33" y="480" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2"/>
-<text x="275.33" y="497" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">metrics · poles · folds</text>
+<text x="275.33" y="497" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">metrics · reparametrisation</text>
 <text x="275.33" y="511" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
 <rect x="269.33" y="530" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2"/>
-<text x="275.33" y="547" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">real CAD input · corpus</text>
+<text x="275.33" y="547" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">real CAD: tolerances · slivers</text>
 <text x="275.33" y="561" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
 <rect x="269.33" y="580" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2"/>
 <text x="275.33" y="597" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">curved meshes: untangling</text>

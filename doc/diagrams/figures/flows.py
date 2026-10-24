@@ -1065,9 +1065,9 @@ def roadmap_map():
             "§6 mesh generation",
             [
                 ("off-centres · corner lopping", "S"),
-                ("size fields · grading", "M"),
-                ("metrics · poles · folds", "M"),
-                ("real CAD input · corpus", "M"),
+                ("sizes given · background field", "S"),
+                ("metrics · reparametrisation", "M"),
+                ("real CAD: tolerances · slivers", "M"),
                 ("curved meshes: untangling", "M"),
                 ("tetrahedra: backends", "L"),
                 ("quads: design first", "L"),
