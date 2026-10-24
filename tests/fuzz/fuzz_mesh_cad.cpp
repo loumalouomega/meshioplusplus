@@ -175,6 +175,9 @@ void fuzz_mesh_cad_surface(const std::uint8_t* pData, std::size_t Size) {
     o.mSmoothIterations = static_cast<std::int64_t>((hash >> 20) % 3);
     o.mSmoothMethod = ((hash >> 24) & 1) ? meshioplusplus::MeshCadSmoothing::Odt
                                          : meshioplusplus::MeshCadSmoothing::Laplacian;
+    // Curved elements (v17.16.0) of order 1, 2 or 3, a third of the inputs
+    // each, so the node placement and the validity check see them too.
+    o.mOrder = 1 + static_cast<std::int32_t>((hash >> 28) % 3);
     o.mMaxPoints = 200000;
     try {
         const meshioplusplus::MeshCadSurfaceResult r = meshioplusplus::mesh_cad_surface(info, o);

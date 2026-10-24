@@ -1147,6 +1147,23 @@ int main(int argc, char** argv) {
                 of(pD, mio::mesh_cad_surface(plate, o).mMesh);
             }
         });
+        // Curved elements (v17.16.0): the same two models at orders 2 and 3,
+        // their nodes placed on the geometry and every element's Jacobian
+        // bounded, against the unrefined rows above at the same sizes.
+        row("mesh_cad_surface_curved", [&](MeshDigest* pD) {
+            const mio::BrepInfo box = cad_box();
+            const mio::BrepInfo plate = cad_plate();
+            for (const std::int32_t order : {2, 3}) {
+                mio::MeshCadSurfaceOptions o;
+                o.mOrder = order;
+                o.mTargetSize = octree_step;
+                of(pD, mio::mesh_cad_surface(box, o).mMesh);
+                for (const double h : {1.1, 4.0 * octree_step}) {
+                    o.mTargetSize = h;
+                    of(pD, mio::mesh_cad_surface(plate, o).mMesh);
+                }
+            }
+        });
         row("sample_distance", [&](MeshDigest* pD) {
             const NDArray d = mio::sample_distance(surface, jittered->Points());
             if (pD)
