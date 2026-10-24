@@ -693,15 +693,51 @@ bool brep_nurbs_face(const BrepNurbsSurface& rSurface,
         }
     }
 
-    // The domain over every sample.
+    // On a plane, a circular trim's centre in the raw parameters and its
+    // angles, unwrapped along its samples: `{cu, cv, a0, a1}`.
+    const auto circle_of = [&](const BnTrim& rT) {
+        const PatchVec dc{rT.pSrc->mCentre[0] - rSurface.mOrigin[0],
+                          rT.pSrc->mCentre[1] - rSurface.mOrigin[1],
+                          rT.pSrc->mCentre[2] - rSurface.mOrigin[2]};
+        const double cu = bn_dot(dc, rSurface.mX), cv = bn_dot(dc, rSurface.mY);
+        double a0 = 0.0, a = 0.0;
+        for (std::size_t i = 0; i < rT.mS.size(); ++i) {
+            const double x = std::atan2(rT.mS[i].mX[1] - cv, rT.mS[i].mX[0] - cu);
+            a = i == 0 ? x : bn_unwrap(x, a);
+            if (i == 0)
+                a0 = a;
+        }
+        return std::array<double, 4>{cu, cv, a0, a};
+    };
+
+    // The domain over every sample and, on a plane, every circular trim's
+    // extreme points: the trim is the exact arc, which must lie within the
+    // patch (evaluation clamps to it), not only its samples.
     double dlo[2] = {1e300, 1e300}, dhi[2] = {-1e300, -1e300};
+    const auto take = [&](double U, double V) {
+        dlo[0] = std::min(dlo[0], U);
+        dhi[0] = std::max(dhi[0], U);
+        dlo[1] = std::min(dlo[1], V);
+        dhi[1] = std::max(dhi[1], V);
+    };
     for (const BnLoop& l : out_loops)
-        for (const BnTrim& t : l.mTrims)
+        for (const BnTrim& t : l.mTrims) {
             for (const BnSample& s : t.mS)
-                for (int k = 0; k < 2; ++k) {
-                    dlo[k] = std::min(dlo[k], s.mX[k]);
-                    dhi[k] = std::max(dhi[k], s.mX[k]);
-                }
+                take(s.mX[0], s.mX[1]);
+            if (t.pSrc == nullptr || kind != 1 || !t.pSrc->mCircle)
+                continue;
+            const auto c = circle_of(t);
+            const double r = t.pSrc->mRadius, quarter = 0.5 * kBnPi;
+            const auto k0 = static_cast<long long>(std::ceil(std::min(c[2], c[3]) / quarter));
+            const auto k1 = static_cast<long long>(std::floor(std::max(c[2], c[3]) / quarter));
+            for (long long k = k0; k <= k1; ++k) {
+                // The point at angle k pi/2, exact on the axes.
+                static constexpr double kCos[4] = {1.0, 0.0, -1.0, 0.0};
+                static constexpr double kSin[4] = {0.0, 1.0, 0.0, -1.0};
+                const auto q = static_cast<std::size_t>((k % 4 + 4) % 4);
+                take(c[0] + r * kCos[q], c[1] + r * kSin[q]);
+            }
+        }
     for (int k = 0; k < 2; ++k)
         if (!(dhi[k] > dlo[k]) && kind != 6) {
             rWhy = "the loops span no area in the surface's parameters";
@@ -904,18 +940,9 @@ bool brep_nurbs_face(const BrepNurbsSurface& rSurface,
             bt.mDirection = true;
             if (t.pSrc != nullptr && kind == 1 && t.pSrc->mCircle) {
                 // The exact arc, its angles unwrapped along the samples.
-                const PatchVec dc{t.pSrc->mCentre[0] - o[0], t.pSrc->mCentre[1] - o[1],
-                                  t.pSrc->mCentre[2] - o[2]};
-                const double cu = bn_dot(dc, ax), cv = bn_dot(dc, ay);
-                double a0 = 0.0, a = 0.0;
-                for (std::size_t i = 0; i < t.mS.size(); ++i) {
-                    const double x = std::atan2(t.mS[i].mX[1] - cv, t.mS[i].mX[0] - cu);
-                    a = i == 0 ? x : bn_unwrap(x, a);
-                    if (i == 0)
-                        a0 = a;
-                }
-                bt.mCurve = brep_curve_arc({cu, cv, 0.0}, {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0},
-                                           t.pSrc->mRadius, a0, a);
+                const auto c = circle_of(t);
+                bt.mCurve = brep_curve_arc({c[0], c[1], 0.0}, {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0},
+                                           t.pSrc->mRadius, c[2], c[3]);
             } else {
                 std::vector<PatchVec> uv;
                 for (const BnSample& s : t.mS) {
