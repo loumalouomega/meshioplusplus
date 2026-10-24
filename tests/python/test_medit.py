@@ -346,3 +346,144 @@ def test_binary_refusals(tmp_path):
     for read in (_core.medit_read_binary, py_medit.read):
         with pytest.raises(meshioplusplus.ReadError, match="nvalid code"):
             read(str(tmp_path / "bad.meshb"))
+
+
+# --- High-order elements (libMeshb's P2/P3 keywords) ----------------------------
+
+
+def _high_order_mesh():
+    rng = np.random.default_rng(3)
+    cells = []
+    for cell_type in (
+        "triangle",
+        "line3",
+        "line4",
+        "triangle6",
+        "triangle10",
+        "tetra10",
+    ):
+        n = meshioplusplus._common.num_nodes_per_cell[cell_type]
+        cells.append((cell_type, np.array([np.arange(n), np.arange(2, n + 2)])))
+    mesh = meshioplusplus.Mesh(rng.random((12, 3)), cells)
+    mesh.point_data["medit:ref"] = np.arange(12) + 1
+    mesh.cell_data["medit:ref"] = [np.array([2 * k + 1, 2 * k + 2]) for k in range(6)]
+    return mesh
+
+
+_WRITE = {
+    ("core", "mesh"): _core.medit_write_ascii,
+    ("core", "meshb"): _core.medit_write_binary,
+    ("python", "mesh"): lambda p, m: py_medit.write(p, m),
+    ("python", "meshb"): lambda p, m: py_medit.write(p, m),
+}
+_READ = {
+    ("core", "mesh"): _core.medit_read_ascii,
+    ("core", "meshb"): _core.medit_read_binary,
+    ("python", "mesh"): py_medit.read,
+    ("python", "meshb"): py_medit.read,
+}
+
+
+@pytest.mark.parametrize("ext", ["mesh", "meshb"])
+@pytest.mark.parametrize("writer", ["core", "python"])
+@pytest.mark.parametrize("reader", ["core", "python"])
+def test_high_order_elements_round_trip(tmp_path, ext, writer, reader):
+    mesh = _high_order_mesh()
+    path = str(tmp_path / f"ho.{ext}")
+    _WRITE[writer, ext](path, mesh)
+    back = _READ[reader, ext](path)
+    # The ASCII core writer groups sections by type; compare by type.
+    got = {c.type: c.data for c in back.cells}
+    assert sorted(got) == sorted(c.type for c in mesh.cells)
+    for c in mesh.cells:
+        np.testing.assert_array_equal(got[c.type], c.data)
+
+
+def test_high_order_binary_is_byte_identical(tmp_path):
+    mesh = _high_order_mesh()
+    _core.medit_write_binary(str(tmp_path / "c.meshb"), mesh)
+    py_medit.write_binary_file(str(tmp_path / "p.meshb"), mesh)
+    assert (tmp_path / "c.meshb").read_bytes() == (tmp_path / "p.meshb").read_bytes()
+
+
+@pytest.mark.parametrize("writer", ["core", "python"])
+def test_the_writers_state_the_node_order(tmp_path, writer):
+    path = str(tmp_path / "ho.mesh")
+    _WRITE[writer, "mesh"](path, _high_order_mesh())
+    text = pathlib.Path(path).read_text()
+    assert (
+        "TrianglesP3Ordering\n10\n3 0 0\n0 3 0\n0 0 3\n2 1 0\n1 2 0\n0 2 1\n0 1 2\n"
+        "1 0 2\n2 0 1\n1 1 1\n"
+    ) in text
+    assert "EdgesP3Ordering\n4\n0\n3\n1\n2\n" in text
+    assert text.count("TetrahedraP2Ordering") == 1
+    # A linear mesh is written as before: no ordering at all.
+    _WRITE[writer, "mesh"](path, helpers.tri_mesh)
+    assert "Ordering" not in pathlib.Path(path).read_text()
+
+
+_VERTS = "Vertices\n6\n" + "".join(f"{i} 0 0 1\n" for i in range(6))
+
+
+def _p2_file(tmp_path, ordering):
+    """One TrianglesP2 element whose file node order puts m01 first."""
+    text = "MeshVersionFormatted 2\nDimension 3\n" + _VERTS
+    # meshio order (v0 v1 v2 m01 m12 m20) = nodes 1 2 3 4 5 6; the file lists
+    # m01 v0 v1 v2 m12 m20.
+    text += "TrianglesP2\n1\n4 1 2 3 5 6 7\n"
+    if ordering is not None:
+        text += f"TrianglesP2Ordering\n{len(ordering)}\n"
+        text += "".join(" ".join(map(str, t)) + "\n" for t in ordering)
+    p = tmp_path / "p2.mesh"
+    p.write_text(text + "End\n")
+    return str(p)
+
+
+@pytest.mark.parametrize("reader", ["core", "python"])
+def test_a_file_s_node_order_is_honoured(tmp_path, reader):
+    # The ordering section comes after the elements it orders.
+    ordering = [(1, 1, 0), (2, 0, 0), (0, 2, 0), (0, 0, 2), (0, 1, 1), (1, 0, 1)]
+    back = _READ[reader, "mesh"](_p2_file(tmp_path, ordering))
+    np.testing.assert_array_equal(back.cells[0].data, [[0, 1, 2, 3, 4, 5]])
+    # With no ordering, meshio's order (libMeshb's own TrianglesP2 order).
+    back = _READ[reader, "mesh"](_p2_file(tmp_path, None))
+    np.testing.assert_array_equal(back.cells[0].data, [[3, 0, 1, 2, 4, 5]])
+
+
+@pytest.mark.parametrize("reader", ["core", "python"])
+@pytest.mark.parametrize(
+    "ordering",
+    [
+        [(1, 1, 0), (2, 0, 0), (0, 2, 0), (0, 0, 2), (0, 1, 1), (1, 1, 0)],  # twice
+        [(1, 1, 0), (2, 0, 0), (0, 2, 0), (0, 0, 2), (0, 1, 1), (3, 0, 0)],  # degree
+        [(2, 0, 0), (0, 2, 0), (0, 0, 2), (1, 1, 0), (0, 1, 1)],  # a node short
+    ],
+)
+def test_a_bad_node_order_is_refused(tmp_path, reader, ordering):
+    with pytest.raises(meshioplusplus.ReadError, match="TrianglesP2Ordering"):
+        _READ[reader, "mesh"](_p2_file(tmp_path, ordering))
+
+
+@pytest.mark.parametrize("reader", ["core", "python"])
+def test_a_bad_binary_node_order_is_refused(tmp_path, reader):
+    mesh = meshioplusplus.Mesh(
+        np.random.default_rng(0).random((6, 3)), [("triangle6", np.arange(6)[None])]
+    )
+    path = tmp_path / "p2.meshb"
+    _core.medit_write_binary(str(path), mesh)
+    data = bytearray(path.read_bytes())
+    # The ordering's first tuple (2, 0, 0) becomes (0, 2, 0), listed twice.
+    at = data.find(np.array([2, 0, 0, 0, 2, 0], "<i4").tobytes())
+    assert at > 0
+    data[at : at + 12] = np.array([0, 2, 0], "<i4").tobytes()
+    path.write_bytes(bytes(data))
+    with pytest.raises(meshioplusplus.ReadError, match="TrianglesP2Ordering"):
+        _READ[reader, "meshb"](str(path))
+
+
+def test_the_core_ascii_writer_says_what_it_drops(tmp_path, capfd):
+    mesh = meshioplusplus.Mesh(
+        np.random.default_rng(0).random((8, 3)), [("quad8", np.arange(8)[None])]
+    )
+    _core.medit_write_ascii(str(tmp_path / "q.mesh"), mesh)
+    assert "doesn't know quad8 cells" in capfd.readouterr().err

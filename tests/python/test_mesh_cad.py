@@ -376,6 +376,22 @@ def test_curved_elements_put_every_node_on_the_sphere(order):
 
 
 @needs_core
+@pytest.mark.parametrize("order", [2, 3])
+@pytest.mark.parametrize("ext", [".mesh", ".meshb", ".msh"])
+def test_curved_elements_survive_a_file(tmp_path, order, ext):
+    """The curved elements round-trip through Medit (its P2/P3 keywords) and
+    Gmsh with their node order."""
+    out = mio.mesh_cad_surface(_read("sphere.cad.json"), 0.5, order=order)
+    path = tmp_path / ("curved" + ext)
+    mio.write(path, out, file_format="gmsh" if ext == ".msh" else None)
+    back = mio.read(path, file_format="gmsh" if ext == ".msh" else None)
+    by_type = {c.type: c.data for c in back.cells}
+    for c in out.cells:
+        np.testing.assert_array_equal(by_type[c.type], c.data)
+    np.testing.assert_allclose(back.points, out.points, rtol=0, atol=1e-15)
+
+
+@needs_core
 def test_smoothing_moves_the_inside_only():
     model = _read("sphere.cad.json")
     plain, r0 = mio.mesh_cad_surface(model, 0.2, return_report=True)
