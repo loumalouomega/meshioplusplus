@@ -74958,6 +74958,44 @@ bool h5u_read_deflate_chunks(hid_t d, hid_t FileType, NDArray& rOut,
 }
 #endif
 
+/// A compact dataset must store exactly its extent's bytes, and an allocated
+/// contiguous one must lie inside the file; anything else is refused before libhdf5
+/// reads it. Variable-length elements are stored elsewhere, so their datasets are not
+/// sized here.
+void h5_check_storage(hid_t dset, const std::string& rName, H5D_layout_t Layout) {
+    Hid dt(H5Dget_type(dset), H5Tclose);
+    if (H5Tget_class(dt) == H5T_VLEN || H5Tis_variable_str(dt) > 0)
+        return;
+    Hid space(H5Dget_space(dset), H5Sclose);
+    const hssize_t points = H5Sget_simple_extent_npoints(space);
+    const std::size_t element = H5Tget_size(dt);
+    if (points < 0 || element == 0)
+        throw ReadError("HDF5: dataset '" + rName + "' has no readable extent");
+    const auto n = static_cast<hsize_t>(points);
+    if (n > 0 && element > std::numeric_limits<hsize_t>::max() / n)
+        throw ReadError("HDF5: dataset '" + rName + "' is too large");
+    const hsize_t need = n * element;
+    const hsize_t stored = H5Dget_storage_size(dset);
+    if (Layout == H5D_COMPACT) {
+        if (stored != need)
+            throw ReadError("HDF5: compact dataset '" + rName + "' stores " +
+                            std::to_string(stored) + " bytes, not the " + std::to_string(need) +
+                            " its extent needs");
+        return;
+    }
+    const haddr_t at = H5Dget_offset(dset);
+    if (at == HADDR_UNDEF)
+        return;  // unallocated (read as fill values) or stored in external files
+    Hid file(H5Iget_file_id(dset), H5Fclose);
+    hsize_t size = 0;
+    if (!file.Valid() || H5Fget_filesize(file, &size) < 0)
+        throw ReadError("HDF5: could not size the file of dataset '" + rName + "'");
+    if (stored < need || at > size || need > size - at)
+        throw ReadError("HDF5: contiguous dataset '" + rName + "' needs " + std::to_string(need) +
+                        " bytes at offset " + std::to_string(at) + ", past the end of its " +
+                        std::to_string(size) + "-byte file");
+}
+
 // libhdf5 1.10 copies a chunk's elements out of the bytes the chunk delivers without
 // checking that there are enough of them: a heap-buffer-overflow inside HDF5 1.10,
 // found by the fuzzer. A chunk delivers its stored record when its filters were
@@ -74971,10 +75009,20 @@ bool h5u_read_deflate_chunks(hid_t d, hid_t FileType, NDArray& rOut,
 // Any other pipeline, such as deflate followed by shuffle (which MSC Nastran writes),
 // is read unverified, so the over-read stays possible for it.
 // Listing the chunks needs HDF5 1.10.5; older libraries are not checked.
+//
+// A compact or contiguous dataset is checked first (h5_check_storage): libhdf5 1.10
+// copies a compact dataset's elements out of its stored bytes without checking that
+// there are enough of them, so a compact dataset stored short -- the fuzzer found one
+// stored in 0 bytes behind a 6 x 3 extent -- reads from a null or short buffer.
 void h5_check_chunks(hid_t dset, const std::string& rName, hsize_t Row0, hsize_t Row1) {
-#if H5_VERSION_GE(1, 10, 5)
     Hid dcpl(H5Dget_create_plist(dset), H5Pclose);
-    if (H5Pget_layout(dcpl) != H5D_CHUNKED)
+    const H5D_layout_t layout = H5Pget_layout(dcpl);
+    if (layout == H5D_COMPACT || layout == H5D_CONTIGUOUS) {
+        h5_check_storage(dset, rName, layout);
+        return;
+    }
+#if H5_VERSION_GE(1, 10, 5)
+    if (layout != H5D_CHUNKED)
         return;
     const int nfilters = H5Pget_nfilters(dcpl);
     if (nfilters < 0)
