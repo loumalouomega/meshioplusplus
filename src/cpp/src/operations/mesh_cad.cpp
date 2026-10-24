@@ -42,6 +42,7 @@
 
 // Project includes
 #include "../detail/cdt2d.hpp"
+#include "../detail/curved_triangle.hpp"
 #include "../detail/edge_sampler.hpp"
 #include "mesh_cad_testing.hpp"
 #include "meshioplusplus/log.hpp"
@@ -339,6 +340,22 @@ struct McadFace {
     /// so the same meshing can be made again, smoothed.
     bool mSmoothingDeferred = false;
     std::int64_t mRefinedBefore = 0;
+    /// Curved elements (order 2 and 3, roadmap 6.6), per triangle of
+    /// `mTriangles`: each edge k (corner k to corner k + 1) runs along a
+    /// boundary piece (its nodes the edge's, made at assembly) or holds
+    /// nodes of the face's own (`mHighOrder`, from corner k); the centre
+    /// (order 3); and the face's normal there, the sign of the element's
+    /// Jacobian.
+    struct CurvedEdge {
+        std::int64_t mEdge = -1;                     ///< boundary: the McadEdge
+        std::int64_t mPiece = -1;                    ///< its master piece
+        bool mReversed = false;                      ///< runs against the master
+        std::array<std::int64_t, 2> mNodes{-1, -1};  ///< interior: into mHighOrder
+    };
+    std::vector<std::array<CurvedEdge, 3>> mCurvedEdges;
+    std::vector<std::int64_t> mCurvedCentre;
+    std::vector<Vec3> mCurvedNormal;
+    std::vector<Vec3> mHighOrder;
 };
 
 /// What refinement and smoothing ask of every face.
@@ -393,6 +410,70 @@ double mcad_ratio(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
     return la * lb * lc / (2.0 * twice_area * std::min({la, lb, lc}));
 }
 
+/// Curved elements whose Jacobian is not positive everywhere (6.6, 6.6.1)
+/// made straight-sided: their edge nodes moved to the chord points of their
+/// corners and the centre to the corners' centroid. The nodes are shared, so
+/// the elements around a moved node are judged again, until none changes
+/// (nodes only ever move to straight). `rElems` holds the node ids, `Order`
+/// gives their count; returns the elements straightened, and in
+/// `rStillInvalid` those invalid even straight.
+std::int64_t mcad_straighten(int Order, const std::vector<std::array<std::int64_t, 10>>& rElems,
+                             const std::vector<Vec3>& rNormal, double* pX,
+                             std::int64_t& rStillInvalid) {
+    const int nn = detail::curved_triangle_num_nodes(Order);
+    // Elements around each high-order node.
+    std::unordered_map<std::int64_t, std::vector<std::size_t>> around;
+    for (std::size_t e = 0; e < rElems.size(); ++e)
+        for (int i = 3; i < nn; ++i)
+            around[rElems[e][static_cast<std::size_t>(i)]].push_back(e);
+    std::vector<char> straight(rElems.size(), 0);
+    std::set<std::size_t> work;
+    for (std::size_t e = 0; e < rElems.size(); ++e)
+        work.insert(e);
+    std::int64_t count = 0;
+    rStillInvalid = 0;
+    std::array<detail::CurvedVec3, 10> nodes{};
+    while (!work.empty()) {
+        const std::size_t e = *work.begin();
+        work.erase(work.begin());
+        const auto& r_el = rElems[e];
+        for (int i = 0; i < nn; ++i)
+            for (std::size_t k = 0; k < 3; ++k)
+                nodes[static_cast<std::size_t>(i)][k] =
+                    pX[3 * static_cast<std::size_t>(r_el[static_cast<std::size_t>(i)]) + k];
+        if (detail::curved_triangle_check(Order, nodes.data(), rNormal[e]).mValid)
+            continue;
+        if (straight[e] != 0) {
+            ++rStillInvalid;
+            continue;
+        }
+        straight[e] = 1;
+        ++count;
+        // Edge k from corner k to corner k + 1, its nodes from corner k.
+        int slot = 3;
+        for (std::size_t k = 0; k < 3; ++k) {
+            const auto& a = nodes[k];
+            const auto& b = nodes[(k + 1) % 3];
+            for (int j = 1; j < Order; ++j, ++slot) {
+                const double f = double(j) / Order;
+                const auto id = static_cast<std::size_t>(r_el[static_cast<std::size_t>(slot)]);
+                for (std::size_t c = 0; c < 3; ++c)
+                    pX[3 * id + c] = a[c] + f * (b[c] - a[c]);
+            }
+        }
+        if (Order == 3) {
+            const auto id = static_cast<std::size_t>(r_el[9]);
+            for (std::size_t c = 0; c < 3; ++c)
+                pX[3 * id + c] = (nodes[0][c] + nodes[1][c] + nodes[2][c]) / 3.0;
+        }
+        for (int i = 3; i < nn; ++i)
+            for (const std::size_t o : around[r_el[static_cast<std::size_t>(i)]])
+                if (o != e)
+                    work.insert(o);
+    }
+    return count;
+}
+
 void mcad_check_options(const MeshCadSurfaceOptions& rO) {
     if (!(std::isfinite(rO.mTargetSize) && rO.mTargetSize > 0.0))
         mcad_fail("target_size must be positive and finite");
@@ -430,8 +511,8 @@ void mcad_check_options(const MeshCadSurfaceOptions& rO) {
         not_yet("pole_rings", "6.4.2");
     if (rO.mReparamConditionNumber != 0.0)
         not_yet("reparam_condition_number", "6.4.4");
-    if (rO.mOrder != 1)
-        not_yet("order", "6.6");
+    if (rO.mOrder < 1 || rO.mOrder > 3)
+        mcad_fail("order must be 1, 2 or 3");
 }
 
 /// One loop sample of a face: its mesh point, its parameters, and the use
@@ -684,6 +765,10 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         rF.mTriangles.clear();
         rF.mInterior.clear();
         rF.mAsks.clear();
+        rF.mCurvedEdges.clear();
+        rF.mCurvedCentre.clear();
+        rF.mCurvedNormal.clear();
+        rF.mHighOrder.clear();
     };
     for (const auto& r_loop : rF.mLoops)
         for (const std::size_t u : r_loop)
@@ -1399,6 +1484,82 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
     // that of the rest (the bound the face reached).
     std::map<std::int64_t, double> pole_min;
     double bound = 180.0;
+    // Curved elements (6.6): an interior edge's nodes are the surface at the
+    // parameter points between its ends (1/2, or 1/3 and 2/3), kept once per
+    // edge (by its plane vertices, in key order) for both its triangles; the
+    // plane is a linear image of the parameters, so the fractions are the
+    // parameters' too.
+    // At a pole the parameters collapse: its plane vertices lie along a
+    // degenerate segment, each with a parameter that means nothing on the
+    // surface. An edge or element there takes the pole's parameters as the
+    // point of that segment nearest the other end's (on a sphere, that end's
+    // meridian), or its parameter midpoint would twist the element.
+    const int order = rO.mOrder;
+    std::map<std::int64_t, std::array<Vec2, 2>> pole_segment;
+    if (order > 1) {
+        std::map<std::int64_t, std::vector<Vec2>> at_pole;
+        for (std::int64_t v = detail::Cdt2d::kFirstVertex; v < cdt.NumVertices(); ++v) {
+            const auto it = mesh_of.find(v);
+            if (it != mesh_of.end() && pole(it->second))
+                at_pole[it->second].push_back(pl.ToUv(cdt.Point(v)));
+        }
+        for (const auto& [id, r_uv] : at_pole) {
+            std::array<Vec2, 2> seg{r_uv.front(), r_uv.front()};
+            double far = -1.0;
+            for (std::size_t i = 0; i < r_uv.size(); ++i)
+                for (std::size_t j = i + 1; j < r_uv.size(); ++j) {
+                    const double d = std::hypot(r_uv[i][0] - r_uv[j][0], r_uv[i][1] - r_uv[j][1]);
+                    if (d > far) {
+                        far = d;
+                        seg = {r_uv[i], r_uv[j]};
+                    }
+                }
+            pole_segment.emplace(id, seg);
+        }
+    }
+    const auto param_of = [&](std::int64_t V) { return pl.ToUv(cdt.Point(V)); };
+    // The parameters of plane vertex `V`, seen from parameters `rToward`.
+    const auto param_toward = [&](std::int64_t V, const Vec2& rToward) {
+        const auto it = pole_segment.find(mesh_of.at(V));
+        if (it == pole_segment.end())
+            return param_of(V);
+        const Vec2& a = it->second[0];
+        const Vec2& b = it->second[1];
+        const double dx = b[0] - a[0], dy = b[1] - a[1];
+        const double len2 = dx * dx + dy * dy;
+        if (!(len2 > 0.0))
+            return a;
+        const double t =
+            std::clamp(((rToward[0] - a[0]) * dx + (rToward[1] - a[1]) * dy) / len2, 0.0, 1.0);
+        return Vec2{a[0] + t * dx, a[1] + t * dy};
+    };
+    const auto surface_at = [&](const Vec2& rUv) {
+        Vec3 x{};
+        r_s.Eval(rUv[0], rUv[1], x.data(), nullptr, nullptr);
+        return x;
+    };
+    std::map<std::pair<std::int64_t, std::int64_t>, std::array<std::int64_t, 2>> edge_nodes;
+    const auto interior_nodes = [&](std::int64_t A, std::int64_t B) {
+        const auto key = seg_key(A, B);
+        auto it = edge_nodes.find(key);
+        if (it == edge_nodes.end()) {
+            std::array<std::int64_t, 2> ids{-1, -1};
+            const Vec2 ua = param_toward(key.first, param_of(key.second));
+            const Vec2 ub = param_toward(key.second, param_of(key.first));
+            for (int j = 1; j < order; ++j) {
+                const double f = double(j) / order;
+                ids[static_cast<std::size_t>(j - 1)] =
+                    static_cast<std::int64_t>(rF.mHighOrder.size());
+                rF.mHighOrder.push_back(
+                    surface_at({ua[0] + f * (ub[0] - ua[0]), ua[1] + f * (ub[1] - ua[1])}));
+            }
+            it = edge_nodes.emplace(key, ids).first;
+        }
+        std::array<std::int64_t, 2> ids = it->second;
+        if (A != key.first && order == 3)
+            std::swap(ids[0], ids[1]);
+        return ids;
+    };
     for (const auto& r_t : cdt.InsideTriangles()) {
         std::array<std::int64_t, 3> tri{};
         for (int k = 0; k < 3; ++k)
@@ -1435,8 +1596,54 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             if (rQ.mMinAngleDeg > 0.0 && m < rQ.mMinAngleDeg)
                 r_rec.mBelowBound = true;
         }
-        if (rBrepFace.mSwappedNormal)
+        std::array<std::int64_t, 3> cv = r_t;
+        if (rBrepFace.mSwappedNormal) {
             std::swap(tri[1], tri[2]);
+            std::swap(cv[1], cv[2]);
+        }
+        if (order > 1) {
+            std::array<McadFace::CurvedEdge, 3> ce{};
+            for (std::size_t k = 0; k < 3; ++k) {
+                const std::int64_t a = cv[k];
+                const std::int64_t b = cv[(k + 1) % 3];
+                const auto it = origin.find(seg_key(a, b));
+                if (it != origin.end()) {
+                    // A boundary piece: the triangle runs from the use's
+                    // sample k to k + 1 when it starts at mStart, and the
+                    // use runs with the master when mSame.
+                    const McadUse& r_u = rUses[it->second.mUse];
+                    const std::size_t n = r_u.mParams.size();
+                    ce[k].mEdge = static_cast<std::int64_t>(r_u.mEdge);
+                    ce[k].mPiece = static_cast<std::int64_t>(r_u.mSame ? it->second.mK
+                                                                       : n - 2 - it->second.mK);
+                    ce[k].mReversed = (a == it->second.mStart) != r_u.mSame;
+                } else {
+                    ce[k].mNodes = interior_nodes(a, b);
+                }
+            }
+            // The centroid's parameters, a pole corner taken toward the
+            // other two.
+            Vec2 uv{0.0, 0.0};
+            for (std::size_t k = 0; k < 3; ++k) {
+                const Vec2 ob = param_of(cv[(k + 1) % 3]);
+                const Vec2 oc = param_of(cv[(k + 2) % 3]);
+                const Vec2 c = param_toward(cv[k], {0.5 * (ob[0] + oc[0]), 0.5 * (ob[1] + oc[1])});
+                uv[0] += c[0] / 3.0;
+                uv[1] += c[1] / 3.0;
+            }
+            Vec3 xs{}, su{}, sv{};
+            r_s.Eval(uv[0], uv[1], xs.data(), su.data(), sv.data());
+            Vec3 nrm{su[1] * sv[2] - su[2] * sv[1], su[2] * sv[0] - su[0] * sv[2],
+                     su[0] * sv[1] - su[1] * sv[0]};
+            if (rBrepFace.mSwappedNormal)
+                nrm = {-nrm[0], -nrm[1], -nrm[2]};
+            rF.mCurvedEdges.push_back(ce);
+            rF.mCurvedNormal.push_back(nrm);
+            if (order == 3) {
+                rF.mCurvedCentre.push_back(static_cast<std::int64_t>(rF.mHighOrder.size()));
+                rF.mHighOrder.push_back(xs);
+            }
+        }
         for (int k = 0; k < 3; ++k) {
             const Vec3& o = pos(tri[k]);
             const Vec3& p = pos(tri[(k + 1) % 3]);
@@ -2168,6 +2375,10 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
                 r_f.mInterior.clear();
                 r_f.mTriangles.clear();
                 r_f.mAsks.clear();
+                r_f.mCurvedEdges.clear();
+                r_f.mCurvedCentre.clear();
+                r_f.mCurvedNormal.clear();
+                r_f.mHighOrder.clear();
                 r_f.mHistogram.fill(0);
                 r_f.mNumStretched = 0;
                 r_f.mRefineBudgetReached = false;
@@ -2191,6 +2402,10 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
                     r_f.mTriangles.clear();
                     r_f.mInterior.clear();
                     r_f.mAsks.clear();
+                    r_f.mCurvedEdges.clear();
+                    r_f.mCurvedCentre.clear();
+                    r_f.mCurvedNormal.clear();
+                    r_f.mHighOrder.clear();
                 }
             },
             1);
@@ -2296,6 +2511,38 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
         if (faces[f].mRecord.mStatus == MeshCadFaceStatus::Ok)
             np += faces[f].mInterior.size();
     }
+    // Curved elements (6.6): after the points above, each edge piece's own
+    // nodes (on the edge, by arc length, shared by every face and line that
+    // runs along it), then each face's (the surface at parameter points).
+    const int order = rOptions.mOrder;
+    const std::size_t np_linear = np;
+    std::vector<std::vector<std::int64_t>> piece_base(edges.size());
+    std::vector<Vec3> piece_points;
+    std::vector<std::int64_t> high_base(nf, 0);
+    if (order > 1) {
+        for (std::size_t e = 0; e < edges.size(); ++e) {
+            const McadEdge& r_e = edges[e];
+            if (r_e.mFail != MeshCadFaceStatus::Ok || r_e.mSamples.mDegenerate)
+                continue;
+            const std::vector<std::int64_t>& r_ids = uses[r_e.mMaster].mIds;
+            const auto pts = detail::edge_piece_points(*traces[r_e.mMaster], r_e.mSamples, order);
+            piece_base[e].assign(r_ids.size() - 1, -1);
+            for (std::size_t k = 0; k + 1 < r_ids.size(); ++k) {
+                if (r_ids[k] == r_ids[k + 1])
+                    continue;
+                piece_base[e][k] = static_cast<std::int64_t>(np + piece_points.size());
+                for (int j = 0; j + 1 < order; ++j)
+                    piece_points.push_back(
+                        pts[k * static_cast<std::size_t>(order - 1) + static_cast<std::size_t>(j)]);
+            }
+        }
+        np += piece_points.size();
+        for (std::size_t f = 0; f < nf; ++f) {
+            high_base[f] = static_cast<std::int64_t>(np);
+            if (faces[f].mRecord.mStatus == MeshCadFaceStatus::Ok)
+                np += faces[f].mHighOrder.size();
+        }
+    }
     if (static_cast<std::int64_t>(np) > rOptions.mMaxPoints)
         throw std::length_error(std::string(kMcadPrefix) + "the mesh would have more than " +
                                 std::to_string(rOptions.mMaxPoints) + " points");
@@ -2304,6 +2551,13 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
     for (std::size_t i = 0; i < boundary.size(); ++i)
         for (int k = 0; k < 3; ++k)
             px[3 * i + static_cast<std::size_t>(k)] = boundary[i][static_cast<std::size_t>(k)];
+    for (std::size_t i = 0; i < piece_points.size(); ++i)
+        for (std::size_t k = 0; k < 3; ++k)
+            px[3 * (np_linear + i) + k] = piece_points[i][k];
+    // A curved element's nodes, in triangle6 / triangle10 order, and the
+    // normal its Jacobian is signed against.
+    std::vector<std::array<std::int64_t, 10>> curved;
+    std::vector<Vec3> curved_normal;
     std::vector<std::array<std::int64_t, 3>> tris;
     std::vector<std::int64_t> tri_face;
     std::vector<std::vector<std::int64_t>> face_cells(nf);
@@ -2332,13 +2586,51 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
             for (int k = 0; k < 3; ++k)
                 px[3 * (static_cast<std::size_t>(base) + i) + static_cast<std::size_t>(k)] =
                     r_f.mInterior[i][static_cast<std::size_t>(k)];
-        for (auto tri : r_f.mTriangles) {
+        if (order > 1)
+            for (std::size_t i = 0; i < r_f.mHighOrder.size(); ++i)
+                for (std::size_t k = 0; k < 3; ++k)
+                    px[3 * (static_cast<std::size_t>(high_base[f]) + i) + k] = r_f.mHighOrder[i][k];
+        for (std::size_t t = 0; t < r_f.mTriangles.size(); ++t) {
+            auto tri = r_f.mTriangles[t];
             for (std::int64_t& r_v : tri)
                 if (r_v < 0)
                     r_v = base + (-r_v - 1);
             face_cells[f].push_back(static_cast<std::int64_t>(tris.size()));
             tris.push_back(tri);
             tri_face.push_back(static_cast<std::int64_t>(f));
+            if (order == 1)
+                continue;
+            std::array<std::int64_t, 10> el{};
+            el.fill(-1);
+            std::size_t slot = 0;
+            for (; slot < 3; ++slot)
+                el[slot] = tri[slot];
+            for (std::size_t k = 0; k < 3; ++k) {
+                const McadFace::CurvedEdge& r_c = r_f.mCurvedEdges[t][k];
+                std::array<std::int64_t, 2> ids{-1, -1};
+                if (r_c.mEdge >= 0) {
+                    const std::int64_t first = piece_base[static_cast<std::size_t>(r_c.mEdge)]
+                                                         [static_cast<std::size_t>(r_c.mPiece)];
+                    if (first < 0)
+                        throw std::logic_error(std::string(kMcadPrefix) +
+                                               "internal error: a curved element runs along "
+                                               "a collapsed piece");
+                    for (int j = 0; j + 1 < order; ++j)
+                        ids[static_cast<std::size_t>(j)] = first + j;
+                    if (r_c.mReversed && order == 3)
+                        std::swap(ids[0], ids[1]);
+                } else {
+                    for (int j = 0; j + 1 < order; ++j)
+                        ids[static_cast<std::size_t>(j)] =
+                            high_base[f] + r_c.mNodes[static_cast<std::size_t>(j)];
+                }
+                for (int j = 0; j + 1 < order; ++j)
+                    el[slot++] = ids[static_cast<std::size_t>(j)];
+            }
+            if (order == 3)
+                el[slot] = high_base[f] + r_f.mCurvedCentre[t];
+            curved.push_back(el);
+            curved_normal.push_back(r_f.mCurvedNormal[t]);
         }
         result.mNumDegenerateDropped += r_f.mRecord.mNumDegenerateDropped;
         result.mNumRefinementPoints += r_f.mRecord.mNumRefinementPoints;
@@ -2356,35 +2648,60 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
         result.mMinEdge = 0.0;
     }
 
+    if (order > 1) {
+        std::int64_t still = 0;
+        result.mNumCurvedStraightened = mcad_straighten(order, curved, curved_normal, px, still);
+        if (result.mNumCurvedStraightened > 0)
+            warn(std::to_string(result.mNumCurvedStraightened) +
+                 " curved elements had a Jacobian that is not positive everywhere and are kept "
+                 "straight-sided");
+        if (still > 0)
+            warn(std::to_string(still) +
+                 " elements stay invalid even straight-sided against their face's normal");
+    }
     Mesh& r_m = result.mMesh;
     r_m.AssignPoints(std::move(points));
-    NDArray conn = NDArray::Uninit(DType::Int64, {tris.size(), std::size_t{3}});
-    std::int64_t* pc = conn.As<std::int64_t>();
-    for (std::size_t t = 0; t < tris.size(); ++t)
-        for (int k = 0; k < 3; ++k)
-            pc[3 * t + static_cast<std::size_t>(k)] = tris[t][static_cast<std::size_t>(k)];
-    r_m.AddCellBlock("triangle", std::move(conn));
-    std::vector<std::array<std::int64_t, 2>> segs;
+    if (order == 1) {
+        NDArray conn = NDArray::Uninit(DType::Int64, {tris.size(), std::size_t{3}});
+        std::int64_t* pc = conn.As<std::int64_t>();
+        for (std::size_t t = 0; t < tris.size(); ++t)
+            for (int k = 0; k < 3; ++k)
+                pc[3 * t + static_cast<std::size_t>(k)] = tris[t][static_cast<std::size_t>(k)];
+        r_m.AddCellBlock("triangle", std::move(conn));
+    } else {
+        const auto nn = static_cast<std::size_t>(detail::curved_triangle_num_nodes(order));
+        NDArray conn = NDArray::Uninit(DType::Int64, {curved.size(), nn});
+        std::int64_t* pc = conn.As<std::int64_t>();
+        for (std::size_t t = 0; t < curved.size(); ++t)
+            for (std::size_t k = 0; k < nn; ++k)
+                pc[nn * t + k] = curved[t][k];
+        r_m.AddCellBlock(order == 2 ? "triangle6" : "triangle10", std::move(conn));
+    }
+    std::vector<std::array<std::int64_t, 4>> segs;
     std::vector<std::int64_t> seg_edge;
     if (rOptions.mEdges) {
-        for (const McadEdge& r_e : edges) {
+        for (std::size_t e = 0; e < edges.size(); ++e) {
+            const McadEdge& r_e = edges[e];
             if (r_e.mFail != MeshCadFaceStatus::Ok)
                 continue;
             const std::vector<std::int64_t>& r_ids = uses[r_e.mMaster].mIds;
             for (std::size_t k = 0; k + 1 < r_ids.size(); ++k) {
                 if (r_ids[k] == r_ids[k + 1])
                     continue;
-                segs.push_back({r_ids[k], r_ids[k + 1]});
+                std::array<std::int64_t, 4> seg{r_ids[k], r_ids[k + 1], -1, -1};
+                for (int j = 0; j + 1 < order; ++j)
+                    seg[static_cast<std::size_t>(2 + j)] = piece_base[e][k] + j;
+                segs.push_back(seg);
                 seg_edge.push_back(r_e.mBrepEdge);
             }
         }
-        NDArray lines = NDArray::Uninit(DType::Int64, {segs.size(), std::size_t{2}});
+        const auto nn = static_cast<std::size_t>(order + 1);
+        NDArray lines = NDArray::Uninit(DType::Int64, {segs.size(), nn});
         std::int64_t* pl = lines.As<std::int64_t>();
-        for (std::size_t s = 0; s < segs.size(); ++s) {
-            pl[2 * s] = segs[s][0];
-            pl[2 * s + 1] = segs[s][1];
-        }
-        r_m.AddCellBlock("line", std::move(lines));
+        for (std::size_t s = 0; s < segs.size(); ++s)
+            for (std::size_t k = 0; k < nn; ++k)
+                pl[nn * s + k] = segs[s][k];
+        r_m.AddCellBlock(order == 1 ? "line" : order == 2 ? "line3" : "line4", std::move(lines));
     }
     const auto column = [](const std::vector<std::int64_t>& rV) {
         NDArray a = NDArray::Uninit(DType::Int64, {rV.size()});

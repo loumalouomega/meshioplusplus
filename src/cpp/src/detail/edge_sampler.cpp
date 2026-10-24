@@ -432,6 +432,21 @@ void edge_refine(const TrimTrace& rTrace, EdgeSamples& rSamples,
     rSamples = std::move(out);
 }
 
+std::vector<std::array<double, 3>> edge_piece_points(const TrimTrace& rTrace,
+                                                     const EdgeSamples& rSamples, int Order) {
+    std::vector<std::array<double, 3>> out;
+    if (rSamples.mDegenerate || Order < 2)
+        return out;
+    const double length = rSamples.mLength;
+    for (std::size_t k = 0; k + 1 < rSamples.mParams.size(); ++k)
+        for (int j = 1; j < Order; ++j) {
+            const double a = double(j) / Order;
+            const double f = (1.0 - a) * rSamples.mFractions[k] + a * rSamples.mFractions[k + 1];
+            out.push_back(rTrace.Point(rTrace.ParamAtLength(f * length)));
+        }
+    return out;
+}
+
 bool edge_same_direction(const TrimTrace& rA, const TrimTrace& rB, double StartLengthB) {
     const double la = rA.Length();
     const double lb = rB.Length();

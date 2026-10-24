@@ -188,6 +188,13 @@ void edge_refine(const TrimTrace& rTrace, EdgeSamples& rSamples,
 void edge_refine(const TrimTrace& rTrace, EdgeSamples& rSamples,
                  const std::vector<std::size_t>& rPieces, const std::vector<double>& rAt);
 
+/// The points inside each piece at arc-length fractions j / Order of the
+/// piece (j = 1 .. Order - 1), piece by piece: the nodes of a curved
+/// element's edge along the trimmed edge (roadmap 6.6). None for a
+/// degenerate edge.
+std::vector<std::array<double, 3>> edge_piece_points(const TrimTrace& rTrace,
+                                                     const EdgeSamples& rSamples, int Order);
+
 /// Whether two traces of one edge run the same way (compared at both ends and
 /// at a quarter and three quarters of their lengths). With `StartLengthB` at
 /// least 0, `rB` is a closed trace taken to start that far along it: only

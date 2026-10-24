@@ -497,9 +497,12 @@ TEST(MeshCadQuality, OptionsNotImplementedYetAreRefused) {
     o = quality(0.5, 0.0);
     o.mReparamConditionNumber = 100.0;
     refused(o, "6.4.4");
-    o = quality(0.5, 0.0);
-    o.mOrder = 2;
-    refused(o, "6.6");
+    for (const int bad : {0, 4}) {
+        o = quality(0.5, 0.0);
+        o.mOrder = bad;
+        EXPECT_THROW((void)mio::mesh_cad_surface(brep_solids::box(), o), std::invalid_argument)
+            << bad;
+    }
     for (const double bad : {-1.0, 60.0, std::nan("")})
         EXPECT_THROW((void)mio::mesh_cad_surface(brep_solids::box(), quality(0.5, bad)),
                      std::invalid_argument)

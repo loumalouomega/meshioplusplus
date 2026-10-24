@@ -77,7 +77,11 @@
  * Math. 2004), each move kept only when no triangle inverts and the star's
  * smallest angle on the surface does not drop (D. A. Field, Commun. Appl.
  * Numer. Methods 1988). `mMinAngleDeg` = 0 with no smoothing is the first
- * milestone's mesh byte for byte. There is no size field beyond the chordal
+ * milestone's mesh byte for byte. `mOrder` 2 or 3 writes curved `triangle6`
+ * or `triangle10` elements whose nodes lie on the surface and the edges; one
+ * whose Jacobian is not positive everywhere (its Bezier bound; A. Johnen,
+ * J.-F. Remacle and C. Geuzaine, J. Comput. Phys. 2013) is written
+ * straight-sided and counted. There is no size field beyond the chordal
  * cap and no anisotropic metric yet: the options for them are in the layout
  * and refused until they land. The output is byte-identical across parallel
  * backends and thread counts. See doc/mesh_cad.md.
@@ -170,9 +174,10 @@ struct MeshCadSurfaceOptions {
     /// The most points in the result; a face or edge that would exceed it fails.
     std::int64_t mMaxPoints = 50000000;
 
-    // Quality (roadmap 6.2), and the fields 6.3, 6.4 and 6.6 will use, laid
-    // out together so they take one ABI bump; a field whose item has not
-    // landed is refused (std::invalid_argument) unless left at its default.
+    // Quality (roadmap 6.2), the fields 6.3 and 6.4 will use, and curved
+    // meshes' order (6.6), laid out together so they took one ABI bump; a
+    // field whose item has not landed is refused (std::invalid_argument)
+    // unless left at its default.
 
     /// Refine until every triangle's smallest angle on the surface is at
     /// least this (degrees, under 60); 0 keeps the unrefined mesh. Below
@@ -189,7 +194,9 @@ struct MeshCadSurfaceOptions {
     MeshCadMetric mMetric = MeshCadMetric::Mean;                   ///< 6.4.1
     std::int32_t mPoleRings = 0;                                   ///< 6.4.2; 0 is the pole's fan
     double mReparamConditionNumber = 0.0;                          ///< 6.4.4; 0 is off
-    std::int32_t mOrder = 1;                                       ///< 6.6; 1 is linear triangles
+    /// 1: linear triangles; 2 and 3: curved `triangle6` and `triangle10`
+    /// (and `line3`, `line4`), their nodes on the surface and edges (6.6).
+    std::int32_t mOrder = 1;
 };
 
 /// A corner that keeps triangles under `mMinAngleDeg`: two trims meeting
@@ -269,7 +276,9 @@ struct MeshCadSurfaceResult {
     std::int64_t mNumSmoothed = 0;
     /// Every angle of every triangle on the surface, in 10-degree bins.
     std::array<std::int64_t, kMeshCadAngleBins> mAngleHistogram{};
-    std::int64_t mNumCurvedStraightened = 0;  ///< 6.6; 0 until curved meshes land
+    /// Curved elements whose Jacobian was not positive everywhere, written
+    /// straight-sided instead (6.6, 6.6.1).
+    std::int64_t mNumCurvedStraightened = 0;
 };
 
 /**
