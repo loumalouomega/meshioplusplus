@@ -1459,6 +1459,81 @@ TEST(H5Util, ARowSliceVerifiesOnlyTheChunksItReads) {
 #endif  // MESHIOPLUSPLUS_HAS_ZLIB
 
 namespace {
+// Writes "c", six doubles in the compact layout (stored in the object header), and
+// "g", a hundred in the contiguous one; returns the compact dataset's values.
+std::vector<double> write_compact_and_contiguous(const std::string& rPath) {
+    std::vector<double> c = {1.5, -2.25, 3.125, 4.0625, 5.03125, 6.015625};
+    std::vector<double> g(100);
+    for (std::size_t i = 0; i < g.size(); ++i)
+        g[i] = 0.5 * static_cast<double>(i);
+    hid_t file = H5Fcreate(rPath.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    hsize_t nc[1] = {c.size()}, ng[1] = {g.size()};
+    hid_t sc = H5Screate_simple(1, nc, nullptr), sg = H5Screate_simple(1, ng, nullptr);
+    hid_t compact = H5Pcreate(H5P_DATASET_CREATE);
+    H5Pset_layout(compact, H5D_COMPACT);
+    hid_t dc = H5Dcreate2(file, "c", H5T_IEEE_F64LE, sc, H5P_DEFAULT, compact, H5P_DEFAULT);
+    hid_t dg = H5Dcreate2(file, "g", H5T_IEEE_F64LE, sg, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    H5Dwrite(dc, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, c.data());
+    H5Dwrite(dg, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, g.data());
+    H5Dclose(dc);
+    H5Dclose(dg);
+    H5Pclose(compact);
+    H5Sclose(sc);
+    H5Sclose(sg);
+    H5Fclose(file);
+    return c;
+}
+}  // namespace
+
+// A compact or contiguous dataset whose storage holds its extent reads as before.
+TEST(H5Util, CompactAndContiguousDatasetsHoldingTheirExtentRead) {
+    H5utilTempFile f(".h5");
+    const std::vector<double> c = write_compact_and_contiguous(f.mPath);
+    h5::Hid file = h5::open_file_read(f.mPath);
+    const auto a = h5::read_dataset(file, "c");
+    ASSERT_EQ(a.Size(), c.size());
+    for (std::size_t i = 0; i < c.size(); ++i)
+        EXPECT_EQ(a.As<double>()[i], c[i]);
+    const auto g = h5::read_dataset(file, "g");
+    ASSERT_EQ(g.Size(), 100u);
+    EXPECT_EQ(g.As<double>()[99], 49.5);
+    EXPECT_EQ(h5::read_dataset_rows(file, "c", 2, 3).As<double>()[0], c[2]);
+}
+
+// libhdf5 1.10 copies a compact dataset's elements out of its stored bytes without
+// checking there are enough (the fuzzer's crash in tests/fuzz/regressions/xdmf, a
+// compact dataset stored in 0 bytes): such a dataset is refused before the read.
+TEST(H5Util, ACompactDatasetStoredShortIsRefusedBeforeTheRead) {
+    H5utilTempFile f(".h5");
+    const std::vector<double> c = write_compact_and_contiguous(f.mPath);
+    std::string bytes;
+    {
+        std::ifstream in(f.mPath, std::ios::binary);
+        bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    // The layout message: version 3, class 0 (compact), a 2-byte size (48), the data.
+    std::string message("\x03\x00\x30\x00", 4);
+    message.append(reinterpret_cast<const char*>(c.data()), c.size() * sizeof(double));
+    const std::size_t at = bytes.find(message);
+    ASSERT_NE(at, std::string::npos);
+    bytes[at + 2] = 0;  // stored in 0 bytes behind a 6-element extent
+    {
+        std::ofstream out(f.mPath, std::ios::binary | std::ios::trunc);
+        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    }
+    h5::Hid file = h5::open_file_read(f.mPath);
+    try {
+        h5::read_dataset(file, "c");
+        ADD_FAILURE() << "a compact dataset stored short was read";
+    } catch (const meshioplusplus::ReadError& e) {
+        EXPECT_NE(std::string(e.what()).find("compact dataset 'c' stores 0 bytes"),
+                  std::string::npos)
+            << e.what();
+    }
+    EXPECT_THROW(h5::read_dataset_rows(file, "c", 0, 2), meshioplusplus::ReadError);
+}
+
+namespace {
 // Writes "d" as four int64 values in one chunk, with the filters `setup` adds.
 template <typename Setup>
 void write_four_values(const std::string& rPath, Setup setup) {
