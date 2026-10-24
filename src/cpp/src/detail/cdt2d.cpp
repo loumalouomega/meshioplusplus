@@ -321,6 +321,7 @@ std::vector<std::int64_t> Cdt2d::ReplaceCavity(const std::vector<std::int64_t>& 
     // The cavity's boundary: the removed triangles' edges whose neighbour
     // was not removed, with that neighbour and the edge's constraint.
     std::vector<Boundary> boundary;
+    boundary.reserve(3 * rRemoved.size());
     for (const std::int64_t r : rRemoved) {
         const auto& r_t = mTris[static_cast<std::size_t>(r)];
         for (int e = 0; e < 3; ++e) {
@@ -480,8 +481,12 @@ std::int64_t Cdt2d::InsertAt(const Vec2& rP, const Location& rLoc, bool Inside) 
     const auto v = static_cast<std::int64_t>(mPoints.size());
     mPoints.push_back(rP);
     mVertTri.push_back(rLoc.mTri);
-    std::vector<std::int64_t> removed{rLoc.mTri};
+    // Reserved for the common case: allocations dominated insertion.
+    std::vector<std::int64_t> removed;
+    removed.reserve(2);
+    removed.push_back(rLoc.mTri);
     std::vector<Tri> fresh;
+    fresh.reserve(4);
     std::int64_t split_a = -1;
     std::int64_t split_b = -1;
     bool split_constrained = false;
@@ -532,6 +537,7 @@ std::int64_t Cdt2d::InsertAt(const Vec2& rP, const Location& rLoc, bool Inside) 
         }
     }
     std::vector<std::pair<std::int64_t, int>> stack;
+    stack.reserve(16);
     for (const std::int64_t id : ids)
         stack.emplace_back(id, 2);
     Legalize(stack);
@@ -803,6 +809,7 @@ std::int64_t Cdt2d::InsertSteiner(const Vec2& rP) {
 
 std::vector<std::int64_t> Cdt2d::TrianglesAround(std::int64_t V) const {
     std::vector<std::int64_t> out;
+    out.reserve(8);
     const std::int64_t t0 = mVertTri[static_cast<std::size_t>(V)];
     std::int64_t t = t0;
     for (std::size_t guard = 0; guard < mTris.size() + 3; ++guard) {
@@ -822,6 +829,7 @@ std::vector<std::int64_t> Cdt2d::TrianglesAround(std::int64_t V) const {
 
 std::vector<std::int64_t> Cdt2d::Neighbours(std::int64_t V) const {
     std::vector<std::int64_t> out;
+    out.reserve(8);
     for (const std::int64_t t : TrianglesAround(V))
         out.push_back(mTris[static_cast<std::size_t>(t)].mV[cdt2d_next(IndexOf(t, V))]);
     return out;
@@ -829,6 +837,7 @@ std::vector<std::int64_t> Cdt2d::Neighbours(std::int64_t V) const {
 
 std::vector<Cdt2d::Tri> Cdt2d::Star(std::int64_t V) const {
     std::vector<Tri> out;
+    out.reserve(8);
     for (const std::int64_t t : TrianglesAround(V))
         out.push_back(mTris[static_cast<std::size_t>(t)].mV);
     return out;
@@ -836,6 +845,7 @@ std::vector<Cdt2d::Tri> Cdt2d::Star(std::int64_t V) const {
 
 std::vector<Cdt2d::Tri> Cdt2d::InsideStar(std::int64_t V) const {
     std::vector<Tri> out;
+    out.reserve(8);
     for (const std::int64_t t : TrianglesAround(V))
         if (mTris[static_cast<std::size_t>(t)].mInside)
             out.push_back(mTris[static_cast<std::size_t>(t)].mV);
