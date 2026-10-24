@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.15...3.30)
 # properties, and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 17.13.0
+  VERSION 17.16.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
@@ -1754,6 +1754,9 @@ endif()
 # the binary's name (meshioplusplus_fuzz_read_<format>, for OSS-Fuzz-style
 # per-format copies). The replay driver is the same harness with a main() that
 # feeds files, so any compiler runs the committed regression inputs in ctest.
+# The operation targets (tests/fuzz/fuzz_mesh_cad.cpp: mesh_cad_surface and
+# triangulate_polygon_2d, roadmap 6.1.5) take the target from the binary's
+# name the same way, and replay through meshioplusplus_fuzz_ops_replay.
 # --------------------------------------------------------------------------
 if(MESHIOPLUSPLUS_BUILD_FUZZERS)
   add_executable(meshioplusplus_fuzz_read tests/fuzz/fuzz_read.cpp)
@@ -1767,6 +1770,16 @@ if(MESHIOPLUSPLUS_BUILD_FUZZERS)
     target_compile_options(meshioplusplus_fuzz_read PRIVATE -fsanitize=fuzzer)
     target_link_options(meshioplusplus_fuzz_read PRIVATE -fsanitize=fuzzer)
   endif()
+  foreach(_op IN ITEMS mesh_cad_surface triangulate_polygon_2d)
+    add_executable(meshioplusplus_fuzz_${_op} tests/fuzz/fuzz_mesh_cad.cpp)
+    target_link_libraries(meshioplusplus_fuzz_${_op} PRIVATE meshioplusplus_core_obj)
+    if(MESHIOPLUSPLUS_FUZZING_ENGINE)
+      target_link_libraries(meshioplusplus_fuzz_${_op} PRIVATE ${_mio_fuzz_engine})
+    else()
+      target_compile_options(meshioplusplus_fuzz_${_op} PRIVATE -fsanitize=fuzzer)
+      target_link_options(meshioplusplus_fuzz_${_op} PRIVATE -fsanitize=fuzzer)
+    endif()
+  endforeach()
   if(MESHIOPLUSPLUS_WITH_HDF5 AND HDF5_FOUND)
     add_executable(meshioplusplus_fuzz_hdf5 tests/fuzz/fuzz_read.cpp tests/fuzz/hdf5_mutator.cpp)
     target_link_libraries(meshioplusplus_fuzz_hdf5 PRIVATE meshioplusplus_core_obj)
@@ -1788,19 +1801,28 @@ endif()
 if(MESHIOPLUSPLUS_BUILD_TESTS OR MESHIOPLUSPLUS_BUILD_FUZZERS)
   add_executable(meshioplusplus_fuzz_replay tests/fuzz/fuzz_read.cpp tests/fuzz/replay_main.cpp)
   target_link_libraries(meshioplusplus_fuzz_replay PRIVATE meshioplusplus_core_obj)
+  add_executable(meshioplusplus_fuzz_ops_replay tests/fuzz/fuzz_mesh_cad.cpp
+                 tests/fuzz/replay_main.cpp)
+  target_link_libraries(meshioplusplus_fuzz_ops_replay PRIVATE meshioplusplus_core_obj)
   add_executable(meshioplusplus_fuzz_seeds tests/fuzz/seed_main.cpp)
   target_link_libraries(meshioplusplus_fuzz_seeds PRIVATE meshioplusplus_core_obj)
 endif()
 if(MESHIOPLUSPLUS_BUILD_TESTS)
   # One ctest per format directory of minimized crash inputs. A format this
-  # build compiled out is skipped by the driver (exit 0 with a note).
+  # build compiled out is skipped by the driver (exit 0 with a note). An
+  # op_<name> directory holds inputs of an operation target instead.
   file(GLOB _mio_fuzz_regression_dirs LIST_DIRECTORIES true
        ${CMAKE_CURRENT_SOURCE_DIR}/tests/fuzz/regressions/*)
   foreach(_d IN LISTS _mio_fuzz_regression_dirs)
     if(IS_DIRECTORY ${_d})
       get_filename_component(_fmt ${_d} NAME)
-      add_test(NAME fuzz_regression_${_fmt}
-               COMMAND meshioplusplus_fuzz_replay -format=${_fmt} ${_d})
+      if(_fmt MATCHES "^op_")
+        add_test(NAME fuzz_regression_${_fmt}
+                 COMMAND meshioplusplus_fuzz_ops_replay -format=${_fmt} ${_d})
+      else()
+        add_test(NAME fuzz_regression_${_fmt}
+                 COMMAND meshioplusplus_fuzz_replay -format=${_fmt} ${_d})
+      endif()
       # The h5m input is a huge metadata allocation that HDF5 reports as an
       # error only when null allocations are allowed, as the instrumented
       # HDF5 campaign runs (fuzz.yml). Keep the sanitizer policy of the leg

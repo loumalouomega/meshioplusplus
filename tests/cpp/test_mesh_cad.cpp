@@ -26,11 +26,14 @@
 // BRepMesh's triangulation of the same STEP solid.
 
 // System includes
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -291,9 +294,9 @@ TEST(MeshCad, SphereThroughThePoles) {
     }
 }
 
-TEST(MeshCad, TrimmedPlateWithAHole) {
-    // tests/cpp/test_iga.cpp's plate: a 4 x 4 plane with a diamond hole, a
-    // single degree-1 trim whose corners are knots (kept as samples).
+// tests/cpp/test_iga.cpp's plate: a 4 x 4 plane with a diamond hole, a
+// single degree-1 trim whose corners are knots (kept as samples).
+mio::BrepInfo trimmed_plate() {
     const char* plate = R"({"breps": [{"brep_id": 1, "faces": [{"brep_id": 2,
         "swapped_surface_normal": false, "surface": {"is_trimmed": true, "is_rational": false,
         "degrees": [1, 1], "knot_vectors": [[0, 4], [0, 4]],
@@ -315,7 +318,11 @@ TEST(MeshCad, TrimmedPlateWithAHole) {
         "embedded_edges": []}], "edges": [], "vertices": []}]})";
     const std::string path = mt::temp_path(".cad.json");
     std::ofstream(path) << plate;
-    const mio::BrepInfo info = mio::read_cad_json_info(path);
+    return mio::read_cad_json_info(path);
+}
+
+TEST(MeshCad, TrimmedPlateWithAHole) {
+    const mio::BrepInfo info = trimmed_plate();
     for (const double h : {0.5, 0.2, 0.1}) {
         const auto r = mio::mesh_cad_surface(info, size(h));
         ASSERT_EQ(r.mNumFailed, 0) << r.mFaces[0].mReason;
@@ -427,19 +434,353 @@ TEST(MeshCad, AFailedFaceIsReportedNeverMeshed) {
     EXPECT_THROW(mio::mesh_cad_surface(info, strict), std::runtime_error);
 }
 
-TEST(MeshCad, AClosedEdgeStartedElsewhereIsReported) {
-    // The top cap's rim starts a quarter turn away from the band's: the
-    // topology joins two points that are not one corner.
-    mio::BrepInfo info = brep_solids::capped_cylinder(1.0, 2.0, /*TopCapStart=*/0.5 * kPi);
-    const auto r = mio::mesh_cad_surface(info, size(0.2));
+TEST(MeshCad, AClosedEdgeStartedElsewhereIsMeshed) {
+    // Roadmap 6.1.2: the top cap's rim starts a quarter turn, a half turn and
+    // three sixteenths of a turn away from the band's. The cap's circle is a loop of
+    // its own, so it is rotated onto the band's corner and the solid closes,
+    // converging at second order as the consistent model does.
+    const double R = 1.0, H = 2.0;
+    const double area = 2.0 * kPi * R * H + 2.0 * kPi * R * R;
+    const double volume = kPi * R * R * H;
+    // (Starts whose 16 builder samples include the circle's axis extremes:
+    // brep_nurbs_face sizes a plane's patch from those samples.)
+    for (const double start : {0.5 * kPi, kPi, 0.375 * kPi}) {
+        double prev_area = 0.0;
+        for (const double h : {0.2, 0.1}) {
+            const auto r =
+                mio::mesh_cad_surface(brep_solids::capped_cylinder(R, H, start), size(h));
+            expect_watertight(r);
+            EXPECT_LT(r.mMaxEdgeGap, 1e-12) << start;
+            const Surface s = measure(r.mMesh);
+            const double ea = std::fabs(s.mArea - area);
+            EXPECT_LT(ea, 0.5 * h * h * area) << start << " " << h;
+            EXPECT_LT(std::fabs(s.mVolume - volume), 0.5 * h * h * volume) << start << " " << h;
+            if (prev_area > 0.0)
+                EXPECT_LT(ea, prev_area / 2.5) << start;
+            prev_area = ea;
+        }
+    }
+}
+
+TEST(MeshCad, AClosedEdgeIsAnchoredOnTheUseThatCannotMove) {
+    // The discs are listed first, so each rim's first use is a disc's; the
+    // band's use runs between its seams and cannot start elsewhere, so it
+    // becomes the master and the discs are rotated onto it.
+    const double R = 1.0, H = 2.0;
+    const auto r =
+        mio::mesh_cad_surface(brep_solids::capped_cylinder(R, H, 0.5 * kPi, true), size(0.2));
+    expect_watertight(r);
+    const Surface s = measure(r.mMesh);
+    EXPECT_NEAR(s.mVolume, kPi * R * R * H, 0.5 * 0.04 * kPi * R * R * H);
+    // A model whose uses start together is untouched by the reordering apart
+    // from the face order.
+    const auto a = mio::mesh_cad_surface(brep_solids::capped_cylinder(R, H, 0.0, true), size(0.2));
+    const auto b = mio::mesh_cad_surface(brep_solids::capped_cylinder(R, H), size(0.2));
+    expect_watertight(a);
+    EXPECT_EQ(a.mNumPoints, b.mNumPoints);
+    EXPECT_EQ(a.mNumTriangles, b.mNumTriangles);
+}
+
+TEST(MeshCad, AClosedEdgeNoRotationResolvesIsReported) {
+    // Both uses of the shared rim run between their bands' seams, a quarter
+    // turn apart: the faces that cannot be carried are reported, never
+    // meshed wrong, and the reason says why.
+    const auto r = mio::mesh_cad_surface(brep_solids::stacked_bands(1.0, 1.0), size(0.2));
     EXPECT_GE(r.mNumFailed, 1);
-    bool reported = false;
+    bool named = false;
     for (const auto& f : r.mFaces)
         if (f.mStatus != MeshCadFaceStatus::Ok) {
-            reported = true;
-            EXPECT_FALSE(f.mReason.empty());
+            EXPECT_EQ(f.mStatus, MeshCadFaceStatus::ProjectionFailed) << f.mReason;
+            EXPECT_EQ(f.mNumTriangles, 0);
+            named = named || f.mReason.find("start at different points") != std::string::npos;
         }
-    EXPECT_TRUE(reported);
+    EXPECT_TRUE(named);
+    EXPECT_GT(r.mNumOpenEdges, 0);
+}
+
+TEST(MeshCad, ASeamListedFromEitherEndIsTheSameSeam) {
+    // The band's seam is used twice, once up and once down (that is what a
+    // seam is); listing one of its trims from the other end of its curve,
+    // with the direction flag flipped to match, describes the same loop.
+    const double R = 1.0, H = 2.0;
+    mio::BrepInfo info = brep_solids::capped_cylinder(R, H);
+    bool flipped = false;
+    for (mio::BrepTrim& t : info.mFaces[0].mLoops[0].mTrims) {
+        const double* p = t.mCurve.mControlPoints.As<double>();
+        const std::size_t n = t.mCurve.mControlPoints.Shape()[0];
+        if (!flipped && n >= 2 && p[0] == p[3 * (n - 1)]) {  // constant u: a seam
+            t.mCurve = mio::detail::brep_curve_reverse(t.mCurve);
+            t.mDirection = !t.mDirection;
+            flipped = true;
+        }
+    }
+    ASSERT_TRUE(flipped);
+    const auto r = mio::mesh_cad_surface(info, size(0.2));
+    const auto ref = mio::mesh_cad_surface(brep_solids::capped_cylinder(R, H), size(0.2));
+    expect_watertight(r);
+    EXPECT_EQ(r.mNumPoints, ref.mNumPoints);
+    EXPECT_EQ(r.mNumTriangles, ref.mNumTriangles);
+    EXPECT_NEAR(measure(r.mMesh).mVolume, measure(ref.mMesh).mVolume, 1e-12);
+}
+
+// Twice the signed area of the line block's segments of one B-rep edge
+// (the shoelace sum over the edge as its master runs).
+double shoelace(const mio::Mesh& rM, std::int64_t Edge) {
+    const double* x = rM.Points().As<double>();
+    const auto lines = rM.Cells(1);
+    const mio::NDArray& c = lines.Conn();
+    const mio::NDArray& ids = rM.CellData("cad:edge", 1);
+    double sum = 0.0;
+    for (std::size_t s = 0; s < lines.NumCells(); ++s) {
+        if (mio::detail::read_int(ids, s) != Edge)
+            continue;
+        const double* a = x + 3 * mio::detail::read_int(c, 2 * s);
+        const double* b = x + 3 * mio::detail::read_int(c, 2 * s + 1);
+        sum += a[0] * b[1] - b[0] * a[1];
+    }
+    return sum;
+}
+
+TEST(MeshCad, ABoundaryCrossingAtACoarseSizeIsSplit) {
+    // Roadmap 6.1.3's probe: a plate with a hole 0.02 from its rim, meshed at
+    // h = 1.1. The rim's coarse chord passes inside the hole's sample, so the
+    // sampled loops cross; the pieces involved are halved until they do not,
+    // and the plate is meshed, its area exactly that of its boundary polygon
+    // (the rim counter-clockwise, the hole clockwise, as the loops run).
+    const double R = 2.0, Rh = 1.0, Cx = 0.98;
+    const auto r = mio::mesh_cad_surface(brep_solids::disc_with_hole(R, Rh, Cx), size(1.1));
+    ASSERT_EQ(r.mNumFailed, 0) << r.mFaces[0].mReason;
+    EXPECT_EQ(r.mNumNonManifoldEdges, 0);
+    EXPECT_EQ(r.mNumMisorientedEdges, 0);
+    const Surface s = measure(r.mMesh);
+    const double polygon = 0.5 * (shoelace(r.mMesh, 0) + shoelace(r.mMesh, 1));
+    EXPECT_GT(shoelace(r.mMesh, 0), 0.0);
+    EXPECT_LT(shoelace(r.mMesh, 1), 0.0);
+    EXPECT_NEAR(s.mArea, polygon, 1e-12 * polygon);
+    EXPECT_LT(s.mArea, kPi * (R * R - Rh * Rh));
+    EXPECT_GT(s.mArea, 0.9 * kPi * (R * R - Rh * Rh));
+    // Both curves gained points where they come close, and every boundary
+    // point is on its circle.
+    const double* x = r.mMesh.Points().As<double>();
+    std::size_t near_rim = 0;  // rim points beside the hole: 345 and 15 degrees, and 0
+    for (std::size_t i = 0; i < r.mMesh.NumPoints(); ++i) {
+        EXPECT_EQ(x[3 * i + 2], 0.0);
+        const double ro = std::hypot(x[3 * i], x[3 * i + 1]);
+        const double rh = std::hypot(x[3 * i] - Cx, x[3 * i + 1]);
+        EXPECT_LE(ro, R + 1e-12);
+        EXPECT_GE(rh, Rh - 1e-12);
+        if (std::fabs(ro - R) < 1e-12 && x[3 * i] > 1.9)
+            ++near_rim;
+    }
+    EXPECT_GE(near_rim, 3u);
+    // The same mesh on every run and thread count.
+    const std::uint64_t ref = digest(r.mMesh);
+#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
+    const int saved = omp_get_max_threads();
+    for (int threads : {1, 2, 4}) {
+        omp_set_num_threads(threads);
+        EXPECT_EQ(
+            digest(mio::mesh_cad_surface(brep_solids::disc_with_hole(R, Rh, Cx), size(1.1)).mMesh),
+            ref)
+            << threads;
+    }
+    omp_set_num_threads(saved);
+#endif
+    EXPECT_EQ(
+        digest(mio::mesh_cad_surface(brep_solids::disc_with_hole(R, Rh, Cx), size(1.1)).mMesh),
+        ref);
+}
+
+TEST(MeshCad, ACrossingIsSplitInEveryFaceThatUsesTheEdge) {
+    // The same plate with a thickness: the caps' loops cross, and the rims
+    // their splits move are shared with the bands, which take the same new
+    // points, so the solid stays closed.
+    const double R = 2.0, Rh = 1.0, Cx = 0.98, T = 0.5;
+    const auto r =
+        mio::mesh_cad_surface(brep_solids::thick_disc_with_hole(R, Rh, Cx, T), size(1.1));
+    for (const auto& f : r.mFaces)
+        EXPECT_EQ(f.mStatus, MeshCadFaceStatus::Ok) << f.mFace << ": " << f.mReason;
+    expect_watertight(r);
+    const double volume = kPi * (R * R - Rh * Rh) * T;
+    EXPECT_NEAR(measure(r.mMesh).mVolume, volume, 0.1 * volume);
+}
+
+TEST(MeshCad, CurvesThatTouchStaySelfIntersecting) {
+    // The hole touches the rim: no split separates the loops, and the
+    // splitting stops once the pieces at the touch are within the tolerance.
+    const auto r = mio::mesh_cad_surface(brep_solids::disc_with_hole(2.0, 1.0, 1.0), size(1.1));
+    ASSERT_EQ(r.mNumFailed, 1);
+    EXPECT_EQ(r.mFaces[0].mStatus, MeshCadFaceStatus::SelfIntersecting);
+    EXPECT_NE(r.mFaces[0].mReason.find("curves themselves meet"), std::string::npos)
+        << r.mFaces[0].mReason;
+    EXPECT_EQ(r.mNumTriangles, 0);
+    EXPECT_LT(r.mNumPoints, 400);  // the halving stopped near the touch
+}
+
+// How many triangles use each undirected edge.
+std::map<std::pair<std::int64_t, std::int64_t>, int> triangle_edge_uses(const mio::Mesh& rM) {
+    std::map<std::pair<std::int64_t, std::int64_t>, int> n;
+    const auto cells = rM.Cells(0);
+    const mio::NDArray& c = cells.Conn();
+    for (std::size_t t = 0; t < cells.NumCells(); ++t)
+        for (std::size_t k = 0; k < 3; ++k) {
+            const std::int64_t a = mio::detail::read_int(c, 3 * t + k);
+            const std::int64_t b = mio::detail::read_int(c, 3 * t + (k + 1) % 3);
+            ++n[{std::min(a, b), std::max(a, b)}];
+        }
+    return n;
+}
+
+// The line block's segments of one B-rep edge (cad:edge), as point pairs.
+std::vector<std::pair<std::int64_t, std::int64_t>> edge_segments(const mio::Mesh& rM,
+                                                                 std::int64_t Edge) {
+    std::vector<std::pair<std::int64_t, std::int64_t>> out;
+    const auto lines = rM.Cells(1);
+    const mio::NDArray& c = lines.Conn();
+    const mio::NDArray& ids = rM.CellData("cad:edge", 1);
+    for (std::size_t s = 0; s < lines.NumCells(); ++s)
+        if (mio::detail::read_int(ids, s) == Edge) {
+            const std::int64_t a = mio::detail::read_int(c, 2 * s);
+            const std::int64_t b = mio::detail::read_int(c, 2 * s + 1);
+            out.emplace_back(std::min(a, b), std::max(a, b));
+        }
+    return out;
+}
+
+bool any_warning_with(const MeshCadSurfaceResult& rR, const std::string& rText) {
+    for (const std::string& w : rR.mWarnings)
+        if (w.find(rText) != std::string::npos)
+            return true;
+    return false;
+}
+
+TEST(MeshCad, TwoPatchBeamMeshesItsEmbeddedCurve) {
+    // Roadmap 6.1.1's probe: the two-patch beam's first face carries an
+    // embedded edge (trim 4, a line across it that no BrepEdge names). It is
+    // now constrained into the face's triangulation, so it is a run of mesh
+    // edges, interior to the face, and the warning is gone.
+    const std::filesystem::path input = std::filesystem::path(__FILE__).parent_path() / ".." /
+                                        "python" / "meshes" / "cad_json" /
+                                        "two_patch_beam.cad.json";
+    ASSERT_TRUE(std::filesystem::exists(input)) << input;
+    const mio::BrepInfo info = mio::read_cad_json_info(input.string());
+    const auto r = mio::mesh_cad_surface(info, size(0.2));
+    EXPECT_EQ(r.mNumFailed, 0);
+    EXPECT_FALSE(any_warning_with(r, "embedded")) << r.mWarnings.front();
+    EXPECT_EQ(r.mNumNonManifoldEdges, 0);
+    EXPECT_EQ(r.mNumMisorientedEdges, 0);
+    // The same model without the embedded edge: the extra line cells are the
+    // curve, and each is an edge of two triangles of the first face.
+    mio::BrepInfo bare = info;
+    for (mio::BrepFace& f : bare.mFaces)
+        f.mEmbeddedEdges.clear();
+    const auto b = mio::mesh_cad_surface(bare, size(0.2));
+    const auto extra = edge_segments(r.mMesh, -1).size() - edge_segments(b.mMesh, -1).size();
+    EXPECT_GE(extra, 5u);  // the line is about 3.0 long in a patch 5 long: h = 0.2
+    const auto uses = triangle_edge_uses(r.mMesh);
+    std::size_t interior = 0;
+    for (const auto& seg : edge_segments(r.mMesh, -1)) {
+        const auto it = uses.find(seg);
+        ASSERT_TRUE(it != uses.end()) << seg.first << "-" << seg.second << " is not a mesh edge";
+        interior += it->second == 2;
+    }
+    EXPECT_GE(interior, extra);
+    EXPECT_NEAR(measure(r.mMesh).mArea, measure(b.mMesh).mArea, 1e-3 * measure(b.mMesh).mArea);
+}
+
+TEST(MeshCad, AnEmbeddedEdgeSharedWithAnotherFaceSharesItsPoints) {
+    // A fin standing on a plate: the fin's bottom edge (BrepEdge 4) is an
+    // embedded edge of the plate. Both faces use its points, so the fin is
+    // attached to the plate along it: each of its segments is an edge of two
+    // plate triangles and one fin triangle (a T, by design non-manifold).
+    const auto r = mio::mesh_cad_surface(brep_solids::plate_with_fin(), size(0.1));
+    ASSERT_EQ(r.mNumFailed, 0);
+    EXPECT_TRUE(r.mWarnings.empty()) << r.mWarnings.front();
+    const auto segs = edge_segments(r.mMesh, 4);
+    ASSERT_GE(segs.size(), 6u);
+    const auto uses = triangle_edge_uses(r.mMesh);
+    for (const auto& seg : segs) {
+        const auto it = uses.find(seg);
+        ASSERT_TRUE(it != uses.end());
+        EXPECT_EQ(it->second, 3) << seg.first << "-" << seg.second;
+    }
+    EXPECT_EQ(r.mNumNonManifoldEdges, static_cast<std::int64_t>(segs.size()));
+    EXPECT_EQ(r.mNumMisorientedEdges, 0);
+    EXPECT_NEAR(measure(r.mMesh).mArea, 1.0 + 0.6 * 0.5, 1e-12);
+}
+
+TEST(MeshCad, AClosedEmbeddedCurveIsMeshed) {
+    // A circle inside a square plate, named by an edge: a closed curve with
+    // no loop of its own, one corner, constrained into the plate.
+    mio::BrepInfo info = brep_solids::square(4.0);
+    mio::BrepTrim t;
+    t.mTrimIndex = 100;
+    t.mCurve = mio::detail::brep_curve_arc({2, 2, 0}, {1, 0, 0}, {0, 1, 0}, 1.0, 0.0, 2 * kPi);
+    const std::int64_t e = brep_solids::embed(info, 0, t);
+    const auto r = mio::mesh_cad_surface(info, size(0.25));
+    ASSERT_EQ(r.mNumFailed, 0);
+    EXPECT_TRUE(r.mWarnings.empty()) << r.mWarnings.front();
+    const auto segs = edge_segments(r.mMesh, e);
+    EXPECT_GE(segs.size(), 25u);
+    const auto uses = triangle_edge_uses(r.mMesh);
+    for (const auto& seg : segs) {
+        const auto it = uses.find(seg);
+        ASSERT_TRUE(it != uses.end());
+        EXPECT_EQ(it->second, 2);
+    }
+    EXPECT_NEAR(measure(r.mMesh).mArea, 16.0, 1e-12);
+    // Closed: as many segments as distinct points.
+    std::set<std::int64_t> pts;
+    for (const auto& seg : segs) {
+        pts.insert(seg.first);
+        pts.insert(seg.second);
+    }
+    EXPECT_EQ(pts.size(), segs.size());
+}
+
+TEST(MeshCad, AnEmbeddedEdgeThatCannotBeInsertedIsLeftOut) {
+    // Outside the plate, ending on its boundary away from a corner, and
+    // crossing it: each is left out with a warning naming it, and the plate
+    // is still meshed (the face is not lost for a bad curve).
+    for (const auto& ends : std::vector<std::array<double, 4>>{
+             {5.0, 5.0, 6.0, 6.0}, {1.0, 1.0, 2.0, 0.0}, {1.0, 1.0, 2.0, -1.0}}) {
+        mio::BrepInfo info = brep_solids::square(4.0);
+        brep_solids::embed(info, 0,
+                           brep_solids::param_line(ends[0], ends[1], ends[2], ends[3], 100));
+        const auto r = mio::mesh_cad_surface(info, size(0.5));
+        EXPECT_EQ(r.mNumFailed, 0);
+        EXPECT_TRUE(any_warning_with(r, "embedded edge (trim 100) is not meshed"))
+            << ends[2] << "," << ends[3];
+        EXPECT_NEAR(measure(r.mMesh).mArea, 16.0, 1e-12);
+        EXPECT_EQ(r.mNumNonManifoldEdges, 0);
+    }
+}
+
+TEST(MeshCad, EmbeddedEdgesAreTheSameOnEveryThreadCount) {
+    const mio::BrepInfo info = brep_solids::plate_with_fin();
+    const std::uint64_t ref = digest(mio::mesh_cad_surface(info, size(0.05)).mMesh);
+#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
+    const int saved = omp_get_max_threads();
+    for (int threads : {1, 2, 4}) {
+        omp_set_num_threads(threads);
+        EXPECT_EQ(digest(mio::mesh_cad_surface(info, size(0.05)).mMesh), ref) << threads;
+    }
+    omp_set_num_threads(saved);
+#endif
+    EXPECT_EQ(digest(mio::mesh_cad_surface(info, size(0.05)).mMesh), ref);
+}
+
+TEST(MeshCad, AFaceBeyondThePredicatesRangeIsReported) {
+    // A box 1e40 on a side: every face's plane coordinates exceed 2^128, where
+    // the exact predicates stop being exact, so every face is reported as
+    // unsupported, by name, rather than triangulated wrong.
+    const auto r = mio::mesh_cad_surface(brep_solids::box(1e40, 1e40, 1e40), size(1e40));
+    EXPECT_EQ(r.mNumFailed, 6);
+    for (const auto& f : r.mFaces) {
+        EXPECT_EQ(f.mStatus, MeshCadFaceStatus::Unsupported);
+        EXPECT_NE(f.mReason.find("exact predicates"), std::string::npos) << f.mReason;
+    }
+    EXPECT_EQ(r.mNumTriangles, 0);
 }
 
 TEST(MeshCad, ChordalDeviationCapsTheBoundary) {

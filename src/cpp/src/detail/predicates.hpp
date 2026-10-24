@@ -62,7 +62,21 @@
  *  - `orient3d(a, b, c, d)` > 0 when `d` lies below the plane of `a, b, c`
  *    (those counter-clockwise seen from above), Shewchuk's convention;
  *  - `insphere(a, b, c, d, e)` > 0 when `e` lies inside the sphere through
- *    `a, b, c, d` with `orient3d(a, b, c, d)` > 0.
+ *    `a, b, c, d` with `orient3d(a, b, c, d)` > 0;
+ *  - `diametral(a, b, p)` < 0 when `p` lies strictly inside the circle whose
+ *    diameter is `ab` (the angle `apb` is obtuse): the sign of
+ *    `(a - p) . (b - p)`, Ruppert's encroachment test;
+ *  - `lens_angle(a, b, p)` > 0 when the angle `apb` is below 60 degrees or
+ *    above 120: the sign of `3 ((a - p) . (b - p))^2 - ((a - p) x (b - p))^2`.
+ *    With `diametral(a, b, p)` > 0 it says the corner `apb` is sharper than
+ *    60 degrees, Ruppert's small input angle; with `diametral` < 0, that
+ *    `p` lies strictly inside the diametral lens of `ab`, where `ab`
+ *    subtends more than 120 degrees (Chew 1989; Shewchuk 2002).
+ *
+ * The last two are not in Shewchuk's paper: they are built the same way
+ * (a filter with an a-priori bound on the permanent, then the exact
+ * expansion), for the encroachment and small-angle decisions of Delaunay
+ * refinement (`Cdt2d::Refine`), so those are exact too.
  *
  * A **core-private** header: nothing installed names it. Pure functions with
  * no state, so safe from any thread.
@@ -76,6 +90,8 @@ double incircle(const double* pA, const double* pB, const double* pC, const doub
 double orient3d(const double* pA, const double* pB, const double* pC, const double* pD);
 double insphere(const double* pA, const double* pB, const double* pC, const double* pD,
                 const double* pE);
+double diametral(const double* pA, const double* pB, const double* pP);
+double lens_angle(const double* pA, const double* pB, const double* pP);
 
 /// The exact-stage arithmetic, exposed for its own tests: `x + y == a * b`
 /// exactly, `x` the rounded product.

@@ -454,31 +454,50 @@ const _MESH_CAD_FACE_STATUS_NAMES = ("ok", "empty", "open_loop", "self_intersect
                                      "degenerate", "projection_failed", "budget_exceeded",
                                      "unsupported", "other")
 
+const _MESH_CAD_SMOOTH_METHODS = ("laplacian", "odt")
+
 """
     mesh_cad_surface(info; target_size, max_chordal_deviation=0.0,
                      min_points_per_edge=0, tolerance=0.0, record_face_ids=true,
                      edges=true, match_unreferenced_trims=true, strict=false,
-                     max_points=50_000_000)
-        -> (; mesh, num_points, num_triangles, ..., faces, warnings)
+                     max_points=50_000_000, min_angle=0.0, smooth_iterations=0,
+                     smooth_method="laplacian", order=1)
+        -> (; mesh, num_points, num_triangles, ..., faces, warnings,
+              angle_histogram, corners)
 
 Triangulate the faces of a B-rep (`info` from [`read_with_info`](@ref) of Kratos
 CAD JSON, STEP or IGES) into one conforming surface mesh with edges of about
 `target_size`: every edge sampled once and shared by the faces that use it, each
 face a constrained Delaunay triangulation of its parameters lifted onto its
 surface. A face that cannot be meshed is left out and listed in `faces` (its
-`status` and `reason`), never meshed wrong; `strict=true` throws instead. See
-`doc/mesh_cad.md`.
+`status` and `reason`), never meshed wrong; `strict=true` throws instead.
+`min_angle` (degrees, under 60) refines every face until its triangles'
+smallest angles on the surface reach it; the corners under 60 degrees and the
+poles that keep triangles below it are in `corners` (1-based `face` and
+`point`), every angle in the 18 ten-degree bins of `angle_histogram`.
+`smooth_iterations` passes of guarded smoothing (`"laplacian"` or `"odt"`)
+follow. `order` 2 or 3 writes curved `triangle6` or `triangle10` elements (and
+`line3` or `line4` edges) whose nodes lie on the surfaces and edges; an element
+whose Jacobian is not positive everywhere is kept straight-sided and counted in
+`num_curved_straightened`. See `doc/mesh_cad.md`.
 """
 function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_deviation::Real=0.0,
                           min_points_per_edge::Integer=0, tolerance::Real=0.0,
                           record_face_ids::Bool=true, edges::Bool=true,
                           match_unreferenced_trims::Bool=true, strict::Bool=false,
-                          max_points::Integer=50_000_000)
+                          max_points::Integer=50_000_000, min_angle::Real=0.0,
+                          smooth_iterations::Integer=0,
+                          smooth_method::AbstractString="laplacian", order::Integer=1)
+    method = findfirst(==(smooth_method), _MESH_CAD_SMOOTH_METHODS)
+    method === nothing &&
+        throw(ArgumentError("meshio++: mesh_cad_surface: smooth_method must be " *
+                            "\"laplacian\" or \"odt\", got \"$smooth_method\""))
     opts = _CMeshCadSurfaceOpts(Cdouble(target_size), Cdouble(max_chordal_deviation),
                                 Cdouble(tolerance), Int64(min_points_per_edge),
                                 Int64(max_points), Int32(record_face_ids), Int32(edges),
                                 Int32(match_unreferenced_trims), Int32(strict),
-                                ntuple(_ -> Int64(0), 6))
+                                Cdouble(min_angle), Int32(smooth_iterations), Int32(method - 1),
+                                Int32(order), Int32(0), ntuple(_ -> Int64(0), 3))
     report = Ref{_CMeshCadSurfaceReport}()
     ptr = ccall(_sym(:mio_mesh_cad_surface), Ptr{Cvoid},
                 (Ptr{Cvoid}, Ref{_CMeshCadSurfaceOpts}, Ref{_CMeshCadSurfaceReport}),
@@ -496,6 +515,19 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
     end
     text = _getstring((buf, n) -> ccall(_sym(:mio_mesh_cad_surface_warnings), Int64,
                                         (Ptr{UInt8}, Int64), buf, n))
+    histogram = zeros(Int64, 18)
+    ccall(_sym(:mio_mesh_cad_surface_angle_histogram), Int64, (Ptr{Int64}, Int64),
+          histogram, Int64(length(histogram)))
+    ncorners = ccall(_sym(:mio_mesh_cad_surface_num_corners), Int64, ())
+    corners = map(0:ncorners-1) do k
+        c = Ref{_CMeshCadCorner}()
+        _check(ccall(_sym(:mio_mesh_cad_surface_corner), Cint, (Int64, Ref{_CMeshCadCorner}),
+                     k, c))
+        (face=Int(c[].face) + 1, point=Int(c[].point) + 1, u=Float64(c[].u),
+         v=Float64(c[].v), x=collect(Float64, c[].x), angle_deg=Float64(c[].angle_deg),
+         min_forced_deg=Float64(c[].min_forced_deg), reach=Float64(c[].reach),
+         pole=c[].pole != 0)
+    end
     (mesh=mesh, num_points=Int(r.num_points), num_triangles=Int(r.num_triangles),
      num_edge_segments=Int(r.num_edge_segments), num_faces=Int(r.num_faces),
      num_failed=Int(r.num_failed), num_edges=Int(r.num_edges),
@@ -505,7 +537,11 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
      min_angle_deg=Float64(r.min_angle_deg), max_angle_deg=Float64(r.max_angle_deg),
      min_edge=Float64(r.min_edge), max_edge=Float64(r.max_edge),
      max_edge_gap=Float64(r.max_edge_gap), faces=faces,
-     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')),
+     num_refinement_points=Int(r.num_refinement_points),
+     num_faces_below_bound=Int(r.num_faces_below_bound), num_smoothed=Int(r.num_smoothed),
+     min_input_angle_deg=Float64(r.min_input_angle_deg), angle_histogram=histogram,
+     corners=corners, num_curved_straightened=Int(r.num_curved_straightened))
 end
 
 const MIO_IGA_POINTS = Int32(0)

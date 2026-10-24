@@ -60,6 +60,9 @@ module meshioplusplus
     public :: MIO_MESH_CAD_SELF_INTERSECTING, MIO_MESH_CAD_DEGENERATE
     public :: MIO_MESH_CAD_PROJECTION_FAILED, MIO_MESH_CAD_BUDGET_EXCEEDED
     public :: MIO_MESH_CAD_UNSUPPORTED, MIO_MESH_CAD_OTHER
+    public :: mio_mesh_cad_corner, mio_mesh_cad_angle_histogram
+    public :: mio_mesh_cad_num_corners, mio_mesh_cad_get_corner
+    public :: MIO_MESH_CAD_SMOOTH_LAPLACIAN, MIO_MESH_CAD_SMOOTH_ODT, MIO_MESH_CAD_ANGLE_BINS
     public :: mio_gltf_options
     public :: MIO_MDPA_PROPERTIES, MIO_MDPA_ENTITY_NAMES, MIO_MDPA_SKIPPED
     public :: MIO_MDPA_MODEL_PART_DATA, MIO_MDPA_TABLES, MIO_MDPA_GEOMETRIES
@@ -480,6 +483,11 @@ module meshioplusplus
                           MIO_MESH_CAD_BUDGET_EXCEEDED = 6, MIO_MESH_CAD_UNSUPPORTED = 7, &
                           MIO_MESH_CAD_OTHER = 8
 
+    !> How `info%mesh_cad_surface` smooths (C `mio_mesh_cad_smoothing`), and the
+    !> angle histogram's bins (10 degrees each, 0 to 180).
+    integer, parameter :: MIO_MESH_CAD_SMOOTH_LAPLACIAN = 0, MIO_MESH_CAD_SMOOTH_ODT = 1
+    integer, parameter :: MIO_MESH_CAD_ANGLE_BINS = 18
+
     !> Interop mirror of C `mio_mesh_cad_surface_opts` (104 bytes, checked once
     !> per process by `check_mesh_cad_layout`). Filled by
     !> `mio_mesh_cad_surface_opts_init` and the optional arguments.
@@ -493,7 +501,12 @@ module meshioplusplus
         integer(c_int32_t) :: edges = 1
         integer(c_int32_t) :: match_unreferenced_trims = 1
         integer(c_int32_t) :: strict = 0
-        integer(c_int64_t) :: reserved(6) = 0
+        real(c_double) :: min_angle_deg = 0.0_c_double
+        integer(c_int32_t) :: smooth_iterations = 0
+        integer(c_int32_t) :: smooth_method = 0
+        integer(c_int32_t) :: order = 1
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(3) = 0
     end type
 
     !> `mio_mesh_cad_surface_report` (200 bytes; field order and types are ABI,
@@ -516,7 +529,30 @@ module meshioplusplus
         real(c_double) :: max_edge = 0.0_c_double
         real(c_double) :: max_edge_gap = 0.0_c_double
         integer(c_int64_t) :: num_warnings = 0
-        integer(c_int64_t) :: reserved(8) = 0
+        integer(c_int64_t) :: num_refinement_points = 0
+        integer(c_int64_t) :: num_faces_below_bound = 0
+        integer(c_int64_t) :: num_smoothed = 0
+        real(c_double) :: min_input_angle_deg = 0.0_c_double
+        integer(c_int64_t) :: num_curved_straightened = 0
+        integer(c_int64_t) :: reserved(3) = 0
+    end type
+
+    !> A corner that keeps triangles under `min_angle` (C `mio_mesh_cad_corner`,
+    !> 120 bytes): two trims meeting at less than 60 degrees in the face's
+    !> plane, or a pole. From `mio_mesh_cad_get_corner`, `face` and `point`
+    !> are 1-based.
+    type, bind(c) :: mio_mesh_cad_corner
+        integer(c_int64_t) :: face = 0
+        integer(c_int64_t) :: point = 0
+        real(c_double) :: u = 0.0_c_double
+        real(c_double) :: v = 0.0_c_double
+        real(c_double) :: x(3) = 0.0_c_double
+        real(c_double) :: angle_deg = 0.0_c_double
+        real(c_double) :: min_forced_deg = 0.0_c_double
+        real(c_double) :: reach = 0.0_c_double
+        integer(c_int32_t) :: pole = 0
+        integer(c_int32_t) :: reserved0 = 0
+        integer(c_int64_t) :: reserved(4) = 0
     end type
 
     !> Interop mirror of C `mio_hausdorff_opts`.
@@ -4393,6 +4429,28 @@ module meshioplusplus
             character(c_char), intent(out) :: buf(*)
             integer(c_int64_t), value :: buflen
             integer(c_int64_t) :: n
+        end function
+
+        function c_mio_mesh_cad_surface_angle_histogram(bins, n) &
+                bind(c, name="mio_mesh_cad_surface_angle_histogram") result(m)
+            import :: c_int64_t
+            integer(c_int64_t), intent(out) :: bins(*)
+            integer(c_int64_t), value :: n
+            integer(c_int64_t) :: m
+        end function
+
+        function c_mio_mesh_cad_surface_num_corners() &
+                bind(c, name="mio_mesh_cad_surface_num_corners") result(n)
+            import :: c_int64_t
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_mesh_cad_surface_corner(idx, corner) &
+                bind(c, name="mio_mesh_cad_surface_corner") result(st)
+            import :: c_int, c_int64_t, mio_mesh_cad_corner
+            integer(c_int64_t), value :: idx
+            type(mio_mesh_cad_corner), intent(out) :: corner
+            integer(c_int) :: st
         end function
 
         function c_mio_iga_sample(info, opts, mapped) bind(c, name="mio_iga_sample") result(h)
@@ -11979,13 +12037,21 @@ contains
     !> (`mio_mesh_cad_face_status` / `mio_mesh_cad_face_reason`), never meshed
     !> wrong; with `strict` the call fails instead. The summary comes back
     !> through the optional `report`, the warnings one per line in `warnings`.
+    !> `min_angle` (degrees, under 60) refines every face until its triangles'
+    !> smallest angles on the surface reach it, corners under 60 degrees and
+    !> poles reported (`mio_mesh_cad_get_corner`); `smooth_iterations` passes
+    !> of guarded smoothing (`smooth_method`, `MIO_MESH_CAD_SMOOTH_*`) follow.
+    !> `order` 2 or 3 writes curved triangle6 or triangle10 elements, their
+    !> nodes on the surface and edges (`report%num_curved_straightened`).
     function format_info_mesh_cad_surface(self, target_size, max_chordal_deviation, &
                                           min_points_per_edge, tolerance, record_face_ids, &
                                           edges, match_unreferenced_trims, strict, max_points, &
-                                          report, warnings, stat, errmsg) result(out)
+                                          report, warnings, stat, errmsg, min_angle, &
+                                          smooth_iterations, smooth_method, order) result(out)
         class(mio_format_info), intent(in) :: self
         real(real64), intent(in) :: target_size
-        real(real64), intent(in), optional :: max_chordal_deviation, tolerance
+        real(real64), intent(in), optional :: max_chordal_deviation, tolerance, min_angle
+        integer, intent(in), optional :: smooth_iterations, smooth_method, order
         integer(int64), intent(in), optional :: min_points_per_edge, max_points
         logical, intent(in), optional :: record_face_ids, edges, match_unreferenced_trims, strict
         type(mio_mesh_cad_surface_report), intent(out), optional :: report
@@ -12015,6 +12081,11 @@ contains
             opts%match_unreferenced_trims = merge(1_c_int32_t, 0_c_int32_t, &
                                                   match_unreferenced_trims)
         if (present(strict)) opts%strict = merge(1_c_int32_t, 0_c_int32_t, strict)
+        if (present(min_angle)) opts%min_angle_deg = real(min_angle, c_double)
+        if (present(smooth_iterations)) &
+            opts%smooth_iterations = int(smooth_iterations, c_int32_t)
+        if (present(smooth_method)) opts%smooth_method = int(smooth_method, c_int32_t)
+        if (present(order)) opts%order = int(order, c_int32_t)
 
         out%handle = c_mio_mesh_cad_surface(self%handle, opts, crep)
         if (.not. c_associated(out%handle)) then
@@ -12061,19 +12132,57 @@ contains
         end if
     end function
 
-    !> The layouts of `mio_mesh_cad_surface_opts_t` and
-    !> `mio_mesh_cad_surface_report` against the C structs (104 and 200
-    !> bytes), checked once per process.
+    !> The angle histogram of this thread's last `info%mesh_cad_surface` call:
+    !> every angle of every triangle on the surface, in `MIO_MESH_CAD_ANGLE_BINS`
+    !> bins of 10 degrees.
+    function mio_mesh_cad_angle_histogram() result(bins)
+        integer(int64) :: bins(MIO_MESH_CAD_ANGLE_BINS)
+        integer(c_int64_t) :: cbins(MIO_MESH_CAD_ANGLE_BINS)
+        integer(c_int64_t) :: n
+        cbins = 0
+        n = c_mio_mesh_cad_surface_angle_histogram(cbins, &
+                                                   int(MIO_MESH_CAD_ANGLE_BINS, c_int64_t))
+        bins = int(cbins, int64)
+    end function
+
+    !> How many corners this thread's last `info%mesh_cad_surface` call
+    !> reported, every face's.
+    integer function mio_mesh_cad_num_corners() result(n)
+        n = int(c_mio_mesh_cad_surface_num_corners())
+    end function
+
+    !> Corner `k` (1-based) of this thread's last call, its `face` and `point`
+    !> 1-based; `stat` nonzero when out of range.
+    function mio_mesh_cad_get_corner(k, stat, errmsg) result(corner)
+        integer, intent(in) :: k
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh_cad_corner) :: corner
+        call check_mesh_cad_layout()
+        if (c_mio_mesh_cad_surface_corner(int(k - 1, c_int64_t), corner) /= 0) then
+            call handle_failure('mesh_cad_get_corner', mio_error_message(), stat, errmsg)
+            return
+        end if
+        corner%face = corner%face + 1
+        corner%point = corner%point + 1
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The layouts of `mio_mesh_cad_surface_opts_t`, `mio_mesh_cad_surface_report`
+    !> and `mio_mesh_cad_corner` against the C structs (104, 200 and 120 bytes),
+    !> checked once per process.
     subroutine check_mesh_cad_layout()
         logical, save :: checked = .false.
         type(mio_mesh_cad_surface_opts_t) :: opts
         type(mio_mesh_cad_surface_report) :: report
+        type(mio_mesh_cad_corner) :: corner
         if (checked) return
         checked = .true.
-        if (c_sizeof(opts) /= 104_c_size_t .or. c_sizeof(report) /= 200_c_size_t) then
-            write (error_unit, '(a,2(i0,1x),a)') &
+        if (c_sizeof(opts) /= 104_c_size_t .or. c_sizeof(report) /= 200_c_size_t .or. &
+            c_sizeof(corner) /= 120_c_size_t) then
+            write (error_unit, '(a,3(i0,1x),a)') &
                 'meshio++: mesh_cad_surface layout mismatch (', c_sizeof(opts), &
-                c_sizeof(report), 'bytes)'
+                c_sizeof(report), c_sizeof(corner), 'bytes)'
             error stop 1
         end if
     end subroutine

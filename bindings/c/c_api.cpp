@@ -6621,6 +6621,21 @@ static_assert(sizeof(mio_mesh_cad_surface_report) == 200,
 static_assert(static_cast<int>(MIO_MESH_CAD_OTHER) ==
                   static_cast<int>(meshioplusplus::MeshCadFaceStatus::Other),
               "mio_mesh_cad_face_status drifted from MeshCadFaceStatus");
+static_assert(sizeof(mio_mesh_cad_corner) == 120,
+              "mio_mesh_cad_corner grew outside its reserved tail");
+static_assert(offsetof(mio_mesh_cad_surface_opts, min_angle_deg) == 56,
+              "mio_mesh_cad_surface_opts::min_angle_deg moved");
+static_assert(offsetof(mio_mesh_cad_surface_report, num_refinement_points) == 136,
+              "mio_mesh_cad_surface_report::num_refinement_points moved");
+static_assert(offsetof(mio_mesh_cad_surface_opts, order) == 72,
+              "mio_mesh_cad_surface_opts::order moved");
+static_assert(offsetof(mio_mesh_cad_surface_report, num_curved_straightened) == 168,
+              "mio_mesh_cad_surface_report::num_curved_straightened moved");
+static_assert(static_cast<int>(MIO_MESH_CAD_SMOOTH_ODT) ==
+                  static_cast<int>(meshioplusplus::MeshCadSmoothing::Odt),
+              "mio_mesh_cad_smoothing drifted from MeshCadSmoothing");
+static_assert(MIO_MESH_CAD_ANGLE_BINS == meshioplusplus::kMeshCadAngleBins,
+              "MIO_MESH_CAD_ANGLE_BINS drifted from kMeshCadAngleBins");
 static_assert(sizeof(mio_fit_cad_report) == 192,
               "mio_fit_cad_report grew outside its reserved tail");
 static_assert(sizeof(mio_fit_cad_report_ex) == 128,
@@ -7006,6 +7021,8 @@ const char* const kCapiIgaNotNurbs = "meshio++: iga: the side channel is not a N
 struct CapiMeshCadState {
     std::vector<meshioplusplus::MeshCadFaceRecord> mFaces;
     std::string mWarnings;
+    std::array<std::int64_t, meshioplusplus::kMeshCadAngleBins> mHistogram{};
+    std::vector<meshioplusplus::MeshCadCorner> mCorners;
 };
 CapiMeshCadState& capi_mesh_cad_state() {
     thread_local CapiMeshCadState state;
@@ -7165,6 +7182,10 @@ void mio_mesh_cad_surface_opts_init(mio_mesh_cad_surface_opts* opts) {
     opts->edges = d.mEdges ? 1 : 0;
     opts->match_unreferenced_trims = d.mMatchUnreferencedTrims ? 1 : 0;
     opts->strict = d.mStrict ? 1 : 0;
+    opts->min_angle_deg = d.mMinAngleDeg;
+    opts->smooth_iterations = static_cast<int32_t>(d.mSmoothIterations);
+    opts->smooth_method = static_cast<int32_t>(d.mSmoothMethod);
+    opts->order = d.mOrder;
 }
 
 mio_mesh* mio_mesh_cad_surface(const mio_format_info* info, const mio_mesh_cad_surface_opts* opts,
@@ -7173,6 +7194,8 @@ mio_mesh* mio_mesh_cad_surface(const mio_format_info* info, const mio_mesh_cad_s
         CapiMeshCadState& state = capi_mesh_cad_state();
         state.mFaces.clear();
         state.mWarnings.clear();
+        state.mHistogram.fill(0);
+        state.mCorners.clear();
         if (!info)
             throw std::invalid_argument("meshio++: format info handle is NULL");
         if (!opts)
@@ -7193,6 +7216,15 @@ mio_mesh* mio_mesh_cad_surface(const mio_format_info* info, const mio_mesh_cad_s
         o.mEdges = opts->edges != 0;
         o.mMatchUnreferencedTrims = opts->match_unreferenced_trims != 0;
         o.mStrict = opts->strict != 0;
+        if (opts->smooth_method != MIO_MESH_CAD_SMOOTH_LAPLACIAN &&
+            opts->smooth_method != MIO_MESH_CAD_SMOOTH_ODT)
+            throw std::invalid_argument(
+                "meshio++: mesh_cad_surface: smooth_method must be MIO_MESH_CAD_SMOOTH_LAPLACIAN "
+                "or MIO_MESH_CAD_SMOOTH_ODT");
+        o.mMinAngleDeg = opts->min_angle_deg;
+        o.mSmoothIterations = opts->smooth_iterations;
+        o.mSmoothMethod = static_cast<meshioplusplus::MeshCadSmoothing>(opts->smooth_method);
+        o.mOrder = opts->order == 0 ? 1 : opts->order;
         meshioplusplus::MeshCadSurfaceResult r = meshioplusplus::mesh_cad_surface(*p_brep, o);
         for (const std::string& w : r.mWarnings) {
             if (!state.mWarnings.empty())
@@ -7200,6 +7232,13 @@ mio_mesh* mio_mesh_cad_surface(const mio_format_info* info, const mio_mesh_cad_s
             state.mWarnings += w;
         }
         state.mFaces = r.mFaces;
+        state.mHistogram = r.mAngleHistogram;
+        double min_input = 180.0;
+        for (const auto& r_f : r.mFaces) {
+            min_input = std::min(min_input, r_f.mMinInputAngleDeg);
+            state.mCorners.insert(state.mCorners.end(), r_f.mSmallAngleCorners.begin(),
+                                  r_f.mSmallAngleCorners.end());
+        }
         if (report) {
             *report = mio_mesh_cad_surface_report{};
             report->num_points = r.mNumPoints;
@@ -7219,6 +7258,11 @@ mio_mesh* mio_mesh_cad_surface(const mio_format_info* info, const mio_mesh_cad_s
             report->max_edge = r.mMaxEdge;
             report->max_edge_gap = r.mMaxEdgeGap;
             report->num_warnings = static_cast<std::int64_t>(r.mWarnings.size());
+            report->num_refinement_points = r.mNumRefinementPoints;
+            report->num_faces_below_bound = r.mNumFacesBelowBound;
+            report->num_smoothed = r.mNumSmoothed;
+            report->min_input_angle_deg = min_input;
+            report->num_curved_straightened = r.mNumCurvedStraightened;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });
@@ -7247,6 +7291,46 @@ int64_t mio_mesh_cad_surface_warnings(char* buf, int64_t buflen) {
         if (buflen < 0)
             throw std::invalid_argument("meshio++: negative warnings buffer length");
         return copy_string(capi_mesh_cad_state().mWarnings, buf, buflen);
+    });
+}
+
+int64_t mio_mesh_cad_surface_angle_histogram(int64_t* bins, int64_t n) {
+    return guarded_ptr(int64_t{-1}, [&]() {
+        if (n < 0 || (n > 0 && !bins))
+            throw std::invalid_argument("meshio++: mesh_cad_surface: bad histogram buffer");
+        const auto& r_h = capi_mesh_cad_state().mHistogram;
+        const auto count = std::min<std::int64_t>(n, static_cast<std::int64_t>(r_h.size()));
+        for (std::int64_t b = 0; b < count; ++b)
+            bins[b] = r_h[static_cast<std::size_t>(b)];
+        return static_cast<int64_t>(r_h.size());
+    });
+}
+
+int64_t mio_mesh_cad_surface_num_corners(void) {
+    return static_cast<int64_t>(capi_mesh_cad_state().mCorners.size());
+}
+
+mio_status mio_mesh_cad_surface_corner(int64_t index, mio_mesh_cad_corner* corner) {
+    return guarded([&]() -> mio_status {
+        const auto& corners = capi_mesh_cad_state().mCorners;
+        if (!corner)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh_cad_surface: corner is NULL");
+        if (index < 0 || static_cast<std::size_t>(index) >= corners.size())
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: mesh_cad_surface: corner index out of range");
+        const meshioplusplus::MeshCadCorner& c = corners[static_cast<std::size_t>(index)];
+        *corner = mio_mesh_cad_corner{};
+        corner->face = c.mFace;
+        corner->point = c.mPoint;
+        corner->u = c.mU;
+        corner->v = c.mV;
+        for (int k = 0; k < 3; ++k)
+            corner->x[k] = c.mX[static_cast<std::size_t>(k)];
+        corner->angle_deg = c.mAngleDeg;
+        corner->min_forced_deg = c.mMinForcedDeg;
+        corner->reach = c.mReach;
+        corner->pole = c.mPole ? 1 : 0;
+        return MIO_OK;
     });
 }
 

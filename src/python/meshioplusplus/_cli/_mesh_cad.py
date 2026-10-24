@@ -73,6 +73,33 @@ def add_args(parser):
         default=50_000_000,
         help="the most points in the result (default: 50000000)",
     )
+    parser.add_argument(
+        "--min-angle",
+        type=float,
+        default=0.0,
+        help="refine until every angle on the surface is at least this many "
+        "degrees, under 60 (default: 0, no refinement)",
+    )
+    parser.add_argument(
+        "--smooth",
+        type=int,
+        default=0,
+        help="passes of guarded smoothing (default: 0)",
+    )
+    parser.add_argument(
+        "--smooth-method",
+        choices=("laplacian", "odt"),
+        default="laplacian",
+        help="how smoothing moves a point (default: laplacian)",
+    )
+    parser.add_argument(
+        "--order",
+        type=int,
+        choices=(1, 2, 3),
+        default=1,
+        help="1: linear triangles; 2 or 3: curved triangle6 or triangle10 whose "
+        "nodes lie on the surface and edges (default: 1)",
+    )
     parser.add_argument("--json", action="store_true", help="emit the report as JSON")
     parser.add_argument(
         "--quiet", "-q", action="store_true", help="suppress the summary"
@@ -92,6 +119,10 @@ def mesh_cad_surface_cmd(args):
         match_unreferenced_trims=not args.no_match,
         strict=args.strict,
         max_points=args.max_points,
+        min_angle=args.min_angle,
+        smooth_iterations=args.smooth,
+        smooth_method=args.smooth_method,
+        order=args.order,
         return_report=True,
     )
     write(args.outfile, out, file_format=args.output_format)
@@ -111,7 +142,26 @@ def mesh_cad_surface_cmd(args):
             f"{report['max_angle_deg']:.2f} degrees"
         )
         print(f"  edge lengths:   {report['min_edge']:g} to {report['max_edge']:g}")
+        if args.min_angle > 0.0 or args.smooth > 0:
+            print(
+                f"  refinement:     {report['num_refinement_points']} points, "
+                f"{report['num_smoothed']} smoothing moves, "
+                f"{report['num_faces_below_bound']} faces below {args.min_angle:g} degrees"
+            )
+        if args.order > 1:
+            print(
+                f"  curved:         order {args.order}, "
+                f"{report['num_curved_straightened']} kept straight-sided"
+            )
         for f in report["faces"]:
             if f["status"] != "ok":
                 print(f"  face {f['face']}: {f['status']}: {f['reason']}")
+            for c in f.get("corners", []):
+                what = (
+                    "pole" if c["pole"] else f"corner of {c['angle_deg']:.2f} degrees"
+                )
+                print(
+                    f"  face {f['face']}: {what} at point {c['point']} keeps "
+                    f"triangles down to {c['min_forced_deg']:.2f} degrees"
+                )
     return 0

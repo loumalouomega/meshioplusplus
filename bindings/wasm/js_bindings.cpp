@@ -5620,7 +5620,7 @@ val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
         check_settings_keys(rOptions, "the meshCadSurface options",
                             {"targetSize", "maxChordalDeviation", "minPointsPerEdge", "tolerance",
                              "recordFaceIds", "edges", "matchUnreferencedTrims", "strict",
-                             "maxPoints"});
+                             "maxPoints", "minAngle", "smoothIterations", "smoothMethod", "order"});
         const auto has = [&](const char* pKey) {
             return rOptions.hasOwnProperty(pKey) && !rOptions[pKey].isUndefined() &&
                    !rOptions[pKey].isNull();
@@ -5644,6 +5644,27 @@ val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
             o.mStrict = rOptions["strict"].as<bool>();
         if (has("maxPoints"))
             o.mMaxPoints = static_cast<std::int64_t>(rOptions["maxPoints"].as<double>());
+        if (has("minAngle"))
+            o.mMinAngleDeg = rOptions["minAngle"].as<double>();
+        if (has("smoothIterations"))
+            o.mSmoothIterations =
+                static_cast<std::int64_t>(rOptions["smoothIterations"].as<double>());
+        if (has("smoothMethod")) {
+            const std::string m = rOptions["smoothMethod"].as<std::string>();
+            if (m == "laplacian")
+                o.mSmoothMethod = meshioplusplus::MeshCadSmoothing::Laplacian;
+            else if (m == "odt")
+                o.mSmoothMethod = meshioplusplus::MeshCadSmoothing::Odt;
+            else
+                throw std::invalid_argument(
+                    "meshio++: mesh_cad_surface: smoothMethod must be 'laplacian' or 'odt'");
+        }
+        if (has("order")) {
+            const double order = rOptions["order"].as<double>();
+            if (order != 1.0 && order != 2.0 && order != 3.0)
+                throw std::invalid_argument("meshio++: mesh_cad_surface: order must be 1, 2 or 3");
+            o.mOrder = static_cast<std::int32_t>(order);
+        }
         meshioplusplus::MeshCadSurfaceResult r =
             meshioplusplus::mesh_cad_surface(val_to_brep_info(rInfo), o);
         val out = val::object();
@@ -5679,9 +5700,41 @@ val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
             d.set("maxAngleDeg", f.mMaxAngleDeg);
             d.set("minEdge", f.mMinEdge);
             d.set("maxEdge", f.mMaxEdge);
+            d.set("numRefinementPoints", static_cast<double>(f.mNumRefinementPoints));
+            d.set("numSmoothed", static_cast<double>(f.mNumSmoothed));
+            d.set("minInputAngleDeg", f.mMinInputAngleDeg);
+            d.set("belowBound", f.mBelowBound);
+            d.set("boundDeg", f.mBoundDeg);
+            val corners = val::array();
+            for (std::size_t k = 0; k < f.mSmallAngleCorners.size(); ++k) {
+                const meshioplusplus::MeshCadCorner& c = f.mSmallAngleCorners[k];
+                val cv = val::object();
+                cv.set("face", static_cast<double>(c.mFace));
+                cv.set("point", static_cast<double>(c.mPoint));
+                cv.set("u", c.mU);
+                cv.set("v", c.mV);
+                val x = val::array();
+                for (unsigned j = 0; j < 3; ++j)
+                    x.set(j, c.mX[j]);
+                cv.set("x", x);
+                cv.set("angleDeg", c.mAngleDeg);
+                cv.set("minForcedDeg", c.mMinForcedDeg);
+                cv.set("reach", c.mReach);
+                cv.set("pole", c.mPole);
+                corners.set(static_cast<unsigned>(k), cv);
+            }
+            d.set("corners", corners);
             faces.set(static_cast<unsigned>(i), d);
         }
         out.set("faces", faces);
+        out.set("numRefinementPoints", static_cast<double>(r.mNumRefinementPoints));
+        out.set("numFacesBelowBound", static_cast<double>(r.mNumFacesBelowBound));
+        out.set("numSmoothed", static_cast<double>(r.mNumSmoothed));
+        out.set("numCurvedStraightened", static_cast<double>(r.mNumCurvedStraightened));
+        val histogram = val::array();
+        for (std::size_t b = 0; b < r.mAngleHistogram.size(); ++b)
+            histogram.set(static_cast<unsigned>(b), static_cast<double>(r.mAngleHistogram[b]));
+        out.set("angleHistogram", histogram);
         val warnings = val::array();
         for (std::size_t i = 0; i < r.mWarnings.size(); ++i)
             warnings.set(static_cast<unsigned>(i), r.mWarnings[i]);

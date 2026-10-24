@@ -296,6 +296,66 @@ TEST(Predicates, InsphereRandomAndCospherical) {
                   sign_of(exact_insphere(p[0], p[1], p[2], p[3], p[4])));
     }
 }
+
+I128 exact_dot(const double* pA, const double* pB, const double* pP) {
+    return (ii(pA[0]) - ii(pP[0])) * (ii(pB[0]) - ii(pP[0])) +
+           (ii(pA[1]) - ii(pP[1])) * (ii(pB[1]) - ii(pP[1]));
+}
+
+I128 exact_lens(const double* pA, const double* pB, const double* pP) {
+    const I128 d = exact_dot(pA, pB, pP);
+    const I128 c = exact_orient2d(pA, pB, pP);
+    return 3 * d * d - c * c;
+}
+
+TEST(Predicates, DiametralAndLensRandomAndOnTheirBoundaries) {
+    std::mt19937_64 rng(29);
+    const double off[2] = {double(std::int64_t{1} << 40), -double(std::int64_t{1} << 39)};
+    std::uniform_int_distribution<std::int64_t> small(-(std::int64_t{1} << 26),
+                                                      std::int64_t{1} << 26);
+    for (int it = 0; it < 20000; ++it) {
+        double p[3][2];
+        for (auto& r_p : p)
+            r_p[0] = off[0] + double(small(rng)), r_p[1] = off[1] + double(small(rng));
+        if (it % 3 == 0) {
+            // p on the circle of diameter ab: a right angle at p, exactly.
+            const double vx = double(small(rng) / 64), vy = double(small(rng) / 64);
+            const double k = double(1 + it % 7);
+            p[0][0] = p[2][0] + vx, p[0][1] = p[2][1] + vy;
+            p[1][0] = p[2][0] - k * vy, p[1][1] = p[2][1] + k * vx;
+            if (it % 2 == 0)
+                p[1][0] += 1.0;  // one off it
+        }
+        ASSERT_EQ(sign_of(mio::detail::diametral(p[0], p[1], p[2])),
+                  sign_of(exact_dot(p[0], p[1], p[2])));
+        ASSERT_EQ(sign_of(mio::detail::lens_angle(p[0], p[1], p[2])),
+                  sign_of(exact_lens(p[0], p[1], p[2])));
+    }
+    // Angles one Pell step from 120 and 60 degrees: (x, y) with
+    // y^2 - 3 x^2 = 1 put b - p = (-x, y) against a - p = (m, 0), so
+    // 3 dot^2 - cross^2 = -m^2 (just under 120 degrees), and (x, y) with
+    // 3 x^2 - y^2 = 2 put it just over; the same mirrored for 60 degrees.
+    const std::array<std::array<std::int64_t, 2>, 5> under = {
+        {{4, 7}, {209, 362}, {564719, 978122}, {2107560, 3650401}, {7865521, 13623482}}};
+    const std::array<std::array<std::int64_t, 2>, 5> over = {
+        {{1, 1}, {153, 265}, {413403, 716035}, {1542841, 2672279}, {5757961, 9973081}}};
+    // Large enough that the products are inexact, so the exact stage decides.
+    for (const double m : {1.0, 3.0, 65537.0, double((std::int64_t{1} << 30) - 3)}) {
+        for (int side = 0; side < 2; ++side)
+            for (const auto* p_set : {&under, &over})
+                for (const auto& r_xy : *p_set) {
+                    const double x = double(r_xy[0]) * (side == 0 ? -1.0 : 1.0);
+                    const double y = double(r_xy[1]);
+                    const double p[2] = {off[0], off[1]};
+                    const double a[2] = {off[0] + m, off[1]};
+                    const double b[2] = {off[0] + x, off[1] + y};
+                    const I128 truth = exact_lens(a, b, p);
+                    ASSERT_EQ(sign_of(truth), p_set == &under ? -1 : 1);
+                    ASSERT_EQ(sign_of(mio::detail::lens_angle(a, b, p)), sign_of(truth));
+                    ASSERT_EQ(sign_of(mio::detail::diametral(a, b, p)), side == 0 ? -1 : 1);
+                }
+    }
+}
 #endif
 
 TEST(Predicates, PermutationSigns) {
@@ -321,6 +381,11 @@ TEST(Predicates, PermutationSigns) {
         EXPECT_EQ(sign_of(mio::detail::orient3d(p[0], p[1], p[3], p[2])), -o3);
         const int is = sign_of(mio::detail::insphere(p[0], p[1], p[2], p[3], p[4]));
         EXPECT_EQ(sign_of(mio::detail::insphere(p[1], p[0], p[2], p[3], p[4])), -is);
+        // Symmetric in a and b.
+        EXPECT_EQ(sign_of(mio::detail::diametral(p[0], p[1], p[2])),
+                  sign_of(mio::detail::diametral(p[1], p[0], p[2])));
+        EXPECT_EQ(sign_of(mio::detail::lens_angle(p[0], p[1], p[2])),
+                  sign_of(mio::detail::lens_angle(p[1], p[0], p[2])));
     }
 }
 

@@ -58,7 +58,101 @@ _BINARY_CELLS = {
     9: ("wedge", 6),
     10: ("hexahedron", 8),
     49: ("pyramid", 5),
+    25: ("line3", 3),
+    92: ("line4", 4),
+    24: ("triangle6", 6),
+    90: ("triangle10", 10),
+    30: ("tetra10", 10),
 }
+
+# libMeshb's high-order elements: meshio type -> (keyword, code, ordering
+# keyword, ordering code, tuples). The format defines no node order for them; a
+# file states its own in a `<Keyword>Ordering` section, one integer tuple per
+# node, matched by tuple (libMeshb's GmfSetHONodesOrdering). These tuples are
+# meshio's node order: barycentric multiplicities for a simplex (component k
+# counts vertex k), the position from the first vertex for an edge. The C++
+# twin is `kMeditHighOrder` in medit.cpp.
+_HIGH_ORDER = {
+    "line3": ("EdgesP2", 25, "EdgesP2Ordering", 127, [[0], [2], [1]]),
+    "line4": ("EdgesP3", 92, "EdgesP3Ordering", 128, [[0], [3], [1], [2]]),
+    "triangle6": (
+        "TrianglesP2",
+        24,
+        "TrianglesP2Ordering",
+        129,
+        [[2, 0, 0], [0, 2, 0], [0, 0, 2], [1, 1, 0], [0, 1, 1], [1, 0, 1]],
+    ),
+    "triangle10": (
+        "TrianglesP3",
+        90,
+        "TrianglesP3Ordering",
+        130,
+        [
+            [3, 0, 0],
+            [0, 3, 0],
+            [0, 0, 3],
+            [2, 1, 0],
+            [1, 2, 0],
+            [0, 2, 1],
+            [0, 1, 2],
+            [1, 0, 2],
+            [2, 0, 1],
+            [1, 1, 1],
+        ],
+    ),
+    "tetra10": (
+        "TetrahedraP2",
+        30,
+        "TetrahedraP2Ordering",
+        133,
+        [
+            [2, 0, 0, 0],
+            [0, 2, 0, 0],
+            [0, 0, 2, 0],
+            [0, 0, 0, 2],
+            [1, 1, 0, 0],
+            [0, 1, 1, 0],
+            [1, 0, 1, 0],
+            [1, 0, 0, 1],
+            [0, 1, 0, 1],
+            [0, 0, 1, 1],
+        ],
+    ),
+}
+_ORDERING_KEYWORDS = {v[2]: k for k, v in _HIGH_ORDER.items()}
+_ORDERING_CODES = {v[3]: k for k, v in _HIGH_ORDER.items()}
+
+
+def _ordering_permutation(cell_type, tuples):
+    """File position -> meshio position, from an ordering section's tuples; a
+    table that is not a permutation of meshio++'s tuples is refused."""
+    keyword, _, ordering, _, reference = _HIGH_ORDER[cell_type]
+    reference = [tuple(t) for t in reference]
+    tuples = np.asarray(tuples).reshape(len(reference), len(reference[0]))
+    perm = []
+    for t in tuples:
+        t = tuple(int(v) for v in t)
+        if t not in reference:
+            raise ReadError(f"Medit: {ordering} lists a node no {keyword} element has")
+        m = reference.index(t)
+        if m in perm:
+            raise ReadError(f"Medit: {ordering} lists a node twice")
+        perm.append(m)
+    return perm
+
+
+def _apply_orderings(cells, perms):
+    """The high-order blocks' nodes in meshio's order, by the file's orderings."""
+    out = []
+    for cell_type, data in cells:
+        if cell_type in perms:
+            reordered = np.empty_like(data)
+            reordered[:, perms[cell_type]] = data
+            data = reordered
+        out.append((cell_type, data))
+    return out
+
+
 _BINARY_ID_LISTS = {
     13: "Corners",
     14: "Ridges",
@@ -121,6 +215,7 @@ def read_binary_buffer(f):
     point_data = {}
     cell_data = {"medit:ref": []}
     id_lists = {}
+    perms = {}
     while True:
         if cursor.left() < 4:
             warn("End-of-file reached before GmfEnd keyword")
@@ -158,6 +253,16 @@ def read_binary_buffer(f):
             flat = cursor.array(n * (ncols + 1), itype).reshape(n, ncols + 1)
             cells.append((meshio_type, flat[:, :ncols].astype(itype) - 1))
             cell_data["medit:ref"].append(flat[:, -1].astype(itype))
+        elif field in _ORDERING_CODES:
+            cell_type = _ORDERING_CODES[field]
+            reference = _HIGH_ORDER[cell_type][4]
+            if cursor.int(itype) != len(reference):
+                raise ReadError(
+                    f"Medit: {_HIGH_ORDER[cell_type][2]} lists a number of nodes "
+                    f"other than {len(reference)}"
+                )
+            tuples = cursor.array(len(reference) * len(reference[0]), itype)
+            perms[cell_type] = _ordering_permutation(cell_type, tuples)
         elif field in _BINARY_ID_LISTS:
             n = cursor.int(itype)
             id_lists[_BINARY_ID_LISTS[field]] = cursor.array(n, itype).astype(itype) - 1
@@ -174,6 +279,7 @@ def read_binary_buffer(f):
 
     if points is None:
         raise ReadError("Medit: expected Vertices")
+    cells = _apply_orderings(cells, perms)
     regions = _regions_from_id_lists(id_lists, len(points), cells)
     return Mesh(
         points, cells, point_data=point_data, cell_data=cell_data, regions=regions
@@ -232,9 +338,12 @@ def read_ascii_buffer(f):
         "Hexahedra": ("hexahedron", 8),  # Frey
         "Hexaedra": ("hexahedron", 8),  # Dobrzynski
     }
+    for cell_type, (keyword, *_, reference) in _HIGH_ORDER.items():
+        meshio_from_medit[keyword] = (cell_type, len(reference))
     points = None
     dtype = None
     id_lists = {}  # keyword -> 0-based ids, kept as regions
+    perms = {}  # high-order type -> its file's node permutation
 
     while True:
         line = f.readline()
@@ -248,7 +357,8 @@ def read_ascii_buffer(f):
 
         items = line.split()
 
-        if not items[0].isalpha():
+        # A keyword: letters, then letters or digits (`TrianglesP2`).
+        if not (items[0][0].isalpha() and items[0].isalnum()):
             raise ReadError()
 
         if items[0] == "MeshVersionFormatted":
@@ -305,6 +415,19 @@ def read_ascii_buffer(f):
             # adapt for 0-base
             cells.append((meshio_type, out[:, :points_per_cell] - 1))
             cell_data["medit:ref"].append(out[:, -1])
+        elif items[0] in _ORDERING_KEYWORDS:
+            cell_type = _ORDERING_KEYWORDS[items[0]]
+            reference = _HIGH_ORDER[cell_type][4]
+            if int(f.readline()) != len(reference):
+                raise ReadError(
+                    f"Medit: {items[0]} lists a number of nodes other than "
+                    f"{len(reference)}"
+                )
+            values = len(reference) * len(reference[0])
+            tuples = np.fromfile(f, count=values, dtype=int, sep=" ")
+            if len(tuples) != values:
+                raise ReadError(f"Medit: {items[0]} is truncated")
+            perms[cell_type] = _ordering_permutation(cell_type, tuples)
         elif items[0] in _ID_LIST_KEYWORDS:
             # Vertex or element ids (1-based), kept as a region.
             count = int(f.readline())
@@ -363,6 +486,7 @@ def read_ascii_buffer(f):
 
     if points is None:
         raise ReadError("Expected `Vertices`")
+    cells = _apply_orderings(cells, perms)
     regions = _regions_from_id_lists(id_lists, len(points), cells)
     return Mesh(
         points, cells, point_data=point_data, cell_data=cell_data, regions=regions
@@ -413,6 +537,9 @@ def write_ascii_file(filename, mesh, float_fmt=".16e"):
             "pyramid": ("Pyramids", 5),
             "hexahedron": ("Hexahedra", 8),
         }
+        for cell_type, (keyword, *_, reference) in _HIGH_ORDER.items():
+            medit_from_meshio[cell_type] = (keyword, len(reference))
+        ordered = set()
 
         # pick out cell_data
         labels_key, other = _pick_first_int_data(mesh.cell_data)
@@ -432,6 +559,13 @@ def write_ascii_file(filename, mesh, float_fmt=".16e"):
                 msg = f"MEDIT's mesh format doesn't know {cell_type} cells. Skipping."
                 warn(msg)
                 continue
+            if cell_type in _HIGH_ORDER and cell_type not in ordered:
+                # The node order, once, before the type's first section.
+                ordered.add(cell_type)
+                _, _, ordering, _, reference = _HIGH_ORDER[cell_type]
+                fh.write(f"\n{ordering}\n{len(reference)}\n".encode())
+                for t in reference:
+                    fh.write((" ".join(str(v) for v in t) + "\n").encode())
             fh.write(b"\n")
             fh.write(f"{medit_name}\n".encode())
             fh.write(f"{len(data)}\n".encode())
@@ -508,6 +642,7 @@ _BINARY_CELL_CODES = {
     "wedge": 9,
     "pyramid": 49,
     "hexahedron": 10,
+    **{cell_type: v[1] for cell_type, v in _HIGH_ORDER.items()},
 }
 _BINARY_ID_CODES = {
     "Corners": 13,
@@ -552,12 +687,12 @@ def write_binary_file(f, mesh):
             if cell_key
             else np.ones(len(data), dtype=np.int64)
         )
-        blocks.append((code, data, refs))
+        blocks.append((code, data, refs, cell_block.type))
     sections = _id_list_sections(mesh)
 
     # version 3 (32-bit integers) unless an index or reference needs 64 bits
     limit = np.iinfo(np.int32)
-    values = [labels] + [d + 1 for _, d, _ in blocks] + [r for _, _, r in blocks]
+    values = [labels] + [d + 1 for _, d, _, _ in blocks] + [r for _, _, r, _ in blocks]
     values += [ids + 1 for _, ids in sections]
     big = num_verts > limit.max or any(
         len(v) and (v.min() < limit.min or v.max() > limit.max) for v in values
@@ -583,7 +718,14 @@ def write_binary_file(f, mesh):
     vertices["x"] = mesh.points
     vertices["ref"] = labels
     out.append(vertices.tobytes())
-    for code, data, refs in blocks:
+    ordered = set()
+    for code, data, refs, cell_type in blocks:
+        if cell_type in _HIGH_ORDER and cell_type not in ordered:
+            # The node order, once, before the type's first section.
+            ordered.add(cell_type)
+            reference = np.asarray(_HIGH_ORDER[cell_type][4])
+            header(_HIGH_ORDER[cell_type][3], len(reference), reference.size * isize)
+            out.append(reference.astype(itype).tobytes())
         num_cells, nodes = data.shape
         header(code, num_cells, num_cells * (nodes + 1) * isize)
         rows = np.empty((num_cells, nodes + 1), dtype=itype)

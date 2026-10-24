@@ -40,6 +40,20 @@ The ordinary campaign skips `tools/fuzz/not_fuzzed.txt`: Elmer directories and t
 
 The scheduled `fuzz` workflow runs the campaign weekly in four shards, and uploads any finding with its log.
 
+## The operation targets
+
+Two targets fuzz the mesh generator rather than a reader (v17.14.0, `tests/fuzz/fuzz_mesh_cad.cpp`). `meshioplusplus_fuzz_mesh_cad_surface` reads each input as a Kratos CAD JSON model (a `ReadError` is a refusal, as for `cad_json`'s reader target) and meshes it with [`mesh_cad_surface`](./mesh_cad.md) at a size taken from the input's hash and the model's box, with the chordal cap on for half the inputs and `max_points` at 200 000 so a run stays bounded. It expects a result whose every face is meshed or reported by status and reason, or `std::invalid_argument` (no faces) or `std::length_error` (the budget); any other exception, a face reported with an internal error of the triangulation, a crash, a sanitizer report or a hang is a finding. `meshioplusplus_fuzz_triangulate_polygon_2d` decodes each input into one to four loops on a small integer grid, perturbed the ways inexact triangulators fail (points a few ulps apart or off a line, all on one line, or raw doubles; Shewchuk 1997, Kettner et al. 2008), at no target size or the box over 4 to 128 pieces, and expects a mesh whose every triangle is counter-clockwise by the exact `orient2d`, or `std::invalid_argument`. Its first campaign found, within seconds, that coordinates near `1e305` or subnormal ones broke the predicates (a product inside `incircle` overflowed or underflowed, and segment recovery then failed with an internal error); the triangulation now refuses coordinates outside zero and `[2^-128, 2^128]` by name, `mesh_cad_surface` reports such a face as `unsupported`, and the input replays as `op_triangulate_polygon_2d/huge-and-subnormal-coordinates`.
+
+```sh
+CC=clang CXX=clang++ build/configure.sh --fuzzers --build
+mkdir -p seeds/op_mesh_cad_surface seeds/op_triangulate_polygon_2d
+cp tests/python/meshes/cad_json/*.json seeds/op_mesh_cad_surface/
+FORMATS=op_mesh_cad_surface FUZZ_BINARY=meshioplusplus_fuzz_mesh_cad_surface \
+    tools/fuzz/run_campaign.sh build/cpp-release-san seeds findings 600
+```
+
+The target comes from `MIO_FUZZ_TARGET` or `MIO_FUZZ_FORMAT` (what the campaign script sets), a `-target=` or `-format=` argument, or the binary's name. `meshioplusplus_fuzz_ops_replay` is the same harness with the replay `main()`, and CMake routes the `tests/fuzz/regressions/op_<name>/` directories to it, so every pull request replays them like the readers' inputs. The weekly `fuzz` workflow runs both targets in its `fuzz-ops` job.
+
 ## Regression inputs
 
 A fixed finding is committed as a minimized input under `tests/fuzz/regressions/<format>/`. With tests enabled, CMake adds one `fuzz_regression_<format>` test per directory, which replays every file through `meshioplusplus_fuzz_replay` -- the same harness with a plain `main()`, so any compiler runs it and a finding can be debugged without libFuzzer. The `cpp-tests` and `cpp-sanitize` jobs therefore replay every past crash on every pull request.

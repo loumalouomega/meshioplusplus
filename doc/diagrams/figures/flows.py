@@ -1065,7 +1065,7 @@ def roadmap_map():
             "§6 mesh generation",
             [
                 ("milestone-1 leftovers", "S"),
-                ("refinement · smoothing", "M"),
+                ("off-centres · corner lopping", "S"),
                 ("size fields · grading", "M"),
                 ("metrics · poles · folds", "M"),
                 ("real CAD input · corpus", "M"),
@@ -1075,7 +1075,7 @@ def roadmap_map():
                 ("boundary layers: design first", "L"),
                 ("adaptation on the CAD", "M"),
             ],
-            [(1, 2)],
+            [],
         ),
     ]
     per_row = 4

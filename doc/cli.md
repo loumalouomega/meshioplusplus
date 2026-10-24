@@ -119,7 +119,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `find-interface` | pair counts, area, maximum gap, unmatched counts and both Side-entry lists |
 | `contact-pairs` | `num_pairs`, the pair table and unmatched slave-point ids |
 | `split-interface` | duplicated-point and cohesive-cell counts |
-| `mesh-cad-surface` | `mesh_cad_surface`'s report: the counts, the open, non-manifold and misoriented edges, the extreme angles and edge lengths, `tolerance`, `max_edge_gap`, `faces` (`status`, `reason`, counts and extremes per face) and `warnings` |
+| `mesh-cad-surface` | `mesh_cad_surface`'s report: the counts, the open, non-manifold and misoriented edges, the extreme angles and edge lengths, `tolerance`, `max_edge_gap`, `faces` (`status`, `reason`, counts and extremes per face, `below_bound`, `bound_deg`, `min_input_angle_deg` and `corners`), `warnings`, `num_refinement_points`, `num_faces_below_bound`, `num_smoothed`, `angle_histogram` and `num_curved_straightened` |
 
 The exit codes are unchanged by `--json`.
 
@@ -2078,6 +2078,8 @@ Triangulate a CAD model's faces into one conforming surface mesh at a target edg
 ```bash
 meshioplusplus mesh-cad-surface part.cad.json part.vtu --size 0.1
 meshioplusplus mesh-cad-surface part.step part.msh -o gmsh --size 2 --deflection 0.01 --strict --json
+meshioplusplus mesh-cad-surface part.cad.json part.vtu --size 0.1 --min-angle 25 --smooth 3
+meshioplusplus mesh-cad-surface part.cad.json part.msh -o gmsh --size 0.2 --order 2
 ```
 
 | flag | meaning |
@@ -2091,9 +2093,12 @@ meshioplusplus mesh-cad-surface part.step part.msh -o gmsh --size 2 --deflection
 | `--no-match` | do not pair the trims no edge references |
 | `--strict` | fail (exit 1) when any face cannot be meshed, instead of reporting it |
 | `--max-points N` | the most points in the result (default 50000000) |
+| `--min-angle DEG` | refine every face until its triangles' smallest angles on the surface reach `DEG` (under 60; 0, the default, is off) |
+| `--smooth N` / `--smooth-method laplacian\|odt` | passes of guarded smoothing (default 0) and how a point moves |
+| `--order 1\|2\|3` | 1 (the default) linear triangles; 2 or 3 curved `triangle6`/`triangle10` with `line3`/`line4` edges, every node on the surface and the edges; an element whose Jacobian is not positive everywhere is written straight-sided and counted |
 | `--json` / `-q/--quiet` | the report as JSON / no summary |
 
-A face that cannot be meshed is left out and named in the summary with its reason; the exit code is 0 unless `--strict` is given.
+A face that cannot be meshed is left out and named in the summary with its reason; the exit code is 0 unless `--strict` is given. With `--min-angle`, the summary also names each corner under 60 degrees and each pole that keeps triangles below the bound.
 
 ## `grid-sample`, `grid-scatter`, `grid-resample`, `grid-spectrum`
 

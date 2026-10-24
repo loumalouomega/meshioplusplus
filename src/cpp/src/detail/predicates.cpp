@@ -293,6 +293,31 @@ double pred_insphere_exact(const double* pA, const double* pB, const double* pC,
     return pred_estimate(det);
 }
 
+/// `(a - p) . (b - p)` and `(a - p) x (b - p)` exactly.
+void pred_dot_cross_exact(const double* pA, const double* pB, const double* pP, PredExpansion& rDot,
+                          PredExpansion& rCross) {
+    const PredExpansion apx = pred_diff(pA[0], pP[0]);
+    const PredExpansion apy = pred_diff(pA[1], pP[1]);
+    const PredExpansion bpx = pred_diff(pB[0], pP[0]);
+    const PredExpansion bpy = pred_diff(pB[1], pP[1]);
+    rDot = pred_sum(pred_mul(apx, bpx), pred_mul(apy, bpy));
+    rCross = pred_minor(apx, bpy, apy, bpx);
+}
+
+double pred_diametral_exact(const double* pA, const double* pB, const double* pP) {
+    PredExpansion dot;
+    PredExpansion cross;
+    pred_dot_cross_exact(pA, pB, pP, dot, cross);
+    return pred_estimate(dot);
+}
+
+double pred_lens_angle_exact(const double* pA, const double* pB, const double* pP) {
+    PredExpansion dot;
+    PredExpansion cross;
+    pred_dot_cross_exact(pA, pB, pP, dot, cross);
+    return pred_estimate(pred_sub(pred_scale(pred_mul(dot, dot), 3.0), pred_mul(cross, cross)));
+}
+
 }  // namespace
 
 void predicates_two_product(double A, double B, double& rX, double& rY) {
@@ -443,6 +468,42 @@ double insphere(const double* pA, const double* pB, const double* pC, const doub
     if (det > errbound || -det > errbound)
         return det;
     return pred_insphere_exact(pA, pB, pC, pD, pE);
+}
+
+double diametral(const double* pA, const double* pB, const double* pP) {
+    MESHIOPLUSPLUS_PRED_NO_CONTRACT
+    // orient2d's shape (two products of differences, summed): its bound.
+    const double xx = (pA[0] - pP[0]) * (pB[0] - pP[0]);
+    const double yy = (pA[1] - pP[1]) * (pB[1] - pP[1]);
+    const double dot = xx + yy;
+    const double errbound = kPredCcwBound * (std::fabs(xx) + std::fabs(yy));
+    if (dot > errbound || -dot > errbound)
+        return dot;
+    return pred_diametral_exact(pA, pB, pP);
+}
+
+double lens_angle(const double* pA, const double* pB, const double* pP) {
+    MESHIOPLUSPLUS_PRED_NO_CONTRACT
+    const double apx = pA[0] - pP[0];
+    const double apy = pA[1] - pP[1];
+    const double bpx = pB[0] - pP[0];
+    const double bpy = pB[1] - pP[1];
+    const double xx = apx * bpx;
+    const double yy = apy * bpy;
+    const double xy = apx * bpy;
+    const double yx = apy * bpx;
+    const double dot = xx + yy;
+    const double cross = xy - yx;
+    const double det = 3.0 * (dot * dot) - cross * cross;
+    // The dot and cross products are each within (3 + 16 eps) eps of their
+    // permanent P (orient2d's bound), so their squares are within about
+    // 6 eps P^2, the weighted sum within 24 eps P^2 and its roundings
+    // within 8 eps P^2: 64 eps P^2 bounds the error with room to spare.
+    const double permanent = std::fabs(xx) + std::fabs(yy) + std::fabs(xy) + std::fabs(yx);
+    const double errbound = 64.0 * kPredEps * (permanent * permanent);
+    if (det > errbound || -det > errbound)
+        return det;
+    return pred_lens_angle_exact(pA, pB, pP);
 }
 
 }  // namespace detail

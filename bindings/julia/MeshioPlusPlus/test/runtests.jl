@@ -311,6 +311,30 @@ end
         @test r.faces[1].status == "ok" && r.faces[1].reason == ""
         @test isempty(r.warnings)
         @test_throws MeshioError mesh_cad_surface(info; target_size=0.0)
+        @test r.min_input_angle_deg == 180.0 && isempty(r.corners)
+        # v17.15.0: refined to 25 degrees and smoothed; the two 45-degree
+        # corners are reported.
+        q = mesh_cad_surface(info; target_size=0.1, min_angle=25, smooth_iterations=2,
+                             smooth_method="odt")
+        @test q.min_angle_deg >= 25 - 1e-9
+        @test q.num_smoothed > 0
+        @test isapprox(q.min_input_angle_deg, 45; atol=1e-9)
+        @test sum(q.angle_histogram) == 3 * q.num_triangles
+        @test length(q.corners) == 2
+        @test all(c -> c.face == 1 && !c.pole && isapprox(c.angle_deg, 45; atol=1e-9), q.corners)
+        @test_throws ArgumentError mesh_cad_surface(info; target_size=0.1, smooth_method="none")
+        @test_throws MeshioError mesh_cad_surface(info; target_size=0.1, min_angle=60)
+        close(q.mesh)
+        # v17.16.0: curved triangles, their nodes on the geometry.
+        for (order, tri) in ((2, "triangle6"), (3, "triangle10"))
+            c = mesh_cad_surface(info; target_size=0.1, order=order)
+            @test c.num_triangles == r.num_triangles
+            @test c.num_points > r.num_points
+            @test c.num_curved_straightened == 0
+            @test tri in cell_block_types(c.mesh)
+            close(c.mesh)
+        end
+        @test_throws MeshioError mesh_cad_surface(info; target_size=0.1, order=4)
         close(r.mesh); close(mesh); close(info)
     end
 end

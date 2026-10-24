@@ -17,7 +17,7 @@
 
 // System includes
 #include <algorithm>
-#include <algorithm>
+#include <array>
 #include <bit>
 #include <cctype>
 #include <cstdint>
@@ -39,6 +39,7 @@
 #include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
+#include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
@@ -56,10 +57,19 @@ namespace {
 // medit element keyword -> (meshio type, nodes per cell)
 const std::unordered_map<std::string, std::pair<std::string, int>>& medit_to_meshio() {
     static const std::unordered_map<std::string, std::pair<std::string, int>> m = {
-        {"Edges", {"line", 2}},           {"Triangles", {"triangle", 3}},
-        {"Quadrilaterals", {"quad", 4}},  {"Tetrahedra", {"tetra", 4}},
-        {"Prisms", {"wedge", 6}},         {"Pyramids", {"pyramid", 5}},
-        {"Hexahedra", {"hexahedron", 8}}, {"Hexaedra", {"hexahedron", 8}},
+        {"Edges", {"line", 2}},
+        {"Triangles", {"triangle", 3}},
+        {"Quadrilaterals", {"quad", 4}},
+        {"Tetrahedra", {"tetra", 4}},
+        {"Prisms", {"wedge", 6}},
+        {"Pyramids", {"pyramid", 5}},
+        {"Hexahedra", {"hexahedron", 8}},
+        {"Hexaedra", {"hexahedron", 8}},
+        {"EdgesP2", {"line3", 3}},
+        {"EdgesP3", {"line4", 4}},
+        {"TrianglesP2", {"triangle6", 6}},
+        {"TrianglesP3", {"triangle10", 10}},
+        {"TetrahedraP2", {"tetra10", 10}},
     };
     return m;
 }
@@ -67,12 +77,140 @@ const std::unordered_map<std::string, std::pair<std::string, int>>& medit_to_mes
 // meshio type -> (medit keyword, nodes per cell), write order.
 const std::vector<std::pair<std::string, std::pair<std::string, int>>>& meshio_to_medit() {
     static const std::vector<std::pair<std::string, std::pair<std::string, int>>> m = {
-        {"line", {"Edges", 2}},           {"triangle", {"Triangles", 3}},
-        {"quad", {"Quadrilaterals", 4}},  {"tetra", {"Tetrahedra", 4}},
-        {"wedge", {"Prisms", 6}},         {"pyramid", {"Pyramids", 5}},
+        {"line", {"Edges", 2}},
+        {"triangle", {"Triangles", 3}},
+        {"quad", {"Quadrilaterals", 4}},
+        {"tetra", {"Tetrahedra", 4}},
+        {"wedge", {"Prisms", 6}},
+        {"pyramid", {"Pyramids", 5}},
         {"hexahedron", {"Hexahedra", 8}},
+        // High-order sections, each preceded by its ordering (see MeditHighOrder).
+        {"line3", {"EdgesP2", 3}},
+        {"line4", {"EdgesP3", 4}},
+        {"triangle6", {"TrianglesP2", 6}},
+        {"triangle10", {"TrianglesP3", 10}},
+        {"tetra10", {"TetrahedraP2", 10}},
     };
     return m;
+}
+
+/**
+ * libMeshb's high-order elements. The format defines no node order for them: a
+ * file states its own in a `<Keyword>Ordering` section, one integer tuple per
+ * node, and a program maps it onto its own order by matching tuples
+ * (`GmfSetHONodesOrdering`). meshio++'s tuples, in meshio's node order: for a
+ * simplex the barycentric multiplicities, component k counting vertex k; for
+ * an edge the node's position from the first vertex. The writers emit them;
+ * the readers match a file's against them, and read a section with no
+ * ordering in meshio's order (libMeshb's own example writes TrianglesP2 so).
+ */
+struct MeditHighOrder {
+    const char* mType;
+    const char* mKeyword;
+    int mCode;
+    const char* mOrderingKeyword;
+    int mOrderingCode;
+    int mNodes;
+    int mCoords;
+    std::array<int, 40> mTuples;  ///< mNodes * mCoords, meshio order
+};
+
+const MeditHighOrder kMeditHighOrder[] = {
+    {"line3", "EdgesP2", 25, "EdgesP2Ordering", 127, 3, 1, {0, 2, 1}},
+    {"line4", "EdgesP3", 92, "EdgesP3Ordering", 128, 4, 1, {0, 3, 1, 2}},
+    {"triangle6",
+     "TrianglesP2",
+     24,
+     "TrianglesP2Ordering",
+     129,
+     6,
+     3,
+     {2, 0, 0, 0, 2, 0, 0, 0, 2, 1, 1, 0, 0, 1, 1, 1, 0, 1}},
+    {"triangle10", "TrianglesP3", 90, "TrianglesP3Ordering", 130, 10, 3, {3, 0, 0, 0, 3, 0, 0, 0,
+                                                                          3, 2, 1, 0, 1, 2, 0, 0,
+                                                                          2, 1, 0, 1, 2, 1, 0, 2,
+                                                                          2, 0, 1, 1, 1, 1}},
+    {"tetra10", "TetrahedraP2", 30, "TetrahedraP2Ordering", 133, 10, 4, {2, 0, 0, 0, 0, 2, 0, 0,
+                                                                         0, 0, 2, 0, 0, 0, 0, 2,
+                                                                         1, 1, 0, 0, 0, 1, 1, 0,
+                                                                         1, 0, 1, 0, 1, 0, 0, 1,
+                                                                         0, 1, 0, 1, 0, 0, 1, 1}},
+};
+
+const MeditHighOrder* medit_high_order_of_type(std::string_view Type) {
+    for (const MeditHighOrder& h : kMeditHighOrder)
+        if (Type == h.mType)
+            return &h;
+    return nullptr;
+}
+
+const MeditHighOrder* medit_high_order_of_ordering(std::string_view Keyword) {
+    for (const MeditHighOrder& h : kMeditHighOrder)
+        if (Keyword == h.mOrderingKeyword)
+            return &h;
+    return nullptr;
+}
+
+/// The node permutation (file position -> meshio position) an ordering
+/// section's tuples give; a table that is not a permutation of meshio++'s
+/// tuples (a tuple it does not have, one listed twice) is refused rather than
+/// guessed at.
+std::vector<int> medit_ordering_permutation(const MeditHighOrder& rH,
+                                            const std::vector<std::int64_t>& rTuples) {
+    const auto nodes = static_cast<std::size_t>(rH.mNodes);
+    const auto coords = static_cast<std::size_t>(rH.mCoords);
+    std::vector<int> perm(nodes, -1);
+    std::vector<bool> used(nodes, false);
+    for (std::size_t f = 0; f < nodes; ++f) {
+        for (std::size_t m = 0; m < nodes; ++m) {
+            bool same = true;
+            for (std::size_t k = 0; k < coords && same; ++k)
+                same = rTuples[f * coords + k] == rH.mTuples[m * coords + k];
+            if (same) {
+                if (used[m])
+                    throw ReadError(std::string("Medit: ") + rH.mOrderingKeyword +
+                                    " lists a node twice");
+                used[m] = true;
+                perm[f] = static_cast<int>(m);
+                break;
+            }
+        }
+        if (perm[f] < 0)
+            throw ReadError(std::string("Medit: ") + rH.mOrderingKeyword + " lists a node no " +
+                            rH.mKeyword + " element has");
+    }
+    return perm;
+}
+
+/// A cell section as read, held back until the file's ordering sections
+/// (which may come after it) are known.
+struct MeditStagedBlock {
+    std::string mType;
+    NDArray mConn;
+    NDArray mRef;
+};
+
+/// Puts the high-order blocks' nodes in meshio's order by the file's ordering
+/// sections (keyed by meshio type), then adds every block to the mesh in file order.
+void medit_add_blocks(Mesh& rMesh, std::vector<MeditStagedBlock>& rBlocks,
+                      const std::unordered_map<std::string, std::vector<int>>& rPerms) {
+    for (MeditStagedBlock& blk : rBlocks) {
+        const auto it = rPerms.find(blk.mType);
+        if (it != rPerms.end()) {
+            const std::vector<int>& perm = it->second;
+            const std::size_t k = perm.size();
+            std::int64_t* conn = blk.mConn.As<std::int64_t>();
+            const std::size_t rows = blk.mConn.Shape()[0];
+            std::vector<std::int64_t> row(k);
+            for (std::size_t r = 0; r < rows; ++r) {
+                for (std::size_t j = 0; j < k; ++j)
+                    row[static_cast<std::size_t>(perm[j])] = conn[r * k + j];
+                std::copy(row.begin(), row.end(), conn + r * k);
+            }
+        }
+        rMesh.AddCellBlock(blk.mType, std::move(blk.mConn));
+        rMesh.AppendCellData("medit:ref", std::move(blk.mRef));
+    }
 }
 
 // Whitespace/comment-skipping tokenizer over the whole file.
@@ -292,6 +430,8 @@ Mesh read_medit_ascii(const std::string& rPath) {
 
     const auto& e2m = medit_to_meshio();
     std::vector<std::pair<const MeditIdList*, std::vector<std::int64_t>>> id_lists;
+    std::vector<MeditStagedBlock> blocks;
+    std::unordered_map<std::string, std::vector<int>> perms;
 
     while (!tok.eof()) {
         std::string kw(tok.next());
@@ -333,8 +473,16 @@ Mesh read_medit_ascii(const std::string& rPath) {
                     dp[i * k + j] = tok.next_int() - 1;
                 rp[i] = tok.next_int();
             }
-            mesh.AddCellBlock(type, std::move(data));
-            mesh.AppendCellData("medit:ref", std::move(ref));
+            blocks.push_back({type, std::move(data), std::move(ref)});
+        } else if (const MeditHighOrder* ho = medit_high_order_of_ordering(kw)) {
+            // One tuple per node; anything else is not this element's ordering.
+            if (tok.next_count() != ho->mNodes)
+                throw ReadError(std::string("Medit: ") + ho->mOrderingKeyword + " lists " +
+                                "a number of nodes other than " + std::to_string(ho->mNodes));
+            std::vector<std::int64_t> tuples(static_cast<std::size_t>(ho->mNodes * ho->mCoords));
+            for (std::int64_t& v : tuples)
+                v = tok.next_int();
+            perms[ho->mType] = medit_ordering_permutation(*ho, tuples);
         } else if (const MeditIdList* id_list = medit_id_list(kw)) {
             // Vertex or element ids (1-based), kept as a region.
             const std::int64_t n = tok.next_count();
@@ -381,6 +529,7 @@ Mesh read_medit_ascii(const std::string& rPath) {
 
     if (!have_points)
         throw ReadError("Medit: expected Vertices");
+    medit_add_blocks(mesh, blocks, perms);
 
     NDArray pr(DType::Int64, {point_ref.size()});
     for (std::size_t i = 0; i < point_ref.size(); ++i)
@@ -427,16 +576,33 @@ void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
                                  });
     }
 
-    // Cells, grouped by medit element keyword.
+    // Cells, grouped by medit element keyword; a type with none is said so.
+    for (std::size_t ci = 0; ci < rMesh.NumCellBlocks(); ++ci) {
+        const std::string_view type = rMesh.Cells(ci).Type();
+        if (std::none_of(meshio_to_medit().begin(), meshio_to_medit().end(),
+                         [&](const auto& rMk) { return rMk.first == type; }))
+            log::warn("MEDIT's mesh format doesn't know {} cells. Skipping.", std::string(type));
+    }
     const std::string clabel_key = pick_first_int_cell(rMesh);
     for (const auto& mk : meshio_to_medit()) {
         const std::string& mtype = mk.first;
         const std::string& kw = mk.second.first;
         int k = mk.second.second;
+        bool ordered = false;
         for (std::size_t ci = 0; ci < rMesh.NumCellBlocks(); ++ci) {
             const auto cb = rMesh.Cells(ci);
             if (cb.Type() != mtype)
                 continue;
+            if (const MeditHighOrder* ho = medit_high_order_of_type(mtype); ho && !ordered) {
+                ordered = true;
+                os << "\n" << ho->mOrderingKeyword << "\n" << ho->mNodes << "\n";
+                for (int i = 0; i < ho->mNodes; ++i) {
+                    for (int j = 0; j < ho->mCoords; ++j)
+                        os << (j ? " " : "")
+                           << ho->mTuples[static_cast<std::size_t>(i * ho->mCoords + j)];
+                    os << "\n";
+                }
+            }
             std::size_t count = cb.NumCells();
             os << "\n" << kw << "\n" << count << "\n";
             const NDArray* lab = (!clabel_key.empty() && ci < rMesh.CellDataNumBlocks(clabel_key))
@@ -490,8 +656,9 @@ struct MeditBinCell {
     int mNodes;
 };
 const MeditBinCell kMeditBinCells[] = {
-    {5, "line", 2},  {6, "triangle", 3},    {7, "quad", 4},     {8, "tetra", 4},
-    {9, "wedge", 6}, {10, "hexahedron", 8}, {49, "pyramid", 5},
+    {5, "line", 2},   {6, "triangle", 3},    {7, "quad", 4},         {8, "tetra", 4},
+    {9, "wedge", 6},  {10, "hexahedron", 8}, {49, "pyramid", 5},     {25, "line3", 3},
+    {92, "line4", 4}, {24, "triangle6", 6},  {90, "triangle10", 10}, {30, "tetra10", 10},
 };
 
 // The id-list sections: libMeshb code -> keyword.
@@ -599,6 +766,8 @@ Mesh read_medit_binary(const std::string& rPath) {
     bool have_points = false;
     std::vector<std::int64_t> point_ref;
     std::vector<std::pair<const MeditIdList*, std::vector<std::int64_t>>> id_lists;
+    std::vector<MeditStagedBlock> blocks;
+    std::unordered_map<std::string, std::vector<int>> perms;
     const DType fdtype = version == 1 ? DType::Float32 : DType::Float64;
 
     while (true) {
@@ -624,6 +793,10 @@ Mesh read_medit_binary(const std::string& rPath) {
         for (const MeditBinIdList& k : kMeditBinIdLists)
             if (k.mCode == kw)
                 idl = &k;
+        const MeditHighOrder* ordering = nullptr;
+        for (const MeditHighOrder& h : kMeditHighOrder)
+            if (h.mOrderingCode == kw)
+                ordering = &h;
 
         if (kw == kMbVertices) {
             const std::size_t row = static_cast<std::size_t>(dim) * fsize + isize;
@@ -655,8 +828,18 @@ Mesh read_medit_binary(const std::string& rPath) {
                     data.As<std::int64_t>()[i * k + j] = c.Int(isize) - 1;
                 ref.As<std::int64_t>()[i] = c.Int(isize);
             }
-            mesh.AddCellBlock(cell->mType, std::move(data));
-            mesh.AppendCellData("medit:ref", std::move(ref));
+            blocks.push_back({cell->mType, std::move(data), std::move(ref)});
+        } else if (ordering) {
+            // One tuple per node; anything else is not this element's ordering.
+            if (c.Int(isize) != ordering->mNodes)
+                throw ReadError(std::string("Medit: ") + ordering->mOrderingKeyword +
+                                " lists a number of nodes other than " +
+                                std::to_string(ordering->mNodes));
+            std::vector<std::int64_t> tuples(
+                static_cast<std::size_t>(ordering->mNodes * ordering->mCoords));
+            for (std::int64_t& v : tuples)
+                v = c.Int(isize);
+            perms[ordering->mType] = medit_ordering_permutation(*ordering, tuples);
         } else if (idl) {
             const std::size_t n =
                 detail::checked_count(c.Int(isize), c.Left() / isize, "Medit", "entry");
@@ -677,6 +860,7 @@ Mesh read_medit_binary(const std::string& rPath) {
 
     if (!have_points)
         throw ReadError("Medit: expected Vertices");
+    medit_add_blocks(mesh, blocks, perms);
     NDArray pr(DType::Int64, {point_ref.size()});
     for (std::size_t i = 0; i < point_ref.size(); ++i)
         pr.As<std::int64_t>()[i] = point_ref[i];
@@ -769,8 +953,18 @@ void write_medit_binary(const std::string& rPath, const Mesh& rMesh) {
             medit_put_int(out, plabels ? (*plabels)[i] : 1, isize);
         }
     }
+    std::vector<const MeditHighOrder*> ordered;
     for (const Block& blk : blocks) {
         const auto cb = rMesh.Cells(blk.mIndex);
+        // A high-order type's ordering, once, before its first section.
+        if (const MeditHighOrder* ho = medit_high_order_of_type(cb.Type());
+            ho && std::find(ordered.begin(), ordered.end(), ho) == ordered.end()) {
+            ordered.push_back(ho);
+            const auto values = static_cast<std::size_t>(ho->mNodes * ho->mCoords);
+            header(ho->mOrderingCode, ho->mNodes, static_cast<std::int64_t>(values * isize));
+            for (std::size_t i = 0; i < values; ++i)
+                medit_put_int(out, ho->mTuples[i], isize);
+        }
         const std::size_t count = cb.NumCells();
         header(blk.mCode, static_cast<std::int64_t>(count),
                static_cast<std::int64_t>(count * (blk.mNodes + 1) * isize));

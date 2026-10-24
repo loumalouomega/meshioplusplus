@@ -6,9 +6,13 @@ JSON, STEP or IGES read, or the bare dict) at one global target edge size,
 with no CAD kernel: every edge is sampled once and shared by the faces that
 use it, so the result conforms; each face is a constrained Delaunay
 triangulation of its parameter domain, lifted onto its surface. A face that
-cannot be meshed is reported by index and reason, never meshed wrong.
+cannot be meshed is reported by index and reason, never meshed wrong. With
+``min_angle`` every face is refined by Delaunay refinement (Ruppert, Chew)
+until its triangles' smallest angles on the surface reach the bound; corners
+under 60 degrees and poles that keep triangles below it are reported.
+``smooth_iterations`` adds guarded Laplacian or ODT smoothing.
 ``triangulate_polygon_2d`` exposes the planar constrained Delaunay
-triangulation underneath. There is no numpy twin: without the compiled core
+triangulation underneath, with the same ``min_angle``. There is no numpy twin: without the compiled core
 both raise ``NotImplementedError``. See ``doc/mesh_cad.md``.
 """
 
@@ -33,6 +37,9 @@ FACE_STATUSES = (
     "other",
 )
 
+#: How smoothing moves an interior point.
+SMOOTH_METHODS = ("laplacian", "odt")
+
 _REPORT_INTS = (
     "num_points",
     "num_triangles",
@@ -44,6 +51,10 @@ _REPORT_INTS = (
     "num_non_manifold_edges",
     "num_misoriented_edges",
     "num_degenerate_dropped",
+    "num_refinement_points",
+    "num_faces_below_bound",
+    "num_smoothed",
+    "num_curved_straightened",
 )
 _REPORT_FLOATS = (
     "tolerance",
@@ -94,6 +105,10 @@ def mesh_cad_surface(
     match_unreferenced_trims: bool = True,
     strict: bool = False,
     max_points: int = 50_000_000,
+    min_angle: float = 0.0,
+    smooth_iterations: int = 0,
+    smooth_method: str = "laplacian",
+    order: int = 1,
     return_report: bool = False,
 ):
     """Triangulate a B-rep's faces into one conforming surface mesh.
@@ -116,14 +131,31 @@ def mesh_cad_surface(
     :param strict: raise ``RuntimeError`` when any face fails, instead of
         reporting it.
     :param max_points: the most points in the result.
+    :param min_angle: refine until every triangle's smallest angle on the
+        surface is at least this (degrees, under 60); 0 keeps the unrefined
+        mesh. Up to 20.7 degrees it is guaranteed away from corners under 60
+        degrees; above, a target whose shortfall is reported.
+    :param smooth_iterations: passes of guarded smoothing; 0 is none.
+    :param smooth_method: ``"laplacian"`` or ``"odt"``.
+    :param order: 1 for linear triangles; 2 or 3 for curved ``triangle6`` or
+        ``triangle10`` elements (and ``line3``, ``line4``) whose nodes lie on
+        the surface and the edges. An element whose Jacobian is not positive
+        everywhere inside is written straight-sided and counted
+        (``num_curved_straightened``).
     :param return_report: also return the report.
-    :returns: the surface mesh (``triangle`` and ``line`` blocks), or
+    :returns: the surface mesh (``triangle`` and ``line`` blocks, or their
+        curved forms with ``order`` 2 or 3), or
         ``(mesh, report)``. The report has the counts (``num_failed``,
         ``num_open_edges``, ``num_non_manifold_edges``,
         ``num_misoriented_edges``, ...), the extreme angles and edge lengths,
         ``max_edge_gap`` (how far two uses of one edge disagree), ``faces``
-        (one dict per face: ``status``, ``reason``, counts and extremes) and
-        ``warnings``.
+        (one dict per face: ``status``, ``reason``, counts and extremes,
+        ``below_bound``, ``bound_deg``, ``min_input_angle_deg`` and its
+        ``corners``), ``warnings``, refinement's ``num_refinement_points``,
+        ``num_faces_below_bound`` and ``num_smoothed``,
+        ``num_curved_straightened``, and
+        ``angle_histogram`` (every angle on the surface in 18 bins of 10
+        degrees).
     :raises ValueError: on an option out of range or a mesh with no B-rep.
     :raises RuntimeError: with ``strict=True``, naming the first failed face.
     :raises NotImplementedError: without the compiled core.
@@ -143,6 +175,15 @@ def mesh_cad_surface(
         raise ValueError(f"{_PREFIX}min_points_per_edge must not be negative")
     if int(max_points) < 1:
         raise ValueError(f"{_PREFIX}max_points must be positive")
+    min_angle = float(min_angle)
+    if not (math.isfinite(min_angle) and 0.0 <= min_angle < 60.0):
+        raise ValueError(f"{_PREFIX}min_angle must lie in [0, 60) degrees")
+    if int(smooth_iterations) < 0:
+        raise ValueError(f"{_PREFIX}smooth_iterations must not be negative")
+    if smooth_method not in SMOOTH_METHODS:
+        raise ValueError(f"{_PREFIX}smooth_method must be one of {SMOOTH_METHODS}")
+    if isinstance(order, bool) or int(order) not in (1, 2, 3):
+        raise ValueError(f"{_PREFIX}order must be 1, 2 or 3")
 
     _core = _core_or_raise("mesh_cad_surface")
     res = _core.mesh_cad_surface(
@@ -156,18 +197,32 @@ def mesh_cad_surface(
         match_unreferenced_trims=bool(match_unreferenced_trims),
         strict=bool(strict),
         max_points=int(max_points),
+        min_angle=min_angle,
+        smooth_iterations=int(smooth_iterations),
+        smooth_method=smooth_method,
+        order=int(order),
     )
     out = res["mesh"]
     if not return_report:
         return out
     report = {k: int(res[k]) for k in _REPORT_INTS}
     report.update({k: float(res[k]) for k in _REPORT_FLOATS})
-    report["faces"] = [dict(f) for f in res["faces"]]
+    report["faces"] = [
+        {**f, "corners": [dict(c) for c in f["corners"]]} for f in res["faces"]
+    ]
     report["warnings"] = [str(w) for w in res["warnings"]]
+    report["angle_histogram"] = [int(b) for b in res["angle_histogram"]]
     return out, report
 
 
-def triangulate_polygon_2d(outer, holes=(), target_size: float = 0.0):
+def triangulate_polygon_2d(
+    outer,
+    holes=(),
+    target_size: float = 0.0,
+    *,
+    min_angle: float = 0.0,
+    max_points: int = 1_000_000,
+):
     """The constrained Delaunay triangulation of a polygon with holes.
 
     :param outer: the boundary, ``(n, 2)``, a closed polyline whose last
@@ -177,10 +232,18 @@ def triangulate_polygon_2d(outer, holes=(), target_size: float = 0.0):
     :param target_size: 0 keeps the boundary as given and adds no interior
         point; ``h > 0`` splits boundary segments longer than ``h`` and fills
         the inside with an equilateral lattice of spacing ``h``.
+    :param min_angle: refine (Ruppert's algorithm, splitting the boundary)
+        until every angle is at least this (degrees, under 60); 0 keeps the
+        unrefined triangulation. Corners under 60 degrees keep the triangles
+        they force.
+    :param max_points: the most points refinement adds.
     :returns: a ``triangle`` mesh in the plane z = 0, triangles
         counter-clockwise.
-    :raises ValueError: for a negative size, non-finite points, or a
-        boundary that is degenerate, open or crosses itself.
+    :raises ValueError: for a negative size, a ``min_angle`` outside
+        ``[0, 60)``, non-finite points, a coordinate
+        outside the range the exact predicates hold in (zero, or a magnitude
+        in ``[2**-128, 2**128]``), or a boundary that is degenerate, open or
+        crosses itself.
     :raises NotImplementedError: without the compiled core.
     """
     loops = []
@@ -196,8 +259,19 @@ def triangulate_polygon_2d(outer, holes=(), target_size: float = 0.0):
         raise ValueError(
             "meshio++: triangulate_polygon_2d: target_size must be finite and not negative"
         )
+    min_angle = float(min_angle)
+    if not (math.isfinite(min_angle) and 0.0 <= min_angle < 60.0):
+        raise ValueError(
+            "meshio++: triangulate_polygon_2d: min_angle must lie in [0, 60) degrees"
+        )
+    if int(max_points) < 0:
+        raise ValueError(
+            "meshio++: triangulate_polygon_2d: max_points must not be negative"
+        )
     _core = _core_or_raise("triangulate_polygon_2d")
-    return _core.triangulate_polygon_2d(loops, target_size)
+    return _core.triangulate_polygon_2d(
+        loops, target_size, min_angle=min_angle, max_points=int(max_points)
+    )
 
 
 __all__ = ["mesh_cad_surface", "triangulate_polygon_2d"]

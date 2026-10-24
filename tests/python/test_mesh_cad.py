@@ -6,9 +6,10 @@ The CAD JSON fixtures through the Python wrapper: the closed solids
 their area and enclosed volume converging at second order, the trimmed plate
 keeps its hole, the Scordelis-Lo roof (an untrimmed patch whose parameter
 scales differ fortyfold) and the two-patch beam (a coupling edge shared by
-two faces) mesh conformingly; the report, the refusals before the core,
-strict mode, a bare B-rep dict, round trips through VTU and Gmsh, both CLI
-verbs and the pipeline's refusal by name. With OpenCASCADE, a STEP solid.
+two faces, and an embedded edge meshed as mesh edges) mesh conformingly;
+the report, the refusals before the core, strict mode, a bare B-rep dict,
+round trips through VTU and Gmsh, both CLI verbs and the pipeline's refusal
+by name. With OpenCASCADE, a STEP solid.
 The algorithm itself is tested in the core (``tests/cpp/test_mesh_cad.cpp``,
 ``test_cdt2d.cpp``, ``test_edge_sampler.cpp``, ``test_predicates.cpp``).
 """
@@ -135,7 +136,48 @@ def test_two_patch_beam_shares_its_coupling_edge():
     on0 = set(tri[face == 0].ravel())
     on1 = set(tri[face == 1].ravel())
     assert len(on0 & on1) > 2
-    assert any("embedded" in w for w in report["warnings"])
+    # Roadmap 6.1.1: the first face's embedded edge is meshed, not warned
+    # about: its line cells are edges of two triangles of that face.
+    assert not any("embedded" in w for w in report["warnings"])
+    uses = {}
+    for t in tri[face == 0]:
+        for a, b in ((t[0], t[1]), (t[1], t[2]), (t[2], t[0])):
+            key = (min(a, b), max(a, b))
+            uses[key] = uses.get(key, 0) + 1
+    lines = out.cells[1].data
+    interior = [(a, b) for a, b in lines if uses.get((min(a, b), max(a, b)), 0) == 2]
+    assert len(interior) >= 5  # the curve is about 3 long; h = 0.2
+
+
+@needs_core
+def test_closed_edge_started_elsewhere_is_rotated():
+    # Roadmap 6.1.2: the top cap's circle starts a quarter turn after the
+    # band's rim; the cap is a loop of its own, so it is rotated onto the
+    # rim's corner and the solid closes.
+    out, report = mio.mesh_cad_surface(
+        _read("capped_cylinder_offset.cad.json"), 0.2, return_report=True
+    )
+    _watertight(report)
+    assert report["max_edge_gap"] < 1e-12
+    area, volume = _measure(out)
+    assert abs(volume - 2 * math.pi) < 0.02 * 2 * math.pi
+    assert abs(area - 6 * math.pi) < 0.02 * 6 * math.pi
+
+
+@needs_core
+def test_loops_crossing_at_a_coarse_size_are_split():
+    # Roadmap 6.1.3: the hole comes within 0.02 of the rim, and at h = 1.1 a
+    # rim chord passes inside the hole's sample. The pieces involved are
+    # halved until the loops do not cross, and the plate is meshed.
+    model = _read("plate_with_near_hole.cad.json")
+    out, report = mio.mesh_cad_surface(model, 1.1, return_report=True)
+    assert report["num_failed"] == 0, report["faces"]
+    assert report["num_non_manifold_edges"] == 0
+    area, _ = _measure(out)
+    assert 0.9 * 3 * math.pi < area < 3 * math.pi
+    # The same at a size that never crossed: nothing to split.
+    fine = mio.mesh_cad_surface(model, 0.1)
+    assert 0.99 * 3 * math.pi < _measure(fine)[0] < 3 * math.pi
 
 
 @needs_core
@@ -257,6 +299,130 @@ def test_triangulate_polygon_2d():
         mio.triangulate_polygon_2d(outer, target_size=-1.0)
     with pytest.raises(ValueError, match=r"\(n, 2\)"):
         mio.triangulate_polygon_2d([[0, 0, 0], [1, 0, 0], [0, 1, 0]])
+    # Beyond the range the exact predicates hold in (a fuzz finding).
+    with pytest.raises(ValueError, match="exact predicates"):
+        mio.triangulate_polygon_2d([[5e-299, -8.9e304], [-8.9e304, 1e-323], [0, 0]])
+
+
+def _min_angles(mesh):
+    """The smallest angle (degrees) of every triangle."""
+    tri = [c for c in mesh.cells if c.type == "triangle"][0].data
+    p = mesh.points[tri]
+    out = np.full(len(tri), 180.0)
+    for k in range(3):
+        u = p[:, (k + 1) % 3] - p[:, k]
+        v = p[:, (k + 2) % 3] - p[:, k]
+        ang = np.degrees(
+            np.arctan2(
+                np.linalg.norm(np.cross(u, v), axis=1), np.einsum("ij,ij->i", u, v)
+            )
+        )
+        out = np.minimum(out, ang)
+    return out
+
+
+@needs_core
+@pytest.mark.parametrize(
+    "name", ["plate_with_hole.cad.json", "capped_cylinder.cad.json", "sphere.cad.json"]
+)
+def test_refinement_meets_the_bound_or_reports_the_corner(name):
+    """Roadmap 6.2.7 on the CAD JSON fixtures: every triangle meets 25 degrees
+    except within the reach of a reported pole; 0 keeps the unrefined mesh."""
+    model = _read(name)
+    plain = mio.mesh_cad_surface(model, 0.2)
+    zero = mio.mesh_cad_surface(model, 0.2, min_angle=0.0)
+    np.testing.assert_array_equal(plain.points, zero.points)
+    out, report = mio.mesh_cad_surface(model, 0.2, min_angle=25.0, return_report=True)
+    assert report["num_failed"] == 0
+    poles = [c for f in report["faces"] for c in f["corners"] if c["pole"]]
+    assert all(not c["pole"] or c["reach"] >= 0.2 for c in poles)
+    tri = [c for c in out.cells if c.type == "triangle"][0].data
+    below = _min_angles(out) < 25.0 - 1e-9
+    for t in np.nonzero(below)[0]:
+        x = out.points[tri[t]]
+        assert any(
+            np.min(np.linalg.norm(x - np.asarray(c["x"]), axis=1)) <= c["reach"] + 1e-12
+            for c in poles
+        ), "a triangle under the bound touches no reported corner"
+    assert sum(report["angle_histogram"]) == 3 * report["num_triangles"]
+    assert report["num_faces_below_bound"] == sum(
+        f["below_bound"] for f in report["faces"]
+    )
+    if name.startswith("sphere"):
+        assert len(poles) == 2
+    else:
+        assert not poles and report["num_faces_below_bound"] == 0
+
+
+@needs_core
+@pytest.mark.parametrize("order", [2, 3])
+def test_curved_elements_put_every_node_on_the_sphere(order):
+    """Roadmap 6.6: order 2 and 3 give triangle6/line3 and triangle10/line4
+    whose corners are the linear mesh and whose every node is on the sphere."""
+    model = _read("sphere.cad.json")
+    linear = mio.mesh_cad_surface(model, 0.3)
+    out, report = mio.mesh_cad_surface(model, 0.3, order=order, return_report=True)
+    _watertight(report)
+    assert [c.type for c in out.cells] == (
+        ["triangle6", "line3"] if order == 2 else ["triangle10", "line4"]
+    )
+    assert report["num_curved_straightened"] == 0
+    np.testing.assert_array_equal(out.points[: len(linear.points)], linear.points)
+    np.testing.assert_array_equal(out.cells[0].data[:, :3], linear.cells[0].data)
+    np.testing.assert_allclose(np.linalg.norm(out.points, axis=1), 1.0, atol=1e-12)
+    for bad in (0, 4, True):
+        with pytest.raises(ValueError, match="order"):
+            mio.mesh_cad_surface(model, 0.3, order=bad)
+
+
+@needs_core
+@pytest.mark.parametrize("order", [2, 3])
+@pytest.mark.parametrize("ext", [".mesh", ".meshb", ".msh"])
+def test_curved_elements_survive_a_file(tmp_path, order, ext):
+    """The curved elements round-trip through Medit (its P2/P3 keywords) and
+    Gmsh with their node order."""
+    out = mio.mesh_cad_surface(_read("sphere.cad.json"), 0.5, order=order)
+    path = tmp_path / ("curved" + ext)
+    mio.write(path, out, file_format="gmsh" if ext == ".msh" else None)
+    back = mio.read(path, file_format="gmsh" if ext == ".msh" else None)
+    by_type = {c.type: c.data for c in back.cells}
+    for c in out.cells:
+        np.testing.assert_array_equal(by_type[c.type], c.data)
+    np.testing.assert_allclose(back.points, out.points, rtol=0, atol=1e-15)
+
+
+@needs_core
+def test_smoothing_moves_the_inside_only():
+    model = _read("sphere.cad.json")
+    plain, r0 = mio.mesh_cad_surface(model, 0.2, return_report=True)
+    for method in ("laplacian", "odt"):
+        out, report = mio.mesh_cad_surface(
+            model, 0.2, smooth_iterations=2, smooth_method=method, return_report=True
+        )
+        _watertight(report)
+        assert report["num_smoothed"] > 0
+        boundary = r0["num_points"] - sum(f["num_interior_points"] for f in r0["faces"])
+        np.testing.assert_array_equal(out.points[:boundary], plain.points[:boundary])
+        np.testing.assert_allclose(np.linalg.norm(out.points, axis=1), 1.0, atol=1e-12)
+    with pytest.raises(ValueError, match="smooth_method"):
+        mio.mesh_cad_surface(model, 0.2, smooth_method="none")
+    with pytest.raises(ValueError, match="min_angle"):
+        mio.mesh_cad_surface(model, 0.2, min_angle=60.0)
+
+
+@needs_core
+def test_triangulate_polygon_2d_refines_to_a_min_angle():
+    outer = [[0, 0], [2, 0], [2, 1], [1, 1], [1, 2], [0, 2]]
+    m = mio.triangulate_polygon_2d(outer, target_size=0.3, min_angle=30.0)
+    assert _measure(m)[0] == pytest.approx(3.0, rel=1e-12)
+    assert _min_angles(m).min() >= 30.0 - 1e-9
+    plain = mio.triangulate_polygon_2d(outer, target_size=0.3)
+    np.testing.assert_array_equal(
+        plain.points,
+        mio.triangulate_polygon_2d(outer, target_size=0.3, min_angle=0).points,
+    )
+    with pytest.raises(ValueError, match="min_angle"):
+        mio.triangulate_polygon_2d(outer, min_angle=75.0)
 
 
 @needs_core

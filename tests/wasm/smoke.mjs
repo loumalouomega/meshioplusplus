@@ -3523,6 +3523,35 @@ step('meshCadSurface: a trimmed CAD JSON face triangulated and reported', () => 
     assert.equal(r.mesh.cells[0].type, 'triangle');
     assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0 }), /target_size/);
     assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, bogus: 1 }), /bogus/);
+    // v17.15.0: refined to 25 degrees and smoothed; the two 45-degree corners
+    // are reported, every angle counted.
+    const q = m.meshCadSurface(read.info, {
+        targetSize: 0.1, minAngle: 25, smoothIterations: 2, smoothMethod: 'odt',
+    });
+    assert.ok(q.minAngleDeg >= 25 - 1e-9);
+    assert.ok(q.numSmoothed > 0);
+    assert.equal(q.angleHistogram.length, 18);
+    assert.equal(q.angleHistogram.reduce((a, b) => a + b, 0), 3 * q.numTriangles);
+    assert.equal(q.faces[0].corners.length, 2);
+    for (const c of q.faces[0].corners) {
+        assert.equal(c.pole, false);
+        assert.ok(Math.abs(c.angleDeg - 45) < 1e-9);
+    }
+    assert.ok(Math.abs(q.faces[0].minInputAngleDeg - 45) < 1e-9);
+    assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, smoothMethod: 'none' }),
+                  /smoothMethod/);
+    assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, minAngle: 60 }),
+                  /min_angle/);
+    // v17.16.0: curved triangles, their nodes on the geometry.
+    for (const [order, type] of [[2, 'triangle6'], [3, 'triangle10']]) {
+        const c = m.meshCadSurface(read.info, { targetSize: 0.1, order });
+        assert.equal(c.numTriangles, r.numTriangles);
+        assert.ok(c.numPoints > r.numPoints);
+        assert.equal(c.numCurvedStraightened, 0);
+        assert.ok(c.mesh.cells.some((b) => b.type === type));
+    }
+    assert.equal(r.numCurvedStraightened, 0);
+    assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, order: 4 }), /order/);
 });
 
 step('info: the mdpa blocks a mesh cannot hold round-trip through info', () => {

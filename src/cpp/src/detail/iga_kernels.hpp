@@ -372,12 +372,41 @@ inline void iga_net_elevate(IgaNet& rNet, std::size_t Dir, int T) {
     rNet.mDegrees[Dir] = p + T;
 }
 
+/// Scratch doubles for the per-point evaluators: on the stack up to `N`,
+/// past it on the heap. An allocation per call was most of their cost.
+template <std::size_t N>
+class IgaScratch {
+public:
+    IgaScratch() = default;
+    explicit IgaScratch(std::size_t Size, double Value = 0.0) { Assign(Size, Value); }
+    IgaScratch(const IgaScratch&) = delete;
+    IgaScratch& operator=(const IgaScratch&) = delete;
+
+    void Assign(std::size_t Size, double Value) {
+        if (Size > N) {
+            mHeap.assign(Size, Value);
+            mData = mHeap.data();
+        } else {
+            std::fill(mFixed.begin(), mFixed.begin() + static_cast<std::ptrdiff_t>(Size), Value);
+            mData = mFixed.data();
+        }
+    }
+    double* data() { return mData; }
+    double& operator[](std::size_t I) { return mData[I]; }
+    double operator[](std::size_t I) const { return mData[I]; }
+
+private:
+    std::array<double, N> mFixed;
+    std::vector<double> mHeap;
+    double* mData = mFixed.data();
+};
+
 /// A2.3 for first derivatives: `pDers` is `(NDer + 1)` rows of `P + 1`
 /// values, row 0 the basis functions, row 1 their derivatives.
 inline void iga_basis_ders(std::size_t Span, double U, int P, int NDer,
                            const std::vector<double>& rKnots, double* pDers) {
     const auto p = static_cast<std::size_t>(P);
-    std::vector<double> ndu((p + 1) * (p + 1), 0.0), left(p + 1, 0.0), right(p + 1, 0.0);
+    IgaScratch<64> ndu((p + 1) * (p + 1)), left(p + 1), right(p + 1);
     const auto at = [p](std::size_t R, std::size_t Cc) { return R * (p + 1) + Cc; };
     ndu[at(0, 0)] = 1.0;
     for (std::size_t j = 1; j <= p; ++j) {
@@ -429,14 +458,15 @@ struct IgaEvalNet {
 inline void iga_eval_point(const IgaEvalNet& rNet, const std::size_t* pSpan, const double* pU,
                            int NDer, double* pOut, double* pDer) {
     const std::size_t dim = rNet.mDim, NV = rNet.mColumns;
-    std::array<std::vector<double>, 3> ders;
+    std::array<IgaScratch<32>, 3> ders;
     for (std::size_t d = 0; d < dim; ++d) {
-        ders[d].assign(
+        ders[d].Assign(
             static_cast<std::size_t>(NDer + 1) * (static_cast<std::size_t>(rNet.mDegrees[d]) + 1),
             0.0);
         iga_basis_ders(pSpan[d], pU[d], rNet.mDegrees[d], NDer, *rNet.mKnots[d], ders[d].data());
     }
-    std::vector<double> acc(NV, 0.0), dacc(dim * NV, 0.0);
+    IgaScratch<16> acc(NV);
+    IgaScratch<48> dacc(dim * NV);
     double wsum = 0.0;
     std::array<double, 3> dwsum{0.0, 0.0, 0.0};
     std::array<std::size_t, 3> np1{1, 1, 1}, base{0, 0, 0};

@@ -1017,17 +1017,14 @@ int main(int argc, char** argv) {
             o.mMaxSize = 8.0 * octree_step;
             of(pD, mio::octree_mesh(surface, o).mMesh);
         });
-        // mesh_cad_surface (v17.13.0): the unit box as six untrimmed bilinear
-        // patches with no edge topology (the trims are paired by their
-        // images), meshed at one lattice step.
-        row("mesh_cad_surface", [&](MeshDigest* pD) {
+        // The CAD models of the mesh_cad_surface rows, built inside each row's
+        // timed body as before.
+        const auto cad_box = [&]() {
             mio::BrepInfo box;
-            const double sides[6][3][3] = {{{0, 0, 0}, {0, 1, 0}, {1, 0, 0}},
-                                           {{0, 0, 1}, {1, 0, 0}, {0, 1, 0}},
-                                           {{0, 0, 0}, {1, 0, 0}, {0, 0, 1}},
-                                           {{0, 1, 0}, {0, 0, 1}, {1, 0, 0}},
-                                           {{0, 0, 0}, {0, 0, 1}, {0, 1, 0}},
-                                           {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
+            const double sides[6][3][3] = {
+                {{0, 0, 0}, {0, 1, 0}, {1, 0, 0}}, {{0, 0, 1}, {1, 0, 0}, {0, 1, 0}},
+                {{0, 0, 0}, {1, 0, 0}, {0, 0, 1}}, {{0, 1, 0}, {0, 0, 1}, {1, 0, 0}},
+                {{0, 0, 0}, {0, 0, 1}, {0, 1, 0}}, {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
             for (int f = 0; f < 6; ++f) {
                 mio::NurbsPatch p;
                 p.mDegrees = {1, 1};
@@ -1047,9 +1044,125 @@ int main(int argc, char** argv) {
                 face.mPatch = f;
                 box.mFaces.push_back(face);
             }
+            return box;
+        };
+        const auto cad_plate = [&]() {
+            constexpr double kTwoPi = 6.283185307179586;
+            // A full circle in the plane's parameters: four rational quarters
+            // from angle A0, run counter-clockwise or not.
+            const auto circle = [&](double Cx, double Cy, double R, double A0, bool Ccw) {
+                mio::BrepTrim t;
+                t.mDirection = Ccw;
+                mio::BrepCurve& c = t.mCurve;
+                c.mDegree = 2;
+                c.mRational = true;
+                const double q = 0.25 * kTwoPi;
+                c.mKnots = {0, 0, 0, q, q, 2 * q, 2 * q, 3 * q, 3 * q, 4 * q, 4 * q, 4 * q};
+                c.mControlPoints = NDArray(mio::DType::Float64, {9, 3});
+                c.mWeights = NDArray(mio::DType::Float64, {9});
+                const double w = std::sqrt(0.5);
+                for (int k = 0; k < 9; ++k) {
+                    const double a = A0 + 0.5 * q * k;
+                    const double r = k % 2 ? R / w : R;
+                    double* p = c.mControlPoints.As<double>() + 3 * k;
+                    p[0] = Cx + r * std::cos(a);
+                    p[1] = Cy + r * std::sin(a);
+                    p[2] = 0.0;
+                    c.mWeights.As<double>()[k] = k % 2 ? w : 1.0;
+                }
+                return t;
+            };
+            mio::BrepInfo plate;
+            mio::NurbsPatch p;
+            p.mDegrees = {1, 1};
+            p.mKnots = {{-2.5, -2.5, 2.5, 2.5}, {-2.5, -2.5, 2.5, 2.5}};
+            p.mControlPoints = NDArray(mio::DType::Float64, {4, 3});
+            p.mWeights = NDArray(mio::DType::Float64, {4});
+            for (int j = 0; j < 2; ++j)
+                for (int i = 0; i < 2; ++i) {
+                    double* x = p.mControlPoints.As<double>() + 3 * (2 * j + i);
+                    x[0] = i ? 2.5 : -2.5;
+                    x[1] = j ? 2.5 : -2.5;
+                    x[2] = 0.0;
+                    p.mWeights.As<double>()[2 * j + i] = 1.0;
+                }
+            plate.mPatches.push_back(p);
+            mio::BrepFace face;
+            face.mId = 1;
+            face.mPatch = 0;
+            face.mTrimmed = true;
+            face.mRational = true;
+            face.mLoops.resize(2);
+            face.mLoops[0].mTrims.push_back(circle(0.0, 0.0, 2.0, 0.625 * kTwoPi, true));
+            face.mLoops[1].mType = "inner";
+            face.mLoops[1].mTrims.push_back(circle(0.98, 0.0, 1.0, 0.0, false));
+            mio::BrepTrim line;
+            line.mCurve.mDegree = 1;
+            line.mCurve.mKnots = {0, 0, 1, 1};
+            line.mCurve.mControlPoints = NDArray(mio::DType::Float64, {2, 3});
+            line.mCurve.mWeights = NDArray(mio::DType::Float64, {2});
+            const double ends[6] = {-1.6, -0.6, 0.0, -0.4, 1.2, 0.0};
+            std::copy(ends, ends + 6, line.mCurve.mControlPoints.As<double>());
+            line.mCurve.mWeights.As<double>()[0] = 1.0;
+            line.mCurve.mWeights.As<double>()[1] = 1.0;
+            face.mEmbeddedEdges.push_back(line);
+            plate.mFaces.push_back(face);
+            return plate;
+        };
+        // mesh_cad_surface (v17.13.0): the unit box as six untrimmed bilinear
+        // patches with no edge topology (the trims are paired by their
+        // images), meshed at one lattice step.
+        row("mesh_cad_surface", [&](MeshDigest* pD) {
+            const mio::BrepInfo box = cad_box();
             mio::MeshCadSurfaceOptions o;
             o.mTargetSize = octree_step;
             of(pD, mio::mesh_cad_surface(box, o).mMesh);
+        });
+        // mesh_cad_surface on trimmed geometry (v17.14.0): a disc plate of
+        // radius 2 with a hole of radius 1 whose edge comes within 0.02 of the
+        // rim, and an embedded line across the plate. At h = 1.1 the coarse
+        // loops cross and are split until they do not; at the tier's step
+        // the plate is filled around the embedded edge.
+        row("mesh_cad_surface_trimmed", [&](MeshDigest* pD) {
+            const mio::BrepInfo plate = cad_plate();
+            for (const double h : {1.1, 4.0 * octree_step}) {
+                mio::MeshCadSurfaceOptions o;
+                o.mTargetSize = h;
+                of(pD, mio::mesh_cad_surface(plate, o).mMesh);
+            }
+        });
+        // Delaunay refinement (v17.15.0): the same two models refined to 25
+        // degrees on the surface (the plate also smoothed twice), against
+        // the two rows above at the same sizes for refinement's cost.
+        row("mesh_cad_surface_refined", [&](MeshDigest* pD) {
+            const mio::BrepInfo box = cad_box();
+            const mio::BrepInfo plate = cad_plate();
+            mio::MeshCadSurfaceOptions o;
+            o.mTargetSize = octree_step;
+            o.mMinAngleDeg = 25.0;
+            of(pD, mio::mesh_cad_surface(box, o).mMesh);
+            for (const double h : {1.1, 4.0 * octree_step}) {
+                o.mTargetSize = h;
+                o.mSmoothIterations = 2;
+                of(pD, mio::mesh_cad_surface(plate, o).mMesh);
+            }
+        });
+        // Curved elements (v17.16.0): the same two models at orders 2 and 3,
+        // their nodes placed on the geometry and every element's Jacobian
+        // bounded, against the unrefined rows above at the same sizes.
+        row("mesh_cad_surface_curved", [&](MeshDigest* pD) {
+            const mio::BrepInfo box = cad_box();
+            const mio::BrepInfo plate = cad_plate();
+            for (const std::int32_t order : {2, 3}) {
+                mio::MeshCadSurfaceOptions o;
+                o.mOrder = order;
+                o.mTargetSize = octree_step;
+                of(pD, mio::mesh_cad_surface(box, o).mMesh);
+                for (const double h : {1.1, 4.0 * octree_step}) {
+                    o.mTargetSize = h;
+                    of(pD, mio::mesh_cad_surface(plate, o).mMesh);
+                }
+            }
         });
         row("sample_distance", [&](MeshDigest* pD) {
             const NDArray d = mio::sample_distance(surface, jittered->Points());

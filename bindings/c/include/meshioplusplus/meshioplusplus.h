@@ -254,7 +254,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 17
-#define MIO_VERSION_MINOR 13
+#define MIO_VERSION_MINOR 16
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -5564,13 +5564,22 @@ typedef enum mio_mesh_cad_face_status {
     MIO_MESH_CAD_OK = 0,
     MIO_MESH_CAD_EMPTY = 1,             /**< its loops enclose nothing */
     MIO_MESH_CAD_OPEN_LOOP = 2,         /**< its loops do not bound a domain consistently */
-    MIO_MESH_CAD_SELF_INTERSECTING = 3, /**< its boundary crosses itself at this size */
+    MIO_MESH_CAD_SELF_INTERSECTING = 3, /**< its boundary meets itself, even after splitting */
     MIO_MESH_CAD_DEGENERATE = 4,        /**< distinct boundary samples coincide */
     MIO_MESH_CAD_PROJECTION_FAILED = 5, /**< an edge could not be carried to its trim */
     MIO_MESH_CAD_BUDGET_EXCEEDED = 6,   /**< more points than max_points */
     MIO_MESH_CAD_UNSUPPORTED = 7,       /**< an invalid surface or trim */
     MIO_MESH_CAD_OTHER = 8
 } mio_mesh_cad_face_status;
+
+/** How smoothing moves an interior point (MeshCadSmoothing). */
+typedef enum mio_mesh_cad_smoothing {
+    MIO_MESH_CAD_SMOOTH_LAPLACIAN = 0, /**< toward the centroid of its neighbours */
+    MIO_MESH_CAD_SMOOTH_ODT = 1        /**< to its star's area-weighted circumcentre */
+} mio_mesh_cad_smoothing;
+
+/** The bins of mio_mesh_cad_surface_angle_histogram(): 10 degrees each, 0 to 180. */
+#define MIO_MESH_CAD_ANGLE_BINS 18
 
 /**
  * Options for mio_mesh_cad_surface. Same ABI rules as above; always initialize
@@ -5588,7 +5597,16 @@ typedef struct mio_mesh_cad_surface_opts {
     int32_t edges;                /**< nonzero: a line block of the edges with "cad:edge" */
     int32_t match_unreferenced_trims; /**< nonzero: pair trims no edge names by their images */
     int32_t strict;               /**< nonzero: fail when any face cannot be meshed */
-    int64_t reserved[6];          /**< must be zero; room for additive growth */
+    /** v17.15.0: refine until every angle on the surface is at least this
+     *  (degrees, under 60); 0 keeps the unrefined mesh. */
+    double min_angle_deg;
+    int32_t smooth_iterations;    /**< v17.15.0: passes of guarded smoothing; 0 is none */
+    int32_t smooth_method;        /**< v17.15.0: a mio_mesh_cad_smoothing */
+    /** v17.16.0: 1 linear triangles; 2 and 3 curved triangle6 and triangle10
+     *  (and line3, line4), their nodes on the surface and edges; 0 is 1. */
+    int32_t order;
+    int32_t reserved_pad; /**< must be zero */
+    int64_t reserved[3];  /**< must be zero; room for additive growth */
 } mio_mesh_cad_surface_opts;
 
 /** What mio_mesh_cad_surface did. */
@@ -5610,8 +5628,34 @@ typedef struct mio_mesh_cad_surface_report {
     double max_edge;
     double max_edge_gap;             /**< how far two uses of one edge or corner disagree */
     int64_t num_warnings;            /**< see mio_mesh_cad_surface_warnings() */
-    int64_t reserved[8];             /**< zeroed */
+    /* v17.15.0: refinement and smoothing. */
+    int64_t num_refinement_points;   /**< points refinement added, inside faces and on edges */
+    int64_t num_faces_below_bound;   /**< faces with a triangle under min_angle_deg */
+    int64_t num_smoothed;            /**< moves smoothing kept */
+    double min_input_angle_deg;      /**< the sharpest corner under 60 degrees; 180 for none */
+    /** v17.16.0: curved elements whose Jacobian was not positive everywhere,
+     *  written straight-sided. */
+    int64_t num_curved_straightened;
+    int64_t reserved[3]; /**< zeroed */
 } mio_mesh_cad_surface_report;
+
+/**
+ * A corner that keeps triangles under min_angle_deg (MeshCadCorner): two trims
+ * meeting at less than 60 degrees in the face's plane, or a pole.
+ */
+typedef struct mio_mesh_cad_corner {
+    int64_t face;
+    int64_t point;         /**< the mesh point at it */
+    double u;              /**< its parameters on the face */
+    double v;
+    double x[3];
+    double angle_deg;      /**< in the face's plane; 0 at a pole */
+    double min_forced_deg; /**< the smallest angle of the triangles it forces */
+    double reach;          /**< a pole's reach on the surface; 0 for a small angle */
+    int32_t pole;          /**< nonzero: a pole */
+    int32_t reserved0;
+    int64_t reserved[4];
+} mio_mesh_cad_corner;
 
 /** Initialize mesh_cad_surface options: every flag on, no deflection, automatic tolerance. */
 MIO_API void mio_mesh_cad_surface_opts_init(mio_mesh_cad_surface_opts* opts);
@@ -5650,6 +5694,23 @@ MIO_API int64_t mio_mesh_cad_surface_face_reason(int64_t face, char* buf, int64_
  * String rule 5: required byte length excluding NUL, -1 on error.
  */
 MIO_API int64_t mio_mesh_cad_surface_warnings(char* buf, int64_t buflen);
+
+/**
+ * v17.15.0: the angle histogram of this thread's last mio_mesh_cad_surface
+ * call, every angle of every triangle on the surface in 10-degree bins. Copies
+ * min(n, MIO_MESH_CAD_ANGLE_BINS) bins into `bins` (which may be NULL when n
+ * is 0) and returns MIO_MESH_CAD_ANGLE_BINS, or -1 on error.
+ */
+MIO_API int64_t mio_mesh_cad_surface_angle_histogram(int64_t* bins, int64_t n);
+
+/** v17.15.0: how many corners this thread's last call reported, every face's. */
+MIO_API int64_t mio_mesh_cad_surface_num_corners(void);
+
+/**
+ * v17.15.0: corner `index` (0 .. mio_mesh_cad_surface_num_corners() - 1) of
+ * this thread's last call, in face order then mesh-point order.
+ */
+MIO_API mio_status mio_mesh_cad_surface_corner(int64_t index, mio_mesh_cad_corner* corner);
 
 /**
  * Options for mio_hausdorff_distance. Same ABI rules as above; an all-zero

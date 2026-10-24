@@ -2254,6 +2254,27 @@ def test_mesh_cad_surface_tool(tmp_path):
     assert "cad:face" in written.cell_data
     with pytest.raises(ValueError, match="target_size"):
         _tools.tool_mesh_cad_surface(str(src), str(out), 0.0)
+    # Refined to 25 degrees and smoothed: the bound is met and reported.
+    refined = _tools.tool_mesh_cad_surface(
+        str(src),
+        str(out),
+        0.25,
+        min_angle=25.0,
+        smooth_iterations=2,
+        smooth_method="odt",
+    )
+    assert refined["min_angle_deg"] >= 25.0 - 1e-9
+    assert refined["num_faces_below_bound"] == 0
+    assert sum(refined["angle_histogram"]) == 3 * refined["num_triangles"]
+    assert all(f["corners"] == [] for f in refined["faces"])
+    with pytest.raises(ValueError, match="smooth_method"):
+        _tools.tool_mesh_cad_surface(str(src), str(out), 0.25, smooth_method="none")
+    # Curved: quadratic triangles, every element valid.
+    curved = _tools.tool_mesh_cad_surface(str(src), str(out), 0.25, order=2)
+    assert curved["num_curved_straightened"] == 0
+    assert [c.type for c in meshioplusplus.read(out).cells][0] == "triangle6"
+    with pytest.raises(ValueError, match="order"):
+        _tools.tool_mesh_cad_surface(str(src), str(out), 0.25, order=4)
 
 
 def test_octree_tool(tmp_path):

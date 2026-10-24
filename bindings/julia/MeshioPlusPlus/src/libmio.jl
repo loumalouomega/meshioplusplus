@@ -687,7 +687,12 @@ struct _CMeshCadSurfaceOpts
     edges::Int32
     match_unreferenced_trims::Int32
     strict::Int32
-    reserved::NTuple{6,Int64}
+    min_angle_deg::Cdouble
+    smooth_iterations::Int32
+    smooth_method::Int32
+    order::Int32
+    reserved_pad::Int32
+    reserved::NTuple{3,Int64}
 end
 
 """Mirror of C `mio_mesh_cad_surface_report`."""
@@ -709,7 +714,27 @@ struct _CMeshCadSurfaceReport
     max_edge::Cdouble
     max_edge_gap::Cdouble
     num_warnings::Int64
-    reserved::NTuple{8,Int64}
+    num_refinement_points::Int64
+    num_faces_below_bound::Int64
+    num_smoothed::Int64
+    min_input_angle_deg::Cdouble
+    num_curved_straightened::Int64
+    reserved::NTuple{3,Int64}
+end
+
+"""Mirror of C `mio_mesh_cad_corner`."""
+struct _CMeshCadCorner
+    face::Int64
+    point::Int64
+    u::Cdouble
+    v::Cdouble
+    x::NTuple{3,Cdouble}
+    angle_deg::Cdouble
+    min_forced_deg::Cdouble
+    reach::Cdouble
+    pole::Int32
+    reserved0::Int32
+    reserved::NTuple{4,Int64}
 end
 
 """Mirror of C `mio_fit_cad_opts`. ABI; build through [`fit_cad`](@ref)."""
@@ -1304,6 +1329,9 @@ function _check_abi_layout()
     sizeof(_CMeshCadSurfaceReport) == 200 ||
         error("meshio++: mio_mesh_cad_surface_report layout mismatch " *
               "($(sizeof(_CMeshCadSurfaceReport)) bytes)")
+    sizeof(_CMeshCadCorner) == 120 ||
+        error("meshio++: mio_mesh_cad_corner layout mismatch " *
+              "($(sizeof(_CMeshCadCorner)) bytes)")
     sizeof(_CFitCadOpts) == 80 ||
         error("meshio++: mio_fit_cad_opts layout mismatch ($(sizeof(_CFitCadOpts)) bytes)")
     sizeof(_CFitCadReport) == 192 ||

@@ -642,7 +642,7 @@ cells = meshioplusplus.octree_mesh(skin, output="castellated", min_size=0.02)
 
 #### Surface meshes from CAD (conforming triangulation of a B-rep)
 
-**`meshioplusplus.mesh_cad_surface`** triangulates the faces of a CAD model (a Kratos CAD JSON read, or STEP and IGES through OpenCASCADE) into one conforming surface mesh at a target edge size, with no CAD kernel: every B-rep edge is sampled once and shared by the faces that use it, so a closed solid comes out watertight, and each face is a constrained Delaunay triangulation of its parameters on Shewchuk's exact predicates, lifted onto the surface. A face that cannot be meshed is reported by index and reason, never meshed wrong, and the output is identical across backends and thread counts. `triangulate_polygon_2d` exposes the planar triangulator. The same operation is in C++, C, Fortran, Julia, R, WASM, both CLIs (`mesh-cad-surface`) and MCP. See `doc/mesh_cad.md`.
+**`meshioplusplus.mesh_cad_surface`** triangulates the faces of a CAD model (a Kratos CAD JSON read, or STEP and IGES through OpenCASCADE) into one conforming surface mesh at a target edge size, with no CAD kernel: every B-rep edge is sampled once and shared by the faces that use it, so a closed solid comes out watertight, and each face is a constrained Delaunay triangulation of its parameters on Shewchuk's exact predicates, lifted onto the surface. A face that cannot be meshed is reported by index and reason, never meshed wrong, and the output is identical across backends and thread counts. `min_angle` refines each face by Delaunay refinement until its triangles' smallest angles on the surface reach the bound (guaranteed to 20.7 degrees away from small input angles and poles, which are reported), and `smooth_iterations` smooths the inside under a guard that never lowers a star's smallest angle. `order=2` or `3` writes curved `triangle6` or `triangle10` elements whose nodes lie on the exact surfaces and edges, each proved valid everywhere inside by a Bézier bound on its Jacobian or kept straight-sided and reported. `triangulate_polygon_2d` exposes the planar triangulator, with the same `min_angle`. The same operation is in C++, C, Fortran, Julia, R, WASM, both CLIs (`mesh-cad-surface`) and MCP. See `doc/mesh_cad.md`.
 
 <!--pytest-codeblocks:skip-->
 
@@ -1239,7 +1239,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 17.13.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 17.16.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

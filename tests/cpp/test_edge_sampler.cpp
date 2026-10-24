@@ -105,6 +105,18 @@ mio::BrepCurve circle(double Cu, double Cv, double R, double T = 1.0) {
                  {1, w, 1, w, 1, w, 1, w, 1});
 }
 
+// The same circle started a number of quarter turns later.
+mio::BrepCurve circle_from(double Cu, double Cv, double R, int Quarters, double T = 1.0) {
+    const double w = std::sqrt(0.5);
+    std::vector<std::array<double, 2>> poles = {
+        {Cu + R, Cv}, {Cu + R, Cv + R}, {Cu, Cv + R}, {Cu - R, Cv + R},
+        {Cu - R, Cv}, {Cu - R, Cv - R}, {Cu, Cv - R}, {Cu + R, Cv - R}};
+    std::rotate(poles.begin(), poles.begin() + 2 * Quarters, poles.end());
+    poles.push_back(poles.front());
+    return curve(2, {0, 0, 0, T, T, 2 * T, 2 * T, 3 * T, 3 * T, 4 * T, 4 * T, 4 * T}, poles,
+                 {1, w, 1, w, 1, w, 1, w, 1});
+}
+
 double dist(const EdgeVec3& rA, const EdgeVec3& rB) {
     return std::sqrt((rA[0] - rB[0]) * (rA[0] - rB[0]) + (rA[1] - rB[1]) * (rA[1] - rB[1]) +
                      (rA[2] - rB[2]) * (rA[2] - rB[2]));
@@ -148,6 +160,38 @@ TEST(EdgeSampler, RationalQuarterCircle) {
             EXPECT_NEAR(dist(q, e.mPoints[k + 1]), chord, 1e-10);
         }
     }
+}
+
+TEST(EdgeSampler, RefineSplitsPiecesByArcLengthAtAChosenFraction) {
+    // Halving (a crossing to separate) and a split a quarter of the way along
+    // (a concentric shell, a power of two from a sharp corner) both land at
+    // that fraction of the piece's arc length, on the rational arc.
+    const mio::NurbsPatch p = plane(0, 0, 2, 2);
+    const BrepSurfaceEval s(p, false);
+    const TrimTrace t(&s, BrepCurveEval(quarter(0.5, 0.5, 0.375)), true);
+    const double r = 0.75;
+    EdgeSampleOptions o;
+    o.mTargetSize = 0.4;
+    auto e = mio::detail::edge_sample(t, o);
+    const std::size_t n = e.mPoints.size() - 1;
+    ASSERT_GE(n, 3u);
+    const double piece = 0.5 * M_PI * r / double(n);
+    mio::detail::edge_refine(t, e, {0, n - 1}, {0.5, 0.25});
+    ASSERT_EQ(e.mPoints.size(), n + 3);
+    const auto arc = [&](std::size_t A, std::size_t B) {
+        // The angle between two points on the arc, times its radius.
+        const EdgeVec3& a = e.mPoints[A];
+        const EdgeVec3& b = e.mPoints[B];
+        const double ca = std::atan2(a[1] - 1.0, a[0] - 1.0);
+        const double cb = std::atan2(b[1] - 1.0, b[0] - 1.0);
+        return r * std::fabs(cb - ca);
+    };
+    EXPECT_NEAR(arc(0, 1), 0.5 * piece, 1e-10);
+    EXPECT_NEAR(arc(1, 2), 0.5 * piece, 1e-10);
+    EXPECT_NEAR(arc(n, n + 1), 0.25 * piece, 1e-10);
+    EXPECT_NEAR(arc(n + 1, n + 2), 0.75 * piece, 1e-10);
+    for (std::size_t k = 0; k + 1 < e.mFractions.size(); ++k)
+        EXPECT_LT(e.mFractions[k], e.mFractions[k + 1]);
 }
 
 TEST(EdgeSampler, ChordalCapIsHonoured) {
@@ -212,6 +256,63 @@ TEST(EdgeSampler, ClosedEdgeDirections) {
     const auto e = mio::detail::edge_sample(master, o);
     EXPECT_LT(mio::detail::edge_project(same, e, true).mMaxGap, 1e-12);
     EXPECT_LT(mio::detail::edge_project(back, e, false).mMaxGap, 1e-12);
+}
+
+TEST(EdgeSampler, LengthAtInvertsParamAtLength) {
+    const mio::NurbsPatch pa = plane(0, 0, 2, 2);
+    const BrepSurfaceEval sa(pa, true);
+    for (const bool forward : {true, false}) {
+        const TrimTrace t(&sa, BrepCurveEval(circle(0.5, 0.5, 0.375, 2.5)), forward);
+        for (int i = 0; i <= 16; ++i) {
+            const double l = t.Length() * double(i) / 16.0;
+            EXPECT_NEAR(t.LengthAt(t.ParamAtLength(l)), l, 1e-12) << forward << " " << i;
+        }
+        EXPECT_EQ(t.LengthAt(t.Start()), 0.0);
+        EXPECT_DOUBLE_EQ(t.LengthAt(t.End()), t.Length());
+    }
+}
+
+TEST(EdgeSampler, AClosedUseStartedElsewhereIsRotatedOntoTheMaster) {
+    // The master circle starts at angle 0; the other use is the same 3-D
+    // circle, its trim on another plane started a quarter, a half or three
+    // quarters of a turn later, run either way. Rotated to start where the
+    // master does, it lands on the master's points in two monotone pieces.
+    const mio::NurbsPatch pa = plane(0, 0, 2, 2);
+    const mio::NurbsPatch pb = plane(-1, -1, 4, 4);
+    const BrepSurfaceEval sa(pa, true);
+    const BrepSurfaceEval sb(pb, true);
+    const TrimTrace master(&sa, BrepCurveEval(circle(0.5, 0.5, 0.375)), true);
+    EdgeSampleOptions o;
+    o.mTargetSize = 0.15;
+    const auto e = mio::detail::edge_sample(master, o);
+    const std::size_t m = e.mParams.size();
+    const EdgeVec3 start = master.Point(master.Start());
+    for (int q = 1; q < 4; ++q)
+        for (const bool forward : {true, false}) {
+            const TrimTrace other(&sb, BrepCurveEval(circle_from(0.5, 0.5, 0.1875, q, 2.5)),
+                                  forward);
+            EXPECT_GT(dist(other.Point(other.Start()), start), 0.5);
+            const double s0 = mio::detail::edge_closest_length(other, start);
+            EXPECT_LT(dist(other.Point(other.ParamAtLength(s0)), start), 1e-12);
+            const double turn = forward ? (4 - q) / 4.0 : q / 4.0;
+            EXPECT_NEAR(s0, turn * other.Length(), 1e-10) << q << " " << forward;
+            const bool same = mio::detail::edge_same_direction(master, other, s0);
+            EXPECT_EQ(same, forward);
+            const auto proj = mio::detail::edge_project(other, e, same, s0);
+            EXPECT_LT(proj.mMaxGap, 1e-12) << q << " " << forward;
+            EXPECT_EQ(proj.mParams.front(), proj.mParams.back());
+            int wraps = 0;
+            for (std::size_t k = 0; k < m; ++k) {
+                const EdgeVec3& want = same ? e.mPoints[k] : e.mPoints[m - 1 - k];
+                EXPECT_LT(dist(other.Point(proj.mParams[k]), want), 1e-12);
+                if (k > 0 && k + 1 < m) {
+                    const double d = proj.mParams[k] - proj.mParams[k - 1];
+                    if ((d < 0.0) == forward)
+                        ++wraps;
+                }
+            }
+            EXPECT_EQ(wraps, 1) << "one wrap past the trace's end";
+        }
 }
 
 TEST(EdgeSampler, ZeroLengthEdge) {

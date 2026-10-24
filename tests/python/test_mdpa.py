@@ -2924,3 +2924,60 @@ def test_commented_block_ends_and_load_conditions(tmp_path):
     mesh = meshioplusplus.read(path)
     assert mesh.points.shape == (4, 3)
     assert {c.type: len(c.data) for c in mesh.cells} == {"tetra": 1, "triangle": 1}
+
+
+# --- Types with no Kratos name (triangle10, line4) ---------------------------
+#
+# Both writers name such a block by its meshio type; the readers resolve that
+# name rather than guessing a type from the row's node count, which several
+# types share (10 nodes: line10, tetra10, triangle10).
+
+
+def _no_kratos_name_mesh(cell_type):
+    n = meshioplusplus._common.num_nodes_per_cell[cell_type]
+    rng = np.random.default_rng(7)
+    return meshioplusplus.Mesh(
+        rng.random((n + 2, 3)),
+        [(cell_type, np.array([np.arange(n), np.arange(2, n + 2)]))],
+    )
+
+
+@pytest.mark.parametrize("cell_type", ["triangle10", "line4"])
+@pytest.mark.parametrize(
+    "writer, reader",
+    [
+        ("native", "python"),
+        ("python", "python"),
+        ("python", "native"),
+        ("native", "native"),
+    ],
+)
+def test_a_type_with_no_kratos_name_round_trips(tmp_path, cell_type, writer, reader):
+    mesh = _no_kratos_name_mesh(cell_type)
+    p = tmp_path / "out.mdpa"
+    if writer == "native":
+        _core.mdpa_write(str(p), copy.deepcopy(mesh))
+    else:
+        _mdpa_py_write(str(p), mesh)
+    assert f" {cell_type}\n" in p.read_text()
+    out = _mdpa_py_read(str(p)) if reader == "python" else _core.mdpa_read(str(p))
+    assert [c.type for c in out.cells] == [cell_type]
+    np.testing.assert_array_equal(out.cells[0].data, mesh.cells[0].data)
+
+
+def test_an_ambiguous_node_count_is_warned(tmp_path, capsys):
+    p = tmp_path / "unknown.mdpa"
+    nodes = "\n".join(f"{i} {i} 0 0" for i in range(1, 11))
+    p.write_text(
+        f"Begin Nodes\n{nodes}\nEnd Nodes\n\n"
+        "Begin Elements MyElement\n1 0 1 2 3 4 5 6 7 8 9 10\n2 0 1 2 3 4 5 6 7 8 9 10\n"
+        "End Elements\n"
+    )
+    out = _mdpa_py_read(str(p))
+    # The console wraps long lines; compare with whitespace collapsed.
+    err = " ".join(capsys.readouterr().err.split())
+    chosen = out.cells[0].type
+    assert err.count("rows of 10 nodes") == 1  # once per block, not per row
+    assert f"are read as '{chosen}'" in err
+    others = {"line10", "tetra10", "triangle10"} - {chosen}
+    assert all(f"'{t}'" in err for t in others)
