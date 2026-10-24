@@ -508,7 +508,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"MeshCadSurface",
          {"TargetSize", "MaxChordalDeviation", "MinPointsPerEdge", "Tolerance", "RecordFaceIds",
           "Edges", "MatchUnreferencedTrims", "Strict", "MaxPoints", "MinAngle", "SmoothIterations",
-          "SmoothMethod", "Order"}},
+          "SmoothMethod", "Order", "CurvatureDeviation", "CellsAcrossGaps", "Grading",
+          "PoleRings"}},
         {"IgaSample", {"Subdivisions", "TrimSamples", "Trim", "Edges"}},
         {"IgaRefine",
          {"Subdivisions", "Elevate", "SampleSubdivisions", "TrimSamples", "Trim", "Edges"}},
@@ -955,6 +956,11 @@ Mesh pipe_apply_model_step(const PipelineStep& rStep, PipelineReport& rReport, P
                 pipe_err(rStep, "'SmoothMethod' must be 'laplacian' or 'odt'"));
         o.mOrder =
             static_cast<std::int32_t>(pipe_number(rStep, "Order", static_cast<double>(o.mOrder)));
+        o.mCurvatureDeviation = pipe_number(rStep, "CurvatureDeviation", o.mCurvatureDeviation);
+        o.mCellsAcrossGaps = pipe_number(rStep, "CellsAcrossGaps", o.mCellsAcrossGaps);
+        o.mGrading = pipe_number(rStep, "Grading", o.mGrading);
+        o.mPoleRings = static_cast<std::int32_t>(
+            pipe_number(rStep, "PoleRings", static_cast<double>(o.mPoleRings)));
         MeshCadSurfaceResult r = mesh_cad_surface(*rModel.mBrep, o);
         for (const std::string& w : r.mWarnings)
             rReport.mWarnings.push_back("MeshCadSurface: " + w);

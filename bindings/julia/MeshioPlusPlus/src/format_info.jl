@@ -479,7 +479,10 @@ poles that keep triangles below it are in `corners` (1-based `face` and
 follow. `order` 2 or 3 writes curved `triangle6` or `triangle10` elements (and
 `line3` or `line4` edges) whose nodes lie on the surfaces and edges; an element
 whose Jacobian is not positive everywhere is kept straight-sided and counted in
-`num_curved_straightened`. See `doc/mesh_cad.md`.
+`num_curved_straightened`. `curvature_deviation` and `cells_across_gaps` size
+the mesh by the surface's curvature and its local feature size, `grading`
+limiting the size's growth (0 is 1.5); `pole_rings` grades the poles
+(v17.18.0). See `doc/mesh_cad.md`.
 """
 function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_deviation::Real=0.0,
                           min_points_per_edge::Integer=0, tolerance::Real=0.0,
@@ -487,7 +490,9 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
                           match_unreferenced_trims::Bool=true, strict::Bool=false,
                           max_points::Integer=50_000_000, min_angle::Real=0.0,
                           smooth_iterations::Integer=0,
-                          smooth_method::AbstractString="laplacian", order::Integer=1)
+                          smooth_method::AbstractString="laplacian", order::Integer=1,
+                          grading::Real=0.0, curvature_deviation::Real=0.0,
+                          cells_across_gaps::Real=0.0, pole_rings::Integer=0)
     method = findfirst(==(smooth_method), _MESH_CAD_SMOOTH_METHODS)
     method === nothing &&
         throw(ArgumentError("meshio++: mesh_cad_surface: smooth_method must be " *
@@ -497,7 +502,8 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
                                 Int64(max_points), Int32(record_face_ids), Int32(edges),
                                 Int32(match_unreferenced_trims), Int32(strict),
                                 Cdouble(min_angle), Int32(smooth_iterations), Int32(method - 1),
-                                Int32(order), Int32(0), ntuple(_ -> Int64(0), 3))
+                                Int32(order), Int32(pole_rings), Cdouble(grading),
+                                Cdouble(curvature_deviation), Cdouble(cells_across_gaps))
     report = Ref{_CMeshCadSurfaceReport}()
     ptr = ccall(_sym(:mio_mesh_cad_surface), Ptr{Cvoid},
                 (Ptr{Cvoid}, Ref{_CMeshCadSurfaceOpts}, Ref{_CMeshCadSurfaceReport}),

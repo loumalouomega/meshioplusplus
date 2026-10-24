@@ -691,8 +691,10 @@ struct _CMeshCadSurfaceOpts
     smooth_iterations::Int32
     smooth_method::Int32
     order::Int32
-    reserved_pad::Int32
-    reserved::NTuple{3,Int64}
+    pole_rings::Int32
+    grading::Cdouble
+    curvature_deviation::Cdouble
+    cells_across_gaps::Cdouble
 end
 
 """Mirror of C `mio_mesh_cad_surface_report`."""

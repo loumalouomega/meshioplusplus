@@ -1840,7 +1840,7 @@ TEST(CApi, MeshCadSurfaceMeshesABrepAndReportsItsFaces) {
     EXPECT_EQ(opts.edges, 1);
     EXPECT_EQ(opts.record_face_ids, 1);
     EXPECT_EQ(opts.max_points, 50000000);
-    EXPECT_EQ(opts.reserved[0], 0);
+    EXPECT_EQ(opts.cells_across_gaps, 0.0);
     // The size is required.
     EXPECT_EQ(mio_mesh_cad_surface(info, &opts, nullptr), nullptr);
     EXPECT_EQ(mio_mesh_cad_surface(info, nullptr, nullptr), nullptr);
@@ -1890,6 +1890,31 @@ TEST(CApi, MeshCadSurfaceMeshesABrepAndReportsItsFaces) {
     mesh = mio_mesh_cad_surface(info, &opts, &report);
     ASSERT_NE(mesh, nullptr) << mio_last_error();
     mio_mesh_free(mesh);
+    // v17.18.0: the size field and pole rings, from the former reserved tail.
+    {
+        mio_mesh_cad_surface_opts fresh;
+        mio_mesh_cad_surface_opts_init(&fresh);
+        EXPECT_EQ(fresh.pole_rings, 0);
+        EXPECT_EQ(fresh.grading, 0.0);
+        EXPECT_EQ(fresh.curvature_deviation, 0.0);
+        EXPECT_EQ(fresh.cells_across_gaps, 0.0);
+    }
+    opts.curvature_deviation = 0.01;
+    opts.cells_across_gaps = 2.0;
+    opts.grading = 1.3;
+    opts.pole_rings = 2;
+    mesh = mio_mesh_cad_surface(info, &opts, &report);
+    ASSERT_NE(mesh, nullptr) << mio_last_error();
+    EXPECT_EQ(report.num_failed, 0);
+    mio_mesh_free(mesh);
+    opts.grading = 0.5;
+    EXPECT_EQ(mio_mesh_cad_surface(info, &opts, nullptr), nullptr);
+    opts.grading = 0.0;
+    opts.pole_rings = 9;
+    EXPECT_EQ(mio_mesh_cad_surface(info, &opts, nullptr), nullptr);
+    opts.pole_rings = 0;
+    opts.curvature_deviation = 0.0;
+    opts.cells_across_gaps = 0.0;
     // v17.15.0: refined to 25 degrees and smoothed. The triangle's two
     // 45-degree corners are reported; every angle is counted.
     opts.min_angle_deg = 25.0;

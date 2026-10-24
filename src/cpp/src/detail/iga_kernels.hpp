@@ -518,4 +518,133 @@ inline void iga_eval_point(const IgaEvalNet& rNet, const std::size_t* pSpan, con
     }
 }
 
+/// A2.3 to the second derivatives: `pDers` is three rows of `P + 1` values,
+/// the basis functions, their first and their second derivatives (zero above
+/// the degree). Kept apart from `iga_basis_ders`, whose path the Python twin
+/// matches bit for bit.
+inline void iga_basis_ders2(std::size_t Span, double U, int P, const std::vector<double>& rKnots,
+                            double* pDers) {
+    const auto p = static_cast<std::size_t>(P);
+    const std::size_t w = p + 1;
+    IgaScratch<64> ndu(w * w), left(w), right(w), a(2 * w);
+    const auto at = [w](std::size_t R, std::size_t Cc) { return R * w + Cc; };
+    ndu[at(0, 0)] = 1.0;
+    for (std::size_t j = 1; j <= p; ++j) {
+        left[j] = U - rKnots[Span + 1 - j];
+        right[j] = rKnots[Span + j] - U;
+        double saved = 0.0;
+        for (std::size_t r = 0; r < j; ++r) {
+            ndu[at(j, r)] = right[r + 1] + left[j - r];
+            const double temp = ndu[at(r, j - 1)] / ndu[at(j, r)];
+            ndu[at(r, j)] = saved + right[r + 1] * temp;
+            saved = left[j - r] * temp;
+        }
+        ndu[at(j, j)] = saved;
+    }
+    for (std::size_t j = 0; j <= p; ++j) {
+        pDers[j] = ndu[at(j, p)];
+        pDers[w + j] = 0.0;
+        pDers[2 * w + j] = 0.0;
+    }
+    const int n = std::min(2, P);
+    for (int r = 0; r <= P; ++r) {
+        std::size_t s1 = 0, s2 = 1;
+        a[0] = 1.0;
+        for (int k = 1; k <= n; ++k) {
+            double d = 0.0;
+            const int rk = r - k, pk = P - k;
+            const auto row = [&](std::size_t S, int J) -> double& {
+                return a[S * w + static_cast<std::size_t>(J)];
+            };
+            if (r >= k) {
+                row(s2, 0) =
+                    row(s1, 0) /
+                    ndu[at(static_cast<std::size_t>(pk + 1), static_cast<std::size_t>(rk))];
+                d = row(s2, 0) *
+                    ndu[at(static_cast<std::size_t>(rk), static_cast<std::size_t>(pk))];
+            }
+            const int j1 = rk >= -1 ? 1 : -rk;
+            const int j2 = r - 1 <= pk ? k - 1 : P - r;
+            for (int j = j1; j <= j2; ++j) {
+                row(s2, j) =
+                    (row(s1, j) - row(s1, j - 1)) /
+                    ndu[at(static_cast<std::size_t>(pk + 1), static_cast<std::size_t>(rk + j))];
+                d += row(s2, j) *
+                     ndu[at(static_cast<std::size_t>(rk + j), static_cast<std::size_t>(pk))];
+            }
+            if (r <= pk) {
+                row(s2, k) = -row(s1, k - 1) /
+                             ndu[at(static_cast<std::size_t>(pk + 1), static_cast<std::size_t>(r))];
+                d +=
+                    row(s2, k) * ndu[at(static_cast<std::size_t>(r), static_cast<std::size_t>(pk))];
+            }
+            pDers[static_cast<std::size_t>(k) * w + static_cast<std::size_t>(r)] = d;
+            std::swap(s1, s2);
+        }
+    }
+    double factor = static_cast<double>(P);
+    for (int k = 1; k <= n; ++k) {
+        for (std::size_t j = 0; j <= p; ++j)
+            pDers[static_cast<std::size_t>(k) * w + j] *= factor;
+        factor *= static_cast<double>(P - k);
+    }
+}
+
+/// A surface net (`mDim == 2`) at the parameters `pU` in spans `pSpan`: the
+/// `NV` values, their first derivatives (`pD1`, rows u and v) and second
+/// derivatives (`pD2`, rows uu, uv and vv), the rational ones by the quotient
+/// rule of A4.4 (Piegl and Tiller 1997).
+inline void iga_eval_surface_d2(const IgaEvalNet& rNet, const std::size_t* pSpan, const double* pU,
+                                double* pOut, double* pD1, double* pD2) {
+    const std::size_t NV = rNet.mColumns;
+    std::array<IgaScratch<48>, 2> ders;
+    std::array<std::size_t, 2> np1{}, base{};
+    for (std::size_t d = 0; d < 2; ++d) {
+        np1[d] = static_cast<std::size_t>(rNet.mDegrees[d]) + 1;
+        base[d] = pSpan[d] - static_cast<std::size_t>(rNet.mDegrees[d]);
+        ders[d].Assign(3 * np1[d], 0.0);
+        iga_basis_ders2(pSpan[d], pU[d], rNet.mDegrees[d], *rNet.mKnots[d], ders[d].data());
+    }
+    // Homogeneous sums: index 0 value, 1 u, 2 v, 3 uu, 4 uv, 5 vv.
+    constexpr std::array<std::array<int, 2>, 6> kOrder{
+        {{0, 0}, {1, 0}, {0, 1}, {2, 0}, {1, 1}, {0, 2}}};
+    IgaScratch<24> acc(6 * NV);
+    std::array<double, 6> wsum{};
+    for (std::size_t j1 = 0; j1 < np1[1]; ++j1)
+        for (std::size_t j0 = 0; j0 < np1[0]; ++j0) {
+            const std::size_t idx = (base[0] + j0) + rNet.mCounts[0] * (base[1] + j1);
+            const double wt = rNet.mWeights ? rNet.mWeights[idx] : 1.0;
+            const double* v = rNet.mValues + idx * NV;
+            for (std::size_t q = 0; q < 6; ++q) {
+                const double b = ders[0][static_cast<std::size_t>(kOrder[q][0]) * np1[0] + j0] *
+                                 ders[1][static_cast<std::size_t>(kOrder[q][1]) * np1[1] + j1];
+                const double cc = wt * b;
+                for (std::size_t c = 0; c < NV; ++c)
+                    acc[q * NV + c] += cc * v[c];
+                wsum[q] += cc;
+            }
+        }
+    const double w0 = rNet.mWeights ? wsum[0] : 1.0;
+    for (std::size_t c = 0; c < NV; ++c) {
+        if (!rNet.mWeights) {
+            pOut[c] = acc[c];
+            pD1[c] = acc[NV + c];
+            pD1[NV + c] = acc[2 * NV + c];
+            pD2[c] = acc[3 * NV + c];
+            pD2[NV + c] = acc[4 * NV + c];
+            pD2[2 * NV + c] = acc[5 * NV + c];
+            continue;
+        }
+        const double x = acc[c] / w0;
+        const double xu = (acc[NV + c] - wsum[1] * x) / w0;
+        const double xv = (acc[2 * NV + c] - wsum[2] * x) / w0;
+        pOut[c] = x;
+        pD1[c] = xu;
+        pD1[NV + c] = xv;
+        pD2[c] = (acc[3 * NV + c] - 2.0 * wsum[1] * xu - wsum[3] * x) / w0;
+        pD2[NV + c] = (acc[4 * NV + c] - wsum[1] * xv - wsum[2] * xu - wsum[4] * x) / w0;
+        pD2[2 * NV + c] = (acc[5 * NV + c] - 2.0 * wsum[2] * xv - wsum[5] * x) / w0;
+    }
+}
+
 }  // namespace meshioplusplus::detail

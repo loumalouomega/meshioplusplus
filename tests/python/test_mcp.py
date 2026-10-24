@@ -2275,6 +2275,26 @@ def test_mesh_cad_surface_tool(tmp_path):
     assert [c.type for c in meshioplusplus.read(out).cells][0] == "triangle6"
     with pytest.raises(ValueError, match="order"):
         _tools.tool_mesh_cad_surface(str(src), str(out), 0.25, order=4)
+    # Sized by curvature: the cylinder's side is finer than target_size.
+    cyl = src.parent / "capped_cylinder.cad.json"
+    uniform = _tools.tool_mesh_cad_surface(str(cyl), str(out), 0.2)
+    sized = _tools.tool_mesh_cad_surface(
+        str(cyl), str(out), 0.2, curvature_deviation=0.002, grading=1.3
+    )
+    assert sized["num_failed"] == 0
+    assert sized["num_triangles"] > uniform["num_triangles"]
+    assert sized["max_edge"] <= uniform["max_edge"] + 1e-12
+    with pytest.raises(ValueError, match="grading"):
+        _tools.tool_mesh_cad_surface(str(cyl), str(out), 0.2, grading=0.5)
+    # Rings at the sphere's poles: every angle meets the bound.
+    sphere = src.parent / "sphere.cad.json"
+    ringed = _tools.tool_mesh_cad_surface(
+        str(sphere), str(out), 0.2, min_angle=25.0, pole_rings=2
+    )
+    assert ringed["num_failed"] == 0
+    assert ringed["min_angle_deg"] >= 25.0 - 1e-9
+    with pytest.raises(ValueError, match="pole_rings"):
+        _tools.tool_mesh_cad_surface(str(sphere), str(out), 0.2, pole_rings=9)
 
 
 def test_octree_tool(tmp_path):

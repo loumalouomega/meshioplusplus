@@ -6629,6 +6629,11 @@ static_assert(offsetof(mio_mesh_cad_surface_report, num_refinement_points) == 13
               "mio_mesh_cad_surface_report::num_refinement_points moved");
 static_assert(offsetof(mio_mesh_cad_surface_opts, order) == 72,
               "mio_mesh_cad_surface_opts::order moved");
+static_assert(offsetof(mio_mesh_cad_surface_opts, pole_rings) == 76 &&
+                  offsetof(mio_mesh_cad_surface_opts, grading) == 80 &&
+                  offsetof(mio_mesh_cad_surface_opts, curvature_deviation) == 88 &&
+                  offsetof(mio_mesh_cad_surface_opts, cells_across_gaps) == 96,
+              "mio_mesh_cad_surface_opts: the v17.18.0 fields left their reserved slots");
 static_assert(offsetof(mio_mesh_cad_surface_report, num_curved_straightened) == 168,
               "mio_mesh_cad_surface_report::num_curved_straightened moved");
 static_assert(static_cast<int>(MIO_MESH_CAD_SMOOTH_ODT) ==
@@ -7186,6 +7191,10 @@ void mio_mesh_cad_surface_opts_init(mio_mesh_cad_surface_opts* opts) {
     opts->smooth_iterations = static_cast<int32_t>(d.mSmoothIterations);
     opts->smooth_method = static_cast<int32_t>(d.mSmoothMethod);
     opts->order = d.mOrder;
+    opts->pole_rings = d.mPoleRings;
+    opts->grading = d.mGrading;
+    opts->curvature_deviation = d.mCurvatureDeviation;
+    opts->cells_across_gaps = d.mCellsAcrossGaps;
 }
 
 mio_mesh* mio_mesh_cad_surface(const mio_format_info* info, const mio_mesh_cad_surface_opts* opts,
@@ -7225,6 +7234,10 @@ mio_mesh* mio_mesh_cad_surface(const mio_format_info* info, const mio_mesh_cad_s
         o.mSmoothIterations = opts->smooth_iterations;
         o.mSmoothMethod = static_cast<meshioplusplus::MeshCadSmoothing>(opts->smooth_method);
         o.mOrder = opts->order == 0 ? 1 : opts->order;
+        o.mPoleRings = opts->pole_rings;
+        o.mGrading = opts->grading;
+        o.mCurvatureDeviation = opts->curvature_deviation;
+        o.mCellsAcrossGaps = opts->cells_across_gaps;
         meshioplusplus::MeshCadSurfaceResult r = meshioplusplus::mesh_cad_surface(*p_brep, o);
         for (const std::string& w : r.mWarnings) {
             if (!state.mWarnings.empty())

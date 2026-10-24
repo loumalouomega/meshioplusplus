@@ -575,6 +575,10 @@ _OP_TABLE = {
         "SmoothIterations",
         "SmoothMethod",
         "Order",
+        "CurvatureDeviation",
+        "CellsAcrossGaps",
+        "Grading",
+        "PoleRings",
     ),
     "IgaSample": ("Subdivisions", "TrimSamples", "Trim", "Edges"),
     "IgaRefine": (
@@ -2324,6 +2328,10 @@ def _apply_model_step(step, model, steps, warnings):
             smooth_iterations=int(_number(step, "SmoothIterations", 0)),
             smooth_method=method,
             order=int(_number(step, "Order", 1)),
+            curvature_deviation=_number(step, "CurvatureDeviation", 0.0),
+            cells_across_gaps=_number(step, "CellsAcrossGaps", 0.0),
+            grading=_number(step, "Grading", 0.0),
+            pole_rings=int(_number(step, "PoleRings", 0)),
             return_report=True,
         )
         warnings.extend("MeshCadSurface: " + w for w in report["warnings"])

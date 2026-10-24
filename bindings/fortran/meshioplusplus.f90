@@ -505,8 +505,10 @@ module meshioplusplus
         integer(c_int32_t) :: smooth_iterations = 0
         integer(c_int32_t) :: smooth_method = 0
         integer(c_int32_t) :: order = 1
-        integer(c_int32_t) :: reserved_pad = 0
-        integer(c_int64_t) :: reserved(3) = 0
+        integer(c_int32_t) :: pole_rings = 0
+        real(c_double) :: grading = 0.0_c_double
+        real(c_double) :: curvature_deviation = 0.0_c_double
+        real(c_double) :: cells_across_gaps = 0.0_c_double
     end type
 
     !> `mio_mesh_cad_surface_report` (200 bytes; field order and types are ABI,
@@ -12043,15 +12045,21 @@ contains
     !> of guarded smoothing (`smooth_method`, `MIO_MESH_CAD_SMOOTH_*`) follow.
     !> `order` 2 or 3 writes curved triangle6 or triangle10 elements, their
     !> nodes on the surface and edges (`report%num_curved_straightened`).
+    !> `curvature_deviation` and `cells_across_gaps` size the mesh by the
+    !> surface's curvature and its local feature size, `grading` limiting the
+    !> size's growth; `pole_rings` grades the poles (v17.18.0).
     function format_info_mesh_cad_surface(self, target_size, max_chordal_deviation, &
                                           min_points_per_edge, tolerance, record_face_ids, &
                                           edges, match_unreferenced_trims, strict, max_points, &
                                           report, warnings, stat, errmsg, min_angle, &
-                                          smooth_iterations, smooth_method, order) result(out)
+                                          smooth_iterations, smooth_method, order, grading, &
+                                          curvature_deviation, cells_across_gaps, pole_rings) &
+        result(out)
         class(mio_format_info), intent(in) :: self
         real(real64), intent(in) :: target_size
         real(real64), intent(in), optional :: max_chordal_deviation, tolerance, min_angle
-        integer, intent(in), optional :: smooth_iterations, smooth_method, order
+        integer, intent(in), optional :: smooth_iterations, smooth_method, order, pole_rings
+        real(real64), intent(in), optional :: grading, curvature_deviation, cells_across_gaps
         integer(int64), intent(in), optional :: min_points_per_edge, max_points
         logical, intent(in), optional :: record_face_ids, edges, match_unreferenced_trims, strict
         type(mio_mesh_cad_surface_report), intent(out), optional :: report
@@ -12086,6 +12094,11 @@ contains
             opts%smooth_iterations = int(smooth_iterations, c_int32_t)
         if (present(smooth_method)) opts%smooth_method = int(smooth_method, c_int32_t)
         if (present(order)) opts%order = int(order, c_int32_t)
+        if (present(pole_rings)) opts%pole_rings = int(pole_rings, c_int32_t)
+        if (present(grading)) opts%grading = real(grading, c_double)
+        if (present(curvature_deviation)) &
+            opts%curvature_deviation = real(curvature_deviation, c_double)
+        if (present(cells_across_gaps)) opts%cells_across_gaps = real(cells_across_gaps, c_double)
 
         out%handle = c_mio_mesh_cad_surface(self%handle, opts, crep)
         if (.not. c_associated(out%handle)) then

@@ -254,6 +254,13 @@ def test_a_failed_face_is_reported_and_strict_raises():
         ({"target_size": 0.1, "min_points_per_edge": -1}, "min_points_per_edge"),
         ({"target_size": 0.1, "tolerance": -1.0}, "tolerance"),
         ({"target_size": 0.1, "max_points": 0}, "max_points"),
+        ({"target_size": 0.1, "grading": 0.5}, "grading"),
+        ({"target_size": 0.1, "grading": 1.0}, "grading"),
+        ({"target_size": 0.1, "grading": float("nan")}, "grading"),
+        ({"target_size": 0.1, "curvature_deviation": -1.0}, "curvature_deviation"),
+        ({"target_size": 0.1, "cells_across_gaps": -1.0}, "cells_across_gaps"),
+        ({"target_size": 0.1, "pole_rings": -1}, "pole_rings"),
+        ({"target_size": 0.1, "pole_rings": 9}, "pole_rings"),
     ],
 )
 def test_refusals_before_the_core(kwargs, match):
@@ -459,6 +466,62 @@ def test_curved_elements_survive_a_file(tmp_path, order, ext):
 
 
 @needs_core
+@needs_core
+@pytest.mark.parametrize("deviation", [0.002, 0.0005])
+def test_curvature_sizing_keeps_the_chordal_error_under_the_bound(deviation):
+    """Roadmap 6.3.2: curvature_deviation sizes the cylinder's side so no
+    triangle sits farther than it from the surface; the flat caps stay near
+    target_size, and the result is still watertight."""
+    model = _read("capped_cylinder.cad.json")
+    out, report = mio.mesh_cad_surface(
+        model, 0.2, curvature_deviation=deviation, return_report=True
+    )
+    _watertight(report)
+    tri, p = out.cells[0].data, out.points
+    radius = np.hypot(p[:, 0], p[:, 1])
+    side = np.all(np.abs(radius[tri] - 1.0) < 1e-9, axis=1)
+    centroid = p[tri[side]].mean(axis=1)
+    assert (1.0 - np.hypot(centroid[:, 0], centroid[:, 1])).max() <= deviation
+    assert report["max_edge"] <= 1.5 * 0.2
+    uniform = mio.mesh_cad_surface(model, 0.2, return_report=True)[1]
+    assert report["num_triangles"] > uniform["num_triangles"]
+
+
+@needs_core
+def test_sizing_defaults_and_determinism():
+    """Every sizing option at its default is the unsized mesh byte for byte; a
+    sized run is the same twice, and a stronger grading limit spends more
+    triangles."""
+    model = _read("capped_cylinder.cad.json")
+    base = mio.mesh_cad_surface(model, 0.2)
+    same = mio.mesh_cad_surface(
+        model, 0.2, curvature_deviation=0.0, cells_across_gaps=0.0, grading=0.0
+    )
+    np.testing.assert_array_equal(base.points, same.points)
+    np.testing.assert_array_equal(base.cells[0].data, same.cells[0].data)
+    a = mio.mesh_cad_surface(model, 0.2, curvature_deviation=0.002, grading=1.2)
+    b = mio.mesh_cad_surface(model, 0.2, curvature_deviation=0.002, grading=1.2)
+    np.testing.assert_array_equal(a.points, b.points)
+    np.testing.assert_array_equal(a.cells[0].data, b.cells[0].data)
+    loose = mio.mesh_cad_surface(model, 0.2, curvature_deviation=0.002, grading=2.0)
+    assert len(a.cells[0].data) > len(loose.cells[0].data)
+
+
+@needs_core
+def test_pole_rings_lift_the_sphere_to_the_bound():
+    """Roadmap 6.4.2: without rings the sphere's pole fans stay below 25
+    degrees and are reported; two rings grade them and the bound is met."""
+    model = _read("sphere.cad.json")
+    fan = mio.mesh_cad_surface(model, 0.2, min_angle=25, return_report=True)[1]
+    assert fan["min_angle_deg"] < 25 and fan["num_faces_below_bound"] > 0
+    out, ringed = mio.mesh_cad_surface(
+        model, 0.2, min_angle=25, pole_rings=2, return_report=True
+    )
+    _watertight(ringed)
+    assert ringed["min_angle_deg"] >= 25 - 1e-9
+    assert ringed["num_faces_below_bound"] == 0
+
+
 def test_smoothing_moves_the_inside_only():
     model = _read("sphere.cad.json")
     plain, r0 = mio.mesh_cad_surface(model, 0.2, return_report=True)
@@ -509,6 +572,29 @@ def test_cli_verb(tmp_path, capsys):
     report = json.loads(capsys.readouterr().out)
     assert report["num_faces"] == 6 and report["num_open_edges"] == 0
     assert out.exists()
+    code = mio._cli.main(
+        [
+            "mesh-cad-surface",
+            str(CAD / "sphere.cad.json"),
+            str(out),
+            "--size",
+            "0.2",
+            "--min-angle",
+            "25",
+            "--curvature-deviation",
+            "0.01",
+            "--cells-across-gaps",
+            "2",
+            "--grading",
+            "1.3",
+            "--pole-rings",
+            "2",
+            "--json",
+        ]
+    )
+    assert code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["num_failed"] == 0 and report["min_angle_deg"] >= 25 - 1e-9
 
 
 def _run_both(doc, tmp_path):
@@ -543,6 +629,40 @@ def test_pipeline_meshes_the_model_its_input_reads(tmp_path, version):
         assert report["steps"][0]["op"] == "MeshCadSurface"
         assert report["steps"][0]["NumFaces"] == 6.0
         assert report["steps"][0]["NumOpenEdges"] == 0.0
+    assert all(r == results[0][0] for r, _ in results)
+
+
+@needs_core
+def test_pipeline_sizes_and_rings_like_the_operation(tmp_path):
+    """The sizing and pole keys reach mesh_cad_surface in both engines."""
+    doc = {
+        "Version": 2,
+        "Input": {"Path": str(CAD / "sphere.cad.json")},
+        "Operations": [
+            {
+                "Op": "MeshCadSurface",
+                "TargetSize": 0.3,
+                "MinAngle": 25,
+                "CurvatureDeviation": 0.01,
+                "Grading": 1.3,
+                "CellsAcrossGaps": 2,
+                "PoleRings": 2,
+            }
+        ],
+    }
+    direct = mio.mesh_cad_surface(
+        _read("sphere.cad.json"),
+        0.3,
+        min_angle=25,
+        curvature_deviation=0.01,
+        grading=1.3,
+        cells_across_gaps=2,
+        pole_rings=2,
+    )
+    results = _run_both(doc, tmp_path)
+    for _, mesh in results:
+        np.testing.assert_array_equal(mesh.points, direct.points)
+        np.testing.assert_array_equal(mesh.cells[0].data, direct.cells[0].data)
     assert all(r == results[0][0] for r, _ in results)
 
 

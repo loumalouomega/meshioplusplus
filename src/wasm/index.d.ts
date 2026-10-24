@@ -390,6 +390,20 @@ export interface MeshCadSurfaceOptions {
    * and edges.
    */
   order?: 1 | 2 | 3;
+  /**
+   * The size's largest growth, `|grad h| <= grading - 1`; 0 (default) is 1.5.
+   * Acts only with `curvatureDeviation` or `cellsAcrossGaps` on.
+   */
+  grading?: number;
+  /** Size each region so a chord sits at most this far from the surface; 0 (default) is off. */
+  curvatureDeviation?: number;
+  /**
+   * Size each region so at least this many elements span its local feature
+   * size (a wall's thickness, a slot's width); 0 (default) is off.
+   */
+  cellsAcrossGaps?: number;
+  /** Rings of points seeded around each pole (0 to 8; default 0 keeps the fan). */
+  poleRings?: number;
 }
 
 /** A corner that keeps triangles under `minAngle`: under 60 degrees, or a pole. */

@@ -459,7 +459,8 @@ void print_usage(std::ostream& os) {
           "                            (CAD JSON, STEP, IGES): --size H [--deflection D]\n"
           "                            [--min-angle DEG] [--smooth N]\n"
           "                            [--smooth-method laplacian|odt] [--order 1|2|3]\n"
-          "                            [--strict] [--json]\n"
+          "                            [--curvature-deviation D] [--cells-across-gaps N]\n"
+          "                            [--grading G] [--pole-rings M] [--strict] [--json]\n"
           "  isosurface              Level set of a scalar point_data field (contours)\n"
           "                            --array NAME --values v1,v2 [--component I]\n"
           "  sdf                     Signed distance field: a grid over a surface,\n"
@@ -2117,6 +2118,10 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
                                   {"smooth", {}, true},
                                   {"smooth-method", {}, true},
                                   {"order", {}, true},
+                                  {"curvature-deviation", {}, true},
+                                  {"cells-across-gaps", {}, true},
+                                  {"grading", {}, true},
+                                  {"pole-rings", {}, true},
                                   {"json", {}, false},
                                   {"quiet", {"-q"}, false},
                               });
@@ -2157,6 +2162,14 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
     }
     if (has_opt(p, "order"))
         o.mOrder = static_cast<std::int32_t>(std::stoi(opt_value(p, "order")));
+    if (has_opt(p, "curvature-deviation"))
+        o.mCurvatureDeviation = meshioplusplus::detail::stod_c(opt_value(p, "curvature-deviation"));
+    if (has_opt(p, "cells-across-gaps"))
+        o.mCellsAcrossGaps = meshioplusplus::detail::stod_c(opt_value(p, "cells-across-gaps"));
+    if (has_opt(p, "grading"))
+        o.mGrading = meshioplusplus::detail::stod_c(opt_value(p, "grading"));
+    if (has_opt(p, "pole-rings"))
+        o.mPoleRings = static_cast<std::int32_t>(std::stoi(opt_value(p, "pole-rings")));
     const meshioplusplus::MeshCadSurfaceResult r =
         meshioplusplus::mesh_cad_surface(*model.mBrep, o);
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));

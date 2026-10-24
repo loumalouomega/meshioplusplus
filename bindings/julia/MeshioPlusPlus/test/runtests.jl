@@ -335,6 +335,12 @@ end
             close(c.mesh)
         end
         @test_throws MeshioError mesh_cad_surface(info; target_size=0.1, order=4)
+        # v17.18.0: the size field and pole rings.
+        s = mesh_cad_surface(info; target_size=0.1, grading=1.3, curvature_deviation=0.01,
+                             cells_across_gaps=2.0, pole_rings=2)
+        @test s.num_failed == 0
+        close(s.mesh)
+        @test_throws MeshioError mesh_cad_surface(info; target_size=0.1, grading=0.5)
         close(r.mesh); close(mesh); close(info)
     end
 end

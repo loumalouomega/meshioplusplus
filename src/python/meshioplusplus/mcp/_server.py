@@ -1186,6 +1186,10 @@ def _register_operations(server: FastMCP) -> None:
         smooth_iterations: int = 0,
         smooth_method: str = "laplacian",
         order: int = 1,
+        curvature_deviation: float = 0.0,
+        cells_across_gaps: float = 0.0,
+        grading: float = 0.0,
+        pole_rings: int = 0,
     ) -> dict:
         """Triangulate the faces of a CAD model (Kratos CAD JSON; STEP and
         IGES where OpenCASCADE is linked) into one conforming surface mesh with
@@ -1216,7 +1220,14 @@ def _register_operations(server: FastMCP) -> None:
         triangle6 or triangle10 elements (line3, line4 for the edges) whose
         nodes lie on the surface and the edges; an element whose Jacobian is
         not positive everywhere is written straight-sided and counted in
-        num_curved_straightened."""
+        num_curved_straightened. curvature_deviation (0: off) sizes curved
+        regions so a triangle sits at most that far from the surface, and
+        cells_across_gaps (0: off) puts at least that many elements across a
+        thin wall or a gap: both through one size field over the whole model,
+        measured on a first uniform mesh, never above target_size, whose
+        growth grading limits (a ratio above 1; 0: 1.5). pole_rings (0 to 8;
+        0: the fan) places that many rings of points around each pole so its
+        triangles are graded and meet min_angle."""
         return _guard(
             _tools.tool_mesh_cad_surface,
             input_path=input_path,
@@ -1236,6 +1247,10 @@ def _register_operations(server: FastMCP) -> None:
             smooth_iterations=smooth_iterations,
             smooth_method=smooth_method,
             order=order,
+            curvature_deviation=curvature_deviation,
+            cells_across_gaps=cells_across_gaps,
+            grading=grading,
+            pole_rings=pole_rings,
         )
 
     @server.tool()

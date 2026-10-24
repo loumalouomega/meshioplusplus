@@ -3552,6 +3552,15 @@ step('meshCadSurface: a trimmed CAD JSON face triangulated and reported', () => 
     }
     assert.equal(r.numCurvedStraightened, 0);
     assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, order: 4 }), /order/);
+    // v17.18.0: a size field and pole rings are accepted; a flat face with no
+    // other face has no curvature nor gap to size by, so the mesh is the same.
+    const z = m.meshCadSurface(read.info, {
+        targetSize: 0.1, curvatureDeviation: 0.01, cellsAcrossGaps: 2, grading: 1.3, poleRings: 2,
+    });
+    assert.equal(z.numFailed, 0);
+    assert.equal(z.numTriangles, r.numTriangles);
+    assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, grading: 0.5 }), /grading/);
+    assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, poleRings: 9 }), /pole_rings/);
 });
 
 step('info: the mdpa blocks a mesh cannot hold round-trip through info', () => {

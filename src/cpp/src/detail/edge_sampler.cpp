@@ -123,6 +123,46 @@ void BrepSurfaceEval::Eval(double U, double V, double* pX, double* pSu, double* 
             pSv[k] = der[3 + k];
 }
 
+void BrepSurfaceEval::Eval2(double U, double V, double* pX, double* pSu, double* pSv, double* pSuu,
+                            double* pSuv, double* pSvv) const {
+    const double u[2] = {std::clamp(U, mBox[0], mBox[1]), std::clamp(V, mBox[2], mBox[3])};
+    std::size_t span[2];
+    for (std::size_t d = 0; d < 2; ++d)
+        span[d] = nurbs_find_span(pPatch->mDegrees[d], pPatch->mKnots[d], mCounts[d], u[d]);
+    double d1[6], d2[9];
+    iga_eval_surface_d2(mNet, span, u, pX, d1, d2);
+    for (int k = 0; k < 3; ++k) {
+        pSu[k] = d1[k];
+        pSv[k] = d1[3 + k];
+        pSuu[k] = d2[k];
+        pSuv[k] = d2[3 + k];
+        pSvv[k] = d2[6 + k];
+    }
+}
+
+double BrepSurfaceEval::MaxCurvature(double U, double V) const {
+    double x[3], su[3], sv[3], suu[3], suv[3], svv[3];
+    Eval2(U, V, x, su, sv, suu, suv, svv);
+    const auto dot = [](const double* pA, const double* pB) {
+        return pA[0] * pB[0] + pA[1] * pB[1] + pA[2] * pB[2];
+    };
+    double n[3] = {su[1] * sv[2] - su[2] * sv[1], su[2] * sv[0] - su[0] * sv[2],
+                   su[0] * sv[1] - su[1] * sv[0]};
+    const double len = std::sqrt(dot(n, n));
+    const double e = dot(su, su), f = dot(su, sv), g = dot(sv, sv);
+    const double det = e * g - f * f;
+    if (!(len > 0.0) || !(det > 1e-14 * e * g))
+        return 0.0;
+    for (double& r_c : n)
+        r_c /= len;
+    const double l = dot(suu, n), m = dot(suv, n), nn = dot(svv, n);
+    // The shape operator I^-1 II: mean and Gaussian curvature, then the
+    // principal curvatures H +- sqrt(H^2 - K).
+    const double mean = (e * nn - 2.0 * f * m + g * l) / (2.0 * det);
+    const double gauss = (l * nn - m * m) / det;
+    return std::abs(mean) + std::sqrt(std::max(0.0, mean * mean - gauss));
+}
+
 BrepCurveEval::BrepCurveEval(const BrepCurve& rCurve) : mDegree(rCurve.mDegree) {
     mCount = rCurve.mControlPoints.Shape().empty() ? 0 : rCurve.mControlPoints.Shape()[0];
     const auto p = static_cast<std::size_t>(mDegree);
@@ -328,6 +368,79 @@ std::vector<double> TrimTrace::CornerLengths() const {
     return out;
 }
 
+namespace {
+
+/// One stretch `[L0, L1]` of a trace cut at equal increments of the integral
+/// of ds / h(s) (roadmap 6.3.4): the density 1 / h is integrated by adaptive
+/// Simpson from pieces no longer than the target, the stretch gets
+/// `ceil(N)` pieces (and the minimum the options ask for), and each piece's
+/// end is found by interpolating the cumulative integral, then handed to
+/// `Split` for the chordal cap.
+template <class TSplit>
+void edgs_sized_stretch(const TrimTrace& rTrace, const EdgeSampleOptions& rOptions, double L0,
+                        double L1, double Length, std::int64_t& rBudget, std::vector<double>& rEnds,
+                        TSplit&& rSplit) {
+    const double part = L1 - L0;
+    const auto density = [&](double L) {
+        const double hx = rOptions.mSize(rTrace.Point(rTrace.ParamAtLength(L)));
+        return 1.0 / std::min(rOptions.mTargetSize, std::max(hx, 1e-12 * rOptions.mTargetSize));
+    };
+    std::vector<double> at{L0}, cum{0.0};
+    const auto simpson = [](double A, double B, double Fa, double Fm, double Fb) {
+        return (B - A) / 6.0 * (Fa + 4.0 * Fm + Fb);
+    };
+    const auto adapt = [&](auto&& rSelf, double A, double B, double Fa, double Fm, double Fb,
+                           double Whole, int Depth) -> void {
+        const double m = 0.5 * (A + B);
+        const double lm = 0.5 * (A + m), rm = 0.5 * (m + B);
+        const double flm = density(lm), frm = density(rm);
+        const double left = simpson(A, m, Fa, flm, Fm);
+        const double right = simpson(m, B, Fm, frm, Fb);
+        if (Depth >= 24 || std::abs(left + right - Whole) <= 1e-3 * (left + right)) {
+            at.push_back(m);
+            cum.push_back(cum.back() + left);
+            at.push_back(B);
+            cum.push_back(cum.back() + right);
+            return;
+        }
+        rSelf(rSelf, A, m, Fa, flm, Fm, left, Depth + 1);
+        rSelf(rSelf, m, B, Fm, frm, Fb, right, Depth + 1);
+    };
+    const auto first = static_cast<std::int64_t>(std::ceil(part / rOptions.mTargetSize));
+    double fa = density(L0);
+    for (std::int64_t k = 0; k < first; ++k) {
+        const double a = L0 + part * double(k) / double(first);
+        const double b = k + 1 == first ? L1 : L0 + part * double(k + 1) / double(first);
+        const double fm = density(0.5 * (a + b)), fb = density(b);
+        adapt(adapt, a, b, fa, fm, fb, simpson(a, b, fa, fm, fb), 0);
+        fa = fb;
+    }
+    const double total = cum.back();
+    if (!(total <= double(rBudget)))
+        throw std::length_error("meshio++: mesh_cad_surface: an edge needs more than " +
+                                std::to_string(rOptions.mMaxSegments) + " segments");
+    const std::int64_t n = std::max<std::int64_t>(
+        {std::int64_t{1}, static_cast<std::int64_t>(std::ceil(total - 1e-9)),
+         static_cast<std::int64_t>(std::ceil(double(rOptions.mMinSegments) * part / Length))});
+    double la = L0;
+    std::size_t j = 0;
+    for (std::int64_t k = 1; k <= n; ++k) {
+        double lb = L1;
+        if (k < n) {
+            const double target = total * double(k) / double(n);
+            while (j + 1 < cum.size() && cum[j + 1] < target)
+                ++j;
+            const double span = cum[j + 1] - cum[j];
+            const double f = span > 0.0 ? (target - cum[j]) / span : 0.0;
+            lb = at[j] + f * (at[j + 1] - at[j]);
+        }
+        rSplit(rSplit, la, lb, 0);
+        la = lb;
+    }
+}
+
+}  // namespace
+
 EdgeSamples edge_sample(const TrimTrace& rTrace, const EdgeSampleOptions& rOptions) {
     EdgeSamples out;
     const double length = rTrace.Length();
@@ -386,6 +499,10 @@ EdgeSamples edge_sample(const TrimTrace& rTrace, const EdgeSampleOptions& rOptio
         const double l0 = cuts[c];
         const double l1 = cuts[c + 1];
         const double part = l1 - l0;
+        if (rOptions.mSize) {
+            edgs_sized_stretch(rTrace, rOptions, l0, l1, length, budget, ends, split);
+            continue;
+        }
         const std::int64_t n = std::max<std::int64_t>(
             {std::int64_t{1}, static_cast<std::int64_t>(std::ceil(part / rOptions.mTargetSize)),
              static_cast<std::int64_t>(std::ceil(double(rOptions.mMinSegments) * part / length))});

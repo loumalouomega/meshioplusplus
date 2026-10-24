@@ -1164,6 +1164,21 @@ int main(int argc, char** argv) {
                 }
             }
         });
+        // A size field (v17.18.0): the unit box squashed to a slab two
+        // lattice steps thick, with two cells across its walls, so the first
+        // uniform pass, the gap rays, the graded field and the sized edges
+        // and faces all run, against mesh_cad_surface at the same step.
+        row("mesh_cad_surface_sized", [&](MeshDigest* pD) {
+            mio::BrepInfo slab = cad_box();
+            for (mio::NurbsPatch& r_p : slab.mPatches)
+                for (std::size_t i = 0; i < 4; ++i)
+                    r_p.mControlPoints.As<double>()[3 * i + 2] *= 2.0 * octree_step;
+            mio::MeshCadSurfaceOptions o;
+            o.mTargetSize = octree_step;
+            o.mCellsAcrossGaps = 2.0;
+            o.mGrading = 1.3;
+            of(pD, mio::mesh_cad_surface(slab, o).mMesh);
+        });
         row("sample_distance", [&](MeshDigest* pD) {
             const NDArray d = mio::sample_distance(surface, jittered->Points());
             if (pD)

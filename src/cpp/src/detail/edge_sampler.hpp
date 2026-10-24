@@ -61,6 +61,7 @@
 // System includes
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 // Project includes
@@ -84,6 +85,13 @@ public:
     BrepSurfaceEval(const NurbsPatch& rPatch, bool Rational);
     /// `pX` (3) and, when not null, `pSu` and `pSv` (3 each).
     void Eval(double U, double V, double* pX, double* pSu, double* pSv) const;
+    /// `pX`, the first derivatives `pSu`, `pSv` and the second derivatives
+    /// `pSuu`, `pSuv`, `pSvv` (3 each, none null).
+    void Eval2(double U, double V, double* pX, double* pSu, double* pSv, double* pSuu, double* pSuv,
+               double* pSvv) const;
+    /// The largest absolute principal curvature at `(U, V)`, from the first
+    /// and second fundamental forms; 0 where the tangents are parallel.
+    double MaxCurvature(double U, double V) const;
     /// The knot range: `{u0, u1, v0, v1}`.
     const std::array<double, 4>& Box() const { return mBox; }
 
@@ -163,6 +171,11 @@ struct EdgeSampleOptions {
     std::int64_t mMinSegments = 1;         ///< at least this many pieces
     double mTolerance = 0.0;               ///< a trace this short is degenerate
     std::int64_t mMaxSegments = 10000000;  ///< refused (std::length_error) above
+    /// The local size h(x) at a point of the edge (roadmap 6.3.4); null:
+    /// `mTargetSize` everywhere. With it a stretch between corners is cut at
+    /// equal increments of the integral of ds / h(s), which h(x) <= the
+    /// target keeps at least as fine.
+    std::function<double(const EdgeVec3&)> mSize;
 };
 
 struct EdgeSamples {

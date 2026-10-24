@@ -480,20 +480,8 @@ TEST(MeshCadQuality, OptionsNotImplementedYetAreRefused) {
     o.mInsertion = mio::MeshCadInsertion::Offcentre;
     refused(o, "6.2.9");
     o = quality(0.5, 0.0);
-    o.mGrading = 1.3;
-    refused(o, "6.3.3");
-    o = quality(0.5, 0.0);
-    o.mCurvatureDeviation = 0.01;
-    refused(o, "6.3.2");
-    o = quality(0.5, 0.0);
-    o.mCellsAcrossGaps = 2.0;
-    refused(o, "6.3.7");
-    o = quality(0.5, 0.0);
     o.mMetric = mio::MeshCadMetric::Varying;
     refused(o, "6.4.1");
-    o = quality(0.5, 0.0);
-    o.mPoleRings = 1;
-    refused(o, "6.4.2");
     o = quality(0.5, 0.0);
     o.mReparamConditionNumber = 100.0;
     refused(o, "6.4.4");
@@ -509,6 +497,27 @@ TEST(MeshCadQuality, OptionsNotImplementedYetAreRefused) {
             << bad;
     EXPECT_THROW((void)mio::mesh_cad_surface(brep_solids::box(), quality(0.5, 0.0, -1)),
                  std::invalid_argument);
+    // The sizing options (6.3) and pole rings (6.4.2) have landed; their
+    // ranges are checked.
+    for (const double bad : {0.5, 1.0, -1.0, std::nan("")}) {
+        o = quality(0.5, 0.0);
+        o.mGrading = bad;
+        EXPECT_THROW((void)mio::mesh_cad_surface(brep_solids::box(), o), std::invalid_argument)
+            << bad;
+    }
+    for (const double bad : {-1.0, std::nan("")}) {
+        o = quality(0.5, 0.0);
+        o.mCurvatureDeviation = bad;
+        EXPECT_THROW((void)mio::mesh_cad_surface(brep_solids::box(), o), std::invalid_argument);
+        o = quality(0.5, 0.0);
+        o.mCellsAcrossGaps = bad;
+        EXPECT_THROW((void)mio::mesh_cad_surface(brep_solids::box(), o), std::invalid_argument);
+    }
+    for (const int bad : {-1, 9}) {
+        o = quality(0.5, 0.0);
+        o.mPoleRings = bad;
+        EXPECT_THROW((void)mio::mesh_cad_surface(brep_solids::box(), o), std::invalid_argument);
+    }
 }
 
 TEST(MeshCadQuality, AStretchedCornerDoesNotRunAway) {

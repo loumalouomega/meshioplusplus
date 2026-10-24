@@ -37,6 +37,9 @@ FACE_STATUSES = (
     "other",
 )
 
+#: The most rings of points ``pole_rings`` seeds around a pole.
+_MAX_POLE_RINGS = 8
+
 #: How smoothing moves an interior point.
 SMOOTH_METHODS = ("laplacian", "odt")
 
@@ -109,6 +112,10 @@ def mesh_cad_surface(
     smooth_iterations: int = 0,
     smooth_method: str = "laplacian",
     order: int = 1,
+    curvature_deviation: float = 0.0,
+    cells_across_gaps: float = 0.0,
+    grading: float = 0.0,
+    pole_rings: int = 0,
     return_report: bool = False,
 ):
     """Triangulate a B-rep's faces into one conforming surface mesh.
@@ -142,6 +149,18 @@ def mesh_cad_surface(
         the surface and the edges. An element whose Jacobian is not positive
         everywhere inside is written straight-sided and counted
         (``num_curved_straightened``).
+    :param curvature_deviation: size each region by its curvature so that a
+        chord sits at most this far from the surface, ``2 sqrt(2 d / k - d^2)``
+        for the largest principal curvature ``k``; 0 is off. Never above
+        ``target_size`` nor below a 64th of it.
+    :param cells_across_gaps: size each region so that at least this many
+        elements span its local feature size (a thin wall's thickness, a
+        slot's width); 0 is off.
+    :param grading: the most the size may grow from one element to the next,
+        ``|grad h| <= grading - 1``; 0 is 1.5. Acts only with a size source on.
+    :param pole_rings: rings of points seeded around each pole (a degenerate
+        trim), at about ``target_size`` apart, so the pole is no longer the
+        apex of a fan of thin triangles; 0 keeps the fan.
     :param return_report: also return the report.
     :returns: the surface mesh (``triangle`` and ``line`` blocks, or their
         curved forms with ``order`` 2 or 3), or
@@ -184,6 +203,20 @@ def mesh_cad_surface(
         raise ValueError(f"{_PREFIX}smooth_method must be one of {SMOOTH_METHODS}")
     if isinstance(order, bool) or int(order) not in (1, 2, 3):
         raise ValueError(f"{_PREFIX}order must be 1, 2 or 3")
+    for name, value in (
+        ("curvature_deviation", curvature_deviation),
+        ("cells_across_gaps", cells_across_gaps),
+    ):
+        value = float(value)
+        if not (math.isfinite(value) and value >= 0.0):
+            raise ValueError(f"{_PREFIX}{name} must be finite and not negative")
+    grading = float(grading)
+    if not (math.isfinite(grading) and (grading == 0.0 or grading > 1.0)):
+        raise ValueError(
+            f"{_PREFIX}grading must be 0 (the default, 1.5) or greater than 1"
+        )
+    if isinstance(pole_rings, bool) or not 0 <= int(pole_rings) <= _MAX_POLE_RINGS:
+        raise ValueError(f"{_PREFIX}pole_rings must lie in [0, {_MAX_POLE_RINGS}]")
 
     _core = _core_or_raise("mesh_cad_surface")
     res = _core.mesh_cad_surface(
@@ -201,6 +234,10 @@ def mesh_cad_surface(
         smooth_iterations=int(smooth_iterations),
         smooth_method=smooth_method,
         order=int(order),
+        grading=grading,
+        curvature_deviation=float(curvature_deviation),
+        cells_across_gaps=float(cells_across_gaps),
+        pole_rings=int(pole_rings),
     )
     out = res["mesh"]
     if not return_report:

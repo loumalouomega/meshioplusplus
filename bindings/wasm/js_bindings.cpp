@@ -5620,7 +5620,8 @@ val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
         check_settings_keys(rOptions, "the meshCadSurface options",
                             {"targetSize", "maxChordalDeviation", "minPointsPerEdge", "tolerance",
                              "recordFaceIds", "edges", "matchUnreferencedTrims", "strict",
-                             "maxPoints", "minAngle", "smoothIterations", "smoothMethod", "order"});
+                             "maxPoints", "minAngle", "smoothIterations", "smoothMethod", "order",
+                             "grading", "curvatureDeviation", "cellsAcrossGaps", "poleRings"});
         const auto has = [&](const char* pKey) {
             return rOptions.hasOwnProperty(pKey) && !rOptions[pKey].isUndefined() &&
                    !rOptions[pKey].isNull();
@@ -5665,6 +5666,14 @@ val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
                 throw std::invalid_argument("meshio++: mesh_cad_surface: order must be 1, 2 or 3");
             o.mOrder = static_cast<std::int32_t>(order);
         }
+        if (has("grading"))
+            o.mGrading = rOptions["grading"].as<double>();
+        if (has("curvatureDeviation"))
+            o.mCurvatureDeviation = rOptions["curvatureDeviation"].as<double>();
+        if (has("cellsAcrossGaps"))
+            o.mCellsAcrossGaps = rOptions["cellsAcrossGaps"].as<double>();
+        if (has("poleRings"))
+            o.mPoleRings = static_cast<std::int32_t>(rOptions["poleRings"].as<double>());
         meshioplusplus::MeshCadSurfaceResult r =
             meshioplusplus::mesh_cad_surface(val_to_brep_info(rInfo), o);
         val out = val::object();

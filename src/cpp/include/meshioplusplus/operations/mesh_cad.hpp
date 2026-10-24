@@ -31,7 +31,7 @@
 /**
  * @file operations/mesh_cad.hpp
  * @brief Mesh generation from CAD: a conforming triangulation of a B-rep's
- * faces at one global target edge size (`mesh_cad_surface`), and the planar
+ * faces at a target edge size (`mesh_cad_surface`), and the planar
  * constrained Delaunay triangulation it is built on (`triangulate_polygon_2d`).
  *
  * `mesh_cad_surface` takes the `BrepInfo` a CAD JSON, STEP or IGES read
@@ -71,7 +71,7 @@
  * broken by vertex ids (J. R. Shewchuk, Comput. Geom. 2002). Corners below
  * 60 degrees split on concentric shells and the triangles they force are
  * left and reported with the corner (Shewchuk 2002; G. L. Miller, S. E. Pav
- * and N. J. Walkington, IMR 2003), as are poles until graded poles land.
+ * and N. J. Walkington, IMR 2003), as are poles without `mPoleRings`.
  * `mSmoothIterations` moves interior points toward their star's centroid
  * (Laplacian) or its optimal Delaunay place (L. Chen and J. Xu, J. Comput.
  * Math. 2004), each move kept only when no triangle inverts and the star's
@@ -81,10 +81,13 @@
  * or `triangle10` elements whose nodes lie on the surface and the edges; one
  * whose Jacobian is not positive everywhere (its Bezier bound; A. Johnen,
  * J.-F. Remacle and C. Geuzaine, J. Comput. Phys. 2013) is written
- * straight-sided and counted. There is no size field beyond the chordal
- * cap and no anisotropic metric yet: the options for them are in the layout
- * and refused until they land. The output is byte-identical across parallel
- * backends and thread counts. See doc/mesh_cad.md.
+ * straight-sided and counted. `mCurvatureDeviation` and `mCellsAcrossGaps`
+ * size the mesh by one gradation-limited field over the whole model (P.-O.
+ * Persson, Eng. Comput. 2006), measured on a first uniform mesh, so edges and
+ * the faces that share them agree on it; `mPoleRings` grades the triangles
+ * around a pole. There is no anisotropic metric yet: its options are in the
+ * layout and refused until they land. The output is byte-identical across
+ * parallel backends and thread counts. See doc/mesh_cad.md.
  */
 
 // System includes
@@ -116,7 +119,9 @@ enum class MeshCadFaceStatus : std::int32_t {
     Empty = 1,             ///< its loops enclose nothing
     OpenLoop = 2,          ///< its loops do not bound a domain consistently
     SelfIntersecting = 3,  ///< its boundary meets itself in the parameters, even after splitting
-    Degenerate = 4,        ///< distinct boundary samples coincide in the parameters
+    Degenerate = 4,        ///< distinct boundary samples coincide in the parameters, or a
+                           ///< lifted triangle folds over (its normal turns more than 120
+                           ///< degrees from the surface's)
     ProjectionFailed = 5,  ///< an edge could not be carried to this face's trim
     BudgetExceeded = 6,    ///< more points than `mMaxPoints`
     Unsupported = 7,       ///< an invalid surface or trim
@@ -188,11 +193,19 @@ struct MeshCadSurfaceOptions {
     std::int64_t mSmoothIterations = 0;
     MeshCadSmoothing mSmoothMethod = MeshCadSmoothing::Laplacian;
     MeshCadInsertion mInsertion = MeshCadInsertion::Circumcentre;  ///< 6.2.9
-    double mGrading = 0.0;                                         ///< 6.3.3; 0 is off
-    double mCurvatureDeviation = 0.0;                              ///< 6.3.2; 0 is off
-    double mCellsAcrossGaps = 0.0;                                 ///< 6.3.7; 0 is off
-    MeshCadMetric mMetric = MeshCadMetric::Mean;                   ///< 6.4.1
-    std::int32_t mPoleRings = 0;                                   ///< 6.4.2; 0 is the pole's fan
+    /// How fast the size may grow, at most `grading - 1` per unit length
+    /// (6.3.3); 0 is 1.5, used only when a size source below is on.
+    double mGrading = 0.0;
+    /// Size curved regions so a triangle sits at most this from the surface
+    /// (its chordal error, 6.3.2); 0 is off.
+    double mCurvatureDeviation = 0.0;
+    /// Put at least this many elements across a thin wall or a gap (6.3.7);
+    /// 0 is off.
+    double mCellsAcrossGaps = 0.0;
+    MeshCadMetric mMetric = MeshCadMetric::Mean;  ///< 6.4.1
+    /// Rings of points around each pole, about `h` apart, so its triangles
+    /// are graded instead of a thin fan (6.4.2; at most 8); 0 is the fan.
+    std::int32_t mPoleRings = 0;
     double mReparamConditionNumber = 0.0;                          ///< 6.4.4; 0 is off
     /// 1: linear triangles; 2 and 3: curved `triangle6` and `triangle10`
     /// (and `line3`, `line4`), their nodes on the surface and edges (6.6).

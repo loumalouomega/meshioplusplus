@@ -558,9 +558,10 @@ static SEXP r_mesh_cad_corners(void) {
 
 SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation,
                             SEXP min_points_per_edge, SEXP tolerance, SEXP record_face_ids,
-                            SEXP edges, SEXP match_unreferenced_trims, SEXP strict,
-                            SEXP max_points, SEXP min_angle, SEXP smooth_iterations,
-                            SEXP smooth_method, SEXP order) {
+                            SEXP edges, SEXP match_unreferenced_trims, SEXP strict, SEXP max_points,
+                            SEXP min_angle, SEXP smooth_iterations, SEXP smooth_method, SEXP order,
+                            SEXP grading, SEXP curvature_deviation, SEXP cells_across_gaps,
+                            SEXP pole_rings) {
     const mio_format_info *info = info_of(x, 0);
     mio_mesh_cad_surface_opts opts;
     mio_mesh_cad_surface_opts_init(&opts);
@@ -578,6 +579,10 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
     opts.smooth_iterations = (int32_t)mio_r_int64(smooth_iterations, "smooth_iterations");
     opts.smooth_method = (int32_t)mio_r_int64(smooth_method, "smooth_method");
     opts.order = (int32_t)mio_r_int64(order, "order");
+    opts.grading = mio_r_double(grading, "grading");
+    opts.curvature_deviation = mio_r_double(curvature_deviation, "curvature_deviation");
+    opts.cells_across_gaps = mio_r_double(cells_across_gaps, "cells_across_gaps");
+    opts.pole_rings = (int32_t)mio_r_int64(pole_rings, "pole_rings");
     mio_mesh_cad_surface_report report;
     mio_mesh *out = mio_mesh_cad_surface(info, &opts, &report);
     if (out == NULL) mio_r_fail("mesh_cad_surface");

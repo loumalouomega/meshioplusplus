@@ -2600,6 +2600,14 @@ mio_iga_evaluate <- function(info, patch, params, derivatives = 0L, trim_samples
 #'   elements (and `line3` or `line4` edges) whose nodes lie on the surfaces
 #'   and edges; an element whose Jacobian is not positive everywhere is kept
 #'   straight-sided and counted in `num_curved_straightened`.
+#' @param grading The size's largest growth, `|grad h| <= grading - 1`; 0 is
+#'   1.5. Acts only with `curvature_deviation` or `cells_across_gaps` on.
+#' @param curvature_deviation Size each region so a chord sits at most this
+#'   far from the surface; 0 is off.
+#' @param cells_across_gaps Size each region so at least this many elements
+#'   span its local feature size (a wall's thickness, a slot's width); 0 is off.
+#' @param pole_rings Rings of points seeded around each pole, so it is no
+#'   longer a fan's apex; 0 keeps the fan, at most 8.
 #' @return A list: `mesh`, the counts (`num_points`, `num_triangles`,
 #'   `num_edge_segments`, `num_faces`, `num_failed`, `num_edges`,
 #'   `num_open_edges`, `num_non_manifold_edges`, `num_misoriented_edges`,
@@ -2619,7 +2627,9 @@ mio_mesh_cad_surface <- function(info, target_size, max_chordal_deviation = 0,
                                  match_unreferenced_trims = TRUE, strict = FALSE,
                                  max_points = 50000000, min_angle = 0,
                                  smooth_iterations = 0,
-                                 smooth_method = c("laplacian", "odt"), order = 1) {
+                                 smooth_method = c("laplacian", "odt"), order = 1,
+                                 grading = 0, curvature_deviation = 0,
+                                 cells_across_gaps = 0, pole_rings = 0) {
   smooth_method <- match.arg(smooth_method)
   r <- .Call(R_mio_mesh_cad_surface, info, as.numeric(target_size),
              as.numeric(max_chordal_deviation), as.numeric(min_points_per_edge),
@@ -2627,7 +2637,8 @@ mio_mesh_cad_surface <- function(info, target_size, max_chordal_deviation = 0,
              isTRUE(match_unreferenced_trims), isTRUE(strict), as.numeric(max_points),
              as.numeric(min_angle), as.numeric(smooth_iterations),
              as.numeric(match(smooth_method, c("laplacian", "odt")) - 1L),
-             as.numeric(order))
+             as.numeric(order), as.numeric(grading), as.numeric(curvature_deviation),
+             as.numeric(cells_across_gaps), as.numeric(pole_rings))
   r$warnings <- if (nzchar(r$warnings)) strsplit(r$warnings, "\n", fixed = TRUE)[[1]] else character(0)
   r$corners <- as.data.frame(r$corners)
   r

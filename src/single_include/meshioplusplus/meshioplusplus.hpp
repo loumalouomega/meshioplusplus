@@ -29852,7 +29852,7 @@ MESHIOPLUSPLUS_API MergeResult merge(const std::vector<const Mesh*>& rMeshes, co
 /**
  * @file operations/mesh_cad.hpp
  * @brief Mesh generation from CAD: a conforming triangulation of a B-rep's
- * faces at one global target edge size (`mesh_cad_surface`), and the planar
+ * faces at a target edge size (`mesh_cad_surface`), and the planar
  * constrained Delaunay triangulation it is built on (`triangulate_polygon_2d`).
  *
  * `mesh_cad_surface` takes the `BrepInfo` a CAD JSON, STEP or IGES read
@@ -29892,7 +29892,7 @@ MESHIOPLUSPLUS_API MergeResult merge(const std::vector<const Mesh*>& rMeshes, co
  * broken by vertex ids (J. R. Shewchuk, Comput. Geom. 2002). Corners below
  * 60 degrees split on concentric shells and the triangles they force are
  * left and reported with the corner (Shewchuk 2002; G. L. Miller, S. E. Pav
- * and N. J. Walkington, IMR 2003), as are poles until graded poles land.
+ * and N. J. Walkington, IMR 2003), as are poles without `mPoleRings`.
  * `mSmoothIterations` moves interior points toward their star's centroid
  * (Laplacian) or its optimal Delaunay place (L. Chen and J. Xu, J. Comput.
  * Math. 2004), each move kept only when no triangle inverts and the star's
@@ -29902,10 +29902,13 @@ MESHIOPLUSPLUS_API MergeResult merge(const std::vector<const Mesh*>& rMeshes, co
  * or `triangle10` elements whose nodes lie on the surface and the edges; one
  * whose Jacobian is not positive everywhere (its Bezier bound; A. Johnen,
  * J.-F. Remacle and C. Geuzaine, J. Comput. Phys. 2013) is written
- * straight-sided and counted. There is no size field beyond the chordal
- * cap and no anisotropic metric yet: the options for them are in the layout
- * and refused until they land. The output is byte-identical across parallel
- * backends and thread counts. See doc/mesh_cad.md.
+ * straight-sided and counted. `mCurvatureDeviation` and `mCellsAcrossGaps`
+ * size the mesh by one gradation-limited field over the whole model (P.-O.
+ * Persson, Eng. Comput. 2006), measured on a first uniform mesh, so edges and
+ * the faces that share them agree on it; `mPoleRings` grades the triangles
+ * around a pole. There is no anisotropic metric yet: its options are in the
+ * layout and refused until they land. The output is byte-identical across
+ * parallel backends and thread counts. See doc/mesh_cad.md.
  */
 
 // System includes
@@ -29934,7 +29937,9 @@ enum class MeshCadFaceStatus : std::int32_t {
     Empty = 1,             ///< its loops enclose nothing
     OpenLoop = 2,          ///< its loops do not bound a domain consistently
     SelfIntersecting = 3,  ///< its boundary meets itself in the parameters, even after splitting
-    Degenerate = 4,        ///< distinct boundary samples coincide in the parameters
+    Degenerate = 4,        ///< distinct boundary samples coincide in the parameters, or a
+                           ///< lifted triangle folds over (its normal turns more than 120
+                           ///< degrees from the surface's)
     ProjectionFailed = 5,  ///< an edge could not be carried to this face's trim
     BudgetExceeded = 6,    ///< more points than `mMaxPoints`
     Unsupported = 7,       ///< an invalid surface or trim
@@ -30006,11 +30011,19 @@ struct MeshCadSurfaceOptions {
     std::int64_t mSmoothIterations = 0;
     MeshCadSmoothing mSmoothMethod = MeshCadSmoothing::Laplacian;
     MeshCadInsertion mInsertion = MeshCadInsertion::Circumcentre;  ///< 6.2.9
-    double mGrading = 0.0;                                         ///< 6.3.3; 0 is off
-    double mCurvatureDeviation = 0.0;                              ///< 6.3.2; 0 is off
-    double mCellsAcrossGaps = 0.0;                                 ///< 6.3.7; 0 is off
-    MeshCadMetric mMetric = MeshCadMetric::Mean;                   ///< 6.4.1
-    std::int32_t mPoleRings = 0;                                   ///< 6.4.2; 0 is the pole's fan
+    /// How fast the size may grow, at most `grading - 1` per unit length
+    /// (6.3.3); 0 is 1.5, used only when a size source below is on.
+    double mGrading = 0.0;
+    /// Size curved regions so a triangle sits at most this from the surface
+    /// (its chordal error, 6.3.2); 0 is off.
+    double mCurvatureDeviation = 0.0;
+    /// Put at least this many elements across a thin wall or a gap (6.3.7);
+    /// 0 is off.
+    double mCellsAcrossGaps = 0.0;
+    MeshCadMetric mMetric = MeshCadMetric::Mean;  ///< 6.4.1
+    /// Rings of points around each pole, about `h` apart, so its triangles
+    /// are graded instead of a thin fan (6.4.2; at most 8); 0 is the fan.
+    std::int32_t mPoleRings = 0;
     double mReparamConditionNumber = 0.0;                          ///< 6.4.4; 0 is off
     /// 1: linear triangles; 2 and 3: curved `triangle6` and `triangle10`
     /// (and `line3`, `line4`), their nodes on the surface and edges (6.6).
@@ -40293,6 +40306,135 @@ inline void iga_eval_point(const IgaEvalNet& rNet, const std::size_t* pSpan, con
     }
 }
 
+/// A2.3 to the second derivatives: `pDers` is three rows of `P + 1` values,
+/// the basis functions, their first and their second derivatives (zero above
+/// the degree). Kept apart from `iga_basis_ders`, whose path the Python twin
+/// matches bit for bit.
+inline void iga_basis_ders2(std::size_t Span, double U, int P, const std::vector<double>& rKnots,
+                            double* pDers) {
+    const auto p = static_cast<std::size_t>(P);
+    const std::size_t w = p + 1;
+    IgaScratch<64> ndu(w * w), left(w), right(w), a(2 * w);
+    const auto at = [w](std::size_t R, std::size_t Cc) { return R * w + Cc; };
+    ndu[at(0, 0)] = 1.0;
+    for (std::size_t j = 1; j <= p; ++j) {
+        left[j] = U - rKnots[Span + 1 - j];
+        right[j] = rKnots[Span + j] - U;
+        double saved = 0.0;
+        for (std::size_t r = 0; r < j; ++r) {
+            ndu[at(j, r)] = right[r + 1] + left[j - r];
+            const double temp = ndu[at(r, j - 1)] / ndu[at(j, r)];
+            ndu[at(r, j)] = saved + right[r + 1] * temp;
+            saved = left[j - r] * temp;
+        }
+        ndu[at(j, j)] = saved;
+    }
+    for (std::size_t j = 0; j <= p; ++j) {
+        pDers[j] = ndu[at(j, p)];
+        pDers[w + j] = 0.0;
+        pDers[2 * w + j] = 0.0;
+    }
+    const int n = std::min(2, P);
+    for (int r = 0; r <= P; ++r) {
+        std::size_t s1 = 0, s2 = 1;
+        a[0] = 1.0;
+        for (int k = 1; k <= n; ++k) {
+            double d = 0.0;
+            const int rk = r - k, pk = P - k;
+            const auto row = [&](std::size_t S, int J) -> double& {
+                return a[S * w + static_cast<std::size_t>(J)];
+            };
+            if (r >= k) {
+                row(s2, 0) =
+                    row(s1, 0) /
+                    ndu[at(static_cast<std::size_t>(pk + 1), static_cast<std::size_t>(rk))];
+                d = row(s2, 0) *
+                    ndu[at(static_cast<std::size_t>(rk), static_cast<std::size_t>(pk))];
+            }
+            const int j1 = rk >= -1 ? 1 : -rk;
+            const int j2 = r - 1 <= pk ? k - 1 : P - r;
+            for (int j = j1; j <= j2; ++j) {
+                row(s2, j) =
+                    (row(s1, j) - row(s1, j - 1)) /
+                    ndu[at(static_cast<std::size_t>(pk + 1), static_cast<std::size_t>(rk + j))];
+                d += row(s2, j) *
+                     ndu[at(static_cast<std::size_t>(rk + j), static_cast<std::size_t>(pk))];
+            }
+            if (r <= pk) {
+                row(s2, k) = -row(s1, k - 1) /
+                             ndu[at(static_cast<std::size_t>(pk + 1), static_cast<std::size_t>(r))];
+                d +=
+                    row(s2, k) * ndu[at(static_cast<std::size_t>(r), static_cast<std::size_t>(pk))];
+            }
+            pDers[static_cast<std::size_t>(k) * w + static_cast<std::size_t>(r)] = d;
+            std::swap(s1, s2);
+        }
+    }
+    double factor = static_cast<double>(P);
+    for (int k = 1; k <= n; ++k) {
+        for (std::size_t j = 0; j <= p; ++j)
+            pDers[static_cast<std::size_t>(k) * w + j] *= factor;
+        factor *= static_cast<double>(P - k);
+    }
+}
+
+/// A surface net (`mDim == 2`) at the parameters `pU` in spans `pSpan`: the
+/// `NV` values, their first derivatives (`pD1`, rows u and v) and second
+/// derivatives (`pD2`, rows uu, uv and vv), the rational ones by the quotient
+/// rule of A4.4 (Piegl and Tiller 1997).
+inline void iga_eval_surface_d2(const IgaEvalNet& rNet, const std::size_t* pSpan, const double* pU,
+                                double* pOut, double* pD1, double* pD2) {
+    const std::size_t NV = rNet.mColumns;
+    std::array<IgaScratch<48>, 2> ders;
+    std::array<std::size_t, 2> np1{}, base{};
+    for (std::size_t d = 0; d < 2; ++d) {
+        np1[d] = static_cast<std::size_t>(rNet.mDegrees[d]) + 1;
+        base[d] = pSpan[d] - static_cast<std::size_t>(rNet.mDegrees[d]);
+        ders[d].Assign(3 * np1[d], 0.0);
+        iga_basis_ders2(pSpan[d], pU[d], rNet.mDegrees[d], *rNet.mKnots[d], ders[d].data());
+    }
+    // Homogeneous sums: index 0 value, 1 u, 2 v, 3 uu, 4 uv, 5 vv.
+    constexpr std::array<std::array<int, 2>, 6> kOrder{
+        {{0, 0}, {1, 0}, {0, 1}, {2, 0}, {1, 1}, {0, 2}}};
+    IgaScratch<24> acc(6 * NV);
+    std::array<double, 6> wsum{};
+    for (std::size_t j1 = 0; j1 < np1[1]; ++j1)
+        for (std::size_t j0 = 0; j0 < np1[0]; ++j0) {
+            const std::size_t idx = (base[0] + j0) + rNet.mCounts[0] * (base[1] + j1);
+            const double wt = rNet.mWeights ? rNet.mWeights[idx] : 1.0;
+            const double* v = rNet.mValues + idx * NV;
+            for (std::size_t q = 0; q < 6; ++q) {
+                const double b = ders[0][static_cast<std::size_t>(kOrder[q][0]) * np1[0] + j0] *
+                                 ders[1][static_cast<std::size_t>(kOrder[q][1]) * np1[1] + j1];
+                const double cc = wt * b;
+                for (std::size_t c = 0; c < NV; ++c)
+                    acc[q * NV + c] += cc * v[c];
+                wsum[q] += cc;
+            }
+        }
+    const double w0 = rNet.mWeights ? wsum[0] : 1.0;
+    for (std::size_t c = 0; c < NV; ++c) {
+        if (!rNet.mWeights) {
+            pOut[c] = acc[c];
+            pD1[c] = acc[NV + c];
+            pD1[NV + c] = acc[2 * NV + c];
+            pD2[c] = acc[3 * NV + c];
+            pD2[NV + c] = acc[4 * NV + c];
+            pD2[2 * NV + c] = acc[5 * NV + c];
+            continue;
+        }
+        const double x = acc[c] / w0;
+        const double xu = (acc[NV + c] - wsum[1] * x) / w0;
+        const double xv = (acc[2 * NV + c] - wsum[2] * x) / w0;
+        pOut[c] = x;
+        pD1[c] = xu;
+        pD1[NV + c] = xv;
+        pD2[c] = (acc[3 * NV + c] - 2.0 * wsum[1] * xu - wsum[3] * x) / w0;
+        pD2[NV + c] = (acc[4 * NV + c] - wsum[1] * xv - wsum[2] * xu - wsum[4] * x) / w0;
+        pD2[2 * NV + c] = (acc[5 * NV + c] - 2.0 * wsum[2] * xv - wsum[5] * x) / w0;
+    }
+}
+
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/iga_kernels.hpp =====
 // ===== begin src/cpp/src/detail/edge_sampler.hpp =====
@@ -40341,6 +40483,7 @@ inline void iga_eval_point(const IgaEvalNet& rNet, const std::size_t* pSpan, con
 // System includes
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 // Project includes
@@ -40361,6 +40504,13 @@ public:
     BrepSurfaceEval(const NurbsPatch& rPatch, bool Rational);
     /// `pX` (3) and, when not null, `pSu` and `pSv` (3 each).
     void Eval(double U, double V, double* pX, double* pSu, double* pSv) const;
+    /// `pX`, the first derivatives `pSu`, `pSv` and the second derivatives
+    /// `pSuu`, `pSuv`, `pSvv` (3 each, none null).
+    void Eval2(double U, double V, double* pX, double* pSu, double* pSv, double* pSuu, double* pSuv,
+               double* pSvv) const;
+    /// The largest absolute principal curvature at `(U, V)`, from the first
+    /// and second fundamental forms; 0 where the tangents are parallel.
+    double MaxCurvature(double U, double V) const;
     /// The knot range: `{u0, u1, v0, v1}`.
     const std::array<double, 4>& Box() const { return mBox; }
 
@@ -40440,6 +40590,11 @@ struct EdgeSampleOptions {
     std::int64_t mMinSegments = 1;         ///< at least this many pieces
     double mTolerance = 0.0;               ///< a trace this short is degenerate
     std::int64_t mMaxSegments = 10000000;  ///< refused (std::length_error) above
+    /// The local size h(x) at a point of the edge (roadmap 6.3.4); null:
+    /// `mTargetSize` everywhere. With it a stretch between corners is cut at
+    /// equal increments of the integral of ds / h(s), which h(x) <= the
+    /// target keeps at least as fine.
+    std::function<double(const EdgeVec3&)> mSize;
 };
 
 struct EdgeSamples {
@@ -41692,6 +41847,107 @@ void lsq_levenberg_marquardt(std::vector<double>& rTheta, const std::vector<doub
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/lsq_fit.hpp =====
+// ===== begin src/cpp/src/detail/mesh_cad_size.hpp =====
+/**
+ * @file detail/mesh_cad_size.hpp
+ * @brief The size field of `mesh_cad_surface` (roadmap 6.3): one function of
+ * space for the whole model, so faces and the edges they share agree on it by
+ * construction.
+ *
+ * Its sources are point samples `(x_i, h_i)` taken on a first, uniform mesh:
+ * the curvature size `2 sqrt(2 d / k - d^2)` for a chordal error `d` on a
+ * surface of largest principal curvature `k`, and the gap size `t / n` for a
+ * local feature size `t` (a ray along the normal to the nearest face that is
+ * neither the point's own nor a neighbour) and `n` elements across it. The
+ * field is their gradation-limited envelope
+ *
+ *     h(x) = min(H, min_i (h_i + s max(0, |x - x_i| - r))),
+ *
+ * whose gradient is at most `s = grading - 1` everywhere: the continuous
+ * form of gradation (Persson 2006), exact for point sources. Each sample
+ * holds its size within `r`, the reach of the first mesh's points (they are
+ * about `H` apart), since the size it measured is the size of the patch of
+ * surface around it, not of the point alone. A minimum of
+ * doubles does not depend on the order it is taken in, so the field is the
+ * same over thread counts.
+ *
+ * A **core-private** header: nothing installed names it.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// How much longer than the local size an edge may come out: refinement
+/// splits a triangle whose circumradius exceeds this times an equilateral
+/// one's of that size. A curvature or gap size is a bound, so the field's
+/// target is the bound over this.
+inline constexpr double kMeshCadSizeSlack = 1.5;
+
+/// A point of the first mesh on one face: where it is, the face, the
+/// surface's unit normal there (outward, with the face's orientation), and
+/// the largest absolute principal curvature.
+struct MeshCadSizeSample {
+    Vec3 mX{0.0, 0.0, 0.0};
+    std::int64_t mFace = -1;
+    Vec3 mNormal{0.0, 0.0, 0.0};
+    double mCurvature = 0.0;
+};
+
+/// `h(x)` from its sources; see the file comment.
+class MeshCadSizeField {
+public:
+    /// @param H the target size, the field's ceiling.
+    /// @param Floor the field's floor.
+    /// @param Slope the largest gradient, `grading - 1`.
+    /// @param Reach how far a sample's own size holds.
+    /// @param rX, rSize the samples whose size is below `H` (others are dropped).
+    MeshCadSizeField(double H, double Floor, double Slope, double Reach,
+                     const std::vector<Vec3>& rX, const std::vector<double>& rSize);
+    double At(const Vec3& rX) const;
+    double Ceiling() const { return mH; }
+    double Floor() const { return mFloor; }
+    /// The smallest sample size (the ceiling with none).
+    double Smallest() const { return mSmallest; }
+    std::size_t NumSamples() const { return mX.size(); }
+
+private:
+    double mH = 0.0;
+    double mFloor = 0.0;
+    double mSlope = 0.0;
+    double mReach = 0.0;
+    double mSmallest = 0.0;
+    double mCell = 1.0;
+    Vec3 mLo{0.0, 0.0, 0.0};
+    std::vector<Vec3> mX;
+    std::vector<double> mSize;
+    std::unordered_map<std::int64_t, std::vector<std::int32_t>> mCells;
+    std::array<std::int64_t, 3> mDims{1, 1, 1};
+
+    std::int64_t Key(std::int64_t I, std::int64_t J, std::int64_t K) const;
+};
+
+/// The size each sample asks for: the curvature size for chordal error
+/// @p Deviation (0: off) and the gap size for @p CellsAcrossGaps elements
+/// across (0: off), measured by rays on @p rFirst's triangles (`cad:face`
+/// names each one's face); @p rAdjacent lists each face's neighbours. Never
+/// above @p H nor below @p Floor.
+std::vector<double> mesh_cad_sample_sizes(const std::vector<MeshCadSizeSample>& rSamples,
+                                          const Mesh& rFirst,
+                                          const std::vector<std::vector<std::int64_t>>& rAdjacent,
+                                          double H, double Floor, double Deviation,
+                                          double CellsAcrossGaps);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/mesh_cad_size.hpp =====
 // ===== begin src/cpp/src/detail/occt_brep.hpp =====
 /**
  * @file detail/occt_brep.hpp
@@ -70305,6 +70561,46 @@ void BrepSurfaceEval::Eval(double U, double V, double* pX, double* pSu, double* 
             pSv[k] = der[3 + k];
 }
 
+void BrepSurfaceEval::Eval2(double U, double V, double* pX, double* pSu, double* pSv, double* pSuu,
+                            double* pSuv, double* pSvv) const {
+    const double u[2] = {std::clamp(U, mBox[0], mBox[1]), std::clamp(V, mBox[2], mBox[3])};
+    std::size_t span[2];
+    for (std::size_t d = 0; d < 2; ++d)
+        span[d] = nurbs_find_span(pPatch->mDegrees[d], pPatch->mKnots[d], mCounts[d], u[d]);
+    double d1[6], d2[9];
+    iga_eval_surface_d2(mNet, span, u, pX, d1, d2);
+    for (int k = 0; k < 3; ++k) {
+        pSu[k] = d1[k];
+        pSv[k] = d1[3 + k];
+        pSuu[k] = d2[k];
+        pSuv[k] = d2[3 + k];
+        pSvv[k] = d2[6 + k];
+    }
+}
+
+double BrepSurfaceEval::MaxCurvature(double U, double V) const {
+    double x[3], su[3], sv[3], suu[3], suv[3], svv[3];
+    Eval2(U, V, x, su, sv, suu, suv, svv);
+    const auto dot = [](const double* pA, const double* pB) {
+        return pA[0] * pB[0] + pA[1] * pB[1] + pA[2] * pB[2];
+    };
+    double n[3] = {su[1] * sv[2] - su[2] * sv[1], su[2] * sv[0] - su[0] * sv[2],
+                   su[0] * sv[1] - su[1] * sv[0]};
+    const double len = std::sqrt(dot(n, n));
+    const double e = dot(su, su), f = dot(su, sv), g = dot(sv, sv);
+    const double det = e * g - f * f;
+    if (!(len > 0.0) || !(det > 1e-14 * e * g))
+        return 0.0;
+    for (double& r_c : n)
+        r_c /= len;
+    const double l = dot(suu, n), m = dot(suv, n), nn = dot(svv, n);
+    // The shape operator I^-1 II: mean and Gaussian curvature, then the
+    // principal curvatures H +- sqrt(H^2 - K).
+    const double mean = (e * nn - 2.0 * f * m + g * l) / (2.0 * det);
+    const double gauss = (l * nn - m * m) / det;
+    return std::abs(mean) + std::sqrt(std::max(0.0, mean * mean - gauss));
+}
+
 BrepCurveEval::BrepCurveEval(const BrepCurve& rCurve) : mDegree(rCurve.mDegree) {
     mCount = rCurve.mControlPoints.Shape().empty() ? 0 : rCurve.mControlPoints.Shape()[0];
     const auto p = static_cast<std::size_t>(mDegree);
@@ -70510,6 +70806,79 @@ std::vector<double> TrimTrace::CornerLengths() const {
     return out;
 }
 
+namespace {
+
+/// One stretch `[L0, L1]` of a trace cut at equal increments of the integral
+/// of ds / h(s) (roadmap 6.3.4): the density 1 / h is integrated by adaptive
+/// Simpson from pieces no longer than the target, the stretch gets
+/// `ceil(N)` pieces (and the minimum the options ask for), and each piece's
+/// end is found by interpolating the cumulative integral, then handed to
+/// `Split` for the chordal cap.
+template <class TSplit>
+void edgs_sized_stretch(const TrimTrace& rTrace, const EdgeSampleOptions& rOptions, double L0,
+                        double L1, double Length, std::int64_t& rBudget, std::vector<double>& rEnds,
+                        TSplit&& rSplit) {
+    const double part = L1 - L0;
+    const auto density = [&](double L) {
+        const double hx = rOptions.mSize(rTrace.Point(rTrace.ParamAtLength(L)));
+        return 1.0 / std::min(rOptions.mTargetSize, std::max(hx, 1e-12 * rOptions.mTargetSize));
+    };
+    std::vector<double> at{L0}, cum{0.0};
+    const auto simpson = [](double A, double B, double Fa, double Fm, double Fb) {
+        return (B - A) / 6.0 * (Fa + 4.0 * Fm + Fb);
+    };
+    const auto adapt = [&](auto&& rSelf, double A, double B, double Fa, double Fm, double Fb,
+                           double Whole, int Depth) -> void {
+        const double m = 0.5 * (A + B);
+        const double lm = 0.5 * (A + m), rm = 0.5 * (m + B);
+        const double flm = density(lm), frm = density(rm);
+        const double left = simpson(A, m, Fa, flm, Fm);
+        const double right = simpson(m, B, Fm, frm, Fb);
+        if (Depth >= 24 || std::abs(left + right - Whole) <= 1e-3 * (left + right)) {
+            at.push_back(m);
+            cum.push_back(cum.back() + left);
+            at.push_back(B);
+            cum.push_back(cum.back() + right);
+            return;
+        }
+        rSelf(rSelf, A, m, Fa, flm, Fm, left, Depth + 1);
+        rSelf(rSelf, m, B, Fm, frm, Fb, right, Depth + 1);
+    };
+    const auto first = static_cast<std::int64_t>(std::ceil(part / rOptions.mTargetSize));
+    double fa = density(L0);
+    for (std::int64_t k = 0; k < first; ++k) {
+        const double a = L0 + part * double(k) / double(first);
+        const double b = k + 1 == first ? L1 : L0 + part * double(k + 1) / double(first);
+        const double fm = density(0.5 * (a + b)), fb = density(b);
+        adapt(adapt, a, b, fa, fm, fb, simpson(a, b, fa, fm, fb), 0);
+        fa = fb;
+    }
+    const double total = cum.back();
+    if (!(total <= double(rBudget)))
+        throw std::length_error("meshio++: mesh_cad_surface: an edge needs more than " +
+                                std::to_string(rOptions.mMaxSegments) + " segments");
+    const std::int64_t n = std::max<std::int64_t>(
+        {std::int64_t{1}, static_cast<std::int64_t>(std::ceil(total - 1e-9)),
+         static_cast<std::int64_t>(std::ceil(double(rOptions.mMinSegments) * part / Length))});
+    double la = L0;
+    std::size_t j = 0;
+    for (std::int64_t k = 1; k <= n; ++k) {
+        double lb = L1;
+        if (k < n) {
+            const double target = total * double(k) / double(n);
+            while (j + 1 < cum.size() && cum[j + 1] < target)
+                ++j;
+            const double span = cum[j + 1] - cum[j];
+            const double f = span > 0.0 ? (target - cum[j]) / span : 0.0;
+            lb = at[j] + f * (at[j + 1] - at[j]);
+        }
+        rSplit(rSplit, la, lb, 0);
+        la = lb;
+    }
+}
+
+}  // namespace
+
 EdgeSamples edge_sample(const TrimTrace& rTrace, const EdgeSampleOptions& rOptions) {
     EdgeSamples out;
     const double length = rTrace.Length();
@@ -70568,6 +70937,10 @@ EdgeSamples edge_sample(const TrimTrace& rTrace, const EdgeSampleOptions& rOptio
         const double l0 = cuts[c];
         const double l1 = cuts[c + 1];
         const double part = l1 - l0;
+        if (rOptions.mSize) {
+            edgs_sized_stretch(rTrace, rOptions, l0, l1, length, budget, ends, split);
+            continue;
+        }
         const std::int64_t n = std::max<std::int64_t>(
             {std::int64_t{1}, static_cast<std::int64_t>(std::ceil(part / rOptions.mTargetSize)),
              static_cast<std::int64_t>(std::ceil(double(rOptions.mMinSegments) * part / length))});
@@ -78545,6 +78918,184 @@ Mesh marching_cut(const MarchingInput& rInput, const std::vector<double>& rNodeV
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/marching.cpp =====
+// ===== begin src/cpp/src/detail/mesh_cad_size.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+// The cell of a coordinate on a grid of edge `Cell` from `Lo`.
+std::int64_t mcsz_cell(double X, double Lo, double Cell) {
+    return static_cast<std::int64_t>(std::floor((X - Lo) / Cell));
+}
+
+}  // namespace
+
+MeshCadSizeField::MeshCadSizeField(double H, double Floor, double Slope, double Reach,
+                                   const std::vector<Vec3>& rX, const std::vector<double>& rSize)
+    : mH(H), mFloor(Floor), mSlope(Slope), mReach(Reach), mSmallest(H) {
+    for (std::size_t i = 0; i < rX.size(); ++i) {
+        const double s = std::max(Floor, rSize[i]);
+        if (!(s < H))
+            continue;
+        mX.push_back(rX[i]);
+        mSize.push_back(s);
+        mSmallest = std::min(mSmallest, s);
+    }
+    if (mX.empty())
+        return;
+    // Cells of edge H: a sample farther than r + (H - h_i) / s from a point
+    // cannot lower it below H, so only a few rings around it are visited.
+    mCell = H;
+    Vec3 hi = mX.front();
+    mLo = mX.front();
+    for (const Vec3& r_x : mX)
+        for (int d = 0; d < 3; ++d) {
+            mLo[d] = std::min(mLo[d], r_x[d]);
+            hi[d] = std::max(hi[d], r_x[d]);
+        }
+    for (int d = 0; d < 3; ++d)
+        mDims[d] = mcsz_cell(hi[d], mLo[d], mCell) + 1;
+    for (std::size_t i = 0; i < mX.size(); ++i)
+        mCells[Key(mcsz_cell(mX[i][0], mLo[0], mCell), mcsz_cell(mX[i][1], mLo[1], mCell),
+                   mcsz_cell(mX[i][2], mLo[2], mCell))]
+            .push_back(static_cast<std::int32_t>(i));
+}
+
+std::int64_t MeshCadSizeField::Key(std::int64_t I, std::int64_t J, std::int64_t K) const {
+    return I + mDims[0] * (J + mDims[1] * K);
+}
+
+double MeshCadSizeField::At(const Vec3& rX) const {
+    if (mX.empty())
+        return mH;
+    double best = mH;
+    std::array<std::int64_t, 3> c{};
+    for (int d = 0; d < 3; ++d)
+        c[d] = mcsz_cell(rX[d], mLo[d], mCell);
+    // Ring r holds the cells at Chebyshev distance r, all farther than
+    // (r - 1) cells; stop once no sample there could beat the best.
+    const std::int64_t reach = mDims[0] + mDims[1] + mDims[2];
+    for (std::int64_t r = 0; r <= reach; ++r) {
+        if (r > 0 && mSmallest + mSlope * std::max(0.0, double(r - 1) * mCell - mReach) >= best)
+            break;
+        for (std::int64_t k = c[2] - r; k <= c[2] + r; ++k) {
+            if (k < 0 || k >= mDims[2])
+                continue;
+            for (std::int64_t j = c[1] - r; j <= c[1] + r; ++j) {
+                if (j < 0 || j >= mDims[1])
+                    continue;
+                for (std::int64_t i = c[0] - r; i <= c[0] + r; ++i) {
+                    if (i < 0 || i >= mDims[0])
+                        continue;
+                    if (std::max({std::abs(i - c[0]), std::abs(j - c[1]), std::abs(k - c[2])}) != r)
+                        continue;
+                    const auto it = mCells.find(Key(i, j, k));
+                    if (it == mCells.end())
+                        continue;
+                    for (const std::int32_t s : it->second) {
+                        const double d = std::max(
+                            0.0, vec3_norm(vec3_sub(rX, mX[static_cast<std::size_t>(s)])) - mReach);
+                        best = std::min(best, mSize[static_cast<std::size_t>(s)] + mSlope * d);
+                    }
+                }
+            }
+        }
+    }
+    return std::max(mFloor, best);
+}
+
+std::vector<double> mesh_cad_sample_sizes(const std::vector<MeshCadSizeSample>& rSamples,
+                                          const Mesh& rFirst,
+                                          const std::vector<std::vector<std::int64_t>>& rAdjacent,
+                                          double H, double Floor, double Deviation,
+                                          double CellsAcrossGaps) {
+    const std::size_t n = rSamples.size();
+    std::vector<double> out(n, H);
+    // Curvature (roadmap 6.3.2): a chord of length l on a circle of radius
+    // 1 / k sits d = R - sqrt(R^2 - l^2 / 4) from it, so l = 2 sqrt(2 d R - d^2).
+    if (Deviation > 0.0)
+        for (std::size_t i = 0; i < n; ++i) {
+            const double k = rSamples[i].mCurvature;
+            if (!(k > 0.0) || !std::isfinite(k))
+                continue;
+            const double q = 2.0 * Deviation / k - Deviation * Deviation;
+            if (q > 0.0)
+                out[i] = std::min(out[i], 2.0 * std::sqrt(q) / kMeshCadSizeSlack);
+        }
+    // Local feature size (roadmap 6.3.7): along the normal, inward to the far
+    // wall of a thin part, outward to the near wall across a gap, skipping
+    // the point's own face and its neighbours.
+    if (CellsAcrossGaps > 0.0 && rFirst.NumCellBlocks() > 0) {
+        const TriangleSoup soup = build_triangle_soup(rFirst, "");
+        const TriBvh tree = build_tri_bvh(soup);
+        std::vector<std::int64_t> cell_face;
+        for (std::size_t b = 0; b < rFirst.NumCellBlocks(); ++b) {
+            const std::size_t nc = rFirst.Cells(b).NumCells();
+            const bool tagged =
+                rFirst.HasCellData("cad:face") && rFirst.CellData("cad:face", b).Size() == nc;
+            for (std::size_t c = 0; c < nc; ++c)
+                cell_face.push_back(tagged ? read_int(rFirst.CellData("cad:face", b), c) : -1);
+        }
+        const auto excluded = [&](std::int64_t Face, std::int64_t Other) {
+            if (Other < 0 || Other == Face)
+                return true;
+            const auto& r_adj = rAdjacent[static_cast<std::size_t>(Face)];
+            return std::binary_search(r_adj.begin(), r_adj.end(), Other);
+        };
+        const double tmin = 1e-9 * H;
+        const double inf = std::numeric_limits<double>::infinity();
+        std::vector<double> gap(n, inf);
+        parallel_for(
+            n,
+            [&](std::size_t i) {
+                const MeshCadSizeSample& r_s = rSamples[i];
+                if (r_s.mFace < 0 || vec3_norm_sq(r_s.mNormal) == 0.0)
+                    return;
+                for (const double side : {-1.0, 1.0}) {
+                    const Vec3 dir = vec3_scale(r_s.mNormal, side);
+                    double from = tmin;
+                    for (int hop = 0; hop < 64; ++hop) {
+                        const TriRayHit hit = tri_bvh_ray(tree, r_s.mX, dir, from, inf);
+                        if (hit.mTriangle < 0)
+                            break;
+                        const std::int64_t face = cell_face[static_cast<std::size_t>(
+                            soup.mSourceCell[static_cast<std::size_t>(hit.mTriangle)])];
+                        if (excluded(r_s.mFace, face)) {
+                            from = hit.mT + std::max(tmin, 1e-12 * hit.mT);
+                            continue;
+                        }
+                        // Inward, the far wall faces along the ray; outward,
+                        // the wall across the gap faces back.
+                        const double facing = vec3_dot(hit.mNormal, dir);
+                        if ((side < 0.0 && facing > 0.0) || (side > 0.0 && facing < 0.0))
+                            gap[i] = std::min(gap[i], hit.mT);
+                        break;
+                    }
+                }
+            },
+            256);
+        for (std::size_t i = 0; i < n; ++i)
+            if (std::isfinite(gap[i]))
+                out[i] = std::min(out[i], gap[i] / (CellsAcrossGaps * kMeshCadSizeSlack));
+    }
+    for (double& r_h : out)
+        r_h = std::max(Floor, std::min(H, r_h));
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/mesh_cad_size.cpp =====
 // ===== begin src/cpp/src/detail/mesh_carve.cpp =====
 #include <algorithm>
 #include <cstddef>
@@ -217497,6 +218048,11 @@ struct McadFace {
     std::vector<std::int64_t> mCurvedCentre;
     std::vector<Vec3> mCurvedNormal;
     std::vector<Vec3> mHighOrder;
+    /// Pole rings (6.4.2) were placed in the face's latest meshing.
+    bool mPoleRingsPlaced = false;
+    /// The first meshing of a sized run (6.3): each point of the face with
+    /// the surface's normal and largest principal curvature there.
+    std::vector<detail::MeshCadSizeSample> mSizeSamples;
 };
 
 /// What refinement and smoothing ask of every face.
@@ -217509,6 +218065,10 @@ struct McadQuality {
     /// A face that asks for boundary splits is not smoothed: the next round
     /// meshes it again (or, when the rounds stop, `mDeferSmoothing` off).
     bool mDeferSmoothing = false;
+    /// The size field of a sized run (6.3); null: `target_size` everywhere.
+    const detail::MeshCadSizeField* pSize = nullptr;
+    /// Record each face's size samples (the first meshing of a sized run).
+    bool mCollectSizes = false;
 };
 
 /// The angles of a triangle on the surface, in degrees.
@@ -217640,16 +218200,16 @@ void mcad_check_options(const MeshCadSurfaceOptions& rO) {
     };
     if (rO.mInsertion != MeshCadInsertion::Circumcentre)
         not_yet("insertion=\"offcentre\"", "6.2.9");
-    if (rO.mGrading != 0.0)
-        not_yet("grading", "6.3.3");
-    if (rO.mCurvatureDeviation != 0.0)
-        not_yet("curvature_deviation", "6.3.2");
-    if (rO.mCellsAcrossGaps != 0.0)
-        not_yet("cells_across_gaps", "6.3.7");
+    if (!(std::isfinite(rO.mGrading) && (rO.mGrading == 0.0 || rO.mGrading > 1.0)))
+        mcad_fail("grading must be 0 (the default, 1.5) or greater than 1");
+    if (!(std::isfinite(rO.mCurvatureDeviation) && rO.mCurvatureDeviation >= 0.0))
+        mcad_fail("curvature_deviation must be finite and not negative");
+    if (!(std::isfinite(rO.mCellsAcrossGaps) && rO.mCellsAcrossGaps >= 0.0))
+        mcad_fail("cells_across_gaps must be finite and not negative");
     if (rO.mMetric != MeshCadMetric::Mean)
         not_yet("metric=\"varying\"", "6.4.1");
-    if (rO.mPoleRings != 0)
-        not_yet("pole_rings", "6.4.2");
+    if (rO.mPoleRings < 0 || rO.mPoleRings > 8)
+        mcad_fail("pole_rings must lie in [0, 8]");
     if (rO.mReparamConditionNumber != 0.0)
         not_yet("reparam_condition_number", "6.4.4");
     if (rO.mOrder < 1 || rO.mOrder > 3)
@@ -217916,6 +218476,7 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             if (rUses[u].mFail != MeshCadFaceStatus::Ok)
                 return fail(rUses[u].mFail, rUses[u].mWhy);
     const double h = rO.mTargetSize;
+    rF.mPoleRingsPlaced = false;
 
     const McadPlane pl = mcad_face_plane(rF, rUses, rTraces);
     if (pl.mTotal < 3)
@@ -218090,6 +218651,144 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             grid.AddPoint(r_seg[1]);
             grid.AddSegment(r_seg[0], r_seg[1]);
         }
+        // Graded poles (6.4.2): rings of points at 3-D distances h, 2h, ...
+        // from each pole, along the face's parameter lines out of the pole's
+        // degenerate segment, each as many points as its length holds at h,
+        // so the pole is the centre of a star of near-equilateral triangles
+        // instead of a fan's apex. The lattice keeps out of the rings' band.
+        std::vector<std::pair<Vec3, double>> ring_band;
+        if (rO.mPoleRings > 0) {
+            std::map<std::int64_t, std::vector<Vec2>> pole_uv;
+            Vec2 lo{std::numeric_limits<double>::infinity(),
+                    std::numeric_limits<double>::infinity()};
+            Vec2 hi{-lo[0], -lo[1]};
+            Vec2 centre{0.0, 0.0};
+            double count = 0.0;
+            for (const auto& r_poly : loops)
+                for (const McadEntry& r_e : r_poly) {
+                    for (int d = 0; d < 2; ++d) {
+                        lo[d] = std::min(lo[d], r_e.mUv[d]);
+                        hi[d] = std::max(hi[d], r_e.mUv[d]);
+                        centre[d] += r_e.mUv[d];
+                    }
+                    count += 1.0;
+                    if (r_e.mId >= 0 && static_cast<std::size_t>(r_e.mId) < rQ.mPole.size() &&
+                        rQ.mPole[static_cast<std::size_t>(r_e.mId)] != 0)
+                        pole_uv[r_e.mId].push_back(r_e.mUv);
+                }
+            centre = {centre[0] / count, centre[1] / count};
+            for (const auto& [id, r_uv] : pole_uv) {
+                // The degenerate segment, and the way into the face across it.
+                Vec2 a = r_uv.front(), b = r_uv.front();
+                double far = 0.0;
+                for (std::size_t i = 0; i < r_uv.size(); ++i)
+                    for (std::size_t j = i + 1; j < r_uv.size(); ++j) {
+                        const double d =
+                            std::hypot(r_uv[i][0] - r_uv[j][0], r_uv[i][1] - r_uv[j][1]);
+                        if (d > far) {
+                            far = d;
+                            a = r_uv[i];
+                            b = r_uv[j];
+                        }
+                    }
+                if (!(far > 0.0))
+                    continue;  // a pole at one parameter point has no lines out of it
+                Vec2 in{-(b[1] - a[1]) / far, (b[0] - a[0]) / far};
+                const Vec2 mid{0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1])};
+                if (in[0] * (centre[0] - mid[0]) + in[1] * (centre[1] - mid[1]) < 0.0)
+                    in = {-in[0], -in[1]};
+                double t_max = std::numeric_limits<double>::infinity();
+                for (int d = 0; d < 2; ++d) {
+                    if (in[d] > 0.0)
+                        t_max = std::min(t_max, (hi[d] - std::min(a[d], b[d])) / in[d]);
+                    else if (in[d] < 0.0)
+                        t_max = std::min(t_max, (lo[d] - std::max(a[d], b[d])) / in[d]);
+                }
+                if (!(t_max > 0.0) || !std::isfinite(t_max))
+                    continue;
+                const Vec3& r_p = rBoundary[static_cast<std::size_t>(id)];
+                const double hp = rQ.pSize ? rQ.pSize->At(r_p) : h;
+                const auto at = [&](double S, double T) {
+                    return Vec2{a[0] + S * (b[0] - a[0]) + T * in[0],
+                                a[1] + S * (b[1] - a[1]) + T * in[1]};
+                };
+                const auto surface = [&](const Vec2& rUv) {
+                    Vec3 x{};
+                    r_s.Eval(rUv[0], rUv[1], x.data(), nullptr, nullptr);
+                    return x;
+                };
+                // The parameter offset along the line at S where the surface
+                // is R from the pole: the first sign change on a scan, then
+                // bisection; NaN where the line never gets that far.
+                const auto offset = [&](double S, double R) {
+                    constexpr int kScan = 64;
+                    double t0 = 0.0;
+                    for (int j = 1; j <= kScan; ++j) {
+                        double t1 = t_max * double(j) / kScan;
+                        if (mcad_dist(surface(at(S, t1)), r_p) >= R) {
+                            for (int it = 0; it < 60; ++it) {
+                                const double tm = 0.5 * (t0 + t1);
+                                if (mcad_dist(surface(at(S, tm)), r_p) >= R)
+                                    t1 = tm;
+                                else
+                                    t0 = tm;
+                            }
+                            return 0.5 * (t0 + t1);
+                        }
+                        t0 = t1;
+                    }
+                    return std::numeric_limits<double>::quiet_NaN();
+                };
+                int placed = 0;
+                for (std::int32_t k = 1; k <= rO.mPoleRings; ++k) {
+                    const double r = double(k) * hp;
+                    constexpr int kTrace = 64;
+                    std::vector<double> cum{0.0};
+                    Vec3 prev{};
+                    bool ok = true;
+                    for (int i = 0; i <= kTrace; ++i) {
+                        const double t = offset(double(i) / kTrace, r);
+                        if (!std::isfinite(t)) {
+                            ok = false;
+                            break;
+                        }
+                        const Vec3 x = surface(at(double(i) / kTrace, t));
+                        if (i > 0)
+                            cum.push_back(cum.back() + mcad_dist(prev, x));
+                        prev = x;
+                    }
+                    if (!ok)
+                        break;
+                    const auto n = std::max<std::int64_t>(3, std::llround(cum.back() / hp));
+                    for (std::int64_t j = 1; j < n; ++j) {
+                        const double target = cum.back() * double(j) / double(n);
+                        std::size_t i = 0;
+                        while (i + 1 < cum.size() && cum[i + 1] < target)
+                            ++i;
+                        const double span = cum[i + 1] - cum[i];
+                        const double sv =
+                            (double(i) + (span > 0.0 ? (target - cum[i]) / span : 0.0)) / kTrace;
+                        const double t = offset(sv, r);
+                        if (!std::isfinite(t))
+                            continue;
+                        const Vec2 uv = at(sv, t);
+                        const Vec3 x = surface(uv);
+                        if (grid.Near(x, 0.4 * hp, 0.3 * hp))
+                            continue;
+                        const std::int64_t v_id = cdt.InsertSteiner(pl.ToX(uv));
+                        if (v_id < 0)
+                            continue;
+                        mesh_of[v_id] = -(1 + static_cast<std::int64_t>(rF.mInterior.size()));
+                        rF.mInterior.push_back(x);
+                        grid.AddPoint(x);
+                    }
+                    placed = k;
+                }
+                if (placed > 0)
+                    ring_band.emplace_back(r_p, (double(placed) + 0.5) * hp);
+            }
+        }
+        rF.mPoleRingsPlaced = !ring_band.empty();
         const auto nrows = static_cast<std::int64_t>(rows);
         const auto ncols = static_cast<std::int64_t>(cols);
         for (std::int64_t j = 1; j <= nrows; ++j) {
@@ -218101,7 +218800,11 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 const Vec2 uv = pl.ToUv(xp);
                 Vec3 x{};
                 r_s.Eval(uv[0], uv[1], x.data(), nullptr, nullptr);
-                if (grid.Near(x, 0.5 * h, 0.4 * h))
+                const double hx = rQ.pSize ? rQ.pSize->At(x) : h;
+                if (grid.Near(x, 0.5 * hx, 0.4 * hx))
+                    continue;
+                if (std::any_of(ring_band.begin(), ring_band.end(),
+                                [&](const auto& rB) { return mcad_dist(x, rB.first) < rB.second; }))
                     continue;
                 const std::int64_t v_id = cdt.InsertSteiner(xp);
                 if (v_id < 0)
@@ -218144,7 +218847,11 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
     // over 2 on the Jacobian samples), the region one affine map cannot
     // follow (a varying metric, roadmap 6.4.1, is what can).
     double pole_reach = h;
-    if (!face_poles.empty())
+    if (rF.mPoleRingsPlaced) {
+        // Its rings make a pole a star's centre: only the triangles at the
+        // pole itself, whose third corners the rings place, are left alone.
+        pole_reach = 0.5 * h;
+    } else if (!face_poles.empty())
         for (std::size_t k = 0; k < pl.mJac.size(); ++k) {
             if (!mcad_stretched(pl.mJac[k][0], pl.mJac[k][1], pl))
                 continue;
@@ -218251,6 +218958,17 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
     // first, after smoothing moves points, and after a call that stopped
     // with edges still pending, which refinement may since have removed).
     std::int64_t sides_upto = -1;
+    // With pole rings a pole is a star's centre whose triangles flips may
+    // improve on the surface: only those it collapses are left alone.
+    const auto flip_exempt = [&](const detail::Cdt2d::Tri& rT, std::array<std::int64_t, 3>& rIds) {
+        if (!rF.mPoleRingsPlaced)
+            return exempt(rT, rIds);
+        for (int k = 0; k < 3; ++k)
+            rIds[static_cast<std::size_t>(k)] = mesh_of.at(rT[static_cast<std::size_t>(k)]);
+        if (rIds[0] == rIds[1] || rIds[1] == rIds[2] || rIds[0] == rIds[2])
+            return true;
+        return left_stretched(rT, rIds);
+    };
     const auto surface_flips = [&]() {
         std::int64_t flips = 0;
         const auto write = [&](const detail::Cdt2d::Tri& rT) {
@@ -218309,7 +219027,8 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 const detail::Cdt2d::Tri n1{r_s[0], r_e.first, r_s[1]};
                 const detail::Cdt2d::Tri n2{r_s[0], r_s[1], r_e.second};
                 std::array<std::int64_t, 3> i1{}, i2{}, j1{}, j2{};
-                if (exempt(t1, i1) || exempt(t2, i2) || exempt(n1, j1) || exempt(n2, j2)) {
+                if (flip_exempt(t1, i1) || flip_exempt(t2, i2) || flip_exempt(n1, j1) ||
+                    flip_exempt(n2, j2)) {
                     r_side.mKept = quad;
                     continue;
                 }
@@ -218351,13 +219070,16 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
     std::set<std::array<std::int64_t, 3>> forced;  // mesh ids, ascending
     std::map<std::int64_t, double> corner_angle;   // mesh point -> plane angle
     std::map<std::int64_t, detail::Cdt2d::Vec2> corner_x;
-    if (rQ.mMinAngleDeg > 0.0) {
+    // A size field refines too (6.3): with no angle sought, a bound so
+    // small no triangle misses it, so only size makes a triangle bad.
+    const double refine_deg = rQ.mMinAngleDeg > 0.0 ? rQ.mMinAngleDeg : 1e-3;
+    if (rQ.mMinAngleDeg > 0.0 || rQ.pSize) {
         // Ruppert's refinement in the plane, every triangle judged on the
         // surface (Chew 1993; Boissonnat and Oudot 2005): the plane is only
         // where the point is found. The boundary is the edges', shared with
         // other faces, so its splits are asked for, not made.
         detail::Cdt2dRefineOptions ro;
-        ro.mMinAngleDeg = rQ.mMinAngleDeg;
+        ro.mMinAngleDeg = refine_deg;
         ro.mSplitSegments = false;
         // An equal share of what max_points leaves after the boundary, so
         // the faces together stay within it whatever each one needs; and at
@@ -218372,8 +219094,33 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         // 30 degrees). A face that reaches either is meshed unrefined and
         // warned.
         const auto unrefined_points = static_cast<std::int64_t>(rF.mInterior.size() + pl.mTotal);
+        // A size field asks for about its own count, the area over an
+        // equilateral triangle of the local size, per two triangles a point.
+        std::int64_t sized_points = 0;
+        if (rQ.pSize) {
+            double count = 0.0;
+            for (const auto& r_t : cdt.InsideTriangles()) {
+                std::array<std::int64_t, 3> ids{};
+                for (int k = 0; k < 3; ++k)
+                    ids[static_cast<std::size_t>(k)] = mesh_of.at(r_t[static_cast<std::size_t>(k)]);
+                const Vec3& pa = pos(ids[0]);
+                const Vec3& pb = pos(ids[1]);
+                const Vec3& pc = pos(ids[2]);
+                const Vec3 centre{(pa[0] + pb[0] + pc[0]) / 3.0, (pa[1] + pb[1] + pc[1]) / 3.0,
+                                  (pa[2] + pb[2] + pc[2]) / 3.0};
+                const double hx = rQ.pSize->At(centre);
+                const Vec3 e1{pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]};
+                const Vec3 e2{pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]};
+                const Vec3 n{e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
+                             e1[0] * e2[1] - e1[1] * e2[0]};
+                const double area = 0.5 * std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+                count += area / (0.4330127018922193 * hx * hx);
+            }
+            sized_points = static_cast<std::int64_t>(std::ceil(count));
+        }
         const std::int64_t cap_left =
-            std::max<std::int64_t>(1024, 2 * unrefined_points) - rF.mRefinedSoFar;
+            std::max<std::int64_t>({1024, 2 * unrefined_points, 2 * sized_points}) -
+            rF.mRefinedSoFar;
         if (cap_left <= 0)
             rF.mRefineBudgetReached = true;
         ro.mMaxPoints = std::min<std::int64_t>(
@@ -218382,11 +219129,31 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                                            std::max<std::int64_t>(1, rQ.mNumFaces) -
                                        static_cast<std::int64_t>(rF.mInterior.size())),
             std::max<std::int64_t>(0, cap_left));
+        const double ratio_bound = 1.0 / (2.0 * std::sin(refine_deg * (kMcadPi / 180.0)));
+        // A triangle whose longest edge on the surface exceeds the local
+        // size (at its centroid) by the slack is bad by its size, reported
+        // as worse than the angle bound by that factor so the worst go
+        // first (6.3).
+        const auto oversize = [&](const std::array<std::int64_t, 3>& rIds) {
+            if (!rQ.pSize)
+                return 0.0;
+            const Vec3& pa = pos(rIds[0]);
+            const Vec3& pb = pos(rIds[1]);
+            const Vec3& pc = pos(rIds[2]);
+            const double longest =
+                std::max({mcad_dist(pb, pc), mcad_dist(pc, pa), mcad_dist(pa, pb)});
+            const Vec3 centre{(pa[0] + pb[0] + pc[0]) / 3.0, (pa[1] + pb[1] + pc[1]) / 3.0,
+                              (pa[2] + pb[2] + pc[2]) / 3.0};
+            const double s = longest / (detail::kMeshCadSizeSlack * rQ.pSize->At(centre));
+            return s > 1.0 ? s : 0.0;
+        };
         ro.mRatio = [&](const detail::Cdt2d::Tri& rT) {
             std::array<std::int64_t, 3> ids{};
             if (exempt(rT, ids))
                 return -1.0;
-            return mcad_ratio(pos(ids[0]), pos(ids[1]), pos(ids[2]));
+            const double q = mcad_ratio(pos(ids[0]), pos(ids[1]), pos(ids[2]));
+            const double s = oversize(ids);
+            return s > 0.0 ? std::max(q, ratio_bound * (1.0 + s)) : q;
         };
         // The point: the lifted triangle's own circumcentre, carried to the
         // plane by the triangle's affine map (its barycentric coordinates
@@ -218426,13 +219193,25 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         // cannot follow a metric that varies too much, as near a pole) a
         // point can land much closer: below half the radius it is declined,
         // so points do not pile up there, and the triangle is reported.
-        const double ratio_bound = 1.0 / (2.0 * std::sin(rQ.mMinAngleDeg * (kMcadPi / 180.0)));
         const double slack = 0.5;
         // Where the surface stretches the plane, no point closer than h / 4
         // (see `stretched`), wherever its triangle is: refinement there does
         // not make the triangles it would then have to leave.
         const auto stretched_floor = [&](const detail::Cdt2d::Vec2& rX) {
             return stretched_at(rX) ? 0.25 * h : 0.0;
+        };
+        // A triangle bad by its size alone keeps its new point a third of
+        // the local size from every vertex of its cavity, which its
+        // circumcentre, at least half its longest edge from its corners,
+        // meets.
+        const auto size_only = [&](const detail::Cdt2d::Tri& rT) {
+            if (!rQ.pSize)
+                return false;
+            std::array<std::int64_t, 3> ids{};
+            for (int k = 0; k < 3; ++k)
+                ids[static_cast<std::size_t>(k)] = mesh_of.at(rT[static_cast<std::size_t>(k)]);
+            return oversize(ids) > 0.0 &&
+                   !(mcad_ratio(pos(ids[0]), pos(ids[1]), pos(ids[2])) > ratio_bound);
         };
         ro.mAccept = [&](const detail::Cdt2d::Tri& rT, const detail::Cdt2d::Vec2& rC,
                          const std::vector<std::int64_t>& rAround) {
@@ -218441,8 +219220,10 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             const Vec3& pc = pos(mesh_of.at(rT[2]));
             const double shortest =
                 std::min({mcad_dist(pa, pb), mcad_dist(pb, pc), mcad_dist(pc, pa)});
-            const double radius = std::max(slack * ratio_bound * shortest, stretched_floor(rC));
             const Vec3 x = lift(rC);
+            const double radius =
+                size_only(rT) ? std::max(rQ.pSize->At(x) / 3.0, stretched_floor(rC))
+                              : std::max(slack * ratio_bound * shortest, stretched_floor(rC));
             for (const std::int64_t w : rAround) {
                 const auto it = mesh_of.find(w);
                 if (it != mesh_of.end() && mcad_dist(pos(it->second), x) < radius)
@@ -218451,6 +219232,16 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             return true;
         };
         ro.mAcceptSplit = [&](std::int64_t A, std::int64_t B, const detail::Cdt2d::Tri& rT) {
+            // A boundary piece is sized by the field already: a triangle bad
+            // by its size alone asks to split one only when the piece is
+            // itself half again too long.
+            if (size_only(rT)) {
+                const Vec3& r_a = pos(mesh_of.at(A));
+                const Vec3& r_b = pos(mesh_of.at(B));
+                const Vec3 mid{0.5 * (r_a[0] + r_b[0]), 0.5 * (r_a[1] + r_b[1]),
+                               0.5 * (r_a[2] + r_b[2])};
+                return mcad_dist(r_a, r_b) > detail::kMeshCadSizeSlack * rQ.pSize->At(mid);
+            }
             const Vec3& pa = pos(mesh_of.at(rT[0]));
             const Vec3& pb = pos(mesh_of.at(rT[1]));
             const Vec3& pc = pos(mesh_of.at(rT[2]));
@@ -218613,6 +219404,51 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         }
         sides_upto = -1;  // points moved
         surface_flips();
+    }
+
+    // Folds (6.4.3): on a small, strongly curved face a triangle valid in
+    // the plane could lift with its normal against S_u x S_v (both taken with
+    // the plane's counter-clockwise winding, which L keeps). One that turns
+    // more than 120 degrees from the surface's normal at its centroid fails
+    // the face as degenerate rather than being written folded; the margin
+    // keeps a sliver across a narrow strip, whose normal is near
+    // perpendicular to the surface's, from failing on rounding. None of the
+    // fixtures folds (doc/mesh_cad.md); a pole's collapsed triangles are not
+    // folds.
+    {
+        std::int64_t folds = 0;
+        for (const auto& r_t : cdt.InsideTriangles()) {
+            std::array<std::int64_t, 3> ids{};
+            for (int k = 0; k < 3; ++k)
+                ids[static_cast<std::size_t>(k)] = mesh_of.at(r_t[static_cast<std::size_t>(k)]);
+            if (ids[0] == ids[1] || ids[1] == ids[2] || ids[0] == ids[2])
+                continue;
+            const Vec3& pa = pos(ids[0]);
+            const Vec3& pb = pos(ids[1]);
+            const Vec3& pc = pos(ids[2]);
+            const Vec3 e1{pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]};
+            const Vec3 e2{pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]};
+            const Vec3 nt{e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
+                          e1[0] * e2[1] - e1[1] * e2[0]};
+            const auto& xa = cdt.Point(r_t[0]);
+            const auto& xb = cdt.Point(r_t[1]);
+            const auto& xc = cdt.Point(r_t[2]);
+            const Vec2 uv = pl.ToUv({(xa[0] + xb[0] + xc[0]) / 3.0, (xa[1] + xb[1] + xc[1]) / 3.0});
+            Vec3 x{}, su{}, sv{};
+            r_s.Eval(uv[0], uv[1], x.data(), su.data(), sv.data());
+            const Vec3 ns{su[1] * sv[2] - su[2] * sv[1], su[2] * sv[0] - su[0] * sv[2],
+                          su[0] * sv[1] - su[1] * sv[0]};
+            const double dot = nt[0] * ns[0] + nt[1] * ns[1] + nt[2] * ns[2];
+            const double norms = std::sqrt((nt[0] * nt[0] + nt[1] * nt[1] + nt[2] * nt[2]) *
+                                           (ns[0] * ns[0] + ns[1] * ns[1] + ns[2] * ns[2]));
+            if (dot < -0.5 * norms)
+                ++folds;
+        }
+        if (folds > 0)
+            return fail(MeshCadFaceStatus::Degenerate,
+                        std::to_string(folds) +
+                            " triangles fold on the surface (their normals turn more than 120 "
+                            "degrees from the surface's)");
     }
 
     // Lift, drop what a pole collapses, orient along the face's normal.
@@ -218813,6 +219649,33 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
     r_rec.mMinEdge = min_edge;
     r_rec.mMaxEdge = max_edge;
     r_rec.mBoundDeg = bound;
+    if (rQ.mCollectSizes) {
+        // Every point of the face once, in vertex order, with the surface's
+        // outward normal and largest principal curvature where it sits.
+        std::vector<char> seen(static_cast<std::size_t>(cdt.NumVertices()), 0);
+        for (const auto& r_t : cdt.InsideTriangles())
+            for (const std::int64_t v : r_t) {
+                if (seen[static_cast<std::size_t>(v)])
+                    continue;
+                seen[static_cast<std::size_t>(v)] = 1;
+                const std::int64_t id = mesh_of.at(v);
+                const Vec2 uv = pl.ToUv(cdt.Point(v));
+                Vec3 x{}, su{}, sv{};
+                r_s.Eval(uv[0], uv[1], x.data(), su.data(), sv.data());
+                detail::MeshCadSizeSample smp;
+                smp.mX = pos(id);
+                smp.mFace = r_rec.mFace;
+                Vec3 n{su[1] * sv[2] - su[2] * sv[1], su[2] * sv[0] - su[0] * sv[2],
+                       su[0] * sv[1] - su[1] * sv[0]};
+                const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+                if (len > 0.0)
+                    for (double& r_c : n)
+                        r_c *= (rBrepFace.mSwappedNormal ? -1.0 : 1.0) / len;
+                smp.mNormal = len > 0.0 ? n : Vec3{0.0, 0.0, 0.0};
+                smp.mCurvature = r_s.MaxCurvature(uv[0], uv[1]);
+                rF.mSizeSamples.push_back(smp);
+            }
+    }
     if (rQ.mMinAngleDeg > 0.0) {
         // The corners, in mesh-point order: small input angles with the
         // smallest angle of the triangles they force on the surface, and
@@ -218898,9 +219761,13 @@ const char* mesh_cad_smoothing_name(MeshCadSmoothing Method) {
     return Method == MeshCadSmoothing::Odt ? "odt" : "laplacian";
 }
 
-MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
-                                      const MeshCadSurfaceOptions& rOptions) {
-    mcad_check_options(rOptions);
+namespace {
+
+/// One meshing of the model: with @p pSize, sized by that field; with
+/// @p pSamples, the size samples of every face appended in face order.
+MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfaceOptions& rOptions,
+                                      const detail::MeshCadSizeField* pSize,
+                                      std::vector<detail::MeshCadSizeSample>* pSamples) {
     if (rBrep.mFaces.empty())
         mcad_fail("the B-rep has no faces");
     const double h = rOptions.mTargetSize;
@@ -219290,6 +220157,8 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
     // other uses.
     detail::EdgeSampleOptions so;
     so.mTargetSize = h;
+    if (pSize)
+        so.mSize = [pSize](const detail::EdgeVec3& rX) { return pSize->At(rX); };
     so.mMaxChordalDeviation = rOptions.mMaxChordalDeviation;
     so.mMinSegments = rOptions.mMinPointsPerEdge + 1;
     so.mTolerance = tol;
@@ -219481,6 +220350,8 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
     quality.mMinAngleDeg = rOptions.mMinAngleDeg;
     quality.mSmoothIterations = rOptions.mSmoothIterations;
     quality.mSmoothMethod = rOptions.mSmoothMethod;
+    quality.pSize = pSize;
+    quality.mCollectSizes = pSamples != nullptr;
     // A pole is the corner of a degenerate edge; corner ids come first, so
     // they do not move when edges are split.
     quality.mNumFaces = static_cast<std::int64_t>(
@@ -219498,7 +220369,7 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
     const auto mesh_faces = [&](bool Defer, bool Again) {
         const std::vector<std::size_t> order = mcad_face_order(nf);
         McadQuality q = quality;
-        q.mDeferSmoothing = Defer && q.mMinAngleDeg > 0.0 && q.mSmoothIterations > 0;
+        q.mDeferSmoothing = Defer && (q.mMinAngleDeg > 0.0 || q.pSize) && q.mSmoothIterations > 0;
         parallel_for(
             nf,
             [&](std::size_t i) {
@@ -219520,6 +220391,7 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
                 r_f.mCurvedCentre.clear();
                 r_f.mCurvedNormal.clear();
                 r_f.mHighOrder.clear();
+                r_f.mSizeSamples.clear();
                 r_f.mHistogram.fill(0);
                 r_f.mNumStretched = 0;
                 r_f.mRefineBudgetReached = false;
@@ -219562,7 +220434,7 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
     // count. A piece within the tolerance, or a degenerate edge, is not
     // split: its face keeps the triangles it has and reports them.
     std::int64_t boundary_refinement = 0;
-    if (rOptions.mMinAngleDeg > 0.0) {
+    if (rOptions.mMinAngleDeg > 0.0 || pSize) {
         constexpr int kMaxRefineRounds = 16;
         for (int round = 0;; ++round) {
             // A face whose refinement spent its points is not refined
@@ -219895,8 +220767,11 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
     result.mNumEdgeSegments = static_cast<std::int64_t>(segs.size());
     result.mNumFaces = static_cast<std::int64_t>(nf);
     result.mNumEdges = static_cast<std::int64_t>(edges.size());
-    for (McadFace& r_f : faces)
+    for (McadFace& r_f : faces) {
         result.mFaces.push_back(std::move(r_f.mRecord));
+        if (pSamples)
+            pSamples->insert(pSamples->end(), r_f.mSizeSamples.begin(), r_f.mSizeSamples.end());
+    }
     if (rOptions.mStrict && result.mNumFailed > 0)
         for (const MeshCadFaceRecord& r_r : result.mFaces)
             if (r_r.mStatus != MeshCadFaceStatus::Ok)
@@ -219905,6 +220780,77 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
                                          mesh_cad_face_status_name(r_r.mStatus) +
                                          "): " + r_r.mReason);
     return result;
+}
+
+}  // namespace
+
+MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
+                                      const MeshCadSurfaceOptions& rOptions) {
+    mcad_check_options(rOptions);
+    if (!(rOptions.mCurvatureDeviation > 0.0 || rOptions.mCellsAcrossGaps > 0.0))
+        return mcad_surface_run(rBrep, rOptions, nullptr, nullptr);
+    // A sized run (6.3): a first, uniform meshing at target_size gives the
+    // samples (every point on every face it lies on, with the surface's
+    // normal and curvature there); the field they make sizes the second,
+    // which is the result.
+    MeshCadSurfaceOptions first = rOptions;
+    first.mCurvatureDeviation = 0.0;
+    first.mCellsAcrossGaps = 0.0;
+    first.mGrading = 0.0;
+    first.mOrder = 1;
+    first.mSmoothIterations = 0;
+    first.mRecordFaceIds = true;
+    first.mStrict = false;
+    std::vector<detail::MeshCadSizeSample> samples;
+    const MeshCadSurfaceResult uniform = mcad_surface_run(rBrep, first, nullptr, &samples);
+    // Faces are neighbours where the first mesh's triangles of both touch a
+    // point: a gap is measured to neither a point's own face nor those.
+    const std::size_t nf = rBrep.mFaces.size();
+    std::vector<std::vector<std::int64_t>> adjacent(nf);
+    {
+        std::vector<std::vector<std::int64_t>> at(uniform.mMesh.NumPoints());
+        for (std::size_t b = 0; b < uniform.mMesh.NumCellBlocks(); ++b) {
+            const auto cells = uniform.mMesh.Cells(b);
+            if (cells.Type() != "triangle" || !uniform.mMesh.HasCellData(kMeshCadFaceName))
+                continue;
+            const NDArray& face = uniform.mMesh.CellData(kMeshCadFaceName, b);
+            const NDArray& conn = cells.Conn();
+            for (std::size_t c = 0; c < cells.NumCells(); ++c) {
+                const std::int64_t f = detail::read_int(face, c);
+                for (std::size_t k = 0; k < 3; ++k)
+                    at[static_cast<std::size_t>(detail::read_int(conn, 3 * c + k))].push_back(f);
+            }
+        }
+        for (auto& r_faces : at) {
+            std::sort(r_faces.begin(), r_faces.end());
+            r_faces.erase(std::unique(r_faces.begin(), r_faces.end()), r_faces.end());
+            for (const std::int64_t a : r_faces)
+                for (const std::int64_t b : r_faces)
+                    if (a != b && a >= 0 && static_cast<std::size_t>(a) < nf)
+                        adjacent[static_cast<std::size_t>(a)].push_back(b);
+        }
+        for (auto& r_adj : adjacent) {
+            std::sort(r_adj.begin(), r_adj.end());
+            r_adj.erase(std::unique(r_adj.begin(), r_adj.end()), r_adj.end());
+        }
+    }
+    const double h = rOptions.mTargetSize;
+    // At most six halvings below target_size.
+    const double floor = h / 64.0;
+    const std::vector<double> sizes =
+        detail::mesh_cad_sample_sizes(samples, uniform.mMesh, adjacent, h, floor,
+                                      rOptions.mCurvatureDeviation, rOptions.mCellsAcrossGaps);
+    std::vector<Vec3> xs;
+    xs.reserve(samples.size());
+    for (const detail::MeshCadSizeSample& r_s : samples)
+        xs.push_back(r_s.mX);
+    const double slope = rOptions.mGrading > 0.0 ? rOptions.mGrading - 1.0 : 0.5;
+    // The first mesh's points are about h apart: each sample's size holds
+    // over the patch of surface around it, three quarters of h out.
+    const detail::MeshCadSizeField field(h, floor, slope, 0.75 * h, xs, sizes);
+    // No sample asks for less than h (a flat model with no thin part): the
+    // uniform mesh, byte for byte.
+    return mcad_surface_run(rBrep, rOptions, field.NumSamples() > 0 ? &field : nullptr, nullptr);
 }
 
 Mesh triangulate_polygon_2d(const std::vector<std::vector<std::array<double, 2>>>& rLoops,
@@ -225417,7 +226363,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"MeshCadSurface",
          {"TargetSize", "MaxChordalDeviation", "MinPointsPerEdge", "Tolerance", "RecordFaceIds",
           "Edges", "MatchUnreferencedTrims", "Strict", "MaxPoints", "MinAngle", "SmoothIterations",
-          "SmoothMethod", "Order"}},
+          "SmoothMethod", "Order", "CurvatureDeviation", "CellsAcrossGaps", "Grading",
+          "PoleRings"}},
         {"IgaSample", {"Subdivisions", "TrimSamples", "Trim", "Edges"}},
         {"IgaRefine",
          {"Subdivisions", "Elevate", "SampleSubdivisions", "TrimSamples", "Trim", "Edges"}},
@@ -225864,6 +226811,11 @@ Mesh pipe_apply_model_step(const PipelineStep& rStep, PipelineReport& rReport, P
                 pipe_err(rStep, "'SmoothMethod' must be 'laplacian' or 'odt'"));
         o.mOrder =
             static_cast<std::int32_t>(pipe_number(rStep, "Order", static_cast<double>(o.mOrder)));
+        o.mCurvatureDeviation = pipe_number(rStep, "CurvatureDeviation", o.mCurvatureDeviation);
+        o.mCellsAcrossGaps = pipe_number(rStep, "CellsAcrossGaps", o.mCellsAcrossGaps);
+        o.mGrading = pipe_number(rStep, "Grading", o.mGrading);
+        o.mPoleRings = static_cast<std::int32_t>(
+            pipe_number(rStep, "PoleRings", static_cast<double>(o.mPoleRings)));
         MeshCadSurfaceResult r = mesh_cad_surface(*rModel.mBrep, o);
         for (const std::string& w : r.mWarnings)
             rReport.mWarnings.push_back("MeshCadSurface: " + w);

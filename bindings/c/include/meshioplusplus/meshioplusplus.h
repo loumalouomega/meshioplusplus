@@ -5605,8 +5605,19 @@ typedef struct mio_mesh_cad_surface_opts {
     /** v17.16.0: 1 linear triangles; 2 and 3 curved triangle6 and triangle10
      *  (and line3, line4), their nodes on the surface and edges; 0 is 1. */
     int32_t order;
-    int32_t reserved_pad; /**< must be zero */
-    int64_t reserved[3];  /**< must be zero; room for additive growth */
+    /** v17.18.0: rings of points seeded around each pole, so it is no longer
+     *  a fan's apex; 0 keeps the fan, at most 8. */
+    int32_t pole_rings;
+    /** v17.18.0: the size's largest growth, |grad h| <= grading - 1; 0 is
+     *  1.5. Acts only with curvature_deviation or cells_across_gaps on. */
+    double grading;
+    /** v17.18.0: size each region so a chord sits at most this far from the
+     *  surface (by its largest principal curvature); 0 is off. */
+    double curvature_deviation;
+    /** v17.18.0: size each region so at least this many elements span its
+     *  local feature size (a wall's thickness, a slot's width); 0 is off.
+     *  This fills the options' tail: further options take a new entry point. */
+    double cells_across_gaps;
 } mio_mesh_cad_surface_opts;
 
 /** What mio_mesh_cad_surface did. */

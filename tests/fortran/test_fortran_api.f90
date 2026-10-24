@@ -346,6 +346,16 @@ program test_fortran_api
                 call check(len(warnings) == 0, 'mesh_cad_surface no warnings')
                 call tris%free()
             end if
+            ! v17.18.0: the size field and pole rings are accepted.
+            tris = info%mesh_cad_surface(0.1_real64, report=report, grading=1.3_real64, &
+                                         curvature_deviation=0.01_real64, &
+                                         cells_across_gaps=2.0_real64, pole_rings=2, &
+                                         stat=ierr, errmsg=msg)
+            call check(ierr == 0, 'mesh_cad_surface sized')
+            if (ierr == 0) then
+                call check(report%num_failed == 0, 'mesh_cad_surface sized meshes the face')
+                call tris%free()
+            end if
             ! v17.15.0: refined to 25 degrees and smoothed; the two 45-degree
             ! corners are reported.
             tris = info%mesh_cad_surface(0.1_real64, report=report, min_angle=25.0_real64, &
