@@ -970,7 +970,7 @@ The sources so far are the STEP samples of OpenCASCADE's repository (`data/step`
 
 <!-- cad-corpus:begin (tools/cad_corpus.py table) -->
 
-Measured with meshio++ 17.17.0: `mesh_cad_surface` at a target size of the model's diagonal over 40, refined to 25 degrees, each model in its own process under 900 s. **5 of 10 models** mesh every face; **15940 of 16503 faces** (96.6%) mesh.
+Measured with meshio++ 17.18.0: `mesh_cad_surface` at a target size of the model's diagonal over 40, refined to 25 degrees, each model in its own process under 900 s. **5 of 10 models** mesh every face; **15940 of 16503 faces** (96.6%) mesh.
 
 | model | faces | meshed | failures by class | open edges | below bound | min angle | Hausdorff / diagonal |
 |---|---:|---:|---|---:|---:|---:|---:|
