@@ -8,8 +8,8 @@ keeps its hole, the Scordelis-Lo roof (an untrimmed patch whose parameter
 scales differ fortyfold) and the two-patch beam (a coupling edge shared by
 two faces, and an embedded edge meshed as mesh edges) mesh conformingly;
 the report, the refusals before the core, strict mode, a bare B-rep dict,
-round trips through VTU and Gmsh, both CLI verbs and the pipeline's refusal
-by name. With OpenCASCADE, a STEP solid.
+round trips through VTU and Gmsh, both CLI verbs and the pipeline step that
+meshes the model its Input reads. With OpenCASCADE, a STEP solid.
 The algorithm itself is tested in the core (``tests/cpp/test_mesh_cad.cpp``,
 ``test_cdt2d.cpp``, ``test_edge_sampler.cpp``, ``test_predicates.cpp``).
 """
@@ -475,13 +475,114 @@ def test_cli_verb(tmp_path, capsys):
     assert out.exists()
 
 
-def test_pipeline_refuses_the_step_by_name():
-    with pytest.raises(ValueError, match="mesh-cad-surface"):
+def _run_both(doc, tmp_path):
+    """The pipeline document through the Python engine and, with the core,
+    the C++ one: their reports and their meshes."""
+    out = []
+    engines = [("py", mio.run_pipeline)]
+    if hasattr(_core, "run_pipeline_json"):
+        engines.append(("cpp", lambda d: _core.run_pipeline_json(json.dumps(d))))
+    for name, run in engines:
+        path = tmp_path / f"{name}.vtu"
+        report = run(dict(doc, Output={"Path": str(path)}))
+        out.append((report, mio.read(path)))
+    return out
+
+
+@needs_core
+@pytest.mark.parametrize("version", [1, 2])
+def test_pipeline_meshes_the_model_its_input_reads(tmp_path, version):
+    """Roadmap 6.1.1: the B-rep a CAD read returns travels from Input to the
+    MeshCadSurface step; both engines mesh it as mesh_cad_surface does."""
+    doc = {
+        "Version": version,
+        "Input": {"Path": str(CAD / "unit_cube.cad.json")},
+        "Operations": [{"Op": "MeshCadSurface", "TargetSize": 0.25, "MinAngle": 25}],
+    }
+    direct = mio.mesh_cad_surface(_read("unit_cube.cad.json"), 0.25, min_angle=25)
+    results = _run_both(doc, tmp_path)
+    for report, mesh in results:
+        np.testing.assert_array_equal(mesh.points, direct.points)
+        np.testing.assert_array_equal(mesh.cells[0].data, direct.cells[0].data)
+        assert report["steps"][0]["op"] == "MeshCadSurface"
+        assert report["steps"][0]["NumFaces"] == 6.0
+        assert report["steps"][0]["NumOpenEdges"] == 0.0
+    assert all(r == results[0][0] for r, _ in results)
+
+
+@needs_core
+def test_pipeline_refines_then_meshes_the_refined_model(tmp_path):
+    doc = {
+        "Version": 2,
+        "Input": {"Path": str(CAD / "unit_cube.cad.json")},
+        "Operations": [
+            {"Op": "IgaRefine", "Subdivisions": [2, 3]},
+            {"Op": "MeshCadSurface", "TargetSize": 0.3, "Order": 2},
+        ],
+    }
+    results = _run_both(doc, tmp_path)
+    for report, mesh in results:
+        assert [s["op"] for s in report["steps"]] == ["IgaRefine", "MeshCadSurface"]
+        assert mesh.cells[0].type == "triangle6"
+    assert all(r == results[0][0] for r, _ in results)
+
+
+@pytest.mark.parametrize(
+    "ops, message",
+    [
+        (
+            [{"Op": "Quality"}, {"Op": "MeshCadSurface", "TargetSize": 0.25}],
+            "step 1 'Quality' changed the mesh, which drops the model",
+        ),
+        ([{"Op": "MeshCadSurface"}], "'TargetSize' is required"),
+    ],
+)
+def test_pipeline_model_steps_fail_by_name(tmp_path, ops, message):
+    doc = {
+        "Input": {"Path": str(CAD / "unit_cube.cad.json")},
+        "Output": {"Path": str(tmp_path / "out.vtu")},
+        "Operations": ops,
+    }
+    with pytest.raises(ValueError, match=message):
+        mio.run_pipeline(doc)
+    if hasattr(_core, "run_pipeline_json"):
+        with pytest.raises(ValueError, match=message):
+            _core.run_pipeline_json(json.dumps(doc))
+
+
+@needs_core
+def test_pipeline_meshes_the_solid_fit_cad_fits(tmp_path):
+    """FitCad hands its fitted B-rep on (outside the native legacy freeform
+    mode, which fits none), so a skin is fitted and re-meshed in one run."""
+    src = tmp_path / "box.vtu"
+    mio.write(src, mio.extract_surface(mio.box()))
+    fit = {"Op": "FitCad", "Backend": "native", "FreeformMode": "adaptive"}
+    doc = {
+        "Input": {"Path": str(src)},
+        "Operations": [fit, {"Op": "MeshCadSurface", "TargetSize": 0.25}],
+    }
+    results = _run_both(doc, tmp_path)
+    for report, mesh in results:
+        assert report["steps"][1]["NumFaces"] == 6.0
+        assert report["steps"][1]["NumOpenEdges"] == 0.0
+    # FitCad's own report holds NaN counters (no volume natively), which never
+    # compare equal; the meshing step's must agree.
+    assert all(r["steps"][1] == results[0][0]["steps"][1] for r, _ in results)
+    doc["Operations"][0] = dict(fit, FreeformMode="legacy")
+    doc["Output"] = {"Path": str(tmp_path / "legacy.vtu")}
+    with pytest.raises(ValueError, match="'FitCad' gave no B-rep"):
+        mio.run_pipeline(doc)
+
+
+def test_pipeline_model_step_needs_a_cad_input(tmp_path):
+    src = tmp_path / "plain.vtu"
+    mio.write(src, mio.extract_surface(mio.box()))
+    with pytest.raises(ValueError, match="Input format 'vtu' carries none"):
         mio.run_pipeline(
             {
-                "Input": {"Path": "a"},
-                "Output": {"Path": "b"},
-                "Operations": [{"Op": "MeshCadSurface"}],
+                "Input": {"Path": str(src)},
+                "Output": {"Path": str(tmp_path / "out.vtu")},
+                "Operations": [{"Op": "IgaSample"}],
             }
         )
 

@@ -405,7 +405,9 @@ def _register_conversion(server: FastMCP) -> None:
         Operations chain (Transform/Gradient/Refine/Clean/... -- PascalCase
         ops and keys, see doc/pipeline.md), write Output.Path. Version 2 adds
         Merge/Interpolate/UndoGreen Inputs and terminal Split/Partition outputs
-        through Output.Pattern ({key}/{part}); all auxiliary inputs and every
+        through Output.Pattern ({key}/{part}); a CAD JSON/STEP/IGES/MFEM NURBS
+        Input carries its model to MeshCadSurface/IgaSample/IgaRefine steps
+        until another step changes the mesh; all auxiliary inputs and every
         expanded output, including symlinks, are checked against the sandbox.
         Output.Codec='lzf' selects PCD compressed binary; ASCII is incompatible.
         input_path/output_path override the paths in the settings file; both

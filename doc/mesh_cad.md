@@ -108,7 +108,7 @@ This first milestone deliberately leaves out:
 | CLIs | `mesh-cad-surface IN OUT --size H [--deflection D] [--min-points-per-edge N] [--tolerance T] [--no-face-ids] [--no-edges] [--no-match] [--strict] [--min-angle DEG] [--smooth N] [--smooth-method laplacian\|odt] [--order 1\|2\|3] [--json]` in both CLIs |
 | MCP | `mesh_cad_surface` |
 
-The pipeline carries no CAD model, so there is no pipeline step; `MeshCadSurface` is refused by name.
+The [pipeline](/pipeline#the-rules) has a `MeshCadSurface` step (v17.17.0): the B-rep a CAD JSON, STEP or IGES Input reads travels to it, through `IgaRefine` or from a `FitCad` step's fitted solid, and is dropped by the first step that changes the mesh, so `{"Input": {"Path": "part.step"}, "Operations": [{"Op": "MeshCadSurface", "TargetSize": 2, "MinAngle": 25}, {"Op": "Quality"}], "Output": {"Path": "part.vtu"}}` meshes a STEP solid in a run.
 
 ## Verification
 

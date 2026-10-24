@@ -64,7 +64,7 @@ The refined model writes back through the format it came from: `mp.write("fine.m
 | CLIs | `iga-refine`, `iga-sample`, `iga-evaluate` (both CLIs); `meshioplusplus iga-refine pipe.mesh fine.mesh -o mfem -s 2 -e 1` |
 | MCP | `iga_refine`, `iga_sample`, `iga_evaluate` |
 
-The operations take and return models, which the [pipeline](/pipeline) does not carry, so there are no pipeline steps.
+The [pipeline](/pipeline#the-rules) carries the model a CAD JSON, STEP, IGES or MFEM NURBS Input reads to its `IgaSample` and `IgaRefine` steps (v17.17.0), the refined model on to the steps after `IgaRefine`, and drops it at the first step that changes the mesh; `iga_evaluate`, which returns arrays rather than a mesh, has no step.
 
 ## What this is not
 

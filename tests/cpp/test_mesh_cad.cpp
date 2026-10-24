@@ -58,6 +58,8 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/mesh_cad.hpp"
+#include "meshioplusplus/operations/pipeline.hpp"
+#include "meshioplusplus/registry.hpp"
 
 namespace {
 
@@ -889,6 +891,99 @@ TEST(MeshCad, GmshFourOneGivesEachFaceItsPhysicalGroup) {
         }
         EXPECT_EQ(tris, r.mMesh.Cells(0).NumCells());
     }
+}
+
+// Roadmap 6.1.1: the pipeline carries the B-rep a CAD read returns from Input
+// to the steps that mesh it, and drops it at the first step that does not.
+std::string pipeline_cube_path() {
+    const std::filesystem::path input = std::filesystem::path(__FILE__).parent_path() / ".." /
+                                        "python" / "meshes" / "cad_json" / "unit_cube.cad.json";
+    return input.string();
+}
+
+mio::PipelineStep pipeline_step(std::string Op,
+                                std::map<std::string, mio::PipelineValue> Params = {}) {
+    mio::PipelineStep s;
+    s.mOp = std::move(Op);
+    s.mParams = std::move(Params);
+    return s;
+}
+
+TEST(MeshCad, PipelineMeshesTheModelItsInputReads) {
+    const std::string input = pipeline_cube_path();
+    ASSERT_TRUE(std::filesystem::exists(input)) << input;
+    mio::Pipeline pipe;
+    pipe.mInput.mPath = input;
+    pipe.mOutput.mPath = mt::temp_path(".vtu");
+    pipe.mSteps = {pipeline_step("MeshCadSurface", {{"TargetSize", 0.25}, {"MinAngle", 25.0}})};
+    for (const int version : {1, 2}) {
+        pipe.mVersion = version;
+        const mio::PipelineReport report = mio::run_pipeline(pipe);
+        ASSERT_EQ(report.mSteps.size(), 1u);
+        MeshCadSurfaceOptions o = size(0.25);
+        o.mMinAngleDeg = 25.0;
+        const auto direct = mio::mesh_cad_surface(mio::read_cad_json_info(input), o);
+        const mio::Mesh out = mio::read_vtu(pipe.mOutput.mPath);
+        ASSERT_EQ(out.NumPoints(), direct.mMesh.NumPoints());
+        const double* a = out.Points().As<double>();
+        const double* b = direct.mMesh.Points().As<double>();
+        for (std::size_t i = 0; i < 3 * out.NumPoints(); ++i)
+            ASSERT_EQ(a[i], b[i]);
+        const auto& counters = report.mSteps[0].mCounters;
+        ASSERT_FALSE(counters.empty());
+        EXPECT_EQ(counters[0].first, "NumPoints");
+        EXPECT_EQ(counters[0].second, static_cast<double>(direct.mNumPoints));
+    }
+}
+
+TEST(MeshCad, PipelineRefinesThenMeshesTheRefinedModel) {
+    mio::Pipeline pipe;
+    pipe.mVersion = 2;
+    pipe.mInput.mPath = pipeline_cube_path();
+    pipe.mOutput.mPath = mt::temp_path(".vtu");
+    pipe.mSteps = {
+        pipeline_step("IgaRefine", {{"Subdivisions", std::vector<std::int64_t>{2, 3}}}),
+        pipeline_step("MeshCadSurface", {{"TargetSize", 0.3}, {"Order", std::int64_t(2)}})};
+    const mio::PipelineReport report = mio::run_pipeline(pipe);
+    ASSERT_EQ(report.mSteps.size(), 2u);
+    EXPECT_EQ(report.mSteps[0].mOp, "IgaRefine");
+    const mio::Mesh out = mio::read_vtu(pipe.mOutput.mPath);
+    EXPECT_EQ(out.Cells(0).Type(), "triangle6");
+}
+
+TEST(MeshCad, PipelineModelStepsFailByNameWithoutAModel) {
+    const auto message = [](const mio::Pipeline& rPipe) {
+        try {
+            mio::run_pipeline(rPipe);
+        } catch (const std::invalid_argument& r_e) {
+            return std::string(r_e.what());
+        }
+        return std::string();
+    };
+    mio::Pipeline pipe;
+    pipe.mInput.mPath = pipeline_cube_path();
+    pipe.mOutput.mPath = mt::temp_path(".vtu");
+    // A step that changes the mesh drops the model.
+    pipe.mSteps = {pipeline_step("Quality"),
+                   pipeline_step("MeshCadSurface", {{"TargetSize", 0.25}})};
+    EXPECT_NE(message(pipe).find("step 1 'Quality' changed the mesh"), std::string::npos)
+        << message(pipe);
+    // A format whose read carries none.
+    const std::string vtu = mt::temp_path(".vtu");
+    mio::write_vtu(vtu, mio::mesh_cad_surface(brep_solids::box(), size(0.5)).mMesh, true, false);
+    pipe.mInput.mPath = vtu;
+    pipe.mSteps = {pipeline_step("IgaSample")};
+    EXPECT_NE(message(pipe).find("Input format 'vtu' carries none"), std::string::npos)
+        << message(pipe);
+    // TargetSize is required.
+    pipe.mInput.mPath = pipeline_cube_path();
+    pipe.mSteps = {pipeline_step("MeshCadSurface")};
+    EXPECT_NE(message(pipe).find("'TargetSize' is required"), std::string::npos);
+    // A step applied on its own has no run to carry a model.
+    mio::PipelineReport report;
+    EXPECT_THROW(mio::apply_pipeline_step(
+                     mio::Mesh(), pipeline_step("MeshCadSurface", {{"TargetSize", 0.25}}), report),
+                 std::invalid_argument);
 }
 
 TEST(MeshCad, Refusals) {
