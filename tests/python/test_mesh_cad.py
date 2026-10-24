@@ -298,6 +298,42 @@ def test_round_trip(tmp_path, ext, fmt):
     assert faces == sorted(r.name for r in out.regions)
 
 
+def _tet_volume(mesh):
+    v = 0.0
+    for c in mesh.cells:
+        if c.type == "tetra":
+            p = mesh.points[c.data]
+            a, b, d = p[:, 1] - p[:, 0], p[:, 2] - p[:, 0], p[:, 3] - p[:, 0]
+            v += np.abs(np.einsum("ij,ij->i", a, np.cross(b, d))).sum() / 6.0
+    return v
+
+
+@needs_core
+@pytest.mark.parametrize(
+    "name, volume, dihedrals",
+    [
+        ("sphere.cad.json", 4 * math.pi / 3, (10.7, 164.8)),
+        ("unit_cube.cad.json", 1.0, (35.0, 126.0)),
+    ],
+)
+def test_octree_mesh_fills_the_skin(name, volume, dihedrals):
+    """Roadmap 6.7.1: a closed mesh_cad_surface result is the skin octree_mesh
+    fills with tetrahedra; under uniform skin grading at the surface's size the
+    volume follows the skin's, the boundary stays within a few hundredths of h
+    of it and the dihedral angles keep inside the stuffing bound."""
+    h = 0.2
+    skin = mio.mesh_cad_surface(_read(name), h, min_angle=25)
+    vol, report = mio.octree_mesh(
+        skin, skin_grading="uniform", surface_size=h, return_report=True
+    )
+    _, skin_volume = _measure(skin)
+    assert abs(_tet_volume(vol) - skin_volume) < 0.005 * volume  # 0.30% on the sphere
+    assert abs(_tet_volume(vol) - volume) < 0.02 * volume
+    assert 0.0 <= report["hausdorff_to_skin"] < 0.06 * h
+    assert report["min_dihedral"] > dihedrals[0]
+    assert report["max_dihedral"] < dihedrals[1]
+
+
 @needs_core
 def test_triangulate_polygon_2d():
     outer = [[0, 0], [4, 0], [4, 4], [0, 4]]

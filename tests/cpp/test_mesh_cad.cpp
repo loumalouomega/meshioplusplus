@@ -58,6 +58,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/mesh_cad.hpp"
+#include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/registry.hpp"
 
@@ -984,6 +985,79 @@ TEST(MeshCad, PipelineModelStepsFailByNameWithoutAModel) {
     EXPECT_THROW(mio::apply_pipeline_step(
                      mio::Mesh(), pipeline_step("MeshCadSurface", {{"TargetSize", 0.25}}), report),
                  std::invalid_argument);
+}
+
+// Roadmap 6.7.1: a closed `mesh_cad_surface` result is a skin `octree_mesh`
+// fills with tetrahedra. Under uniform skin grading at the surface's own size
+// the enclosed volume follows the skin's at second order, the boundary stays
+// within a few hundredths of `h` of it and the dihedral angles keep inside
+// Labelle and Shewchuk's 10.7-164.8 degree bound.
+double tet_volume(const mio::Mesh& rM) {
+    const double* x = rM.Points().As<double>();
+    double v = 0.0;
+    for (std::size_t b = 0; b < rM.NumCellBlocks(); ++b) {
+        const auto cells = rM.Cells(b);
+        if (cells.Type() != "tetra")
+            continue;
+        const mio::NDArray& c = cells.Conn();
+        for (std::size_t t = 0; t < cells.NumCells(); ++t) {
+            const double* p[4];
+            for (int k = 0; k < 4; ++k)
+                p[k] = x + 3 * mio::detail::read_int(c, 4 * t + k);
+            const double u[3] = {p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]};
+            const double w[3] = {p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]};
+            const double z[3] = {p[3][0] - p[0][0], p[3][1] - p[0][1], p[3][2] - p[0][2]};
+            v += std::abs(u[0] * (w[1] * z[2] - w[2] * z[1]) - u[1] * (w[0] * z[2] - w[2] * z[0]) +
+                          u[2] * (w[0] * z[1] - w[1] * z[0])) /
+                 6.0;
+        }
+    }
+    return v;
+}
+
+mio::OctreeMeshResult fill(const mio::Mesh& rSkin, double H) {
+    mio::OctreeMeshOptions o;
+    o.mSkinGrading = mio::OctreeMeshSkinGrading::Uniform;
+    o.mSurfaceSize = H;
+    return mio::octree_mesh(rSkin, o);
+}
+
+TEST(MeshCad, OctreeMeshFillsTheSkinWithTetrahedra) {
+    MeshCadSurfaceOptions o = size(0.2);
+    o.mMinAngleDeg = 25.0;
+    std::vector<double> errors;
+    for (const double h : {0.2, 0.1}) {
+        o.mTargetSize = h;
+        const auto skin = mio::mesh_cad_surface(brep_solids::sphere(), o);
+        ASSERT_EQ(skin.mNumOpenEdges, 0);
+        const auto vol = fill(skin.mMesh, h);
+        const double v = tet_volume(vol.mMesh);
+        const double skin_volume = measure(skin.mMesh).mVolume;
+        errors.push_back(std::abs(v - skin_volume));
+        // Measured 0.30% and 0.075% of the sphere's volume.
+        EXPECT_LT(errors.back(), 0.005 * skin_volume) << h;
+        // Measured 0.036 h and 0.028 h.
+        EXPECT_GE(vol.mHausdorffToSkin, 0.0);
+        EXPECT_LT(vol.mHausdorffToSkin, 0.06 * h) << h;
+        // Measured 25.6-132.4 and 21.6-144.2 degrees.
+        EXPECT_GT(vol.mMinDihedral, 10.7) << h;
+        EXPECT_LT(vol.mMaxDihedral, 164.8) << h;
+        // And the sphere's own volume to the skin's chordal error.
+        EXPECT_LT(std::abs(v - 4.0 * kPi / 3.0),
+                  2.0 * std::abs(skin_volume - 4.0 * kPi / 3.0) + errors.back())
+            << h;
+    }
+    EXPECT_GT(std::log2(errors[0] / errors[1]), 1.7);  // measured 2.0
+    // A box is filled exactly, by BCC tetrahedra only.
+    o.mTargetSize = 0.2;
+    const auto box = mio::mesh_cad_surface(brep_solids::box(), o);
+    const auto vol = fill(box.mMesh, 0.2);
+    EXPECT_NEAR(tet_volume(vol.mMesh), 1.0, 1e-12);
+    EXPECT_GT(vol.mMinDihedral, 35.0);
+    EXPECT_LT(vol.mMaxDihedral, 126.0);
+    // The curved elements are skins only once linear: the octree refuses them.
+    o.mOrder = 2;
+    EXPECT_THROW(fill(mio::mesh_cad_surface(brep_solids::box(), o).mMesh, 0.2), std::exception);
 }
 
 TEST(MeshCad, Refusals) {

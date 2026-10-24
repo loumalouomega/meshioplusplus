@@ -79,6 +79,14 @@ The report (`return_report=True`; `MeshCadSurfaceResult` in C++) has the counts 
 
 An embedded edge that cannot be inserted is left out with a warning naming the face and the trim, and the face is meshed without it: one that leaves the face's domain or ends on its boundary away from a corner, and one that crosses or touches the boundary or another embedded edge at this size. Those are not split, since refining the loops around a curve that really crosses them would only crowd boundaries the neighbouring faces share. Its line cells stay in the `line` block.
 
+## Volume meshes
+
+A closed result is the skin a tetrahedral mesher needs, and [`octree_mesh`](./octree_mesh.md) fills it natively: `octree_mesh(mesh_cad_surface(model, h, min_angle=25), skin_grading="uniform", surface_size=h)` gives conforming tetrahedra of the inside, the line block of the edges skipped. The tetrahedra fit the skin by isosurface stuffing (cut points on the skin, lattice vertices warped onto them, Labelle and Shewchuk 2007), not by keeping its triangles: the boundary is the skin's within a measured distance, and in exchange every dihedral angle is bounded away from 0 and 180 degrees by construction, 10.7 to 164.8 degrees where the report's `guarantee_applies` holds (uniform skin grading, no warp refused, no node moved onto a feature). On the unit sphere at `h` = 0.2, 0.1 and 0.05 the enclosed volume is the skin's within 0.30%, 0.075% and 0.019%, second order, so the sphere's own `4/3 π` is met to the skin's chordal error; the boundary is within 0.036 `h`, 0.028 `h` and 0.03 `h` of the skin (`hausdorff_to_skin`); and the dihedral angles lie between 25.6 and 132.4 degrees, then 21.6 and 144.2. A box is filled exactly, by BCC tetrahedra only (35.3 to 125.3 degrees). Uniform grading matters: the default graded skin cuts transition shapes along the skin, which on the same sphere left angles of 0.6 to 179 degrees. The curved elements of `order` 2 and 3 are not a skin `octree_mesh` takes (it refuses `triangle6` by name); mesh the volume from the linear result. `tests/cpp/test_mesh_cad.cpp` (`MeshCad.OctreeMeshFillsTheSkinWithTetrahedra`) and `tests/python/test_mesh_cad.py` pin these. A tetrahedral mesher that keeps the triangles exactly is an optional backend still to come ([roadmap 6.7](/roadmap#_6-mesh-generation)).
+
+![The unit sphere's skin at h = 0.2 filled by octree_mesh under uniform skin grading, cut open at x = 0 and coloured by each tetrahedron's smallest dihedral angle](/images/mesh_cad_volume.png)
+
+![Histograms of the dihedral angles of the same sphere's tetrahedra with a graded skin (0.8 to 178.6 degrees) and a uniform one (25.6 to 132.4 degrees, inside the stuffing bound)](/images/mesh_cad_volume_dihedrals.png)
+
 ## Limitations
 
 This first milestone deliberately leaves out:
@@ -90,7 +98,7 @@ This first milestone deliberately leaves out:
 - **Embedded edges that meet.** Embedded edges that cross each other (stiffeners in a grid) or end on the boundary between its corners are left out with a warning, not split where they meet.
 - **Touching curves.** Loops whose curves touch, such as a hole tangent to the rim, stay `self_intersecting`.
 - **Curved elements.** A node inside a face sits at a parameter fraction, not where the surface's own arc length puts it, which bounds the convergence of cubic elements at about the quadratic's fourth order ([roadmap 6.6.2](/roadmap#_6-mesh-generation)); an element that folds is made straight-sided, not untangled by moving its nodes (6.6.3).
-- **Other elements.** No quadrilaterals, no volume meshes, no boundary layers.
+- **Other elements.** No quadrilaterals and no boundary layers; volume meshes come from [`octree_mesh`](#volume-meshes), fitted to the skin rather than keeping its triangles.
 
 [Roadmap §6](/roadmap#_6-mesh-generation) lists what comes next. Everything is serial within a face; faces and edges run in parallel and the output is byte-identical across backends and thread counts.
 
