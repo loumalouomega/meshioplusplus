@@ -1,0 +1,75 @@
+{
+  "Version": 1,
+  "comment": "Public STEP models named by source and SHA-256, never stored here: tools/cad_corpus.py fetches them where it runs (.github/workflows/cad_corpus.yml). See doc/benchmarks.md#cad-corpus.",
+  "sources": [
+    {
+      "commit": "bd2a789f15235755ce4d1a3b07379a2e062fdc2e",
+      "id": "occt-samples",
+      "kind": "git",
+      "licence": "LGPL-2.1 with the OCCT exception (the repository's licence; the sample data carries no other)",
+      "models": [
+        {
+          "id": "occt-samples/linkrods",
+          "path": "data/step/linkrods.step",
+          "sha256": "3674e4b01ee0e983c81ed170f0574cda201ad08e0f7b46e05e4f4613400fd5f7"
+        },
+        {
+          "id": "occt-samples/screw",
+          "path": "data/step/screw.step",
+          "sha256": "4b3649a4f5c4f05c7a06a402a91fe2fd7e3cba1615520fbd8c62a62610ad3e69"
+        }
+      ],
+      "ref": "V7_8_1",
+      "url": "https://github.com/Open-Cascade-SAS/OCCT.git"
+    },
+    {
+      "commit": "0bbdf10e716222370ad300e4bb88994e7d9fb5cb",
+      "id": "pythonocc-demos",
+      "kind": "git",
+      "licence": "not stated by the repository; downloaded for measurement only, never redistributed (as1-oc-214 and as1_pe_203 are the CAx-IF AS1 test assembly)",
+      "models": [
+        {
+          "id": "pythonocc-demos/11752",
+          "path": "assets/models/11752.stp",
+          "sha256": "c2748324a36018ff1d88cfb0a80946636f29431417b9f1052a0dfc13576b0d41"
+        },
+        {
+          "id": "pythonocc-demos/kr600-r2830-4",
+          "path": "assets/models/KR600_R2830-4.stp",
+          "sha256": "8beb257cb915240f7012474c2dcfb55a820a343abde082faadeacfdbe93823ce"
+        },
+        {
+          "id": "pythonocc-demos/rc-buggy-2-front-suspension",
+          "path": "assets/models/RC_Buggy_2_front_suspension.stp",
+          "sha256": "7640da77c19d10c3373b15cbbf40c39755ab4047166aca6d5293cb3efb79ed8b"
+        },
+        {
+          "id": "pythonocc-demos/ventilator",
+          "path": "assets/models/Ventilator.stp",
+          "sha256": "19a11c6949aff4d003a4750d0d9f7e4ee21ab12401dfb07bd97350777266e4d5"
+        },
+        {
+          "id": "pythonocc-demos/as1-oc-214",
+          "path": "assets/models/as1-oc-214.stp",
+          "sha256": "038be659c54b16c9f3da8d7b2da7b63e3fd8879d3abe5b7826108336a7c0bae9"
+        },
+        {
+          "id": "pythonocc-demos/as1-pe-203",
+          "path": "assets/models/as1_pe_203.stp",
+          "sha256": "e14f7a52b3f0c53e36730c0f56654b01a17822f1b864dc6c42657223c54cafb6"
+        },
+        {
+          "id": "pythonocc-demos/face-recognition-sample-part",
+          "path": "assets/models/face_recognition_sample_part.stp",
+          "sha256": "de7b8a513ae923cd11de2323e798ac084cc94f9aa7d7a2a8adab65fc592f8d0b"
+        },
+        {
+          "id": "pythonocc-demos/splinecage",
+          "path": "assets/models/splinecage.stp",
+          "sha256": "e6d3c25c4a3777de1cb71c4988fc1a5cbb9fb5587e4085273d1844a479ddfe33"
+        }
+      ],
+      "url": "https://github.com/tpaviot/pythonocc-demos.git"
+    }
+  ]
+}

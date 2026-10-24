@@ -1,0 +1,146 @@
+{
+  "Version": 1,
+  "meshioplusplus": "17.17.0",
+  "models": {
+    "occt-samples/linkrods": {
+      "faces": 37,
+      "faces_ok": 37,
+      "failures_by_class": {},
+      "hausdorff_to_brepmesh": 0.00664,
+      "meshed": true,
+      "min_angle_deg": 0.96,
+      "num_faces_below_bound": 1,
+      "num_open_edges": 0,
+      "num_triangles": 7034,
+      "status": "ok"
+    },
+    "occt-samples/screw": {
+      "faces": 10,
+      "faces_ok": 10,
+      "failures_by_class": {},
+      "hausdorff_to_brepmesh": 0.000973,
+      "meshed": true,
+      "min_angle_deg": 8.83,
+      "num_faces_below_bound": 2,
+      "num_open_edges": 0,
+      "num_triangles": 4042,
+      "status": "ok"
+    },
+    "pythonocc-demos/11752": {
+      "faces": 1018,
+      "faces_ok": 1018,
+      "failures_by_class": {},
+      "hausdorff_to_brepmesh": 0.0241,
+      "meshed": true,
+      "min_angle_deg": 0.612,
+      "num_faces_below_bound": 115,
+      "num_open_edges": 0,
+      "num_triangles": 50586,
+      "status": "ok"
+    },
+    "pythonocc-demos/as1-oc-214": {
+      "faces": 160,
+      "faces_ok": 135,
+      "failures_by_class": {
+        "other": 25
+      },
+      "hausdorff_to_brepmesh": 0.126,
+      "meshed": false,
+      "min_angle_deg": 25.0,
+      "num_faces_below_bound": 0,
+      "num_open_edges": 202,
+      "num_triangles": 8084,
+      "status": "ok"
+    },
+    "pythonocc-demos/as1-pe-203": {
+      "faces": 160,
+      "faces_ok": 153,
+      "failures_by_class": {
+        "other": 7
+      },
+      "hausdorff_to_brepmesh": 0.0125,
+      "meshed": false,
+      "min_angle_deg": 25.1,
+      "num_faces_below_bound": 0,
+      "num_open_edges": 86,
+      "num_triangles": 8662,
+      "status": "ok"
+    },
+    "pythonocc-demos/face-recognition-sample-part": {
+      "faces": 23,
+      "faces_ok": 23,
+      "failures_by_class": {},
+      "hausdorff_to_brepmesh": 0.00361,
+      "meshed": true,
+      "min_angle_deg": 25.0,
+      "num_faces_below_bound": 0,
+      "num_open_edges": 0,
+      "num_triangles": 5948,
+      "status": "ok"
+    },
+    "pythonocc-demos/kr600-r2830-4": {
+      "faces": 4123,
+      "faces_ok": 3966,
+      "failures_by_class": {
+        "degenerate_patch": 135,
+        "other": 8,
+        "trim_outside_patch": 14
+      },
+      "hausdorff_to_brepmesh": 0.0106,
+      "meshed": false,
+      "min_angle_deg": 3.71e-09,
+      "num_faces_below_bound": 1624,
+      "num_open_edges": 15248,
+      "num_triangles": 154820,
+      "status": "ok"
+    },
+    "pythonocc-demos/rc-buggy-2-front-suspension": {
+      "faces": 10663,
+      "faces_ok": 10290,
+      "failures_by_class": {
+        "degenerate_patch": 202,
+        "other": 115,
+        "trim_outside_patch": 56
+      },
+      "hausdorff_to_brepmesh": 0.0457,
+      "meshed": false,
+      "min_angle_deg": 0.0582,
+      "num_faces_below_bound": 4748,
+      "num_open_edges": 14493,
+      "num_triangles": 301933,
+      "status": "ok"
+    },
+    "pythonocc-demos/splinecage": {
+      "faces": 4,
+      "faces_ok": 4,
+      "failures_by_class": {},
+      "hausdorff_to_brepmesh": 0.00187,
+      "meshed": true,
+      "min_angle_deg": 4.93,
+      "num_faces_below_bound": 1,
+      "num_open_edges": 216,
+      "num_triangles": 1312,
+      "status": "ok"
+    },
+    "pythonocc-demos/ventilator": {
+      "faces": 305,
+      "faces_ok": 304,
+      "failures_by_class": {
+        "degenerate_patch": 1
+      },
+      "hausdorff_to_brepmesh": 0.00353,
+      "meshed": false,
+      "min_angle_deg": 0.0555,
+      "num_faces_below_bound": 67,
+      "num_open_edges": 73,
+      "num_triangles": 40103,
+      "status": "ok"
+    }
+  },
+  "settings": {
+    "max_points": 5000000,
+    "min_angle": 25.0,
+    "size_divisor": 40.0,
+    "timeout_s": 900.0
+  }
+}
