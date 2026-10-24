@@ -316,6 +316,28 @@ inverse_num_nodes_per_cell = {
     v_nnodes: k_type for k_type, v_nnodes in num_nodes_per_cell.items()
 }
 
+
+def _type_from_node_count(num_nodes, where, warned):
+    """The cell type a row of `num_nodes` nodes is read as when its block's
+    header names no known type: the last type with that count, as always.
+    Several types share most counts (10 nodes: `line10`, `tetra10`,
+    `triangle10`), so a guess among them is warned once per block (`warned`
+    collects the counts already reported) rather than made silently."""
+    chosen = inverse_num_nodes_per_cell[num_nodes]  # KeyError: no type at all
+    if num_nodes not in warned:
+        warned.add(num_nodes)
+        others = sorted(
+            t for t, n in num_nodes_per_cell.items() if n == num_nodes and t != chosen
+        )
+        if others:
+            warn(
+                f"{where}: the header names no known cell type; rows of "
+                f"{num_nodes} nodes are read as '{chosen}', though they could also be "
+                + ", ".join(f"'{t}'" for t in others)
+            )
+    return chosen
+
+
 # Helper for determining the dimension of a Kratos entity based on its name.
 # Standard Kratos names often contain "2D" or "3D". Default to 3D if unspecified.
 local_dimension_types = {}
@@ -749,6 +771,10 @@ def _read_cells(
                 if k_mdpa == entity_name_mdpa:
                     meshio_cell_type = v_meshio
                     break
+            if meshio_cell_type is None and entity_name_mdpa in num_nodes_per_cell:
+                # A plain meshio name: what both writers emit for a type with
+                # no Kratos name (`triangle10`), and what the C++ reader reads.
+                meshio_cell_type = entity_name_mdpa
             if meshio_cell_type is None:
                 # Try longest keys first to avoid ambiguous partial matches (e.g., "Line" matching "Line3D2")
                 for k_mdpa in sorted(mapping_to_use.keys(), key=len, reverse=True):
@@ -756,6 +782,7 @@ def _read_cells(
                         meshio_cell_type = mapping_to_use[k_mdpa]
                         break
     line_at_end = ""
+    warned_counts = set()
     while True:
         line_raw = f.readline().decode()
         if not line_raw:
@@ -785,7 +812,9 @@ def _read_cells(
         current_meshio_type = meshio_cell_type
         if current_meshio_type is None:
             try:
-                current_meshio_type = inverse_num_nodes_per_cell[num_nodes_this_elem]
+                current_meshio_type = _type_from_node_count(
+                    num_nodes_this_elem, environ, warned_counts
+                )
             except KeyError:
                 raise ReadError(
                     f"Unknown cell type with {num_nodes_this_elem} nodes in {environ}: {line_content}"
@@ -883,6 +912,9 @@ def _read_geometries(
                 meshio_geometry_type = _kratos_geometries_to_meshio_type[
                     geometry_name_mdpa
                 ]
+            elif geometry_name_mdpa in num_nodes_per_cell:
+                # A plain meshio name, as for Elements above.
+                meshio_geometry_type = geometry_name_mdpa
             else:
                 # If no direct match, look for substrings (try longest keys first)
                 for k_mdpa in sorted(
@@ -898,6 +930,7 @@ def _read_geometries(
             )
 
     line_at_end = ""
+    warned_counts = set()
     while True:
         line_raw = f.readline().decode()
         if not line_raw:
@@ -933,9 +966,9 @@ def _read_geometries(
 
         if current_meshio_type is None:  # Try to infer from node count if not in header
             try:
-                current_meshio_type = inverse_num_nodes_per_cell[
-                    num_nodes_this_geometry
-                ]
+                current_meshio_type = _type_from_node_count(
+                    num_nodes_this_geometry, environ, warned_counts
+                )
             except KeyError:
                 raise ReadError(
                     f"Unknown geometry type with {num_nodes_this_geometry} nodes in {environ} (and type not in header): {line_content}"
@@ -2031,12 +2064,15 @@ def _write_elements_and_conditions(fh, mesh, cells_to_write, written_node_ids=No
     for ib, cell_block in enumerate(cells_to_write):
         entity_block_type = bname[ib].get("entity", "Elements")
         if entity_block_type == "Elements":
+            # A type with no Kratos name keeps its meshio name, as the C++
+            # writer's does, so the readers resolve it rather than guessing
+            # from the node count.
             mdpa_type = _meshio_to_kratos_element_type.get(
-                cell_block.type, "UnknownElement"
+                cell_block.type, cell_block.type
             )
         else:
             mdpa_type = _meshio_to_kratos_condition_type.get(
-                cell_block.type, "UnknownCondition"
+                cell_block.type, cell_block.type
             )
         line = f"Begin {entity_block_type} {mdpa_type}\n"
         fh.write(line.encode())
@@ -2139,10 +2175,11 @@ def _write_geometries(
     global_geometry_id_counter = 1  # Fallback counter if ID not in lookup
 
     for cell_block in geometries_to_write:
-        mdpa_type = _meshio_to_kratos_geometry_type.get(cell_block.type)
-        if not mdpa_type:
-            warn(f"Skipping geometry block of unknown type: {cell_block.type}")
-            continue
+        # A type with no Kratos geometry name keeps its meshio name, as the
+        # C++ writer's does; both readers resolve it.
+        mdpa_type = _meshio_to_kratos_geometry_type.get(
+            cell_block.type, cell_block.type
+        )
 
         fh.write(f"Begin Geometries {mdpa_type}\n".encode())
         # meshio++'s node order -> Kratos's, undoing what the reader applied
