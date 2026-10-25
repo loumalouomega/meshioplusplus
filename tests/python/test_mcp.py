@@ -2304,6 +2304,10 @@ def test_mesh_cad_surface_tool(tmp_path):
     assert given["virtual_edges"] == []
     with pytest.raises(ValueError, match="face_sizes"):
         _tools.tool_mesh_cad_surface(str(src), str(out), 0.4, face_sizes={"9": 0.1})
+    # Virtual edges (v17.19.0): the rim's sliver is skipped, its chain named.
+    rim = src.parent / "split_rim.cad.json"
+    virtual = _tools.tool_mesh_cad_surface(str(rim), str(out), 0.25, virtual_edges=True)
+    assert virtual["num_failed"] == 0 and virtual["virtual_edges"] == [[3, 5]]
 
 
 def test_octree_tool(tmp_path):

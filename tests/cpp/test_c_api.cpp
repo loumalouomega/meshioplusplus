@@ -1947,6 +1947,17 @@ TEST(CApi, MeshCadSurfaceMeshesABrepAndReportsItsFaces) {
         ex.face_size_faces = &face;
         ex.metric = 7;
         EXPECT_EQ(mio_mesh_cad_surface2(info, &opts, &ex, nullptr), nullptr);
+        ex.metric = MIO_MESH_CAD_METRIC_MEAN;
+        // Virtual edges: none here (three corners, all sharp); refused curved.
+        ex.virtual_edges = 1;
+        mio_mesh* v = mio_mesh_cad_surface2(info, &opts, &ex, nullptr);
+        ASSERT_NE(v, nullptr) << mio_last_error();
+        EXPECT_EQ(mio_mesh_cad_surface_num_virtual_edges(), 0);
+        mio_mesh_free(v);
+        opts.order = 2;
+        EXPECT_EQ(mio_mesh_cad_surface2(info, &opts, &ex, nullptr), nullptr);
+        EXPECT_NE(std::string(mio_last_error()).find("virtual_edges"), std::string::npos);
+        opts.order = 1;
     }
     // v17.15.0: refined to 25 degrees and smoothed. The triangle's two
     // 45-degree corners are reported; every angle is counted.

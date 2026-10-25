@@ -653,6 +653,37 @@ def test_a_surface_of_revolution_smaller_than_h_is_meshed(min_angle):
     assert len(fine.cells[0].data) > len(out.cells[0].data)
 
 
+@needs_core
+@pytest.mark.parametrize("min_angle", [0, 25])
+def test_virtual_edges_skip_a_sliver_of_an_edge(min_angle):
+    """Roadmap 6.5.2: a rim split by an edge of h / 50 forces a point h / 50
+    from its neighbour on both plates. With ``virtual_edges`` one corner of
+    the sliver is suppressed: the plates still conform across the rim, the
+    chain is reported, and the triangles near it are not slivers."""
+    model = _read("split_rim.cad.json")
+    off, r_off = mio.mesh_cad_surface(
+        model, 0.25, min_angle=min_angle, return_report=True
+    )
+    on, r_on = mio.mesh_cad_surface(
+        model, 0.25, min_angle=min_angle, virtual_edges=True, return_report=True
+    )
+    assert r_off["virtual_edges"] == [] and r_on["virtual_edges"] == [[3, 5]]
+    assert r_on["num_failed"] == 0
+    assert r_on["num_open_edges"] == r_off["num_open_edges"]
+    assert np.isclose(_measure(on)[0], _measure(off)[0], rtol=0, atol=1e-12)
+    if min_angle == 0:
+        assert r_off["min_angle_deg"] < 5 < 20 < r_on["min_angle_deg"]
+    else:
+        assert r_on["min_angle_deg"] >= 25 - 1e-9
+        assert len(on.cells[0].data) < 0.7 * len(off.cells[0].data)
+    # The suppressed corner stays a point, used by no cell (as subdivide's
+    # orphans do): clean(remove_orphans=True) drops it.
+    used = np.unique(np.concatenate([c.data.ravel() for c in on.cells]))
+    assert len(on.points) - len(used) == 1
+    with pytest.raises(ValueError, match="virtual_edges"):
+        mio.mesh_cad_surface(model, 0.25, order=2, virtual_edges=True)
+
+
 def test_smoothing_moves_the_inside_only():
     model = _read("sphere.cad.json")
     plain, r0 = mio.mesh_cad_surface(model, 0.2, return_report=True)
@@ -746,6 +777,19 @@ def test_cli_verb(tmp_path, capsys):
     report = json.loads(capsys.readouterr().out)
     assert report["num_failed"] == 0 and report["virtual_edges"] == []
     assert any(f["limited_by_edges"] for f in report["faces"])
+    code = mio._cli.main(
+        [
+            "mesh-cad-surface",
+            str(CAD / "split_rim.cad.json"),
+            str(out),
+            "--size",
+            "0.25",
+            "--virtual-edges",
+            "--json",
+        ]
+    )
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["virtual_edges"] == [[3, 5]]
 
 
 def _run_both(doc, tmp_path):
@@ -850,6 +894,17 @@ def test_pipeline_takes_given_sizes_like_the_operation(tmp_path):
     for _, mesh in results:
         np.testing.assert_array_equal(mesh.points, direct.points)
     assert all(r == results[0][0] for r, _ in results)
+    doc = {
+        "Version": 2,
+        "Input": {"Path": str(CAD / "split_rim.cad.json")},
+        "Operations": [
+            {"Op": "MeshCadSurface", "TargetSize": 0.25, "VirtualEdges": True}
+        ],
+    }
+    direct = mio.mesh_cad_surface(_read("split_rim.cad.json"), 0.25, virtual_edges=True)
+    for _, mesh in _run_both(doc, tmp_path):
+        np.testing.assert_array_equal(mesh.points, direct.points)
+        np.testing.assert_array_equal(mesh.cells[0].data, direct.cells[0].data)
 
 
 @needs_core

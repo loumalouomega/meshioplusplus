@@ -366,6 +366,9 @@ struct McadFace {
     bool mNeedsRounds = false;
     /// Every triangle of its latest meshing collapsed (6.5.7).
     bool mCollapsed = false;
+    /// By boundary point: a corner virtual edges suppress (6.5.2), left out
+    /// of the face's loops; null when there are none.
+    const std::vector<char>* pSuppressed = nullptr;
     /// Mesh it with a small interior grid whatever its size: set after a
     /// meshing collapsed, kept for every later one.
     bool mForceInterior = false;
@@ -603,8 +606,13 @@ McadPlane mcad_face_plane(const McadFace& rF, const std::vector<McadUse>& rUses,
             const McadUse& r_u = rUses[u];
             const detail::TrimTrace& r_t = *rTraces[u];
             for (std::size_t j = 0; j + 1 < r_u.mIds.size(); ++j) {
+                const std::int64_t id = r_u.mIds[j];
+                if (rF.pSuppressed && id >= 0 &&
+                    static_cast<std::size_t>(id) < rF.pSuppressed->size() &&
+                    (*rF.pSuppressed)[static_cast<std::size_t>(id)])
+                    continue;
                 const Vec2 uv = r_t.Uv(r_u.mParams[j]);
-                poly.push_back({r_u.mIds[j], uv, u, j});
+                poly.push_back({id, uv, u, j});
                 for (int k = 0; k < 2; ++k) {
                     lo[k] = std::min(lo[k], uv[k]);
                     hi[k] = std::max(hi[k], uv[k]);
@@ -2195,7 +2203,12 @@ namespace {
 /// One meshing of the model: with @p pSize, sized by that field; with
 /// @p pSamples, the size samples of every face appended in face order.
 /// The given sizes' refusals (6.3.1).
-void mcad_check_sources(const BrepInfo& rBrep, const MeshCadSizeSources& rSources) {
+void mcad_check_sources(const BrepInfo& rBrep, const MeshCadSurfaceOptions& rOptions,
+                        const MeshCadSizeSources& rSources) {
+    if (rSources.mVirtualEdges && rOptions.mOrder > 1)
+        mcad_fail(
+            "virtual_edges: curved elements (order 2 or 3) follow each edge's own "
+            "curve, so a chord across a suppressed corner cannot be curved; use order 1");
     const auto size_ok = [](double S) { return std::isfinite(S) && S > 0.0; };
     for (const auto& [f, s] : rSources.mFaceSizes) {
         if (f < 0 || static_cast<std::size_t>(f) >= rBrep.mFaces.size())
@@ -2224,7 +2237,9 @@ void mcad_check_sources(const BrepInfo& rBrep, const MeshCadSizeSources& rSource
 
 MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfaceOptions& rOptions,
                                       const detail::MeshCadSizeField* pSize,
-                                      std::vector<detail::MeshCadSizeSample>* pSamples) {
+                                      std::vector<detail::MeshCadSizeSample>* pSamples,
+                                      bool VirtualEdges = false,
+                                      std::vector<std::vector<std::int64_t>>* pChains = nullptr) {
     if (rBrep.mFaces.empty())
         mcad_fail("the B-rep has no faces");
     const double h = rOptions.mTargetSize;
@@ -2700,6 +2715,142 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
         }
     };
     assign_ids();
+
+    // Virtual edges (6.5.2): a corner where exactly two edges meet, used by
+    // the same faces, turning by under 30 degrees, at least one of them
+    // shorter than h / 2, is suppressed: no face's loop and no line cell
+    // goes through it, so a sliver of an edge forces no tiny triangle. The
+    // chord across it stays within a tenth of its length of the corner and
+    // within 1.5 h; a corner next to one already suppressed across a single
+    // piece is kept, so no chord skips more than one corner. The model is not
+    // changed; the chains are reported.
+    std::vector<char> suppressed;
+    if (VirtualEdges) {
+        suppressed.assign(num_corners, 0);
+        struct Touch {
+            std::size_t mEdge;
+            std::size_t mFace;
+        };
+        std::vector<std::vector<Touch>> touching(num_corners);
+        for (std::size_t u = 0; u < uses.size(); ++u) {
+            if (!live(u) || uses[u].mEmbedded || uses[u].mEdge < 0)
+                continue;
+            for (int end = 0; end < 2; ++end)
+                touching[static_cast<std::size_t>(corner_id[slot(u, end)])].push_back(
+                    {static_cast<std::size_t>(uses[u].mEdge), uses[u].mFace});
+        }
+        // The sample next to corner C along edge E, and E's other corner.
+        const auto beside = [&](std::size_t E, std::int64_t C, Vec3& rNext, std::int64_t& rOther,
+                                bool& rOnePiece) {
+            const McadEdge& r_e = edges[E];
+            const auto& r_pts = r_e.mSamples.mPoints;
+            const std::size_t m = r_e.mMaster;
+            const bool at_start = corner_id[slot(m, 0)] == C;
+            rNext = at_start ? r_pts[1] : r_pts[r_pts.size() - 2];
+            rOther = corner_id[slot(m, at_start ? 1 : 0)];
+            rOnePiece = r_pts.size() == 2;
+        };
+        for (std::size_t c = 0; c < num_corners; ++c) {
+            const auto& r_t = touching[c];
+            std::vector<std::size_t> touched;
+            for (const Touch& r_x : r_t)
+                touched.push_back(r_x.mEdge);
+            std::sort(touched.begin(), touched.end());
+            touched.erase(std::unique(touched.begin(), touched.end()), touched.end());
+            if (touched.size() != 2)
+                continue;
+            const std::size_t e1 = touched[0], e2 = touched[1];
+            const auto usable = [&](std::size_t E) {
+                const McadEdge& r_e = edges[E];
+                return r_e.mFail == MeshCadFaceStatus::Ok && !r_e.mSamples.mDegenerate &&
+                       r_e.mSamples.mPoints.size() >= 2 &&
+                       corner_id[slot(r_e.mMaster, 0)] != corner_id[slot(r_e.mMaster, 1)];
+            };
+            if (!usable(e1) || !usable(e2))
+                continue;
+            // The same faces, each using each edge once.
+            std::vector<std::size_t> f1, f2;
+            for (const std::size_t u : edges[e1].mUses)
+                f1.push_back(uses[u].mFace);
+            for (const std::size_t u : edges[e2].mUses)
+                f2.push_back(uses[u].mFace);
+            std::sort(f1.begin(), f1.end());
+            std::sort(f2.begin(), f2.end());
+            if (f1 != f2 || std::adjacent_find(f1.begin(), f1.end()) != f1.end())
+                continue;
+            if (!(std::min(edges[e1].mSamples.mLength, edges[e2].mSamples.mLength) < 0.5 * h))
+                continue;
+            Vec3 p{}, q{};
+            std::int64_t o1 = -1, o2 = -1;
+            bool one1 = false, one2 = false;
+            beside(e1, static_cast<std::int64_t>(c), p, o1, one1);
+            beside(e2, static_cast<std::int64_t>(c), q, o2, one2);
+            if ((one1 && o1 >= 0 && suppressed[static_cast<std::size_t>(o1)]) ||
+                (one2 && o2 >= 0 && suppressed[static_cast<std::size_t>(o2)]))
+                continue;
+            const Vec3& x = boundary[c];
+            const Vec3 a{x[0] - p[0], x[1] - p[1], x[2] - p[2]};
+            const Vec3 b{q[0] - x[0], q[1] - x[1], q[2] - x[2]};
+            const double la = mcad_dist(p, x), lb = mcad_dist(x, q), chord = mcad_dist(p, q);
+            const double cos_turn = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / (la * lb);
+            if (!(la > 0.0 && lb > 0.0) || !(cos_turn > std::cos(30.0 * kMcadPi / 180.0)))
+                continue;
+            const Vec3 mid{0.5 * (p[0] + q[0]), 0.5 * (p[1] + q[1]), 0.5 * (p[2] + q[2])};
+            const double local = pSize ? pSize->At(mid) : h;
+            // The corner's distance from the chord p-q.
+            const Vec3 pq{q[0] - p[0], q[1] - p[1], q[2] - p[2]};
+            const Vec3 px{x[0] - p[0], x[1] - p[1], x[2] - p[2]};
+            const Vec3 cr{pq[1] * px[2] - pq[2] * px[1], pq[2] * px[0] - pq[0] * px[2],
+                          pq[0] * px[1] - pq[1] * px[0]};
+            const double off = std::sqrt(cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]) / chord;
+            if (!(chord <= 1.5 * local) || !(off <= 0.1 * chord))
+                continue;
+            suppressed[c] = 1;
+        }
+        bool any = false;
+        for (const char r_c : suppressed)
+            any = any || r_c;
+        if (any) {
+            for (McadFace& r_f : faces)
+                r_f.pSuppressed = &suppressed;
+            // The chains: edges joined through suppressed corners, walked
+            // from an end, in edge-index order of their first edge.
+            if (pChains) {
+                std::map<std::size_t, std::vector<std::size_t>> link;
+                for (std::size_t c = 0; c < num_corners; ++c) {
+                    if (!suppressed[c])
+                        continue;
+                    std::vector<std::size_t> touched;
+                    for (const Touch& r_x : touching[c])
+                        touched.push_back(r_x.mEdge);
+                    std::sort(touched.begin(), touched.end());
+                    touched.erase(std::unique(touched.begin(), touched.end()), touched.end());
+                    link[touched[0]].push_back(touched[1]);
+                    link[touched[1]].push_back(touched[0]);
+                }
+                std::set<std::size_t> done;
+                for (const auto& [e, r_n] : link) {
+                    if (done.count(e) || r_n.size() != 1)
+                        continue;
+                    std::vector<std::int64_t> chain;
+                    std::size_t at = e, from = edges.size();
+                    while (true) {
+                        done.insert(at);
+                        chain.push_back(edges[at].mBrepEdge);
+                        std::size_t next = edges.size();
+                        for (const std::size_t n : link[at])
+                            if (n != from && !done.count(n))
+                                next = n;
+                        if (next == edges.size())
+                            break;
+                        from = at;
+                        at = next;
+                    }
+                    pChains->push_back(std::move(chain));
+                }
+            }
+        }
+    }
 
     // Boundaries that cross at this size: the sampled loops of a face
     // can cross in its parameters where the exact curves do not (two close
@@ -3179,6 +3330,36 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                 seg_edge.push_back(r_e.mBrepEdge);
             }
         }
+        // A suppressed corner (6.5.2): its two line cells become one, the
+        // first edge's, straight across it.
+        if (!suppressed.empty()) {
+            std::map<std::int64_t, std::vector<std::size_t>> at_corner;
+            for (std::size_t k = 0; k < segs.size(); ++k)
+                for (int j = 0; j < 2; ++j)
+                    if (segs[k][j] >= 0 &&
+                        static_cast<std::size_t>(segs[k][j]) < suppressed.size() &&
+                        suppressed[static_cast<std::size_t>(segs[k][j])])
+                        at_corner[segs[k][j]].push_back(k);
+            std::vector<char> dropped(segs.size(), 0);
+            for (const auto& [c, r_k] : at_corner) {
+                if (r_k.size() != 2)
+                    continue;
+                auto& r_a = segs[r_k[0]];
+                const auto& r_b = segs[r_k[1]];
+                const std::int64_t far = r_b[0] == c ? r_b[1] : r_b[0];
+                (r_a[0] == c ? r_a[0] : r_a[1]) = far;
+                dropped[r_k[1]] = 1;
+            }
+            std::vector<std::array<std::int64_t, 4>> kept;
+            std::vector<std::int64_t> kept_edge;
+            for (std::size_t k = 0; k < segs.size(); ++k)
+                if (!dropped[k]) {
+                    kept.push_back(segs[k]);
+                    kept_edge.push_back(seg_edge[k]);
+                }
+            segs = std::move(kept);
+            seg_edge = std::move(kept_edge);
+        }
         const auto nn = static_cast<std::size_t>(order + 1);
         NDArray lines = NDArray::Uninit(DType::Int64, {segs.size(), nn});
         std::int64_t* pl = lines.As<std::int64_t>();
@@ -3264,7 +3445,7 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep, const MeshCadSurfac
                                       const MeshCadSizeSources& rSources,
                                       MeshCadSizeReport* pReport) {
     mcad_check_options(rOptions);
-    mcad_check_sources(rBrep, rSources);
+    mcad_check_sources(rBrep, rOptions, rSources);
     const std::size_t nf = rBrep.mFaces.size();
     if (pReport) {
         *pReport = MeshCadSizeReport{};
@@ -3272,8 +3453,10 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep, const MeshCadSurfac
     }
     const bool given =
         !rSources.mFaceSizes.empty() || !rSources.mEdgeSizes.empty() || rSources.pBackground;
+    std::vector<std::vector<std::int64_t>>* p_chains = pReport ? &pReport->mVirtualEdges : nullptr;
     if (!(rOptions.mCurvatureDeviation > 0.0 || rOptions.mCellsAcrossGaps > 0.0 || given))
-        return mcad_surface_run(rBrep, rOptions, nullptr, nullptr);
+        return mcad_surface_run(rBrep, rOptions, nullptr, nullptr, rSources.mVirtualEdges,
+                                p_chains);
     // A sized run (6.3): a first, uniform meshing at target_size gives the
     // samples (every point on every face it lies on, with the surface's
     // normal and curvature there, and the edges' points); the field they
@@ -3288,7 +3471,8 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep, const MeshCadSurfac
     first.mEdges = true;
     first.mStrict = false;
     std::vector<detail::MeshCadSizeSample> samples;
-    const MeshCadSurfaceResult uniform = mcad_surface_run(rBrep, first, nullptr, &samples);
+    const MeshCadSurfaceResult uniform =
+        mcad_surface_run(rBrep, first, nullptr, &samples, rSources.mVirtualEdges);
     const Mesh& r_first = uniform.mMesh;
     // The faces at each point of the first mesh, from its triangles; faces
     // are neighbours where both touch a point: a gap is measured to neither
@@ -3458,7 +3642,7 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep, const MeshCadSurfac
     // uniform mesh, byte for byte.
     MeshCadSurfaceResult r = mcad_surface_run(
         rBrep, rOptions, field.NumSamples() > 0 || field.HasBackground() ? &field : nullptr,
-        nullptr);
+        nullptr, rSources.mVirtualEdges, p_chains);
     if (pReport)
         for (std::size_t f = 0; f < nf; ++f)
             for (const std::int64_t e : pReport->mLimitedByEdges[f])

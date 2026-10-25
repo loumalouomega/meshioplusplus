@@ -225,7 +225,7 @@ def fetch(args):
 # --- run ---------------------------------------------------------------------------------
 
 
-def measure_one(path, divisor, min_angle, max_points):
+def measure_one(path, divisor, min_angle, max_points, virtual_edges=False):
     """Read, mesh and measure one model; runs in its own process."""
     import resource
 
@@ -254,6 +254,7 @@ def measure_one(path, divisor, min_angle, max_points):
             out["target_size"],
             min_angle=min_angle,
             max_points=max_points,
+            virtual_edges=virtual_edges,
             return_report=True,
         )
     except Exception as exc:  # noqa: BLE001
@@ -290,6 +291,8 @@ def measure_one(path, divisor, min_angle, max_points):
     ):
         out[key] = report[key]
     out["num_warnings"] = len(report["warnings"])
+    if virtual_edges:
+        out["num_virtual_edges"] = len(report["virtual_edges"])
     tri = [c.data for c in mesh.cells if c.type == "triangle"]
     if tri:
         surface = mio.Mesh(mesh.points, [("triangle", np.concatenate(tri))])
@@ -350,6 +353,7 @@ def run(args):
                 str(args.size_divisor),
                 str(args.min_angle),
                 str(args.max_points),
+                str(int(args.virtual_edges)),
             ]
             t0 = time.perf_counter()
             try:
@@ -384,6 +388,7 @@ def run(args):
             "min_angle": args.min_angle,
             "max_points": args.max_points,
             "timeout_s": args.timeout,
+            **({"virtual_edges": True} if args.virtual_edges else {}),
         },
         "models": results,
     }
@@ -573,6 +578,11 @@ def main(argv=None):
     p.add_argument("--max-points", type=int, default=5_000_000)
     p.add_argument("--timeout", type=float, default=900.0)
     p.add_argument("--models", help="a comma-separated subset of model ids")
+    p.add_argument(
+        "--virtual-edges",
+        action="store_true",
+        help="mesh with virtual edges across slivers of edges (6.5.2)",
+    )
     p = sub.add_parser("compare", help="fail when a model that meshed no longer does")
     p.add_argument("results")
     p.add_argument("--baseline", default=str(BASELINE))
@@ -591,7 +601,10 @@ def main(argv=None):
         argv = sys.argv[1:]
     if argv and argv[0] == "_one":
         path, divisor, min_angle, max_points = argv[1:5]
-        row = measure_one(path, float(divisor), float(min_angle), int(max_points))
+        virtual = len(argv) > 5 and argv[5] == "1"
+        row = measure_one(
+            path, float(divisor), float(min_angle), int(max_points), virtual
+        )
         print(json.dumps(finite(row), allow_nan=False, default=float))
         return 0
     args = parser.parse_args(argv)

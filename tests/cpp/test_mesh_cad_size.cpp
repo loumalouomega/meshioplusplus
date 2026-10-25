@@ -508,3 +508,121 @@ TEST(MeshCadGivenSizes, EmptySourcesAreTheTwoArgumentOverloadAndBadOnesAreRefuse
     s.mBackgroundArray = "size";
     refused(s);
 }
+
+namespace {
+
+// Two square plates folded along their shared rim y = z = 0, the rim split
+// at x = 0.5 and 0.5 + D into three edges (0, 1 and 2): a model's sliver of
+// an edge. The top plate (z = 0) is face 0, the front one (y = 0) face 1.
+mio::BrepInfo split_rim(double D) {
+    using namespace brep_solids;
+    const PatchVec a{0, 0, 0}, b{0.5, 0, 0}, c{0.5 + D, 0, 0}, d{1, 0, 0};
+    const PatchVec t1{1, 1, 0}, t2{0, 1, 0}, f1{0, 0, -1}, f2{1, 0, -1};
+    std::vector<mio::BrepCurve> curves = {
+        mio::detail::brep_curve_line(a, b),   mio::detail::brep_curve_line(b, c),
+        mio::detail::brep_curve_line(c, d),   mio::detail::brep_curve_line(d, t1),
+        mio::detail::brep_curve_line(t1, t2), mio::detail::brep_curve_line(t2, a),
+        mio::detail::brep_curve_line(f1, f2), mio::detail::brep_curve_line(f2, d),
+        mio::detail::brep_curve_line(a, f1)};
+    std::vector<SolidFace> faces(2);
+    faces[0].mSurface = plane(a, {1, 0, 0}, {0, 1, 0}, {0, 0, 1});
+    faces[0].mLoops = {{line_trim(a, b, 0, true), line_trim(b, c, 1, true),
+                        line_trim(c, d, 2, true), line_trim(d, t1, 3, true),
+                        line_trim(t1, t2, 4, true), line_trim(t2, a, 5, true)}};
+    faces[1].mSurface = plane(a, {1, 0, 0}, {0, 0, 1}, {0, -1, 0});
+    faces[1].mLoops = {{line_trim(f1, f2, 6, true), line_trim(f2, d, 7, true),
+                        line_trim(d, c, 2, false), line_trim(c, b, 1, false),
+                        line_trim(b, a, 0, false), line_trim(a, f1, 8, true)}};
+    return assemble(faces, curves);
+}
+
+double min_angle_deg(const mio::Mesh& rM) {
+    double lo = 180.0;
+    for (const auto& t : triangles(rM))
+        for (int k = 0; k < 3; ++k) {
+            const Vec3 p = point(rM, t[k]), q = point(rM, t[(k + 1) % 3]),
+                       r = point(rM, t[(k + 2) % 3]);
+            const double a = dist(q, r), b = dist(p, r), c = dist(p, q);
+            lo = std::min(lo,
+                          std::acos(std::clamp((b * b + c * c - a * a) / (2 * b * c), -1.0, 1.0)) *
+                              180.0 / kPi);
+        }
+    return lo;
+}
+
+// Mesh edges on the rim y = z = 0 used by one triangle only: none when the
+// two plates conform across it.
+int unmatched_rim_edges(const mio::Mesh& rM) {
+    std::map<std::pair<std::int64_t, std::int64_t>, int> uses;
+    for (const auto& t : triangles(rM))
+        for (int k = 0; k < 3; ++k) {
+            const std::int64_t i = t[k], j = t[(k + 1) % 3];
+            ++uses[{std::min(i, j), std::max(i, j)}];
+        }
+    int n = 0;
+    for (const auto& [e, k] : uses) {
+        const Vec3 p = point(rM, e.first), q = point(rM, e.second);
+        if (k == 1 && std::abs(p[1]) + std::abs(p[2]) + std::abs(q[1]) + std::abs(q[2]) < 1e-12)
+            ++n;
+    }
+    return n;
+}
+
+}  // namespace
+
+// Roadmap 6.5.2: a rim split by an edge of h / 50 forces a point h / 50 from
+// its neighbour on both plates. With virtual edges the two corners between
+// the three collinear edges are suppressed: one corner per chord, so the
+// chain's sliver is skipped, the plates still conform across the rim, and
+// the chain is reported.
+TEST(MeshCadVirtualEdges, ASliverOfAnEdgeIsSkipped) {
+    const double h = 0.25;
+    const mio::BrepInfo b = split_rim(h / 50);
+    for (const double min_angle : {0.0, 25.0}) {
+        MeshCadSurfaceOptions o = sized(h);
+        o.mMinAngleDeg = min_angle;
+        const auto off = mio::mesh_cad_surface(b, o);
+        ASSERT_EQ(off.mNumFailed, 0);
+        mio::MeshCadSizeSources src;
+        src.mVirtualEdges = true;
+        mio::MeshCadSizeReport report;
+        const auto on = mio::mesh_cad_surface(b, o, src, &report);
+        ASSERT_EQ(on.mNumFailed, 0);
+        EXPECT_EQ(unmatched_rim_edges(off.mMesh), 0);
+        EXPECT_EQ(unmatched_rim_edges(on.mMesh), 0);
+        EXPECT_EQ(on.mNumOpenEdges, off.mNumOpenEdges);
+        EXPECT_EQ(report.mVirtualEdges, (std::vector<std::vector<std::int64_t>>{{0, 1}}));
+        if (min_angle == 0.0) {
+            EXPECT_LT(min_angle_deg(off.mMesh), 5.0);
+            EXPECT_GT(min_angle_deg(on.mMesh), 20.0);
+        } else {
+            EXPECT_GE(min_angle_deg(on.mMesh), 25.0);
+            EXPECT_LT(triangles(on.mMesh).size(), 0.7 * triangles(off.mMesh).size());
+        }
+        EXPECT_EQ(digest(on.mMesh), digest(mio::mesh_cad_surface(b, o, src).mMesh));
+        // The line block runs straight across the suppressed corner.
+        const auto lines = on.mMesh.Cells(1);
+        ASSERT_EQ(lines.Type(), "line");
+        double shortest = 1.0;
+        for (std::size_t k = 0; k < lines.NumCells(); ++k)
+            shortest = std::min(
+                shortest, dist(point(on.mMesh, mio::detail::read_int(lines.Conn(), 2 * k)),
+                               point(on.mMesh, mio::detail::read_int(lines.Conn(), 2 * k + 1))));
+        EXPECT_GT(shortest, h / 10);
+    }
+    // Sized by curvature (the two-pass run), the same chain.
+    MeshCadSurfaceOptions oc = sized(h);
+    oc.mCurvatureDeviation = 0.01;
+    mio::MeshCadSizeSources sv;
+    sv.mVirtualEdges = true;
+    mio::MeshCadSizeReport rc;
+    const auto c = mio::mesh_cad_surface(b, oc, sv, &rc);
+    ASSERT_EQ(c.mNumFailed, 0);
+    EXPECT_EQ(unmatched_rim_edges(c.mMesh), 0);
+    EXPECT_EQ(rc.mVirtualEdges, (std::vector<std::vector<std::int64_t>>{{0, 1}}));
+    MeshCadSurfaceOptions o2 = sized(h);
+    o2.mOrder = 2;
+    mio::MeshCadSizeSources src;
+    src.mVirtualEdges = true;
+    EXPECT_THROW(mio::mesh_cad_surface(b, o2, src), std::invalid_argument);
+}
