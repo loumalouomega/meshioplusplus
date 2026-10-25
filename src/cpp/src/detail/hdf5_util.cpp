@@ -474,6 +474,14 @@ void h5_check_chunks(hid_t dset, const std::string& rName, hsize_t Row0, hsize_t
     std::vector<hsize_t> offset(static_cast<std::size_t>(rank));
     std::vector<std::uint8_t> stored;
     std::vector<std::uint8_t> inflated;
+    // The chunks are in this file, so no record may claim more bytes than the file holds. The
+    // records come from the chunk index, which a corrupt file damages: the buffers below are
+    // sized within the file's own size (the stored one at most that, the inflated one 1032 times).
+    Hid file(H5Iget_file_id(dset), H5Fclose);
+    hsize_t file_size = 0;
+    if (!file.Valid() || H5Fget_filesize(file, &file_size) < 0)
+        throw ReadError("HDF5: could not read the size of the file holding dataset '" + rName +
+                        "'");
     for (hsize_t i = 0; i < nchunks; ++i) {
         unsigned mask = 0;
         haddr_t addr = 0;
@@ -498,6 +506,12 @@ void h5_check_chunks(hid_t dset, const std::string& rName, hsize_t Row0, hsize_t
             continue;
         }
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB
+        // A record larger than the file is refused before its buffer is sized.
+        if (size > file_size)
+            throw ReadError("HDF5: chunk " + std::to_string(i) + " of dataset '" + rName +
+                            "' is recorded as " + std::to_string(size) +
+                            " bytes, more than the file holds (" + std::to_string(file_size) +
+                            " bytes)");
         // A zlib stream expands at most 1032 to 1, which bounds the buffer below.
         if (payload > std::numeric_limits<hsize_t>::max() / 1032 ||
             expected > payload * 1032 + 1024)
