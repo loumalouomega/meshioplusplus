@@ -317,41 +317,42 @@ TEST(MeshCadFolds, ABandSweptPastHalfATurnIsUnfolded) {
         for (const double height : {0.05, 0.3})
             for (const double h : {8.0, 16.0})
                 for (const double min_angle : {0.0, 25.0})
-                  for (const auto metric : {mio::MeshCadMetric::Mean, mio::MeshCadMetric::Varying}) {
-                    mio::MeshCadSurfaceOptions o;
-                    o.mTargetSize = h;
-                    o.mMinAngleDeg = min_angle;
-                    o.mMetric = metric;
-                    const auto r =
-                        mio::mesh_cad_surface(partial_band(1.0, height, sweep * kPi / 180.0), o);
-                    // Unfolded by the rounds in either metric: none falls
-                    // back to the mean one.
-                    for (const auto& r_w : r.mWarnings)
-                        EXPECT_EQ(r_w.find("folded in the varying"), std::string::npos) << r_w;
-                    ASSERT_EQ(r.mNumFailed, 0)
-                        << "sweep " << sweep << ", h " << h << ": " << r.mFaces[0].mReason;
-                    const auto& m = r.mMesh;
-                    for (std::size_t b = 0; b < m.NumCellBlocks(); ++b) {
-                        if (m.Cells(b).Type() != "triangle")
-                            continue;
-                        const auto& conn = m.Cells(b).Conn();
-                        for (std::size_t c = 0; c < m.Cells(b).NumCells(); ++c) {
-                            std::array<Vec3, 3> p{};
-                            for (std::size_t k = 0; k < 3; ++k)
-                                p[k] = point(m, mio::detail::read_int(conn, 3 * c + k));
-                            const std::array<double, 3> e1{p[1][0] - p[0][0], p[1][1] - p[0][1],
-                                                           p[1][2] - p[0][2]};
-                            const std::array<double, 3> e2{p[2][0] - p[0][0], p[2][1] - p[0][1],
-                                                           p[2][2] - p[0][2]};
-                            const double nx = e1[1] * e2[2] - e1[2] * e2[1];
-                            const double ny = e1[2] * e2[0] - e1[0] * e2[2];
-                            // The outward normal at each corner is radial.
-                            for (std::size_t k = 0; k < 3; ++k)
-                                EXPECT_GT(nx * p[k][0] + ny * p[k][1], 0.0)
-                                    << "sweep " << sweep << ", h " << h << ", triangle " << c;
+                    for (const auto metric :
+                         {mio::MeshCadMetric::Mean, mio::MeshCadMetric::Varying}) {
+                        mio::MeshCadSurfaceOptions o;
+                        o.mTargetSize = h;
+                        o.mMinAngleDeg = min_angle;
+                        o.mMetric = metric;
+                        const auto r = mio::mesh_cad_surface(
+                            partial_band(1.0, height, sweep * kPi / 180.0), o);
+                        // Unfolded by the rounds in either metric: none falls
+                        // back to the mean one.
+                        for (const auto& r_w : r.mWarnings)
+                            EXPECT_EQ(r_w.find("folded in the varying"), std::string::npos) << r_w;
+                        ASSERT_EQ(r.mNumFailed, 0)
+                            << "sweep " << sweep << ", h " << h << ": " << r.mFaces[0].mReason;
+                        const auto& m = r.mMesh;
+                        for (std::size_t b = 0; b < m.NumCellBlocks(); ++b) {
+                            if (m.Cells(b).Type() != "triangle")
+                                continue;
+                            const auto& conn = m.Cells(b).Conn();
+                            for (std::size_t c = 0; c < m.Cells(b).NumCells(); ++c) {
+                                std::array<Vec3, 3> p{};
+                                for (std::size_t k = 0; k < 3; ++k)
+                                    p[k] = point(m, mio::detail::read_int(conn, 3 * c + k));
+                                const std::array<double, 3> e1{p[1][0] - p[0][0], p[1][1] - p[0][1],
+                                                               p[1][2] - p[0][2]};
+                                const std::array<double, 3> e2{p[2][0] - p[0][0], p[2][1] - p[0][1],
+                                                               p[2][2] - p[0][2]};
+                                const double nx = e1[1] * e2[2] - e1[2] * e2[1];
+                                const double ny = e1[2] * e2[0] - e1[0] * e2[2];
+                                // The outward normal at each corner is radial.
+                                for (std::size_t k = 0; k < 3; ++k)
+                                    EXPECT_GT(nx * p[k][0] + ny * p[k][1], 0.0)
+                                        << "sweep " << sweep << ", h " << h << ", triangle " << c;
+                            }
                         }
                     }
-                }
 }
 
 namespace {

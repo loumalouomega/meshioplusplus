@@ -1065,9 +1065,8 @@ def roadmap_map():
             "§6 mesh generation",
             [
                 ("off-centres · corner lopping", "S"),
-                ("sizes given · background field", "S"),
-                ("metrics · reparametrisation", "M"),
-                ("real CAD: tolerances · slivers", "M"),
+                ("reparametrising unusable faces", "M"),
+                ("real CAD: tolerances · sliver faces", "M"),
                 ("curved meshes: untangling", "M"),
                 ("tetrahedra: backends", "L"),
                 ("quads: design first", "L"),
