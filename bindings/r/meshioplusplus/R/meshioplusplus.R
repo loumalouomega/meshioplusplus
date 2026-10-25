@@ -2608,6 +2608,18 @@ mio_iga_evaluate <- function(info, patch, params, derivatives = 0L, trim_samples
 #'   span its local feature size (a wall's thickness, a slot's width); 0 is off.
 #' @param pole_rings Rings of points seeded around each pole, so it is no
 #'   longer a fan's apex; 0 keeps the fan, at most 8.
+#' @param face_sizes Sizes given per face: a named or unnamed numeric vector
+#'   whose names (or, unnamed, a two-column matrix's first column) are 1-based
+#'   face indices; every point of the face is at most that size (v17.19.0).
+#' @param edge_sizes The same per edge (1-based edge indices).
+#' @param background A mesh whose one-component point data `background_array`
+#'   is the size at its points, read at its nearest surface point; `NULL` for
+#'   none.
+#' @param background_array The name of that point data array.
+#' @param metric `"mean"` meshes each face in its mean metric; `"varying"`
+#'   follows the surface's metric as it varies over the face.
+#' @param virtual_edges Sample chains of short edges meeting smoothly as one;
+#'   the chains are reported in `virtual_edges`.
 #' @return A list: `mesh`, the counts (`num_points`, `num_triangles`,
 #'   `num_edge_segments`, `num_faces`, `num_failed`, `num_edges`,
 #'   `num_open_edges`, `num_non_manifold_edges`, `num_misoriented_edges`,
@@ -2616,7 +2628,9 @@ mio_iga_evaluate <- function(info, patch, params, derivatives = 0L, trim_samples
 #'   face), `warnings` (a character vector), refinement's
 #'   `num_refinement_points`, `num_faces_below_bound`, `num_smoothed` and
 #'   `min_input_angle_deg`, `angle_histogram` (18 ten-degree bins),
-#'   `num_curved_straightened` and
+#'   `num_curved_straightened`, `face_size_limits` (per face, the 1-based edges
+#'   finer than its given size allows), `virtual_edges` (each chain's 1-based
+#'   edges) and
 #'   `corners`, a data frame of the corners under 60 degrees and poles (1-based
 #'   `face` and `point`, `u`, `v`, `x`, `y`, `z`, `angle_deg`, `min_forced_deg`,
 #'   `reach`, `pole`).
@@ -2629,8 +2643,20 @@ mio_mesh_cad_surface <- function(info, target_size, max_chordal_deviation = 0,
                                  smooth_iterations = 0,
                                  smooth_method = c("laplacian", "odt"), order = 1,
                                  grading = 0, curvature_deviation = 0,
-                                 cells_across_gaps = 0, pole_rings = 0) {
+                                 cells_across_gaps = 0, pole_rings = 0,
+                                 face_sizes = NULL, edge_sizes = NULL, background = NULL,
+                                 background_array = "size",
+                                 metric = c("mean", "varying"), virtual_edges = FALSE) {
   smooth_method <- match.arg(smooth_method)
+  metric <- match.arg(metric)
+  # (1-based index, size) pairs from a named vector or a two-column matrix.
+  pairs <- function(x) {
+    if (is.null(x)) return(list(numeric(0), numeric(0)))
+    if (is.matrix(x)) return(list(as.numeric(x[, 1]), as.numeric(x[, 2])))
+    list(as.numeric(names(x)), as.numeric(x))
+  }
+  fs <- pairs(face_sizes)
+  es <- pairs(edge_sizes)
   r <- .Call(R_mio_mesh_cad_surface, info, as.numeric(target_size),
              as.numeric(max_chordal_deviation), as.numeric(min_points_per_edge),
              as.numeric(tolerance), isTRUE(record_face_ids), isTRUE(edges),
@@ -2638,7 +2664,9 @@ mio_mesh_cad_surface <- function(info, target_size, max_chordal_deviation = 0,
              as.numeric(min_angle), as.numeric(smooth_iterations),
              as.numeric(match(smooth_method, c("laplacian", "odt")) - 1L),
              as.numeric(order), as.numeric(grading), as.numeric(curvature_deviation),
-             as.numeric(cells_across_gaps), as.numeric(pole_rings))
+             as.numeric(cells_across_gaps), as.numeric(pole_rings),
+             fs[[1]], fs[[2]], es[[1]], es[[2]], background, as.character(background_array),
+             as.numeric(match(metric, c("mean", "varying")) - 1L), isTRUE(virtual_edges))
   r$warnings <- if (nzchar(r$warnings)) strsplit(r$warnings, "\n", fixed = TRUE)[[1]] else character(0)
   r$corners <- as.data.frame(r$corners)
   r

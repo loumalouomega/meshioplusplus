@@ -3561,6 +3561,14 @@ step('meshCadSurface: a trimmed CAD JSON face triangulated and reported', () => 
     assert.equal(z.numTriangles, r.numTriangles);
     assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, grading: 0.5 }), /grading/);
     assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, poleRings: 9 }), /pole_rings/);
+    // v17.19.0: a size given to face 0 refines it.
+    const g = m.meshCadSurface(read.info, { targetSize: 0.1, faceSizes: { 0: 0.025 } });
+    assert.equal(g.numFailed, 0);
+    assert.ok(g.numTriangles > 4 * r.numTriangles);
+    assert.deepEqual(g.virtualEdges, []);
+    assert.ok(Array.isArray(g.faces[0].limitedByEdges));
+    assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, faceSizes: { 7: 0.025 } }),
+                  /face_sizes/);
 });
 
 step('info: the mdpa blocks a mesh cannot hold round-trip through info', () => {

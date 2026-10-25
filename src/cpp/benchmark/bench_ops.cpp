@@ -1179,6 +1179,16 @@ int main(int argc, char** argv) {
             o.mGrading = 1.3;
             of(pD, mio::mesh_cad_surface(slab, o).mMesh);
         });
+        // Given sizes (v17.19.0): the unit box at four lattice steps with one
+        // face given one step, graded into the rest.
+        row("mesh_cad_surface_given_sizes", [&](MeshDigest* pD) {
+            const mio::BrepInfo box = cad_box();
+            mio::MeshCadSurfaceOptions o;
+            o.mTargetSize = 4.0 * octree_step;
+            mio::MeshCadSizeSources src;
+            src.mFaceSizes = {{1, octree_step}};
+            of(pD, mio::mesh_cad_surface(box, o, src).mMesh);
+        });
         row("sample_distance", [&](MeshDigest* pD) {
             const NDArray d = mio::sample_distance(surface, jittered->Points());
             if (pD)

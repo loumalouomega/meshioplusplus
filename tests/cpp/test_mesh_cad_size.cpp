@@ -347,3 +347,164 @@ TEST(MeshCadFolds, ABandSweptPastHalfATurnIsUnfolded) {
                     }
                 }
 }
+
+namespace {
+
+// The median edge length of the triangles `cad:face` puts on face F.
+double median_edge_on(const mio::Mesh& rM, std::int64_t F) {
+    const mio::NDArray& face = rM.CellData(mio::kMeshCadFaceName, 0);
+    const auto tris = triangles(rM);
+    std::vector<double> e;
+    for (std::size_t t = 0; t < tris.size(); ++t)
+        if (mio::detail::read_int(face, t) == F)
+            for (int k = 0; k < 3; ++k)
+                e.push_back(dist(point(rM, tris[t][k]), point(rM, tris[t][(k + 1) % 3])));
+    std::nth_element(e.begin(), e.begin() + e.size() / 2, e.end());
+    return e[e.size() / 2];
+}
+
+// The faces (indices) each edge of a B-rep bounds, by its topology.
+std::vector<std::vector<std::int64_t>> faces_of_edges(const mio::BrepInfo& rB) {
+    std::vector<std::vector<std::int64_t>> out(rB.mEdges.size());
+    for (std::size_t e = 0; e < rB.mEdges.size(); ++e)
+        for (const mio::BrepRef& r_r : rB.mEdges[e].mTopology)
+            for (std::size_t f = 0; f < rB.mFaces.size(); ++f)
+                if (rB.mFaces[f].mId == r_r.mId)
+                    out[e].push_back(static_cast<std::int64_t>(f));
+    return out;
+}
+
+}  // namespace
+
+// Roadmap 6.3.1 / 6.3.5 / 6.3.8: a face given its own size meshes at it, its
+// neighbours grade away within the grading, and the report names exactly the
+// edge a finer neighbour limits a face by.
+TEST(MeshCadGivenSizes, AFaceMeshesAtItsGivenSize) {
+    const mio::BrepInfo box = brep_solids::box();
+    mio::MeshCadSizeSources src;
+    src.mFaceSizes = {{1, 0.1}};
+    const auto r = mio::mesh_cad_surface(box, sized(0.4), src);
+    ASSERT_EQ(r.mNumFailed, 0);
+    EXPECT_EQ(r.mNumOpenEdges, 0);
+    EXPECT_NEAR(median_edge_on(r.mMesh, 1), 0.1, 0.015);
+    // The field grows at most grading - 1 = 0.5 per unit length (the faces
+    // across the box are 1 away), and never past target_size.
+    for (std::int64_t f = 0; f < 6; ++f)
+        if (f != 1)
+            EXPECT_GT(median_edge_on(r.mMesh, f), 0.1) << f;
+
+    const auto edges = faces_of_edges(box);
+    std::int64_t shared = -1, neighbour = -1;
+    for (std::size_t e = 0; e < edges.size() && shared < 0; ++e)
+        if (edges[e].size() == 2 && (edges[e][0] == 1 || edges[e][1] == 1)) {
+            shared = static_cast<std::int64_t>(e);
+            neighbour = edges[e][0] == 1 ? edges[e][1] : edges[e][0];
+        }
+    ASSERT_GE(shared, 0);
+    src.mFaceSizes = {{1, 0.1}, {neighbour, 0.4}};
+    mio::MeshCadSizeReport report;
+    const auto q = mio::mesh_cad_surface(box, sized(0.4), src, &report);
+    ASSERT_EQ(q.mNumFailed, 0);
+    for (std::size_t f = 0; f < report.mLimitedByEdges.size(); ++f)
+        EXPECT_EQ(report.mLimitedByEdges[f], static_cast<std::int64_t>(f) == neighbour
+                                                 ? std::vector<std::int64_t>{shared}
+                                                 : std::vector<std::int64_t>{})
+            << f;
+}
+
+TEST(MeshCadGivenSizes, AnEdgeAndABackgroundSizeTheMesh) {
+    const mio::BrepInfo box = brep_solids::box();
+    mio::MeshCadSizeSources src;
+    src.mEdgeSizes = {{4, 0.05}};
+    const auto r = mio::mesh_cad_surface(box, sized(0.4), src);
+    ASSERT_EQ(r.mNumFailed, 0);
+    const mio::NDArray& edge = r.mMesh.CellData(mio::kMeshCadEdgeName, 1);
+    const mio::NDArray& conn = r.mMesh.Cells(1).Conn();
+    double longest = 0.0;
+    for (std::size_t c = 0; c < r.mMesh.Cells(1).NumCells(); ++c)
+        if (mio::detail::read_int(edge, c) == 4)
+            longest =
+                std::max(longest, dist(point(r.mMesh, mio::detail::read_int(conn, 2 * c)),
+                                       point(r.mMesh, mio::detail::read_int(conn, 2 * c + 1))));
+    EXPECT_LE(longest, 0.05 * 1.000001);
+
+    // A background plane under the box whose size grows along x.
+    mio::Mesh bg;
+    {
+        const int n = 21;
+        mio::NDArray pts(mio::DType::Float64, {std::size_t(n * n), 3});
+        mio::NDArray size(mio::DType::Float64, {std::size_t(n * n)});
+        for (int j = 0; j < n; ++j)
+            for (int i = 0; i < n; ++i) {
+                const double x = double(i) / (n - 1), y = double(j) / (n - 1);
+                double* p = pts.As<double>() + 3 * (j * n + i);
+                p[0] = x;
+                p[1] = y;
+                p[2] = 0.0;
+                size.As<double>()[j * n + i] = 0.05 + 0.3 * x;
+            }
+        mio::NDArray tri(mio::DType::Int64, {std::size_t(2 * (n - 1) * (n - 1)), 3});
+        std::int64_t* t = tri.As<std::int64_t>();
+        for (int j = 0; j + 1 < n; ++j)
+            for (int i = 0; i + 1 < n; ++i) {
+                const std::int64_t a = j * n + i, b = a + 1, c = a + n, d = c + 1;
+                const std::int64_t row[6] = {a, b, d, a, d, c};
+                std::copy(row, row + 6, t);
+                t += 6;
+            }
+        bg.AssignPoints(std::move(pts));
+        bg.AddCellBlock("triangle", std::move(tri));
+        bg.AddPointData("size", std::move(size));
+    }
+    mio::MeshCadSizeSources src_bg;
+    src_bg.pBackground = &bg;
+    src_bg.mBackgroundArray = "size";
+    const auto b = mio::mesh_cad_surface(box, sized(0.4), src_bg);
+    ASSERT_EQ(b.mNumFailed, 0);
+    EXPECT_EQ(b.mNumOpenEdges, 0);
+    // On the face at z = 0, the median edge per quarter of x follows the
+    // background's size at the quarter's middle within 25%.
+    const auto tris = triangles(b.mMesh);
+    for (int q = 0; q < 4; ++q) {
+        std::vector<double> e;
+        for (const auto& r_t : tris) {
+            const Vec3 p0 = point(b.mMesh, r_t[0]), p1 = point(b.mMesh, r_t[1]),
+                       p2 = point(b.mMesh, r_t[2]);
+            const double cx = (p0[0] + p1[0] + p2[0]) / 3.0;
+            if (std::abs(p0[2]) + std::abs(p1[2]) + std::abs(p2[2]) > 1e-9 || cx < 0.25 * q ||
+                cx >= 0.25 * (q + 1))
+                continue;
+            e.push_back(dist(p0, p1));
+            e.push_back(dist(p1, p2));
+            e.push_back(dist(p2, p0));
+        }
+        std::nth_element(e.begin(), e.begin() + e.size() / 2, e.end());
+        const double target = 0.05 + 0.3 * (0.25 * q + 0.125);
+        EXPECT_NEAR(e[e.size() / 2], target, 0.25 * target) << q;
+    }
+    EXPECT_EQ(digest(b.mMesh), digest(mio::mesh_cad_surface(box, sized(0.4), src_bg).mMesh));
+}
+
+TEST(MeshCadGivenSizes, EmptySourcesAreTheTwoArgumentOverloadAndBadOnesAreRefused) {
+    const mio::BrepInfo box = brep_solids::box();
+    EXPECT_EQ(digest(mio::mesh_cad_surface(box, sized(0.3), mio::MeshCadSizeSources{}).mMesh),
+              digest(mio::mesh_cad_surface(box, sized(0.3)).mMesh));
+    const auto refused = [&](mio::MeshCadSizeSources rS) {
+        EXPECT_THROW(mio::mesh_cad_surface(box, sized(0.3), rS), std::invalid_argument);
+    };
+    mio::MeshCadSizeSources s;
+    s.mFaceSizes = {{6, 0.1}};
+    refused(s);
+    s.mFaceSizes = {{0, 0.0}};
+    refused(s);
+    s.mFaceSizes = {{0, std::nan("")}};
+    refused(s);
+    s = {};
+    s.mEdgeSizes = {{-1, 0.1}};
+    refused(s);
+    s = {};
+    mio::Mesh no_array = mio::mesh_cad_surface(box, sized(0.5)).mMesh;
+    s.pBackground = &no_array;
+    s.mBackgroundArray = "size";
+    refused(s);
+}

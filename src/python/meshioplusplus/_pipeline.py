@@ -579,6 +579,12 @@ _OP_TABLE = {
         "CellsAcrossGaps",
         "Grading",
         "PoleRings",
+        "FaceSizes",
+        "EdgeSizes",
+        "Background",
+        "BackgroundArray",
+        "Metric",
+        "VirtualEdges",
     ),
     "IgaSample": ("Subdivisions", "TrimSamples", "Trim", "Edges"),
     "IgaRefine": (
@@ -2294,6 +2300,22 @@ def _iga_triple(step, key, default):
     return [int(x) for x in v] + [default] * (3 - len(v))
 
 
+def _index_size_pairs(step, key):
+    """A flat ``[index, size, index, size, ...]`` list as pairs (the C++
+    engine's settings values are flat lists, so both read the same)."""
+    flat = step.get(key)
+    if flat is None:
+        return None
+    if not isinstance(flat, (list, tuple)) or len(flat) % 2:
+        raise _err(step["Op"], f"'{key}' must list index, size pairs")
+    pairs = []
+    for index, size in zip(flat[0::2], flat[1::2]):
+        if isinstance(index, bool) or float(index) != int(index):
+            raise _err(step["Op"], f"'{key}': an index must be an integer")
+        pairs.append((int(index), float(size)))
+    return pairs
+
+
 def _apply_model_step(step, model, steps, warnings):
     """A model step on the run's model; returns the mesh it makes."""
     from ._iga import iga_refine, iga_sample
@@ -2313,6 +2335,12 @@ def _apply_model_step(step, model, steps, warnings):
         method = _text(step, "SmoothMethod", "laplacian")
         if method not in ("laplacian", "odt"):
             raise _err(op, "'SmoothMethod' must be 'laplacian' or 'odt'")
+        metric = _text(step, "Metric", "mean")
+        if metric not in ("mean", "varying"):
+            raise _err(op, "'Metric' must be 'mean' or 'varying'")
+        background = None
+        if "Background" in step:
+            background = read(_text(step, "Background", ""))
         mesh, report = mesh_cad_surface(
             model.data,
             _number(step, "TargetSize", 0.0),
@@ -2332,6 +2360,12 @@ def _apply_model_step(step, model, steps, warnings):
             cells_across_gaps=_number(step, "CellsAcrossGaps", 0.0),
             grading=_number(step, "Grading", 0.0),
             pole_rings=int(_number(step, "PoleRings", 0)),
+            face_sizes=_index_size_pairs(step, "FaceSizes"),
+            edge_sizes=_index_size_pairs(step, "EdgeSizes"),
+            background=background,
+            background_array=_text(step, "BackgroundArray", "size"),
+            metric=metric,
+            virtual_edges=_flag(step, "VirtualEdges", False),
             return_report=True,
         )
         warnings.extend("MeshCadSurface: " + w for w in report["warnings"])

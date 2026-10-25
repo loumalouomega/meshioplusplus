@@ -2295,6 +2295,15 @@ def test_mesh_cad_surface_tool(tmp_path):
     assert ringed["min_angle_deg"] >= 25.0 - 1e-9
     with pytest.raises(ValueError, match="pole_rings"):
         _tools.tool_mesh_cad_surface(str(sphere), str(out), 0.2, pole_rings=9)
+    # Given sizes (v17.19.0): a face's, by index as JSON gives it.
+    given = _tools.tool_mesh_cad_surface(
+        str(src), str(out), 0.4, face_sizes={"1": 0.1, "2": 0.4}
+    )
+    assert given["num_failed"] == 0
+    assert any(f["limited_by_edges"] for f in given["faces"])
+    assert given["virtual_edges"] == []
+    with pytest.raises(ValueError, match="face_sizes"):
+        _tools.tool_mesh_cad_surface(str(src), str(out), 0.4, face_sizes={"9": 0.1})
 
 
 def test_octree_tool(tmp_path):

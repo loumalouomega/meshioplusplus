@@ -404,6 +404,24 @@ export interface MeshCadSurfaceOptions {
   cellsAcrossGaps?: number;
   /** Rings of points seeded around each pole (0 to 8; default 0 keeps the fan). */
   poleRings?: number;
+  /**
+   * Sizes given per face, `{faceIndex: size}` (0-based indices into the
+   * B-rep's faces): every point of the face is at most that size (v17.19.0).
+   */
+  faceSizes?: Record<number, number>;
+  /** The same per edge (0-based indices into the B-rep's edges). */
+  edgeSizes?: Record<number, number>;
+  /**
+   * A mesh whose one-component point data `backgroundArray` is the size at
+   * its points, read at its nearest surface point.
+   */
+  background?: Mesh;
+  /** The name of that point data array (default 'size'). */
+  backgroundArray?: string;
+  /** 'mean' (default) meshes each face in its mean metric; 'varying' follows its metric. */
+  metric?: 'mean' | 'varying';
+  /** Sample chains of short edges meeting smoothly as one (default false). */
+  virtualEdges?: boolean;
 }
 
 /** A corner that keeps triangles under `minAngle`: under 60 degrees, or a pole. */
@@ -453,6 +471,8 @@ export interface MeshCadFaceRecord {
   /** The smallest angle of its triangles no corner forces. */
   boundDeg: number;
   corners: MeshCadCorner[];
+  /** The edges finer than its given size allows (v17.19.0). */
+  limitedByEdges: number[];
 }
 
 /** What `meshCadSurface` returns. */
@@ -483,6 +503,8 @@ export interface MeshCadSurfaceResult {
   numCurvedStraightened: number;
   /** Every angle of every triangle on the surface, in 18 bins of 10 degrees. */
   angleHistogram: number[];
+  /** Each virtual edge's chain of edge indices (v17.19.0). */
+  virtualEdges: number[][];
 }
 
 /** Sampling options of `igaRefine` / `igaSample`. */

@@ -187,8 +187,18 @@ void fuzz_mesh_cad_surface(const std::uint8_t* pData, std::size_t Size) {
     if (((hash >> 36) & 3) == 0)
         o.mPoleRings = 2;
     o.mMaxPoints = 200000;
+    // Given sizes (v17.19.0) for one input in four: the first face and the
+    // first edge at a quarter of the target size.
+    meshioplusplus::MeshCadSizeSources sources;
+    if (((hash >> 38) & 3) == 0) {
+        if (!info.mFaces.empty())
+            sources.mFaceSizes = {{0, 0.25 * o.mTargetSize}};
+        if (!info.mEdges.empty())
+            sources.mEdgeSizes = {{0, 0.25 * o.mTargetSize}};
+    }
     try {
-        const meshioplusplus::MeshCadSurfaceResult r = meshioplusplus::mesh_cad_surface(info, o);
+        const meshioplusplus::MeshCadSurfaceResult r =
+            meshioplusplus::mesh_cad_surface(info, o, sources);
         for (const meshioplusplus::MeshCadFaceRecord& r_f : r.mFaces)
             if (r_f.mStatus == meshioplusplus::MeshCadFaceStatus::Other &&
                 r_f.mReason.find("internal error") != std::string::npos)

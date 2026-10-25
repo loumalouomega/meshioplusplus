@@ -341,6 +341,13 @@ end
         @test s.num_failed == 0
         close(s.mesh)
         @test_throws MeshioError mesh_cad_surface(info; target_size=0.1, grading=0.5)
+        # v17.19.0: a size given to face 1 (1-based) refines it.
+        g = mesh_cad_surface(info; target_size=0.1, face_sizes=Dict(1 => 0.025))
+        @test g.num_failed == 0 && g.num_triangles > 400
+        @test g.faces[1].limited_by_edges isa Vector{Int}
+        @test g.virtual_edges == Vector{Int}[]
+        close(g.mesh)
+        @test_throws MeshioError mesh_cad_surface(info; target_size=0.1, face_sizes=[7 => 0.025])
         close(r.mesh); close(mesh); close(info)
     end
 end

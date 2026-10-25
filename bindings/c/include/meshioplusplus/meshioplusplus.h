@@ -5723,6 +5723,71 @@ MIO_API int64_t mio_mesh_cad_surface_num_corners(void);
  */
 MIO_API mio_status mio_mesh_cad_surface_corner(int64_t index, mio_mesh_cad_corner* corner);
 
+/** The metric a face is meshed in (v17.19.0), MeshCadMetric's values. */
+typedef enum mio_mesh_cad_metric {
+    MIO_MESH_CAD_METRIC_MEAN = 0,   /**< the face's mean first fundamental form (the default) */
+    MIO_MESH_CAD_METRIC_VARYING = 1 /**< the surface's metric as it varies over the face */
+} mio_mesh_cad_metric;
+
+/**
+ * Options of mio_mesh_cad_surface2 beyond mio_mesh_cad_surface_opts (v17.19.0),
+ * whose reserved tail is spent. Same ABI rules as above; always initialize
+ * through mio_mesh_cad_surface_opts_ex_init(). Every pointer is borrowed for
+ * the call only.
+ *
+ * Given sizes (roadmap 6.3.1) join the size field the curvature and gap sizes
+ * make, the smallest at a point winning, graded by `grading`; they only
+ * refine (nothing is coarser than target_size). A face size covers every
+ * point of the face (0-based indices into the B-rep's faces), an edge size
+ * every point of the edge (into its edges); the background's one-component
+ * point_data `background_array` is the size at its points, read at its
+ * nearest surface point (a volume mesh is skinned first).
+ */
+typedef struct mio_mesh_cad_surface_opts_ex {
+    int32_t metric;                 /**< a mio_mesh_cad_metric */
+    int32_t virtual_edges;          /**< nonzero: sample chains of short edges as one (6.5.2) */
+    const int64_t* face_size_faces; /**< num_face_sizes face indices */
+    const double* face_sizes;       /**< their sizes */
+    int64_t num_face_sizes;
+    const int64_t* edge_size_edges; /**< num_edge_sizes edge indices */
+    const double* edge_sizes;       /**< their sizes */
+    int64_t num_edge_sizes;
+    const mio_mesh* background;   /**< NULL: none */
+    const char* background_array; /**< NULL or "": "size" */
+    int64_t reserved[8];          /**< zero */
+} mio_mesh_cad_surface_opts_ex;
+
+/** Initialize the extended options: the mean metric, no virtual edges, no
+ *  given sizes and no background. */
+MIO_API void mio_mesh_cad_surface_opts_ex_init(mio_mesh_cad_surface_opts_ex* opts);
+
+/**
+ * mio_mesh_cad_surface with the extended options (v17.19.0); a NULL `opts_ex`
+ * is every mio_mesh_cad_surface_opts_ex_init() default, which is
+ * mio_mesh_cad_surface(info, opts, report).
+ */
+MIO_API mio_mesh* mio_mesh_cad_surface2(const mio_format_info* info,
+                                        const mio_mesh_cad_surface_opts* opts,
+                                        const mio_mesh_cad_surface_opts_ex* opts_ex,
+                                        mio_mesh_cad_surface_report* report);
+
+/**
+ * v17.19.0: the edges (0-based B-rep edge indices) whose sampling this
+ * thread's last call found finer than face `face`'s given size allows (6.3.8):
+ * copies up to `n` into `edges` and returns how many there are, or -1 for a
+ * face out of range.
+ */
+MIO_API int64_t mio_mesh_cad_surface_face_size_limits(int64_t face, int64_t* edges, int64_t n);
+
+/** v17.19.0: how many virtual edges (6.5.2) this thread's last call made. */
+MIO_API int64_t mio_mesh_cad_surface_num_virtual_edges(void);
+
+/**
+ * v17.19.0: virtual edge `index`'s chain of B-rep edge indices: copies up to
+ * `n` into `edges` and returns its length, or -1 for an index out of range.
+ */
+MIO_API int64_t mio_mesh_cad_surface_virtual_edge(int64_t index, int64_t* edges, int64_t n);
+
 /**
  * Options for mio_hausdorff_distance. Same ABI rules as above; an all-zero
  * struct IS the default here, but initialize through mio_hausdorff_opts_init().

@@ -1915,6 +1915,39 @@ TEST(CApi, MeshCadSurfaceMeshesABrepAndReportsItsFaces) {
     opts.pole_rings = 0;
     opts.curvature_deviation = 0.0;
     opts.cells_across_gaps = 0.0;
+    // v17.19.0: given sizes through mio_mesh_cad_surface2's extended options.
+    {
+        mio_mesh_cad_surface_opts_ex ex;
+        mio_mesh_cad_surface_opts_ex_init(&ex);
+        EXPECT_EQ(ex.metric, MIO_MESH_CAD_METRIC_MEAN);
+        EXPECT_EQ(ex.num_face_sizes, 0);
+        EXPECT_EQ(ex.background, nullptr);
+        mio_mesh_cad_surface_report plain{}, finer{};
+        mio_mesh* a = mio_mesh_cad_surface2(info, &opts, nullptr, &plain);
+        ASSERT_NE(a, nullptr) << mio_last_error();
+        const int64_t face = 0;
+        const double size = 0.25 * opts.target_size;
+        ex.face_size_faces = &face;
+        ex.face_sizes = &size;
+        ex.num_face_sizes = 1;
+        mio_mesh* b = mio_mesh_cad_surface2(info, &opts, &ex, &finer);
+        ASSERT_NE(b, nullptr) << mio_last_error();
+        EXPECT_GT(finer.num_triangles, plain.num_triangles);
+        EXPECT_EQ(finer.num_failed, 0);
+        int64_t limits[4] = {-7, -7, -7, -7};
+        EXPECT_GE(mio_mesh_cad_surface_face_size_limits(0, limits, 4), 0);
+        EXPECT_EQ(mio_mesh_cad_surface_face_size_limits(99, limits, 4), -1);
+        EXPECT_EQ(mio_mesh_cad_surface_num_virtual_edges(), 0);
+        EXPECT_EQ(mio_mesh_cad_surface_virtual_edge(0, limits, 4), -1);
+        mio_mesh_free(a);
+        mio_mesh_free(b);
+        const int64_t bad_face = 99;
+        ex.face_size_faces = &bad_face;
+        EXPECT_EQ(mio_mesh_cad_surface2(info, &opts, &ex, nullptr), nullptr);
+        ex.face_size_faces = &face;
+        ex.metric = 7;
+        EXPECT_EQ(mio_mesh_cad_surface2(info, &opts, &ex, nullptr), nullptr);
+    }
     // v17.15.0: refined to 25 degrees and smoothed. The triangle's two
     // 45-degree corners are reported; every angle is counted.
     opts.min_angle_deg = 25.0;

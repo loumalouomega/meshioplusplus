@@ -461,9 +461,12 @@ const _MESH_CAD_SMOOTH_METHODS = ("laplacian", "odt")
                      min_points_per_edge=0, tolerance=0.0, record_face_ids=true,
                      edges=true, match_unreferenced_trims=true, strict=false,
                      max_points=50_000_000, min_angle=0.0, smooth_iterations=0,
-                     smooth_method="laplacian", order=1)
+                     smooth_method="laplacian", order=1, grading=0.0,
+                     curvature_deviation=0.0, cells_across_gaps=0.0, pole_rings=0,
+                     face_sizes=nothing, edge_sizes=nothing, background=nothing,
+                     background_array="size", metric="mean", virtual_edges=false)
         -> (; mesh, num_points, num_triangles, ..., faces, warnings,
-              angle_histogram, corners)
+              angle_histogram, corners, virtual_edges)
 
 Triangulate the faces of a B-rep (`info` from [`read_with_info`](@ref) of Kratos
 CAD JSON, STEP or IGES) into one conforming surface mesh with edges of about
@@ -482,7 +485,12 @@ whose Jacobian is not positive everywhere is kept straight-sided and counted in
 `num_curved_straightened`. `curvature_deviation` and `cells_across_gaps` size
 the mesh by the surface's curvature and its local feature size, `grading`
 limiting the size's growth (0 is 1.5); `pole_rings` grades the poles
-(v17.18.0). See `doc/mesh_cad.md`.
+(v17.18.0). Sizes given per face or edge (`face_sizes`, `edge_sizes`: a
+`Dict` or pairs of a 1-based index and a size) or by a `background` mesh's
+one-component point data `background_array` join the same field; each face
+record lists the 1-based edges that `limited_by_edges` its given size;
+`metric` (`"mean"` or `"varying"`) and `virtual_edges` as in the doc
+(v17.19.0). See `doc/mesh_cad.md`.
 """
 function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_deviation::Real=0.0,
                           min_points_per_edge::Integer=0, tolerance::Real=0.0,
@@ -492,7 +500,11 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
                           smooth_iterations::Integer=0,
                           smooth_method::AbstractString="laplacian", order::Integer=1,
                           grading::Real=0.0, curvature_deviation::Real=0.0,
-                          cells_across_gaps::Real=0.0, pole_rings::Integer=0)
+                          cells_across_gaps::Real=0.0, pole_rings::Integer=0,
+                          face_sizes=nothing, edge_sizes=nothing,
+                          background::Union{Nothing,Mesh}=nothing,
+                          background_array::AbstractString="size",
+                          metric::AbstractString="mean", virtual_edges::Bool=false)
     method = findfirst(==(smooth_method), _MESH_CAD_SMOOTH_METHODS)
     method === nothing &&
         throw(ArgumentError("meshio++: mesh_cad_surface: smooth_method must be " *
@@ -504,20 +516,55 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
                                 Cdouble(min_angle), Int32(smooth_iterations), Int32(method - 1),
                                 Int32(order), Int32(pole_rings), Cdouble(grading),
                                 Cdouble(curvature_deviation), Cdouble(cells_across_gaps))
+    metric in ("mean", "varying") ||
+        throw(ArgumentError("meshio++: mesh_cad_surface: metric must be \"mean\" or " *
+                            "\"varying\", got \"$metric\""))
+    # Given sizes as (0-based index, size) arrays, kept alive across the call.
+    pairs(x) = x === nothing ? Pair{Int,Float64}[] :
+               [Int(first(p)) - 1 => Float64(last(p)) for p in (x isa AbstractDict ? collect(x) : x)]
+    fpairs, epairs = pairs(face_sizes), pairs(edge_sizes)
+    fidx, fsz = Int64[first(p) for p in fpairs], Cdouble[last(p) for p in fpairs]
+    eidx, esz = Int64[first(p) for p in epairs], Cdouble[last(p) for p in epairs]
+    bname = Vector{UInt8}(codeunits(String(background_array)))
+    push!(bname, 0x00)
     report = Ref{_CMeshCadSurfaceReport}()
-    ptr = ccall(_sym(:mio_mesh_cad_surface), Ptr{Cvoid},
-                (Ptr{Cvoid}, Ref{_CMeshCadSurfaceOpts}, Ref{_CMeshCadSurfaceReport}),
-                _handle(info), Ref(opts), report)
+    ptr = GC.@preserve fidx fsz eidx esz bname background begin
+        ex = _CMeshCadSurfaceOptsEx(Int32(metric == "varying"), Int32(virtual_edges),
+                                    isempty(fidx) ? C_NULL : pointer(fidx),
+                                    isempty(fsz) ? C_NULL : pointer(fsz), Int64(length(fidx)),
+                                    isempty(eidx) ? C_NULL : pointer(eidx),
+                                    isempty(esz) ? C_NULL : pointer(esz), Int64(length(eidx)),
+                                    background === nothing ? C_NULL : _handle(background),
+                                    pointer(bname), ntuple(_ -> Int64(0), 8))
+        ccall(_sym(:mio_mesh_cad_surface2), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CMeshCadSurfaceOpts}, Ref{_CMeshCadSurfaceOptsEx},
+               Ref{_CMeshCadSurfaceReport}),
+              _handle(info), Ref(opts), Ref(ex), report)
+    end
     mesh = Mesh(_check_ptr(ptr))
     r = report[]
     faces = map(0:r.num_faces-1) do f
         st = ccall(_sym(:mio_mesh_cad_surface_face_status), Int32, (Int64,), f)
         reason = _getstring((buf, n) -> ccall(_sym(:mio_mesh_cad_surface_face_reason), Int64,
                                               (Int64, Ptr{UInt8}, Int64), f, buf, n))
+        nlim = ccall(_sym(:mio_mesh_cad_surface_face_size_limits), Int64,
+                     (Int64, Ptr{Int64}, Int64), f, C_NULL, 0)
+        lim = zeros(Int64, max(nlim, 0))
+        nlim > 0 && ccall(_sym(:mio_mesh_cad_surface_face_size_limits), Int64,
+                          (Int64, Ptr{Int64}, Int64), f, lim, nlim)
         (face=Int(f) + 1,
          status=0 <= st < length(_MESH_CAD_FACE_STATUS_NAMES) ?
                 _MESH_CAD_FACE_STATUS_NAMES[st + 1] : string(st),
-         reason=reason)
+         reason=reason, limited_by_edges=Int.(lim) .+ 1)
+    end
+    nvirtual = ccall(_sym(:mio_mesh_cad_surface_num_virtual_edges), Int64, ())
+    virtual = map(0:nvirtual-1) do k
+        n = ccall(_sym(:mio_mesh_cad_surface_virtual_edge), Int64, (Int64, Ptr{Int64}, Int64),
+                  k, C_NULL, 0)
+        chain = zeros(Int64, max(n, 0))
+        ccall(_sym(:mio_mesh_cad_surface_virtual_edge), Int64, (Int64, Ptr{Int64}, Int64),
+              k, chain, n)
+        Int.(chain) .+ 1
     end
     text = _getstring((buf, n) -> ccall(_sym(:mio_mesh_cad_surface_warnings), Int64,
                                         (Ptr{UInt8}, Int64), buf, n))
@@ -547,7 +594,8 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
      num_refinement_points=Int(r.num_refinement_points),
      num_faces_below_bound=Int(r.num_faces_below_bound), num_smoothed=Int(r.num_smoothed),
      min_input_angle_deg=Float64(r.min_input_angle_deg), angle_histogram=histogram,
-     corners=corners, num_curved_straightened=Int(r.num_curved_straightened))
+     corners=corners, num_curved_straightened=Int(r.num_curved_straightened),
+     virtual_edges=virtual)
 end
 
 const MIO_IGA_POINTS = Int32(0)

@@ -1828,6 +1828,12 @@ def tool_mesh_cad_surface(
     cells_across_gaps=0.0,
     grading=0.0,
     pole_rings=0,
+    face_sizes=None,
+    edge_sizes=None,
+    background_path=None,
+    background_array="size",
+    metric="mean",
+    virtual_edges=False,
 ):
     """Triangulate a CAD model's faces (CAD JSON, STEP, IGES) into one
     conforming surface mesh at a target edge size, optionally sized by
@@ -1853,9 +1859,22 @@ def tool_mesh_cad_surface(
         cells_across_gaps=cells_across_gaps,
         grading=grading,
         pole_rings=pole_rings,
+        face_sizes=_index_sizes(face_sizes),
+        edge_sizes=_index_sizes(edge_sizes),
+        background=None if background_path is None else _load(background_path, None),
+        background_array=background_array,
+        metric=metric,
+        virtual_edges=virtual_edges,
         return_report=True,
     )
     return _result(_store(out, output_path, output_format), out, **report)
+
+
+def _index_sizes(sizes):
+    """Sizes keyed by index as JSON gives them (``{"3": 0.1}``) as pairs."""
+    if sizes is None:
+        return None
+    return [(int(k), float(v)) for k, v in dict(sizes).items()]
 
 
 def tool_octree(

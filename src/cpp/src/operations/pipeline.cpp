@@ -506,10 +506,29 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         // The model steps (roadmap 6.1.1): they act on the CAD model the
         // Input read carries beside its mesh (see PipeModel below).
         {"MeshCadSurface",
-         {"TargetSize", "MaxChordalDeviation", "MinPointsPerEdge", "Tolerance", "RecordFaceIds",
-          "Edges", "MatchUnreferencedTrims", "Strict", "MaxPoints", "MinAngle", "SmoothIterations",
-          "SmoothMethod", "Order", "CurvatureDeviation", "CellsAcrossGaps", "Grading",
-          "PoleRings"}},
+         {"TargetSize",
+          "MaxChordalDeviation",
+          "MinPointsPerEdge",
+          "Tolerance",
+          "RecordFaceIds",
+          "Edges",
+          "MatchUnreferencedTrims",
+          "Strict",
+          "MaxPoints",
+          "MinAngle",
+          "SmoothIterations",
+          "SmoothMethod",
+          "Order",
+          "CurvatureDeviation",
+          "CellsAcrossGaps",
+          "Grading",
+          "PoleRings",
+          "FaceSizes",
+          "EdgeSizes",
+          "Background",
+          "BackgroundArray",
+          "Metric",
+          "VirtualEdges"}},
         {"IgaSample", {"Subdivisions", "TrimSamples", "Trim", "Edges"}},
         {"IgaRefine",
          {"Subdivisions", "Elevate", "SampleSubdivisions", "TrimSamples", "Trim", "Edges"}},
@@ -872,6 +891,8 @@ bool pipe_is_model_step(const std::string& rOp) {
 /// Read the Input as `registry_read` would, keeping the model a CAD read
 /// returns beside the mesh (the same readers the CLI's iga and mesh-cad verbs
 /// and `mio_read_with_info` use).
+Mesh pipe_read_extra(const std::string& rPath);
+
 Mesh pipe_read_with_model(const std::string& rPath, const std::string& rFormat,
                           const ReadOptions& rOptions, PipeModel& rModel) {
     if (rFormat == "mfem") {
@@ -961,7 +982,39 @@ Mesh pipe_apply_model_step(const PipelineStep& rStep, PipelineReport& rReport, P
         o.mGrading = pipe_number(rStep, "Grading", o.mGrading);
         o.mPoleRings = static_cast<std::int32_t>(
             pipe_number(rStep, "PoleRings", static_cast<double>(o.mPoleRings)));
-        MeshCadSurfaceResult r = mesh_cad_surface(*rModel.mBrep, o);
+        const std::string metric = pipe_text(rStep, "Metric", "mean");
+        if (metric == "mean")
+            o.mMetric = MeshCadMetric::Mean;
+        else if (metric == "varying")
+            o.mMetric = MeshCadMetric::Varying;
+        else
+            throw std::invalid_argument(pipe_err(rStep, "'Metric' must be 'mean' or 'varying'"));
+        // Given sizes (v17.19.0): a flat list of index, size pairs.
+        MeshCadSizeSources sources;
+        const auto pairs = [&](const char* pKey) {
+            const std::vector<double> flat = pipe_dvec(rStep, pKey);
+            if (flat.size() % 2 != 0)
+                throw std::invalid_argument(
+                    pipe_err(rStep, std::string("'") + pKey + "' must list index, size pairs"));
+            std::vector<std::pair<std::int64_t, double>> v;
+            for (std::size_t i = 0; i < flat.size(); i += 2) {
+                if (flat[i] != std::floor(flat[i]))
+                    throw std::invalid_argument(pipe_err(
+                        rStep, std::string("'") + pKey + "': an index must be an integer"));
+                v.emplace_back(static_cast<std::int64_t>(flat[i]), flat[i + 1]);
+            }
+            return v;
+        };
+        sources.mFaceSizes = pairs("FaceSizes");
+        sources.mEdgeSizes = pairs("EdgeSizes");
+        sources.mVirtualEdges = pipe_flag(rStep, "VirtualEdges", false);
+        Mesh background;
+        if (pipe_find(rStep, "Background")) {
+            background = pipe_read_extra(pipe_text(rStep, "Background", ""));
+            sources.pBackground = &background;
+            sources.mBackgroundArray = pipe_text(rStep, "BackgroundArray", "size");
+        }
+        MeshCadSurfaceResult r = mesh_cad_surface(*rModel.mBrep, o, sources);
         for (const std::string& w : r.mWarnings)
             rReport.mWarnings.push_back("MeshCadSurface: " + w);
         pipe_push_step(rReport, rStep,

@@ -3010,8 +3010,37 @@ PYBIND11_MODULE(_core, m) {
            std::int64_t min_points_per_edge, double tolerance, bool record_face_ids, bool edges,
            bool match_unreferenced_trims, bool strict, std::int64_t max_points, double min_angle,
            std::int64_t smooth_iterations, const std::string& smooth_method, int order,
-           double grading, double curvature_deviation, double cells_across_gaps, int pole_rings) {
+           double grading, double curvature_deviation, double cells_across_gaps, int pole_rings,
+           py::object face_sizes, py::object edge_sizes, py::object background,
+           const std::string& background_array, bool virtual_edges, const std::string& metric) {
             const meshioplusplus::BrepInfo info = core_brep_from_py(brep);
+            // Given sizes (6.3.1): sequences of (index, size) pairs, already
+            // validated and sorted by the Python wrapper.
+            meshioplusplus::MeshCadSizeSources sources;
+            const auto pairs = [](py::object rSeq, const char* pName) {
+                std::vector<std::pair<std::int64_t, double>> v;
+                if (rSeq.is_none())
+                    return v;
+                for (py::handle h : rSeq) {
+                    const py::sequence pair = py::reinterpret_borrow<py::sequence>(h);
+                    if (py::len(pair) != 2)
+                        throw std::invalid_argument(std::string("meshio++: mesh_cad_surface: ") +
+                                                    pName + " must hold (index, size) pairs");
+                    v.emplace_back(pair[0].cast<std::int64_t>(), pair[1].cast<double>());
+                }
+                return v;
+            };
+            sources.mFaceSizes = pairs(face_sizes, "face_sizes");
+            sources.mEdgeSizes = pairs(edge_sizes, "edge_sizes");
+            sources.mVirtualEdges = virtual_edges;
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh bg;
+            if (!background.is_none()) {
+                bg = meshioplusplus_py::py_to_mesh(background, refs, /*lenient_field_data=*/true,
+                                                   /*allow_ragged=*/false);
+                sources.pBackground = &bg;
+                sources.mBackgroundArray = background_array;
+            }
             meshioplusplus::MeshCadSurfaceOptions o;
             o.mTargetSize = target_size;
             o.mMaxChordalDeviation = max_chordal_deviation;
@@ -3036,8 +3065,16 @@ PYBIND11_MODULE(_core, m) {
             o.mCurvatureDeviation = curvature_deviation;
             o.mCellsAcrossGaps = cells_across_gaps;
             o.mPoleRings = pole_rings;
-            meshioplusplus::MeshCadSurfaceResult r =
-                core_nogil([&] { return meshioplusplus::mesh_cad_surface(info, o); });
+            if (metric == "mean")
+                o.mMetric = meshioplusplus::MeshCadMetric::Mean;
+            else if (metric == "varying")
+                o.mMetric = meshioplusplus::MeshCadMetric::Varying;
+            else
+                throw std::invalid_argument(
+                    "meshio++: mesh_cad_surface: metric must be 'mean' or 'varying'");
+            meshioplusplus::MeshCadSizeReport size_report;
+            meshioplusplus::MeshCadSurfaceResult r = core_nogil(
+                [&] { return meshioplusplus::mesh_cad_surface(info, o, sources, &size_report); });
             py::dict out;
             out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
             out["num_points"] = r.mNumPoints;
@@ -3090,6 +3127,10 @@ PYBIND11_MODULE(_core, m) {
                     corners.append(cd);
                 }
                 d["corners"] = corners;
+                const auto face = static_cast<std::size_t>(f.mFace);
+                d["limited_by_edges"] = face < size_report.mLimitedByEdges.size()
+                                            ? size_report.mLimitedByEdges[face]
+                                            : std::vector<std::int64_t>{};
                 faces.append(d);
             }
             out["faces"] = faces;
@@ -3100,6 +3141,7 @@ PYBIND11_MODULE(_core, m) {
             out["angle_histogram"] =
                 std::vector<std::int64_t>(r.mAngleHistogram.begin(), r.mAngleHistogram.end());
             out["num_curved_straightened"] = r.mNumCurvedStraightened;
+            out["virtual_edges"] = size_report.mVirtualEdges;
             return out;
         },
         py::arg("brep"), py::arg("target_size"), py::arg("max_chordal_deviation") = 0.0,
@@ -3109,7 +3151,10 @@ PYBIND11_MODULE(_core, m) {
         py::arg("max_points") = 50000000, py::arg("min_angle") = 0.0,
         py::arg("smooth_iterations") = 0, py::arg("smooth_method") = "laplacian",
         py::arg("order") = 1, py::arg("grading") = 0.0, py::arg("curvature_deviation") = 0.0,
-        py::arg("cells_across_gaps") = 0.0, py::arg("pole_rings") = 0);
+        py::arg("cells_across_gaps") = 0.0, py::arg("pole_rings") = 0,
+        py::arg("face_sizes") = py::none(), py::arg("edge_sizes") = py::none(),
+        py::arg("background") = py::none(), py::arg("background_array") = "size",
+        py::arg("virtual_edges") = false, py::arg("metric") = "mean");
     m.def(
         "triangulate_polygon_2d",
         [](py::list loops, double target_size, double min_angle, std::int64_t max_points) {

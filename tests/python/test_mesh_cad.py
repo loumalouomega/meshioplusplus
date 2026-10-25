@@ -522,6 +522,93 @@ def test_pole_rings_lift_the_sphere_to_the_bound():
     assert ringed["num_faces_below_bound"] == 0
 
 
+@needs_core
+def test_given_sizes_refine_and_report():
+    """Roadmap 6.3.1 / 6.3.8: a face given its size meshes at it, an edge given
+    its size is sampled at it, and the report names exactly the edge a finer
+    neighbour limits a face by. Sizes only refine."""
+    cube = _read("unit_cube.cad.json")
+    edges = cube.info["brep"]["edges"]
+    ids = {f["id"]: k for k, f in enumerate(cube.info["brep"]["faces"])}
+    faces_of = [sorted(ids[r["id"]] for r in e["topology"]) for e in edges]
+    shared = next(k for k, fs in enumerate(faces_of) if fs == [1, 2])
+    out, report = mio.mesh_cad_surface(
+        cube, 0.4, face_sizes={1: 0.1, 2: 0.4}, return_report=True
+    )
+    _watertight(report)
+    tri, p = out.cells[0].data, out.points
+    face = out.cell_data["cad:face"][0]
+    e = np.concatenate(
+        [
+            np.linalg.norm(p[tri[face == 1][:, a]] - p[tri[face == 1][:, b]], axis=1)
+            for a, b in ((0, 1), (1, 2), (2, 0))
+        ]
+    )
+    assert np.median(e) == pytest.approx(0.1, rel=0.15)
+    assert [f["limited_by_edges"] for f in report["faces"]] == [
+        [shared] if k == 2 else [] for k in range(6)
+    ]
+    assert any(f"limited by edge {shared}" in w for w in report["warnings"])
+    # The same as pairs; the edge size.
+    again = mio.mesh_cad_surface(cube, 0.4, face_sizes=[(2, 0.4), (1, 0.1)])
+    np.testing.assert_array_equal(again.points, out.points)
+    out, report = mio.mesh_cad_surface(
+        cube, 0.4, edge_sizes={shared: 0.05}, return_report=True
+    )
+    lines = [c for c in out.cells if c.type == "line"][0].data
+    on = lines[out.cell_data["cad:edge"][1] == shared]
+    gaps = out.points[on[:, 0]] - out.points[on[:, 1]]
+    assert np.linalg.norm(gaps, axis=1).max() <= 0.05 + 1e-12
+    # Empty sources are the plain mesh.
+    plain = mio.mesh_cad_surface(cube, 0.4)
+    same = mio.mesh_cad_surface(cube, 0.4, face_sizes={}, edge_sizes=[])
+    np.testing.assert_array_equal(plain.points, same.points)
+
+
+@needs_core
+def test_a_background_mesh_sizes_the_model():
+    cube = _read("unit_cube.cad.json")
+    bg = mio.rectangle(dims=(20, 20), size=(1.0, 1.0), cell_type="triangle")
+    bg.point_data["size"] = 0.05 + 0.3 * bg.points[:, 0]
+    out, report = mio.mesh_cad_surface(cube, 0.4, background=bg, return_report=True)
+    _watertight(report)
+    tri, p = out.cells[0].data, out.points
+    bottom = np.all(np.abs(p[tri][:, :, 2]) < 1e-9, axis=1)
+    c = p[tri].mean(axis=1)
+    for lo in (0.0, 0.25, 0.5, 0.75):
+        sel = tri[bottom & (c[:, 0] >= lo) & (c[:, 0] < lo + 0.25)]
+        e = np.concatenate(
+            [
+                np.linalg.norm(p[sel[:, a]] - p[sel[:, b]], axis=1)
+                for a, b in ((0, 1), (1, 2), (2, 0))
+            ]
+        )
+        target = 0.05 + 0.3 * (lo + 0.125)
+        assert np.median(e) == pytest.approx(target, rel=0.25)
+
+
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [
+        ({"face_sizes": {6: 0.1}}, "face_sizes"),
+        ({"face_sizes": {0: 0.0}}, "face_sizes"),
+        ({"face_sizes": [(0.5, 0.1)]}, "face_sizes"),
+        ({"edge_sizes": {-1: 0.1}}, "edge_sizes"),
+        ({"edge_sizes": [0.1]}, "edge_sizes"),
+        ({"metric": "anisotropic"}, "metric"),
+    ],
+)
+def test_given_size_refusals(kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        mio.mesh_cad_surface(_read("unit_cube.cad.json"), 0.4, **kwargs)
+
+
+def test_a_background_without_its_array_is_refused():
+    bg = mio.rectangle(dims=(2, 2), size=(1.0, 1.0), cell_type="triangle")
+    with pytest.raises(ValueError, match="background"):
+        mio.mesh_cad_surface(_read("unit_cube.cad.json"), 0.4, background=bg)
+
+
 def _sphere_patch(radius=1.0):
     """One untrimmed rational patch: a full turn in u (four quarter arcs), a
     half meridian in v (two quarter arcs), so its loop is a seam twice and
@@ -639,6 +726,26 @@ def test_cli_verb(tmp_path, capsys):
     assert code == 0
     report = json.loads(capsys.readouterr().out)
     assert report["num_failed"] == 0 and report["min_angle_deg"] >= 25 - 1e-9
+    code = mio._cli.main(
+        [
+            "mesh-cad-surface",
+            str(CAD / "unit_cube.cad.json"),
+            str(out),
+            "--size",
+            "0.4",
+            "--face-sizes",
+            "1=0.1,2=0.4",
+            "--edge-sizes",
+            "0=0.05",
+            "--metric",
+            "mean",
+            "--json",
+        ]
+    )
+    assert code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["num_failed"] == 0 and report["virtual_edges"] == []
+    assert any(f["limited_by_edges"] for f in report["faces"])
 
 
 def _run_both(doc, tmp_path):
@@ -707,6 +814,41 @@ def test_pipeline_sizes_and_rings_like_the_operation(tmp_path):
     for _, mesh in results:
         np.testing.assert_array_equal(mesh.points, direct.points)
         np.testing.assert_array_equal(mesh.cells[0].data, direct.cells[0].data)
+    assert all(r == results[0][0] for r, _ in results)
+
+
+@needs_core
+def test_pipeline_takes_given_sizes_like_the_operation(tmp_path):
+    """FaceSizes / EdgeSizes (flat index, size lists), Background and Metric
+    reach mesh_cad_surface in both engines."""
+    bg = mio.rectangle(dims=(10, 10), size=(1.0, 1.0), cell_type="triangle")
+    bg.point_data["size"] = 0.1 + 0.2 * bg.points[:, 0]
+    bg_path = tmp_path / "bg.vtu"
+    mio.write(bg_path, bg)
+    doc = {
+        "Version": 2,
+        "Input": {"Path": str(CAD / "unit_cube.cad.json")},
+        "Operations": [
+            {
+                "Op": "MeshCadSurface",
+                "TargetSize": 0.4,
+                "FaceSizes": [1, 0.1],
+                "EdgeSizes": [0, 0.05],
+                "Background": str(bg_path),
+                "Metric": "mean",
+            }
+        ],
+    }
+    direct = mio.mesh_cad_surface(
+        _read("unit_cube.cad.json"),
+        0.4,
+        face_sizes={1: 0.1},
+        edge_sizes={0: 0.05},
+        background=mio.read(bg_path),
+    )
+    results = _run_both(doc, tmp_path)
+    for _, mesh in results:
+        np.testing.assert_array_equal(mesh.points, direct.points)
     assert all(r == results[0][0] for r, _ in results)
 
 

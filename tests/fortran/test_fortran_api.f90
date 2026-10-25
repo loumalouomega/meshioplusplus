@@ -356,6 +356,21 @@ program test_fortran_api
                 call check(report%num_failed == 0, 'mesh_cad_surface sized meshes the face')
                 call tris%free()
             end if
+            ! v17.19.0: a size given to face 1 (1-based) refines it.
+            tris = info%mesh_cad_surface(0.1_real64, report=report, &
+                                         face_size_faces=[1_int64], face_sizes=[0.025_real64], &
+                                         stat=ierr, errmsg=msg)
+            call check(ierr == 0, 'mesh_cad_surface given sizes')
+            if (ierr == 0) then
+                call check(report%num_failed == 0 .and. report%num_triangles > 400, &
+                           'mesh_cad_surface given sizes refine the face')
+                call check(size(mio_mesh_cad_face_size_limits(1)) >= 0, &
+                           'mesh_cad_surface size limits query')
+                call tris%free()
+            end if
+            tris = info%mesh_cad_surface(0.1_real64, face_size_faces=[7_int64], &
+                                         face_sizes=[0.025_real64], stat=ierr, errmsg=msg)
+            call check(ierr /= 0, 'mesh_cad_surface refuses a face out of range')
             ! v17.15.0: refined to 25 degrees and smoothed; the two 45-degree
             ! corners are reported.
             tris = info%mesh_cad_surface(0.1_real64, report=report, min_angle=25.0_real64, &

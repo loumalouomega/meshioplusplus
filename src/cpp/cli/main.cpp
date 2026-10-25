@@ -39,6 +39,7 @@
 #include <iterator>
 #include <map>
 #include <set>
+#include <sstream>
 #include <cstring>
 #include <utility>
 #include <exception>
@@ -460,7 +461,11 @@ void print_usage(std::ostream& os) {
           "                            [--min-angle DEG] [--smooth N]\n"
           "                            [--smooth-method laplacian|odt] [--order 1|2|3]\n"
           "                            [--curvature-deviation D] [--cells-across-gaps N]\n"
-          "                            [--grading G] [--pole-rings M] [--strict] [--json]\n"
+          "                            [--grading G] [--pole-rings M]\n"
+          "                            [--face-sizes K=H,...] [--edge-sizes K=H,...]\n"
+          "                            [--background PATH [--background-array NAME]]\n"
+          "                            [--metric mean|varying] [--virtual-edges]\n"
+          "                            [--strict] [--json]\n"
           "  isosurface              Level set of a scalar point_data field (contours)\n"
           "                            --array NAME --values v1,v2 [--component I]\n"
           "  sdf                     Signed distance field: a grid over a surface,\n"
@@ -2122,6 +2127,12 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
                                   {"cells-across-gaps", {}, true},
                                   {"grading", {}, true},
                                   {"pole-rings", {}, true},
+                                  {"face-sizes", {}, true},
+                                  {"edge-sizes", {}, true},
+                                  {"background", {}, true},
+                                  {"background-array", {}, true},
+                                  {"metric", {}, true},
+                                  {"virtual-edges", {}, false},
                                   {"json", {}, false},
                                   {"quiet", {"-q"}, false},
                               });
@@ -2170,8 +2181,45 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
         o.mGrading = meshioplusplus::detail::stod_c(opt_value(p, "grading"));
     if (has_opt(p, "pole-rings"))
         o.mPoleRings = static_cast<std::int32_t>(std::stoi(opt_value(p, "pole-rings")));
+    if (has_opt(p, "metric")) {
+        const std::string m = opt_value(p, "metric");
+        if (m == "mean")
+            o.mMetric = meshioplusplus::MeshCadMetric::Mean;
+        else if (m == "varying")
+            o.mMetric = meshioplusplus::MeshCadMetric::Varying;
+        else
+            throw std::runtime_error("mesh-cad-surface: --metric must be mean or varying");
+    }
+    // Given sizes (v17.19.0): "K=H,K=H" with 0-based indices.
+    meshioplusplus::MeshCadSizeSources sources;
+    const auto pairs = [&](const char* pName) {
+        std::vector<std::pair<std::int64_t, double>> v;
+        if (!has_opt(p, pName))
+            return v;
+        std::stringstream list(opt_value(p, pName));
+        std::string item;
+        while (std::getline(list, item, ',')) {
+            const auto eq = item.find('=');
+            if (eq == std::string::npos)
+                throw std::runtime_error(std::string("mesh-cad-surface: --") + pName +
+                                         " takes K=H pairs, comma-separated");
+            v.emplace_back(std::stoll(item.substr(0, eq)),
+                           meshioplusplus::detail::stod_c(item.substr(eq + 1)));
+        }
+        return v;
+    };
+    sources.mFaceSizes = pairs("face-sizes");
+    sources.mEdgeSizes = pairs("edge-sizes");
+    sources.mVirtualEdges = has_flag(p, "virtual-edges");
+    meshioplusplus::Mesh background;
+    if (has_opt(p, "background")) {
+        background = read_mesh_cli(opt_value(p, "background"), "");
+        sources.pBackground = &background;
+        sources.mBackgroundArray = opt_value(p, "background-array", "size");
+    }
+    meshioplusplus::MeshCadSizeReport size_report;
     const meshioplusplus::MeshCadSurfaceResult r =
-        meshioplusplus::mesh_cad_surface(*model.mBrep, o);
+        meshioplusplus::mesh_cad_surface(*model.mBrep, o, sources, &size_report);
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     if (has_flag(p, "json")) {
         meshioplusplus::cli::JsonOut json(std::cout);
@@ -2232,6 +2280,13 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
                 json.EndObject();
             }
             json.EndArray();
+            json.Key("limited_by_edges");
+            json.BeginArray();
+            const auto face = static_cast<std::size_t>(f.mFace);
+            if (face < size_report.mLimitedByEdges.size())
+                for (const std::int64_t e : size_report.mLimitedByEdges[face])
+                    json.Int(e);
+            json.EndArray();
             json.EndObject();
         }
         json.EndArray();
@@ -2249,6 +2304,15 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
             json.Int(b);
         json.EndArray();
         json.Field("num_curved_straightened", r.mNumCurvedStraightened);
+        json.Key("virtual_edges");
+        json.BeginArray();
+        for (const auto& r_chain : size_report.mVirtualEdges) {
+            json.BeginArray();
+            for (const std::int64_t e : r_chain)
+                json.Int(e);
+            json.EndArray();
+        }
+        json.EndArray();
         json.EndObject();
     } else if (!has_flag(p, "quiet")) {
         std::cout << "mesh_cad_surface\n"

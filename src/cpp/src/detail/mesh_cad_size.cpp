@@ -21,13 +21,17 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <vector>
 
 // Project includes
 #include "mesh_cad_size.hpp"
 #include "tri_bvh.hpp"
 #include "meshioplusplus/detail/surface_distance.hpp"
+#include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/operations/sdf.hpp"
+#include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/parallel.hpp"
 
 namespace meshioplusplus {
@@ -78,9 +82,11 @@ std::int64_t MeshCadSizeField::Key(std::int64_t I, std::int64_t J, std::int64_t 
 }
 
 double MeshCadSizeField::At(const Vec3& rX) const {
-    if (mX.empty())
-        return mH;
     double best = mH;
+    if (mpBackground)
+        best = std::max(mFloor, std::min(best, mpBackground->At(rX)));
+    if (mX.empty())
+        return best;
     std::array<std::int64_t, 3> c{};
     for (int d = 0; d < 3; ++d)
         c[d] = mcsz_cell(rX[d], mLo[d], mCell);
@@ -193,6 +199,65 @@ std::vector<double> mesh_cad_sample_sizes(const std::vector<MeshCadSizeSample>& 
     for (double& r_h : out)
         r_h = std::max(Floor, std::min(H, r_h));
     return out;
+}
+
+struct MeshCadBackgroundSize::Impl {
+    TriangleSoup mSoup;
+    DistanceQuery mQuery;
+    std::vector<double> mSize;  ///< per point of the surface
+};
+
+MeshCadBackgroundSize::MeshCadBackgroundSize(const Mesh& rBackground, const std::string& rArray)
+    : mpImpl(std::make_unique<Impl>()) {
+    bool volume = false;
+    for (std::size_t b = 0; b < rBackground.NumCellBlocks(); ++b)
+        volume =
+            volume || cell_type_dimension(cell_type_from_name(rBackground.Cells(b).Type())) == 3;
+    // A skin keeps the point_data of the points it keeps.
+    const Mesh skin = volume ? extract_surface(rBackground) : Mesh{};
+    const Mesh& r_surface = volume ? skin : rBackground;
+    const NDArray& r_size = r_surface.PointData(rArray);
+    mpImpl->mSize.resize(r_surface.NumPoints());
+    for (std::size_t i = 0; i < mpImpl->mSize.size(); ++i)
+        mpImpl->mSize[i] = read_double(r_size, i);
+    mpImpl->mSoup = build_triangle_soup(r_surface, "");
+    if (mpImpl->mSoup.NumTriangles() == 0)
+        return;
+    SurfaceDistanceOptions opt;
+    opt.mSign = SdfSign::Unsigned;
+    opt.mWatertightCheck = SdfWatertightCheck::Off;
+    mpImpl->mQuery = build_distance_query(mpImpl->mSoup, opt);
+}
+
+MeshCadBackgroundSize::~MeshCadBackgroundSize() = default;
+
+double MeshCadBackgroundSize::At(const Vec3& rX) const {
+    const double none = std::numeric_limits<double>::infinity();
+    const TriangleSoup& r_soup = mpImpl->mSoup;
+    if (r_soup.NumTriangles() == 0)
+        return none;
+    const SurfaceProjection hit = query_surface_projections(mpImpl->mQuery, {rX}).front();
+    if (!hit.mFound || hit.mTriangle < 0)
+        return none;
+    const auto& r_v = r_soup.mVertices[static_cast<std::size_t>(hit.mTriangle)];
+    const Vec3& a = r_soup.mPoints[static_cast<std::size_t>(r_v[0])];
+    const Vec3& b = r_soup.mPoints[static_cast<std::size_t>(r_v[1])];
+    const Vec3& c = r_soup.mPoints[static_cast<std::size_t>(r_v[2])];
+    // The hit's barycentric coordinates in its triangle.
+    const Vec3 e1 = vec3_sub(b, a), e2 = vec3_sub(c, a), ep = vec3_sub(hit.mPoint, a);
+    const double d11 = vec3_dot(e1, e1), d12 = vec3_dot(e1, e2), d22 = vec3_dot(e2, e2);
+    const double dp1 = vec3_dot(ep, e1), dp2 = vec3_dot(ep, e2);
+    const double den = d11 * d22 - d12 * d12;
+    double wb = 1.0 / 3.0, wc = 1.0 / 3.0;
+    if (den > 0.0) {
+        wb = std::clamp((d22 * dp1 - d12 * dp2) / den, 0.0, 1.0);
+        wc = std::clamp((d11 * dp2 - d12 * dp1) / den, 0.0, 1.0 - wb);
+    }
+    const auto& r_s = mpImpl->mSize;
+    const double s = (1.0 - wb - wc) * r_s[static_cast<std::size_t>(r_v[0])] +
+                     wb * r_s[static_cast<std::size_t>(r_v[1])] +
+                     wc * r_s[static_cast<std::size_t>(r_v[2])];
+    return std::isfinite(s) && s > 0.0 ? s : none;
 }
 
 }  // namespace detail

@@ -1190,6 +1190,12 @@ def _register_operations(server: FastMCP) -> None:
         cells_across_gaps: float = 0.0,
         grading: float = 0.0,
         pole_rings: int = 0,
+        face_sizes: Optional[Dict[str, float]] = None,
+        edge_sizes: Optional[Dict[str, float]] = None,
+        background_path: Optional[str] = None,
+        background_array: str = "size",
+        metric: str = "mean",
+        virtual_edges: bool = False,
     ) -> dict:
         """Triangulate the faces of a CAD model (Kratos CAD JSON; STEP and
         IGES where OpenCASCADE is linked) into one conforming surface mesh with
@@ -1227,7 +1233,14 @@ def _register_operations(server: FastMCP) -> None:
         measured on a first uniform mesh, never above target_size, whose
         growth grading limits (a ratio above 1; 0: 1.5). pole_rings (0 to 8;
         0: the fan) places that many rings of points around each pole so its
-        triangles are graded and meet min_angle."""
+        triangles are graded and meet min_angle. face_sizes and edge_sizes ({"index":
+        size}, 0-based into the B-rep's faces and edges) and a background mesh
+        (background_path, its point_data background_array the size at its
+        points) give sizes that join the same field and only refine; each
+        face's limited_by_edges names the edges finer than its given size
+        allows. metric "varying" follows each face's metric as it varies
+        instead of its mean; virtual_edges samples chains of short edges
+        meeting smoothly as one, listed in virtual_edges."""
         return _guard(
             _tools.tool_mesh_cad_surface,
             input_path=input_path,
@@ -1251,6 +1264,12 @@ def _register_operations(server: FastMCP) -> None:
             cells_across_gaps=cells_across_gaps,
             grading=grading,
             pole_rings=pole_rings,
+            face_sizes=face_sizes,
+            edge_sizes=edge_sizes,
+            background_path=background_path,
+            background_array=background_array,
+            metric=metric,
+            virtual_edges=virtual_edges,
         )
 
     @server.tool()

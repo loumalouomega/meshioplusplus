@@ -697,6 +697,22 @@ struct _CMeshCadSurfaceOpts
     cells_across_gaps::Cdouble
 end
 
+"""Mirror of C `mio_mesh_cad_surface_opts_ex` (v17.19.0); its pointers are
+borrowed for one call, the caller keeping the arrays alive."""
+struct _CMeshCadSurfaceOptsEx
+    metric::Int32
+    virtual_edges::Int32
+    face_size_faces::Ptr{Int64}
+    face_sizes::Ptr{Cdouble}
+    num_face_sizes::Int64
+    edge_size_edges::Ptr{Int64}
+    edge_sizes::Ptr{Cdouble}
+    num_edge_sizes::Int64
+    background::Ptr{Cvoid}
+    background_array::Ptr{UInt8}
+    reserved::NTuple{8,Int64}
+end
+
 """Mirror of C `mio_mesh_cad_surface_report`."""
 struct _CMeshCadSurfaceReport
     num_points::Int64

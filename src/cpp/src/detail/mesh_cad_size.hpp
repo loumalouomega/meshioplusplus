@@ -45,6 +45,8 @@
 // System includes
 #include <array>
 #include <cstdint>
+#include <memory>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -71,6 +73,8 @@ struct MeshCadSizeSample {
     double mCurvature = 0.0;
 };
 
+class MeshCadBackgroundSize;
+
 /// `h(x)` from its sources; see the file comment.
 class MeshCadSizeField {
 public:
@@ -82,6 +86,10 @@ public:
     MeshCadSizeField(double H, double Floor, double Slope, double Reach,
                      const std::vector<Vec3>& rX, const std::vector<double>& rSize);
     double At(const Vec3& rX) const;
+    /// Also take a background's size at every point, as given (its own
+    /// gradation is the user's), within the field's floor and ceiling.
+    void SetBackground(const MeshCadBackgroundSize* pBackground) { mpBackground = pBackground; }
+    bool HasBackground() const { return mpBackground != nullptr; }
     double Ceiling() const { return mH; }
     double Floor() const { return mFloor; }
     /// The smallest sample size (the ceiling with none).
@@ -100,6 +108,7 @@ private:
     std::vector<double> mSize;
     std::unordered_map<std::int64_t, std::vector<std::int32_t>> mCells;
     std::array<std::int64_t, 3> mDims{1, 1, 1};
+    const MeshCadBackgroundSize* mpBackground = nullptr;
 
     std::int64_t Key(std::int64_t I, std::int64_t J, std::int64_t K) const;
 };
@@ -114,6 +123,21 @@ std::vector<double> mesh_cad_sample_sizes(const std::vector<MeshCadSizeSample>& 
                                           const std::vector<std::vector<std::int64_t>>& rAdjacent,
                                           double H, double Floor, double Deviation,
                                           double CellsAcrossGaps);
+
+/// A background mesh's size (roadmap 6.3.1): its one-component point_data
+/// interpolated linearly at the nearest point of its surface (a volume mesh
+/// is skinned first). Built once; `At` is safe to call from many threads.
+class MeshCadBackgroundSize {
+public:
+    MeshCadBackgroundSize(const Mesh& rBackground, const std::string& rArray);
+    ~MeshCadBackgroundSize();
+    /// Not positive or not finite there, or no surface: infinity.
+    double At(const Vec3& rX) const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace detail
 }  // namespace meshioplusplus

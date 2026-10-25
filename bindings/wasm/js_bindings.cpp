@@ -5618,10 +5618,29 @@ val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
             throw std::invalid_argument(
                 "meshio++: mesh_cad_surface: the options need 'targetSize'");
         check_settings_keys(rOptions, "the meshCadSurface options",
-                            {"targetSize", "maxChordalDeviation", "minPointsPerEdge", "tolerance",
-                             "recordFaceIds", "edges", "matchUnreferencedTrims", "strict",
-                             "maxPoints", "minAngle", "smoothIterations", "smoothMethod", "order",
-                             "grading", "curvatureDeviation", "cellsAcrossGaps", "poleRings"});
+                            {"targetSize",
+                             "maxChordalDeviation",
+                             "minPointsPerEdge",
+                             "tolerance",
+                             "recordFaceIds",
+                             "edges",
+                             "matchUnreferencedTrims",
+                             "strict",
+                             "maxPoints",
+                             "minAngle",
+                             "smoothIterations",
+                             "smoothMethod",
+                             "order",
+                             "grading",
+                             "curvatureDeviation",
+                             "cellsAcrossGaps",
+                             "poleRings",
+                             "faceSizes",
+                             "edgeSizes",
+                             "background",
+                             "backgroundArray",
+                             "metric",
+                             "virtualEdges"});
         const auto has = [&](const char* pKey) {
             return rOptions.hasOwnProperty(pKey) && !rOptions[pKey].isUndefined() &&
                    !rOptions[pKey].isNull();
@@ -5674,8 +5693,44 @@ val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
             o.mCellsAcrossGaps = rOptions["cellsAcrossGaps"].as<double>();
         if (has("poleRings"))
             o.mPoleRings = static_cast<std::int32_t>(rOptions["poleRings"].as<double>());
+        if (has("metric")) {
+            const std::string m = rOptions["metric"].as<std::string>();
+            if (m == "mean")
+                o.mMetric = meshioplusplus::MeshCadMetric::Mean;
+            else if (m == "varying")
+                o.mMetric = meshioplusplus::MeshCadMetric::Varying;
+            else
+                throw std::invalid_argument(
+                    "meshio++: mesh_cad_surface: metric must be 'mean' or 'varying'");
+        }
+        // Given sizes (v17.19.0): an object {index: size} (0-based indices).
+        meshioplusplus::MeshCadSizeSources sources;
+        const auto pairs = [&](const char* pKey) {
+            std::vector<std::pair<std::int64_t, double>> v;
+            if (!has(pKey))
+                return v;
+            const val keys = val::global("Object").call<val>("keys", rOptions[pKey]);
+            const unsigned n = keys["length"].as<unsigned>();
+            for (unsigned i = 0; i < n; ++i) {
+                const std::string k = keys[i].as<std::string>();
+                v.emplace_back(std::stoll(k), rOptions[pKey][k].as<double>());
+            }
+            return v;
+        };
+        sources.mFaceSizes = pairs("faceSizes");
+        sources.mEdgeSizes = pairs("edgeSizes");
+        if (has("virtualEdges"))
+            sources.mVirtualEdges = rOptions["virtualEdges"].as<bool>();
+        meshioplusplus::Mesh background;
+        if (has("background")) {
+            background = val_to_mesh(rOptions["background"]);
+            sources.pBackground = &background;
+            sources.mBackgroundArray =
+                has("backgroundArray") ? rOptions["backgroundArray"].as<std::string>() : "size";
+        }
+        meshioplusplus::MeshCadSizeReport size_report;
         meshioplusplus::MeshCadSurfaceResult r =
-            meshioplusplus::mesh_cad_surface(val_to_brep_info(rInfo), o);
+            meshioplusplus::mesh_cad_surface(val_to_brep_info(rInfo), o, sources, &size_report);
         val out = val::object();
         out.set("mesh", mesh_to_val(r.mMesh));
         out.set("numPoints", static_cast<double>(r.mNumPoints));
@@ -5733,6 +5788,12 @@ val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
                 corners.set(static_cast<unsigned>(k), cv);
             }
             d.set("corners", corners);
+            val limits = val::array();
+            if (i < size_report.mLimitedByEdges.size())
+                for (std::size_t k = 0; k < size_report.mLimitedByEdges[i].size(); ++k)
+                    limits.set(static_cast<unsigned>(k),
+                               static_cast<double>(size_report.mLimitedByEdges[i][k]));
+            d.set("limitedByEdges", limits);
             faces.set(static_cast<unsigned>(i), d);
         }
         out.set("faces", faces);
@@ -5748,6 +5809,15 @@ val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
         for (std::size_t i = 0; i < r.mWarnings.size(); ++i)
             warnings.set(static_cast<unsigned>(i), r.mWarnings[i]);
         out.set("warnings", warnings);
+        val virtual_edges = val::array();
+        for (std::size_t i = 0; i < size_report.mVirtualEdges.size(); ++i) {
+            val chain = val::array();
+            for (std::size_t k = 0; k < size_report.mVirtualEdges[i].size(); ++k)
+                chain.set(static_cast<unsigned>(k),
+                          static_cast<double>(size_report.mVirtualEdges[i][k]));
+            virtual_edges.set(static_cast<unsigned>(i), chain);
+        }
+        out.set("virtualEdges", virtual_edges);
         return out;
     });
 }

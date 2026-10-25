@@ -42,6 +42,7 @@ _MAX_POLE_RINGS = 8
 
 #: How smoothing moves an interior point.
 SMOOTH_METHODS = ("laplacian", "odt")
+METRICS = ("mean", "varying")
 
 _REPORT_INTS = (
     "num_points",
@@ -116,6 +117,12 @@ def mesh_cad_surface(
     cells_across_gaps: float = 0.0,
     grading: float = 0.0,
     pole_rings: int = 0,
+    face_sizes=None,
+    edge_sizes=None,
+    background=None,
+    background_array: str = "size",
+    virtual_edges: bool = False,
+    metric: str = "mean",
     return_report: bool = False,
 ):
     """Triangulate a B-rep's faces into one conforming surface mesh.
@@ -161,6 +168,22 @@ def mesh_cad_surface(
     :param pole_rings: rings of points seeded around each pole (a degenerate
         trim), at about ``target_size`` apart, so the pole is no longer the
         apex of a fan of thin triangles; 0 keeps the fan.
+    :param face_sizes: sizes given per face, ``{face index: size}`` or a
+        sequence of ``(face index, size)`` pairs (indices into
+        ``brep["faces"]``); every point of the face is at most that size.
+    :param edge_sizes: the same per edge (indices into ``brep["edges"]``).
+    :param background: a mesh whose one-component ``point_data``
+        ``background_array`` is the size at its points, read at its nearest
+        surface point (a volume mesh is skinned first).
+    :param background_array: the name of that array.
+    :param virtual_edges: sample chains of short edges meeting smoothly as
+        one, so a sliver of an edge does not force tiny triangles; the chains
+        are reported, the model is not changed.
+    :param metric: ``"mean"`` meshes each face in its mean metric;
+        ``"varying"`` follows the surface's metric as it varies over the face.
+        Given sizes, like the curvature and gap sizes, join one size field
+        graded by ``grading``; they only refine: nothing is coarser than
+        ``target_size``.
     :param return_report: also return the report.
     :returns: the surface mesh (``triangle`` and ``line`` blocks, or their
         curved forms with ``order`` 2 or 3), or
@@ -172,9 +195,11 @@ def mesh_cad_surface(
         ``below_bound``, ``bound_deg``, ``min_input_angle_deg`` and its
         ``corners``), ``warnings``, refinement's ``num_refinement_points``,
         ``num_faces_below_bound`` and ``num_smoothed``,
-        ``num_curved_straightened``, and
+        ``num_curved_straightened``,
         ``angle_histogram`` (every angle on the surface in 18 bins of 10
-        degrees).
+        degrees), ``virtual_edges`` (the edge indices of each chain) and, per
+        face, ``limited_by_edges`` (the edges whose sampling is finer than the
+        face's given size allows).
     :raises ValueError: on an option out of range or a mesh with no B-rep.
     :raises RuntimeError: with ``strict=True``, naming the first failed face.
     :raises NotImplementedError: without the compiled core.
@@ -218,6 +243,23 @@ def mesh_cad_surface(
     if isinstance(pole_rings, bool) or not 0 <= int(pole_rings) <= _MAX_POLE_RINGS:
         raise ValueError(f"{_PREFIX}pole_rings must lie in [0, {_MAX_POLE_RINGS}]")
 
+    face_pairs = _size_pairs(face_sizes, "face_sizes", len(brep["faces"]))
+    edge_pairs = _size_pairs(edge_sizes, "edge_sizes", len(brep.get("edges", [])))
+    if metric not in METRICS:
+        raise ValueError(f"{_PREFIX}metric must be one of {METRICS}")
+    if background is not None:
+        data = getattr(background, "point_data", {})
+        if background_array not in data:
+            raise ValueError(
+                f"{_PREFIX}background: it has no point_data {background_array!r}"
+            )
+        values = np.asarray(data[background_array])
+        if values.ndim != 1 and not (values.ndim == 2 and values.shape[1] == 1):
+            raise ValueError(
+                f"{_PREFIX}background: its point_data {background_array!r} must "
+                "have one component"
+            )
+
     _core = _core_or_raise("mesh_cad_surface")
     res = _core.mesh_cad_surface(
         brep,
@@ -238,6 +280,12 @@ def mesh_cad_surface(
         curvature_deviation=float(curvature_deviation),
         cells_across_gaps=float(cells_across_gaps),
         pole_rings=int(pole_rings),
+        face_sizes=face_pairs,
+        edge_sizes=edge_pairs,
+        background=background,
+        background_array=str(background_array),
+        virtual_edges=bool(virtual_edges),
+        metric=metric,
     )
     out = res["mesh"]
     if not return_report:
@@ -249,7 +297,37 @@ def mesh_cad_surface(
     ]
     report["warnings"] = [str(w) for w in res["warnings"]]
     report["angle_histogram"] = [int(b) for b in res["angle_histogram"]]
+    report["virtual_edges"] = [[int(e) for e in c] for c in res["virtual_edges"]]
+    for f in report["faces"]:
+        f["limited_by_edges"] = [int(e) for e in f["limited_by_edges"]]
     return out, report
+
+
+def _size_pairs(sizes, name, count):
+    """``{index: size}`` or ``(index, size)`` pairs as sorted pairs, each
+    index in ``[0, count)`` and each size finite and positive."""
+    if sizes is None:
+        return []
+    items = sizes.items() if isinstance(sizes, dict) else sizes
+    pairs = []
+    for item in items:
+        try:
+            index, size = item
+        except (TypeError, ValueError):
+            raise ValueError(f"{_PREFIX}{name} must hold (index, size) pairs") from None
+        if isinstance(index, bool) or int(index) != index:
+            raise ValueError(f"{_PREFIX}{name}: index {index!r} is not an integer")
+        index, size = int(index), float(size)
+        if not 0 <= index < count:
+            raise ValueError(
+                f"{_PREFIX}{name}: index {index} is out of range [0, {count})"
+            )
+        if not (math.isfinite(size) and size > 0.0):
+            raise ValueError(
+                f"{_PREFIX}{name}: the size of {index} must be finite and positive"
+            )
+        pairs.append((index, size))
+    return sorted(pairs)
 
 
 def triangulate_polygon_2d(

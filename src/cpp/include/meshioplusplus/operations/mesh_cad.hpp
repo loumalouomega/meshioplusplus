@@ -95,6 +95,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Project includes
@@ -303,6 +304,49 @@ struct MeshCadSurfaceResult {
  */
 MESHIOPLUSPLUS_API MeshCadSurfaceResult
 mesh_cad_surface(const BrepInfo& rBrep, const MeshCadSurfaceOptions& rOptions = {});
+
+/// Sizes a user gives (roadmap 6.3.1), beside the options: each joins the
+/// size field the curvature and gap sizes make, the smallest at a point
+/// winning and the field graded by `mGrading`. They only refine: the field
+/// never exceeds `mTargetSize`.
+struct MeshCadSizeSources {
+    /// (index into `BrepInfo::mFaces`, size): every point of the face.
+    std::vector<std::pair<std::int64_t, double>> mFaceSizes;
+    /// (index into `BrepInfo::mEdges`, size): every point of the edge.
+    std::vector<std::pair<std::int64_t, double>> mEdgeSizes;
+    /// A background mesh (surface cells; a volume mesh is skinned) whose
+    /// one-component point_data `mBackgroundArray` is the size at its
+    /// points, read at the nearest point of the background. Borrowed.
+    const Mesh* pBackground = nullptr;
+    std::string mBackgroundArray;
+    /// Sample chains of short edges as one (roadmap 6.5.2): see
+    /// doc/mesh_cad.md.
+    bool mVirtualEdges = false;
+};
+
+/// What the sources decided, filled when passed (roadmap 6.3.8, 6.5.2).
+struct MeshCadSizeReport {
+    /// Per face: the `BrepEdge` indices whose sampling is finer than the
+    /// face's given size allows (its pieces under the size over the field's
+    /// slack), so the face came out finer near them. Empty for a face given
+    /// no size.
+    std::vector<std::vector<std::int64_t>> mLimitedByEdges;
+    /// Per virtual edge: the `BrepEdge` indices of its chain, in order.
+    std::vector<std::vector<std::int64_t>> mVirtualEdges;
+};
+
+/**
+ * @brief `mesh_cad_surface` with sizes given per face, per edge or by a
+ * background mesh (roadmap 6.3.1). Empty sources reproduce the two-argument
+ * overload byte for byte.
+ * @throws std::invalid_argument as that overload, and for a face or edge
+ *         index out of range, a size that is not finite and positive, or a
+ *         background without a one-component `mBackgroundArray`.
+ */
+MESHIOPLUSPLUS_API MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
+                                                         const MeshCadSurfaceOptions& rOptions,
+                                                         const MeshCadSizeSources& rSources,
+                                                         MeshCadSizeReport* pReport = nullptr);
 
 /**
  * @brief The constrained Delaunay triangulation of a polygon with holes, as a
