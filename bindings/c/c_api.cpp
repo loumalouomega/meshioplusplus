@@ -6636,10 +6636,14 @@ static_assert(offsetof(mio_mesh_cad_surface_opts, pole_rings) == 76 &&
               "mio_mesh_cad_surface_opts: the v17.18.0 fields left their reserved slots");
 static_assert(offsetof(mio_mesh_cad_surface_report, num_curved_straightened) == 168,
               "mio_mesh_cad_surface_report::num_curved_straightened moved");
-static_assert(sizeof(void*) != 8 || (sizeof(mio_mesh_cad_surface_opts_ex) == 136 &&
-                                     offsetof(mio_mesh_cad_surface_opts_ex, background) == 56 &&
-                                     offsetof(mio_mesh_cad_surface_opts_ex, reserved) == 72),
-              "mio_mesh_cad_surface_opts_ex's layout moved");
+static_assert(sizeof(void*) != 8 ||
+                  (sizeof(mio_mesh_cad_surface_opts_ex) == 136 &&
+                   offsetof(mio_mesh_cad_surface_opts_ex, background) == 56 &&
+                   offsetof(mio_mesh_cad_surface_opts_ex, reparam_condition_number) == 72 &&
+                   offsetof(mio_mesh_cad_surface_opts_ex, model_tolerances) == 80 &&
+                   offsetof(mio_mesh_cad_surface_opts_ex, virtual_faces) == 84 &&
+                   offsetof(mio_mesh_cad_surface_opts_ex, reserved) == 88),
+              "mio_mesh_cad_surface_opts_ex's layout moved (v17.20.0 took 16 bytes of its tail)");
 static_assert(static_cast<int>(MIO_MESH_CAD_SMOOTH_ODT) ==
                   static_cast<int>(meshioplusplus::MeshCadSmoothing::Odt),
               "mio_mesh_cad_smoothing drifted from MeshCadSmoothing");
@@ -7033,6 +7037,7 @@ struct CapiMeshCadState {
     std::array<std::int64_t, meshioplusplus::kMeshCadAngleBins> mHistogram{};
     std::vector<meshioplusplus::MeshCadCorner> mCorners;
     meshioplusplus::MeshCadSizeReport mSizes;
+    meshioplusplus::MeshCadSurfaceExtrasReport mExtras;
 };
 CapiMeshCadState& capi_mesh_cad_state() {
     thread_local CapiMeshCadState state;
@@ -7224,6 +7229,7 @@ mio_mesh* mio_mesh_cad_surface2(const mio_format_info* info, const mio_mesh_cad_
         state.mHistogram.fill(0);
         state.mCorners.clear();
         state.mSizes = meshioplusplus::MeshCadSizeReport{};
+        state.mExtras = meshioplusplus::MeshCadSurfaceExtrasReport{};
         if (!info)
             throw std::invalid_argument("meshio++: format info handle is NULL");
         if (!opts)
@@ -7258,7 +7264,11 @@ mio_mesh* mio_mesh_cad_surface2(const mio_format_info* info, const mio_mesh_cad_
         o.mCurvatureDeviation = opts->curvature_deviation;
         o.mCellsAcrossGaps = opts->cells_across_gaps;
         meshioplusplus::MeshCadSizeSources sources;
+        meshioplusplus::MeshCadSurfaceExtras extras;
         if (opts_ex) {
+            o.mReparamConditionNumber = opts_ex->reparam_condition_number;
+            extras.mModelTolerances = opts_ex->model_tolerances != 0;
+            extras.mVirtualFaces = opts_ex->virtual_faces != 0;
             if (opts_ex->metric != MIO_MESH_CAD_METRIC_MEAN &&
                 opts_ex->metric != MIO_MESH_CAD_METRIC_VARYING)
                 throw std::invalid_argument(
@@ -7287,8 +7297,8 @@ mio_mesh* mio_mesh_cad_surface2(const mio_format_info* info, const mio_mesh_cad_
                                                : "size";
             }
         }
-        meshioplusplus::MeshCadSurfaceResult r =
-            meshioplusplus::mesh_cad_surface(*p_brep, o, sources, &state.mSizes);
+        meshioplusplus::MeshCadSurfaceResult r = meshioplusplus::mesh_cad_surface(
+            *p_brep, o, sources, extras, &state.mSizes, &state.mExtras);
         for (const std::string& w : r.mWarnings) {
             if (!state.mWarnings.empty())
                 state.mWarnings += '\n';
@@ -7398,6 +7408,119 @@ int64_t mio_mesh_cad_surface_virtual_edge(int64_t index, int64_t* edges, int64_t
         const auto count = std::min<std::int64_t>(n, static_cast<std::int64_t>(r_c.size()));
         std::copy(r_c.begin(), r_c.begin() + count, edges);
         return static_cast<int64_t>(r_c.size());
+    });
+}
+
+int64_t mio_mesh_cad_surface_num_reparametrised(void) {
+    return static_cast<int64_t>(capi_mesh_cad_state().mExtras.mReparametrised.size());
+}
+
+mio_status mio_mesh_cad_surface_reparametrised(int64_t index, int64_t* face,
+                                               double* condition_number,
+                                               double* condition_number_disc, int32_t* method) {
+    return guarded([&]() -> mio_status {
+        const auto& r_v = capi_mesh_cad_state().mExtras.mReparametrised;
+        if (index < 0 || static_cast<std::size_t>(index) >= r_v.size())
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: mesh_cad_surface: reparametrised index out of range");
+        const auto& r_f = r_v[static_cast<std::size_t>(index)];
+        if (face)
+            *face = r_f.mFace;
+        if (condition_number)
+            *condition_number = r_f.mConditionNumber;
+        if (condition_number_disc)
+            *condition_number_disc = r_f.mConditionNumberDisc;
+        if (method)
+            *method = r_f.mTaken ? r_f.mMethod : 0;
+        return MIO_OK;
+    });
+}
+
+int64_t mio_mesh_cad_surface_reparam_reason(int64_t index, char* buf, int64_t buflen) {
+    return guarded_ptr(int64_t{-1}, [&]() {
+        const auto& r_v = capi_mesh_cad_state().mExtras.mReparametrised;
+        if (index < 0 || static_cast<std::size_t>(index) >= r_v.size())
+            throw std::invalid_argument(
+                "meshio++: mesh_cad_surface: reparametrised index out of range");
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative reason buffer length");
+        return copy_string(r_v[static_cast<std::size_t>(index)].mReason, buf, buflen);
+    });
+}
+
+int64_t mio_mesh_cad_surface_num_merged_faces(void) {
+    return static_cast<int64_t>(capi_mesh_cad_state().mExtras.mMergedFaces.size());
+}
+
+mio_status mio_mesh_cad_surface_merged_face(int64_t index, int64_t* sliver, int64_t* host,
+                                            double* width, int32_t* merged) {
+    return guarded([&]() -> mio_status {
+        const auto& r_v = capi_mesh_cad_state().mExtras.mMergedFaces;
+        if (index < 0 || static_cast<std::size_t>(index) >= r_v.size())
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: mesh_cad_surface: merged face index out of range");
+        const auto& r_m = r_v[static_cast<std::size_t>(index)];
+        if (sliver)
+            *sliver = r_m.mSliver;
+        if (host)
+            *host = r_m.mHost;
+        if (width)
+            *width = r_m.mWidth;
+        if (merged)
+            *merged = r_m.mMerged ? 1 : 0;
+        return MIO_OK;
+    });
+}
+
+int64_t mio_mesh_cad_surface_merged_face_edges(int64_t index, int64_t* edges, int64_t n) {
+    return guarded_ptr(int64_t{-1}, [&]() -> int64_t {
+        const auto& r_v = capi_mesh_cad_state().mExtras.mMergedFaces;
+        if (index < 0 || static_cast<std::size_t>(index) >= r_v.size())
+            return -1;
+        if (n < 0 || (n > 0 && !edges))
+            throw std::invalid_argument("meshio++: mesh_cad_surface: bad edges buffer");
+        const auto& r_e = r_v[static_cast<std::size_t>(index)].mEdges;
+        const auto count = std::min<std::int64_t>(n, static_cast<std::int64_t>(r_e.size()));
+        std::copy(r_e.begin(), r_e.begin() + count, edges);
+        return static_cast<int64_t>(r_e.size());
+    });
+}
+
+int64_t mio_mesh_cad_surface_merged_face_reason(int64_t index, char* buf, int64_t buflen) {
+    return guarded_ptr(int64_t{-1}, [&]() {
+        const auto& r_v = capi_mesh_cad_state().mExtras.mMergedFaces;
+        if (index < 0 || static_cast<std::size_t>(index) >= r_v.size())
+            throw std::invalid_argument(
+                "meshio++: mesh_cad_surface: merged face index out of range");
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative reason buffer length");
+        return copy_string(r_v[static_cast<std::size_t>(index)].mReason, buf, buflen);
+    });
+}
+
+int64_t mio_mesh_cad_surface_num_tolerance_uses(void) {
+    return static_cast<int64_t>(capi_mesh_cad_state().mExtras.mToleranceUses.size());
+}
+
+mio_status mio_mesh_cad_surface_tolerance_use(int64_t index, int64_t* edge, double* declared,
+                                              double* gap, int32_t* where) {
+    return guarded([&]() -> mio_status {
+        const auto& r_v = capi_mesh_cad_state().mExtras.mToleranceUses;
+        if (index < 0 || static_cast<std::size_t>(index) >= r_v.size())
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: mesh_cad_surface: tolerance use index out of range");
+        const auto& r_t = r_v[static_cast<std::size_t>(index)];
+        if (edge)
+            *edge = r_t.mEdge;
+        if (declared)
+            *declared = r_t.mDeclared;
+        if (gap)
+            *gap = r_t.mGap;
+        if (where)
+            *where = r_t.mWhere == "closed_start" ? MIO_MESH_CAD_TOLERANCE_CLOSED_START
+                     : r_t.mWhere == "corner"     ? MIO_MESH_CAD_TOLERANCE_CORNER
+                                                  : MIO_MESH_CAD_TOLERANCE_PROJECTION;
+        return MIO_OK;
     });
 }
 

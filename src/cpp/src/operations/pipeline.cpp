@@ -528,7 +528,10 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "Background",
           "BackgroundArray",
           "Metric",
-          "VirtualEdges"}},
+          "VirtualEdges",
+          "ReparamConditionNumber",
+          "ModelTolerances",
+          "VirtualFaces"}},
         {"IgaSample", {"Subdivisions", "TrimSamples", "Trim", "Edges"}},
         {"IgaRefine",
          {"Subdivisions", "Elevate", "SampleSubdivisions", "TrimSamples", "Trim", "Edges"}},
@@ -1014,7 +1017,18 @@ Mesh pipe_apply_model_step(const PipelineStep& rStep, PipelineReport& rReport, P
             sources.pBackground = &background;
             sources.mBackgroundArray = pipe_text(rStep, "BackgroundArray", "size");
         }
-        MeshCadSurfaceResult r = mesh_cad_surface(*rModel.mBrep, o, sources);
+        // v17.20.0: the reparametrisation, model tolerances and virtual faces.
+        o.mReparamConditionNumber =
+            pipe_number(rStep, "ReparamConditionNumber", o.mReparamConditionNumber);
+        MeshCadSurfaceExtras extras;
+        extras.mModelTolerances = pipe_flag(rStep, "ModelTolerances", false);
+        extras.mVirtualFaces = pipe_flag(rStep, "VirtualFaces", false);
+        MeshCadSurfaceExtrasReport extras_report;
+        MeshCadSurfaceResult r =
+            mesh_cad_surface(*rModel.mBrep, o, sources, extras, nullptr, &extras_report);
+        const auto count = [](const auto& rRecords, auto Pred) {
+            return static_cast<double>(std::count_if(rRecords.begin(), rRecords.end(), Pred));
+        };
         for (const std::string& w : r.mWarnings)
             rReport.mWarnings.push_back("MeshCadSurface: " + w);
         pipe_push_step(rReport, rStep,
@@ -1026,6 +1040,10 @@ Mesh pipe_apply_model_step(const PipelineStep& rStep, PipelineReport& rReport, P
                         {"NumNonManifoldEdges", static_cast<double>(r.mNumNonManifoldEdges)},
                         {"NumRefinementPoints", static_cast<double>(r.mNumRefinementPoints)},
                         {"NumCurvedStraightened", static_cast<double>(r.mNumCurvedStraightened)},
+                        {"NumReparametrised", count(extras_report.mReparametrised,
+                                                    [](const auto& rF) { return rF.mTaken; })},
+                        {"NumMergedFaces", count(extras_report.mMergedFaces,
+                                                 [](const auto& rM) { return rM.mMerged; })},
                         {"MinAngleDeg", r.mMinAngleDeg},
                         {"MaxAngleDeg", r.mMaxAngleDeg}});
         return std::move(r.mMesh);

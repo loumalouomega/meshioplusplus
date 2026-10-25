@@ -1954,6 +1954,33 @@ TEST(CApi, MeshCadSurfaceMeshesABrepAndReportsItsFaces) {
         ASSERT_NE(v, nullptr) << mio_last_error();
         EXPECT_EQ(mio_mesh_cad_surface_num_virtual_edges(), 0);
         mio_mesh_free(v);
+        // v17.20.0: the reparametrisation, virtual faces and model
+        // tolerances; a planar face is never flattened, nothing is a sliver.
+        EXPECT_EQ(ex.reparam_condition_number, 0.0);
+        EXPECT_EQ(ex.model_tolerances, 0);
+        EXPECT_EQ(ex.virtual_faces, 0);
+        ex.reparam_condition_number = 4.0;
+        ex.model_tolerances = 1;
+        ex.virtual_faces = 1;
+        mio_mesh* x = mio_mesh_cad_surface2(info, &opts, &ex, nullptr);
+        ASSERT_NE(x, nullptr) << mio_last_error();
+        EXPECT_EQ(mio_mesh_cad_surface_num_reparametrised(), 0);
+        EXPECT_EQ(mio_mesh_cad_surface_num_merged_faces(), 0);
+        EXPECT_EQ(mio_mesh_cad_surface_num_tolerance_uses(), 0);
+        int64_t idx = 0;
+        EXPECT_NE(mio_mesh_cad_surface_reparametrised(0, &idx, nullptr, nullptr, nullptr), MIO_OK);
+        EXPECT_NE(mio_mesh_cad_surface_merged_face(0, nullptr, nullptr, nullptr, nullptr), MIO_OK);
+        EXPECT_NE(mio_mesh_cad_surface_tolerance_use(0, nullptr, nullptr, nullptr, nullptr),
+                  MIO_OK);
+        EXPECT_EQ(mio_mesh_cad_surface_merged_face_edges(0, limits, 4), -1);
+        mio_mesh_free(x);
+        ex.reparam_condition_number = 0.5;
+        EXPECT_EQ(mio_mesh_cad_surface2(info, &opts, &ex, nullptr), nullptr);
+        EXPECT_NE(std::string(mio_last_error()).find("reparam_condition_number"),
+                  std::string::npos);
+        ex.reparam_condition_number = 0.0;
+        ex.model_tolerances = 0;
+        ex.virtual_faces = 0;
         opts.order = 2;
         EXPECT_EQ(mio_mesh_cad_surface2(info, &opts, &ex, nullptr), nullptr);
         EXPECT_NE(std::string(mio_last_error()).find("virtual_edges"), std::string::npos);

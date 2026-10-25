@@ -1021,3 +1021,218 @@ def test_step_solid_through_opencascade(tmp_path):
     assert a == pytest.approx(6.0, rel=1e-9)
     assert v == pytest.approx(1.0, rel=1e-9)
     assert a == pytest.approx(_measure(model)[0], rel=1e-9)
+
+
+@needs_core
+@pytest.mark.skipif(
+    not getattr(_core, "__has_occt__", False), reason="needs OpenCASCADE"
+)
+def test_a_step_read_declares_its_tolerances(tmp_path):
+    """Roadmap 6.5.1: an OpenCASCADE read writes each edge's tolerance and its
+    vertices' into the edge's extra JSON, which model_tolerances reads; a
+    sound box declares nothing the global tolerance would refuse."""
+    path = tmp_path / "box.step"
+    mio.write(path, mio.extract_surface(mio.box()))
+    model = mio.read(path)
+    for e in model.info["brep"]["edges"]:
+        extra = json.loads(e["extra"])
+        assert extra["tolerance"] >= 0.0
+        assert len(extra["end_tolerances"]) == 2
+    out, report = mio.mesh_cad_surface(
+        model, 0.1, model_tolerances=True, return_report=True
+    )
+    _watertight(report)
+    assert report["tolerance_uses"] == []
+
+
+def _collapsed_patch(path):
+    """The planar bilinear patch with corners (0, 0), (1, 0), (0, 2) and
+    (0, 2): its side v = 1 collapses, so it is the triangle with a 26.6-degree
+    corner there (roadmap 6.4.4's probe)."""
+    doc = {
+        "breps": [
+            {
+                "brep_id": 1,
+                "faces": [
+                    {
+                        "brep_id": 2,
+                        "swapped_surface_normal": False,
+                        "surface": {
+                            "is_trimmed": False,
+                            "is_rational": False,
+                            "degrees": [1, 1],
+                            "knot_vectors": [[0, 1], [0, 1]],
+                            "control_points": [
+                                [1, [0, 0, 0, 1]],
+                                [2, [1, 0, 0, 1]],
+                                [3, [0, 2, 0, 1]],
+                                [4, [0, 2, 0, 1]],
+                            ],
+                        },
+                        "boundary_loops": [],
+                        "embedded_edges": [],
+                    }
+                ],
+                "edges": [],
+                "vertices": [],
+            }
+        ]
+    }
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    return mio.read(path, file_format="cad_json")
+
+
+@needs_core
+def test_a_collapsed_patch_is_flattened_and_meets_the_bound(tmp_path):
+    """Roadmap 6.4.4: in its own parameters the collapsed corner is a pole
+    whose fan neither metric rounds; meshed in the flattening of its coarse
+    mesh (the conformal map), every triangle meets 25 degrees, and the face
+    is reported with its condition numbers."""
+    model = _collapsed_patch(tmp_path / "collapsed.cad.json")
+    _, mean = mio.mesh_cad_surface(model, 0.1, min_angle=25, return_report=True)
+    _, varying = mio.mesh_cad_surface(
+        model, 0.1, min_angle=25, metric="varying", return_report=True
+    )
+    out, flat = mio.mesh_cad_surface(
+        model, 0.1, min_angle=25, reparam_condition_number=4, return_report=True
+    )
+    assert mean["min_angle_deg"] < 25 and varying["min_angle_deg"] < 25
+    assert flat["num_failed"] == 0 and flat["warnings"] == []
+    assert flat["min_angle_deg"] >= 25 - 1e-9
+    assert flat["num_points"] < mean["num_points"]
+    (rec,) = flat["reparametrised"]
+    assert rec["taken"] and rec["method"] == "conformal" and rec["face"] == 0
+    assert rec["condition_number"] > 4 > rec["condition_number_disc"]
+    # Every point on the patch, which is the plane z = 0.
+    assert np.all(out.points[:, 2] == 0.0)
+    a, _ = _measure(out)
+    assert a == pytest.approx(1.0, rel=1e-12)
+    # Below the threshold nothing changes; the refusals.
+    plain = mio.mesh_cad_surface(model, 0.1, min_angle=25)
+    high = mio.mesh_cad_surface(
+        model, 0.1, min_angle=25, reparam_condition_number=1e300
+    )
+    assert np.array_equal(plain.points, high.points)
+    for bad in (-1.0, 0.5, 1.0, float("nan")):
+        with pytest.raises(ValueError, match="reparam_condition_number"):
+            mio.mesh_cad_surface(model, 0.1, reparam_condition_number=bad)
+    with pytest.raises(ValueError, match="order 1"):
+        mio.mesh_cad_surface(model, 0.1, reparam_condition_number=4, order=2)
+
+
+@needs_core
+def test_the_sphere_is_flattened_through_its_poles():
+    """Each hemisphere is flattened, its pole a point of the seam's cut: the
+    sphere meets 25 degrees without pole rings, watertight, every point on
+    it."""
+    model = _read("sphere.cad.json")
+    out, report = mio.mesh_cad_surface(
+        model, 0.2, min_angle=25, reparam_condition_number=4, return_report=True
+    )
+    _watertight(report)
+    assert report["min_angle_deg"] >= 25 - 1e-9
+    assert [r["taken"] for r in report["reparametrised"]] == [True, True]
+    np.testing.assert_allclose(np.linalg.norm(out.points, axis=1), 1.0, atol=1e-12)
+
+
+@needs_core
+def test_virtual_faces_mesh_a_sliver_with_its_neighbour():
+    """Roadmap 6.5.2: three plates in a row, the middle one 0.01 wide. Alone,
+    the sliver is a strip of needles; meshed with the neighbour it meets
+    along the most edge, the pair meets 25 degrees with a fraction of the
+    triangles, each triangle keeps its own face in cad:face, the shared edge
+    leaves the line block and the merge is reported."""
+    model = _read("sliver_strip.cad.json")
+    _, alone = mio.mesh_cad_surface(model, 0.2, min_angle=25, return_report=True)
+    out, merged = mio.mesh_cad_surface(
+        model, 0.2, min_angle=25, virtual_faces=True, return_report=True
+    )
+    assert merged["num_failed"] == 0 and merged["num_misoriented_edges"] == 0
+    assert merged["min_angle_deg"] >= 25 - 1e-9
+    assert 3 * merged["num_triangles"] < alone["num_triangles"]
+    (rec,) = merged["merged_faces"]
+    assert rec["sliver"] == 1 and rec["merged"] and rec["host"] in (0, 2)
+    assert len(rec["edges"]) == 1
+    tri = [k for k, c in enumerate(out.cells) if c.type == "triangle"][0]
+    faces = out.cell_data["cad:face"][tri]
+    assert set(np.unique(faces)) == {0, 1, 2}
+    line = [k for k, c in enumerate(out.cells) if c.type == "line"][0]
+    assert rec["edges"][0] not in set(out.cell_data["cad:edge"][line])
+    a, _ = _measure(out)
+    assert a == pytest.approx(2.01, rel=1e-12)
+    with pytest.raises(ValueError, match="order 1"):
+        mio.mesh_cad_surface(model, 0.2, virtual_faces=True, order=2)
+
+
+@needs_core
+def test_model_tolerances_join_what_the_model_declares():
+    """Roadmap 6.5.1: the capped cylinder whose top cap starts a quarter turn
+    round meshes either way (the cap is rotated); a tolerance declared on
+    every edge is read but accepts nothing the global one refuses, and a
+    malformed one is warned."""
+    model = _read("capped_cylinder_offset.cad.json")
+    brep = copy.deepcopy(model.info["brep"])
+    for e in brep["edges"]:
+        e["extra"] = json.dumps({"tolerance": 1e-6})
+    _, report = mio.mesh_cad_surface(
+        brep, 0.3, model_tolerances=True, return_report=True
+    )
+    _watertight(report)
+    assert report["tolerance_uses"] == []
+    brep["edges"][0]["extra"] = json.dumps({"tolerance": -1})
+    _, bad = mio.mesh_cad_surface(brep, 0.3, model_tolerances=True, return_report=True)
+    assert any("declared tolerance" in w for w in bad["warnings"])
+
+
+@needs_core
+def test_a_hessian_sized_mesh_reaches_the_layer_with_fewer_points():
+    """Roadmap 6.11: a background size from the layer's tangential Hessian
+    (sqrt(8 eps / |lambda|max), Loseille and Alauzet 2011) reaches the
+    uniform mesh's L2 interpolation error with well under half its points."""
+    sphere = _read("sphere.cad.json")
+
+    def layer(x):
+        return np.tanh((x[..., 2] - 0.3) / 0.05)
+
+    a1, b1 = 0.059715871789770, 0.470142064105115
+    a2, b2 = 0.797426985353087, 0.101286507323456
+    bary = np.array(
+        [
+            [1 / 3, 1 / 3, 1 / 3],
+            [a1, b1, b1],
+            [b1, a1, b1],
+            [b1, b1, a1],
+            [a2, b2, b2],
+            [b2, a2, b2],
+            [b2, b2, a2],
+        ]
+    )
+    weights = np.array([0.225] + [0.132394152788506] * 3 + [0.125939180544827] * 3)
+
+    def l2(mesh):
+        p = np.asarray(mesh.points)
+        t = [c.data for c in mesh.cells if c.type == "triangle"][0]
+        c = p[t]
+        area = 0.5 * np.linalg.norm(
+            np.cross(c[:, 1] - c[:, 0], c[:, 2] - c[:, 0]), axis=1
+        )
+        q = np.einsum("qk,nkd->nqd", bary, c)
+        on = q / np.linalg.norm(q, axis=2, keepdims=True)
+        e = np.einsum("qk,nk->nq", bary, layer(p)[t]) - layer(on)
+        return np.sqrt((area[:, None] * weights * e**2).sum())
+
+    opts = dict(min_angle=25, pole_rings=2, edges=False)
+    uniform = mio.mesh_cad_surface(sphere, 0.05, **opts)
+    bg = mio.mesh_cad_surface(sphere, 0.1, **opts)
+    bg.point_data["f"] = layer(np.asarray(bg.points))
+    hess = mio.hessian(bg, "f", location="point").point_data["f:hessian"]
+    H = np.asarray(hess).reshape(-1, 3, 3)
+    H = 0.5 * (H + H.transpose(0, 2, 1))
+    n = np.asarray(bg.points) / np.linalg.norm(bg.points, axis=1, keepdims=True)
+    P = np.eye(3) - n[:, :, None] * n[:, None, :]
+    lam = np.abs(np.linalg.eigvalsh(P @ H @ P)).max(axis=1)
+    size = np.sqrt(8 * 8e-3 / np.maximum(lam, 1e-300))
+    bg.point_data["size"] = np.clip(size, 0.05 / 4, 0.2)
+    sized = mio.mesh_cad_surface(sphere, 0.2, background=bg, **opts)
+    assert l2(sized) < l2(uniform)
+    assert len(sized.points) < 0.4 * len(uniform.points)

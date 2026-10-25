@@ -348,6 +348,14 @@ end
         @test g.virtual_edges == Vector{Int}[]
         close(g.mesh)
         @test_throws MeshioError mesh_cad_surface(info; target_size=0.1, face_sizes=[7 => 0.025])
+        # v17.20.0: a planar face is never flattened, and nothing is a sliver.
+        x = mesh_cad_surface(info; target_size=0.1, reparam_condition_number=4.0,
+                             model_tolerances=true, virtual_faces=true)
+        @test x.num_failed == 0
+        @test isempty(x.reparametrised) && isempty(x.merged_faces) && isempty(x.tolerance_uses)
+        close(x.mesh)
+        @test_throws MeshioError mesh_cad_surface(info; target_size=0.1,
+                                                  reparam_condition_number=0.5)
         close(r.mesh); close(mesh); close(info)
     end
 end

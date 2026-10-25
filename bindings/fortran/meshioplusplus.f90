@@ -57,7 +57,12 @@ module meshioplusplus
     public :: mio_mesh_cad_surface_report
     public :: mio_mesh_cad_face_status, mio_mesh_cad_face_reason
     public :: mio_mesh_cad_face_size_limits
+    public :: mio_mesh_cad_num_reparametrised, mio_mesh_cad_get_reparametrised
+    public :: mio_mesh_cad_num_merged_faces, mio_mesh_cad_get_merged_face
+    public :: mio_mesh_cad_num_tolerance_uses, mio_mesh_cad_get_tolerance_use
     public :: MIO_MESH_CAD_METRIC_MEAN, MIO_MESH_CAD_METRIC_VARYING
+    public :: MIO_MESH_CAD_TOLERANCE_CLOSED_START, MIO_MESH_CAD_TOLERANCE_CORNER
+    public :: MIO_MESH_CAD_TOLERANCE_PROJECTION
     public :: MIO_MESH_CAD_OK, MIO_MESH_CAD_EMPTY, MIO_MESH_CAD_OPEN_LOOP
     public :: MIO_MESH_CAD_SELF_INTERSECTING, MIO_MESH_CAD_DEGENERATE
     public :: MIO_MESH_CAD_PROJECTION_FAILED, MIO_MESH_CAD_BUDGET_EXCEEDED
@@ -490,6 +495,9 @@ module meshioplusplus
     integer, parameter :: MIO_MESH_CAD_SMOOTH_LAPLACIAN = 0, MIO_MESH_CAD_SMOOTH_ODT = 1
     integer, parameter :: MIO_MESH_CAD_ANGLE_BINS = 18
     integer, parameter :: MIO_MESH_CAD_METRIC_MEAN = 0, MIO_MESH_CAD_METRIC_VARYING = 1
+    !> Where a declared tolerance accepted a gap (v17.20.0, mio_mesh_cad_tolerance_where).
+    integer, parameter :: MIO_MESH_CAD_TOLERANCE_CLOSED_START = 0, MIO_MESH_CAD_TOLERANCE_CORNER = 1, &
+                          MIO_MESH_CAD_TOLERANCE_PROJECTION = 2
 
     !> Interop mirror of C `mio_mesh_cad_surface_opts` (104 bytes, checked once
     !> per process by `check_mesh_cad_layout`). Filled by
@@ -516,7 +524,9 @@ module meshioplusplus
 
     !> Interop mirror of C `mio_mesh_cad_surface_opts_ex` (v17.19.0; 136 bytes
     !> with 8-byte pointers, checked by `check_mesh_cad_layout`): the metric,
-    !> virtual edges, given sizes and the background, borrowed for one call.
+    !> virtual edges, given sizes and the background, borrowed for one call;
+    !> since v17.20.0 the reparametrisation threshold, model tolerances and
+    !> virtual faces from its reserved tail.
     type, bind(c) :: mio_mesh_cad_surface_opts_ex_t
         integer(c_int32_t) :: metric = 0
         integer(c_int32_t) :: virtual_edges = 0
@@ -528,7 +538,10 @@ module meshioplusplus
         integer(c_int64_t) :: num_edge_sizes = 0
         type(c_ptr) :: background = c_null_ptr
         type(c_ptr) :: background_array = c_null_ptr
-        integer(c_int64_t) :: reserved(8) = 0
+        real(c_double) :: reparam_condition_number = 0
+        integer(c_int32_t) :: model_tolerances = 0
+        integer(c_int32_t) :: virtual_faces = 0
+        integer(c_int64_t) :: reserved(6) = 0
     end type
 
     !> `mio_mesh_cad_surface_report` (200 bytes; field order and types are ABI,
@@ -4438,6 +4451,54 @@ module meshioplusplus
             type(mio_mesh_cad_surface_opts_ex_t), intent(in) :: opts_ex
             type(mio_mesh_cad_surface_report), intent(out) :: report
             type(c_ptr) :: h
+        end function
+
+        function c_mio_mesh_cad_surface_num_reparametrised() &
+                bind(c, name="mio_mesh_cad_surface_num_reparametrised") result(m)
+            import :: c_int64_t
+            integer(c_int64_t) :: m
+        end function
+
+        function c_mio_mesh_cad_surface_reparametrised(idx, face, cond, cond_disc, method) &
+                bind(c, name="mio_mesh_cad_surface_reparametrised") result(st)
+            import :: c_int64_t, c_int32_t, c_double, c_int
+            integer(c_int64_t), value :: idx
+            integer(c_int64_t), intent(out) :: face
+            real(c_double), intent(out) :: cond, cond_disc
+            integer(c_int32_t), intent(out) :: method
+            integer(c_int) :: st
+        end function
+
+        function c_mio_mesh_cad_surface_num_merged_faces() &
+                bind(c, name="mio_mesh_cad_surface_num_merged_faces") result(m)
+            import :: c_int64_t
+            integer(c_int64_t) :: m
+        end function
+
+        function c_mio_mesh_cad_surface_merged_face(idx, sliver, host, width, merged) &
+                bind(c, name="mio_mesh_cad_surface_merged_face") result(st)
+            import :: c_int64_t, c_int32_t, c_double, c_int
+            integer(c_int64_t), value :: idx
+            integer(c_int64_t), intent(out) :: sliver, host
+            real(c_double), intent(out) :: width
+            integer(c_int32_t), intent(out) :: merged
+            integer(c_int) :: st
+        end function
+
+        function c_mio_mesh_cad_surface_num_tolerance_uses() &
+                bind(c, name="mio_mesh_cad_surface_num_tolerance_uses") result(m)
+            import :: c_int64_t
+            integer(c_int64_t) :: m
+        end function
+
+        function c_mio_mesh_cad_surface_tolerance_use(idx, edge, declared, gap, where) &
+                bind(c, name="mio_mesh_cad_surface_tolerance_use") result(st)
+            import :: c_int64_t, c_int32_t, c_double, c_int
+            integer(c_int64_t), value :: idx
+            integer(c_int64_t), intent(out) :: edge
+            real(c_double), intent(out) :: declared, gap
+            integer(c_int32_t), intent(out) :: where
+            integer(c_int) :: st
         end function
 
         function c_mio_mesh_cad_surface_face_size_limits(face, edges, n) &
@@ -12093,7 +12154,11 @@ contains
     !> one-component point data `background_array` (default 'size') join the
     !> same field; `metric` (`MIO_MESH_CAD_METRIC_*`) and `virtual_edges` as in
     !> doc/mesh_cad.md; `mio_mesh_cad_face_size_limits` reads which edges
-    !> limited a face given a size (v17.19.0).
+    !> limited a face given a size (v17.19.0). `reparam_condition_number`
+    !> flattens a face whose metric's condition number passes it,
+    !> `model_tolerances` accepts the gaps the model declares and
+    !> `virtual_faces` meshes slivers with a neighbour (v17.20.0; read back by
+    !> `mio_mesh_cad_get_reparametrised`, `_merged_face`, `_tolerance_use`).
     function format_info_mesh_cad_surface(self, target_size, max_chordal_deviation, &
                                           min_points_per_edge, tolerance, record_face_ids, &
                                           edges, match_unreferenced_trims, strict, max_points, &
@@ -12102,7 +12167,8 @@ contains
                                           curvature_deviation, cells_across_gaps, pole_rings, &
                                           face_size_faces, face_sizes, edge_size_edges, &
                                           edge_sizes, background, background_array, metric, &
-                                          virtual_edges) &
+                                          virtual_edges, reparam_condition_number, &
+                                          model_tolerances, virtual_faces) &
         result(out)
         class(mio_format_info), intent(in) :: self
         real(real64), intent(in) :: target_size
@@ -12115,6 +12181,8 @@ contains
         character(*), intent(in), optional :: background_array
         integer, intent(in), optional :: metric
         logical, intent(in), optional :: virtual_edges
+        real(real64), intent(in), optional :: reparam_condition_number
+        logical, intent(in), optional :: model_tolerances, virtual_faces
         integer(int64), intent(in), optional :: min_points_per_edge, max_points
         logical, intent(in), optional :: record_face_ids, edges, match_unreferenced_trims, strict
         type(mio_mesh_cad_surface_report), intent(out), optional :: report
@@ -12160,6 +12228,11 @@ contains
         if (present(cells_across_gaps)) opts%cells_across_gaps = real(cells_across_gaps, c_double)
         if (present(metric)) ex%metric = int(metric, c_int32_t)
         if (present(virtual_edges)) ex%virtual_edges = merge(1_c_int32_t, 0_c_int32_t, virtual_edges)
+        if (present(reparam_condition_number)) &
+            ex%reparam_condition_number = real(reparam_condition_number, c_double)
+        if (present(model_tolerances)) &
+            ex%model_tolerances = merge(1_c_int32_t, 0_c_int32_t, model_tolerances)
+        if (present(virtual_faces)) ex%virtual_faces = merge(1_c_int32_t, 0_c_int32_t, virtual_faces)
         if (present(face_size_faces) .and. present(face_sizes)) then
             if (size(face_size_faces) /= size(face_sizes)) then
                 call handle_failure('mesh_cad_surface', &
@@ -12231,6 +12304,84 @@ contains
         n = c_mio_mesh_cad_surface_face_size_limits(int(face - 1, c_int64_t), all, n)
         edges = int(all + 1, int64)
     end function
+
+    !> How many faces this thread's last `info%mesh_cad_surface` call found
+    !> over `reparam_condition_number` (v17.20.0), flattened or declined.
+    integer function mio_mesh_cad_num_reparametrised() result(n)
+        n = int(c_mio_mesh_cad_surface_num_reparametrised())
+    end function
+
+    !> Reparametrised face record `idx` (1-based): its face (1-based), its
+    !> condition number and its flattening's, and `method` (1 conformal, 2
+    !> mean-value, 0 declined); `stat` nonzero when out of range.
+    subroutine mio_mesh_cad_get_reparametrised(idx, face, condition_number, &
+                                               condition_number_disc, method, stat)
+        integer, intent(in) :: idx
+        integer(int64), intent(out) :: face
+        real(real64), intent(out) :: condition_number, condition_number_disc
+        integer, intent(out) :: method
+        integer, intent(out), optional :: stat
+        integer(c_int64_t) :: f
+        real(c_double) :: c, d
+        integer(c_int32_t) :: m
+        integer(c_int) :: st
+        st = c_mio_mesh_cad_surface_reparametrised(int(idx - 1, c_int64_t), f, c, d, m)
+        face = int(f + 1, int64)
+        condition_number = real(c, real64)
+        condition_number_disc = real(d, real64)
+        method = int(m)
+        if (present(stat)) stat = int(st)
+    end subroutine
+
+    !> How many sliver faces this thread's last call found (v17.20.0).
+    integer function mio_mesh_cad_num_merged_faces() result(n)
+        n = int(c_mio_mesh_cad_surface_num_merged_faces())
+    end function
+
+    !> Sliver record `idx` (1-based): the sliver's and its host's faces
+    !> (1-based; 0 for no host), its width and whether it was merged.
+    subroutine mio_mesh_cad_get_merged_face(idx, sliver, host, width, merged, stat)
+        integer, intent(in) :: idx
+        integer(int64), intent(out) :: sliver, host
+        real(real64), intent(out) :: width
+        logical, intent(out) :: merged
+        integer, intent(out), optional :: stat
+        integer(c_int64_t) :: s, h
+        real(c_double) :: w
+        integer(c_int32_t) :: m
+        integer(c_int) :: st
+        st = c_mio_mesh_cad_surface_merged_face(int(idx - 1, c_int64_t), s, h, w, m)
+        sliver = int(s + 1, int64)
+        host = int(h + 1, int64)
+        width = real(w, real64)
+        merged = m /= 0
+        if (present(stat)) stat = int(st)
+    end subroutine
+
+    !> How many places a declared tolerance accepted a gap (v17.20.0).
+    integer function mio_mesh_cad_num_tolerance_uses() result(n)
+        n = int(c_mio_mesh_cad_surface_num_tolerance_uses())
+    end function
+
+    !> Tolerance use `idx` (1-based): the edge (1-based), the tolerance it
+    !> declares, the gap accepted and where (`MIO_MESH_CAD_TOLERANCE_*`).
+    subroutine mio_mesh_cad_get_tolerance_use(idx, edge, declared, gap, where, stat)
+        integer, intent(in) :: idx
+        integer(int64), intent(out) :: edge
+        real(real64), intent(out) :: declared, gap
+        integer, intent(out) :: where
+        integer, intent(out), optional :: stat
+        integer(c_int64_t) :: e
+        real(c_double) :: d, g
+        integer(c_int32_t) :: w
+        integer(c_int) :: st
+        st = c_mio_mesh_cad_surface_tolerance_use(int(idx - 1, c_int64_t), e, d, g, w)
+        edge = int(e + 1, int64)
+        declared = real(d, real64)
+        gap = real(g, real64)
+        where = int(w)
+        if (present(stat)) stat = int(st)
+    end subroutine
 
     !> The status (`MIO_MESH_CAD_*`) of face `face` (1-based) in this thread's
     !> last `info%mesh_cad_surface` call, or -1 when out of range.

@@ -201,9 +201,17 @@ void fuzz_mesh_cad_surface(const std::uint8_t* pData, std::size_t Size) {
     sources.mVirtualEdges = ((hash >> 40) & 3) == 0 && o.mOrder == 1;
     if (((hash >> 42) & 3) == 0)
         o.mMetric = meshioplusplus::MeshCadMetric::Varying;
+    // The discrete reparametrisation for one input in four, virtual faces and
+    // model tolerances for one in eight each (v17.20.0; the first two order 1
+    // only).
+    meshioplusplus::MeshCadSurfaceExtras extras;
+    if (((hash >> 44) & 3) == 0 && o.mOrder == 1)
+        o.mReparamConditionNumber = 4.0;
+    extras.mVirtualFaces = ((hash >> 46) & 7) == 0 && o.mOrder == 1;
+    extras.mModelTolerances = ((hash >> 49) & 7) == 0;
     try {
         const meshioplusplus::MeshCadSurfaceResult r =
-            meshioplusplus::mesh_cad_surface(info, o, sources);
+            meshioplusplus::mesh_cad_surface(info, o, sources, extras);
         for (const meshioplusplus::MeshCadFaceRecord& r_f : r.mFaces)
             if (r_f.mStatus == meshioplusplus::MeshCadFaceStatus::Other &&
                 r_f.mReason.find("internal error") != std::string::npos)

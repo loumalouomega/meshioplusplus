@@ -187,7 +187,7 @@ extern SEXP R_mio_iga_refine(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_iga_sample(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_mesh_cad_surface(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
                                    SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
-                                   SEXP, SEXP, SEXP, SEXP);
+                                   SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_iga_evaluate(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_brep_info(SEXP);
 extern SEXP R_mio_mdpa_info(SEXP);
@@ -379,7 +379,7 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_nurbs_info, 1),
                                               CALLDEF(R_mio_iga_refine, 7),
                                               CALLDEF(R_mio_iga_sample, 5),
-                                              CALLDEF(R_mio_mesh_cad_surface, 26),
+                                              CALLDEF(R_mio_mesh_cad_surface, 29),
                                               CALLDEF(R_mio_iga_evaluate, 5),
                                               CALLDEF(R_mio_brep_info, 1),
                                               CALLDEF(R_mio_mdpa_info, 1),

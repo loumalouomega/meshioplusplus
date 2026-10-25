@@ -556,6 +556,106 @@ static SEXP r_mesh_cad_corners(void) {
     return cols;
 }
 
+/* A named list of equal-length columns. */
+static SEXP r_columns(int n, const char** names, SEXP* cols) {
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
+    SEXP nm = PROTECT(Rf_allocVector(STRSXP, n));
+    for (int i = 0; i < n; ++i) {
+        SET_VECTOR_ELT(out, i, cols[i]);
+        SET_STRING_ELT(nm, i, Rf_mkChar(names[i]));
+    }
+    Rf_setAttrib(out, R_NamesSymbol, nm);
+    UNPROTECT(2);
+    return out;
+}
+
+/* A reason string of record `k` through `fn` (the C string rule). */
+static SEXP r_reason(int64_t (*fn)(int64_t, char*, int64_t), int64_t k) {
+    const int64_t n = fn(k, NULL, 0);
+    if (n <= 0)
+        return Rf_mkChar("");
+    char* buf = (char*)R_alloc((size_t)n + 1, 1);
+    fn(k, buf, n + 1);
+    return Rf_mkCharLen(buf, (int)n);
+}
+
+/* v17.20.0: the last call's reparametrised faces (6.4.4). */
+static SEXP r_mesh_cad_reparametrised(void) {
+    const R_xlen_t n = (R_xlen_t)mio_mesh_cad_surface_num_reparametrised();
+    SEXP face = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP cond = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP disc = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP method = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP reason = PROTECT(Rf_allocVector(STRSXP, n));
+    for (R_xlen_t i = 0; i < n; ++i) {
+        int64_t f = -1;
+        double c = 0.0, d = 0.0;
+        int32_t m = 0;
+        mio_mesh_cad_surface_reparametrised((int64_t)i, &f, &c, &d, &m);
+        REAL(face)[i] = (double)f + 1.0;
+        REAL(cond)[i] = c;
+        REAL(disc)[i] = d;
+        REAL(method)[i] = (double)m;
+        SET_STRING_ELT(reason, i, r_reason(mio_mesh_cad_surface_reparam_reason, (int64_t)i));
+    }
+    const char* names[] = {"face", "condition_number", "condition_number_disc", "method", "reason"};
+    SEXP cols[] = {face, cond, disc, method, reason};
+    SEXP out = r_columns(5, names, cols);
+    UNPROTECT(5);
+    return out;
+}
+
+/* v17.20.0: the slivers found (6.5.2); host 0 for none. */
+static SEXP r_mesh_cad_merged_faces(void) {
+    const R_xlen_t n = (R_xlen_t)mio_mesh_cad_surface_num_merged_faces();
+    SEXP sliver = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP host = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP width = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP merged = PROTECT(Rf_allocVector(LGLSXP, n));
+    SEXP reason = PROTECT(Rf_allocVector(STRSXP, n));
+    for (R_xlen_t i = 0; i < n; ++i) {
+        int64_t s = -1, h = -1;
+        double w = 0.0;
+        int32_t m = 0;
+        mio_mesh_cad_surface_merged_face((int64_t)i, &s, &h, &w, &m);
+        REAL(sliver)[i] = (double)s + 1.0;
+        REAL(host)[i] = (double)h + 1.0;
+        REAL(width)[i] = w;
+        LOGICAL(merged)[i] = m != 0;
+        SET_STRING_ELT(reason, i, r_reason(mio_mesh_cad_surface_merged_face_reason, (int64_t)i));
+    }
+    const char* names[] = {"sliver", "host", "width", "merged", "reason"};
+    SEXP cols[] = {sliver, host, width, merged, reason};
+    SEXP out = r_columns(5, names, cols);
+    UNPROTECT(5);
+    return out;
+}
+
+/* v17.20.0: where a declared tolerance accepted a gap (6.5.1). */
+static SEXP r_mesh_cad_tolerance_uses(void) {
+    const R_xlen_t n = (R_xlen_t)mio_mesh_cad_surface_num_tolerance_uses();
+    SEXP edge = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP declared = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP gap = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP where = PROTECT(Rf_allocVector(STRSXP, n));
+    static const char* kWhere[] = {"closed_start", "corner", "projection"};
+    for (R_xlen_t i = 0; i < n; ++i) {
+        int64_t e = -1;
+        double d = 0.0, g = 0.0;
+        int32_t w = 0;
+        mio_mesh_cad_surface_tolerance_use((int64_t)i, &e, &d, &g, &w);
+        REAL(edge)[i] = (double)e + 1.0;
+        REAL(declared)[i] = d;
+        REAL(gap)[i] = g;
+        SET_STRING_ELT(where, i, Rf_mkChar(kWhere[w >= 0 && w < 3 ? w : 2]));
+    }
+    const char* names[] = {"edge", "declared", "gap", "where"};
+    SEXP cols[] = {edge, declared, gap, where};
+    SEXP out = r_columns(4, names, cols);
+    UNPROTECT(4);
+    return out;
+}
+
 SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation,
                             SEXP min_points_per_edge, SEXP tolerance, SEXP record_face_ids,
                             SEXP edges, SEXP match_unreferenced_trims, SEXP strict, SEXP max_points,
@@ -563,7 +663,9 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
                             SEXP grading, SEXP curvature_deviation, SEXP cells_across_gaps,
                             SEXP pole_rings, SEXP face_size_faces, SEXP face_sizes,
                             SEXP edge_size_edges, SEXP edge_sizes, SEXP background,
-                            SEXP background_array, SEXP metric, SEXP virtual_edges) {
+                            SEXP background_array, SEXP metric, SEXP virtual_edges,
+                            SEXP reparam_condition_number, SEXP model_tolerances,
+                            SEXP virtual_faces) {
     const mio_format_info *info = info_of(x, 0);
     mio_mesh_cad_surface_opts opts;
     mio_mesh_cad_surface_opts_init(&opts);
@@ -591,6 +693,11 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
     mio_mesh_cad_surface_opts_ex_init(&ex);
     ex.metric = (int32_t)mio_r_int64(metric, "metric");
     ex.virtual_edges = mio_r_bool(virtual_edges, "virtual_edges") ? 1 : 0;
+    /* v17.20.0: the reparametrisation, model tolerances and virtual faces. */
+    ex.reparam_condition_number =
+        mio_r_double(reparam_condition_number, "reparam_condition_number");
+    ex.model_tolerances = mio_r_bool(model_tolerances, "model_tolerances") ? 1 : 0;
+    ex.virtual_faces = mio_r_bool(virtual_faces, "virtual_faces") ? 1 : 0;
     const R_xlen_t nfs = Rf_xlength(face_size_faces), nes = Rf_xlength(edge_size_edges);
     if (Rf_xlength(face_sizes) != nfs || Rf_xlength(edge_sizes) != nes)
         Rf_error("mesh_cad_surface: the size indices and sizes must have the same length");
@@ -675,7 +782,13 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
         UNPROTECT(1);
     }
 
-    enum { R_MESH_CAD_N = 29 };
+    /* v17.20.0: the faces over the reparametrisation threshold, the slivers
+     * found and the declared tolerances used, as named columns (1-based). */
+    SEXP reparam = PROTECT(r_mesh_cad_reparametrised());
+    SEXP merged = PROTECT(r_mesh_cad_merged_faces());
+    SEXP tol_uses = PROTECT(r_mesh_cad_tolerance_uses());
+
+    enum { R_MESH_CAD_N = 32 };
     SEXP res = PROTECT(Rf_allocVector(VECSXP, R_MESH_CAD_N));
     SEXP nm = PROTECT(Rf_allocVector(STRSXP, R_MESH_CAD_N));
     int k = 0;
@@ -717,12 +830,15 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
     R_MESH_CAD_NUM(num_curved_straightened);
     R_MESH_CAD_SET("face_size_limits", limits);
     R_MESH_CAD_SET("virtual_edges", virtual_edges_out);
+    R_MESH_CAD_SET("reparametrised", reparam);
+    R_MESH_CAD_SET("merged_faces", merged);
+    R_MESH_CAD_SET("tolerance_uses", tol_uses);
 #undef R_MESH_CAD_NUM
 #undef R_MESH_CAD_SET
     if (k != R_MESH_CAD_N)
         Rf_error("mesh_cad_surface: report has %d fields, expected %d", k, (int)R_MESH_CAD_N);
     Rf_setAttrib(res, R_NamesSymbol, nm);
-    UNPROTECT(10);
+    UNPROTECT(13);
     return res;
 }
 

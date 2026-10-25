@@ -371,6 +371,24 @@ program test_fortran_api
             tris = info%mesh_cad_surface(0.1_real64, face_size_faces=[7_int64], &
                                          face_sizes=[0.025_real64], stat=ierr, errmsg=msg)
             call check(ierr /= 0, 'mesh_cad_surface refuses a face out of range')
+            ! v17.20.0: the reparametrisation, model tolerances and virtual
+            ! faces; a planar face is never flattened.
+            tris = info%mesh_cad_surface(0.1_real64, report=report, &
+                                         reparam_condition_number=4.0_real64, &
+                                         model_tolerances=.true., virtual_faces=.true., &
+                                         stat=ierr, errmsg=msg)
+            call check(ierr == 0, 'mesh_cad_surface takes the v17.20.0 options')
+            if (ierr == 0) then
+                call check(mio_mesh_cad_num_reparametrised() == 0, &
+                           'mesh_cad_surface flattens no planar face')
+                call check(mio_mesh_cad_num_merged_faces() == 0 .and. &
+                           mio_mesh_cad_num_tolerance_uses() == 0, &
+                           'mesh_cad_surface finds no sliver nor declared gap')
+                call tris%free()
+            end if
+            tris = info%mesh_cad_surface(0.1_real64, reparam_condition_number=0.5_real64, &
+                                         stat=ierr, errmsg=msg)
+            call check(ierr /= 0, 'mesh_cad_surface refuses a threshold under 1')
             ! v17.15.0: refined to 25 degrees and smoothed; the two 45-degree
             ! corners are reported.
             tris = info%mesh_cad_surface(0.1_real64, report=report, min_angle=25.0_real64, &

@@ -162,6 +162,24 @@ def add_args(parser):
         action="store_true",
         help="sample chains of short edges meeting smoothly as one",
     )
+    parser.add_argument(
+        "--reparam-condition-number",
+        type=float,
+        default=0.0,
+        metavar="K",
+        help="mesh a face whose metric's condition number passes K in a "
+        "flattening of its coarse mesh (default: 0, off)",
+    )
+    parser.add_argument(
+        "--model-tolerances",
+        action="store_true",
+        help="accept the gaps the model itself declares",
+    )
+    parser.add_argument(
+        "--virtual-faces",
+        action="store_true",
+        help="mesh a sliver face with the neighbour it meets tangentially",
+    )
     parser.add_argument("--json", action="store_true", help="emit the report as JSON")
     parser.add_argument(
         "--quiet", "-q", action="store_true", help="suppress the summary"
@@ -206,6 +224,9 @@ def mesh_cad_surface_cmd(args):
         background_array=args.background_array,
         metric=args.metric,
         virtual_edges=args.virtual_edges,
+        reparam_condition_number=args.reparam_condition_number,
+        model_tolerances=args.model_tolerances,
+        virtual_faces=args.virtual_faces,
         return_report=True,
     )
     write(args.outfile, out, file_format=args.output_format)

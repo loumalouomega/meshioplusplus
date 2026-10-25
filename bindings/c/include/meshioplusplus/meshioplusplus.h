@@ -5754,11 +5754,18 @@ typedef struct mio_mesh_cad_surface_opts_ex {
     int64_t num_edge_sizes;
     const mio_mesh* background;   /**< NULL: none */
     const char* background_array; /**< NULL or "": "size" */
-    int64_t reserved[8];          /**< zero */
+    /** v17.20.0: mesh a face whose metric's condition number over its coarse
+     *  mesh exceeds this in a flattening of that mesh (6.4.4); 0 is off,
+     *  otherwise above 1; order 1 only. */
+    double reparam_condition_number;
+    int32_t model_tolerances; /**< v17.20.0: nonzero: accept the gaps the model declares (6.5.1) */
+    int32_t virtual_faces;    /**< v17.20.0: nonzero: mesh sliver faces with a neighbour (6.5.2) */
+    int64_t reserved[6];      /**< zero */
 } mio_mesh_cad_surface_opts_ex;
 
 /** Initialize the extended options: the mean metric, no virtual edges, no
- *  given sizes and no background. */
+ *  given sizes, no background, no reparametrisation, no model tolerances and
+ *  no virtual faces. */
 MIO_API void mio_mesh_cad_surface_opts_ex_init(mio_mesh_cad_surface_opts_ex* opts);
 
 /**
@@ -5787,6 +5794,64 @@ MIO_API int64_t mio_mesh_cad_surface_num_virtual_edges(void);
  * `n` into `edges` and returns its length, or -1 for an index out of range.
  */
 MIO_API int64_t mio_mesh_cad_surface_virtual_edge(int64_t index, int64_t* edges, int64_t n);
+
+/**
+ * v17.20.0: how many faces this thread's last call found over
+ * `reparam_condition_number` (6.4.4), meshed in their flattening or declined.
+ */
+MIO_API int64_t mio_mesh_cad_surface_num_reparametrised(void);
+
+/**
+ * v17.20.0: reparametrised face record `index`: its face, its condition number
+ * over its coarse mesh and in its flattening (0 when none was built), and its
+ * method: 1 least-squares conformal, 2 mean-value on a circle, 0 declined
+ * (see mio_mesh_cad_surface_reparam_reason). Any output may be NULL.
+ */
+MIO_API mio_status mio_mesh_cad_surface_reparametrised(int64_t index, int64_t* face,
+                                                       double* condition_number,
+                                                       double* condition_number_disc,
+                                                       int32_t* method);
+
+/** v17.20.0: why reparametrised record `index` was declined ("" when taken),
+ *  copied as mio_mesh_cad_surface_face_reason does. */
+MIO_API int64_t mio_mesh_cad_surface_reparam_reason(int64_t index, char* buf, int64_t buflen);
+
+/** v17.20.0: how many sliver faces this thread's last call found (6.5.2). */
+MIO_API int64_t mio_mesh_cad_surface_num_merged_faces(void);
+
+/**
+ * v17.20.0: sliver record `index`: the sliver's and its host's face indices
+ * (-1 for no host), its width (twice its area over its perimeter) and
+ * whether it was meshed with the host. Any output may be NULL.
+ */
+MIO_API mio_status mio_mesh_cad_surface_merged_face(int64_t index, int64_t* sliver, int64_t* host,
+                                                    double* width, int32_t* merged);
+
+/** v17.20.0: the B-rep edges sliver record `index` shares with its host:
+ *  copies up to `n` and returns how many, or -1 for an index out of range. */
+MIO_API int64_t mio_mesh_cad_surface_merged_face_edges(int64_t index, int64_t* edges, int64_t n);
+
+/** v17.20.0: why sliver record `index` was not merged ("" when it was). */
+MIO_API int64_t mio_mesh_cad_surface_merged_face_reason(int64_t index, char* buf, int64_t buflen);
+
+/** Where a model's declared tolerance accepted a gap (v17.20.0, 6.5.1). */
+typedef enum mio_mesh_cad_tolerance_where {
+    MIO_MESH_CAD_TOLERANCE_CLOSED_START = 0, /**< a closed edge's uses start at one point */
+    MIO_MESH_CAD_TOLERANCE_CORNER = 1,       /**< a corner's uses lie within it */
+    MIO_MESH_CAD_TOLERANCE_PROJECTION = 2    /**< an edge's uses lie within it */
+} mio_mesh_cad_tolerance_where;
+
+/** v17.20.0: how many places a declared tolerance accepted a gap (6.5.1). */
+MIO_API int64_t mio_mesh_cad_surface_num_tolerance_uses(void);
+
+/**
+ * v17.20.0: tolerance use `index`: the B-rep edge, the tolerance it declares,
+ * the gap accepted and where (a mio_mesh_cad_tolerance_where). Any output
+ * may be NULL.
+ */
+MIO_API mio_status mio_mesh_cad_surface_tolerance_use(int64_t index, int64_t* edge,
+                                                      double* declared, double* gap,
+                                                      int32_t* where);
 
 /**
  * Options for mio_hausdorff_distance. Same ABI rules as above; an all-zero

@@ -464,9 +464,12 @@ const _MESH_CAD_SMOOTH_METHODS = ("laplacian", "odt")
                      smooth_method="laplacian", order=1, grading=0.0,
                      curvature_deviation=0.0, cells_across_gaps=0.0, pole_rings=0,
                      face_sizes=nothing, edge_sizes=nothing, background=nothing,
-                     background_array="size", metric="mean", virtual_edges=false)
+                     background_array="size", metric="mean", virtual_edges=false,
+                     reparam_condition_number=0.0, model_tolerances=false,
+                     virtual_faces=false)
         -> (; mesh, num_points, num_triangles, ..., faces, warnings,
-              angle_histogram, corners, virtual_edges)
+              angle_histogram, corners, virtual_edges, reparametrised, merged_faces,
+              tolerance_uses)
 
 Triangulate the faces of a B-rep (`info` from [`read_with_info`](@ref) of Kratos
 CAD JSON, STEP or IGES) into one conforming surface mesh with edges of about
@@ -490,7 +493,12 @@ limiting the size's growth (0 is 1.5); `pole_rings` grades the poles
 one-component point data `background_array` join the same field; each face
 record lists the 1-based edges that `limited_by_edges` its given size;
 `metric` (`"mean"` or `"varying"`) and `virtual_edges` as in the doc
-(v17.19.0). See `doc/mesh_cad.md`.
+(v17.19.0). `reparam_condition_number` meshes a face whose metric's condition
+number over its coarse mesh passes it in a flattening of that mesh,
+`model_tolerances` accepts the gaps the model declares and `virtual_faces`
+meshes a sliver face with its neighbour (v17.20.0); `reparametrised`,
+`merged_faces` and `tolerance_uses` report them, every index 1-based. See
+`doc/mesh_cad.md`.
 """
 function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_deviation::Real=0.0,
                           min_points_per_edge::Integer=0, tolerance::Real=0.0,
@@ -504,7 +512,9 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
                           face_sizes=nothing, edge_sizes=nothing,
                           background::Union{Nothing,Mesh}=nothing,
                           background_array::AbstractString="size",
-                          metric::AbstractString="mean", virtual_edges::Bool=false)
+                          metric::AbstractString="mean", virtual_edges::Bool=false,
+                          reparam_condition_number::Real=0.0, model_tolerances::Bool=false,
+                          virtual_faces::Bool=false)
     method = findfirst(==(smooth_method), _MESH_CAD_SMOOTH_METHODS)
     method === nothing &&
         throw(ArgumentError("meshio++: mesh_cad_surface: smooth_method must be " *
@@ -535,7 +545,9 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
                                     isempty(eidx) ? C_NULL : pointer(eidx),
                                     isempty(esz) ? C_NULL : pointer(esz), Int64(length(eidx)),
                                     background === nothing ? C_NULL : _handle(background),
-                                    pointer(bname), ntuple(_ -> Int64(0), 8))
+                                    pointer(bname), Cdouble(reparam_condition_number),
+                                    Int32(model_tolerances), Int32(virtual_faces),
+                                    ntuple(_ -> Int64(0), 6))
         ccall(_sym(:mio_mesh_cad_surface2), Ptr{Cvoid},
               (Ptr{Cvoid}, Ref{_CMeshCadSurfaceOpts}, Ref{_CMeshCadSurfaceOptsEx},
                Ref{_CMeshCadSurfaceReport}),
@@ -566,6 +578,40 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
               k, chain, n)
         Int.(chain) .+ 1
     end
+    nre = ccall(_sym(:mio_mesh_cad_surface_num_reparametrised), Int64, ())
+    reparametrised = map(0:nre-1) do k
+        f, c, d, m = Ref{Int64}(), Ref{Cdouble}(), Ref{Cdouble}(), Ref{Int32}()
+        _check(ccall(_sym(:mio_mesh_cad_surface_reparametrised), Cint,
+                     (Int64, Ref{Int64}, Ref{Cdouble}, Ref{Cdouble}, Ref{Int32}), k, f, c, d, m))
+        why = _getstring((buf, n) -> ccall(_sym(:mio_mesh_cad_surface_reparam_reason), Int64,
+                                           (Int64, Ptr{UInt8}, Int64), k, buf, n))
+        (face=Int(f[]) + 1, condition_number=Float64(c[]), condition_number_disc=Float64(d[]),
+         taken=m[] != 0, method=m[] == 1 ? "conformal" : m[] == 2 ? "mean_value" : "none",
+         reason=why)
+    end
+    nmerged = ccall(_sym(:mio_mesh_cad_surface_num_merged_faces), Int64, ())
+    merged_faces = map(0:nmerged-1) do k
+        s, h, w, m = Ref{Int64}(), Ref{Int64}(), Ref{Cdouble}(), Ref{Int32}()
+        _check(ccall(_sym(:mio_mesh_cad_surface_merged_face), Cint,
+                     (Int64, Ref{Int64}, Ref{Int64}, Ref{Cdouble}, Ref{Int32}), k, s, h, w, m))
+        n = ccall(_sym(:mio_mesh_cad_surface_merged_face_edges), Int64,
+                  (Int64, Ptr{Int64}, Int64), k, C_NULL, 0)
+        shared = zeros(Int64, max(n, 0))
+        n > 0 && ccall(_sym(:mio_mesh_cad_surface_merged_face_edges), Int64,
+                       (Int64, Ptr{Int64}, Int64), k, shared, n)
+        why = _getstring((buf, n) -> ccall(_sym(:mio_mesh_cad_surface_merged_face_reason), Int64,
+                                           (Int64, Ptr{UInt8}, Int64), k, buf, n))
+        (sliver=Int(s[]) + 1, host=h[] < 0 ? 0 : Int(h[]) + 1, width=Float64(w[]),
+         edges=Int.(shared) .+ 1, merged=m[] != 0, reason=why)
+    end
+    nuses = ccall(_sym(:mio_mesh_cad_surface_num_tolerance_uses), Int64, ())
+    tolerance_uses = map(0:nuses-1) do k
+        e, d, g, w = Ref{Int64}(), Ref{Cdouble}(), Ref{Cdouble}(), Ref{Int32}()
+        _check(ccall(_sym(:mio_mesh_cad_surface_tolerance_use), Cint,
+                     (Int64, Ref{Int64}, Ref{Cdouble}, Ref{Cdouble}, Ref{Int32}), k, e, d, g, w))
+        (edge=Int(e[]) + 1, declared=Float64(d[]), gap=Float64(g[]),
+         where=("closed_start", "corner", "projection")[w[] + 1])
+    end
     text = _getstring((buf, n) -> ccall(_sym(:mio_mesh_cad_surface_warnings), Int64,
                                         (Ptr{UInt8}, Int64), buf, n))
     histogram = zeros(Int64, 18)
@@ -595,7 +641,8 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
      num_faces_below_bound=Int(r.num_faces_below_bound), num_smoothed=Int(r.num_smoothed),
      min_input_angle_deg=Float64(r.min_input_angle_deg), angle_histogram=histogram,
      corners=corners, num_curved_straightened=Int(r.num_curved_straightened),
-     virtual_edges=virtual)
+     virtual_edges=virtual, reparametrised=reparametrised, merged_faces=merged_faces,
+     tolerance_uses=tolerance_uses)
 end
 
 const MIO_IGA_POINTS = Int32(0)

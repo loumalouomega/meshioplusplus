@@ -3012,7 +3012,8 @@ PYBIND11_MODULE(_core, m) {
            std::int64_t smooth_iterations, const std::string& smooth_method, int order,
            double grading, double curvature_deviation, double cells_across_gaps, int pole_rings,
            py::object face_sizes, py::object edge_sizes, py::object background,
-           const std::string& background_array, bool virtual_edges, const std::string& metric) {
+           const std::string& background_array, bool virtual_edges, const std::string& metric,
+           double reparam_condition_number, bool model_tolerances, bool virtual_faces) {
             const meshioplusplus::BrepInfo info = core_brep_from_py(brep);
             // Given sizes (6.3.1): sequences of (index, size) pairs, already
             // validated and sorted by the Python wrapper.
@@ -3072,9 +3073,16 @@ PYBIND11_MODULE(_core, m) {
             else
                 throw std::invalid_argument(
                     "meshio++: mesh_cad_surface: metric must be 'mean' or 'varying'");
+            o.mReparamConditionNumber = reparam_condition_number;
+            meshioplusplus::MeshCadSurfaceExtras extras;
+            extras.mModelTolerances = model_tolerances;
+            extras.mVirtualFaces = virtual_faces;
             meshioplusplus::MeshCadSizeReport size_report;
-            meshioplusplus::MeshCadSurfaceResult r = core_nogil(
-                [&] { return meshioplusplus::mesh_cad_surface(info, o, sources, &size_report); });
+            meshioplusplus::MeshCadSurfaceExtrasReport extras_report;
+            meshioplusplus::MeshCadSurfaceResult r = core_nogil([&] {
+                return meshioplusplus::mesh_cad_surface(info, o, sources, extras, &size_report,
+                                                        &extras_report);
+            });
             py::dict out;
             out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
             out["num_points"] = r.mNumPoints;
@@ -3142,6 +3150,42 @@ PYBIND11_MODULE(_core, m) {
                 std::vector<std::int64_t>(r.mAngleHistogram.begin(), r.mAngleHistogram.end());
             out["num_curved_straightened"] = r.mNumCurvedStraightened;
             out["virtual_edges"] = size_report.mVirtualEdges;
+            py::list reparametrised;
+            for (const auto& r_f : extras_report.mReparametrised) {
+                py::dict d;
+                d["face"] = r_f.mFace;
+                d["condition_number"] = r_f.mConditionNumber;
+                d["condition_number_disc"] = r_f.mConditionNumberDisc;
+                d["taken"] = r_f.mTaken;
+                d["method"] = r_f.mMethod == 1   ? "conformal"
+                              : r_f.mMethod == 2 ? "mean_value"
+                                                 : "none";
+                d["reason"] = r_f.mReason;
+                reparametrised.append(d);
+            }
+            out["reparametrised"] = reparametrised;
+            py::list merged;
+            for (const auto& r_m : extras_report.mMergedFaces) {
+                py::dict d;
+                d["sliver"] = r_m.mSliver;
+                d["host"] = r_m.mHost;
+                d["width"] = r_m.mWidth;
+                d["edges"] = r_m.mEdges;
+                d["merged"] = r_m.mMerged;
+                d["reason"] = r_m.mReason;
+                merged.append(d);
+            }
+            out["merged_faces"] = merged;
+            py::list tolerance_uses;
+            for (const auto& r_t : extras_report.mToleranceUses) {
+                py::dict d;
+                d["edge"] = r_t.mEdge;
+                d["declared"] = r_t.mDeclared;
+                d["gap"] = r_t.mGap;
+                d["where"] = r_t.mWhere;
+                tolerance_uses.append(d);
+            }
+            out["tolerance_uses"] = tolerance_uses;
             return out;
         },
         py::arg("brep"), py::arg("target_size"), py::arg("max_chordal_deviation") = 0.0,
@@ -3154,7 +3198,9 @@ PYBIND11_MODULE(_core, m) {
         py::arg("cells_across_gaps") = 0.0, py::arg("pole_rings") = 0,
         py::arg("face_sizes") = py::none(), py::arg("edge_sizes") = py::none(),
         py::arg("background") = py::none(), py::arg("background_array") = "size",
-        py::arg("virtual_edges") = false, py::arg("metric") = "mean");
+        py::arg("virtual_edges") = false, py::arg("metric") = "mean",
+        py::arg("reparam_condition_number") = 0.0, py::arg("model_tolerances") = false,
+        py::arg("virtual_faces") = false);
     m.def(
         "triangulate_polygon_2d",
         [](py::list loops, double target_size, double min_angle, std::int64_t max_points) {
