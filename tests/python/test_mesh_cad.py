@@ -887,7 +887,7 @@ def test_pipeline_takes_given_sizes_like_the_operation(tmp_path):
     bg = mio.rectangle(dims=(10, 10), size=(1.0, 1.0), cell_type="triangle")
     bg.point_data["size"] = 0.1 + 0.2 * bg.points[:, 0]
     bg_path = tmp_path / "bg.vtu"
-    mio.write(bg_path, bg)
+    mio.write(bg_path, bg, compression=None)
     doc = {
         "Version": 2,
         "Input": {"Path": str(CAD / "unit_cube.cad.json")},
@@ -971,7 +971,7 @@ def test_pipeline_meshes_the_solid_fit_cad_fits(tmp_path):
     """FitCad hands its fitted B-rep on (outside the native legacy freeform
     mode, which fits none), so a skin is fitted and re-meshed in one run."""
     src = tmp_path / "box.vtu"
-    mio.write(src, mio.extract_surface(mio.box()))
+    mio.write(src, mio.extract_surface(mio.box()), compression=None)
     fit = {"Op": "FitCad", "Backend": "native", "FreeformMode": "adaptive"}
     doc = {
         "Input": {"Path": str(src)},
@@ -992,7 +992,7 @@ def test_pipeline_meshes_the_solid_fit_cad_fits(tmp_path):
 
 def test_pipeline_model_step_needs_a_cad_input(tmp_path):
     src = tmp_path / "plain.vtu"
-    mio.write(src, mio.extract_surface(mio.box()))
+    mio.write(src, mio.extract_surface(mio.box()), compression=None)
     with pytest.raises(ValueError, match="Input format 'vtu' carries none"):
         mio.run_pipeline(
             {
