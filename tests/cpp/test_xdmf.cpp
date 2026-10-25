@@ -140,6 +140,27 @@ TEST(Xdmf, ADeflatedChunkInflatingShorterThanItsElementsIsAReadError) {
     expect_xdmf_regression_refused("deflated-chunk-inflates-short.bundle",
                                    "meshioplusplus-deflated-chunk");
 }
+
+// The fuzzer's crash (tests/fuzz/regressions/xdmf/deflated-chunk-record-past-the-file): a
+// deflated chunk's index record claims more bytes than the file holds, and the reader sized
+// the chunk's buffer from that claim before reading it. The record is refused before the
+// buffer is sized, so the message names the claim and the file.
+TEST(Xdmf, ADeflatedChunkRecordLargerThanTheFileIsAReadError) {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / "meshioplusplus-deflated-record";
+    const std::filesystem::path xml =
+        extract_xdmf_regression("deflated-chunk-record-past-the-file.bundle", dir);
+    ASSERT_FALSE(xml.empty());
+    try {
+        meshioplusplus::read_xdmf(xml.string());
+        ADD_FAILURE() << "a deflated chunk record larger than its file was read";
+    } catch (const meshioplusplus::ReadError& e) {
+        EXPECT_NE(std::string(e.what()).find("more than the file holds"), std::string::npos)
+            << e.what();
+    }
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
 #endif
 
 // The Dimensions of an XML DataItem name a product the text cannot hold. The
