@@ -91,7 +91,7 @@ def sha256(path):
 
 
 def load_manifest(path):
-    manifest = json.loads(pathlib.Path(path).read_text())
+    manifest = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
     if manifest.get("Version") != 1:
         raise SystemExit(f"{path}: 'Version' must be 1")
     ids = set()
@@ -216,7 +216,7 @@ def fetch(args):
             file=sys.stderr,
         )
         if args.record:
-            pathlib.Path(args.record).write_text(canonical(recorded))
+            pathlib.Path(args.record).write_text(canonical(recorded), encoding="utf-8")
     # A source that cannot be reached is reported, not fatal (a mismatched
     # hash is: the file is not the one measured before).
     return 1 if any("SHA-256" in p for p in problems) else 0
@@ -397,7 +397,7 @@ def run(args):
         },
         "models": results,
     }
-    pathlib.Path(args.out).write_text(canonical(doc))
+    pathlib.Path(args.out).write_text(canonical(doc), encoding="utf-8")
     return 0
 
 
@@ -443,14 +443,17 @@ def stable(results):
 
 def baseline(args):
     pathlib.Path(args.out).write_text(
-        canonical(stable(json.loads(pathlib.Path(args.results).read_text())))
+        canonical(
+            stable(json.loads(pathlib.Path(args.results).read_text(encoding="utf-8")))
+        ),
+        encoding="utf-8",
     )
     return 0
 
 
 def compare(args):
-    now = json.loads(pathlib.Path(args.results).read_text())
-    base = json.loads(pathlib.Path(args.baseline).read_text())
+    now = json.loads(pathlib.Path(args.results).read_text(encoding="utf-8"))
+    base = json.loads(pathlib.Path(args.baseline).read_text(encoding="utf-8"))
     rows = {r["id"]: r for r in now["models"]}
     lost, notes = [], []
     for model_id, entry in sorted(base["models"].items()):
@@ -531,9 +534,9 @@ def render(base):
 
 
 def table(args):
-    base = json.loads(pathlib.Path(args.baseline).read_text())
+    base = json.loads(pathlib.Path(args.baseline).read_text(encoding="utf-8"))
     doc = pathlib.Path(args.doc)
-    text = doc.read_text()
+    text = doc.read_text(encoding="utf-8")
     if BEGIN not in text or END not in text:
         raise SystemExit(f"{doc}: the corpus markers are missing")
     head, rest = text.split(BEGIN, 1)
@@ -547,12 +550,12 @@ def table(args):
             )
             return 1
         return 0
-    doc.write_text(new)
+    doc.write_text(new, encoding="utf-8")
     return 0
 
 
 def summary(args):
-    results = json.loads(pathlib.Path(args.results).read_text())
+    results = json.loads(pathlib.Path(args.results).read_text(encoding="utf-8"))
     print("### CAD corpus\n")
     print(render(stable(results)).replace(BEGIN, "").replace(END, "").strip())
     print("\n| model | status | read s | mesh s | peak MB | error |")
