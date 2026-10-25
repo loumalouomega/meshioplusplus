@@ -34,7 +34,7 @@ from conan.tools.files import copy
 
 class MeshioplusplusConan(ConanFile):
     name = "meshioplusplus"
-    version = "17.19.0"
+    version = "17.20.0"
     # MIT for meshio++ itself. The default build links OpenCASCADE (with_occt,
     # LGPL-2.1 with the OCCT exception), so the package declares that combined
     # licence. A -o with_occt=False build contains no OpenCASCADE and is MIT,
