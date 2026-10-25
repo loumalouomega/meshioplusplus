@@ -50,9 +50,11 @@
 #include "brep_solids.hpp"
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/brep.hpp"
+#include "meshioplusplus/detail/sym3_eigen.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/formats/cad_json.hpp"
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/mesh_cad.hpp"
 
 namespace {
@@ -240,6 +242,100 @@ TEST(MeshCadInterpolation, TheSphereConvergesAtSecondOrder) {
     const Study layer = study(sphere, sizes, 25.0, sphere_layer);
     print("sphere, layer at z = 0.3", 25.0, sizes, layer);
     EXPECT_LT(layer.mErrors.back().mL2, layer.mErrors.front().mL2);
+}
+
+// Roadmap 6.11's layer: a size field from the field's own Hessian, carried
+// as a background (6.3.1), reaches the uniform mesh's L2 error with fewer
+// points. The background is a coarse mesh (h = 0.1) of the sphere with the
+// layer at its points; `hessian` (composed Green-Gauss, point values) gives
+// its second derivatives, projected on the tangent plane (P H P, P = I - n
+// n^T), and the size at a point is sqrt(8 eps / |lambda|max), the length at
+// which linear interpolation's error is about eps there (Loseille and
+// Alauzet 2011), between h / 4 and the target 0.2, with eps = 8e-3. A size
+// only refines, so the mesh starts at 0.2 and is refined to the layer. Both
+// meshes grade their poles (two rings), so the angles meet 25 degrees.
+// Measured: the uniform mesh at h = 0.05 has 11,281 points and an L2 error
+// of 1.58e-2; the sized one 3,848 points and 1.39e-2.
+TEST(MeshCadInterpolation, AHessianSizedMeshReachesTheLayerWithFewerPoints) {
+    const mio::BrepInfo sphere = brep_solids::sphere(1.0);
+    const auto layer = [](const double* pX) { return sphere_layer(pX); };
+    mio::MeshCadSurfaceOptions o;
+    o.mTargetSize = 0.05;
+    o.mMinAngleDeg = 25.0;
+    o.mEdges = false;
+    o.mPoleRings = 2;
+    const auto uniform = mio::mesh_cad_surface(sphere, o);
+    const Errors eu = interpolation_errors(uniform.mMesh, layer, {});
+    // The background and its sizes.
+    o.mTargetSize = 0.1;
+    mio::Mesh bg = mio::mesh_cad_surface(sphere, o).mMesh;
+    const std::size_t n = bg.NumPoints();
+    {
+        mio::NDArray f(mio::DType::Float64, {n});
+        const double* x = bg.Points().As<double>();
+        for (std::size_t i = 0; i < n; ++i)
+            f.As<double>()[i] = sphere_layer(x + 3 * i);
+        bg.AddPointData("f", std::move(f));
+    }
+    mio::HessianOptions ho;
+    ho.mArrayName = "f";
+    ho.mLocation = mio::DataLocation::Point;
+    const mio::Mesh hm = mio::hessian(bg, ho).mMesh;
+    const double* hess = hm.PointData("f:hessian").As<double>();
+    const double* x = bg.Points().As<double>();
+    const double eps = 8.0e-3;
+    mio::NDArray size(mio::DType::Float64, {n});
+    for (std::size_t i = 0; i < n; ++i) {
+        const double* p = x + 3 * i;
+        const double len = std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+        const double nn[3] = {p[0] / len, p[1] / len, p[2] / len};
+        double pm[3][3], h[3][3], t[3][3], ph[3][3];
+        for (int a = 0; a < 3; ++a)
+            for (int b = 0; b < 3; ++b) {
+                pm[a][b] = (a == b ? 1.0 : 0.0) - nn[a] * nn[b];
+                h[a][b] = 0.5 * (hess[9 * i + 3 * a + b] + hess[9 * i + 3 * b + a]);
+            }
+        for (int a = 0; a < 3; ++a)
+            for (int b = 0; b < 3; ++b) {
+                t[a][b] = 0.0;
+                for (int k = 0; k < 3; ++k)
+                    t[a][b] += pm[a][k] * h[k][b];
+            }
+        for (int a = 0; a < 3; ++a)
+            for (int b = 0; b < 3; ++b) {
+                ph[a][b] = 0.0;
+                for (int k = 0; k < 3; ++k)
+                    ph[a][b] += t[a][k] * pm[k][b];
+            }
+        const double six[6] = {ph[0][0], ph[1][1], ph[2][2], ph[0][1], ph[1][2], ph[2][0]};
+        double eig[3];
+        mio::detail::sym3_principal(six, eig);
+        const double lmax = std::max(std::fabs(eig[0]), std::fabs(eig[2]));
+        const double hs = lmax > 0.0 ? std::sqrt(8.0 * eps / lmax) : 0.2;
+        size.As<double>()[i] = std::clamp(hs, 0.05 / 4.0, 0.2);
+    }
+    {
+        double lo = 1e300, hi = 0;
+        for (std::size_t i = 0; i < n; ++i) {
+            lo = std::min(lo, size.As<double>()[i]);
+            hi = std::max(hi, size.As<double>()[i]);
+        }
+        std::printf("[6.11] background sizes %.4g .. %.4g over %zu points\n", lo, hi, n);
+    }
+    bg.AddPointData("size", std::move(size));
+    o.mTargetSize = 0.2;
+    mio::MeshCadSizeSources src;
+    src.pBackground = &bg;
+    const auto sized = mio::mesh_cad_surface(sphere, o, src);
+    ASSERT_EQ(sized.mNumFailed, 0);
+    const Errors es = interpolation_errors(sized.mMesh, layer, {});
+    std::printf(
+        "[6.11] layer: uniform h 0.05 points %zu L2 %.4e max %.4e; Hessian-sized "
+        "points %zu L2 %.4e max %.4e\n",
+        eu.mPoints, eu.mL2, eu.mMax, es.mPoints, es.mL2, es.mMax);
+    EXPECT_LE(es.mL2, eu.mL2);
+    EXPECT_LT(double(es.mPoints), 0.4 * double(eu.mPoints));
+    EXPECT_GE(sized.mMinAngleDeg, 25.0 - 1e-9);
 }
 
 // The roof (radius 25, length 50, 80 degrees): an untrimmed rational patch

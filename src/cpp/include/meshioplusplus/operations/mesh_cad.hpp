@@ -208,7 +208,10 @@ struct MeshCadSurfaceOptions {
     /// Rings of points around each pole, about `h` apart, so its triangles
     /// are graded instead of a thin fan (6.4.2; at most 8); 0 is the fan.
     std::int32_t mPoleRings = 0;
-    double mReparamConditionNumber = 0.0;                          ///< 6.4.4; 0 is off
+    /// Mesh a face whose metric's condition number over its coarse mesh
+    /// exceeds this in a flattening of that mesh instead of its parameters
+    /// (6.4.4; 0 is off, otherwise above 1; order 1 only).
+    double mReparamConditionNumber = 0.0;
     /// 1: linear triangles; 2 and 3: curved `triangle6` and `triangle10`
     /// (and `line3`, `line4`), their nodes on the surface and edges (6.6).
     std::int32_t mOrder = 1;
@@ -350,6 +353,91 @@ MESHIOPLUSPLUS_API MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
                                                          const MeshCadSurfaceOptions& rOptions,
                                                          const MeshCadSizeSources& rSources,
                                                          MeshCadSizeReport* pReport = nullptr);
+
+/// Inputs beside the options and the sources (v17.20.0), whose layouts have
+/// no room left: each off by default, and with all off the mesh is the
+/// four-argument overload's byte for byte.
+struct MeshCadSurfaceExtras {
+    /// Accept the gaps the model itself declares (roadmap 6.5.1): an edge's
+    /// `"tolerance"` and its ends' `"end_tolerances"` in its `mExtra` JSON
+    /// (a STEP or IGES read writes OpenCASCADE's) widen, for that edge and
+    /// its corners, where uses are taken to start at one point and how far
+    /// apart they may lie.
+    bool mModelTolerances = false;
+    /// Merge a sliver face, narrower than `h` and with no interior point, into
+    /// the neighbour it meets tangentially along the most edge, through their
+    /// common discrete parameterisation (roadmap 6.5.2). Order 1 only.
+    bool mVirtualFaces = false;
+    /// Corner lopping (roadmap 6.2.3): laid out, refused until it lands.
+    bool mLopCorners = false;
+};
+
+/// A face whose metric's condition number passed
+/// `MeshCadSurfaceOptions::mReparamConditionNumber` (roadmap 6.4.4).
+struct MeshCadReparamFace {
+    std::int64_t mFace = -1;
+    /// Over its coarse mesh: the largest stretch of the surface against the
+    /// face's plane over the smallest.
+    double mConditionNumber = 0.0;
+    /// The same in the flattening's plane (0 when none was built).
+    double mConditionNumberDisc = 0.0;
+    /// Meshed in the flattening; otherwise `mReason` says why not.
+    bool mTaken = false;
+    /// 1 least-squares conformal, 2 mean-value on a circle, 0 none.
+    std::int32_t mMethod = 0;
+    std::string mReason;
+};
+
+/// A sliver face found (roadmap 6.5.2) and what became of it.
+struct MeshCadMergedFace {
+    std::int64_t mSliver = -1;  ///< index into `BrepInfo::mFaces`
+    std::int64_t mHost = -1;    ///< the face it is meshed with; -1 for none
+    double mWidth = 0.0;        ///< twice its area over its perimeter
+    /// The `BrepEdge` indices the two share, left out of the triangulation
+    /// and of the line block.
+    std::vector<std::int64_t> mEdges;
+    bool mMerged = false;
+    std::string mReason;  ///< why not, when not merged
+};
+
+/// A place a model's own tolerance accepted what the global one refused
+/// (roadmap 6.5.1).
+struct MeshCadToleranceUse {
+    std::int64_t mEdge = -1;  ///< `BrepEdge` index
+    double mDeclared = 0.0;   ///< the tolerance the model declares there
+    double mGap = 0.0;        ///< the gap it accepted
+    /// `"closed_start"`, `"corner"` or `"projection"`.
+    std::string mWhere;
+};
+
+/// A corner lopped (roadmap 6.2.3): laid out, empty until it lands.
+struct MeshCadLoppedCorner {
+    std::int64_t mFace = -1;
+    std::int64_t mPoint = -1;
+    double mAngleDeg = 0.0;
+    double mLopRadius = 0.0;
+    double mStatedBoundDeg = 0.0;
+    double mMinForcedDeg = 180.0;
+};
+
+/// What the extras decided, filled when passed.
+struct MeshCadSurfaceExtrasReport {
+    std::vector<MeshCadReparamFace> mReparametrised;
+    std::vector<MeshCadMergedFace> mMergedFaces;
+    std::vector<MeshCadToleranceUse> mToleranceUses;
+    std::vector<MeshCadLoppedCorner> mLoppedCorners;
+};
+
+/**
+ * @brief `mesh_cad_surface` with the extras of v17.20.0 (roadmap 6.5.1,
+ * 6.5.2) beside the sizes, and the reparametrised faces (6.4.4) in its report.
+ * @throws std::invalid_argument as the four-argument overload, for
+ *         `mVirtualFaces` with `mOrder` > 1, and for `mLopCorners`.
+ */
+MESHIOPLUSPLUS_API MeshCadSurfaceResult mesh_cad_surface(
+    const BrepInfo& rBrep, const MeshCadSurfaceOptions& rOptions,
+    const MeshCadSizeSources& rSources, const MeshCadSurfaceExtras& rExtras,
+    MeshCadSizeReport* pReport = nullptr, MeshCadSurfaceExtrasReport* pExtrasReport = nullptr);
 
 /**
  * @brief The constrained Delaunay triangulation of a polygon with holes, as a
