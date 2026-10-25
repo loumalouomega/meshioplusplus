@@ -39,7 +39,6 @@
 #include <iterator>
 #include <map>
 #include <set>
-#include <sstream>
 #include <cstring>
 #include <utility>
 #include <exception>
@@ -2196,7 +2195,7 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
         std::vector<std::pair<std::int64_t, double>> v;
         if (!has_opt(p, pName))
             return v;
-        std::stringstream list(opt_value(p, pName));
+        auto list = meshioplusplus::detail::make_classic_istringstream(opt_value(p, pName));
         std::string item;
         while (std::getline(list, item, ',')) {
             const auto eq = item.find('=');
