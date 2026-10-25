@@ -1,0 +1,9 @@
+# Files the fuzz builds compile without coverage instrumentation
+# (-fsanitize-coverage-ignorelist; AddressSanitizer and UBSan still apply).
+#
+# Coverage feedback is what steers the fuzzer through input-shaped branches.
+# A sparse solver's inner loops have none: their bounds come from the matrix,
+# and trace-cmp instrumenting every bound check made a conjugate-gradient
+# solve 70 times its release cost, enough for a one-second mesh_cad_surface
+# run (a flattened face, roadmap 6.4.4) to trip the 10 s timeout.
+src:*/src/cpp/src/detail/sparse_solve.cpp

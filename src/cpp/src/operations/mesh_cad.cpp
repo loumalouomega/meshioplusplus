@@ -3562,6 +3562,16 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                     r_f.mRefinedSoFar = r_f.mRefinedBefore;
                 r_f.mRefinedBefore = r_f.mRefinedSoFar;
                 const auto reset = [&]() { reset_face(f); };
+                // A flattening's coarse mesh is the uniform lattice, even in a
+                // sized run: it only carries the surface's map, while a lattice
+                // at the local size would let the conformal solve, whose
+                // iterations grow with the mesh, outweigh the meshing it serves
+                // (found by the fuzz target on a roof sized to a quarter of h).
+                const auto coarse_quality = [](const McadQuality& rQq) {
+                    McadQuality c = rQq;
+                    c.pSize = nullptr;
+                    return c;
+                };
                 // The discrete reparametrisation (6.4.4): the face's unrefined
                 // lattice is its coarse mesh, measured on its first meshing;
                 // a face over the threshold is meshed in the flattening of
@@ -3576,11 +3586,11 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                     McadFace& r_sl = faces[s];
                     std::string why;
                     detail::McadCoarseMesh ch, cs;
-                    mcad_mesh_face(r_f, rBrep.mFaces[f], uses, traces, boundary, rOptions, rQq,
-                                   &ch);
+                    mcad_mesh_face(r_f, rBrep.mFaces[f], uses, traces, boundary, rOptions,
+                                   coarse_quality(rQq), &ch);
                     reset();
-                    mcad_mesh_face(r_sl, rBrep.mFaces[s], uses, traces, boundary, rOptions, rQq,
-                                   &cs);
+                    mcad_mesh_face(r_sl, rBrep.mFaces[s], uses, traces, boundary, rOptions,
+                                   coarse_quality(rQq), &cs);
                     reset_face(s);
                     if (!ch.mFilled || !cs.mFilled)
                         why = "one of the two has no unrefined triangulation to flatten";
@@ -3629,8 +3639,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                         return;
                     }
                     detail::McadCoarseMesh coarse;
-                    mcad_mesh_face(r_f, rBrep.mFaces[f], uses, traces, boundary, rOptions, rQq,
-                                   &coarse);
+                    mcad_mesh_face(r_f, rBrep.mFaces[f], uses, traces, boundary, rOptions,
+                                   coarse_quality(rQq), &coarse);
                     reset();
                     const auto decline = [&](const std::string& rWhy) {
                         r_f.mRoute = Route::Declined;

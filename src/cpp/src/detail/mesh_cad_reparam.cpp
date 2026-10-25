@@ -218,32 +218,56 @@ McadDisc::Hit McadDisc::Locate(const V2& rP) const {
         const double c = std::floor((X - mLo[D]) / mCell);
         return static_cast<std::size_t>(std::clamp(c, 0.0, double(N - 1)));
     };
-    const std::vector<std::size_t>* p_cands =
-        &mBuckets[cell_of(rP[1], 1, mNy) * mNx + cell_of(rP[0], 0, mNx)];
-    std::vector<std::size_t> all;
-    if (p_cands->empty()) {
-        all.resize(pCoarse->mTris.size());
-        for (std::size_t t = 0; t < all.size(); ++t)
-            all[t] = t;
-        p_cands = &all;
-    }
-    std::size_t best = p_cands->front();
+    const std::size_t ci = cell_of(rP[0], 0, mNx);
+    const std::size_t cj = cell_of(rP[1], 1, mNy);
+    std::size_t best = 0;
     double best_min = -std::numeric_limits<double>::infinity();
     std::array<double, 3> best_l{1.0, 0.0, 0.0};
-    for (const std::size_t t : *p_cands) {
-        const std::array<double, 3> l = Bary(t, rP);
-        const double m = std::min({l[0], l[1], l[2]});
-        if (m >= -1e-12) {
-            best = t;
-            best_l = l;
-            hit.mInside = true;
-            break;
+    const auto consider = [&](const std::vector<std::size_t>& rCands) {
+        for (const std::size_t t : rCands) {
+            const std::array<double, 3> l = Bary(t, rP);
+            const double m = std::min({l[0], l[1], l[2]});
+            if (m >= -1e-12) {
+                best = t;
+                best_l = l;
+                hit.mInside = true;
+                return;
+            }
+            if (m > best_min) {
+                best_min = m;
+                best = t;
+                best_l = l;
+            }
         }
-        if (m > best_min) {
-            best_min = m;
-            best = t;
-            best_l = l;
+    };
+    consider(mBuckets[cj * mNx + ci]);
+    // An empty bucket lies outside every triangle (each is filed in every
+    // bucket its box meets), so only the clamped fallback is wanted: the
+    // nearest ring of buckets that holds any, searched outward in a fixed
+    // order, rather than every triangle, which made each lattice point
+    // outside a curved disc cost the whole coarse mesh (found by the fuzz
+    // target).
+    if (mBuckets[cj * mNx + ci].empty()) {
+        const std::size_t rings = std::max(mNx, mNy);
+        bool found = false;
+        for (std::size_t r = 1; r <= rings && !found; ++r) {
+            const auto ring = [&](std::size_t I, std::size_t J) {
+                const auto& r_b = mBuckets[J * mNx + I];
+                if (!r_b.empty()) {
+                    found = true;
+                    consider(r_b);
+                }
+            };
+            const std::size_t i0 = ci >= r ? ci - r : 0;
+            const std::size_t i1 = std::min(ci + r, mNx - 1);
+            const std::size_t j0 = cj >= r ? cj - r : 0;
+            const std::size_t j1 = std::min(cj + r, mNy - 1);
+            for (std::size_t j = j0; j <= j1; ++j)
+                for (std::size_t i = i0; i <= i1; ++i)
+                    if (std::max(i > ci ? i - ci : ci - i, j > cj ? j - cj : cj - j) == r)
+                        ring(i, j);
         }
+        hit.mInside = false;
     }
     double sum = 0.0;
     for (double& r_l : best_l) {

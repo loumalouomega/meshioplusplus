@@ -477,6 +477,55 @@ TEST(MeshCadReparam, CollapsedCoordinatesAreContinuousAtAPole) {
     EXPECT_EQ(hit.mTri, 0u);
 }
 
+// A point in a bucket no triangle's box meets is outside the flattening: it
+// is located against the nearest ring of buckets that holds any, with its
+// clamped fallback, not against every triangle (found by the fuzz target:
+// each lattice point outside a curved disc cost the whole coarse mesh).
+TEST(MeshCadReparam, APointOutsideTheDiscIsLocatedNearby) {
+    mio::detail::McadCoarseMesh c;
+    // A strip of 20 triangles along y in [0, 1] and one triangle far above.
+    for (int i = 0; i <= 10; ++i) {
+        c.mX.push_back({double(i), 0.0, 0.0});
+        c.mX.push_back({double(i), 1.0, 0.0});
+    }
+    c.mX.push_back({0.0, 9.0, 0.0});
+    c.mX.push_back({1.0, 9.0, 0.0});
+    c.mX.push_back({0.0, 10.0, 0.0});
+    for (std::size_t i = 0; i < 10; ++i) {
+        c.mTris.push_back({2 * i, 2 * i + 2, 2 * i + 3});
+        c.mTris.push_back({2 * i, 2 * i + 3, 2 * i + 1});
+    }
+    c.mTris.push_back({22, 23, 24});
+    mio::detail::McadDisc d;
+    d.pCoarse = &c;
+    for (const auto& r_x : c.mX) {
+        c.mId.push_back(static_cast<std::int64_t>(c.mId.size()));
+        d.mP.push_back({r_x[0], r_x[1]});
+    }
+    for (const auto& r_t : c.mTris) {
+        std::array<std::array<double, 2>, 3> uv{};
+        for (std::size_t k = 0; k < 3; ++k)
+            uv[k] = {c.mX[r_t[k]][0], c.mX[r_t[k]][1]};
+        c.mCornerUv.push_back(uv);
+        c.mOwner.push_back(0);
+        c.mPoleCorner.push_back(-1);
+    }
+    c.mReversed = {0};
+    d.Index();  // about two triangles a bucket: a 4 by 4 grid, empty in the middle
+    // Inside: found, its parameters the point's own.
+    const auto in = d.Locate({4.25, 0.5});
+    EXPECT_TRUE(in.mInside);
+    EXPECT_NEAR(in.mUv[0], 4.25, 1e-12);
+    EXPECT_NEAR(in.mUv[1], 0.5, 1e-12);
+    // Far from every triangle: outside, clamped onto one nearby.
+    const auto out = d.Locate({6.0, 5.0});
+    EXPECT_FALSE(out.mInside);
+    ASSERT_LT(out.mTri, c.mTris.size());
+    EXPECT_GE(out.mUv[0], 0.0);
+    EXPECT_LE(out.mUv[0], 10.0);
+    EXPECT_LE(out.mUv[1], 10.0);
+}
+
 // Roadmap 6.5.2: three plates in a row, the middle one h / 20 wide. Alone,
 // the sliver is a strip of needles and its neighbours are refined against
 // it; merged into the neighbour it meets along the most edge, the pair is
