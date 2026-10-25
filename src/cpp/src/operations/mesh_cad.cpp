@@ -3001,9 +3001,6 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                 }
             }
         }
-    const auto use_tol = [&](std::size_t U) {
-        return uses[U].mEdge >= 0 ? edge_tol[static_cast<std::size_t>(uses[U].mEdge)] : tol;
-    };
     const auto accepted = [&](std::int64_t E, double Gap, const char* pWhere) {
         if (E < 0)
             return;
@@ -3019,8 +3016,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
     // first use. Models whose uses start together are not touched.
     const auto closed_3d = [&](std::size_t U) {
         const detail::TrimTrace& r_t = *traces[U];
-        return r_t.Length() > tol &&
-               mcad_dist(r_t.Point(r_t.Start()), r_t.Point(r_t.End())) <= use_tol(U);
+        return r_t.Length() > tol && mcad_dist(r_t.Point(r_t.Start()), r_t.Point(r_t.End())) <= tol;
     };
     const auto rotatable = [&](std::size_t U) {
         if (uses[U].mLoopSize != 1 || !closed_3d(U))
@@ -3039,12 +3035,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
         const auto start_of = [&](std::size_t U) { return traces[U]->Point(traces[U]->Start()); };
         const double te = edge_tol[e];
         bool apart = false;
-        for (const std::size_t u : r_e.mUses) {
-            const double d = mcad_dist(start_of(u), start_of(r_e.mUses.front()));
-            apart = apart || d > te;
-            if (d > tol && d <= te)
-                accepted(static_cast<std::int64_t>(e), d, "closed_start");
-        }
+        for (const std::size_t u : r_e.mUses)
+            apart = apart || mcad_dist(start_of(u), start_of(r_e.mUses.front())) > tol;
         if (!apart)
             continue;
         std::size_t anchor = r_e.mUses.front();
@@ -3056,10 +3048,18 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
         r_e.mMaster = anchor;
         const Vec3 p = start_of(anchor);
         for (const std::size_t u : r_e.mUses) {
-            if (u == anchor || mcad_dist(start_of(u), p) <= te)
+            const double d = mcad_dist(start_of(u), p);
+            if (u == anchor || d <= tol)
                 continue;
             if (rotatable(u)) {
                 uses[u].mStartLength = detail::edge_closest_length(*traces[u], p);
+                continue;
+            }
+            // A use that cannot be rotated starts where the anchor does
+            // within the edge's declared tolerance (6.5.1): accepted, and
+            // reported, where the global tolerance fails its face.
+            if (d <= te) {
+                accepted(static_cast<std::int64_t>(e), d, "closed_start");
                 continue;
             }
             // Its whole face fails with this reason, rather than with the
@@ -3995,6 +3995,28 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                 mesh_faces(true, false, &again);
             return any;
         };
+        // A host and its sliver (6.5.2) folded in their flattening for
+        // `Streak` meshings in a row, or when no split is left: the merge is
+        // undone, both faces are meshed on their own from then on, and the
+        // rounds go on, so a pair is not failed that apart would mesh.
+        const auto unmerge = [&](int Streak) {
+            std::vector<char> again(nf, 0);
+            bool any = false;
+            for (std::size_t f = 0; f < nf; ++f) {
+                McadFace& r_h = faces[f];
+                if (r_h.mMergedWith < 0 || !r_h.mFolded || r_h.mFoldStreak < Streak)
+                    continue;
+                const auto s = static_cast<std::size_t>(r_h.mMergedWith);
+                faces[s].mMergedInto = -1;
+                r_h.mMergedWith = -1;
+                r_h.mMergeWhy = "their flattening kept a triangle folded";
+                again[f] = again[s] = 1;
+                any = true;
+            }
+            if (any)
+                mesh_faces(true, false, &again);
+            return any;
+        };
         for (int round = 0;; ++round) {
             // A face whose refinement spent its points is not refined
             // further, since every round would spend them again: it is
@@ -4015,7 +4037,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                 mesh_faces(true, false);
                 continue;
             }
-            if (to_mean(3))
+            if (to_mean(3) || unmerge(3))
                 continue;
             std::map<std::size_t, std::map<std::size_t, std::size_t>> split;
             for (std::size_t f = 0; f < nf; ++f)
@@ -4028,7 +4050,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                     split[r_a[0]][r_a[1]] |= r_a[2];
                 }
             if (split.empty()) {
-                if (!to_mean(1))
+                if (!to_mean(1) && !unmerge(1))
                     break;
                 continue;
             }
@@ -4038,10 +4060,12 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
             if (round >= kMaxRefineRounds) {
                 warn("refinement stopped after " + std::to_string(kMaxRefineRounds) +
                      " rounds of boundary splits");
+                unmerge(1);
                 break;
             }
             if (static_cast<std::int64_t>(boundary.size() + added) > rOptions.mMaxPoints) {
                 warn("refinement stopped: its boundary splits would exceed max_points");
+                unmerge(1);
                 break;
             }
             for (const auto& [e, r_pieces] : split) {

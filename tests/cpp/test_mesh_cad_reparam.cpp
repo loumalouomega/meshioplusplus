@@ -603,6 +603,20 @@ TEST(MeshCadTolerances, ADeclaredToleranceJoinsAClosedEdgesStarts) {
     EXPECT_TRUE(std::any_of(bad.mWarnings.begin(), bad.mWarnings.end(), [](const std::string& rW) {
         return rW.find("declared tolerance") != std::string::npos;
     }));
+    // A use that can be rotated is rotated as without the option, though its
+    // start lies within the declaration: a declared tolerance accepts only
+    // what the global one refuses (on the corpus, keeping such a cap's start
+    // folded a triangle).
+    {
+        mio::BrepInfo cyl = brep_solids::capped_cylinder(1.0, 2.0, 1e-5);
+        const std::uint64_t plain = digest(run(cyl, o).mMesh);
+        for (auto& r_e : cyl.mEdges)
+            r_e.mExtra = R"({"tolerance":0.0001,"end_tolerances":[0.0001,0.0001]})";
+        mio::MeshCadSurfaceExtrasReport xc;
+        const auto rc = mio::mesh_cad_surface(cyl, o, mio::MeshCadSizeSources{}, extras, nullptr, &xc);
+        EXPECT_EQ(digest(rc.mMesh), plain);
+        EXPECT_TRUE(xc.mToleranceUses.empty());
+    }
     // With nothing declared, the option changes nothing.
     const mio::BrepInfo box = brep_solids::box();
     EXPECT_EQ(
