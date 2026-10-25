@@ -319,9 +319,11 @@ struct MeshCadSizeSources {
     /// one-component point_data `mBackgroundArray` is the size at its
     /// points, read at the nearest point of the background. Borrowed.
     const Mesh* pBackground = nullptr;
-    std::string mBackgroundArray;
-    /// Sample chains of short edges as one (roadmap 6.5.2): see
-    /// doc/mesh_cad.md.
+    std::string mBackgroundArray = "size";
+    /// Virtual edges (roadmap 6.5.2): suppress a corner between a sliver of
+    /// an edge and its smooth continuation, so no face's loop and no line
+    /// cell goes through it, and report the chains (doc/mesh_cad.md, item
+    /// 17). Order 1 only.
     bool mVirtualEdges = false;
 };
 

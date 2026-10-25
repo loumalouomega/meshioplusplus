@@ -12359,7 +12359,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 17
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 18
+#define MESHIOPLUSPLUS_VERSION_MINOR 19
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -12369,7 +12369,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "17.18.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "17.19.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -30137,9 +30137,11 @@ struct MeshCadSizeSources {
     /// one-component point_data `mBackgroundArray` is the size at its
     /// points, read at the nearest point of the background. Borrowed.
     const Mesh* pBackground = nullptr;
-    std::string mBackgroundArray;
-    /// Sample chains of short edges as one (roadmap 6.5.2): see
-    /// doc/mesh_cad.md.
+    std::string mBackgroundArray = "size";
+    /// Virtual edges (roadmap 6.5.2): suppress a corner between a sliver of
+    /// an edge and its smooth continuation, so no face's loop and no line
+    /// cell goes through it, and report the chains (doc/mesh_cad.md, item
+    /// 17). Order 1 only.
     bool mVirtualEdges = false;
 };
 
@@ -221007,7 +221009,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                             mcad_mesh_face(r_f, rBrep.mFaces[f], uses, traces, boundary, rOptions,
                                            unrefined);
                         } else {
-                            mcad_mesh_face(r_f, rBrep.mFaces[f], uses, traces, boundary, rOptions, q);
+                            mcad_mesh_face(r_f, rBrep.mFaces[f], uses, traces, boundary, rOptions,
+                                           q);
                         }
                     } catch (const std::exception& r_x) {
                         r_f.mRecord.mStatus = MeshCadFaceStatus::Other;

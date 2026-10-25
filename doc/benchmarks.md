@@ -972,22 +972,22 @@ The v17.18.0 baseline's two largest classes, 95 faces whose parameters lay outsi
 
 <!-- cad-corpus:begin (tools/cad_corpus.py table) -->
 
-Measured with meshio++ 17.18.0: `mesh_cad_surface` at a target size of the model's diagonal over 40, refined to 25 degrees, each model in its own process under 900 s. **5 of 10 models** mesh every face; **15940 of 16503 faces** (96.6%) mesh.
+Measured with meshio++ 17.19.0: `mesh_cad_surface` at a target size of the model's diagonal over 40, refined to 25 degrees, each model in its own process under 900 s. **7 of 10 models** mesh every face; **16104 of 16503 faces** (97.6%) mesh.
 
 | model | faces | meshed | failures by class | open edges | below bound | min angle | Hausdorff / diagonal |
 |---|---:|---:|---|---:|---:|---:|---:|
 | `occt-samples/linkrods` | 37 | 37 | – | 0 | 1 | 0.96 | 0.0066 |
 | `occt-samples/screw` | 10 | 10 | – | 0 | 2 | 8.83 | 0.00097 |
 | `pythonocc-demos/11752` | 1018 | 1018 | – | 0 | 115 | 0.612 | 0.024 |
-| `pythonocc-demos/as1-oc-214` | 160 | 135 | other 25 | 202 | 0 | 25 | 0.13 |
-| `pythonocc-demos/as1-pe-203` | 160 | 153 | other 7 | 86 | 0 | 25.1 | 0.013 |
+| `pythonocc-demos/as1-oc-214` | 160 | 160 | – | 0 | 0 | 25 | 0.005 |
+| `pythonocc-demos/as1-pe-203` | 160 | 160 | – | 0 | 0 | 25.1 | 0.013 |
 | `pythonocc-demos/face-recognition-sample-part` | 23 | 23 | – | 0 | 0 | 25 | 0.0036 |
-| `pythonocc-demos/kr600-r2830-4` | 4123 | 3966 | degenerate_patch 135, other 8, trim_outside_patch 14 | 15248 | 1624 | 3.71e-09 | 0.011 |
-| `pythonocc-demos/rc-buggy-2-front-suspension` | 10663 | 10290 | degenerate_patch 202, other 115, trim_outside_patch 56 | 14493 | 4748 | 0.0582 | 0.046 |
+| `pythonocc-demos/kr600-r2830-4` | 4123 | 3970 | degenerate_patch 139, other 1, trim_outside_patch 13 | 8623 | 1885 | 1.86e-09 | 0.011 |
+| `pythonocc-demos/rc-buggy-2-front-suspension` | 10663 | 10418 | degenerate_patch 130, other 59, trim_outside_patch 56 | 14291 | 4796 | 0.0582 | 0.036 |
 | `pythonocc-demos/splinecage` | 4 | 4 | – | 216 | 1 | 4.93 | 0.0019 |
 | `pythonocc-demos/ventilator` | 305 | 304 | degenerate_patch 1 | 73 | 67 | 0.0555 | 0.0035 |
 
-Failures by class: trim_outside_patch 70, degenerate_patch 338, other 155.
+Failures by class: trim_outside_patch 69, degenerate_patch 270, other 60.
 
 <!-- cad-corpus:end -->
 

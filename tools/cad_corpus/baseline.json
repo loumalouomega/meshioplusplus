@@ -1,6 +1,6 @@
 {
   "Version": 1,
-  "meshioplusplus": "17.18.0",
+  "meshioplusplus": "17.19.0",
   "models": {
     "occt-samples/linkrods": {
       "faces": 37,
@@ -40,30 +40,26 @@
     },
     "pythonocc-demos/as1-oc-214": {
       "faces": 160,
-      "faces_ok": 135,
-      "failures_by_class": {
-        "other": 25
-      },
-      "hausdorff_to_brepmesh": 0.126,
-      "meshed": false,
+      "faces_ok": 160,
+      "failures_by_class": {},
+      "hausdorff_to_brepmesh": 0.00501,
+      "meshed": true,
       "min_angle_deg": 25.0,
       "num_faces_below_bound": 0,
-      "num_open_edges": 202,
-      "num_triangles": 8084,
+      "num_open_edges": 0,
+      "num_triangles": 8750,
       "status": "ok"
     },
     "pythonocc-demos/as1-pe-203": {
       "faces": 160,
-      "faces_ok": 153,
-      "failures_by_class": {
-        "other": 7
-      },
+      "faces_ok": 160,
+      "failures_by_class": {},
       "hausdorff_to_brepmesh": 0.0125,
-      "meshed": false,
+      "meshed": true,
       "min_angle_deg": 25.1,
       "num_faces_below_bound": 0,
-      "num_open_edges": 86,
-      "num_triangles": 8662,
+      "num_open_edges": 0,
+      "num_triangles": 8750,
       "status": "ok"
     },
     "pythonocc-demos/face-recognition-sample-part": {
@@ -80,34 +76,34 @@
     },
     "pythonocc-demos/kr600-r2830-4": {
       "faces": 4123,
-      "faces_ok": 3966,
+      "faces_ok": 3970,
       "failures_by_class": {
-        "degenerate_patch": 135,
-        "other": 8,
-        "trim_outside_patch": 14
+        "degenerate_patch": 139,
+        "other": 1,
+        "trim_outside_patch": 13
       },
       "hausdorff_to_brepmesh": 0.0106,
       "meshed": false,
-      "min_angle_deg": 3.71e-09,
-      "num_faces_below_bound": 1624,
-      "num_open_edges": 15248,
-      "num_triangles": 154820,
+      "min_angle_deg": 1.86e-09,
+      "num_faces_below_bound": 1885,
+      "num_open_edges": 8623,
+      "num_triangles": 105713,
       "status": "ok"
     },
     "pythonocc-demos/rc-buggy-2-front-suspension": {
       "faces": 10663,
-      "faces_ok": 10290,
+      "faces_ok": 10418,
       "failures_by_class": {
-        "degenerate_patch": 202,
-        "other": 115,
+        "degenerate_patch": 130,
+        "other": 59,
         "trim_outside_patch": 56
       },
-      "hausdorff_to_brepmesh": 0.0457,
+      "hausdorff_to_brepmesh": 0.036,
       "meshed": false,
       "min_angle_deg": 0.0582,
-      "num_faces_below_bound": 4748,
-      "num_open_edges": 14493,
-      "num_triangles": 301933,
+      "num_faces_below_bound": 4796,
+      "num_open_edges": 14291,
+      "num_triangles": 304187,
       "status": "ok"
     },
     "pythonocc-demos/splinecage": {

@@ -3046,7 +3046,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                             mcad_mesh_face(r_f, rBrep.mFaces[f], uses, traces, boundary, rOptions,
                                            unrefined);
                         } else {
-                            mcad_mesh_face(r_f, rBrep.mFaces[f], uses, traces, boundary, rOptions, q);
+                            mcad_mesh_face(r_f, rBrep.mFaces[f], uses, traces, boundary, rOptions,
+                                           q);
                         }
                     } catch (const std::exception& r_x) {
                         r_f.mRecord.mStatus = MeshCadFaceStatus::Other;
