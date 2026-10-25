@@ -58,6 +58,9 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/mesh_cad.hpp"
+#include "meshioplusplus/operations/octree_mesh.hpp"
+#include "meshioplusplus/operations/pipeline.hpp"
+#include "meshioplusplus/registry.hpp"
 
 namespace {
 
@@ -850,6 +853,213 @@ TEST(MeshCad, RoundTripsThroughVtuAndGmsh) {
         EXPECT_EQ(mio::detail::read_int(ca, i), mio::detail::read_int(cb, i));
 }
 
+// Roadmap 6.1.2: every face of the one triangle block is a `face:<k>` region,
+// and Gmsh 4.1 places a physical group on an entity, so the writer splits the
+// block into one per face; the box opens with six named physical surfaces.
+TEST(MeshCad, GmshFourOneGivesEachFaceItsPhysicalGroup) {
+    const auto r = mio::mesh_cad_surface(brep_solids::box(), size(0.25));
+    ASSERT_EQ(r.mNumFailed, 0);
+    const mio::NDArray& faces = r.mMesh.CellData(mio::kMeshCadFaceName, 0);
+    std::map<std::int64_t, std::size_t> per_face;
+    for (std::size_t i = 0; i < faces.Size(); ++i)
+        ++per_face[mio::detail::read_int(faces, i)];
+    ASSERT_EQ(per_face.size(), 6u);
+    for (const bool binary : {false, true}) {
+        const std::string msh = mt::temp_path(".msh");
+        mio::write_gmsh41(msh, r.mMesh, binary);
+        const mio::Mesh g = mio::read_gmsh(msh);
+        std::size_t named = 0;
+        for (std::size_t i = 0; i < g.NumRegions(); ++i) {
+            const mio::Region& reg = g.Region(i);
+            if (reg.mName.rfind("face:", 0) != 0)
+                continue;
+            ++named;
+            EXPECT_EQ(reg.mKind, mio::RegionKind::Cell);
+            EXPECT_EQ(reg.mDim, 2);
+            const std::int64_t k = std::stoll(reg.mName.substr(5));
+            EXPECT_EQ(reg.NumEntries(), per_face.at(k)) << reg.mName << " binary " << binary;
+        }
+        EXPECT_EQ(named, 6u) << "binary " << binary;
+        // The triangles still carry their face, now one block per face.
+        std::size_t tris = 0;
+        for (std::size_t b = 0; b < g.NumCellBlocks(); ++b) {
+            if (g.Cells(b).Type() != "triangle")
+                continue;
+            tris += g.Cells(b).NumCells();
+            const mio::NDArray& f = g.CellData(mio::kMeshCadFaceName, b);
+            for (std::size_t i = 1; i < f.Size(); ++i)
+                ASSERT_EQ(mio::detail::read_int(f, i), mio::detail::read_int(f, 0));
+        }
+        EXPECT_EQ(tris, r.mMesh.Cells(0).NumCells());
+    }
+}
+
+// Roadmap 6.1.1: the pipeline carries the B-rep a CAD read returns from Input
+// to the steps that mesh it, and drops it at the first step that does not.
+std::string pipeline_cube_path() {
+    const std::filesystem::path input = std::filesystem::path(__FILE__).parent_path() / ".." /
+                                        "python" / "meshes" / "cad_json" / "unit_cube.cad.json";
+    return input.string();
+}
+
+mio::PipelineStep pipeline_step(std::string Op,
+                                std::map<std::string, mio::PipelineValue> Params = {}) {
+    mio::PipelineStep s;
+    s.mOp = std::move(Op);
+    s.mParams = std::move(Params);
+    return s;
+}
+
+TEST(MeshCad, PipelineMeshesTheModelItsInputReads) {
+    const std::string input = pipeline_cube_path();
+    ASSERT_TRUE(std::filesystem::exists(input)) << input;
+    mio::Pipeline pipe;
+    pipe.mInput.mPath = input;
+    pipe.mOutput.mPath = mt::temp_path(".vtu");
+    pipe.mSteps = {pipeline_step("MeshCadSurface", {{"TargetSize", 0.25}, {"MinAngle", 25.0}})};
+    for (const int version : {1, 2}) {
+        pipe.mVersion = version;
+        const mio::PipelineReport report = mio::run_pipeline(pipe);
+        ASSERT_EQ(report.mSteps.size(), 1u);
+        MeshCadSurfaceOptions o = size(0.25);
+        o.mMinAngleDeg = 25.0;
+        const auto direct = mio::mesh_cad_surface(mio::read_cad_json_info(input), o);
+        const mio::Mesh out = mio::read_vtu(pipe.mOutput.mPath);
+        ASSERT_EQ(out.NumPoints(), direct.mMesh.NumPoints());
+        const double* a = out.Points().As<double>();
+        const double* b = direct.mMesh.Points().As<double>();
+        for (std::size_t i = 0; i < 3 * out.NumPoints(); ++i)
+            ASSERT_EQ(a[i], b[i]);
+        const auto& counters = report.mSteps[0].mCounters;
+        ASSERT_FALSE(counters.empty());
+        EXPECT_EQ(counters[0].first, "NumPoints");
+        EXPECT_EQ(counters[0].second, static_cast<double>(direct.mNumPoints));
+    }
+}
+
+TEST(MeshCad, PipelineRefinesThenMeshesTheRefinedModel) {
+    mio::Pipeline pipe;
+    pipe.mVersion = 2;
+    pipe.mInput.mPath = pipeline_cube_path();
+    pipe.mOutput.mPath = mt::temp_path(".vtu");
+    pipe.mSteps = {
+        pipeline_step("IgaRefine", {{"Subdivisions", std::vector<std::int64_t>{2, 3}}}),
+        pipeline_step("MeshCadSurface", {{"TargetSize", 0.3}, {"Order", std::int64_t(2)}})};
+    const mio::PipelineReport report = mio::run_pipeline(pipe);
+    ASSERT_EQ(report.mSteps.size(), 2u);
+    EXPECT_EQ(report.mSteps[0].mOp, "IgaRefine");
+    const mio::Mesh out = mio::read_vtu(pipe.mOutput.mPath);
+    EXPECT_EQ(out.Cells(0).Type(), "triangle6");
+}
+
+TEST(MeshCad, PipelineModelStepsFailByNameWithoutAModel) {
+    const auto message = [](const mio::Pipeline& rPipe) {
+        try {
+            mio::run_pipeline(rPipe);
+        } catch (const std::invalid_argument& r_e) {
+            return std::string(r_e.what());
+        }
+        return std::string();
+    };
+    mio::Pipeline pipe;
+    pipe.mInput.mPath = pipeline_cube_path();
+    pipe.mOutput.mPath = mt::temp_path(".vtu");
+    // A step that changes the mesh drops the model.
+    pipe.mSteps = {pipeline_step("Quality"),
+                   pipeline_step("MeshCadSurface", {{"TargetSize", 0.25}})};
+    EXPECT_NE(message(pipe).find("step 1 'Quality' changed the mesh"), std::string::npos)
+        << message(pipe);
+    // A format whose read carries none.
+    const std::string vtu = mt::temp_path(".vtu");
+    mio::write_vtu(vtu, mio::mesh_cad_surface(brep_solids::box(), size(0.5)).mMesh, true, false);
+    pipe.mInput.mPath = vtu;
+    pipe.mSteps = {pipeline_step("IgaSample")};
+    EXPECT_NE(message(pipe).find("Input format 'vtu' carries none"), std::string::npos)
+        << message(pipe);
+    // TargetSize is required.
+    pipe.mInput.mPath = pipeline_cube_path();
+    pipe.mSteps = {pipeline_step("MeshCadSurface")};
+    EXPECT_NE(message(pipe).find("'TargetSize' is required"), std::string::npos);
+    // A step applied on its own has no run to carry a model.
+    mio::PipelineReport report;
+    EXPECT_THROW(mio::apply_pipeline_step(
+                     mio::Mesh(), pipeline_step("MeshCadSurface", {{"TargetSize", 0.25}}), report),
+                 std::invalid_argument);
+}
+
+// Roadmap 6.7.1: a closed `mesh_cad_surface` result is a skin `octree_mesh`
+// fills with tetrahedra. Under uniform skin grading at the surface's own size
+// the enclosed volume follows the skin's at second order, the boundary stays
+// within a few hundredths of `h` of it and the dihedral angles keep inside
+// Labelle and Shewchuk's 10.7-164.8 degree bound.
+double tet_volume(const mio::Mesh& rM) {
+    const double* x = rM.Points().As<double>();
+    double v = 0.0;
+    for (std::size_t b = 0; b < rM.NumCellBlocks(); ++b) {
+        const auto cells = rM.Cells(b);
+        if (cells.Type() != "tetra")
+            continue;
+        const mio::NDArray& c = cells.Conn();
+        for (std::size_t t = 0; t < cells.NumCells(); ++t) {
+            const double* p[4];
+            for (int k = 0; k < 4; ++k)
+                p[k] = x + 3 * mio::detail::read_int(c, 4 * t + k);
+            const double u[3] = {p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]};
+            const double w[3] = {p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]};
+            const double z[3] = {p[3][0] - p[0][0], p[3][1] - p[0][1], p[3][2] - p[0][2]};
+            v += std::abs(u[0] * (w[1] * z[2] - w[2] * z[1]) - u[1] * (w[0] * z[2] - w[2] * z[0]) +
+                          u[2] * (w[0] * z[1] - w[1] * z[0])) /
+                 6.0;
+        }
+    }
+    return v;
+}
+
+mio::OctreeMeshResult fill(const mio::Mesh& rSkin, double H) {
+    mio::OctreeMeshOptions o;
+    o.mSkinGrading = mio::OctreeMeshSkinGrading::Uniform;
+    o.mSurfaceSize = H;
+    return mio::octree_mesh(rSkin, o);
+}
+
+TEST(MeshCad, OctreeMeshFillsTheSkinWithTetrahedra) {
+    MeshCadSurfaceOptions o = size(0.2);
+    o.mMinAngleDeg = 25.0;
+    std::vector<double> errors;
+    for (const double h : {0.2, 0.1}) {
+        o.mTargetSize = h;
+        const auto skin = mio::mesh_cad_surface(brep_solids::sphere(), o);
+        ASSERT_EQ(skin.mNumOpenEdges, 0);
+        const auto vol = fill(skin.mMesh, h);
+        const double v = tet_volume(vol.mMesh);
+        const double skin_volume = measure(skin.mMesh).mVolume;
+        errors.push_back(std::abs(v - skin_volume));
+        // Measured 0.30% and 0.075% of the sphere's volume.
+        EXPECT_LT(errors.back(), 0.005 * skin_volume) << h;
+        // Measured 0.036 h and 0.028 h.
+        EXPECT_GE(vol.mHausdorffToSkin, 0.0);
+        EXPECT_LT(vol.mHausdorffToSkin, 0.06 * h) << h;
+        // Measured 25.6-132.4 and 21.6-144.2 degrees.
+        EXPECT_GT(vol.mMinDihedral, 10.7) << h;
+        EXPECT_LT(vol.mMaxDihedral, 164.8) << h;
+        // And the sphere's own volume to the skin's chordal error.
+        EXPECT_LT(std::abs(v - 4.0 * kPi / 3.0),
+                  2.0 * std::abs(skin_volume - 4.0 * kPi / 3.0) + errors.back())
+            << h;
+    }
+    EXPECT_GT(std::log2(errors[0] / errors[1]), 1.7);  // measured 2.0
+    // A box is filled exactly, by BCC tetrahedra only.
+    o.mTargetSize = 0.2;
+    const auto box = mio::mesh_cad_surface(brep_solids::box(), o);
+    const auto vol = fill(box.mMesh, 0.2);
+    EXPECT_NEAR(tet_volume(vol.mMesh), 1.0, 1e-12);
+    EXPECT_GT(vol.mMinDihedral, 35.0);
+    EXPECT_LT(vol.mMaxDihedral, 126.0);
+    // The curved elements are skins only once linear: the octree refuses them.
+    o.mOrder = 2;
+    EXPECT_THROW(fill(mio::mesh_cad_surface(brep_solids::box(), o).mMesh, 0.2), std::exception);
+}
+
 TEST(MeshCad, Refusals) {
     const mio::BrepInfo box = brep_solids::box();
     for (const double h : {0.0, -1.0, std::nan("")})
@@ -915,3 +1125,50 @@ TEST(MeshCadOcct, StepCubeIsWatertightAndMatchesBRepMesh) {
 #endif
 
 }  // namespace
+
+namespace {
+
+// One untrimmed bilinear patch, the square [0, 1]^2 of the plane z = 0, its
+// knots in u starting at U0.
+mio::BrepInfo mcadt_square_from(double U0) {
+    mio::BrepInfo b;
+    mio::NurbsPatch p;
+    p.mDegrees = {1, 1};
+    p.mKnots = {{U0, U0, 1, 1}, {0, 0, 1, 1}};
+    p.mControlPoints = mio::NDArray(mio::DType::Float64, {4, 3});
+    p.mWeights = mio::NDArray(mio::DType::Float64, {4});
+    const double pts[4][3] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0}};
+    for (int i = 0; i < 4; ++i) {
+        for (int k = 0; k < 3; ++k)
+            p.mControlPoints.As<double>()[3 * i + k] = pts[i][k];
+        p.mWeights.As<double>()[i] = 1.0;
+    }
+    b.mPatches.push_back(p);
+    mio::BrepFace f;
+    f.mId = 1;
+    f.mPatch = 0;
+    b.mFaces.push_back(f);
+    return b;
+}
+
+}  // namespace
+
+// Roadmap 6.5.7: real STEP files write parameters a hair off zero (7e-44
+// where 0 was meant), under the 2^-128 the exact predicates hold for; 95
+// faces of the corpus failed on it. Such a face is triangulated with those
+// coordinates flushed to zero; a face whose parameters are in range is
+// meshed on exactly the coordinates it always was.
+TEST(MeshCad, ParametersAHairOffZeroAreMeshed) {
+    mio::MeshCadSurfaceOptions o;
+    o.mTargetSize = 0.25;
+    const auto clean = mio::mesh_cad_surface(mcadt_square_from(0.0), o);
+    for (const double u0 : {7.3e-44, -2.1e-45, 3.2e-48}) {
+        const auto r = mio::mesh_cad_surface(mcadt_square_from(u0), o);
+        ASSERT_EQ(r.mNumFailed, 0) << u0 << ": " << r.mFaces[0].mReason;
+        EXPECT_EQ(r.mNumTriangles, clean.mNumTriangles) << u0;
+        EXPECT_EQ(r.mNumOpenEdges, clean.mNumOpenEdges) << u0;
+    }
+    // In range, untouched.
+    const auto r = mio::mesh_cad_surface(mcadt_square_from(1e-30), o);
+    EXPECT_EQ(r.mNumFailed, 0);
+}

@@ -83,6 +83,20 @@
  *    boundary with others (`mesh_cad_surface`'s edges) asks for the splits
  *    instead of making them, and may judge triangles by its own measure
  *    (the surface's); the plane stays where the points are found.
+ *  - **A metric.** With `SetMetric`, the flips after an insertion decide by
+ *    the in-circumellipse test of H. Borouchaki, P. L. George, F. Hecht, P.
+ *    Laug and E. Saltel, "Delaunay mesh generation governed by metric
+ *    specifications. Part I. Algorithms", Finite Elem. Anal. Des. 25, 1997:
+ *    the opposite vertex lies in the triangle's circumcircle measured in the
+ *    metric at the shared edge's midpoint (the four points mapped by its
+ *    Cholesky factor, then the exact `incircle` on the mapped coordinates).
+ *    A flip still needs a strictly convex quadrilateral (exact `orient2d`),
+ *    and, as without a metric, only the edges opposite the new vertex are
+ *    tested, each flip adding an edge to its star that is never flipped
+ *    away, so the flips end. Refinement's encroachment is measured in the
+ *    same metric (the diametral circle at the subsegment's midpoint). The
+ *    triangulation is no longer Delaunay in the plane; insertion and
+ *    refinement need only a valid one.
  *  - **Moving a vertex.** `MoveVertex` moves an interior vertex inside its
  *    star, refusing a move that would invert a triangle (exact `orient2d`),
  *    then restores the Delaunay property by flips (smoothing).
@@ -108,6 +122,7 @@
 
 // System includes
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -294,6 +309,15 @@ public:
     /// Whether the edge between two vertices exists and is constrained.
     bool IsConstrainedEdge(std::int64_t A, std::int64_t B) const;
 
+    /// A metric over the plane, (m11, m12, m22) at a point, symmetric
+    /// positive definite; one that is not (or not finite) where it is asked
+    /// falls back to the plane's in-circle test there.
+    using Metric = std::function<std::array<double, 3>(const Vec2&)>;
+
+    /// From now on, decide the flips after each insertion in this metric
+    /// (see the file comment); an empty one restores the plane's test.
+    void SetMetric(Metric M) { mMetric = std::move(M); }
+
     const Vec2& Point(std::int64_t V) const { return mPoints[static_cast<std::size_t>(V)]; }
     std::int64_t NumVertices() const { return static_cast<std::int64_t>(mPoints.size()); }
 
@@ -325,6 +349,7 @@ private:
     std::int64_t mLast = 0;
     std::uint64_t mWalkState = 0x9E3779B97F4A7C15ull;
     bool mClassified = false;
+    Metric mMetric;
 
     Location Locate(const Vec2& rP);
     Location LocateBruteForce(const Vec2& rP) const;
@@ -342,6 +367,14 @@ private:
     double Orient(std::int64_t A, std::int64_t B, std::int64_t C) const;
     double Orient(std::int64_t A, std::int64_t B, const Vec2& rC) const;
     double InCircle(std::int64_t A, std::int64_t B, std::int64_t C, std::int64_t D) const;
+    /// Whether Lawson's flip of the edge (B, C) of triangle (A, B, C), D
+    /// across it, is due: the plane's in-circle test, or the metric's.
+    bool FlipDue(std::int64_t A, std::int64_t B, std::int64_t C, std::int64_t D) const;
+    /// The first `N` points mapped by the metric's Cholesky factor at
+    /// `rAt`, relative to it; false (unchanged) without a metric, where it
+    /// is not positive definite, or where a mapped coordinate leaves
+    /// `cdt2d_in_range`.
+    bool MetricMapped(const Vec2& rAt, std::array<Vec2, 4>& rPoints, std::size_t N = 4) const;
     std::vector<std::int64_t> TrianglesAround(std::int64_t V) const;
     bool FindEdge(std::int64_t A, std::int64_t B, std::int64_t& rT, int& rE) const;
     std::int64_t SplitConstrained(std::int64_t T, int E, const Vec2& rP);

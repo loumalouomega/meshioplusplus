@@ -1751,6 +1751,20 @@ test_that("mesh_cad_surface meshes a trimmed face and reports it", {
     mio_release(c2$mesh)
   }
   expect_error(mio_mesh_cad_surface(r$info, target_size = 0.1, order = 4))
+  # v17.18.0: the size field and pole rings.
+  s <- mio_mesh_cad_surface(r$info, target_size = 0.1, grading = 1.3,
+                            curvature_deviation = 0.01, cells_across_gaps = 2,
+                            pole_rings = 2)
+  expect_equal(s$num_failed, 0)
+  mio_release(s$mesh)
+  expect_error(mio_mesh_cad_surface(r$info, target_size = 0.1, grading = 0.5))
+  # v17.19.0: a size given to face 1 (1-based) refines it.
+  g <- mio_mesh_cad_surface(r$info, target_size = 0.1, face_sizes = c("1" = 0.025))
+  expect_equal(g$num_failed, 0)
+  expect_gt(g$num_triangles, 400)
+  expect_type(g$face_size_limits, "list")
+  expect_length(g$virtual_edges, 0)
+  expect_error(mio_mesh_cad_surface(r$info, target_size = 0.1, face_sizes = c("7" = 0.025)))
 })
 test_that("PCD compressed binary is reachable through write options", {
   m <- mio_mesh()

@@ -35,6 +35,9 @@ meshio++'s own writer, so they are canonical (a rewrite gives the same bytes):
   1 whose edge comes within 0.02 of the rim, the rim's circle started at 225
   degrees: at ``h = 1.1`` its coarse loops cross (``mesh_cad_surface`` splits
   them).
+- ``split_rim.cad.json``: two unit plates folded along a shared rim that is
+  split at x = 0.5 and 0.505 into three edges, the middle one a sliver (for
+  ``mesh_cad_surface``'s ``virtual_edges``).
 
     python tools/gen_cad_json_fixtures.py
 """
@@ -665,6 +668,48 @@ def plate_with_near_hole():
     return _closed_solid([plate], [face(2, 0, loops=loops, ids=Ids().take(4))], [])
 
 
+def split_rim(d=0.005):
+    # The top plate (z = 0, normal +z) and the front one (y = 0, z in
+    # [-1, 0], normal -y); their loops, counter-clockwise in (u, v).
+    sides = [((0, 0, 0), (1, 0, 0), (0, 1, 0)), ((0, 0, -1), (1, 0, 0), (0, 0, 1))]
+    loops = [
+        [(0, 0), (0.5, 0), (0.5 + d, 0), (1, 0), (1, 1), (0, 1)],
+        [(0, 0), (1, 0), (1, 1), (0.5 + d, 1), (0.5, 1), (0, 1)],
+    ]
+    ids = Ids()
+    patches, faces, refs = [], [], {}
+    for f, (side, loop) in enumerate(zip(sides, loops)):
+
+        def at(u, v, side=side):
+            o, a, b = side
+            return tuple(float(o[k] + u * a[k] + v * b[k]) for k in range(3))
+
+        patches.append(
+            patch(
+                [1, 1],
+                [[0, 0, 1, 1], [0, 0, 1, 1]],
+                [at(u, v) for v in (0, 1) for u in (0, 1)],
+            )
+        )
+        trims = []
+        for k in range(len(loop)):
+            p, q = loop[k], loop[(k + 1) % len(loop)]
+            trims.append(trim(k, line(p, q, None)))
+            pa, pb = at(*p), at(*q)
+            key = tuple(sorted((pa, pb)))
+            refs.setdefault(key, []).append(ref(2 + f, k, 1 if (pa, pb) == key else 0))
+        faces.append(face(2 + f, f, loops=[_loop(trims)], ids=ids.take(4)))
+    edges = [
+        edge(
+            8 + i,
+            curve(1, [0, 0, 1, 1], list(key), active=[0, 1], ids=ids.take(2)),
+            refs[key],
+        )
+        for i, key in enumerate(sorted(refs))
+    ]
+    return _closed_solid(patches, faces, edges)
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     for name, build in (
@@ -676,6 +721,7 @@ def main():
         ("sphere.cad.json", sphere),
         ("capped_cylinder_offset.cad.json", capped_cylinder_offset),
         ("plate_with_near_hole.cad.json", plate_with_near_hole),
+        ("split_rim.cad.json", split_rim),
     ):
         (OUT / name).write_text(render(build()), encoding="utf-8")
     (OUT / "import_square.json").write_text(import_square(), encoding="utf-8")

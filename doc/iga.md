@@ -64,13 +64,13 @@ The refined model writes back through the format it came from: `mp.write("fine.m
 | CLIs | `iga-refine`, `iga-sample`, `iga-evaluate` (both CLIs); `meshioplusplus iga-refine pipe.mesh fine.mesh -o mfem -s 2 -e 1` |
 | MCP | `iga_refine`, `iga_sample`, `iga_evaluate` |
 
-The operations take and return models, which the [pipeline](/pipeline) does not carry, so there are no pipeline steps.
+The [pipeline](/pipeline#the-rules) carries the model a CAD JSON, STEP, IGES or MFEM NURBS Input reads to its `IgaSample` and `IgaRefine` steps (v17.17.0), the refined model on to the steps after `IgaRefine`, and drops it at the first step that changes the mesh; `iga_evaluate`, which returns arrays rather than a mesh, has no step.
 
 ## What this is not
 
 - **Not a second entity kind in `Mesh`.** Operations on a mesh (`refine`, `smooth`, `partition`, …) still see only the sampling; the model changes only through these three operations. Putting patches and trims inside `Mesh` itself (every backend, binding and the ABI) is a recorded [non-goal](/roadmap#non-goals-and-decisions-taken) that a consumer needing it can reopen.
 - **Not a mesher.** `iga_sample` keeps the cells of a trimmed face whose centre its loops contain, so its trimmed edges are staircases; the loops themselves stay exact. A conforming triangulation that follows the trims is [`mesh_cad_surface`](/mesh_cad), on the same side channel.
-- **Not yet:** Bézier extraction, knot removal as an operation, second derivatives, closest-point projection, and refinement of one patch of an MFEM model (the patch-level `iga_insert_knots` and `iga_elevate_degree` act on a single `NurbsPatch`, leaving the neighbours to the caller).
+- **Not yet:** Bézier extraction, knot removal as an operation, second derivatives through the public `iga_evaluate` (the core evaluates them since v17.18.0 for `mesh_cad_surface`'s curvature sizing, not yet exposed), closest-point projection, and refinement of one patch of an MFEM model (the patch-level `iga_insert_knots` and `iga_elevate_degree` act on a single `NurbsPatch`, leaving the neighbours to the caller).
 
 ## Verification
 

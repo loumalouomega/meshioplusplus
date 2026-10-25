@@ -405,7 +405,9 @@ def _register_conversion(server: FastMCP) -> None:
         Operations chain (Transform/Gradient/Refine/Clean/... -- PascalCase
         ops and keys, see doc/pipeline.md), write Output.Path. Version 2 adds
         Merge/Interpolate/UndoGreen Inputs and terminal Split/Partition outputs
-        through Output.Pattern ({key}/{part}); all auxiliary inputs and every
+        through Output.Pattern ({key}/{part}); a CAD JSON/STEP/IGES/MFEM NURBS
+        Input carries its model to MeshCadSurface/IgaSample/IgaRefine steps
+        until another step changes the mesh; all auxiliary inputs and every
         expanded output, including symlinks, are checked against the sandbox.
         Output.Codec='lzf' selects PCD compressed binary; ASCII is incompatible.
         input_path/output_path override the paths in the settings file; both
@@ -1184,6 +1186,16 @@ def _register_operations(server: FastMCP) -> None:
         smooth_iterations: int = 0,
         smooth_method: str = "laplacian",
         order: int = 1,
+        curvature_deviation: float = 0.0,
+        cells_across_gaps: float = 0.0,
+        grading: float = 0.0,
+        pole_rings: int = 0,
+        face_sizes: Optional[Dict[str, float]] = None,
+        edge_sizes: Optional[Dict[str, float]] = None,
+        background_path: Optional[str] = None,
+        background_array: str = "size",
+        metric: str = "mean",
+        virtual_edges: bool = False,
     ) -> dict:
         """Triangulate the faces of a CAD model (Kratos CAD JSON; STEP and
         IGES where OpenCASCADE is linked) into one conforming surface mesh with
@@ -1214,7 +1226,21 @@ def _register_operations(server: FastMCP) -> None:
         triangle6 or triangle10 elements (line3, line4 for the edges) whose
         nodes lie on the surface and the edges; an element whose Jacobian is
         not positive everywhere is written straight-sided and counted in
-        num_curved_straightened."""
+        num_curved_straightened. curvature_deviation (0: off) sizes curved
+        regions so a triangle sits at most that far from the surface, and
+        cells_across_gaps (0: off) puts at least that many elements across a
+        thin wall or a gap: both through one size field over the whole model,
+        measured on a first uniform mesh, never above target_size, whose
+        growth grading limits (a ratio above 1; 0: 1.5). pole_rings (0 to 8;
+        0: the fan) places that many rings of points around each pole so its
+        triangles are graded and meet min_angle. face_sizes and edge_sizes ({"index":
+        size}, 0-based into the B-rep's faces and edges) and a background mesh
+        (background_path, its point_data background_array the size at its
+        points) give sizes that join the same field and only refine; each
+        face's limited_by_edges names the edges finer than its given size
+        allows. metric "varying" follows each face's metric as it varies
+        instead of its mean; virtual_edges samples chains of short edges
+        meeting smoothly as one, listed in virtual_edges."""
         return _guard(
             _tools.tool_mesh_cad_surface,
             input_path=input_path,
@@ -1234,6 +1260,16 @@ def _register_operations(server: FastMCP) -> None:
             smooth_iterations=smooth_iterations,
             smooth_method=smooth_method,
             order=order,
+            curvature_deviation=curvature_deviation,
+            cells_across_gaps=cells_across_gaps,
+            grading=grading,
+            pole_rings=pole_rings,
+            face_sizes=face_sizes,
+            edge_sizes=edge_sizes,
+            background_path=background_path,
+            background_array=background_array,
+            metric=metric,
+            virtual_edges=virtual_edges,
         )
 
     @server.tool()

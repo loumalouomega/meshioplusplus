@@ -347,6 +347,8 @@ static_assert(offsetof(meshioplusplus::MeshCadSurfaceOptions, mOrder) == 112,
               "MeshCadSurfaceOptions::mOrder moved");
 MIO_ABI_LAYOUT(meshioplusplus::MeshCadFaceRecord, 176, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MeshCadCorner, 88, 8);
+MIO_ABI_LAYOUT(meshioplusplus::MeshCadSizeSources, 96, 8);
+MIO_ABI_LAYOUT(meshioplusplus::MeshCadSizeReport, 48, 8);
 MIO_ABI_LAYOUT(meshioplusplus::TriangulatePolygon2dOptions, 24, 8);
 MIO_ABI_LAYOUT(meshioplusplus::detail::LatticeSpec, 72, 8);
 

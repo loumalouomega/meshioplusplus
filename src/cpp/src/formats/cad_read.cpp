@@ -32,6 +32,9 @@
 // Project includes (private, not installed)
 #include "../detail/library_lock.hpp"
 #include "../detail/occt_brep.hpp"
+
+// External includes
+#include <Standard_Failure.hxx>
 #endif
 
 namespace meshioplusplus {
@@ -49,11 +52,17 @@ Mesh cad_read_shape(const std::string& rPath, bool Iges, BrepInfo& rInfo,
                                     "deflection positive");
     detail::LibraryLock lock;
     detail::OcctQuiet quiet;
-    detail::OcctNurbs nurbs = detail::occt_nurbs(detail::occt_read_cad_file(rPath, Iges, fmt));
-    Mesh mesh = detail::occt_tessellate(nurbs.mShape, nurbs.mInfo, rOptions.mDeflection,
-                                        rOptions.mAngularDeflection);
-    rInfo = std::move(nurbs.mInfo);
-    return mesh;
+    try {
+        detail::OcctNurbs nurbs = detail::occt_nurbs(detail::occt_read_cad_file(rPath, Iges, fmt));
+        Mesh mesh = detail::occt_tessellate(nurbs.mShape, nurbs.mInfo, rOptions.mDeflection,
+                                            rOptions.mAngularDeflection);
+        rInfo = std::move(nurbs.mInfo);
+        return mesh;
+    } catch (const Standard_Failure& rErr) {
+        // Never OpenCASCADE's own exception, which is no std::exception.
+        throw ReadError(std::string("meshio++: ") + fmt + ": OpenCASCADE failed converting '" +
+                        rPath + "': " + rErr.GetMessageString());
+    }
 }
 #else
 [[noreturn]] void cad_read_unsupported(const char* pFormat) {

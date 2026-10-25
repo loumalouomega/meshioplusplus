@@ -809,3 +809,88 @@ TEST(Cdt2dRefine, MoveVertexRefusesAnInversionAndKeepsDelaunay) {
 }
 
 }  // namespace
+
+namespace {
+
+// A square of random points, its boundary constrained and classified;
+// returns the inside triangles. With a metric, set
+// before the first point.
+std::vector<mio::detail::Cdt2d::Tri> metric_square(const mio::detail::Cdt2d::Metric& rM,
+                                                   std::vector<Vec2>& rPoints) {
+    mio::detail::Cdt2d cdt(0, 0, 1, 1);
+    if (rM)
+        cdt.SetMetric(rM);
+    std::mt19937_64 rng(7);
+    std::uniform_real_distribution<double> u(0.02, 0.98);
+    std::vector<Vec2> pts = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+    for (int k = 0; k < 200; ++k)
+        pts.push_back({u(rng), u(rng)});
+    const auto ids = cdt.InsertBatch(pts);
+    for (int k = 0; k < 4; ++k)
+        EXPECT_EQ(cdt.InsertSegment(ids[std::size_t(k)], ids[std::size_t((k + 1) % 4)]),
+                  Cdt2dStatus::Ok);
+    EXPECT_EQ(cdt.Classify(), Cdt2dStatus::Ok);
+    rPoints.clear();
+    for (std::int64_t v = 0; v < cdt.NumVertices(); ++v)
+        rPoints.push_back(cdt.Point(v));
+    return cdt.InsideTriangles();
+}
+
+}  // namespace
+
+// Roadmap 6.4.1: with a metric, Lawson's flips decide by the in-circumellipse
+// test. The identity metric is the plane's test; a stretched one still
+// triangulates the domain validly, its triangles rounder in that metric
+// than the plane's Delaunay triangles are; an empty one restores the plane.
+TEST(Cdt2d, AMetricDecidesTheFlips) {
+    std::vector<Vec2> plane_pts, id_pts, aniso_pts;
+    const auto plane = metric_square(nullptr, plane_pts);
+    const auto identity =
+        metric_square([](const Vec2&) { return std::array<double, 3>{1.0, 0.0, 1.0}; }, id_pts);
+    EXPECT_EQ(identity, plane);
+    EXPECT_EQ(id_pts, plane_pts);
+    // Lengths along y count tenfold, more so towards x = 1.
+    const auto stretch = [](const Vec2& rX) {
+        const double s = 10.0 * (1.0 + rX[0]);
+        return std::array<double, 3>{1.0, 0.0, s * s};
+    };
+    const auto aniso = metric_square(stretch, aniso_pts);
+    double area = 0.0;
+    for (const auto& t : aniso) {
+        const double a = mio::detail::orient2d(aniso_pts[std::size_t(t[0])].data(),
+                                               aniso_pts[std::size_t(t[1])].data(),
+                                               aniso_pts[std::size_t(t[2])].data());
+        EXPECT_GT(a, 0.0);
+        area += 0.5 * a;
+    }
+    EXPECT_NEAR(area, 1.0, 1e-12);
+    // The smallest angle, measured in the metric at the centroid, averaged.
+    const auto mean_angle = [&](const std::vector<mio::detail::Cdt2d::Tri>& rT,
+                                const std::vector<Vec2>& rP) {
+        double sum = 0.0;
+        for (const auto& t : rT) {
+            const Vec2 &a = rP[std::size_t(t[0])], &b = rP[std::size_t(t[1])],
+                       &c = rP[std::size_t(t[2])];
+            const double s = std::sqrt(stretch({(a[0] + b[0] + c[0]) / 3, 0.0})[2]);
+            const auto len = [&](const Vec2& rU, const Vec2& rV) {
+                return std::hypot(rU[0] - rV[0], s * (rU[1] - rV[1]));
+            };
+            const double x = len(b, c), y = len(c, a), z = len(a, b);
+            const auto angle = [](double P, double Q, double R) {
+                return std::acos(std::clamp((Q * Q + R * R - P * P) / (2 * Q * R), -1.0, 1.0));
+            };
+            sum += std::min({angle(x, y, z), angle(y, z, x), angle(z, x, y)});
+        }
+        return sum / double(rT.size()) * 180.0 / 3.14159265358979323846;
+    };
+    EXPECT_GT(mean_angle(aniso, aniso_pts), mean_angle(plane, plane_pts) + 5.0);
+    // Cleared, the plane's test again.
+    mio::detail::Cdt2d cdt(0, 0, 1, 1);
+    cdt.SetMetric(stretch);
+    cdt.SetMetric(nullptr);
+    std::vector<Vec2> pts = {{0, 0}, {1, 0}, {1, 1}, {0, 1}, {0.4, 0.45}, {0.55, 0.6}};
+    mio::detail::Cdt2d ref(0, 0, 1, 1);
+    cdt.InsertBatch(pts);
+    ref.InsertBatch(pts);
+    EXPECT_EQ(cdt.AllTriangles(), ref.AllTriangles());
+}

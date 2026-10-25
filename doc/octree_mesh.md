@@ -89,7 +89,7 @@ The default output is a conforming, graded tetrahedral mesh of the skin's inside
 
 ![Histograms of the dihedral angles of a sphere's tetrahedra before and after optimisation, graded and uniform](/images/octree_mesh_dihedrals.png)
 
-`guarantee_applies` in the report is true when the 10.7°–164.8° bound covers the whole mesh: uniform skin grading, no warp refused, and no node moved onto a feature. Otherwise the actual angles are in `min_dihedral` and `max_dihedral`; snapping to a sharp corner can lower them locally, and graded skins cut transition shapes.
+`guarantee_applies` in the report is true when the 10.7°–164.8° bound covers the whole mesh: uniform skin grading, no warp refused, and no node moved onto a feature. What the stuffing trades for the bound is the boundary, which is the skin's within `hausdorff_to_skin` rather than its triangles: on the unit sphere's skin from [`mesh_cad_surface`](./mesh_cad.md#volume-meshes) under uniform grading at `surface_size = h`, it is within 0.036 `h`, 0.028 `h` and 0.03 `h` at `h` = 0.2, 0.1 and 0.05, and the enclosed volume the skin's within 0.30%, 0.075% and 0.019%. Otherwise the actual angles are in `min_dihedral` and `max_dihedral`; snapping to a sharp corner can lower them locally, and graded skins cut transition shapes.
 
 ## The hexahedral output
 

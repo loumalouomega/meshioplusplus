@@ -950,6 +950,47 @@ Native C++ tests cover ASCII/binary output and an explicit triangle/quad zone on
 
 The weekly `benchmark` workflow (also runnable by hand) runs both: every format at size M, and the operations for SEQ, OpenMP and TBB at 1, 2 and 4 threads, with `--hash`. It uploads the CSVs as artifacts and prints them in the job summary. Successful default-branch runs also publish immutable records with commit, run/attempt, machine, compiler, dependencies and benchmark parameters to `benchmark-data`; the [benchmark trends page](./benchmark_trends.md) plots that history through the existing Pages deployment. Its timings never fail a build — a hosted runner is noisy, so they are for trends across runs, not for gating one change — but a digest that differs between backends does. Every performance change is expected to show its before and after with these tools ([landing a performance change](#landing-a-performance-change)).
 
+## CAD corpus
+
+The clean fixtures say little about real CAD models, whose tolerances, tiny edges, sliver faces and gaps are where meshers lose most of their failures ([roadmap 6.5](./roadmap.md)). The weekly `cad_corpus` workflow (also runnable by hand, for a subset of models) meshes a corpus of public STEP files with [`mesh_cad_surface`](./mesh_cad.md) and measures each one. `tools/cad_corpus/manifest.json` names every model by source (a git repository at a pinned commit, or an https URL), path, licence and SHA-256; the files are fetched where the job runs and never stored in this repository. `tools/cad_corpus.py` holds the steps:
+
+```sh
+python tools/cad_corpus.py fetch --dest corpus --record hashes.json   # check, or record, the hashes
+python tools/cad_corpus.py run --dest corpus --out cad-corpus.json    # one process per model, under a time limit
+python tools/cad_corpus.py compare cad-corpus.json                    # fail when a model stops meshing
+python tools/cad_corpus.py baseline cad-corpus.json                   # its stable part as the next baseline
+python tools/cad_corpus.py table                                      # regenerate the table below (--check)
+```
+
+Per model a run records the faces meshed and failed by status and by class, the open, non-manifold and misoriented edges, `max_edge_gap`, the extreme angles and [`compute_quality`](./quality.md)'s triangle metrics, the Hausdorff distance to the read's own `BRepMesh` triangulation (both lie on the surfaces, so it is at most their two chordal errors) and their area ratio, points, time and peak memory. A model reads, meshes and is measured in its own process, so a crash or a hang is recorded with the model's id instead of ending the run. The failure classes are those of roadmap 6.5.6, from each face's status and reason: `gap_beyond_tolerance` (an edge's trims further apart than the tolerance), `trim_outside_patch`, `self_intersecting_loop`, `open_loop`, `degenerate_patch`, `budget` and `other`. On a model that is not a closed solid (an assembly of unsewn faces) the open edges are its boundary's segments, so their count grows as the mesh refines; on a closed solid any open edge is a defect.
+
+The job fails when a model that meshed in `tools/cad_corpus/baseline.json` no longer does, naming it, so a regression cannot hide in an average; a source that cannot be downloaded is reported and does not fail it. A change to the mesher that lowers the share of faces meshed or raises a class says why in its `CHANGELOG.md` entry and commits the new baseline, as for [a performance change](#landing-a-performance-change).
+
+The sources so far are the STEP samples of OpenCASCADE's repository (`data/step` at `V7_8_1`) and of `pythonocc-demos`, whose licence is not stated and which are therefore only downloaded, never redistributed. NIST's MBE PMI test models (a US-government work) are next: the manifest takes them as an `https` source once a run that can reach nist.gov has recorded their URLs and hashes (`fetch --record`), and the ABC and Fusion 360 Gallery corpora wait on a check of their terms.
+
+The v17.18.0 baseline's two largest classes, 95 faces whose parameters lay outside the exact predicates' range and 118 whose every triangle collapsed, were measured from the faces `run` failed and fixed in v17.19.0 ([roadmap 6.5.7](./roadmap.md)); as1-oc-214 and as1-pe-203 now mesh every face. `run --virtual-edges` and `run --metric varying` measure the two opt-in options of [`mesh_cad_surface`](./mesh_cad.md) against the same models (a run's `settings` record them). At v17.19.0, virtual edges form 67 chains, mesh one more face and close the Ventilator's 73 open edges, but leave 24 more faces under the bound; the varying metric leaves 59 fewer faces under the bound and lifts linkrods, screw and splinecage to 25 degrees, but 6 fewer faces mesh, their folds outlasting the 16 boundary rounds on the RC buggy's suspension. Both stay off in the baseline. The latest baseline:
+
+<!-- cad-corpus:begin (tools/cad_corpus.py table) -->
+
+Measured with meshio++ 17.19.0: `mesh_cad_surface` at a target size of the model's diagonal over 40, refined to 25 degrees, each model in its own process under 900 s. **7 of 10 models** mesh every face; **16104 of 16503 faces** (97.6%) mesh.
+
+| model | faces | meshed | failures by class | open edges | below bound | min angle | Hausdorff / diagonal |
+|---|---:|---:|---|---:|---:|---:|---:|
+| `occt-samples/linkrods` | 37 | 37 | – | 0 | 1 | 0.96 | 0.0066 |
+| `occt-samples/screw` | 10 | 10 | – | 0 | 2 | 8.83 | 0.00097 |
+| `pythonocc-demos/11752` | 1018 | 1018 | – | 0 | 115 | 0.612 | 0.024 |
+| `pythonocc-demos/as1-oc-214` | 160 | 160 | – | 0 | 0 | 25 | 0.005 |
+| `pythonocc-demos/as1-pe-203` | 160 | 160 | – | 0 | 0 | 25.1 | 0.013 |
+| `pythonocc-demos/face-recognition-sample-part` | 23 | 23 | – | 0 | 0 | 25 | 0.0036 |
+| `pythonocc-demos/kr600-r2830-4` | 4123 | 3970 | degenerate_patch 139, other 1, trim_outside_patch 13 | 8623 | 1885 | 1.86e-09 | 0.011 |
+| `pythonocc-demos/rc-buggy-2-front-suspension` | 10663 | 10418 | degenerate_patch 130, other 59, trim_outside_patch 56 | 14291 | 4796 | 0.0582 | 0.036 |
+| `pythonocc-demos/splinecage` | 4 | 4 | – | 216 | 1 | 4.93 | 0.0019 |
+| `pythonocc-demos/ventilator` | 305 | 304 | degenerate_patch 1 | 73 | 67 | 0.0555 | 0.0035 |
+
+Failures by class: trim_outside_patch 69, degenerate_patch 270, other 60.
+
+<!-- cad-corpus:end -->
+
 ## Mesh-backend benchmarks
 
 The C++ core's [mesh backend](cpp_backends.md) (MESHIO / NATIVE / KRATOS) is an exclusive compile-time choice, so `benchmark/bench_backends.sh` builds one benchmark binary per backend (`src/cpp/benchmark/bench_backends.cpp`, enabled with `-DMESHIOPLUSPLUS_BUILD_BENCHMARKS=ON`) and collates a CSV (`benchmark/results_backends.csv`). Method mirrors the Python harness: warmup + median of 5 (`std::chrono`), a synthetic structured tet cube (default 6·35³ = 257k tets over 46k shared points), and four kinds of rows:

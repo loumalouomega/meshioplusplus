@@ -570,71 +570,83 @@ BrepInfo ob_brep_info(const TopoDS_Shape& rNurbs, double ApproxTol) {
     Brep brep;
     brep.mId = nf + ne + 1;
     for (int fi = 1; fi <= faces.Extent(); ++fi) {
-        const TopoDS_Face face = TopoDS::Face(faces(fi));
-        const ObHandle<Geom_BSplineSurface> bs = ob_surface(face, ApproxTol);
-        if (bs.IsNull())
-            continue;
+        // The face's references, kept only once all of it converts: a face
+        // OpenCASCADE throws on (a surface trimmed to an empty range, an
+        // approximation that fails) is left out, as one with no surface is.
+        std::vector<std::pair<int, BrepRef> > refs;
         NurbsPatch patch;
-        patch.mDegrees = {bs->UDegree(), bs->VDegree()};
-        patch.mKnots = {ob_knots(bs->UKnotSequence()), ob_knots(bs->VKnotSequence())};
-        const auto nu = static_cast<std::size_t>(bs->NbUPoles());
-        const auto nv = static_cast<std::size_t>(bs->NbVPoles());
-        patch.mControlPoints = NDArray(DType::Float64, {nu * nv, 3});
-        patch.mWeights = NDArray(DType::Float64, {nu * nv});
-        for (std::size_t j = 0; j < nv; ++j)
-            for (std::size_t i = 0; i < nu; ++i) {
-                const gp_Pnt p = bs->Pole(static_cast<int>(i) + 1, static_cast<int>(j) + 1);
-                const std::size_t k = j * nu + i;
-                patch.mControlPoints.As<double>()[k * 3] = p.X();
-                patch.mControlPoints.As<double>()[k * 3 + 1] = p.Y();
-                patch.mControlPoints.As<double>()[k * 3 + 2] = p.Z();
-                patch.mWeights.As<double>()[k] =
-                    bs->Weight(static_cast<int>(i) + 1, static_cast<int>(j) + 1);
-            }
         BrepFace f;
-        f.mId = fi;
-        f.mPatch = static_cast<std::int64_t>(info.mPatches.size());
-        f.mSwappedNormal = face.Orientation() == TopAbs_REVERSED;
-        f.mRational = bs->IsURational() || bs->IsVRational();
-        f.mControlPointIds = ob_ids(next_id, nu * nv);
-        // Loops in the surface's own orientation: the outer one first.
-        const TopoDS_Face fwd = TopoDS::Face(face.Oriented(TopAbs_FORWARD));
-        const TopoDS_Wire outer = BRepTools::OuterWire(fwd);
-        std::vector<TopoDS_Wire> wires;
-        if (!outer.IsNull())
-            wires.push_back(outer);
-        for (TopExp_Explorer ex(fwd, TopAbs_WIRE); ex.More(); ex.Next())
-            if (!ex.Current().IsSame(outer))
-                wires.push_back(TopoDS::Wire(ex.Current()));
-        std::int64_t trim_index = 0;
-        for (const TopoDS_Wire& w : wires) {
-            BrepLoop loop;
-            loop.mType = w.IsSame(outer) ? "outer" : "inner";
-            for (BRepTools_WireExplorer we(w, fwd); we.More(); we.Next()) {
-                const TopoDS_Edge& e = we.Current();
-                double a = 0.0, b = 0.0;
-                const ObHandle<Geom2d_BSplineCurve> pc = ob_pcurve(e, fwd, a, b, ApproxTol);
-                if (pc.IsNull())
-                    continue;
-                BrepTrim t;
-                t.mTrimIndex = trim_index++;
-                t.mDirection = e.Orientation() != TopAbs_REVERSED;
-                t.mCurve = ob_curve(pc, a, b);
-                const int ei = edges.FindIndex(e);
-                if (ei > 0) {
-                    BrepRef r;
-                    r.mId = f.mId;
-                    r.mTrimIndex = t.mTrimIndex;
-                    // Edge and trim share their parameter in OpenCASCADE.
-                    r.mRelativeDirection = 1;
-                    edge_refs[static_cast<std::size_t>(ei - 1)].push_back(std::move(r));
+        try {
+            const TopoDS_Face face = TopoDS::Face(faces(fi));
+            const ObHandle<Geom_BSplineSurface> bs = ob_surface(face, ApproxTol);
+            if (bs.IsNull())
+                continue;
+            patch.mDegrees = {bs->UDegree(), bs->VDegree()};
+            patch.mKnots = {ob_knots(bs->UKnotSequence()), ob_knots(bs->VKnotSequence())};
+            const auto nu = static_cast<std::size_t>(bs->NbUPoles());
+            const auto nv = static_cast<std::size_t>(bs->NbVPoles());
+            patch.mControlPoints = NDArray(DType::Float64, {nu * nv, 3});
+            patch.mWeights = NDArray(DType::Float64, {nu * nv});
+            for (std::size_t j = 0; j < nv; ++j)
+                for (std::size_t i = 0; i < nu; ++i) {
+                    const gp_Pnt p = bs->Pole(static_cast<int>(i) + 1, static_cast<int>(j) + 1);
+                    const std::size_t k = j * nu + i;
+                    patch.mControlPoints.As<double>()[k * 3] = p.X();
+                    patch.mControlPoints.As<double>()[k * 3 + 1] = p.Y();
+                    patch.mControlPoints.As<double>()[k * 3 + 2] = p.Z();
+                    patch.mWeights.As<double>()[k] =
+                        bs->Weight(static_cast<int>(i) + 1, static_cast<int>(j) + 1);
                 }
-                loop.mTrims.push_back(std::move(t));
+            f.mId = fi;
+            f.mPatch = static_cast<std::int64_t>(info.mPatches.size());
+            f.mSwappedNormal = face.Orientation() == TopAbs_REVERSED;
+            f.mRational = bs->IsURational() || bs->IsVRational();
+            f.mControlPointIds = ob_ids(next_id, nu * nv);
+            // Loops in the surface's own orientation: the outer one first.
+            const TopoDS_Face fwd = TopoDS::Face(face.Oriented(TopAbs_FORWARD));
+            const TopoDS_Wire outer = BRepTools::OuterWire(fwd);
+            std::vector<TopoDS_Wire> wires;
+            if (!outer.IsNull())
+                wires.push_back(outer);
+            for (TopExp_Explorer ex(fwd, TopAbs_WIRE); ex.More(); ex.Next())
+                if (!ex.Current().IsSame(outer))
+                    wires.push_back(TopoDS::Wire(ex.Current()));
+            std::int64_t trim_index = 0;
+            for (const TopoDS_Wire& w : wires) {
+                BrepLoop loop;
+                loop.mType = w.IsSame(outer) ? "outer" : "inner";
+                for (BRepTools_WireExplorer we(w, fwd); we.More(); we.Next()) {
+                    const TopoDS_Edge& e = we.Current();
+                    double a = 0.0, b = 0.0;
+                    const ObHandle<Geom2d_BSplineCurve> pc = ob_pcurve(e, fwd, a, b, ApproxTol);
+                    if (pc.IsNull())
+                        continue;
+                    BrepTrim t;
+                    t.mTrimIndex = trim_index++;
+                    t.mDirection = e.Orientation() != TopAbs_REVERSED;
+                    t.mCurve = ob_curve(pc, a, b);
+                    const int ei = edges.FindIndex(e);
+                    if (ei > 0) {
+                        BrepRef r;
+                        r.mId = f.mId;
+                        r.mTrimIndex = t.mTrimIndex;
+                        // Edge and trim share their parameter in OpenCASCADE.
+                        r.mRelativeDirection = 1;
+                        refs.emplace_back(ei, std::move(r));
+                    }
+                    loop.mTrims.push_back(std::move(t));
+                }
+                if (!loop.mTrims.empty())
+                    f.mLoops.push_back(std::move(loop));
             }
-            if (!loop.mTrims.empty())
-                f.mLoops.push_back(std::move(loop));
+            f.mTrimmed = !f.mLoops.empty();
+        } catch (const Standard_Failure& rErr) {
+            log::warn("occt: face {} could not be converted ({}); left out", fi,
+                      rErr.GetMessageString());
+            continue;
         }
-        f.mTrimmed = !f.mLoops.empty();
+        for (auto& [ei, r] : refs)
+            edge_refs[static_cast<std::size_t>(ei - 1)].push_back(std::move(r));
         info.mPatches.push_back(std::move(patch));
         brep.mFaces.push_back(static_cast<std::int64_t>(info.mFaces.size()));
         info.mFaces.push_back(std::move(f));
@@ -644,7 +656,14 @@ BrepInfo ob_brep_info(const TopoDS_Shape& rNurbs, double ApproxTol) {
         BrepEdge e;
         e.mId = nf + ei;
         double a = 0.0, b = 0.0;
-        const ObHandle<Geom_BSplineCurve> c = ob_edge_curve(edge, a, b, ApproxTol);
+        ObHandle<Geom_BSplineCurve> c;
+        try {
+            c = ob_edge_curve(edge, a, b, ApproxTol);
+        } catch (const Standard_Failure& rErr) {
+            // Its uses still pair through their trims.
+            log::warn("occt: edge {} could not be converted ({}); its curve is left out", ei,
+                      rErr.GetMessageString());
+        }
         if (!c.IsNull()) {
             e.mHasCurve = true;
             e.mCurve = ob_curve(c, a, b);

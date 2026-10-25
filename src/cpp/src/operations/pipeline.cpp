@@ -17,10 +17,12 @@
 
 // System includes
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <type_traits>
@@ -49,6 +51,12 @@
 #include "meshioplusplus/operations/curvature.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/fit_cad.hpp"
+#include "meshioplusplus/operations/iga.hpp"
+#include "meshioplusplus/operations/mesh_cad.hpp"
+#include "meshioplusplus/formats/cad_json.hpp"
+#include "meshioplusplus/formats/iges.hpp"
+#include "meshioplusplus/formats/mfem.hpp"
+#include "meshioplusplus/formats/step.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/refine_patches.hpp"
 #include "meshioplusplus/operations/segment.hpp"
@@ -495,6 +503,35 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"TensorInvariants", {"Location", "Names", "Outputs", "Prefix", "Suffix", "Overwrite"}},
         {"ToCell", {"Names"}},
         {"ToPoint", {"Names", "Weight"}},
+        // The model steps (roadmap 6.1.1): they act on the CAD model the
+        // Input read carries beside its mesh (see PipeModel below).
+        {"MeshCadSurface",
+         {"TargetSize",
+          "MaxChordalDeviation",
+          "MinPointsPerEdge",
+          "Tolerance",
+          "RecordFaceIds",
+          "Edges",
+          "MatchUnreferencedTrims",
+          "Strict",
+          "MaxPoints",
+          "MinAngle",
+          "SmoothIterations",
+          "SmoothMethod",
+          "Order",
+          "CurvatureDeviation",
+          "CellsAcrossGaps",
+          "Grading",
+          "PoleRings",
+          "FaceSizes",
+          "EdgeSizes",
+          "Background",
+          "BackgroundArray",
+          "Metric",
+          "VirtualEdges"}},
+        {"IgaSample", {"Subdivisions", "TrimSamples", "Trim", "Edges"}},
+        {"IgaRefine",
+         {"Subdivisions", "Elevate", "SampleSubdivisions", "TrimSamples", "Trim", "Edges"}},
     };
     return table;
 }
@@ -530,9 +567,6 @@ const char* pipe_excluded_hint(const std::string& rOp) {
     if (rOp == "ConservativeInterpolate")
         return "'ConservativeInterpolate' needs a second (source) mesh and is not "
                "a pipeline step; use the `conservative-interpolate` CLI verb";
-    if (rOp == "MeshCadSurface")
-        return "'MeshCadSurface' meshes a CAD model, which the pipeline does not "
-               "carry, and is not a pipeline step; use the `mesh-cad-surface` CLI verb";
     return nullptr;
 }
 
@@ -826,6 +860,214 @@ TextOptions pipe_snap_text_options(const PipelineStep& rStep) {
     return t;
 }
 
+// --------------------------------------------------------------------------
+// The CAD model a run carries (roadmap 6.1.1). A CAD read returns a B-rep
+// (CAD JSON, STEP, IGES) or a NURBS model (MFEM) beside the mesh it samples;
+// `run_pipeline` keeps it from Input to the model steps that use it
+// (`MeshCadSurface`, `IgaSample`, `IgaRefine`), and `FitCad` hands on the solid
+// it fits. Any other step drops it: nothing else keeps a model in step with
+// the mesh it changes, so a model step after one fails by name rather than
+// meshing a model the mesh no longer matches.
+// --------------------------------------------------------------------------
+
+struct PipeModel {
+    std::optional<NurbsInfo> mNurbs;
+    std::optional<BrepInfo> mBrep;
+    /// Why there is no model, for the error a model step raises without one.
+    std::string mWhy;
+
+    bool Has() const { return mNurbs.has_value() || mBrep.has_value(); }
+    void Drop(std::string Why) {
+        mNurbs.reset();
+        mBrep.reset();
+        mWhy = std::move(Why);
+    }
+};
+
+bool pipe_is_model_step(const std::string& rOp) {
+    return rOp == "MeshCadSurface" || rOp == "IgaSample" || rOp == "IgaRefine";
+}
+
+/// Read the Input as `registry_read` would, keeping the model a CAD read
+/// returns beside the mesh (the same readers the CLI's iga and mesh-cad verbs
+/// and `mio_read_with_info` use).
+Mesh pipe_read_extra(const std::string& rPath);
+
+Mesh pipe_read_with_model(const std::string& rPath, const std::string& rFormat,
+                          const ReadOptions& rOptions, PipeModel& rModel) {
+    if (rFormat == "mfem") {
+        NurbsInfo nurbs;
+        Mesh mesh = read_mfem(rPath, {}, rOptions, nurbs);
+        if (nurbs.mPatches.empty())
+            rModel.Drop("Input '" + rPath + "' is an MFEM mesh with no NURBS patches");
+        else
+            rModel.mNurbs = std::move(nurbs);
+        return mesh;
+    }
+    if (rFormat == "cad_json" || rFormat == "step" || rFormat == "iges") {
+        BrepInfo brep;
+        Mesh mesh = rFormat == "cad_json" ? read_cad_json(rPath, brep)
+                    : rFormat == "step"   ? read_step(rPath, brep)
+                                          : read_iges(rPath, brep);
+        rModel.mBrep = std::move(brep);
+        return mesh;
+    }
+    rModel.Drop("Input format '" + rFormat +
+                "' carries none (read CAD JSON, STEP, IGES or an MFEM NURBS mesh)");
+    return registry_read(rPath, rFormat, rOptions);
+}
+
+/// `Subdivisions` / `Elevate`: a number for every direction, or one to three
+/// integers with the missing directions at @p Default (`iga_refine`'s rule).
+std::array<std::int32_t, 3> pipe_iga_triple(const PipelineStep& rStep, const char* pKey,
+                                            std::int32_t Default) {
+    const PipelineValue* v = pipe_find(rStep, pKey);
+    if (!v)
+        return {Default, Default, Default};
+    if (std::holds_alternative<double>(*v) || std::holds_alternative<std::int64_t>(*v)) {
+        const auto n = static_cast<std::int32_t>(pipe_number(rStep, pKey, Default));
+        return {n, n, n};
+    }
+    const std::vector<std::int64_t> values = pipe_ivec(rStep, pKey);
+    if (values.empty() || values.size() > 3)
+        throw std::invalid_argument(
+            pipe_err(rStep, std::string("'") + pKey + "' must be a number or 1 to 3 integers"));
+    std::array<std::int32_t, 3> out{Default, Default, Default};
+    for (std::size_t i = 0; i < values.size(); ++i)
+        out[i] = static_cast<std::int32_t>(values[i]);
+    return out;
+}
+
+Mesh pipe_apply_model_step(const PipelineStep& rStep, PipelineReport& rReport, PipeModel& rModel) {
+    const std::string& op = rStep.mOp;
+    if (!rModel.Has())
+        throw std::invalid_argument(pipe_err(rStep,
+                                             "needs a CAD model, and the pipeline carries "
+                                             "none: " +
+                                                 rModel.mWhy));
+    if (op == "MeshCadSurface") {
+        if (!rModel.mBrep)
+            throw std::invalid_argument(pipe_err(
+                rStep, "meshes a B-rep (CAD JSON, STEP or IGES), not an MFEM NURBS model"));
+        if (!pipe_find(rStep, "TargetSize"))
+            throw std::invalid_argument(pipe_err(rStep, "'TargetSize' is required"));
+        MeshCadSurfaceOptions o;
+        o.mTargetSize = pipe_number(rStep, "TargetSize", 0.0);
+        o.mMaxChordalDeviation = pipe_number(rStep, "MaxChordalDeviation", o.mMaxChordalDeviation);
+        o.mMinPointsPerEdge = static_cast<std::int64_t>(
+            pipe_number(rStep, "MinPointsPerEdge", static_cast<double>(o.mMinPointsPerEdge)));
+        o.mGeometricTolerance = pipe_number(rStep, "Tolerance", o.mGeometricTolerance);
+        o.mRecordFaceIds = pipe_flag(rStep, "RecordFaceIds", o.mRecordFaceIds);
+        o.mEdges = pipe_flag(rStep, "Edges", o.mEdges);
+        o.mMatchUnreferencedTrims =
+            pipe_flag(rStep, "MatchUnreferencedTrims", o.mMatchUnreferencedTrims);
+        o.mStrict = pipe_flag(rStep, "Strict", o.mStrict);
+        o.mMaxPoints = static_cast<std::int64_t>(
+            pipe_number(rStep, "MaxPoints", static_cast<double>(o.mMaxPoints)));
+        o.mMinAngleDeg = pipe_number(rStep, "MinAngle", o.mMinAngleDeg);
+        o.mSmoothIterations = static_cast<std::int64_t>(
+            pipe_number(rStep, "SmoothIterations", static_cast<double>(o.mSmoothIterations)));
+        const std::string method = pipe_text(rStep, "SmoothMethod", "laplacian");
+        if (method == "laplacian")
+            o.mSmoothMethod = MeshCadSmoothing::Laplacian;
+        else if (method == "odt")
+            o.mSmoothMethod = MeshCadSmoothing::Odt;
+        else
+            throw std::invalid_argument(
+                pipe_err(rStep, "'SmoothMethod' must be 'laplacian' or 'odt'"));
+        o.mOrder =
+            static_cast<std::int32_t>(pipe_number(rStep, "Order", static_cast<double>(o.mOrder)));
+        o.mCurvatureDeviation = pipe_number(rStep, "CurvatureDeviation", o.mCurvatureDeviation);
+        o.mCellsAcrossGaps = pipe_number(rStep, "CellsAcrossGaps", o.mCellsAcrossGaps);
+        o.mGrading = pipe_number(rStep, "Grading", o.mGrading);
+        o.mPoleRings = static_cast<std::int32_t>(
+            pipe_number(rStep, "PoleRings", static_cast<double>(o.mPoleRings)));
+        const std::string metric = pipe_text(rStep, "Metric", "mean");
+        if (metric == "mean")
+            o.mMetric = MeshCadMetric::Mean;
+        else if (metric == "varying")
+            o.mMetric = MeshCadMetric::Varying;
+        else
+            throw std::invalid_argument(pipe_err(rStep, "'Metric' must be 'mean' or 'varying'"));
+        // Given sizes (v17.19.0): a flat list of index, size pairs.
+        MeshCadSizeSources sources;
+        const auto pairs = [&](const char* pKey) {
+            const std::vector<double> flat = pipe_dvec(rStep, pKey);
+            if (flat.size() % 2 != 0)
+                throw std::invalid_argument(
+                    pipe_err(rStep, std::string("'") + pKey + "' must list index, size pairs"));
+            std::vector<std::pair<std::int64_t, double>> v;
+            for (std::size_t i = 0; i < flat.size(); i += 2) {
+                if (flat[i] != std::floor(flat[i]))
+                    throw std::invalid_argument(pipe_err(
+                        rStep, std::string("'") + pKey + "': an index must be an integer"));
+                v.emplace_back(static_cast<std::int64_t>(flat[i]), flat[i + 1]);
+            }
+            return v;
+        };
+        sources.mFaceSizes = pairs("FaceSizes");
+        sources.mEdgeSizes = pairs("EdgeSizes");
+        sources.mVirtualEdges = pipe_flag(rStep, "VirtualEdges", false);
+        Mesh background;
+        if (pipe_find(rStep, "Background")) {
+            background = pipe_read_extra(pipe_text(rStep, "Background", ""));
+            sources.pBackground = &background;
+            sources.mBackgroundArray = pipe_text(rStep, "BackgroundArray", "size");
+        }
+        MeshCadSurfaceResult r = mesh_cad_surface(*rModel.mBrep, o, sources);
+        for (const std::string& w : r.mWarnings)
+            rReport.mWarnings.push_back("MeshCadSurface: " + w);
+        pipe_push_step(rReport, rStep,
+                       {{"NumPoints", static_cast<double>(r.mNumPoints)},
+                        {"NumTriangles", static_cast<double>(r.mNumTriangles)},
+                        {"NumFaces", static_cast<double>(r.mNumFaces)},
+                        {"NumFailed", static_cast<double>(r.mNumFailed)},
+                        {"NumOpenEdges", static_cast<double>(r.mNumOpenEdges)},
+                        {"NumNonManifoldEdges", static_cast<double>(r.mNumNonManifoldEdges)},
+                        {"NumRefinementPoints", static_cast<double>(r.mNumRefinementPoints)},
+                        {"NumCurvedStraightened", static_cast<double>(r.mNumCurvedStraightened)},
+                        {"MinAngleDeg", r.mMinAngleDeg},
+                        {"MaxAngleDeg", r.mMaxAngleDeg}});
+        return std::move(r.mMesh);
+    }
+    // IgaSample, IgaRefine: the model is sampled (refined first), and the run
+    // carries the model the sampling describes on.
+    IgaSampleOptions so;
+    so.mSubdivisions = static_cast<std::int32_t>(
+        pipe_number(rStep, op == "IgaRefine" ? "SampleSubdivisions" : "Subdivisions", 0.0));
+    so.mTrimSamples = static_cast<std::int32_t>(pipe_number(rStep, "TrimSamples", 16.0));
+    so.mTrim = pipe_flag(rStep, "Trim", true);
+    so.mEdges = pipe_flag(rStep, "Edges", true);
+    Mesh out;
+    if (op == "IgaRefine") {
+        IgaRefineOptions ro;
+        ro.mSubdivisions = pipe_iga_triple(rStep, "Subdivisions", 1);
+        ro.mElevate = pipe_iga_triple(rStep, "Elevate", 0);
+        if (rModel.mNurbs) {
+            const NurbsInfo refined = iga_refine(*rModel.mNurbs, ro);
+            NurbsInfo mapped;
+            out = iga_sample(refined, so, &mapped);
+            rModel.mNurbs = std::move(mapped);
+        } else {
+            rModel.mBrep = iga_refine(*rModel.mBrep, ro);
+            out = iga_sample(*rModel.mBrep, so);
+        }
+    } else if (rModel.mNurbs) {
+        NurbsInfo mapped;
+        out = iga_sample(*rModel.mNurbs, so, &mapped);
+        rModel.mNurbs = std::move(mapped);
+    } else {
+        out = iga_sample(*rModel.mBrep, so);
+    }
+    pipe_push_step(
+        rReport, rStep,
+        {{"NumPatches", static_cast<double>(rModel.mNurbs ? rModel.mNurbs->mPatches.size()
+                                                          : rModel.mBrep->mPatches.size())},
+         {"NumPoints", static_cast<double>(out.NumPoints())},
+         {"NumCells", static_cast<double>(pipe_total_cells(out))}});
+    return out;
+}
+
 }  // namespace
 
 std::vector<std::pair<std::string, std::vector<std::string>>> pipeline_op_table() {
@@ -869,8 +1111,22 @@ void validate_pipeline_step(const PipelineStep& rStep) {
     }
 }
 
-Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rReport) {
+namespace {
+
+/// The body of `apply_pipeline_step`; @p pModel is the run's model when the
+/// caller is `run_pipeline` (null from every other caller, which carries none).
+Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rReport,
+                     PipeModel* pModel) {
     const std::string& op = rStep.mOp;
+
+    if (pipe_is_model_step(op)) {
+        if (!pModel)
+            throw std::invalid_argument(
+                pipe_err(rStep,
+                         "needs the CAD model a pipeline's Input reads, which only a whole run "
+                         "carries (run_pipeline), not a step applied on its own"));
+        return pipe_apply_model_step(rStep, rReport, *pModel);
+    }
 
     if (op == "Quality") {
         Mesh out = attach_quality(mesh);
@@ -1268,6 +1524,16 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
             counters.emplace_back("MaxG1AngleDeg", cr.mMaxG1AngleDeg);
         }
         pipe_push_step(rReport, rStep, std::move(counters));
+        // The fitted solid is the model the rest of the run carries, when the
+        // backend gave one (the native legacy mode gives none).
+        if (pModel) {
+            if (!cr.mBrep.mFaces.empty()) {
+                pModel->mNurbs.reset();
+                pModel->mBrep = std::move(cr.mBrep);
+            } else {
+                pModel->Drop("'FitCad' gave no B-rep (its native legacy freeform mode fits none)");
+            }
+        }
         return std::move(cr.mMesh);
     }
     if (op == "RefinePatches") {
@@ -2092,6 +2358,12 @@ Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& r
     throw std::invalid_argument("meshio++: pipeline: unknown operation '" + op + "'");
 }
 
+}  // namespace
+
+Mesh apply_pipeline_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rReport) {
+    return pipe_apply_step(std::move(mesh), rStep, rReport, nullptr);
+}
+
 Mesh run_pipeline_steps(Mesh mesh, const std::vector<PipelineStep>& rSteps,
                         PipelineReport& rReport) {
     for (const PipelineStep& step : rSteps) {
@@ -2157,7 +2429,8 @@ Mesh pipe_read_extra(const std::string& rPath) {
     return registry_read(rPath, fmt, ReadOptions{});
 }
 
-Mesh pipe_apply_v2(Mesh mesh, const PipelineStep& rStep, PipelineReport& rReport) {
+Mesh pipe_apply_v2(Mesh mesh, const PipelineStep& rStep, PipelineReport& rReport,
+                   PipeModel* pModel) {
     const auto& op = rStep.mOp;
     if (op == "Merge") {
         std::vector<Mesh> owned;
@@ -2201,7 +2474,7 @@ Mesh pipe_apply_v2(Mesh mesh, const PipelineStep& rStep, PipelineReport& rReport
         pipe_push_step(rReport, rStep);
         return result;
     }
-    return apply_pipeline_step(std::move(mesh), rStep, rReport);
+    return pipe_apply_step(std::move(mesh), rStep, rReport, pModel);
 }
 
 std::string pipe_piece_path(const std::string& rPattern, const std::string& rKey, bool Part) {
@@ -2277,12 +2550,14 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
     if (rPipeline.mVersion == 2 && !fanout &&
         (rPipeline.mOutput.mPath.find('{') != std::string::npos || rPipeline.mOutput.mPath.find('}') != std::string::npos))
         throw std::invalid_argument("meshio++: pipeline: unsupported Version 2 output token; transient sequence schemas remain Version 1");
+    bool wants_model = false;
     for (std::size_t i = 0; i < rPipeline.mSteps.size(); ++i) {
         const auto& step = rPipeline.mSteps[i];
         if (rPipeline.mVersion == 1)
             validate_pipeline_step(step);
         else
             pipe_validate_v2(step);
+        wants_model = wants_model || pipe_is_model_step(step.mOp);
         if (step.mOp == "Split" && (!fanout || i + 1 != rPipeline.mSteps.size()))
             throw std::invalid_argument(
                 "meshio++: pipeline: Split must be terminal and requires Output.Pattern with "
@@ -2334,8 +2609,15 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
         detail::provenance_set_source(rPipeline.mInput.mPath, rfmt);
 
     PipelineReport report;
-    Mesh mesh = generated ? Mesh()
-                          : registry_read(rPipeline.mInput.mPath, rfmt, rPipeline.mInput.mOptions);
+    // The model is read only for a chain that uses it, so every other run
+    // reads exactly as before.
+    PipeModel model;
+    model.mWhy = "the pipeline starts from Generate, not a CAD read";
+    Mesh mesh;
+    if (!generated)
+        mesh = wants_model ? pipe_read_with_model(rPipeline.mInput.mPath, rfmt,
+                                                  rPipeline.mInput.mOptions, model)
+                           : registry_read(rPipeline.mInput.mPath, rfmt, rPipeline.mInput.mOptions);
     for (std::size_t i = 0; i < rPipeline.mSteps.size(); ++i) {
         const auto& step = rPipeline.mSteps[i];
         if (fanout && i + 1 == rPipeline.mSteps.size()) {
@@ -2363,8 +2645,11 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
             pipe_write_pieces(rPipeline, pieces, step.mOp == "Partition");
             return report;
         }
-        mesh = rPipeline.mVersion == 2 ? pipe_apply_v2(std::move(mesh), step, report)
-                                       : apply_pipeline_step(std::move(mesh), step, report);
+        mesh = rPipeline.mVersion == 2 ? pipe_apply_v2(std::move(mesh), step, report, &model)
+                                       : pipe_apply_step(std::move(mesh), step, report, &model);
+        if (model.Has() && !pipe_is_model_step(step.mOp) && step.mOp != "FitCad")
+            model.Drop("step " + std::to_string(i + 1) + " '" + step.mOp +
+                       "' changed the mesh, which drops the model");
     }
 
     const std::string out_fmt =

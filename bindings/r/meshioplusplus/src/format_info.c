@@ -558,9 +558,12 @@ static SEXP r_mesh_cad_corners(void) {
 
 SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation,
                             SEXP min_points_per_edge, SEXP tolerance, SEXP record_face_ids,
-                            SEXP edges, SEXP match_unreferenced_trims, SEXP strict,
-                            SEXP max_points, SEXP min_angle, SEXP smooth_iterations,
-                            SEXP smooth_method, SEXP order) {
+                            SEXP edges, SEXP match_unreferenced_trims, SEXP strict, SEXP max_points,
+                            SEXP min_angle, SEXP smooth_iterations, SEXP smooth_method, SEXP order,
+                            SEXP grading, SEXP curvature_deviation, SEXP cells_across_gaps,
+                            SEXP pole_rings, SEXP face_size_faces, SEXP face_sizes,
+                            SEXP edge_size_edges, SEXP edge_sizes, SEXP background,
+                            SEXP background_array, SEXP metric, SEXP virtual_edges) {
     const mio_format_info *info = info_of(x, 0);
     mio_mesh_cad_surface_opts opts;
     mio_mesh_cad_surface_opts_init(&opts);
@@ -578,8 +581,43 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
     opts.smooth_iterations = (int32_t)mio_r_int64(smooth_iterations, "smooth_iterations");
     opts.smooth_method = (int32_t)mio_r_int64(smooth_method, "smooth_method");
     opts.order = (int32_t)mio_r_int64(order, "order");
+    opts.grading = mio_r_double(grading, "grading");
+    opts.curvature_deviation = mio_r_double(curvature_deviation, "curvature_deviation");
+    opts.cells_across_gaps = mio_r_double(cells_across_gaps, "cells_across_gaps");
+    opts.pole_rings = (int32_t)mio_r_int64(pole_rings, "pole_rings");
+    /* v17.19.0: given sizes (1-based indices from R), the background, the
+     * metric and virtual edges. */
+    mio_mesh_cad_surface_opts_ex ex;
+    mio_mesh_cad_surface_opts_ex_init(&ex);
+    ex.metric = (int32_t)mio_r_int64(metric, "metric");
+    ex.virtual_edges = mio_r_bool(virtual_edges, "virtual_edges") ? 1 : 0;
+    const R_xlen_t nfs = Rf_xlength(face_size_faces), nes = Rf_xlength(edge_size_edges);
+    if (Rf_xlength(face_sizes) != nfs || Rf_xlength(edge_sizes) != nes)
+        Rf_error("mesh_cad_surface: the size indices and sizes must have the same length");
+    int64_t* fidx = (int64_t*)R_alloc(nfs > 0 ? (size_t)nfs : 1, sizeof(int64_t));
+    double* fsz = (double*)R_alloc(nfs > 0 ? (size_t)nfs : 1, sizeof(double));
+    int64_t* eidx = (int64_t*)R_alloc(nes > 0 ? (size_t)nes : 1, sizeof(int64_t));
+    double* esz = (double*)R_alloc(nes > 0 ? (size_t)nes : 1, sizeof(double));
+    for (R_xlen_t i = 0; i < nfs; ++i) {
+        /* Numeric vectors: the R wrapper coerces them. */
+        fidx[i] = (int64_t)REAL(face_size_faces)[i] - 1;
+        fsz[i] = REAL(face_sizes)[i];
+    }
+    for (R_xlen_t i = 0; i < nes; ++i) {
+        eidx[i] = (int64_t)REAL(edge_size_edges)[i] - 1;
+        esz[i] = REAL(edge_sizes)[i];
+    }
+    ex.face_size_faces = fidx;
+    ex.face_sizes = fsz;
+    ex.num_face_sizes = (int64_t)nfs;
+    ex.edge_size_edges = eidx;
+    ex.edge_sizes = esz;
+    ex.num_edge_sizes = (int64_t)nes;
+    if (!Rf_isNull(background))
+        ex.background = mio_r_mesh(background);
+    ex.background_array = mio_r_string(background_array, "background_array");
     mio_mesh_cad_surface_report report;
-    mio_mesh *out = mio_mesh_cad_surface(info, &opts, &report);
+    mio_mesh* out = mio_mesh_cad_surface2(info, &opts, &ex, &report);
     if (out == NULL) mio_r_fail("mesh_cad_surface");
 
     /* Wrap the mesh first: once it has a finalizer nothing below can leak it. */
@@ -607,8 +645,37 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
         for (int b = 0; b < MIO_MESH_CAD_ANGLE_BINS; ++b) REAL(histogram)[b] = (double)bins[b];
     }
     SEXP corners = PROTECT(r_mesh_cad_corners());
+    /* v17.19.0: per face, the 1-based edges that limited its given size; and
+     * each virtual edge's chain of 1-based edges. */
+    SEXP limits = PROTECT(Rf_allocVector(VECSXP, nf));
+    for (R_xlen_t f = 0; f < nf; ++f) {
+        const int64_t n = mio_mesh_cad_surface_face_size_limits((int64_t)f, NULL, 0);
+        SEXP v = PROTECT(Rf_allocVector(REALSXP, n > 0 ? (R_xlen_t)n : 0));
+        if (n > 0) {
+            int64_t* buf = (int64_t*)R_alloc((size_t)n, sizeof(int64_t));
+            mio_mesh_cad_surface_face_size_limits((int64_t)f, buf, n);
+            for (int64_t i = 0; i < n; ++i)
+                REAL(v)[i] = (double)buf[i] + 1.0;
+        }
+        SET_VECTOR_ELT(limits, f, v);
+        UNPROTECT(1);
+    }
+    const int64_t nv = mio_mesh_cad_surface_num_virtual_edges();
+    SEXP virtual_edges_out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t)nv));
+    for (int64_t k = 0; k < nv; ++k) {
+        const int64_t n = mio_mesh_cad_surface_virtual_edge(k, NULL, 0);
+        SEXP v = PROTECT(Rf_allocVector(REALSXP, n > 0 ? (R_xlen_t)n : 0));
+        if (n > 0) {
+            int64_t* buf = (int64_t*)R_alloc((size_t)n, sizeof(int64_t));
+            mio_mesh_cad_surface_virtual_edge(k, buf, n);
+            for (int64_t i = 0; i < n; ++i)
+                REAL(v)[i] = (double)buf[i] + 1.0;
+        }
+        SET_VECTOR_ELT(virtual_edges_out, (R_xlen_t)k, v);
+        UNPROTECT(1);
+    }
 
-    enum { R_MESH_CAD_N = 27 };
+    enum { R_MESH_CAD_N = 29 };
     SEXP res = PROTECT(Rf_allocVector(VECSXP, R_MESH_CAD_N));
     SEXP nm = PROTECT(Rf_allocVector(STRSXP, R_MESH_CAD_N));
     int k = 0;
@@ -648,12 +715,14 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
     /* Named columns; the R wrapper makes a data frame. */
     R_MESH_CAD_SET("corners", corners);
     R_MESH_CAD_NUM(num_curved_straightened);
+    R_MESH_CAD_SET("face_size_limits", limits);
+    R_MESH_CAD_SET("virtual_edges", virtual_edges_out);
 #undef R_MESH_CAD_NUM
 #undef R_MESH_CAD_SET
     if (k != R_MESH_CAD_N)
         Rf_error("mesh_cad_surface: report has %d fields, expected %d", k, (int)R_MESH_CAD_N);
     Rf_setAttrib(res, R_NamesSymbol, nm);
-    UNPROTECT(8);
+    UNPROTECT(10);
     return res;
 }
 

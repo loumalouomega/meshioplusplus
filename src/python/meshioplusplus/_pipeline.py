@@ -559,6 +559,42 @@ _OP_TABLE = {
     ),
     "ToCell": ("Names",),
     "ToPoint": ("Names", "Weight"),
+    # The model steps (roadmap 6.1.1): they act on the CAD model the Input
+    # read carries beside its mesh (see _apply_model_step).
+    "MeshCadSurface": (
+        "TargetSize",
+        "MaxChordalDeviation",
+        "MinPointsPerEdge",
+        "Tolerance",
+        "RecordFaceIds",
+        "Edges",
+        "MatchUnreferencedTrims",
+        "Strict",
+        "MaxPoints",
+        "MinAngle",
+        "SmoothIterations",
+        "SmoothMethod",
+        "Order",
+        "CurvatureDeviation",
+        "CellsAcrossGaps",
+        "Grading",
+        "PoleRings",
+        "FaceSizes",
+        "EdgeSizes",
+        "Background",
+        "BackgroundArray",
+        "Metric",
+        "VirtualEdges",
+    ),
+    "IgaSample": ("Subdivisions", "TrimSamples", "Trim", "Edges"),
+    "IgaRefine": (
+        "Subdivisions",
+        "Elevate",
+        "SampleSubdivisions",
+        "TrimSamples",
+        "Trim",
+        "Edges",
+    ),
 }
 
 _V2_OP_TABLE = {
@@ -602,10 +638,12 @@ _EXCLUDED_OPS = {
     "ConservativeInterpolate": "'ConservativeInterpolate' needs a second "
     "(source) mesh and is not a pipeline step; use the "
     "`conservative-interpolate` CLI verb",
-    "MeshCadSurface": "'MeshCadSurface' meshes a CAD model, which the pipeline "
-    "does not carry, and is not a pipeline step; use the `mesh-cad-surface` "
-    "CLI verb",
 }
+
+# The model steps, and the formats whose read carries a model (the C++
+# engine's pipe_is_model_step and pipe_read_with_model).
+_MODEL_OPS = ("MeshCadSurface", "IgaSample", "IgaRefine")
+_MODEL_FORMATS = ("cad_json", "step", "iges", "mfem")
 
 
 def _err(op, what):
@@ -1162,6 +1200,12 @@ def _apply_step(mesh, step, steps, warnings):
     op = step["Op"]
     entry = {"op": op}
 
+    if op in _MODEL_OPS:
+        raise _err(
+            op,
+            "needs the CAD model a pipeline's Input reads, which only a whole run "
+            "carries (run_pipeline), not a step applied on its own",
+        )
     if op == "Quality":
         mesh = attach_quality(mesh)
     elif op == "Clean":
@@ -2208,6 +2252,167 @@ def _resolve_settings(settings):
         return json.load(handle)
 
 
+class _Model:
+    """The CAD model a run carries (roadmap 6.1.1): ``kind`` is ``"brep"`` or
+    ``"nurbs"`` and ``data`` the model dict, or both ``None`` and ``why`` the
+    reason a model step raises. The C++ engine's ``PipeModel``."""
+
+    def __init__(self, why):
+        self.kind = None
+        self.data = None
+        self.why = why
+
+    def has(self):
+        return self.kind is not None
+
+    def set(self, kind, data):
+        self.kind, self.data = kind, data
+
+    def drop(self, why):
+        self.kind = self.data = None
+        self.why = why
+
+
+def _sniffed_format(path):
+    """The format the C++ engine resolves an ambiguous extension to (``.mesh``
+    is Medit or MFEM by its content), or ``""`` without the core. Called after
+    the Input was read, so the file exists."""
+    try:
+        from . import _core
+    except ImportError:  # pragma: no cover - the numpy-only install
+        return ""
+    return _core.sniff_format(str(path))
+
+
+def _iga_triple(step, key, default):
+    v = step.get(key)
+    if v is None:
+        return [default] * 3
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return [int(_number(step, key, default))] * 3
+    if (
+        not isinstance(v, (list, tuple))
+        or not 1 <= len(v) <= 3
+        or any(isinstance(x, bool) or not isinstance(x, (int, float)) for x in v)
+        or any(float(x) != int(x) for x in v)
+    ):
+        raise _err(step["Op"], f"'{key}' must be a number or 1 to 3 integers")
+    return [int(x) for x in v] + [default] * (3 - len(v))
+
+
+def _index_size_pairs(step, key):
+    """A flat ``[index, size, index, size, ...]`` list as pairs (the C++
+    engine's settings values are flat lists, so both read the same)."""
+    flat = step.get(key)
+    if flat is None:
+        return None
+    if not isinstance(flat, (list, tuple)) or len(flat) % 2:
+        raise _err(step["Op"], f"'{key}' must list index, size pairs")
+    pairs = []
+    for index, size in zip(flat[0::2], flat[1::2]):
+        if isinstance(index, bool) or float(index) != int(index):
+            raise _err(step["Op"], f"'{key}': an index must be an integer")
+        pairs.append((int(index), float(size)))
+    return pairs
+
+
+def _apply_model_step(step, model, steps, warnings):
+    """A model step on the run's model; returns the mesh it makes."""
+    from ._iga import iga_refine, iga_sample
+    from ._mesh_cad import mesh_cad_surface
+
+    op = step["Op"]
+    entry = {"op": op}
+    if not model.has():
+        raise _err(op, "needs a CAD model, and the pipeline carries none: " + model.why)
+    if op == "MeshCadSurface":
+        if model.kind != "brep":
+            raise _err(
+                op, "meshes a B-rep (CAD JSON, STEP or IGES), not an MFEM NURBS model"
+            )
+        if "TargetSize" not in step:
+            raise _err(op, "'TargetSize' is required")
+        method = _text(step, "SmoothMethod", "laplacian")
+        if method not in ("laplacian", "odt"):
+            raise _err(op, "'SmoothMethod' must be 'laplacian' or 'odt'")
+        metric = _text(step, "Metric", "mean")
+        if metric not in ("mean", "varying"):
+            raise _err(op, "'Metric' must be 'mean' or 'varying'")
+        background = None
+        if "Background" in step:
+            background = read(_text(step, "Background", ""))
+        mesh, report = mesh_cad_surface(
+            model.data,
+            _number(step, "TargetSize", 0.0),
+            max_chordal_deviation=_number(step, "MaxChordalDeviation", 0.0),
+            min_points_per_edge=int(_number(step, "MinPointsPerEdge", 0)),
+            tolerance=_number(step, "Tolerance", 0.0),
+            record_face_ids=_flag(step, "RecordFaceIds", True),
+            edges=_flag(step, "Edges", True),
+            match_unreferenced_trims=_flag(step, "MatchUnreferencedTrims", True),
+            strict=_flag(step, "Strict", False),
+            max_points=int(_number(step, "MaxPoints", 50_000_000)),
+            min_angle=_number(step, "MinAngle", 0.0),
+            smooth_iterations=int(_number(step, "SmoothIterations", 0)),
+            smooth_method=method,
+            order=int(_number(step, "Order", 1)),
+            curvature_deviation=_number(step, "CurvatureDeviation", 0.0),
+            cells_across_gaps=_number(step, "CellsAcrossGaps", 0.0),
+            grading=_number(step, "Grading", 0.0),
+            pole_rings=int(_number(step, "PoleRings", 0)),
+            face_sizes=_index_size_pairs(step, "FaceSizes"),
+            edge_sizes=_index_size_pairs(step, "EdgeSizes"),
+            background=background,
+            background_array=_text(step, "BackgroundArray", "size"),
+            metric=metric,
+            virtual_edges=_flag(step, "VirtualEdges", False),
+            return_report=True,
+        )
+        warnings.extend("MeshCadSurface: " + w for w in report["warnings"])
+        entry.update(
+            NumPoints=float(report["num_points"]),
+            NumTriangles=float(report["num_triangles"]),
+            NumFaces=float(report["num_faces"]),
+            NumFailed=float(report["num_failed"]),
+            NumOpenEdges=float(report["num_open_edges"]),
+            NumNonManifoldEdges=float(report["num_non_manifold_edges"]),
+            NumRefinementPoints=float(report["num_refinement_points"]),
+            NumCurvedStraightened=float(report["num_curved_straightened"]),
+            MinAngleDeg=float(report["min_angle_deg"]),
+            MaxAngleDeg=float(report["max_angle_deg"]),
+        )
+    else:
+        # IgaSample, IgaRefine: the model is sampled (refined first), and the
+        # run carries on the model the sampling describes.
+        sample = dict(
+            trim_samples=int(_number(step, "TrimSamples", 16)),
+            edges=_flag(step, "Edges", True),
+            trim=_flag(step, "Trim", True),
+        )
+        if op == "IgaRefine":
+            mesh = iga_refine(
+                model.data,
+                subdivisions=_iga_triple(step, "Subdivisions", 1),
+                elevate=_iga_triple(step, "Elevate", 0),
+                sample_subdivisions=int(_number(step, "SampleSubdivisions", 0)),
+                **sample,
+            )
+        else:
+            mesh = iga_sample(
+                model.data, subdivisions=int(_number(step, "Subdivisions", 0)), **sample
+            )
+        model.set(model.kind, mesh.info[model.kind])
+        ncells = sum(len(c) for c in mesh.cells)
+        entry.update(
+            NumPatches=float(len(model.data["patches"])),
+            NumPoints=float(len(mesh.points)),
+            NumCells=float(ncells),
+        )
+    steps.append(entry)
+    _prov_add_operation(_render_op(step))
+    return mesh
+
+
 def _apply_v2(mesh, step, steps, warnings):
     op = step["Op"]
     entry = {"op": op}
@@ -2441,6 +2646,7 @@ def run_pipeline(settings, input_path=None, output_path=None):
     # A no-op unless the caller opened a provenance scope around this call
     # (see meshioplusplus._provenance) -- the pipeline never opens one
     # itself, matching the C++ engine's own posture (opt-in everywhere).
+    model = _Model("the pipeline starts from Generate, not a CAD read")
     if generated:
         mesh = Mesh(np.zeros((0, 3)), [])
     else:
@@ -2451,13 +2657,44 @@ def run_pipeline(settings, input_path=None, output_path=None):
         _prov_set_source(str(in_path), in_fmt)
 
         mesh = read(in_path, file_format=inp.get("Format") or None, **read_kwargs)
+        info = getattr(mesh, "info", None) or {}
+        model_fmt = inp.get("Format") or _sniffed_format(in_path) or in_fmt
+        if model_fmt not in _MODEL_FORMATS:
+            model.drop(
+                f"Input format '{model_fmt}' carries none (read CAD JSON, STEP, IGES "
+                "or an MFEM NURBS mesh)"
+            )
+        elif model_fmt == "mfem":
+            if info.get("nurbs") is not None and len(info["nurbs"].get("patches", ())):
+                model.set("nurbs", info["nurbs"])
+            else:
+                model.drop(f"Input '{in_path}' is an MFEM mesh with no NURBS patches")
+        else:
+            model.set("brep", info.get("brep"))
 
     steps = []
     for i, step in enumerate(steps_spec):
         if fanout and i + 1 == len(steps_spec):
             steps.append(_fanout(mesh, step, out_path, out, in_path, steps_spec))
             return {"steps": steps, "warnings": warnings}
+        if step["Op"] in _MODEL_OPS:
+            mesh = _apply_model_step(step, model, steps, warnings)
+            continue
         mesh = (_apply_v2 if version == 2 else _apply_step)(mesh, step, steps, warnings)
+        if step["Op"] == "FitCad":
+            # The fitted solid is the model the rest of the run carries, when
+            # the backend gave one (the native legacy mode gives none).
+            brep = (getattr(mesh, "info", None) or {}).get("brep")
+            if brep is not None and len(brep.get("faces", ())):
+                model.set("brep", brep)
+            else:
+                model.drop(
+                    "'FitCad' gave no B-rep (its native legacy freeform mode fits none)"
+                )
+        elif model.has():
+            model.drop(
+                f"step {i + 1} '{step['Op']}' changed the mesh, which drops the model"
+            )
 
     out_fmt = out.get("Format") or _write_format_for_path(pathlib.Path(str(out_path)))
     out_encoding = out.get("Encoding", "default")

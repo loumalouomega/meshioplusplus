@@ -303,20 +303,39 @@ def _read_periodic(f, is_ascii, data_size):
     return periodic
 
 
-def _block_entities(mesh):
-    """One entity per cell block, for a mixed mesh that brings no entity tags.
+def _block_entities(mesh, block_tags=None):
+    """One entity per cell block, for a mesh that brings no entity tags.
 
-    The twin of the C++ writer's block-only synthesis: a block's entity tag is
-    the smallest positive tag still free in its dimension, in block order, and a
-    point belongs to the highest-dimension block touching it (ties go to the
-    earlier block). Points no block touches keep ``(0, 0)``. Returns the
+    The twin of the C++ writer's ``gmsh_synthesize_tags_41``: a block keeps its
+    region tag (``block_tags``) as its entity tag while that tag is positive
+    and no earlier block of the same dimension holds it; every other block is
+    given the smallest positive tag still free in its dimension, in block
+    order. A point belongs to the highest-dimension block touching it (ties go
+    to the earlier block); points no block touches keep ``(0, 0)``. Returns the
     ``gmsh:dim_tags`` array and the per-block ``gmsh:geometrical`` list.
     """
-    next_tag = {}
-    entity_tag = []
-    for block in mesh.cells:
-        next_tag[block.dim] = next_tag.get(block.dim, 0) + 1
-        entity_tag.append(next_tag[block.dim])
+    nblocks = len(mesh.cells)
+    if block_tags is None:
+        block_tags = [0] * nblocks
+    taken = set()
+    entity_tag = [0] * nblocks
+    placed = [False] * nblocks
+    for b, block in enumerate(mesh.cells):
+        key = (block.dim, int(block_tags[b]))
+        if block_tags[b] > 0 and key not in taken:
+            taken.add(key)
+            entity_tag[b] = int(block_tags[b])
+            placed[b] = True
+    next_free = {}
+    for b, block in enumerate(mesh.cells):
+        if placed[b]:
+            continue
+        candidate = next_free.get(block.dim, 1)
+        while (block.dim, candidate) in taken:
+            candidate += 1
+        next_free[block.dim] = candidate
+        taken.add((block.dim, candidate))
+        entity_tag[b] = candidate
     n = len(mesh.points)
     point_dim = np.full(n, -1, dtype=np.int64)
     point_tag = np.zeros(n, dtype=np.int64)
@@ -339,16 +358,107 @@ def _block_entities(mesh):
     return dim_tags, geometrical
 
 
-def write(filename, mesh, float_fmt=".16e", binary=True):
+def _split_by_physical(mesh):
+    """Split every block whose ``gmsh:physical`` tags differ into one per tag.
+
+    The twin of the C++ writer's ``gmsh_split_blocks_by_tag_41`` (roadmap
+    6.1.2): a 4.1 element block lives on one entity with one physical group,
+    so a block several regions share becomes several. Sub-blocks follow the
+    order their tags first appear in, each keeping its cells in order, and every
+    cell data array is split alike. Returns ``(cells, cell_data, tags)``, or
+    ``None`` when every block is uniform or a block cannot be split (ragged
+    data, a cell array of the wrong length).
+    """
+    physical = mesh.cell_data["gmsh:physical"]
+    groups = []
+    any_split = False
+    for block, tags in zip(mesh.cells, physical):
+        tags = np.asarray(tags).reshape(-1)
+        order = {}
+        for c, t in enumerate(tags.tolist()):
+            order.setdefault(t, []).append(c)
+        groups.append(list(order.items()))
+        if len(order) > 1:
+            if not isinstance(block.data, np.ndarray):
+                return None
+            any_split = True
+    if not any_split:
+        return None
+    for data in mesh.cell_data.values():
+        if len(data) != len(mesh.cells):
+            return None
+        for block, arr, grp in zip(mesh.cells, data, groups):
+            if len(grp) > 1 and (np.ndim(arr) == 0 or len(arr) != len(block)):
+                return None
+    cells = []
+    cell_data = {name: [] for name in mesh.cell_data}
+    tags_out = []
+    for b, (block, grp) in enumerate(zip(mesh.cells, groups)):
+        if len(grp) <= 1:
+            cells.append(block)
+            for name, data in mesh.cell_data.items():
+                cell_data[name].append(data[b])
+            tags_out.append(grp[0][0] if grp else 0)
+            continue
+        for tag, idx in grp:
+            idx = np.asarray(idx, dtype=np.int64)
+            cells.append(CellBlock(block.type, block.data[idx]))
+            for name, data in mesh.cell_data.items():
+                cell_data[name].append(np.asarray(data[b])[idx])
+            tags_out.append(tag)
+    return cells, cell_data, tags_out
+
+
+def write(filename, mesh, float_fmt=".16e", binary=True, region_groups=False):
     """Writes msh files, cf.
     <http://gmsh.info/doc/texinfo/gmsh.html#MSH-file-format>.
 
     A mixed mesh (several cell blocks) with no ``gmsh:dim_tags`` and no
     ``gmsh:geometrical`` gets one entity per block, as the C++ writer does.
+    With ``region_groups`` (``gmsh:physical`` synthesised from the mesh's
+    regions), a block several regions share is split into one per region and
+    every block becomes an entity carrying its region's physical group.
     """
     mesh_point_data = mesh.point_data
     mesh_cell_data = mesh.cell_data
-    if (
+    cells = mesh.cells
+    cell_sets = mesh.cell_sets
+    if "gmsh:dim_tags" not in mesh.point_data and region_groups:
+        split = _split_by_physical(mesh)
+        if split is not None:
+            cells, mesh_cell_data, block_tags = split
+            cell_sets = {
+                k: v for k, v in cell_sets.items() if k != "gmsh:bounding_entities"
+            }
+        else:
+            mesh_cell_data = dict(mesh_cell_data)
+            block_tags = []
+            for b, (block, tags) in enumerate(
+                zip(cells, mesh_cell_data["gmsh:physical"])
+            ):
+                tags = np.asarray(tags).reshape(-1)
+                tag = int(tags[0]) if tags.size else 0
+                if tags.size and np.any(tags != tag):
+                    warn(
+                        f"Gmsh writer: cell block {b} ('{block.type}') spans more "
+                        "than one region; no single physical tag can be written "
+                        "for it in format 4.1"
+                    )
+                    tag = 0
+                    mesh_cell_data["gmsh:physical"] = list(
+                        mesh_cell_data["gmsh:physical"]
+                    )
+                    mesh_cell_data["gmsh:physical"][b] = np.zeros(
+                        len(block), dtype=np.int64
+                    )
+                block_tags.append(tag)
+        view = Mesh(mesh.points, cells)
+        dim_tags, geometrical = _block_entities(view, block_tags)
+        mesh_point_data = dict(mesh.point_data)
+        mesh_point_data["gmsh:dim_tags"] = dim_tags
+        mesh_cell_data = dict(mesh_cell_data)
+        mesh_cell_data["gmsh:geometrical"] = geometrical
+    elif (
         "gmsh:dim_tags" not in mesh.point_data
         and "gmsh:geometrical" not in mesh.cell_data
         and len(mesh.cells) > 1
@@ -389,11 +499,9 @@ def write(filename, mesh, float_fmt=".16e", binary=True):
         if mesh.field_data:
             _write_physical_names(fh, mesh.field_data)
 
-        _write_entities(
-            fh, mesh.cells, tag_data, mesh.cell_sets, mesh_point_data, binary
-        )
-        _write_nodes(fh, mesh.points, mesh.cells, mesh_point_data, float_fmt, binary)
-        _write_elements(fh, mesh.cells, tag_data, binary)
+        _write_entities(fh, cells, tag_data, cell_sets, mesh_point_data, binary)
+        _write_nodes(fh, mesh.points, cells, mesh_point_data, float_fmt, binary)
+        _write_elements(fh, cells, tag_data, binary)
         if mesh.gmsh_periodic is not None:
             _write_periodic(fh, mesh.gmsh_periodic, float_fmt, binary)
 

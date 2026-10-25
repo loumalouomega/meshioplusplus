@@ -178,9 +178,32 @@ void fuzz_mesh_cad_surface(const std::uint8_t* pData, std::size_t Size) {
     // Curved elements (v17.16.0) of order 1, 2 or 3, a third of the inputs
     // each, so the node placement and the validity check see them too.
     o.mOrder = 1 + static_cast<std::int32_t>((hash >> 28) % 3);
+    // Sizing and pole rings (v17.18.0), each for one input in four, so the
+    // first pass, the field and the ring placement see mutated models.
+    if (((hash >> 32) & 3) == 0)
+        o.mCurvatureDeviation = 0.02 * o.mTargetSize;
+    if (((hash >> 34) & 3) == 0)
+        o.mCellsAcrossGaps = 2.0;
+    if (((hash >> 36) & 3) == 0)
+        o.mPoleRings = 2;
     o.mMaxPoints = 200000;
+    // Given sizes (v17.19.0) for one input in four: the first face and the
+    // first edge at a quarter of the target size.
+    meshioplusplus::MeshCadSizeSources sources;
+    if (((hash >> 38) & 3) == 0) {
+        if (!info.mFaces.empty())
+            sources.mFaceSizes = {{0, 0.25 * o.mTargetSize}};
+        if (!info.mEdges.empty())
+            sources.mEdgeSizes = {{0, 0.25 * o.mTargetSize}};
+    }
+    // Virtual edges and a varying metric (v17.19.0), each for one input in
+    // four (virtual edges only at order 1, where they are allowed).
+    sources.mVirtualEdges = ((hash >> 40) & 3) == 0 && o.mOrder == 1;
+    if (((hash >> 42) & 3) == 0)
+        o.mMetric = meshioplusplus::MeshCadMetric::Varying;
     try {
-        const meshioplusplus::MeshCadSurfaceResult r = meshioplusplus::mesh_cad_surface(info, o);
+        const meshioplusplus::MeshCadSurfaceResult r =
+            meshioplusplus::mesh_cad_surface(info, o, sources);
         for (const meshioplusplus::MeshCadFaceRecord& r_f : r.mFaces)
             if (r_f.mStatus == meshioplusplus::MeshCadFaceStatus::Other &&
                 r_f.mReason.find("internal error") != std::string::npos)

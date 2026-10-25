@@ -8,8 +8,8 @@ keeps its hole, the Scordelis-Lo roof (an untrimmed patch whose parameter
 scales differ fortyfold) and the two-patch beam (a coupling edge shared by
 two faces, and an embedded edge meshed as mesh edges) mesh conformingly;
 the report, the refusals before the core, strict mode, a bare B-rep dict,
-round trips through VTU and Gmsh, both CLI verbs and the pipeline's refusal
-by name. With OpenCASCADE, a STEP solid.
+round trips through VTU and Gmsh, both CLI verbs and the pipeline step that
+meshes the model its Input reads. With OpenCASCADE, a STEP solid.
 The algorithm itself is tested in the core (``tests/cpp/test_mesh_cad.cpp``,
 ``test_cdt2d.cpp``, ``test_edge_sampler.cpp``, ``test_predicates.cpp``).
 """
@@ -254,6 +254,13 @@ def test_a_failed_face_is_reported_and_strict_raises():
         ({"target_size": 0.1, "min_points_per_edge": -1}, "min_points_per_edge"),
         ({"target_size": 0.1, "tolerance": -1.0}, "tolerance"),
         ({"target_size": 0.1, "max_points": 0}, "max_points"),
+        ({"target_size": 0.1, "grading": 0.5}, "grading"),
+        ({"target_size": 0.1, "grading": 1.0}, "grading"),
+        ({"target_size": 0.1, "grading": float("nan")}, "grading"),
+        ({"target_size": 0.1, "curvature_deviation": -1.0}, "curvature_deviation"),
+        ({"target_size": 0.1, "cells_across_gaps": -1.0}, "cells_across_gaps"),
+        ({"target_size": 0.1, "pole_rings": -1}, "pole_rings"),
+        ({"target_size": 0.1, "pole_rings": 9}, "pole_rings"),
     ],
 )
 def test_refusals_before_the_core(kwargs, match):
@@ -276,11 +283,62 @@ def test_round_trip(tmp_path, ext, fmt):
     path = tmp_path / f"sphere{ext}"
     mio.write(path, out, file_format=fmt)
     back = mio.read(path, file_format=fmt)
-    np.testing.assert_array_equal(back.points, out.points)
-    tri = np.concatenate([c.data for c in back.cells if c.type == "triangle"])
-    np.testing.assert_array_equal(
-        np.sort(tri, axis=0), np.sort(out.cells[0].data, axis=0)
+    if fmt == "vtu":
+        np.testing.assert_array_equal(back.points, out.points)
+        tri = np.concatenate([c.data for c in back.cells if c.type == "triangle"])
+        np.testing.assert_array_equal(
+            np.sort(tri, axis=0), np.sort(out.cells[0].data, axis=0)
+        )
+        return
+
+    # Gmsh 4.1 writes one entity per face (roadmap 6.1.2) and groups $Nodes by
+    # entity, so the points come back grouped by face: the same triangles,
+    # point for point, and every face its own physical surface.
+    def triangles(mesh):
+        tri = np.concatenate([c.data for c in mesh.cells if c.type == "triangle"])
+        xyz = mesh.points[tri]
+        xyz = np.array([t[np.lexsort(t.T[::-1])] for t in xyz]).reshape(len(tri), 9)
+        return xyz[np.lexsort(xyz.T[::-1])]
+
+    np.testing.assert_array_equal(triangles(back), triangles(out))
+    faces = sorted(r.name for r in back.regions if r.name.startswith("face:"))
+    assert faces == sorted(r.name for r in out.regions)
+
+
+def _tet_volume(mesh):
+    v = 0.0
+    for c in mesh.cells:
+        if c.type == "tetra":
+            p = mesh.points[c.data]
+            a, b, d = p[:, 1] - p[:, 0], p[:, 2] - p[:, 0], p[:, 3] - p[:, 0]
+            v += np.abs(np.einsum("ij,ij->i", a, np.cross(b, d))).sum() / 6.0
+    return v
+
+
+@needs_core
+@pytest.mark.parametrize(
+    "name, volume, dihedrals",
+    [
+        ("sphere.cad.json", 4 * math.pi / 3, (10.7, 164.8)),
+        ("unit_cube.cad.json", 1.0, (35.0, 126.0)),
+    ],
+)
+def test_octree_mesh_fills_the_skin(name, volume, dihedrals):
+    """Roadmap 6.7.1: a closed mesh_cad_surface result is the skin octree_mesh
+    fills with tetrahedra; under uniform skin grading at the surface's size the
+    volume follows the skin's, the boundary stays within a few hundredths of h
+    of it and the dihedral angles keep inside the stuffing bound."""
+    h = 0.2
+    skin = mio.mesh_cad_surface(_read(name), h, min_angle=25)
+    vol, report = mio.octree_mesh(
+        skin, skin_grading="uniform", surface_size=h, return_report=True
     )
+    _, skin_volume = _measure(skin)
+    assert abs(_tet_volume(vol) - skin_volume) < 0.005 * volume  # 0.30% on the sphere
+    assert abs(_tet_volume(vol) - volume) < 0.02 * volume
+    assert 0.0 <= report["hausdorff_to_skin"] < 0.06 * h
+    assert report["min_dihedral"] > dihedrals[0]
+    assert report["max_dihedral"] < dihedrals[1]
 
 
 @needs_core
@@ -385,6 +443,22 @@ def test_curved_elements_survive_a_file(tmp_path, order, ext):
     path = tmp_path / ("curved" + ext)
     mio.write(path, out, file_format="gmsh" if ext == ".msh" else None)
     back = mio.read(path, file_format="gmsh" if ext == ".msh" else None)
+    if ext == ".msh":
+        # One entity per face (roadmap 6.1.2): Gmsh 4.1 groups $Nodes by
+        # entity, so the points come back grouped by face. Each element keeps
+        # its nodes, in their order, point for point.
+        for kind in {c.type for c in out.cells}:
+            got = np.concatenate(
+                [back.points[c.data] for c in back.cells if c.type == kind]
+            )
+            want = np.concatenate(
+                [out.points[c.data] for c in out.cells if c.type == kind]
+            )
+            got, want = got.reshape(len(got), -1), want.reshape(len(want), -1)
+            np.testing.assert_array_equal(
+                got[np.lexsort(got.T[::-1])], want[np.lexsort(want.T[::-1])]
+            )
+        return
     by_type = {c.type: c.data for c in back.cells}
     for c in out.cells:
         np.testing.assert_array_equal(by_type[c.type], c.data)
@@ -392,6 +466,243 @@ def test_curved_elements_survive_a_file(tmp_path, order, ext):
 
 
 @needs_core
+@needs_core
+@pytest.mark.parametrize("deviation", [0.002, 0.0005])
+def test_curvature_sizing_keeps_the_chordal_error_under_the_bound(deviation):
+    """Roadmap 6.3.2: curvature_deviation sizes the cylinder's side so no
+    triangle sits farther than it from the surface; the flat caps stay near
+    target_size, and the result is still watertight."""
+    model = _read("capped_cylinder.cad.json")
+    out, report = mio.mesh_cad_surface(
+        model, 0.2, curvature_deviation=deviation, return_report=True
+    )
+    _watertight(report)
+    tri, p = out.cells[0].data, out.points
+    radius = np.hypot(p[:, 0], p[:, 1])
+    side = np.all(np.abs(radius[tri] - 1.0) < 1e-9, axis=1)
+    centroid = p[tri[side]].mean(axis=1)
+    assert (1.0 - np.hypot(centroid[:, 0], centroid[:, 1])).max() <= deviation
+    assert report["max_edge"] <= 1.5 * 0.2
+    uniform = mio.mesh_cad_surface(model, 0.2, return_report=True)[1]
+    assert report["num_triangles"] > uniform["num_triangles"]
+
+
+@needs_core
+def test_sizing_defaults_and_determinism():
+    """Every sizing option at its default is the unsized mesh byte for byte; a
+    sized run is the same twice, and a stronger grading limit spends more
+    triangles."""
+    model = _read("capped_cylinder.cad.json")
+    base = mio.mesh_cad_surface(model, 0.2)
+    same = mio.mesh_cad_surface(
+        model, 0.2, curvature_deviation=0.0, cells_across_gaps=0.0, grading=0.0
+    )
+    np.testing.assert_array_equal(base.points, same.points)
+    np.testing.assert_array_equal(base.cells[0].data, same.cells[0].data)
+    a = mio.mesh_cad_surface(model, 0.2, curvature_deviation=0.002, grading=1.2)
+    b = mio.mesh_cad_surface(model, 0.2, curvature_deviation=0.002, grading=1.2)
+    np.testing.assert_array_equal(a.points, b.points)
+    np.testing.assert_array_equal(a.cells[0].data, b.cells[0].data)
+    loose = mio.mesh_cad_surface(model, 0.2, curvature_deviation=0.002, grading=2.0)
+    assert len(a.cells[0].data) > len(loose.cells[0].data)
+
+
+@needs_core
+def test_pole_rings_lift_the_sphere_to_the_bound():
+    """Roadmap 6.4.2: without rings the sphere's pole fans stay below 25
+    degrees and are reported; two rings grade them and the bound is met."""
+    model = _read("sphere.cad.json")
+    fan = mio.mesh_cad_surface(model, 0.2, min_angle=25, return_report=True)[1]
+    assert fan["min_angle_deg"] < 25 and fan["num_faces_below_bound"] > 0
+    out, ringed = mio.mesh_cad_surface(
+        model, 0.2, min_angle=25, pole_rings=2, return_report=True
+    )
+    _watertight(ringed)
+    assert ringed["min_angle_deg"] >= 25 - 1e-9
+    assert ringed["num_faces_below_bound"] == 0
+
+
+@needs_core
+def test_a_varying_metric_meets_the_bound_at_the_poles():
+    """Roadmap 6.4.1: near its poles the sphere's parameters stretch the
+    surface far from each hemisphere's mean metric; meshed in the surface's
+    own metric (Lawson's flips and encroachment measured in it) the pole fans
+    meet 25 degrees without rings, and the mesh stays watertight."""
+    model = _read("sphere.cad.json")
+    mean = mio.mesh_cad_surface(model, 0.2, min_angle=25, return_report=True)[1]
+    out, varying = mio.mesh_cad_surface(
+        model, 0.2, min_angle=25, metric="varying", return_report=True
+    )
+    _watertight(varying)
+    assert mean["min_angle_deg"] < 25 <= varying["min_angle_deg"] + 1e-9
+    assert varying["num_faces_below_bound"] == 0
+    assert varying["num_points"] <= 1.5 * mean["num_points"]
+    with pytest.raises(ValueError, match="metric"):
+        mio.mesh_cad_surface(model, 0.2, metric="riemann")
+
+
+@needs_core
+def test_given_sizes_refine_and_report():
+    """Roadmap 6.3.1 / 6.3.8: a face given its size meshes at it, an edge given
+    its size is sampled at it, and the report names exactly the edge a finer
+    neighbour limits a face by. Sizes only refine."""
+    cube = _read("unit_cube.cad.json")
+    edges = cube.info["brep"]["edges"]
+    ids = {f["id"]: k for k, f in enumerate(cube.info["brep"]["faces"])}
+    faces_of = [sorted(ids[r["id"]] for r in e["topology"]) for e in edges]
+    shared = next(k for k, fs in enumerate(faces_of) if fs == [1, 2])
+    out, report = mio.mesh_cad_surface(
+        cube, 0.4, face_sizes={1: 0.1, 2: 0.4}, return_report=True
+    )
+    _watertight(report)
+    tri, p = out.cells[0].data, out.points
+    face = out.cell_data["cad:face"][0]
+    e = np.concatenate(
+        [
+            np.linalg.norm(p[tri[face == 1][:, a]] - p[tri[face == 1][:, b]], axis=1)
+            for a, b in ((0, 1), (1, 2), (2, 0))
+        ]
+    )
+    assert np.median(e) == pytest.approx(0.1, rel=0.15)
+    assert [f["limited_by_edges"] for f in report["faces"]] == [
+        [shared] if k == 2 else [] for k in range(6)
+    ]
+    assert any(f"limited by edge {shared}" in w for w in report["warnings"])
+    # The same as pairs; the edge size.
+    again = mio.mesh_cad_surface(cube, 0.4, face_sizes=[(2, 0.4), (1, 0.1)])
+    np.testing.assert_array_equal(again.points, out.points)
+    out, report = mio.mesh_cad_surface(
+        cube, 0.4, edge_sizes={shared: 0.05}, return_report=True
+    )
+    lines = [c for c in out.cells if c.type == "line"][0].data
+    on = lines[out.cell_data["cad:edge"][1] == shared]
+    gaps = out.points[on[:, 0]] - out.points[on[:, 1]]
+    assert np.linalg.norm(gaps, axis=1).max() <= 0.05 + 1e-12
+    # Empty sources are the plain mesh.
+    plain = mio.mesh_cad_surface(cube, 0.4)
+    same = mio.mesh_cad_surface(cube, 0.4, face_sizes={}, edge_sizes=[])
+    np.testing.assert_array_equal(plain.points, same.points)
+
+
+@needs_core
+def test_a_background_mesh_sizes_the_model():
+    cube = _read("unit_cube.cad.json")
+    bg = mio.rectangle(dims=(20, 20), size=(1.0, 1.0), cell_type="triangle")
+    bg.point_data["size"] = 0.05 + 0.3 * bg.points[:, 0]
+    out, report = mio.mesh_cad_surface(cube, 0.4, background=bg, return_report=True)
+    _watertight(report)
+    tri, p = out.cells[0].data, out.points
+    bottom = np.all(np.abs(p[tri][:, :, 2]) < 1e-9, axis=1)
+    c = p[tri].mean(axis=1)
+    for lo in (0.0, 0.25, 0.5, 0.75):
+        sel = tri[bottom & (c[:, 0] >= lo) & (c[:, 0] < lo + 0.25)]
+        e = np.concatenate(
+            [
+                np.linalg.norm(p[sel[:, a]] - p[sel[:, b]], axis=1)
+                for a, b in ((0, 1), (1, 2), (2, 0))
+            ]
+        )
+        target = 0.05 + 0.3 * (lo + 0.125)
+        assert np.median(e) == pytest.approx(target, rel=0.25)
+
+
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [
+        ({"face_sizes": {6: 0.1}}, "face_sizes"),
+        ({"face_sizes": {0: 0.0}}, "face_sizes"),
+        ({"face_sizes": [(0.5, 0.1)]}, "face_sizes"),
+        ({"edge_sizes": {-1: 0.1}}, "edge_sizes"),
+        ({"edge_sizes": [0.1]}, "edge_sizes"),
+        ({"metric": "anisotropic"}, "metric"),
+    ],
+)
+def test_given_size_refusals(kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        mio.mesh_cad_surface(_read("unit_cube.cad.json"), 0.4, **kwargs)
+
+
+def test_a_background_without_its_array_is_refused():
+    bg = mio.rectangle(dims=(2, 2), size=(1.0, 1.0), cell_type="triangle")
+    with pytest.raises(ValueError, match="background"):
+        mio.mesh_cad_surface(_read("unit_cube.cad.json"), 0.4, background=bg)
+
+
+def _sphere_patch(radius=1.0):
+    """One untrimmed rational patch: a full turn in u (four quarter arcs), a
+    half meridian in v (two quarter arcs), so its loop is a seam twice and
+    two poles."""
+    brep = copy.deepcopy(_read("cylindrical_roof.cad.json").info["brep"])
+    s = np.sqrt(0.5)
+    ring = [(1, 0, 1), (1, 1, s), (0, 1, 1), (-1, 1, s), (-1, 0, 1)]
+    ring += [(-1, -1, s), (0, -1, 1), (1, -1, s), (1, 0, 1)]
+    meridian = [(0, -1, 1), (1, -1, s), (1, 0, 1), (1, 1, s), (0, 1, 1)]
+    cps, weights = [], []
+    for rr, z, wv in meridian:
+        for x, y, wu in ring:
+            cps.append([radius * rr * x, radius * rr * y, radius * z])
+            weights.append(wu * wv)
+    patch = brep["patches"][0]
+    patch["degrees"] = [2, 2]
+    patch["knots"] = [
+        np.array([0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4], float),
+        np.array([0, 0, 0, 1, 1, 2, 2, 2], float),
+    ]
+    patch["control_points"] = np.array(cps)
+    patch["weights"] = np.array(weights)
+    brep["faces"][0]["control_point_ids"] = np.arange(1, len(cps) + 1)
+    return brep
+
+
+@needs_core
+@pytest.mark.parametrize("min_angle", [0, 25])
+def test_a_surface_of_revolution_smaller_than_h_is_meshed(min_angle):
+    """Roadmap 6.5.7: a face whose loop is a seam and two poles, smaller than
+    h, has no lattice point, and every triangle of its boundary alone touches
+    a pole or the seam twice (118 faces of the corpus). It is meshed again
+    with an interior grid: watertight, outward, its volume positive."""
+    out, report = mio.mesh_cad_surface(
+        _sphere_patch(), 10.0, min_angle=min_angle, return_report=True
+    )
+    _watertight(report)
+    area, volume = _measure(out)
+    assert 0.5 * 4 * math.pi < area < 4 * math.pi
+    assert 0.2 * 4 * math.pi / 3 < volume < 4 * math.pi / 3
+    fine = mio.mesh_cad_surface(_sphere_patch(), 0.3)
+    assert len(fine.cells[0].data) > len(out.cells[0].data)
+
+
+@needs_core
+@pytest.mark.parametrize("min_angle", [0, 25])
+def test_virtual_edges_skip_a_sliver_of_an_edge(min_angle):
+    """Roadmap 6.5.2: a rim split by an edge of h / 50 forces a point h / 50
+    from its neighbour on both plates. With ``virtual_edges`` one corner of
+    the sliver is suppressed: the plates still conform across the rim, the
+    chain is reported, and the triangles near it are not slivers."""
+    model = _read("split_rim.cad.json")
+    off, r_off = mio.mesh_cad_surface(
+        model, 0.25, min_angle=min_angle, return_report=True
+    )
+    on, r_on = mio.mesh_cad_surface(
+        model, 0.25, min_angle=min_angle, virtual_edges=True, return_report=True
+    )
+    assert r_off["virtual_edges"] == [] and r_on["virtual_edges"] == [[3, 5]]
+    assert r_on["num_failed"] == 0
+    assert r_on["num_open_edges"] == r_off["num_open_edges"]
+    assert np.isclose(_measure(on)[0], _measure(off)[0], rtol=0, atol=1e-12)
+    if min_angle == 0:
+        assert r_off["min_angle_deg"] < 5 < 20 < r_on["min_angle_deg"]
+    else:
+        assert r_on["min_angle_deg"] >= 25 - 1e-9
+        assert len(on.cells[0].data) < 0.7 * len(off.cells[0].data)
+    # The suppressed corner stays a point, used by no cell (as subdivide's
+    # orphans do): clean(remove_orphans=True) drops it.
+    used = np.unique(np.concatenate([c.data.ravel() for c in on.cells]))
+    assert len(on.points) - len(used) == 1
+    with pytest.raises(ValueError, match="virtual_edges"):
+        mio.mesh_cad_surface(model, 0.25, order=2, virtual_edges=True)
+
+
 def test_smoothing_moves_the_inside_only():
     model = _read("sphere.cad.json")
     plain, r0 = mio.mesh_cad_surface(model, 0.2, return_report=True)
@@ -442,15 +753,252 @@ def test_cli_verb(tmp_path, capsys):
     report = json.loads(capsys.readouterr().out)
     assert report["num_faces"] == 6 and report["num_open_edges"] == 0
     assert out.exists()
+    code = mio._cli.main(
+        [
+            "mesh-cad-surface",
+            str(CAD / "sphere.cad.json"),
+            str(out),
+            "--size",
+            "0.2",
+            "--min-angle",
+            "25",
+            "--curvature-deviation",
+            "0.01",
+            "--cells-across-gaps",
+            "2",
+            "--grading",
+            "1.3",
+            "--pole-rings",
+            "2",
+            "--json",
+        ]
+    )
+    assert code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["num_failed"] == 0 and report["min_angle_deg"] >= 25 - 1e-9
+    code = mio._cli.main(
+        [
+            "mesh-cad-surface",
+            str(CAD / "unit_cube.cad.json"),
+            str(out),
+            "--size",
+            "0.4",
+            "--face-sizes",
+            "1=0.1,2=0.4",
+            "--edge-sizes",
+            "0=0.05",
+            "--metric",
+            "mean",
+            "--json",
+        ]
+    )
+    assert code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["num_failed"] == 0 and report["virtual_edges"] == []
+    assert any(f["limited_by_edges"] for f in report["faces"])
+    code = mio._cli.main(
+        [
+            "mesh-cad-surface",
+            str(CAD / "split_rim.cad.json"),
+            str(out),
+            "--size",
+            "0.25",
+            "--virtual-edges",
+            "--json",
+        ]
+    )
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["virtual_edges"] == [[3, 5]]
 
 
-def test_pipeline_refuses_the_step_by_name():
-    with pytest.raises(ValueError, match="mesh-cad-surface"):
+def _run_both(doc, tmp_path):
+    """The pipeline document through the Python engine and, with the core,
+    the C++ one: their reports and their meshes."""
+    out = []
+    engines = [("py", mio.run_pipeline)]
+    if hasattr(_core, "run_pipeline_json"):
+        engines.append(("cpp", lambda d: _core.run_pipeline_json(json.dumps(d))))
+    for name, run in engines:
+        path = tmp_path / f"{name}.vtu"
+        report = run(dict(doc, Output={"Path": str(path)}))
+        out.append((report, mio.read(path)))
+    return out
+
+
+@needs_core
+@pytest.mark.parametrize("version", [1, 2])
+def test_pipeline_meshes_the_model_its_input_reads(tmp_path, version):
+    """Roadmap 6.1.1: the B-rep a CAD read returns travels from Input to the
+    MeshCadSurface step; both engines mesh it as mesh_cad_surface does."""
+    doc = {
+        "Version": version,
+        "Input": {"Path": str(CAD / "unit_cube.cad.json")},
+        "Operations": [{"Op": "MeshCadSurface", "TargetSize": 0.25, "MinAngle": 25}],
+    }
+    direct = mio.mesh_cad_surface(_read("unit_cube.cad.json"), 0.25, min_angle=25)
+    results = _run_both(doc, tmp_path)
+    for report, mesh in results:
+        np.testing.assert_array_equal(mesh.points, direct.points)
+        np.testing.assert_array_equal(mesh.cells[0].data, direct.cells[0].data)
+        assert report["steps"][0]["op"] == "MeshCadSurface"
+        assert report["steps"][0]["NumFaces"] == 6.0
+        assert report["steps"][0]["NumOpenEdges"] == 0.0
+    assert all(r == results[0][0] for r, _ in results)
+
+
+@needs_core
+def test_pipeline_sizes_and_rings_like_the_operation(tmp_path):
+    """The sizing and pole keys reach mesh_cad_surface in both engines."""
+    doc = {
+        "Version": 2,
+        "Input": {"Path": str(CAD / "sphere.cad.json")},
+        "Operations": [
+            {
+                "Op": "MeshCadSurface",
+                "TargetSize": 0.3,
+                "MinAngle": 25,
+                "CurvatureDeviation": 0.01,
+                "Grading": 1.3,
+                "CellsAcrossGaps": 2,
+                "PoleRings": 2,
+            }
+        ],
+    }
+    direct = mio.mesh_cad_surface(
+        _read("sphere.cad.json"),
+        0.3,
+        min_angle=25,
+        curvature_deviation=0.01,
+        grading=1.3,
+        cells_across_gaps=2,
+        pole_rings=2,
+    )
+    results = _run_both(doc, tmp_path)
+    for _, mesh in results:
+        np.testing.assert_array_equal(mesh.points, direct.points)
+        np.testing.assert_array_equal(mesh.cells[0].data, direct.cells[0].data)
+    assert all(r == results[0][0] for r, _ in results)
+
+
+@needs_core
+def test_pipeline_takes_given_sizes_like_the_operation(tmp_path):
+    """FaceSizes / EdgeSizes (flat index, size lists), Background and Metric
+    reach mesh_cad_surface in both engines."""
+    bg = mio.rectangle(dims=(10, 10), size=(1.0, 1.0), cell_type="triangle")
+    bg.point_data["size"] = 0.1 + 0.2 * bg.points[:, 0]
+    bg_path = tmp_path / "bg.vtu"
+    mio.write(bg_path, bg, compression=None)
+    doc = {
+        "Version": 2,
+        "Input": {"Path": str(CAD / "unit_cube.cad.json")},
+        "Operations": [
+            {
+                "Op": "MeshCadSurface",
+                "TargetSize": 0.4,
+                "FaceSizes": [1, 0.1],
+                "EdgeSizes": [0, 0.05],
+                "Background": str(bg_path),
+                "Metric": "mean",
+            }
+        ],
+    }
+    direct = mio.mesh_cad_surface(
+        _read("unit_cube.cad.json"),
+        0.4,
+        face_sizes={1: 0.1},
+        edge_sizes={0: 0.05},
+        background=mio.read(bg_path),
+    )
+    results = _run_both(doc, tmp_path)
+    for _, mesh in results:
+        np.testing.assert_array_equal(mesh.points, direct.points)
+    assert all(r == results[0][0] for r, _ in results)
+    doc = {
+        "Version": 2,
+        "Input": {"Path": str(CAD / "split_rim.cad.json")},
+        "Operations": [
+            {"Op": "MeshCadSurface", "TargetSize": 0.25, "VirtualEdges": True}
+        ],
+    }
+    direct = mio.mesh_cad_surface(_read("split_rim.cad.json"), 0.25, virtual_edges=True)
+    for _, mesh in _run_both(doc, tmp_path):
+        np.testing.assert_array_equal(mesh.points, direct.points)
+        np.testing.assert_array_equal(mesh.cells[0].data, direct.cells[0].data)
+
+
+@needs_core
+def test_pipeline_refines_then_meshes_the_refined_model(tmp_path):
+    doc = {
+        "Version": 2,
+        "Input": {"Path": str(CAD / "unit_cube.cad.json")},
+        "Operations": [
+            {"Op": "IgaRefine", "Subdivisions": [2, 3]},
+            {"Op": "MeshCadSurface", "TargetSize": 0.3, "Order": 2},
+        ],
+    }
+    results = _run_both(doc, tmp_path)
+    for report, mesh in results:
+        assert [s["op"] for s in report["steps"]] == ["IgaRefine", "MeshCadSurface"]
+        assert mesh.cells[0].type == "triangle6"
+    assert all(r == results[0][0] for r, _ in results)
+
+
+@pytest.mark.parametrize(
+    "ops, message",
+    [
+        (
+            [{"Op": "Quality"}, {"Op": "MeshCadSurface", "TargetSize": 0.25}],
+            "step 1 'Quality' changed the mesh, which drops the model",
+        ),
+        ([{"Op": "MeshCadSurface"}], "'TargetSize' is required"),
+    ],
+)
+def test_pipeline_model_steps_fail_by_name(tmp_path, ops, message):
+    doc = {
+        "Input": {"Path": str(CAD / "unit_cube.cad.json")},
+        "Output": {"Path": str(tmp_path / "out.vtu")},
+        "Operations": ops,
+    }
+    with pytest.raises(ValueError, match=message):
+        mio.run_pipeline(doc)
+    if hasattr(_core, "run_pipeline_json"):
+        with pytest.raises(ValueError, match=message):
+            _core.run_pipeline_json(json.dumps(doc))
+
+
+@needs_core
+def test_pipeline_meshes_the_solid_fit_cad_fits(tmp_path):
+    """FitCad hands its fitted B-rep on (outside the native legacy freeform
+    mode, which fits none), so a skin is fitted and re-meshed in one run."""
+    src = tmp_path / "box.vtu"
+    mio.write(src, mio.extract_surface(mio.box()), compression=None)
+    fit = {"Op": "FitCad", "Backend": "native", "FreeformMode": "adaptive"}
+    doc = {
+        "Input": {"Path": str(src)},
+        "Operations": [fit, {"Op": "MeshCadSurface", "TargetSize": 0.25}],
+    }
+    results = _run_both(doc, tmp_path)
+    for report, mesh in results:
+        assert report["steps"][1]["NumFaces"] == 6.0
+        assert report["steps"][1]["NumOpenEdges"] == 0.0
+    # FitCad's own report holds NaN counters (no volume natively), which never
+    # compare equal; the meshing step's must agree.
+    assert all(r["steps"][1] == results[0][0]["steps"][1] for r, _ in results)
+    doc["Operations"][0] = dict(fit, FreeformMode="legacy")
+    doc["Output"] = {"Path": str(tmp_path / "legacy.vtu")}
+    with pytest.raises(ValueError, match="'FitCad' gave no B-rep"):
+        mio.run_pipeline(doc)
+
+
+def test_pipeline_model_step_needs_a_cad_input(tmp_path):
+    src = tmp_path / "plain.vtu"
+    mio.write(src, mio.extract_surface(mio.box()), compression=None)
+    with pytest.raises(ValueError, match="Input format 'vtu' carries none"):
         mio.run_pipeline(
             {
-                "Input": {"Path": "a"},
-                "Output": {"Path": "b"},
-                "Operations": [{"Op": "MeshCadSurface"}],
+                "Input": {"Path": str(src)},
+                "Output": {"Path": str(tmp_path / "out.vtu")},
+                "Operations": [{"Op": "IgaSample"}],
             }
         )
 

@@ -56,6 +56,8 @@ module meshioplusplus
     public :: mio_iga_evaluation
     public :: mio_mesh_cad_surface_report
     public :: mio_mesh_cad_face_status, mio_mesh_cad_face_reason
+    public :: mio_mesh_cad_face_size_limits
+    public :: MIO_MESH_CAD_METRIC_MEAN, MIO_MESH_CAD_METRIC_VARYING
     public :: MIO_MESH_CAD_OK, MIO_MESH_CAD_EMPTY, MIO_MESH_CAD_OPEN_LOOP
     public :: MIO_MESH_CAD_SELF_INTERSECTING, MIO_MESH_CAD_DEGENERATE
     public :: MIO_MESH_CAD_PROJECTION_FAILED, MIO_MESH_CAD_BUDGET_EXCEEDED
@@ -487,6 +489,7 @@ module meshioplusplus
     !> angle histogram's bins (10 degrees each, 0 to 180).
     integer, parameter :: MIO_MESH_CAD_SMOOTH_LAPLACIAN = 0, MIO_MESH_CAD_SMOOTH_ODT = 1
     integer, parameter :: MIO_MESH_CAD_ANGLE_BINS = 18
+    integer, parameter :: MIO_MESH_CAD_METRIC_MEAN = 0, MIO_MESH_CAD_METRIC_VARYING = 1
 
     !> Interop mirror of C `mio_mesh_cad_surface_opts` (104 bytes, checked once
     !> per process by `check_mesh_cad_layout`). Filled by
@@ -505,8 +508,27 @@ module meshioplusplus
         integer(c_int32_t) :: smooth_iterations = 0
         integer(c_int32_t) :: smooth_method = 0
         integer(c_int32_t) :: order = 1
-        integer(c_int32_t) :: reserved_pad = 0
-        integer(c_int64_t) :: reserved(3) = 0
+        integer(c_int32_t) :: pole_rings = 0
+        real(c_double) :: grading = 0.0_c_double
+        real(c_double) :: curvature_deviation = 0.0_c_double
+        real(c_double) :: cells_across_gaps = 0.0_c_double
+    end type
+
+    !> Interop mirror of C `mio_mesh_cad_surface_opts_ex` (v17.19.0; 136 bytes
+    !> with 8-byte pointers, checked by `check_mesh_cad_layout`): the metric,
+    !> virtual edges, given sizes and the background, borrowed for one call.
+    type, bind(c) :: mio_mesh_cad_surface_opts_ex_t
+        integer(c_int32_t) :: metric = 0
+        integer(c_int32_t) :: virtual_edges = 0
+        type(c_ptr) :: face_size_faces = c_null_ptr
+        type(c_ptr) :: face_sizes = c_null_ptr
+        integer(c_int64_t) :: num_face_sizes = 0
+        type(c_ptr) :: edge_size_edges = c_null_ptr
+        type(c_ptr) :: edge_sizes = c_null_ptr
+        integer(c_int64_t) :: num_edge_sizes = 0
+        type(c_ptr) :: background = c_null_ptr
+        type(c_ptr) :: background_array = c_null_ptr
+        integer(c_int64_t) :: reserved(8) = 0
     end type
 
     !> `mio_mesh_cad_surface_report` (200 bytes; field order and types are ABI,
@@ -4405,6 +4427,26 @@ module meshioplusplus
             type(mio_mesh_cad_surface_opts_t), intent(in) :: opts
             type(mio_mesh_cad_surface_report), intent(out) :: report
             type(c_ptr) :: h
+        end function
+
+        function c_mio_mesh_cad_surface2(info, opts, opts_ex, report) &
+                bind(c, name="mio_mesh_cad_surface2") result(h)
+            import :: c_ptr, mio_mesh_cad_surface_opts_t, mio_mesh_cad_surface_opts_ex_t, &
+                      mio_mesh_cad_surface_report
+            type(c_ptr), value :: info
+            type(mio_mesh_cad_surface_opts_t), intent(in) :: opts
+            type(mio_mesh_cad_surface_opts_ex_t), intent(in) :: opts_ex
+            type(mio_mesh_cad_surface_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_mesh_cad_surface_face_size_limits(face, edges, n) &
+                bind(c, name="mio_mesh_cad_surface_face_size_limits") result(m)
+            import :: c_int64_t
+            integer(c_int64_t), value :: face
+            integer(c_int64_t), intent(out) :: edges(*)
+            integer(c_int64_t), value :: n
+            integer(c_int64_t) :: m
         end function
 
         function c_mio_mesh_cad_surface_face_status(face) &
@@ -12043,15 +12085,36 @@ contains
     !> of guarded smoothing (`smooth_method`, `MIO_MESH_CAD_SMOOTH_*`) follow.
     !> `order` 2 or 3 writes curved triangle6 or triangle10 elements, their
     !> nodes on the surface and edges (`report%num_curved_straightened`).
+    !> `curvature_deviation` and `cells_across_gaps` size the mesh by the
+    !> surface's curvature and its local feature size, `grading` limiting the
+    !> size's growth; `pole_rings` grades the poles (v17.18.0).
+    !> Sizes given per face (`face_size_faces`, 1-based, with `face_sizes`), per
+    !> edge (`edge_size_edges`, `edge_sizes`) or by a `background` mesh's
+    !> one-component point data `background_array` (default 'size') join the
+    !> same field; `metric` (`MIO_MESH_CAD_METRIC_*`) and `virtual_edges` as in
+    !> doc/mesh_cad.md; `mio_mesh_cad_face_size_limits` reads which edges
+    !> limited a face given a size (v17.19.0).
     function format_info_mesh_cad_surface(self, target_size, max_chordal_deviation, &
                                           min_points_per_edge, tolerance, record_face_ids, &
                                           edges, match_unreferenced_trims, strict, max_points, &
                                           report, warnings, stat, errmsg, min_angle, &
-                                          smooth_iterations, smooth_method, order) result(out)
+                                          smooth_iterations, smooth_method, order, grading, &
+                                          curvature_deviation, cells_across_gaps, pole_rings, &
+                                          face_size_faces, face_sizes, edge_size_edges, &
+                                          edge_sizes, background, background_array, metric, &
+                                          virtual_edges) &
+        result(out)
         class(mio_format_info), intent(in) :: self
         real(real64), intent(in) :: target_size
         real(real64), intent(in), optional :: max_chordal_deviation, tolerance, min_angle
-        integer, intent(in), optional :: smooth_iterations, smooth_method, order
+        integer, intent(in), optional :: smooth_iterations, smooth_method, order, pole_rings
+        real(real64), intent(in), optional :: grading, curvature_deviation, cells_across_gaps
+        integer(int64), intent(in), optional :: face_size_faces(:), edge_size_edges(:)
+        real(real64), intent(in), optional :: face_sizes(:), edge_sizes(:)
+        class(mio_mesh), intent(in), optional :: background
+        character(*), intent(in), optional :: background_array
+        integer, intent(in), optional :: metric
+        logical, intent(in), optional :: virtual_edges
         integer(int64), intent(in), optional :: min_points_per_edge, max_points
         logical, intent(in), optional :: record_face_ids, edges, match_unreferenced_trims, strict
         type(mio_mesh_cad_surface_report), intent(out), optional :: report
@@ -12061,6 +12124,10 @@ contains
         type(mio_mesh) :: out
         type(mio_mesh_cad_surface_opts_t) :: opts
         type(mio_mesh_cad_surface_report) :: crep
+        type(mio_mesh_cad_surface_opts_ex_t) :: ex
+        integer(c_int64_t), allocatable, target :: fidx(:), eidx(:)
+        real(c_double), allocatable, target :: fsz(:), esz(:)
+        character(kind=c_char, len=:), allocatable, target :: bname
         character(kind=c_char), allocatable :: wbuf(:)
         integer(c_int64_t) :: n
 
@@ -12086,8 +12153,49 @@ contains
             opts%smooth_iterations = int(smooth_iterations, c_int32_t)
         if (present(smooth_method)) opts%smooth_method = int(smooth_method, c_int32_t)
         if (present(order)) opts%order = int(order, c_int32_t)
+        if (present(pole_rings)) opts%pole_rings = int(pole_rings, c_int32_t)
+        if (present(grading)) opts%grading = real(grading, c_double)
+        if (present(curvature_deviation)) &
+            opts%curvature_deviation = real(curvature_deviation, c_double)
+        if (present(cells_across_gaps)) opts%cells_across_gaps = real(cells_across_gaps, c_double)
+        if (present(metric)) ex%metric = int(metric, c_int32_t)
+        if (present(virtual_edges)) ex%virtual_edges = merge(1_c_int32_t, 0_c_int32_t, virtual_edges)
+        if (present(face_size_faces) .and. present(face_sizes)) then
+            if (size(face_size_faces) /= size(face_sizes)) then
+                call handle_failure('mesh_cad_surface', &
+                                    'face_size_faces and face_sizes differ in length', stat, errmsg)
+                return
+            end if
+            ! 1-based face indices, as the face status queries take them.
+            fidx = int(face_size_faces - 1, c_int64_t)
+            fsz = real(face_sizes, c_double)
+            ex%num_face_sizes = size(fidx, kind=c_int64_t)
+            if (ex%num_face_sizes > 0) then
+                ex%face_size_faces = c_loc(fidx)
+                ex%face_sizes = c_loc(fsz)
+            end if
+        end if
+        if (present(edge_size_edges) .and. present(edge_sizes)) then
+            if (size(edge_size_edges) /= size(edge_sizes)) then
+                call handle_failure('mesh_cad_surface', &
+                                    'edge_size_edges and edge_sizes differ in length', stat, errmsg)
+                return
+            end if
+            eidx = int(edge_size_edges - 1, c_int64_t)
+            esz = real(edge_sizes, c_double)
+            ex%num_edge_sizes = size(eidx, kind=c_int64_t)
+            if (ex%num_edge_sizes > 0) then
+                ex%edge_size_edges = c_loc(eidx)
+                ex%edge_sizes = c_loc(esz)
+            end if
+        end if
+        if (present(background)) ex%background = background%handle
+        if (present(background_array)) then
+            bname = c_str(background_array)
+            ex%background_array = c_loc(bname(1:1))
+        end if
 
-        out%handle = c_mio_mesh_cad_surface(self%handle, opts, crep)
+        out%handle = c_mio_mesh_cad_surface2(self%handle, opts, ex, crep)
         if (.not. c_associated(out%handle)) then
             call handle_failure('mesh_cad_surface', mio_error_message(), stat, errmsg)
             return
@@ -12105,6 +12213,23 @@ contains
             end if
         end if
         call clear_status(stat, errmsg)
+    end function
+
+    !> The edges (1-based) whose sampling this thread's last
+    !> `info%mesh_cad_surface` call found finer than face `face`'s (1-based)
+    !> given size allows (v17.19.0); empty for a face given no size or out of
+    !> range.
+    function mio_mesh_cad_face_size_limits(face) result(edges)
+        integer, intent(in) :: face
+        integer(int64), allocatable :: edges(:)
+        integer(c_int64_t) :: buf(1), n
+        integer(c_int64_t), allocatable :: all(:)
+        allocate (edges(0))
+        n = c_mio_mesh_cad_surface_face_size_limits(int(face - 1, c_int64_t), buf, 0_c_int64_t)
+        if (n <= 0) return
+        allocate (all(n))
+        n = c_mio_mesh_cad_surface_face_size_limits(int(face - 1, c_int64_t), all, n)
+        edges = int(all + 1, int64)
     end function
 
     !> The status (`MIO_MESH_CAD_*`) of face `face` (1-based) in this thread's
@@ -12176,10 +12301,12 @@ contains
         type(mio_mesh_cad_surface_opts_t) :: opts
         type(mio_mesh_cad_surface_report) :: report
         type(mio_mesh_cad_corner) :: corner
+        type(mio_mesh_cad_surface_opts_ex_t) :: ex
         if (checked) return
         checked = .true.
         if (c_sizeof(opts) /= 104_c_size_t .or. c_sizeof(report) /= 200_c_size_t .or. &
-            c_sizeof(corner) /= 120_c_size_t) then
+            c_sizeof(corner) /= 120_c_size_t .or. &
+            (c_sizeof(c_null_ptr) == 8_c_size_t .and. c_sizeof(ex) /= 136_c_size_t)) then
             write (error_unit, '(a,3(i0,1x),a)') &
                 'meshio++: mesh_cad_surface layout mismatch (', c_sizeof(opts), &
                 c_sizeof(report), c_sizeof(corner), 'bytes)'

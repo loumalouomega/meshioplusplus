@@ -35,6 +35,7 @@
 #include "meshioplusplus/brep.hpp"
 #include "meshioplusplus/nurbs.hpp"
 #include "../../src/cpp/src/detail/edge_sampler.hpp"
+#include "brep_solids.hpp"
 
 namespace {
 
@@ -329,6 +330,21 @@ TEST(EdgeSampler, ZeroLengthEdge) {
     EXPECT_EQ(dist(e.mPoints[0], e.mPoints[1]), 0.0);
 }
 
+// A short trace on a patch far from the origin: its speed carries round-off
+// of 1e-6 of itself, which no relative tolerance meets. Its table halved to
+// the depth limit (2^30 pieces per span, hours) before v17.18.0; now it stops
+// at the cap and its length is still right to the round-off.
+TEST(EdgeSampler, RoundOffInTheSpeedDoesNotHalveForever) {
+    const mio::NurbsPatch p = plane(1e6, 1e6, 1e-4, 1e-4);
+    const BrepSurfaceEval s(p, false);
+    const TrimTrace t(&s, BrepCurveEval(curve(1, {0, 0, 1, 1}, {{0.1, 0.2}, {0.7, 0.9}})), true);
+    const double length = 1e-4 * std::hypot(0.6, 0.7);
+    EXPECT_NEAR(t.Length(), length, length * 1e-5);
+    EdgeSampleOptions o;
+    o.mTargetSize = 0.25 * length * (1.0 + 1e-3);
+    EXPECT_EQ(mio::detail::edge_sample(t, o).mParams.size(), 5u);
+}
+
 TEST(EdgeSampler, CornersAreKept) {
     // A polyline (0, 0) -> (1, 0) -> (1, 0.3): its corner at the knot 0.5 is
     // a sample whatever the spacing, so no chord cuts it.
@@ -363,3 +379,78 @@ TEST(EdgeSampler, Refusals) {
 }
 
 }  // namespace
+
+// Second derivatives and curvature (roadmap 6.3.2): the rational surfaces of
+// the hand-built solids against central differences of the first
+// derivatives, and their principal curvatures against the analytic ones
+// (A2.3 and A4.4, Piegl and Tiller 1997).
+namespace {
+
+void expect_second_derivatives_match(const mio::BrepInfo& rInfo) {
+    for (const mio::BrepFace& r_f : rInfo.mFaces) {
+        const mio::NurbsPatch& r_p = rInfo.mPatches[static_cast<std::size_t>(r_f.mPatch)];
+        const BrepSurfaceEval s(r_p, r_f.mRational);
+        const auto& box = s.Box();
+        // Off the knots (the circles' double knots at the quarters, where the
+        // second derivative jumps and a central difference straddles both).
+        for (const double fu : {0.13, 0.37, 0.61, 0.89})
+            for (const double fv : {0.21, 0.43, 0.79}) {
+                const double u = box[0] + fu * (box[1] - box[0]);
+                const double v = box[2] + fv * (box[3] - box[2]);
+                double x[3], su[3], sv[3], suu[3], suv[3], svv[3];
+                s.Eval2(u, v, x, su, sv, suu, suv, svv);
+                double x1[3], su1[3], sv1[3];
+                s.Eval(u, v, x1, su1, sv1);
+                const double hu = 1e-5 * (box[1] - box[0]), hv = 1e-5 * (box[3] - box[2]);
+                double xa[3], ua[3], va[3], xb[3], ub[3], vb[3];
+                s.Eval(u + hu, v, xa, ua, va);
+                s.Eval(u - hu, v, xb, ub, vb);
+                double xc[3], uc[3], vc[3], xd[3], ud[3], vd[3];
+                s.Eval(u, v + hv, xc, uc, vc);
+                s.Eval(u, v - hv, xd, ud, vd);
+                for (int k = 0; k < 3; ++k) {
+                    EXPECT_NEAR(x[k], x1[k], 1e-12);
+                    EXPECT_NEAR(su[k], su1[k], 1e-10);
+                    EXPECT_NEAR(sv[k], sv1[k], 1e-10);
+                    const double scale_u = 1.0 + std::abs(suu[k]);
+                    const double scale_v = 1.0 + std::abs(svv[k]);
+                    EXPECT_NEAR(suu[k], (ua[k] - ub[k]) / (2 * hu), 1e-5 * scale_u);
+                    EXPECT_NEAR(suv[k], (va[k] - vb[k]) / (2 * hu),
+                                1e-5 * (1.0 + std::abs(suv[k])));
+                    EXPECT_NEAR(suv[k], (uc[k] - ud[k]) / (2 * hv),
+                                1e-5 * (1.0 + std::abs(suv[k])));
+                    EXPECT_NEAR(svv[k], (vc[k] - vd[k]) / (2 * hv), 1e-5 * scale_v);
+                }
+            }
+    }
+}
+
+}  // namespace
+
+TEST(EdgeSampler, SecondDerivativesMatchCentralDifferences) {
+    expect_second_derivatives_match(brep_solids::sphere(1.5));
+    expect_second_derivatives_match(brep_solids::capped_cylinder(0.7, 2.0));
+    expect_second_derivatives_match(brep_solids::box());
+}
+
+TEST(EdgeSampler, PrincipalCurvaturesOfTheAnalyticSurfaces) {
+    const auto max_curvature = [](const mio::BrepInfo& rInfo, std::size_t Face, double Fu,
+                                  double Fv) {
+        const mio::BrepFace& r_f = rInfo.mFaces[Face];
+        const BrepSurfaceEval s(rInfo.mPatches[static_cast<std::size_t>(r_f.mPatch)],
+                                r_f.mRational);
+        const auto& box = s.Box();
+        return s.MaxCurvature(box[0] + Fu * (box[1] - box[0]), box[2] + Fv * (box[3] - box[2]));
+    };
+    const mio::BrepInfo sphere = brep_solids::sphere(2.0);
+    for (const double fu : {0.1, 0.4, 0.9})
+        for (const double fv : {0.2, 0.45, 0.7})
+            // A sphere is all umbilics, where sqrt(H^2 - K) of two equal
+            // curvatures lifts rounding to about sqrt(eps).
+            EXPECT_NEAR(max_curvature(sphere, 0, fu, fv), 0.5, 1e-7) << fu << " " << fv;
+    const mio::BrepInfo cylinder = brep_solids::capped_cylinder(0.25, 1.0);
+    // The band is face 0, the discs are flat.
+    EXPECT_NEAR(max_curvature(cylinder, 0, 0.3, 0.6), 4.0, 1e-9);
+    EXPECT_NEAR(max_curvature(cylinder, 1, 0.3, 0.6), 0.0, 1e-12);
+    EXPECT_NEAR(max_curvature(brep_solids::box(), 2, 0.5, 0.5), 0.0, 1e-12);
+}

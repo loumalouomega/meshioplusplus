@@ -1,3 +1,5 @@
+import argparse
+
 from .._helpers import _writer_map, read, reader_map, write
 from .._mesh_cad import mesh_cad_surface
 from ._json import emit_json
@@ -100,10 +102,81 @@ def add_args(parser):
         help="1: linear triangles; 2 or 3: curved triangle6 or triangle10 whose "
         "nodes lie on the surface and edges (default: 1)",
     )
+    parser.add_argument(
+        "--curvature-deviation",
+        type=float,
+        default=0.0,
+        help="size curved regions so a triangle sits at most this far from the "
+        "surface (default: 0, off)",
+    )
+    parser.add_argument(
+        "--cells-across-gaps",
+        type=float,
+        default=0.0,
+        help="at least this many elements across a thin wall or a gap "
+        "(default: 0, off)",
+    )
+    parser.add_argument(
+        "--grading",
+        type=float,
+        default=0.0,
+        help="how fast the size may grow, a ratio above 1 (default: 0, 1.5 when "
+        "a size source is on)",
+    )
+    parser.add_argument(
+        "--pole-rings",
+        type=int,
+        default=0,
+        help="rings of points around each pole, 0 to 8 (default: 0, the fan)",
+    )
+    parser.add_argument(
+        "--face-sizes",
+        type=_size_pairs,
+        default=None,
+        help="sizes given per face, K=H pairs comma-separated (0-based faces)",
+    )
+    parser.add_argument(
+        "--edge-sizes",
+        type=_size_pairs,
+        default=None,
+        help="sizes given per edge, K=H pairs comma-separated (0-based edges)",
+    )
+    parser.add_argument(
+        "--background",
+        default=None,
+        help="a mesh whose point_data --background-array is the size at its points",
+    )
+    parser.add_argument(
+        "--background-array",
+        default="size",
+        help="the background's size array (default: size)",
+    )
+    parser.add_argument(
+        "--metric",
+        choices=("mean", "varying"),
+        default="mean",
+        help="each face's mean metric, or its metric as it varies (default: mean)",
+    )
+    parser.add_argument(
+        "--virtual-edges",
+        action="store_true",
+        help="sample chains of short edges meeting smoothly as one",
+    )
     parser.add_argument("--json", action="store_true", help="emit the report as JSON")
     parser.add_argument(
         "--quiet", "-q", action="store_true", help="suppress the summary"
     )
+
+
+def _size_pairs(text):
+    """``"0=0.1,3=0.2"`` as ``[(0, 0.1), (3, 0.2)]``."""
+    pairs = []
+    for item in text.split(","):
+        index, sep, size = item.partition("=")
+        if not sep:
+            raise argparse.ArgumentTypeError("K=H pairs, comma-separated")
+        pairs.append((int(index), float(size)))
+    return pairs
 
 
 def mesh_cad_surface_cmd(args):
@@ -123,6 +196,16 @@ def mesh_cad_surface_cmd(args):
         smooth_iterations=args.smooth,
         smooth_method=args.smooth_method,
         order=args.order,
+        curvature_deviation=args.curvature_deviation,
+        cells_across_gaps=args.cells_across_gaps,
+        grading=args.grading,
+        pole_rings=args.pole_rings,
+        face_sizes=args.face_sizes,
+        edge_sizes=args.edge_sizes,
+        background=None if args.background is None else read(args.background),
+        background_array=args.background_array,
+        metric=args.metric,
+        virtual_edges=args.virtual_edges,
         return_report=True,
     )
     write(args.outfile, out, file_format=args.output_format)

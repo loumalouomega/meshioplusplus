@@ -2080,6 +2080,9 @@ meshioplusplus mesh-cad-surface part.cad.json part.vtu --size 0.1
 meshioplusplus mesh-cad-surface part.step part.msh -o gmsh --size 2 --deflection 0.01 --strict --json
 meshioplusplus mesh-cad-surface part.cad.json part.vtu --size 0.1 --min-angle 25 --smooth 3
 meshioplusplus mesh-cad-surface part.cad.json part.msh -o gmsh --size 0.2 --order 2
+meshioplusplus mesh-cad-surface part.step part.vtu --size 2 --curvature-deviation 0.01 --cells-across-gaps 2 --min-angle 25
+meshioplusplus mesh-cad-surface sphere.cad.json sphere.vtu --size 0.2 --min-angle 25 --pole-rings 2
+meshioplusplus mesh-cad-surface part.step part.vtu --size 2 --face-sizes 3=0.5 --edge-sizes 12=0.2 --background sizes.vtu --metric varying --virtual-edges --min-angle 25 --json
 ```
 
 | flag | meaning |
@@ -2096,6 +2099,14 @@ meshioplusplus mesh-cad-surface part.cad.json part.msh -o gmsh --size 0.2 --orde
 | `--min-angle DEG` | refine every face until its triangles' smallest angles on the surface reach `DEG` (under 60; 0, the default, is off) |
 | `--smooth N` / `--smooth-method laplacian\|odt` | passes of guarded smoothing (default 0) and how a point moves |
 | `--order 1\|2\|3` | 1 (the default) linear triangles; 2 or 3 curved `triangle6`/`triangle10` with `line3`/`line4` edges, every node on the surface and the edges; an element whose Jacobian is not positive everywhere is written straight-sided and counted |
+| `--curvature-deviation D` | size curved regions so a triangle sits at most `D` from the surface (0, the default, is off) |
+| `--cells-across-gaps N` | at least `N` elements across a thin wall or a gap (0, the default, is off) |
+| `--grading G` | how fast the size may grow, a ratio above 1 (0, the default, is 1.5 when a size source is on) |
+| `--pole-rings M` | `M` rings of points (0 to 8) around each pole, so its triangles are graded (0, the default, is the fan) |
+| `--face-sizes K=H,…` / `--edge-sizes K=H,…` | sizes given per face / per edge (0-based `BrepFace` / `BrepEdge` indices); they only refine below `--size`, and the report's faces list the edges that limit them (`limited_by_edges`) |
+| `--background PATH` / `--background-array NAME` | a mesh whose point data `NAME` (default `size`) is the size at its points |
+| `--metric mean\|varying` | `mean` (the default), one affine map per face, or `varying`, the surface's own metric |
+| `--virtual-edges` | suppress the corners between slivers of edges and their neighbours (order 1 only); the chains are reported as `virtual_edges` |
 | `--json` / `-q/--quiet` | the report as JSON / no summary |
 
 A face that cannot be meshed is left out and named in the summary with its reason; the exit code is 0 unless `--strict` is given. With `--min-angle`, the summary also names each corner under 60 degrees and each pole that keeps triangles below the bound.

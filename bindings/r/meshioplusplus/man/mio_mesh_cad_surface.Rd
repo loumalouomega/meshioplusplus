@@ -6,7 +6,10 @@ mio_mesh_cad_surface(info, target_size, max_chordal_deviation = 0,
   min_points_per_edge = 0, tolerance = 0, record_face_ids = TRUE, edges = TRUE,
   match_unreferenced_trims = TRUE, strict = FALSE, max_points = 50000000,
   min_angle = 0, smooth_iterations = 0, smooth_method = c("laplacian", "odt"),
-  order = 1)
+  order = 1, grading = 0, curvature_deviation = 0, cells_across_gaps = 0,
+  pole_rings = 0, face_sizes = NULL, edge_sizes = NULL, background = NULL,
+  background_array = "size", metric = c("mean", "varying"),
+  virtual_edges = FALSE)
 }
 \arguments{
 \item{info}{A format-info handle holding a B-rep.}
@@ -27,6 +30,26 @@ at least this (degrees, under 60); 0 keeps the unrefined mesh.}
 \code{triangle10} elements (and \code{line3} or \code{line4} edges) whose nodes
 lie on the surfaces and edges; an element whose Jacobian is not positive
 everywhere is kept straight-sided and counted in \code{num_curved_straightened}.}
+\item{grading}{The size's largest growth, \code{|grad h| <= grading - 1}; 0 is
+1.5. Acts only with \code{curvature_deviation} or \code{cells_across_gaps} on.}
+\item{curvature_deviation}{Size each region so a chord sits at most this far
+from the surface; 0 is off.}
+\item{cells_across_gaps}{Size each region so at least this many elements span
+its local feature size (a wall's thickness, a slot's width); 0 is off.}
+\item{pole_rings}{Rings of points seeded around each pole, so it is no longer a
+fan's apex; 0 keeps the fan, at most 8.}
+\item{face_sizes}{Sizes given per face: a numeric vector named by 1-based face
+indices, or a two-column matrix of (index, size); every point of the face is at
+most that size (v17.19.0).}
+\item{edge_sizes}{The same per edge (1-based edge indices).}
+\item{background}{A mesh whose one-component point data \code{background_array}
+is the size at its points, read at its nearest surface point; \code{NULL} for
+none.}
+\item{background_array}{The name of that point data array.}
+\item{metric}{\code{"mean"} meshes each face in its mean metric;
+\code{"varying"} follows the surface's metric as it varies over the face.}
+\item{virtual_edges}{Sample chains of short edges meeting smoothly as one; the
+chains are reported in \code{virtual_edges}.}
 }
 \description{Mesh generation from CAD (v17.13.0): a conforming triangle mesh of
 the faces of the B-rep a format-info handle holds (Kratos CAD JSON, STEP or IGES,
