@@ -219435,12 +219435,23 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
     // centroid is folded; the margin keeps a sliver across a narrow strip,
     // whose normal is near perpendicular to the surface's, from counting on
     // rounding. A pole's collapsed triangles are not folds.
+    // The fold verdict of a triangle depends on its vertices alone, and the
+    // surface normal at a vertex on that vertex alone, so both are kept for
+    // this meshing: refinement judges a triangle several times (its first
+    // pass, its last, the fold check) and a corner is shared by its star.
+    std::map<std::array<std::int64_t, 3>, bool> folded_cache;
+    std::vector<std::optional<Vec3>> corner_normal;
     const auto folded = [&](const detail::Cdt2d::Tri& rT) {
         std::array<std::int64_t, 3> ids{};
         for (int k = 0; k < 3; ++k)
             ids[static_cast<std::size_t>(k)] = mesh_of.at(rT[static_cast<std::size_t>(k)]);
         if (ids[0] == ids[1] || ids[1] == ids[2] || ids[0] == ids[2])
             return false;
+        std::array<std::int64_t, 3> key = rT;
+        std::sort(key.begin(), key.end());
+        const auto hit = folded_cache.find(key);
+        if (hit != folded_cache.end())
+            return hit->second;
         const Vec3& pa = pos(ids[0]);
         const Vec3& pb = pos(ids[1]);
         const Vec3& pc = pos(ids[2]);
@@ -219449,14 +219460,23 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         const Vec3 nt{e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
                       e1[0] * e2[1] - e1[1] * e2[0]};
         const double nt2 = nt[0] * nt[0] + nt[1] * nt[1] + nt[2] * nt[2];
-        const auto against = [&](const detail::Cdt2d::Vec2& rX) {
-            const Vec2 uv = pl.ToUv(rX);
-            Vec3 x{}, su{}, sv{};
-            r_s.Eval(uv[0], uv[1], x.data(), su.data(), sv.data());
-            const Vec3 ns{su[1] * sv[2] - su[2] * sv[1], su[2] * sv[0] - su[0] * sv[2],
-                          su[0] * sv[1] - su[1] * sv[0]};
+        const auto against = [&](const Vec3& ns) {
             const double dot = nt[0] * ns[0] + nt[1] * ns[1] + nt[2] * ns[2];
             return dot < -0.5 * std::sqrt(nt2 * (ns[0] * ns[0] + ns[1] * ns[1] + ns[2] * ns[2]));
+        };
+        // The surface's normal at a vertex's point, once per vertex.
+        const auto normal_at = [&](std::int64_t v) -> Vec3 {
+            if (corner_normal.size() < static_cast<std::size_t>(cdt.NumVertices()))
+                corner_normal.resize(static_cast<std::size_t>(cdt.NumVertices()));
+            auto& r_slot = corner_normal[static_cast<std::size_t>(v)];
+            if (!r_slot) {
+                const Vec2 uv = pl.ToUv(cdt.Point(v));
+                Vec3 x{}, su{}, sv{};
+                r_s.Eval(uv[0], uv[1], x.data(), su.data(), sv.data());
+                r_slot = Vec3{su[1] * sv[2] - su[2] * sv[1], su[2] * sv[0] - su[0] * sv[2],
+                              su[0] * sv[1] - su[1] * sv[0]};
+            }
+            return *r_slot;
         };
         const auto& xa = cdt.Point(rT[0]);
         const auto& xb = cdt.Point(rT[1]);
@@ -219465,8 +219485,16 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         // corner: a triangle spanning most of a closed curve can lift onto
         // the short way round, backwards there, while its parameter
         // centroid lies on the far side.
-        return against({(xa[0] + xb[0] + xc[0]) / 3.0, (xa[1] + xb[1] + xc[1]) / 3.0}) ||
-               (against(xa) && against(xb) && against(xc));
+        const Vec2 centre{(xa[0] + xb[0] + xc[0]) / 3.0, (xa[1] + xb[1] + xc[1]) / 3.0};
+        const Vec2 cuv = pl.ToUv(centre);
+        Vec3 cx{}, csu{}, csv{};
+        r_s.Eval(cuv[0], cuv[1], cx.data(), csu.data(), csv.data());
+        const Vec3 cns{csu[1] * csv[2] - csu[2] * csv[1], csu[2] * csv[0] - csu[0] * csv[2],
+                       csu[0] * csv[1] - csu[1] * csv[0]};
+        const bool out = against(cns) || (against(normal_at(rT[0])) && against(normal_at(rT[1])) &&
+                                          against(normal_at(rT[2])));
+        folded_cache.emplace(key, out);
+        return out;
     };
     // A face that folds is refined even with no angle or size sought: a
     // folded triangle is bad, split at its centroid in the plane, until none
