@@ -218109,9 +218109,15 @@ struct McadFace {
     std::vector<Vec3> mHighOrder;
     /// Pole rings (6.4.2) were placed in the face's latest meshing.
     bool mPoleRingsPlaced = false;
-    /// Its unrefined triangulation folded on the surface in some meshing
-    /// (6.4.3), so it was refined until it did not.
-    bool mFolded = false;
+    /// In some meshing its unrefined triangulation folded on the surface
+    /// (6.4.3): it asks for boundary splits even when no angle or size is
+    /// sought, so the rounds run.
+    bool mNeedsRounds = false;
+    /// Every triangle of its latest meshing collapsed (6.5.7).
+    bool mCollapsed = false;
+    /// Mesh it with a small interior grid whatever its size: set after a
+    /// meshing collapsed, kept for every later one.
+    bool mForceInterior = false;
     /// The first meshing of a sized run (6.3): each point of the face with
     /// the surface's normal and largest principal curvature there.
     std::vector<detail::MeshCadSizeSample> mSizeSamples;
@@ -218403,6 +218409,28 @@ McadPlane mcad_face_plane(const McadFace& rF, const std::vector<McadUse>& rUses,
                 pl.mXhi[k] = std::max(pl.mXhi[k], pl.mXs.back()[static_cast<std::size_t>(k)]);
             }
         }
+    if (!pl.mInRange) {
+        // Real CAD writes parameters a hair off zero (7e-44 where 0 was
+        // meant), under the 2^-128 the predicates hold for (roadmap 6.5.7):
+        // a coordinate 1e-30 of the plane's size from zero is zero. Only a
+        // face that would fail otherwise takes this, so every other face is
+        // triangulated on the coordinates it always was.
+        double size = 0.0;
+        for (const Vec2& r_x : pl.mXs)
+            size = std::max({size, std::fabs(r_x[0]), std::fabs(r_x[1])});
+        const double flush = 1e-30 * size;
+        pl.mInRange = true;
+        for (Vec2& r_x : pl.mXs)
+            for (double& r_c : r_x) {
+                if (std::fabs(r_c) < flush)
+                    r_c = 0.0;
+                pl.mInRange = pl.mInRange && detail::cdt2d_in_range(r_c);
+            }
+        for (int k = 0; k < 2; ++k) {
+            pl.mXlo[k] = std::min(pl.mXlo[k], 0.0);
+            pl.mXhi[k] = std::max(pl.mXhi[k], 0.0);
+        }
+    }
     return pl;
 }
 
@@ -218539,6 +218567,7 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 return fail(rUses[u].mFail, rUses[u].mWhy);
     const double h = rO.mTargetSize;
     rF.mPoleRingsPlaced = false;
+    rF.mCollapsed = false;
 
     const McadPlane pl = mcad_face_plane(rF, rUses, rTraces);
     if (pl.mTotal < 3)
@@ -218876,6 +218905,27 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 grid.AddPoint(x);
             }
         }
+        // After a meshing in which every triangle collapsed: three by three
+        // points at the quarters of the plane's box, whatever h, so the face
+        // has an inside (those outside its domain are not inserted).
+        if (rF.mForceInterior)
+            for (int j = 1; j <= 3; ++j)
+                for (int i = 1; i <= 3; ++i) {
+                    const Vec2 xp{xlo[0] + 0.25 * double(i) * (xhi[0] - xlo[0]),
+                                  xlo[1] + 0.25 * double(j) * (xhi[1] - xlo[1])};
+                    const std::int64_t v_id = cdt.InsertSteiner(xp);
+                    if (v_id < 0 || mesh_of.count(v_id) > 0)
+                        continue;
+                    const Vec3 x = [&]() {
+                        const Vec2 uv = pl.ToUv(xp);
+                        Vec3 y{};
+                        r_s.Eval(uv[0], uv[1], y.data(), nullptr, nullptr);
+                        return y;
+                    }();
+                    mesh_of[v_id] = -(1 + static_cast<std::int64_t>(rF.mInterior.size()));
+                    rF.mInterior.push_back(x);
+                    grid.AddPoint(x);
+                }
     }
 
     const auto pos = [&](std::int64_t Id) -> const Vec3& {
@@ -219178,7 +219228,7 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             fold_refine = true;
             break;
         }
-    rF.mFolded = rF.mFolded || fold_refine;
+    rF.mNeedsRounds = rF.mNeedsRounds || fold_refine;
     detail::Cdt2dRefineReport refined;
     std::set<std::array<std::int64_t, 3>> forced;  // mesh ids, ascending
     std::map<std::int64_t, double> corner_angle;   // mesh point -> plane angle
@@ -219762,8 +219812,14 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         }
         rF.mTriangles.push_back(tri);
     }
-    if (rF.mTriangles.empty())
+    if (rF.mTriangles.empty()) {
+        // A face smaller than h whose loops are poles and a seam (a small
+        // surface of revolution, roadmap 6.5.7) has no lattice point, and
+        // every triangle of its boundary alone touches a pole or the seam
+        // twice: the driver meshes it once more with an interior grid.
+        rF.mCollapsed = true;
         return fail(MeshCadFaceStatus::Empty, "every triangle collapses on the surface");
+    }
     r_rec.mNumTriangles = static_cast<std::int64_t>(rF.mTriangles.size());
     r_rec.mNumInteriorPoints = static_cast<std::int64_t>(rF.mInterior.size());
     r_rec.mMinAngleDeg = min_angle;
@@ -220502,45 +220558,55 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                 if (Again)
                     r_f.mRefinedSoFar = r_f.mRefinedBefore;
                 r_f.mRefinedBefore = r_f.mRefinedSoFar;
-                r_f.mSmoothingDeferred = false;
-                r_f.mRecord = MeshCadFaceRecord{};
-                r_f.mRecord.mFace = static_cast<std::int64_t>(f);
-                r_f.mRecord.mId = rBrep.mFaces[f].mId;
-                r_f.mInterior.clear();
-                r_f.mTriangles.clear();
-                r_f.mAsks.clear();
-                r_f.mCurvedEdges.clear();
-                r_f.mCurvedCentre.clear();
-                r_f.mCurvedNormal.clear();
-                r_f.mHighOrder.clear();
-                r_f.mSizeSamples.clear();
-                r_f.mHistogram.fill(0);
-                r_f.mNumStretched = 0;
-                r_f.mRefineBudgetReached = false;
-                // What meshing adds to the skipped embedded edges is added
-                // again by the next meshing.
-                if (r_f.mSkippedBefore == std::string::npos)
-                    r_f.mSkippedBefore = r_f.mSkipped.size();
-                r_f.mSkipped.resize(r_f.mSkippedBefore);
-                try {
-                    if (r_f.mUnrefined) {
-                        McadQuality unrefined = quality;
-                        unrefined.mMinAngleDeg = 0.0;
-                        mcad_mesh_face(r_f, rBrep.mFaces[f], uses, traces, boundary, rOptions,
-                                       unrefined);
-                    } else {
-                        mcad_mesh_face(r_f, rBrep.mFaces[f], uses, traces, boundary, rOptions, q);
-                    }
-                } catch (const std::exception& r_x) {
-                    r_f.mRecord.mStatus = MeshCadFaceStatus::Other;
-                    r_f.mRecord.mReason = mcad_why(r_x);
-                    r_f.mTriangles.clear();
+                const auto once = [&]() {
+                    r_f.mSmoothingDeferred = false;
+                    r_f.mRecord = MeshCadFaceRecord{};
+                    r_f.mRecord.mFace = static_cast<std::int64_t>(f);
+                    r_f.mRecord.mId = rBrep.mFaces[f].mId;
                     r_f.mInterior.clear();
+                    r_f.mTriangles.clear();
                     r_f.mAsks.clear();
                     r_f.mCurvedEdges.clear();
                     r_f.mCurvedCentre.clear();
                     r_f.mCurvedNormal.clear();
                     r_f.mHighOrder.clear();
+                    r_f.mSizeSamples.clear();
+                    r_f.mHistogram.fill(0);
+                    r_f.mNumStretched = 0;
+                    r_f.mRefineBudgetReached = false;
+                    // What meshing adds to the skipped embedded edges is added
+                    // again by the next meshing.
+                    if (r_f.mSkippedBefore == std::string::npos)
+                        r_f.mSkippedBefore = r_f.mSkipped.size();
+                    r_f.mSkipped.resize(r_f.mSkippedBefore);
+                    try {
+                        if (r_f.mUnrefined) {
+                            McadQuality unrefined = quality;
+                            unrefined.mMinAngleDeg = 0.0;
+                            mcad_mesh_face(r_f, rBrep.mFaces[f], uses, traces, boundary, rOptions,
+                                           unrefined);
+                        } else {
+                            mcad_mesh_face(r_f, rBrep.mFaces[f], uses, traces, boundary, rOptions, q);
+                        }
+                    } catch (const std::exception& r_x) {
+                        r_f.mRecord.mStatus = MeshCadFaceStatus::Other;
+                        r_f.mRecord.mReason = mcad_why(r_x);
+                        r_f.mTriangles.clear();
+                        r_f.mInterior.clear();
+                        r_f.mAsks.clear();
+                        r_f.mCurvedEdges.clear();
+                        r_f.mCurvedCentre.clear();
+                        r_f.mCurvedNormal.clear();
+                        r_f.mHighOrder.clear();
+                    }
+                };
+                once();
+                // Every triangle collapsed: once more with an interior grid
+                // (6.5.7), kept for every later meshing of the face.
+                if (r_f.mCollapsed && !r_f.mForceInterior) {
+                    r_f.mForceInterior = true;
+                    r_f.mRefinedSoFar = r_f.mRefinedBefore;
+                    once();
                 }
             },
             1);
@@ -220558,7 +220624,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
     std::int64_t boundary_refinement = 0;
     // A face that folds asks for splits as refinement does (6.4.3).
     const bool any_fold =
-        std::any_of(faces.begin(), faces.end(), [](const McadFace& rF) { return rF.mFolded; });
+        std::any_of(faces.begin(), faces.end(), [](const McadFace& rF) { return rF.mNeedsRounds; });
     if (rOptions.mMinAngleDeg > 0.0 || pSize || any_fold) {
         constexpr int kMaxRefineRounds = 16;
         for (int round = 0;; ++round) {

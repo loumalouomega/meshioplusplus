@@ -522,6 +522,50 @@ def test_pole_rings_lift_the_sphere_to_the_bound():
     assert ringed["num_faces_below_bound"] == 0
 
 
+def _sphere_patch(radius=1.0):
+    """One untrimmed rational patch: a full turn in u (four quarter arcs), a
+    half meridian in v (two quarter arcs), so its loop is a seam twice and
+    two poles."""
+    brep = copy.deepcopy(_read("cylindrical_roof.cad.json").info["brep"])
+    s = np.sqrt(0.5)
+    ring = [(1, 0, 1), (1, 1, s), (0, 1, 1), (-1, 1, s), (-1, 0, 1)]
+    ring += [(-1, -1, s), (0, -1, 1), (1, -1, s), (1, 0, 1)]
+    meridian = [(0, -1, 1), (1, -1, s), (1, 0, 1), (1, 1, s), (0, 1, 1)]
+    cps, weights = [], []
+    for rr, z, wv in meridian:
+        for x, y, wu in ring:
+            cps.append([radius * rr * x, radius * rr * y, radius * z])
+            weights.append(wu * wv)
+    patch = brep["patches"][0]
+    patch["degrees"] = [2, 2]
+    patch["knots"] = [
+        np.array([0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4], float),
+        np.array([0, 0, 0, 1, 1, 2, 2, 2], float),
+    ]
+    patch["control_points"] = np.array(cps)
+    patch["weights"] = np.array(weights)
+    brep["faces"][0]["control_point_ids"] = np.arange(1, len(cps) + 1)
+    return brep
+
+
+@needs_core
+@pytest.mark.parametrize("min_angle", [0, 25])
+def test_a_surface_of_revolution_smaller_than_h_is_meshed(min_angle):
+    """Roadmap 6.5.7: a face whose loop is a seam and two poles, smaller than
+    h, has no lattice point, and every triangle of its boundary alone touches
+    a pole or the seam twice (118 faces of the corpus). It is meshed again
+    with an interior grid: watertight, outward, its volume positive."""
+    out, report = mio.mesh_cad_surface(
+        _sphere_patch(), 10.0, min_angle=min_angle, return_report=True
+    )
+    _watertight(report)
+    area, volume = _measure(out)
+    assert 0.5 * 4 * math.pi < area < 4 * math.pi
+    assert 0.2 * 4 * math.pi / 3 < volume < 4 * math.pi / 3
+    fine = mio.mesh_cad_surface(_sphere_patch(), 0.3)
+    assert len(fine.cells[0].data) > len(out.cells[0].data)
+
+
 def test_smoothing_moves_the_inside_only():
     model = _read("sphere.cad.json")
     plain, r0 = mio.mesh_cad_surface(model, 0.2, return_report=True)

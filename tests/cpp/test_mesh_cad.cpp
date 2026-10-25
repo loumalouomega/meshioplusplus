@@ -1125,3 +1125,50 @@ TEST(MeshCadOcct, StepCubeIsWatertightAndMatchesBRepMesh) {
 #endif
 
 }  // namespace
+
+namespace {
+
+// One untrimmed bilinear patch, the square [0, 1]^2 of the plane z = 0, its
+// knots in u starting at U0.
+mio::BrepInfo mcadt_square_from(double U0) {
+    mio::BrepInfo b;
+    mio::NurbsPatch p;
+    p.mDegrees = {1, 1};
+    p.mKnots = {{U0, U0, 1, 1}, {0, 0, 1, 1}};
+    p.mControlPoints = mio::NDArray(mio::DType::Float64, {4, 3});
+    p.mWeights = mio::NDArray(mio::DType::Float64, {4});
+    const double pts[4][3] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0}};
+    for (int i = 0; i < 4; ++i) {
+        for (int k = 0; k < 3; ++k)
+            p.mControlPoints.As<double>()[3 * i + k] = pts[i][k];
+        p.mWeights.As<double>()[i] = 1.0;
+    }
+    b.mPatches.push_back(p);
+    mio::BrepFace f;
+    f.mId = 1;
+    f.mPatch = 0;
+    b.mFaces.push_back(f);
+    return b;
+}
+
+}  // namespace
+
+// Roadmap 6.5.7: real STEP files write parameters a hair off zero (7e-44
+// where 0 was meant), under the 2^-128 the exact predicates hold for; 95
+// faces of the corpus failed on it. Such a face is triangulated with those
+// coordinates flushed to zero; a face whose parameters are in range is
+// meshed on exactly the coordinates it always was.
+TEST(MeshCad, ParametersAHairOffZeroAreMeshed) {
+    mio::MeshCadSurfaceOptions o;
+    o.mTargetSize = 0.25;
+    const auto clean = mio::mesh_cad_surface(mcadt_square_from(0.0), o);
+    for (const double u0 : {7.3e-44, -2.1e-45, 3.2e-48}) {
+        const auto r = mio::mesh_cad_surface(mcadt_square_from(u0), o);
+        ASSERT_EQ(r.mNumFailed, 0) << u0 << ": " << r.mFaces[0].mReason;
+        EXPECT_EQ(r.mNumTriangles, clean.mNumTriangles) << u0;
+        EXPECT_EQ(r.mNumOpenEdges, clean.mNumOpenEdges) << u0;
+    }
+    // In range, untouched.
+    const auto r = mio::mesh_cad_surface(mcadt_square_from(1e-30), o);
+    EXPECT_EQ(r.mNumFailed, 0);
+}
