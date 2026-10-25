@@ -372,6 +372,14 @@ struct McadFace {
     /// Mesh it with a small interior grid whatever its size: set after a
     /// meshing collapsed, kept for every later one.
     bool mForceInterior = false;
+    /// Its latest meshing left a fold (6.4.3), and how many meshings in a
+    /// row did.
+    bool mFolded = false;
+    int mFoldStreak = 0;
+    /// Mesh it in its mean metric whatever the options: set after a
+    /// meshing in the varying metric folded (6.4.1), kept for every later
+    /// one.
+    bool mMeanMetric = false;
     /// The first meshing of a sized run (6.3): each point of the face with
     /// the surface's normal and largest principal curvature there.
     std::vector<detail::MeshCadSizeSample> mSizeSamples;
@@ -528,8 +536,8 @@ void mcad_check_options(const MeshCadSurfaceOptions& rO) {
         mcad_fail("curvature_deviation must be finite and not negative");
     if (!(std::isfinite(rO.mCellsAcrossGaps) && rO.mCellsAcrossGaps >= 0.0))
         mcad_fail("cells_across_gaps must be finite and not negative");
-    if (rO.mMetric != MeshCadMetric::Mean)
-        not_yet("metric=\"varying\"", "6.4.1");
+    if (rO.mMetric != MeshCadMetric::Mean && rO.mMetric != MeshCadMetric::Varying)
+        mcad_fail("metric must be \"mean\" or \"varying\"");
     if (rO.mPoleRings < 0 || rO.mPoleRings > 8)
         mcad_fail("pole_rings must lie in [0, 8]");
     if (rO.mReparamConditionNumber != 0.0)
@@ -827,6 +835,7 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
     const double h = rO.mTargetSize;
     rF.mPoleRingsPlaced = false;
     rF.mCollapsed = false;
+    rF.mFolded = false;
 
     const McadPlane pl = mcad_face_plane(rF, rUses, rTraces);
     if (pl.mTotal < 3)
@@ -857,6 +866,25 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
     const double* xhi = pl.mXhi;
     const detail::BrepSurfaceEval& r_s = *rF.pSurface;
     detail::Cdt2d cdt(xlo[0], xlo[1], xhi[0], xhi[1]);
+    // A varying metric (6.4.1): Lawson's flips decide in the surface's own
+    // metric at each edge, the first fundamental form in the plane's
+    // coordinates, (J L^-1)^T (J L^-1); the size is a scale the in-circle
+    // test does not see.
+    const bool varying = rO.mMetric == MeshCadMetric::Varying && !rF.mMeanMetric;
+    if (varying)
+        cdt.SetMetric([&](const detail::Cdt2d::Vec2& rX) {
+            const Vec2 uv = pl.ToUv(rX);
+            Vec3 x{}, su{}, sv{};
+            r_s.Eval(uv[0], uv[1], x.data(), su.data(), sv.data());
+            Vec3 c1{}, c2{};
+            for (std::size_t k = 0; k < 3; ++k) {
+                c1[k] = su[k] / l11;
+                c2[k] = sv[k] / l22 - su[k] * l12 / (l11 * l22);
+            }
+            return std::array<double, 3>{c1[0] * c1[0] + c1[1] * c1[1] + c1[2] * c1[2],
+                                         c1[0] * c2[0] + c1[1] * c2[1] + c1[2] * c2[2],
+                                         c2[0] * c2[0] + c2[1] * c2[1] + c2[2] * c2[2]};
+        });
     const std::vector<std::int64_t> vid = cdt.InsertBatch(pl.mXs);
     // Each triangulation vertex is one mesh point: a boundary vertex holds
     // its id, an interior one -(1 + its index in mInterior).
@@ -1277,7 +1305,7 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
     };
     const auto left_stretched = [&](const detail::Cdt2d::Tri& rT,
                                     const std::array<std::int64_t, 3>& rIds) {
-        if (!(rQ.mMinAngleDeg > 0.0))
+        if (!(rQ.mMinAngleDeg > 0.0) || varying)
             return false;
         const double shortest =
             std::min({mcad_dist(pos(rIds[0]), pos(rIds[1])), mcad_dist(pos(rIds[1]), pos(rIds[2])),
@@ -1636,7 +1664,7 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         // (see `stretched`), wherever its triangle is: refinement there does
         // not make the triangles it would then have to leave.
         const auto stretched_floor = [&](const detail::Cdt2d::Vec2& rX) {
-            return stretched_at(rX) ? 0.25 * h : 0.0;
+            return !varying && stretched_at(rX) ? 0.25 * h : 0.0;
         };
         // A triangle bad by its size alone keeps its new point a third of
         // the local size from every vertex of its cavity, which its
@@ -1878,6 +1906,7 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                      " triangles fold on the surface (their normals turn more than 120 "
                      "degrees from the surface's)");
             rF.mAsks = std::move(asks);
+            rF.mFolded = true;
             return;
         }
     }
@@ -1995,7 +2024,8 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 }
                 at_corner = at_corner || corner_angle.count(id) > 0;
             }
-            if (!at_corner && rQ.mMinAngleDeg > 0.0 && m < rQ.mMinAngleDeg && stretched(r_t)) {
+            if (!at_corner && !varying && rQ.mMinAngleDeg > 0.0 && m < rQ.mMinAngleDeg &&
+                stretched(r_t)) {
                 at_corner = true;
                 ++rF.mNumStretched;
             }
@@ -2974,7 +3004,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
     // Every usable face, or with `Again` those whose last meshing left its
     // smoothing for the next one, meshed once more from where that one
     // started (the same boundary and refinement budget give the same mesh).
-    const auto mesh_faces = [&](bool Defer, bool Again) {
+    const auto mesh_faces = [&](bool Defer, bool Again, const std::vector<char>* pOnly = nullptr) {
         const std::vector<std::size_t> order = mcad_face_order(nf);
         McadQuality q = quality;
         q.mDeferSmoothing = Defer && (q.mMinAngleDeg > 0.0 || q.pSize) && q.mSmoothIterations > 0;
@@ -2983,7 +3013,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
             [&](std::size_t i) {
                 const std::size_t f = order[i];
                 McadFace& r_f = faces[f];
-                if (!r_f.mUsable || (Again && !r_f.mSmoothingDeferred))
+                if (!r_f.mUsable || (Again && !r_f.mSmoothingDeferred) || (pOnly && !(*pOnly)[f]))
                     return;
                 if (Again)
                     r_f.mRefinedSoFar = r_f.mRefinedBefore;
@@ -3031,6 +3061,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                     }
                 };
                 once();
+                r_f.mFoldStreak = r_f.mFolded ? r_f.mFoldStreak + 1 : 0;
                 // Every triangle collapsed: once more with an interior grid
                 // (6.5.7), kept for every later meshing of the face.
                 if (r_f.mCollapsed && !r_f.mForceInterior) {
@@ -3057,6 +3088,27 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
         std::any_of(faces.begin(), faces.end(), [](const McadFace& rF) { return rF.mNeedsRounds; });
     if (rOptions.mMinAngleDeg > 0.0 || pSize || any_fold) {
         constexpr int kMaxRefineRounds = 16;
+        // Folded in the varying metric (6.4.1) for `Streak` meshings in a
+        // row, or when no split is left to make: the metric at an edge's
+        // midpoint is the surface's to first order only, and on a small,
+        // strongly curved face it can keep a diagonal that lifts backwards
+        // whatever the boundary. Such a face is meshed again in its mean
+        // metric, kept for every later meshing of it, and the rounds go on.
+        const auto to_mean = [&](int Streak) {
+            if (rOptions.mMetric != MeshCadMetric::Varying)
+                return false;
+            std::vector<char> again(nf, 0);
+            bool any = false;
+            for (std::size_t f = 0; f < nf; ++f)
+                if (faces[f].mFolded && !faces[f].mMeanMetric && faces[f].mFoldStreak >= Streak) {
+                    faces[f].mMeanMetric = true;
+                    again[f] = 1;
+                    any = true;
+                }
+            if (any)
+                mesh_faces(true, false, &again);
+            return any;
+        };
         for (int round = 0;; ++round) {
             // A face whose refinement spent its points is not refined
             // further, since every round would spend them again: it is
@@ -3077,6 +3129,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                 mesh_faces(true, false);
                 continue;
             }
+            if (to_mean(3))
+                continue;
             std::map<std::size_t, std::map<std::size_t, std::size_t>> split;
             for (std::size_t f = 0; f < nf; ++f)
                 for (const auto& r_a : faces[f].mAsks) {
@@ -3087,8 +3141,11 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                         continue;
                     split[r_a[0]][r_a[1]] |= r_a[2];
                 }
-            if (split.empty())
-                break;
+            if (split.empty()) {
+                if (!to_mean(1))
+                    break;
+                continue;
+            }
             std::size_t added = 0;
             for (const auto& [e, r_pieces] : split)
                 added += r_pieces.size();
@@ -3203,11 +3260,15 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
         for (const auto& [u, r_why] : r_f.mSkipped)
             warn("face " + std::to_string(f) + ": an embedded edge (trim " +
                  std::to_string(uses[u].mTrimIndex) + ") is not meshed: " + r_why);
+        if (r_f.mMeanMetric)
+            warn("face " + std::to_string(f) +
+                 ": folded in the varying metric, so meshed in its mean metric "
+                 "(roadmap 6.4.1)");
         if (r_f.mNumStretched > 0)
             warn("face " + std::to_string(f) + ": " + std::to_string(r_f.mNumStretched) +
                  " triangles stay under min_angle where its parameters stretch the surface "
-                 "more than twofold against the face's plane; refinement leaves them to a "
-                 "varying metric (roadmap 6.4.1)");
+                 "more than twofold against the face's plane; metric = \"varying\" meshes them "
+                 "in the surface's own metric (roadmap 6.4.1)");
         if (r_f.mRecord.mStatus != MeshCadFaceStatus::Ok) {
             ++result.mNumFailed;
             if (r_f.mRecord.mStatus == MeshCadFaceStatus::Empty && r_f.mRecord.mReason.empty())

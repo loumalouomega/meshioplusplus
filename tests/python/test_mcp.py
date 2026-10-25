@@ -2308,6 +2308,11 @@ def test_mesh_cad_surface_tool(tmp_path):
     rim = src.parent / "split_rim.cad.json"
     virtual = _tools.tool_mesh_cad_surface(str(rim), str(out), 0.25, virtual_edges=True)
     assert virtual["num_failed"] == 0 and virtual["virtual_edges"] == [[3, 5]]
+    # A varying metric (v17.19.0): the sphere's poles meet the bound.
+    varying = _tools.tool_mesh_cad_surface(
+        str(sphere), str(out), 0.2, min_angle=25.0, metric="varying"
+    )
+    assert varying["num_failed"] == 0 and varying["min_angle_deg"] >= 25.0 - 1e-9
 
 
 def test_octree_tool(tmp_path):

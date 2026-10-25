@@ -523,6 +523,25 @@ def test_pole_rings_lift_the_sphere_to_the_bound():
 
 
 @needs_core
+def test_a_varying_metric_meets_the_bound_at_the_poles():
+    """Roadmap 6.4.1: near its poles the sphere's parameters stretch the
+    surface far from each hemisphere's mean metric; meshed in the surface's
+    own metric (Lawson's flips and encroachment measured in it) the pole fans
+    meet 25 degrees without rings, and the mesh stays watertight."""
+    model = _read("sphere.cad.json")
+    mean = mio.mesh_cad_surface(model, 0.2, min_angle=25, return_report=True)[1]
+    out, varying = mio.mesh_cad_surface(
+        model, 0.2, min_angle=25, metric="varying", return_report=True
+    )
+    _watertight(varying)
+    assert mean["min_angle_deg"] < 25 <= varying["min_angle_deg"] + 1e-9
+    assert varying["num_faces_below_bound"] == 0
+    assert varying["num_points"] <= 1.5 * mean["num_points"]
+    with pytest.raises(ValueError, match="metric"):
+        mio.mesh_cad_surface(model, 0.2, metric="riemann")
+
+
+@needs_core
 def test_given_sizes_refine_and_report():
     """Roadmap 6.3.1 / 6.3.8: a face given its size meshes at it, an edge given
     its size is sampled at it, and the report names exactly the edge a finer

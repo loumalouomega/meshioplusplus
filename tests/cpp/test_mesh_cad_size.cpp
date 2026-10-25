@@ -305,7 +305,7 @@ mio::BrepInfo partial_band(double R, double H, double Sweep) {
 
 }  // namespace
 
-// Roadmap 6.4.3: meshed coarser than itself, a band swept 270 degrees or
+// Roadmap 6.4.3: meshed coarser than itself (in either metric, 6.4.1), a band swept 270 degrees or
 // more gets one boundary piece per arc, and its two triangles cover the
 // short way round, backwards: folded (on the real STEP models of the corpus
 // the same happens on small fillets and blade faces). Before v17.18.0 they
@@ -316,12 +316,18 @@ TEST(MeshCadFolds, ABandSweptPastHalfATurnIsUnfolded) {
     for (const double sweep : {270.0, 300.0, 340.0})
         for (const double height : {0.05, 0.3})
             for (const double h : {8.0, 16.0})
-                for (const double min_angle : {0.0, 25.0}) {
+                for (const double min_angle : {0.0, 25.0})
+                  for (const auto metric : {mio::MeshCadMetric::Mean, mio::MeshCadMetric::Varying}) {
                     mio::MeshCadSurfaceOptions o;
                     o.mTargetSize = h;
                     o.mMinAngleDeg = min_angle;
+                    o.mMetric = metric;
                     const auto r =
                         mio::mesh_cad_surface(partial_band(1.0, height, sweep * kPi / 180.0), o);
+                    // Unfolded by the rounds in either metric: none falls
+                    // back to the mean one.
+                    for (const auto& r_w : r.mWarnings)
+                        EXPECT_EQ(r_w.find("folded in the varying"), std::string::npos) << r_w;
                     ASSERT_EQ(r.mNumFailed, 0)
                         << "sweep " << sweep << ", h " << h << ": " << r.mFaces[0].mReason;
                     const auto& m = r.mMesh;

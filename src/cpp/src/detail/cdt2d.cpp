@@ -197,6 +197,47 @@ double Cdt2d::InCircle(std::int64_t A, std::int64_t B, std::int64_t C, std::int6
     return incircle(Point(A).data(), Point(B).data(), Point(C).data(), Point(D).data());
 }
 
+bool Cdt2d::FlipDue(std::int64_t A, std::int64_t B, std::int64_t C, std::int64_t D) const {
+    // Without a metric, or with the super triangle's vertices (outside the
+    // domain, far away), the plane's test.
+    if (!mMetric || A < kFirstVertex || B < kFirstVertex || C < kFirstVertex || D < kFirstVertex)
+        return InCircle(A, B, C, D) > 0.0;
+    const Vec2& pb = Point(B);
+    const Vec2& pc = Point(C);
+    std::array<Vec2, 4> m{Point(A), pb, pc, Point(D)};
+    if (!MetricMapped({0.5 * (pb[0] + pc[0]), 0.5 * (pb[1] + pc[1])}, m))
+        return InCircle(A, B, C, D) > 0.0;
+    // Lawson's flip of (B, C) to (A, D) needs the quadrilateral A, B, D, C
+    // strictly convex: the new edge crosses the old one.
+    if (!(Orient(A, B, D) > 0.0) || !(Orient(A, D, C) > 0.0))
+        return false;
+    return incircle(m[0].data(), m[1].data(), m[2].data(), m[3].data()) > 0.0;
+}
+
+bool Cdt2d::MetricMapped(const Vec2& rAt, std::array<Vec2, 4>& rPoints, std::size_t N) const {
+    if (!mMetric)
+        return false;
+    const std::array<double, 3> m = mMetric(rAt);
+    // M = R^T R, R = [[r11, r12], [0, r22]] upper triangular: det R > 0, so
+    // the mapping keeps every orientation.
+    const double r11 = m[0] > 0.0 ? std::sqrt(m[0]) : 0.0;
+    const double r12 = r11 > 0.0 ? m[1] / r11 : 0.0;
+    const double q = m[2] - r12 * r12;
+    const double r22 = q > 0.0 ? std::sqrt(q) : 0.0;
+    if (!(r11 > 0.0 && r22 > 0.0 && std::isfinite(r11) && std::isfinite(r12) && std::isfinite(r22)))
+        return false;
+    std::array<Vec2, 4> out{};
+    for (std::size_t k = 0; k < N; ++k) {
+        const double x = rPoints[k][0] - rAt[0], y = rPoints[k][1] - rAt[1];
+        out[k] = {r11 * x + r12 * y, r22 * y};
+        if (!cdt2d_in_range(out[k][0]) || !cdt2d_in_range(out[k][1]))
+            return false;
+    }
+    for (std::size_t k = 0; k < N; ++k)
+        rPoints[k] = out[k];
+    return true;
+}
+
 int Cdt2d::IndexOf(std::int64_t T, std::int64_t V) const {
     const auto& r_t = mTris[static_cast<std::size_t>(T)];
     for (int i = 0; i < 3; ++i)
@@ -469,7 +510,7 @@ void Cdt2d::Legalize(std::vector<std::pair<std::int64_t, int>>& rStack) {
         if (f < 0)
             cdt2d_internal("broken adjacency while legalising");
         const std::int64_t d = mTris[static_cast<std::size_t>(u)].mV[f];
-        if (InCircle(r_t.mV[0], r_t.mV[1], r_t.mV[2], d) > 0.0) {
+        if (FlipDue(r_t.mV[e], r_t.mV[cdt2d_next(e)], r_t.mV[cdt2d_prev(e)], d)) {
             Flip(t, e);
             rStack.emplace_back(t, 0);
             rStack.emplace_back(u, 0);
@@ -1061,6 +1102,13 @@ private:
     /// domains it let refinement past 30 degrees run away where the circle
     /// does not.)
     bool Encroaches(std::int64_t A, std::int64_t B, const Vec2& rP) const {
+        // With a metric, the diametral circle measured in it at the
+        // subsegment's midpoint: a subsegment long in the plane but short
+        // in the metric is not encroached by the points its own size puts
+        // beside it.
+        std::array<Vec2, 4> m{P(A), P(B), rP, Vec2{}};
+        if (mC.MetricMapped({0.5 * (P(A)[0] + P(B)[0]), 0.5 * (P(A)[1] + P(B)[1])}, m, 3))
+            return diametral(m[0].data(), m[1].data(), m[2].data()) < 0.0;
         return diametral(P(A).data(), P(B).data(), rP.data()) < 0.0;
     }
     std::int64_t SegmentOf(std::int64_t A, std::int64_t B) const {

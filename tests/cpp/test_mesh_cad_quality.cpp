@@ -479,9 +479,12 @@ TEST(MeshCadQuality, OptionsNotImplementedYetAreRefused) {
     MeshCadSurfaceOptions o = quality(0.5, 0.0);
     o.mInsertion = mio::MeshCadInsertion::Offcentre;
     refused(o, "6.2.9");
+    // A varying metric (6.4.1) has landed; a value past the enum is refused.
     o = quality(0.5, 0.0);
     o.mMetric = mio::MeshCadMetric::Varying;
-    refused(o, "6.4.1");
+    EXPECT_EQ(mio::mesh_cad_surface(brep_solids::box(), o).mNumFailed, 0);
+    o.mMetric = static_cast<mio::MeshCadMetric>(7);
+    EXPECT_THROW((void)mio::mesh_cad_surface(brep_solids::box(), o), std::invalid_argument);
     o = quality(0.5, 0.0);
     o.mReparamConditionNumber = 100.0;
     refused(o, "6.4.4");
@@ -645,3 +648,103 @@ TEST(MeshCadQuality, TriangulatePolygonTakesTheSameMinAngle) {
 }
 
 }  // namespace
+
+namespace {
+
+// A cone frustum (half-angle tan 0.5) from z = Z0 to z = 1, its radius
+// varying 1 / Z0-fold: one open band.
+mio::BrepInfo cone_frustum(double Z0) {
+    std::vector<mio::BrepCurve> curves = {
+        mio::detail::brep_curve_arc({0, 0, Z0}, {1, 0, 0}, {0, 1, 0}, 0.5 * Z0, 0.0, 2 * kPi),
+        mio::detail::brep_curve_arc({0, 0, 1}, {1, 0, 0}, {0, 1, 0}, 0.5, 0.0, 2 * kPi)};
+    std::vector<brep_solids::SolidFace> faces(1);
+    faces[0].mSurface.mKind = 4;
+    faces[0].mSurface.mTanHalfAngle = 0.5;
+    faces[0].mLoops = {{brep_solids::circle_trim(0.5 * Z0, Z0, 2 * kPi, 0, true, false)},
+                       {brep_solids::circle_trim(0.5, 1.0, -2 * kPi, 1, false, false)}};
+    return brep_solids::assemble(faces, curves);
+}
+
+// A band of the torus of radii R and r between the tube's parallels at -Phi
+// and Phi.
+mio::BrepInfo torus_band_q(double R, double r, double Phi) {
+    const double rho = R + r * std::cos(Phi), z = r * std::sin(Phi);
+    std::vector<mio::BrepCurve> curves = {
+        mio::detail::brep_curve_arc({0, 0, -z}, {1, 0, 0}, {0, 1, 0}, rho, 0.0, 2 * kPi),
+        mio::detail::brep_curve_arc({0, 0, z}, {1, 0, 0}, {0, 1, 0}, rho, 0.0, 2 * kPi)};
+    std::vector<brep_solids::SolidFace> faces(1);
+    faces[0].mSurface.mKind = 5;
+    faces[0].mSurface.mRadius = R;
+    faces[0].mSurface.mMinor = r;
+    faces[0].mLoops = {{brep_solids::circle_trim(rho, -z, 2 * kPi, 0, true, false)},
+                       {brep_solids::circle_trim(rho, z, -2 * kPi, 1, false, false)}};
+    return brep_solids::assemble(faces, curves);
+}
+
+}  // namespace
+
+// Roadmap 6.4.1: on a cone frustum whose radius varies tenfold, a torus
+// band whose parallels do eightfold and the bilinear patch whose corner
+// stretches its plane, one affine map per face cannot follow the surface.
+// Under the mean metric the triangles there stay under the bound and are
+// warned; with metric = varying, Lawson's flips and encroachment measured in
+// the surface's own metric meet 25 degrees everywhere, unwarned, with no
+// more points, the same at every thread count.
+TEST(MeshCadVaryingMetric, StretchedFacesMeetTheBound) {
+    struct Case {
+        const char* mName;
+        mio::BrepInfo mB;
+        double mH;
+        bool mMeanWarned;
+    };
+    std::vector<Case> cases;
+    cases.push_back({"bilinear", bilinear_patch({1.0, 1.0}), 0.05, false});
+    cases.push_back({"cone", cone_frustum(0.1), 0.1, true});
+    cases.push_back({"cone", cone_frustum(0.05), 0.05, true});
+    cases.push_back({"torus", torus_band_q(1.2, 1.0, 2.8), 0.2, true});
+    const auto warned = [](const MeshCadSurfaceResult& rR) {
+        for (const std::string& r_w : rR.mWarnings)
+            if (r_w.find("roadmap 6.4.1") != std::string::npos)
+                return true;
+        return false;
+    };
+    for (const auto& r_c : cases) {
+        const MeshCadSurfaceOptions mean = quality(r_c.mH, 25.0);
+        MeshCadSurfaceOptions varying = mean;
+        varying.mMetric = mio::MeshCadMetric::Varying;
+        const auto m = mio::mesh_cad_surface(r_c.mB, mean);
+        const auto v = mio::mesh_cad_surface(r_c.mB, varying);
+        ASSERT_EQ(v.mNumFailed, 0) << r_c.mName;
+        EXPECT_EQ(warned(m), r_c.mMeanWarned) << r_c.mName;
+        EXPECT_FALSE(warned(v)) << r_c.mName;
+        EXPECT_GE(v.mMinAngleDeg, 25.0 - 1e-9) << r_c.mName << " " << r_c.mH;
+        EXPECT_LE(v.mNumPoints, m.mNumPoints + m.mNumPoints / 2) << r_c.mName;
+        // Unrefined, the metric's flips alone lift the smallest angle.
+        MeshCadSurfaceOptions plain = varying;
+        plain.mMinAngleDeg = 0.0;
+        MeshCadSurfaceOptions plain_mean = mean;
+        plain_mean.mMinAngleDeg = 0.0;
+        EXPECT_GT(mio::mesh_cad_surface(r_c.mB, plain).mMinAngleDeg,
+                  mio::mesh_cad_surface(r_c.mB, plain_mean).mMinAngleDeg + 5.0)
+            << r_c.mName;
+#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
+        const std::uint64_t ref = digest(v.mMesh);
+        const int saved = omp_get_max_threads();
+        for (int threads : {1, 2, 4}) {
+            omp_set_num_threads(threads);
+            EXPECT_EQ(digest(mio::mesh_cad_surface(r_c.mB, varying).mMesh), ref) << threads;
+        }
+        omp_set_num_threads(saved);
+#endif
+    }
+    // The solids of the suite mesh under it too, watertight.
+    for (const auto& r_b :
+         {brep_solids::box(), brep_solids::capped_cylinder(1.0, 2.0), brep_solids::sphere(1.0)}) {
+        MeshCadSurfaceOptions o = quality(0.25, 25.0);
+        o.mMetric = mio::MeshCadMetric::Varying;
+        const auto r = mio::mesh_cad_surface(r_b, o);
+        EXPECT_EQ(r.mNumFailed, 0);
+        EXPECT_EQ(r.mNumOpenEdges, 0);
+        EXPECT_EQ(r.mNumMisorientedEdges, 0);
+    }
+}

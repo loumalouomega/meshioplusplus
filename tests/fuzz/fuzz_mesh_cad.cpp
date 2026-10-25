@@ -196,6 +196,11 @@ void fuzz_mesh_cad_surface(const std::uint8_t* pData, std::size_t Size) {
         if (!info.mEdges.empty())
             sources.mEdgeSizes = {{0, 0.25 * o.mTargetSize}};
     }
+    // Virtual edges and a varying metric (v17.19.0), each for one input in
+    // four (virtual edges only at order 1, where they are allowed).
+    sources.mVirtualEdges = ((hash >> 40) & 3) == 0 && o.mOrder == 1;
+    if (((hash >> 42) & 3) == 0)
+        o.mMetric = meshioplusplus::MeshCadMetric::Varying;
     try {
         const meshioplusplus::MeshCadSurfaceResult r =
             meshioplusplus::mesh_cad_surface(info, o, sources);

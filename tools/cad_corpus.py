@@ -225,7 +225,9 @@ def fetch(args):
 # --- run ---------------------------------------------------------------------------------
 
 
-def measure_one(path, divisor, min_angle, max_points, virtual_edges=False):
+def measure_one(
+    path, divisor, min_angle, max_points, virtual_edges=False, metric="mean"
+):
     """Read, mesh and measure one model; runs in its own process."""
     import resource
 
@@ -255,6 +257,7 @@ def measure_one(path, divisor, min_angle, max_points, virtual_edges=False):
             min_angle=min_angle,
             max_points=max_points,
             virtual_edges=virtual_edges,
+            metric=metric,
             return_report=True,
         )
     except Exception as exc:  # noqa: BLE001
@@ -354,6 +357,7 @@ def run(args):
                 str(args.min_angle),
                 str(args.max_points),
                 str(int(args.virtual_edges)),
+                args.metric,
             ]
             t0 = time.perf_counter()
             try:
@@ -389,6 +393,7 @@ def run(args):
             "max_points": args.max_points,
             "timeout_s": args.timeout,
             **({"virtual_edges": True} if args.virtual_edges else {}),
+            **({"metric": args.metric} if args.metric != "mean" else {}),
         },
         "models": results,
     }
@@ -583,6 +588,12 @@ def main(argv=None):
         action="store_true",
         help="mesh with virtual edges across slivers of edges (6.5.2)",
     )
+    p.add_argument(
+        "--metric",
+        choices=("mean", "varying"),
+        default="mean",
+        help="the metric each face is meshed in (6.4.1)",
+    )
     p = sub.add_parser("compare", help="fail when a model that meshed no longer does")
     p.add_argument("results")
     p.add_argument("--baseline", default=str(BASELINE))
@@ -602,8 +613,9 @@ def main(argv=None):
     if argv and argv[0] == "_one":
         path, divisor, min_angle, max_points = argv[1:5]
         virtual = len(argv) > 5 and argv[5] == "1"
+        metric = argv[6] if len(argv) > 6 else "mean"
         row = measure_one(
-            path, float(divisor), float(min_angle), int(max_points), virtual
+            path, float(divisor), float(min_angle), int(max_points), virtual, metric
         )
         print(json.dumps(finite(row), allow_nan=False, default=float))
         return 0

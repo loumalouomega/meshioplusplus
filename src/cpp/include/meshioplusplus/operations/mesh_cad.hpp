@@ -146,8 +146,9 @@ enum class MeshCadInsertion : std::int32_t {
     Offcentre = 1,
 };
 
-/// The metric a face is meshed in (roadmap 6.4.1: only the face's mean yet;
-/// `Varying` is refused).
+/// The metric a face is meshed in: `Mean`, one affine map of its
+/// parameters per face; `Varying` (roadmap 6.4.1), the surface's own metric
+/// wherever Lawson's flips and refinement's encroachment are decided.
 enum class MeshCadMetric : std::int32_t {
     Mean = 0,
     Varying = 1,
