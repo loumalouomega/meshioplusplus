@@ -139,7 +139,11 @@ def test_points_on_a_straight_trim_are_inside(tmp_path):
                                         },
                                     }
                                     for i, (a, b) in enumerate(
-                                        [((0, 0), (1.5, 0)), ((1.5, 0), (0, 1.5)), ((0, 1.5), (0, 0))]
+                                        [
+                                            ((0, 0), (1.5, 0)),
+                                            ((1.5, 0), (0, 1.5)),
+                                            ((0, 1.5), (0, 0)),
+                                        ]
                                     )
                                 ],
                             }
@@ -158,7 +162,9 @@ def test_points_on_a_straight_trim_are_inside(tmp_path):
     assert report["num_outside_trim"] == 0 and report["outside_trim"] == []
     p = np.asarray(mesh.points).copy()
     on_hypotenuse = np.flatnonzero(
-        np.isclose(p[:, 0] + p[:, 1], 1.5, atol=1e-9) & (p[:, 0] > 0.2) & (p[:, 0] < 1.3)
+        np.isclose(p[:, 0] + p[:, 1], 1.5, atol=1e-9)
+        & (p[:, 0] > 0.2)
+        & (p[:, 0] < 1.3)
     )
     pick = int(on_hypotenuse[0])
     p[pick] += [0.05, 0.05, 0.0]
