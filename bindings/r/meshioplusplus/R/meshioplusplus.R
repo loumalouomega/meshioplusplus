@@ -2629,6 +2629,12 @@ mio_iga_evaluate <- function(info, patch, params, derivatives = 0L, trim_samples
 #'   neighbour it meets tangentially along the most edge; order 1 only.
 #' @param lop_corners Lop acute corners (Pav and Walkington 2005) in place of
 #'   concentric shells; only with refinement (`min_angle` or sizes).
+#' @param metric_background A mesh whose 9-component point data
+#'   `metric_array` is a field's Hessian: an anisotropic metric from it, with
+#'   the target interpolation error `metric_error`, sizes the triangles in
+#'   every direction (roadmap 6.10.2); `NULL` for none; order 1 only.
+#' @param metric_array The name of that Hessian array (e.g. `"f:hessian"`).
+#' @param metric_error The target interpolation error (positive).
 #' @return A list: `mesh`, the counts (`num_points`, `num_triangles`,
 #'   `num_edge_segments`, `num_faces`, `num_failed`, `num_edges`,
 #'   `num_open_edges`, `num_non_manifold_edges`, `num_misoriented_edges`,
@@ -2640,7 +2646,8 @@ mio_iga_evaluate <- function(info, patch, params, derivatives = 0L, trim_samples
 #'   `num_curved_straightened`, `face_size_limits` (per face, the 1-based edges
 #'   finer than its given size allows), `virtual_edges` (each chain's 1-based
 #'   edges), `reparametrised` (a data frame: `face`, `condition_number`,
-#'   `condition_number_disc`, `method` 1 conformal, 2 mean-value, 0 declined,
+#'   `condition_number_disc`, `method` 1 conformal, 2 mean-value, 3 annulus,
+#'   0 declined,
 #'   `reason`), `merged_faces` (`sliver`, `host`, `width`, `merged`, `reason`),
 #'   `tolerance_uses` (`edge`, `declared`, `gap`, `where`), `lopped_corners`
 #'   (`face`, `point`, `angle_deg`, `lfs0`, `lop_radius`, `turning_deg`,
@@ -2663,7 +2670,9 @@ mio_mesh_cad_surface <- function(info, target_size, max_chordal_deviation = 0,
                                  background_array = "size",
                                  metric = c("mean", "varying"), virtual_edges = FALSE,
                                  reparam_condition_number = 0, model_tolerances = FALSE,
-                                 virtual_faces = FALSE, lop_corners = FALSE) {
+                                 virtual_faces = FALSE, lop_corners = FALSE,
+                                 metric_background = NULL, metric_array = "",
+                                 metric_error = 0) {
   smooth_method <- match.arg(smooth_method)
   metric <- match.arg(metric)
   # (1-based index, size) pairs from a named vector or a two-column matrix.
@@ -2685,7 +2694,8 @@ mio_mesh_cad_surface <- function(info, target_size, max_chordal_deviation = 0,
              fs[[1]], fs[[2]], es[[1]], es[[2]], background, as.character(background_array),
              as.numeric(match(metric, c("mean", "varying")) - 1L), isTRUE(virtual_edges),
              as.numeric(reparam_condition_number), isTRUE(model_tolerances),
-             isTRUE(virtual_faces), isTRUE(lop_corners))
+             isTRUE(virtual_faces), isTRUE(lop_corners), metric_background,
+             as.character(metric_array), as.numeric(metric_error))
   r$warnings <- if (nzchar(r$warnings)) strsplit(r$warnings, "\n", fixed = TRUE)[[1]] else character(0)
   r$corners <- as.data.frame(r$corners)
   r$reparametrised <- as.data.frame(r$reparametrised, stringsAsFactors = FALSE)

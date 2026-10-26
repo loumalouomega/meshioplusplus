@@ -437,6 +437,17 @@ export interface MeshCadSurfaceOptions {
    * shells (v17.20.0; default false); only with refinement.
    */
   lopCorners?: boolean;
+  /**
+   * A mesh whose 9-component point data `metricArray` is a field's Hessian:
+   * an anisotropic metric from it, with the target interpolation error
+   * `metricError`, sizes the triangles in every direction (roadmap 6.10.2);
+   * order 1 only.
+   */
+  metricBackground?: Mesh;
+  /** The name of that Hessian array (e.g. 'f:hessian'). */
+  metricArray?: string;
+  /** The target interpolation error (positive). */
+  metricError?: number;
 }
 
 /** A corner lopped (`lopCorners`, v17.20.0), 0-based face and point. */
@@ -470,7 +481,7 @@ export interface MeshCadReparamFace {
   /** The same in its flattening's plane (0 when none was built). */
   conditionNumberDisc: number;
   taken: boolean;
-  method: 'conformal' | 'mean_value' | 'none';
+  method: 'conformal' | 'mean_value' | 'annulus' | 'none';
   /** Why not taken. */
   reason: string;
 }

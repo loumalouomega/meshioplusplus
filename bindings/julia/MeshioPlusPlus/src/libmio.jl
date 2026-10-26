@@ -698,8 +698,8 @@ struct _CMeshCadSurfaceOpts
 end
 
 """Mirror of C `mio_mesh_cad_surface_opts_ex` (v17.19.0; v17.20.0 took 24
-bytes of its tail); its pointers are borrowed for one call, the caller keeping
-the arrays alive."""
+bytes of its tail, the metric source 24 more); its pointers are borrowed for
+one call, the caller keeping the arrays alive."""
 struct _CMeshCadSurfaceOptsEx
     metric::Int32
     virtual_edges::Int32
@@ -716,7 +716,10 @@ struct _CMeshCadSurfaceOptsEx
     virtual_faces::Int32
     lop_corners::Int32
     reserved_pad::Int32
-    reserved::NTuple{5,Int64}
+    metric_background::Ptr{Cvoid}
+    metric_array::Ptr{UInt8}
+    metric_error::Cdouble
+    reserved::NTuple{2,Int64}
 end
 
 """Mirror of C `mio_mesh_cad_surface_report`."""
@@ -1357,7 +1360,8 @@ function _check_abi_layout()
         error("meshio++: mio_mesh_cad_corner layout mismatch " *
               "($(sizeof(_CMeshCadCorner)) bytes)")
     (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CMeshCadSurfaceOptsEx) == 136 &&
-                                 fieldoffset(_CMeshCadSurfaceOptsEx, 11) == 72)) ||
+                                 fieldoffset(_CMeshCadSurfaceOptsEx, 11) == 72 &&
+                                 fieldoffset(_CMeshCadSurfaceOptsEx, 16) == 96)) ||
         error("meshio++: mio_mesh_cad_surface_opts_ex layout mismatch " *
               "($(sizeof(_CMeshCadSurfaceOptsEx)) bytes)")
     sizeof(_CFitCadOpts) == 80 ||

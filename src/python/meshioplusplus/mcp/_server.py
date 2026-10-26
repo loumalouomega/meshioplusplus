@@ -1200,6 +1200,9 @@ def _register_operations(server: FastMCP) -> None:
         model_tolerances: bool = False,
         virtual_faces: bool = False,
         lop_corners: bool = False,
+        metric_background_path: Optional[str] = None,
+        metric_array: str = "",
+        metric_error: float = 0.0,
     ) -> dict:
         """Triangulate the faces of a CAD model (Kratos CAD JSON; STEP and
         IGES where OpenCASCADE is linked) into one conforming surface mesh with
@@ -1250,12 +1253,21 @@ def _register_operations(server: FastMCP) -> None:
         passes it in a flattening of that triangulation (a conformal map, or
         mean-value coordinates on a circle), every point still on the
         surface, listed in reparametrised (condition_number,
-        condition_number_disc, taken, method, reason); model_tolerances
-        accepts the gaps the model declares in its edges' extras (a STEP or
-        IGES read writes OpenCASCADE's), listed in tolerance_uses;
-        virtual_faces (order 1 only) meshes a face narrower than target_size
-        with the neighbour it meets tangentially along the most edge, each
-        triangle keeping its own face, listed in merged_faces; lop_corners
+        condition_number_disc, taken, method 'conformal', 'mean_value' or
+        'annulus' (a band between two circles), reason); model_tolerances
+        accepts the gaps the model declares in its edges' and vertices'
+        extras (a STEP or IGES read writes OpenCASCADE's) and the file's
+        tolerances.model_tolerance, which also pairs trims no edge names,
+        listed in tolerance_uses; virtual_faces (order 1 only) meshes a face
+        narrower than target_size with the neighbour it meets tangentially
+        along the most edge, a chain of slivers joining the group the first
+        forms, each triangle keeping its own face, listed in merged_faces;
+        a metric_background_path mesh whose 9-component point_data
+        metric_array is a field's Hessian (hessian writes "<array>:hessian"),
+        with the target interpolation error metric_error, sizes the
+        triangles by the anisotropic metric R |L| R^T / (8 metric_error)
+        (Loseille and Alauzet 2011), triangles stretching where the field
+        varies in one direction only (order 1 only); lop_corners
         protects every acute corner by corner lopping (Pav and Walkington
         2005) in place of concentric shells, only with refinement, listed in
         lopped_corners (angle_deg, lfs0, lop_radius, turning_deg,
@@ -1295,6 +1307,9 @@ def _register_operations(server: FastMCP) -> None:
             model_tolerances=model_tolerances,
             virtual_faces=virtual_faces,
             lop_corners=lop_corners,
+            metric_background_path=metric_background_path,
+            metric_array=metric_array,
+            metric_error=metric_error,
         )
 
     @server.tool()

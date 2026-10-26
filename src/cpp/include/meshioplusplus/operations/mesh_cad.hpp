@@ -320,7 +320,8 @@ struct MeshCadSizeSources {
     std::vector<std::pair<std::int64_t, double>> mEdgeSizes;
     /// A background mesh (surface cells; a volume mesh is skinned) whose
     /// one-component point_data `mBackgroundArray` is the size at its
-    /// points, read at the nearest point of the background. Borrowed.
+    /// points, interpolated linearly at the nearest point of the
+    /// background's surface. Borrowed.
     const Mesh* pBackground = nullptr;
     std::string mBackgroundArray = "size";
     /// Virtual edges (roadmap 6.5.2): suppress a corner between a sliver of
@@ -328,6 +329,19 @@ struct MeshCadSizeSources {
     /// cell goes through it, and report the chains (doc/mesh_cad.md, item
     /// 17). Order 1 only.
     bool mVirtualEdges = false;
+    /// An anisotropic metric from a field's Hessian (roadmap 6.10.2; A.
+    /// Loseille and F. Alauzet, "Continuous mesh framework part I", 2011):
+    /// a background mesh (as `pBackground`) whose 9-component point_data
+    /// `mMetricArray` is a Hessian (`hessian` writes `<array>:hessian`),
+    /// with the target interpolation error `mMetricError` (positive). Its
+    /// metric `R |Λ| R^T / (8 ε)`, its sizes clamped to the size field's
+    /// floor and the local size, is pulled back onto each face (`J^T M J`)
+    /// for Lawson's flips and encroachment, as `MeshCadMetric::Varying`
+    /// does, and refinement judges triangles by their lengths and angles in
+    /// it. Borrowed; null for none. Order 1 only.
+    const Mesh* pMetricBackground = nullptr;
+    std::string mMetricArray;
+    double mMetricError = 0.0;
 };
 
 /// What the sources decided, filled when passed (roadmap 6.3.8, 6.5.2).
@@ -343,11 +357,13 @@ struct MeshCadSizeReport {
 
 /**
  * @brief `mesh_cad_surface` with sizes given per face, per edge or by a
- * background mesh (roadmap 6.3.1). Empty sources reproduce the two-argument
- * overload byte for byte.
+ * background mesh (roadmap 6.3.1), or a metric (6.10.2). Empty sources
+ * reproduce the two-argument overload byte for byte.
  * @throws std::invalid_argument as that overload, and for a face or edge
- *         index out of range, a size that is not finite and positive, or a
- *         background without a one-component `mBackgroundArray`.
+ *         index out of range, a size that is not finite and positive, a
+ *         background without a one-component `mBackgroundArray`, a metric
+ *         background without a 9-component `mMetricArray`, a metric error
+ *         that is not finite and positive, or a metric with `mOrder` > 1.
  */
 MESHIOPLUSPLUS_API MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
                                                          const MeshCadSurfaceOptions& rOptions,
@@ -362,7 +378,11 @@ struct MeshCadSurfaceExtras {
     /// `"tolerance"` and its ends' `"end_tolerances"` in its `mExtra` JSON
     /// (a STEP or IGES read writes OpenCASCADE's) widen, for that edge and
     /// its corners, where uses are taken to start at one point and how far
-    /// apart they may lie.
+    /// apart they may lie; a `BrepVertex`'s `"tolerance"` widens its corner,
+    /// and the file's `tolerances.model_tolerance` (Kratos CAD JSON, kept in
+    /// `BrepInfo::mExtra`) is the floor of them all and pairs the trims no
+    /// edge names (`mMatchUnreferencedTrims`). Degeneracy stays on the global
+    /// tolerance: a declared one never makes an edge a pole.
     bool mModelTolerances = false;
     /// Merge a sliver face, narrower than `h` and with no interior point, into
     /// the neighbour it meets tangentially along the most edge, through their
@@ -389,7 +409,8 @@ struct MeshCadReparamFace {
     double mConditionNumberDisc = 0.0;
     /// Meshed in the flattening; otherwise `mReason` says why not.
     bool mTaken = false;
-    /// 1 least-squares conformal, 2 mean-value on a circle, 0 none.
+    /// 1 least-squares conformal, 2 mean-value on a circle, 3 mean-value
+    /// between two concentric circles (a band: an annulus), 0 none.
     std::int32_t mMethod = 0;
     std::string mReason;
 };
@@ -409,10 +430,11 @@ struct MeshCadMergedFace {
 /// A place a model's own tolerance accepted what the global one refused
 /// (roadmap 6.5.1).
 struct MeshCadToleranceUse {
-    std::int64_t mEdge = -1;  ///< `BrepEdge` index
-    double mDeclared = 0.0;   ///< the tolerance the model declares there
-    double mGap = 0.0;        ///< the gap it accepted
-    /// `"closed_start"`, `"corner"` or `"projection"`.
+    /// `BrepEdge` index; -1 for a pair of trims no edge names.
+    std::int64_t mEdge = -1;
+    double mDeclared = 0.0;  ///< the tolerance the model declares there
+    double mGap = 0.0;       ///< the gap it accepted
+    /// `"closed_start"`, `"corner"`, `"projection"` or `"pairing"`.
     std::string mWhere;
 };
 

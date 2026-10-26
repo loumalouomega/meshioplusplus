@@ -1985,6 +1985,36 @@ TEST(CApi, MeshCadSurfaceMeshesABrepAndReportsItsFaces) {
         EXPECT_EQ(mio_mesh_cad_surface2(info, &opts, &ex, nullptr), nullptr);
         EXPECT_NE(std::string(mio_last_error()).find("virtual_edges"), std::string::npos);
         opts.order = 1;
+        ex.virtual_edges = 0;
+        // Roadmap 6.10.2: a metric from a constant Hessian asking for an
+        // eighth of target_size along x refines the face.
+        EXPECT_EQ(ex.metric_background, nullptr);
+        EXPECT_EQ(ex.metric_array, nullptr);
+        EXPECT_EQ(ex.metric_error, 0.0);
+        mio_mesh* bg = mio_mesh_cad_surface2(info, &opts, nullptr, nullptr);
+        ASSERT_NE(bg, nullptr) << mio_last_error();
+        const int64_t np = mio_mesh_num_points(bg);
+        std::vector<double> hess(static_cast<std::size_t>(9 * np), 0.0);
+        const double hx = opts.target_size / 8.0;
+        for (int64_t i = 0; i < np; ++i)
+            hess[static_cast<std::size_t>(9 * i)] = 8.0 / (hx * hx);
+        const int64_t shape[2] = {np, 9};
+        ASSERT_EQ(mio_mesh_add_point_data(bg, "h", MIO_FLOAT64, 2, shape, hess.data()), MIO_OK);
+        ex.metric_background = bg;
+        ex.metric_array = "h";
+        ex.metric_error = 1.0;
+        mio_mesh_cad_surface_report metric{};
+        mio_mesh* m = mio_mesh_cad_surface2(info, &opts, &ex, &metric);
+        ASSERT_NE(m, nullptr) << mio_last_error();
+        EXPECT_EQ(metric.num_failed, 0);
+        EXPECT_GT(metric.num_triangles, plain.num_triangles);
+        mio_mesh_free(m);
+        ex.metric_error = 0.0;
+        EXPECT_EQ(mio_mesh_cad_surface2(info, &opts, &ex, nullptr), nullptr);
+        EXPECT_NE(std::string(mio_last_error()).find("metric_error"), std::string::npos);
+        ex.metric_background = nullptr;
+        ex.metric_array = nullptr;
+        mio_mesh_free(bg);
     }
     // v17.15.0: refined to 25 degrees and smoothed. The triangle's two
     // 45-degree corners are reported; every angle is counted.

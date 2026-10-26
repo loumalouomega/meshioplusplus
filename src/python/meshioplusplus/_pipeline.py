@@ -589,6 +589,9 @@ _OP_TABLE = {
         "ModelTolerances",
         "VirtualFaces",
         "LopCorners",
+        "MetricBackground",
+        "MetricArray",
+        "MetricError",
     ),
     "IgaSample": ("Subdivisions", "TrimSamples", "Trim", "Edges"),
     "IgaRefine": (
@@ -2345,6 +2348,9 @@ def _apply_model_step(step, model, steps, warnings):
         background = None
         if "Background" in step:
             background = read(_text(step, "Background", ""))
+        metric_background = None
+        if "MetricBackground" in step:
+            metric_background = read(_text(step, "MetricBackground", ""))
         mesh, report = mesh_cad_surface(
             model.data,
             _number(step, "TargetSize", 0.0),
@@ -2374,6 +2380,9 @@ def _apply_model_step(step, model, steps, warnings):
             model_tolerances=_flag(step, "ModelTolerances", False),
             virtual_faces=_flag(step, "VirtualFaces", False),
             lop_corners=_flag(step, "LopCorners", False),
+            metric_background=metric_background,
+            metric_array=_text(step, "MetricArray", ""),
+            metric_error=_number(step, "MetricError", 0.0),
             return_report=True,
         )
         warnings.extend("MeshCadSurface: " + w for w in report["warnings"])

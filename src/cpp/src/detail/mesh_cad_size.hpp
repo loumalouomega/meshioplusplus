@@ -139,5 +139,36 @@ private:
     std::unique_ptr<Impl> mpImpl;
 };
 
+/**
+ * @brief An anisotropic metric from a field's Hessian (roadmap 6.10.2):
+ * per point of a background mesh (a volume mesh is skinned first), `M =
+ * R |Λ| R^T / (8 ε)` from the symmetrised Hessian `R Λ R^T` in its 9-component
+ * point_data and the target interpolation error `ε` -- the metric under
+ * which linear interpolation of a quadratic errs by at most `ε` on a unit
+ * edge (A. Loseille and F. Alauzet, "Continuous mesh framework part I",
+ * SIAM J. Numer. Anal. 49(1), 2011; the bound `h <= sqrt(8 ε / |λ|)` along
+ * an eigenvector). Interpolated linearly at the nearest point of the
+ * background's surface (a convex combination keeps it positive
+ * semi-definite), projected on that surface's tangent plane (`P M P`), then
+ * clamped so that every direction's size lies between a floor and the local
+ * isotropic size: the metric only refines. Built once; `At` is safe to call
+ * from many threads.
+ */
+class MeshCadMetricField {
+public:
+    MeshCadMetricField(const Mesh& rBackground, const std::string& rArray, double Error,
+                       double Floor);
+    ~MeshCadMetricField();
+    /// The metric at `rX` (row-major 3x3) with its sizes clamped to
+    /// [`Floor`, `Size`], and its square root in `pRoot` when given; off the
+    /// background (no surface) the isotropic `I / Size^2`.
+    void At(const Vec3& rX, double Size, std::array<double, 9>& rM,
+            std::array<double, 9>* pRoot = nullptr) const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
+
 }  // namespace detail
 }  // namespace meshioplusplus

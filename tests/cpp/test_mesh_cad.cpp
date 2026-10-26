@@ -1121,6 +1121,25 @@ TEST(MeshCadOcct, StepCubeIsWatertightAndMatchesBRepMesh) {
         EXPECT_NEAR(s.mArea, measure(occt).mArea, 1e-9);
         EXPECT_LE(r.mMaxEdge, 1.5 * h);
     }
+    // Roadmap 6.5.1: the read declares its eight vertices, each the start of
+    // one trim on each of its three faces, with its tolerance; with them the
+    // sound cube needs no declared tolerance.
+    ASSERT_EQ(info.mVertices.size(), 8u);
+    ASSERT_EQ(info.mBreps.size(), 1u);
+    EXPECT_EQ(info.mBreps[0].mVertices.size(), 8u);
+    for (const auto& r_v : info.mVertices) {
+        EXPECT_EQ(r_v.mTopology.size(), 3u);
+        for (const auto& r_r : r_v.mTopology)
+            EXPECT_EQ(r_r.mLocalCoordinates.size(), 2u);
+        EXPECT_NE(r_v.mExtra.find("\"tolerance\""), std::string::npos);
+    }
+    mio::MeshCadSurfaceExtras extras;
+    extras.mModelTolerances = true;
+    mio::MeshCadSurfaceExtrasReport x;
+    const auto r =
+        mio::mesh_cad_surface(info, size(0.25), mio::MeshCadSizeSources{}, extras, nullptr, &x);
+    expect_watertight(r);
+    EXPECT_TRUE(x.mToleranceUses.empty());
 }
 #endif
 

@@ -5644,7 +5644,10 @@ val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
                              "reparamConditionNumber",
                              "modelTolerances",
                              "virtualFaces",
-                             "lopCorners"});
+                             "lopCorners",
+                             "metricBackground",
+                             "metricArray",
+                             "metricError"});
         const auto has = [&](const char* pKey) {
             return rOptions.hasOwnProperty(pKey) && !rOptions[pKey].isUndefined() &&
                    !rOptions[pKey].isNull();
@@ -5732,6 +5735,16 @@ val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
             sources.mBackgroundArray =
                 has("backgroundArray") ? rOptions["backgroundArray"].as<std::string>() : "size";
         }
+        // A metric from a field's Hessian (roadmap 6.10.2).
+        meshioplusplus::Mesh metric_background;
+        if (has("metricBackground")) {
+            metric_background = val_to_mesh(rOptions["metricBackground"]);
+            sources.pMetricBackground = &metric_background;
+        }
+        if (has("metricArray"))
+            sources.mMetricArray = rOptions["metricArray"].as<std::string>();
+        if (has("metricError"))
+            sources.mMetricError = rOptions["metricError"].as<double>();
         // v17.20.0: the reparametrisation, model tolerances and virtual faces.
         if (has("reparamConditionNumber"))
             o.mReparamConditionNumber = rOptions["reparamConditionNumber"].as<double>();
@@ -5843,6 +5856,7 @@ val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
             d.set("taken", r_f.mTaken);
             d.set("method", std::string(r_f.mMethod == 1   ? "conformal"
                                         : r_f.mMethod == 2 ? "mean_value"
+                                        : r_f.mMethod == 3 ? "annulus"
                                                            : "none"));
             d.set("reason", r_f.mReason);
             reparametrised.set(static_cast<unsigned>(i), d);

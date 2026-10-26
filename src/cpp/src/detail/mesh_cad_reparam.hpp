@@ -127,7 +127,9 @@ public:
     /// lattice's spacing and the stretched test.
     std::vector<std::array<V3, 2>> mJac;
     std::vector<V3> mJacAt;
-    int mMethod = 0;  ///< 1 least-squares conformal, 2 mean-value on a circle
+    /// 1 least-squares conformal, 2 mean-value on a circle, 3 mean-value
+    /// between two circles (an annulus).
+    int mMethod = 0;
 
     Hit Locate(const V2& rP) const;
     /// The parameters at barycentrics `rL` of triangle `T`.

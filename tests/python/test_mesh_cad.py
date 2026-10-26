@@ -809,6 +809,66 @@ def test_cli_verb(tmp_path, capsys):
     )
     assert code == 0
     assert json.loads(capsys.readouterr().out)["virtual_edges"] == [[3, 5]]
+    # A metric from a Hessian (roadmap 6.10.2), read from a file.
+    bg_path = _layer_hessian(tmp_path)
+    code = mio._cli.main(
+        [
+            "mesh-cad-surface",
+            str(CAD / "sphere.cad.json"),
+            str(out),
+            "--size",
+            "0.3",
+            "--metric-background",
+            str(bg_path),
+            "--metric-array",
+            "f:hessian",
+            "--metric-error",
+            "0.01",
+            "--json",
+        ]
+    )
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["num_failed"] == 0
+
+
+def _layer_hessian(tmp_path):
+    """A coarse sphere carrying the Hessian of a layer at z = 0.3, written."""
+    bg = mio.mesh_cad_surface(_read("sphere.cad.json"), 0.2, edges=False)
+    x = np.asarray(bg.points)
+    bg.point_data["f"] = np.tanh((x[:, 2] - 0.3) / 0.1)
+    path = tmp_path / "hessian.vtu"
+    mio.write(path, mio.hessian(bg, "f", location="point"))
+    return path
+
+
+@needs_core
+def test_pipeline_takes_a_metric_like_the_operation(tmp_path):
+    """The metric keys (roadmap 6.10.2) reach mesh_cad_surface in both
+    engines."""
+    bg_path = _layer_hessian(tmp_path)
+    doc = {
+        "Version": 2,
+        "Input": {"Path": str(CAD / "sphere.cad.json")},
+        "Operations": [
+            {
+                "Op": "MeshCadSurface",
+                "TargetSize": 0.3,
+                "MetricBackground": str(bg_path),
+                "MetricArray": "f:hessian",
+                "MetricError": 0.01,
+            }
+        ],
+    }
+    direct = mio.mesh_cad_surface(
+        _read("sphere.cad.json"),
+        0.3,
+        metric_background=mio.read(bg_path),
+        metric_array="f:hessian",
+        metric_error=0.01,
+    )
+    for report, mesh in _run_both(doc, tmp_path):
+        np.testing.assert_array_equal(mesh.points, direct.points)
+        assert report["steps"][0]["NumFailed"] == 0.0
 
 
 def _run_both(doc, tmp_path):
@@ -1038,6 +1098,12 @@ def test_a_step_read_declares_its_tolerances(tmp_path):
         extra = json.loads(e["extra"])
         assert extra["tolerance"] >= 0.0
         assert len(extra["end_tolerances"]) == 2
+    # Its eight vertices, each starting a trim of each of its three faces.
+    vertices = model.info["brep"]["vertices"]
+    assert len(vertices) == 8
+    for v in vertices:
+        assert json.loads(v["extra"])["tolerance"] >= 0.0
+        assert len(v["topology"]) == 3
     out, report = mio.mesh_cad_surface(
         model, 0.1, model_tolerances=True, return_report=True
     )
@@ -1269,6 +1335,133 @@ def test_model_tolerances_join_what_the_model_declares():
     brep["edges"][0]["extra"] = json.dumps({"tolerance": -1})
     _, bad = mio.mesh_cad_surface(brep, 0.3, model_tolerances=True, return_report=True)
     assert any("declared tolerance" in w for w in bad["warnings"])
+
+
+@needs_core
+def test_the_models_tolerance_pairs_the_trims_no_edge_names():
+    """Roadmap 6.5.1: the unit cube without edge topology, one face moved
+    1e-5: its trims pair with their neighbours' only under the file's own
+    ``tolerances.model_tolerance``, each pair reported with no edge."""
+    model = _read("unit_cube.cad.json")
+    brep = copy.deepcopy(model.info["brep"])
+    brep["edges"] = []
+    for b in brep["breps"]:
+        b["edges"] = []
+    patch = brep["patches"][brep["faces"][0]["patch"]]
+    patch["control_points"] = np.asarray(patch["control_points"]) + 1e-5
+    extra = json.loads(brep["extra"]) if brep["extra"] else {}
+    extra["tolerances"] = {"model_tolerance": 1e-4}
+    brep["extra"] = json.dumps(extra)
+    _, off = mio.mesh_cad_surface(brep, 0.2, return_report=True)
+    assert off["num_edges"] == 16
+    _, on = mio.mesh_cad_surface(brep, 0.2, model_tolerances=True, return_report=True)
+    _watertight(on)
+    assert on["num_edges"] == 12
+    uses = on["tolerance_uses"]
+    assert len(uses) == 4
+    assert all(u["edge"] == -1 and u["where"] == "pairing" for u in uses)
+    assert all(u["declared"] == 1e-4 for u in uses)
+
+
+def _stacked_plates(path, ys):
+    """Untrimmed planar bilinear patches stacked in y, ``[0, 1] x [ys[k],
+    ys[k + 1]]`` each, with no edge topology (their trims pair by image)."""
+    faces = []
+    cid = 1
+    for k in range(len(ys) - 1):
+        y0, y1 = ys[k], ys[k + 1]
+        corners = [[0, y0, 0], [1, y0, 0], [0, y1, 0], [1, y1, 0]]
+        cps = []
+        for c in corners:
+            cps.append([cid, [*c, 1]])
+            cid += 1
+        faces.append(
+            {
+                "brep_id": 100 + k,
+                "swapped_surface_normal": False,
+                "surface": {
+                    "is_trimmed": False,
+                    "is_rational": False,
+                    "degrees": [1, 1],
+                    "knot_vectors": [[0, 1], [0, 1]],
+                    "control_points": cps,
+                },
+                "boundary_loops": [],
+                "embedded_edges": [],
+            }
+        )
+    doc = {"breps": [{"brep_id": 1, "faces": faces, "edges": [], "vertices": []}]}
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    return mio.read(path, file_format="cad_json")
+
+
+@needs_core
+def test_virtual_faces_join_a_chain_of_slivers_into_one_host(tmp_path):
+    """Roadmap 6.5.2: three strips h / 20 wide beside a plate. The first
+    merges with the plate; the others border only slivers, and join the group
+    it forms in the rounds that follow, each triangle keeping its own face."""
+    h, w = 0.2, 0.01
+    ys = [0.0, 1.0, 1.0 + w, 1.0 + 2 * w, 1.0 + 3 * w]
+    model = _stacked_plates(tmp_path / "chain.cad.json", ys)
+    _, alone = mio.mesh_cad_surface(model, h, min_angle=25, return_report=True)
+    out, merged = mio.mesh_cad_surface(
+        model, h, min_angle=25, virtual_faces=True, return_report=True
+    )
+    assert merged["num_failed"] == 0
+    assert merged["min_angle_deg"] >= 25 - 1e-9
+    assert merged["num_triangles"] < alone["num_triangles"]
+    recs = merged["merged_faces"]
+    assert [r["sliver"] for r in recs] == [1, 2, 3]
+    assert all(r["merged"] and r["host"] == 0 for r in recs)
+    faces = out.cell_data["cad:face"][0]
+    assert sorted(set(int(f) for f in faces)) == [0, 1, 2, 3]
+    a, _ = _measure(out)
+    assert a == pytest.approx(1.0 + 3 * w, abs=1e-12)
+
+
+@needs_core
+def test_a_metric_from_the_hessian_stretches_along_the_layer():
+    """Roadmap 6.10.2: the sphere sized by the metric of a layer's Hessian
+    (``R |L| R^T / (8 eps)``): the triangles in the layer stretch along it,
+    with far fewer points than a uniform mesh fine enough for the layer."""
+    sphere = _read("sphere.cad.json")
+    bg = mio.mesh_cad_surface(sphere, 0.1, edges=False, pole_rings=2, min_angle=25)
+    x = np.asarray(bg.points)
+    bg.point_data["f"] = np.tanh((x[:, 2] - 0.3) / 0.05)
+    bg = mio.hessian(bg, "f", location="point")
+    out, rep = mio.mesh_cad_surface(
+        sphere,
+        0.2,
+        min_angle=25,
+        pole_rings=2,
+        edges=False,
+        metric_background=bg,
+        metric_array="f:hessian",
+        metric_error=8e-3,
+        return_report=True,
+    )
+    _, uniform = mio.mesh_cad_surface(
+        sphere, 0.05, min_angle=25, pole_rings=2, edges=False, return_report=True
+    )
+    assert rep["num_failed"] == 0 and rep["num_open_edges"] == 0
+    assert rep["num_points"] < 0.15 * uniform["num_points"]
+    p = np.asarray(out.points)
+    tri = [c for c in out.cells if c.type == "triangle"][0].data
+    z = p[tri][:, :, 2].mean(axis=1)
+    t = p[tri[np.abs(z - 0.3) < 0.05]]
+    edge = np.linalg.norm(t - np.roll(t, 1, axis=1), axis=2)
+    area2 = np.linalg.norm(np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0]), axis=1)
+    assert np.mean(edge.max(axis=1) ** 2 / area2) > 3.0
+    with pytest.raises(ValueError, match="metric_error"):
+        mio.mesh_cad_surface(
+            sphere, 0.2, metric_background=bg, metric_array="f:hessian"
+        )
+    with pytest.raises(ValueError, match="nine components"):
+        mio.mesh_cad_surface(
+            sphere, 0.2, metric_background=bg, metric_array="f", metric_error=1
+        )
+    with pytest.raises(ValueError, match="need a metric_background"):
+        mio.mesh_cad_surface(sphere, 0.2, metric_error=1.0)
 
 
 @needs_core

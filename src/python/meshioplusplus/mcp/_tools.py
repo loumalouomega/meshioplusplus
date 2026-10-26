@@ -1838,13 +1838,16 @@ def tool_mesh_cad_surface(
     model_tolerances=False,
     virtual_faces=False,
     lop_corners=False,
+    metric_background_path=None,
+    metric_array="",
+    metric_error=0.0,
 ):
     """Triangulate a CAD model's faces (CAD JSON, STEP, IGES) into one
     conforming surface mesh at a target edge size, optionally sized by
-    curvature and gaps, refined to a minimum angle, graded at poles,
-    smoothed, and curved (order 2 or 3); faces with unusable parameters
-    flattened, slivers merged, the model's own tolerances accepted and acute
-    corners lopped."""
+    curvature and gaps or by an anisotropic metric from a field's Hessian,
+    refined to a minimum angle, graded at poles, smoothed, and curved (order
+    2 or 3); faces with unusable parameters flattened, slivers merged, the
+    model's own tolerances accepted and acute corners lopped."""
     mesh = _load(input_path, input_format)
     out, report = mesh_cad_surface(
         mesh,
@@ -1875,6 +1878,13 @@ def tool_mesh_cad_surface(
         model_tolerances=model_tolerances,
         virtual_faces=virtual_faces,
         lop_corners=lop_corners,
+        metric_background=(
+            None
+            if metric_background_path is None
+            else _load(metric_background_path, None)
+        ),
+        metric_array=metric_array,
+        metric_error=metric_error,
         return_report=True,
     )
     return _result(_store(out, output_path, output_format), out, **report)

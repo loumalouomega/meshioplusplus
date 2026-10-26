@@ -365,6 +365,8 @@ end
         close(l.mesh)
         @test_throws MeshioError mesh_cad_surface(info; target_size=0.1,
                                                   reparam_condition_number=0.5)
+        # A metric error without a metric background is refused (roadmap 6.10.2).
+        @test_throws MeshioError mesh_cad_surface(info; target_size=0.1, metric_error=1.0)
         close(r.mesh); close(mesh); close(info)
     end
 end

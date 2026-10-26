@@ -152,6 +152,23 @@ def add_args(parser):
         help="the background's size array (default: size)",
     )
     parser.add_argument(
+        "--metric-background",
+        default=None,
+        help="a mesh whose 9-component point_data --metric-array is a field's "
+        "Hessian: an anisotropic metric from it sizes the triangles (roadmap 6.10.2)",
+    )
+    parser.add_argument(
+        "--metric-array",
+        default="",
+        help="the metric background's Hessian array (e.g. f:hessian)",
+    )
+    parser.add_argument(
+        "--metric-error",
+        type=float,
+        default=0.0,
+        help="the target interpolation error of --metric-background (positive)",
+    )
+    parser.add_argument(
         "--metric",
         choices=("mean", "varying"),
         default="mean",
@@ -234,6 +251,11 @@ def mesh_cad_surface_cmd(args):
         model_tolerances=args.model_tolerances,
         virtual_faces=args.virtual_faces,
         lop_corners=args.lop_corners,
+        metric_background=(
+            None if args.metric_background is None else read(args.metric_background)
+        ),
+        metric_array=args.metric_array,
+        metric_error=args.metric_error,
         return_report=True,
     )
     write(args.outfile, out, file_format=args.output_format)

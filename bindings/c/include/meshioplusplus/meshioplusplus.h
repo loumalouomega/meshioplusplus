@@ -5764,12 +5764,22 @@ typedef struct mio_mesh_cad_surface_opts_ex {
      *  of concentric shells (6.2.3); only with refinement. */
     int32_t lop_corners;
     int32_t reserved_pad; /**< zero */
-    int64_t reserved[5];  /**< zero */
+    /** Unreleased (roadmap 6.10.2): an anisotropic metric from a field's
+     *  Hessian, the 9-component point_data `metric_array` of
+     *  `metric_background`, with the target interpolation error
+     *  `metric_error` (positive): its metric R |L| R^T / (8 metric_error),
+     *  its sizes between a 64th of target_size and the local size, sizes the
+     *  triangles in every direction (Loseille and Alauzet 2011). NULL: none;
+     *  order 1 only. */
+    const mio_mesh* metric_background;
+    const char* metric_array; /**< the Hessian's name (e.g. "f:hessian") */
+    double metric_error;
+    int64_t reserved[2]; /**< zero */
 } mio_mesh_cad_surface_opts_ex;
 
 /** Initialize the extended options: the mean metric, no virtual edges, no
  *  given sizes, no background, no reparametrisation, no model tolerances, no
- *  virtual faces and no corner lopping. */
+ *  virtual faces, no corner lopping and no metric background. */
 MIO_API void mio_mesh_cad_surface_opts_ex_init(mio_mesh_cad_surface_opts_ex* opts);
 
 /**

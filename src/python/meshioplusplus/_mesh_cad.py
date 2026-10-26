@@ -127,6 +127,9 @@ def mesh_cad_surface(
     model_tolerances: bool = False,
     virtual_faces: bool = False,
     lop_corners: bool = False,
+    metric_background=None,
+    metric_array: str = "",
+    metric_error: float = 0.0,
     return_report: bool = False,
 ):
     """Triangulate a B-rep's faces into one conforming surface mesh.
@@ -213,6 +216,20 @@ def mesh_cad_surface(
         proves (Corollary 3) for the face's turning on a planar face, and
         whether the run meets it. Only with refinement (``min_angle`` or a
         size).
+    :param metric_background: a mesh whose 9-component ``point_data``
+        ``metric_array`` is a field's Hessian (``hessian`` writes
+        ``"<array>:hessian"``), with ``metric_error``: an anisotropic metric
+        ``R |L| R^T / (8 metric_error)`` from it (A. Loseille and F. Alauzet,
+        "Continuous mesh framework part I", 2011), its sizes kept between a
+        64th of ``target_size`` and the local size, sizes each face's
+        triangles in every direction: Lawson's flips and encroachment follow
+        it on the surface (as ``metric="varying"`` does), and refinement
+        judges each triangle by its lengths and angles in it, so triangles
+        stretch where the field varies in one direction only. Read at the
+        nearest point of its surface (a volume mesh is skinned first).
+        Order 1 only.
+    :param metric_array: the name of the Hessian array.
+    :param metric_error: the target interpolation error (positive).
     :param return_report: also return the report.
     :returns: the surface mesh (``triangle`` and ``line`` blocks, or their
         curved forms with ``order`` 2 or 3), or
@@ -231,7 +248,8 @@ def mesh_cad_surface(
         face's given size allows), ``reparametrised`` (per face over
         ``reparam_condition_number``: ``face``, ``condition_number``, the
         flattening's ``condition_number_disc``, ``taken``, ``method``
-        ``"conformal"`` or ``"mean_value"``, and ``reason`` when not taken),
+        ``"conformal"``, ``"mean_value"`` or ``"annulus"`` (a band between
+        two circles), and ``reason`` when not taken),
         ``merged_faces`` (per sliver found: ``sliver``, ``host``, ``width``,
         the shared ``edges``, ``merged`` and ``reason``) and
         ``tolerance_uses`` (per edge and place where a declared tolerance
@@ -312,6 +330,28 @@ def mesh_cad_surface(
                 "have one component"
             )
 
+    metric_error = float(metric_error)
+    if metric_background is not None:
+        data = getattr(metric_background, "point_data", {})
+        if not metric_array or metric_array not in data:
+            raise ValueError(
+                f"{_PREFIX}metric_background: it has no point_data {metric_array!r}"
+            )
+        values = np.asarray(data[metric_array])
+        if values.reshape(len(values), -1).shape[1] != 9:
+            raise ValueError(
+                f"{_PREFIX}metric_background: its point_data {metric_array!r} must "
+                "have nine components (a Hessian, as hessian writes it)"
+            )
+        if not (math.isfinite(metric_error) and metric_error > 0.0):
+            raise ValueError(f"{_PREFIX}metric_error must be finite and positive")
+        if int(order) > 1:
+            raise ValueError(f"{_PREFIX}metric_background is order 1 only")
+    elif metric_array or metric_error != 0.0:
+        raise ValueError(
+            f"{_PREFIX}metric_array and metric_error need a metric_background"
+        )
+
     _core = _core_or_raise("mesh_cad_surface")
     res = _core.mesh_cad_surface(
         brep,
@@ -342,6 +382,9 @@ def mesh_cad_surface(
         model_tolerances=bool(model_tolerances),
         virtual_faces=bool(virtual_faces),
         lop_corners=bool(lop_corners),
+        metric_background=metric_background,
+        metric_array=str(metric_array),
+        metric_error=metric_error,
     )
     out = res["mesh"]
     if not return_report:

@@ -6643,8 +6643,12 @@ static_assert(sizeof(void*) != 8 ||
                    offsetof(mio_mesh_cad_surface_opts_ex, model_tolerances) == 80 &&
                    offsetof(mio_mesh_cad_surface_opts_ex, virtual_faces) == 84 &&
                    offsetof(mio_mesh_cad_surface_opts_ex, lop_corners) == 88 &&
-                   offsetof(mio_mesh_cad_surface_opts_ex, reserved) == 96),
-              "mio_mesh_cad_surface_opts_ex's layout moved (v17.20.0 took 24 bytes of its tail)");
+                   offsetof(mio_mesh_cad_surface_opts_ex, metric_background) == 96 &&
+                   offsetof(mio_mesh_cad_surface_opts_ex, metric_array) == 104 &&
+                   offsetof(mio_mesh_cad_surface_opts_ex, metric_error) == 112 &&
+                   offsetof(mio_mesh_cad_surface_opts_ex, reserved) == 120),
+              "mio_mesh_cad_surface_opts_ex's layout moved (v17.20.0 took 24 bytes of its "
+              "tail, the metric source 24 more)");
 static_assert(static_cast<int>(MIO_MESH_CAD_SMOOTH_ODT) ==
                   static_cast<int>(meshioplusplus::MeshCadSmoothing::Odt),
               "mio_mesh_cad_smoothing drifted from MeshCadSmoothing");
@@ -7298,6 +7302,11 @@ mio_mesh* mio_mesh_cad_surface2(const mio_format_info* info, const mio_mesh_cad_
                                                ? opts_ex->background_array
                                                : "size";
             }
+            if (opts_ex->metric_background)
+                sources.pMetricBackground = &opts_ex->metric_background->mMesh;
+            if (opts_ex->metric_array)
+                sources.mMetricArray = opts_ex->metric_array;
+            sources.mMetricError = opts_ex->metric_error;
         }
         meshioplusplus::MeshCadSurfaceResult r = meshioplusplus::mesh_cad_surface(
             *p_brep, o, sources, extras, &state.mSizes, &state.mExtras);

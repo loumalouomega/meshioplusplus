@@ -43,6 +43,7 @@
 #include "mesh_fixtures.hpp"
 #include "../../src/cpp/benchmark/mesh_digest.hpp"
 #include "../../src/cpp/src/detail/mesh_cad_reparam.hpp"
+#include "../../src/cpp/src/detail/param_disc.hpp"
 #include "../../src/cpp/src/operations/mesh_cad_testing.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/formats/cad_json.hpp"
@@ -668,4 +669,354 @@ TEST(MeshCadTolerances, ADeclaredToleranceJoinsAClosedEdgesStarts) {
         digest(mio::mesh_cad_surface(box, quality(0.3, 25.0), mio::MeshCadSizeSources{}, extras)
                    .mMesh),
         digest(run(box, quality(0.3, 25.0)).mMesh));
+}
+
+// Roadmap 6.5.1: the box without edge topology, one face translated by
+// 1e-5 (well past the global tolerance, 1e-7 of the diagonal): its four
+// trims do not pair with their neighbours'. The file's own
+// `tolerances.model_tolerance` (Kratos CAD JSON) pairs them, and each pair
+// is reported with no `BrepEdge`. Without the option it is ignored.
+TEST(MeshCadTolerances, TheModelsTolerancePairsTheTrimsNoEdgeNames) {
+    mio::BrepInfo b = brep_solids::box();
+    b.mEdges.clear();
+    mio::NDArray& r_cp = b.mPatches[static_cast<std::size_t>(b.mFaces[0].mPatch)].mControlPoints;
+    for (std::size_t i = 0; i < r_cp.Size(); ++i)
+        r_cp.As<double>()[i] += 1e-5;
+    b.mExtra = R"({"tolerances":{"model_tolerance":0.0001},"version_number":1})";
+    const MeshCadSurfaceOptions o = quality(0.2, 0.0);
+    const auto off = run(b, o);
+    EXPECT_EQ(off.mNumEdges, 16);
+    mio::MeshCadSurfaceExtras extras;
+    extras.mModelTolerances = true;
+    mio::MeshCadSurfaceExtrasReport x;
+    const auto r = mio::mesh_cad_surface(b, o, mio::MeshCadSizeSources{}, extras, nullptr, &x);
+    EXPECT_EQ(r.mNumFailed, 0);
+    EXPECT_EQ(r.mNumEdges, 12);
+    EXPECT_EQ(r.mNumOpenEdges, 0);
+    ASSERT_EQ(x.mToleranceUses.size(), 4u);
+    for (const auto& r_u : x.mToleranceUses) {
+        EXPECT_EQ(r_u.mEdge, -1);
+        EXPECT_EQ(r_u.mWhere, "pairing");
+        EXPECT_NEAR(r_u.mGap, std::sqrt(3.0) * 1e-5, 1e-9);
+        EXPECT_EQ(r_u.mDeclared, 1e-4);
+    }
+    // A model tolerance under the gap pairs nothing; a malformed one is warned.
+    b.mExtra = R"({"tolerances":{"model_tolerance":1e-6}})";
+    EXPECT_EQ(mio::mesh_cad_surface(b, o, mio::MeshCadSizeSources{}, extras).mNumEdges, 16);
+    b.mExtra = R"({"tolerances":{"model_tolerance":"big"}})";
+    const auto bad = mio::mesh_cad_surface(b, o, mio::MeshCadSizeSources{}, extras);
+    EXPECT_EQ(bad.mNumEdges, 16);
+    EXPECT_TRUE(std::any_of(bad.mWarnings.begin(), bad.mWarnings.end(), [](const std::string& rW) {
+        return rW.find("model's declared tolerance") != std::string::npos;
+    }));
+}
+
+// Roadmap 6.5.1: the box with its top face translated by 0.07, a gap past
+// what the global tolerance accepts at h = 0.2 (a quarter of h). The top's
+// edges declare 0.01, which accepts their projections, but the vertical
+// edges declare 1e-6, so their ends fail where they meet the top's corners.
+// A vertex declaring 0.01 there accepts the corner for every edge in it.
+TEST(MeshCadTolerances, AVertexsToleranceAcceptsItsCorner) {
+    mio::BrepInfo b = brep_solids::box();
+    mio::NDArray& r_cp = b.mPatches[static_cast<std::size_t>(b.mFaces[0].mPatch)].mControlPoints;
+    for (std::size_t i = 0; i < r_cp.Size(); ++i)
+        r_cp.As<double>()[i] += 0.07 / std::sqrt(3.0);
+    std::vector<bool> top(b.mEdges.size(), false);
+    for (std::size_t e = 0; e < b.mEdges.size(); ++e)
+        for (const auto& r_r : b.mEdges[e].mTopology)
+            if (r_r.mId == b.mFaces[0].mId)
+                top[e] = true;
+    for (std::size_t e = 0; e < b.mEdges.size(); ++e)
+        b.mEdges[e].mExtra = top[e] ? R"({"tolerance":0.01})" : R"({"tolerance":1e-6})";
+    const MeshCadSurfaceOptions o = quality(0.2, 0.0);
+    mio::MeshCadSurfaceExtras extras;
+    extras.mModelTolerances = true;
+    const auto edges_only = mio::mesh_cad_surface(b, o, mio::MeshCadSizeSources{}, extras);
+    EXPECT_GT(edges_only.mNumFailed, 0);
+    // A vertex at every trim's start.
+    for (const auto& r_f : b.mFaces)
+        for (const auto& r_l : r_f.mLoops)
+            for (const auto& r_t : r_l.mTrims) {
+                mio::BrepVertex v;
+                mio::BrepRef ref;
+                ref.mId = r_f.mId;
+                ref.mTrimIndex = r_t.mTrimIndex;
+                v.mTopology.push_back(ref);
+                v.mExtra = R"({"tolerance":0.01})";
+                b.mVertices.push_back(std::move(v));
+            }
+    mio::MeshCadSurfaceExtrasReport x;
+    const auto r = mio::mesh_cad_surface(b, o, mio::MeshCadSizeSources{}, extras, nullptr, &x);
+    EXPECT_EQ(r.mNumFailed, 0);
+    EXPECT_TRUE(std::any_of(x.mToleranceUses.begin(), x.mToleranceUses.end(), [&](const auto& rU) {
+        return rU.mWhere == "corner" && rU.mEdge >= 0 && !top[static_cast<std::size_t>(rU.mEdge)] &&
+               rU.mDeclared == 0.01;
+    }));
+    // Without the option the vertices change nothing.
+    EXPECT_GT(run(b, o).mNumFailed, 0);
+}
+
+namespace {
+
+// A frustum of the cone of half-angle 45 degrees about the z axis, its apex at
+// the origin, from z = Z0 to z = Z1: one band closed without a seam, its two
+// rims circles of radius Z0 and Z1. In the cone's own parameters (angle,
+// height) the metric stretches Z1 / Z0 times from rim to rim.
+mio::BrepInfo cone_band(double Z0, double Z1) {
+    std::vector<mio::BrepCurve> curves = {
+        mio::detail::brep_curve_arc({0, 0, Z0}, {1, 0, 0}, {0, 1, 0}, Z0, 0.0, 2 * kPi),
+        mio::detail::brep_curve_arc({0, 0, Z1}, {1, 0, 0}, {0, 1, 0}, Z1, 0.0, 2 * kPi)};
+    std::vector<brep_solids::SolidFace> faces(1);
+    faces[0].mSurface.mKind = 4;
+    faces[0].mSurface.mTanHalfAngle = 1.0;
+    faces[0].mLoops = {{brep_solids::circle_trim(Z0, Z0, 2 * kPi, 0, true, false)},
+                       {brep_solids::circle_trim(Z1, Z1, -2 * kPi, 1, false, false)}};
+    return brep_solids::assemble(faces, curves);
+}
+
+}  // namespace
+
+// Roadmap 6.4.4: a band closed without a seam (a cone's frustum, its
+// rims full circles) is not declined: its coarse mesh keeps the seam's two
+// copies of each point apart, as in the parameters, so it is a disc, and the
+// conformal map flattens it. In its own parameters, which stretch tenfold
+// from rim to rim, triangles stay at 4 degrees; flattened, it meets 25.
+TEST(MeshCadReparam, ASeamlessBandIsFlattenedAsADisc) {
+    const mio::BrepInfo band = cone_band(0.1, 1.0);
+    for (const double h : {0.1, 0.05}) {
+        MeshCadSurfaceOptions o = quality(h, 25.0);
+        const auto plain = run(band, o);
+        o.mReparamConditionNumber = 4.0;
+        mio::MeshCadSurfaceExtrasReport x;
+        const auto r = run(band, o, &x);
+        report("cone band", r, &x);
+        EXPECT_EQ(r.mNumFailed, 0);
+        EXPECT_EQ(r.mNumNonManifoldEdges, 0);
+        EXPECT_EQ(r.mNumMisorientedEdges, 0);
+        ASSERT_EQ(x.mReparametrised.size(), 1u);
+        EXPECT_TRUE(x.mReparametrised[0].mTaken) << x.mReparametrised[0].mReason;
+        EXPECT_EQ(x.mReparametrised[0].mMethod, 1);
+        EXPECT_GE(angle_and_area(r.mMesh)[0], 25.0 - 1e-9) << h;
+        EXPECT_LT(angle_and_area(plain.mMesh)[0], 5.0) << h;
+        EXPECT_LT(r.mNumPoints, plain.mNumPoints) << h;
+        // The frustum's area, pi sqrt 2 (Z1^2 - Z0^2), within the chordal error.
+        EXPECT_NEAR(angle_and_area(r.mMesh)[1], kPi * std::sqrt(2.0) * (1.0 - 0.01), 4.0 * h * h);
+    }
+}
+
+// Roadmap 6.4.4: a coarse mesh that is an annulus (two loops, Euler
+// characteristic 0, as a face with a hole has) laid between two concentric
+// circles: the frustum of the cone above welded at its seam, 32 sectors by
+// 6 rings. Nothing flips, each rim lies on its circle by arc length, the
+// inner at exp(-2 pi w / L) of the outer, and the map does not twist. A disc
+// is refused.
+TEST(MeshCadReparam, AnAnnulusIsLaidBetweenTwoCircles) {
+    const std::size_t ns = 32, nr = 6;
+    std::vector<mio::detail::PatchVec> pts;
+    for (std::size_t j = 0; j <= nr; ++j) {
+        const double z = 0.1 + 0.9 * double(j) / double(nr);
+        for (std::size_t i = 0; i < ns; ++i) {
+            const double a = 2.0 * kPi * double(i) / double(ns);
+            pts.push_back({z * std::cos(a), z * std::sin(a), z});
+        }
+    }
+    std::vector<mio::detail::PatchTri> tris;
+    for (std::size_t j = 0; j < nr; ++j)
+        for (std::size_t i = 0; i < ns; ++i) {
+            const std::size_t a = j * ns + i, b = j * ns + (i + 1) % ns;
+            const std::size_t c = a + ns, d = b + ns;
+            tris.push_back({a, b, d});
+            tris.push_back({a, d, c});
+        }
+    const mio::detail::DiscParam p = mio::detail::param_annulus(pts, tris);
+    ASSERT_TRUE(p.mOk);
+    EXPECT_EQ(p.mMethod, 6);
+    EXPECT_EQ(p.mNumFlips, 0u);
+    EXPECT_EQ(mio::detail::param_flips(tris, p.mU, p.mV), 0u);
+    const auto radius = [&](std::size_t V) { return std::hypot(p.mU[V], p.mV[V]); };
+    // The longer rim (z = 1) outside, the shorter inside, each on a circle.
+    const double ro = radius(nr * ns), ri = radius(0);
+    for (std::size_t i = 0; i < ns; ++i) {
+        EXPECT_NEAR(radius(nr * ns + i), ro, 1e-12 * ro);
+        EXPECT_NEAR(radius(i), ri, 1e-12 * ro);
+    }
+    // The modulus: the mean rim length L, the area over L for the height.
+    double lo = 0.0, li = 0.0, area = 0.0;
+    for (std::size_t i = 0; i < ns; ++i) {
+        const auto d = [&](std::size_t A, std::size_t B) {
+            return std::hypot(pts[A][0] - pts[B][0], pts[A][1] - pts[B][1], pts[A][2] - pts[B][2]);
+        };
+        lo += d(nr * ns + i, nr * ns + (i + 1) % ns);
+        li += d(i, (i + 1) % ns);
+    }
+    for (const auto& r_t : tris) {
+        const auto& a = pts[r_t[0]];
+        const auto& b = pts[r_t[1]];
+        const auto& c = pts[r_t[2]];
+        const double u[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+        const double v[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+        area += 0.5 * std::hypot(u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
+                                 u[0] * v[1] - u[1] * v[0]);
+    }
+    const double len = 0.5 * (lo + li);
+    EXPECT_NEAR(ri / ro, std::exp(-2.0 * kPi * (area / len) / len), 1e-12);
+    // No twist: the inner rim's first vertex (below the outer's first) at the
+    // same angle.
+    EXPECT_NEAR(std::atan2(p.mV[0], p.mU[0]), std::atan2(p.mV[nr * ns], p.mU[nr * ns]), 1e-12);
+    // A disc (one ring of the band cut open) is not an annulus.
+    std::vector<mio::detail::PatchTri> open(tris.begin(), tris.begin() + 2 * (ns - 1));
+    EXPECT_FALSE(mio::detail::param_annulus(pts, open).mOk);
+}
+
+namespace {
+
+// Roadmap 6.5.2's chains: the plate [0, 1] x [0, 1], then `K` slivers of
+// width W stacked in y (a fillet split into strips), then, with `Plate`, the
+// plate [0, 1] x [1 + K W, 2 + K W]; each its own patch, sharing edges.
+mio::BrepInfo sliver_chain(double W, int K, bool Plate) {
+    using brep_solids::line_trim;
+    using brep_solids::PatchVec;
+    std::vector<double> ys = {0.0, 1.0};
+    for (int k = 1; k <= K; ++k)
+        ys.push_back(1.0 + k * W);
+    if (Plate)
+        ys.push_back(2.0 + K * W);
+    std::vector<PatchVec> v;
+    for (const double y : ys) {
+        v.push_back({0, y, 0});
+        v.push_back({1, y, 0});
+    }
+    std::vector<std::array<int, 2>> ends;
+    std::vector<mio::BrepCurve> curves;
+    const auto edge = [&](int A, int B) {
+        const int lo = std::min(A, B), hi = std::max(A, B);
+        for (std::size_t e = 0; e < ends.size(); ++e)
+            if (ends[e][0] == lo && ends[e][1] == hi)
+                return static_cast<std::int64_t>(e);
+        ends.push_back({lo, hi});
+        curves.push_back(mio::detail::brep_curve_line(v[static_cast<std::size_t>(lo)],
+                                                      v[static_cast<std::size_t>(hi)]));
+        return static_cast<std::int64_t>(ends.size() - 1);
+    };
+    std::vector<brep_solids::SolidFace> faces;
+    for (std::size_t r = 0; r + 1 < ys.size(); ++r) {
+        const int a = static_cast<int>(2 * r);
+        const std::array<int, 4> c{a, a + 1, a + 3, a + 2};
+        brep_solids::SolidFace f;
+        f.mSurface =
+            brep_solids::plane(v[static_cast<std::size_t>(a)], {1, 0, 0}, {0, 1, 0}, {0, 0, 1});
+        f.mLoops.emplace_back();
+        for (std::size_t k = 0; k < 4; ++k) {
+            const int p = c[k], q = c[(k + 1) % 4];
+            f.mLoops[0].push_back(line_trim(v[static_cast<std::size_t>(p)],
+                                            v[static_cast<std::size_t>(q)], edge(p, q), p < q));
+        }
+        faces.push_back(f);
+    }
+    return brep_solids::assemble(faces, curves);
+}
+
+// Every triangle's cad:face, and that its centroid lies in that face's band
+// of y (`rYs`, the faces' bounds in order).
+std::vector<std::int64_t> count_by_face(const mio::Mesh& rM, const std::vector<double>& rYs) {
+    std::vector<std::int64_t> count(rYs.size() - 1, 0);
+    const double* px = rM.Points().As<double>();
+    const auto cells = rM.Cells(0);
+    const mio::NDArray& conn = cells.Conn();
+    const mio::NDArray& face = rM.CellData(mio::kMeshCadFaceName, 0);
+    for (std::size_t t = 0; t < cells.NumCells(); ++t) {
+        const std::int64_t f = mio::detail::read_int(face, t);
+        EXPECT_GE(f, 0);
+        EXPECT_LT(f, static_cast<std::int64_t>(count.size()));
+        if (f < 0 || f >= static_cast<std::int64_t>(count.size()))
+            continue;
+        ++count[static_cast<std::size_t>(f)];
+        double y = 0.0;
+        for (std::size_t k = 0; k < 3; ++k)
+            y += px[3 * mio::detail::read_int(conn, 3 * t + k) + 1] / 3.0;
+        EXPECT_GE(y, rYs[static_cast<std::size_t>(f)] - 1e-12);
+        EXPECT_LE(y, rYs[static_cast<std::size_t>(f) + 1] + 1e-12);
+    }
+    return count;
+}
+
+}  // namespace
+
+// Roadmap 6.5.2: three strips of width h / 20 beside a plate. Only the first
+// borders a face that is not a sliver; the second and third join the group
+// it forms in the rounds that follow, so the plate's triangulation spans all
+// four faces, each triangle keeping the face it lies in.
+TEST(MeshCadVirtualFaces, AChainOfSliverStripsJoinsOneHost) {
+    const double h = 0.2, w = h / 20.0;
+    const mio::BrepInfo b = sliver_chain(w, 3, false);
+    const auto alone = run(b, quality(h, 25.0));
+    mio::MeshCadSurfaceExtras extras;
+    extras.mVirtualFaces = true;
+    mio::MeshCadSurfaceExtrasReport x;
+    const auto r =
+        mio::mesh_cad_surface(b, quality(h, 25.0), mio::MeshCadSizeSources{}, extras, nullptr, &x);
+    EXPECT_EQ(r.mNumFailed, 0);
+    EXPECT_GE(angle_and_area(r.mMesh)[0], 25.0 - 1e-9);
+    EXPECT_LT(r.mNumTriangles, alone.mNumTriangles);
+    EXPECT_NEAR(angle_and_area(r.mMesh)[1], 1.0 + 3.0 * w, 1e-12);
+    EXPECT_EQ(r.mNumMisorientedEdges, 0);
+    EXPECT_EQ(r.mNumNonManifoldEdges, 0);
+    EXPECT_TRUE(open_only_outside(r.mMesh, 1.0 + 3.0 * w));
+    ASSERT_EQ(x.mMergedFaces.size(), 3u);
+    for (std::size_t i = 0; i < 3; ++i) {
+        const auto& r_m = x.mMergedFaces[i];
+        EXPECT_EQ(r_m.mSliver, static_cast<std::int64_t>(i + 1));
+        EXPECT_TRUE(r_m.mMerged) << r_m.mReason;
+        EXPECT_EQ(r_m.mHost, 0);
+        EXPECT_EQ(r_m.mEdges.size(), 1u);
+    }
+    const auto count = count_by_face(r.mMesh, {0.0, 1.0, 1.0 + w, 1.0 + 2.0 * w, 1.0 + 3.0 * w});
+    for (std::size_t f = 0; f < count.size(); ++f) {
+        EXPECT_GT(count[f], 0) << f;
+        EXPECT_EQ(r.mFaces[f].mNumTriangles, count[f]) << f;
+    }
+    // Deterministic across thread counts.
+#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
+    const std::uint64_t ref = digest(r.mMesh);
+    const int saved = omp_get_max_threads();
+    for (int threads : {1, 2, 4}) {
+        omp_set_num_threads(threads);
+        EXPECT_EQ(
+            digest(mio::mesh_cad_surface(b, quality(h, 25.0), mio::MeshCadSizeSources{}, extras)
+                       .mMesh),
+            ref)
+            << threads;
+    }
+    omp_set_num_threads(saved);
+#endif
+}
+
+// Roadmap 6.5.2: plate, three strips, plate. The outer strips merge with
+// their plates in the first round; the middle one borders only those two
+// groups and joins the first (the same shared length, the lower host), a
+// merge across more than two faces.
+TEST(MeshCadVirtualFaces, ASliverBetweenTwoMergedGroupsJoinsOne) {
+    const double h = 0.2, w = h / 20.0;
+    const mio::BrepInfo b = sliver_chain(w, 3, true);
+    mio::MeshCadSurfaceExtras extras;
+    extras.mVirtualFaces = true;
+    mio::MeshCadSurfaceExtrasReport x;
+    const auto r =
+        mio::mesh_cad_surface(b, quality(h, 25.0), mio::MeshCadSizeSources{}, extras, nullptr, &x);
+    EXPECT_EQ(r.mNumFailed, 0);
+    EXPECT_GE(angle_and_area(r.mMesh)[0], 25.0 - 1e-9);
+    EXPECT_NEAR(angle_and_area(r.mMesh)[1], 2.0 + 3.0 * w, 1e-12);
+    EXPECT_EQ(r.mNumMisorientedEdges, 0);
+    EXPECT_EQ(r.mNumNonManifoldEdges, 0);
+    EXPECT_TRUE(open_only_outside(r.mMesh, 2.0 + 3.0 * w));
+    ASSERT_EQ(x.mMergedFaces.size(), 3u);
+    const std::array<std::int64_t, 3> host{0, 0, 4};
+    for (std::size_t i = 0; i < 3; ++i) {
+        EXPECT_TRUE(x.mMergedFaces[i].mMerged) << x.mMergedFaces[i].mReason;
+        EXPECT_EQ(x.mMergedFaces[i].mHost, host[i]) << i;
+    }
+    const auto count =
+        count_by_face(r.mMesh, {0.0, 1.0, 1.0 + w, 1.0 + 2.0 * w, 1.0 + 3.0 * w, 2.0 + 3.0 * w});
+    for (std::size_t f = 0; f < count.size(); ++f)
+        EXPECT_GT(count[f], 0) << f;
 }

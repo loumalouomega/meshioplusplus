@@ -2331,6 +2331,37 @@ def test_mesh_cad_surface_tool(tmp_path):
         str(sphere), str(out), 0.2, min_angle=20.0, lop_corners=True
     )
     assert lopped["lopped_corners"] == []
+    # A metric from a Hessian (roadmap 6.10.2): a background of the sphere
+    # with a field's Hessian, read from a file.
+    bg = meshioplusplus.mesh_cad_surface(meshioplusplus.read(sphere), 0.2, edges=False)
+    x = np.asarray(bg.points)
+    bg.point_data["f"] = np.tanh((x[:, 2] - 0.3) / 0.1)
+    bg = meshioplusplus.hessian(bg, "f", location="point")
+    bg_path = tmp_path / "hessian.vtu"
+    meshioplusplus.write(bg_path, bg)
+    metric = _tools.tool_mesh_cad_surface(
+        str(sphere),
+        str(out),
+        0.3,
+        metric_background_path=str(bg_path),
+        metric_array="f:hessian",
+        metric_error=0.01,
+    )
+    assert metric["num_failed"] == 0
+    assert metric["num_points"] > uniform_sphere_points(sphere, out)
+    with pytest.raises(ValueError, match="metric_error"):
+        _tools.tool_mesh_cad_surface(
+            str(sphere),
+            str(out),
+            0.3,
+            metric_background_path=str(bg_path),
+            metric_array="f:hessian",
+        )
+
+
+def uniform_sphere_points(sphere, out):
+    """The points of the sphere meshed at 0.3 with nothing else asked."""
+    return _tools.tool_mesh_cad_surface(str(sphere), str(out), 0.3)["num_points"]
 
 
 def test_octree_tool(tmp_path):
