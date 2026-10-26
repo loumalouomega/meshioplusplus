@@ -313,6 +313,16 @@ struct McadEdge {
     std::string mWhy;
 };
 
+/// A boundary piece corner lopping asks to split (6.2.3) where its distance
+/// from the lopped corner at one end (1 the piece's start, 2 its end) is the
+/// corner's ball radius.
+struct McadLopAsk {
+    std::size_t mEdge = 0;
+    std::size_t mPiece = 0;
+    std::size_t mEnd = 0;
+    double mDistance = 0.0;
+};
+
 struct McadFace {
     bool mUsable = false;
     std::unique_ptr<detail::BrepSurfaceEval> pSurface;
@@ -328,6 +338,10 @@ struct McadFace {
     /// Boundary pieces refinement asks to split: (edge, master piece, the
     /// end at a sharp corner: 0 none, 1 the piece's start, 2 its end).
     std::vector<std::array<std::size_t, 3>> mAsks;
+    /// Corner lopping's asks (6.2.3), and the corners the last meshing
+    /// lopped, by position, with what is reported of each.
+    std::vector<McadLopAsk> mLopAsks;
+    std::vector<std::pair<Vec3, MeshCadLoppedCorner>> mLopped;
     std::array<std::int64_t, kMeshCadAngleBins> mHistogram{};
     /// Triangles under min_angle that refinement leaves where the face's
     /// metric departs too far from its plane's, warned in face order.
@@ -428,6 +442,11 @@ struct McadQuality {
     const detail::MeshCadSizeField* pSize = nullptr;
     /// Record each face's size samples (the first meshing of a sized run).
     bool mCollectSizes = false;
+    /// Corner lopping (6.2.3) in place of concentric shells, and the balls'
+    /// radii carried between meshings by corner position: the smallest any
+    /// face's meshing or any split left.
+    bool mLopCorners = false;
+    const std::map<Vec3, double>* pLopRadius = nullptr;
 };
 
 /// The angles of a triangle on the surface, in degrees.
@@ -468,6 +487,25 @@ double mcad_ratio(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
     if (!(twice_area > 0.0))
         return std::numeric_limits<double>::infinity();
     return la * lb * lc / (2.0 * twice_area * std::min({la, lb, lc}));
+}
+
+/// How far a trace turns between two parameters (radians): the angles
+/// between its tangents at nine equal steps of the parameter, summed (Pav and
+/// Walkington's total variation of a curve, 6.2.3).
+double mcad_piece_turning(const detail::TrimTrace& rTrace, double T0, double T1) {
+    double sum = 0.0;
+    Vec3 last{};
+    for (int j = 0; j <= 8; ++j) {
+        const Vec3 v = rTrace.Velocity(T0 + (T1 - T0) * (j / 8.0));
+        if (j > 0) {
+            const Vec3 c{last[1] * v[2] - last[2] * v[1], last[2] * v[0] - last[0] * v[2],
+                         last[0] * v[1] - last[1] * v[0]};
+            sum += std::atan2(std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]),
+                              last[0] * v[0] + last[1] * v[1] + last[2] * v[2]);
+        }
+        last = v;
+    }
+    return sum;
 }
 
 /// Curved elements whose Jacobian is not positive everywhere (6.6, 6.6.1)
@@ -979,6 +1017,8 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         rF.mTriangles.clear();
         rF.mInterior.clear();
         rF.mAsks.clear();
+        rF.mLopAsks.clear();
+        rF.mLopped.clear();
         rF.mCurvedEdges.clear();
         rF.mCurvedCentre.clear();
         rF.mCurvedNormal.clear();
@@ -2181,10 +2221,55 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             catch_up();
             return min_angle(rT);
         };
+        // Corner lopping (6.2.3): the input points are the ends of the
+        // face's edges and any acute kink inside one (a pole's aside, which
+        // has its own handling), their balls measured on the
+        // surface, in 3-D, and carried from the earlier meshings, so a ball
+        // only shrinks; each flip cycle carries them to the next.
+        std::map<std::int64_t, double> lop_radius;  // cdt vertex -> radius
+        if (rQ.mLopCorners) {
+            std::set<std::int64_t> ends;
+            const auto add_ends = [&](std::size_t U) {
+                const auto& r_ids = rUses[U].mIds;
+                if (!r_ids.empty()) {
+                    ends.insert(r_ids.front());
+                    ends.insert(r_ids.back());
+                }
+            };
+            for (const auto& r_loop : rF.mLoops)
+                for (const std::size_t u : r_loop)
+                    add_ends(u);
+            for (const std::size_t u : rF.mEmbedded)
+                add_ends(u);
+            for (const auto& [v, id] : mesh_of) {
+                if (id >= 0 && pole_near(id) >= 0)
+                    ro.mLopSkip.push_back(v);
+                else if (id >= 0 && ends.count(id) != 0)
+                    ro.mCorners.push_back(v);
+            }
+            std::sort(ro.mCorners.begin(), ro.mCorners.end());
+            std::sort(ro.mLopSkip.begin(), ro.mLopSkip.end());
+            // No corner but poles: nothing to lop (an empty list would make
+            // every boundary sample an input point).
+            ro.mLopCorners = !ro.mCorners.empty();
+            if (rQ.pLopRadius)
+                for (const std::int64_t v : ro.mCorners) {
+                    const auto it = rQ.pLopRadius->find(pos(mesh_of.at(v)));
+                    if (it != rQ.pLopRadius->end())
+                        lop_radius[v] = it->second;
+                }
+            ro.mDistance = [&](std::int64_t P, std::int64_t V, const detail::Cdt2d::Vec2& rX) {
+                catch_up();
+                return mcad_dist(pos(mesh_of.at(P)), V >= 0 ? pos(mesh_of.at(V)) : lift(rX));
+            };
+        }
         std::set<detail::Cdt2dSplitRequest> asked;
         for (int cycle = 0; cycle < 8; ++cycle) {
+            ro.mLopRadius.assign(lop_radius.begin(), lop_radius.end());
             refined = cdt.Refine(ro);
             catch_up();
+            for (const auto& r_l : refined.mLopped)
+                lop_radius[r_l.mVertex] = r_l.mRadius;
             asked.insert(refined.mRequests.begin(), refined.mRequests.end());
             r_rec.mNumRefinementPoints += refined.mNumCircumcentres;
             rF.mRefinedSoFar += refined.mNumCircumcentres;
@@ -2210,6 +2295,14 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 // the use runs with the master.
                 const bool at_k = r_o.mStart == r_q.mApex;
                 end = (at_k == r_u.mSame) ? 1 : 2;
+            }
+            if (r_q.mDistance > 0.0) {
+                // At the ball's last radius: balls only shrink, so a piece
+                // that reached past it at the ask still does.
+                const auto it_r = lop_radius.find(r_q.mApex);
+                rF.mLopAsks.push_back({static_cast<std::size_t>(r_u.mEdge), piece, end,
+                                       it_r != lop_radius.end() ? it_r->second : r_q.mDistance});
+                continue;
             }
             rF.mAsks.push_back({static_cast<std::size_t>(r_u.mEdge), piece, end});
         }
@@ -2237,7 +2330,7 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
     // the guard kept. Boundary points stay, so shared edges stay shared; a
     // star within h of a pole is left.
     const std::int64_t smooth_passes =
-        rQ.mDeferSmoothing && !rF.mAsks.empty() ? 0 : rQ.mSmoothIterations;
+        rQ.mDeferSmoothing && !(rF.mAsks.empty() && rF.mLopAsks.empty()) ? 0 : rQ.mSmoothIterations;
     rF.mSmoothingDeferred = smooth_passes < rQ.mSmoothIterations;
     for (std::int64_t pass = 0; pass < smooth_passes; ++pass) {
         for (std::int64_t v = detail::Cdt2d::kFirstVertex; v < cdt.NumVertices(); ++v) {
@@ -2321,11 +2414,13 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 ++folds;
         if (folds > 0) {
             std::vector<std::array<std::size_t, 3>> asks = std::move(rF.mAsks);
+            std::vector<McadLopAsk> lop_asks = std::move(rF.mLopAsks);
             fail(MeshCadFaceStatus::Degenerate,
                  std::to_string(folds) +
                      " triangles fold on the surface (their normals turn more than 120 "
                      "degrees from the surface's)");
             rF.mAsks = std::move(asks);
+            rF.mLopAsks = std::move(lop_asks);
             rF.mFolded = true;
             return;
         }
@@ -2572,6 +2667,73 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 smp.mCurvature = p_surface->MaxCurvature(uv[0], uv[1]);
                 rF.mSizeSamples.push_back(smp);
             }
+    }
+    if (!refined.mLopped.empty()) {
+        // Corner lopping's corners (6.2.3), with what Pav and Walkington
+        // (2005) state of them: Corollary 3's bound for the most any
+        // boundary piece of the face turns (sampled tangents, in 3-D), on a
+        // planar face, and whether the run is under it, finished, and kept
+        // every triangle under min_angle within twice a ball's radius of its
+        // corner (Lemma 7).
+        double turning = 0.0;
+        const auto add_turning = [&](std::size_t U) {
+            const auto& r_tr = rTraces[U];
+            const auto& r_p = rUses[U].mParams;
+            if (!r_tr)
+                return;
+            for (std::size_t k = 0; k + 1 < r_p.size(); ++k)
+                turning = std::max(turning, mcad_piece_turning(*r_tr, r_p[k], r_p[k + 1]));
+        };
+        for (const auto& r_loop : rF.mLoops)
+            for (const std::size_t u : r_loop)
+                add_turning(u);
+        for (const std::size_t u : rF.mEmbedded)
+            add_turning(u);
+        // Planar: no principal curvature over a 7 by 7 grid of the patch
+        // past one in a billion target sizes.
+        bool planar = true;
+        if (rF.pSurface) {
+            const auto& r_box = rF.pSurface->Box();
+            for (int i = 0; i <= 6 && planar; ++i)
+                for (int j = 0; j <= 6 && planar; ++j)
+                    planar =
+                        !(rF.pSurface->MaxCurvature(r_box[0] + (r_box[1] - r_box[0]) * i / 6.0,
+                                                    r_box[2] + (r_box[3] - r_box[2]) * j / 6.0) *
+                              h >
+                          1e-9);
+        }
+        const double bound = planar ? detail::cdt2d_lop_bound_deg(turning) : 0.0;
+        for (const auto& r_l : refined.mLopped) {
+            MeshCadLoppedCorner c;
+            c.mFace = r_rec.mFace;
+            c.mPoint = mesh_of.at(r_l.mVertex);
+            c.mAngleDeg = r_l.mAngleDeg;
+            c.mLfs0 = r_l.mLfs0;
+            c.mLopRadius = r_l.mRadius;
+            c.mTurningDeg = turning * (180.0 / kMcadPi);
+            c.mStatedBoundDeg = bound;
+            c.mNumForced = r_l.mNumForced;
+            c.mMinForcedDeg = r_l.mMinForcedDeg;
+            c.mWithinTwoRadii = r_l.mWithinTwoRadii;
+            if (!planar)
+                c.mReason = "the face is curved; Corollary 3 is proved for a planar domain";
+            else if (!(bound > 0.0))
+                c.mReason = "a boundary piece turns more than 60 degrees";
+            else if (!(rQ.mMinAngleDeg < bound))
+                c.mReason = "min_angle is not under the bound for the face's turning";
+            else if (rF.mRefineBudgetReached || refined.mBudgetReached ||
+                     refined.mNumUnresolved > 0)
+                c.mReason = "refinement did not finish";
+            else if (!r_l.mWithinTwoRadii)
+                c.mReason = "a triangle under min_angle reaches past twice the ball's radius";
+            c.mGuaranteed = c.mReason.empty();
+            rF.mLopped.emplace_back(pos(c.mPoint), c);
+            if (rQ.mMinAngleDeg > 0.0 && r_l.mAngleDeg < 60.0) {
+                // Still a small input angle, as concentric shells report one.
+                corner_angle[c.mPoint] = r_l.mAngleDeg;
+                corner_x[c.mPoint] = cdt.Point(r_l.mVertex);
+            }
+        }
     }
     if (rQ.mMinAngleDeg > 0.0) {
         // The corners, in mesh-point order: small input angles with the
@@ -3506,6 +3668,12 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
     quality.mSmoothMethod = rOptions.mSmoothMethod;
     quality.pSize = pSize;
     quality.mCollectSizes = pSamples != nullptr;
+    // Corner lopping (6.2.3): each corner's ball, the smallest radius any
+    // face's meshing or any split left, by the corner's position (its id
+    // stays, but the position names it whatever is renumbered).
+    std::map<Vec3, double> lop_radius;
+    quality.mLopCorners = extras.mLopCorners;
+    quality.pLopRadius = &lop_radius;
     // A pole is the corner of a degenerate edge; corner ids come first, so
     // they do not move when edges are split.
     quality.mNumFaces = static_cast<std::int64_t>(
@@ -3527,6 +3695,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
         r_g.mInterior.clear();
         r_g.mTriangles.clear();
         r_g.mAsks.clear();
+        r_g.mLopAsks.clear();
+        r_g.mLopped.clear();
         r_g.mCurvedEdges.clear();
         r_g.mCurvedCentre.clear();
         r_g.mCurvedNormal.clear();
@@ -3709,6 +3879,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                         r_f.mTriangles.clear();
                         r_f.mInterior.clear();
                         r_f.mAsks.clear();
+                        r_f.mLopAsks.clear();
+                        r_f.mLopped.clear();
                         r_f.mCurvedEdges.clear();
                         r_f.mCurvedCentre.clear();
                         r_f.mCurvedNormal.clear();
@@ -3726,6 +3898,14 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                 }
             },
             1);
+        // The balls the faces left, after them all (the smallest, so the
+        // order does not matter), for the next meshing.
+        for (const McadFace& r_f : faces)
+            for (const auto& [x, r_c] : r_f.mLopped) {
+                auto [it, fresh] = lop_radius.emplace(x, r_c.mLopRadius);
+                if (!fresh)
+                    it->second = std::min(it->second, r_c.mLopRadius);
+            }
     };
     mesh_faces(true, false);
 
@@ -4059,6 +4239,39 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                         continue;
                     split[r_a[0]][r_a[1]] |= r_a[2];
                 }
+            // Corner lopping (6.2.3): a piece is split where it leaves a
+            // corner's ball (the smallest radius asked at the start's end,
+            // else at the end's), and a piece turning more than pi / 3, past
+            // what Pav and Walkington assume of a curve, at its midpoint.
+            std::map<std::size_t, std::map<std::size_t, McadLopAsk>> lop_split;
+            if (extras.mLopCorners) {
+                for (std::size_t f = 0; f < nf; ++f)
+                    for (const McadLopAsk& r_a : faces[f].mLopAsks) {
+                        const McadEdge& r_e = edges[r_a.mEdge];
+                        if (r_e.mFail != MeshCadFaceStatus::Ok || r_e.mSamples.mDegenerate ||
+                            r_a.mPiece + 1 >= r_e.mSamples.mPoints.size() ||
+                            (r_a.mEnd != 1 && r_a.mEnd != 2))
+                            continue;
+                        split[r_a.mEdge][r_a.mPiece] |= 0;
+                        auto [it, fresh] = lop_split[r_a.mEdge].emplace(r_a.mPiece, r_a);
+                        if (!fresh &&
+                            (r_a.mEnd < it->second.mEnd ||
+                             (r_a.mEnd == it->second.mEnd && r_a.mDistance < it->second.mDistance)))
+                            it->second = r_a;
+                    }
+                for (std::size_t e = 0; e < edges.size(); ++e) {
+                    const McadEdge& r_e = edges[e];
+                    if (r_e.mFail != MeshCadFaceStatus::Ok || r_e.mSamples.mDegenerate ||
+                        !traces[r_e.mMaster])
+                        continue;
+                    const auto& r_p = r_e.mSamples.mParams;
+                    for (std::size_t k = 0; k + 1 < r_p.size(); ++k)
+                        if (mcad_piece_turning(*traces[r_e.mMaster], r_p[k], r_p[k + 1]) >
+                                kMcadPi / 3.0 &&
+                            mcad_dist(r_e.mSamples.mPoints[k], r_e.mSamples.mPoints[k + 1]) > tol)
+                            split[e][k] |= 0;
+                }
+            }
             if (split.empty()) {
                 if (!to_mean(1) && !unmerge(1))
                     break;
@@ -4082,8 +4295,51 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                 McadEdge& r_e = edges[e];
                 std::vector<std::size_t> pieces;
                 std::vector<double> at;
+                const auto lop_it = lop_split.find(e);
                 for (const auto& [piece, end] : r_pieces) {
                     double a = 0.5;
+                    const McadLopAsk* p_lop = nullptr;
+                    if (lop_it != lop_split.end()) {
+                        const auto it = lop_it->second.find(piece);
+                        if (it != lop_it->second.end())
+                            p_lop = &it->second;
+                    }
+                    if (p_lop) {
+                        // Where the 3-D distance from the corner is the
+                        // ball's radius: bisected along the trace, then the
+                        // corner's radius is that split's own distance.
+                        const detail::TrimTrace& r_tr = *traces[r_e.mMaster];
+                        const auto& r_fr = r_e.mSamples.mFractions;
+                        const std::int64_t corner_id =
+                            uses[r_e.mMaster].mIds[p_lop->mEnd == 1 ? piece : piece + 1];
+                        const Vec3 corner = boundary[static_cast<std::size_t>(corner_id)];
+                        const auto at_fraction = [&](double A) {
+                            const double f = (1.0 - A) * r_fr[piece] + A * r_fr[piece + 1];
+                            return r_tr.Point(r_tr.ParamAtLength(f * r_e.mSamples.mLength));
+                        };
+                        const auto from_corner = [&](double A) {
+                            return mcad_dist(corner, at_fraction(p_lop->mEnd == 1 ? A : 1.0 - A));
+                        };
+                        // A piece that ends inside the ball is the shrink
+                        // rule's, not split here.
+                        if (!(from_corner(1.0) > p_lop->mDistance))
+                            continue;
+                        double lo = 0.0;
+                        double hi = 1.0;
+                        for (int k = 0; k < 64 && hi - lo > 1e-15; ++k) {
+                            const double mid = 0.5 * (lo + hi);
+                            (from_corner(mid) < p_lop->mDistance ? lo : hi) = mid;
+                        }
+                        const double b = 0.5 * (lo + hi);
+                        a = p_lop->mEnd == 1 ? b : 1.0 - b;
+                        const double d = from_corner(b);
+                        auto [it, fresh] = lop_radius.emplace(corner, d);
+                        if (!fresh)
+                            it->second = std::min(it->second, d);
+                        pieces.push_back(piece);
+                        at.push_back(a);
+                        continue;
+                    }
                     if (end == 1 || end == 2) {
                         // A power of two in (L / 3, 2 L / 3] from the corner.
                         const double len =
@@ -4513,6 +4769,16 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
             }
             pExtrasReport->mMergedFaces.push_back(std::move(rec));
         }
+        // The corners lopped (6.2.3), by face then point, as each face's
+        // last meshing left them.
+        for (const McadFace& r_f : faces)
+            if (r_f.mRecord.mStatus == MeshCadFaceStatus::Ok)
+                for (const auto& r_l : r_f.mLopped)
+                    pExtrasReport->mLoppedCorners.push_back(r_l.second);
+        std::sort(pExtrasReport->mLoppedCorners.begin(), pExtrasReport->mLoppedCorners.end(),
+                  [](const MeshCadLoppedCorner& rA, const MeshCadLoppedCorner& rB) {
+                      return rA.mFace != rB.mFace ? rA.mFace < rB.mFace : rA.mPoint < rB.mPoint;
+                  });
     }
     if (rOptions.mStrict && result.mNumFailed > 0)
         for (const MeshCadFaceRecord& r_r : result.mFaces)
@@ -4546,8 +4812,6 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep, const MeshCadSurfac
     mcad_check_sources(rBrep, rOptions, rSources);
     if (rExtras.mVirtualFaces && rOptions.mOrder > 1)
         mcad_fail("virtual_faces is order 1 only (roadmap 6.5.2)");
-    if (rExtras.mLopCorners)
-        mcad_fail("lop_corners is not implemented yet (roadmap 6.2.3); leave it at its default");
     const std::size_t nf = rBrep.mFaces.size();
     if (pReport) {
         *pReport = MeshCadSizeReport{};

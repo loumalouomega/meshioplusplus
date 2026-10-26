@@ -368,7 +368,13 @@ struct MeshCadSurfaceExtras {
     /// the neighbour it meets tangentially along the most edge, through their
     /// common discrete parameterisation (roadmap 6.5.2). Order 1 only.
     bool mVirtualFaces = false;
-    /// Corner lopping (roadmap 6.2.3): laid out, refused until it lands.
+    /// Corner lopping (roadmap 6.2.3; S. E. Pav and N. J. Walkington,
+    /// "Delaunay refinement by corner lopping", IMR 2005) in place of
+    /// concentric shells: each acute corner of a face gets a ball of radius
+    /// (sqrt 2 - 1) times its distance to the nearest other corner, its
+    /// edges split where they leave it, shrunk by half while a vertex lies
+    /// inside, and refinement leaves the triangles whose point falls in it.
+    /// Only with refinement (`mMinAngleDeg` or a size field).
     bool mLopCorners = false;
 };
 
@@ -410,14 +416,32 @@ struct MeshCadToleranceUse {
     std::string mWhere;
 };
 
-/// A corner lopped (roadmap 6.2.3): laid out, empty until it lands.
+/// A corner lopped (`MeshCadSurfaceExtras::mLopCorners`, roadmap 6.2.3) and
+/// what Pav and Walkington (2005) state of it.
 struct MeshCadLoppedCorner {
     std::int64_t mFace = -1;
-    std::int64_t mPoint = -1;
+    std::int64_t mPoint = -1;  ///< the corner's mesh point
+    /// Its smallest acute wedge in the face's plane (degrees).
     double mAngleDeg = 0.0;
+    /// The distance (in 3-D) to the nearest other corner of the face.
+    double mLfs0 = 0.0;
+    /// Its ball's radius at the end.
     double mLopRadius = 0.0;
+    /// The most any boundary piece of the face turns (degrees).
+    double mTurningDeg = 0.0;
+    /// Corollary 3's angle bound for that turning, on a planar face; 0 on a
+    /// curved one.
     double mStatedBoundDeg = 0.0;
+    /// The triangles under `mMinAngleDeg` left in its ball, and the
+    /// smallest angle among them on the surface (180 for none).
+    std::int64_t mNumForced = 0;
     double mMinForcedDeg = 180.0;
+    /// Every one of them within twice the radius of the corner (Lemma 7).
+    bool mWithinTwoRadii = true;
+    /// The face is planar, `mMinAngleDeg` is under the stated bound,
+    /// refinement finished and Lemma 7 held; otherwise `mReason` says why not.
+    bool mGuaranteed = false;
+    std::string mReason;
 };
 
 /// What the extras decided, filled when passed.
@@ -430,9 +454,10 @@ struct MeshCadSurfaceExtrasReport {
 
 /**
  * @brief `mesh_cad_surface` with the extras of v17.20.0 (roadmap 6.5.1,
- * 6.5.2) beside the sizes, and the reparametrised faces (6.4.4) in its report.
- * @throws std::invalid_argument as the four-argument overload, for
- *         `mVirtualFaces` with `mOrder` > 1, and for `mLopCorners`.
+ * 6.5.2, 6.2.3) beside the sizes, and the reparametrised faces (6.4.4) in its
+ * report.
+ * @throws std::invalid_argument as the four-argument overload, and for
+ *         `mVirtualFaces` with `mOrder` > 1.
  */
 MESHIOPLUSPLUS_API MeshCadSurfaceResult mesh_cad_surface(
     const BrepInfo& rBrep, const MeshCadSurfaceOptions& rOptions,

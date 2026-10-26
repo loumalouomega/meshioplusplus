@@ -697,7 +697,7 @@ struct _CMeshCadSurfaceOpts
     cells_across_gaps::Cdouble
 end
 
-"""Mirror of C `mio_mesh_cad_surface_opts_ex` (v17.19.0; v17.20.0 took 16
+"""Mirror of C `mio_mesh_cad_surface_opts_ex` (v17.19.0; v17.20.0 took 24
 bytes of its tail); its pointers are borrowed for one call, the caller keeping
 the arrays alive."""
 struct _CMeshCadSurfaceOptsEx
@@ -714,7 +714,9 @@ struct _CMeshCadSurfaceOptsEx
     reparam_condition_number::Cdouble
     model_tolerances::Int32
     virtual_faces::Int32
-    reserved::NTuple{6,Int64}
+    lop_corners::Int32
+    reserved_pad::Int32
+    reserved::NTuple{5,Int64}
 end
 
 """Mirror of C `mio_mesh_cad_surface_report`."""

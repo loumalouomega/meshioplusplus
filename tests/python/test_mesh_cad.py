@@ -1164,6 +1164,93 @@ def test_virtual_faces_mesh_a_sliver_with_its_neighbour():
         mio.mesh_cad_surface(model, 0.2, virtual_faces=True, order=2)
 
 
+def _planar_lens(path, length=4.0, theta_deg=2.5):
+    """A planar face on [0, 5]^2 bounded by two circular trims (rational
+    quadratic arcs) from (0.5, 1) to (0.5 + length, 1), each leaving the
+    chord at ``theta_deg``: both corners are twice that."""
+    th = math.radians(theta_deg)
+    w, dy, x0, y0 = math.cos(th), 0.5 * length * math.tan(th), 0.5, 1.0
+
+    def arc(index, ax, bx, my):
+        return {
+            "trim_index": index,
+            "curve_direction": True,
+            "parameter_curve": {
+                "is_rational": True,
+                "degree": 2,
+                "knot_vector": [0, 0, 0, 1, 1, 1],
+                "active_range": [0, 1],
+                "control_points": [
+                    [[ax, y0, 0, 1]],
+                    [[x0 + 0.5 * length, my, 0, w]],
+                    [[bx, y0, 0, 1]],
+                ],
+            },
+        }
+
+    face = {
+        "brep_id": 2,
+        "swapped_surface_normal": False,
+        "surface": {
+            "is_trimmed": True,
+            "is_rational": False,
+            "degrees": [1, 1],
+            "knot_vectors": [[0, 5], [0, 5]],
+            "control_points": [
+                [1, [0, 0, 0, 1]],
+                [2, [5, 0, 0, 1]],
+                [3, [0, 5, 0, 1]],
+                [4, [5, 5, 0, 1]],
+            ],
+        },
+        "boundary_loops": [
+            {
+                "loop_type": "outer",
+                "trimming_curves": [
+                    arc(0, x0, x0 + length, y0 - dy),
+                    arc(1, x0 + length, x0, y0 + dy),
+                ],
+            }
+        ],
+        "embedded_edges": [],
+    }
+    doc = {"breps": [{"brep_id": 1, "faces": [face], "edges": [], "vertices": []}]}
+    path.write_text(json.dumps(doc))
+    return mio.read(path)
+
+
+@needs_core
+def test_corner_lopping_states_its_bound_on_a_lens(tmp_path):
+    """Roadmap 6.2.3, Pav and Walkington (2005): a planar face with two
+    5-degree corners between circular trims, refined at 20 degrees with its
+    corners lopped, ends under the stated bound with no budget warning, and
+    every triangle under 20 degrees lies within twice its corner's radius
+    (Lemma 7). Off, the mesh is the concentric shells'."""
+    model = _planar_lens(tmp_path / "lens.cad.json")
+    out, report = mio.mesh_cad_surface(
+        model, 0.05, min_angle=20, lop_corners=True, return_report=True
+    )
+    assert report["num_failed"] == 0
+    assert not any("did not finish" in w for w in report["warnings"])
+    corners = report["lopped_corners"]
+    assert len(corners) == 2
+    for c in corners:
+        assert c["face"] == 0 and 4.9 < c["angle_deg"] <= 5.0
+        assert c["lfs0"] == pytest.approx(4.0, rel=1e-9)
+        assert 0 < c["lop_radius"] <= (math.sqrt(2) - 1) * 4.0
+        assert 20.0 < c["stated_bound_deg"] <= 20.705
+        assert c["guaranteed"] and c["reason"] == "" and c["within_two_radii"]
+    tri = [c for c in out.cells if c.type == "triangle"][0].data
+    angles = _min_angles(out)
+    centres = np.array([out.points[c["point"]] for c in corners])
+    radii = np.array([c["lop_radius"] for c in corners])
+    for t in np.nonzero(angles < 20 - 1e-9)[0]:
+        d = np.linalg.norm(out.points[tri[t]][:, None, :] - centres[None], axis=2)
+        assert np.any(np.all(d <= 2 * radii * (1 + 1e-9), axis=0))
+    _, off = mio.mesh_cad_surface(model, 0.05, min_angle=20, return_report=True)
+    assert off["lopped_corners"] == []
+
+
 @needs_core
 def test_model_tolerances_join_what_the_model_declares():
     """Roadmap 6.5.1: the capped cylinder whose top cap starts a quarter turn

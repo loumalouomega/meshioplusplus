@@ -594,7 +594,7 @@ TEST(MeshCadVirtualFaces, ASliverStripIsMeshedWithItsNeighbour) {
 
 // A sliver at a crease (its far neighbour turned up 90 degrees) still
 // merges with the flat one; folded on both sides, it is declined, and the
-// mesh is the option off's. Order 2 and corner lopping are refused.
+// mesh is the option off's. Order 2 is refused.
 TEST(MeshCadVirtualFaces, ACreaseIsDeclinedAndOptionsAreChecked) {
     const double h = 0.2;
     const mio::BrepInfo b = sliver_strip(h / 20.0, true);
@@ -613,10 +613,6 @@ TEST(MeshCadVirtualFaces, ACreaseIsDeclinedAndOptionsAreChecked) {
     MeshCadSurfaceOptions o = quality(h, 0.0);
     o.mOrder = 2;
     EXPECT_THROW((void)mio::mesh_cad_surface(b, o, mio::MeshCadSizeSources{}, extras),
-                 std::invalid_argument);
-    mio::MeshCadSurfaceExtras lop;
-    lop.mLopCorners = true;
-    EXPECT_THROW((void)mio::mesh_cad_surface(b, quality(h, 0.0), mio::MeshCadSizeSources{}, lop),
                  std::invalid_argument);
 }
 

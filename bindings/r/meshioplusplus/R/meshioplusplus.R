@@ -2627,6 +2627,8 @@ mio_iga_evaluate <- function(info, patch, params, derivatives = 0L, trim_samples
 #'   edge's `"tolerance"` and `"end_tolerances"` in its extra JSON).
 #' @param virtual_faces Mesh a face narrower than `target_size` with the
 #'   neighbour it meets tangentially along the most edge; order 1 only.
+#' @param lop_corners Lop acute corners (Pav and Walkington 2005) in place of
+#'   concentric shells; only with refinement (`min_angle` or sizes).
 #' @return A list: `mesh`, the counts (`num_points`, `num_triangles`,
 #'   `num_edge_segments`, `num_faces`, `num_failed`, `num_edges`,
 #'   `num_open_edges`, `num_non_manifold_edges`, `num_misoriented_edges`,
@@ -2640,7 +2642,10 @@ mio_iga_evaluate <- function(info, patch, params, derivatives = 0L, trim_samples
 #'   edges), `reparametrised` (a data frame: `face`, `condition_number`,
 #'   `condition_number_disc`, `method` 1 conformal, 2 mean-value, 0 declined,
 #'   `reason`), `merged_faces` (`sliver`, `host`, `width`, `merged`, `reason`),
-#'   `tolerance_uses` (`edge`, `declared`, `gap`, `where`) and
+#'   `tolerance_uses` (`edge`, `declared`, `gap`, `where`), `lopped_corners`
+#'   (`face`, `point`, `angle_deg`, `lfs0`, `lop_radius`, `turning_deg`,
+#'   `stated_bound_deg`, `num_forced`, `min_forced_deg`, `within_two_radii`,
+#'   `guaranteed`, `reason`) and
 #'   `corners`, a data frame of the corners under 60 degrees and poles (1-based
 #'   `face` and `point`, `u`, `v`, `x`, `y`, `z`, `angle_deg`, `min_forced_deg`,
 #'   `reach`, `pole`).
@@ -2658,7 +2663,7 @@ mio_mesh_cad_surface <- function(info, target_size, max_chordal_deviation = 0,
                                  background_array = "size",
                                  metric = c("mean", "varying"), virtual_edges = FALSE,
                                  reparam_condition_number = 0, model_tolerances = FALSE,
-                                 virtual_faces = FALSE) {
+                                 virtual_faces = FALSE, lop_corners = FALSE) {
   smooth_method <- match.arg(smooth_method)
   metric <- match.arg(metric)
   # (1-based index, size) pairs from a named vector or a two-column matrix.
@@ -2680,12 +2685,13 @@ mio_mesh_cad_surface <- function(info, target_size, max_chordal_deviation = 0,
              fs[[1]], fs[[2]], es[[1]], es[[2]], background, as.character(background_array),
              as.numeric(match(metric, c("mean", "varying")) - 1L), isTRUE(virtual_edges),
              as.numeric(reparam_condition_number), isTRUE(model_tolerances),
-             isTRUE(virtual_faces))
+             isTRUE(virtual_faces), isTRUE(lop_corners))
   r$warnings <- if (nzchar(r$warnings)) strsplit(r$warnings, "\n", fixed = TRUE)[[1]] else character(0)
   r$corners <- as.data.frame(r$corners)
   r$reparametrised <- as.data.frame(r$reparametrised, stringsAsFactors = FALSE)
   r$merged_faces <- as.data.frame(r$merged_faces, stringsAsFactors = FALSE)
   r$tolerance_uses <- as.data.frame(r$tolerance_uses, stringsAsFactors = FALSE)
+  r$lopped_corners <- as.data.frame(r$lopped_corners, stringsAsFactors = FALSE)
   r
 }
 

@@ -126,6 +126,7 @@ def mesh_cad_surface(
     reparam_condition_number: float = 0.0,
     model_tolerances: bool = False,
     virtual_faces: bool = False,
+    lop_corners: bool = False,
     return_report: bool = False,
 ):
     """Triangulate a B-rep's faces into one conforming surface mesh.
@@ -202,6 +203,16 @@ def mesh_cad_surface(
         with the neighbour it meets tangentially along the most edge, through
         their common flattening; each triangle keeps the face it lies in, and
         the edges they share leave the ``line`` block. Order 1 only.
+    :param lop_corners: protect every acute corner by corner lopping (S. E.
+        Pav and N. J. Walkington, "Delaunay refinement by corner lopping",
+        IMR 2005) in place of concentric shells: a ball of radius
+        ``(sqrt 2 - 1)`` times the corner's distance to the nearest other
+        corner of the face, its edges split where they leave it, halved while
+        a vertex lies inside, and refinement leaves the triangles whose point
+        falls in it. Each corner is reported with the angle bound the paper
+        proves (Corollary 3) for the face's turning on a planar face, and
+        whether the run meets it. Only with refinement (``min_angle`` or a
+        size).
     :param return_report: also return the report.
     :returns: the surface mesh (``triangle`` and ``line`` blocks, or their
         curved forms with ``order`` 2 or 3), or
@@ -224,7 +235,11 @@ def mesh_cad_surface(
         ``merged_faces`` (per sliver found: ``sliver``, ``host``, ``width``,
         the shared ``edges``, ``merged`` and ``reason``) and
         ``tolerance_uses`` (per edge and place where a declared tolerance
-        accepted a gap: ``edge``, ``declared``, ``gap``, ``where``).
+        accepted a gap: ``edge``, ``declared``, ``gap``, ``where``) and
+        ``lopped_corners`` (per corner lopped: ``face``, ``point``,
+        ``angle_deg``, ``lfs0``, ``lop_radius``, ``turning_deg``,
+        ``stated_bound_deg``, ``num_forced``, ``min_forced_deg``,
+        ``within_two_radii``, ``guaranteed`` and ``reason`` when not).
     :raises ValueError: on an option out of range or a mesh with no B-rep.
     :raises RuntimeError: with ``strict=True``, naming the first failed face.
     :raises NotImplementedError: without the compiled core.
@@ -326,6 +341,7 @@ def mesh_cad_surface(
         reparam_condition_number=reparam_condition_number,
         model_tolerances=bool(model_tolerances),
         virtual_faces=bool(virtual_faces),
+        lop_corners=bool(lop_corners),
     )
     out = res["mesh"]
     if not return_report:
@@ -345,6 +361,7 @@ def mesh_cad_surface(
         {**m, "edges": [int(e) for e in m["edges"]]} for m in res["merged_faces"]
     ]
     report["tolerance_uses"] = [dict(t) for t in res["tolerance_uses"]]
+    report["lopped_corners"] = [dict(c) for c in res["lopped_corners"]]
     return out, report
 
 

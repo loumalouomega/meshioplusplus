@@ -3013,7 +3013,8 @@ PYBIND11_MODULE(_core, m) {
            double grading, double curvature_deviation, double cells_across_gaps, int pole_rings,
            py::object face_sizes, py::object edge_sizes, py::object background,
            const std::string& background_array, bool virtual_edges, const std::string& metric,
-           double reparam_condition_number, bool model_tolerances, bool virtual_faces) {
+           double reparam_condition_number, bool model_tolerances, bool virtual_faces,
+           bool lop_corners) {
             const meshioplusplus::BrepInfo info = core_brep_from_py(brep);
             // Given sizes (6.3.1): sequences of (index, size) pairs, already
             // validated and sorted by the Python wrapper.
@@ -3077,6 +3078,7 @@ PYBIND11_MODULE(_core, m) {
             meshioplusplus::MeshCadSurfaceExtras extras;
             extras.mModelTolerances = model_tolerances;
             extras.mVirtualFaces = virtual_faces;
+            extras.mLopCorners = lop_corners;
             meshioplusplus::MeshCadSizeReport size_report;
             meshioplusplus::MeshCadSurfaceExtrasReport extras_report;
             meshioplusplus::MeshCadSurfaceResult r = core_nogil([&] {
@@ -3186,6 +3188,24 @@ PYBIND11_MODULE(_core, m) {
                 tolerance_uses.append(d);
             }
             out["tolerance_uses"] = tolerance_uses;
+            py::list lopped;
+            for (const auto& r_c : extras_report.mLoppedCorners) {
+                py::dict d;
+                d["face"] = r_c.mFace;
+                d["point"] = r_c.mPoint;
+                d["angle_deg"] = r_c.mAngleDeg;
+                d["lfs0"] = r_c.mLfs0;
+                d["lop_radius"] = r_c.mLopRadius;
+                d["turning_deg"] = r_c.mTurningDeg;
+                d["stated_bound_deg"] = r_c.mStatedBoundDeg;
+                d["num_forced"] = r_c.mNumForced;
+                d["min_forced_deg"] = r_c.mMinForcedDeg;
+                d["within_two_radii"] = r_c.mWithinTwoRadii;
+                d["guaranteed"] = r_c.mGuaranteed;
+                d["reason"] = r_c.mReason;
+                lopped.append(d);
+            }
+            out["lopped_corners"] = lopped;
             return out;
         },
         py::arg("brep"), py::arg("target_size"), py::arg("max_chordal_deviation") = 0.0,
@@ -3200,7 +3220,7 @@ PYBIND11_MODULE(_core, m) {
         py::arg("background") = py::none(), py::arg("background_array") = "size",
         py::arg("virtual_edges") = false, py::arg("metric") = "mean",
         py::arg("reparam_condition_number") = 0.0, py::arg("model_tolerances") = false,
-        py::arg("virtual_faces") = false);
+        py::arg("virtual_faces") = false, py::arg("lop_corners") = false);
     m.def(
         "triangulate_polygon_2d",
         [](py::list loops, double target_size, double min_angle, std::int64_t max_points) {

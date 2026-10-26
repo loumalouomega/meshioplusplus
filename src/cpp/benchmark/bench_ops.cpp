@@ -1236,6 +1236,18 @@ int main(int argc, char** argv) {
             extras.mVirtualFaces = true;
             of(pD, mio::mesh_cad_surface(strip, o, mio::MeshCadSizeSources{}, extras).mMesh);
         });
+        // Corner lopping (v17.20.0): a parallelogram with two 30-degree
+        // corners, lopped and refined to 20 degrees.
+        row("mesh_cad_surface_lop_corners", [&](MeshDigest* pD) {
+            const double c = std::sqrt(3.0), sh = 1.0;
+            const mio::BrepInfo para = bilinear({{0, 0, 0, 2, 0, 0, c, sh, 0, 2 + c, sh, 0}});
+            mio::MeshCadSurfaceOptions o;
+            o.mTargetSize = octree_step;
+            o.mMinAngleDeg = 20.0;
+            mio::MeshCadSurfaceExtras extras;
+            extras.mLopCorners = true;
+            of(pD, mio::mesh_cad_surface(para, o, mio::MeshCadSizeSources{}, extras).mMesh);
+        });
         row("sample_distance", [&](MeshDigest* pD) {
             const NDArray d = mio::sample_distance(surface, jittered->Points());
             if (pD)

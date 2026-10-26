@@ -353,7 +353,16 @@ end
                              model_tolerances=true, virtual_faces=true)
         @test x.num_failed == 0
         @test isempty(x.reparametrised) && isempty(x.merged_faces) && isempty(x.tolerance_uses)
+        @test isempty(x.lopped_corners)
         close(x.mesh)
+        # Corner lopping at 20 degrees: the two 45-degree corners, under the
+        # straight-segment bound.
+        l = mesh_cad_surface(info; target_size=0.1, min_angle=20.0, lop_corners=true)
+        @test length(l.lopped_corners) == 2
+        @test all(c -> c.face == 1 && isapprox(c.angle_deg, 45.0; atol=1e-9) &&
+                       20.7 < c.stated_bound_deg < 20.71 && c.guaranteed && isempty(c.reason),
+                  l.lopped_corners)
+        close(l.mesh)
         @test_throws MeshioError mesh_cad_surface(info; target_size=0.1,
                                                   reparam_condition_number=0.5)
         close(r.mesh); close(mesh); close(info)

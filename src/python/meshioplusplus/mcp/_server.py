@@ -1199,6 +1199,7 @@ def _register_operations(server: FastMCP) -> None:
         reparam_condition_number: float = 0.0,
         model_tolerances: bool = False,
         virtual_faces: bool = False,
+        lop_corners: bool = False,
     ) -> dict:
         """Triangulate the faces of a CAD model (Kratos CAD JSON; STEP and
         IGES where OpenCASCADE is linked) into one conforming surface mesh with
@@ -1254,7 +1255,13 @@ def _register_operations(server: FastMCP) -> None:
         IGES read writes OpenCASCADE's), listed in tolerance_uses;
         virtual_faces (order 1 only) meshes a face narrower than target_size
         with the neighbour it meets tangentially along the most edge, each
-        triangle keeping its own face, listed in merged_faces."""
+        triangle keeping its own face, listed in merged_faces; lop_corners
+        protects every acute corner by corner lopping (Pav and Walkington
+        2005) in place of concentric shells, only with refinement, listed in
+        lopped_corners (angle_deg, lfs0, lop_radius, turning_deg,
+        stated_bound_deg, num_forced, min_forced_deg, within_two_radii,
+        guaranteed, reason): the angle bound the paper proves on a planar
+        face, and whether the run meets it."""
         return _guard(
             _tools.tool_mesh_cad_surface,
             input_path=input_path,
@@ -1287,6 +1294,7 @@ def _register_operations(server: FastMCP) -> None:
             reparam_condition_number=reparam_condition_number,
             model_tolerances=model_tolerances,
             virtual_faces=virtual_faces,
+            lop_corners=lop_corners,
         )
 
     @server.tool()

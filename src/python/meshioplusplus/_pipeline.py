@@ -588,6 +588,7 @@ _OP_TABLE = {
         "ReparamConditionNumber",
         "ModelTolerances",
         "VirtualFaces",
+        "LopCorners",
     ),
     "IgaSample": ("Subdivisions", "TrimSamples", "Trim", "Edges"),
     "IgaRefine": (
@@ -2372,6 +2373,7 @@ def _apply_model_step(step, model, steps, warnings):
             reparam_condition_number=_number(step, "ReparamConditionNumber", 0.0),
             model_tolerances=_flag(step, "ModelTolerances", False),
             virtual_faces=_flag(step, "VirtualFaces", False),
+            lop_corners=_flag(step, "LopCorners", False),
             return_report=True,
         )
         warnings.extend("MeshCadSurface: " + w for w in report["warnings"])
@@ -2386,6 +2388,7 @@ def _apply_model_step(step, model, steps, warnings):
             NumCurvedStraightened=float(report["num_curved_straightened"]),
             NumReparametrised=float(sum(r["taken"] for r in report["reparametrised"])),
             NumMergedFaces=float(sum(m["merged"] for m in report["merged_faces"])),
+            NumLoppedCorners=float(len(report["lopped_corners"])),
             MinAngleDeg=float(report["min_angle_deg"]),
             MaxAngleDeg=float(report["max_angle_deg"]),
         )

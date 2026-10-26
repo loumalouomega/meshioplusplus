@@ -432,6 +432,35 @@ export interface MeshCadSurfaceOptions {
   modelTolerances?: boolean;
   /** Mesh a sliver face with the neighbour it meets tangentially (default false). */
   virtualFaces?: boolean;
+  /**
+   * Lop acute corners (Pav and Walkington 2005) in place of concentric
+   * shells (v17.20.0; default false); only with refinement.
+   */
+  lopCorners?: boolean;
+}
+
+/** A corner lopped (`lopCorners`, v17.20.0), 0-based face and point. */
+export interface MeshCadLoppedCorner {
+  face: number;
+  point: number;
+  /** Its smallest acute wedge in the face's plane (degrees). */
+  angleDeg: number;
+  /** The distance to the face's nearest other corner. */
+  lfs0: number;
+  /** Its ball's radius at the end. */
+  lopRadius: number;
+  /** The most any boundary piece of the face turns (degrees). */
+  turningDeg: number;
+  /** Corollary 3's bound for that turning on a planar face; 0 on a curved one. */
+  statedBoundDeg: number;
+  /** The triangles under `minAngle` left in its ball, and their smallest angle. */
+  numForced: number;
+  minForcedDeg: number;
+  /** Every one of them within twice the radius (Lemma 7). */
+  withinTwoRadii: boolean;
+  /** The bound holds; otherwise `reason` says why not. */
+  guaranteed: boolean;
+  reason: string;
 }
 
 /** A face over `reparamConditionNumber` (v17.20.0). */
@@ -552,6 +581,8 @@ export interface MeshCadSurfaceResult {
   mergedFaces: MeshCadMergedFace[];
   /** Where declared tolerances accepted gaps (v17.20.0). */
   toleranceUses: MeshCadToleranceUse[];
+  /** The corners lopped (v17.20.0). */
+  loppedCorners: MeshCadLoppedCorner[];
 }
 
 /** Sampling options of `igaRefine` / `igaSample`. */

@@ -1837,12 +1837,14 @@ def tool_mesh_cad_surface(
     reparam_condition_number=0.0,
     model_tolerances=False,
     virtual_faces=False,
+    lop_corners=False,
 ):
     """Triangulate a CAD model's faces (CAD JSON, STEP, IGES) into one
     conforming surface mesh at a target edge size, optionally sized by
     curvature and gaps, refined to a minimum angle, graded at poles,
     smoothed, and curved (order 2 or 3); faces with unusable parameters
-    flattened, slivers merged and the model's own tolerances accepted."""
+    flattened, slivers merged, the model's own tolerances accepted and acute
+    corners lopped."""
     mesh = _load(input_path, input_format)
     out, report = mesh_cad_surface(
         mesh,
@@ -1872,6 +1874,7 @@ def tool_mesh_cad_surface(
         reparam_condition_number=reparam_condition_number,
         model_tolerances=model_tolerances,
         virtual_faces=virtual_faces,
+        lop_corners=lop_corners,
         return_report=True,
     )
     return _result(_store(out, output_path, output_format), out, **report)

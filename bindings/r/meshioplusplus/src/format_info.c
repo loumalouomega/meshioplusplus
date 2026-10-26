@@ -656,6 +656,52 @@ static SEXP r_mesh_cad_tolerance_uses(void) {
     return out;
 }
 
+/* v17.20.0: the corners lopped (6.2.3), 1-based face and point. */
+static SEXP r_mesh_cad_lopped_corners(void) {
+    const R_xlen_t n = (R_xlen_t)mio_mesh_cad_surface_num_lopped_corners();
+    SEXP face = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP point = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP angle = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP lfs0 = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP radius = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP turning = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP bound = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP forced = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP min_forced = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP within = PROTECT(Rf_allocVector(LGLSXP, n));
+    SEXP guaranteed = PROTECT(Rf_allocVector(LGLSXP, n));
+    SEXP reason = PROTECT(Rf_allocVector(STRSXP, n));
+    for (R_xlen_t i = 0; i < n; ++i) {
+        int64_t f = -1, p = -1, nf = 0;
+        double a = 0.0, l = 0.0, r = 0.0, t = 0.0, b = 0.0, m = 0.0;
+        int32_t w = 0, g = 0;
+        mio_mesh_cad_surface_lopped_corner((int64_t)i, &f, &p, &a, &l, &r, &t, &b, &nf, &m, &w,
+                                           &g);
+        REAL(face)[i] = (double)f + 1.0;
+        REAL(point)[i] = (double)p + 1.0;
+        REAL(angle)[i] = a;
+        REAL(lfs0)[i] = l;
+        REAL(radius)[i] = r;
+        REAL(turning)[i] = t;
+        REAL(bound)[i] = b;
+        REAL(forced)[i] = (double)nf;
+        REAL(min_forced)[i] = m;
+        LOGICAL(within)[i] = w != 0;
+        LOGICAL(guaranteed)[i] = g != 0;
+        SET_STRING_ELT(reason, i,
+                       r_reason(mio_mesh_cad_surface_lopped_corner_reason, (int64_t)i));
+    }
+    const char* names[] = {"face",          "point",          "angle_deg",   "lfs0",
+                           "lop_radius",    "turning_deg",    "stated_bound_deg",
+                           "num_forced",    "min_forced_deg", "within_two_radii",
+                           "guaranteed",    "reason"};
+    SEXP cols[] = {face,   point,      angle,  lfs0,   radius,     turning,
+                   bound,  forced,     min_forced, within, guaranteed, reason};
+    SEXP out = r_columns(12, names, cols);
+    UNPROTECT(12);
+    return out;
+}
+
 SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation,
                             SEXP min_points_per_edge, SEXP tolerance, SEXP record_face_ids,
                             SEXP edges, SEXP match_unreferenced_trims, SEXP strict, SEXP max_points,
@@ -665,7 +711,7 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
                             SEXP edge_size_edges, SEXP edge_sizes, SEXP background,
                             SEXP background_array, SEXP metric, SEXP virtual_edges,
                             SEXP reparam_condition_number, SEXP model_tolerances,
-                            SEXP virtual_faces) {
+                            SEXP virtual_faces, SEXP lop_corners) {
     const mio_format_info *info = info_of(x, 0);
     mio_mesh_cad_surface_opts opts;
     mio_mesh_cad_surface_opts_init(&opts);
@@ -693,11 +739,13 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
     mio_mesh_cad_surface_opts_ex_init(&ex);
     ex.metric = (int32_t)mio_r_int64(metric, "metric");
     ex.virtual_edges = mio_r_bool(virtual_edges, "virtual_edges") ? 1 : 0;
-    /* v17.20.0: the reparametrisation, model tolerances and virtual faces. */
+    /* v17.20.0: the reparametrisation, model tolerances, virtual faces and
+     * corner lopping. */
     ex.reparam_condition_number =
         mio_r_double(reparam_condition_number, "reparam_condition_number");
     ex.model_tolerances = mio_r_bool(model_tolerances, "model_tolerances") ? 1 : 0;
     ex.virtual_faces = mio_r_bool(virtual_faces, "virtual_faces") ? 1 : 0;
+    ex.lop_corners = mio_r_bool(lop_corners, "lop_corners") ? 1 : 0;
     const R_xlen_t nfs = Rf_xlength(face_size_faces), nes = Rf_xlength(edge_size_edges);
     if (Rf_xlength(face_sizes) != nfs || Rf_xlength(edge_sizes) != nes)
         Rf_error("mesh_cad_surface: the size indices and sizes must have the same length");
@@ -787,8 +835,9 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
     SEXP reparam = PROTECT(r_mesh_cad_reparametrised());
     SEXP merged = PROTECT(r_mesh_cad_merged_faces());
     SEXP tol_uses = PROTECT(r_mesh_cad_tolerance_uses());
+    SEXP lopped = PROTECT(r_mesh_cad_lopped_corners());
 
-    enum { R_MESH_CAD_N = 32 };
+    enum { R_MESH_CAD_N = 33 };
     SEXP res = PROTECT(Rf_allocVector(VECSXP, R_MESH_CAD_N));
     SEXP nm = PROTECT(Rf_allocVector(STRSXP, R_MESH_CAD_N));
     int k = 0;
@@ -833,12 +882,13 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
     R_MESH_CAD_SET("reparametrised", reparam);
     R_MESH_CAD_SET("merged_faces", merged);
     R_MESH_CAD_SET("tolerance_uses", tol_uses);
+    R_MESH_CAD_SET("lopped_corners", lopped);
 #undef R_MESH_CAD_NUM
 #undef R_MESH_CAD_SET
     if (k != R_MESH_CAD_N)
         Rf_error("mesh_cad_surface: report has %d fields, expected %d", k, (int)R_MESH_CAD_N);
     Rf_setAttrib(res, R_NamesSymbol, nm);
-    UNPROTECT(13);
+    UNPROTECT(14);
     return res;
 }
 

@@ -5643,7 +5643,8 @@ val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
                              "virtualEdges",
                              "reparamConditionNumber",
                              "modelTolerances",
-                             "virtualFaces"});
+                             "virtualFaces",
+                             "lopCorners"});
         const auto has = [&](const char* pKey) {
             return rOptions.hasOwnProperty(pKey) && !rOptions[pKey].isUndefined() &&
                    !rOptions[pKey].isNull();
@@ -5739,6 +5740,8 @@ val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
             extras.mModelTolerances = rOptions["modelTolerances"].as<bool>();
         if (has("virtualFaces"))
             extras.mVirtualFaces = rOptions["virtualFaces"].as<bool>();
+        if (has("lopCorners"))
+            extras.mLopCorners = rOptions["lopCorners"].as<bool>();
         meshioplusplus::MeshCadSizeReport size_report;
         meshioplusplus::MeshCadSurfaceExtrasReport extras_report;
         meshioplusplus::MeshCadSurfaceResult r = meshioplusplus::mesh_cad_surface(
@@ -5872,6 +5875,25 @@ val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
             tolerance_uses.set(static_cast<unsigned>(i), d);
         }
         out.set("toleranceUses", tolerance_uses);
+        val lopped = val::array();
+        for (std::size_t i = 0; i < extras_report.mLoppedCorners.size(); ++i) {
+            const auto& r_c = extras_report.mLoppedCorners[i];
+            val d = val::object();
+            d.set("face", static_cast<double>(r_c.mFace));
+            d.set("point", static_cast<double>(r_c.mPoint));
+            d.set("angleDeg", r_c.mAngleDeg);
+            d.set("lfs0", r_c.mLfs0);
+            d.set("lopRadius", r_c.mLopRadius);
+            d.set("turningDeg", r_c.mTurningDeg);
+            d.set("statedBoundDeg", r_c.mStatedBoundDeg);
+            d.set("numForced", static_cast<double>(r_c.mNumForced));
+            d.set("minForcedDeg", r_c.mMinForcedDeg);
+            d.set("withinTwoRadii", r_c.mWithinTwoRadii);
+            d.set("guaranteed", r_c.mGuaranteed);
+            d.set("reason", r_c.mReason);
+            lopped.set(static_cast<unsigned>(i), d);
+        }
+        out.set("loppedCorners", lopped);
         return out;
     });
 }

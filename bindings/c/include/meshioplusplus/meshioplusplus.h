@@ -5760,12 +5760,16 @@ typedef struct mio_mesh_cad_surface_opts_ex {
     double reparam_condition_number;
     int32_t model_tolerances; /**< v17.20.0: nonzero: accept the gaps the model declares (6.5.1) */
     int32_t virtual_faces;    /**< v17.20.0: nonzero: mesh sliver faces with a neighbour (6.5.2) */
-    int64_t reserved[6];      /**< zero */
+    /** v17.20.0: nonzero: lop acute corners (Pav and Walkington 2005) in place
+     *  of concentric shells (6.2.3); only with refinement. */
+    int32_t lop_corners;
+    int32_t reserved_pad; /**< zero */
+    int64_t reserved[5];  /**< zero */
 } mio_mesh_cad_surface_opts_ex;
 
 /** Initialize the extended options: the mean metric, no virtual edges, no
- *  given sizes, no background, no reparametrisation, no model tolerances and
- *  no virtual faces. */
+ *  given sizes, no background, no reparametrisation, no model tolerances, no
+ *  virtual faces and no corner lopping. */
 MIO_API void mio_mesh_cad_surface_opts_ex_init(mio_mesh_cad_surface_opts_ex* opts);
 
 /**
@@ -5852,6 +5856,29 @@ MIO_API int64_t mio_mesh_cad_surface_num_tolerance_uses(void);
 MIO_API mio_status mio_mesh_cad_surface_tolerance_use(int64_t index, int64_t* edge,
                                                       double* declared, double* gap,
                                                       int32_t* where);
+
+/** v17.20.0: how many corners this thread's last call lopped (6.2.3). */
+MIO_API int64_t mio_mesh_cad_surface_num_lopped_corners(void);
+
+/**
+ * v17.20.0: lopped corner `index`, by face then point: its face and mesh
+ * point, its smallest acute wedge in the face's plane (degrees), the distance
+ * to the face's nearest other corner, its ball's radius at the end, the most
+ * any boundary piece of the face turns (degrees), Corollary 3's bound for that
+ * turning on a planar face (0 on a curved one), the triangles under min_angle
+ * left in its ball and the smallest angle among them (180 for none), whether
+ * they all lie within twice the radius (Lemma 7), and whether the bound is
+ * guaranteed (see mio_mesh_cad_surface_lopped_corner_reason). Any output may
+ * be NULL.
+ */
+MIO_API mio_status mio_mesh_cad_surface_lopped_corner(
+    int64_t index, int64_t* face, int64_t* point, double* angle_deg, double* lfs0, double* radius,
+    double* turning_deg, double* stated_bound_deg, int64_t* num_forced, double* min_forced_deg,
+    int32_t* within_two_radii, int32_t* guaranteed);
+
+/** v17.20.0: why lopped corner `index`'s bound is not guaranteed ("" when it
+ *  is), copied as mio_mesh_cad_surface_face_reason does. */
+MIO_API int64_t mio_mesh_cad_surface_lopped_corner_reason(int64_t index, char* buf, int64_t buflen);
 
 /**
  * Options for mio_hausdorff_distance. Same ABI rules as above; an all-zero

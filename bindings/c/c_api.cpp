@@ -6642,8 +6642,9 @@ static_assert(sizeof(void*) != 8 ||
                    offsetof(mio_mesh_cad_surface_opts_ex, reparam_condition_number) == 72 &&
                    offsetof(mio_mesh_cad_surface_opts_ex, model_tolerances) == 80 &&
                    offsetof(mio_mesh_cad_surface_opts_ex, virtual_faces) == 84 &&
-                   offsetof(mio_mesh_cad_surface_opts_ex, reserved) == 88),
-              "mio_mesh_cad_surface_opts_ex's layout moved (v17.20.0 took 16 bytes of its tail)");
+                   offsetof(mio_mesh_cad_surface_opts_ex, lop_corners) == 88 &&
+                   offsetof(mio_mesh_cad_surface_opts_ex, reserved) == 96),
+              "mio_mesh_cad_surface_opts_ex's layout moved (v17.20.0 took 24 bytes of its tail)");
 static_assert(static_cast<int>(MIO_MESH_CAD_SMOOTH_ODT) ==
                   static_cast<int>(meshioplusplus::MeshCadSmoothing::Odt),
               "mio_mesh_cad_smoothing drifted from MeshCadSmoothing");
@@ -7269,6 +7270,7 @@ mio_mesh* mio_mesh_cad_surface2(const mio_format_info* info, const mio_mesh_cad_
             o.mReparamConditionNumber = opts_ex->reparam_condition_number;
             extras.mModelTolerances = opts_ex->model_tolerances != 0;
             extras.mVirtualFaces = opts_ex->virtual_faces != 0;
+            extras.mLopCorners = opts_ex->lop_corners != 0;
             if (opts_ex->metric != MIO_MESH_CAD_METRIC_MEAN &&
                 opts_ex->metric != MIO_MESH_CAD_METRIC_VARYING)
                 throw std::invalid_argument(
@@ -7521,6 +7523,59 @@ mio_status mio_mesh_cad_surface_tolerance_use(int64_t index, int64_t* edge, doub
                      : r_t.mWhere == "corner"     ? MIO_MESH_CAD_TOLERANCE_CORNER
                                                   : MIO_MESH_CAD_TOLERANCE_PROJECTION;
         return MIO_OK;
+    });
+}
+
+int64_t mio_mesh_cad_surface_num_lopped_corners(void) {
+    return static_cast<int64_t>(capi_mesh_cad_state().mExtras.mLoppedCorners.size());
+}
+
+mio_status mio_mesh_cad_surface_lopped_corner(int64_t index, int64_t* face, int64_t* point,
+                                              double* angle_deg, double* lfs0, double* radius,
+                                              double* turning_deg, double* stated_bound_deg,
+                                              int64_t* num_forced, double* min_forced_deg,
+                                              int32_t* within_two_radii, int32_t* guaranteed) {
+    return guarded([&]() -> mio_status {
+        const auto& r_v = capi_mesh_cad_state().mExtras.mLoppedCorners;
+        if (index < 0 || static_cast<std::size_t>(index) >= r_v.size())
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: mesh_cad_surface: lopped corner index out of range");
+        const auto& r_c = r_v[static_cast<std::size_t>(index)];
+        if (face)
+            *face = r_c.mFace;
+        if (point)
+            *point = r_c.mPoint;
+        if (angle_deg)
+            *angle_deg = r_c.mAngleDeg;
+        if (lfs0)
+            *lfs0 = r_c.mLfs0;
+        if (radius)
+            *radius = r_c.mLopRadius;
+        if (turning_deg)
+            *turning_deg = r_c.mTurningDeg;
+        if (stated_bound_deg)
+            *stated_bound_deg = r_c.mStatedBoundDeg;
+        if (num_forced)
+            *num_forced = r_c.mNumForced;
+        if (min_forced_deg)
+            *min_forced_deg = r_c.mMinForcedDeg;
+        if (within_two_radii)
+            *within_two_radii = r_c.mWithinTwoRadii ? 1 : 0;
+        if (guaranteed)
+            *guaranteed = r_c.mGuaranteed ? 1 : 0;
+        return MIO_OK;
+    });
+}
+
+int64_t mio_mesh_cad_surface_lopped_corner_reason(int64_t index, char* buf, int64_t buflen) {
+    return guarded_ptr(int64_t{-1}, [&]() {
+        const auto& r_v = capi_mesh_cad_state().mExtras.mLoppedCorners;
+        if (index < 0 || static_cast<std::size_t>(index) >= r_v.size())
+            throw std::invalid_argument(
+                "meshio++: mesh_cad_surface: lopped corner index out of range");
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative reason buffer length");
+        return copy_string(r_v[static_cast<std::size_t>(index)].mReason, buf, buflen);
     });
 }
 

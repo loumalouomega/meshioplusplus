@@ -235,6 +235,7 @@ def measure_one(
     reparam=0.0,
     model_tolerances=False,
     virtual_faces=False,
+    lop_corners=False,
 ):
     """Read, mesh and measure one model; runs in its own process."""
     import resource
@@ -269,6 +270,7 @@ def measure_one(
             reparam_condition_number=reparam,
             model_tolerances=model_tolerances,
             virtual_faces=virtual_faces,
+            lop_corners=lop_corners,
             return_report=True,
         )
     except Exception as exc:  # noqa: BLE001
@@ -317,6 +319,11 @@ def measure_one(
         out["num_slivers"] = len(report["merged_faces"])
     if model_tolerances:
         out["num_tolerance_uses"] = len(report["tolerance_uses"])
+    if lop_corners:
+        out["num_lopped_corners"] = len(report["lopped_corners"])
+        out["num_lop_guaranteed"] = sum(
+            c["guaranteed"] for c in report["lopped_corners"]
+        )
     tri = [c.data for c in mesh.cells if c.type == "triangle"]
     if tri:
         surface = mio.Mesh(mesh.points, [("triangle", np.concatenate(tri))])
@@ -382,6 +389,7 @@ def run(args):
                 str(args.reparam),
                 str(int(args.model_tolerances)),
                 str(int(args.virtual_faces)),
+                str(int(args.lop_corners)),
             ]
             t0 = time.perf_counter()
             try:
@@ -421,6 +429,7 @@ def run(args):
             **({"reparam_condition_number": args.reparam} if args.reparam > 0 else {}),
             **({"model_tolerances": True} if args.model_tolerances else {}),
             **({"virtual_faces": True} if args.virtual_faces else {}),
+            **({"lop_corners": True} if args.lop_corners else {}),
         },
         "models": results,
     }
@@ -641,6 +650,11 @@ def main(argv=None):
         action="store_true",
         help="mesh sliver faces with a neighbour (6.5.2)",
     )
+    p.add_argument(
+        "--lop-corners",
+        action="store_true",
+        help="lop acute corners in place of concentric shells (6.2.3)",
+    )
     p = sub.add_parser("compare", help="fail when a model that meshed no longer does")
     p.add_argument("results")
     p.add_argument("--baseline", default=str(BASELINE))
@@ -664,6 +678,7 @@ def main(argv=None):
         reparam = float(argv[7]) if len(argv) > 7 else 0.0
         tolerances = len(argv) > 8 and argv[8] == "1"
         virtual_faces = len(argv) > 9 and argv[9] == "1"
+        lop_corners = len(argv) > 10 and argv[10] == "1"
         row = measure_one(
             path,
             float(divisor),
@@ -674,6 +689,7 @@ def main(argv=None):
             reparam,
             tolerances,
             virtual_faces,
+            lop_corners,
         )
         print(json.dumps(finite(row), allow_nan=False, default=float))
         return 0

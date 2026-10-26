@@ -46,6 +46,7 @@
 #include "brep_solids.hpp"
 #include "mesh_fixtures.hpp"
 #include "../../src/cpp/benchmark/mesh_digest.hpp"
+#include "../../src/cpp/src/detail/cdt2d.hpp"
 #include "../../src/cpp/src/operations/mesh_cad_testing.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/formats/cad_json.hpp"
@@ -379,6 +380,118 @@ TEST(MeshCadQuality, ASmallInputAngleIsReportedWithTheTrianglesItForces) {
         }
         EXPECT_NEAR(c.mMinForcedDeg, forced_min, 1e-9);
     }
+}
+
+// A planar lens on the patch [0, S]^2 at z = 0: two circular trims (rational
+// quadratic arcs) from (X0, Y0) to (X0 + L, Y0), each leaving the chord at
+// Theta degrees, so both corners are 2 Theta.
+mio::BrepInfo planar_lens(double X0, double Y0, double L, double ThetaDeg, double S) {
+    const double th = ThetaDeg * kPi / 180.0;
+    const double w = std::cos(th);
+    const double dy = 0.5 * L * std::tan(th);
+    std::ostringstream j;
+    j.precision(17);
+    j << R"({"breps": [{"brep_id": 1, "faces": [{"brep_id": 2, "swapped_surface_normal": false,
+        "surface": {"is_trimmed": true, "is_rational": false, "degrees": [1, 1],
+        "knot_vectors": [[0, )"
+      << S << "], [0, " << S << R"(]], "control_points": [[1, [0, 0, 0, 1]], [2, [)" << S
+      << R"(, 0, 0, 1]], [3, [0, )" << S << R"(, 0, 1]], [4, [)" << S << ", " << S
+      << R"(, 0, 1]]]}, "boundary_loops": [{"loop_type": "outer", "trimming_curves": [)";
+    const auto arc = [&](int Index, double Ax, double Bx, double My) {
+        j << (Index ? ", " : "") << R"({"trim_index": )" << Index
+          << R"(, "curve_direction": true, "parameter_curve": {"is_rational": true, "degree": 2,
+            "knot_vector": [0, 0, 0, 1, 1, 1], "active_range": [0, 1], "control_points": [[[)"
+          << Ax << ", " << Y0 << R"(, 0, 1]], [[)" << X0 + 0.5 * L << ", " << My << ", 0, " << w
+          << R"(]], [[)" << Bx << ", " << Y0 << R"(, 0, 1]]]}})";
+    };
+    arc(0, X0, X0 + L, Y0 - dy);
+    arc(1, X0 + L, X0, Y0 + dy);
+    j << R"(]}], "embedded_edges": []}], "edges": [], "vertices": []}]})";
+    const std::string path = mt::temp_path(".cad.json");
+    std::ofstream(path) << j.str();
+    return mio::read_cad_json_info(path);
+}
+
+TEST(MeshCadQuality, CornerLoppingStatesItsBoundOnALens) {
+    // Roadmap 6.2.3, Pav and Walkington (2005): a planar face with two
+    // 5-degree corners between circular trims, refined at 20 degrees with
+    // its corners lopped. Both are reported with their angle, a ball inside
+    // (sqrt 2 - 1) times the corners' distance, and Corollary 3's bound for
+    // the trims' turning, which 20 is under; the run ends with no budget
+    // warning, and every triangle under 20 degrees lies within twice its
+    // corner's radius (Lemma 7).
+    const double l = 4.0;
+    const auto info = planar_lens(0.5, 1.0, l, 2.5, 5.0);
+    for (const double h : {0.05, 0.02}) {
+        mio::MeshCadSurfaceExtras extras;
+        extras.mLopCorners = true;
+        mio::MeshCadSurfaceExtrasReport x;
+        const auto r = mio::mesh_cad_surface(info, quality(h, 20.0), mio::MeshCadSizeSources{},
+                                             extras, nullptr, &x);
+        ASSERT_EQ(r.mNumFailed, 0) << r.mFaces[0].mReason;
+        for (const auto& r_w : r.mWarnings)
+            EXPECT_EQ(r_w.find("did not finish"), std::string::npos) << r_w;
+        ASSERT_EQ(x.mLoppedCorners.size(), 2u) << h;
+        const double* pts = r.mMesh.Points().As<double>();
+        for (const auto& c : x.mLoppedCorners) {
+            EXPECT_EQ(c.mFace, 0);
+            // Between the first chords, under the tangents' 5 degrees.
+            EXPECT_LE(c.mAngleDeg, 5.0) << h;
+            EXPECT_GT(c.mAngleDeg, 4.9) << h;
+            EXPECT_NEAR(c.mLfs0, l, 1e-9);
+            EXPECT_GT(c.mLopRadius, 0.0);
+            EXPECT_LE(c.mLopRadius, (std::sqrt(2.0) - 1.0) * l * (1 + 1e-12));
+            EXPECT_GT(c.mStatedBoundDeg, 20.0) << h;
+            EXPECT_LE(c.mStatedBoundDeg, mio::detail::cdt2d_lop_bound_deg(0.0));
+            EXPECT_LT(c.mTurningDeg, 60.0);
+            EXPECT_TRUE(c.mWithinTwoRadii) << h;
+            EXPECT_TRUE(c.mGuaranteed) << h << ": " << c.mReason;
+            EXPECT_GE(c.mNumForced, 1);
+            EXPECT_LT(c.mMinForcedDeg, 20.0);
+        }
+        for (const Tri& r_t : triangles(r.mMesh)) {
+            if (r_t.mMinAngle >= 20.0 - 1e-9)
+                continue;
+            bool near = false;
+            for (const auto& c : x.mLoppedCorners) {
+                const double* o = pts + 3 * c.mPoint;
+                bool all = true;
+                for (int k = 0; k < 3; ++k)
+                    all = all && distance(r_t.mX[k], o) <= 2.0 * c.mLopRadius * (1 + 1e-9);
+                near = near || all;
+            }
+            EXPECT_TRUE(near) << "h " << h << ": a triangle of " << r_t.mMinAngle;
+        }
+    }
+}
+
+TEST(MeshCadQuality, CornerLoppingSaysWhyItStatesNoBound) {
+    // Above the bound, or on a curved face, the corner is still lopped and
+    // reported, with the reason no bound is stated.
+    const double t = std::tan(15.0 * kPi / 180.0);
+    const auto plane = planar_face({{{0, 0}, {4, 0}, {4, 4 * t}}}, 4.0);
+    mio::MeshCadSurfaceExtras extras;
+    extras.mLopCorners = true;
+    mio::MeshCadSurfaceExtrasReport x;
+    const auto r = mio::mesh_cad_surface(plane, quality(0.3, 25.0), mio::MeshCadSizeSources{},
+                                         extras, nullptr, &x);
+    ASSERT_EQ(r.mNumFailed, 0);
+    ASSERT_FALSE(x.mLoppedCorners.empty());
+    for (const auto& c : x.mLoppedCorners) {
+        EXPECT_NEAR(c.mStatedBoundDeg, mio::detail::cdt2d_lop_bound_deg(0.0), 1e-9);
+        EXPECT_FALSE(c.mGuaranteed);
+        EXPECT_NE(c.mReason.find("not under the bound"), std::string::npos) << c.mReason;
+    }
+    const auto r20 = mio::mesh_cad_surface(plane, quality(0.3, 20.0), mio::MeshCadSizeSources{},
+                                           extras, nullptr, &x);
+    ASSERT_EQ(r20.mNumFailed, 0);
+    for (const auto& c : x.mLoppedCorners)
+        EXPECT_TRUE(c.mGuaranteed) << c.mReason;
+    // Off, the mesh is the shells' byte for byte.
+    const auto off = mio::mesh_cad_surface(plane, quality(0.3, 20.0), mio::MeshCadSizeSources{},
+                                           mio::MeshCadSurfaceExtras{}, nullptr, &x);
+    EXPECT_TRUE(x.mLoppedCorners.empty());
+    EXPECT_EQ(digest(off.mMesh), digest(mio::mesh_cad_surface(plane, quality(0.3, 20.0)).mMesh));
 }
 
 TEST(MeshCadQuality, TheSpherePinsItsPointCount) {

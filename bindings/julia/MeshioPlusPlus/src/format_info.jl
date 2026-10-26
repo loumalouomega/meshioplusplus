@@ -466,10 +466,10 @@ const _MESH_CAD_SMOOTH_METHODS = ("laplacian", "odt")
                      face_sizes=nothing, edge_sizes=nothing, background=nothing,
                      background_array="size", metric="mean", virtual_edges=false,
                      reparam_condition_number=0.0, model_tolerances=false,
-                     virtual_faces=false)
+                     virtual_faces=false, lop_corners=false)
         -> (; mesh, num_points, num_triangles, ..., faces, warnings,
               angle_histogram, corners, virtual_edges, reparametrised, merged_faces,
-              tolerance_uses)
+              tolerance_uses, lopped_corners)
 
 Triangulate the faces of a B-rep (`info` from [`read_with_info`](@ref) of Kratos
 CAD JSON, STEP or IGES) into one conforming surface mesh with edges of about
@@ -495,9 +495,11 @@ record lists the 1-based edges that `limited_by_edges` its given size;
 `metric` (`"mean"` or `"varying"`) and `virtual_edges` as in the doc
 (v17.19.0). `reparam_condition_number` meshes a face whose metric's condition
 number over its coarse mesh passes it in a flattening of that mesh,
-`model_tolerances` accepts the gaps the model declares and `virtual_faces`
-meshes a sliver face with its neighbour (v17.20.0); `reparametrised`,
-`merged_faces` and `tolerance_uses` report them, every index 1-based. See
+`model_tolerances` accepts the gaps the model declares, `virtual_faces`
+meshes a sliver face with its neighbour and `lop_corners` lops acute corners
+(Pav and Walkington 2005) in place of concentric shells (v17.20.0);
+`reparametrised`, `merged_faces`, `tolerance_uses` and `lopped_corners` report
+them, every index 1-based. See
 `doc/mesh_cad.md`.
 """
 function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_deviation::Real=0.0,
@@ -514,7 +516,7 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
                           background_array::AbstractString="size",
                           metric::AbstractString="mean", virtual_edges::Bool=false,
                           reparam_condition_number::Real=0.0, model_tolerances::Bool=false,
-                          virtual_faces::Bool=false)
+                          virtual_faces::Bool=false, lop_corners::Bool=false)
     method = findfirst(==(smooth_method), _MESH_CAD_SMOOTH_METHODS)
     method === nothing &&
         throw(ArgumentError("meshio++: mesh_cad_surface: smooth_method must be " *
@@ -547,7 +549,7 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
                                     background === nothing ? C_NULL : _handle(background),
                                     pointer(bname), Cdouble(reparam_condition_number),
                                     Int32(model_tolerances), Int32(virtual_faces),
-                                    ntuple(_ -> Int64(0), 6))
+                                    Int32(lop_corners), Int32(0), ntuple(_ -> Int64(0), 5))
         ccall(_sym(:mio_mesh_cad_surface2), Ptr{Cvoid},
               (Ptr{Cvoid}, Ref{_CMeshCadSurfaceOpts}, Ref{_CMeshCadSurfaceOptsEx},
                Ref{_CMeshCadSurfaceReport}),
@@ -612,6 +614,22 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
         (edge=Int(e[]) + 1, declared=Float64(d[]), gap=Float64(g[]),
          where=("closed_start", "corner", "projection")[w[] + 1])
     end
+    nlopped = ccall(_sym(:mio_mesh_cad_surface_num_lopped_corners), Int64, ())
+    lopped_corners = map(0:nlopped-1) do k
+        f, p, nf = Ref{Int64}(), Ref{Int64}(), Ref{Int64}()
+        a, l, rr, t, b, m = (Ref{Cdouble}() for _ in 1:6)
+        w, g = Ref{Int32}(), Ref{Int32}()
+        _check(ccall(_sym(:mio_mesh_cad_surface_lopped_corner), Cint,
+                     (Int64, Ref{Int64}, Ref{Int64}, Ref{Cdouble}, Ref{Cdouble}, Ref{Cdouble},
+                      Ref{Cdouble}, Ref{Cdouble}, Ref{Int64}, Ref{Cdouble}, Ref{Int32},
+                      Ref{Int32}), k, f, p, a, l, rr, t, b, nf, m, w, g))
+        why = _getstring((buf, n) -> ccall(_sym(:mio_mesh_cad_surface_lopped_corner_reason),
+                                           Int64, (Int64, Ptr{UInt8}, Int64), k, buf, n))
+        (face=Int(f[]) + 1, point=Int(p[]) + 1, angle_deg=Float64(a[]), lfs0=Float64(l[]),
+         lop_radius=Float64(rr[]), turning_deg=Float64(t[]), stated_bound_deg=Float64(b[]),
+         num_forced=Int(nf[]), min_forced_deg=Float64(m[]), within_two_radii=w[] != 0,
+         guaranteed=g[] != 0, reason=why)
+    end
     text = _getstring((buf, n) -> ccall(_sym(:mio_mesh_cad_surface_warnings), Int64,
                                         (Ptr{UInt8}, Int64), buf, n))
     histogram = zeros(Int64, 18)
@@ -642,7 +660,7 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
      min_input_angle_deg=Float64(r.min_input_angle_deg), angle_histogram=histogram,
      corners=corners, num_curved_straightened=Int(r.num_curved_straightened),
      virtual_edges=virtual, reparametrised=reparametrised, merged_faces=merged_faces,
-     tolerance_uses=tolerance_uses)
+     tolerance_uses=tolerance_uses, lopped_corners=lopped_corners)
 end
 
 const MIO_IGA_POINTS = Int32(0)

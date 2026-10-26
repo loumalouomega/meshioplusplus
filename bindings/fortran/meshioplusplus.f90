@@ -60,6 +60,8 @@ module meshioplusplus
     public :: mio_mesh_cad_num_reparametrised, mio_mesh_cad_get_reparametrised
     public :: mio_mesh_cad_num_merged_faces, mio_mesh_cad_get_merged_face
     public :: mio_mesh_cad_num_tolerance_uses, mio_mesh_cad_get_tolerance_use
+    public :: mio_mesh_cad_num_lopped_corners, mio_mesh_cad_get_lopped_corner
+    public :: mio_mesh_cad_lopped_corner_reason
     public :: MIO_MESH_CAD_METRIC_MEAN, MIO_MESH_CAD_METRIC_VARYING
     public :: MIO_MESH_CAD_TOLERANCE_CLOSED_START, MIO_MESH_CAD_TOLERANCE_CORNER
     public :: MIO_MESH_CAD_TOLERANCE_PROJECTION
@@ -525,8 +527,8 @@ module meshioplusplus
     !> Interop mirror of C `mio_mesh_cad_surface_opts_ex` (v17.19.0; 136 bytes
     !> with 8-byte pointers, checked by `check_mesh_cad_layout`): the metric,
     !> virtual edges, given sizes and the background, borrowed for one call;
-    !> since v17.20.0 the reparametrisation threshold, model tolerances and
-    !> virtual faces from its reserved tail.
+    !> since v17.20.0 the reparametrisation threshold, model tolerances,
+    !> virtual faces and corner lopping from its reserved tail.
     type, bind(c) :: mio_mesh_cad_surface_opts_ex_t
         integer(c_int32_t) :: metric = 0
         integer(c_int32_t) :: virtual_edges = 0
@@ -541,7 +543,9 @@ module meshioplusplus
         real(c_double) :: reparam_condition_number = 0
         integer(c_int32_t) :: model_tolerances = 0
         integer(c_int32_t) :: virtual_faces = 0
-        integer(c_int64_t) :: reserved(6) = 0
+        integer(c_int32_t) :: lop_corners = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(5) = 0
     end type
 
     !> `mio_mesh_cad_surface_report` (200 bytes; field order and types are ABI,
@@ -4499,6 +4503,33 @@ module meshioplusplus
             real(c_double), intent(out) :: declared, gap
             integer(c_int32_t), intent(out) :: where
             integer(c_int) :: st
+        end function
+
+        function c_mio_mesh_cad_surface_num_lopped_corners() &
+                bind(c, name="mio_mesh_cad_surface_num_lopped_corners") result(m)
+            import :: c_int64_t
+            integer(c_int64_t) :: m
+        end function
+
+        function c_mio_mesh_cad_surface_lopped_corner(idx, face, point, angle, lfs0, radius, &
+                                                      turning, bound, forced, min_forced, &
+                                                      within, guaranteed) &
+                bind(c, name="mio_mesh_cad_surface_lopped_corner") result(st)
+            import :: c_int64_t, c_int32_t, c_double, c_int
+            integer(c_int64_t), value :: idx
+            integer(c_int64_t), intent(out) :: face, point, forced
+            real(c_double), intent(out) :: angle, lfs0, radius, turning, bound, min_forced
+            integer(c_int32_t), intent(out) :: within, guaranteed
+            integer(c_int) :: st
+        end function
+
+        function c_mio_mesh_cad_surface_lopped_corner_reason(idx, buf, buflen) &
+                bind(c, name="mio_mesh_cad_surface_lopped_corner_reason") result(m)
+            import :: c_int64_t, c_char
+            integer(c_int64_t), value :: idx
+            character(kind=c_char), intent(out) :: buf(*)
+            integer(c_int64_t), value :: buflen
+            integer(c_int64_t) :: m
         end function
 
         function c_mio_mesh_cad_surface_face_size_limits(face, edges, n) &
@@ -12157,8 +12188,10 @@ contains
     !> limited a face given a size (v17.19.0). `reparam_condition_number`
     !> flattens a face whose metric's condition number passes it,
     !> `model_tolerances` accepts the gaps the model declares and
-    !> `virtual_faces` meshes slivers with a neighbour (v17.20.0; read back by
-    !> `mio_mesh_cad_get_reparametrised`, `_merged_face`, `_tolerance_use`).
+    !> `virtual_faces` meshes slivers with a neighbour and `lop_corners` lops
+    !> acute corners in place of concentric shells (v17.20.0; read back by
+    !> `mio_mesh_cad_get_reparametrised`, `_merged_face`, `_tolerance_use`,
+    !> `_lopped_corner`).
     function format_info_mesh_cad_surface(self, target_size, max_chordal_deviation, &
                                           min_points_per_edge, tolerance, record_face_ids, &
                                           edges, match_unreferenced_trims, strict, max_points, &
@@ -12168,7 +12201,7 @@ contains
                                           face_size_faces, face_sizes, edge_size_edges, &
                                           edge_sizes, background, background_array, metric, &
                                           virtual_edges, reparam_condition_number, &
-                                          model_tolerances, virtual_faces) &
+                                          model_tolerances, virtual_faces, lop_corners) &
         result(out)
         class(mio_format_info), intent(in) :: self
         real(real64), intent(in) :: target_size
@@ -12182,7 +12215,7 @@ contains
         integer, intent(in), optional :: metric
         logical, intent(in), optional :: virtual_edges
         real(real64), intent(in), optional :: reparam_condition_number
-        logical, intent(in), optional :: model_tolerances, virtual_faces
+        logical, intent(in), optional :: model_tolerances, virtual_faces, lop_corners
         integer(int64), intent(in), optional :: min_points_per_edge, max_points
         logical, intent(in), optional :: record_face_ids, edges, match_unreferenced_trims, strict
         type(mio_mesh_cad_surface_report), intent(out), optional :: report
@@ -12233,6 +12266,7 @@ contains
         if (present(model_tolerances)) &
             ex%model_tolerances = merge(1_c_int32_t, 0_c_int32_t, model_tolerances)
         if (present(virtual_faces)) ex%virtual_faces = merge(1_c_int32_t, 0_c_int32_t, virtual_faces)
+        if (present(lop_corners)) ex%lop_corners = merge(1_c_int32_t, 0_c_int32_t, lop_corners)
         if (present(face_size_faces) .and. present(face_sizes)) then
             if (size(face_size_faces) /= size(face_sizes)) then
                 call handle_failure('mesh_cad_surface', &
@@ -12382,6 +12416,63 @@ contains
         where = int(w)
         if (present(stat)) stat = int(st)
     end subroutine
+
+    !> How many corners this thread's last call lopped (v17.20.0).
+    integer function mio_mesh_cad_num_lopped_corners() result(n)
+        n = int(c_mio_mesh_cad_surface_num_lopped_corners())
+    end function
+
+    !> Lopped corner `idx` (1-based): its face and mesh point (1-based), its
+    !> wedge in the face's plane, the distance to the face's nearest other
+    !> corner, its ball's radius, the face's turning, Corollary 3's bound (0
+    !> on a curved face), the triangles left in its ball and their smallest
+    !> angle, whether they lie within twice the radius, and whether the bound
+    !> is guaranteed (degrees throughout).
+    subroutine mio_mesh_cad_get_lopped_corner(idx, face, point, angle, lfs0, radius, turning, &
+                                              bound, num_forced, min_forced, within_two_radii, &
+                                              guaranteed, stat)
+        integer, intent(in) :: idx
+        integer(int64), intent(out) :: face, point, num_forced
+        real(real64), intent(out) :: angle, lfs0, radius, turning, bound, min_forced
+        logical, intent(out) :: within_two_radii, guaranteed
+        integer, intent(out), optional :: stat
+        integer(c_int64_t) :: f, p, nf
+        real(c_double) :: a, l, r, t, b, m
+        integer(c_int32_t) :: w, g
+        integer(c_int) :: st
+        st = c_mio_mesh_cad_surface_lopped_corner(int(idx - 1, c_int64_t), f, p, a, l, r, t, b, &
+                                                  nf, m, w, g)
+        face = int(f + 1, int64)
+        point = int(p + 1, int64)
+        num_forced = int(nf, int64)
+        angle = real(a, real64)
+        lfs0 = real(l, real64)
+        radius = real(r, real64)
+        turning = real(t, real64)
+        bound = real(b, real64)
+        min_forced = real(m, real64)
+        within_two_radii = w /= 0
+        guaranteed = g /= 0
+        if (present(stat)) stat = int(st)
+    end subroutine
+
+    !> Why lopped corner `idx`'s (1-based) bound is not guaranteed; empty when
+    !> it is or out of range.
+    function mio_mesh_cad_lopped_corner_reason(idx) result(reason)
+        integer, intent(in) :: idx
+        character(:), allocatable :: reason
+        character(kind=c_char), allocatable :: buf(:)
+        integer(c_int64_t) :: n
+        reason = ''
+        allocate (buf(1))
+        n = c_mio_mesh_cad_surface_lopped_corner_reason(int(idx - 1, c_int64_t), buf, 0_c_int64_t)
+        if (n > 0 .and. n < int(huge(0) - 1, c_int64_t)) then
+            deallocate (buf)
+            allocate (buf(int(n) + 1))
+            n = c_mio_mesh_cad_surface_lopped_corner_reason(int(idx - 1, c_int64_t), buf, n + 1)
+            if (n > 0) reason = from_c_buf(buf, int(n))
+        end if
+    end function
 
     !> The status (`MIO_MESH_CAD_*`) of face `face` (1-based) in this thread's
     !> last `info%mesh_cad_surface` call, or -1 when out of range.

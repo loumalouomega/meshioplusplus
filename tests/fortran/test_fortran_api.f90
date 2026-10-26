@@ -386,6 +386,29 @@ program test_fortran_api
                            'mesh_cad_surface finds no sliver nor declared gap')
                 call tris%free()
             end if
+            ! v17.20.0: corner lopping at 20 degrees lops the two 45-degree
+            ! corners and states the straight-segment bound.
+            block
+                integer(int64) :: lf, lp, lnf
+                real(real64) :: la, ll, lr, lt, lb, lm
+                logical :: lw, lg
+            tris = info%mesh_cad_surface(0.1_real64, min_angle=20.0_real64, lop_corners=.true., &
+                                         stat=ierr, errmsg=msg)
+            call check(ierr == 0, 'mesh_cad_surface lops corners')
+            if (ierr == 0) then
+                call check(mio_mesh_cad_num_lopped_corners() == 2, &
+                           'mesh_cad_surface lops the two acute corners')
+                call mio_mesh_cad_get_lopped_corner(1, lf, lp, la, ll, lr, lt, lb, lnf, lm, &
+                                                    lw, lg, ierr)
+                call check(ierr == 0 .and. lf == 1 .and. lp >= 1 .and. &
+                           abs(la - 45.0_real64) < 1.0e-9_real64 .and. lr > 0.0_real64 .and. &
+                           lb > 20.7_real64 .and. lb < 20.71_real64 .and. lw .and. lg, &
+                           'mesh_cad_surface reports a lopped corner')
+                call check(len(mio_mesh_cad_lopped_corner_reason(1)) == 0, &
+                           'mesh_cad_surface guarantees the lopped bound')
+                call tris%free()
+            end if
+            end block
             tris = info%mesh_cad_surface(0.1_real64, reparam_condition_number=0.5_real64, &
                                          stat=ierr, errmsg=msg)
             call check(ierr /= 0, 'mesh_cad_surface refuses a threshold under 1')

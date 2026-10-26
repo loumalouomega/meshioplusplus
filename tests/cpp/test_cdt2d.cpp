@@ -894,3 +894,199 @@ TEST(Cdt2d, AMetricDecidesTheFlips) {
     ref.InsertBatch(pts);
     EXPECT_EQ(cdt.AllTriangles(), ref.AllTriangles());
 }
+
+// --- Corner lopping (Pav and Walkington 2005) ------------------------------
+
+namespace {
+
+struct Lopped {
+    std::vector<Vec2> mPoints;
+    std::vector<mio::detail::Cdt2d::Tri> mTriangles;
+    mio::detail::Cdt2dRefineReport mRefine;
+};
+
+// One loop, triangulated, classified and refined with corner lopping.
+Lopped lopped(const std::vector<Vec2>& rLoop, double MinAngle, bool Split = true,
+              std::int64_t MaxPoints = 200000, double Beta = 0.5, double Grid = 0.0) {
+    double lo[2] = {1e300, 1e300}, hi[2] = {-1e300, -1e300};
+    for (const Vec2& p : rLoop)
+        for (int k = 0; k < 2; ++k) {
+            lo[k] = std::min(lo[k], p[k]);
+            hi[k] = std::max(hi[k], p[k]);
+        }
+    mio::detail::Cdt2d cdt(lo[0], lo[1], hi[0], hi[1]);
+    const auto ids = cdt.InsertBatch(rLoop);
+    for (std::size_t k = 0; k < ids.size(); ++k)
+        EXPECT_EQ(cdt.InsertSegment(ids[k], ids[(k + 1) % ids.size()]), Cdt2dStatus::Ok);
+    EXPECT_EQ(cdt.Classify(), Cdt2dStatus::Ok);
+    // Interior points on a grid (those inside), some of them in the balls.
+    if (Grid > 0.0)
+        for (double x = lo[0] + 0.5 * Grid; x < hi[0]; x += Grid)
+            for (double y = lo[1] + 0.5 * Grid; y < hi[1]; y += Grid)
+                cdt.InsertSteiner({x, y});
+    mio::detail::Cdt2dRefineOptions o;
+    o.mMinAngleDeg = MinAngle;
+    o.mMaxPoints = MaxPoints;
+    o.mSplitSegments = Split;
+    o.mLopCorners = true;
+    o.mLopBeta = Beta;
+    Lopped out;
+    out.mRefine = cdt.Refine(o);
+    for (std::int64_t v = 0; v < cdt.NumVertices(); ++v)
+        out.mPoints.push_back(cdt.Point(v));
+    out.mTriangles = cdt.InsideTriangles();
+    return out;
+}
+
+double lopped_min_angle(const Lopped& rL, std::size_t T) {
+    double m = 180.0;
+    const auto& tri = rL.mTriangles[T];
+    for (int k = 0; k < 3; ++k) {
+        const Vec2& o = rL.mPoints[std::size_t(tri[k])];
+        const Vec2& p = rL.mPoints[std::size_t(tri[(k + 1) % 3])];
+        const Vec2& q = rL.mPoints[std::size_t(tri[(k + 2) % 3])];
+        const double ux = p[0] - o[0], uy = p[1] - o[1], vx = q[0] - o[0], vy = q[1] - o[1];
+        m = std::min(m, std::atan2(std::fabs(ux * vy - uy * vx), ux * vx + uy * vy) * 180.0 / M_PI);
+    }
+    return m;
+}
+
+}  // namespace
+
+TEST(Cdt2dLop, TheBoundIsCorollaryThree) {
+    // arcsin(1 / (2 sqrt 2)) for straight segments, falling with the
+    // turning, and none past pi / 3.
+    EXPECT_NEAR(mio::detail::cdt2d_lop_bound_deg(0.0),
+                std::asin(1.0 / (2.0 * std::sqrt(2.0))) * 180.0 / M_PI, 1e-12);
+    EXPECT_NEAR(mio::detail::cdt2d_lop_bound_deg(1e-7), mio::detail::cdt2d_lop_bound_deg(0.0),
+                1e-5);
+    double last = mio::detail::cdt2d_lop_bound_deg(0.0);
+    for (int k = 1; k <= 10; ++k) {
+        const double b = mio::detail::cdt2d_lop_bound_deg(k * M_PI / 30.0);
+        EXPECT_LT(b, last) << k;
+        EXPECT_GT(b, 0.0) << k;
+        last = b;
+    }
+    EXPECT_EQ(mio::detail::cdt2d_lop_bound_deg(M_PI / 3.0 + 1e-9), 0.0);
+    EXPECT_EQ(mio::detail::cdt2d_lop_bound_deg(-1.0), 0.0);
+}
+
+TEST(Cdt2dLop, SharpCornersMeetTheBoundOutsideTheirBalls) {
+    // A triangle with an apex of phi at the origin and a quadrilateral with
+    // two sharp corners, refined at 20 degrees (under Corollary 3's 20.7):
+    // the run ends without a budget or an unresolved triangle, the acute
+    // corners are lopped with their angle and lfs0, and every triangle
+    // under the bound lies within twice its corner's radius (Lemma 7).
+    // With interior points, some in the balls, those shrink (rule 11).
+    for (const auto& [phi, grid] : std::vector<std::pair<double, double>>{{80.0, 0.0},
+                                                                          {45.0, 0.0},
+                                                                          {15.0, 0.0},
+                                                                          {5.0, 0.0},
+                                                                          {1.0, 0.0},
+                                                                          {45.0, 0.11},
+                                                                          {15.0, 0.07},
+                                                                          {5.0, 0.05},
+                                                                          {1.0, 0.03}}) {
+        const double r = phi * M_PI / 180.0;
+        const std::vector<Vec2> loop = {
+            {0, 0}, {2, 0}, {2, 2}, {1.8 * std::cos(r), 1.8 * std::sin(r)}};
+        const auto t = lopped(loop, 20.0, true, 200000, 0.5, grid);
+        EXPECT_FALSE(t.mRefine.mBudgetReached) << phi;
+        EXPECT_EQ(t.mRefine.mNumUnresolved, 0) << phi;
+        EXPECT_TRUE(t.mRefine.mSmallAngles.empty()) << phi;  // no shells
+        bool found = false;
+        for (const auto& r_c : t.mRefine.mLopped) {
+            EXPECT_LT(r_c.mAngleDeg, 90.0);
+            EXPECT_GT(r_c.mRadius, 0.0);
+            EXPECT_LE(r_c.mRadius, (std::sqrt(2.0) - 1.0) * r_c.mLfs0 * (1 + 1e-12));
+            EXPECT_TRUE(r_c.mWithinTwoRadii) << phi;
+            if (r_c.mVertex == 3) {
+                found = true;
+                EXPECT_NEAR(r_c.mAngleDeg, phi, 1e-9);
+                EXPECT_NEAR(r_c.mLfs0, 1.8, 1e-12);
+            }
+        }
+        EXPECT_TRUE(found) << phi;
+        if (grid > 0.0) {
+            bool shrunk = false;
+            for (const auto& r_c : t.mRefine.mLopped)
+                shrunk = shrunk || r_c.mRadius < 0.5 * (std::sqrt(2.0) - 1.0) * r_c.mLfs0;
+            EXPECT_TRUE(shrunk) << phi;
+        }
+        std::int64_t bad = 0;
+        for (std::size_t k = 0; k < t.mTriangles.size(); ++k) {
+            if (lopped_min_angle(t, k) >= 20.0 - 1e-9)
+                continue;
+            ++bad;
+            bool near = false;
+            for (const auto& r_c : t.mRefine.mLopped) {
+                const Vec2& c = t.mPoints[std::size_t(r_c.mVertex)];
+                bool all = true;
+                for (const auto v : t.mTriangles[k]) {
+                    const Vec2& p = t.mPoints[std::size_t(v)];
+                    all = all &&
+                          std::hypot(p[0] - c[0], p[1] - c[1]) <= 2.0 * r_c.mRadius * (1 + 1e-9);
+                }
+                near = near || all;
+            }
+            EXPECT_TRUE(near) << "phi " << phi << ", triangle " << k;
+        }
+        EXPECT_EQ(bad, t.mRefine.mNumForced) << phi;
+    }
+}
+
+TEST(Cdt2dLop, ASplitIsAskedAtTheBall) {
+    // Asking: the boundary is left, and each subsegment at an acute corner
+    // is asked to split where the ball ends, at (sqrt 2 - 1) lfs0.
+    const double r = 10.0 * M_PI / 180.0;
+    const std::vector<Vec2> loop = {{0, 0}, {2, 0}, {2, 2}, {1.8 * std::cos(r), 1.8 * std::sin(r)}};
+    const auto t = lopped(loop, 20.0, false);
+    EXPECT_EQ(t.mRefine.mNumSplits, 0);
+    int at_origin = 0;
+    for (const auto& r_q : t.mRefine.mRequests)
+        if (r_q.mApex == 3) {
+            ++at_origin;
+            EXPECT_NEAR(r_q.mDistance, (std::sqrt(2.0) - 1.0) * 1.8, 1e-12);
+        }
+    EXPECT_EQ(at_origin, 2);
+}
+
+TEST(Cdt2dLop, TheOrderDependsOnTheInputAloneAndBetaIsChecked) {
+    const std::vector<Vec2> loop = {{0, 0}, {3, 0}, {3, 0.2}, {1.5, 0.05}, {0, 0.4}};
+    const auto a = lopped(loop, 20.0);
+    const auto b = lopped(loop, 20.0);
+    EXPECT_EQ(a.mPoints, b.mPoints);
+    EXPECT_EQ(a.mTriangles, b.mTriangles);
+    EXPECT_FALSE(a.mRefine.mLopped.empty());
+    const auto c = lopped(loop, 20.0, true, 200000, 0.75);
+    EXPECT_FALSE(c.mRefine.mBudgetReached);
+    EXPECT_EQ(c.mRefine.mNumUnresolved, 0);
+    EXPECT_THROW(lopped(loop, 20.0, true, 200000, 0.4), std::invalid_argument);
+    EXPECT_THROW(lopped(loop, 20.0, true, 200000, 1.0), std::invalid_argument);
+}
+
+TEST(Cdt2dLop, AnAcuteKinkIsAnInputPointAndASkippedOneIsNot) {
+    // The caller names only the far corner (2, 2) as an input point: the
+    // acute corner at the origin (a kink of the caller's curve) is lopped
+    // all the same, unless it is skipped (a pole's).
+    const double r = 10.0 * M_PI / 180.0;
+    const std::vector<Vec2> loop = {{0, 0}, {2, 0}, {2, 2}, {1.8 * std::cos(r), 1.8 * std::sin(r)}};
+    for (const bool skip : {false, true}) {
+        mio::detail::Cdt2d cdt(0, 0, 2, 2);
+        const auto ids = cdt.InsertBatch(loop);
+        for (std::size_t k = 0; k < ids.size(); ++k)
+            ASSERT_EQ(cdt.InsertSegment(ids[k], ids[(k + 1) % ids.size()]), Cdt2dStatus::Ok);
+        ASSERT_EQ(cdt.Classify(), Cdt2dStatus::Ok);
+        mio::detail::Cdt2dRefineOptions o;
+        o.mMinAngleDeg = 20.0;
+        o.mLopCorners = true;
+        o.mCorners = {ids[2]};
+        if (skip)
+            o.mLopSkip = {ids[0]};
+        const auto rep = cdt.Refine(o);
+        bool origin = false;
+        for (const auto& r_c : rep.mLopped)
+            origin = origin || r_c.mVertex == ids[0];
+        EXPECT_EQ(origin, !skip);
+    }
+}

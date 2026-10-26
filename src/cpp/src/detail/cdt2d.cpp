@@ -1088,6 +1088,23 @@ private:
     std::set<std::array<std::int64_t, 2>> mEncroached;
     std::set<Cdt2dSplitRequest> mRequests;
     std::map<Tri, std::int64_t> mDeclined;  ///< left by the terminator, with the apex
+    /// Corner lopping (Pav and Walkington 2005): the balls' radii by corner,
+    /// the vertices last found inside each, the balls to shrink, and what
+    /// is reported of each.
+    std::map<std::int64_t, double> mBall;
+    std::map<std::int64_t, std::vector<std::int64_t>> mInsideBall;
+    std::set<std::int64_t> mShrink;
+    std::map<std::int64_t, Cdt2dLoppedCorner> mLopInfo;
+    /// The bad triangles left because their point lay in a ball, queued
+    /// again when it shrinks; the balls too small to shrink further; the
+    /// balls shrunk for an asked split this pass (once is enough, the
+    /// caller makes it); the corners by plane abscissa, with the largest
+    /// radius, to find the balls near a point (plane distances only).
+    std::map<std::int64_t, std::vector<Cdt2dBad>> mLopDeclined;
+    std::set<std::int64_t> mFloored;
+    std::set<std::int64_t> mShrunkByAsk;
+    std::vector<std::pair<double, std::int64_t>> mBallX;
+    double mMaxBall = 0.0;
 
     const Vec2& P(std::int64_t V) const { return mC.Point(V); }
     bool Real(const Tri& rT) const {
@@ -1119,6 +1136,39 @@ private:
     std::int64_t ApexOf(std::int64_t A, std::int64_t B) const;
     /// The small-angle apexes a vertex lies on a cluster segment of.
     std::vector<std::int64_t> ClustersOf(std::int64_t V) const;
+    /// Corner lopping. The distance from input point `C` to vertex `V` (or,
+    /// `V` < 0, to `rX`), as the caller measures it.
+    double Dist(std::int64_t C, std::int64_t V, const Vec2& rX) const {
+        if (mO.mDistance)
+            return mO.mDistance(C, V, rX);
+        return cdt2d_length(P(C), V >= 0 ? P(V) : rX);
+    }
+    /// The corners whose ball may hold `rX`, ascending.
+    std::vector<std::int64_t> BallsNear(const Vec2& rX) const;
+    /// The lowest corner whose ball holds `rX` strictly, or -1.
+    std::int64_t BallOf(const Vec2& rX) const;
+    /// Whether vertex `V` lies inside corner `C`'s ball (not on it, where
+    /// the ball's own splits are).
+    bool InsideBall(std::int64_t C, std::int64_t V) const;
+    /// The constrained neighbours of `V`, counter-clockwise, and the inside
+    /// wedges between consecutive ones.
+    std::vector<std::int64_t> ConstrainedNeighbours(std::int64_t V) const;
+    std::vector<std::array<std::int64_t, 2>> InsideWedges(std::int64_t V) const;
+    void SetUpBalls();
+    /// SPLITBALL(C, 1): split (or ask to split) every subsegment at `C`
+    /// where it leaves the ball; returns whether one was split or asked.
+    bool SplitIncident(std::int64_t C);
+    /// SPLITBALL(C, beta): shrink the ball, split where it now ends, and
+    /// queue it again while a vertex is still inside.
+    bool ShrinkBall(std::int64_t C);
+    /// Queue the balls a new vertex lies in.
+    void CheckBalls(std::int64_t V);
+    /// Split constrained edge `A`-`B` at `rM` (book-keeping included).
+    bool SplitAt(std::int64_t A, std::int64_t B, const Vec2& rM);
+    /// The point on subsegment `C`-`W` at distance `D` from `C`.
+    Vec2 PointAtDistance(std::int64_t C, std::int64_t W, double D) const;
+    /// Ask for the split of `A`-`B` at distance `D` from corner `C`.
+    void AskAtBall(std::int64_t A, std::int64_t B, std::int64_t C, double D);
     /// The small-angle apex that forces a triangle (it holds the angle, or
     /// its shortest edge spans it), or -1.
     std::int64_t ForcedBy(const Tri& rT) const;
@@ -1131,6 +1181,9 @@ private:
     bool SplitOrAsk(std::int64_t A, std::int64_t B);
     void HandleEncroached(const std::vector<std::array<std::int64_t, 2>>& rSegments,
                           const Tri& rBad, std::int64_t Slot);
+    /// The point to insert for a bad triangle (its circumcentre, or the
+    /// caller's).
+    Vec2 CentreOf(const Tri& rT) const;
     void Attempt(const Cdt2dBad& rBad);
 };
 
@@ -1174,6 +1227,268 @@ std::vector<std::int64_t> Cdt2dRefiner::ClustersOf(std::int64_t V) const {
         if (mCluster[s][static_cast<std::size_t>(k)])
             out.push_back(mInput[s][static_cast<std::size_t>(k)]);
     return out;
+}
+
+std::vector<std::int64_t> Cdt2dRefiner::ConstrainedNeighbours(std::int64_t V) const {
+    std::vector<std::int64_t> out;
+    for (const std::int64_t t : mC.TrianglesAround(V)) {
+        const auto& r_t = mC.mTris[static_cast<std::size_t>(t)];
+        const int i = mC.IndexOf(t, V);
+        // The edge (V, p) opens this triangle, p its next vertex.
+        if (r_t.mC[cdt2d_prev(i)])
+            out.push_back(r_t.mV[cdt2d_next(i)]);
+    }
+    return out;
+}
+
+std::vector<std::array<std::int64_t, 2>> Cdt2dRefiner::InsideWedges(std::int64_t V) const {
+    // The constrained neighbours of V, counter-clockwise, and whether the
+    // wedge after each (to the next) is inside the domain.
+    std::vector<std::int64_t> nbrs;
+    std::vector<bool> wedge_inside;
+    for (const std::int64_t t : mC.TrianglesAround(V)) {
+        const auto& r_t = mC.mTris[static_cast<std::size_t>(t)];
+        const int i = mC.IndexOf(t, V);
+        if (r_t.mC[cdt2d_prev(i)]) {
+            nbrs.push_back(r_t.mV[cdt2d_next(i)]);
+            wedge_inside.push_back(r_t.mInside);
+        }
+    }
+    std::vector<std::array<std::int64_t, 2>> out;
+    const std::size_t n = nbrs.size();
+    for (std::size_t k = 0; k < n && n >= 2; ++k)
+        if (wedge_inside[k])
+            out.push_back({nbrs[k], nbrs[(k + 1) % n]});
+    return out;
+}
+
+// A vertex closer to a corner than this fraction of its ball's radius under
+// it is inside; the ball's own splits, at the radius, are not.
+constexpr double kCdt2dLopTol = 1e-9;
+// A ball is not shrunk below this fraction of its corner's lfs0 (a vertex
+// that close is one rounding put there).
+constexpr double kCdt2dLopFloor = 1e-12;
+
+std::vector<std::int64_t> Cdt2dRefiner::BallsNear(const Vec2& rX) const {
+    std::vector<std::int64_t> out;
+    if (mO.mDistance) {
+        for (const auto& r_b : mBall)
+            out.push_back(r_b.first);
+        return out;
+    }
+    // Balls only shrink, so the largest radius at the start bounds them all.
+    auto it = std::lower_bound(mBallX.begin(), mBallX.end(),
+                               std::make_pair(rX[0] - mMaxBall, std::int64_t{-1}));
+    for (; it != mBallX.end() && it->first <= rX[0] + mMaxBall; ++it)
+        out.push_back(it->second);
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+std::int64_t Cdt2dRefiner::BallOf(const Vec2& rX) const {
+    for (const std::int64_t c : BallsNear(rX))
+        if (Dist(c, -1, rX) < mBall.at(c))
+            return c;
+    return -1;
+}
+
+bool Cdt2dRefiner::InsideBall(std::int64_t C, std::int64_t V) const {
+    return V != C && Dist(C, V, P(V)) < mBall.at(C) * (1.0 - kCdt2dLopTol);
+}
+
+void Cdt2dRefiner::CheckBalls(std::int64_t V) {
+    if (mBall.empty())
+        return;
+    for (const std::int64_t c : BallsNear(P(V)))
+        if (mFloored.count(c) == 0 && InsideBall(c, V)) {
+            mInsideBall[c].push_back(V);
+            mShrink.insert(c);
+        }
+}
+
+Cdt2dRefiner::Vec2 Cdt2dRefiner::PointAtDistance(std::int64_t C, std::int64_t W, double D) const {
+    const Vec2& a = P(C);
+    const Vec2& b = P(W);
+    const auto at = [&](double F) {
+        return Vec2{a[0] + F * (b[0] - a[0]), a[1] + F * (b[1] - a[1])};
+    };
+    if (!mO.mDistance)
+        return at(D / cdt2d_length(a, b));
+    // The caller's distance grows along the subsegment: bisect for it.
+    double lo = 0.0;
+    double hi = 1.0;
+    for (int k = 0; k < 64 && hi - lo > 1e-15; ++k) {
+        const double mid = 0.5 * (lo + hi);
+        (Dist(C, -1, at(mid)) < D ? lo : hi) = mid;
+    }
+    return at(0.5 * (lo + hi));
+}
+
+void Cdt2dRefiner::AskAtBall(std::int64_t A, std::int64_t B, std::int64_t C, double D) {
+    Cdt2dSplitRequest r{std::min(A, B), std::max(A, B), C, D};
+    mRequests.erase(r);  // the ball's last radius replaces an earlier one
+    mRequests.insert(r);
+}
+
+bool Cdt2dRefiner::SplitIncident(std::int64_t C) {
+    const double d = mBall.at(C);
+    bool acted = false;
+    for (const std::int64_t w : ConstrainedNeighbours(C)) {
+        // A neighbour inside (or on) the ball is the shrink rule's.
+        if (!(Dist(C, w, P(w)) > d * (1.0 + kCdt2dLopTol)))
+            continue;
+        if (!mO.mSplitSegments) {
+            AskAtBall(C, w, C, d);
+            acted = true;
+            continue;
+        }
+        if (mBudget <= 0)
+            break;
+        acted = SplitAt(C, w, PointAtDistance(C, w, d)) || acted;
+    }
+    return acted;
+}
+
+bool Cdt2dRefiner::ShrinkBall(std::int64_t C) {
+    auto& r_d = mBall.at(C);
+    auto& r_info = mLopInfo.at(C);
+    if (!(mO.mLopBeta * r_d > kCdt2dLopFloor * r_info.mLfs0)) {
+        mFloored.insert(C);
+        mInsideBall.erase(C);
+        return false;
+    }
+    r_d *= mO.mLopBeta;
+    r_info.mRadius = r_d;
+    // The triangles left for this ball may now be refined.
+    const auto it = mLopDeclined.find(C);
+    if (it != mLopDeclined.end()) {
+        for (const Cdt2dBad& r_b : it->second) {
+            const auto& r_t = mC.mTris[static_cast<std::size_t>(r_b.mSlot)];
+            if (r_t.mAlive && r_t.mInside && cdt2d_sorted(r_t.mV) == r_b.mKey) {
+                mDeclined.erase(r_b.mKey);
+                mBad.push(r_b);
+            }
+        }
+        mLopDeclined.erase(it);
+    }
+    const bool acted = SplitIncident(C);
+    auto& r_in = mInsideBall[C];
+    r_in.erase(
+        std::remove_if(r_in.begin(), r_in.end(), [&](std::int64_t V) { return !InsideBall(C, V); }),
+        r_in.end());
+    if (!r_in.empty())
+        mShrink.insert(C);
+    return acted;
+}
+
+void Cdt2dRefiner::SetUpBalls() {
+    if (!(mO.mLopBeta >= 0.5 && mO.mLopBeta < 1.0))
+        throw std::invalid_argument("meshio++: cdt2d: lop_beta must lie in [1/2, 1)");
+    // The acute inside wedge at a vertex (degrees; 180 for none): turning
+    // left at under 90 degrees.
+    const auto acute_deg = [&](std::int64_t V) {
+        double deg = 180.0;
+        for (const auto& r_w : InsideWedges(V)) {
+            const double* pv = P(V).data();
+            if (!(orient2d(pv, P(r_w[0]).data(), P(r_w[1]).data()) > 0.0) ||
+                !(diametral(P(r_w[0]).data(), P(r_w[1]).data(), pv) > 0.0))
+                continue;
+            const double ax = P(r_w[0])[0] - P(V)[0], ay = P(r_w[0])[1] - P(V)[1];
+            const double bx = P(r_w[1])[0] - P(V)[0], by = P(r_w[1])[1] - P(V)[1];
+            deg = std::min(deg, std::atan2(ax * by - ay * bx, ax * bx + ay * by) *
+                                    (180.0 / 3.14159265358979323846));
+        }
+        return deg;
+    };
+    // The input points P: the caller's, and every end of an input segment at
+    // an acute corner (all of them when the caller gives none).
+    std::vector<std::int64_t> pts = mO.mCorners;
+    for (const std::int64_t p : pts)
+        if (p < Cdt2d::kFirstVertex || p >= mC.NumVertices())
+            throw std::invalid_argument("meshio++: cdt2d: a lopped corner is not a vertex");
+    const bool all_ends = pts.empty();
+    std::vector<std::int64_t> ends;
+    for (const auto& r_s : mInput)
+        ends.insert(ends.end(), r_s.begin(), r_s.end());
+    std::sort(ends.begin(), ends.end());
+    ends.erase(std::unique(ends.begin(), ends.end()), ends.end());
+    for (const std::int64_t v : ends)
+        if (all_ends || acute_deg(v) < 90.0)
+            pts.push_back(v);
+    std::sort(pts.begin(), pts.end());
+    pts.erase(std::unique(pts.begin(), pts.end()), pts.end());
+    if (!mO.mLopSkip.empty()) {
+        const std::set<std::int64_t> skip(mO.mLopSkip.begin(), mO.mLopSkip.end());
+        pts.erase(std::remove_if(pts.begin(), pts.end(),
+                                 [&](std::int64_t V) { return skip.count(V) != 0; }),
+                  pts.end());
+    }
+    std::map<std::int64_t, double> carried;
+    for (const auto& [v, d] : mO.mLopRadius)
+        if (d > 0.0 && std::isfinite(d)) {
+            auto [it, fresh] = carried.emplace(v, d);
+            if (!fresh)
+                it->second = std::min(it->second, d);
+        }
+    // The plane abscissae, to find the nearest input point (lfs0) with the
+    // plane's distance; the caller's is searched in full.
+    std::vector<std::pair<double, std::int64_t>> by_x;
+    for (const std::int64_t p : pts)
+        by_x.emplace_back(P(p)[0], p);
+    std::sort(by_x.begin(), by_x.end());
+    const auto lfs0 = [&](std::int64_t Q) {
+        double best = std::numeric_limits<double>::infinity();
+        if (mO.mDistance) {
+            for (const std::int64_t q : pts)
+                if (q != Q)
+                    best = std::min(best, Dist(Q, q, P(q)));
+            return best;
+        }
+        const auto at = std::lower_bound(by_x.begin(), by_x.end(), std::make_pair(P(Q)[0], Q));
+        for (auto it = at; it != by_x.end() && it->first - P(Q)[0] < best; ++it)
+            if (it->second != Q)
+                best = std::min(best, Dist(Q, it->second, P(it->second)));
+        for (auto it = at; it != by_x.begin();) {
+            --it;
+            if (P(Q)[0] - it->first >= best)
+                break;
+            best = std::min(best, Dist(Q, it->second, P(it->second)));
+        }
+        return best;
+    };
+    for (const std::int64_t p : pts) {
+        const double deg = acute_deg(p);
+        if (!(deg < 90.0))
+            continue;
+        const double l = lfs0(p);
+        if (!(l > 0.0) || !std::isfinite(l))
+            continue;
+        double d = (std::sqrt(2.0) - 1.0) * l;
+        const auto it = carried.find(p);
+        if (it != carried.end())
+            d = std::min(d, it->second);
+        mBall[p] = d;
+        mLopInfo[p] = {p, deg, l, d, 0, 180.0, true};
+        mBallX.emplace_back(P(p)[0], p);
+        mMaxBall = std::max(mMaxBall, d);
+    }
+    std::sort(mBallX.begin(), mBallX.end());
+    if (mBall.empty())
+        return;
+    // The vertices already inside a ball (those of the inside triangles),
+    // then the balls' splits.
+    std::vector<bool> seen(static_cast<std::size_t>(mC.NumVertices()), false);
+    for (const auto& r_t : mC.mTris) {
+        if (!r_t.mAlive || !r_t.mInside || !Real(r_t.mV))
+            continue;
+        for (const std::int64_t v : r_t.mV)
+            if (!seen[static_cast<std::size_t>(v)]) {
+                seen[static_cast<std::size_t>(v)] = true;
+                CheckBalls(v);
+            }
+    }
+    for (const auto& r_b : mBall)
+        SplitIncident(r_b.first);
 }
 
 double Cdt2dRefiner::MinAngleDeg(const Tri& rT) const {
@@ -1241,29 +1556,14 @@ void Cdt2dRefiner::FindSmallAngles() {
         incident[r_e[1]].push_back(s);
     }
     mCluster.assign(mInput.size(), {false, false});
+    if (mO.mLopCorners)
+        return;  // corner lopping protects small angles in place of shells
     for (const auto& [v, r_segs] : incident) {
         if (r_segs.size() < 2)
             continue;
-        // The constrained neighbours of v, counter-clockwise, and whether
-        // the wedge after each (to the next) is inside the domain.
-        const std::vector<std::int64_t> around = mC.TrianglesAround(v);
-        std::vector<std::int64_t> nbrs;
-        std::vector<bool> wedge_inside;
-        for (const std::int64_t t : around) {
-            const auto& r_t = mC.mTris[static_cast<std::size_t>(t)];
-            const int i = mC.IndexOf(t, v);
-            // The edge (v, p) opens this triangle, p its next vertex.
-            if (r_t.mC[cdt2d_prev(i)]) {
-                nbrs.push_back(r_t.mV[cdt2d_next(i)]);
-                wedge_inside.push_back(r_t.mInside);
-            }
-        }
-        const std::size_t n = nbrs.size();
-        for (std::size_t k = 0; k < n && n >= 2; ++k) {
-            if (!wedge_inside[k])
-                continue;
-            const std::int64_t a = nbrs[k];
-            const std::int64_t b = nbrs[(k + 1) % n];
+        for (const auto& r_w : InsideWedges(v)) {
+            const std::int64_t a = r_w[0];
+            const std::int64_t b = r_w[1];
             const double* pv = P(v).data();
             // Below 60 degrees: turning left (under 180), acute, and in the
             // lens_angle region (below 60 or above 120).
@@ -1333,18 +1633,62 @@ void Cdt2dRefiner::AfterInsert(std::int64_t V) {
         if (r_t.mC[cdt2d_prev(i)])
             CheckSubsegment(V, a);  // a subsegment at V
     }
+    CheckBalls(V);
+}
+
+bool Cdt2dRefiner::SplitAt(std::int64_t A, std::int64_t B, const Vec2& rM) {
+    std::int64_t t = -1;
+    int e = -1;
+    if (!mC.FindEdge(A, B, t, e) || !mC.mTris[static_cast<std::size_t>(t)].mC[e])
+        return false;
+    const std::int64_t s = SegmentOf(A, B);
+    const std::int64_t v = mC.SplitConstrained(t, e, rM);
+    if (v < 0)
+        return false;
+    --mBudget;
+    ++mRep.mNumSplits;
+    if (s >= 0) {
+        mSegOf.erase(cdt2d_edge_key(A, B));
+        mSegOf[cdt2d_edge_key(A, v)] = s;
+        mSegOf[cdt2d_edge_key(v, B)] = s;
+        mVertexSeg[v] = s;
+    }
+    AfterInsert(v);
+    return true;
 }
 
 bool Cdt2dRefiner::SplitOrAsk(std::int64_t A, std::int64_t B) {
+    if (!mBall.empty()) {
+        // A subsegment at a lopped corner: one that reaches past the ball is
+        // split where it leaves it; the ball's own is lopped again,
+        // SPLITBALL(c, beta) (at beta = 1/2, its midpoint).
+        bool at_ball = false;
+        bool acted = false;
+        for (const std::int64_t c : {std::min(A, B), std::max(A, B)}) {
+            const auto it = mBall.find(c);
+            if (it == mBall.end() || mFloored.count(c) != 0)
+                continue;
+            at_ball = true;
+            const std::int64_t w = c == A ? B : A;
+            if (Dist(c, w, P(w)) > it->second * (1.0 + kCdt2dLopTol)) {
+                if (!mO.mSplitSegments) {
+                    AskAtBall(c, w, c, it->second);
+                    acted = true;
+                } else {
+                    acted = SplitAt(c, w, PointAtDistance(c, w, it->second)) || acted;
+                }
+            } else if (mO.mSplitSegments || mShrunkByAsk.insert(c).second) {
+                acted = ShrinkBall(c) || acted;
+            }
+        }
+        if (at_ball)
+            return acted && mO.mSplitSegments;
+    }
     const std::int64_t apex = ApexOf(A, B);
     if (!mO.mSplitSegments) {
         mRequests.insert({std::min(A, B), std::max(A, B), apex});
         return false;
     }
-    std::int64_t t = -1;
-    int e = -1;
-    if (!mC.FindEdge(A, B, t, e) || !mC.mTris[static_cast<std::size_t>(t)].mC[e])
-        return false;
     Vec2 m{0.5 * (P(A)[0] + P(B)[0]), 0.5 * (P(A)[1] + P(B)[1])};
     if (apex >= 0) {
         // Concentric shells: a power-of-two distance from the apex in
@@ -1360,20 +1704,7 @@ bool Cdt2dRefiner::SplitOrAsk(std::int64_t A, std::int64_t B) {
                  P(apex)[1] + f * (P(far)[1] - P(apex)[1])};
         }
     }
-    const std::int64_t s = SegmentOf(A, B);
-    const std::int64_t v = mC.SplitConstrained(t, e, m);
-    if (v < 0)
-        return false;
-    --mBudget;
-    ++mRep.mNumSplits;
-    if (s >= 0) {
-        mSegOf.erase(cdt2d_edge_key(A, B));
-        mSegOf[cdt2d_edge_key(A, v)] = s;
-        mSegOf[cdt2d_edge_key(v, B)] = s;
-        mVertexSeg[v] = s;
-    }
-    AfterInsert(v);
-    return true;
+    return SplitAt(A, B, m);
 }
 
 void Cdt2dRefiner::HandleEncroached(const std::vector<std::array<std::int64_t, 2>>& rSegments,
@@ -1414,6 +1745,19 @@ void Cdt2dRefiner::HandleEncroached(const std::vector<std::array<std::int64_t, 2
     }
 }
 
+Cdt2dRefiner::Vec2 Cdt2dRefiner::CentreOf(const Tri& rT) const {
+    if (mO.mCentre)
+        return mO.mCentre(rT);
+    // The circumcentre, relative to the first vertex.
+    const Vec2& a = P(rT[0]);
+    const double bx = P(rT[1])[0] - a[0], by = P(rT[1])[1] - a[1];
+    const double cx = P(rT[2])[0] - a[0], cy = P(rT[2])[1] - a[1];
+    const double d = 2.0 * orient2d(a.data(), P(rT[1]).data(), P(rT[2]).data());
+    const double b2 = bx * bx + by * by;
+    const double c2 = cx * cx + cy * cy;
+    return {a[0] + (cy * b2 - by * c2) / d, a[1] + (bx * c2 - cx * b2) / d};
+}
+
 void Cdt2dRefiner::Attempt(const Cdt2dBad& rBad) {
     const auto& r_t = mC.mTris[static_cast<std::size_t>(rBad.mSlot)];
     if (!r_t.mAlive || !r_t.mInside || cdt2d_sorted(r_t.mV) != rBad.mKey)
@@ -1421,22 +1765,20 @@ void Cdt2dRefiner::Attempt(const Cdt2dBad& rBad) {
     const Tri tri = r_t.mV;
     if (Forced(tri))
         return;
-    // The circumcentre, relative to the first vertex (or the caller's).
     const Vec2& a = P(tri[0]);
-    Vec2 c{};
-    if (mO.mCentre) {
-        c = mO.mCentre(tri);
-    } else {
-        const double bx = P(tri[1])[0] - a[0], by = P(tri[1])[1] - a[1];
-        const double cx = P(tri[2])[0] - a[0], cy = P(tri[2])[1] - a[1];
-        const double d = 2.0 * orient2d(a.data(), P(tri[1]).data(), P(tri[2]).data());
-        const double b2 = bx * bx + by * by;
-        const double c2 = cx * cx + cy * cy;
-        c = {a[0] + (cy * b2 - by * c2) / d, a[1] + (bx * c2 - cx * b2) / d};
-    }
+    const Vec2 c = CentreOf(tri);
     if (!std::isfinite(c[0]) || !std::isfinite(c[1]) || !cdt2d_in_range(c[0]) ||
         !cdt2d_in_range(c[1]))
         return;
+    // Corner lopping: a point in a ball is left (until the ball shrinks).
+    if (!mBall.empty()) {
+        const std::int64_t q = BallOf(c);
+        if (q >= 0) {
+            mDeclined[rBad.mKey] = q;
+            mLopDeclined[q].push_back(rBad);
+            return;
+        }
+    }
     // Walk from the centroid toward it; a constrained edge on the way hides
     // it, and is split instead (Chew 1993; Shewchuk 2002).
     const Vec2 g{(a[0] + P(tri[1])[0] + P(tri[2])[0]) / 3.0,
@@ -1557,6 +1899,8 @@ Cdt2dRefineReport Cdt2dRefiner::Run() {
     mBound = 1.0 / (2.0 * std::sin(mO.mMinAngleDeg * (3.14159265358979323846 / 180.0)));
     mBudget = mO.mMaxPoints;
     FindSmallAngles();
+    if (mO.mLopCorners)
+        SetUpBalls();
     for (const auto& r_s : mInput)
         CheckSubsegment(r_s[0], r_s[1]);
     for (std::size_t t = 0; t < mC.mTris.size(); ++t)
@@ -1565,6 +1909,19 @@ Cdt2dRefineReport Cdt2dRefiner::Run() {
         if (mBudget <= 0) {
             mRep.mBudgetReached = true;
             break;
+        }
+        // Corner lopping's rules in their priority: a vertex inside a ball,
+        // an encroached subsegment, a bad triangle.
+        if (!mShrink.empty()) {
+            const std::int64_t c = *mShrink.begin();
+            mShrink.erase(mShrink.begin());
+            auto& r_in = mInsideBall[c];
+            r_in.erase(std::remove_if(r_in.begin(), r_in.end(),
+                                      [&](std::int64_t V) { return !InsideBall(c, V); }),
+                       r_in.end());
+            if (!r_in.empty() && mFloored.count(c) == 0)
+                ShrinkBall(c);
+            continue;
         }
         if (!mEncroached.empty()) {
             const auto s = *mEncroached.begin();
@@ -1596,7 +1953,22 @@ Cdt2dRefineReport Cdt2dRefiner::Run() {
         if (!(r > mBound))
             continue;
         std::int64_t apex = ForcedBy(r_t.mV);
-        if (apex < 0) {
+        if (apex < 0 && !mBall.empty()) {
+            // Corner lopping forces a bad triangle whose point lies in a
+            // ball at the end; Lemma 7 has its vertices within twice the
+            // radius of the corner.
+            const Vec2 c = CentreOf(r_t.mV);
+            if (std::isfinite(c[0]) && std::isfinite(c[1]))
+                apex = BallOf(c);
+            if (apex >= 0) {
+                auto& r_info = mLopInfo.at(apex);
+                ++r_info.mNumForced;
+                r_info.mMinForcedDeg = std::min(r_info.mMinForcedDeg, MinAngleDeg(r_t.mV));
+                for (const std::int64_t v : r_t.mV)
+                    if (Dist(apex, v, P(v)) > 2.0 * mBall.at(apex) * (1.0 + kCdt2dLopTol))
+                        r_info.mWithinTwoRadii = false;
+            }
+        } else if (apex < 0) {
             const auto it = mDeclined.find(cdt2d_sorted(r_t.mV));
             if (it != mDeclined.end())
                 apex = it->second;
@@ -1618,8 +1990,26 @@ Cdt2dRefineReport Cdt2dRefiner::Run() {
         if (it != forced_min.end())
             r_a.mMinForcedDeg = it->second;
     }
+    for (const auto& r_l : mLopInfo)
+        mRep.mLopped.push_back(r_l.second);
     mRep.mRequests.assign(mRequests.begin(), mRequests.end());
     return mRep;
+}
+
+double cdt2d_lop_bound_deg(double DeltaT) {
+    constexpr double k_pi = 3.14159265358979323846;
+    if (!(DeltaT >= 0.0) || DeltaT > k_pi / 3.0)
+        return 0.0;
+    const double t = std::tan(0.5 * DeltaT);
+    const double eta = (1.0 + t) / (1.0 - t);
+    const double mu = 1.0 / (1.0 - t);
+    // zeta tends to sqrt 2 as the turning vanishes (0 / 0 at 0).
+    const double zeta = DeltaT < 1e-6 ? std::sqrt(2.0)
+                                      : std::sqrt(2.0) * std::sin(0.5 * DeltaT) /
+                                            (std::sqrt(1.0 + std::sin(DeltaT)) - 1.0);
+    const double k = std::min(std::asin(1.0 / (2.0 * std::sqrt(2.0) * mu)),
+                              std::asin(std::min(1.0, 1.0 / (2.0 * zeta * eta))));
+    return k * (180.0 / k_pi);
 }
 
 Cdt2dRefineReport Cdt2d::Refine(const Cdt2dRefineOptions& rOptions) {

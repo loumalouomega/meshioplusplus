@@ -466,6 +466,7 @@ void print_usage(std::ostream& os) {
           "                            [--metric mean|varying] [--virtual-edges]\n"
           "                            [--reparam-condition-number K]\n"
           "                            [--model-tolerances] [--virtual-faces]\n"
+          "                            [--lop-corners]\n"
           "                            [--strict] [--json]\n"
           "  isosurface              Level set of a scalar point_data field (contours)\n"
           "                            --array NAME --values v1,v2 [--component I]\n"
@@ -2137,6 +2138,7 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
                                   {"reparam-condition-number", {}, true},
                                   {"model-tolerances", {}, false},
                                   {"virtual-faces", {}, false},
+                                  {"lop-corners", {}, false},
                                   {"json", {}, false},
                                   {"quiet", {"-q"}, false},
                               });
@@ -2228,6 +2230,7 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
     meshioplusplus::MeshCadSurfaceExtras extras;
     extras.mModelTolerances = has_flag(p, "model-tolerances");
     extras.mVirtualFaces = has_flag(p, "virtual-faces");
+    extras.mLopCorners = has_flag(p, "lop-corners");
     meshioplusplus::MeshCadSizeReport size_report;
     meshioplusplus::MeshCadSurfaceExtrasReport extras_report;
     const meshioplusplus::MeshCadSurfaceResult r = meshioplusplus::mesh_cad_surface(
@@ -2368,6 +2371,25 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
             json.EndObject();
         }
         json.EndArray();
+        json.Key("lopped_corners");
+        json.BeginArray();
+        for (const auto& r_c : extras_report.mLoppedCorners) {
+            json.BeginObject();
+            json.Field("face", r_c.mFace);
+            json.Field("point", r_c.mPoint);
+            json.Field("angle_deg", r_c.mAngleDeg);
+            json.Field("lfs0", r_c.mLfs0);
+            json.Field("lop_radius", r_c.mLopRadius);
+            json.Field("turning_deg", r_c.mTurningDeg);
+            json.Field("stated_bound_deg", r_c.mStatedBoundDeg);
+            json.Field("num_forced", r_c.mNumForced);
+            json.Field("min_forced_deg", r_c.mMinForcedDeg);
+            json.Field("within_two_radii", r_c.mWithinTwoRadii);
+            json.Field("guaranteed", r_c.mGuaranteed);
+            json.Field("reason", r_c.mReason);
+            json.EndObject();
+        }
+        json.EndArray();
         json.EndObject();
     } else if (!has_flag(p, "quiet")) {
         std::cout << "mesh_cad_surface\n"
@@ -2402,6 +2424,20 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
                                   : std::string(" forces no triangle"))
                           << "\n";
             }
+        }
+        for (const auto& r_c : extras_report.mLoppedCorners) {
+            char angle[32];
+            char radius[32];
+            char bound[32];
+            meshioplusplus::detail::snprintf_c(angle, sizeof(angle), "%.2f", r_c.mAngleDeg);
+            meshioplusplus::detail::snprintf_c(radius, sizeof(radius), "%g", r_c.mLopRadius);
+            meshioplusplus::detail::snprintf_c(bound, sizeof(bound), "%.2f", r_c.mStatedBoundDeg);
+            std::cout << "  face " << r_c.mFace << ": corner of " << angle << " degrees at point "
+                      << r_c.mPoint << " lopped at radius " << radius << "; bound " << bound
+                      << " degrees "
+                      << (r_c.mGuaranteed ? std::string("guaranteed")
+                                          : "not stated: " + r_c.mReason)
+                      << "\n";
         }
     }
     return 0;

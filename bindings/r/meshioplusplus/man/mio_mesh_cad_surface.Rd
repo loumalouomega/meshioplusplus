@@ -10,7 +10,7 @@ mio_mesh_cad_surface(info, target_size, max_chordal_deviation = 0,
   pole_rings = 0, face_sizes = NULL, edge_sizes = NULL, background = NULL,
   background_array = "size", metric = c("mean", "varying"),
   virtual_edges = FALSE, reparam_condition_number = 0,
-  model_tolerances = FALSE, virtual_faces = FALSE)
+  model_tolerances = FALSE, virtual_faces = FALSE, lop_corners = FALSE)
 }
 \arguments{
 \item{info}{A format-info handle holding a B-rep.}
@@ -58,6 +58,8 @@ parameters (v17.20.0); 0 is off, otherwise above 1; order 1 only.}
 \code{"tolerance"} and \code{"end_tolerances"} in its extra JSON).}
 \item{virtual_faces}{Mesh a face narrower than \code{target_size} with the
 neighbour it meets tangentially along the most edge; order 1 only.}
+\item{lop_corners}{Lop acute corners (Pav and Walkington 2005) in place of
+concentric shells; only with refinement (\code{min_angle} or sizes).}
 }
 \description{Mesh generation from CAD (v17.13.0): a conforming triangle mesh of
 the faces of the B-rep a format-info handle holds (Kratos CAD JSON, STEP or IGES,
@@ -82,6 +84,9 @@ edges finer than its given size allows), \code{virtual_edges} (each chain's
 conformal, 2 mean-value, 0 declined, \code{reason}), \code{merged_faces}
 (\code{sliver}, \code{host}, \code{width}, \code{merged}, \code{reason}),
 \code{tolerance_uses} (\code{edge}, \code{declared}, \code{gap},
-\code{where}) and \code{corners}, a data frame of the corners under 60 degrees and poles (1-based
+\code{where}), \code{lopped_corners} (\code{face}, \code{point},
+\code{angle_deg}, \code{lfs0}, \code{lop_radius}, \code{turning_deg},
+\code{stated_bound_deg}, \code{num_forced}, \code{min_forced_deg},
+\code{within_two_radii}, \code{guaranteed}, \code{reason}) and \code{corners}, a data frame of the corners under 60 degrees and poles (1-based
 \code{face} and \code{point}, \code{u}, \code{v}, \code{x}, \code{y}, \code{z},
 \code{angle_deg}, \code{min_forced_deg}, \code{reach}, \code{pole}).}

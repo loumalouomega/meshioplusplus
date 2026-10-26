@@ -2326,6 +2326,11 @@ def test_mesh_cad_surface_tool(tmp_path):
         str(sphere), str(out), 0.2, virtual_faces=True, model_tolerances=True
     )
     assert other["merged_faces"] == [] and other["tolerance_uses"] == []
+    # Corner lopping: the sphere's faces have no acute corner to lop.
+    lopped = _tools.tool_mesh_cad_surface(
+        str(sphere), str(out), 0.2, min_angle=20.0, lop_corners=True
+    )
+    assert lopped["lopped_corners"] == []
 
 
 def test_octree_tool(tmp_path):
