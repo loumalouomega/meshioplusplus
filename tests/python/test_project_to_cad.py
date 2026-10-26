@@ -99,6 +99,75 @@ def test_a_point_outside_the_trims_is_reported():
 
 
 @needs_core
+def test_points_on_a_straight_trim_are_inside(tmp_path):
+    """A triangular face bounded by three straight trims: a mesh's own points on
+    them lie on the trims to rounding, so none is outside; a point pushed well
+    past the hypotenuse is still reported."""
+    doc = {
+        "breps": [
+            {
+                "brep_id": 1,
+                "faces": [
+                    {
+                        "brep_id": 2,
+                        "surface": {
+                            "is_trimmed": True,
+                            "degrees": [1, 1],
+                            "knot_vectors": [[0, 2], [0, 2]],
+                            "control_points": [
+                                [1, [0, 0, 0, 1]],
+                                [2, [2, 0, 0, 1]],
+                                [3, [0, 2, 0, 1]],
+                                [4, [2, 2, 0, 1]],
+                            ],
+                        },
+                        "boundary_loops": [
+                            {
+                                "loop_type": "outer",
+                                "trimming_curves": [
+                                    {
+                                        "trim_index": i,
+                                        "curve_direction": True,
+                                        "parameter_curve": {
+                                            "degree": 1,
+                                            "knot_vector": [0, 0, 1, 1],
+                                            "active_range": [0, 1],
+                                            "control_points": [
+                                                [[a[0], a[1], 0, 1]],
+                                                [[b[0], b[1], 0, 1]],
+                                            ],
+                                        },
+                                    }
+                                    for i, (a, b) in enumerate(
+                                        [((0, 0), (1.5, 0)), ((1.5, 0), (0, 1.5)), ((0, 1.5), (0, 0))]
+                                    )
+                                ],
+                            }
+                        ],
+                    }
+                ],
+                "edges": [],
+            }
+        ]
+    }
+    path = tmp_path / "triangle.cad.json"
+    path.write_text(json.dumps(doc))
+    model = mio.read(path)
+    mesh = mio.mesh_cad_surface(model, 0.1)
+    _, report = mio.project_to_cad(mesh, model, return_report=True)
+    assert report["num_outside_trim"] == 0 and report["outside_trim"] == []
+    p = np.asarray(mesh.points).copy()
+    on_hypotenuse = np.flatnonzero(
+        np.isclose(p[:, 0] + p[:, 1], 1.5, atol=1e-9) & (p[:, 0] > 0.2) & (p[:, 0] < 1.3)
+    )
+    pick = int(on_hypotenuse[0])
+    p[pick] += [0.05, 0.05, 0.0]
+    off = mio.Mesh(p, mesh.cells, cell_data=mesh.cell_data)
+    _, report = mio.project_to_cad(off, model, return_report=True)
+    assert report["outside_trim"] == [pick]
+
+
+@needs_core
 def test_refusals_are_by_name():
     model = _read("sphere.cad.json")
     mesh = mio.mesh_cad_surface(model, 0.4)

@@ -38143,6 +38143,7 @@ inline void nurbs_surface_point_in_span(int P, int Q, const std::vector<double>&
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -38228,9 +38229,13 @@ inline std::vector<double> brep_lattice(const BrepAxis& rA, int K) {
 }
 
 /// A loop as a closed polygon in `(u, v)`: every trim sampled at `Samples`
-/// points per knot span of its active range, in loop order.
+/// points per knot span of its active range, walked in its own direction (a
+/// trim whose direction flag is off runs backwards). A loop need not list its
+/// trims in walking order, and a loop of reversed trims lists them back to
+/// front, so each next walk is the one that starts where the last one ended.
 inline std::vector<std::array<double, 2>> brep_loop_polygon(const BrepLoop& rLoop, int Samples) {
-    std::vector<std::array<double, 2>> poly;
+    std::vector<std::vector<std::array<double, 2>>> walks;
+    walks.reserve(rLoop.mTrims.size());
     for (const BrepTrim& t : rLoop.mTrims) {
         const BrepCurve& c = t.mCurve;
         const std::size_t n = c.mWeights.Size();
@@ -38255,7 +38260,29 @@ inline std::vector<std::array<double, 2>> brep_loop_polygon(const BrepLoop& rLoo
         }
         if (!t.mDirection)
             std::reverse(pts.begin(), pts.end());
-        poly.insert(poly.end(), pts.begin(), pts.end());
+        walks.push_back(std::move(pts));
+    }
+    std::vector<std::array<double, 2>> poly;
+    std::vector<char> used(walks.size(), 0);
+    for (std::size_t step = 0; step < walks.size(); ++step) {
+        std::size_t pick = walks.size();
+        double best = std::numeric_limits<double>::infinity();
+        for (std::size_t k = 0; k < walks.size(); ++k) {
+            if (used[k])
+                continue;
+            if (pick == walks.size())
+                pick = k;
+            if (poly.empty() || walks[k].empty())
+                continue;
+            const double dx = walks[k].front()[0] - poly.back()[0];
+            const double dy = walks[k].front()[1] - poly.back()[1];
+            if (dx * dx + dy * dy < best) {
+                best = dx * dx + dy * dy;
+                pick = k;
+            }
+        }
+        used[pick] = 1;
+        poly.insert(poly.end(), walks[pick].begin(), walks[pick].end());
     }
     return poly;
 }
@@ -238303,6 +238330,43 @@ const BrepTrim* ptc_trim(const BrepFace& rFace, std::int64_t T) {
     return nullptr;
 }
 
+// A point on a trim lies on it to rounding, which the even-odd test cannot
+// decide, so the trim's tolerance is a relative 1e-9 of the loops' extent.
+double ptc_trim_tolerance(const std::vector<std::vector<std::array<double, 2>>>& rLoops) {
+    constexpr double kInf = std::numeric_limits<double>::infinity();
+    double lo[2] = {kInf, kInf};
+    double hi[2] = {-kInf, -kInf};
+    for (const auto& poly : rLoops)
+        for (const auto& q : poly)
+            for (std::size_t k = 0; k < 2; ++k) {
+                lo[k] = std::min(lo[k], q[k]);
+                hi[k] = std::max(hi[k], q[k]);
+            }
+    if (hi[0] < lo[0])
+        return 0.0;
+    return 1e-9 * std::hypot(hi[0] - lo[0], hi[1] - lo[1]);
+}
+
+// Whether (U, V) lies within `Tol` of an edge of one of the loops.
+bool ptc_on_trim(const std::vector<std::vector<std::array<double, 2>>>& rLoops, double U,
+                 double V, double Tol) {
+    for (const auto& poly : rLoops) {
+        const std::size_t n = poly.size();
+        for (std::size_t i = 0, j = n - 1; i < n; j = i++) {
+            const double ex = poly[i][0] - poly[j][0];
+            const double ey = poly[i][1] - poly[j][1];
+            const double len2 = ex * ex + ey * ey;
+            const double s = (U - poly[j][0]) * ex + (V - poly[j][1]) * ey;
+            const double t = len2 > 0.0 ? std::clamp(s / len2, 0.0, 1.0) : 0.0;
+            const double dx = poly[j][0] + t * ex - U;
+            const double dy = poly[j][1] + t * ey - V;
+            if (dx * dx + dy * dy <= Tol * Tol)
+                return true;
+        }
+    }
+    return false;
+}
+
 }  // namespace
 
 ProjectToCadResult project_to_cad(const Mesh& rMesh, const BrepInfo& rBrep,
@@ -238388,6 +238452,7 @@ ProjectToCadResult project_to_cad(const Mesh& rMesh, const BrepInfo& rBrep,
     };
     std::vector<std::optional<detail::SurfaceProjector>> projector(nf);
     std::vector<std::vector<std::vector<std::array<double, 2>>>> loops(nf);
+    std::vector<double> trim_tol(nf, 0.0);
     for (std::size_t f = 0; f < nf; ++f) {
         if (!face_used[f])
             continue;
@@ -238401,6 +238466,7 @@ ProjectToCadResult project_to_cad(const Mesh& rMesh, const BrepInfo& rBrep,
         if (rBrep.mFaces[f].mTrimmed)
             for (const BrepLoop& r_l : rBrep.mFaces[f].mLoops)
                 loops[f].push_back(detail::brep_loop_polygon(r_l, rOptions.mTrimSamples));
+        trim_tol[f] = ptc_trim_tolerance(loops[f]);
     }
     std::vector<std::optional<detail::TrimTrace>> trace(ne);
     for (std::size_t e = 0; e < ne; ++e) {
@@ -238485,7 +238551,8 @@ ProjectToCadResult project_to_cad(const Mesh& rMesh, const BrepInfo& rBrep,
             for (std::size_t k = 0; k < 3; ++k)
                 px[3 * i + k] = x[k];
             moved[i] = d;
-            if (on_face && !loops[f].empty() && !detail::brep_inside(loops[f], uv[0], uv[1]))
+            if (on_face && !loops[f].empty() && !detail::brep_inside(loops[f], uv[0], uv[1]) &&
+                !ptc_on_trim(loops[f], uv[0], uv[1], trim_tol[f]))
                 outside[i] = 1;
         },
         64);

@@ -35,6 +35,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -122,9 +123,13 @@ inline std::vector<double> brep_lattice(const BrepAxis& rA, int K) {
 }
 
 /// A loop as a closed polygon in `(u, v)`: every trim sampled at `Samples`
-/// points per knot span of its active range, in loop order.
+/// points per knot span of its active range, walked in its own direction (a
+/// trim whose direction flag is off runs backwards). A loop need not list its
+/// trims in walking order, and a loop of reversed trims lists them back to
+/// front, so each next walk is the one that starts where the last one ended.
 inline std::vector<std::array<double, 2>> brep_loop_polygon(const BrepLoop& rLoop, int Samples) {
-    std::vector<std::array<double, 2>> poly;
+    std::vector<std::vector<std::array<double, 2>>> walks;
+    walks.reserve(rLoop.mTrims.size());
     for (const BrepTrim& t : rLoop.mTrims) {
         const BrepCurve& c = t.mCurve;
         const std::size_t n = c.mWeights.Size();
@@ -149,7 +154,29 @@ inline std::vector<std::array<double, 2>> brep_loop_polygon(const BrepLoop& rLoo
         }
         if (!t.mDirection)
             std::reverse(pts.begin(), pts.end());
-        poly.insert(poly.end(), pts.begin(), pts.end());
+        walks.push_back(std::move(pts));
+    }
+    std::vector<std::array<double, 2>> poly;
+    std::vector<char> used(walks.size(), 0);
+    for (std::size_t step = 0; step < walks.size(); ++step) {
+        std::size_t pick = walks.size();
+        double best = std::numeric_limits<double>::infinity();
+        for (std::size_t k = 0; k < walks.size(); ++k) {
+            if (used[k])
+                continue;
+            if (pick == walks.size())
+                pick = k;
+            if (poly.empty() || walks[k].empty())
+                continue;
+            const double dx = walks[k].front()[0] - poly.back()[0];
+            const double dy = walks[k].front()[1] - poly.back()[1];
+            if (dx * dx + dy * dy < best) {
+                best = dx * dx + dy * dy;
+                pick = k;
+            }
+        }
+        used[pick] = 1;
+        poly.insert(poly.end(), walks[pick].begin(), walks[pick].end());
     }
     return poly;
 }
