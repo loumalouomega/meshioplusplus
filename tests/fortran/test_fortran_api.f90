@@ -408,6 +408,23 @@ program test_fortran_api
             call check(ierr == 0 .and. mio_mesh_cad_num_untangled() == 0, &
                        'mesh_cad_surface untangles nothing on a flat triangle')
             if (ierr == 0) call tris%free()
+            ! Roadmap 6.10.1: the mesh projected back onto its triangle moves
+            ! nothing; a read's own sampling names no face and is refused.
+            block
+                type(mio_mesh) :: projected
+                type(mio_project_to_cad_report) :: prep
+            tris = info%mesh_cad_surface(0.1_real64, stat=ierr, errmsg=msg)
+            if (ierr == 0) then
+                projected = mio_project_to_cad(tris, info, report=prep, stat=ierr, errmsg=msg)
+                call check(ierr == 0 .and. prep%num_projected == tris%num_points() .and. &
+                           prep%max_move < 1.0e-12_real64 .and. prep%num_outside_trim == 0, &
+                           'project_to_cad leaves a mesh on its model')
+                call check(size(mio_project_to_cad_outside_trim()) == 0, &
+                           'project_to_cad lists no point outside the trims')
+                if (ierr == 0) call projected%free()
+                call tris%free()
+            end if
+            end block
             ! v17.20.0: corner lopping at 20 degrees lops the two 45-degree
             ! corners and states the straight-segment bound.
             block

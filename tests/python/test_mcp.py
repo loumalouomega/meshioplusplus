@@ -2236,6 +2236,29 @@ def test_octree_mesh_tool(tmp_path):
         _tools.tool_octree_mesh(str(skin), str(out), winding_threshold=2.0)
 
 
+def test_project_to_cad_tool(tmp_path):
+    """Roadmap 6.10.1: the sphere's mesh, smoothed (which shrinks it), goes
+    back onto the sphere."""
+    if not hasattr(_core, "project_to_cad"):
+        pytest.skip("core predates project_to_cad")
+    model = pathlib.Path(__file__).parent / "meshes" / "cad_json" / "sphere.cad.json"
+    meshed = tmp_path / "sphere.vtu"
+    _tools.tool_mesh_cad_surface(str(model), str(meshed), 0.25)
+    smoothed = meshioplusplus.smooth(meshioplusplus.read(meshed), iterations=5)
+    shrunk = tmp_path / "shrunk.vtu"
+    meshioplusplus.write(shrunk, smoothed)
+    out = tmp_path / "back.vtu"
+    report = _tools.tool_project_to_cad(str(shrunk), str(model), str(out))
+    assert report["num_projected"] == len(smoothed.points)
+    assert report["num_ambiguous"] == report["num_failed"] == 0
+    assert report["max_move"] > 1e-3
+    assert report["outside_trim"] == []
+    back = meshioplusplus.read(out)
+    assert np.allclose(np.linalg.norm(back.points, axis=1), 1.0, atol=1e-12)
+    with pytest.raises(ValueError, match="trim_samples"):
+        _tools.tool_project_to_cad(str(shrunk), str(model), str(out), trim_samples=1)
+
+
 def test_mesh_cad_surface_tool(tmp_path):
     if not hasattr(_core, "mesh_cad_surface"):
         pytest.skip("core predates mesh_cad_surface")

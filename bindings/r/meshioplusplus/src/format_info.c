@@ -702,6 +702,47 @@ static SEXP r_mesh_cad_lopped_corners(void) {
     return out;
 }
 
+/* project_to_cad (roadmap 6.10.1): every point of a mesh onto the CAD face or
+ * edge its cells name. Returns list(mesh, num_projected, ..., outside_trim). */
+SEXP R_mio_project_to_cad(SEXP mesh, SEXP x, SEXP face_array, SEXP edge_array, SEXP max_distance,
+                          SEXP trim_samples) {
+    const mio_format_info* info = info_of(x, 0);
+    mio_project_to_cad_opts opts;
+    mio_project_to_cad_opts_init(&opts);
+    opts.face_array = mio_r_string(face_array, "face_array");
+    opts.edge_array = mio_r_string(edge_array, "edge_array");
+    opts.max_distance = mio_r_double(max_distance, "max_distance");
+    opts.trim_samples = (int32_t)mio_r_int(trim_samples, "trim_samples");
+    mio_project_to_cad_report report;
+    mio_mesh* out = mio_project_to_cad(mio_r_mesh(mesh), info, &opts, &report);
+    if (out == NULL)
+        mio_r_fail("project_to_cad");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    const int64_t n = mio_project_to_cad_outside_trim(NULL, 0);
+    SEXP outside = PROTECT(Rf_allocVector(REALSXP, n > 0 ? (R_xlen_t)n : 0));
+    if (n > 0) {
+        int64_t* buf = (int64_t*)R_alloc((size_t)n, sizeof(int64_t));
+        mio_project_to_cad_outside_trim(buf, n);
+        for (int64_t i = 0; i < n; ++i)
+            REAL(outside)[i] = (double)buf[i] + 1.0;
+    }
+    SEXP v1 = PROTECT(Rf_ScalarReal((double)report.num_projected));
+    SEXP v2 = PROTECT(Rf_ScalarReal((double)report.num_on_edges));
+    SEXP v3 = PROTECT(Rf_ScalarReal((double)report.num_corners));
+    SEXP v4 = PROTECT(Rf_ScalarReal((double)report.num_ambiguous));
+    SEXP v5 = PROTECT(Rf_ScalarReal((double)report.num_too_far));
+    SEXP v6 = PROTECT(Rf_ScalarReal((double)report.num_failed));
+    SEXP v7 = PROTECT(Rf_ScalarReal((double)report.num_outside_trim));
+    SEXP v8 = PROTECT(Rf_ScalarReal(report.max_move));
+    const char* names[] = {"mesh",          "num_projected", "num_on_edges", "num_corners",
+                           "num_ambiguous", "num_too_far",   "num_failed",   "num_outside_trim",
+                           "max_move",      "outside_trim"};
+    SEXP values[] = {mo, v1, v2, v3, v4, v5, v6, v7, v8, outside};
+    SEXP res = PROTECT(mio_r_named_list(10, names, values));
+    UNPROTECT(11);
+    return res;
+}
+
 SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation,
                             SEXP min_points_per_edge, SEXP tolerance, SEXP record_face_ids,
                             SEXP edges, SEXP match_unreferenced_trims, SEXP strict, SEXP max_points,

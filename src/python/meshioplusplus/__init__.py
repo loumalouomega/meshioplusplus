@@ -209,6 +209,7 @@ if TYPE_CHECKING:
         reference_triangle,
         uv_sphere,
     )
+    from ._project_to_cad import project_to_cad
     from ._proximity import (
         BistrideHierarchy,
         bistride_hierarchy,
@@ -426,6 +427,7 @@ _LAZY_ATTRS = {
     "octree": "_octree",
     "octree_mesh": "_octree_mesh",
     "mesh_cad_surface": "_mesh_cad",
+    "project_to_cad": "_project_to_cad",
     "triangulate_polygon_2d": "_mesh_cad",
 }
 
@@ -597,6 +599,7 @@ __all__ = [
     "octree",
     "octree_mesh",
     "mesh_cad_surface",
+    "project_to_cad",
     "triangulate_polygon_2d",
     "sample_distance",
     "distance_to_surface",

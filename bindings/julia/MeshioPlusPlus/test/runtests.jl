@@ -376,6 +376,12 @@ end
         u = mesh_cad_surface(info; target_size=0.1, order=2, untangle=true)
         @test u.num_untangled == 0
         close(u.mesh)
+        # Projection back onto the model (roadmap 6.10.1) moves nothing.
+        p = project_to_cad(r.mesh, info)
+        @test p.num_projected == num_points(r.mesh) && p.max_move < 1e-12
+        @test isempty(p.outside_trim)
+        close(p.mesh)
+        @test_throws MeshioError project_to_cad(mesh, info)
         close(r.mesh); close(mesh); close(info)
     end
 end

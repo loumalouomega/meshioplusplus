@@ -174,6 +174,7 @@
 #include "meshioplusplus/operations/subdivide.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
+#include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
@@ -7524,6 +7525,51 @@ val conservative_interpolate_js(const val& rSourceObj, const val& rTargetObj, co
  * true, recordLevels: true})`); `coarse` must be the mesh that call was run
  * on. Returns `{ mesh, numGroupsUndone, numCellsRemoved }`.
  */
+// project_to_cad (roadmap 6.10.1): every point of a mesh onto the CAD face or
+// edge its cells name; options {faceArray, edgeArray, maxDistance,
+// trimSamples}, all optional.
+val project_to_cad_js(const val& rMeshObj, const val& rInfo, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        if (rInfo.isUndefined() || rInfo.isNull() || !rInfo.hasOwnProperty("faces"))
+            throw std::invalid_argument(
+                "meshio++: project_to_cad: the info object is not a B-rep (no 'faces')");
+        meshioplusplus::ProjectToCadOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the projectToCad options",
+                                {"faceArray", "edgeArray", "maxDistance", "trimSamples"});
+            if (rOptions.hasOwnProperty("faceArray"))
+                o.mFaceArray = rOptions["faceArray"].as<std::string>();
+            if (rOptions.hasOwnProperty("edgeArray"))
+                o.mEdgeArray = rOptions["edgeArray"].as<std::string>();
+            if (rOptions.hasOwnProperty("maxDistance"))
+                o.mMaxDistance = rOptions["maxDistance"].as<double>();
+            if (rOptions.hasOwnProperty("trimSamples"))
+                o.mTrimSamples = rOptions["trimSamples"].as<int>();
+        }
+        meshioplusplus::ProjectToCadResult r =
+            meshioplusplus::project_to_cad(val_to_mesh(rMeshObj), val_to_brep_info(rInfo), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numProjected", static_cast<double>(r.mNumProjected));
+        out.set("numOnEdges", static_cast<double>(r.mNumOnEdges));
+        out.set("numCorners", static_cast<double>(r.mNumCorners));
+        out.set("numAmbiguous", static_cast<double>(r.mNumAmbiguous));
+        out.set("numTooFar", static_cast<double>(r.mNumTooFar));
+        out.set("numFailed", static_cast<double>(r.mNumFailed));
+        out.set("numOutsideTrim", static_cast<double>(r.mNumOutsideTrim));
+        out.set("maxMove", r.mMaxMove);
+        val outside = val::array();
+        for (const std::int64_t i : r.mOutsideTrim)
+            outside.call<void>("push", static_cast<double>(i));
+        out.set("outsideTrim", outside);
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
 val undo_green_js(const val& rCoarseObj, const val& rFineObj) {
     return with_js_errors([&]() -> val {
         meshioplusplus::UndoGreenResult r =
@@ -8033,6 +8079,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("igaRefine", &iga_refine_js);
     emscripten::function("igaSample", &iga_sample_js);
     emscripten::function("meshCadSurface", &mesh_cad_surface_js);
+    emscripten::function("projectToCad", &project_to_cad_js);
     emscripten::function("igaEvaluate", &iga_evaluate_js);
     emscripten::function("render", &render_js);
     emscripten::function("renderText", &render_text_js);

@@ -1794,6 +1794,14 @@ test_that("mesh_cad_surface meshes a trimmed face and reports it", {
   u <- mio_mesh_cad_surface(r$info, target_size = 0.1, order = 2, untangle = TRUE)
   expect_equal(u$num_untangled, 0)
   mio_release(u$mesh)
+  # Projection back onto the model (roadmap 6.10.1) moves nothing.
+  p <- mio_mesh_cad_surface(r$info, target_size = 0.1)
+  b <- mio_project_to_cad(p$mesh, r$info)
+  expect_equal(b$num_projected, mio_num_points(p$mesh))
+  expect_lt(b$max_move, 1e-12)
+  expect_equal(length(b$outside_trim), 0)
+  mio_release(b$mesh)
+  mio_release(p$mesh)
 })
 test_that("PCD compressed binary is reachable through write options", {
   m <- mio_mesh()

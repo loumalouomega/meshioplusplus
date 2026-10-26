@@ -3043,6 +3043,41 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def project_to_cad(
+        input_path: str,
+        model_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        face_array: str = "cad:face",
+        edge_array: str = "cad:edge",
+        max_distance: float = 0.0,
+        trim_samples: int = 16,
+    ) -> dict:
+        """Move a mesh's points back onto the CAD model it was made from
+        (roadmap 6.10.1): a point on one edge's lines (cad:edge) onto that
+        edge, on two or more (a corner) onto the lowest, a point whose cells
+        name one face (cad:face) onto its surface by Newton point inversion;
+        a point on two faces and no edge stays. model_path is a CAD JSON,
+        STEP or IGES file. A point farther than max_distance (0: no limit)
+        stays. Reports num_projected, num_on_edges, num_corners,
+        num_ambiguous, num_too_far, num_failed, num_outside_trim (projections
+        outside their face's trims, kept, never clamped), max_move and
+        outside_trim."""
+        return _guard(
+            _tools.tool_project_to_cad,
+            input_path=input_path,
+            model_path=model_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            face_array=face_array,
+            edge_array=edge_array,
+            max_distance=max_distance,
+            trim_samples=trim_samples,
+        )
+
+    @server.tool()
     def undo_green(
         coarse_path: str,
         fine_path: str,

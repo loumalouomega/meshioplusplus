@@ -44,6 +44,7 @@ from . import (
     _pipeline,
     _point_budget,
     _predict,
+    _project_to_cad,
     _proximity,
     _quality,
     _refine,
@@ -362,6 +363,13 @@ def main(argv=None):
     )
     _mesh_cad.add_args(parser)
     parser.set_defaults(func=_mesh_cad.mesh_cad_surface_cmd)
+
+    parser = subparsers.add_parser(
+        "project-to-cad",
+        help="Move a mesh's points back onto the CAD faces and edges its cells name",
+    )
+    _project_to_cad.add_args(parser)
+    parser.set_defaults(func=_project_to_cad.project_to_cad_cmd)
 
     parser = subparsers.add_parser(
         "grid-sample",

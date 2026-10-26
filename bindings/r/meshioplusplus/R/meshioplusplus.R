@@ -2716,6 +2716,32 @@ mio_mesh_cad_surface <- function(info, target_size, max_chordal_deviation = 0,
   r
 }
 
+#' Move a mesh's points back onto its CAD model
+#'
+#' Every point of `mesh` goes onto the CAD face or edge its cells name
+#' (`cad:face` on triangles and quads, `cad:edge` on lines, as
+#' [mio_mesh_cad_surface()] writes them) of the B-rep held by `info` (roadmap
+#' 6.10.1): a point on one edge's lines onto that edge, on two or more (a
+#' corner) onto the lowest, a point whose cells name one face onto its surface
+#' (Newton point inversion); a point on two faces and no edge stays. Data and
+#' regions pass through.
+#'
+#' @param mesh A surface mesh carrying `face_array` (and `edge_array`) cell data.
+#' @param info A format-info handle holding a B-rep.
+#' @param face_array,edge_array The cell data naming each cell's face and edge.
+#' @param max_distance A point farther than this stays (0: no limit).
+#' @param trim_samples Samples per knot span when testing a face's trims.
+#' @return A list: `mesh`, `num_projected`, `num_on_edges`, `num_corners`,
+#'   `num_ambiguous`, `num_too_far`, `num_failed`, `num_outside_trim`,
+#'   `max_move` and `outside_trim` (1-based points projected outside their
+#'   face's trims, kept, never clamped).
+#' @export
+mio_project_to_cad <- function(mesh, info, face_array = "cad:face", edge_array = "cad:edge",
+                               max_distance = 0, trim_samples = 16) {
+  .Call(R_mio_project_to_cad, mesh, info, as.character(face_array),
+        as.character(edge_array), as.numeric(max_distance), as.integer(trim_samples))
+}
+
 #' Copy a B-rep side channel
 #'
 #' The trimmed NURBS faces, loops, edges and vertices of a Kratos CAD JSON

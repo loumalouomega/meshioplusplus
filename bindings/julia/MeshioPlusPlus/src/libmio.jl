@@ -724,6 +724,30 @@ struct _CMeshCadSurfaceOptsEx
     reserved::NTuple{1,Int64}
 end
 
+"""Mirror of C `mio_project_to_cad_opts` (roadmap 6.10.1); its strings are
+borrowed for one call."""
+struct _CProjectToCadOpts
+    face_array::Ptr{UInt8}
+    edge_array::Ptr{UInt8}
+    max_distance::Cdouble
+    trim_samples::Int32
+    reserved_pad::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_project_to_cad_report`."""
+struct _CProjectToCadReport
+    num_projected::Int64
+    num_on_edges::Int64
+    num_corners::Int64
+    num_ambiguous::Int64
+    num_too_far::Int64
+    num_failed::Int64
+    num_outside_trim::Int64
+    max_move::Cdouble
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_mesh_cad_surface_report`."""
 struct _CMeshCadSurfaceReport
     num_points::Int64
@@ -1367,6 +1391,13 @@ function _check_abi_layout()
                                  fieldoffset(_CMeshCadSurfaceOptsEx, 19) == 120)) ||
         error("meshio++: mio_mesh_cad_surface_opts_ex layout mismatch " *
               "($(sizeof(_CMeshCadSurfaceOptsEx)) bytes)")
+    (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CProjectToCadOpts) == 64 &&
+                                 fieldoffset(_CProjectToCadOpts, 4) == 24)) ||
+        error("meshio++: mio_project_to_cad_opts layout mismatch " *
+              "($(sizeof(_CProjectToCadOpts)) bytes)")
+    (sizeof(_CProjectToCadReport) == 96 && fieldoffset(_CProjectToCadReport, 8) == 56) ||
+        error("meshio++: mio_project_to_cad_report layout mismatch " *
+              "($(sizeof(_CProjectToCadReport)) bytes)")
     sizeof(_CFitCadOpts) == 80 ||
         error("meshio++: mio_fit_cad_opts layout mismatch ($(sizeof(_CFitCadOpts)) bytes)")
     sizeof(_CFitCadReport) == 192 ||

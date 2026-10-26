@@ -534,6 +534,34 @@ export interface MeshCadCorner {
   pole: boolean;
 }
 
+/** Options of `projectToCad` (doc/project_to_cad.md). */
+export interface ProjectToCadOptions {
+  /** The cell data naming each triangle's or quad's CAD face (default "cad:face"). */
+  faceArray?: string;
+  /** The cell data naming each line's CAD edge (default "cad:edge"). */
+  edgeArray?: string;
+  /** A point farther than this stays (0, the default, is no limit). */
+  maxDistance?: number;
+  /** Samples per knot span when testing a face's trims (default 16). */
+  trimSamples?: number;
+}
+
+/** What `projectToCad` returns. */
+export interface ProjectToCadResult {
+  mesh: Mesh;
+  numProjected: number;
+  numOnEdges: number;
+  numCorners: number;
+  numAmbiguous: number;
+  numTooFar: number;
+  numFailed: number;
+  numOutsideTrim: number;
+  maxMove: number;
+  /** The points (0-based) projected outside their face's trims, ascending. */
+  outsideTrim: number[];
+  warnings: string[];
+}
+
 /** One face's outcome in `meshCadSurface`'s report. */
 export interface MeshCadFaceRecord {
   face: number;
@@ -3084,6 +3112,19 @@ export interface MeshioPlusPlusModule {
    * @throws {Error} on a bad option or an info object that is not a B-rep.
    */
   meshCadSurface(info: CadJsonInfo, options: MeshCadSurfaceOptions): MeshCadSurfaceResult;
+
+  /**
+   * Move every point of `mesh` onto the CAD face or edge its cells name
+   * (`cad:face` on triangles and quads, `cad:edge` on lines, as
+   * `meshCadSurface` writes them) of the B-rep `info` (roadmap 6.10.1): a
+   * point on one edge's lines onto that edge, on two or more (a corner) onto
+   * the lowest, a point whose cells name one face onto its surface (Newton
+   * point inversion); a point on two faces and no edge stays. A projection
+   * outside its face's trims is kept and listed in `outsideTrim`.
+   * @throws {Error} on a mesh with no face cell data, an index out of range or
+   * an info object that is not a B-rep.
+   */
+  projectToCad(mesh: Mesh, info: CadJsonInfo, options?: ProjectToCadOptions): ProjectToCadResult;
 
   /**
    * Evaluate patch `patch` (0-based; the face of a B-rep) at `params`, a flat

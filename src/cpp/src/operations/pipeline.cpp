@@ -53,6 +53,7 @@
 #include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/iga.hpp"
 #include "meshioplusplus/operations/mesh_cad.hpp"
+#include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/formats/cad_json.hpp"
 #include "meshioplusplus/formats/iges.hpp"
 #include "meshioplusplus/formats/mfem.hpp"
@@ -539,6 +540,9 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "Untangle",
           "Quads"}},
         {"IgaSample", {"Subdivisions", "TrimSamples", "Trim", "Edges"}},
+        // Back onto the CAD (roadmap 6.10.1): the B-rep at `Model`, or the
+        // one a CAD Input carries when no step has changed the mesh since.
+        {"ProjectToCad", {"Model", "FaceArray", "EdgeArray", "MaxDistance", "TrimSamples"}},
         {"IgaRefine",
          {"Subdivisions", "Elevate", "SampleSubdivisions", "TrimSamples", "Trim", "Edges"}},
     };
@@ -1176,6 +1180,46 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                          "needs the CAD model a pipeline's Input reads, which only a whole run "
                          "carries (run_pipeline), not a step applied on its own"));
         return pipe_apply_model_step(rStep, rReport, *pModel);
+    }
+
+    if (op == "ProjectToCad") {
+        BrepInfo owned;
+        const BrepInfo* p_brep = nullptr;
+        if (pipe_find(rStep, "Model")) {
+            const std::string path = pipe_text(rStep, "Model", "");
+            const std::string fmt = resolve_format(path, "");
+            if (fmt == "cad_json")
+                (void)read_cad_json(path, owned);
+            else if (fmt == "step")
+                (void)read_step(path, owned);
+            else if (fmt == "iges")
+                (void)read_iges(path, owned);
+            else
+                throw std::invalid_argument(pipe_err(
+                    rStep, "'Model' must be a CAD JSON, STEP or IGES file, not '" + fmt + "'"));
+            p_brep = &owned;
+        } else if (pModel && pModel->mBrep) {
+            p_brep = &*pModel->mBrep;
+        } else {
+            throw std::invalid_argument(pipe_err(
+                rStep,
+                "needs 'Model' (a CAD JSON, STEP or IGES file), or the B-rep a CAD Input "
+                "carries while no step has changed the mesh" +
+                    std::string(pModel && !pModel->mWhy.empty() ? ": " + pModel->mWhy : "")));
+        }
+        ProjectToCadOptions o;
+        o.mFaceArray = pipe_text(rStep, "FaceArray", o.mFaceArray.c_str());
+        o.mEdgeArray = pipe_text(rStep, "EdgeArray", o.mEdgeArray.c_str());
+        o.mMaxDistance = pipe_number(rStep, "MaxDistance", o.mMaxDistance);
+        o.mTrimSamples = static_cast<std::int32_t>(
+            pipe_number(rStep, "TrimSamples", static_cast<double>(o.mTrimSamples)));
+        ProjectToCadResult r = project_to_cad(mesh, *p_brep, o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumProjected", static_cast<double>(r.mNumProjected)},
+                        {"NumOnEdges", static_cast<double>(r.mNumOnEdges)},
+                        {"NumOutsideTrim", static_cast<double>(r.mNumOutsideTrim)},
+                        {"MaxMove", r.mMaxMove}});
+        return std::move(r.mMesh);
     }
 
     if (op == "Quality") {
@@ -2607,7 +2651,8 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
             validate_pipeline_step(step);
         else
             pipe_validate_v2(step);
-        wants_model = wants_model || pipe_is_model_step(step.mOp);
+        wants_model = wants_model || pipe_is_model_step(step.mOp) ||
+                      (step.mOp == "ProjectToCad" && !pipe_find(step, "Model"));
         if (step.mOp == "Split" && (!fanout || i + 1 != rPipeline.mSteps.size()))
             throw std::invalid_argument(
                 "meshio++: pipeline: Split must be terminal and requires Output.Pattern with "
@@ -2697,7 +2742,9 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
         }
         mesh = rPipeline.mVersion == 2 ? pipe_apply_v2(std::move(mesh), step, report, &model)
                                        : pipe_apply_step(std::move(mesh), step, report, &model);
-        if (model.Has() && !pipe_is_model_step(step.mOp) && step.mOp != "FitCad")
+        // Projected onto it, the mesh matches the model again.
+        if (model.Has() && !pipe_is_model_step(step.mOp) && step.mOp != "FitCad" &&
+            step.mOp != "ProjectToCad")
             model.Drop("step " + std::to_string(i + 1) + " '" + step.mOp +
                        "' changed the mesh, which drops the model");
     }

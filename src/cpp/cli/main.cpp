@@ -94,6 +94,7 @@
 #include "meshioplusplus/operations/primitives.hpp"
 #include "meshioplusplus/operations/octree.hpp"
 #include "meshioplusplus/operations/mesh_cad.hpp"
+#include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
@@ -471,6 +472,10 @@ void print_usage(std::ostream& os) {
           "                            [--lop-corners] [--untangle]\n"
           "                            [--quads none|dominant|all]\n"
           "                            [--strict] [--json]\n"
+          "  project-to-cad          Move a mesh's points back onto the CAD faces and\n"
+          "                            edges its cells name: INFILE MODEL OUTFILE\n"
+          "                            [--face-array NAME] [--edge-array NAME]\n"
+          "                            [--max-distance D] [--trim-samples N] [--json]\n"
           "  isosurface              Level set of a scalar point_data field (contours)\n"
           "                            --array NAME --values v1,v2 [--component I]\n"
           "  sdf                     Signed distance field: a grid over a surface,\n"
@@ -5118,6 +5123,69 @@ int cmd_refine(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+int cmd_project_to_cad(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"face-array", {}, true},
+                                  {"edge-array", {}, true},
+                                  {"max-distance", {}, true},
+                                  {"trim-samples", {}, true},
+                                  {"json", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 3)
+        throw std::runtime_error("project-to-cad requires exactly INFILE MODEL and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    CliIgaModel model = cli_iga_read(p.positionals[1], "");
+    if (!model.mBrep)
+        throw std::runtime_error("project-to-cad needs a B-rep (CAD JSON, STEP or IGES), not '" +
+                                 model.mFormat + "'");
+    meshioplusplus::ProjectToCadOptions o;
+    if (has_opt(p, "face-array"))
+        o.mFaceArray = opt_value(p, "face-array");
+    if (has_opt(p, "edge-array"))
+        o.mEdgeArray = opt_value(p, "edge-array");
+    if (has_opt(p, "max-distance"))
+        o.mMaxDistance = meshioplusplus::detail::stod_c(opt_value(p, "max-distance"));
+    if (has_opt(p, "trim-samples"))
+        o.mTrimSamples = std::stoi(opt_value(p, "trim-samples"));
+    auto r = meshioplusplus::project_to_cad(mesh, *model.mBrep, o);
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_projected", r.mNumProjected);
+        json.Field("num_on_edges", r.mNumOnEdges);
+        json.Field("num_corners", r.mNumCorners);
+        json.Field("num_ambiguous", r.mNumAmbiguous);
+        json.Field("num_too_far", r.mNumTooFar);
+        json.Field("num_failed", r.mNumFailed);
+        json.Field("num_outside_trim", r.mNumOutsideTrim);
+        json.Field("max_move", r.mMaxMove);
+        json.Key("outside_trim");
+        json.BeginArray();
+        for (const std::int64_t i : r.mOutsideTrim)
+            json.Int(i);
+        json.EndArray();
+        json.Key("warnings");
+        json.BeginArray();
+        for (const std::string& w : r.mWarnings)
+            json.String(w);
+        json.EndArray();
+        json.EndObject();
+        std::cout << "\n";
+    } else if (!has_flag(p, "quiet")) {
+        char move[32];
+        meshioplusplus::detail::snprintf_c(move, sizeof(move), "%.6g", r.mMaxMove);
+        std::cout << "projected " << r.mNumProjected << " point(s) (" << r.mNumOnEdges
+                  << " on edges, " << r.mNumCorners << " at corners), largest move " << move << "; "
+                  << r.mNumAmbiguous << " ambiguous, " << r.mNumTooFar << " too far, "
+                  << r.mNumFailed << " failed, " << r.mNumOutsideTrim << " outside their trims\n";
+    }
+    write_mesh_cli(p.positionals[2], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
 int cmd_undo_green(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -7274,6 +7342,8 @@ int main(int argc, char** argv) {
             return cmd_octree_mesh(rest);
         if (cmd == "mesh-cad-surface")
             return cmd_mesh_cad_surface(rest);
+        if (cmd == "project-to-cad")
+            return cmd_project_to_cad(rest);
         if (cmd == "sdf")
             return cmd_sdf(rest);
         if (cmd == "split")

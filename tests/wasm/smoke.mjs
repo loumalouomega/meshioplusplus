@@ -3523,6 +3523,13 @@ step('meshCadSurface: a trimmed CAD JSON face triangulated and reported', () => 
     assert.equal(r.mesh.cells[0].type, 'triangle');
     assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0 }), /target_size/);
     assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, bogus: 1 }), /bogus/);
+    // Roadmap 6.10.1: projected back onto its face, the mesh does not move.
+    const back = m.projectToCad(r.mesh, read.info);
+    assert.equal(back.numProjected, r.numPoints);
+    assert.ok(back.maxMove < 1e-12);
+    assert.deepEqual(back.outsideTrim, []);
+    assert.throws(() => m.projectToCad(read.mesh, read.info), /cad:face/);
+    assert.throws(() => m.projectToCad(r.mesh, read.info, { bogus: 1 }), /bogus/);
     // v17.15.0: refined to 25 degrees and smoothed; the two 45-degree corners
     // are reported, every angle counted.
     const q = m.meshCadSurface(read.info, {

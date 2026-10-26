@@ -32285,6 +32285,90 @@ MESHIOPLUSPLUS_API Mesh reference_cells(const std::vector<std::string>& rTypes =
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/primitives.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/project_to_cad.hpp =====
+/**
+ * @file project_to_cad.hpp
+ * @brief Move a mesh's points back onto the CAD model it was made from
+ * (roadmap 6.10.1).
+ *
+ * A mesh `mesh_cad_surface` wrote carries, per cell, the CAD face it lies on
+ * (`cad:face` on its triangles and quads) and the CAD edge it runs along
+ * (`cad:edge` on its lines). An operation that knows no CAD (smoothing, an
+ * adaptation, a remesh that keeps those arrays) moves the points off the
+ * surfaces; `project_to_cad` puts them back:
+ *
+ *  - a point on the lines of one edge goes to the nearest point of that
+ *    edge (its first use's trim curve lifted through its face's surface:
+ *    a scan of 64 steps, then Newton on `(X - p) . X' = 0`);
+ *  - a point on the lines of two or more edges is a corner of the model:
+ *    it goes to the nearest point of the lowest of them, which is the edge's
+ *    end for a point near it, and is counted;
+ *  - a point whose triangles and quads all name one face goes to the nearest
+ *    point of that face's surface: Newton on the first-order condition
+ *    `(S - p) . S_u = (S - p) . S_v = 0` with its second derivatives,
+ *    Gauss-Newton where that Hessian is not positive, the step halved until
+ *    the distance does not grow, started from the nearest few of a grid of
+ *    the patch's points (the subdivision start of Ma and Hewitt 2003,
+ *    *Point inversion and projection for NURBS curve and surface*);
+ *  - a point on two faces and no edge is ambiguous: it stays, counted.
+ *
+ * A projection that lands outside the face's trimmed region (by the trim
+ * loops sampled `mTrimSamples` times per span, even-odd) is still the
+ * nearest surface point and is kept, but reported, never clamped. Points no
+ * face or edge cell uses stay where they are. Data, regions and property
+ * sets pass through; only coordinates change. Points are projected
+ * independently and in parallel, so the result does not depend on threads.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+struct ProjectToCadOptions {
+    /// The cell data naming each cell's face (on triangles and quads) and
+    /// edge (on lines), as indices into the model's faces and edges; -1 is
+    /// none.
+    std::string mFaceArray = "cad:face";
+    std::string mEdgeArray = "cad:edge";
+    /// A point farther than this from where it would go stays where it is
+    /// and is counted (0 is no limit).
+    double mMaxDistance = 0.0;
+    /// Samples per knot span when testing a face's trimmed region.
+    std::int32_t mTrimSamples = 16;
+};
+
+struct ProjectToCadResult {
+    Mesh mMesh;
+    std::int64_t mNumProjected = 0;    ///< points moved onto a face or an edge
+    std::int64_t mNumOnEdges = 0;      ///< of those, onto an edge
+    std::int64_t mNumCorners = 0;      ///< of those, on two or more edges
+    std::int64_t mNumAmbiguous = 0;    ///< on two faces and no edge: left
+    std::int64_t mNumTooFar = 0;       ///< beyond `mMaxDistance`: left
+    std::int64_t mNumFailed = 0;       ///< whose face or edge is unusable: left
+    std::int64_t mNumOutsideTrim = 0;  ///< projected outside their face's trims
+    double mMaxMove = 0.0;             ///< the largest distance a point moved
+    /// The points projected outside their face's trims, ascending.
+    std::vector<std::int64_t> mOutsideTrim;
+    std::vector<std::string> mWarnings;
+};
+
+/**
+ * @brief Move every point of `rMesh` onto the face or edge of `rBrep` its
+ * cells name (see the file comment).
+ * @throws std::invalid_argument when `rMesh` has no `mFaceArray` cell data,
+ * its points are not three-dimensional, a face or edge index is out of
+ * range, or an option is invalid.
+ */
+MESHIOPLUSPLUS_API ProjectToCadResult project_to_cad(const Mesh& rMesh, const BrepInfo& rBrep,
+                                                     const ProjectToCadOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/project_to_cad.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/quality_gate.hpp =====
 /**
  * @file operations/quality_gate.hpp
@@ -44981,6 +45065,58 @@ DistanceQuery build_distance_query_from_runs(const TriangleSoup& rSoup,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/surface_edge_runs.hpp =====
+// ===== begin src/cpp/src/detail/surface_project.hpp =====
+/**
+ * @file detail/surface_project.hpp
+ * @brief The nearest point of a NURBS surface to a point (roadmap 6.10.1):
+ * point inversion.
+ *
+ * Newton on the first-order condition `(S - p) . S_u = (S - p) . S_v = 0`,
+ * whose Hessian is `J^T J + (S - p) . S_2` with the surface's second
+ * derivatives; where that is not positive definite the step is Gauss-
+ * Newton's (the first fundamental form), and it is halved until the
+ * distance does not grow; the parameters stay in the knot range. Newton
+ * converges only from inside the right basin, so it starts from the nearest
+ * few of a grid of the patch's points, `(degree + 1)` per knot span in each
+ * direction (8 to 32), the subdivision start of Ma and Hewitt (2003,
+ * *Point inversion and projection for NURBS curve and surface: control
+ * polygon approach*), and the nearest result is kept. The same as
+ * `detail::bspline_project` on a `BsplineSurface`, on a rational patch.
+ *
+ * A **core-private** header: nothing installed names it.
+ */
+
+// System includes
+#include <array>
+#include <vector>
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+
+struct NurbsPatch;
+
+namespace detail {
+
+class SurfaceProjector {
+public:
+    /// `rSurface` and `rPatch` (the patch it evaluates) outlive it.
+    SurfaceProjector(const BrepSurfaceEval& rSurface, const NurbsPatch& rPatch);
+    /// The parameters of the surface point nearest `rP`, and in `rX` that
+    /// point. Safe to call from many threads.
+    std::array<double, 2> Project(const EdgeVec3& rP, EdgeVec3& rX) const;
+    /// Newton from `rUv`: the distance reached, `rUv` updated.
+    double Polish(const EdgeVec3& rP, std::array<double, 2>& rUv) const;
+
+private:
+    const BrepSurfaceEval* pSurface = nullptr;
+    std::vector<std::array<double, 2>> mSeedUv;
+    std::vector<EdgeVec3> mSeedX;
+};
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/surface_project.hpp =====
 // ===== begin src/cpp/src/detail/surface_rings.hpp =====
 /**
  * @file detail/surface_rings.hpp
@@ -95580,6 +95716,143 @@ VertexNormalGroups vertex_normal_groups(const TriangleSoup& rSoup, SdfPseudonorm
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/surface_normals.cpp =====
+// ===== begin src/cpp/src/detail/surface_project.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <limits>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+namespace {
+
+double spj_dot(const double* pA, const double* pB) {
+    return pA[0] * pB[0] + pA[1] * pB[1] + pA[2] * pB[2];
+}
+
+double spj_dist(const EdgeVec3& rA, const EdgeVec3& rB) {
+    return std::sqrt((rA[0] - rB[0]) * (rA[0] - rB[0]) + (rA[1] - rB[1]) * (rA[1] - rB[1]) +
+                     (rA[2] - rB[2]) * (rA[2] - rB[2]));
+}
+
+// Seeds per direction: (degree + 1) per span of nonzero length, 8 to 32.
+int spj_count(const NurbsPatch& rPatch, std::size_t D) {
+    if (D >= rPatch.mKnots.size() || D >= rPatch.mDegrees.size())
+        return 8;
+    const auto& r_k = rPatch.mKnots[D];
+    int spans = 0;
+    for (std::size_t i = 0; i + 1 < r_k.size(); ++i)
+        spans += r_k[i + 1] > r_k[i] ? 1 : 0;
+    return std::clamp((rPatch.mDegrees[D] + 1) * std::max(spans, 1), 8, 32);
+}
+
+}  // namespace
+
+SurfaceProjector::SurfaceProjector(const BrepSurfaceEval& rSurface, const NurbsPatch& rPatch)
+    : pSurface(&rSurface) {
+    const auto& r_b = rSurface.Box();
+    const int nu = spj_count(rPatch, 0), nv = spj_count(rPatch, 1);
+    for (int j = 0; j <= nv; ++j)
+        for (int i = 0; i <= nu; ++i) {
+            const std::array<double, 2> uv{r_b[0] + (r_b[1] - r_b[0]) * double(i) / nu,
+                                           r_b[2] + (r_b[3] - r_b[2]) * double(j) / nv};
+            EdgeVec3 x{};
+            rSurface.Eval(uv[0], uv[1], x.data(), nullptr, nullptr);
+            mSeedUv.push_back(uv);
+            mSeedX.push_back(x);
+        }
+}
+
+double SurfaceProjector::Polish(const EdgeVec3& rP, std::array<double, 2>& rUv) const {
+    const auto& r_b = pSurface->Box();
+    const double eps_u = 1e-14 * std::max(1.0, r_b[1] - r_b[0]);
+    const double eps_v = 1e-14 * std::max(1.0, r_b[3] - r_b[2]);
+    const auto dist = [&](double U, double V) {
+        EdgeVec3 x{};
+        pSurface->Eval(U, V, x.data(), nullptr, nullptr);
+        return spj_dist(x, rP);
+    };
+    double best = dist(rUv[0], rUv[1]);
+    for (int it = 0; it < 50; ++it) {
+        double s[3], su[3], sv[3], suu[3], suv[3], svv[3];
+        pSurface->Eval2(rUv[0], rUv[1], s, su, sv, suu, suv, svv);
+        const double r[3] = {s[0] - rP[0], s[1] - rP[1], s[2] - rP[2]};
+        const double g0 = spj_dot(r, su), g1 = spj_dot(r, sv);
+        double h00 = spj_dot(su, su) + spj_dot(r, suu);
+        double h01 = spj_dot(su, sv) + spj_dot(r, suv);
+        double h11 = spj_dot(sv, sv) + spj_dot(r, svv);
+        double det = h00 * h11 - h01 * h01;
+        if (!(h00 > 0.0) || !(det > 0.0)) {
+            h00 = spj_dot(su, su);
+            h01 = spj_dot(su, sv);
+            h11 = spj_dot(sv, sv);
+            det = h00 * h11 - h01 * h01;
+            if (!(det > 0.0))
+                break;
+        }
+        double du = -(h11 * g0 - h01 * g1) / det;
+        double dv = -(h00 * g1 - h01 * g0) / det;
+        double nu = std::clamp(rUv[0] + du, r_b[0], r_b[1]);
+        double nv = std::clamp(rUv[1] + dv, r_b[2], r_b[3]);
+        double d = dist(nu, nv);
+        for (int h = 0; h < 30 && d > best; ++h) {
+            du *= 0.5;
+            dv *= 0.5;
+            nu = std::clamp(rUv[0] + du, r_b[0], r_b[1]);
+            nv = std::clamp(rUv[1] + dv, r_b[2], r_b[3]);
+            d = dist(nu, nv);
+        }
+        if (d > best)
+            break;
+        const double step_u = std::fabs(nu - rUv[0]), step_v = std::fabs(nv - rUv[1]);
+        rUv = {nu, nv};
+        best = d;
+        if (step_u <= eps_u && step_v <= eps_v)
+            break;
+    }
+    return best;
+}
+
+std::array<double, 2> SurfaceProjector::Project(const EdgeVec3& rP, EdgeVec3& rX) const {
+    // The three nearest seeds, ties to the lower index.
+    constexpr std::size_t kStarts = 3;
+    std::array<std::size_t, kStarts> near{};
+    std::array<double, kStarts> near_d{};
+    near_d.fill(std::numeric_limits<double>::infinity());
+    for (std::size_t s = 0; s < mSeedX.size(); ++s) {
+        const double d = spj_dist(mSeedX[s], rP);
+        for (std::size_t k = 0; k < kStarts; ++k)
+            if (d < near_d[k]) {
+                for (std::size_t m = kStarts - 1; m > k; --m) {
+                    near_d[m] = near_d[m - 1];
+                    near[m] = near[m - 1];
+                }
+                near_d[k] = d;
+                near[k] = s;
+                break;
+            }
+    }
+    std::array<double, 2> best_uv =
+        mSeedUv.empty() ? std::array<double, 2>{0.0, 0.0} : mSeedUv[near[0]];
+    double best = std::numeric_limits<double>::infinity();
+    for (std::size_t k = 0; k < kStarts && k < mSeedUv.size(); ++k) {
+        std::array<double, 2> uv = mSeedUv[near[k]];
+        const double d = Polish(rP, uv);
+        if (d < best) {
+            best = d;
+            best_uv = uv;
+        }
+    }
+    pSurface->Eval(best_uv[0], best_uv[1], rX.data(), nullptr, nullptr);
+    return best_uv;
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/surface_project.cpp =====
 // ===== begin src/cpp/src/detail/surface_rings.cpp =====
 #include <cstddef>
 #include <cstdint>
@@ -231996,6 +232269,9 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "Untangle",
           "Quads"}},
         {"IgaSample", {"Subdivisions", "TrimSamples", "Trim", "Edges"}},
+        // Back onto the CAD (roadmap 6.10.1): the B-rep at `Model`, or the
+        // one a CAD Input carries when no step has changed the mesh since.
+        {"ProjectToCad", {"Model", "FaceArray", "EdgeArray", "MaxDistance", "TrimSamples"}},
         {"IgaRefine",
          {"Subdivisions", "Elevate", "SampleSubdivisions", "TrimSamples", "Trim", "Edges"}},
     };
@@ -232633,6 +232909,46 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                          "needs the CAD model a pipeline's Input reads, which only a whole run "
                          "carries (run_pipeline), not a step applied on its own"));
         return pipe_apply_model_step(rStep, rReport, *pModel);
+    }
+
+    if (op == "ProjectToCad") {
+        BrepInfo owned;
+        const BrepInfo* p_brep = nullptr;
+        if (pipe_find(rStep, "Model")) {
+            const std::string path = pipe_text(rStep, "Model", "");
+            const std::string fmt = resolve_format(path, "");
+            if (fmt == "cad_json")
+                (void)read_cad_json(path, owned);
+            else if (fmt == "step")
+                (void)read_step(path, owned);
+            else if (fmt == "iges")
+                (void)read_iges(path, owned);
+            else
+                throw std::invalid_argument(pipe_err(
+                    rStep, "'Model' must be a CAD JSON, STEP or IGES file, not '" + fmt + "'"));
+            p_brep = &owned;
+        } else if (pModel && pModel->mBrep) {
+            p_brep = &*pModel->mBrep;
+        } else {
+            throw std::invalid_argument(pipe_err(
+                rStep,
+                "needs 'Model' (a CAD JSON, STEP or IGES file), or the B-rep a CAD Input "
+                "carries while no step has changed the mesh" +
+                    std::string(pModel && !pModel->mWhy.empty() ? ": " + pModel->mWhy : "")));
+        }
+        ProjectToCadOptions o;
+        o.mFaceArray = pipe_text(rStep, "FaceArray", o.mFaceArray.c_str());
+        o.mEdgeArray = pipe_text(rStep, "EdgeArray", o.mEdgeArray.c_str());
+        o.mMaxDistance = pipe_number(rStep, "MaxDistance", o.mMaxDistance);
+        o.mTrimSamples = static_cast<std::int32_t>(
+            pipe_number(rStep, "TrimSamples", static_cast<double>(o.mTrimSamples)));
+        ProjectToCadResult r = project_to_cad(mesh, *p_brep, o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumProjected", static_cast<double>(r.mNumProjected)},
+                        {"NumOnEdges", static_cast<double>(r.mNumOnEdges)},
+                        {"NumOutsideTrim", static_cast<double>(r.mNumOutsideTrim)},
+                        {"MaxMove", r.mMaxMove}});
+        return std::move(r.mMesh);
     }
 
     if (op == "Quality") {
@@ -234064,7 +234380,8 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
             validate_pipeline_step(step);
         else
             pipe_validate_v2(step);
-        wants_model = wants_model || pipe_is_model_step(step.mOp);
+        wants_model = wants_model || pipe_is_model_step(step.mOp) ||
+                      (step.mOp == "ProjectToCad" && !pipe_find(step, "Model"));
         if (step.mOp == "Split" && (!fanout || i + 1 != rPipeline.mSteps.size()))
             throw std::invalid_argument(
                 "meshio++: pipeline: Split must be terminal and requires Output.Pattern with "
@@ -234154,7 +234471,9 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
         }
         mesh = rPipeline.mVersion == 2 ? pipe_apply_v2(std::move(mesh), step, report, &model)
                                        : pipe_apply_step(std::move(mesh), step, report, &model);
-        if (model.Has() && !pipe_is_model_step(step.mOp) && step.mOp != "FitCad")
+        // Projected onto it, the mesh matches the model again.
+        if (model.Has() && !pipe_is_model_step(step.mOp) && step.mOp != "FitCad" &&
+            step.mOp != "ProjectToCad")
             model.Drop("step " + std::to_string(i + 1) + " '" + step.mOp +
                        "' changed the mesh, which drops the model");
     }
@@ -236159,6 +236478,315 @@ Mesh reference_cells(const std::vector<std::string>& rTypes, bool Pairs) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/primitives.cpp =====
+// ===== begin src/cpp/src/operations/project_to_cad.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <map>
+#include <memory>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kPtcPrefix = "meshio++: project_to_cad: ";
+
+[[noreturn]] void ptc_fail(const std::string& rWhy) {
+    throw std::invalid_argument(std::string(kPtcPrefix) + rWhy);
+}
+
+bool ptc_is_line(const std::string& rType) {
+    return rType.rfind("line", 0) == 0;
+}
+
+bool ptc_is_face(const std::string& rType) {
+    return rType.rfind("triangle", 0) == 0 || rType.rfind("quad", 0) == 0 || rType == "polygon";
+}
+
+// What a point lies on: the lowest face and edge its cells name, and
+// whether they name more than one.
+struct PtcOn {
+    std::int64_t mFace = -1;
+    std::int64_t mEdge = -1;
+    bool mFaces = false;  ///< more than one face
+    bool mEdges = false;  ///< more than one edge
+};
+
+void ptc_note(std::int64_t& rFirst, bool& rMore, std::int64_t K) {
+    if (K < 0)
+        return;
+    if (rFirst < 0)
+        rFirst = K;
+    else if (rFirst != K) {
+        rMore = true;
+        rFirst = std::min(rFirst, K);
+    }
+}
+
+// The face a topology reference names, by id or by name.
+std::optional<std::size_t> ptc_face_of(const BrepInfo& rBrep, const BrepRef& rRef) {
+    for (std::size_t f = 0; f < rBrep.mFaces.size(); ++f) {
+        const BrepFace& r_f = rBrep.mFaces[f];
+        if ((rRef.mId >= 0 && r_f.mId == rRef.mId) ||
+            (rRef.mId < 0 && !rRef.mName.empty() && r_f.mName == rRef.mName))
+            return f;
+    }
+    return std::nullopt;
+}
+
+// The trim (on a loop or embedded) of face F with index T.
+const BrepTrim* ptc_trim(const BrepFace& rFace, std::int64_t T) {
+    for (const BrepLoop& r_l : rFace.mLoops)
+        for (const BrepTrim& r_t : r_l.mTrims)
+            if (r_t.mTrimIndex == T)
+                return &r_t;
+    for (const BrepTrim& r_t : rFace.mEmbeddedEdges)
+        if (r_t.mTrimIndex == T)
+            return &r_t;
+    return nullptr;
+}
+
+}  // namespace
+
+ProjectToCadResult project_to_cad(const Mesh& rMesh, const BrepInfo& rBrep,
+                                  const ProjectToCadOptions& rOptions) {
+    if (!(std::isfinite(rOptions.mMaxDistance) && rOptions.mMaxDistance >= 0.0))
+        ptc_fail("max_distance must be finite and not negative");
+    if (rOptions.mTrimSamples < 2 || rOptions.mTrimSamples > 1024)
+        ptc_fail("trim_samples must be between 2 and 1024");
+    if (!rMesh.HasCellData(rOptions.mFaceArray))
+        ptc_fail("the mesh has no cell data '" + rOptions.mFaceArray +
+                 "' naming each cell's CAD face (mesh_cad_surface writes it)");
+    const NDArray& r_pts = rMesh.Points();
+    const std::size_t np = rMesh.NumPoints();
+    if (np > 0 && (r_pts.Ndim() != 2 || r_pts.Shape()[1] != 3))
+        ptc_fail("the mesh's points must be three-dimensional");
+    const bool has_edges = rMesh.HasCellData(rOptions.mEdgeArray);
+    const std::size_t nf = rBrep.mFaces.size();
+    const std::size_t ne = rBrep.mEdges.size();
+
+    // What each point lies on, from the cells that use it.
+    std::vector<PtcOn> on(np);
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cells = rMesh.Cells(b);
+        const std::string type(cells.Type());
+        const bool line = ptc_is_line(type);
+        if (!(line || ptc_is_face(type)) || (line && !has_edges))
+            continue;
+        const NDArray& r_tag = rMesh.CellData(line ? rOptions.mEdgeArray : rOptions.mFaceArray, b);
+        const std::size_t limit = line ? ne : nf;
+        for (std::size_t c = 0; c < cells.NumCells(); ++c) {
+            const std::int64_t k = detail::read_int(r_tag, c);
+            if (k >= 0 && static_cast<std::size_t>(k) >= limit)
+                ptc_fail("cell " + std::to_string(c) + " of block " + std::to_string(b) +
+                         " names " + (line ? "edge " : "face ") + std::to_string(k) +
+                         ", out of range");
+            const auto visit = [&](std::int64_t P) {
+                PtcOn& r_o = on[static_cast<std::size_t>(P)];
+                if (line)
+                    ptc_note(r_o.mEdge, r_o.mEdges, k);
+                else
+                    ptc_note(r_o.mFace, r_o.mFaces, k);
+            };
+            if (cells.IsRagged()) {
+                if (cells.IsPolyhedron())
+                    continue;
+                for (std::size_t i = 0; i < cells.RowSize(c); ++i)
+                    visit(cells.Row(c)[i]);
+            } else {
+                const std::size_t n = cells.NodesPerCell();
+                for (std::size_t i = 0; i < n; ++i)
+                    visit(detail::read_int(cells.Conn(), n * c + i));
+            }
+        }
+    }
+
+    // The surfaces and edge traces the points need, built once.
+    std::vector<char> face_used(nf, 0), edge_used(ne, 0);
+    for (const PtcOn& r_o : on) {
+        if (r_o.mEdge >= 0)
+            edge_used[static_cast<std::size_t>(r_o.mEdge)] = 1;
+        else if (r_o.mFace >= 0 && !r_o.mFaces)
+            face_used[static_cast<std::size_t>(r_o.mFace)] = 1;
+    }
+    ProjectToCadResult result;
+    const auto warn = [&](const std::string& rMsg) {
+        log::warn("project_to_cad: {}", rMsg);
+        result.mWarnings.push_back(rMsg);
+    };
+    std::vector<std::unique_ptr<detail::BrepSurfaceEval>> surface(nf);
+    const auto surface_of = [&](std::size_t F) -> const detail::BrepSurfaceEval* {
+        if (surface[F])
+            return surface[F].get();
+        const BrepFace& r_f = rBrep.mFaces[F];
+        if (r_f.mPatch < 0 || static_cast<std::size_t>(r_f.mPatch) >= rBrep.mPatches.size())
+            return nullptr;
+        try {
+            surface[F] = std::make_unique<detail::BrepSurfaceEval>(
+                rBrep.mPatches[static_cast<std::size_t>(r_f.mPatch)], r_f.mRational);
+        } catch (const std::invalid_argument&) {
+            return nullptr;
+        }
+        return surface[F].get();
+    };
+    std::vector<std::optional<detail::SurfaceProjector>> projector(nf);
+    std::vector<std::vector<std::vector<std::array<double, 2>>>> loops(nf);
+    for (std::size_t f = 0; f < nf; ++f) {
+        if (!face_used[f])
+            continue;
+        const detail::BrepSurfaceEval* p_s = surface_of(f);
+        if (!p_s) {
+            warn("face " + std::to_string(f) + " has no usable surface");
+            continue;
+        }
+        projector[f].emplace(*p_s,
+                             rBrep.mPatches[static_cast<std::size_t>(rBrep.mFaces[f].mPatch)]);
+        if (rBrep.mFaces[f].mTrimmed)
+            for (const BrepLoop& r_l : rBrep.mFaces[f].mLoops)
+                loops[f].push_back(detail::brep_loop_polygon(r_l, rOptions.mTrimSamples));
+    }
+    std::vector<std::optional<detail::TrimTrace>> trace(ne);
+    for (std::size_t e = 0; e < ne; ++e) {
+        if (!edge_used[e])
+            continue;
+        for (const BrepRef& r_r : rBrep.mEdges[e].mTopology) {
+            const auto f = ptc_face_of(rBrep, r_r);
+            if (!f)
+                continue;
+            const BrepTrim* p_t = ptc_trim(rBrep.mFaces[*f], r_r.mTrimIndex);
+            const detail::BrepSurfaceEval* p_s = surface_of(*f);
+            if (!p_t || !p_s)
+                continue;
+            try {
+                trace[e].emplace(p_s, detail::BrepCurveEval(p_t->mCurve), true);
+                break;
+            } catch (const std::invalid_argument&) {
+            }
+        }
+        if (!trace[e])
+            warn("edge " + std::to_string(e) + " has no usable trim");
+    }
+
+    // Each point, independently.
+    enum class Fate : std::uint8_t { Stay, Face, Edge, Corner, Ambiguous, TooFar, Failed };
+    std::vector<Fate> fate(np, Fate::Stay);
+    std::vector<char> outside(np, 0);
+    std::vector<double> moved(np, 0.0);
+    NDArray points = detail::data_owned_copy(r_pts);
+    double* px = points.As<double>();
+    const double* p0 = r_pts.Size() ? r_pts.As<double>() : nullptr;
+    NDArray input;
+    if (np > 0 && r_pts.Dtype() != DType::Float64) {
+        input = NDArray::Uninit(DType::Float64, {np, std::size_t{3}});
+        for (std::size_t i = 0; i < 3 * np; ++i)
+            input.As<double>()[i] = detail::read_double(r_pts, i);
+        p0 = input.As<double>();
+        points = NDArray::Uninit(DType::Float64, {np, std::size_t{3}});
+        px = points.As<double>();
+        std::copy(p0, p0 + 3 * np, px);
+    }
+    parallel_for(
+        np,
+        [&](std::size_t i) {
+            const PtcOn& r_o = on[i];
+            const detail::EdgeVec3 p{p0[3 * i], p0[3 * i + 1], p0[3 * i + 2]};
+            detail::EdgeVec3 x{};
+            bool on_face = false;
+            std::size_t f = 0;
+            std::array<double, 2> uv{0.0, 0.0};
+            if (r_o.mEdge >= 0) {
+                const auto& r_t = trace[static_cast<std::size_t>(r_o.mEdge)];
+                if (!r_t) {
+                    fate[i] = Fate::Failed;
+                    return;
+                }
+                x = r_t->Point(r_t->ParamAtLength(detail::edge_closest_length(*r_t, p)));
+                fate[i] = r_o.mEdges ? Fate::Corner : Fate::Edge;
+            } else if (r_o.mFace >= 0) {
+                if (r_o.mFaces) {
+                    fate[i] = Fate::Ambiguous;
+                    return;
+                }
+                f = static_cast<std::size_t>(r_o.mFace);
+                if (!projector[f]) {
+                    fate[i] = Fate::Failed;
+                    return;
+                }
+                uv = projector[f]->Project(p, x);
+                fate[i] = Fate::Face;
+                on_face = true;
+            } else {
+                return;
+            }
+            const double d =
+                std::sqrt((x[0] - p[0]) * (x[0] - p[0]) + (x[1] - p[1]) * (x[1] - p[1]) +
+                          (x[2] - p[2]) * (x[2] - p[2]));
+            if (rOptions.mMaxDistance > 0.0 && d > rOptions.mMaxDistance) {
+                fate[i] = Fate::TooFar;
+                return;
+            }
+            for (std::size_t k = 0; k < 3; ++k)
+                px[3 * i + k] = x[k];
+            moved[i] = d;
+            if (on_face && !loops[f].empty() && !detail::brep_inside(loops[f], uv[0], uv[1]))
+                outside[i] = 1;
+        },
+        64);
+    for (std::size_t i = 0; i < np; ++i) {
+        switch (fate[i]) {
+            case Fate::Face:
+            case Fate::Edge:
+            case Fate::Corner:
+                ++result.mNumProjected;
+                result.mNumOnEdges += fate[i] != Fate::Face ? 1 : 0;
+                result.mNumCorners += fate[i] == Fate::Corner ? 1 : 0;
+                result.mMaxMove = std::max(result.mMaxMove, moved[i]);
+                break;
+            case Fate::Ambiguous:
+                ++result.mNumAmbiguous;
+                break;
+            case Fate::TooFar:
+                ++result.mNumTooFar;
+                break;
+            case Fate::Failed:
+                ++result.mNumFailed;
+                break;
+            case Fate::Stay:
+                break;
+        }
+        if (outside[i]) {
+            ++result.mNumOutsideTrim;
+            result.mOutsideTrim.push_back(static_cast<std::int64_t>(i));
+        }
+    }
+    if (result.mNumOutsideTrim > 0)
+        warn(std::to_string(result.mNumOutsideTrim) +
+             " points projected outside their face's trimmed region");
+
+    // Only the coordinates change.
+    Mesh& r_out = result.mMesh;
+    r_out = detail::clone_mesh(rMesh);
+    r_out.AssignPoints(std::move(points));
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
+        r_out.AddRegion(rMesh.Region(i));
+    for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i)
+        r_out.AddPropertySet(rMesh.GetPropertySet(i));
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/project_to_cad.cpp =====
 // ===== begin src/cpp/src/operations/quality.cpp =====
 #include <algorithm>
 #include <array>

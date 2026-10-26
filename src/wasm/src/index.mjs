@@ -270,6 +270,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   interpolate: (source: Mesh, target: Mesh, method?: string, arrays?: string[], extrapolate?: boolean, defaultValue?: number, onConflict?: string) => Mesh,
  *   conservativeInterpolate: (source: Mesh, target: Mesh, arrays?: string[], defaultValue?: number, onConflict?: string) => Mesh,
  *   undoGreen: (coarse: Mesh, fine: Mesh) => {mesh: Mesh, numGroupsUndone: number, numCellsRemoved: number},
+ *   projectToCad: (mesh: Mesh, info: object, options?: {faceArray?: string, edgeArray?: string, maxDistance?: number, trimSamples?: number}) => {mesh: Mesh, numProjected: number, numOnEdges: number, numCorners: number, numAmbiguous: number, numTooFar: number, numFailed: number, numOutsideTrim: number, maxMove: number, outsideTrim: number[], warnings: string[]},
  *   cropBbox: (mesh: Mesh, lo: number[], hi: number[], mode?: string, recordIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
  *   cropPlane: (mesh: Mesh, point: number[], normal: number[], mode?: string, recordIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
  *   cropPredicate: (mesh: Mesh, array: string, compare?: string, value?: number, recordIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
@@ -1049,6 +1050,7 @@ export async function loadMeshioPlusPlus(
         igaEvaluate: (info, patch, params, options = {}) =>
             Module.igaEvaluate(info, patch, params, options),
         meshCadSurface: (info, options) => Module.meshCadSurface(info, options),
+        projectToCad: (mesh, info, options) => Module.projectToCad(mesh, info, options ?? {}),
         tessellate: (mesh, levels = 2, curved = true, fields = true, recordStencil = false) =>
             Module.tessellate(mesh, levels, curved, fields, recordStencil),
         render: (mesh, options = {}) => Module.render(mesh, options),

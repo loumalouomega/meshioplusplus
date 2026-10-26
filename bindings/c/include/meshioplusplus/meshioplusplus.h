@@ -5901,6 +5901,65 @@ MIO_API mio_status mio_mesh_cad_surface_quad_stats(int64_t* num_quads,
                                                    int64_t* num_leftover_triangles,
                                                    double* min_scaled_jacobian);
 
+/* ---- project_to_cad (roadmap 6.10.1) ------------------------------------ */
+
+/**
+ * Options of mio_project_to_cad. Initialise with mio_project_to_cad_opts_init.
+ * 64 bytes, with a reserved tail.
+ */
+typedef struct mio_project_to_cad_opts {
+    /** The cell data naming each triangle's or quad's CAD face; NULL is "cad:face". */
+    const char* face_array;
+    /** The cell data naming each line's CAD edge; NULL is "cad:edge". */
+    const char* edge_array;
+    /** A point farther than this from where it would go stays (0: no limit). */
+    double max_distance;
+    /** Samples per knot span when testing a face's trims (0 is 16; 2 to 1024). */
+    int32_t trim_samples;
+    int32_t reserved_pad;
+    int64_t reserved[4];
+} mio_project_to_cad_opts;
+
+/** What mio_project_to_cad did. 96 bytes, with a reserved tail. */
+typedef struct mio_project_to_cad_report {
+    int64_t num_projected;    /**< points moved onto a face or an edge */
+    int64_t num_on_edges;     /**< of those, onto an edge */
+    int64_t num_corners;      /**< of those, on two or more edges */
+    int64_t num_ambiguous;    /**< on two faces and no edge: left */
+    int64_t num_too_far;      /**< beyond max_distance: left */
+    int64_t num_failed;       /**< whose face or edge is unusable: left */
+    int64_t num_outside_trim; /**< projected outside their face's trims */
+    double max_move;          /**< the largest distance a point moved */
+    int64_t reserved[4];
+} mio_project_to_cad_report;
+
+MIO_API void mio_project_to_cad_opts_init(mio_project_to_cad_opts* opts);
+
+/**
+ * Move every point of `mesh` onto the CAD face or edge its cells name
+ * (`cad:face` on triangles and quads, `cad:edge` on lines, as
+ * mio_mesh_cad_surface writes them) of the B-rep in `info` (a "cad_json",
+ * "step" or "iges" mio_format_info): a point on one edge's lines onto that
+ * edge, on two or more (a corner) onto the lowest, a point whose cells name
+ * one face onto that face's surface (Newton point inversion); a point on two
+ * faces and no edge stays. A projection outside its face's trims is kept and
+ * counted. Data and regions pass through; only coordinates change.
+ *
+ * @param opts   NULL for the defaults.
+ * @param report out, nullable.
+ * @return the projected mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_project_to_cad(const mio_mesh* mesh, const mio_format_info* info,
+                                     const mio_project_to_cad_opts* opts,
+                                     mio_project_to_cad_report* report);
+
+/**
+ * The points the thread's last mio_project_to_cad projected outside their
+ * face's trims, ascending: copies up to `n` into `points` and returns the
+ * full count.
+ */
+MIO_API int64_t mio_project_to_cad_outside_trim(int64_t* points, int64_t n);
+
 /** v17.20.0: how many corners this thread's last call lopped (6.2.3). */
 MIO_API int64_t mio_mesh_cad_surface_num_lopped_corners(void);
 

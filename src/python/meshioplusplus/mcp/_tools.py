@@ -106,6 +106,7 @@ from .. import (
     plate_with_hole,
     point_data_to_cell_data,
     power_spectrum,
+    project_to_cad,
     proximity_graph,
     read,
     read_metadata,
@@ -3844,6 +3845,36 @@ def tool_conservative_interpolate(
     return _result(_store(out, output_path, output_format), out)
 
 
+def tool_project_to_cad(
+    input_path,
+    model_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    face_array="cad:face",
+    edge_array="cad:edge",
+    max_distance=0.0,
+    trim_samples=16,
+):
+    """Move a mesh's points back onto the CAD faces and edges its cells name
+    (cad:face / cad:edge, as mesh_cad_surface writes them) of the model at
+    model_path (CAD JSON, STEP or IGES). Returns the counts (num_projected,
+    num_on_edges, num_corners, num_ambiguous, num_too_far, num_failed,
+    num_outside_trim), max_move and outside_trim alongside the mesh summary."""
+    mesh = _load(input_path, input_format)
+    model = _load(model_path, None)
+    out, report = project_to_cad(
+        mesh,
+        model,
+        face_array=face_array,
+        edge_array=edge_array,
+        max_distance=max_distance,
+        trim_samples=trim_samples,
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
 def tool_undo_green(
     coarse_path,
     fine_path,
@@ -5446,6 +5477,14 @@ TOOL_REGISTRY = OrderedDict(
             {
                 "fn": tool_mesh_cad_surface,
                 "wraps": ("mesh_cad_surface",),
+                "gated": None,
+            },
+        ),
+        (
+            "project_to_cad",
+            {
+                "fn": tool_project_to_cad,
+                "wraps": ("project_to_cad",),
                 "gated": None,
             },
         ),

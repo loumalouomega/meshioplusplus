@@ -86,6 +86,8 @@
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/octree.hpp"
 #include "meshioplusplus/operations/mesh_cad.hpp"
+#include "meshioplusplus/operations/project_to_cad.hpp"
+#include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
 #include "meshioplusplus/operations/partition.hpp"
@@ -1300,6 +1302,42 @@ int main(int argc, char** argv) {
             extras.mQuads = mio::MeshCadQuads::All;
             o.mTargetSize = octree_step;
             of(pD, mio::mesh_cad_surface(box, o, mio::MeshCadSizeSources{}, extras).mMesh);
+        });
+        // Curved all-quad meshes (roadmap 6.8.3): the box and the plate as
+        // quad9, and the plate sized by its gaps at twice the size.
+        row("mesh_cad_surface_quad9", [&](MeshDigest* pD) {
+            const mio::BrepInfo box = cad_box();
+            const mio::BrepInfo plate = cad_plate();
+            mio::MeshCadSurfaceOptions o;
+            o.mOrder = 2;
+            mio::MeshCadSurfaceExtras extras;
+            extras.mQuads = mio::MeshCadQuads::All;
+            o.mTargetSize = octree_step;
+            of(pD, mio::mesh_cad_surface(box, o, mio::MeshCadSizeSources{}, extras).mMesh);
+            o.mTargetSize = 4.0 * octree_step;
+            of(pD, mio::mesh_cad_surface(plate, o, mio::MeshCadSizeSources{}, extras).mMesh);
+            o.mOrder = 1;
+            o.mCellsAcrossGaps = 2.0;
+            of(pD, mio::mesh_cad_surface(plate, o, mio::MeshCadSizeSources{}, extras).mMesh);
+        });
+        // Back onto the CAD (roadmap 6.10.1): the plate's mesh lifted off its
+        // plane and moved in it, projected back onto its face and edges.
+        row("project_to_cad", [&](MeshDigest* pD) {
+            const mio::BrepInfo plate = cad_plate();
+            mio::MeshCadSurfaceOptions o;
+            o.mTargetSize = octree_step;
+            const mio::Mesh m = mio::mesh_cad_surface(plate, o).mMesh;
+            mio::Mesh off = mio::detail::clone_mesh(m);
+            mio::NDArray p =
+                mio::NDArray::Uninit(mio::DType::Float64, {m.NumPoints(), std::size_t{3}});
+            const double* src = m.Points().As<double>();
+            for (std::size_t i = 0; i < m.NumPoints(); ++i) {
+                p.As<double>()[3 * i] = src[3 * i] + 0.01 * std::sin(double(i));
+                p.As<double>()[3 * i + 1] = src[3 * i + 1] + 0.01 * std::cos(double(i));
+                p.As<double>()[3 * i + 2] = src[3 * i + 2] + 0.05 * std::sin(3.0 * double(i));
+            }
+            off.AssignPoints(std::move(p));
+            of(pD, mio::project_to_cad(off, plate).mMesh);
         });
         row("sample_distance", [&](MeshDigest* pD) {
             const NDArray d = mio::sample_distance(surface, jittered->Points());

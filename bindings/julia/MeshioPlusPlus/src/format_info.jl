@@ -689,6 +689,49 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
      num_leftover_triangles=Int(nleft[]), min_quad_scaled_jacobian=Float64(qsj[]))
 end
 
+"""
+    project_to_cad(mesh, info; face_array="cad:face", edge_array="cad:edge",
+                   max_distance=0.0, trim_samples=16)
+        -> (; mesh, num_projected, num_on_edges, num_corners, num_ambiguous,
+              num_too_far, num_failed, num_outside_trim, max_move, outside_trim)
+
+Move every point of `mesh` onto the CAD face or edge its cells name
+(`cad:face` on triangles and quads, `cad:edge` on lines, as `mesh_cad_surface`
+writes them) of the B-rep `info` (roadmap 6.10.1): a point on one edge's lines
+onto that edge, on two or more (a corner) onto the lowest, a point whose cells
+name one face onto its surface (Newton point inversion); a point on two faces
+and no edge stays. A point farther than `max_distance` (0: no limit) stays.
+`outside_trim` lists (1-based) the points projected outside their face's trims,
+kept and never clamped. Data and regions pass through.
+"""
+function project_to_cad(mesh::Mesh, info::FormatInfo; face_array::AbstractString="cad:face",
+                        edge_array::AbstractString="cad:edge", max_distance::Real=0.0,
+                        trim_samples::Integer=16)
+    fname = Vector{UInt8}(codeunits(String(face_array)))
+    push!(fname, 0x00)
+    ename = Vector{UInt8}(codeunits(String(edge_array)))
+    push!(ename, 0x00)
+    report = Ref{_CProjectToCadReport}()
+    ptr = GC.@preserve fname ename begin
+        opts = _CProjectToCadOpts(pointer(fname), pointer(ename), Cdouble(max_distance),
+                                  Int32(trim_samples), Int32(0), (0, 0, 0, 0))
+        ccall(_sym(:mio_project_to_cad), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ptr{Cvoid}, Ref{_CProjectToCadOpts}, Ref{_CProjectToCadReport}),
+              _handle(mesh), _handle(info), Ref(opts), report)
+    end
+    out = Mesh(_check_ptr(ptr))
+    r = report[]
+    n = ccall(_sym(:mio_project_to_cad_outside_trim), Int64, (Ptr{Int64}, Int64), C_NULL, 0)
+    outside = zeros(Int64, max(n, 0))
+    n > 0 && ccall(_sym(:mio_project_to_cad_outside_trim), Int64, (Ptr{Int64}, Int64),
+                   outside, n)
+    (mesh=out, num_projected=Int(r.num_projected), num_on_edges=Int(r.num_on_edges),
+     num_corners=Int(r.num_corners), num_ambiguous=Int(r.num_ambiguous),
+     num_too_far=Int(r.num_too_far), num_failed=Int(r.num_failed),
+     num_outside_trim=Int(r.num_outside_trim), max_move=Float64(r.max_move),
+     outside_trim=Int.(outside) .+ 1)
+end
+
 const MIO_IGA_POINTS = Int32(0)
 const MIO_IGA_DERIVATIVES = Int32(1)
 const MIO_IGA_NORMALS = Int32(2)

@@ -2193,9 +2193,54 @@ TEST(CApi, MeshCadSurfaceUntanglesAndMakesQuads) {
         mio_mesh_free(m);
     }
     EXPECT_EQ(mio_mesh_cad_surface_quad_stats(nullptr, nullptr, nullptr), MIO_OK);
+    // All-quad at order 2 writes quad9 (6.8.3).
+    ex.quads = MIO_MESH_CAD_QUADS_ALL;
+    opts.order = 2;
+    mio_mesh* q9 = mio_mesh_cad_surface2(info, &opts, &ex, nullptr);
+    ASSERT_NE(q9, nullptr) << mio_last_error();
+    EXPECT_GE(block_of(q9, "quad9"), 0);
+    EXPECT_GE(block_of(q9, "line3"), 0);
+    mio_mesh_free(q9);
+    opts.order = 1;
     ex.quads = 7;
     EXPECT_EQ(mio_mesh_cad_surface2(info, &opts, &ex, nullptr), nullptr);
     EXPECT_NE(std::string(mio_last_error()).find("quads"), std::string::npos);
+    mio_format_info_free(info);
+}
+
+// Roadmap 6.10.1: a mesh of the box projected back onto it moves nothing,
+// every point lands on a face or an edge, and none outside its trims.
+TEST(CApi, ProjectToCad) {
+    const auto path = mt::temp_path(".cad.json");
+    meshioplusplus::write_cad_json(path, meshioplusplus::Mesh{}, brep_solids::box());
+    mio_format_info* info = nullptr;
+    mio_mesh* sampled = mio_read_with_info(path.c_str(), nullptr, nullptr, &info);
+    ASSERT_NE(sampled, nullptr) << mio_last_error();
+    mio_mesh_cad_surface_opts opts;
+    mio_mesh_cad_surface_opts_init(&opts);
+    opts.target_size = 0.25;
+    mio_mesh* m = mio_mesh_cad_surface(info, &opts, nullptr);
+    ASSERT_NE(m, nullptr) << mio_last_error();
+    mio_project_to_cad_opts po;
+    mio_project_to_cad_opts_init(&po);
+    EXPECT_EQ(po.trim_samples, 16);
+    EXPECT_EQ(po.face_array, nullptr);
+    mio_project_to_cad_report report{};
+    mio_mesh* out = mio_project_to_cad(m, info, &po, &report);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(report.num_projected, mio_mesh_num_points(m));
+    EXPECT_EQ(report.num_corners, 8);
+    EXPECT_GT(report.num_on_edges, 8);
+    EXPECT_EQ(report.num_outside_trim, 0);
+    EXPECT_LT(report.max_move, 1e-12);
+    EXPECT_EQ(mio_project_to_cad_outside_trim(nullptr, 0), 0);
+    mio_mesh_free(out);
+    // A mesh with no faces named, and a NULL model, are refused by name.
+    EXPECT_EQ(mio_project_to_cad(sampled, info, nullptr, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("cad:face"), std::string::npos);
+    EXPECT_EQ(mio_project_to_cad(m, nullptr, nullptr, nullptr), nullptr);
+    mio_mesh_free(m);
+    mio_mesh_free(sampled);
     mio_format_info_free(info);
 }
 

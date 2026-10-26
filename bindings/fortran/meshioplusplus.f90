@@ -67,6 +67,7 @@ module meshioplusplus
     public :: MIO_MESH_CAD_TOLERANCE_CLOSED_START, MIO_MESH_CAD_TOLERANCE_CORNER
     public :: MIO_MESH_CAD_TOLERANCE_PROJECTION, MIO_MESH_CAD_TOLERANCE_PAIRING
     public :: MIO_MESH_CAD_QUADS_NONE, MIO_MESH_CAD_QUADS_DOMINANT, MIO_MESH_CAD_QUADS_ALL
+    public :: mio_project_to_cad, mio_project_to_cad_report, mio_project_to_cad_outside_trim
     public :: MIO_MESH_CAD_OK, MIO_MESH_CAD_EMPTY, MIO_MESH_CAD_OPEN_LOOP
     public :: MIO_MESH_CAD_SELF_INTERSECTING, MIO_MESH_CAD_DEGENERATE
     public :: MIO_MESH_CAD_PROJECTION_FAILED, MIO_MESH_CAD_BUDGET_EXCEEDED
@@ -505,6 +506,30 @@ module meshioplusplus
     !> Quadrilaterals (roadmap 6.8, mio_mesh_cad_quads).
     integer, parameter :: MIO_MESH_CAD_QUADS_NONE = 0, MIO_MESH_CAD_QUADS_DOMINANT = 1, &
                           MIO_MESH_CAD_QUADS_ALL = 2
+
+    !> Interop mirror of C `mio_project_to_cad_opts` (64 bytes with 8-byte
+    !> pointers, checked by `mio_project_to_cad`; roadmap 6.10.1).
+    type, bind(c) :: mio_project_to_cad_opts_t
+        type(c_ptr) :: face_array = c_null_ptr
+        type(c_ptr) :: edge_array = c_null_ptr
+        real(c_double) :: max_distance = 0.0_c_double
+        integer(c_int32_t) :: trim_samples = 16
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_project_to_cad_report` (96 bytes): what `mio_project_to_cad` did.
+    type, bind(c) :: mio_project_to_cad_report
+        integer(c_int64_t) :: num_projected = 0
+        integer(c_int64_t) :: num_on_edges = 0
+        integer(c_int64_t) :: num_corners = 0
+        integer(c_int64_t) :: num_ambiguous = 0
+        integer(c_int64_t) :: num_too_far = 0
+        integer(c_int64_t) :: num_failed = 0
+        integer(c_int64_t) :: num_outside_trim = 0
+        real(c_double) :: max_move = 0.0_c_double
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
 
     !> Interop mirror of C `mio_mesh_cad_surface_opts` (104 bytes, checked once
     !> per process by `check_mesh_cad_layout`). Filled by
@@ -4466,6 +4491,23 @@ module meshioplusplus
             type(mio_mesh_cad_surface_opts_ex_t), intent(in) :: opts_ex
             type(mio_mesh_cad_surface_report), intent(out) :: report
             type(c_ptr) :: h
+        end function
+
+        function c_mio_project_to_cad(mesh, info, opts, report) &
+                bind(c, name="mio_project_to_cad") result(h)
+            import :: c_ptr, mio_project_to_cad_opts_t, mio_project_to_cad_report
+            type(c_ptr), value :: mesh, info
+            type(mio_project_to_cad_opts_t), intent(in) :: opts
+            type(mio_project_to_cad_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_project_to_cad_outside_trim(points, n) &
+                bind(c, name="mio_project_to_cad_outside_trim") result(m)
+            import :: c_int64_t
+            integer(c_int64_t), intent(out) :: points(*)
+            integer(c_int64_t), value :: n
+            integer(c_int64_t) :: m
         end function
 
         function c_mio_mesh_cad_surface_num_reparametrised() &
@@ -12491,6 +12533,67 @@ contains
         min_scaled_jacobian = real(sj, real64)
         if (present(stat)) stat = int(st)
     end subroutine
+
+    !> Move every point of `mesh` onto the CAD face or edge its cells name
+    !> (`cad:face` on triangles and quads, `cad:edge` on lines, as
+    !> mesh_cad_surface writes them) of the B-rep `info` (roadmap 6.10.1): a
+    !> point on one edge's lines onto that edge, on two or more onto the
+    !> lowest, a point whose cells name one face onto its surface; a point on
+    !> two faces and no edge stays. `face_array` and `edge_array` rename the
+    !> cell data, `max_distance` leaves a point farther than it, and
+    !> `trim_samples` samples the trims per knot span. The optional `report`
+    !> counts what was done; `mio_project_to_cad_outside_trim` lists the
+    !> points projected outside their face's trims.
+    function mio_project_to_cad(mesh, info, face_array, edge_array, max_distance, &
+                                trim_samples, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        type(mio_format_info), intent(in) :: info
+        character(*), intent(in), optional :: face_array, edge_array
+        real(real64), intent(in), optional :: max_distance
+        integer, intent(in), optional :: trim_samples
+        type(mio_project_to_cad_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_project_to_cad_opts_t) :: opts
+        type(mio_project_to_cad_report) :: rep
+        character(kind=c_char, len=:), allocatable, target :: fname, ename
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. &
+            (c_sizeof(opts) /= 64_c_size_t .or. c_sizeof(rep) /= 96_c_size_t)) then
+            write (error_unit, '(a)') 'meshio++: project_to_cad layout mismatch'
+            error stop 1
+        end if
+        if (present(face_array)) then
+            fname = c_str(face_array)
+            opts%face_array = c_loc(fname(1:1))
+        end if
+        if (present(edge_array)) then
+            ename = c_str(edge_array)
+            opts%edge_array = c_loc(ename(1:1))
+        end if
+        if (present(max_distance)) opts%max_distance = real(max_distance, c_double)
+        if (present(trim_samples)) opts%trim_samples = int(trim_samples, c_int32_t)
+        out%handle = c_mio_project_to_cad(mesh%handle, info%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('project_to_cad', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The points (1-based) this thread's last `mio_project_to_cad` projected
+    !> outside their face's trims, ascending.
+    function mio_project_to_cad_outside_trim() result(points)
+        integer(int64), allocatable :: points(:)
+        integer(c_int64_t) :: n
+        integer(c_int64_t), allocatable :: buf(:)
+        integer(c_int64_t) :: dummy(1)
+        n = c_mio_project_to_cad_outside_trim(dummy, 0_c_int64_t)
+        allocate (buf(max(n, 1_c_int64_t)))
+        if (n > 0) n = c_mio_project_to_cad_outside_trim(buf, n)
+        points = int(buf(1:max(n, 0_c_int64_t)), int64) + 1_int64
+    end function
 
     !> Lopped corner `idx` (1-based): its face and mesh point (1-based), its
     !> wedge in the face's plane, the distance to the face's nearest other

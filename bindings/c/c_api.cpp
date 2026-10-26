@@ -132,6 +132,7 @@
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
+#include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
@@ -7538,6 +7539,82 @@ mio_status mio_mesh_cad_surface_tolerance_use(int64_t index, int64_t* edge, doub
                      : r_t.mWhere == "pairing"    ? MIO_MESH_CAD_TOLERANCE_PAIRING
                                                   : MIO_MESH_CAD_TOLERANCE_PROJECTION;
         return MIO_OK;
+    });
+}
+
+static_assert(sizeof(mio_project_to_cad_opts) == 64, "mio_project_to_cad_opts layout");
+static_assert(offsetof(mio_project_to_cad_opts, trim_samples) == 24,
+              "mio_project_to_cad_opts layout");
+static_assert(offsetof(mio_project_to_cad_opts, reserved) == 32, "mio_project_to_cad_opts layout");
+static_assert(sizeof(mio_project_to_cad_report) == 96, "mio_project_to_cad_report layout");
+static_assert(offsetof(mio_project_to_cad_report, max_move) == 56,
+              "mio_project_to_cad_report layout");
+
+namespace {
+
+std::vector<std::int64_t>& capi_project_to_cad_outside() {
+    thread_local std::vector<std::int64_t> outside;
+    return outside;
+}
+
+}  // namespace
+
+void mio_project_to_cad_opts_init(mio_project_to_cad_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_project_to_cad_opts{};
+    opts->trim_samples = 16;
+}
+
+mio_mesh* mio_project_to_cad(const mio_mesh* mesh, const mio_format_info* info,
+                             const mio_project_to_cad_opts* opts,
+                             mio_project_to_cad_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        capi_project_to_cad_outside().clear();
+        if (!mesh)
+            throw std::invalid_argument("meshio++: project_to_cad: mesh is NULL");
+        if (!info)
+            throw std::invalid_argument("meshio++: format info handle is NULL");
+        const auto* p_brep = std::get_if<meshioplusplus::BrepInfo>(&info->mInfo);
+        if (!p_brep)
+            throw std::invalid_argument(
+                "meshio++: project_to_cad: the info is not a B-rep (read a CAD JSON, STEP or "
+                "IGES file)");
+        meshioplusplus::ProjectToCadOptions o;
+        if (opts) {
+            if (opts->face_array)
+                o.mFaceArray = opts->face_array;
+            if (opts->edge_array)
+                o.mEdgeArray = opts->edge_array;
+            o.mMaxDistance = opts->max_distance;
+            o.mTrimSamples = opts->trim_samples == 0 ? 16 : opts->trim_samples;
+        }
+        meshioplusplus::ProjectToCadResult r =
+            meshioplusplus::project_to_cad(mesh->mMesh, *p_brep, o);
+        if (report) {
+            *report = mio_project_to_cad_report{};
+            report->num_projected = r.mNumProjected;
+            report->num_on_edges = r.mNumOnEdges;
+            report->num_corners = r.mNumCorners;
+            report->num_ambiguous = r.mNumAmbiguous;
+            report->num_too_far = r.mNumTooFar;
+            report->num_failed = r.mNumFailed;
+            report->num_outside_trim = r.mNumOutsideTrim;
+            report->max_move = r.mMaxMove;
+        }
+        capi_project_to_cad_outside() = std::move(r.mOutsideTrim);
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+int64_t mio_project_to_cad_outside_trim(int64_t* points, int64_t n) {
+    return guarded_ptr(int64_t{-1}, [&]() -> int64_t {
+        if (n < 0 || (n > 0 && !points))
+            throw std::invalid_argument("meshio++: project_to_cad: bad points buffer");
+        const auto& r_o = capi_project_to_cad_outside();
+        const auto count = std::min<std::int64_t>(n, static_cast<std::int64_t>(r_o.size()));
+        std::copy(r_o.begin(), r_o.begin() + count, points);
+        return static_cast<int64_t>(r_o.size());
     });
 }
 

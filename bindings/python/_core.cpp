@@ -188,6 +188,7 @@
 #include "meshioplusplus/operations/subdivide.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
+#include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
@@ -3001,6 +3002,42 @@ PYBIND11_MODULE(_core, m) {
         py::arg("snap") = false, py::arg("surface_level") = -1,
         py::arg("curvature_threshold") = 0.0, py::arg("feature_angle") = 0.0,
         py::arg("size_array") = "", py::arg("plane") = "auto");
+
+    // Projection back onto the CAD (roadmap 6.10.1): every point of a mesh
+    // whose cells name their CAD face and edge moved onto it. Returns a dict
+    // {mesh, num_projected, ...}. See operations/project_to_cad.hpp.
+    m.def(
+        "project_to_cad",
+        [](py::object pymesh, py::object brep, const std::string& face_array,
+           const std::string& edge_array, double max_distance, int trim_samples) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            const meshioplusplus::BrepInfo info = core_brep_from_py(brep);
+            meshioplusplus::ProjectToCadOptions o;
+            o.mFaceArray = face_array;
+            o.mEdgeArray = edge_array;
+            o.mMaxDistance = max_distance;
+            o.mTrimSamples = trim_samples;
+            meshioplusplus::ProjectToCadResult r =
+                core_nogil([&] { return meshioplusplus::project_to_cad(mesh, info, o); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_projected"] = r.mNumProjected;
+            out["num_on_edges"] = r.mNumOnEdges;
+            out["num_corners"] = r.mNumCorners;
+            out["num_ambiguous"] = r.mNumAmbiguous;
+            out["num_too_far"] = r.mNumTooFar;
+            out["num_failed"] = r.mNumFailed;
+            out["num_outside_trim"] = r.mNumOutsideTrim;
+            out["max_move"] = r.mMaxMove;
+            out["outside_trim"] = r.mOutsideTrim;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("mesh"), py::arg("brep"), py::arg("face_array") = "cad:face",
+        py::arg("edge_array") = "cad:edge", py::arg("max_distance") = 0.0,
+        py::arg("trim_samples") = 16);
 
     // Mesh generation from CAD: a conforming triangulation of a B-rep's faces
     // (the BrepInfo dict of mesh.info["brep"]), and the planar CDT under it.
