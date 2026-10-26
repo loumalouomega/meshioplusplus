@@ -202273,7 +202273,7 @@ namespace {
 
 using BlV3 = std::array<double, 3>;
 
-constexpr const char* kBlPrefix = "meshio++: boundary_layer: ";
+constexpr const char* kBoundaryLayerPrefix = "meshio++: boundary_layer: ";
 // The least cosine at which a point still sees all its faces.
 constexpr double kBlVisible = 0.05;
 // Offsets are divided by the least cosine, at most this many times.
@@ -202282,7 +202282,7 @@ constexpr double kBlMaxStretch = 4.0;
 constexpr double kBlMinJacobian = 1e-6;
 
 [[noreturn]] void bl_fail(const std::string& rWhy) {
-    throw std::invalid_argument(std::string(kBlPrefix) + rWhy);
+    throw std::invalid_argument(std::string(kBoundaryLayerPrefix) + rWhy);
 }
 
 BlV3 bl_sub(const BlV3& rA, const BlV3& rB) {
@@ -202599,7 +202599,7 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
         if (!bad)
             break;
         if (round > 64 * (o.mMaxShrink + 2))
-            throw std::logic_error(std::string(kBlPrefix) +
+            throw std::logic_error(std::string(kBoundaryLayerPrefix) +
                                    "internal error: the layers do not settle");
         for (std::size_t p = 0; p < np; ++p)
             if (bad_point[p] && sigma[p] > 0.0) {
