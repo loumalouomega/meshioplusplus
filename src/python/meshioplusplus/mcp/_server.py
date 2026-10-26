@@ -1205,6 +1205,7 @@ def _register_operations(server: FastMCP) -> None:
         metric_error: float = 0.0,
         untangle: bool = False,
         quads: str = "none",
+        quad_pairs: str = "matching",
     ) -> dict:
         """Triangulate the faces of a CAD model (Kratos CAD JSON; STEP and
         IGES where OpenCASCADE is linked) into one conforming surface mesh with
@@ -1277,13 +1278,15 @@ def _register_operations(server: FastMCP) -> None:
         guaranteed, reason): the angle bound the paper proves on a planar
         face, and whether the run meets it. untangle (order 2 or 3) moves a
         face's own high-order nodes on the surface to untangle a folded curved
-        element before it is straightened (Toulorge et al. 2013), counted in
-        num_untangled. quads 'dominant' recombines each face's triangles in
-        pairs, best quad first, into a quad block beside the triangles left;
-        'all' splits the quad-dominant mesh of twice the size through its
-        edges' midpoints into quads only (one size: no curvature_deviation,
-        cells_across_gaps or given sizes); order 1 only; reported as
-        num_quads, num_leftover_triangles and min_quad_scaled_jacobian."""
+        element before it is straightened (Toulorge et al. 2013), then slides
+        the nodes on the model's edges, counted in num_untangled. quads
+        'dominant' (order 1) recombines each face's triangles in pairs into a
+        quad block beside the triangles left; 'all' splits the quad-dominant
+        mesh of twice the size (its size sources asked for twice their size)
+        through its edges' midpoints into quads only, quad9 with order 2;
+        quad_pairs 'matching' (the default, a maximum matching, Blossom-quad)
+        or 'greedy' (best pair first) pairs them; reported as num_quads,
+        num_leftover_triangles and min_quad_scaled_jacobian."""
         return _guard(
             _tools.tool_mesh_cad_surface,
             input_path=input_path,
@@ -1322,6 +1325,7 @@ def _register_operations(server: FastMCP) -> None:
             metric_error=metric_error,
             untangle=untangle,
             quads=quads,
+            quad_pairs=quad_pairs,
         )
 
     @server.tool()

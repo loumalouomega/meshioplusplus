@@ -1639,6 +1639,19 @@ def test_quads_dominant_and_all(tmp_path):
         mio.mesh_cad_surface(sphere, 0.2, quads="all", order=2, untangle=True)
     with pytest.raises(ValueError, match="order 1"):
         mio.mesh_cad_surface(sphere, 0.2, quads="dominant", order=2)
+    # Roadmap 6.8.1: the matching (the default) leaves fewer triangles than
+    # greedy pairing.
+    _, greedy = mio.mesh_cad_surface(
+        sphere,
+        0.2,
+        min_angle=25,
+        quads="dominant",
+        quad_pairs="greedy",
+        return_report=True,
+    )
+    assert d["num_leftover_triangles"] < greedy["num_leftover_triangles"]
+    with pytest.raises(ValueError, match="quad_pairs"):
+        mio.mesh_cad_surface(sphere, 0.2, quads="dominant", quad_pairs="best")
 
 
 @needs_core

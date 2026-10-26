@@ -1844,6 +1844,7 @@ def tool_mesh_cad_surface(
     metric_error=0.0,
     untangle=False,
     quads="none",
+    quad_pairs="matching",
 ):
     """Triangulate a CAD model's faces (CAD JSON, STEP, IGES) into one
     conforming surface mesh at a target edge size, optionally sized by
@@ -1891,6 +1892,7 @@ def tool_mesh_cad_surface(
         metric_error=metric_error,
         untangle=untangle,
         quads=quads,
+        quad_pairs=quad_pairs,
         return_report=True,
     )
     return _result(_store(out, output_path, output_format), out, **report)

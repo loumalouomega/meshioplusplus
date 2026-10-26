@@ -392,7 +392,9 @@ program test_fortran_api
                 integer(int64) :: nq, nl
                 real(real64) :: qsj
             tris = info%mesh_cad_surface(0.1_real64, min_angle=25.0_real64, &
-                                         quads=MIO_MESH_CAD_QUADS_DOMINANT, stat=ierr, errmsg=msg)
+                                         quads=MIO_MESH_CAD_QUADS_DOMINANT, &
+                                         quad_pairs=MIO_MESH_CAD_QUAD_PAIRS_GREEDY, stat=ierr, &
+                                         errmsg=msg)
             call check(ierr == 0, 'mesh_cad_surface recombines quads')
             if (ierr == 0) then
                 call mio_mesh_cad_get_quad_stats(nq, nl, qsj, ierr)

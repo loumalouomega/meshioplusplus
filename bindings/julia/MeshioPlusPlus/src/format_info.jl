@@ -507,7 +507,9 @@ data `metric_array` is a field's Hessian, with the target interpolation error
 folded curved element before it is straightened (6.6.3, `num_untangled`);
 `quads` (`"none"`, `"dominant"` or `"all"`) recombines the triangles into a
 quad-dominant or all-quad mesh (6.8, `num_quads`, `num_leftover_triangles`,
-`min_quad_scaled_jacobian`). See `doc/mesh_cad.md`.
+`min_quad_scaled_jacobian`; `"all"` with `order=2` writes quad9), pairing them
+by `quad_pairs` (`"matching"`, the default, a maximum matching, or `"greedy"`;
+6.8.1). See `doc/mesh_cad.md`.
 """
 function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_deviation::Real=0.0,
                           min_points_per_edge::Integer=0, tolerance::Real=0.0,
@@ -526,7 +528,8 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
                           virtual_faces::Bool=false, lop_corners::Bool=false,
                           metric_background::Union{Nothing,Mesh}=nothing,
                           metric_array::AbstractString="", metric_error::Real=0.0,
-                          untangle::Bool=false, quads::AbstractString="none")
+                          untangle::Bool=false, quads::AbstractString="none",
+                          quad_pairs::AbstractString="matching")
     method = findfirst(==(smooth_method), _MESH_CAD_SMOOTH_METHODS)
     method === nothing &&
         throw(ArgumentError("meshio++: mesh_cad_surface: smooth_method must be " *
@@ -545,6 +548,10 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
     quads_code === nothing &&
         throw(ArgumentError("meshio++: mesh_cad_surface: quads must be \"none\", " *
                             "\"dominant\" or \"all\", got \"$quads\""))
+    pairs_code = findfirst(==(quad_pairs), ("matching", "greedy"))
+    pairs_code === nothing &&
+        throw(ArgumentError("meshio++: mesh_cad_surface: quad_pairs must be \"matching\" " *
+                            "or \"greedy\", got \"$quad_pairs\""))
     # Given sizes as (0-based index, size) arrays, kept alive across the call.
     pairs(x) = x === nothing ? Pair{Int,Float64}[] :
                [Int(first(p)) - 1 => Float64(last(p)) for p in (x isa AbstractDict ? collect(x) : x)]
@@ -569,7 +576,7 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
                                     metric_background === nothing ? C_NULL :
                                     _handle(metric_background),
                                     pointer(mname), Cdouble(metric_error),
-                                    Int32(quads_code - 1), Int32(0), (Int64(0),))
+                                    Int32(quads_code - 1), Int32(pairs_code - 1), (Int64(0),))
         ccall(_sym(:mio_mesh_cad_surface2), Ptr{Cvoid},
               (Ptr{Cvoid}, Ref{_CMeshCadSurfaceOpts}, Ref{_CMeshCadSurfaceOptsEx},
                Ref{_CMeshCadSurfaceReport}),

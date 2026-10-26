@@ -538,7 +538,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "MetricArray",
           "MetricError",
           "Untangle",
-          "Quads"}},
+          "Quads",
+          "QuadPairs"}},
         {"IgaSample", {"Subdivisions", "TrimSamples", "Trim", "Edges"}},
         // Back onto the CAD (roadmap 6.10.1): the B-rep at `Model`, or the
         // one a CAD Input carries when no step has changed the mesh since.
@@ -1055,6 +1056,14 @@ Mesh pipe_apply_model_step(const PipelineStep& rStep, PipelineReport& rReport, P
         else
             throw std::invalid_argument(
                 pipe_err(rStep, "'Quads' must be 'none', 'dominant' or 'all'"));
+        const std::string quad_pairs = pipe_text(rStep, "QuadPairs", "matching");
+        if (quad_pairs == "matching")
+            extras.mQuadPairs = MeshCadQuadPairs::Matching;
+        else if (quad_pairs == "greedy")
+            extras.mQuadPairs = MeshCadQuadPairs::Greedy;
+        else
+            throw std::invalid_argument(
+                pipe_err(rStep, "'QuadPairs' must be 'matching' or 'greedy'"));
         MeshCadSurfaceExtrasReport extras_report;
         MeshCadSurfaceResult r =
             mesh_cad_surface(*rModel.mBrep, o, sources, extras, nullptr, &extras_report);

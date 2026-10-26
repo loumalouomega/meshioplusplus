@@ -67,6 +67,7 @@ module meshioplusplus
     public :: MIO_MESH_CAD_TOLERANCE_CLOSED_START, MIO_MESH_CAD_TOLERANCE_CORNER
     public :: MIO_MESH_CAD_TOLERANCE_PROJECTION, MIO_MESH_CAD_TOLERANCE_PAIRING
     public :: MIO_MESH_CAD_QUADS_NONE, MIO_MESH_CAD_QUADS_DOMINANT, MIO_MESH_CAD_QUADS_ALL
+    public :: MIO_MESH_CAD_QUAD_PAIRS_MATCHING, MIO_MESH_CAD_QUAD_PAIRS_GREEDY
     public :: mio_project_to_cad, mio_project_to_cad_report, mio_project_to_cad_outside_trim
     public :: MIO_MESH_CAD_OK, MIO_MESH_CAD_EMPTY, MIO_MESH_CAD_OPEN_LOOP
     public :: MIO_MESH_CAD_SELF_INTERSECTING, MIO_MESH_CAD_DEGENERATE
@@ -506,6 +507,8 @@ module meshioplusplus
     !> Quadrilaterals (roadmap 6.8, mio_mesh_cad_quads).
     integer, parameter :: MIO_MESH_CAD_QUADS_NONE = 0, MIO_MESH_CAD_QUADS_DOMINANT = 1, &
                           MIO_MESH_CAD_QUADS_ALL = 2
+    !> How triangles pair into quads (roadmap 6.8.1, mio_mesh_cad_quad_pairs).
+    integer, parameter :: MIO_MESH_CAD_QUAD_PAIRS_MATCHING = 0, MIO_MESH_CAD_QUAD_PAIRS_GREEDY = 1
 
     !> Interop mirror of C `mio_project_to_cad_opts` (64 bytes with 8-byte
     !> pointers, checked by `mio_project_to_cad`; roadmap 6.10.1).
@@ -580,7 +583,7 @@ module meshioplusplus
         type(c_ptr) :: metric_array = c_null_ptr
         real(c_double) :: metric_error = 0
         integer(c_int32_t) :: quads = 0
-        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int32_t) :: quad_pairs = 0
         integer(c_int64_t) :: reserved(1) = 0
     end type
 
@@ -12265,7 +12268,10 @@ contains
     !> high-order nodes to untangle a folded curved element before it is
     !> straightened (6.6.3, `mio_mesh_cad_num_untangled`); `quads`
     !> (`MIO_MESH_CAD_QUADS_*`) recombines the triangles into a quad-dominant
-    !> or all-quad mesh (6.8, `mio_mesh_cad_get_quad_stats`).
+    !> or all-quad mesh (6.8, `mio_mesh_cad_get_quad_stats`; all-quad with
+    !> `order` 2 writes quad9), pairing them by `quad_pairs`
+    !> (`MIO_MESH_CAD_QUAD_PAIRS_*`, 6.8.1: a maximum matching, the default,
+    !> or greedily).
     function format_info_mesh_cad_surface(self, target_size, max_chordal_deviation, &
                                           min_points_per_edge, tolerance, record_face_ids, &
                                           edges, match_unreferenced_trims, strict, max_points, &
@@ -12277,7 +12283,7 @@ contains
                                           virtual_edges, reparam_condition_number, &
                                           model_tolerances, virtual_faces, lop_corners, &
                                           metric_background, metric_array, metric_error, &
-                                          untangle, quads) &
+                                          untangle, quads, quad_pairs) &
         result(out)
         class(mio_format_info), intent(in) :: self
         real(real64), intent(in) :: target_size
@@ -12296,7 +12302,7 @@ contains
         character(*), intent(in), optional :: metric_array
         real(real64), intent(in), optional :: metric_error
         logical, intent(in), optional :: untangle
-        integer, intent(in), optional :: quads
+        integer, intent(in), optional :: quads, quad_pairs
         integer(int64), intent(in), optional :: min_points_per_edge, max_points
         logical, intent(in), optional :: record_face_ids, edges, match_unreferenced_trims, strict
         type(mio_mesh_cad_surface_report), intent(out), optional :: report
@@ -12390,6 +12396,7 @@ contains
         if (present(metric_error)) ex%metric_error = real(metric_error, c_double)
         if (present(untangle)) ex%untangle = merge(1_c_int32_t, 0_c_int32_t, untangle)
         if (present(quads)) ex%quads = int(quads, c_int32_t)
+        if (present(quad_pairs)) ex%quad_pairs = int(quad_pairs, c_int32_t)
 
         out%handle = c_mio_mesh_cad_surface2(self%handle, opts, ex, crep)
         if (.not. c_associated(out%handle)) then

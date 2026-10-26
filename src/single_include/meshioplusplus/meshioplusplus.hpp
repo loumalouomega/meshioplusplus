@@ -30198,6 +30198,15 @@ enum class MeshCadQuads : std::int32_t {
     All = 2,
 };
 
+/// How triangles are paired into quads (roadmap 6.8.1): a maximum-
+/// cardinality matching of greatest total quality (Blossom-quad, Remacle et
+/// al. 2012, on the core's own matching; exact in patches of 3,000 triangles
+/// and a band about the triangles left), or best pair first.
+enum class MeshCadQuadPairs : std::int32_t {
+    Matching = 0,
+    Greedy = 1,
+};
+
 /// Inputs beside the options and the sources (v17.20.0), whose layouts have
 /// no room left: each off by default, and with all off the mesh is the
 /// four-argument overload's byte for byte.
@@ -30229,12 +30238,16 @@ struct MeshCadSurfaceExtras {
     /// meshes", J. Comput. Phys. 254, 2013): before an element whose
     /// Jacobian is not positive everywhere is made straight-sided, its face's
     /// own high-order nodes move on the surface to raise the worst scaled
-    /// Jacobian around them, the nodes on the model's edges staying put; only
-    /// the elements still invalid are straightened. Order 2 or 3.
+    /// Jacobian around them, then the nodes on the model's edges beside an
+    /// element still invalid slide along their edge; only the elements still
+    /// invalid are straightened. Order 2 or 3.
     bool mUntangle = false;
-    /// Quadrilaterals (roadmap 6.8, `MeshCadQuads`): greedy recombination
-    /// (Lee and Lo 1994), all-quad by splitting. Order 1 only.
+    /// Quadrilaterals (roadmap 6.8, `MeshCadQuads`): recombination
+    /// (Borouchaki and Frey 1998), all-quad by splitting. `Dominant` is order
+    /// 1 only; `All` writes `quad9` with order 2 (roadmap 6.8.3).
     MeshCadQuads mQuads = MeshCadQuads::None;
+    /// How the triangles are paired (roadmap 6.8.1, `MeshCadQuadPairs`).
+    MeshCadQuadPairs mQuadPairs = MeshCadQuadPairs::Matching;
 };
 
 /// A face whose metric's condition number passed
@@ -43742,10 +43755,15 @@ PrimitiveFit fit_primitive_samples(const std::vector<double>& rPts,
  * and P. J. Frey, "Adaptive triangular-quadrilateral mesh generation", Int.
  * J. Numer. Meth. Engng. 41 (1998); C. K. Lee and S. H. Lo, "A new scheme for
  * the generation of a graded quadrilateral mesh", Comput. Struct. 52 (1994),
- * merge front by front instead. A minimum-cost perfect matching (Blossom-quad,
- * Remacle et al. 2012) would leave fewer triangles; its libraries are
- * excluded by licence (roadmap 6.8.1). Deterministic: the order depends on
- * the input alone.
+ * merge front by front instead. Or, `QuadPairing::Matching` (roadmap 6.8.1),
+ * the pairs are a maximum-cardinality matching of the same candidates of
+ * greatest total score, group by group, the Blossom-quad of J.-F. Remacle,
+ * J. Lambrechts, B. Seny, E. Marchandise, A. Johnen and C. Geuzaine,
+ * "Blossom-Quad: a non-uniform quadrilateral mesh generator using a
+ * minimum-cost perfect-matching algorithm", Int. J. Numer. Meth. Engng. 89
+ * (2012), on the core's own matching (`weighted_matching.hpp`; their Blossom
+ * V is licensed for research only). Deterministic: the order depends on the
+ * input alone.
  *
  * A **core-private** header: nothing installed names it.
  */
@@ -43765,6 +43783,9 @@ double quad_recombine_quality(const double* pX, const std::array<std::int64_t, 4
 /// `compute_quality` reports): the least corner `(e1 x e2) . n / (|e1| |e2|)`.
 double quad_scaled_jacobian(const double* pX, const std::array<std::int64_t, 4>& rQ);
 
+/// How the pairs are chosen: best first, or a maximum matching.
+enum class QuadPairing { Greedy, Matching };
+
 struct QuadRecombineResult {
     /// Each quad, and the two triangles (indices into the input) it merges:
     /// `(a, d, b, c)` from `(a, b, c)` and `(b, a, d)`, so it runs as they do.
@@ -43781,7 +43802,7 @@ struct QuadRecombineResult {
  */
 QuadRecombineResult quad_recombine(const std::vector<std::array<std::int64_t, 3>>& rTris,
                                    const std::vector<std::int64_t>& rGroup, const double* pX,
-                                   double MinQuality);
+                                   double MinQuality, QuadPairing Pairing = QuadPairing::Greedy);
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/quad_recombine.hpp =====
@@ -47365,6 +47386,49 @@ inline std::string_view vtu_strip_view(const char* pS) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/vtu_decode.hpp =====
+// ===== begin src/cpp/src/detail/weighted_matching.hpp =====
+/**
+ * @file detail/weighted_matching.hpp
+ * @brief A maximum-weight matching of a general graph (roadmap 6.8.1).
+ *
+ * Edmonds' blossom algorithm in its primal-dual form (J. Edmonds, *Paths,
+ * trees, and flowers*, 1965, and *Maximum matching and a polyhedron with
+ * 0,1-vertices*, 1965), in the O(n^3) organisation of Z. Galil, *Efficient
+ * algorithms for finding maximum matching in graphs*, ACM Computing Surveys
+ * 18 (1986): stages, each growing alternating trees from the free vertices
+ * over the tight edges, shrinking an odd cycle into a blossom, expanding a
+ * blossom whose dual reaches zero, and changing the duals by the least of
+ * the four slacks until an augmenting path appears. The weights are
+ * integers and are doubled on entry, so every dual and slack stays an
+ * integer and the result is exact; vertices, edges and stacks are visited
+ * in index order, so it is deterministic.
+ *
+ * With `MaxCardinality` the matching is the heaviest among those with the
+ * most edges (the dual variables are not allowed to stop the search).
+ *
+ * A **core-private** header: nothing installed names it.
+ */
+
+// System includes
+#include <cstdint>
+#include <vector>
+
+namespace meshioplusplus::detail {
+
+struct MatchingEdge {
+    std::int64_t mA = 0;
+    std::int64_t mB = 0;
+    std::int64_t mWeight = 0;  ///< |weight| below 2^60
+};
+
+/// Each vertex's mate in a maximum-weight matching, or -1. Self-loops are
+/// ignored; parallel edges are allowed.
+std::vector<std::int64_t> max_weight_matching(std::int64_t NumVertices,
+                                              const std::vector<MatchingEdge>& rEdges,
+                                              bool MaxCardinality);
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/weighted_matching.hpp =====
 // ===== begin src/cpp/src/detail/weld.hpp =====
 /**
  * @file detail/weld.hpp
@@ -89841,7 +89905,9 @@ QuadLayoutFailure quad_layout_check(const QuadLayout& rLayout, const std::vector
 #include <cstddef>
 #include <limits>
 #include <map>
+#include <set>
 #include <tuple>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -89857,13 +89923,19 @@ QrV3 qr_at(const double* pX, std::int64_t Id) {
     const auto i = static_cast<std::size_t>(Id);
     return {pX[3 * i], pX[3 * i + 1], pX[3 * i + 2]};
 }
-QrV3 qr_sub(const QrV3& rA, const QrV3& rB) { return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]}; }
+QrV3 qr_sub(const QrV3& rA, const QrV3& rB) {
+    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
+}
 QrV3 qr_cross(const QrV3& rA, const QrV3& rB) {
     return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
             rA[0] * rB[1] - rA[1] * rB[0]};
 }
-double qr_dot(const QrV3& rA, const QrV3& rB) { return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2]; }
-double qr_norm(const QrV3& rA) { return std::sqrt(qr_dot(rA, rA)); }
+double qr_dot(const QrV3& rA, const QrV3& rB) {
+    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
+}
+double qr_norm(const QrV3& rA) {
+    return std::sqrt(qr_dot(rA, rA));
+}
 
 /// The quad's unit normal (its vector area normalised); zero when none.
 QrV3 qr_normal(const std::array<QrV3, 4>& rP) {
@@ -89916,9 +89988,121 @@ double quad_recombine_quality(const double* pX, const std::array<std::int64_t, 4
     return std::max(0.0, q);
 }
 
+namespace {
+
+using QrEdge = MatchingEdge;
+
+// Triangles a face is matched in at once: the matching is exact inside a
+// patch, and its cost grows faster than linearly with the patch (measured on
+// the sphere at h = 0.025, 45,000 triangles: 45 s whole, 2.6 s in patches of
+// 3,000 with a band of 4 rings, leaving 3,074 triangles where the exact
+// matching leaves 2,624 and the greedy one 4,796).
+constexpr std::int64_t kQrPatch = 3000;
+// Rings about the triangles left over that are matched again together.
+constexpr int kQrBandRings = 4;
+
+// The matching of the induced subgraph on `rIds` (ascending local ids),
+// written into `rMate`; edges leaving it are ignored.
+void qr_match_subset(const std::vector<std::int64_t>& rIds,
+                     const std::vector<std::vector<std::size_t>>& rIncident,
+                     const std::vector<QrEdge>& rEdges, std::vector<std::int64_t>& rMate) {
+    std::unordered_map<std::int64_t, std::int64_t> sub;
+    for (std::size_t i = 0; i < rIds.size(); ++i)
+        sub.emplace(rIds[i], static_cast<std::int64_t>(i));
+    std::vector<MatchingEdge> e;
+    for (const std::int64_t v : rIds)
+        for (const std::size_t k : rIncident[static_cast<std::size_t>(v)]) {
+            const QrEdge& r_e = rEdges[k];
+            const std::int64_t o = r_e.mA == v ? r_e.mB : r_e.mA;
+            if (o > v) {
+                const auto it = sub.find(o);
+                if (it != sub.end())
+                    e.push_back({sub.at(v), it->second, r_e.mWeight});
+            }
+        }
+    const auto m = max_weight_matching(static_cast<std::int64_t>(rIds.size()), e, true);
+    for (std::size_t i = 0; i < rIds.size(); ++i)
+        rMate[static_cast<std::size_t>(rIds[i])] =
+            m[i] < 0 ? -1 : rIds[static_cast<std::size_t>(m[i])];
+}
+
+// A maximum-cardinality, maximum-weight matching, exact up to `kQrPatch`
+// triangles; above, exact in connected patches of that size grown
+// breadth-first in index order, then exact again on the band of
+// `kQrBandRings` rings about the triangles the patches left unmatched (with
+// the pairs inside it released), which finds the short augmenting paths
+// across the patches' seams.
+std::vector<std::int64_t> qr_patched_matching(std::int64_t N, const std::vector<QrEdge>& rEdges) {
+    if (N <= kQrPatch)
+        return max_weight_matching(N, rEdges, true);
+    std::vector<std::vector<std::size_t>> incident(static_cast<std::size_t>(N));
+    for (std::size_t k = 0; k < rEdges.size(); ++k) {
+        incident[static_cast<std::size_t>(rEdges[k].mA)].push_back(k);
+        incident[static_cast<std::size_t>(rEdges[k].mB)].push_back(k);
+    }
+    const auto other = [&](std::size_t K, std::int64_t V) {
+        return rEdges[K].mA == V ? rEdges[K].mB : rEdges[K].mA;
+    };
+    std::vector<std::int64_t> mate(static_cast<std::size_t>(N), -1);
+    std::vector<char> seen(static_cast<std::size_t>(N), 0);
+    for (std::int64_t start = 0; start < N; ++start) {
+        if (seen[static_cast<std::size_t>(start)])
+            continue;
+        std::vector<std::int64_t> patch{start};
+        seen[static_cast<std::size_t>(start)] = 1;
+        for (std::size_t q = 0;
+             q < patch.size() && static_cast<std::int64_t>(patch.size()) < kQrPatch; ++q)
+            for (const std::size_t k : incident[static_cast<std::size_t>(patch[q])]) {
+                const std::int64_t o = other(k, patch[q]);
+                if (!seen[static_cast<std::size_t>(o)] &&
+                    static_cast<std::int64_t>(patch.size()) < kQrPatch) {
+                    seen[static_cast<std::size_t>(o)] = 1;
+                    patch.push_back(o);
+                }
+            }
+        std::sort(patch.begin(), patch.end());
+        qr_match_subset(patch, incident, rEdges, mate);
+    }
+    // The band about the triangles left over that could still pair.
+    std::vector<int> ring(static_cast<std::size_t>(N), -1);
+    std::vector<std::int64_t> frontier;
+    for (std::int64_t v = 0; v < N; ++v)
+        if (mate[static_cast<std::size_t>(v)] < 0 &&
+            !incident[static_cast<std::size_t>(v)].empty()) {
+            ring[static_cast<std::size_t>(v)] = 0;
+            frontier.push_back(v);
+        }
+    for (int r = 1; r <= kQrBandRings && !frontier.empty(); ++r) {
+        std::vector<std::int64_t> next;
+        for (const std::int64_t v : frontier)
+            for (const std::size_t k : incident[static_cast<std::size_t>(v)]) {
+                const std::int64_t o = other(k, v);
+                if (ring[static_cast<std::size_t>(o)] < 0) {
+                    ring[static_cast<std::size_t>(o)] = r;
+                    next.push_back(o);
+                }
+            }
+        frontier = std::move(next);
+    }
+    // A pair half inside the band stays; both halves inside are released.
+    std::vector<std::int64_t> band;
+    for (std::int64_t v = 0; v < N; ++v) {
+        if (ring[static_cast<std::size_t>(v)] < 0)
+            continue;
+        const std::int64_t w = mate[static_cast<std::size_t>(v)];
+        if (w < 0 || ring[static_cast<std::size_t>(w)] >= 0)
+            band.push_back(v);
+    }
+    if (!band.empty())
+        qr_match_subset(band, incident, rEdges, mate);
+    return mate;
+}
+
+}  // namespace
+
 QuadRecombineResult quad_recombine(const std::vector<std::array<std::int64_t, 3>>& rTris,
                                    const std::vector<std::int64_t>& rGroup, const double* pX,
-                                   double MinQuality) {
+                                   double MinQuality, QuadPairing Pairing) {
     QuadRecombineResult out;
     // Each directed edge's triangle; an interior edge has both directions.
     std::map<std::pair<std::int64_t, std::int64_t>, std::size_t> of_edge;
@@ -89972,12 +90156,53 @@ QuadRecombineResult quad_recombine(const std::vector<std::array<std::int64_t, 3>
     });
     std::vector<char> used(rTris.size(), 0);
     std::vector<std::pair<std::size_t, std::size_t>> chosen;  // (first triangle, candidate)
-    for (std::size_t i = 0; i < cand.size(); ++i) {
-        const Candidate& r_c = cand[i];
-        if (used[r_c.mT1] || used[r_c.mT2])
-            continue;
-        used[r_c.mT1] = used[r_c.mT2] = 1;
-        chosen.emplace_back(r_c.mT1, i);
+    if (Pairing == QuadPairing::Matching) {
+        // Each group's triangles and candidates (a pair of triangles once,
+        // its best), matched group by group: the groups are independent.
+        std::map<std::int64_t, std::size_t> group_index;
+        for (std::size_t t = 0; t < rTris.size(); ++t)
+            group_index.emplace(rGroup[t], group_index.size());
+        const std::size_t ng = group_index.size();
+        std::vector<std::vector<std::size_t>> tris_of(ng), cands_of(ng);
+        std::vector<std::int64_t> local(rTris.size(), -1);
+        for (std::size_t t = 0; t < rTris.size(); ++t) {
+            auto& r_t = tris_of[group_index.at(rGroup[t])];
+            local[t] = static_cast<std::int64_t>(r_t.size());
+            r_t.push_back(t);
+        }
+        std::set<std::pair<std::size_t, std::size_t>> seen;
+        for (std::size_t i = 0; i < cand.size(); ++i)
+            if (seen.emplace(cand[i].mT1, cand[i].mT2).second)
+                cands_of[group_index.at(rGroup[cand[i].mT1])].push_back(i);
+        std::vector<std::vector<std::size_t>> picked(ng);
+        parallel_for(
+            ng,
+            [&](std::size_t G) {
+                std::vector<QrEdge> edges;
+                for (const std::size_t i : cands_of[G])
+                    edges.push_back(
+                        {local[cand[i].mT1], local[cand[i].mT2],
+                         static_cast<std::int64_t>(std::llround(1e6 * cand[i].mQuality))});
+                const auto mate =
+                    qr_patched_matching(static_cast<std::int64_t>(tris_of[G].size()), edges);
+                for (const std::size_t i : cands_of[G])
+                    if (mate[static_cast<std::size_t>(local[cand[i].mT1])] == local[cand[i].mT2])
+                        picked[G].push_back(i);
+            },
+            1);
+        for (const auto& r_p : picked)
+            for (const std::size_t i : r_p) {
+                used[cand[i].mT1] = used[cand[i].mT2] = 1;
+                chosen.emplace_back(cand[i].mT1, i);
+            }
+    } else {
+        for (std::size_t i = 0; i < cand.size(); ++i) {
+            const Candidate& r_c = cand[i];
+            if (used[r_c.mT1] || used[r_c.mT2])
+                continue;
+            used[r_c.mT1] = used[r_c.mT2] = 1;
+            chosen.emplace_back(r_c.mT1, i);
+        }
     }
     std::sort(chosen.begin(), chosen.end());
     for (const auto& [t, i] : chosen) {
@@ -99838,6 +100063,538 @@ NDArray vtu_decode_ndarray(const char* pText, std::size_t len, std::size_t hsz, 
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/vtu_binary.cpp =====
+// ===== begin src/cpp/src/detail/weighted_matching.cpp =====
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+namespace {
+
+using I = std::int64_t;
+
+// The state of one run. Vertices are 0..n-1, blossoms n..2n-1. An edge k
+// has the endpoints 2k (its first vertex) and 2k + 1 (its second); `p ^ 1`
+// is the other end of endpoint p. Labels: 0 free, 1 S (outer), 2 T
+// (inner); 4 marks a blossom on the path being scanned (5 = S marked).
+class WmState {
+public:
+    WmState(I N, const std::vector<MatchingEdge>& rEdges, bool MaxCardinality)
+        : n(N), mMaxCardinality(MaxCardinality) {
+        I most = 0;
+        for (const MatchingEdge& r_e : rEdges) {
+            if (r_e.mA == r_e.mB)
+                continue;
+            if (r_e.mA < 0 || r_e.mB < 0 || r_e.mA >= N || r_e.mB >= N)
+                throw std::invalid_argument("meshio++: max_weight_matching: vertex out of range");
+            // Doubled: every slack and dual stays an integer.
+            mEdges.push_back({r_e.mA, r_e.mB, 2 * r_e.mWeight});
+            most = std::max(most, 2 * r_e.mWeight);
+        }
+        const auto m = static_cast<I>(mEdges.size());
+        mEndpoint.resize(static_cast<std::size_t>(2 * m));
+        mNeighbend.assign(static_cast<std::size_t>(n), {});
+        for (I k = 0; k < m; ++k) {
+            const MatchingEdge& r_e = mEdges[static_cast<std::size_t>(k)];
+            mEndpoint[static_cast<std::size_t>(2 * k)] = r_e.mA;
+            mEndpoint[static_cast<std::size_t>(2 * k + 1)] = r_e.mB;
+            mNeighbend[static_cast<std::size_t>(r_e.mA)].push_back(2 * k + 1);
+            mNeighbend[static_cast<std::size_t>(r_e.mB)].push_back(2 * k);
+        }
+        const auto nn = static_cast<std::size_t>(2 * n);
+        mMate.assign(static_cast<std::size_t>(n), -1);
+        mLabel.assign(nn, 0);
+        mLabelEnd.assign(nn, -1);
+        mInBlossom.resize(static_cast<std::size_t>(n));
+        for (I v = 0; v < n; ++v)
+            mInBlossom[static_cast<std::size_t>(v)] = v;
+        mBlossomParent.assign(nn, -1);
+        mBlossomChilds.assign(nn, {});
+        mBlossomBase.assign(nn, -1);
+        for (I v = 0; v < n; ++v)
+            mBlossomBase[static_cast<std::size_t>(v)] = v;
+        mBlossomEndps.assign(nn, {});
+        mBestEdge.assign(nn, -1);
+        mBlossomBestEdges.assign(nn, {});
+        mHasBestEdges.assign(nn, 0);
+        for (I b = 2 * n - 1; b >= n; --b)
+            mUnused.push_back(b);
+        mDual.assign(nn, 0);
+        for (I v = 0; v < n; ++v)
+            mDual[static_cast<std::size_t>(v)] = most;
+        mAllowEdge.assign(static_cast<std::size_t>(m), 0);
+    }
+
+    std::vector<I> Run() {
+        for (I stage = 0; stage < n; ++stage) {
+            std::fill(mLabel.begin(), mLabel.end(), 0);
+            std::fill(mBestEdge.begin(), mBestEdge.end(), -1);
+            for (I b = n; b < 2 * n; ++b) {
+                mBlossomBestEdges[static_cast<std::size_t>(b)].clear();
+                mHasBestEdges[static_cast<std::size_t>(b)] = 0;
+            }
+            std::fill(mAllowEdge.begin(), mAllowEdge.end(), 0);
+            mQueue.clear();
+            for (I v = 0; v < n; ++v)
+                if (Mate(v) == -1 && Label(InBlossom(v)) == 0)
+                    AssignLabel(v, 1, -1);
+            bool augmented = false;
+            for (;;) {
+                while (!mQueue.empty() && !augmented) {
+                    const I v = mQueue.back();
+                    mQueue.pop_back();
+                    for (const I p : mNeighbend[static_cast<std::size_t>(v)]) {
+                        const I k = p / 2;
+                        const I w = Endpoint(p);
+                        if (InBlossom(v) == InBlossom(w))
+                            continue;
+                        I kslack = 0;
+                        if (!mAllowEdge[static_cast<std::size_t>(k)]) {
+                            kslack = Slack(k);
+                            if (kslack <= 0)
+                                mAllowEdge[static_cast<std::size_t>(k)] = 1;
+                        }
+                        if (mAllowEdge[static_cast<std::size_t>(k)]) {
+                            if (Label(InBlossom(w)) == 0) {
+                                AssignLabel(w, 2, p ^ 1);
+                            } else if (Label(InBlossom(w)) == 1) {
+                                const I base = ScanBlossom(v, w);
+                                if (base >= 0) {
+                                    AddBlossom(base, k);
+                                } else {
+                                    AugmentMatching(k);
+                                    augmented = true;
+                                    break;
+                                }
+                            } else if (Label(w) == 0) {
+                                Label(w) = 2;
+                                LabelEnd(w) = p ^ 1;
+                            }
+                        } else if (Label(InBlossom(w)) == 1) {
+                            const I b = InBlossom(v);
+                            if (BestEdge(b) == -1 || kslack < Slack(BestEdge(b)))
+                                BestEdge(b) = k;
+                        } else if (Label(w) == 0) {
+                            if (BestEdge(w) == -1 || kslack < Slack(BestEdge(w)))
+                                BestEdge(w) = k;
+                        }
+                    }
+                }
+                if (augmented)
+                    break;
+                // The least of the four slacks.
+                int type = -1;
+                I delta = 0, delta_edge = -1, delta_blossom = -1;
+                if (!mMaxCardinality) {
+                    type = 1;
+                    delta = *std::min_element(mDual.begin(), mDual.begin() + n);
+                }
+                for (I v = 0; v < n; ++v)
+                    if (Label(InBlossom(v)) == 0 && BestEdge(v) != -1) {
+                        const I d = Slack(BestEdge(v));
+                        if (type == -1 || d < delta) {
+                            delta = d;
+                            type = 2;
+                            delta_edge = BestEdge(v);
+                        }
+                    }
+                for (I b = 0; b < 2 * n; ++b)
+                    if (Parent(b) == -1 && Label(b) == 1 && BestEdge(b) != -1) {
+                        const I d = Slack(BestEdge(b)) / 2;
+                        if (type == -1 || d < delta) {
+                            delta = d;
+                            type = 3;
+                            delta_edge = BestEdge(b);
+                        }
+                    }
+                for (I b = n; b < 2 * n; ++b)
+                    if (Base(b) >= 0 && Parent(b) == -1 && Label(b) == 2 &&
+                        (type == -1 || Dual(b) < delta)) {
+                        delta = Dual(b);
+                        type = 4;
+                        delta_blossom = b;
+                    }
+                if (type == -1) {
+                    // Max cardinality and no further progress: stop the run.
+                    type = 1;
+                    delta = std::max<I>(0, *std::min_element(mDual.begin(), mDual.begin() + n));
+                }
+                for (I v = 0; v < n; ++v) {
+                    const I l = Label(InBlossom(v));
+                    if (l == 1)
+                        Dual(v) -= delta;
+                    else if (l == 2)
+                        Dual(v) += delta;
+                }
+                for (I b = n; b < 2 * n; ++b)
+                    if (Base(b) >= 0 && Parent(b) == -1) {
+                        if (Label(b) == 1)
+                            Dual(b) += delta;
+                        else if (Label(b) == 2)
+                            Dual(b) -= delta;
+                    }
+                if (type == 1)
+                    break;
+                if (type == 2) {
+                    mAllowEdge[static_cast<std::size_t>(delta_edge)] = 1;
+                    I i = Edge(delta_edge).mA, j = Edge(delta_edge).mB;
+                    if (Label(InBlossom(i)) == 0)
+                        std::swap(i, j);
+                    mQueue.push_back(i);
+                } else if (type == 3) {
+                    mAllowEdge[static_cast<std::size_t>(delta_edge)] = 1;
+                    mQueue.push_back(Edge(delta_edge).mA);
+                } else {
+                    ExpandBlossom(delta_blossom, false);
+                }
+            }
+            if (!augmented)
+                break;
+            for (I b = n; b < 2 * n; ++b)
+                if (Parent(b) == -1 && Base(b) >= 0 && Label(b) == 1 && Dual(b) == 0)
+                    ExpandBlossom(b, true);
+        }
+        std::vector<I> out(static_cast<std::size_t>(n), -1);
+        for (I v = 0; v < n; ++v)
+            if (Mate(v) >= 0)
+                out[static_cast<std::size_t>(v)] = Endpoint(Mate(v));
+        return out;
+    }
+
+private:
+    I n = 0;
+    bool mMaxCardinality = false;
+    std::vector<MatchingEdge> mEdges;
+    std::vector<I> mEndpoint;
+    std::vector<std::vector<I>> mNeighbend;
+    std::vector<I> mMate, mLabel, mLabelEnd, mInBlossom, mBlossomParent, mBlossomBase;
+    std::vector<std::vector<I>> mBlossomChilds, mBlossomEndps, mBlossomBestEdges;
+    std::vector<char> mHasBestEdges;
+    std::vector<I> mBestEdge, mUnused, mDual, mQueue;
+    std::vector<char> mAllowEdge;
+
+    static std::size_t Z(I X) { return static_cast<std::size_t>(X); }
+    I& Mate(I V) { return mMate[Z(V)]; }
+    I& Label(I B) { return mLabel[Z(B)]; }
+    I& LabelEnd(I B) { return mLabelEnd[Z(B)]; }
+    I& InBlossom(I V) { return mInBlossom[Z(V)]; }
+    I& Parent(I B) { return mBlossomParent[Z(B)]; }
+    I& Base(I B) { return mBlossomBase[Z(B)]; }
+    I& BestEdge(I B) { return mBestEdge[Z(B)]; }
+    I& Dual(I B) { return mDual[Z(B)]; }
+    I Endpoint(I P) const { return mEndpoint[Z(P)]; }
+    const MatchingEdge& Edge(I K) const { return mEdges[Z(K)]; }
+
+    I Slack(I K) const {
+        const MatchingEdge& r_e = mEdges[Z(K)];
+        return mDual[Z(r_e.mA)] + mDual[Z(r_e.mB)] - 2 * r_e.mWeight;
+    }
+
+    void Leaves(I B, std::vector<I>& rOut) const {
+        if (B < n) {
+            rOut.push_back(B);
+            return;
+        }
+        for (const I c : mBlossomChilds[Z(B)])
+            Leaves(c, rOut);
+    }
+
+    std::vector<I> Leaves(I B) const {
+        std::vector<I> out;
+        Leaves(B, out);
+        return out;
+    }
+
+    // Label the top blossom of W with T, and the blossom across its base's
+    // mate with S, as the tree grows through P.
+    void AssignLabel(I W, I T, I P) {
+        const I b = InBlossom(W);
+        Label(W) = Label(b) = T;
+        LabelEnd(W) = LabelEnd(b) = P;
+        BestEdge(W) = BestEdge(b) = -1;
+        if (T == 1) {
+            Leaves(b, mQueue);
+        } else if (T == 2) {
+            const I base = Base(b);
+            AssignLabel(Endpoint(Mate(base)), 1, Mate(base) ^ 1);
+        }
+    }
+
+    // Trace back from V and W to the trees' roots: a new blossom's base, or
+    // -1 when the roots differ (an augmenting path).
+    I ScanBlossom(I V, I W) {
+        std::vector<I> path;
+        I base = -1;
+        while (V != -1 || W != -1) {
+            I b = InBlossom(V);
+            if (Label(b) & 4) {
+                base = Base(b);
+                break;
+            }
+            path.push_back(b);
+            Label(b) = 5;
+            if (LabelEnd(b) == -1) {
+                V = -1;
+            } else {
+                V = Endpoint(LabelEnd(b));
+                b = InBlossom(V);
+                V = Endpoint(LabelEnd(b));
+            }
+            if (W != -1)
+                std::swap(V, W);
+        }
+        for (const I b : path)
+            Label(b) = 1;
+        return base;
+    }
+
+    // Shrink the cycle closed by edge K through the trees from base Base.
+    void AddBlossom(I BaseV, I K) {
+        I v = Edge(K).mA, w = Edge(K).mB;
+        const I bb = InBlossom(BaseV);
+        I bv = InBlossom(v), bw = InBlossom(w);
+        const I b = mUnused.back();
+        mUnused.pop_back();
+        Base(b) = BaseV;
+        Parent(b) = -1;
+        Parent(bb) = b;
+        std::vector<I>& r_path = mBlossomChilds[Z(b)];
+        std::vector<I>& r_endps = mBlossomEndps[Z(b)];
+        r_path.clear();
+        r_endps.clear();
+        while (bv != bb) {
+            Parent(bv) = b;
+            r_path.push_back(bv);
+            r_endps.push_back(LabelEnd(bv));
+            v = Endpoint(LabelEnd(bv));
+            bv = InBlossom(v);
+        }
+        r_path.push_back(bb);
+        std::reverse(r_path.begin(), r_path.end());
+        std::reverse(r_endps.begin(), r_endps.end());
+        r_endps.push_back(2 * K);
+        while (bw != bb) {
+            Parent(bw) = b;
+            r_path.push_back(bw);
+            r_endps.push_back(LabelEnd(bw) ^ 1);
+            w = Endpoint(LabelEnd(bw));
+            bw = InBlossom(w);
+        }
+        Label(b) = 1;
+        LabelEnd(b) = LabelEnd(bb);
+        Dual(b) = 0;
+        for (const I leaf : Leaves(b)) {
+            if (Label(InBlossom(leaf)) == 2)
+                mQueue.push_back(leaf);
+            InBlossom(leaf) = b;
+        }
+        // The least-slack edge from the new blossom to each S-blossom.
+        std::vector<I> best_to(Z(2 * n), -1);
+        for (const I sub : mBlossomChilds[Z(b)]) {
+            std::vector<std::vector<I>> lists;
+            if (!mHasBestEdges[Z(sub)]) {
+                for (const I leaf : Leaves(sub)) {
+                    std::vector<I> l;
+                    for (const I p : mNeighbend[Z(leaf)])
+                        l.push_back(p / 2);
+                    lists.push_back(std::move(l));
+                }
+            } else {
+                lists.push_back(mBlossomBestEdges[Z(sub)]);
+            }
+            for (const auto& r_list : lists)
+                for (const I k : r_list) {
+                    I i = Edge(k).mA, j = Edge(k).mB;
+                    if (InBlossom(j) == b)
+                        std::swap(i, j);
+                    const I bj = InBlossom(j);
+                    if (bj != b && Label(bj) == 1 &&
+                        (best_to[Z(bj)] == -1 || Slack(k) < Slack(best_to[Z(bj)])))
+                        best_to[Z(bj)] = k;
+                }
+            mBlossomBestEdges[Z(sub)].clear();
+            mHasBestEdges[Z(sub)] = 0;
+            BestEdge(sub) = -1;
+        }
+        std::vector<I>& r_best = mBlossomBestEdges[Z(b)];
+        r_best.clear();
+        for (const I k : best_to)
+            if (k != -1)
+                r_best.push_back(k);
+        mHasBestEdges[Z(b)] = 1;
+        BestEdge(b) = -1;
+        for (const I k : r_best)
+            if (BestEdge(b) == -1 || Slack(k) < Slack(BestEdge(b)))
+                BestEdge(b) = k;
+    }
+
+    // A child's index from the end when negative.
+    static std::size_t Wrap(I J, std::size_t N) {
+        const I m = static_cast<I>(N);
+        return static_cast<std::size_t>(((J % m) + m) % m);
+    }
+
+    // Expand blossom B into its children; at a stage's end recursively
+    // those whose dual is zero, otherwise relabel the T-blossom's children.
+    void ExpandBlossom(I B, bool EndStage) {
+        const std::vector<I> childs = mBlossomChilds[Z(B)];
+        for (const I s : childs) {
+            Parent(s) = -1;
+            if (s < n) {
+                InBlossom(s) = s;
+            } else if (EndStage && Dual(s) == 0) {
+                ExpandBlossom(s, EndStage);
+            } else {
+                for (const I leaf : Leaves(s))
+                    InBlossom(leaf) = s;
+            }
+        }
+        if (!EndStage && Label(B) == 2) {
+            const std::vector<I>& r_endps = mBlossomEndps[Z(B)];
+            const std::size_t nc = childs.size();
+            const I entry = InBlossom(Endpoint(LabelEnd(B) ^ 1));
+            I j = static_cast<I>(std::find(childs.begin(), childs.end(), entry) - childs.begin());
+            I step = 0, trick = 0;
+            if (j & 1) {
+                j -= static_cast<I>(nc);
+                step = 1;
+                trick = 0;
+            } else {
+                step = -1;
+                trick = 1;
+            }
+            I p = LabelEnd(B);
+            while (j != 0) {
+                Label(Endpoint(p ^ 1)) = 0;
+                Label(Endpoint(r_endps[Wrap(j - trick, nc)] ^ trick ^ 1)) = 0;
+                AssignLabel(Endpoint(p ^ 1), 2, p);
+                mAllowEdge[Z(r_endps[Wrap(j - trick, nc)] / 2)] = 1;
+                j += step;
+                p = r_endps[Wrap(j - trick, nc)] ^ trick;
+                mAllowEdge[Z(p / 2)] = 1;
+                j += step;
+            }
+            const I bv = childs[Wrap(j, nc)];
+            Label(Endpoint(p ^ 1)) = Label(bv) = 2;
+            LabelEnd(Endpoint(p ^ 1)) = LabelEnd(bv) = p;
+            BestEdge(bv) = -1;
+            j += step;
+            while (childs[Wrap(j, nc)] != entry) {
+                const I sub = childs[Wrap(j, nc)];
+                if (Label(sub) == 1) {
+                    j += step;
+                    continue;
+                }
+                I found = -1;
+                for (const I leaf : Leaves(sub))
+                    if (Label(leaf) != 0) {
+                        found = leaf;
+                        break;
+                    }
+                if (found >= 0) {
+                    Label(found) = 0;
+                    Label(Endpoint(Mate(Base(sub)))) = 0;
+                    AssignLabel(found, 2, LabelEnd(found));
+                }
+                j += step;
+            }
+        }
+        Label(B) = LabelEnd(B) = -1;
+        mBlossomChilds[Z(B)].clear();
+        mBlossomEndps[Z(B)].clear();
+        Base(B) = -1;
+        mBlossomBestEdges[Z(B)].clear();
+        mHasBestEdges[Z(B)] = 0;
+        BestEdge(B) = -1;
+        mUnused.push_back(B);
+    }
+
+    // Swap matched and unmatched edges along the even path from V to B's
+    // base, rotating B's children so V's child is its new base.
+    void AugmentBlossom(I B, I V) {
+        I t = V;
+        while (Parent(t) != B)
+            t = Parent(t);
+        if (t >= n)
+            AugmentBlossom(t, V);
+        std::vector<I>& r_childs = mBlossomChilds[Z(B)];
+        std::vector<I>& r_endps = mBlossomEndps[Z(B)];
+        const std::size_t nc = r_childs.size();
+        const I i =
+            static_cast<I>(std::find(r_childs.begin(), r_childs.end(), t) - r_childs.begin());
+        I j = i, step = 0, trick = 0;
+        if (i & 1) {
+            j -= static_cast<I>(nc);
+            step = 1;
+            trick = 0;
+        } else {
+            step = -1;
+            trick = 1;
+        }
+        while (j != 0) {
+            j += step;
+            t = r_childs[Wrap(j, nc)];
+            const I p = r_endps[Wrap(j - trick, nc)] ^ trick;
+            if (t >= n)
+                AugmentBlossom(t, Endpoint(p));
+            j += step;
+            t = r_childs[Wrap(j, nc)];
+            if (t >= n)
+                AugmentBlossom(t, Endpoint(p ^ 1));
+            Mate(Endpoint(p)) = p ^ 1;
+            Mate(Endpoint(p ^ 1)) = p;
+        }
+        std::rotate(r_childs.begin(), r_childs.begin() + i, r_childs.end());
+        std::rotate(r_endps.begin(), r_endps.begin() + i, r_endps.end());
+        Base(B) = Base(r_childs[0]);
+    }
+
+    // Augment along the path through edge K between two S-vertices.
+    void AugmentMatching(I K) {
+        const I v = Edge(K).mA, w = Edge(K).mB;
+        for (int side = 0; side < 2; ++side) {
+            I s = side == 0 ? v : w;
+            I p = side == 0 ? 2 * K + 1 : 2 * K;
+            for (;;) {
+                const I bs = InBlossom(s);
+                if (bs >= n)
+                    AugmentBlossom(bs, s);
+                Mate(s) = p;
+                if (LabelEnd(bs) == -1)
+                    break;
+                const I t = Endpoint(LabelEnd(bs));
+                const I bt = InBlossom(t);
+                s = Endpoint(LabelEnd(bt));
+                const I j = Endpoint(LabelEnd(bt) ^ 1);
+                if (bt >= n)
+                    AugmentBlossom(bt, j);
+                Mate(j) = LabelEnd(bt);
+                p = LabelEnd(bt) ^ 1;
+            }
+        }
+    }
+};
+
+}  // namespace
+
+std::vector<std::int64_t> max_weight_matching(std::int64_t NumVertices,
+                                              const std::vector<MatchingEdge>& rEdges,
+                                              bool MaxCardinality) {
+    if (NumVertices < 0)
+        throw std::invalid_argument("meshio++: max_weight_matching: negative vertex count");
+    if (NumVertices == 0)
+        return {};
+    WmState state(NumVertices, rEdges, MaxCardinality);
+    return state.Run();
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/weighted_matching.cpp =====
 // ===== begin src/cpp/src/detail/xdmf_common.cpp =====
 #include <algorithm>
 #include <cstdint>
@@ -225989,8 +226746,10 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
     std::map<std::pair<std::int64_t, std::int64_t>, std::int64_t> half_node;
     std::vector<Vec3> centres;
     if (extras.mQuads != MeshCadQuads::None && !tris.empty()) {
-        const detail::QuadRecombineResult rec =
-            detail::quad_recombine(tris, tri_face, px, kMcadQuadFloor);
+        const detail::QuadRecombineResult rec = detail::quad_recombine(
+            tris, tri_face, px, kMcadQuadFloor,
+            extras.mQuadPairs == MeshCadQuadPairs::Matching ? detail::QuadPairing::Matching
+                                                            : detail::QuadPairing::Greedy);
         if (!all_quads) {
             for (std::size_t i = 0; i < rec.mQuads.size(); ++i) {
                 quads.push_back(rec.mQuads[i]);
@@ -226482,6 +227241,9 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep, const MeshCadSurfac
     if (rExtras.mQuads != MeshCadQuads::None && rExtras.mQuads != MeshCadQuads::Dominant &&
         rExtras.mQuads != MeshCadQuads::All)
         mcad_fail("quads must be none, dominant or all");
+    if (rExtras.mQuadPairs != MeshCadQuadPairs::Matching &&
+        rExtras.mQuadPairs != MeshCadQuadPairs::Greedy)
+        mcad_fail("quad_pairs must be matching or greedy");
     if (rExtras.mQuads == MeshCadQuads::Dominant && rOptions.mOrder != 1)
         mcad_fail("quads=\"dominant\" is order 1 only (roadmap 6.8)");
     if (rExtras.mQuads == MeshCadQuads::All && rOptions.mOrder > 2)
@@ -232267,7 +233029,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "MetricArray",
           "MetricError",
           "Untangle",
-          "Quads"}},
+          "Quads",
+          "QuadPairs"}},
         {"IgaSample", {"Subdivisions", "TrimSamples", "Trim", "Edges"}},
         // Back onto the CAD (roadmap 6.10.1): the B-rep at `Model`, or the
         // one a CAD Input carries when no step has changed the mesh since.
@@ -232784,6 +233547,14 @@ Mesh pipe_apply_model_step(const PipelineStep& rStep, PipelineReport& rReport, P
         else
             throw std::invalid_argument(
                 pipe_err(rStep, "'Quads' must be 'none', 'dominant' or 'all'"));
+        const std::string quad_pairs = pipe_text(rStep, "QuadPairs", "matching");
+        if (quad_pairs == "matching")
+            extras.mQuadPairs = MeshCadQuadPairs::Matching;
+        else if (quad_pairs == "greedy")
+            extras.mQuadPairs = MeshCadQuadPairs::Greedy;
+        else
+            throw std::invalid_argument(
+                pipe_err(rStep, "'QuadPairs' must be 'matching' or 'greedy'"));
         MeshCadSurfaceExtrasReport extras_report;
         MeshCadSurfaceResult r =
             mesh_cad_surface(*rModel.mBrep, o, sources, extras, nullptr, &extras_report);

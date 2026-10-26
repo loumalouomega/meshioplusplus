@@ -1790,6 +1790,10 @@ test_that("mesh_cad_surface meshes a trimmed face and reports it", {
   expect_gt(q$num_quads, 0)
   expect_gt(q$min_quad_scaled_jacobian, 0)
   mio_release(q$mesh)
+  g <- mio_mesh_cad_surface(r$info, target_size = 0.1, min_angle = 25, quads = "dominant",
+                            quad_pairs = "greedy")
+  expect_gt(g$num_quads, 0)
+  mio_release(g$mesh)
   expect_error(mio_mesh_cad_surface(r$info, target_size = 0.1, untangle = TRUE))
   u <- mio_mesh_cad_surface(r$info, target_size = 0.1, order = 2, untangle = TRUE)
   expect_equal(u$num_untangled, 0)

@@ -31,10 +31,15 @@
  * and P. J. Frey, "Adaptive triangular-quadrilateral mesh generation", Int.
  * J. Numer. Meth. Engng. 41 (1998); C. K. Lee and S. H. Lo, "A new scheme for
  * the generation of a graded quadrilateral mesh", Comput. Struct. 52 (1994),
- * merge front by front instead. A minimum-cost perfect matching (Blossom-quad,
- * Remacle et al. 2012) would leave fewer triangles; its libraries are
- * excluded by licence (roadmap 6.8.1). Deterministic: the order depends on
- * the input alone.
+ * merge front by front instead. Or, `QuadPairing::Matching` (roadmap 6.8.1),
+ * the pairs are a maximum-cardinality matching of the same candidates of
+ * greatest total score, group by group, the Blossom-quad of J.-F. Remacle,
+ * J. Lambrechts, B. Seny, E. Marchandise, A. Johnen and C. Geuzaine,
+ * "Blossom-Quad: a non-uniform quadrilateral mesh generator using a
+ * minimum-cost perfect-matching algorithm", Int. J. Numer. Meth. Engng. 89
+ * (2012), on the core's own matching (`weighted_matching.hpp`; their Blossom
+ * V is licensed for research only). Deterministic: the order depends on the
+ * input alone.
  *
  * A **core-private** header: nothing installed names it.
  */
@@ -54,6 +59,9 @@ double quad_recombine_quality(const double* pX, const std::array<std::int64_t, 4
 /// `compute_quality` reports): the least corner `(e1 x e2) . n / (|e1| |e2|)`.
 double quad_scaled_jacobian(const double* pX, const std::array<std::int64_t, 4>& rQ);
 
+/// How the pairs are chosen: best first, or a maximum matching.
+enum class QuadPairing { Greedy, Matching };
+
 struct QuadRecombineResult {
     /// Each quad, and the two triangles (indices into the input) it merges:
     /// `(a, d, b, c)` from `(a, b, c)` and `(b, a, d)`, so it runs as they do.
@@ -70,6 +78,6 @@ struct QuadRecombineResult {
  */
 QuadRecombineResult quad_recombine(const std::vector<std::array<std::int64_t, 3>>& rTris,
                                    const std::vector<std::int64_t>& rGroup, const double* pX,
-                                   double MinQuality);
+                                   double MinQuality, QuadPairing Pairing = QuadPairing::Greedy);
 
 }  // namespace meshioplusplus::detail

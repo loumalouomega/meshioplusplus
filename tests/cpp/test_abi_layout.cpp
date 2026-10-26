@@ -356,11 +356,13 @@ MIO_ABI_LAYOUT(meshioplusplus::MeshCadSizeReport, 48, 8);
 // report (roadmap 6.4.4, 6.5.1, 6.5.2; 6.2.3 laid out).
 // ABI 36: untangling (6.6.3) and quadrilaterals (6.8) appended to the
 // extras, their counts to the report.
-MIO_ABI_LAYOUT(meshioplusplus::MeshCadSurfaceExtras, 8, 4);
+MIO_ABI_LAYOUT(meshioplusplus::MeshCadSurfaceExtras, 12, 4);
 static_assert(offsetof(meshioplusplus::MeshCadSurfaceExtras, mUntangle) == 3,
               "MeshCadSurfaceExtras::mUntangle moved");
 static_assert(offsetof(meshioplusplus::MeshCadSurfaceExtras, mQuads) == 4,
               "MeshCadSurfaceExtras::mQuads moved");
+static_assert(offsetof(meshioplusplus::MeshCadSurfaceExtras, mQuadPairs) == 8,
+              "MeshCadSurfaceExtras::mQuadPairs moved");
 MIO_ABI_LAYOUT(meshioplusplus::MeshCadReparamFace, 64, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MeshCadMergedFace, 88, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MeshCadToleranceUse, 56, 8);

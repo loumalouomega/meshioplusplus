@@ -743,17 +743,15 @@ SEXP R_mio_project_to_cad(SEXP mesh, SEXP x, SEXP face_array, SEXP edge_array, S
     return res;
 }
 
-SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation,
-                            SEXP min_points_per_edge, SEXP tolerance, SEXP record_face_ids,
-                            SEXP edges, SEXP match_unreferenced_trims, SEXP strict, SEXP max_points,
-                            SEXP min_angle, SEXP smooth_iterations, SEXP smooth_method, SEXP order,
-                            SEXP grading, SEXP curvature_deviation, SEXP cells_across_gaps,
-                            SEXP pole_rings, SEXP face_size_faces, SEXP face_sizes,
-                            SEXP edge_size_edges, SEXP edge_sizes, SEXP background,
-                            SEXP background_array, SEXP metric, SEXP virtual_edges,
-                            SEXP reparam_condition_number, SEXP model_tolerances,
-                            SEXP virtual_faces, SEXP lop_corners, SEXP metric_background,
-                            SEXP metric_array, SEXP metric_error, SEXP untangle, SEXP quads) {
+SEXP R_mio_mesh_cad_surface(
+    SEXP x, SEXP target_size, SEXP max_chordal_deviation, SEXP min_points_per_edge, SEXP tolerance,
+    SEXP record_face_ids, SEXP edges, SEXP match_unreferenced_trims, SEXP strict, SEXP max_points,
+    SEXP min_angle, SEXP smooth_iterations, SEXP smooth_method, SEXP order, SEXP grading,
+    SEXP curvature_deviation, SEXP cells_across_gaps, SEXP pole_rings, SEXP face_size_faces,
+    SEXP face_sizes, SEXP edge_size_edges, SEXP edge_sizes, SEXP background, SEXP background_array,
+    SEXP metric, SEXP virtual_edges, SEXP reparam_condition_number, SEXP model_tolerances,
+    SEXP virtual_faces, SEXP lop_corners, SEXP metric_background, SEXP metric_array,
+    SEXP metric_error, SEXP untangle, SEXP quads, SEXP quad_pairs) {
     const mio_format_info *info = info_of(x, 0);
     mio_mesh_cad_surface_opts opts;
     mio_mesh_cad_surface_opts_init(&opts);
@@ -821,6 +819,7 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
     /* Roadmap 6.6.3 and 6.8: untangling and quads (a mio_mesh_cad_quads). */
     ex.untangle = mio_r_bool(untangle, "untangle") ? 1 : 0;
     ex.quads = (int32_t)mio_r_int64(quads, "quads");
+    ex.quad_pairs = (int32_t)mio_r_int64(quad_pairs, "quad_pairs");
     mio_mesh_cad_surface_report report;
     mio_mesh* out = mio_mesh_cad_surface2(info, &opts, &ex, &report);
     if (out == NULL) mio_r_fail("mesh_cad_surface");

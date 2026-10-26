@@ -2396,6 +2396,14 @@ def test_mesh_cad_surface_tool(tmp_path):
         _tools.tool_mesh_cad_surface(str(sphere), str(out), 0.3, untangle=True)
     with pytest.raises(ValueError, match="quads"):
         _tools.tool_mesh_cad_surface(str(sphere), str(out), 0.3, quads="hex")
+    # Pairing (6.8.1): the matching leaves no more triangles than the greedy.
+    greedy = _tools.tool_mesh_cad_surface(
+        str(sphere), str(out), 0.3, quads="dominant", quad_pairs="greedy"
+    )
+    matched = _tools.tool_mesh_cad_surface(str(sphere), str(out), 0.3, quads="dominant")
+    assert matched["num_leftover_triangles"] <= greedy["num_leftover_triangles"]
+    with pytest.raises(ValueError, match="quad_pairs"):
+        _tools.tool_mesh_cad_surface(str(sphere), str(out), 0.3, quad_pairs="best")
 
 
 def uniform_sphere_points(sphere, out):

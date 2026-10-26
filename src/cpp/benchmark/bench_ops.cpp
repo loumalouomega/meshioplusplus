@@ -1303,6 +1303,21 @@ int main(int argc, char** argv) {
             o.mTargetSize = octree_step;
             of(pD, mio::mesh_cad_surface(box, o, mio::MeshCadSizeSources{}, extras).mMesh);
         });
+        // The same quad-dominant meshes paired greedily (roadmap 6.8.1: the
+        // matching is the default).
+        row("mesh_cad_surface_quads_greedy", [&](MeshDigest* pD) {
+            const mio::BrepInfo box = cad_box();
+            const mio::BrepInfo plate = cad_plate();
+            mio::MeshCadSurfaceOptions o;
+            o.mMinAngleDeg = 25.0;
+            mio::MeshCadSurfaceExtras extras;
+            extras.mQuads = mio::MeshCadQuads::Dominant;
+            extras.mQuadPairs = mio::MeshCadQuadPairs::Greedy;
+            o.mTargetSize = octree_step;
+            of(pD, mio::mesh_cad_surface(box, o, mio::MeshCadSizeSources{}, extras).mMesh);
+            o.mTargetSize = 4.0 * octree_step;
+            of(pD, mio::mesh_cad_surface(plate, o, mio::MeshCadSizeSources{}, extras).mMesh);
+        });
         // Curved all-quad meshes (roadmap 6.8.3): the box and the plate as
         // quad9, and the plate sized by its gaps at twice the size.
         row("mesh_cad_surface_quad9", [&](MeshDigest* pD) {

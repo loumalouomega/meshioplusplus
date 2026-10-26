@@ -12,7 +12,8 @@ mio_mesh_cad_surface(info, target_size, max_chordal_deviation = 0,
   virtual_edges = FALSE, reparam_condition_number = 0,
   model_tolerances = FALSE, virtual_faces = FALSE, lop_corners = FALSE,
   metric_background = NULL, metric_array = "", metric_error = 0,
-  untangle = FALSE, quads = c("none", "dominant", "all"))
+  untangle = FALSE, quads = c("none", "dominant", "all"),
+  quad_pairs = c("matching", "greedy"))
 }
 \arguments{
 \item{info}{A format-info handle holding a B-rep.}
@@ -72,8 +73,12 @@ direction (roadmap 6.10.2); \code{NULL} for none; order 1 only.}
 the surface to untangle a folded curved element before it is straightened
 (roadmap 6.6.3; Toulorge et al. 2013).}
 \item{quads}{\code{"none"}, \code{"dominant"} (pairs of triangles recombined
-into quads where they make a good one) or \code{"all"} (the quad-dominant mesh
-of twice the size split into quads only; one size); order 1 only (roadmap 6.8).}
+into quads where they make a good one; order 1 only) or \code{"all"} (the
+quad-dominant mesh of twice the size split into quads only; \code{order = 2}
+writes quad9) (roadmap 6.8).}
+\item{quad_pairs}{How triangles pair into quads: \code{"matching"} (a maximum
+matching of greatest total quality, Blossom-quad) or \code{"greedy"} (best pair
+first) (roadmap 6.8.1).}
 }
 \description{Mesh generation from CAD (v17.13.0): a conforming triangle mesh of
 the faces of the B-rep a format-info handle holds (Kratos CAD JSON, STEP or IGES,

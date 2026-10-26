@@ -456,10 +456,17 @@ export interface MeshCadSurfaceOptions {
   untangle?: boolean;
   /**
    * 'none' (the default), 'dominant' (pairs of triangles recombined into
-   * quads where they make a good one) or 'all' (the quad-dominant mesh of
-   * twice the size split into quads only; one size); order 1 only (6.8).
+   * quads where they make a good one; order 1 only) or 'all' (the
+   * quad-dominant mesh of twice the size split into quads only; order 2
+   * writes quad9) (6.8).
    */
   quads?: 'none' | 'dominant' | 'all';
+  /**
+   * How triangles pair into quads: 'matching' (the default, a maximum
+   * matching of greatest total quality, Blossom-quad) or 'greedy' (best pair
+   * first) (6.8.1).
+   */
+  quadPairs?: 'matching' | 'greedy';
 }
 
 /** A corner lopped (`lopCorners`, v17.20.0), 0-based face and point. */

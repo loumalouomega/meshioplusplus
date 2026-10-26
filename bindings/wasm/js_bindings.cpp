@@ -5650,7 +5650,8 @@ val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
                              "metricArray",
                              "metricError",
                              "untangle",
-                             "quads"});
+                             "quads",
+                             "quadPairs"});
         const auto has = [&](const char* pKey) {
             return rOptions.hasOwnProperty(pKey) && !rOptions[pKey].isUndefined() &&
                    !rOptions[pKey].isNull();
@@ -5772,6 +5773,17 @@ val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
             else
                 throw std::invalid_argument(
                     "meshio++: mesh_cad_surface: quads must be 'none', 'dominant' or 'all'");
+        }
+        // Roadmap 6.8.1.
+        if (has("quadPairs")) {
+            const std::string q = rOptions["quadPairs"].as<std::string>();
+            if (q == "matching")
+                extras.mQuadPairs = meshioplusplus::MeshCadQuadPairs::Matching;
+            else if (q == "greedy")
+                extras.mQuadPairs = meshioplusplus::MeshCadQuadPairs::Greedy;
+            else
+                throw std::invalid_argument(
+                    "meshio++: mesh_cad_surface: quadPairs must be 'matching' or 'greedy'");
         }
         meshioplusplus::MeshCadSizeReport size_report;
         meshioplusplus::MeshCadSurfaceExtrasReport extras_report;

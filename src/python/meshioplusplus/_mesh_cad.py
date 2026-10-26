@@ -45,6 +45,7 @@ SMOOTH_METHODS = ("laplacian", "odt")
 METRICS = ("mean", "varying")
 #: Quadrilaterals (roadmap 6.8): none, quad-dominant, all-quad.
 QUADS = ("none", "dominant", "all")
+QUAD_PAIRS = ("matching", "greedy")
 
 _REPORT_INTS = (
     "num_points",
@@ -138,6 +139,7 @@ def mesh_cad_surface(
     metric_error: float = 0.0,
     untangle: bool = False,
     quads: str = "none",
+    quad_pairs: str = "matching",
     return_report: bool = False,
 ):
     """Triangulate a B-rep's faces into one conforming surface mesh.
@@ -247,7 +249,7 @@ def mesh_cad_surface(
         straightened, and the result is kept only when it straightens fewer.
         Reported as ``num_untangled``.
     :param quads: ``"none"`` (the default); ``"dominant"``, each face's
-        triangles recombined in pairs, best quad first, where they make a
+        triangles recombined in pairs (``quad_pairs``) where they make a
         convex quad with corners within 63 degrees of a right angle, the rest
         kept beside them (H. Borouchaki and P. J. Frey, 1998); or ``"all"``,
         the quad-dominant mesh of twice the size split through its edges'
@@ -259,9 +261,14 @@ def mesh_cad_surface(
         kept straight-sided. ``"all"`` takes no ``metric_background``,
         ``virtual_edges``, ``virtual_faces`` or ``reparam_condition_number``,
         and ``"dominant"`` is order 1 only; neither takes ``untangle``.
-        Reported as
-        ``num_quads``, ``num_leftover_triangles`` and
+        Reported as ``num_quads``, ``num_leftover_triangles`` and
         ``min_quad_scaled_jacobian``.
+    :param quad_pairs: how triangles pair into quads (roadmap 6.8.1):
+        ``"matching"`` (the default), a maximum-cardinality matching of
+        greatest total quality, the Blossom-quad of J.-F. Remacle et al.
+        (2012) on the core's own matching (exact in patches of 3,000
+        triangles and a band about the triangles left), or ``"greedy"``, best
+        pair first.
     :param return_report: also return the report.
     :returns: the surface mesh (``triangle`` and ``line`` blocks, or their
         curved forms with ``order`` 2 or 3, with a ``quad`` block beside or in
@@ -349,6 +356,8 @@ def mesh_cad_surface(
         raise ValueError(f"{_PREFIX}virtual_faces is order 1 only")
     if untangle and int(order) < 2:
         raise ValueError(f"{_PREFIX}untangle needs curved elements (order 2 or 3)")
+    if quad_pairs not in QUAD_PAIRS:
+        raise ValueError(f"{_PREFIX}quad_pairs must be one of {QUAD_PAIRS}")
     if quads not in QUADS:
         raise ValueError(f"{_PREFIX}quads must be one of {QUADS}")
     if quads == "dominant" and int(order) != 1:
@@ -440,6 +449,7 @@ def mesh_cad_surface(
         metric_error=metric_error,
         untangle=bool(untangle),
         quads=quads,
+        quad_pairs=quad_pairs,
     )
     out = res["mesh"]
     if not return_report:

@@ -5406,8 +5406,10 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
     std::map<std::pair<std::int64_t, std::int64_t>, std::int64_t> half_node;
     std::vector<Vec3> centres;
     if (extras.mQuads != MeshCadQuads::None && !tris.empty()) {
-        const detail::QuadRecombineResult rec =
-            detail::quad_recombine(tris, tri_face, px, kMcadQuadFloor);
+        const detail::QuadRecombineResult rec = detail::quad_recombine(
+            tris, tri_face, px, kMcadQuadFloor,
+            extras.mQuadPairs == MeshCadQuadPairs::Matching ? detail::QuadPairing::Matching
+                                                            : detail::QuadPairing::Greedy);
         if (!all_quads) {
             for (std::size_t i = 0; i < rec.mQuads.size(); ++i) {
                 quads.push_back(rec.mQuads[i]);
@@ -5899,6 +5901,9 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep, const MeshCadSurfac
     if (rExtras.mQuads != MeshCadQuads::None && rExtras.mQuads != MeshCadQuads::Dominant &&
         rExtras.mQuads != MeshCadQuads::All)
         mcad_fail("quads must be none, dominant or all");
+    if (rExtras.mQuadPairs != MeshCadQuadPairs::Matching &&
+        rExtras.mQuadPairs != MeshCadQuadPairs::Greedy)
+        mcad_fail("quad_pairs must be matching or greedy");
     if (rExtras.mQuads == MeshCadQuads::Dominant && rOptions.mOrder != 1)
         mcad_fail("quads=\"dominant\" is order 1 only (roadmap 6.8)");
     if (rExtras.mQuads == MeshCadQuads::All && rOptions.mOrder > 2)

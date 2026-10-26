@@ -594,6 +594,7 @@ _OP_TABLE = {
         "MetricError",
         "Untangle",
         "Quads",
+        "QuadPairs",
     ),
     "IgaSample": ("Subdivisions", "TrimSamples", "Trim", "Edges"),
     "IgaRefine": (
@@ -2433,6 +2434,7 @@ def _apply_model_step(step, model, steps, warnings):
             metric_error=_number(step, "MetricError", 0.0),
             untangle=_flag(step, "Untangle", False),
             quads=_text(step, "Quads", "none"),
+            quad_pairs=_text(step, "QuadPairs", "matching"),
             return_report=True,
         )
         warnings.extend("MeshCadSurface: " + w for w in report["warnings"])

@@ -2155,6 +2155,7 @@ TEST(CApi, MeshCadSurfaceUntanglesAndMakesQuads) {
     mio_mesh_cad_surface_opts_ex_init(&ex);
     EXPECT_EQ(ex.untangle, 0);
     EXPECT_EQ(ex.quads, MIO_MESH_CAD_QUADS_NONE);
+    EXPECT_EQ(ex.quad_pairs, MIO_MESH_CAD_QUAD_PAIRS_MATCHING);
     // Untangling needs curved elements.
     ex.untangle = 1;
     EXPECT_EQ(mio_mesh_cad_surface2(info, &opts, &ex, nullptr), nullptr);
@@ -2193,6 +2194,20 @@ TEST(CApi, MeshCadSurfaceUntanglesAndMakesQuads) {
         mio_mesh_free(m);
     }
     EXPECT_EQ(mio_mesh_cad_surface_quad_stats(nullptr, nullptr, nullptr), MIO_OK);
+    // Greedy pairing (6.8.1) leaves at least as many triangles.
+    ex.quads = MIO_MESH_CAD_QUADS_DOMINANT;
+    int64_t matched_left = -1, greedy_left = -1;
+    mio_mesh* mm = mio_mesh_cad_surface2(info, &opts, &ex, nullptr);
+    ASSERT_NE(mm, nullptr) << mio_last_error();
+    ASSERT_EQ(mio_mesh_cad_surface_quad_stats(nullptr, &matched_left, nullptr), MIO_OK);
+    mio_mesh_free(mm);
+    ex.quad_pairs = MIO_MESH_CAD_QUAD_PAIRS_GREEDY;
+    mm = mio_mesh_cad_surface2(info, &opts, &ex, nullptr);
+    ASSERT_NE(mm, nullptr) << mio_last_error();
+    ASSERT_EQ(mio_mesh_cad_surface_quad_stats(nullptr, &greedy_left, nullptr), MIO_OK);
+    mio_mesh_free(mm);
+    EXPECT_LE(matched_left, greedy_left);
+    ex.quad_pairs = MIO_MESH_CAD_QUAD_PAIRS_MATCHING;
     // All-quad at order 2 writes quad9 (6.8.3).
     ex.quads = MIO_MESH_CAD_QUADS_ALL;
     opts.order = 2;

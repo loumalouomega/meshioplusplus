@@ -5767,7 +5767,7 @@ typedef struct mio_mesh_cad_surface_opts_ex {
      *  own high-order nodes on the surface to untangle a folded curved
      *  element before it is straightened (Toulorge et al. 2013). */
     int32_t untangle;
-    /** Unreleased (roadmap 6.10.2): an anisotropic metric from a field's
+    /** Since v17.22.0 (roadmap 6.10.2): an anisotropic metric from a field's
      *  Hessian, the 9-component point_data `metric_array` of
      *  `metric_background`, with the target interpolation error
      *  `metric_error` (positive): its metric R |L| R^T / (8 metric_error),
@@ -5777,21 +5777,33 @@ typedef struct mio_mesh_cad_surface_opts_ex {
     const mio_mesh* metric_background;
     const char* metric_array; /**< the Hessian's name (e.g. "f:hessian") */
     double metric_error;
-    /** Unreleased (roadmap 6.8): a mio_mesh_cad_quads; order 1 only. */
+    /** Unreleased (roadmap 6.8): a mio_mesh_cad_quads; MIO_MESH_CAD_QUADS_ALL
+     *  with order 2 writes quad9 (6.8.3), MIO_MESH_CAD_QUADS_DOMINANT is order
+     *  1 only. */
     int32_t quads;
-    int32_t reserved_pad; /**< zero */
-    int64_t reserved[1];  /**< zero */
+    /** Unreleased (roadmap 6.8.1): a mio_mesh_cad_quad_pairs, how triangles
+     *  pair into quads (0, the default, a maximum matching). */
+    int32_t quad_pairs;
+    int64_t reserved[1]; /**< zero */
 } mio_mesh_cad_surface_opts_ex;
 
 /** Quadrilaterals (roadmap 6.8): none, quad-dominant (pairs of triangles
  *  recombined where they make a good quad), or all-quad (the quad-dominant
  *  mesh of twice the size, each quad split into four and each triangle into
- *  three; one size only). */
+ *  three; the size sources asked for twice their size). */
 typedef enum mio_mesh_cad_quads {
     MIO_MESH_CAD_QUADS_NONE = 0,
     MIO_MESH_CAD_QUADS_DOMINANT = 1,
     MIO_MESH_CAD_QUADS_ALL = 2
 } mio_mesh_cad_quads;
+
+/** How triangles pair into quads (roadmap 6.8.1). */
+typedef enum mio_mesh_cad_quad_pairs {
+    /** A maximum-cardinality matching of greatest total quality (Blossom-quad). */
+    MIO_MESH_CAD_QUAD_PAIRS_MATCHING = 0,
+    /** Best pair first. */
+    MIO_MESH_CAD_QUAD_PAIRS_GREEDY = 1
+} mio_mesh_cad_quad_pairs;
 
 /** Initialize the extended options: the mean metric, no virtual edges, no
  *  given sizes, no background, no reparametrisation, no model tolerances, no

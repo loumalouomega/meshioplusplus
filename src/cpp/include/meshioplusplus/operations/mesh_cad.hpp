@@ -380,6 +380,15 @@ enum class MeshCadQuads : std::int32_t {
     All = 2,
 };
 
+/// How triangles are paired into quads (roadmap 6.8.1): a maximum-
+/// cardinality matching of greatest total quality (Blossom-quad, Remacle et
+/// al. 2012, on the core's own matching; exact in patches of 3,000 triangles
+/// and a band about the triangles left), or best pair first.
+enum class MeshCadQuadPairs : std::int32_t {
+    Matching = 0,
+    Greedy = 1,
+};
+
 /// Inputs beside the options and the sources (v17.20.0), whose layouts have
 /// no room left: each off by default, and with all off the mesh is the
 /// four-argument overload's byte for byte.
@@ -411,12 +420,16 @@ struct MeshCadSurfaceExtras {
     /// meshes", J. Comput. Phys. 254, 2013): before an element whose
     /// Jacobian is not positive everywhere is made straight-sided, its face's
     /// own high-order nodes move on the surface to raise the worst scaled
-    /// Jacobian around them, the nodes on the model's edges staying put; only
-    /// the elements still invalid are straightened. Order 2 or 3.
+    /// Jacobian around them, then the nodes on the model's edges beside an
+    /// element still invalid slide along their edge; only the elements still
+    /// invalid are straightened. Order 2 or 3.
     bool mUntangle = false;
-    /// Quadrilaterals (roadmap 6.8, `MeshCadQuads`): greedy recombination
-    /// (Lee and Lo 1994), all-quad by splitting. Order 1 only.
+    /// Quadrilaterals (roadmap 6.8, `MeshCadQuads`): recombination
+    /// (Borouchaki and Frey 1998), all-quad by splitting. `Dominant` is order
+    /// 1 only; `All` writes `quad9` with order 2 (roadmap 6.8.3).
     MeshCadQuads mQuads = MeshCadQuads::None;
+    /// How the triangles are paired (roadmap 6.8.1, `MeshCadQuadPairs`).
+    MeshCadQuadPairs mQuadPairs = MeshCadQuadPairs::Matching;
 };
 
 /// A face whose metric's condition number passed

@@ -3052,7 +3052,8 @@ PYBIND11_MODULE(_core, m) {
            const std::string& background_array, bool virtual_edges, const std::string& metric,
            double reparam_condition_number, bool model_tolerances, bool virtual_faces,
            bool lop_corners, py::object metric_background, const std::string& metric_array,
-           double metric_error, bool untangle, const std::string& quads) {
+           double metric_error, bool untangle, const std::string& quads,
+           const std::string& quad_pairs) {
             const meshioplusplus::BrepInfo info = core_brep_from_py(brep);
             // Given sizes (6.3.1): sequences of (index, size) pairs, already
             // validated and sorted by the Python wrapper.
@@ -3137,6 +3138,13 @@ PYBIND11_MODULE(_core, m) {
             else
                 throw std::invalid_argument(
                     "meshio++: mesh_cad_surface: quads must be 'none', 'dominant' or 'all'");
+            if (quad_pairs == "greedy")
+                extras.mQuadPairs = meshioplusplus::MeshCadQuadPairs::Greedy;
+            else if (quad_pairs == "matching")
+                extras.mQuadPairs = meshioplusplus::MeshCadQuadPairs::Matching;
+            else
+                throw std::invalid_argument(
+                    "meshio++: mesh_cad_surface: quad_pairs must be 'greedy' or 'matching'");
             meshioplusplus::MeshCadSizeReport size_report;
             meshioplusplus::MeshCadSurfaceExtrasReport extras_report;
             meshioplusplus::MeshCadSurfaceResult r = core_nogil([&] {
@@ -3285,7 +3293,8 @@ PYBIND11_MODULE(_core, m) {
         py::arg("reparam_condition_number") = 0.0, py::arg("model_tolerances") = false,
         py::arg("virtual_faces") = false, py::arg("lop_corners") = false,
         py::arg("metric_background") = py::none(), py::arg("metric_array") = "",
-        py::arg("metric_error") = 0.0, py::arg("untangle") = false, py::arg("quads") = "none");
+        py::arg("metric_error") = 0.0, py::arg("untangle") = false, py::arg("quads") = "none",
+        py::arg("quad_pairs") = "matching");
     m.def(
         "triangulate_polygon_2d",
         [](py::list loops, double target_size, double min_angle, std::int64_t max_points) {

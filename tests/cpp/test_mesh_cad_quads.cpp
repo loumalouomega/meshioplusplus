@@ -76,7 +76,8 @@ Quads run(const mio::BrepInfo& rB, const mio::MeshCadSurfaceOptions& rO, mio::Me
     mio::MeshCadSurfaceExtras ex;
     ex.mQuads = Q;
     Quads out;
-    out.mResult = mio::mesh_cad_surface(rB, rO, mio::MeshCadSizeSources{}, ex, nullptr, &out.mReport);
+    out.mResult =
+        mio::mesh_cad_surface(rB, rO, mio::MeshCadSizeSources{}, ex, nullptr, &out.mReport);
     return out;
 }
 
@@ -191,10 +192,11 @@ TEST(MeshCadQuads, TheBoxAndTheCylinderAreAllQuad) {
         EXPECT_EQ(r.mResult.mNumMisorientedEdges, 0) << r_s.mName;
         EXPECT_TRUE(watertight(m)) << r_s.mName;
         const double sj = min_scaled_jacobian(m);
-        std::printf("[6.8] %s all-quad at h 0.2: %lld quads, least scaled Jacobian %.3f, area "
-                    "error %.2e\n",
-                    r_s.mName, static_cast<long long>(r.mReport.mNumQuads), sj,
-                    std::fabs(area(m) - r_s.mArea) / r_s.mArea);
+        std::printf(
+            "[6.8] %s all-quad at h 0.2: %lld quads, least scaled Jacobian %.3f, area "
+            "error %.2e\n",
+            r_s.mName, static_cast<long long>(r.mReport.mNumQuads), sj,
+            std::fabs(area(m) - r_s.mArea) / r_s.mArea);
         EXPECT_NEAR(sj, r.mReport.mMinQuadScaledJacobian, 1e-12) << r_s.mName;
         EXPECT_GT(sj, 0.3) << r_s.mName;
         EXPECT_LT(std::fabs(area(m) - r_s.mArea) / r_s.mArea, r_s.mAreaTol) << r_s.mName;
@@ -241,11 +243,12 @@ TEST(MeshCadQuads, TheSphereIsQuadDominant) {
     EXPECT_TRUE(watertight(m));
     EXPECT_EQ(r.mResult.mNumOpenEdges, 0);
     const double share = double(2 * r.mReport.mNumQuads) / double(plain.mNumTriangles);
-    std::printf("[6.8] sphere quad-dominant at h 0.1: %lld quads and %lld triangles (%.0f%% of "
-                "the triangles recombined), least scaled Jacobian %.3f\n",
-                static_cast<long long>(r.mReport.mNumQuads),
-                static_cast<long long>(r.mReport.mNumLeftoverTriangles), 100.0 * share,
-                r.mReport.mMinQuadScaledJacobian);
+    std::printf(
+        "[6.8] sphere quad-dominant at h 0.1: %lld quads and %lld triangles (%.0f%% of "
+        "the triangles recombined), least scaled Jacobian %.3f\n",
+        static_cast<long long>(r.mReport.mNumQuads),
+        static_cast<long long>(r.mReport.mNumLeftoverTriangles), 100.0 * share,
+        r.mReport.mMinQuadScaledJacobian);
     EXPECT_GT(share, 0.75);
     EXPECT_GT(r.mReport.mMinQuadScaledJacobian, 0.3);
     EXPECT_NEAR(area(m), area(plain.mMesh), 1e-9);
@@ -260,6 +263,55 @@ TEST(MeshCadQuads, TheSphereIsQuadDominant) {
     EXPECT_EQ(c.mResult.mNumFailed, 0);
     EXPECT_GT(c.mReport.mNumQuads, 0);
     EXPECT_TRUE(watertight(c.mResult.mMesh));
+}
+
+// Roadmap 6.8.1: pairing by a maximum matching (Blossom-quad, the default)
+// leaves under half the triangles greedy pairing does on the sphere at
+// h = 0.1 (206 against 516), and on a face of more triangles than one patch
+// (h = 0.04, the patches and the band) 30% fewer at least (1,382 against
+// 2,426); the result does not depend on threads.
+TEST(MeshCadQuads, AMatchingLeavesFewerTriangles) {
+    const mio::BrepInfo sphere = brep_solids::sphere(1.0);
+    for (const double h : {0.1, 0.04}) {
+        mio::MeshCadSurfaceExtras ex;
+        ex.mQuads = mio::MeshCadQuads::Dominant;
+        mio::MeshCadSurfaceExtrasReport matched, greedy;
+        const auto rm = mio::mesh_cad_surface(sphere, sized(h, 25.0), mio::MeshCadSizeSources{}, ex,
+                                              nullptr, &matched);
+        ex.mQuadPairs = mio::MeshCadQuadPairs::Greedy;
+        const auto rg = mio::mesh_cad_surface(sphere, sized(h, 25.0), mio::MeshCadSizeSources{}, ex,
+                                              nullptr, &greedy);
+        std::printf(
+            "[6.8.1] sphere at h %.2f: %lld triangles left by the matching, %lld by "
+            "greedy pairing; least scaled Jacobian %.3f against %.3f\n",
+            h, static_cast<long long>(matched.mNumLeftoverTriangles),
+            static_cast<long long>(greedy.mNumLeftoverTriangles), matched.mMinQuadScaledJacobian,
+            greedy.mMinQuadScaledJacobian);
+        EXPECT_EQ(2 * matched.mNumQuads + matched.mNumLeftoverTriangles,
+                  2 * greedy.mNumQuads + greedy.mNumLeftoverTriangles);
+        // Exact on one patch: under half; in patches: at least 30% fewer.
+        if (h > 0.05)
+            EXPECT_LT(2 * matched.mNumLeftoverTriangles, greedy.mNumLeftoverTriangles) << h;
+        else
+            EXPECT_LT(10 * matched.mNumLeftoverTriangles, 7 * greedy.mNumLeftoverTriangles) << h;
+        EXPECT_GT(matched.mMinQuadScaledJacobian, 0.3);
+        EXPECT_TRUE(watertight(rm.mMesh));
+        EXPECT_TRUE(watertight(rg.mMesh));
+#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
+        ex.mQuadPairs = mio::MeshCadQuadPairs::Matching;
+        const std::uint64_t ref = digest(rm.mMesh);
+        const int saved = omp_get_max_threads();
+        for (int threads : {1, 4}) {
+            omp_set_num_threads(threads);
+            EXPECT_EQ(
+                digest(mio::mesh_cad_surface(sphere, sized(h, 25.0), mio::MeshCadSizeSources{}, ex)
+                           .mMesh),
+                ref)
+                << threads;
+        }
+        omp_set_num_threads(saved);
+#endif
+    }
 }
 
 TEST(MeshCadQuads, RefusalsAreByName) {
@@ -286,6 +338,10 @@ TEST(MeshCadQuads, RefusalsAreByName) {
                  std::invalid_argument);
     ex.mVirtualFaces = false;
     ex.mQuads = static_cast<mio::MeshCadQuads>(7);
+    EXPECT_THROW((void)mio::mesh_cad_surface(box, o, mio::MeshCadSizeSources{}, ex),
+                 std::invalid_argument);
+    ex.mQuads = mio::MeshCadQuads::Dominant;
+    ex.mQuadPairs = static_cast<mio::MeshCadQuadPairs>(5);
     EXPECT_THROW((void)mio::mesh_cad_surface(box, o, mio::MeshCadSizeSources{}, ex),
                  std::invalid_argument);
 }

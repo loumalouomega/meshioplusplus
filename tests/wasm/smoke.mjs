@@ -3603,6 +3603,11 @@ step('meshCadSurface: a trimmed CAD JSON face triangulated and reported', () => 
     const q = m.meshCadSurface(read.info, { targetSize: 0.1, minAngle: 25, quads: 'dominant' });
     assert.ok(q.numQuads > 0 && q.minQuadScaledJacobian > 0);
     assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, quads: 'hex' }), /quads/);
+    const g = m.meshCadSurface(read.info,
+                               { targetSize: 0.1, minAngle: 25, quads: 'dominant', quadPairs: 'greedy' });
+    assert.ok(g.numQuads > 0 && g.numLeftoverTriangles >= q.numLeftoverTriangles);
+    assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, quads: 'dominant', quadPairs: 'best' }),
+                  /quadPairs/);
     assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, untangle: true }), /untangle/);
     assert.equal(m.meshCadSurface(read.info, { targetSize: 0.1, order: 2, untangle: true }).numUntangled, 0);
 });

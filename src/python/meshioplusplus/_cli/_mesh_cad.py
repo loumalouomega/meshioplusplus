@@ -214,7 +214,14 @@ def add_args(parser):
         choices=("none", "dominant", "all"),
         default="none",
         help="recombine the triangles into a quad-dominant or all-quad mesh "
-        "(order 1; roadmap 6.8)",
+        "(roadmap 6.8; all with --order 2 writes quad9)",
+    )
+    parser.add_argument(
+        "--quad-pairs",
+        choices=("matching", "greedy"),
+        default="matching",
+        help="pair the triangles by a maximum matching (the default) or "
+        "greedily (roadmap 6.8.1)",
     )
     parser.add_argument("--json", action="store_true", help="emit the report as JSON")
     parser.add_argument(
@@ -271,6 +278,7 @@ def mesh_cad_surface_cmd(args):
         metric_error=args.metric_error,
         untangle=args.untangle,
         quads=args.quads,
+        quad_pairs=args.quad_pairs,
         return_report=True,
     )
     write(args.outfile, out, file_format=args.output_format)

@@ -2639,9 +2639,12 @@ mio_iga_evaluate <- function(info, patch, params, derivatives = 0L, trim_samples
 #'   the surface to untangle a folded curved element before it is
 #'   straightened (roadmap 6.6.3; Toulorge et al. 2013).
 #' @param quads `"none"`, `"dominant"` (pairs of triangles recombined into
-#'   quads where they make a good one) or `"all"` (the quad-dominant mesh of
-#'   twice the size split into quads only; one size); order 1 only (roadmap
-#'   6.8).
+#'   quads where they make a good one; order 1 only) or `"all"` (the
+#'   quad-dominant mesh of twice the size split into quads only; `order = 2`
+#'   writes quad9) (roadmap 6.8).
+#' @param quad_pairs How triangles pair into quads: `"matching"` (a maximum
+#'   matching of greatest total quality, Blossom-quad) or `"greedy"` (best pair
+#'   first) (roadmap 6.8.1).
 #' @return A list: `mesh`, the counts (`num_points`, `num_triangles`,
 #'   `num_edge_segments`, `num_faces`, `num_failed`, `num_edges`,
 #'   `num_open_edges`, `num_non_manifold_edges`, `num_misoriented_edges`,
@@ -2681,10 +2684,12 @@ mio_mesh_cad_surface <- function(info, target_size, max_chordal_deviation = 0,
                                  virtual_faces = FALSE, lop_corners = FALSE,
                                  metric_background = NULL, metric_array = "",
                                  metric_error = 0, untangle = FALSE,
-                                 quads = c("none", "dominant", "all")) {
+                                 quads = c("none", "dominant", "all"),
+                                 quad_pairs = c("matching", "greedy")) {
   smooth_method <- match.arg(smooth_method)
   metric <- match.arg(metric)
   quads <- match.arg(quads)
+  quad_pairs <- match.arg(quad_pairs)
   # (1-based index, size) pairs from a named vector or a two-column matrix.
   pairs <- function(x) {
     if (is.null(x)) return(list(numeric(0), numeric(0)))
@@ -2706,7 +2711,8 @@ mio_mesh_cad_surface <- function(info, target_size, max_chordal_deviation = 0,
              as.numeric(reparam_condition_number), isTRUE(model_tolerances),
              isTRUE(virtual_faces), isTRUE(lop_corners), metric_background,
              as.character(metric_array), as.numeric(metric_error), isTRUE(untangle),
-             as.numeric(match(quads, c("none", "dominant", "all")) - 1L))
+             as.numeric(match(quads, c("none", "dominant", "all")) - 1L),
+             as.numeric(match(quad_pairs, c("matching", "greedy")) - 1L))
   r$warnings <- if (nzchar(r$warnings)) strsplit(r$warnings, "\n", fixed = TRUE)[[1]] else character(0)
   r$corners <- as.data.frame(r$corners)
   r$reparametrised <- as.data.frame(r$reparametrised, stringsAsFactors = FALSE)

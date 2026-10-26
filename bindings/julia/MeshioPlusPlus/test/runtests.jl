@@ -372,6 +372,12 @@ end
         @test q.num_quads > 0 && q.min_quad_scaled_jacobian > 0
         close(q.mesh)
         @test_throws ArgumentError mesh_cad_surface(info; target_size=0.1, quads="hex")
+        g = mesh_cad_surface(info; target_size=0.1, min_angle=25.0, quads="dominant",
+                             quad_pairs="greedy")
+        @test g.num_quads > 0
+        close(g.mesh)
+        @test_throws ArgumentError mesh_cad_surface(info; target_size=0.1, quads="dominant",
+                                                    quad_pairs="best")
         @test_throws MeshioError mesh_cad_surface(info; target_size=0.1, untangle=true)
         u = mesh_cad_surface(info; target_size=0.1, order=2, untangle=true)
         @test u.num_untangled == 0

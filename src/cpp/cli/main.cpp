@@ -471,6 +471,7 @@ void print_usage(std::ostream& os) {
           "                            [--model-tolerances] [--virtual-faces]\n"
           "                            [--lop-corners] [--untangle]\n"
           "                            [--quads none|dominant|all]\n"
+          "                            [--quad-pairs matching|greedy]\n"
           "                            [--strict] [--json]\n"
           "  project-to-cad          Move a mesh's points back onto the CAD faces and\n"
           "                            edges its cells name: INFILE MODEL OUTFILE\n"
@@ -2152,6 +2153,7 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
                                   {"lop-corners", {}, false},
                                   {"untangle", {}, false},
                                   {"quads", {}, true},
+                                  {"quad-pairs", {}, true},
                                   {"json", {}, false},
                                   {"quiet", {"-q"}, false},
                               });
@@ -2265,6 +2267,15 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
             extras.mQuads = meshioplusplus::MeshCadQuads::All;
         else
             throw std::runtime_error("mesh-cad-surface: --quads must be none, dominant or all");
+    }
+    if (has_opt(p, "quad-pairs")) {
+        const std::string q = opt_value(p, "quad-pairs");
+        if (q == "matching")
+            extras.mQuadPairs = meshioplusplus::MeshCadQuadPairs::Matching;
+        else if (q == "greedy")
+            extras.mQuadPairs = meshioplusplus::MeshCadQuadPairs::Greedy;
+        else
+            throw std::runtime_error("mesh-cad-surface: --quad-pairs must be matching or greedy");
     }
     meshioplusplus::MeshCadSizeReport size_report;
     meshioplusplus::MeshCadSurfaceExtrasReport extras_report;

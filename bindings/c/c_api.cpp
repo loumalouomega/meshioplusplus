@@ -6649,6 +6649,7 @@ static_assert(sizeof(void*) != 8 ||
                    offsetof(mio_mesh_cad_surface_opts_ex, metric_error) == 112 &&
                    offsetof(mio_mesh_cad_surface_opts_ex, untangle) == 92 &&
                    offsetof(mio_mesh_cad_surface_opts_ex, quads) == 120 &&
+                   offsetof(mio_mesh_cad_surface_opts_ex, quad_pairs) == 124 &&
                    offsetof(mio_mesh_cad_surface_opts_ex, reserved) == 128),
               "mio_mesh_cad_surface_opts_ex's layout moved (v17.20.0 took 24 bytes of its "
               "tail, the metric source 24 more)");
@@ -7281,6 +7282,7 @@ mio_mesh* mio_mesh_cad_surface2(const mio_format_info* info, const mio_mesh_cad_
             extras.mUntangle = opts_ex->untangle != 0;
             // The core refuses a value out of range by name.
             extras.mQuads = static_cast<meshioplusplus::MeshCadQuads>(opts_ex->quads);
+            extras.mQuadPairs = static_cast<meshioplusplus::MeshCadQuadPairs>(opts_ex->quad_pairs);
             if (opts_ex->metric != MIO_MESH_CAD_METRIC_MEAN &&
                 opts_ex->metric != MIO_MESH_CAD_METRIC_VARYING)
                 throw std::invalid_argument(

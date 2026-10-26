@@ -720,7 +720,7 @@ struct _CMeshCadSurfaceOptsEx
     metric_array::Ptr{UInt8}
     metric_error::Cdouble
     quads::Int32
-    reserved_pad::Int32
+    quad_pairs::Int32
     reserved::NTuple{1,Int64}
 end
 
