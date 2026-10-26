@@ -8,7 +8,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
-## Unreleased
+## v17.22.0 (2026-10-26)
 
 - **Added: a metric source** (roadmap 6.10.2, [item 23](doc/mesh_cad.md#how-it-works)): `mesh_cad_surface(..., metric_background=, metric_array=, metric_error=)` sizes the triangles by the anisotropic metric `R |Λ| Rᵀ / (8 ε)` of a field's Hessian on a background mesh (A. Loseille and F. Alauzet, *Continuous mesh framework part I*, SIAM J. Numer. Anal. 2011), clamped to the size field and projected on the background's tangent plane. It composes with the surface as `J^T M J` for the varying metric's flips and encroachment, and refinement judges every triangle by its lengths and angles in it. On the 6.11 layer it reaches the uniform mesh's L2 interpolation error with 1,008 points against 11,281, triangles in the layer stretched 5.4 to one. It reaches Python, C (three fields from `mio_mesh_cad_surface_opts_ex`'s reserved tail, which keeps its 136 bytes), Fortran, Julia, R, WASM, both CLIs (`--metric-background`, `--metric-array`, `--metric-error`), MCP (`metric_background_path`), the pipeline's `MeshCadSurface` step (`MetricBackground`, `MetricArray`, `MetricError`) and the `mesh_cad_surface_metric` bench row.
 - **Breaking (C++ ABI):** `MeshCadSizeSources` gains `pMetricBackground`, `mMetricArray` and `mMetricError` (96 → 144 bytes), so `MESHIOPLUSPLUS_ABI_VERSION` is 35 ([ABI](doc/abi.md)); code compiled against ABI 34 headers must be rebuilt. Without a metric background every mesh is byte-identical.

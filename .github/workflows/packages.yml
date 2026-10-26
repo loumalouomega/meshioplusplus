@@ -160,18 +160,28 @@ jobs:
   vcpkg-build:
     name: vcpkg install (overlay)
     runs-on: ubuntu-latest
-    # SHA512 of the release tarball is only knowable once the tag exists.
-    if: startsWith(github.ref, 'refs/tags/v')
+    # A tag builds its release tarball. A manual run builds the dispatched commit
+    # from its own archive (see the next step), so the 8.0.1 build can run before
+    # any tag exists.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: vcpkg-lint
     steps:
       - uses: actions/checkout@v4
       - name: Pin tarball SHA512
         run: |
-          url="https://github.com/${GITHUB_REPOSITORY}/archive/${GITHUB_REF_NAME}.tar.gz"
+          # The portfile fetches REF "v${VERSION}", which exists only after the
+          # release. A manual run points it at the dispatched commit instead.
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            ref="$GITHUB_SHA"
+            sed -i "s|REF \"v\${VERSION}\"|REF \"${ref}\"|" packages/vcpkg/meshioplusplus/portfile.cmake
+          else
+            ref="$GITHUB_REF_NAME"
+          fi
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/${ref}.tar.gz"
           curl -fsSL "$url" -o src.tar.gz
           sha="$(sha512sum src.tar.gz | cut -d' ' -f1)"
           sed -i "s/SHA512 0$/SHA512 ${sha}/" packages/vcpkg/meshioplusplus/portfile.cmake
-          grep "SHA512" packages/vcpkg/meshioplusplus/portfile.cmake
+          grep "REF\|SHA512" packages/vcpkg/meshioplusplus/portfile.cmake
       # The default `occt` feature builds vcpkg's opencascade port, which needs
       # gperf, and vcpkg's gperf port is an autotools build that refuses to start
       # without these from the system (the runner image no longer ships them).
@@ -192,7 +202,11 @@ jobs:
         # the placeholder -- see the file's own comment); zip it up so release
         # consumers get a ready-to-use overlay port with no manual hash step.
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            version="dispatch-${GITHUB_SHA:0:12}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
           zip -r "meshioplusplus-vcpkg-overlay-port-${version}.zip" packages/vcpkg/meshioplusplus
       - uses: actions/upload-artifact@v4
         with:
