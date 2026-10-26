@@ -3589,6 +3589,9 @@ step('meshCadSurface: a trimmed CAD JSON face triangulated and reported', () => 
     }
     assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, reparamConditionNumber: 0.5 }),
                   /reparam_condition_number/);
+    // A metric error without a metric background is refused (roadmap 6.10.2).
+    assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, metricError: 1 }),
+                  /metric_background/);
 });
 
 step('info: the mdpa blocks a mesh cannot hold round-trip through info', () => {

@@ -1783,6 +1783,8 @@ test_that("mesh_cad_surface meshes a trimmed face and reports it", {
   expect_true(all(l$lopped_corners$stated_bound_deg > 20.7))
   mio_release(l$mesh)
   expect_error(mio_mesh_cad_surface(r$info, target_size = 0.1, reparam_condition_number = 0.5))
+  # A metric error without a metric background is refused (roadmap 6.10.2).
+  expect_error(mio_mesh_cad_surface(r$info, target_size = 0.1, metric_error = 1))
 })
 test_that("PCD compressed binary is reachable through write options", {
   m <- mio_mesh()

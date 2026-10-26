@@ -76,6 +76,7 @@
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <TopoDS_Wire.hxx>
+#include <gp_Pnt2d.hxx>
 
 // Project includes
 #include "meshioplusplus/exceptions.hpp"
@@ -436,7 +437,7 @@ std::int64_t ob_span_ordinal(int P, const std::vector<double>& rKnots, double U)
 
 struct OcctQuiet::Impl {
     ObHandle<Message_Messenger> mMessenger;
-    Message_SequenceOfPrinters mSaved;
+    OcctPrinters mSaved;
 };
 
 OcctQuiet::OcctQuiet() : mpImpl(new Impl) {
@@ -562,12 +563,14 @@ namespace {
 BrepInfo ob_brep_info(const TopoDS_Shape& rNurbs, double ApproxTol) {
     BrepInfo info;
     info.mExtra = "{\"version_number\":1}";
-    TopTools_IndexedMapOfShape faces, edges;
+    TopTools_IndexedMapOfShape faces, edges, vertices;
     TopExp::MapShapes(rNurbs, TopAbs_FACE, faces);
     TopExp::MapShapes(rNurbs, TopAbs_EDGE, edges);
+    TopExp::MapShapes(rNurbs, TopAbs_VERTEX, vertices);
     const auto nf = static_cast<std::int64_t>(faces.Extent());
     const auto ne = static_cast<std::int64_t>(edges.Extent());
     std::vector<std::vector<BrepRef> > edge_refs(static_cast<std::size_t>(ne));
+    std::vector<std::vector<BrepRef> > vertex_refs(static_cast<std::size_t>(vertices.Extent()));
     std::int64_t next_id = 1;
     Brep brep;
     brep.mId = nf + ne + 1;
@@ -576,6 +579,7 @@ BrepInfo ob_brep_info(const TopoDS_Shape& rNurbs, double ApproxTol) {
         // OpenCASCADE throws on (a surface trimmed to an empty range, an
         // approximation that fails) is left out, as one with no surface is.
         std::vector<std::pair<int, BrepRef> > refs;
+        std::vector<std::pair<int, BrepRef> > v_refs;
         NurbsPatch patch;
         BrepFace f;
         try {
@@ -636,6 +640,18 @@ BrepInfo ob_brep_info(const TopoDS_Shape& rNurbs, double ApproxTol) {
                         r.mRelativeDirection = 1;
                         refs.emplace_back(ei, std::move(r));
                     }
+                    // The vertex the trim starts from in its wire, at its
+                    // parameters on the face.
+                    const TopoDS_Vertex cv = we.CurrentVertex();
+                    const int vi = cv.IsNull() ? 0 : vertices.FindIndex(cv);
+                    if (vi > 0) {
+                        BrepRef r;
+                        r.mId = f.mId;
+                        r.mTrimIndex = t.mTrimIndex;
+                        const gp_Pnt2d uv = BRep_Tool::Parameters(cv, fwd);
+                        r.mLocalCoordinates = {uv.X(), uv.Y()};
+                        v_refs.emplace_back(vi, std::move(r));
+                    }
                     loop.mTrims.push_back(std::move(t));
                 }
                 if (!loop.mTrims.empty())
@@ -649,6 +665,8 @@ BrepInfo ob_brep_info(const TopoDS_Shape& rNurbs, double ApproxTol) {
         }
         for (auto& [ei, r] : refs)
             edge_refs[static_cast<std::size_t>(ei - 1)].push_back(std::move(r));
+        for (auto& [vi, r] : v_refs)
+            vertex_refs[static_cast<std::size_t>(vi - 1)].push_back(std::move(r));
         info.mPatches.push_back(std::move(patch));
         brep.mFaces.push_back(static_cast<std::int64_t>(info.mFaces.size()));
         info.mFaces.push_back(std::move(f));
@@ -690,6 +708,20 @@ BrepInfo ob_brep_info(const TopoDS_Shape& rNurbs, double ApproxTol) {
         }
         brep.mEdges.push_back(static_cast<std::int64_t>(info.mEdges.size()));
         info.mEdges.push_back(std::move(e));
+    }
+    // Vertices (roadmap 6.5.1): the trims each starts, and its own tolerance
+    // with the approximation's error, as on the edges. Their ids follow the
+    // brep's.
+    for (int vi = 1; vi <= vertices.Extent(); ++vi) {
+        const TopoDS_Vertex vertex = TopoDS::Vertex(vertices(vi));
+        BrepVertex v;
+        v.mId = nf + ne + 1 + vi;
+        v.mTopology = std::move(vertex_refs[static_cast<std::size_t>(vi - 1)]);
+        JsonValue extra = JsonValue::Object();
+        extra.Add("tolerance", JsonValue::Number(BRep_Tool::Tolerance(vertex) + ApproxTol));
+        v.mExtra = write_json(extra, 0);
+        brep.mVertices.push_back(static_cast<std::int64_t>(info.mVertices.size()));
+        info.mVertices.push_back(std::move(v));
     }
     info.mBreps.push_back(std::move(brep));
     return info;

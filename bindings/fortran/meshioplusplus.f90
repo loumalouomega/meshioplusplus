@@ -528,7 +528,8 @@ module meshioplusplus
     !> with 8-byte pointers, checked by `check_mesh_cad_layout`): the metric,
     !> virtual edges, given sizes and the background, borrowed for one call;
     !> since v17.20.0 the reparametrisation threshold, model tolerances,
-    !> virtual faces and corner lopping from its reserved tail.
+    !> virtual faces and corner lopping, and the metric source (roadmap
+    !> 6.10.2) from its reserved tail.
     type, bind(c) :: mio_mesh_cad_surface_opts_ex_t
         integer(c_int32_t) :: metric = 0
         integer(c_int32_t) :: virtual_edges = 0
@@ -545,7 +546,10 @@ module meshioplusplus
         integer(c_int32_t) :: virtual_faces = 0
         integer(c_int32_t) :: lop_corners = 0
         integer(c_int32_t) :: reserved_pad = 0
-        integer(c_int64_t) :: reserved(5) = 0
+        type(c_ptr) :: metric_background = c_null_ptr
+        type(c_ptr) :: metric_array = c_null_ptr
+        real(c_double) :: metric_error = 0
+        integer(c_int64_t) :: reserved(2) = 0
     end type
 
     !> `mio_mesh_cad_surface_report` (200 bytes; field order and types are ABI,
@@ -12191,7 +12195,10 @@ contains
     !> `virtual_faces` meshes slivers with a neighbour and `lop_corners` lops
     !> acute corners in place of concentric shells (v17.20.0; read back by
     !> `mio_mesh_cad_get_reparametrised`, `_merged_face`, `_tolerance_use`,
-    !> `_lopped_corner`).
+    !> `_lopped_corner`). A `metric_background` mesh whose 9-component point
+    !> data `metric_array` is a field's Hessian, with the target
+    !> interpolation error `metric_error`, sizes the triangles by an
+    !> anisotropic metric (roadmap 6.10.2).
     function format_info_mesh_cad_surface(self, target_size, max_chordal_deviation, &
                                           min_points_per_edge, tolerance, record_face_ids, &
                                           edges, match_unreferenced_trims, strict, max_points, &
@@ -12201,7 +12208,8 @@ contains
                                           face_size_faces, face_sizes, edge_size_edges, &
                                           edge_sizes, background, background_array, metric, &
                                           virtual_edges, reparam_condition_number, &
-                                          model_tolerances, virtual_faces, lop_corners) &
+                                          model_tolerances, virtual_faces, lop_corners, &
+                                          metric_background, metric_array, metric_error) &
         result(out)
         class(mio_format_info), intent(in) :: self
         real(real64), intent(in) :: target_size
@@ -12216,6 +12224,9 @@ contains
         logical, intent(in), optional :: virtual_edges
         real(real64), intent(in), optional :: reparam_condition_number
         logical, intent(in), optional :: model_tolerances, virtual_faces, lop_corners
+        class(mio_mesh), intent(in), optional :: metric_background
+        character(*), intent(in), optional :: metric_array
+        real(real64), intent(in), optional :: metric_error
         integer(int64), intent(in), optional :: min_points_per_edge, max_points
         logical, intent(in), optional :: record_face_ids, edges, match_unreferenced_trims, strict
         type(mio_mesh_cad_surface_report), intent(out), optional :: report
@@ -12228,7 +12239,7 @@ contains
         type(mio_mesh_cad_surface_opts_ex_t) :: ex
         integer(c_int64_t), allocatable, target :: fidx(:), eidx(:)
         real(c_double), allocatable, target :: fsz(:), esz(:)
-        character(kind=c_char, len=:), allocatable, target :: bname
+        character(kind=c_char, len=:), allocatable, target :: bname, mname
         character(kind=c_char), allocatable :: wbuf(:)
         integer(c_int64_t) :: n
 
@@ -12301,6 +12312,12 @@ contains
             bname = c_str(background_array)
             ex%background_array = c_loc(bname(1:1))
         end if
+        if (present(metric_background)) ex%metric_background = metric_background%handle
+        if (present(metric_array)) then
+            mname = c_str(metric_array)
+            ex%metric_array = c_loc(mname(1:1))
+        end if
+        if (present(metric_error)) ex%metric_error = real(metric_error, c_double)
 
         out%handle = c_mio_mesh_cad_surface2(self%handle, opts, ex, crep)
         if (.not. c_associated(out%handle)) then

@@ -532,7 +532,10 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "ReparamConditionNumber",
           "ModelTolerances",
           "VirtualFaces",
-          "LopCorners"}},
+          "LopCorners",
+          "MetricBackground",
+          "MetricArray",
+          "MetricError"}},
         {"IgaSample", {"Subdivisions", "TrimSamples", "Trim", "Edges"}},
         {"IgaRefine",
          {"Subdivisions", "Elevate", "SampleSubdivisions", "TrimSamples", "Trim", "Edges"}},
@@ -1018,6 +1021,14 @@ Mesh pipe_apply_model_step(const PipelineStep& rStep, PipelineReport& rReport, P
             sources.pBackground = &background;
             sources.mBackgroundArray = pipe_text(rStep, "BackgroundArray", "size");
         }
+        // A metric from a field's Hessian (roadmap 6.10.2).
+        Mesh metric_background;
+        if (pipe_find(rStep, "MetricBackground")) {
+            metric_background = pipe_read_extra(pipe_text(rStep, "MetricBackground", ""));
+            sources.pMetricBackground = &metric_background;
+        }
+        sources.mMetricArray = pipe_text(rStep, "MetricArray", "");
+        sources.mMetricError = pipe_number(rStep, "MetricError", 0.0);
         // v17.20.0: the reparametrisation, model tolerances, virtual faces and
         // corner lopping.
         o.mReparamConditionNumber =

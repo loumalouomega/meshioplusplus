@@ -405,6 +405,23 @@ std::string mcad_build_disc(const McadCoarseMesh& rCoarse,
             if (a < kMcrPi / 3.0)
                 return "the conformal map folds it, and a corner under 60 degrees keeps it off "
                        "a circle";
+        // A band (an annulus: two loops, no seam): between two concentric
+        // circles, so neither loop is crushed by a fan into the middle.
+        if (loops.size() == 2) {
+            DiscParam ann = param_annulus(r_c.mX, r_c.mTris);
+            if (ann.mOk) {
+                ann.mU.resize(nv);
+                ann.mV.resize(nv);
+                if (param_flips(r_c.mTris, ann.mU, ann.mV) == 0 && oriented(ann.mU, ann.mV) &&
+                    simple(ann.mU, ann.mV)) {
+                    u = std::move(ann.mU);
+                    v = std::move(ann.mV);
+                    rDisc.mMethod = 3;
+                }
+            }
+        }
+    }
+    if (rDisc.mMethod == 0) {
         // The outer loop: the longest on the surface.
         std::size_t outer = 0;
         double longest = -1.0;

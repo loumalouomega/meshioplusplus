@@ -10,7 +10,8 @@ mio_mesh_cad_surface(info, target_size, max_chordal_deviation = 0,
   pole_rings = 0, face_sizes = NULL, edge_sizes = NULL, background = NULL,
   background_array = "size", metric = c("mean", "varying"),
   virtual_edges = FALSE, reparam_condition_number = 0,
-  model_tolerances = FALSE, virtual_faces = FALSE, lop_corners = FALSE)
+  model_tolerances = FALSE, virtual_faces = FALSE, lop_corners = FALSE,
+  metric_background = NULL, metric_array = "", metric_error = 0)
 }
 \arguments{
 \item{info}{A format-info handle holding a B-rep.}
@@ -60,6 +61,12 @@ parameters (v17.20.0); 0 is off, otherwise above 1; order 1 only.}
 neighbour it meets tangentially along the most edge; order 1 only.}
 \item{lop_corners}{Lop acute corners (Pav and Walkington 2005) in place of
 concentric shells; only with refinement (\code{min_angle} or sizes).}
+\item{metric_background}{A mesh whose 9-component point data
+\code{metric_array} is a field's Hessian: an anisotropic metric from it, with
+the target interpolation error \code{metric_error}, sizes the triangles in every
+direction (roadmap 6.10.2); \code{NULL} for none; order 1 only.}
+\item{metric_array}{The name of that Hessian array (e.g. \code{"f:hessian"}).}
+\item{metric_error}{The target interpolation error (positive).}
 }
 \description{Mesh generation from CAD (v17.13.0): a conforming triangle mesh of
 the faces of the B-rep a format-info handle holds (Kratos CAD JSON, STEP or IGES,
@@ -81,7 +88,7 @@ per face), \code{warnings} (a character vector), refinement's
 edges finer than its given size allows), \code{virtual_edges} (each chain's
 1-based edges), \code{reparametrised} (a data frame: \code{face},
 \code{condition_number}, \code{condition_number_disc}, \code{method} 1
-conformal, 2 mean-value, 0 declined, \code{reason}), \code{merged_faces}
+conformal, 2 mean-value, 3 annulus, 0 declined, \code{reason}), \code{merged_faces}
 (\code{sliver}, \code{host}, \code{width}, \code{merged}, \code{reason}),
 \code{tolerance_uses} (\code{edge}, \code{declared}, \code{gap},
 \code{where}), \code{lopped_corners} (\code{face}, \code{point},

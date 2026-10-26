@@ -711,7 +711,8 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
                             SEXP edge_size_edges, SEXP edge_sizes, SEXP background,
                             SEXP background_array, SEXP metric, SEXP virtual_edges,
                             SEXP reparam_condition_number, SEXP model_tolerances,
-                            SEXP virtual_faces, SEXP lop_corners) {
+                            SEXP virtual_faces, SEXP lop_corners, SEXP metric_background,
+                            SEXP metric_array, SEXP metric_error) {
     const mio_format_info *info = info_of(x, 0);
     mio_mesh_cad_surface_opts opts;
     mio_mesh_cad_surface_opts_init(&opts);
@@ -771,6 +772,11 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
     if (!Rf_isNull(background))
         ex.background = mio_r_mesh(background);
     ex.background_array = mio_r_string(background_array, "background_array");
+    /* Roadmap 6.10.2: a metric from a field's Hessian. */
+    if (!Rf_isNull(metric_background))
+        ex.metric_background = mio_r_mesh(metric_background);
+    ex.metric_array = mio_r_string(metric_array, "metric_array");
+    ex.metric_error = mio_r_double(metric_error, "metric_error");
     mio_mesh_cad_surface_report report;
     mio_mesh* out = mio_mesh_cad_surface2(info, &opts, &ex, &report);
     if (out == NULL) mio_r_fail("mesh_cad_surface");

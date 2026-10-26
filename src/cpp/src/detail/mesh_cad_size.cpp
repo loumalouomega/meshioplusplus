@@ -17,6 +17,7 @@
 
 // System includes
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -25,6 +26,7 @@
 #include <vector>
 
 // Project includes
+#include "lsq_fit.hpp"
 #include "mesh_cad_size.hpp"
 #include "tri_bvh.hpp"
 #include "meshioplusplus/detail/surface_distance.hpp"
@@ -207,43 +209,47 @@ struct MeshCadBackgroundSize::Impl {
     std::vector<double> mSize;  ///< per point of the surface
 };
 
-MeshCadBackgroundSize::MeshCadBackgroundSize(const Mesh& rBackground, const std::string& rArray)
-    : mpImpl(std::make_unique<Impl>()) {
+namespace {
+
+// A background's surface (a volume mesh skinned, which keeps the point_data
+// of the points it keeps) and the unsigned distance query on it.
+const Mesh& mcs_surface(const Mesh& rBackground, Mesh& rSkin) {
     bool volume = false;
     for (std::size_t b = 0; b < rBackground.NumCellBlocks(); ++b)
         volume =
             volume || cell_type_dimension(cell_type_from_name(rBackground.Cells(b).Type())) == 3;
-    // A skin keeps the point_data of the points it keeps.
-    const Mesh skin = volume ? extract_surface(rBackground) : Mesh{};
-    const Mesh& r_surface = volume ? skin : rBackground;
-    const NDArray& r_size = r_surface.PointData(rArray);
-    mpImpl->mSize.resize(r_surface.NumPoints());
-    for (std::size_t i = 0; i < mpImpl->mSize.size(); ++i)
-        mpImpl->mSize[i] = read_double(r_size, i);
-    mpImpl->mSoup = build_triangle_soup(r_surface, "");
-    if (mpImpl->mSoup.NumTriangles() == 0)
+    if (!volume)
+        return rBackground;
+    rSkin = extract_surface(rBackground);
+    return rSkin;
+}
+
+void mcs_build_query(const Mesh& rSurface, TriangleSoup& rSoup, DistanceQuery& rQuery) {
+    rSoup = build_triangle_soup(rSurface, "");
+    if (rSoup.NumTriangles() == 0)
         return;
     SurfaceDistanceOptions opt;
     opt.mSign = SdfSign::Unsigned;
     opt.mWatertightCheck = SdfWatertightCheck::Off;
-    mpImpl->mQuery = build_distance_query(mpImpl->mSoup, opt);
+    rQuery = build_distance_query(rSoup, opt);
 }
 
-MeshCadBackgroundSize::~MeshCadBackgroundSize() = default;
-
-double MeshCadBackgroundSize::At(const Vec3& rX) const {
-    const double none = std::numeric_limits<double>::infinity();
-    const TriangleSoup& r_soup = mpImpl->mSoup;
-    if (r_soup.NumTriangles() == 0)
-        return none;
-    const SurfaceProjection hit = query_surface_projections(mpImpl->mQuery, {rX}).front();
+// The nearest point of the surface to `rX`: its triangle's vertices and
+// barycentric coordinates; false with no surface.
+bool mcs_locate(const TriangleSoup& rSoup, const DistanceQuery& rQuery, const Vec3& rX,
+                std::array<std::size_t, 3>& rV, std::array<double, 3>& rW,
+                Vec3* pNormal = nullptr) {
+    if (rSoup.NumTriangles() == 0)
+        return false;
+    const SurfaceProjection hit = query_surface_projections(rQuery, {rX}).front();
     if (!hit.mFound || hit.mTriangle < 0)
-        return none;
-    const auto& r_v = r_soup.mVertices[static_cast<std::size_t>(hit.mTriangle)];
-    const Vec3& a = r_soup.mPoints[static_cast<std::size_t>(r_v[0])];
-    const Vec3& b = r_soup.mPoints[static_cast<std::size_t>(r_v[1])];
-    const Vec3& c = r_soup.mPoints[static_cast<std::size_t>(r_v[2])];
-    // The hit's barycentric coordinates in its triangle.
+        return false;
+    const auto& r_v = rSoup.mVertices[static_cast<std::size_t>(hit.mTriangle)];
+    for (std::size_t k = 0; k < 3; ++k)
+        rV[k] = static_cast<std::size_t>(r_v[k]);
+    const Vec3& a = rSoup.mPoints[rV[0]];
+    const Vec3& b = rSoup.mPoints[rV[1]];
+    const Vec3& c = rSoup.mPoints[rV[2]];
     const Vec3 e1 = vec3_sub(b, a), e2 = vec3_sub(c, a), ep = vec3_sub(hit.mPoint, a);
     const double d11 = vec3_dot(e1, e1), d12 = vec3_dot(e1, e2), d22 = vec3_dot(e2, e2);
     const double dp1 = vec3_dot(ep, e1), dp2 = vec3_dot(ep, e2);
@@ -253,11 +259,126 @@ double MeshCadBackgroundSize::At(const Vec3& rX) const {
         wb = std::clamp((d22 * dp1 - d12 * dp2) / den, 0.0, 1.0);
         wc = std::clamp((d11 * dp2 - d12 * dp1) / den, 0.0, 1.0 - wb);
     }
+    rW = {1.0 - wb - wc, wb, wc};
+    if (pNormal) {
+        const Vec3 n = vec3_cross(e1, e2);
+        const double l = std::sqrt(vec3_dot(n, n));
+        *pNormal = l > 0.0 ? vec3_scale(n, 1.0 / l) : Vec3{0.0, 0.0, 0.0};
+    }
+    return true;
+}
+
+}  // namespace
+
+MeshCadBackgroundSize::MeshCadBackgroundSize(const Mesh& rBackground, const std::string& rArray)
+    : mpImpl(std::make_unique<Impl>()) {
+    Mesh skin;
+    const Mesh& r_surface = mcs_surface(rBackground, skin);
+    const NDArray& r_size = r_surface.PointData(rArray);
+    mpImpl->mSize.resize(r_surface.NumPoints());
+    for (std::size_t i = 0; i < mpImpl->mSize.size(); ++i)
+        mpImpl->mSize[i] = read_double(r_size, i);
+    mcs_build_query(r_surface, mpImpl->mSoup, mpImpl->mQuery);
+}
+
+MeshCadBackgroundSize::~MeshCadBackgroundSize() = default;
+
+double MeshCadBackgroundSize::At(const Vec3& rX) const {
+    const double none = std::numeric_limits<double>::infinity();
+    std::array<std::size_t, 3> v{};
+    std::array<double, 3> w{};
+    if (!mcs_locate(mpImpl->mSoup, mpImpl->mQuery, rX, v, w))
+        return none;
     const auto& r_s = mpImpl->mSize;
-    const double s = (1.0 - wb - wc) * r_s[static_cast<std::size_t>(r_v[0])] +
-                     wb * r_s[static_cast<std::size_t>(r_v[1])] +
-                     wc * r_s[static_cast<std::size_t>(r_v[2])];
+    const double s = w[0] * r_s[v[0]] + w[1] * r_s[v[1]] + w[2] * r_s[v[2]];
     return std::isfinite(s) && s > 0.0 ? s : none;
+}
+
+struct MeshCadMetricField::Impl {
+    TriangleSoup mSoup;
+    DistanceQuery mQuery;
+    std::vector<std::array<double, 9>> mMetric;  ///< per point of the surface
+    double mFloor = 0.0;
+};
+
+MeshCadMetricField::MeshCadMetricField(const Mesh& rBackground, const std::string& rArray,
+                                       double Error, double Floor)
+    : mpImpl(std::make_unique<Impl>()) {
+    mpImpl->mFloor = Floor;
+    Mesh skin;
+    const Mesh& r_surface = mcs_surface(rBackground, skin);
+    const NDArray& r_h = r_surface.PointData(rArray);
+    const std::size_t n = r_surface.NumPoints();
+    mpImpl->mMetric.resize(n);
+    parallel_for(n, [&](std::size_t i) {
+        std::array<double, 9> a{};
+        for (std::size_t r = 0; r < 3; ++r)
+            for (std::size_t c = 0; c < 3; ++c)
+                a[3 * r + c] = 0.5 * (read_double(r_h, 9 * i + 3 * r + c) +
+                                      read_double(r_h, 9 * i + 3 * c + r));
+        std::array<double, 9> m{};
+        bool finite = true;
+        for (const double x : a)
+            finite = finite && std::isfinite(x);
+        if (finite) {
+            double ev[3], vec[9];
+            lsq_sym3_eigen(a.data(), ev, vec);
+            for (std::size_t k = 0; k < 3; ++k) {
+                const double l = std::fabs(ev[k]) / (8.0 * Error);
+                for (std::size_t r = 0; r < 3; ++r)
+                    for (std::size_t c = 0; c < 3; ++c)
+                        m[3 * r + c] += l * vec[3 * k + r] * vec[3 * k + c];
+            }
+        }
+        mpImpl->mMetric[i] = m;
+    });
+    mcs_build_query(r_surface, mpImpl->mSoup, mpImpl->mQuery);
+}
+
+MeshCadMetricField::~MeshCadMetricField() = default;
+
+void MeshCadMetricField::At(const Vec3& rX, double Size, std::array<double, 9>& rM,
+                            std::array<double, 9>* pRoot) const {
+    std::array<double, 9> m{};
+    std::array<std::size_t, 3> v{};
+    std::array<double, 3> w{};
+    Vec3 nn{0.0, 0.0, 0.0};
+    if (mcs_locate(mpImpl->mSoup, mpImpl->mQuery, rX, v, w, &nn)) {
+        for (std::size_t k = 0; k < 3; ++k)
+            for (std::size_t j = 0; j < 9; ++j)
+                m[j] += w[k] * mpImpl->mMetric[v[k]][j];
+        // On the background's tangent plane, `P M P` with `P = I - n n^T`: a
+        // surface's metric has no say along its normal, which the clamp
+        // below then sizes at the local size.
+        std::array<double, 9> pm{}, out{};
+        for (std::size_t a = 0; a < 3; ++a)
+            for (std::size_t b = 0; b < 3; ++b)
+                pm[3 * a + b] = (a == b ? 1.0 : 0.0) - nn[a] * nn[b];
+        for (std::size_t a = 0; a < 3; ++a)
+            for (std::size_t b = 0; b < 3; ++b)
+                for (std::size_t c = 0; c < 3; ++c)
+                    for (std::size_t d = 0; d < 3; ++d)
+                        out[3 * a + d] += pm[3 * a + b] * m[3 * b + c] * pm[3 * c + d];
+        m = out;
+    }
+    double ev[3], vec[9];
+    lsq_sym3_eigen(m.data(), ev, vec);
+    const double lo = 1.0 / (Size * Size);
+    const double hi = 1.0 / (mpImpl->mFloor * mpImpl->mFloor);
+    rM.fill(0.0);
+    if (pRoot)
+        pRoot->fill(0.0);
+    for (std::size_t k = 0; k < 3; ++k) {
+        const double l = std::min(hi, std::max(lo, std::isfinite(ev[k]) ? ev[k] : lo));
+        const double r = std::sqrt(l);
+        for (std::size_t a = 0; a < 3; ++a)
+            for (std::size_t b = 0; b < 3; ++b) {
+                const double vv = vec[3 * k + a] * vec[3 * k + b];
+                rM[3 * a + b] += l * vv;
+                if (pRoot)
+                    (*pRoot)[3 * a + b] += r * vv;
+            }
+    }
 }
 
 }  // namespace detail

@@ -347,7 +347,10 @@ static_assert(offsetof(meshioplusplus::MeshCadSurfaceOptions, mOrder) == 112,
               "MeshCadSurfaceOptions::mOrder moved");
 MIO_ABI_LAYOUT(meshioplusplus::MeshCadFaceRecord, 176, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MeshCadCorner, 88, 8);
-MIO_ABI_LAYOUT(meshioplusplus::MeshCadSizeSources, 96, 8);
+// ABI 35: the metric source of roadmap 6.10.2 appended to the sources.
+MIO_ABI_LAYOUT(meshioplusplus::MeshCadSizeSources, 144, 8);
+static_assert(offsetof(meshioplusplus::MeshCadSizeSources, pMetricBackground) == 96,
+              "MeshCadSizeSources::pMetricBackground moved");
 MIO_ABI_LAYOUT(meshioplusplus::MeshCadSizeReport, 48, 8);
 // v17.20.0 (ABI 34, pure additions): the extras beside the sources and their
 // report (roadmap 6.4.4, 6.5.1, 6.5.2; 6.2.3 laid out).

@@ -377,6 +377,102 @@ DiscParam param_mean_value(const std::vector<PatchVec>& rPts, const std::vector<
     return out;
 }
 
+DiscParam param_annulus(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris) {
+    DiscParam out;
+    bool ok = true;
+    const std::vector<std::vector<std::size_t>> loops = param_boundary_loops(rTris, ok);
+    if (!ok || loops.size() != 2)
+        return out;
+    {
+        std::set<std::pair<std::size_t, std::size_t>> edges;
+        for (const PatchTri& t : rTris)
+            for (int k = 0; k < 3; ++k) {
+                std::size_t a = t[static_cast<std::size_t>(k)],
+                            b = t[static_cast<std::size_t>((k + 1) % 3)];
+                if (a > b)
+                    std::swap(a, b);
+                edges.insert({a, b});
+            }
+        const long long v = static_cast<long long>(pd_used(rTris).size());
+        const long long e = static_cast<long long>(edges.size());
+        const long long f = static_cast<long long>(rTris.size());
+        if (v - e + f != 0)
+            return out;
+    }
+    const std::size_t n = rPts.size();
+    std::array<std::vector<double>, 2> cum;
+    for (std::size_t l = 0; l < 2; ++l) {
+        const std::vector<std::size_t>& r_l = loops[l];
+        cum[l].assign(r_l.size() + 1, 0.0);
+        for (std::size_t i = 0; i < r_l.size(); ++i)
+            cum[l][i + 1] =
+                cum[l][i] + pd_norm(pd_sub(rPts[r_l[(i + 1) % r_l.size()]], rPts[r_l[i]]));
+        if (!(cum[l].back() > 0.0))
+            return out;
+    }
+    const std::size_t outer = cum[0].back() >= cum[1].back() ? 0 : 1;
+    const std::size_t inner = 1 - outer;
+    double area = 0.0;
+    for (const PatchTri& t : rTris) {
+        const PatchVec a = pd_sub(rPts[t[1]], rPts[t[0]]);
+        const PatchVec b = pd_sub(rPts[t[2]], rPts[t[0]]);
+        const PatchVec c{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+                         a[0] * b[1] - a[1] * b[0]};
+        area += 0.5 * pd_norm(c);
+    }
+    const double len = 0.5 * (cum[0].back() + cum[1].back());
+    const double width = area / len;
+    const double ratio = std::min(0.9, std::max(1e-3, std::exp(-2.0 * kPdPi * width / len)));
+    const double radius = cum[outer].back() / (2.0 * kPdPi);
+    out.mU.assign(n, 0.0);
+    out.mV.assign(n, 0.0);
+    std::vector<std::uint8_t> on_boundary(n, 0);
+    const std::vector<std::size_t>& r_o = loops[outer];
+    for (std::size_t i = 0; i < r_o.size(); ++i) {
+        const double a = 2.0 * kPdPi * cum[outer][i] / cum[outer].back();
+        out.mU[r_o[i]] = radius * std::cos(a);
+        out.mV[r_o[i]] = radius * std::sin(a);
+        on_boundary[r_o[i]] = 1;
+    }
+    // The inner loop from its vertex nearest the outer's first, clockwise
+    // where the outer runs counter-clockwise (both run as the triangles do).
+    const std::vector<std::size_t>& r_i = loops[inner];
+    std::size_t start = 0;
+    double best = std::numeric_limits<double>::infinity();
+    for (std::size_t i = 0; i < r_i.size(); ++i) {
+        const double d = pd_norm(pd_sub(rPts[r_i[i]], rPts[r_o[0]]));
+        if (d < best) {
+            best = d;
+            start = i;
+        }
+    }
+    const double total = cum[inner].back();
+    for (std::size_t i = 0; i < r_i.size(); ++i) {
+        double s = cum[inner][i] - cum[inner][start];
+        if (s < 0.0)
+            s += total;
+        const double a = -2.0 * kPdPi * s / total;
+        out.mU[r_i[i]] = ratio * radius * std::cos(a);
+        out.mV[r_i[i]] = ratio * radius * std::sin(a);
+        on_boundary[r_i[i]] = 1;
+    }
+    if (!pd_mean_value_interior(rPts, rTris, on_boundary, out))
+        return out;
+    std::size_t pos = 0, neg = 0;
+    for (const PatchTri& t : rTris) {
+        const double s = (out.mU[t[1]] - out.mU[t[0]]) * (out.mV[t[2]] - out.mV[t[0]]) -
+                         (out.mU[t[2]] - out.mU[t[0]]) * (out.mV[t[1]] - out.mV[t[0]]);
+        (s >= 0.0 ? pos : neg) += 1;
+    }
+    if (neg > pos)
+        for (double& v : out.mV)
+            v = -v;
+    out.mNumFlips = param_flips(rTris, out.mU, out.mV);
+    out.mMethod = 6;
+    out.mOk = true;
+    return out;
+}
+
 DiscParam param_square(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
                        const std::vector<std::size_t>& rLoop,
                        const std::array<std::size_t, 4>& rCorners) {

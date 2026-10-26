@@ -466,7 +466,8 @@ const _MESH_CAD_SMOOTH_METHODS = ("laplacian", "odt")
                      face_sizes=nothing, edge_sizes=nothing, background=nothing,
                      background_array="size", metric="mean", virtual_edges=false,
                      reparam_condition_number=0.0, model_tolerances=false,
-                     virtual_faces=false, lop_corners=false)
+                     virtual_faces=false, lop_corners=false,
+                     metric_background=nothing, metric_array="", metric_error=0.0)
         -> (; mesh, num_points, num_triangles, ..., faces, warnings,
               angle_histogram, corners, virtual_edges, reparametrised, merged_faces,
               tolerance_uses, lopped_corners)
@@ -499,7 +500,10 @@ number over its coarse mesh passes it in a flattening of that mesh,
 meshes a sliver face with its neighbour and `lop_corners` lops acute corners
 (Pav and Walkington 2005) in place of concentric shells (v17.20.0);
 `reparametrised`, `merged_faces`, `tolerance_uses` and `lopped_corners` report
-them, every index 1-based. See
+them, every index 1-based. A `metric_background` mesh whose 9-component point
+data `metric_array` is a field's Hessian, with the target interpolation error
+`metric_error`, sizes the triangles by an anisotropic metric (roadmap 6.10.2).
+See
 `doc/mesh_cad.md`.
 """
 function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_deviation::Real=0.0,
@@ -516,7 +520,9 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
                           background_array::AbstractString="size",
                           metric::AbstractString="mean", virtual_edges::Bool=false,
                           reparam_condition_number::Real=0.0, model_tolerances::Bool=false,
-                          virtual_faces::Bool=false, lop_corners::Bool=false)
+                          virtual_faces::Bool=false, lop_corners::Bool=false,
+                          metric_background::Union{Nothing,Mesh}=nothing,
+                          metric_array::AbstractString="", metric_error::Real=0.0)
     method = findfirst(==(smooth_method), _MESH_CAD_SMOOTH_METHODS)
     method === nothing &&
         throw(ArgumentError("meshio++: mesh_cad_surface: smooth_method must be " *
@@ -539,8 +545,10 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
     eidx, esz = Int64[first(p) for p in epairs], Cdouble[last(p) for p in epairs]
     bname = Vector{UInt8}(codeunits(String(background_array)))
     push!(bname, 0x00)
+    mname = Vector{UInt8}(codeunits(String(metric_array)))
+    push!(mname, 0x00)
     report = Ref{_CMeshCadSurfaceReport}()
-    ptr = GC.@preserve fidx fsz eidx esz bname background begin
+    ptr = GC.@preserve fidx fsz eidx esz bname background mname metric_background begin
         ex = _CMeshCadSurfaceOptsEx(Int32(metric == "varying"), Int32(virtual_edges),
                                     isempty(fidx) ? C_NULL : pointer(fidx),
                                     isempty(fsz) ? C_NULL : pointer(fsz), Int64(length(fidx)),
@@ -549,7 +557,11 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
                                     background === nothing ? C_NULL : _handle(background),
                                     pointer(bname), Cdouble(reparam_condition_number),
                                     Int32(model_tolerances), Int32(virtual_faces),
-                                    Int32(lop_corners), Int32(0), ntuple(_ -> Int64(0), 5))
+                                    Int32(lop_corners), Int32(0),
+                                    metric_background === nothing ? C_NULL :
+                                    _handle(metric_background),
+                                    pointer(mname), Cdouble(metric_error),
+                                    ntuple(_ -> Int64(0), 2))
         ccall(_sym(:mio_mesh_cad_surface2), Ptr{Cvoid},
               (Ptr{Cvoid}, Ref{_CMeshCadSurfaceOpts}, Ref{_CMeshCadSurfaceOptsEx},
                Ref{_CMeshCadSurfaceReport}),
@@ -588,7 +600,7 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
         why = _getstring((buf, n) -> ccall(_sym(:mio_mesh_cad_surface_reparam_reason), Int64,
                                            (Int64, Ptr{UInt8}, Int64), k, buf, n))
         (face=Int(f[]) + 1, condition_number=Float64(c[]), condition_number_disc=Float64(d[]),
-         taken=m[] != 0, method=m[] == 1 ? "conformal" : m[] == 2 ? "mean_value" : "none",
+         taken=m[] != 0, method=m[] == 1 ? "conformal" : m[] == 2 ? "mean_value" : m[] == 3 ? "annulus" : "none",
          reason=why)
     end
     nmerged = ccall(_sym(:mio_mesh_cad_surface_num_merged_faces), Int64, ())

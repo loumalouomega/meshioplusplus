@@ -66,7 +66,8 @@ struct DiscParam {
     std::size_t mNumFlips = 0;
     /// Which map `param_disc` or `param_ladder` settled on: 0 none, 1
     /// least-squares conformal, 2 mean-value, 3 the best-fit plane, 4 the
-    /// unrolled cylinder; and whether the patch was a disc at all.
+    /// unrolled cylinder, 5 the square, 6 the annulus; and whether the
+    /// patch was a disc at all.
     int mMethod = 0;
     bool mDisc = false;
 };
@@ -99,6 +100,20 @@ DiscParam param_mean_value(const std::vector<PatchVec>& rPts, const std::vector<
 DiscParam param_square(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
                        const std::vector<std::size_t>& rLoop,
                        const std::array<std::size_t, 4>& rCorners);
+
+/**
+ * @brief Mean-value coordinates of an annulus (two boundary loops, Euler
+ * characteristic 0) between two concentric circles (`mesh_cad_surface`'s
+ * band faces, roadmap 6.4.4): the longer loop on the circle of radius its
+ * length over 2π, the other on the circle `exp(-2π w / L)` times as large,
+ * the conformal modulus of a cylinder of circumference `L` (the loops' mean
+ * length) and height `w` (the area over `L`), clamped to [1e-3, 0.9]. Each
+ * loop is laid by arc length, the inner starting at its vertex nearest the
+ * outer's first so the map does not twist, and running the other way round
+ * as the triangles do. Floater's interior solve, as `param_mean_value`.
+ * `mOk` false for a patch that is not an annulus; `mMethod` 6.
+ */
+DiscParam param_annulus(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris);
 
 /// The triangles whose signed area in `(u, v)` has the minority sign or is zero.
 std::size_t param_flips(const std::vector<PatchTri>& rTris, const std::vector<double>& rU,

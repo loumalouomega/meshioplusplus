@@ -463,6 +463,8 @@ void print_usage(std::ostream& os) {
           "                            [--grading G] [--pole-rings M]\n"
           "                            [--face-sizes K=H,...] [--edge-sizes K=H,...]\n"
           "                            [--background PATH [--background-array NAME]]\n"
+          "                            [--metric-background PATH --metric-array NAME\n"
+          "                             --metric-error E]\n"
           "                            [--metric mean|varying] [--virtual-edges]\n"
           "                            [--reparam-condition-number K]\n"
           "                            [--model-tolerances] [--virtual-faces]\n"
@@ -2133,6 +2135,9 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
                                   {"edge-sizes", {}, true},
                                   {"background", {}, true},
                                   {"background-array", {}, true},
+                                  {"metric-background", {}, true},
+                                  {"metric-array", {}, true},
+                                  {"metric-error", {}, true},
                                   {"metric", {}, true},
                                   {"virtual-edges", {}, false},
                                   {"reparam-condition-number", {}, true},
@@ -2223,6 +2228,16 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
         sources.pBackground = &background;
         sources.mBackgroundArray = opt_value(p, "background-array", "size");
     }
+    // A metric from a Hessian (roadmap 6.10.2).
+    meshioplusplus::Mesh metric_background;
+    if (has_opt(p, "metric-background")) {
+        metric_background = read_mesh_cli(opt_value(p, "metric-background"), "");
+        sources.pMetricBackground = &metric_background;
+    }
+    if (has_opt(p, "metric-array"))
+        sources.mMetricArray = opt_value(p, "metric-array");
+    if (has_opt(p, "metric-error"))
+        sources.mMetricError = meshioplusplus::detail::stod_c(opt_value(p, "metric-error"));
     // v17.20.0: the reparametrisation, model tolerances and virtual faces.
     if (has_opt(p, "reparam-condition-number"))
         o.mReparamConditionNumber =
@@ -2338,6 +2353,7 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
             json.Field("taken", r_f.mTaken);
             json.Field("method", std::string(r_f.mMethod == 1   ? "conformal"
                                              : r_f.mMethod == 2 ? "mean_value"
+                                             : r_f.mMethod == 3 ? "annulus"
                                                                 : "none"));
             json.Field("reason", r_f.mReason);
             json.EndObject();

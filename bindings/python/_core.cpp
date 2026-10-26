@@ -3014,7 +3014,8 @@ PYBIND11_MODULE(_core, m) {
            py::object face_sizes, py::object edge_sizes, py::object background,
            const std::string& background_array, bool virtual_edges, const std::string& metric,
            double reparam_condition_number, bool model_tolerances, bool virtual_faces,
-           bool lop_corners) {
+           bool lop_corners, py::object metric_background, const std::string& metric_array,
+           double metric_error) {
             const meshioplusplus::BrepInfo info = core_brep_from_py(brep);
             // Given sizes (6.3.1): sequences of (index, size) pairs, already
             // validated and sorted by the Python wrapper.
@@ -3043,6 +3044,16 @@ PYBIND11_MODULE(_core, m) {
                 sources.pBackground = &bg;
                 sources.mBackgroundArray = background_array;
             }
+            // A metric from a Hessian (6.10.2).
+            meshioplusplus::Mesh metric_bg;
+            if (!metric_background.is_none()) {
+                metric_bg = meshioplusplus_py::py_to_mesh(metric_background, refs,
+                                                          /*lenient_field_data=*/true,
+                                                          /*allow_ragged=*/false);
+                sources.pMetricBackground = &metric_bg;
+            }
+            sources.mMetricArray = metric_array;
+            sources.mMetricError = metric_error;
             meshioplusplus::MeshCadSurfaceOptions o;
             o.mTargetSize = target_size;
             o.mMaxChordalDeviation = max_chordal_deviation;
@@ -3161,6 +3172,7 @@ PYBIND11_MODULE(_core, m) {
                 d["taken"] = r_f.mTaken;
                 d["method"] = r_f.mMethod == 1   ? "conformal"
                               : r_f.mMethod == 2 ? "mean_value"
+                              : r_f.mMethod == 3 ? "annulus"
                                                  : "none";
                 d["reason"] = r_f.mReason;
                 reparametrised.append(d);
@@ -3220,7 +3232,9 @@ PYBIND11_MODULE(_core, m) {
         py::arg("background") = py::none(), py::arg("background_array") = "size",
         py::arg("virtual_edges") = false, py::arg("metric") = "mean",
         py::arg("reparam_condition_number") = 0.0, py::arg("model_tolerances") = false,
-        py::arg("virtual_faces") = false, py::arg("lop_corners") = false);
+        py::arg("virtual_faces") = false, py::arg("lop_corners") = false,
+        py::arg("metric_background") = py::none(), py::arg("metric_array") = "",
+        py::arg("metric_error") = 0.0);
     m.def(
         "triangulate_polygon_2d",
         [](py::list loops, double target_size, double min_angle, std::int64_t max_points) {

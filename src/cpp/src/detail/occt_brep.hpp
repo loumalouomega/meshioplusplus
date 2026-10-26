@@ -41,8 +41,11 @@
 
 // System includes
 #include <string>
+#include <type_traits>
+#include <utility>
 
 // External includes (OpenCASCADE)
+#include <Message_Messenger.hxx>
 #include <TopoDS_Shape.hxx>
 
 // Project includes
@@ -86,6 +89,10 @@ BrepInfo occt_brep_info(const TopoDS_Shape& rNurbs);
  */
 Mesh occt_tessellate(const TopoDS_Shape& rNurbs, const BrepInfo& rInfo, double Deflection,
                      double Angular);
+
+/// The printers a messenger holds, named through its accessor: OpenCASCADE 8.0
+/// deprecates the typedef `Message_SequenceOfPrinters`, and no header includes it.
+using OcctPrinters = std::remove_cvref_t<decltype(std::declval<Message_Messenger&>().Printers())>;
 
 /// Detach OpenCASCADE's message printers (it prints to stdout) while alive.
 class OcctQuiet {

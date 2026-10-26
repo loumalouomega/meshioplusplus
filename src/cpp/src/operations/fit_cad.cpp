@@ -121,8 +121,13 @@
 #include <GProp_GProps.hxx>
 #include <Geom2dAPI_Interpolate.hxx>
 #include <Geom2d_BSplineCurve.hxx>
+#include <Standard_Version.hxx>
+#if OCC_VERSION_MAJOR < 8
 #include <TColStd_HArray1OfReal.hxx>
 #include <TColgp_HArray1OfPnt2d.hxx>
+#else
+#include <NCollection_HArray1.hxx>
+#endif
 #include <TopoDS_Iterator.hxx>
 #include <gp_Pnt2d.hxx>
 #include <GeomAPI_IntSS.hxx>
@@ -166,7 +171,6 @@
 #include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <ShapeFix_Solid.hxx>
 #include <Standard_Failure.hxx>
-#include <Standard_Version.hxx>
 #include <TColgp_Array1OfPnt.hxx>
 #include <TCollection_HAsciiString.hxx>
 #include <TopExp.hxx>
@@ -1483,6 +1487,15 @@ constexpr std::size_t kFcTileMinTriangles = 24;
 template <class T>
 using FcHandle = opencascade::handle<T>;
 
+// OpenCASCADE 8.0 deprecates the HArray classes in favour of NCollection_HArray1.
+#if OCC_VERSION_MAJOR < 8
+using FcPnt2dArray = TColgp_HArray1OfPnt2d;
+using FcRealArray = TColStd_HArray1OfReal;
+#else
+using FcPnt2dArray = NCollection_HArray1<gp_Pnt2d>;
+using FcRealArray = NCollection_HArray1<double>;
+#endif
+
 // The OpenCASCADE messenger prints transfer statistics to stdout; a library
 // must not, so its printers are detached for the duration of the call.
 class FcQuietMessenger {
@@ -1502,7 +1515,7 @@ public:
 
 private:
     FcHandle<Message_Messenger> mMessenger;
-    Message_SequenceOfPrinters mSaved;
+    detail::OcctPrinters mSaved;
 };
 
 gp_Pnt fc_point(const std::vector<double>& rXyz, std::int64_t V) {
@@ -1736,8 +1749,8 @@ void fc_set_pcurves(const TopoDS_Face& rFace, const std::vector<TopoDS_Wire>& rW
                 have_prev = true;
                 uv[static_cast<std::size_t>(j)] = gp_Pnt2d(u, v);
             }
-            FcHandle<TColgp_HArray1OfPnt2d> pts = new TColgp_HArray1OfPnt2d(1, kSamples);
-            FcHandle<TColStd_HArray1OfReal> par = new TColStd_HArray1OfReal(1, kSamples);
+            FcHandle<FcPnt2dArray> pts = new FcPnt2dArray(1, kSamples);
+            FcHandle<FcRealArray> par = new FcRealArray(1, kSamples);
             for (int k = 0; k < kSamples; ++k) {
                 pts->SetValue(k + 1, uv[static_cast<std::size_t>(k)]);
                 par->SetValue(k + 1, a + (b - a) * k / (kSamples - 1));

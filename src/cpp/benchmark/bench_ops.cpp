@@ -1189,6 +1189,26 @@ int main(int argc, char** argv) {
             src.mFaceSizes = {{1, octree_step}};
             of(pD, mio::mesh_cad_surface(box, o, src).mMesh);
         });
+        // A metric source (roadmap 6.10.2): the unit box at four lattice
+        // steps, a constant Hessian asking for one step along x alone, so the
+        // triangles stretch along y and z.
+        row("mesh_cad_surface_metric", [&](MeshDigest* pD) {
+            const mio::BrepInfo box = cad_box();
+            mio::MeshCadSurfaceOptions o;
+            o.mTargetSize = 4.0 * octree_step;
+            o.mEdges = false;
+            mio::Mesh bg = mio::mesh_cad_surface(box, o).mMesh;
+            NDArray hess(mio::DType::Float64, {bg.NumPoints(), 9});
+            for (std::size_t i = 0; i < bg.NumPoints(); ++i)
+                for (std::size_t k = 0; k < 9; ++k)
+                    hess.As<double>()[9 * i + k] = k == 0 ? 8.0 / (octree_step * octree_step) : 0.0;
+            bg.AddPointData("hessian", std::move(hess));
+            mio::MeshCadSizeSources src;
+            src.pMetricBackground = &bg;
+            src.mMetricArray = "hessian";
+            src.mMetricError = 1.0;
+            of(pD, mio::mesh_cad_surface(box, o, src).mMesh);
+        });
         // Bilinear patches over z = 0, each from its four corners (u fastest).
         const auto bilinear = [&](const std::vector<std::array<double, 12>>& rCorners) {
             mio::BrepInfo b;
