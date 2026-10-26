@@ -1189,6 +1189,65 @@ int main(int argc, char** argv) {
             src.mFaceSizes = {{1, octree_step}};
             of(pD, mio::mesh_cad_surface(box, o, src).mMesh);
         });
+        // Bilinear patches over z = 0, each from its four corners (u fastest).
+        const auto bilinear = [&](const std::vector<std::array<double, 12>>& rCorners) {
+            mio::BrepInfo b;
+            for (std::size_t f = 0; f < rCorners.size(); ++f) {
+                mio::NurbsPatch p;
+                p.mDegrees = {1, 1};
+                p.mKnots = {{0, 0, 1, 1}, {0, 0, 1, 1}};
+                p.mControlPoints = NDArray(mio::DType::Float64, {4, 3});
+                p.mWeights = NDArray(mio::DType::Float64, {4});
+                for (int i = 0; i < 12; ++i)
+                    p.mControlPoints.As<double>()[i] = rCorners[f][static_cast<std::size_t>(i)];
+                for (int i = 0; i < 4; ++i)
+                    p.mWeights.As<double>()[i] = 1.0;
+                b.mPatches.push_back(p);
+                mio::BrepFace face;
+                face.mId = static_cast<std::int64_t>(f) + 1;
+                face.mPatch = static_cast<std::int64_t>(f);
+                b.mFaces.push_back(face);
+            }
+            return b;
+        };
+        // The discrete reparametrisation (v17.20.0): a patch whose two corner
+        // control points coincide, flattened by its conformal map, refined to
+        // 25 degrees.
+        row("mesh_cad_surface_reparam", [&](MeshDigest* pD) {
+            const mio::BrepInfo patch = bilinear({{0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 2, 0}});
+            mio::MeshCadSurfaceOptions o;
+            o.mTargetSize = 2.0 * octree_step;
+            o.mMinAngleDeg = 25.0;
+            o.mReparamConditionNumber = 4.0;
+            of(pD, mio::mesh_cad_surface(patch, o).mMesh);
+        });
+        // Virtual faces (v17.20.0): three plates in a row, the middle one a
+        // twentieth of the step wide, merged into a neighbour.
+        row("mesh_cad_surface_virtual_faces", [&](MeshDigest* pD) {
+            const double w = 0.05 * octree_step;
+            const mio::BrepInfo strip =
+                bilinear({{0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0},
+                          {0, 1, 0, 1, 1, 0, 0, 1 + w, 0, 1, 1 + w, 0},
+                          {0, 1 + w, 0, 1, 1 + w, 0, 0, 2 + w, 0, 1, 2 + w, 0}});
+            mio::MeshCadSurfaceOptions o;
+            o.mTargetSize = octree_step;
+            o.mMinAngleDeg = 25.0;
+            mio::MeshCadSurfaceExtras extras;
+            extras.mVirtualFaces = true;
+            of(pD, mio::mesh_cad_surface(strip, o, mio::MeshCadSizeSources{}, extras).mMesh);
+        });
+        // Corner lopping (v17.20.0): a parallelogram with two 30-degree
+        // corners, lopped and refined to 20 degrees.
+        row("mesh_cad_surface_lop_corners", [&](MeshDigest* pD) {
+            const double c = std::sqrt(3.0), sh = 1.0;
+            const mio::BrepInfo para = bilinear({{0, 0, 0, 2, 0, 0, c, sh, 0, 2 + c, sh, 0}});
+            mio::MeshCadSurfaceOptions o;
+            o.mTargetSize = octree_step;
+            o.mMinAngleDeg = 20.0;
+            mio::MeshCadSurfaceExtras extras;
+            extras.mLopCorners = true;
+            of(pD, mio::mesh_cad_surface(para, o, mio::MeshCadSizeSources{}, extras).mMesh);
+        });
         row("sample_distance", [&](MeshDigest* pD) {
             const NDArray d = mio::sample_distance(surface, jittered->Points());
             if (pD)

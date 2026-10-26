@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.15...3.30)
 # properties, and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 17.19.0
+  VERSION 17.20.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
@@ -727,7 +727,10 @@ if(MESHIOPLUSPLUS_BUILD_FUZZERS)
     set(_mio_sanitize_list "address;undefined")
   endif()
   if(NOT MESHIOPLUSPLUS_FUZZING_ENGINE)
-    list(APPEND _mio_core_copts -fsanitize=fuzzer-no-link)
+    # tests/fuzz/coverage_ignorelist.txt names the numeric kernels whose loops
+    # coverage would only slow down (the sanitizers still instrument them).
+    list(APPEND _mio_core_copts -fsanitize=fuzzer-no-link
+         "-fsanitize-coverage-ignorelist=${CMAKE_CURRENT_SOURCE_DIR}/tests/fuzz/coverage_ignorelist.txt")
   endif()
 endif()
 if(_mio_sanitize_list)

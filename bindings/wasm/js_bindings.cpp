@@ -5640,7 +5640,11 @@ val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
                              "background",
                              "backgroundArray",
                              "metric",
-                             "virtualEdges"});
+                             "virtualEdges",
+                             "reparamConditionNumber",
+                             "modelTolerances",
+                             "virtualFaces",
+                             "lopCorners"});
         const auto has = [&](const char* pKey) {
             return rOptions.hasOwnProperty(pKey) && !rOptions[pKey].isUndefined() &&
                    !rOptions[pKey].isNull();
@@ -5728,9 +5732,20 @@ val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
             sources.mBackgroundArray =
                 has("backgroundArray") ? rOptions["backgroundArray"].as<std::string>() : "size";
         }
+        // v17.20.0: the reparametrisation, model tolerances and virtual faces.
+        if (has("reparamConditionNumber"))
+            o.mReparamConditionNumber = rOptions["reparamConditionNumber"].as<double>();
+        meshioplusplus::MeshCadSurfaceExtras extras;
+        if (has("modelTolerances"))
+            extras.mModelTolerances = rOptions["modelTolerances"].as<bool>();
+        if (has("virtualFaces"))
+            extras.mVirtualFaces = rOptions["virtualFaces"].as<bool>();
+        if (has("lopCorners"))
+            extras.mLopCorners = rOptions["lopCorners"].as<bool>();
         meshioplusplus::MeshCadSizeReport size_report;
-        meshioplusplus::MeshCadSurfaceResult r =
-            meshioplusplus::mesh_cad_surface(val_to_brep_info(rInfo), o, sources, &size_report);
+        meshioplusplus::MeshCadSurfaceExtrasReport extras_report;
+        meshioplusplus::MeshCadSurfaceResult r = meshioplusplus::mesh_cad_surface(
+            val_to_brep_info(rInfo), o, sources, extras, &size_report, &extras_report);
         val out = val::object();
         out.set("mesh", mesh_to_val(r.mMesh));
         out.set("numPoints", static_cast<double>(r.mNumPoints));
@@ -5818,6 +5833,67 @@ val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
             virtual_edges.set(static_cast<unsigned>(i), chain);
         }
         out.set("virtualEdges", virtual_edges);
+        val reparametrised = val::array();
+        for (std::size_t i = 0; i < extras_report.mReparametrised.size(); ++i) {
+            const auto& r_f = extras_report.mReparametrised[i];
+            val d = val::object();
+            d.set("face", static_cast<double>(r_f.mFace));
+            d.set("conditionNumber", r_f.mConditionNumber);
+            d.set("conditionNumberDisc", r_f.mConditionNumberDisc);
+            d.set("taken", r_f.mTaken);
+            d.set("method", std::string(r_f.mMethod == 1   ? "conformal"
+                                        : r_f.mMethod == 2 ? "mean_value"
+                                                           : "none"));
+            d.set("reason", r_f.mReason);
+            reparametrised.set(static_cast<unsigned>(i), d);
+        }
+        out.set("reparametrised", reparametrised);
+        val merged = val::array();
+        for (std::size_t i = 0; i < extras_report.mMergedFaces.size(); ++i) {
+            const auto& r_m = extras_report.mMergedFaces[i];
+            val d = val::object();
+            d.set("sliver", static_cast<double>(r_m.mSliver));
+            d.set("host", static_cast<double>(r_m.mHost));
+            d.set("width", r_m.mWidth);
+            val shared = val::array();
+            for (std::size_t k = 0; k < r_m.mEdges.size(); ++k)
+                shared.set(static_cast<unsigned>(k), static_cast<double>(r_m.mEdges[k]));
+            d.set("edges", shared);
+            d.set("merged", r_m.mMerged);
+            d.set("reason", r_m.mReason);
+            merged.set(static_cast<unsigned>(i), d);
+        }
+        out.set("mergedFaces", merged);
+        val tolerance_uses = val::array();
+        for (std::size_t i = 0; i < extras_report.mToleranceUses.size(); ++i) {
+            const auto& r_t = extras_report.mToleranceUses[i];
+            val d = val::object();
+            d.set("edge", static_cast<double>(r_t.mEdge));
+            d.set("declared", r_t.mDeclared);
+            d.set("gap", r_t.mGap);
+            d.set("where", r_t.mWhere);
+            tolerance_uses.set(static_cast<unsigned>(i), d);
+        }
+        out.set("toleranceUses", tolerance_uses);
+        val lopped = val::array();
+        for (std::size_t i = 0; i < extras_report.mLoppedCorners.size(); ++i) {
+            const auto& r_c = extras_report.mLoppedCorners[i];
+            val d = val::object();
+            d.set("face", static_cast<double>(r_c.mFace));
+            d.set("point", static_cast<double>(r_c.mPoint));
+            d.set("angleDeg", r_c.mAngleDeg);
+            d.set("lfs0", r_c.mLfs0);
+            d.set("lopRadius", r_c.mLopRadius);
+            d.set("turningDeg", r_c.mTurningDeg);
+            d.set("statedBoundDeg", r_c.mStatedBoundDeg);
+            d.set("numForced", static_cast<double>(r_c.mNumForced));
+            d.set("minForcedDeg", r_c.mMinForcedDeg);
+            d.set("withinTwoRadii", r_c.mWithinTwoRadii);
+            d.set("guaranteed", r_c.mGuaranteed);
+            d.set("reason", r_c.mReason);
+            lopped.set(static_cast<unsigned>(i), d);
+        }
+        out.set("loppedCorners", lopped);
         return out;
     });
 }

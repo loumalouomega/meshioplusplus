@@ -1765,6 +1765,24 @@ test_that("mesh_cad_surface meshes a trimmed face and reports it", {
   expect_type(g$face_size_limits, "list")
   expect_length(g$virtual_edges, 0)
   expect_error(mio_mesh_cad_surface(r$info, target_size = 0.1, face_sizes = c("7" = 0.025)))
+  # v17.20.0: a planar face is never flattened, and nothing is a sliver.
+  x <- mio_mesh_cad_surface(r$info, target_size = 0.1, reparam_condition_number = 4,
+                            model_tolerances = TRUE, virtual_faces = TRUE)
+  expect_equal(x$num_failed, 0)
+  expect_equal(nrow(x$reparametrised), 0)
+  expect_equal(nrow(x$merged_faces), 0)
+  expect_equal(nrow(x$tolerance_uses), 0)
+  expect_equal(nrow(x$lopped_corners), 0)
+  mio_release(x$mesh)
+  # Corner lopping at 20 degrees: the two 45-degree corners, under the
+  # straight-segment bound.
+  l <- mio_mesh_cad_surface(r$info, target_size = 0.1, min_angle = 20, lop_corners = TRUE)
+  expect_equal(nrow(l$lopped_corners), 2)
+  expect_equal(l$lopped_corners$angle_deg, c(45, 45), tolerance = 1e-9)
+  expect_true(all(l$lopped_corners$guaranteed))
+  expect_true(all(l$lopped_corners$stated_bound_deg > 20.7))
+  mio_release(l$mesh)
+  expect_error(mio_mesh_cad_surface(r$info, target_size = 0.1, reparam_condition_number = 0.5))
 })
 test_that("PCD compressed binary is reachable through write options", {
   m <- mio_mesh()

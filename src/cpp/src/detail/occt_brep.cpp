@@ -74,6 +74,7 @@
 #include <TopoDS.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
+#include <TopoDS_Vertex.hxx>
 #include <TopoDS_Wire.hxx>
 
 // Project includes
@@ -82,6 +83,7 @@
 #include "meshioplusplus/ndarray.hpp"
 
 // Project includes (private, not installed)
+#include "json_value.hpp"
 #include "nurbs_eval.hpp"
 #include "occt_brep.hpp"
 
@@ -670,6 +672,22 @@ BrepInfo ob_brep_info(const TopoDS_Shape& rNurbs, double ApproxTol) {
             e.mCurve.mIds = ob_ids(next_id, e.mCurve.mWeights.Size());
         }
         e.mTopology = std::move(edge_refs[static_cast<std::size_t>(ei - 1)]);
+        // The model's own tolerances (roadmap 6.5.1): the edge's and its two
+        // vertices', each with the approximation's error on that path, which
+        // mesh_cad_surface's model_tolerances accepts as the gaps it declares.
+        {
+            JsonValue extra = JsonValue::Object();
+            extra.Add("tolerance", JsonValue::Number(BRep_Tool::Tolerance(edge) + ApproxTol));
+            TopoDS_Vertex v1, v2;
+            TopExp::Vertices(edge, v1, v2);
+            JsonValue ends = JsonValue::Array();
+            for (const TopoDS_Vertex& r_v : {v1, v2})
+                if (!r_v.IsNull())
+                    ends.Push(JsonValue::Number(BRep_Tool::Tolerance(r_v) + ApproxTol));
+            if (!ends.mItems.empty())
+                extra.Add("end_tolerances", std::move(ends));
+            e.mExtra = write_json(extra, 0);
+        }
         brep.mEdges.push_back(static_cast<std::int64_t>(info.mEdges.size()));
         info.mEdges.push_back(std::move(e));
     }

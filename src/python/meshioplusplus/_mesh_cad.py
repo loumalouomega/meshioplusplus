@@ -123,6 +123,10 @@ def mesh_cad_surface(
     background_array: str = "size",
     virtual_edges: bool = False,
     metric: str = "mean",
+    reparam_condition_number: float = 0.0,
+    model_tolerances: bool = False,
+    virtual_faces: bool = False,
+    lop_corners: bool = False,
     return_report: bool = False,
 ):
     """Triangulate a B-rep's faces into one conforming surface mesh.
@@ -184,6 +188,31 @@ def mesh_cad_surface(
         Given sizes, like the curvature and gap sizes, join one size field
         graded by ``grading``; they only refine: nothing is coarser than
         ``target_size``.
+    :param reparam_condition_number: mesh a face whose metric's condition
+        number over its unrefined triangulation (the largest stretch of the
+        surface against the face's plane over the smallest) exceeds this in
+        a flattening of that triangulation (a conformal map, or mean-value
+        coordinates on a circle) instead of its own parameters, every point
+        still lifted onto the surface; 0 is off, otherwise above 1. Order 1
+        only.
+    :param model_tolerances: accept the gaps the model itself declares, the
+        ``"tolerance"`` and ``"end_tolerances"`` in an edge's ``extra`` JSON
+        (a STEP or IGES read writes OpenCASCADE's), where a closed edge's
+        uses start and how far its uses and corners may lie apart.
+    :param virtual_faces: mesh a face narrower than ``target_size`` together
+        with the neighbour it meets tangentially along the most edge, through
+        their common flattening; each triangle keeps the face it lies in, and
+        the edges they share leave the ``line`` block. Order 1 only.
+    :param lop_corners: protect every acute corner by corner lopping (S. E.
+        Pav and N. J. Walkington, "Delaunay refinement by corner lopping",
+        IMR 2005) in place of concentric shells: a ball of radius
+        ``(sqrt 2 - 1)`` times the corner's distance to the nearest other
+        corner of the face, its edges split where they leave it, halved while
+        a vertex lies inside, and refinement leaves the triangles whose point
+        falls in it. Each corner is reported with the angle bound the paper
+        proves (Corollary 3) for the face's turning on a planar face, and
+        whether the run meets it. Only with refinement (``min_angle`` or a
+        size).
     :param return_report: also return the report.
     :returns: the surface mesh (``triangle`` and ``line`` blocks, or their
         curved forms with ``order`` 2 or 3), or
@@ -199,7 +228,18 @@ def mesh_cad_surface(
         ``angle_histogram`` (every angle on the surface in 18 bins of 10
         degrees), ``virtual_edges`` (the edge indices of each chain) and, per
         face, ``limited_by_edges`` (the edges whose sampling is finer than the
-        face's given size allows).
+        face's given size allows), ``reparametrised`` (per face over
+        ``reparam_condition_number``: ``face``, ``condition_number``, the
+        flattening's ``condition_number_disc``, ``taken``, ``method``
+        ``"conformal"`` or ``"mean_value"``, and ``reason`` when not taken),
+        ``merged_faces`` (per sliver found: ``sliver``, ``host``, ``width``,
+        the shared ``edges``, ``merged`` and ``reason``) and
+        ``tolerance_uses`` (per edge and place where a declared tolerance
+        accepted a gap: ``edge``, ``declared``, ``gap``, ``where``) and
+        ``lopped_corners`` (per corner lopped: ``face``, ``point``,
+        ``angle_deg``, ``lfs0``, ``lop_radius``, ``turning_deg``,
+        ``stated_bound_deg``, ``num_forced``, ``min_forced_deg``,
+        ``within_two_radii``, ``guaranteed`` and ``reason`` when not).
     :raises ValueError: on an option out of range or a mesh with no B-rep.
     :raises RuntimeError: with ``strict=True``, naming the first failed face.
     :raises NotImplementedError: without the compiled core.
@@ -242,6 +282,18 @@ def mesh_cad_surface(
         )
     if isinstance(pole_rings, bool) or not 0 <= int(pole_rings) <= _MAX_POLE_RINGS:
         raise ValueError(f"{_PREFIX}pole_rings must lie in [0, {_MAX_POLE_RINGS}]")
+    reparam_condition_number = float(reparam_condition_number)
+    if not (
+        math.isfinite(reparam_condition_number)
+        and (reparam_condition_number == 0.0 or reparam_condition_number > 1.0)
+    ):
+        raise ValueError(
+            f"{_PREFIX}reparam_condition_number must be 0 (off) or greater than 1"
+        )
+    if reparam_condition_number > 0.0 and int(order) > 1:
+        raise ValueError(f"{_PREFIX}reparam_condition_number is order 1 only")
+    if virtual_faces and int(order) > 1:
+        raise ValueError(f"{_PREFIX}virtual_faces is order 1 only")
 
     face_pairs = _size_pairs(face_sizes, "face_sizes", len(brep["faces"]))
     edge_pairs = _size_pairs(edge_sizes, "edge_sizes", len(brep.get("edges", [])))
@@ -286,6 +338,10 @@ def mesh_cad_surface(
         background_array=str(background_array),
         virtual_edges=bool(virtual_edges),
         metric=metric,
+        reparam_condition_number=reparam_condition_number,
+        model_tolerances=bool(model_tolerances),
+        virtual_faces=bool(virtual_faces),
+        lop_corners=bool(lop_corners),
     )
     out = res["mesh"]
     if not return_report:
@@ -300,6 +356,12 @@ def mesh_cad_surface(
     report["virtual_edges"] = [[int(e) for e in c] for c in res["virtual_edges"]]
     for f in report["faces"]:
         f["limited_by_edges"] = [int(e) for e in f["limited_by_edges"]]
+    report["reparametrised"] = [dict(r) for r in res["reparametrised"]]
+    report["merged_faces"] = [
+        {**m, "edges": [int(e) for e in m["edges"]]} for m in res["merged_faces"]
+    ]
+    report["tolerance_uses"] = [dict(t) for t in res["tolerance_uses"]]
+    report["lopped_corners"] = [dict(c) for c in res["lopped_corners"]]
     return out, report
 
 

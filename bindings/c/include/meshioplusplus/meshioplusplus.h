@@ -254,7 +254,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 17
-#define MIO_VERSION_MINOR 19
+#define MIO_VERSION_MINOR 20
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -5754,11 +5754,22 @@ typedef struct mio_mesh_cad_surface_opts_ex {
     int64_t num_edge_sizes;
     const mio_mesh* background;   /**< NULL: none */
     const char* background_array; /**< NULL or "": "size" */
-    int64_t reserved[8];          /**< zero */
+    /** v17.20.0: mesh a face whose metric's condition number over its coarse
+     *  mesh exceeds this in a flattening of that mesh (6.4.4); 0 is off,
+     *  otherwise above 1; order 1 only. */
+    double reparam_condition_number;
+    int32_t model_tolerances; /**< v17.20.0: nonzero: accept the gaps the model declares (6.5.1) */
+    int32_t virtual_faces;    /**< v17.20.0: nonzero: mesh sliver faces with a neighbour (6.5.2) */
+    /** v17.20.0: nonzero: lop acute corners (Pav and Walkington 2005) in place
+     *  of concentric shells (6.2.3); only with refinement. */
+    int32_t lop_corners;
+    int32_t reserved_pad; /**< zero */
+    int64_t reserved[5];  /**< zero */
 } mio_mesh_cad_surface_opts_ex;
 
 /** Initialize the extended options: the mean metric, no virtual edges, no
- *  given sizes and no background. */
+ *  given sizes, no background, no reparametrisation, no model tolerances, no
+ *  virtual faces and no corner lopping. */
 MIO_API void mio_mesh_cad_surface_opts_ex_init(mio_mesh_cad_surface_opts_ex* opts);
 
 /**
@@ -5787,6 +5798,87 @@ MIO_API int64_t mio_mesh_cad_surface_num_virtual_edges(void);
  * `n` into `edges` and returns its length, or -1 for an index out of range.
  */
 MIO_API int64_t mio_mesh_cad_surface_virtual_edge(int64_t index, int64_t* edges, int64_t n);
+
+/**
+ * v17.20.0: how many faces this thread's last call found over
+ * `reparam_condition_number` (6.4.4), meshed in their flattening or declined.
+ */
+MIO_API int64_t mio_mesh_cad_surface_num_reparametrised(void);
+
+/**
+ * v17.20.0: reparametrised face record `index`: its face, its condition number
+ * over its coarse mesh and in its flattening (0 when none was built), and its
+ * method: 1 least-squares conformal, 2 mean-value on a circle, 0 declined
+ * (see mio_mesh_cad_surface_reparam_reason). Any output may be NULL.
+ */
+MIO_API mio_status mio_mesh_cad_surface_reparametrised(int64_t index, int64_t* face,
+                                                       double* condition_number,
+                                                       double* condition_number_disc,
+                                                       int32_t* method);
+
+/** v17.20.0: why reparametrised record `index` was declined ("" when taken),
+ *  copied as mio_mesh_cad_surface_face_reason does. */
+MIO_API int64_t mio_mesh_cad_surface_reparam_reason(int64_t index, char* buf, int64_t buflen);
+
+/** v17.20.0: how many sliver faces this thread's last call found (6.5.2). */
+MIO_API int64_t mio_mesh_cad_surface_num_merged_faces(void);
+
+/**
+ * v17.20.0: sliver record `index`: the sliver's and its host's face indices
+ * (-1 for no host), its width (twice its area over its perimeter) and
+ * whether it was meshed with the host. Any output may be NULL.
+ */
+MIO_API mio_status mio_mesh_cad_surface_merged_face(int64_t index, int64_t* sliver, int64_t* host,
+                                                    double* width, int32_t* merged);
+
+/** v17.20.0: the B-rep edges sliver record `index` shares with its host:
+ *  copies up to `n` and returns how many, or -1 for an index out of range. */
+MIO_API int64_t mio_mesh_cad_surface_merged_face_edges(int64_t index, int64_t* edges, int64_t n);
+
+/** v17.20.0: why sliver record `index` was not merged ("" when it was). */
+MIO_API int64_t mio_mesh_cad_surface_merged_face_reason(int64_t index, char* buf, int64_t buflen);
+
+/** Where a model's declared tolerance accepted a gap (v17.20.0, 6.5.1). */
+typedef enum mio_mesh_cad_tolerance_where {
+    MIO_MESH_CAD_TOLERANCE_CLOSED_START = 0, /**< a closed edge's uses start at one point */
+    MIO_MESH_CAD_TOLERANCE_CORNER = 1,       /**< a corner's uses lie within it */
+    MIO_MESH_CAD_TOLERANCE_PROJECTION = 2    /**< an edge's uses lie within it */
+} mio_mesh_cad_tolerance_where;
+
+/** v17.20.0: how many places a declared tolerance accepted a gap (6.5.1). */
+MIO_API int64_t mio_mesh_cad_surface_num_tolerance_uses(void);
+
+/**
+ * v17.20.0: tolerance use `index`: the B-rep edge, the tolerance it declares,
+ * the gap accepted and where (a mio_mesh_cad_tolerance_where). Any output
+ * may be NULL.
+ */
+MIO_API mio_status mio_mesh_cad_surface_tolerance_use(int64_t index, int64_t* edge,
+                                                      double* declared, double* gap,
+                                                      int32_t* where);
+
+/** v17.20.0: how many corners this thread's last call lopped (6.2.3). */
+MIO_API int64_t mio_mesh_cad_surface_num_lopped_corners(void);
+
+/**
+ * v17.20.0: lopped corner `index`, by face then point: its face and mesh
+ * point, its smallest acute wedge in the face's plane (degrees), the distance
+ * to the face's nearest other corner, its ball's radius at the end, the most
+ * any boundary piece of the face turns (degrees), Corollary 3's bound for that
+ * turning on a planar face (0 on a curved one), the triangles under min_angle
+ * left in its ball and the smallest angle among them (180 for none), whether
+ * they all lie within twice the radius (Lemma 7), and whether the bound is
+ * guaranteed (see mio_mesh_cad_surface_lopped_corner_reason). Any output may
+ * be NULL.
+ */
+MIO_API mio_status mio_mesh_cad_surface_lopped_corner(
+    int64_t index, int64_t* face, int64_t* point, double* angle_deg, double* lfs0, double* radius,
+    double* turning_deg, double* stated_bound_deg, int64_t* num_forced, double* min_forced_deg,
+    int32_t* within_two_radii, int32_t* guaranteed);
+
+/** v17.20.0: why lopped corner `index`'s bound is not guaranteed ("" when it
+ *  is), copied as mio_mesh_cad_surface_face_reason does. */
+MIO_API int64_t mio_mesh_cad_surface_lopped_corner_reason(int64_t index, char* buf, int64_t buflen);
 
 /**
  * Options for mio_hausdorff_distance. Same ABI rules as above; an all-zero

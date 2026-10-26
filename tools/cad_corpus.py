@@ -226,7 +226,16 @@ def fetch(args):
 
 
 def measure_one(
-    path, divisor, min_angle, max_points, virtual_edges=False, metric="mean"
+    path,
+    divisor,
+    min_angle,
+    max_points,
+    virtual_edges=False,
+    metric="mean",
+    reparam=0.0,
+    model_tolerances=False,
+    virtual_faces=False,
+    lop_corners=False,
 ):
     """Read, mesh and measure one model; runs in its own process."""
     import resource
@@ -258,6 +267,10 @@ def measure_one(
             max_points=max_points,
             virtual_edges=virtual_edges,
             metric=metric,
+            reparam_condition_number=reparam,
+            model_tolerances=model_tolerances,
+            virtual_faces=virtual_faces,
+            lop_corners=lop_corners,
             return_report=True,
         )
     except Exception as exc:  # noqa: BLE001
@@ -296,6 +309,21 @@ def measure_one(
     out["num_warnings"] = len(report["warnings"])
     if virtual_edges:
         out["num_virtual_edges"] = len(report["virtual_edges"])
+    if reparam > 0.0:
+        out["num_reparametrised"] = sum(r["taken"] for r in report["reparametrised"])
+        out["num_reparam_declined"] = sum(
+            not r["taken"] for r in report["reparametrised"]
+        )
+    if virtual_faces:
+        out["num_merged_faces"] = sum(m["merged"] for m in report["merged_faces"])
+        out["num_slivers"] = len(report["merged_faces"])
+    if model_tolerances:
+        out["num_tolerance_uses"] = len(report["tolerance_uses"])
+    if lop_corners:
+        out["num_lopped_corners"] = len(report["lopped_corners"])
+        out["num_lop_guaranteed"] = sum(
+            c["guaranteed"] for c in report["lopped_corners"]
+        )
     tri = [c.data for c in mesh.cells if c.type == "triangle"]
     if tri:
         surface = mio.Mesh(mesh.points, [("triangle", np.concatenate(tri))])
@@ -358,6 +386,10 @@ def run(args):
                 str(args.max_points),
                 str(int(args.virtual_edges)),
                 args.metric,
+                str(args.reparam),
+                str(int(args.model_tolerances)),
+                str(int(args.virtual_faces)),
+                str(int(args.lop_corners)),
             ]
             t0 = time.perf_counter()
             try:
@@ -394,6 +426,10 @@ def run(args):
             "timeout_s": args.timeout,
             **({"virtual_edges": True} if args.virtual_edges else {}),
             **({"metric": args.metric} if args.metric != "mean" else {}),
+            **({"reparam_condition_number": args.reparam} if args.reparam > 0 else {}),
+            **({"model_tolerances": True} if args.model_tolerances else {}),
+            **({"virtual_faces": True} if args.virtual_faces else {}),
+            **({"lop_corners": True} if args.lop_corners else {}),
         },
         "models": results,
     }
@@ -597,6 +633,28 @@ def main(argv=None):
         default="mean",
         help="the metric each face is meshed in (6.4.1)",
     )
+    p.add_argument(
+        "--reparam",
+        type=float,
+        default=0.0,
+        metavar="K",
+        help="flatten faces whose condition number passes K (6.4.4); 0 is off",
+    )
+    p.add_argument(
+        "--model-tolerances",
+        action="store_true",
+        help="accept the gaps the models declare (6.5.1)",
+    )
+    p.add_argument(
+        "--virtual-faces",
+        action="store_true",
+        help="mesh sliver faces with a neighbour (6.5.2)",
+    )
+    p.add_argument(
+        "--lop-corners",
+        action="store_true",
+        help="lop acute corners in place of concentric shells (6.2.3)",
+    )
     p = sub.add_parser("compare", help="fail when a model that meshed no longer does")
     p.add_argument("results")
     p.add_argument("--baseline", default=str(BASELINE))
@@ -617,8 +675,21 @@ def main(argv=None):
         path, divisor, min_angle, max_points = argv[1:5]
         virtual = len(argv) > 5 and argv[5] == "1"
         metric = argv[6] if len(argv) > 6 else "mean"
+        reparam = float(argv[7]) if len(argv) > 7 else 0.0
+        tolerances = len(argv) > 8 and argv[8] == "1"
+        virtual_faces = len(argv) > 9 and argv[9] == "1"
+        lop_corners = len(argv) > 10 and argv[10] == "1"
         row = measure_one(
-            path, float(divisor), float(min_angle), int(max_points), virtual, metric
+            path,
+            float(divisor),
+            float(min_angle),
+            int(max_points),
+            virtual,
+            metric,
+            reparam,
+            tolerances,
+            virtual_faces,
+            lop_corners,
         )
         print(json.dumps(finite(row), allow_nan=False, default=float))
         return 0

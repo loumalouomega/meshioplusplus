@@ -422,6 +422,76 @@ export interface MeshCadSurfaceOptions {
   metric?: 'mean' | 'varying';
   /** Sample chains of short edges meeting smoothly as one (default false). */
   virtualEdges?: boolean;
+  /**
+   * Mesh a face whose metric's condition number over its coarse mesh passes
+   * this in a flattening of that mesh (v17.20.0); 0 (default) is off,
+   * otherwise above 1; order 1 only.
+   */
+  reparamConditionNumber?: number;
+  /** Accept the gaps the model itself declares in its edges' extras (default false). */
+  modelTolerances?: boolean;
+  /** Mesh a sliver face with the neighbour it meets tangentially (default false). */
+  virtualFaces?: boolean;
+  /**
+   * Lop acute corners (Pav and Walkington 2005) in place of concentric
+   * shells (v17.20.0; default false); only with refinement.
+   */
+  lopCorners?: boolean;
+}
+
+/** A corner lopped (`lopCorners`, v17.20.0), 0-based face and point. */
+export interface MeshCadLoppedCorner {
+  face: number;
+  point: number;
+  /** Its smallest acute wedge in the face's plane (degrees). */
+  angleDeg: number;
+  /** The distance to the face's nearest other corner. */
+  lfs0: number;
+  /** Its ball's radius at the end. */
+  lopRadius: number;
+  /** The most any boundary piece of the face turns (degrees). */
+  turningDeg: number;
+  /** Corollary 3's bound for that turning on a planar face; 0 on a curved one. */
+  statedBoundDeg: number;
+  /** The triangles under `minAngle` left in its ball, and their smallest angle. */
+  numForced: number;
+  minForcedDeg: number;
+  /** Every one of them within twice the radius (Lemma 7). */
+  withinTwoRadii: boolean;
+  /** The bound holds; otherwise `reason` says why not. */
+  guaranteed: boolean;
+  reason: string;
+}
+
+/** A face over `reparamConditionNumber` (v17.20.0). */
+export interface MeshCadReparamFace {
+  face: number;
+  conditionNumber: number;
+  /** The same in its flattening's plane (0 when none was built). */
+  conditionNumberDisc: number;
+  taken: boolean;
+  method: 'conformal' | 'mean_value' | 'none';
+  /** Why not taken. */
+  reason: string;
+}
+
+/** A sliver face found and what became of it (v17.20.0). */
+export interface MeshCadMergedFace {
+  sliver: number;
+  /** The face it is meshed with; -1 for none. */
+  host: number;
+  width: number;
+  edges: number[];
+  merged: boolean;
+  reason: string;
+}
+
+/** Where a declared tolerance accepted a gap (v17.20.0). */
+export interface MeshCadToleranceUse {
+  edge: number;
+  declared: number;
+  gap: number;
+  where: 'closed_start' | 'corner' | 'projection';
 }
 
 /** A corner that keeps triangles under `minAngle`: under 60 degrees, or a pole. */
@@ -505,6 +575,14 @@ export interface MeshCadSurfaceResult {
   angleHistogram: number[];
   /** Each virtual edge's chain of edge indices (v17.19.0). */
   virtualEdges: number[][];
+  /** The faces over `reparamConditionNumber` (v17.20.0). */
+  reparametrised: MeshCadReparamFace[];
+  /** The sliver faces found (v17.20.0). */
+  mergedFaces: MeshCadMergedFace[];
+  /** Where declared tolerances accepted gaps (v17.20.0). */
+  toleranceUses: MeshCadToleranceUse[];
+  /** The corners lopped (v17.20.0). */
+  loppedCorners: MeshCadLoppedCorner[];
 }
 
 /** Sampling options of `igaRefine` / `igaSample`. */

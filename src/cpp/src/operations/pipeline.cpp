@@ -528,7 +528,11 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "Background",
           "BackgroundArray",
           "Metric",
-          "VirtualEdges"}},
+          "VirtualEdges",
+          "ReparamConditionNumber",
+          "ModelTolerances",
+          "VirtualFaces",
+          "LopCorners"}},
         {"IgaSample", {"Subdivisions", "TrimSamples", "Trim", "Edges"}},
         {"IgaRefine",
          {"Subdivisions", "Elevate", "SampleSubdivisions", "TrimSamples", "Trim", "Edges"}},
@@ -1014,20 +1018,39 @@ Mesh pipe_apply_model_step(const PipelineStep& rStep, PipelineReport& rReport, P
             sources.pBackground = &background;
             sources.mBackgroundArray = pipe_text(rStep, "BackgroundArray", "size");
         }
-        MeshCadSurfaceResult r = mesh_cad_surface(*rModel.mBrep, o, sources);
+        // v17.20.0: the reparametrisation, model tolerances, virtual faces and
+        // corner lopping.
+        o.mReparamConditionNumber =
+            pipe_number(rStep, "ReparamConditionNumber", o.mReparamConditionNumber);
+        MeshCadSurfaceExtras extras;
+        extras.mModelTolerances = pipe_flag(rStep, "ModelTolerances", false);
+        extras.mVirtualFaces = pipe_flag(rStep, "VirtualFaces", false);
+        extras.mLopCorners = pipe_flag(rStep, "LopCorners", false);
+        MeshCadSurfaceExtrasReport extras_report;
+        MeshCadSurfaceResult r =
+            mesh_cad_surface(*rModel.mBrep, o, sources, extras, nullptr, &extras_report);
+        const auto count = [](const auto& rRecords, auto Pred) {
+            return static_cast<double>(std::count_if(rRecords.begin(), rRecords.end(), Pred));
+        };
         for (const std::string& w : r.mWarnings)
             rReport.mWarnings.push_back("MeshCadSurface: " + w);
-        pipe_push_step(rReport, rStep,
-                       {{"NumPoints", static_cast<double>(r.mNumPoints)},
-                        {"NumTriangles", static_cast<double>(r.mNumTriangles)},
-                        {"NumFaces", static_cast<double>(r.mNumFaces)},
-                        {"NumFailed", static_cast<double>(r.mNumFailed)},
-                        {"NumOpenEdges", static_cast<double>(r.mNumOpenEdges)},
-                        {"NumNonManifoldEdges", static_cast<double>(r.mNumNonManifoldEdges)},
-                        {"NumRefinementPoints", static_cast<double>(r.mNumRefinementPoints)},
-                        {"NumCurvedStraightened", static_cast<double>(r.mNumCurvedStraightened)},
-                        {"MinAngleDeg", r.mMinAngleDeg},
-                        {"MaxAngleDeg", r.mMaxAngleDeg}});
+        pipe_push_step(
+            rReport, rStep,
+            {{"NumPoints", static_cast<double>(r.mNumPoints)},
+             {"NumTriangles", static_cast<double>(r.mNumTriangles)},
+             {"NumFaces", static_cast<double>(r.mNumFaces)},
+             {"NumFailed", static_cast<double>(r.mNumFailed)},
+             {"NumOpenEdges", static_cast<double>(r.mNumOpenEdges)},
+             {"NumNonManifoldEdges", static_cast<double>(r.mNumNonManifoldEdges)},
+             {"NumRefinementPoints", static_cast<double>(r.mNumRefinementPoints)},
+             {"NumCurvedStraightened", static_cast<double>(r.mNumCurvedStraightened)},
+             {"NumReparametrised",
+              count(extras_report.mReparametrised, [](const auto& rF) { return rF.mTaken; })},
+             {"NumMergedFaces",
+              count(extras_report.mMergedFaces, [](const auto& rM) { return rM.mMerged; })},
+             {"NumLoppedCorners", static_cast<double>(extras_report.mLoppedCorners.size())},
+             {"MinAngleDeg", r.mMinAngleDeg},
+             {"MaxAngleDeg", r.mMaxAngleDeg}});
         return std::move(r.mMesh);
     }
     // IgaSample, IgaRefine: the model is sampled (refined first), and the run

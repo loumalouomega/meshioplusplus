@@ -464,6 +464,9 @@ void print_usage(std::ostream& os) {
           "                            [--face-sizes K=H,...] [--edge-sizes K=H,...]\n"
           "                            [--background PATH [--background-array NAME]]\n"
           "                            [--metric mean|varying] [--virtual-edges]\n"
+          "                            [--reparam-condition-number K]\n"
+          "                            [--model-tolerances] [--virtual-faces]\n"
+          "                            [--lop-corners]\n"
           "                            [--strict] [--json]\n"
           "  isosurface              Level set of a scalar point_data field (contours)\n"
           "                            --array NAME --values v1,v2 [--component I]\n"
@@ -2132,6 +2135,10 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
                                   {"background-array", {}, true},
                                   {"metric", {}, true},
                                   {"virtual-edges", {}, false},
+                                  {"reparam-condition-number", {}, true},
+                                  {"model-tolerances", {}, false},
+                                  {"virtual-faces", {}, false},
+                                  {"lop-corners", {}, false},
                                   {"json", {}, false},
                                   {"quiet", {"-q"}, false},
                               });
@@ -2216,9 +2223,18 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
         sources.pBackground = &background;
         sources.mBackgroundArray = opt_value(p, "background-array", "size");
     }
+    // v17.20.0: the reparametrisation, model tolerances and virtual faces.
+    if (has_opt(p, "reparam-condition-number"))
+        o.mReparamConditionNumber =
+            meshioplusplus::detail::stod_c(opt_value(p, "reparam-condition-number"));
+    meshioplusplus::MeshCadSurfaceExtras extras;
+    extras.mModelTolerances = has_flag(p, "model-tolerances");
+    extras.mVirtualFaces = has_flag(p, "virtual-faces");
+    extras.mLopCorners = has_flag(p, "lop-corners");
     meshioplusplus::MeshCadSizeReport size_report;
-    const meshioplusplus::MeshCadSurfaceResult r =
-        meshioplusplus::mesh_cad_surface(*model.mBrep, o, sources, &size_report);
+    meshioplusplus::MeshCadSurfaceExtrasReport extras_report;
+    const meshioplusplus::MeshCadSurfaceResult r = meshioplusplus::mesh_cad_surface(
+        *model.mBrep, o, sources, extras, &size_report, &extras_report);
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     if (has_flag(p, "json")) {
         meshioplusplus::cli::JsonOut json(std::cout);
@@ -2312,6 +2328,68 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
             json.EndArray();
         }
         json.EndArray();
+        json.Key("reparametrised");
+        json.BeginArray();
+        for (const auto& r_f : extras_report.mReparametrised) {
+            json.BeginObject();
+            json.Field("face", r_f.mFace);
+            json.Field("condition_number", r_f.mConditionNumber);
+            json.Field("condition_number_disc", r_f.mConditionNumberDisc);
+            json.Field("taken", r_f.mTaken);
+            json.Field("method", std::string(r_f.mMethod == 1   ? "conformal"
+                                             : r_f.mMethod == 2 ? "mean_value"
+                                                                : "none"));
+            json.Field("reason", r_f.mReason);
+            json.EndObject();
+        }
+        json.EndArray();
+        json.Key("merged_faces");
+        json.BeginArray();
+        for (const auto& r_m : extras_report.mMergedFaces) {
+            json.BeginObject();
+            json.Field("sliver", r_m.mSliver);
+            json.Field("host", r_m.mHost);
+            json.Field("width", r_m.mWidth);
+            json.Key("edges");
+            json.BeginArray();
+            for (const std::int64_t e : r_m.mEdges)
+                json.Int(e);
+            json.EndArray();
+            json.Field("merged", r_m.mMerged);
+            json.Field("reason", r_m.mReason);
+            json.EndObject();
+        }
+        json.EndArray();
+        json.Key("tolerance_uses");
+        json.BeginArray();
+        for (const auto& r_t : extras_report.mToleranceUses) {
+            json.BeginObject();
+            json.Field("edge", r_t.mEdge);
+            json.Field("declared", r_t.mDeclared);
+            json.Field("gap", r_t.mGap);
+            json.Field("where", r_t.mWhere);
+            json.EndObject();
+        }
+        json.EndArray();
+        json.Key("lopped_corners");
+        json.BeginArray();
+        for (const auto& r_c : extras_report.mLoppedCorners) {
+            json.BeginObject();
+            json.Field("face", r_c.mFace);
+            json.Field("point", r_c.mPoint);
+            json.Field("angle_deg", r_c.mAngleDeg);
+            json.Field("lfs0", r_c.mLfs0);
+            json.Field("lop_radius", r_c.mLopRadius);
+            json.Field("turning_deg", r_c.mTurningDeg);
+            json.Field("stated_bound_deg", r_c.mStatedBoundDeg);
+            json.Field("num_forced", r_c.mNumForced);
+            json.Field("min_forced_deg", r_c.mMinForcedDeg);
+            json.Field("within_two_radii", r_c.mWithinTwoRadii);
+            json.Field("guaranteed", r_c.mGuaranteed);
+            json.Field("reason", r_c.mReason);
+            json.EndObject();
+        }
+        json.EndArray();
         json.EndObject();
     } else if (!has_flag(p, "quiet")) {
         std::cout << "mesh_cad_surface\n"
@@ -2346,6 +2424,20 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
                                   : std::string(" forces no triangle"))
                           << "\n";
             }
+        }
+        for (const auto& r_c : extras_report.mLoppedCorners) {
+            char angle[32];
+            char radius[32];
+            char bound[32];
+            meshioplusplus::detail::snprintf_c(angle, sizeof(angle), "%.2f", r_c.mAngleDeg);
+            meshioplusplus::detail::snprintf_c(radius, sizeof(radius), "%g", r_c.mLopRadius);
+            meshioplusplus::detail::snprintf_c(bound, sizeof(bound), "%.2f", r_c.mStatedBoundDeg);
+            std::cout << "  face " << r_c.mFace << ": corner of " << angle << " degrees at point "
+                      << r_c.mPoint << " lopped at radius " << radius << "; bound " << bound
+                      << " degrees "
+                      << (r_c.mGuaranteed ? std::string("guaranteed")
+                                          : "not stated: " + r_c.mReason)
+                      << "\n";
         }
     }
     return 0;

@@ -38,6 +38,9 @@ meshio++'s own writer, so they are canonical (a rewrite gives the same bytes):
 - ``split_rim.cad.json``: two unit plates folded along a shared rim that is
   split at x = 0.5 and 0.505 into three edges, the middle one a sliver (for
   ``mesh_cad_surface``'s ``virtual_edges``).
+- ``sliver_strip.cad.json``: three plates in a row in the plane z = 0, each
+  its own patch, the middle one 0.01 wide, a sliver face (for
+  ``mesh_cad_surface``'s ``virtual_faces``).
 
     python tools/gen_cad_json_fixtures.py
 """
@@ -710,6 +713,44 @@ def split_rim(d=0.005):
     return _closed_solid(patches, faces, edges)
 
 
+def sliver_strip(w=0.01):
+    # [0, 1] x [0, 1], the sliver [0, 1] x [1, 1 + w] and [0, 1] x [1 + w,
+    # 2 + w], each its own planar patch, normal +z, sharing their edges.
+    rows = [(0.0, 1.0), (1.0, 1.0 + w), (1.0 + w, 2.0 + w)]
+    ids = Ids()
+    patches, faces, refs = [], [], {}
+    for f, (y0, y1) in enumerate(rows):
+
+        def at(u, v, y0=y0, y1=y1):
+            return (float(u), float(y0 + v * (y1 - y0)), 0.0)
+
+        patches.append(
+            patch(
+                [1, 1],
+                [[0, 0, 1, 1], [0, 0, 1, 1]],
+                [at(u, v) for v in (0, 1) for u in (0, 1)],
+            )
+        )
+        loop = [(0, 0), (1, 0), (1, 1), (0, 1)]
+        trims = []
+        for k in range(len(loop)):
+            p, q = loop[k], loop[(k + 1) % len(loop)]
+            trims.append(trim(k, line(p, q, None)))
+            pa, pb = at(*p), at(*q)
+            key = tuple(sorted((pa, pb)))
+            refs.setdefault(key, []).append(ref(2 + f, k, 1 if (pa, pb) == key else 0))
+        faces.append(face(2 + f, f, loops=[_loop(trims)], ids=ids.take(4)))
+    edges = [
+        edge(
+            8 + i,
+            curve(1, [0, 0, 1, 1], list(key), active=[0, 1], ids=ids.take(2)),
+            refs[key],
+        )
+        for i, key in enumerate(sorted(refs))
+    ]
+    return _closed_solid(patches, faces, edges)
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     for name, build in (
@@ -722,6 +763,7 @@ def main():
         ("capped_cylinder_offset.cad.json", capped_cylinder_offset),
         ("plate_with_near_hole.cad.json", plate_with_near_hole),
         ("split_rim.cad.json", split_rim),
+        ("sliver_strip.cad.json", sliver_strip),
     ):
         (OUT / name).write_text(render(build()), encoding="utf-8")
     (OUT / "import_square.json").write_text(import_square(), encoding="utf-8")

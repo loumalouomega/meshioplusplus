@@ -2313,6 +2313,24 @@ def test_mesh_cad_surface_tool(tmp_path):
         str(sphere), str(out), 0.2, min_angle=25.0, metric="varying"
     )
     assert varying["num_failed"] == 0 and varying["min_angle_deg"] >= 25.0 - 1e-9
+    # The discrete reparametrisation (v17.20.0): the sphere's hemispheres are
+    # flattened through their poles and meet the bound, both reported.
+    flat = _tools.tool_mesh_cad_surface(
+        str(sphere), str(out), 0.2, min_angle=25.0, reparam_condition_number=4.0
+    )
+    assert flat["num_failed"] == 0 and flat["min_angle_deg"] >= 25.0 - 1e-9
+    assert [r["taken"] for r in flat["reparametrised"]] == [True, True]
+    # Virtual faces and model tolerances are accepted; nothing is a sliver
+    # nor declares a tolerance here.
+    other = _tools.tool_mesh_cad_surface(
+        str(sphere), str(out), 0.2, virtual_faces=True, model_tolerances=True
+    )
+    assert other["merged_faces"] == [] and other["tolerance_uses"] == []
+    # Corner lopping: the sphere's faces have no acute corner to lop.
+    lopped = _tools.tool_mesh_cad_surface(
+        str(sphere), str(out), 0.2, min_angle=20.0, lop_corners=True
+    )
+    assert lopped["lopped_corners"] == []
 
 
 def test_octree_tool(tmp_path):

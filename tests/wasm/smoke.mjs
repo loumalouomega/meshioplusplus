@@ -3569,6 +3569,26 @@ step('meshCadSurface: a trimmed CAD JSON face triangulated and reported', () => 
     assert.ok(Array.isArray(g.faces[0].limitedByEdges));
     assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, faceSizes: { 7: 0.025 } }),
                   /face_sizes/);
+    // v17.20.0: a planar face is never flattened, and nothing is a sliver.
+    const x = m.meshCadSurface(read.info, {
+        targetSize: 0.1, reparamConditionNumber: 4, modelTolerances: true, virtualFaces: true,
+    });
+    assert.equal(x.numFailed, 0);
+    assert.equal(x.numTriangles, r.numTriangles);
+    assert.deepEqual(x.reparametrised, []);
+    assert.deepEqual(x.mergedFaces, []);
+    assert.deepEqual(x.toleranceUses, []);
+    assert.deepEqual(x.loppedCorners, []);
+    // Corner lopping at 20 degrees: the two 45-degree corners, under the
+    // straight-segment bound.
+    const l = m.meshCadSurface(read.info, { targetSize: 0.1, minAngle: 20, lopCorners: true });
+    assert.equal(l.loppedCorners.length, 2);
+    for (const c of l.loppedCorners) {
+        assert.ok(Math.abs(c.angleDeg - 45) < 1e-9);
+        assert.ok(c.statedBoundDeg > 20.7 && c.guaranteed && c.reason === '');
+    }
+    assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, reparamConditionNumber: 0.5 }),
+                  /reparam_condition_number/);
 });
 
 step('info: the mdpa blocks a mesh cannot hold round-trip through info', () => {

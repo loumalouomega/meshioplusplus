@@ -1954,6 +1954,33 @@ TEST(CApi, MeshCadSurfaceMeshesABrepAndReportsItsFaces) {
         ASSERT_NE(v, nullptr) << mio_last_error();
         EXPECT_EQ(mio_mesh_cad_surface_num_virtual_edges(), 0);
         mio_mesh_free(v);
+        // v17.20.0: the reparametrisation, virtual faces and model
+        // tolerances; a planar face is never flattened, nothing is a sliver.
+        EXPECT_EQ(ex.reparam_condition_number, 0.0);
+        EXPECT_EQ(ex.model_tolerances, 0);
+        EXPECT_EQ(ex.virtual_faces, 0);
+        ex.reparam_condition_number = 4.0;
+        ex.model_tolerances = 1;
+        ex.virtual_faces = 1;
+        mio_mesh* x = mio_mesh_cad_surface2(info, &opts, &ex, nullptr);
+        ASSERT_NE(x, nullptr) << mio_last_error();
+        EXPECT_EQ(mio_mesh_cad_surface_num_reparametrised(), 0);
+        EXPECT_EQ(mio_mesh_cad_surface_num_merged_faces(), 0);
+        EXPECT_EQ(mio_mesh_cad_surface_num_tolerance_uses(), 0);
+        int64_t idx = 0;
+        EXPECT_NE(mio_mesh_cad_surface_reparametrised(0, &idx, nullptr, nullptr, nullptr), MIO_OK);
+        EXPECT_NE(mio_mesh_cad_surface_merged_face(0, nullptr, nullptr, nullptr, nullptr), MIO_OK);
+        EXPECT_NE(mio_mesh_cad_surface_tolerance_use(0, nullptr, nullptr, nullptr, nullptr),
+                  MIO_OK);
+        EXPECT_EQ(mio_mesh_cad_surface_merged_face_edges(0, limits, 4), -1);
+        mio_mesh_free(x);
+        ex.reparam_condition_number = 0.5;
+        EXPECT_EQ(mio_mesh_cad_surface2(info, &opts, &ex, nullptr), nullptr);
+        EXPECT_NE(std::string(mio_last_error()).find("reparam_condition_number"),
+                  std::string::npos);
+        ex.reparam_condition_number = 0.0;
+        ex.model_tolerances = 0;
+        ex.virtual_faces = 0;
         opts.order = 2;
         EXPECT_EQ(mio_mesh_cad_surface2(info, &opts, &ex, nullptr), nullptr);
         EXPECT_NE(std::string(mio_last_error()).find("virtual_edges"), std::string::npos);
@@ -1991,6 +2018,46 @@ TEST(CApi, MeshCadSurfaceMeshesABrepAndReportsItsFaces) {
     mio_mesh_cad_corner c;
     EXPECT_EQ(mio_mesh_cad_surface_corner(2, &c), MIO_ERR_INVALID_ARG);
     EXPECT_EQ(mio_mesh_cad_surface_corner(0, nullptr), MIO_ERR_INVALID_ARG);
+    // v17.20.0: corner lopping at 20 degrees lops the two 45-degree corners
+    // of the planar face and states the straight-segment bound, 20.7.
+    {
+        mio_mesh_cad_surface_opts_ex ex;
+        mio_mesh_cad_surface_opts_ex_init(&ex);
+        EXPECT_EQ(ex.lop_corners, 0);
+        ex.lop_corners = 1;
+        opts.min_angle_deg = 20.0;
+        mio_mesh* l = mio_mesh_cad_surface2(info, &opts, &ex, nullptr);
+        ASSERT_NE(l, nullptr) << mio_last_error();
+        ASSERT_EQ(mio_mesh_cad_surface_num_lopped_corners(), 2);
+        for (std::int64_t k = 0; k < 2; ++k) {
+            int64_t face = -1, point = -1, forced = -1;
+            double angle = 0, lfs0 = 0, radius = 0, turning = -1, bound = 0, min_forced = 0;
+            int32_t within = 0, guaranteed = 0;
+            ASSERT_EQ(mio_mesh_cad_surface_lopped_corner(k, &face, &point, &angle, &lfs0, &radius,
+                                                         &turning, &bound, &forced, &min_forced,
+                                                         &within, &guaranteed),
+                      MIO_OK)
+                << mio_last_error();
+            EXPECT_EQ(face, 0);
+            EXPECT_GE(point, 0);
+            EXPECT_NEAR(angle, 45.0, 1e-9);
+            EXPECT_GT(radius, 0.0);
+            EXPECT_LE(radius, (std::sqrt(2.0) - 1.0) * lfs0 * (1 + 1e-12));
+            EXPECT_NEAR(turning, 0.0, 1e-9);
+            EXPECT_NEAR(bound, std::asin(1.0 / (2.0 * std::sqrt(2.0))) * 180.0 / M_PI, 1e-9);
+            EXPECT_EQ(within, 1);
+            EXPECT_EQ(guaranteed, 1);
+            char why[64];
+            EXPECT_EQ(mio_mesh_cad_surface_lopped_corner_reason(k, why, sizeof why), 0);
+        }
+        EXPECT_NE(mio_mesh_cad_surface_lopped_corner(2, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                                     nullptr, nullptr, nullptr, nullptr, nullptr,
+                                                     nullptr),
+                  MIO_OK);
+        EXPECT_EQ(mio_mesh_cad_surface_lopped_corner_reason(2, nullptr, 0), -1);
+        mio_mesh_free(l);
+        opts.min_angle_deg = 25.0;
+    }
     // Not implemented yet, or out of range: refused.
     opts.smooth_method = 7;
     EXPECT_EQ(mio_mesh_cad_surface(info, &opts, nullptr), nullptr);

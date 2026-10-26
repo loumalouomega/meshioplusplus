@@ -78,7 +78,18 @@
  *    forces it, and a subsegment of the cluster is not split when its
  *    halves would be shorter than the skinny triangle's shortest edge. The
  *    smallest angle those forced triangles keep is measured and reported
- *    per corner (`Cdt2dSmallAngle::mMinForcedDeg`). Every
+ *    per corner (`Cdt2dSmallAngle::mMinForcedDeg`). In place of shells,
+ *    `mLopCorners` is corner lopping (S. E. Pav and N. J. Walkington,
+ *    "Delaunay refinement by corner lopping", 14th IMR, 2005, Algorithm 2):
+ *    an input point at an acute corner gets a ball of radius
+ *    d = (sqrt 2 - 1) lfs0 (lfs0 its distance to the nearest other input
+ *    point), its segments split where they leave it; in priority, a vertex
+ *    inside a ball shrinks it by beta in [1/2, 1) and splits them again, an
+ *    encroached subsegment is split (one at a corner by shrinking its ball),
+ *    and a bad triangle is refined unless its point lies in a ball. It
+ *    terminates for angles under `cdt2d_lop_bound_deg` (Corollary 3), and
+ *    every triangle left under the bound has its vertices within 2 d of a
+ *    corner (Lemma 7), checked and reported per corner. Every
  *    insertion counts against `max_points`. A caller that shares its
  *    boundary with others (`mesh_cad_surface`'s edges) asks for the splits
  *    instead of making them, and may judge triangles by its own measure
@@ -192,6 +203,43 @@ struct Cdt2dRefineOptions {
     /// The smallest angle (degrees) to report a forced triangle by; null:
     /// in the plane.
     std::function<double(const std::array<std::int64_t, 3>&)> mMinAngle;
+    /// Corner lopping (Pav and Walkington 2005, Algorithm 2) in place of
+    /// concentric shells: every input point at an acute corner (two input
+    /// segments meeting at under 90 degrees inside the domain) is protected by
+    /// a ball of radius (sqrt 2 - 1) lfs0, its segments split where they leave
+    /// it; a vertex inside a ball shrinks it by `mLopBeta` and splits them
+    /// again; a bad triangle whose circumcentre lies in a ball is left.
+    bool mLopCorners = false;
+    /// The factor a ball shrinks by, in [1/2, 1).
+    double mLopBeta = 0.5;
+    /// The input points (vertex ids) beside every end of a constrained edge
+    /// at an acute corner at the start (a kink inside a curve is one); empty:
+    /// every end of a constrained edge at the start.
+    std::vector<std::int64_t> mCorners;
+    /// Vertices never input points (a pole's, which has its own handling).
+    std::vector<std::int64_t> mLopSkip;
+    /// A ball's radius carried from an earlier pass (vertex id, radius), used
+    /// in place of (sqrt 2 - 1) lfs0, so balls only shrink.
+    std::vector<std::pair<std::int64_t, double>> mLopRadius;
+    /// The distance from input point `P` to vertex `V`, or, with `V` < 0, to
+    /// the plane point `rX`, by which balls and lfs0 are measured; null: in
+    /// the plane.
+    std::function<double(std::int64_t P, std::int64_t V, const std::array<double, 2>& rX)>
+        mDistance;
+};
+
+/// An acute input corner lopped (`Cdt2dRefineOptions::mLopCorners`).
+struct Cdt2dLoppedCorner {
+    std::int64_t mVertex = -1;
+    double mAngleDeg = 0.0;  ///< the smallest acute wedge at it, in the plane
+    double mLfs0 = 0.0;      ///< the distance to the nearest other input point
+    double mRadius = 0.0;    ///< its ball's radius d at the end
+    /// The bad triangles left because their circumcentre lies in the ball,
+    /// and the smallest angle among them (180 for none).
+    std::int64_t mNumForced = 0;
+    double mMinForcedDeg = 180.0;
+    /// Whether every one of them lies within 2 d of the corner (Lemma 7).
+    bool mWithinTwoRadii = true;
 };
 
 /// A corner where two segments meet at less than 60 degrees inside the
@@ -211,10 +259,19 @@ struct Cdt2dSplitRequest {
     std::int64_t mA = -1;
     std::int64_t mB = -1;
     std::int64_t mApex = -1;
+    /// Corner lopping: split where the distance from `mApex` is this (the
+    /// ball's radius); 0: the subsegment's midpoint, or its shell.
+    double mDistance = 0.0;
+    /// By subsegment, then apex: corner lopping may ask a subsegment
+    /// between two lopped corners to split at each ball.
     bool operator<(const Cdt2dSplitRequest& rO) const {
-        return mA != rO.mA ? mA < rO.mA : mB < rO.mB;
+        if (mA != rO.mA)
+            return mA < rO.mA;
+        return mB != rO.mB ? mB < rO.mB : mApex < rO.mApex;
     }
-    bool operator==(const Cdt2dSplitRequest& rO) const { return mA == rO.mA && mB == rO.mB; }
+    bool operator==(const Cdt2dSplitRequest& rO) const {
+        return mA == rO.mA && mB == rO.mB && mApex == rO.mApex;
+    }
 };
 
 struct Cdt2dRefineReport {
@@ -231,7 +288,20 @@ struct Cdt2dRefineReport {
     /// The bad triangles a small input angle forces (vertex ids ascending),
     /// with that angle's apex, sorted.
     std::vector<std::pair<std::array<std::int64_t, 3>, std::int64_t>> mForced;
+    /// Corner lopping: the acute corners, by vertex.
+    std::vector<Cdt2dLoppedCorner> mLopped;
 };
+
+/**
+ * @brief The largest angle bound (degrees) Pav and Walkington (2005,
+ * Corollary 3) prove corner lopping terminates for, given `DeltaT`, the most
+ * any (sub)curve turns: kappa < arcsin(1 / (2 sqrt 2 mu)) and
+ * arcsin(1 / (2 zeta eta)), with eta = (1 + tan(dt/2)) / (1 - tan(dt/2)),
+ * mu = 1 / (1 - tan(dt/2)), zeta = sqrt 2 sin(dt/2) / (sqrt(1 + sin dt) - 1).
+ * arcsin(1 / 2 sqrt 2), 20.7 degrees, for straight segments; 0 past pi/3,
+ * where the paper assumes no curve goes.
+ */
+double cdt2d_lop_bound_deg(double DeltaT);
 
 class Cdt2d {
 public:
