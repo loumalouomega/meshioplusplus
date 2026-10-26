@@ -782,6 +782,36 @@ jobs:
           python -c "from meshioplusplus import _core; assert _core.__occt_version__.startswith('7.9')"
           python -m pytest tests/python/test_fit_cad.py tests/python/test_fit_cad_goldens.py tests/python/test_step.py tests/python/test_cad_json.py tests/python/test_mesh_cad.py -v
 
+  # The release packages build OpenCASCADE 8.0.1 through vcpkg, which only tags
+  # run (packages.yml), so an 8.0 API break used to surface at release time
+  # (v17.21.0). This job compiles the sources that include OpenCASCADE headers
+  # against the 8.0.1 headers of conda-forge's occt package, pinned by SHA-256,
+  # on every pull request and push to master. Deprecation warnings do not fail
+  # it; errors do.
+  occt-80-syntax:
+    name: OpenCASCADE 8.0.1 syntax check
+    needs: [lint]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
+      - name: Fetch the OpenCASCADE 8.0.1 headers
+        env:
+          OCCT_PKG: occt-8.0.1-novtk_h6e372de_101.conda
+          OCCT_SHA256: a614d7625a2e2278ff877eea340f1a3d980c691e0d3f8522a6da3fd28c38b2d4
+        run: |
+          command -v zstd >/dev/null || (sudo apt-get update && sudo apt-get install -y zstd)
+          curl -fsSL -o "$OCCT_PKG" "https://conda.anaconda.org/conda-forge/linux-64/$OCCT_PKG"
+          echo "$OCCT_SHA256  $OCCT_PKG" | sha256sum -c -
+          mkdir pkg occt80
+          unzip -q "$OCCT_PKG" -d pkg
+          zstd -dc pkg/pkg-occt-8.0.1-*.tar.zst | tar -x -C occt80
+      - name: Syntax-check the OpenCASCADE sources
+        run: sh tools/occt_syntax.sh "$PWD/occt80/include/opencascade"
+
   # The two read-only formats behind a library that is never a default
   # (v16.13.0): DOLFINx VTX `.bp` through ADIOS2 (Ubuntu's serial package) and
   # Tecplot SZL through TecIO (the redistributable TecIO source SU2 vendors,

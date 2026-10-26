@@ -1,6 +1,6 @@
 # meshio++ roadmap
 
-Status at time of writing: **v17.21.0** and unreleased work after it, ABI 35. What ships is listed where it is documented rather than counted here, where counts went stale: the formats in [supported formats](./formats.md) and the [conformance matrix](./conformance.md), the operations in [architecture](./architecture.md#the-operations-layer), the language surfaces in the [C API](./c_api.md), [Fortran](./fortran.md), [Julia](./julia.md), [R](./r.md) and [WebAssembly](./wasm.md) pages.
+Status at time of writing: **v17.22.0** and unreleased work after it, ABI 35. What ships is listed where it is documented rather than counted here, where counts went stale: the formats in [supported formats](./formats.md) and the [conformance matrix](./conformance.md), the operations in [architecture](./architecture.md#the-operations-layer), the language surfaces in the [C API](./c_api.md), [Fortran](./fortran.md), [Julia](./julia.md), [R](./r.md) and [WebAssembly](./wasm.md) pages.
 
 This document lists what is *not* built. Nothing here duplicates shipped functionality; where a feature partially exists, the shipped half is named and the gap is stated explicitly. Release history lives in [`CHANGELOG.md`](https://github.com/loumalouomega/meshioplusplus/blob/main/CHANGELOG.md), not here.
 
