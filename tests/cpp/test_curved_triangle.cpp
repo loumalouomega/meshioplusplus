@@ -168,4 +168,40 @@ TEST(CurvedTriangle, ACurvedValidElementIsProvedValid) {
     }
 }
 
+TEST(CurvedTriangle, TheScaledBoundIsALowerBoundOfTheScaledJacobian) {
+    // Roadmap 6.6.3: min over max of J's Bernstein coefficients. 1 for a
+    // straight element, positive and below the sampled min J / max J for a
+    // curved valid one, negative for the folded elements above, and the
+    // pushed-across mid-edge node far below zero.
+    for (const int order : {1, 2, 3})
+        EXPECT_NEAR(mdt::curved_triangle_scaled_bound(order, reference(order).data(), kUp), 1.0,
+                    1e-12)
+            << order;
+    for (const int order : {2, 3}) {
+        std::vector<V> n = reference(order);
+        for (V& r_x : n)
+            r_x[2] = 2.0 - std::sqrt(4.0 - r_x[1] * r_x[1]);
+        n[3][0] += 0.1;  // bend it in the plane too
+        const double b = mdt::curved_triangle_scaled_bound(order, n.data(), kUp);
+        double lo = 1e300, hi = 0.0;
+        for (int i = 0; i <= 40; ++i)
+            for (int j = 0; i + j <= 40; ++j) {
+                const double v =
+                    mdt::curved_triangle_jacobian(order, n.data(), kUp, i / 40.0, j / 40.0);
+                lo = std::min(lo, v);
+                hi = std::max(hi, v);
+            }
+        EXPECT_GT(b, 0.0) << order;
+        EXPECT_LE(b, lo / hi + 1e-12) << order;
+    }
+    std::vector<V> p2 = reference(2);
+    p2[3] = {0.0, -0.07, 0.0};
+    p2[4] = {0.8, 0.47, 0.0};
+    p2[5] = {-0.2, 0.0, 0.0};
+    EXPECT_LT(mdt::curved_triangle_scaled_bound(2, p2.data(), kUp), 0.0);
+    std::vector<V> pushed = reference(2);
+    pushed[3] = {0.0, 1.4, 0.0};
+    EXPECT_LT(mdt::curved_triangle_scaled_bound(2, pushed.data(), kUp), -0.1);
+}
+
 }  // namespace

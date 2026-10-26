@@ -43,6 +43,7 @@
 // Project includes
 #include "../detail/cdt2d.hpp"
 #include "../detail/curved_triangle.hpp"
+#include "../detail/curved_untangle.hpp"
 #include "../detail/edge_sampler.hpp"
 #include "../detail/json_value.hpp"
 #include "../detail/mesh_cad_reparam.hpp"
@@ -374,6 +375,9 @@ struct McadFace {
     std::vector<std::int64_t> mCurvedCentre;
     std::vector<Vec3> mCurvedNormal;
     std::vector<Vec3> mHighOrder;
+    /// The parameters each of `mHighOrder` was lifted from (untangling,
+    /// 6.6.3, moves them there).
+    std::vector<Vec2> mHighOrderUv;
     /// Pole rings (6.4.2) were placed in the face's latest meshing.
     bool mPoleRingsPlaced = false;
     /// In some meshing its unrefined triangulation folded on the surface
@@ -1034,6 +1038,7 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         rF.mCurvedCentre.clear();
         rF.mCurvedNormal.clear();
         rF.mHighOrder.clear();
+        rF.mHighOrderUv.clear();
         rF.mTriOwner.clear();
     };
     for (const auto& r_loop : rF.mLoops)
@@ -2674,8 +2679,9 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 const double f = double(j) / order;
                 ids[static_cast<std::size_t>(j - 1)] =
                     static_cast<std::int64_t>(rF.mHighOrder.size());
-                rF.mHighOrder.push_back(
-                    surface_at({ua[0] + f * (ub[0] - ua[0]), ua[1] + f * (ub[1] - ua[1])}));
+                const Vec2 uv{ua[0] + f * (ub[0] - ua[0]), ua[1] + f * (ub[1] - ua[1])};
+                rF.mHighOrder.push_back(surface_at(uv));
+                rF.mHighOrderUv.push_back(uv);
             }
             it = edge_nodes.emplace(key, ids).first;
         }
@@ -2767,6 +2773,7 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             if (order == 3) {
                 rF.mCurvedCentre.push_back(static_cast<std::int64_t>(rF.mHighOrder.size()));
                 rF.mHighOrder.push_back(xs);
+                rF.mHighOrderUv.push_back(uv);
             }
         }
         for (int k = 0; k < 3; ++k) {
@@ -3990,6 +3997,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
         r_g.mCurvedCentre.clear();
         r_g.mCurvedNormal.clear();
         r_g.mHighOrder.clear();
+        r_g.mHighOrderUv.clear();
         r_g.mTriOwner.clear();
         r_g.mSizeSamples.clear();
         r_g.mHistogram.fill(0);
@@ -4191,6 +4199,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                         r_f.mCurvedCentre.clear();
                         r_f.mCurvedNormal.clear();
                         r_f.mHighOrder.clear();
+                        r_f.mHighOrderUv.clear();
                     }
                 };
                 once();
@@ -4317,6 +4326,9 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
             rLen = count;
             return starts == 1 && count > 0 && count < n;
         };
+        // The widest face of a chain no face but a sliver borders, which
+        // hosts the rest (below).
+        std::vector<char> seed(nf, 0);
         // One sliver's record, and the slivers declined so far with it; a
         // sliver declined in one round is tried again in the next.
         std::vector<std::int64_t> record_of(nf, -1);
@@ -4374,7 +4386,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
             for (const auto& [g, len] : along) {
                 if (!faces[g].mUsable || faces[g].mRecord.mStatus != MeshCadFaceStatus::Ok)
                     continue;
-                if (First ? (!sliver[g] && !hosting[g])
+                if (First ? ((!sliver[g] || seed[g]) && !hosting[g])
                           : faces[g].mMergedSlivers.size() + 1 < kMaxGroup)
                     order.emplace_back(-len, g);
             }
@@ -4500,12 +4512,88 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
         // Chains (a fillet split into strips) and slivers between two faces
         // already merged: a sliver left over joins a group it borders, in
         // rounds until none joins.
-        for (bool joined = true; joined;) {
-            joined = false;
-            for (std::size_t s = 0; s < nf; ++s)
-                if (sliver[s] && !hosting[s] && faces[s].mMergedInto < 0 &&
-                    faces[s].mLoops.size() == 1 && faces[s].mEmbedded.empty())
-                    joined = attempt(s, false) || joined;
+        const auto free_sliver = [&](std::size_t F) {
+            return sliver[F] && !hosting[F] && faces[F].mMergedInto < 0 &&
+                   faces[F].mLoops.size() == 1 && faces[F].mEmbedded.empty();
+        };
+        const auto chain_rounds = [&]() {
+            for (bool joined = true; joined;) {
+                joined = false;
+                for (std::size_t s = 0; s < nf; ++s)
+                    if (free_sliver(s))
+                        joined = attempt(s, false) || joined;
+            }
+        };
+        chain_rounds();
+        // A chain all of whose faces are slivers (a fillet narrower than h
+        // split into strips, with nothing wider beside it along an edge): no
+        // round above finds it a host. Its widest face hosts it (ties to the
+        // lower index), and the rest join in the same rounds, so the strips
+        // are meshed as one face where the model has them, up to the cap.
+        {
+            // The faces across use U's manifold edge.
+            const auto across = [&](std::size_t U) -> std::int64_t {
+                const std::int64_t e = uses[U].mEdge;
+                if (e < 0 || uses[U].mEmbedded)
+                    return -1;
+                const McadEdge& r_e = edges[static_cast<std::size_t>(e)];
+                if (r_e.mUses.size() != 2 || r_e.mFail != MeshCadFaceStatus::Ok ||
+                    r_e.mSamples.mDegenerate)
+                    return -1;
+                const std::size_t o = r_e.mUses[0] == U ? r_e.mUses[1] : r_e.mUses[0];
+                if (uses[o].mEmbedded || uses[o].mFace == uses[U].mFace)
+                    return -1;
+                return static_cast<std::int64_t>(uses[o].mFace);
+            };
+            std::vector<char> seen(nf, 0);
+            std::vector<std::size_t> seeds;
+            for (std::size_t s = 0; s < nf; ++s) {
+                if (seen[s] || !free_sliver(s))
+                    continue;
+                std::vector<std::size_t> chain{s};
+                seen[s] = 1;
+                bool bordered = false;
+                for (std::size_t i = 0; i < chain.size(); ++i)
+                    for (const std::size_t u : faces[chain[i]].mLoops[0]) {
+                        const std::int64_t g = across(u);
+                        if (g < 0)
+                            continue;
+                        const auto gg = static_cast<std::size_t>(g);
+                        if (!faces[gg].mUsable || faces[gg].mRecord.mStatus != MeshCadFaceStatus::Ok)
+                            continue;
+                        if (!free_sliver(gg)) {
+                            bordered = true;
+                        } else if (!seen[gg]) {
+                            seen[gg] = 1;
+                            chain.push_back(gg);
+                        }
+                    }
+                if (bordered || chain.size() < 2)
+                    continue;
+                // Widths within round-off of each other tie.
+                std::size_t w = chain.front();
+                for (const std::size_t f : chain) {
+                    const double tie = 1e-9 * std::max(width[f], width[w]);
+                    if (width[f] > width[w] + tie || (width[f] >= width[w] - tie && f < w))
+                        w = f;
+                }
+                seed[w] = 1;
+                seeds.push_back(w);
+            }
+            if (!seeds.empty()) {
+                for (std::size_t s = 0; s < nf; ++s)
+                    if (free_sliver(s) && !seed[s])
+                        attempt(s, true);
+                chain_rounds();
+                for (const std::size_t w : seeds) {
+                    if (!hosting[w] || record_of[w] < 0)
+                        continue;
+                    MeshCadMergedFace& r_rec = merged_found[static_cast<std::size_t>(record_of[w])];
+                    r_rec.mHost = static_cast<std::int64_t>(w);
+                    r_rec.mMerged = true;
+                    r_rec.mReason.clear();
+                }
+            }
         }
         std::vector<char> again(nf, 0);
         bool any = false;
@@ -4797,6 +4885,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
     // normal its Jacobian is signed against.
     std::vector<std::array<std::int64_t, 10>> curved;
     std::vector<Vec3> curved_normal;
+    std::vector<std::size_t> curved_face;
+    std::int64_t untangled = 0;
     std::vector<std::array<std::int64_t, 3>> tris;
     std::vector<std::int64_t> tri_face;
     std::vector<std::vector<std::int64_t>> face_cells(nf);
@@ -4966,6 +5056,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                 el[slot] = high_base[f] + r_f.mCurvedCentre[t];
             curved.push_back(el);
             curved_normal.push_back(r_f.mCurvedNormal[t]);
+            curved_face.push_back(f);
         }
         result.mNumDegenerateDropped += r_f.mRecord.mNumDegenerateDropped;
         result.mNumRefinementPoints += r_f.mRecord.mNumRefinementPoints;
@@ -4984,8 +5075,65 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
     }
 
     if (order > 1) {
+        // Untangling (6.6.3) first: face by face, each moving only its own
+        // nodes (the edges' are shared and stay), so faces run in parallel.
+        // Straightening an element left invalid moves nodes its neighbours
+        // share, so the result is kept only when it straightens fewer
+        // elements than straightening alone would; it never straightens
+        // more.
+        std::vector<double> plain;
+        std::int64_t plain_count = 0, plain_still = 0;
+        if (extras.mUntangle) {
+            plain.assign(px, px + 3 * np);
+            plain_count = mcad_straighten(order, curved, curved_normal, plain.data(), plain_still);
+        }
+        if (extras.mUntangle && plain_count > 0) {
+            std::vector<std::vector<std::size_t>> elems_of(nf);
+            for (std::size_t e = 0; e < curved.size(); ++e)
+                elems_of[curved_face[e]].push_back(e);
+            std::vector<std::int64_t> fixed(nf, 0);
+            parallel_for(
+                nf,
+                [&](std::size_t f) {
+                    McadFace& r_f = faces[f];
+                    if (elems_of[f].empty() || r_f.mHighOrderUv.size() != r_f.mHighOrder.size())
+                        return;
+                    std::vector<detail::CurvedUntangleElement> els;
+                    els.reserve(elems_of[f].size());
+                    for (const std::size_t e : elems_of[f])
+                        els.push_back({curved[e], curved_normal[e]});
+                    std::vector<std::int64_t> free(r_f.mHighOrder.size());
+                    for (std::size_t i = 0; i < free.size(); ++i)
+                        free[i] = high_base[f] + static_cast<std::int64_t>(i);
+                    std::vector<std::array<double, 2>> uv(r_f.mHighOrderUv.begin(),
+                                                          r_f.mHighOrderUv.end());
+                    const detail::BrepSurfaceEval& r_s = *r_f.pSurface;
+                    const auto rep = detail::curved_untangle(
+                        order, els, px, free, uv, [&](const std::array<double, 2>& rUv) {
+                            Vec3 x{};
+                            r_s.Eval(rUv[0], rUv[1], x.data(), nullptr, nullptr);
+                            return x;
+                        });
+                    fixed[f] = rep.mInvalidBefore - rep.mInvalidAfter;
+                },
+                1);
+            for (const std::int64_t n : fixed)
+                untangled += n;
+        }
         std::int64_t still = 0;
         result.mNumCurvedStraightened = mcad_straighten(order, curved, curved_normal, px, still);
+        if (extras.mUntangle) {
+            if (result.mNumCurvedStraightened >= plain_count) {
+                std::copy(plain.begin(), plain.end(), px);
+                still = plain_still;
+                result.mNumCurvedStraightened = plain_count;
+                untangled = 0;
+            } else {
+                untangled = plain_count - result.mNumCurvedStraightened;
+            }
+        }
+        if (untangled > 0)
+            log::debug("mesh_cad_surface: {} curved elements untangled", untangled);
         if (result.mNumCurvedStraightened > 0)
             warn(std::to_string(result.mNumCurvedStraightened) +
                  " curved elements had a Jacobian that is not positive everywhere and are kept "
@@ -5126,6 +5274,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
             pSamples->insert(pSamples->end(), r_f.mSizeSamples.begin(), r_f.mSizeSamples.end());
     }
     if (pExtrasReport) {
+        pExtrasReport->mNumUntangled = untangled;
         // Where a declared tolerance accepted what the global one would not
         // (6.5.1), in (edge, where) order.
         for (std::size_t e = 0; e < edges.size(); ++e)
@@ -5144,8 +5293,15 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
         for (MeshCadMergedFace rec : merged_found) {
             if (rec.mMerged) {
                 const McadFace& r_h = faces[static_cast<std::size_t>(rec.mHost)];
-                if (std::find(r_h.mMergedSlivers.begin(), r_h.mMergedSlivers.end(),
-                              static_cast<std::size_t>(rec.mSliver)) == r_h.mMergedSlivers.end()) {
+                // A chain's widest face hosts itself: it stays merged while
+                // its group does.
+                const bool kept = rec.mHost == rec.mSliver
+                                      ? !r_h.mMergedSlivers.empty()
+                                      : std::find(r_h.mMergedSlivers.begin(),
+                                                  r_h.mMergedSlivers.end(),
+                                                  static_cast<std::size_t>(rec.mSliver)) !=
+                                            r_h.mMergedSlivers.end();
+                if (!kept) {
                     rec.mMerged = false;
                     rec.mReason = r_h.mMergeWhy;
                 }
@@ -5195,6 +5351,10 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep, const MeshCadSurfac
     mcad_check_sources(rBrep, rOptions, rSources);
     if (rExtras.mVirtualFaces && rOptions.mOrder > 1)
         mcad_fail("virtual_faces is order 1 only (roadmap 6.5.2)");
+    if (rExtras.mUntangle && rOptions.mOrder < 2)
+        mcad_fail("untangle needs curved elements (order 2 or 3; roadmap 6.6.3)");
+    if (rExtras.mQuads != MeshCadQuads::None)
+        mcad_fail("quads is not implemented yet (roadmap 6.8)");
     const std::size_t nf = rBrep.mFaces.size();
     if (pReport) {
         *pReport = MeshCadSizeReport{};

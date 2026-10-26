@@ -638,7 +638,7 @@ static SEXP r_mesh_cad_tolerance_uses(void) {
     SEXP declared = PROTECT(Rf_allocVector(REALSXP, n));
     SEXP gap = PROTECT(Rf_allocVector(REALSXP, n));
     SEXP where = PROTECT(Rf_allocVector(STRSXP, n));
-    static const char* kWhere[] = {"closed_start", "corner", "projection"};
+    static const char* kWhere[] = {"closed_start", "corner", "projection", "pairing"};
     for (R_xlen_t i = 0; i < n; ++i) {
         int64_t e = -1;
         double d = 0.0, g = 0.0;
@@ -647,7 +647,7 @@ static SEXP r_mesh_cad_tolerance_uses(void) {
         REAL(edge)[i] = (double)e + 1.0;
         REAL(declared)[i] = d;
         REAL(gap)[i] = g;
-        SET_STRING_ELT(where, i, Rf_mkChar(kWhere[w >= 0 && w < 3 ? w : 2]));
+        SET_STRING_ELT(where, i, Rf_mkChar(kWhere[w >= 0 && w < 4 ? w : 2]));
     }
     const char* names[] = {"edge", "declared", "gap", "where"};
     SEXP cols[] = {edge, declared, gap, where};

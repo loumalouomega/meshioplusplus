@@ -255,6 +255,30 @@ void curved_triangle_bernstein(int Degree, const double* pValues, double* pCoeff
     }
 }
 
+double curved_triangle_scaled_bound(int Order, const CurvedVec3* pNodes,
+                                    const CurvedVec3& rNormal) {
+    if (Order == 1) {
+        const double j = curved_triangle_jacobian(1, pNodes, rNormal, 1.0 / 3.0, 1.0 / 3.0);
+        return j > 0.0 ? 1.0 : (j < 0.0 ? -1.0 : 0.0);
+    }
+    const int d = 2 * (Order - 1);
+    const auto lat = ct_lattice(d);
+    std::array<double, 15> vals{};
+    for (std::size_t a = 0; a < lat.size(); ++a)
+        vals[a] = curved_triangle_jacobian(Order, pNodes, rNormal, double(lat[a][0]) / d,
+                                           double(lat[a][1]) / d);
+    std::array<double, 15> coef{};
+    curved_triangle_bernstein(d, vals.data(), coef.data());
+    double lo = coef[0], big = 0.0;
+    for (std::size_t a = 0; a < lat.size(); ++a) {
+        lo = std::min(lo, coef[a]);
+        big = std::max(big, std::fabs(coef[a]));
+    }
+    if (!(big > 0.0) || !std::isfinite(lo) || !std::isfinite(big))
+        return -1.0;
+    return lo / big;
+}
+
 CurvedTriangleCheck curved_triangle_check(int Order, const CurvedVec3* pNodes,
                                           const CurvedVec3& rNormal, int MaxDepth) {
     CurvedTriangleCheck out;

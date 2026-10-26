@@ -7530,6 +7530,7 @@ mio_status mio_mesh_cad_surface_tolerance_use(int64_t index, int64_t* edge, doub
         if (where)
             *where = r_t.mWhere == "closed_start" ? MIO_MESH_CAD_TOLERANCE_CLOSED_START
                      : r_t.mWhere == "corner"     ? MIO_MESH_CAD_TOLERANCE_CORNER
+                     : r_t.mWhere == "pairing"    ? MIO_MESH_CAD_TOLERANCE_PAIRING
                                                   : MIO_MESH_CAD_TOLERANCE_PROJECTION;
         return MIO_OK;
     });

@@ -5818,7 +5818,8 @@ MIO_API int64_t mio_mesh_cad_surface_num_reparametrised(void);
 /**
  * v17.20.0: reparametrised face record `index`: its face, its condition number
  * over its coarse mesh and in its flattening (0 when none was built), and its
- * method: 1 least-squares conformal, 2 mean-value on a circle, 0 declined
+ * method: 1 least-squares conformal, 2 mean-value on a circle, 3 between two
+ * concentric circles (an annulus), 0 declined
  * (see mio_mesh_cad_surface_reparam_reason). Any output may be NULL.
  */
 MIO_API mio_status mio_mesh_cad_surface_reparametrised(int64_t index, int64_t* face,
@@ -5852,7 +5853,9 @@ MIO_API int64_t mio_mesh_cad_surface_merged_face_reason(int64_t index, char* buf
 typedef enum mio_mesh_cad_tolerance_where {
     MIO_MESH_CAD_TOLERANCE_CLOSED_START = 0, /**< a closed edge's uses start at one point */
     MIO_MESH_CAD_TOLERANCE_CORNER = 1,       /**< a corner's uses lie within it */
-    MIO_MESH_CAD_TOLERANCE_PROJECTION = 2    /**< an edge's uses lie within it */
+    MIO_MESH_CAD_TOLERANCE_PROJECTION = 2,   /**< an edge's uses lie within it */
+    MIO_MESH_CAD_TOLERANCE_PAIRING = 3       /**< the file-level tolerance paired trims no
+                                                  edge names (Kratos `model_tolerance`) */
 } mio_mesh_cad_tolerance_where;
 
 /** v17.20.0: how many places a declared tolerance accepted a gap (6.5.1). */

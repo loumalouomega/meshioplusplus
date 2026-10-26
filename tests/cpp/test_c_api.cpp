@@ -47,6 +47,9 @@
 // Project includes
 #include "meshioplusplus/meshioplusplus.h"
 
+#include "meshioplusplus/formats/cad_json.hpp"
+
+#include "brep_solids.hpp"
 #include "mesh_fixtures.hpp"
 #include "gmsh_fixtures.hpp"
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
@@ -2095,6 +2098,42 @@ TEST(CApi, MeshCadSurfaceMeshesABrepAndReportsItsFaces) {
     opts.min_angle_deg = 60.0;
     EXPECT_EQ(mio_mesh_cad_surface(info, &opts, nullptr), nullptr);
     mio_mesh_free(mesh);
+    mio_format_info_free(info);
+}
+
+// Roadmap 6.5.1: trims the file-level `model_tolerance` pairs are reported
+// as MIO_MESH_CAD_TOLERANCE_PAIRING, not as a projection. The box without
+// edge topology, one face translated by 1e-5, as in test_mesh_cad_reparam.
+TEST(CApi, MeshCadSurfaceReportsTheModelTolerancesPairing) {
+    meshioplusplus::BrepInfo b = brep_solids::box();
+    b.mEdges.clear();
+    meshioplusplus::NDArray& r_cp = b.mPatches[static_cast<std::size_t>(b.mFaces[0].mPatch)].mControlPoints;
+    for (std::size_t i = 0; i < r_cp.Size(); ++i)
+        r_cp.As<double>()[i] += 1e-5;
+    b.mExtra = R"({"tolerances":{"model_tolerance":0.0001}})";
+    const auto path = mt::temp_path(".cad.json");
+    meshioplusplus::write_cad_json(path, meshioplusplus::Mesh{}, b);
+    mio_format_info* info = nullptr;
+    mio_mesh* sampled = mio_read_with_info(path.c_str(), nullptr, nullptr, &info);
+    ASSERT_NE(sampled, nullptr) << mio_last_error();
+    mio_mesh_free(sampled);
+    mio_mesh_cad_surface_opts opts;
+    mio_mesh_cad_surface_opts_init(&opts);
+    opts.target_size = 0.2;
+    mio_mesh_cad_surface_opts_ex ex;
+    mio_mesh_cad_surface_opts_ex_init(&ex);
+    ex.model_tolerances = 1;
+    mio_mesh* m = mio_mesh_cad_surface2(info, &opts, &ex, nullptr);
+    ASSERT_NE(m, nullptr) << mio_last_error();
+    ASSERT_EQ(mio_mesh_cad_surface_num_tolerance_uses(), 4);
+    for (int64_t i = 0; i < 4; ++i) {
+        int64_t edge = 0;
+        int32_t where = -1;
+        ASSERT_EQ(mio_mesh_cad_surface_tolerance_use(i, &edge, nullptr, nullptr, &where), MIO_OK);
+        EXPECT_EQ(edge, -1);
+        EXPECT_EQ(where, MIO_MESH_CAD_TOLERANCE_PAIRING);
+    }
+    mio_mesh_free(m);
     mio_format_info_free(info);
 }
 

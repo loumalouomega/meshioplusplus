@@ -873,14 +873,11 @@ namespace {
 // Roadmap 6.5.2's chains: the plate [0, 1] x [0, 1], then `K` slivers of
 // width W stacked in y (a fillet split into strips), then, with `Plate`, the
 // plate [0, 1] x [1 + K W, 2 + K W]; each its own patch, sharing edges.
-mio::BrepInfo sliver_chain(double W, int K, bool Plate) {
+// Bands [0, 1] x [ys[i], ys[i + 1]] stacked in y, each its own patch,
+// sharing edges.
+mio::BrepInfo bands(const std::vector<double>& ys) {
     using brep_solids::line_trim;
     using brep_solids::PatchVec;
-    std::vector<double> ys = {0.0, 1.0};
-    for (int k = 1; k <= K; ++k)
-        ys.push_back(1.0 + k * W);
-    if (Plate)
-        ys.push_back(2.0 + K * W);
     std::vector<PatchVec> v;
     for (const double y : ys) {
         v.push_back({0, y, 0});
@@ -914,6 +911,15 @@ mio::BrepInfo sliver_chain(double W, int K, bool Plate) {
         faces.push_back(f);
     }
     return brep_solids::assemble(faces, curves);
+}
+
+mio::BrepInfo sliver_chain(double W, int K, bool Plate) {
+    std::vector<double> ys = {0.0, 1.0};
+    for (int k = 1; k <= K; ++k)
+        ys.push_back(1.0 + k * W);
+    if (Plate)
+        ys.push_back(2.0 + K * W);
+    return bands(ys);
 }
 
 // Every triangle's cad:face, and that its centroid lies in that face's band
@@ -989,6 +995,46 @@ TEST(MeshCadVirtualFaces, AChainOfSliverStripsJoinsOneHost) {
     }
     omp_set_num_threads(saved);
 #endif
+}
+
+// Roadmap 6.5.2: three strips with no plate, all narrower than h (the
+// middle one the widest). No face but a sliver borders the chain, so its
+// widest face hosts it and the other two join: one triangulation spans the
+// three, each triangle keeping its own face.
+TEST(MeshCadVirtualFaces, AChainOfSliversAloneIsHostedByItsWidest) {
+    const double h = 0.2, w = h / 20.0;
+    const std::vector<double> ys{0.0, w, 3.0 * w, 4.0 * w};
+    const mio::BrepInfo b = bands(ys);
+    const auto alone = run(b, quality(h, 25.0));
+    mio::MeshCadSurfaceExtras extras;
+    extras.mVirtualFaces = true;
+    mio::MeshCadSurfaceExtrasReport x;
+    const auto r =
+        mio::mesh_cad_surface(b, quality(h, 25.0), mio::MeshCadSizeSources{}, extras, nullptr, &x);
+    EXPECT_EQ(r.mNumFailed, 0);
+    EXPECT_NEAR(angle_and_area(r.mMesh)[1], 4.0 * w, 1e-12);
+    EXPECT_EQ(r.mNumMisorientedEdges, 0);
+    EXPECT_EQ(r.mNumNonManifoldEdges, 0);
+    EXPECT_TRUE(open_only_outside(r.mMesh, 4.0 * w));
+    std::printf("[6.5.2] all-sliver chain: %zu triangles face by face, %zu merged; min angle "
+                "%.2f against %.2f\n",
+                static_cast<std::size_t>(alone.mNumTriangles),
+                static_cast<std::size_t>(r.mNumTriangles), angle_and_area(alone.mMesh)[0],
+                angle_and_area(r.mMesh)[0]);
+    ASSERT_EQ(x.mMergedFaces.size(), 3u);
+    for (const auto& r_m : x.mMergedFaces) {
+        EXPECT_TRUE(r_m.mMerged) << r_m.mSliver << ": " << r_m.mReason;
+        EXPECT_EQ(r_m.mHost, 1) << r_m.mSliver;
+    }
+    const auto count = count_by_face(r.mMesh, ys);
+    for (std::size_t f = 0; f < count.size(); ++f)
+        EXPECT_GT(count[f], 0) << f;
+    // Strips of one width: the tie goes to the lower index.
+    const auto uniform = mio::mesh_cad_surface(bands({0.0, w, 2.0 * w, 3.0 * w}), quality(h, 25.0),
+                                               mio::MeshCadSizeSources{}, extras, nullptr, &x);
+    EXPECT_EQ(uniform.mNumFailed, 0);
+    for (const auto& r_m : x.mMergedFaces)
+        EXPECT_EQ(r_m.mHost, 0) << r_m.mSliver;
 }
 
 // Roadmap 6.5.2: plate, three strips, plate. The outer strips merge with

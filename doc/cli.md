@@ -2110,7 +2110,9 @@ meshioplusplus mesh-cad-surface part.step part.vtu --size 2 --min-angle 25 --rep
 | `--virtual-edges` | suppress the corners between slivers of edges and their neighbours (order 1 only); the chains are reported as `virtual_edges` |
 | `--reparam-condition-number K` | mesh a face whose parameters stretch the surface more than `K` (above 1) in a flattening of its coarse mesh instead (order 1 only; 0, the default, is off); reported as `reparametrised` |
 | `--virtual-faces` | mesh a sliver face, narrower than the size, with the neighbour it meets tangentially (order 1 only); reported as `merged_faces` |
-| `--model-tolerances` | accept the gaps each edge's own declared tolerance allows (a STEP or IGES read declares OpenCASCADE's); reported as `tolerance_uses` |
+| `--model-tolerances` | accept the gaps each edge's own declared tolerance or vertex's own declared tolerance allows (a STEP or IGES read declares OpenCASCADE's; a Kratos file's `tolerances.model_tolerance` is their floor and pairs the trims no edge names); reported as `tolerance_uses` |
+| `--lop-corners` | lop acute corners (Pav and Walkington 2005) in place of concentric shells, and state the angle bound they prove on a planar face; reported as `lopped_corners` |
+| `--metric-background PATH` / `--metric-array NAME` / `--metric-error E` | a mesh whose 9-component point data `NAME` is a field's Hessian (`hessian` writes `<array>:hessian`), and the interpolation error `E` (> 0) to reach: the anisotropic metric `R \|Λ\| Rᵀ / (8 E)` sizes and stretches the triangles (order 1 only) |
 | `--json` / `-q/--quiet` | the report as JSON / no summary |
 
 A face that cannot be meshed is left out and named in the summary with its reason; the exit code is 0 unless `--strict` is given. With `--min-angle`, the summary also names each corner under 60 degrees and each pole that keeps triangles below the bound.

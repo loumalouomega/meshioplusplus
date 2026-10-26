@@ -64,7 +64,7 @@ module meshioplusplus
     public :: mio_mesh_cad_lopped_corner_reason
     public :: MIO_MESH_CAD_METRIC_MEAN, MIO_MESH_CAD_METRIC_VARYING
     public :: MIO_MESH_CAD_TOLERANCE_CLOSED_START, MIO_MESH_CAD_TOLERANCE_CORNER
-    public :: MIO_MESH_CAD_TOLERANCE_PROJECTION
+    public :: MIO_MESH_CAD_TOLERANCE_PROJECTION, MIO_MESH_CAD_TOLERANCE_PAIRING
     public :: MIO_MESH_CAD_OK, MIO_MESH_CAD_EMPTY, MIO_MESH_CAD_OPEN_LOOP
     public :: MIO_MESH_CAD_SELF_INTERSECTING, MIO_MESH_CAD_DEGENERATE
     public :: MIO_MESH_CAD_PROJECTION_FAILED, MIO_MESH_CAD_BUDGET_EXCEEDED
@@ -499,7 +499,7 @@ module meshioplusplus
     integer, parameter :: MIO_MESH_CAD_METRIC_MEAN = 0, MIO_MESH_CAD_METRIC_VARYING = 1
     !> Where a declared tolerance accepted a gap (v17.20.0, mio_mesh_cad_tolerance_where).
     integer, parameter :: MIO_MESH_CAD_TOLERANCE_CLOSED_START = 0, MIO_MESH_CAD_TOLERANCE_CORNER = 1, &
-                          MIO_MESH_CAD_TOLERANCE_PROJECTION = 2
+                          MIO_MESH_CAD_TOLERANCE_PROJECTION = 2, MIO_MESH_CAD_TOLERANCE_PAIRING = 3
 
     !> Interop mirror of C `mio_mesh_cad_surface_opts` (104 bytes, checked once
     !> per process by `check_mesh_cad_layout`). Filled by
@@ -12364,7 +12364,7 @@ contains
 
     !> Reparametrised face record `idx` (1-based): its face (1-based), its
     !> condition number and its flattening's, and `method` (1 conformal, 2
-    !> mean-value, 0 declined); `stat` nonzero when out of range.
+    !> mean-value, 3 annulus, 0 declined); `stat` nonzero when out of range.
     subroutine mio_mesh_cad_get_reparametrised(idx, face, condition_number, &
                                                condition_number_disc, method, stat)
         integer, intent(in) :: idx

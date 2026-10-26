@@ -624,7 +624,7 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
         _check(ccall(_sym(:mio_mesh_cad_surface_tolerance_use), Cint,
                      (Int64, Ref{Int64}, Ref{Cdouble}, Ref{Cdouble}, Ref{Int32}), k, e, d, g, w))
         (edge=Int(e[]) + 1, declared=Float64(d[]), gap=Float64(g[]),
-         where=("closed_start", "corner", "projection")[w[] + 1])
+         where=("closed_start", "corner", "projection", "pairing")[w[] + 1])
     end
     nlopped = ccall(_sym(:mio_mesh_cad_surface_num_lopped_corners), Int64, ())
     lopped_corners = map(0:nlopped-1) do k
