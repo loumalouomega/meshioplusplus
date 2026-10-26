@@ -1263,6 +1263,47 @@ SEXP R_mio_conservative_interpolate(SEXP source, SEXP target, SEXP arrays, SEXP 
     return mio_r_wrap_mesh(out);
 }
 
+/* boundary_layer (roadmap 6.9): prisms grown from a surface. Returns
+ * list(mesh, num_cells, ..., cap_closed). */
+SEXP R_mio_boundary_layer(SEXP mesh, SEXP first_height, SEXP num_layers, SEXP growth,
+                          SEXP reverse, SEXP collision_fraction, SEXP smooth_iterations,
+                          SEXP max_shrink) {
+    mio_boundary_layer_opts opts;
+    mio_boundary_layer_opts_init(&opts);
+    opts.first_height = mio_r_double(first_height, "first_height");
+    opts.num_layers = (int32_t)mio_r_int(num_layers, "num_layers");
+    opts.growth = mio_r_double(growth, "growth");
+    opts.reverse = mio_r_bool(reverse, "reverse");
+    opts.collision_fraction = mio_r_double(collision_fraction, "collision_fraction");
+    opts.smooth_iterations = (int32_t)mio_r_int(smooth_iterations, "smooth_iterations");
+    opts.max_shrink = (int32_t)mio_r_int(max_shrink, "max_shrink");
+    mio_boundary_layer_report report;
+    mio_mesh *out = mio_boundary_layer(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL) mio_r_fail("boundary_layer");
+    SEXP v[13];
+    v[0] = PROTECT(mio_r_wrap_mesh(out));
+    v[1] = PROTECT(Rf_ScalarReal((double)report.num_cells));
+    v[2] = PROTECT(Rf_ScalarReal((double)report.num_wedges));
+    v[3] = PROTECT(Rf_ScalarReal((double)report.num_hexahedra));
+    v[4] = PROTECT(Rf_ScalarReal((double)report.num_pyramids));
+    v[5] = PROTECT(Rf_ScalarReal((double)report.num_tetrahedra));
+    v[6] = PROTECT(Rf_ScalarReal((double)report.num_shrunk));
+    v[7] = PROTECT(Rf_ScalarReal((double)report.num_collapsed));
+    v[8] = PROTECT(Rf_ScalarReal((double)report.num_not_visible));
+    v[9] = PROTECT(Rf_ScalarReal(report.min_scaled_jacobian));
+    v[10] = PROTECT(Rf_ScalarReal(report.min_thickness));
+    v[11] = PROTECT(Rf_ScalarReal(report.max_thickness));
+    v[12] = PROTECT(Rf_ScalarLogical(report.cap_closed != 0));
+    const char *names[] = {"mesh",          "num_cells",       "num_wedges",
+                           "num_hexahedra", "num_pyramids",    "num_tetrahedra",
+                           "num_shrunk",    "num_collapsed",   "num_not_visible",
+                           "min_scaled_jacobian", "min_thickness", "max_thickness",
+                           "cap_closed"};
+    SEXP res = PROTECT(mio_r_named_list(13, names, v));
+    UNPROTECT(14);
+    return res;
+}
+
 SEXP R_mio_undo_green(SEXP coarse, SEXP fine) {
     int64_t ngroups = 0, nremoved = 0;
     mio_mesh *out =

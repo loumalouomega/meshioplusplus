@@ -748,6 +748,36 @@ struct _CProjectToCadReport
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_boundary_layer_opts` (roadmap 6.9)."""
+struct _CBoundaryLayerOpts
+    first_height::Cdouble
+    growth::Cdouble
+    collision_fraction::Cdouble
+    num_layers::Int32
+    reverse::Int32
+    smooth_iterations::Int32
+    max_shrink::Int32
+    reserved::NTuple{3,Int64}
+end
+
+"""Mirror of C `mio_boundary_layer_report`."""
+struct _CBoundaryLayerReport
+    num_cells::Int64
+    num_wedges::Int64
+    num_hexahedra::Int64
+    num_pyramids::Int64
+    num_tetrahedra::Int64
+    num_shrunk::Int64
+    num_collapsed::Int64
+    num_not_visible::Int64
+    min_scaled_jacobian::Cdouble
+    min_thickness::Cdouble
+    max_thickness::Cdouble
+    cap_closed::Int32
+    reserved_pad::Int32
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_mesh_cad_surface_report`."""
 struct _CMeshCadSurfaceReport
     num_points::Int64
@@ -1398,6 +1428,12 @@ function _check_abi_layout()
     (sizeof(_CProjectToCadReport) == 96 && fieldoffset(_CProjectToCadReport, 8) == 56) ||
         error("meshio++: mio_project_to_cad_report layout mismatch " *
               "($(sizeof(_CProjectToCadReport)) bytes)")
+    (sizeof(_CBoundaryLayerOpts) == 64 && fieldoffset(_CBoundaryLayerOpts, 4) == 24) ||
+        error("meshio++: mio_boundary_layer_opts layout mismatch " *
+              "($(sizeof(_CBoundaryLayerOpts)) bytes)")
+    (sizeof(_CBoundaryLayerReport) == 128 && fieldoffset(_CBoundaryLayerReport, 12) == 88) ||
+        error("meshio++: mio_boundary_layer_report layout mismatch " *
+              "($(sizeof(_CBoundaryLayerReport)) bytes)")
     sizeof(_CFitCadOpts) == 80 ||
         error("meshio++: mio_fit_cad_opts layout mismatch ($(sizeof(_CFitCadOpts)) bytes)")
     sizeof(_CFitCadReport) == 192 ||

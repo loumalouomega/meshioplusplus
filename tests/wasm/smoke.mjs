@@ -3530,6 +3530,10 @@ step('meshCadSurface: a trimmed CAD JSON face triangulated and reported', () => 
     assert.deepEqual(back.outsideTrim, []);
     assert.throws(() => m.projectToCad(read.mesh, read.info), /cad:face/);
     assert.throws(() => m.projectToCad(r.mesh, read.info, { bogus: 1 }), /bogus/);
+    // Roadmap 6.9: layers grown from the triangle are wedges.
+    const bl = m.boundaryLayer(r.mesh, { firstHeight: 0.01, numLayers: 2 });
+    assert.ok(bl.numWedges > 0 && bl.minScaledJacobian > 0);
+    assert.throws(() => m.boundaryLayer(r.mesh, { numLayers: 2 }), /firstHeight/);
     // v17.15.0: refined to 25 degrees and smoothed; the two 45-degree corners
     // are reported, every angle counted.
     const q = m.meshCadSurface(read.info, {

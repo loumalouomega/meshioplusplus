@@ -6,6 +6,7 @@ from . import (
     _agglomerate,
     _ascii,
     _binary,
+    _boundary_layer,
     _check,
     _clean,
     _compress,
@@ -370,6 +371,13 @@ def main(argv=None):
     )
     _project_to_cad.add_args(parser)
     parser.set_defaults(func=_project_to_cad.project_to_cad_cmd)
+
+    parser = subparsers.add_parser(
+        "boundary-layer",
+        help="Prismatic boundary layers grown from a triangle and quad surface",
+    )
+    _boundary_layer.add_args(parser)
+    parser.set_defaults(func=_boundary_layer.boundary_layer_cmd)
 
     parser = subparsers.add_parser(
         "grid-sample",

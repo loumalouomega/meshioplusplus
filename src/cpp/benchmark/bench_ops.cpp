@@ -87,6 +87,7 @@
 #include "meshioplusplus/operations/octree.hpp"
 #include "meshioplusplus/operations/mesh_cad.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
+#include "meshioplusplus/operations/boundary_layer.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
@@ -648,7 +649,8 @@ int main(int argc, char** argv) {
         });
         row("quality", [&](MeshDigest* pD) { of(pD, mio::attach_quality(volume)); });
         row("quality_ragged", [&](MeshDigest* pD) { of(pD, mio::attach_quality(ragged)); });
-        row("data_average", [&](MeshDigest* pD) { of(pD, mio::point_data_to_cell_data(with_field)); });
+        row("data_average",
+            [&](MeshDigest* pD) { of(pD, mio::point_data_to_cell_data(with_field)); });
         row("data_average_ragged",
             [&](MeshDigest* pD) { of(pD, mio::point_data_to_cell_data(ragged_field)); });
         row("interpolate_cells", [&](MeshDigest* pD) {
@@ -679,9 +681,8 @@ int main(int argc, char** argv) {
                                   const Mesh& rSource) {
             if (!wanted(pOp))
                 return;
-            const std::filesystem::path dir =
-                std::filesystem::temp_directory_path() /
-                (std::string("meshioplusplus_bench_read_") + pFormat);
+            const std::filesystem::path dir = std::filesystem::temp_directory_path() /
+                                              (std::string("meshioplusplus_bench_read_") + pFormat);
             std::filesystem::create_directories(dir);
             const std::string path = (dir / (std::string("mesh") + pExt)).string();
             try {
@@ -828,8 +829,7 @@ int main(int argc, char** argv) {
         row("compute_curvature",
             [&](MeshDigest* pD) { of(pD, mio::compute_curvature(surface).mMesh); });
         // Rows for roadmap §5's analysis operations (v16.23.0).
-        row("feature_edges",
-            [&](MeshDigest* pD) { of(pD, mio::feature_edges(volume).mMesh); });
+        row("feature_edges", [&](MeshDigest* pD) { of(pD, mio::feature_edges(volume).mMesh); });
         // Rows for roadmap §6.3's skin to CAD: the cube's skin segments into its
         // six faces (the growth is the serial phase), and each face fits a plane.
         const BenchLazyMesh segmented([&] { return mio::segment(surface).mMesh; });
@@ -970,9 +970,8 @@ int main(int argc, char** argv) {
             const auto m = static_cast<std::int64_t>(4 * n);
             of(pD, mio::uv_sphere(1.0, 2 * m, m, {{0.0, 0.0, 0.0}}, "triangle", 1, 0));
         });
-        row("icosa_sphere", [&](MeshDigest* pD) {
-            of(pD, mio::icosa_sphere(1.0, 6, {{0.0, 0.0, 0.0}}, 1, 0));
-        });
+        row("icosa_sphere",
+            [&](MeshDigest* pD) { of(pD, mio::icosa_sphere(1.0, 6, {{0.0, 0.0, 0.0}}, 1, 0)); });
         row("cylinder", [&](MeshDigest* pD) {
             const auto m = static_cast<std::int64_t>(n);
             of(pD, mio::cylinder(1.0, 1.0, m, m, {{0.0, 0.0, 0.0}}, "hexahedron", 1, 0));
@@ -1353,6 +1352,23 @@ int main(int argc, char** argv) {
             }
             off.AssignPoints(std::move(p));
             of(pD, mio::project_to_cad(off, plate).mMesh);
+        });
+        // Boundary layers (roadmap 6.9): four layers grown out of the box's
+        // surface and into its all-quad one.
+        row("boundary_layer", [&](MeshDigest* pD) {
+            const mio::BrepInfo box = cad_box();
+            mio::MeshCadSurfaceOptions o;
+            o.mTargetSize = octree_step;
+            mio::BoundaryLayerOptions b;
+            b.mFirstHeight = 0.05 * octree_step;
+            b.mNumLayers = 4;
+            of(pD, mio::boundary_layer(mio::mesh_cad_surface(box, o).mMesh, b).mMesh);
+            mio::MeshCadSurfaceExtras ex;
+            ex.mQuads = mio::MeshCadQuads::All;
+            b.mReverse = true;
+            of(pD, mio::boundary_layer(
+                       mio::mesh_cad_surface(box, o, mio::MeshCadSizeSources{}, ex).mMesh, b)
+                       .mMesh);
         });
         row("sample_distance", [&](MeshDigest* pD) {
             const NDArray d = mio::sample_distance(surface, jittered->Points());

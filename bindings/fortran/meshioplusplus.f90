@@ -69,6 +69,7 @@ module meshioplusplus
     public :: MIO_MESH_CAD_QUADS_NONE, MIO_MESH_CAD_QUADS_DOMINANT, MIO_MESH_CAD_QUADS_ALL
     public :: MIO_MESH_CAD_QUAD_PAIRS_MATCHING, MIO_MESH_CAD_QUAD_PAIRS_GREEDY
     public :: mio_project_to_cad, mio_project_to_cad_report, mio_project_to_cad_outside_trim
+    public :: mio_boundary_layer, mio_boundary_layer_report
     public :: MIO_MESH_CAD_OK, MIO_MESH_CAD_EMPTY, MIO_MESH_CAD_OPEN_LOOP
     public :: MIO_MESH_CAD_SELF_INTERSECTING, MIO_MESH_CAD_DEGENERATE
     public :: MIO_MESH_CAD_PROJECTION_FAILED, MIO_MESH_CAD_BUDGET_EXCEEDED
@@ -531,6 +532,36 @@ module meshioplusplus
         integer(c_int64_t) :: num_failed = 0
         integer(c_int64_t) :: num_outside_trim = 0
         real(c_double) :: max_move = 0.0_c_double
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_boundary_layer_opts` (64 bytes; roadmap 6.9).
+    type, bind(c) :: mio_boundary_layer_opts_t
+        real(c_double) :: first_height = 0.0_c_double
+        real(c_double) :: growth = 1.2_c_double
+        real(c_double) :: collision_fraction = 0.45_c_double
+        integer(c_int32_t) :: num_layers = 3
+        integer(c_int32_t) :: reverse = 0
+        integer(c_int32_t) :: smooth_iterations = 5
+        integer(c_int32_t) :: max_shrink = 6
+        integer(c_int64_t) :: reserved(3) = 0
+    end type
+
+    !> `mio_boundary_layer_report` (128 bytes): what `mio_boundary_layer` did.
+    type, bind(c) :: mio_boundary_layer_report
+        integer(c_int64_t) :: num_cells = 0
+        integer(c_int64_t) :: num_wedges = 0
+        integer(c_int64_t) :: num_hexahedra = 0
+        integer(c_int64_t) :: num_pyramids = 0
+        integer(c_int64_t) :: num_tetrahedra = 0
+        integer(c_int64_t) :: num_shrunk = 0
+        integer(c_int64_t) :: num_collapsed = 0
+        integer(c_int64_t) :: num_not_visible = 0
+        real(c_double) :: min_scaled_jacobian = 0.0_c_double
+        real(c_double) :: min_thickness = 0.0_c_double
+        real(c_double) :: max_thickness = 0.0_c_double
+        integer(c_int32_t) :: cap_closed = 0
+        integer(c_int32_t) :: reserved_pad = 0
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
@@ -4502,6 +4533,15 @@ module meshioplusplus
             type(c_ptr), value :: mesh, info
             type(mio_project_to_cad_opts_t), intent(in) :: opts
             type(mio_project_to_cad_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_boundary_layer(mesh, opts, report) &
+                bind(c, name="mio_boundary_layer") result(h)
+            import :: c_ptr, mio_boundary_layer_opts_t, mio_boundary_layer_report
+            type(c_ptr), value :: mesh
+            type(mio_boundary_layer_opts_t), intent(in) :: opts
+            type(mio_boundary_layer_report), intent(out) :: report
             type(c_ptr) :: h
         end function
 
@@ -12583,6 +12623,49 @@ contains
         out%handle = c_mio_project_to_cad(mesh%handle, info%handle, opts, rep)
         if (.not. c_associated(out%handle)) then
             call handle_failure('project_to_cad', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Grow prismatic boundary layers from the triangle and quad surface `mesh`
+    !> (roadmap 6.9): `num_layers` layers (default 3), the first
+    !> `first_height` thick and each next `growth` (1.2) times the one before,
+    !> along each point's most normal normal (against the faces' normals with
+    !> `reverse`), stopped at `collision_fraction` (0.45) of the distance to
+    !> the surface, smoothed `smooth_iterations` (5) times, the points of a
+    !> folding cell halved `max_shrink` (6) times and then collapsed. The
+    !> optional `report` counts the cells and what was shrunk.
+    function mio_boundary_layer(mesh, first_height, num_layers, growth, reverse, &
+                                collision_fraction, smooth_iterations, max_shrink, report, &
+                                stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        real(real64), intent(in) :: first_height
+        integer, intent(in), optional :: num_layers, smooth_iterations, max_shrink
+        real(real64), intent(in), optional :: growth, collision_fraction
+        logical, intent(in), optional :: reverse
+        type(mio_boundary_layer_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_boundary_layer_opts_t) :: opts
+        type(mio_boundary_layer_report) :: rep
+        if (c_sizeof(opts) /= 64_c_size_t .or. c_sizeof(rep) /= 128_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: boundary_layer layout mismatch'
+            error stop 1
+        end if
+        opts%first_height = real(first_height, c_double)
+        if (present(num_layers)) opts%num_layers = int(num_layers, c_int32_t)
+        if (present(growth)) opts%growth = real(growth, c_double)
+        if (present(reverse)) opts%reverse = merge(1_c_int32_t, 0_c_int32_t, reverse)
+        if (present(collision_fraction)) &
+            opts%collision_fraction = real(collision_fraction, c_double)
+        if (present(smooth_iterations)) opts%smooth_iterations = int(smooth_iterations, c_int32_t)
+        if (present(max_shrink)) opts%max_shrink = int(max_shrink, c_int32_t)
+        out%handle = c_mio_boundary_layer(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('boundary_layer', mio_error_message(), stat, errmsg)
             return
         end if
         if (present(report)) report = rep

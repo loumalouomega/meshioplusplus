@@ -423,6 +423,17 @@ program test_fortran_api
                            'project_to_cad leaves a mesh on its model')
                 call check(size(mio_project_to_cad_outside_trim()) == 0, &
                            'project_to_cad lists no point outside the trims')
+                ! Roadmap 6.9: layers grown from the triangle are wedges.
+                block
+                    type(mio_mesh) :: grown
+                    type(mio_boundary_layer_report) :: brep
+                    grown = mio_boundary_layer(tris, 0.01_real64, num_layers=2, report=brep, &
+                                               stat=ierr, errmsg=msg)
+                    call check(ierr == 0 .and. brep%num_wedges > 0 .and. &
+                               brep%min_scaled_jacobian > 0.0_real64, &
+                               'boundary_layer grows wedges')
+                    if (ierr == 0) call grown%free()
+                end block
                 if (ierr == 0) call projected%free()
                 call tris%free()
             end if

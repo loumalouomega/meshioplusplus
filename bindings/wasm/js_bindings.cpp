@@ -174,6 +174,7 @@
 #include "meshioplusplus/operations/subdivide.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
+#include "meshioplusplus/operations/boundary_layer.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
@@ -1370,9 +1371,10 @@ val nurbs_info_to_val(const meshioplusplus::NurbsInfo& rInfo) {
     out.set("fieldNames", string_vec_to_val(rInfo.mFieldNames));
     val components = val::array();
     for (std::size_t k = 0; k < rInfo.mFieldNames.size(); ++k)
-        components.call<void>("push", rInfo.mPatches.empty()
-                                          ? 0.0
-                                          : static_cast<double>(cols_of(rInfo.mPatches[0].mFields[k])));
+        components.call<void>("push",
+                              rInfo.mPatches.empty()
+                                  ? 0.0
+                                  : static_cast<double>(cols_of(rInfo.mPatches[0].mFields[k])));
     out.set("fieldComponents", components);
     const meshioplusplus::NurbsTopology& t = rInfo.mTopology;
     if (t.mDimension == 0) {
@@ -1397,7 +1399,8 @@ val nurbs_info_to_val(const meshioplusplus::NurbsInfo& rInfo) {
 // A JS array or typed array (Number or BigInt elements) as `rows x Cols` doubles.
 NDArray nurbs_js_doubles(const val& rArr, std::size_t Cols, const char* pWhat) {
     if (rArr.isUndefined() || rArr.isNull())
-        throw meshioplusplus::WriteError(std::string("MFEM NURBS info: '") + pWhat + "' is missing");
+        throw meshioplusplus::WriteError(std::string("MFEM NURBS info: '") + pWhat +
+                                         "' is missing");
     const auto n = rArr["length"].as<std::size_t>();
     if (Cols == 0 || n % Cols)
         throw meshioplusplus::WriteError(std::string("MFEM NURBS info: '") + pWhat +
@@ -1413,7 +1416,8 @@ NDArray nurbs_js_doubles(const val& rArr, std::size_t Cols, const char* pWhat) {
 // The same as Int64, every entry an integer.
 NDArray nurbs_js_ints(const val& rArr, std::size_t Cols, const char* pWhat) {
     if (rArr.isUndefined() || rArr.isNull())
-        throw meshioplusplus::WriteError(std::string("MFEM NURBS info: '") + pWhat + "' is missing");
+        throw meshioplusplus::WriteError(std::string("MFEM NURBS info: '") + pWhat +
+                                         "' is missing");
     const auto n = rArr["length"].as<std::size_t>();
     if (Cols == 0 || n % Cols)
         throw meshioplusplus::WriteError(std::string("MFEM NURBS info: '") + pWhat +
@@ -1439,7 +1443,8 @@ meshioplusplus::NurbsInfo val_to_nurbs_info(const val& rInfo) {
     if (patches.isUndefined() || patches.isNull())
         throw meshioplusplus::WriteError("MFEM NURBS info: 'patches' is missing");
     info.mFieldNames = emscripten::vecFromJSArray<std::string>(rInfo["fieldNames"]);
-    const std::vector<double> components = emscripten::vecFromJSArray<double>(rInfo["fieldComponents"]);
+    const std::vector<double> components =
+        emscripten::vecFromJSArray<double>(rInfo["fieldComponents"]);
     if (components.size() != info.mFieldNames.size())
         throw meshioplusplus::WriteError("MFEM NURBS info: one fieldComponents entry per field");
     const auto np = patches["length"].as<unsigned>();
@@ -1688,7 +1693,8 @@ std::vector<meshioplusplus::BrepRef> val_to_brep_refs(const val& rArr) {
         ref.mName = brep_js_string(r, "name");
         ref.mTrimIndex = brep_js_int(r, "trimIndex");
         ref.mRelativeDirection = static_cast<std::int32_t>(brep_js_int(r, "relativeDirection"));
-        ref.mLocalCoordinates = emscripten::vecFromJSArray<double>(brep_js_get(r, "localCoordinates"));
+        ref.mLocalCoordinates =
+            emscripten::vecFromJSArray<double>(brep_js_get(r, "localCoordinates"));
         ref.mExtra = brep_js_string(r, "extra");
         out.push_back(std::move(ref));
     }
@@ -1706,7 +1712,8 @@ meshioplusplus::BrepInfo val_to_brep_info(const val& rInfo) {
         const val knots = brep_js_get(p, "knots");
         for (unsigned d = 0; d < knots["length"].as<unsigned>(); ++d)
             patch.mKnots.push_back(emscripten::vecFromJSArray<double>(knots[d]));
-        patch.mControlPoints = nurbs_js_doubles(brep_js_get(p, "controlPoints"), 3, "controlPoints");
+        patch.mControlPoints =
+            nurbs_js_doubles(brep_js_get(p, "controlPoints"), 3, "controlPoints");
         patch.mWeights = nurbs_js_doubles(brep_js_get(p, "weights"), 1, "weights");
         info.mPatches.push_back(std::move(patch));
     }
@@ -1733,7 +1740,8 @@ meshioplusplus::BrepInfo val_to_brep_info(const val& rInfo) {
         face.mTrimmed = brep_js_get(f, "trimmed").as<bool>();
         face.mRational = brep_js_get(f, "rational").as<bool>();
         face.mReducedKnots = brep_js_get(f, "reducedKnots").as<bool>();
-        face.mControlPointIds = nurbs_js_ints(brep_js_get(f, "controlPointIds"), 1, "controlPointIds");
+        face.mControlPointIds =
+            nurbs_js_ints(brep_js_get(f, "controlPointIds"), 1, "controlPointIds");
         const val loops = brep_js_get(f, "loops");
         for (unsigned l = 0; l < loops["length"].as<unsigned>(); ++l) {
             meshioplusplus::BrepLoop loop;
@@ -3282,7 +3290,8 @@ SettingsDocument val_to_settings(const val& rSettings) {
         check_settings_keys(output, "Output",
                             {"Path", "Pattern", "Format", "Encoding", "Codec", "FloatFormat"});
     else
-        check_settings_keys(output, "Output", {"Path", "Format", "Encoding", "Codec", "FloatFormat"});
+        check_settings_keys(output, "Output",
+                            {"Path", "Format", "Encoding", "Codec", "FloatFormat"});
     const val out_path = output["Path"];
     if (has_pattern && !out_path.isUndefined() && !out_path.isNull())
         throw meshioplusplus::ReadError(
@@ -3992,8 +4001,8 @@ val rectangle_js(const val& rDims, const val& rSize, const val& rOrigin,
             size = {{rSize[0].as<double>(), rSize[1].as<double>()}};
         }
         return mesh_to_val(meshioplusplus::rectangle(
-            {{d[0], d[1]}}, size, prim_js_vec3(rOrigin, {{0.0, 0.0, 0.0}}, true), rCellType,
-            rSplit, order, static_cast<std::int64_t>(maxCells)));
+            {{d[0], d[1]}}, size, prim_js_vec3(rOrigin, {{0.0, 0.0, 0.0}}, true), rCellType, rSplit,
+            order, static_cast<std::int64_t>(maxCells)));
     });
 }
 
@@ -4001,10 +4010,10 @@ val box_js(const val& rDims, const val& rSize, const val& rOrigin, const std::st
            int order, double maxCells) {
     return with_js_errors([&]() -> val {
         const auto d = prim_js_counts(rDims, 3, 1);
-        return mesh_to_val(meshioplusplus::box(
-            {{d[0], d[1], d[2]}}, prim_js_vec3(rSize, {{1.0, 1.0, 1.0}}, false),
-            prim_js_vec3(rOrigin, {{0.0, 0.0, 0.0}}, false), rCellType, order,
-            static_cast<std::int64_t>(maxCells)));
+        return mesh_to_val(
+            meshioplusplus::box({{d[0], d[1], d[2]}}, prim_js_vec3(rSize, {{1.0, 1.0, 1.0}}, false),
+                                prim_js_vec3(rOrigin, {{0.0, 0.0, 0.0}}, false), rCellType, order,
+                                static_cast<std::int64_t>(maxCells)));
     });
 }
 
@@ -4030,10 +4039,10 @@ val uv_sphere_js(double radius, double nu, double nv, const val& rCenter,
 val icosa_sphere_js(double radius, double subdivisions, const val& rCenter, int order,
                     double maxCells) {
     return with_js_errors([&]() -> val {
-        return mesh_to_val(meshioplusplus::icosa_sphere(
-            radius, static_cast<std::int64_t>(subdivisions),
-            prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false), order,
-            static_cast<std::int64_t>(maxCells)));
+        return mesh_to_val(
+            meshioplusplus::icosa_sphere(radius, static_cast<std::int64_t>(subdivisions),
+                                         prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false), order,
+                                         static_cast<std::int64_t>(maxCells)));
     });
 }
 
@@ -5494,9 +5503,9 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
             out.set("faces", faces);
         }
         out.set("info", brep_info_to_val(r.mBrep));
-        out.set("backend",
-                std::string(r.mBackend == meshioplusplus::FitCadBackend::Native ? "native"
-                                                                                : "occt"));
+        out.set(
+            "backend",
+            std::string(r.mBackend == meshioplusplus::FitCadBackend::Native ? "native" : "occt"));
         return out;
     });
 }
@@ -5540,7 +5549,8 @@ std::array<std::int32_t, 3> iga_js_triple(const val& rOptions, const char* pKey,
         throw std::invalid_argument(std::string("meshio++: iga: '") + pKey +
                                     "' must be a number or one to three numbers");
     for (std::size_t d = 0; d < 3; ++d)
-        out[d] = static_cast<std::int32_t>(v[static_cast<unsigned>(std::min(d, n - 1))].as<double>());
+        out[d] =
+            static_cast<std::int32_t>(v[static_cast<unsigned>(std::min(d, n - 1))].as<double>());
     return out;
 }
 
@@ -5594,8 +5604,8 @@ val iga_sample_js(const val& rInfo, const val& rOptions) {
         val out = val::object();
         if (fmt == "mfem") {
             meshioplusplus::NurbsInfo mapped;
-            out.set("mesh", mesh_to_val(meshioplusplus::iga_sample(val_to_nurbs_info(rInfo), so,
-                                                                   &mapped)));
+            out.set("mesh",
+                    mesh_to_val(meshioplusplus::iga_sample(val_to_nurbs_info(rInfo), so, &mapped)));
             out.set("info", nurbs_info_to_val(mapped));
         } else {
             const meshioplusplus::BrepInfo brep = val_to_brep_info(rInfo);
@@ -5662,7 +5672,8 @@ val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
         if (has("maxChordalDeviation"))
             o.mMaxChordalDeviation = rOptions["maxChordalDeviation"].as<double>();
         if (has("minPointsPerEdge"))
-            o.mMinPointsPerEdge = static_cast<std::int64_t>(rOptions["minPointsPerEdge"].as<double>());
+            o.mMinPointsPerEdge =
+                static_cast<std::int64_t>(rOptions["minPointsPerEdge"].as<double>());
         if (has("tolerance"))
             o.mGeometricTolerance = rOptions["tolerance"].as<double>();
         if (has("recordFaceIds"))
@@ -7537,6 +7548,54 @@ val conservative_interpolate_js(const val& rSourceObj, const val& rTargetObj, co
  * true, recordLevels: true})`); `coarse` must be the mesh that call was run
  * on. Returns `{ mesh, numGroupsUndone, numCellsRemoved }`.
  */
+// boundary_layer (roadmap 6.9): prisms grown from a surface; options
+// {firstHeight (required), numLayers, growth, reverse, collisionFraction,
+// smoothIterations, maxShrink}.
+val boundary_layer_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        if (rOptions.isUndefined() || rOptions.isNull() || !rOptions.hasOwnProperty("firstHeight"))
+            throw std::invalid_argument("meshio++: boundary_layer: the options need 'firstHeight'");
+        check_settings_keys(rOptions, "the boundaryLayer options",
+                            {"firstHeight", "numLayers", "growth", "reverse", "collisionFraction",
+                             "smoothIterations", "maxShrink"});
+        meshioplusplus::BoundaryLayerOptions o;
+        o.mFirstHeight = rOptions["firstHeight"].as<double>();
+        if (rOptions.hasOwnProperty("numLayers"))
+            o.mNumLayers = rOptions["numLayers"].as<int>();
+        if (rOptions.hasOwnProperty("growth"))
+            o.mGrowth = rOptions["growth"].as<double>();
+        if (rOptions.hasOwnProperty("reverse"))
+            o.mReverse = rOptions["reverse"].as<bool>();
+        if (rOptions.hasOwnProperty("collisionFraction"))
+            o.mCollisionFraction = rOptions["collisionFraction"].as<double>();
+        if (rOptions.hasOwnProperty("smoothIterations"))
+            o.mSmoothIterations = rOptions["smoothIterations"].as<int>();
+        if (rOptions.hasOwnProperty("maxShrink"))
+            o.mMaxShrink = rOptions["maxShrink"].as<int>();
+        meshioplusplus::BoundaryLayerResult r =
+            meshioplusplus::boundary_layer(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numCells", static_cast<double>(r.mNumCells));
+        out.set("numWedges", static_cast<double>(r.mNumWedges));
+        out.set("numHexahedra", static_cast<double>(r.mNumHexahedra));
+        out.set("numPyramids", static_cast<double>(r.mNumPyramids));
+        out.set("numTetrahedra", static_cast<double>(r.mNumTetrahedra));
+        out.set("numShrunk", static_cast<double>(r.mNumShrunk));
+        out.set("numCollapsed", static_cast<double>(r.mNumCollapsed));
+        out.set("numNotVisible", static_cast<double>(r.mNumNotVisible));
+        out.set("minScaledJacobian", r.mMinScaledJacobian);
+        out.set("minThickness", r.mMinThickness);
+        out.set("maxThickness", r.mMaxThickness);
+        out.set("capClosed", r.mCapClosed);
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
 // project_to_cad (roadmap 6.10.1): every point of a mesh onto the CAD face or
 // edge its cells name; options {faceArray, edgeArray, maxDistance,
 // trimSamples}, all optional.
@@ -8092,6 +8151,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("igaSample", &iga_sample_js);
     emscripten::function("meshCadSurface", &mesh_cad_surface_js);
     emscripten::function("projectToCad", &project_to_cad_js);
+    emscripten::function("boundaryLayer", &boundary_layer_js);
     emscripten::function("igaEvaluate", &iga_evaluate_js);
     emscripten::function("render", &render_js);
     emscripten::function("renderText", &render_text_js);

@@ -608,6 +608,16 @@ _OP_TABLE = {
     # Back onto the CAD (roadmap 6.10.1): the B-rep at Model, or the one a
     # CAD Input carries when no step has changed the mesh since.
     "ProjectToCad": ("Model", "FaceArray", "EdgeArray", "MaxDistance", "TrimSamples"),
+    # Prismatic layers grown from the surface (roadmap 6.9).
+    "BoundaryLayer": (
+        "FirstHeight",
+        "NumLayers",
+        "Growth",
+        "Reverse",
+        "CollisionFraction",
+        "SmoothIterations",
+        "MaxShrink",
+    ),
 }
 
 _V2_OP_TABLE = {
@@ -1219,7 +1229,29 @@ def _apply_step(mesh, step, steps, warnings):
             "needs the CAD model a pipeline's Input reads, which only a whole run "
             "carries (run_pipeline), not a step applied on its own",
         )
-    if op == "ProjectToCad":
+    if op == "BoundaryLayer":
+        from ._boundary_layer import boundary_layer
+
+        if "FirstHeight" not in step:
+            raise _err(op, "'FirstHeight' is required")
+        mesh, report = boundary_layer(
+            mesh,
+            _number(step, "FirstHeight", 0.0),
+            num_layers=int(_number(step, "NumLayers", 3)),
+            growth=_number(step, "Growth", 1.2),
+            reverse=_flag(step, "Reverse", False),
+            collision_fraction=_number(step, "CollisionFraction", 0.45),
+            smooth_iterations=int(_number(step, "SmoothIterations", 5)),
+            max_shrink=int(_number(step, "MaxShrink", 6)),
+            return_report=True,
+        )
+        entry.update(
+            NumCells=float(report["num_cells"]),
+            NumShrunk=float(report["num_shrunk"]),
+            NumCollapsed=float(report["num_collapsed"]),
+            MinScaledJacobian=float(report["min_scaled_jacobian"]),
+        )
+    elif op == "ProjectToCad":
         mesh = _project_to_cad_step(mesh, step, entry, None)
     elif op == "Quality":
         mesh = attach_quality(mesh)

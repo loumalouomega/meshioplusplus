@@ -3047,6 +3047,47 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def boundary_layer(
+        input_path: str,
+        output_path: str,
+        first_height: float,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        num_layers: int = 3,
+        growth: float = 1.2,
+        reverse: bool = False,
+        collision_fraction: float = 0.45,
+        smooth_iterations: int = 5,
+        max_shrink: int = 6,
+    ) -> dict:
+        """Grow prismatic boundary layers from a triangle and quad surface
+        (roadmap 6.9): wedges from triangles and hexahedra from quads along
+        each point's most normal normal (Aubry and Löhner 2009), the first
+        first_height thick and each next growth times the one before (against
+        the faces' normals with reverse), stopped at collision_fraction of the
+        distance to the surface ahead, smoothed smooth_iterations times; the
+        points of a cell that would fold are halved max_shrink times and then
+        collapsed into pyramids and tetrahedra, so no cell is written folded.
+        The wall and the cap come out as faces with boundary_layer:layer cell
+        data. Reports num_cells, num_wedges, num_hexahedra, num_pyramids,
+        num_tetrahedra, num_shrunk, num_collapsed, num_not_visible,
+        min_scaled_jacobian, min_thickness, max_thickness and cap_closed."""
+        return _guard(
+            _tools.tool_boundary_layer,
+            input_path=input_path,
+            output_path=output_path,
+            first_height=first_height,
+            input_format=input_format,
+            output_format=output_format,
+            num_layers=num_layers,
+            growth=growth,
+            reverse=reverse,
+            collision_fraction=collision_fraction,
+            smooth_iterations=smooth_iterations,
+            max_shrink=max_shrink,
+        )
+
+    @server.tool()
     def project_to_cad(
         input_path: str,
         model_path: str,

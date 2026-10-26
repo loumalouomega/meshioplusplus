@@ -108,6 +108,7 @@ if TYPE_CHECKING:
     )
     from ._agglomerate import agglomerate
     from ._blender import from_blender, has_blender, to_blender
+    from ._boundary_layer import boundary_layer
     from ._clean import clean
     from ._conservative_interpolate import conservative_interpolate
     from ._convert_cells import convert_cells
@@ -428,6 +429,7 @@ _LAZY_ATTRS = {
     "octree_mesh": "_octree_mesh",
     "mesh_cad_surface": "_mesh_cad",
     "project_to_cad": "_project_to_cad",
+    "boundary_layer": "_boundary_layer",
     "triangulate_polygon_2d": "_mesh_cad",
 }
 
@@ -600,6 +602,7 @@ __all__ = [
     "octree_mesh",
     "mesh_cad_surface",
     "project_to_cad",
+    "boundary_layer",
     "triangulate_polygon_2d",
     "sample_distance",
     "distance_to_surface",

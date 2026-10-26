@@ -270,6 +270,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   interpolate: (source: Mesh, target: Mesh, method?: string, arrays?: string[], extrapolate?: boolean, defaultValue?: number, onConflict?: string) => Mesh,
  *   conservativeInterpolate: (source: Mesh, target: Mesh, arrays?: string[], defaultValue?: number, onConflict?: string) => Mesh,
  *   undoGreen: (coarse: Mesh, fine: Mesh) => {mesh: Mesh, numGroupsUndone: number, numCellsRemoved: number},
+ *   boundaryLayer: (mesh: Mesh, options: {firstHeight: number, numLayers?: number, growth?: number, reverse?: boolean, collisionFraction?: number, smoothIterations?: number, maxShrink?: number}) => {mesh: Mesh, numCells: number, numWedges: number, numHexahedra: number, numPyramids: number, numTetrahedra: number, numShrunk: number, numCollapsed: number, numNotVisible: number, minScaledJacobian: number, minThickness: number, maxThickness: number, capClosed: boolean, warnings: string[]},
  *   projectToCad: (mesh: Mesh, info: object, options?: {faceArray?: string, edgeArray?: string, maxDistance?: number, trimSamples?: number}) => {mesh: Mesh, numProjected: number, numOnEdges: number, numCorners: number, numAmbiguous: number, numTooFar: number, numFailed: number, numOutsideTrim: number, maxMove: number, outsideTrim: number[], warnings: string[]},
  *   cropBbox: (mesh: Mesh, lo: number[], hi: number[], mode?: string, recordIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
  *   cropPlane: (mesh: Mesh, point: number[], normal: number[], mode?: string, recordIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
@@ -1051,6 +1052,7 @@ export async function loadMeshioPlusPlus(
             Module.igaEvaluate(info, patch, params, options),
         meshCadSurface: (info, options) => Module.meshCadSurface(info, options),
         projectToCad: (mesh, info, options) => Module.projectToCad(mesh, info, options ?? {}),
+        boundaryLayer: (mesh, options) => Module.boundaryLayer(mesh, options),
         tessellate: (mesh, levels = 2, curved = true, fields = true, recordStencil = false) =>
             Module.tessellate(mesh, levels, curved, fields, recordStencil),
         render: (mesh, options = {}) => Module.render(mesh, options),

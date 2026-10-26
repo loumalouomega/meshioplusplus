@@ -1644,7 +1644,8 @@ TEST(CApi, NurbsSideChannel) {
         out << "MFEM NURBS mesh v1.0\ndimension\n2\nelements\n1\n5 3 0 1 2 3\nboundary\n0\n"
                "edges\n4\n0 0 1\n0 3 2\n1 0 3\n1 1 2\nvertices\n4\nknotvectors\n2\n"
                "2 3 0 0 0 1 1 1\n1 2 0 0 1 1\nweights\n1\n1\n1\n1\n"
-            << w << "\n" << w
+            << w << "\n"
+            << w
             << "\nFiniteElementSpace\nFiniteElementCollection: NURBS2\nVDim: 2\nOrdering: 1\n"
                "1 0\n0 1\n0 2\n2 0\n1 1\n2 2\n";
     }
@@ -1726,7 +1727,8 @@ TEST(CApi, IgaRefinesAndEvaluatesTheNurbsModel) {
         out << "MFEM NURBS mesh v1.0\ndimension\n2\nelements\n1\n5 3 0 1 2 3\nboundary\n0\n"
                "edges\n4\n0 0 1\n0 3 2\n1 0 3\n1 1 2\nvertices\n4\nknotvectors\n2\n"
                "2 3 0 0 0 1 1 1\n1 2 0 0 1 1\nweights\n1\n1\n1\n1\n"
-            << w << "\n" << w
+            << w << "\n"
+            << w
             << "\nFiniteElementSpace\nFiniteElementCollection: NURBS2\nVDim: 2\nOrdering: 1\n"
                "1 0\n0 1\n0 2\n2 0\n1 1\n2 2\n";
     }
@@ -1761,7 +1763,8 @@ TEST(CApi, IgaRefinesAndEvaluatesTheNurbsModel) {
     EXPECT_EQ(static_cast<const int32_t*>(data)[1], 2);
     // The refined model writes back as an MFEM NURBS mesh through the returned mesh.
     const auto output = mt::temp_path(".mesh");
-    ASSERT_EQ(mio_write_with_info(output.c_str(), fine, "mfem", refined), MIO_OK) << mio_last_error();
+    ASSERT_EQ(mio_write_with_info(output.c_str(), fine, "mfem", refined), MIO_OK)
+        << mio_last_error();
     mio_mesh_free(fine);
 
     // Evaluate the same point on the original and the refined patch.
@@ -1777,10 +1780,12 @@ TEST(CApi, IgaRefinesAndEvaluatesTheNurbsModel) {
     EXPECT_EQ(dtype, MIO_FLOAT64);
     EXPECT_EQ(shape[0], 2);
     EXPECT_EQ(shape[1], 2);
-    ASSERT_EQ(mio_iga_evaluation_array(b, MIO_IGA_POINTS, 0, &pb, nullptr, nullptr, nullptr), MIO_OK);
+    ASSERT_EQ(mio_iga_evaluation_array(b, MIO_IGA_POINTS, 0, &pb, nullptr, nullptr, nullptr),
+              MIO_OK);
     for (int i = 0; i < 4; ++i)
         EXPECT_NEAR(static_cast<const double*>(pa)[i], static_cast<const double*>(pb)[i], 1e-13);
-    ASSERT_EQ(mio_iga_evaluation_array(a, MIO_IGA_DERIVATIVES, 0, &pa, &dtype, &ndim, shape), MIO_OK);
+    ASSERT_EQ(mio_iga_evaluation_array(a, MIO_IGA_DERIVATIVES, 0, &pa, &dtype, &ndim, shape),
+              MIO_OK);
     EXPECT_EQ(ndim, 3);
     EXPECT_EQ(shape[1], 2);
     // a planar patch has no 3-D normals, no trimming, no fields
@@ -2223,6 +2228,41 @@ TEST(CApi, MeshCadSurfaceUntanglesAndMakesQuads) {
     mio_format_info_free(info);
 }
 
+// Roadmap 6.9: layers grown outward from the box's mesh are wedges, all
+// valid, under a closed cap.
+TEST(CApi, BoundaryLayer) {
+    const auto path = mt::temp_path(".cad.json");
+    meshioplusplus::write_cad_json(path, meshioplusplus::Mesh{}, brep_solids::box());
+    mio_format_info* info = nullptr;
+    mio_mesh* sampled = mio_read_with_info(path.c_str(), nullptr, nullptr, &info);
+    ASSERT_NE(sampled, nullptr) << mio_last_error();
+    mio_mesh_cad_surface_opts opts;
+    mio_mesh_cad_surface_opts_init(&opts);
+    opts.target_size = 0.25;
+    mio_mesh* m = mio_mesh_cad_surface(info, &opts, nullptr);
+    ASSERT_NE(m, nullptr) << mio_last_error();
+    mio_boundary_layer_opts bo;
+    mio_boundary_layer_opts_init(&bo);
+    EXPECT_EQ(bo.num_layers, 3);
+    EXPECT_DOUBLE_EQ(bo.growth, 1.2);
+    EXPECT_EQ(mio_boundary_layer(m, &bo, nullptr), nullptr);  // no first_height
+    EXPECT_NE(std::string(mio_last_error()).find("first_height"), std::string::npos);
+    bo.first_height = 0.01;
+    mio_boundary_layer_report report{};
+    mio_mesh* out = mio_boundary_layer(m, &bo, &report);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_GT(report.num_wedges, 0);
+    EXPECT_EQ(report.num_cells, report.num_wedges);
+    EXPECT_EQ(report.num_collapsed, 0);
+    EXPECT_EQ(report.cap_closed, 1);
+    EXPECT_GT(report.min_scaled_jacobian, 0.1);
+    mio_mesh_free(out);
+    EXPECT_EQ(mio_boundary_layer(m, nullptr, nullptr), nullptr);
+    mio_mesh_free(m);
+    mio_mesh_free(sampled);
+    mio_format_info_free(info);
+}
+
 // Roadmap 6.10.1: a mesh of the box projected back onto it moves nothing,
 // every point lands on a face or an edge, and none outside its trims.
 TEST(CApi, ProjectToCad) {
@@ -2299,7 +2339,8 @@ TEST(CApi, IgaOnABrepKeepsItsTrimsAndReportsInside) {
     EXPECT_EQ(dtype, MIO_UINT8);
     EXPECT_EQ(static_cast<const uint8_t*>(data)[0], 1);
     EXPECT_EQ(static_cast<const uint8_t*>(data)[1], 0);
-    ASSERT_EQ(mio_iga_evaluation_array(ev, MIO_IGA_NORMALS, 0, &data, &dtype, &ndim, shape), MIO_OK);
+    ASSERT_EQ(mio_iga_evaluation_array(ev, MIO_IGA_NORMALS, 0, &data, &dtype, &ndim, shape),
+              MIO_OK);
     EXPECT_NEAR(std::abs(static_cast<const double*>(data)[2]), 1.0, 1e-13);
     mio_iga_evaluation_free(ev);
     mio_format_info_free(refined);
@@ -6091,8 +6132,7 @@ TEST(CApi, BrepSideChannel) {
     ASSERT_EQ(mio_brep_info_array(info, MIO_BREP_TRIMS, 0, 14, &data, &dtype, &ndim, shape),
               MIO_OK);  // the active range
     EXPECT_EQ(shape[0], 2);
-    ASSERT_EQ(mio_brep_info_array(info, MIO_BREP_BREPS, 0, 1, &data, &dtype, &ndim, shape),
-              MIO_OK);
+    ASSERT_EQ(mio_brep_info_array(info, MIO_BREP_BREPS, 0, 1, &data, &dtype, &ndim, shape), MIO_OK);
     EXPECT_EQ(dtype, MIO_INT64);
     EXPECT_EQ(static_cast<const int64_t*>(data)[0], 0);
     char buf[16];

@@ -2722,6 +2722,36 @@ mio_mesh_cad_surface <- function(info, target_size, max_chordal_deviation = 0,
   r
 }
 
+#' Grow boundary layers from a surface
+#'
+#' Prismatic layers grow from the triangle and quad surface `mesh` (roadmap
+#' 6.9): wedges from triangles and hexahedra from quads along each point's most
+#' normal normal (Aubry and Löhner 2009), the first `first_height` thick and
+#' each next `growth` times the one before; stopped at `collision_fraction` of
+#' the distance to the surface ahead; the points of a cell that would fold
+#' shrunk and then collapsed into pyramids and tetrahedra. The wall and the cap
+#' come out as faces, with `boundary_layer:layer` cell data.
+#'
+#' @param mesh A triangle and quad surface.
+#' @param first_height The first layer's thickness.
+#' @param num_layers,growth How many layers, and each over the one before.
+#' @param reverse Grow against the faces' normals.
+#' @param collision_fraction Of the distance a point's ray hits, in (0, 1].
+#' @param smooth_iterations,max_shrink Smoothing passes; halvings before a
+#'   point collapses.
+#' @return A list: `mesh`, `num_cells`, `num_wedges`, `num_hexahedra`,
+#'   `num_pyramids`, `num_tetrahedra`, `num_shrunk`, `num_collapsed`,
+#'   `num_not_visible`, `min_scaled_jacobian`, `min_thickness`,
+#'   `max_thickness` and `cap_closed`.
+#' @export
+mio_boundary_layer <- function(mesh, first_height, num_layers = 3, growth = 1.2,
+                               reverse = FALSE, collision_fraction = 0.45,
+                               smooth_iterations = 5, max_shrink = 6) {
+  .Call(R_mio_boundary_layer, mesh, as.numeric(first_height), as.integer(num_layers),
+        as.numeric(growth), isTRUE(reverse), as.numeric(collision_fraction),
+        as.integer(smooth_iterations), as.integer(max_shrink))
+}
+
 #' Move a mesh's points back onto its CAD model
 #'
 #' Every point of `mesh` goes onto the CAD face or edge its cells name

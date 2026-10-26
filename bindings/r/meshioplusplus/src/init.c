@@ -126,6 +126,7 @@ extern SEXP R_mio_merge(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_interpolate(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_conservative_interpolate(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_undo_green(SEXP, SEXP);
+extern SEXP R_mio_boundary_layer(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_project_to_cad(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_meshes_equal(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_diff(SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -324,6 +325,7 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_interpolate, 7),
                                               CALLDEF(R_mio_conservative_interpolate, 5),
                                               CALLDEF(R_mio_undo_green, 2),
+                                              CALLDEF(R_mio_boundary_layer, 8),
                                               CALLDEF(R_mio_project_to_cad, 6),
                                               CALLDEF(R_mio_meshes_equal, 5),
                                               CALLDEF(R_mio_diff, 5),

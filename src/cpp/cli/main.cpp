@@ -94,6 +94,7 @@
 #include "meshioplusplus/operations/primitives.hpp"
 #include "meshioplusplus/operations/octree.hpp"
 #include "meshioplusplus/operations/mesh_cad.hpp"
+#include "meshioplusplus/operations/boundary_layer.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/error.hpp"
@@ -179,20 +180,20 @@ using meshioplusplus::WriteError;
 // Small argument parser
 // --------------------------------------------------------------------------
 
-using meshioplusplus::cli::cli_opt_spec;
-using meshioplusplus::cli::cli_parsed;
-using meshioplusplus::cli::cli_parse;
-using meshioplusplus::cli::opt_value;
-using meshioplusplus::cli::has_flag;
-using meshioplusplus::cli::opt_values;
-using meshioplusplus::cli::has_opt;
+using meshioplusplus::cli::cli_color_depth;
 using meshioplusplus::cli::cli_color_values;
-using meshioplusplus::cli::render_flag_specs;
+using meshioplusplus::cli::cli_opt_spec;
+using meshioplusplus::cli::cli_parse;
 using meshioplusplus::cli::cli_parse_numbers;
 using meshioplusplus::cli::cli_parse_rgba;
+using meshioplusplus::cli::cli_parsed;
 using meshioplusplus::cli::cli_render_options;
 using meshioplusplus::cli::cli_text_encoding;
-using meshioplusplus::cli::cli_color_depth;
+using meshioplusplus::cli::has_flag;
+using meshioplusplus::cli::has_opt;
+using meshioplusplus::cli::opt_value;
+using meshioplusplus::cli::opt_values;
+using meshioplusplus::cli::render_flag_specs;
 
 // --------------------------------------------------------------------------
 // Format dispatch (mirrors bindings/c / bindings/wasm)
@@ -473,6 +474,10 @@ void print_usage(std::ostream& os) {
           "                            [--quads none|dominant|all]\n"
           "                            [--quad-pairs matching|greedy]\n"
           "                            [--strict] [--json]\n"
+          "  boundary-layer          Prismatic layers grown from a triangle and quad\n"
+          "                            surface: --first-height H [--num-layers N]\n"
+          "                            [--growth G] [--reverse] [--collision-fraction F]\n"
+          "                            [--smooth N] [--max-shrink N] [--json]\n"
           "  project-to-cad          Move a mesh's points back onto the CAD faces and\n"
           "                            edges its cells name: INFILE MODEL OUTFILE\n"
           "                            [--face-array NAME] [--edge-array NAME]\n"
@@ -1966,9 +1971,10 @@ CliIgaModel cli_iga_read(const std::string& rPath, const std::string& rFormat) {
                   : m.mFormat == "step"   ? meshioplusplus::read_step(rPath, *m.mBrep)
                                           : meshioplusplus::read_iges(rPath, *m.mBrep);
     } else {
-        throw std::runtime_error("'" + m.mFormat +
-                                 "' carries no NURBS model (use an MFEM NURBS mesh, CAD JSON, STEP or "
-                                 "IGES)");
+        throw std::runtime_error(
+            "'" + m.mFormat +
+            "' carries no NURBS model (use an MFEM NURBS mesh, CAD JSON, STEP or "
+            "IGES)");
     }
     return m;
 }
@@ -2520,15 +2526,15 @@ int cmd_iga_evaluate(const std::vector<std::string>& rArgs) {
     if (!has_opt(p, "param"))
         throw std::runtime_error("iga-evaluate requires at least one --param u[,v[,w]]");
     CliIgaModel model = cli_iga_read(p.positionals[0], opt_value(p, "input-format"));
-    const auto patch = static_cast<std::size_t>(
-        has_opt(p, "patch") ? std::stoll(opt_value(p, "patch")) : 0);
+    const auto patch =
+        static_cast<std::size_t>(has_opt(p, "patch") ? std::stoll(opt_value(p, "patch")) : 0);
     const auto derivatives = static_cast<std::int32_t>(
         has_opt(p, "derivatives") ? std::stol(opt_value(p, "derivatives")) : 0);
     const auto trim_samples = static_cast<std::int32_t>(
         has_opt(p, "trim-samples") ? std::stol(opt_value(p, "trim-samples")) : 16);
     const std::size_t dim = model.mNurbs ? (patch < model.mNurbs->mPatches.size()
-                                                 ? model.mNurbs->mPatches[patch].mDegrees.size()
-                                                 : 0)
+                                                ? model.mNurbs->mPatches[patch].mDegrees.size()
+                                                : 0)
                                          : 2;
     // Every --param, point after point (the parser keeps the values of a repeated option).
     std::vector<double> flat;
@@ -2547,9 +2553,9 @@ int cmd_iga_evaluate(const std::vector<std::string>& rArgs) {
     NDArray params(meshioplusplus::DType::Float64, {flat.size() / d, d});
     std::copy(flat.begin(), flat.end(), params.As<double>());
     const meshioplusplus::IgaEvaluation e =
-        model.mNurbs ? meshioplusplus::iga_evaluate(*model.mNurbs, patch, params, derivatives)
-                     : meshioplusplus::iga_evaluate(*model.mBrep, patch, params, derivatives,
-                                                    trim_samples);
+        model.mNurbs
+            ? meshioplusplus::iga_evaluate(*model.mNurbs, patch, params, derivatives)
+            : meshioplusplus::iga_evaluate(*model.mBrep, patch, params, derivatives, trim_samples);
     meshioplusplus::cli::JsonOut json(std::cout);
     const auto array = [&](const char* pName, const NDArray& rA) {
         json.Key(pName);
@@ -2815,7 +2821,8 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         options.mMaxDemotionRounds = std::stoll(opt_value(p, "max-demotion-rounds"));
     options.mFreeform = !has_flag(p, "no-freeform");
     if (has_opt(p, "freeform-degree"))
-        options.mFreeformDegree = static_cast<std::int32_t>(std::stoi(opt_value(p, "freeform-degree")));
+        options.mFreeformDegree =
+            static_cast<std::int32_t>(std::stoi(opt_value(p, "freeform-degree")));
     if (has_opt(p, "freeform-max-control"))
         options.mFreeformMaxControl = std::stoll(opt_value(p, "freeform-max-control"));
     options.mFreeformSplit = !has_flag(p, "no-freeform-split");
@@ -4274,18 +4281,18 @@ int cmd_generate(const std::vector<std::string>& rArgs) {
     Mesh mesh;
     if (shape == "rectangle") {
         const auto d = dims(2, 1);
-        mesh = meshioplusplus::rectangle({{d[0], d[1]}}, vec2("size", {{1.0, 1.0}}),
-                                         vec3("origin", zero, true),
-                                         opt_value(p, "cell-type", "quad"),
-                                         opt_value(p, "split", "zigzag"), order, max_cells);
+        mesh = meshioplusplus::rectangle(
+            {{d[0], d[1]}}, vec2("size", {{1.0, 1.0}}), vec3("origin", zero, true),
+            opt_value(p, "cell-type", "quad"), opt_value(p, "split", "zigzag"), order, max_cells);
     } else if (shape == "box") {
         const auto d = dims(3, 1);
         mesh = meshioplusplus::box({{d[0], d[1], d[2]}}, vec3("size", {{1.0, 1.0, 1.0}}, false),
                                    vec3("origin", zero, false),
                                    opt_value(p, "cell-type", "hexahedron"), order, max_cells);
     } else if (shape == "disk") {
-        mesh = meshioplusplus::disk(number("radius", 1.0), count("n", 8), vec3("center", zero, false),
-                                    opt_value(p, "cell-type", "quad"), order, max_cells);
+        mesh =
+            meshioplusplus::disk(number("radius", 1.0), count("n", 8), vec3("center", zero, false),
+                                 opt_value(p, "cell-type", "quad"), order, max_cells);
     } else if (shape == "uv-sphere") {
         mesh = meshioplusplus::uv_sphere(number("radius", 1.0), count("nu", 16), count("nv", 8),
                                          vec3("center", zero, false),
@@ -4294,10 +4301,9 @@ int cmd_generate(const std::vector<std::string>& rArgs) {
         mesh = meshioplusplus::icosa_sphere(number("radius", 1.0), count("subdivisions", 2),
                                             vec3("center", zero, false), order, max_cells);
     } else if (shape == "cylinder") {
-        mesh = meshioplusplus::cylinder(number("radius", 1.0), number("height", 1.0),
-                                        count("nxy", 8), count("nz", 8),
-                                        vec3("center", zero, false),
-                                        opt_value(p, "cell-type", "hexahedron"), order, max_cells);
+        mesh = meshioplusplus::cylinder(
+            number("radius", 1.0), number("height", 1.0), count("nxy", 8), count("nz", 8),
+            vec3("center", zero, false), opt_value(p, "cell-type", "hexahedron"), order, max_cells);
     } else if (shape == "reference-triangle") {
         mesh = meshioplusplus::reference_triangle(count("n", 4), vec2("size", {{1.0, 1.0}}),
                                                   vec3("origin", zero, true), order, max_cells);
@@ -4441,8 +4447,8 @@ int cmd_octree(const std::vector<std::string>& rArgs) {
     meshioplusplus::OctreeResult r = meshioplusplus::octree(mesh, options);
 
     if (!has_flag(p, "quiet")) {
-        std::cout << (r.mDimension == 2 ? "quadtree" : "octree") << " (" << opt_value(p, "fill", "all")
-                  << ")\n";
+        std::cout << (r.mDimension == 2 ? "quadtree" : "octree") << " ("
+                  << opt_value(p, "fill", "all") << ")\n";
         std::cout << "  root size:      " << r.mRootSize << "\n";
         std::cout << "  finest level:   " << r.mFinestLevel << "\n";
         std::cout << "  leaves kept:    " << r.mNumLeaves << "\n";
@@ -5134,6 +5140,76 @@ int cmd_refine(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+int cmd_boundary_layer(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"first-height", {}, true},
+                                  {"num-layers", {}, true},
+                                  {"growth", {}, true},
+                                  {"reverse", {}, false},
+                                  {"collision-fraction", {}, true},
+                                  {"smooth", {}, true},
+                                  {"max-shrink", {}, true},
+                                  {"json", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("boundary-layer requires exactly INFILE and OUTFILE");
+    if (!has_opt(p, "first-height"))
+        throw std::runtime_error("boundary-layer requires --first-height H");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::BoundaryLayerOptions o;
+    o.mFirstHeight = meshioplusplus::detail::stod_c(opt_value(p, "first-height"));
+    if (has_opt(p, "num-layers"))
+        o.mNumLayers = std::stoi(opt_value(p, "num-layers"));
+    if (has_opt(p, "growth"))
+        o.mGrowth = meshioplusplus::detail::stod_c(opt_value(p, "growth"));
+    o.mReverse = has_flag(p, "reverse");
+    if (has_opt(p, "collision-fraction"))
+        o.mCollisionFraction = meshioplusplus::detail::stod_c(opt_value(p, "collision-fraction"));
+    if (has_opt(p, "smooth"))
+        o.mSmoothIterations = std::stoi(opt_value(p, "smooth"));
+    if (has_opt(p, "max-shrink"))
+        o.mMaxShrink = std::stoi(opt_value(p, "max-shrink"));
+    auto r = meshioplusplus::boundary_layer(mesh, o);
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_cells", r.mNumCells);
+        json.Field("num_wedges", r.mNumWedges);
+        json.Field("num_hexahedra", r.mNumHexahedra);
+        json.Field("num_pyramids", r.mNumPyramids);
+        json.Field("num_tetrahedra", r.mNumTetrahedra);
+        json.Field("num_shrunk", r.mNumShrunk);
+        json.Field("num_collapsed", r.mNumCollapsed);
+        json.Field("num_not_visible", r.mNumNotVisible);
+        json.Field("min_scaled_jacobian", r.mMinScaledJacobian);
+        json.Field("min_thickness", r.mMinThickness);
+        json.Field("max_thickness", r.mMaxThickness);
+        json.Field("cap_closed", r.mCapClosed);
+        json.Key("warnings");
+        json.BeginArray();
+        for (const std::string& w : r.mWarnings)
+            json.String(w);
+        json.EndArray();
+        json.EndObject();
+        std::cout << "\n";
+    } else if (!has_flag(p, "quiet")) {
+        char sj[32], t0[32], t1[32];
+        meshioplusplus::detail::snprintf_c(sj, sizeof(sj), "%.3f", r.mMinScaledJacobian);
+        meshioplusplus::detail::snprintf_c(t0, sizeof(t0), "%.6g", r.mMinThickness);
+        meshioplusplus::detail::snprintf_c(t1, sizeof(t1), "%.6g", r.mMaxThickness);
+        std::cout << r.mNumCells << " cells (" << r.mNumWedges << " wedges, " << r.mNumHexahedra
+                  << " hexahedra, " << r.mNumPyramids << " pyramids, " << r.mNumTetrahedra
+                  << " tetrahedra), least scaled Jacobian " << sj << "; thickness " << t0 << " to "
+                  << t1 << ", " << r.mNumShrunk << " points thinner, " << r.mNumCollapsed
+                  << " collapsed; cap " << (r.mCapClosed ? "closed" : "open") << "\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
 int cmd_project_to_cad(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -5731,7 +5807,8 @@ int cmd_view(const std::vector<std::string>& rArgs) {
         throw std::runtime_error("view: unknown backend '" + backend +
                                  "' (expected auto, polyscope or terminal)");
     if (backend == "auto")
-        backend = !meshioplusplus::cli::has_polyscope() && meshioplusplus::cli::stdin_is_terminal() &&
+        backend = !meshioplusplus::cli::has_polyscope() &&
+                          meshioplusplus::cli::stdin_is_terminal() &&
                           meshioplusplus::cli::stdout_is_terminal()
                       ? "terminal"
                       : "polyscope";
@@ -5901,9 +5978,9 @@ int cmd_snapshot(const std::vector<std::string>& rArgs) {
 // The tonic of the soundtrack: a semitone above C (0 to 11) or a note name (C, C#, Db, A, ...).
 int parse_music_key(const std::string& rText) {
     static const std::vector<std::pair<std::string, int>> names = {
-        {"C", 0},  {"C#", 1}, {"Db", 1}, {"D", 2},  {"D#", 3}, {"Eb", 3}, {"E", 4},
-        {"F", 5},  {"F#", 6}, {"Gb", 6}, {"G", 7},  {"G#", 8}, {"Ab", 8}, {"A", 9},
-        {"A#", 10}, {"Bb", 10}, {"B", 11}};
+        {"C", 0},  {"C#", 1}, {"Db", 1},  {"D", 2},   {"D#", 3}, {"Eb", 3},
+        {"E", 4},  {"F", 5},  {"F#", 6},  {"Gb", 6},  {"G", 7},  {"G#", 8},
+        {"Ab", 8}, {"A", 9},  {"A#", 10}, {"Bb", 10}, {"B", 11}};
     for (const auto& [name, semitone] : names)
         if (rText == name)
             return semitone;
@@ -5914,8 +5991,8 @@ int parse_music_key(const std::string& rText) {
             return v;
     } catch (const std::exception&) {
     }
-    throw std::runtime_error("--music-key expects a note name (C, C#, Db, ..., B) or 0 to 11, not '" +
-                             rText + "'");
+    throw std::runtime_error(
+        "--music-key expects a note name (C, C#, Db, ..., B) or 0 to 11, not '" + rText + "'");
 }
 
 int cmd_tui(const std::vector<std::string>& rArgs) {
@@ -5977,8 +6054,8 @@ int cmd_tui(const std::vector<std::string>& rArgs) {
     options.mDiff = has_flag(p, "diff");
     options.mSharedRange = !has_flag(p, "separate-ranges");
     if (has_flag(p, "follow")) {
-        options.mFollowMs = has_opt(p, "follow-interval") ? std::stoi(opt_value(p, "follow-interval"))
-                                                          : 500;
+        options.mFollowMs =
+            has_opt(p, "follow-interval") ? std::stoi(opt_value(p, "follow-interval")) : 500;
         if (options.mFollowMs < 10)
             throw std::runtime_error("--follow-interval must be at least 10 (milliseconds)");
     } else if (has_opt(p, "follow-interval")) {
@@ -6029,8 +6106,8 @@ int cmd_tui(const std::vector<std::string>& rArgs) {
     // (which watches the file for being rewritten).
     const std::string format = opt_value(p, "input-format");
     Mesh mesh;  // the single mesh; unused when a series is shown
-    const bool glob = p.positionals.size() == 1 &&
-                      p.positionals[0].find_first_of("*?") != std::string::npos;
+    const bool glob =
+        p.positionals.size() == 1 && p.positionals[0].find_first_of("*?") != std::string::npos;
     if (glob || p.positionals.size() > 1 || options.mFollowMs > 0) {
         options.mpSeries = glob ? std::make_shared<meshioplusplus::cli::tui::PathSeries>(
                                       std::vector<std::string>{}, p.positionals[0], format)
@@ -6849,8 +6926,10 @@ int cmd_pipeline(const std::vector<std::string>& rArgs) {
     if (pipeline.mVersion == 2) {
         // Spatial v2 has one current mesh, not an implicit time/branch cross-product.
         auto spatial = meshioplusplus::parse_pipeline_file(p.positionals[0]);
-        if (has_opt(p, "input")) spatial.mInput.mPath = opt_value(p, "input");
-        if (has_opt(p, "output")) spatial.mOutput.mPath = opt_value(p, "output");
+        if (has_opt(p, "input"))
+            spatial.mInput.mPath = opt_value(p, "input");
+        if (has_opt(p, "output"))
+            spatial.mOutput.mPath = opt_value(p, "output");
         report = meshioplusplus::run_pipeline(spatial);
     } else {
         report = meshioplusplus::run_sequence_pipeline(pipeline);
@@ -7355,6 +7434,8 @@ int main(int argc, char** argv) {
             return cmd_mesh_cad_surface(rest);
         if (cmd == "project-to-cad")
             return cmd_project_to_cad(rest);
+        if (cmd == "boundary-layer")
+            return cmd_boundary_layer(rest);
         if (cmd == "sdf")
             return cmd_sdf(rest);
         if (cmd == "split")

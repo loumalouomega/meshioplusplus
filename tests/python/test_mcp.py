@@ -2236,6 +2236,22 @@ def test_octree_mesh_tool(tmp_path):
         _tools.tool_octree_mesh(str(skin), str(out), winding_threshold=2.0)
 
 
+def test_boundary_layer_tool(tmp_path):
+    """Roadmap 6.9: layers grown out of the sphere's mesh are wedges."""
+    if not hasattr(_core, "boundary_layer"):
+        pytest.skip("core predates boundary_layer")
+    model = pathlib.Path(__file__).parent / "meshes" / "cad_json" / "sphere.cad.json"
+    skin = tmp_path / "sphere.vtu"
+    _tools.tool_mesh_cad_surface(str(model), str(skin), 0.3)
+    out = tmp_path / "layers.vtu"
+    report = _tools.tool_boundary_layer(str(skin), str(out), 0.01, num_layers=2)
+    assert report["num_wedges"] > 0 and report["cap_closed"]
+    assert report["min_scaled_jacobian"] > 0.0
+    assert "wedge" in {c.type for c in meshioplusplus.read(out).cells}
+    with pytest.raises(ValueError, match="first_height"):
+        _tools.tool_boundary_layer(str(skin), str(out), 0.0)
+
+
 def test_project_to_cad_tool(tmp_path):
     """Roadmap 6.10.1: the sphere's mesh, smoothed (which shrinks it), goes
     back onto the sphere."""

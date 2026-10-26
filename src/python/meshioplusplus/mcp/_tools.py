@@ -49,6 +49,7 @@ from .. import (
     agglomerate,
     annulus,
     attach_quality,
+    boundary_layer,
     box,
     cell_data_to_point_data,
     check_quality,
@@ -3847,6 +3848,39 @@ def tool_conservative_interpolate(
     return _result(_store(out, output_path, output_format), out)
 
 
+def tool_boundary_layer(
+    input_path,
+    output_path,
+    first_height,
+    input_format=None,
+    output_format=None,
+    num_layers=3,
+    growth=1.2,
+    reverse=False,
+    collision_fraction=0.45,
+    smooth_iterations=5,
+    max_shrink=6,
+):
+    """Grow prismatic boundary layers from a triangle and quad surface.
+    Returns the counts (num_cells, num_wedges, num_hexahedra, num_pyramids,
+    num_tetrahedra, num_shrunk, num_collapsed, num_not_visible),
+    min_scaled_jacobian, the thickness range and cap_closed alongside the
+    mesh summary."""
+    mesh = _load(input_path, input_format)
+    out, report = boundary_layer(
+        mesh,
+        first_height,
+        num_layers=num_layers,
+        growth=growth,
+        reverse=reverse,
+        collision_fraction=collision_fraction,
+        smooth_iterations=smooth_iterations,
+        max_shrink=max_shrink,
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
 def tool_project_to_cad(
     input_path,
     model_path,
@@ -5479,6 +5513,14 @@ TOOL_REGISTRY = OrderedDict(
             {
                 "fn": tool_mesh_cad_surface,
                 "wraps": ("mesh_cad_surface",),
+                "gated": None,
+            },
+        ),
+        (
+            "boundary_layer",
+            {
+                "fn": tool_boundary_layer,
+                "wraps": ("boundary_layer",),
                 "gated": None,
             },
         ),

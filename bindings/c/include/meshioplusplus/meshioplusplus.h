@@ -5972,6 +5972,55 @@ MIO_API mio_mesh* mio_project_to_cad(const mio_mesh* mesh, const mio_format_info
  */
 MIO_API int64_t mio_project_to_cad_outside_trim(int64_t* points, int64_t n);
 
+/* ---- boundary_layer (roadmap 6.9) --------------------------------------- */
+
+/** Options of mio_boundary_layer; initialise with mio_boundary_layer_opts_init. 64 bytes. */
+typedef struct mio_boundary_layer_opts {
+    double first_height;       /**< the first layer's thickness (required, > 0) */
+    double growth;             /**< each layer over the one before, 1 to 10 (init: 1.2) */
+    double collision_fraction; /**< of the distance a point's ray hits, (0, 1] (init: 0.45) */
+    int32_t num_layers;        /**< 1 to 1000 (init: 3) */
+    int32_t reverse;           /**< nonzero: grow against the faces' normals */
+    int32_t smooth_iterations; /**< (init: 5) */
+    int32_t max_shrink;        /**< halvings before a point collapses (init: 6) */
+    int64_t reserved[3];
+} mio_boundary_layer_opts;
+
+/** What mio_boundary_layer did. 128 bytes. */
+typedef struct mio_boundary_layer_report {
+    int64_t num_cells; /**< volume cells */
+    int64_t num_wedges;
+    int64_t num_hexahedra;
+    int64_t num_pyramids;
+    int64_t num_tetrahedra;
+    int64_t num_shrunk;      /**< points whose layers are thinner than asked */
+    int64_t num_collapsed;   /**< of those, points that do not grow */
+    int64_t num_not_visible; /**< of those, points no direction sees all faces from */
+    double min_scaled_jacobian;
+    double min_thickness;
+    double max_thickness;
+    int32_t cap_closed;
+    int32_t reserved_pad;
+    int64_t reserved[4];
+} mio_boundary_layer_report;
+
+MIO_API void mio_boundary_layer_opts_init(mio_boundary_layer_opts* opts);
+
+/**
+ * Grow prismatic boundary layers from the triangle and quad surface `mesh`
+ * (roadmap 6.9): wedges from triangles and hexahedra from quads along each
+ * point's most normal normal (Aubry and Löhner 2009), stopped before they
+ * collide, the points of a cell that would fold shrunk and then collapsed
+ * into pyramids and tetrahedra; the wall and the cap come out as faces, with
+ * the `boundary_layer:layer` cell data and the surface's data carried.
+ *
+ * @param opts   required (first_height has no default).
+ * @param report out, nullable.
+ * @return the layers (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_boundary_layer(const mio_mesh* mesh, const mio_boundary_layer_opts* opts,
+                                     mio_boundary_layer_report* report);
+
 /** v17.20.0: how many corners this thread's last call lopped (6.2.3). */
 MIO_API int64_t mio_mesh_cad_surface_num_lopped_corners(void);
 

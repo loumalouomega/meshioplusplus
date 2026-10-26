@@ -387,6 +387,11 @@ end
         @test p.num_projected == num_points(r.mesh) && p.max_move < 1e-12
         @test isempty(p.outside_trim)
         close(p.mesh)
+        # Boundary layers (roadmap 6.9) grown from the triangle are wedges.
+        b = boundary_layer(r.mesh; first_height=0.01, num_layers=2)
+        @test b.num_wedges > 0 && b.min_scaled_jacobian > 0
+        close(b.mesh)
+        @test_throws MeshioError boundary_layer(r.mesh; first_height=0.0)
         @test_throws MeshioError project_to_cad(mesh, info)
         close(r.mesh); close(mesh); close(info)
     end

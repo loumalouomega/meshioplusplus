@@ -541,6 +541,42 @@ export interface MeshCadCorner {
   pole: boolean;
 }
 
+/** Options of `boundaryLayer` (doc/boundary_layer.md). */
+export interface BoundaryLayerOptions {
+  /** The first layer's thickness (required, positive). */
+  firstHeight: number;
+  /** How many layers, 1 to 1000 (default 3). */
+  numLayers?: number;
+  /** Each layer's thickness over the one before, 1 to 10 (default 1.2). */
+  growth?: number;
+  /** Grow against the faces' normals (default false). */
+  reverse?: boolean;
+  /** Of the distance a point's ray hits, in (0, 1] (default 0.45). */
+  collisionFraction?: number;
+  /** Passes smoothing that share over neighbours (default 5). */
+  smoothIterations?: number;
+  /** Halvings of a point's layers before they collapse (default 6). */
+  maxShrink?: number;
+}
+
+/** What `boundaryLayer` returns. */
+export interface BoundaryLayerResult {
+  mesh: Mesh;
+  numCells: number;
+  numWedges: number;
+  numHexahedra: number;
+  numPyramids: number;
+  numTetrahedra: number;
+  numShrunk: number;
+  numCollapsed: number;
+  numNotVisible: number;
+  minScaledJacobian: number;
+  minThickness: number;
+  maxThickness: number;
+  capClosed: boolean;
+  warnings: string[];
+}
+
 /** Options of `projectToCad` (doc/project_to_cad.md). */
 export interface ProjectToCadOptions {
   /** The cell data naming each triangle's or quad's CAD face (default "cad:face"). */
@@ -3132,6 +3168,17 @@ export interface MeshioPlusPlusModule {
    * an info object that is not a B-rep.
    */
   projectToCad(mesh: Mesh, info: CadJsonInfo, options?: ProjectToCadOptions): ProjectToCadResult;
+
+  /**
+   * Grow prismatic boundary layers from a triangle and quad surface (roadmap
+   * 6.9): wedges from triangles and hexahedra from quads along each point's
+   * most normal normal, stopped before they collide, the points of a folding
+   * cell shrunk and then collapsed into pyramids and tetrahedra; the wall and
+   * the cap come out as faces with `boundary_layer:layer` cell data.
+   * @throws {Error} on a bad option or a surface that is not triangles and
+   * quads, manifold and consistently oriented.
+   */
+  boundaryLayer(mesh: Mesh, options: BoundaryLayerOptions): BoundaryLayerResult;
 
   /**
    * Evaluate patch `patch` (0-based; the face of a B-rep) at `params`, a flat

@@ -1805,6 +1805,11 @@ test_that("mesh_cad_surface meshes a trimmed face and reports it", {
   expect_lt(b$max_move, 1e-12)
   expect_equal(length(b$outside_trim), 0)
   mio_release(b$mesh)
+  # Boundary layers (roadmap 6.9) grown from the triangle are wedges.
+  bl <- mio_boundary_layer(p$mesh, first_height = 0.01, num_layers = 2)
+  expect_gt(bl$num_wedges, 0)
+  expect_gt(bl$min_scaled_jacobian, 0)
+  mio_release(bl$mesh)
   mio_release(p$mesh)
 })
 test_that("PCD compressed binary is reachable through write options", {
