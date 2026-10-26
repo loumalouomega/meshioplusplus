@@ -3528,7 +3528,7 @@ step('meshCadSurface: a trimmed CAD JSON face triangulated and reported', () => 
     assert.equal(back.numProjected, r.numPoints);
     assert.ok(back.maxMove < 1e-12);
     assert.deepEqual(back.outsideTrim, []);
-    assert.throws(() => m.projectToCad(read.mesh, read.info), /cad:face/);
+    assert.throws(() => m.projectToCad(read, read.info), /cad:face/);
     assert.throws(() => m.projectToCad(r.mesh, read.info, { bogus: 1 }), /bogus/);
     // Roadmap 6.9: layers grown from the triangle are wedges.
     const bl = m.boundaryLayer(r.mesh, { firstHeight: 0.01, numLayers: 2 });
@@ -3604,12 +3604,12 @@ step('meshCadSurface: a trimmed CAD JSON face triangulated and reported', () => 
     assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, metricError: 1 }),
                   /metric_background/);
     // Quads (roadmap 6.8) and untangling (6.6.3).
-    const q = m.meshCadSurface(read.info, { targetSize: 0.1, minAngle: 25, quads: 'dominant' });
-    assert.ok(q.numQuads > 0 && q.minQuadScaledJacobian > 0);
+    const quads = m.meshCadSurface(read.info, { targetSize: 0.1, minAngle: 25, quads: 'dominant' });
+    assert.ok(quads.numQuads > 0 && quads.minQuadScaledJacobian > 0);
     assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, quads: 'hex' }), /quads/);
-    const g = m.meshCadSurface(read.info,
+    const greedy = m.meshCadSurface(read.info,
                                { targetSize: 0.1, minAngle: 25, quads: 'dominant', quadPairs: 'greedy' });
-    assert.ok(g.numQuads > 0 && g.numLeftoverTriangles >= q.numLeftoverTriangles);
+    assert.ok(greedy.numQuads > 0 && greedy.numLeftoverTriangles >= quads.numLeftoverTriangles);
     assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, quads: 'dominant', quadPairs: 'best' }),
                   /quadPairs/);
     assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, untangle: true }), /untangle/);
