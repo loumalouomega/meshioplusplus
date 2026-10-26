@@ -244,6 +244,13 @@ _REQUIRE_GMSH = os.environ.get("MESHIOPLUSPLUS_REQUIRE_GMSH") == "1"
 
 def _stand_in(tmp_path, body):
     """An executable that behaves as `body` says, called as Gmsh would be."""
+    if sys.platform == "win32":
+        # Windows runs no shebang: a batch file hands its arguments to Python.
+        py = tmp_path / "gmsh_stand_in.py"
+        py.write_text(f"import sys\n{body}\n")
+        bat = tmp_path / "gmsh.bat"
+        bat.write_text(f'@"{sys.executable}" "{py}" %*\r\n')
+        return str(bat)
     script = tmp_path / "gmsh"
     script.write_text(f"#!{sys.executable}\nimport sys\n{body}\n")
     script.chmod(0o755)
