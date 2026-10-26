@@ -437,7 +437,7 @@ std::int64_t ob_span_ordinal(int P, const std::vector<double>& rKnots, double U)
 
 struct OcctQuiet::Impl {
     ObHandle<Message_Messenger> mMessenger;
-    Message_SequenceOfPrinters mSaved;
+    OcctPrinters mSaved;
 };
 
 OcctQuiet::OcctQuiet() : mpImpl(new Impl) {
