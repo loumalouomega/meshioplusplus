@@ -2113,11 +2113,58 @@ meshioplusplus mesh-cad-surface part.step part.vtu --size 2 --min-angle 25 --rep
 | `--model-tolerances` | accept the gaps each edge's own declared tolerance or vertex's own declared tolerance allows (a STEP or IGES read declares OpenCASCADE's; a Kratos file's `tolerances.model_tolerance` is their floor and pairs the trims no edge names); reported as `tolerance_uses` |
 | `--lop-corners` | lop acute corners (Pav and Walkington 2005) in place of concentric shells, and state the angle bound they prove on a planar face; reported as `lopped_corners` |
 | `--metric-background PATH` / `--metric-array NAME` / `--metric-error E` | a mesh whose 9-component point data `NAME` is a field's Hessian (`hessian` writes `<array>:hessian`), and the interpolation error `E` (> 0) to reach: the anisotropic metric `R \|Λ\| Rᵀ / (8 E)` sizes and stretches the triangles (order 1 only) |
-| `--untangle` | at order 2 or 3, move the high-order nodes of folded elements on the surface to make them valid before any is straightened (Toulorge et al. 2013); reported as `num_untangled` |
-| `--quads none\|dominant\|all` | `dominant` recombines triangle pairs into quads greedily by quality (Borouchaki and Frey 1998), `all` splits a mesh at twice the size into quads only; order 1 only; reported as `num_quads`, `num_leftover_triangles` and `min_quad_scaled_jacobian` |
+| `--untangle` | at order 2 or 3, move the high-order nodes of folded elements on the surface to make them valid before any is straightened (Toulorge et al. 2013), then slide the nodes on CAD edges along their edges; reported as `num_untangled` |
+| `--quads none\|dominant\|all` | `dominant` recombines triangle pairs into quads by quality (Borouchaki and Frey 1998), `all` splits a mesh at twice the size into quads only (with `--order 2`, curved `quad9` cells); `dominant` is order 1 only; reported as `num_quads`, `num_leftover_triangles` and `min_quad_scaled_jacobian` |
+| `--quad-pairs matching\|greedy` | how triangles pair into quads: `matching` (the default) a maximum-weight matching per face (Remacle et al. 2012), `greedy` the best pairs first |
 | `--json` / `-q/--quiet` | the report as JSON / no summary |
 
 A face that cannot be meshed is left out and named in the summary with its reason; the exit code is 0 unless `--strict` is given. With `--min-angle`, the summary also names each corner under 60 degrees and each pole that keeps triangles below the bound.
+
+## `project-to-cad`
+
+Move a mesh's points back onto the CAD model it was made from, by the `cad:face` and `cad:edge` cell data `mesh-cad-surface` writes (see [project to CAD](/project_to_cad)). Both CLIs.
+
+```
+meshioplusplus project-to-cad INFILE MODEL OUTFILE [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--face-array NAME` / `--edge-array NAME` | the cell data naming each cell's face and each line's edge (`cad:face`, `cad:edge`) |
+| `--max-distance D` | leave a point farther than `D` from where it would go (0, the default, is no limit) |
+| `--trim-samples N` | samples per knot span when testing a face's trims (16) |
+| `--json` / `-q/--quiet` | the report as JSON / no summary |
+| `-i/--input-format` / `-o/--output-format` | force the mesh's input / the output format |
+
+```sh
+meshioplusplus mesh-cad-surface part.cad.json skin.vtu --size 0.1
+meshioplusplus smooth skin.vtu smoothed.vtu --iterations 10 --method laplacian
+meshioplusplus project-to-cad smoothed.vtu part.cad.json back.vtu --json
+```
+
+## `boundary-layer`
+
+Grow prismatic layers from a triangle and quad surface along its normals (see [boundary layers](/boundary_layer)). Both CLIs.
+
+```
+meshioplusplus boundary-layer INFILE OUTFILE --first-height H [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--first-height H` | the first layer's thickness (required) |
+| `--num-layers N` | how many layers (3) |
+| `--growth G` | each layer's thickness over the one before (1.2) |
+| `--reverse` | grow against the faces' normals |
+| `--collision-fraction F` | the share of the distance to the surface a point's ray hits that its layers may take (0.45) |
+| `--smooth N` | passes smoothing that share over neighbours (5) |
+| `--max-shrink N` | halvings of a point's layers before they collapse (6) |
+| `--json` / `-q/--quiet` | the report as JSON / no summary |
+| `-i/--input-format` / `-o/--output-format` | force the input / output format |
+
+```sh
+meshioplusplus boundary-layer skin.vtu layers.vtu --first-height 1e-3 --num-layers 8 --growth 1.25
+```
 
 ## `grid-sample`, `grid-scatter`, `grid-resample`, `grid-spectrum`
 
