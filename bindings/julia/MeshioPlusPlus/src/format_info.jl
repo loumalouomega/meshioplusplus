@@ -503,8 +503,11 @@ meshes a sliver face with its neighbour and `lop_corners` lops acute corners
 them, every index 1-based. A `metric_background` mesh whose 9-component point
 data `metric_array` is a field's Hessian, with the target interpolation error
 `metric_error`, sizes the triangles by an anisotropic metric (roadmap 6.10.2).
-See
-`doc/mesh_cad.md`.
+`untangle` (order 2 or 3) moves a face's own high-order nodes to untangle a
+folded curved element before it is straightened (6.6.3, `num_untangled`);
+`quads` (`"none"`, `"dominant"` or `"all"`) recombines the triangles into a
+quad-dominant or all-quad mesh (6.8, `num_quads`, `num_leftover_triangles`,
+`min_quad_scaled_jacobian`). See `doc/mesh_cad.md`.
 """
 function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_deviation::Real=0.0,
                           min_points_per_edge::Integer=0, tolerance::Real=0.0,
@@ -522,7 +525,8 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
                           reparam_condition_number::Real=0.0, model_tolerances::Bool=false,
                           virtual_faces::Bool=false, lop_corners::Bool=false,
                           metric_background::Union{Nothing,Mesh}=nothing,
-                          metric_array::AbstractString="", metric_error::Real=0.0)
+                          metric_array::AbstractString="", metric_error::Real=0.0,
+                          untangle::Bool=false, quads::AbstractString="none")
     method = findfirst(==(smooth_method), _MESH_CAD_SMOOTH_METHODS)
     method === nothing &&
         throw(ArgumentError("meshio++: mesh_cad_surface: smooth_method must be " *
@@ -537,6 +541,10 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
     metric in ("mean", "varying") ||
         throw(ArgumentError("meshio++: mesh_cad_surface: metric must be \"mean\" or " *
                             "\"varying\", got \"$metric\""))
+    quads_code = findfirst(==(quads), ("none", "dominant", "all"))
+    quads_code === nothing &&
+        throw(ArgumentError("meshio++: mesh_cad_surface: quads must be \"none\", " *
+                            "\"dominant\" or \"all\", got \"$quads\""))
     # Given sizes as (0-based index, size) arrays, kept alive across the call.
     pairs(x) = x === nothing ? Pair{Int,Float64}[] :
                [Int(first(p)) - 1 => Float64(last(p)) for p in (x isa AbstractDict ? collect(x) : x)]
@@ -557,11 +565,11 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
                                     background === nothing ? C_NULL : _handle(background),
                                     pointer(bname), Cdouble(reparam_condition_number),
                                     Int32(model_tolerances), Int32(virtual_faces),
-                                    Int32(lop_corners), Int32(0),
+                                    Int32(lop_corners), Int32(untangle),
                                     metric_background === nothing ? C_NULL :
                                     _handle(metric_background),
                                     pointer(mname), Cdouble(metric_error),
-                                    ntuple(_ -> Int64(0), 2))
+                                    Int32(quads_code - 1), Int32(0), (Int64(0),))
         ccall(_sym(:mio_mesh_cad_surface2), Ptr{Cvoid},
               (Ptr{Cvoid}, Ref{_CMeshCadSurfaceOpts}, Ref{_CMeshCadSurfaceOptsEx},
                Ref{_CMeshCadSurfaceReport}),
@@ -642,6 +650,10 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
          num_forced=Int(nf[]), min_forced_deg=Float64(m[]), within_two_radii=w[] != 0,
          guaranteed=g[] != 0, reason=why)
     end
+    nuntangled = ccall(_sym(:mio_mesh_cad_surface_num_untangled), Int64, ())
+    nq, nleft, qsj = Ref{Int64}(0), Ref{Int64}(0), Ref{Cdouble}(0.0)
+    _check(ccall(_sym(:mio_mesh_cad_surface_quad_stats), Cint,
+                 (Ref{Int64}, Ref{Int64}, Ref{Cdouble}), nq, nleft, qsj))
     text = _getstring((buf, n) -> ccall(_sym(:mio_mesh_cad_surface_warnings), Int64,
                                         (Ptr{UInt8}, Int64), buf, n))
     histogram = zeros(Int64, 18)
@@ -672,7 +684,9 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
      min_input_angle_deg=Float64(r.min_input_angle_deg), angle_histogram=histogram,
      corners=corners, num_curved_straightened=Int(r.num_curved_straightened),
      virtual_edges=virtual, reparametrised=reparametrised, merged_faces=merged_faces,
-     tolerance_uses=tolerance_uses, lopped_corners=lopped_corners)
+     tolerance_uses=tolerance_uses, lopped_corners=lopped_corners,
+     num_untangled=Int(nuntangled), num_quads=Int(nq[]),
+     num_leftover_triangles=Int(nleft[]), min_quad_scaled_jacobian=Float64(qsj[]))
 end
 
 const MIO_IGA_POINTS = Int32(0)

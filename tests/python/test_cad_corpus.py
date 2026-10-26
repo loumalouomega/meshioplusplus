@@ -4,7 +4,10 @@ published table. No network: sources are file:// URLs."""
 
 import importlib.util
 import json
+import os
 import pathlib
+import shutil
+import sys
 
 import pytest
 
@@ -231,3 +234,168 @@ def test_compare_names_the_model_that_stopped_meshing(tmp_path, capsys):
 
 def test_the_published_table_is_fresh():
     assert corpus.main(["table", "--check"]) == 0
+
+
+# --- the Gmsh oracle (roadmap 6.5.4) -----------------------------------------------------
+
+GMSH = shutil.which("gmsh")
+_REQUIRE_GMSH = os.environ.get("MESHIOPLUSPLUS_REQUIRE_GMSH") == "1"
+
+
+def _stand_in(tmp_path, body):
+    """An executable that behaves as `body` says, called as Gmsh would be."""
+    script = tmp_path / "gmsh"
+    script.write_text(f"#!{sys.executable}\nimport sys\n{body}\n")
+    script.chmod(0o755)
+    return str(script)
+
+
+def _box_surface():
+    """The unit cube's surface as 12 triangles, outward."""
+    return mio.extract_surface(mio.box(cell_type="tetra"))
+
+
+def test_the_gmsh_oracle_measures_what_gmsh_writes(tmp_path):
+    # A stand-in writes the box's own surface where -o says, so the oracle
+    # finds both meshes the same: no distance, equal area and volume.
+    box = _box_surface()
+    src = tmp_path / "box.msh"
+    mio.write(src, box, file_format="gmsh")
+    gmsh = _stand_in(
+        tmp_path,
+        "import shutil\n"
+        "if '--version' in sys.argv: print('4.12.1'); sys.exit(0)\n"
+        f"shutil.copy({str(src)!r}, sys.argv[sys.argv.index('-o') + 1])",
+    )
+    assert corpus.gmsh_version(gmsh) == "4.12.1"
+    tri = mio.Mesh(box.points, [c for c in box.cells if c.type == "triangle"])
+    g = corpus.gmsh_oracle(gmsh, tmp_path / "box.step", 0.25, 60, tri, 3**0.5)
+    assert g["status"] == "ok", g
+    assert g["num_triangles"] == len(tri.cells[0].data)
+    assert g["hausdorff_to_ours"] < 1e-12
+    area, volume = corpus.triangle_measures(tri.points, tri.cells[0].data)
+    assert g["area"] == pytest.approx(area) == pytest.approx(6.0)
+    assert g["volume"] == pytest.approx(volume) == pytest.approx(1.0)
+    assert 0.0 < g["min_angle_deg"] <= 60.0
+
+
+def test_a_gmsh_failure_is_a_result(tmp_path):
+    gmsh = _stand_in(
+        tmp_path, "print('Error: no OpenCASCADE', file=sys.stderr); sys.exit(1)"
+    )
+    tri = _box_surface()
+    g = corpus.gmsh_oracle(gmsh, tmp_path / "x.step", 0.1, 60, tri, 1.0)
+    assert g["status"] == "failed"
+    assert "no OpenCASCADE" in g["error"]
+    slow = _stand_in(tmp_path, "import time; time.sleep(30)")
+    assert (
+        corpus.gmsh_oracle(slow, tmp_path / "x.step", 0.1, 1, tri, 1.0)["status"]
+        == "timeout"
+    )
+    assert corpus.gmsh_version(str(tmp_path / "nowhere")) is None
+
+
+def test_an_open_surface_has_no_volume():
+    box = _box_surface()
+    tri = box.cells[0].data[:-1]
+    area, volume = corpus.triangle_measures(box.points, tri)
+    assert area == pytest.approx(6.0 - 0.5)
+    assert volume is None
+
+
+def test_the_summary_shows_the_gmsh_columns(capsys, tmp_path):
+    results = {
+        "Version": 1,
+        "meshioplusplus": "x",
+        "settings": {
+            "size_divisor": 40,
+            "min_angle": 25,
+            "timeout_s": 900,
+            "gmsh": "4.12.1",
+        },
+        "models": [
+            {
+                "id": "s/a",
+                "status": "ok",
+                "faces": 6,
+                "faces_ok": 6,
+                "num_triangles": 100,
+                "area": 6.0,
+                "volume": 1.0,
+                "min_angle_deg": 30.0,
+                "gmsh": {
+                    "status": "ok",
+                    "num_triangles": 120,
+                    "area": 6.0,
+                    "volume": 1.0,
+                    "min_angle_deg": 35.0,
+                    "hausdorff_to_ours": 1e-3,
+                    "mesh_s": 0.5,
+                },
+            },
+            {
+                "id": "s/b",
+                "status": "ok",
+                "faces": 1,
+                "faces_ok": 1,
+                "gmsh": {"status": "timeout", "error": "over 900 s"},
+            },
+        ],
+    }
+    (tmp_path / "r.json").write_text(json.dumps(results))
+    assert corpus.main(["summary", str(tmp_path / "r.json")]) == 0
+    text = capsys.readouterr().out
+    assert "Against Gmsh (4.12.1)" in text
+    assert (
+        "| `s/a` | 100 / 120 | 1.0000 | 1.0000 | 0.001 | 30 / 35 | 0.5 | ok |" in text
+    )
+    assert "timeout: over 900 s" in text
+    # The baseline never holds Gmsh's numbers: a Gmsh upgrade cannot fail
+    # the compare gate.
+    assert "gmsh" not in json.dumps(corpus.stable(results)["models"])
+
+
+def test_a_gmsh_that_does_not_run_is_refused(tmp_path):
+    manifest = _manifest(tmp_path, [("missing.step", None)])
+    code = corpus.main(
+        [
+            "run",
+            "--manifest",
+            str(manifest),
+            "--dest",
+            str(tmp_path / "d"),
+            "--out",
+            str(tmp_path / "r.json"),
+            "--gmsh",
+            str(tmp_path / "no-such-gmsh"),
+        ]
+    )
+    assert code == 2
+
+
+@needs_occt
+@pytest.mark.skipif(
+    GMSH is None and not _REQUIRE_GMSH, reason="needs Gmsh's executable"
+)
+def test_one_model_against_gmsh_end_to_end(tmp_path):
+    if GMSH is None:
+        pytest.fail("MESHIOPLUSPLUS_REQUIRE_GMSH=1 but gmsh is not on PATH")
+    (tmp_path / "src").mkdir()
+    step = tmp_path / "src" / "box.step"
+    mio.write(step, mio.extract_surface(mio.box()))
+    manifest = _manifest(tmp_path, [("box.step", corpus.sha256(step))])
+    dest = tmp_path / "d"
+    assert corpus.main(["fetch", "--manifest", str(manifest), "--dest", str(dest)]) == 0
+    out = tmp_path / "run.json"
+    argv = ["run", "--manifest", str(manifest), "--dest", str(dest), "--out", str(out)]
+    assert corpus.main(argv + ["--size-divisor", "10", "--gmsh"]) == 0
+    run = json.loads(out.read_text())
+    assert run["settings"]["gmsh"]
+    row = run["models"][0]
+    g = row["gmsh"]
+    assert g["status"] == "ok", g
+    # Two meshes of one box: the same area and volume, no distance between them.
+    assert g["area"] == pytest.approx(row["area"], rel=1e-9)
+    assert g["volume"] == pytest.approx(row["volume"], rel=1e-9) == pytest.approx(1.0)
+    assert g["hausdorff_to_ours"] < 1e-9
+    assert g["num_triangles"] > 0

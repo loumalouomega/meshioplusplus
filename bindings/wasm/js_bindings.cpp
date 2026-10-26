@@ -5647,7 +5647,9 @@ val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
                              "lopCorners",
                              "metricBackground",
                              "metricArray",
-                             "metricError"});
+                             "metricError",
+                             "untangle",
+                             "quads"});
         const auto has = [&](const char* pKey) {
             return rOptions.hasOwnProperty(pKey) && !rOptions[pKey].isUndefined() &&
                    !rOptions[pKey].isNull();
@@ -5755,6 +5757,21 @@ val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
             extras.mVirtualFaces = rOptions["virtualFaces"].as<bool>();
         if (has("lopCorners"))
             extras.mLopCorners = rOptions["lopCorners"].as<bool>();
+        // Roadmap 6.6.3 and 6.8.
+        if (has("untangle"))
+            extras.mUntangle = rOptions["untangle"].as<bool>();
+        if (has("quads")) {
+            const std::string q = rOptions["quads"].as<std::string>();
+            if (q == "none")
+                extras.mQuads = meshioplusplus::MeshCadQuads::None;
+            else if (q == "dominant")
+                extras.mQuads = meshioplusplus::MeshCadQuads::Dominant;
+            else if (q == "all")
+                extras.mQuads = meshioplusplus::MeshCadQuads::All;
+            else
+                throw std::invalid_argument(
+                    "meshio++: mesh_cad_surface: quads must be 'none', 'dominant' or 'all'");
+        }
         meshioplusplus::MeshCadSizeReport size_report;
         meshioplusplus::MeshCadSurfaceExtrasReport extras_report;
         meshioplusplus::MeshCadSurfaceResult r = meshioplusplus::mesh_cad_surface(
@@ -5908,6 +5925,10 @@ val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
             lopped.set(static_cast<unsigned>(i), d);
         }
         out.set("loppedCorners", lopped);
+        out.set("numUntangled", static_cast<double>(extras_report.mNumUntangled));
+        out.set("numQuads", static_cast<double>(extras_report.mNumQuads));
+        out.set("numLeftoverTriangles", static_cast<double>(extras_report.mNumLeftoverTriangles));
+        out.set("minQuadScaledJacobian", extras_report.mMinQuadScaledJacobian);
         return out;
     });
 }

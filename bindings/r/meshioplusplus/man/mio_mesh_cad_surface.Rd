@@ -11,7 +11,8 @@ mio_mesh_cad_surface(info, target_size, max_chordal_deviation = 0,
   background_array = "size", metric = c("mean", "varying"),
   virtual_edges = FALSE, reparam_condition_number = 0,
   model_tolerances = FALSE, virtual_faces = FALSE, lop_corners = FALSE,
-  metric_background = NULL, metric_array = "", metric_error = 0)
+  metric_background = NULL, metric_array = "", metric_error = 0,
+  untangle = FALSE, quads = c("none", "dominant", "all"))
 }
 \arguments{
 \item{info}{A format-info handle holding a B-rep.}
@@ -67,6 +68,12 @@ the target interpolation error \code{metric_error}, sizes the triangles in every
 direction (roadmap 6.10.2); \code{NULL} for none; order 1 only.}
 \item{metric_array}{The name of that Hessian array (e.g. \code{"f:hessian"}).}
 \item{metric_error}{The target interpolation error (positive).}
+\item{untangle}{With \code{order} 2 or 3, move a face's own high-order nodes on
+the surface to untangle a folded curved element before it is straightened
+(roadmap 6.6.3; Toulorge et al. 2013).}
+\item{quads}{\code{"none"}, \code{"dominant"} (pairs of triangles recombined
+into quads where they make a good one) or \code{"all"} (the quad-dominant mesh
+of twice the size split into quads only; one size); order 1 only (roadmap 6.8).}
 }
 \description{Mesh generation from CAD (v17.13.0): a conforming triangle mesh of
 the faces of the B-rep a format-info handle holds (Kratos CAD JSON, STEP or IGES,
@@ -94,6 +101,8 @@ conformal, 2 mean-value, 3 annulus, 0 declined, \code{reason}), \code{merged_fac
 \code{where}), \code{lopped_corners} (\code{face}, \code{point},
 \code{angle_deg}, \code{lfs0}, \code{lop_radius}, \code{turning_deg},
 \code{stated_bound_deg}, \code{num_forced}, \code{min_forced_deg},
-\code{within_two_radii}, \code{guaranteed}, \code{reason}) and \code{corners}, a data frame of the corners under 60 degrees and poles (1-based
+\code{within_two_radii}, \code{guaranteed}, \code{reason}), \code{num_untangled},
+\code{num_quads}, \code{num_leftover_triangles}, \code{min_quad_scaled_jacobian}
+and \code{corners}, a data frame of the corners under 60 degrees and poles (1-based
 \code{face} and \code{point}, \code{u}, \code{v}, \code{x}, \code{y}, \code{z},
 \code{angle_deg}, \code{min_forced_deg}, \code{reach}, \code{pole}).}

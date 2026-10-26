@@ -1841,13 +1841,16 @@ def tool_mesh_cad_surface(
     metric_background_path=None,
     metric_array="",
     metric_error=0.0,
+    untangle=False,
+    quads="none",
 ):
     """Triangulate a CAD model's faces (CAD JSON, STEP, IGES) into one
     conforming surface mesh at a target edge size, optionally sized by
     curvature and gaps or by an anisotropic metric from a field's Hessian,
     refined to a minimum angle, graded at poles, smoothed, and curved (order
-    2 or 3); faces with unusable parameters flattened, slivers merged, the
-    model's own tolerances accepted and acute corners lopped."""
+    2 or 3, folded elements untangled); faces with unusable parameters
+    flattened, slivers merged, the model's own tolerances accepted, acute
+    corners lopped, and the triangles recombined into quads."""
     mesh = _load(input_path, input_format)
     out, report = mesh_cad_surface(
         mesh,
@@ -1885,6 +1888,8 @@ def tool_mesh_cad_surface(
         ),
         metric_array=metric_array,
         metric_error=metric_error,
+        untangle=untangle,
+        quads=quads,
         return_report=True,
     )
     return _result(_store(out, output_path, output_format), out, **report)

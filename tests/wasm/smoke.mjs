@@ -3592,6 +3592,12 @@ step('meshCadSurface: a trimmed CAD JSON face triangulated and reported', () => 
     // A metric error without a metric background is refused (roadmap 6.10.2).
     assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, metricError: 1 }),
                   /metric_background/);
+    // Quads (roadmap 6.8) and untangling (6.6.3).
+    const q = m.meshCadSurface(read.info, { targetSize: 0.1, minAngle: 25, quads: 'dominant' });
+    assert.ok(q.numQuads > 0 && q.minQuadScaledJacobian > 0);
+    assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, quads: 'hex' }), /quads/);
+    assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, untangle: true }), /untangle/);
+    assert.equal(m.meshCadSurface(read.info, { targetSize: 0.1, order: 2, untangle: true }).numUntangled, 0);
 });
 
 step('info: the mdpa blocks a mesh cannot hold round-trip through info', () => {

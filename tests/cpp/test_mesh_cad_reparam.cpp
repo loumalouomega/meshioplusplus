@@ -1016,11 +1016,11 @@ TEST(MeshCadVirtualFaces, AChainOfSliversAloneIsHostedByItsWidest) {
     EXPECT_EQ(r.mNumMisorientedEdges, 0);
     EXPECT_EQ(r.mNumNonManifoldEdges, 0);
     EXPECT_TRUE(open_only_outside(r.mMesh, 4.0 * w));
-    std::printf("[6.5.2] all-sliver chain: %zu triangles face by face, %zu merged; min angle "
-                "%.2f against %.2f\n",
-                static_cast<std::size_t>(alone.mNumTriangles),
-                static_cast<std::size_t>(r.mNumTriangles), angle_and_area(alone.mMesh)[0],
-                angle_and_area(r.mMesh)[0]);
+    std::printf(
+        "[6.5.2] all-sliver chain: %zu triangles face by face, %zu merged; min angle "
+        "%.2f against %.2f\n",
+        static_cast<std::size_t>(alone.mNumTriangles), static_cast<std::size_t>(r.mNumTriangles),
+        angle_and_area(alone.mMesh)[0], angle_and_area(r.mMesh)[0]);
     ASSERT_EQ(x.mMergedFaces.size(), 3u);
     for (const auto& r_m : x.mMergedFaces) {
         EXPECT_TRUE(r_m.mMerged) << r_m.mSliver << ": " << r_m.mReason;

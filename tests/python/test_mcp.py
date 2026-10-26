@@ -2357,6 +2357,22 @@ def test_mesh_cad_surface_tool(tmp_path):
             metric_background_path=str(bg_path),
             metric_array="f:hessian",
         )
+    # Quads (roadmap 6.8): all-quad leaves no triangle; untangling (6.6.3)
+    # needs curved elements.
+    quads = _tools.tool_mesh_cad_surface(
+        str(sphere), str(out), 0.3, min_angle=25.0, quads="all"
+    )
+    assert quads["num_quads"] > 0 and quads["num_leftover_triangles"] == 0
+    assert quads["min_quad_scaled_jacobian"] > 0.0
+    assert {c.type for c in meshioplusplus.read(out).cells} == {"quad", "line"}
+    curved = _tools.tool_mesh_cad_surface(
+        str(sphere), str(out), 0.3, order=2, untangle=True
+    )
+    assert curved["num_untangled"] == 0
+    with pytest.raises(ValueError, match="untangle"):
+        _tools.tool_mesh_cad_surface(str(sphere), str(out), 0.3, untangle=True)
+    with pytest.raises(ValueError, match="quads"):
+        _tools.tool_mesh_cad_surface(str(sphere), str(out), 0.3, quads="hex")
 
 
 def uniform_sphere_points(sphere, out):

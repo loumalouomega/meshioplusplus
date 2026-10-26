@@ -2635,6 +2635,13 @@ mio_iga_evaluate <- function(info, patch, params, derivatives = 0L, trim_samples
 #'   every direction (roadmap 6.10.2); `NULL` for none; order 1 only.
 #' @param metric_array The name of that Hessian array (e.g. `"f:hessian"`).
 #' @param metric_error The target interpolation error (positive).
+#' @param untangle With `order` 2 or 3, move a face's own high-order nodes on
+#'   the surface to untangle a folded curved element before it is
+#'   straightened (roadmap 6.6.3; Toulorge et al. 2013).
+#' @param quads `"none"`, `"dominant"` (pairs of triangles recombined into
+#'   quads where they make a good one) or `"all"` (the quad-dominant mesh of
+#'   twice the size split into quads only; one size); order 1 only (roadmap
+#'   6.8).
 #' @return A list: `mesh`, the counts (`num_points`, `num_triangles`,
 #'   `num_edge_segments`, `num_faces`, `num_failed`, `num_edges`,
 #'   `num_open_edges`, `num_non_manifold_edges`, `num_misoriented_edges`,
@@ -2652,7 +2659,8 @@ mio_iga_evaluate <- function(info, patch, params, derivatives = 0L, trim_samples
 #'   `tolerance_uses` (`edge`, `declared`, `gap`, `where`), `lopped_corners`
 #'   (`face`, `point`, `angle_deg`, `lfs0`, `lop_radius`, `turning_deg`,
 #'   `stated_bound_deg`, `num_forced`, `min_forced_deg`, `within_two_radii`,
-#'   `guaranteed`, `reason`) and
+#'   `guaranteed`, `reason`), `num_untangled`, `num_quads`,
+#'   `num_leftover_triangles`, `min_quad_scaled_jacobian` and
 #'   `corners`, a data frame of the corners under 60 degrees and poles (1-based
 #'   `face` and `point`, `u`, `v`, `x`, `y`, `z`, `angle_deg`, `min_forced_deg`,
 #'   `reach`, `pole`).
@@ -2672,9 +2680,11 @@ mio_mesh_cad_surface <- function(info, target_size, max_chordal_deviation = 0,
                                  reparam_condition_number = 0, model_tolerances = FALSE,
                                  virtual_faces = FALSE, lop_corners = FALSE,
                                  metric_background = NULL, metric_array = "",
-                                 metric_error = 0) {
+                                 metric_error = 0, untangle = FALSE,
+                                 quads = c("none", "dominant", "all")) {
   smooth_method <- match.arg(smooth_method)
   metric <- match.arg(metric)
+  quads <- match.arg(quads)
   # (1-based index, size) pairs from a named vector or a two-column matrix.
   pairs <- function(x) {
     if (is.null(x)) return(list(numeric(0), numeric(0)))
@@ -2695,7 +2705,8 @@ mio_mesh_cad_surface <- function(info, target_size, max_chordal_deviation = 0,
              as.numeric(match(metric, c("mean", "varying")) - 1L), isTRUE(virtual_edges),
              as.numeric(reparam_condition_number), isTRUE(model_tolerances),
              isTRUE(virtual_faces), isTRUE(lop_corners), metric_background,
-             as.character(metric_array), as.numeric(metric_error))
+             as.character(metric_array), as.numeric(metric_error), isTRUE(untangle),
+             as.numeric(match(quads, c("none", "dominant", "all")) - 1L))
   r$warnings <- if (nzchar(r$warnings)) strsplit(r$warnings, "\n", fixed = TRUE)[[1]] else character(0)
   r$corners <- as.data.frame(r$corners)
   r$reparametrised <- as.data.frame(r$reparametrised, stringsAsFactors = FALSE)

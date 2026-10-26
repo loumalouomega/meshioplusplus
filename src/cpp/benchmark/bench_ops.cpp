@@ -1268,6 +1268,39 @@ int main(int argc, char** argv) {
             extras.mLopCorners = true;
             of(pD, mio::mesh_cad_surface(para, o, mio::MeshCadSizeSources{}, extras).mMesh);
         });
+        // Untangling (roadmap 6.6.3): the plate's curved rows again, its
+        // folded elements' own nodes moved on the surface before any is
+        // straightened.
+        row("mesh_cad_surface_untangle", [&](MeshDigest* pD) {
+            const mio::BrepInfo plate = cad_plate();
+            mio::MeshCadSurfaceExtras extras;
+            extras.mUntangle = true;
+            for (const std::int32_t order : {2, 3})
+                for (const double h : {1.1, 4.0 * octree_step}) {
+                    mio::MeshCadSurfaceOptions o;
+                    o.mOrder = order;
+                    o.mTargetSize = h;
+                    of(pD,
+                       mio::mesh_cad_surface(plate, o, mio::MeshCadSizeSources{}, extras).mMesh);
+                }
+        });
+        // Quadrilaterals (roadmap 6.8): the box and the plate refined to 25
+        // degrees, recombined quad-dominant, and the box all-quad.
+        row("mesh_cad_surface_quads", [&](MeshDigest* pD) {
+            const mio::BrepInfo box = cad_box();
+            const mio::BrepInfo plate = cad_plate();
+            mio::MeshCadSurfaceOptions o;
+            o.mMinAngleDeg = 25.0;
+            mio::MeshCadSurfaceExtras extras;
+            extras.mQuads = mio::MeshCadQuads::Dominant;
+            o.mTargetSize = octree_step;
+            of(pD, mio::mesh_cad_surface(box, o, mio::MeshCadSizeSources{}, extras).mMesh);
+            o.mTargetSize = 4.0 * octree_step;
+            of(pD, mio::mesh_cad_surface(plate, o, mio::MeshCadSizeSources{}, extras).mMesh);
+            extras.mQuads = mio::MeshCadQuads::All;
+            o.mTargetSize = octree_step;
+            of(pD, mio::mesh_cad_surface(box, o, mio::MeshCadSizeSources{}, extras).mMesh);
+        });
         row("sample_distance", [&](MeshDigest* pD) {
             const NDArray d = mio::sample_distance(surface, jittered->Points());
             if (pD)

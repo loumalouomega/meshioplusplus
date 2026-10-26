@@ -5,9 +5,12 @@ name: cad_corpus
 # stored in the repository. Each model is read through OpenCASCADE, meshed by
 # mesh_cad_surface and measured (tools/cad_corpus.py). The job fails when a
 # model that meshed in tools/cad_corpus/baseline.json no longer does, naming
-# it; a source that cannot be downloaded is reported, not a failure. Weekly,
-# not on every push: the corpus takes minutes, and a change to the mesher is
-# checked by the CAD suites in ci.yml first.
+# it; a source that cannot be downloaded is reported, not a failure. Gmsh's
+# executable (Ubuntu's package) meshes every model too and is measured beside
+# ours (roadmap 6.5.4): called through files in a process of its own, never
+# linked, since its licence is the GPL; its numbers are reported, not gated.
+# Weekly, not on every push: the corpus takes minutes, and a change to the
+# mesher is checked by the CAD suites in ci.yml first.
 on:
   schedule:
     - cron: "17 5 * * 1"  # weekly, Monday 05:17 UTC
@@ -42,7 +45,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y zlib1g-dev libtbb-dev pkg-config \
             libocct-foundation-dev libocct-modeling-data-dev \
-            libocct-modeling-algorithms-dev libocct-data-exchange-dev
+            libocct-modeling-algorithms-dev libocct-data-exchange-dev gmsh
+          gmsh --version
       - name: Install meshioplusplus with OpenCASCADE
         run: |
           python -m pip install --upgrade pip
@@ -54,7 +58,7 @@ jobs:
         env:
           MODELS: ${{ inputs.models }}
         run: |
-          python tools/cad_corpus.py run --dest corpus --out cad-corpus.json \
+          python tools/cad_corpus.py run --dest corpus --out cad-corpus.json --gmsh \
             ${MODELS:+--models "$MODELS"}
       - name: Job summary
         if: always()

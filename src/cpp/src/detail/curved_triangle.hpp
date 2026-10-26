@@ -78,8 +78,7 @@ CurvedTriangleCheck curved_triangle_check(int Order, const CurvedVec3* pNodes,
  * whose Jacobian is constant and positive. Cheap (no subdivision): the
  * measure untangling raises.
  */
-double curved_triangle_scaled_bound(int Order, const CurvedVec3* pNodes,
-                                    const CurvedVec3& rNormal);
+double curved_triangle_scaled_bound(int Order, const CurvedVec3* pNodes, const CurvedVec3& rNormal);
 
 /// The Bernstein coefficients of the polynomial of degree `Degree` (2 or 4)
 /// on the reference triangle whose values at the degree's lattice points are

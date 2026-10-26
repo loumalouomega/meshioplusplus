@@ -40,11 +40,10 @@ double cu_dist(const CurvedVec3& rA, const CurvedVec3& rB) {
 
 }  // namespace
 
-CurvedUntangleReport curved_untangle(int Order, const std::vector<CurvedUntangleElement>& rElems,
-                                     double* pX, const std::vector<std::int64_t>& rFree,
-                                     std::vector<std::array<double, 2>>& rUv,
-                                     const std::function<CurvedVec3(const std::array<double, 2>&)>& rLift,
-                                     int MaxSweeps) {
+CurvedUntangleReport curved_untangle(
+    int Order, const std::vector<CurvedUntangleElement>& rElems, double* pX,
+    const std::vector<std::int64_t>& rFree, std::vector<std::array<double, 2>>& rUv,
+    const std::function<CurvedVec3(const std::array<double, 2>&)>& rLift, int MaxSweeps) {
     CurvedUntangleReport out;
     const int nn = curved_triangle_num_nodes(Order);
     const auto node = [&](std::int64_t Id) {
@@ -92,8 +91,8 @@ CurvedUntangleReport curved_untangle(int Order, const std::vector<CurvedUntangle
         double h = std::numeric_limits<double>::infinity();
         for (const std::size_t e : around[F])
             for (std::size_t k = 0; k < 3; ++k)
-                h = std::min(h, cu_dist(node(rElems[e].mNodes[k]),
-                                        node(rElems[e].mNodes[(k + 1) % 3])));
+                h = std::min(
+                    h, cu_dist(node(rElems[e].mNodes[k]), node(rElems[e].mNodes[(k + 1) % 3])));
         const auto& uv = rUv[F];
         for (std::size_t d = 0; d < 2; ++d) {
             const double du = 1e-6 * (1.0 + std::fabs(uv[d]));

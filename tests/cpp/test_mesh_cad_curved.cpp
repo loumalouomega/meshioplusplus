@@ -286,11 +286,12 @@ TEST(MeshCadCurved, UntanglingKeepsFoldedElementsCurved) {
         ASSERT_EQ(r.mNumFailed, 0);
         const double e_plain = std::fabs(area_volume(plain.mMesh, order)[0] - exact);
         const double e = std::fabs(area_volume(r.mMesh, order)[0] - exact);
-        std::printf("[6.6.3] order %d: straightened %lld without untangling, %lld with (%lld "
-                    "untangled); area error %.3e against %.3e\n",
-                    order, static_cast<long long>(plain.mNumCurvedStraightened),
-                    static_cast<long long>(r.mNumCurvedStraightened),
-                    static_cast<long long>(x.mNumUntangled), e_plain, e);
+        std::printf(
+            "[6.6.3] order %d: straightened %lld without untangling, %lld with (%lld "
+            "untangled); area error %.3e against %.3e\n",
+            order, static_cast<long long>(plain.mNumCurvedStraightened),
+            static_cast<long long>(r.mNumCurvedStraightened),
+            static_cast<long long>(x.mNumUntangled), e_plain, e);
         EXPECT_GT(plain.mNumCurvedStraightened, 0) << order;
         EXPECT_EQ(r.mNumCurvedStraightened, 0) << order;
         EXPECT_EQ(x.mNumUntangled, plain.mNumCurvedStraightened) << order;
@@ -307,7 +308,7 @@ TEST(MeshCadCurved, UntanglingKeepsFoldedElementsCurved) {
         const double* p = r.mMesh.Points().As<double>();
         for (std::size_t i = 0; i < r.mMesh.NumPoints(); ++i)
             EXPECT_TRUE(on_solid(p + 3 * i)) << i;
-        // Deterministic across threads.
+            // Deterministic across threads.
 #ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
         const std::uint64_t ref = digest(r.mMesh);
         const int saved = omp_get_max_threads();
@@ -333,9 +334,9 @@ TEST(MeshCadCurved, UntanglingKeepsFoldedElementsCurved) {
     EXPECT_EQ(xc.mNumUntangled, 0);
     EXPECT_EQ(digest(rc.mMesh), digest(mio::mesh_cad_surface(cyl, curved(1.75, 3)).mMesh));
     // Where nothing folds the mesh is the plain one, byte for byte.
-    EXPECT_EQ(digest(mio::mesh_cad_surface(cyl, curved(0.3, 3), mio::MeshCadSizeSources{}, ex)
-                         .mMesh),
-              digest(mio::mesh_cad_surface(cyl, curved(0.3, 3)).mMesh));
+    EXPECT_EQ(
+        digest(mio::mesh_cad_surface(cyl, curved(0.3, 3), mio::MeshCadSizeSources{}, ex).mMesh),
+        digest(mio::mesh_cad_surface(cyl, curved(0.3, 3)).mMesh));
     // Linear elements have nothing to untangle: refused.
     EXPECT_THROW((void)mio::mesh_cad_surface(cyl, curved(0.3, 1), mio::MeshCadSizeSources{}, ex),
                  std::invalid_argument);

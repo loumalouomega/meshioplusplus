@@ -448,6 +448,18 @@ export interface MeshCadSurfaceOptions {
   metricArray?: string;
   /** The target interpolation error (positive). */
   metricError?: number;
+  /**
+   * With `order` 2 or 3, move a face's own high-order nodes on the surface to
+   * untangle a folded curved element before it is straightened (roadmap
+   * 6.6.3; default false).
+   */
+  untangle?: boolean;
+  /**
+   * 'none' (the default), 'dominant' (pairs of triangles recombined into
+   * quads where they make a good one) or 'all' (the quad-dominant mesh of
+   * twice the size split into quads only; one size); order 1 only (6.8).
+   */
+  quads?: 'none' | 'dominant' | 'all';
 }
 
 /** A corner lopped (`lopCorners`, v17.20.0), 0-based face and point. */
@@ -594,6 +606,12 @@ export interface MeshCadSurfaceResult {
   toleranceUses: MeshCadToleranceUse[];
   /** The corners lopped (v17.20.0). */
   loppedCorners: MeshCadLoppedCorner[];
+  /** Curved elements kept curved by untangling (6.6.3). */
+  numUntangled: number;
+  /** Quads, the triangles left beside them, and the least scaled Jacobian of a quad (6.8). */
+  numQuads: number;
+  numLeftoverTriangles: number;
+  minQuadScaledJacobian: number;
 }
 
 /** Sampling options of `igaRefine` / `igaSample`. */

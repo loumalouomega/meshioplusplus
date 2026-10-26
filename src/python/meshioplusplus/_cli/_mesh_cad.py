@@ -203,6 +203,19 @@ def add_args(parser):
         help="lop acute corners (Pav and Walkington 2005) in place of "
         "concentric shells, and state the angle bound they prove",
     )
+    parser.add_argument(
+        "--untangle",
+        action="store_true",
+        help="with --order 2 or 3, move a face's own nodes to untangle a folded "
+        "curved element before it is straightened (roadmap 6.6.3)",
+    )
+    parser.add_argument(
+        "--quads",
+        choices=("none", "dominant", "all"),
+        default="none",
+        help="recombine the triangles into a quad-dominant or all-quad mesh "
+        "(order 1; roadmap 6.8)",
+    )
     parser.add_argument("--json", action="store_true", help="emit the report as JSON")
     parser.add_argument(
         "--quiet", "-q", action="store_true", help="suppress the summary"
@@ -256,6 +269,8 @@ def mesh_cad_surface_cmd(args):
         ),
         metric_array=args.metric_array,
         metric_error=args.metric_error,
+        untangle=args.untangle,
+        quads=args.quads,
         return_report=True,
     )
     write(args.outfile, out, file_format=args.output_format)
@@ -282,9 +297,18 @@ def mesh_cad_surface_cmd(args):
                 f"{report['num_faces_below_bound']} faces below {args.min_angle:g} degrees"
             )
         if args.order > 1:
+            untangled = (
+                f", {report['num_untangled']} untangled" if args.untangle else ""
+            )
             print(
                 f"  curved:         order {args.order}, "
-                f"{report['num_curved_straightened']} kept straight-sided"
+                f"{report['num_curved_straightened']} kept straight-sided{untangled}"
+            )
+        if args.quads != "none":
+            print(
+                f"  quads:          {report['num_quads']} "
+                f"({report['num_leftover_triangles']} triangles left), least scaled "
+                f"Jacobian {report['min_quad_scaled_jacobian']:.3f}"
             )
         for f in report["faces"]:
             if f["status"] != "ok":

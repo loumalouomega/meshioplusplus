@@ -73,10 +73,9 @@ struct CurvedUntangleReport {
  * `rLift` gives the surface point at parameters. Every other node of the
  * elements is fixed. Elements with no free node are judged, not changed.
  */
-CurvedUntangleReport curved_untangle(int Order, const std::vector<CurvedUntangleElement>& rElems,
-                                     double* pX, const std::vector<std::int64_t>& rFree,
-                                     std::vector<std::array<double, 2>>& rUv,
-                                     const std::function<CurvedVec3(const std::array<double, 2>&)>& rLift,
-                                     int MaxSweeps = 60);
+CurvedUntangleReport curved_untangle(
+    int Order, const std::vector<CurvedUntangleElement>& rElems, double* pX,
+    const std::vector<std::int64_t>& rFree, std::vector<std::array<double, 2>>& rUv,
+    const std::function<CurvedVec3(const std::array<double, 2>&)>& rLift, int MaxSweeps = 60);
 
 }  // namespace meshioplusplus::detail

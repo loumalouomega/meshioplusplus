@@ -592,6 +592,8 @@ _OP_TABLE = {
         "MetricBackground",
         "MetricArray",
         "MetricError",
+        "Untangle",
+        "Quads",
     ),
     "IgaSample": ("Subdivisions", "TrimSamples", "Trim", "Edges"),
     "IgaRefine": (
@@ -2383,6 +2385,8 @@ def _apply_model_step(step, model, steps, warnings):
             metric_background=metric_background,
             metric_array=_text(step, "MetricArray", ""),
             metric_error=_number(step, "MetricError", 0.0),
+            untangle=_flag(step, "Untangle", False),
+            quads=_text(step, "Quads", "none"),
             return_report=True,
         )
         warnings.extend("MeshCadSurface: " + w for w in report["warnings"])
@@ -2398,6 +2402,8 @@ def _apply_model_step(step, model, steps, warnings):
             NumReparametrised=float(sum(r["taken"] for r in report["reparametrised"])),
             NumMergedFaces=float(sum(m["merged"] for m in report["merged_faces"])),
             NumLoppedCorners=float(len(report["lopped_corners"])),
+            NumUntangled=float(report["num_untangled"]),
+            NumQuads=float(report["num_quads"]),
             MinAngleDeg=float(report["min_angle_deg"]),
             MaxAngleDeg=float(report["max_angle_deg"]),
         )

@@ -715,11 +715,13 @@ struct _CMeshCadSurfaceOptsEx
     model_tolerances::Int32
     virtual_faces::Int32
     lop_corners::Int32
-    reserved_pad::Int32
+    untangle::Int32
     metric_background::Ptr{Cvoid}
     metric_array::Ptr{UInt8}
     metric_error::Cdouble
-    reserved::NTuple{2,Int64}
+    quads::Int32
+    reserved_pad::Int32
+    reserved::NTuple{1,Int64}
 end
 
 """Mirror of C `mio_mesh_cad_surface_report`."""
@@ -1361,7 +1363,8 @@ function _check_abi_layout()
               "($(sizeof(_CMeshCadCorner)) bytes)")
     (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CMeshCadSurfaceOptsEx) == 136 &&
                                  fieldoffset(_CMeshCadSurfaceOptsEx, 11) == 72 &&
-                                 fieldoffset(_CMeshCadSurfaceOptsEx, 16) == 96)) ||
+                                 fieldoffset(_CMeshCadSurfaceOptsEx, 16) == 96 &&
+                                 fieldoffset(_CMeshCadSurfaceOptsEx, 19) == 120)) ||
         error("meshio++: mio_mesh_cad_surface_opts_ex layout mismatch " *
               "($(sizeof(_CMeshCadSurfaceOptsEx)) bytes)")
     sizeof(_CFitCadOpts) == 80 ||

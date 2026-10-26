@@ -468,7 +468,8 @@ void print_usage(std::ostream& os) {
           "                            [--metric mean|varying] [--virtual-edges]\n"
           "                            [--reparam-condition-number K]\n"
           "                            [--model-tolerances] [--virtual-faces]\n"
-          "                            [--lop-corners]\n"
+          "                            [--lop-corners] [--untangle]\n"
+          "                            [--quads none|dominant|all]\n"
           "                            [--strict] [--json]\n"
           "  isosurface              Level set of a scalar point_data field (contours)\n"
           "                            --array NAME --values v1,v2 [--component I]\n"
@@ -2144,6 +2145,8 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
                                   {"model-tolerances", {}, false},
                                   {"virtual-faces", {}, false},
                                   {"lop-corners", {}, false},
+                                  {"untangle", {}, false},
+                                  {"quads", {}, true},
                                   {"json", {}, false},
                                   {"quiet", {"-q"}, false},
                               });
@@ -2246,6 +2249,18 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
     extras.mModelTolerances = has_flag(p, "model-tolerances");
     extras.mVirtualFaces = has_flag(p, "virtual-faces");
     extras.mLopCorners = has_flag(p, "lop-corners");
+    extras.mUntangle = has_flag(p, "untangle");
+    if (has_opt(p, "quads")) {
+        const std::string q = opt_value(p, "quads");
+        if (q == "none")
+            extras.mQuads = meshioplusplus::MeshCadQuads::None;
+        else if (q == "dominant")
+            extras.mQuads = meshioplusplus::MeshCadQuads::Dominant;
+        else if (q == "all")
+            extras.mQuads = meshioplusplus::MeshCadQuads::All;
+        else
+            throw std::runtime_error("mesh-cad-surface: --quads must be none, dominant or all");
+    }
     meshioplusplus::MeshCadSizeReport size_report;
     meshioplusplus::MeshCadSurfaceExtrasReport extras_report;
     const meshioplusplus::MeshCadSurfaceResult r = meshioplusplus::mesh_cad_surface(
@@ -2406,6 +2421,10 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
             json.EndObject();
         }
         json.EndArray();
+        json.Field("num_untangled", extras_report.mNumUntangled);
+        json.Field("num_quads", extras_report.mNumQuads);
+        json.Field("num_leftover_triangles", extras_report.mNumLeftoverTriangles);
+        json.Field("min_quad_scaled_jacobian", extras_report.mMinQuadScaledJacobian);
         json.EndObject();
     } else if (!has_flag(p, "quiet")) {
         std::cout << "mesh_cad_surface\n"
@@ -2420,7 +2439,19 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
                       << " faces below the bound\n";
         if (o.mOrder > 1)
             std::cout << "  curved:         order " << o.mOrder << ", " << r.mNumCurvedStraightened
-                      << " kept straight-sided\n";
+                      << " kept straight-sided"
+                      << (extras.mUntangle
+                              ? ", " + std::to_string(extras_report.mNumUntangled) + " untangled"
+                              : std::string())
+                      << "\n";
+        if (extras.mQuads != meshioplusplus::MeshCadQuads::None) {
+            char sj[32];
+            meshioplusplus::detail::snprintf_c(sj, sizeof(sj), "%.3f",
+                                               extras_report.mMinQuadScaledJacobian);
+            std::cout << "  quads:          " << extras_report.mNumQuads << " ("
+                      << extras_report.mNumLeftoverTriangles
+                      << " triangles left), least scaled Jacobian " << sj << "\n";
+        }
         for (const meshioplusplus::MeshCadFaceRecord& f : r.mFaces) {
             if (f.mStatus != meshioplusplus::MeshCadFaceStatus::Ok)
                 std::cout << "  face " << f.mFace << ": "

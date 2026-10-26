@@ -1203,6 +1203,8 @@ def _register_operations(server: FastMCP) -> None:
         metric_background_path: Optional[str] = None,
         metric_array: str = "",
         metric_error: float = 0.0,
+        untangle: bool = False,
+        quads: str = "none",
     ) -> dict:
         """Triangulate the faces of a CAD model (Kratos CAD JSON; STEP and
         IGES where OpenCASCADE is linked) into one conforming surface mesh with
@@ -1273,7 +1275,15 @@ def _register_operations(server: FastMCP) -> None:
         lopped_corners (angle_deg, lfs0, lop_radius, turning_deg,
         stated_bound_deg, num_forced, min_forced_deg, within_two_radii,
         guaranteed, reason): the angle bound the paper proves on a planar
-        face, and whether the run meets it."""
+        face, and whether the run meets it. untangle (order 2 or 3) moves a
+        face's own high-order nodes on the surface to untangle a folded curved
+        element before it is straightened (Toulorge et al. 2013), counted in
+        num_untangled. quads 'dominant' recombines each face's triangles in
+        pairs, best quad first, into a quad block beside the triangles left;
+        'all' splits the quad-dominant mesh of twice the size through its
+        edges' midpoints into quads only (one size: no curvature_deviation,
+        cells_across_gaps or given sizes); order 1 only; reported as
+        num_quads, num_leftover_triangles and min_quad_scaled_jacobian."""
         return _guard(
             _tools.tool_mesh_cad_surface,
             input_path=input_path,
@@ -1310,6 +1320,8 @@ def _register_operations(server: FastMCP) -> None:
             metric_background_path=metric_background_path,
             metric_array=metric_array,
             metric_error=metric_error,
+            untangle=untangle,
+            quads=quads,
         )
 
     @server.tool()

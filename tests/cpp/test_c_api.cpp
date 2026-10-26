@@ -2107,7 +2107,8 @@ TEST(CApi, MeshCadSurfaceMeshesABrepAndReportsItsFaces) {
 TEST(CApi, MeshCadSurfaceReportsTheModelTolerancesPairing) {
     meshioplusplus::BrepInfo b = brep_solids::box();
     b.mEdges.clear();
-    meshioplusplus::NDArray& r_cp = b.mPatches[static_cast<std::size_t>(b.mFaces[0].mPatch)].mControlPoints;
+    meshioplusplus::NDArray& r_cp =
+        b.mPatches[static_cast<std::size_t>(b.mFaces[0].mPatch)].mControlPoints;
     for (std::size_t i = 0; i < r_cp.Size(); ++i)
         r_cp.As<double>()[i] += 1e-5;
     b.mExtra = R"({"tolerances":{"model_tolerance":0.0001}})";
@@ -2134,6 +2135,67 @@ TEST(CApi, MeshCadSurfaceReportsTheModelTolerancesPairing) {
         EXPECT_EQ(where, MIO_MESH_CAD_TOLERANCE_PAIRING);
     }
     mio_mesh_free(m);
+    mio_format_info_free(info);
+}
+
+// Roadmap 6.6.3 and 6.8 through the extended options: untangling (refused
+// at order 1) and quadrilaterals, quad-dominant and all-quad, on the box.
+TEST(CApi, MeshCadSurfaceUntanglesAndMakesQuads) {
+    const auto path = mt::temp_path(".cad.json");
+    meshioplusplus::write_cad_json(path, meshioplusplus::Mesh{}, brep_solids::box());
+    mio_format_info* info = nullptr;
+    mio_mesh* sampled = mio_read_with_info(path.c_str(), nullptr, nullptr, &info);
+    ASSERT_NE(sampled, nullptr) << mio_last_error();
+    mio_mesh_free(sampled);
+    mio_mesh_cad_surface_opts opts;
+    mio_mesh_cad_surface_opts_init(&opts);
+    opts.target_size = 0.2;
+    opts.min_angle_deg = 25.0;
+    mio_mesh_cad_surface_opts_ex ex;
+    mio_mesh_cad_surface_opts_ex_init(&ex);
+    EXPECT_EQ(ex.untangle, 0);
+    EXPECT_EQ(ex.quads, MIO_MESH_CAD_QUADS_NONE);
+    // Untangling needs curved elements.
+    ex.untangle = 1;
+    EXPECT_EQ(mio_mesh_cad_surface2(info, &opts, &ex, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("untangle"), std::string::npos);
+    opts.order = 2;
+    mio_mesh* curved = mio_mesh_cad_surface2(info, &opts, &ex, nullptr);
+    ASSERT_NE(curved, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_cad_surface_num_untangled(), 0);  // nothing folds on a box
+    mio_mesh_free(curved);
+    opts.order = 1;
+    ex.untangle = 0;
+    const auto block_of = [](const mio_mesh* pM, const char* pType) {
+        char buf[32];
+        for (int64_t b = 0; b < mio_mesh_num_cell_blocks(pM); ++b)
+            if (mio_mesh_cell_block_type(pM, b, buf, sizeof buf) >= 0 && std::string(buf) == pType)
+                return b;
+        return int64_t{-1};
+    };
+    for (const int32_t q : {MIO_MESH_CAD_QUADS_DOMINANT, MIO_MESH_CAD_QUADS_ALL}) {
+        ex.quads = q;
+        mio_mesh_cad_surface_report report{};
+        mio_mesh* m = mio_mesh_cad_surface2(info, &opts, &ex, &report);
+        ASSERT_NE(m, nullptr) << mio_last_error();
+        int64_t quads = -1, left = -1;
+        double sj = -1.0;
+        ASSERT_EQ(mio_mesh_cad_surface_quad_stats(&quads, &left, &sj), MIO_OK);
+        EXPECT_GT(quads, 0) << q;
+        EXPECT_GT(sj, 0.3) << q;
+        EXPECT_GE(block_of(m, "quad"), 0) << q;
+        EXPECT_EQ(report.num_triangles, left) << q;
+        EXPECT_EQ(report.num_open_edges, 0) << q;
+        if (q == MIO_MESH_CAD_QUADS_ALL) {
+            EXPECT_EQ(left, 0);
+            EXPECT_EQ(block_of(m, "triangle"), -1);
+        }
+        mio_mesh_free(m);
+    }
+    EXPECT_EQ(mio_mesh_cad_surface_quad_stats(nullptr, nullptr, nullptr), MIO_OK);
+    ex.quads = 7;
+    EXPECT_EQ(mio_mesh_cad_surface2(info, &opts, &ex, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("quads"), std::string::npos);
     mio_format_info_free(info);
 }
 

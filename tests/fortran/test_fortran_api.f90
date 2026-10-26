@@ -386,6 +386,28 @@ program test_fortran_api
                            'mesh_cad_surface finds no sliver nor declared gap')
                 call tris%free()
             end if
+            ! Roadmap 6.8: the triangle recombined quad-dominant; untangling
+            ! needs curved elements (6.6.3).
+            block
+                integer(int64) :: nq, nl
+                real(real64) :: qsj
+            tris = info%mesh_cad_surface(0.1_real64, min_angle=25.0_real64, &
+                                         quads=MIO_MESH_CAD_QUADS_DOMINANT, stat=ierr, errmsg=msg)
+            call check(ierr == 0, 'mesh_cad_surface recombines quads')
+            if (ierr == 0) then
+                call mio_mesh_cad_get_quad_stats(nq, nl, qsj, ierr)
+                call check(ierr == 0 .and. nq > 0 .and. qsj > 0.0_real64, &
+                           'mesh_cad_surface reports its quads')
+                call tris%free()
+            end if
+            end block
+            tris = info%mesh_cad_surface(0.1_real64, untangle=.true., stat=ierr, errmsg=msg)
+            call check(ierr /= 0, 'mesh_cad_surface refuses untangle at order 1')
+            tris = info%mesh_cad_surface(0.1_real64, order=2, untangle=.true., stat=ierr, &
+                                         errmsg=msg)
+            call check(ierr == 0 .and. mio_mesh_cad_num_untangled() == 0, &
+                       'mesh_cad_surface untangles nothing on a flat triangle')
+            if (ierr == 0) call tris%free()
             ! v17.20.0: corner lopping at 20 degrees lops the two 45-degree
             ! corners and states the straight-segment bound.
             block

@@ -535,7 +535,9 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "LopCorners",
           "MetricBackground",
           "MetricArray",
-          "MetricError"}},
+          "MetricError",
+          "Untangle",
+          "Quads"}},
         {"IgaSample", {"Subdivisions", "TrimSamples", "Trim", "Edges"}},
         {"IgaRefine",
          {"Subdivisions", "Elevate", "SampleSubdivisions", "TrimSamples", "Trim", "Edges"}},
@@ -1037,6 +1039,18 @@ Mesh pipe_apply_model_step(const PipelineStep& rStep, PipelineReport& rReport, P
         extras.mModelTolerances = pipe_flag(rStep, "ModelTolerances", false);
         extras.mVirtualFaces = pipe_flag(rStep, "VirtualFaces", false);
         extras.mLopCorners = pipe_flag(rStep, "LopCorners", false);
+        // Roadmap 6.6.3 and 6.8.
+        extras.mUntangle = pipe_flag(rStep, "Untangle", false);
+        const std::string quads = pipe_text(rStep, "Quads", "none");
+        if (quads == "none")
+            extras.mQuads = MeshCadQuads::None;
+        else if (quads == "dominant")
+            extras.mQuads = MeshCadQuads::Dominant;
+        else if (quads == "all")
+            extras.mQuads = MeshCadQuads::All;
+        else
+            throw std::invalid_argument(
+                pipe_err(rStep, "'Quads' must be 'none', 'dominant' or 'all'"));
         MeshCadSurfaceExtrasReport extras_report;
         MeshCadSurfaceResult r =
             mesh_cad_surface(*rModel.mBrep, o, sources, extras, nullptr, &extras_report);
@@ -1060,6 +1074,8 @@ Mesh pipe_apply_model_step(const PipelineStep& rStep, PipelineReport& rReport, P
              {"NumMergedFaces",
               count(extras_report.mMergedFaces, [](const auto& rM) { return rM.mMerged; })},
              {"NumLoppedCorners", static_cast<double>(extras_report.mLoppedCorners.size())},
+             {"NumUntangled", static_cast<double>(extras_report.mNumUntangled)},
+             {"NumQuads", static_cast<double>(extras_report.mNumQuads)},
              {"MinAngleDeg", r.mMinAngleDeg},
              {"MaxAngleDeg", r.mMaxAngleDeg}});
         return std::move(r.mMesh);

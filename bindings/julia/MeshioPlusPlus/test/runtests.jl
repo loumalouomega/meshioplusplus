@@ -367,6 +367,15 @@ end
                                                   reparam_condition_number=0.5)
         # A metric error without a metric background is refused (roadmap 6.10.2).
         @test_throws MeshioError mesh_cad_surface(info; target_size=0.1, metric_error=1.0)
+        # Quads (roadmap 6.8) and untangling (6.6.3).
+        q = mesh_cad_surface(info; target_size=0.1, min_angle=25.0, quads="dominant")
+        @test q.num_quads > 0 && q.min_quad_scaled_jacobian > 0
+        close(q.mesh)
+        @test_throws ArgumentError mesh_cad_surface(info; target_size=0.1, quads="hex")
+        @test_throws MeshioError mesh_cad_surface(info; target_size=0.1, untangle=true)
+        u = mesh_cad_surface(info; target_size=0.1, order=2, untangle=true)
+        @test u.num_untangled == 0
+        close(u.mesh)
         close(r.mesh); close(mesh); close(info)
     end
 end

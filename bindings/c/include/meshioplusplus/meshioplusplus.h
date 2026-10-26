@@ -5763,7 +5763,10 @@ typedef struct mio_mesh_cad_surface_opts_ex {
     /** v17.20.0: nonzero: lop acute corners (Pav and Walkington 2005) in place
      *  of concentric shells (6.2.3); only with refinement. */
     int32_t lop_corners;
-    int32_t reserved_pad; /**< zero */
+    /** Unreleased (roadmap 6.6.3): nonzero, with order 2 or 3: move a face's
+     *  own high-order nodes on the surface to untangle a folded curved
+     *  element before it is straightened (Toulorge et al. 2013). */
+    int32_t untangle;
     /** Unreleased (roadmap 6.10.2): an anisotropic metric from a field's
      *  Hessian, the 9-component point_data `metric_array` of
      *  `metric_background`, with the target interpolation error
@@ -5774,12 +5777,26 @@ typedef struct mio_mesh_cad_surface_opts_ex {
     const mio_mesh* metric_background;
     const char* metric_array; /**< the Hessian's name (e.g. "f:hessian") */
     double metric_error;
-    int64_t reserved[2]; /**< zero */
+    /** Unreleased (roadmap 6.8): a mio_mesh_cad_quads; order 1 only. */
+    int32_t quads;
+    int32_t reserved_pad; /**< zero */
+    int64_t reserved[1];  /**< zero */
 } mio_mesh_cad_surface_opts_ex;
+
+/** Quadrilaterals (roadmap 6.8): none, quad-dominant (pairs of triangles
+ *  recombined where they make a good quad), or all-quad (the quad-dominant
+ *  mesh of twice the size, each quad split into four and each triangle into
+ *  three; one size only). */
+typedef enum mio_mesh_cad_quads {
+    MIO_MESH_CAD_QUADS_NONE = 0,
+    MIO_MESH_CAD_QUADS_DOMINANT = 1,
+    MIO_MESH_CAD_QUADS_ALL = 2
+} mio_mesh_cad_quads;
 
 /** Initialize the extended options: the mean metric, no virtual edges, no
  *  given sizes, no background, no reparametrisation, no model tolerances, no
- *  virtual faces, no corner lopping and no metric background. */
+ *  virtual faces, no corner lopping, no metric background, no untangling and
+ *  no quads. */
 MIO_API void mio_mesh_cad_surface_opts_ex_init(mio_mesh_cad_surface_opts_ex* opts);
 
 /**
@@ -5869,6 +5886,20 @@ MIO_API int64_t mio_mesh_cad_surface_num_tolerance_uses(void);
 MIO_API mio_status mio_mesh_cad_surface_tolerance_use(int64_t index, int64_t* edge,
                                                       double* declared, double* gap,
                                                       int32_t* where);
+
+/** Unreleased (6.6.3): how many curved elements this thread's last call kept
+ *  curved by untangling, which straightening alone would have made
+ *  straight-sided. */
+MIO_API int64_t mio_mesh_cad_surface_num_untangled(void);
+
+/**
+ * Unreleased (6.8): this thread's last call's quads, the triangles left
+ * beside them, and the least scaled Jacobian of a quad (0 with none). Any
+ * output may be NULL.
+ */
+MIO_API mio_status mio_mesh_cad_surface_quad_stats(int64_t* num_quads,
+                                                   int64_t* num_leftover_triangles,
+                                                   double* min_scaled_jacobian);
 
 /** v17.20.0: how many corners this thread's last call lopped (6.2.3). */
 MIO_API int64_t mio_mesh_cad_surface_num_lopped_corners(void);

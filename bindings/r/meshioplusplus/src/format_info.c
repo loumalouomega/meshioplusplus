@@ -712,7 +712,7 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
                             SEXP background_array, SEXP metric, SEXP virtual_edges,
                             SEXP reparam_condition_number, SEXP model_tolerances,
                             SEXP virtual_faces, SEXP lop_corners, SEXP metric_background,
-                            SEXP metric_array, SEXP metric_error) {
+                            SEXP metric_array, SEXP metric_error, SEXP untangle, SEXP quads) {
     const mio_format_info *info = info_of(x, 0);
     mio_mesh_cad_surface_opts opts;
     mio_mesh_cad_surface_opts_init(&opts);
@@ -777,6 +777,9 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
         ex.metric_background = mio_r_mesh(metric_background);
     ex.metric_array = mio_r_string(metric_array, "metric_array");
     ex.metric_error = mio_r_double(metric_error, "metric_error");
+    /* Roadmap 6.6.3 and 6.8: untangling and quads (a mio_mesh_cad_quads). */
+    ex.untangle = mio_r_bool(untangle, "untangle") ? 1 : 0;
+    ex.quads = (int32_t)mio_r_int64(quads, "quads");
     mio_mesh_cad_surface_report report;
     mio_mesh* out = mio_mesh_cad_surface2(info, &opts, &ex, &report);
     if (out == NULL) mio_r_fail("mesh_cad_surface");
@@ -843,7 +846,11 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
     SEXP tol_uses = PROTECT(r_mesh_cad_tolerance_uses());
     SEXP lopped = PROTECT(r_mesh_cad_lopped_corners());
 
-    enum { R_MESH_CAD_N = 33 };
+    int64_t num_quads = 0, num_leftover = 0;
+    double quad_sj = 0.0;
+    mio_mesh_cad_surface_quad_stats(&num_quads, &num_leftover, &quad_sj);
+
+    enum { R_MESH_CAD_N = 37 };
     SEXP res = PROTECT(Rf_allocVector(VECSXP, R_MESH_CAD_N));
     SEXP nm = PROTECT(Rf_allocVector(STRSXP, R_MESH_CAD_N));
     int k = 0;
@@ -889,6 +896,10 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
     R_MESH_CAD_SET("merged_faces", merged);
     R_MESH_CAD_SET("tolerance_uses", tol_uses);
     R_MESH_CAD_SET("lopped_corners", lopped);
+    R_MESH_CAD_SET("num_untangled", Rf_ScalarReal((double)mio_mesh_cad_surface_num_untangled()));
+    R_MESH_CAD_SET("num_quads", Rf_ScalarReal((double)num_quads));
+    R_MESH_CAD_SET("num_leftover_triangles", Rf_ScalarReal((double)num_leftover));
+    R_MESH_CAD_SET("min_quad_scaled_jacobian", Rf_ScalarReal(quad_sj));
 #undef R_MESH_CAD_NUM
 #undef R_MESH_CAD_SET
     if (k != R_MESH_CAD_N)

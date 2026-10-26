@@ -61,10 +61,12 @@ module meshioplusplus
     public :: mio_mesh_cad_num_merged_faces, mio_mesh_cad_get_merged_face
     public :: mio_mesh_cad_num_tolerance_uses, mio_mesh_cad_get_tolerance_use
     public :: mio_mesh_cad_num_lopped_corners, mio_mesh_cad_get_lopped_corner
+    public :: mio_mesh_cad_num_untangled, mio_mesh_cad_get_quad_stats
     public :: mio_mesh_cad_lopped_corner_reason
     public :: MIO_MESH_CAD_METRIC_MEAN, MIO_MESH_CAD_METRIC_VARYING
     public :: MIO_MESH_CAD_TOLERANCE_CLOSED_START, MIO_MESH_CAD_TOLERANCE_CORNER
     public :: MIO_MESH_CAD_TOLERANCE_PROJECTION, MIO_MESH_CAD_TOLERANCE_PAIRING
+    public :: MIO_MESH_CAD_QUADS_NONE, MIO_MESH_CAD_QUADS_DOMINANT, MIO_MESH_CAD_QUADS_ALL
     public :: MIO_MESH_CAD_OK, MIO_MESH_CAD_EMPTY, MIO_MESH_CAD_OPEN_LOOP
     public :: MIO_MESH_CAD_SELF_INTERSECTING, MIO_MESH_CAD_DEGENERATE
     public :: MIO_MESH_CAD_PROJECTION_FAILED, MIO_MESH_CAD_BUDGET_EXCEEDED
@@ -500,6 +502,9 @@ module meshioplusplus
     !> Where a declared tolerance accepted a gap (v17.20.0, mio_mesh_cad_tolerance_where).
     integer, parameter :: MIO_MESH_CAD_TOLERANCE_CLOSED_START = 0, MIO_MESH_CAD_TOLERANCE_CORNER = 1, &
                           MIO_MESH_CAD_TOLERANCE_PROJECTION = 2, MIO_MESH_CAD_TOLERANCE_PAIRING = 3
+    !> Quadrilaterals (roadmap 6.8, mio_mesh_cad_quads).
+    integer, parameter :: MIO_MESH_CAD_QUADS_NONE = 0, MIO_MESH_CAD_QUADS_DOMINANT = 1, &
+                          MIO_MESH_CAD_QUADS_ALL = 2
 
     !> Interop mirror of C `mio_mesh_cad_surface_opts` (104 bytes, checked once
     !> per process by `check_mesh_cad_layout`). Filled by
@@ -528,8 +533,8 @@ module meshioplusplus
     !> with 8-byte pointers, checked by `check_mesh_cad_layout`): the metric,
     !> virtual edges, given sizes and the background, borrowed for one call;
     !> since v17.20.0 the reparametrisation threshold, model tolerances,
-    !> virtual faces and corner lopping, and the metric source (roadmap
-    !> 6.10.2) from its reserved tail.
+    !> virtual faces and corner lopping, the metric source (roadmap 6.10.2),
+    !> untangling (6.6.3) and quads (6.8) from its reserved tail.
     type, bind(c) :: mio_mesh_cad_surface_opts_ex_t
         integer(c_int32_t) :: metric = 0
         integer(c_int32_t) :: virtual_edges = 0
@@ -545,11 +550,13 @@ module meshioplusplus
         integer(c_int32_t) :: model_tolerances = 0
         integer(c_int32_t) :: virtual_faces = 0
         integer(c_int32_t) :: lop_corners = 0
-        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int32_t) :: untangle = 0
         type(c_ptr) :: metric_background = c_null_ptr
         type(c_ptr) :: metric_array = c_null_ptr
         real(c_double) :: metric_error = 0
-        integer(c_int64_t) :: reserved(2) = 0
+        integer(c_int32_t) :: quads = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(1) = 0
     end type
 
     !> `mio_mesh_cad_surface_report` (200 bytes; field order and types are ABI,
@@ -4513,6 +4520,20 @@ module meshioplusplus
                 bind(c, name="mio_mesh_cad_surface_num_lopped_corners") result(m)
             import :: c_int64_t
             integer(c_int64_t) :: m
+        end function
+
+        function c_mio_mesh_cad_surface_num_untangled() &
+                bind(c, name="mio_mesh_cad_surface_num_untangled") result(m)
+            import :: c_int64_t
+            integer(c_int64_t) :: m
+        end function
+
+        function c_mio_mesh_cad_surface_quad_stats(nq, left, sj) &
+                bind(c, name="mio_mesh_cad_surface_quad_stats") result(st)
+            import :: c_int64_t, c_double, c_int
+            integer(c_int64_t), intent(out) :: nq, left
+            real(c_double), intent(out) :: sj
+            integer(c_int) :: st
         end function
 
         function c_mio_mesh_cad_surface_lopped_corner(idx, face, point, angle, lfs0, radius, &
@@ -12198,7 +12219,11 @@ contains
     !> `_lopped_corner`). A `metric_background` mesh whose 9-component point
     !> data `metric_array` is a field's Hessian, with the target
     !> interpolation error `metric_error`, sizes the triangles by an
-    !> anisotropic metric (roadmap 6.10.2).
+    !> anisotropic metric (roadmap 6.10.2). `untangle` moves a face's own
+    !> high-order nodes to untangle a folded curved element before it is
+    !> straightened (6.6.3, `mio_mesh_cad_num_untangled`); `quads`
+    !> (`MIO_MESH_CAD_QUADS_*`) recombines the triangles into a quad-dominant
+    !> or all-quad mesh (6.8, `mio_mesh_cad_get_quad_stats`).
     function format_info_mesh_cad_surface(self, target_size, max_chordal_deviation, &
                                           min_points_per_edge, tolerance, record_face_ids, &
                                           edges, match_unreferenced_trims, strict, max_points, &
@@ -12209,7 +12234,8 @@ contains
                                           edge_sizes, background, background_array, metric, &
                                           virtual_edges, reparam_condition_number, &
                                           model_tolerances, virtual_faces, lop_corners, &
-                                          metric_background, metric_array, metric_error) &
+                                          metric_background, metric_array, metric_error, &
+                                          untangle, quads) &
         result(out)
         class(mio_format_info), intent(in) :: self
         real(real64), intent(in) :: target_size
@@ -12227,6 +12253,8 @@ contains
         class(mio_mesh), intent(in), optional :: metric_background
         character(*), intent(in), optional :: metric_array
         real(real64), intent(in), optional :: metric_error
+        logical, intent(in), optional :: untangle
+        integer, intent(in), optional :: quads
         integer(int64), intent(in), optional :: min_points_per_edge, max_points
         logical, intent(in), optional :: record_face_ids, edges, match_unreferenced_trims, strict
         type(mio_mesh_cad_surface_report), intent(out), optional :: report
@@ -12318,6 +12346,8 @@ contains
             ex%metric_array = c_loc(mname(1:1))
         end if
         if (present(metric_error)) ex%metric_error = real(metric_error, c_double)
+        if (present(untangle)) ex%untangle = merge(1_c_int32_t, 0_c_int32_t, untangle)
+        if (present(quads)) ex%quads = int(quads, c_int32_t)
 
         out%handle = c_mio_mesh_cad_surface2(self%handle, opts, ex, crep)
         if (.not. c_associated(out%handle)) then
@@ -12438,6 +12468,29 @@ contains
     integer function mio_mesh_cad_num_lopped_corners() result(n)
         n = int(c_mio_mesh_cad_surface_num_lopped_corners())
     end function
+
+    !> How many curved elements this thread's last call kept curved by
+    !> untangling (roadmap 6.6.3).
+    integer function mio_mesh_cad_num_untangled() result(n)
+        n = int(c_mio_mesh_cad_surface_num_untangled())
+    end function
+
+    !> This thread's last call's quads, the triangles left beside them and the
+    !> least scaled Jacobian of a quad (roadmap 6.8).
+    subroutine mio_mesh_cad_get_quad_stats(num_quads, num_leftover_triangles, &
+                                           min_scaled_jacobian, stat)
+        integer(int64), intent(out) :: num_quads, num_leftover_triangles
+        real(real64), intent(out) :: min_scaled_jacobian
+        integer, intent(out), optional :: stat
+        integer(c_int64_t) :: nq, left
+        real(c_double) :: sj
+        integer(c_int) :: st
+        st = c_mio_mesh_cad_surface_quad_stats(nq, left, sj)
+        num_quads = int(nq, int64)
+        num_leftover_triangles = int(left, int64)
+        min_scaled_jacobian = real(sj, real64)
+        if (present(stat)) stat = int(st)
+    end subroutine
 
     !> Lopped corner `idx` (1-based): its face and mesh point (1-based), its
     !> wedge in the face's plane, the distance to the face's nearest other

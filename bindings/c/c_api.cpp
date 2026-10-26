@@ -6646,7 +6646,9 @@ static_assert(sizeof(void*) != 8 ||
                    offsetof(mio_mesh_cad_surface_opts_ex, metric_background) == 96 &&
                    offsetof(mio_mesh_cad_surface_opts_ex, metric_array) == 104 &&
                    offsetof(mio_mesh_cad_surface_opts_ex, metric_error) == 112 &&
-                   offsetof(mio_mesh_cad_surface_opts_ex, reserved) == 120),
+                   offsetof(mio_mesh_cad_surface_opts_ex, untangle) == 92 &&
+                   offsetof(mio_mesh_cad_surface_opts_ex, quads) == 120 &&
+                   offsetof(mio_mesh_cad_surface_opts_ex, reserved) == 128),
               "mio_mesh_cad_surface_opts_ex's layout moved (v17.20.0 took 24 bytes of its "
               "tail, the metric source 24 more)");
 static_assert(static_cast<int>(MIO_MESH_CAD_SMOOTH_ODT) ==
@@ -7275,6 +7277,9 @@ mio_mesh* mio_mesh_cad_surface2(const mio_format_info* info, const mio_mesh_cad_
             extras.mModelTolerances = opts_ex->model_tolerances != 0;
             extras.mVirtualFaces = opts_ex->virtual_faces != 0;
             extras.mLopCorners = opts_ex->lop_corners != 0;
+            extras.mUntangle = opts_ex->untangle != 0;
+            // The core refuses a value out of range by name.
+            extras.mQuads = static_cast<meshioplusplus::MeshCadQuads>(opts_ex->quads);
             if (opts_ex->metric != MIO_MESH_CAD_METRIC_MEAN &&
                 opts_ex->metric != MIO_MESH_CAD_METRIC_VARYING)
                 throw std::invalid_argument(
@@ -7532,6 +7537,24 @@ mio_status mio_mesh_cad_surface_tolerance_use(int64_t index, int64_t* edge, doub
                      : r_t.mWhere == "corner"     ? MIO_MESH_CAD_TOLERANCE_CORNER
                      : r_t.mWhere == "pairing"    ? MIO_MESH_CAD_TOLERANCE_PAIRING
                                                   : MIO_MESH_CAD_TOLERANCE_PROJECTION;
+        return MIO_OK;
+    });
+}
+
+int64_t mio_mesh_cad_surface_num_untangled(void) {
+    return capi_mesh_cad_state().mExtras.mNumUntangled;
+}
+
+mio_status mio_mesh_cad_surface_quad_stats(int64_t* num_quads, int64_t* num_leftover_triangles,
+                                           double* min_scaled_jacobian) {
+    return guarded([&]() -> mio_status {
+        const auto& r_x = capi_mesh_cad_state().mExtras;
+        if (num_quads)
+            *num_quads = r_x.mNumQuads;
+        if (num_leftover_triangles)
+            *num_leftover_triangles = r_x.mNumLeftoverTriangles;
+        if (min_scaled_jacobian)
+            *min_scaled_jacobian = r_x.mMinQuadScaledJacobian;
         return MIO_OK;
     });
 }
