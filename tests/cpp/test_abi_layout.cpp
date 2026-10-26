@@ -354,7 +354,7 @@ static_assert(offsetof(meshioplusplus::MeshCadSizeSources, pMetricBackground) ==
 MIO_ABI_LAYOUT(meshioplusplus::MeshCadSizeReport, 48, 8);
 // v17.20.0 (ABI 34, pure additions): the extras beside the sources and their
 // report (roadmap 6.4.4, 6.5.1, 6.5.2; 6.2.3 laid out).
-// ABI 35: untangling (6.6.3) and quadrilaterals (6.8) appended to the
+// ABI 36: untangling (6.6.3) and quadrilaterals (6.8) appended to the
 // extras, their counts to the report.
 MIO_ABI_LAYOUT(meshioplusplus::MeshCadSurfaceExtras, 8, 4);
 static_assert(offsetof(meshioplusplus::MeshCadSurfaceExtras, mUntangle) == 3,
