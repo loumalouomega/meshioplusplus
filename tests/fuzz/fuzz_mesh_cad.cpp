@@ -186,7 +186,12 @@ void fuzz_mesh_cad_surface(const std::uint8_t* pData, std::size_t Size) {
         o.mCellsAcrossGaps = 2.0;
     if (((hash >> 36) & 3) == 0)
         o.mPoleRings = 2;
-    o.mMaxPoints = 200000;
+    // A mesh must fit libFuzzer's 10 s timeout under ASan, UBSan and
+    // coverage, about ten times slower than a release build. A face sized to
+    // a quarter of h and refined to 30 degrees (the reweighted-edge seed)
+    // took 49 s instrumented at 200000 points; at 10000 it takes 5 s, and
+    // below about 8500 its lattice alone would be refused.
+    o.mMaxPoints = 10000;
     // Given sizes (v17.19.0) for one input in four: the first face and the
     // first edge at a quarter of the target size.
     meshioplusplus::MeshCadSizeSources sources;

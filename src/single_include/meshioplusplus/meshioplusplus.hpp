@@ -219625,6 +219625,9 @@ struct McadQuality {
     const detail::MeshCadSizeField* pSize = nullptr;
     /// Record each face's size samples (the first meshing of a sized run).
     bool mCollectSizes = false;
+    /// Do not refine for `pSize` (a face meshed unrefined after spending its
+    /// points); the lattice still follows it.
+    bool mNoSizeRefine = false;
     /// Corner lopping (6.2.3) in place of concentric shells, and the balls'
     /// radii carried between meshings by corner position: the smallest any
     /// face's meshing or any split left.
@@ -221138,7 +221141,10 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
     // A size field refines too (6.3): with no angle sought, a bound so
     // small no triangle misses it, so only size makes a triangle bad.
     const double refine_deg = rQ.mMinAngleDeg > 0.0 ? rQ.mMinAngleDeg : 1e-3;
-    if (rQ.mMinAngleDeg > 0.0 || rQ.pSize || fold_refine) {
+    // A face meshed unrefined after spending its points is not refined for
+    // its size either (only a fold still is).
+    const detail::MeshCadSizeField* const p_refine_size = rQ.mNoSizeRefine ? nullptr : rQ.pSize;
+    if (rQ.mMinAngleDeg > 0.0 || p_refine_size || fold_refine) {
         // Ruppert's refinement in the plane, every triangle judged on the
         // surface (Chew 1993; Boissonnat and Oudot 2005): the plane is only
         // where the point is found. The boundary is the edges', shared with
@@ -221162,7 +221168,7 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         // A size field asks for about its own count, the area over an
         // equilateral triangle of the local size, per two triangles a point.
         std::int64_t sized_points = 0;
-        if (rQ.pSize) {
+        if (p_refine_size) {
             double count = 0.0;
             for (const auto& r_t : cdt.InsideTriangles()) {
                 std::array<std::int64_t, 3> ids{};
@@ -221200,20 +221206,27 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                     Vec3 xq{};
                     for (std::size_t k = 0; k < 3; ++k)
                         xq[k] = kRule[q][0] * pa[k] + kRule[q][1] * pb[k] + kRule[q][2] * pc[k];
-                    const double hx = rQ.pSize->At(xq);
+                    const double hx = p_refine_size->At(xq);
                     inverse_area += kWeight[q] / (hx * hx);
                 }
                 count += area * inverse_area / 0.4330127018922193;
             }
-            sized_points = static_cast<std::int64_t>(std::ceil(count));
+            // `count` is the triangles the field asks for: half as many points.
+            sized_points = static_cast<std::int64_t>(std::ceil(0.5 * count));
         }
-        // A size field asks for a bounded count of points, which cannot run
-        // away: its allowance is twice that count in every meshing, rather
-        // than summed over the rounds as the angle's is (a face sized down
-        // to a narrow layer re-spends its points each round, 6.11).
-        const std::int64_t cap_left = std::max<std::int64_t>(
-            std::max<std::int64_t>(1024, 2 * unrefined_points) - rF.mRefinedSoFar,
-            2 * sized_points);
+        // A size field asks for a bounded count of points, but each round
+        // meshes the face again and re-spends them: a meshing may spend four
+        // times the count (twice its triangles), and the rounds together
+        // sixteen times it, where a face sized down to a narrow layer needs
+        // ten (the 6.11 probe; nine meshes it unrefined).
+        const std::int64_t cap_total =
+            std::max<std::int64_t>({1024, 2 * unrefined_points, 16 * sized_points}) -
+            rF.mRefinedSoFar;
+        const std::int64_t cap_left =
+            sized_points > 0
+                ? std::min(cap_total,
+                           std::max<std::int64_t>({1024, 2 * unrefined_points, 4 * sized_points}))
+                : cap_total;
         if (cap_left <= 0)
             rF.mRefineBudgetReached = true;
         ro.mMaxPoints = std::min<std::int64_t>(
@@ -221228,7 +221241,7 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         // as worse than the angle bound by that factor so the worst go
         // first (6.3).
         const auto oversize = [&](const std::array<std::int64_t, 3>& rIds) {
-            if (!rQ.pSize)
+            if (!p_refine_size)
                 return 0.0;
             const Vec3& pa = pos(rIds[0]);
             const Vec3& pb = pos(rIds[1]);
@@ -221237,7 +221250,7 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 std::max({mcad_dist(pb, pc), mcad_dist(pc, pa), mcad_dist(pa, pb)});
             const Vec3 centre{(pa[0] + pb[0] + pc[0]) / 3.0, (pa[1] + pb[1] + pc[1]) / 3.0,
                               (pa[2] + pb[2] + pc[2]) / 3.0};
-            const double s = longest / (detail::kMeshCadSizeSlack * rQ.pSize->At(centre));
+            const double s = longest / (detail::kMeshCadSizeSlack * p_refine_size->At(centre));
             return s > 1.0 ? s : 0.0;
         };
         ro.mRatio = [&](const detail::Cdt2d::Tri& rT) {
@@ -221314,7 +221327,7 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         // circumcentre, at least half its longest edge from its corners,
         // meets.
         const auto size_only = [&](const detail::Cdt2d::Tri& rT) {
-            if (!rQ.pSize)
+            if (!p_refine_size)
                 return false;
             std::array<std::int64_t, 3> ids{};
             for (int k = 0; k < 3; ++k)
@@ -221334,7 +221347,7 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             // the cavity's vertices.
             const double radius =
                 folded(rT)      ? std::max(0.25 * shortest, stretched_floor(rC))
-                : size_only(rT) ? std::max(rQ.pSize->At(x) / 3.0, stretched_floor(rC))
+                : size_only(rT) ? std::max(p_refine_size->At(x) / 3.0, stretched_floor(rC))
                                 : std::max(slack * ratio_bound * shortest, stretched_floor(rC));
             for (const std::int64_t w : rAround) {
                 const auto it = mesh_of.find(w);
@@ -221366,7 +221379,7 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 const Vec3& r_b = pos(mesh_of.at(B));
                 const Vec3 mid{0.5 * (r_a[0] + r_b[0]), 0.5 * (r_a[1] + r_b[1]),
                                0.5 * (r_a[2] + r_b[2])};
-                return mcad_dist(r_a, r_b) > detail::kMeshCadSizeSlack * rQ.pSize->At(mid);
+                return mcad_dist(r_a, r_b) > detail::kMeshCadSizeSlack * p_refine_size->At(mid);
             }
             const Vec3& pa = pos(mesh_of.at(rT[0]));
             const Vec3& pb = pos(mesh_of.at(rT[1]));
@@ -223052,6 +223065,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                         if (r_f.mUnrefined) {
                             McadQuality unrefined = quality;
                             unrefined.mMinAngleDeg = 0.0;
+                            unrefined.mNoSizeRefine = true;
                             mesh_one(unrefined);
                         } else {
                             mesh_one(q);
