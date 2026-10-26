@@ -262,6 +262,87 @@ TEST(MeshCadCurved, AnElementTheCurvedBoundaryFoldsIsKeptStraightSided) {
               0);
 }
 
+TEST(MeshCadCurved, UntanglingKeepsFoldedElementsCurved) {
+    // Roadmap 6.6.3 (Toulorge et al. 2013): the holed disc, 0.5 thick, at
+    // h = 0.6. Across the thin wall between the hole and the rim some
+    // curved elements fold. With `untangle` the caps' own nodes move on
+    // their planes first: none is straightened, every element written is
+    // valid, every node lies on the solid's faces, and the area is closer.
+    const mio::BrepInfo disc = brep_solids::thick_disc_with_hole();
+    const auto on_solid = [](const double* pX) {
+        return std::fabs(pX[2]) < 1e-12 || std::fabs(pX[2] - 0.5) < 1e-12 ||
+               std::fabs(std::hypot(pX[0], pX[1]) - 2.0) < 1e-9 ||
+               std::fabs(std::hypot(pX[0] - 0.98, pX[1]) - 1.0) < 1e-9;
+    };
+    // The surface area: two annuli and the two bands.
+    const double exact = 2.0 * (kPi * 4.0 - kPi) + 0.5 * 2.0 * kPi * (2.0 + 1.0);
+    mio::MeshCadSurfaceExtras ex;
+    ex.mUntangle = true;
+    for (const int order : {2, 3}) {
+        const auto plain = mio::mesh_cad_surface(disc, curved(0.6, order));
+        mio::MeshCadSurfaceExtrasReport x;
+        const auto r = mio::mesh_cad_surface(disc, curved(0.6, order), mio::MeshCadSizeSources{},
+                                             ex, nullptr, &x);
+        ASSERT_EQ(r.mNumFailed, 0);
+        const double e_plain = std::fabs(area_volume(plain.mMesh, order)[0] - exact);
+        const double e = std::fabs(area_volume(r.mMesh, order)[0] - exact);
+        std::printf(
+            "[6.6.3] order %d: straightened %lld without untangling, %lld with (%lld "
+            "untangled); area error %.3e against %.3e\n",
+            order, static_cast<long long>(plain.mNumCurvedStraightened),
+            static_cast<long long>(r.mNumCurvedStraightened),
+            static_cast<long long>(x.mNumUntangled), e_plain, e);
+        EXPECT_GT(plain.mNumCurvedStraightened, 0) << order;
+        EXPECT_EQ(r.mNumCurvedStraightened, 0) << order;
+        EXPECT_EQ(x.mNumUntangled, plain.mNumCurvedStraightened) << order;
+        EXPECT_LT(e, e_plain) << order;
+        for (const auto& r_e : elements(r.mMesh, order)) {
+            const mdt::CurvedVec3 a{r_e[1][0] - r_e[0][0], r_e[1][1] - r_e[0][1],
+                                    r_e[1][2] - r_e[0][2]};
+            const mdt::CurvedVec3 b{r_e[2][0] - r_e[0][0], r_e[2][1] - r_e[0][1],
+                                    r_e[2][2] - r_e[0][2]};
+            const mdt::CurvedVec3 n{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+                                    a[0] * b[1] - a[1] * b[0]};
+            EXPECT_TRUE(mdt::curved_triangle_check(order, r_e.data(), n).mValid);
+        }
+        const double* p = r.mMesh.Points().As<double>();
+        for (std::size_t i = 0; i < r.mMesh.NumPoints(); ++i)
+            EXPECT_TRUE(on_solid(p + 3 * i)) << i;
+            // Deterministic across threads.
+#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
+        const std::uint64_t ref = digest(r.mMesh);
+        const int saved = omp_get_max_threads();
+        for (int threads : {1, 2, 4}) {
+            omp_set_num_threads(threads);
+            EXPECT_EQ(digest(mio::mesh_cad_surface(disc, curved(0.6, order),
+                                                   mio::MeshCadSizeSources{}, ex)
+                                 .mMesh),
+                      ref)
+                << threads;
+        }
+        omp_set_num_threads(saved);
+#endif
+    }
+    // A fold at a corner, where two boundary arcs meet nearly tangent (the
+    // cylinder's caps at h = 1.75, above), is set by the arc bulging past
+    // the element: neither a face's nodes nor the edge's, sliding along the
+    // arc, bend it back, so the mesh is the straightened one, byte for
+    // byte, and nothing is reported untangled.
+    const mio::BrepInfo cyl = brep_solids::capped_cylinder(1.0, 2.0);
+    mio::MeshCadSurfaceExtrasReport xc;
+    const auto rc =
+        mio::mesh_cad_surface(cyl, curved(1.75, 3), mio::MeshCadSizeSources{}, ex, nullptr, &xc);
+    EXPECT_EQ(xc.mNumUntangled, 0);
+    EXPECT_EQ(digest(rc.mMesh), digest(mio::mesh_cad_surface(cyl, curved(1.75, 3)).mMesh));
+    // Where nothing folds the mesh is the plain one, byte for byte.
+    EXPECT_EQ(
+        digest(mio::mesh_cad_surface(cyl, curved(0.3, 3), mio::MeshCadSizeSources{}, ex).mMesh),
+        digest(mio::mesh_cad_surface(cyl, curved(0.3, 3)).mMesh));
+    // Linear elements have nothing to untangle: refused.
+    EXPECT_THROW((void)mio::mesh_cad_surface(cyl, curved(0.3, 1), mio::MeshCadSizeSources{}, ex),
+                 std::invalid_argument);
+}
+
 TEST(MeshCadCurved, TheMeshDoesNotDependOnTheFaceOrderOrThreads) {
     const mio::BrepInfo cyl = brep_solids::capped_cylinder(1.0, 2.0);
     for (const int order : {2, 3}) {

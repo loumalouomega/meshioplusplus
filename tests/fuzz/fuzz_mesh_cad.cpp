@@ -214,6 +214,20 @@ void fuzz_mesh_cad_surface(const std::uint8_t* pData, std::size_t Size) {
         o.mReparamConditionNumber = 4.0;
     extras.mVirtualFaces = ((hash >> 46) & 7) == 0 && o.mOrder == 1;
     extras.mModelTolerances = ((hash >> 49) & 7) == 0;
+    // Untangling at order 2 or 3 for one input in four, and quads for one in
+    // four: dominant at order 1, all-quad at order 1 or 2, paired by a
+    // matching or greedily (roadmap 6.6.3, 6.8, 6.8.1, 6.8.3).
+    extras.mUntangle = ((hash >> 52) & 3) == 0 && o.mOrder > 1;
+    if (((hash >> 54) & 3) == 0 && !extras.mUntangle && o.mOrder <= 2) {
+        extras.mQuads = ((hash >> 56) & 1) || o.mOrder == 2
+                            ? meshioplusplus::MeshCadQuads::All
+                            : meshioplusplus::MeshCadQuads::Dominant;
+        extras.mQuadPairs = ((hash >> 57) & 1) ? meshioplusplus::MeshCadQuadPairs::Greedy
+                                               : meshioplusplus::MeshCadQuadPairs::Matching;
+        if (extras.mQuads == meshioplusplus::MeshCadQuads::All &&
+            (extras.mVirtualFaces || o.mReparamConditionNumber > 0.0))
+            extras.mQuads = meshioplusplus::MeshCadQuads::None;
+    }
     try {
         const meshioplusplus::MeshCadSurfaceResult r =
             meshioplusplus::mesh_cad_surface(info, o, sources, extras);

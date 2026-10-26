@@ -1203,6 +1203,9 @@ def _register_operations(server: FastMCP) -> None:
         metric_background_path: Optional[str] = None,
         metric_array: str = "",
         metric_error: float = 0.0,
+        untangle: bool = False,
+        quads: str = "none",
+        quad_pairs: str = "matching",
     ) -> dict:
         """Triangulate the faces of a CAD model (Kratos CAD JSON; STEP and
         IGES where OpenCASCADE is linked) into one conforming surface mesh with
@@ -1273,7 +1276,17 @@ def _register_operations(server: FastMCP) -> None:
         lopped_corners (angle_deg, lfs0, lop_radius, turning_deg,
         stated_bound_deg, num_forced, min_forced_deg, within_two_radii,
         guaranteed, reason): the angle bound the paper proves on a planar
-        face, and whether the run meets it."""
+        face, and whether the run meets it. untangle (order 2 or 3) moves a
+        face's own high-order nodes on the surface to untangle a folded curved
+        element before it is straightened (Toulorge et al. 2013), then slides
+        the nodes on the model's edges, counted in num_untangled. quads
+        'dominant' (order 1) recombines each face's triangles in pairs into a
+        quad block beside the triangles left; 'all' splits the quad-dominant
+        mesh of twice the size (its size sources asked for twice their size)
+        through its edges' midpoints into quads only, quad9 with order 2;
+        quad_pairs 'matching' (the default, a maximum matching, Blossom-quad)
+        or 'greedy' (best pair first) pairs them; reported as num_quads,
+        num_leftover_triangles and min_quad_scaled_jacobian."""
         return _guard(
             _tools.tool_mesh_cad_surface,
             input_path=input_path,
@@ -1310,6 +1323,9 @@ def _register_operations(server: FastMCP) -> None:
             metric_background_path=metric_background_path,
             metric_array=metric_array,
             metric_error=metric_error,
+            untangle=untangle,
+            quads=quads,
+            quad_pairs=quad_pairs,
         )
 
     @server.tool()
@@ -3028,6 +3044,82 @@ def _register_operations(server: FastMCP) -> None:
             closure=closure,
             record_levels=record_levels,
             record_hierarchy=record_hierarchy,
+        )
+
+    @server.tool()
+    def boundary_layer(
+        input_path: str,
+        output_path: str,
+        first_height: float,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        num_layers: int = 3,
+        growth: float = 1.2,
+        reverse: bool = False,
+        collision_fraction: float = 0.45,
+        smooth_iterations: int = 5,
+        max_shrink: int = 6,
+    ) -> dict:
+        """Grow prismatic boundary layers from a triangle and quad surface
+        (roadmap 6.9): wedges from triangles and hexahedra from quads along
+        each point's most normal normal (Aubry and Löhner 2009), the first
+        first_height thick and each next growth times the one before (against
+        the faces' normals with reverse), stopped at collision_fraction of the
+        distance to the surface ahead, smoothed smooth_iterations times; the
+        points of a cell that would fold are halved max_shrink times and then
+        collapsed into pyramids and tetrahedra, so no cell is written folded.
+        The wall and the cap come out as faces with boundary_layer:layer cell
+        data. Reports num_cells, num_wedges, num_hexahedra, num_pyramids,
+        num_tetrahedra, num_shrunk, num_collapsed, num_not_visible,
+        min_scaled_jacobian, min_thickness, max_thickness and cap_closed."""
+        return _guard(
+            _tools.tool_boundary_layer,
+            input_path=input_path,
+            output_path=output_path,
+            first_height=first_height,
+            input_format=input_format,
+            output_format=output_format,
+            num_layers=num_layers,
+            growth=growth,
+            reverse=reverse,
+            collision_fraction=collision_fraction,
+            smooth_iterations=smooth_iterations,
+            max_shrink=max_shrink,
+        )
+
+    @server.tool()
+    def project_to_cad(
+        input_path: str,
+        model_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        face_array: str = "cad:face",
+        edge_array: str = "cad:edge",
+        max_distance: float = 0.0,
+        trim_samples: int = 16,
+    ) -> dict:
+        """Move a mesh's points back onto the CAD model it was made from
+        (roadmap 6.10.1): a point on one edge's lines (cad:edge) onto that
+        edge, on two or more (a corner) onto the lowest, a point whose cells
+        name one face (cad:face) onto its surface by Newton point inversion;
+        a point on two faces and no edge stays. model_path is a CAD JSON,
+        STEP or IGES file. A point farther than max_distance (0: no limit)
+        stays. Reports num_projected, num_on_edges, num_corners,
+        num_ambiguous, num_too_far, num_failed, num_outside_trim (projections
+        outside their face's trims, kept, never clamped), max_move and
+        outside_trim."""
+        return _guard(
+            _tools.tool_project_to_cad,
+            input_path=input_path,
+            model_path=model_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            face_array=face_array,
+            edge_array=edge_array,
+            max_distance=max_distance,
+            trim_samples=trim_samples,
         )
 
     @server.tool()

@@ -2236,6 +2236,45 @@ def test_octree_mesh_tool(tmp_path):
         _tools.tool_octree_mesh(str(skin), str(out), winding_threshold=2.0)
 
 
+def test_boundary_layer_tool(tmp_path):
+    """Roadmap 6.9: layers grown out of the sphere's mesh are wedges."""
+    if not hasattr(_core, "boundary_layer"):
+        pytest.skip("core predates boundary_layer")
+    model = pathlib.Path(__file__).parent / "meshes" / "cad_json" / "sphere.cad.json"
+    skin = tmp_path / "sphere.vtu"
+    _tools.tool_mesh_cad_surface(str(model), str(skin), 0.3)
+    out = tmp_path / "layers.vtu"
+    report = _tools.tool_boundary_layer(str(skin), str(out), 0.01, num_layers=2)
+    assert report["num_wedges"] > 0 and report["cap_closed"]
+    assert report["min_scaled_jacobian"] > 0.0
+    assert "wedge" in {c.type for c in meshioplusplus.read(out).cells}
+    with pytest.raises(ValueError, match="first_height"):
+        _tools.tool_boundary_layer(str(skin), str(out), 0.0)
+
+
+def test_project_to_cad_tool(tmp_path):
+    """Roadmap 6.10.1: the sphere's mesh, smoothed (which shrinks it), goes
+    back onto the sphere."""
+    if not hasattr(_core, "project_to_cad"):
+        pytest.skip("core predates project_to_cad")
+    model = pathlib.Path(__file__).parent / "meshes" / "cad_json" / "sphere.cad.json"
+    meshed = tmp_path / "sphere.vtu"
+    _tools.tool_mesh_cad_surface(str(model), str(meshed), 0.25)
+    smoothed = meshioplusplus.smooth(meshioplusplus.read(meshed), iterations=5)
+    shrunk = tmp_path / "shrunk.vtu"
+    meshioplusplus.write(shrunk, smoothed)
+    out = tmp_path / "back.vtu"
+    report = _tools.tool_project_to_cad(str(shrunk), str(model), str(out))
+    assert report["num_projected"] == len(smoothed.points)
+    assert report["num_ambiguous"] == report["num_failed"] == 0
+    assert report["max_move"] > 1e-3
+    assert report["outside_trim"] == []
+    back = meshioplusplus.read(out)
+    assert np.allclose(np.linalg.norm(back.points, axis=1), 1.0, atol=1e-12)
+    with pytest.raises(ValueError, match="trim_samples"):
+        _tools.tool_project_to_cad(str(shrunk), str(model), str(out), trim_samples=1)
+
+
 def test_mesh_cad_surface_tool(tmp_path):
     if not hasattr(_core, "mesh_cad_surface"):
         pytest.skip("core predates mesh_cad_surface")
@@ -2357,6 +2396,30 @@ def test_mesh_cad_surface_tool(tmp_path):
             metric_background_path=str(bg_path),
             metric_array="f:hessian",
         )
+    # Quads (roadmap 6.8): all-quad leaves no triangle; untangling (6.6.3)
+    # needs curved elements.
+    quads = _tools.tool_mesh_cad_surface(
+        str(sphere), str(out), 0.3, min_angle=25.0, quads="all"
+    )
+    assert quads["num_quads"] > 0 and quads["num_leftover_triangles"] == 0
+    assert quads["min_quad_scaled_jacobian"] > 0.0
+    assert {c.type for c in meshioplusplus.read(out).cells} == {"quad", "line"}
+    curved = _tools.tool_mesh_cad_surface(
+        str(sphere), str(out), 0.3, order=2, untangle=True
+    )
+    assert curved["num_untangled"] == 0
+    with pytest.raises(ValueError, match="untangle"):
+        _tools.tool_mesh_cad_surface(str(sphere), str(out), 0.3, untangle=True)
+    with pytest.raises(ValueError, match="quads"):
+        _tools.tool_mesh_cad_surface(str(sphere), str(out), 0.3, quads="hex")
+    # Pairing (6.8.1): the matching leaves no more triangles than the greedy.
+    greedy = _tools.tool_mesh_cad_surface(
+        str(sphere), str(out), 0.3, quads="dominant", quad_pairs="greedy"
+    )
+    matched = _tools.tool_mesh_cad_surface(str(sphere), str(out), 0.3, quads="dominant")
+    assert matched["num_leftover_triangles"] <= greedy["num_leftover_triangles"]
+    with pytest.raises(ValueError, match="quad_pairs"):
+        _tools.tool_mesh_cad_surface(str(sphere), str(out), 0.3, quad_pairs="best")
 
 
 def uniform_sphere_points(sphere, out):

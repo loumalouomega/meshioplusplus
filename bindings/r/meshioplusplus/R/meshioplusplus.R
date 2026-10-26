@@ -2635,6 +2635,16 @@ mio_iga_evaluate <- function(info, patch, params, derivatives = 0L, trim_samples
 #'   every direction (roadmap 6.10.2); `NULL` for none; order 1 only.
 #' @param metric_array The name of that Hessian array (e.g. `"f:hessian"`).
 #' @param metric_error The target interpolation error (positive).
+#' @param untangle With `order` 2 or 3, move a face's own high-order nodes on
+#'   the surface to untangle a folded curved element before it is
+#'   straightened (roadmap 6.6.3; Toulorge et al. 2013).
+#' @param quads `"none"`, `"dominant"` (pairs of triangles recombined into
+#'   quads where they make a good one; order 1 only) or `"all"` (the
+#'   quad-dominant mesh of twice the size split into quads only; `order = 2`
+#'   writes quad9) (roadmap 6.8).
+#' @param quad_pairs How triangles pair into quads: `"matching"` (a maximum
+#'   matching of greatest total quality, Blossom-quad) or `"greedy"` (best pair
+#'   first) (roadmap 6.8.1).
 #' @return A list: `mesh`, the counts (`num_points`, `num_triangles`,
 #'   `num_edge_segments`, `num_faces`, `num_failed`, `num_edges`,
 #'   `num_open_edges`, `num_non_manifold_edges`, `num_misoriented_edges`,
@@ -2652,7 +2662,8 @@ mio_iga_evaluate <- function(info, patch, params, derivatives = 0L, trim_samples
 #'   `tolerance_uses` (`edge`, `declared`, `gap`, `where`), `lopped_corners`
 #'   (`face`, `point`, `angle_deg`, `lfs0`, `lop_radius`, `turning_deg`,
 #'   `stated_bound_deg`, `num_forced`, `min_forced_deg`, `within_two_radii`,
-#'   `guaranteed`, `reason`) and
+#'   `guaranteed`, `reason`), `num_untangled`, `num_quads`,
+#'   `num_leftover_triangles`, `min_quad_scaled_jacobian` and
 #'   `corners`, a data frame of the corners under 60 degrees and poles (1-based
 #'   `face` and `point`, `u`, `v`, `x`, `y`, `z`, `angle_deg`, `min_forced_deg`,
 #'   `reach`, `pole`).
@@ -2672,9 +2683,13 @@ mio_mesh_cad_surface <- function(info, target_size, max_chordal_deviation = 0,
                                  reparam_condition_number = 0, model_tolerances = FALSE,
                                  virtual_faces = FALSE, lop_corners = FALSE,
                                  metric_background = NULL, metric_array = "",
-                                 metric_error = 0) {
+                                 metric_error = 0, untangle = FALSE,
+                                 quads = c("none", "dominant", "all"),
+                                 quad_pairs = c("matching", "greedy")) {
   smooth_method <- match.arg(smooth_method)
   metric <- match.arg(metric)
+  quads <- match.arg(quads)
+  quad_pairs <- match.arg(quad_pairs)
   # (1-based index, size) pairs from a named vector or a two-column matrix.
   pairs <- function(x) {
     if (is.null(x)) return(list(numeric(0), numeric(0)))
@@ -2695,7 +2710,9 @@ mio_mesh_cad_surface <- function(info, target_size, max_chordal_deviation = 0,
              as.numeric(match(metric, c("mean", "varying")) - 1L), isTRUE(virtual_edges),
              as.numeric(reparam_condition_number), isTRUE(model_tolerances),
              isTRUE(virtual_faces), isTRUE(lop_corners), metric_background,
-             as.character(metric_array), as.numeric(metric_error))
+             as.character(metric_array), as.numeric(metric_error), isTRUE(untangle),
+             as.numeric(match(quads, c("none", "dominant", "all")) - 1L),
+             as.numeric(match(quad_pairs, c("matching", "greedy")) - 1L))
   r$warnings <- if (nzchar(r$warnings)) strsplit(r$warnings, "\n", fixed = TRUE)[[1]] else character(0)
   r$corners <- as.data.frame(r$corners)
   r$reparametrised <- as.data.frame(r$reparametrised, stringsAsFactors = FALSE)
@@ -2703,6 +2720,62 @@ mio_mesh_cad_surface <- function(info, target_size, max_chordal_deviation = 0,
   r$tolerance_uses <- as.data.frame(r$tolerance_uses, stringsAsFactors = FALSE)
   r$lopped_corners <- as.data.frame(r$lopped_corners, stringsAsFactors = FALSE)
   r
+}
+
+#' Grow boundary layers from a surface
+#'
+#' Prismatic layers grow from the triangle and quad surface `mesh` (roadmap
+#' 6.9): wedges from triangles and hexahedra from quads along each point's most
+#' normal normal (Aubry and Löhner 2009), the first `first_height` thick and
+#' each next `growth` times the one before; stopped at `collision_fraction` of
+#' the distance to the surface ahead; the points of a cell that would fold
+#' shrunk and then collapsed into pyramids and tetrahedra. The wall and the cap
+#' come out as faces, with `boundary_layer:layer` cell data.
+#'
+#' @param mesh A triangle and quad surface.
+#' @param first_height The first layer's thickness.
+#' @param num_layers,growth How many layers, and each over the one before.
+#' @param reverse Grow against the faces' normals.
+#' @param collision_fraction Of the distance a point's ray hits, in (0, 1].
+#' @param smooth_iterations,max_shrink Smoothing passes; halvings before a
+#'   point collapses.
+#' @return A list: `mesh`, `num_cells`, `num_wedges`, `num_hexahedra`,
+#'   `num_pyramids`, `num_tetrahedra`, `num_shrunk`, `num_collapsed`,
+#'   `num_not_visible`, `min_scaled_jacobian`, `min_thickness`,
+#'   `max_thickness` and `cap_closed`.
+#' @export
+mio_boundary_layer <- function(mesh, first_height, num_layers = 3, growth = 1.2,
+                               reverse = FALSE, collision_fraction = 0.45,
+                               smooth_iterations = 5, max_shrink = 6) {
+  .Call(R_mio_boundary_layer, mesh, as.numeric(first_height), as.integer(num_layers),
+        as.numeric(growth), isTRUE(reverse), as.numeric(collision_fraction),
+        as.integer(smooth_iterations), as.integer(max_shrink))
+}
+
+#' Move a mesh's points back onto its CAD model
+#'
+#' Every point of `mesh` goes onto the CAD face or edge its cells name
+#' (`cad:face` on triangles and quads, `cad:edge` on lines, as
+#' [mio_mesh_cad_surface()] writes them) of the B-rep held by `info` (roadmap
+#' 6.10.1): a point on one edge's lines onto that edge, on two or more (a
+#' corner) onto the lowest, a point whose cells name one face onto its surface
+#' (Newton point inversion); a point on two faces and no edge stays. Data and
+#' regions pass through.
+#'
+#' @param mesh A surface mesh carrying `face_array` (and `edge_array`) cell data.
+#' @param info A format-info handle holding a B-rep.
+#' @param face_array,edge_array The cell data naming each cell's face and edge.
+#' @param max_distance A point farther than this stays (0: no limit).
+#' @param trim_samples Samples per knot span when testing a face's trims.
+#' @return A list: `mesh`, `num_projected`, `num_on_edges`, `num_corners`,
+#'   `num_ambiguous`, `num_too_far`, `num_failed`, `num_outside_trim`,
+#'   `max_move` and `outside_trim` (1-based points projected outside their
+#'   face's trims, kept, never clamped).
+#' @export
+mio_project_to_cad <- function(mesh, info, face_array = "cad:face", edge_array = "cad:edge",
+                               max_distance = 0, trim_samples = 16) {
+  .Call(R_mio_project_to_cad, mesh, info, as.character(face_array),
+        as.character(edge_array), as.numeric(max_distance), as.integer(trim_samples))
 }
 
 #' Copy a B-rep side channel

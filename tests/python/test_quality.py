@@ -76,6 +76,27 @@ def test_unit_square_2d():
     assert _val(r, "quality:warpage") == pytest.approx(0.0, abs=1e-12)
 
 
+def test_quad_scaled_jacobian():
+    # Verdict's quad scaled Jacobian (roadmap 6.8): the least corner
+    # (e1 x e2) . n / (|e1| |e2|). A square scores 1, a 60-degree rhombus
+    # sin 60, a reflex (arrowhead) quad below 0, in both engines and in 3-D.
+    c = np.sqrt(3.0) / 2.0
+    cases = [
+        ([[0, 0], [1, 0], [1, 1], [0, 1]], 1.0),
+        ([[0, 0], [1, 0], [1.5, c], [0.5, c]], c),
+        ([[0, 0], [2, 1], [0, 2], [0.5, 1]], None),
+    ]
+    for pts, want in cases:
+        for points in (np.array(pts, float), np.column_stack([pts, np.zeros(4)])):
+            mesh = meshioplusplus.Mesh(points, [("quad", np.array([[0, 1, 2, 3]]))])
+            for r in (meshioplusplus.compute_quality(mesh), _compute_quality_py(mesh)):
+                sj = _val(r, "quality:scaled_jacobian")
+                if want is None:
+                    assert sj < 0.0
+                else:
+                    assert sj == pytest.approx(want)
+
+
 def test_inverted_tetra_flagged():
     s = SQRT2
     pts = np.array(

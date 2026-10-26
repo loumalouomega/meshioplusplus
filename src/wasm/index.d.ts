@@ -448,6 +448,25 @@ export interface MeshCadSurfaceOptions {
   metricArray?: string;
   /** The target interpolation error (positive). */
   metricError?: number;
+  /**
+   * With `order` 2 or 3, move a face's own high-order nodes on the surface to
+   * untangle a folded curved element before it is straightened (roadmap
+   * 6.6.3; default false).
+   */
+  untangle?: boolean;
+  /**
+   * 'none' (the default), 'dominant' (pairs of triangles recombined into
+   * quads where they make a good one; order 1 only) or 'all' (the
+   * quad-dominant mesh of twice the size split into quads only; order 2
+   * writes quad9) (6.8).
+   */
+  quads?: 'none' | 'dominant' | 'all';
+  /**
+   * How triangles pair into quads: 'matching' (the default, a maximum
+   * matching of greatest total quality, Blossom-quad) or 'greedy' (best pair
+   * first) (6.8.1).
+   */
+  quadPairs?: 'matching' | 'greedy';
 }
 
 /** A corner lopped (`lopCorners`, v17.20.0), 0-based face and point. */
@@ -522,6 +541,70 @@ export interface MeshCadCorner {
   pole: boolean;
 }
 
+/** Options of `boundaryLayer` (doc/boundary_layer.md). */
+export interface BoundaryLayerOptions {
+  /** The first layer's thickness (required, positive). */
+  firstHeight: number;
+  /** How many layers, 1 to 1000 (default 3). */
+  numLayers?: number;
+  /** Each layer's thickness over the one before, 1 to 10 (default 1.2). */
+  growth?: number;
+  /** Grow against the faces' normals (default false). */
+  reverse?: boolean;
+  /** Of the distance a point's ray hits, in (0, 1] (default 0.45). */
+  collisionFraction?: number;
+  /** Passes smoothing that share over neighbours (default 5). */
+  smoothIterations?: number;
+  /** Halvings of a point's layers before they collapse (default 6). */
+  maxShrink?: number;
+}
+
+/** What `boundaryLayer` returns. */
+export interface BoundaryLayerResult {
+  mesh: Mesh;
+  numCells: number;
+  numWedges: number;
+  numHexahedra: number;
+  numPyramids: number;
+  numTetrahedra: number;
+  numShrunk: number;
+  numCollapsed: number;
+  numNotVisible: number;
+  minScaledJacobian: number;
+  minThickness: number;
+  maxThickness: number;
+  capClosed: boolean;
+  warnings: string[];
+}
+
+/** Options of `projectToCad` (doc/project_to_cad.md). */
+export interface ProjectToCadOptions {
+  /** The cell data naming each triangle's or quad's CAD face (default "cad:face"). */
+  faceArray?: string;
+  /** The cell data naming each line's CAD edge (default "cad:edge"). */
+  edgeArray?: string;
+  /** A point farther than this stays (0, the default, is no limit). */
+  maxDistance?: number;
+  /** Samples per knot span when testing a face's trims (default 16). */
+  trimSamples?: number;
+}
+
+/** What `projectToCad` returns. */
+export interface ProjectToCadResult {
+  mesh: Mesh;
+  numProjected: number;
+  numOnEdges: number;
+  numCorners: number;
+  numAmbiguous: number;
+  numTooFar: number;
+  numFailed: number;
+  numOutsideTrim: number;
+  maxMove: number;
+  /** The points (0-based) projected outside their face's trims, ascending. */
+  outsideTrim: number[];
+  warnings: string[];
+}
+
 /** One face's outcome in `meshCadSurface`'s report. */
 export interface MeshCadFaceRecord {
   face: number;
@@ -594,6 +677,12 @@ export interface MeshCadSurfaceResult {
   toleranceUses: MeshCadToleranceUse[];
   /** The corners lopped (v17.20.0). */
   loppedCorners: MeshCadLoppedCorner[];
+  /** Curved elements kept curved by untangling (6.6.3). */
+  numUntangled: number;
+  /** Quads, the triangles left beside them, and the least scaled Jacobian of a quad (6.8). */
+  numQuads: number;
+  numLeftoverTriangles: number;
+  minQuadScaledJacobian: number;
 }
 
 /** Sampling options of `igaRefine` / `igaSample`. */
@@ -3066,6 +3155,30 @@ export interface MeshioPlusPlusModule {
    * @throws {Error} on a bad option or an info object that is not a B-rep.
    */
   meshCadSurface(info: CadJsonInfo, options: MeshCadSurfaceOptions): MeshCadSurfaceResult;
+
+  /**
+   * Move every point of `mesh` onto the CAD face or edge its cells name
+   * (`cad:face` on triangles and quads, `cad:edge` on lines, as
+   * `meshCadSurface` writes them) of the B-rep `info` (roadmap 6.10.1): a
+   * point on one edge's lines onto that edge, on two or more (a corner) onto
+   * the lowest, a point whose cells name one face onto its surface (Newton
+   * point inversion); a point on two faces and no edge stays. A projection
+   * outside its face's trims is kept and listed in `outsideTrim`.
+   * @throws {Error} on a mesh with no face cell data, an index out of range or
+   * an info object that is not a B-rep.
+   */
+  projectToCad(mesh: Mesh, info: CadJsonInfo, options?: ProjectToCadOptions): ProjectToCadResult;
+
+  /**
+   * Grow prismatic boundary layers from a triangle and quad surface (roadmap
+   * 6.9): wedges from triangles and hexahedra from quads along each point's
+   * most normal normal, stopped before they collide, the points of a folding
+   * cell shrunk and then collapsed into pyramids and tetrahedra; the wall and
+   * the cap come out as faces with `boundary_layer:layer` cell data.
+   * @throws {Error} on a bad option or a surface that is not triangles and
+   * quads, manifold and consistently oriented.
+   */
+  boundaryLayer(mesh: Mesh, options: BoundaryLayerOptions): BoundaryLayerResult;
 
   /**
    * Evaluate patch `patch` (0-based; the face of a B-rep) at `params`, a flat

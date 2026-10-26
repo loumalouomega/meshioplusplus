@@ -592,6 +592,9 @@ _OP_TABLE = {
         "MetricBackground",
         "MetricArray",
         "MetricError",
+        "Untangle",
+        "Quads",
+        "QuadPairs",
     ),
     "IgaSample": ("Subdivisions", "TrimSamples", "Trim", "Edges"),
     "IgaRefine": (
@@ -601,6 +604,19 @@ _OP_TABLE = {
         "TrimSamples",
         "Trim",
         "Edges",
+    ),
+    # Back onto the CAD (roadmap 6.10.1): the B-rep at Model, or the one a
+    # CAD Input carries when no step has changed the mesh since.
+    "ProjectToCad": ("Model", "FaceArray", "EdgeArray", "MaxDistance", "TrimSamples"),
+    # Prismatic layers grown from the surface (roadmap 6.9).
+    "BoundaryLayer": (
+        "FirstHeight",
+        "NumLayers",
+        "Growth",
+        "Reverse",
+        "CollisionFraction",
+        "SmoothIterations",
+        "MaxShrink",
     ),
 }
 
@@ -1213,7 +1229,31 @@ def _apply_step(mesh, step, steps, warnings):
             "needs the CAD model a pipeline's Input reads, which only a whole run "
             "carries (run_pipeline), not a step applied on its own",
         )
-    if op == "Quality":
+    if op == "BoundaryLayer":
+        from ._boundary_layer import boundary_layer
+
+        if "FirstHeight" not in step:
+            raise _err(op, "'FirstHeight' is required")
+        mesh, report = boundary_layer(
+            mesh,
+            _number(step, "FirstHeight", 0.0),
+            num_layers=int(_number(step, "NumLayers", 3)),
+            growth=_number(step, "Growth", 1.2),
+            reverse=_flag(step, "Reverse", False),
+            collision_fraction=_number(step, "CollisionFraction", 0.45),
+            smooth_iterations=int(_number(step, "SmoothIterations", 5)),
+            max_shrink=int(_number(step, "MaxShrink", 6)),
+            return_report=True,
+        )
+        entry.update(
+            NumCells=float(report["num_cells"]),
+            NumShrunk=float(report["num_shrunk"]),
+            NumCollapsed=float(report["num_collapsed"]),
+            MinScaledJacobian=float(report["min_scaled_jacobian"]),
+        )
+    elif op == "ProjectToCad":
+        mesh = _project_to_cad_step(mesh, step, entry, None)
+    elif op == "Quality":
         mesh = attach_quality(mesh)
     elif op == "Clean":
         mesh, report = clean(
@@ -2153,6 +2193,47 @@ def _apply_step(mesh, step, steps, warnings):
     return mesh
 
 
+def _project_to_cad_step(mesh, step, entry, model):
+    """``ProjectToCad`` on the B-rep at ``Model``, or else on the run's model
+    (the C++ engine's branch of pipe_apply_step)."""
+    from ._project_to_cad import project_to_cad
+
+    op = step["Op"]
+    if "Model" in step:
+        path = _text(step, "Model", "")
+        fmt = (_filetypes_from_path(pathlib.Path(path)) or [""])[0]
+        if fmt not in ("cad_json", "step", "iges"):
+            raise _err(
+                op, f"'Model' must be a CAD JSON, STEP or IGES file, not '{fmt}'"
+            )
+        brep = read(path, file_format=fmt).info["brep"]
+    elif model is not None and model.kind == "brep":
+        brep = model.data
+    else:
+        why = model.why if model is not None and not model.has() and model.why else ""
+        raise _err(
+            op,
+            "needs 'Model' (a CAD JSON, STEP or IGES file), or the B-rep a CAD Input "
+            "carries while no step has changed the mesh" + (": " + why if why else ""),
+        )
+    mesh, report = project_to_cad(
+        mesh,
+        brep,
+        face_array=_text(step, "FaceArray", "cad:face"),
+        edge_array=_text(step, "EdgeArray", "cad:edge"),
+        max_distance=_number(step, "MaxDistance", 0.0),
+        trim_samples=int(_number(step, "TrimSamples", 16)),
+        return_report=True,
+    )
+    entry.update(
+        NumProjected=float(report["num_projected"]),
+        NumOnEdges=float(report["num_on_edges"]),
+        NumOutsideTrim=float(report["num_outside_trim"]),
+        MaxMove=float(report["max_move"]),
+    )
+    return mesh
+
+
 def _check_keys(obj, where, allowed):
     for key in obj:
         if key not in allowed:
@@ -2383,6 +2464,9 @@ def _apply_model_step(step, model, steps, warnings):
             metric_background=metric_background,
             metric_array=_text(step, "MetricArray", ""),
             metric_error=_number(step, "MetricError", 0.0),
+            untangle=_flag(step, "Untangle", False),
+            quads=_text(step, "Quads", "none"),
+            quad_pairs=_text(step, "QuadPairs", "matching"),
             return_report=True,
         )
         warnings.extend("MeshCadSurface: " + w for w in report["warnings"])
@@ -2398,6 +2482,8 @@ def _apply_model_step(step, model, steps, warnings):
             NumReparametrised=float(sum(r["taken"] for r in report["reparametrised"])),
             NumMergedFaces=float(sum(m["merged"] for m in report["merged_faces"])),
             NumLoppedCorners=float(len(report["lopped_corners"])),
+            NumUntangled=float(report["num_untangled"]),
+            NumQuads=float(report["num_quads"]),
             MinAngleDeg=float(report["min_angle_deg"]),
             MaxAngleDeg=float(report["max_angle_deg"]),
         )
@@ -2699,6 +2785,13 @@ def run_pipeline(settings, input_path=None, output_path=None):
             return {"steps": steps, "warnings": warnings}
         if step["Op"] in _MODEL_OPS:
             mesh = _apply_model_step(step, model, steps, warnings)
+            continue
+        if step["Op"] == "ProjectToCad":
+            # Projected onto it, the mesh matches the model again: it stays.
+            entry = {"op": "ProjectToCad"}
+            mesh = _project_to_cad_step(mesh, step, entry, model)
+            steps.append(entry)
+            _prov_add_operation(_render_op(step))
             continue
         mesh = (_apply_v2 if version == 2 else _apply_step)(mesh, step, steps, warnings)
         if step["Op"] == "FitCad":

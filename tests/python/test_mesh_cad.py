@@ -1517,3 +1517,184 @@ def test_a_hessian_sized_mesh_reaches_the_layer_with_fewer_points():
     sized = mio.mesh_cad_surface(sphere, 0.2, background=bg, **opts)
     assert l2(sized) < l2(uniform)
     assert len(sized.points) < 0.4 * len(uniform.points)
+
+
+@needs_core
+def test_a_chain_of_slivers_alone_is_hosted_by_its_widest(tmp_path):
+    """Roadmap 6.5.2: three strips narrower than h and nothing wider beside
+    them. The widest (the middle one) hosts the chain; its own record names
+    itself as the host."""
+    h, w = 0.2, 0.01
+    ys = [0.0, w, 3 * w, 4 * w]
+    model = _stacked_plates(tmp_path / "strips.cad.json", ys)
+    _, alone = mio.mesh_cad_surface(model, h, min_angle=25, return_report=True)
+    out, merged = mio.mesh_cad_surface(
+        model, h, min_angle=25, virtual_faces=True, return_report=True
+    )
+    assert merged["num_failed"] == 0
+    assert merged["num_triangles"] < alone["num_triangles"]
+    recs = merged["merged_faces"]
+    assert [r["sliver"] for r in recs] == [0, 1, 2]
+    assert all(r["merged"] and r["host"] == 1 for r in recs)
+    a, _ = _measure(out)
+    assert a == pytest.approx(4 * w, abs=1e-12)
+
+
+@needs_core
+def test_untangling_keeps_folded_elements_curved():
+    """Roadmap 6.6.3: the plate whose hole nearly touches its rim, curved at
+    h = 0.6. Without untangling some elements fold and are straightened; with
+    it the plate's own nodes move first and none is."""
+    model = _read("plate_with_near_hole.cad.json")
+    for order in (2, 3):
+        _, plain = mio.mesh_cad_surface(model, 0.6, order=order, return_report=True)
+        out, report = mio.mesh_cad_surface(
+            model, 0.6, order=order, untangle=True, return_report=True
+        )
+        assert plain["num_curved_straightened"] > 0
+        assert report["num_curved_straightened"] == 0
+        assert report["num_untangled"] == plain["num_curved_straightened"]
+        assert out.cells[0].type == ("triangle6" if order == 2 else "triangle10")
+        # Every node stays on the plane.
+        assert np.allclose(np.asarray(out.points)[:, 2], 0.0)
+    with pytest.raises(ValueError, match="untangle"):
+        mio.mesh_cad_surface(model, 0.6, untangle=True)
+
+
+@needs_core
+def test_untangling_slides_nodes_along_the_edges():
+    """Roadmap 6.6.3: at h = 1.75 the quadratic plate's two folds are set by
+    the rim and the hole, which the plate's own nodes cannot undo; the nodes
+    on those edges slide along them, so none is straightened and every edge
+    node stays on its circle."""
+    model = _read("plate_with_near_hole.cad.json")
+    _, plain = mio.mesh_cad_surface(model, 1.75, order=2, return_report=True)
+    out, report = mio.mesh_cad_surface(
+        model, 1.75, order=2, untangle=True, return_report=True
+    )
+    assert plain["num_curved_straightened"] == 2
+    assert report["num_curved_straightened"] == 0
+    assert report["num_untangled"] == 2
+    p = np.asarray(out.points)
+    ids = np.unique(
+        np.concatenate([c.data.ravel() for c in out.cells if c.type == "line3"])
+    )
+    q = p[ids, :2]
+    rim = np.isclose(np.hypot(q[:, 0], q[:, 1]), 2.0, atol=1e-9)
+    hole = q[~rim]
+    # The hole's nodes lie on one circle: fit its centre and radius.
+    a = np.c_[2 * hole, np.ones(len(hole))]
+    c = np.linalg.lstsq(a, (hole**2).sum(axis=1), rcond=None)[0]
+    r = np.sqrt(c[2] + c[0] ** 2 + c[1] ** 2)
+    assert np.allclose(np.hypot(*(hole - c[:2]).T), r, atol=1e-9)
+    again, _ = mio.mesh_cad_surface(
+        model, 1.75, order=2, untangle=True, return_report=True
+    )
+    assert np.array_equal(np.asarray(again.points), p)
+
+
+@needs_core
+def test_quads_dominant_and_all(tmp_path):
+    """Roadmap 6.8: the unit cube all-quad (no triangle left, convex quads,
+    each keeping its face, written to Gmsh with a physical surface per face),
+    and the sphere quad-dominant."""
+    cube = _read("unit_cube.cad.json")
+    out, report = mio.mesh_cad_surface(
+        cube, 0.2, min_angle=25, quads="all", return_report=True
+    )
+    assert {c.type for c in out.cells} == {"quad", "line"}
+    assert report["num_triangles"] == 0 and report["num_leftover_triangles"] == 0
+    assert report["num_open_edges"] == 0 and report["num_misoriented_edges"] == 0
+    assert report["min_quad_scaled_jacobian"] > 0.3
+    q = mio.compute_quality(out)["metrics"]["quality:scaled_jacobian"]
+    assert q["min"] == pytest.approx(report["min_quad_scaled_jacobian"])
+    faces = out.cell_data["cad:face"][0]
+    assert sorted(set(int(f) for f in faces)) == list(range(6))
+    a = 0.0
+    p = np.asarray(out.points)
+    for quad in out.cells[0].data:
+        a += 0.5 * np.linalg.norm(
+            np.cross(p[quad[2]] - p[quad[0]], p[quad[3]] - p[quad[1]])
+        )
+    assert a == pytest.approx(6.0, abs=1e-12)
+    path = tmp_path / "cube.msh"
+    mio.write(path, out, file_format="gmsh")
+    back = mio.read(path)
+    assert (
+        sum(len(c.data) for c in back.cells if c.type == "quad") == report["num_quads"]
+    )
+    sphere = _read("sphere.cad.json")
+    _, plain = mio.mesh_cad_surface(sphere, 0.2, min_angle=25, return_report=True)
+    dom, d = mio.mesh_cad_surface(
+        sphere, 0.2, min_angle=25, quads="dominant", return_report=True
+    )
+    assert {c.type for c in dom.cells} == {"triangle", "quad", "line"}
+    assert 2 * d["num_quads"] + d["num_leftover_triangles"] == plain["num_triangles"]
+    assert d["num_open_edges"] == 0
+    with pytest.raises(ValueError, match="quads"):
+        mio.mesh_cad_surface(sphere, 0.2, quads="hex")
+    with pytest.raises(ValueError, match="order 1 or 2"):
+        mio.mesh_cad_surface(sphere, 0.2, quads="all", order=3)
+    with pytest.raises(ValueError, match="untangle"):
+        mio.mesh_cad_surface(sphere, 0.2, quads="all", order=2, untangle=True)
+    with pytest.raises(ValueError, match="order 1"):
+        mio.mesh_cad_surface(sphere, 0.2, quads="dominant", order=2)
+    # Roadmap 6.8.1: the matching (the default) leaves fewer triangles than
+    # greedy pairing.
+    _, greedy = mio.mesh_cad_surface(
+        sphere,
+        0.2,
+        min_angle=25,
+        quads="dominant",
+        quad_pairs="greedy",
+        return_report=True,
+    )
+    assert d["num_leftover_triangles"] < greedy["num_leftover_triangles"]
+    with pytest.raises(ValueError, match="quad_pairs"):
+        mio.mesh_cad_surface(sphere, 0.2, quads="dominant", quad_pairs="best")
+
+
+@needs_core
+def test_quads_all_curved_and_sized():
+    """Roadmap 6.8.3: quads="all" with order 2 writes quad9 whose every node
+    lies on the sphere, closed and none straightened; and quads="all" takes
+    a size source, asking it for twice its size."""
+    sphere = _read("sphere.cad.json")
+    out, report = mio.mesh_cad_surface(
+        sphere, 0.2, quads="all", order=2, return_report=True
+    )
+    assert {c.type for c in out.cells} == {"quad9", "line3"}
+    assert report["num_open_edges"] == 0
+    assert report["num_curved_straightened"] == 0
+    p = np.asarray(out.points)
+    assert np.allclose(np.linalg.norm(p, axis=1), 1.0, atol=1e-12)
+    cyl = _read("capped_cylinder.cad.json")
+    _, uniform = mio.mesh_cad_surface(cyl, 0.2, quads="all", return_report=True)
+    sized, r = mio.mesh_cad_surface(
+        cyl, 0.2, quads="all", curvature_deviation=0.002, return_report=True
+    )
+    assert {c.type for c in sized.cells} == {"quad", "line"}
+    assert r["num_open_edges"] == 0
+    assert r["num_quads"] > 2 * uniform["num_quads"]
+
+
+@needs_core
+def test_pipeline_meshes_quads_and_untangles(tmp_path):
+    """Roadmap 6.8 and 6.6.3 through both engines: Quads and Untangle reach
+    mesh_cad_surface, and the step reports NumQuads and NumUntangled."""
+    doc = {
+        "Version": 2,
+        "Input": {"Path": str(CAD / "unit_cube.cad.json")},
+        "Operations": [{"Op": "MeshCadSurface", "TargetSize": 0.25, "Quads": "all"}],
+    }
+    direct = mio.mesh_cad_surface(_read("unit_cube.cad.json"), 0.25, quads="all")
+    results = _run_both(doc, tmp_path)
+    for report, mesh in results:
+        assert {c.type for c in mesh.cells} == {"quad", "line"}
+        np.testing.assert_array_equal(mesh.points, direct.points)
+        assert report["steps"][0]["NumQuads"] == float(len(direct.cells[0].data))
+        assert report["steps"][0]["NumUntangled"] == 0.0
+    assert all(r == results[0][0] for r, _ in results)
+    doc["Operations"][0].update(Quads="none", Order=2, Untangle=True)
+    for report, _ in _run_both(doc, tmp_path):
+        assert report["steps"][0]["NumUntangled"] == 0.0

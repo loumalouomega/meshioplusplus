@@ -123,6 +123,7 @@ def _tri(c, is2d, m):
 def _quad(c, is2d, m):
     p = [c[0], c[1], c[2], c[3]]
     lengths = [_norm(p[(i + 1) % 4] - p[i]) for i in range(4)]
+    normal = np.array([0.0, 0.0, 1.0])
     if is2d:
         area = 0.5 * sum(
             p[i][0] * p[(i + 1) % 4][1] - p[(i + 1) % 4][0] * p[i][1] for i in range(4)
@@ -132,6 +133,8 @@ def _quad(c, is2d, m):
         for i in range(4):
             n = n + np.cross(p[i], p[(i + 1) % 4])
         area = 0.5 * _norm(n)
+        if area > 0.0:
+            normal = n / (2.0 * area)
     m[_M["quality:volume"]] = area
     abs_area = abs(area)
     lmin, lmax = min(lengths), max(lengths)
@@ -141,6 +144,14 @@ def _quad(c, is2d, m):
     if degenerate:
         return
     m[_M["quality:aspect_ratio"]] = lmax / lmin
+    # Scaled Jacobian: the least over the corners of (e1 x e2) . n / (|e1| |e2|)
+    # against the quad's normal (Verdict's definition).
+    sj = np.inf
+    for i in range(4):
+        e1 = p[(i + 1) % 4] - p[i]
+        e2 = p[(i + 3) % 4] - p[i]
+        sj = min(sj, float(np.dot(np.cross(e1, e2), normal)) / (_norm(e1) * _norm(e2)))
+    m[_M["quality:scaled_jacobian"]] = sj
     angs = [_angle_deg(p[(i + 1) % 4] - p[i], p[(i + 3) % 4] - p[i]) for i in range(4)]
     m[_M["quality:skewness"]] = _equiangle_skew(min(angs), max(angs))
 

@@ -386,6 +386,58 @@ program test_fortran_api
                            'mesh_cad_surface finds no sliver nor declared gap')
                 call tris%free()
             end if
+            ! Roadmap 6.8: the triangle recombined quad-dominant; untangling
+            ! needs curved elements (6.6.3).
+            block
+                integer(int64) :: nq, nl
+                real(real64) :: qsj
+            tris = info%mesh_cad_surface(0.1_real64, min_angle=25.0_real64, &
+                                         quads=MIO_MESH_CAD_QUADS_DOMINANT, &
+                                         quad_pairs=MIO_MESH_CAD_QUAD_PAIRS_GREEDY, stat=ierr, &
+                                         errmsg=msg)
+            call check(ierr == 0, 'mesh_cad_surface recombines quads')
+            if (ierr == 0) then
+                call mio_mesh_cad_get_quad_stats(nq, nl, qsj, ierr)
+                call check(ierr == 0 .and. nq > 0 .and. qsj > 0.0_real64, &
+                           'mesh_cad_surface reports its quads')
+                call tris%free()
+            end if
+            end block
+            tris = info%mesh_cad_surface(0.1_real64, untangle=.true., stat=ierr, errmsg=msg)
+            call check(ierr /= 0, 'mesh_cad_surface refuses untangle at order 1')
+            tris = info%mesh_cad_surface(0.1_real64, order=2, untangle=.true., stat=ierr, &
+                                         errmsg=msg)
+            call check(ierr == 0 .and. mio_mesh_cad_num_untangled() == 0, &
+                       'mesh_cad_surface untangles nothing on a flat triangle')
+            if (ierr == 0) call tris%free()
+            ! Roadmap 6.10.1: the mesh projected back onto its triangle moves
+            ! nothing; a read's own sampling names no face and is refused.
+            block
+                type(mio_mesh) :: projected
+                type(mio_project_to_cad_report) :: prep
+            tris = info%mesh_cad_surface(0.1_real64, stat=ierr, errmsg=msg)
+            if (ierr == 0) then
+                projected = mio_project_to_cad(tris, info, report=prep, stat=ierr, errmsg=msg)
+                call check(ierr == 0 .and. prep%num_projected == tris%num_points() .and. &
+                           prep%max_move < 1.0e-12_real64 .and. prep%num_outside_trim == 0, &
+                           'project_to_cad leaves a mesh on its model')
+                call check(size(mio_project_to_cad_outside_trim()) == 0, &
+                           'project_to_cad lists no point outside the trims')
+                ! Roadmap 6.9: layers grown from the triangle are wedges.
+                block
+                    type(mio_mesh) :: grown
+                    type(mio_boundary_layer_report) :: brep
+                    grown = mio_boundary_layer(tris, 0.01_real64, num_layers=2, report=brep, &
+                                               stat=ierr, errmsg=msg)
+                    call check(ierr == 0 .and. brep%num_wedges > 0 .and. &
+                               brep%min_scaled_jacobian > 0.0_real64, &
+                               'boundary_layer grows wedges')
+                    if (ierr == 0) call grown%free()
+                end block
+                if (ierr == 0) call projected%free()
+                call tris%free()
+            end if
+            end block
             ! v17.20.0: corner lopping at 20 degrees lops the two 45-degree
             ! corners and states the straight-segment bound.
             block

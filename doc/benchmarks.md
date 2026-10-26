@@ -991,6 +991,19 @@ Failures by class: trim_outside_patch 69, degenerate_patch 270, other 60.
 
 <!-- cad-corpus:end -->
 
+Gmsh is the corpus's oracle ([roadmap 6.5.4](./roadmap.md)). `run --gmsh [EXE]` (default: `gmsh` on the `PATH`; the run stops with exit code 2 when it does not start) also meshes every model with Gmsh's own executable, `gmsh <model> -2 -clmax <size> -format msh41`, at the same target size and under the same time limit, and records under each model's `gmsh` key its triangles, area, volume (when its mesh is closed), smallest angle and time, beside the Hausdorff distance between its mesh and ours over the diagonal; `summary` divides our area and volume by its own. Gmsh is GPL, so it is run in a process of its own through files and never linked or imported; a Gmsh failure is recorded, not fatal, and the `gmsh` key stays out of the baseline, so a Gmsh upgrade cannot fail `compare`. The weekly job installs Ubuntu's package and passes `--gmsh`, and `summary` prints a table against it. Measured at 17.21.0 against Gmsh 4.12.1 on the eight models that fetch here (KR600 and the RC buggy were left out for time), the two meshes agree on the geometry: the area ratios lie within 0.5% except 11752 (0.959, not yet explained), the closed solids' volumes within 0.15%, and the Hausdorff distance between the meshes under 1.5% of the diagonal. Gmsh, unrefined, makes fewer triangles on six models and reaches larger smallest angles on all but 11752, where both stay under a degree; ours meet 25 degrees where Gmsh is between 25.8 and 26.7 (the two as1 assemblies and the face-recognition part), and the gap on linkrods, screw and splinecage is the faces our report already names as under the bound.
+
+| model | triangles (ours / Gmsh) | area ratio | volume ratio | Hausdorff / diagonal | min angle (ours / Gmsh) |
+|---|---:|---:|---:|---:|---:|
+| `occt-samples/linkrods` | 7034 / 4602 | 0.9994 | 0.9986 | 0.0066 | 0.96 / 7.61 |
+| `occt-samples/screw` | 4042 / 3022 | 1.0003 | 1.0009 | 0.00099 | 8.83 / 26.7 |
+| `pythonocc-demos/11752` | 50586 / 28618 | 0.9589 | – | 0.015 | 0.612 / 0.19 |
+| `pythonocc-demos/as1-oc-214` | 8750 / 11396 | 0.9979 | 1.0005 | 0.0039 | 25 / 25.8 |
+| `pythonocc-demos/as1-pe-203` | 8750 / 11364 | 0.9958 | 1.0001 | 0.011 | 25.1 / 25.8 |
+| `pythonocc-demos/face-recognition-sample-part` | 5948 / 6704 | 0.9998 | 1.0000 | 0.0037 | 25 / 26.6 |
+| `pythonocc-demos/splinecage` | 1312 / 728 | 0.9997 | – | 0.0016 | 4.93 / 36.9 |
+| `pythonocc-demos/ventilator` | 40103 / 10084 | 0.9993 | – | 0.0034 | 0.0555 / 0.146 |
+
 ## Mesh-backend benchmarks
 
 The C++ core's [mesh backend](cpp_backends.md) (MESHIO / NATIVE / KRATOS) is an exclusive compile-time choice, so `benchmark/bench_backends.sh` builds one benchmark binary per backend (`src/cpp/benchmark/bench_backends.cpp`, enabled with `-DMESHIOPLUSPLUS_BUILD_BENCHMARKS=ON`) and collates a CSV (`benchmark/results_backends.csv`). Method mirrors the Python harness: warmup + median of 5 (`std::chrono`), a synthetic structured tet cube (default 6·35³ = 257k tets over 46k shared points), and four kinds of rows:

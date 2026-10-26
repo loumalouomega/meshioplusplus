@@ -5763,8 +5763,11 @@ typedef struct mio_mesh_cad_surface_opts_ex {
     /** v17.20.0: nonzero: lop acute corners (Pav and Walkington 2005) in place
      *  of concentric shells (6.2.3); only with refinement. */
     int32_t lop_corners;
-    int32_t reserved_pad; /**< zero */
-    /** Unreleased (roadmap 6.10.2): an anisotropic metric from a field's
+    /** Unreleased (roadmap 6.6.3): nonzero, with order 2 or 3: move a face's
+     *  own high-order nodes on the surface to untangle a folded curved
+     *  element before it is straightened (Toulorge et al. 2013). */
+    int32_t untangle;
+    /** Since v17.22.0 (roadmap 6.10.2): an anisotropic metric from a field's
      *  Hessian, the 9-component point_data `metric_array` of
      *  `metric_background`, with the target interpolation error
      *  `metric_error` (positive): its metric R |L| R^T / (8 metric_error),
@@ -5774,12 +5777,38 @@ typedef struct mio_mesh_cad_surface_opts_ex {
     const mio_mesh* metric_background;
     const char* metric_array; /**< the Hessian's name (e.g. "f:hessian") */
     double metric_error;
-    int64_t reserved[2]; /**< zero */
+    /** Unreleased (roadmap 6.8): a mio_mesh_cad_quads; MIO_MESH_CAD_QUADS_ALL
+     *  with order 2 writes quad9 (6.8.3), MIO_MESH_CAD_QUADS_DOMINANT is order
+     *  1 only. */
+    int32_t quads;
+    /** Unreleased (roadmap 6.8.1): a mio_mesh_cad_quad_pairs, how triangles
+     *  pair into quads (0, the default, a maximum matching). */
+    int32_t quad_pairs;
+    int64_t reserved[1]; /**< zero */
 } mio_mesh_cad_surface_opts_ex;
+
+/** Quadrilaterals (roadmap 6.8): none, quad-dominant (pairs of triangles
+ *  recombined where they make a good quad), or all-quad (the quad-dominant
+ *  mesh of twice the size, each quad split into four and each triangle into
+ *  three; the size sources asked for twice their size). */
+typedef enum mio_mesh_cad_quads {
+    MIO_MESH_CAD_QUADS_NONE = 0,
+    MIO_MESH_CAD_QUADS_DOMINANT = 1,
+    MIO_MESH_CAD_QUADS_ALL = 2
+} mio_mesh_cad_quads;
+
+/** How triangles pair into quads (roadmap 6.8.1). */
+typedef enum mio_mesh_cad_quad_pairs {
+    /** A maximum-cardinality matching of greatest total quality (Blossom-quad). */
+    MIO_MESH_CAD_QUAD_PAIRS_MATCHING = 0,
+    /** Best pair first. */
+    MIO_MESH_CAD_QUAD_PAIRS_GREEDY = 1
+} mio_mesh_cad_quad_pairs;
 
 /** Initialize the extended options: the mean metric, no virtual edges, no
  *  given sizes, no background, no reparametrisation, no model tolerances, no
- *  virtual faces, no corner lopping and no metric background. */
+ *  virtual faces, no corner lopping, no metric background, no untangling and
+ *  no quads. */
 MIO_API void mio_mesh_cad_surface_opts_ex_init(mio_mesh_cad_surface_opts_ex* opts);
 
 /**
@@ -5818,7 +5847,8 @@ MIO_API int64_t mio_mesh_cad_surface_num_reparametrised(void);
 /**
  * v17.20.0: reparametrised face record `index`: its face, its condition number
  * over its coarse mesh and in its flattening (0 when none was built), and its
- * method: 1 least-squares conformal, 2 mean-value on a circle, 0 declined
+ * method: 1 least-squares conformal, 2 mean-value on a circle, 3 between two
+ * concentric circles (an annulus), 0 declined
  * (see mio_mesh_cad_surface_reparam_reason). Any output may be NULL.
  */
 MIO_API mio_status mio_mesh_cad_surface_reparametrised(int64_t index, int64_t* face,
@@ -5852,7 +5882,9 @@ MIO_API int64_t mio_mesh_cad_surface_merged_face_reason(int64_t index, char* buf
 typedef enum mio_mesh_cad_tolerance_where {
     MIO_MESH_CAD_TOLERANCE_CLOSED_START = 0, /**< a closed edge's uses start at one point */
     MIO_MESH_CAD_TOLERANCE_CORNER = 1,       /**< a corner's uses lie within it */
-    MIO_MESH_CAD_TOLERANCE_PROJECTION = 2    /**< an edge's uses lie within it */
+    MIO_MESH_CAD_TOLERANCE_PROJECTION = 2,   /**< an edge's uses lie within it */
+    MIO_MESH_CAD_TOLERANCE_PAIRING = 3       /**< the file-level tolerance paired trims no
+                                                  edge names (Kratos `model_tolerance`) */
 } mio_mesh_cad_tolerance_where;
 
 /** v17.20.0: how many places a declared tolerance accepted a gap (6.5.1). */
@@ -5866,6 +5898,128 @@ MIO_API int64_t mio_mesh_cad_surface_num_tolerance_uses(void);
 MIO_API mio_status mio_mesh_cad_surface_tolerance_use(int64_t index, int64_t* edge,
                                                       double* declared, double* gap,
                                                       int32_t* where);
+
+/** Unreleased (6.6.3): how many curved elements this thread's last call kept
+ *  curved by untangling, which straightening alone would have made
+ *  straight-sided. */
+MIO_API int64_t mio_mesh_cad_surface_num_untangled(void);
+
+/**
+ * Unreleased (6.8): this thread's last call's quads, the triangles left
+ * beside them, and the least scaled Jacobian of a quad (0 with none). Any
+ * output may be NULL.
+ */
+MIO_API mio_status mio_mesh_cad_surface_quad_stats(int64_t* num_quads,
+                                                   int64_t* num_leftover_triangles,
+                                                   double* min_scaled_jacobian);
+
+/* ---- project_to_cad (roadmap 6.10.1) ------------------------------------ */
+
+/**
+ * Options of mio_project_to_cad. Initialise with mio_project_to_cad_opts_init.
+ * 64 bytes, with a reserved tail.
+ */
+typedef struct mio_project_to_cad_opts {
+    /** The cell data naming each triangle's or quad's CAD face; NULL is "cad:face". */
+    const char* face_array;
+    /** The cell data naming each line's CAD edge; NULL is "cad:edge". */
+    const char* edge_array;
+    /** A point farther than this from where it would go stays (0: no limit). */
+    double max_distance;
+    /** Samples per knot span when testing a face's trims (0 is 16; 2 to 1024). */
+    int32_t trim_samples;
+    int32_t reserved_pad;
+    int64_t reserved[4];
+} mio_project_to_cad_opts;
+
+/** What mio_project_to_cad did. 96 bytes, with a reserved tail. */
+typedef struct mio_project_to_cad_report {
+    int64_t num_projected;    /**< points moved onto a face or an edge */
+    int64_t num_on_edges;     /**< of those, onto an edge */
+    int64_t num_corners;      /**< of those, on two or more edges */
+    int64_t num_ambiguous;    /**< on two faces and no edge: left */
+    int64_t num_too_far;      /**< beyond max_distance: left */
+    int64_t num_failed;       /**< whose face or edge is unusable: left */
+    int64_t num_outside_trim; /**< projected outside their face's trims */
+    double max_move;          /**< the largest distance a point moved */
+    int64_t reserved[4];
+} mio_project_to_cad_report;
+
+MIO_API void mio_project_to_cad_opts_init(mio_project_to_cad_opts* opts);
+
+/**
+ * Move every point of `mesh` onto the CAD face or edge its cells name
+ * (`cad:face` on triangles and quads, `cad:edge` on lines, as
+ * mio_mesh_cad_surface writes them) of the B-rep in `info` (a "cad_json",
+ * "step" or "iges" mio_format_info): a point on one edge's lines onto that
+ * edge, on two or more (a corner) onto the lowest, a point whose cells name
+ * one face onto that face's surface (Newton point inversion); a point on two
+ * faces and no edge stays. A projection outside its face's trims is kept and
+ * counted. Data and regions pass through; only coordinates change.
+ *
+ * @param opts   NULL for the defaults.
+ * @param report out, nullable.
+ * @return the projected mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_project_to_cad(const mio_mesh* mesh, const mio_format_info* info,
+                                     const mio_project_to_cad_opts* opts,
+                                     mio_project_to_cad_report* report);
+
+/**
+ * The points the thread's last mio_project_to_cad projected outside their
+ * face's trims, ascending: copies up to `n` into `points` and returns the
+ * full count.
+ */
+MIO_API int64_t mio_project_to_cad_outside_trim(int64_t* points, int64_t n);
+
+/* ---- boundary_layer (roadmap 6.9) --------------------------------------- */
+
+/** Options of mio_boundary_layer; initialise with mio_boundary_layer_opts_init. 64 bytes. */
+typedef struct mio_boundary_layer_opts {
+    double first_height;       /**< the first layer's thickness (required, > 0) */
+    double growth;             /**< each layer over the one before, 1 to 10 (init: 1.2) */
+    double collision_fraction; /**< of the distance a point's ray hits, (0, 1] (init: 0.45) */
+    int32_t num_layers;        /**< 1 to 1000 (init: 3) */
+    int32_t reverse;           /**< nonzero: grow against the faces' normals */
+    int32_t smooth_iterations; /**< (init: 5) */
+    int32_t max_shrink;        /**< halvings before a point collapses (init: 6) */
+    int64_t reserved[3];
+} mio_boundary_layer_opts;
+
+/** What mio_boundary_layer did. 128 bytes. */
+typedef struct mio_boundary_layer_report {
+    int64_t num_cells; /**< volume cells */
+    int64_t num_wedges;
+    int64_t num_hexahedra;
+    int64_t num_pyramids;
+    int64_t num_tetrahedra;
+    int64_t num_shrunk;      /**< points whose layers are thinner than asked */
+    int64_t num_collapsed;   /**< of those, points that do not grow */
+    int64_t num_not_visible; /**< of those, points no direction sees all faces from */
+    double min_scaled_jacobian;
+    double min_thickness;
+    double max_thickness;
+    int32_t cap_closed;
+    int32_t reserved_pad;
+    int64_t reserved[4];
+} mio_boundary_layer_report;
+
+MIO_API void mio_boundary_layer_opts_init(mio_boundary_layer_opts* opts);
+
+/**
+ * Grow prismatic boundary layers from the triangle and quad surface `mesh`
+ * (roadmap 6.9): wedges from triangles and hexahedra from quads along each
+ * point's most normal normal (Aubry and Löhner 2009), stopped before they
+ * collide, the points of a cell that would fold shrunk and then collapsed
+ * into pyramids and tetrahedra; the wall and the cap come out as faces, with
+ * the `boundary_layer:layer` cell data and the surface's data carried.
+ *
+ * @param opts   required (first_height has no default).
+ * @param report out, nullable.
+ * @return the layers (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_boundary_layer(const mio_mesh* mesh, const mio_boundary_layer_opts* opts,
+                                     mio_boundary_layer_report* report);
 
 /** v17.20.0: how many corners this thread's last call lopped (6.2.3). */
 MIO_API int64_t mio_mesh_cad_surface_num_lopped_corners(void);

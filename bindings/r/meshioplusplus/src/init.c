@@ -126,6 +126,8 @@ extern SEXP R_mio_merge(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_interpolate(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_conservative_interpolate(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_undo_green(SEXP, SEXP);
+extern SEXP R_mio_boundary_layer(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_project_to_cad(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_meshes_equal(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_diff(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_stats(SEXP);
@@ -187,8 +189,8 @@ extern SEXP R_mio_iga_refine(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_iga_sample(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_mesh_cad_surface(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
                                    SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
-                                   SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
-                                   SEXP);
+                                   SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
+                                   SEXP, SEXP, SEXP);
 extern SEXP R_mio_iga_evaluate(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_brep_info(SEXP);
 extern SEXP R_mio_mdpa_info(SEXP);
@@ -323,6 +325,8 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_interpolate, 7),
                                               CALLDEF(R_mio_conservative_interpolate, 5),
                                               CALLDEF(R_mio_undo_green, 2),
+                                              CALLDEF(R_mio_boundary_layer, 8),
+                                              CALLDEF(R_mio_project_to_cad, 6),
                                               CALLDEF(R_mio_meshes_equal, 5),
                                               CALLDEF(R_mio_diff, 5),
                                               CALLDEF(R_mio_stats, 1),
@@ -380,7 +384,7 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_nurbs_info, 1),
                                               CALLDEF(R_mio_iga_refine, 7),
                                               CALLDEF(R_mio_iga_sample, 5),
-                                              CALLDEF(R_mio_mesh_cad_surface, 33),
+                                              CALLDEF(R_mio_mesh_cad_surface, 36),
                                               CALLDEF(R_mio_iga_evaluate, 5),
                                               CALLDEF(R_mio_brep_info, 1),
                                               CALLDEF(R_mio_mdpa_info, 1),

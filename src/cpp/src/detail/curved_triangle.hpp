@@ -69,6 +69,17 @@ struct CurvedTriangleCheck {
 CurvedTriangleCheck curved_triangle_check(int Order, const CurvedVec3* pNodes,
                                           const CurvedVec3& rNormal, int MaxDepth = 8);
 
+/**
+ * @brief A lower bound of the element's scaled Jacobian, `min J / max |J|`
+ * over the element (roadmap 6.6.3): the least of `J`'s Bernstein
+ * coefficients over the largest in magnitude (Johnen, Remacle and Geuzaine
+ * 2013 bound `min J` from below and `max J` from above by them), in
+ * [-1, 1]. Positive proves the element valid; 1 for a straight-sided one
+ * whose Jacobian is constant and positive. Cheap (no subdivision): the
+ * measure untangling raises.
+ */
+double curved_triangle_scaled_bound(int Order, const CurvedVec3* pNodes, const CurvedVec3& rNormal);
+
 /// The Bernstein coefficients of the polynomial of degree `Degree` (2 or 4)
 /// on the reference triangle whose values at the degree's lattice points are
 /// `pValues`, in the order `(i, j)` with `i` (the `xi` index) outer, `j`

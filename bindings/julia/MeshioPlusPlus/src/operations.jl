@@ -678,6 +678,42 @@ function undo_green(coarse::Mesh, fine::Mesh)
 end
 
 """
+    boundary_layer(mesh; first_height, num_layers=3, growth=1.2, reverse=false,
+                   collision_fraction=0.45, smooth_iterations=5, max_shrink=6)
+        -> (; mesh, num_cells, num_wedges, num_hexahedra, num_pyramids, num_tetrahedra,
+              num_shrunk, num_collapsed, num_not_visible, min_scaled_jacobian,
+              min_thickness, max_thickness, cap_closed)
+
+Grow prismatic boundary layers from a triangle and quad surface (roadmap 6.9):
+wedges from triangles and hexahedra from quads along each point's most normal
+normal (Aubry and Löhner 2009), the first `first_height` thick and each next
+`growth` times the one before; stopped at `collision_fraction` of the distance
+to the surface ahead; the points of a cell that would fold shrunk and then
+collapsed into pyramids and tetrahedra. The wall and the cap come out as faces,
+with `boundary_layer:layer` cell data. See `doc/boundary_layer.md`.
+"""
+function boundary_layer(mesh::Mesh; first_height::Real, num_layers::Integer=3,
+                        growth::Real=1.2, reverse::Bool=false, collision_fraction::Real=0.45,
+                        smooth_iterations::Integer=5, max_shrink::Integer=6)
+    opts = _CBoundaryLayerOpts(Cdouble(first_height), Cdouble(growth),
+                               Cdouble(collision_fraction), Int32(num_layers), Int32(reverse),
+                               Int32(smooth_iterations), Int32(max_shrink), (0, 0, 0))
+    report = Ref{_CBoundaryLayerReport}()
+    ptr = ccall(_sym(:mio_boundary_layer), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CBoundaryLayerOpts}, Ref{_CBoundaryLayerReport}),
+                _handle(mesh), Ref(opts), report)
+    out = Mesh(_check_ptr(ptr))
+    r = report[]
+    (mesh=out, num_cells=Int(r.num_cells), num_wedges=Int(r.num_wedges),
+     num_hexahedra=Int(r.num_hexahedra), num_pyramids=Int(r.num_pyramids),
+     num_tetrahedra=Int(r.num_tetrahedra), num_shrunk=Int(r.num_shrunk),
+     num_collapsed=Int(r.num_collapsed), num_not_visible=Int(r.num_not_visible),
+     min_scaled_jacobian=Float64(r.min_scaled_jacobian),
+     min_thickness=Float64(r.min_thickness), max_thickness=Float64(r.max_thickness),
+     cap_closed=r.cap_closed != 0)
+end
+
+"""
     interpolate(source, target; method="nearest", arrays=String[],
                 extrapolate=false, default_value=0.0, on_conflict="error") -> Mesh
 

@@ -367,6 +367,32 @@ end
                                                   reparam_condition_number=0.5)
         # A metric error without a metric background is refused (roadmap 6.10.2).
         @test_throws MeshioError mesh_cad_surface(info; target_size=0.1, metric_error=1.0)
+        # Quads (roadmap 6.8) and untangling (6.6.3).
+        q = mesh_cad_surface(info; target_size=0.1, min_angle=25.0, quads="dominant")
+        @test q.num_quads > 0 && q.min_quad_scaled_jacobian > 0
+        close(q.mesh)
+        @test_throws ArgumentError mesh_cad_surface(info; target_size=0.1, quads="hex")
+        g = mesh_cad_surface(info; target_size=0.1, min_angle=25.0, quads="dominant",
+                             quad_pairs="greedy")
+        @test g.num_quads > 0
+        close(g.mesh)
+        @test_throws ArgumentError mesh_cad_surface(info; target_size=0.1, quads="dominant",
+                                                    quad_pairs="best")
+        @test_throws MeshioError mesh_cad_surface(info; target_size=0.1, untangle=true)
+        u = mesh_cad_surface(info; target_size=0.1, order=2, untangle=true)
+        @test u.num_untangled == 0
+        close(u.mesh)
+        # Projection back onto the model (roadmap 6.10.1) moves nothing.
+        p = project_to_cad(r.mesh, info)
+        @test p.num_projected == num_points(r.mesh) && p.max_move < 1e-12
+        @test isempty(p.outside_trim)
+        close(p.mesh)
+        # Boundary layers (roadmap 6.9) grown from the triangle are wedges.
+        b = boundary_layer(r.mesh; first_height=0.01, num_layers=2)
+        @test b.num_wedges > 0 && b.min_scaled_jacobian > 0
+        close(b.mesh)
+        @test_throws MeshioError boundary_layer(r.mesh; first_height=0.0)
+        @test_throws MeshioError project_to_cad(mesh, info)
         close(r.mesh); close(mesh); close(info)
     end
 end

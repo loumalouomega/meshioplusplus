@@ -53,6 +53,8 @@
 #include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/iga.hpp"
 #include "meshioplusplus/operations/mesh_cad.hpp"
+#include "meshioplusplus/operations/boundary_layer.hpp"
+#include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/formats/cad_json.hpp"
 #include "meshioplusplus/formats/iges.hpp"
 #include "meshioplusplus/formats/mfem.hpp"
@@ -535,8 +537,18 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "LopCorners",
           "MetricBackground",
           "MetricArray",
-          "MetricError"}},
+          "MetricError",
+          "Untangle",
+          "Quads",
+          "QuadPairs"}},
         {"IgaSample", {"Subdivisions", "TrimSamples", "Trim", "Edges"}},
+        // Back onto the CAD (roadmap 6.10.1): the B-rep at `Model`, or the
+        // one a CAD Input carries when no step has changed the mesh since.
+        {"ProjectToCad", {"Model", "FaceArray", "EdgeArray", "MaxDistance", "TrimSamples"}},
+        // Prismatic layers grown from the surface (roadmap 6.9).
+        {"BoundaryLayer",
+         {"FirstHeight", "NumLayers", "Growth", "Reverse", "CollisionFraction", "SmoothIterations",
+          "MaxShrink"}},
         {"IgaRefine",
          {"Subdivisions", "Elevate", "SampleSubdivisions", "TrimSamples", "Trim", "Edges"}},
     };
@@ -798,7 +810,8 @@ RenderOptions pipe_snap_render_options(const PipelineStep& rStep) {
         o.mComponent = static_cast<int>(pipe_number(rStep, "Component", 0.0));
     o.mTheme = static_cast<RenderTheme>(pipe_snap_choice(rStep, "Theme", {"none", "synthwave"}, 0));
     // The theme brings its own colormap unless one is named.
-    o.mCmap = pipe_text(rStep, "Cmap", o.mTheme == RenderTheme::Synthwave ? "synthwave" : "viridis");
+    o.mCmap =
+        pipe_text(rStep, "Cmap", o.mTheme == RenderTheme::Synthwave ? "synthwave" : "viridis");
     o.mScanlines = pipe_flag(rStep, "Scanlines", false);
     o.mBloom = pipe_flag(rStep, "Bloom", false);
     o.mFringe = pipe_flag(rStep, "Fringe", false);
@@ -839,9 +852,10 @@ RenderOptions pipe_snap_render_options(const PipelineStep& rStep) {
     // normal of the side kept).
     const std::vector<double> cut = pipe_dvec(rStep, "Cutaway");
     if (cut.size() % 6 != 0 || cut.size() > 12)
-        throw std::invalid_argument(pipe_err(
-            rStep, "parameter 'Cutaway' must be one or two planes of six numbers each "
-                   "(a point, then the normal of the side kept)"));
+        throw std::invalid_argument(
+            pipe_err(rStep,
+                     "parameter 'Cutaway' must be one or two planes of six numbers each "
+                     "(a point, then the normal of the side kept)"));
     for (std::size_t i = 0; i + 6 <= cut.size(); i += 6) {
         RenderCutaway plane;
         plane.mPoint = {cut[i], cut[i + 1], cut[i + 2]};
@@ -1037,6 +1051,26 @@ Mesh pipe_apply_model_step(const PipelineStep& rStep, PipelineReport& rReport, P
         extras.mModelTolerances = pipe_flag(rStep, "ModelTolerances", false);
         extras.mVirtualFaces = pipe_flag(rStep, "VirtualFaces", false);
         extras.mLopCorners = pipe_flag(rStep, "LopCorners", false);
+        // Roadmap 6.6.3 and 6.8.
+        extras.mUntangle = pipe_flag(rStep, "Untangle", false);
+        const std::string quads = pipe_text(rStep, "Quads", "none");
+        if (quads == "none")
+            extras.mQuads = MeshCadQuads::None;
+        else if (quads == "dominant")
+            extras.mQuads = MeshCadQuads::Dominant;
+        else if (quads == "all")
+            extras.mQuads = MeshCadQuads::All;
+        else
+            throw std::invalid_argument(
+                pipe_err(rStep, "'Quads' must be 'none', 'dominant' or 'all'"));
+        const std::string quad_pairs = pipe_text(rStep, "QuadPairs", "matching");
+        if (quad_pairs == "matching")
+            extras.mQuadPairs = MeshCadQuadPairs::Matching;
+        else if (quad_pairs == "greedy")
+            extras.mQuadPairs = MeshCadQuadPairs::Greedy;
+        else
+            throw std::invalid_argument(
+                pipe_err(rStep, "'QuadPairs' must be 'matching' or 'greedy'"));
         MeshCadSurfaceExtrasReport extras_report;
         MeshCadSurfaceResult r =
             mesh_cad_surface(*rModel.mBrep, o, sources, extras, nullptr, &extras_report);
@@ -1060,6 +1094,8 @@ Mesh pipe_apply_model_step(const PipelineStep& rStep, PipelineReport& rReport, P
              {"NumMergedFaces",
               count(extras_report.mMergedFaces, [](const auto& rM) { return rM.mMerged; })},
              {"NumLoppedCorners", static_cast<double>(extras_report.mLoppedCorners.size())},
+             {"NumUntangled", static_cast<double>(extras_report.mNumUntangled)},
+             {"NumQuads", static_cast<double>(extras_report.mNumQuads)},
              {"MinAngleDeg", r.mMinAngleDeg},
              {"MaxAngleDeg", r.mMaxAngleDeg}});
         return std::move(r.mMesh);
@@ -1160,6 +1196,69 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                          "needs the CAD model a pipeline's Input reads, which only a whole run "
                          "carries (run_pipeline), not a step applied on its own"));
         return pipe_apply_model_step(rStep, rReport, *pModel);
+    }
+
+    if (op == "BoundaryLayer") {
+        if (!pipe_find(rStep, "FirstHeight"))
+            throw std::invalid_argument(pipe_err(rStep, "'FirstHeight' is required"));
+        BoundaryLayerOptions o;
+        o.mFirstHeight = pipe_number(rStep, "FirstHeight", 0.0);
+        o.mNumLayers = static_cast<std::int32_t>(
+            pipe_number(rStep, "NumLayers", static_cast<double>(o.mNumLayers)));
+        o.mGrowth = pipe_number(rStep, "Growth", o.mGrowth);
+        o.mReverse = pipe_flag(rStep, "Reverse", o.mReverse);
+        o.mCollisionFraction = pipe_number(rStep, "CollisionFraction", o.mCollisionFraction);
+        o.mSmoothIterations = static_cast<std::int32_t>(
+            pipe_number(rStep, "SmoothIterations", static_cast<double>(o.mSmoothIterations)));
+        o.mMaxShrink = static_cast<std::int32_t>(
+            pipe_number(rStep, "MaxShrink", static_cast<double>(o.mMaxShrink)));
+        BoundaryLayerResult r = boundary_layer(mesh, o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumCells", static_cast<double>(r.mNumCells)},
+                        {"NumShrunk", static_cast<double>(r.mNumShrunk)},
+                        {"NumCollapsed", static_cast<double>(r.mNumCollapsed)},
+                        {"MinScaledJacobian", r.mMinScaledJacobian}});
+        return std::move(r.mMesh);
+    }
+
+    if (op == "ProjectToCad") {
+        BrepInfo owned;
+        const BrepInfo* p_brep = nullptr;
+        if (pipe_find(rStep, "Model")) {
+            const std::string path = pipe_text(rStep, "Model", "");
+            const std::string fmt = resolve_format(path, "");
+            if (fmt == "cad_json")
+                (void)read_cad_json(path, owned);
+            else if (fmt == "step")
+                (void)read_step(path, owned);
+            else if (fmt == "iges")
+                (void)read_iges(path, owned);
+            else
+                throw std::invalid_argument(pipe_err(
+                    rStep, "'Model' must be a CAD JSON, STEP or IGES file, not '" + fmt + "'"));
+            p_brep = &owned;
+        } else if (pModel && pModel->mBrep) {
+            p_brep = &*pModel->mBrep;
+        } else {
+            throw std::invalid_argument(pipe_err(
+                rStep,
+                "needs 'Model' (a CAD JSON, STEP or IGES file), or the B-rep a CAD Input "
+                "carries while no step has changed the mesh" +
+                    std::string(pModel && !pModel->mWhy.empty() ? ": " + pModel->mWhy : "")));
+        }
+        ProjectToCadOptions o;
+        o.mFaceArray = pipe_text(rStep, "FaceArray", o.mFaceArray.c_str());
+        o.mEdgeArray = pipe_text(rStep, "EdgeArray", o.mEdgeArray.c_str());
+        o.mMaxDistance = pipe_number(rStep, "MaxDistance", o.mMaxDistance);
+        o.mTrimSamples = static_cast<std::int32_t>(
+            pipe_number(rStep, "TrimSamples", static_cast<double>(o.mTrimSamples)));
+        ProjectToCadResult r = project_to_cad(mesh, *p_brep, o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumProjected", static_cast<double>(r.mNumProjected)},
+                        {"NumOnEdges", static_cast<double>(r.mNumOnEdges)},
+                        {"NumOutsideTrim", static_cast<double>(r.mNumOutsideTrim)},
+                        {"MaxMove", r.mMaxMove}});
+        return std::move(r.mMesh);
     }
 
     if (op == "Quality") {
@@ -1933,12 +2032,13 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             if (v.size() == 2 && PadZero)
                 v.push_back(0.0);
             if (v.size() != 3)
-                throw std::invalid_argument(pipe_err(
-                    rStep, std::string("'") + pKey + "' expects three values"));
+                throw std::invalid_argument(
+                    pipe_err(rStep, std::string("'") + pKey + "' expects three values"));
             return std::array<double, 3>{{v[0], v[1], v[2]}};
         };
         auto count = [&](const char* pKey, std::int64_t Default) {
-            return static_cast<std::int64_t>(pipe_number(rStep, pKey, static_cast<double>(Default)));
+            return static_cast<std::int64_t>(
+                pipe_number(rStep, pKey, static_cast<double>(Default)));
         };
         auto dims_of = [&](std::size_t N, std::int64_t Default) {
             std::vector<std::int64_t> v = pipe_ivec(rStep, "Dims");
@@ -1956,8 +2056,9 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             const std::vector<double> size = pipe_dvec(rStep, "Size");
             if (!size.empty() && size.size() != 2)
                 throw std::invalid_argument(pipe_err(rStep, "'Size' expects two values"));
-            out = rectangle({{d[0], d[1]}}, size.empty() ? std::array<double, 2>{{1.0, 1.0}}
-                                                         : std::array<double, 2>{{size[0], size[1]}},
+            out = rectangle({{d[0], d[1]}},
+                            size.empty() ? std::array<double, 2>{{1.0, 1.0}}
+                                         : std::array<double, 2>{{size[0], size[1]}},
                             triple("Origin", zero, true), pipe_text(rStep, "CellType", "quad"),
                             pipe_text(rStep, "Split", "zigzag"), order, max_cells);
         } else if (shape == "box") {
@@ -1966,8 +2067,9 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                       triple("Origin", zero, false), pipe_text(rStep, "CellType", "hexahedron"),
                       order, max_cells);
         } else if (shape == "disk") {
-            out = disk(pipe_number(rStep, "Radius", 1.0), count("N", 8), triple("Center", zero, false),
-                       pipe_text(rStep, "CellType", "quad"), order, max_cells);
+            out = disk(pipe_number(rStep, "Radius", 1.0), count("N", 8),
+                       triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"), order,
+                       max_cells);
         } else if (shape == "uv_sphere") {
             out = uv_sphere(pipe_number(rStep, "Radius", 1.0), count("Nu", 16), count("Nv", 8),
                             triple("Center", zero, false), pipe_text(rStep, "CellType", "triangle"),
@@ -2134,8 +2236,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mDistance.mSign = sdf_sign_from_name(pipe_text(rStep, "Sign", "pseudonormal"));
         opts.mTransition = octree_transition_from_name(pipe_text(rStep, "Transition", "hanging"));
         opts.mSnap = pipe_flag(rStep, "Snap", false);
-        opts.mSurfaceLevel =
-            static_cast<std::int64_t>(pipe_number(rStep, "SurfaceLevel", -1.0));
+        opts.mSurfaceLevel = static_cast<std::int64_t>(pipe_number(rStep, "SurfaceLevel", -1.0));
         opts.mCurvatureThreshold = pipe_number(rStep, "CurvatureThreshold", 0.0);
         opts.mFeatureAngle = pipe_number(rStep, "FeatureAngle", 0.0);
         opts.mSizeArray = pipe_text(rStep, "SizeArray", "");
@@ -2582,8 +2683,11 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
     const bool fanout = rPipeline.mOutput.mPath.find("{key}") != std::string::npos ||
                         rPipeline.mOutput.mPath.find("{part}") != std::string::npos;
     if (rPipeline.mVersion == 2 && !fanout &&
-        (rPipeline.mOutput.mPath.find('{') != std::string::npos || rPipeline.mOutput.mPath.find('}') != std::string::npos))
-        throw std::invalid_argument("meshio++: pipeline: unsupported Version 2 output token; transient sequence schemas remain Version 1");
+        (rPipeline.mOutput.mPath.find('{') != std::string::npos ||
+         rPipeline.mOutput.mPath.find('}') != std::string::npos))
+        throw std::invalid_argument(
+            "meshio++: pipeline: unsupported Version 2 output token; transient sequence schemas "
+            "remain Version 1");
     bool wants_model = false;
     for (std::size_t i = 0; i < rPipeline.mSteps.size(); ++i) {
         const auto& step = rPipeline.mSteps[i];
@@ -2591,7 +2695,8 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
             validate_pipeline_step(step);
         else
             pipe_validate_v2(step);
-        wants_model = wants_model || pipe_is_model_step(step.mOp);
+        wants_model = wants_model || pipe_is_model_step(step.mOp) ||
+                      (step.mOp == "ProjectToCad" && !pipe_find(step, "Model"));
         if (step.mOp == "Split" && (!fanout || i + 1 != rPipeline.mSteps.size()))
             throw std::invalid_argument(
                 "meshio++: pipeline: Split must be terminal and requires Output.Pattern with "
@@ -2681,7 +2786,9 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
         }
         mesh = rPipeline.mVersion == 2 ? pipe_apply_v2(std::move(mesh), step, report, &model)
                                        : pipe_apply_step(std::move(mesh), step, report, &model);
-        if (model.Has() && !pipe_is_model_step(step.mOp) && step.mOp != "FitCad")
+        // Projected onto it, the mesh matches the model again.
+        if (model.Has() && !pipe_is_model_step(step.mOp) && step.mOp != "FitCad" &&
+            step.mOp != "ProjectToCad")
             model.Drop("step " + std::to_string(i + 1) + " '" + step.mOp +
                        "' changed the mesh, which drops the model");
     }

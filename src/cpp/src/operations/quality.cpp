@@ -203,6 +203,9 @@ void quality_quad(const std::vector<Vec3>& c, bool is2d, double eps, double* m) 
     const double l3 = quality_edge_len(p3, p0);
 
     double area;
+    // The quad's normal: +z in 2-D, the sum of its edges' cross products
+    // (twice its vector area) in 3-D.
+    Vec3 normal = {0.0, 0.0, 1.0};
     if (is2d) {
         area = 0.5 * ((p0[0] * p1[1] - p1[0] * p0[1]) + (p1[0] * p2[1] - p2[0] * p1[1]) +
                       (p2[0] * p3[1] - p3[0] * p2[1]) + (p3[0] * p0[1] - p0[0] * p3[1]));
@@ -212,6 +215,8 @@ void quality_quad(const std::vector<Vec3>& c, bool is2d, double eps, double* m) 
         for (int i = 0; i < 4; ++i)
             n = detail::vec3_add(n, detail::vec3_cross(*pts[i], *pts[(i + 1) % 4]));
         area = 0.5 * detail::vec3_norm(n);
+        if (area > 0.0)
+            normal = {n[0] / (2.0 * area), n[1] / (2.0 * area), n[2] / (2.0 * area)};
     }
     m[QM_VOLUME] = area;
     const double abs_area = std::fabs(area);
@@ -224,6 +229,20 @@ void quality_quad(const std::vector<Vec3>& c, bool is2d, double eps, double* m) 
         return;
 
     m[QM_ASPECT_RATIO] = lmax / lmin;
+    // Scaled Jacobian: the least over the corners of (e1 x e2) . n / (|e1|
+    // |e2|), e1 and e2 the corner's two edges, n the quad's normal (Verdict's
+    // definition); 1 for a rectangle, negative at a reflex or inverted corner.
+    {
+        const Vec3* pts[4] = {&p0, &p1, &p2, &p3};
+        double sj = std::numeric_limits<double>::infinity();
+        for (int i = 0; i < 4; ++i) {
+            const Vec3 e1 = detail::vec3_sub(*pts[(i + 1) % 4], *pts[i]);
+            const Vec3 e2 = detail::vec3_sub(*pts[(i + 3) % 4], *pts[i]);
+            const double l = detail::vec3_norm(e1) * detail::vec3_norm(e2);
+            sj = std::min(sj, detail::vec3_dot(detail::vec3_cross(e1, e2), normal) / l);
+        }
+        m[QM_SCALED_JACOBIAN] = sj;
+    }
     // Equiangle skewness over the four interior corner angles.
     const double t0 = quality_angle_deg(detail::vec3_sub(p1, p0), detail::vec3_sub(p3, p0), eps);
     const double t1 = quality_angle_deg(detail::vec3_sub(p2, p1), detail::vec3_sub(p0, p1), eps);

@@ -49,6 +49,7 @@ from .. import (
     agglomerate,
     annulus,
     attach_quality,
+    boundary_layer,
     box,
     cell_data_to_point_data,
     check_quality,
@@ -106,6 +107,7 @@ from .. import (
     plate_with_hole,
     point_data_to_cell_data,
     power_spectrum,
+    project_to_cad,
     proximity_graph,
     read,
     read_metadata,
@@ -1841,13 +1843,17 @@ def tool_mesh_cad_surface(
     metric_background_path=None,
     metric_array="",
     metric_error=0.0,
+    untangle=False,
+    quads="none",
+    quad_pairs="matching",
 ):
     """Triangulate a CAD model's faces (CAD JSON, STEP, IGES) into one
     conforming surface mesh at a target edge size, optionally sized by
     curvature and gaps or by an anisotropic metric from a field's Hessian,
     refined to a minimum angle, graded at poles, smoothed, and curved (order
-    2 or 3); faces with unusable parameters flattened, slivers merged, the
-    model's own tolerances accepted and acute corners lopped."""
+    2 or 3, folded elements untangled); faces with unusable parameters
+    flattened, slivers merged, the model's own tolerances accepted, acute
+    corners lopped, and the triangles recombined into quads."""
     mesh = _load(input_path, input_format)
     out, report = mesh_cad_surface(
         mesh,
@@ -1885,6 +1891,9 @@ def tool_mesh_cad_surface(
         ),
         metric_array=metric_array,
         metric_error=metric_error,
+        untangle=untangle,
+        quads=quads,
+        quad_pairs=quad_pairs,
         return_report=True,
     )
     return _result(_store(out, output_path, output_format), out, **report)
@@ -3839,6 +3848,69 @@ def tool_conservative_interpolate(
     return _result(_store(out, output_path, output_format), out)
 
 
+def tool_boundary_layer(
+    input_path,
+    output_path,
+    first_height,
+    input_format=None,
+    output_format=None,
+    num_layers=3,
+    growth=1.2,
+    reverse=False,
+    collision_fraction=0.45,
+    smooth_iterations=5,
+    max_shrink=6,
+):
+    """Grow prismatic boundary layers from a triangle and quad surface.
+    Returns the counts (num_cells, num_wedges, num_hexahedra, num_pyramids,
+    num_tetrahedra, num_shrunk, num_collapsed, num_not_visible),
+    min_scaled_jacobian, the thickness range and cap_closed alongside the
+    mesh summary."""
+    mesh = _load(input_path, input_format)
+    out, report = boundary_layer(
+        mesh,
+        first_height,
+        num_layers=num_layers,
+        growth=growth,
+        reverse=reverse,
+        collision_fraction=collision_fraction,
+        smooth_iterations=smooth_iterations,
+        max_shrink=max_shrink,
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
+def tool_project_to_cad(
+    input_path,
+    model_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    face_array="cad:face",
+    edge_array="cad:edge",
+    max_distance=0.0,
+    trim_samples=16,
+):
+    """Move a mesh's points back onto the CAD faces and edges its cells name
+    (cad:face / cad:edge, as mesh_cad_surface writes them) of the model at
+    model_path (CAD JSON, STEP or IGES). Returns the counts (num_projected,
+    num_on_edges, num_corners, num_ambiguous, num_too_far, num_failed,
+    num_outside_trim), max_move and outside_trim alongside the mesh summary."""
+    mesh = _load(input_path, input_format)
+    model = _load(model_path, None)
+    out, report = project_to_cad(
+        mesh,
+        model,
+        face_array=face_array,
+        edge_array=edge_array,
+        max_distance=max_distance,
+        trim_samples=trim_samples,
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
 def tool_undo_green(
     coarse_path,
     fine_path,
@@ -5441,6 +5513,22 @@ TOOL_REGISTRY = OrderedDict(
             {
                 "fn": tool_mesh_cad_surface,
                 "wraps": ("mesh_cad_surface",),
+                "gated": None,
+            },
+        ),
+        (
+            "boundary_layer",
+            {
+                "fn": tool_boundary_layer,
+                "wraps": ("boundary_layer",),
+                "gated": None,
+            },
+        ),
+        (
+            "project_to_cad",
+            {
+                "fn": tool_project_to_cad,
+                "wraps": ("project_to_cad",),
                 "gated": None,
             },
         ),

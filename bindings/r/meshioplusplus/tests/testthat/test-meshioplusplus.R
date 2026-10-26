@@ -1785,6 +1785,32 @@ test_that("mesh_cad_surface meshes a trimmed face and reports it", {
   expect_error(mio_mesh_cad_surface(r$info, target_size = 0.1, reparam_condition_number = 0.5))
   # A metric error without a metric background is refused (roadmap 6.10.2).
   expect_error(mio_mesh_cad_surface(r$info, target_size = 0.1, metric_error = 1))
+  # Quads (roadmap 6.8) and untangling (6.6.3).
+  q <- mio_mesh_cad_surface(r$info, target_size = 0.1, min_angle = 25, quads = "dominant")
+  expect_gt(q$num_quads, 0)
+  expect_gt(q$min_quad_scaled_jacobian, 0)
+  mio_release(q$mesh)
+  g <- mio_mesh_cad_surface(r$info, target_size = 0.1, min_angle = 25, quads = "dominant",
+                            quad_pairs = "greedy")
+  expect_gt(g$num_quads, 0)
+  mio_release(g$mesh)
+  expect_error(mio_mesh_cad_surface(r$info, target_size = 0.1, untangle = TRUE))
+  u <- mio_mesh_cad_surface(r$info, target_size = 0.1, order = 2, untangle = TRUE)
+  expect_equal(u$num_untangled, 0)
+  mio_release(u$mesh)
+  # Projection back onto the model (roadmap 6.10.1) moves nothing.
+  p <- mio_mesh_cad_surface(r$info, target_size = 0.1)
+  b <- mio_project_to_cad(p$mesh, r$info)
+  expect_equal(b$num_projected, mio_num_points(p$mesh))
+  expect_lt(b$max_move, 1e-12)
+  expect_equal(length(b$outside_trim), 0)
+  mio_release(b$mesh)
+  # Boundary layers (roadmap 6.9) grown from the triangle are wedges.
+  bl <- mio_boundary_layer(p$mesh, first_height = 0.01, num_layers = 2)
+  expect_gt(bl$num_wedges, 0)
+  expect_gt(bl$min_scaled_jacobian, 0)
+  mio_release(bl$mesh)
+  mio_release(p$mesh)
 })
 test_that("PCD compressed binary is reachable through write options", {
   m <- mio_mesh()

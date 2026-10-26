@@ -638,7 +638,7 @@ static SEXP r_mesh_cad_tolerance_uses(void) {
     SEXP declared = PROTECT(Rf_allocVector(REALSXP, n));
     SEXP gap = PROTECT(Rf_allocVector(REALSXP, n));
     SEXP where = PROTECT(Rf_allocVector(STRSXP, n));
-    static const char* kWhere[] = {"closed_start", "corner", "projection"};
+    static const char* kWhere[] = {"closed_start", "corner", "projection", "pairing"};
     for (R_xlen_t i = 0; i < n; ++i) {
         int64_t e = -1;
         double d = 0.0, g = 0.0;
@@ -647,7 +647,7 @@ static SEXP r_mesh_cad_tolerance_uses(void) {
         REAL(edge)[i] = (double)e + 1.0;
         REAL(declared)[i] = d;
         REAL(gap)[i] = g;
-        SET_STRING_ELT(where, i, Rf_mkChar(kWhere[w >= 0 && w < 3 ? w : 2]));
+        SET_STRING_ELT(where, i, Rf_mkChar(kWhere[w >= 0 && w < 4 ? w : 2]));
     }
     const char* names[] = {"edge", "declared", "gap", "where"};
     SEXP cols[] = {edge, declared, gap, where};
@@ -702,17 +702,56 @@ static SEXP r_mesh_cad_lopped_corners(void) {
     return out;
 }
 
-SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation,
-                            SEXP min_points_per_edge, SEXP tolerance, SEXP record_face_ids,
-                            SEXP edges, SEXP match_unreferenced_trims, SEXP strict, SEXP max_points,
-                            SEXP min_angle, SEXP smooth_iterations, SEXP smooth_method, SEXP order,
-                            SEXP grading, SEXP curvature_deviation, SEXP cells_across_gaps,
-                            SEXP pole_rings, SEXP face_size_faces, SEXP face_sizes,
-                            SEXP edge_size_edges, SEXP edge_sizes, SEXP background,
-                            SEXP background_array, SEXP metric, SEXP virtual_edges,
-                            SEXP reparam_condition_number, SEXP model_tolerances,
-                            SEXP virtual_faces, SEXP lop_corners, SEXP metric_background,
-                            SEXP metric_array, SEXP metric_error) {
+/* project_to_cad (roadmap 6.10.1): every point of a mesh onto the CAD face or
+ * edge its cells name. Returns list(mesh, num_projected, ..., outside_trim). */
+SEXP R_mio_project_to_cad(SEXP mesh, SEXP x, SEXP face_array, SEXP edge_array, SEXP max_distance,
+                          SEXP trim_samples) {
+    const mio_format_info* info = info_of(x, 0);
+    mio_project_to_cad_opts opts;
+    mio_project_to_cad_opts_init(&opts);
+    opts.face_array = mio_r_string(face_array, "face_array");
+    opts.edge_array = mio_r_string(edge_array, "edge_array");
+    opts.max_distance = mio_r_double(max_distance, "max_distance");
+    opts.trim_samples = (int32_t)mio_r_int(trim_samples, "trim_samples");
+    mio_project_to_cad_report report;
+    mio_mesh* out = mio_project_to_cad(mio_r_mesh(mesh), info, &opts, &report);
+    if (out == NULL)
+        mio_r_fail("project_to_cad");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    const int64_t n = mio_project_to_cad_outside_trim(NULL, 0);
+    SEXP outside = PROTECT(Rf_allocVector(REALSXP, n > 0 ? (R_xlen_t)n : 0));
+    if (n > 0) {
+        int64_t* buf = (int64_t*)R_alloc((size_t)n, sizeof(int64_t));
+        mio_project_to_cad_outside_trim(buf, n);
+        for (int64_t i = 0; i < n; ++i)
+            REAL(outside)[i] = (double)buf[i] + 1.0;
+    }
+    SEXP v1 = PROTECT(Rf_ScalarReal((double)report.num_projected));
+    SEXP v2 = PROTECT(Rf_ScalarReal((double)report.num_on_edges));
+    SEXP v3 = PROTECT(Rf_ScalarReal((double)report.num_corners));
+    SEXP v4 = PROTECT(Rf_ScalarReal((double)report.num_ambiguous));
+    SEXP v5 = PROTECT(Rf_ScalarReal((double)report.num_too_far));
+    SEXP v6 = PROTECT(Rf_ScalarReal((double)report.num_failed));
+    SEXP v7 = PROTECT(Rf_ScalarReal((double)report.num_outside_trim));
+    SEXP v8 = PROTECT(Rf_ScalarReal(report.max_move));
+    const char* names[] = {"mesh",          "num_projected", "num_on_edges", "num_corners",
+                           "num_ambiguous", "num_too_far",   "num_failed",   "num_outside_trim",
+                           "max_move",      "outside_trim"};
+    SEXP values[] = {mo, v1, v2, v3, v4, v5, v6, v7, v8, outside};
+    SEXP res = PROTECT(mio_r_named_list(10, names, values));
+    UNPROTECT(11);
+    return res;
+}
+
+SEXP R_mio_mesh_cad_surface(
+    SEXP x, SEXP target_size, SEXP max_chordal_deviation, SEXP min_points_per_edge, SEXP tolerance,
+    SEXP record_face_ids, SEXP edges, SEXP match_unreferenced_trims, SEXP strict, SEXP max_points,
+    SEXP min_angle, SEXP smooth_iterations, SEXP smooth_method, SEXP order, SEXP grading,
+    SEXP curvature_deviation, SEXP cells_across_gaps, SEXP pole_rings, SEXP face_size_faces,
+    SEXP face_sizes, SEXP edge_size_edges, SEXP edge_sizes, SEXP background, SEXP background_array,
+    SEXP metric, SEXP virtual_edges, SEXP reparam_condition_number, SEXP model_tolerances,
+    SEXP virtual_faces, SEXP lop_corners, SEXP metric_background, SEXP metric_array,
+    SEXP metric_error, SEXP untangle, SEXP quads, SEXP quad_pairs) {
     const mio_format_info *info = info_of(x, 0);
     mio_mesh_cad_surface_opts opts;
     mio_mesh_cad_surface_opts_init(&opts);
@@ -777,6 +816,10 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
         ex.metric_background = mio_r_mesh(metric_background);
     ex.metric_array = mio_r_string(metric_array, "metric_array");
     ex.metric_error = mio_r_double(metric_error, "metric_error");
+    /* Roadmap 6.6.3 and 6.8: untangling and quads (a mio_mesh_cad_quads). */
+    ex.untangle = mio_r_bool(untangle, "untangle") ? 1 : 0;
+    ex.quads = (int32_t)mio_r_int64(quads, "quads");
+    ex.quad_pairs = (int32_t)mio_r_int64(quad_pairs, "quad_pairs");
     mio_mesh_cad_surface_report report;
     mio_mesh* out = mio_mesh_cad_surface2(info, &opts, &ex, &report);
     if (out == NULL) mio_r_fail("mesh_cad_surface");
@@ -843,7 +886,11 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
     SEXP tol_uses = PROTECT(r_mesh_cad_tolerance_uses());
     SEXP lopped = PROTECT(r_mesh_cad_lopped_corners());
 
-    enum { R_MESH_CAD_N = 33 };
+    int64_t num_quads = 0, num_leftover = 0;
+    double quad_sj = 0.0;
+    mio_mesh_cad_surface_quad_stats(&num_quads, &num_leftover, &quad_sj);
+
+    enum { R_MESH_CAD_N = 37 };
     SEXP res = PROTECT(Rf_allocVector(VECSXP, R_MESH_CAD_N));
     SEXP nm = PROTECT(Rf_allocVector(STRSXP, R_MESH_CAD_N));
     int k = 0;
@@ -889,6 +936,10 @@ SEXP R_mio_mesh_cad_surface(SEXP x, SEXP target_size, SEXP max_chordal_deviation
     R_MESH_CAD_SET("merged_faces", merged);
     R_MESH_CAD_SET("tolerance_uses", tol_uses);
     R_MESH_CAD_SET("lopped_corners", lopped);
+    R_MESH_CAD_SET("num_untangled", Rf_ScalarReal((double)mio_mesh_cad_surface_num_untangled()));
+    R_MESH_CAD_SET("num_quads", Rf_ScalarReal((double)num_quads));
+    R_MESH_CAD_SET("num_leftover_triangles", Rf_ScalarReal((double)num_leftover));
+    R_MESH_CAD_SET("min_quad_scaled_jacobian", Rf_ScalarReal(quad_sj));
 #undef R_MESH_CAD_NUM
 #undef R_MESH_CAD_SET
     if (k != R_MESH_CAD_N)

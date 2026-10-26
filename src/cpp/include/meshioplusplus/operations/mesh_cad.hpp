@@ -370,6 +370,25 @@ MESHIOPLUSPLUS_API MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep,
                                                          const MeshCadSizeSources& rSources,
                                                          MeshCadSizeReport* pReport = nullptr);
 
+/// Quadrilaterals (roadmap 6.8): none, quad-dominant (pairs of triangles
+/// recombined where they make a good quad, the rest kept), or all-quad (a
+/// quad-dominant mesh at twice the size, each quad split into four and each
+/// triangle into three).
+enum class MeshCadQuads : std::int32_t {
+    None = 0,
+    Dominant = 1,
+    All = 2,
+};
+
+/// How triangles are paired into quads (roadmap 6.8.1): a maximum-
+/// cardinality matching of greatest total quality (Blossom-quad, Remacle et
+/// al. 2012, on the core's own matching; exact in patches of 3,000 triangles
+/// and a band about the triangles left), or best pair first.
+enum class MeshCadQuadPairs : std::int32_t {
+    Matching = 0,
+    Greedy = 1,
+};
+
 /// Inputs beside the options and the sources (v17.20.0), whose layouts have
 /// no room left: each off by default, and with all off the mesh is the
 /// four-argument overload's byte for byte.
@@ -396,6 +415,21 @@ struct MeshCadSurfaceExtras {
     /// inside, and refinement leaves the triangles whose point falls in it.
     /// Only with refinement (`mMinAngleDeg` or a size field).
     bool mLopCorners = false;
+    /// Untangle curved elements (roadmap 6.6.3; T. Toulorge, C. Geuzaine,
+    /// J.-F. Remacle and J. Lambrechts, "Robust untangling of curvilinear
+    /// meshes", J. Comput. Phys. 254, 2013): before an element whose
+    /// Jacobian is not positive everywhere is made straight-sided, its face's
+    /// own high-order nodes move on the surface to raise the worst scaled
+    /// Jacobian around them, then the nodes on the model's edges beside an
+    /// element still invalid slide along their edge; only the elements still
+    /// invalid are straightened. Order 2 or 3.
+    bool mUntangle = false;
+    /// Quadrilaterals (roadmap 6.8, `MeshCadQuads`): recombination
+    /// (Borouchaki and Frey 1998), all-quad by splitting. `Dominant` is order
+    /// 1 only; `All` writes `quad9` with order 2 (roadmap 6.8.3).
+    MeshCadQuads mQuads = MeshCadQuads::None;
+    /// How the triangles are paired (roadmap 6.8.1, `MeshCadQuadPairs`).
+    MeshCadQuadPairs mQuadPairs = MeshCadQuadPairs::Matching;
 };
 
 /// A face whose metric's condition number passed
@@ -472,6 +506,15 @@ struct MeshCadSurfaceExtrasReport {
     std::vector<MeshCadMergedFace> mMergedFaces;
     std::vector<MeshCadToleranceUse> mToleranceUses;
     std::vector<MeshCadLoppedCorner> mLoppedCorners;
+    /// Curved elements made valid by untangling (6.6.3), which would
+    /// otherwise have been straightened.
+    std::int64_t mNumUntangled = 0;
+    /// Quadrilaterals (6.8): how many, the triangles left beside them, and
+    /// the least scaled Jacobian of a quad (its corners' against the quad's
+    /// mean normal; 0 when there is none).
+    std::int64_t mNumQuads = 0;
+    std::int64_t mNumLeftoverTriangles = 0;
+    double mMinQuadScaledJacobian = 0.0;
 };
 
 /**

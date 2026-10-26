@@ -17,7 +17,11 @@ URL) and a SHA-256, and fetched where the run happens (the scheduled
     triangle metrics, the Hausdorff distance to the read's own ``BRepMesh``
     triangulation, points, time and peak memory. Each model runs in its own
     process under a time limit, so a crash or a hang is a result, not the end
-    of the run.
+    of the run. With ``--gmsh`` (roadmap 6.5.4) Gmsh's executable meshes the
+    same file at the same size in a process of its own (called through
+    files, never linked: its licence is the GPL), and its mesh is measured
+    beside ours: triangles, area, enclosed volume, the Hausdorff distance
+    between the two meshes, its angles and its time.
 ``compare``
     exit non-zero when a model that meshed in the baseline no longer does,
     naming it (6.5.5's probe).
@@ -222,6 +226,112 @@ def fetch(args):
     return 1 if any("SHA-256" in p for p in problems) else 0
 
 
+# --- the Gmsh oracle (6.5.4) -------------------------------------------------------------
+
+
+def triangle_measures(points, tri):
+    """Area, and the enclosed volume when every edge is used once each way
+    (a closed, consistently oriented surface; None otherwise)."""
+    import numpy as np
+
+    a, b, c = points[tri[:, 0]], points[tri[:, 1]], points[tri[:, 2]]
+    area = float(0.5 * np.linalg.norm(np.cross(b - a, c - a), axis=1).sum())
+    directed = collections.Counter()
+    for t in tri.tolist():
+        for k in range(3):
+            directed[(t[k], t[(k + 1) % 3])] += 1
+    closed = all(
+        n == 1 and directed.get((e[1], e[0]), 0) == 1 for e, n in directed.items()
+    )
+    if not closed:
+        return area, None
+    return area, float(abs(np.einsum("ij,ij->i", a, np.cross(b, c)).sum()) / 6.0)
+
+
+def gmsh_version(gmsh):
+    """The executable's version string, or None when it does not run."""
+    try:
+        proc = subprocess.run(
+            [gmsh, "--version"], capture_output=True, text=True, timeout=60
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    text = (proc.stdout + proc.stderr).strip().splitlines()
+    return text[-1].strip() if proc.returncode == 0 and text else None
+
+
+def gmsh_oracle(gmsh, path, size, timeout, ours, diag):
+    """Mesh ``path`` with Gmsh's executable at ``size`` (2-D, ``-clmax``) in a
+    process of its own and measure its triangles beside ``ours`` (a triangle
+    mesh). A failure is a result: ``{"status": ..., "error": ...}``."""
+    import tempfile
+
+    import numpy as np
+
+    import meshioplusplus as mio
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_msh = pathlib.Path(tmp) / "gmsh.msh"
+        cmd = [
+            gmsh,
+            str(path),
+            "-2",
+            "-clmax",
+            repr(float(size)),
+            "-format",
+            "msh41",
+            "-v",
+            "1",
+            "-o",
+            str(out_msh),
+        ]
+        t0 = time.perf_counter()
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return {"status": "timeout", "error": f"over {timeout} s"}
+        except OSError as exc:
+            return {"status": "failed", "error": f"{type(exc).__name__}: {exc}"[:500]}
+        seconds = round(time.perf_counter() - t0, 3)
+        if proc.returncode != 0 or not out_msh.exists():
+            tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-3:]
+            return {
+                "status": "failed",
+                "error": f"exit {proc.returncode}: {' '.join(tail)}"[:500],
+                "mesh_s": seconds,
+            }
+        try:
+            theirs = mio.read(out_msh)
+        except Exception as exc:  # noqa: BLE001 - every failure is a result here
+            return {"status": "failed", "error": f"{type(exc).__name__}: {exc}"[:500]}
+    tri = [c.data for c in theirs.cells if c.type == "triangle"]
+    if not tri:
+        return {
+            "status": "failed",
+            "error": "Gmsh wrote no triangles",
+            "mesh_s": seconds,
+        }
+    tri = np.concatenate(tri)
+    surface = mio.Mesh(theirs.points, [("triangle", tri)])
+    area, volume = triangle_measures(np.asarray(theirs.points, dtype=float), tri)
+    quality = mio.compute_quality(surface)["metrics"]
+    h = mio.hausdorff_distance(ours, surface, face_samples=2)
+    return {
+        "status": "ok",
+        "mesh_s": seconds,
+        "num_points": int(len(theirs.points)),
+        "num_triangles": int(len(tri)),
+        "area": area,
+        "volume": volume,
+        "min_angle_deg": quality["quality:min_angle"]["min"],
+        "quality": {
+            name: {k: quality["quality:" + name][k] for k in ("min", "mean", "max")}
+            for name in ("aspect_ratio", "min_angle", "max_angle")
+        },
+        "hausdorff_to_ours": h["distance"] / diag if diag > 0 else 0.0,
+    }
+
+
 # --- run ---------------------------------------------------------------------------------
 
 
@@ -236,6 +346,8 @@ def measure_one(
     model_tolerances=False,
     virtual_faces=False,
     lop_corners=False,
+    gmsh=None,
+    gmsh_timeout=900.0,
 ):
     """Read, mesh and measure one model; runs in its own process."""
     import resource
@@ -351,6 +463,13 @@ def measure_one(
             ).sum()
         )
         out["area_ratio"] = float(area / ref) if ref > 0 else None
+        out["area"], out["volume"] = triangle_measures(
+            np.asarray(mesh.points, dtype=float), np.concatenate(tri)
+        )
+        if gmsh:
+            out["gmsh"] = gmsh_oracle(
+                gmsh, path, out["target_size"], gmsh_timeout, surface, diag
+            )
     out["peak_rss_mb"] = round(
         resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, 1
     )
@@ -363,6 +482,13 @@ def run(args):
 
     manifest = load_manifest(args.manifest)
     dest = pathlib.Path(args.dest)
+    gmsh, gmsh_ver = "", None
+    if args.gmsh is not None:
+        gmsh = shutil.which(args.gmsh) or ""
+        gmsh_ver = gmsh_version(gmsh) if gmsh else None
+        if not gmsh_ver:
+            print(f"cad_corpus: --gmsh: {args.gmsh!r} does not run", file=sys.stderr)
+            return 2
     only = set(args.models.split(",")) if args.models else None
     results = []
     for source in manifest["sources"]:
@@ -390,6 +516,8 @@ def run(args):
                 str(int(args.model_tolerances)),
                 str(int(args.virtual_faces)),
                 str(int(args.lop_corners)),
+                gmsh,
+                str(args.timeout),
             ]
             t0 = time.perf_counter()
             try:
@@ -430,6 +558,7 @@ def run(args):
             **({"model_tolerances": True} if args.model_tolerances else {}),
             **({"virtual_faces": True} if args.virtual_faces else {}),
             **({"lop_corners": True} if args.lop_corners else {}),
+            **({"gmsh": gmsh_ver} if gmsh_ver else {}),
         },
         "models": results,
     }
@@ -601,7 +730,45 @@ def summary(args):
             f"| `{row['id']}` | {row['status']} | {row.get('read_s', '')} | "
             f"{row.get('mesh_s', '')} | {row.get('peak_rss_mb', '')} | {row.get('error', '')} |"
         )
+    if "gmsh" in results.get("settings", {}):
+        print(render_gmsh(results))
     return 0
+
+
+def render_gmsh(results):
+    """The Gmsh oracle's columns (6.5.4): ours against Gmsh's at one size."""
+
+    def num(x, fmt):
+        return "–" if x is None else format(x, fmt)
+
+    def ratio(a, b):
+        return None if a is None or not b else a / b
+
+    lines = [
+        f"\n### Against Gmsh ({results['settings']['gmsh']})\n",
+        "| model | triangles (ours / Gmsh) | area ratio | volume ratio "
+        "| Hausdorff / diagonal | min angle (ours / Gmsh) | Gmsh s | Gmsh status |",
+        "|---|---:|---:|---:|---:|---:|---:|---|",
+    ]
+    for row in results["models"]:
+        g = row.get("gmsh")
+        if not g:
+            continue
+        if g.get("status") != "ok":
+            lines.append(
+                f"| `{row['id']}` | | | | | | {g.get('mesh_s', '')} | {g['status']}: "
+                f"{g.get('error', '')} |"
+            )
+            continue
+        lines.append(
+            f"| `{row['id']}` | {row.get('num_triangles', '–')} / {g['num_triangles']} | "
+            f"{num(ratio(row.get('area'), g['area']), '.4f')} | "
+            f"{num(ratio(row.get('volume'), g['volume']), '.4f')} | "
+            f"{num(g['hausdorff_to_ours'], '.2g')} | "
+            f"{num(row.get('min_angle_deg'), '.3g')} / {num(g['min_angle_deg'], '.3g')} | "
+            f"{g['mesh_s']} | ok |"
+        )
+    return "\n".join(lines)
 
 
 def main(argv=None):
@@ -655,6 +822,15 @@ def main(argv=None):
         action="store_true",
         help="lop acute corners in place of concentric shells (6.2.3)",
     )
+    p.add_argument(
+        "--gmsh",
+        nargs="?",
+        const="gmsh",
+        default=None,
+        metavar="EXE",
+        help="also mesh each model with Gmsh's executable (default: gmsh on PATH) "
+        "and measure it beside ours (6.5.4)",
+    )
     p = sub.add_parser("compare", help="fail when a model that meshed no longer does")
     p.add_argument("results")
     p.add_argument("--baseline", default=str(BASELINE))
@@ -679,6 +855,8 @@ def main(argv=None):
         tolerances = len(argv) > 8 and argv[8] == "1"
         virtual_faces = len(argv) > 9 and argv[9] == "1"
         lop_corners = len(argv) > 10 and argv[10] == "1"
+        gmsh = argv[11] if len(argv) > 11 and argv[11] else None
+        gmsh_timeout = float(argv[12]) if len(argv) > 12 else 900.0
         row = measure_one(
             path,
             float(divisor),
@@ -690,6 +868,8 @@ def main(argv=None):
             tolerances,
             virtual_faces,
             lop_corners,
+            gmsh,
+            gmsh_timeout,
         )
         print(json.dumps(finite(row), allow_nan=False, default=float))
         return 0

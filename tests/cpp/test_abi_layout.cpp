@@ -354,12 +354,20 @@ static_assert(offsetof(meshioplusplus::MeshCadSizeSources, pMetricBackground) ==
 MIO_ABI_LAYOUT(meshioplusplus::MeshCadSizeReport, 48, 8);
 // v17.20.0 (ABI 34, pure additions): the extras beside the sources and their
 // report (roadmap 6.4.4, 6.5.1, 6.5.2; 6.2.3 laid out).
-MIO_ABI_LAYOUT(meshioplusplus::MeshCadSurfaceExtras, 3, 1);
+// ABI 36: untangling (6.6.3) and quadrilaterals (6.8) appended to the
+// extras, their counts to the report.
+MIO_ABI_LAYOUT(meshioplusplus::MeshCadSurfaceExtras, 12, 4);
+static_assert(offsetof(meshioplusplus::MeshCadSurfaceExtras, mUntangle) == 3,
+              "MeshCadSurfaceExtras::mUntangle moved");
+static_assert(offsetof(meshioplusplus::MeshCadSurfaceExtras, mQuads) == 4,
+              "MeshCadSurfaceExtras::mQuads moved");
+static_assert(offsetof(meshioplusplus::MeshCadSurfaceExtras, mQuadPairs) == 8,
+              "MeshCadSurfaceExtras::mQuadPairs moved");
 MIO_ABI_LAYOUT(meshioplusplus::MeshCadReparamFace, 64, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MeshCadMergedFace, 88, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MeshCadToleranceUse, 56, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MeshCadLoppedCorner, 112, 8);
-MIO_ABI_LAYOUT(meshioplusplus::MeshCadSurfaceExtrasReport, 96, 8);
+MIO_ABI_LAYOUT(meshioplusplus::MeshCadSurfaceExtrasReport, 128, 8);
 MIO_ABI_LAYOUT(meshioplusplus::TriangulatePolygon2dOptions, 24, 8);
 MIO_ABI_LAYOUT(meshioplusplus::detail::LatticeSpec, 72, 8);
 

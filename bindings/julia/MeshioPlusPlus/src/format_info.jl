@@ -503,8 +503,13 @@ meshes a sliver face with its neighbour and `lop_corners` lops acute corners
 them, every index 1-based. A `metric_background` mesh whose 9-component point
 data `metric_array` is a field's Hessian, with the target interpolation error
 `metric_error`, sizes the triangles by an anisotropic metric (roadmap 6.10.2).
-See
-`doc/mesh_cad.md`.
+`untangle` (order 2 or 3) moves a face's own high-order nodes to untangle a
+folded curved element before it is straightened (6.6.3, `num_untangled`);
+`quads` (`"none"`, `"dominant"` or `"all"`) recombines the triangles into a
+quad-dominant or all-quad mesh (6.8, `num_quads`, `num_leftover_triangles`,
+`min_quad_scaled_jacobian`; `"all"` with `order=2` writes quad9), pairing them
+by `quad_pairs` (`"matching"`, the default, a maximum matching, or `"greedy"`;
+6.8.1). See `doc/mesh_cad.md`.
 """
 function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_deviation::Real=0.0,
                           min_points_per_edge::Integer=0, tolerance::Real=0.0,
@@ -522,7 +527,9 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
                           reparam_condition_number::Real=0.0, model_tolerances::Bool=false,
                           virtual_faces::Bool=false, lop_corners::Bool=false,
                           metric_background::Union{Nothing,Mesh}=nothing,
-                          metric_array::AbstractString="", metric_error::Real=0.0)
+                          metric_array::AbstractString="", metric_error::Real=0.0,
+                          untangle::Bool=false, quads::AbstractString="none",
+                          quad_pairs::AbstractString="matching")
     method = findfirst(==(smooth_method), _MESH_CAD_SMOOTH_METHODS)
     method === nothing &&
         throw(ArgumentError("meshio++: mesh_cad_surface: smooth_method must be " *
@@ -537,6 +544,14 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
     metric in ("mean", "varying") ||
         throw(ArgumentError("meshio++: mesh_cad_surface: metric must be \"mean\" or " *
                             "\"varying\", got \"$metric\""))
+    quads_code = findfirst(==(quads), ("none", "dominant", "all"))
+    quads_code === nothing &&
+        throw(ArgumentError("meshio++: mesh_cad_surface: quads must be \"none\", " *
+                            "\"dominant\" or \"all\", got \"$quads\""))
+    pairs_code = findfirst(==(quad_pairs), ("matching", "greedy"))
+    pairs_code === nothing &&
+        throw(ArgumentError("meshio++: mesh_cad_surface: quad_pairs must be \"matching\" " *
+                            "or \"greedy\", got \"$quad_pairs\""))
     # Given sizes as (0-based index, size) arrays, kept alive across the call.
     pairs(x) = x === nothing ? Pair{Int,Float64}[] :
                [Int(first(p)) - 1 => Float64(last(p)) for p in (x isa AbstractDict ? collect(x) : x)]
@@ -557,11 +572,11 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
                                     background === nothing ? C_NULL : _handle(background),
                                     pointer(bname), Cdouble(reparam_condition_number),
                                     Int32(model_tolerances), Int32(virtual_faces),
-                                    Int32(lop_corners), Int32(0),
+                                    Int32(lop_corners), Int32(untangle),
                                     metric_background === nothing ? C_NULL :
                                     _handle(metric_background),
                                     pointer(mname), Cdouble(metric_error),
-                                    ntuple(_ -> Int64(0), 2))
+                                    Int32(quads_code - 1), Int32(pairs_code - 1), (Int64(0),))
         ccall(_sym(:mio_mesh_cad_surface2), Ptr{Cvoid},
               (Ptr{Cvoid}, Ref{_CMeshCadSurfaceOpts}, Ref{_CMeshCadSurfaceOptsEx},
                Ref{_CMeshCadSurfaceReport}),
@@ -624,7 +639,7 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
         _check(ccall(_sym(:mio_mesh_cad_surface_tolerance_use), Cint,
                      (Int64, Ref{Int64}, Ref{Cdouble}, Ref{Cdouble}, Ref{Int32}), k, e, d, g, w))
         (edge=Int(e[]) + 1, declared=Float64(d[]), gap=Float64(g[]),
-         where=("closed_start", "corner", "projection")[w[] + 1])
+         where=("closed_start", "corner", "projection", "pairing")[w[] + 1])
     end
     nlopped = ccall(_sym(:mio_mesh_cad_surface_num_lopped_corners), Int64, ())
     lopped_corners = map(0:nlopped-1) do k
@@ -642,6 +657,10 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
          num_forced=Int(nf[]), min_forced_deg=Float64(m[]), within_two_radii=w[] != 0,
          guaranteed=g[] != 0, reason=why)
     end
+    nuntangled = ccall(_sym(:mio_mesh_cad_surface_num_untangled), Int64, ())
+    nq, nleft, qsj = Ref{Int64}(0), Ref{Int64}(0), Ref{Cdouble}(0.0)
+    _check(ccall(_sym(:mio_mesh_cad_surface_quad_stats), Cint,
+                 (Ref{Int64}, Ref{Int64}, Ref{Cdouble}), nq, nleft, qsj))
     text = _getstring((buf, n) -> ccall(_sym(:mio_mesh_cad_surface_warnings), Int64,
                                         (Ptr{UInt8}, Int64), buf, n))
     histogram = zeros(Int64, 18)
@@ -672,7 +691,52 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
      min_input_angle_deg=Float64(r.min_input_angle_deg), angle_histogram=histogram,
      corners=corners, num_curved_straightened=Int(r.num_curved_straightened),
      virtual_edges=virtual, reparametrised=reparametrised, merged_faces=merged_faces,
-     tolerance_uses=tolerance_uses, lopped_corners=lopped_corners)
+     tolerance_uses=tolerance_uses, lopped_corners=lopped_corners,
+     num_untangled=Int(nuntangled), num_quads=Int(nq[]),
+     num_leftover_triangles=Int(nleft[]), min_quad_scaled_jacobian=Float64(qsj[]))
+end
+
+"""
+    project_to_cad(mesh, info; face_array="cad:face", edge_array="cad:edge",
+                   max_distance=0.0, trim_samples=16)
+        -> (; mesh, num_projected, num_on_edges, num_corners, num_ambiguous,
+              num_too_far, num_failed, num_outside_trim, max_move, outside_trim)
+
+Move every point of `mesh` onto the CAD face or edge its cells name
+(`cad:face` on triangles and quads, `cad:edge` on lines, as `mesh_cad_surface`
+writes them) of the B-rep `info` (roadmap 6.10.1): a point on one edge's lines
+onto that edge, on two or more (a corner) onto the lowest, a point whose cells
+name one face onto its surface (Newton point inversion); a point on two faces
+and no edge stays. A point farther than `max_distance` (0: no limit) stays.
+`outside_trim` lists (1-based) the points projected outside their face's trims,
+kept and never clamped. Data and regions pass through.
+"""
+function project_to_cad(mesh::Mesh, info::FormatInfo; face_array::AbstractString="cad:face",
+                        edge_array::AbstractString="cad:edge", max_distance::Real=0.0,
+                        trim_samples::Integer=16)
+    fname = Vector{UInt8}(codeunits(String(face_array)))
+    push!(fname, 0x00)
+    ename = Vector{UInt8}(codeunits(String(edge_array)))
+    push!(ename, 0x00)
+    report = Ref{_CProjectToCadReport}()
+    ptr = GC.@preserve fname ename begin
+        opts = _CProjectToCadOpts(pointer(fname), pointer(ename), Cdouble(max_distance),
+                                  Int32(trim_samples), Int32(0), (0, 0, 0, 0))
+        ccall(_sym(:mio_project_to_cad), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ptr{Cvoid}, Ref{_CProjectToCadOpts}, Ref{_CProjectToCadReport}),
+              _handle(mesh), _handle(info), Ref(opts), report)
+    end
+    out = Mesh(_check_ptr(ptr))
+    r = report[]
+    n = ccall(_sym(:mio_project_to_cad_outside_trim), Int64, (Ptr{Int64}, Int64), C_NULL, 0)
+    outside = zeros(Int64, max(n, 0))
+    n > 0 && ccall(_sym(:mio_project_to_cad_outside_trim), Int64, (Ptr{Int64}, Int64),
+                   outside, n)
+    (mesh=out, num_projected=Int(r.num_projected), num_on_edges=Int(r.num_on_edges),
+     num_corners=Int(r.num_corners), num_ambiguous=Int(r.num_ambiguous),
+     num_too_far=Int(r.num_too_far), num_failed=Int(r.num_failed),
+     num_outside_trim=Int(r.num_outside_trim), max_move=Float64(r.max_move),
+     outside_trim=Int.(outside) .+ 1)
 end
 
 const MIO_IGA_POINTS = Int32(0)

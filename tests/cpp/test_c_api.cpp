@@ -47,6 +47,9 @@
 // Project includes
 #include "meshioplusplus/meshioplusplus.h"
 
+#include "meshioplusplus/formats/cad_json.hpp"
+
+#include "brep_solids.hpp"
 #include "mesh_fixtures.hpp"
 #include "gmsh_fixtures.hpp"
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
@@ -1641,7 +1644,8 @@ TEST(CApi, NurbsSideChannel) {
         out << "MFEM NURBS mesh v1.0\ndimension\n2\nelements\n1\n5 3 0 1 2 3\nboundary\n0\n"
                "edges\n4\n0 0 1\n0 3 2\n1 0 3\n1 1 2\nvertices\n4\nknotvectors\n2\n"
                "2 3 0 0 0 1 1 1\n1 2 0 0 1 1\nweights\n1\n1\n1\n1\n"
-            << w << "\n" << w
+            << w << "\n"
+            << w
             << "\nFiniteElementSpace\nFiniteElementCollection: NURBS2\nVDim: 2\nOrdering: 1\n"
                "1 0\n0 1\n0 2\n2 0\n1 1\n2 2\n";
     }
@@ -1723,7 +1727,8 @@ TEST(CApi, IgaRefinesAndEvaluatesTheNurbsModel) {
         out << "MFEM NURBS mesh v1.0\ndimension\n2\nelements\n1\n5 3 0 1 2 3\nboundary\n0\n"
                "edges\n4\n0 0 1\n0 3 2\n1 0 3\n1 1 2\nvertices\n4\nknotvectors\n2\n"
                "2 3 0 0 0 1 1 1\n1 2 0 0 1 1\nweights\n1\n1\n1\n1\n"
-            << w << "\n" << w
+            << w << "\n"
+            << w
             << "\nFiniteElementSpace\nFiniteElementCollection: NURBS2\nVDim: 2\nOrdering: 1\n"
                "1 0\n0 1\n0 2\n2 0\n1 1\n2 2\n";
     }
@@ -1758,7 +1763,8 @@ TEST(CApi, IgaRefinesAndEvaluatesTheNurbsModel) {
     EXPECT_EQ(static_cast<const int32_t*>(data)[1], 2);
     // The refined model writes back as an MFEM NURBS mesh through the returned mesh.
     const auto output = mt::temp_path(".mesh");
-    ASSERT_EQ(mio_write_with_info(output.c_str(), fine, "mfem", refined), MIO_OK) << mio_last_error();
+    ASSERT_EQ(mio_write_with_info(output.c_str(), fine, "mfem", refined), MIO_OK)
+        << mio_last_error();
     mio_mesh_free(fine);
 
     // Evaluate the same point on the original and the refined patch.
@@ -1774,10 +1780,12 @@ TEST(CApi, IgaRefinesAndEvaluatesTheNurbsModel) {
     EXPECT_EQ(dtype, MIO_FLOAT64);
     EXPECT_EQ(shape[0], 2);
     EXPECT_EQ(shape[1], 2);
-    ASSERT_EQ(mio_iga_evaluation_array(b, MIO_IGA_POINTS, 0, &pb, nullptr, nullptr, nullptr), MIO_OK);
+    ASSERT_EQ(mio_iga_evaluation_array(b, MIO_IGA_POINTS, 0, &pb, nullptr, nullptr, nullptr),
+              MIO_OK);
     for (int i = 0; i < 4; ++i)
         EXPECT_NEAR(static_cast<const double*>(pa)[i], static_cast<const double*>(pb)[i], 1e-13);
-    ASSERT_EQ(mio_iga_evaluation_array(a, MIO_IGA_DERIVATIVES, 0, &pa, &dtype, &ndim, shape), MIO_OK);
+    ASSERT_EQ(mio_iga_evaluation_array(a, MIO_IGA_DERIVATIVES, 0, &pa, &dtype, &ndim, shape),
+              MIO_OK);
     EXPECT_EQ(ndim, 3);
     EXPECT_EQ(shape[1], 2);
     // a planar patch has no 3-D normals, no trimming, no fields
@@ -2098,6 +2106,199 @@ TEST(CApi, MeshCadSurfaceMeshesABrepAndReportsItsFaces) {
     mio_format_info_free(info);
 }
 
+// Roadmap 6.5.1: trims the file-level `model_tolerance` pairs are reported
+// as MIO_MESH_CAD_TOLERANCE_PAIRING, not as a projection. The box without
+// edge topology, one face translated by 1e-5, as in test_mesh_cad_reparam.
+TEST(CApi, MeshCadSurfaceReportsTheModelTolerancesPairing) {
+    meshioplusplus::BrepInfo b = brep_solids::box();
+    b.mEdges.clear();
+    meshioplusplus::NDArray& r_cp =
+        b.mPatches[static_cast<std::size_t>(b.mFaces[0].mPatch)].mControlPoints;
+    for (std::size_t i = 0; i < r_cp.Size(); ++i)
+        r_cp.As<double>()[i] += 1e-5;
+    b.mExtra = R"({"tolerances":{"model_tolerance":0.0001}})";
+    const auto path = mt::temp_path(".cad.json");
+    meshioplusplus::write_cad_json(path, meshioplusplus::Mesh{}, b);
+    mio_format_info* info = nullptr;
+    mio_mesh* sampled = mio_read_with_info(path.c_str(), nullptr, nullptr, &info);
+    ASSERT_NE(sampled, nullptr) << mio_last_error();
+    mio_mesh_free(sampled);
+    mio_mesh_cad_surface_opts opts;
+    mio_mesh_cad_surface_opts_init(&opts);
+    opts.target_size = 0.2;
+    mio_mesh_cad_surface_opts_ex ex;
+    mio_mesh_cad_surface_opts_ex_init(&ex);
+    ex.model_tolerances = 1;
+    mio_mesh* m = mio_mesh_cad_surface2(info, &opts, &ex, nullptr);
+    ASSERT_NE(m, nullptr) << mio_last_error();
+    ASSERT_EQ(mio_mesh_cad_surface_num_tolerance_uses(), 4);
+    for (int64_t i = 0; i < 4; ++i) {
+        int64_t edge = 0;
+        int32_t where = -1;
+        ASSERT_EQ(mio_mesh_cad_surface_tolerance_use(i, &edge, nullptr, nullptr, &where), MIO_OK);
+        EXPECT_EQ(edge, -1);
+        EXPECT_EQ(where, MIO_MESH_CAD_TOLERANCE_PAIRING);
+    }
+    mio_mesh_free(m);
+    mio_format_info_free(info);
+}
+
+// Roadmap 6.6.3 and 6.8 through the extended options: untangling (refused
+// at order 1) and quadrilaterals, quad-dominant and all-quad, on the box.
+TEST(CApi, MeshCadSurfaceUntanglesAndMakesQuads) {
+    const auto path = mt::temp_path(".cad.json");
+    meshioplusplus::write_cad_json(path, meshioplusplus::Mesh{}, brep_solids::box());
+    mio_format_info* info = nullptr;
+    mio_mesh* sampled = mio_read_with_info(path.c_str(), nullptr, nullptr, &info);
+    ASSERT_NE(sampled, nullptr) << mio_last_error();
+    mio_mesh_free(sampled);
+    mio_mesh_cad_surface_opts opts;
+    mio_mesh_cad_surface_opts_init(&opts);
+    opts.target_size = 0.2;
+    opts.min_angle_deg = 25.0;
+    mio_mesh_cad_surface_opts_ex ex;
+    mio_mesh_cad_surface_opts_ex_init(&ex);
+    EXPECT_EQ(ex.untangle, 0);
+    EXPECT_EQ(ex.quads, MIO_MESH_CAD_QUADS_NONE);
+    EXPECT_EQ(ex.quad_pairs, MIO_MESH_CAD_QUAD_PAIRS_MATCHING);
+    // Untangling needs curved elements.
+    ex.untangle = 1;
+    EXPECT_EQ(mio_mesh_cad_surface2(info, &opts, &ex, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("untangle"), std::string::npos);
+    opts.order = 2;
+    mio_mesh* curved = mio_mesh_cad_surface2(info, &opts, &ex, nullptr);
+    ASSERT_NE(curved, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_cad_surface_num_untangled(), 0);  // nothing folds on a box
+    mio_mesh_free(curved);
+    opts.order = 1;
+    ex.untangle = 0;
+    const auto block_of = [](const mio_mesh* pM, const char* pType) {
+        char buf[32];
+        for (int64_t b = 0; b < mio_mesh_num_cell_blocks(pM); ++b)
+            if (mio_mesh_cell_block_type(pM, b, buf, sizeof buf) >= 0 && std::string(buf) == pType)
+                return b;
+        return int64_t{-1};
+    };
+    for (const int32_t q : {MIO_MESH_CAD_QUADS_DOMINANT, MIO_MESH_CAD_QUADS_ALL}) {
+        ex.quads = q;
+        mio_mesh_cad_surface_report report{};
+        mio_mesh* m = mio_mesh_cad_surface2(info, &opts, &ex, &report);
+        ASSERT_NE(m, nullptr) << mio_last_error();
+        int64_t quads = -1, left = -1;
+        double sj = -1.0;
+        ASSERT_EQ(mio_mesh_cad_surface_quad_stats(&quads, &left, &sj), MIO_OK);
+        EXPECT_GT(quads, 0) << q;
+        EXPECT_GT(sj, 0.3) << q;
+        EXPECT_GE(block_of(m, "quad"), 0) << q;
+        EXPECT_EQ(report.num_triangles, left) << q;
+        EXPECT_EQ(report.num_open_edges, 0) << q;
+        if (q == MIO_MESH_CAD_QUADS_ALL) {
+            EXPECT_EQ(left, 0);
+            EXPECT_EQ(block_of(m, "triangle"), -1);
+        }
+        mio_mesh_free(m);
+    }
+    EXPECT_EQ(mio_mesh_cad_surface_quad_stats(nullptr, nullptr, nullptr), MIO_OK);
+    // Greedy pairing (6.8.1) leaves at least as many triangles.
+    ex.quads = MIO_MESH_CAD_QUADS_DOMINANT;
+    int64_t matched_left = -1, greedy_left = -1;
+    mio_mesh* mm = mio_mesh_cad_surface2(info, &opts, &ex, nullptr);
+    ASSERT_NE(mm, nullptr) << mio_last_error();
+    ASSERT_EQ(mio_mesh_cad_surface_quad_stats(nullptr, &matched_left, nullptr), MIO_OK);
+    mio_mesh_free(mm);
+    ex.quad_pairs = MIO_MESH_CAD_QUAD_PAIRS_GREEDY;
+    mm = mio_mesh_cad_surface2(info, &opts, &ex, nullptr);
+    ASSERT_NE(mm, nullptr) << mio_last_error();
+    ASSERT_EQ(mio_mesh_cad_surface_quad_stats(nullptr, &greedy_left, nullptr), MIO_OK);
+    mio_mesh_free(mm);
+    EXPECT_LE(matched_left, greedy_left);
+    ex.quad_pairs = MIO_MESH_CAD_QUAD_PAIRS_MATCHING;
+    // All-quad at order 2 writes quad9 (6.8.3).
+    ex.quads = MIO_MESH_CAD_QUADS_ALL;
+    opts.order = 2;
+    mio_mesh* q9 = mio_mesh_cad_surface2(info, &opts, &ex, nullptr);
+    ASSERT_NE(q9, nullptr) << mio_last_error();
+    EXPECT_GE(block_of(q9, "quad9"), 0);
+    EXPECT_GE(block_of(q9, "line3"), 0);
+    mio_mesh_free(q9);
+    opts.order = 1;
+    ex.quads = 7;
+    EXPECT_EQ(mio_mesh_cad_surface2(info, &opts, &ex, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("quads"), std::string::npos);
+    mio_format_info_free(info);
+}
+
+// Roadmap 6.9: layers grown outward from the box's mesh are wedges, all
+// valid, under a closed cap.
+TEST(CApi, BoundaryLayer) {
+    const auto path = mt::temp_path(".cad.json");
+    meshioplusplus::write_cad_json(path, meshioplusplus::Mesh{}, brep_solids::box());
+    mio_format_info* info = nullptr;
+    mio_mesh* sampled = mio_read_with_info(path.c_str(), nullptr, nullptr, &info);
+    ASSERT_NE(sampled, nullptr) << mio_last_error();
+    mio_mesh_cad_surface_opts opts;
+    mio_mesh_cad_surface_opts_init(&opts);
+    opts.target_size = 0.25;
+    mio_mesh* m = mio_mesh_cad_surface(info, &opts, nullptr);
+    ASSERT_NE(m, nullptr) << mio_last_error();
+    mio_boundary_layer_opts bo;
+    mio_boundary_layer_opts_init(&bo);
+    EXPECT_EQ(bo.num_layers, 3);
+    EXPECT_DOUBLE_EQ(bo.growth, 1.2);
+    EXPECT_EQ(mio_boundary_layer(m, &bo, nullptr), nullptr);  // no first_height
+    EXPECT_NE(std::string(mio_last_error()).find("first_height"), std::string::npos);
+    bo.first_height = 0.01;
+    mio_boundary_layer_report report{};
+    mio_mesh* out = mio_boundary_layer(m, &bo, &report);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_GT(report.num_wedges, 0);
+    EXPECT_EQ(report.num_cells, report.num_wedges);
+    EXPECT_EQ(report.num_collapsed, 0);
+    EXPECT_EQ(report.cap_closed, 1);
+    EXPECT_GT(report.min_scaled_jacobian, 0.1);
+    mio_mesh_free(out);
+    EXPECT_EQ(mio_boundary_layer(m, nullptr, nullptr), nullptr);
+    mio_mesh_free(m);
+    mio_mesh_free(sampled);
+    mio_format_info_free(info);
+}
+
+// Roadmap 6.10.1: a mesh of the box projected back onto it moves nothing,
+// every point lands on a face or an edge, and none outside its trims.
+TEST(CApi, ProjectToCad) {
+    const auto path = mt::temp_path(".cad.json");
+    meshioplusplus::write_cad_json(path, meshioplusplus::Mesh{}, brep_solids::box());
+    mio_format_info* info = nullptr;
+    mio_mesh* sampled = mio_read_with_info(path.c_str(), nullptr, nullptr, &info);
+    ASSERT_NE(sampled, nullptr) << mio_last_error();
+    mio_mesh_cad_surface_opts opts;
+    mio_mesh_cad_surface_opts_init(&opts);
+    opts.target_size = 0.25;
+    mio_mesh* m = mio_mesh_cad_surface(info, &opts, nullptr);
+    ASSERT_NE(m, nullptr) << mio_last_error();
+    mio_project_to_cad_opts po;
+    mio_project_to_cad_opts_init(&po);
+    EXPECT_EQ(po.trim_samples, 16);
+    EXPECT_EQ(po.face_array, nullptr);
+    mio_project_to_cad_report report{};
+    mio_mesh* out = mio_project_to_cad(m, info, &po, &report);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(report.num_projected, mio_mesh_num_points(m));
+    EXPECT_EQ(report.num_corners, 8);
+    EXPECT_GT(report.num_on_edges, 8);
+    EXPECT_EQ(report.num_outside_trim, 0);
+    EXPECT_LT(report.max_move, 1e-12);
+    EXPECT_EQ(mio_project_to_cad_outside_trim(nullptr, 0), 0);
+    mio_mesh_free(out);
+    // A mesh with no faces named, and a NULL model, are refused by name.
+    EXPECT_EQ(mio_project_to_cad(sampled, info, nullptr, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("cad:face"), std::string::npos);
+    EXPECT_EQ(mio_project_to_cad(m, nullptr, nullptr, nullptr), nullptr);
+    mio_mesh_free(m);
+    mio_mesh_free(sampled);
+    mio_format_info_free(info);
+}
+
 TEST(CApi, IgaOnABrepKeepsItsTrimsAndReportsInside) {
     // The same square face as BrepSideChannel with an outer loop of four trims.
     const auto path = mt::temp_path(".cad.json");
@@ -2138,7 +2339,8 @@ TEST(CApi, IgaOnABrepKeepsItsTrimsAndReportsInside) {
     EXPECT_EQ(dtype, MIO_UINT8);
     EXPECT_EQ(static_cast<const uint8_t*>(data)[0], 1);
     EXPECT_EQ(static_cast<const uint8_t*>(data)[1], 0);
-    ASSERT_EQ(mio_iga_evaluation_array(ev, MIO_IGA_NORMALS, 0, &data, &dtype, &ndim, shape), MIO_OK);
+    ASSERT_EQ(mio_iga_evaluation_array(ev, MIO_IGA_NORMALS, 0, &data, &dtype, &ndim, shape),
+              MIO_OK);
     EXPECT_NEAR(std::abs(static_cast<const double*>(data)[2]), 1.0, 1e-13);
     mio_iga_evaluation_free(ev);
     mio_format_info_free(refined);
@@ -5930,8 +6132,7 @@ TEST(CApi, BrepSideChannel) {
     ASSERT_EQ(mio_brep_info_array(info, MIO_BREP_TRIMS, 0, 14, &data, &dtype, &ndim, shape),
               MIO_OK);  // the active range
     EXPECT_EQ(shape[0], 2);
-    ASSERT_EQ(mio_brep_info_array(info, MIO_BREP_BREPS, 0, 1, &data, &dtype, &ndim, shape),
-              MIO_OK);
+    ASSERT_EQ(mio_brep_info_array(info, MIO_BREP_BREPS, 0, 1, &data, &dtype, &ndim, shape), MIO_OK);
     EXPECT_EQ(dtype, MIO_INT64);
     EXPECT_EQ(static_cast<const int64_t*>(data)[0], 0);
     char buf[16];

@@ -43,6 +43,9 @@ _MAX_POLE_RINGS = 8
 #: How smoothing moves an interior point.
 SMOOTH_METHODS = ("laplacian", "odt")
 METRICS = ("mean", "varying")
+#: Quadrilaterals (roadmap 6.8): none, quad-dominant, all-quad.
+QUADS = ("none", "dominant", "all")
+QUAD_PAIRS = ("matching", "greedy")
 
 _REPORT_INTS = (
     "num_points",
@@ -59,6 +62,9 @@ _REPORT_INTS = (
     "num_faces_below_bound",
     "num_smoothed",
     "num_curved_straightened",
+    "num_untangled",
+    "num_quads",
+    "num_leftover_triangles",
 )
 _REPORT_FLOATS = (
     "tolerance",
@@ -67,6 +73,7 @@ _REPORT_FLOATS = (
     "min_edge",
     "max_edge",
     "max_edge_gap",
+    "min_quad_scaled_jacobian",
 )
 
 
@@ -130,6 +137,9 @@ def mesh_cad_surface(
     metric_background=None,
     metric_array: str = "",
     metric_error: float = 0.0,
+    untangle: bool = False,
+    quads: str = "none",
+    quad_pairs: str = "matching",
     return_report: bool = False,
 ):
     """Triangulate a B-rep's faces into one conforming surface mesh.
@@ -230,9 +240,39 @@ def mesh_cad_surface(
         Order 1 only.
     :param metric_array: the name of the Hessian array.
     :param metric_error: the target interpolation error (positive).
+    :param untangle: with ``order`` 2 or 3, before an element whose Jacobian
+        is not positive everywhere is made straight-sided, move its face's own
+        high-order nodes on the surface to raise the worst scaled Jacobian
+        around them, the nodes on the model's edges staying put (T. Toulorge,
+        C. Geuzaine, J.-F. Remacle and J. Lambrechts, "Robust untangling of
+        curvilinear meshes", 2013); only the elements still invalid are
+        straightened, and the result is kept only when it straightens fewer.
+        Reported as ``num_untangled``.
+    :param quads: ``"none"`` (the default); ``"dominant"``, each face's
+        triangles recombined in pairs (``quad_pairs``) where they make a
+        convex quad with corners within 63 degrees of a right angle, the rest
+        kept beside them (H. Borouchaki and P. J. Frey, 1998); or ``"all"``,
+        the quad-dominant mesh of twice the size split through its edges'
+        midpoints (on the geometry, shared across faces) and a centre on the
+        surface, each quad into four and each triangle into three, so no
+        triangle is left; it asks the size sources for twice their size, and
+        with ``order=2`` writes curved ``quad9`` elements whose nodes lie on
+        the geometry, each proved valid by a Bézier bound on its Jacobian or
+        kept straight-sided. ``"all"`` takes no ``metric_background``,
+        ``virtual_edges``, ``virtual_faces`` or ``reparam_condition_number``,
+        and ``"dominant"`` is order 1 only; neither takes ``untangle``.
+        Reported as ``num_quads``, ``num_leftover_triangles`` and
+        ``min_quad_scaled_jacobian``.
+    :param quad_pairs: how triangles pair into quads (roadmap 6.8.1):
+        ``"matching"`` (the default), a maximum-cardinality matching of
+        greatest total quality, the Blossom-quad of J.-F. Remacle et al.
+        (2012) on the core's own matching (exact in patches of 3,000
+        triangles and a band about the triangles left), or ``"greedy"``, best
+        pair first.
     :param return_report: also return the report.
     :returns: the surface mesh (``triangle`` and ``line`` blocks, or their
-        curved forms with ``order`` 2 or 3), or
+        curved forms with ``order`` 2 or 3, with a ``quad`` block beside or in
+        place of the triangles with ``quads``), or
         ``(mesh, report)``. The report has the counts (``num_failed``,
         ``num_open_edges``, ``num_non_manifold_edges``,
         ``num_misoriented_edges``, ...), the extreme angles and edge lengths,
@@ -257,7 +297,9 @@ def mesh_cad_surface(
         ``lopped_corners`` (per corner lopped: ``face``, ``point``,
         ``angle_deg``, ``lfs0``, ``lop_radius``, ``turning_deg``,
         ``stated_bound_deg``, ``num_forced``, ``min_forced_deg``,
-        ``within_two_radii``, ``guaranteed`` and ``reason`` when not).
+        ``within_two_radii``, ``guaranteed`` and ``reason`` when not),
+        ``num_untangled``, ``num_quads``, ``num_leftover_triangles`` and
+        ``min_quad_scaled_jacobian`` (0 with no quad).
     :raises ValueError: on an option out of range or a mesh with no B-rep.
     :raises RuntimeError: with ``strict=True``, naming the first failed face.
     :raises NotImplementedError: without the compiled core.
@@ -312,6 +354,26 @@ def mesh_cad_surface(
         raise ValueError(f"{_PREFIX}reparam_condition_number is order 1 only")
     if virtual_faces and int(order) > 1:
         raise ValueError(f"{_PREFIX}virtual_faces is order 1 only")
+    if untangle and int(order) < 2:
+        raise ValueError(f"{_PREFIX}untangle needs curved elements (order 2 or 3)")
+    if quad_pairs not in QUAD_PAIRS:
+        raise ValueError(f"{_PREFIX}quad_pairs must be one of {QUAD_PAIRS}")
+    if quads not in QUADS:
+        raise ValueError(f"{_PREFIX}quads must be one of {QUADS}")
+    if quads == "dominant" and int(order) != 1:
+        raise ValueError(f'{_PREFIX}quads="dominant" is order 1 only')
+    if quads == "all" and int(order) > 2:
+        raise ValueError(f'{_PREFIX}quads="all" takes order 1 or 2 (quad or quad9)')
+    if quads != "none" and untangle:
+        raise ValueError(f"{_PREFIX}untangle takes no quads")
+    if quads == "all":
+        if metric_background is not None:
+            raise ValueError(f'{_PREFIX}quads="all" takes no metric_background')
+        if virtual_edges or virtual_faces or reparam_condition_number > 0.0:
+            raise ValueError(
+                f'{_PREFIX}quads="all" takes no virtual_edges, virtual_faces or '
+                "reparam_condition_number"
+            )
 
     face_pairs = _size_pairs(face_sizes, "face_sizes", len(brep["faces"]))
     edge_pairs = _size_pairs(edge_sizes, "edge_sizes", len(brep.get("edges", [])))
@@ -385,6 +447,9 @@ def mesh_cad_surface(
         metric_background=metric_background,
         metric_array=str(metric_array),
         metric_error=metric_error,
+        untangle=bool(untangle),
+        quads=quads,
+        quad_pairs=quad_pairs,
     )
     out = res["mesh"]
     if not return_report:

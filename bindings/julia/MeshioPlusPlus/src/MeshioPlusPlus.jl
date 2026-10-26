@@ -75,7 +75,7 @@ export Mesh, MeshBorrow, MeshioError, BorrowError, Region
 export FormatInfo, read_with_info, write_with_info, format_name, mdpa_info, gmsh_info, nurbs_info,
        brep_info
 export iga_refine, iga_sample, iga_evaluate
-export mesh_cad_surface
+export mesh_cad_surface, project_to_cad
 export write_gltf
 export render, render_text, render_png, write_snapshot, detect_color_depth, Frame, rgba
 export ReadOptions, MeshMetadata, DiffReport
@@ -120,6 +120,7 @@ export segment, fit_primitives, refine_patches, fit_cad, has_occt
 export repair, shrinkwrap, sobolev_deform
 export interpolate, conservative_interpolate, meshes_equal, stats, compute_bandwidth
 export reorder, convert_cells, subdivide, agglomerate, refine, undo_green, decimate, partition, partition_labels
+export boundary_layer
 export tessellate
 export data_drop, data_keep, data_rename, data_point_to_cell, data_cell_to_point
 export sets_to_data, data_to_sets
