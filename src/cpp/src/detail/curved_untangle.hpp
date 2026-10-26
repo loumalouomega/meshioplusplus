@@ -44,6 +44,7 @@
 
 // System includes
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <vector>
@@ -67,6 +68,10 @@ struct CurvedUntangleReport {
     std::int64_t mSweeps = 0;
 };
 
+/// A free node's lift: the point at parameters `rUv` of free node `Free`.
+using CurvedUntangleLift =
+    std::function<CurvedVec3(std::size_t Free, const std::array<double, 2>& rUv)>;
+
 /**
  * @brief Move the free nodes `rFree` (ids into `pX`, three coordinates each)
  * whose parameters are `rUv` (updated in place) to untangle `rElems`;
@@ -77,5 +82,18 @@ CurvedUntangleReport curved_untangle(
     int Order, const std::vector<CurvedUntangleElement>& rElems, double* pX,
     const std::vector<std::int64_t>& rFree, std::vector<std::array<double, 2>>& rUv,
     const std::function<CurvedVec3(const std::array<double, 2>&)>& rLift, int MaxSweeps = 60);
+
+/**
+ * @brief The same with a lift of its own per free node and, when `pBounds`
+ * is given, a box `{lo0, hi0, lo1, hi1}` per free node its parameters stay
+ * in. A node whose lift ignores its second parameter (a node on a curve,
+ * `{t, 0}`) has no speed along it, so it moves along the curve only.
+ */
+CurvedUntangleReport curved_untangle(int Order, const std::vector<CurvedUntangleElement>& rElems,
+                                     double* pX, const std::vector<std::int64_t>& rFree,
+                                     std::vector<std::array<double, 2>>& rUv,
+                                     const CurvedUntangleLift& rLift,
+                                     const std::vector<std::array<double, 4>>* pBounds,
+                                     int MaxSweeps = 60);
 
 }  // namespace meshioplusplus::detail

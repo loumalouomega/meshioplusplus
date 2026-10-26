@@ -90,10 +90,14 @@ public:
     /// gradation is the user's), within the field's floor and ceiling.
     void SetBackground(const MeshCadBackgroundSize* pBackground) { mpBackground = pBackground; }
     bool HasBackground() const { return mpBackground != nullptr; }
-    double Ceiling() const { return mH; }
-    double Floor() const { return mFloor; }
+    /// Scale every size the field gives by `S` (roadmap 6.8.3: the
+    /// all-quad route meshes at twice the size and splits each quad in
+    /// four, so it asks the field for `2 h(x)`).
+    void SetScale(double S) { mScale = S; }
+    double Ceiling() const { return mScale * mH; }
+    double Floor() const { return mScale * mFloor; }
     /// The smallest sample size (the ceiling with none).
-    double Smallest() const { return mSmallest; }
+    double Smallest() const { return mScale * mSmallest; }
     std::size_t NumSamples() const { return mX.size(); }
 
 private:
@@ -102,6 +106,7 @@ private:
     double mSlope = 0.0;
     double mReach = 0.0;
     double mSmallest = 0.0;
+    double mScale = 1.0;
     double mCell = 1.0;
     Vec3 mLo{0.0, 0.0, 0.0};
     std::vector<Vec3> mX;

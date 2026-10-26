@@ -44,6 +44,18 @@ CurvedUntangleReport curved_untangle(
     int Order, const std::vector<CurvedUntangleElement>& rElems, double* pX,
     const std::vector<std::int64_t>& rFree, std::vector<std::array<double, 2>>& rUv,
     const std::function<CurvedVec3(const std::array<double, 2>&)>& rLift, int MaxSweeps) {
+    return curved_untangle(
+        Order, rElems, pX, rFree, rUv,
+        [&](std::size_t, const std::array<double, 2>& rP) { return rLift(rP); }, nullptr,
+        MaxSweeps);
+}
+
+CurvedUntangleReport curved_untangle(int Order, const std::vector<CurvedUntangleElement>& rElems,
+                                     double* pX, const std::vector<std::int64_t>& rFree,
+                                     std::vector<std::array<double, 2>>& rUv,
+                                     const CurvedUntangleLift& rLift,
+                                     const std::vector<std::array<double, 4>>* pBounds,
+                                     int MaxSweeps) {
     CurvedUntangleReport out;
     const int nn = curved_triangle_num_nodes(Order);
     const auto node = [&](std::int64_t Id) {
@@ -99,7 +111,7 @@ CurvedUntangleReport curved_untangle(
             std::array<double, 2> a = uv, b = uv;
             a[d] -= du;
             b[d] += du;
-            const double speed = cu_dist(rLift(a), rLift(b)) / (2.0 * du);
+            const double speed = cu_dist(rLift(F, a), rLift(F, b)) / (2.0 * du);
             step[F][d] = speed > 0.0 && std::isfinite(h) ? 0.25 * h / speed : 0.0;
         }
     };
@@ -148,9 +160,15 @@ CurvedUntangleReport curved_untangle(
                 was_valid[i] = bad[around[f][i]] ? 0 : 1;
             for (int k = 0; k < 8; ++k) {
                 const double a = kCuPi * double(k) / 4.0;
-                const std::array<double, 2> uv{uv0[0] + step[f][0] * std::cos(a),
-                                               uv0[1] + step[f][1] * std::sin(a)};
-                const CurvedVec3 x = rLift(uv);
+                std::array<double, 2> uv{uv0[0] + step[f][0] * std::cos(a),
+                                         uv0[1] + step[f][1] * std::sin(a)};
+                if (pBounds != nullptr) {
+                    const auto& r_b = (*pBounds)[f];
+                    uv = {std::clamp(uv[0], r_b[0], r_b[1]), std::clamp(uv[1], r_b[2], r_b[3])};
+                    if (uv == uv0)
+                        continue;
+                }
+                const CurvedVec3 x = rLift(f, uv);
                 for (std::size_t c = 0; c < 3; ++c)
                     pX[3 * id + c] = x[c];
                 const double b = star_bound(f);

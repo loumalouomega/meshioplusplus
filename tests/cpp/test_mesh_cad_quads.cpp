@@ -40,6 +40,7 @@
 // Project includes
 #include "brep_solids.hpp"
 #include "../../src/cpp/benchmark/mesh_digest.hpp"
+#include "../../src/cpp/src/detail/curved_quad.hpp"
 #include "../../src/cpp/src/detail/quad_recombine.hpp"
 #include "meshioplusplus/brep.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -271,9 +272,14 @@ TEST(MeshCadQuads, RefusalsAreByName) {
                  std::invalid_argument);
     ex.mQuads = mio::MeshCadQuads::All;
     o = sized(0.3);
-    o.mCurvatureDeviation = 0.01;
+    o.mOrder = 3;
     EXPECT_THROW((void)mio::mesh_cad_surface(box, o, mio::MeshCadSizeSources{}, ex),
                  std::invalid_argument);
+    o.mOrder = 2;
+    ex.mUntangle = true;
+    EXPECT_THROW((void)mio::mesh_cad_surface(box, o, mio::MeshCadSizeSources{}, ex),
+                 std::invalid_argument);
+    ex.mUntangle = false;
     o = sized(0.3);
     ex.mVirtualFaces = true;
     EXPECT_THROW((void)mio::mesh_cad_surface(box, o, mio::MeshCadSizeSources{}, ex),
@@ -282,6 +288,148 @@ TEST(MeshCadQuads, RefusalsAreByName) {
     ex.mQuads = static_cast<mio::MeshCadQuads>(7);
     EXPECT_THROW((void)mio::mesh_cad_surface(box, o, mio::MeshCadSizeSources{}, ex),
                  std::invalid_argument);
+}
+
+// Roadmap 6.8.3: quads="all" asks a size field for twice its size. The
+// capped cylinder sized by its curvature is all-quad, closed, finer than
+// the uniform mesh, and deterministic.
+TEST(MeshCadQuads, AllQuadTakesSizeSources) {
+    const mio::BrepInfo cyl = brep_solids::capped_cylinder(1.0, 2.0);
+    mio::MeshCadSurfaceOptions o = sized(0.2);
+    o.mCurvatureDeviation = 0.002;
+    const auto u = run(cyl, sized(0.2), mio::MeshCadQuads::All);
+    const auto r = run(cyl, o, mio::MeshCadQuads::All);
+    std::printf("[6.8.3] the cylinder all-quad: %lld quads uniform, %lld sized\n",
+                static_cast<long long>(u.mReport.mNumQuads),
+                static_cast<long long>(r.mReport.mNumQuads));
+    EXPECT_EQ(r.mResult.mNumFailed, 0);
+    EXPECT_EQ(r.mReport.mNumLeftoverTriangles, 0);
+    EXPECT_EQ(block(r.mResult.mMesh, "triangle"), -1);
+    EXPECT_GT(r.mReport.mNumQuads, 2 * u.mReport.mNumQuads);
+    EXPECT_TRUE(watertight(r.mResult.mMesh));
+    EXPECT_GT(r.mReport.mMinQuadScaledJacobian, 0.2);
+    EXPECT_EQ(digest(run(cyl, o, mio::MeshCadQuads::All).mResult.mMesh), digest(r.mResult.mMesh));
+}
+
+/// The area of the quad9 block, by 5 x 5 Gauss points on each quad.
+double quad9_area(const mio::Mesh& rM) {
+    const std::int64_t b = block(rM, "quad9");
+    if (b < 0)
+        return 0.0;
+    const double* x = rM.Points().As<double>();
+    const auto cells = rM.Cells(static_cast<std::size_t>(b));
+    const double g[5] = {0.0469100770306680, 0.2307653449471585, 0.5, 0.7692346550528415,
+                         0.9530899229693320};
+    const double w[5] = {0.1184634425280945, 0.2393143352496832, 0.2844444444444444,
+                         0.2393143352496832, 0.1184634425280945};
+    double s = 0.0;
+    std::array<mio::detail::CurvedVec3, 9> n{};
+    for (std::size_t c = 0; c < cells.NumCells(); ++c) {
+        for (std::size_t k = 0; k < 9; ++k) {
+            const auto id =
+                static_cast<std::size_t>(mio::detail::read_int(cells.Conn(), 9 * c + k));
+            n[k] = {x[3 * id], x[3 * id + 1], x[3 * id + 2]};
+        }
+        for (int i = 0; i < 5; ++i)
+            for (int j = 0; j < 5; ++j) {
+                // |x_xi x x_eta| by the Jacobian against its own direction.
+                const double e = 1e-7;
+                const auto p0 = mio::detail::curved_quad_point(n.data(), g[i], g[j]);
+                const auto pu = mio::detail::curved_quad_point(n.data(), g[i] + e, g[j]);
+                const auto pv = mio::detail::curved_quad_point(n.data(), g[i], g[j] + e);
+                const double a[3] = {(pu[0] - p0[0]) / e, (pu[1] - p0[1]) / e, (pu[2] - p0[2]) / e};
+                const double v[3] = {(pv[0] - p0[0]) / e, (pv[1] - p0[1]) / e, (pv[2] - p0[2]) / e};
+                const mio::detail::CurvedVec3 cr{a[1] * v[2] - a[2] * v[1],
+                                                 a[2] * v[0] - a[0] * v[2],
+                                                 a[0] * v[1] - a[1] * v[0]};
+                const double len = std::sqrt(cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]);
+                s += w[i] * w[j] *
+                     (len > 0.0 ? mio::detail::curved_quad_jacobian(
+                                      n.data(), {cr[0] / len, cr[1] / len, cr[2] / len}, g[i], g[j])
+                                : 0.0);
+            }
+    }
+    return s;
+}
+
+// Roadmap 6.8.3: quads="all" with order 2 writes quad9. On the sphere every
+// node lies on it, every quad is proved valid, the surface is closed, the
+// edges are line3, and the area converges at order 4 where the linear
+// quads' does at order 2.
+TEST(MeshCadQuads, CurvedQuadsLieOnTheSphereAndConverge) {
+    const mio::BrepInfo sphere = brep_solids::sphere(1.0);
+    std::array<double, 2> err{}, err_lin{};
+    for (std::size_t i = 0; i < 2; ++i) {
+        const double h = i == 0 ? 0.4 : 0.2;
+        mio::MeshCadSurfaceOptions o = sized(h);
+        o.mOrder = 2;
+        const auto r = run(sphere, o, mio::MeshCadQuads::All);
+        const mio::Mesh& m = r.mResult.mMesh;
+        ASSERT_EQ(r.mResult.mNumFailed, 0);
+        EXPECT_EQ(r.mResult.mNumCurvedStraightened, 0);
+        EXPECT_EQ(r.mResult.mNumOpenEdges, 0);
+        const std::int64_t b = block(m, "quad9");
+        ASSERT_GE(b, 0);
+        EXPECT_EQ(block(m, "quad"), -1);
+        EXPECT_EQ(block(m, "triangle"), -1);
+        const double* x = m.Points().As<double>();
+        for (std::size_t p = 0; p < m.NumPoints(); ++p)
+            EXPECT_NEAR(std::hypot(x[3 * p], x[3 * p + 1], x[3 * p + 2]), 1.0, 1e-12) << p;
+        const auto cells = m.Cells(static_cast<std::size_t>(b));
+        for (std::size_t c = 0; c < cells.NumCells(); ++c) {
+            std::array<mio::detail::CurvedVec3, 9> n{};
+            for (std::size_t k = 0; k < 9; ++k) {
+                const auto id =
+                    static_cast<std::size_t>(mio::detail::read_int(cells.Conn(), 9 * c + k));
+                n[k] = {x[3 * id], x[3 * id + 1], x[3 * id + 2]};
+            }
+            // The outward normal at the centre.
+            EXPECT_TRUE(mio::detail::curved_quad_check(n.data(), n[8]).mValid) << c;
+        }
+        err[i] = std::fabs(quad9_area(m) - 4.0 * kPi);
+        err_lin[i] = std::fabs(area(run(sphere, sized(h), mio::MeshCadQuads::All).mResult.mMesh) -
+                               4.0 * kPi);
+        if (i == 1) {
+            EXPECT_EQ(digest(run(sphere, o, mio::MeshCadQuads::All).mResult.mMesh), digest(m));
+        }
+    }
+    const double rate = std::log2(err[0] / err[1]);
+    const double rate_lin = std::log2(err_lin[0] / err_lin[1]);
+    std::printf(
+        "[6.8.3] the sphere's area: quad9 %.2e -> %.2e (order %.2f), quad %.2e -> %.2e "
+        "(order %.2f)\n",
+        err[0], err[1], rate, err_lin[0], err_lin[1], rate_lin);
+    EXPECT_GT(rate, 3.5);
+    EXPECT_GT(rate_lin, 1.8);
+    EXPECT_LT(err[1], 1e-4);
+}
+
+// The quad9 validity check alone: the unit square is valid; its centre
+// pulled past a corner folds it at the nodes; an edge node pushed across
+// the opposite one folds it between them though every node's Jacobian
+// stays positive.
+TEST(MeshCadQuads, TheQuad9CheckFindsFolds) {
+    using V = mio::detail::CurvedVec3;
+    std::array<V, 9> sq{V{0, 0, 0},   V{1, 0, 0},   V{1, 1, 0},   V{0, 1, 0},    V{0.5, 0, 0},
+                        V{1, 0.5, 0}, V{0.5, 1, 0}, V{0, 0.5, 0}, V{0.5, 0.5, 0}};
+    const V up{0, 0, 1};
+    EXPECT_TRUE(mio::detail::curved_quad_check(sq.data(), up).mValid);
+    EXPECT_NEAR(mio::detail::curved_quad_jacobian(sq.data(), up, 0.3, 0.7), 1.0, 1e-14);
+    auto bad = sq;
+    bad[8] = {1.4, 1.4, 0};
+    EXPECT_FALSE(mio::detail::curved_quad_check(bad.data(), up).mValid);
+    // A bent edge: the bottom's midpoint raised to 0.6 of the height keeps
+    // the nodal Jacobians positive but folds the element near it.
+    bad = sq;
+    bad[4] = {0.5, 0.6, 0};
+    const auto c = mio::detail::curved_quad_check(bad.data(), up);
+    EXPECT_FALSE(c.mValid);
+    EXPECT_TRUE(c.mDecided);
+    // Mildly bent, it stays valid.
+    bad[4] = {0.5, 0.1, 0};
+    EXPECT_TRUE(mio::detail::curved_quad_check(bad.data(), up).mValid);
+    // Against the opposite normal every element is invalid.
+    EXPECT_FALSE(mio::detail::curved_quad_check(sq.data(), V{0, 0, -1}).mValid);
 }
 
 // The recombination kernel alone: two right triangles of a unit square make

@@ -88,7 +88,7 @@ double MeshCadSizeField::At(const Vec3& rX) const {
     if (mpBackground)
         best = std::max(mFloor, std::min(best, mpBackground->At(rX)));
     if (mX.empty())
-        return best;
+        return mScale * best;
     std::array<std::int64_t, 3> c{};
     for (int d = 0; d < 3; ++d)
         c[d] = mcsz_cell(rX[d], mLo[d], mCell);
@@ -121,7 +121,7 @@ double MeshCadSizeField::At(const Vec3& rX) const {
             }
         }
     }
-    return std::max(mFloor, best);
+    return mScale * std::max(mFloor, best);
 }
 
 std::vector<double> mesh_cad_sample_sizes(const std::vector<MeshCadSizeSample>& rSamples,

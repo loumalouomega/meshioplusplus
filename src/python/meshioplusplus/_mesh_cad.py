@@ -253,10 +253,13 @@ def mesh_cad_surface(
         the quad-dominant mesh of twice the size split through its edges'
         midpoints (on the geometry, shared across faces) and a centre on the
         surface, each quad into four and each triangle into three, so no
-        triangle is left. ``"all"`` meshes at one size (no
-        ``curvature_deviation``, ``cells_across_gaps`` or given sizes) and
-        takes no ``virtual_edges``, ``virtual_faces`` or
-        ``reparam_condition_number``. Order 1 only. Reported as
+        triangle is left; it asks the size sources for twice their size, and
+        with ``order=2`` writes curved ``quad9`` elements whose nodes lie on
+        the geometry, each proved valid by a Bézier bound on its Jacobian or
+        kept straight-sided. ``"all"`` takes no ``metric_background``,
+        ``virtual_edges``, ``virtual_faces`` or ``reparam_condition_number``,
+        and ``"dominant"`` is order 1 only; neither takes ``untangle``.
+        Reported as
         ``num_quads``, ``num_leftover_triangles`` and
         ``min_quad_scaled_jacobian``.
     :param return_report: also return the report.
@@ -348,21 +351,15 @@ def mesh_cad_surface(
         raise ValueError(f"{_PREFIX}untangle needs curved elements (order 2 or 3)")
     if quads not in QUADS:
         raise ValueError(f"{_PREFIX}quads must be one of {QUADS}")
-    if quads != "none" and int(order) != 1:
-        raise ValueError(f"{_PREFIX}quads is order 1 only")
+    if quads == "dominant" and int(order) != 1:
+        raise ValueError(f'{_PREFIX}quads="dominant" is order 1 only')
+    if quads == "all" and int(order) > 2:
+        raise ValueError(f'{_PREFIX}quads="all" takes order 1 or 2 (quad or quad9)')
+    if quads != "none" and untangle:
+        raise ValueError(f"{_PREFIX}untangle takes no quads")
     if quads == "all":
-        if (
-            float(curvature_deviation) > 0.0
-            or float(cells_across_gaps) > 0.0
-            or face_sizes
-            or edge_sizes
-            or background is not None
-            or metric_background is not None
-        ):
-            raise ValueError(
-                f'{_PREFIX}quads="all" meshes at one size: no curvature_deviation, '
-                "cells_across_gaps or given sizes"
-            )
+        if metric_background is not None:
+            raise ValueError(f'{_PREFIX}quads="all" takes no metric_background')
         if virtual_edges or virtual_faces or reparam_condition_number > 0.0:
             raise ValueError(
                 f'{_PREFIX}quads="all" takes no virtual_edges, virtual_faces or '

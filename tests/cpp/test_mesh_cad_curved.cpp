@@ -324,9 +324,10 @@ TEST(MeshCadCurved, UntanglingKeepsFoldedElementsCurved) {
 #endif
     }
     // A fold at a corner, where two boundary arcs meet nearly tangent (the
-    // cylinder's caps at h = 1.75, above), is set by the edges' own nodes:
-    // nothing a face's nodes can do, so the mesh is the straightened one,
-    // byte for byte, and nothing is reported untangled.
+    // cylinder's caps at h = 1.75, above), is set by the arc bulging past
+    // the element: neither a face's nodes nor the edge's, sliding along the
+    // arc, bend it back, so the mesh is the straightened one, byte for
+    // byte, and nothing is reported untangled.
     const mio::BrepInfo cyl = brep_solids::capped_cylinder(1.0, 2.0);
     mio::MeshCadSurfaceExtrasReport xc;
     const auto rc =
