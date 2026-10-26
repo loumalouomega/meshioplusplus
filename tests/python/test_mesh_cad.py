@@ -837,7 +837,8 @@ def _layer_hessian(tmp_path):
     x = np.asarray(bg.points)
     bg.point_data["f"] = np.tanh((x[:, 2] - 0.3) / 0.1)
     path = tmp_path / "hessian.vtu"
-    mio.write(path, mio.hessian(bg, "f", location="point"))
+    # Uncompressed, so the core reads it in builds without zlib (the Windows wheel).
+    mio.write(path, mio.hessian(bg, "f", location="point"), compression=None)
     return path
 
 
