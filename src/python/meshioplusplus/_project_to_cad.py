@@ -56,7 +56,8 @@ def project_to_cad(
         projection lies in its face's trimmed region.
     :param return_report: also return the report.
     :returns: the mesh with its points moved, or ``(mesh, report)``. The
-        report has ``num_projected``, ``num_on_edges``, ``num_corners``,
+        report has ``num_projected``, ``num_on_edges``, ``num_on_curves``
+        (of those on edges, onto the edge's own 3-D curve), ``num_corners``,
         ``num_ambiguous``, ``num_too_far``, ``num_failed``,
         ``num_outside_trim``, ``max_move``, ``outside_trim`` (the points
         projected outside their trims) and ``warnings``.
@@ -92,6 +93,7 @@ def project_to_cad(
         for k in (
             "num_projected",
             "num_on_edges",
+            "num_on_curves",
             "num_corners",
             "num_ambiguous",
             "num_too_far",

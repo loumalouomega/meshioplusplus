@@ -1251,7 +1251,7 @@ def _register_operations(server: FastMCP) -> None:
         allows. metric "varying" follows each face's metric as it varies
         instead of its mean; virtual_edges samples chains of short edges
         meeting smoothly as one, listed in virtual_edges.
-        reparam_condition_number (0: off; else above 1, order 1 only) meshes a
+        reparam_condition_number (0: off; else above 1; any order) meshes a
         face whose metric's condition number over its unrefined triangulation
         passes it in a flattening of that triangulation (a conformal map, or
         mean-value coordinates on a circle), every point still on the
@@ -1261,16 +1261,18 @@ def _register_operations(server: FastMCP) -> None:
         accepts the gaps the model declares in its edges' and vertices'
         extras (a STEP or IGES read writes OpenCASCADE's) and the file's
         tolerances.model_tolerance, which also pairs trims no edge names,
-        listed in tolerance_uses; virtual_faces (order 1 only) meshes a face
+        listed in tolerance_uses; virtual_faces (any order) meshes a face
         narrower than target_size with the neighbour it meets tangentially
         along the most edge, a chain of slivers joining the group the first
         forms, each triangle keeping its own face, listed in merged_faces;
         a metric_background_path mesh whose 9-component point_data
         metric_array is a field's Hessian (hessian writes "<array>:hessian"),
-        with the target interpolation error metric_error, sizes the
+        or whose 1-component one is the field itself (its Hessian then
+        taken), with the target interpolation error metric_error, sizes the
         triangles by the anisotropic metric R |L| R^T / (8 metric_error)
         (Loseille and Alauzet 2011), triangles stretching where the field
-        varies in one direction only (order 1 only); lop_corners
+        varies in one direction only (any order; min_metric_angle reports
+        the least corner angle in the metric); lop_corners
         protects every acute corner by corner lopping (Pav and Walkington
         2005) in place of concentric shells, only with refinement, listed in
         lopped_corners (angle_deg, lfs0, lop_radius, turning_deg,
@@ -1279,11 +1281,13 @@ def _register_operations(server: FastMCP) -> None:
         face, and whether the run meets it. untangle (order 2 or 3) moves a
         face's own high-order nodes on the surface to untangle a folded curved
         element before it is straightened (Toulorge et al. 2013), then slides
-        the nodes on the model's edges, counted in num_untangled. quads
-        'dominant' (order 1) recombines each face's triangles in pairs into a
-        quad block beside the triangles left; 'all' splits the quad-dominant
-        mesh of twice the size (its size sources asked for twice their size)
-        through its edges' midpoints into quads only, quad9 with order 2;
+        the nodes on the model's edges (quads' nodes too), counted in
+        num_untangled. quads 'dominant' recombines each face's triangles in
+        pairs into a quad block beside the triangles left; 'all' splits the
+        quad-dominant mesh of twice the size (its size sources, a metric
+        included, asked for twice their size) through its edges' midpoints
+        into quads only, and takes no virtual_edges; with order 2 or 3 either
+        writes curved quad9 or quad16 beside triangle6 or triangle10;
         quad_pairs 'matching' (the default, a maximum matching, Blossom-quad)
         or 'greedy' (best pair first) pairs them; reported as num_quads,
         num_leftover_triangles and min_quad_scaled_jacobian."""
@@ -2860,6 +2864,49 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def error_size(
+        input_path: str,
+        output_path: str,
+        target_error: float,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        error_array: str = "error:zz",
+        order: float = 1.0,
+        min_size: float = 0.0,
+        max_size: float = 0.0,
+        output: str = "size",
+        overwrite: bool = False,
+    ) -> dict:
+        """A per-point size field from a per-cell error indicator (roadmap
+        6.10.2), by the adaptive procedure of Zienkiewicz and Zhu (1987).
+
+        With N cells evaluated and the target global error target_error, a
+        cell of diameter h whose one-component cell_data indicator
+        error_array (estimate_error writes "error:zz") is eta asks
+        h * (target_error / sqrt(N) / eta)**(1 / order), order being the
+        indicator's rate in the cell size (1 for linear elements), clamped to
+        [min_size, max_size] (0: no bound); a point takes the least of its
+        cells' (NaN where none is evaluated). The sizes are written as
+        point_data output (default "size", what mesh_cad_surface's
+        background_array reads), so estimate_error -> error_size ->
+        mesh_cad_surface(background_path=...) closes the adaptive loop.
+        Reports num_cells, num_skipped, num_clamped, min_size and max_size."""
+        return _guard(
+            _tools.tool_error_size,
+            input_path=input_path,
+            output_path=output_path,
+            target_error=target_error,
+            input_format=input_format,
+            output_format=output_format,
+            error_array=error_array,
+            order=order,
+            min_size=min_size,
+            max_size=max_size,
+            output=output,
+            overwrite=overwrite,
+        )
+
+    @server.tool()
     def transform(
         input_path: str,
         output_path: str,
@@ -3105,7 +3152,8 @@ def _register_operations(server: FastMCP) -> None:
         name one face (cad:face) onto its surface by Newton point inversion;
         a point on two faces and no edge stays. model_path is a CAD JSON,
         STEP or IGES file. A point farther than max_distance (0: no limit)
-        stays. Reports num_projected, num_on_edges, num_corners,
+        stays. Reports num_projected, num_on_edges, num_on_curves (of those
+        on edges, onto the edge's own 3-D curve), num_corners,
         num_ambiguous, num_too_far, num_failed, num_outside_trim (projections
         outside their face's trims, kept, never clamped), max_move and
         outside_trim."""

@@ -1,6 +1,6 @@
 # Back onto the CAD — `project_to_cad`
 
-`project_to_cad` moves a mesh's points back onto the CAD model it was made from (roadmap 6.10.1). A mesh [`mesh_cad_surface`](./mesh_cad.md) wrote names, cell by cell, the CAD face it lies on (`cad:face` on its triangles and quads) and the CAD edge it runs along (`cad:edge` on its lines). An operation that knows no CAD — smoothing, an adaptation, a remesh that keeps those arrays — moves points off the surfaces; `project_to_cad` puts them back.
+`project_to_cad` moves a mesh's points back onto the CAD model it was made from. A mesh [`mesh_cad_surface`](./mesh_cad.md) wrote names, cell by cell, the CAD face it lies on (`cad:face` on its triangles and quads) and the CAD edge it runs along (`cad:edge` on its lines). An operation that knows no CAD — smoothing, an adaptation, a remesh that keeps those arrays — moves points off the surfaces; `project_to_cad` puts them back.
 
 ```python
 import meshioplusplus as mp
@@ -18,7 +18,7 @@ Each point is classified by the cells that use it:
 
 | the point lies on | it goes to |
 |---|---|
-| the lines of one edge | the nearest point of that edge: its first use's trim curve lifted through its face's surface, a scan of 64 steps, then Newton on `(X - p) · X' = 0` |
+| the lines of one edge | the nearest point of that edge: its own 3-D curve (`BrepEdge.curve`, the `3d_curve` of a CAD JSON, OpenCASCADE's for a STEP or IGES read) where the model gives one that its first use's trace follows (within a millionth of its length at nine points, or a billionth of the model's size), the best of 64 steps of its parameter then Gauss–Newton on `(C - p) · C' = 0`; else that trace, its trim curve lifted through its face's surface, a scan of 64 steps, then Newton on `(X - p) · X' = 0`. A curve its trace leaves is warned and the trace taken (counted in `num_on_curves` when the curve is) |
 | the lines of two or more edges | a corner of the model: the nearest point of the lowest of those edges, which is the edge's end for a point near it (counted in `num_corners`) |
 | cells that all name one face | the nearest point of that face's surface |
 | cells naming two faces and no edge | nowhere: it stays, counted in `num_ambiguous` |
@@ -36,11 +36,11 @@ A projection that lands outside the face's trimmed region (the trim loops sample
 | `max_distance` | a point farther than this from where it would go stays (0, the default, is no limit) |
 | `trim_samples` | samples per knot span when testing a face's trims (16) |
 
-The report has `num_projected` (points moved onto a face or an edge), `num_on_edges` and `num_corners` of those, `num_ambiguous`, `num_too_far`, `num_failed` (a face with no usable surface or an edge with no usable trim), `num_outside_trim`, `max_move`, `outside_trim` and `warnings`. A mesh with no `face_array` cell data, points that are not three-dimensional or an index outside the model is refused by name.
+The report has `num_projected` (points moved onto a face or an edge), `num_on_edges`, `num_on_curves` (of those, onto the edge's own 3-D curve) and `num_corners` of those, `num_ambiguous`, `num_too_far`, `num_failed` (a face with no usable surface or an edge with no usable trim), `num_outside_trim`, `max_move`, `outside_trim` and `warnings`. A mesh with no `face_array` cell data, points that are not three-dimensional or an index outside the model is refused by name.
 
 ## Which route keeps a mesh on the CAD
 
-Two routes keep an adapted mesh on the model (roadmap 6.10). **Re-mesh from the model** when the change can be said as a size field or a metric: [`mesh_cad_surface`](./mesh_cad.md) with a `background` mesh or a `metric_background` keeps every point on the model by construction, with conforming edges and every face's trims respected. **Project back** when an operation that knows no CAD has already made the mesh — a smoothing, an adaptation by a backend that keeps `cad:face` and `cad:edge`, a hand edit: `project_to_cad` restores the geometry without changing the connectivity. Projection moves points but cannot fix a triangle that straddles a trim or a fold the operation introduced; `outside_trim` names the points where that happened.
+Two routes keep an adapted mesh on the model. **Re-mesh from the model** when the change can be said as a size field or a metric: [`mesh_cad_surface`](./mesh_cad.md) with a `background` mesh (a size field, such as [`error_size`](./error_size.md) builds from an error estimate) or a `metric_background` (a field's Hessian, or the field) keeps every point on the model by construction, with conforming edges and every face's trims respected. **Project back** when an operation that knows no CAD has already made the mesh — a smoothing, an adaptation by a backend that keeps `cad:face` and `cad:edge`, a hand edit: `project_to_cad` restores the geometry without changing the connectivity. Projection moves points but cannot fix a triangle that straddles a trim or a fold the operation introduced; `outside_trim` names the points where that happened.
 
 ## Bindings
 

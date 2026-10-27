@@ -92,14 +92,18 @@ TEST(ProjectToCad, TheShrunkSphereGoesBack) {
                 r.mMaxMove);
     EXPECT_EQ(r.mNumProjected, static_cast<std::int64_t>(m.NumPoints()));
     EXPECT_EQ(r.mNumAmbiguous + r.mNumFailed + r.mNumTooFar + r.mNumOutsideTrim, 0);
+    // On the sphere; a point on an edge goes onto the edge's own 3-D curve
+    // (6.10.1), which the fixture's seams fit within 1e-8 of it, as a model's
+    // curves meet its surfaces within the model's tolerance.
     const double* p = r.mMesh.Points().As<double>();
     for (std::size_t i = 0; i < r.mMesh.NumPoints(); ++i)
-        EXPECT_NEAR(std::hypot(p[3 * i], p[3 * i + 1], p[3 * i + 2]), 1.0, 1e-12) << i;
+        EXPECT_NEAR(std::hypot(p[3 * i], p[3 * i + 1], p[3 * i + 2]), 1.0, 1e-8) << i;
     EXPECT_GT(r.mMaxMove, 0.01);
     EXPECT_EQ(r.mMesh.NumCellBlocks(), m.NumCellBlocks());
-    // Points already on it stay, to round-off.
+    // Points already on it stay, to round-off, those on the seams to within
+    // the fit of their curves.
     const auto again = mio::project_to_cad(m, sphere);
-    EXPECT_LT(again.mMaxMove, 1e-12);
+    EXPECT_LT(again.mMaxMove, 1e-8);
 #ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
     const std::uint64_t ref = digest(r.mMesh);
     const int saved = omp_get_max_threads();
@@ -142,6 +146,45 @@ TEST(ProjectToCad, TheCylinderKeepsItsRims) {
             EXPECT_NEAR(z, z0, 1e-10) << i;
         }
     }
+}
+
+// Roadmap 6.10.1: an edge's own 3-D curve, where the model gives one that
+// its trace follows, takes the edge's points: every rim point goes onto it.
+// A curve the trace leaves (the rim's moved up 0.1) is warned and the trace
+// kept, so the points still land on the rim.
+TEST(ProjectToCad, EdgePointsGoOntoTheEdgesCurves) {
+    mio::BrepInfo cyl = brep_solids::capped_cylinder(1.0, 2.0);
+    const mio::Mesh m = surface(cyl, 0.25);
+    const mio::Mesh off = moved(m, [](std::size_t I, std::array<double, 3>& rX) {
+        rX[0] += 0.01 * std::cos(3.0 * double(I));
+        rX[2] += 0.01 * std::sin(7.0 * double(I));
+    });
+    const auto r = mio::project_to_cad(off, cyl);
+    std::printf("[6.10.1] cylinder: %lld on edges, %lld onto their 3-D curves\n",
+                static_cast<long long>(r.mNumOnEdges), static_cast<long long>(r.mNumOnCurves));
+    EXPECT_GT(r.mNumOnEdges, 0);
+    EXPECT_EQ(r.mNumOnCurves, r.mNumOnEdges);
+    std::size_t with_curve = 0;
+    for (mio::BrepEdge& r_e : cyl.mEdges)
+        if (r_e.mHasCurve) {
+            ++with_curve;
+            double* pc = r_e.mCurve.mControlPoints.As<double>();
+            for (std::size_t i = 0; i < r_e.mCurve.mControlPoints.Shape()[0]; ++i)
+                pc[3 * i + 2] += 0.1;
+        }
+    ASSERT_GT(with_curve, 0u);
+    const auto w = mio::project_to_cad(off, cyl);
+    EXPECT_EQ(w.mNumOnCurves, 0);
+    EXPECT_EQ(w.mNumOnEdges, r.mNumOnEdges);
+    bool warned = false;
+    for (const std::string& r_w : w.mWarnings)
+        warned = warned || r_w.find("3-D curve") != std::string::npos;
+    EXPECT_TRUE(warned);
+    const double* p = w.mMesh.Points().As<double>();
+    const double* q = r.mMesh.Points().As<double>();
+    for (std::size_t i = 0; i < w.mMesh.NumPoints(); ++i)
+        for (std::size_t k = 0; k < 3; ++k)
+            EXPECT_NEAR(p[3 * i + k], q[3 * i + k], 1e-9) << i;
 }
 
 // A point of the holed disc's cap moved into the hole lands on the plane

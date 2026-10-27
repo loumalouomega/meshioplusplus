@@ -702,6 +702,65 @@ def test_data_estimate_error_rejects_cell_data(data_infile, tmp_path):
         )
 
 
+def test_data_error_size(data_infile, tmp_path, capsys):
+    indicated = tmp_path / "ind.vtu"
+    assert (
+        meshioplusplus._cli.main(
+            ["data", "estimate-error", str(data_infile), str(indicated), "--array", "T"]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    out = tmp_path / "sized.vtu"
+    rc = meshioplusplus._cli.main(
+        [
+            "data",
+            "error-size",
+            str(indicated),
+            str(out),
+            "--target-error",
+            "1e-3",
+            "--min-size",
+            "0.01",
+            "--json",
+        ]
+    )
+    assert rc == 0
+    report = json.loads(capsys.readouterr().out)
+    assert set(report) == {
+        "num_cells",
+        "num_skipped",
+        "num_clamped",
+        "min_size",
+        "max_size",
+    }
+    mesh = meshioplusplus.read(out)
+    assert "size" in mesh.point_data
+    rc = meshioplusplus._cli.main(
+        [
+            "data",
+            "error-size",
+            str(indicated),
+            str(out),
+            "--target-error",
+            "1e-3",
+            "--output",
+            "h",
+        ]
+    )
+    assert rc == 0
+    assert "cells evaluated" in capsys.readouterr().out
+    assert "h" in meshioplusplus.read(out).point_data
+
+
+def test_data_error_size_refuses_a_missing_indicator(data_infile, tmp_path):
+    out = tmp_path / "out.vtu"
+    with pytest.raises(ValueError, match="error:zz"):
+        meshioplusplus._cli.main(
+            ["data", "error-size", str(data_infile), str(out), "--target-error", "1"]
+        )
+
+
 def test_data_without_a_verb_exits_2():
     with pytest.raises(SystemExit) as exc:
         meshioplusplus._cli.main(["data"])

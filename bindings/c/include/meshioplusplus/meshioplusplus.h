@@ -5756,7 +5756,8 @@ typedef struct mio_mesh_cad_surface_opts_ex {
     const char* background_array; /**< NULL or "": "size" */
     /** v17.20.0: mesh a face whose metric's condition number over its coarse
      *  mesh exceeds this in a flattening of that mesh (6.4.4); 0 is off,
-     *  otherwise above 1; order 1 only. */
+     *  otherwise above 1; at order 2 or 3 the curved nodes sit at the
+     *  flattening's coordinates. */
     double reparam_condition_number;
     int32_t model_tolerances; /**< v17.20.0: nonzero: accept the gaps the model declares (6.5.1) */
     int32_t virtual_faces;    /**< v17.20.0: nonzero: mesh sliver faces with a neighbour (6.5.2) */
@@ -5764,22 +5765,24 @@ typedef struct mio_mesh_cad_surface_opts_ex {
      *  of concentric shells (6.2.3); only with refinement. */
     int32_t lop_corners;
     /** Unreleased (roadmap 6.6.3): nonzero, with order 2 or 3: move a face's
-     *  own high-order nodes on the surface to untangle a folded curved
-     *  element before it is straightened (Toulorge et al. 2013). */
+     *  own high-order nodes on the surface (quads' too) to untangle a folded
+     *  curved element before it is straightened (Toulorge et al. 2013). */
     int32_t untangle;
     /** Since v17.22.0 (roadmap 6.10.2): an anisotropic metric from a field's
      *  Hessian, the 9-component point_data `metric_array` of
-     *  `metric_background`, with the target interpolation error
-     *  `metric_error` (positive): its metric R |L| R^T / (8 metric_error),
-     *  its sizes between a 64th of target_size and the local size, sizes the
-     *  triangles in every direction (Loseille and Alauzet 2011). NULL: none;
-     *  order 1 only. */
+     *  `metric_background` (unreleased: or a 1-component one, the field
+     *  itself, whose Hessian is then taken), with the target interpolation
+     *  error `metric_error` (positive): its metric R |L| R^T /
+     *  (8 metric_error), its sizes between a 64th of target_size and the
+     *  local size, sizes the triangles in every direction (Loseille and
+     *  Alauzet 2011), at any order (mio_mesh_cad_surface_min_metric_angle).
+     *  NULL: none. */
     const mio_mesh* metric_background;
-    const char* metric_array; /**< the Hessian's name (e.g. "f:hessian") */
+    const char* metric_array; /**< the Hessian's (e.g. "f:hessian") or the field's name */
     double metric_error;
-    /** Unreleased (roadmap 6.8): a mio_mesh_cad_quads; MIO_MESH_CAD_QUADS_ALL
-     *  with order 2 writes quad9 (6.8.3), MIO_MESH_CAD_QUADS_DOMINANT is order
-     *  1 only. */
+    /** Unreleased (roadmap 6.8): a mio_mesh_cad_quads; with order 2 or 3
+     *  either mode writes quad9 or quad16 (6.8.3) beside triangle6 or
+     *  triangle10; MIO_MESH_CAD_QUADS_ALL takes no virtual_edges. */
     int32_t quads;
     /** Unreleased (roadmap 6.8.1): a mio_mesh_cad_quad_pairs, how triangles
      *  pair into quads (0, the default, a maximum matching). */
@@ -5913,6 +5916,11 @@ MIO_API mio_status mio_mesh_cad_surface_quad_stats(int64_t* num_quads,
                                                    int64_t* num_leftover_triangles,
                                                    double* min_scaled_jacobian);
 
+/** Unreleased (6.10.2): with a metric_background, the least corner angle of a
+ *  cell of this thread's last call measured in the metric at its centroid,
+ *  in degrees (the measure refinement judges by); 0 without one. */
+MIO_API double mio_mesh_cad_surface_min_metric_angle(void);
+
 /* ---- project_to_cad (roadmap 6.10.1) ------------------------------------ */
 
 /**
@@ -5942,7 +5950,8 @@ typedef struct mio_project_to_cad_report {
     int64_t num_failed;       /**< whose face or edge is unusable: left */
     int64_t num_outside_trim; /**< projected outside their face's trims */
     double max_move;          /**< the largest distance a point moved */
-    int64_t reserved[4];
+    int64_t num_on_curves;    /**< of those on edges, onto the edge's own 3-D curve */
+    int64_t reserved[3];
 } mio_project_to_cad_report;
 
 MIO_API void mio_project_to_cad_opts_init(mio_project_to_cad_opts* opts);
@@ -5952,7 +5961,9 @@ MIO_API void mio_project_to_cad_opts_init(mio_project_to_cad_opts* opts);
  * (`cad:face` on triangles and quads, `cad:edge` on lines, as
  * mio_mesh_cad_surface writes them) of the B-rep in `info` (a "cad_json",
  * "step" or "iges" mio_format_info): a point on one edge's lines onto that
- * edge, on two or more (a corner) onto the lowest, a point whose cells name
+ * edge (its own 3-D curve where the model gives one its trim follows, else
+ * the trim lifted through its face), on two or more (a corner) onto the
+ * lowest, a point whose cells name
  * one face onto that face's surface (Newton point inversion); a point on two
  * faces and no edge stays. A projection outside its face's trims is kept and
  * counted. Data and regions pass through; only coordinates change.
@@ -5972,6 +5983,60 @@ MIO_API mio_mesh* mio_project_to_cad(const mio_mesh* mesh, const mio_format_info
  */
 MIO_API int64_t mio_project_to_cad_outside_trim(int64_t* points, int64_t n);
 
+/* ---- error_size (roadmap 6.10.2) ---------------------------------------- */
+
+/**
+ * Options of mio_error_size. Initialise with mio_error_size_opts_init.
+ * 80 bytes, with a reserved tail.
+ */
+typedef struct mio_error_size_opts {
+    /** The one-component cell_data indicator; NULL is "error:zz". */
+    const char* error_array;
+    /** The target global error, in the indicator's norm (positive). */
+    double target_error;
+    /** The indicator's rate in the cell size (positive; 1 for linear cells). */
+    double order;
+    /** The sizes' bounds; 0 is none. */
+    double min_size;
+    double max_size;
+    /** The point_data array written; NULL is "size". */
+    const char* output;
+    /** Nonzero to replace an existing array of that name. */
+    int32_t overwrite;
+    int32_t reserved_pad;
+    int64_t reserved[3];
+} mio_error_size_opts;
+
+/** What mio_error_size did. 64 bytes, with a reserved tail. */
+typedef struct mio_error_size_report {
+    int64_t num_cells;   /**< cells evaluated */
+    int64_t num_skipped; /**< cells whose indicator or size is not finite */
+    int64_t num_clamped; /**< cell sizes the bounds clamped */
+    double min_size;     /**< the least point size written */
+    double max_size;     /**< the greatest */
+    int64_t reserved[3];
+} mio_error_size_report;
+
+MIO_API void mio_error_size_opts_init(mio_error_size_opts* opts);
+
+/**
+ * A per-point size field from a per-cell error indicator (what
+ * mio_estimate_error writes): the adaptive procedure of Zienkiewicz and Zhu
+ * (1987). With N cells evaluated and a target global error eta, a cell of
+ * diameter h_K and indicator eta_K asks h_K (eta / sqrt(N) / eta_K)^(1/order),
+ * clamped to [min_size, max_size]; a point takes the least of its cells' (NaN
+ * where none is evaluated). The result feeds mio_mesh_cad_surface2's
+ * `background`. Geometry, regions and arrays pass through.
+ *
+ * @param opts   must name a positive target_error (mio_error_size_opts_init
+ *               leaves it 0).
+ * @param report out, nullable.
+ * @return the mesh with the size array (free with mio_mesh_free), or NULL on
+ *         failure.
+ */
+MIO_API mio_mesh* mio_error_size(const mio_mesh* mesh, const mio_error_size_opts* opts,
+                                 mio_error_size_report* report);
+
 /* ---- boundary_layer (roadmap 6.9) --------------------------------------- */
 
 /** Options of mio_boundary_layer; initialise with mio_boundary_layer_opts_init. 64 bytes. */
@@ -5983,8 +6048,23 @@ typedef struct mio_boundary_layer_opts {
     int32_t reverse;           /**< nonzero: grow against the faces' normals */
     int32_t smooth_iterations; /**< (init: 5) */
     int32_t max_shrink;        /**< halvings before a point collapses (init: 6) */
-    int64_t reserved[3];
+    /** How a point whose cells fold gives way: MIO_BOUNDARY_LAYER_COLLAPSE_POINTS
+     *  (init) or MIO_BOUNDARY_LAYER_COLLAPSE_LAYERS (was reserved). */
+    int32_t collapse;
+    /** Laplacian passes over the growth directions, 0 to 1000 (init: 0; was reserved). */
+    int32_t normal_smooth_iterations;
+    /** Nonzero: test the last layer's faces against each other and the surface
+     *  (init: 1; was reserved). */
+    int32_t front_check;
+    int32_t reserved_pad;
+    int64_t reserved[1];
 } mio_boundary_layer_opts;
+
+/** mio_boundary_layer_opts.collapse. */
+typedef enum mio_boundary_layer_collapse {
+    MIO_BOUNDARY_LAYER_COLLAPSE_POINTS = 0, /**< layers halved, then the point collapsed */
+    MIO_BOUNDARY_LAYER_COLLAPSE_LAYERS = 1  /**< the top layer dropped: fewer layers there */
+} mio_boundary_layer_collapse;
 
 /** What mio_boundary_layer did. 128 bytes. */
 typedef struct mio_boundary_layer_report {
@@ -6001,7 +6081,13 @@ typedef struct mio_boundary_layer_report {
     double max_thickness;
     int32_t cap_closed;
     int32_t reserved_pad;
-    int64_t reserved[4];
+    /** With MIO_BOUNDARY_LAYER_COLLAPSE_LAYERS, the points that grow fewer
+     *  layers than asked (but some; was reserved). */
+    int64_t num_fewer_layers;
+    /** Pairs of last-layer faces found crossing or touching another face, over
+     *  every round of the front test (was reserved). */
+    int64_t num_front_crossings;
+    int64_t reserved[2];
 } mio_boundary_layer_report;
 
 MIO_API void mio_boundary_layer_opts_init(mio_boundary_layer_opts* opts);
@@ -6020,6 +6106,71 @@ MIO_API void mio_boundary_layer_opts_init(mio_boundary_layer_opts* opts);
  */
 MIO_API mio_mesh* mio_boundary_layer(const mio_mesh* mesh, const mio_boundary_layer_opts* opts,
                                      mio_boundary_layer_report* report);
+
+/* ---- tetrahedralize (roadmap 6.7) --------------------------------------- */
+
+/** mio_tetrahedralize_opts.backend. */
+typedef enum mio_tetrahedralize_backend {
+    MIO_TETRAHEDRALIZE_BACKEND_AUTO = 0,  /**< the first backend built in */
+    MIO_TETRAHEDRALIZE_BACKEND_NETGEN = 1 /**< Netgen's nglib (MESHIOPLUSPLUS_WITH_NETGEN) */
+} mio_tetrahedralize_backend;
+
+/**
+ * Options of mio_tetrahedralize. Initialise with mio_tetrahedralize_opts_init.
+ * 80 bytes, with a reserved tail.
+ */
+typedef struct mio_tetrahedralize_opts {
+    double max_size;   /**< the largest edge asked of the tetrahedra (0: none) */
+    double max_volume; /**< the largest volume asked of a tetrahedron (0: none) */
+    double grading;    /**< how fast the size grows away from the surface, [0, 1] (init: 0.3) */
+    int64_t max_cells; /**< refuse a result of more tetrahedra (init: 50000000) */
+    /** The cell data naming each triangle's CAD face; NULL is "cad:face". */
+    const char* face_array;
+    int32_t backend;        /**< a mio_tetrahedralize_backend (init: AUTO) */
+    int32_t optimize_steps; /**< passes of the backend's volume optimisation, 0 to 100 (init: 3) */
+    int64_t reserved[4];
+} mio_tetrahedralize_opts;
+
+/** What mio_tetrahedralize did. 128 bytes, with a reserved tail. */
+typedef struct mio_tetrahedralize_report {
+    int64_t num_tetrahedra;
+    int64_t num_points;     /**< every point of the result */
+    int64_t num_new_points; /**< of those, inside the surface */
+    int64_t num_regions;    /**< enclosed regions, one per shell */
+    int64_t num_boundary_triangles;
+    double hausdorff_to_surface; /**< zero when the boundary is preserved */
+    double min_dihedral_deg;
+    double max_dihedral_deg;
+    double volume;              /**< the tetrahedra's total */
+    int32_t boundary_preserved; /**< every surface triangle and point kept exactly */
+    int32_t backend;            /**< the mio_tetrahedralize_backend that ran */
+    int64_t reserved[6];
+} mio_tetrahedralize_report;
+
+MIO_API void mio_tetrahedralize_opts_init(mio_tetrahedralize_opts* opts);
+
+/** Nonzero when this library was built with a mio_tetrahedralize backend
+ *  (Netgen, -DMESHIOPLUSPLUS_WITH_NETGEN=ON). */
+MIO_API int mio_has_netgen(void);
+
+/**
+ * Fill the closed, manifold, consistently oriented triangle surface `mesh`
+ * (a mio_mesh_cad_surface result, say) with tetrahedra, its triangles and
+ * points kept exactly: each connected shell bounds a region (a box inside a
+ * box gives two), meshed on its own so neighbouring regions conform. The
+ * result holds the input's points first, then the new interior points; a
+ * `tetra` block and the surface's `triangle` block; the cell data
+ * `tetrahedralize:region` and, when the surface carries `face_array`, that
+ * array on the triangles. Without a backend (mio_has_netgen() is 0) it fails
+ * naming MESHIOPLUSPLUS_WITH_NETGEN; an open, non-manifold or misoriented
+ * surface fails by name.
+ *
+ * @param opts   NULL for the defaults.
+ * @param report out, nullable.
+ * @return the volume mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_tetrahedralize(const mio_mesh* mesh, const mio_tetrahedralize_opts* opts,
+                                     mio_tetrahedralize_report* report);
 
 /** v17.20.0: how many corners this thread's last call lopped (6.2.3). */
 MIO_API int64_t mio_mesh_cad_surface_num_lopped_corners(void);

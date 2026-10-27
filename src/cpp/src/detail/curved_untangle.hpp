@@ -18,8 +18,8 @@
 
 /**
  * @file detail/curved_untangle.hpp
- * @brief Untangling curved surface triangles by moving their interior nodes
- * on the surface (roadmap 6.6.3).
+ * @brief Untangling curved surface triangles and quadrilaterals by moving
+ * their nodes on the surface (roadmap 6.6.3).
  *
  * A curved element whose Jacobian is not positive everywhere (the Bézier
  * check of `curved_triangle.hpp`) loses the order its nodes bought if it is
@@ -27,11 +27,13 @@
  * untangling of curvilinear meshes", J. Comput. Phys. 254, 2013) instead move
  * the high-order nodes that are not on the boundary to raise the worst
  * scaled Jacobian of the elements around them, the boundary nodes staying on
- * the CAD. Here the free nodes are a face's own (interior edges' nodes and
- * cubic centres) and each moves in the face's parameters, lifted by the
- * surface, so every node stays on the geometry by construction; the measure
- * raised is `curved_triangle_scaled_bound`, a lower bound of
- * `min J / max |J|`. The optimiser is a deterministic Gauss-Seidel pattern
+ * the CAD. Here the free nodes are a face's own (interior edges' nodes,
+ * cubic centres and, for split quads, the corners inside the face) and
+ * each moves in the face's parameters, lifted by the surface, so every node
+ * stays on the geometry by construction; the measure raised is
+ * `curved_triangle_scaled_bound` (`curved_quad_scaled_bound` for a quad), a
+ * lower bound of `min J / max |J|`. Any node of an element may be free,
+ * corners included. The optimiser is a deterministic Gauss-Seidel pattern
  * search (the precedent of `hex_untangle`), not the paper's barrier method:
  * each free node of an invalid element, in ascending id order, takes the
  * best of eight steps around it that raises the least bound of its elements,
@@ -54,12 +56,24 @@
 
 namespace meshioplusplus::detail {
 
-/// One element: its node ids in the `triangle6` / `triangle10` layout, and
-/// the face's normal the sign of its Jacobian is taken against.
+/// One element: its node ids in the `triangle6` / `triangle10` layout, or
+/// with `mQuad` in the `quad9` / `quad16` one (`curved_quad.hpp`), and the
+/// face's normal the sign of its Jacobian is taken against.
 struct CurvedUntangleElement {
-    std::array<std::int64_t, 10> mNodes{};
+    std::array<std::int64_t, 16> mNodes{};
     CurvedVec3 mNormal{0.0, 0.0, 0.0};
+    bool mQuad = false;
 };
+
+/// A curved triangle as an element to untangle.
+inline CurvedUntangleElement curved_untangle_triangle(const std::array<std::int64_t, 10>& rNodes,
+                                                      const CurvedVec3& rNormal) {
+    CurvedUntangleElement e;
+    for (std::size_t i = 0; i < rNodes.size(); ++i)
+        e.mNodes[i] = rNodes[i];
+    e.mNormal = rNormal;
+    return e;
+}
 
 struct CurvedUntangleReport {
     std::int64_t mInvalidBefore = 0;  ///< elements not proved valid on entry

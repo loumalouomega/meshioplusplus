@@ -595,7 +595,8 @@ TEST(MeshCadVirtualFaces, ASliverStripIsMeshedWithItsNeighbour) {
 
 // A sliver at a crease (its far neighbour turned up 90 degrees) still
 // merges with the flat one; folded on both sides, it is declined, and the
-// mesh is the option off's. Order 2 is refused.
+// mesh is the option off's. Order 2 merges too (roadmap 6.5.2): its nodes
+// lie on the strip's planes.
 TEST(MeshCadVirtualFaces, ACreaseIsDeclinedAndOptionsAreChecked) {
     const double h = 0.2;
     const mio::BrepInfo b = sliver_strip(h / 20.0, true);
@@ -613,8 +614,9 @@ TEST(MeshCadVirtualFaces, ACreaseIsDeclinedAndOptionsAreChecked) {
     }
     MeshCadSurfaceOptions o = quality(h, 0.0);
     o.mOrder = 2;
-    EXPECT_THROW((void)mio::mesh_cad_surface(b, o, mio::MeshCadSizeSources{}, extras),
-                 std::invalid_argument);
+    const auto r2 = mio::mesh_cad_surface(b, o, mio::MeshCadSizeSources{}, extras);
+    EXPECT_EQ(r2.mNumFailed, 0);
+    EXPECT_EQ(r2.mMesh.Cells(0).Type(), "triangle6");
 }
 
 // Roadmap 6.5.1: two stacked bands whose shared rim's uses start 1e-5 apart
@@ -801,6 +803,22 @@ TEST(MeshCadReparam, ASeamlessBandIsFlattenedAsADisc) {
         EXPECT_LT(r.mNumPoints, plain.mNumPoints) << h;
         // The frustum's area, pi sqrt 2 (Z1^2 - Z0^2), within the chordal error.
         EXPECT_NEAR(angle_and_area(r.mMesh)[1], kPi * std::sqrt(2.0) * (1.0 - 0.01), 4.0 * h * h);
+    }
+    // Curved elements on the flattened band (roadmap 6.4.4): the nodes sit at
+    // the flattening's coordinates, lifted through the coarse mesh, so every
+    // node lies on the cone (x^2 + y^2 = z^2), and every element is proved
+    // valid: none is straightened.
+    for (const int order : {2, 3}) {
+        MeshCadSurfaceOptions o = quality(0.1, 25.0);
+        o.mReparamConditionNumber = 4.0;
+        o.mOrder = order;
+        const auto r = run(band, o);
+        EXPECT_EQ(r.mNumFailed, 0);
+        EXPECT_EQ(r.mMesh.Cells(0).Type(), order == 2 ? "triangle6" : "triangle10");
+        EXPECT_EQ(r.mNumCurvedStraightened, 0) << order;
+        const double* x = r.mMesh.Points().As<double>();
+        for (std::size_t p = 0; p < r.mMesh.NumPoints(); ++p)
+            EXPECT_NEAR(std::hypot(x[3 * p], x[3 * p + 1]), x[3 * p + 2], 1e-9) << p;
     }
 }
 

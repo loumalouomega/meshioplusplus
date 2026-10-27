@@ -320,3 +320,134 @@ TEST(BoundaryLayer, RefusalsAreByName) {
     tet.AddCellBlock("tetra", std::move(c));
     EXPECT_THROW((void)mio::boundary_layer(tet, layers(0.01, 3)), std::invalid_argument);
 }
+
+namespace {
+
+/// A surface of two triangle squares: the unit square at z = 0 facing +z,
+/// and a small one, [0.3, 0.6]^2 at z = Z, facing it (-z).
+mio::Mesh plate_and_lid(double Z) {
+    mio::Mesh m;
+    mio::NDArray p = mio::NDArray::Uninit(mio::DType::Float64, {8, 3});
+    const double coords[24] = {0,   0,   0, 1,   0,   0, 1,   1,   0, 0,   1,   0,
+                               0.3, 0.3, Z, 0.6, 0.3, Z, 0.6, 0.6, Z, 0.3, 0.6, Z};
+    std::copy(coords, coords + 24, p.As<double>());
+    m.AssignPoints(std::move(p));
+    mio::NDArray c = mio::NDArray::Uninit(mio::DType::Int64, {4, 3});
+    const std::int64_t tris[12] = {0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6};
+    std::copy(tris, tris + 12, c.As<std::int64_t>());
+    m.AddCellBlock("triangle", std::move(c));
+    return m;
+}
+
+/// The highest point of the layers grown from the first four points.
+double top_of_plate(const mio::Mesh& rM) {
+    const double* x = rM.Points().As<double>();
+    double top = 0.0;
+    for (std::size_t i = 0; i < rM.NumPoints(); ++i) {
+        const double* p = x + 3 * i;
+        const bool over_plate = p[2] < 0.49 && (p[0] < 0.29 || p[0] > 0.61 || p[1] < 0.29 ||
+                                                p[1] > 0.61 || std::fabs(p[2]) < 1.0);
+        if (over_plate && (std::fabs(p[0]) < 1e-12 || std::fabs(p[0] - 1.0) < 1e-12))
+            top = std::max(top, p[2]);
+    }
+    return top;
+}
+
+}  // namespace
+
+// Roadmap 6.9.1: the front test. The plate's corners' rays miss the small
+// lid above it, so without the test the plate's layers (1.0 thick) pass
+// through the lid at z = 0.5; with it, the plate's last layer crosses the
+// lid's faces, its points give way until it no longer does, and the lid's
+// own layers (cut short by their rays) do not meet the plate's.
+TEST(BoundaryLayer, TheFrontTestStopsLayersTheRaysMiss) {
+    const mio::Mesh s = plate_and_lid(0.5);
+    auto o = layers(0.2, 5, 1.0);
+    o.mSmoothIterations = 0;
+    o.mFrontCheck = false;
+    const auto off = mio::boundary_layer(s, o);
+    o.mFrontCheck = true;
+    const auto on = mio::boundary_layer(s, o);
+    std::printf("[6.9.1] plate under a lid: thickest %.3f without the front test, %.3f with "
+                "(%lld crossings)\n",
+                off.mMaxThickness, on.mMaxThickness,
+                static_cast<long long>(on.mNumFrontCrossings));
+    EXPECT_EQ(off.mNumFrontCrossings, 0);
+    EXPECT_NEAR(off.mMaxThickness, 1.0, 1e-12);
+    EXPECT_GT(on.mNumFrontCrossings, 0);
+    EXPECT_LT(on.mMaxThickness, 0.5);
+    EXPECT_GT(on.mMinScaledJacobian, 0.0);
+    // Deterministic.
+    EXPECT_EQ(digest(mio::boundary_layer(s, o).mMesh), digest(on.mMesh));
+    // A lid far above: nothing crosses, and the mesh is the test off's.
+    const mio::Mesh far = plate_and_lid(5.0);
+    o.mFrontCheck = false;
+    const std::uint64_t ref = digest(mio::boundary_layer(far, o).mMesh);
+    o.mFrontCheck = true;
+    const auto r = mio::boundary_layer(far, o);
+    EXPECT_EQ(r.mNumFrontCrossings, 0);
+    EXPECT_EQ(digest(r.mMesh), ref);
+}
+
+// Roadmap 6.9.1: fewer layers at a point (Garimella and Shephard 2000). The
+// sweep alone: a point whose offsets stop growing after one level grows one
+// layer, and its corner of the cells above is collapsed, a pyramid per
+// layer above the first, every cell valid.
+TEST(BoundaryLayer, ThePointThatStopsGrowingLeavesPyramidsAbove) {
+    const std::vector<double> x = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0};
+    mdt::LayerSweepInput in;
+    in.pPoints = x.data();
+    in.mNumPoints = 4;
+    in.mFaces = {{0, 1, 2, -1}, {0, 2, 3, -1}};
+    in.mLayers = 3;
+    in.mDirections = {0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1};
+    in.mOffsets = {0.1, 0.1, 0.1, 0.1, 0.2, 0.3, 0.1, 0.2, 0.3, 0.1, 0.2, 0.3};
+    const auto r = mdt::layer_sweep(in);
+    EXPECT_EQ(r.mWedges.size(), 2u);    // the first layer
+    EXPECT_EQ(r.mPyramids.size(), 4u);  // two per layer above
+    for (const auto& r_c : r.mWedges)
+        EXPECT_GT(mdt::layer_cell_scaled_jacobian(r.mPoints.data(), r_c, 6), 0.0);
+    for (const auto& r_c : r.mPyramids)
+        EXPECT_GT(mdt::layer_cell_scaled_jacobian(r.mPoints.data(), r_c, 5), 0.0);
+    // The cap at point 0 is its first level's copy.
+    EXPECT_EQ(r.mCapTriangles.size(), 2u);
+    // With collapse = layers the plate under the lid keeps its first layers
+    // whole and drops its top ones, where halving thins every layer.
+    const mio::Mesh s = plate_and_lid(0.5);
+    auto o = layers(0.2, 5, 1.0);
+    o.mSmoothIterations = 0;
+    const auto halved = mio::boundary_layer(s, o);
+    o.mCollapse = mio::BoundaryLayerCollapse::Layers;
+    const auto fewer = mio::boundary_layer(s, o);
+    std::printf("[6.9.1] plate under a lid: %lld points with fewer layers, thickest %.3f, "
+                "%lld pyramids and %lld tetrahedra\n",
+                static_cast<long long>(fewer.mNumFewerLayers), fewer.mMaxThickness,
+                static_cast<long long>(fewer.mNumPyramids),
+                static_cast<long long>(fewer.mNumTetrahedra));
+    EXPECT_GT(fewer.mNumFewerLayers, 0);
+    EXPECT_LT(fewer.mMaxThickness, 0.5);
+    EXPECT_GT(fewer.mMinScaledJacobian, 0.0);
+    // Its layers that are kept are 0.2 thick, a multiple of the first.
+    EXPECT_NEAR(std::fmod(fewer.mMaxThickness + 1e-12, 0.2), 0.0, 1e-9);
+    EXPECT_NE(digest(fewer.mMesh), digest(halved.mMesh));
+    o.mCollapse = static_cast<mio::BoundaryLayerCollapse>(9);
+    EXPECT_THROW((void)mio::boundary_layer(s, o), std::invalid_argument);
+}
+
+// Roadmap 6.9.1: smoothed normals. On the cube's coarse skin the most
+// normal normals turn by 45 degrees from a face's middle to its edge;
+// smoothing turns them less from point to point, every cell stays valid,
+// and with no pass the mesh is the plain one.
+TEST(BoundaryLayer, SmoothedNormalsTurnLessFromPointToPoint) {
+    const mio::Mesh s = skin(brep_solids::box(), 0.25);
+    auto o = layers(0.02, 3);
+    const auto plain = mio::boundary_layer(s, o);
+    o.mNormalSmoothIterations = 10;
+    const auto smooth = mio::boundary_layer(s, o);
+    EXPECT_GT(smooth.mMinScaledJacobian, 0.0);
+    EXPECT_NE(digest(smooth.mMesh), digest(plain.mMesh));
+    o.mNormalSmoothIterations = 0;
+    EXPECT_EQ(digest(mio::boundary_layer(s, o).mMesh), digest(plain.mMesh));
+    o.mNormalSmoothIterations = -1;
+    EXPECT_THROW((void)mio::boundary_layer(s, o), std::invalid_argument);
+}

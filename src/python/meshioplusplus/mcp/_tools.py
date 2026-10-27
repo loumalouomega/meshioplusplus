@@ -76,6 +76,7 @@ from .. import (
     disk,
     distance_to_surface,
     edit_regions,
+    error_size,
     estimate_error,
     extract_skin,
     extract_surface,
@@ -1853,7 +1854,9 @@ def tool_mesh_cad_surface(
     refined to a minimum angle, graded at poles, smoothed, and curved (order
     2 or 3, folded elements untangled); faces with unusable parameters
     flattened, slivers merged, the model's own tolerances accepted, acute
-    corners lopped, and the triangles recombined into quads."""
+    corners lopped, and the triangles recombined into quads (curved quad9 or
+    quad16 at order 2 or 3). Reports min_metric_angle with a metric
+    background."""
     mesh = _load(input_path, input_format)
     out, report = mesh_cad_surface(
         mesh,
@@ -3313,6 +3316,46 @@ def tool_estimate_error(
     )
 
 
+def tool_error_size(
+    input_path,
+    output_path,
+    target_error,
+    input_format=None,
+    output_format=None,
+    error_array="error:zz",
+    order=1.0,
+    min_size=0.0,
+    max_size=0.0,
+    output="size",
+    overwrite=False,
+):
+    """A per-point size field from a per-cell error indicator (what
+    estimate_error writes) by the Zienkiewicz-Zhu adaptive procedure, for
+    mesh_cad_surface's background. Returns num_cells, num_skipped,
+    num_clamped, min_size and max_size alongside the mesh summary."""
+    mesh = _load(input_path, input_format)
+    out, report = error_size(
+        mesh,
+        error_array,
+        target_error=target_error,
+        order=order,
+        min_size=min_size,
+        max_size=max_size,
+        output=output,
+        overwrite=overwrite,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_cells=int(report["num_cells"]),
+        num_skipped=int(report["num_skipped"]),
+        num_clamped=int(report["num_clamped"]),
+        min_size=float(report["min_size"]),
+        max_size=float(report["max_size"]),
+    )
+
+
 def tool_transform(
     input_path,
     output_path,
@@ -3895,7 +3938,7 @@ def tool_project_to_cad(
     """Move a mesh's points back onto the CAD faces and edges its cells name
     (cad:face / cad:edge, as mesh_cad_surface writes them) of the model at
     model_path (CAD JSON, STEP or IGES). Returns the counts (num_projected,
-    num_on_edges, num_corners, num_ambiguous, num_too_far, num_failed,
+    num_on_edges, num_on_curves, num_corners, num_ambiguous, num_too_far, num_failed,
     num_outside_trim), max_move and outside_trim alongside the mesh summary."""
     mesh = _load(input_path, input_format)
     model = _load(model_path, None)
@@ -5467,6 +5510,10 @@ TOOL_REGISTRY = OrderedDict(
         (
             "estimate_error",
             {"fn": tool_estimate_error, "wraps": ("estimate_error",), "gated": None},
+        ),
+        (
+            "error_size",
+            {"fn": tool_error_size, "wraps": ("error_size",), "gated": None},
         ),
         ("grid", {"fn": tool_grid, "wraps": ("grid",), "gated": None}),
         ("rectangle", {"fn": tool_rectangle, "wraps": ("rectangle",), "gated": None}),

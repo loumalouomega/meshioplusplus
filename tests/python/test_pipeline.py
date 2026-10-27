@@ -332,6 +332,46 @@ def test_estimate_error_pipeline_step(settings_env):
         assert "error:marked" in out_cpp.cell_data
 
 
+def test_error_size_pipeline_step(settings_env):
+    """ErrorSize (roadmap 6.10.2) after EstimateError: the indicator becomes a
+    per-point size array in both engines, which agree to rounding (the
+    indicator itself only agrees to a tolerance, see
+    test_estimate_error_pipeline_step)."""
+    settings = make_settings(
+        settings_env,
+        [
+            {"Op": "EstimateError", "Array": "temperature"},
+            {"Op": "ErrorSize", "TargetError": 1e-3, "MinSize": 0.05, "Output": "h"},
+        ],
+    )
+    report = meshioplusplus.run_pipeline(settings)
+    step = report["steps"][1]
+    assert step["op"] == "ErrorSize"
+    for key in ("NumCells", "NumSkipped", "NumClamped", "MinSize", "MaxSize"):
+        assert key in step
+    out = meshioplusplus.read(settings_env["out"])
+    assert "h" in out.point_data
+    finite = np.isfinite(out.point_data["h"])
+    assert np.all(out.point_data["h"][finite] >= 0.05)
+
+    if hasattr(_core, "run_pipeline_json"):
+        settings["Output"]["Path"] = str(settings_env["tmp"] / "out_cpp.vtu")
+        cpp_report = _core.run_pipeline_json(json.dumps(settings))
+        cpp_step = cpp_report["steps"][1]
+        assert cpp_step["op"] == "ErrorSize"
+        assert cpp_step["NumCells"] == step["NumCells"]
+        assert cpp_step["MinSize"] == pytest.approx(step["MinSize"], rel=1e-6)
+        out_cpp = meshioplusplus.read(settings["Output"]["Path"])
+        np.testing.assert_allclose(
+            out_cpp.point_data["h"], out.point_data["h"], rtol=1e-6, equal_nan=True
+        )
+
+    # A missing TargetError is refused by name.
+    bad = make_settings(settings_env, [{"Op": "ErrorSize"}])
+    with pytest.raises(ValueError, match="target_error"):
+        meshioplusplus.run_pipeline(bad)
+
+
 def test_hessian_pipeline_step(settings_env):
     """Hessian dispatches generically off the same _OP_TABLE/
     pipeline_op_table pair test_op_table_matches_core pins. Unlike

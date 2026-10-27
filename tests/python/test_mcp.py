@@ -2268,11 +2268,46 @@ def test_project_to_cad_tool(tmp_path):
     assert report["num_projected"] == len(smoothed.points)
     assert report["num_ambiguous"] == report["num_failed"] == 0
     assert report["max_move"] > 1e-3
+    assert 0 <= report["num_on_curves"] <= report["num_on_edges"]
     assert report["outside_trim"] == []
     back = meshioplusplus.read(out)
     assert np.allclose(np.linalg.norm(back.points, axis=1), 1.0, atol=1e-12)
     with pytest.raises(ValueError, match="trim_samples"):
         _tools.tool_project_to_cad(str(shrunk), str(model), str(out), trim_samples=1)
+
+
+def test_error_size_tool(tmp_path):
+    """Roadmap 6.10.2: estimate_error's indicator becomes a size field that
+    mesh_cad_surface's background reads."""
+    if not hasattr(_core, "error_size"):
+        pytest.skip("core predates error_size")
+    model = pathlib.Path(__file__).parent / "meshes" / "cad_json" / "sphere.cad.json"
+    meshed = tmp_path / "sphere.vtu"
+    _tools.tool_mesh_cad_surface(str(model), str(meshed), 0.3, edges=False)
+    mesh = meshioplusplus.read(meshed)
+    mesh.point_data["f"] = np.exp(3.0 * mesh.points[:, 2])
+    with_field = tmp_path / "field.vtu"
+    meshioplusplus.write(with_field, mesh)
+    indicated = tmp_path / "indicated.vtu"
+    _tools.tool_estimate_error(str(with_field), str(indicated), "f")
+    sized = tmp_path / "sized.vtu"
+    report = _tools.tool_error_size(
+        str(indicated), str(sized), 0.05, min_size=0.05, max_size=0.5
+    )
+    assert report["num_cells"] > 0 and report["num_skipped"] == 0
+    assert 0.05 <= report["min_size"] <= report["max_size"] <= 0.5
+    back = meshioplusplus.read(sized)
+    assert np.all((back.point_data["size"] >= 0.05) & (back.point_data["size"] <= 0.5))
+    remeshed = tmp_path / "remeshed.vtu"
+    adapted = _tools.tool_mesh_cad_surface(
+        str(model), str(remeshed), 0.5, background_path=str(sized)
+    )
+    assert adapted["num_failed"] == 0
+    assert adapted["min_metric_angle"] == 0.0
+    with pytest.raises(ValueError, match="target_error"):
+        _tools.tool_error_size(str(indicated), str(sized), 0.0)
+    with pytest.raises(ValueError, match="error:zz"):
+        _tools.tool_error_size(str(with_field), str(sized), 0.05)
 
 
 def test_mesh_cad_surface_tool(tmp_path):

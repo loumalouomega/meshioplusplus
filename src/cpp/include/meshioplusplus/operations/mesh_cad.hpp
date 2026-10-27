@@ -515,14 +515,17 @@ struct MeshCadSurfaceExtrasReport {
     std::int64_t mNumQuads = 0;
     std::int64_t mNumLeftoverTriangles = 0;
     double mMinQuadScaledJacobian = 0.0;
+    /// With a metric source (6.10.2): the least corner angle of a cell in
+    /// the metric at its centroid, in degrees, the measure refinement
+    /// judges by (the result's own angles are the surface's); 0 without.
+    double mMinMetricAngleDeg = 0.0;
 };
 
 /**
  * @brief `mesh_cad_surface` with the extras of v17.20.0 (roadmap 6.5.1,
  * 6.5.2, 6.2.3) beside the sizes, and the reparametrised faces (6.4.4) in its
  * report.
- * @throws std::invalid_argument as the four-argument overload, and for
- *         `mVirtualFaces` with `mOrder` > 1.
+ * @throws std::invalid_argument as the four-argument overload.
  */
 MESHIOPLUSPLUS_API MeshCadSurfaceResult mesh_cad_surface(
     const BrepInfo& rBrep, const MeshCadSurfaceOptions& rOptions,

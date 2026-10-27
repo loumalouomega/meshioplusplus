@@ -34,6 +34,7 @@ set(MESHIOPLUSPLUS_WITH_LZ4 @_mio_has_LZ4@)
 set(MESHIOPLUSPLUS_WITH_LZMA @_mio_has_LZMA@)
 set(MESHIOPLUSPLUS_WITH_BZIP2 @_mio_has_BZIP2@)
 set(MESHIOPLUSPLUS_WITH_KAHIP @_mio_has_KAHIP@)
+set(MESHIOPLUSPLUS_WITH_NETGEN @_mio_has_NETGEN@)
 set(MESHIOPLUSPLUS_WITH_ADIOS2 @_mio_has_ADIOS2@)
 set(MESHIOPLUSPLUS_WITH_TECIO @_mio_has_TECIO@)
 set(MESHIOPLUSPLUS_WITH_OCCT @_mio_has_OCCT@)
@@ -103,6 +104,12 @@ if(@MESHIOPLUSPLUS_INSTALL_CPP@)
     # point KAHIP_ROOT at an install.
     list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}")
     find_dependency(KaHIP)
+  endif()
+  if(MESHIOPLUSPLUS_WITH_NETGEN)
+    # FindNetgen.cmake is installed beside this file, as FindKaHIP.cmake is;
+    # point NETGEN_ROOT at an install, or use the system's libnglib-dev.
+    list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}")
+    find_dependency(Netgen)
   endif()
   # HDF5 and MPI both reach the consumer as imported targets (HDF5::HDF5,
   # MPI::MPI_C), which is what makes this install relocatable -- no absolute

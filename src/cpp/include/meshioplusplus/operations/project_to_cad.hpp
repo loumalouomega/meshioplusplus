@@ -28,8 +28,11 @@
  * surfaces; `project_to_cad` puts them back:
  *
  *  - a point on the lines of one edge goes to the nearest point of that
- *    edge (its first use's trim curve lifted through its face's surface:
- *    a scan of 64 steps, then Newton on `(X - p) . X' = 0`);
+ *    edge: its own 3-D curve (`BrepEdge::mCurve`) where the model gives one
+ *    that its first use's trace follows (within a millionth of its length),
+ *    else that trace, its trim curve lifted through its face's surface (a
+ *    scan of 64 steps, then Newton on `(X - p) . X' = 0`); a curve the
+ *    trace leaves is warned;
  *  - a point on the lines of two or more edges is a corner of the model:
  *    it goes to the nearest point of the lowest of them, which is the edge's
  *    end for a point near it, and is counted;
@@ -85,6 +88,7 @@ struct ProjectToCadResult {
     std::int64_t mNumFailed = 0;       ///< whose face or edge is unusable: left
     std::int64_t mNumOutsideTrim = 0;  ///< projected outside their face's trims
     double mMaxMove = 0.0;             ///< the largest distance a point moved
+    std::int64_t mNumOnCurves = 0;     ///< of those on edges, onto an edge's 3-D curve
     /// The points projected outside their face's trims, ascending.
     std::vector<std::int64_t> mOutsideTrim;
     std::vector<std::string> mWarnings;

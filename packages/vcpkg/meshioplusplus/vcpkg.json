@@ -92,6 +92,9 @@
     "kahip": {
       "description": "KaHIP partition backend (no vcpkg port exists: supply an install and set KAHIP_ROOT)"
     },
+    "netgen": {
+      "description": "Netgen tetrahedralize backend (LGPL-2.1, linked dynamically; no vcpkg port exists: supply an install and set NETGEN_ROOT)"
+    },
     "occt": {
       "description": "fit_cad: analytic CAD faces sewn into a STEP solid through OpenCASCADE (LGPL-2.1 with the OCCT exception)",
       "dependencies": [

@@ -78,8 +78,9 @@ def project_to_cad_cmd(args):
     elif not args.quiet:
         print(
             f"projected {report['num_projected']} point(s) "
-            f"({report['num_on_edges']} on edges, {report['num_corners']} at "
-            f"corners), largest move {report['max_move']:.6g}; "
+            f"({report['num_on_edges']} on edges, {report['num_on_curves']} onto "
+            f"their curves, {report['num_corners']} at corners), largest move "
+            f"{report['max_move']:.6g}; "
             f"{report['num_ambiguous']} ambiguous, {report['num_too_far']} too far, "
             f"{report['num_failed']} failed, {report['num_outside_trim']} outside "
             "their trims"

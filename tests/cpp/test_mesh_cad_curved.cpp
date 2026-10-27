@@ -323,17 +323,26 @@ TEST(MeshCadCurved, UntanglingKeepsFoldedElementsCurved) {
         omp_set_num_threads(saved);
 #endif
     }
-    // A fold at a corner, where two boundary arcs meet nearly tangent (the
-    // cylinder's caps at h = 1.75, above), is set by the arc bulging past
-    // the element: neither a face's nodes nor the edge's, sliding along the
-    // arc, bend it back, so the mesh is the straightened one, byte for
-    // byte, and nothing is reported untangled.
+    // A fold at a corner where an element's two sides run along one edge
+    // (the cylinder's caps at h = 1.75, above: each cap is two triangles
+    // with every corner on its rim) is a straight angle there, where the
+    // Jacobian vanishes whatever the nodes do: with untangling the face is
+    // meshed again with an interior grid, so every element has a corner
+    // inside it, and none is straightened.
     const mio::BrepInfo cyl = brep_solids::capped_cylinder(1.0, 2.0);
     mio::MeshCadSurfaceExtrasReport xc;
     const auto rc =
         mio::mesh_cad_surface(cyl, curved(1.75, 3), mio::MeshCadSizeSources{}, ex, nullptr, &xc);
-    EXPECT_EQ(xc.mNumUntangled, 0);
-    EXPECT_EQ(digest(rc.mMesh), digest(mio::mesh_cad_surface(cyl, curved(1.75, 3)).mMesh));
+    const auto pc = mio::mesh_cad_surface(cyl, curved(1.75, 3));
+    std::printf("[6.6.3] capped cylinder h 1.75 order 3: %lld straightened, %lld with untangling "
+                "(%lld triangles against %lld)\n",
+                static_cast<long long>(pc.mNumCurvedStraightened),
+                static_cast<long long>(rc.mNumCurvedStraightened),
+                static_cast<long long>(rc.mNumTriangles), static_cast<long long>(pc.mNumTriangles));
+    EXPECT_GT(pc.mNumCurvedStraightened, 0);
+    EXPECT_EQ(rc.mNumCurvedStraightened, 0);
+    EXPECT_GT(rc.mNumTriangles, pc.mNumTriangles);
+    EXPECT_EQ(rc.mNumOpenEdges, 0);
     // Where nothing folds the mesh is the plain one, byte for byte.
     EXPECT_EQ(
         digest(mio::mesh_cad_surface(cyl, curved(0.3, 3), mio::MeshCadSizeSources{}, ex).mMesh),

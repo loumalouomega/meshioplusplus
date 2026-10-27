@@ -25,6 +25,7 @@
 #include <vector>
 
 // Project includes
+#include "curved_quad.hpp"
 #include "curved_untangle.hpp"
 
 namespace meshioplusplus::detail {
@@ -57,24 +58,29 @@ CurvedUntangleReport curved_untangle(int Order, const std::vector<CurvedUntangle
                                      const std::vector<std::array<double, 4>>* pBounds,
                                      int MaxSweeps) {
     CurvedUntangleReport out;
-    const int nn = curved_triangle_num_nodes(Order);
+    const auto nn = [&](std::size_t E) {
+        return rElems[E].mQuad ? static_cast<int>(curved_quad_num_nodes(Order))
+                               : curved_triangle_num_nodes(Order);
+    };
     const auto node = [&](std::int64_t Id) {
         const auto i = static_cast<std::size_t>(Id);
         return CurvedVec3{pX[3 * i], pX[3 * i + 1], pX[3 * i + 2]};
     };
     const auto nodes_of = [&](std::size_t E) {
-        std::array<CurvedVec3, 10> x{};
-        for (int i = 0; i < nn; ++i)
+        std::array<CurvedVec3, 16> x{};
+        for (int i = 0; i < nn(E); ++i)
             x[static_cast<std::size_t>(i)] = node(rElems[E].mNodes[static_cast<std::size_t>(i)]);
         return x;
     };
     const auto valid = [&](std::size_t E) {
         const auto x = nodes_of(E);
-        return curved_triangle_check(Order, x.data(), rElems[E].mNormal).mValid;
+        return rElems[E].mQuad ? curved_quad_check(Order, x.data(), rElems[E].mNormal).mValid
+                               : curved_triangle_check(Order, x.data(), rElems[E].mNormal).mValid;
     };
     const auto bound = [&](std::size_t E) {
         const auto x = nodes_of(E);
-        return curved_triangle_scaled_bound(Order, x.data(), rElems[E].mNormal);
+        return rElems[E].mQuad ? curved_quad_scaled_bound(Order, x.data(), rElems[E].mNormal)
+                               : curved_triangle_scaled_bound(Order, x.data(), rElems[E].mNormal);
     };
     // The free nodes by id, and the elements around each.
     std::unordered_map<std::int64_t, std::size_t> free_of;
@@ -82,7 +88,7 @@ CurvedUntangleReport curved_untangle(int Order, const std::vector<CurvedUntangle
         free_of.emplace(rFree[i], i);
     std::vector<std::vector<std::size_t>> around(rFree.size());
     for (std::size_t e = 0; e < rElems.size(); ++e)
-        for (int i = 3; i < nn; ++i) {
+        for (int i = 0; i < nn(e); ++i) {
             const auto it = free_of.find(rElems[e].mNodes[static_cast<std::size_t>(i)]);
             if (it != free_of.end())
                 around[it->second].push_back(e);
@@ -101,10 +107,12 @@ CurvedUntangleReport curved_untangle(int Order, const std::vector<CurvedUntangle
     std::vector<std::array<double, 2>> step(rFree.size(), {0.0, 0.0});
     const auto init_step = [&](std::size_t F) {
         double h = std::numeric_limits<double>::infinity();
-        for (const std::size_t e : around[F])
-            for (std::size_t k = 0; k < 3; ++k)
-                h = std::min(
-                    h, cu_dist(node(rElems[e].mNodes[k]), node(rElems[e].mNodes[(k + 1) % 3])));
+        for (const std::size_t e : around[F]) {
+            const std::size_t corners = rElems[e].mQuad ? 4 : 3;
+            for (std::size_t k = 0; k < corners; ++k)
+                h = std::min(h, cu_dist(node(rElems[e].mNodes[k]),
+                                        node(rElems[e].mNodes[(k + 1) % corners])));
+        }
         const auto& uv = rUv[F];
         for (std::size_t d = 0; d < 2; ++d) {
             const double du = 1e-6 * (1.0 + std::fabs(uv[d]));
@@ -118,7 +126,7 @@ CurvedUntangleReport curved_untangle(int Order, const std::vector<CurvedUntangle
     std::set<std::size_t> active;
     std::vector<char> stepped(rFree.size(), 0);
     const auto activate = [&](std::size_t E) {
-        for (int i = 3; i < nn; ++i) {
+        for (int i = 0; i < nn(E); ++i) {
             const auto it = free_of.find(rElems[E].mNodes[static_cast<std::size_t>(i)]);
             if (it == free_of.end())
                 continue;

@@ -1,0 +1,16 @@
+{
+  "Version": 1,
+  "comment": "Roadmap 6.7.8: a seeded sample of Thingi10K (Zhou and Jacobson 2016) at a pinned revision, tetrahedralized by tools/tet_corpus.py. Each model carries its own licence, so only ids and SHA-256 hashes are stored here; `fetch --record` writes the hashes a run lacks, to commit under models.",
+  "models": {},
+  "sample": {
+    "count": 300,
+    "seed": 6708
+  },
+  "source": {
+    "archive": "Thingi10K.tar.gz",
+    "base": "https://huggingface.co/datasets/Thingi10K/Thingi10K/resolve/v1.5.0",
+    "geometry": "metadata/geometry_data.csv",
+    "members": "Thingi10K/raw_meshes",
+    "summary": "metadata/input_summary.csv"
+  }
+}

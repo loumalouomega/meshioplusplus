@@ -178,6 +178,7 @@
 #include "meshioplusplus/operations/mesh_cad.hpp"
 #include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/error.hpp"
+#include "meshioplusplus/operations/error_size.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/slice.hpp"
@@ -3113,6 +3114,7 @@ PYBIND11_MODULE(_core, m) {
             out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
             out["num_projected"] = r.mNumProjected;
             out["num_on_edges"] = r.mNumOnEdges;
+            out["num_on_curves"] = r.mNumOnCurves;
             out["num_corners"] = r.mNumCorners;
             out["num_ambiguous"] = r.mNumAmbiguous;
             out["num_too_far"] = r.mNumTooFar;
@@ -3365,6 +3367,7 @@ PYBIND11_MODULE(_core, m) {
             out["num_quads"] = extras_report.mNumQuads;
             out["num_leftover_triangles"] = extras_report.mNumLeftoverTriangles;
             out["min_quad_scaled_jacobian"] = extras_report.mMinQuadScaledJacobian;
+            out["min_metric_angle"] = extras_report.mMinMetricAngleDeg;
             return out;
         },
         py::arg("brep"), py::arg("target_size"), py::arg("max_chordal_deviation") = 0.0,
@@ -5149,6 +5152,38 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("array"), py::arg("method") = "green-gauss",
         py::arg("location") = "cell", py::arg("output") = "", py::arg("overwrite") = false);
+
+    // A size field from a per-cell error indicator (roadmap 6.10.2): the
+    // Zienkiewicz-Zhu (1987) adaptive procedure. See operations/error_size.hpp.
+    m.def(
+        "error_size",
+        [](py::object pymesh, const std::string& error_array, double target_error, double order,
+           double min_size, double max_size, const std::string& output, bool overwrite) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::ErrorSizeOptions options;
+            options.mErrorArray = error_array;
+            options.mTargetError = target_error;
+            options.mOrder = order;
+            options.mMinSize = min_size;
+            options.mMaxSize = max_size;
+            options.mOutputName = output;
+            options.mOverwrite = overwrite;
+            meshioplusplus::ErrorSizeResult r =
+                core_nogil([&] { return meshioplusplus::error_size(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_cells"] = r.mNumCells;
+            out["num_skipped"] = r.mNumSkipped;
+            out["num_clamped"] = r.mNumClamped;
+            out["min_size"] = r.mMinSize;
+            out["max_size"] = r.mMaxSize;
+            return out;
+        },
+        py::arg("mesh"), py::arg("error_array") = "error:zz", py::arg("target_error"),
+        py::arg("order") = 1.0, py::arg("min_size") = 0.0, py::arg("max_size") = 0.0,
+        py::arg("output") = "size", py::arg("overwrite") = false);
 
     // The Zienkiewicz-Zhu recovery-based error estimator plus marking, built
     // entirely as a composition of `gradient` + the two `data_average`

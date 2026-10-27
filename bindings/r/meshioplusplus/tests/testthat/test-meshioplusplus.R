@@ -767,6 +767,30 @@ test_that("estimate_error estimates a recovery-based indicator and marks", {
   expect_error(mio_estimate_error(m, "temperature", marking = "fraction", marking_value = 1.5))
 })
 
+test_that("error_size turns the indicator into a size field", {
+  m <- fixture()
+  on.exit(mio_release(m))
+  e <- mio_estimate_error(m, "temperature")
+  on.exit(mio_release(e$mesh), add = TRUE)
+
+  s <- mio_error_size(e$mesh, target_error = 1e-3)
+  expect_true("size" %in% mio_point_data_names(s$mesh))
+  expect_gte(s$num_cells + s$num_skipped, 1)
+  expect_lte(s$min_size, s$max_size)
+  mio_release(s$mesh)
+
+  t <- mio_error_size(e$mesh, target_error = 1e-3, output = "h", min_size = 0.5,
+                      max_size = 2)
+  expect_true("h" %in% mio_point_data_names(t$mesh))
+  mio_release(t$mesh)
+
+  # A target error that is not positive, crossed bounds and a missing
+  # indicator are refused by name.
+  expect_error(mio_error_size(e$mesh, target_error = 0))
+  expect_error(mio_error_size(e$mesh, target_error = 1e-3, min_size = 2, max_size = 1))
+  expect_error(mio_error_size(e$mesh, target_error = 1e-3, error_array = "nope"))
+})
+
 test_that("merge and interpolate work", {
   a <- fixture()
   b <- fixture()
@@ -1789,6 +1813,7 @@ test_that("mesh_cad_surface meshes a trimmed face and reports it", {
   q <- mio_mesh_cad_surface(r$info, target_size = 0.1, min_angle = 25, quads = "dominant")
   expect_gt(q$num_quads, 0)
   expect_gt(q$min_quad_scaled_jacobian, 0)
+  expect_equal(q$min_metric_angle, 0)
   mio_release(q$mesh)
   g <- mio_mesh_cad_surface(r$info, target_size = 0.1, min_angle = 25, quads = "dominant",
                             quad_pairs = "greedy")
@@ -1803,14 +1828,46 @@ test_that("mesh_cad_surface meshes a trimmed face and reports it", {
   b <- mio_project_to_cad(p$mesh, r$info)
   expect_equal(b$num_projected, mio_num_points(p$mesh))
   expect_lt(b$max_move, 1e-12)
+  expect_gte(b$num_on_curves, 0)
+  expect_lte(b$num_on_curves, b$num_on_edges)
   expect_equal(length(b$outside_trim), 0)
   mio_release(b$mesh)
   # Boundary layers (roadmap 6.9) grown from the triangle are wedges.
   bl <- mio_boundary_layer(p$mesh, first_height = 0.01, num_layers = 2)
   expect_gt(bl$num_wedges, 0)
   expect_gt(bl$min_scaled_jacobian, 0)
+  expect_equal(bl$num_fewer_layers, 0)
+  expect_gte(bl$num_front_crossings, 0)
   mio_release(bl$mesh)
+  bl <- mio_boundary_layer(p$mesh, first_height = 0.01, num_layers = 2, collapse = "layers",
+                           normal_smooth_iterations = 2, front_check = FALSE)
+  expect_gt(bl$num_wedges, 0)
+  expect_equal(bl$num_front_crossings, 0)
+  mio_release(bl$mesh)
+  expect_error(mio_boundary_layer(p$mesh, first_height = 0.01, collapse = "rows"), "collapse")
+  expect_error(mio_boundary_layer(p$mesh, first_height = 0.01, normal_smooth_iterations = 5000),
+               "normal_smooth_iterations")
   mio_release(p$mesh)
+})
+test_that("tetrahedralize fills a closed surface keeping its skin (roadmap 6.7)", {
+  s <- mio_icosa_sphere(subdivisions = 2)
+  on.exit(mio_release(s))
+  expect_error(mio_tetrahedralize(s, backend = "tetgen"), "backend")
+  expect_error(mio_tetrahedralize(s, grading = 2), "grading")
+  if (mio_has_netgen()) {
+    t <- mio_tetrahedralize(s, max_size = 0.3)
+    expect_gt(t$num_tetrahedra, 0)
+    expect_equal(t$num_regions, 1)
+    expect_true(t$boundary_preserved)
+    expect_equal(t$backend, "netgen")
+    expect_equal(t$num_boundary_triangles, 320)
+    expect_equal(t$num_points - t$num_new_points, mio_num_points(s))
+    expect_gt(t$volume, 3.9)
+    expect_lt(t$volume, 4 / 3 * pi)
+    mio_release(t$mesh)
+  } else {
+    expect_error(mio_tetrahedralize(s), "MESHIOPLUSPLUS_WITH_NETGEN")
+  }
 })
 test_that("PCD compressed binary is reachable through write options", {
   m <- mio_mesh()

@@ -1609,6 +1609,7 @@ meshioplusplus data <subcommand> [options]
 | `gradient` | Differentiate a `point_data` field (see [field derivatives](/gradient)) |
 | `hessian` | Second derivative of a scalar `point_data` field (see [second derivatives](/hessian)) |
 | `estimate-error` | ZZ recovery-based error indicator, plus marking (see [error estimation](/error)) |
+| `error-size` | Per-point size field from a per-cell error indicator, for `mesh-cad-surface --background` (roadmap 6.10.2) |
 | `integrate` | Cell-measure-weighted total/mean over cells, per region (see [field integration](/field_integration)) |
 | `export` | Export the arrays to Parquet (see [interoperability](/interop)) |
 | `export-dataset` | Export a *set* of meshes as one `mesh_id`-keyed dataset (see [ML data handling](/ml)) |
@@ -1623,7 +1624,7 @@ meshioplusplus data export-cae 'run_*.vtu' dataset/ \
     --surface-fields p --global stream_velocity=30 --global-order stream_velocity
 ```
 
-::: tip `data gradient`, `data hessian`, `data estimate-error` and `data integrate` are mesh operations
+::: tip `data gradient`, `data hessian`, `data estimate-error`, `data error-size` and `data integrate` are mesh operations
 Every other verb in this group belongs to the `data_*` family, which by definition never touches geometry. `gradient` consumes and produces data arrays but **reads** geometry and topology (face areas, cell volumes, cell adjacency), so it lives in the mesh-operations layer; `hessian` is `gradient`'s companion one order further, a composition of two `gradient` calls; `estimate-error` composes `gradient` itself; `integrate` reads the same cell measures to weight its totals. All four are grouped here because that is where a user looks for them. See [field derivatives](/gradient), [second derivatives](/hessian), [error estimation](/error) and [field integration](/field_integration).
 :::
 
@@ -1743,6 +1744,20 @@ The Hessian (second derivative) of a scalar `point_data` field — `gradient`'s 
 
 The Zienkiewicz-Zhu recovery-based error indicator of a `point_data` field: a composition of `gradient` and the point↔cell averaging round trip, not a new kernel. Naming a `cell_data` array is an error pointing at `data to-point`, for the same reason `data gradient` rejects one. Cells that cannot be evaluated are reported as `cells skipped (NaN)` and read `NaN` in `error:zz`, `0` in `error:marked`. With `--marking` not `none`, a second `cell_data` array is attached so [`refine`](/refine)'s own `--where` selector needs no change at all — the intended use is `meshioplusplus refine estimated.vtu adapted.vtu --where "error:marked > 0.5"`. See [error estimation](/error) for the composition, the marking policies and the byte-identity tolerance.
 
+### data error-size
+
+| Option | Description |
+|--------|-------------|
+| `--target-error E` | The target global error, in the indicator's norm (**required**, positive) |
+| `--array NAME` | The one-component `cell_data` indicator (default `error:zz`, what `data estimate-error` writes) |
+| `--order P` | The indicator's rate in the cell size (default 1, linear elements) |
+| `--min-size H` / `--max-size H` | The sizes' bounds (default 0: no bound) |
+| `--output NAME` | The `point_data` array written (default `size`, what `mesh-cad-surface --background` reads) |
+| `--overwrite` | Replace an existing array of that name instead of failing |
+| `--json` / `--quiet`, `-q` | The report as JSON / no summary |
+
+The adaptive procedure of Zienkiewicz and Zhu (1987): with `N` cells evaluated, a cell of diameter `h` whose indicator is `eta` asks `h (E / sqrt(N) / eta)^(1/P)`, clamped to the bounds; each point takes the least of its cells' sizes, and a point with no evaluated cell reads `NaN` (no size there). The report gives the cells evaluated, skipped (a non-finite indicator or size) and clamped, and the least and greatest size written. Both CLIs. The intended use closes the adaptive loop: `data estimate-error`, then `data error-size`, then `mesh-cad-surface --background sized.vtu`.
+
 ### data integrate
 
 | Option | Description |
@@ -1767,6 +1782,7 @@ meshioplusplus data hessian in.vtu out.vtu --array T --location point
 
 meshioplusplus data estimate-error in.vtu out.vtu --array T
 meshioplusplus data estimate-error in.vtu out.vtu --array T --marking dorfler --marking-value 0.6
+meshioplusplus data error-size estimated.vtu sized.vtu --target-error 1e-3 --min-size 0.01
 
 meshioplusplus data integrate mesh.vtu --array density
 meshioplusplus data integrate mesh.vtu --array density --array pressure --json
@@ -2108,13 +2124,13 @@ meshioplusplus mesh-cad-surface part.step part.vtu --size 2 --min-angle 25 --rep
 | `--background PATH` / `--background-array NAME` | a mesh whose point data `NAME` (default `size`) is the size at its points |
 | `--metric mean\|varying` | `mean` (the default), one affine map per face, or `varying`, the surface's own metric |
 | `--virtual-edges` | suppress the corners between slivers of edges and their neighbours (order 1 only); the chains are reported as `virtual_edges` |
-| `--reparam-condition-number K` | mesh a face whose parameters stretch the surface more than `K` (above 1) in a flattening of its coarse mesh instead (order 1 only; 0, the default, is off); reported as `reparametrised` |
-| `--virtual-faces` | mesh a sliver face, narrower than the size, with the neighbour it meets tangentially (order 1 only); reported as `merged_faces` |
+| `--reparam-condition-number K` | mesh a face whose parameters stretch the surface more than `K` (above 1) in a flattening of its coarse mesh instead (any order; 0, the default, is off); reported as `reparametrised` |
+| `--virtual-faces` | mesh a sliver face, narrower than the size, with the neighbour it meets tangentially (any order); reported as `merged_faces` |
 | `--model-tolerances` | accept the gaps each edge's own declared tolerance or vertex's own declared tolerance allows (a STEP or IGES read declares OpenCASCADE's; a Kratos file's `tolerances.model_tolerance` is their floor and pairs the trims no edge names); reported as `tolerance_uses` |
 | `--lop-corners` | lop acute corners (Pav and Walkington 2005) in place of concentric shells, and state the angle bound they prove on a planar face; reported as `lopped_corners` |
-| `--metric-background PATH` / `--metric-array NAME` / `--metric-error E` | a mesh whose 9-component point data `NAME` is a field's Hessian (`hessian` writes `<array>:hessian`), and the interpolation error `E` (> 0) to reach: the anisotropic metric `R \|Λ\| Rᵀ / (8 E)` sizes and stretches the triangles (order 1 only) |
-| `--untangle` | at order 2 or 3, move the high-order nodes of folded elements on the surface to make them valid before any is straightened (Toulorge et al. 2013), then slide the nodes on CAD edges along their edges; reported as `num_untangled` |
-| `--quads none\|dominant\|all` | `dominant` recombines triangle pairs into quads by quality (Borouchaki and Frey 1998), `all` splits a mesh at twice the size into quads only (with `--order 2`, curved `quad9` cells); `dominant` is order 1 only; reported as `num_quads`, `num_leftover_triangles` and `min_quad_scaled_jacobian` |
+| `--metric-background PATH` / `--metric-array NAME` / `--metric-error E` | a mesh whose 9-component point data `NAME` is a field's Hessian (`hessian` writes `<array>:hessian`), or whose 1-component one is the field itself (its Hessian then taken), and the interpolation error `E` (> 0) to reach: the anisotropic metric `R \|Λ\| Rᵀ / (8 E)` sizes and stretches the triangles at any order; reported as `min_metric_angle`, the least corner angle in the metric |
+| `--untangle` | at order 2 or 3, move the high-order nodes of folded elements on the surface to make them valid before any is straightened (Toulorge et al. 2013), then slide the nodes on CAD edges along their edges (quads' nodes too); reported as `num_untangled` |
+| `--quads none\|dominant\|all` | `dominant` recombines triangle pairs into quads by quality (Borouchaki and Frey 1998), `all` splits a mesh at twice the size into quads only and takes no `--virtual-edges`; with `--order 2` or `3` either writes curved `quad9` or `quad16` cells; reported as `num_quads`, `num_leftover_triangles` and `min_quad_scaled_jacobian` |
 | `--quad-pairs matching\|greedy` | how triangles pair into quads: `matching` (the default) a maximum-weight matching per face (Remacle et al. 2012), `greedy` the best pairs first |
 | `--json` / `-q/--quiet` | the report as JSON / no summary |
 

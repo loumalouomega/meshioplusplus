@@ -56,6 +56,7 @@
 #include "meshioplusplus/formats/med.hpp"
 #include "meshioplusplus/formats/vtkhdf.hpp"
 #include "meshioplusplus/region.hpp"
+#include "meshioplusplus/operations/tetrahedralize.hpp"
 #endif
 
 namespace {
@@ -2199,6 +2200,8 @@ TEST(CApi, MeshCadSurfaceUntanglesAndMakesQuads) {
         mio_mesh_free(m);
     }
     EXPECT_EQ(mio_mesh_cad_surface_quad_stats(nullptr, nullptr, nullptr), MIO_OK);
+    // No metric background: no metric angle (roadmap 6.10.2).
+    EXPECT_EQ(mio_mesh_cad_surface_min_metric_angle(), 0.0);
     // Greedy pairing (6.8.1) leaves at least as many triangles.
     ex.quads = MIO_MESH_CAD_QUADS_DOMINANT;
     int64_t matched_left = -1, greedy_left = -1;
@@ -2263,6 +2266,140 @@ TEST(CApi, BoundaryLayer) {
     mio_format_info_free(info);
 }
 
+// Roadmap 6.9.1: the fields taken from the opts' and report's reserved tails
+// reach the core: the defaults, a layers collapse, smoothed normals and the
+// front test switched off, and an out-of-range collapse refused by name.
+TEST(CApi, BoundaryLayerCollapseAndFront) {
+    const auto path = mt::temp_path(".cad.json");
+    meshioplusplus::write_cad_json(path, meshioplusplus::Mesh{}, brep_solids::box());
+    mio_format_info* info = nullptr;
+    mio_mesh* sampled = mio_read_with_info(path.c_str(), nullptr, nullptr, &info);
+    ASSERT_NE(sampled, nullptr) << mio_last_error();
+    mio_mesh_cad_surface_opts opts;
+    mio_mesh_cad_surface_opts_init(&opts);
+    opts.target_size = 0.25;
+    mio_mesh* m = mio_mesh_cad_surface(info, &opts, nullptr);
+    ASSERT_NE(m, nullptr) << mio_last_error();
+    mio_boundary_layer_opts bo;
+    mio_boundary_layer_opts_init(&bo);
+    EXPECT_EQ(bo.collapse, MIO_BOUNDARY_LAYER_COLLAPSE_POINTS);
+    EXPECT_EQ(bo.normal_smooth_iterations, 0);
+    EXPECT_EQ(bo.front_check, 1);
+    EXPECT_EQ(bo.reserved_pad, 0);
+    EXPECT_EQ(bo.reserved[0], 0);
+    bo.first_height = 0.01;
+    mio_boundary_layer_report report;
+    std::memset(&report, 0xff, sizeof(report));
+    mio_mesh* out = mio_boundary_layer(m, &bo, &report);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(report.num_fewer_layers, 0);
+    EXPECT_EQ(report.num_front_crossings, 0);
+    EXPECT_EQ(report.reserved[0], 0);
+    EXPECT_EQ(report.reserved[1], 0);
+    const int64_t wedges = report.num_wedges;
+    mio_mesh_free(out);
+    bo.collapse = MIO_BOUNDARY_LAYER_COLLAPSE_LAYERS;
+    bo.normal_smooth_iterations = 4;
+    bo.front_check = 0;
+    out = mio_boundary_layer(m, &bo, &report);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(report.num_wedges, wedges);
+    EXPECT_EQ(report.num_front_crossings, 0);
+    EXPECT_EQ(report.cap_closed, 1);
+    mio_mesh_free(out);
+    bo.collapse = 7;
+    EXPECT_EQ(mio_boundary_layer(m, &bo, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("collapse"), std::string::npos)
+        << mio_last_error();
+    bo.collapse = MIO_BOUNDARY_LAYER_COLLAPSE_POINTS;
+    bo.normal_smooth_iterations = 1001;
+    EXPECT_EQ(mio_boundary_layer(m, &bo, nullptr), nullptr);
+    mio_mesh_free(m);
+    mio_mesh_free(sampled);
+    mio_format_info_free(info);
+}
+
+// Roadmap 6.7: the box's skin filled with tetrahedra, its triangles kept;
+// without Netgen the call fails naming the build flag.
+TEST(CApi, Tetrahedralize) {
+    const auto block_of = [](const mio_mesh* pM, const char* pType) {
+        char buf[32];
+        for (int64_t b = 0; b < mio_mesh_num_cell_blocks(pM); ++b)
+            if (mio_mesh_cell_block_type(pM, b, buf, sizeof buf) >= 0 && std::string(buf) == pType)
+                return b;
+        return int64_t{-1};
+    };
+    mio_tetrahedralize_opts to;
+    mio_tetrahedralize_opts_init(&to);
+    EXPECT_EQ(to.backend, MIO_TETRAHEDRALIZE_BACKEND_AUTO);
+    EXPECT_DOUBLE_EQ(to.grading, 0.3);
+    EXPECT_EQ(to.optimize_steps, 3);
+    EXPECT_EQ(to.max_cells, 50000000);
+    EXPECT_EQ(to.face_array, nullptr);
+    EXPECT_EQ(to.max_size, 0.0);
+    EXPECT_EQ(mio_has_netgen() != 0, meshioplusplus::tetrahedralize_has_netgen());
+    mio_tetrahedralize_opts_init(nullptr);
+
+    const auto path = mt::temp_path(".cad.json");
+    meshioplusplus::write_cad_json(path, meshioplusplus::Mesh{}, brep_solids::box());
+    mio_format_info* info = nullptr;
+    mio_mesh* sampled = mio_read_with_info(path.c_str(), nullptr, nullptr, &info);
+    ASSERT_NE(sampled, nullptr) << mio_last_error();
+    mio_mesh_cad_surface_opts opts;
+    mio_mesh_cad_surface_opts_init(&opts);
+    opts.target_size = 0.25;
+    mio_mesh* m = mio_mesh_cad_surface(info, &opts, nullptr);
+    ASSERT_NE(m, nullptr) << mio_last_error();
+
+    EXPECT_EQ(mio_tetrahedralize(nullptr, nullptr, nullptr), nullptr);
+    to.grading = 2.0;
+    EXPECT_EQ(mio_tetrahedralize(m, &to, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("grading"), std::string::npos);
+    mio_tetrahedralize_opts_init(&to);
+    to.backend = 9;
+    EXPECT_EQ(mio_tetrahedralize(m, &to, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("backend"), std::string::npos);
+    mio_tetrahedralize_opts_init(&to);
+
+    mio_tetrahedralize_report report;
+    std::memset(&report, 0xff, sizeof(report));
+    if (!mio_has_netgen()) {
+        EXPECT_EQ(mio_tetrahedralize(m, &to, &report), nullptr);
+        EXPECT_NE(std::string(mio_last_error()).find("MESHIOPLUSPLUS_WITH_NETGEN"),
+                  std::string::npos)
+            << mio_last_error();
+    } else {
+        to.max_size = 0.25;
+        mio_mesh* out = mio_tetrahedralize(m, &to, &report);
+        ASSERT_NE(out, nullptr) << mio_last_error();
+        EXPECT_GT(report.num_tetrahedra, 0);
+        EXPECT_EQ(report.num_regions, 1);
+        EXPECT_EQ(report.boundary_preserved, 1);
+        EXPECT_EQ(report.hausdorff_to_surface, 0.0);
+        EXPECT_EQ(report.backend, MIO_TETRAHEDRALIZE_BACKEND_NETGEN);
+        EXPECT_NEAR(report.volume, 1.0, 1e-9);
+        EXPECT_GT(report.min_dihedral_deg, 0.0);
+        EXPECT_LT(report.max_dihedral_deg, 180.0);
+        EXPECT_EQ(report.num_points, mio_mesh_num_points(out));
+        EXPECT_EQ(report.num_points - report.num_new_points, mio_mesh_num_points(m));
+        for (int64_t k : report.reserved)
+            EXPECT_EQ(k, 0);
+        EXPECT_GE(block_of(out, "tetra"), 0);
+        EXPECT_GE(block_of(out, "triangle"), 0);
+        mio_mesh_free(out);
+        // Past max_cells, refused.
+        to.max_cells = 2;
+        EXPECT_EQ(mio_tetrahedralize(m, &to, nullptr), nullptr);
+        // The defaults (NULL opts) mesh too.
+        out = mio_tetrahedralize(m, nullptr, nullptr);
+        ASSERT_NE(out, nullptr) << mio_last_error();
+        mio_mesh_free(out);
+    }
+    mio_mesh_free(m);
+    mio_mesh_free(sampled);
+    mio_format_info_free(info);
+}
+
 // Roadmap 6.10.1: a mesh of the box projected back onto it moves nothing,
 // every point lands on a face or an edge, and none outside its trims.
 TEST(CApi, ProjectToCad) {
@@ -2288,6 +2425,9 @@ TEST(CApi, ProjectToCad) {
     EXPECT_GT(report.num_on_edges, 8);
     EXPECT_EQ(report.num_outside_trim, 0);
     EXPECT_LT(report.max_move, 1e-12);
+    EXPECT_GE(report.num_on_curves, 0);
+    EXPECT_LE(report.num_on_curves, report.num_on_edges);
+    EXPECT_EQ(report.reserved[0], 0);
     EXPECT_EQ(mio_project_to_cad_outside_trim(nullptr, 0), 0);
     mio_mesh_free(out);
     // A mesh with no faces named, and a NULL model, are refused by name.
@@ -3820,6 +3960,90 @@ TEST(CApi, EstimateError) {
     EXPECT_EQ(dt, MIO_INT64);
     mio_mesh_free(out2);
 
+    mio_mesh_free(m);
+}
+
+TEST(CApi, ErrorSize) {
+    // Two unit right triangles of the unit square (diameter sqrt 2), indicator
+    // 1 and 4: with eta = 1 and N = 2 they ask 1 and a quarter (Zienkiewicz
+    // and Zhu 1987); a point takes the least of its cells'.
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 0, 2, 3};
+    const std::vector<double> eta = {1.0, 4.0};
+    const std::int64_t eshape[1] = {2};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 4, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "triangle", 2, 3, MIO_INT64, conn.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_append_cell_data(m, "error:zz", MIO_FLOAT64, 1, eshape, eta.data()), MIO_OK);
+
+    mio_error_size_opts o;
+    mio_error_size_opts_init(&o);
+    EXPECT_EQ(o.error_array, nullptr);
+    EXPECT_EQ(o.output, nullptr);
+    EXPECT_EQ(o.target_error, 0.0);
+    EXPECT_EQ(o.order, 1.0);
+    EXPECT_EQ(o.overwrite, 0);
+    o.target_error = 1.0;
+    mio_error_size_report report{};
+    report.reserved[0] = 7;
+    mio_mesh* out = mio_error_size(m, &o, &report);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(report.num_cells, 2);
+    EXPECT_EQ(report.num_skipped, 0);
+    EXPECT_EQ(report.num_clamped, 0);
+    EXPECT_NEAR(report.min_size, 0.25, 1e-14);
+    EXPECT_NEAR(report.max_size, 1.0, 1e-14);
+    EXPECT_EQ(report.reserved[0], 0);
+    const void* data = nullptr;
+    mio_dtype dt = MIO_INT64;
+    std::int32_t ndim = 0;
+    std::int64_t shape[MIO_MAX_NDIM] = {0};
+    ASSERT_EQ(mio_mesh_get_point_data(out, "size", &data, &dt, &ndim, shape), MIO_OK);
+    ASSERT_EQ(dt, MIO_FLOAT64);
+    ASSERT_EQ(shape[0], 4);
+    const double* s = static_cast<const double*>(data);
+    EXPECT_NEAR(s[0], 0.25, 1e-14);
+    EXPECT_NEAR(s[1], 1.0, 1e-14);
+    EXPECT_NEAR(s[3], 0.25, 1e-14);
+
+    // Named arrays, bounds (counted), and a NULL report.
+    o.output = "h";
+    o.min_size = 0.5;
+    mio_mesh* bounded = mio_error_size(out, &o, &report);
+    ASSERT_NE(bounded, nullptr) << mio_last_error();
+    EXPECT_EQ(report.num_clamped, 1);
+    EXPECT_NEAR(report.min_size, 0.5, 1e-14);
+    ASSERT_EQ(mio_mesh_get_point_data(bounded, "h", &data, &dt, &ndim, shape), MIO_OK);
+    mio_mesh_free(bounded);
+    mio_mesh* quiet = mio_error_size(m, &o, nullptr);
+    ASSERT_NE(quiet, nullptr) << mio_last_error();
+    mio_mesh_free(quiet);
+
+    // Refusals come back as NULL with the reason, never thrown.
+    o.output = nullptr;
+    EXPECT_EQ(mio_error_size(out, &o, nullptr), nullptr) << "size exists, no overwrite";
+    EXPECT_NE(std::string(mio_last_error()).find("overwrite"), std::string::npos);
+    o.overwrite = 1;
+    mio_mesh* again = mio_error_size(out, &o, nullptr);
+    ASSERT_NE(again, nullptr) << mio_last_error();
+    mio_mesh_free(again);
+    o.overwrite = 0;
+    o.target_error = 0.0;
+    EXPECT_EQ(mio_error_size(m, &o, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("target_error"), std::string::npos);
+    o.target_error = 1.0;
+    o.min_size = 2.0;
+    o.max_size = 1.0;
+    EXPECT_EQ(mio_error_size(m, &o, nullptr), nullptr);
+    o.min_size = o.max_size = 0.0;
+    o.error_array = "nope";
+    EXPECT_EQ(mio_error_size(m, &o, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("nope"), std::string::npos);
+    EXPECT_EQ(mio_error_size(m, nullptr, nullptr), nullptr);
+    EXPECT_EQ(mio_error_size(nullptr, &o, nullptr), nullptr);
+    mio_error_size_opts_init(nullptr);
+
+    mio_mesh_free(out);
     mio_mesh_free(m);
 }
 

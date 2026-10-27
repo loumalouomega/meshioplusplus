@@ -501,15 +501,19 @@ meshes a sliver face with its neighbour and `lop_corners` lops acute corners
 (Pav and Walkington 2005) in place of concentric shells (v17.20.0);
 `reparametrised`, `merged_faces`, `tolerance_uses` and `lopped_corners` report
 them, every index 1-based. A `metric_background` mesh whose 9-component point
-data `metric_array` is a field's Hessian, with the target interpolation error
-`metric_error`, sizes the triangles by an anisotropic metric (roadmap 6.10.2).
-`untangle` (order 2 or 3) moves a face's own high-order nodes to untangle a
-folded curved element before it is straightened (6.6.3, `num_untangled`);
-`quads` (`"none"`, `"dominant"` or `"all"`) recombines the triangles into a
-quad-dominant or all-quad mesh (6.8, `num_quads`, `num_leftover_triangles`,
-`min_quad_scaled_jacobian`; `"all"` with `order=2` writes quad9), pairing them
-by `quad_pairs` (`"matching"`, the default, a maximum matching, or `"greedy"`;
-6.8.1). See `doc/mesh_cad.md`.
+data `metric_array` is a field's Hessian (or whose 1-component one is the
+field, its Hessian then taken), with the target interpolation error
+`metric_error`, sizes the triangles by an anisotropic metric (roadmap 6.10.2;
+`min_metric_angle` is the least corner angle in the metric, 0 without one).
+`untangle` (order 2 or 3) moves a face's own high-order nodes (quads' too) to
+untangle a folded curved element before it is straightened (6.6.3,
+`num_untangled`); `quads` (`"none"`, `"dominant"` or `"all"`) recombines the
+triangles into a quad-dominant or all-quad mesh (6.8, `num_quads`,
+`num_leftover_triangles`, `min_quad_scaled_jacobian`; `order` 2 or 3 writes
+quad9 or quad16; `"all"` takes no `virtual_edges`), pairing them by
+`quad_pairs` (`"matching"`, the default, a maximum matching, or `"greedy"`;
+6.8.1). `reparam_condition_number`, `virtual_faces` and `metric_background`
+take every order. See `doc/mesh_cad.md`.
 """
 function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_deviation::Real=0.0,
                           min_points_per_edge::Integer=0, tolerance::Real=0.0,
@@ -693,14 +697,17 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
      virtual_edges=virtual, reparametrised=reparametrised, merged_faces=merged_faces,
      tolerance_uses=tolerance_uses, lopped_corners=lopped_corners,
      num_untangled=Int(nuntangled), num_quads=Int(nq[]),
-     num_leftover_triangles=Int(nleft[]), min_quad_scaled_jacobian=Float64(qsj[]))
+     num_leftover_triangles=Int(nleft[]), min_quad_scaled_jacobian=Float64(qsj[]),
+     min_metric_angle=Float64(ccall(_sym(:mio_mesh_cad_surface_min_metric_angle),
+                                    Cdouble, ())))
 end
 
 """
     project_to_cad(mesh, info; face_array="cad:face", edge_array="cad:edge",
                    max_distance=0.0, trim_samples=16)
-        -> (; mesh, num_projected, num_on_edges, num_corners, num_ambiguous,
-              num_too_far, num_failed, num_outside_trim, max_move, outside_trim)
+        -> (; mesh, num_projected, num_on_edges, num_on_curves, num_corners,
+              num_ambiguous, num_too_far, num_failed, num_outside_trim, max_move,
+              outside_trim)
 
 Move every point of `mesh` onto the CAD face or edge its cells name
 (`cad:face` on triangles and quads, `cad:edge` on lines, as `mesh_cad_surface`
@@ -708,6 +715,8 @@ writes them) of the B-rep `info` (roadmap 6.10.1): a point on one edge's lines
 onto that edge, on two or more (a corner) onto the lowest, a point whose cells
 name one face onto its surface (Newton point inversion); a point on two faces
 and no edge stays. A point farther than `max_distance` (0: no limit) stays.
+`num_on_curves` counts the points on edges that went onto the edge's own 3-D
+curve (else onto its trim lifted through its face).
 `outside_trim` lists (1-based) the points projected outside their face's trims,
 kept and never clamped. Data and regions pass through.
 """
@@ -733,7 +742,7 @@ function project_to_cad(mesh::Mesh, info::FormatInfo; face_array::AbstractString
     n > 0 && ccall(_sym(:mio_project_to_cad_outside_trim), Int64, (Ptr{Int64}, Int64),
                    outside, n)
     (mesh=out, num_projected=Int(r.num_projected), num_on_edges=Int(r.num_on_edges),
-     num_corners=Int(r.num_corners), num_ambiguous=Int(r.num_ambiguous),
+     num_on_curves=Int(r.num_on_curves), num_corners=Int(r.num_corners), num_ambiguous=Int(r.num_ambiguous),
      num_too_far=Int(r.num_too_far), num_failed=Int(r.num_failed),
      num_outside_trim=Int(r.num_outside_trim), max_move=Float64(r.max_move),
      outside_trim=Int.(outside) .+ 1)

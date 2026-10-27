@@ -79,6 +79,7 @@
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/decimate_volume.hpp"
 #include "meshioplusplus/operations/error.hpp"
+#include "meshioplusplus/operations/error_size.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
@@ -418,6 +419,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Array", "LengthScale", "FixedPointsArray", "FixBoundary", "RecordFiltered",
           "MaxIterations", "Tolerance"}},
         {"EstimateError", {"Array", "Method", "Marking", "MarkingValue", "Output", "Marked"}},
+        {"ErrorSize", {"Array", "TargetError", "Order", "MinSize", "MaxSize", "Output"}},
         {"Remesh",
          {"NumClusters", "Subdivide", "SubsampleRatio", "MaxSubdivide", "MaxIterations",
           "MaxRepairPasses", "Metric", "Gradation", "PreserveBoundary", "MaxAnisotropy"}},
@@ -1256,6 +1258,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         pipe_push_step(rReport, rStep,
                        {{"NumProjected", static_cast<double>(r.mNumProjected)},
                         {"NumOnEdges", static_cast<double>(r.mNumOnEdges)},
+                        {"NumOnCurves", static_cast<double>(r.mNumOnCurves)},
                         {"NumOutsideTrim", static_cast<double>(r.mNumOutsideTrim)},
                         {"MaxMove", r.mMaxMove}});
         return std::move(r.mMesh);
@@ -1928,6 +1931,30 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             rReport.mWarnings.push_back("estimate_error: " + std::to_string(er.mNumSkipped) +
                                         " cell(s) could not be evaluated and are NaN");
         return std::move(er.mMesh);
+    }
+    if (op == "ErrorSize") {
+        // A pure data step (roadmap 6.10.2): EstimateError's per-cell
+        // indicator becomes the per-point size a later mesh_cad_surface's
+        // background reads. Geometry is untouched.
+        ErrorSizeOptions opts;
+        opts.mErrorArray = pipe_text(rStep, "Array", "error:zz");
+        opts.mTargetError = pipe_number(rStep, "TargetError", 0.0);
+        opts.mOrder = pipe_number(rStep, "Order", 1.0);
+        opts.mMinSize = pipe_number(rStep, "MinSize", 0.0);
+        opts.mMaxSize = pipe_number(rStep, "MaxSize", 0.0);
+        opts.mOutputName = pipe_text(rStep, "Output", kErrorSizeName);
+        opts.mOverwrite = true;
+        ErrorSizeResult sr = error_size(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumCells", static_cast<double>(sr.mNumCells)},
+                        {"NumSkipped", static_cast<double>(sr.mNumSkipped)},
+                        {"NumClamped", static_cast<double>(sr.mNumClamped)},
+                        {"MinSize", sr.mMinSize},
+                        {"MaxSize", sr.mMaxSize}});
+        if (sr.mNumSkipped > 0)
+            rReport.mWarnings.push_back("error_size: " + std::to_string(sr.mNumSkipped) +
+                                        " cell(s) have no finite size and size no point");
+        return std::move(sr.mMesh);
     }
     if (op == "Remesh") {
         // Unlike every other step, the output has NO correspondence to the

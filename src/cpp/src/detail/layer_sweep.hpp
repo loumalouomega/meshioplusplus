@@ -26,10 +26,14 @@
  * levels `k - 1` and `k` (level 0 the surface itself) each triangle gives a
  * `wedge` and each quad a `hexahedron`, ordered so that its Jacobian is
  * positive when the face's normal (right-hand rule) points along the
- * directions. A point whose offsets are all zero is *collapsed*: its copies
- * are the point itself, so a cell with a collapsed corner degenerates. Such
- * a face is split into triangles (a quad along its first diagonal), and a
- * wedge with one collapsed corner becomes a `pyramid` on its opposite side
+ * directions. A point whose offset at level `k` equals the one below (0 at
+ * the surface) does not grow in layer `k`: its copy there is the one below,
+ * and its corner of every cell of that layer is *collapsed*, so a point
+ * whose offsets stop growing after `m` levels grows `m` layers (Garimella and
+ * Shephard's fewer layers at a point), and one whose offsets are all zero
+ * stays the surface point. A face with a corner collapsed in any layer is
+ * split into triangles (a quad along its first diagonal) in every layer, and
+ * a wedge with one collapsed corner becomes a `pyramid` on its opposite side
  * face, with two a `tetra`, with three nothing; the faces the cells share
  * stay conforming, since every column through a collapsed point is split
  * the same way in every layer. The surface (`wall`) and the last level
@@ -53,8 +57,9 @@ struct LayerSweepInput {
     std::vector<std::array<std::int64_t, 4>> mFaces;
     /// Per point, the direction (three coordinates each).
     std::vector<double> mDirections;
-    /// Per point, its `mLayers` offsets along its direction, level by level;
-    /// all zero for a collapsed point.
+    /// Per point, its `mLayers` offsets along its direction, level by level,
+    /// not decreasing; an offset equal to the one below (0 at the surface)
+    /// does not grow that layer, and all zero is a collapsed point.
     std::vector<double> mOffsets;
     int mLayers = 1;
 };

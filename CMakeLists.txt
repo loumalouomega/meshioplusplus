@@ -252,6 +252,19 @@ if(MESHIOPLUSPLUS_WITH_KAHIP AND (NOT EMSCRIPTEN OR KAHIP_ROOT OR DEFINED ENV{KA
   find_package(KaHIP QUIET)
 endif()
 
+# Netgen (LGPL-2.1), the backend of the tetrahedralize operation (roadmap
+# 6.7): a closed triangle surface meshed into tetrahedra that keep its
+# triangles. OFF by default and bring-your-own, as KaHIP is: located via the
+# in-repo cmake/FindNetgen.cmake (NETGEN_ROOT or the system's libnglib-dev),
+# never vendored, never downloaded, and linked dynamically. Not under
+# Emscripten: no wasm build of Netgen is known, so tetrahedralize raises by
+# name in both WASM artifacts.
+option(MESHIOPLUSPLUS_WITH_NETGEN "Build the Netgen tetrahedralize backend" OFF)
+if(MESHIOPLUSPLUS_WITH_NETGEN AND NOT EMSCRIPTEN)
+  list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+  find_package(Netgen QUIET)
+endif()
+
 # The official CGNS library (cgnslib / the CGNS Mid-Level Library). OFF by
 # default and bring-your-own, exactly like KaHIP: never vendored, never
 # downloaded. It is an ADDITIVE backend -- the hand-rolled ADF-over-HDF5 CGNS
@@ -850,6 +863,15 @@ elseif(MESHIOPLUSPLUS_WITH_KAHIP)
                  "partition method 'kahip' will raise")
 endif()
 
+if(MESHIOPLUSPLUS_WITH_NETGEN AND NETGEN_FOUND)
+  message(STATUS "meshio++: Netgen tetrahedralize backend enabled (${NETGEN_LIBRARIES})")
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_NETGEN)
+  list(APPEND _mio_core_libs netgen::nglib)
+elseif(MESHIOPLUSPLUS_WITH_NETGEN)
+  message(STATUS "meshio++: Netgen requested but not found (set NETGEN_ROOT) - "
+                 "tetrahedralize will raise")
+endif()
+
 if(MESHIOPLUSPLUS_WITH_OCCT AND _mio_occt_libs)
   message(STATUS "meshio++: OpenCASCADE ${OpenCASCADE_VERSION} enabled (fit_cad, STEP/IGES reading)")
   list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_OCCT)
@@ -1331,7 +1353,7 @@ if(MESHIOPLUSPLUS_INSTALL_CPP)
 
   # Shipped so a consumer with no FindKaHIP.cmake of its own can still resolve
   # the find_dependency(KaHIP) the generated config emits for a KaHIP build.
-  install(FILES cmake/FindKaHIP.cmake
+  install(FILES cmake/FindKaHIP.cmake cmake/FindNetgen.cmake
           DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/meshioplusplus)
   message(STATUS
     "meshio++: installing the C++ API (backends: ${MESHIOPLUSPLUS_INSTALL_CPP_BACKENDS})")
@@ -1343,7 +1365,7 @@ endif()
 # it reports what the build actually compiled in: `-DMESHIOPLUSPLUS_WITH_HDF5=OFF`
 # on a machine that happens to have HDF5 now correctly reports "no HDF5".
 # ---------------------------------------------------------------------------
-foreach(_f ZLIB ZSTD LZ4 LZMA BZIP2 KAHIP HDF5 NETCDF EIGEN JSON CGNSLIB ADIOS2 TECIO OCCT)
+foreach(_f ZLIB ZSTD LZ4 LZMA BZIP2 KAHIP HDF5 NETCDF EIGEN JSON CGNSLIB ADIOS2 TECIO OCCT NETGEN)
   if("MESHIOPLUSPLUS_HAS_${_f}" IN_LIST _mio_core_defs)
     set(_mio_has_${_f} TRUE)
   else()
@@ -1402,6 +1424,9 @@ if(_mio_has_BZIP2)
 endif()
 if(_mio_has_KAHIP)
   string(APPEND MIO_PC_LIBS_PRIVATE " -lkahip")
+endif()
+if(_mio_has_NETGEN)
+  string(APPEND MIO_PC_LIBS_PRIVATE " -lnglib -lngcore")
 endif()
 if(_mio_has_ADIOS2)
   string(APPEND MIO_PC_LIBS_PRIVATE " -l${_mio_adios2_pc_lib} -ladios2_core")

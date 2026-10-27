@@ -201,6 +201,7 @@ def test_the_cli_verb(tmp_path, capsys):
     assert code in (0, None)
     report = json.loads(capsys.readouterr().out)
     assert report["num_projected"] > 0 and report["max_move"] > 0
+    assert 0 <= report["num_on_curves"] <= report["num_on_edges"]
     back = mio.read(out)
     assert np.allclose(np.linalg.norm(back.points, axis=1), 1.0, atol=1e-12)
 

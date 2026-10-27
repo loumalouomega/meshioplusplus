@@ -100,18 +100,23 @@ LayerSweepResult layer_sweep(const LayerSweepInput& rIn) {
     out.mOrigin.resize(nn);
     for (std::size_t p = 0; p < nn; ++p)
         out.mOrigin[p] = static_cast<std::int64_t>(p);
-    // A point is collapsed when every offset is zero.
-    std::vector<char> collapsed(nn, 1);
+    // A point grows in layer K when its offset there differs from the one
+    // below (0 at the surface); otherwise its copy at K is the one below, and
+    // its corner of every cell of that layer is collapsed. A point that grows
+    // in no layer is the surface point at every level.
+    std::vector<char> grows(nn * nl, 0);
     for (std::size_t p = 0; p < nn; ++p)
-        for (std::size_t k = 0; k < nl; ++k)
-            if (rIn.mOffsets[p * nl + k] != 0.0)
-                collapsed[p] = 0;
+        for (std::size_t k = 0; k < nl; ++k) {
+            const double below = k == 0 ? 0.0 : rIn.mOffsets[p * nl + k - 1];
+            grows[k * nn + p] = rIn.mOffsets[p * nl + k] != below ? 1 : 0;
+        }
     // The id of point P at level K (0 the surface).
     std::vector<std::int64_t> level_id(nn * nl, -1);
     for (std::size_t k = 0; k < nl; ++k)
         for (std::size_t p = 0; p < nn; ++p) {
-            if (collapsed[p]) {
-                level_id[k * nn + p] = static_cast<std::int64_t>(p);
+            if (!grows[k * nn + p]) {
+                level_id[k * nn + p] =
+                    k == 0 ? static_cast<std::int64_t>(p) : level_id[(k - 1) * nn + p];
                 continue;
             }
             level_id[k * nn + p] = static_cast<std::int64_t>(out.mOrigin.size());
@@ -125,8 +130,9 @@ LayerSweepResult layer_sweep(const LayerSweepInput& rIn) {
                    ? P
                    : level_id[static_cast<std::size_t>(K - 1) * nn + static_cast<std::size_t>(P)];
     };
-    const auto is_collapsed = [&](std::int64_t P) {
-        return collapsed[static_cast<std::size_t>(P)] != 0;
+    // Collapsed in layer K (between levels K - 1 and K).
+    const auto is_collapsed = [&](std::int64_t P, int K) {
+        return grows[static_cast<std::size_t>(K - 1) * nn + static_cast<std::size_t>(P)] == 0;
     };
     // A triangle (A, B, C) between levels K - 1 and K: a wedge, or what its
     // collapsed corners leave of it.
@@ -135,7 +141,7 @@ LayerSweepResult layer_sweep(const LayerSweepInput& rIn) {
         const std::array<std::int64_t, 3> v{A, B, C};
         int ncol = 0;
         for (const std::int64_t x : v)
-            ncol += is_collapsed(x) ? 1 : 0;
+            ncol += is_collapsed(x, K) ? 1 : 0;
         LayerSweepCell cell;
         cell.mNodes.fill(-1);
         cell.mFace = F;
@@ -153,16 +159,17 @@ LayerSweepResult layer_sweep(const LayerSweepInput& rIn) {
         // Rotate so the collapsed ones come first, in cyclic order.
         std::size_t s = 0;
         if (ncol == 1) {
-            while (!is_collapsed(v[s]))
+            while (!is_collapsed(v[s], K))
                 ++s;
             const std::int64_t x = v[s], y = v[(s + 1) % 3], z = v[(s + 2) % 3];
-            cell.mNodes = {at(y, K - 1), at(y, K), at(z, K), at(z, K - 1), x, -1, -1, -1};
+            cell.mNodes = {at(y, K - 1), at(y, K), at(z, K), at(z, K - 1), at(x, K - 1),
+                           -1,           -1,        -1};
             out.mPyramids.push_back(cell);
         } else {
-            while (is_collapsed(v[s]))
+            while (is_collapsed(v[s], K))
                 ++s;
             const std::int64_t z = v[s], x = v[(s + 1) % 3], y = v[(s + 2) % 3];
-            cell.mNodes = {x, y, at(z, K - 1), at(z, K), -1, -1, -1, -1};
+            cell.mNodes = {at(x, K - 1), at(y, K - 1), at(z, K - 1), at(z, K), -1, -1, -1, -1};
             out.mTetrahedra.push_back(cell);
         }
     };
@@ -170,9 +177,12 @@ LayerSweepResult layer_sweep(const LayerSweepInput& rIn) {
         const auto& r_f = rIn.mFaces[f];
         const bool quad = r_f[3] >= 0;
         const int corners = quad ? 4 : 3;
+        // A quad with a corner collapsed in any layer is split in every
+        // layer, so the columns beside it stay conforming.
         bool any = false;
         for (int i = 0; i < corners; ++i)
-            any = any || is_collapsed(r_f[static_cast<std::size_t>(i)]);
+            for (int k = 1; k <= layers && !any; ++k)
+                any = is_collapsed(r_f[static_cast<std::size_t>(i)], k);
         const auto face = static_cast<std::int64_t>(f);
         const bool split = quad && any;
         for (int k = 1; k <= layers; ++k) {

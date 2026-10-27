@@ -62,6 +62,7 @@ module meshioplusplus
     public :: mio_mesh_cad_num_tolerance_uses, mio_mesh_cad_get_tolerance_use
     public :: mio_mesh_cad_num_lopped_corners, mio_mesh_cad_get_lopped_corner
     public :: mio_mesh_cad_num_untangled, mio_mesh_cad_get_quad_stats
+    public :: mio_mesh_cad_min_metric_angle
     public :: mio_mesh_cad_lopped_corner_reason
     public :: MIO_MESH_CAD_METRIC_MEAN, MIO_MESH_CAD_METRIC_VARYING
     public :: MIO_MESH_CAD_TOLERANCE_CLOSED_START, MIO_MESH_CAD_TOLERANCE_CORNER
@@ -70,6 +71,8 @@ module meshioplusplus
     public :: MIO_MESH_CAD_QUAD_PAIRS_MATCHING, MIO_MESH_CAD_QUAD_PAIRS_GREEDY
     public :: mio_project_to_cad, mio_project_to_cad_report, mio_project_to_cad_outside_trim
     public :: mio_boundary_layer, mio_boundary_layer_report
+    public :: mio_tetrahedralize, mio_tetrahedralize_report, mio_has_netgen
+    public :: mio_error_size_report
     public :: MIO_MESH_CAD_OK, MIO_MESH_CAD_EMPTY, MIO_MESH_CAD_OPEN_LOOP
     public :: MIO_MESH_CAD_SELF_INTERSECTING, MIO_MESH_CAD_DEGENERATE
     public :: MIO_MESH_CAD_PROJECTION_FAILED, MIO_MESH_CAD_BUDGET_EXCEEDED
@@ -532,7 +535,33 @@ module meshioplusplus
         integer(c_int64_t) :: num_failed = 0
         integer(c_int64_t) :: num_outside_trim = 0
         real(c_double) :: max_move = 0.0_c_double
-        integer(c_int64_t) :: reserved(4) = 0
+        !> Of those on edges, onto the edge's own 3-D curve.
+        integer(c_int64_t) :: num_on_curves = 0
+        integer(c_int64_t) :: reserved(3) = 0
+    end type
+
+    !> Interop mirror of C `mio_error_size_opts` (80 bytes with 8-byte
+    !> pointers, checked by `error_size`; roadmap 6.10.2).
+    type, bind(c) :: mio_error_size_opts_t
+        type(c_ptr) :: error_array = c_null_ptr
+        real(c_double) :: target_error = 0.0_c_double
+        real(c_double) :: order = 1.0_c_double
+        real(c_double) :: min_size = 0.0_c_double
+        real(c_double) :: max_size = 0.0_c_double
+        type(c_ptr) :: output = c_null_ptr
+        integer(c_int32_t) :: overwrite = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(3) = 0
+    end type
+
+    !> `mio_error_size_report` (64 bytes): what `error_size` did.
+    type, bind(c) :: mio_error_size_report
+        integer(c_int64_t) :: num_cells = 0
+        integer(c_int64_t) :: num_skipped = 0
+        integer(c_int64_t) :: num_clamped = 0
+        real(c_double) :: min_size = 0.0_c_double
+        real(c_double) :: max_size = 0.0_c_double
+        integer(c_int64_t) :: reserved(3) = 0
     end type
 
     !> Interop mirror of C `mio_boundary_layer_opts` (64 bytes; roadmap 6.9).
@@ -544,7 +573,11 @@ module meshioplusplus
         integer(c_int32_t) :: reverse = 0
         integer(c_int32_t) :: smooth_iterations = 5
         integer(c_int32_t) :: max_shrink = 6
-        integer(c_int64_t) :: reserved(3) = 0
+        integer(c_int32_t) :: collapse = 0
+        integer(c_int32_t) :: normal_smooth_iterations = 0
+        integer(c_int32_t) :: front_check = 1
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(1) = 0
     end type
 
     !> `mio_boundary_layer_report` (128 bytes): what `mio_boundary_layer` did.
@@ -562,7 +595,41 @@ module meshioplusplus
         real(c_double) :: max_thickness = 0.0_c_double
         integer(c_int32_t) :: cap_closed = 0
         integer(c_int32_t) :: reserved_pad = 0
+        !> With `collapse='layers'`, the points that grow fewer layers than asked.
+        integer(c_int64_t) :: num_fewer_layers = 0
+        !> Last-layer face pairs the front test found crossing or touching.
+        integer(c_int64_t) :: num_front_crossings = 0
+        integer(c_int64_t) :: reserved(2) = 0
+    end type
+
+    !> Interop mirror of C `mio_tetrahedralize_opts` (80 bytes with 8-byte
+    !> pointers, checked by `mio_tetrahedralize`; roadmap 6.7).
+    type, bind(c) :: mio_tetrahedralize_opts_t
+        real(c_double) :: max_size = 0.0_c_double
+        real(c_double) :: max_volume = 0.0_c_double
+        real(c_double) :: grading = 0.3_c_double
+        integer(c_int64_t) :: max_cells = 50000000_c_int64_t
+        type(c_ptr) :: face_array = c_null_ptr
+        integer(c_int32_t) :: backend = 0
+        integer(c_int32_t) :: optimize_steps = 3
         integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_tetrahedralize_report` (128 bytes): what `mio_tetrahedralize` did.
+    !> `backend` is 1 for Netgen.
+    type, bind(c) :: mio_tetrahedralize_report
+        integer(c_int64_t) :: num_tetrahedra = 0
+        integer(c_int64_t) :: num_points = 0
+        integer(c_int64_t) :: num_new_points = 0
+        integer(c_int64_t) :: num_regions = 0
+        integer(c_int64_t) :: num_boundary_triangles = 0
+        real(c_double) :: hausdorff_to_surface = 0.0_c_double
+        real(c_double) :: min_dihedral_deg = 0.0_c_double
+        real(c_double) :: max_dihedral_deg = 0.0_c_double
+        real(c_double) :: volume = 0.0_c_double
+        integer(c_int32_t) :: boundary_preserved = 0
+        integer(c_int32_t) :: backend = 0
+        integer(c_int64_t) :: reserved(6) = 0
     end type
 
     !> Interop mirror of C `mio_mesh_cad_surface_opts` (104 bytes, checked once
@@ -1560,6 +1627,7 @@ module meshioplusplus
         procedure :: gradient => mesh_gradient
         procedure :: hessian => mesh_hessian
         procedure :: estimate_error => mesh_estimate_error
+        procedure :: error_size => mesh_error_size
         procedure :: remesh => mesh_remesh
         procedure :: curvature => mesh_curvature
         procedure :: normals => mesh_normals
@@ -4545,6 +4613,29 @@ module meshioplusplus
             type(c_ptr) :: h
         end function
 
+        function c_mio_tetrahedralize(mesh, opts, report) &
+                bind(c, name="mio_tetrahedralize") result(h)
+            import :: c_ptr, mio_tetrahedralize_opts_t, mio_tetrahedralize_report
+            type(c_ptr), value :: mesh
+            type(mio_tetrahedralize_opts_t), intent(in) :: opts
+            type(mio_tetrahedralize_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_has_netgen() bind(c, name="mio_has_netgen") result(r)
+            import :: c_int
+            integer(c_int) :: r
+        end function
+
+        function c_mio_error_size(mesh, opts, report) &
+                bind(c, name="mio_error_size") result(h)
+            import :: c_ptr, mio_error_size_opts_t, mio_error_size_report
+            type(c_ptr), value :: mesh
+            type(mio_error_size_opts_t), intent(in) :: opts
+            type(mio_error_size_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
         function c_mio_project_to_cad_outside_trim(points, n) &
                 bind(c, name="mio_project_to_cad_outside_trim") result(m)
             import :: c_int64_t
@@ -4611,6 +4702,12 @@ module meshioplusplus
                 bind(c, name="mio_mesh_cad_surface_num_untangled") result(m)
             import :: c_int64_t
             integer(c_int64_t) :: m
+        end function
+
+        function c_mio_mesh_cad_surface_min_metric_angle() &
+                bind(c, name="mio_mesh_cad_surface_min_metric_angle") result(a)
+            import :: c_double
+            real(c_double) :: a
         end function
 
         function c_mio_mesh_cad_surface_quad_stats(nq, left, sj) &
@@ -5313,6 +5410,12 @@ contains
     function mio_has_occt() result(has)
         logical :: has
         has = c_mio_has_occt() /= 0
+    end function
+
+    !> Whether the library carries the Netgen backend `mio_tetrahedralize` needs.
+    function mio_has_netgen() result(has)
+        logical :: has
+        has = c_mio_has_netgen() /= 0
     end function
 
     function mio_pipeline_has_json() result(has)
@@ -6415,6 +6518,57 @@ contains
         if (present(global_error)) global_error = real(cerror, real64)
         if (present(num_skipped)) num_skipped = int(nskip, int64)
         if (present(num_marked)) num_marked = int(nmark, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> A per-point size field from the per-cell error indicator `error_array`
+    !> (default "error:zz", what `estimate_error` writes) by the adaptive
+    !> procedure of Zienkiewicz and Zhu (1987; roadmap 6.10.2): with N cells
+    !> evaluated, a cell of diameter h and indicator eta asks
+    !> h * (target_error / sqrt(N) / eta)**(1 / order) (`order` default 1),
+    !> clamped to [`min_size`, `max_size`] (0: no bound); a point takes the
+    !> least of its cells' (NaN where none is evaluated), written as point data
+    !> `output` (default "size", what `mesh_cad_surface`'s `background`
+    !> reads). The optional `report` counts the cells evaluated, skipped and
+    !> clamped and the least and greatest size written.
+    function mesh_error_size(self, target_error, error_array, order, min_size, max_size, &
+                             output, overwrite, report, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        real(real64), intent(in) :: target_error
+        character(*), intent(in), optional :: error_array, output
+        real(real64), intent(in), optional :: order, min_size, max_size
+        logical, intent(in), optional :: overwrite
+        type(mio_error_size_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_error_size_opts_t) :: opts
+        type(mio_error_size_report) :: rep
+        character(kind=c_char, len=:), allocatable, target :: aname, oname
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. &
+            (c_sizeof(opts) /= 80_c_size_t .or. c_sizeof(rep) /= 64_c_size_t)) then
+            write (error_unit, '(a)') 'meshio++: error_size layout mismatch'
+            error stop 1
+        end if
+        opts%target_error = real(target_error, c_double)
+        if (present(error_array)) then
+            aname = c_str(error_array)
+            opts%error_array = c_loc(aname(1:1))
+        end if
+        if (present(order)) opts%order = real(order, c_double)
+        if (present(min_size)) opts%min_size = real(min_size, c_double)
+        if (present(max_size)) opts%max_size = real(max_size, c_double)
+        if (present(output)) then
+            oname = c_str(output)
+            opts%output = c_loc(oname(1:1))
+        end if
+        if (present(overwrite)) opts%overwrite = merge(1_c_int32_t, 0_c_int32_t, overwrite)
+        out%handle = c_mio_error_size(self%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('error_size', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
         call clear_status(stat, errmsg)
     end function
 
@@ -12302,16 +12456,19 @@ contains
     !> acute corners in place of concentric shells (v17.20.0; read back by
     !> `mio_mesh_cad_get_reparametrised`, `_merged_face`, `_tolerance_use`,
     !> `_lopped_corner`). A `metric_background` mesh whose 9-component point
-    !> data `metric_array` is a field's Hessian, with the target
-    !> interpolation error `metric_error`, sizes the triangles by an
-    !> anisotropic metric (roadmap 6.10.2). `untangle` moves a face's own
-    !> high-order nodes to untangle a folded curved element before it is
-    !> straightened (6.6.3, `mio_mesh_cad_num_untangled`); `quads`
-    !> (`MIO_MESH_CAD_QUADS_*`) recombines the triangles into a quad-dominant
-    !> or all-quad mesh (6.8, `mio_mesh_cad_get_quad_stats`; all-quad with
-    !> `order` 2 writes quad9), pairing them by `quad_pairs`
+    !> data `metric_array` is a field's Hessian (or whose 1-component one is
+    !> the field, its Hessian then taken), with the target interpolation
+    !> error `metric_error`, sizes the triangles by an anisotropic metric
+    !> (roadmap 6.10.2, `mio_mesh_cad_min_metric_angle`). `untangle` moves a
+    !> face's own high-order nodes (quads' too) to untangle a folded curved
+    !> element before it is straightened (6.6.3, `mio_mesh_cad_num_untangled`);
+    !> `quads` (`MIO_MESH_CAD_QUADS_*`) recombines the triangles into a
+    !> quad-dominant or all-quad mesh (6.8, `mio_mesh_cad_get_quad_stats`;
+    !> `order` 2 or 3 writes quad9 or quad16; all-quad takes no
+    !> `virtual_edges`), pairing them by `quad_pairs`
     !> (`MIO_MESH_CAD_QUAD_PAIRS_*`, 6.8.1: a maximum matching, the default,
-    !> or greedily).
+    !> or greedily). `reparam_condition_number`, `virtual_faces` and
+    !> `metric_background` take every order.
     function format_info_mesh_cad_surface(self, target_size, max_chordal_deviation, &
                                           min_points_per_edge, tolerance, record_face_ids, &
                                           edges, match_unreferenced_trims, strict, max_points, &
@@ -12581,6 +12738,14 @@ contains
         if (present(stat)) stat = int(st)
     end subroutine
 
+    !> With a `metric_background`, the least corner angle (degrees) of a cell
+    !> of this thread's last call measured in the metric at its centroid, the
+    !> measure refinement judges by; 0 without one (roadmap 6.10.2).
+    function mio_mesh_cad_min_metric_angle() result(angle)
+        real(real64) :: angle
+        angle = real(c_mio_mesh_cad_surface_min_metric_angle(), real64)
+    end function
+
     !> Move every point of `mesh` onto the CAD face or edge its cells name
     !> (`cad:face` on triangles and quads, `cad:edge` on lines, as
     !> mesh_cad_surface writes them) of the B-rep `info` (roadmap 6.10.1): a
@@ -12589,7 +12754,8 @@ contains
     !> two faces and no edge stays. `face_array` and `edge_array` rename the
     !> cell data, `max_distance` leaves a point farther than it, and
     !> `trim_samples` samples the trims per knot span. The optional `report`
-    !> counts what was done; `mio_project_to_cad_outside_trim` lists the
+    !> counts what was done (`num_on_curves` of the points on edges went onto
+    !> the edge's own 3-D curve); `mio_project_to_cad_outside_trim` lists the
     !> points projected outside their face's trims.
     function mio_project_to_cad(mesh, info, face_array, edge_array, max_distance, &
                                 trim_samples, report, stat, errmsg) result(out)
@@ -12635,16 +12801,24 @@ contains
     !> along each point's most normal normal (against the faces' normals with
     !> `reverse`), stopped at `collision_fraction` (0.45) of the distance to
     !> the surface, smoothed `smooth_iterations` (5) times, the points of a
-    !> folding cell halved `max_shrink` (6) times and then collapsed. The
-    !> optional `report` counts the cells and what was shrunk.
+    !> folding cell halved `max_shrink` (6) times and then collapsed
+    !> (`collapse='points'`, the default) or its top layer dropped
+    !> (`collapse='layers'`). `normal_smooth_iterations` (0) Laplacian passes
+    !> smooth the directions; `front_check` (.true.) tests the last layer's
+    !> faces against each other and the surface. The optional `report` counts
+    !> the cells and what was shrunk.
     function mio_boundary_layer(mesh, first_height, num_layers, growth, reverse, &
                                 collision_fraction, smooth_iterations, max_shrink, report, &
-                                stat, errmsg) result(out)
+                                stat, errmsg, collapse, normal_smooth_iterations, &
+                                front_check) result(out)
         type(mio_mesh), intent(in) :: mesh
         real(real64), intent(in) :: first_height
         integer, intent(in), optional :: num_layers, smooth_iterations, max_shrink
         real(real64), intent(in), optional :: growth, collision_fraction
         logical, intent(in), optional :: reverse
+        character(*), intent(in), optional :: collapse
+        integer, intent(in), optional :: normal_smooth_iterations
+        logical, intent(in), optional :: front_check
         type(mio_boundary_layer_report), intent(out), optional :: report
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
@@ -12663,9 +12837,82 @@ contains
             opts%collision_fraction = real(collision_fraction, c_double)
         if (present(smooth_iterations)) opts%smooth_iterations = int(smooth_iterations, c_int32_t)
         if (present(max_shrink)) opts%max_shrink = int(max_shrink, c_int32_t)
+        if (present(collapse)) then
+            select case (trim(collapse))
+            case ('points')
+                opts%collapse = 0
+            case ('layers')
+                opts%collapse = 1
+            case default
+                call handle_failure('boundary_layer', "collapse must be 'points' or 'layers'", &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+        if (present(normal_smooth_iterations)) &
+            opts%normal_smooth_iterations = int(normal_smooth_iterations, c_int32_t)
+        if (present(front_check)) opts%front_check = merge(1_c_int32_t, 0_c_int32_t, front_check)
         out%handle = c_mio_boundary_layer(mesh%handle, opts, rep)
         if (.not. c_associated(out%handle)) then
             call handle_failure('boundary_layer', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Fill the closed, manifold, consistently oriented triangle surface `mesh`
+    !> with tetrahedra, its triangles and points kept exactly (roadmap 6.7):
+    !> each shell bounds a region (a box inside a box gives two). `max_size`
+    !> and `max_volume` (0: none) bound the tetrahedra, `grading` (0.3) is how
+    !> fast the size grows inward, `optimize_steps` (3) the backend's volume
+    !> optimisation passes, `max_cells` (50000000) the refusal bound,
+    !> `face_array` ('cad:face') the CAD face data carried to the triangles,
+    !> and `backend` 'auto' (default) or 'netgen'. Without Netgen
+    !> (`mio_has_netgen()` is false) it fails naming MESHIOPLUSPLUS_WITH_NETGEN.
+    function mio_tetrahedralize(mesh, max_size, max_volume, grading, optimize_steps, max_cells, &
+                                face_array, backend, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        real(real64), intent(in), optional :: max_size, max_volume, grading
+        integer, intent(in), optional :: optimize_steps
+        integer(int64), intent(in), optional :: max_cells
+        character(*), intent(in), optional :: face_array, backend
+        type(mio_tetrahedralize_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_tetrahedralize_opts_t) :: opts
+        type(mio_tetrahedralize_report) :: rep
+        character(kind=c_char, len=:), allocatable, target :: fname
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. &
+            (c_sizeof(opts) /= 80_c_size_t .or. c_sizeof(rep) /= 128_c_size_t)) then
+            write (error_unit, '(a)') 'meshio++: tetrahedralize layout mismatch'
+            error stop 1
+        end if
+        if (present(max_size)) opts%max_size = real(max_size, c_double)
+        if (present(max_volume)) opts%max_volume = real(max_volume, c_double)
+        if (present(grading)) opts%grading = real(grading, c_double)
+        if (present(optimize_steps)) opts%optimize_steps = int(optimize_steps, c_int32_t)
+        if (present(max_cells)) opts%max_cells = int(max_cells, c_int64_t)
+        if (present(face_array)) then
+            fname = c_str(face_array)
+            opts%face_array = c_loc(fname(1:1))
+        end if
+        if (present(backend)) then
+            select case (trim(backend))
+            case ('auto')
+                opts%backend = 0
+            case ('netgen')
+                opts%backend = 1
+            case default
+                call handle_failure('tetrahedralize', "backend must be 'auto' or 'netgen'", &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+        out%handle = c_mio_tetrahedralize(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('tetrahedralize', mio_error_message(), stat, errmsg)
             return
         end if
         if (present(report)) report = rep

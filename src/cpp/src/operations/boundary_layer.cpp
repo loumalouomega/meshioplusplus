@@ -30,7 +30,9 @@
 
 // Project includes
 #include "../detail/layer_sweep.hpp"
+#include "../detail/predicates.hpp"
 #include "../detail/tri_bvh.hpp"
+#include "../detail/tri_tri.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/surface_distance.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -97,6 +99,166 @@ NDArray bl_gather(const NDArray& rA, const std::vector<std::int64_t>& rFrom) {
     return out;
 }
 
+// The front test (6.9.1, after Pirzadeh 1996's advancing-layer test): every
+// layer cell against the surface's faces and the last layer's (quads by
+// their first diagonal), over a bounding-volume hierarchy, by the exact
+// triangle-triangle kernel: a face that crosses one of the cell's faces, or
+// lies inside the cell, meets it. A face whose column shares a surface point
+// with the cell is its neighbour and is left out. Marks the surface points
+// of each such cell, and of a last-layer face it meets, in `rBad`; returns
+// the pairs found. Cells are tested in parallel, each pair once, so the
+// count does not depend on threads.
+std::int64_t bl_front_crossings(const detail::LayerSweepResult& rSweep, std::vector<char>& rBad) {
+    detail::TriangleSoup soup;
+    const std::size_t npts = rSweep.mOrigin.size();
+    soup.mPoints.resize(npts);
+    for (std::size_t i = 0; i < npts; ++i)
+        soup.mPoints[i] = {rSweep.mPoints[3 * i], rSweep.mPoints[3 * i + 1],
+                           rSweep.mPoints[3 * i + 2]};
+    std::vector<char> is_cap;
+    const auto add = [&](std::int64_t A, std::int64_t B, std::int64_t C, bool Cap) {
+        soup.mVertices.push_back({A, B, C});
+        for (const std::int64_t v : {A, B, C})
+            soup.mCorners.push_back(soup.mPoints[static_cast<std::size_t>(v)]);
+        soup.mSourceCell.push_back(static_cast<std::int64_t>(is_cap.size()));
+        is_cap.push_back(Cap ? 1 : 0);
+    };
+    for (const bool cap : {true, false}) {
+        for (const auto& r_c : cap ? rSweep.mCapTriangles : rSweep.mWallTriangles)
+            add(r_c.mNodes[0], r_c.mNodes[1], r_c.mNodes[2], cap);
+        for (const auto& r_c : cap ? rSweep.mCapQuads : rSweep.mWallQuads) {
+            add(r_c.mNodes[0], r_c.mNodes[1], r_c.mNodes[2], cap);
+            add(r_c.mNodes[0], r_c.mNodes[2], r_c.mNodes[3], cap);
+        }
+    }
+    const std::size_t nt = is_cap.size();
+    if (nt == 0)
+        return 0;
+    const detail::TriBvh tree = detail::build_tri_bvh(soup);
+    // The cells, each with its kind (its node count), and the triangles of
+    // its faces by local node.
+    struct BlCell {
+        const detail::LayerSweepCell* pCell;
+        int mKind;
+    };
+    std::vector<BlCell> cells;
+    for (const auto& r_c : rSweep.mHexahedra)
+        cells.push_back({&r_c, 8});
+    for (const auto& r_c : rSweep.mWedges)
+        cells.push_back({&r_c, 6});
+    for (const auto& r_c : rSweep.mPyramids)
+        cells.push_back({&r_c, 5});
+    for (const auto& r_c : rSweep.mTetrahedra)
+        cells.push_back({&r_c, 4});
+    using Tri = std::array<int, 3>;
+    static const std::vector<Tri> k_hex = {{0, 1, 2}, {0, 2, 3}, {4, 5, 6}, {4, 6, 7},
+                                           {0, 1, 5}, {0, 5, 4}, {1, 2, 6}, {1, 6, 5},
+                                           {2, 3, 7}, {2, 7, 6}, {3, 0, 4}, {3, 4, 7}};
+    static const std::vector<Tri> k_wedge = {{0, 1, 2}, {3, 4, 5}, {0, 1, 4}, {0, 4, 3},
+                                             {1, 2, 5}, {1, 5, 4}, {2, 0, 3}, {2, 3, 5}};
+    static const std::vector<Tri> k_pyramid = {{0, 1, 2}, {0, 2, 3}, {0, 1, 4},
+                                               {1, 2, 4}, {2, 3, 4}, {3, 0, 4}};
+    static const std::vector<Tri> k_tet = {{0, 1, 2}, {0, 1, 3}, {1, 2, 3}, {2, 0, 3}};
+    const auto faces_of = [&](int Kind) -> const std::vector<Tri>& {
+        return Kind == 8 ? k_hex : Kind == 6 ? k_wedge : Kind == 5 ? k_pyramid : k_tet;
+    };
+    const auto pt = [&](std::int64_t I) { return rSweep.mPoints.data() + 3 * I; };
+    std::vector<std::vector<std::size_t>> hits(cells.size());
+    parallel_for(
+        cells.size(),
+        [&](std::size_t C) {
+            const detail::LayerSweepCell& r_c = *cells[C].pCell;
+            const int kind = cells[C].mKind;
+            const auto nn = static_cast<std::size_t>(kind);
+            BlV3 lo{std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity(),
+                    std::numeric_limits<double>::infinity()};
+            BlV3 hi{-lo[0], -lo[1], -lo[2]};
+            BlV3 mid{0.0, 0.0, 0.0};
+            for (std::size_t k = 0; k < nn; ++k) {
+                const double* x = pt(r_c.mNodes[k]);
+                for (std::size_t d = 0; d < 3; ++d) {
+                    lo[d] = std::min(lo[d], x[d]);
+                    hi[d] = std::max(hi[d], x[d]);
+                    mid[d] += x[d] / double(nn);
+                }
+            }
+            const auto shares = [&](std::size_t U) {
+                for (std::size_t a = 0; a < nn; ++a)
+                    for (std::size_t b = 0; b < 3; ++b)
+                        if (rSweep.mOrigin[static_cast<std::size_t>(r_c.mNodes[a])] ==
+                            rSweep.mOrigin[static_cast<std::size_t>(soup.mVertices[U][b])])
+                            return true;
+                return false;
+            };
+            // Inside the cell: on no face's far side from its centroid (the
+            // cells are valid, so nearly convex).
+            const auto inside = [&](const double* pP) {
+                for (const Tri& r_f : faces_of(kind)) {
+                    const double* a = pt(r_c.mNodes[static_cast<std::size_t>(r_f[0])]);
+                    const double* b = pt(r_c.mNodes[static_cast<std::size_t>(r_f[1])]);
+                    const double* c = pt(r_c.mNodes[static_cast<std::size_t>(r_f[2])]);
+                    const double s_mid = detail::orient3d(a, b, c, mid.data());
+                    const double s_p = detail::orient3d(a, b, c, pP);
+                    if ((s_mid > 0.0 && s_p < 0.0) || (s_mid < 0.0 && s_p > 0.0))
+                        return false;
+                }
+                return true;
+            };
+            std::vector<std::int32_t> stack{0};
+            while (!stack.empty()) {
+                const auto n = static_cast<std::size_t>(stack.back());
+                stack.pop_back();
+                const detail::TriBvhNode& r_n = tree.mNodes[n];
+                bool apart = false;
+                for (std::size_t d = 0; d < 3 && !apart; ++d)
+                    apart = r_n.mHi[d] < lo[d] || r_n.mLo[d] > hi[d];
+                if (apart)
+                    continue;
+                if (r_n.mRight >= 0) {
+                    stack.push_back(r_n.mRight);
+                    stack.push_back(static_cast<std::int32_t>(n + 1));
+                    continue;
+                }
+                for (std::int32_t i = 0; i < r_n.mCount; ++i) {
+                    const auto u = static_cast<std::size_t>(
+                        tree.mOrder[static_cast<std::size_t>(r_n.mBegin + i)]);
+                    if (shares(u))
+                        continue;
+                    const double* d0 = soup.mCorners[3 * u].data();
+                    const double* d1 = soup.mCorners[3 * u + 1].data();
+                    const double* d2 = soup.mCorners[3 * u + 2].data();
+                    bool meets = inside(d0);
+                    for (const Tri& r_f : faces_of(kind)) {
+                        if (meets)
+                            break;
+                        meets = detail::tri_tri_intersect(
+                            pt(r_c.mNodes[static_cast<std::size_t>(r_f[0])]),
+                            pt(r_c.mNodes[static_cast<std::size_t>(r_f[1])]),
+                            pt(r_c.mNodes[static_cast<std::size_t>(r_f[2])]), d0, d1, d2);
+                    }
+                    if (meets)
+                        hits[C].push_back(u);
+                }
+            }
+        },
+        16);
+    std::int64_t count = 0;
+    for (std::size_t c = 0; c < cells.size(); ++c)
+        for (const std::size_t u : hits[c]) {
+            ++count;
+            const detail::LayerSweepCell& r_c = *cells[c].pCell;
+            for (int k = 0; k < cells[c].mKind; ++k)
+                rBad[static_cast<std::size_t>(
+                    rSweep.mOrigin[static_cast<std::size_t>(r_c.mNodes[static_cast<std::size_t>(k)])])] =
+                    1;
+            if (is_cap[u])
+                for (std::size_t k = 0; k < 3; ++k)
+                    rBad[static_cast<std::size_t>(
+                        rSweep.mOrigin[static_cast<std::size_t>(soup.mVertices[u][k])])] = 1;
+        }
+    return count;
+}
+
 }  // namespace
 
 BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOptions& rOptions) {
@@ -113,6 +275,10 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
         bl_fail("smooth_iterations must be between 0 and 1000");
     if (o.mMaxShrink < 0 || o.mMaxShrink > 60)
         bl_fail("max_shrink must be between 0 and 60");
+    if (o.mCollapse != BoundaryLayerCollapse::Points && o.mCollapse != BoundaryLayerCollapse::Layers)
+        bl_fail("collapse must be points or layers");
+    if (o.mNormalSmoothIterations < 0 || o.mNormalSmoothIterations > 1000)
+        bl_fail("normal_smooth_iterations must be between 0 and 1000");
     const std::size_t np = rSurface.NumPoints();
     const NDArray& r_pts = rSurface.Points();
     if (np > 0 && (r_pts.Ndim() != 2 || r_pts.Shape()[1] != 3))
@@ -210,7 +376,7 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
     // Each point's most normal normal (Aubry and Löhner 2009): from the
     // angle-weighted mean, steps toward the face that sees it least.
     std::vector<BlV3> dir(np, BlV3{0.0, 0.0, 0.0});
-    std::vector<double> stretch(np, 0.0), sigma(np, 0.0);
+    std::vector<double> stretch(np, 0.0), sigma(np, 0.0), seen(np, 0.0);
     std::vector<char> used(np, 0), not_visible(np, 0);
     parallel_for(
         np,
@@ -255,8 +421,46 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
             }
             stretch[P] = 1.0 / std::max(best_lo, 1.0 / kBlMaxStretch);
             sigma[P] = 1.0;
+            seen[P] = best_lo;
         },
         64);
+    // Smoothed directions (6.9.1): each moved toward its neighbours' mean,
+    // kept while every face around it still sees it at more than half the
+    // least cosine its most normal normal had (Jacobi passes, so the result
+    // does not depend on the order).
+    const auto least_cos = [&](std::size_t P, const BlV3& rN) {
+        double lo = std::numeric_limits<double>::infinity();
+        for (const auto& [f, w] : around[P]) {
+            (void)w;
+            lo = std::min(lo, bl_dot(rN, fn[f]));
+        }
+        return lo;
+    };
+    for (int it = 0; it < o.mNormalSmoothIterations; ++it) {
+        std::vector<BlV3> next = dir;
+        parallel_for(
+            np,
+            [&](std::size_t P) {
+                if (!(sigma[P] > 0.0) || nbrs[P].empty())
+                    return;
+                BlV3 m = dir[P];
+                for (const std::int64_t q : nbrs[P]) {
+                    const auto& r_q = dir[static_cast<std::size_t>(q)];
+                    if (sigma[static_cast<std::size_t>(q)] > 0.0)
+                        m = {m[0] + r_q[0], m[1] + r_q[1], m[2] + r_q[2]};
+                }
+                const BlV3 n = bl_unit(m);
+                const double lo = least_cos(P, n);
+                if (lo > 0.5 * seen[P] && lo > kBlVisible)
+                    next[P] = n;
+            },
+            64);
+        dir = std::move(next);
+    }
+    if (o.mNormalSmoothIterations > 0)
+        for (std::size_t p = 0; p < np; ++p)
+            if (sigma[p] > 0.0)
+                stretch[p] = 1.0 / std::max(least_cos(p, dir[p]), 1.0 / kBlMaxStretch);
     // The levels' offsets, before each point's own fraction and stretch.
     const auto nl = static_cast<std::size_t>(o.mNumLayers);
     std::vector<double> level(nl);
@@ -339,14 +543,21 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
         for (std::size_t c = 0; c < 3; ++c)
             in.mDirections[3 * p + c] = dir[p][c];
     std::vector<int> halvings(np, 0);
+    // With Layers, the layers each point grows (6.9.1).
+    std::vector<std::size_t> grown(np, nl);
+    const bool by_layers = o.mCollapse == BoundaryLayerCollapse::Layers;
     detail::LayerSweepResult sweep;
     double min_sj = std::numeric_limits<double>::infinity();
+    std::int64_t front_crossings = 0;
+    const int max_rounds =
+        std::max(64 * (o.mMaxShrink + 2), by_layers ? 4 * o.mNumLayers + 64 : 0);
     for (int round = 0;; ++round) {
         in.mOffsets.assign(np * nl, 0.0);
         for (std::size_t p = 0; p < np; ++p)
-            if (sigma[p] > 0.0)
+            if (sigma[p] > 0.0 && grown[p] > 0)
                 for (std::size_t k = 0; k < nl; ++k)
-                    in.mOffsets[p * nl + k] = sigma[p] * stretch[p] * level[k];
+                    in.mOffsets[p * nl + k] =
+                        sigma[p] * stretch[p] * level[std::min(k, grown[p] - 1)];
         sweep = detail::layer_sweep(in);
         std::vector<char> bad_point(np, 0);
         bool bad = false;
@@ -368,20 +579,29 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
         judge(sweep.mWedges, 6);
         judge(sweep.mPyramids, 5);
         judge(sweep.mTetrahedra, 4);
+        if (!bad && o.mFrontCheck) {
+            const std::int64_t crossings = bl_front_crossings(sweep, bad_point);
+            front_crossings += crossings;
+            bad = crossings > 0;
+        }
         if (!bad)
             break;
-        if (round > 64 * (o.mMaxShrink + 2))
+        if (round > max_rounds)
             throw std::logic_error(std::string(kBoundaryLayerPrefix) +
                                    "internal error: the layers do not settle");
-        for (std::size_t p = 0; p < np; ++p)
-            if (bad_point[p] && sigma[p] > 0.0) {
-                if (halvings[p] < o.mMaxShrink) {
-                    sigma[p] *= 0.5;
-                    ++halvings[p];
-                } else {
+        for (std::size_t p = 0; p < np; ++p) {
+            if (!bad_point[p] || !(sigma[p] > 0.0) || grown[p] == 0)
+                continue;
+            if (by_layers) {
+                if (--grown[p] == 0)
                     sigma[p] = 0.0;
-                }
+            } else if (halvings[p] < o.mMaxShrink) {
+                sigma[p] *= 0.5;
+                ++halvings[p];
+            } else {
+                sigma[p] = 0.0;
             }
+        }
     }
 
     // The mesh: the cells, then the wall and the cap.
@@ -549,12 +769,16 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
     for (std::size_t p = 0; p < np; ++p) {
         if (!used[p])
             continue;
-        result.mNumShrunk += sigma[p] < 1.0 ? 1 : 0;
-        result.mNumCollapsed += sigma[p] > 0.0 ? 0 : 1;
+        const bool fewer = grown[p] < nl && grown[p] > 0 && sigma[p] > 0.0;
+        result.mNumShrunk += sigma[p] < 1.0 || grown[p] < nl ? 1 : 0;
+        result.mNumCollapsed += sigma[p] > 0.0 && grown[p] > 0 ? 0 : 1;
         result.mNumNotVisible += not_visible[p] ? 1 : 0;
-        result.mMinThickness = std::min(result.mMinThickness, sigma[p] * total);
-        result.mMaxThickness = std::max(result.mMaxThickness, sigma[p] * total);
+        result.mNumFewerLayers += fewer ? 1 : 0;
+        const double thick = grown[p] > 0 ? sigma[p] * level[grown[p] - 1] : 0.0;
+        result.mMinThickness = std::min(result.mMinThickness, thick);
+        result.mMaxThickness = std::max(result.mMaxThickness, thick);
     }
+    result.mNumFrontCrossings = front_crossings;
     if (!std::isfinite(result.mMinThickness))
         result.mMinThickness = 0.0;
     {
@@ -575,6 +799,12 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
                 result.mCapClosed = false;
         }
     }
+    if (result.mNumFrontCrossings > 0)
+        log::debug("boundary_layer: {} crossings of the last layer's faces given way to",
+                   result.mNumFrontCrossings);
+    if (result.mNumFewerLayers > 0)
+        warn(std::to_string(result.mNumFewerLayers) +
+             " points grow fewer layers than asked (their top layers would fold or cross)");
     if (result.mNumCollapsed > 0)
         warn(std::to_string(result.mNumCollapsed) +
              " points do not grow (their layers would fold or no direction sees all their "

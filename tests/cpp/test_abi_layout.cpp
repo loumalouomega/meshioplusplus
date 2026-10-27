@@ -367,7 +367,7 @@ MIO_ABI_LAYOUT(meshioplusplus::MeshCadReparamFace, 64, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MeshCadMergedFace, 88, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MeshCadToleranceUse, 56, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MeshCadLoppedCorner, 112, 8);
-MIO_ABI_LAYOUT(meshioplusplus::MeshCadSurfaceExtrasReport, 128, 8);
+MIO_ABI_LAYOUT(meshioplusplus::MeshCadSurfaceExtrasReport, 136, 8);
 MIO_ABI_LAYOUT(meshioplusplus::TriangulatePolygon2dOptions, 24, 8);
 MIO_ABI_LAYOUT(meshioplusplus::detail::LatticeSpec, 72, 8);
 

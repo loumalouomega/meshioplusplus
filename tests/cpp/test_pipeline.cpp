@@ -105,6 +105,41 @@ TEST(Pipeline, VersionTwoTypedMergeAndFanoutWorkWithoutJson) {
     std::filesystem::remove(extra);
 }
 
+TEST(Pipeline, ErrorSizeTurnsTheIndicatorIntoSizes) {
+    // Roadmap 6.10.2: a hand-made indicator on the tet mesh, then the step.
+    Mesh in = mt::tet_mesh();
+    std::vector<meshioplusplus::NDArray> blocks;
+    for (const auto& block : in.CellRange()) {
+        meshioplusplus::NDArray e(meshioplusplus::DType::Float64,
+                                  {static_cast<std::int64_t>(block.NumCells())});
+        for (std::size_t i = 0; i < block.NumCells(); ++i)
+            e.As<double>()[i] = 0.1 * static_cast<double>(i + 1);
+        blocks.push_back(std::move(e));
+    }
+    in.AddCellData("error:zz", std::move(blocks));
+    PipelineReport report;
+    Mesh out = meshioplusplus::apply_pipeline_step(
+        std::move(in),
+        step("ErrorSize", {{"TargetError", 0.01}, {"MinSize", 1e-3}, {"Output", std::string("h")}}),
+        report);
+    ASSERT_TRUE(out.HasPointData("h"));
+    ASSERT_EQ(report.mSteps.size(), 1u);
+    const auto& counters = report.mSteps[0].mCounters;
+    ASSERT_EQ(counters.size(), 5u);
+    EXPECT_EQ(counters[0].first, "NumCells");
+    EXPECT_EQ(counters[0].second, static_cast<double>(total_cells(out)));
+    EXPECT_EQ(counters[3].first, "MinSize");
+    EXPECT_GE(counters[3].second, 1e-3);
+    EXPECT_EQ(counters[4].first, "MaxSize");
+    // The output is replaced, never refused, and a missing target error is.
+    Mesh again = meshioplusplus::apply_pipeline_step(
+        std::move(out), step("ErrorSize", {{"TargetError", 0.01}, {"Output", std::string("h")}}),
+        report);
+    EXPECT_TRUE(again.HasPointData("h"));
+    EXPECT_THROW(meshioplusplus::apply_pipeline_step(std::move(again), step("ErrorSize"), report),
+                 std::invalid_argument);
+}
+
 TEST(Pipeline, TransformRotatesAboutZ) {
     PipelineReport report;
     Mesh out = meshioplusplus::apply_pipeline_step(

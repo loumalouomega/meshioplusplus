@@ -1040,6 +1040,37 @@ mio_estimate_error <- function(mesh, array, method = "zz", marking = "none",
   )
 }
 
+#' A size field from a per-cell error estimate
+#'
+#' A per-point size field from the per-cell error indicator `error_array`
+#' (what [mio_estimate_error()] writes) by the adaptive procedure of
+#' Zienkiewicz and Zhu (1987; roadmap 6.10.2): with `N` cells evaluated, a cell
+#' of diameter `h` whose indicator is `eta` asks
+#' `h * (target_error / sqrt(N) / eta)^(1 / order)`, clamped to
+#' `[min_size, max_size]` (0: no bound); a point takes the least of its cells'
+#' (`NaN` where none is evaluated). The sizes are written as point data
+#' `output`, what [mio_mesh_cad_surface()]'s `background` reads.
+#'
+#' @param mesh A mesh carrying the indicator as cell data.
+#' @param target_error The target global error, in the indicator's norm
+#'   (positive).
+#' @param error_array The one-component cell data indicator.
+#' @param order The indicator's rate in the cell size (1 for linear elements).
+#' @param min_size,max_size The sizes' bounds; 0 is none.
+#' @param output The point data array written.
+#' @param overwrite Replace an existing array of that name.
+#' @return A list: `mesh`, `num_cells` (evaluated), `num_skipped`,
+#'   `num_clamped`, `min_size` and `max_size` (the least and greatest size
+#'   written).
+#' @export
+mio_error_size <- function(mesh, target_error, error_array = "error:zz", order = 1,
+                           min_size = 0, max_size = 0, output = "size",
+                           overwrite = FALSE) {
+  .Call(R_mio_error_size, mesh, as.numeric(target_error), as.character(error_array),
+        as.numeric(order), as.numeric(min_size), as.numeric(max_size),
+        as.character(output), isTRUE(overwrite))
+}
+
 #' Remesh a surface by approximated centroidal Voronoi diagram (ACVD)
 #' clustering
 #'
@@ -2622,26 +2653,29 @@ mio_iga_evaluate <- function(info, patch, params, derivatives = 0L, trim_samples
 #'   the chains are reported in `virtual_edges`.
 #' @param reparam_condition_number Mesh a face whose metric's condition number
 #'   over its coarse mesh passes this in a flattening of that mesh instead of
-#'   its parameters (v17.20.0); 0 is off, otherwise above 1; order 1 only.
+#'   its parameters (v17.20.0); 0 is off, otherwise above 1; at order 2 or 3
+#'   the curved nodes sit at the flattening's coordinates.
 #' @param model_tolerances Accept the gaps the model itself declares (an
 #'   edge's `"tolerance"` and `"end_tolerances"` in its extra JSON).
 #' @param virtual_faces Mesh a face narrower than `target_size` with the
-#'   neighbour it meets tangentially along the most edge; order 1 only.
+#'   neighbour it meets tangentially along the most edge; any order.
 #' @param lop_corners Lop acute corners (Pav and Walkington 2005) in place of
 #'   concentric shells; only with refinement (`min_angle` or sizes).
 #' @param metric_background A mesh whose 9-component point data
-#'   `metric_array` is a field's Hessian: an anisotropic metric from it, with
-#'   the target interpolation error `metric_error`, sizes the triangles in
-#'   every direction (roadmap 6.10.2); `NULL` for none; order 1 only.
-#' @param metric_array The name of that Hessian array (e.g. `"f:hessian"`).
+#'   `metric_array` is a field's Hessian (or whose 1-component one is the
+#'   field, its Hessian then taken): an anisotropic metric from it, with the
+#'   target interpolation error `metric_error`, sizes the triangles in every
+#'   direction (roadmap 6.10.2); `NULL` for none; any order.
+#' @param metric_array The name of that Hessian array (e.g. `"f:hessian"`) or
+#'   of the field.
 #' @param metric_error The target interpolation error (positive).
 #' @param untangle With `order` 2 or 3, move a face's own high-order nodes on
-#'   the surface to untangle a folded curved element before it is
+#'   the surface (quads' too) to untangle a folded curved element before it is
 #'   straightened (roadmap 6.6.3; Toulorge et al. 2013).
 #' @param quads `"none"`, `"dominant"` (pairs of triangles recombined into
-#'   quads where they make a good one; order 1 only) or `"all"` (the
-#'   quad-dominant mesh of twice the size split into quads only; `order = 2`
-#'   writes quad9) (roadmap 6.8).
+#'   quads where they make a good one) or `"all"` (the quad-dominant mesh of
+#'   twice the size split into quads only; no `virtual_edges`); `order` 2 or 3
+#'   writes quad9 or quad16 (roadmap 6.8).
 #' @param quad_pairs How triangles pair into quads: `"matching"` (a maximum
 #'   matching of greatest total quality, Blossom-quad) or `"greedy"` (best pair
 #'   first) (roadmap 6.8.1).
@@ -2663,8 +2697,9 @@ mio_iga_evaluate <- function(info, patch, params, derivatives = 0L, trim_samples
 #'   (`face`, `point`, `angle_deg`, `lfs0`, `lop_radius`, `turning_deg`,
 #'   `stated_bound_deg`, `num_forced`, `min_forced_deg`, `within_two_radii`,
 #'   `guaranteed`, `reason`), `num_untangled`, `num_quads`,
-#'   `num_leftover_triangles`, `min_quad_scaled_jacobian` and
-#'   `corners`, a data frame of the corners under 60 degrees and poles (1-based
+#'   `num_leftover_triangles`, `min_quad_scaled_jacobian`, `min_metric_angle`
+#'   (the least corner angle in the metric, 0 without a `metric_background`)
+#'   and `corners`, a data frame of the corners under 60 degrees and poles (1-based
 #'   `face` and `point`, `u`, `v`, `x`, `y`, `z`, `angle_deg`, `min_forced_deg`,
 #'   `reach`, `pole`).
 #' @export
@@ -2729,8 +2764,9 @@ mio_mesh_cad_surface <- function(info, target_size, max_chordal_deviation = 0,
 #' normal normal (Aubry and Löhner 2009), the first `first_height` thick and
 #' each next `growth` times the one before; stopped at `collision_fraction` of
 #' the distance to the surface ahead; the points of a cell that would fold
-#' shrunk and then collapsed into pyramids and tetrahedra. The wall and the cap
-#' come out as faces, with `boundary_layer:layer` cell data.
+#' shrunk and then collapsed into pyramids and tetrahedra (`collapse =
+#' "points"`) or their top layer dropped (`collapse = "layers"`). The wall and
+#' the cap come out as faces, with `boundary_layer:layer` cell data.
 #'
 #' @param mesh A triangle and quad surface.
 #' @param first_height The first layer's thickness.
@@ -2739,17 +2775,70 @@ mio_mesh_cad_surface <- function(info, target_size, max_chordal_deviation = 0,
 #' @param collision_fraction Of the distance a point's ray hits, in (0, 1].
 #' @param smooth_iterations,max_shrink Smoothing passes; halvings before a
 #'   point collapses.
+#' @param collapse How a point whose cells fold gives way: `"points"` or
+#'   `"layers"`.
+#' @param normal_smooth_iterations Laplacian passes over the growth
+#'   directions (0 to 1000).
+#' @param front_check Test the last layer's faces against each other and the
+#'   surface.
 #' @return A list: `mesh`, `num_cells`, `num_wedges`, `num_hexahedra`,
 #'   `num_pyramids`, `num_tetrahedra`, `num_shrunk`, `num_collapsed`,
 #'   `num_not_visible`, `min_scaled_jacobian`, `min_thickness`,
-#'   `max_thickness` and `cap_closed`.
+#'   `max_thickness`, `cap_closed`, `num_fewer_layers` and
+#'   `num_front_crossings`.
 #' @export
 mio_boundary_layer <- function(mesh, first_height, num_layers = 3, growth = 1.2,
                                reverse = FALSE, collision_fraction = 0.45,
-                               smooth_iterations = 5, max_shrink = 6) {
+                               smooth_iterations = 5, max_shrink = 6,
+                               collapse = "points", normal_smooth_iterations = 0,
+                               front_check = TRUE) {
   .Call(R_mio_boundary_layer, mesh, as.numeric(first_height), as.integer(num_layers),
         as.numeric(growth), isTRUE(reverse), as.numeric(collision_fraction),
-        as.integer(smooth_iterations), as.integer(max_shrink))
+        as.integer(smooth_iterations), as.integer(max_shrink), as.character(collapse),
+        as.integer(normal_smooth_iterations), isTRUE(front_check))
+}
+
+#' Whether the library carries the Netgen backend
+#'
+#' [mio_tetrahedralize()] needs a library built with
+#' `-DMESHIOPLUSPLUS_WITH_NETGEN=ON`; this reports whether the loaded one was.
+#'
+#' @return `TRUE` or `FALSE`.
+#' @export
+mio_has_netgen <- function() {
+  .Call(R_mio_has_netgen)
+}
+
+#' Fill a closed triangle surface with tetrahedra
+#'
+#' The closed, manifold, consistently oriented triangle surface `mesh` is
+#' filled with tetrahedra, its triangles and points kept exactly (roadmap
+#' 6.7): each shell bounds a region (a box inside a box gives two), meshed on
+#' its own so the regions conform. The result has the input's points first, a
+#' `tetra` block, the surface's `triangle` block and the cell data
+#' `tetrahedralize:region`. Without Netgen ([mio_has_netgen()] is `FALSE`) it
+#' fails naming `MESHIOPLUSPLUS_WITH_NETGEN`.
+#'
+#' @param mesh A closed triangle surface.
+#' @param backend `"auto"` or `"netgen"`.
+#' @param max_size,max_volume The largest edge and volume asked of the
+#'   tetrahedra; 0 is none.
+#' @param grading How fast the size grows away from the surface, in [0, 1].
+#' @param optimize_steps Passes of the backend's volume optimisation (0 to
+#'   100).
+#' @param max_cells Refuse a result of more tetrahedra.
+#' @param face_array The cell data naming each triangle's CAD face.
+#' @return A list: `mesh`, `num_tetrahedra`, `num_points`, `num_new_points`,
+#'   `num_regions`, `num_boundary_triangles`, `boundary_preserved`,
+#'   `hausdorff_to_surface`, `min_dihedral_deg`, `max_dihedral_deg`, `volume`
+#'   and `backend`.
+#' @export
+mio_tetrahedralize <- function(mesh, backend = "auto", max_size = 0, max_volume = 0,
+                               grading = 0.3, optimize_steps = 3, max_cells = 5e7,
+                               face_array = "cad:face") {
+  .Call(R_mio_tetrahedralize, mesh, as.character(backend), as.numeric(max_size),
+        as.numeric(max_volume), as.numeric(grading), as.integer(optimize_steps),
+        as.numeric(max_cells), as.character(face_array))
 }
 
 #' Move a mesh's points back onto its CAD model
@@ -2767,7 +2856,8 @@ mio_boundary_layer <- function(mesh, first_height, num_layers = 3, growth = 1.2,
 #' @param face_array,edge_array The cell data naming each cell's face and edge.
 #' @param max_distance A point farther than this stays (0: no limit).
 #' @param trim_samples Samples per knot span when testing a face's trims.
-#' @return A list: `mesh`, `num_projected`, `num_on_edges`, `num_corners`,
+#' @return A list: `mesh`, `num_projected`, `num_on_edges`, `num_on_curves`
+#'   (of those on edges, onto the edge's own 3-D curve), `num_corners`,
 #'   `num_ambiguous`, `num_too_far`, `num_failed`, `num_outside_trim`,
 #'   `max_move` and `outside_trim` (1-based points projected outside their
 #'   face's trims, kept, never clamped).

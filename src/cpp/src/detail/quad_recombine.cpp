@@ -91,8 +91,11 @@ double quad_scaled_jacobian(const double* pX, const std::array<std::int64_t, 4>&
     return sj;
 }
 
-double quad_recombine_quality(const double* pX, const std::array<std::int64_t, 4>& rQ) {
-    const auto p = qr_points(pX, rQ);
+namespace {
+
+/// `quad_recombine_quality` of a quad given by its corners.
+double qr_quality(const std::array<QrV3, 4>& rP) {
+    const auto& p = rP;
     const QrV3 n = qr_normal(p);
     double q = 1.0;
     for (std::size_t i = 0; i < 4; ++i) {
@@ -107,9 +110,40 @@ double quad_recombine_quality(const double* pX, const std::array<std::int64_t, 4
     return std::max(0.0, q);
 }
 
+}  // namespace
+
+double quad_recombine_quality(const double* pX, const std::array<std::int64_t, 4>& rQ) {
+    return qr_quality(qr_points(pX, rQ));
+}
+
 namespace {
 
 using QrEdge = MatchingEdge;
+
+/// Whether quad `rQ`, split through its edges' midpoints `rMid` and their
+/// mean into four, has all four meet the floor `MinQuality`: a corner the
+/// floor admits near a straight angle (150 degrees on the sphere) turns
+/// past it once the midpoints lie on a curved surface and the centre is
+/// lifted onto it (all-quad, roadmap 6.8). A side without a midpoint leaves
+/// the quad as it is.
+bool qr_splits_well(const double* pX, const std::array<std::int64_t, 4>& rQ,
+                    const std::map<std::pair<std::int64_t, std::int64_t>, std::int64_t>& rMid,
+                    double MinQuality) {
+    std::array<QrV3, 4> mid{};
+    QrV3 centre{0.0, 0.0, 0.0};
+    for (std::size_t i = 0; i < 4; ++i) {
+        const auto it = rMid.find(std::minmax(rQ[i], rQ[(i + 1) % 4]));
+        if (it == rMid.end())
+            return true;
+        mid[i] = qr_at(pX, it->second);
+        for (std::size_t k = 0; k < 3; ++k)
+            centre[k] += 0.25 * mid[i][k];
+    }
+    for (std::size_t i = 0; i < 4; ++i)
+        if (!(qr_quality({qr_at(pX, rQ[i]), mid[i], centre, mid[(i + 3) % 4]}) >= MinQuality))
+            return false;
+    return true;
+}
 
 // Triangles a face is matched in at once: the matching is exact inside a
 // patch, and its cost grows faster than linearly with the patch (measured on
@@ -221,7 +255,11 @@ std::vector<std::int64_t> qr_patched_matching(std::int64_t N, const std::vector<
 
 QuadRecombineResult quad_recombine(const std::vector<std::array<std::int64_t, 3>>& rTris,
                                    const std::vector<std::int64_t>& rGroup, const double* pX,
-                                   double MinQuality, QuadPairing Pairing) {
+                                   double MinQuality, QuadPairing Pairing,
+                                   const std::vector<std::array<std::int64_t, 3>>* pSideCurve,
+                                   const std::set<std::pair<std::int64_t, std::int64_t>>* pFixed,
+                                   const std::map<std::pair<std::int64_t, std::int64_t>,
+                                                  std::int64_t>* pMidpoint) {
     QuadRecombineResult out;
     // Each directed edge's triangle; an interior edge has both directions.
     std::map<std::pair<std::int64_t, std::int64_t>, std::size_t> of_edge;
@@ -249,6 +287,8 @@ QuadRecombineResult quad_recombine(const std::vector<std::array<std::int64_t, 3>
         const std::size_t t2 = it->second;
         if (t1 == t2 || rGroup[t1] != rGroup[t2])
             continue;
+        if (pFixed && pFixed->count({a, b}) > 0)
+            continue;
         // The third points: c of (a, b, c), d of (b, a, d).
         std::int64_t c = -1, d = -1;
         for (std::size_t k = 0; k < 3; ++k) {
@@ -259,14 +299,32 @@ QuadRecombineResult quad_recombine(const std::vector<std::array<std::int64_t, 3>
         }
         if (c < 0 || d < 0 || c == d)
             continue;
+        if (pSideCurve) {
+            // The curve of triangle T's side from P to Q.
+            const auto curve = [&](std::size_t T, std::int64_t P, std::int64_t Q) {
+                for (std::size_t k = 0; k < 3; ++k)
+                    if (rTris[T][k] == P && rTris[T][(k + 1) % 3] == Q)
+                        return (*pSideCurve)[T][k];
+                return std::int64_t{-1};
+            };
+            // Corner a: sides (a, d) of t2 and (c, a) of t1; corner b: (d, b)
+            // of t2 and (b, c) of t1.
+            const std::int64_t ad = curve(t2, a, d), ca = curve(t1, c, a);
+            const std::int64_t db = curve(t2, d, b), bc = curve(t1, b, c);
+            if ((ad >= 0 && ad == ca) || (db >= 0 && db == bc))
+                continue;
+        }
         const std::array<std::int64_t, 4> quad{a, d, b, c};
         const QrV3 n1 = normal_of(t1), n2 = normal_of(t2);
         const double l = qr_norm(n1) * qr_norm(n2);
         if (!(l > 0.0))
             continue;
         const double q = quad_recombine_quality(pX, quad) * std::max(0.0, qr_dot(n1, n2) / l);
-        if (q >= MinQuality && q > 0.0)
-            cand.push_back({q, a, b, std::min(t1, t2), std::max(t1, t2), quad});
+        if (!(q >= MinQuality && q > 0.0))
+            continue;
+        if (pMidpoint && !qr_splits_well(pX, quad, *pMidpoint, MinQuality))
+            continue;
+        cand.push_back({q, a, b, std::min(t1, t2), std::max(t1, t2), quad});
     }
     std::sort(cand.begin(), cand.end(), [](const Candidate& rX, const Candidate& rY) {
         if (rX.mQuality != rY.mQuality)

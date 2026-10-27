@@ -125,6 +125,7 @@ if TYPE_CHECKING:
     from ._decimate_volume import decimate_volume
     from ._diff import diff, meshes_equal
     from ._error import estimate_error
+    from ._error_size import error_size
     from ._feature_edges import feature_edges
     from ._fit_cad import fit_cad
     from ._fit_primitives import fit_primitives
@@ -293,6 +294,7 @@ _LAZY_ATTRS = {
     "diff": "_diff",
     "meshes_equal": "_diff",
     "estimate_error": "_error",
+    "error_size": "_error_size",
     "feature_edges": "_feature_edges",
     "fit_cad": "_fit_cad",
     "fit_primitives": "_fit_primitives",
@@ -564,6 +566,7 @@ __all__ = [
     "split_interface",
     "data_integrate",
     "estimate_error",
+    "error_size",
     "slice",
     "isosurface",
     "transform",

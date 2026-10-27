@@ -41,6 +41,7 @@ from ._data_manage import data_drop, data_keep, data_rename
 from ._decimate import decimate
 from ._decimate_volume import decimate_volume
 from ._error import estimate_error
+from ._error_size import error_size
 from ._feature_edges import feature_edges
 from ._fit_cad import DEFAULT_RANSAC_SEED, fit_cad
 from ._fit_primitives import TYPES, fit_primitives, types_mask
@@ -353,6 +354,7 @@ _OP_TABLE = {
         "Tolerance",
     ),
     "EstimateError": ("Array", "Method", "Marking", "MarkingValue", "Output", "Marked"),
+    "ErrorSize": ("Array", "TargetError", "Order", "MinSize", "MaxSize", "Output"),
     "Remesh": (
         "NumClusters",
         "Subdivide",
@@ -1804,6 +1806,31 @@ def _apply_step(mesh, step, steps, warnings):
                 f"estimate_error: {report['num_skipped']} cell(s) could not be "
                 "evaluated and are NaN"
             )
+    elif op == "ErrorSize":
+        # A pure data step (roadmap 6.10.2): EstimateError's per-cell
+        # indicator becomes the per-point size a later mesh_cad_surface's
+        # background reads. Geometry is untouched.
+        mesh, report = error_size(
+            mesh,
+            _text(step, "Array", "error:zz"),
+            target_error=_number(step, "TargetError", 0.0),
+            order=_number(step, "Order", 1.0),
+            min_size=_number(step, "MinSize", 0.0),
+            max_size=_number(step, "MaxSize", 0.0),
+            output=_text(step, "Output", "size"),
+            overwrite=True,
+            return_report=True,
+        )
+        entry["NumCells"] = report["num_cells"]
+        entry["NumSkipped"] = report["num_skipped"]
+        entry["NumClamped"] = report["num_clamped"]
+        entry["MinSize"] = report["min_size"]
+        entry["MaxSize"] = report["max_size"]
+        if report["num_skipped"] > 0:
+            warnings.append(
+                f"error_size: {report['num_skipped']} cell(s) have no finite size "
+                "and size no point"
+            )
     elif op == "Remesh":
         # Unlike every other step, the output has NO correspondence to the
         # input: new points, new connectivity. point_data/cell_data/regions
@@ -2228,6 +2255,7 @@ def _project_to_cad_step(mesh, step, entry, model):
     entry.update(
         NumProjected=float(report["num_projected"]),
         NumOnEdges=float(report["num_on_edges"]),
+        NumOnCurves=float(report["num_on_curves"]),
         NumOutsideTrim=float(report["num_outside_trim"]),
         MaxMove=float(report["max_move"]),
     )
