@@ -2952,6 +2952,12 @@ typedef enum mio_octree_mesh_skin_grading {
     MIO_OCTREE_MESH_UNIFORM = 1 /**< one level along the skin: the 10.7-164.8 degree bound */
 } mio_octree_mesh_skin_grading;
 
+/** How a hexahedral mio_octree_mesh output grades. */
+typedef enum mio_octree_mesh_hex_grading {
+    MIO_OCTREE_MESH_HEX_UNIFORM = 0, /**< one grid at the skin's size */
+    MIO_OCTREE_MESH_HEX_GRADED = 1   /**< the octree's grading, through dual transition schemes */
+} mio_octree_mesh_hex_grading;
+
 /** Which leaves a castellated mio_octree_mesh output keeps. */
 typedef enum mio_octree_mesh_fill {
     MIO_OCTREE_MESH_FILL_ALL = 0,    /**< every leaf */
@@ -3004,7 +3010,7 @@ typedef struct mio_octree_mesh_opts {
     int32_t attach_distance;      /**< nonzero (default): attach sdf:distance */
     int32_t attach_quality;       /**< nonzero: attach the quality:* cell data */
     int32_t pillow;               /**< nonzero (default): hexahedral output's boundary layer */
-    int32_t reserved32;           /**< must be zero */
+    int32_t hex_grading;          /**< a mio_octree_mesh_hex_grading (hexahedral; UNIFORM) */
     int64_t reserved[4];          /**< must be zero; room for additive growth */
 } mio_octree_mesh_opts;
 

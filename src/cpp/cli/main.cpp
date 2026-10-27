@@ -4587,6 +4587,7 @@ int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
                                   {"no-distance", {}, false},
                                   {"attach-quality", {}, false},
                                   {"no-pillow", {}, false},
+                                  {"hex-grading", {}, true},
                                   {"untangle-iterations", {}, true},
                                   {"max-cells", {}, true},
                                   {"max-tets", {}, true},
@@ -4641,6 +4642,7 @@ int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
     o.mAttachDistance = !has_flag(p, "no-distance");
     o.mAttachQuality = has_flag(p, "attach-quality");
     o.mPillow = !has_flag(p, "no-pillow");
+    o.mHexGrading = mio::octree_mesh_hex_grading_from_name(opt_value(p, "hex-grading", "uniform"));
     o.mUntangleIterations = integer("untangle-iterations", o.mUntangleIterations);
     o.mMaxCells = integer("max-cells", o.mMaxCells);
     o.mMaxTets = integer("max-tets", o.mMaxTets);

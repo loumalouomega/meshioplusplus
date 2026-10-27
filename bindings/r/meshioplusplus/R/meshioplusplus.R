@@ -3559,6 +3559,9 @@ mio_octree <- function(mesh, root_cells = NULL, min_level = 0, max_level = 4,
 #' @param attach_quality Attach the `quality:*` cell data (default `FALSE`).
 #' @param pillow Hexahedral output: a boundary layer of hexahedra (default
 #'   `TRUE`).
+#' @param hex_grading Hexahedral output: `"uniform"` (default, one grid at the
+#'   skin's size) or `"graded"` (the octree's grading, through dual transition
+#'   schemes).
 #' @param untangle_iterations Hexahedral output: untangling iterations (default
 #'   `50`).
 #' @param max_cells Refuse an octree with more leaves (default `20000000`).
@@ -3581,8 +3584,8 @@ mio_octree_mesh <- function(mesh, output = NULL, min_size = NULL, max_size = NUL
                             fit_iterations = NULL, dihedral_floor_guard = NULL,
                             fill = NULL, keep_outside = NULL, attach_distance = NULL,
                             attach_quality = NULL, pillow = NULL,
-                            untangle_iterations = NULL, max_cells = NULL,
-                            max_tets = NULL) {
+                            hex_grading = NULL, untangle_iterations = NULL,
+                            max_cells = NULL, max_tets = NULL) {
   code <- function(value, table, what) {
     if (is.null(value)) {
       return(NULL)
@@ -3609,7 +3612,8 @@ mio_octree_mesh <- function(mesh, output = NULL, min_size = NULL, max_size = NUL
     num(alpha_long), num(alpha_short), num(max_level), num(grading_layers),
     num(fit_iterations), num(untangle_iterations), num(max_cells), num(max_tets),
     flag(gap_outside), flag(preserve_features), flag(dihedral_floor_guard),
-    flag(keep_outside), flag(attach_distance), flag(attach_quality), flag(pillow)
+    flag(keep_outside), flag(attach_distance), flag(attach_quality), flag(pillow),
+    code(hex_grading, c(uniform = 0L, graded = 1L), "hex grading")
   )
   res$warnings <- if (nzchar(res$warnings)) {
     strsplit(res$warnings, "\n", fixed = TRUE)[[1]]

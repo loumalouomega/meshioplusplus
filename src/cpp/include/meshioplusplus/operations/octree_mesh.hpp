@@ -122,6 +122,15 @@ enum class OctreeMeshSkinGrading {
     Uniform = 1,
 };
 
+/// How a hexahedral output grades.
+enum class OctreeMeshHexGrading {
+    /// One grid at the skin's size everywhere.
+    Uniform = 0,
+    /// The octree's own grading, made conforming by the dual transition
+    /// schemes of Livesu, Pitzalis and Cherchi (2022).
+    Graded = 1,
+};
+
 /// Which leaves a castellated output keeps.
 enum class OctreeMeshFill {
     All = 0,     ///< every leaf
@@ -136,6 +145,8 @@ MESHIOPLUSPLUS_API OctreeMeshConformity octree_mesh_conformity_from_name(const s
 /// Parse an `OctreeMeshSkinGrading` name (`graded`, `uniform`).
 MESHIOPLUSPLUS_API OctreeMeshSkinGrading
 octree_mesh_skin_grading_from_name(const std::string& rName);
+/// Parse an `OctreeMeshHexGrading` name (`uniform`, `graded`).
+MESHIOPLUSPLUS_API OctreeMeshHexGrading octree_mesh_hex_grading_from_name(const std::string& rName);
 /// Parse an `OctreeMeshFill` name (`all`, `inside`, `cover`).
 MESHIOPLUSPLUS_API OctreeMeshFill octree_mesh_fill_from_name(const std::string& rName);
 /// The name of an `OctreeMeshOutput` (`castellated`, `tet`, `hex`).
@@ -213,6 +224,8 @@ struct OctreeMeshOptions {
     bool mAttachQuality = false;
     /// Hexahedral output: insert a layer of hexahedra along the boundary.
     bool mPillow = true;
+    /// Hexahedral output: one grid at the skin's size, or the octree's grading.
+    OctreeMeshHexGrading mHexGrading = OctreeMeshHexGrading::Uniform;
     /// Hexahedral output: untangling iterations.
     std::int64_t mUntangleIterations = 50;
     /// Refuse an octree with more leaves than this.

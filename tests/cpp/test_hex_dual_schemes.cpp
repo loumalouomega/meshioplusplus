@@ -34,6 +34,7 @@
 
 // Project includes
 #include "../../src/cpp/src/detail/hex_dual_schemes.hpp"
+#include "../../src/cpp/src/detail/hex_fit.hpp"
 #include "../../src/cpp/src/detail/linear_octree.hpp"
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/operations/check_conformity.hpp"
@@ -215,4 +216,21 @@ TEST(HexDualSchemes, RandomTrees) {
         }
     }
     EXPECT_EQ(failed, 0) << first;
+}
+
+TEST(HexDualSchemes, TheDualOfAShellIsFairWithoutFitting) {
+    // Centroid duals of the schemes: the transition hexahedra's worst corner
+    // stays above a quarter (0.283 here, 1 away from the transitions).
+    const d::LinearOctree t = hds_tree({{2, 2, 2}}, 5, 2, [](double X, double Y, double Z) {
+        const double r =
+            std::sqrt((X - 0.5) * (X - 0.5) + (Y - 0.5) * (Y - 0.5) + (Z - 0.5) * (Z - 0.5));
+        return std::fabs(r - 0.3) < 0.12;
+    });
+    const d::HexDualMesh dual = d::hex_dual_mesh(t);
+    double worst = 1.0;
+    for (const auto& h : dual.mHexes)
+        worst = std::min(worst, d::hex_min_scaled_jacobian(dual.mPoints, h));
+    EXPECT_GT(worst, 0.25);
+    EXPECT_GT(dual.mNumSchemes[static_cast<std::size_t>(d::HexTransition::Flat)], 0);
+    EXPECT_GT(dual.mNumSchemes[static_cast<std::size_t>(d::HexTransition::Edge)], 0);
 }

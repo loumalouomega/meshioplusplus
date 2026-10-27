@@ -2761,7 +2761,7 @@ SEXP R_mio_octree_mesh(SEXP mesh, SEXP output, SEXP conformity, SEXP skin_gradin
                        SEXP fit_iterations, SEXP untangle_iterations, SEXP max_cells,
                        SEXP max_tets, SEXP gap_outside, SEXP preserve_features,
                        SEXP dihedral_floor_guard, SEXP keep_outside, SEXP attach_distance,
-                       SEXP attach_quality, SEXP pillow) {
+                       SEXP attach_quality, SEXP pillow, SEXP hex_grading) {
     mio_octree_mesh_opts opts;
     mio_octree_mesh_opts_init(&opts);
 
@@ -2777,6 +2777,7 @@ SEXP R_mio_octree_mesh(SEXP mesh, SEXP output, SEXP conformity, SEXP skin_gradin
     R_OCTREE_MESH_ENUM(conformity);
     R_OCTREE_MESH_ENUM(skin_grading);
     R_OCTREE_MESH_ENUM(fill);
+    R_OCTREE_MESH_ENUM(hex_grading);
     R_OCTREE_MESH_DOUBLE(min_size);
     R_OCTREE_MESH_DOUBLE(max_size);
     R_OCTREE_MESH_DOUBLE(padding);

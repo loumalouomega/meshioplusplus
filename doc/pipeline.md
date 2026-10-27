@@ -231,7 +231,7 @@ Like `Voxelize` it **replaces** its input's geometry. See [`doc/octree.md`](octr
 { "Op": "OctreeMesh", "Output": "castellated", "MinSize": 0.01, "MaxSize": 0.2, "Fill": "inside" }
 ```
 
-Keys: `Output`, `MinSize`, `MaxSize`, `MaxLevel`, `Bounds`, `Padding`, `PaddingRelative`, `CurvatureAngle`, `FeatureAngle`, `CornerAngle`, `FeatureSize`, `GapCells`, `GapOutside`, `SizeArray`, `SurfaceRegion`, `GradingLayers`, `SkinGrading`, `SurfaceSize`, `WindingThreshold`, `WindingBeta`, `Conformity`, `AlphaLong`, `AlphaShort`, `PreserveFeatures`, `FitIterations`, `DihedralFloorGuard`, `Fill`, `KeepOutside`, `AttachDistance`, `AttachQuality`, `Pillow`, `UntangleIterations`, `MaxCells`, `MaxTets`. Reports `NumLeaves`, `NumCells`, `NumInside`, `NumSurrogateFaces`, `NumHanging`, `NumInverted`, `MinDihedral` and `MinScaledJacobian`.
+Keys: `Output`, `MinSize`, `MaxSize`, `MaxLevel`, `Bounds`, `Padding`, `PaddingRelative`, `CurvatureAngle`, `FeatureAngle`, `CornerAngle`, `FeatureSize`, `GapCells`, `GapOutside`, `SizeArray`, `SurfaceRegion`, `GradingLayers`, `SkinGrading`, `SurfaceSize`, `WindingThreshold`, `WindingBeta`, `Conformity`, `AlphaLong`, `AlphaShort`, `PreserveFeatures`, `FitIterations`, `DihedralFloorGuard`, `Fill`, `KeepOutside`, `AttachDistance`, `AttachQuality`, `Pillow`, `HexGrading`, `UntangleIterations`, `MaxCells`, `MaxTets`. Reports `NumLeaves`, `NumCells`, `NumInside`, `NumSurrogateFaces`, `NumHanging`, `NumInverted`, `MinDihedral` and `MinScaledJacobian`.
 
 It **replaces** its input's geometry with a volume mesh of the skin's inside. See [`doc/octree_mesh.md`](octree_mesh.md).
 

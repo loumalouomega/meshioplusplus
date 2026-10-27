@@ -1019,6 +1019,14 @@ int main(int argc, char** argv) {
             o.mMaxSize = 8.0 * octree_step;
             of(pD, mio::octree_mesh(surface, o).mMesh);
         });
+        row("octree_mesh_hex_graded", [&](MeshDigest* pD) {
+            mio::OctreeMeshOptions o;
+            o.mOutput = mio::OctreeMeshOutput::Hexa;
+            o.mHexGrading = mio::OctreeMeshHexGrading::Graded;
+            o.mMinSize = 2.0 * octree_step;
+            o.mMaxSize = 8.0 * octree_step;
+            of(pD, mio::octree_mesh(surface, o).mMesh);
+        });
         // The CAD models of the mesh_cad_surface rows, built inside each row's
         // timed body as before.
         const auto cad_box = [&]() {

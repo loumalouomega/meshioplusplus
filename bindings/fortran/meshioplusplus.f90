@@ -1086,7 +1086,7 @@ module meshioplusplus
         integer(c_int32_t) :: attach_distance = 1
         integer(c_int32_t) :: attach_quality = 0
         integer(c_int32_t) :: pillow = 1
-        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int32_t) :: hex_grading = 0
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
@@ -9274,8 +9274,9 @@ contains
     !> from `mio_octree_mesh_opts_init`, i.e. from the C side. The string
     !> options are `output` ('tet' default, 'castellated' or 'hex'),
     !> `conformity` ('stuffing' default or 'cleaving'), `skin_grading`
-    !> ('graded' default or 'uniform') and `fill` ('inside' default, 'all' or
-    !> 'cover'); an unknown one fails by name. The whole summary comes back
+    !> ('graded' default or 'uniform'), `fill` ('inside' default, 'all' or
+    !> 'cover') and `hex_grading` ('uniform' default or 'graded', the hexahedral
+    !> output); an unknown one fails by name. The whole summary comes back
     !> through the optional `report` (a `mio_octree_mesh_report`), and the
     !> run's warnings, one per line, through the optional `warnings`.
     function mesh_octree_mesh(self, output, min_size, max_size, max_level, bounds, padding, &
@@ -9285,10 +9286,11 @@ contains
                               surface_size, winding_threshold, winding_beta, conformity, &
                               alpha_long, alpha_short, preserve_features, fit_iterations, &
                               dihedral_floor_guard, fill, keep_outside, attach_distance, &
-                              attach_quality, pillow, untangle_iterations, max_cells, &
-                              max_tets, report, warnings, stat, errmsg) result(out)
+                              attach_quality, pillow, hex_grading, untangle_iterations, &
+                              max_cells, max_tets, report, warnings, stat, errmsg) result(out)
         class(mio_mesh), intent(in) :: self
         character(*), intent(in), optional :: output, skin_grading, conformity, fill
+        character(*), intent(in), optional :: hex_grading
         character(*), intent(in), optional :: size_array, surface_region
         real(real64), intent(in), optional :: min_size, max_size, bounds(6)
         real(real64), intent(in), optional :: padding, padding_relative
@@ -9344,6 +9346,16 @@ contains
             case ('uniform'); opts%skin_grading = 1
             case default
                 call handle_failure('octree_mesh', 'unknown skin grading '//trim(skin_grading), &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+        if (present(hex_grading)) then
+            select case (trim(hex_grading))
+            case ('', 'uniform'); opts%hex_grading = 0
+            case ('graded'); opts%hex_grading = 1
+            case default
+                call handle_failure('octree_mesh', 'unknown hex grading '//trim(hex_grading), &
                                     stat, errmsg)
                 return
             end select

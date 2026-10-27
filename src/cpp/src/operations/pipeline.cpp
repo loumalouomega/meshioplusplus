@@ -480,6 +480,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "AttachDistance",
           "AttachQuality",
           "Pillow",
+          "HexGrading",
           "UntangleIterations",
           "MaxCells",
           "MaxTets"}},
@@ -2314,6 +2315,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mAttachDistance = pipe_flag(rStep, "AttachDistance", true);
         opts.mAttachQuality = pipe_flag(rStep, "AttachQuality", false);
         opts.mPillow = pipe_flag(rStep, "Pillow", true);
+        opts.mHexGrading =
+            octree_mesh_hex_grading_from_name(pipe_text(rStep, "HexGrading", "uniform"));
         opts.mUntangleIterations =
             static_cast<std::int64_t>(pipe_number(rStep, "UntangleIterations", 50.0));
         opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));

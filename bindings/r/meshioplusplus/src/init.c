@@ -117,7 +117,7 @@ extern SEXP R_mio_octree(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, S
 extern SEXP R_mio_octree_mesh(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
                               SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
                               SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
-                              SEXP, SEXP);
+                              SEXP, SEXP, SEXP);
 extern SEXP R_mio_compute_sdf(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
                               SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_surface_watertight_check(SEXP);
@@ -322,7 +322,7 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_reference_cells, 2),
                                               CALLDEF(R_mio_voxelize, 12),
                                               CALLDEF(R_mio_octree, 23),
-                                              CALLDEF(R_mio_octree_mesh, 35),
+                                              CALLDEF(R_mio_octree_mesh, 36),
                                               CALLDEF(R_mio_compute_sdf, 16),
                                               CALLDEF(R_mio_surface_watertight_check, 1),
                                               CALLDEF(R_mio_sample_distance, 5),

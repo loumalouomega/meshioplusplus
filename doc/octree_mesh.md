@@ -97,7 +97,7 @@ The default output is a conforming, graded tetrahedral mesh of the skin's inside
 
 `output="hex"` gives a mesh of hexahedra only, in four stages.
 
-**The grid.** The cells of edge `h` (the skin size: `surface_size`, or the smallest size the field asks for on the skin, rounded down to a level of the frame) whose centre is inside are kept. The grid is uniform: the octree's grading is not carried into the hexahedra yet (the graded dual of Livesu, Pitzalis and Cherchi's templates is [roadmap](roadmap.md) work). `max_cells` caps its cell count.
+**The grid.** With `hex_grading="uniform"` (the default), the cells of edge `h` (the skin size: `surface_size`, or the smallest size the field asks for on the skin, rounded down to a level of the frame) whose centre is inside are kept, one grid everywhere. `max_cells` caps its cell count. With `hex_grading="graded"` the hexahedra follow the octree's grading instead (below).
 
 **Manifold repair.** Kept cells may touch along an edge or at a corner only, which no hexahedral mesh with a manifold boundary can have. Around every grid vertex the kept and the empty cells of its 2×2×2 block must each be face-connected; where they are not, the empty cell with the largest winding number is added, until every block passes. The boundary is then a closed 2-manifold of quadrilaterals (the tests check every block by brute force and the boundary's volume by the divergence theorem).
 
@@ -110,11 +110,22 @@ The default output is a conforming, graded tetrahedral mesh of the skin's inside
 | `inside` | cell region | every hexahedron |
 | `boundary` | side region | the boundary faces (with `pillow`, the outer face, facet 5, of each pillow cell) |
 | `feature_corners`, `feature_edges` | point regions | the nodes on the skin's corners and feature chains |
-| `octree:level` | cell data | the grid's level |
+| `octree:level` | cell data | the grid's level (graded: the finest level around the hexahedron's centre) |
 | `octree_mesh:pillow` | cell data | 1 for a pillow cell |
 | `sdf:distance` | point data | the signed distance to the skin |
 
-The report's `min_scaled_jacobian` is the smallest over the cells, `surface_level` is the grid's level, and `num_optimized_moves` counts the untangler's moves; a smallest corner scaled Jacobian below 0.2, or a corner left inverted, is reported in `warnings`. On a sphere, a torus and a cube the tests find it above 0.4 with the pillow (0.28 on the cube, whose pillow cells bend round its edges), every corner and edge kept, the boundary closed and within 0.05 of the skin.
+**Graded hexahedra.** `hex_grading="graded"` carries the octree's grading into the hexahedra by the dual method of Livesu, Pitzalis and Cherchi ("Optimal dual schemes for adaptive grid based hexmeshing", ACM TOG 41(2), 2022), with the scheme detection, marking and orientation ported from [CinoLib](https://github.com/mlivesu/cinolib) (MIT) and the pairing of Pitzalis, Livesu, Cherchi, Gobbetti and Scateni ("Generalized adaptive refinement for grid-based hexahedral meshing", ACM TOG 40(6), 2021). The octree is paired (the roots split once, and every leaf with a split sibling split, until the eight children of every parent are all leaves or all split) and stays balanced across faces, edges and corners. A transition vertex is the centre of a face of a parent whose children are leaves, when the leaves across that face are one level finer; every coarse leaf around the transitions is replaced by one of the eight schemes for strongly balanced grids (flat, flat beside a convex turn, one to three convex turns, the concave edge, and the centre and side of a concave corner), placed by the transition vertices it holds. Coordinates are integers on a lattice of a twentieth of the finest cell, so the schemes weld by exact keys and every rotation is a signed permutation. The result is a conforming polyhedral mesh whose every interior vertex has eight cells meeting as a cube's corners, so its dual is all hexahedra: one per interior vertex, with a corner at the centroid of each cell around it. Both properties are checked, and a configuration the port does not cover is refused by name (`Unsupported`), never meshed wrong; the five schemes for weakly balanced grids are not ported. A dual hexahedron is kept when the vertex it surrounds is more than a tenth of its cell inside the skin: a vertex on a skin that lies on a lattice plane, such as a cylinder's cap, would otherwise be kept by a hair and pressed flat by the pillow. The manifold repair works on the vertex stars of the unstructured mesh (the empty hexahedron with the largest winding number first), and the pillow, the feature snap and the untangler use each node's own size, its mean edge along the boundary. The raw dual's transition hexahedra have corners down to a scaled Jacobian of 0.28. `octree:level` is the finest level of the leaves around each hexahedron's centre.
+
+| skin | uniform: hexahedra, min. scaled Jacobian, Hausdorff | graded: hexahedra, min. scaled Jacobian, Hausdorff |
+|---|---|---|
+| sphere, `curvature_angle=5`, `max_size=0.5` | 22 128, 0.51, 0.0015 | 18 281, 0.28, 0.0015 |
+| capped cylinder (radius 0.5, height 2), `min_size=0.05` | 16 472, 0.003, 0.0023 | 7 461, 0.01, 0.0052 |
+| torus (1, 0.4), `min_size=0.05` | 5 440, 0.58, 0.0076 | 4 936, 0.60, 0.0086 |
+| Stanford bunny, `min_size=1.5`, `max_size=8`, `feature_angle=60` | 101 761, −0.16, 0.38 | 71 983, −0.62, 1.48 |
+
+No hexahedron of either has a non-positive volume. The savings grow with the room the tree has to coarsen: 55% on the cylinder, whose skin grades from its rims to its caps, 17% on the finely curved sphere and 9% on the thin torus, whose tube leaves little inside to coarsen. Pairing and the balance across corners refine more than the castellated output's tree, and the boundary layer is as fine as the uniform grid's. On the scanned bunny both outputs keep corners of negative scaled Jacobian, which the warnings report; the graded one also misses the 191-point chain round the flat base, a skirt thinner than a cell, which the uniform grid happens to recover, hence its larger Hausdorff distance.
+
+The report's `min_scaled_jacobian` is the smallest over the cells, `surface_level` is the grid's level (graded: the finest level present), and `num_optimized_moves` counts the untangler's moves; a smallest corner scaled Jacobian below 0.2, or a corner left inverted, is reported in `warnings`. On a sphere, a torus and a cube the tests find it above 0.4 with the pillow (0.28 on the cube, whose pillow cells bend round its edges), every corner and edge kept, the boundary closed and within 0.05 of the skin.
 
 ![A sphere's hexahedra, cut open, coloured by pillow layer](/images/octree_mesh_hex.png)
 

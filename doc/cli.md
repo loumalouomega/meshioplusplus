@@ -2101,7 +2101,7 @@ meshioplusplus octree-mesh part.stl hexes.vtu --output hex --surface-size 0.05
 | `--no-preserve-features`, `--fit-iterations N`, `--no-dihedral-floor-guard` | feature snapping and optimisation |
 | `--fill all\|inside\|cover` | castellated output: every leaf, the inside ones, or inside and cut |
 | `--keep-outside`, `--no-distance`, `--attach-quality` | also mesh the outside; skip `sdf:*`; attach `quality:*` |
-| `--no-pillow`, `--untangle-iterations N` | hexahedral output |
+| `--no-pillow`, `--hex-grading uniform\|graded`, `--untangle-iterations N` | hexahedral output |
 | `--max-cells N` / `--max-tets N` | refuse above this many leaves / output cells |
 | `--json` | the report as JSON (without the timings, which vary from run to run) |
 

@@ -1,5 +1,12 @@
 from .._helpers import _writer_map, read, reader_map, write
-from .._octree_mesh import CONFORMITIES, FILLS, OUTPUTS, SKIN_GRADINGS, octree_mesh
+from .._octree_mesh import (
+    CONFORMITIES,
+    FILLS,
+    HEX_GRADINGS,
+    OUTPUTS,
+    SKIN_GRADINGS,
+    octree_mesh,
+)
 from ._json import emit_json
 
 
@@ -195,6 +202,13 @@ def add_args(parser):
         "--no-pillow", action="store_true", help="hexahedral output: no boundary layer"
     )
     parser.add_argument(
+        "--hex-grading",
+        type=str,
+        default="uniform",
+        choices=list(HEX_GRADINGS),
+        help="hexahedral output: one grid at the skin's size, or the octree's grading",
+    )
+    parser.add_argument(
         "--untangle-iterations",
         type=int,
         default=50,
@@ -256,6 +270,7 @@ def octree_mesh_cmd(args):
         attach_distance=not args.no_distance,
         attach_quality=args.attach_quality,
         pillow=not args.no_pillow,
+        hex_grading=args.hex_grading,
         untangle_iterations=args.untangle_iterations,
         max_cells=args.max_cells,
         max_tets=args.max_tets,

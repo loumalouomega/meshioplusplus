@@ -5538,6 +5538,11 @@ static_assert(sizeof(mio_octree_opts) == 176, "mio_octree_opts grew outside its 
 static_assert(sizeof(mio_octree_report) == 96, "mio_octree_report layout changed");
 static_assert(sizeof(mio_octree_mesh_opts) == 264,
               "mio_octree_mesh_opts grew outside its reserved tail");
+static_assert(offsetof(mio_octree_mesh_opts, hex_grading) == 228,
+              "mio_octree_mesh_opts layout changed");
+static_assert(static_cast<int>(meshioplusplus::OctreeMeshHexGrading::Graded) ==
+                  MIO_OCTREE_MESH_HEX_GRADED,
+              "mio_octree_mesh_hex_grading drifted from OctreeMeshHexGrading");
 static_assert(sizeof(mio_octree_mesh_report) == 392, "mio_octree_mesh_report layout changed");
 static_assert(offsetof(mio_octree_mesh_report, num_winding_skipped) == 328,
               "mio_octree_mesh_report layout changed");
@@ -5714,6 +5719,8 @@ meshioplusplus::OctreeMeshOptions capi_octree_mesh_options(const mio_octree_mesh
         check(rOpts.skin_grading, MIO_OCTREE_MESH_UNIFORM, "skin grading"));
     options.mFill = static_cast<meshioplusplus::OctreeMeshFill>(
         check(rOpts.fill, MIO_OCTREE_MESH_FILL_COVER, "fill"));
+    options.mHexGrading = static_cast<meshioplusplus::OctreeMeshHexGrading>(
+        check(rOpts.hex_grading, MIO_OCTREE_MESH_HEX_GRADED, "hex grading"));
     if (rOpts.bounds != nullptr)
         options.mBounds =
             std::array<double, 6>{{rOpts.bounds[0], rOpts.bounds[1], rOpts.bounds[2],
@@ -5900,6 +5907,7 @@ void mio_octree_mesh_opts_init(mio_octree_mesh_opts* opts) {
     opts->attach_distance = d.mAttachDistance ? 1 : 0;
     opts->attach_quality = d.mAttachQuality ? 1 : 0;
     opts->pillow = d.mPillow ? 1 : 0;
+    opts->hex_grading = static_cast<std::int32_t>(d.mHexGrading);
 }
 
 void mio_compute_sdf_opts_init(mio_compute_sdf_opts* opts) {

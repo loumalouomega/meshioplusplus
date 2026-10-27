@@ -4266,11 +4266,12 @@ val octree_js(const val& rMeshObj, const val& rRootCells, double minLevel, doubl
  *   skinGrading, surfaceSize, windingThreshold, windingBeta, conformity,
  *   alphaLong, alphaShort, preserveFeatures, fitIterations,
  *   dihedralFloorGuard, fill, keepOutside, attachDistance, attachQuality,
- *   pillow, untangleIterations, maxCells, maxTets}`, every key optional
+ *   pillow, hexGrading, untangleIterations, maxCells, maxTets}`, every key optional
  *   (an unknown key is an error) and defaulting to `OctreeMeshOptions`;
  *   `output` is `'tet'`, `'castellated'` or `'hex'`, `skinGrading`
  *   `'graded'` or `'uniform'`, `conformity` `'stuffing'` or `'cleaving'`,
- *   `fill` `'inside'`, `'all'` or `'cover'`, `bounds` six numbers.
+ *   `fill` `'inside'`, `'all'` or `'cover'`, `hexGrading` `'uniform'` or
+ *   `'graded'`, `bounds` six numbers.
  * @return `mesh` and every scalar `OctreeMeshResult` field in camelCase, plus
  *   `rootCells`, `leavesPerLevel`, `origin`, `timings` (`[stage, seconds]`
  *   pairs) and `warnings` as arrays.
@@ -4311,6 +4312,7 @@ val octree_mesh_js(const val& rMeshObj, const val& rOptions) {
                                  "attachDistance",
                                  "attachQuality",
                                  "pillow",
+                                 "hexGrading",
                                  "untangleIterations",
                                  "maxCells",
                                  "maxTets"});
@@ -4397,6 +4399,9 @@ val octree_mesh_js(const val& rMeshObj, const val& rOptions) {
                 options.mAttachQuality = flag("attachQuality");
             if (has("pillow"))
                 options.mPillow = flag("pillow");
+            if (has("hexGrading"))
+                options.mHexGrading =
+                    meshioplusplus::octree_mesh_hex_grading_from_name(text("hexGrading"));
             if (has("untangleIterations"))
                 options.mUntangleIterations = integer("untangleIterations");
             if (has("maxCells"))

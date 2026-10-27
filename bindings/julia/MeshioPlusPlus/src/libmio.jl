@@ -410,7 +410,7 @@ struct _COctreeMeshOpts
     attach_distance::Int32
     attach_quality::Int32
     pillow::Int32
-    reserved32::Int32
+    hex_grading::Int32
     reserved::NTuple{4,Int64}
 end
 

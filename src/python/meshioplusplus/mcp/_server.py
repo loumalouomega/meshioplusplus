@@ -1104,6 +1104,7 @@ def _register_operations(server: FastMCP) -> None:
         attach_distance: bool = True,
         attach_quality: bool = False,
         pillow: bool = True,
+        hex_grading: str = "uniform",
         untangle_iterations: int = 50,
         max_cells: int = 20000000,
         max_tets: int = 100000000,
@@ -1123,6 +1124,8 @@ def _register_operations(server: FastMCP) -> None:
         winding_threshold, so holes and self-intersections are tolerated.
         skin_grading='uniform' keeps the skin at one level (the stuffing angle
         guarantee). fill='all'/'inside'/'cover' chooses the castellated leaves.
+        hex_grading='graded' grades the hexahedra with the octree (dual
+        transition schemes) instead of one grid at the skin's size.
         Reports the frame, leaf and cell counts, the quality (dihedral angles,
         scaled Jacobian, histograms), feature recovery, timings and warnings."""
         return _guard(
@@ -1162,6 +1165,7 @@ def _register_operations(server: FastMCP) -> None:
             attach_distance=attach_distance,
             attach_quality=attach_quality,
             pillow=pillow,
+            hex_grading=hex_grading,
             untangle_iterations=untangle_iterations,
             max_cells=max_cells,
             max_tets=max_tets,

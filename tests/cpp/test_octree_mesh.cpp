@@ -31,6 +31,7 @@
 #include <cstdlib>
 #include <map>
 #include <stdexcept>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -911,4 +912,73 @@ TEST(OctreeMeshHex, RefusesAGridAboveMaxCellsByName) {
     } catch (const std::invalid_argument& rE) {
         EXPECT_NE(std::string(rE.what()).find("max_cells"), std::string::npos);
     }
+}
+
+TEST(OctreeMeshHex, GradedHexahedraFollowTheOctree) {
+    // The sphere at a fine curvature angle and a capped cylinder whose skin
+    // grades from its rims to its caps: the graded dual has fewer hexahedra
+    // than one grid at the skin's size, none inverted, a closed manifold
+    // boundary on the skin, and every corner of positive scaled Jacobian.
+    struct Case {
+        mio::Mesh mSkin;
+        mio::OctreeMeshOptions mOptions;
+    };
+    std::vector<Case> cases;
+    {
+        auto o = om_hex(0.0);
+        o.mCurvatureAngle = 5.0;
+        o.mMaxSize = 0.5;
+        cases.push_back({mio::icosa_sphere(1.0, 5), o});
+    }
+    {
+        auto o = om_hex(0.0);
+        o.mMinSize = 0.05;
+        cases.push_back({analytic::capped_cylinder(0.5, 2.0, 6, 48), o});
+    }
+    for (const Case& c : cases) {
+        auto o = c.mOptions;
+        o.mHexGrading = mio::OctreeMeshHexGrading::Graded;
+        const auto r = mio::octree_mesh(c.mSkin, o);
+        const auto u = mio::octree_mesh(c.mSkin, c.mOptions);
+        const OmHexCheck h = om_check_hexes(r.mMesh);
+        EXPECT_LT(r.mNumHexahedra, u.mNumHexahedra);
+        EXPECT_EQ(r.mNumInverted, 0);
+        EXPECT_GT(h.mMinScaledJacobian, 0.0);
+        EXPECT_EQ(r.mNumBoundaryEdgesOpen, 0);
+        EXPECT_EQ(r.mNumNonManifoldBoundaryEdges, 0);
+        EXPECT_LT(r.mHausdorffToSkin, 0.05);
+        EXPECT_NEAR(h.mVolume, om_enclosed(c.mSkin), 0.03 * om_enclosed(c.mSkin));
+        const mio::ConformityResult cc = mio::check_conformity(r.mMesh);
+        EXPECT_EQ(cc.mNumHangingNodes, 0);
+        EXPECT_EQ(cc.mNumNonManifoldFacets, 0);
+        // More than one level, and the levels recorded per cell.
+        const mio::NDArray& lv = r.mMesh.CellData(mio::kOctreeLevelName, 0);
+        const std::int64_t* l = lv.As<std::int64_t>();
+        std::set<std::int64_t> levels(l, l + r.mMesh.Cells(0).NumCells());
+        EXPECT_GT(levels.size(), 1u);
+    }
+}
+
+TEST(OctreeMeshHex, GradedHexahedraAreTheSameOnEveryThreadCount) {
+    auto o = om_hex(0.0);
+    o.mMinSize = 0.05;
+    o.mHexGrading = mio::OctreeMeshHexGrading::Graded;
+    const mio::Mesh skin = analytic::capped_cylinder(0.5, 2.0, 6, 48);
+    std::uint64_t ref = 0;
+#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
+    const int saved = omp_get_max_threads();
+    for (int threads : {1, 2, 4}) {
+        omp_set_num_threads(threads);
+#else
+    for (int threads : {1}) {
+        (void)threads;
+#endif
+        const std::uint64_t d = om_digest(mio::octree_mesh(skin, o).mMesh);
+        if (ref == 0)
+            ref = d;
+        EXPECT_EQ(d, ref);
+    }
+#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
+    omp_set_num_threads(saved);
+#endif
 }

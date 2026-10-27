@@ -334,7 +334,10 @@ static_assert(offsetof(meshioplusplus::VoxelOptions, mPlane) == 216, "VoxelOptio
 // that introduces them.
 MIO_ABI_LAYOUT(meshioplusplus::ConformityOptions, 16, 8);
 MIO_ABI_LAYOUT(meshioplusplus::OctreeOptions, 304, 8);
+// ABI 36: `mHexGrading` (roadmap 3.1.4.3) in the padding after `mPillow`.
 MIO_ABI_LAYOUT(meshioplusplus::OctreeMeshOptions, 336, 8);
+static_assert(offsetof(meshioplusplus::OctreeMeshOptions, mHexGrading) == 308,
+              "OctreeMeshOptions::mHexGrading moved");
 // ABI 34 (v17.15.0): the quality options of roadmap 6.2 and the fields 6.3,
 // 6.4 and 6.6 will use, appended in one layout (refused until their items
 // land), and the face record's refinement report.

@@ -3495,8 +3495,8 @@ PYBIND11_MODULE(_core, m) {
            double winding_beta, const std::string& conformity, double alpha_long,
            double alpha_short, bool preserve_features, std::int64_t fit_iterations,
            bool dihedral_floor_guard, const std::string& fill, bool keep_outside,
-           bool attach_distance, bool attach_quality, bool pillow, std::int64_t untangle_iterations,
-           std::int64_t max_cells, std::int64_t max_tets) {
+           bool attach_distance, bool attach_quality, bool pillow, const std::string& hex_grading,
+           std::int64_t untangle_iterations, std::int64_t max_cells, std::int64_t max_tets) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
                 pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
@@ -3533,6 +3533,7 @@ PYBIND11_MODULE(_core, m) {
             o.mAttachDistance = attach_distance;
             o.mAttachQuality = attach_quality;
             o.mPillow = pillow;
+            o.mHexGrading = meshioplusplus::octree_mesh_hex_grading_from_name(hex_grading);
             o.mUntangleIterations = untangle_iterations;
             o.mMaxCells = max_cells;
             o.mMaxTets = max_tets;
@@ -3620,8 +3621,8 @@ PYBIND11_MODULE(_core, m) {
         py::arg("dihedral_floor_guard") = true, py::arg("fill") = "inside",
         py::arg("keep_outside") = false, py::arg("attach_distance") = true,
         py::arg("attach_quality") = false, py::arg("pillow") = true,
-        py::arg("untangle_iterations") = 50, py::arg("max_cells") = 20000000,
-        py::arg("max_tets") = 100000000);
+        py::arg("hex_grading") = "uniform", py::arg("untangle_iterations") = 50,
+        py::arg("max_cells") = 20000000, py::arg("max_tets") = 100000000);
 
     // Distance to a surface. `sample_distance` takes bare query points;
     // `distance_to_surface` attaches the result to a mesh as ordinary data.

@@ -2251,6 +2251,14 @@ def test_octree_mesh_tool(tmp_path):
     with pytest.raises(ValueError, match="winding_threshold"):
         _tools.tool_octree_mesh(str(skin), str(out), winding_threshold=2.0)
 
+    graded = _tools.tool_octree_mesh(
+        str(skin), str(out), output="hex", hex_grading="graded", max_size=0.5
+    )
+    assert graded["output"] == "hex" and graded["num_hexahedra"] > 0
+    assert graded["num_inverted"] == 0
+    with pytest.raises(ValueError, match="hex_grading"):
+        _tools.tool_octree_mesh(str(skin), str(out), output="hex", hex_grading="bogus")
+
 
 def test_boundary_layer_tool(tmp_path):
     """Roadmap 6.9: layers grown out of the sphere's mesh are wedges."""

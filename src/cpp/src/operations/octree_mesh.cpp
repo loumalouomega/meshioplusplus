@@ -614,6 +614,14 @@ OctreeMeshSkinGrading octree_mesh_skin_grading_from_name(const std::string& rNam
     octm_fail("unknown skin_grading '" + rName + "' (expected 'graded' or 'uniform')");
 }
 
+OctreeMeshHexGrading octree_mesh_hex_grading_from_name(const std::string& rName) {
+    if (rName == "uniform")
+        return OctreeMeshHexGrading::Uniform;
+    if (rName == "graded")
+        return OctreeMeshHexGrading::Graded;
+    octm_fail("unknown hex_grading '" + rName + "' (expected 'uniform' or 'graded')");
+}
+
 OctreeMeshFill octree_mesh_fill_from_name(const std::string& rName) {
     if (rName == "all")
         return OctreeMeshFill::All;

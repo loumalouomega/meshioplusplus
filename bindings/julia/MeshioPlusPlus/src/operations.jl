@@ -2210,6 +2210,7 @@ const _OCTREE_MESH_OUTPUT_NAMES = ("castellated", "tet", "hex")
 const _OCTREE_MESH_CONFORMITIES = Dict("stuffing" => Int32(0), "cleaving" => Int32(1))
 const _OCTREE_MESH_SKIN_GRADINGS = Dict("graded" => Int32(0), "uniform" => Int32(1))
 const _OCTREE_MESH_FILLS = Dict("all" => Int32(0), "inside" => Int32(1), "cover" => Int32(2))
+const _OCTREE_MESH_HEX_GRADINGS = Dict("uniform" => Int32(0), "graded" => Int32(1))
 
 """
     octree_mesh(m; output=:tet, min_size=0.0, max_size=0.0, max_level=-1, bounds=nothing,
@@ -2221,15 +2222,16 @@ const _OCTREE_MESH_FILLS = Dict("all" => Int32(0), "inside" => Int32(1), "cover"
                 alpha_long=0.24799, alpha_short=0.40173, preserve_features=true,
                 fit_iterations=5, dihedral_floor_guard=true, fill=:inside,
                 keep_outside=false, attach_distance=true, attach_quality=false,
-                pillow=true, untangle_iterations=50, max_cells=20_000_000,
-                max_tets=100_000_000) -> NamedTuple
+                pillow=true, hex_grading=:uniform, untangle_iterations=50,
+                max_cells=20_000_000, max_tets=100_000_000) -> NamedTuple
 
 Mesh the inside of the skin `m` on a balanced octree: conforming graded
 tetrahedra by default (`output=:tet`), or the castellated leaves
 (`output=:castellated`) with surrogate-boundary regions and `sdf:distance` /
 `sdf:closest_point`; `:hex` is the all-hexahedral dual. `conformity` is
-`:stuffing` or `:cleaving`, `skin_grading` `:graded` or `:uniform`, and `fill`
-(castellated output) `:all`, `:inside` or `:cover`; an unknown one throws
+`:stuffing` or `:cleaving`, `skin_grading` `:graded` or `:uniform`, `fill`
+(castellated output) `:all`, `:inside` or `:cover`, and `hex_grading`
+(hexahedral output) `:uniform` or `:graded`; an unknown one throws
 `ArgumentError`. Every keyword left at `nothing` takes its default from
 `mio_octree_mesh_opts_init`, i.e. from the C side; the defaults shown above are
 those. See `doc/octree_mesh.md` for every option and report field.
@@ -2258,7 +2260,8 @@ function octree_mesh(m::Mesh; output=nothing, min_size=nothing, max_size=nothing
                      preserve_features=nothing, fit_iterations=nothing,
                      dihedral_floor_guard=nothing, fill=nothing, keep_outside=nothing,
                      attach_distance=nothing, attach_quality=nothing, pillow=nothing,
-                     untangle_iterations=nothing, max_cells=nothing, max_tets=nothing)
+                     hex_grading=nothing, untangle_iterations=nothing, max_cells=nothing,
+                     max_tets=nothing)
     bnd = bounds === nothing ? Cdouble[] : Cdouble[Cdouble(v) for v in bounds]
     (bounds === nothing || length(bnd) == 6) ||
         throw(ArgumentError("bounds must have six entries"))
@@ -2275,6 +2278,9 @@ function octree_mesh(m::Mesh; output=nothing, min_size=nothing, max_size=nothing
         _setopt!(opts, :skin_grading,
                  _code(_OCTREE_MESH_SKIN_GRADINGS, skin_grading, "skin grading"))
     fill === nothing || _setopt!(opts, :fill, _code(_OCTREE_MESH_FILLS, fill, "fill"))
+    hex_grading === nothing ||
+        _setopt!(opts, :hex_grading,
+                 _code(_OCTREE_MESH_HEX_GRADINGS, hex_grading, "hex grading"))
     scalars = (; min_size, max_size, padding, padding_relative, curvature_angle,
                feature_angle, corner_angle, feature_size, gap_cells, surface_size,
                winding_threshold, winding_beta, alpha_long, alpha_short, max_level,

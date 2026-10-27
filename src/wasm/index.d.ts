@@ -1488,6 +1488,9 @@ export type OctreeMeshConformity = 'stuffing' | 'cleaving';
 /** How `octreeMesh`'s size field may vary along the skin. */
 export type OctreeMeshSkinGrading = 'graded' | 'uniform';
 
+/** How a hexahedral `octreeMesh` output grades: one grid at the skin's size, or the octree's own grading through dual transition schemes. */
+export type OctreeMeshHexGrading = 'uniform' | 'graded';
+
 /** Which leaves a castellated `octreeMesh` output keeps. */
 export type OctreeMeshFill = 'inside' | 'all' | 'cover';
 
@@ -4237,6 +4240,8 @@ export interface OctreeMeshOptions {
   attachQuality?: boolean;
   /** Hexahedral output: insert a layer of hexahedra along the boundary (default true). */
   pillow?: boolean;
+  /** Hexahedral output: one grid at the skin's size (`'uniform'`, the default) or the octree's own grading (`'graded'`). */
+  hexGrading?: OctreeMeshHexGrading;
   /** Hexahedral output: untangling iterations (default 50). */
   untangleIterations?: number;
   /** Refuse an octree with more leaves than this (default 20000000). */
