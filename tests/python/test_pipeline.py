@@ -332,6 +332,46 @@ def test_estimate_error_pipeline_step(settings_env):
         assert "error:marked" in out_cpp.cell_data
 
 
+def test_error_size_pipeline_step(settings_env):
+    """ErrorSize (roadmap 6.10.2) after EstimateError: the indicator becomes a
+    per-point size array in both engines, which agree to rounding (the
+    indicator itself only agrees to a tolerance, see
+    test_estimate_error_pipeline_step)."""
+    settings = make_settings(
+        settings_env,
+        [
+            {"Op": "EstimateError", "Array": "temperature"},
+            {"Op": "ErrorSize", "TargetError": 1e-3, "MinSize": 0.05, "Output": "h"},
+        ],
+    )
+    report = meshioplusplus.run_pipeline(settings)
+    step = report["steps"][1]
+    assert step["op"] == "ErrorSize"
+    for key in ("NumCells", "NumSkipped", "NumClamped", "MinSize", "MaxSize"):
+        assert key in step
+    out = meshioplusplus.read(settings_env["out"])
+    assert "h" in out.point_data
+    finite = np.isfinite(out.point_data["h"])
+    assert np.all(out.point_data["h"][finite] >= 0.05)
+
+    if hasattr(_core, "run_pipeline_json"):
+        settings["Output"]["Path"] = str(settings_env["tmp"] / "out_cpp.vtu")
+        cpp_report = _core.run_pipeline_json(json.dumps(settings))
+        cpp_step = cpp_report["steps"][1]
+        assert cpp_step["op"] == "ErrorSize"
+        assert cpp_step["NumCells"] == step["NumCells"]
+        assert cpp_step["MinSize"] == pytest.approx(step["MinSize"], rel=1e-6)
+        out_cpp = meshioplusplus.read(settings["Output"]["Path"])
+        np.testing.assert_allclose(
+            out_cpp.point_data["h"], out.point_data["h"], rtol=1e-6, equal_nan=True
+        )
+
+    # A missing TargetError is refused by name.
+    bad = make_settings(settings_env, [{"Op": "ErrorSize"}])
+    with pytest.raises(ValueError, match="target_error"):
+        meshioplusplus.run_pipeline(bad)
+
+
 def test_hessian_pipeline_step(settings_env):
     """Hessian dispatches generically off the same _OP_TABLE/
     pipeline_op_table pair test_op_table_matches_core pins. Unlike
@@ -1108,3 +1148,97 @@ def test_generate_step_errors_by_name(tmp_path):
         meshioplusplus.run_pipeline(
             {"Version": 1, "Operations": [{"Op": "Quality"}], "Output": out}
         )
+
+
+def _cad_sphere_doc(operations, out):
+    model = pathlib.Path(__file__).parent / "meshes" / "cad_json" / "sphere.cad.json"
+    return {
+        "Version": 1,
+        "Input": {"Path": str(model)},
+        "Operations": [{"Op": "MeshCadSurface", "TargetSize": 0.3}, *operations],
+        "Output": {"Path": str(out)},
+    }
+
+
+def _engines():
+    engines = [("py", meshioplusplus.run_pipeline)]
+    if hasattr(_core, "run_pipeline_json"):
+        engines.append(("cpp", lambda d: _core.run_pipeline_json(json.dumps(d))))
+    return engines
+
+
+def test_boundary_layer_collapse_and_front_pipeline_keys(tmp_path):
+    """Roadmap 6.9.1: Collapse, NormalSmoothIterations and FrontCheck reach
+    the step in both engines, which agree on the two new counters."""
+    if not hasattr(_core, "boundary_layer"):
+        pytest.skip("core predates boundary_layer")
+    op = {
+        "Op": "BoundaryLayer",
+        "FirstHeight": 0.01,
+        "NumLayers": 2,
+        "Collapse": "layers",
+        "NormalSmoothIterations": 2,
+        "FrontCheck": False,
+    }
+    steps = []
+    for name, run in _engines():
+        report = run(_cad_sphere_doc([op], tmp_path / f"{name}.vtu"))
+        step = report["steps"][-1]
+        assert step["NumCells"] > 0 and step["NumFrontCrossings"] == 0, name
+        assert "NumFewerLayers" in step
+        steps.append(step)
+    assert all(s == steps[0] for s in steps)
+    for _, run in _engines():
+        with pytest.raises(ValueError, match="Collapse"):
+            run(_cad_sphere_doc([dict(op, Collapse="rows")], tmp_path / "bad.vtu"))
+
+
+def test_tetrahedralize_pipeline_step(tmp_path):
+    """Roadmap 6.7: Tetrahedralize after MeshCadSurface, in both engines,
+    which agree on every counter, through the native octree backend and,
+    with Netgen, its skin kept (or both name the missing backend)."""
+    if not hasattr(_core, "tetrahedralize"):
+        pytest.skip("core predates tetrahedralize")
+    op = {"Op": "Tetrahedralize", "MaxSize": 0.3, "Grading": 0.3, "OptimizeSteps": 3}
+    for _, run in _engines():
+        with pytest.raises(ValueError, match="Backend"):
+            run(_cad_sphere_doc([dict(op, Backend="tetgen")], tmp_path / "bad.vtu"))
+    fitted = []
+    for name, run in _engines():
+        report = run(
+            _cad_sphere_doc([dict(op, Backend="octree")], tmp_path / f"o{name}.vtu")
+        )
+        step = report["steps"][-1]
+        assert step["BoundaryPreserved"] == 0.0 and step["NumTetrahedra"] > 0, name
+        fitted.append(step)
+    assert all(s == fitted[0] for s in fitted)
+    if not _core.__has_netgen__:
+        for _, run in _engines():
+            with pytest.raises(NotImplementedError, match="MESHIOPLUSPLUS_WITH_NETGEN"):
+                run(
+                    _cad_sphere_doc([dict(op, Backend="netgen")], tmp_path / "none.vtu")
+                )
+        return
+    steps = []
+    for name, run in _engines():
+        path = tmp_path / f"{name}.vtu"
+        report = run(_cad_sphere_doc([op], path))
+        step = report["steps"][-1]
+        assert step["op"] == "Tetrahedralize"
+        assert step["NumRegions"] == 1 and step["BoundaryPreserved"] == 1.0, name
+        assert step["NumTetrahedra"] > 0 and 4.0 < step["Volume"] < 4 / 3 * np.pi
+        for key in (
+            "NumPoints",
+            "NumNewPoints",
+            "NumBoundaryTriangles",
+            "HausdorffToSurface",
+            "MinDihedralDeg",
+            "MaxDihedralDeg",
+        ):
+            assert key in step
+        assert {c.type for c in meshioplusplus.read(path).cells} == {
+            "tetra",
+            "triangle",
+        }
+        steps.append(step)
+    assert all(s == steps[0] for s in steps)

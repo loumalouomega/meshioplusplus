@@ -125,6 +125,7 @@ if TYPE_CHECKING:
     from ._decimate_volume import decimate_volume
     from ._diff import diff, meshes_equal
     from ._error import estimate_error
+    from ._error_size import error_size
     from ._feature_edges import feature_edges
     from ._fit_cad import fit_cad
     from ._fit_primitives import fit_primitives
@@ -255,6 +256,7 @@ if TYPE_CHECKING:
     from ._surface import extract_surface
     from ._tensor_invariants import tensor_invariants
     from ._tessellation import Tessellation, tessellate
+    from ._tetrahedralize import tetrahedralize
     from ._transform import transform
     from ._tui import tui
     from ._undo_green import undo_green
@@ -293,6 +295,7 @@ _LAZY_ATTRS = {
     "diff": "_diff",
     "meshes_equal": "_diff",
     "estimate_error": "_error",
+    "error_size": "_error_size",
     "feature_edges": "_feature_edges",
     "fit_cad": "_fit_cad",
     "fit_primitives": "_fit_primitives",
@@ -430,6 +433,7 @@ _LAZY_ATTRS = {
     "mesh_cad_surface": "_mesh_cad",
     "project_to_cad": "_project_to_cad",
     "boundary_layer": "_boundary_layer",
+    "tetrahedralize": "_tetrahedralize",
     "triangulate_polygon_2d": "_mesh_cad",
 }
 
@@ -564,6 +568,7 @@ __all__ = [
     "split_interface",
     "data_integrate",
     "estimate_error",
+    "error_size",
     "slice",
     "isosurface",
     "transform",
@@ -603,6 +608,7 @@ __all__ = [
     "mesh_cad_surface",
     "project_to_cad",
     "boundary_layer",
+    "tetrahedralize",
     "triangulate_polygon_2d",
     "sample_distance",
     "distance_to_surface",

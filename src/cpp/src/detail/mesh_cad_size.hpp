@@ -169,6 +169,9 @@ public:
     /// background (no surface) the isotropic `I / Size^2`.
     void At(const Vec3& rX, double Size, std::array<double, 9>& rM,
             std::array<double, 9>* pRoot = nullptr) const;
+    /// Every size the metric asks for, and its floor, times `Scale`: the
+    /// metric over `Scale^2` (all-quad meshes at twice the size, 6.8.3).
+    void SetScale(double Scale);
 
 private:
     struct Impl;

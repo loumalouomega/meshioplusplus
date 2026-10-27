@@ -2,7 +2,7 @@
 
 This is the plan for `mesh_cad_surface`, a new operation that triangulates a CAD B-rep's faces into one conforming surface mesh at a single global target edge size, without a CAD kernel. It is milestone 1 of a longer programme (refinement, size fields, anisotropic metrics, volume meshing; see the [roadmap](./roadmap.md)). Every existing operation keeps its behaviour and its output byte for byte.
 
-**Status.** Shipped in v17.13.0; the contract is [mesh generation from CAD](./mesh_cad.md), and what comes next is [roadmap §6](./roadmap.md#_6-mesh-generation). This page is kept as the record of the plan; where the two differ, the contract wins (the per-face metric map and the loop chaining, for instance, were added while meshing the real fixtures).
+**Status.** Shipped in v17.13.0; the contract is [mesh generation from CAD](./mesh_cad.md), and what followed it is on that page (the roadmap's mesh-generation section closed in October 2026; its parked notes are [measured and parked](./mesh_cad.md#measured-and-parked)). This page is kept as the record of the plan; where the two differ, the contract wins (the per-face metric map and the loop chaining, for instance, were added while meshing the real fixtures).
 
 ## What exists
 

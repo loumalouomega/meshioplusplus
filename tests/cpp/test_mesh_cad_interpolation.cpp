@@ -664,12 +664,44 @@ TEST(MeshCadInterpolation, AMetricFromTheHessianStretchesAlongTheLayer) {
     bad.mMetricError = 0.0;
     EXPECT_THROW((void)mio::mesh_cad_surface(sphere, o, bad), std::invalid_argument);
     bad = src;
-    bad.mMetricArray = "f";
+    bad.mMetricArray = "missing";
     EXPECT_THROW((void)mio::mesh_cad_surface(sphere, o, bad), std::invalid_argument);
     bad = mio::MeshCadSizeSources{};
     bad.mMetricError = 1e-3;
     EXPECT_THROW((void)mio::mesh_cad_surface(sphere, o, bad), std::invalid_argument);
-    mio::MeshCadSurfaceOptions o2 = o;
-    o2.mOrder = 2;
-    EXPECT_THROW((void)mio::mesh_cad_surface(sphere, o2, src), std::invalid_argument);
+    // The field itself as the source: its Hessian at the points is taken
+    // as hessian takes it, so the mesh is the same, byte for byte.
+    mio::MeshCadSizeSources from_field = src;
+    from_field.pMetricBackground = &bg;
+    from_field.mMetricArray = "f";
+    mio::MeshCadSurfaceExtrasReport xf, xh;
+    const auto rf =
+        mio::mesh_cad_surface(sphere, o, from_field, mio::MeshCadSurfaceExtras{}, nullptr, &xf);
+    (void)mio::mesh_cad_surface(sphere, o, src, mio::MeshCadSurfaceExtras{}, nullptr, &xh);
+    EXPECT_EQ(rf.mNumPoints, r.mNumPoints);
+    EXPECT_EQ(rf.mNumTriangles, r.mNumTriangles);
+    // The angles in the metric, which refinement judges, meet the bound the
+    // surface's own angles do not.
+    std::printf("[6.10.2] least angle in the metric %.2f, on the surface %.2f\n",
+                xh.mMinMetricAngleDeg, r.mMinAngleDeg);
+    EXPECT_NEAR(xf.mMinMetricAngleDeg, xh.mMinMetricAngleDeg, 1e-12);
+    EXPECT_GE(xh.mMinMetricAngleDeg, 25.0 - 1e-6);
+    EXPECT_LT(r.mMinAngleDeg, 25.0);
+    // Curved elements and quads take the metric (roadmap 6.10.2, 6.8.3): the
+    // all-quad split asks it for twice its size.
+    for (const int order : {2, 3}) {
+        mio::MeshCadSurfaceOptions o2 = o;
+        o2.mOrder = order;
+        const auto r2 = mio::mesh_cad_surface(sphere, o2, src);
+        EXPECT_EQ(r2.mNumFailed, 0) << order;
+        EXPECT_EQ(r2.mNumOpenEdges, 0) << order;
+    }
+    mio::MeshCadSurfaceExtras all;
+    all.mQuads = mio::MeshCadQuads::All;
+    mio::MeshCadSurfaceExtrasReport xq;
+    const auto rq = mio::mesh_cad_surface(sphere, o, src, all, nullptr, &xq);
+    EXPECT_EQ(rq.mNumFailed, 0);
+    EXPECT_EQ(rq.mNumOpenEdges, 0);
+    EXPECT_GT(xq.mNumQuads, 0);
+    EXPECT_EQ(xq.mNumLeftoverTriangles, 0);
 }

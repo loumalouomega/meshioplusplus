@@ -348,6 +348,8 @@ def measure_one(
     lop_corners=False,
     gmsh=None,
     gmsh_timeout=900.0,
+    order=1,
+    untangle=False,
 ):
     """Read, mesh and measure one model; runs in its own process."""
     import resource
@@ -383,6 +385,8 @@ def measure_one(
             model_tolerances=model_tolerances,
             virtual_faces=virtual_faces,
             lop_corners=lop_corners,
+            order=order,
+            untangle=untangle,
             return_report=True,
         )
     except Exception as exc:  # noqa: BLE001
@@ -431,12 +435,21 @@ def measure_one(
         out["num_slivers"] = len(report["merged_faces"])
     if model_tolerances:
         out["num_tolerance_uses"] = len(report["tolerance_uses"])
+    if order > 1:
+        out["num_curved_straightened"] = report["num_curved_straightened"]
+    if untangle:
+        out["num_untangled"] = report["num_untangled"]
     if lop_corners:
         out["num_lopped_corners"] = len(report["lopped_corners"])
         out["num_lop_guaranteed"] = sum(
             c["guaranteed"] for c in report["lopped_corners"]
         )
-    tri = [c.data for c in mesh.cells if c.type == "triangle"]
+    # A curved mesh is measured by its corners.
+    tri = [
+        c.data[:, :3]
+        for c in mesh.cells
+        if c.type in ("triangle", "triangle6", "triangle10")
+    ]
     if tri:
         surface = mio.Mesh(mesh.points, [("triangle", np.concatenate(tri))])
         quality = mio.compute_quality(surface)["metrics"]
@@ -518,6 +531,8 @@ def run(args):
                 str(int(args.lop_corners)),
                 gmsh,
                 str(args.timeout),
+                str(args.order),
+                str(int(args.untangle)),
             ]
             t0 = time.perf_counter()
             try:
@@ -558,6 +573,8 @@ def run(args):
             **({"model_tolerances": True} if args.model_tolerances else {}),
             **({"virtual_faces": True} if args.virtual_faces else {}),
             **({"lop_corners": True} if args.lop_corners else {}),
+            **({"order": args.order} if args.order > 1 else {}),
+            **({"untangle": True} if args.untangle else {}),
             **({"gmsh": gmsh_ver} if gmsh_ver else {}),
         },
         "models": results,
@@ -601,7 +618,9 @@ def stable(results):
     return {
         "Version": 1,
         "meshioplusplus": results["meshioplusplus"],
-        "settings": results["settings"],
+        # Gmsh's version stays out with its numbers: an upgrade of the
+        # oracle must not change the baseline.
+        "settings": {k: v for k, v in results["settings"].items() if k != "gmsh"},
         "models": models,
     }
 
@@ -823,6 +842,18 @@ def main(argv=None):
         help="lop acute corners in place of concentric shells (6.2.3)",
     )
     p.add_argument(
+        "--order",
+        type=int,
+        choices=(1, 2, 3),
+        default=1,
+        help="curved elements of this order (6.6)",
+    )
+    p.add_argument(
+        "--untangle",
+        action="store_true",
+        help="untangle curved elements before straightening them (6.6.3)",
+    )
+    p.add_argument(
         "--gmsh",
         nargs="?",
         const="gmsh",
@@ -857,6 +888,8 @@ def main(argv=None):
         lop_corners = len(argv) > 10 and argv[10] == "1"
         gmsh = argv[11] if len(argv) > 11 and argv[11] else None
         gmsh_timeout = float(argv[12]) if len(argv) > 12 else 900.0
+        order = int(argv[13]) if len(argv) > 13 else 1
+        untangle = len(argv) > 14 and argv[14] == "1"
         row = measure_one(
             path,
             float(divisor),
@@ -870,6 +903,8 @@ def main(argv=None):
             lop_corners,
             gmsh,
             gmsh_timeout,
+            order,
+            untangle,
         )
         print(json.dumps(finite(row), allow_nan=False, default=float))
         return 0

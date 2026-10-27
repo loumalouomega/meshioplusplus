@@ -197,6 +197,27 @@ def test_one_model_end_to_end(tmp_path):
     assert corpus.main(["compare", str(out), "--baseline", str(base)]) == 1
 
 
+@needs_occt
+def test_a_curved_run_counts_what_it_straightened(tmp_path):
+    (tmp_path / "src").mkdir()
+    step = tmp_path / "src" / "box.step"
+    mio.write(step, mio.extract_surface(mio.box()))
+    manifest = _manifest(tmp_path, [("box.step", corpus.sha256(step))])
+    dest = tmp_path / "d"
+    assert corpus.main(["fetch", "--manifest", str(manifest), "--dest", str(dest)]) == 0
+    out = tmp_path / "run.json"
+    argv = ["run", "--manifest", str(manifest), "--dest", str(dest), "--out", str(out)]
+    assert (
+        corpus.main(argv + ["--size-divisor", "10", "--order", "2", "--untangle"]) == 0
+    )
+    run = json.loads(out.read_text())
+    assert run["settings"]["order"] == 2 and run["settings"]["untangle"] is True
+    row = run["models"][0]
+    assert row["status"] == "ok", row
+    assert row["num_curved_straightened"] == 0 and row["num_untangled"] == 0
+    assert row["quality"]["min_angle"]["min"] > 0.0
+
+
 def test_compare_names_the_model_that_stopped_meshing(tmp_path, capsys):
     base = {
         "Version": 1,

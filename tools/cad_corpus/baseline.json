@@ -1,6 +1,6 @@
 {
   "Version": 1,
-  "meshioplusplus": "17.19.0",
+  "meshioplusplus": "17.22.0",
   "models": {
     "occt-samples/linkrods": {
       "faces": 37,

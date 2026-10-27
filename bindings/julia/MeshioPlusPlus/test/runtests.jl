@@ -370,6 +370,7 @@ end
         # Quads (roadmap 6.8) and untangling (6.6.3).
         q = mesh_cad_surface(info; target_size=0.1, min_angle=25.0, quads="dominant")
         @test q.num_quads > 0 && q.min_quad_scaled_jacobian > 0
+        @test q.min_metric_angle == 0.0
         close(q.mesh)
         @test_throws ArgumentError mesh_cad_surface(info; target_size=0.1, quads="hex")
         g = mesh_cad_surface(info; target_size=0.1, min_angle=25.0, quads="dominant",
@@ -385,6 +386,7 @@ end
         # Projection back onto the model (roadmap 6.10.1) moves nothing.
         p = project_to_cad(r.mesh, info)
         @test p.num_projected == num_points(r.mesh) && p.max_move < 1e-12
+        @test 0 <= p.num_on_curves <= p.num_on_edges
         @test isempty(p.outside_trim)
         close(p.mesh)
         # Boundary layers (roadmap 6.9) grown from the triangle are wedges.
@@ -392,6 +394,14 @@ end
         @test b.num_wedges > 0 && b.min_scaled_jacobian > 0
         close(b.mesh)
         @test_throws MeshioError boundary_layer(r.mesh; first_height=0.0)
+        @test b.num_fewer_layers == 0 && b.num_front_crossings >= 0
+        bl = boundary_layer(r.mesh; first_height=0.01, num_layers=2, collapse="layers",
+                            normal_smooth_iterations=2, front_check=false)
+        @test bl.num_wedges > 0 && bl.num_front_crossings == 0
+        close(bl.mesh)
+        @test_throws ArgumentError boundary_layer(r.mesh; first_height=0.01, collapse="rows")
+        @test_throws MeshioError boundary_layer(r.mesh; first_height=0.01,
+                                                normal_smooth_iterations=5000)
         @test_throws MeshioError project_to_cad(mesh, info)
         close(r.mesh); close(mesh); close(info)
     end
@@ -1090,6 +1100,67 @@ end
     @test_throws MeshioError estimate_error(m, "material")
     @test_throws MeshioError estimate_error(m, "temperature"; marking=:fraction,
                                             marking_value=1.5)
+    close(m)
+end
+
+@testset "operations: tetrahedralize" begin
+    # Roadmap 6.7: a closed triangle surface filled with tetrahedra, its skin kept.
+    s = icosa_sphere(subdivisions=2)
+    @test_throws ArgumentError tetrahedralize(s; backend="tetgen")
+    @test_throws MeshioError tetrahedralize(s; grading=2.0)
+    if has_netgen()
+        t = tetrahedralize(s; max_size=0.3)
+        @test t.num_tetrahedra > 0 && t.num_regions == 1 && t.boundary_preserved
+        @test t.backend == "netgen" && t.hausdorff_to_surface == 0.0
+        @test t.num_boundary_triangles == 320
+        @test t.num_points == num_points(t.mesh)
+        @test t.num_points - t.num_new_points == num_points(s)
+        @test 0 < t.min_dihedral_deg < t.max_dihedral_deg < 180
+        @test 3.9 < t.volume < 4 / 3 * pi
+        close(t.mesh)
+    else
+        t = tetrahedralize(s)  # the octree backend, by default here
+        @test t.backend == "octree" && !t.boundary_preserved
+        close(t.mesh)
+        err = try
+            tetrahedralize(s; backend="netgen")
+            nothing
+        catch e
+            e
+        end
+        @test err isa MeshioError
+        @test occursin("MESHIOPLUSPLUS_WITH_NETGEN", sprint(showerror, err))
+    end
+    # The native octree backend, always there: the boundary fitted.
+    t = tetrahedralize(s; backend="octree")
+    @test t.backend == "octree" && !t.boundary_preserved
+    @test t.num_tetrahedra > 0 && t.hausdorff_to_surface > 0
+    @test t.num_new_points == t.num_points
+    close(t.mesh)
+    close(s)
+end
+
+@testset "operations: error_size" begin
+    m = fixture()
+    e = estimate_error(m, "temperature")
+
+    s = error_size(e.mesh; target_error=1e-3)
+    @test "size" in point_data_names(s.mesh)
+    @test s.num_cells + s.num_skipped >= 1
+    @test s.min_size <= s.max_size
+    close(s.mesh)
+
+    t = error_size(e.mesh; target_error=1e-3, output="h", min_size=0.5, max_size=2.0)
+    @test "h" in point_data_names(t.mesh)
+    close(t.mesh)
+
+    # A target error that is not positive, crossed bounds and a missing
+    # indicator are refused by name.
+    @test_throws MeshioError error_size(e.mesh; target_error=0.0)
+    @test_throws MeshioError error_size(e.mesh; target_error=1e-3, min_size=2.0,
+                                        max_size=1.0)
+    @test_throws MeshioError error_size(e.mesh; target_error=1e-3, error_array="nope")
+    close(e.mesh)
     close(m)
 end
 

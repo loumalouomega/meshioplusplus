@@ -598,8 +598,8 @@ TEST(MeshCadQuality, OptionsNotImplementedYetAreRefused) {
     EXPECT_EQ(mio::mesh_cad_surface(brep_solids::box(), o).mNumFailed, 0);
     o.mMetric = static_cast<mio::MeshCadMetric>(7);
     EXPECT_THROW((void)mio::mesh_cad_surface(brep_solids::box(), o), std::invalid_argument);
-    // The discrete reparametrisation (6.4.4) has landed: 0 or above 1, order
-    // 1 only.
+    // The discrete reparametrisation (6.4.4) has landed: 0 or above 1, at
+    // every order.
     o = quality(0.5, 0.0);
     o.mReparamConditionNumber = 100.0;
     EXPECT_EQ(mio::mesh_cad_surface(brep_solids::box(), o).mNumFailed, 0);
@@ -610,7 +610,7 @@ TEST(MeshCadQuality, OptionsNotImplementedYetAreRefused) {
     }
     o.mReparamConditionNumber = 100.0;
     o.mOrder = 2;
-    EXPECT_THROW((void)mio::mesh_cad_surface(brep_solids::box(), o), std::invalid_argument);
+    EXPECT_EQ(mio::mesh_cad_surface(brep_solids::box(), o).mNumFailed, 0);
     for (const int bad : {0, 4}) {
         o = quality(0.5, 0.0);
         o.mOrder = bad;

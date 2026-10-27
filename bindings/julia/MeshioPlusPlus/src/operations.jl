@@ -475,6 +475,43 @@ function estimate_error(m::Mesh, array::AbstractString; method=:zz, marking=:non
 end
 
 """
+    error_size(mesh; target_error, error_array="error:zz", order=1.0, min_size=0.0,
+               max_size=0.0, output="size", overwrite=false)
+        -> (; mesh, num_cells, num_skipped, num_clamped, min_size, max_size)
+
+A per-point size field from a per-cell error indicator (roadmap 6.10.2), by the
+adaptive procedure of Zienkiewicz and Zhu (1987): with `N` cells evaluated and
+the target global error `target_error`, a cell of diameter `h` whose indicator
+`error_array` (what [`estimate_error`](@ref) writes) is `eta` asks
+`h * (target_error / sqrt(N) / eta)^(1 / order)`, clamped to
+`[min_size, max_size]` (0: no bound); a point takes the least of its cells'
+(`NaN` where none is evaluated). The sizes are written as point data `output`,
+what [`mesh_cad_surface`](@ref)'s `background` reads. See `doc/error.md`.
+"""
+function error_size(m::Mesh; target_error::Real, error_array::AbstractString="error:zz",
+                    order::Real=1.0, min_size::Real=0.0, max_size::Real=0.0,
+                    output::AbstractString="size", overwrite::Bool=false)
+    aname = Vector{UInt8}(codeunits(String(error_array)))
+    push!(aname, 0x00)
+    oname = Vector{UInt8}(codeunits(String(output)))
+    push!(oname, 0x00)
+    report = Ref{_CErrorSizeReport}()
+    ptr = GC.@preserve aname oname begin
+        opts = _CErrorSizeOpts(pointer(aname), Cdouble(target_error), Cdouble(order),
+                               Cdouble(min_size), Cdouble(max_size), pointer(oname),
+                               overwrite ? Int32(1) : Int32(0), Int32(0), (0, 0, 0))
+        ccall(_sym(:mio_error_size), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CErrorSizeOpts}, Ref{_CErrorSizeReport}),
+              _handle(m), Ref(opts), report)
+    end
+    out = Mesh(_check_ptr(ptr))
+    r = report[]
+    (mesh=out, num_cells=Int(r.num_cells), num_skipped=Int(r.num_skipped),
+     num_clamped=Int(r.num_clamped), min_size=Float64(r.min_size),
+     max_size=Float64(r.max_size))
+end
+
+"""
     remesh(mesh, num_clusters; subdivide=-1, subsample_ratio=10.0,
            max_subdivide=4, max_iterations=100, max_repair_passes=10,
            metric=:isotropic, gradation=0.0, preserve_boundary=true,
@@ -679,25 +716,37 @@ end
 
 """
     boundary_layer(mesh; first_height, num_layers=3, growth=1.2, reverse=false,
-                   collision_fraction=0.45, smooth_iterations=5, max_shrink=6)
+                   collision_fraction=0.45, smooth_iterations=5, max_shrink=6,
+                   collapse="points", normal_smooth_iterations=0, front_check=true)
         -> (; mesh, num_cells, num_wedges, num_hexahedra, num_pyramids, num_tetrahedra,
-              num_shrunk, num_collapsed, num_not_visible, min_scaled_jacobian,
-              min_thickness, max_thickness, cap_closed)
+              num_shrunk, num_collapsed, num_not_visible, num_fewer_layers,
+              num_front_crossings, min_scaled_jacobian, min_thickness, max_thickness,
+              cap_closed)
 
 Grow prismatic boundary layers from a triangle and quad surface (roadmap 6.9):
 wedges from triangles and hexahedra from quads along each point's most normal
 normal (Aubry and Löhner 2009), the first `first_height` thick and each next
 `growth` times the one before; stopped at `collision_fraction` of the distance
 to the surface ahead; the points of a cell that would fold shrunk and then
-collapsed into pyramids and tetrahedra. The wall and the cap come out as faces,
-with `boundary_layer:layer` cell data. See `doc/boundary_layer.md`.
+collapsed into pyramids and tetrahedra (`collapse="points"`) or their top layer
+dropped (`collapse="layers"`, counted by `num_fewer_layers`).
+`normal_smooth_iterations` Laplacian passes smooth the directions, and
+`front_check` tests the last layer's faces against each other and the surface
+(`num_front_crossings`). The wall and the cap come out as faces, with
+`boundary_layer:layer` cell data. See `doc/boundary_layer.md`.
 """
 function boundary_layer(mesh::Mesh; first_height::Real, num_layers::Integer=3,
                         growth::Real=1.2, reverse::Bool=false, collision_fraction::Real=0.45,
-                        smooth_iterations::Integer=5, max_shrink::Integer=6)
+                        smooth_iterations::Integer=5, max_shrink::Integer=6,
+                        collapse::AbstractString="points",
+                        normal_smooth_iterations::Integer=0, front_check::Bool=true)
+    collapse_c = collapse == "points" ? Int32(0) : collapse == "layers" ? Int32(1) :
+                 throw(ArgumentError("meshio++: boundary_layer: collapse must be \"points\" or \"layers\""))
     opts = _CBoundaryLayerOpts(Cdouble(first_height), Cdouble(growth),
                                Cdouble(collision_fraction), Int32(num_layers), Int32(reverse),
-                               Int32(smooth_iterations), Int32(max_shrink), (0, 0, 0))
+                               Int32(smooth_iterations), Int32(max_shrink), collapse_c,
+                               Int32(normal_smooth_iterations), Int32(front_check), Int32(0),
+                               (0,))
     report = Ref{_CBoundaryLayerReport}()
     ptr = ccall(_sym(:mio_boundary_layer), Ptr{Cvoid},
                 (Ptr{Cvoid}, Ref{_CBoundaryLayerOpts}, Ref{_CBoundaryLayerReport}),
@@ -708,9 +757,67 @@ function boundary_layer(mesh::Mesh; first_height::Real, num_layers::Integer=3,
      num_hexahedra=Int(r.num_hexahedra), num_pyramids=Int(r.num_pyramids),
      num_tetrahedra=Int(r.num_tetrahedra), num_shrunk=Int(r.num_shrunk),
      num_collapsed=Int(r.num_collapsed), num_not_visible=Int(r.num_not_visible),
+     num_fewer_layers=Int(r.num_fewer_layers), num_front_crossings=Int(r.num_front_crossings),
      min_scaled_jacobian=Float64(r.min_scaled_jacobian),
      min_thickness=Float64(r.min_thickness), max_thickness=Float64(r.max_thickness),
      cap_closed=r.cap_closed != 0)
+end
+
+"""
+    has_netgen() -> Bool
+
+Whether the library carries the Netgen backend [`tetrahedralize`](@ref) needs
+(a build with `-DMESHIOPLUSPLUS_WITH_NETGEN=ON`).
+"""
+has_netgen() = ccall(_sym(:mio_has_netgen), Cint, ()) != 0
+
+"""
+    tetrahedralize(mesh; backend="auto", max_size=0.0, max_volume=0.0, grading=0.3,
+                   optimize_steps=3, max_cells=50_000_000, face_array="cad:face")
+        -> (; mesh, num_tetrahedra, num_points, num_new_points, num_regions,
+              num_boundary_triangles, boundary_preserved, hausdorff_to_surface,
+              min_dihedral_deg, max_dihedral_deg, volume, backend)
+
+Fill a closed, manifold, consistently oriented triangle surface with tetrahedra
+(roadmap 6.7): through Netgen its triangles and points are kept exactly, through
+the native octree backend its boundary is fitted within `hausdorff_to_surface`.
+Each shell bounds a region (a box inside a box gives two), meshed on its own.
+`max_size` and `max_volume` (0: none) bound the tetrahedra, `grading` is how fast
+the size grows inward, `optimize_steps` the backend's volume optimisation
+passes; `face_array` names the CAD face cell data carried to the triangles.
+The result has a `tetra` block, a `triangle` block (the surface's with Netgen,
+its input points first; the tetrahedra's boundary with the octree backend) and
+the cell data `tetrahedralize:region`. `backend` is `"auto"` (Netgen when
+[`has_netgen`](@ref), else `"octree"`), `"netgen"` (throws naming
+`MESHIOPLUSPLUS_WITH_NETGEN` without it) or `"octree"`.
+See `doc/tetrahedralize.md`.
+"""
+function tetrahedralize(mesh::Mesh; backend::AbstractString="auto", max_size::Real=0.0,
+                        max_volume::Real=0.0, grading::Real=0.3, optimize_steps::Integer=3,
+                        max_cells::Integer=50_000_000, face_array::AbstractString="cad:face")
+    backend_c = backend == "auto" ? Int32(0) : backend == "netgen" ? Int32(1) :
+                backend == "octree" ? Int32(2) :
+                throw(ArgumentError("meshio++: tetrahedralize: backend must be \"auto\", \"netgen\" or \"octree\""))
+    fname = Vector{UInt8}(codeunits(String(face_array)))
+    push!(fname, 0x00)
+    report = Ref{_CTetrahedralizeReport}()
+    ptr = GC.@preserve fname begin
+        opts = _CTetrahedralizeOpts(Cdouble(max_size), Cdouble(max_volume), Cdouble(grading),
+                                    Int64(max_cells), pointer(fname), backend_c,
+                                    Int32(optimize_steps), (0, 0, 0, 0))
+        ccall(_sym(:mio_tetrahedralize), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CTetrahedralizeOpts}, Ref{_CTetrahedralizeReport}),
+              _handle(mesh), Ref(opts), report)
+    end
+    out = Mesh(_check_ptr(ptr))
+    r = report[]
+    (mesh=out, num_tetrahedra=Int(r.num_tetrahedra), num_points=Int(r.num_points),
+     num_new_points=Int(r.num_new_points), num_regions=Int(r.num_regions),
+     num_boundary_triangles=Int(r.num_boundary_triangles),
+     boundary_preserved=r.boundary_preserved != 0,
+     hausdorff_to_surface=Float64(r.hausdorff_to_surface),
+     min_dihedral_deg=Float64(r.min_dihedral_deg), max_dihedral_deg=Float64(r.max_dihedral_deg),
+     volume=Float64(r.volume), backend=r.backend == 1 ? "netgen" : "octree")
 end
 
 """

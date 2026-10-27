@@ -734,12 +734,13 @@ SEXP R_mio_project_to_cad(SEXP mesh, SEXP x, SEXP face_array, SEXP edge_array, S
     SEXP v6 = PROTECT(Rf_ScalarReal((double)report.num_failed));
     SEXP v7 = PROTECT(Rf_ScalarReal((double)report.num_outside_trim));
     SEXP v8 = PROTECT(Rf_ScalarReal(report.max_move));
-    const char* names[] = {"mesh",          "num_projected", "num_on_edges", "num_corners",
-                           "num_ambiguous", "num_too_far",   "num_failed",   "num_outside_trim",
-                           "max_move",      "outside_trim"};
-    SEXP values[] = {mo, v1, v2, v3, v4, v5, v6, v7, v8, outside};
-    SEXP res = PROTECT(mio_r_named_list(10, names, values));
-    UNPROTECT(11);
+    SEXP v9 = PROTECT(Rf_ScalarReal((double)report.num_on_curves));
+    const char* names[] = {"mesh",          "num_projected", "num_on_edges", "num_on_curves",
+                           "num_corners",   "num_ambiguous", "num_too_far",  "num_failed",
+                           "num_outside_trim", "max_move",   "outside_trim"};
+    SEXP values[] = {mo, v1, v2, v9, v3, v4, v5, v6, v7, v8, outside};
+    SEXP res = PROTECT(mio_r_named_list(11, names, values));
+    UNPROTECT(12);
     return res;
 }
 
@@ -890,7 +891,7 @@ SEXP R_mio_mesh_cad_surface(
     double quad_sj = 0.0;
     mio_mesh_cad_surface_quad_stats(&num_quads, &num_leftover, &quad_sj);
 
-    enum { R_MESH_CAD_N = 37 };
+    enum { R_MESH_CAD_N = 38 };
     SEXP res = PROTECT(Rf_allocVector(VECSXP, R_MESH_CAD_N));
     SEXP nm = PROTECT(Rf_allocVector(STRSXP, R_MESH_CAD_N));
     int k = 0;
@@ -940,6 +941,7 @@ SEXP R_mio_mesh_cad_surface(
     R_MESH_CAD_SET("num_quads", Rf_ScalarReal((double)num_quads));
     R_MESH_CAD_SET("num_leftover_triangles", Rf_ScalarReal((double)num_leftover));
     R_MESH_CAD_SET("min_quad_scaled_jacobian", Rf_ScalarReal(quad_sj));
+    R_MESH_CAD_SET("min_metric_angle", Rf_ScalarReal(mio_mesh_cad_surface_min_metric_angle()));
 #undef R_MESH_CAD_NUM
 #undef R_MESH_CAD_SET
     if (k != R_MESH_CAD_N)

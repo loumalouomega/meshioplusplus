@@ -1,0 +1,73 @@
+name: tet_corpus
+
+# Tetrahedralizes a seeded sample of Thingi10K (roadmap 6.7.8,
+# doc/tetrahedralize.md): the closed, manifold, oriented STL models its
+# metadata lists, drawn by the seed in tools/tet_corpus/manifest.json at the
+# dataset's pinned revision and fetched here, never stored in the repository
+# (each model carries its own licence; only ids and hashes are committed).
+# Each model runs in its own process under a time limit through the Netgen
+# backend (Ubuntu's libnglib-dev, linked dynamically); the job fails when one
+# crashes or hangs, naming it, and reports the share meshed, the share with
+# the boundary kept and the dihedral extremes in the job summary. Weekly, not
+# on every push: tetrahedralize's own tests run in ci.yml's netgen job.
+on:
+  schedule:
+    - cron: "41 5 * * 2"  # weekly, Tuesday 05:41 UTC
+  workflow_dispatch:
+    inputs:
+      models:
+        description: "a comma-separated subset of model ids (empty: the whole sample)"
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  corpus:
+    name: Tetrahedralize the Thingi10K sample
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install native libraries
+        run: |
+          # See ci.yml's kahip job: an unused, preinstalled third-party apt
+          # source must not take the whole step down.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          sudo apt-get install -y zlib1g-dev libtbb-dev pkg-config libnglib-dev
+      - name: Install meshioplusplus with Netgen
+        run: |
+          python -m pip install --upgrade pip
+          CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_NETGEN=ON -DMESHIOPLUSPLUS_WITH_OCCT=OFF" \
+            python -m pip install .
+          python -c "from meshioplusplus import _core; assert _core.__has_netgen__"
+      - name: Fetch the sample
+        run: python tools/tet_corpus.py fetch --dest tet-corpus --record tet-corpus-hashes.json
+      - name: Tetrahedralize and measure every model
+        env:
+          MODELS: ${{ inputs.models }}
+        run: |
+          python tools/tet_corpus.py run --dest tet-corpus --out tet-corpus.json \
+            ${MODELS:+--models "$MODELS"}
+      - name: Job summary
+        if: always()
+        run: |
+          if [ -f tet-corpus.json ]; then
+            python tools/tet_corpus.py summary tet-corpus.json >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tet-corpus
+          path: |
+            tet-corpus.json
+            tet-corpus-hashes.json
+          if-no-files-found: ignore

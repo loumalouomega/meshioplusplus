@@ -745,7 +745,32 @@ struct _CProjectToCadReport
     num_failed::Int64
     num_outside_trim::Int64
     max_move::Cdouble
-    reserved::NTuple{4,Int64}
+    num_on_curves::Int64
+    reserved::NTuple{3,Int64}
+end
+
+"""Mirror of C `mio_error_size_opts` (roadmap 6.10.2); its strings are
+borrowed for one call."""
+struct _CErrorSizeOpts
+    error_array::Ptr{UInt8}
+    target_error::Cdouble
+    order::Cdouble
+    min_size::Cdouble
+    max_size::Cdouble
+    output::Ptr{UInt8}
+    overwrite::Int32
+    reserved_pad::Int32
+    reserved::NTuple{3,Int64}
+end
+
+"""Mirror of C `mio_error_size_report`."""
+struct _CErrorSizeReport
+    num_cells::Int64
+    num_skipped::Int64
+    num_clamped::Int64
+    min_size::Cdouble
+    max_size::Cdouble
+    reserved::NTuple{3,Int64}
 end
 
 """Mirror of C `mio_boundary_layer_opts` (roadmap 6.9)."""
@@ -757,7 +782,11 @@ struct _CBoundaryLayerOpts
     reverse::Int32
     smooth_iterations::Int32
     max_shrink::Int32
-    reserved::NTuple{3,Int64}
+    collapse::Int32
+    normal_smooth_iterations::Int32
+    front_check::Int32
+    reserved_pad::Int32
+    reserved::NTuple{1,Int64}
 end
 
 """Mirror of C `mio_boundary_layer_report`."""
@@ -775,7 +804,38 @@ struct _CBoundaryLayerReport
     max_thickness::Cdouble
     cap_closed::Int32
     reserved_pad::Int32
+    num_fewer_layers::Int64
+    num_front_crossings::Int64
+    reserved::NTuple{2,Int64}
+end
+
+"""Mirror of C `mio_tetrahedralize_opts` (roadmap 6.7); its string is
+borrowed for one call."""
+struct _CTetrahedralizeOpts
+    max_size::Cdouble
+    max_volume::Cdouble
+    grading::Cdouble
+    max_cells::Int64
+    face_array::Ptr{UInt8}
+    backend::Int32
+    optimize_steps::Int32
     reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_tetrahedralize_report`."""
+struct _CTetrahedralizeReport
+    num_tetrahedra::Int64
+    num_points::Int64
+    num_new_points::Int64
+    num_regions::Int64
+    num_boundary_triangles::Int64
+    hausdorff_to_surface::Cdouble
+    min_dihedral_deg::Cdouble
+    max_dihedral_deg::Cdouble
+    volume::Cdouble
+    boundary_preserved::Int32
+    backend::Int32
+    reserved::NTuple{6,Int64}
 end
 
 """Mirror of C `mio_mesh_cad_surface_report`."""
@@ -1425,15 +1485,36 @@ function _check_abi_layout()
                                  fieldoffset(_CProjectToCadOpts, 4) == 24)) ||
         error("meshio++: mio_project_to_cad_opts layout mismatch " *
               "($(sizeof(_CProjectToCadOpts)) bytes)")
-    (sizeof(_CProjectToCadReport) == 96 && fieldoffset(_CProjectToCadReport, 8) == 56) ||
+    (sizeof(_CProjectToCadReport) == 96 && fieldoffset(_CProjectToCadReport, 8) == 56 &&
+     fieldoffset(_CProjectToCadReport, 9) == 64) ||
         error("meshio++: mio_project_to_cad_report layout mismatch " *
               "($(sizeof(_CProjectToCadReport)) bytes)")
-    (sizeof(_CBoundaryLayerOpts) == 64 && fieldoffset(_CBoundaryLayerOpts, 4) == 24) ||
+    (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CErrorSizeOpts) == 80 &&
+                                 fieldoffset(_CErrorSizeOpts, 6) == 40 &&
+                                 fieldoffset(_CErrorSizeOpts, 9) == 56)) ||
+        error("meshio++: mio_error_size_opts layout mismatch " *
+              "($(sizeof(_CErrorSizeOpts)) bytes)")
+    (sizeof(_CErrorSizeReport) == 64 && fieldoffset(_CErrorSizeReport, 5) == 32) ||
+        error("meshio++: mio_error_size_report layout mismatch " *
+              "($(sizeof(_CErrorSizeReport)) bytes)")
+    (sizeof(_CBoundaryLayerOpts) == 64 && fieldoffset(_CBoundaryLayerOpts, 4) == 24 &&
+     fieldoffset(_CBoundaryLayerOpts, 8) == 40 && fieldoffset(_CBoundaryLayerOpts, 12) == 56) ||
         error("meshio++: mio_boundary_layer_opts layout mismatch " *
               "($(sizeof(_CBoundaryLayerOpts)) bytes)")
-    (sizeof(_CBoundaryLayerReport) == 128 && fieldoffset(_CBoundaryLayerReport, 12) == 88) ||
+    (sizeof(_CBoundaryLayerReport) == 128 && fieldoffset(_CBoundaryLayerReport, 12) == 88 &&
+     fieldoffset(_CBoundaryLayerReport, 14) == 96 &&
+     fieldoffset(_CBoundaryLayerReport, 16) == 112) ||
         error("meshio++: mio_boundary_layer_report layout mismatch " *
               "($(sizeof(_CBoundaryLayerReport)) bytes)")
+    (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CTetrahedralizeOpts) == 80 &&
+                                 fieldoffset(_CTetrahedralizeOpts, 5) == 32 &&
+                                 fieldoffset(_CTetrahedralizeOpts, 8) == 48)) ||
+        error("meshio++: mio_tetrahedralize_opts layout mismatch " *
+              "($(sizeof(_CTetrahedralizeOpts)) bytes)")
+    (sizeof(_CTetrahedralizeReport) == 128 && fieldoffset(_CTetrahedralizeReport, 10) == 72 &&
+     fieldoffset(_CTetrahedralizeReport, 12) == 80) ||
+        error("meshio++: mio_tetrahedralize_report layout mismatch " *
+              "($(sizeof(_CTetrahedralizeReport)) bytes)")
     sizeof(_CFitCadOpts) == 80 ||
         error("meshio++: mio_fit_cad_opts layout mismatch ($(sizeof(_CFitCadOpts)) bytes)")
     sizeof(_CFitCadReport) == 192 ||

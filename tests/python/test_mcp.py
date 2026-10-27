@@ -2252,6 +2252,56 @@ def test_boundary_layer_tool(tmp_path):
         _tools.tool_boundary_layer(str(skin), str(out), 0.0)
 
 
+def test_boundary_layer_tool_collapse_and_front(tmp_path):
+    """Roadmap 6.9.1: the collapse, normal smoothing and front-test options
+    reach the operation, and its two counters the report."""
+    if not hasattr(_core, "boundary_layer"):
+        pytest.skip("core predates boundary_layer")
+    model = pathlib.Path(__file__).parent / "meshes" / "cad_json" / "sphere.cad.json"
+    skin = tmp_path / "sphere.vtu"
+    _tools.tool_mesh_cad_surface(str(model), str(skin), 0.3)
+    out = tmp_path / "layers.vtu"
+    report = _tools.tool_boundary_layer(
+        str(skin),
+        str(out),
+        0.01,
+        num_layers=2,
+        collapse="layers",
+        normal_smooth_iterations=2,
+        front_check=False,
+    )
+    assert report["num_wedges"] > 0
+    assert report["num_fewer_layers"] >= 0 and report["num_front_crossings"] == 0
+    with pytest.raises(ValueError, match="collapse"):
+        _tools.tool_boundary_layer(str(skin), str(out), 0.01, collapse="rows")
+
+
+def test_tetrahedralize_tool(tmp_path):
+    """Roadmap 6.7: the sphere's mesh filled with tetrahedra by the native
+    octree backend (always built, its boundary fitted) and, with Netgen, its
+    skin kept; without Netgen asking for it names the build flag."""
+    if not hasattr(_core, "tetrahedralize"):
+        pytest.skip("core predates tetrahedralize")
+    model = pathlib.Path(__file__).parent / "meshes" / "cad_json" / "sphere.cad.json"
+    skin = tmp_path / "sphere.vtu"
+    _tools.tool_mesh_cad_surface(str(model), str(skin), 0.3)
+    out = tmp_path / "tets.vtu"
+    with pytest.raises(ValueError, match="grading"):
+        _tools.tool_tetrahedralize(str(skin), str(out), grading=2.0)
+    fitted = _tools.tool_tetrahedralize(str(skin), str(out), backend="octree")
+    assert fitted["backend"] == "octree" and not fitted["boundary_preserved"]
+    assert fitted["num_tetrahedra"] > 0 and fitted["hausdorff_to_surface"] > 0.0
+    if not _core.__has_netgen__:
+        with pytest.raises(NotImplementedError, match="MESHIOPLUSPLUS_WITH_NETGEN"):
+            _tools.tool_tetrahedralize(str(skin), str(out), backend="netgen")
+        return
+    report = _tools.tool_tetrahedralize(str(skin), str(out), max_size=0.3)
+    assert report["num_tetrahedra"] > 0 and report["num_regions"] == 1
+    assert report["boundary_preserved"] and report["backend"] == "netgen"
+    assert 4.0 < report["volume"] < 4 / 3 * np.pi
+    assert {c.type for c in meshioplusplus.read(out).cells} == {"tetra", "triangle"}
+
+
 def test_project_to_cad_tool(tmp_path):
     """Roadmap 6.10.1: the sphere's mesh, smoothed (which shrinks it), goes
     back onto the sphere."""
@@ -2268,11 +2318,46 @@ def test_project_to_cad_tool(tmp_path):
     assert report["num_projected"] == len(smoothed.points)
     assert report["num_ambiguous"] == report["num_failed"] == 0
     assert report["max_move"] > 1e-3
+    assert 0 <= report["num_on_curves"] <= report["num_on_edges"]
     assert report["outside_trim"] == []
     back = meshioplusplus.read(out)
     assert np.allclose(np.linalg.norm(back.points, axis=1), 1.0, atol=1e-12)
     with pytest.raises(ValueError, match="trim_samples"):
         _tools.tool_project_to_cad(str(shrunk), str(model), str(out), trim_samples=1)
+
+
+def test_error_size_tool(tmp_path):
+    """Roadmap 6.10.2: estimate_error's indicator becomes a size field that
+    mesh_cad_surface's background reads."""
+    if not hasattr(_core, "error_size"):
+        pytest.skip("core predates error_size")
+    model = pathlib.Path(__file__).parent / "meshes" / "cad_json" / "sphere.cad.json"
+    meshed = tmp_path / "sphere.vtu"
+    _tools.tool_mesh_cad_surface(str(model), str(meshed), 0.3, edges=False)
+    mesh = meshioplusplus.read(meshed)
+    mesh.point_data["f"] = np.exp(3.0 * mesh.points[:, 2])
+    with_field = tmp_path / "field.vtu"
+    meshioplusplus.write(with_field, mesh)
+    indicated = tmp_path / "indicated.vtu"
+    _tools.tool_estimate_error(str(with_field), str(indicated), "f")
+    sized = tmp_path / "sized.vtu"
+    report = _tools.tool_error_size(
+        str(indicated), str(sized), 0.05, min_size=0.05, max_size=0.5
+    )
+    assert report["num_cells"] > 0 and report["num_skipped"] == 0
+    assert 0.05 <= report["min_size"] <= report["max_size"] <= 0.5
+    back = meshioplusplus.read(sized)
+    assert np.all((back.point_data["size"] >= 0.05) & (back.point_data["size"] <= 0.5))
+    remeshed = tmp_path / "remeshed.vtu"
+    adapted = _tools.tool_mesh_cad_surface(
+        str(model), str(remeshed), 0.5, background_path=str(sized)
+    )
+    assert adapted["num_failed"] == 0
+    assert adapted["min_metric_angle"] == 0.0
+    with pytest.raises(ValueError, match="target_error"):
+        _tools.tool_error_size(str(indicated), str(sized), 0.0)
+    with pytest.raises(ValueError, match="error:zz"):
+        _tools.tool_error_size(str(with_field), str(sized), 0.05)
 
 
 def test_mesh_cad_surface_tool(tmp_path):

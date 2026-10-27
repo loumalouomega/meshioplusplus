@@ -88,6 +88,7 @@
 #include "meshioplusplus/operations/mesh_cad.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/boundary_layer.hpp"
+#include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
@@ -1369,6 +1370,28 @@ int main(int argc, char** argv) {
             of(pD, mio::boundary_layer(
                        mio::mesh_cad_surface(box, o, mio::MeshCadSizeSources{}, ex).mMesh, b)
                        .mMesh);
+        });
+        // Tetrahedra filling the box's skin (roadmap 6.7), only where the
+        // Netgen backend is built in; its calls are serialised, so the digest
+        // is the same at every thread count.
+        if (mio::tetrahedralize_has_netgen())
+            row("tetrahedralize", [&](MeshDigest* pD) {
+                const mio::BrepInfo box = cad_box();
+                mio::MeshCadSurfaceOptions o;
+                o.mTargetSize = octree_step;
+                mio::TetrahedralizeOptions t;
+                t.mBackend = mio::TetrahedralizeBackend::Netgen;
+                t.mMaxSize = octree_step;
+                of(pD, mio::tetrahedralize(mio::mesh_cad_surface(box, o).mMesh, t).mMesh);
+            });
+        // The same skin through the native octree backend, always built.
+        row("tetrahedralize_octree", [&](MeshDigest* pD) {
+            const mio::BrepInfo box = cad_box();
+            mio::MeshCadSurfaceOptions o;
+            o.mTargetSize = octree_step;
+            mio::TetrahedralizeOptions t;
+            t.mBackend = mio::TetrahedralizeBackend::Octree;
+            of(pD, mio::tetrahedralize(mio::mesh_cad_surface(box, o).mMesh, t).mMesh);
         });
         row("sample_distance", [&](MeshDigest* pD) {
             const NDArray d = mio::sample_distance(surface, jittered->Points());

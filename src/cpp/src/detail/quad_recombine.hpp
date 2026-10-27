@@ -47,6 +47,9 @@
 // System includes
 #include <array>
 #include <cstdint>
+#include <map>
+#include <set>
+#include <utility>
 #include <vector>
 
 namespace meshioplusplus::detail {
@@ -75,9 +78,23 @@ struct QuadRecombineResult {
  * @brief Recombine consistently oriented triangles `rTris` (point ids) whose
  * pairs may merge only within one `rGroup` (one value per triangle, e.g. the
  * CAD face it lies in); quads come out in the order of their first triangle.
+ *
+ * With `pSideCurve`, per triangle the curve each side (corner k to corner
+ * k + 1) lies on (-1 for none), a pair whose quad would have both sides at a
+ * corner on one curve is no candidate: on a curved element the corner is a
+ * straight angle, where the Jacobian vanishes (roadmap 6.8.3). With
+ * `pFixed`, the edges (as `(min, max)` point pairs) no pair may merge
+ * across: a model's edges, a seam among them, whose line cells would cross
+ * the quad. With `pMidpoint`, each edge's midpoint node (by its `(min, max)`
+ * ends; all-quad's split), a pair is a candidate only if the four quads it
+ * splits into, through those midpoints and their mean, meet `MinQuality`
+ * too.
  */
-QuadRecombineResult quad_recombine(const std::vector<std::array<std::int64_t, 3>>& rTris,
-                                   const std::vector<std::int64_t>& rGroup, const double* pX,
-                                   double MinQuality, QuadPairing Pairing = QuadPairing::Greedy);
+QuadRecombineResult quad_recombine(
+    const std::vector<std::array<std::int64_t, 3>>& rTris, const std::vector<std::int64_t>& rGroup,
+    const double* pX, double MinQuality, QuadPairing Pairing = QuadPairing::Greedy,
+    const std::vector<std::array<std::int64_t, 3>>* pSideCurve = nullptr,
+    const std::set<std::pair<std::int64_t, std::int64_t>>* pFixed = nullptr,
+    const std::map<std::pair<std::int64_t, std::int64_t>, std::int64_t>* pMidpoint = nullptr);
 
 }  // namespace meshioplusplus::detail

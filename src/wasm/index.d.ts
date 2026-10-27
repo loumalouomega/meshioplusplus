@@ -425,12 +425,13 @@ export interface MeshCadSurfaceOptions {
   /**
    * Mesh a face whose metric's condition number over its coarse mesh passes
    * this in a flattening of that mesh (v17.20.0); 0 (default) is off,
-   * otherwise above 1; order 1 only.
+   * otherwise above 1; at order 2 or 3 the curved nodes sit at the
+   * flattening's coordinates.
    */
   reparamConditionNumber?: number;
   /** Accept the gaps the model itself declares in its edges' extras (default false). */
   modelTolerances?: boolean;
-  /** Mesh a sliver face with the neighbour it meets tangentially (default false). */
+  /** Mesh a sliver face with the neighbour it meets tangentially, at any order (default false). */
   virtualFaces?: boolean;
   /**
    * Lop acute corners (Pav and Walkington 2005) in place of concentric
@@ -438,27 +439,28 @@ export interface MeshCadSurfaceOptions {
    */
   lopCorners?: boolean;
   /**
-   * A mesh whose 9-component point data `metricArray` is a field's Hessian:
-   * an anisotropic metric from it, with the target interpolation error
-   * `metricError`, sizes the triangles in every direction (roadmap 6.10.2);
-   * order 1 only.
+   * A mesh whose 9-component point data `metricArray` is a field's Hessian
+   * (or whose 1-component one is the field, its Hessian then taken): an
+   * anisotropic metric from it, with the target interpolation error
+   * `metricError`, sizes the triangles in every direction (roadmap 6.10.2),
+   * at any order; `minMetricAngle` reports the least angle in the metric.
    */
   metricBackground?: Mesh;
-  /** The name of that Hessian array (e.g. 'f:hessian'). */
+  /** The name of that Hessian array (e.g. 'f:hessian'), or of the field. */
   metricArray?: string;
   /** The target interpolation error (positive). */
   metricError?: number;
   /**
-   * With `order` 2 or 3, move a face's own high-order nodes on the surface to
-   * untangle a folded curved element before it is straightened (roadmap
-   * 6.6.3; default false).
+   * With `order` 2 or 3, move a face's own high-order nodes on the surface
+   * (quads' too) to untangle a folded curved element before it is
+   * straightened (roadmap 6.6.3; default false).
    */
   untangle?: boolean;
   /**
    * 'none' (the default), 'dominant' (pairs of triangles recombined into
-   * quads where they make a good one; order 1 only) or 'all' (the
-   * quad-dominant mesh of twice the size split into quads only; order 2
-   * writes quad9) (6.8).
+   * quads where they make a good one) or 'all' (the quad-dominant mesh of
+   * twice the size split into quads only; no `virtualEdges`); order 2 or 3
+   * writes quad9 or quad16 (6.8).
    */
   quads?: 'none' | 'dominant' | 'all';
   /**
@@ -557,6 +559,16 @@ export interface BoundaryLayerOptions {
   smoothIterations?: number;
   /** Halvings of a point's layers before they collapse (default 6). */
   maxShrink?: number;
+  /**
+   * How a point whose cells fold gives way: `"points"` (default) halves its
+   * layers and then collapses it; `"layers"` drops its top layer, so it grows
+   * fewer layers at their full thickness.
+   */
+  collapse?: 'points' | 'layers';
+  /** Laplacian passes over the growth directions, 0 to 1000 (default 0). */
+  normalSmoothIterations?: number;
+  /** Test the last layer's faces against each other and the surface (default true). */
+  frontCheck?: boolean;
 }
 
 /** What `boundaryLayer` returns. */
@@ -570,11 +582,91 @@ export interface BoundaryLayerResult {
   numShrunk: number;
   numCollapsed: number;
   numNotVisible: number;
+  /** With `collapse: "layers"`, the points that grow fewer layers than asked. */
+  numFewerLayers: number;
+  /** Last-layer face pairs the front test found crossing or touching. */
+  numFrontCrossings: number;
   minScaledJacobian: number;
   minThickness: number;
   maxThickness: number;
   capClosed: boolean;
   warnings: string[];
+}
+
+/** Options of `tetrahedralize` (doc/tetrahedralize.md). */
+export interface TetrahedralizeOptions {
+  /**
+   * `"auto"` (default: Netgen when built in, else `"octree"`), `"netgen"`
+   * (the surface kept; no WebAssembly build carries it) or `"octree"` (the
+   * native isosurface stuffing, the boundary fitted).
+   */
+  backend?: 'auto' | 'netgen' | 'octree';
+  /** The largest edge asked of the tetrahedra (0, the default, is none). */
+  maxSize?: number;
+  /** The largest volume asked of a tetrahedron (0, the default, is none). */
+  maxVolume?: number;
+  /** How fast the size grows away from the surface, in [0, 1] (default 0.3). */
+  grading?: number;
+  /** Passes of the backend's volume optimisation, 0 to 100 (default 3). */
+  optimizeSteps?: number;
+  /** Refuse a result of more tetrahedra (default 50000000). */
+  maxCells?: number;
+  /** The cell data naming each triangle's CAD face (default "cad:face"). */
+  faceArray?: string;
+}
+
+/** What `tetrahedralize` returns. */
+export interface TetrahedralizeResult {
+  mesh: Mesh;
+  numTetrahedra: number;
+  /** Every point of the result. */
+  numPoints: number;
+  /** Of those, inside the surface. */
+  numNewPoints: number;
+  /** Enclosed regions, one per shell. */
+  numRegions: number;
+  numBoundaryTriangles: number;
+  /** Every surface triangle and its points kept exactly. */
+  boundaryPreserved: boolean;
+  hausdorffToSurface: number;
+  minDihedralDeg: number;
+  maxDihedralDeg: number;
+  volume: number;
+  /** The backend that ran. */
+  backend: string;
+  warnings: string[];
+}
+
+/** Options of `errorSize` (doc/error.md). */
+export interface ErrorSizeOptions {
+  /** The target global error, in the indicator's norm (positive; required). */
+  targetError: number;
+  /** The one-component cell data indicator (default "error:zz"). */
+  errorArray?: string;
+  /** The indicator's rate in the cell size (default 1, for linear elements). */
+  order?: number;
+  /** The least size written (0, the default, is no bound). */
+  minSize?: number;
+  /** The greatest size written (0, the default, is no bound). */
+  maxSize?: number;
+  /** The point data array written (default "size"). */
+  output?: string;
+  /** Replace an existing array of that name (default false). */
+  overwrite?: boolean;
+}
+
+/** What `errorSize` returns. */
+export interface ErrorSizeResult {
+  mesh: Mesh;
+  /** Cells evaluated. */
+  numCells: number;
+  /** Cells whose indicator or size is not finite. */
+  numSkipped: number;
+  /** Cell sizes the bounds clamped. */
+  numClamped: number;
+  /** The least and greatest point size written. */
+  minSize: number;
+  maxSize: number;
 }
 
 /** Options of `projectToCad` (doc/project_to_cad.md). */
@@ -594,6 +686,8 @@ export interface ProjectToCadResult {
   mesh: Mesh;
   numProjected: number;
   numOnEdges: number;
+  /** Of those on edges, the points put onto the edge's own 3-D curve. */
+  numOnCurves: number;
   numCorners: number;
   numAmbiguous: number;
   numTooFar: number;
@@ -683,6 +777,11 @@ export interface MeshCadSurfaceResult {
   numQuads: number;
   numLeftoverTriangles: number;
   minQuadScaledJacobian: number;
+  /**
+   * With a `metricBackground`, the least corner angle of a cell in the metric
+   * at its centroid, in degrees (the measure refinement judges by); 0 without.
+   */
+  minMetricAngle: number;
 }
 
 /** Sampling options of `igaRefine` / `igaSample`. */
@@ -2102,6 +2201,12 @@ export interface MeshioPlusPlusModule {
   hasOcct(): boolean;
 
   /**
+   * Whether `tetrahedralize`'s Netgen backend is linked in: always false in
+   * WebAssembly, where no Netgen build exists (the octree backend always is).
+   */
+  hasNetgen(): boolean;
+
+  /**
    * Whether the KaHIP kaffpa partitioner is linked in, so `partition` with
    * `method: 'kahip'` runs: true in the full artifact (`{full: true}`),
    * false in the lean one.
@@ -2765,6 +2870,22 @@ export interface MeshioPlusPlusModule {
   ): { mesh: Mesh; globalError: number; numSkipped: number; numMarked: number };
 
   /**
+   * A per-point size field from a per-cell error indicator (roadmap 6.10.2),
+   * by the adaptive procedure of Zienkiewicz and Zhu (1987): with `N` cells
+   * evaluated, a cell of diameter `h` whose indicator `errorArray` (what
+   * `estimateError` writes) is `eta` asks
+   * `h * (targetError / sqrt(N) / eta) ** (1 / order)`, clamped to
+   * `[minSize, maxSize]` (0: no bound); a point takes the least of its
+   * cells' (NaN where none is evaluated). The sizes are written as point data
+   * `output`, what `meshCadSurface`'s `background` reads.
+   * @throws {Error} on a missing or multi-component indicator, a target error
+   *   or order that is not finite and positive, a negative bound,
+   *   `minSize > maxSize`, an output-name collision without `overwrite`, or
+   *   an unknown option.
+   */
+  errorSize(mesh: Mesh, options: ErrorSizeOptions): ErrorSizeResult;
+
+  /**
    * Remesh a surface by approximated centroidal Voronoi diagram (ACVD)
    * clustering: replace its triangulation with a new, near-uniformly-sized,
    * well-shaped one at `numClusters` vertices. Unlike every other
@@ -3179,6 +3300,18 @@ export interface MeshioPlusPlusModule {
    * quads, manifold and consistently oriented.
    */
   boundaryLayer(mesh: Mesh, options: BoundaryLayerOptions): BoundaryLayerResult;
+
+  /**
+   * Fill a closed, manifold, consistently oriented triangle surface with
+   * tetrahedra (roadmap 6.7). No WebAssembly build carries Netgen, which
+   * keeps the surface's triangles (`hasNetgen()` is false), so `"auto"` is the
+   * native octree backend: isosurface stuffing whose boundary is fitted to
+   * the surface within `hausdorffToSurface` (`boundaryPreserved` false), with
+   * a warning saying so.
+   * @throws {Error} for `backend: "netgen"` naming `MESHIOPLUSPLUS_WITH_NETGEN`;
+   * on a bad option or an open, non-manifold or misoriented surface by name.
+   */
+  tetrahedralize(mesh: Mesh, options?: TetrahedralizeOptions): TetrahedralizeResult;
 
   /**
    * Evaluate patch `patch` (0-based; the face of a B-rep) at `params`, a flat

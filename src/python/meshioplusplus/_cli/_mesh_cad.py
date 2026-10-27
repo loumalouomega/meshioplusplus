@@ -155,12 +155,13 @@ def add_args(parser):
         "--metric-background",
         default=None,
         help="a mesh whose 9-component point_data --metric-array is a field's "
-        "Hessian: an anisotropic metric from it sizes the triangles (roadmap 6.10.2)",
+        "Hessian (or whose 1-component one is the field itself): an anisotropic "
+        "metric from it sizes the triangles, at any order (roadmap 6.10.2)",
     )
     parser.add_argument(
         "--metric-array",
         default="",
-        help="the metric background's Hessian array (e.g. f:hessian)",
+        help="the metric background's Hessian array (e.g. f:hessian) or field",
     )
     parser.add_argument(
         "--metric-error",
@@ -206,15 +207,16 @@ def add_args(parser):
     parser.add_argument(
         "--untangle",
         action="store_true",
-        help="with --order 2 or 3, move a face's own nodes to untangle a folded "
-        "curved element before it is straightened (roadmap 6.6.3)",
+        help="with --order 2 or 3, move a face's own nodes (quads' too) to "
+        "untangle a folded curved element before it is straightened (roadmap 6.6.3)",
     )
     parser.add_argument(
         "--quads",
         choices=("none", "dominant", "all"),
         default="none",
         help="recombine the triangles into a quad-dominant or all-quad mesh "
-        "(roadmap 6.8; all with --order 2 writes quad9)",
+        "(roadmap 6.8; with --order 2 or 3 writes quad9 or quad16; all takes no "
+        "--virtual-edges)",
     )
     parser.add_argument(
         "--quad-pairs",
@@ -318,6 +320,8 @@ def mesh_cad_surface_cmd(args):
                 f"({report['num_leftover_triangles']} triangles left), least scaled "
                 f"Jacobian {report['min_quad_scaled_jacobian']:.3f}"
             )
+        if args.metric_background is not None:
+            print(f"  metric angles:  from {report['min_metric_angle']:.2f} degrees")
         for f in report["faces"]:
             if f["status"] != "ok":
                 print(f"  face {f['face']}: {f['status']}: {f['reason']}")

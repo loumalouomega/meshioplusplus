@@ -400,6 +400,8 @@ program test_fortran_api
                 call mio_mesh_cad_get_quad_stats(nq, nl, qsj, ierr)
                 call check(ierr == 0 .and. nq > 0 .and. qsj > 0.0_real64, &
                            'mesh_cad_surface reports its quads')
+                call check(mio_mesh_cad_min_metric_angle() == 0.0_real64, &
+                           'mesh_cad_surface reports no metric angle without a metric')
                 call tris%free()
             end if
             end block
@@ -423,6 +425,9 @@ program test_fortran_api
                            'project_to_cad leaves a mesh on its model')
                 call check(size(mio_project_to_cad_outside_trim()) == 0, &
                            'project_to_cad lists no point outside the trims')
+                call check(prep%num_on_curves >= 0 .and. &
+                           prep%num_on_curves <= prep%num_on_edges, &
+                           'project_to_cad counts the points on edge curves')
                 ! Roadmap 6.9: layers grown from the triangle are wedges.
                 block
                     type(mio_mesh) :: grown
@@ -432,7 +437,24 @@ program test_fortran_api
                     call check(ierr == 0 .and. brep%num_wedges > 0 .and. &
                                brep%min_scaled_jacobian > 0.0_real64, &
                                'boundary_layer grows wedges')
+                    call check(ierr == 0 .and. brep%num_fewer_layers == 0 .and. &
+                               brep%num_front_crossings >= 0, &
+                               'boundary_layer reports the collapse and front counters')
                     if (ierr == 0) call grown%free()
+                    grown = mio_boundary_layer(tris, 0.01_real64, num_layers=2, report=brep, &
+                                               collapse='layers', normal_smooth_iterations=2, &
+                                               front_check=.false., stat=ierr, errmsg=msg)
+                    call check(ierr == 0 .and. brep%num_wedges > 0 .and. &
+                               brep%num_front_crossings == 0, &
+                               'boundary_layer takes collapse, normal smoothing and front_check')
+                    if (ierr == 0) call grown%free()
+                    grown = mio_boundary_layer(tris, 0.01_real64, collapse='rows', stat=ierr, &
+                                               errmsg=msg)
+                    call check(ierr /= 0, 'boundary_layer refuses an unknown collapse')
+                    grown = mio_boundary_layer(tris, 0.01_real64, normal_smooth_iterations=5000, &
+                                               stat=ierr, errmsg=msg)
+                    call check(ierr /= 0 .and. index(msg, 'normal_smooth_iterations') > 0, &
+                               'boundary_layer refuses normal_smooth_iterations by name')
                 end block
                 if (ierr == 0) call projected%free()
                 call tris%free()
@@ -1452,6 +1474,43 @@ program test_fortran_api
         call octa%set_points(octa_points)
         call octa%add_cell_block('triangle', octa_conn)
 
+        ! -- tetrahedralize (roadmap 6.7): the octahedron filled, its skin kept --
+        block
+            type(mio_mesh) :: tet_out
+            type(mio_tetrahedralize_report) :: trep
+            integer :: tst
+            character(:), allocatable :: tmsg
+            tet_out = mio_tetrahedralize(octa, grading=2.0_real64, stat=tst, errmsg=tmsg)
+            call check(tst /= 0 .and. index(tmsg, 'grading') > 0, &
+                       'tetrahedralize refuses grading by name')
+            tet_out = mio_tetrahedralize(octa, backend='tetgen', stat=tst, errmsg=tmsg)
+            call check(tst /= 0, 'tetrahedralize refuses an unknown backend')
+            tet_out = mio_tetrahedralize(octa, max_size=0.5_real64, report=trep, stat=tst, &
+                                         errmsg=tmsg)
+            if (mio_has_netgen()) then
+                call check(tst == 0 .and. trep%num_tetrahedra > 0 .and. &
+                           trep%num_regions == 1_int64 .and. trep%boundary_preserved == 1 .and. &
+                           trep%backend == 1 .and. trep%num_boundary_triangles == 8_int64 .and. &
+                           abs(trep%volume - 4.0_real64/3.0_real64) < 1.0e-9_real64, &
+                           'tetrahedralize fills the octahedron')
+                if (tst == 0) call tet_out%free()
+            else
+                call check(tst == 0 .and. trep%backend == 2, &
+                           'tetrahedralize falls back to the octree backend without Netgen')
+                if (tst == 0) call tet_out%free()
+                tet_out = mio_tetrahedralize(octa, backend='netgen', stat=tst, errmsg=tmsg)
+                call check(tst /= 0 .and. index(tmsg, 'MESHIOPLUSPLUS_WITH_NETGEN') > 0, &
+                           'tetrahedralize names the build flag for netgen without it')
+            end if
+            ! The native octree backend, always there: the boundary fitted.
+            tet_out = mio_tetrahedralize(octa, backend='octree', report=trep, stat=tst, &
+                                         errmsg=tmsg)
+            call check(tst == 0 .and. trep%backend == 2 .and. trep%boundary_preserved == 0 .and. &
+                       trep%num_tetrahedra > 0 .and. trep%hausdorff_to_surface > 0.0_real64, &
+                       'tetrahedralize fills the octahedron with the octree backend')
+            if (tst == 0) call tet_out%free()
+        end block
+
         out = octa%remesh(30_int64, num_iterations=niter, subdivide_applied=subapp, &
                           num_isolated_clusters=niso, stat=st)
         call check(st == 0, 'remesh succeeded')
@@ -1683,6 +1742,40 @@ program test_fortran_api
         ! An out-of-range marking_value for "fraction" fails through stat too.
         e = m%estimate_error('temperature', marking='fraction', marking_value=1.5d0, stat=st)
         call check(st /= 0, 'estimate_error rejects an out-of-range marking_value')
+    end block
+
+    ! ---- error_size (roadmap 6.10.2: a size field from the indicator) -----
+    block
+        type(mio_mesh) :: e, s
+        type(mio_error_size_report) :: srep
+        integer :: st
+
+        e = m%estimate_error('temperature', stat=st)
+        call check(st == 0, 'estimate_error for error_size succeeded')
+        if (st == 0) then
+            s = e%error_size(1.0d-3, report=srep, stat=st)
+            call check(st == 0, 'error_size succeeded')
+            if (st == 0) then
+                call check(s%num_point_data() == e%num_point_data() + 1, &
+                           'error_size adds one point_data array')
+                call check(srep%num_cells + srep%num_skipped >= 1_int64, &
+                           'error_size reports the cells it read')
+                call s%free()
+            end if
+            s = e%error_size(1.0d-3, output='h', min_size=0.5d0, max_size=2.0d0, stat=st)
+            call check(st == 0, 'error_size with bounds and an output name succeeded')
+            if (st == 0) call s%free()
+            ! A target error that is not positive fails through stat.
+            s = e%error_size(0.0d0, stat=st)
+            call check(st /= 0, 'error_size rejects a target error of 0')
+            ! min_size above max_size fails through stat.
+            s = e%error_size(1.0d-3, min_size=2.0d0, max_size=1.0d0, stat=st)
+            call check(st /= 0, 'error_size rejects min_size > max_size')
+            ! A missing indicator fails through stat.
+            s = e%error_size(1.0d-3, error_array='nope', stat=st)
+            call check(st /= 0, 'error_size rejects a missing indicator')
+            call e%free()
+        end if
     end block
 
     ! --- named regions (doc/regions.md) ---------------------------------------

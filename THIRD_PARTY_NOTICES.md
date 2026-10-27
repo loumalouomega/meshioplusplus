@@ -27,6 +27,10 @@ The binaries link OpenCASCADE statically, as the CAD kernel of `fit_cad` and of 
 2. `build/build-occt.sh PREFIX` fetches that commit, verifies it, and builds the static libraries (`build/occt-recipe.sh` holds the pin and the configuration). Configuring meshio++ with `OpenCASCADE_ROOT=PREFIX` (or `-DOpenCASCADE_DIR=PREFIX/lib/cmake/opencascade`) links them: `pip install .` for the wheel, `build/configure.sh --cli --build` for the executable. The workflows that build the published binaries, `.github/workflows/wheels.yml` and `.github/workflows/cli.yml`, run exactly these steps. All of it is in the meshio++ repository at the tag of the binary's version.
 3. Replacing the OpenCASCADE checkout with a modified one (or pointing `OpenCASCADE_ROOT` at any compatible OpenCASCADE 7.6 or later, static or shared) and rebuilding produces a binary linked against it.
 
+## Netgen
+
+[`tetrahedralize`](doc/tetrahedralize.md)'s backend is [Netgen](https://github.com/NGSolve/netgen)'s nglib (J. Schöberl; LGPL-2.1-only). It is never vendored and never in the published binaries: a build from source links it only when configured with `-DMESHIOPLUSPLUS_WITH_NETGEN=ON` (`build/configure.sh --with-netgen`), and then only dynamically, against the shared `libnglib` and `libngcore` of a Netgen install (`NETGEN_ROOT`, or the distribution's `libnglib-dev`), so a recipient can replace them without rebuilding meshio++. A binary built that way carries Netgen's licence beside meshio++'s MIT; without the option no Netgen code is built or linked, and `tetrahedralize` uses its native octree backend instead (asked for Netgen by name, it throws `Unsupported` naming the flag).
+
 ## Licence texts
 
 OpenCASCADE's are named above. zlib's is in the header of its source distribution at the version above (the pin is in `CMakeLists.txt`, `MESHIOPLUSPLUS_ZLIB_STATIC`); the vendored gidpost's is `src/cpp/third_party/gidpost/LICENSE` in the meshio++ repository. pugixml's MIT notice is in the header of `src/cpp/third_party/pugixml/pugixml.hpp`, nlohmann/json's is in its own header, and libomp's is in its own distribution (to be confirmed for the macOS wheels).

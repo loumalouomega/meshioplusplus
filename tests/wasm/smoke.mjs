@@ -2162,6 +2162,18 @@ step('estimateError: zero on a linear field, nonzero and markable on a quadratic
     // marking_value for "fraction" is rejected.
     assert.throws(() => m.estimateError(e1.mesh, 'error:zz'));
     assert.throws(() => m.estimateError(quadField, 'f', 'zz', 'fraction', 1.5));
+
+    // Roadmap 6.10.2: the indicator becomes a per-point size field.
+    const s = m.errorSize(e1.mesh, { targetError: 1e-3 });
+    assert.equal(s.numCells + s.numSkipped, 2);
+    assert.equal(s.mesh.point_data.size.length, 12);
+    assert.ok(s.minSize > 0 && s.minSize <= s.maxSize);
+    const b = m.errorSize(e1.mesh, { targetError: 1e-3, minSize: 0.5, maxSize: 0.75, output: 'h' });
+    assert.ok(b.mesh.point_data.h.every((v) => v >= 0.5 && v <= 0.75));
+    assert.throws(() => m.errorSize(e1.mesh, {}), /targetError/);
+    assert.throws(() => m.errorSize(e1.mesh, { targetError: 0 }), /target_error/);
+    assert.throws(() => m.errorSize(e1.mesh, { targetError: 1e-3, bogus: 1 }), /bogus/);
+    assert.throws(() => m.errorSize(quadField, { targetError: 1e-3 }), /error:zz/);
 });
 
 step('convertSurfaceOps: gradient is a chainable pipeline step', () => {
@@ -2518,6 +2530,8 @@ step('every binding is reachable through the wrapper', () => {
         'topologicalDimension',
         'availableFormats',
         'hasOcct',
+        'hasNetgen',
+        'tetrahedralize',
         'hasZstd',
         'hasLz4',
         'hasBzip2',
@@ -2561,6 +2575,7 @@ step('every binding is reachable through the wrapper', () => {
         'gradient',
         'hessian',
         'estimateError',
+        'errorSize',
         'cropBbox',
         'cropPlane',
         'cropPredicate',
@@ -2727,6 +2742,20 @@ step('the stays-out set is exactly what this artifact reports (roadmap 6.2.4)', 
     for (const [name, value] of Object.entries(expected))
         assert.equal(m[name](), value, name);
     assert.equal(m.hasCgnslib(), true);
+    // Roadmap 6.7: no WebAssembly build of Netgen, in either artifact, so
+    // "auto" is the native octree backend (its boundary fitted) and "netgen"
+    // is refused by name.
+    assert.equal(m.hasNetgen(), false);
+    const ico = m.icosaSphere(1, 2);
+    const tet = m.tetrahedralize(ico);
+    assert.equal(tet.backend, 'octree');
+    assert.equal(tet.boundaryPreserved, false);
+    assert.ok(tet.numTetrahedra > 0 && tet.hausdorffToSurface > 0, 'octree tetrahedra');
+    assert.ok(tet.warnings.some((w) => /MESHIOPLUSPLUS_WITH_NETGEN/.test(w)), 'fallback warned');
+    assert.throws(() => m.tetrahedralize(ico, { backend: 'netgen' }), /MESHIOPLUSPLUS_WITH_NETGEN/);
+    assert.throws(() => m.tetrahedralize(ico, { grading: 2 }), /grading/);
+    assert.throws(() => m.tetrahedralize(ico, { backend: 'tetgen' }), /backend/);
+    assert.throws(() => m.tetrahedralize(ico, { bogus: 1 }), /bogus/);
     assert.ok(['seq', 'openmp'].includes(m.parallelBackend()));
     const { readers, writers } = m.availableFormats();
     for (const fmt of ['vtx', 'szplt'])
@@ -3527,6 +3556,7 @@ step('meshCadSurface: a trimmed CAD JSON face triangulated and reported', () => 
     const back = m.projectToCad(r.mesh, read.info);
     assert.equal(back.numProjected, r.numPoints);
     assert.ok(back.maxMove < 1e-12);
+    assert.ok(back.numOnCurves >= 0 && back.numOnCurves <= back.numOnEdges);
     assert.deepEqual(back.outsideTrim, []);
     assert.throws(() => m.projectToCad(read, read.info), /cad:face/);
     assert.throws(() => m.projectToCad(r.mesh, read.info, { bogus: 1 }), /bogus/);
@@ -3534,6 +3564,20 @@ step('meshCadSurface: a trimmed CAD JSON face triangulated and reported', () => 
     const bl = m.boundaryLayer(r.mesh, { firstHeight: 0.01, numLayers: 2 });
     assert.ok(bl.numWedges > 0 && bl.minScaledJacobian > 0);
     assert.throws(() => m.boundaryLayer(r.mesh, { numLayers: 2 }), /firstHeight/);
+    assert.equal(bl.numFewerLayers, 0);
+    assert.ok(bl.numFrontCrossings >= 0);
+    // Roadmap 6.9.1: a layers collapse, smoothed normals, no front test.
+    const bl2 = m.boundaryLayer(r.mesh, {
+        firstHeight: 0.01, numLayers: 2, collapse: 'layers', normalSmoothIterations: 2,
+        frontCheck: false,
+    });
+    assert.ok(bl2.numWedges > 0);
+    assert.equal(bl2.numFrontCrossings, 0);
+    assert.throws(() => m.boundaryLayer(r.mesh, { firstHeight: 0.01, collapse: 'rows' }),
+        /collapse/);
+    assert.throws(
+        () => m.boundaryLayer(r.mesh, { firstHeight: 0.01, normalSmoothIterations: 5000 }),
+        /normal_smooth_iterations/);
     // v17.15.0: refined to 25 degrees and smoothed; the two 45-degree corners
     // are reported, every angle counted.
     const q = m.meshCadSurface(read.info, {
@@ -3606,6 +3650,7 @@ step('meshCadSurface: a trimmed CAD JSON face triangulated and reported', () => 
     // Quads (roadmap 6.8) and untangling (6.6.3).
     const quads = m.meshCadSurface(read.info, { targetSize: 0.1, minAngle: 25, quads: 'dominant' });
     assert.ok(quads.numQuads > 0 && quads.minQuadScaledJacobian > 0);
+    assert.equal(quads.minMetricAngle, 0);
     assert.throws(() => m.meshCadSurface(read.info, { targetSize: 0.1, quads: 'hex' }), /quads/);
     const greedy = m.meshCadSurface(read.info,
                                { targetSize: 0.1, minAngle: 25, quads: 'dominant', quadPairs: 'greedy' });

@@ -102,6 +102,7 @@
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/error.hpp"
+#include "meshioplusplus/operations/error_size.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/slice.hpp"
@@ -133,6 +134,7 @@
 #include "meshioplusplus/operations/quality_gate.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/boundary_layer.hpp"
+#include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
@@ -372,6 +374,8 @@ mio_status guarded(F&& f) {
         return fail(MIO_ERR_READ, e.what());
     } catch (const meshioplusplus::WriteError& e) {
         return fail(MIO_ERR_WRITE, e.what());
+    } catch (const meshioplusplus::Unsupported& e) {
+        return fail(MIO_ERR_UNSUPPORTED, e.what());
     } catch (const std::bad_alloc&) {
         return fail(MIO_ERR_INTERNAL, "meshio++: out of memory");
     } catch (const std::exception& e) {
@@ -7570,6 +7574,8 @@ static_assert(offsetof(mio_project_to_cad_opts, reserved) == 32, "mio_project_to
 static_assert(sizeof(mio_project_to_cad_report) == 96, "mio_project_to_cad_report layout");
 static_assert(offsetof(mio_project_to_cad_report, max_move) == 56,
               "mio_project_to_cad_report layout");
+static_assert(offsetof(mio_project_to_cad_report, num_on_curves) == 64,
+              "mio_project_to_cad_report layout");
 
 namespace {
 
@@ -7622,8 +7628,54 @@ mio_mesh* mio_project_to_cad(const mio_mesh* mesh, const mio_format_info* info,
             report->num_failed = r.mNumFailed;
             report->num_outside_trim = r.mNumOutsideTrim;
             report->max_move = r.mMaxMove;
+            report->num_on_curves = r.mNumOnCurves;
         }
         capi_project_to_cad_outside() = std::move(r.mOutsideTrim);
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+static_assert(sizeof(mio_error_size_opts) == 80, "mio_error_size_opts layout");
+static_assert(offsetof(mio_error_size_opts, output) == 40, "mio_error_size_opts layout");
+static_assert(offsetof(mio_error_size_opts, reserved) == 56, "mio_error_size_opts layout");
+static_assert(sizeof(mio_error_size_report) == 64, "mio_error_size_report layout");
+static_assert(offsetof(mio_error_size_report, max_size) == 32, "mio_error_size_report layout");
+
+void mio_error_size_opts_init(mio_error_size_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_error_size_opts{};
+    opts->order = 1.0;
+}
+
+mio_mesh* mio_error_size(const mio_mesh* mesh, const mio_error_size_opts* opts,
+                         mio_error_size_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw std::invalid_argument("meshio++: error_size: mesh is NULL");
+        if (!opts)
+            throw std::invalid_argument(
+                "meshio++: error_size: opts is NULL (a target_error is "
+                "required)");
+        meshioplusplus::ErrorSizeOptions o;
+        if (opts->error_array)
+            o.mErrorArray = opts->error_array;
+        o.mTargetError = opts->target_error;
+        o.mOrder = opts->order;
+        o.mMinSize = opts->min_size;
+        o.mMaxSize = opts->max_size;
+        if (opts->output)
+            o.mOutputName = opts->output;
+        o.mOverwrite = opts->overwrite != 0;
+        meshioplusplus::ErrorSizeResult r = meshioplusplus::error_size(mesh->mMesh, o);
+        if (report) {
+            *report = mio_error_size_report{};
+            report->num_cells = r.mNumCells;
+            report->num_skipped = r.mNumSkipped;
+            report->num_clamped = r.mNumClamped;
+            report->min_size = r.mMinSize;
+            report->max_size = r.mMaxSize;
+        }
         return new mio_mesh{std::move(r.mMesh)};
     });
 }
@@ -7633,6 +7685,12 @@ static_assert(offsetof(mio_boundary_layer_opts, num_layers) == 24,
               "mio_boundary_layer_opts layout");
 static_assert(sizeof(mio_boundary_layer_report) == 128, "mio_boundary_layer_report layout");
 static_assert(offsetof(mio_boundary_layer_report, cap_closed) == 88,
+              "mio_boundary_layer_report layout");
+static_assert(offsetof(mio_boundary_layer_opts, collapse) == 40, "mio_boundary_layer_opts layout");
+static_assert(offsetof(mio_boundary_layer_opts, reserved) == 56, "mio_boundary_layer_opts layout");
+static_assert(offsetof(mio_boundary_layer_report, num_fewer_layers) == 96,
+              "mio_boundary_layer_report layout");
+static_assert(offsetof(mio_boundary_layer_report, reserved) == 112,
               "mio_boundary_layer_report layout");
 
 void mio_boundary_layer_opts_init(mio_boundary_layer_opts* opts) {
@@ -7645,6 +7703,9 @@ void mio_boundary_layer_opts_init(mio_boundary_layer_opts* opts) {
     opts->num_layers = d.mNumLayers;
     opts->smooth_iterations = d.mSmoothIterations;
     opts->max_shrink = d.mMaxShrink;
+    opts->collapse = static_cast<int32_t>(d.mCollapse);
+    opts->normal_smooth_iterations = d.mNormalSmoothIterations;
+    opts->front_check = d.mFrontCheck ? 1 : 0;
 }
 
 mio_mesh* mio_boundary_layer(const mio_mesh* mesh, const mio_boundary_layer_opts* opts,
@@ -7662,6 +7723,10 @@ mio_mesh* mio_boundary_layer(const mio_mesh* mesh, const mio_boundary_layer_opts
         o.mReverse = opts->reverse != 0;
         o.mSmoothIterations = opts->smooth_iterations;
         o.mMaxShrink = opts->max_shrink;
+        // Out-of-range values reach the core, which refuses them by name.
+        o.mCollapse = static_cast<meshioplusplus::BoundaryLayerCollapse>(opts->collapse);
+        o.mNormalSmoothIterations = opts->normal_smooth_iterations;
+        o.mFrontCheck = opts->front_check != 0;
         meshioplusplus::BoundaryLayerResult r = meshioplusplus::boundary_layer(mesh->mMesh, o);
         if (report) {
             *report = mio_boundary_layer_report{};
@@ -7677,6 +7742,79 @@ mio_mesh* mio_boundary_layer(const mio_mesh* mesh, const mio_boundary_layer_opts
             report->min_thickness = r.mMinThickness;
             report->max_thickness = r.mMaxThickness;
             report->cap_closed = r.mCapClosed ? 1 : 0;
+            report->num_fewer_layers = r.mNumFewerLayers;
+            report->num_front_crossings = r.mNumFrontCrossings;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+static_assert(sizeof(mio_tetrahedralize_opts) == 80, "mio_tetrahedralize_opts layout");
+static_assert(offsetof(mio_tetrahedralize_opts, face_array) == 32,
+              "mio_tetrahedralize_opts layout");
+static_assert(offsetof(mio_tetrahedralize_opts, backend) == 40, "mio_tetrahedralize_opts layout");
+static_assert(offsetof(mio_tetrahedralize_opts, reserved) == 48, "mio_tetrahedralize_opts layout");
+static_assert(sizeof(mio_tetrahedralize_report) == 128, "mio_tetrahedralize_report layout");
+static_assert(offsetof(mio_tetrahedralize_report, boundary_preserved) == 72,
+              "mio_tetrahedralize_report layout");
+static_assert(offsetof(mio_tetrahedralize_report, reserved) == 80,
+              "mio_tetrahedralize_report layout");
+static_assert(static_cast<int>(meshioplusplus::TetrahedralizeBackend::Netgen) ==
+                      MIO_TETRAHEDRALIZE_BACKEND_NETGEN &&
+                  static_cast<int>(meshioplusplus::TetrahedralizeBackend::Octree) ==
+                      MIO_TETRAHEDRALIZE_BACKEND_OCTREE,
+              "mio_tetrahedralize_backend drifted from TetrahedralizeBackend");
+
+void mio_tetrahedralize_opts_init(mio_tetrahedralize_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_tetrahedralize_opts{};
+    const meshioplusplus::TetrahedralizeOptions d;
+    opts->max_size = d.mMaxSize;
+    opts->max_volume = d.mMaxVolume;
+    opts->grading = d.mGrading;
+    opts->max_cells = d.mMaxCells;
+    opts->backend = static_cast<int32_t>(d.mBackend);
+    opts->optimize_steps = d.mOptimizeSteps;
+}
+
+int mio_has_netgen(void) {
+    return meshioplusplus::tetrahedralize_has_netgen() ? 1 : 0;
+}
+
+mio_mesh* mio_tetrahedralize(const mio_mesh* mesh, const mio_tetrahedralize_opts* opts,
+                             mio_tetrahedralize_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw std::invalid_argument("meshio++: tetrahedralize: mesh is NULL");
+        mio_tetrahedralize_opts defaults;
+        mio_tetrahedralize_opts_init(&defaults);
+        const mio_tetrahedralize_opts& r_in = opts ? *opts : defaults;
+        meshioplusplus::TetrahedralizeOptions o;
+        // Out-of-range values reach the core, which refuses them by name.
+        o.mBackend = static_cast<meshioplusplus::TetrahedralizeBackend>(r_in.backend);
+        o.mMaxSize = r_in.max_size;
+        o.mMaxVolume = r_in.max_volume;
+        o.mGrading = r_in.grading;
+        o.mOptimizeSteps = r_in.optimize_steps;
+        o.mMaxCells = r_in.max_cells;
+        if (r_in.face_array)
+            o.mFaceArray = r_in.face_array;
+        meshioplusplus::TetrahedralizeResult r = meshioplusplus::tetrahedralize(mesh->mMesh, o);
+        if (report) {
+            *report = mio_tetrahedralize_report{};
+            report->num_tetrahedra = r.mNumTetrahedra;
+            report->num_points = r.mNumPoints;
+            report->num_new_points = r.mNumNewPoints;
+            report->num_regions = r.mNumRegions;
+            report->num_boundary_triangles = r.mNumBoundaryTriangles;
+            report->hausdorff_to_surface = r.mHausdorffToSurface;
+            report->min_dihedral_deg = r.mMinDihedralDeg;
+            report->max_dihedral_deg = r.mMaxDihedralDeg;
+            report->volume = r.mVolume;
+            report->boundary_preserved = r.mBoundaryPreserved ? 1 : 0;
+            report->backend = r.mBackend == "netgen" ? MIO_TETRAHEDRALIZE_BACKEND_NETGEN
+                                                     : MIO_TETRAHEDRALIZE_BACKEND_OCTREE;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });
@@ -7709,6 +7847,10 @@ mio_status mio_mesh_cad_surface_quad_stats(int64_t* num_quads, int64_t* num_left
             *min_scaled_jacobian = r_x.mMinQuadScaledJacobian;
         return MIO_OK;
     });
+}
+
+double mio_mesh_cad_surface_min_metric_angle(void) {
+    return capi_mesh_cad_state().mExtras.mMinMetricAngleDeg;
 }
 
 int64_t mio_mesh_cad_surface_num_lopped_corners(void) {

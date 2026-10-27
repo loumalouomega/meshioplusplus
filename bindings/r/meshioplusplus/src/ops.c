@@ -1263,11 +1263,43 @@ SEXP R_mio_conservative_interpolate(SEXP source, SEXP target, SEXP arrays, SEXP 
     return mio_r_wrap_mesh(out);
 }
 
+/* error_size (roadmap 6.10.2): a per-point size field from a per-cell error
+ * indicator. Returns list(mesh, num_cells, num_skipped, num_clamped, min_size,
+ * max_size). */
+SEXP R_mio_error_size(SEXP mesh, SEXP target_error, SEXP error_array, SEXP order,
+                      SEXP min_size, SEXP max_size, SEXP output, SEXP overwrite) {
+    mio_error_size_opts opts;
+    mio_error_size_opts_init(&opts);
+    opts.target_error = mio_r_double(target_error, "target_error");
+    opts.error_array = mio_r_string(error_array, "error_array");
+    opts.order = mio_r_double(order, "order");
+    opts.min_size = mio_r_double(min_size, "min_size");
+    opts.max_size = mio_r_double(max_size, "max_size");
+    opts.output = mio_r_string(output, "output");
+    opts.overwrite = mio_r_bool(overwrite, "overwrite");
+    mio_error_size_report report;
+    mio_mesh *out = mio_error_size(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL) mio_r_fail("error_size");
+    SEXP v[6];
+    v[0] = PROTECT(mio_r_wrap_mesh(out));
+    v[1] = PROTECT(Rf_ScalarReal((double)report.num_cells));
+    v[2] = PROTECT(Rf_ScalarReal((double)report.num_skipped));
+    v[3] = PROTECT(Rf_ScalarReal((double)report.num_clamped));
+    v[4] = PROTECT(Rf_ScalarReal(report.min_size));
+    v[5] = PROTECT(Rf_ScalarReal(report.max_size));
+    const char *names[] = {"mesh",        "num_cells", "num_skipped",
+                           "num_clamped", "min_size",  "max_size"};
+    SEXP res = PROTECT(mio_r_named_list(6, names, v));
+    UNPROTECT(7);
+    return res;
+}
+
 /* boundary_layer (roadmap 6.9): prisms grown from a surface. Returns
  * list(mesh, num_cells, ..., cap_closed). */
 SEXP R_mio_boundary_layer(SEXP mesh, SEXP first_height, SEXP num_layers, SEXP growth,
                           SEXP reverse, SEXP collision_fraction, SEXP smooth_iterations,
-                          SEXP max_shrink) {
+                          SEXP max_shrink, SEXP collapse, SEXP normal_smooth_iterations,
+                          SEXP front_check) {
     mio_boundary_layer_opts opts;
     mio_boundary_layer_opts_init(&opts);
     opts.first_height = mio_r_double(first_height, "first_height");
@@ -1277,10 +1309,22 @@ SEXP R_mio_boundary_layer(SEXP mesh, SEXP first_height, SEXP num_layers, SEXP gr
     opts.collision_fraction = mio_r_double(collision_fraction, "collision_fraction");
     opts.smooth_iterations = (int32_t)mio_r_int(smooth_iterations, "smooth_iterations");
     opts.max_shrink = (int32_t)mio_r_int(max_shrink, "max_shrink");
+    {
+        const char *c = mio_r_string(collapse, "collapse");
+        if (strcmp(c, "points") == 0)
+            opts.collapse = MIO_BOUNDARY_LAYER_COLLAPSE_POINTS;
+        else if (strcmp(c, "layers") == 0)
+            opts.collapse = MIO_BOUNDARY_LAYER_COLLAPSE_LAYERS;
+        else
+            Rf_error("meshio++: boundary_layer: collapse must be \"points\" or \"layers\"");
+    }
+    opts.normal_smooth_iterations =
+        (int32_t)mio_r_int(normal_smooth_iterations, "normal_smooth_iterations");
+    opts.front_check = mio_r_bool(front_check, "front_check");
     mio_boundary_layer_report report;
     mio_mesh *out = mio_boundary_layer(mio_r_mesh(mesh), &opts, &report);
     if (out == NULL) mio_r_fail("boundary_layer");
-    SEXP v[13];
+    SEXP v[15];
     v[0] = PROTECT(mio_r_wrap_mesh(out));
     v[1] = PROTECT(Rf_ScalarReal((double)report.num_cells));
     v[2] = PROTECT(Rf_ScalarReal((double)report.num_wedges));
@@ -1294,13 +1338,77 @@ SEXP R_mio_boundary_layer(SEXP mesh, SEXP first_height, SEXP num_layers, SEXP gr
     v[10] = PROTECT(Rf_ScalarReal(report.min_thickness));
     v[11] = PROTECT(Rf_ScalarReal(report.max_thickness));
     v[12] = PROTECT(Rf_ScalarLogical(report.cap_closed != 0));
+    v[13] = PROTECT(Rf_ScalarReal((double)report.num_fewer_layers));
+    v[14] = PROTECT(Rf_ScalarReal((double)report.num_front_crossings));
     const char *names[] = {"mesh",          "num_cells",       "num_wedges",
                            "num_hexahedra", "num_pyramids",    "num_tetrahedra",
                            "num_shrunk",    "num_collapsed",   "num_not_visible",
                            "min_scaled_jacobian", "min_thickness", "max_thickness",
-                           "cap_closed"};
-    SEXP res = PROTECT(mio_r_named_list(13, names, v));
-    UNPROTECT(14);
+                           "cap_closed",    "num_fewer_layers", "num_front_crossings"};
+    SEXP res = PROTECT(mio_r_named_list(15, names, v));
+    UNPROTECT(16);
+    return res;
+}
+
+SEXP R_mio_has_netgen(void) {
+    return Rf_ScalarLogical(mio_has_netgen() != 0);
+}
+
+/* tetrahedralize (roadmap 6.7): tetrahedra filling a closed triangle surface.
+ * Returns list(mesh, num_tetrahedra, ..., backend). */
+SEXP R_mio_tetrahedralize(SEXP mesh, SEXP backend, SEXP max_size, SEXP max_volume, SEXP grading,
+                          SEXP optimize_steps, SEXP max_cells, SEXP face_array) {
+    mio_tetrahedralize_opts opts;
+    mio_tetrahedralize_opts_init(&opts);
+    {
+        const char *b = mio_r_string(backend, "backend");
+        if (strcmp(b, "auto") == 0)
+            opts.backend = MIO_TETRAHEDRALIZE_BACKEND_AUTO;
+        else if (strcmp(b, "netgen") == 0)
+            opts.backend = MIO_TETRAHEDRALIZE_BACKEND_NETGEN;
+        else if (strcmp(b, "octree") == 0)
+            opts.backend = MIO_TETRAHEDRALIZE_BACKEND_OCTREE;
+        else
+            Rf_error(
+                "meshio++: tetrahedralize: backend must be \"auto\", \"netgen\" or \"octree\"");
+    }
+    opts.max_size = mio_r_double(max_size, "max_size");
+    opts.max_volume = mio_r_double(max_volume, "max_volume");
+    opts.grading = mio_r_double(grading, "grading");
+    opts.optimize_steps = (int32_t)mio_r_int(optimize_steps, "optimize_steps");
+    opts.max_cells = (int64_t)mio_r_double(max_cells, "max_cells");
+    opts.face_array = mio_r_string(face_array, "face_array");
+    mio_tetrahedralize_report report;
+    mio_mesh *out = mio_tetrahedralize(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL) mio_r_fail("tetrahedralize");
+    SEXP v[12];
+    v[0] = PROTECT(mio_r_wrap_mesh(out));
+    v[1] = PROTECT(Rf_ScalarReal((double)report.num_tetrahedra));
+    v[2] = PROTECT(Rf_ScalarReal((double)report.num_points));
+    v[3] = PROTECT(Rf_ScalarReal((double)report.num_new_points));
+    v[4] = PROTECT(Rf_ScalarReal((double)report.num_regions));
+    v[5] = PROTECT(Rf_ScalarReal((double)report.num_boundary_triangles));
+    v[6] = PROTECT(Rf_ScalarLogical(report.boundary_preserved != 0));
+    v[7] = PROTECT(Rf_ScalarReal(report.hausdorff_to_surface));
+    v[8] = PROTECT(Rf_ScalarReal(report.min_dihedral_deg));
+    v[9] = PROTECT(Rf_ScalarReal(report.max_dihedral_deg));
+    v[10] = PROTECT(Rf_ScalarReal(report.volume));
+    v[11] = PROTECT(
+        Rf_mkString(report.backend == MIO_TETRAHEDRALIZE_BACKEND_NETGEN ? "netgen" : "octree"));
+    const char *names[] = {"mesh",
+                           "num_tetrahedra",
+                           "num_points",
+                           "num_new_points",
+                           "num_regions",
+                           "num_boundary_triangles",
+                           "boundary_preserved",
+                           "hausdorff_to_surface",
+                           "min_dihedral_deg",
+                           "max_dihedral_deg",
+                           "volume",
+                           "backend"};
+    SEXP res = PROTECT(mio_r_named_list(12, names, v));
+    UNPROTECT(13);
     return res;
 }
 

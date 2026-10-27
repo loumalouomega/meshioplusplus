@@ -138,6 +138,50 @@ bool ptc_on_trim(const std::vector<std::vector<std::array<double, 2>>>& rLoops, 
     return false;
 }
 
+// The nearest point of a 3-D curve to `rP`: the best of 64 equal steps of
+// its parameter, then Gauss-Newton on `(C - p) . C' = 0` within the steps
+// beside it.
+detail::EdgeVec3 ptc_curve_closest(const detail::BrepCurveEval& rC, const detail::EdgeVec3& rP) {
+    constexpr int kSteps = 64;
+    const double t0 = rC.T0(), t1 = rC.T1();
+    const auto dist2 = [&](double T, detail::EdgeVec3& rX) {
+        double d[3];
+        rC.Eval(T, rX.data(), d);
+        return (rX[0] - rP[0]) * (rX[0] - rP[0]) + (rX[1] - rP[1]) * (rX[1] - rP[1]) +
+               (rX[2] - rP[2]) * (rX[2] - rP[2]);
+    };
+    double best_t = t0, best = std::numeric_limits<double>::infinity();
+    detail::EdgeVec3 x{};
+    for (int i = 0; i <= kSteps; ++i) {
+        const double t = t0 + (t1 - t0) * double(i) / kSteps;
+        const double d = dist2(t, x);
+        if (d < best) {
+            best = d;
+            best_t = t;
+        }
+    }
+    const double step = (t1 - t0) / kSteps;
+    const double lo = std::max(t0, best_t - step), hi = std::min(t1, best_t + step);
+    double t = best_t;
+    for (int it = 0; it < 30; ++it) {
+        double d[3];
+        rC.Eval(t, x.data(), d);
+        const double g = (x[0] - rP[0]) * d[0] + (x[1] - rP[1]) * d[1] + (x[2] - rP[2]) * d[2];
+        const double h = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+        if (!(h > 0.0))
+            break;
+        const double next = std::clamp(t - g / h, lo, hi);
+        if (std::fabs(next - t) <= 1e-15 * (1.0 + std::fabs(t)))
+            break;
+        t = next;
+    }
+    detail::EdgeVec3 y{};
+    if (dist2(t, y) <= best)
+        return y;
+    dist2(best_t, y);
+    return y;
+}
+
 }  // namespace
 
 ProjectToCadResult project_to_cad(const Mesh& rMesh, const BrepInfo& rBrep,
@@ -260,11 +304,45 @@ ProjectToCadResult project_to_cad(const Mesh& rMesh, const BrepInfo& rBrep,
         if (!trace[e])
             warn("edge " + std::to_string(e) + " has no usable trim");
     }
+    // An edge's own 3-D curve, where the model gives one that its trace
+    // follows (within a millionth of its length at nine points, or a
+    // billionth of the model's size): a point on the edge goes onto it, the
+    // trace's surface error left out. A curve the trace leaves is warned and
+    // the trace kept.
+    std::vector<std::optional<detail::BrepCurveEval>> curve(ne);
+    for (std::size_t e = 0; e < ne; ++e) {
+        const BrepEdge& r_e = rBrep.mEdges[e];
+        if (!edge_used[e] || !trace[e] || !r_e.mHasCurve || r_e.mCurve.mControlPoints.Ndim() != 2 ||
+            r_e.mCurve.mControlPoints.Shape()[1] != 3)
+            continue;
+        try {
+            curve[e].emplace(r_e.mCurve);
+        } catch (const std::invalid_argument&) {
+            continue;
+        }
+        const double length = trace[e]->Length();
+        double gap = 0.0, scale = 0.0;
+        for (int k = 0; k <= 8; ++k) {
+            const detail::EdgeVec3 q = trace[e]->Point(trace[e]->ParamAtLength(length * k / 8.0));
+            const detail::EdgeVec3 c = ptc_curve_closest(*curve[e], q);
+            gap = std::max(gap,
+                           std::sqrt((c[0] - q[0]) * (c[0] - q[0]) + (c[1] - q[1]) * (c[1] - q[1]) +
+                                     (c[2] - q[2]) * (c[2] - q[2])));
+            for (const double v : q)
+                scale = std::max(scale, std::fabs(v));
+        }
+        if (!(gap <= std::max(1e-6 * length, 1e-9 * scale))) {
+            warn("edge " + std::to_string(e) + ": its 3-D curve lies up to " + std::to_string(gap) +
+                 " from its trim; its points go onto the trim");
+            curve[e].reset();
+        }
+    }
 
     // Each point, independently.
     enum class Fate : std::uint8_t { Stay, Face, Edge, Corner, Ambiguous, TooFar, Failed };
     std::vector<Fate> fate(np, Fate::Stay);
     std::vector<char> outside(np, 0);
+    std::vector<char> on_curve(np, 0);
     std::vector<double> moved(np, 0.0);
     NDArray points = detail::data_owned_copy(r_pts);
     double* px = points.As<double>();
@@ -294,7 +372,13 @@ ProjectToCadResult project_to_cad(const Mesh& rMesh, const BrepInfo& rBrep,
                     fate[i] = Fate::Failed;
                     return;
                 }
-                x = r_t->Point(r_t->ParamAtLength(detail::edge_closest_length(*r_t, p)));
+                const auto& r_c = curve[static_cast<std::size_t>(r_o.mEdge)];
+                if (r_c) {
+                    x = ptc_curve_closest(*r_c, p);
+                    on_curve[i] = 1;
+                } else {
+                    x = r_t->Point(r_t->ParamAtLength(detail::edge_closest_length(*r_t, p)));
+                }
                 fate[i] = r_o.mEdges ? Fate::Corner : Fate::Edge;
             } else if (r_o.mFace >= 0) {
                 if (r_o.mFaces) {
@@ -335,6 +419,7 @@ ProjectToCadResult project_to_cad(const Mesh& rMesh, const BrepInfo& rBrep,
                 ++result.mNumProjected;
                 result.mNumOnEdges += fate[i] != Fate::Face ? 1 : 0;
                 result.mNumCorners += fate[i] == Fate::Corner ? 1 : 0;
+                result.mNumOnCurves += on_curve[i] ? 1 : 0;
                 result.mMaxMove = std::max(result.mMaxMove, moved[i]);
                 break;
             case Fate::Ambiguous:

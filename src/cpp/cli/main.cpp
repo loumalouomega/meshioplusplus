@@ -95,9 +95,11 @@
 #include "meshioplusplus/operations/octree.hpp"
 #include "meshioplusplus/operations/mesh_cad.hpp"
 #include "meshioplusplus/operations/boundary_layer.hpp"
+#include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/error.hpp"
+#include "meshioplusplus/operations/error_size.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/slice.hpp"
@@ -477,7 +479,15 @@ void print_usage(std::ostream& os) {
           "  boundary-layer          Prismatic layers grown from a triangle and quad\n"
           "                            surface: --first-height H [--num-layers N]\n"
           "                            [--growth G] [--reverse] [--collision-fraction F]\n"
-          "                            [--smooth N] [--max-shrink N] [--json]\n"
+          "                            [--smooth N] [--max-shrink N]\n"
+          "                            [--collapse points|layers] [--normal-smooth N]\n"
+          "                            [--no-front-check] [--json]\n"
+          "  tetrahedralize          Fill a closed triangle surface with tetrahedra,\n"
+          "                            its triangles kept (Netgen): [--max-size H]\n"
+          "                            [--max-volume V] [--grading G]\n"
+          "                            [--optimize-steps N] [--max-cells N]\n"
+          "                            [--face-array NAME] [--backend auto|netgen|octree]\n"
+          "                            [--json]\n"
           "  project-to-cad          Move a mesh's points back onto the CAD faces and\n"
           "                            edges its cells name: INFILE MODEL OUTFILE\n"
           "                            [--face-array NAME] [--edge-array NAME]\n"
@@ -2447,6 +2457,7 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
         json.Field("num_quads", extras_report.mNumQuads);
         json.Field("num_leftover_triangles", extras_report.mNumLeftoverTriangles);
         json.Field("min_quad_scaled_jacobian", extras_report.mMinQuadScaledJacobian);
+        json.Field("min_metric_angle", extras_report.mMinMetricAngleDeg);
         json.EndObject();
     } else if (!has_flag(p, "quiet")) {
         std::cout << "mesh_cad_surface\n"
@@ -2473,6 +2484,12 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
             std::cout << "  quads:          " << extras_report.mNumQuads << " ("
                       << extras_report.mNumLeftoverTriangles
                       << " triangles left), least scaled Jacobian " << sj << "\n";
+        }
+        if (sources.pMetricBackground) {
+            char ma[32];
+            meshioplusplus::detail::snprintf_c(ma, sizeof(ma), "%.2f",
+                                               extras_report.mMinMetricAngleDeg);
+            std::cout << "  metric angles:  from " << ma << " degrees\n";
         }
         for (const meshioplusplus::MeshCadFaceRecord& f : r.mFaces) {
             if (f.mStatus != meshioplusplus::MeshCadFaceStatus::Ok)
@@ -5151,6 +5168,9 @@ int cmd_boundary_layer(const std::vector<std::string>& rArgs) {
                                   {"collision-fraction", {}, true},
                                   {"smooth", {}, true},
                                   {"max-shrink", {}, true},
+                                  {"collapse", {}, true},
+                                  {"normal-smooth", {}, true},
+                                  {"no-front-check", {}, false},
                                   {"json", {}, false},
                                   {"quiet", {"-q"}, false},
                               });
@@ -5172,6 +5192,19 @@ int cmd_boundary_layer(const std::vector<std::string>& rArgs) {
         o.mSmoothIterations = std::stoi(opt_value(p, "smooth"));
     if (has_opt(p, "max-shrink"))
         o.mMaxShrink = std::stoi(opt_value(p, "max-shrink"));
+    if (has_opt(p, "collapse")) {
+        const std::string c = opt_value(p, "collapse");
+        if (c == "points")
+            o.mCollapse = meshioplusplus::BoundaryLayerCollapse::Points;
+        else if (c == "layers")
+            o.mCollapse = meshioplusplus::BoundaryLayerCollapse::Layers;
+        else
+            throw std::runtime_error("boundary-layer: --collapse must be points or layers, not '" +
+                                     c + "'");
+    }
+    if (has_opt(p, "normal-smooth"))
+        o.mNormalSmoothIterations = std::stoi(opt_value(p, "normal-smooth"));
+    o.mFrontCheck = !has_flag(p, "no-front-check");
     auto r = meshioplusplus::boundary_layer(mesh, o);
     if (has_flag(p, "json")) {
         meshioplusplus::cli::JsonOut json(std::cout);
@@ -5184,6 +5217,8 @@ int cmd_boundary_layer(const std::vector<std::string>& rArgs) {
         json.Field("num_shrunk", r.mNumShrunk);
         json.Field("num_collapsed", r.mNumCollapsed);
         json.Field("num_not_visible", r.mNumNotVisible);
+        json.Field("num_fewer_layers", r.mNumFewerLayers);
+        json.Field("num_front_crossings", r.mNumFrontCrossings);
         json.Field("min_scaled_jacobian", r.mMinScaledJacobian);
         json.Field("min_thickness", r.mMinThickness);
         json.Field("max_thickness", r.mMaxThickness);
@@ -5204,7 +5239,90 @@ int cmd_boundary_layer(const std::vector<std::string>& rArgs) {
                   << " hexahedra, " << r.mNumPyramids << " pyramids, " << r.mNumTetrahedra
                   << " tetrahedra), least scaled Jacobian " << sj << "; thickness " << t0 << " to "
                   << t1 << ", " << r.mNumShrunk << " points thinner, " << r.mNumCollapsed
-                  << " collapsed; cap " << (r.mCapClosed ? "closed" : "open") << "\n";
+                  << " collapsed, " << r.mNumFewerLayers << " with fewer layers; "
+                  << r.mNumFrontCrossings << " front crossings; cap "
+                  << (r.mCapClosed ? "closed" : "open") << "\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_tetrahedralize(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"backend", {}, true},
+                                  {"max-size", {}, true},
+                                  {"max-volume", {}, true},
+                                  {"grading", {}, true},
+                                  {"optimize-steps", {}, true},
+                                  {"max-cells", {}, true},
+                                  {"face-array", {}, true},
+                                  {"json", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("tetrahedralize requires exactly INFILE and OUTFILE");
+    meshioplusplus::TetrahedralizeOptions o;
+    if (has_opt(p, "backend")) {
+        const std::string b = opt_value(p, "backend");
+        if (b == "auto")
+            o.mBackend = meshioplusplus::TetrahedralizeBackend::Auto;
+        else if (b == "netgen")
+            o.mBackend = meshioplusplus::TetrahedralizeBackend::Netgen;
+        else if (b == "octree")
+            o.mBackend = meshioplusplus::TetrahedralizeBackend::Octree;
+        else
+            throw std::runtime_error(
+                "tetrahedralize: --backend must be auto, netgen or octree, not '" + b + "'");
+    }
+    if (has_opt(p, "max-size"))
+        o.mMaxSize = meshioplusplus::detail::stod_c(opt_value(p, "max-size"));
+    if (has_opt(p, "max-volume"))
+        o.mMaxVolume = meshioplusplus::detail::stod_c(opt_value(p, "max-volume"));
+    if (has_opt(p, "grading"))
+        o.mGrading = meshioplusplus::detail::stod_c(opt_value(p, "grading"));
+    if (has_opt(p, "optimize-steps"))
+        o.mOptimizeSteps = std::stoi(opt_value(p, "optimize-steps"));
+    if (has_opt(p, "max-cells"))
+        o.mMaxCells = std::stoll(opt_value(p, "max-cells"));
+    if (has_opt(p, "face-array"))
+        o.mFaceArray = opt_value(p, "face-array");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    auto r = meshioplusplus::tetrahedralize(mesh, o);
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_tetrahedra", r.mNumTetrahedra);
+        json.Field("num_points", r.mNumPoints);
+        json.Field("num_new_points", r.mNumNewPoints);
+        json.Field("num_regions", r.mNumRegions);
+        json.Field("num_boundary_triangles", r.mNumBoundaryTriangles);
+        json.Field("boundary_preserved", r.mBoundaryPreserved);
+        json.Field("hausdorff_to_surface", r.mHausdorffToSurface);
+        json.Field("min_dihedral_deg", r.mMinDihedralDeg);
+        json.Field("max_dihedral_deg", r.mMaxDihedralDeg);
+        json.Field("volume", r.mVolume);
+        json.Field("backend", r.mBackend);
+        json.Key("warnings");
+        json.BeginArray();
+        for (const std::string& w : r.mWarnings)
+            json.String(w);
+        json.EndArray();
+        json.EndObject();
+        std::cout << "\n";
+    } else if (!has_flag(p, "quiet")) {
+        char d0[32], d1[32], vol[32];
+        meshioplusplus::detail::snprintf_c(d0, sizeof(d0), "%.2f", r.mMinDihedralDeg);
+        meshioplusplus::detail::snprintf_c(d1, sizeof(d1), "%.2f", r.mMaxDihedralDeg);
+        meshioplusplus::detail::snprintf_c(vol, sizeof(vol), "%.6g", r.mVolume);
+        std::cout << r.mNumTetrahedra << " tetrahedra in " << r.mNumRegions << " region(s), "
+                  << r.mNumNewPoints << " new points (" << r.mNumPoints << " in all); dihedral "
+                  << d0 << " to " << d1 << " deg, volume " << vol << "; " << r.mBackend
+                  << ", boundary " << (r.mBoundaryPreserved ? "preserved" : "NOT preserved") << " ("
+                  << r.mNumBoundaryTriangles << " triangles)\n";
+        for (const std::string& w : r.mWarnings)
+            std::cout << "  warning: " << w << "\n";
     }
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     return 0;
@@ -5243,6 +5361,7 @@ int cmd_project_to_cad(const std::vector<std::string>& rArgs) {
         json.BeginObject();
         json.Field("num_projected", r.mNumProjected);
         json.Field("num_on_edges", r.mNumOnEdges);
+        json.Field("num_on_curves", r.mNumOnCurves);
         json.Field("num_corners", r.mNumCorners);
         json.Field("num_ambiguous", r.mNumAmbiguous);
         json.Field("num_too_far", r.mNumTooFar);
@@ -5265,9 +5384,10 @@ int cmd_project_to_cad(const std::vector<std::string>& rArgs) {
         char move[32];
         meshioplusplus::detail::snprintf_c(move, sizeof(move), "%.6g", r.mMaxMove);
         std::cout << "projected " << r.mNumProjected << " point(s) (" << r.mNumOnEdges
-                  << " on edges, " << r.mNumCorners << " at corners), largest move " << move << "; "
-                  << r.mNumAmbiguous << " ambiguous, " << r.mNumTooFar << " too far, "
-                  << r.mNumFailed << " failed, " << r.mNumOutsideTrim << " outside their trims\n";
+                  << " on edges, " << r.mNumOnCurves << " onto their curves, " << r.mNumCorners
+                  << " at corners), largest move " << move << "; " << r.mNumAmbiguous
+                  << " ambiguous, " << r.mNumTooFar << " too far, " << r.mNumFailed << " failed, "
+                  << r.mNumOutsideTrim << " outside their trims\n";
     }
     write_mesh_cli(p.positionals[2], r.mMesh, opt_value(p, "output-format"));
     return 0;
@@ -6889,6 +7009,68 @@ int cmd_data_estimate_error(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+// `data error-size` follows `data estimate-error`: it turns the per-cell
+// indicator that command writes into the per-point size field
+// `mesh-cad-surface --background` reads (Zienkiewicz and Zhu 1987, roadmap
+// 6.10.2). See doc/error.md.
+int cmd_data_error_size(const std::vector<std::string>& rArgs) {
+    auto specs = data_io_specs(true);
+    specs.push_back({"array", {}, true});
+    specs.push_back({"target-error", {}, true});
+    specs.push_back({"order", {}, true});
+    specs.push_back({"min-size", {}, true});
+    specs.push_back({"max-size", {}, true});
+    specs.push_back({"output", {}, true});
+    specs.push_back({"overwrite", {}, false});
+    specs.push_back({"json", {}, false});
+    specs.push_back({"quiet", {"-q"}, false});
+    auto p = cli_parse(rArgs, specs);
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("data error-size requires exactly INFILE and OUTFILE");
+    if (!has_opt(p, "target-error"))
+        throw std::runtime_error("data error-size requires --target-error E");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::ErrorSizeOptions opts;
+    // The defaults here must stay string-identical to the Python CLI's.
+    opts.mErrorArray = opt_value(p, "array", "error:zz");
+    opts.mTargetError = meshioplusplus::detail::stod_c(opt_value(p, "target-error"));
+    if (has_opt(p, "order"))
+        opts.mOrder = meshioplusplus::detail::stod_c(opt_value(p, "order"));
+    if (has_opt(p, "min-size"))
+        opts.mMinSize = meshioplusplus::detail::stod_c(opt_value(p, "min-size"));
+    if (has_opt(p, "max-size"))
+        opts.mMaxSize = meshioplusplus::detail::stod_c(opt_value(p, "max-size"));
+    opts.mOutputName = opt_value(p, "output", meshioplusplus::kErrorSizeName);
+    opts.mOverwrite = has_flag(p, "overwrite");
+
+    meshioplusplus::ErrorSizeResult r = meshioplusplus::error_size(mesh, opts);
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_cells", r.mNumCells);
+        json.Field("num_skipped", r.mNumSkipped);
+        json.Field("num_clamped", r.mNumClamped);
+        json.Field("min_size", r.mMinSize);
+        json.Field("max_size", r.mMaxSize);
+        json.EndObject();
+        std::cout << "\n";
+    } else if (!has_flag(p, "quiet")) {
+        char lo[32];
+        char hi[32];
+        meshioplusplus::detail::snprintf_c(lo, sizeof(lo), "%.6g", r.mMinSize);
+        meshioplusplus::detail::snprintf_c(hi, sizeof(hi), "%.6g", r.mMaxSize);
+        std::cout << "wrote point_data '" << opts.mOutputName << "' (from '" << opts.mErrorArray
+                  << "')\n";
+        std::cout << "  sizes:                    " << lo << " to " << hi << "\n";
+        std::cout << "  cells evaluated:          " << r.mNumCells << "\n";
+        std::cout << "  cells skipped:            " << r.mNumSkipped << "\n";
+        std::cout << "  sizes clamped:            " << r.mNumClamped << "\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
 /// One report counter, printed as an integer when it is one (most are counts;
 /// only e.g. Smooth's MaxDisplacement is genuinely fractional).
 void pipeline_print_counter(std::ostream& rOut, double value) {
@@ -7000,7 +7182,10 @@ void print_data_usage(std::ostream& rOut) {
             "  integrate   Cell-measure-weighted total/mean of a cell_data field, "
             "whole mesh and per named Cell region (--array NAME, repeatable)\n"
             "  estimate-error  ZZ recovery-based error indicator (--array NAME "
-            "--marking none|absolute|fraction|dorfler)\n\n";
+            "--marking none|absolute|fraction|dorfler)\n"
+            "  error-size  Per-point size field from a per-cell error indicator "
+            "(--target-error E [--array error:zz] [--order P] [--min-size H] "
+            "[--max-size H] [--output size] [--json])\n\n";
 }
 
 int cmd_data(const std::vector<std::string>& rArgs) {
@@ -7042,6 +7227,8 @@ int cmd_data(const std::vector<std::string>& rArgs) {
         return cmd_data_integrate(rest);
     if (sub == "estimate-error")
         return cmd_data_estimate_error(rest);
+    if (sub == "error-size")
+        return cmd_data_error_size(rest);
     std::cerr << "error: unknown data subcommand '" << sub << "'\n\n";
     print_data_usage(std::cerr);
     return 2;
@@ -7436,6 +7623,8 @@ int main(int argc, char** argv) {
             return cmd_project_to_cad(rest);
         if (cmd == "boundary-layer")
             return cmd_boundary_layer(rest);
+        if (cmd == "tetrahedralize")
+            return cmd_tetrahedralize(rest);
         if (cmd == "sdf")
             return cmd_sdf(rest);
         if (cmd == "split")

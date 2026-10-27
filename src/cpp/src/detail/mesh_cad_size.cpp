@@ -299,6 +299,7 @@ struct MeshCadMetricField::Impl {
     DistanceQuery mQuery;
     std::vector<std::array<double, 9>> mMetric;  ///< per point of the surface
     double mFloor = 0.0;
+    double mScale = 1.0;
 };
 
 MeshCadMetricField::MeshCadMetricField(const Mesh& rBackground, const std::string& rArray,
@@ -337,6 +338,10 @@ MeshCadMetricField::MeshCadMetricField(const Mesh& rBackground, const std::strin
 
 MeshCadMetricField::~MeshCadMetricField() = default;
 
+void MeshCadMetricField::SetScale(double Scale) {
+    mpImpl->mScale = Scale;
+}
+
 void MeshCadMetricField::At(const Vec3& rX, double Size, std::array<double, 9>& rM,
                             std::array<double, 9>* pRoot) const {
     std::array<double, 9> m{};
@@ -361,10 +366,14 @@ void MeshCadMetricField::At(const Vec3& rX, double Size, std::array<double, 9>& 
                         out[3 * a + d] += pm[3 * a + b] * m[3 * b + c] * pm[3 * c + d];
         m = out;
     }
+    if (mpImpl->mScale != 1.0)
+        for (double& r_v : m)
+            r_v /= mpImpl->mScale * mpImpl->mScale;
     double ev[3], vec[9];
     lsq_sym3_eigen(m.data(), ev, vec);
     const double lo = 1.0 / (Size * Size);
-    const double hi = 1.0 / (mpImpl->mFloor * mpImpl->mFloor);
+    const double floor = mpImpl->mFloor * mpImpl->mScale;
+    const double hi = 1.0 / (floor * floor);
     rM.fill(0.0);
     if (pRoot)
         pRoot->fill(0.0);

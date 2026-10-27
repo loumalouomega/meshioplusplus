@@ -164,6 +164,7 @@
 #include "meshioplusplus/operations/mesh_cad.hpp"
 #include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/error.hpp"
+#include "meshioplusplus/operations/error_size.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/slice.hpp"
@@ -175,6 +176,7 @@
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/boundary_layer.hpp"
+#include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
@@ -4752,6 +4754,42 @@ val estimate_error_js(const val& rMeshObj, const std::string& rArray, const std:
     });
 }
 
+// error_size (roadmap 6.10.2): a per-point size field from a per-cell error
+// indicator (Zienkiewicz and Zhu 1987); options {targetError (required),
+// errorArray, order, minSize, maxSize, output, overwrite}.
+val error_size_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        if (rOptions.isUndefined() || rOptions.isNull() || !rOptions.hasOwnProperty("targetError"))
+            throw std::invalid_argument("meshio++: error_size: the options need 'targetError'");
+        check_settings_keys(
+            rOptions, "the errorSize options",
+            {"targetError", "errorArray", "order", "minSize", "maxSize", "output", "overwrite"});
+        meshioplusplus::ErrorSizeOptions o;
+        o.mTargetError = rOptions["targetError"].as<double>();
+        if (rOptions.hasOwnProperty("errorArray"))
+            o.mErrorArray = rOptions["errorArray"].as<std::string>();
+        if (rOptions.hasOwnProperty("order"))
+            o.mOrder = rOptions["order"].as<double>();
+        if (rOptions.hasOwnProperty("minSize"))
+            o.mMinSize = rOptions["minSize"].as<double>();
+        if (rOptions.hasOwnProperty("maxSize"))
+            o.mMaxSize = rOptions["maxSize"].as<double>();
+        if (rOptions.hasOwnProperty("output"))
+            o.mOutputName = rOptions["output"].as<std::string>();
+        if (rOptions.hasOwnProperty("overwrite"))
+            o.mOverwrite = rOptions["overwrite"].as<bool>();
+        meshioplusplus::ErrorSizeResult r = meshioplusplus::error_size(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numCells", static_cast<double>(r.mNumCells));
+        out.set("numSkipped", static_cast<double>(r.mNumSkipped));
+        out.set("numClamped", static_cast<double>(r.mNumClamped));
+        out.set("minSize", r.mMinSize);
+        out.set("maxSize", r.mMaxSize);
+        return out;
+    });
+}
+
 /**
  * Remesh a surface by approximated centroidal Voronoi diagram (ACVD)
  * clustering: replace its triangulation with a new, near-uniformly-sized,
@@ -5953,6 +5991,7 @@ val mesh_cad_surface_js(const val& rInfo, const val& rOptions) {
         out.set("numQuads", static_cast<double>(extras_report.mNumQuads));
         out.set("numLeftoverTriangles", static_cast<double>(extras_report.mNumLeftoverTriangles));
         out.set("minQuadScaledJacobian", extras_report.mMinQuadScaledJacobian);
+        out.set("minMetricAngle", extras_report.mMinMetricAngleDeg);
         return out;
     });
 }
@@ -7550,14 +7589,16 @@ val conservative_interpolate_js(const val& rSourceObj, const val& rTargetObj, co
  */
 // boundary_layer (roadmap 6.9): prisms grown from a surface; options
 // {firstHeight (required), numLayers, growth, reverse, collisionFraction,
-// smoothIterations, maxShrink}.
+// smoothIterations, maxShrink, collapse ("points" | "layers"),
+// normalSmoothIterations, frontCheck}.
 val boundary_layer_js(const val& rMeshObj, const val& rOptions) {
     return with_js_errors([&]() -> val {
         if (rOptions.isUndefined() || rOptions.isNull() || !rOptions.hasOwnProperty("firstHeight"))
             throw std::invalid_argument("meshio++: boundary_layer: the options need 'firstHeight'");
-        check_settings_keys(rOptions, "the boundaryLayer options",
-                            {"firstHeight", "numLayers", "growth", "reverse", "collisionFraction",
-                             "smoothIterations", "maxShrink"});
+        check_settings_keys(
+            rOptions, "the boundaryLayer options",
+            {"firstHeight", "numLayers", "growth", "reverse", "collisionFraction",
+             "smoothIterations", "maxShrink", "collapse", "normalSmoothIterations", "frontCheck"});
         meshioplusplus::BoundaryLayerOptions o;
         o.mFirstHeight = rOptions["firstHeight"].as<double>();
         if (rOptions.hasOwnProperty("numLayers"))
@@ -7572,6 +7613,21 @@ val boundary_layer_js(const val& rMeshObj, const val& rOptions) {
             o.mSmoothIterations = rOptions["smoothIterations"].as<int>();
         if (rOptions.hasOwnProperty("maxShrink"))
             o.mMaxShrink = rOptions["maxShrink"].as<int>();
+        if (rOptions.hasOwnProperty("collapse")) {
+            const std::string c = rOptions["collapse"].as<std::string>();
+            if (c == "points")
+                o.mCollapse = meshioplusplus::BoundaryLayerCollapse::Points;
+            else if (c == "layers")
+                o.mCollapse = meshioplusplus::BoundaryLayerCollapse::Layers;
+            else
+                throw std::invalid_argument(
+                    "meshio++: boundary_layer: collapse must be 'points' or 'layers', not '" + c +
+                    "'");
+        }
+        if (rOptions.hasOwnProperty("normalSmoothIterations"))
+            o.mNormalSmoothIterations = rOptions["normalSmoothIterations"].as<int>();
+        if (rOptions.hasOwnProperty("frontCheck"))
+            o.mFrontCheck = rOptions["frontCheck"].as<bool>();
         meshioplusplus::BoundaryLayerResult r =
             meshioplusplus::boundary_layer(val_to_mesh(rMeshObj), o);
         val out = val::object();
@@ -7584,6 +7640,8 @@ val boundary_layer_js(const val& rMeshObj, const val& rOptions) {
         out.set("numShrunk", static_cast<double>(r.mNumShrunk));
         out.set("numCollapsed", static_cast<double>(r.mNumCollapsed));
         out.set("numNotVisible", static_cast<double>(r.mNumNotVisible));
+        out.set("numFewerLayers", static_cast<double>(r.mNumFewerLayers));
+        out.set("numFrontCrossings", static_cast<double>(r.mNumFrontCrossings));
         out.set("minScaledJacobian", r.mMinScaledJacobian);
         out.set("minThickness", r.mMinThickness);
         out.set("maxThickness", r.mMaxThickness);
@@ -7594,6 +7652,75 @@ val boundary_layer_js(const val& rMeshObj, const val& rOptions) {
         out.set("warnings", warnings);
         return out;
     });
+}
+
+// tetrahedralize (roadmap 6.7): tetrahedra filling a closed triangle surface;
+// options {backend ("auto" | "netgen" | "octree"), maxSize, maxVolume,
+// grading, optimizeSteps, maxCells, faceArray}, all optional. No WebAssembly
+// build of Netgen exists (`hasNetgen()` is false), so "auto" is the native
+// octree backend, its boundary fitted, and "netgen" throws naming
+// MESHIOPLUSPLUS_WITH_NETGEN.
+val tetrahedralize_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::TetrahedralizeOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the tetrahedralize options",
+                                {"backend", "maxSize", "maxVolume", "grading", "optimizeSteps",
+                                 "maxCells", "faceArray"});
+            if (rOptions.hasOwnProperty("backend")) {
+                const std::string b = rOptions["backend"].as<std::string>();
+                if (b == "auto")
+                    o.mBackend = meshioplusplus::TetrahedralizeBackend::Auto;
+                else if (b == "netgen")
+                    o.mBackend = meshioplusplus::TetrahedralizeBackend::Netgen;
+                else if (b == "octree")
+                    o.mBackend = meshioplusplus::TetrahedralizeBackend::Octree;
+                else
+                    throw std::invalid_argument(
+                        "meshio++: tetrahedralize: backend must be 'auto', 'netgen' or 'octree', "
+                        "not '" +
+                        b + "'");
+            }
+            if (rOptions.hasOwnProperty("maxSize"))
+                o.mMaxSize = rOptions["maxSize"].as<double>();
+            if (rOptions.hasOwnProperty("maxVolume"))
+                o.mMaxVolume = rOptions["maxVolume"].as<double>();
+            if (rOptions.hasOwnProperty("grading"))
+                o.mGrading = rOptions["grading"].as<double>();
+            if (rOptions.hasOwnProperty("optimizeSteps"))
+                o.mOptimizeSteps = rOptions["optimizeSteps"].as<int>();
+            if (rOptions.hasOwnProperty("maxCells"))
+                o.mMaxCells = static_cast<std::int64_t>(rOptions["maxCells"].as<double>());
+            if (rOptions.hasOwnProperty("faceArray"))
+                o.mFaceArray = rOptions["faceArray"].as<std::string>();
+        }
+        meshioplusplus::TetrahedralizeResult r =
+            meshioplusplus::tetrahedralize(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numTetrahedra", static_cast<double>(r.mNumTetrahedra));
+        out.set("numPoints", static_cast<double>(r.mNumPoints));
+        out.set("numNewPoints", static_cast<double>(r.mNumNewPoints));
+        out.set("numRegions", static_cast<double>(r.mNumRegions));
+        out.set("numBoundaryTriangles", static_cast<double>(r.mNumBoundaryTriangles));
+        out.set("boundaryPreserved", r.mBoundaryPreserved);
+        out.set("hausdorffToSurface", r.mHausdorffToSurface);
+        out.set("minDihedralDeg", r.mMinDihedralDeg);
+        out.set("maxDihedralDeg", r.mMaxDihedralDeg);
+        out.set("volume", r.mVolume);
+        out.set("backend", r.mBackend);
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+/// Whether tetrahedralize's Netgen backend is linked in: never in a
+/// WebAssembly build (the octree backend always is).
+bool has_netgen_js() {
+    return meshioplusplus::tetrahedralize_has_netgen();
 }
 
 // project_to_cad (roadmap 6.10.1): every point of a mesh onto the CAD face or
@@ -7623,6 +7750,7 @@ val project_to_cad_js(const val& rMeshObj, const val& rInfo, const val& rOptions
         out.set("mesh", mesh_to_val(r.mMesh));
         out.set("numProjected", static_cast<double>(r.mNumProjected));
         out.set("numOnEdges", static_cast<double>(r.mNumOnEdges));
+        out.set("numOnCurves", static_cast<double>(r.mNumOnCurves));
         out.set("numCorners", static_cast<double>(r.mNumCorners));
         out.set("numAmbiguous", static_cast<double>(r.mNumAmbiguous));
         out.set("numTooFar", static_cast<double>(r.mNumTooFar));
@@ -8136,6 +8264,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("gradient", &gradient_js);
     emscripten::function("hessian", &hessian_js);
     emscripten::function("estimateError", &estimate_error_js);
+    emscripten::function("errorSize", &error_size_js);
     emscripten::function("remesh", &remesh_js);
     emscripten::function("remeshVolume", &remesh_volume_js);
     emscripten::function("optimizeVolume", &optimize_volume_js);
@@ -8152,6 +8281,8 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("meshCadSurface", &mesh_cad_surface_js);
     emscripten::function("projectToCad", &project_to_cad_js);
     emscripten::function("boundaryLayer", &boundary_layer_js);
+    emscripten::function("tetrahedralize", &tetrahedralize_js);
+    emscripten::function("hasNetgen", &has_netgen_js);
     emscripten::function("igaEvaluate", &iga_evaluate_js);
     emscripten::function("render", &render_js);
     emscripten::function("renderText", &render_text_js);

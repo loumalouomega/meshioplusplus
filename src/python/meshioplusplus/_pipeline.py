@@ -41,6 +41,7 @@ from ._data_manage import data_drop, data_keep, data_rename
 from ._decimate import decimate
 from ._decimate_volume import decimate_volume
 from ._error import estimate_error
+from ._error_size import error_size
 from ._feature_edges import feature_edges
 from ._fit_cad import DEFAULT_RANSAC_SEED, fit_cad
 from ._fit_primitives import TYPES, fit_primitives, types_mask
@@ -353,6 +354,7 @@ _OP_TABLE = {
         "Tolerance",
     ),
     "EstimateError": ("Array", "Method", "Marking", "MarkingValue", "Output", "Marked"),
+    "ErrorSize": ("Array", "TargetError", "Order", "MinSize", "MaxSize", "Output"),
     "Remesh": (
         "NumClusters",
         "Subdivide",
@@ -617,6 +619,19 @@ _OP_TABLE = {
         "CollisionFraction",
         "SmoothIterations",
         "MaxShrink",
+        "Collapse",
+        "NormalSmoothIterations",
+        "FrontCheck",
+    ),
+    # Tetrahedra filling the closed triangle surface (roadmap 6.7).
+    "Tetrahedralize": (
+        "Backend",
+        "MaxSize",
+        "MaxVolume",
+        "Grading",
+        "OptimizeSteps",
+        "MaxCells",
+        "FaceArray",
     ),
 }
 
@@ -1217,6 +1232,59 @@ def _render_op(step):
     return f"{step['Op']}(" + ", ".join(parts) + ")"
 
 
+def _bl_collapse(step):
+    collapse = _text(step, "Collapse", "points")
+    if collapse not in ("points", "layers"):
+        raise _err(
+            "BoundaryLayer",
+            f"'Collapse' must be 'points' or 'layers', not '{collapse}'",
+        )
+    return collapse
+
+
+def _tetrahedralize_step(mesh, step, entry, warnings):
+    """``Tetrahedralize``: :func:`meshioplusplus.tetrahedralize`, its counters
+    and warnings the C++ engine's."""
+    import warnings as _warnings
+
+    from ._tetrahedralize import tetrahedralize
+
+    backend = _text(step, "Backend", "auto")
+    if backend not in ("auto", "netgen", "octree"):
+        raise _err(
+            "Tetrahedralize",
+            f"'Backend' must be 'auto', 'netgen' or 'octree', not '{backend}'",
+        )
+    with _warnings.catch_warnings():
+        # The report carries them, as the C++ engine's does.
+        _warnings.simplefilter("ignore", RuntimeWarning)
+        mesh, report = tetrahedralize(
+            mesh,
+            backend=backend,
+            max_size=_number(step, "MaxSize", 0.0),
+            max_volume=_number(step, "MaxVolume", 0.0),
+            grading=_number(step, "Grading", 0.3),
+            optimize_steps=int(_number(step, "OptimizeSteps", 3)),
+            max_cells=int(_number(step, "MaxCells", 50_000_000)),
+            face_array=_text(step, "FaceArray", "cad:face"),
+            return_report=True,
+        )
+    warnings.extend("Tetrahedralize: " + w for w in report["warnings"])
+    entry.update(
+        NumTetrahedra=float(report["num_tetrahedra"]),
+        NumPoints=float(report["num_points"]),
+        NumNewPoints=float(report["num_new_points"]),
+        NumRegions=float(report["num_regions"]),
+        NumBoundaryTriangles=float(report["num_boundary_triangles"]),
+        BoundaryPreserved=1.0 if report["boundary_preserved"] else 0.0,
+        HausdorffToSurface=float(report["hausdorff_to_surface"]),
+        MinDihedralDeg=float(report["min_dihedral_deg"]),
+        MaxDihedralDeg=float(report["max_dihedral_deg"]),
+        Volume=float(report["volume"]),
+    )
+    return mesh
+
+
 def _apply_step(mesh, step, steps, warnings):
     """One validated step. Counters and warning strings are the C++ engine's,
     transcribed -- keep the two in lockstep."""
@@ -1243,14 +1311,21 @@ def _apply_step(mesh, step, steps, warnings):
             collision_fraction=_number(step, "CollisionFraction", 0.45),
             smooth_iterations=int(_number(step, "SmoothIterations", 5)),
             max_shrink=int(_number(step, "MaxShrink", 6)),
+            collapse=_bl_collapse(step),
+            normal_smooth_iterations=int(_number(step, "NormalSmoothIterations", 0)),
+            front_check=_flag(step, "FrontCheck", True),
             return_report=True,
         )
         entry.update(
             NumCells=float(report["num_cells"]),
             NumShrunk=float(report["num_shrunk"]),
             NumCollapsed=float(report["num_collapsed"]),
+            NumFewerLayers=float(report["num_fewer_layers"]),
+            NumFrontCrossings=float(report["num_front_crossings"]),
             MinScaledJacobian=float(report["min_scaled_jacobian"]),
         )
+    elif op == "Tetrahedralize":
+        mesh = _tetrahedralize_step(mesh, step, entry, warnings)
     elif op == "ProjectToCad":
         mesh = _project_to_cad_step(mesh, step, entry, None)
     elif op == "Quality":
@@ -1804,6 +1879,31 @@ def _apply_step(mesh, step, steps, warnings):
                 f"estimate_error: {report['num_skipped']} cell(s) could not be "
                 "evaluated and are NaN"
             )
+    elif op == "ErrorSize":
+        # A pure data step (roadmap 6.10.2): EstimateError's per-cell
+        # indicator becomes the per-point size a later mesh_cad_surface's
+        # background reads. Geometry is untouched.
+        mesh, report = error_size(
+            mesh,
+            _text(step, "Array", "error:zz"),
+            target_error=_number(step, "TargetError", 0.0),
+            order=_number(step, "Order", 1.0),
+            min_size=_number(step, "MinSize", 0.0),
+            max_size=_number(step, "MaxSize", 0.0),
+            output=_text(step, "Output", "size"),
+            overwrite=True,
+            return_report=True,
+        )
+        entry["NumCells"] = report["num_cells"]
+        entry["NumSkipped"] = report["num_skipped"]
+        entry["NumClamped"] = report["num_clamped"]
+        entry["MinSize"] = report["min_size"]
+        entry["MaxSize"] = report["max_size"]
+        if report["num_skipped"] > 0:
+            warnings.append(
+                f"error_size: {report['num_skipped']} cell(s) have no finite size "
+                "and size no point"
+            )
     elif op == "Remesh":
         # Unlike every other step, the output has NO correspondence to the
         # input: new points, new connectivity. point_data/cell_data/regions
@@ -2228,6 +2328,7 @@ def _project_to_cad_step(mesh, step, entry, model):
     entry.update(
         NumProjected=float(report["num_projected"]),
         NumOnEdges=float(report["num_on_edges"]),
+        NumOnCurves=float(report["num_on_curves"]),
         NumOutsideTrim=float(report["num_outside_trim"]),
         MaxMove=float(report["max_move"]),
     )

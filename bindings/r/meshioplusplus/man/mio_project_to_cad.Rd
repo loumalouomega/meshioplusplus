@@ -13,7 +13,8 @@ mio_project_to_cad(mesh, info, face_array = "cad:face", edge_array = "cad:edge",
 \item{trim_samples}{Samples per knot span when testing a face's trims.}
 }
 \value{
-A list: \code{mesh}, \code{num_projected}, \code{num_on_edges}, \code{num_corners},
+A list: \code{mesh}, \code{num_projected}, \code{num_on_edges},
+\code{num_on_curves} (of those on edges, onto the edge's own 3-D curve), \code{num_corners},
 \code{num_ambiguous}, \code{num_too_far}, \code{num_failed}, \code{num_outside_trim},
 \code{max_move} and \code{outside_trim} (1-based points projected outside their
 face's trims, kept, never clamped).

@@ -56,26 +56,29 @@ none.}
 chains are reported in \code{virtual_edges}.}
 \item{reparam_condition_number}{Mesh a face whose metric's condition number over
 its coarse mesh passes this in a flattening of that mesh instead of its
-parameters (v17.20.0); 0 is off, otherwise above 1; order 1 only.}
+parameters (v17.20.0); 0 is off, otherwise above 1; at order 2 or 3 the curved
+nodes sit at the flattening's coordinates.}
 \item{model_tolerances}{Accept the gaps the model itself declares (an edge's
 \code{"tolerance"} and \code{"end_tolerances"} in its extra JSON).}
 \item{virtual_faces}{Mesh a face narrower than \code{target_size} with the
-neighbour it meets tangentially along the most edge; order 1 only.}
+neighbour it meets tangentially along the most edge; any order.}
 \item{lop_corners}{Lop acute corners (Pav and Walkington 2005) in place of
 concentric shells; only with refinement (\code{min_angle} or sizes).}
 \item{metric_background}{A mesh whose 9-component point data
-\code{metric_array} is a field's Hessian: an anisotropic metric from it, with
-the target interpolation error \code{metric_error}, sizes the triangles in every
-direction (roadmap 6.10.2); \code{NULL} for none; order 1 only.}
-\item{metric_array}{The name of that Hessian array (e.g. \code{"f:hessian"}).}
+\code{metric_array} is a field's Hessian (or whose 1-component one is the field,
+its Hessian then taken): an anisotropic metric from it, with the target
+interpolation error \code{metric_error}, sizes the triangles in every direction
+(roadmap 6.10.2); \code{NULL} for none; any order.}
+\item{metric_array}{The name of that Hessian array (e.g. \code{"f:hessian"}) or
+of the field.}
 \item{metric_error}{The target interpolation error (positive).}
 \item{untangle}{With \code{order} 2 or 3, move a face's own high-order nodes on
-the surface to untangle a folded curved element before it is straightened
-(roadmap 6.6.3; Toulorge et al. 2013).}
+the surface (quads' too) to untangle a folded curved element before it is
+straightened (roadmap 6.6.3; Toulorge et al. 2013).}
 \item{quads}{\code{"none"}, \code{"dominant"} (pairs of triangles recombined
-into quads where they make a good one; order 1 only) or \code{"all"} (the
-quad-dominant mesh of twice the size split into quads only; \code{order = 2}
-writes quad9) (roadmap 6.8).}
+into quads where they make a good one) or \code{"all"} (the quad-dominant mesh
+of twice the size split into quads only; no \code{virtual_edges}); \code{order}
+2 or 3 writes quad9 or quad16 (roadmap 6.8).}
 \item{quad_pairs}{How triangles pair into quads: \code{"matching"} (a maximum
 matching of greatest total quality, Blossom-quad) or \code{"greedy"} (best pair
 first) (roadmap 6.8.1).}
@@ -107,7 +110,8 @@ conformal, 2 mean-value, 3 annulus, 0 declined, \code{reason}), \code{merged_fac
 \code{angle_deg}, \code{lfs0}, \code{lop_radius}, \code{turning_deg},
 \code{stated_bound_deg}, \code{num_forced}, \code{min_forced_deg},
 \code{within_two_radii}, \code{guaranteed}, \code{reason}), \code{num_untangled},
-\code{num_quads}, \code{num_leftover_triangles}, \code{min_quad_scaled_jacobian}
-and \code{corners}, a data frame of the corners under 60 degrees and poles (1-based
+\code{num_quads}, \code{num_leftover_triangles}, \code{min_quad_scaled_jacobian},
+\code{min_metric_angle} (the least corner angle in the metric, 0 without a
+\code{metric_background}) and \code{corners}, a data frame of the corners under 60 degrees and poles (1-based
 \code{face} and \code{point}, \code{u}, \code{v}, \code{x}, \code{y}, \code{z},
 \code{angle_deg}, \code{min_forced_deg}, \code{reach}, \code{pole}).}

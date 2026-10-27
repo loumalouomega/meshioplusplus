@@ -1026,6 +1026,7 @@ def roadmap_map():
             [
                 ("OSS-Fuzz submission", "S"),
                 ("CalculiX validators in CI", "S"),
+                ("meshing corpora: sources", "S"),
             ],
             [],
         ),
@@ -1038,6 +1039,7 @@ def roadmap_map():
                 ("conformity · intersections", "M"),
                 ("select · thickness · mirror", "M"),
                 ("MMG backend (optional)", "M"),
+                ("optimize_volume: worst-cell moves", "M"),
             ],
             [(0, 1), (2, 3)],
         ),
@@ -1058,19 +1060,6 @@ def roadmap_map():
             [
                 ("MMG under Emscripten (after §3.3)", "M"),
                 ("skin to CAD: constraints · G1", "L"),
-            ],
-            [],
-        ),
-        (
-            "§6 mesh generation",
-            [
-                ("corner lopping: the stated bound", "S"),
-                ("real CAD: sliver chains · corpus", "M"),
-                ("curved meshes: untangling", "M"),
-                ("tetrahedra: backends", "L"),
-                ("quads: design first", "L"),
-                ("boundary layers: design first", "L"),
-                ("adaptation on the CAD", "M"),
             ],
             [],
         ),

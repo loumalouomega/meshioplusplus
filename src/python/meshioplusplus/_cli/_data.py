@@ -11,17 +11,21 @@ exports for analytics, not mesh formats**: neither round-trips geometry, and
 pyarrow/zarr are optional extras, so their imports stay inside the handlers.
 Neither has a counterpart in the native C++ CLI.
 
-``gradient``, ``hessian``, ``integrate`` and ``estimate-error`` are a slight
-departure: all four are **mesh** operations (``operations/gradient.hpp``,
-``operations/hessian.hpp``, ``operations/data_integrate.hpp``,
-``operations/error.hpp``), not part of the ``data_*`` family, because they
-read geometry (cell measures, face tables) rather than only data arrays.
+``gradient``, ``hessian``, ``integrate``, ``estimate-error`` and
+``error-size`` are a slight departure: all five are **mesh** operations
+(``operations/gradient.hpp``, ``operations/hessian.hpp``,
+``operations/data_integrate.hpp``, ``operations/error.hpp``,
+``operations/error_size.hpp``), not part of the ``data_*`` family, because
+they read geometry (cell measures, face tables, cell diameters) rather than
+only data arrays.
 They live here anyway because they consume and produce data arrays, which is
 where a user looks for them. ``hessian`` is ``gradient``'s companion one
 order further -- a composition of two ``gradient`` calls, not a new kernel;
 ``estimate-error`` composes ``gradient`` with the point↔cell averaging round
 trip to produce the ZZ recovery-based error indicator ``refine``'s own
-``--where`` selector consumes, closing the adaptive loop; ``integrate`` is
+``--where`` selector consumes, closing the adaptive loop, and ``error-size``
+turns that indicator into the per-point size field ``mesh-cad-surface
+--background`` reads (roadmap 6.10.2); ``integrate`` is
 ``gradient``'s companion the other direction, reducing a ``cell_data`` field
 to a physical total/mean instead of differentiating it. See
 ``doc/gradient.md`` / ``doc/hessian.md`` / ``doc/field_integration.md`` /
@@ -40,6 +44,7 @@ from .._data_info import data_info
 from .._data_integrate import data_integrate
 from .._data_manage import data_drop, data_keep, data_rename
 from .._error import estimate_error
+from .._error_size import error_size
 from .._gradient import gradient
 from .._helpers import _writer_map, read, reader_map, write
 from .._hessian import hessian
@@ -966,6 +971,94 @@ def estimate_error_cmd(args):
     return 0
 
 
+# --- data error-size --------------------------------------------------------
+
+
+def add_error_size_args(parser):
+    _add_io_args(parser)
+    parser.add_argument(
+        "--array",
+        type=str,
+        default="error:zz",
+        metavar="NAME",
+        help="the one-component cell_data indicator (default: error:zz, what "
+        "estimate-error writes)",
+    )
+    parser.add_argument(
+        "--target-error",
+        type=float,
+        required=True,
+        metavar="E",
+        help="the target global error, in the indicator's norm (positive)",
+    )
+    parser.add_argument(
+        "--order",
+        type=float,
+        default=1.0,
+        metavar="P",
+        help="the indicator's rate in the cell size (default: 1, linear elements)",
+    )
+    parser.add_argument(
+        "--min-size",
+        type=float,
+        default=0.0,
+        metavar="H",
+        help="the least size written (default: 0, no bound)",
+    )
+    parser.add_argument(
+        "--max-size",
+        type=float,
+        default=0.0,
+        metavar="H",
+        help="the greatest size written (default: 0, no bound)",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="size",
+        metavar="NAME",
+        help="point_data array written (default: size, what mesh-cad-surface "
+        "--background reads)",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace an existing array of the output name instead of failing",
+    )
+    parser.add_argument("--json", action="store_true", help="emit the report as JSON")
+    parser.add_argument(
+        "--quiet", "-q", action="store_true", help="suppress the summary"
+    )
+
+
+def error_size_cmd(args):
+    mesh = read(args.infile, file_format=args.input_format)
+    out, report = error_size(
+        mesh,
+        args.array,
+        target_error=args.target_error,
+        order=args.order,
+        min_size=args.min_size,
+        max_size=args.max_size,
+        output=args.output,
+        overwrite=args.overwrite,
+        return_report=True,
+    )
+    if args.json:
+        emit_json(report)
+    elif not args.quiet:
+        print(f"wrote point_data '{args.output}' (from '{args.array}')")
+        print(
+            f"  sizes:                    {report['min_size']:.6g} to "
+            f"{report['max_size']:.6g}"
+        )
+        print(f"  cells evaluated:          {report['num_cells']}")
+        print(f"  cells skipped:            {report['num_skipped']}")
+        print(f"  sizes clamped:            {report['num_clamped']}")
+    write(args.outfile, out, file_format=args.output_format)
+    return 0
+
+
 # --- data invariants ---------------------------------------------------------
 
 
@@ -1079,6 +1172,13 @@ _VERBS = (
         "optionally mark cells for refinement",
         add_estimate_error_args,
         estimate_error_cmd,
+    ),
+    (
+        "error-size",
+        "A per-point size field from a per-cell error indicator "
+        "(Zienkiewicz-Zhu), for mesh-cad-surface --background",
+        add_error_size_args,
+        error_size_cmd,
     ),
     (
         "normalize",

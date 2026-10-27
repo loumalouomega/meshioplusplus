@@ -120,6 +120,8 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `contact-pairs` | `num_pairs`, the pair table and unmatched slave-point ids |
 | `split-interface` | duplicated-point and cohesive-cell counts |
 | `mesh-cad-surface` | `mesh_cad_surface`'s report: the counts, the open, non-manifold and misoriented edges, the extreme angles and edge lengths, `tolerance`, `max_edge_gap`, `faces` (`status`, `reason`, counts and extremes per face, `below_bound`, `bound_deg`, `min_input_angle_deg` and `corners`), `warnings`, `num_refinement_points`, `num_faces_below_bound`, `num_smoothed`, `angle_histogram` and `num_curved_straightened` |
+| `boundary-layer` | `boundary_layer`'s report: the cell counts by type, `num_shrunk`, `num_collapsed`, `num_not_visible`, `num_fewer_layers`, `num_front_crossings`, `min_scaled_jacobian`, the thickness range, `cap_closed` and `warnings` |
+| `tetrahedralize` | `tetrahedralize`'s report: `num_tetrahedra`, `num_points`, `num_new_points`, `num_regions`, `num_boundary_triangles`, `boundary_preserved`, `hausdorff_to_surface`, the dihedral range, `volume`, `backend` and `warnings` |
 
 The exit codes are unchanged by `--json`.
 
@@ -1609,6 +1611,7 @@ meshioplusplus data <subcommand> [options]
 | `gradient` | Differentiate a `point_data` field (see [field derivatives](/gradient)) |
 | `hessian` | Second derivative of a scalar `point_data` field (see [second derivatives](/hessian)) |
 | `estimate-error` | ZZ recovery-based error indicator, plus marking (see [error estimation](/error)) |
+| `error-size` | Per-point size field from a per-cell error indicator, for `mesh-cad-surface --background` (roadmap 6.10.2) |
 | `integrate` | Cell-measure-weighted total/mean over cells, per region (see [field integration](/field_integration)) |
 | `export` | Export the arrays to Parquet (see [interoperability](/interop)) |
 | `export-dataset` | Export a *set* of meshes as one `mesh_id`-keyed dataset (see [ML data handling](/ml)) |
@@ -1623,7 +1626,7 @@ meshioplusplus data export-cae 'run_*.vtu' dataset/ \
     --surface-fields p --global stream_velocity=30 --global-order stream_velocity
 ```
 
-::: tip `data gradient`, `data hessian`, `data estimate-error` and `data integrate` are mesh operations
+::: tip `data gradient`, `data hessian`, `data estimate-error`, `data error-size` and `data integrate` are mesh operations
 Every other verb in this group belongs to the `data_*` family, which by definition never touches geometry. `gradient` consumes and produces data arrays but **reads** geometry and topology (face areas, cell volumes, cell adjacency), so it lives in the mesh-operations layer; `hessian` is `gradient`'s companion one order further, a composition of two `gradient` calls; `estimate-error` composes `gradient` itself; `integrate` reads the same cell measures to weight its totals. All four are grouped here because that is where a user looks for them. See [field derivatives](/gradient), [second derivatives](/hessian), [error estimation](/error) and [field integration](/field_integration).
 :::
 
@@ -1743,6 +1746,20 @@ The Hessian (second derivative) of a scalar `point_data` field — `gradient`'s 
 
 The Zienkiewicz-Zhu recovery-based error indicator of a `point_data` field: a composition of `gradient` and the point↔cell averaging round trip, not a new kernel. Naming a `cell_data` array is an error pointing at `data to-point`, for the same reason `data gradient` rejects one. Cells that cannot be evaluated are reported as `cells skipped (NaN)` and read `NaN` in `error:zz`, `0` in `error:marked`. With `--marking` not `none`, a second `cell_data` array is attached so [`refine`](/refine)'s own `--where` selector needs no change at all — the intended use is `meshioplusplus refine estimated.vtu adapted.vtu --where "error:marked > 0.5"`. See [error estimation](/error) for the composition, the marking policies and the byte-identity tolerance.
 
+### data error-size
+
+| Option | Description |
+|--------|-------------|
+| `--target-error E` | The target global error, in the indicator's norm (**required**, positive) |
+| `--array NAME` | The one-component `cell_data` indicator (default `error:zz`, what `data estimate-error` writes) |
+| `--order P` | The indicator's rate in the cell size (default 1, linear elements) |
+| `--min-size H` / `--max-size H` | The sizes' bounds (default 0: no bound) |
+| `--output NAME` | The `point_data` array written (default `size`, what `mesh-cad-surface --background` reads) |
+| `--overwrite` | Replace an existing array of that name instead of failing |
+| `--json` / `--quiet`, `-q` | The report as JSON / no summary |
+
+The adaptive procedure of Zienkiewicz and Zhu (1987): with `N` cells evaluated, a cell of diameter `h` whose indicator is `eta` asks `h (E / sqrt(N) / eta)^(1/P)`, clamped to the bounds; each point takes the least of its cells' sizes, and a point with no evaluated cell reads `NaN` (no size there). The report gives the cells evaluated, skipped (a non-finite indicator or size) and clamped, and the least and greatest size written. Both CLIs. The intended use closes the adaptive loop: `data estimate-error`, then `data error-size`, then `mesh-cad-surface --background sized.vtu`.
+
 ### data integrate
 
 | Option | Description |
@@ -1767,6 +1784,7 @@ meshioplusplus data hessian in.vtu out.vtu --array T --location point
 
 meshioplusplus data estimate-error in.vtu out.vtu --array T
 meshioplusplus data estimate-error in.vtu out.vtu --array T --marking dorfler --marking-value 0.6
+meshioplusplus data error-size estimated.vtu sized.vtu --target-error 1e-3 --min-size 0.01
 
 meshioplusplus data integrate mesh.vtu --array density
 meshioplusplus data integrate mesh.vtu --array density --array pressure --json
@@ -2108,13 +2126,13 @@ meshioplusplus mesh-cad-surface part.step part.vtu --size 2 --min-angle 25 --rep
 | `--background PATH` / `--background-array NAME` | a mesh whose point data `NAME` (default `size`) is the size at its points |
 | `--metric mean\|varying` | `mean` (the default), one affine map per face, or `varying`, the surface's own metric |
 | `--virtual-edges` | suppress the corners between slivers of edges and their neighbours (order 1 only); the chains are reported as `virtual_edges` |
-| `--reparam-condition-number K` | mesh a face whose parameters stretch the surface more than `K` (above 1) in a flattening of its coarse mesh instead (order 1 only; 0, the default, is off); reported as `reparametrised` |
-| `--virtual-faces` | mesh a sliver face, narrower than the size, with the neighbour it meets tangentially (order 1 only); reported as `merged_faces` |
+| `--reparam-condition-number K` | mesh a face whose parameters stretch the surface more than `K` (above 1) in a flattening of its coarse mesh instead (any order; 0, the default, is off); reported as `reparametrised` |
+| `--virtual-faces` | mesh a sliver face, narrower than the size, with the neighbour it meets tangentially (any order); reported as `merged_faces` |
 | `--model-tolerances` | accept the gaps each edge's own declared tolerance or vertex's own declared tolerance allows (a STEP or IGES read declares OpenCASCADE's; a Kratos file's `tolerances.model_tolerance` is their floor and pairs the trims no edge names); reported as `tolerance_uses` |
 | `--lop-corners` | lop acute corners (Pav and Walkington 2005) in place of concentric shells, and state the angle bound they prove on a planar face; reported as `lopped_corners` |
-| `--metric-background PATH` / `--metric-array NAME` / `--metric-error E` | a mesh whose 9-component point data `NAME` is a field's Hessian (`hessian` writes `<array>:hessian`), and the interpolation error `E` (> 0) to reach: the anisotropic metric `R \|Λ\| Rᵀ / (8 E)` sizes and stretches the triangles (order 1 only) |
-| `--untangle` | at order 2 or 3, move the high-order nodes of folded elements on the surface to make them valid before any is straightened (Toulorge et al. 2013), then slide the nodes on CAD edges along their edges; reported as `num_untangled` |
-| `--quads none\|dominant\|all` | `dominant` recombines triangle pairs into quads by quality (Borouchaki and Frey 1998), `all` splits a mesh at twice the size into quads only (with `--order 2`, curved `quad9` cells); `dominant` is order 1 only; reported as `num_quads`, `num_leftover_triangles` and `min_quad_scaled_jacobian` |
+| `--metric-background PATH` / `--metric-array NAME` / `--metric-error E` | a mesh whose 9-component point data `NAME` is a field's Hessian (`hessian` writes `<array>:hessian`), or whose 1-component one is the field itself (its Hessian then taken), and the interpolation error `E` (> 0) to reach: the anisotropic metric `R \|Λ\| Rᵀ / (8 E)` sizes and stretches the triangles at any order; reported as `min_metric_angle`, the least corner angle in the metric |
+| `--untangle` | at order 2 or 3, move the high-order nodes of folded elements on the surface to make them valid before any is straightened (Toulorge et al. 2013), then slide the nodes on CAD edges along their edges (quads' nodes too); reported as `num_untangled` |
+| `--quads none\|dominant\|all` | `dominant` recombines triangle pairs into quads by quality (Borouchaki and Frey 1998), `all` splits a mesh at twice the size into quads only and takes no `--virtual-edges`; with `--order 2` or `3` either writes curved `quad9` or `quad16` cells; reported as `num_quads`, `num_leftover_triangles` and `min_quad_scaled_jacobian` |
 | `--quad-pairs matching\|greedy` | how triangles pair into quads: `matching` (the default) a maximum-weight matching per face (Remacle et al. 2012), `greedy` the best pairs first |
 | `--json` / `-q/--quiet` | the report as JSON / no summary |
 
@@ -2159,11 +2177,44 @@ meshioplusplus boundary-layer INFILE OUTFILE --first-height H [options]
 | `--collision-fraction F` | the share of the distance to the surface a point's ray hits that its layers may take (0.45) |
 | `--smooth N` | passes smoothing that share over neighbours (5) |
 | `--max-shrink N` | halvings of a point's layers before they collapse (6) |
+| `--collapse points\|layers` | how a point whose cells fold gives way: its layers halved and then collapsed (`points`, the default) or its top layer dropped, so it grows fewer layers (`layers`) |
+| `--normal-smooth N` | Laplacian passes over the growth directions (0) |
+| `--no-front-check` | skip testing the last layer's faces against each other and the surface |
 | `--json` / `-q/--quiet` | the report as JSON / no summary |
 | `-i/--input-format` / `-o/--output-format` | force the input / output format |
 
+The summary and the JSON report count, besides the cells, the points shrunk and collapsed, `num_fewer_layers` (with `--collapse layers`) and `num_front_crossings`.
+
 ```sh
 meshioplusplus boundary-layer skin.vtu layers.vtu --first-height 1e-3 --num-layers 8 --growth 1.25
+meshioplusplus boundary-layer skin.vtu layers.vtu --first-height 1e-3 --collapse layers --normal-smooth 5
+```
+
+## `tetrahedralize`
+
+Fill a closed, manifold, consistently oriented triangle surface with tetrahedra, its triangles and points kept exactly through Netgen, or its boundary fitted through the native octree backend (see [tetrahedralize](/tetrahedralize)). Each shell bounds a region, so a box inside a box gives two. Both CLIs; `--backend auto` takes Netgen when the build has it (`-DMESHIOPLUSPLUS_WITH_NETGEN=ON`) and `octree` otherwise, and `--backend netgen` without it fails naming the flag. Lines and vertices in the input are skipped; quads, polygons and an open, non-manifold or misoriented surface are refused by name.
+
+```
+meshioplusplus tetrahedralize INFILE OUTFILE [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--max-size H` | the largest edge asked of the tetrahedra (0: none, the surface's triangles size the inside) |
+| `--max-volume V` | the largest volume asked of a tetrahedron (0: none) |
+| `--grading G` | how fast the size grows away from the surface, in [0, 1] (0.3) |
+| `--optimize-steps N` | passes of the backend's volume optimisation, 0 to 100 (3) |
+| `--max-cells N` | refuse a result of more tetrahedra (50000000) |
+| `--face-array NAME` | the cell data naming each triangle's CAD face, carried to the triangles (`cad:face`) |
+| `--backend auto\|netgen\|octree` | the backend (`auto`: Netgen when built in, else `octree`) |
+| `--json` / `-q/--quiet` | the report as JSON / no summary |
+| `-i/--input-format` / `-o/--output-format` | force the input / output format |
+
+The summary gives the tetrahedra, regions and new points, the dihedral angle range, the volume, the backend and whether the boundary is preserved; the JSON report has `num_tetrahedra`, `num_points`, `num_new_points`, `num_regions`, `num_boundary_triangles`, `boundary_preserved`, `hausdorff_to_surface`, `min_dihedral_deg`, `max_dihedral_deg`, `volume`, `backend` and `warnings`.
+
+```sh
+meshioplusplus mesh-cad-surface part.cad.json skin.vtu --size 0.1
+meshioplusplus tetrahedralize skin.vtu volume.vtu --max-size 0.1 --json
 ```
 
 ## `grid-sample`, `grid-scatter`, `grid-resample`, `grid-spectrum`

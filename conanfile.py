@@ -58,6 +58,7 @@ class MeshioplusplusConan(ConanFile):
         "with_lzma": [True, False],
         "with_bzip2": [True, False],
         "with_kahip": [True, False],
+        "with_netgen": [True, False],
         "with_cgnslib": [True, False],
         "with_adios2": [True, False],
         "with_tecio": [True, False],
@@ -89,6 +90,10 @@ class MeshioplusplusConan(ConanFile):
         # supplies an install and points KAHIP_ROOT at it (find_package prefix,
         # same policy as the CMake build). Off by default.
         "with_kahip": False,
+        # Netgen's nglib (tetrahedralize; LGPL-2.1, linked dynamically) is not
+        # on ConanCenter: bring-your-own like KaHIP, the option only flips the
+        # CMake flag and the consumer points NETGEN_ROOT at an install.
+        "with_netgen": False,
         "with_cgnslib": False,
         # ADIOS2 (DOLFINx .bp) is not on ConanCenter and TecIO (.szplt) is a
         # vendor library: both are bring-your-own like KaHIP -- the options only
@@ -192,6 +197,9 @@ class MeshioplusplusConan(ConanFile):
         tc.cache_variables["MESHIOPLUSPLUS_WITH_LZMA"] = bool(self.options.with_lzma)
         tc.cache_variables["MESHIOPLUSPLUS_WITH_BZIP2"] = bool(self.options.with_bzip2)
         tc.cache_variables["MESHIOPLUSPLUS_WITH_KAHIP"] = bool(self.options.with_kahip)
+        tc.cache_variables["MESHIOPLUSPLUS_WITH_NETGEN"] = bool(
+            self.options.with_netgen
+        )
         # cgnslib is not on ConanCenter, so like KaHIP it is bring-your-own:
         # this only flips the CMake flag and the consumer supplies CGNS_ROOT.
         tc.cache_variables["MESHIOPLUSPLUS_WITH_CGNSLIB"] = bool(

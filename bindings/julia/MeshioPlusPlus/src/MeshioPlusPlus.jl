@@ -108,7 +108,7 @@ export extract_surface, extract_skin, attach_quality, quality_counts
 export transform, clean, smooth, optimize_volume, crop_bbox, crop_plane, crop_predicate, slice, isosurface
 export gradient
 export hessian
-export estimate_error
+export estimate_error, error_size
 export remesh
 export remesh_volume
 export grid, voxelize, octree, octree_mesh
@@ -121,6 +121,7 @@ export repair, shrinkwrap, sobolev_deform
 export interpolate, conservative_interpolate, meshes_equal, stats, compute_bandwidth
 export reorder, convert_cells, subdivide, agglomerate, refine, undo_green, decimate, partition, partition_labels
 export boundary_layer
+export tetrahedralize, has_netgen
 export tessellate
 export data_drop, data_keep, data_rename, data_point_to_cell, data_cell_to_point
 export sets_to_data, data_to_sets

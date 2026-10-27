@@ -178,6 +178,7 @@
 #include "meshioplusplus/operations/mesh_cad.hpp"
 #include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/error.hpp"
+#include "meshioplusplus/operations/error_size.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/slice.hpp"
@@ -189,6 +190,7 @@
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/boundary_layer.hpp"
+#include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
@@ -1488,6 +1490,8 @@ PYBIND11_MODULE(_core, m) {
 #else
     m.attr("__has_occt__") = false;
 #endif
+    // Whether tetrahedralize has its Netgen backend (MESHIOPLUSPLUS_WITH_NETGEN).
+    m.attr("__has_netgen__") = meshioplusplus::tetrahedralize_has_netgen();
     // The kernel version fit_cad's STEP bytes depend on ("" without it).
     m.attr("__occt_version__") = std::string(meshioplusplus::fit_cad_occt_version());
 #ifdef MESHIOPLUSPLUS_HAS_GIDPOST
@@ -3056,7 +3060,8 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "boundary_layer",
         [](py::object pymesh, double first_height, double growth, int num_layers, bool reverse,
-           double collision_fraction, int smooth_iterations, int max_shrink) {
+           double collision_fraction, int smooth_iterations, int max_shrink,
+           const std::string& collapse, int normal_smooth_iterations, bool front_check) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
                 pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
@@ -3068,6 +3073,16 @@ PYBIND11_MODULE(_core, m) {
             o.mCollisionFraction = collision_fraction;
             o.mSmoothIterations = smooth_iterations;
             o.mMaxShrink = max_shrink;
+            if (collapse == "points")
+                o.mCollapse = meshioplusplus::BoundaryLayerCollapse::Points;
+            else if (collapse == "layers")
+                o.mCollapse = meshioplusplus::BoundaryLayerCollapse::Layers;
+            else
+                throw py::value_error(
+                    "meshio++: boundary_layer: collapse must be 'points' or 'layers', not '" +
+                    collapse + "'");
+            o.mNormalSmoothIterations = normal_smooth_iterations;
+            o.mFrontCheck = front_check;
             meshioplusplus::BoundaryLayerResult r =
                 core_nogil([&] { return meshioplusplus::boundary_layer(mesh, o); });
             py::dict out;
@@ -3080,6 +3095,8 @@ PYBIND11_MODULE(_core, m) {
             out["num_shrunk"] = r.mNumShrunk;
             out["num_collapsed"] = r.mNumCollapsed;
             out["num_not_visible"] = r.mNumNotVisible;
+            out["num_fewer_layers"] = r.mNumFewerLayers;
+            out["num_front_crossings"] = r.mNumFrontCrossings;
             out["min_scaled_jacobian"] = r.mMinScaledJacobian;
             out["min_thickness"] = r.mMinThickness;
             out["max_thickness"] = r.mMaxThickness;
@@ -3089,7 +3106,61 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("first_height"), py::arg("growth") = 1.2,
         py::arg("num_layers") = 3, py::arg("reverse") = false, py::arg("collision_fraction") = 0.45,
-        py::arg("smooth_iterations") = 5, py::arg("max_shrink") = 6);
+        py::arg("smooth_iterations") = 5, py::arg("max_shrink") = 6, py::arg("collapse") = "points",
+        py::arg("normal_smooth_iterations") = 0, py::arg("front_check") = true);
+
+    // Tetrahedra filling a closed triangle surface (roadmap 6.7): through
+    // Netgen, its triangles kept, or the native octree backend, its boundary
+    // fitted. Returns a dict {mesh, num_tetrahedra, ...}; backend="netgen"
+    // without Netgen raises NotImplementedError naming
+    // MESHIOPLUSPLUS_WITH_NETGEN. See operations/tetrahedralize.hpp.
+    m.def(
+        "tetrahedralize",
+        [](py::object pymesh, const std::string& backend, double max_size, double max_volume,
+           double grading, int optimize_steps, std::int64_t max_cells,
+           const std::string& face_array) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::TetrahedralizeOptions o;
+            if (backend == "auto")
+                o.mBackend = meshioplusplus::TetrahedralizeBackend::Auto;
+            else if (backend == "netgen")
+                o.mBackend = meshioplusplus::TetrahedralizeBackend::Netgen;
+            else if (backend == "octree")
+                o.mBackend = meshioplusplus::TetrahedralizeBackend::Octree;
+            else
+                throw py::value_error(
+                    "meshio++: tetrahedralize: backend must be 'auto', 'netgen' or 'octree', not "
+                    "'" +
+                    backend + "'");
+            o.mMaxSize = max_size;
+            o.mMaxVolume = max_volume;
+            o.mGrading = grading;
+            o.mOptimizeSteps = optimize_steps;
+            o.mMaxCells = max_cells;
+            o.mFaceArray = face_array;
+            meshioplusplus::TetrahedralizeResult r =
+                core_nogil([&] { return meshioplusplus::tetrahedralize(mesh, o); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_tetrahedra"] = r.mNumTetrahedra;
+            out["num_points"] = r.mNumPoints;
+            out["num_new_points"] = r.mNumNewPoints;
+            out["num_regions"] = r.mNumRegions;
+            out["num_boundary_triangles"] = r.mNumBoundaryTriangles;
+            out["boundary_preserved"] = r.mBoundaryPreserved;
+            out["hausdorff_to_surface"] = r.mHausdorffToSurface;
+            out["min_dihedral_deg"] = r.mMinDihedralDeg;
+            out["max_dihedral_deg"] = r.mMaxDihedralDeg;
+            out["volume"] = r.mVolume;
+            out["backend"] = r.mBackend;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("mesh"), py::arg("backend") = "auto", py::arg("max_size") = 0.0,
+        py::arg("max_volume") = 0.0, py::arg("grading") = 0.3, py::arg("optimize_steps") = 3,
+        py::arg("max_cells") = std::int64_t{50000000}, py::arg("face_array") = "cad:face");
 
     // Projection back onto the CAD (roadmap 6.10.1): every point of a mesh
     // whose cells name their CAD face and edge moved onto it. Returns a dict
@@ -3113,6 +3184,7 @@ PYBIND11_MODULE(_core, m) {
             out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
             out["num_projected"] = r.mNumProjected;
             out["num_on_edges"] = r.mNumOnEdges;
+            out["num_on_curves"] = r.mNumOnCurves;
             out["num_corners"] = r.mNumCorners;
             out["num_ambiguous"] = r.mNumAmbiguous;
             out["num_too_far"] = r.mNumTooFar;
@@ -3365,6 +3437,7 @@ PYBIND11_MODULE(_core, m) {
             out["num_quads"] = extras_report.mNumQuads;
             out["num_leftover_triangles"] = extras_report.mNumLeftoverTriangles;
             out["min_quad_scaled_jacobian"] = extras_report.mMinQuadScaledJacobian;
+            out["min_metric_angle"] = extras_report.mMinMetricAngleDeg;
             return out;
         },
         py::arg("brep"), py::arg("target_size"), py::arg("max_chordal_deviation") = 0.0,
@@ -5149,6 +5222,38 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("array"), py::arg("method") = "green-gauss",
         py::arg("location") = "cell", py::arg("output") = "", py::arg("overwrite") = false);
+
+    // A size field from a per-cell error indicator (roadmap 6.10.2): the
+    // Zienkiewicz-Zhu (1987) adaptive procedure. See operations/error_size.hpp.
+    m.def(
+        "error_size",
+        [](py::object pymesh, const std::string& error_array, double target_error, double order,
+           double min_size, double max_size, const std::string& output, bool overwrite) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::ErrorSizeOptions options;
+            options.mErrorArray = error_array;
+            options.mTargetError = target_error;
+            options.mOrder = order;
+            options.mMinSize = min_size;
+            options.mMaxSize = max_size;
+            options.mOutputName = output;
+            options.mOverwrite = overwrite;
+            meshioplusplus::ErrorSizeResult r =
+                core_nogil([&] { return meshioplusplus::error_size(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_cells"] = r.mNumCells;
+            out["num_skipped"] = r.mNumSkipped;
+            out["num_clamped"] = r.mNumClamped;
+            out["min_size"] = r.mMinSize;
+            out["max_size"] = r.mMaxSize;
+            return out;
+        },
+        py::arg("mesh"), py::arg("error_array") = "error:zz", py::arg("target_error"),
+        py::arg("order") = 1.0, py::arg("min_size") = 0.0, py::arg("max_size") = 0.0,
+        py::arg("output") = "size", py::arg("overwrite") = false);
 
     // The Zienkiewicz-Zhu recovery-based error estimator plus marking, built
     // entirely as a composition of `gradient` + the two `data_average`

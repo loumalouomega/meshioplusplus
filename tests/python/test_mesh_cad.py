@@ -1183,8 +1183,11 @@ def test_a_collapsed_patch_is_flattened_and_meets_the_bound(tmp_path):
     for bad in (-1.0, 0.5, 1.0, float("nan")):
         with pytest.raises(ValueError, match="reparam_condition_number"):
             mio.mesh_cad_surface(model, 0.1, reparam_condition_number=bad)
-    with pytest.raises(ValueError, match="order 1"):
-        mio.mesh_cad_surface(model, 0.1, reparam_condition_number=4, order=2)
+    # Roadmap 6.4.4: curved on the flattened patch too, none straightened.
+    _, curved = mio.mesh_cad_surface(
+        model, 0.1, reparam_condition_number=4, order=2, return_report=True
+    )
+    assert curved["num_failed"] == 0 and curved["num_curved_straightened"] == 0
 
 
 @needs_core
@@ -1227,8 +1230,9 @@ def test_virtual_faces_mesh_a_sliver_with_its_neighbour():
     assert rec["edges"][0] not in set(out.cell_data["cad:edge"][line])
     a, _ = _measure(out)
     assert a == pytest.approx(2.01, rel=1e-12)
-    with pytest.raises(ValueError, match="order 1"):
-        mio.mesh_cad_surface(model, 0.2, virtual_faces=True, order=2)
+    # Roadmap 6.5.2: curved on the merged face too.
+    curved = mio.mesh_cad_surface(model, 0.2, virtual_faces=True, order=2)
+    assert "triangle6" in {c.type for c in curved.cells}
 
 
 def _planar_lens(path, length=4.0, theta_deg=2.5):
@@ -1457,9 +1461,10 @@ def test_a_metric_from_the_hessian_stretches_along_the_layer():
         mio.mesh_cad_surface(
             sphere, 0.2, metric_background=bg, metric_array="f:hessian"
         )
+    bg.point_data["two"] = np.zeros((len(x), 2))
     with pytest.raises(ValueError, match="nine components"):
         mio.mesh_cad_surface(
-            sphere, 0.2, metric_background=bg, metric_array="f", metric_error=1
+            sphere, 0.2, metric_background=bg, metric_array="two", metric_error=1
         )
     with pytest.raises(ValueError, match="need a metric_background"):
         mio.mesh_cad_surface(sphere, 0.2, metric_error=1.0)
@@ -1633,12 +1638,18 @@ def test_quads_dominant_and_all(tmp_path):
     assert d["num_open_edges"] == 0
     with pytest.raises(ValueError, match="quads"):
         mio.mesh_cad_surface(sphere, 0.2, quads="hex")
-    with pytest.raises(ValueError, match="order 1 or 2"):
-        mio.mesh_cad_surface(sphere, 0.2, quads="all", order=3)
-    with pytest.raises(ValueError, match="untangle"):
-        mio.mesh_cad_surface(sphere, 0.2, quads="all", order=2, untangle=True)
-    with pytest.raises(ValueError, match="order 1"):
-        mio.mesh_cad_surface(sphere, 0.2, quads="dominant", order=2)
+    # Roadmap 6.8.3: quad16, untangling with quads, and curved quad-dominant.
+    cubic, c = mio.mesh_cad_surface(
+        sphere, 0.3, quads="all", order=3, return_report=True
+    )
+    assert {b.type for b in cubic.cells} == {"quad16", "line4"}
+    assert c["num_curved_straightened"] == 0
+    _, u = mio.mesh_cad_surface(
+        sphere, 0.3, quads="all", order=2, untangle=True, return_report=True
+    )
+    assert u["num_curved_straightened"] == 0
+    curved_dom = mio.mesh_cad_surface(sphere, 0.3, quads="dominant", order=2)
+    assert {"triangle6", "quad9"} <= {b.type for b in curved_dom.cells}
     # Roadmap 6.8.1: the matching (the default) leaves fewer triangles than
     # greedy pairing.
     _, greedy = mio.mesh_cad_surface(
