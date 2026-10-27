@@ -443,8 +443,12 @@ struct LbBinout {
 NDArray lb_array(const std::vector<double>& rV, bool Integer) {
     if (Integer) {
         NDArray a(DType::Int64, {rV.size()});
-        for (std::size_t i = 0; i < rV.size(); ++i)
+        for (std::size_t i = 0; i < rV.size(); ++i) {
+            // The cast is undefined outside [-2^63, 2^63); NaN fails this test too.
+            if (!(rV[i] >= -9223372036854775808.0 && rV[i] < 9223372036854775808.0))
+                lb_fail("an integer array holds a value outside the 64-bit range");
             a.As<std::int64_t>()[i] = static_cast<std::int64_t>(rV[i]);
+        }
         return a;
     }
     NDArray a(DType::Float64, {rV.size()});
