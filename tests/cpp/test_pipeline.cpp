@@ -30,6 +30,7 @@
 #include <gtest/gtest.h>
 
 // Project includes
+#include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/operations/primitives.hpp"
@@ -44,6 +45,8 @@ using meshioplusplus::Mesh;
 using meshioplusplus::Pipeline;
 using meshioplusplus::PipelineReport;
 using meshioplusplus::PipelineStep;
+// KRATOS meshes are not copy-constructible: a copy goes through clone_mesh.
+using meshioplusplus::detail::clone_mesh;
 
 PipelineStep step(std::string op,
                   std::map<std::string, meshioplusplus::PipelineValue> params = {}) {
@@ -147,7 +150,7 @@ TEST(Pipeline, BoundaryLayerTakesCollapseAndFrontCheck) {
     const Mesh sphere = meshioplusplus::icosa_sphere(1.0, 2);
     PipelineReport report;
     Mesh out = meshioplusplus::apply_pipeline_step(
-        Mesh(sphere),
+        clone_mesh(sphere),
         step("BoundaryLayer", {{"FirstHeight", 0.01},
                                {"NumLayers", std::int64_t{2}},
                                {"Collapse", std::string("layers")},
@@ -165,7 +168,7 @@ TEST(Pipeline, BoundaryLayerTakesCollapseAndFrontCheck) {
     EXPECT_EQ(counters[5].first, "MinScaledJacobian");
     EXPECT_THROW(
         meshioplusplus::apply_pipeline_step(
-            Mesh(sphere),
+            clone_mesh(sphere),
             step("BoundaryLayer", {{"FirstHeight", 0.01}, {"Collapse", std::string("rows")}}),
             report),
         std::invalid_argument);
@@ -178,16 +181,16 @@ TEST(Pipeline, TetrahedralizeFillsTheSurface) {
     PipelineReport report;
     EXPECT_THROW(
         meshioplusplus::apply_pipeline_step(
-            Mesh(sphere), step("Tetrahedralize", {{"Backend", std::string("tetgen")}}), report),
+            clone_mesh(sphere), step("Tetrahedralize", {{"Backend", std::string("tetgen")}}), report),
         std::invalid_argument);
     EXPECT_THROW(meshioplusplus::apply_pipeline_step(
-                     Mesh(sphere), step("Tetrahedralize", {{"Grading", 2.0}}), report),
+                     clone_mesh(sphere), step("Tetrahedralize", {{"Grading", 2.0}}), report),
                  std::invalid_argument);
     {
         // The native octree backend, always built: the boundary fitted.
         PipelineReport fitted;
         Mesh out = meshioplusplus::apply_pipeline_step(
-            Mesh(sphere), step("Tetrahedralize", {{"Backend", std::string("octree")}}), fitted);
+            clone_mesh(sphere), step("Tetrahedralize", {{"Backend", std::string("octree")}}), fitted);
         ASSERT_EQ(fitted.mSteps.size(), 1u);
         const auto& c = fitted.mSteps[0].mCounters;
         EXPECT_GT(c[0].second, 0.0);
@@ -198,12 +201,12 @@ TEST(Pipeline, TetrahedralizeFillsTheSurface) {
     if (!meshioplusplus::tetrahedralize_has_netgen()) {
         EXPECT_THROW(
             meshioplusplus::apply_pipeline_step(
-                Mesh(sphere), step("Tetrahedralize", {{"Backend", std::string("netgen")}}), report),
+                clone_mesh(sphere), step("Tetrahedralize", {{"Backend", std::string("netgen")}}), report),
             meshioplusplus::Unsupported);
         return;
     }
     Mesh out = meshioplusplus::apply_pipeline_step(
-        Mesh(sphere), step("Tetrahedralize", {{"MaxSize", 0.3}}), report);
+        clone_mesh(sphere), step("Tetrahedralize", {{"MaxSize", 0.3}}), report);
     ASSERT_EQ(report.mSteps.size(), 1u);
     const auto& counters = report.mSteps[0].mCounters;
     ASSERT_EQ(counters.size(), 10u);
