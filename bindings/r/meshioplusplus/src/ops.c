@@ -1324,7 +1324,7 @@ SEXP R_mio_boundary_layer(SEXP mesh, SEXP first_height, SEXP num_layers, SEXP gr
     mio_boundary_layer_report report;
     mio_mesh *out = mio_boundary_layer(mio_r_mesh(mesh), &opts, &report);
     if (out == NULL) mio_r_fail("boundary_layer");
-    SEXP v[13];
+    SEXP v[15];
     v[0] = PROTECT(mio_r_wrap_mesh(out));
     v[1] = PROTECT(Rf_ScalarReal((double)report.num_cells));
     v[2] = PROTECT(Rf_ScalarReal((double)report.num_wedges));
