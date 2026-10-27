@@ -368,10 +368,10 @@ TEST(BoundaryLayer, TheFrontTestStopsLayersTheRaysMiss) {
     const auto off = mio::boundary_layer(s, o);
     o.mFrontCheck = true;
     const auto on = mio::boundary_layer(s, o);
-    std::printf("[6.9.1] plate under a lid: thickest %.3f without the front test, %.3f with "
-                "(%lld crossings)\n",
-                off.mMaxThickness, on.mMaxThickness,
-                static_cast<long long>(on.mNumFrontCrossings));
+    std::printf(
+        "[6.9.1] plate under a lid: thickest %.3f without the front test, %.3f with "
+        "(%lld crossings)\n",
+        off.mMaxThickness, on.mMaxThickness, static_cast<long long>(on.mNumFrontCrossings));
     EXPECT_EQ(off.mNumFrontCrossings, 0);
     EXPECT_NEAR(off.mMaxThickness, 1.0, 1e-12);
     EXPECT_GT(on.mNumFrontCrossings, 0);
@@ -419,11 +419,11 @@ TEST(BoundaryLayer, ThePointThatStopsGrowingLeavesPyramidsAbove) {
     const auto halved = mio::boundary_layer(s, o);
     o.mCollapse = mio::BoundaryLayerCollapse::Layers;
     const auto fewer = mio::boundary_layer(s, o);
-    std::printf("[6.9.1] plate under a lid: %lld points with fewer layers, thickest %.3f, "
-                "%lld pyramids and %lld tetrahedra\n",
-                static_cast<long long>(fewer.mNumFewerLayers), fewer.mMaxThickness,
-                static_cast<long long>(fewer.mNumPyramids),
-                static_cast<long long>(fewer.mNumTetrahedra));
+    std::printf(
+        "[6.9.1] plate under a lid: %lld points with fewer layers, thickest %.3f, "
+        "%lld pyramids and %lld tetrahedra\n",
+        static_cast<long long>(fewer.mNumFewerLayers), fewer.mMaxThickness,
+        static_cast<long long>(fewer.mNumPyramids), static_cast<long long>(fewer.mNumTetrahedra));
     EXPECT_GT(fewer.mNumFewerLayers, 0);
     EXPECT_LT(fewer.mMaxThickness, 0.5);
     EXPECT_GT(fewer.mMinScaledJacobian, 0.0);

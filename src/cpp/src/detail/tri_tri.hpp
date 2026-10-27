@@ -55,7 +55,7 @@ bool tri_tri_intersect(const double* pA, const double* pB, const double* pC, con
                        const double* pE, const double* pF);
 
 /// Whether the segment `(pA, pB)` meets the triangle `(pP, pQ, pR)`.
-bool segment_tri_intersect(const double* pA, const double* pB, const double* pP,
-                           const double* pQ, const double* pR);
+bool segment_tri_intersect(const double* pA, const double* pB, const double* pP, const double* pQ,
+                           const double* pR);
 
 }  // namespace meshioplusplus::detail

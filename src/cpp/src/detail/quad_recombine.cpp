@@ -253,13 +253,12 @@ std::vector<std::int64_t> qr_patched_matching(std::int64_t N, const std::vector<
 
 }  // namespace
 
-QuadRecombineResult quad_recombine(const std::vector<std::array<std::int64_t, 3>>& rTris,
-                                   const std::vector<std::int64_t>& rGroup, const double* pX,
-                                   double MinQuality, QuadPairing Pairing,
-                                   const std::vector<std::array<std::int64_t, 3>>* pSideCurve,
-                                   const std::set<std::pair<std::int64_t, std::int64_t>>* pFixed,
-                                   const std::map<std::pair<std::int64_t, std::int64_t>,
-                                                  std::int64_t>* pMidpoint) {
+QuadRecombineResult quad_recombine(
+    const std::vector<std::array<std::int64_t, 3>>& rTris, const std::vector<std::int64_t>& rGroup,
+    const double* pX, double MinQuality, QuadPairing Pairing,
+    const std::vector<std::array<std::int64_t, 3>>* pSideCurve,
+    const std::set<std::pair<std::int64_t, std::int64_t>>* pFixed,
+    const std::map<std::pair<std::int64_t, std::int64_t>, std::int64_t>* pMidpoint) {
     QuadRecombineResult out;
     // Each directed edge's triangle; an interior edge has both directions.
     std::map<std::pair<std::int64_t, std::int64_t>, std::size_t> of_edge;

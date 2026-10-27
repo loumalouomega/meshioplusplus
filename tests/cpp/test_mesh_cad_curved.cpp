@@ -334,11 +334,12 @@ TEST(MeshCadCurved, UntanglingKeepsFoldedElementsCurved) {
     const auto rc =
         mio::mesh_cad_surface(cyl, curved(1.75, 3), mio::MeshCadSizeSources{}, ex, nullptr, &xc);
     const auto pc = mio::mesh_cad_surface(cyl, curved(1.75, 3));
-    std::printf("[6.6.3] capped cylinder h 1.75 order 3: %lld straightened, %lld with untangling "
-                "(%lld triangles against %lld)\n",
-                static_cast<long long>(pc.mNumCurvedStraightened),
-                static_cast<long long>(rc.mNumCurvedStraightened),
-                static_cast<long long>(rc.mNumTriangles), static_cast<long long>(pc.mNumTriangles));
+    std::printf(
+        "[6.6.3] capped cylinder h 1.75 order 3: %lld straightened, %lld with untangling "
+        "(%lld triangles against %lld)\n",
+        static_cast<long long>(pc.mNumCurvedStraightened),
+        static_cast<long long>(rc.mNumCurvedStraightened), static_cast<long long>(rc.mNumTriangles),
+        static_cast<long long>(pc.mNumTriangles));
     EXPECT_GT(pc.mNumCurvedStraightened, 0);
     EXPECT_EQ(rc.mNumCurvedStraightened, 0);
     EXPECT_GT(rc.mNumTriangles, pc.mNumTriangles);

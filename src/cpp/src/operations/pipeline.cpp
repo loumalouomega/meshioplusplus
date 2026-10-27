@@ -54,6 +54,7 @@
 #include "meshioplusplus/operations/iga.hpp"
 #include "meshioplusplus/operations/mesh_cad.hpp"
 #include "meshioplusplus/operations/boundary_layer.hpp"
+#include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/formats/cad_json.hpp"
 #include "meshioplusplus/formats/iges.hpp"
@@ -550,7 +551,10 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         // Prismatic layers grown from the surface (roadmap 6.9).
         {"BoundaryLayer",
          {"FirstHeight", "NumLayers", "Growth", "Reverse", "CollisionFraction", "SmoothIterations",
-          "MaxShrink"}},
+          "MaxShrink", "Collapse", "NormalSmoothIterations", "FrontCheck"}},
+        // Tetrahedra filling the closed triangle surface (roadmap 6.7).
+        {"Tetrahedralize",
+         {"Backend", "MaxSize", "MaxVolume", "Grading", "OptimizeSteps", "MaxCells", "FaceArray"}},
         {"IgaRefine",
          {"Subdivisions", "Elevate", "SampleSubdivisions", "TrimSamples", "Trim", "Edges"}},
     };
@@ -1214,12 +1218,60 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             pipe_number(rStep, "SmoothIterations", static_cast<double>(o.mSmoothIterations)));
         o.mMaxShrink = static_cast<std::int32_t>(
             pipe_number(rStep, "MaxShrink", static_cast<double>(o.mMaxShrink)));
+        const std::string collapse = pipe_text(rStep, "Collapse", "points");
+        if (collapse == "points")
+            o.mCollapse = BoundaryLayerCollapse::Points;
+        else if (collapse == "layers")
+            o.mCollapse = BoundaryLayerCollapse::Layers;
+        else
+            throw std::invalid_argument(
+                pipe_err(rStep, "'Collapse' must be 'points' or 'layers', not '" + collapse + "'"));
+        o.mNormalSmoothIterations = static_cast<std::int32_t>(pipe_number(
+            rStep, "NormalSmoothIterations", static_cast<double>(o.mNormalSmoothIterations)));
+        o.mFrontCheck = pipe_flag(rStep, "FrontCheck", o.mFrontCheck);
         BoundaryLayerResult r = boundary_layer(mesh, o);
         pipe_push_step(rReport, rStep,
                        {{"NumCells", static_cast<double>(r.mNumCells)},
                         {"NumShrunk", static_cast<double>(r.mNumShrunk)},
                         {"NumCollapsed", static_cast<double>(r.mNumCollapsed)},
+                        {"NumFewerLayers", static_cast<double>(r.mNumFewerLayers)},
+                        {"NumFrontCrossings", static_cast<double>(r.mNumFrontCrossings)},
                         {"MinScaledJacobian", r.mMinScaledJacobian}});
+        return std::move(r.mMesh);
+    }
+
+    if (op == "Tetrahedralize") {
+        TetrahedralizeOptions o;
+        const std::string backend = pipe_text(rStep, "Backend", "auto");
+        if (backend == "auto")
+            o.mBackend = TetrahedralizeBackend::Auto;
+        else if (backend == "netgen")
+            o.mBackend = TetrahedralizeBackend::Netgen;
+        else
+            throw std::invalid_argument(
+                pipe_err(rStep, "'Backend' must be 'auto' or 'netgen', not '" + backend + "'"));
+        o.mMaxSize = pipe_number(rStep, "MaxSize", o.mMaxSize);
+        o.mMaxVolume = pipe_number(rStep, "MaxVolume", o.mMaxVolume);
+        o.mGrading = pipe_number(rStep, "Grading", o.mGrading);
+        o.mOptimizeSteps = static_cast<std::int32_t>(
+            pipe_number(rStep, "OptimizeSteps", static_cast<double>(o.mOptimizeSteps)));
+        o.mMaxCells = static_cast<std::int64_t>(
+            pipe_number(rStep, "MaxCells", static_cast<double>(o.mMaxCells)));
+        o.mFaceArray = pipe_text(rStep, "FaceArray", o.mFaceArray.c_str());
+        TetrahedralizeResult r = tetrahedralize(mesh, o);
+        for (const std::string& w : r.mWarnings)
+            rReport.mWarnings.push_back("Tetrahedralize: " + w);
+        pipe_push_step(rReport, rStep,
+                       {{"NumTetrahedra", static_cast<double>(r.mNumTetrahedra)},
+                        {"NumPoints", static_cast<double>(r.mNumPoints)},
+                        {"NumNewPoints", static_cast<double>(r.mNumNewPoints)},
+                        {"NumRegions", static_cast<double>(r.mNumRegions)},
+                        {"NumBoundaryTriangles", static_cast<double>(r.mNumBoundaryTriangles)},
+                        {"BoundaryPreserved", r.mBoundaryPreserved ? 1.0 : 0.0},
+                        {"HausdorffToSurface", r.mHausdorffToSurface},
+                        {"MinDihedralDeg", r.mMinDihedralDeg},
+                        {"MaxDihedralDeg", r.mMaxDihedralDeg},
+                        {"Volume", r.mVolume}});
         return std::move(r.mMesh);
     }
 

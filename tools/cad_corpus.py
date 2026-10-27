@@ -618,7 +618,9 @@ def stable(results):
     return {
         "Version": 1,
         "meshioplusplus": results["meshioplusplus"],
-        "settings": results["settings"],
+        # Gmsh's version stays out with its numbers: an upgrade of the
+        # oracle must not change the baseline.
+        "settings": {k: v for k, v in results["settings"].items() if k != "gmsh"},
         "models": models,
     }
 

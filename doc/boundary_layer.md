@@ -26,6 +26,8 @@ The cells come first (`wedge`, `hexahedron`, `pyramid`, `tetra`, the blocks that
 
 The volume the cap closes off is filled by [`tetrahedralize`](./tetrahedralize.md), which keeps the cap's triangles, so the tetrahedra conform to the last layer's faces (`tests/cpp/test_tetrahedralize.cpp`, the sphere's layers grown inward), or by [`octree_mesh`](./octree_mesh.md), fitted to the cap rather than conforming to it.
 
+![A plate with a small lid over its middle, layer cells seen from the side: without the front test the layers grow through the lid; with it they stop under it; with collapse="layers" the stopped points grow fewer layers](/images/boundary_layer_front.png)
+
 ## Options and report
 
 | option | meaning |
@@ -47,15 +49,15 @@ The report has `num_cells`, `num_wedges`, `num_hexahedra`, `num_pyramids`, `num_
 
 | surface | entry |
 |---|---|
-| Python | `meshioplusplus.boundary_layer(mesh, first_height, *, num_layers=3, growth=1.2, reverse=False, collision_fraction=0.45, smooth_iterations=5, max_shrink=6, return_report=False)`; no numpy twin |
+| Python | `meshioplusplus.boundary_layer(mesh, first_height, *, num_layers=3, growth=1.2, reverse=False, collision_fraction=0.45, smooth_iterations=5, max_shrink=6, collapse="points", normal_smooth_iterations=0, front_check=True, return_report=False)`; the report adds `num_fewer_layers` and `num_front_crossings`; no numpy twin |
 | C++ | `boundary_layer(const Mesh&, const BoundaryLayerOptions&)` → `BoundaryLayerResult` (`operations/boundary_layer.hpp`) |
-| C | `mio_boundary_layer(mesh, opts, report)` with `mio_boundary_layer_opts` (64 bytes, through `mio_boundary_layer_opts_init`) and `mio_boundary_layer_report` (128 bytes) |
-| Fortran | `mio_boundary_layer(mesh, first_height, num_layers, growth, reverse, collision_fraction, smooth_iterations, max_shrink, report, stat, errmsg)` |
-| Julia | `boundary_layer(mesh; first_height, num_layers, growth, reverse, collision_fraction, smooth_iterations, max_shrink)` |
-| R | `mio_boundary_layer(mesh, first_height, num_layers, growth, reverse, collision_fraction, smooth_iterations, max_shrink)` |
-| WASM | `boundaryLayer(mesh, {firstHeight, numLayers, growth, reverse, collisionFraction, smoothIterations, maxShrink})` |
-| CLI | `boundary-layer INFILE OUTFILE --first-height H [--num-layers N] [--growth G] [--reverse] [--collision-fraction F] [--smooth N] [--max-shrink N] [--json]`, both CLIs |
-| MCP | `boundary_layer(input_path, output_path, first_height, ...)` |
+| C | `mio_boundary_layer(mesh, opts, report)` with `mio_boundary_layer_opts` (64 bytes, through `mio_boundary_layer_opts_init`; `collapse` (`MIO_BOUNDARY_LAYER_COLLAPSE_POINTS`/`_LAYERS`), `normal_smooth_iterations` and `front_check` (init 1) from the former reserved tail) and `mio_boundary_layer_report` (128 bytes; `num_fewer_layers` and `num_front_crossings` from the former reserved tail) |
+| Fortran | `mio_boundary_layer(mesh, first_height, num_layers, growth, reverse, collision_fraction, smooth_iterations, max_shrink, report, stat, errmsg, collapse, normal_smooth_iterations, front_check)` (`collapse` `'points'` or `'layers'`) |
+| Julia | `boundary_layer(mesh; first_height, num_layers, growth, reverse, collision_fraction, smooth_iterations, max_shrink, collapse, normal_smooth_iterations, front_check)` |
+| R | `mio_boundary_layer(mesh, first_height, num_layers, growth, reverse, collision_fraction, smooth_iterations, max_shrink, collapse, normal_smooth_iterations, front_check)` |
+| WASM | `boundaryLayer(mesh, {firstHeight, numLayers, growth, reverse, collisionFraction, smoothIterations, maxShrink, collapse, normalSmoothIterations, frontCheck})`; the result adds `numFewerLayers` and `numFrontCrossings` |
+| CLI | `boundary-layer INFILE OUTFILE --first-height H [--num-layers N] [--growth G] [--reverse] [--collision-fraction F] [--smooth N] [--max-shrink N] [--collapse points\|layers] [--normal-smooth N] [--no-front-check] [--json]`, both CLIs |
+| MCP | `boundary_layer(input_path, output_path, first_height, ..., collapse, normal_smooth_iterations, front_check)` |
 | Pipeline | `BoundaryLayer` with `FirstHeight` (required), `NumLayers`, `Growth`, `Reverse`, `CollisionFraction`, `SmoothIterations`, `MaxShrink`, `Collapse`, `NormalSmoothIterations`, `FrontCheck`; the step reports `NumCells`, `NumShrunk`, `NumCollapsed`, `NumFewerLayers`, `NumFrontCrossings` and `MinScaledJacobian` |
 
 ## Limitations

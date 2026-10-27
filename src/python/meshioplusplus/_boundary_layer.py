@@ -10,7 +10,12 @@ corners; a ray against the surface stops layers before they meet across a gap
 (``collision_fraction`` of the distance), the fraction smoothed over
 neighbours; and the points of a cell that would fold have their layers halved
 and at last collapsed, so their cells become pyramids and tetrahedra and no
-cell is written folded. The design is ``doc/boundary_layer_plan.md``.
+cell is written folded (or, with ``collapse="layers"``, their top layer
+dropped, so they grow fewer layers at full thickness). Once every cell is
+valid, the last layer's faces are tested against each other and the surface
+(``front_check``), and the points of a face that crosses another give way the
+same way; ``normal_smooth_iterations`` Laplacian passes smooth the growth
+directions first. The design is ``doc/boundary_layer_plan.md``.
 
 The C++ core does the work; there is no numpy twin.
 """
@@ -32,7 +37,10 @@ _REPORT_INTS = (
     "num_shrunk",
     "num_collapsed",
     "num_not_visible",
+    "num_fewer_layers",
+    "num_front_crossings",
 )
+_COLLAPSE = ("points", "layers")
 _REPORT_FLOATS = ("min_scaled_jacobian", "min_thickness", "max_thickness")
 
 
@@ -46,6 +54,9 @@ def boundary_layer(
     collision_fraction: float = 0.45,
     smooth_iterations: int = 5,
     max_shrink: int = 6,
+    collapse: str = "points",
+    normal_smooth_iterations: int = 0,
+    front_check: bool = True,
     return_report: bool = False,
 ):
     """Grow boundary layers from a triangle and quad surface.
@@ -64,6 +75,16 @@ def boundary_layer(
         (never raising it).
     :param max_shrink: halvings of a point's layers, where a cell would fold,
         before they collapse.
+    :param collapse: how a point whose cells fold gives way: ``"points"``
+        halves its layers and then collapses it onto the surface;
+        ``"layers"`` drops its top layer, so it grows fewer layers at their
+        full thickness and its cells above end in pyramids and tetrahedra.
+    :param normal_smooth_iterations: Laplacian passes moving each growth
+        direction toward its neighbours' mean (0 to 1000), kept only while
+        every face around the point still sees it.
+    :param front_check: test the last layer's faces against each other and
+        the surface, and make the points of a face that crosses or touches
+        another give way.
     :param return_report: also return the report.
     :returns: the mesh (``wedge``, ``hexahedron``, ``pyramid`` and ``tetra``
         cells, then the wall and cap faces, with ``boundary_layer:layer`` cell
@@ -72,7 +93,9 @@ def boundary_layer(
         ``(mesh, report)``: ``num_cells``, ``num_wedges``,
         ``num_hexahedra``, ``num_pyramids``, ``num_tetrahedra``,
         ``num_shrunk``, ``num_collapsed``, ``num_not_visible``,
-        ``min_scaled_jacobian``, ``min_thickness``, ``max_thickness``,
+        ``num_fewer_layers`` (with ``collapse="layers"``, the points that grow
+        fewer layers than asked), ``num_front_crossings`` (last-layer face
+        pairs the front test found crossing or touching), ``min_scaled_jacobian``, ``min_thickness``, ``max_thickness``,
         ``cap_closed`` and ``warnings``.
     :raises ValueError: for an option out of range, or a surface with no
         triangle or quad, another cell type, a non-manifold edge or faces that
@@ -91,6 +114,18 @@ def boundary_layer(
     collision_fraction = float(collision_fraction)
     if not 0.0 < collision_fraction <= 1.0:
         raise ValueError(f"{_PREFIX}collision_fraction must be in (0, 1]")
+    if not isinstance(collapse, str) or collapse not in _COLLAPSE:
+        raise ValueError(
+            f"{_PREFIX}collapse must be 'points' or 'layers', not {collapse!r}"
+        )
+    if isinstance(normal_smooth_iterations, bool) or (
+        int(normal_smooth_iterations) != normal_smooth_iterations
+    ):
+        raise ValueError(f"{_PREFIX}normal_smooth_iterations must be an integer")
+    if not 0 <= int(normal_smooth_iterations) <= 1000:
+        raise ValueError(
+            f"{_PREFIX}normal_smooth_iterations must be between 0 and 1000"
+        )
     try:
         from . import _core
     except ImportError as exc:  # pragma: no cover - the numpy-only install
@@ -107,6 +142,9 @@ def boundary_layer(
         collision_fraction=collision_fraction,
         smooth_iterations=int(smooth_iterations),
         max_shrink=int(max_shrink),
+        collapse=collapse,
+        normal_smooth_iterations=int(normal_smooth_iterations),
+        front_check=bool(front_check),
     )
     out = res["mesh"]
     if not return_report:

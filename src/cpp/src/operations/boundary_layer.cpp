@@ -170,7 +170,8 @@ std::int64_t bl_front_crossings(const detail::LayerSweepResult& rSweep, std::vec
             const detail::LayerSweepCell& r_c = *cells[C].pCell;
             const int kind = cells[C].mKind;
             const auto nn = static_cast<std::size_t>(kind);
-            BlV3 lo{std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity(),
+            BlV3 lo{std::numeric_limits<double>::infinity(),
+                    std::numeric_limits<double>::infinity(),
                     std::numeric_limits<double>::infinity()};
             BlV3 hi{-lo[0], -lo[1], -lo[2]};
             BlV3 mid{0.0, 0.0, 0.0};
@@ -248,9 +249,8 @@ std::int64_t bl_front_crossings(const detail::LayerSweepResult& rSweep, std::vec
             ++count;
             const detail::LayerSweepCell& r_c = *cells[c].pCell;
             for (int k = 0; k < cells[c].mKind; ++k)
-                rBad[static_cast<std::size_t>(
-                    rSweep.mOrigin[static_cast<std::size_t>(r_c.mNodes[static_cast<std::size_t>(k)])])] =
-                    1;
+                rBad[static_cast<std::size_t>(rSweep.mOrigin[static_cast<std::size_t>(
+                    r_c.mNodes[static_cast<std::size_t>(k)])])] = 1;
             if (is_cap[u])
                 for (std::size_t k = 0; k < 3; ++k)
                     rBad[static_cast<std::size_t>(
@@ -275,7 +275,8 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
         bl_fail("smooth_iterations must be between 0 and 1000");
     if (o.mMaxShrink < 0 || o.mMaxShrink > 60)
         bl_fail("max_shrink must be between 0 and 60");
-    if (o.mCollapse != BoundaryLayerCollapse::Points && o.mCollapse != BoundaryLayerCollapse::Layers)
+    if (o.mCollapse != BoundaryLayerCollapse::Points &&
+        o.mCollapse != BoundaryLayerCollapse::Layers)
         bl_fail("collapse must be points or layers");
     if (o.mNormalSmoothIterations < 0 || o.mNormalSmoothIterations > 1000)
         bl_fail("normal_smooth_iterations must be between 0 and 1000");
@@ -549,8 +550,7 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
     detail::LayerSweepResult sweep;
     double min_sj = std::numeric_limits<double>::infinity();
     std::int64_t front_crossings = 0;
-    const int max_rounds =
-        std::max(64 * (o.mMaxShrink + 2), by_layers ? 4 * o.mNumLayers + 64 : 0);
+    const int max_rounds = std::max(64 * (o.mMaxShrink + 2), by_layers ? 4 * o.mNumLayers + 64 : 0);
     for (int round = 0;; ++round) {
         in.mOffsets.assign(np * nl, 0.0);
         for (std::size_t p = 0; p < np; ++p)

@@ -5271,8 +5271,8 @@ int cmd_tetrahedralize(const std::vector<std::string>& rArgs) {
         else if (b == "netgen")
             o.mBackend = meshioplusplus::TetrahedralizeBackend::Netgen;
         else
-            throw std::runtime_error("tetrahedralize: --backend must be auto or netgen, not '" +
-                                     b + "'");
+            throw std::runtime_error("tetrahedralize: --backend must be auto or netgen, not '" + b +
+                                     "'");
     }
     if (has_opt(p, "max-size"))
         o.mMaxSize = meshioplusplus::detail::stod_c(opt_value(p, "max-size"));
@@ -5317,8 +5317,8 @@ int cmd_tetrahedralize(const std::vector<std::string>& rArgs) {
         std::cout << r.mNumTetrahedra << " tetrahedra in " << r.mNumRegions << " region(s), "
                   << r.mNumNewPoints << " new points (" << r.mNumPoints << " in all); dihedral "
                   << d0 << " to " << d1 << " deg, volume " << vol << "; " << r.mBackend
-                  << ", boundary " << (r.mBoundaryPreserved ? "preserved" : "NOT preserved")
-                  << " (" << r.mNumBoundaryTriangles << " triangles)\n";
+                  << ", boundary " << (r.mBoundaryPreserved ? "preserved" : "NOT preserved") << " ("
+                  << r.mNumBoundaryTriangles << " triangles)\n";
         for (const std::string& w : r.mWarnings)
             std::cout << "  warning: " << w << "\n";
     }

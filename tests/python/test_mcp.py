@@ -2252,6 +2252,52 @@ def test_boundary_layer_tool(tmp_path):
         _tools.tool_boundary_layer(str(skin), str(out), 0.0)
 
 
+def test_boundary_layer_tool_collapse_and_front(tmp_path):
+    """Roadmap 6.9.1: the collapse, normal smoothing and front-test options
+    reach the operation, and its two counters the report."""
+    if not hasattr(_core, "boundary_layer"):
+        pytest.skip("core predates boundary_layer")
+    model = pathlib.Path(__file__).parent / "meshes" / "cad_json" / "sphere.cad.json"
+    skin = tmp_path / "sphere.vtu"
+    _tools.tool_mesh_cad_surface(str(model), str(skin), 0.3)
+    out = tmp_path / "layers.vtu"
+    report = _tools.tool_boundary_layer(
+        str(skin),
+        str(out),
+        0.01,
+        num_layers=2,
+        collapse="layers",
+        normal_smooth_iterations=2,
+        front_check=False,
+    )
+    assert report["num_wedges"] > 0
+    assert report["num_fewer_layers"] >= 0 and report["num_front_crossings"] == 0
+    with pytest.raises(ValueError, match="collapse"):
+        _tools.tool_boundary_layer(str(skin), str(out), 0.01, collapse="rows")
+
+
+def test_tetrahedralize_tool(tmp_path):
+    """Roadmap 6.7: the sphere's mesh filled with tetrahedra, its skin kept;
+    without Netgen the tool names the build flag."""
+    if not hasattr(_core, "tetrahedralize"):
+        pytest.skip("core predates tetrahedralize")
+    model = pathlib.Path(__file__).parent / "meshes" / "cad_json" / "sphere.cad.json"
+    skin = tmp_path / "sphere.vtu"
+    _tools.tool_mesh_cad_surface(str(model), str(skin), 0.3)
+    out = tmp_path / "tets.vtu"
+    with pytest.raises(ValueError, match="grading"):
+        _tools.tool_tetrahedralize(str(skin), str(out), grading=2.0)
+    if not _core.__has_netgen__:
+        with pytest.raises(NotImplementedError, match="MESHIOPLUSPLUS_WITH_NETGEN"):
+            _tools.tool_tetrahedralize(str(skin), str(out))
+        return
+    report = _tools.tool_tetrahedralize(str(skin), str(out), max_size=0.3)
+    assert report["num_tetrahedra"] > 0 and report["num_regions"] == 1
+    assert report["boundary_preserved"] and report["backend"] == "netgen"
+    assert 4.0 < report["volume"] < 4 / 3 * np.pi
+    assert {c.type for c in meshioplusplus.read(out).cells} == {"tetra", "triangle"}
+
+
 def test_project_to_cad_tool(tmp_path):
     """Roadmap 6.10.1: the sphere's mesh, smoothed (which shrinks it), goes
     back onto the sphere."""

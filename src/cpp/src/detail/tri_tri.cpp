@@ -38,9 +38,9 @@ bool ttr_opposite(int A, int B) {
 
 // In the plane: the two coordinates the axis `Drop` leaves.
 std::array<double, 2> ttr_project(const double* pP, int Drop) {
-    return Drop == 0 ? std::array<double, 2>{pP[1], pP[2]}
-                     : Drop == 1 ? std::array<double, 2>{pP[2], pP[0]}
-                                 : std::array<double, 2>{pP[0], pP[1]};
+    return Drop == 0   ? std::array<double, 2>{pP[1], pP[2]}
+           : Drop == 1 ? std::array<double, 2>{pP[2], pP[0]}
+                       : std::array<double, 2>{pP[0], pP[1]};
 }
 
 // Whether 2-D segments ab and cd meet (touching included).
@@ -103,8 +103,8 @@ bool ttr_coplanar(const double* const* pT1, const double* const* pT2) {
 
 }  // namespace
 
-bool segment_tri_intersect(const double* pA, const double* pB, const double* pP,
-                           const double* pQ, const double* pR) {
+bool segment_tri_intersect(const double* pA, const double* pB, const double* pP, const double* pQ,
+                           const double* pR) {
     const int sa = ttr_sign(orient3d(pP, pQ, pR, pA));
     const int sb = ttr_sign(orient3d(pP, pQ, pR, pB));
     if (sa != 0 && sa == sb)

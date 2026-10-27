@@ -93,9 +93,9 @@ struct TetrahedralizeOptions {
 struct TetrahedralizeResult {
     Mesh mMesh;
     std::int64_t mNumTetrahedra = 0;
-    std::int64_t mNumPoints = 0;      ///< every point of the result
-    std::int64_t mNumNewPoints = 0;   ///< of those, inside the surface
-    std::int64_t mNumRegions = 0;     ///< enclosed regions, one per shell
+    std::int64_t mNumPoints = 0;     ///< every point of the result
+    std::int64_t mNumNewPoints = 0;  ///< of those, inside the surface
+    std::int64_t mNumRegions = 0;    ///< enclosed regions, one per shell
     std::int64_t mNumBoundaryTriangles = 0;
     /// Every surface triangle and its points kept exactly (checked).
     bool mBoundaryPreserved = false;

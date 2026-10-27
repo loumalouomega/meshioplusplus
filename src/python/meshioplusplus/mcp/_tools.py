@@ -144,6 +144,7 @@ from .. import (
     surface_watertight_check,
     tensor_invariants,
     tessellate,
+    tetrahedralize,
     transform,
     undo_green,
     uv_sphere,
@@ -3903,12 +3904,15 @@ def tool_boundary_layer(
     collision_fraction=0.45,
     smooth_iterations=5,
     max_shrink=6,
+    collapse="points",
+    normal_smooth_iterations=0,
+    front_check=True,
 ):
     """Grow prismatic boundary layers from a triangle and quad surface.
     Returns the counts (num_cells, num_wedges, num_hexahedra, num_pyramids,
-    num_tetrahedra, num_shrunk, num_collapsed, num_not_visible),
-    min_scaled_jacobian, the thickness range and cap_closed alongside the
-    mesh summary."""
+    num_tetrahedra, num_shrunk, num_collapsed, num_not_visible,
+    num_fewer_layers, num_front_crossings), min_scaled_jacobian, the
+    thickness range and cap_closed alongside the mesh summary."""
     mesh = _load(input_path, input_format)
     out, report = boundary_layer(
         mesh,
@@ -3919,6 +3923,42 @@ def tool_boundary_layer(
         collision_fraction=collision_fraction,
         smooth_iterations=smooth_iterations,
         max_shrink=max_shrink,
+        collapse=collapse,
+        normal_smooth_iterations=normal_smooth_iterations,
+        front_check=front_check,
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
+def tool_tetrahedralize(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    backend="auto",
+    max_size=0.0,
+    max_volume=0.0,
+    grading=0.3,
+    optimize_steps=3,
+    max_cells=50_000_000,
+    face_array="cad:face",
+):
+    """Fill a closed triangle surface with tetrahedra, its triangles kept
+    (Netgen). Returns num_tetrahedra, num_points, num_new_points,
+    num_regions, num_boundary_triangles, boundary_preserved,
+    hausdorff_to_surface, min_dihedral_deg, max_dihedral_deg, volume,
+    backend and warnings alongside the mesh summary."""
+    mesh = _load(input_path, input_format)
+    out, report = tetrahedralize(
+        mesh,
+        backend=backend,
+        max_size=max_size,
+        max_volume=max_volume,
+        grading=grading,
+        optimize_steps=optimize_steps,
+        max_cells=max_cells,
+        face_array=face_array,
         return_report=True,
     )
     return _result(_store(out, output_path, output_format), out, **report)
@@ -5568,6 +5608,14 @@ TOOL_REGISTRY = OrderedDict(
             {
                 "fn": tool_boundary_layer,
                 "wraps": ("boundary_layer",),
+                "gated": None,
+            },
+        ),
+        (
+            "tetrahedralize",
+            {
+                "fn": tool_tetrahedralize,
+                "wraps": ("tetrahedralize",),
                 "gated": None,
             },
         ),

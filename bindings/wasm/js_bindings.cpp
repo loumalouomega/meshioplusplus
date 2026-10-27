@@ -7595,10 +7595,10 @@ val boundary_layer_js(const val& rMeshObj, const val& rOptions) {
     return with_js_errors([&]() -> val {
         if (rOptions.isUndefined() || rOptions.isNull() || !rOptions.hasOwnProperty("firstHeight"))
             throw std::invalid_argument("meshio++: boundary_layer: the options need 'firstHeight'");
-        check_settings_keys(rOptions, "the boundaryLayer options",
-                            {"firstHeight", "numLayers", "growth", "reverse", "collisionFraction",
-                             "smoothIterations", "maxShrink", "collapse", "normalSmoothIterations",
-                             "frontCheck"});
+        check_settings_keys(
+            rOptions, "the boundaryLayer options",
+            {"firstHeight", "numLayers", "growth", "reverse", "collisionFraction",
+             "smoothIterations", "maxShrink", "collapse", "normalSmoothIterations", "frontCheck"});
         meshioplusplus::BoundaryLayerOptions o;
         o.mFirstHeight = rOptions["firstHeight"].as<double>();
         if (rOptions.hasOwnProperty("numLayers"))

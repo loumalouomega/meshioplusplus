@@ -162,8 +162,8 @@ LayerSweepResult layer_sweep(const LayerSweepInput& rIn) {
             while (!is_collapsed(v[s], K))
                 ++s;
             const std::int64_t x = v[s], y = v[(s + 1) % 3], z = v[(s + 2) % 3];
-            cell.mNodes = {at(y, K - 1), at(y, K), at(z, K), at(z, K - 1), at(x, K - 1),
-                           -1,           -1,        -1};
+            cell.mNodes = {at(y, K - 1), at(y, K), at(z, K), at(z, K - 1),
+                           at(x, K - 1), -1,       -1,       -1};
             out.mPyramids.push_back(cell);
         } else {
             while (is_collapsed(v[s], K))

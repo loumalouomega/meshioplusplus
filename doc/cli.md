@@ -120,6 +120,8 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `contact-pairs` | `num_pairs`, the pair table and unmatched slave-point ids |
 | `split-interface` | duplicated-point and cohesive-cell counts |
 | `mesh-cad-surface` | `mesh_cad_surface`'s report: the counts, the open, non-manifold and misoriented edges, the extreme angles and edge lengths, `tolerance`, `max_edge_gap`, `faces` (`status`, `reason`, counts and extremes per face, `below_bound`, `bound_deg`, `min_input_angle_deg` and `corners`), `warnings`, `num_refinement_points`, `num_faces_below_bound`, `num_smoothed`, `angle_histogram` and `num_curved_straightened` |
+| `boundary-layer` | `boundary_layer`'s report: the cell counts by type, `num_shrunk`, `num_collapsed`, `num_not_visible`, `num_fewer_layers`, `num_front_crossings`, `min_scaled_jacobian`, the thickness range, `cap_closed` and `warnings` |
+| `tetrahedralize` | `tetrahedralize`'s report: `num_tetrahedra`, `num_points`, `num_new_points`, `num_regions`, `num_boundary_triangles`, `boundary_preserved`, `hausdorff_to_surface`, the dihedral range, `volume`, `backend` and `warnings` |
 
 The exit codes are unchanged by `--json`.
 
@@ -2175,11 +2177,44 @@ meshioplusplus boundary-layer INFILE OUTFILE --first-height H [options]
 | `--collision-fraction F` | the share of the distance to the surface a point's ray hits that its layers may take (0.45) |
 | `--smooth N` | passes smoothing that share over neighbours (5) |
 | `--max-shrink N` | halvings of a point's layers before they collapse (6) |
+| `--collapse points\|layers` | how a point whose cells fold gives way: its layers halved and then collapsed (`points`, the default) or its top layer dropped, so it grows fewer layers (`layers`) |
+| `--normal-smooth N` | Laplacian passes over the growth directions (0) |
+| `--no-front-check` | skip testing the last layer's faces against each other and the surface |
 | `--json` / `-q/--quiet` | the report as JSON / no summary |
 | `-i/--input-format` / `-o/--output-format` | force the input / output format |
 
+The summary and the JSON report count, besides the cells, the points shrunk and collapsed, `num_fewer_layers` (with `--collapse layers`) and `num_front_crossings`.
+
 ```sh
 meshioplusplus boundary-layer skin.vtu layers.vtu --first-height 1e-3 --num-layers 8 --growth 1.25
+meshioplusplus boundary-layer skin.vtu layers.vtu --first-height 1e-3 --collapse layers --normal-smooth 5
+```
+
+## `tetrahedralize`
+
+Fill a closed, manifold, consistently oriented triangle surface with tetrahedra, its triangles and points kept exactly (see [tetrahedralize](/tetrahedralize)). Each shell bounds a region, so a box inside a box gives two. Both CLIs; the backend is Netgen, and a build without it (`-DMESHIOPLUSPLUS_WITH_NETGEN=ON`) fails naming the flag. Lines and vertices in the input are skipped; quads, polygons and an open, non-manifold or misoriented surface are refused by name.
+
+```
+meshioplusplus tetrahedralize INFILE OUTFILE [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--max-size H` | the largest edge asked of the tetrahedra (0: none, the surface's triangles size the inside) |
+| `--max-volume V` | the largest volume asked of a tetrahedron (0: none) |
+| `--grading G` | how fast the size grows away from the surface, in [0, 1] (0.3) |
+| `--optimize-steps N` | passes of the backend's volume optimisation, 0 to 100 (3) |
+| `--max-cells N` | refuse a result of more tetrahedra (50000000) |
+| `--face-array NAME` | the cell data naming each triangle's CAD face, carried to the triangles (`cad:face`) |
+| `--backend auto\|netgen` | the backend (`auto`) |
+| `--json` / `-q/--quiet` | the report as JSON / no summary |
+| `-i/--input-format` / `-o/--output-format` | force the input / output format |
+
+The summary gives the tetrahedra, regions and new points, the dihedral angle range, the volume, the backend and whether the boundary is preserved; the JSON report has `num_tetrahedra`, `num_points`, `num_new_points`, `num_regions`, `num_boundary_triangles`, `boundary_preserved`, `hausdorff_to_surface`, `min_dihedral_deg`, `max_dihedral_deg`, `volume`, `backend` and `warnings`.
+
+```sh
+meshioplusplus mesh-cad-surface part.cad.json skin.vtu --size 0.1
+meshioplusplus tetrahedralize skin.vtu volume.vtu --max-size 0.1 --json
 ```
 
 ## `grid-sample`, `grid-scatter`, `grid-resample`, `grid-spectrum`

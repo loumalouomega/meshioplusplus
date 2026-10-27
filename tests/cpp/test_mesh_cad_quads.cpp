@@ -268,7 +268,7 @@ TEST(MeshCadQuads, TheSphereIsQuadDominant) {
 
 // Roadmap 6.8.1: pairing by a maximum matching (Blossom-quad, the default)
 // leaves under half the triangles greedy pairing does on the sphere at
-// h = 0.1 (206 against 516), and on a face of more triangles than one patch
+// h = 0.1 (224 against 542), and on a face of more triangles than one patch
 // (h = 0.04, the patches and the band) 30% fewer at least (1,382 against
 // 2,426); the result does not depend on threads.
 TEST(MeshCadQuads, AMatchingLeavesFewerTriangles) {
@@ -589,9 +589,8 @@ TEST(MeshCadQuads, CubicQuadsLieOnTheSphereAndBeatQuad9) {
         }
         err[i] = std::fabs(curved_quad_area(m, 3) - 4.0 * kPi);
         o.mOrder = 2;
-        err9[i] = std::fabs(curved_quad_area(run(sphere, o, mio::MeshCadQuads::All).mResult.mMesh,
-                                             2) -
-                            4.0 * kPi);
+        err9[i] = std::fabs(
+            curved_quad_area(run(sphere, o, mio::MeshCadQuads::All).mResult.mMesh, 2) - 4.0 * kPi);
         EXPECT_LT(err[i], err9[i]) << h;
     }
     const double rate = std::log2(err[0] / err[1]);
@@ -653,8 +652,7 @@ TEST(MeshCadQuads, CurvedQuadDominantAndNoUnusedPoints) {
     for (const int order : {1, 2, 3}) {
         mio::MeshCadSurfaceOptions o = sized(0.3);
         o.mOrder = order;
-        EXPECT_EQ(unused_points(run(sphere, o, mio::MeshCadQuads::All).mResult.mMesh), 0u)
-            << order;
+        EXPECT_EQ(unused_points(run(sphere, o, mio::MeshCadQuads::All).mResult.mMesh), 0u) << order;
     }
 }
 
@@ -673,9 +671,10 @@ TEST(MeshCadQuads, UntanglingTakesQuads) {
         mio::MeshCadSurfaceExtrasReport rep;
         const auto r =
             mio::mesh_cad_surface(sphere, o, mio::MeshCadSizeSources{}, ex, nullptr, &rep);
-        std::printf("[6.6.3] sphere quad-dominant order %d: %lld straightened plain, %lld untangled\n",
-                    order, static_cast<long long>(plain.mResult.mNumCurvedStraightened),
-                    static_cast<long long>(rep.mNumUntangled));
+        std::printf(
+            "[6.6.3] sphere quad-dominant order %d: %lld straightened plain, %lld untangled\n",
+            order, static_cast<long long>(plain.mResult.mNumCurvedStraightened),
+            static_cast<long long>(rep.mNumUntangled));
         EXPECT_LE(r.mNumCurvedStraightened, plain.mResult.mNumCurvedStraightened);
         EXPECT_EQ(rep.mNumUntangled,
                   plain.mResult.mNumCurvedStraightened - r.mNumCurvedStraightened);

@@ -69,6 +69,7 @@ from . import (
     _stats,
     _subdivide,
     _tessellate,
+    _tetrahedralize,
     _to_cad,
     _transform,
     _tui,
@@ -378,6 +379,13 @@ def main(argv=None):
     )
     _boundary_layer.add_args(parser)
     parser.set_defaults(func=_boundary_layer.boundary_layer_cmd)
+
+    parser = subparsers.add_parser(
+        "tetrahedralize",
+        help="Fill a closed triangle surface with tetrahedra, its triangles kept (Netgen)",
+    )
+    _tetrahedralize.add_args(parser)
+    parser.set_defaults(func=_tetrahedralize.tetrahedralize_cmd)
 
     parser = subparsers.add_parser(
         "grid-sample",

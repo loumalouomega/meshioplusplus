@@ -32,6 +32,8 @@
 // Project includes
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
+#include "meshioplusplus/operations/primitives.hpp"
+#include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "analytic_surfaces.hpp"
 #include "mesh_fixtures.hpp"
@@ -138,6 +140,73 @@ TEST(Pipeline, ErrorSizeTurnsTheIndicatorIntoSizes) {
     EXPECT_TRUE(again.HasPointData("h"));
     EXPECT_THROW(meshioplusplus::apply_pipeline_step(std::move(again), step("ErrorSize"), report),
                  std::invalid_argument);
+}
+
+// Roadmap 6.9.1: the BoundaryLayer step takes Collapse, NormalSmoothIterations
+// and FrontCheck, and reports the two new counters.
+TEST(Pipeline, BoundaryLayerTakesCollapseAndFrontCheck) {
+    const Mesh sphere = meshioplusplus::icosa_sphere(1.0, 2);
+    PipelineReport report;
+    Mesh out = meshioplusplus::apply_pipeline_step(
+        Mesh(sphere),
+        step("BoundaryLayer", {{"FirstHeight", 0.01},
+                               {"NumLayers", std::int64_t{2}},
+                               {"Collapse", std::string("layers")},
+                               {"NormalSmoothIterations", std::int64_t{2}},
+                               {"FrontCheck", false}}),
+        report);
+    ASSERT_EQ(report.mSteps.size(), 1u);
+    const auto& counters = report.mSteps[0].mCounters;
+    ASSERT_EQ(counters.size(), 6u);
+    EXPECT_EQ(counters[0].first, "NumCells");
+    EXPECT_GT(counters[0].second, 0.0);
+    EXPECT_EQ(counters[3].first, "NumFewerLayers");
+    EXPECT_EQ(counters[4].first, "NumFrontCrossings");
+    EXPECT_EQ(counters[4].second, 0.0);
+    EXPECT_EQ(counters[5].first, "MinScaledJacobian");
+    EXPECT_THROW(
+        meshioplusplus::apply_pipeline_step(
+            Mesh(sphere),
+            step("BoundaryLayer", {{"FirstHeight", 0.01}, {"Collapse", std::string("rows")}}),
+            report),
+        std::invalid_argument);
+}
+
+// Roadmap 6.7: the Tetrahedralize step fills the sphere's skin, or without
+// Netgen names the build flag.
+TEST(Pipeline, TetrahedralizeFillsTheSurface) {
+    const Mesh sphere = meshioplusplus::icosa_sphere(1.0, 2);
+    PipelineReport report;
+    EXPECT_THROW(
+        meshioplusplus::apply_pipeline_step(
+            Mesh(sphere), step("Tetrahedralize", {{"Backend", std::string("tetgen")}}), report),
+        std::invalid_argument);
+    EXPECT_THROW(meshioplusplus::apply_pipeline_step(
+                     Mesh(sphere), step("Tetrahedralize", {{"Grading", 2.0}}), report),
+                 std::invalid_argument);
+    if (!meshioplusplus::tetrahedralize_has_netgen()) {
+        EXPECT_THROW(
+            meshioplusplus::apply_pipeline_step(Mesh(sphere), step("Tetrahedralize"), report),
+            meshioplusplus::Unsupported);
+        return;
+    }
+    Mesh out = meshioplusplus::apply_pipeline_step(
+        Mesh(sphere), step("Tetrahedralize", {{"MaxSize", 0.3}}), report);
+    ASSERT_EQ(report.mSteps.size(), 1u);
+    const auto& counters = report.mSteps[0].mCounters;
+    ASSERT_EQ(counters.size(), 10u);
+    EXPECT_EQ(counters[0].first, "NumTetrahedra");
+    EXPECT_GT(counters[0].second, 0.0);
+    EXPECT_EQ(counters[3].first, "NumRegions");
+    EXPECT_EQ(counters[3].second, 1.0);
+    EXPECT_EQ(counters[4].first, "NumBoundaryTriangles");
+    EXPECT_EQ(counters[4].second, 320.0);
+    EXPECT_EQ(counters[5].first, "BoundaryPreserved");
+    EXPECT_EQ(counters[5].second, 1.0);
+    EXPECT_EQ(counters[9].first, "Volume");
+    EXPECT_GT(counters[9].second, 3.9);
+    EXPECT_TRUE(out.HasCellData(meshioplusplus::kTetrahedralizeRegion));
+    EXPECT_EQ(out.NumPoints() - sphere.NumPoints(), static_cast<std::size_t>(counters[2].second));
 }
 
 TEST(Pipeline, TransformRotatesAboutZ) {

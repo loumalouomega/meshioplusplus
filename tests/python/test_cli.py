@@ -1308,3 +1308,143 @@ def test_cli_subsample_writes_a_point_cloud(tmp_path, capsys):
     assert len(got.points) == 5 and got.points[:, 2].max() <= 2.0
     with pytest.raises(ValueError, match="count is 1000 but only"):
         meshioplusplus._cli.main(["subsample", str(src), str(out), "--count", "1000"])
+
+
+def _cad_sphere_skin(tmp_path, size="0.3"):
+    model = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "meshes",
+        "cad_json",
+        "sphere.cad.json",
+    )
+    skin = tmp_path / "skin.vtu"
+    meshioplusplus.write(
+        skin, meshioplusplus.mesh_cad_surface(meshioplusplus.read(model), float(size))
+    )
+    return skin
+
+
+def _native_cli():
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    configured = os.environ.get("MESHIOPLUSPLUS_NATIVE_CLI")
+    candidates = (
+        [configured]
+        if configured
+        else glob.glob(os.path.join(root, "build", "*", "meshioplusplus"))
+    )
+    candidates = [
+        p for p in candidates if p and os.path.isfile(p) and os.access(p, os.X_OK)
+    ]
+    return max(candidates, key=os.path.getmtime) if candidates else None
+
+
+def test_boundary_layer_collapse_and_front_flags(tmp_path, capsys):
+    """Roadmap 6.9.1: --collapse, --normal-smooth and --no-front-check reach
+    the operation; the summary and the JSON carry the two new counters."""
+    from meshioplusplus import _core
+
+    if not hasattr(_core, "boundary_layer"):
+        pytest.skip("core predates boundary_layer")
+    skin = _cad_sphere_skin(tmp_path)
+    out = tmp_path / "layers.vtu"
+    args = ["boundary-layer", str(skin), str(out), "--first-height", "0.01"]
+    rc = meshioplusplus._cli.main(
+        args
+        + ["--collapse", "layers", "--normal-smooth", "2", "--no-front-check", "--json"]
+    )
+    assert rc in (0, None)
+    report = json.loads(capsys.readouterr().out)
+    assert report["num_wedges"] > 0 and report["num_front_crossings"] == 0
+    assert "num_fewer_layers" in report
+    assert meshioplusplus._cli.main(args) in (0, None)
+    text = capsys.readouterr().out
+    assert "with fewer layers" in text and "front crossings" in text
+    with pytest.raises(SystemExit):
+        meshioplusplus._cli.main(args + ["--collapse", "rows"])
+
+
+def test_tetrahedralize_cli(tmp_path, capsys):
+    """Roadmap 6.7: the sphere's skin filled through the CLI verb."""
+    from meshioplusplus import _core
+
+    if not hasattr(_core, "tetrahedralize"):
+        pytest.skip("core predates tetrahedralize")
+    skin = _cad_sphere_skin(tmp_path)
+    out = tmp_path / "tets.vtu"
+    args = ["tetrahedralize", str(skin), str(out), "--max-size", "0.3"]
+    if not _core.__has_netgen__:
+        with pytest.raises(NotImplementedError, match="MESHIOPLUSPLUS_WITH_NETGEN"):
+            meshioplusplus._cli.main(args)
+        return
+    assert meshioplusplus._cli.main(args + ["--json"]) in (0, None)
+    report = json.loads(capsys.readouterr().out)
+    assert report["boundary_preserved"] and report["num_regions"] == 1
+    assert report["backend"] == "netgen" and report["num_tetrahedra"] > 0
+    assert {c.type for c in meshioplusplus.read(out).cells} == {"tetra", "triangle"}
+    assert meshioplusplus._cli.main(
+        args + ["--grading", "0.5", "--optimize-steps", "1"]
+    ) in (
+        0,
+        None,
+    )
+    assert "tetrahedra in 1 region(s)" in capsys.readouterr().out
+    with pytest.raises(ValueError, match="grading"):
+        meshioplusplus._cli.main(args + ["--grading", "2"])
+
+
+def test_native_tetrahedralize_and_boundary_layer_when_available(tmp_path):
+    """The native CLI's tetrahedralize verb and boundary-layer flags agree
+    with the Python CLI's report."""
+    native = _native_cli()
+    if native is None:
+        pytest.skip("native CLI is not built")
+    skin = _cad_sphere_skin(tmp_path)
+    help_text = subprocess.run(
+        [native, "--help"], capture_output=True, text=True
+    ).stdout
+    if "tetrahedralize" not in help_text:
+        pytest.skip("native CLI predates tetrahedralize")
+    result = subprocess.run(
+        [
+            native,
+            "boundary-layer",
+            str(skin),
+            str(tmp_path / "layers.vtu"),
+            "--first-height",
+            "0.01",
+            "--collapse",
+            "layers",
+            "--normal-smooth",
+            "2",
+            "--no-front-check",
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["num_front_crossings"] == 0 and "num_fewer_layers" in report
+    result = subprocess.run(
+        [
+            native,
+            "tetrahedralize",
+            str(skin),
+            str(tmp_path / "t.vtu"),
+            "--max-size",
+            "0.3",
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        assert "MESHIOPLUSPLUS_WITH_NETGEN" in result.stderr, result.stderr
+        return
+    report = json.loads(result.stdout)
+    assert report["boundary_preserved"] and report["num_regions"] == 1
+    if meshioplusplus._core.__has_netgen__:
+        _, py = meshioplusplus.tetrahedralize(
+            meshioplusplus.read(skin), max_size=0.3, return_report=True
+        )
+        assert report["num_tetrahedra"] == py["num_tetrahedra"]

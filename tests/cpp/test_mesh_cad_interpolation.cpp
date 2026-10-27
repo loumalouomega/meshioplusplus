@@ -675,8 +675,8 @@ TEST(MeshCadInterpolation, AMetricFromTheHessianStretchesAlongTheLayer) {
     from_field.pMetricBackground = &bg;
     from_field.mMetricArray = "f";
     mio::MeshCadSurfaceExtrasReport xf, xh;
-    const auto rf = mio::mesh_cad_surface(sphere, o, from_field, mio::MeshCadSurfaceExtras{},
-                                          nullptr, &xf);
+    const auto rf =
+        mio::mesh_cad_surface(sphere, o, from_field, mio::MeshCadSurfaceExtras{}, nullptr, &xf);
     (void)mio::mesh_cad_surface(sphere, o, src, mio::MeshCadSurfaceExtras{}, nullptr, &xh);
     EXPECT_EQ(rf.mNumPoints, r.mNumPoints);
     EXPECT_EQ(rf.mNumTriangles, r.mNumTriangles);

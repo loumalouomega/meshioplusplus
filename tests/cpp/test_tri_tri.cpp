@@ -28,8 +28,8 @@ namespace mdt = meshioplusplus::detail;
 using V = std::array<double, 3>;
 
 bool meet(const V& rA, const V& rB, const V& rC, const V& rD, const V& rE, const V& rF) {
-    const bool x = mdt::tri_tri_intersect(rA.data(), rB.data(), rC.data(), rD.data(), rE.data(),
-                                          rF.data());
+    const bool x =
+        mdt::tri_tri_intersect(rA.data(), rB.data(), rC.data(), rD.data(), rE.data(), rF.data());
     // Symmetric in the two triangles and in their corners' order.
     EXPECT_EQ(x, mdt::tri_tri_intersect(rD.data(), rE.data(), rF.data(), rA.data(), rB.data(),
                                         rC.data()));
@@ -58,7 +58,7 @@ TEST(TriTri, CrossingApartAndTouching) {
 TEST(TriTri, InOnePlane) {
     const V a{0, 0, 0}, b{1, 0, 0}, c{0, 1, 0};
     EXPECT_TRUE(meet(a, b, c, V{0.1, 0.1, 0}, V{0.2, 0.1, 0}, V{0.1, 0.2, 0}));  // inside
-    EXPECT_TRUE(meet(a, b, c, V{0.5, -0.5, 0}, V{0.5, 0.5, 0}, V{2, 0, 0}));      // crossing
+    EXPECT_TRUE(meet(a, b, c, V{0.5, -0.5, 0}, V{0.5, 0.5, 0}, V{2, 0, 0}));     // crossing
     EXPECT_FALSE(meet(a, b, c, V{1, 1, 0}, V{2, 1, 0}, V{1, 2, 0}));             // apart
     EXPECT_TRUE(meet(a, b, c, V{1, 0, 0}, V{2, 0, 0}, V{1, 1, 0}));              // a corner
     // Tilted out of the axes' planes: still exact.

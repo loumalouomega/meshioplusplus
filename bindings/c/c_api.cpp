@@ -7654,8 +7654,9 @@ mio_mesh* mio_error_size(const mio_mesh* mesh, const mio_error_size_opts* opts,
         if (!mesh)
             throw std::invalid_argument("meshio++: error_size: mesh is NULL");
         if (!opts)
-            throw std::invalid_argument("meshio++: error_size: opts is NULL (a target_error is "
-                                        "required)");
+            throw std::invalid_argument(
+                "meshio++: error_size: opts is NULL (a target_error is "
+                "required)");
         meshioplusplus::ErrorSizeOptions o;
         if (opts->error_array)
             o.mErrorArray = opts->error_array;

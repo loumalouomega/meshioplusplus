@@ -25435,7 +25435,25 @@ MESHIOPLUSPLUS_API Mesh blend_steps(const Mesh& rA, const Mesh& rB, double W,
  *    points of a cell that folds have their layers halved, at most
  *    `mMaxShrink` times, and then collapsed: a point whose layers collapse
  *    stays on the surface, and its cells become pyramids and tetrahedra
- *    (`detail/layer_sweep.hpp`). No cell is written folded.
+ *    (`detail/layer_sweep.hpp`). With `mCollapse` = `Layers` a point instead
+ *    drops its top layer, so it grows fewer layers at their full thickness
+ *    and its cells above end in pyramids and tetrahedra (Garimella and
+ *    Shephard 2000). No cell is written folded.
+ *  - **Fronts.** Once every cell is valid, each face of the last layer is
+ *    tested against every other one and the surface (`mFrontCheck`), the
+ *    advancing-layer front test of Pirzadeh (1996), with the exact
+ *    triangle–triangle kernel of `detail/tri_tri.hpp` over a bounding-volume
+ *    hierarchy; faces whose columns share a surface point are neighbours and
+ *    are not tested. The points of a face that crosses or touches another
+ *    give way as a folding cell's do, and the layers are judged again. A ray
+ *    misses what lies between its point's neighbours; the front test does
+ *    not.
+ *  - **Smoothing the normals.** `mNormalSmoothIterations` Laplacian passes
+ *    move each direction toward its neighbours' mean, a move kept only while
+ *    every face around the point still sees it at more than half the least
+ *    cosine its most normal normal had; the stretch follows the new least
+ *    cosine. On a coarse surface it turns the directions less sharply from
+ *    point to point.
  *
  * The result holds the cells, the surface (`boundary_layer:wall`) and the
  * last layer (`boundary_layer:cap`) as faces, named Cell regions and the
@@ -25462,6 +25480,12 @@ inline constexpr const char* kBoundaryLayerWall = "boundary_layer:wall";
 inline constexpr const char* kBoundaryLayerCap = "boundary_layer:cap";
 inline constexpr const char* kBoundaryLayerCells = "boundary_layer:cells";
 
+/// How a point whose cells fold gives way (roadmap 6.9.1).
+enum class BoundaryLayerCollapse : std::int32_t {
+    Points = 0,  ///< its layers halved, then the point collapsed
+    Layers = 1,  ///< its top layer dropped: fewer layers at the point
+};
+
 struct BoundaryLayerOptions {
     double mFirstHeight = 0.0;         ///< the first layer's thickness (required, > 0)
     double mGrowth = 1.2;              ///< each layer over the one before (>= 1)
@@ -25470,6 +25494,11 @@ struct BoundaryLayerOptions {
     double mCollisionFraction = 0.45;  ///< of the distance a point's ray hits, (0, 1]
     std::int32_t mSmoothIterations = 5;
     std::int32_t mMaxShrink = 6;  ///< halvings before a point collapses
+    BoundaryLayerCollapse mCollapse = BoundaryLayerCollapse::Points;
+    /// Laplacian passes over the directions (0 to 1000).
+    std::int32_t mNormalSmoothIterations = 0;
+    /// Test the last layer's faces against each other and the surface.
+    bool mFrontCheck = true;
 };
 
 struct BoundaryLayerResult {
@@ -25482,6 +25511,11 @@ struct BoundaryLayerResult {
     std::int64_t mNumShrunk = 0;      ///< points whose layers are thinner than asked
     std::int64_t mNumCollapsed = 0;   ///< of those, points that do not grow at all
     std::int64_t mNumNotVisible = 0;  ///< of those, points no direction sees all faces from
+    /// With `Layers`, the points that grow fewer layers than asked (but some).
+    std::int64_t mNumFewerLayers = 0;
+    /// Pairs of last-layer faces found crossing or touching another face,
+    /// over every round of the front test.
+    std::int64_t mNumFrontCrossings = 0;
     double mMinScaledJacobian = 0.0;  ///< least corner Jacobian over the cells
     double mMinThickness = 0.0;       ///< the thinnest and thickest total, over points
     double mMaxThickness = 0.0;
@@ -25494,7 +25528,8 @@ struct BoundaryLayerResult {
 /**
  * @brief Grow boundary layers from the triangle and quad surface `rSurface`
  * (see the file comment).
- * @throws std::invalid_argument for an option out of range, a surface with
+ * @throws std::invalid_argument for an option out of range (`mCollapse`
+ * among them), a surface with
  * no triangle or quad, a cell block that is neither (lines and vertices are
  * skipped), an edge used by more than two faces, or two faces that disagree
  * on its direction.
@@ -27718,6 +27753,83 @@ MESHIOPLUSPLUS_API ErrorMarking error_marking_from_name(const std::string& rName
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/error.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/error_size.hpp =====
+/**
+ * @file error_size.hpp
+ * @brief A size field from a per-cell error estimate (roadmap 6.10.2).
+ *
+ * `estimate_error` measures where a field is badly resolved (`error:zz`, one
+ * value per cell); `mesh_cad_surface`'s `background` takes a size per point.
+ * `error_size` joins them by the adaptive procedure of O. C. Zienkiewicz and
+ * J. Z. Zhu, "A simple error estimator and adaptive procedure for practical
+ * engineering analysis", Int. J. Numer. Meth. Engng. 24 (1987): with `N`
+ * cells evaluated and a target global error `eta`, the error each cell may
+ * carry when the error is spread evenly is `e = eta / sqrt(N)`; a cell of
+ * size `h_K` (its diameter, the largest distance between two of its nodes)
+ * whose indicator is `eta_K` asks for `h_K (e / eta_K)^(1 / p)`, where `p` is
+ * the rate at which the indicator falls with `h` (the element order for the
+ * recovered-gradient error, 1 for linear elements). The size is clamped to
+ * `[mMinSize, mMaxSize]` (0: no bound) and written per point as the least of
+ * its cells' (the finer request wins, as every size source of
+ * `mesh_cad_surface` refines); a point with no evaluated cell reads NaN,
+ * which `background` treats as no size there.
+ *
+ * Geometry, connectivity, regions, property sets and every existing array
+ * pass through. Byte-identical across mesh backends and thread counts.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Default output array name: what `mesh_cad_surface`'s `background` reads.
+inline constexpr const char* kErrorSizeName = "size";
+
+/// Options for `error_size`.
+struct ErrorSizeOptions {
+    /// The one-component cell_data indicator (`estimate_error` writes
+    /// `error:zz`).
+    std::string mErrorArray = "error:zz";
+    /// The target global error `eta`, in the indicator's norm (positive).
+    double mTargetError = 0.0;
+    /// The indicator's rate `p` in the cell size (positive; 1 for linear
+    /// elements).
+    double mOrder = 1.0;
+    /// The sizes' bounds; 0 is none.
+    double mMinSize = 0.0;
+    double mMaxSize = 0.0;
+    /// The point_data array written.
+    std::string mOutputName = kErrorSizeName;
+    /// When false, an output name that already exists is an error.
+    bool mOverwrite = false;
+};
+
+/// The mesh with the size array, and what the sizes cover.
+struct ErrorSizeResult {
+    Mesh mMesh;
+    std::int64_t mNumCells = 0;    ///< cells evaluated
+    std::int64_t mNumSkipped = 0;  ///< cells whose indicator or size is not finite
+    std::int64_t mNumClamped = 0;  ///< cell sizes the bounds clamped
+    double mMinSize = 0.0;         ///< the least and greatest point size written
+    double mMaxSize = 0.0;
+};
+
+/**
+ * @brief A per-point size field from a per-cell error indicator (see the file
+ * comment).
+ * @throws std::invalid_argument on a missing or multi-component indicator, a
+ *         target error or order that is not finite and positive, a bound that
+ *         is negative or not finite, `mMinSize > mMaxSize`, or an output-name
+ *         collision when `mOverwrite` is false.
+ */
+MESHIOPLUSPLUS_API ErrorSizeResult error_size(const Mesh& rMesh, const ErrorSizeOptions& rOptions);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/error_size.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/feature_edges.hpp =====
 /**
  * @file operations/feature_edges.hpp
@@ -30127,7 +30239,7 @@ struct MeshCadSurfaceOptions {
     std::int32_t mPoleRings = 0;
     /// Mesh a face whose metric's condition number over its coarse mesh
     /// exceeds this in a flattening of that mesh instead of its parameters
-    /// (6.4.4; 0 is off, otherwise above 1; order 1 only).
+    /// (6.4.4; 0 is off, otherwise above 1; at every order).
     double mReparamConditionNumber = 0.0;
     /// 1: linear triangles; 2 and 3: curved `triangle6` and `triangle10`
     /// (and `line3`, `line4`), their nodes on the surface and edges (6.6).
@@ -30255,7 +30367,7 @@ struct MeshCadSizeSources {
     /// floor and the local size, is pulled back onto each face (`J^T M J`)
     /// for Lawson's flips and encroachment, as `MeshCadMetric::Varying`
     /// does, and refinement judges triangles by their lengths and angles in
-    /// it. Borrowed; null for none. Order 1 only.
+    /// it. Borrowed; null for none.
     const Mesh* pMetricBackground = nullptr;
     std::string mMetricArray;
     double mMetricError = 0.0;
@@ -30322,7 +30434,7 @@ struct MeshCadSurfaceExtras {
     bool mModelTolerances = false;
     /// Merge a sliver face, narrower than `h` and with no interior point, into
     /// the neighbour it meets tangentially along the most edge, through their
-    /// common discrete parameterisation (roadmap 6.5.2). Order 1 only.
+    /// common discrete parameterisation (roadmap 6.5.2), at every order.
     bool mVirtualFaces = false;
     /// Corner lopping (roadmap 6.2.3; S. E. Pav and N. J. Walkington,
     /// "Delaunay refinement by corner lopping", IMR 2005) in place of
@@ -30432,14 +30544,17 @@ struct MeshCadSurfaceExtrasReport {
     std::int64_t mNumQuads = 0;
     std::int64_t mNumLeftoverTriangles = 0;
     double mMinQuadScaledJacobian = 0.0;
+    /// With a metric source (6.10.2): the least corner angle of a cell in
+    /// the metric at its centroid, in degrees, the measure refinement
+    /// judges by (the result's own angles are the surface's); 0 without.
+    double mMinMetricAngleDeg = 0.0;
 };
 
 /**
  * @brief `mesh_cad_surface` with the extras of v17.20.0 (roadmap 6.5.1,
  * 6.5.2, 6.2.3) beside the sizes, and the reparametrised faces (6.4.4) in its
  * report.
- * @throws std::invalid_argument as the four-argument overload, and for
- *         `mVirtualFaces` with `mOrder` > 1.
+ * @throws std::invalid_argument as the four-argument overload.
  */
 MESHIOPLUSPLUS_API MeshCadSurfaceResult mesh_cad_surface(
     const BrepInfo& rBrep, const MeshCadSurfaceOptions& rOptions,
@@ -32410,8 +32525,11 @@ MESHIOPLUSPLUS_API Mesh reference_cells(const std::vector<std::string>& rTypes =
  * surfaces; `project_to_cad` puts them back:
  *
  *  - a point on the lines of one edge goes to the nearest point of that
- *    edge (its first use's trim curve lifted through its face's surface:
- *    a scan of 64 steps, then Newton on `(X - p) . X' = 0`);
+ *    edge: its own 3-D curve (`BrepEdge::mCurve`) where the model gives one
+ *    that its first use's trace follows (within a millionth of its length),
+ *    else that trace, its trim curve lifted through its face's surface (a
+ *    scan of 64 steps, then Newton on `(X - p) . X' = 0`); a curve the
+ *    trace leaves is warned;
  *  - a point on the lines of two or more edges is a corner of the model:
  *    it goes to the nearest point of the lowest of them, which is the edge's
  *    end for a point near it, and is counted;
@@ -32464,6 +32582,7 @@ struct ProjectToCadResult {
     std::int64_t mNumFailed = 0;       ///< whose face or edge is unusable: left
     std::int64_t mNumOutsideTrim = 0;  ///< projected outside their face's trims
     double mMaxMove = 0.0;             ///< the largest distance a point moved
+    std::int64_t mNumOnCurves = 0;     ///< of those on edges, onto an edge's 3-D curve
     /// The points projected outside their face's trims, ascending.
     std::vector<std::int64_t> mOutsideTrim;
     std::vector<std::string> mWarnings;
@@ -35932,6 +36051,115 @@ MESHIOPLUSPLUS_API TessellateResult tessellate(const Mesh& rMesh,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/tessellate.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/tetrahedralize.hpp =====
+/**
+ * @file tetrahedralize.hpp
+ * @brief Tetrahedra filling a closed triangle surface, its triangles kept
+ * (roadmap 6.7), through an optional backend.
+ *
+ * The input is a closed, manifold, consistently oriented triangle surface,
+ * such as a `mesh_cad_surface` result or a boundary layer's cap: an open,
+ * non-manifold, misoriented or degenerate one is refused by name, with the
+ * counts of `surface_watertight_check`. Its connected shells are oriented
+ * outward (a shell whose triangles face in is turned), and each shell bounds
+ * a region: the inside of the shell minus the shells directly inside it
+ * (found by the winding number of one of their points). A box inside a box
+ * gives two regions, the shell between them and the inner box. Each region
+ * is meshed on its own, from its shell and its inner shells turned inward,
+ * so neighbouring regions share the inner shell's triangles exactly and the
+ * tetrahedra conform across it.
+ *
+ * The backend is Netgen's nglib (J. Schöberl, "NETGEN: an advancing front
+ * 2D/3D-mesh generator based on abstract rules", Comput. Visual. Sci. 1,
+ * 1997; LGPL-2.1, built with `MESHIOPLUSPLUS_WITH_NETGEN`, linked
+ * dynamically, never vendored): its volume mesher keeps the surface's
+ * triangles and points exactly, which is checked, and `mOptimizeSteps`
+ * passes of its volume optimisation follow. Without it the operation throws
+ * `Unsupported` naming the flag. Calls into nglib are serialised (its state
+ * is global); a region is meshed in one thread, so the result is
+ * deterministic.
+ *
+ * The result holds the input's points first (unchanged, at their indices),
+ * then the new interior points; a `tetra` block (positively oriented,
+ * region by region) and the surface's `triangle` block as given; the cell
+ * data `tetrahedralize:region` (the region of each tetrahedron, -1 on the
+ * triangles) and, when the surface carries `mFaceArray` (`cad:face`), that
+ * array on the triangles (-1 on the tetrahedra); Cell regions `region:<k>`
+ * and, per value of `mFaceArray`, Side regions `face:<v>` on the tetrahedra
+ * facets the surface's triangles are.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+inline constexpr const char* kTetrahedralizeRegion = "tetrahedralize:region";
+
+enum class TetrahedralizeBackend : std::int32_t {
+    Auto = 0,    ///< the first backend built in
+    Netgen = 1,  ///< Netgen's nglib (MESHIOPLUSPLUS_WITH_NETGEN)
+};
+
+struct TetrahedralizeOptions {
+    TetrahedralizeBackend mBackend = TetrahedralizeBackend::Auto;
+    /// The largest edge asked of the tetrahedra (0: none; the surface's
+    /// triangles then size the inside).
+    double mMaxSize = 0.0;
+    /// The largest volume asked of a tetrahedron (0: none): a regular
+    /// tetrahedron's edge for it, `(6 sqrt 2 V)^(1/3)`, joins `mMaxSize`.
+    double mMaxVolume = 0.0;
+    /// How fast the size grows away from the surface, in [0, 1].
+    double mGrading = 0.3;
+    /// Passes of the backend's volume optimisation (0 to 100).
+    std::int32_t mOptimizeSteps = 3;
+    /// Refuse a result of more tetrahedra (by `std::length_error`).
+    std::int64_t mMaxCells = 50000000;
+    /// The cell data naming each triangle's CAD face, carried to the
+    /// triangles and made Side regions when present.
+    std::string mFaceArray = "cad:face";
+};
+
+struct TetrahedralizeResult {
+    Mesh mMesh;
+    std::int64_t mNumTetrahedra = 0;
+    std::int64_t mNumPoints = 0;     ///< every point of the result
+    std::int64_t mNumNewPoints = 0;  ///< of those, inside the surface
+    std::int64_t mNumRegions = 0;    ///< enclosed regions, one per shell
+    std::int64_t mNumBoundaryTriangles = 0;
+    /// Every surface triangle and its points kept exactly (checked).
+    bool mBoundaryPreserved = false;
+    /// Zero when the boundary is preserved.
+    double mHausdorffToSurface = 0.0;
+    double mMinDihedralDeg = 0.0;
+    double mMaxDihedralDeg = 0.0;
+    double mVolume = 0.0;  ///< the tetrahedra's total
+    std::string mBackend;  ///< the backend that ran
+    std::vector<std::string> mWarnings;
+};
+
+/// Whether a tetrahedralize backend is built in (Netgen).
+MESHIOPLUSPLUS_API bool tetrahedralize_has_netgen();
+
+/**
+ * @brief Fill the closed triangle surface `rSurface` with tetrahedra (see
+ * the file comment).
+ * @throws std::invalid_argument for an option out of range, a surface with
+ * no triangle, a quad, polygon, higher-order or volume block (lines and
+ * vertices are skipped), or a surface that is open, non-manifold,
+ * misoriented or has degenerate triangles; `Unsupported` without a backend;
+ * `std::length_error` past `mMaxCells`; `std::runtime_error` when the
+ * backend fails (a self-intersecting surface, for one).
+ */
+MESHIOPLUSPLUS_API TetrahedralizeResult tetrahedralize(const Mesh& rSurface,
+                                                       const TetrahedralizeOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/tetrahedralize.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/undo_green.hpp =====
 /**
  * @file undo_green.hpp
@@ -39241,20 +39469,23 @@ void curved_triangle_bernstein(int Degree, const double* pValues, double* pCoeff
 // ===== begin src/cpp/src/detail/curved_quad.hpp =====
 /**
  * @file detail/curved_quad.hpp
- * @brief Biquadratic quadrilaterals (`quad9`) in 3-D, and whether one is
- * valid everywhere inside (roadmap 6.8.3).
+ * @brief Biquadratic and bicubic quadrilaterals (`quad9`, `quad16`) in 3-D,
+ * and whether one is valid everywhere inside (roadmap 6.8.3).
  *
  *  - **The element.** Nodes in the layout of `quad9` (Gmsh's and VTK's):
  *    corners 0..3 at reference (0, 0), (1, 0), (1, 1), (0, 1); the edges'
  *    midpoints 4..7 on edges (0, 1), (1, 2), (2, 3), (3, 0); the centre 8.
- *    The map is the tensor product of the quadratic Lagrange basis at 0,
- *    1/2 and 1 in each direction.
+ *    `quad16` in Gmsh's layout: the corners, each edge's two nodes from its
+ *    first corner (4..11), then the inside (12..15) at (1/3, 1/3),
+ *    (2/3, 1/3), (2/3, 2/3), (1/3, 2/3). The map is the tensor product of
+ *    the Lagrange basis of degree `Order` at equispaced points.
  *  - **The Jacobian.** As for the curved triangles (`curved_triangle.hpp`),
  *    `J = (x_xi x x_eta) . N` against the face's normal `N`. `x_xi` is of
- *    degree (1, 2) and `x_eta` of degree (2, 1), so `J` is a tensor-product
- *    polynomial of degree (3, 3).
+ *    degree (p - 1, p) and `x_eta` of degree (p, p - 1), so `J` is a
+ *    tensor-product polynomial of degree (2p - 1, 2p - 1): (3, 3) for
+ *    `quad9`, (5, 5) for `quad16`.
  *  - **Validity** (Johnen, Remacle and Geuzaine 2013, whose bounds hold for
- *    the tensor-product Bézier basis as for the simplex one). `J`'s 16
+ *    the tensor-product Bézier basis as for the simplex one). `J`'s 16 (36)
  *    Bernstein coefficients bound it: all positive proves `J > 0`
  *    everywhere, a value not positive proves the element invalid, and
  *    otherwise the square is split into four and each part judged, to
@@ -39265,19 +39496,38 @@ void curved_triangle_bernstein(int Degree, const double* pValues, double* pCoeff
 
 // System includes
 #include <array>
+#include <cstddef>
 
 // Project includes (private, not installed)
 
 namespace meshioplusplus::detail {
 
-/// The element's point at reference `(Xi, Eta)`; `pNodes` holds 9 points.
+/// Nodes of a quad of order `Order` (2: 9, 3: 16).
+std::size_t curved_quad_num_nodes(int Order);
+
+/// Node `Node`'s reference position.
+std::array<double, 2> curved_quad_node_position(int Order, std::size_t Node);
+
+/// The element's point at reference `(Xi, Eta)`; `pNodes` holds
+/// `curved_quad_num_nodes(Order)` points.
+CurvedVec3 curved_quad_point(int Order, const CurvedVec3* pNodes, double Xi, double Eta);
+
+double curved_quad_jacobian(int Order, const CurvedVec3* pNodes, const CurvedVec3& rNormal,
+                            double Xi, double Eta);
+
+CurvedTriangleCheck curved_quad_check(int Order, const CurvedVec3* pNodes,
+                                      const CurvedVec3& rNormal, int MaxDepth = 8);
+
+/// A lower bound of the scaled Jacobian, as `curved_triangle_scaled_bound`:
+/// the least Bernstein coefficient of `J` over the largest in magnitude.
+double curved_quad_scaled_bound(int Order, const CurvedVec3* pNodes, const CurvedVec3& rNormal);
+
+/// `quad9` (order 2), as before.
 CurvedVec3 curved_quad_point(const CurvedVec3* pNodes, double Xi, double Eta);
 
-/// `J = (x_xi x x_eta) . N` at reference `(Xi, Eta)`.
 double curved_quad_jacobian(const CurvedVec3* pNodes, const CurvedVec3& rNormal, double Xi,
                             double Eta);
 
-/// Whether the element is valid everywhere inside (see the file comment).
 CurvedTriangleCheck curved_quad_check(const CurvedVec3* pNodes, const CurvedVec3& rNormal,
                                       int MaxDepth = 8);
 
@@ -39286,8 +39536,8 @@ CurvedTriangleCheck curved_quad_check(const CurvedVec3* pNodes, const CurvedVec3
 // ===== begin src/cpp/src/detail/curved_untangle.hpp =====
 /**
  * @file detail/curved_untangle.hpp
- * @brief Untangling curved surface triangles by moving their interior nodes
- * on the surface (roadmap 6.6.3).
+ * @brief Untangling curved surface triangles and quadrilaterals by moving
+ * their nodes on the surface (roadmap 6.6.3).
  *
  * A curved element whose Jacobian is not positive everywhere (the Bézier
  * check of `curved_triangle.hpp`) loses the order its nodes bought if it is
@@ -39295,11 +39545,13 @@ CurvedTriangleCheck curved_quad_check(const CurvedVec3* pNodes, const CurvedVec3
  * untangling of curvilinear meshes", J. Comput. Phys. 254, 2013) instead move
  * the high-order nodes that are not on the boundary to raise the worst
  * scaled Jacobian of the elements around them, the boundary nodes staying on
- * the CAD. Here the free nodes are a face's own (interior edges' nodes and
- * cubic centres) and each moves in the face's parameters, lifted by the
- * surface, so every node stays on the geometry by construction; the measure
- * raised is `curved_triangle_scaled_bound`, a lower bound of
- * `min J / max |J|`. The optimiser is a deterministic Gauss-Seidel pattern
+ * the CAD. Here the free nodes are a face's own (interior edges' nodes,
+ * cubic centres and, for split quads, the corners inside the face) and
+ * each moves in the face's parameters, lifted by the surface, so every node
+ * stays on the geometry by construction; the measure raised is
+ * `curved_triangle_scaled_bound` (`curved_quad_scaled_bound` for a quad), a
+ * lower bound of `min J / max |J|`. Any node of an element may be free,
+ * corners included. The optimiser is a deterministic Gauss-Seidel pattern
  * search (the precedent of `hex_untangle`), not the paper's barrier method:
  * each free node of an invalid element, in ascending id order, takes the
  * best of eight steps around it that raises the least bound of its elements,
@@ -39321,12 +39573,24 @@ CurvedTriangleCheck curved_quad_check(const CurvedVec3* pNodes, const CurvedVec3
 
 namespace meshioplusplus::detail {
 
-/// One element: its node ids in the `triangle6` / `triangle10` layout, and
-/// the face's normal the sign of its Jacobian is taken against.
+/// One element: its node ids in the `triangle6` / `triangle10` layout, or
+/// with `mQuad` in the `quad9` / `quad16` one (`curved_quad.hpp`), and the
+/// face's normal the sign of its Jacobian is taken against.
 struct CurvedUntangleElement {
-    std::array<std::int64_t, 10> mNodes{};
+    std::array<std::int64_t, 16> mNodes{};
     CurvedVec3 mNormal{0.0, 0.0, 0.0};
+    bool mQuad = false;
 };
+
+/// A curved triangle as an element to untangle.
+inline CurvedUntangleElement curved_untangle_triangle(const std::array<std::int64_t, 10>& rNodes,
+                                                      const CurvedVec3& rNormal) {
+    CurvedUntangleElement e;
+    for (std::size_t i = 0; i < rNodes.size(); ++i)
+        e.mNodes[i] = rNodes[i];
+    e.mNormal = rNormal;
+    return e;
+}
 
 struct CurvedUntangleReport {
     std::int64_t mInvalidBefore = 0;  ///< elements not proved valid on entry
@@ -42451,10 +42715,14 @@ double card_to_real_view(std::string_view Text, const std::string& rWhere,
  * levels `k - 1` and `k` (level 0 the surface itself) each triangle gives a
  * `wedge` and each quad a `hexahedron`, ordered so that its Jacobian is
  * positive when the face's normal (right-hand rule) points along the
- * directions. A point whose offsets are all zero is *collapsed*: its copies
- * are the point itself, so a cell with a collapsed corner degenerates. Such
- * a face is split into triangles (a quad along its first diagonal), and a
- * wedge with one collapsed corner becomes a `pyramid` on its opposite side
+ * directions. A point whose offset at level `k` equals the one below (0 at
+ * the surface) does not grow in layer `k`: its copy there is the one below,
+ * and its corner of every cell of that layer is *collapsed*, so a point
+ * whose offsets stop growing after `m` levels grows `m` layers (Garimella and
+ * Shephard's fewer layers at a point), and one whose offsets are all zero
+ * stays the surface point. A face with a corner collapsed in any layer is
+ * split into triangles (a quad along its first diagonal) in every layer, and
+ * a wedge with one collapsed corner becomes a `pyramid` on its opposite side
  * face, with two a `tetra`, with three nothing; the faces the cells share
  * stay conforming, since every column through a collapsed point is split
  * the same way in every layer. The surface (`wall`) and the last level
@@ -42478,8 +42746,9 @@ struct LayerSweepInput {
     std::vector<std::array<std::int64_t, 4>> mFaces;
     /// Per point, the direction (three coordinates each).
     std::vector<double> mDirections;
-    /// Per point, its `mLayers` offsets along its direction, level by level;
-    /// all zero for a collapsed point.
+    /// Per point, its `mLayers` offsets along its direction, level by level,
+    /// not decreasing; an offset equal to the one below (0 at the surface)
+    /// does not grow that layer, and all zero is a collapsed point.
     std::vector<double> mOffsets;
     int mLayers = 1;
 };
@@ -42918,6 +43187,9 @@ public:
     /// background (no surface) the isotropic `I / Size^2`.
     void At(const Vec3& rX, double Size, std::array<double, 9>& rM,
             std::array<double, 9>* pRoot = nullptr) const;
+    /// Every size the metric asks for, and its floor, times `Scale`: the
+    /// metric over `Scale^2` (all-quad meshes at twice the size, 6.8.3).
+    void SetScale(double Scale);
 
 private:
     struct Impl;
@@ -43968,6 +44240,9 @@ PrimitiveFit fit_primitive_samples(const std::vector<double>& rPts,
 // System includes
 #include <array>
 #include <cstdint>
+#include <map>
+#include <set>
+#include <utility>
 #include <vector>
 
 namespace meshioplusplus::detail {
@@ -43996,10 +44271,24 @@ struct QuadRecombineResult {
  * @brief Recombine consistently oriented triangles `rTris` (point ids) whose
  * pairs may merge only within one `rGroup` (one value per triangle, e.g. the
  * CAD face it lies in); quads come out in the order of their first triangle.
+ *
+ * With `pSideCurve`, per triangle the curve each side (corner k to corner
+ * k + 1) lies on (-1 for none), a pair whose quad would have both sides at a
+ * corner on one curve is no candidate: on a curved element the corner is a
+ * straight angle, where the Jacobian vanishes (roadmap 6.8.3). With
+ * `pFixed`, the edges (as `(min, max)` point pairs) no pair may merge
+ * across: a model's edges, a seam among them, whose line cells would cross
+ * the quad. With `pMidpoint`, each edge's midpoint node (by its `(min, max)`
+ * ends; all-quad's split), a pair is a candidate only if the four quads it
+ * splits into, through those midpoints and their mean, meet `MinQuality`
+ * too.
  */
-QuadRecombineResult quad_recombine(const std::vector<std::array<std::int64_t, 3>>& rTris,
-                                   const std::vector<std::int64_t>& rGroup, const double* pX,
-                                   double MinQuality, QuadPairing Pairing = QuadPairing::Greedy);
+QuadRecombineResult quad_recombine(
+    const std::vector<std::array<std::int64_t, 3>>& rTris, const std::vector<std::int64_t>& rGroup,
+    const double* pX, double MinQuality, QuadPairing Pairing = QuadPairing::Greedy,
+    const std::vector<std::array<std::int64_t, 3>>* pSideCurve = nullptr,
+    const std::set<std::pair<std::int64_t, std::int64_t>>* pFixed = nullptr,
+    const std::map<std::pair<std::int64_t, std::int64_t>, std::int64_t>* pMidpoint = nullptr);
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/quad_recombine.hpp =====
@@ -45615,6 +45904,51 @@ BsplineFitResult thb_fit_patch(const std::vector<PatchVec>& rPts,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/thb_spline.hpp =====
+// ===== begin src/cpp/src/detail/tri_tri.hpp =====
+/**
+ * @file detail/tri_tri.hpp
+ * @brief Whether two triangles in 3-D meet, decided exactly (roadmap 6.9.1;
+ * the kernel `find_intersections`, roadmap 3.2.2, will share).
+ *
+ * Every decision is a sign of Shewchuk's exact `orient3d` or `orient2d`
+ * (`predicates.hpp`), so the answer is the exact one for the triangles'
+ * double coordinates, in the spirit of P. Guigue and O. Devillers, "Fast and
+ * robust triangle-triangle overlap test using orientation predicates",
+ * Journal of Graphics Tools 8(1), 2003:
+ *
+ *  - **Apart.** When every corner of one triangle lies strictly on one side
+ *    of the other's plane, they do not meet.
+ *  - **Not in one plane.** Two triangles whose planes differ meet exactly
+ *    when an edge of one meets the other (their intersection is a segment
+ *    whose ends lie on edges). A segment `ab` meets the triangle `pqr` when
+ *    `a` and `b` are not strictly on one side of its plane and the three
+ *    orientations of `ab` against the triangle's edges, `orient3d(a, b, p,
+ *    q)` and its turns, have no two strictly opposite signs.
+ *  - **In one plane.** Projected on the plane of the two coordinates the
+ *    normal leaves (dropping one coordinate keeps them exact), they meet
+ *    exactly when two edges cross or touch, or a corner of one lies inside
+ *    or on the other, by `orient2d`.
+ *
+ * Touching counts as meeting: a caller that wants proper crossings only
+ * leaves out the pairs that share a corner. A degenerate triangle (its
+ * corners on a line) is treated as its segments.
+ *
+ * A **core-private** header: nothing installed names it.
+ */
+
+namespace meshioplusplus::detail {
+
+/// Whether the triangles `(pA, pB, pC)` and `(pD, pE, pF)` (three coordinates
+/// each) meet, touching included.
+bool tri_tri_intersect(const double* pA, const double* pB, const double* pC, const double* pD,
+                       const double* pE, const double* pF);
+
+/// Whether the segment `(pA, pB)` meets the triangle `(pP, pQ, pR)`.
+bool segment_tri_intersect(const double* pA, const double* pB, const double* pP, const double* pQ,
+                           const double* pR);
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/tri_tri.hpp =====
 // ===== begin src/cpp/src/detail/typed_view.hpp =====
 /**
  * @file detail/typed_view.hpp
@@ -70799,6 +71133,7 @@ CrossField cross_field(const std::vector<PatchVec>& rPts, const std::vector<Patc
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 
 // Project includes
 
@@ -70806,80 +71141,124 @@ namespace meshioplusplus::detail {
 
 namespace {
 
-// The quadratic Lagrange basis at 0, 1/2 and 1, and its derivative.
-std::array<double, 3> cq_basis(double T) {
-    return {2.0 * T * T - 3.0 * T + 1.0, 4.0 * T - 4.0 * T * T, 2.0 * T * T - T};
+// The Lagrange basis of degree Order (2 or 3) at the equispaced points
+// 0, 1/Order, ..., 1, and its derivative.
+std::array<double, 4> cq_basis(int Order, double T) {
+    if (Order == 2)
+        return {2.0 * T * T - 3.0 * T + 1.0, 4.0 * T - 4.0 * T * T, 2.0 * T * T - T, 0.0};
+    const double a = 3.0 * T, b = 3.0 * T - 1.0, c = 3.0 * T - 2.0, d = 3.0 * T - 3.0;
+    return {-b * c * d / 6.0, a * c * d / 2.0, -a * b * d / 2.0, a * b * c / 6.0};
 }
 
-std::array<double, 3> cq_basis_d(double T) {
-    return {4.0 * T - 3.0, 4.0 - 8.0 * T, 4.0 * T - 1.0};
+std::array<double, 4> cq_basis_d(int Order, double T) {
+    if (Order == 2)
+        return {4.0 * T - 3.0, 4.0 - 8.0 * T, 4.0 * T - 1.0, 0.0};
+    const double a = 3.0 * T, b = 3.0 * T - 1.0, c = 3.0 * T - 2.0, d = 3.0 * T - 3.0;
+    // d/dT of each product of three factors, each factor's derivative 3.
+    return {-0.5 * (c * d + b * d + b * c), 1.5 * (c * d + a * d + a * c),
+            -1.5 * (b * d + a * d + a * b), 0.5 * (b * c + a * c + a * b)};
 }
 
-// Node k of quad9 at lattice position (i, j), i along xi, j along eta.
-constexpr std::array<std::array<int, 2>, 9> kCqLattice{
+// Node k of quad9 and quad16 at lattice position (i, j), i along xi, j along
+// eta, in steps of 1/Order: Gmsh's layout (corners, then each edge's nodes
+// from its first corner, then the inside, itself a quad's corners).
+constexpr std::array<std::array<int, 2>, 9> kCqLattice2{
     {{0, 0}, {2, 0}, {2, 2}, {0, 2}, {1, 0}, {2, 1}, {1, 2}, {0, 1}, {1, 1}}};
+constexpr std::array<std::array<int, 2>, 16> kCqLattice3{{{0, 0},
+                                                          {3, 0},
+                                                          {3, 3},
+                                                          {0, 3},
+                                                          {1, 0},
+                                                          {2, 0},
+                                                          {3, 1},
+                                                          {3, 2},
+                                                          {2, 3},
+                                                          {1, 3},
+                                                          {0, 2},
+                                                          {0, 1},
+                                                          {1, 1},
+                                                          {2, 1},
+                                                          {2, 2},
+                                                          {1, 2}}};
 
-// The inverse of the cubic Bernstein basis at 0, 1/3, 2/3 and 1: the
-// coefficients from the values, row by row.
-const std::array<std::array<double, 4>, 4>& cq_bernstein_inverse() {
-    static const std::array<std::array<double, 4>, 4> inv = [] {
-        std::array<std::array<double, 8>, 4> m{};
-        const double binom[4] = {1.0, 3.0, 3.0, 1.0};
-        for (int i = 0; i < 4; ++i) {
-            const double t = double(i) / 3.0;
-            for (int k = 0; k < 4; ++k)
-                m[i][k] = binom[k] * std::pow(t, k) * std::pow(1.0 - t, 3 - k);
-            m[i][4 + i] = 1.0;
+std::array<int, 2> cq_lattice(int Order, std::size_t N) {
+    return Order == 2 ? kCqLattice2[N] : kCqLattice3[N];
+}
+
+// The Jacobian's degree in each direction: 2 Order - 1.
+constexpr int kCqMaxDegree = 5;
+using CqMatrix = std::array<std::array<double, kCqMaxDegree + 1>, kCqMaxDegree + 1>;
+
+// The inverse of the Bernstein basis of degree Degree at the equispaced
+// points 0, 1/Degree, ..., 1: the coefficients from the values, row by row.
+CqMatrix cq_make_bernstein_inverse(int Degree) {
+    const int n = Degree + 1;
+    std::array<std::array<double, 2 * (kCqMaxDegree + 1)>, kCqMaxDegree + 1> m{};
+    for (int i = 0; i < n; ++i) {
+        const double t = double(i) / double(Degree);
+        double binom = 1.0;
+        for (int k = 0; k < n; ++k) {
+            m[i][k] = binom * std::pow(t, k) * std::pow(1.0 - t, Degree - k);
+            binom = binom * double(Degree - k) / double(k + 1);
         }
-        // Gauss-Jordan with partial pivoting on [M | I].
-        for (int c = 0; c < 4; ++c) {
-            int p = c;
-            for (int r = c + 1; r < 4; ++r)
-                if (std::fabs(m[r][c]) > std::fabs(m[p][c]))
-                    p = r;
-            std::swap(m[c], m[p]);
-            const double d = m[c][c];
-            for (double& r_v : m[c])
-                r_v /= d;
-            for (int r = 0; r < 4; ++r)
-                if (r != c) {
-                    const double f = m[r][c];
-                    for (int k = 0; k < 8; ++k)
-                        m[r][k] -= f * m[c][k];
-                }
-        }
-        std::array<std::array<double, 4>, 4> out{};
-        for (int i = 0; i < 4; ++i)
-            for (int k = 0; k < 4; ++k)
-                out[i][k] = m[i][4 + k];
-        return out;
-    }();
-    return inv;
+        m[i][n + i] = 1.0;
+    }
+    // Gauss-Jordan with partial pivoting on [M | I].
+    for (int c = 0; c < n; ++c) {
+        int p = c;
+        for (int r = c + 1; r < n; ++r)
+            if (std::fabs(m[r][c]) > std::fabs(m[p][c]))
+                p = r;
+        std::swap(m[c], m[p]);
+        const double d = m[c][c];
+        for (int k = 0; k < 2 * n; ++k)
+            m[c][k] /= d;
+        for (int r = 0; r < n; ++r)
+            if (r != c) {
+                const double f = m[r][c];
+                for (int k = 0; k < 2 * n; ++k)
+                    m[r][k] -= f * m[c][k];
+            }
+    }
+    CqMatrix out{};
+    for (int i = 0; i < n; ++i)
+        for (int k = 0; k < n; ++k)
+            out[i][k] = m[i][n + k];
+    return out;
+}
+
+const CqMatrix& cq_bernstein_inverse(int Degree) {
+    static const CqMatrix inv3 = cq_make_bernstein_inverse(3);
+    static const CqMatrix inv5 = cq_make_bernstein_inverse(5);
+    return Degree == 3 ? inv3 : inv5;
 }
 
 // Judge the part over [U0, U1] x [V0, V1]: 1 valid, 0 invalid, -1
 // undecided at the depth.
-int cq_judge(const CurvedVec3* pNodes, const CurvedVec3& rN, double U0, double U1, double V0,
-             double V1, int Depth, int MaxDepth) {
-    std::array<std::array<double, 4>, 4> vals{};
-    for (int i = 0; i < 4; ++i)
-        for (int j = 0; j < 4; ++j) {
-            vals[i][j] = curved_quad_jacobian(pNodes, rN, U0 + (U1 - U0) * double(i) / 3.0,
-                                              V0 + (V1 - V0) * double(j) / 3.0);
+int cq_judge(int Order, const CurvedVec3* pNodes, const CurvedVec3& rN, double U0, double U1,
+             double V0, double V1, int Depth, int MaxDepth) {
+    const int degree = 2 * Order - 1;
+    const int n = degree + 1;
+    CqMatrix vals{};
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j) {
+            vals[i][j] =
+                curved_quad_jacobian(Order, pNodes, rN, U0 + (U1 - U0) * double(i) / degree,
+                                     V0 + (V1 - V0) * double(j) / degree);
             if (!(vals[i][j] > 0.0))
                 return 0;
         }
     // C = Minv V Minv^T.
-    const auto& r_inv = cq_bernstein_inverse();
-    std::array<std::array<double, 4>, 4> tmp{}, coef{};
-    for (int i = 0; i < 4; ++i)
-        for (int j = 0; j < 4; ++j)
-            for (int k = 0; k < 4; ++k)
+    const CqMatrix& r_inv = cq_bernstein_inverse(degree);
+    CqMatrix tmp{}, coef{};
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j)
+            for (int k = 0; k < n; ++k)
                 tmp[i][j] += r_inv[i][k] * vals[k][j];
     double least = tmp[0][0];
-    for (int i = 0; i < 4; ++i)
-        for (int j = 0; j < 4; ++j) {
-            for (int k = 0; k < 4; ++k)
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j) {
+            for (int k = 0; k < n; ++k)
                 coef[i][j] += tmp[i][k] * r_inv[j][k];
             least = std::min(least, coef[i][j]);
         }
@@ -70892,7 +71271,8 @@ int cq_judge(const CurvedVec3* pNodes, const CurvedVec3& rN, double U0, double U
     for (const auto& r_b :
          {std::array<double, 4>{U0, um, V0, vm}, std::array<double, 4>{um, U1, V0, vm},
           std::array<double, 4>{U0, um, vm, V1}, std::array<double, 4>{um, U1, vm, V1}}) {
-        const int v = cq_judge(pNodes, rN, r_b[0], r_b[1], r_b[2], r_b[3], Depth + 1, MaxDepth);
+        const int v =
+            cq_judge(Order, pNodes, rN, r_b[0], r_b[1], r_b[2], r_b[3], Depth + 1, MaxDepth);
         if (v == 0)
             return 0;
         if (v < 0)
@@ -70903,26 +71283,36 @@ int cq_judge(const CurvedVec3* pNodes, const CurvedVec3& rN, double U0, double U
 
 }  // namespace
 
-CurvedVec3 curved_quad_point(const CurvedVec3* pNodes, double Xi, double Eta) {
-    const auto a = cq_basis(Xi), b = cq_basis(Eta);
+std::size_t curved_quad_num_nodes(int Order) {
+    return static_cast<std::size_t>((Order + 1) * (Order + 1));
+}
+
+std::array<double, 2> curved_quad_node_position(int Order, std::size_t Node) {
+    const auto l = cq_lattice(Order, Node);
+    return {double(l[0]) / Order, double(l[1]) / Order};
+}
+
+CurvedVec3 curved_quad_point(int Order, const CurvedVec3* pNodes, double Xi, double Eta) {
+    const auto a = cq_basis(Order, Xi), b = cq_basis(Order, Eta);
     CurvedVec3 x{0.0, 0.0, 0.0};
-    for (std::size_t n = 0; n < 9; ++n) {
-        const double w = a[static_cast<std::size_t>(kCqLattice[n][0])] *
-                         b[static_cast<std::size_t>(kCqLattice[n][1])];
+    for (std::size_t n = 0; n < curved_quad_num_nodes(Order); ++n) {
+        const auto l = cq_lattice(Order, n);
+        const double w = a[static_cast<std::size_t>(l[0])] * b[static_cast<std::size_t>(l[1])];
         for (std::size_t k = 0; k < 3; ++k)
             x[k] += w * pNodes[n][k];
     }
     return x;
 }
 
-double curved_quad_jacobian(const CurvedVec3* pNodes, const CurvedVec3& rNormal, double Xi,
-                            double Eta) {
-    const auto a = cq_basis(Xi), b = cq_basis(Eta);
-    const auto da = cq_basis_d(Xi), db = cq_basis_d(Eta);
+double curved_quad_jacobian(int Order, const CurvedVec3* pNodes, const CurvedVec3& rNormal,
+                            double Xi, double Eta) {
+    const auto a = cq_basis(Order, Xi), b = cq_basis(Order, Eta);
+    const auto da = cq_basis_d(Order, Xi), db = cq_basis_d(Order, Eta);
     CurvedVec3 xu{0.0, 0.0, 0.0}, xv{0.0, 0.0, 0.0};
-    for (std::size_t n = 0; n < 9; ++n) {
-        const auto i = static_cast<std::size_t>(kCqLattice[n][0]);
-        const auto j = static_cast<std::size_t>(kCqLattice[n][1]);
+    for (std::size_t n = 0; n < curved_quad_num_nodes(Order); ++n) {
+        const auto l = cq_lattice(Order, n);
+        const auto i = static_cast<std::size_t>(l[0]);
+        const auto j = static_cast<std::size_t>(l[1]);
         for (std::size_t k = 0; k < 3; ++k) {
             xu[k] += da[i] * b[j] * pNodes[n][k];
             xv[k] += a[i] * db[j] * pNodes[n][k];
@@ -70933,18 +71323,61 @@ double curved_quad_jacobian(const CurvedVec3* pNodes, const CurvedVec3& rNormal,
     return c[0] * rNormal[0] + c[1] * rNormal[1] + c[2] * rNormal[2];
 }
 
-CurvedTriangleCheck curved_quad_check(const CurvedVec3* pNodes, const CurvedVec3& rNormal,
-                                      int MaxDepth) {
+CurvedTriangleCheck curved_quad_check(int Order, const CurvedVec3* pNodes,
+                                      const CurvedVec3& rNormal, int MaxDepth) {
     CurvedTriangleCheck out;
-    out.mMinNodal = curved_quad_jacobian(pNodes, rNormal, 0.0, 0.0);
-    for (std::size_t n = 1; n < 9; ++n)
-        out.mMinNodal = std::min(
-            out.mMinNodal,
-            curved_quad_jacobian(pNodes, rNormal, 0.5 * kCqLattice[n][0], 0.5 * kCqLattice[n][1]));
-    const int v = cq_judge(pNodes, rNormal, 0.0, 1.0, 0.0, 1.0, 0, MaxDepth);
+    out.mMinNodal = curved_quad_jacobian(Order, pNodes, rNormal, 0.0, 0.0);
+    for (std::size_t n = 1; n < curved_quad_num_nodes(Order); ++n) {
+        const auto p = curved_quad_node_position(Order, n);
+        out.mMinNodal =
+            std::min(out.mMinNodal, curved_quad_jacobian(Order, pNodes, rNormal, p[0], p[1]));
+    }
+    const int v = cq_judge(Order, pNodes, rNormal, 0.0, 1.0, 0.0, 1.0, 0, MaxDepth);
     out.mValid = v == 1;
     out.mDecided = v >= 0;
     return out;
+}
+
+double curved_quad_scaled_bound(int Order, const CurvedVec3* pNodes, const CurvedVec3& rNormal) {
+    // As curved_triangle_scaled_bound: the least Bernstein coefficient of J
+    // over the largest in magnitude, on the tensor-product basis.
+    const int degree = 2 * Order - 1;
+    const int n = degree + 1;
+    CqMatrix vals{};
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j)
+            vals[i][j] = curved_quad_jacobian(Order, pNodes, rNormal, double(i) / degree,
+                                              double(j) / degree);
+    const CqMatrix& r_inv = cq_bernstein_inverse(degree);
+    CqMatrix tmp{};
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j)
+            for (int k = 0; k < n; ++k)
+                tmp[i][j] += r_inv[i][k] * vals[k][j];
+    double least = std::numeric_limits<double>::infinity(), largest = 0.0;
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j) {
+            double c = 0.0;
+            for (int k = 0; k < n; ++k)
+                c += tmp[i][k] * r_inv[j][k];
+            least = std::min(least, c);
+            largest = std::max(largest, std::fabs(c));
+        }
+    return largest > 0.0 ? least / largest : -1.0;
+}
+
+CurvedVec3 curved_quad_point(const CurvedVec3* pNodes, double Xi, double Eta) {
+    return curved_quad_point(2, pNodes, Xi, Eta);
+}
+
+double curved_quad_jacobian(const CurvedVec3* pNodes, const CurvedVec3& rNormal, double Xi,
+                            double Eta) {
+    return curved_quad_jacobian(2, pNodes, rNormal, Xi, Eta);
+}
+
+CurvedTriangleCheck curved_quad_check(const CurvedVec3* pNodes, const CurvedVec3& rNormal,
+                                      int MaxDepth) {
+    return curved_quad_check(2, pNodes, rNormal, MaxDepth);
 }
 
 }  // namespace meshioplusplus::detail
@@ -71292,24 +71725,29 @@ CurvedUntangleReport curved_untangle(int Order, const std::vector<CurvedUntangle
                                      const std::vector<std::array<double, 4>>* pBounds,
                                      int MaxSweeps) {
     CurvedUntangleReport out;
-    const int nn = curved_triangle_num_nodes(Order);
+    const auto nn = [&](std::size_t E) {
+        return rElems[E].mQuad ? static_cast<int>(curved_quad_num_nodes(Order))
+                               : curved_triangle_num_nodes(Order);
+    };
     const auto node = [&](std::int64_t Id) {
         const auto i = static_cast<std::size_t>(Id);
         return CurvedVec3{pX[3 * i], pX[3 * i + 1], pX[3 * i + 2]};
     };
     const auto nodes_of = [&](std::size_t E) {
-        std::array<CurvedVec3, 10> x{};
-        for (int i = 0; i < nn; ++i)
+        std::array<CurvedVec3, 16> x{};
+        for (int i = 0; i < nn(E); ++i)
             x[static_cast<std::size_t>(i)] = node(rElems[E].mNodes[static_cast<std::size_t>(i)]);
         return x;
     };
     const auto valid = [&](std::size_t E) {
         const auto x = nodes_of(E);
-        return curved_triangle_check(Order, x.data(), rElems[E].mNormal).mValid;
+        return rElems[E].mQuad ? curved_quad_check(Order, x.data(), rElems[E].mNormal).mValid
+                               : curved_triangle_check(Order, x.data(), rElems[E].mNormal).mValid;
     };
     const auto bound = [&](std::size_t E) {
         const auto x = nodes_of(E);
-        return curved_triangle_scaled_bound(Order, x.data(), rElems[E].mNormal);
+        return rElems[E].mQuad ? curved_quad_scaled_bound(Order, x.data(), rElems[E].mNormal)
+                               : curved_triangle_scaled_bound(Order, x.data(), rElems[E].mNormal);
     };
     // The free nodes by id, and the elements around each.
     std::unordered_map<std::int64_t, std::size_t> free_of;
@@ -71317,7 +71755,7 @@ CurvedUntangleReport curved_untangle(int Order, const std::vector<CurvedUntangle
         free_of.emplace(rFree[i], i);
     std::vector<std::vector<std::size_t>> around(rFree.size());
     for (std::size_t e = 0; e < rElems.size(); ++e)
-        for (int i = 3; i < nn; ++i) {
+        for (int i = 0; i < nn(e); ++i) {
             const auto it = free_of.find(rElems[e].mNodes[static_cast<std::size_t>(i)]);
             if (it != free_of.end())
                 around[it->second].push_back(e);
@@ -71336,10 +71774,12 @@ CurvedUntangleReport curved_untangle(int Order, const std::vector<CurvedUntangle
     std::vector<std::array<double, 2>> step(rFree.size(), {0.0, 0.0});
     const auto init_step = [&](std::size_t F) {
         double h = std::numeric_limits<double>::infinity();
-        for (const std::size_t e : around[F])
-            for (std::size_t k = 0; k < 3; ++k)
-                h = std::min(
-                    h, cu_dist(node(rElems[e].mNodes[k]), node(rElems[e].mNodes[(k + 1) % 3])));
+        for (const std::size_t e : around[F]) {
+            const std::size_t corners = rElems[e].mQuad ? 4 : 3;
+            for (std::size_t k = 0; k < corners; ++k)
+                h = std::min(h, cu_dist(node(rElems[e].mNodes[k]),
+                                        node(rElems[e].mNodes[(k + 1) % corners])));
+        }
         const auto& uv = rUv[F];
         for (std::size_t d = 0; d < 2; ++d) {
             const double du = 1e-6 * (1.0 + std::fabs(uv[d]));
@@ -71353,7 +71793,7 @@ CurvedUntangleReport curved_untangle(int Order, const std::vector<CurvedUntangle
     std::set<std::size_t> active;
     std::vector<char> stepped(rFree.size(), 0);
     const auto activate = [&](std::size_t E) {
-        for (int i = 3; i < nn; ++i) {
+        for (int i = 0; i < nn(E); ++i) {
             const auto it = free_of.find(rElems[E].mNodes[static_cast<std::size_t>(i)]);
             if (it == free_of.end())
                 continue;
@@ -79837,18 +80277,23 @@ LayerSweepResult layer_sweep(const LayerSweepInput& rIn) {
     out.mOrigin.resize(nn);
     for (std::size_t p = 0; p < nn; ++p)
         out.mOrigin[p] = static_cast<std::int64_t>(p);
-    // A point is collapsed when every offset is zero.
-    std::vector<char> collapsed(nn, 1);
+    // A point grows in layer K when its offset there differs from the one
+    // below (0 at the surface); otherwise its copy at K is the one below, and
+    // its corner of every cell of that layer is collapsed. A point that grows
+    // in no layer is the surface point at every level.
+    std::vector<char> grows(nn * nl, 0);
     for (std::size_t p = 0; p < nn; ++p)
-        for (std::size_t k = 0; k < nl; ++k)
-            if (rIn.mOffsets[p * nl + k] != 0.0)
-                collapsed[p] = 0;
+        for (std::size_t k = 0; k < nl; ++k) {
+            const double below = k == 0 ? 0.0 : rIn.mOffsets[p * nl + k - 1];
+            grows[k * nn + p] = rIn.mOffsets[p * nl + k] != below ? 1 : 0;
+        }
     // The id of point P at level K (0 the surface).
     std::vector<std::int64_t> level_id(nn * nl, -1);
     for (std::size_t k = 0; k < nl; ++k)
         for (std::size_t p = 0; p < nn; ++p) {
-            if (collapsed[p]) {
-                level_id[k * nn + p] = static_cast<std::int64_t>(p);
+            if (!grows[k * nn + p]) {
+                level_id[k * nn + p] =
+                    k == 0 ? static_cast<std::int64_t>(p) : level_id[(k - 1) * nn + p];
                 continue;
             }
             level_id[k * nn + p] = static_cast<std::int64_t>(out.mOrigin.size());
@@ -79862,8 +80307,9 @@ LayerSweepResult layer_sweep(const LayerSweepInput& rIn) {
                    ? P
                    : level_id[static_cast<std::size_t>(K - 1) * nn + static_cast<std::size_t>(P)];
     };
-    const auto is_collapsed = [&](std::int64_t P) {
-        return collapsed[static_cast<std::size_t>(P)] != 0;
+    // Collapsed in layer K (between levels K - 1 and K).
+    const auto is_collapsed = [&](std::int64_t P, int K) {
+        return grows[static_cast<std::size_t>(K - 1) * nn + static_cast<std::size_t>(P)] == 0;
     };
     // A triangle (A, B, C) between levels K - 1 and K: a wedge, or what its
     // collapsed corners leave of it.
@@ -79872,7 +80318,7 @@ LayerSweepResult layer_sweep(const LayerSweepInput& rIn) {
         const std::array<std::int64_t, 3> v{A, B, C};
         int ncol = 0;
         for (const std::int64_t x : v)
-            ncol += is_collapsed(x) ? 1 : 0;
+            ncol += is_collapsed(x, K) ? 1 : 0;
         LayerSweepCell cell;
         cell.mNodes.fill(-1);
         cell.mFace = F;
@@ -79890,16 +80336,17 @@ LayerSweepResult layer_sweep(const LayerSweepInput& rIn) {
         // Rotate so the collapsed ones come first, in cyclic order.
         std::size_t s = 0;
         if (ncol == 1) {
-            while (!is_collapsed(v[s]))
+            while (!is_collapsed(v[s], K))
                 ++s;
             const std::int64_t x = v[s], y = v[(s + 1) % 3], z = v[(s + 2) % 3];
-            cell.mNodes = {at(y, K - 1), at(y, K), at(z, K), at(z, K - 1), x, -1, -1, -1};
+            cell.mNodes = {at(y, K - 1), at(y, K), at(z, K), at(z, K - 1),
+                           at(x, K - 1), -1,       -1,       -1};
             out.mPyramids.push_back(cell);
         } else {
-            while (is_collapsed(v[s]))
+            while (is_collapsed(v[s], K))
                 ++s;
             const std::int64_t z = v[s], x = v[(s + 1) % 3], y = v[(s + 2) % 3];
-            cell.mNodes = {x, y, at(z, K - 1), at(z, K), -1, -1, -1, -1};
+            cell.mNodes = {at(x, K - 1), at(y, K - 1), at(z, K - 1), at(z, K), -1, -1, -1, -1};
             out.mTetrahedra.push_back(cell);
         }
     };
@@ -79907,9 +80354,12 @@ LayerSweepResult layer_sweep(const LayerSweepInput& rIn) {
         const auto& r_f = rIn.mFaces[f];
         const bool quad = r_f[3] >= 0;
         const int corners = quad ? 4 : 3;
+        // A quad with a corner collapsed in any layer is split in every
+        // layer, so the columns beside it stay conforming.
         bool any = false;
         for (int i = 0; i < corners; ++i)
-            any = any || is_collapsed(r_f[static_cast<std::size_t>(i)]);
+            for (int k = 1; k <= layers && !any; ++k)
+                any = is_collapsed(r_f[static_cast<std::size_t>(i)], k);
         const auto face = static_cast<std::int64_t>(f);
         const bool split = quad && any;
         for (int k = 1; k <= layers; ++k) {
@@ -81898,6 +82348,7 @@ struct MeshCadMetricField::Impl {
     DistanceQuery mQuery;
     std::vector<std::array<double, 9>> mMetric;  ///< per point of the surface
     double mFloor = 0.0;
+    double mScale = 1.0;
 };
 
 MeshCadMetricField::MeshCadMetricField(const Mesh& rBackground, const std::string& rArray,
@@ -81936,6 +82387,10 @@ MeshCadMetricField::MeshCadMetricField(const Mesh& rBackground, const std::strin
 
 MeshCadMetricField::~MeshCadMetricField() = default;
 
+void MeshCadMetricField::SetScale(double Scale) {
+    mpImpl->mScale = Scale;
+}
+
 void MeshCadMetricField::At(const Vec3& rX, double Size, std::array<double, 9>& rM,
                             std::array<double, 9>* pRoot) const {
     std::array<double, 9> m{};
@@ -81960,10 +82415,14 @@ void MeshCadMetricField::At(const Vec3& rX, double Size, std::array<double, 9>& 
                         out[3 * a + d] += pm[3 * a + b] * m[3 * b + c] * pm[3 * c + d];
         m = out;
     }
+    if (mpImpl->mScale != 1.0)
+        for (double& r_v : m)
+            r_v /= mpImpl->mScale * mpImpl->mScale;
     double ev[3], vec[9];
     lsq_sym3_eigen(m.data(), ev, vec);
     const double lo = 1.0 / (Size * Size);
-    const double hi = 1.0 / (mpImpl->mFloor * mpImpl->mFloor);
+    const double floor = mpImpl->mFloor * mpImpl->mScale;
+    const double hi = 1.0 / (floor * floor);
     rM.fill(0.0);
     if (pRoot)
         pRoot->fill(0.0);
@@ -90379,8 +90838,11 @@ double quad_scaled_jacobian(const double* pX, const std::array<std::int64_t, 4>&
     return sj;
 }
 
-double quad_recombine_quality(const double* pX, const std::array<std::int64_t, 4>& rQ) {
-    const auto p = qr_points(pX, rQ);
+namespace {
+
+/// `quad_recombine_quality` of a quad given by its corners.
+double qr_quality(const std::array<QrV3, 4>& rP) {
+    const auto& p = rP;
     const QrV3 n = qr_normal(p);
     double q = 1.0;
     for (std::size_t i = 0; i < 4; ++i) {
@@ -90395,9 +90857,40 @@ double quad_recombine_quality(const double* pX, const std::array<std::int64_t, 4
     return std::max(0.0, q);
 }
 
+}  // namespace
+
+double quad_recombine_quality(const double* pX, const std::array<std::int64_t, 4>& rQ) {
+    return qr_quality(qr_points(pX, rQ));
+}
+
 namespace {
 
 using QrEdge = MatchingEdge;
+
+/// Whether quad `rQ`, split through its edges' midpoints `rMid` and their
+/// mean into four, has all four meet the floor `MinQuality`: a corner the
+/// floor admits near a straight angle (150 degrees on the sphere) turns
+/// past it once the midpoints lie on a curved surface and the centre is
+/// lifted onto it (all-quad, roadmap 6.8). A side without a midpoint leaves
+/// the quad as it is.
+bool qr_splits_well(const double* pX, const std::array<std::int64_t, 4>& rQ,
+                    const std::map<std::pair<std::int64_t, std::int64_t>, std::int64_t>& rMid,
+                    double MinQuality) {
+    std::array<QrV3, 4> mid{};
+    QrV3 centre{0.0, 0.0, 0.0};
+    for (std::size_t i = 0; i < 4; ++i) {
+        const auto it = rMid.find(std::minmax(rQ[i], rQ[(i + 1) % 4]));
+        if (it == rMid.end())
+            return true;
+        mid[i] = qr_at(pX, it->second);
+        for (std::size_t k = 0; k < 3; ++k)
+            centre[k] += 0.25 * mid[i][k];
+    }
+    for (std::size_t i = 0; i < 4; ++i)
+        if (!(qr_quality({qr_at(pX, rQ[i]), mid[i], centre, mid[(i + 3) % 4]}) >= MinQuality))
+            return false;
+    return true;
+}
 
 // Triangles a face is matched in at once: the matching is exact inside a
 // patch, and its cost grows faster than linearly with the patch (measured on
@@ -90507,9 +91000,12 @@ std::vector<std::int64_t> qr_patched_matching(std::int64_t N, const std::vector<
 
 }  // namespace
 
-QuadRecombineResult quad_recombine(const std::vector<std::array<std::int64_t, 3>>& rTris,
-                                   const std::vector<std::int64_t>& rGroup, const double* pX,
-                                   double MinQuality, QuadPairing Pairing) {
+QuadRecombineResult quad_recombine(
+    const std::vector<std::array<std::int64_t, 3>>& rTris, const std::vector<std::int64_t>& rGroup,
+    const double* pX, double MinQuality, QuadPairing Pairing,
+    const std::vector<std::array<std::int64_t, 3>>* pSideCurve,
+    const std::set<std::pair<std::int64_t, std::int64_t>>* pFixed,
+    const std::map<std::pair<std::int64_t, std::int64_t>, std::int64_t>* pMidpoint) {
     QuadRecombineResult out;
     // Each directed edge's triangle; an interior edge has both directions.
     std::map<std::pair<std::int64_t, std::int64_t>, std::size_t> of_edge;
@@ -90537,6 +91033,8 @@ QuadRecombineResult quad_recombine(const std::vector<std::array<std::int64_t, 3>
         const std::size_t t2 = it->second;
         if (t1 == t2 || rGroup[t1] != rGroup[t2])
             continue;
+        if (pFixed && pFixed->count({a, b}) > 0)
+            continue;
         // The third points: c of (a, b, c), d of (b, a, d).
         std::int64_t c = -1, d = -1;
         for (std::size_t k = 0; k < 3; ++k) {
@@ -90547,14 +91045,32 @@ QuadRecombineResult quad_recombine(const std::vector<std::array<std::int64_t, 3>
         }
         if (c < 0 || d < 0 || c == d)
             continue;
+        if (pSideCurve) {
+            // The curve of triangle T's side from P to Q.
+            const auto curve = [&](std::size_t T, std::int64_t P, std::int64_t Q) {
+                for (std::size_t k = 0; k < 3; ++k)
+                    if (rTris[T][k] == P && rTris[T][(k + 1) % 3] == Q)
+                        return (*pSideCurve)[T][k];
+                return std::int64_t{-1};
+            };
+            // Corner a: sides (a, d) of t2 and (c, a) of t1; corner b: (d, b)
+            // of t2 and (b, c) of t1.
+            const std::int64_t ad = curve(t2, a, d), ca = curve(t1, c, a);
+            const std::int64_t db = curve(t2, d, b), bc = curve(t1, b, c);
+            if ((ad >= 0 && ad == ca) || (db >= 0 && db == bc))
+                continue;
+        }
         const std::array<std::int64_t, 4> quad{a, d, b, c};
         const QrV3 n1 = normal_of(t1), n2 = normal_of(t2);
         const double l = qr_norm(n1) * qr_norm(n2);
         if (!(l > 0.0))
             continue;
         const double q = quad_recombine_quality(pX, quad) * std::max(0.0, qr_dot(n1, n2) / l);
-        if (q >= MinQuality && q > 0.0)
-            cand.push_back({q, a, b, std::min(t1, t2), std::max(t1, t2), quad});
+        if (!(q >= MinQuality && q > 0.0))
+            continue;
+        if (pMidpoint && !qr_splits_well(pX, quad, *pMidpoint, MinQuality))
+            continue;
+        cand.push_back({q, a, b, std::min(t1, t2), std::max(t1, t2), quad});
     }
     std::sort(cand.begin(), cand.end(), [](const Candidate& rX, const Candidate& rY) {
         if (rX.mQuality != rY.mQuality)
@@ -98086,6 +98602,136 @@ std::vector<TriSegmentHit> tri_bvh_segment_hits(const TriBvh& rTree, const Vec3&
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/tri_bvh.cpp =====
+// ===== begin src/cpp/src/detail/tri_tri.cpp =====
+#include <array>
+#include <cmath>
+#include <cstddef>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+namespace {
+
+int ttr_sign(double V) {
+    return (V > 0.0) - (V < 0.0);
+}
+
+// Two signs strictly opposite.
+bool ttr_opposite(int A, int B) {
+    return A * B < 0;
+}
+
+// In the plane: the two coordinates the axis `Drop` leaves.
+std::array<double, 2> ttr_project(const double* pP, int Drop) {
+    return Drop == 0   ? std::array<double, 2>{pP[1], pP[2]}
+           : Drop == 1 ? std::array<double, 2>{pP[2], pP[0]}
+                       : std::array<double, 2>{pP[0], pP[1]};
+}
+
+// Whether 2-D segments ab and cd meet (touching included).
+bool ttr_segments_2d(const std::array<double, 2>& rA, const std::array<double, 2>& rB,
+                     const std::array<double, 2>& rC, const std::array<double, 2>& rD) {
+    const int o1 = ttr_sign(orient2d(rA.data(), rB.data(), rC.data()));
+    const int o2 = ttr_sign(orient2d(rA.data(), rB.data(), rD.data()));
+    const int o3 = ttr_sign(orient2d(rC.data(), rD.data(), rA.data()));
+    const int o4 = ttr_sign(orient2d(rC.data(), rD.data(), rB.data()));
+    if (o1 == 0 && o2 == 0 && o3 == 0 && o4 == 0) {
+        // On one line: their extents along it overlap.
+        const int axis = std::fabs(rA[0] - rB[0]) + std::fabs(rC[0] - rD[0]) >=
+                                 std::fabs(rA[1] - rB[1]) + std::fabs(rC[1] - rD[1])
+                             ? 0
+                             : 1;
+        const double lo1 = std::fmin(rA[axis], rB[axis]), hi1 = std::fmax(rA[axis], rB[axis]);
+        const double lo2 = std::fmin(rC[axis], rD[axis]), hi2 = std::fmax(rC[axis], rD[axis]);
+        return lo1 <= hi2 && lo2 <= hi1;
+    }
+    return o1 * o2 <= 0 && o3 * o4 <= 0;
+}
+
+// Whether 2-D point p lies in or on triangle abc (either orientation). A
+// degenerate triangle has no inside: its segments are the edges' tests.
+bool ttr_inside_2d(const std::array<double, 2>& rP, const std::array<double, 2>& rA,
+                   const std::array<double, 2>& rB, const std::array<double, 2>& rC) {
+    if (orient2d(rA.data(), rB.data(), rC.data()) == 0.0)
+        return false;
+    const int s1 = ttr_sign(orient2d(rA.data(), rB.data(), rP.data()));
+    const int s2 = ttr_sign(orient2d(rB.data(), rC.data(), rP.data()));
+    const int s3 = ttr_sign(orient2d(rC.data(), rA.data(), rP.data()));
+    return !(ttr_opposite(s1, s2) || ttr_opposite(s2, s3) || ttr_opposite(s1, s3));
+}
+
+bool ttr_coplanar(const double* const* pT1, const double* const* pT2) {
+    // Drop the axis the plane's normal is largest along.
+    double n[3] = {0.0, 0.0, 0.0};
+    const auto accumulate = [&](const double* const* pT) {
+        const double u[3] = {pT[1][0] - pT[0][0], pT[1][1] - pT[0][1], pT[1][2] - pT[0][2]};
+        const double v[3] = {pT[2][0] - pT[0][0], pT[2][1] - pT[0][1], pT[2][2] - pT[0][2]};
+        const double c[3] = {u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
+                             u[0] * v[1] - u[1] * v[0]};
+        for (int k = 0; k < 3; ++k)
+            n[k] += std::fabs(c[k]);
+    };
+    accumulate(pT1);
+    accumulate(pT2);
+    const int drop = n[0] >= n[1] && n[0] >= n[2] ? 0 : (n[1] >= n[2] ? 1 : 2);
+    std::array<std::array<double, 2>, 3> a{}, b{};
+    for (int k = 0; k < 3; ++k) {
+        a[static_cast<std::size_t>(k)] = ttr_project(pT1[k], drop);
+        b[static_cast<std::size_t>(k)] = ttr_project(pT2[k], drop);
+    }
+    for (std::size_t i = 0; i < 3; ++i)
+        for (std::size_t j = 0; j < 3; ++j)
+            if (ttr_segments_2d(a[i], a[(i + 1) % 3], b[j], b[(j + 1) % 3]))
+                return true;
+    return ttr_inside_2d(a[0], b[0], b[1], b[2]) || ttr_inside_2d(b[0], a[0], a[1], a[2]);
+}
+
+}  // namespace
+
+bool segment_tri_intersect(const double* pA, const double* pB, const double* pP, const double* pQ,
+                           const double* pR) {
+    const int sa = ttr_sign(orient3d(pP, pQ, pR, pA));
+    const int sb = ttr_sign(orient3d(pP, pQ, pR, pB));
+    if (sa != 0 && sa == sb)
+        return false;
+    if (sa == 0 && sb == 0) {
+        // In the triangle's plane: as a degenerate triangle.
+        const double* t1[3] = {pA, pB, pB};
+        const double* t2[3] = {pP, pQ, pR};
+        return ttr_coplanar(t1, t2);
+    }
+    const int s1 = ttr_sign(orient3d(pA, pB, pP, pQ));
+    const int s2 = ttr_sign(orient3d(pA, pB, pQ, pR));
+    const int s3 = ttr_sign(orient3d(pA, pB, pR, pP));
+    return !(ttr_opposite(s1, s2) || ttr_opposite(s2, s3) || ttr_opposite(s1, s3));
+}
+
+bool tri_tri_intersect(const double* pA, const double* pB, const double* pC, const double* pD,
+                       const double* pE, const double* pF) {
+    const int d1 = ttr_sign(orient3d(pD, pE, pF, pA));
+    const int d2 = ttr_sign(orient3d(pD, pE, pF, pB));
+    const int d3 = ttr_sign(orient3d(pD, pE, pF, pC));
+    if (d1 != 0 && d1 == d2 && d2 == d3)
+        return false;
+    const int e1 = ttr_sign(orient3d(pA, pB, pC, pD));
+    const int e2 = ttr_sign(orient3d(pA, pB, pC, pE));
+    const int e3 = ttr_sign(orient3d(pA, pB, pC, pF));
+    if (e1 != 0 && e1 == e2 && e2 == e3)
+        return false;
+    const double* t1[3] = {pA, pB, pC};
+    const double* t2[3] = {pD, pE, pF};
+    if (d1 == 0 && d2 == 0 && d3 == 0)
+        return ttr_coplanar(t1, t2);
+    for (int i = 0; i < 3; ++i)
+        if (segment_tri_intersect(t1[i], t1[(i + 1) % 3], pD, pE, pF) ||
+            segment_tri_intersect(t2[i], t2[(i + 1) % 3], pA, pB, pC))
+            return true;
+    return false;
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/tri_tri.cpp =====
 // ===== begin src/cpp/src/detail/vtk_cells.cpp =====
 #include <algorithm>
 #include <cstring>
@@ -202352,6 +202998,166 @@ NDArray bl_gather(const NDArray& rA, const std::vector<std::int64_t>& rFrom) {
     return out;
 }
 
+// The front test (6.9.1, after Pirzadeh 1996's advancing-layer test): every
+// layer cell against the surface's faces and the last layer's (quads by
+// their first diagonal), over a bounding-volume hierarchy, by the exact
+// triangle-triangle kernel: a face that crosses one of the cell's faces, or
+// lies inside the cell, meets it. A face whose column shares a surface point
+// with the cell is its neighbour and is left out. Marks the surface points
+// of each such cell, and of a last-layer face it meets, in `rBad`; returns
+// the pairs found. Cells are tested in parallel, each pair once, so the
+// count does not depend on threads.
+std::int64_t bl_front_crossings(const detail::LayerSweepResult& rSweep, std::vector<char>& rBad) {
+    detail::TriangleSoup soup;
+    const std::size_t npts = rSweep.mOrigin.size();
+    soup.mPoints.resize(npts);
+    for (std::size_t i = 0; i < npts; ++i)
+        soup.mPoints[i] = {rSweep.mPoints[3 * i], rSweep.mPoints[3 * i + 1],
+                           rSweep.mPoints[3 * i + 2]};
+    std::vector<char> is_cap;
+    const auto add = [&](std::int64_t A, std::int64_t B, std::int64_t C, bool Cap) {
+        soup.mVertices.push_back({A, B, C});
+        for (const std::int64_t v : {A, B, C})
+            soup.mCorners.push_back(soup.mPoints[static_cast<std::size_t>(v)]);
+        soup.mSourceCell.push_back(static_cast<std::int64_t>(is_cap.size()));
+        is_cap.push_back(Cap ? 1 : 0);
+    };
+    for (const bool cap : {true, false}) {
+        for (const auto& r_c : cap ? rSweep.mCapTriangles : rSweep.mWallTriangles)
+            add(r_c.mNodes[0], r_c.mNodes[1], r_c.mNodes[2], cap);
+        for (const auto& r_c : cap ? rSweep.mCapQuads : rSweep.mWallQuads) {
+            add(r_c.mNodes[0], r_c.mNodes[1], r_c.mNodes[2], cap);
+            add(r_c.mNodes[0], r_c.mNodes[2], r_c.mNodes[3], cap);
+        }
+    }
+    const std::size_t nt = is_cap.size();
+    if (nt == 0)
+        return 0;
+    const detail::TriBvh tree = detail::build_tri_bvh(soup);
+    // The cells, each with its kind (its node count), and the triangles of
+    // its faces by local node.
+    struct BlCell {
+        const detail::LayerSweepCell* pCell;
+        int mKind;
+    };
+    std::vector<BlCell> cells;
+    for (const auto& r_c : rSweep.mHexahedra)
+        cells.push_back({&r_c, 8});
+    for (const auto& r_c : rSweep.mWedges)
+        cells.push_back({&r_c, 6});
+    for (const auto& r_c : rSweep.mPyramids)
+        cells.push_back({&r_c, 5});
+    for (const auto& r_c : rSweep.mTetrahedra)
+        cells.push_back({&r_c, 4});
+    using Tri = std::array<int, 3>;
+    static const std::vector<Tri> k_hex = {{0, 1, 2}, {0, 2, 3}, {4, 5, 6}, {4, 6, 7},
+                                           {0, 1, 5}, {0, 5, 4}, {1, 2, 6}, {1, 6, 5},
+                                           {2, 3, 7}, {2, 7, 6}, {3, 0, 4}, {3, 4, 7}};
+    static const std::vector<Tri> k_wedge = {{0, 1, 2}, {3, 4, 5}, {0, 1, 4}, {0, 4, 3},
+                                             {1, 2, 5}, {1, 5, 4}, {2, 0, 3}, {2, 3, 5}};
+    static const std::vector<Tri> k_pyramid = {{0, 1, 2}, {0, 2, 3}, {0, 1, 4},
+                                               {1, 2, 4}, {2, 3, 4}, {3, 0, 4}};
+    static const std::vector<Tri> k_tet = {{0, 1, 2}, {0, 1, 3}, {1, 2, 3}, {2, 0, 3}};
+    const auto faces_of = [&](int Kind) -> const std::vector<Tri>& {
+        return Kind == 8 ? k_hex : Kind == 6 ? k_wedge : Kind == 5 ? k_pyramid : k_tet;
+    };
+    const auto pt = [&](std::int64_t I) { return rSweep.mPoints.data() + 3 * I; };
+    std::vector<std::vector<std::size_t>> hits(cells.size());
+    parallel_for(
+        cells.size(),
+        [&](std::size_t C) {
+            const detail::LayerSweepCell& r_c = *cells[C].pCell;
+            const int kind = cells[C].mKind;
+            const auto nn = static_cast<std::size_t>(kind);
+            BlV3 lo{std::numeric_limits<double>::infinity(),
+                    std::numeric_limits<double>::infinity(),
+                    std::numeric_limits<double>::infinity()};
+            BlV3 hi{-lo[0], -lo[1], -lo[2]};
+            BlV3 mid{0.0, 0.0, 0.0};
+            for (std::size_t k = 0; k < nn; ++k) {
+                const double* x = pt(r_c.mNodes[k]);
+                for (std::size_t d = 0; d < 3; ++d) {
+                    lo[d] = std::min(lo[d], x[d]);
+                    hi[d] = std::max(hi[d], x[d]);
+                    mid[d] += x[d] / double(nn);
+                }
+            }
+            const auto shares = [&](std::size_t U) {
+                for (std::size_t a = 0; a < nn; ++a)
+                    for (std::size_t b = 0; b < 3; ++b)
+                        if (rSweep.mOrigin[static_cast<std::size_t>(r_c.mNodes[a])] ==
+                            rSweep.mOrigin[static_cast<std::size_t>(soup.mVertices[U][b])])
+                            return true;
+                return false;
+            };
+            // Inside the cell: on no face's far side from its centroid (the
+            // cells are valid, so nearly convex).
+            const auto inside = [&](const double* pP) {
+                for (const Tri& r_f : faces_of(kind)) {
+                    const double* a = pt(r_c.mNodes[static_cast<std::size_t>(r_f[0])]);
+                    const double* b = pt(r_c.mNodes[static_cast<std::size_t>(r_f[1])]);
+                    const double* c = pt(r_c.mNodes[static_cast<std::size_t>(r_f[2])]);
+                    const double s_mid = detail::orient3d(a, b, c, mid.data());
+                    const double s_p = detail::orient3d(a, b, c, pP);
+                    if ((s_mid > 0.0 && s_p < 0.0) || (s_mid < 0.0 && s_p > 0.0))
+                        return false;
+                }
+                return true;
+            };
+            std::vector<std::int32_t> stack{0};
+            while (!stack.empty()) {
+                const auto n = static_cast<std::size_t>(stack.back());
+                stack.pop_back();
+                const detail::TriBvhNode& r_n = tree.mNodes[n];
+                bool apart = false;
+                for (std::size_t d = 0; d < 3 && !apart; ++d)
+                    apart = r_n.mHi[d] < lo[d] || r_n.mLo[d] > hi[d];
+                if (apart)
+                    continue;
+                if (r_n.mRight >= 0) {
+                    stack.push_back(r_n.mRight);
+                    stack.push_back(static_cast<std::int32_t>(n + 1));
+                    continue;
+                }
+                for (std::int32_t i = 0; i < r_n.mCount; ++i) {
+                    const auto u = static_cast<std::size_t>(
+                        tree.mOrder[static_cast<std::size_t>(r_n.mBegin + i)]);
+                    if (shares(u))
+                        continue;
+                    const double* d0 = soup.mCorners[3 * u].data();
+                    const double* d1 = soup.mCorners[3 * u + 1].data();
+                    const double* d2 = soup.mCorners[3 * u + 2].data();
+                    bool meets = inside(d0);
+                    for (const Tri& r_f : faces_of(kind)) {
+                        if (meets)
+                            break;
+                        meets = detail::tri_tri_intersect(
+                            pt(r_c.mNodes[static_cast<std::size_t>(r_f[0])]),
+                            pt(r_c.mNodes[static_cast<std::size_t>(r_f[1])]),
+                            pt(r_c.mNodes[static_cast<std::size_t>(r_f[2])]), d0, d1, d2);
+                    }
+                    if (meets)
+                        hits[C].push_back(u);
+                }
+            }
+        },
+        16);
+    std::int64_t count = 0;
+    for (std::size_t c = 0; c < cells.size(); ++c)
+        for (const std::size_t u : hits[c]) {
+            ++count;
+            const detail::LayerSweepCell& r_c = *cells[c].pCell;
+            for (int k = 0; k < cells[c].mKind; ++k)
+                rBad[static_cast<std::size_t>(rSweep.mOrigin[static_cast<std::size_t>(
+                    r_c.mNodes[static_cast<std::size_t>(k)])])] = 1;
+            if (is_cap[u])
+                for (std::size_t k = 0; k < 3; ++k)
+                    rBad[static_cast<std::size_t>(
+                        rSweep.mOrigin[static_cast<std::size_t>(soup.mVertices[u][k])])] = 1;
+        }
+    return count;
+}
+
 }  // namespace
 
 BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOptions& rOptions) {
@@ -202368,6 +203174,11 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
         bl_fail("smooth_iterations must be between 0 and 1000");
     if (o.mMaxShrink < 0 || o.mMaxShrink > 60)
         bl_fail("max_shrink must be between 0 and 60");
+    if (o.mCollapse != BoundaryLayerCollapse::Points &&
+        o.mCollapse != BoundaryLayerCollapse::Layers)
+        bl_fail("collapse must be points or layers");
+    if (o.mNormalSmoothIterations < 0 || o.mNormalSmoothIterations > 1000)
+        bl_fail("normal_smooth_iterations must be between 0 and 1000");
     const std::size_t np = rSurface.NumPoints();
     const NDArray& r_pts = rSurface.Points();
     if (np > 0 && (r_pts.Ndim() != 2 || r_pts.Shape()[1] != 3))
@@ -202465,7 +203276,7 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
     // Each point's most normal normal (Aubry and Löhner 2009): from the
     // angle-weighted mean, steps toward the face that sees it least.
     std::vector<BlV3> dir(np, BlV3{0.0, 0.0, 0.0});
-    std::vector<double> stretch(np, 0.0), sigma(np, 0.0);
+    std::vector<double> stretch(np, 0.0), sigma(np, 0.0), seen(np, 0.0);
     std::vector<char> used(np, 0), not_visible(np, 0);
     parallel_for(
         np,
@@ -202510,8 +203321,46 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
             }
             stretch[P] = 1.0 / std::max(best_lo, 1.0 / kBlMaxStretch);
             sigma[P] = 1.0;
+            seen[P] = best_lo;
         },
         64);
+    // Smoothed directions (6.9.1): each moved toward its neighbours' mean,
+    // kept while every face around it still sees it at more than half the
+    // least cosine its most normal normal had (Jacobi passes, so the result
+    // does not depend on the order).
+    const auto least_cos = [&](std::size_t P, const BlV3& rN) {
+        double lo = std::numeric_limits<double>::infinity();
+        for (const auto& [f, w] : around[P]) {
+            (void)w;
+            lo = std::min(lo, bl_dot(rN, fn[f]));
+        }
+        return lo;
+    };
+    for (int it = 0; it < o.mNormalSmoothIterations; ++it) {
+        std::vector<BlV3> next = dir;
+        parallel_for(
+            np,
+            [&](std::size_t P) {
+                if (!(sigma[P] > 0.0) || nbrs[P].empty())
+                    return;
+                BlV3 m = dir[P];
+                for (const std::int64_t q : nbrs[P]) {
+                    const auto& r_q = dir[static_cast<std::size_t>(q)];
+                    if (sigma[static_cast<std::size_t>(q)] > 0.0)
+                        m = {m[0] + r_q[0], m[1] + r_q[1], m[2] + r_q[2]};
+                }
+                const BlV3 n = bl_unit(m);
+                const double lo = least_cos(P, n);
+                if (lo > 0.5 * seen[P] && lo > kBlVisible)
+                    next[P] = n;
+            },
+            64);
+        dir = std::move(next);
+    }
+    if (o.mNormalSmoothIterations > 0)
+        for (std::size_t p = 0; p < np; ++p)
+            if (sigma[p] > 0.0)
+                stretch[p] = 1.0 / std::max(least_cos(p, dir[p]), 1.0 / kBlMaxStretch);
     // The levels' offsets, before each point's own fraction and stretch.
     const auto nl = static_cast<std::size_t>(o.mNumLayers);
     std::vector<double> level(nl);
@@ -202594,14 +203443,20 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
         for (std::size_t c = 0; c < 3; ++c)
             in.mDirections[3 * p + c] = dir[p][c];
     std::vector<int> halvings(np, 0);
+    // With Layers, the layers each point grows (6.9.1).
+    std::vector<std::size_t> grown(np, nl);
+    const bool by_layers = o.mCollapse == BoundaryLayerCollapse::Layers;
     detail::LayerSweepResult sweep;
     double min_sj = std::numeric_limits<double>::infinity();
+    std::int64_t front_crossings = 0;
+    const int max_rounds = std::max(64 * (o.mMaxShrink + 2), by_layers ? 4 * o.mNumLayers + 64 : 0);
     for (int round = 0;; ++round) {
         in.mOffsets.assign(np * nl, 0.0);
         for (std::size_t p = 0; p < np; ++p)
-            if (sigma[p] > 0.0)
+            if (sigma[p] > 0.0 && grown[p] > 0)
                 for (std::size_t k = 0; k < nl; ++k)
-                    in.mOffsets[p * nl + k] = sigma[p] * stretch[p] * level[k];
+                    in.mOffsets[p * nl + k] =
+                        sigma[p] * stretch[p] * level[std::min(k, grown[p] - 1)];
         sweep = detail::layer_sweep(in);
         std::vector<char> bad_point(np, 0);
         bool bad = false;
@@ -202623,20 +203478,29 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
         judge(sweep.mWedges, 6);
         judge(sweep.mPyramids, 5);
         judge(sweep.mTetrahedra, 4);
+        if (!bad && o.mFrontCheck) {
+            const std::int64_t crossings = bl_front_crossings(sweep, bad_point);
+            front_crossings += crossings;
+            bad = crossings > 0;
+        }
         if (!bad)
             break;
-        if (round > 64 * (o.mMaxShrink + 2))
+        if (round > max_rounds)
             throw std::logic_error(std::string(kBoundaryLayerPrefix) +
                                    "internal error: the layers do not settle");
-        for (std::size_t p = 0; p < np; ++p)
-            if (bad_point[p] && sigma[p] > 0.0) {
-                if (halvings[p] < o.mMaxShrink) {
-                    sigma[p] *= 0.5;
-                    ++halvings[p];
-                } else {
+        for (std::size_t p = 0; p < np; ++p) {
+            if (!bad_point[p] || !(sigma[p] > 0.0) || grown[p] == 0)
+                continue;
+            if (by_layers) {
+                if (--grown[p] == 0)
                     sigma[p] = 0.0;
-                }
+            } else if (halvings[p] < o.mMaxShrink) {
+                sigma[p] *= 0.5;
+                ++halvings[p];
+            } else {
+                sigma[p] = 0.0;
             }
+        }
     }
 
     // The mesh: the cells, then the wall and the cap.
@@ -202804,12 +203668,16 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
     for (std::size_t p = 0; p < np; ++p) {
         if (!used[p])
             continue;
-        result.mNumShrunk += sigma[p] < 1.0 ? 1 : 0;
-        result.mNumCollapsed += sigma[p] > 0.0 ? 0 : 1;
+        const bool fewer = grown[p] < nl && grown[p] > 0 && sigma[p] > 0.0;
+        result.mNumShrunk += sigma[p] < 1.0 || grown[p] < nl ? 1 : 0;
+        result.mNumCollapsed += sigma[p] > 0.0 && grown[p] > 0 ? 0 : 1;
         result.mNumNotVisible += not_visible[p] ? 1 : 0;
-        result.mMinThickness = std::min(result.mMinThickness, sigma[p] * total);
-        result.mMaxThickness = std::max(result.mMaxThickness, sigma[p] * total);
+        result.mNumFewerLayers += fewer ? 1 : 0;
+        const double thick = grown[p] > 0 ? sigma[p] * level[grown[p] - 1] : 0.0;
+        result.mMinThickness = std::min(result.mMinThickness, thick);
+        result.mMaxThickness = std::max(result.mMaxThickness, thick);
     }
+    result.mNumFrontCrossings = front_crossings;
     if (!std::isfinite(result.mMinThickness))
         result.mMinThickness = 0.0;
     {
@@ -202830,6 +203698,12 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
                 result.mCapClosed = false;
         }
     }
+    if (result.mNumFrontCrossings > 0)
+        log::debug("boundary_layer: {} crossings of the last layer's faces given way to",
+                   result.mNumFrontCrossings);
+    if (result.mNumFewerLayers > 0)
+        warn(std::to_string(result.mNumFewerLayers) +
+             " points grow fewer layers than asked (their top layers would fold or cross)");
     if (result.mNumCollapsed > 0)
         warn(std::to_string(result.mNumCollapsed) +
              " points do not grow (their layers would fold or no direction sees all their "
@@ -210279,6 +211153,192 @@ ErrorResult estimate_error(const Mesh& rMesh, const ErrorOptions& rOptions) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/error.cpp =====
+// ===== begin src/cpp/src/operations/error_size.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kEsPrefix = "meshio++: error_size: ";
+
+[[noreturn]] void es_fail(const std::string& rWhy) {
+    throw std::invalid_argument(std::string(kEsPrefix) + rWhy);
+}
+
+}  // namespace
+
+ErrorSizeResult error_size(const Mesh& rMesh, const ErrorSizeOptions& rOptions) {
+    if (!(std::isfinite(rOptions.mTargetError) && rOptions.mTargetError > 0.0))
+        es_fail("target_error must be finite and positive");
+    if (!(std::isfinite(rOptions.mOrder) && rOptions.mOrder > 0.0))
+        es_fail("order must be finite and positive");
+    if (!(std::isfinite(rOptions.mMinSize) && rOptions.mMinSize >= 0.0) ||
+        !(std::isfinite(rOptions.mMaxSize) && rOptions.mMaxSize >= 0.0))
+        es_fail("min_size and max_size must be finite and not negative");
+    if (rOptions.mMinSize > 0.0 && rOptions.mMaxSize > 0.0 && rOptions.mMinSize > rOptions.mMaxSize)
+        es_fail("min_size must not exceed max_size");
+    if (rOptions.mOutputName.empty())
+        es_fail("an output name is required");
+    if (!rMesh.HasCellData(rOptions.mErrorArray)) {
+        if (rMesh.HasPointData(rOptions.mErrorArray))
+            es_fail("'" + rOptions.mErrorArray +
+                    "' is point_data; the indicator is per cell (estimate_error writes error:zz)");
+        throw std::invalid_argument(
+            data_unknown_key_message(rMesh, DataLocation::Cell, rOptions.mErrorArray));
+    }
+    const std::size_t nb = rMesh.NumCellBlocks();
+    for (std::size_t b = 0; b < nb; ++b)
+        if (data_num_components(rMesh.CellData(rOptions.mErrorArray, b)) != 1)
+            es_fail("'" + rOptions.mErrorArray + "' must have one component");
+    if (!rOptions.mOverwrite && rMesh.HasPointData(rOptions.mOutputName))
+        es_fail("'" + rOptions.mOutputName +
+                "' already exists in point_data (pass overwrite=true to replace it)");
+
+    const std::size_t np = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+    const NDArray& r_pts = rMesh.Points();
+    // Each cell's diameter and indicator, block by block, in block order.
+    std::vector<std::size_t> first(nb + 1, 0);
+    for (std::size_t b = 0; b < nb; ++b)
+        first[b + 1] = first[b] + rMesh.Cells(b).NumCells();
+    const std::size_t nc = first[nb];
+    std::vector<double> diam(nc, 0.0), eta(nc, std::numeric_limits<double>::quiet_NaN());
+    for (std::size_t b = 0; b < nb; ++b) {
+        const auto cells = rMesh.Cells(b);
+        const NDArray& r_e = rMesh.CellData(rOptions.mErrorArray, b);
+        parallel_for(cells.NumCells(), [&](std::size_t c) {
+            const std::size_t k = first[b] + c;
+            eta[k] = detail::read_double(r_e, c);
+            std::vector<std::int64_t> ids;
+            if (cells.IsPolyhedron()) {
+                for (std::size_t f = 0; f < cells.NumFaces(c); ++f) {
+                    const auto face = cells.Face(c, f);
+                    ids.insert(ids.end(), face.first, face.first + face.second);
+                }
+            } else if (cells.IsRagged()) {
+                const std::int64_t* p_row = cells.Row(c);
+                ids.assign(p_row, p_row + cells.RowSize(c));
+            } else {
+                const std::size_t n = cells.NodesPerCell();
+                for (std::size_t i = 0; i < n; ++i)
+                    ids.push_back(detail::read_int(cells.Conn(), n * c + i));
+            }
+            double d2 = 0.0;
+            for (std::size_t i = 0; i < ids.size(); ++i)
+                for (std::size_t j = i + 1; j < ids.size(); ++j) {
+                    double s = 0.0;
+                    for (std::size_t a = 0; a < dim; ++a) {
+                        const double t =
+                            detail::read_double(r_pts, dim * static_cast<std::size_t>(ids[i]) + a) -
+                            detail::read_double(r_pts, dim * static_cast<std::size_t>(ids[j]) + a);
+                        s += t * t;
+                    }
+                    d2 = std::max(d2, s);
+                }
+            diam[k] = std::sqrt(d2);
+        });
+    }
+    ErrorSizeResult result;
+    std::vector<char> usable(nc, 0);
+    for (std::size_t k = 0; k < nc; ++k)
+        if (std::isfinite(eta[k]) && eta[k] >= 0.0 && diam[k] > 0.0) {
+            usable[k] = 1;
+            ++result.mNumCells;
+        } else {
+            ++result.mNumSkipped;
+        }
+    // The evenly spread share (Zienkiewicz and Zhu 1987), and each cell's
+    // size: a cell with no error asks for the greatest size allowed.
+    const double share =
+        result.mNumCells > 0 ? rOptions.mTargetError / std::sqrt(double(result.mNumCells)) : 0.0;
+    std::vector<double> size(nc, std::numeric_limits<double>::quiet_NaN());
+    for (std::size_t k = 0; k < nc; ++k) {
+        if (!usable[k])
+            continue;
+        double h = eta[k] > 0.0 ? diam[k] * std::pow(share / eta[k], 1.0 / rOptions.mOrder)
+                                : std::numeric_limits<double>::infinity();
+        const double lo = rOptions.mMinSize, hi = rOptions.mMaxSize;
+        if (lo > 0.0 && h < lo) {
+            h = lo;
+            ++result.mNumClamped;
+        } else if (hi > 0.0 && h > hi) {
+            h = hi;
+            ++result.mNumClamped;
+        }
+        if (!std::isfinite(h)) {
+            --result.mNumCells;
+            ++result.mNumSkipped;
+            continue;
+        }
+        size[k] = h;
+    }
+    // Per point, the least of its cells' (block order, cell order: the
+    // minimum does not depend on it).
+    std::vector<double> at(np, std::numeric_limits<double>::infinity());
+    for (std::size_t b = 0; b < nb; ++b) {
+        const auto cells = rMesh.Cells(b);
+        for (std::size_t c = 0; c < cells.NumCells(); ++c) {
+            const double h = size[first[b] + c];
+            if (!std::isfinite(h))
+                continue;
+            const auto note = [&](std::int64_t P) {
+                double& r_a = at[static_cast<std::size_t>(P)];
+                r_a = std::min(r_a, h);
+            };
+            if (cells.IsPolyhedron()) {
+                for (std::size_t f = 0; f < cells.NumFaces(c); ++f) {
+                    const auto face = cells.Face(c, f);
+                    for (std::size_t i = 0; i < face.second; ++i)
+                        note(face.first[i]);
+                }
+            } else if (cells.IsRagged()) {
+                const std::int64_t* p_row = cells.Row(c);
+                for (std::size_t i = 0; i < cells.RowSize(c); ++i)
+                    note(p_row[i]);
+            } else {
+                const std::size_t n = cells.NodesPerCell();
+                for (std::size_t i = 0; i < n; ++i)
+                    note(detail::read_int(cells.Conn(), n * c + i));
+            }
+        }
+    }
+    NDArray out = NDArray::Uninit(DType::Float64, {np});
+    double* po = out.As<double>();
+    result.mMinSize = std::numeric_limits<double>::infinity();
+    result.mMaxSize = 0.0;
+    for (std::size_t i = 0; i < np; ++i) {
+        po[i] = std::isfinite(at[i]) ? at[i] : std::numeric_limits<double>::quiet_NaN();
+        if (std::isfinite(at[i])) {
+            result.mMinSize = std::min(result.mMinSize, at[i]);
+            result.mMaxSize = std::max(result.mMaxSize, at[i]);
+        }
+    }
+    if (!std::isfinite(result.mMinSize))
+        result.mMinSize = 0.0;
+    result.mMesh = detail::clone_mesh(
+        rMesh, [&](DataLocation Location, const std::string& rName, std::string&) {
+            return !(Location == DataLocation::Point && rName == rOptions.mOutputName);
+        });
+    result.mMesh.AddPointData(rOptions.mOutputName, std::move(out));
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
+        result.mMesh.AddRegion(rMesh.Region(i));
+    for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i)
+        result.mMesh.AddPropertySet(rMesh.GetPropertySet(i));
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/error_size.cpp =====
 // ===== begin src/cpp/src/operations/feature_edges.cpp =====
 #include <algorithm>
 #include <cstddef>
@@ -222703,6 +223763,10 @@ struct McadFace {
     bool mNeedsRounds = false;
     /// Every triangle of its latest meshing collapsed (6.5.7).
     bool mCollapsed = false;
+    /// In its latest curved meshing (6.6.3) a triangle had two sides along
+    /// one edge: their corner is a straight angle on the curve, where the
+    /// element's Jacobian vanishes, which no node can move.
+    bool mStraightCorner = false;
     /// By boundary point: a corner virtual edges suppress (6.5.2), left out
     /// of the face's loops; null when there are none.
     const std::vector<char>* pSuppressed = nullptr;
@@ -222776,6 +223840,9 @@ struct McadQuality {
     /// face's meshing or any split left.
     bool mLopCorners = false;
     const std::map<Vec3, double>* pLopRadius = nullptr;
+    /// Untangling (6.6.3): a curved element with two sides on one edge sets
+    /// the face's `mStraightCorner`.
+    bool mUntangle = false;
 };
 
 /// The angles of a triangle on the surface, in degrees.
@@ -222901,53 +223968,90 @@ std::int64_t mcad_straighten(int Order, const std::vector<std::array<std::int64_
     return count;
 }
 
-/// `mcad_straighten` for curved quads (6.8.3): a `quad9` whose Jacobian is
-/// not positive everywhere has its edge nodes moved to its edges' chord
-/// midpoints and its centre to its corners' mean, and the quads sharing a
-/// moved node are judged again. `rHi` holds nodes 4..8 of each quad.
-std::int64_t mcad_straighten_quads(const std::vector<std::array<std::int64_t, 4>>& rQuads,
-                                   const std::vector<std::array<std::int64_t, 5>>& rHi,
-                                   const std::vector<Vec3>& rNormal, double* pX,
-                                   std::int64_t& rStillInvalid) {
+/// `mcad_straighten` for curved quads beside curved triangles (6.8.3): an
+/// element whose Jacobian is not positive everywhere is made straight-sided,
+/// a triangle as there, a quad's edge nodes moved to its chords' points at
+/// their fractions and its inside nodes to the bilinear map of its corners
+/// (a `quad9`'s centre to their mean), and the elements sharing a moved node
+/// are judged again. Returns the elements straightened, and in
+/// `rStillInvalid` those invalid even straight.
+std::int64_t mcad_straighten_mixed(int Order,
+                                   const std::vector<detail::CurvedUntangleElement>& rEls,
+                                   double* pX, std::int64_t& rStillInvalid) {
+    const auto corners = [&](std::size_t E) { return rEls[E].mQuad ? std::size_t{4} : 3; };
+    const auto nn = [&](std::size_t E) {
+        return rEls[E].mQuad ? detail::curved_quad_num_nodes(Order)
+                             : static_cast<std::size_t>(detail::curved_triangle_num_nodes(Order));
+    };
     std::unordered_map<std::int64_t, std::vector<std::size_t>> around;
-    for (std::size_t q = 0; q < rQuads.size(); ++q)
-        for (std::size_t k = 0; k < 4; ++k)
-            around[rHi[q][k]].push_back(q);
-    std::vector<char> straight(rQuads.size(), 0);
+    for (std::size_t e = 0; e < rEls.size(); ++e)
+        for (std::size_t i = corners(e); i < nn(e); ++i)
+            around[rEls[e].mNodes[i]].push_back(e);
+    std::vector<char> straight(rEls.size(), 0);
     std::set<std::size_t> work;
-    for (std::size_t q = 0; q < rQuads.size(); ++q)
-        work.insert(q);
+    for (std::size_t e = 0; e < rEls.size(); ++e)
+        work.insert(e);
     std::int64_t count = 0;
     rStillInvalid = 0;
-    std::array<detail::CurvedVec3, 9> nodes{};
-    const auto id_of = [&](std::size_t Q, std::size_t I) {
-        return static_cast<std::size_t>(I < 4 ? rQuads[Q][I] : rHi[Q][I - 4]);
+    std::array<detail::CurvedVec3, 16> nodes{};
+    const auto set = [&](std::int64_t Id, const detail::CurvedVec3& rX) {
+        for (std::size_t c = 0; c < 3; ++c)
+            pX[3 * static_cast<std::size_t>(Id) + c] = rX[c];
     };
     while (!work.empty()) {
-        const std::size_t q = *work.begin();
+        const std::size_t e = *work.begin();
         work.erase(work.begin());
-        for (std::size_t i = 0; i < 9; ++i)
+        const auto& r_el = rEls[e];
+        for (std::size_t i = 0; i < nn(e); ++i)
             for (std::size_t k = 0; k < 3; ++k)
-                nodes[i][k] = pX[3 * id_of(q, i) + k];
-        if (detail::curved_quad_check(nodes.data(), rNormal[q]).mValid)
+                nodes[i][k] = pX[3 * static_cast<std::size_t>(r_el.mNodes[i]) + k];
+        const bool valid =
+            r_el.mQuad ? detail::curved_quad_check(Order, nodes.data(), r_el.mNormal).mValid
+                       : detail::curved_triangle_check(Order, nodes.data(), r_el.mNormal).mValid;
+        if (valid)
             continue;
-        if (straight[q] != 0) {
+        if (straight[e] != 0) {
             ++rStillInvalid;
             continue;
         }
-        straight[q] = 1;
+        straight[e] = 1;
         ++count;
-        for (std::size_t k = 0; k < 4; ++k) {
-            const std::size_t id = id_of(q, 4 + k);
-            for (std::size_t c = 0; c < 3; ++c)
-                pX[3 * id + c] = 0.5 * (nodes[k][c] + nodes[(k + 1) % 4][c]);
+        const std::size_t nc = corners(e);
+        // Edge k from corner k to corner k + 1, its nodes from corner k.
+        std::size_t slot = nc;
+        for (std::size_t k = 0; k < nc; ++k) {
+            const auto& a = nodes[k];
+            const auto& b = nodes[(k + 1) % nc];
+            for (int j = 1; j < Order; ++j, ++slot) {
+                const double f = double(j) / Order;
+                set(r_el.mNodes[slot],
+                    {a[0] + f * (b[0] - a[0]), a[1] + f * (b[1] - a[1]), a[2] + f * (b[2] - a[2])});
+            }
         }
-        const std::size_t centre = id_of(q, 8);
-        for (std::size_t c = 0; c < 3; ++c)
-            pX[3 * centre + c] = 0.25 * (nodes[0][c] + nodes[1][c] + nodes[2][c] + nodes[3][c]);
-        for (std::size_t k = 0; k < 4; ++k)
-            for (const std::size_t o : around[rHi[q][k]])
-                if (o != q)
+        if (!r_el.mQuad && Order == 3) {
+            detail::CurvedVec3 c{};
+            for (std::size_t k = 0; k < 3; ++k)
+                c[k] = (nodes[0][k] + nodes[1][k] + nodes[2][k]) / 3.0;
+            set(r_el.mNodes[9], c);
+        } else if (r_el.mQuad && Order == 2) {
+            detail::CurvedVec3 c{};
+            for (std::size_t k = 0; k < 3; ++k)
+                c[k] = 0.25 * (nodes[0][k] + nodes[1][k] + nodes[2][k] + nodes[3][k]);
+            set(r_el.mNodes[8], c);
+        } else if (r_el.mQuad) {
+            for (std::size_t i = 12; i < 16; ++i) {
+                const auto p = detail::curved_quad_node_position(Order, i);
+                const double u = p[0], v = p[1];
+                detail::CurvedVec3 c{};
+                for (std::size_t k = 0; k < 3; ++k)
+                    c[k] = (1.0 - u) * (1.0 - v) * nodes[0][k] + u * (1.0 - v) * nodes[1][k] +
+                           u * v * nodes[2][k] + (1.0 - u) * v * nodes[3][k];
+                set(r_el.mNodes[i], c);
+            }
+        }
+        for (std::size_t i = nc; i < nn(e); ++i)
+            for (const std::size_t o : around[r_el.mNodes[i]])
+                if (o != e)
                     work.insert(o);
     }
     return count;
@@ -223054,7 +224158,7 @@ void mcad_untangle_edges(int Order, const std::vector<std::array<std::int64_t, 1
                 star.insert(e);
         std::vector<detail::CurvedUntangleElement> els;
         for (const std::size_t e : star)
-            els.push_back({rElems[e], rNormal[e]});
+            els.push_back(detail::curved_untangle_triangle(rElems[e], rNormal[e]));
         const McadEdge& r_e = rEdges[g];
         const detail::TrimTrace& r_t = *rTraces[r_e.mMaster];
         const double length = r_e.mSamples.mLength;
@@ -223115,8 +224219,6 @@ void mcad_check_options(const MeshCadSurfaceOptions& rO) {
         mcad_fail("reparam_condition_number must be 0 (off) or greater than 1");
     if (rO.mOrder < 1 || rO.mOrder > 3)
         mcad_fail("order must be 1, 2 or 3");
-    if (rO.mReparamConditionNumber > 0.0 && rO.mOrder > 1)
-        mcad_fail("reparam_condition_number is order 1 only (roadmap 6.4.4)");
 }
 
 /// One loop sample of a face: its mesh point, its parameters, and the use
@@ -223540,6 +224642,7 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
     const double h = rO.mTargetSize;
     rF.mPoleRingsPlaced = false;
     rF.mCollapsed = false;
+    rF.mStraightCorner = false;
     rF.mFolded = false;
 
     McadPlane pl_built = mcad_face_plane(rF, rUses, rTraces);
@@ -225154,11 +226257,23 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             std::clamp(((rToward[0] - a[0]) * dx + (rToward[1] - a[1]) * dy) / len2, 0.0, 1.0);
         return Vec2{a[0] + t * dx, a[1] + t * dy};
     };
+    // A curved element's node at parameters `rUv`; in a flattening (6.4.4)
+    // `rUv` is the flattening's, carried by the coarse triangle holding it
+    // to its owner's parameters, so the node lies on that face's surface.
     const auto surface_at = [&](const Vec2& rUv) {
         Vec3 x{};
-        r_s.Eval(rUv[0], rUv[1], x.data(), nullptr, nullptr);
+        if (pl.pDisc) {
+            const detail::McadDisc::Hit hit = pl.pDisc->Locate(rUv);
+            pl.pDisc->mSurfaces[static_cast<std::size_t>(hit.mOwner)]->Eval(
+                hit.mUv[0], hit.mUv[1], x.data(), nullptr, nullptr);
+        } else {
+            r_s.Eval(rUv[0], rUv[1], x.data(), nullptr, nullptr);
+        }
         return x;
     };
+    // Untangling (6.6.3) moves nodes in their face's own parameters: a
+    // flattened face's nodes have the flattening's, so it keeps none.
+    const bool keep_uv = pl.pDisc == nullptr;
     std::map<std::pair<std::int64_t, std::int64_t>, std::array<std::int64_t, 2>> edge_nodes;
     // The boundary pieces by their mesh points too, with the point each
     // starts at: at a pole (one point, several vertices along its segment)
@@ -225200,7 +226315,8 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                     static_cast<std::int64_t>(rF.mHighOrder.size());
                 const Vec2 uv{ua[0] + f * (ub[0] - ua[0]), ua[1] + f * (ub[1] - ua[1])};
                 rF.mHighOrder.push_back(surface_at(uv));
-                rF.mHighOrderUv.push_back(uv);
+                if (keep_uv)
+                    rF.mHighOrderUv.push_back(uv);
             }
             it = edge_nodes.emplace(key, ids).first;
         }
@@ -225274,6 +226390,9 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                     ce[k].mNodes = interior_nodes(a, b);
                 }
             }
+            for (std::size_t k = 0; k < 3; ++k)
+                if (ce[k].mEdge >= 0 && ce[k].mEdge == ce[(k + 2) % 3].mEdge)
+                    rF.mStraightCorner = true;
             // The centroid's parameters, a pole corner taken toward the
             // other two.
             Vec2 uv{0.0, 0.0};
@@ -225286,19 +226405,39 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 uv[0] += c[0] / 3.0;
                 uv[1] += c[1] / 3.0;
             }
+            Vec3 xs{}, nrm{};
+            if (pl.pDisc) {
+                // In a flattening: the corners' owner parameters (what the
+                // all-quad centres start from), the centre lifted through
+                // the coarse mesh, and the element's sign taken against its
+                // corners' own normal, since a merged face's triangles can
+                // lie on surfaces of either orientation.
+                for (Vec2& r_c : corner_uv)
+                    r_c = pl.pDisc->Locate(r_c).mUv;
+                xs = surface_at(uv);
+                const Vec3& p0 = pos(tri[0]);
+                const Vec3& p1 = pos(tri[1]);
+                const Vec3& p2 = pos(tri[2]);
+                const Vec3 a{p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]};
+                const Vec3 b{p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]};
+                nrm = {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+                       a[0] * b[1] - a[1] * b[0]};
+            } else {
+                Vec3 su{}, sv{};
+                r_s.Eval(uv[0], uv[1], xs.data(), su.data(), sv.data());
+                nrm = {su[1] * sv[2] - su[2] * sv[1], su[2] * sv[0] - su[0] * sv[2],
+                       su[0] * sv[1] - su[1] * sv[0]};
+                if (rBrepFace.mSwappedNormal)
+                    nrm = {-nrm[0], -nrm[1], -nrm[2]};
+            }
             rF.mCurvedCornerUv.push_back(corner_uv);
-            Vec3 xs{}, su{}, sv{};
-            r_s.Eval(uv[0], uv[1], xs.data(), su.data(), sv.data());
-            Vec3 nrm{su[1] * sv[2] - su[2] * sv[1], su[2] * sv[0] - su[0] * sv[2],
-                     su[0] * sv[1] - su[1] * sv[0]};
-            if (rBrepFace.mSwappedNormal)
-                nrm = {-nrm[0], -nrm[1], -nrm[2]};
             rF.mCurvedEdges.push_back(ce);
             rF.mCurvedNormal.push_back(nrm);
             if (order == 3) {
                 rF.mCurvedCentre.push_back(static_cast<std::int64_t>(rF.mHighOrder.size()));
                 rF.mHighOrder.push_back(xs);
-                rF.mHighOrderUv.push_back(uv);
+                if (keep_uv)
+                    rF.mHighOrderUv.push_back(uv);
             }
         }
         for (int k = 0; k < 3; ++k) {
@@ -225564,13 +226703,12 @@ void mcad_check_sources(const BrepInfo& rBrep, const MeshCadSurfaceOptions& rOpt
         if (rSources.mMetricArray.empty() || !r_bg.HasPointData(rSources.mMetricArray))
             mcad_fail("metric_background: it has no point_data '" + rSources.mMetricArray + "'");
         const NDArray& r_a = r_bg.PointData(rSources.mMetricArray);
-        if (r_a.Size() != 9 * r_bg.NumPoints())
+        if (r_a.Size() != 9 * r_bg.NumPoints() && r_a.Size() != r_bg.NumPoints())
             mcad_fail("metric_background: its point_data '" + rSources.mMetricArray +
-                      "' must have nine components (a Hessian, as hessian writes it)");
+                      "' must have nine components (a Hessian, as hessian writes it) or one "
+                      "(a field, whose Hessian is then taken)");
         if (!size_ok(rSources.mMetricError))
             mcad_fail("metric_error must be finite and positive");
-        if (rOptions.mOrder > 1)
-            mcad_fail("metric_background is order 1 only (roadmap 6.10.2)");
     } else if (rSources.mMetricError != 0.0 || !rSources.mMetricArray.empty()) {
         mcad_fail("metric_array and metric_error need a metric_background");
     }
@@ -226495,6 +227633,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
     // stays, but the position names it whatever is renumbered).
     std::map<Vec3, double> lop_radius;
     quality.mLopCorners = extras.mLopCorners;
+    quality.mUntangle = extras.mUntangle && rOptions.mOrder > 1;
     quality.pLopRadius = &lop_radius;
     // A pole is the corner of a degenerate edge; corner ids come first, so
     // they do not move when edges are split.
@@ -226734,7 +227873,12 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                 r_f.mFoldStreak = r_f.mFolded ? r_f.mFoldStreak + 1 : 0;
                 // Every triangle collapsed: once more with an interior grid
                 // (6.5.7), kept for every later meshing of the face.
-                if (r_f.mCollapsed && !r_f.mForceInterior) {
+                // Untangling (6.6.3): a curved element with two sides along
+                // one edge folds at their corner whatever its nodes do, so
+                // the face takes the interior grid too, which gives every
+                // element a corner inside it.
+                if ((r_f.mCollapsed || (quality.mUntangle && r_f.mStraightCorner)) &&
+                    !r_f.mForceInterior) {
                     r_f.mForceInterior = true;
                     r_f.mRefinedSoFar = r_f.mRefinedBefore;
                     once();
@@ -227430,6 +228574,9 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
     std::vector<Vec3> curved_normal;
     std::vector<std::size_t> curved_face;
     std::vector<std::array<Vec2, 3>> curved_uv;
+    // Each curved element's sides' edges (-1 inside the face), corner k to
+    // corner k + 1.
+    std::vector<std::array<std::int64_t, 3>> curved_side;
     std::int64_t untangled = 0;
     std::vector<std::array<std::int64_t, 3>> tris;
     std::vector<std::int64_t> tri_face;
@@ -227600,9 +228747,13 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                 el[slot] = high_base[f] + r_f.mCurvedCentre[t];
             curved.push_back(el);
             curved_normal.push_back(r_f.mCurvedNormal[t]);
-            curved_face.push_back(f);
+            // The face whose surface holds it: a merged pair's triangle
+            // (6.5.2) its own face's.
+            curved_face.push_back(owner);
             curved_uv.push_back(t < r_f.mCurvedCornerUv.size() ? r_f.mCurvedCornerUv[t]
                                                                : std::array<Vec2, 3>{});
+            curved_side.push_back({r_f.mCurvedEdges[t][0].mEdge, r_f.mCurvedEdges[t][1].mEdge,
+                                   r_f.mCurvedEdges[t][2].mEdge});
         }
         result.mNumDegenerateDropped += r_f.mRecord.mNumDegenerateDropped;
         result.mNumRefinementPoints += r_f.mRecord.mNumRefinementPoints;
@@ -227620,7 +228771,21 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
         result.mMinEdge = 0.0;
     }
 
-    if (order > 1) {
+    // Quadrilaterals (6.8): each face's triangles recombined, best pair
+    // first, into a quad block beside the triangles left; or, all-quad, the
+    // quad-dominant mesh of twice the size (meshed at order 2, so every edge
+    // has its midpoint on the geometry, shared by the faces beside it) split
+    // through those midpoints and a centre lifted from the corners'
+    // parameters: a quad into four and a triangle into three.
+    const bool all_quads = extras.mQuads == MeshCadQuads::All && order == 2;
+    const bool dominant = extras.mQuads == MeshCadQuads::Dominant;
+    // Curved quads (6.8.3): all-quad at order 2 or 3 (quad9, quad16, split
+    // from the order-2 coarse mesh), or quad-dominant at order 2 or 3, whose
+    // quads and the triangles left are curved alike. They are judged, and
+    // untangled, once built, below.
+    const int quad_order = all_quads ? QuadOrder : (dominant ? order : 1);
+    const bool curved_quads = quad_order >= 2;
+    if (order > 1 && !curved_quads) {
         // Untangling (6.6.3) first: face by face, each moving only its own
         // nodes (the edges' are shared and stay), so faces run in parallel.
         // Straightening an element left invalid moves nodes its neighbours
@@ -227647,7 +228812,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                     std::vector<detail::CurvedUntangleElement> els;
                     els.reserve(elems_of[f].size());
                     for (const std::size_t e : elems_of[f])
-                        els.push_back({curved[e], curved_normal[e]});
+                        els.push_back(
+                            detail::curved_untangle_triangle(curved[e], curved_normal[e]));
                     std::vector<std::int64_t> free(r_f.mHighOrder.size());
                     for (std::size_t i = 0; i < free.size(); ++i)
                         free[i] = high_base[f] + static_cast<std::int64_t>(i);
@@ -227670,12 +228836,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
             mcad_untangle_edges(order, curved, curved_normal, px, faces, high_base, edges, traces,
                                 np_linear, piece_edge, piece_frac);
         }
-        // Curved quads (6.8.3) are judged once split, below: the coarse
-        // elements' nodes stay on the geometry.
         std::int64_t still = 0;
-        if (QuadOrder < 2)
-            result.mNumCurvedStraightened =
-                mcad_straighten(order, curved, curved_normal, px, still);
+        result.mNumCurvedStraightened = mcad_straighten(order, curved, curved_normal, px, still);
         if (extras.mUntangle) {
             if (result.mNumCurvedStraightened >= plain_count) {
                 std::copy(plain.begin(), plain.end(), px);
@@ -227696,32 +228858,338 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
             warn(std::to_string(still) +
                  " elements stay invalid even straight-sided against their face's normal");
     }
-    // Quadrilaterals (6.8): each face's triangles recombined, best pair
-    // first, into a quad block beside the triangles left; or, all-quad, the
-    // quad-dominant mesh of twice the size (meshed at order 2, so every edge
-    // has its midpoint on the geometry, shared by the faces beside it) split
-    // through those midpoints and a centre lifted from the corners'
-    // parameters: a quad into four and a triangle into three.
-    const bool all_quads = extras.mQuads == MeshCadQuads::All && order == 2;
-    // Curved quads (6.8.3): each quad's nodes 4..8 in quad9 order, and the
-    // node halving each half of a coarse edge or each spoke from a coarse
-    // edge's midpoint to its cell's centre, by its two ends.
-    const bool quad9 = all_quads && QuadOrder == 2;
+    // Curved quads: each quad's nodes 4.. in quad9 / quad16 order, and each
+    // sub-edge's nodes (a coarse edge's half, a spoke from a coarse edge's
+    // midpoint to its cell's centre, or a quad-dominant quad's edge, the
+    // triangles' own) by its two ends, listed from the key's first end.
     std::vector<std::array<std::int64_t, 4>> quads;
     std::vector<std::int64_t> quad_face;
-    std::vector<std::array<std::int64_t, 5>> quad_hi;
+    std::vector<std::size_t> quad_geo;  ///< the face whose surface holds it
+    std::vector<std::array<std::int64_t, 12>> quad_hi;
     std::vector<Vec3> quad_normal;
-    std::map<std::pair<std::int64_t, std::int64_t>, std::int64_t> half_node;
+    std::map<std::pair<std::int64_t, std::int64_t>, std::array<std::int64_t, 2>> sub_edge;
     std::vector<Vec3> centres;
+    // The points made inside a face for curved quads, with their face and
+    // parameters: untangling moves them there.
+    std::map<std::int64_t, std::pair<std::size_t, Vec2>> made_uv;
+    const auto sub_nodes_of = [&](std::int64_t A, std::int64_t B) {
+        const auto key = std::minmax(A, B);
+        std::array<std::int64_t, 2> n = sub_edge.at({key.first, key.second});
+        if (A != key.first && quad_order == 3)
+            std::swap(n[0], n[1]);
+        return n;
+    };
+    // The coarse elements' corners, faces and parameters, for untangling
+    // the curved quads by their corners inside a face.
+    std::vector<std::array<std::int64_t, 3>> coarse_corners;
+    std::vector<std::size_t> coarse_face;
+    std::vector<std::array<Vec2, 3>> coarse_uv;
+    if (curved_quads && extras.mUntangle)
+        for (std::size_t t = 0; t < curved.size(); ++t) {
+            coarse_corners.push_back({curved[t][0], curved[t][1], curved[t][2]});
+            coarse_face.push_back(curved_face[t]);
+            coarse_uv.push_back(curved_uv[t]);
+        }
     if (extras.mQuads != MeshCadQuads::None && !tris.empty()) {
+        // Curved quads (6.8.3): the edge each triangle's side runs along, so
+        // no quad has both sides at a corner on one curve, a straight angle
+        // where a curved element's Jacobian vanishes.
+        // The model's edges (a seam among them, whose two sides a face's
+        // triangles share): no pair merges across one, since its line cells
+        // would cross the quad. A merged pair's shared edges are inside it.
+        std::set<std::pair<std::int64_t, std::int64_t>> model_edges;
+        for (std::size_t e = 0; e < edges.size(); ++e) {
+            const McadEdge& r_e = edges[e];
+            if (r_e.mFail != MeshCadFaceStatus::Ok || dropped_edge[e])
+                continue;
+            const std::vector<std::int64_t>& r_ids = uses[r_e.mMaster].mIds;
+            for (std::size_t k = 0; k + 1 < r_ids.size(); ++k)
+                if (r_ids[k] != r_ids[k + 1])
+                    model_edges.insert(std::minmax(r_ids[k], r_ids[k + 1]));
+        }
+        // All-quad: each coarse edge's midpoint, through which pairs split.
+        std::map<std::pair<std::int64_t, std::int64_t>, std::int64_t> mid_of;
+        if (all_quads && curved.size() == tris.size())
+            for (const auto& r_el : curved)
+                for (std::size_t k = 0; k < 3; ++k)
+                    mid_of.emplace(std::minmax(r_el[k], r_el[(k + 1) % 3]), r_el[3 + k]);
         const detail::QuadRecombineResult rec = detail::quad_recombine(
             tris, tri_face, px, kMcadQuadFloor,
             extras.mQuadPairs == MeshCadQuadPairs::Matching ? detail::QuadPairing::Matching
-                                                            : detail::QuadPairing::Greedy);
+                                                            : detail::QuadPairing::Greedy,
+            curved_quads && curved_side.size() == tris.size() ? &curved_side : nullptr,
+            &model_edges, all_quads ? &mid_of : nullptr);
+        // A cell's centre: the mean of its edges' midpoints projected on
+        // face F by Gauss-Newton from the mean of one triangle's corner
+        // parameters (a pair can straddle a seam, where the parameters
+        // of its two triangles do not average).
+        const auto project = [&](std::size_t F, Vec2 uv, const Vec3& p) {
+            const detail::BrepSurfaceEval& r_s = *faces[F].pSurface;
+            Vec3 x{}, su{}, sv{};
+            for (int it = 0; it < 12; ++it) {
+                r_s.Eval(uv[0], uv[1], x.data(), su.data(), sv.data());
+                const Vec3 d{x[0] - p[0], x[1] - p[1], x[2] - p[2]};
+                const double a11 = su[0] * su[0] + su[1] * su[1] + su[2] * su[2];
+                const double a12 = su[0] * sv[0] + su[1] * sv[1] + su[2] * sv[2];
+                const double a22 = sv[0] * sv[0] + sv[1] * sv[1] + sv[2] * sv[2];
+                const double g1 = su[0] * d[0] + su[1] * d[1] + su[2] * d[2];
+                const double g2 = sv[0] * d[0] + sv[1] * d[1] + sv[2] * d[2];
+                const double det = a11 * a22 - a12 * a12;
+                if (!(det > 1e-300))
+                    break;
+                const double du = -(a22 * g1 - a12 * g2) / det;
+                const double dv = -(a11 * g2 - a12 * g1) / det;
+                uv = {uv[0] + du, uv[1] + dv};
+                if (std::fabs(du) + std::fabs(dv) <
+                    1e-14 * (1.0 + std::fabs(uv[0]) + std::fabs(uv[1])))
+                    break;
+            }
+            return uv;
+        };
+        const auto add_point = [&](std::size_t F, const Vec2& rUv) {
+            Vec3 x{};
+            faces[F].pSurface->Eval(rUv[0], rUv[1], x.data(), nullptr, nullptr);
+            centres.push_back(x);
+            const auto id = static_cast<std::int64_t>(np + centres.size() - 1);
+            made_uv[id] = {F, rUv};
+            return id;
+        };
+        const auto point_at = [&](std::int64_t Id) {
+            const auto i = static_cast<std::size_t>(Id);
+            return i < np ? Vec3{px[3 * i], px[3 * i + 1], px[3 * i + 2]} : centres[i - np];
+        };
+        // A cell's centre (and its parameters).
+        const auto centre = [&](std::size_t F, const std::array<Vec2, 3>& rUv,
+                                std::initializer_list<std::int64_t> Mids) {
+            Vec3 p{0.0, 0.0, 0.0};
+            for (const std::int64_t m : Mids)
+                for (std::size_t k = 0; k < 3; ++k)
+                    p[k] += px[3 * static_cast<std::size_t>(m) + k] / double(Mids.size());
+            const Vec2 uv = project(F,
+                                    {(rUv[0][0] + rUv[1][0] + rUv[2][0]) / 3.0,
+                                     (rUv[0][1] + rUv[1][1] + rUv[2][1]) / 3.0},
+                                    p);
+            return std::pair<std::int64_t, Vec2>{add_point(F, uv), uv};
+        };
+        // A sub-quad's or a quad's nodes (6.8.3): its edges' (the edges'
+        // shares below, or, inside a face, the surface's points nearest the
+        // chord's points between the two ends) and its inside's (nearest
+        // its corners' mean, or for quad16 nearest the transfinite blend
+        // of its edges' nodes). Each is found by Gauss-Newton from every
+        // parameter point the cell's triangles hold, keeping the nearest:
+        // one chart need not hold them all across a seam.
+        std::vector<Vec2> starts;
+        // A point's parameters on face F: the nearest of the projections
+        // from every start, or, with `pFrom`, the projection continued from
+        // those parameters, so a cell's points share one chart.
+        const auto param_near = [&](std::size_t F, const Vec3& rP, const Vec2* pFrom) {
+            if (pFrom)
+                return project(F, *pFrom, rP);
+            Vec2 best{0.0, 0.0};
+            double best_d = std::numeric_limits<double>::infinity();
+            for (const Vec2& r_s : starts) {
+                const Vec2 uv = project(F, r_s, rP);
+                Vec3 x{};
+                faces[F].pSurface->Eval(uv[0], uv[1], x.data(), nullptr, nullptr);
+                const double d = (x[0] - rP[0]) * (x[0] - rP[0]) + (x[1] - rP[1]) * (x[1] - rP[1]) +
+                                 (x[2] - rP[2]) * (x[2] - rP[2]);
+                if (d < best_d) {
+                    best_d = d;
+                    best = uv;
+                }
+            }
+            return best;
+        };
+        const auto nearest = [&](std::size_t F, const Vec3& rP) {
+            return add_point(F, param_near(F, rP, nullptr));
+        };
+        // A made point moved to parameters `rUv` of face F.
+        const auto place = [&](std::int64_t Id, std::size_t F, const Vec2& rUv) {
+            Vec3 x{};
+            faces[F].pSurface->Eval(rUv[0], rUv[1], x.data(), nullptr, nullptr);
+            centres[static_cast<std::size_t>(Id) - np] = x;
+            made_uv[Id] = {F, rUv};
+        };
+        // quad16 (6.8.3): the sub-edges placed by their parameters, and per
+        // quad whether its inside was and the starts its cell's chart had,
+        // so a quad the parameters fold is placed again by projection.
+        std::set<std::pair<std::int64_t, std::int64_t>> param_edges;
+        std::vector<char> quad_param;
+        std::vector<std::vector<Vec2>> quad_starts;
+        // Inside face F's knot box: a chart continued past a seam or a pole
+        // leaves it, where the patch is not the surface.
+        // and away from a pole, where a parameter collapses and the
+        // lattice with it.
+        const auto in_box = [&](std::size_t F, const Vec2& rUv) {
+            const detail::BrepSurfaceEval& r_s = *faces[F].pSurface;
+            const auto& r_b = r_s.Box();
+            const double tu = 1e-9 * (1.0 + std::fabs(r_b[1] - r_b[0]));
+            const double tv = 1e-9 * (1.0 + std::fabs(r_b[3] - r_b[2]));
+            if (!(rUv[0] >= r_b[0] - tu && rUv[0] <= r_b[1] + tu && rUv[1] >= r_b[2] - tv &&
+                  rUv[1] <= r_b[3] + tv))
+                return false;
+            Vec3 x{}, su{}, sv{};
+            r_s.Eval(rUv[0], rUv[1], x.data(), su.data(), sv.data());
+            const double nu = std::sqrt(su[0] * su[0] + su[1] * su[1] + su[2] * su[2]);
+            const double nv = std::sqrt(sv[0] * sv[0] + sv[1] * sv[1] + sv[2] * sv[2]);
+            const Vec3 c{su[1] * sv[2] - su[2] * sv[1], su[2] * sv[0] - su[0] * sv[2],
+                         su[0] * sv[1] - su[1] * sv[0]};
+            const double nc = std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
+            return nc > 1e-6 * r_s.Scale() * r_s.Scale() && nc > 1e-3 * nu * nv;
+        };
+        const auto seed = [&](std::int64_t A, std::int64_t B,
+                              const std::array<std::int64_t, 2>& rN) {
+            // rN runs from A to B.
+            std::array<std::int64_t, 2> n = rN;
+            if (A > B && quad_order == 3)
+                std::swap(n[0], n[1]);
+            sub_edge.emplace(std::pair<std::int64_t, std::int64_t>{std::min(A, B), std::max(A, B)},
+                             n);
+        };
+        const auto sub_nodes = [&](std::int64_t A, std::int64_t B, std::size_t S) {
+            const auto key = std::minmax(A, B);
+            if (sub_edge.count({key.first, key.second}) == 0) {
+                const Vec3 a = point_at(key.first), b = point_at(key.second);
+                std::array<std::int64_t, 2> n{-1, -1};
+                // quad16: at the thirds of the parameters between its ends,
+                // in one chart, so every node is the image of one lattice
+                // under the surface's map, which a cubic's accuracy rests on
+                // (as the curved triangles' edges, 6.6.2); where that chart
+                // leaves the knot box, and for quad9, the surface's points
+                // nearest the chord's.
+                Vec2 ua{0.0, 0.0}, ub{0.0, 0.0};
+                bool by_param = false;
+                if (quad_order == 3) {
+                    ua = param_near(S, a, nullptr);
+                    ub = param_near(S, b, &ua);
+                    by_param = in_box(S, ua) && in_box(S, ub);
+                    if (by_param)
+                        param_edges.insert({key.first, key.second});
+                }
+                for (int j = 1; j < quad_order; ++j) {
+                    const double t = double(j) / quad_order;
+                    n[static_cast<std::size_t>(j - 1)] =
+                        by_param ? add_point(S, {ua[0] + t * (ub[0] - ua[0]),
+                                                 ua[1] + t * (ub[1] - ua[1])})
+                                 : nearest(S, {a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]),
+                                               a[2] + t * (b[2] - a[2])});
+                }
+                sub_edge.emplace(std::pair<std::int64_t, std::int64_t>{key.first, key.second}, n);
+            }
+            return sub_nodes_of(A, B);
+        };
+        const auto add = [&](std::array<std::int64_t, 4> Q, std::int64_t F, std::size_t S,
+                             const Vec3& rN) {
+            quads.push_back(Q);
+            quad_face.push_back(F);
+            quad_geo.push_back(S);
+            if (!curved_quads)
+                return;
+            std::array<std::int64_t, 12> hi{};
+            hi.fill(-1);
+            bool by_param_inside = false;
+            Vec3 mean{0.0, 0.0, 0.0};
+            std::size_t slot = 0;
+            for (std::size_t k = 0; k < 4; ++k) {
+                const Vec3 a = point_at(Q[k]);
+                for (std::size_t c = 0; c < 3; ++c)
+                    mean[c] += 0.25 * a[c];
+                const auto n = sub_nodes(Q[k], Q[(k + 1) % 4], S);
+                for (int j = 0; j + 1 < quad_order; ++j)
+                    hi[slot++] = n[static_cast<std::size_t>(j)];
+            }
+            if (quad_order == 2) {
+                hi[slot] = nearest(S, mean);
+            } else {
+                // The transfinite (Coons) blend at (i / 3, j / 3) of the
+                // edges' nodes' parameters, in one chart, inside in quad16
+                // order.
+                std::array<Vec2, 4> c{};
+                c[0] = param_near(S, point_at(Q[0]), nullptr);
+                bool by_param = in_box(S, c[0]);
+                for (std::size_t k = 1; k < 4; ++k) {
+                    c[k] = param_near(S, point_at(Q[k]), &c[0]);
+                    by_param = by_param && in_box(S, c[k]);
+                }
+                std::array<Vec2, 8> e{};
+                for (std::size_t k = 0; k < 8; ++k) {
+                    e[k] = param_near(S, point_at(hi[k]), &c[0]);
+                    by_param = by_param && in_box(S, e[k]);
+                }
+                std::array<Vec3, 4> cx{};
+                std::array<Vec3, 8> ex{};
+                for (std::size_t k = 0; k < 4; ++k)
+                    cx[k] = point_at(Q[k]);
+                for (std::size_t k = 0; k < 8; ++k)
+                    ex[k] = point_at(hi[k]);
+                // Each side's points at 1/3 and 2/3 of its parameter: the
+                // bottom and top in u, the left and right in v.
+                for (const auto& r_ij : {std::array<int, 2>{1, 1}, std::array<int, 2>{2, 1},
+                                         std::array<int, 2>{2, 2}, std::array<int, 2>{1, 2}}) {
+                    const double u = r_ij[0] / 3.0, v = r_ij[1] / 3.0;
+                    const auto i = static_cast<std::size_t>(r_ij[0] - 1);
+                    const auto j = static_cast<std::size_t>(r_ij[1] - 1);
+                    const auto blend = [&](const auto& rC, const auto& rE, std::size_t D) {
+                        // rE in hi's order: bottom 0, 1; right 2, 3; top
+                        // 5, 4; left 7, 6, each at 1/3 then 2/3.
+                        const std::array<std::size_t, 2> bottom{0, 1}, right{2, 3}, top{5, 4},
+                            left{7, 6};
+                        return (1.0 - v) * rE[bottom[i]][D] + v * rE[top[i]][D] +
+                               (1.0 - u) * rE[left[j]][D] + u * rE[right[j]][D] -
+                               ((1.0 - u) * (1.0 - v) * rC[0][D] + u * (1.0 - v) * rC[1][D] +
+                                u * v * rC[2][D] + (1.0 - u) * v * rC[3][D]);
+                    };
+                    by_param_inside = by_param;
+                    if (by_param) {
+                        hi[slot++] = add_point(S, {blend(c, e, 0), blend(c, e, 1)});
+                    } else {
+                        hi[slot++] =
+                            nearest(S, {blend(cx, ex, 0), blend(cx, ex, 1), blend(cx, ex, 2)});
+                    }
+                }
+            }
+            quad_hi.push_back(hi);
+            quad_normal.push_back(rN);
+            if (quad_order == 3) {
+                quad_param.push_back(by_param_inside ? 1 : 0);
+                quad_starts.push_back(starts);
+            }
+        };
+        const auto chart = [&](const Vec2& rUc, std::initializer_list<std::size_t> Tris) {
+            starts.clear();
+            if (!curved_quads)
+                return;
+            starts.push_back(rUc);
+            for (const std::size_t t : Tris)
+                for (const Vec2& r_uv : curved_uv[t])
+                    starts.push_back(r_uv);
+        };
         if (!all_quads) {
+            // Quad-dominant: a curved quad keeps its two triangles' outer
+            // edges and their nodes.
+            if (curved_quads)
+                for (const auto& r_el : curved) {
+                    std::size_t slot = 3;
+                    for (std::size_t k = 0; k < 3; ++k) {
+                        std::array<std::int64_t, 2> n{-1, -1};
+                        for (int j = 0; j + 1 < order; ++j)
+                            n[static_cast<std::size_t>(j)] = r_el[slot++];
+                        seed(r_el[k], r_el[(k + 1) % 3], n);
+                    }
+                }
             for (std::size_t i = 0; i < rec.mQuads.size(); ++i) {
-                quads.push_back(rec.mQuads[i]);
-                quad_face.push_back(tri_face[rec.mPairs[i][0]]);
+                const std::size_t t1 = rec.mPairs[i][0], t2 = rec.mPairs[i][1];
+                if (curved_quads) {
+                    const auto& r_u = curved_uv[t1];
+                    chart({(r_u[0][0] + r_u[1][0] + r_u[2][0]) / 3.0,
+                           (r_u[0][1] + r_u[1][1] + r_u[2][1]) / 3.0},
+                          {t1, t2});
+                    add(rec.mQuads[i], tri_face[t1], curved_face[t1], curved_normal[t1]);
+                } else {
+                    quads.push_back(rec.mQuads[i]);
+                    quad_face.push_back(tri_face[t1]);
+                    quad_geo.push_back(order > 1 ? curved_face[t1] : 0);
+                }
             }
             std::vector<std::array<std::int64_t, 3>> left;
             std::vector<std::int64_t> left_face;
@@ -227729,79 +229197,60 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                 left.push_back(tris[t]);
                 left_face.push_back(tri_face[t]);
             }
+            if (curved_quads) {
+                std::vector<std::array<std::int64_t, 10>> c;
+                std::vector<Vec3> c_normal;
+                std::vector<std::size_t> c_face;
+                std::vector<std::array<Vec2, 3>> c_uv;
+                std::vector<std::array<std::int64_t, 3>> c_side;
+                for (const std::size_t t : rec.mLeft) {
+                    c.push_back(curved[t]);
+                    c_normal.push_back(curved_normal[t]);
+                    c_face.push_back(curved_face[t]);
+                    c_uv.push_back(curved_uv[t]);
+                    c_side.push_back(curved_side[t]);
+                }
+                curved_side = std::move(c_side);
+                curved = std::move(c);
+                curved_normal = std::move(c_normal);
+                curved_face = std::move(c_face);
+                curved_uv = std::move(c_uv);
+            }
             tris = std::move(left);
             tri_face = std::move(left_face);
         } else {
-            // A cell's centre: the mean of its edges' midpoints projected on
-            // face F by Gauss-Newton from the mean of one triangle's corner
-            // parameters (a pair can straddle a seam, where the parameters
-            // of its two triangles do not average).
-            const auto project = [&](std::size_t F, Vec2 uv, const Vec3& p) {
-                const detail::BrepSurfaceEval& r_s = *faces[F].pSurface;
-                Vec3 x{}, su{}, sv{};
-                for (int it = 0; it < 12; ++it) {
-                    r_s.Eval(uv[0], uv[1], x.data(), su.data(), sv.data());
-                    const Vec3 d{x[0] - p[0], x[1] - p[1], x[2] - p[2]};
-                    const double a11 = su[0] * su[0] + su[1] * su[1] + su[2] * su[2];
-                    const double a12 = su[0] * sv[0] + su[1] * sv[1] + su[2] * sv[2];
-                    const double a22 = sv[0] * sv[0] + sv[1] * sv[1] + sv[2] * sv[2];
-                    const double g1 = su[0] * d[0] + su[1] * d[1] + su[2] * d[2];
-                    const double g2 = sv[0] * d[0] + sv[1] * d[1] + sv[2] * d[2];
-                    const double det = a11 * a22 - a12 * a12;
-                    if (!(det > 1e-300))
-                        break;
-                    const double du = -(a22 * g1 - a12 * g2) / det;
-                    const double dv = -(a11 * g2 - a12 * g1) / det;
-                    uv = {uv[0] + du, uv[1] + dv};
-                    if (std::fabs(du) + std::fabs(dv) <
-                        1e-14 * (1.0 + std::fabs(uv[0]) + std::fabs(uv[1])))
-                        break;
-                }
-                return uv;
-            };
-            const auto add_point = [&](std::size_t F, const Vec2& rUv) {
-                Vec3 x{};
-                faces[F].pSurface->Eval(rUv[0], rUv[1], x.data(), nullptr, nullptr);
-                centres.push_back(x);
-                return static_cast<std::int64_t>(np + centres.size() - 1);
-            };
-            const auto point_at = [&](std::int64_t Id) {
-                const auto i = static_cast<std::size_t>(Id);
-                return i < np ? Vec3{px[3 * i], px[3 * i + 1], px[3 * i + 2]} : centres[i - np];
-            };
-            // A cell's centre (and its parameters).
-            const auto centre = [&](std::size_t F, const std::array<Vec2, 3>& rUv,
-                                    std::initializer_list<std::int64_t> Mids) {
-                Vec3 p{0.0, 0.0, 0.0};
-                for (const std::int64_t m : Mids)
-                    for (std::size_t k = 0; k < 3; ++k)
-                        p[k] += px[3 * static_cast<std::size_t>(m) + k] / double(Mids.size());
-                const Vec2 uv = project(F,
-                                        {(rUv[0][0] + rUv[1][0] + rUv[2][0]) / 3.0,
-                                         (rUv[0][1] + rUv[1][1] + rUv[2][1]) / 3.0},
-                                        p);
-                return std::pair<std::int64_t, Vec2>{add_point(F, uv), uv};
-            };
-            // The edges' halves (6.8.3): each piece's quarter points, on the
-            // edge by arc length as its midpoint is, shared by every face.
-            if (quad9)
+            // The edges' halves (6.8.3): each piece's points at its
+            // quarters (quad9) or sixths (quad16), on the edge by arc
+            // length as its midpoint is, shared by every face.
+            if (curved_quads)
                 for (std::size_t e = 0; e < edges.size(); ++e) {
                     const McadEdge& r_e = edges[e];
                     if (r_e.mFail != MeshCadFaceStatus::Ok || r_e.mSamples.mDegenerate ||
                         piece_base[e].empty())
                         continue;
                     const std::vector<std::int64_t>& r_ids = uses[r_e.mMaster].mIds;
+                    const int divisions = 2 * quad_order;
+                    const auto stride = static_cast<std::size_t>(divisions - 1);
                     const auto pts =
-                        detail::edge_piece_points(*traces[r_e.mMaster], r_e.mSamples, 4);
+                        detail::edge_piece_points(*traces[r_e.mMaster], r_e.mSamples, divisions);
                     for (std::size_t k = 0; k + 1 < r_ids.size(); ++k) {
                         const std::int64_t m = piece_base[e][k];
                         if (m < 0)
                             continue;
-                        for (const std::size_t j : {std::size_t{0}, std::size_t{2}}) {
-                            centres.push_back(pts[3 * k + j]);
-                            const std::int64_t c = r_ids[j == 0 ? k : k + 1];
-                            half_node[std::minmax(c, m)] =
-                                static_cast<std::int64_t>(np + centres.size() - 1);
+                        for (const int h : {0, 1}) {
+                            std::array<std::int64_t, 2> n{-1, -1};
+                            for (int j = 0; j + 1 < quad_order; ++j) {
+                                centres.push_back(
+                                    pts[stride * k + static_cast<std::size_t>(h * quad_order + j)]);
+                                n[static_cast<std::size_t>(j)] =
+                                    static_cast<std::int64_t>(np + centres.size() - 1);
+                            }
+                            // The first half runs from the piece's start
+                            // to its midpoint, the second on to its end.
+                            if (h == 0)
+                                seed(r_ids[k], m, n);
+                            else
+                                seed(m, r_ids[k + 1], n);
                         }
                     }
                 }
@@ -227811,64 +229260,6 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                         return k;
                 throw std::logic_error(std::string(kMcadPrefix) +
                                        "internal error: a recombined quad lost its corner");
-            };
-            // A sub-quad: with quad9, its edges' nodes (the edges' halves
-            // above, or, inside a face, the surface's point nearest the
-            // middle of the chord between the two ends) and its centre
-            // (nearest its corners' mean). Each is found by Gauss-Newton
-            // from every parameter point the cell's triangles hold, keeping
-            // the nearest: one chart need not hold them all across a seam.
-            std::vector<Vec2> starts;
-            const auto nearest = [&](std::size_t F, const Vec3& rP) {
-                Vec2 best{0.0, 0.0};
-                double best_d = std::numeric_limits<double>::infinity();
-                for (const Vec2& r_s : starts) {
-                    const Vec2 uv = project(F, r_s, rP);
-                    Vec3 x{};
-                    faces[F].pSurface->Eval(uv[0], uv[1], x.data(), nullptr, nullptr);
-                    const double d = (x[0] - rP[0]) * (x[0] - rP[0]) +
-                                     (x[1] - rP[1]) * (x[1] - rP[1]) +
-                                     (x[2] - rP[2]) * (x[2] - rP[2]);
-                    if (d < best_d) {
-                        best_d = d;
-                        best = uv;
-                    }
-                }
-                return add_point(F, best);
-            };
-            const auto add = [&](std::array<std::int64_t, 4> Q, std::int64_t F, std::size_t S,
-                                 const Vec3& rN) {
-                quads.push_back(Q);
-                quad_face.push_back(F);
-                if (!quad9)
-                    return;
-                std::array<std::int64_t, 5> hi{};
-                Vec3 mean{0.0, 0.0, 0.0};
-                for (std::size_t k = 0; k < 4; ++k) {
-                    const Vec3 a = point_at(Q[k]);
-                    const Vec3 b = point_at(Q[(k + 1) % 4]);
-                    for (std::size_t c = 0; c < 3; ++c)
-                        mean[c] += 0.25 * a[c];
-                    const auto key = std::minmax(Q[k], Q[(k + 1) % 4]);
-                    const auto it = half_node.find(key);
-                    hi[k] = it != half_node.end()
-                                ? it->second
-                                : (half_node[key] =
-                                       nearest(S, {0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1]),
-                                                   0.5 * (a[2] + b[2])}));
-                }
-                hi[4] = nearest(S, mean);
-                quad_hi.push_back(hi);
-                quad_normal.push_back(rN);
-            };
-            const auto chart = [&](const Vec2& rUc, std::initializer_list<std::size_t> Tris) {
-                starts.clear();
-                if (!quad9)
-                    return;
-                starts.push_back(rUc);
-                for (const std::size_t t : Tris)
-                    for (const Vec2& r_uv : curved_uv[t])
-                        starts.push_back(r_uv);
             };
             for (std::size_t i = 0; i < rec.mQuads.size(); ++i) {
                 const std::size_t t1 = rec.mPairs[i][0], t2 = rec.mPairs[i][1];
@@ -227901,6 +229292,81 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
             tris.clear();
             tri_face.clear();
         }
+        // A quad16 its parameters fold (a cell where the parameters vary
+        // too fast, near a pole) has its own nodes placed again as quad9's
+        // are, by projection: its sub-edges placed by parameters (and so
+        // its neighbour's side, judged again) and its inside, from the
+        // transfinite blend of its edges' nodes in space.
+        if (quad_order == 3) {
+            const auto pos = [&](std::int64_t Id) {
+                const auto i = static_cast<std::size_t>(Id);
+                return i < np ? Vec3{px[3 * i], px[3 * i + 1], px[3 * i + 2]} : centres[i - np];
+            };
+            std::vector<char> redone(quads.size(), 0);
+            for (int round = 0; round < 8; ++round) {
+                bool changed = false;
+                for (std::size_t q = 0; q < quads.size(); ++q) {
+                    if (redone[q])
+                        continue;
+                    std::array<detail::CurvedVec3, 16> x{};
+                    for (std::size_t k = 0; k < 4; ++k)
+                        x[k] = pos(quads[q][k]);
+                    for (std::size_t k = 0; k < 12; ++k)
+                        x[4 + k] = pos(quad_hi[q][k]);
+                    if (detail::curved_quad_check(3, x.data(), quad_normal[q]).mValid)
+                        continue;
+                    bool any = quad_param[q] != 0;
+                    for (std::size_t k = 0; k < 4 && !any; ++k)
+                        any =
+                            param_edges.count(std::minmax(quads[q][k], quads[q][(k + 1) % 4])) > 0;
+                    if (!any)
+                        continue;
+                    redone[q] = 1;
+                    changed = true;
+                    starts = quad_starts[q];
+                    const std::size_t sf = quad_geo[q];
+                    for (std::size_t k = 0; k < 4; ++k) {
+                        const auto key = std::minmax(quads[q][k], quads[q][(k + 1) % 4]);
+                        if (param_edges.erase({key.first, key.second}) == 0)
+                            continue;
+                        const Vec3 a = pos(key.first), b = pos(key.second);
+                        const auto& r_n = sub_edge.at({key.first, key.second});
+                        for (int j = 1; j < 3; ++j) {
+                            const double t = double(j) / 3.0;
+                            place(r_n[static_cast<std::size_t>(j - 1)], sf,
+                                  param_near(sf,
+                                             {a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]),
+                                              a[2] + t * (b[2] - a[2])},
+                                             nullptr));
+                        }
+                    }
+                    std::array<Vec3, 4> c{};
+                    std::array<Vec3, 8> e{};
+                    for (std::size_t k = 0; k < 4; ++k)
+                        c[k] = pos(quads[q][k]);
+                    for (std::size_t k = 0; k < 8; ++k)
+                        e[k] = pos(quad_hi[q][k]);
+                    const std::array<std::size_t, 2> bottom{0, 1}, right{2, 3}, top{5, 4},
+                        left{7, 6};
+                    std::size_t slot = 8;
+                    for (const auto& r_ij : {std::array<int, 2>{1, 1}, std::array<int, 2>{2, 1},
+                                             std::array<int, 2>{2, 2}, std::array<int, 2>{1, 2}}) {
+                        const double u = r_ij[0] / 3.0, v = r_ij[1] / 3.0;
+                        const auto i = static_cast<std::size_t>(r_ij[0] - 1);
+                        const auto j = static_cast<std::size_t>(r_ij[1] - 1);
+                        Vec3 p{};
+                        for (std::size_t d = 0; d < 3; ++d)
+                            p[d] = (1.0 - v) * e[bottom[i]][d] + v * e[top[i]][d] +
+                                   (1.0 - u) * e[left[j]][d] + u * e[right[j]][d] -
+                                   ((1.0 - u) * (1.0 - v) * c[0][d] + u * (1.0 - v) * c[1][d] +
+                                    u * v * c[2][d] + (1.0 - u) * v * c[3][d]);
+                        place(quad_hi[q][slot++], sf, param_near(sf, p, nullptr));
+                    }
+                }
+                if (!changed)
+                    break;
+            }
+        }
         if (!centres.empty()) {
             if (static_cast<std::int64_t>(np + centres.size()) > rOptions.mMaxPoints)
                 throw std::length_error(std::string(kMcadPrefix) +
@@ -227916,17 +229382,119 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
             points = std::move(grown);
             px = points.As<double>();
         }
-        if (quad9) {
+        if (curved_quads) {
+            // The curved elements written: the triangles left (quad-dominant)
+            // and the quads, judged together since they share nodes.
+            std::vector<detail::CurvedUntangleElement> els;
+            std::vector<std::size_t> els_face;
+            if (!all_quads)
+                for (std::size_t t = 0; t < curved.size(); ++t) {
+                    els.push_back(detail::curved_untangle_triangle(curved[t], curved_normal[t]));
+                    els_face.push_back(curved_face[t]);
+                }
+            for (std::size_t q = 0; q < quads.size(); ++q) {
+                detail::CurvedUntangleElement e;
+                e.mQuad = true;
+                e.mNormal = quad_normal[q];
+                for (std::size_t k = 0; k < 4; ++k)
+                    e.mNodes[k] = quads[q][k];
+                const std::size_t nh = detail::curved_quad_num_nodes(quad_order) - 4;
+                for (std::size_t k = 0; k < nh; ++k)
+                    e.mNodes[4 + k] = quad_hi[q][k];
+                els.push_back(e);
+                els_face.push_back(quad_geo[q]);
+            }
+            // Untangling (6.6.3) as for triangles: each face's nodes inside
+            // it (its own, the points made for its quads, and its corners
+            // inside it), in its parameters, the result kept only when it
+            // straightens fewer elements.
+            std::vector<double> plain;
+            std::int64_t plain_count = 0, plain_still = 0;
+            if (extras.mUntangle) {
+                plain.assign(px, px + 3 * np);
+                plain_count = mcad_straighten_mixed(quad_order, els, plain.data(), plain_still);
+            }
+            if (extras.mUntangle && plain_count > 0) {
+                // Each node inside a face: its parameters.
+                std::vector<std::map<std::int64_t, Vec2>> inside(nf);
+                for (const auto& [id, r_fu] : made_uv)
+                    inside[r_fu.first].emplace(id, r_fu.second);
+                for (std::size_t f = 0; f < nf; ++f) {
+                    const McadFace& r_f = faces[f];
+                    if (r_f.mHighOrderUv.size() != r_f.mHighOrder.size())
+                        continue;
+                    for (std::size_t i = 0; i < r_f.mHighOrderUv.size(); ++i)
+                        inside[f].emplace(high_base[f] + static_cast<std::int64_t>(i),
+                                          r_f.mHighOrderUv[i]);
+                }
+                for (std::size_t t = 0; t < coarse_uv.size(); ++t)
+                    for (std::size_t k = 0; k < 3; ++k) {
+                        const std::int64_t id = coarse_corners[t][k];
+                        const std::size_t f = coarse_face[t];
+                        if (id >= interior_base[f] &&
+                            id < interior_base[f] +
+                                     static_cast<std::int64_t>(faces[f].mInterior.size()))
+                            inside[f].emplace(id, coarse_uv[t][k]);
+                    }
+                std::vector<std::vector<std::size_t>> els_of(nf);
+                for (std::size_t e = 0; e < els.size(); ++e)
+                    els_of[els_face[e]].push_back(e);
+                std::vector<std::int64_t> fixed(nf, 0);
+                parallel_for(
+                    nf,
+                    [&](std::size_t f) {
+                        if (els_of[f].empty() || inside[f].empty())
+                            return;
+                        std::vector<detail::CurvedUntangleElement> mine;
+                        std::set<std::int64_t> used;
+                        for (const std::size_t e : els_of[f]) {
+                            mine.push_back(els[e]);
+                            const std::size_t nn =
+                                els[e].mQuad ? detail::curved_quad_num_nodes(quad_order)
+                                             : static_cast<std::size_t>(
+                                                   detail::curved_triangle_num_nodes(quad_order));
+                            for (std::size_t i = 0; i < nn; ++i)
+                                used.insert(els[e].mNodes[i]);
+                        }
+                        std::vector<std::int64_t> free;
+                        std::vector<std::array<double, 2>> uv;
+                        for (const auto& [id, r_uv] : inside[f])
+                            if (used.count(id) > 0) {
+                                free.push_back(id);
+                                uv.push_back({r_uv[0], r_uv[1]});
+                            }
+                        const detail::BrepSurfaceEval& r_s = *faces[f].pSurface;
+                        const auto rep = detail::curved_untangle(
+                            quad_order, mine, px, free, uv, [&](const std::array<double, 2>& rUv) {
+                                Vec3 x{};
+                                r_s.Eval(rUv[0], rUv[1], x.data(), nullptr, nullptr);
+                                return x;
+                            });
+                        fixed[f] = rep.mInvalidBefore - rep.mInvalidAfter;
+                    },
+                    1);
+            }
             std::int64_t still = 0;
-            result.mNumCurvedStraightened =
-                mcad_straighten_quads(quads, quad_hi, quad_normal, px, still);
+            result.mNumCurvedStraightened = mcad_straighten_mixed(quad_order, els, px, still);
+            if (extras.mUntangle) {
+                if (result.mNumCurvedStraightened >= plain_count) {
+                    std::copy(plain.begin(), plain.end(), px);
+                    still = plain_still;
+                    result.mNumCurvedStraightened = plain_count;
+                    untangled = 0;
+                } else {
+                    untangled = plain_count - result.mNumCurvedStraightened;
+                }
+            }
+            if (untangled > 0)
+                log::debug("mesh_cad_surface: {} curved elements untangled", untangled);
             if (result.mNumCurvedStraightened > 0)
                 warn(std::to_string(result.mNumCurvedStraightened) +
-                     " curved quads had a Jacobian that is not positive everywhere and are kept "
-                     "straight-sided");
+                     " curved elements had a Jacobian that is not positive everywhere and are "
+                     "kept straight-sided");
             if (still > 0)
                 warn(std::to_string(still) +
-                     " quads stay invalid even straight-sided against their face's normal");
+                     " elements stay invalid even straight-sided against their face's normal");
         }
         // The face regions: the triangles left, then the quads.
         for (auto& r_c : face_cells)
@@ -227937,6 +229505,73 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
         for (std::size_t q = 0; q < quads.size(); ++q)
             face_cells[static_cast<std::size_t>(quad_face[q])].push_back(
                 static_cast<std::int64_t>(tris.size() + q));
+    }
+    // Points no cell uses (6.8.3): a curved quad-dominant pair's diagonal
+    // nodes and cubic centres, and an all-quad pair's diagonal midpoints,
+    // are dropped and the rest renumbered in order.
+    std::vector<std::int64_t> renum;
+    if (extras.mQuads != MeshCadQuads::None && (curved_quads || all_quads)) {
+        std::vector<char> used(np, 0);
+        for (const auto& r_t : tris)
+            for (const std::int64_t v : r_t)
+                used[static_cast<std::size_t>(v)] = 1;
+        if (order > 1 && !all_quads)
+            for (const auto& r_el : curved)
+                for (int k = 0; k < detail::curved_triangle_num_nodes(order); ++k)
+                    used[static_cast<std::size_t>(r_el[static_cast<std::size_t>(k)])] = 1;
+        for (const auto& r_q : quads)
+            for (const std::int64_t v : r_q)
+                used[static_cast<std::size_t>(v)] = 1;
+        for (const auto& r_h : quad_hi)
+            for (const std::int64_t v : r_h)
+                if (v >= 0)
+                    used[static_cast<std::size_t>(v)] = 1;
+        // And every point the line cells below will name: the edges' samples
+        // and pieces' nodes (the all-quad halves' are the quads' own).
+        if (rOptions.mEdges) {
+            for (std::size_t e = 0; e < edges.size(); ++e) {
+                const McadEdge& r_e = edges[e];
+                if (r_e.mFail != MeshCadFaceStatus::Ok || dropped_edge[e])
+                    continue;
+                for (const std::int64_t v : uses[r_e.mMaster].mIds)
+                    used[static_cast<std::size_t>(v)] = 1;
+                for (const std::int64_t b : piece_base[e])
+                    for (int j = 0; b >= 0 && j + 1 < order; ++j)
+                        used[static_cast<std::size_t>(b + j)] = 1;
+            }
+        }
+        if (std::find(used.begin(), used.end(), 0) != used.end()) {
+            renum.assign(np, -1);
+            std::size_t kept = 0;
+            for (std::size_t i = 0; i < np; ++i)
+                if (used[i])
+                    renum[i] = static_cast<std::int64_t>(kept++);
+            NDArray packed = NDArray::Uninit(DType::Float64, {kept, std::size_t{3}});
+            double* pk = packed.As<double>();
+            for (std::size_t i = 0; i < np; ++i)
+                if (used[i])
+                    for (std::size_t k = 0; k < 3; ++k)
+                        pk[3 * static_cast<std::size_t>(renum[i]) + k] = px[3 * i + k];
+            const auto re = [&](std::int64_t& rV) {
+                if (rV >= 0)
+                    rV = renum[static_cast<std::size_t>(rV)];
+            };
+            for (auto& r_t : tris)
+                for (std::int64_t& r_v : r_t)
+                    re(r_v);
+            for (auto& r_el : curved)
+                for (std::int64_t& r_v : r_el)
+                    re(r_v);
+            for (auto& r_q : quads)
+                for (std::int64_t& r_v : r_q)
+                    re(r_v);
+            for (auto& r_h : quad_hi)
+                for (std::int64_t& r_v : r_h)
+                    re(r_v);
+            np = kept;
+            points = std::move(packed);
+            px = points.As<double>();
+        }
     }
     const bool tri_block = extras.mQuads == MeshCadQuads::None || !tris.empty();
     Mesh& r_m = result.mMesh;
@@ -227962,13 +229597,16 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
         r_m.AddCellBlock(order == 2 ? "triangle6" : "triangle10", std::move(conn));
     }
     if (!quads.empty()) {
-        const std::size_t nq = quad9 ? 9 : 4;
+        const std::size_t nq = curved_quads ? detail::curved_quad_num_nodes(quad_order) : 4;
         NDArray conn = NDArray::Uninit(DType::Int64, {quads.size(), nq});
         std::int64_t* pc = conn.As<std::int64_t>();
         for (std::size_t q = 0; q < quads.size(); ++q)
             for (std::size_t k = 0; k < nq; ++k)
                 pc[nq * q + k] = k < 4 ? quads[q][k] : quad_hi[q][k - 4];
-        r_m.AddCellBlock(quad9 ? "quad9" : "quad", std::move(conn));
+        r_m.AddCellBlock(!curved_quads     ? "quad"
+                         : quad_order == 2 ? "quad9"
+                                           : "quad16",
+                         std::move(conn));
     }
     std::vector<std::array<std::int64_t, 4>> segs;
     std::vector<std::int64_t> seg_edge;
@@ -228024,12 +229662,20 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
         if (all_quads) {
             std::vector<std::array<std::int64_t, 4>> halves;
             std::vector<std::int64_t> halves_edge;
+            // A half's nodes, from its first end: line3's midpoint, or
+            // line4's two.
             const auto half = [&](std::int64_t A, std::int64_t B) {
-                return quad9 ? half_node.at(std::minmax(A, B)) : std::int64_t{-1};
+                std::array<std::int64_t, 4> h{A, B, -1, -1};
+                if (curved_quads) {
+                    const auto n = sub_nodes_of(A, B);
+                    h[2] = n[0];
+                    h[3] = n[1];
+                }
+                return h;
             };
             for (std::size_t k = 0; k < segs.size(); ++k) {
-                halves.push_back({segs[k][0], segs[k][2], half(segs[k][0], segs[k][2]), -1});
-                halves.push_back({segs[k][2], segs[k][1], half(segs[k][2], segs[k][1]), -1});
+                halves.push_back(half(segs[k][0], segs[k][2]));
+                halves.push_back(half(segs[k][2], segs[k][1]));
                 halves_edge.push_back(seg_edge[k]);
                 halves_edge.push_back(seg_edge[k]);
             }
@@ -228041,7 +229687,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
         std::int64_t* pl = lines.As<std::int64_t>();
         for (std::size_t s = 0; s < segs.size(); ++s)
             for (std::size_t k = 0; k < nn; ++k)
-                pl[nn * s + k] = segs[s][k];
+                pl[nn * s + k] =
+                    renum.empty() ? segs[s][k] : renum[static_cast<std::size_t>(segs[s][k])];
         r_m.AddCellBlock(line_order == 1   ? "line"
                          : line_order == 2 ? "line3"
                                            : "line4",
@@ -228128,6 +229775,49 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                 sj = std::min(sj, detail::quad_scaled_jacobian(pp, r_q));
             pExtrasReport->mMinQuadScaledJacobian = sj;
         }
+        // The angles in the metric (6.10.2): each cell's corners mapped by
+        // the root of the metric at its centroid, the cells in parallel and
+        // the least kept, which does not depend on their order.
+        if (pMetric && (!tris.empty() || !quads.empty())) {
+            const double* pp = r_m.Points().As<double>();
+            const std::size_t nt = tris.size();
+            std::vector<double> least(nt + quads.size(), 180.0);
+            parallel_for(nt + quads.size(), [&](std::size_t c) {
+                const bool quad = c >= nt;
+                const std::size_t nc = quad ? 4 : 3;
+                std::array<Vec3, 4> x{};
+                Vec3 mid{0.0, 0.0, 0.0};
+                for (std::size_t k = 0; k < nc; ++k) {
+                    const auto id = static_cast<std::size_t>(quad ? quads[c - nt][k] : tris[c][k]);
+                    for (std::size_t d = 0; d < 3; ++d) {
+                        x[k][d] = pp[3 * id + d];
+                        mid[d] += x[k][d] / double(nc);
+                    }
+                }
+                std::array<double, 9> m{}, root{};
+                pMetric->At(mid, pSize ? pSize->At(mid) : rOptions.mTargetSize, m, &root);
+                std::array<Vec3, 4> y{};
+                for (std::size_t k = 0; k < nc; ++k)
+                    for (std::size_t a = 0; a < 3; ++a)
+                        for (std::size_t b = 0; b < 3; ++b)
+                            y[k][a] += root[3 * a + b] * x[k][b];
+                for (std::size_t k = 0; k < nc; ++k) {
+                    const Vec3& o = y[k];
+                    const Vec3& p = y[(k + 1) % nc];
+                    const Vec3& q = y[(k + nc - 1) % nc];
+                    const Vec3 a{p[0] - o[0], p[1] - o[1], p[2] - o[2]};
+                    const Vec3 b{q[0] - o[0], q[1] - o[1], q[2] - o[2]};
+                    const Vec3 cr{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+                                  a[0] * b[1] - a[1] * b[0]};
+                    least[c] = std::min(
+                        least[c],
+                        std::atan2(std::sqrt(cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]),
+                                   a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) *
+                            (180.0 / kMcadPi));
+                }
+            });
+            pExtrasReport->mMinMetricAngleDeg = *std::min_element(least.begin(), least.end());
+        }
         // Where a declared tolerance accepted what the global one would not
         // (6.5.1), in (edge, where) order.
         for (std::size_t e = 0; e < edges.size(); ++e)
@@ -228202,8 +229892,6 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep, const MeshCadSurfac
                                       MeshCadSurfaceExtrasReport* pExtrasReport) {
     mcad_check_options(rOptions);
     mcad_check_sources(rBrep, rOptions, rSources);
-    if (rExtras.mVirtualFaces && rOptions.mOrder > 1)
-        mcad_fail("virtual_faces is order 1 only (roadmap 6.5.2)");
     if (rExtras.mUntangle && rOptions.mOrder < 2)
         mcad_fail("untangle needs curved elements (order 2 or 3; roadmap 6.6.3)");
     if (rExtras.mQuads != MeshCadQuads::None && rExtras.mQuads != MeshCadQuads::Dominant &&
@@ -228212,12 +229900,6 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep, const MeshCadSurfac
     if (rExtras.mQuadPairs != MeshCadQuadPairs::Matching &&
         rExtras.mQuadPairs != MeshCadQuadPairs::Greedy)
         mcad_fail("quad_pairs must be matching or greedy");
-    if (rExtras.mQuads == MeshCadQuads::Dominant && rOptions.mOrder != 1)
-        mcad_fail("quads=\"dominant\" is order 1 only (roadmap 6.8)");
-    if (rExtras.mQuads == MeshCadQuads::All && rOptions.mOrder > 2)
-        mcad_fail("quads=\"all\" takes order 1 or 2 (quad or quad9, roadmap 6.8.3)");
-    if (rExtras.mQuads != MeshCadQuads::None && rExtras.mUntangle)
-        mcad_fail("untangle takes no quads (roadmap 6.8.3)");
     const std::size_t nf = rBrep.mFaces.size();
     if (pReport) {
         *pReport = MeshCadSizeReport{};
@@ -228234,13 +229916,11 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep, const MeshCadSurfac
     const bool all_quads = rExtras.mQuads == MeshCadQuads::All;
     MeshCadSurfaceOptions twice = rOptions;
     if (all_quads) {
-        if (rSources.pMetricBackground)
-            mcad_fail("quads=\"all\" takes no metric_background (roadmap 6.8.3)");
-        if (rSources.mVirtualEdges || rExtras.mVirtualFaces ||
-            rOptions.mReparamConditionNumber > 0.0)
+        if (rSources.mVirtualEdges)
             mcad_fail(
-                "quads=\"all\" takes no virtual_edges, virtual_faces or "
-                "reparam_condition_number (roadmap 6.8)");
+                "quads=\"all\" takes no virtual_edges: its split meshes at order 2, and curved "
+                "elements follow each edge's own curve, so a chord across a suppressed corner "
+                "cannot be curved");
         twice.mTargetSize = 2.0 * rOptions.mTargetSize;
         twice.mOrder = 2;
     }
@@ -228437,15 +230117,34 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep, const MeshCadSurfac
         }
     }
     // A metric (6.10.2), within the field's floor and the local size.
+    // A one-component array is a field (6.10.2): its Hessian at the points,
+    // as hessian takes it, is the metric's.
     std::unique_ptr<detail::MeshCadMetricField> metric;
-    if (rSources.pMetricBackground)
-        metric = std::make_unique<detail::MeshCadMetricField>(
-            *rSources.pMetricBackground, rSources.mMetricArray, rSources.mMetricError, floor);
+    if (rSources.pMetricBackground) {
+        const Mesh& r_bg = *rSources.pMetricBackground;
+        if (r_bg.PointData(rSources.mMetricArray).Size() == r_bg.NumPoints() &&
+            r_bg.NumPoints() > 0) {
+            HessianOptions ho;
+            ho.mArrayName = rSources.mMetricArray;
+            ho.mLocation = DataLocation::Point;
+            ho.mOutputName = "mesh_cad:metric_hessian";
+            ho.mOverwrite = true;
+            const Mesh hm = hessian(r_bg, ho).mMesh;
+            metric = std::make_unique<detail::MeshCadMetricField>(hm, ho.mOutputName,
+                                                                  rSources.mMetricError, floor);
+        } else {
+            metric = std::make_unique<detail::MeshCadMetricField>(r_bg, rSources.mMetricArray,
+                                                                  rSources.mMetricError, floor);
+        }
+    }
     // No sample asks for less than h (a flat model with no thin part): the
     // uniform mesh, byte for byte.
     // All-quad asks the field for twice its size, at every point (6.8.3).
-    if (all_quads)
+    if (all_quads) {
         field.SetScale(2.0);
+        if (metric)
+            metric->SetScale(2.0);
+    }
     MeshCadSurfaceResult r = mcad_surface_run(
         rBrep, all_quads ? twice : rOptions,
         field.NumSamples() > 0 || field.HasBackground() ? &field : nullptr, nullptr,
@@ -233876,6 +235575,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Array", "LengthScale", "FixedPointsArray", "FixBoundary", "RecordFiltered",
           "MaxIterations", "Tolerance"}},
         {"EstimateError", {"Array", "Method", "Marking", "MarkingValue", "Output", "Marked"}},
+        {"ErrorSize", {"Array", "TargetError", "Order", "MinSize", "MaxSize", "Output"}},
         {"Remesh",
          {"NumClusters", "Subdivide", "SubsampleRatio", "MaxSubdivide", "MaxIterations",
           "MaxRepairPasses", "Metric", "Gradation", "PreserveBoundary", "MaxAnisotropy"}},
@@ -234006,7 +235706,10 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         // Prismatic layers grown from the surface (roadmap 6.9).
         {"BoundaryLayer",
          {"FirstHeight", "NumLayers", "Growth", "Reverse", "CollisionFraction", "SmoothIterations",
-          "MaxShrink"}},
+          "MaxShrink", "Collapse", "NormalSmoothIterations", "FrontCheck"}},
+        // Tetrahedra filling the closed triangle surface (roadmap 6.7).
+        {"Tetrahedralize",
+         {"Backend", "MaxSize", "MaxVolume", "Grading", "OptimizeSteps", "MaxCells", "FaceArray"}},
         {"IgaRefine",
          {"Subdivisions", "Elevate", "SampleSubdivisions", "TrimSamples", "Trim", "Edges"}},
     };
@@ -234670,12 +236373,60 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             pipe_number(rStep, "SmoothIterations", static_cast<double>(o.mSmoothIterations)));
         o.mMaxShrink = static_cast<std::int32_t>(
             pipe_number(rStep, "MaxShrink", static_cast<double>(o.mMaxShrink)));
+        const std::string collapse = pipe_text(rStep, "Collapse", "points");
+        if (collapse == "points")
+            o.mCollapse = BoundaryLayerCollapse::Points;
+        else if (collapse == "layers")
+            o.mCollapse = BoundaryLayerCollapse::Layers;
+        else
+            throw std::invalid_argument(
+                pipe_err(rStep, "'Collapse' must be 'points' or 'layers', not '" + collapse + "'"));
+        o.mNormalSmoothIterations = static_cast<std::int32_t>(pipe_number(
+            rStep, "NormalSmoothIterations", static_cast<double>(o.mNormalSmoothIterations)));
+        o.mFrontCheck = pipe_flag(rStep, "FrontCheck", o.mFrontCheck);
         BoundaryLayerResult r = boundary_layer(mesh, o);
         pipe_push_step(rReport, rStep,
                        {{"NumCells", static_cast<double>(r.mNumCells)},
                         {"NumShrunk", static_cast<double>(r.mNumShrunk)},
                         {"NumCollapsed", static_cast<double>(r.mNumCollapsed)},
+                        {"NumFewerLayers", static_cast<double>(r.mNumFewerLayers)},
+                        {"NumFrontCrossings", static_cast<double>(r.mNumFrontCrossings)},
                         {"MinScaledJacobian", r.mMinScaledJacobian}});
+        return std::move(r.mMesh);
+    }
+
+    if (op == "Tetrahedralize") {
+        TetrahedralizeOptions o;
+        const std::string backend = pipe_text(rStep, "Backend", "auto");
+        if (backend == "auto")
+            o.mBackend = TetrahedralizeBackend::Auto;
+        else if (backend == "netgen")
+            o.mBackend = TetrahedralizeBackend::Netgen;
+        else
+            throw std::invalid_argument(
+                pipe_err(rStep, "'Backend' must be 'auto' or 'netgen', not '" + backend + "'"));
+        o.mMaxSize = pipe_number(rStep, "MaxSize", o.mMaxSize);
+        o.mMaxVolume = pipe_number(rStep, "MaxVolume", o.mMaxVolume);
+        o.mGrading = pipe_number(rStep, "Grading", o.mGrading);
+        o.mOptimizeSteps = static_cast<std::int32_t>(
+            pipe_number(rStep, "OptimizeSteps", static_cast<double>(o.mOptimizeSteps)));
+        o.mMaxCells = static_cast<std::int64_t>(
+            pipe_number(rStep, "MaxCells", static_cast<double>(o.mMaxCells)));
+        o.mFaceArray = pipe_text(rStep, "FaceArray", o.mFaceArray.c_str());
+        TetrahedralizeResult r = tetrahedralize(mesh, o);
+        for (const std::string& w : r.mWarnings)
+            rReport.mWarnings.push_back("Tetrahedralize: " + w);
+        pipe_push_step(rReport, rStep,
+                       {{"NumTetrahedra", static_cast<double>(r.mNumTetrahedra)},
+                        {"NumPoints", static_cast<double>(r.mNumPoints)},
+                        {"NumNewPoints", static_cast<double>(r.mNumNewPoints)},
+                        {"NumRegions", static_cast<double>(r.mNumRegions)},
+                        {"NumBoundaryTriangles", static_cast<double>(r.mNumBoundaryTriangles)},
+                        {"BoundaryPreserved", r.mBoundaryPreserved ? 1.0 : 0.0},
+                        {"HausdorffToSurface", r.mHausdorffToSurface},
+                        {"MinDihedralDeg", r.mMinDihedralDeg},
+                        {"MaxDihedralDeg", r.mMaxDihedralDeg},
+                        {"Volume", r.mVolume}});
         return std::move(r.mMesh);
     }
 
@@ -234714,6 +236465,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         pipe_push_step(rReport, rStep,
                        {{"NumProjected", static_cast<double>(r.mNumProjected)},
                         {"NumOnEdges", static_cast<double>(r.mNumOnEdges)},
+                        {"NumOnCurves", static_cast<double>(r.mNumOnCurves)},
                         {"NumOutsideTrim", static_cast<double>(r.mNumOutsideTrim)},
                         {"MaxMove", r.mMaxMove}});
         return std::move(r.mMesh);
@@ -235386,6 +237138,30 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             rReport.mWarnings.push_back("estimate_error: " + std::to_string(er.mNumSkipped) +
                                         " cell(s) could not be evaluated and are NaN");
         return std::move(er.mMesh);
+    }
+    if (op == "ErrorSize") {
+        // A pure data step (roadmap 6.10.2): EstimateError's per-cell
+        // indicator becomes the per-point size a later mesh_cad_surface's
+        // background reads. Geometry is untouched.
+        ErrorSizeOptions opts;
+        opts.mErrorArray = pipe_text(rStep, "Array", "error:zz");
+        opts.mTargetError = pipe_number(rStep, "TargetError", 0.0);
+        opts.mOrder = pipe_number(rStep, "Order", 1.0);
+        opts.mMinSize = pipe_number(rStep, "MinSize", 0.0);
+        opts.mMaxSize = pipe_number(rStep, "MaxSize", 0.0);
+        opts.mOutputName = pipe_text(rStep, "Output", kErrorSizeName);
+        opts.mOverwrite = true;
+        ErrorSizeResult sr = error_size(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumCells", static_cast<double>(sr.mNumCells)},
+                        {"NumSkipped", static_cast<double>(sr.mNumSkipped)},
+                        {"NumClamped", static_cast<double>(sr.mNumClamped)},
+                        {"MinSize", sr.mMinSize},
+                        {"MaxSize", sr.mMaxSize}});
+        if (sr.mNumSkipped > 0)
+            rReport.mWarnings.push_back("error_size: " + std::to_string(sr.mNumSkipped) +
+                                        " cell(s) have no finite size and size no point");
+        return std::move(sr.mMesh);
     }
     if (op == "Remesh") {
         // Unlike every other step, the output has NO correspondence to the
@@ -238367,6 +240143,50 @@ bool ptc_on_trim(const std::vector<std::vector<std::array<double, 2>>>& rLoops, 
     return false;
 }
 
+// The nearest point of a 3-D curve to `rP`: the best of 64 equal steps of
+// its parameter, then Gauss-Newton on `(C - p) . C' = 0` within the steps
+// beside it.
+detail::EdgeVec3 ptc_curve_closest(const detail::BrepCurveEval& rC, const detail::EdgeVec3& rP) {
+    constexpr int kSteps = 64;
+    const double t0 = rC.T0(), t1 = rC.T1();
+    const auto dist2 = [&](double T, detail::EdgeVec3& rX) {
+        double d[3];
+        rC.Eval(T, rX.data(), d);
+        return (rX[0] - rP[0]) * (rX[0] - rP[0]) + (rX[1] - rP[1]) * (rX[1] - rP[1]) +
+               (rX[2] - rP[2]) * (rX[2] - rP[2]);
+    };
+    double best_t = t0, best = std::numeric_limits<double>::infinity();
+    detail::EdgeVec3 x{};
+    for (int i = 0; i <= kSteps; ++i) {
+        const double t = t0 + (t1 - t0) * double(i) / kSteps;
+        const double d = dist2(t, x);
+        if (d < best) {
+            best = d;
+            best_t = t;
+        }
+    }
+    const double step = (t1 - t0) / kSteps;
+    const double lo = std::max(t0, best_t - step), hi = std::min(t1, best_t + step);
+    double t = best_t;
+    for (int it = 0; it < 30; ++it) {
+        double d[3];
+        rC.Eval(t, x.data(), d);
+        const double g = (x[0] - rP[0]) * d[0] + (x[1] - rP[1]) * d[1] + (x[2] - rP[2]) * d[2];
+        const double h = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+        if (!(h > 0.0))
+            break;
+        const double next = std::clamp(t - g / h, lo, hi);
+        if (std::fabs(next - t) <= 1e-15 * (1.0 + std::fabs(t)))
+            break;
+        t = next;
+    }
+    detail::EdgeVec3 y{};
+    if (dist2(t, y) <= best)
+        return y;
+    dist2(best_t, y);
+    return y;
+}
+
 }  // namespace
 
 ProjectToCadResult project_to_cad(const Mesh& rMesh, const BrepInfo& rBrep,
@@ -238489,11 +240309,45 @@ ProjectToCadResult project_to_cad(const Mesh& rMesh, const BrepInfo& rBrep,
         if (!trace[e])
             warn("edge " + std::to_string(e) + " has no usable trim");
     }
+    // An edge's own 3-D curve, where the model gives one that its trace
+    // follows (within a millionth of its length at nine points, or a
+    // billionth of the model's size): a point on the edge goes onto it, the
+    // trace's surface error left out. A curve the trace leaves is warned and
+    // the trace kept.
+    std::vector<std::optional<detail::BrepCurveEval>> curve(ne);
+    for (std::size_t e = 0; e < ne; ++e) {
+        const BrepEdge& r_e = rBrep.mEdges[e];
+        if (!edge_used[e] || !trace[e] || !r_e.mHasCurve || r_e.mCurve.mControlPoints.Ndim() != 2 ||
+            r_e.mCurve.mControlPoints.Shape()[1] != 3)
+            continue;
+        try {
+            curve[e].emplace(r_e.mCurve);
+        } catch (const std::invalid_argument&) {
+            continue;
+        }
+        const double length = trace[e]->Length();
+        double gap = 0.0, scale = 0.0;
+        for (int k = 0; k <= 8; ++k) {
+            const detail::EdgeVec3 q = trace[e]->Point(trace[e]->ParamAtLength(length * k / 8.0));
+            const detail::EdgeVec3 c = ptc_curve_closest(*curve[e], q);
+            gap = std::max(gap,
+                           std::sqrt((c[0] - q[0]) * (c[0] - q[0]) + (c[1] - q[1]) * (c[1] - q[1]) +
+                                     (c[2] - q[2]) * (c[2] - q[2])));
+            for (const double v : q)
+                scale = std::max(scale, std::fabs(v));
+        }
+        if (!(gap <= std::max(1e-6 * length, 1e-9 * scale))) {
+            warn("edge " + std::to_string(e) + ": its 3-D curve lies up to " + std::to_string(gap) +
+                 " from its trim; its points go onto the trim");
+            curve[e].reset();
+        }
+    }
 
     // Each point, independently.
     enum class Fate : std::uint8_t { Stay, Face, Edge, Corner, Ambiguous, TooFar, Failed };
     std::vector<Fate> fate(np, Fate::Stay);
     std::vector<char> outside(np, 0);
+    std::vector<char> on_curve(np, 0);
     std::vector<double> moved(np, 0.0);
     NDArray points = detail::data_owned_copy(r_pts);
     double* px = points.As<double>();
@@ -238523,7 +240377,13 @@ ProjectToCadResult project_to_cad(const Mesh& rMesh, const BrepInfo& rBrep,
                     fate[i] = Fate::Failed;
                     return;
                 }
-                x = r_t->Point(r_t->ParamAtLength(detail::edge_closest_length(*r_t, p)));
+                const auto& r_c = curve[static_cast<std::size_t>(r_o.mEdge)];
+                if (r_c) {
+                    x = ptc_curve_closest(*r_c, p);
+                    on_curve[i] = 1;
+                } else {
+                    x = r_t->Point(r_t->ParamAtLength(detail::edge_closest_length(*r_t, p)));
+                }
                 fate[i] = r_o.mEdges ? Fate::Corner : Fate::Edge;
             } else if (r_o.mFace >= 0) {
                 if (r_o.mFaces) {
@@ -238564,6 +240424,7 @@ ProjectToCadResult project_to_cad(const Mesh& rMesh, const BrepInfo& rBrep,
                 ++result.mNumProjected;
                 result.mNumOnEdges += fate[i] != Fate::Face ? 1 : 0;
                 result.mNumCorners += fate[i] == Fate::Corner ? 1 : 0;
+                result.mNumOnCurves += on_curve[i] ? 1 : 0;
                 result.mMaxMove = std::max(result.mMaxMove, moved[i]);
                 break;
             case Fate::Ambiguous:
@@ -257490,6 +259351,511 @@ TessellateResult tessellate(const Mesh& rMesh, const TessellateOptions& rOptions
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/tessellate.cpp =====
+// ===== begin src/cpp/src/operations/tetrahedralize.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <map>
+#include <mutex>
+#include <numeric>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// External includes
+#ifdef MESHIOPLUSPLUS_HAS_NETGEN
+namespace nglib {
+#include <nglib.h>
+}  // namespace nglib
+#endif
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kTetPrefix = "meshio++: tetrahedralize: ";
+constexpr double kTetPi = 3.14159265358979323846;
+
+using TetV3 = std::array<double, 3>;
+
+[[noreturn]] void tet_fail(const std::string& rWhy) {
+    throw std::invalid_argument(std::string(kTetPrefix) + rWhy);
+}
+
+TetV3 tet_sub(const TetV3& rA, const TetV3& rB) {
+    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
+}
+
+TetV3 tet_cross(const TetV3& rA, const TetV3& rB) {
+    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
+            rA[0] * rB[1] - rA[1] * rB[0]};
+}
+
+double tet_dot(const TetV3& rA, const TetV3& rB) {
+    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
+}
+
+// Six times the signed volume of (A, B, C, D): positive when D lies on the
+// side of (A, B, C) its right-hand normal points away from, meshio's order.
+double tet_volume6(const TetV3& rA, const TetV3& rB, const TetV3& rC, const TetV3& rD) {
+    return tet_dot(tet_sub(rB, rA), tet_cross(tet_sub(rC, rA), tet_sub(rD, rA)));
+}
+
+// The six dihedral angles of a tetrahedron, in degrees: at each edge, pi
+// less the angle between the outward normals of the two faces there.
+void tet_dihedrals(const std::array<TetV3, 4>& rX, double& rLo, double& rHi) {
+    static constexpr int kFaces[4][3] = {{1, 2, 3}, {0, 3, 2}, {0, 1, 3}, {0, 2, 1}};
+    std::array<TetV3, 4> n{};
+    for (int f = 0; f < 4; ++f) {
+        const TetV3& a = rX[static_cast<std::size_t>(kFaces[f][0])];
+        const TetV3& b = rX[static_cast<std::size_t>(kFaces[f][1])];
+        const TetV3& c = rX[static_cast<std::size_t>(kFaces[f][2])];
+        TetV3 v = tet_cross(tet_sub(b, a), tet_sub(c, a));
+        const double l = std::sqrt(tet_dot(v, v));
+        if (l > 0.0)
+            v = {v[0] / l, v[1] / l, v[2] / l};
+        n[static_cast<std::size_t>(f)] = v;
+    }
+    // Faces f and g (the ones opposite corners f and g) meet at the edge of
+    // the other two corners.
+    for (int f = 0; f < 4; ++f)
+        for (int g = f + 1; g < 4; ++g) {
+            const double c =
+                std::clamp(-tet_dot(n[static_cast<std::size_t>(f)], n[static_cast<std::size_t>(g)]),
+                           -1.0, 1.0);
+            const double angle = std::acos(c) * (180.0 / kTetPi);
+            rLo = std::min(rLo, angle);
+            rHi = std::max(rHi, angle);
+        }
+}
+
+#ifdef MESHIOPLUSPLUS_HAS_NETGEN
+// nglib's state is global: one call at a time, and one Ng_Init.
+std::mutex& tet_netgen_mutex() {
+    static std::mutex m;
+    return m;
+}
+#endif
+
+}  // namespace
+
+bool tetrahedralize_has_netgen() {
+#ifdef MESHIOPLUSPLUS_HAS_NETGEN
+    return true;
+#else
+    return false;
+#endif
+}
+
+TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOptions& rOptions) {
+    const TetrahedralizeOptions& o = rOptions;
+    if (o.mBackend != TetrahedralizeBackend::Auto && o.mBackend != TetrahedralizeBackend::Netgen)
+        tet_fail("backend must be auto or netgen");
+    if (!(std::isfinite(o.mMaxSize) && o.mMaxSize >= 0.0))
+        tet_fail("max_size must be finite and not negative");
+    if (!(std::isfinite(o.mMaxVolume) && o.mMaxVolume >= 0.0))
+        tet_fail("max_volume must be finite and not negative");
+    if (!(std::isfinite(o.mGrading) && o.mGrading >= 0.0 && o.mGrading <= 1.0))
+        tet_fail("grading must lie in [0, 1]");
+    if (o.mOptimizeSteps < 0 || o.mOptimizeSteps > 100)
+        tet_fail("optimize_steps must be between 0 and 100");
+    if (o.mMaxCells < 1)
+        tet_fail("max_cells must be positive");
+
+    // The triangles, block by block.
+    const std::size_t np = rSurface.NumPoints();
+    const NDArray& r_pts = rSurface.Points();
+    if (np > 0 && (r_pts.Ndim() != 2 || r_pts.Shape()[1] != 3))
+        tet_fail("the surface's points must be three-dimensional");
+    std::vector<TetV3> x(np);
+    for (std::size_t i = 0; i < np; ++i)
+        for (std::size_t k = 0; k < 3; ++k)
+            x[i][k] = detail::read_double(r_pts, 3 * i + k);
+    std::vector<std::array<std::int64_t, 3>> tris;
+    std::vector<std::int64_t> tri_face;  // mFaceArray, or -1
+    bool has_face = false;
+    for (std::size_t b = 0; b < rSurface.NumCellBlocks(); ++b) {
+        const auto cells = rSurface.Cells(b);
+        const std::string type(cells.Type());
+        if (type.rfind("line", 0) == 0 || type == "vertex")
+            continue;
+        if (type == "quad" || type == "polygon")
+            tet_fail("a '" + type +
+                     "' block: the surface must be triangles (split them with convert_cells)");
+        if (type != "triangle" || cells.IsRagged())
+            tet_fail("a '" + type +
+                     "' block: the surface must be linear triangles (linearize or extract_surface "
+                     "first)");
+        const bool face = !o.mFaceArray.empty() && rSurface.HasCellData(o.mFaceArray);
+        has_face = has_face || face;
+        for (std::size_t c = 0; c < cells.NumCells(); ++c) {
+            std::array<std::int64_t, 3> t{};
+            for (std::size_t k = 0; k < 3; ++k) {
+                t[k] = detail::read_int(cells.Conn(), 3 * c + k);
+                if (t[k] < 0 || static_cast<std::size_t>(t[k]) >= np)
+                    tet_fail("a triangle names a point out of range");
+            }
+            tris.push_back(t);
+            tri_face.push_back(face ? detail::read_int(rSurface.CellData(o.mFaceArray, b), c) : -1);
+        }
+    }
+    if (tris.empty())
+        tet_fail("the surface has no triangle");
+    {
+        Mesh check;
+        NDArray p = NDArray::Uninit(DType::Float64, {np, std::size_t{3}});
+        for (std::size_t i = 0; i < np; ++i)
+            for (std::size_t k = 0; k < 3; ++k)
+                p.As<double>()[3 * i + k] = x[i][k];
+        check.AssignPoints(std::move(p));
+        NDArray c = NDArray::Uninit(DType::Int64, {tris.size(), std::size_t{3}});
+        for (std::size_t t = 0; t < tris.size(); ++t)
+            for (std::size_t k = 0; k < 3; ++k)
+                c.As<std::int64_t>()[3 * t + k] = tris[t][k];
+        check.AddCellBlock("triangle", std::move(c));
+        const SurfaceQuality q = surface_watertight_check(check);
+        if (!q.mWatertight)
+            tet_fail(
+                "the surface must be closed, manifold, consistently oriented and without "
+                "degenerate triangles: it has " +
+                std::to_string(q.mBoundaryEdges) + " open edges, " +
+                std::to_string(q.mNonManifoldEdges) + " non-manifold edges, " +
+                std::to_string(q.mInconsistentPairs) + " misoriented edge pairs and " +
+                std::to_string(q.mDegenerateTriangles) + " degenerate triangles (repair it first)");
+    }
+
+#ifndef MESHIOPLUSPLUS_HAS_NETGEN
+    throw Unsupported(std::string(kTetPrefix) +
+                      "no backend is built in: rebuild with -DMESHIOPLUSPLUS_WITH_NETGEN=ON and "
+                      "Netgen's nglib installed (roadmap 6.7)");
+#else
+    const std::size_t nt = tris.size();
+    // Shells: the triangles connected across edges, in the order of their
+    // first triangle.
+    std::vector<std::size_t> parent(nt);
+    std::iota(parent.begin(), parent.end(), std::size_t{0});
+    const auto find = [&](std::size_t A) {
+        while (parent[A] != A)
+            A = parent[A] = parent[parent[A]];
+        return A;
+    };
+    {
+        std::map<std::pair<std::int64_t, std::int64_t>, std::size_t> first;
+        for (std::size_t t = 0; t < nt; ++t)
+            for (std::size_t k = 0; k < 3; ++k) {
+                const auto key = std::minmax(tris[t][k], tris[t][(k + 1) % 3]);
+                const auto [it, fresh] = first.emplace(key, t);
+                if (!fresh) {
+                    const std::size_t a = find(it->second), b = find(t);
+                    if (a != b)
+                        parent[std::max(a, b)] = std::min(a, b);
+                }
+            }
+    }
+    std::vector<std::int64_t> shell_of(nt, -1);
+    std::vector<std::vector<std::size_t>> shells;
+    {
+        std::map<std::size_t, std::size_t> index;
+        for (std::size_t t = 0; t < nt; ++t) {
+            const auto [it, fresh] = index.emplace(find(t), shells.size());
+            if (fresh)
+                shells.emplace_back();
+            shells[it->second].push_back(t);
+            shell_of[t] = static_cast<std::int64_t>(it->second);
+        }
+    }
+    const std::size_t ns = shells.size();
+    // Each shell's signed volume; one facing in is turned outward.
+    std::vector<double> volume(ns, 0.0);
+    std::vector<char> turned(ns, 0);
+    for (std::size_t s = 0; s < ns; ++s) {
+        for (const std::size_t t : shells[s])
+            volume[s] += tet_volume6({0.0, 0.0, 0.0}, x[static_cast<std::size_t>(tris[t][0])],
+                                     x[static_cast<std::size_t>(tris[t][1])],
+                                     x[static_cast<std::size_t>(tris[t][2])]) /
+                         6.0;
+        if (volume[s] < 0.0) {
+            turned[s] = 1;
+            volume[s] = -volume[s];
+        }
+        if (!(volume[s] > 0.0))
+            tet_fail("shell " + std::to_string(s) + " encloses no volume");
+    }
+    const auto oriented = [&](std::size_t T) {
+        std::array<std::int64_t, 3> t = tris[T];
+        if (turned[static_cast<std::size_t>(shell_of[T])])
+            std::swap(t[1], t[2]);
+        return t;
+    };
+    // Nesting: shell s lies in shell r when the winding number of r at one of
+    // s's points is 1; s's region is in its innermost container's.
+    std::vector<std::int64_t> container(ns, -1);
+    for (std::size_t s = 0; s < ns; ++s) {
+        const detail::Vec3 q = x[static_cast<std::size_t>(tris[shells[s][0]][0])];
+        for (std::size_t r = 0; r < ns; ++r) {
+            if (r == s || !(volume[r] > volume[s]))
+                continue;
+            double w = 0.0;
+            for (const std::size_t t : shells[r]) {
+                const auto v = oriented(t);
+                w += detail::tri_solid_angle(x[static_cast<std::size_t>(v[0])],
+                                             x[static_cast<std::size_t>(v[1])],
+                                             x[static_cast<std::size_t>(v[2])], q);
+            }
+            if (std::fabs(w) / (4.0 * kTetPi) > 0.5 &&
+                (container[s] < 0 || volume[r] < volume[static_cast<std::size_t>(container[s])]))
+                container[s] = static_cast<std::int64_t>(r);
+        }
+    }
+
+    double maxh = o.mMaxSize > 0.0 ? o.mMaxSize : 0.0;
+    if (o.mMaxVolume > 0.0) {
+        const double h = std::cbrt(6.0 * std::sqrt(2.0) * o.mMaxVolume);
+        maxh = maxh > 0.0 ? std::min(maxh, h) : h;
+    }
+    TetrahedralizeResult result;
+    result.mBackend = "netgen";
+    result.mNumRegions = static_cast<std::int64_t>(ns);
+    result.mNumBoundaryTriangles = static_cast<std::int64_t>(nt);
+    result.mBoundaryPreserved = true;
+    std::vector<TetV3> points(x.begin(), x.end());
+    std::vector<std::array<std::int64_t, 4>> tets;
+    std::vector<std::int64_t> tet_region;
+    {
+        std::lock_guard<std::mutex> lock(tet_netgen_mutex());
+        static std::once_flag s_init;
+        std::call_once(s_init, [] { nglib::Ng_Init(); });
+        for (std::size_t s = 0; s < ns; ++s) {
+            // The region of shell s: its triangles outward, its children's
+            // inward; the points they use, ascending.
+            std::vector<std::array<std::int64_t, 3>> faces;
+            for (const std::size_t t : shells[s])
+                faces.push_back(oriented(t));
+            for (std::size_t c = 0; c < ns; ++c)
+                if (container[c] == static_cast<std::int64_t>(s))
+                    for (const std::size_t t : shells[c]) {
+                        auto v = oriented(t);
+                        std::swap(v[1], v[2]);
+                        faces.push_back(v);
+                    }
+            std::vector<std::int64_t> used;
+            for (const auto& r_f : faces)
+                used.insert(used.end(), r_f.begin(), r_f.end());
+            std::sort(used.begin(), used.end());
+            used.erase(std::unique(used.begin(), used.end()), used.end());
+            std::map<std::int64_t, int> local;
+            for (std::size_t i = 0; i < used.size(); ++i)
+                local[used[i]] = static_cast<int>(i) + 1;
+            nglib::Ng_Mesh* p_m = nglib::Ng_NewMesh();
+            for (const std::int64_t g : used) {
+                double p[3] = {x[static_cast<std::size_t>(g)][0], x[static_cast<std::size_t>(g)][1],
+                               x[static_cast<std::size_t>(g)][2]};
+                nglib::Ng_AddPoint(p_m, p);
+            }
+            for (const auto& r_f : faces) {
+                int pi[3] = {local.at(r_f[0]), local.at(r_f[1]), local.at(r_f[2])};
+                nglib::Ng_AddSurfaceElement(p_m, nglib::NG_TRIG, pi);
+            }
+            nglib::Ng_Meshing_Parameters mp;
+            if (maxh > 0.0)
+                mp.maxh = maxh;
+            mp.grading = o.mGrading;
+            mp.optsteps_3d = o.mOptimizeSteps;
+            mp.optvolmeshenable = o.mOptimizeSteps > 0 ? 1 : 0;
+            mp.optsurfmeshenable = 0;
+            const nglib::Ng_Result status = nglib::Ng_GenerateVolumeMesh(p_m, &mp);
+            const int ne = nglib::Ng_GetNE(p_m);
+            const int nlocal = nglib::Ng_GetNP(p_m);
+            if (status != nglib::NG_OK || ne <= 0) {
+                nglib::Ng_DeleteMesh(p_m);
+                throw std::runtime_error(std::string(kTetPrefix) + "Netgen failed on region " +
+                                         std::to_string(s) + " (status " +
+                                         std::to_string(static_cast<int>(status)) +
+                                         "); is the surface free of self-intersections?");
+            }
+            if (static_cast<std::int64_t>(tets.size()) + ne > o.mMaxCells) {
+                nglib::Ng_DeleteMesh(p_m);
+                throw std::length_error(std::string(kTetPrefix) + "the mesh would have more than " +
+                                        std::to_string(o.mMaxCells) + " tetrahedra (max_cells)");
+            }
+            // The surface kept: its points where they were, its triangles as
+            // given.
+            for (std::size_t i = 0; i < used.size(); ++i) {
+                double p[3];
+                nglib::Ng_GetPoint(p_m, static_cast<int>(i) + 1, p);
+                const TetV3& r_g = x[static_cast<std::size_t>(used[i])];
+                if (p[0] != r_g[0] || p[1] != r_g[1] || p[2] != r_g[2])
+                    result.mBoundaryPreserved = false;
+            }
+            if (nglib::Ng_GetNSE(p_m) != static_cast<int>(faces.size())) {
+                result.mBoundaryPreserved = false;
+            } else {
+                std::vector<std::array<std::int64_t, 3>> want, got;
+                for (const auto& r_f : faces) {
+                    std::array<std::int64_t, 3> k = r_f;
+                    std::sort(k.begin(), k.end());
+                    want.push_back(k);
+                }
+                for (int e = 1; e <= static_cast<int>(faces.size()); ++e) {
+                    int pi[NG_SURFACE_ELEMENT_MAXPOINTS];
+                    nglib::Ng_GetSurfaceElement(p_m, e, pi);
+                    std::array<std::int64_t, 3> k{};
+                    for (std::size_t j = 0; j < 3; ++j)
+                        k[j] = pi[j] >= 1 && pi[j] <= static_cast<int>(used.size())
+                                   ? used[static_cast<std::size_t>(pi[j] - 1)]
+                                   : -1;
+                    std::sort(k.begin(), k.end());
+                    got.push_back(k);
+                }
+                std::sort(want.begin(), want.end());
+                std::sort(got.begin(), got.end());
+                if (want != got)
+                    result.mBoundaryPreserved = false;
+            }
+            // New points, after every earlier region's.
+            std::vector<std::int64_t> global(static_cast<std::size_t>(nlocal) + 1, -1);
+            for (std::size_t i = 0; i < used.size(); ++i)
+                global[i + 1] = used[i];
+            for (int i = static_cast<int>(used.size()) + 1; i <= nlocal; ++i) {
+                double p[3];
+                nglib::Ng_GetPoint(p_m, i, p);
+                global[static_cast<std::size_t>(i)] = static_cast<std::int64_t>(points.size());
+                points.push_back({p[0], p[1], p[2]});
+            }
+            for (int e = 1; e <= ne; ++e) {
+                int pi[NG_VOLUME_ELEMENT_MAXPOINTS];
+                if (nglib::Ng_GetVolumeElement(p_m, e, pi) != nglib::NG_TET) {
+                    nglib::Ng_DeleteMesh(p_m);
+                    throw std::runtime_error(std::string(kTetPrefix) +
+                                             "Netgen returned an element that is not a "
+                                             "tetrahedron");
+                }
+                std::array<std::int64_t, 4> t{};
+                for (std::size_t j = 0; j < 4; ++j)
+                    t[j] = global[static_cast<std::size_t>(pi[j])];
+                if (tet_volume6(points[static_cast<std::size_t>(t[0])],
+                                points[static_cast<std::size_t>(t[1])],
+                                points[static_cast<std::size_t>(t[2])],
+                                points[static_cast<std::size_t>(t[3])]) < 0.0)
+                    std::swap(t[1], t[2]);
+                tets.push_back(t);
+                tet_region.push_back(static_cast<std::int64_t>(s));
+            }
+            nglib::Ng_DeleteMesh(p_m);
+        }
+    }
+    if (!result.mBoundaryPreserved)
+        throw std::runtime_error(std::string(kTetPrefix) +
+                                 "Netgen moved the surface's points or triangles");
+
+    // The measures.
+    result.mNumTetrahedra = static_cast<std::int64_t>(tets.size());
+    result.mNumPoints = static_cast<std::int64_t>(points.size());
+    result.mNumNewPoints = static_cast<std::int64_t>(points.size() - np);
+    double lo = 180.0, hi = 0.0;
+    for (const auto& r_t : tets) {
+        const std::array<TetV3, 4> c{
+            points[static_cast<std::size_t>(r_t[0])], points[static_cast<std::size_t>(r_t[1])],
+            points[static_cast<std::size_t>(r_t[2])], points[static_cast<std::size_t>(r_t[3])]};
+        result.mVolume += tet_volume6(c[0], c[1], c[2], c[3]) / 6.0;
+        tet_dihedrals(c, lo, hi);
+    }
+    result.mMinDihedralDeg = tets.empty() ? 0.0 : lo;
+    result.mMaxDihedralDeg = tets.empty() ? 0.0 : hi;
+
+    // The mesh: the points, the tetrahedra, the surface's triangles.
+    Mesh& r_m = result.mMesh;
+    NDArray pts = NDArray::Uninit(DType::Float64, {points.size(), std::size_t{3}});
+    for (std::size_t i = 0; i < points.size(); ++i)
+        for (std::size_t k = 0; k < 3; ++k)
+            pts.As<double>()[3 * i + k] = points[i][k];
+    r_m.AssignPoints(std::move(pts));
+    NDArray tc = NDArray::Uninit(DType::Int64, {tets.size(), std::size_t{4}});
+    for (std::size_t t = 0; t < tets.size(); ++t)
+        for (std::size_t k = 0; k < 4; ++k)
+            tc.As<std::int64_t>()[4 * t + k] = tets[t][k];
+    r_m.AddCellBlock("tetra", std::move(tc));
+    NDArray fc = NDArray::Uninit(DType::Int64, {nt, std::size_t{3}});
+    for (std::size_t t = 0; t < nt; ++t)
+        for (std::size_t k = 0; k < 3; ++k)
+            fc.As<std::int64_t>()[3 * t + k] = tris[t][k];
+    r_m.AddCellBlock("triangle", std::move(fc));
+    const auto column = [](std::size_t N, const std::int64_t* pFrom, std::int64_t Fill) {
+        NDArray a = NDArray::Uninit(DType::Int64, {N});
+        for (std::size_t i = 0; i < N; ++i)
+            a.As<std::int64_t>()[i] = pFrom ? pFrom[i] : Fill;
+        return a;
+    };
+    {
+        std::vector<NDArray> blocks;
+        blocks.push_back(column(tets.size(), tet_region.data(), 0));
+        blocks.push_back(column(nt, nullptr, -1));
+        r_m.AddCellData(kTetrahedralizeRegion, std::move(blocks));
+    }
+    if (has_face) {
+        std::vector<NDArray> blocks;
+        blocks.push_back(column(tets.size(), nullptr, -1));
+        blocks.push_back(column(nt, tri_face.data(), 0));
+        r_m.AddCellData(o.mFaceArray, std::move(blocks));
+    }
+    for (std::size_t s = 0; s < ns; ++s) {
+        std::vector<std::int64_t> ids;
+        for (std::size_t t = 0; t < tets.size(); ++t)
+            if (tet_region[t] == static_cast<std::int64_t>(s))
+                ids.push_back(static_cast<std::int64_t>(t));
+        r_m.AddRegion(Region("region:" + std::to_string(s), RegionKind::Cell, 3, -1,
+                             column(ids.size(), ids.data(), 0)));
+    }
+    if (has_face) {
+        // Each surface triangle's tetrahedron facet, the one outside it
+        // first found (a shell between two regions is a facet of both; the
+        // lower region's is taken).
+        static constexpr int kFacet[4][3] = {{1, 2, 3}, {0, 3, 2}, {0, 1, 3}, {0, 2, 1}};
+        std::map<std::array<std::int64_t, 3>, std::pair<std::int64_t, std::int64_t>> facet_of;
+        for (std::size_t t = 0; t < tets.size(); ++t)
+            for (int f = 0; f < 4; ++f) {
+                std::array<std::int64_t, 3> k{tets[t][static_cast<std::size_t>(kFacet[f][0])],
+                                              tets[t][static_cast<std::size_t>(kFacet[f][1])],
+                                              tets[t][static_cast<std::size_t>(kFacet[f][2])]};
+                std::sort(k.begin(), k.end());
+                facet_of.emplace(
+                    k, std::make_pair(static_cast<std::int64_t>(t), static_cast<std::int64_t>(f)));
+            }
+        std::map<std::int64_t, std::vector<std::int64_t>> sides;
+        for (std::size_t t = 0; t < nt; ++t) {
+            if (tri_face[t] < 0)
+                continue;
+            std::array<std::int64_t, 3> k = tris[t];
+            std::sort(k.begin(), k.end());
+            const auto it = facet_of.find(k);
+            if (it == facet_of.end())
+                continue;
+            auto& r_s = sides[tri_face[t]];
+            r_s.push_back(it->second.first);
+            r_s.push_back(it->second.second);
+        }
+        for (const auto& [face, r_e] : sides) {
+            NDArray e = NDArray::Uninit(DType::Int64, {r_e.size() / 2, std::size_t{2}});
+            std::copy(r_e.begin(), r_e.end(), e.As<std::int64_t>());
+            r_m.AddRegion(
+                Region("face:" + std::to_string(face), RegionKind::Side, 2, -1, std::move(e)));
+        }
+    }
+    log::debug("tetrahedralize: {} tetrahedra in {} regions, dihedral angles {:.1f} to {:.1f}",
+               result.mNumTetrahedra, result.mNumRegions, result.mMinDihedralDeg,
+               result.mMaxDihedralDeg);
+    return result;
+#endif
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/tetrahedralize.cpp =====
 // ===== begin src/cpp/src/operations/transform.cpp =====
 #include <array>
 #include <cmath>

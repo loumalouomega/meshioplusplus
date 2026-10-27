@@ -96,8 +96,9 @@ void tet_dihedrals(const std::array<TetV3, 4>& rX, double& rLo, double& rHi) {
     // the other two corners.
     for (int f = 0; f < 4; ++f)
         for (int g = f + 1; g < 4; ++g) {
-            const double c = std::clamp(
-                -tet_dot(n[static_cast<std::size_t>(f)], n[static_cast<std::size_t>(g)]), -1.0, 1.0);
+            const double c =
+                std::clamp(-tet_dot(n[static_cast<std::size_t>(f)], n[static_cast<std::size_t>(g)]),
+                           -1.0, 1.0);
             const double angle = std::acos(c) * (180.0 / kTetPi);
             rLo = std::min(rLo, angle);
             rHi = std::max(rHi, angle);
@@ -190,13 +191,13 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
         check.AddCellBlock("triangle", std::move(c));
         const SurfaceQuality q = surface_watertight_check(check);
         if (!q.mWatertight)
-            tet_fail("the surface must be closed, manifold, consistently oriented and without "
-                     "degenerate triangles: it has " +
-                     std::to_string(q.mBoundaryEdges) + " open edges, " +
-                     std::to_string(q.mNonManifoldEdges) + " non-manifold edges, " +
-                     std::to_string(q.mInconsistentPairs) + " misoriented edge pairs and " +
-                     std::to_string(q.mDegenerateTriangles) +
-                     " degenerate triangles (repair it first)");
+            tet_fail(
+                "the surface must be closed, manifold, consistently oriented and without "
+                "degenerate triangles: it has " +
+                std::to_string(q.mBoundaryEdges) + " open edges, " +
+                std::to_string(q.mNonManifoldEdges) + " non-manifold edges, " +
+                std::to_string(q.mInconsistentPairs) + " misoriented edge pairs and " +
+                std::to_string(q.mDegenerateTriangles) + " degenerate triangles (repair it first)");
     }
 
 #ifndef MESHIOPLUSPLUS_HAS_NETGEN
@@ -350,9 +351,8 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
             }
             if (static_cast<std::int64_t>(tets.size()) + ne > o.mMaxCells) {
                 nglib::Ng_DeleteMesh(p_m);
-                throw std::length_error(std::string(kTetPrefix) +
-                                        "the mesh would have more than " +
-                                        std::to_string(o.mMaxCells) + " tetrahedra");
+                throw std::length_error(std::string(kTetPrefix) + "the mesh would have more than " +
+                                        std::to_string(o.mMaxCells) + " tetrahedra (max_cells)");
             }
             // The surface kept: its points where they were, its triangles as
             // given.
@@ -430,10 +430,9 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
     result.mNumNewPoints = static_cast<std::int64_t>(points.size() - np);
     double lo = 180.0, hi = 0.0;
     for (const auto& r_t : tets) {
-        const std::array<TetV3, 4> c{points[static_cast<std::size_t>(r_t[0])],
-                                     points[static_cast<std::size_t>(r_t[1])],
-                                     points[static_cast<std::size_t>(r_t[2])],
-                                     points[static_cast<std::size_t>(r_t[3])]};
+        const std::array<TetV3, 4> c{
+            points[static_cast<std::size_t>(r_t[0])], points[static_cast<std::size_t>(r_t[1])],
+            points[static_cast<std::size_t>(r_t[2])], points[static_cast<std::size_t>(r_t[3])]};
         result.mVolume += tet_volume6(c[0], c[1], c[2], c[3]) / 6.0;
         tet_dihedrals(c, lo, hi);
     }
@@ -495,8 +494,8 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
                                               tets[t][static_cast<std::size_t>(kFacet[f][1])],
                                               tets[t][static_cast<std::size_t>(kFacet[f][2])]};
                 std::sort(k.begin(), k.end());
-                facet_of.emplace(k, std::make_pair(static_cast<std::int64_t>(t),
-                                                   static_cast<std::int64_t>(f)));
+                facet_of.emplace(
+                    k, std::make_pair(static_cast<std::int64_t>(t), static_cast<std::int64_t>(f)));
             }
         std::map<std::int64_t, std::vector<std::int64_t>> sides;
         for (std::size_t t = 0; t < nt; ++t) {
@@ -514,8 +513,8 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
         for (const auto& [face, r_e] : sides) {
             NDArray e = NDArray::Uninit(DType::Int64, {r_e.size() / 2, std::size_t{2}});
             std::copy(r_e.begin(), r_e.end(), e.As<std::int64_t>());
-            r_m.AddRegion(Region("face:" + std::to_string(face), RegionKind::Side, 2, -1,
-                                 std::move(e)));
+            r_m.AddRegion(
+                Region("face:" + std::to_string(face), RegionKind::Side, 2, -1, std::move(e)));
         }
     }
     log::debug("tetrahedralize: {} tetrahedra in {} regions, dihedral angles {:.1f} to {:.1f}",

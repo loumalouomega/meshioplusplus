@@ -256,6 +256,7 @@ if TYPE_CHECKING:
     from ._surface import extract_surface
     from ._tensor_invariants import tensor_invariants
     from ._tessellation import Tessellation, tessellate
+    from ._tetrahedralize import tetrahedralize
     from ._transform import transform
     from ._tui import tui
     from ._undo_green import undo_green
@@ -432,6 +433,7 @@ _LAZY_ATTRS = {
     "mesh_cad_surface": "_mesh_cad",
     "project_to_cad": "_project_to_cad",
     "boundary_layer": "_boundary_layer",
+    "tetrahedralize": "_tetrahedralize",
     "triangulate_polygon_2d": "_mesh_cad",
 }
 
@@ -606,6 +608,7 @@ __all__ = [
     "mesh_cad_surface",
     "project_to_cad",
     "boundary_layer",
+    "tetrahedralize",
     "triangulate_polygon_2d",
     "sample_distance",
     "distance_to_surface",

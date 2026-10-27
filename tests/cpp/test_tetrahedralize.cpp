@@ -67,8 +67,9 @@ void add_box(std::vector<double>& rX, std::vector<std::int64_t>& rT, double Lo, 
                             {Lo, Lo, Hi}, {Hi, Lo, Hi}, {Hi, Hi, Hi}, {Lo, Hi, Hi}};
     for (const auto& r_p : p)
         rX.insert(rX.end(), r_p, r_p + 3);
-    const std::int64_t t[12][3] = {{0, 2, 1}, {0, 3, 2}, {4, 5, 6}, {4, 6, 7}, {0, 1, 5}, {0, 5, 4},
-                                   {1, 2, 6}, {1, 6, 5}, {2, 3, 7}, {2, 7, 6}, {3, 0, 4}, {3, 4, 7}};
+    const std::int64_t t[12][3] = {{0, 2, 1}, {0, 3, 2}, {4, 5, 6}, {4, 6, 7},
+                                   {0, 1, 5}, {0, 5, 4}, {1, 2, 6}, {1, 6, 5},
+                                   {2, 3, 7}, {2, 7, 6}, {3, 0, 4}, {3, 4, 7}};
     for (const auto& r_t : t) {
         rT.push_back(base + r_t[0]);
         rT.push_back(base + (Inward ? r_t[2] : r_t[1]));
@@ -140,10 +141,11 @@ TEST(Tetrahedralize, TheSphereIsFilledKeepingItsSkin) {
     mio::TetrahedralizeOptions o;
     o.mMaxSize = 0.2;
     const auto r = mio::tetrahedralize(s, o);
-    std::printf("[6.7] sphere: %lld tetrahedra, %lld new points, dihedral %.1f to %.1f, volume "
-                "%.6f (4/3 pi %.6f)\n",
-                static_cast<long long>(r.mNumTetrahedra), static_cast<long long>(r.mNumNewPoints),
-                r.mMinDihedralDeg, r.mMaxDihedralDeg, r.mVolume, 4.0 / 3.0 * kPi);
+    std::printf(
+        "[6.7] sphere: %lld tetrahedra, %lld new points, dihedral %.1f to %.1f, volume "
+        "%.6f (4/3 pi %.6f)\n",
+        static_cast<long long>(r.mNumTetrahedra), static_cast<long long>(r.mNumNewPoints),
+        r.mMinDihedralDeg, r.mMaxDihedralDeg, r.mVolume, 4.0 / 3.0 * kPi);
     EXPECT_TRUE(r.mBoundaryPreserved);
     EXPECT_EQ(r.mHausdorffToSurface, 0.0);
     EXPECT_EQ(r.mNumRegions, 1);
@@ -277,8 +279,7 @@ TEST(Tetrahedralize, TheVolumeBehindABoundaryLayerConforms) {
         first += cells.NumCells();
     }
     ASSERT_FALSE(conn.empty());
-    std::vector<double> x(lm.Points().As<double>(),
-                          lm.Points().As<double>() + 3 * lm.NumPoints());
+    std::vector<double> x(lm.Points().As<double>(), lm.Points().As<double>() + 3 * lm.NumPoints());
     // The cap faces away from the wall, into the sphere's middle: turned
     // outward by the operation, as every shell is.
     const auto r = mio::tetrahedralize(triangles(x, conn));

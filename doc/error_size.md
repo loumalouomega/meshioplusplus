@@ -21,6 +21,10 @@ The size is clamped to `[min_size, max_size]` (0 is no bound) and written per po
 
 Geometry, connectivity, regions, property sets and every existing array pass through; only the size array is added. The result is byte-identical across mesh backends and thread counts.
 
+On the unit sphere with a `tanh` layer across it (notebook 42), the indicator of the layer's field on a mesh at `h = 0.1`, asked for 1.5 times that mesh's global error, re-meshes the sphere with 3,137 points at an L2 interpolation error of 1.54e-2, where a uniform mesh at `h = 0.05` needs 11,273 points for 1.59e-2.
+
+![The sphere meshed uniformly at h = 0.05 and sized by error_size from the layer's error indicator, coloured by the layer's field](/images/mesh_cad_error_size.png)
+
 ## Options and report
 
 | option | meaning |

@@ -3106,6 +3106,9 @@ def _register_operations(server: FastMCP) -> None:
         collision_fraction: float = 0.45,
         smooth_iterations: int = 5,
         max_shrink: int = 6,
+        collapse: str = "points",
+        normal_smooth_iterations: int = 0,
+        front_check: bool = True,
     ) -> dict:
         """Grow prismatic boundary layers from a triangle and quad surface
         (roadmap 6.9): wedges from triangles and hexahedra from quads along
@@ -3114,11 +3117,16 @@ def _register_operations(server: FastMCP) -> None:
         the faces' normals with reverse), stopped at collision_fraction of the
         distance to the surface ahead, smoothed smooth_iterations times; the
         points of a cell that would fold are halved max_shrink times and then
-        collapsed into pyramids and tetrahedra, so no cell is written folded.
-        The wall and the cap come out as faces with boundary_layer:layer cell
-        data. Reports num_cells, num_wedges, num_hexahedra, num_pyramids,
-        num_tetrahedra, num_shrunk, num_collapsed, num_not_visible,
-        min_scaled_jacobian, min_thickness, max_thickness and cap_closed."""
+        collapsed into pyramids and tetrahedra (collapse="points") or their
+        top layer dropped (collapse="layers"), so no cell is written folded.
+        normal_smooth_iterations Laplacian passes smooth the growth
+        directions; front_check tests the last layer's faces against each
+        other and the surface. The wall and the cap come out as faces with
+        boundary_layer:layer cell data. Reports num_cells, num_wedges,
+        num_hexahedra, num_pyramids, num_tetrahedra, num_shrunk,
+        num_collapsed, num_not_visible, num_fewer_layers,
+        num_front_crossings, min_scaled_jacobian, min_thickness,
+        max_thickness and cap_closed."""
         return _guard(
             _tools.tool_boundary_layer,
             input_path=input_path,
@@ -3132,6 +3140,51 @@ def _register_operations(server: FastMCP) -> None:
             collision_fraction=collision_fraction,
             smooth_iterations=smooth_iterations,
             max_shrink=max_shrink,
+            collapse=collapse,
+            normal_smooth_iterations=normal_smooth_iterations,
+            front_check=front_check,
+        )
+
+    @server.tool()
+    def tetrahedralize(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        backend: str = "auto",
+        max_size: float = 0.0,
+        max_volume: float = 0.0,
+        grading: float = 0.3,
+        optimize_steps: int = 3,
+        max_cells: int = 50_000_000,
+        face_array: str = "cad:face",
+    ) -> dict:
+        """Fill a closed, manifold, consistently oriented triangle surface
+        (a mesh_cad_surface result, a boundary layer's cap) with tetrahedra,
+        its triangles and points kept exactly (roadmap 6.7). Each shell bounds
+        a region (a box inside a box gives two), meshed on its own so the
+        regions conform. max_size and max_volume (0: none) bound the
+        tetrahedra, grading (0 to 1) is how fast the size grows inward,
+        optimize_steps the backend's volume optimisation passes; face_array
+        (cad:face) is carried to the triangles. The backend is Netgen
+        ("auto" or "netgen"); a build without it (-DMESHIOPLUSPLUS_WITH_NETGEN)
+        returns an error naming the flag. Reports num_tetrahedra, num_points,
+        num_new_points, num_regions, num_boundary_triangles,
+        boundary_preserved, hausdorff_to_surface, min_dihedral_deg,
+        max_dihedral_deg, volume, backend and warnings."""
+        return _guard(
+            _tools.tool_tetrahedralize,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            backend=backend,
+            max_size=max_size,
+            max_volume=max_volume,
+            grading=grading,
+            optimize_steps=optimize_steps,
+            max_cells=max_cells,
+            face_array=face_array,
         )
 
     @server.tool()

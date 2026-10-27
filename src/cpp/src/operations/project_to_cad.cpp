@@ -325,9 +325,9 @@ ProjectToCadResult project_to_cad(const Mesh& rMesh, const BrepInfo& rBrep,
         for (int k = 0; k <= 8; ++k) {
             const detail::EdgeVec3 q = trace[e]->Point(trace[e]->ParamAtLength(length * k / 8.0));
             const detail::EdgeVec3 c = ptc_curve_closest(*curve[e], q);
-            gap = std::max(gap, std::sqrt((c[0] - q[0]) * (c[0] - q[0]) +
-                                          (c[1] - q[1]) * (c[1] - q[1]) +
-                                          (c[2] - q[2]) * (c[2] - q[2])));
+            gap = std::max(gap,
+                           std::sqrt((c[0] - q[0]) * (c[0] - q[0]) + (c[1] - q[1]) * (c[1] - q[1]) +
+                                     (c[2] - q[2]) * (c[2] - q[2])));
             for (const double v : q)
                 scale = std::max(scale, std::fabs(v));
         }

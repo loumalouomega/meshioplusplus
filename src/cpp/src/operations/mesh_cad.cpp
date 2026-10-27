@@ -608,7 +608,8 @@ std::int64_t mcad_straighten(int Order, const std::vector<std::array<std::int64_
 /// (a `quad9`'s centre to their mean), and the elements sharing a moved node
 /// are judged again. Returns the elements straightened, and in
 /// `rStillInvalid` those invalid even straight.
-std::int64_t mcad_straighten_mixed(int Order, const std::vector<detail::CurvedUntangleElement>& rEls,
+std::int64_t mcad_straighten_mixed(int Order,
+                                   const std::vector<detail::CurvedUntangleElement>& rEls,
                                    double* pX, std::int64_t& rStillInvalid) {
     const auto corners = [&](std::size_t E) { return rEls[E].mQuad ? std::size_t{4} : 3; };
     const auto nn = [&](std::size_t E) {
@@ -5444,7 +5445,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                     std::vector<detail::CurvedUntangleElement> els;
                     els.reserve(elems_of[f].size());
                     for (const std::size_t e : elems_of[f])
-                        els.push_back(detail::curved_untangle_triangle(curved[e], curved_normal[e]));
+                        els.push_back(
+                            detail::curved_untangle_triangle(curved[e], curved_normal[e]));
                     std::vector<std::int64_t> free(r_f.mHighOrder.size());
                     for (std::size_t i = 0; i < free.size(); ++i)
                         free[i] = high_base[f] + static_cast<std::int64_t>(i);
@@ -5622,8 +5624,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                 const Vec2 uv = project(F, r_s, rP);
                 Vec3 x{};
                 faces[F].pSurface->Eval(uv[0], uv[1], x.data(), nullptr, nullptr);
-                const double d = (x[0] - rP[0]) * (x[0] - rP[0]) +
-                                 (x[1] - rP[1]) * (x[1] - rP[1]) + (x[2] - rP[2]) * (x[2] - rP[2]);
+                const double d = (x[0] - rP[0]) * (x[0] - rP[0]) + (x[1] - rP[1]) * (x[1] - rP[1]) +
+                                 (x[2] - rP[2]) * (x[2] - rP[2]);
                 if (d < best_d) {
                     best_d = d;
                     best = uv;
@@ -5668,7 +5670,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
             const double nc = std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
             return nc > 1e-6 * r_s.Scale() * r_s.Scale() && nc > 1e-3 * nu * nv;
         };
-        const auto seed = [&](std::int64_t A, std::int64_t B, const std::array<std::int64_t, 2>& rN) {
+        const auto seed = [&](std::int64_t A, std::int64_t B,
+                              const std::array<std::int64_t, 2>& rN) {
             // rN runs from A to B.
             std::array<std::int64_t, 2> n = rN;
             if (A > B && quad_order == 3)
@@ -5947,7 +5950,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                         continue;
                     bool any = quad_param[q] != 0;
                     for (std::size_t k = 0; k < 4 && !any; ++k)
-                        any = param_edges.count(std::minmax(quads[q][k], quads[q][(k + 1) % 4])) > 0;
+                        any =
+                            param_edges.count(std::minmax(quads[q][k], quads[q][(k + 1) % 4])) > 0;
                     if (!any)
                         continue;
                     redone[q] = 1;
@@ -6094,8 +6098,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                             }
                         const detail::BrepSurfaceEval& r_s = *faces[f].pSurface;
                         const auto rep = detail::curved_untangle(
-                            quad_order, mine, px, free, uv,
-                            [&](const std::array<double, 2>& rUv) {
+                            quad_order, mine, px, free, uv, [&](const std::array<double, 2>& rUv) {
                                 Vec3 x{};
                                 r_s.Eval(rUv[0], rUv[1], x.data(), nullptr, nullptr);
                                 return x;
@@ -6233,7 +6236,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
         for (std::size_t q = 0; q < quads.size(); ++q)
             for (std::size_t k = 0; k < nq; ++k)
                 pc[nq * q + k] = k < 4 ? quads[q][k] : quad_hi[q][k - 4];
-        r_m.AddCellBlock(!curved_quads         ? "quad"
+        r_m.AddCellBlock(!curved_quads     ? "quad"
                          : quad_order == 2 ? "quad9"
                                            : "quad16",
                          std::move(conn));
@@ -6439,11 +6442,11 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                     const Vec3 b{q[0] - o[0], q[1] - o[1], q[2] - o[2]};
                     const Vec3 cr{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
                                   a[0] * b[1] - a[1] * b[0]};
-                    least[c] =
-                        std::min(least[c], std::atan2(std::sqrt(cr[0] * cr[0] + cr[1] * cr[1] +
-                                                                cr[2] * cr[2]),
-                                                      a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) *
-                                               (180.0 / kMcadPi));
+                    least[c] = std::min(
+                        least[c],
+                        std::atan2(std::sqrt(cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]),
+                                   a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) *
+                            (180.0 / kMcadPi));
                 }
             });
             pExtrasReport->mMinMetricAngleDeg = *std::min_element(least.begin(), least.end());
@@ -6763,8 +6766,8 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep, const MeshCadSurfac
             metric = std::make_unique<detail::MeshCadMetricField>(hm, ho.mOutputName,
                                                                   rSources.mMetricError, floor);
         } else {
-            metric = std::make_unique<detail::MeshCadMetricField>(
-                r_bg, rSources.mMetricArray, rSources.mMetricError, floor);
+            metric = std::make_unique<detail::MeshCadMetricField>(r_bg, rSources.mMetricArray,
+                                                                  rSources.mMetricError, floor);
         }
     }
     // No sample asks for less than h (a flat model with no thin part): the

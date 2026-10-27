@@ -210,7 +210,7 @@ struct MeshCadSurfaceOptions {
     std::int32_t mPoleRings = 0;
     /// Mesh a face whose metric's condition number over its coarse mesh
     /// exceeds this in a flattening of that mesh instead of its parameters
-    /// (6.4.4; 0 is off, otherwise above 1; order 1 only).
+    /// (6.4.4; 0 is off, otherwise above 1; at every order).
     double mReparamConditionNumber = 0.0;
     /// 1: linear triangles; 2 and 3: curved `triangle6` and `triangle10`
     /// (and `line3`, `line4`), their nodes on the surface and edges (6.6).
@@ -338,7 +338,7 @@ struct MeshCadSizeSources {
     /// floor and the local size, is pulled back onto each face (`J^T M J`)
     /// for Lawson's flips and encroachment, as `MeshCadMetric::Varying`
     /// does, and refinement judges triangles by their lengths and angles in
-    /// it. Borrowed; null for none. Order 1 only.
+    /// it. Borrowed; null for none.
     const Mesh* pMetricBackground = nullptr;
     std::string mMetricArray;
     double mMetricError = 0.0;
@@ -405,7 +405,7 @@ struct MeshCadSurfaceExtras {
     bool mModelTolerances = false;
     /// Merge a sliver face, narrower than `h` and with no interior point, into
     /// the neighbour it meets tangentially along the most edge, through their
-    /// common discrete parameterisation (roadmap 6.5.2). Order 1 only.
+    /// common discrete parameterisation (roadmap 6.5.2), at every order.
     bool mVirtualFaces = false;
     /// Corner lopping (roadmap 6.2.3; S. E. Pav and N. J. Walkington,
     /// "Delaunay refinement by corner lopping", IMR 2005) in place of
