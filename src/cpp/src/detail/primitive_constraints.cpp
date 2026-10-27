@@ -492,8 +492,10 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
         pc_axis_point(patches[a], x);
         const double* d = patches[a].mParams + 3;
         std::vector<std::size_t> rows = {a};
-        for (std::size_t b = a + 1; b < m; ++b)
-            if (!grouped[b] && pc_on_axis(patches[b], x, d))
+        // Every other row not yet grouped, in order: a sphere before the
+        // seed too (an earlier axial row seeded its own group already).
+        for (std::size_t b = 0; b < m; ++b)
+            if (b != a && !grouped[b] && pc_on_axis(patches[b], x, d))
                 rows.push_back(b);
         // Fit jointly; a member that no longer passes leaves and the rest are
         // fitted again, until every member passes or one is left.
