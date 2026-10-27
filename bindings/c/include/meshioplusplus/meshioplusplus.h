@@ -5391,7 +5391,14 @@ typedef struct mio_fit_cad_opts_ex2 {
     int64_t resegment_rounds;
     int32_t layout_snap_to_features;      /**< nonzero: layout edges snap to feature edges */
     int32_t validate_by_surface_sampling; /**< nonzero: freeform faces are sampled too */
-    int64_t reserved[8];                  /**< must be zero; room for additive growth */
+    /** Nonzero: related primitives are fitted together (coaxial cylinders,
+     *  cones, tori and spheres share one axis; parallel and perpendicular
+     *  planes, nearly equal radii), each change kept only where its patch
+     *  still passes its fit. Both backends; 0 (the default) leaves every
+     *  primitive as fitted on its own (unreleased). */
+    int32_t constrain_primitives;
+    int32_t reserved32;  /**< must be zero */
+    int64_t reserved[7]; /**< must be zero; room for additive growth */
 } mio_fit_cad_opts_ex2;
 
 /** Initialize the freeform-mode options to fit_cad's defaults (legacy mode). */
@@ -5421,7 +5428,12 @@ typedef struct mio_fit_cad_report_ex3 {
     /** Patches tried as a surface: the rows of "fit_cad:face_table", which the
      *  result carries as field data outside the legacy mode. */
     int64_t num_face_records;
-    int64_t reserved[10]; /**< zero; room for additive growth */
+    /** With constrain_primitives: the patches whose primitive took a shared
+     *  axis, normal or radius, and the coaxial groups, parallel-normal
+     *  families and equal-radius sets of two or more formed (unreleased). */
+    int64_t num_constrained_primitives;
+    int64_t num_constraint_groups;
+    int64_t reserved[8]; /**< zero; room for additive growth */
 } mio_fit_cad_report_ex3;
 
 /**

@@ -4337,6 +4337,7 @@ def _register_gated(server: FastMCP) -> None:
         resegment_rounds: int = 2,
         layout_snap_to_features: bool = True,
         validate_by_surface_sampling: bool = True,
+        constrain_primitives: bool = False,
     ) -> dict:
         """Turn a closed triangle skin into a CAD solid with analytic faces,
         written to output_path as AP214 STEP -- the last step of skin to CAD
@@ -4424,7 +4425,12 @@ def _register_gated(server: FastMCP) -> None:
         num_extraordinary_vertices, num_resegmented, num_escalations,
         max_g1_angle_deg, max_freeform_distance, rms_freeform_distance and
         faces (per patch tried: param_method, num_ctrl, iterations,
-        refinements, distances, escalation_steps, demotion_reason)."""
+        refinements, distances, escalation_steps, demotion_reason).
+        constrain_primitives (off) fits related primitives together on either
+        backend: coaxial cylinders, cones, tori and spheres share one axis,
+        parallel and perpendicular planes and nearly equal radii are made
+        exact, each change kept only where its patch still passes its fit;
+        adds num_constrained_primitives and num_constraint_groups."""
         return _guard(
             _tools.tool_fit_cad,
             input_path=input_path,
@@ -4480,6 +4486,7 @@ def _register_gated(server: FastMCP) -> None:
             resegment_rounds=resegment_rounds,
             layout_snap_to_features=layout_snap_to_features,
             validate_by_surface_sampling=validate_by_surface_sampling,
+            constrain_primitives=constrain_primitives,
         )
 
     @server.tool()

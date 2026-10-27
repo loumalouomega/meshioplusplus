@@ -49,7 +49,8 @@ mio_fit_cad(
   layout_max_valence_deviation = 2L,
   resegment_rounds = 2L,
   layout_snap_to_features = TRUE,
-  validate_by_surface_sampling = TRUE
+  validate_by_surface_sampling = TRUE,
+  constrain_primitives = FALSE
 )
 }
 \arguments{
@@ -167,6 +168,11 @@ a layout vertex, 1 to 3 (default 2).}
 
 \item{validate_by_surface_sampling}{Whether a freeform face's surface is
 sampled against the skin too, outside the legacy mode.}
+
+\item{constrain_primitives}{Whether related primitives are fitted together
+on either backend: coaxial cylinders, cones, tori and spheres share one
+axis, parallel and perpendicular planes and nearly equal radii are made
+exact, each change kept only where its patch still passes its fit.}
 }
 \value{
 A list of `mesh` (the solid re-meshed, with cell data
@@ -192,9 +198,10 @@ A list of `mesh` (the solid re-meshed, with cell data
   facet faces), `num_freeform_adaptive`, `num_network_patches`,
   `num_network_edges`, `num_extraordinary_vertices`, `num_resegmented`,
   `num_escalations`, `max_g1_angle_deg`, `max_freeform_distance`,
-  `rms_freeform_distance` and `num_face_records` (the rows of the
+  `rms_freeform_distance`, `num_face_records` (the rows of the
   `fit_cad:face_table` field data the mesh carries outside the legacy
-  mode).
+  mode), and `num_constrained_primitives` and `num_constraint_groups`
+  (what `constrain_primitives` changed).
 }
 \description{
 Builds a CAD solid from the fitted patches of a closed skin through the

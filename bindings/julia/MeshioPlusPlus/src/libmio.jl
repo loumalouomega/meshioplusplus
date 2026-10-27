@@ -1031,7 +1031,9 @@ struct _CFitCadOptsEx2
     resegment_rounds::Int64
     layout_snap_to_features::Int32
     validate_by_surface_sampling::Int32
-    reserved::NTuple{8,Int64}
+    constrain_primitives::Int32
+    reserved32::Int32
+    reserved::NTuple{7,Int64}
 end
 
 """Mirror of C `mio_fit_cad_report_ex3` (v17.12.0)."""
@@ -1050,7 +1052,9 @@ struct _CFitCadReportEx3
     max_freeform_distance::Cdouble
     rms_freeform_distance::Cdouble
     num_face_records::Int64
-    reserved::NTuple{10,Int64}
+    num_constrained_primitives::Int64
+    num_constraint_groups::Int64
+    reserved::NTuple{8,Int64}
 end
 
 """Mirror of C `mio_render_opts` (v16.34.0; cut-aways v16.36.0). ABI; fill it through [`render`](@ref),

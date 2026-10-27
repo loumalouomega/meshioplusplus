@@ -1825,6 +1825,12 @@ end
                       freeform_smoothing=1e-10)
     @test general.closed && general.num_plane == 6
     close(general.mesh)
+    # The constrained primitives: off by default, and the cube keeps its faces.
+    @test plain.num_constrained_primitives == 0 && plain.num_constraint_groups == 0
+    constrained = fit_cad(cube; backend="native", constrain_primitives=true)
+    @test constrained.num_faces == 6 && constrained.num_demoted == 0
+    @test 0 <= constrained.num_constrained_primitives <= 6
+    close(constrained.mesh)
     if has_occt()
         snapped = fit_cad(cube; snap_junctions=true, face_deviation=true)
         @test snapped.valid && snapped.closed

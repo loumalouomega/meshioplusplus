@@ -322,6 +322,12 @@ def add_args(parser):
         help="accept a freeform face without sampling its surface against the skin",
     )
     parser.add_argument(
+        "--constrain-primitives",
+        action="store_true",
+        help="fit related primitives together: coaxial surfaces share one axis, "
+        "parallel and perpendicular planes and nearly equal radii are made exact",
+    )
+    parser.add_argument(
         "--mesh-out", type=str, default=None, help="also write the re-meshed solid here"
     )
     parser.add_argument(
@@ -407,6 +413,7 @@ def to_cad_cmd(args):
         resegment_rounds=args.resegment_rounds,
         layout_snap_to_features=not args.no_layout_snap_to_features,
         validate_by_surface_sampling=not args.no_validate_by_surface_sampling,
+        constrain_primitives=args.constrain_primitives,
     )
     if args.mesh_out:
         write(args.mesh_out, out)
@@ -455,6 +462,11 @@ def to_cad_cmd(args):
         print(f"  {'vertex:':10s} {report['num_vertex_blend']} vertex blend(s)")
         print(f"  {'facets:':10s} {report['num_faceted_faces']}")
         print(f"  {'demoted:':10s} {report['num_demoted']} patch(es)")
+        if args.constrain_primitives:
+            print(
+                f"  constrained: {report['num_constrained_primitives']} primitive(s) "
+                f"in {report['num_constraint_groups']} group(s)"
+            )
         if report.get("refined"):
             print(
                 f"  refined: {report['num_refine_splits']} split(s), "

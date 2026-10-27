@@ -389,7 +389,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "LayoutMaxValenceDeviation",
           "ResegmentRounds",
           "LayoutSnapToFeatures",
-          "ValidateBySurfaceSampling"}},
+          "ValidateBySurfaceSampling",
+          "ConstrainPrimitives"}},
         {"RefinePatches",
          {"Tolerance", "Relative", "NormalWeight", "Epsilon", "FeatureAngle", "MaxIterations",
           "MinPatchCells", "RansacSeed", "Types", "AllowSplit", "AllowMerge", "Prefix"}},
@@ -1651,6 +1652,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             static_cast<std::int64_t>(pipe_number(rStep, "ResegmentRounds", 2.0));
         opts.mLayoutSnapToFeatures = pipe_flag(rStep, "LayoutSnapToFeatures", true);
         opts.mValidateBySurfaceSampling = pipe_flag(rStep, "ValidateBySurfaceSampling", true);
+        opts.mConstrainPrimitives = pipe_flag(rStep, "ConstrainPrimitives", false);
         FitCadResult cr = fit_cad(mesh, pipe_text(rStep, "Path", ""), opts);
         std::vector<std::pair<std::string, double>> counters = {
             {"Valid", cr.mValid ? 1.0 : 0.0},
@@ -1698,6 +1700,12 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         if (opts.mFaceDeviation) {
             counters.emplace_back("HausdorffMax", cr.mHausdorffMax);
             counters.emplace_back("HausdorffRms", cr.mHausdorffRms);
+        }
+        if (opts.mConstrainPrimitives) {
+            counters.emplace_back("NumConstrainedPrimitives",
+                                  static_cast<double>(cr.mNumConstrainedPrimitives));
+            counters.emplace_back("NumConstraintGroups",
+                                  static_cast<double>(cr.mNumConstraintGroups));
         }
         // The freeform modes (v17.12.0) report only outside the legacy mode.
         if (opts.mFreeformMode != FitCadFreeformMode::Legacy) {

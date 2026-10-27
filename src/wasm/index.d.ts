@@ -4083,6 +4083,12 @@ export interface FitCadOptions {
   layoutSnapToFeatures?: boolean;
   /** Whether a freeform face's surface is sampled against the skin too, outside the legacy mode (default true). */
   validateBySurfaceSampling?: boolean;
+  /**
+   * Whether related primitives are fitted together, on either backend: coaxial cylinders, cones,
+   * tori and spheres share one axis, parallel and perpendicular planes and nearly equal radii are
+   * made exact, each change kept only where its patch still passes its fit (default false).
+   */
+  constrainPrimitives?: boolean;
 }
 
 /** One patch {@link MeshioPlusPlusModule.fitCad} tried as a surface (v17.12.0). */
@@ -4426,6 +4432,10 @@ export interface FitCadResult {
   maxG1AngleDeg: number;
   maxFreeformDistance: number;
   rmsFreeformDistance: number;
+  /** With `constrainPrimitives`: the patches whose primitive took a shared axis, normal or radius. */
+  numConstrainedPrimitives: number;
+  /** With `constrainPrimitives`: the coaxial groups, parallel-normal families and equal-radius sets formed. */
+  numConstraintGroups: number;
   /** Outside the legacy mode: one record per patch tried as a surface. */
   faces?: FitCadFaceRecord[];
   /** The solid's B-rep, for `writeMesh(path, mesh, 'cad_json', {info})`. */

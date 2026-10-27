@@ -7149,6 +7149,7 @@ TEST(CApi, FitCad3FreeformModes) {
     EXPECT_EQ(ex2.extraordinary_vertex, MIO_EV_G1X);
     EXPECT_EQ(ex2.freeform_max_control_points, 400);
     EXPECT_EQ(ex2.layout_snap_to_features, 1);
+    EXPECT_EQ(ex2.constrain_primitives, 0);
     mio_fit_cad_report_ex3 report_ex3;
     std::memset(&report_ex3, 0xff, sizeof report_ex3);
     mio_mesh* skin =
@@ -7158,6 +7159,8 @@ TEST(CApi, FitCad3FreeformModes) {
     EXPECT_EQ(report_ex3.freeform_mode, MIO_FREEFORM_LEGACY);
     EXPECT_EQ(report_ex3.facet_area_fraction, 0.0);
     EXPECT_EQ(report_ex3.num_face_records, 6);
+    EXPECT_EQ(report_ex3.num_constrained_primitives, 0);
+    EXPECT_EQ(report_ex3.num_constraint_groups, 0);
     for (int64_t r : report_ex3.reserved)
         EXPECT_EQ(r, 0);
     const void* data = nullptr;
@@ -7193,6 +7196,19 @@ TEST(CApi, FitCad3FreeformModes) {
     ex2.layout_max_valence_deviation = 0;
     skin = mio_fit_cad3(m, nullptr, &opts, nullptr, &ex2, nullptr, nullptr, nullptr, nullptr);
     ASSERT_NE(skin, nullptr) << mio_last_error();
+    mio_mesh_free(skin);
+    // The constrained primitives: the cube's opposite planes share a normal
+    // and its neighbours are made exactly perpendicular, every face kept.
+    mio_fit_cad_opts_ex2_init(&ex2);
+    ex2.constrain_primitives = 1;
+    mio_fit_cad_report report;
+    skin = mio_fit_cad3(m, nullptr, &opts, nullptr, &ex2, &report, nullptr, nullptr, &report_ex3);
+    ASSERT_NE(skin, nullptr) << mio_last_error();
+    EXPECT_EQ(report.num_demoted, 0);
+    EXPECT_GE(report_ex3.num_constrained_primitives, 0);
+    EXPECT_LE(report_ex3.num_constrained_primitives, 6);
+    for (int64_t r : report_ex3.reserved)
+        EXPECT_EQ(r, 0);
     mio_mesh_free(skin);
     mio_mesh_free(m);
 }

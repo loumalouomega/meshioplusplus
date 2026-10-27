@@ -2809,6 +2809,12 @@ step('the stays-out set is exactly what this artifact reports (roadmap 6.2.4)', 
     });
     assert.equal(general.closed, true);
     assert.equal(general.numFreeformGeneral, 0);
+    assert.equal(plain.numConstrainedPrimitives, 0);
+    assert.equal(plain.numConstraintGroups, 0);
+    const constrained = m.fitCad(cubeSurface, { backend: 'native', constrainPrimitives: true });
+    assert.equal(constrained.numFaces, 6);
+    assert.equal(constrained.numDemoted, 0);
+    assert.ok(constrained.numConstrainedPrimitives >= 0 && constrained.numConstrainedPrimitives <= 6);
     assert.throws(() => m.fitCad(cubeSurface, { maxFreeformPoles: 3 }), /max_freeform_poles/);
     assert.throws(() => m.fitCad(cubeSurface, { sewTolerance: -1 }), /sew_tolerance/);
     if (m.hasOcct()) {

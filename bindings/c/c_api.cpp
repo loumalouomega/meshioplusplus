@@ -6711,9 +6711,15 @@ static_assert(sizeof(mio_fit_cad_opts_ex2) == 128,
               "mio_fit_cad_opts_ex2 grew outside its reserved tail");
 static_assert(sizeof(mio_fit_cad_report_ex3) == 184,
               "mio_fit_cad_report_ex3 grew outside its reserved tail");
-static_assert(offsetof(mio_fit_cad_opts_ex2, reserved) == 64,
+// The constrained primitives (unreleased) were carved from the front of the
+// reserved tails.
+static_assert(offsetof(mio_fit_cad_opts_ex2, constrain_primitives) == 64,
+              "mio_fit_cad_opts_ex2: constrain_primitives left the reserved tail's start");
+static_assert(offsetof(mio_fit_cad_opts_ex2, reserved) == 72,
               "mio_fit_cad_opts_ex2: the reserved tail moved");
-static_assert(offsetof(mio_fit_cad_report_ex3, reserved) == 104,
+static_assert(offsetof(mio_fit_cad_report_ex3, num_constrained_primitives) == 104,
+              "mio_fit_cad_report_ex3: the counts left the reserved tail's start");
+static_assert(offsetof(mio_fit_cad_report_ex3, reserved) == 120,
               "mio_fit_cad_report_ex3: the reserved tail moved");
 static_assert(MIO_FREEFORM_AUTO == static_cast<int>(meshioplusplus::FitCadFreeformMode::Auto),
               "mio_fit_cad_freeform_mode must match FitCadFreeformMode");
@@ -7004,6 +7010,7 @@ void mio_fit_cad_opts_ex2_init(mio_fit_cad_opts_ex2* opts) {
     opts->resegment_rounds = defaults.mResegmentRounds;
     opts->layout_snap_to_features = defaults.mLayoutSnapToFeatures ? 1 : 0;
     opts->validate_by_surface_sampling = defaults.mValidateBySurfaceSampling ? 1 : 0;
+    opts->constrain_primitives = defaults.mConstrainPrimitives ? 1 : 0;
 }
 
 void mio_iga_opts_init(mio_iga_opts* opts) {
@@ -8028,6 +8035,7 @@ mio_mesh* mio_fit_cad3(const mio_mesh* mesh, const char* step_path, const mio_fi
             options.mResegmentRounds = opts_ex2->resegment_rounds;
             options.mLayoutSnapToFeatures = opts_ex2->layout_snap_to_features != 0;
             options.mValidateBySurfaceSampling = opts_ex2->validate_by_surface_sampling != 0;
+            options.mConstrainPrimitives = opts_ex2->constrain_primitives != 0;
         }
         meshioplusplus::FitCadResult r =
             meshioplusplus::fit_cad(mesh->mMesh, step_path ? step_path : "", options);
@@ -8104,6 +8112,8 @@ mio_mesh* mio_fit_cad3(const mio_mesh* mesh, const char* step_path, const mio_fi
             report_ex3->max_freeform_distance = r.mMaxFreeformDistance;
             report_ex3->rms_freeform_distance = r.mRmsFreeformDistance;
             report_ex3->num_face_records = static_cast<std::int64_t>(r.mFaces.size());
+            report_ex3->num_constrained_primitives = r.mNumConstrainedPrimitives;
+            report_ex3->num_constraint_groups = r.mNumConstraintGroups;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });

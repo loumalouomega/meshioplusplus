@@ -205,6 +205,7 @@ def fit_cad(
     resegment_rounds: int = 2,
     layout_snap_to_features: bool = True,
     validate_by_surface_sampling: bool = True,
+    constrain_primitives: bool = False,
 ):
     """Build a CAD solid from the fitted patches of a closed skin.
 
@@ -351,6 +352,13 @@ def fit_cad(
     :param validate_by_surface_sampling: outside the legacy mode, accept a
         freeform face only once samples of its surface lie within the
         tolerance of the skin too.
+    :param constrain_primitives: fit related primitives together before
+        either backend builds a face: cylinders, cones, tori and spheres on one
+        axis share it exactly, planes parallel or perpendicular to an axis or
+        another plane are made exactly so, and nearly equal radii are made
+        equal, each change kept only where its patch still passes its fit.
+        The report then holds ``num_constrained_primitives`` and
+        ``num_constraint_groups``.
     :returns: the solid re-meshed as triangles with cell data ``fit_cad:face``,
         ``fit_cad:type`` (0 a facet, 6 a freeform B-spline, 7 a fillet,
         blend or conic blend, 8 a helical thread face, 9 a vertex blend, 10 a
@@ -542,6 +550,8 @@ def fit_cad(
         **(refine if refine["refine_segmentation"] else {}),
         **{k: v for k, v in phase3.items() if v != _PHASE3_DEFAULTS[k]},
         **{k: v for k, v in modes.items() if v != _MODE_DEFAULTS[k]},
+        # Off by default, passed only when on, like the options above.
+        **({"constrain_primitives": True} if constrain_primitives else {}),
     )
     out = res["mesh"]
     info = out.info if isinstance(getattr(out, "info", None), dict) else {}
@@ -576,6 +586,9 @@ def fit_cad(
         report.update({k: int(res[k]) for k in _MODE_INTS})
         report.update({k: float(res[k]) for k in _MODE_FLOATS})
         report["faces"] = [dict(row) for row in res["faces"]]
+    if constrain_primitives:
+        report["num_constrained_primitives"] = int(res["num_constrained_primitives"])
+        report["num_constraint_groups"] = int(res["num_constraint_groups"])
     return out, report
 
 

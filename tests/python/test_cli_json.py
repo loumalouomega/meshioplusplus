@@ -580,6 +580,7 @@ def test_check_exit_codes(files, tmp_path):
             "--face-deviation",
             "--refine",
         ],
+        ["--constrain-primitives"],
     ],
 )
 def test_to_cad_json_agrees(tmp_path, flags):

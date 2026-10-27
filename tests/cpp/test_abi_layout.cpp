@@ -446,6 +446,8 @@ MIO_ABI_LAYOUT(meshioplusplus::FitPrimitivesOptions, 72, 8);
 // freeform options: 56 -> 224, and grew FitCadResult by both reports. ABI 33
 // appended the freeform modes (mFreeformMode .. mValidateBySurfaceSampling):
 // 224 -> 288, grew FitCadResult by their report and added FitCadFaceRecord.
+// ABI 36 put mConstrainPrimitives in the tail padding (same size, a new
+// member) and grew FitCadResult by its two counts.
 MIO_ABI_LAYOUT(meshioplusplus::FitCadOptions, 288, 8);
 MIO_ABI_LAYOUT(meshioplusplus::FitCadFaceRecord, 96, 8);
 static_assert(offsetof(meshioplusplus::FitCadOptions, mMergeFaces) == 51,
@@ -472,6 +474,8 @@ static_assert(offsetof(meshioplusplus::FitCadOptions, mResegmentRounds) == 272,
               "FitCadOptions::mResegmentRounds moved");
 static_assert(offsetof(meshioplusplus::FitCadOptions, mValidateBySurfaceSampling) == 281,
               "FitCadOptions::mValidateBySurfaceSampling moved");
+static_assert(offsetof(meshioplusplus::FitCadOptions, mConstrainPrimitives) == 282,
+              "FitCadOptions::mConstrainPrimitives moved");
 // refine_patches' options (operations/refine_patches.hpp, ABI 32).
 MIO_ABI_LAYOUT(meshioplusplus::RefinePatchesOptions, 96, 8);
 // The kernel-free STEP writer's options (formats/step.hpp), from ABI 31.
