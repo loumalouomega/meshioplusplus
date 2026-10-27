@@ -205128,14 +205128,13 @@ ConformityResult check_conformity(const Mesh& rMesh, const ConformityOptions& rO
 
         // The facets' boxes and the tolerance, from the box of their corners.
         std::vector<std::array<double, 6>> box(nf);
-        std::array<double, 3> lo{{std::numeric_limits<double>::infinity(),
-                                  std::numeric_limits<double>::infinity(),
-                                  std::numeric_limits<double>::infinity()}};
-        std::array<double, 3> hi{{-lo[0], -lo[1], -lo[2]}};
+        const double inf = std::numeric_limits<double>::infinity();
+        std::array<double, 3> lo{{inf, inf, inf}};
+        std::array<double, 3> hi{{-inf, -inf, -inf}};
         double extent_sum = 0.0;
         for (std::size_t f = 0; f < nf; ++f) {
             std::array<double, 6>& r_box = box[f];
-            r_box = {{lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]}};
+            r_box = {{inf, inf, inf, -inf, -inf, -inf}};
             const std::int64_t* ring = facets.Ring(f);
             for (std::size_t k = 0; k < facets.Corners(f); ++k) {
                 const detail::Vec3 p = cc_point(xyz, ring[k]);
