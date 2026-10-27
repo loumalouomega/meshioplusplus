@@ -197,6 +197,7 @@ def test_one_model_end_to_end(tmp_path):
     assert corpus.main(["compare", str(out), "--baseline", str(base)]) == 1
 
 
+@needs_occt
 def test_a_curved_run_counts_what_it_straightened(tmp_path):
     (tmp_path / "src").mkdir()
     step = tmp_path / "src" / "box.step"
