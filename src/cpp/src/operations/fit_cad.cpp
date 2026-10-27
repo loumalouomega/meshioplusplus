@@ -5925,8 +5925,11 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
 
 #endif  // MESHIOPLUSPLUS_HAS_OCCT
 
-FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
-                     const FitCadOptions& rOptions) {
+// One build of the solid, as `fit_cad` makes it: the options checked, the
+// backend chosen, the freeform modes' general fit run first. `fit_cad` adds the
+// constrained-primitives choice on top of it.
+static FitCadResult fit_cad_build(const Mesh& rMesh, const std::string& rStepPath,
+                                  const FitCadOptions& rOptions) {
     if (std::isnan(rOptions.mTolerance) || std::isinf(rOptions.mTolerance))
         throw std::invalid_argument(std::string(kFcnPrefix) + "tolerance must be finite");
     if ((rOptions.mTypes & ~kFitAllTypes) != 0)
@@ -5991,7 +5994,7 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         FitCadOptions general = rOptions;
         general.mFreeformGeneral = true;
         general.mExtendSurfaces = true;
-        return fit_cad(rMesh, rStepPath, general);
+        return fit_cad_build(rMesh, rStepPath, general);
     }
 #ifdef MESHIOPLUSPLUS_HAS_OCCT
     if (rOptions.mBackend != FitCadBackend::Native)
@@ -6017,6 +6020,36 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     }
 #endif
     return fcn_native_fit_cad(rMesh, rStepPath, rOptions);
+}
+
+FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
+                     const FitCadOptions& rOptions) {
+    if (!rOptions.mConstrainPrimitives)
+        return fit_cad_build(rMesh, rStepPath, rOptions);
+    // The constrained surfaces are fitted within tolerance, but the solid built
+    // from them can lose a junction the unconstrained surfaces kept (a fillet
+    // tangent to its wall, say), so the constrained solid is kept only where it
+    // demotes no more patches than the unconstrained one. The constrained solid
+    // is written to `rStepPath`; the unconstrained one is built unwritten, and
+    // written only when it is the one kept.
+    FitCadResult on = fit_cad_build(rMesh, rStepPath, rOptions);
+    FitCadOptions plain = rOptions;
+    plain.mConstrainPrimitives = false;
+    const FitCadResult off = fit_cad_build(rMesh, "", plain);
+    const bool keep_on = !(off.mValid && (!on.mValid || off.mNumDemoted < on.mNumDemoted));
+    if (keep_on)
+        return on;
+    if (!on.mValid)
+        log::warn("fit_cad: the constrained primitives give a solid that is not valid; the "
+                  "unconstrained solid is returned");
+    else
+        log::warn("fit_cad: the constrained primitives demote {} patch(es) against {} for the "
+                  "unconstrained solid; the unconstrained solid is returned",
+                  on.mNumDemoted, off.mNumDemoted);
+    FitCadResult out = fit_cad_build(rMesh, rStepPath, plain);
+    out.mNumConstrainedPrimitives = 0;
+    out.mNumConstraintGroups = 0;
+    return out;
 }
 
 }  // namespace meshioplusplus

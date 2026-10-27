@@ -117,7 +117,8 @@ def test_turned_part_keeps_every_primitive(noise):
 def test_constrained_primitives_share_one_axis(backend):
     if backend == "occt" and not HAS_OCCT:
         pytest.skip("needs a core built with OpenCASCADE")
-    skin = turned_part(noise=1e-3)
+    # Seed 1: the constrained solid keeps every face on both backends.
+    skin = turned_part(noise=1e-3, seed=1)
     fit = _fitted(skin, curvature_tolerance=1.0, tolerance=2e-3, min_patch_cells=20)
     _out, plain = mio.fit_cad(fit, backend=backend, return_report=True)
     assert "num_constrained_primitives" not in plain
@@ -130,6 +131,24 @@ def test_constrained_primitives_share_one_axis(backend):
     assert report["num_demoted"] == 0
     assert report["num_faces"] == plain["num_faces"]
     assert report["max_deviation"] <= report["tolerance"]
+
+
+@needs_occt
+def test_constrained_primitives_fall_back_when_the_solid_loses_a_junction():
+    # Seed 7: the constrained torus fillet no longer builds its tangent junction
+    # with the wall in OpenCASCADE, which demotes two faces. The unconstrained
+    # solid, which demotes none, is returned instead, with the counts at zero.
+    skin = turned_part(noise=1e-3)
+    fit = _fitted(skin, curvature_tolerance=1.0, tolerance=2e-3, min_patch_cells=20)
+    _out, plain = mio.fit_cad(fit, backend="occt", return_report=True)
+    _out, report = mio.fit_cad(
+        fit, backend="occt", constrain_primitives=True, return_report=True
+    )
+    assert report["valid"] is True
+    assert report["num_constrained_primitives"] == 0
+    assert report["num_constraint_groups"] == 0
+    assert report["num_demoted"] == plain["num_demoted"] == 0
+    assert report["num_faces"] == plain["num_faces"] == 6
 
 
 @needs_occt
