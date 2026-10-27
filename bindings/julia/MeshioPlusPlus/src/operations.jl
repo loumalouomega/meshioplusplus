@@ -778,22 +778,26 @@ has_netgen() = ccall(_sym(:mio_has_netgen), Cint, ()) != 0
               num_boundary_triangles, boundary_preserved, hausdorff_to_surface,
               min_dihedral_deg, max_dihedral_deg, volume, backend)
 
-Fill a closed, manifold, consistently oriented triangle surface with tetrahedra,
-its triangles and points kept exactly (roadmap 6.7): each shell bounds a region
-(a box inside a box gives two), meshed on its own so the regions conform.
+Fill a closed, manifold, consistently oriented triangle surface with tetrahedra
+(roadmap 6.7): through Netgen its triangles and points are kept exactly, through
+the native octree backend its boundary is fitted within `hausdorff_to_surface`.
+Each shell bounds a region (a box inside a box gives two), meshed on its own.
 `max_size` and `max_volume` (0: none) bound the tetrahedra, `grading` is how fast
 the size grows inward, `optimize_steps` the backend's volume optimisation
 passes; `face_array` names the CAD face cell data carried to the triangles.
-The result has the input's points first, a `tetra` block, the surface's
-`triangle` block and the cell data `tetrahedralize:region`. Without Netgen
-([`has_netgen`](@ref) is false) it throws naming `MESHIOPLUSPLUS_WITH_NETGEN`.
+The result has a `tetra` block, a `triangle` block (the surface's with Netgen,
+its input points first; the tetrahedra's boundary with the octree backend) and
+the cell data `tetrahedralize:region`. `backend` is `"auto"` (Netgen when
+[`has_netgen`](@ref), else `"octree"`), `"netgen"` (throws naming
+`MESHIOPLUSPLUS_WITH_NETGEN` without it) or `"octree"`.
 See `doc/tetrahedralize.md`.
 """
 function tetrahedralize(mesh::Mesh; backend::AbstractString="auto", max_size::Real=0.0,
                         max_volume::Real=0.0, grading::Real=0.3, optimize_steps::Integer=3,
                         max_cells::Integer=50_000_000, face_array::AbstractString="cad:face")
     backend_c = backend == "auto" ? Int32(0) : backend == "netgen" ? Int32(1) :
-                throw(ArgumentError("meshio++: tetrahedralize: backend must be \"auto\" or \"netgen\""))
+                backend == "octree" ? Int32(2) :
+                throw(ArgumentError("meshio++: tetrahedralize: backend must be \"auto\", \"netgen\" or \"octree\""))
     fname = Vector{UInt8}(codeunits(String(face_array)))
     push!(fname, 0x00)
     report = Ref{_CTetrahedralizeReport}()
@@ -813,7 +817,7 @@ function tetrahedralize(mesh::Mesh; backend::AbstractString="auto", max_size::Re
      boundary_preserved=r.boundary_preserved != 0,
      hausdorff_to_surface=Float64(r.hausdorff_to_surface),
      min_dihedral_deg=Float64(r.min_dihedral_deg), max_dihedral_deg=Float64(r.max_dihedral_deg),
-     volume=Float64(r.volume), backend=r.backend == 1 ? "netgen" : "auto")
+     volume=Float64(r.volume), backend=r.backend == 1 ? "netgen" : "octree")
 end
 
 """

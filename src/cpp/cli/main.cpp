@@ -486,7 +486,7 @@ void print_usage(std::ostream& os) {
           "                            its triangles kept (Netgen): [--max-size H]\n"
           "                            [--max-volume V] [--grading G]\n"
           "                            [--optimize-steps N] [--max-cells N]\n"
-          "                            [--face-array NAME] [--backend auto|netgen]\n"
+          "                            [--face-array NAME] [--backend auto|netgen|octree]\n"
           "                            [--json]\n"
           "  project-to-cad          Move a mesh's points back onto the CAD faces and\n"
           "                            edges its cells name: INFILE MODEL OUTFILE\n"
@@ -5270,9 +5270,11 @@ int cmd_tetrahedralize(const std::vector<std::string>& rArgs) {
             o.mBackend = meshioplusplus::TetrahedralizeBackend::Auto;
         else if (b == "netgen")
             o.mBackend = meshioplusplus::TetrahedralizeBackend::Netgen;
+        else if (b == "octree")
+            o.mBackend = meshioplusplus::TetrahedralizeBackend::Octree;
         else
-            throw std::runtime_error("tetrahedralize: --backend must be auto or netgen, not '" + b +
-                                     "'");
+            throw std::runtime_error(
+                "tetrahedralize: --backend must be auto, netgen or octree, not '" + b + "'");
     }
     if (has_opt(p, "max-size"))
         o.mMaxSize = meshioplusplus::detail::stod_c(opt_value(p, "max-size"));

@@ -6111,8 +6111,9 @@ MIO_API mio_mesh* mio_boundary_layer(const mio_mesh* mesh, const mio_boundary_la
 
 /** mio_tetrahedralize_opts.backend. */
 typedef enum mio_tetrahedralize_backend {
-    MIO_TETRAHEDRALIZE_BACKEND_AUTO = 0,  /**< the first backend built in */
-    MIO_TETRAHEDRALIZE_BACKEND_NETGEN = 1 /**< Netgen's nglib (MESHIOPLUSPLUS_WITH_NETGEN) */
+    MIO_TETRAHEDRALIZE_BACKEND_AUTO = 0,   /**< Netgen when built in, else the octree backend */
+    MIO_TETRAHEDRALIZE_BACKEND_NETGEN = 1, /**< Netgen's nglib (MESHIOPLUSPLUS_WITH_NETGEN): kept */
+    MIO_TETRAHEDRALIZE_BACKEND_OCTREE = 2  /**< native isosurface stuffing: the boundary fitted */
 } mio_tetrahedralize_backend;
 
 /**
@@ -6138,7 +6139,7 @@ typedef struct mio_tetrahedralize_report {
     int64_t num_new_points; /**< of those, inside the surface */
     int64_t num_regions;    /**< enclosed regions, one per shell */
     int64_t num_boundary_triangles;
-    double hausdorff_to_surface; /**< zero when the boundary is preserved */
+    double hausdorff_to_surface; /**< zero when the boundary is preserved (Netgen) */
     double min_dihedral_deg;
     double max_dihedral_deg;
     double volume;              /**< the tetrahedra's total */
@@ -6149,21 +6150,24 @@ typedef struct mio_tetrahedralize_report {
 
 MIO_API void mio_tetrahedralize_opts_init(mio_tetrahedralize_opts* opts);
 
-/** Nonzero when this library was built with a mio_tetrahedralize backend
- *  (Netgen, -DMESHIOPLUSPLUS_WITH_NETGEN=ON). */
+/** Nonzero when this library was built with mio_tetrahedralize's Netgen
+ *  backend (-DMESHIOPLUSPLUS_WITH_NETGEN=ON); the octree backend always is. */
 MIO_API int mio_has_netgen(void);
 
 /**
  * Fill the closed, manifold, consistently oriented triangle surface `mesh`
- * (a mio_mesh_cad_surface result, say) with tetrahedra, its triangles and
- * points kept exactly: each connected shell bounds a region (a box inside a
- * box gives two), meshed on its own so neighbouring regions conform. The
- * result holds the input's points first, then the new interior points; a
- * `tetra` block and the surface's `triangle` block; the cell data
- * `tetrahedralize:region` and, when the surface carries `face_array`, that
- * array on the triangles. Without a backend (mio_has_netgen() is 0) it fails
- * naming MESHIOPLUSPLUS_WITH_NETGEN; an open, non-manifold or misoriented
- * surface fails by name.
+ * (a mio_mesh_cad_surface result, say) with tetrahedra: each connected shell
+ * bounds a region (a box inside a box gives two), meshed on its own. With
+ * Netgen the surface's triangles and points are kept exactly (the input's
+ * points first, then the new ones, and the surface's `triangle` block), so
+ * neighbouring regions conform; the native octree backend fits the
+ * boundary within the reported hausdorff_to_surface (new points, and the
+ * tetrahedra's boundary facets as the `triangle` block). AUTO takes Netgen
+ * when mio_has_netgen() is nonzero and the octree backend otherwise; NETGEN
+ * without it fails with MIO_ERR_UNSUPPORTED naming
+ * MESHIOPLUSPLUS_WITH_NETGEN. The cell data `tetrahedralize:region` and,
+ * when the surface carries `face_array`, that array on the triangles. An
+ * open, non-manifold or misoriented surface fails by name.
  *
  * @param opts   NULL for the defaults.
  * @param report out, nullable.

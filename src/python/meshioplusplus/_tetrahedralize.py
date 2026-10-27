@@ -1,20 +1,21 @@
-"""Tetrahedra filling a closed triangle surface, its triangles kept (roadmap
-6.7).
+"""Tetrahedra filling a closed triangle surface (roadmap 6.7).
 
 The input is a closed, manifold, consistently oriented triangle surface, such
 as a :func:`meshioplusplus.mesh_cad_surface` result or a boundary layer's cap:
 an open, non-manifold, misoriented or degenerate one is refused by name. Its
 connected shells are oriented outward, and each shell bounds a region (the
 inside of the shell minus the shells directly inside it): a box inside a box
-gives two regions that share the inner box's triangles, so the tetrahedra
-conform across it.
+gives two regions.
 
-The backend is Netgen's nglib (J. Schöberl, *NETGEN: an advancing front
+Two backends. Netgen's nglib (J. Schöberl, *NETGEN: an advancing front
 2D/3D-mesh generator based on abstract rules*, 1997), linked when the core is
-built with ``MESHIOPLUSPLUS_WITH_NETGEN``; its volume mesher keeps the
-surface's triangles and points exactly, which is checked. Without it the
-operation raises naming that flag (``meshioplusplus._core.__has_netgen__``
-tells in advance). See ``doc/tetrahedralize.md``.
+built with ``MESHIOPLUSPLUS_WITH_NETGEN``, keeps the surface's triangles and
+points exactly, which is checked, so neighbouring regions conform. The native
+octree backend, always built, is :func:`meshioplusplus.octree_mesh`'s
+isosurface stuffing at the surface's own size: its boundary is fitted to the
+surface within the reported ``hausdorff_to_surface``. ``backend="auto"`` takes
+Netgen when ``meshioplusplus._core.__has_netgen__`` and the octree backend
+otherwise, with a warning. See ``doc/tetrahedralize.md``.
 
 The C++ core does the work; there is no numpy twin.
 """
@@ -30,7 +31,7 @@ __all__ = ["tetrahedralize"]
 
 _PREFIX = "meshio++: tetrahedralize: "
 
-_BACKENDS = ("auto", "netgen")
+_BACKENDS = ("auto", "netgen", "octree")
 
 _REPORT_INTS = (
     "num_tetrahedra",
@@ -73,23 +74,26 @@ def tetrahedralize(
         skipped), closed, manifold, consistently oriented and without
         degenerate triangles; quads, polygons, higher-order and volume cells
         are refused.
-    :param backend: ``"auto"`` (the first backend built in) or ``"netgen"``.
+    :param backend: ``"auto"`` (Netgen when built in, else ``"octree"``),
+        ``"netgen"`` (the surface's triangles kept) or ``"octree"`` (the
+        native backend, the boundary fitted).
     :param max_size: the largest edge asked of the tetrahedra (0, the
         default, is none: the surface's triangles size the inside).
     :param max_volume: the largest volume asked of a tetrahedron (0 is none);
         a regular tetrahedron's edge for it joins ``max_size``.
     :param grading: how fast the size grows away from the surface, in
-        ``[0, 1]``.
+        ``[0, 1]`` (Netgen).
     :param optimize_steps: passes of the backend's volume optimisation (0 to
         100).
     :param max_cells: refuse a result of more tetrahedra.
     :param face_array: the cell data naming each triangle's CAD face, carried
         to the triangles and made ``face:<v>`` Side regions when present.
     :param return_report: also return the report.
-    :returns: the mesh (the input's points first and unchanged, then the new
-        interior points; a ``tetra`` block and the surface's ``triangle``
-        block; the cell data ``tetrahedralize:region``; ``region:<k>`` Cell
-        regions), or ``(mesh, report)``: ``num_tetrahedra``, ``num_points``,
+    :returns: the mesh (a ``tetra`` block and a ``triangle`` block: with
+        Netgen the input's points first and unchanged and the surface's
+        triangles, with the octree backend new points and the tetrahedra's
+        boundary facets; the cell data ``tetrahedralize:region``;
+        ``region:<k>`` Cell regions), or ``(mesh, report)``: ``num_tetrahedra``, ``num_points``,
         ``num_new_points``, ``num_regions``, ``num_boundary_triangles``,
         ``boundary_preserved``, ``hausdorff_to_surface``,
         ``min_dihedral_deg``, ``max_dihedral_deg``, ``volume``, ``backend``
@@ -97,14 +101,14 @@ def tetrahedralize(
     :raises ValueError: for an option out of range, a surface that has no
         triangle, another cell type, or is open, non-manifold, misoriented or
         degenerate, or a result past ``max_cells``.
-    :raises NotImplementedError: without a backend (a core built without
-        ``MESHIOPLUSPLUS_WITH_NETGEN``).
+    :raises NotImplementedError: for ``backend="netgen"`` in a core built
+        without ``MESHIOPLUSPLUS_WITH_NETGEN``.
     :raises RuntimeError: when the backend fails (a self-intersecting
         surface, for one).
     """
     if not isinstance(backend, str) or backend not in _BACKENDS:
         raise ValueError(
-            f"{_PREFIX}backend must be 'auto' or 'netgen', not {backend!r}"
+            f"{_PREFIX}backend must be 'auto', 'netgen' or 'octree', not {backend!r}"
         )
     max_size = float(max_size)
     if not (math.isfinite(max_size) and max_size >= 0.0):

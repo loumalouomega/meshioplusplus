@@ -3109,9 +3109,10 @@ PYBIND11_MODULE(_core, m) {
         py::arg("smooth_iterations") = 5, py::arg("max_shrink") = 6, py::arg("collapse") = "points",
         py::arg("normal_smooth_iterations") = 0, py::arg("front_check") = true);
 
-    // Tetrahedra filling a closed triangle surface, its triangles kept
-    // (roadmap 6.7), through Netgen. Returns a dict {mesh, num_tetrahedra,
-    // ...}; without the backend it raises NotImplementedError naming
+    // Tetrahedra filling a closed triangle surface (roadmap 6.7): through
+    // Netgen, its triangles kept, or the native octree backend, its boundary
+    // fitted. Returns a dict {mesh, num_tetrahedra, ...}; backend="netgen"
+    // without Netgen raises NotImplementedError naming
     // MESHIOPLUSPLUS_WITH_NETGEN. See operations/tetrahedralize.hpp.
     m.def(
         "tetrahedralize",
@@ -3126,9 +3127,12 @@ PYBIND11_MODULE(_core, m) {
                 o.mBackend = meshioplusplus::TetrahedralizeBackend::Auto;
             else if (backend == "netgen")
                 o.mBackend = meshioplusplus::TetrahedralizeBackend::Netgen;
+            else if (backend == "octree")
+                o.mBackend = meshioplusplus::TetrahedralizeBackend::Octree;
             else
                 throw py::value_error(
-                    "meshio++: tetrahedralize: backend must be 'auto' or 'netgen', not '" +
+                    "meshio++: tetrahedralize: backend must be 'auto', 'netgen' or 'octree', not "
+                    "'" +
                     backend + "'");
             o.mMaxSize = max_size;
             o.mMaxVolume = max_volume;

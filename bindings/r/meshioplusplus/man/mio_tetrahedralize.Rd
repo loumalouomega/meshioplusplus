@@ -10,7 +10,7 @@ mio_tetrahedralize(mesh, backend = "auto", max_size = 0, max_volume = 0,
 }
 \arguments{
 \item{mesh}{A closed triangle surface.}
-\item{backend}{\code{"auto"} or \code{"netgen"}.}
+\item{backend}{\code{"auto"}, \code{"netgen"} or \code{"octree"}.}
 \item{max_size, max_volume}{The largest edge and volume asked of the tetrahedra; 0 is none.}
 \item{grading}{How fast the size grows away from the surface, in [0, 1].}
 \item{optimize_steps}{Passes of the backend's volume optimisation (0 to 100).}
@@ -26,11 +26,14 @@ A list: \code{mesh}, \code{num_tetrahedra}, \code{num_points},
 }
 \description{
 The closed, manifold, consistently oriented triangle surface \code{mesh} is
-filled with tetrahedra, its triangles and points kept exactly (roadmap 6.7):
-each shell bounds a region (a box inside a box gives two), meshed on its own
-so the regions conform. The result has the input's points first, a
-\code{tetra} block, the surface's \code{triangle} block and the cell data
-\code{tetrahedralize:region}. Without Netgen
-(\code{\link[=mio_has_netgen]{mio_has_netgen()}} is \code{FALSE}) it fails
-naming \code{MESHIOPLUSPLUS_WITH_NETGEN}.
+filled with tetrahedra (roadmap 6.7): through Netgen its triangles and points
+are kept exactly, through the native octree backend its boundary is fitted
+within \code{hausdorff_to_surface}. Each shell bounds a region (a box inside a
+box gives two), meshed on its own. The result has a \code{tetra} block, a
+\code{triangle} block (the surface's with Netgen, its input points first; the
+tetrahedra's boundary with the octree backend) and the cell data
+\code{tetrahedralize:region}. \code{backend = "auto"} takes Netgen when
+\code{\link[=mio_has_netgen]{mio_has_netgen()}} is \code{TRUE} and the octree
+backend otherwise; \code{"netgen"} without it fails naming
+\code{MESHIOPLUSPLUS_WITH_NETGEN}.
 }

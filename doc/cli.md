@@ -2192,7 +2192,7 @@ meshioplusplus boundary-layer skin.vtu layers.vtu --first-height 1e-3 --collapse
 
 ## `tetrahedralize`
 
-Fill a closed, manifold, consistently oriented triangle surface with tetrahedra, its triangles and points kept exactly (see [tetrahedralize](/tetrahedralize)). Each shell bounds a region, so a box inside a box gives two. Both CLIs; the backend is Netgen, and a build without it (`-DMESHIOPLUSPLUS_WITH_NETGEN=ON`) fails naming the flag. Lines and vertices in the input are skipped; quads, polygons and an open, non-manifold or misoriented surface are refused by name.
+Fill a closed, manifold, consistently oriented triangle surface with tetrahedra, its triangles and points kept exactly through Netgen, or its boundary fitted through the native octree backend (see [tetrahedralize](/tetrahedralize)). Each shell bounds a region, so a box inside a box gives two. Both CLIs; `--backend auto` takes Netgen when the build has it (`-DMESHIOPLUSPLUS_WITH_NETGEN=ON`) and `octree` otherwise, and `--backend netgen` without it fails naming the flag. Lines and vertices in the input are skipped; quads, polygons and an open, non-manifold or misoriented surface are refused by name.
 
 ```
 meshioplusplus tetrahedralize INFILE OUTFILE [options]
@@ -2206,7 +2206,7 @@ meshioplusplus tetrahedralize INFILE OUTFILE [options]
 | `--optimize-steps N` | passes of the backend's volume optimisation, 0 to 100 (3) |
 | `--max-cells N` | refuse a result of more tetrahedra (50000000) |
 | `--face-array NAME` | the cell data naming each triangle's CAD face, carried to the triangles (`cad:face`) |
-| `--backend auto\|netgen` | the backend (`auto`) |
+| `--backend auto\|netgen\|octree` | the backend (`auto`: Netgen when built in, else `octree`) |
 | `--json` / `-q/--quiet` | the report as JSON / no summary |
 | `-i/--input-format` / `-o/--output-format` | force the input / output format |
 

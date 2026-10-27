@@ -616,7 +616,7 @@ module meshioplusplus
     end type
 
     !> `mio_tetrahedralize_report` (128 bytes): what `mio_tetrahedralize` did.
-    !> `backend` is 1 for Netgen.
+    !> `backend` is 1 for Netgen, 2 for the octree backend.
     type, bind(c) :: mio_tetrahedralize_report
         integer(c_int64_t) :: num_tetrahedra = 0
         integer(c_int64_t) :: num_points = 0
@@ -12862,14 +12862,17 @@ contains
     end function
 
     !> Fill the closed, manifold, consistently oriented triangle surface `mesh`
-    !> with tetrahedra, its triangles and points kept exactly (roadmap 6.7):
-    !> each shell bounds a region (a box inside a box gives two). `max_size`
+    !> with tetrahedra (roadmap 6.7): through Netgen its triangles and points
+    !> are kept exactly, through the native octree backend its boundary is
+    !> fitted within `report%hausdorff_to_surface`. Each shell bounds a region
+    !> (a box inside a box gives two). `max_size`
     !> and `max_volume` (0: none) bound the tetrahedra, `grading` (0.3) is how
     !> fast the size grows inward, `optimize_steps` (3) the backend's volume
     !> optimisation passes, `max_cells` (50000000) the refusal bound,
     !> `face_array` ('cad:face') the CAD face data carried to the triangles,
-    !> and `backend` 'auto' (default) or 'netgen'. Without Netgen
-    !> (`mio_has_netgen()` is false) it fails naming MESHIOPLUSPLUS_WITH_NETGEN.
+    !> and `backend` 'auto' (default: Netgen when built in, else the octree
+    !> backend), 'netgen' or 'octree'. 'netgen' without Netgen
+    !> (`mio_has_netgen()` is false) fails naming MESHIOPLUSPLUS_WITH_NETGEN.
     function mio_tetrahedralize(mesh, max_size, max_volume, grading, optimize_steps, max_cells, &
                                 face_array, backend, report, stat, errmsg) result(out)
         type(mio_mesh), intent(in) :: mesh
@@ -12904,9 +12907,11 @@ contains
                 opts%backend = 0
             case ('netgen')
                 opts%backend = 1
+            case ('octree')
+                opts%backend = 2
             case default
-                call handle_failure('tetrahedralize', "backend must be 'auto' or 'netgen'", &
-                                    stat, errmsg)
+                call handle_failure('tetrahedralize', &
+                                    "backend must be 'auto', 'netgen' or 'octree'", stat, errmsg)
                 return
             end select
         end if

@@ -1119,8 +1119,11 @@ end
         @test 3.9 < t.volume < 4 / 3 * pi
         close(t.mesh)
     else
+        t = tetrahedralize(s)  # the octree backend, by default here
+        @test t.backend == "octree" && !t.boundary_preserved
+        close(t.mesh)
         err = try
-            tetrahedralize(s)
+            tetrahedralize(s; backend="netgen")
             nothing
         catch e
             e
@@ -1128,6 +1131,12 @@ end
         @test err isa MeshioError
         @test occursin("MESHIOPLUSPLUS_WITH_NETGEN", sprint(showerror, err))
     end
+    # The native octree backend, always there: the boundary fitted.
+    t = tetrahedralize(s; backend="octree")
+    @test t.backend == "octree" && !t.boundary_preserved
+    @test t.num_tetrahedra > 0 && t.hausdorff_to_surface > 0
+    @test t.num_new_points == t.num_points
+    close(t.mesh)
     close(s)
 end
 

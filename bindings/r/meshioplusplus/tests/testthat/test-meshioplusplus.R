@@ -1866,8 +1866,18 @@ test_that("tetrahedralize fills a closed surface keeping its skin (roadmap 6.7)"
     expect_lt(t$volume, 4 / 3 * pi)
     mio_release(t$mesh)
   } else {
-    expect_error(mio_tetrahedralize(s), "MESHIOPLUSPLUS_WITH_NETGEN")
+    t <- mio_tetrahedralize(s)
+    expect_equal(t$backend, "octree")
+    mio_release(t$mesh)
+    expect_error(mio_tetrahedralize(s, backend = "netgen"), "MESHIOPLUSPLUS_WITH_NETGEN")
   }
+  # The native octree backend, always there: the boundary fitted.
+  t <- mio_tetrahedralize(s, backend = "octree")
+  expect_equal(t$backend, "octree")
+  expect_false(t$boundary_preserved)
+  expect_gt(t$num_tetrahedra, 0)
+  expect_gt(t$hausdorff_to_surface, 0)
+  mio_release(t$mesh)
 })
 test_that("PCD compressed binary is reachable through write options", {
   m <- mio_mesh()

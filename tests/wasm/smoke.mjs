@@ -2742,11 +2742,17 @@ step('the stays-out set is exactly what this artifact reports (roadmap 6.2.4)', 
     for (const [name, value] of Object.entries(expected))
         assert.equal(m[name](), value, name);
     assert.equal(m.hasCgnslib(), true);
-    // Roadmap 6.7: no WebAssembly build of Netgen, in either artifact; the
-    // surface is checked by name first, then the backend is named.
+    // Roadmap 6.7: no WebAssembly build of Netgen, in either artifact, so
+    // "auto" is the native octree backend (its boundary fitted) and "netgen"
+    // is refused by name.
     assert.equal(m.hasNetgen(), false);
-    const ico = m.icosaSphere(1, 1);
-    assert.throws(() => m.tetrahedralize(ico), /MESHIOPLUSPLUS_WITH_NETGEN/);
+    const ico = m.icosaSphere(1, 2);
+    const tet = m.tetrahedralize(ico);
+    assert.equal(tet.backend, 'octree');
+    assert.equal(tet.boundaryPreserved, false);
+    assert.ok(tet.numTetrahedra > 0 && tet.hausdorffToSurface > 0, 'octree tetrahedra');
+    assert.ok(tet.warnings.some((w) => /MESHIOPLUSPLUS_WITH_NETGEN/.test(w)), 'fallback warned');
+    assert.throws(() => m.tetrahedralize(ico, { backend: 'netgen' }), /MESHIOPLUSPLUS_WITH_NETGEN/);
     assert.throws(() => m.tetrahedralize(ico, { grading: 2 }), /grading/);
     assert.throws(() => m.tetrahedralize(ico, { backend: 'tetgen' }), /backend/);
     assert.throws(() => m.tetrahedralize(ico, { bogus: 1 }), /bogus/);

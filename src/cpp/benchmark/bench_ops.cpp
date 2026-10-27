@@ -1380,9 +1380,19 @@ int main(int argc, char** argv) {
                 mio::MeshCadSurfaceOptions o;
                 o.mTargetSize = octree_step;
                 mio::TetrahedralizeOptions t;
+                t.mBackend = mio::TetrahedralizeBackend::Netgen;
                 t.mMaxSize = octree_step;
                 of(pD, mio::tetrahedralize(mio::mesh_cad_surface(box, o).mMesh, t).mMesh);
             });
+        // The same skin through the native octree backend, always built.
+        row("tetrahedralize_octree", [&](MeshDigest* pD) {
+            const mio::BrepInfo box = cad_box();
+            mio::MeshCadSurfaceOptions o;
+            o.mTargetSize = octree_step;
+            mio::TetrahedralizeOptions t;
+            t.mBackend = mio::TetrahedralizeBackend::Octree;
+            of(pD, mio::tetrahedralize(mio::mesh_cad_surface(box, o).mMesh, t).mMesh);
+        });
         row("sample_distance", [&](MeshDigest* pD) {
             const NDArray d = mio::sample_distance(surface, jittered->Points());
             if (pD)

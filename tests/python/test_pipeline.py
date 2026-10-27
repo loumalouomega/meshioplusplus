@@ -1195,17 +1195,29 @@ def test_boundary_layer_collapse_and_front_pipeline_keys(tmp_path):
 
 def test_tetrahedralize_pipeline_step(tmp_path):
     """Roadmap 6.7: Tetrahedralize after MeshCadSurface, in both engines,
-    which agree on every counter (or both name the missing backend)."""
+    which agree on every counter, through the native octree backend and,
+    with Netgen, its skin kept (or both name the missing backend)."""
     if not hasattr(_core, "tetrahedralize"):
         pytest.skip("core predates tetrahedralize")
     op = {"Op": "Tetrahedralize", "MaxSize": 0.3, "Grading": 0.3, "OptimizeSteps": 3}
     for _, run in _engines():
         with pytest.raises(ValueError, match="Backend"):
             run(_cad_sphere_doc([dict(op, Backend="tetgen")], tmp_path / "bad.vtu"))
+    fitted = []
+    for name, run in _engines():
+        report = run(
+            _cad_sphere_doc([dict(op, Backend="octree")], tmp_path / f"o{name}.vtu")
+        )
+        step = report["steps"][-1]
+        assert step["BoundaryPreserved"] == 0.0 and step["NumTetrahedra"] > 0, name
+        fitted.append(step)
+    assert all(s == fitted[0] for s in fitted)
     if not _core.__has_netgen__:
         for _, run in _engines():
             with pytest.raises(NotImplementedError, match="MESHIOPLUSPLUS_WITH_NETGEN"):
-                run(_cad_sphere_doc([op], tmp_path / "none.vtu"))
+                run(
+                    _cad_sphere_doc([dict(op, Backend="netgen")], tmp_path / "none.vtu")
+                )
         return
     steps = []
     for name, run in _engines():

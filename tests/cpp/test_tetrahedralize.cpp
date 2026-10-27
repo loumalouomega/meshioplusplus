@@ -115,19 +115,139 @@ std::map<std::array<std::int64_t, 3>, int> facets(const mio::Mesh& rM) {
 
 }  // namespace
 
-// Without a backend the operation says which flag to build with.
-TEST(Tetrahedralize, WithoutABackendItRaisesByName) {
-    if (mio::tetrahedralize_has_netgen())
-        GTEST_SKIP() << "Netgen is built in";
+// Netgen asked for where it is not built in is refused by name; Auto falls
+// back to the native octree backend with a warning.
+TEST(Tetrahedralize, AutoTakesNetgenWhenBuiltElseTheOctree) {
     std::vector<double> x;
     std::vector<std::int64_t> t;
     add_box(x, t, 0.0, 1.0);
+    const auto r = mio::tetrahedralize(triangles(x, t));
+    if (mio::tetrahedralize_has_netgen()) {
+        EXPECT_EQ(r.mBackend, "netgen");
+        EXPECT_TRUE(r.mWarnings.empty());
+        return;
+    }
+    EXPECT_EQ(r.mBackend, "octree");
+    ASSERT_FALSE(r.mWarnings.empty());
+    EXPECT_NE(r.mWarnings[0].find("MESHIOPLUSPLUS_WITH_NETGEN"), std::string::npos);
+    mio::TetrahedralizeOptions o;
+    o.mBackend = mio::TetrahedralizeBackend::Netgen;
     try {
-        (void)mio::tetrahedralize(triangles(x, t));
-        FAIL() << "no backend, no throw";
+        (void)mio::tetrahedralize(triangles(x, t), o);
+        FAIL() << "no Netgen, no throw";
     } catch (const mio::Unsupported& rE) {
         EXPECT_NE(std::string(rE.what()).find("MESHIOPLUSPLUS_WITH_NETGEN"), std::string::npos);
     }
+}
+
+// The native backend (roadmap 6.7): the sphere's skin filled by isosurface
+// stuffing. Every tetrahedron is positive, the boundary is closed and within
+// a small fraction of h of the skin (not kept: boundary_preserved is false),
+// the volume is the skin's within that, and two runs agree.
+TEST(Tetrahedralize, TheOctreeBackendFillsTheSphere) {
+    const double h = 0.2;
+    const mio::Mesh s = skin(brep_solids::sphere(1.0), h);
+    mio::TetrahedralizeOptions o;
+    o.mBackend = mio::TetrahedralizeBackend::Octree;
+    const auto r = mio::tetrahedralize(s, o);
+    std::printf(
+        "[6.7] sphere, octree: %lld tetrahedra, boundary within %.4f, dihedral %.1f to %.1f, "
+        "volume %.6f\n",
+        static_cast<long long>(r.mNumTetrahedra), r.mHausdorffToSurface, r.mMinDihedralDeg,
+        r.mMaxDihedralDeg, r.mVolume);
+    EXPECT_EQ(r.mBackend, "octree");
+    EXPECT_TRUE(r.mWarnings.empty());  // asked for by name
+    EXPECT_FALSE(r.mBoundaryPreserved);
+    EXPECT_GT(r.mHausdorffToSurface, 0.0);
+    EXPECT_LT(r.mHausdorffToSurface, 0.1 * h);
+    EXPECT_EQ(r.mNumRegions, 1);
+    EXPECT_EQ(r.mNumNewPoints, r.mNumPoints);
+    EXPECT_GT(r.mMinDihedralDeg, 0.0);
+    EXPECT_LT(r.mMaxDihedralDeg, 180.0);
+    // The skin's own enclosed volume, by the divergence theorem.
+    double skin_volume = 0.0;
+    {
+        const double* p = s.Points().As<double>();
+        const auto tri = s.Cells(0);
+        for (std::size_t c = 0; c < tri.NumCells(); ++c) {
+            const double* a = p + 3 * mio::detail::read_int(tri.Conn(), 3 * c);
+            const double* b = p + 3 * mio::detail::read_int(tri.Conn(), 3 * c + 1);
+            const double* d = p + 3 * mio::detail::read_int(tri.Conn(), 3 * c + 2);
+            skin_volume +=
+                (a[0] * (b[1] * d[2] - b[2] * d[1]) - a[1] * (b[0] * d[2] - b[2] * d[0]) +
+                 a[2] * (b[0] * d[1] - b[1] * d[0])) /
+                6.0;
+        }
+    }
+    EXPECT_NEAR(r.mVolume, skin_volume, 0.01 * skin_volume);
+    // The triangle block is the tetrahedra's boundary: each a facet of one
+    // tetrahedron, every other facet of two.
+    const auto f = facets(r.mMesh);
+    std::size_t once = 0;
+    for (const auto& [k, n] : f) {
+        EXPECT_LE(n, 2);
+        once += n == 1 ? 1 : 0;
+    }
+    EXPECT_EQ(static_cast<std::int64_t>(once), r.mNumBoundaryTriangles);
+    EXPECT_EQ(r.mMesh.Cells(1).NumCells(), once);
+    EXPECT_EQ(digest(mio::tetrahedralize(s, o).mMesh), digest(r.mMesh));
+}
+
+// The octree backend keeps the regions and the CAD faces: a box in a box
+// gives two regions (not sharing points, warned), and the capped cylinder's
+// faces become Side regions on the fitted boundary.
+TEST(Tetrahedralize, TheOctreeBackendKeepsRegionsAndFaces) {
+    std::vector<double> x;
+    std::vector<std::int64_t> t;
+    add_box(x, t, 0.0, 1.0);
+    add_box(x, t, 0.3, 0.6, true);
+    mio::TetrahedralizeOptions o;
+    o.mBackend = mio::TetrahedralizeBackend::Octree;
+    o.mMaxSize = 0.1;
+    const auto r = mio::tetrahedralize(triangles(x, t), o);
+    ASSERT_EQ(r.mNumRegions, 2);
+    ASSERT_EQ(r.mWarnings.size(), 1u);
+    EXPECT_NE(r.mWarnings[0].find("regions"), std::string::npos);
+    double vol[2] = {0.0, 0.0};
+    const double* p = r.mMesh.Points().As<double>();
+    const auto cells = r.mMesh.Cells(0);
+    const mio::NDArray& region = r.mMesh.CellData(mio::kTetrahedralizeRegion, 0);
+    for (std::size_t c = 0; c < cells.NumCells(); ++c) {
+        std::array<const double*, 4> q{};
+        for (std::size_t k = 0; k < 4; ++k)
+            q[k] = p + 3 * mio::detail::read_int(cells.Conn(), 4 * c + k);
+        const double a[3] = {q[1][0] - q[0][0], q[1][1] - q[0][1], q[1][2] - q[0][2]};
+        const double b[3] = {q[2][0] - q[0][0], q[2][1] - q[0][1], q[2][2] - q[0][2]};
+        const double d[3] = {q[3][0] - q[0][0], q[3][1] - q[0][1], q[3][2] - q[0][2]};
+        const double v = (a[0] * (b[1] * d[2] - b[2] * d[1]) - a[1] * (b[0] * d[2] - b[2] * d[0]) +
+                          a[2] * (b[0] * d[1] - b[1] * d[0])) /
+                         6.0;
+        EXPECT_GT(v, 0.0) << c;
+        vol[mio::detail::read_int(region, c)] += v;
+    }
+    EXPECT_NEAR(vol[0], 1.0 - 0.027, 0.02);
+    EXPECT_NEAR(vol[1], 0.027, 0.005);
+
+    const mio::Mesh s = skin(brep_solids::capped_cylinder(1.0, 2.0), 0.4);
+    const auto c = mio::tetrahedralize(s, o);
+    std::size_t sides = 0, entries = 0;
+    for (std::size_t i = 0; i < c.mMesh.NumRegions(); ++i) {
+        const mio::Region& r_r = c.mMesh.Region(i);
+        if (r_r.mKind == mio::RegionKind::Side) {
+            ++sides;
+            entries += r_r.NumEntries();
+        }
+    }
+    EXPECT_EQ(sides, 3u);  // the side and the two caps
+    EXPECT_EQ(static_cast<std::int64_t>(entries), c.mNumBoundaryTriangles);
+    const mio::NDArray& face = c.mMesh.CellData("cad:face", 1);
+    for (std::size_t i = 0; i < c.mMesh.Cells(1).NumCells(); ++i)
+        EXPECT_GE(mio::detail::read_int(face, i), 0) << i;
+    // max_cells bounds it too.
+    o = {};
+    o.mBackend = mio::TetrahedralizeBackend::Octree;
+    o.mMaxCells = 2;
+    EXPECT_THROW((void)mio::tetrahedralize(s, o), std::length_error);
 }
 
 // Roadmap 6.7.6: the sphere's skin filled. Every tetrahedron is positive,

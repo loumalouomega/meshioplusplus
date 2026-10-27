@@ -595,8 +595,12 @@ export interface BoundaryLayerResult {
 
 /** Options of `tetrahedralize` (doc/tetrahedralize.md). */
 export interface TetrahedralizeOptions {
-  /** `"auto"` (default) or `"netgen"`; no WebAssembly build carries Netgen. */
-  backend?: 'auto' | 'netgen';
+  /**
+   * `"auto"` (default: Netgen when built in, else `"octree"`), `"netgen"`
+   * (the surface kept; no WebAssembly build carries it) or `"octree"` (the
+   * native isosurface stuffing, the boundary fitted).
+   */
+  backend?: 'auto' | 'netgen' | 'octree';
   /** The largest edge asked of the tetrahedra (0, the default, is none). */
   maxSize?: number;
   /** The largest volume asked of a tetrahedron (0, the default, is none). */
@@ -2197,8 +2201,8 @@ export interface MeshioPlusPlusModule {
   hasOcct(): boolean;
 
   /**
-   * Whether a `tetrahedralize` backend (Netgen) is linked in: always false in
-   * WebAssembly, where no Netgen build exists.
+   * Whether `tetrahedralize`'s Netgen backend is linked in: always false in
+   * WebAssembly, where no Netgen build exists (the octree backend always is).
    */
   hasNetgen(): boolean;
 
@@ -3299,12 +3303,13 @@ export interface MeshioPlusPlusModule {
 
   /**
    * Fill a closed, manifold, consistently oriented triangle surface with
-   * tetrahedra, its triangles kept (roadmap 6.7). The backend is Netgen, which
-   * no WebAssembly build carries: past the surface's checks this throws naming
-   * `MESHIOPLUSPLUS_WITH_NETGEN` (`hasNetgen()` is false). Use the native
-   * library, the CLI or Python for it.
-   * @throws {Error} always in WebAssembly; on a bad option or an open,
-   * non-manifold or misoriented surface by name.
+   * tetrahedra (roadmap 6.7). No WebAssembly build carries Netgen, which
+   * keeps the surface's triangles (`hasNetgen()` is false), so `"auto"` is the
+   * native octree backend: isosurface stuffing whose boundary is fitted to
+   * the surface within `hausdorffToSurface` (`boundaryPreserved` false), with
+   * a warning saying so.
+   * @throws {Error} for `backend: "netgen"` naming `MESHIOPLUSPLUS_WITH_NETGEN`;
+   * on a bad option or an open, non-manifold or misoriented surface by name.
    */
   tetrahedralize(mesh: Mesh, options?: TetrahedralizeOptions): TetrahedralizeResult;
 

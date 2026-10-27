@@ -7760,7 +7760,9 @@ static_assert(offsetof(mio_tetrahedralize_report, boundary_preserved) == 72,
 static_assert(offsetof(mio_tetrahedralize_report, reserved) == 80,
               "mio_tetrahedralize_report layout");
 static_assert(static_cast<int>(meshioplusplus::TetrahedralizeBackend::Netgen) ==
-                  MIO_TETRAHEDRALIZE_BACKEND_NETGEN,
+                      MIO_TETRAHEDRALIZE_BACKEND_NETGEN &&
+                  static_cast<int>(meshioplusplus::TetrahedralizeBackend::Octree) ==
+                      MIO_TETRAHEDRALIZE_BACKEND_OCTREE,
               "mio_tetrahedralize_backend drifted from TetrahedralizeBackend");
 
 void mio_tetrahedralize_opts_init(mio_tetrahedralize_opts* opts) {
@@ -7812,7 +7814,7 @@ mio_mesh* mio_tetrahedralize(const mio_mesh* mesh, const mio_tetrahedralize_opts
             report->volume = r.mVolume;
             report->boundary_preserved = r.mBoundaryPreserved ? 1 : 0;
             report->backend = r.mBackend == "netgen" ? MIO_TETRAHEDRALIZE_BACKEND_NETGEN
-                                                     : MIO_TETRAHEDRALIZE_BACKEND_AUTO;
+                                                     : MIO_TETRAHEDRALIZE_BACKEND_OCTREE;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });

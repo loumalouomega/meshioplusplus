@@ -3944,8 +3944,9 @@ def tool_tetrahedralize(
     max_cells=50_000_000,
     face_array="cad:face",
 ):
-    """Fill a closed triangle surface with tetrahedra, its triangles kept
-    (Netgen). Returns num_tetrahedra, num_points, num_new_points,
+    """Fill a closed triangle surface with tetrahedra: its triangles kept
+    (Netgen) or its boundary fitted (the native octree backend; auto takes
+    Netgen when built in). Returns num_tetrahedra, num_points, num_new_points,
     num_regions, num_boundary_triangles, boundary_preserved,
     hausdorff_to_surface, min_dihedral_deg, max_dihedral_deg, volume,
     backend and warnings alongside the mesh summary."""

@@ -2363,7 +2363,31 @@ TEST(CApi, Tetrahedralize) {
 
     mio_tetrahedralize_report report;
     std::memset(&report, 0xff, sizeof(report));
+    // The native octree backend, always there: the boundary fitted.
+    {
+        mio_tetrahedralize_opts oct;
+        mio_tetrahedralize_opts_init(&oct);
+        oct.backend = MIO_TETRAHEDRALIZE_BACKEND_OCTREE;
+        mio_mesh* out = mio_tetrahedralize(m, &oct, &report);
+        ASSERT_NE(out, nullptr) << mio_last_error();
+        EXPECT_EQ(report.backend, MIO_TETRAHEDRALIZE_BACKEND_OCTREE);
+        EXPECT_EQ(report.boundary_preserved, 0);
+        EXPECT_GT(report.hausdorff_to_surface, 0.0);
+        EXPECT_GT(report.num_tetrahedra, 0);
+        EXPECT_NEAR(report.volume, 1.0, 0.02);
+        EXPECT_EQ(report.num_new_points, report.num_points);
+        for (int64_t k : report.reserved)
+            EXPECT_EQ(k, 0);
+        EXPECT_GE(block_of(out, "triangle"), 0);
+        mio_mesh_free(out);
+    }
     if (!mio_has_netgen()) {
+        // AUTO falls back to the octree backend; NETGEN is refused by name.
+        mio_mesh* out = mio_tetrahedralize(m, &to, &report);
+        ASSERT_NE(out, nullptr) << mio_last_error();
+        EXPECT_EQ(report.backend, MIO_TETRAHEDRALIZE_BACKEND_OCTREE);
+        mio_mesh_free(out);
+        to.backend = MIO_TETRAHEDRALIZE_BACKEND_NETGEN;
         EXPECT_EQ(mio_tetrahedralize(m, &to, &report), nullptr);
         EXPECT_NE(std::string(mio_last_error()).find("MESHIOPLUSPLUS_WITH_NETGEN"),
                   std::string::npos)

@@ -1366,8 +1366,11 @@ SEXP R_mio_tetrahedralize(SEXP mesh, SEXP backend, SEXP max_size, SEXP max_volum
             opts.backend = MIO_TETRAHEDRALIZE_BACKEND_AUTO;
         else if (strcmp(b, "netgen") == 0)
             opts.backend = MIO_TETRAHEDRALIZE_BACKEND_NETGEN;
+        else if (strcmp(b, "octree") == 0)
+            opts.backend = MIO_TETRAHEDRALIZE_BACKEND_OCTREE;
         else
-            Rf_error("meshio++: tetrahedralize: backend must be \"auto\" or \"netgen\"");
+            Rf_error(
+                "meshio++: tetrahedralize: backend must be \"auto\", \"netgen\" or \"octree\"");
     }
     opts.max_size = mio_r_double(max_size, "max_size");
     opts.max_volume = mio_r_double(max_volume, "max_volume");
@@ -1391,7 +1394,7 @@ SEXP R_mio_tetrahedralize(SEXP mesh, SEXP backend, SEXP max_size, SEXP max_volum
     v[9] = PROTECT(Rf_ScalarReal(report.max_dihedral_deg));
     v[10] = PROTECT(Rf_ScalarReal(report.volume));
     v[11] = PROTECT(
-        Rf_mkString(report.backend == MIO_TETRAHEDRALIZE_BACKEND_NETGEN ? "netgen" : "auto"));
+        Rf_mkString(report.backend == MIO_TETRAHEDRALIZE_BACKEND_NETGEN ? "netgen" : "octree"));
     const char *names[] = {"mesh",
                            "num_tetrahedra",
                            "num_points",

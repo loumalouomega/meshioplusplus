@@ -33,24 +33,34 @@
  * so neighbouring regions share the inner shell's triangles exactly and the
  * tetrahedra conform across it.
  *
- * The backend is Netgen's nglib (J. Schöberl, "NETGEN: an advancing front
+ * Two backends. Netgen's nglib (J. Schöberl, "NETGEN: an advancing front
  * 2D/3D-mesh generator based on abstract rules", Comput. Visual. Sci. 1,
  * 1997; LGPL-2.1, built with `MESHIOPLUSPLUS_WITH_NETGEN`, linked
- * dynamically, never vendored): its volume mesher keeps the surface's
- * triangles and points exactly, which is checked, and `mOptimizeSteps`
- * passes of its volume optimisation follow. Without it the operation throws
- * `Unsupported` naming the flag. Calls into nglib are serialised (its state
- * is global); a region is meshed in one thread, so the result is
+ * dynamically, never vendored) keeps the surface's triangles and points
+ * exactly, which is checked, and `mOptimizeSteps` passes of its volume
+ * optimisation follow; calls into nglib are serialised (its state is
+ * global). The native octree backend, always built, is `octree_mesh`'s
+ * isosurface stuffing at the surface's own size (F. Labelle and J. R.
+ * Shewchuk, "Isosurface stuffing", ACM TOG 26, 2007): its boundary is fitted
+ * to the surface within the reported Hausdorff distance rather than kept,
+ * its dihedral angles bounded where the stuffing's guarantee holds, and
+ * two regions do not share points across their interface. `Auto` takes
+ * Netgen when it is built in and the octree backend otherwise, with a
+ * warning; asking for Netgen without it throws `Unsupported` naming the
+ * flag. Each region is meshed in one thread, so the result is
  * deterministic.
  *
- * The result holds the input's points first (unchanged, at their indices),
- * then the new interior points; a `tetra` block (positively oriented,
- * region by region) and the surface's `triangle` block as given; the cell
- * data `tetrahedralize:region` (the region of each tetrahedron, -1 on the
- * triangles) and, when the surface carries `mFaceArray` (`cad:face`), that
- * array on the triangles (-1 on the tetrahedra); Cell regions `region:<k>`
- * and, per value of `mFaceArray`, Side regions `face:<v>` on the tetrahedra
- * facets the surface's triangles are.
+ * The result holds the points, then a `tetra` block (positively oriented,
+ * region by region) and a `triangle` block: with Netgen the input's points
+ * first (unchanged, at their indices) and the surface's triangles as given;
+ * with the octree backend new points and the tetrahedra's boundary facets,
+ * outward. The cell data `tetrahedralize:region` gives the region of each
+ * tetrahedron (-1 on the triangles) and, when the surface carries
+ * `mFaceArray` (`cad:face`), that array is on the triangles (-1 on the
+ * tetrahedra; a boundary facet of the octree backend takes the value of the
+ * surface triangle nearest its centroid); Cell regions `region:<k>` and, per
+ * value of `mFaceArray`, Side regions `face:<v>` on the tetrahedra facets
+ * the triangles are.
  */
 
 // System includes
@@ -67,8 +77,9 @@ namespace meshioplusplus {
 inline constexpr const char* kTetrahedralizeRegion = "tetrahedralize:region";
 
 enum class TetrahedralizeBackend : std::int32_t {
-    Auto = 0,    ///< the first backend built in
-    Netgen = 1,  ///< Netgen's nglib (MESHIOPLUSPLUS_WITH_NETGEN)
+    Auto = 0,    ///< Netgen when built in, else the octree backend
+    Netgen = 1,  ///< Netgen's nglib (MESHIOPLUSPLUS_WITH_NETGEN): the surface kept
+    Octree = 2,  ///< native isosurface stuffing (always built): the surface fitted
 };
 
 struct TetrahedralizeOptions {
@@ -79,7 +90,7 @@ struct TetrahedralizeOptions {
     /// The largest volume asked of a tetrahedron (0: none): a regular
     /// tetrahedron's edge for it, `(6 sqrt 2 V)^(1/3)`, joins `mMaxSize`.
     double mMaxVolume = 0.0;
-    /// How fast the size grows away from the surface, in [0, 1].
+    /// How fast the size grows away from the surface, in [0, 1] (Netgen).
     double mGrading = 0.3;
     /// Passes of the backend's volume optimisation (0 to 100).
     std::int32_t mOptimizeSteps = 3;
@@ -99,7 +110,9 @@ struct TetrahedralizeResult {
     std::int64_t mNumBoundaryTriangles = 0;
     /// Every surface triangle and its points kept exactly (checked).
     bool mBoundaryPreserved = false;
-    /// Zero when the boundary is preserved.
+    /// The two-sided distance between the result's boundary and the surface:
+    /// zero when the boundary is preserved (Netgen), measured by the octree
+    /// backend.
     double mHausdorffToSurface = 0.0;
     double mMinDihedralDeg = 0.0;
     double mMaxDihedralDeg = 0.0;
@@ -108,7 +121,7 @@ struct TetrahedralizeResult {
     std::vector<std::string> mWarnings;
 };
 
-/// Whether a tetrahedralize backend is built in (Netgen).
+/// Whether the Netgen backend is built in (the octree backend always is).
 MESHIOPLUSPLUS_API bool tetrahedralize_has_netgen();
 
 /**
@@ -117,7 +130,8 @@ MESHIOPLUSPLUS_API bool tetrahedralize_has_netgen();
  * @throws std::invalid_argument for an option out of range, a surface with
  * no triangle, a quad, polygon, higher-order or volume block (lines and
  * vertices are skipped), or a surface that is open, non-manifold,
- * misoriented or has degenerate triangles; `Unsupported` without a backend;
+ * misoriented or has degenerate triangles; `Unsupported` for Netgen when it
+ * is not built in;
  * `std::length_error` past `mMaxCells`; `std::runtime_error` when the
  * backend fails (a self-intersecting surface, for one).
  */

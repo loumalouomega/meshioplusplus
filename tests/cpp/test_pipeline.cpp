@@ -172,8 +172,8 @@ TEST(Pipeline, BoundaryLayerTakesCollapseAndFrontCheck) {
         std::invalid_argument);
 }
 
-// Roadmap 6.7: the Tetrahedralize step fills the sphere's skin, or without
-// Netgen names the build flag.
+// Roadmap 6.7: the Tetrahedralize step fills the sphere's skin through the
+// octree backend and Netgen, or names the build flag for Netgen without it.
 TEST(Pipeline, TetrahedralizeFillsTheSurface) {
     const Mesh sphere = meshioplusplus::icosa_sphere(1.0, 2);
     PipelineReport report;
@@ -184,9 +184,22 @@ TEST(Pipeline, TetrahedralizeFillsTheSurface) {
     EXPECT_THROW(meshioplusplus::apply_pipeline_step(
                      Mesh(sphere), step("Tetrahedralize", {{"Grading", 2.0}}), report),
                  std::invalid_argument);
+    {
+        // The native octree backend, always built: the boundary fitted.
+        PipelineReport fitted;
+        Mesh out = meshioplusplus::apply_pipeline_step(
+            Mesh(sphere), step("Tetrahedralize", {{"Backend", std::string("octree")}}), fitted);
+        ASSERT_EQ(fitted.mSteps.size(), 1u);
+        const auto& c = fitted.mSteps[0].mCounters;
+        EXPECT_GT(c[0].second, 0.0);
+        EXPECT_EQ(c[5].first, "BoundaryPreserved");
+        EXPECT_EQ(c[5].second, 0.0);
+        EXPECT_TRUE(out.HasCellData(meshioplusplus::kTetrahedralizeRegion));
+    }
     if (!meshioplusplus::tetrahedralize_has_netgen()) {
         EXPECT_THROW(
-            meshioplusplus::apply_pipeline_step(Mesh(sphere), step("Tetrahedralize"), report),
+            meshioplusplus::apply_pipeline_step(
+                Mesh(sphere), step("Tetrahedralize", {{"Backend", std::string("netgen")}}), report),
             meshioplusplus::Unsupported);
         return;
     }

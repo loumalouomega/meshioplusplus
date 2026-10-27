@@ -61,9 +61,10 @@ def add_args(parser):
     )
     parser.add_argument(
         "--backend",
-        choices=("auto", "netgen"),
+        choices=("auto", "netgen", "octree"),
         default="auto",
-        help="the tetrahedra's backend (default auto)",
+        help="the tetrahedra's backend: netgen keeps the surface's triangles, octree "
+        "(native) fits them; auto is netgen when built in, else octree (default auto)",
     )
     parser.add_argument("--json", action="store_true", help="print the report as JSON")
     parser.add_argument(

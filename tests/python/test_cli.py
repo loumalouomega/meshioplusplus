@@ -1372,9 +1372,16 @@ def test_tetrahedralize_cli(tmp_path, capsys):
     skin = _cad_sphere_skin(tmp_path)
     out = tmp_path / "tets.vtu"
     args = ["tetrahedralize", str(skin), str(out), "--max-size", "0.3"]
+    assert meshioplusplus._cli.main(args + ["--backend", "octree", "--json"]) in (
+        0,
+        None,
+    )
+    fitted = json.loads(capsys.readouterr().out)
+    assert fitted["backend"] == "octree" and not fitted["boundary_preserved"]
+    assert fitted["num_tetrahedra"] > 0
     if not _core.__has_netgen__:
         with pytest.raises(NotImplementedError, match="MESHIOPLUSPLUS_WITH_NETGEN"):
-            meshioplusplus._cli.main(args)
+            meshioplusplus._cli.main(args + ["--backend", "netgen"])
         return
     assert meshioplusplus._cli.main(args + ["--json"]) in (0, None)
     report = json.loads(capsys.readouterr().out)

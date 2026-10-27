@@ -2812,15 +2812,18 @@ mio_has_netgen <- function() {
 #' Fill a closed triangle surface with tetrahedra
 #'
 #' The closed, manifold, consistently oriented triangle surface `mesh` is
-#' filled with tetrahedra, its triangles and points kept exactly (roadmap
-#' 6.7): each shell bounds a region (a box inside a box gives two), meshed on
-#' its own so the regions conform. The result has the input's points first, a
-#' `tetra` block, the surface's `triangle` block and the cell data
-#' `tetrahedralize:region`. Without Netgen ([mio_has_netgen()] is `FALSE`) it
-#' fails naming `MESHIOPLUSPLUS_WITH_NETGEN`.
+#' filled with tetrahedra (roadmap 6.7): through Netgen its triangles and
+#' points are kept exactly, through the native octree backend its boundary is
+#' fitted within `hausdorff_to_surface`. Each shell bounds a region (a box
+#' inside a box gives two), meshed on its own. The result has a `tetra` block,
+#' a `triangle` block (the surface's with Netgen, its input points first; the
+#' tetrahedra's boundary with the octree backend) and the cell data
+#' `tetrahedralize:region`. `backend = "auto"` takes Netgen when
+#' [mio_has_netgen()] is `TRUE` and the octree backend otherwise;
+#' `"netgen"` without it fails naming `MESHIOPLUSPLUS_WITH_NETGEN`.
 #'
 #' @param mesh A closed triangle surface.
-#' @param backend `"auto"` or `"netgen"`.
+#' @param backend `"auto"`, `"netgen"` or `"octree"`.
 #' @param max_size,max_volume The largest edge and volume asked of the
 #'   tetrahedra; 0 is none.
 #' @param grading How fast the size grows away from the surface, in [0, 1].

@@ -2277,8 +2277,9 @@ def test_boundary_layer_tool_collapse_and_front(tmp_path):
 
 
 def test_tetrahedralize_tool(tmp_path):
-    """Roadmap 6.7: the sphere's mesh filled with tetrahedra, its skin kept;
-    without Netgen the tool names the build flag."""
+    """Roadmap 6.7: the sphere's mesh filled with tetrahedra by the native
+    octree backend (always built, its boundary fitted) and, with Netgen, its
+    skin kept; without Netgen asking for it names the build flag."""
     if not hasattr(_core, "tetrahedralize"):
         pytest.skip("core predates tetrahedralize")
     model = pathlib.Path(__file__).parent / "meshes" / "cad_json" / "sphere.cad.json"
@@ -2287,9 +2288,12 @@ def test_tetrahedralize_tool(tmp_path):
     out = tmp_path / "tets.vtu"
     with pytest.raises(ValueError, match="grading"):
         _tools.tool_tetrahedralize(str(skin), str(out), grading=2.0)
+    fitted = _tools.tool_tetrahedralize(str(skin), str(out), backend="octree")
+    assert fitted["backend"] == "octree" and not fitted["boundary_preserved"]
+    assert fitted["num_tetrahedra"] > 0 and fitted["hausdorff_to_surface"] > 0.0
     if not _core.__has_netgen__:
         with pytest.raises(NotImplementedError, match="MESHIOPLUSPLUS_WITH_NETGEN"):
-            _tools.tool_tetrahedralize(str(skin), str(out))
+            _tools.tool_tetrahedralize(str(skin), str(out), backend="netgen")
         return
     report = _tools.tool_tetrahedralize(str(skin), str(out), max_size=0.3)
     assert report["num_tetrahedra"] > 0 and report["num_regions"] == 1

@@ -1250,9 +1250,10 @@ def _tetrahedralize_step(mesh, step, entry, warnings):
     from ._tetrahedralize import tetrahedralize
 
     backend = _text(step, "Backend", "auto")
-    if backend not in ("auto", "netgen"):
+    if backend not in ("auto", "netgen", "octree"):
         raise _err(
-            "Tetrahedralize", f"'Backend' must be 'auto' or 'netgen', not '{backend}'"
+            "Tetrahedralize",
+            f"'Backend' must be 'auto', 'netgen' or 'octree', not '{backend}'",
         )
     with _warnings.catch_warnings():
         # The report carries them, as the C++ engine's does.

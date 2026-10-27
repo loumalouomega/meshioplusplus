@@ -1,10 +1,12 @@
 """tetrahedralize (roadmap 6.7): tetrahedra filling a closed triangle surface.
 
-Through the Python wrapper: the sphere's CAD skin filled with its triangles
-kept and its enclosed volume matched, a box in a box giving two regions, the
-report, the refusals by name, determinism, and the named error of a core built
-without Netgen. The CI ``netgen`` job runs the live tests; the algorithm
-itself is tested in the core (``tests/cpp/test_tetrahedralize.cpp``).
+Through the Python wrapper: with Netgen, the sphere's CAD skin filled with its
+triangles kept and its enclosed volume matched and a box in a box giving two
+regions; with the native octree backend, always built, the same skin filled
+with its boundary fitted within the reported distance; the report, the
+refusals by name, determinism, and the fallback of a core built without
+Netgen. The CI ``netgen`` job runs the Netgen tests; the algorithm itself is
+tested in the core (``tests/cpp/test_tetrahedralize.cpp``).
 """
 
 import pathlib
@@ -201,6 +203,79 @@ def test_refusals_are_by_name():
 
 @needs_core
 @pytest.mark.skipif(HAS_NETGEN, reason="Netgen is built in")
-def test_without_netgen_the_flag_is_named():
+def test_without_netgen_auto_falls_back_and_netgen_is_named():
+    box = _boxes((0.0, 1.0))
+    with pytest.warns(RuntimeWarning, match="MESHIOPLUSPLUS_WITH_NETGEN"):
+        _, report = mio.tetrahedralize(box, return_report=True)
+    assert report["backend"] == "octree" and not report["boundary_preserved"]
     with pytest.raises(NotImplementedError, match="MESHIOPLUSPLUS_WITH_NETGEN"):
-        mio.tetrahedralize(_boxes((0.0, 1.0)))
+        mio.tetrahedralize(box, backend="netgen")
+
+
+@needs_core
+def test_auto_takes_netgen_when_built_in():
+    _, report = mio.tetrahedralize(_boxes((0.0, 1.0)), return_report=True)
+    assert report["backend"] == ("netgen" if HAS_NETGEN else "octree")
+
+
+@needs_core
+def test_the_octree_backend_fits_the_sphere():
+    h = 0.3
+    skin = _sphere_skin(h)
+    out, report = mio.tetrahedralize(skin, backend="octree", return_report=True)
+    assert set(report) == _REPORT_KEYS
+    assert report["backend"] == "octree" and report["warnings"] == []
+    assert not report["boundary_preserved"]
+    assert 0.0 < report["hausdorff_to_surface"] < 0.1 * h
+    assert report["num_new_points"] == report["num_points"] == len(out.points)
+    assert 0.0 < report["min_dihedral_deg"] < report["max_dihedral_deg"] < 180.0
+    # The volume differs from the skin's by at most the boundary's distance
+    # to it over the skin's area.
+    p = np.asarray(skin.points, dtype=float)
+    t = _triangles(skin)
+    area = (
+        0.5
+        * np.linalg.norm(
+            np.cross(p[t[:, 1]] - p[t[:, 0]], p[t[:, 2]] - p[t[:, 0]]), axis=1
+        ).sum()
+    )
+    gap = abs(report["volume"] - _enclosed_volume(skin))
+    assert gap <= report["hausdorff_to_surface"] * area
+    # The triangle block is the tetrahedra's boundary, closed and outward.
+    boundary = mio.Mesh(out.points, [("triangle", _triangles(out))])
+    assert report["num_boundary_triangles"] == len(_triangles(out))
+    assert _enclosed_volume(boundary) == pytest.approx(report["volume"], rel=1e-9)
+    # The CAD faces reach the fitted boundary, one Side region per face.
+    faces = np.concatenate(
+        [
+            np.asarray(out.cell_data["cad:face"][b])
+            for b, c in enumerate(out.cells)
+            if c.type == "triangle"
+        ]
+    )
+    assert (faces >= 0).all()
+    sides = [r.name for r in out.regions if r.name.startswith("face:")]
+    assert sorted(sides) == [f"face:{v}" for v in sorted(set(faces.tolist()))]
+    again = mio.tetrahedralize(skin, backend="octree")
+    np.testing.assert_array_equal(again.points, out.points)
+
+
+@needs_core
+def test_the_octree_backend_keeps_two_regions():
+    surface = _boxes((0.0, 3.0), (1.0, 2.0))
+    with pytest.warns(RuntimeWarning, match="regions"):
+        out, report = mio.tetrahedralize(
+            surface, backend="octree", max_size=0.25, return_report=True
+        )
+    assert report["num_regions"] == 2
+    assert report["volume"] == pytest.approx(27.0, rel=0.02)
+    regions = np.concatenate(
+        [
+            np.asarray(out.cell_data["tetrahedralize:region"][b])
+            for b, c in enumerate(out.cells)
+            if c.type == "tetra"
+        ]
+    )
+    assert set(regions.tolist()) == {0, 1}
+    with pytest.raises(ValueError, match="max_cells"):
+        mio.tetrahedralize(surface, backend="octree", max_cells=10)

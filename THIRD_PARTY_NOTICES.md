@@ -29,7 +29,7 @@ The binaries link OpenCASCADE statically, as the CAD kernel of `fit_cad` and of 
 
 ## Netgen
 
-[`tetrahedralize`](doc/tetrahedralize.md)'s backend is [Netgen](https://github.com/NGSolve/netgen)'s nglib (J. Schöberl; LGPL-2.1-only). It is never vendored and never in the published binaries: a build from source links it only when configured with `-DMESHIOPLUSPLUS_WITH_NETGEN=ON` (`build/configure.sh --with-netgen`), and then only dynamically, against the shared `libnglib` and `libngcore` of a Netgen install (`NETGEN_ROOT`, or the distribution's `libnglib-dev`), so a recipient can replace them without rebuilding meshio++. A binary built that way carries Netgen's licence beside meshio++'s MIT; without the option no Netgen code is built or linked, and `tetrahedralize` throws `Unsupported` naming the flag.
+[`tetrahedralize`](doc/tetrahedralize.md)'s backend is [Netgen](https://github.com/NGSolve/netgen)'s nglib (J. Schöberl; LGPL-2.1-only). It is never vendored and never in the published binaries: a build from source links it only when configured with `-DMESHIOPLUSPLUS_WITH_NETGEN=ON` (`build/configure.sh --with-netgen`), and then only dynamically, against the shared `libnglib` and `libngcore` of a Netgen install (`NETGEN_ROOT`, or the distribution's `libnglib-dev`), so a recipient can replace them without rebuilding meshio++. A binary built that way carries Netgen's licence beside meshio++'s MIT; without the option no Netgen code is built or linked, and `tetrahedralize` uses its native octree backend instead (asked for Netgen by name, it throws `Unsupported` naming the flag).
 
 ## Licence texts
 

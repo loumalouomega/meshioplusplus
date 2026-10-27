@@ -40,7 +40,9 @@ namespace nglib {
 #include "../detail/tri_bvh.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/detail/surface_distance.hpp"
 #include "meshioplusplus/log.hpp"
+#include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/region.hpp"
@@ -125,8 +127,9 @@ bool tetrahedralize_has_netgen() {
 
 TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOptions& rOptions) {
     const TetrahedralizeOptions& o = rOptions;
-    if (o.mBackend != TetrahedralizeBackend::Auto && o.mBackend != TetrahedralizeBackend::Netgen)
-        tet_fail("backend must be auto or netgen");
+    if (o.mBackend != TetrahedralizeBackend::Auto && o.mBackend != TetrahedralizeBackend::Netgen &&
+        o.mBackend != TetrahedralizeBackend::Octree)
+        tet_fail("backend must be auto, netgen or octree");
     if (!(std::isfinite(o.mMaxSize) && o.mMaxSize >= 0.0))
         tet_fail("max_size must be finite and not negative");
     if (!(std::isfinite(o.mMaxVolume) && o.mMaxVolume >= 0.0))
@@ -200,11 +203,16 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
                 std::to_string(q.mDegenerateTriangles) + " degenerate triangles (repair it first)");
     }
 
-#ifndef MESHIOPLUSPLUS_HAS_NETGEN
-    throw Unsupported(std::string(kTetPrefix) +
-                      "no backend is built in: rebuild with -DMESHIOPLUSPLUS_WITH_NETGEN=ON and "
-                      "Netgen's nglib installed (roadmap 6.7)");
-#else
+    // The backend: Netgen when asked for or, under Auto, when built in; the
+    // native octree route otherwise.
+    const bool has_netgen = tetrahedralize_has_netgen();
+    if (o.mBackend == TetrahedralizeBackend::Netgen && !has_netgen)
+        throw Unsupported(std::string(kTetPrefix) +
+                          "the netgen backend is not built in: rebuild with "
+                          "-DMESHIOPLUSPLUS_WITH_NETGEN=ON and Netgen's nglib installed, or use "
+                          "backend=octree (roadmap 6.7)");
+    const bool use_netgen = o.mBackend == TetrahedralizeBackend::Netgen ||
+                            (o.mBackend == TetrahedralizeBackend::Auto && has_netgen);
     const std::size_t nt = tris.size();
     // Shells: the triangles connected across edges, in the order of their
     // first triangle.
@@ -289,145 +297,343 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
         const double h = std::cbrt(6.0 * std::sqrt(2.0) * o.mMaxVolume);
         maxh = maxh > 0.0 ? std::min(maxh, h) : h;
     }
+    // The region of shell s: its triangles outward, its children's inward.
+    const auto region_faces = [&](std::size_t S) {
+        std::vector<std::array<std::int64_t, 3>> faces;
+        for (const std::size_t t : shells[S])
+            faces.push_back(oriented(t));
+        for (std::size_t c = 0; c < ns; ++c)
+            if (container[c] == static_cast<std::int64_t>(S))
+                for (const std::size_t t : shells[c]) {
+                    auto v = oriented(t);
+                    std::swap(v[1], v[2]);
+                    faces.push_back(v);
+                }
+        return faces;
+    };
     TetrahedralizeResult result;
-    result.mBackend = "netgen";
     result.mNumRegions = static_cast<std::int64_t>(ns);
-    result.mNumBoundaryTriangles = static_cast<std::int64_t>(nt);
-    result.mBoundaryPreserved = true;
-    std::vector<TetV3> points(x.begin(), x.end());
+    std::vector<TetV3> points;
     std::vector<std::array<std::int64_t, 4>> tets;
     std::vector<std::int64_t> tet_region;
-    {
-        std::lock_guard<std::mutex> lock(tet_netgen_mutex());
-        static std::once_flag s_init;
-        std::call_once(s_init, [] { nglib::Ng_Init(); });
-        for (std::size_t s = 0; s < ns; ++s) {
-            // The region of shell s: its triangles outward, its children's
-            // inward; the points they use, ascending.
-            std::vector<std::array<std::int64_t, 3>> faces;
-            for (const std::size_t t : shells[s])
-                faces.push_back(oriented(t));
-            for (std::size_t c = 0; c < ns; ++c)
-                if (container[c] == static_cast<std::int64_t>(s))
-                    for (const std::size_t t : shells[c]) {
-                        auto v = oriented(t);
-                        std::swap(v[1], v[2]);
-                        faces.push_back(v);
+    // The result's triangles and their face_array values: the surface's own
+    // (Netgen), or the tetrahedra's boundary facets (octree).
+    std::vector<std::array<std::int64_t, 3>> bnd;
+    std::vector<std::int64_t> bnd_face;
+    if (use_netgen) {
+#ifdef MESHIOPLUSPLUS_HAS_NETGEN
+        result.mBackend = "netgen";
+        result.mBoundaryPreserved = true;
+        points.assign(x.begin(), x.end());
+        {
+            std::lock_guard<std::mutex> lock(tet_netgen_mutex());
+            static std::once_flag s_init;
+            std::call_once(s_init, [] { nglib::Ng_Init(); });
+            for (std::size_t s = 0; s < ns; ++s) {
+                // The region's triangles; the points they use, ascending.
+                const std::vector<std::array<std::int64_t, 3>> faces = region_faces(s);
+                std::vector<std::int64_t> used;
+                for (const auto& r_f : faces)
+                    used.insert(used.end(), r_f.begin(), r_f.end());
+                std::sort(used.begin(), used.end());
+                used.erase(std::unique(used.begin(), used.end()), used.end());
+                std::map<std::int64_t, int> local;
+                for (std::size_t i = 0; i < used.size(); ++i)
+                    local[used[i]] = static_cast<int>(i) + 1;
+                nglib::Ng_Mesh* p_m = nglib::Ng_NewMesh();
+                for (const std::int64_t g : used) {
+                    double p[3] = {x[static_cast<std::size_t>(g)][0],
+                                   x[static_cast<std::size_t>(g)][1],
+                                   x[static_cast<std::size_t>(g)][2]};
+                    nglib::Ng_AddPoint(p_m, p);
+                }
+                for (const auto& r_f : faces) {
+                    int pi[3] = {local.at(r_f[0]), local.at(r_f[1]), local.at(r_f[2])};
+                    nglib::Ng_AddSurfaceElement(p_m, nglib::NG_TRIG, pi);
+                }
+                nglib::Ng_Meshing_Parameters mp;
+                if (maxh > 0.0)
+                    mp.maxh = maxh;
+                mp.grading = o.mGrading;
+                mp.optsteps_3d = o.mOptimizeSteps;
+                mp.optvolmeshenable = o.mOptimizeSteps > 0 ? 1 : 0;
+                mp.optsurfmeshenable = 0;
+                const nglib::Ng_Result status = nglib::Ng_GenerateVolumeMesh(p_m, &mp);
+                const int ne = nglib::Ng_GetNE(p_m);
+                const int nlocal = nglib::Ng_GetNP(p_m);
+                if (status != nglib::NG_OK || ne <= 0) {
+                    nglib::Ng_DeleteMesh(p_m);
+                    throw std::runtime_error(std::string(kTetPrefix) + "Netgen failed on region " +
+                                             std::to_string(s) + " (status " +
+                                             std::to_string(static_cast<int>(status)) +
+                                             "); is the surface free of self-intersections?");
+                }
+                if (static_cast<std::int64_t>(tets.size()) + ne > o.mMaxCells) {
+                    nglib::Ng_DeleteMesh(p_m);
+                    throw std::length_error(
+                        std::string(kTetPrefix) + "the mesh would have more than " +
+                        std::to_string(o.mMaxCells) + " tetrahedra (max_cells)");
+                }
+                // The surface kept: its points where they were, its triangles as
+                // given.
+                for (std::size_t i = 0; i < used.size(); ++i) {
+                    double p[3];
+                    nglib::Ng_GetPoint(p_m, static_cast<int>(i) + 1, p);
+                    const TetV3& r_g = x[static_cast<std::size_t>(used[i])];
+                    if (p[0] != r_g[0] || p[1] != r_g[1] || p[2] != r_g[2])
+                        result.mBoundaryPreserved = false;
+                }
+                if (nglib::Ng_GetNSE(p_m) != static_cast<int>(faces.size())) {
+                    result.mBoundaryPreserved = false;
+                } else {
+                    std::vector<std::array<std::int64_t, 3>> want, got;
+                    for (const auto& r_f : faces) {
+                        std::array<std::int64_t, 3> k = r_f;
+                        std::sort(k.begin(), k.end());
+                        want.push_back(k);
                     }
+                    for (int e = 1; e <= static_cast<int>(faces.size()); ++e) {
+                        int pi[NG_SURFACE_ELEMENT_MAXPOINTS];
+                        nglib::Ng_GetSurfaceElement(p_m, e, pi);
+                        std::array<std::int64_t, 3> k{};
+                        for (std::size_t j = 0; j < 3; ++j)
+                            k[j] = pi[j] >= 1 && pi[j] <= static_cast<int>(used.size())
+                                       ? used[static_cast<std::size_t>(pi[j] - 1)]
+                                       : -1;
+                        std::sort(k.begin(), k.end());
+                        got.push_back(k);
+                    }
+                    std::sort(want.begin(), want.end());
+                    std::sort(got.begin(), got.end());
+                    if (want != got)
+                        result.mBoundaryPreserved = false;
+                }
+                // New points, after every earlier region's.
+                std::vector<std::int64_t> global(static_cast<std::size_t>(nlocal) + 1, -1);
+                for (std::size_t i = 0; i < used.size(); ++i)
+                    global[i + 1] = used[i];
+                for (int i = static_cast<int>(used.size()) + 1; i <= nlocal; ++i) {
+                    double p[3];
+                    nglib::Ng_GetPoint(p_m, i, p);
+                    global[static_cast<std::size_t>(i)] = static_cast<std::int64_t>(points.size());
+                    points.push_back({p[0], p[1], p[2]});
+                }
+                for (int e = 1; e <= ne; ++e) {
+                    int pi[NG_VOLUME_ELEMENT_MAXPOINTS];
+                    if (nglib::Ng_GetVolumeElement(p_m, e, pi) != nglib::NG_TET) {
+                        nglib::Ng_DeleteMesh(p_m);
+                        throw std::runtime_error(std::string(kTetPrefix) +
+                                                 "Netgen returned an element that is not a "
+                                                 "tetrahedron");
+                    }
+                    std::array<std::int64_t, 4> t{};
+                    for (std::size_t j = 0; j < 4; ++j)
+                        t[j] = global[static_cast<std::size_t>(pi[j])];
+                    if (tet_volume6(points[static_cast<std::size_t>(t[0])],
+                                    points[static_cast<std::size_t>(t[1])],
+                                    points[static_cast<std::size_t>(t[2])],
+                                    points[static_cast<std::size_t>(t[3])]) < 0.0)
+                        std::swap(t[1], t[2]);
+                    tets.push_back(t);
+                    tet_region.push_back(static_cast<std::int64_t>(s));
+                }
+                nglib::Ng_DeleteMesh(p_m);
+            }
+        }
+        if (!result.mBoundaryPreserved)
+            throw std::runtime_error(std::string(kTetPrefix) +
+                                     "Netgen moved the surface's points or triangles");
+        bnd = tris;
+        bnd_face = tri_face;
+#endif
+    } else {
+        // The native route (octree_mesh's isosurface stuffing, Labelle and
+        // Shewchuk 2007), region by region from the same faces Netgen takes:
+        // the winding number of a region's faces is 1 inside it and 0 in its
+        // holes, so the stuffing cuts its outer and its inner surfaces. The
+        // boundary is fitted to the surface within the distance reported,
+        // not kept, and two regions do not share their interface's points.
+        result.mBackend = "octree";
+        result.mBoundaryPreserved = false;
+        double edge_sum = 0.0;
+        for (const auto& r_t : tris)
+            for (std::size_t k = 0; k < 3; ++k) {
+                const TetV3 e = tet_sub(x[static_cast<std::size_t>(r_t[(k + 1) % 3])],
+                                        x[static_cast<std::size_t>(r_t[k])]);
+                edge_sum += std::sqrt(tet_dot(e, e));
+            }
+        const double mean_edge = edge_sum / (3.0 * static_cast<double>(nt));
+        const double skin_size = maxh > 0.0 ? std::min(maxh, mean_edge) : mean_edge;
+        for (std::size_t s = 0; s < ns; ++s) {
+            const std::vector<std::array<std::int64_t, 3>> faces = region_faces(s);
+            std::map<std::int64_t, std::int64_t> local;
             std::vector<std::int64_t> used;
             for (const auto& r_f : faces)
-                used.insert(used.end(), r_f.begin(), r_f.end());
+                for (const std::int64_t v : r_f)
+                    if (local.emplace(v, 0).second)
+                        used.push_back(v);
             std::sort(used.begin(), used.end());
-            used.erase(std::unique(used.begin(), used.end()), used.end());
-            std::map<std::int64_t, int> local;
             for (std::size_t i = 0; i < used.size(); ++i)
-                local[used[i]] = static_cast<int>(i) + 1;
-            nglib::Ng_Mesh* p_m = nglib::Ng_NewMesh();
-            for (const std::int64_t g : used) {
-                double p[3] = {x[static_cast<std::size_t>(g)][0], x[static_cast<std::size_t>(g)][1],
-                               x[static_cast<std::size_t>(g)][2]};
-                nglib::Ng_AddPoint(p_m, p);
-            }
-            for (const auto& r_f : faces) {
-                int pi[3] = {local.at(r_f[0]), local.at(r_f[1]), local.at(r_f[2])};
-                nglib::Ng_AddSurfaceElement(p_m, nglib::NG_TRIG, pi);
-            }
-            nglib::Ng_Meshing_Parameters mp;
-            if (maxh > 0.0)
-                mp.maxh = maxh;
-            mp.grading = o.mGrading;
-            mp.optsteps_3d = o.mOptimizeSteps;
-            mp.optvolmeshenable = o.mOptimizeSteps > 0 ? 1 : 0;
-            mp.optsurfmeshenable = 0;
-            const nglib::Ng_Result status = nglib::Ng_GenerateVolumeMesh(p_m, &mp);
-            const int ne = nglib::Ng_GetNE(p_m);
-            const int nlocal = nglib::Ng_GetNP(p_m);
-            if (status != nglib::NG_OK || ne <= 0) {
-                nglib::Ng_DeleteMesh(p_m);
-                throw std::runtime_error(std::string(kTetPrefix) + "Netgen failed on region " +
-                                         std::to_string(s) + " (status " +
-                                         std::to_string(static_cast<int>(status)) +
-                                         "); is the surface free of self-intersections?");
-            }
-            if (static_cast<std::int64_t>(tets.size()) + ne > o.mMaxCells) {
-                nglib::Ng_DeleteMesh(p_m);
+                local[used[i]] = static_cast<std::int64_t>(i);
+            Mesh skin;
+            NDArray sp = NDArray::Uninit(DType::Float64, {used.size(), std::size_t{3}});
+            for (std::size_t i = 0; i < used.size(); ++i)
+                for (std::size_t k = 0; k < 3; ++k)
+                    sp.As<double>()[3 * i + k] = x[static_cast<std::size_t>(used[i])][k];
+            skin.AssignPoints(std::move(sp));
+            NDArray sc = NDArray::Uninit(DType::Int64, {faces.size(), std::size_t{3}});
+            for (std::size_t f = 0; f < faces.size(); ++f)
+                for (std::size_t k = 0; k < 3; ++k)
+                    sc.As<std::int64_t>()[3 * f + k] = local.at(faces[f][k]);
+            skin.AddCellBlock("triangle", std::move(sc));
+            OctreeMeshOptions oo;
+            oo.mOutput = OctreeMeshOutput::Tetra;
+            oo.mSkinGrading = OctreeMeshSkinGrading::Uniform;
+            oo.mSurfaceSize = skin_size;
+            oo.mMinSize = skin_size;
+            // The largest leaf: max_size, or octree_mesh's default (an eighth
+            // of the region's diagonal), never under the skin's size.
+            double lo3[3] = {std::numeric_limits<double>::infinity(),
+                             std::numeric_limits<double>::infinity(),
+                             std::numeric_limits<double>::infinity()};
+            double hi3[3] = {-lo3[0], -lo3[1], -lo3[2]};
+            for (const std::int64_t v : used)
+                for (std::size_t k = 0; k < 3; ++k) {
+                    lo3[k] = std::min(lo3[k], x[static_cast<std::size_t>(v)][k]);
+                    hi3[k] = std::max(hi3[k], x[static_cast<std::size_t>(v)][k]);
+                }
+            const double diagonal = std::sqrt((hi3[0] - lo3[0]) * (hi3[0] - lo3[0]) +
+                                              (hi3[1] - lo3[1]) * (hi3[1] - lo3[1]) +
+                                              (hi3[2] - lo3[2]) * (hi3[2] - lo3[2]));
+            oo.mMaxSize = std::max(maxh > 0.0 ? maxh : diagonal / 8.0, skin_size);
+            oo.mFitIterations = o.mOptimizeSteps;
+            oo.mMaxTets =
+                std::max<std::int64_t>(1, o.mMaxCells - static_cast<std::int64_t>(tets.size()));
+            oo.mAttachDistance = false;
+            OctreeMeshResult om;
+            try {
+                om = octree_mesh(skin, oo);
+            } catch (const std::invalid_argument& rE) {
+                // The lattice's own budget, which max_cells sets.
+                if (std::string(rE.what()).find("max_tets") == std::string::npos)
+                    throw;
                 throw std::length_error(std::string(kTetPrefix) + "the mesh would have more than " +
                                         std::to_string(o.mMaxCells) + " tetrahedra (max_cells)");
             }
-            // The surface kept: its points where they were, its triangles as
-            // given.
-            for (std::size_t i = 0; i < used.size(); ++i) {
-                double p[3];
-                nglib::Ng_GetPoint(p_m, static_cast<int>(i) + 1, p);
-                const TetV3& r_g = x[static_cast<std::size_t>(used[i])];
-                if (p[0] != r_g[0] || p[1] != r_g[1] || p[2] != r_g[2])
-                    result.mBoundaryPreserved = false;
-            }
-            if (nglib::Ng_GetNSE(p_m) != static_cast<int>(faces.size())) {
-                result.mBoundaryPreserved = false;
-            } else {
-                std::vector<std::array<std::int64_t, 3>> want, got;
-                for (const auto& r_f : faces) {
-                    std::array<std::int64_t, 3> k = r_f;
-                    std::sort(k.begin(), k.end());
-                    want.push_back(k);
+            result.mHausdorffToSurface = std::max(result.mHausdorffToSurface, om.mHausdorffToSkin);
+            const std::size_t base = points.size();
+            const NDArray& r_op = om.mMesh.Points();
+            for (std::size_t i = 0; i < om.mMesh.NumPoints(); ++i)
+                points.push_back({detail::read_double(r_op, 3 * i),
+                                  detail::read_double(r_op, 3 * i + 1),
+                                  detail::read_double(r_op, 3 * i + 2)});
+            for (std::size_t b = 0; b < om.mMesh.NumCellBlocks(); ++b) {
+                const auto cells = om.mMesh.Cells(b);
+                if (std::string(cells.Type()) != "tetra")
+                    continue;
+                for (std::size_t c = 0; c < cells.NumCells(); ++c) {
+                    std::array<std::int64_t, 4> t{};
+                    for (std::size_t k = 0; k < 4; ++k)
+                        t[k] = static_cast<std::int64_t>(base) +
+                               detail::read_int(cells.Conn(), 4 * c + k);
+                    if (tet_volume6(points[static_cast<std::size_t>(t[0])],
+                                    points[static_cast<std::size_t>(t[1])],
+                                    points[static_cast<std::size_t>(t[2])],
+                                    points[static_cast<std::size_t>(t[3])]) < 0.0)
+                        std::swap(t[1], t[2]);
+                    tets.push_back(t);
+                    tet_region.push_back(static_cast<std::int64_t>(s));
                 }
-                for (int e = 1; e <= static_cast<int>(faces.size()); ++e) {
-                    int pi[NG_SURFACE_ELEMENT_MAXPOINTS];
-                    nglib::Ng_GetSurfaceElement(p_m, e, pi);
-                    std::array<std::int64_t, 3> k{};
-                    for (std::size_t j = 0; j < 3; ++j)
-                        k[j] = pi[j] >= 1 && pi[j] <= static_cast<int>(used.size())
-                                   ? used[static_cast<std::size_t>(pi[j] - 1)]
-                                   : -1;
-                    std::sort(k.begin(), k.end());
-                    got.push_back(k);
-                }
-                std::sort(want.begin(), want.end());
-                std::sort(got.begin(), got.end());
-                if (want != got)
-                    result.mBoundaryPreserved = false;
             }
-            // New points, after every earlier region's.
-            std::vector<std::int64_t> global(static_cast<std::size_t>(nlocal) + 1, -1);
-            for (std::size_t i = 0; i < used.size(); ++i)
-                global[i + 1] = used[i];
-            for (int i = static_cast<int>(used.size()) + 1; i <= nlocal; ++i) {
-                double p[3];
-                nglib::Ng_GetPoint(p_m, i, p);
-                global[static_cast<std::size_t>(i)] = static_cast<std::int64_t>(points.size());
-                points.push_back({p[0], p[1], p[2]});
-            }
-            for (int e = 1; e <= ne; ++e) {
-                int pi[NG_VOLUME_ELEMENT_MAXPOINTS];
-                if (nglib::Ng_GetVolumeElement(p_m, e, pi) != nglib::NG_TET) {
-                    nglib::Ng_DeleteMesh(p_m);
-                    throw std::runtime_error(std::string(kTetPrefix) +
-                                             "Netgen returned an element that is not a "
-                                             "tetrahedron");
-                }
-                std::array<std::int64_t, 4> t{};
-                for (std::size_t j = 0; j < 4; ++j)
-                    t[j] = global[static_cast<std::size_t>(pi[j])];
-                if (tet_volume6(points[static_cast<std::size_t>(t[0])],
-                                points[static_cast<std::size_t>(t[1])],
-                                points[static_cast<std::size_t>(t[2])],
-                                points[static_cast<std::size_t>(t[3])]) < 0.0)
-                    std::swap(t[1], t[2]);
-                tets.push_back(t);
-                tet_region.push_back(static_cast<std::int64_t>(s));
-            }
-            nglib::Ng_DeleteMesh(p_m);
+            if (static_cast<std::int64_t>(tets.size()) > o.mMaxCells)
+                throw std::length_error(std::string(kTetPrefix) + "the mesh would have more than " +
+                                        std::to_string(o.mMaxCells) + " tetrahedra (max_cells)");
         }
+        // The boundary: the facets one tetrahedron has, outward, in the order
+        // of their tetrahedra.
+        static constexpr int kSide[4][3] = {{1, 2, 3}, {0, 3, 2}, {0, 1, 3}, {0, 2, 1}};
+        std::map<std::array<std::int64_t, 3>, std::int64_t> uses;
+        for (const auto& r_t : tets)
+            for (const auto& r_k : kSide) {
+                std::array<std::int64_t, 3> k{r_t[static_cast<std::size_t>(r_k[0])],
+                                              r_t[static_cast<std::size_t>(r_k[1])],
+                                              r_t[static_cast<std::size_t>(r_k[2])]};
+                std::sort(k.begin(), k.end());
+                ++uses[k];
+            }
+        for (const auto& r_t : tets)
+            for (int f = 0; f < 4; ++f) {
+                std::array<std::int64_t, 3> v{r_t[static_cast<std::size_t>(kSide[f][0])],
+                                              r_t[static_cast<std::size_t>(kSide[f][1])],
+                                              r_t[static_cast<std::size_t>(kSide[f][2])]};
+                std::array<std::int64_t, 3> k = v;
+                std::sort(k.begin(), k.end());
+                if (uses.at(k) != 1)
+                    continue;
+                // Facing away from the tetrahedron's fourth corner.
+                const TetV3& r_a = points[static_cast<std::size_t>(v[0])];
+                const TetV3 n = tet_cross(tet_sub(points[static_cast<std::size_t>(v[1])], r_a),
+                                          tet_sub(points[static_cast<std::size_t>(v[2])], r_a));
+                if (tet_dot(
+                        n,
+                        tet_sub(points[static_cast<std::size_t>(r_t[static_cast<std::size_t>(f)])],
+                                r_a)) > 0.0)
+                    std::swap(v[1], v[2]);
+                bnd.push_back(v);
+            }
+        // Each boundary triangle takes the face_array value of the surface
+        // triangle nearest its centroid (ties to the lower index).
+        if (has_face && !bnd.empty()) {
+            Mesh surface;
+            NDArray p = NDArray::Uninit(DType::Float64, {np, std::size_t{3}});
+            for (std::size_t i = 0; i < np; ++i)
+                for (std::size_t k = 0; k < 3; ++k)
+                    p.As<double>()[3 * i + k] = x[i][k];
+            surface.AssignPoints(std::move(p));
+            NDArray c = NDArray::Uninit(DType::Int64, {nt, std::size_t{3}});
+            for (std::size_t t = 0; t < nt; ++t)
+                for (std::size_t k = 0; k < 3; ++k)
+                    c.As<std::int64_t>()[3 * t + k] = tris[t][k];
+            surface.AddCellBlock("triangle", std::move(c));
+            const detail::TriangleSoup soup = detail::build_triangle_soup(surface, "");
+            const detail::DistanceQuery query =
+                detail::build_distance_query(soup, SurfaceDistanceOptions{});
+            std::vector<detail::Vec3> centres(bnd.size());
+            for (std::size_t t = 0; t < bnd.size(); ++t)
+                for (std::size_t k = 0; k < 3; ++k)
+                    centres[t][k] = (points[static_cast<std::size_t>(bnd[t][0])][k] +
+                                     points[static_cast<std::size_t>(bnd[t][1])][k] +
+                                     points[static_cast<std::size_t>(bnd[t][2])][k]) /
+                                    3.0;
+            const auto hits = detail::query_closest_points(query, centres);
+            bnd_face.resize(bnd.size(), -1);
+            for (std::size_t t = 0; t < bnd.size(); ++t)
+                if (hits[t].mFound && hits[t].mSourceCell >= 0)
+                    bnd_face[t] = tri_face[static_cast<std::size_t>(hits[t].mSourceCell)];
+        } else {
+            bnd_face.assign(bnd.size(), -1);
+        }
+        if (o.mBackend == TetrahedralizeBackend::Auto)
+            result.mWarnings.push_back(
+                "no Netgen backend is built in: the native octree backend fits the boundary "
+                "within " +
+                std::to_string(result.mHausdorffToSurface) +
+                " of the surface instead of keeping its triangles (build with "
+                "-DMESHIOPLUSPLUS_WITH_NETGEN=ON to keep them)");
+        if (ns > 1)
+            result.mWarnings.push_back(
+                "the octree backend meshes each of the " + std::to_string(ns) +
+                " regions on its own: they do not share points across their interfaces");
+        for (const std::string& r_w : result.mWarnings)
+            log::warn("{}{}", kTetPrefix, r_w);
     }
-    if (!result.mBoundaryPreserved)
-        throw std::runtime_error(std::string(kTetPrefix) +
-                                 "Netgen moved the surface's points or triangles");
+    result.mNumBoundaryTriangles = static_cast<std::int64_t>(bnd.size());
 
     // The measures.
     result.mNumTetrahedra = static_cast<std::int64_t>(tets.size());
     result.mNumPoints = static_cast<std::int64_t>(points.size());
-    result.mNumNewPoints = static_cast<std::int64_t>(points.size() - np);
+    result.mNumNewPoints =
+        static_cast<std::int64_t>(points.size()) - (use_netgen ? static_cast<std::int64_t>(np) : 0);
     double lo = 180.0, hi = 0.0;
     for (const auto& r_t : tets) {
         const std::array<TetV3, 4> c{
@@ -451,10 +657,11 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
         for (std::size_t k = 0; k < 4; ++k)
             tc.As<std::int64_t>()[4 * t + k] = tets[t][k];
     r_m.AddCellBlock("tetra", std::move(tc));
-    NDArray fc = NDArray::Uninit(DType::Int64, {nt, std::size_t{3}});
-    for (std::size_t t = 0; t < nt; ++t)
+    const std::size_t nb = bnd.size();
+    NDArray fc = NDArray::Uninit(DType::Int64, {nb, std::size_t{3}});
+    for (std::size_t t = 0; t < nb; ++t)
         for (std::size_t k = 0; k < 3; ++k)
-            fc.As<std::int64_t>()[3 * t + k] = tris[t][k];
+            fc.As<std::int64_t>()[3 * t + k] = bnd[t][k];
     r_m.AddCellBlock("triangle", std::move(fc));
     const auto column = [](std::size_t N, const std::int64_t* pFrom, std::int64_t Fill) {
         NDArray a = NDArray::Uninit(DType::Int64, {N});
@@ -465,13 +672,13 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
     {
         std::vector<NDArray> blocks;
         blocks.push_back(column(tets.size(), tet_region.data(), 0));
-        blocks.push_back(column(nt, nullptr, -1));
+        blocks.push_back(column(nb, nullptr, -1));
         r_m.AddCellData(kTetrahedralizeRegion, std::move(blocks));
     }
     if (has_face) {
         std::vector<NDArray> blocks;
         blocks.push_back(column(tets.size(), nullptr, -1));
-        blocks.push_back(column(nt, tri_face.data(), 0));
+        blocks.push_back(column(nb, bnd_face.data(), 0));
         r_m.AddCellData(o.mFaceArray, std::move(blocks));
     }
     for (std::size_t s = 0; s < ns; ++s) {
@@ -498,15 +705,15 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
                     k, std::make_pair(static_cast<std::int64_t>(t), static_cast<std::int64_t>(f)));
             }
         std::map<std::int64_t, std::vector<std::int64_t>> sides;
-        for (std::size_t t = 0; t < nt; ++t) {
-            if (tri_face[t] < 0)
+        for (std::size_t t = 0; t < nb; ++t) {
+            if (bnd_face[t] < 0)
                 continue;
-            std::array<std::int64_t, 3> k = tris[t];
+            std::array<std::int64_t, 3> k = bnd[t];
             std::sort(k.begin(), k.end());
             const auto it = facet_of.find(k);
             if (it == facet_of.end())
                 continue;
-            auto& r_s = sides[tri_face[t]];
+            auto& r_s = sides[bnd_face[t]];
             r_s.push_back(it->second.first);
             r_s.push_back(it->second.second);
         }
@@ -521,7 +728,6 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
                result.mNumTetrahedra, result.mNumRegions, result.mMinDihedralDeg,
                result.mMaxDihedralDeg);
     return result;
-#endif
 }
 
 }  // namespace meshioplusplus

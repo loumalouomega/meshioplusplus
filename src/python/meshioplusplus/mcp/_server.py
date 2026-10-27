@@ -3160,15 +3160,17 @@ def _register_operations(server: FastMCP) -> None:
         face_array: str = "cad:face",
     ) -> dict:
         """Fill a closed, manifold, consistently oriented triangle surface
-        (a mesh_cad_surface result, a boundary layer's cap) with tetrahedra,
-        its triangles and points kept exactly (roadmap 6.7). Each shell bounds
-        a region (a box inside a box gives two), meshed on its own so the
-        regions conform. max_size and max_volume (0: none) bound the
+        (a mesh_cad_surface result, a boundary layer's cap) with tetrahedra
+        (roadmap 6.7). backend "netgen" keeps its triangles and points
+        exactly; "octree", the native backend always built, fits the boundary
+        within the reported hausdorff_to_surface; "auto" (default) takes
+        Netgen when built in, else octree with a warning. Each shell bounds a
+        region (a box inside a box gives two), meshed on its own. max_size and max_volume (0: none) bound the
         tetrahedra, grading (0 to 1) is how fast the size grows inward,
         optimize_steps the backend's volume optimisation passes; face_array
-        (cad:face) is carried to the triangles. The backend is Netgen
-        ("auto" or "netgen"); a build without it (-DMESHIOPLUSPLUS_WITH_NETGEN)
-        returns an error naming the flag. Reports num_tetrahedra, num_points,
+        (cad:face) is carried to the triangles. backend "netgen" in a build
+        without it (-DMESHIOPLUSPLUS_WITH_NETGEN) returns an error naming the
+        flag. Reports num_tetrahedra, num_points,
         num_new_points, num_regions, num_boundary_triangles,
         boundary_preserved, hausdorff_to_surface, min_dihedral_deg,
         max_dihedral_deg, volume, backend and warnings."""

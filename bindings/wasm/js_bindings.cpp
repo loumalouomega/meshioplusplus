@@ -7655,10 +7655,11 @@ val boundary_layer_js(const val& rMeshObj, const val& rOptions) {
 }
 
 // tetrahedralize (roadmap 6.7): tetrahedra filling a closed triangle surface;
-// options {backend ("auto" | "netgen"), maxSize, maxVolume, grading,
-// optimizeSteps, maxCells, faceArray}, all optional. No WebAssembly build of
-// Netgen exists, so past the surface's checks it throws naming
-// MESHIOPLUSPLUS_WITH_NETGEN (`hasNetgen()` is false).
+// options {backend ("auto" | "netgen" | "octree"), maxSize, maxVolume,
+// grading, optimizeSteps, maxCells, faceArray}, all optional. No WebAssembly
+// build of Netgen exists (`hasNetgen()` is false), so "auto" is the native
+// octree backend, its boundary fitted, and "netgen" throws naming
+// MESHIOPLUSPLUS_WITH_NETGEN.
 val tetrahedralize_js(const val& rMeshObj, const val& rOptions) {
     return with_js_errors([&]() -> val {
         meshioplusplus::TetrahedralizeOptions o;
@@ -7672,10 +7673,13 @@ val tetrahedralize_js(const val& rMeshObj, const val& rOptions) {
                     o.mBackend = meshioplusplus::TetrahedralizeBackend::Auto;
                 else if (b == "netgen")
                     o.mBackend = meshioplusplus::TetrahedralizeBackend::Netgen;
+                else if (b == "octree")
+                    o.mBackend = meshioplusplus::TetrahedralizeBackend::Octree;
                 else
                     throw std::invalid_argument(
-                        "meshio++: tetrahedralize: backend must be 'auto' or 'netgen', not '" + b +
-                        "'");
+                        "meshio++: tetrahedralize: backend must be 'auto', 'netgen' or 'octree', "
+                        "not '" +
+                        b + "'");
             }
             if (rOptions.hasOwnProperty("maxSize"))
                 o.mMaxSize = rOptions["maxSize"].as<double>();
@@ -7713,8 +7717,8 @@ val tetrahedralize_js(const val& rMeshObj, const val& rOptions) {
     });
 }
 
-/// Whether a tetrahedralize backend (Netgen) is linked in: never in a
-/// WebAssembly build.
+/// Whether tetrahedralize's Netgen backend is linked in: never in a
+/// WebAssembly build (the octree backend always is).
 bool has_netgen_js() {
     return meshioplusplus::tetrahedralize_has_netgen();
 }

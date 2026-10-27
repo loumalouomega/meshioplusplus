@@ -1495,9 +1495,20 @@ program test_fortran_api
                            'tetrahedralize fills the octahedron')
                 if (tst == 0) call tet_out%free()
             else
+                call check(tst == 0 .and. trep%backend == 2, &
+                           'tetrahedralize falls back to the octree backend without Netgen')
+                if (tst == 0) call tet_out%free()
+                tet_out = mio_tetrahedralize(octa, backend='netgen', stat=tst, errmsg=tmsg)
                 call check(tst /= 0 .and. index(tmsg, 'MESHIOPLUSPLUS_WITH_NETGEN') > 0, &
-                           'tetrahedralize names the build flag without Netgen')
+                           'tetrahedralize names the build flag for netgen without it')
             end if
+            ! The native octree backend, always there: the boundary fitted.
+            tet_out = mio_tetrahedralize(octa, backend='octree', report=trep, stat=tst, &
+                                         errmsg=tmsg)
+            call check(tst == 0 .and. trep%backend == 2 .and. trep%boundary_preserved == 0 .and. &
+                       trep%num_tetrahedra > 0 .and. trep%hausdorff_to_surface > 0.0_real64, &
+                       'tetrahedralize fills the octahedron with the octree backend')
+            if (tst == 0) call tet_out%free()
         end block
 
         out = octa%remesh(30_int64, num_iterations=niter, subdivide_applied=subapp, &

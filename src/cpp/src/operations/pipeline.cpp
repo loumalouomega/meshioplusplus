@@ -1247,9 +1247,11 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             o.mBackend = TetrahedralizeBackend::Auto;
         else if (backend == "netgen")
             o.mBackend = TetrahedralizeBackend::Netgen;
+        else if (backend == "octree")
+            o.mBackend = TetrahedralizeBackend::Octree;
         else
-            throw std::invalid_argument(
-                pipe_err(rStep, "'Backend' must be 'auto' or 'netgen', not '" + backend + "'"));
+            throw std::invalid_argument(pipe_err(
+                rStep, "'Backend' must be 'auto', 'netgen' or 'octree', not '" + backend + "'"));
         o.mMaxSize = pipe_number(rStep, "MaxSize", o.mMaxSize);
         o.mMaxVolume = pipe_number(rStep, "MaxVolume", o.mMaxVolume);
         o.mGrading = pipe_number(rStep, "Grading", o.mGrading);
