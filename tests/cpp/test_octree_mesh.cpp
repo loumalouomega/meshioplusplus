@@ -47,6 +47,7 @@
 #include "../../src/cpp/benchmark/mesh_digest.hpp"
 #include "meshioplusplus/detail/surface_distance.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/operations/check_conformity.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/octree.hpp"
@@ -400,6 +401,48 @@ TEST(OctreeMesh, TheFloodedInsideTestChangesNoOutput) {
         }
         EXPECT_EQ(om_digest(flooded.mMesh), plain_digest) << static_cast<int>(output);
         EXPECT_EQ(flooded.mNumWindingRechecks, plain_rechecks) << static_cast<int>(output);
+    }
+}
+
+// A cylinder whose caps lie exactly on lattice planes: the cut flags' closed
+// test may miss a cap in the face between two leaves, and a flood through it
+// would fill the outside. The flood's own test grows the boxes by a margin.
+TEST(OctreeMesh, AFloodDoesNotCrossASkinOnALatticePlane) {
+    const mio::Mesh skin = mio::convert_cells(mio::extract_surface(mio::cylinder(0.5, 2.0, 48, 16)),
+                                              {mio::ConvertCellsMode::Simplexify, false})
+                               .mMesh;
+    for (auto output : {mio::OctreeMeshOutput::Tetra, mio::OctreeMeshOutput::Castellated}) {
+        mio::OctreeMeshOptions o;
+        o.mOutput = output;
+        o.mMinSize = 0.1;
+        o.mMaxSize = 0.5;
+        const auto flooded = mio::octree_mesh(skin, o);
+        EXPECT_GT(flooded.mNumWindingSkipped, 0);
+        OmNoFlood off;
+        const auto plain = mio::octree_mesh(skin, o);
+        EXPECT_EQ(om_digest(flooded.mMesh), om_digest(plain.mMesh)) << static_cast<int>(output);
+        EXPECT_EQ(flooded.mNumCells, plain.mNumCells);
+    }
+}
+
+// Roadmap 3.1.4.3: a cylinder's rims on fine graded skins. The guard counted
+// the slivers outside the skin, which the output drops, and held rim vertices
+// off their chains; every chain is recovered now, and nothing kept inverts.
+TEST(OctreeMesh, ACylindersRimsAreRecoveredOnFineSkins) {
+    const mio::Mesh skin = mio::convert_cells(mio::extract_surface(mio::cylinder(0.5, 2.0, 48, 16)),
+                                              {mio::ConvertCellsMode::Simplexify, false})
+                               .mMesh;
+    for (double hmin : {0.1, 0.05}) {
+        mio::OctreeMeshOptions o;
+        o.mMinSize = hmin;
+        o.mMaxSize = 0.5;
+        const auto r = mio::octree_mesh(skin, o);
+        EXPECT_EQ(r.mNumFeatureChains, 4) << hmin;
+        EXPECT_EQ(r.mNumFeatureChainsMissed, 0) << hmin;
+        EXPECT_EQ(r.mNumCornersSnapped, r.mNumCorners) << hmin;
+        EXPECT_EQ(r.mNumInverted, 0) << hmin;
+        EXPECT_LT(r.mHausdorffToSkin, 0.25 * hmin) << hmin;
+        EXPECT_TRUE(mio::check_conformity(r.mMesh).mConforming) << hmin;
     }
 }
 

@@ -34,9 +34,12 @@
  * from the polyline), and the path's inner vertices are moved onto the
  * polyline and pinned. Every move goes through one guard: no tetrahedron
  * around the vertex may lose its volume or drop below a two-degree dihedral
- * angle it did not already have; a refused chain vertex tries a half and a
- * quarter of the move, a refused corner the next candidate. A corner or chain
- * that cannot be recovered is counted, never silently dropped.
+ * angle it did not already have. Only the guarded tetrahedra count: those the
+ * output keeps, so a sliver outside the skin that is about to be discarded
+ * cannot hold a rim's vertex off its chain. A vertex moves in four quarter
+ * steps and keeps the steps that succeeded; a refused corner tries the next
+ * candidate. A corner or chain that cannot be recovered is counted, never
+ * silently dropped.
  *
  * A **core-private** header: nothing installed names it.
  */
@@ -83,12 +86,15 @@ struct FeatureSnapReport {
  * @param rPinned per point; snapped points are set to 1 and pinned points are
  *        never moved.
  * @param rFeature per point, set to 1 on a corner and 2 on a chain.
+ * @param rGuarded per tetrahedron, 1 when it must stay positive (it reaches
+ *        the output).
  * @param rLocalSize the local mesh size at a point in space.
  */
 FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
                                const std::vector<std::array<std::int64_t, 4>>& rTets,
-                               const std::vector<std::uint8_t>& rInside, const FeatureGraph& rGraph,
-                               const std::vector<Vec3>& rSkinPoints,
+                               const std::vector<std::uint8_t>& rInside,
+                               const std::vector<std::uint8_t>& rGuarded,
+                               const FeatureGraph& rGraph, const std::vector<Vec3>& rSkinPoints,
                                const std::function<double(const Vec3&)>& rLocalSize,
                                double MinVolume, std::vector<std::uint8_t>& rPinned,
                                std::vector<std::uint8_t>& rFeature);

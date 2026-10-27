@@ -850,12 +850,12 @@ Roadmap 3.1.4.3: the winding numbers of the lattice points away from a closed sk
 
 | Input | Points | Not evaluated | Total | Stage |
 | --- | ---: | ---: | ---: | ---: |
-| sphere (20 480 triangles), castellated, uniform `h = 0.025` | 283 409 | 1 326 342 | 25.3 → 13.6 s | output 23.9 → 10.8 s |
-| sphere, tetrahedra, uniform `h = 0.04` | 142 019 | 601 338 | 32.6 → 28.2 s | stuffing 9.4 → 4.7 s |
-| sphere, tetrahedra, graded 0.02 to 0.4 | 2 921 | 3 970 | 0.85 → 0.85 s | stuffing 0.12 → 0.11 s |
-| Stanford bunny (112 402 triangles), castellated, uniform `h = 1.5` | 92 612 | 708 045 | 22.3 → 11.1 s | output 21.2 → 9.4 s |
+| sphere (20 480 triangles), castellated, uniform `h = 0.025` | 283 409 | 1 326 246 | 30.3 → 18.1 s | output 24.3 → 10.9 s |
+| sphere, tetrahedra, uniform `h = 0.04` | 142 019 | 601 242 | 33.2 → 28.0 s | stuffing 9.1 → 4.7 s |
+| sphere, tetrahedra, graded 0.02 to 0.4 | 2 921 | 3 970 | 0.83 → 0.83 s | stuffing 0.13 → 0.10 s |
+| Stanford bunny (112 402 triangles), castellated, uniform `h = 1.5` | 92 612 | 708 045 | 22.4 → 10.2 s | output 21.3 → 8.1 s |
 
-The flood itself costs up to 1.5 s in the `octree` stage on these trees. A graded mesh has few points away from the skin and gains nothing. Eighteen `octree_mesh` outputs (the cube, the sphere and a cylinder, each castellated, tetrahedral and hexahedral, graded and uniform) hash identically with the flood on and off, and the near-threshold recheck counts agree.
+The flood itself costs up to 1.3 s in the `octree` stage on these trees, most of it testing every skin triangle against the leaves it may reach (a skin lying on a leaf face escapes the cut flags' closed test, and the flood must not cross it). A graded mesh has few points away from the skin and gains nothing. Seventy-two `octree_mesh` outputs hash identically with the flood on and off, with equal near-threshold recheck counts: the cube, the sphere and a cylinder, castellated, tetrahedral and hexahedral, graded and uniform; then a cylinder and two boxes whose faces lie on lattice planes, at four size pairs each, and a decimated bunny.
 
 ### Determinism check
 

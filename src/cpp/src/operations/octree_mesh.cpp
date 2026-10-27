@@ -37,6 +37,7 @@
 
 // Project includes
 #include "octree_mesh_internal.hpp"
+#include "meshioplusplus/detail/tri_box.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/octree_mesh.hpp"
@@ -244,6 +245,63 @@ bool octm_skin_closed(const detail::OctreeSkin& rSkin) {
     return !edges.empty();
 }
 
+// Per leaf, 1 when the skin reaches its box grown by a margin. The cut flags'
+// closed-box test can miss a triangle that lies exactly in the face between
+// two leaves (a cap on a lattice plane), and a flood through that face would
+// cross the skin; this test cannot, and it sees every skin triangle, not the
+// candidates a leaf inherited.
+std::vector<std::uint8_t> octm_blocked(const detail::OctreeMeshSetup& rS,
+                                       const detail::LinearOctree& rTree) {
+    using namespace detail;
+    const OctreeSkin& skin = rS.mSkin;
+    const double fine = rS.mFrame.Fine();
+    const double margin = 1e-6 * fine;
+    std::vector<std::vector<std::int64_t>> hit(skin.mTris.size());
+    parallel_for(
+        skin.mTris.size(),
+        [&](std::size_t t) {
+            const Vec3& a = skin.mPoints[static_cast<std::size_t>(skin.mTris[t][0])];
+            const Vec3& b = skin.mPoints[static_cast<std::size_t>(skin.mTris[t][1])];
+            const Vec3& c = skin.mPoints[static_cast<std::size_t>(skin.mTris[t][2])];
+            std::array<std::int64_t, 3> lo{}, hi{};
+            for (std::size_t k = 0; k < 3; ++k) {
+                const double x0 = std::min({a[k], b[k], c[k]}) - 2.0 * margin;
+                const double x1 = std::max({a[k], b[k], c[k]}) + 2.0 * margin;
+                lo[k] = std::max<std::int64_t>(
+                    0, static_cast<std::int64_t>(std::floor((x0 - rS.mFrame.mOrigin[k]) / fine)));
+                hi[k] = std::min<std::int64_t>(
+                    rTree.Extent(k) - 1,
+                    static_cast<std::int64_t>(std::floor((x1 - rS.mFrame.mOrigin[k]) / fine)));
+            }
+            std::vector<std::int64_t>& out = hit[t];
+            for (std::int64_t z = lo[2]; z <= hi[2]; ++z)
+                for (std::int64_t y = lo[1]; y <= hi[1]; ++y)
+                    for (std::int64_t x = lo[0]; x <= hi[0];) {
+                        const std::int64_t j = rTree.Locate(x, y, z);
+                        if (j < 0)
+                            break;
+                        const auto jl = rTree.Lo(static_cast<std::size_t>(j));
+                        const std::int64_t span = rTree.Span(static_cast<std::size_t>(j));
+                        Vec3 centre, half;
+                        for (std::size_t k = 0; k < 3; ++k) {
+                            half[k] = 0.5 * static_cast<double>(span) * fine + margin;
+                            centre[k] = rS.mFrame.mOrigin[k] + (static_cast<double>(jl[k]) +
+                                                                0.5 * static_cast<double>(span)) *
+                                                                   fine;
+                        }
+                        if (tri_box_overlap(centre, half, a, b, c))
+                            out.push_back(j);
+                        x = jl[0] + span;
+                    }
+        },
+        16);
+    std::vector<std::uint8_t> blocked(rTree.Size(), 0);
+    for (const auto& h : hit)
+        for (std::int64_t j : h)
+            blocked[static_cast<std::size_t>(j)] = 1;
+    return blocked;
+}
+
 // The union-find root of leaf `I`, compressing the path.
 std::size_t octm_root(std::vector<std::size_t>& rParent, std::size_t I) {
     while (rParent[I] != I) {
@@ -326,8 +384,10 @@ void octree_mesh_flood(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOption
     if (frac < 0.1 || frac > 0.9 || !octm_skin_closed(rSetup.mSkin))
         return;
     const LinearOctree& tree = rSetup.mOctree.mTree;
-    const std::vector<std::uint8_t>& cut = rSetup.mOctree.mCut;
     const std::size_t n = tree.Size();
+    std::vector<std::uint8_t> cut = octm_blocked(rSetup, tree);
+    for (std::size_t i = 0; i < n; ++i)
+        cut[i] = cut[i] || rSetup.mOctree.mCut[i];
 
     // Deep leaves: neither they nor any of their 26 neighbours is cut, and
     // none of those neighbours lies outside the forest.

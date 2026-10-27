@@ -42155,9 +42155,12 @@ JunctionPoint junction_closest(const std::vector<ClosestPoint>& rSurfaces,
  * from the polyline), and the path's inner vertices are moved onto the
  * polyline and pinned. Every move goes through one guard: no tetrahedron
  * around the vertex may lose its volume or drop below a two-degree dihedral
- * angle it did not already have; a refused chain vertex tries a half and a
- * quarter of the move, a refused corner the next candidate. A corner or chain
- * that cannot be recovered is counted, never silently dropped.
+ * angle it did not already have. Only the guarded tetrahedra count: those the
+ * output keeps, so a sliver outside the skin that is about to be discarded
+ * cannot hold a rim's vertex off its chain. A vertex moves in four quarter
+ * steps and keeps the steps that succeeded; a refused corner tries the next
+ * candidate. A corner or chain that cannot be recovered is counted, never
+ * silently dropped.
  *
  * A **core-private** header: nothing installed names it.
  */
@@ -42203,12 +42206,15 @@ struct FeatureSnapReport {
  * @param rPinned per point; snapped points are set to 1 and pinned points are
  *        never moved.
  * @param rFeature per point, set to 1 on a corner and 2 on a chain.
+ * @param rGuarded per tetrahedron, 1 when it must stay positive (it reaches
+ *        the output).
  * @param rLocalSize the local mesh size at a point in space.
  */
 FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
                                const std::vector<std::array<std::int64_t, 4>>& rTets,
-                               const std::vector<std::uint8_t>& rInside, const FeatureGraph& rGraph,
-                               const std::vector<Vec3>& rSkinPoints,
+                               const std::vector<std::uint8_t>& rInside,
+                               const std::vector<std::uint8_t>& rGuarded,
+                               const FeatureGraph& rGraph, const std::vector<Vec3>& rSkinPoints,
                                const std::function<double(const Vec3&)>& rLocalSize,
                                double MinVolume, std::vector<std::uint8_t>& rPinned,
                                std::vector<std::uint8_t>& rFeature);
@@ -76568,8 +76574,9 @@ FeatureGraph feature_graph(const std::vector<Vec3>& rPoints,
 
 FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
                                const std::vector<std::array<std::int64_t, 4>>& rTets,
-                               const std::vector<std::uint8_t>& rInside, const FeatureGraph& rGraph,
-                               const std::vector<Vec3>& rSkinPoints,
+                               const std::vector<std::uint8_t>& rInside,
+                               const std::vector<std::uint8_t>& rGuarded,
+                               const FeatureGraph& rGraph, const std::vector<Vec3>& rSkinPoints,
                                const std::function<double(const Vec3&)>& rLocalSize,
                                double MinVolume, std::vector<std::uint8_t>& rPinned,
                                std::vector<std::uint8_t>& rFeature) {
@@ -76625,6 +76632,8 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
         double lo = 180.0;
         rPositive = true;
         for (std::int64_t t : inc[static_cast<std::size_t>(V)]) {
+            if (!rGuarded[static_cast<std::size_t>(t)])
+                continue;
             Vec3 p[4];
             for (std::size_t c = 0; c < 4; ++c) {
                 const std::int64_t q = rTets[static_cast<std::size_t>(t)][c];
@@ -76641,6 +76650,8 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
     // Whether every tetrahedron around `U` stays positive with `V` at `rAt`.
     auto star_positive = [&](std::int64_t U, std::int64_t V, const Vec3& rAt) {
         for (std::int64_t t : inc[static_cast<std::size_t>(U)]) {
+            if (!rGuarded[static_cast<std::size_t>(t)])
+                continue;
             Vec3 p[4];
             for (std::size_t c = 0; c < 4; ++c) {
                 const std::int64_t q = rTets[static_cast<std::size_t>(t)][c];
@@ -233758,6 +233769,63 @@ bool octm_skin_closed(const detail::OctreeSkin& rSkin) {
     return !edges.empty();
 }
 
+// Per leaf, 1 when the skin reaches its box grown by a margin. The cut flags'
+// closed-box test can miss a triangle that lies exactly in the face between
+// two leaves (a cap on a lattice plane), and a flood through that face would
+// cross the skin; this test cannot, and it sees every skin triangle, not the
+// candidates a leaf inherited.
+std::vector<std::uint8_t> octm_blocked(const detail::OctreeMeshSetup& rS,
+                                       const detail::LinearOctree& rTree) {
+    using namespace detail;
+    const OctreeSkin& skin = rS.mSkin;
+    const double fine = rS.mFrame.Fine();
+    const double margin = 1e-6 * fine;
+    std::vector<std::vector<std::int64_t>> hit(skin.mTris.size());
+    parallel_for(
+        skin.mTris.size(),
+        [&](std::size_t t) {
+            const Vec3& a = skin.mPoints[static_cast<std::size_t>(skin.mTris[t][0])];
+            const Vec3& b = skin.mPoints[static_cast<std::size_t>(skin.mTris[t][1])];
+            const Vec3& c = skin.mPoints[static_cast<std::size_t>(skin.mTris[t][2])];
+            std::array<std::int64_t, 3> lo{}, hi{};
+            for (std::size_t k = 0; k < 3; ++k) {
+                const double x0 = std::min({a[k], b[k], c[k]}) - 2.0 * margin;
+                const double x1 = std::max({a[k], b[k], c[k]}) + 2.0 * margin;
+                lo[k] = std::max<std::int64_t>(
+                    0, static_cast<std::int64_t>(std::floor((x0 - rS.mFrame.mOrigin[k]) / fine)));
+                hi[k] = std::min<std::int64_t>(
+                    rTree.Extent(k) - 1,
+                    static_cast<std::int64_t>(std::floor((x1 - rS.mFrame.mOrigin[k]) / fine)));
+            }
+            std::vector<std::int64_t>& out = hit[t];
+            for (std::int64_t z = lo[2]; z <= hi[2]; ++z)
+                for (std::int64_t y = lo[1]; y <= hi[1]; ++y)
+                    for (std::int64_t x = lo[0]; x <= hi[0];) {
+                        const std::int64_t j = rTree.Locate(x, y, z);
+                        if (j < 0)
+                            break;
+                        const auto jl = rTree.Lo(static_cast<std::size_t>(j));
+                        const std::int64_t span = rTree.Span(static_cast<std::size_t>(j));
+                        Vec3 centre, half;
+                        for (std::size_t k = 0; k < 3; ++k) {
+                            half[k] = 0.5 * static_cast<double>(span) * fine + margin;
+                            centre[k] = rS.mFrame.mOrigin[k] + (static_cast<double>(jl[k]) +
+                                                                0.5 * static_cast<double>(span)) *
+                                                                   fine;
+                        }
+                        if (tri_box_overlap(centre, half, a, b, c))
+                            out.push_back(j);
+                        x = jl[0] + span;
+                    }
+        },
+        16);
+    std::vector<std::uint8_t> blocked(rTree.Size(), 0);
+    for (const auto& h : hit)
+        for (std::int64_t j : h)
+            blocked[static_cast<std::size_t>(j)] = 1;
+    return blocked;
+}
+
 // The union-find root of leaf `I`, compressing the path.
 std::size_t octm_root(std::vector<std::size_t>& rParent, std::size_t I) {
     while (rParent[I] != I) {
@@ -233840,8 +233908,10 @@ void octree_mesh_flood(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOption
     if (frac < 0.1 || frac > 0.9 || !octm_skin_closed(rSetup.mSkin))
         return;
     const LinearOctree& tree = rSetup.mOctree.mTree;
-    const std::vector<std::uint8_t>& cut = rSetup.mOctree.mCut;
     const std::size_t n = tree.Size();
+    std::vector<std::uint8_t> cut = octm_blocked(rSetup, tree);
+    for (std::size_t i = 0; i < n; ++i)
+        cut[i] = cut[i] || rSetup.mOctree.mCut[i];
 
     // Deep leaves: neither they nor any of their 26 neighbours is cut, and
     // none of those neighbours lies outside the forest.
@@ -235250,12 +235320,15 @@ void octree_mesh_snap_features(OctreeMeshSetup& rS, const OctreeMeshOptions& rO,
     for (const OctreeFeatureEdge& e : rS.mFeatures)
         edges.push_back({e.mA, e.mB});
     const FeatureGraph graph = feature_graph(rS.mSkin.mPoints, edges, rO.mCornerAngle);
-    std::vector<std::uint8_t> inside(rTets.mTets.size());
-    for (std::size_t t = 0; t < inside.size(); ++t)
+    std::vector<std::uint8_t> inside(rTets.mTets.size()), guarded(rTets.mTets.size());
+    for (std::size_t t = 0; t < inside.size(); ++t) {
         inside[t] = rTets.mMaterial[t] > 0;
+        // The tetrahedra the output keeps; the others are about to be dropped.
+        guarded[t] = inside[t] || rO.mKeepOutside;
+    }
     std::vector<std::uint8_t> claimed(rTets.mPoints.size(), 0);
     const FeatureSnapReport rep = feature_snap(
-        rTets.mPoints, rTets.mTets, inside, graph, rS.mSkin.mPoints,
+        rTets.mPoints, rTets.mTets, inside, guarded, graph, rS.mSkin.mPoints,
         [&](const Vec3& rP) { return octree_mesh_local_size(rS, rP); },
         1e-12 * std::pow(rS.mFrame.mMinSize, 3.0), claimed, rTets.mFeature);
     rR.mNumCorners = rep.mNumCorners;
