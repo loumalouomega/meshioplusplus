@@ -2776,6 +2776,7 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
                                   {"resegment-rounds", {}, true},
                                   {"no-layout-snap-to-features", {}, false},
                                   {"no-validate-by-surface-sampling", {}, false},
+                                  {"constrain-primitives", {}, false},
                                   {"mesh-out", {}, true},
                                   {"cad-json", {}, true},
                                   {"json", {}, false},
@@ -2930,6 +2931,7 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         options.mResegmentRounds = std::stoll(opt_value(p, "resegment-rounds"));
     options.mLayoutSnapToFeatures = !has_flag(p, "no-layout-snap-to-features");
     options.mValidateBySurfaceSampling = !has_flag(p, "no-validate-by-surface-sampling");
+    options.mConstrainPrimitives = has_flag(p, "constrain-primitives");
     const bool modes = options.mFreeformMode != meshioplusplus::FitCadFreeformMode::Legacy;
     static const char* const kModes[] = {"legacy", "adaptive", "network", "auto"};
     meshioplusplus::FitCadResult r = meshioplusplus::fit_cad(mesh, p.positionals[1], options);
@@ -2996,6 +2998,10 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         if (options.mFaceDeviation) {
             json.Field("hausdorff_max", r.mHausdorffMax);
             json.Field("hausdorff_rms", r.mHausdorffRms);
+        }
+        if (options.mConstrainPrimitives) {
+            json.Field("num_constrained_primitives", r.mNumConstrainedPrimitives);
+            json.Field("num_constraint_groups", r.mNumConstraintGroups);
         }
         // The freeform modes report only outside the legacy mode.
         if (modes) {
@@ -3094,6 +3100,9 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         if (options.mFaceDeviation)
             std::cout << "  face deviation: Hausdorff " << r.mHausdorffMax << ", RMS "
                       << r.mHausdorffRms << "\n";
+        if (options.mConstrainPrimitives)
+            std::cout << "  constrained: " << r.mNumConstrainedPrimitives << " primitive(s) in "
+                      << r.mNumConstraintGroups << " group(s)\n";
         if (modes)
             std::cout << "  freeform (" << kModes[static_cast<int>(r.mFreeformMode) & 3]
                       << "): " << r.mNumFreeformAdaptive << " adaptive face(s), "

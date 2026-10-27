@@ -2768,6 +2768,7 @@ def tool_fit_cad(
     resegment_rounds=2,
     layout_snap_to_features=True,
     validate_by_surface_sampling=True,
+    constrain_primitives=False,
 ):
     """Turn the fitted patches of a closed skin into a CAD solid with analytic
     faces (and, through OpenCASCADE, rolling-ball fillet, thread flank and
@@ -2802,7 +2803,12 @@ def tool_fit_cad(
     num_network_edges, num_extraordinary_vertices, num_resegmented,
     num_escalations, max_g1_angle_deg, max_freeform_distance,
     rms_freeform_distance and faces (per patch: param_method, num_ctrl,
-    distances, escalation_steps and demotion_reason)."""
+    distances, escalation_steps and demotion_reason). constrain_primitives
+    (off) fits related primitives together on either backend -- coaxial
+    cylinders, cones, tori and spheres share one axis, parallel and
+    perpendicular planes and nearly equal radii are made exact, each change
+    kept only where its patch still passes its fit -- and adds
+    num_constrained_primitives and num_constraint_groups."""
     from .._fit_cad import has_occt
 
     occt = has_occt()
@@ -2881,6 +2887,7 @@ def tool_fit_cad(
         resegment_rounds=resegment_rounds,
         layout_snap_to_features=layout_snap_to_features,
         validate_by_surface_sampling=validate_by_surface_sampling,
+        constrain_primitives=constrain_primitives,
     )
     _cache_invalidate(step_path)
     extra = {"step_path": step_path, "occt_available": occt, **report}

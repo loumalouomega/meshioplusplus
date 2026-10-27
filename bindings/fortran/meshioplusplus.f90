@@ -458,7 +458,9 @@ module meshioplusplus
         integer(c_int64_t) :: resegment_rounds = 2
         integer(c_int32_t) :: layout_snap_to_features = 1
         integer(c_int32_t) :: validate_by_surface_sampling = 1
-        integer(c_int64_t) :: reserved(8) = 0
+        integer(c_int32_t) :: constrain_primitives = 0
+        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int64_t) :: reserved(7) = 0
     end type
 
     !> Interop mirror of C `mio_fit_cad_report_ex3` (v17.12.0, 184 bytes).
@@ -477,7 +479,9 @@ module meshioplusplus
         real(c_double) :: max_freeform_distance = 0.0_c_double
         real(c_double) :: rms_freeform_distance = 0.0_c_double
         integer(c_int64_t) :: num_face_records = 0
-        integer(c_int64_t) :: reserved(10) = 0
+        integer(c_int64_t) :: num_constrained_primitives = 0
+        integer(c_int64_t) :: num_constraint_groups = 0
+        integer(c_int64_t) :: reserved(8) = 0
     end type
 
     !> Interop mirror of C `mio_iga_opts` (the subdivisions default to 1 and
@@ -6935,7 +6939,8 @@ contains
                           num_network_patches, num_network_edges, &
                           num_extraordinary_vertices, num_resegmented, num_escalations, &
                           max_g1_angle_deg, max_freeform_distance, rms_freeform_distance, &
-                          num_face_records) result(out)
+                          num_face_records, constrain_primitives, &
+                          num_constrained_primitives, num_constraint_groups) result(out)
         class(mio_mesh), intent(in) :: self
         character(*), intent(in), optional :: step_path
         real(real64), intent(in), optional :: tolerance, mesh_deflection
@@ -6994,6 +6999,8 @@ contains
         integer(int64), intent(out), optional :: num_network_edges, num_extraordinary_vertices
         integer(int64), intent(out), optional :: num_resegmented, num_escalations
         integer(int64), intent(out), optional :: num_face_records
+        logical, intent(in), optional :: constrain_primitives
+        integer(int64), intent(out), optional :: num_constrained_primitives, num_constraint_groups
         type(mio_mesh) :: out
         type(c_ptr) :: res, path_ptr
         type(mio_fit_cad_opts_t) :: opts
@@ -7063,6 +7070,8 @@ contains
             merge(1_c_int32_t, 0_c_int32_t, layout_snap_to_features)
         if (present(validate_by_surface_sampling)) opts_ex2%validate_by_surface_sampling = &
             merge(1_c_int32_t, 0_c_int32_t, validate_by_surface_sampling)
+        if (present(constrain_primitives)) opts_ex2%constrain_primitives = &
+            merge(1_c_int32_t, 0_c_int32_t, constrain_primitives)
         if (present(refine_segmentation)) &
             opts_ex%refine_segmentation = merge(1_c_int32_t, 0_c_int32_t, refine_segmentation)
         if (present(max_refine_iterations)) &
@@ -7200,6 +7209,10 @@ contains
         if (present(rms_freeform_distance)) &
             rms_freeform_distance = real(report_ex3%rms_freeform_distance, real64)
         if (present(num_face_records)) num_face_records = int(report_ex3%num_face_records, int64)
+        if (present(num_constrained_primitives)) &
+            num_constrained_primitives = int(report_ex3%num_constrained_primitives, int64)
+        if (present(num_constraint_groups)) &
+            num_constraint_groups = int(report_ex3%num_constraint_groups, int64)
         call clear_status(stat, errmsg)
     end function
 

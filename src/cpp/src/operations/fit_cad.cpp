@@ -47,6 +47,7 @@
 #include "../detail/freeform_adaptive.hpp"
 #include "../detail/patch_flatten.hpp"
 #include "../detail/patch_network.hpp"
+#include "../detail/primitive_constraints.hpp"
 #include "../detail/quad_layout.hpp"
 #include "../detail/step_brep.hpp"
 #include "../detail/surface_rings.hpp"
@@ -309,29 +310,65 @@ const Mesh* fcn_annotate(const Mesh& rMesh, Mesh& rOwned) {
     return &rOwned;
 }
 
-// What the refinement did, for the report.
+// What the refinement and the primitive constraints did, for the report.
 struct FcnRefined {
     bool mRan = false;
     RefinePatchesResult mResult;
+    detail::PrimitiveConstraintReport mConstraints;
 };
 
-// The annotated skin, refined by `refine_patches` when asked.
+// The tolerance a face may keep from its patch before a writer demotes it,
+// from the table alone: the requested one, or three times the largest patch
+// tolerance (`fcn_tolerance` without its bounding-box fallback).
+double fcn_face_tolerance(const Mesh& rMesh, double Requested) {
+    if (Requested > 0.0)
+        return Requested;
+    double largest = 0.0;
+    if (rMesh.HasFieldData("fit:patch_tolerance")) {
+        const NDArray& tols = rMesh.FieldData("fit:patch_tolerance");
+        for (std::size_t r = 0; r < tols.Size(); ++r) {
+            const double t = detail::read_double(tols, r);
+            if (std::isfinite(t))
+                largest = std::max(largest, t);
+        }
+    }
+    return 3.0 * largest;
+}
+
+// The annotated skin, refined by `refine_patches` and its primitives
+// constrained when asked.
 const Mesh* fcn_prepare(const Mesh& rMesh, Mesh& rOwned, const FitCadOptions& rOptions,
                         FcnRefined& rRefined) {
     const Mesh* work = fcn_annotate(rMesh, rOwned);
-    if (!rOptions.mRefineSegmentation)
-        return work;
-    rRefined.mResult = refine_patches(*work, rOptions.mRefine);
-    rRefined.mRan = true;
-    log::info("fit_cad: refined the patches: {} -> {} of the area explained by primitives",
-              rRefined.mResult.mInitialExplainedAreaFraction,
-              rRefined.mResult.mExplainedAreaFraction);
-    rOwned = std::move(rRefined.mResult.mMesh);
-    return &rOwned;
+    if (rOptions.mRefineSegmentation) {
+        rRefined.mResult = refine_patches(*work, rOptions.mRefine);
+        rRefined.mRan = true;
+        log::info("fit_cad: refined the patches: {} -> {} of the area explained by primitives",
+                  rRefined.mResult.mInitialExplainedAreaFraction,
+                  rRefined.mResult.mExplainedAreaFraction);
+        rOwned = std::move(rRefined.mResult.mMesh);
+        work = &rOwned;
+    }
+    if (rOptions.mConstrainPrimitives) {
+        const double face_tol = fcn_face_tolerance(*work, rOptions.mTolerance);
+        if (face_tol > 0.0) {
+            if (work != &rOwned) {
+                rOwned = detail::clone_mesh(
+                    *work, [](DataLocation, const std::string&, std::string&) { return true; });
+                work = &rOwned;
+            }
+            rRefined.mConstraints = detail::constrain_primitives(rOwned, face_tol);
+            log::info("fit_cad: constrained {} primitive(s) in {} group(s)",
+                      rRefined.mConstraints.mNumConstrained, rRefined.mConstraints.mNumGroups);
+        }
+    }
+    return work;
 }
 
 // The refinement's report and its `refine:*` field data on the result.
 void fcn_report_refined(const FcnRefined& rRefined, const Mesh& rWork, FitCadResult& rResult) {
+    rResult.mNumConstrainedPrimitives = rRefined.mConstraints.mNumConstrained;
+    rResult.mNumConstraintGroups = rRefined.mConstraints.mNumGroups;
     if (!rRefined.mRan)
         return;
     const RefinePatchesResult& r = rRefined.mResult;

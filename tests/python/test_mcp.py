@@ -1603,6 +1603,22 @@ def test_refine_patches_tool_segments_then_refines(tmp_path):
     assert refined["explained_area_fraction"] == pytest.approx(1.0)
     for key in ("refine_iterations", "num_refine_splits", "num_refine_merges"):
         assert key in refined
+    # The constrained primitives report only when asked for.
+    assert "num_constrained_primitives" not in plain
+    constrained = _dump(
+        _tools.call_tool(
+            "fit_cad",
+            {
+                "input_path": src,
+                "output_path": str(tmp_path / "c.step"),
+                "backend": "native",
+                "constrain_primitives": True,
+            },
+        )
+    )
+    assert constrained["num_constrained_primitives"] >= 0
+    assert constrained["num_constraint_groups"] >= 0
+    assert constrained["num_demoted"] == 0
 
 
 def test_cad_json_brep_rides_through_convert(tmp_path):

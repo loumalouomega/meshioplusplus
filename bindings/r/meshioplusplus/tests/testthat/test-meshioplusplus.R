@@ -1530,6 +1530,14 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
   on.exit(mio_release(gc$mesh), add = TRUE)
   expect_true(gc$closed)
   expect_equal(gc$num_freeform_general, 0)
+  # The constrained primitives: off by default, the cube keeps its faces.
+  expect_equal(pc$num_constrained_primitives, 0)
+  expect_equal(pc$num_constraint_groups, 0)
+  cc <- mio_fit_cad(m, backend = "native", constrain_primitives = TRUE)
+  on.exit(mio_release(cc$mesh), add = TRUE)
+  expect_equal(cc$num_faces, 6)
+  expect_equal(cc$num_demoted, 0)
+  expect_true(cc$num_constrained_primitives >= 0 && cc$num_constrained_primitives <= 6)
   if (mio_has_occt()) {
     sc <- mio_fit_cad(m, snap_junctions = TRUE, face_deviation = TRUE)
     on.exit(mio_release(sc$mesh), add = TRUE)

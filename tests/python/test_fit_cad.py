@@ -113,6 +113,25 @@ def test_turned_part_keeps_every_primitive(noise):
     assert report["volume_ratio"] == pytest.approx(1.0, abs=0.01)
 
 
+@pytest.mark.parametrize("backend", ["native", "occt"])
+def test_constrained_primitives_share_one_axis(backend):
+    if backend == "occt" and not HAS_OCCT:
+        pytest.skip("needs a core built with OpenCASCADE")
+    skin = turned_part(noise=1e-3)
+    fit = _fitted(skin, curvature_tolerance=1.0, tolerance=2e-3, min_patch_cells=20)
+    _out, plain = mio.fit_cad(fit, backend=backend, return_report=True)
+    assert "num_constrained_primitives" not in plain
+    _out, report = mio.fit_cad(
+        fit, backend=backend, constrain_primitives=True, return_report=True
+    )
+    # Two planes, a sphere, a cylinder, a cone and a torus about one axis.
+    assert report["num_constrained_primitives"] == 6
+    assert report["num_constraint_groups"] >= 2
+    assert report["num_demoted"] == 0
+    assert report["num_faces"] == plain["num_faces"]
+    assert report["max_deviation"] <= report["tolerance"]
+
+
 @needs_occt
 def test_closed_torus_is_one_natural_face():
     _out, report = mio.fit_cad(_fitted(torus()), return_report=True)
@@ -610,6 +629,7 @@ def test_phase_three_pipeline_keys_in_both_engines(tmp_path):
         "ExtendSurfaces": True,
         "SnapJunctions": True,
         "FaceDeviation": True,
+        "ConstrainPrimitives": True,
     }
     settings = {
         "Version": 1,
@@ -637,6 +657,8 @@ def test_phase_three_pipeline_keys_in_both_engines(tmp_path):
             "NumSnappedJunctions",
             "HausdorffMax",
             "HausdorffRms",
+            "NumConstrainedPrimitives",
+            "NumConstraintGroups",
         ]
         entries.append((list(plain), list(full)))
     # The two engines agree key for key, in order.

@@ -5235,7 +5235,8 @@ val refine_patches_js(const val& rMeshObj, const val& rOptions) {
  *   ransacSeed, refineTolerance, relativeTolerance, freeformGeneral,
  *   freeformTolerance, freeformSmoothing, maxFreeformPoles,
  *   maxFreeformIterations, maxFreeformSplits, sewTolerance, extendSurfaces,
- *   snapJunctions, faceDeviation}`, every key optional;
+ *   snapJunctions, faceDeviation, the freeform-mode keys and
+ *   constrainPrimitives}`, every key optional;
  *   `types` is an array of `'plane'`, `'sphere'`, `'cylinder'`, `'cone'`,
  *   `'torus'`, `backend` one of `'auto'`, `'occt'`, `'native'`; the
  *   `refine*` keys, `normalWeight`, `allow*` and `ransacSeed` set
@@ -5296,7 +5297,8 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
                                  "layoutMaxValenceDeviation",
                                  "resegmentRounds",
                                  "layoutSnapToFeatures",
-                                 "validateBySurfaceSampling"});
+                                 "validateBySurfaceSampling",
+                                 "constrainPrimitives"});
             const auto has = [&](const char* pKey) {
                 return rOptions.hasOwnProperty(pKey) && !rOptions[pKey].isUndefined();
             };
@@ -5429,6 +5431,8 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
             if (has("validateBySurfaceSampling"))
                 options.mValidateBySurfaceSampling =
                     rOptions["validateBySurfaceSampling"].as<bool>();
+            if (has("constrainPrimitives"))
+                options.mConstrainPrimitives = rOptions["constrainPrimitives"].as<bool>();
         }
         if (options.mBackend == meshioplusplus::FitCadBackend::Occt &&
             !meshioplusplus::fit_cad_has_occt())
@@ -5483,6 +5487,8 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
             {"numExtraordinaryVertices", r.mNumExtraordinaryVertices},
             {"numResegmented", r.mNumResegmented},
             {"numEscalations", r.mNumEscalations},
+            {"numConstrainedPrimitives", r.mNumConstrainedPrimitives},
+            {"numConstraintGroups", r.mNumConstraintGroups},
         };
         for (const auto& [name, value] : counters)
             out.set(name, static_cast<double>(value));

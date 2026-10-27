@@ -2564,7 +2564,8 @@ has_occt() = ccall(_sym(:mio_has_occt), Cint, ()) != 0
             local_refine="knots", freeform_g1_tolerance_deg=1.0,
             freeform_max_control_points=400, layout_target_patch_size=0.1,
             layout_max_valence_deviation=2, resegment_rounds=2,
-            layout_snap_to_features=true, validate_by_surface_sampling=true)
+            layout_snap_to_features=true, validate_by_surface_sampling=true,
+            constrain_primitives=false)
         -> (; mesh, backend, valid, closed, tolerance, volume, skin_volume, volume_ratio,
              max_deviation, num_faces, num_plane, num_sphere, num_cylinder,
              num_cone, num_torus, num_faceted_faces, num_patches, num_demoted,
@@ -2579,7 +2580,8 @@ has_occt() = ccall(_sym(:mio_has_occt), Cint, ()) != 0
              brep_checked, freeform_mode, facet_area_fraction, num_freeform_adaptive,
              num_network_patches, num_network_edges, num_extraordinary_vertices,
              num_resegmented, num_escalations, max_g1_angle_deg, max_freeform_distance,
-             rms_freeform_distance, num_face_records)
+             rms_freeform_distance, num_face_records, num_constrained_primitives,
+             num_constraint_groups)
 
 Build a CAD solid from the fitted patches of a closed skin through the
 OpenCASCADE backend: accepted fits become analytic faces, a patch no primitive
@@ -2634,8 +2636,12 @@ the patches no primitive or feature fit explains are treated, with
 and `validate_by_surface_sampling`; `facet_area_fraction` is the share of the
 result's area left on facet faces, `brep_checked` whether OpenCASCADE checked
 the solid, and outside the legacy mode the mesh carries the
-`fit_cad:face_table` field data (one row per patch tried as a surface). See
-`doc/fit_cad.md`.
+`fit_cad:face_table` field data (one row per patch tried as a surface).
+`constrain_primitives` fits related primitives together on either backend
+(coaxial cylinders, cones, tori and spheres share one axis; parallel and
+perpendicular planes and nearly equal radii are made exact), each change kept
+only where its patch still passes its fit; `num_constrained_primitives` and
+`num_constraint_groups` count what it changed. See `doc/fit_cad.md`.
 """
 function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                  exact_edges::Bool=true,
@@ -2661,7 +2667,8 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                  layout_target_patch_size::Real=0.1,
                  layout_max_valence_deviation::Integer=2, resegment_rounds::Integer=2,
                  layout_snap_to_features::Bool=true,
-                 validate_by_surface_sampling::Bool=true)
+                 validate_by_surface_sampling::Bool=true,
+                 constrain_primitives::Bool=false)
     pick(name, value, words) = begin
         k = findfirst(==(String(value)), words)
         k === nothing && throw(ArgumentError("meshio++: fit_cad: $(name) must be one of " *
@@ -2709,7 +2716,8 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                                Float64(layout_target_patch_size),
                                Int64(layout_max_valence_deviation), Int64(resegment_rounds),
                                Int32(layout_snap_to_features),
-                               Int32(validate_by_surface_sampling), ntuple(_ -> Int64(0), 8))
+                               Int32(validate_by_surface_sampling),
+                               Int32(constrain_primitives), Int32(0), ntuple(_ -> Int64(0), 7))
     ptr = ccall(_sym(:mio_fit_cad3), Ptr{Cvoid},
                 (Ptr{Cvoid}, Cstring, Ref{_CFitCadOpts}, Ref{_CFitCadOptsEx},
                  Ref{_CFitCadOptsEx2}, Ptr{_CFitCadReport}, Ptr{_CFitCadReportEx},
@@ -2759,7 +2767,9 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
      num_resegmented=Int(ex3.num_resegmented), num_escalations=Int(ex3.num_escalations),
      max_g1_angle_deg=ex3.max_g1_angle_deg, max_freeform_distance=ex3.max_freeform_distance,
      rms_freeform_distance=ex3.rms_freeform_distance,
-     num_face_records=Int(ex3.num_face_records))
+     num_face_records=Int(ex3.num_face_records),
+     num_constrained_primitives=Int(ex3.num_constrained_primitives),
+     num_constraint_groups=Int(ex3.num_constraint_groups))
 end
 
 """

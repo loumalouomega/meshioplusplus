@@ -246,6 +246,7 @@ _OP_TABLE = {
         "ResegmentRounds",
         "LayoutSnapToFeatures",
         "ValidateBySurfaceSampling",
+        "ConstrainPrimitives",
     ),
     "RefinePatches": (
         "Tolerance",
@@ -1619,6 +1620,7 @@ def _apply_step(mesh, step, steps, warnings):
             resegment_rounds=int(_number(step, "ResegmentRounds", 2.0)),
             layout_snap_to_features=_flag(step, "LayoutSnapToFeatures", True),
             validate_by_surface_sampling=_flag(step, "ValidateBySurfaceSampling", True),
+            constrain_primitives=_flag(step, "ConstrainPrimitives", False),
         )
         entry["Valid"] = 1.0 if report["valid"] else 0.0
         entry["Native"] = 1.0 if report["backend"] == "native" else 0.0
@@ -1660,6 +1662,9 @@ def _apply_step(mesh, step, steps, warnings):
         if "hausdorff_max" in report:
             entry["HausdorffMax"] = report["hausdorff_max"]
             entry["HausdorffRms"] = report["hausdorff_rms"]
+        if "num_constrained_primitives" in report:
+            entry["NumConstrainedPrimitives"] = report["num_constrained_primitives"]
+            entry["NumConstraintGroups"] = report["num_constraint_groups"]
         # The freeform modes (v17.12.0) report only outside the legacy mode.
         if "freeform_mode" in report:
             entry["BrepChecked"] = 1.0 if report["brep_checked"] else 0.0

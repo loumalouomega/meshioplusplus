@@ -2591,6 +2591,15 @@ contains
         call check(ierr == 0 .and. .not. was_refined, 'fit_cad does not refine by default')
         call check(.not. was_kept, 'nothing refined is kept without refinement')
         call solid%free()
+        ! The constrained primitives: the cube's six planes keep their faces.
+        solid = sq%fit_cad(backend='native', constrain_primitives=.true., num_faces=nfaces, &
+                           num_constrained_primitives=nrsplit, num_constraint_groups=nrmerge, &
+                           stat=ierr, errmsg=msg)
+        call check(ierr == 0, 'fit_cad with constrain_primitives succeeded')
+        call check(nfaces == 6_int64, 'the constrained cube still has six faces')
+        call check(nrsplit >= 0_int64 .and. nrsplit <= 6_int64, 'at most six planes constrained')
+        call check(nrmerge >= 0_int64, 'the constraint groups are counted')
+        call solid%free()
         ! The Phase 3 options (v17.11.0): closed on every backend, nothing
         ! measured is NaN, and an option out of range is refused.
         solid = sq%fit_cad(backend='native', closed=was_closed, hausdorff_max=hmax, &

@@ -646,7 +646,8 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
                    SEXP local_refine, SEXP freeform_g1_tolerance_deg,
                    SEXP freeform_max_control_points, SEXP layout_target_patch_size,
                    SEXP layout_max_valence_deviation, SEXP resegment_rounds,
-                   SEXP layout_snap_to_features, SEXP validate_by_surface_sampling) {
+                   SEXP layout_snap_to_features, SEXP validate_by_surface_sampling,
+                   SEXP constrain_primitives) {
     mio_fit_cad_opts opts;
     mio_fit_cad_opts_ex opts_ex;
     mio_fit_cad_opts_ex2 opts_ex2;
@@ -682,6 +683,8 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
         mio_r_bool(layout_snap_to_features, "layout_snap_to_features") ? 1 : 0;
     opts_ex2.validate_by_surface_sampling =
         mio_r_bool(validate_by_surface_sampling, "validate_by_surface_sampling") ? 1 : 0;
+    opts_ex2.constrain_primitives =
+        mio_r_bool(constrain_primitives, "constrain_primitives") ? 1 : 0;
     opts_ex.refine_segmentation = mio_r_bool(refine_segmentation, "refine_segmentation") ? 1 : 0;
     opts_ex.refine.max_iterations = mio_r_int64(max_refine_iterations, "max_refine_iterations");
     opts_ex.refine.epsilon = mio_r_double(refine_epsilon, "refine_epsilon");
@@ -792,6 +795,8 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
     SEXP fmax = PROTECT(Rf_ScalarReal(report_ex3.max_freeform_distance));
     SEXP frms = PROTECT(Rf_ScalarReal(report_ex3.rms_freeform_distance));
     SEXP nrec = PROTECT(Rf_ScalarReal((double)report_ex3.num_face_records));
+    SEXP nconstrained = PROTECT(Rf_ScalarReal((double)report_ex3.num_constrained_primitives));
+    SEXP ngroups = PROTECT(Rf_ScalarReal((double)report_ex3.num_constraint_groups));
     const char* names[] = {"mesh",
                            "valid",
                            "tolerance",
@@ -851,7 +856,9 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
                            "max_g1_angle_deg",
                            "max_freeform_distance",
                            "rms_freeform_distance",
-                           "num_face_records"};
+                           "num_face_records",
+                           "num_constrained_primitives",
+                           "num_constraint_groups"};
     SEXP values[] = {mo,        valid,     tol,       vol,      svol,     ratio,        dev,
                      nfaces,    nplane,    nsphere,   ncyl,     ncone,    ntorus,       nfacet,
                      npatch,    ndem,      nexact,    napprox,  nsolid,   nbspline,     nsplit,
@@ -860,9 +867,9 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
                      rmerge,    rex0,      rex,       closed,   ngeneral, nrefinements, avgpoles,
                      nextended, nsnapped,  hmax,      hrms,     kept,     checked,      mode,
                      faf,       nadaptive, nnetpatch, nnetedge, nev,      nreseg,       nesc,
-                     g1,        fmax,      frms,      nrec};
-    SEXP res = PROTECT(mio_r_named_list(60, names, values));
-    UNPROTECT(61);
+                     g1,        fmax,      frms,      nrec,     nconstrained, ngroups};
+    SEXP res = PROTECT(mio_r_named_list(62, names, values));
+    UNPROTECT(63);
     return res;
 }
 
