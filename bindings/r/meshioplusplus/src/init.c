@@ -110,7 +110,8 @@ extern SEXP R_mio_grid(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_generate(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
                            SEXP);
 extern SEXP R_mio_reference_cells(SEXP, SEXP);
-extern SEXP R_mio_voxelize(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_voxelize(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
+                           SEXP);
 extern SEXP R_mio_octree(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
                          SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_octree_mesh(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
@@ -131,6 +132,7 @@ extern SEXP R_mio_boundary_layer(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
 extern SEXP R_mio_tetrahedralize(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_has_netgen(void);
 extern SEXP R_mio_error_size(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_check_conformity(SEXP, SEXP, SEXP);
 extern SEXP R_mio_project_to_cad(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_meshes_equal(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_diff(SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -318,7 +320,7 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_grid, 4),
                                               CALLDEF(R_mio_generate, 12),
                                               CALLDEF(R_mio_reference_cells, 2),
-                                              CALLDEF(R_mio_voxelize, 11),
+                                              CALLDEF(R_mio_voxelize, 12),
                                               CALLDEF(R_mio_octree, 23),
                                               CALLDEF(R_mio_octree_mesh, 35),
                                               CALLDEF(R_mio_compute_sdf, 16),
@@ -333,6 +335,7 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_tetrahedralize, 8),
                                               CALLDEF(R_mio_has_netgen, 0),
                                               CALLDEF(R_mio_error_size, 8),
+                                              CALLDEF(R_mio_check_conformity, 3),
                                               CALLDEF(R_mio_project_to_cad, 6),
                                               CALLDEF(R_mio_meshes_equal, 5),
                                               CALLDEF(R_mio_diff, 5),

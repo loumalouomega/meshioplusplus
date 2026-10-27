@@ -2174,6 +2174,14 @@ step('estimateError: zero on a linear field, nonzero and markable on a quadratic
     assert.throws(() => m.errorSize(e1.mesh, { targetError: 0 }), /target_error/);
     assert.throws(() => m.errorSize(e1.mesh, { targetError: 1e-3, bogus: 1 }), /bogus/);
     assert.throws(() => m.errorSize(quadField, { targetError: 1e-3 }), /error:zz/);
+
+    // Roadmap 3.2.1: a conforming mesh reports nothing and flags no point.
+    const c = m.checkConformity(e1.mesh);
+    assert.equal(c.conforming, true);
+    assert.equal(c.interfaceMode, 'conforming');
+    assert.ok(c.mesh.point_data['conformity:hanging'].every((v) => Number(v) === 0));
+    assert.throws(() => m.checkConformity(e1.mesh, { tolerance: -1 }), /tolerance/);
+    assert.throws(() => m.checkConformity(e1.mesh, { bogus: 1 }), /bogus/);
 });
 
 step('convertSurfaceOps: gradient is a chainable pipeline step', () => {
@@ -2388,6 +2396,13 @@ step('voxelize keeps the whole box, the shell, or the interior', () => {
 
     // An unknown fill fails by name rather than silently defaulting.
     assert.throws(() => m.voxelize(cubeSurface, [2, 2, 2], 0, null, 0, 0, 'solid'));
+
+    // 2-D pixels in an explicit plane; an unknown plane is refused.
+    const flat = m.voxelize(cubeSurface, [4, 2, 0], 0, null, 0, 0, 'all', 'pseudonormal',
+        false, 20000000, 'off', 'yz');
+    assert.deepEqual(Array.from(flat.dims), [4, 2, 1]);
+    assert.throws(() => m.voxelize(cubeSurface, [4, 2, 0], 0, null, 0, 0, 'all',
+        'pseudonormal', false, 20000000, 'off', 'uv'));
 });
 
 step('sampleDistance matches the cube\'s closed form', () => {

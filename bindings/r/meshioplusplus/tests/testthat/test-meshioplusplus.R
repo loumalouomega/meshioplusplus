@@ -791,6 +791,19 @@ test_that("error_size turns the indicator into a size field", {
   expect_error(mio_error_size(e$mesh, target_error = 1e-3, error_array = "nope"))
 })
 
+test_that("check_conformity reports a conforming mesh", {
+  m <- fixture()
+  on.exit(mio_release(m))
+  c <- mio_check_conformity(m)
+  expect_gte(c$dimension, 2)
+  expect_true(c$conforming)
+  expect_equal(c$interface_mode, "conforming")
+  expect_true("conformity:hanging" %in% mio_point_data_names(c$mesh))
+  expect_type(c$warnings, "character")
+  mio_release(c$mesh)
+  expect_error(mio_check_conformity(m, tolerance = -1))
+})
+
 test_that("merge and interpolate work", {
   a <- fixture()
   b <- fixture()
@@ -1195,6 +1208,9 @@ test_that("voxelize builds a grid around a surface", {
 
   # An unknown fill fails by name rather than silently defaulting.
   expect_error(mio_voxelize(cube, resolution = c(2, 2, 2), fill = "solid"))
+  flat <- mio_voxelize(cube, resolution = c(4, 4, 0), plane = "xy")
+  expect_equal(flat$dims, c(4, 4, 1))
+  expect_error(mio_voxelize(cube, resolution = c(4, 4, 0), plane = "uv"))
 })
 
 test_that("signed distance matches the cube's closed form", {

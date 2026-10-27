@@ -844,6 +844,19 @@ build/bench-ops-seq/meshioplusplus_bench_ops --tier XL --runs 1 --ops feature_ed
 
 The digests agree at 1 and 4 threads and on the `NATIVE` mesh backend (tiers S to L). The rows never fail CI on time.
 
+### Flooded inside test in `octree_mesh`
+
+Roadmap 3.1.4.3: the winding numbers of the lattice points away from a closed skin dominated the time of a uniformly fine `octree_mesh`; they are now flooded through the leaves the skin does not cut ([inside and outside](octree_mesh.md#inside-and-outside)). Measured on 2026-10-27 in the Python package (Release, STL backend, four threads of an Intel Xeon), the best of two runs with the flood switched off and on:
+
+| Input | Points | Not evaluated | Total | Stage |
+| --- | ---: | ---: | ---: | ---: |
+| sphere (20 480 triangles), castellated, uniform `h = 0.025` | 283 409 | 1 326 342 | 25.3 → 13.6 s | output 23.9 → 10.8 s |
+| sphere, tetrahedra, uniform `h = 0.04` | 142 019 | 601 338 | 32.6 → 28.2 s | stuffing 9.4 → 4.7 s |
+| sphere, tetrahedra, graded 0.02 to 0.4 | 2 921 | 3 970 | 0.85 → 0.85 s | stuffing 0.12 → 0.11 s |
+| Stanford bunny (112 402 triangles), castellated, uniform `h = 1.5` | 92 612 | 708 045 | 22.3 → 11.1 s | output 21.2 → 9.4 s |
+
+The flood itself costs up to 1.5 s in the `octree` stage on these trees. A graded mesh has few points away from the skin and gains nothing. Eighteen `octree_mesh` outputs (the cube, the sphere and a cylinder, each castellated, tetrahedral and hexahedral, graded and uniform) hash identically with the flood on and off, and the near-threshold recheck counts agree.
+
 ### Determinism check
 
 Every operation's output is meant to be byte-identical across parallel backends and thread counts; the serial phases in several operations exist to guarantee that. `--hash` makes each row carry a 64-bit digest of its result — points, connectivity, point/cell/field data and regions in block and sorted-name order, plus the result's index maps and counters — taken from the untimed warmup run, and `tools/bench_ops.sh` then fails if one row's digest differs between any two backends or thread counts. With `BASELINE=<earlier.csv>` it also fails if a digest differs from that earlier sweep, which is how a change that must not alter output proves it:

@@ -8,6 +8,7 @@ from . import (
     _binary,
     _boundary_layer,
     _check,
+    _check_conformity,
     _clean,
     _compress,
     _conservative_interpolate,
@@ -146,6 +147,14 @@ def main(argv=None):
     )
     _check.add_args(parser)
     parser.set_defaults(func=_check.check_cmd)
+
+    parser = subparsers.add_parser(
+        "check-conformity",
+        help="Hanging nodes, T-junctions and partial overlaps: exit 1 when the "
+        "mesh is not conforming (2: could not check)",
+    )
+    _check_conformity.add_args(parser)
+    parser.set_defaults(func=_check_conformity.check_conformity_cmd)
 
     parser = subparsers.add_parser(
         "feature-edges",

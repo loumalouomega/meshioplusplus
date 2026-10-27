@@ -511,6 +511,44 @@ function error_size(m::Mesh; target_error::Real, error_array::AbstractString="er
      max_size=Float64(r.max_size))
 end
 
+const _CONFORMITY_MODES = ("conforming", "weld", "proximity")
+
+"""
+    check_conformity(mesh; tolerance=1e-9, attach_flags=true)
+        -> (; mesh, dimension, num_hanging_nodes, num_t_junctions, num_partial_overlaps,
+              num_unwelded_facets, num_boundary_facets, num_non_manifold_facets,
+              conforming, interface_mode, warnings)
+
+Whether `mesh` is conforming (roadmap 3.2.1): its volume cells (else its 2-D
+cells) are checked for hanging nodes (a point on a volume cell's face or edge
+that the cell does not use), T-junctions (the same on a 2-D cell's edge), and
+partly overlapping or unwelded pairs of unmatched facets. `tolerance` is a
+fraction of the examined facets' bounding-box diagonal. With `attach_flags` the
+mesh carries the `conformity:hanging` point data (1 hanging node, 2 T-junction).
+`interface_mode` is `"conforming"`, `"weld"` or `"proximity"`: the
+[`find_interface`](@ref) mode that suits the mesh. See `doc/check_conformity.md`.
+"""
+function check_conformity(m::Mesh; tolerance::Real=1e-9, attach_flags::Bool=true)
+    report = Ref{_CConformityReport}()
+    opts = _CConformityOpts(Cdouble(tolerance), attach_flags ? Int32(1) : Int32(0), Int32(0),
+                            (0, 0, 0, 0))
+    ptr = ccall(_sym(:mio_check_conformity), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CConformityOpts}, Ref{_CConformityReport}),
+                _handle(m), Ref(opts), report)
+    out = Mesh(_check_ptr(ptr))
+    text = _getstring((buf, n) -> ccall(_sym(:mio_check_conformity_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    r = report[]
+    (mesh=out, dimension=Int(r.dimension), num_hanging_nodes=Int(r.num_hanging_nodes),
+     num_t_junctions=Int(r.num_t_junctions), num_partial_overlaps=Int(r.num_partial_overlaps),
+     num_unwelded_facets=Int(r.num_unwelded_facets),
+     num_boundary_facets=Int(r.num_boundary_facets),
+     num_non_manifold_facets=Int(r.num_non_manifold_facets), conforming=r.conforming != 0,
+     interface_mode=0 <= r.interface_mode < length(_CONFORMITY_MODES) ?
+                    _CONFORMITY_MODES[r.interface_mode + 1] : string(r.interface_mode),
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
 """
     remesh(mesh, num_clusters; subdivide=-1, subsample_ratio=10.0,
            max_subdivide=4, max_iterations=100, max_repair_passes=10,
@@ -2044,17 +2082,20 @@ end
     voxelize(m; resolution=nothing, cell_size=nothing, bounds=nothing, padding=0.0,
              padding_relative=0.0, fill=:all, sign=:pseudonormal,
              watertight_check=:warn, attach_occupancy=false,
-             max_cells=20_000_000) -> NamedTuple
+             max_cells=20_000_000, plane=:auto) -> NamedTuple
 
 Build a regular grid around `m`. Exactly one of `resolution` and `cell_size`
-must be given. `fill` is `:all`, `:surface` or `:inside`.
+must be given. `fill` is `:all`, `:surface` or `:inside`. A zero third
+`resolution` entry selects 2-D pixels around a planar skin, whose plane is
+`plane` (`:auto`, `:xy`, `:xz` or `:yz`; `:auto` takes the axis of zero extent).
 
 Returns `(; mesh, dims, origin, spacing, num_occupied)`.
 """
 function voxelize(m::Mesh; resolution=nothing, cell_size=nothing, bounds=nothing,
                   padding::Real=0.0, padding_relative::Real=0.0, fill=:all,
                   sign=:pseudonormal, watertight_check=:warn,
-                  attach_occupancy::Bool=false, max_cells::Integer=20_000_000)
+                  attach_occupancy::Bool=false, max_cells::Integer=20_000_000,
+                  plane=:auto)
     res = resolution === nothing ? Int64[] : Int64[Int64(v) for v in resolution]
     (resolution === nothing || length(res) == 3) ||
         throw(ArgumentError("resolution must have three entries"))
@@ -2075,7 +2116,8 @@ function voxelize(m::Mesh; resolution=nothing, cell_size=nothing, bounds=nothing
                            attach_occupancy ? Int32(1) : Int32(0),
                            _code(_SDF_SIGNS, sign, "sign"),
                            _code(_SDF_CHECKS, watertight_check, "watertight check"),
-                           (Int64(0), Int64(0), Int64(0), Int64(0), Int64(0), Int64(0)))
+                           _code(_PLANAR_PLANES, plane, "plane"), Int32(0),
+                           (Int64(0), Int64(0), Int64(0), Int64(0), Int64(0)))
         ccall(_sym(:mio_voxelize), Ptr{Cvoid},
               (Ptr{Cvoid}, Ref{_CVoxelOpts}, Ptr{Int64}, Ptr{Cdouble}, Ptr{Cdouble},
                Ptr{Int64}),
@@ -2200,7 +2242,8 @@ num_warped, num_warp_refused, min_dihedral, max_dihedral, min_scaled_jacobian,
 hausdorff_to_skin, num_inverted, num_boundary_edges_open,
 num_non_manifold_boundary_edges, num_corners, num_corners_snapped,
 num_feature_chains, num_feature_chains_missed, num_feature_moves,
-num_optimized_moves, num_flips, num_winding_rechecks, num_warnings, warnings)`,
+num_optimized_moves, num_flips, num_winding_rechecks, num_winding_skipped, num_warnings,
+warnings)`,
 with `output` the name of the output produced and `warnings` a
 `Vector{String}`, one entry per warning.
 """
@@ -2284,7 +2327,8 @@ function octree_mesh(m::Mesh; output=nothing, min_size=nothing, max_size=nothing
      num_feature_chains_missed=Int(r.num_feature_chains_missed),
      num_feature_moves=Int(r.num_feature_moves),
      num_optimized_moves=Int(r.num_optimized_moves), num_flips=Int(r.num_flips),
-     num_winding_rechecks=Int(r.num_winding_rechecks), num_warnings=Int(r.num_warnings),
+     num_winding_rechecks=Int(r.num_winding_rechecks),
+     num_winding_skipped=Int(r.num_winding_skipped), num_warnings=Int(r.num_warnings),
      warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
 end
 

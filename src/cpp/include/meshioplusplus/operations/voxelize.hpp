@@ -57,6 +57,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/detail/planar_skin.hpp"
 #include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
@@ -109,6 +110,9 @@ struct VoxelOptions {
     std::int64_t mMaxCells = 20000000;
     /// How `VoxelFill::Inside` decides what is inside.
     SurfaceDistanceOptions mDistance;
+    /// The plane of a 2-D skin (`Auto`: the axis of zero extent, `z` first).
+    /// Ignored by the 3-D variant, as `OctreeOptions::mPlane` is.
+    detail::PlanarPlane mPlane = detail::PlanarPlane::Auto;
 };
 
 /// The result of `voxelize`: the grid and the lattice it came from.

@@ -165,6 +165,7 @@
 #include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/error_size.hpp"
+#include "meshioplusplus/operations/check_conformity.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/slice.hpp"
@@ -4139,9 +4140,10 @@ val reference_cells_js(const val& rTypes, bool pairs) {
 val voxelize_js(const val& rMeshObj, const val& rResolution, double cellSize, const val& rBounds,
                 double padding, double paddingRelative, const std::string& rFill,
                 const std::string& rSign, bool attachOccupancy, double maxCells,
-                const std::string& rWatertightCheck) {
+                const std::string& rWatertightCheck, const std::string& rPlane) {
     return with_js_errors([&]() -> val {
         meshioplusplus::VoxelOptions options;
+        options.mPlane = meshioplusplus::detail::planar_plane_from_name(rPlane);
         if (!rResolution.isUndefined() && !rResolution.isNull() &&
             rResolution["length"].as<unsigned>() == 3)
             options.mResolution = std::array<std::int64_t, 3>{
@@ -4460,6 +4462,7 @@ val octree_mesh_js(const val& rMeshObj, const val& rOptions) {
             {"numOptimizedMoves", r.mNumOptimizedMoves},
             {"numFlips", r.mNumFlips},
             {"numWindingRechecks", r.mNumWindingRechecks},
+            {"numWindingSkipped", r.mNumWindingSkipped},
         };
         for (const auto& [name, value] : counters)
             out.set(name, static_cast<double>(value));
@@ -4786,6 +4789,40 @@ val error_size_js(const val& rMeshObj, const val& rOptions) {
         out.set("numClamped", static_cast<double>(r.mNumClamped));
         out.set("minSize", r.mMinSize);
         out.set("maxSize", r.mMaxSize);
+        return out;
+    });
+}
+
+// check_conformity (roadmap 3.2.1): hanging nodes, T-junctions, partly
+// overlapping and unwelded facets; options {tolerance, attachFlags}.
+val check_conformity_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ConformityOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the checkConformity options",
+                                {"tolerance", "attachFlags"});
+            if (rOptions.hasOwnProperty("tolerance"))
+                o.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("attachFlags"))
+                o.mAttachFlags = rOptions["attachFlags"].as<bool>();
+        }
+        meshioplusplus::ConformityResult r =
+            meshioplusplus::check_conformity(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("dimension", static_cast<double>(r.mDimension));
+        out.set("numHangingNodes", static_cast<double>(r.mNumHangingNodes));
+        out.set("numTJunctions", static_cast<double>(r.mNumTJunctions));
+        out.set("numPartialOverlaps", static_cast<double>(r.mNumPartialOverlaps));
+        out.set("numUnweldedFacets", static_cast<double>(r.mNumUnweldedFacets));
+        out.set("numBoundaryFacets", static_cast<double>(r.mNumBoundaryFacets));
+        out.set("numNonManifoldFacets", static_cast<double>(r.mNumNonManifoldFacets));
+        out.set("conforming", r.mConforming);
+        out.set("interfaceMode", r.mInterfaceMode);
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
         return out;
     });
 }
@@ -8271,6 +8308,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("hessian", &hessian_js);
     emscripten::function("estimateError", &estimate_error_js);
     emscripten::function("errorSize", &error_size_js);
+    emscripten::function("checkConformity", &check_conformity_js);
     emscripten::function("remesh", &remesh_js);
     emscripten::function("remeshVolume", &remesh_volume_js);
     emscripten::function("optimizeVolume", &optimize_volume_js);

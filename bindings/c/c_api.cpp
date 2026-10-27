@@ -103,6 +103,7 @@
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/error_size.hpp"
+#include "meshioplusplus/operations/check_conformity.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/slice.hpp"
@@ -5538,6 +5539,8 @@ static_assert(sizeof(mio_octree_report) == 96, "mio_octree_report layout changed
 static_assert(sizeof(mio_octree_mesh_opts) == 264,
               "mio_octree_mesh_opts grew outside its reserved tail");
 static_assert(sizeof(mio_octree_mesh_report) == 392, "mio_octree_mesh_report layout changed");
+static_assert(offsetof(mio_octree_mesh_report, num_winding_skipped) == 328,
+              "mio_octree_mesh_report layout changed");
 static_assert(
     static_cast<int>(meshioplusplus::OctreeMeshOutput::Castellated) ==
             MIO_OCTREE_MESH_CASTELLATED &&
@@ -5634,6 +5637,10 @@ meshioplusplus::VoxelOptions capi_voxel_options(const mio_voxel_opts& rOpts) {
                                         std::to_string(rOpts.watertight_check));
     options.mDistance.mWatertightCheck =
         static_cast<meshioplusplus::SdfWatertightCheck>(rOpts.watertight_check);
+    if (rOpts.plane < 0 || rOpts.plane > MIO_PLANE_YZ)
+        throw meshioplusplus::ReadError("meshio++: voxelize: unknown plane " +
+                                        std::to_string(rOpts.plane));
+    options.mPlane = static_cast<meshioplusplus::detail::PlanarPlane>(rOpts.plane);
     return options;
 }
 
@@ -6309,6 +6316,7 @@ mio_mesh* mio_octree_mesh(const mio_mesh* mesh, const mio_octree_mesh_opts* opts
             report->num_optimized_moves = r.mNumOptimizedMoves;
             report->num_flips = r.mNumFlips;
             report->num_winding_rechecks = r.mNumWindingRechecks;
+            report->num_winding_skipped = r.mNumWindingSkipped;
             report->num_warnings = static_cast<std::int64_t>(r.mWarnings.size());
         }
         return new mio_mesh{std::move(r.mMesh)};
@@ -7684,6 +7692,81 @@ mio_mesh* mio_error_size(const mio_mesh* mesh, const mio_error_size_opts* opts,
             report->max_size = r.mMaxSize;
         }
         return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+static_assert(sizeof(mio_conformity_opts) == 48, "mio_conformity_opts layout");
+static_assert(offsetof(mio_conformity_opts, reserved) == 16, "mio_conformity_opts layout");
+static_assert(sizeof(mio_conformity_report) == 104, "mio_conformity_report layout");
+static_assert(offsetof(mio_conformity_report, conforming) == 56, "mio_conformity_report layout");
+static_assert(offsetof(mio_conformity_report, num_warnings) == 64, "mio_conformity_report layout");
+
+}  // extern "C"
+
+namespace {
+
+/// The warnings of this thread's last mio_check_conformity call.
+std::string& capi_conformity_warnings() {
+    thread_local std::string warnings;
+    return warnings;
+}
+
+}  // namespace
+
+extern "C" {
+
+void mio_conformity_opts_init(mio_conformity_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_conformity_opts{};
+    opts->tolerance = 1e-9;
+    opts->attach_flags = 1;
+}
+
+mio_mesh* mio_check_conformity(const mio_mesh* mesh, const mio_conformity_opts* opts,
+                               mio_conformity_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        capi_conformity_warnings().clear();
+        if (!mesh)
+            throw std::invalid_argument("meshio++: check_conformity: mesh is NULL");
+        mio_conformity_opts defaults;
+        mio_conformity_opts_init(&defaults);
+        const mio_conformity_opts& rOpts = opts ? *opts : defaults;
+        meshioplusplus::ConformityOptions o;
+        o.mTolerance = rOpts.tolerance;
+        o.mAttachFlags = rOpts.attach_flags != 0;
+        meshioplusplus::ConformityResult r = meshioplusplus::check_conformity(mesh->mMesh, o);
+        std::string& warnings = capi_conformity_warnings();
+        for (const std::string& w : r.mWarnings) {
+            if (!warnings.empty())
+                warnings += '\n';
+            warnings += w;
+        }
+        if (report) {
+            *report = mio_conformity_report{};
+            report->dimension = r.mDimension;
+            report->num_hanging_nodes = r.mNumHangingNodes;
+            report->num_t_junctions = r.mNumTJunctions;
+            report->num_partial_overlaps = r.mNumPartialOverlaps;
+            report->num_unwelded_facets = r.mNumUnweldedFacets;
+            report->num_boundary_facets = r.mNumBoundaryFacets;
+            report->num_non_manifold_facets = r.mNumNonManifoldFacets;
+            report->conforming = r.mConforming ? 1 : 0;
+            report->interface_mode = r.mInterfaceMode == "weld" ? MIO_CONFORMITY_WELD
+                                                                : (r.mInterfaceMode == "proximity"
+                                                                       ? MIO_CONFORMITY_PROXIMITY
+                                                                       : MIO_CONFORMITY_CONFORMING);
+            report->num_warnings = static_cast<int64_t>(r.mWarnings.size());
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+int64_t mio_check_conformity_warnings(char* buf, int64_t buflen) {
+    return guarded_ptr(int64_t{-1}, [&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative warnings buffer length");
+        return copy_string(capi_conformity_warnings(), buf, buflen);
     });
 }
 

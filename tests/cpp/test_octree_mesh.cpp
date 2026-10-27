@@ -28,6 +28,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -348,6 +349,76 @@ TEST(OctreeMesh, IsTheSameOnEveryThreadCount) {
 #ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
     omp_set_num_threads(saved);
 #endif
+}
+
+namespace {
+
+// Switch the flooded inside test off (the internal test hook) for a scope.
+struct OmNoFlood {
+    OmNoFlood() { om_setenv("0"); }
+    ~OmNoFlood() { om_setenv(nullptr); }
+    static void om_setenv(const char* pValue) {
+#ifdef _WIN32
+        _putenv_s("MESHIOPLUSPLUS_OCTREE_MESH_FLOOD", pValue != nullptr ? pValue : "");
+#else
+        if (pValue != nullptr)
+            setenv("MESHIOPLUSPLUS_OCTREE_MESH_FLOOD", pValue, 1);
+        else
+            unsetenv("MESHIOPLUSPLUS_OCTREE_MESH_FLOOD");
+#endif
+    }
+};
+
+std::uint64_t om_digest(const mio::Mesh& rMesh) {
+    mio::bench::MeshDigest d;
+    d.Of(rMesh);
+    return d.Value();
+}
+
+}  // namespace
+
+// Roadmap 3.1.4.3: deep inside a closed skin the winding number is flooded in
+// rather than evaluated, and every output is bit for bit what it was.
+TEST(OctreeMesh, TheFloodedInsideTestChangesNoOutput) {
+    const mio::Mesh sphere = mio::icosa_sphere(1.0, 3);
+    for (auto output : {mio::OctreeMeshOutput::Tetra, mio::OctreeMeshOutput::Castellated,
+                        mio::OctreeMeshOutput::Hexa}) {
+        mio::OctreeMeshOptions o;
+        o.mOutput = output;
+        o.mMaxSize = 0.12;
+        o.mMinSize = 0.06;
+        const auto flooded = mio::octree_mesh(sphere, o);
+        EXPECT_GT(flooded.mNumWindingSkipped, 0) << static_cast<int>(output);
+        std::uint64_t plain_digest = 0;
+        std::int64_t plain_rechecks = 0;
+        {
+            OmNoFlood off;
+            const auto plain = mio::octree_mesh(sphere, o);
+            EXPECT_EQ(plain.mNumWindingSkipped, 0);
+            plain_digest = om_digest(plain.mMesh);
+            plain_rechecks = plain.mNumWindingRechecks;
+        }
+        EXPECT_EQ(om_digest(flooded.mMesh), plain_digest) << static_cast<int>(output);
+        EXPECT_EQ(flooded.mNumWindingRechecks, plain_rechecks) << static_cast<int>(output);
+    }
+}
+
+TEST(OctreeMesh, AnOpenSkinIsNotFlooded) {
+    // The sphere less one triangle: its winding number is not an integer.
+    const mio::Mesh closed = mio::icosa_sphere(1.0, 2);
+    const auto block = closed.Cells(0);
+    std::vector<std::vector<std::int64_t>> tris;
+    for (std::size_t t = 1; t < block.NumCells(); ++t)
+        tris.push_back({block.Conn().As<std::int64_t>()[t * 3],
+                        block.Conn().As<std::int64_t>()[t * 3 + 1],
+                        block.Conn().As<std::int64_t>()[t * 3 + 2]});
+    std::vector<std::vector<double>> pts;
+    const double* p = closed.Points().As<double>();
+    for (std::size_t i = 0; i < closed.NumPoints(); ++i)
+        pts.push_back({p[i * 3], p[i * 3 + 1], p[i * 3 + 2]});
+    mio::OctreeMeshOptions o = om_castellated(0.2, 0.1);
+    const auto r = mio::octree_mesh(mt::make_mesh(pts, "triangle", tris), o);
+    EXPECT_EQ(r.mNumWindingSkipped, 0);
 }
 
 TEST(OctreeMesh, RefusesBadOptionsByName) {

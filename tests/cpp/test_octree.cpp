@@ -33,6 +33,7 @@
 
 // Project includes
 #include "mesh_fixtures.hpp"
+#include "meshioplusplus/operations/check_conformity.hpp"
 #include "meshioplusplus/operations/octree.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
 
@@ -158,7 +159,9 @@ TEST(Octree, FaceBalanceHolds) {
     const double* pts = m.Points().As<double>();
     const std::int64_t* conn = m.Cells(0).Conn().As<std::int64_t>();
     const std::size_t n = m.Cells(0).NumCells();
-    struct Box { double lo[3], hi[3]; };
+    struct Box {
+        double lo[3], hi[3];
+    };
     std::vector<Box> boxes(n);
     for (std::size_t c = 0; c < n; ++c) {
         for (int k = 0; k < 3; ++k) {
@@ -175,7 +178,8 @@ TEST(Octree, FaceBalanceHolds) {
                 if (std::fabs(boxes[a].hi[k] - boxes[b].lo[k]) < eps ||
                     std::fabs(boxes[b].hi[k] - boxes[a].lo[k]) < eps)
                     ++touching;
-                else if (boxes[a].lo[k] < boxes[b].hi[k] - eps && boxes[b].lo[k] < boxes[a].hi[k] - eps)
+                else if (boxes[a].lo[k] < boxes[b].hi[k] - eps &&
+                         boxes[b].lo[k] < boxes[a].hi[k] - eps)
                     ++overlap;
             }
             if (touching == 1 && overlap == 2)
@@ -271,6 +275,34 @@ TEST(Octree, TemplatesConserveVolumeAndStayPositive) {
     bool positive = false;
     EXPECT_NEAR(sum_cell_volume(r.mMesh, positive), 2.4 * 2.4 * 2.4, 1e-9);
     EXPECT_TRUE(positive);
+}
+
+// Roadmap 3.1.4.2: check_conformity finds no hanging node in the conforming
+// transitions, and under "hanging" flags exactly the points octree:hanging does.
+TEST(Octree, ConformityProbesAgreeWithTheTransitions) {
+    OctreeOptions o;
+    o.mBounds = std::array<double, 6>{{-1.2, -1.2, -1.2, 1.2, 1.2, 1.2}};
+    o.mMaxLevel = 4;
+    const Mesh skin = uv_sphere(1.0, 24, 12);
+    const OctreeResult hanging = octree(skin, o);
+    ASSERT_GT(hanging.mNumHanging, 0);
+    const meshioplusplus::ConformityResult c = meshioplusplus::check_conformity(hanging.mMesh);
+    EXPECT_EQ(c.mNumHangingNodes, hanging.mNumHanging);
+    const std::int64_t* want =
+        hanging.mMesh.PointData(meshioplusplus::kOctreeHangingName).As<std::int64_t>();
+    const std::int64_t* got =
+        c.mMesh.PointData(meshioplusplus::kConformityHangingName).As<std::int64_t>();
+    for (std::size_t i = 0; i < hanging.mMesh.NumPoints(); ++i)
+        EXPECT_EQ(got[i] != 0, want[i] != 0) << i;
+    for (auto t : {meshioplusplus::OctreeTransition::Polyhedra,
+                   meshioplusplus::OctreeTransition::Templates}) {
+        o.mTransition = t;
+        const meshioplusplus::ConformityResult r =
+            meshioplusplus::check_conformity(octree(skin, o).mMesh);
+        EXPECT_EQ(r.mNumHangingNodes, 0) << static_cast<int>(t);
+        EXPECT_EQ(r.mNumPartialOverlaps, 0) << static_cast<int>(t);
+        EXPECT_TRUE(r.mConforming) << static_cast<int>(t);
+    }
 }
 
 TEST(Octree, PolyhedraNeedABalancedTree) {

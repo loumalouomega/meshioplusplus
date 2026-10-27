@@ -93,6 +93,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/formats/step.hpp"
 #include "meshioplusplus/formats/radioss_th.hpp"
 #include "meshioplusplus/formats/xyz.hpp"
+#include "meshioplusplus/operations/check_conformity.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
@@ -326,7 +327,12 @@ MIO_ABI_LAYOUT(meshioplusplus::SequenceResample, 64, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SurfaceQuality, 40, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SurfaceDistanceOptions, 80, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SdfOptions, 248, 8);
-MIO_ABI_LAYOUT(meshioplusplus::VoxelOptions, 216, 8);
+// ABI 36: `mPlane`, the 2-D variant's plane (roadmap 3.1.4.1), appended.
+MIO_ABI_LAYOUT(meshioplusplus::VoxelOptions, 224, 8);
+static_assert(offsetof(meshioplusplus::VoxelOptions, mPlane) == 216, "VoxelOptions::mPlane moved");
+// ABI 36: check_conformity's options (roadmap 3.2.1), pinned from the release
+// that introduces them.
+MIO_ABI_LAYOUT(meshioplusplus::ConformityOptions, 16, 8);
 MIO_ABI_LAYOUT(meshioplusplus::OctreeOptions, 304, 8);
 MIO_ABI_LAYOUT(meshioplusplus::OctreeMeshOptions, 336, 8);
 // ABI 34 (v17.15.0): the quality options of roadmap 6.2 and the fields 6.3,

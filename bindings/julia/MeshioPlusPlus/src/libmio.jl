@@ -456,7 +456,8 @@ struct _COctreeMeshReport
     num_flips::Int64
     num_winding_rechecks::Int64
     num_warnings::Int64
-    reserved::NTuple{8,Int64}
+    num_winding_skipped::Int64
+    reserved::NTuple{7,Int64}
 end
 
 """
@@ -478,7 +479,9 @@ struct _CVoxelOpts
     attach_occupancy::Int32
     sign::Int32
     watertight_check::Int32
-    reserved::NTuple{6,Int64}
+    plane::Int32
+    reserved32::Int32
+    reserved::NTuple{5,Int64}
 end
 
 """
@@ -771,6 +774,29 @@ struct _CErrorSizeReport
     min_size::Cdouble
     max_size::Cdouble
     reserved::NTuple{3,Int64}
+end
+
+"""Mirror of C `mio_conformity_opts` (roadmap 3.2.1)."""
+struct _CConformityOpts
+    tolerance::Cdouble
+    attach_flags::Int32
+    reserved32::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_conformity_report`."""
+struct _CConformityReport
+    dimension::Int64
+    num_hanging_nodes::Int64
+    num_t_junctions::Int64
+    num_partial_overlaps::Int64
+    num_unwelded_facets::Int64
+    num_boundary_facets::Int64
+    num_non_manifold_facets::Int64
+    conforming::Int32
+    interface_mode::Int32
+    num_warnings::Int64
+    reserved::NTuple{4,Int64}
 end
 
 """Mirror of C `mio_boundary_layer_opts` (roadmap 6.9)."""
@@ -1501,6 +1527,13 @@ function _check_abi_layout()
     (sizeof(_CErrorSizeReport) == 64 && fieldoffset(_CErrorSizeReport, 5) == 32) ||
         error("meshio++: mio_error_size_report layout mismatch " *
               "($(sizeof(_CErrorSizeReport)) bytes)")
+    (sizeof(_CConformityOpts) == 48 && fieldoffset(_CConformityOpts, 4) == 16) ||
+        error("meshio++: mio_conformity_opts layout mismatch " *
+              "($(sizeof(_CConformityOpts)) bytes)")
+    (sizeof(_CConformityReport) == 104 && fieldoffset(_CConformityReport, 8) == 56 &&
+     fieldoffset(_CConformityReport, 10) == 64) ||
+        error("meshio++: mio_conformity_report layout mismatch " *
+              "($(sizeof(_CConformityReport)) bytes)")
     (sizeof(_CBoundaryLayerOpts) == 64 && fieldoffset(_CBoundaryLayerOpts, 4) == 24 &&
      fieldoffset(_CBoundaryLayerOpts, 8) == 40 && fieldoffset(_CBoundaryLayerOpts, 12) == 56) ||
         error("meshio++: mio_boundary_layer_opts layout mismatch " *

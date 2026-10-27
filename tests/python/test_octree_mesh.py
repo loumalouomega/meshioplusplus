@@ -86,6 +86,8 @@ def test_castellated_regions_distances_and_report():
         "quality",
     ]
     assert report["warnings"] == []
+    # A closed skin: the points deep inside are flooded, not evaluated.
+    assert report["num_winding_skipped"] > 0
     # The distance is negative inside, the closest points lie on the skin.
     d = out.point_data["sdf:distance"]
     cp = out.point_data["sdf:closest_point"]

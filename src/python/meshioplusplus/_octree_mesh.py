@@ -53,6 +53,7 @@ _REPORT_INTS = (
     "num_optimized_moves",
     "num_flips",
     "num_winding_rechecks",
+    "num_winding_skipped",
 )
 _REPORT_FLOATS = (
     "root_size",
@@ -201,7 +202,8 @@ def octree_mesh(
         the features (``num_corners``, ``num_corners_snapped``,
         ``num_feature_chains``, ``num_feature_chains_missed``,
         ``num_feature_moves``), the optimisation (``num_optimized_moves``,
-        ``num_flips``), ``guarantee_applies``, ``num_winding_rechecks``, ``timings`` (seconds
+        ``num_flips``), ``guarantee_applies``, ``num_winding_rechecks``,
+        ``num_winding_skipped`` (deep inside a closed skin), ``timings`` (seconds
         per stage) and ``warnings``.
     :raises ValueError: on an option out of range.
     :raises NotImplementedError: without the compiled core.

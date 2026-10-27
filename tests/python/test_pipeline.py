@@ -803,6 +803,70 @@ def test_cli_pipeline_verb(settings_env, tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["steps"] == [{"op": "Quality"}]
 
 
+def test_check_conformity_step_gates_and_reports(tmp_path):
+    """``CheckConformity`` stops a non-conforming mesh, or reports and flags it."""
+    pts = np.array(
+        [[0, 0], [1, 0], [1, 1], [0, 1], [2, 0], [2, 0.5], [2, 1], [1, 0.5]],
+        dtype=float,
+    )
+    quads = np.array([[0, 1, 2, 3], [1, 4, 5, 7], [7, 5, 6, 2]])
+    src = tmp_path / "t.vtu"
+    meshioplusplus.write(src, meshioplusplus.Mesh(pts, [("quad", quads)]))
+
+    def settings(step, out):
+        return {
+            "Version": 1,
+            "Input": {"Path": str(src)},
+            "Operations": [dict(step, Op="CheckConformity")],
+            "Output": {"Path": str(tmp_path / out)},
+        }
+
+    with pytest.raises(RuntimeError, match="1 T-junction"):
+        meshioplusplus.run_pipeline(settings({}, "gate.vtu"))
+    doc = settings({"Require": False, "AttachFlags": True}, "py.vtu")
+    report = meshioplusplus.run_pipeline(doc)
+    assert report["steps"][0]["NumTJunctions"] == 1.0
+    assert report["steps"][0]["NumPartialOverlaps"] == 2.0
+    py_mesh = meshioplusplus.read(tmp_path / "py.vtu")
+    assert "conformity:hanging" in py_mesh.point_data
+    if hasattr(_core, "run_pipeline_json"):
+        with pytest.raises(RuntimeError, match="1 T-junction"):
+            _core.run_pipeline_json(json.dumps(settings({}, "gate_cpp.vtu")))
+        doc["Output"]["Path"] = str(tmp_path / "cpp.vtu")
+        cpp_report = _core.run_pipeline_json(json.dumps(doc))
+        assert cpp_report["steps"][0]["NumTJunctions"] == 1.0
+        cpp_mesh = meshioplusplus.read(doc["Output"]["Path"])
+        assert meshioplusplus.meshes_equal(py_mesh, cpp_mesh)
+
+
+def test_voxelize_step_takes_a_plane(tmp_path):
+    """A two-entry ``Resolution`` is 2-D pixels in both engines, in ``Plane``."""
+    pts = np.array([[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]], dtype=float)
+    loop = meshioplusplus.Mesh(
+        pts, [("line", np.array([[0, 1], [1, 2], [2, 3], [3, 0]]))]
+    )
+    src = tmp_path / "loop.vtu"
+    meshioplusplus.write(src, loop)
+    settings = {
+        "Version": 1,
+        "Input": {"Path": str(src)},
+        "Operations": [
+            {"Op": "Voxelize", "Resolution": [4, 4], "Fill": "inside", "Plane": "xz"}
+        ],
+        "Output": {"Path": str(tmp_path / "py.vtu")},
+    }
+    report = meshioplusplus.run_pipeline(settings)
+    assert report["steps"][0]["NumOccupied"] == 16.0
+    py_mesh = meshioplusplus.read(tmp_path / "py.vtu")
+    assert py_mesh.cells[0].type == "quad"
+    if hasattr(_core, "run_pipeline_json"):
+        settings["Output"]["Path"] = str(tmp_path / "cpp.vtu")
+        cpp_report = _core.run_pipeline_json(json.dumps(settings))
+        assert cpp_report["steps"][0]["NumOccupied"] == 16.0
+        cpp_mesh = meshioplusplus.read(settings["Output"]["Path"])
+        assert meshioplusplus.meshes_equal(py_mesh, cpp_mesh)
+
+
 def test_octree_step_replaces_the_geometry(tmp_path):
     """``Octree`` is ``Voxelize``'s adaptive sibling in the single-mesh chain."""
     surface = meshioplusplus.convert_cells(

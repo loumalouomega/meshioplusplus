@@ -637,6 +637,38 @@ export interface TetrahedralizeResult {
   warnings: string[];
 }
 
+/** Options of `checkConformity` (doc/check_conformity.md). */
+export interface ConformityOptions {
+  /** Distances at or below this fraction of the examined facets' bounding-box
+   *  diagonal count as zero (default 1e-9). */
+  tolerance?: number;
+  /** Attach the `conformity:hanging` point data (default true). */
+  attachFlags?: boolean;
+}
+
+/** What `checkConformity` returns. */
+export interface ConformityResult {
+  /** The input, unchanged but for `conformity:hanging` (1 hanging node, 2 T-junction). */
+  mesh: Mesh;
+  /** 3 for volume cells, 2 for 2-D cells, 0 when nothing was examined. */
+  dimension: number;
+  /** Points on a volume cell's face or edge that the cell does not use. */
+  numHangingNodes: number;
+  /** Points on a 2-D cell's edge that the cell does not use. */
+  numTJunctions: number;
+  /** Pairs of unmatched facets in one plane that overlap over a positive area. */
+  numPartialOverlaps: number;
+  /** Pairs of coincident unmatched facets with different point ids. */
+  numUnweldedFacets: number;
+  numBoundaryFacets: number;
+  numNonManifoldFacets: number;
+  /** None of the four defects above. */
+  conforming: boolean;
+  /** The `findInterface` mode that suits the mesh. */
+  interfaceMode: 'conforming' | 'weld' | 'proximity';
+  warnings: string[];
+}
+
 /** Options of `errorSize` (doc/error.md). */
 export interface ErrorSizeOptions {
   /** The target global error, in the indicator's norm (positive; required). */
@@ -1330,6 +1362,7 @@ export type OpSpec =
       attachOccupancy?: boolean;
       maxCells?: number;
       sign?: SdfSign;
+      plane?: PlanarPlane;
     }
   | {
       /**
@@ -2603,9 +2636,11 @@ export interface MeshioPlusPlusModule {
   /**
    * Build a regular grid around a mesh. Give exactly one of `resolution` and
    * `cellSize`; `fill` selects the whole bounding box, only the cells a triangle
-   * passes through, or only the cells inside the surface.
+   * passes through, or only the cells inside the surface. A zero third
+   * `resolution` entry selects 2-D pixels around a planar skin in `plane`
+   * (`'auto'` takes the axis of zero extent).
    * @throws {Error} when neither or both size options are given, on an unknown
-   *   `fill`/`sign`, or when the grid exceeds `maxCells`.
+   *   `fill`/`sign`/`plane`, or when the grid exceeds `maxCells`.
    */
   voxelize(
     mesh: Mesh,
@@ -2619,6 +2654,7 @@ export interface MeshioPlusPlusModule {
     attachOccupancy?: boolean,
     maxCells?: number,
     watertightCheck?: SdfWatertightCheck,
+    plane?: PlanarPlane,
   ): {
     mesh: Mesh;
     dims: number[];
@@ -2884,6 +2920,14 @@ export interface MeshioPlusPlusModule {
    *   an unknown option.
    */
   errorSize(mesh: Mesh, options: ErrorSizeOptions): ErrorSizeResult;
+
+  /**
+   * Whether a mesh is conforming: hanging nodes, T-junctions, partly
+   * overlapping and unwelded facets of its volume cells (else its 2-D cells).
+   * See doc/check_conformity.md.
+   * @throws {Error} on a negative or non-finite tolerance, or an unknown option.
+   */
+  checkConformity(mesh: Mesh, options?: ConformityOptions): ConformityResult;
 
   /**
    * Remesh a surface by approximated centroidal Voronoi diagram (ACVD)
@@ -4286,6 +4330,8 @@ export interface OctreeMeshResult {
   guaranteeApplies: boolean;
   /** Winding numbers re-evaluated near the threshold. */
   numWindingRechecks: number;
+  /** Winding numbers flooded in deep inside a closed skin, not evaluated. */
+  numWindingSkipped: number;
   /** Seconds spent in each stage, in order, as `[stage, seconds]` pairs. */
   timings: Array<[string, number]>;
   /** Everything that did not meet its target, in order. */

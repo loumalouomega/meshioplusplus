@@ -1301,6 +1301,55 @@ SEXP R_mio_error_size(SEXP mesh, SEXP target_error, SEXP error_array, SEXP order
     return res;
 }
 
+/* mio_r_getstring adapter: the warnings of this thread's last check_conformity call. */
+static int64_t r_check_conformity_warnings(void *ctx, char *buf, int64_t buflen) {
+    (void)ctx;
+    return mio_check_conformity_warnings(buf, buflen);
+}
+
+/* check_conformity (roadmap 3.2.1): hanging nodes, T-junctions, partly
+ * overlapping and unwelded facets. Returns list(mesh, dimension, ...,
+ * interface_mode, warnings). */
+SEXP R_mio_check_conformity(SEXP mesh, SEXP tolerance, SEXP attach_flags) {
+    mio_conformity_opts opts;
+    mio_conformity_opts_init(&opts);
+    opts.tolerance = mio_r_double(tolerance, "tolerance");
+    opts.attach_flags = mio_r_bool(attach_flags, "attach_flags");
+    mio_conformity_report report;
+    mio_mesh *out = mio_check_conformity(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL) mio_r_fail("check_conformity");
+    static const char *modes[] = {"conforming", "weld", "proximity"};
+    const char *mode = (report.interface_mode >= 0 && report.interface_mode <= 2)
+                           ? modes[report.interface_mode]
+                           : "unknown";
+    SEXP v[11];
+    v[0] = PROTECT(mio_r_wrap_mesh(out));
+    v[1] = PROTECT(Rf_ScalarReal((double)report.dimension));
+    v[2] = PROTECT(Rf_ScalarReal((double)report.num_hanging_nodes));
+    v[3] = PROTECT(Rf_ScalarReal((double)report.num_t_junctions));
+    v[4] = PROTECT(Rf_ScalarReal((double)report.num_partial_overlaps));
+    v[5] = PROTECT(Rf_ScalarReal((double)report.num_unwelded_facets));
+    v[6] = PROTECT(Rf_ScalarReal((double)report.num_boundary_facets));
+    v[7] = PROTECT(Rf_ScalarReal((double)report.num_non_manifold_facets));
+    v[8] = PROTECT(Rf_ScalarLogical(report.conforming != 0));
+    v[9] = PROTECT(Rf_mkString(mode));
+    v[10] = PROTECT(mio_r_getstring(r_check_conformity_warnings, NULL, "check_conformity"));
+    const char *names[] = {"mesh",
+                           "dimension",
+                           "num_hanging_nodes",
+                           "num_t_junctions",
+                           "num_partial_overlaps",
+                           "num_unwelded_facets",
+                           "num_boundary_facets",
+                           "num_non_manifold_facets",
+                           "conforming",
+                           "interface_mode",
+                           "warnings"};
+    SEXP res = PROTECT(mio_r_named_list(11, names, v));
+    UNPROTECT(12);
+    return res;
+}
+
 /* boundary_layer (roadmap 6.9): prisms grown from a surface. Returns
  * list(mesh, num_cells, ..., cap_closed). */
 SEXP R_mio_boundary_layer(SEXP mesh, SEXP first_height, SEXP num_layers, SEXP growth,
@@ -2559,7 +2608,7 @@ SEXP R_mio_reference_cells(SEXP types, SEXP pairs) {
 
 SEXP R_mio_voxelize(SEXP mesh, SEXP resolution, SEXP cell_size, SEXP bounds, SEXP padding,
                     SEXP padding_relative, SEXP fill, SEXP sign, SEXP attach_occupancy,
-                    SEXP max_cells, SEXP watertight_check) {
+                    SEXP max_cells, SEXP watertight_check, SEXP plane) {
     mio_voxel_opts opts;
     mio_voxel_opts_init(&opts);
 
@@ -2594,6 +2643,7 @@ SEXP R_mio_voxelize(SEXP mesh, SEXP resolution, SEXP cell_size, SEXP bounds, SEX
     opts.attach_occupancy = mio_r_bool(attach_occupancy, "attach_occupancy");
     opts.max_cells = mio_r_int64(max_cells, "max_cells");
     opts.watertight_check = (int32_t)mio_r_int(watertight_check, "watertight_check");
+    opts.plane = (int32_t)mio_r_int(plane, "plane");
 
     int64_t cdims[3] = {0, 0, 0}, occupied = 0;
     double origin[3] = {0, 0, 0}, spacing[3] = {0, 0, 0};
@@ -2788,7 +2838,7 @@ SEXP R_mio_octree_mesh(SEXP mesh, SEXP output, SEXP conformity, SEXP skin_gradin
     const char *output_name =
         (report.output >= 0 && report.output <= 2) ? outputs[report.output] : "unknown";
 
-    enum { R_OCTREE_MESH_N = 40 };
+    enum { R_OCTREE_MESH_N = 41 };
     SEXP res = PROTECT(Rf_allocVector(VECSXP, R_OCTREE_MESH_N));
     SEXP nm = PROTECT(Rf_allocVector(STRSXP, R_OCTREE_MESH_N));
     int k = 0;
@@ -2849,6 +2899,7 @@ SEXP R_mio_octree_mesh(SEXP mesh, SEXP output, SEXP conformity, SEXP skin_gradin
     R_OCTREE_MESH_NUM(num_optimized_moves);
     R_OCTREE_MESH_NUM(num_flips);
     R_OCTREE_MESH_NUM(num_winding_rechecks);
+    R_OCTREE_MESH_NUM(num_winding_skipped);
     R_OCTREE_MESH_NUM(num_warnings);
     /* One string, newline-separated; the R wrapper splits it. */
     R_OCTREE_MESH_SET("warnings", warnings);

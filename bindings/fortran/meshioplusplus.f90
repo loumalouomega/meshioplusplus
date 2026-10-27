@@ -73,6 +73,8 @@ module meshioplusplus
     public :: mio_boundary_layer, mio_boundary_layer_report
     public :: mio_tetrahedralize, mio_tetrahedralize_report, mio_has_netgen
     public :: mio_error_size_report
+    public :: mio_conformity_report
+    public :: MIO_CONFORMITY_CONFORMING, MIO_CONFORMITY_WELD, MIO_CONFORMITY_PROXIMITY
     public :: MIO_MESH_CAD_OK, MIO_MESH_CAD_EMPTY, MIO_MESH_CAD_OPEN_LOOP
     public :: MIO_MESH_CAD_SELF_INTERSECTING, MIO_MESH_CAD_DEGENERATE
     public :: MIO_MESH_CAD_PROJECTION_FAILED, MIO_MESH_CAD_BUDGET_EXCEEDED
@@ -568,6 +570,35 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(3) = 0
     end type
 
+    !> `mio_conformity_mode`: the `interface_mode` of a conformity report.
+    integer(c_int32_t), parameter :: MIO_CONFORMITY_CONFORMING = 0
+    integer(c_int32_t), parameter :: MIO_CONFORMITY_WELD = 1
+    integer(c_int32_t), parameter :: MIO_CONFORMITY_PROXIMITY = 2
+
+    !> Interop mirror of C `mio_conformity_opts` (48 bytes, checked by
+    !> `check_conformity`; roadmap 3.2.1).
+    type, bind(c) :: mio_conformity_opts_t
+        real(c_double) :: tolerance = 1.0e-9_c_double
+        integer(c_int32_t) :: attach_flags = 1
+        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_conformity_report` (104 bytes): what `check_conformity` found.
+    type, bind(c) :: mio_conformity_report
+        integer(c_int64_t) :: dimension = 0
+        integer(c_int64_t) :: num_hanging_nodes = 0
+        integer(c_int64_t) :: num_t_junctions = 0
+        integer(c_int64_t) :: num_partial_overlaps = 0
+        integer(c_int64_t) :: num_unwelded_facets = 0
+        integer(c_int64_t) :: num_boundary_facets = 0
+        integer(c_int64_t) :: num_non_manifold_facets = 0
+        integer(c_int32_t) :: conforming = 0
+        integer(c_int32_t) :: interface_mode = 0
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
     !> Interop mirror of C `mio_boundary_layer_opts` (64 bytes; roadmap 6.9).
     type, bind(c) :: mio_boundary_layer_opts_t
         real(c_double) :: first_height = 0.0_c_double
@@ -952,7 +983,9 @@ module meshioplusplus
         integer(c_int32_t) :: attach_occupancy = 0
         integer(c_int32_t) :: sign = 1
         integer(c_int32_t) :: watertight_check = 1
-        integer(c_int64_t) :: reserved(6) = 0
+        integer(c_int32_t) :: plane = 0
+        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int64_t) :: reserved(5) = 0
     end type
 
     !> Interop mirror of C `mio_gen_opts`, the options of the parametric
@@ -1102,7 +1135,8 @@ module meshioplusplus
         integer(c_int64_t) :: num_flips = 0
         integer(c_int64_t) :: num_winding_rechecks = 0
         integer(c_int64_t) :: num_warnings = 0
-        integer(c_int64_t) :: reserved(8) = 0
+        integer(c_int64_t) :: num_winding_skipped = 0
+        integer(c_int64_t) :: reserved(7) = 0
     end type
 
     !> Interop mirror of C `mio_compute_sdf_opts`. Same ABI rules as above. For
@@ -1632,6 +1666,7 @@ module meshioplusplus
         procedure :: hessian => mesh_hessian
         procedure :: estimate_error => mesh_estimate_error
         procedure :: error_size => mesh_error_size
+        procedure :: check_conformity => mesh_check_conformity
         procedure :: remesh => mesh_remesh
         procedure :: curvature => mesh_curvature
         procedure :: normals => mesh_normals
@@ -4631,6 +4666,23 @@ module meshioplusplus
             integer(c_int) :: r
         end function
 
+        function c_mio_check_conformity(mesh, opts, report) &
+                bind(c, name="mio_check_conformity") result(h)
+            import :: c_ptr, mio_conformity_opts_t, mio_conformity_report
+            type(c_ptr), value :: mesh
+            type(mio_conformity_opts_t), intent(in) :: opts
+            type(mio_conformity_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_check_conformity_warnings(buf, buflen) &
+                bind(c, name="mio_check_conformity_warnings") result(n)
+            import :: c_char, c_int64_t
+            character(c_char), intent(out) :: buf(*)
+            integer(c_int64_t), value :: buflen
+            integer(c_int64_t) :: n
+        end function
+
         function c_mio_error_size(mesh, opts, report) &
                 bind(c, name="mio_error_size") result(h)
             import :: c_ptr, mio_error_size_opts_t, mio_error_size_report
@@ -6573,6 +6625,57 @@ contains
             return
         end if
         if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Whether the mesh is conforming (roadmap 3.2.1): its volume cells (else
+    !> its 2-D cells) are checked for hanging nodes (a point on a volume cell's
+    !> face or edge that the cell does not use), T-junctions (the same on a 2-D
+    !> cell's edge), partly overlapping and unwelded pairs of unmatched facets.
+    !> `tolerance` (default 1e-9) is a fraction of the examined facets'
+    !> bounding-box diagonal; with `attach_flags` (default true) the result
+    !> carries the Int64 point data `conformity:hanging` (1 hanging node, 2
+    !> T-junction). The optional `report` holds the counts, `conforming` and
+    !> `interface_mode` (a MIO_CONFORMITY_* code: the find_interface mode that
+    !> suits the mesh); `warnings` receives what was not examined, one per line.
+    function mesh_check_conformity(self, tolerance, attach_flags, report, warnings, &
+                                   stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        real(real64), intent(in), optional :: tolerance
+        logical, intent(in), optional :: attach_flags
+        type(mio_conformity_report), intent(out), optional :: report
+        character(:), allocatable, intent(out), optional :: warnings
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_conformity_opts_t) :: opts
+        type(mio_conformity_report) :: rep
+        character(c_char), allocatable :: wbuf(:)
+        integer(c_int64_t) :: n
+        if (c_sizeof(opts) /= 48_c_size_t .or. c_sizeof(rep) /= 104_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: check_conformity layout mismatch'
+            error stop 1
+        end if
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(attach_flags)) opts%attach_flags = merge(1_c_int32_t, 0_c_int32_t, attach_flags)
+        out%handle = c_mio_check_conformity(self%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('check_conformity', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        if (present(warnings)) then
+            warnings = ''
+            ! String rule 5: query the length with an empty buffer, then copy.
+            allocate (wbuf(1))
+            n = c_mio_check_conformity_warnings(wbuf, 0_c_int64_t)
+            if (n > 0 .and. n < int(huge(0) - 1, c_int64_t)) then
+                deallocate (wbuf)
+                allocate (wbuf(int(n) + 1))
+                n = c_mio_check_conformity_warnings(wbuf, n + 1)
+                if (n > 0) warnings = from_c_buf(wbuf, int(n))
+            end if
+        end if
         call clear_status(stat, errmsg)
     end function
 
@@ -8916,15 +9019,17 @@ contains
     !> 'surface' (only cells a triangle passes through) or 'inside' (only cells
     !> whose centre is inside the surface). The lattice geometry comes back
     !> through the optional `dims`/`origin`/`spacing`/`num_occupied` arguments.
+    !> `plane` ('auto', 'xy', 'xz' or 'yz') is the plane of a 2-D skin
+    !> (resolution(3) = 0); 'auto' takes the axis of zero extent.
     function mesh_voxelize(self, resolution, cell_size, bounds, padding, &
                            padding_relative, fill, sign, watertight_check, &
                            attach_occupancy, max_cells, &
-                           dims, origin, spacing, num_occupied, stat, errmsg) result(out)
+                           dims, origin, spacing, num_occupied, stat, errmsg, plane) result(out)
         class(mio_mesh), intent(in) :: self
         integer, intent(in), optional :: resolution(3)
         real(real64), intent(in), optional :: cell_size, bounds(6)
         real(real64), intent(in), optional :: padding, padding_relative
-        character(*), intent(in), optional :: fill, sign, watertight_check
+        character(*), intent(in), optional :: fill, sign, watertight_check, plane
         logical, intent(in), optional :: attach_occupancy
         integer(int64), intent(in), optional :: max_cells
         integer(int64), intent(out), optional :: dims(3), num_occupied
@@ -8982,6 +9087,17 @@ contains
                 call handle_failure('voxelize', &
                                     'unknown watertight check '//trim(watertight_check), &
                                     stat, errmsg)
+                return
+            end select
+        end if
+        if (present(plane)) then
+            select case (trim(plane))
+            case ('', 'auto'); opts%plane = 0
+            case ('xy'); opts%plane = 1
+            case ('xz'); opts%plane = 2
+            case ('yz'); opts%plane = 3
+            case default
+                call handle_failure('voxelize', 'unknown plane '//trim(plane), stat, errmsg)
                 return
             end select
         end if

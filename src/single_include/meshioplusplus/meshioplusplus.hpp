@@ -25539,6 +25539,109 @@ MESHIOPLUSPLUS_API BoundaryLayerResult boundary_layer(const Mesh& rSurface,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/boundary_layer.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/check_conformity.hpp =====
+/**
+ * @file operations/check_conformity.hpp
+ * @brief Whether a mesh is conforming: hanging nodes, T-junctions and facets
+ * that only partly overlap, reported with a flag per point.
+ *
+ * A mesh is conforming when every two cells meet in a whole shared facet, edge
+ * or corner, with the same point ids on both sides. This check reports the ways
+ * that fails on the mesh's top-dimensional cells (volume cells when there are
+ * any, else 2-D cells; lines and vertices are ignored):
+ *
+ *  - a **hanging node** (3-D): a point some cell uses that lies on a face of a
+ *    volume cell -- in its interior or on one of its edges -- without being one
+ *    of that cell's nodes;
+ *  - a **T-junction** (2-D): a point some cell uses that lies on the interior of
+ *    an edge of a 2-D cell without being one of its nodes;
+ *  - a **partial overlap**: two unmatched facets (faces in 3-D, edges in 2-D)
+ *    that lie in one plane (on one line) and overlap over a positive area
+ *    (length) without being the same facet;
+ *  - an **unwelded** pair: two unmatched facets whose corners coincide but whose
+ *    point ids differ.
+ *
+ * Only unmatched facets -- a face of one volume cell, an edge of one 2-D cell
+ * -- are examined: a node hanging on a face is always a corner of an unmatched
+ * facet of the finer side, and a face matched by its neighbour cannot hold one.
+ * A cell's own nodes are never flagged against it, so a quadratic cell's
+ * mid-edge nodes are not hanging. Two points closer than the tolerance are one
+ * location: a point on a facet's corner is an unwelded duplicate, not a hanging
+ * node.
+ *
+ * The verdict tells a caller which `find_interface` mode suits the mesh:
+ * `"conforming"` when nothing is reported, `"weld"` when the only defect is
+ * unwelded facets (merge the coincident points, then `"conforming"`), and
+ * `"proximity"` when facets partly overlap. Points, connectivity, block order,
+ * data and regions are returned bit-identical; only the flag array is added.
+ *
+ * Deterministic: the flags are computed per point and the counts summed in
+ * facet order, so the result is identical across parallel backends and thread
+ * counts.
+ *
+ * @see doc/check_conformity.md
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Point data (Int64): 0, or `ConformityFlag::HangingNode`/`TJunction`.
+inline constexpr const char* kConformityHangingName = "conformity:hanging";
+
+/// The values of `conformity:hanging`.
+enum class ConformityFlag : std::int32_t {
+    Conforming = 0,
+    HangingNode = 1,  ///< on a face of a volume cell that does not use it
+    TJunction = 2,    ///< on an edge of a 2-D cell that does not use it
+};
+
+/// Options for `check_conformity`.
+struct ConformityOptions {
+    /// Distances at or below this fraction of the bounding-box diagonal of the
+    /// examined cells' points count as zero; must be finite and non-negative.
+    double mTolerance = 1e-9;
+    /// Attach `conformity:hanging` to the returned mesh.
+    bool mAttachFlags = true;
+};
+
+/// The verdict and the counts behind it.
+struct ConformityResult {
+    /// The input, bit-identical, with `conformity:hanging` when asked for.
+    Mesh mMesh;
+    /// 3 for volume cells, 2 for 2-D cells, 0 when the mesh has neither.
+    std::int64_t mDimension = 0;
+    std::int64_t mNumHangingNodes = 0;       ///< points flagged `HangingNode`
+    std::int64_t mNumTJunctions = 0;         ///< points flagged `TJunction`
+    std::int64_t mNumPartialOverlaps = 0;    ///< pairs of partly overlapping facets
+    std::int64_t mNumUnweldedFacets = 0;     ///< pairs of coincident, unwelded facets
+    std::int64_t mNumBoundaryFacets = 0;     ///< facets used by one cell
+    std::int64_t mNumNonManifoldFacets = 0;  ///< facets used by three or more cells
+    /// No hanging node, T-junction, partial overlap or unwelded pair.
+    bool mConforming = true;
+    /// `"conforming"`, `"weld"` or `"proximity"`: see the file comment.
+    std::string mInterfaceMode = "conforming";
+    /// What the check could not examine, one entry per line.
+    std::vector<std::string> mWarnings;
+};
+
+/**
+ * @brief Report the hanging nodes, T-junctions, partial overlaps and unwelded
+ * facets of @p rMesh.
+ * @param rMesh any mesh; its volume cells (else its 2-D cells) are examined.
+ * @param rOptions the tolerance and whether to attach the flags.
+ * @throws std::invalid_argument on a negative or non-finite tolerance.
+ */
+MESHIOPLUSPLUS_API ConformityResult check_conformity(const Mesh& rMesh,
+                                                     const ConformityOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/check_conformity.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/clean.hpp =====
 /**
  * @file operations/clean.hpp
@@ -30880,6 +30983,9 @@ struct VoxelOptions {
     std::int64_t mMaxCells = 20000000;
     /// How `VoxelFill::Inside` decides what is inside.
     SurfaceDistanceOptions mDistance;
+    /// The plane of a 2-D skin (`Auto`: the axis of zero extent, `z` first).
+    /// Ignored by the 3-D variant, as `OctreeOptions::mPlane` is.
+    detail::PlanarPlane mPlane = detail::PlanarPlane::Auto;
 };
 
 /// The result of `voxelize`: the grid and the lattice it came from.
@@ -31392,7 +31498,10 @@ struct OctreeMeshResult {
     /// `Uniform` grading, nothing snapped to features, nothing refused.
     bool mGuaranteeApplies = false;
     std::int64_t mNumWindingRechecks = 0;  ///< Winding numbers re-evaluated near 0.5.
-    QualityReport mQuality;                ///< `compute_quality` of the output.
+    /// Winding numbers not evaluated: the point lies deep in a region the
+    /// closed skin does not cut, whose integer winding number was flooded in.
+    std::int64_t mNumWindingSkipped = 0;
+    QualityReport mQuality;  ///< `compute_quality` of the output.
     /// Seconds spent in each stage, in order.
     std::vector<std::pair<std::string, double>> mTimings;
     /// Everything that did not meet its target, in order.
@@ -50215,6 +50324,7 @@ void mesh_cad_set_face_order_seed(std::uint64_t Seed);
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -50228,6 +50338,32 @@ inline constexpr const char* kOctreeMeshPrefix = "meshio++: octree_mesh: ";
 
 /// Everything the outputs are built from. Not movable once built: the trees
 /// point into the skin's soup.
+/**
+ * @brief The inside test's shortcut for a closed skin.
+ *
+ * The winding number of a closed, consistently oriented skin is an integer
+ * that only changes across the skin. The leaves the skin does not cut join
+ * into regions through their shared faces, and one region has one winding
+ * number, evaluated at a few of its leaves. A point in a *deep* leaf -- one
+ * neither it nor any of its 26 neighbours is cut -- takes that integer instead
+ * of a winding-number evaluation: its closed box is skin-free with a margin of
+ * a leaf, so a cut flag rounded the wrong way at a shared face cannot reach it.
+ * Points beside the skin are evaluated as before, so every decision that uses a
+ * winding number's value rather than its side (the snapping, the cuts, the
+ * manifold repair's scores) sees the same numbers.
+ */
+struct OctreeMeshFlood {
+    static constexpr std::int32_t kUnknown = std::numeric_limits<std::int32_t>::min();
+    /// The tree the flood was computed on, kept as it was: a later split of a
+    /// leaf does not move the skin.
+    LinearOctree mTree;
+    /// Per leaf of `mTree`, its region's winding number, or `kUnknown`.
+    std::vector<std::int32_t> mValue;
+    std::array<double, 3> mOrigin{{0.0, 0.0, 0.0}};
+    double mFine = 0.0;
+    bool mActive = false;
+};
+
 struct OctreeMeshSetup {
     OctreeSkin mSkin;
     TriBvh mBvh;
@@ -50243,6 +50379,8 @@ struct OctreeMeshSetup {
     double mWindingSign = 1.0;
     /// Points at most this far from the skin are on it.
     double mOnSkin = 0.0;
+    /// The flooded winding numbers of a closed skin (inactive otherwise).
+    OctreeMeshFlood mFlood;
 };
 
 /// A stopwatch that records each stage's seconds in the result.
@@ -50253,6 +50391,12 @@ struct OctreeMeshClock {
 
 /// Log a warning and keep it in the result.
 void octree_mesh_warn(OctreeMeshResult& rResult, const std::string& rMessage);
+
+/// Flood the winding numbers of a closed skin through the leaves of the
+/// setup's octree it does not cut; a skin that is not closed, a winding
+/// threshold within 0.1 of an integer, or `MESHIOPLUSPLUS_OCTREE_MESH_FLOOD=0`
+/// in the environment (a test hook) leaves it inactive.
+void octree_mesh_flood(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions);
 
 /// The winding number at every point (the skin's orientation applied), with
 /// the values near the threshold re-evaluated more accurately.
@@ -204510,6 +204654,589 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/boundary_layer.cpp =====
+// ===== begin src/cpp/src/operations/check_conformity.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace {
+
+constexpr const char* kCcPrefix = "meshio++: check_conformity: ";
+
+// The unmatched facets of the examined cells, as corner rings (CSR), each with
+// the global cell that owns it.
+struct CcFacets {
+    std::vector<std::int64_t> mStart{0};
+    std::vector<std::int64_t> mNodes;
+    std::vector<std::int64_t> mOwner;
+    std::int64_t mNumNonManifold = 0;
+
+    std::size_t Size() const { return mOwner.size(); }
+    std::size_t Corners(std::size_t Facet) const {
+        return static_cast<std::size_t>(mStart[Facet + 1] - mStart[Facet]);
+    }
+    const std::int64_t* Ring(std::size_t Facet) const { return mNodes.data() + mStart[Facet]; }
+    void Push(const std::int64_t* pIds, std::size_t Size, std::int64_t Owner) {
+        mNodes.insert(mNodes.end(), pIds, pIds + Size);
+        mStart.push_back(static_cast<std::int64_t>(mNodes.size()));
+        mOwner.push_back(Owner);
+    }
+};
+
+// The topological dimension of a block: 3, 2, or -1 for anything else.
+template <class TView>
+int cc_block_dimension(const TView& rBlock) {
+    if (rBlock.IsPolyhedron())
+        return 3;
+    const std::string type(rBlock.Type());
+    if (rBlock.IsRagged() || type.rfind("polygon", 0) == 0)
+        return 2;
+    const int dim = cell_type_dimension(cell_type_from_name(type));
+    return dim == 2 || dim == 3 ? dim : -1;
+}
+
+// Every node of a cell (all faces' nodes of a polyhedron), unsorted.
+template <class TView>
+void cc_cell_nodes(const TView& rBlock, std::size_t Row, std::vector<std::int64_t>& rOut) {
+    rOut.clear();
+    if (rBlock.IsPolyhedron()) {
+        for (std::size_t f = 0; f < rBlock.NumFaces(Row); ++f) {
+            const auto face = rBlock.Face(Row, f);
+            rOut.insert(rOut.end(), face.first, face.first + face.second);
+        }
+    } else if (rBlock.IsRagged()) {
+        rOut.assign(rBlock.Row(Row), rBlock.Row(Row) + rBlock.RowSize(Row));
+    } else {
+        const std::size_t npc = rBlock.NodesPerCell();
+        for (std::size_t k = 0; k < npc; ++k)
+            rOut.push_back(detail::read_int(rBlock.Conn(), Row * npc + k));
+    }
+}
+
+// 3-D: the faces of the volume cells that only one cell uses.
+CcFacets cc_volume_facets(const Mesh& rMesh, std::vector<std::string>& rWarnings) {
+    CcFacets out;
+    const detail::GlobalFaces gf = detail::build_global_faces(rMesh);
+    out.mNumNonManifold = gf.mNumNonManifold;
+    for (std::size_t f = 0; f < gf.NumFaces(); ++f)
+        if (gf.mNeighbour[f] < 0)
+            out.Push(gf.Face(f), gf.FaceSize(f),
+                     gf.mCellToGlobal[static_cast<std::size_t>(gf.mOwner[f])]);
+    std::size_t b = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        if (cc_block_dimension(cb) == 3 &&
+            std::find(gf.mNonCellBlocks.begin(), gf.mNonCellBlocks.end(), b) !=
+                gf.mNonCellBlocks.end() &&
+            cb.NumCells() > 0)
+            rWarnings.push_back("block " + std::to_string(b) + " ('" + std::string(cb.Type()) +
+                                "') has no known face topology and was not examined");
+        ++b;
+    }
+    if (gf.mNumUnorientable > 0)
+        rWarnings.push_back(std::to_string(gf.mNumUnorientable) +
+                            " polyhedra are not closed and orientable; their faces were "
+                            "examined as given");
+    return out;
+}
+
+// 2-D: the edges of the 2-D cells that only one cell uses, in ascending
+// (low, high) endpoint order.
+CcFacets cc_surface_facets(const Mesh& rMesh, std::vector<std::string>& rWarnings) {
+    struct Use {
+        std::int64_t mLo, mHi, mCell, mA, mB;
+    };
+    std::vector<Use> uses;
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const std::size_t npts = rMesh.NumPoints();
+    std::vector<std::int64_t> ring;
+    std::size_t b = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t block = b++;
+        if (cc_block_dimension(cb) != 2)
+            continue;
+        const std::string type(cb.Type());
+        const bool polygon = cb.IsRagged() || type.rfind("polygon", 0) == 0;
+        std::vector<std::size_t> corners;
+        if (!polygon) {
+            for (const detail::CellEdgeDef& ed : detail::cell_edges(cell_type_from_name(type)))
+                corners.push_back(ed.mNodes[0]);
+            if (corners.size() < 3) {
+                if (cb.NumCells() > 0)
+                    rWarnings.push_back("block " + std::to_string(block) + " ('" + type +
+                                        "') has no known edge topology and was not examined");
+                continue;
+            }
+        }
+        const std::size_t npc = cb.NodesPerCell();
+        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+            ring.clear();
+            if (cb.IsRagged())
+                ring.assign(cb.Row(c), cb.Row(c) + cb.RowSize(c));
+            else if (polygon)
+                for (std::size_t k = 0; k < npc; ++k)
+                    ring.push_back(detail::read_int(cb.Conn(), c * npc + k));
+            else
+                for (std::size_t k : corners)
+                    ring.push_back(detail::read_int(cb.Conn(), c * npc + k));
+            const std::int64_t g = bases[block] + static_cast<std::int64_t>(c);
+            const std::size_t n = ring.size();
+            for (std::size_t k = 0; k < n; ++k) {
+                const std::int64_t a = ring[k], bb = ring[(k + 1) % n];
+                if (a < 0 || bb < 0 || static_cast<std::size_t>(a) >= npts ||
+                    static_cast<std::size_t>(bb) >= npts)
+                    throw std::invalid_argument(std::string(kCcPrefix) +
+                                                "a cell references a point the mesh does not have");
+                if (a == bb)
+                    continue;
+                uses.push_back(Use{std::min(a, bb), std::max(a, bb), g, a, bb});
+            }
+        }
+    }
+    std::sort(uses.begin(), uses.end(), [](const Use& rX, const Use& rY) {
+        if (rX.mLo != rY.mLo)
+            return rX.mLo < rY.mLo;
+        if (rX.mHi != rY.mHi)
+            return rX.mHi < rY.mHi;
+        return rX.mCell < rY.mCell;
+    });
+    CcFacets out;
+    for (std::size_t i = 0; i < uses.size();) {
+        std::size_t j = i + 1;
+        while (j < uses.size() && uses[j].mLo == uses[i].mLo && uses[j].mHi == uses[i].mHi)
+            ++j;
+        if (j - i == 1) {
+            const std::int64_t ids[2] = {uses[i].mA, uses[i].mB};
+            out.Push(ids, 2, uses[i].mCell);
+        } else if (j - i >= 3) {
+            ++out.mNumNonManifold;
+        }
+        i = j;
+    }
+    return out;
+}
+
+detail::Vec3 cc_point(const std::vector<double>& rXyz, std::int64_t Id) {
+    const std::size_t i = static_cast<std::size_t>(Id) * 3;
+    return {{rXyz[i], rXyz[i + 1], rXyz[i + 2]}};
+}
+
+// The squared distance from P to segment AB.
+double cc_segment_distance_sq(const detail::Vec3& rP, const detail::Vec3& rA,
+                              const detail::Vec3& rB) {
+    const detail::Vec3 ab = detail::vec3_sub(rB, rA);
+    const double len_sq = detail::vec3_norm_sq(ab);
+    double t = len_sq > 0.0 ? detail::vec3_dot(detail::vec3_sub(rP, rA), ab) / len_sq : 0.0;
+    t = std::min(1.0, std::max(0.0, t));
+    return detail::vec3_norm_sq(
+        detail::vec3_sub(rP, detail::vec3_add(rA, detail::vec3_scale(ab, t))));
+}
+
+// The squared distance from P to a facet: a segment, or a polygon as the fan
+// of triangles from its first corner.
+double cc_facet_distance_sq(const detail::Vec3& rP, const std::vector<double>& rXyz,
+                            const std::int64_t* pRing, std::size_t Corners) {
+    if (Corners == 2)
+        return cc_segment_distance_sq(rP, cc_point(rXyz, pRing[0]), cc_point(rXyz, pRing[1]));
+    double best = std::numeric_limits<double>::infinity();
+    const detail::Vec3 a = cc_point(rXyz, pRing[0]);
+    for (std::size_t k = 1; k + 1 < Corners; ++k)
+        best = std::min(best, detail::closest_point_on_triangle(rP, a, cc_point(rXyz, pRing[k]),
+                                                                cc_point(rXyz, pRing[k + 1]))
+                                  .mDistanceSq);
+    return best;
+}
+
+// A facet's plane: its centroid, unit (Newell) normal and an in-plane frame.
+struct CcPlane {
+    detail::Vec3 mCentre{{0.0, 0.0, 0.0}};
+    detail::Vec3 mNormal{{0.0, 0.0, 0.0}};
+    detail::Vec3 mU{{0.0, 0.0, 0.0}};
+    detail::Vec3 mV{{0.0, 0.0, 0.0}};
+    bool mValid = false;
+};
+
+CcPlane cc_plane(const std::vector<double>& rXyz, const std::int64_t* pRing, std::size_t Corners) {
+    CcPlane plane;
+    for (std::size_t k = 0; k < Corners; ++k)
+        plane.mCentre = detail::vec3_add(plane.mCentre, cc_point(rXyz, pRing[k]));
+    plane.mCentre = detail::vec3_scale(plane.mCentre, 1.0 / static_cast<double>(Corners));
+    detail::Vec3 n{{0.0, 0.0, 0.0}};
+    for (std::size_t k = 0; k < Corners; ++k) {
+        const detail::Vec3 a = cc_point(rXyz, pRing[k]);
+        const detail::Vec3 b = cc_point(rXyz, pRing[(k + 1) % Corners]);
+        n[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        n[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    const double len = detail::vec3_norm(n);
+    if (!(len > 0.0))
+        return plane;
+    plane.mNormal = detail::vec3_scale(n, 1.0 / len);
+    const detail::Vec3 e = detail::vec3_sub(cc_point(rXyz, pRing[1]), cc_point(rXyz, pRing[0]));
+    const double elen = detail::vec3_norm(e);
+    if (!(elen > 0.0))
+        return plane;
+    plane.mU = detail::vec3_scale(e, 1.0 / elen);
+    plane.mV = detail::vec3_cross(plane.mNormal, plane.mU);
+    plane.mValid = true;
+    return plane;
+}
+
+using CcUv = std::array<double, 2>;
+
+double cc_area(const std::vector<CcUv>& rPoly) {
+    double a = 0.0;
+    for (std::size_t i = 0, n = rPoly.size(); i < n; ++i) {
+        const CcUv& p = rPoly[i];
+        const CcUv& q = rPoly[(i + 1) % n];
+        a += p[0] * q[1] - q[0] * p[1];
+    }
+    return 0.5 * a;
+}
+
+// The area of the intersection of two triangles, both counter-clockwise, by
+// clipping the first against the second's three edges (Sutherland and Hodgman).
+double cc_triangle_overlap(const std::array<CcUv, 3>& rA, const std::array<CcUv, 3>& rB) {
+    std::vector<CcUv> poly(rA.begin(), rA.end()), next;
+    for (std::size_t e = 0; e < 3 && !poly.empty(); ++e) {
+        const CcUv& p = rB[e];
+        const CcUv& q = rB[(e + 1) % 3];
+        auto side = [&](const CcUv& rX) {
+            return (q[0] - p[0]) * (rX[1] - p[1]) - (q[1] - p[1]) * (rX[0] - p[0]);
+        };
+        next.clear();
+        for (std::size_t i = 0, n = poly.size(); i < n; ++i) {
+            const CcUv& a = poly[i];
+            const CcUv& b = poly[(i + 1) % n];
+            const double sa = side(a), sb = side(b);
+            if (sa >= 0.0)
+                next.push_back(a);
+            if ((sa >= 0.0) != (sb >= 0.0)) {
+                const double t = sa / (sa - sb);
+                next.push_back({{a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])}});
+            }
+        }
+        poly.swap(next);
+    }
+    return poly.size() < 3 ? 0.0 : std::abs(cc_area(poly));
+}
+
+// A ring as the counter-clockwise fan of triangles from its first corner.
+std::vector<std::array<CcUv, 3>> cc_fan(const std::vector<CcUv>& rRing) {
+    std::vector<std::array<CcUv, 3>> fan;
+    for (std::size_t k = 1; k + 1 < rRing.size(); ++k) {
+        std::array<CcUv, 3> t{{rRing[0], rRing[k], rRing[k + 1]}};
+        const double a =
+            (t[1][0] - t[0][0]) * (t[2][1] - t[0][1]) - (t[1][1] - t[0][1]) * (t[2][0] - t[0][0]);
+        if (a < 0.0)
+            std::swap(t[1], t[2]);
+        if (a != 0.0)
+            fan.push_back(t);
+    }
+    return fan;
+}
+
+// How two unmatched facets relate.
+enum class CcPair { Apart, Unwelded, Overlap };
+
+CcPair cc_classify_polygons(const std::vector<double>& rXyz, const std::int64_t* pF, std::size_t Nf,
+                            const CcPlane& rPf, const std::int64_t* pG, std::size_t Ng,
+                            const CcPlane& rPg, double Tol) {
+    if (!rPf.mValid || !rPg.mValid)
+        return CcPair::Apart;
+    for (std::size_t k = 0; k < Ng; ++k)
+        if (std::abs(detail::vec3_dot(rPf.mNormal,
+                                      detail::vec3_sub(cc_point(rXyz, pG[k]), rPf.mCentre))) > Tol)
+            return CcPair::Apart;
+    for (std::size_t k = 0; k < Nf; ++k)
+        if (std::abs(detail::vec3_dot(rPg.mNormal,
+                                      detail::vec3_sub(cc_point(rXyz, pF[k]), rPg.mCentre))) > Tol)
+            return CcPair::Apart;
+    if (Nf == Ng) {
+        bool same = true;
+        for (std::size_t i = 0; i < Nf && same; ++i) {
+            bool found = false;
+            for (std::size_t j = 0; j < Ng && !found; ++j)
+                found = detail::vec3_norm_sq(detail::vec3_sub(cc_point(rXyz, pF[i]),
+                                                              cc_point(rXyz, pG[j]))) <= Tol * Tol;
+            same = found;
+        }
+        if (same)
+            return CcPair::Unwelded;
+    }
+    auto uv = [&](std::int64_t Id) {
+        const detail::Vec3 d = detail::vec3_sub(cc_point(rXyz, Id), rPf.mCentre);
+        return CcUv{{detail::vec3_dot(d, rPf.mU), detail::vec3_dot(d, rPf.mV)}};
+    };
+    std::vector<CcUv> f(Nf), g(Ng);
+    for (std::size_t k = 0; k < Nf; ++k)
+        f[k] = uv(pF[k]);
+    for (std::size_t k = 0; k < Ng; ++k)
+        g[k] = uv(pG[k]);
+    // The facets overlap when their intersection is a strip wider than the
+    // tolerance: its area beyond the tolerance times the smaller facet's
+    // diameter. Facets that only share a boundary intersect in a segment.
+    double area = 0.0;
+    const std::vector<std::array<CcUv, 3>> ff = cc_fan(f), gf = cc_fan(g);
+    for (const auto& a : ff)
+        for (const auto& b : gf)
+            area += cc_triangle_overlap(a, b);
+    auto diameter = [](const std::vector<CcUv>& rRing) {
+        double d = 0.0;
+        for (const CcUv& p : rRing)
+            for (const CcUv& q : rRing)
+                d = std::max(d, std::hypot(p[0] - q[0], p[1] - q[1]));
+        return d;
+    };
+    return area > Tol * std::min(diameter(f), diameter(g)) ? CcPair::Overlap : CcPair::Apart;
+}
+
+CcPair cc_classify_segments(const std::vector<double>& rXyz, const std::int64_t* pF,
+                            const std::int64_t* pG, double Tol) {
+    const detail::Vec3 a = cc_point(rXyz, pF[0]), b = cc_point(rXyz, pF[1]);
+    const detail::Vec3 c = cc_point(rXyz, pG[0]), d = cc_point(rXyz, pG[1]);
+    const detail::Vec3 ab = detail::vec3_sub(b, a), cd = detail::vec3_sub(d, c);
+    const double lf = detail::vec3_norm(ab), lg = detail::vec3_norm(cd);
+    if (!(lf > 0.0) || !(lg > 0.0))
+        return CcPair::Apart;
+    // Distance of a point from the infinite line through P0 along unit U.
+    auto off_line = [&](const detail::Vec3& rP, const detail::Vec3& rP0, const detail::Vec3& rU) {
+        const detail::Vec3 w = detail::vec3_sub(rP, rP0);
+        return detail::vec3_norm(detail::vec3_cross(w, rU));
+    };
+    const detail::Vec3 uf = detail::vec3_scale(ab, 1.0 / lf), ug = detail::vec3_scale(cd, 1.0 / lg);
+    if (off_line(c, a, uf) > Tol || off_line(d, a, uf) > Tol || off_line(a, c, ug) > Tol ||
+        off_line(b, c, ug) > Tol)
+        return CcPair::Apart;
+    const double tol_sq = Tol * Tol;
+    auto near = [&](const detail::Vec3& rX, const detail::Vec3& rY) {
+        return detail::vec3_norm_sq(detail::vec3_sub(rX, rY)) <= tol_sq;
+    };
+    if ((near(a, c) && near(b, d)) || (near(a, d) && near(b, c)))
+        return CcPair::Unwelded;
+    double t0 = detail::vec3_dot(detail::vec3_sub(c, a), uf);
+    double t1 = detail::vec3_dot(detail::vec3_sub(d, a), uf);
+    if (t0 > t1)
+        std::swap(t0, t1);
+    return std::min(lf, t1) - std::max(0.0, t0) > Tol ? CcPair::Overlap : CcPair::Apart;
+}
+
+}  // namespace
+
+ConformityResult check_conformity(const Mesh& rMesh, const ConformityOptions& rOptions) {
+    if (!(rOptions.mTolerance >= 0.0) || !std::isfinite(rOptions.mTolerance))
+        throw std::invalid_argument(std::string(kCcPrefix) +
+                                    "the tolerance must be finite and non-negative");
+    ConformityResult result;
+
+    int dim = -1;
+    for (const auto cb : rMesh.CellRange())
+        if (cb.NumCells() > 0)
+            dim = std::max(dim, cc_block_dimension(cb));
+    CcFacets facets;
+    if (dim == 3)
+        facets = cc_volume_facets(rMesh, result.mWarnings);
+    else if (dim == 2)
+        facets = cc_surface_facets(rMesh, result.mWarnings);
+    else
+        result.mWarnings.push_back("the mesh has no 2-D or 3-D cells; nothing was examined");
+    result.mDimension = dim < 2 ? 0 : dim;
+    result.mNumNonManifoldFacets = facets.mNumNonManifold;
+    const std::size_t nf = facets.Size();
+    result.mNumBoundaryFacets = static_cast<std::int64_t>(nf);
+
+    const std::size_t npts = rMesh.NumPoints();
+    std::vector<std::int64_t> flags(npts, 0);
+    if (nf > 0) {
+        const std::vector<double> xyz = detail::surface_xyz(rMesh);
+
+        // The facets' boxes and the tolerance, from the box of their corners.
+        std::vector<std::array<double, 6>> box(nf);
+        std::array<double, 3> lo{{std::numeric_limits<double>::infinity(),
+                                  std::numeric_limits<double>::infinity(),
+                                  std::numeric_limits<double>::infinity()}};
+        std::array<double, 3> hi{{-lo[0], -lo[1], -lo[2]}};
+        double extent_sum = 0.0;
+        for (std::size_t f = 0; f < nf; ++f) {
+            std::array<double, 6>& r_box = box[f];
+            r_box = {{lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]}};
+            const std::int64_t* ring = facets.Ring(f);
+            for (std::size_t k = 0; k < facets.Corners(f); ++k) {
+                const detail::Vec3 p = cc_point(xyz, ring[k]);
+                for (std::size_t d = 0; d < 3; ++d) {
+                    r_box[d] = std::min(r_box[d], p[d]);
+                    r_box[3 + d] = std::max(r_box[3 + d], p[d]);
+                }
+            }
+            for (std::size_t d = 0; d < 3; ++d) {
+                lo[d] = std::min(lo[d], r_box[d]);
+                hi[d] = std::max(hi[d], r_box[3 + d]);
+            }
+            extent_sum += std::max({r_box[3] - r_box[0], r_box[4] - r_box[1], r_box[5] - r_box[2]});
+        }
+        const double diag =
+            std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+                      (hi[2] - lo[2]) * (hi[2] - lo[2]));
+        const double tol = rOptions.mTolerance * diag;
+        for (std::array<double, 6>& r_box : box)
+            for (std::size_t d = 0; d < 3; ++d) {
+                r_box[d] -= tol;
+                r_box[3 + d] += tol;
+            }
+
+        // A bucket grid over the facets' boxes, sized by their mean extent and
+        // never finer than 1/256 of the diagonal, so a large facet among small
+        // ones spans a bounded number of buckets.
+        double cell = std::max(extent_sum / static_cast<double>(nf), diag / 256.0);
+        if (!(cell > 0.0))
+            cell = 1.0;
+        detail::SpatialGrid grid(cell);
+        for (std::size_t f = 0; f < nf; ++f)
+            grid.InsertBox(grid.KeyOf(box[f].data()), grid.KeyOf(box[f].data() + 3),
+                           static_cast<std::int64_t>(f));
+
+        // One view per block, and the nodes of a facet's owner on demand.
+        const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+        auto owner_has = [&](std::size_t Facet, std::int64_t Point,
+                             std::vector<std::int64_t>& rScratch) {
+            const auto br = detail::global_to_block_row(bases, facets.mOwner[Facet]);
+            cc_cell_nodes(rMesh.Cells(br.first), static_cast<std::size_t>(br.second), rScratch);
+            return std::find(rScratch.begin(), rScratch.end(), Point) != rScratch.end();
+        };
+
+        // Candidates: the nodes of the cells that own an unmatched facet.
+        std::vector<std::int64_t> owners(facets.mOwner);
+        std::sort(owners.begin(), owners.end());
+        owners.erase(std::unique(owners.begin(), owners.end()), owners.end());
+        std::vector<std::int64_t> candidates;
+        {
+            std::vector<std::int64_t> nodes;
+            for (std::int64_t g : owners) {
+                const auto br = detail::global_to_block_row(bases, g);
+                cc_cell_nodes(rMesh.Cells(br.first), static_cast<std::size_t>(br.second), nodes);
+                for (std::int64_t p : nodes)
+                    if (p >= 0 && static_cast<std::size_t>(p) < npts)
+                        candidates.push_back(p);
+            }
+        }
+        std::sort(candidates.begin(), candidates.end());
+        candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+
+        const std::int64_t flag = static_cast<std::int64_t>(dim == 3 ? ConformityFlag::HangingNode
+                                                                     : ConformityFlag::TJunction);
+        const double tol_sq = tol * tol;
+        parallel_for(candidates.size(), [&](std::size_t i) {
+            const std::int64_t p = candidates[i];
+            const detail::Vec3 x = cc_point(xyz, p);
+            const std::vector<std::int64_t>* bucket = grid.Find(grid.KeyOf(x.data()));
+            if (bucket == nullptr)
+                return;
+            std::vector<std::int64_t> scratch;
+            for (std::int64_t id : *bucket) {
+                const std::size_t f = static_cast<std::size_t>(id);
+                const std::array<double, 6>& b = box[f];
+                if (x[0] < b[0] || x[1] < b[1] || x[2] < b[2] || x[0] > b[3] || x[1] > b[4] ||
+                    x[2] > b[5])
+                    continue;
+                const std::int64_t* ring = facets.Ring(f);
+                const std::size_t nc = facets.Corners(f);
+                if (std::find(ring, ring + nc, p) != ring + nc)
+                    continue;
+                if (cc_facet_distance_sq(x, xyz, ring, nc) > tol_sq)
+                    continue;
+                // On a corner's location: an unwelded duplicate, not a hanging node.
+                bool on_corner = false;
+                for (std::size_t k = 0; k < nc && !on_corner; ++k)
+                    on_corner =
+                        detail::vec3_norm_sq(detail::vec3_sub(x, cc_point(xyz, ring[k]))) <= tol_sq;
+                if (on_corner || owner_has(f, p, scratch))
+                    continue;
+                flags[static_cast<std::size_t>(p)] = flag;
+                return;
+            }
+        });
+
+        // Facet pairs, each counted once at its lower facet.
+        std::vector<CcPlane> planes(nf);
+        if (dim == 3)
+            parallel_for(nf, [&](std::size_t f) {
+                planes[f] = cc_plane(xyz, facets.Ring(f), facets.Corners(f));
+            });
+        std::vector<std::int64_t> partial(nf, 0), unwelded(nf, 0);
+        parallel_for(nf, [&](std::size_t f) {
+            std::vector<std::int64_t> near;
+            grid.ForEachInBox(grid.KeyOf(box[f].data()), grid.KeyOf(box[f].data() + 3),
+                              [&](const std::vector<std::int64_t>& rIds) {
+                                  for (std::int64_t id : rIds)
+                                      if (static_cast<std::size_t>(id) > f)
+                                          near.push_back(id);
+                              });
+            std::sort(near.begin(), near.end());
+            near.erase(std::unique(near.begin(), near.end()), near.end());
+            const std::array<double, 6>& bf = box[f];
+            for (std::int64_t id : near) {
+                const std::size_t g = static_cast<std::size_t>(id);
+                const std::array<double, 6>& bg = box[g];
+                if (bf[0] > bg[3] || bg[0] > bf[3] || bf[1] > bg[4] || bg[1] > bf[4] ||
+                    bf[2] > bg[5] || bg[2] > bf[5])
+                    continue;
+                const CcPair kind =
+                    dim == 3
+                        ? cc_classify_polygons(xyz, facets.Ring(f), facets.Corners(f), planes[f],
+                                               facets.Ring(g), facets.Corners(g), planes[g], tol)
+                        : cc_classify_segments(xyz, facets.Ring(f), facets.Ring(g), tol);
+                if (kind == CcPair::Overlap)
+                    ++partial[f];
+                else if (kind == CcPair::Unwelded)
+                    ++unwelded[f];
+            }
+        });
+        for (std::size_t f = 0; f < nf; ++f) {
+            result.mNumPartialOverlaps += partial[f];
+            result.mNumUnweldedFacets += unwelded[f];
+        }
+    }
+
+    for (std::int64_t v : flags) {
+        result.mNumHangingNodes += v == static_cast<std::int64_t>(ConformityFlag::HangingNode);
+        result.mNumTJunctions += v == static_cast<std::int64_t>(ConformityFlag::TJunction);
+    }
+    result.mConforming = result.mNumHangingNodes == 0 && result.mNumTJunctions == 0 &&
+                         result.mNumPartialOverlaps == 0 && result.mNumUnweldedFacets == 0;
+    if (result.mNumPartialOverlaps > 0 || result.mNumHangingNodes > 0 || result.mNumTJunctions > 0)
+        result.mInterfaceMode = "proximity";
+    else if (result.mNumUnweldedFacets > 0)
+        result.mInterfaceMode = "weld";
+
+    result.mMesh = detail::clone_mesh(
+        rMesh, [&](DataLocation Location, const std::string& rName, std::string&) {
+            return !(rOptions.mAttachFlags && Location == DataLocation::Point &&
+                     rName == kConformityHangingName);
+        });
+    if (rOptions.mAttachFlags) {
+        NDArray out = NDArray::Uninit(DType::Int64, {npts});
+        std::copy(flags.begin(), flags.end(), out.As<std::int64_t>());
+        result.mMesh.AddPointData(kConformityHangingName, std::move(out));
+    }
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
+        result.mMesh.AddRegion(rMesh.Region(i));
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/check_conformity.cpp =====
 // ===== begin src/cpp/src/operations/clean.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -232820,6 +233547,8 @@ OctreeResult octree(const Mesh& rMesh, const OctreeOptions& rOptions) {
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -233000,7 +233729,42 @@ void octm_prepare(const Mesh& rMesh, const OctreeMeshOptions& rO, detail::Octree
     rResult.mSurfaceLevel = surface_level;
     rResult.mMinSize = rS.mFrame.mMinSize;
     rResult.mMaxSize = hmax;
+    octree_mesh_flood(rS, rO);
     rClock.Lap(rResult, "octree");
+}
+
+// Whether every edge of the welded skin is walked as often one way as the
+// other: a closed, consistently oriented cycle, whose winding number is an
+// integer everywhere off the skin.
+bool octm_skin_closed(const detail::OctreeSkin& rSkin) {
+    std::vector<std::array<std::int64_t, 3>> edges;
+    edges.reserve(3 * rSkin.mTris.size());
+    for (const auto& t : rSkin.mTris)
+        for (std::size_t k = 0; k < 3; ++k) {
+            const std::int64_t a = t[k], b = t[(k + 1) % 3];
+            if (a != b)
+                edges.push_back({std::min(a, b), std::max(a, b), a < b ? 1 : -1});
+        }
+    std::sort(edges.begin(), edges.end());
+    for (std::size_t i = 0; i < edges.size();) {
+        std::int64_t sum = 0;
+        std::size_t j = i;
+        for (; j < edges.size() && edges[j][0] == edges[i][0] && edges[j][1] == edges[i][1]; ++j)
+            sum += edges[j][2];
+        if (sum != 0)
+            return false;
+        i = j;
+    }
+    return !edges.empty();
+}
+
+// The union-find root of leaf `I`, compressing the path.
+std::size_t octm_root(std::vector<std::size_t>& rParent, std::size_t I) {
+    while (rParent[I] != I) {
+        rParent[I] = rParent[rParent[I]];
+        I = rParent[I];
+    }
+    return I;
 }
 
 // The output-independent part of the report.
@@ -233064,28 +233828,167 @@ void octree_mesh_warn(OctreeMeshResult& rResult, const std::string& rMessage) {
     rResult.mWarnings.push_back(rMessage);
 }
 
+void octree_mesh_flood(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions) {
+    OctreeMeshFlood& flood = rSetup.mFlood;
+    flood = OctreeMeshFlood{};
+    const char* p_env = std::getenv("MESHIOPLUSPLUS_OCTREE_MESH_FLOOD");
+    if (p_env != nullptr && std::string(p_env) == "0")
+        return;
+    // A threshold near an integer would put a flooded value near the cleaving
+    // levels and the near-threshold rechecks, where its exactness would show.
+    const double frac = rOptions.mWindingThreshold - std::floor(rOptions.mWindingThreshold);
+    if (frac < 0.1 || frac > 0.9 || !octm_skin_closed(rSetup.mSkin))
+        return;
+    const LinearOctree& tree = rSetup.mOctree.mTree;
+    const std::vector<std::uint8_t>& cut = rSetup.mOctree.mCut;
+    const std::size_t n = tree.Size();
+
+    // Deep leaves: neither they nor any of their 26 neighbours is cut, and
+    // none of those neighbours lies outside the forest.
+    const std::vector<std::array<int, 3>> around = linear_octree_directions(OctreeAdjacency::Full);
+    std::vector<std::uint8_t> deep(n, 0);
+    parallel_for(n, [&](std::size_t i) {
+        if (cut[i])
+            return;
+        const auto lo = tree.Lo(i);
+        const std::int64_t s = tree.Span(i);
+        for (const auto& d : around) {
+            if (!tree.Contains(lo[0] + d[0] * s, lo[1] + d[1] * s, lo[2] + d[2] * s))
+                return;
+            for (std::int64_t j : linear_octree_neighbours(tree, i, d[0], d[1], d[2]))
+                if (cut[static_cast<std::size_t>(j)])
+                    return;
+        }
+        deep[i] = 1;
+    });
+
+    // The regions of uncut leaves joined through their faces, each rooted at
+    // its lowest leaf; one pass in leaf order, so the roots do not depend on
+    // the thread count.
+    std::vector<std::size_t> parent(n);
+    for (std::size_t i = 0; i < n; ++i)
+        parent[i] = i;
+    const int up[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    for (std::size_t i = 0; i < n; ++i) {
+        if (cut[i])
+            continue;
+        for (const auto& d : up)
+            for (std::int64_t j : linear_octree_neighbours(tree, i, d[0], d[1], d[2])) {
+                if (cut[static_cast<std::size_t>(j)])
+                    continue;
+                const std::size_t a = octm_root(parent, i);
+                const std::size_t b = octm_root(parent, static_cast<std::size_t>(j));
+                if (a != b)
+                    parent[std::max(a, b)] = std::min(a, b);
+            }
+    }
+
+    // Each region's winding number, from up to three of its deep leaves (the
+    // lowest): they must agree on one integer, each within 0.1 of it.
+    std::vector<std::size_t> root(n, 0);
+    for (std::size_t i = 0; i < n; ++i)
+        root[i] = octm_root(parent, i);
+    std::vector<std::vector<std::size_t>> probes(n);
+    for (std::size_t i = 0; i < n; ++i)
+        if (deep[i] && probes[root[i]].size() < 3)
+            probes[root[i]].push_back(i);
+    std::vector<std::size_t> regions, probe_leaf;
+    for (std::size_t r = 0; r < n; ++r)
+        if (!probes[r].empty()) {
+            regions.push_back(r);
+            probe_leaf.insert(probe_leaf.end(), probes[r].begin(), probes[r].end());
+        }
+    if (regions.empty())
+        return;
+    const std::vector<Vec3> centres = octree_mesh_leaf_centres(rSetup.mFrame, tree);
+    std::vector<Vec3> at(probe_leaf.size());
+    for (std::size_t k = 0; k < probe_leaf.size(); ++k)
+        at[k] = centres[probe_leaf[k]];
+    const double beta =
+        rOptions.mWindingBeta > 0.0 ? std::max(8.0, 4.0 * rOptions.mWindingBeta) : 0.0;
+    const std::vector<double> w = fast_windings(rSetup.mBvh, at, beta);
+    std::vector<std::int32_t> value(n, OctreeMeshFlood::kUnknown);
+    std::size_t k = 0;
+    for (std::size_t r : regions) {
+        std::int32_t v = OctreeMeshFlood::kUnknown;
+        bool agree = true;
+        for (std::size_t q = 0; q < probes[r].size(); ++q, ++k) {
+            const double x = rSetup.mWindingSign * w[k];
+            const double rounded = std::round(x);
+            if (!(std::abs(x - rounded) < 0.1) || std::abs(rounded) > 1e6)
+                agree = false;
+            else if (q == 0)
+                v = static_cast<std::int32_t>(rounded);
+            else if (static_cast<std::int32_t>(rounded) != v)
+                agree = false;
+        }
+        if (agree)
+            value[r] = v;
+    }
+    flood.mValue.assign(n, OctreeMeshFlood::kUnknown);
+    for (std::size_t i = 0; i < n; ++i)
+        if (deep[i] && value[root[i]] != OctreeMeshFlood::kUnknown) {
+            flood.mValue[i] = value[root[i]];
+            flood.mActive = true;
+        }
+    if (!flood.mActive)
+        return;
+    flood.mTree = tree;
+    flood.mOrigin = rSetup.mFrame.mOrigin;
+    flood.mFine = rSetup.mFrame.Fine();
+}
+
 std::vector<double> octree_mesh_winding(const OctreeMeshSetup& rSetup,
                                         const std::vector<Vec3>& rPoints,
                                         const OctreeMeshOptions& rOptions,
                                         OctreeMeshResult& rResult) {
-    std::vector<double> w = fast_windings(rSetup.mBvh, rPoints, rOptions.mWindingBeta);
-    for (double& v : w)
+    // The flooded value where the point lies in a deep leaf, else NaN.
+    const OctreeMeshFlood& flood = rSetup.mFlood;
+    std::vector<double> w(rPoints.size(), std::numeric_limits<double>::quiet_NaN());
+    if (flood.mActive)
+        parallel_for(rPoints.size(), [&](std::size_t i) {
+            std::array<std::int64_t, 3> cell{};
+            for (std::size_t a = 0; a < 3; ++a) {
+                const double x = std::floor((rPoints[i][a] - flood.mOrigin[a]) / flood.mFine);
+                if (!(x >= 0.0 && x < 4.0e18))
+                    return;
+                cell[a] = static_cast<std::int64_t>(x);
+            }
+            if (!flood.mTree.Contains(cell[0], cell[1], cell[2]))
+                return;
+            const std::int64_t leaf = flood.mTree.Locate(cell[0], cell[1], cell[2]);
+            if (leaf >= 0 &&
+                flood.mValue[static_cast<std::size_t>(leaf)] != OctreeMeshFlood::kUnknown)
+                w[i] = static_cast<double>(flood.mValue[static_cast<std::size_t>(leaf)]);
+        });
+    std::vector<std::size_t> todo;
+    for (std::size_t i = 0; i < w.size(); ++i)
+        if (std::isnan(w[i]))
+            todo.push_back(i);
+    rResult.mNumWindingSkipped += static_cast<std::int64_t>(w.size() - todo.size());
+
+    std::vector<Vec3> pts(todo.size());
+    for (std::size_t k = 0; k < todo.size(); ++k)
+        pts[k] = rPoints[todo[k]];
+    std::vector<double> sub = fast_windings(rSetup.mBvh, pts, rOptions.mWindingBeta);
+    for (double& v : sub)
         v *= rSetup.mWindingSign;
     if (rOptions.mWindingBeta > 0.0) {
         std::vector<std::size_t> near;
-        for (std::size_t i = 0; i < w.size(); ++i)
-            if (std::abs(w[i] - rOptions.mWindingThreshold) < 0.1)
+        for (std::size_t i = 0; i < sub.size(); ++i)
+            if (std::abs(sub[i] - rOptions.mWindingThreshold) < 0.1)
                 near.push_back(i);
         const double beta = std::max(8.0, 4.0 * rOptions.mWindingBeta);
         parallel_for(
             near.size(),
             [&](std::size_t k) {
-                w[near[k]] =
-                    rSetup.mWindingSign * fast_winding(rSetup.mBvh, rPoints[near[k]], beta);
+                sub[near[k]] = rSetup.mWindingSign * fast_winding(rSetup.mBvh, pts[near[k]], beta);
             },
             64);
         rResult.mNumWindingRechecks += static_cast<std::int64_t>(near.size());
     }
+    for (std::size_t k = 0; k < todo.size(); ++k)
+        w[todo[k]] = sub[k];
     return w;
 }
 
@@ -236422,6 +237325,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "OverlapTolerance"}},
         {"SplitInterface", {"Region", "AddCohesive"}},
         {"QualityGate", {"Require", "MaxInverted", "MaxDegenerate"}},
+        {"CheckConformity", {"Tolerance", "Require", "AttachFlags"}},
         {"Snapshot",
          {"Path",           "Width",       "Height",        "Supersample",   "Cols",
           "Rows",           "Encoding",    "ColorDepth",    "PngCompress",   "View",
@@ -236454,7 +237358,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
         {"Voxelize",
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
-          "AttachOccupancy", "MaxCells", "Sign"}},
+          "AttachOccupancy", "MaxCells", "Sign", "Plane"}},
         {"Generate",
          {"Shape", "Dims",        "Size",        "Origin", "Center",   "Radius",       "Height",
           "N",     "Nu",          "Nv",          "Nxy",    "Nz",       "Subdivisions", "Sides",
@@ -237821,6 +238725,30 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"NumFailed", static_cast<double>(failed)}});
         return mesh;
     }
+    if (op == "CheckConformity") {
+        // A gate by default: a mesh that is not conforming stops the pipeline;
+        // with Require false it only reports. AttachFlags writes
+        // conformity:hanging onto the mesh that flows on.
+        ConformityOptions opts;
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 1e-9);
+        opts.mAttachFlags = pipe_flag(rStep, "AttachFlags", false);
+        ConformityResult cr = check_conformity(mesh, opts);
+        if (pipe_flag(rStep, "Require", true) && !cr.mConforming)
+            throw std::runtime_error(
+                "meshio++: pipeline: CheckConformity failed: " +
+                std::to_string(cr.mNumHangingNodes) + " hanging node(s), " +
+                std::to_string(cr.mNumTJunctions) + " T-junction(s), " +
+                std::to_string(cr.mNumPartialOverlaps) + " partial overlap(s), " +
+                std::to_string(cr.mNumUnweldedFacets) + " unwelded facet pair(s)");
+        pipe_push_step(rReport, rStep,
+                       {{"NumHangingNodes", static_cast<double>(cr.mNumHangingNodes)},
+                        {"NumTJunctions", static_cast<double>(cr.mNumTJunctions)},
+                        {"NumPartialOverlaps", static_cast<double>(cr.mNumPartialOverlaps)},
+                        {"NumUnweldedFacets", static_cast<double>(cr.mNumUnweldedFacets)}});
+        if (opts.mAttachFlags)
+            return std::move(cr.mMesh);
+        return mesh;
+    }
     if (op == "EditRegions") {
         // One edit per step: a pipeline value is flat, and a list of edits is
         // just a list of steps.
@@ -238250,6 +239178,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         if (resolution.size() == 3)
             opts.mResolution =
                 std::array<std::int64_t, 3>{{resolution[0], resolution[1], resolution[2]}};
+        else if (resolution.size() == 2)  // 2-D pixels, as `[nx, ny, 0]` is
+            opts.mResolution = std::array<std::int64_t, 3>{{resolution[0], resolution[1], 0}};
         if (pipe_find(rStep, "CellSize") != nullptr)
             opts.mCellSize = pipe_number(rStep, "CellSize", 0.0);
         const std::vector<double> bounds = pipe_dvec(rStep, "Bounds");
@@ -238262,6 +239192,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mAttachOccupancy = pipe_flag(rStep, "AttachOccupancy", false);
         opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
         opts.mDistance.mSign = sdf_sign_from_name(pipe_text(rStep, "Sign", "pseudonormal"));
+        opts.mPlane = detail::planar_plane_from_name(pipe_text(rStep, "Plane", "auto"));
         VoxelResult r = voxelize(mesh, opts);
         pipe_push_step(rReport, rStep, {{"NumOccupied", static_cast<double>(r.mNumOccupied)}});
         return std::move(r.mMesh);
@@ -261901,9 +262832,10 @@ Mesh vox_build_subset(const detail::LatticeSpec& rSpec, const std::vector<char>&
 // fastest). Selected by a resolution whose third entry is zero, or by a cell size
 // on a polyline-only mesh.
 
-Mesh vox_build_pixels(const std::array<std::int64_t, 2>& rDims, const std::array<double, 3>& rOrigin,
-                      const std::array<double, 3>& rSpacing, const std::vector<char>& rOccupied,
-                      std::int64_t Kept, const detail::PlanarFrame& rFrame) {
+Mesh vox_build_pixels(const std::array<std::int64_t, 2>& rDims,
+                      const std::array<double, 3>& rOrigin, const std::array<double, 3>& rSpacing,
+                      const std::vector<char>& rOccupied, std::int64_t Kept,
+                      const detail::PlanarFrame& rFrame) {
     Mesh out;
     const std::int64_t nx = rDims[0];
     const std::int64_t ny = rDims[1];
@@ -261963,10 +262895,11 @@ Mesh vox_build_pixels(const std::array<std::int64_t, 2>& rDims, const std::array
 }
 
 VoxelResult vox_voxelize_pixels(const Mesh& rMesh, const VoxelOptions& rOptions) {
-    // The skin's plane: the axis with zero extent, else z (so an xz or yz
-    // polyline voxelizes in its own plane). Everything below runs in the frame
-    // where that plane is xy, and the points are mapped back on emit.
-    const detail::PlanarFrame frame = detail::planar_frame(rMesh, detail::PlanarPlane::Auto);
+    // The skin's plane: the one asked for, else the axis with zero extent, else
+    // z (so an xz or yz polyline voxelizes in its own plane). Everything below
+    // runs in the frame where that plane is xy, and the points are mapped back
+    // on emit.
+    const detail::PlanarFrame frame = detail::planar_frame(rMesh, rOptions.mPlane);
     const detail::PlanarSkin skin = detail::collect_planar_skin(rMesh, kVoxPrefix, frame);
     if (rOptions.mFill == VoxelFill::Inside)
         detail::require_closed_polyline(skin, kVoxPrefix);
@@ -261977,8 +262910,8 @@ VoxelResult vox_voxelize_pixels(const Mesh& rMesh, const VoxelOptions& rOptions)
             lo[k] = (*rOptions.mBounds)[k];
             hi[k] = (*rOptions.mBounds)[3 + k];
             if (!(hi[k] >= lo[k]))
-                throw std::invalid_argument(std::string(kVoxPrefix) + "bounds are inverted on axis " +
-                                            std::to_string(k));
+                throw std::invalid_argument(std::string(kVoxPrefix) +
+                                            "bounds are inverted on axis " + std::to_string(k));
         }
     } else if (!detail::point_bbox(rMesh, lo, hi)) {
         throw std::invalid_argument(std::string(kVoxPrefix) +
@@ -262011,10 +262944,9 @@ VoxelResult vox_voxelize_pixels(const Mesh& rMesh, const VoxelOptions& rOptions)
         for (std::size_t k = 0; k < 2; ++k) {
             dims[k] = (*rOptions.mResolution)[k];
             if (dims[k] <= 0)
-                throw std::invalid_argument(std::string(kVoxPrefix) +
-                                            "resolution must be positive on every axis, got " +
-                                            std::to_string(dims[k]) + " on axis " +
-                                            std::to_string(k));
+                throw std::invalid_argument(
+                    std::string(kVoxPrefix) + "resolution must be positive on every axis, got " +
+                    std::to_string(dims[k]) + " on axis " + std::to_string(k));
             spacing[k] = (hi[k] - lo[k]) / static_cast<double>(dims[k]);
         }
     } else {
@@ -262069,9 +263001,9 @@ VoxelResult vox_voxelize_pixels(const Mesh& rMesh, const VoxelOptions& rOptions)
                     const std::size_t cid = static_cast<std::size_t>(j * nx + i);
                     if (occupied[cid])
                         continue;
-                    const detail::Vec3 centre{{origin[0] + (static_cast<double>(i) + 0.5) * spacing[0],
-                                               origin[1] + (static_cast<double>(j) + 0.5) * spacing[1],
-                                               origin[2]}};
+                    const detail::Vec3 centre{
+                        {origin[0] + (static_cast<double>(i) + 0.5) * spacing[0],
+                         origin[1] + (static_cast<double>(j) + 0.5) * spacing[1], origin[2]}};
                     if (detail::segment_box_overlap_2d(centre, half, seg[0], seg[1]))
                         occupied[cid] = 1;
                 }

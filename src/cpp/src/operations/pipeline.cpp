@@ -67,6 +67,7 @@
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
+#include "meshioplusplus/operations/check_conformity.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
@@ -401,6 +402,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "OverlapTolerance"}},
         {"SplitInterface", {"Region", "AddCohesive"}},
         {"QualityGate", {"Require", "MaxInverted", "MaxDegenerate"}},
+        {"CheckConformity", {"Tolerance", "Require", "AttachFlags"}},
         {"Snapshot",
          {"Path",           "Width",       "Height",        "Supersample",   "Cols",
           "Rows",           "Encoding",    "ColorDepth",    "PngCompress",   "View",
@@ -433,7 +435,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
         {"Voxelize",
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
-          "AttachOccupancy", "MaxCells", "Sign"}},
+          "AttachOccupancy", "MaxCells", "Sign", "Plane"}},
         {"Generate",
          {"Shape", "Dims",        "Size",        "Origin", "Center",   "Radius",       "Height",
           "N",     "Nu",          "Nv",          "Nxy",    "Nz",       "Subdivisions", "Sides",
@@ -1800,6 +1802,30 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"NumFailed", static_cast<double>(failed)}});
         return mesh;
     }
+    if (op == "CheckConformity") {
+        // A gate by default: a mesh that is not conforming stops the pipeline;
+        // with Require false it only reports. AttachFlags writes
+        // conformity:hanging onto the mesh that flows on.
+        ConformityOptions opts;
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 1e-9);
+        opts.mAttachFlags = pipe_flag(rStep, "AttachFlags", false);
+        ConformityResult cr = check_conformity(mesh, opts);
+        if (pipe_flag(rStep, "Require", true) && !cr.mConforming)
+            throw std::runtime_error(
+                "meshio++: pipeline: CheckConformity failed: " +
+                std::to_string(cr.mNumHangingNodes) + " hanging node(s), " +
+                std::to_string(cr.mNumTJunctions) + " T-junction(s), " +
+                std::to_string(cr.mNumPartialOverlaps) + " partial overlap(s), " +
+                std::to_string(cr.mNumUnweldedFacets) + " unwelded facet pair(s)");
+        pipe_push_step(rReport, rStep,
+                       {{"NumHangingNodes", static_cast<double>(cr.mNumHangingNodes)},
+                        {"NumTJunctions", static_cast<double>(cr.mNumTJunctions)},
+                        {"NumPartialOverlaps", static_cast<double>(cr.mNumPartialOverlaps)},
+                        {"NumUnweldedFacets", static_cast<double>(cr.mNumUnweldedFacets)}});
+        if (opts.mAttachFlags)
+            return std::move(cr.mMesh);
+        return mesh;
+    }
     if (op == "EditRegions") {
         // One edit per step: a pipeline value is flat, and a list of edits is
         // just a list of steps.
@@ -2229,6 +2255,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         if (resolution.size() == 3)
             opts.mResolution =
                 std::array<std::int64_t, 3>{{resolution[0], resolution[1], resolution[2]}};
+        else if (resolution.size() == 2)  // 2-D pixels, as `[nx, ny, 0]` is
+            opts.mResolution = std::array<std::int64_t, 3>{{resolution[0], resolution[1], 0}};
         if (pipe_find(rStep, "CellSize") != nullptr)
             opts.mCellSize = pipe_number(rStep, "CellSize", 0.0);
         const std::vector<double> bounds = pipe_dvec(rStep, "Bounds");
@@ -2241,6 +2269,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mAttachOccupancy = pipe_flag(rStep, "AttachOccupancy", false);
         opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
         opts.mDistance.mSign = sdf_sign_from_name(pipe_text(rStep, "Sign", "pseudonormal"));
+        opts.mPlane = detail::planar_plane_from_name(pipe_text(rStep, "Plane", "auto"));
         VoxelResult r = voxelize(mesh, opts);
         pipe_push_step(rReport, rStep, {{"NumOccupied", static_cast<double>(r.mNumOccupied)}});
         return std::move(r.mMesh);

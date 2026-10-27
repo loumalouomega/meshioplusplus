@@ -266,7 +266,10 @@ struct OctreeMeshResult {
     /// `Uniform` grading, nothing snapped to features, nothing refused.
     bool mGuaranteeApplies = false;
     std::int64_t mNumWindingRechecks = 0;  ///< Winding numbers re-evaluated near 0.5.
-    QualityReport mQuality;                ///< `compute_quality` of the output.
+    /// Winding numbers not evaluated: the point lies deep in a region the
+    /// closed skin does not cut, whose integer winding number was flooded in.
+    std::int64_t mNumWindingSkipped = 0;
+    QualityReport mQuality;  ///< `compute_quality` of the output.
     /// Seconds spent in each stage, in order.
     std::vector<std::pair<std::string, double>> mTimings;
     /// Everything that did not meet its target, in order.

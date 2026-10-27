@@ -109,6 +109,7 @@ export transform, clean, smooth, optimize_volume, crop_bbox, crop_plane, crop_pr
 export gradient
 export hessian
 export estimate_error, error_size
+export check_conformity
 export remesh
 export remesh_volume
 export grid, voxelize, octree, octree_mesh

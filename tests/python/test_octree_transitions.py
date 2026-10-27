@@ -209,6 +209,26 @@ def test_forest_patterns_are_conforming(transition, balance, pattern):
         assert any(cb.type in ("pyramid", "tetra") for cb in mesh.cells)
     leaf = np.concatenate([np.asarray(a) for a in mesh.cell_data["octree:leaf"]])
     assert leaf.max() < len(plain.cells[0].data)
+    # Roadmap 3.1.4.2: check_conformity agrees with the face-sharing oracle.
+    _expect_conforming(mesh)
+    # ...and under "hanging" it flags exactly the points octree:hanging marks.
+    _expect_flags_match(plain)
+
+
+def _expect_conforming(mesh):
+    _, report = meshioplusplus.check_conformity(mesh, return_report=True)
+    assert report["num_hanging_nodes"] == 0, report
+    assert report["num_t_junctions"] == 0, report
+    assert report["num_partial_overlaps"] == 0, report
+    assert report["conforming"] is True, report
+
+
+def _expect_flags_match(plain):
+    checked, report = meshioplusplus.check_conformity(plain, return_report=True)
+    want = np.asarray(plain.point_data["octree:hanging"]).reshape(-1) != 0
+    got = np.asarray(checked.point_data["conformity:hanging"]).reshape(-1) != 0
+    assert np.array_equal(got, want)
+    assert report["num_hanging_nodes"] + report["num_t_junctions"] == int(want.sum())
 
 
 @pytest.mark.parametrize("transition", ["polyhedra", "templates"])
@@ -223,6 +243,8 @@ def test_transition_needs_a_balanced_tree(transition):
 def test_sphere_transition_conforms_and_conserves_volume(transition):
     mesh = octree(_sphere(), bounds=BOX, max_level=4, transition=transition)
     _check_conforming(mesh, [-1.2] * 3, [1.2] * 3, 2.4**3)
+    _expect_conforming(mesh)
+    _expect_flags_match(octree(_sphere(), bounds=BOX, max_level=4))
     # data is carried onto every cell of the leaf it was cut from
     for name in ("octree:level", "octree:cut", "octree:leaf"):
         assert len(mesh.cell_data[name]) == len(mesh.cells)
@@ -244,6 +266,10 @@ def test_quadtree_transition_conforms(transition):
     assert len(kinds) == 2
     _check_conforming(mesh, [-1.2, -1.2], [1.2, 1.2], 2.4**2)
     assert rep["num_hanging"] == 0
+    _expect_conforming(mesh)
+    _expect_flags_match(
+        octree(_circle(n=128), bounds=[-1.2, -1.2, 0, 1.2, 1.2, 0], max_level=5)
+    )
 
 
 def test_snap_moves_outer_nodes_onto_the_sphere_without_inverting_a_leaf():

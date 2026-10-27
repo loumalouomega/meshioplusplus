@@ -293,7 +293,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   plateWithHole: (radius?: number, size?: number, nt?: number, nr?: number, center?: number[], cellType?: string, order?: number, maxCells?: number) => Mesh,
  *   honeycomb: (dims?: number[], edge?: number, origin?: number[], maxCells?: number) => Mesh,
  *   referenceCells: (types?: string[], pairs?: boolean) => Mesh,
- *   voxelize: (mesh: Mesh, resolution?: number[], cellSize?: number, bounds?: number[], padding?: number, paddingRelative?: number, fill?: string, sign?: string, attachOccupancy?: boolean, maxCells?: number, watertightCheck?: string) => {mesh: Mesh, dims: number[], origin: number[], spacing: number[], numOccupied: number},
+ *   voxelize: (mesh: Mesh, resolution?: number[], cellSize?: number, bounds?: number[], padding?: number, paddingRelative?: number, fill?: string, sign?: string, attachOccupancy?: boolean, maxCells?: number, watertightCheck?: string, plane?: string) => {mesh: Mesh, dims: number[], origin: number[], spacing: number[], numOccupied: number},
  *   octree: (mesh: Mesh, rootCells?: number[], minLevel?: number, maxLevel?: number, bounds?: number[], padding?: number, paddingRelative?: number, dimension?: number, sampleDistance?: number, balance?: string, fill?: string, sign?: string, attachDistance?: boolean, evenOdd?: boolean, maxCells?: number, watertightCheck?: string, transition?: string, snap?: boolean, surfaceLevel?: number, curvatureThreshold?: number, featureAngle?: number, sizeArray?: string, plane?: string) => {mesh: Mesh, dimension: number, numLeaves: number, numHanging: number, finestLevel: number, origin: number[], rootSize: number, numSnapped: number, numRefused: number},
  *   octreeMesh: (mesh: Mesh, options?: {output?: 'tet' | 'castellated' | 'hex', minSize?: number, maxSize?: number, maxLevel?: number, bounds?: number[], padding?: number, paddingRelative?: number, curvatureAngle?: number, featureAngle?: number, cornerAngle?: number, featureSize?: number, gapCells?: number, gapOutside?: boolean, sizeArray?: string, surfaceRegion?: string, gradingLayers?: number, skinGrading?: 'graded' | 'uniform', surfaceSize?: number, windingThreshold?: number, windingBeta?: number, conformity?: 'stuffing' | 'cleaving', alphaLong?: number, alphaShort?: number, preserveFeatures?: boolean, fitIterations?: number, dihedralFloorGuard?: boolean, fill?: 'inside' | 'all' | 'cover', keepOutside?: boolean, attachDistance?: boolean, attachQuality?: boolean, pillow?: boolean, untangleIterations?: number, maxCells?: number, maxTets?: number}) => object,
  *   surfaceWatertightCheck: (mesh: Mesh) => {boundaryEdges: number, nonManifoldEdges: number, inconsistentPairs: number, degenerateTriangles: number, watertight: boolean},
@@ -303,6 +303,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   gradient: (mesh: Mesh, array: string, operator?: string, method?: string, location?: string, output?: string, component?: number, overwrite?: boolean) => {mesh: Mesh, numSkipped: number, numFallback: number},
  *   hessian: (mesh: Mesh, array: string, method?: string, location?: string, output?: string, overwrite?: boolean) => {mesh: Mesh, numSkipped: number, numFallback: number},
  *   estimateError: (mesh: Mesh, array: string, method?: string, marking?: string, markingValue?: number, output?: string, marked?: string, overwrite?: boolean) => {mesh: Mesh, globalError: number, numSkipped: number, numMarked: number},
+ *   checkConformity: (mesh: Mesh, options?: {tolerance?: number, attachFlags?: boolean}) => {mesh: Mesh, dimension: number, numHangingNodes: number, numTJunctions: number, numPartialOverlaps: number, numUnweldedFacets: number, numBoundaryFacets: number, numNonManifoldFacets: number, conforming: boolean, interfaceMode: string, warnings: string[]},
  *   errorSize: (mesh: Mesh, options: {targetError: number, errorArray?: string, order?: number, minSize?: number, maxSize?: number, output?: string, overwrite?: boolean}) => {mesh: Mesh, numCells: number, numSkipped: number, numClamped: number, minSize: number, maxSize: number},
  *   remesh: (mesh: Mesh, numClusters: number, subdivide?: number, subsampleRatio?: number, maxSubdivide?: number, maxIterations?: number, maxRepairPasses?: number, metric?: string, gradation?: number, preserveBoundary?: boolean, maxAnisotropy?: number) => {mesh: Mesh, numClusters: number, numIterations: number, subdivideApplied: number, numIsolatedClusters: number, numNonManifoldVertices: number},
  *   remeshVolume: (mesh: Mesh, resolution?: number[], cellSize?: number, bounds?: number[], padding?: number, paddingRelative?: number, maxCells?: number, maxTets?: number, warpFraction?: number, sign?: string, watertightCheck?: string) => {mesh: Mesh, numTets: number, numVerticesWarped: number, numTetsRejected: number, numNonManifoldEdges: number},
@@ -819,9 +820,10 @@ export async function loadMeshioPlusPlus(
             attachOccupancy = false,
             maxCells = 20000000,
             watertightCheck = 'warn',
+            plane = 'auto',
         ) =>
             Module.voxelize(mesh, resolution, cellSize, bounds, padding, paddingRelative,
-                fill, sign, attachOccupancy, maxCells, watertightCheck),
+                fill, sign, attachOccupancy, maxCells, watertightCheck, plane),
         octree: (
             mesh,
             rootCells = null,
@@ -936,6 +938,7 @@ export async function loadMeshioPlusPlus(
                 overwrite,
             ),
         errorSize: (mesh, options) => Module.errorSize(mesh, options),
+        checkConformity: (mesh, options = {}) => Module.checkConformity(mesh, options),
         remesh: (
             mesh,
             numClusters,

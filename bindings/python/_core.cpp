@@ -128,6 +128,7 @@
 #include "meshioplusplus/formats/neuroglancer.hpp"
 #include "meshioplusplus/formats/xyz.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
+#include "meshioplusplus/operations/check_conformity.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/conservative_interpolate.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
@@ -2955,11 +2956,13 @@ PYBIND11_MODULE(_core, m) {
         "voxelize",
         [](py::object pymesh, py::object resolution, py::object cell_size, py::object bounds,
            double padding, double padding_relative, const std::string& fill, bool attach_occupancy,
-           std::int64_t max_cells, const std::string& sign, const std::string& watertight_check) {
+           std::int64_t max_cells, const std::string& sign, const std::string& watertight_check,
+           const std::string& plane) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
                 pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
             meshioplusplus::VoxelOptions options;
+            options.mPlane = meshioplusplus::detail::planar_plane_from_name(plane);
             if (!resolution.is_none())
                 options.mResolution = resolution.cast<std::array<std::int64_t, 3>>();
             if (!cell_size.is_none())
@@ -2988,7 +2991,7 @@ PYBIND11_MODULE(_core, m) {
         py::arg("bounds") = py::none(), py::arg("padding") = 0.0, py::arg("padding_relative") = 0.0,
         py::arg("fill") = "all", py::arg("attach_occupancy") = false,
         py::arg("max_cells") = 20000000, py::arg("sign") = "pseudonormal",
-        py::arg("watertight_check") = "warn");
+        py::arg("watertight_check") = "warn", py::arg("plane") = "auto");
 
     // Octree / quadtree leaves around a skin.
     m.def(
@@ -3575,6 +3578,7 @@ PYBIND11_MODULE(_core, m) {
             out["num_flips"] = r.mNumFlips;
             out["guarantee_applies"] = r.mGuaranteeApplies;
             out["num_winding_rechecks"] = r.mNumWindingRechecks;
+            out["num_winding_skipped"] = r.mNumWindingSkipped;
             py::dict quality;
             quality["num_cells"] = r.mQuality.mNumCells;
             quality["num_inverted"] = r.mQuality.mNumInverted;
@@ -4282,6 +4286,35 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("feature_angle") = 30.0, py::arg("feature") = true,
         py::arg("boundary") = true, py::arg("non_manifold") = true, py::arg("inconsistent") = true,
         py::arg("region") = "");
+
+    // Hanging nodes, T-junctions and partial overlaps. See
+    // operations/check_conformity.hpp.
+    m.def(
+        "check_conformity",
+        [](py::object pymesh, double tolerance, bool attach_flags) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::ConformityOptions options;
+            options.mTolerance = tolerance;
+            options.mAttachFlags = attach_flags;
+            meshioplusplus::ConformityResult r =
+                core_nogil([&] { return meshioplusplus::check_conformity(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["dimension"] = r.mDimension;
+            out["num_hanging_nodes"] = r.mNumHangingNodes;
+            out["num_t_junctions"] = r.mNumTJunctions;
+            out["num_partial_overlaps"] = r.mNumPartialOverlaps;
+            out["num_unwelded_facets"] = r.mNumUnweldedFacets;
+            out["num_boundary_facets"] = r.mNumBoundaryFacets;
+            out["num_non_manifold_facets"] = r.mNumNonManifoldFacets;
+            out["conforming"] = r.mConforming;
+            out["interface_mode"] = r.mInterfaceMode;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("mesh"), py::arg("tolerance") = 1e-9, py::arg("attach_flags") = true);
 
     // Isoparametric tessellation of curved cells. See operations/tessellate.hpp.
     m.def(

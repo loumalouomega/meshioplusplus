@@ -111,6 +111,7 @@
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "meshioplusplus/operations/check_conformity.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/formats/cad_json.hpp"
@@ -408,6 +409,8 @@ void print_usage(std::ostream& os) {
           "  check                   Quality gate: exit 1 when cells break thresholds\n"
           "                            (--require 'scaled_jacobian >= 0.2; ...', --gate FILE,\n"
           "                            --max-inverted/--max-degenerate; exit 2: not checked)\n"
+          "  check-conformity        Hanging nodes, T-junctions, partial overlaps: exit 1 when\n"
+          "                            not conforming (INFILE [OUTFILE] --tolerance --json)\n"
           "  curvature               Per-vertex mean/Gaussian curvature of a surface\n"
           "  normals                 Point/cell normals of a surface, optionally split at creases\n"
           "  feature-edges           Sharp/open/non-manifold edges of a surface as a line mesh\n"
@@ -1759,6 +1762,66 @@ int cmd_check(const std::vector<std::string>& rArgs) {
         std::cout << meshioplusplus::quality_gate_summary(r);
     }
     return r.mPassed ? 0 : 1;
+}
+
+int cmd_check_conformity(const std::vector<std::string>& rArgs) {
+    // 0 conforming, 1 not, 2 could not check -- the `check` verb's convention.
+    meshioplusplus::ConformityResult r;
+    bool json = false;
+    try {
+        auto p = cli_parse(rArgs, {
+                                      {"input-format", {"-i"}, true},
+                                      {"output-format", {"-o"}, true},
+                                      {"tolerance", {}, true},
+                                      {"json", {}, false},
+                                  });
+        if (p.positionals.empty() || p.positionals.size() > 2)
+            throw std::runtime_error("check-conformity requires INFILE and an optional OUTFILE");
+        json = has_flag(p, "json");
+        meshioplusplus::ConformityOptions options;
+        if (has_opt(p, "tolerance"))
+            options.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+        options.mAttachFlags = p.positionals.size() == 2;
+        Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+        r = meshioplusplus::check_conformity(mesh, options);
+        if (p.positionals.size() == 2)
+            write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    } catch (const std::exception& e) {
+        std::cerr << "error: " << e.what() << "\n";
+        return 2;
+    }
+    if (json) {
+        meshioplusplus::cli::JsonOut out(std::cout);
+        out.BeginObject();
+        out.Field("dimension", r.mDimension);
+        out.Field("num_hanging_nodes", r.mNumHangingNodes);
+        out.Field("num_t_junctions", r.mNumTJunctions);
+        out.Field("num_partial_overlaps", r.mNumPartialOverlaps);
+        out.Field("num_unwelded_facets", r.mNumUnweldedFacets);
+        out.Field("num_boundary_facets", r.mNumBoundaryFacets);
+        out.Field("num_non_manifold_facets", r.mNumNonManifoldFacets);
+        out.Field("conforming", r.mConforming);
+        out.Field("interface_mode", r.mInterfaceMode);
+        out.Key("warnings");
+        out.BeginArray();
+        for (const std::string& w : r.mWarnings)
+            out.String(w);
+        out.EndArray();
+        out.EndObject();
+    } else {
+        std::cout << (r.mConforming ? "conforming" : "NOT conforming") << " (" << r.mDimension
+                  << "-D cells examined)\n";
+        std::cout << "  hanging nodes:       " << r.mNumHangingNodes << "\n";
+        std::cout << "  T-junctions:         " << r.mNumTJunctions << "\n";
+        std::cout << "  partial overlaps:    " << r.mNumPartialOverlaps << "\n";
+        std::cout << "  unwelded facets:     " << r.mNumUnweldedFacets << "\n";
+        std::cout << "  boundary facets:     " << r.mNumBoundaryFacets << "\n";
+        std::cout << "  non-manifold facets: " << r.mNumNonManifoldFacets << "\n";
+        std::cout << "  interface mode:      " << r.mInterfaceMode << "\n";
+        for (const std::string& w : r.mWarnings)
+            std::cout << "  warning: " << w << "\n";
+    }
+    return r.mConforming ? 0 : 1;
 }
 
 int cmd_feature_edges(const std::vector<std::string>& rArgs) {
@@ -4126,6 +4189,7 @@ int cmd_voxelize(const std::vector<std::string>& rArgs) {
                                   {"padding-relative", {}, true},
                                   {"fill", {}, true},
                                   {"sign", {}, true},
+                                  {"plane", {}, true},
                                   {"attach-occupancy", {}, false},
                                   {"max-cells", {}, true},
                                   {"quiet", {"-q"}, false},
@@ -4167,6 +4231,7 @@ int cmd_voxelize(const std::vector<std::string>& rArgs) {
     options.mFill = meshioplusplus::voxel_fill_from_name(opt_value(p, "fill", "all"));
     options.mDistance.mSign =
         meshioplusplus::sdf_sign_from_name(opt_value(p, "sign", "pseudonormal"));
+    options.mPlane = meshioplusplus::detail::planar_plane_from_name(opt_value(p, "plane", "auto"));
     options.mAttachOccupancy = has_flag(p, "attach-occupancy");
     if (p.values.count("max-cells"))
         options.mMaxCells = std::stoll(opt_value(p, "max-cells"));
@@ -4625,6 +4690,7 @@ int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
         json.Field("num_optimized_moves", r.mNumOptimizedMoves);
         json.Field("num_flips", r.mNumFlips);
         json.Field("num_winding_rechecks", r.mNumWindingRechecks);
+        json.Field("num_winding_skipped", r.mNumWindingSkipped);
         json.Field("root_size", r.mRootSize);
         json.Field("min_size", r.mMinSize);
         json.Field("max_size", r.mMaxSize);
@@ -7570,6 +7636,8 @@ int main(int argc, char** argv) {
             return cmd_curvature(rest);
         if (cmd == "normals")
             return cmd_normals(rest);
+        if (cmd == "check-conformity")
+            return cmd_check_conformity(rest);
         if (cmd == "check")
             return cmd_check(rest);
         if (cmd == "feature-edges")
