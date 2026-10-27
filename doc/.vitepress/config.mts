@@ -114,6 +114,7 @@ export default defineConfig({
               { text: "Mesh comparison (diff)", link: "/diff" },
               { text: "Hausdorff distance", link: "/hausdorff" },
               { text: "Feature edges", link: "/feature_edges" },
+              { text: "Conformity check", link: "/check_conformity" },
               { text: "Segment (smooth patches)", link: "/segment" },
               { text: "Refine patches", link: "/refine_patches" },
               { text: "Fit primitives", link: "/fit_primitives" },

@@ -135,6 +135,129 @@ std::int64_t hex_grid_make_manifold(const std::array<std::int64_t, 3>& rN,
     return added;
 }
 
+std::int64_t hex_make_manifold(const HexMesh& rMesh, std::vector<std::uint8_t>& rKept,
+                               const std::vector<double>& rScore) {
+    const std::size_t nh = rMesh.mHexes.size(), np = rMesh.mPoints.size();
+    // The hexahedron across each facet (-1: none).
+    std::vector<std::array<std::int64_t, 6>> across(nh);
+    {
+        std::vector<std::pair<std::array<std::int64_t, 4>, std::int64_t>> faces;
+        faces.reserve(nh * 6);
+        for (std::size_t h = 0; h < nh; ++h) {
+            across[h].fill(-1);
+            for (int f = 0; f < 6; ++f) {
+                std::array<std::int64_t, 4> key{};
+                for (int k = 0; k < 4; ++k)
+                    key[static_cast<std::size_t>(k)] =
+                        rMesh.mHexes[h][static_cast<std::size_t>(kHexfitFace[f][k])];
+                std::sort(key.begin(), key.end());
+                faces.emplace_back(key,
+                                   static_cast<std::int64_t>(h * 6 + static_cast<std::size_t>(f)));
+            }
+        }
+        std::sort(faces.begin(), faces.end());
+        for (std::size_t i = 0; i + 1 < faces.size(); ++i)
+            if (faces[i].first == faces[i + 1].first) {
+                const std::int64_t a = faces[i].second, b = faces[i + 1].second;
+                across[static_cast<std::size_t>(a / 6)][static_cast<std::size_t>(a % 6)] = b / 6;
+                across[static_cast<std::size_t>(b / 6)][static_cast<std::size_t>(b % 6)] = a / 6;
+            }
+    }
+    std::vector<std::int64_t> start(np + 1, 0), at;
+    for (const auto& h : rMesh.mHexes)
+        for (std::int64_t v : h)
+            ++start[static_cast<std::size_t>(v) + 1];
+    for (std::size_t v = 0; v < np; ++v)
+        start[v + 1] += start[v];
+    at.resize(static_cast<std::size_t>(start[np]));
+    {
+        std::vector<std::int64_t> fill(start.begin(), start.end() - 1);
+        for (std::size_t h = 0; h < nh; ++h)
+            for (std::int64_t v : rMesh.mHexes[h])
+                at[static_cast<std::size_t>(fill[static_cast<std::size_t>(v)]++)] =
+                    static_cast<std::int64_t>(h);
+    }
+    std::int64_t added = 0;
+    std::vector<std::vector<std::size_t>> link;
+    std::vector<std::uint8_t> seen;
+    // The components of the star's cells with `Kept` (the outside, index n,
+    // counting as empty).
+    auto components = [&](const std::vector<std::int64_t>& rStar, bool Kept, bool Outside) {
+        const std::size_t n = rStar.size();
+        auto member = [&](std::size_t I) {
+            if (I == n)
+                return !Kept && Outside;
+            return (rKept[static_cast<std::size_t>(rStar[I])] != 0) == Kept;
+        };
+        seen.assign(n + 1, 0);
+        int count = 0;
+        for (std::size_t i = 0; i <= n; ++i) {
+            if (seen[i] || !member(i))
+                continue;
+            ++count;
+            std::vector<std::size_t> front{i};
+            seen[i] = 1;
+            while (!front.empty()) {
+                const std::size_t u = front.back();
+                front.pop_back();
+                for (std::size_t w : link[u])
+                    if (!seen[w] && member(w)) {
+                        seen[w] = 1;
+                        front.push_back(w);
+                    }
+            }
+        }
+        return count;
+    };
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (std::size_t p = 0; p < np; ++p) {
+            const std::vector<std::int64_t> star(at.begin() + start[p], at.begin() + start[p + 1]);
+            const std::size_t n = star.size();
+            if (n == 0)
+                continue;
+            link.assign(n + 1, {});
+            bool outside = false;
+            for (std::size_t i = 0; i < n; ++i) {
+                const auto& hex = rMesh.mHexes[static_cast<std::size_t>(star[i])];
+                for (int f = 0; f < 6; ++f) {
+                    bool has = false;
+                    for (int k = 0; k < 4 && !has; ++k)
+                        has = hex[static_cast<std::size_t>(kHexfitFace[f][k])] ==
+                              static_cast<std::int64_t>(p);
+                    if (!has)
+                        continue;
+                    const std::int64_t g =
+                        across[static_cast<std::size_t>(star[i])][static_cast<std::size_t>(f)];
+                    const std::size_t j =
+                        g < 0 ? n
+                              : static_cast<std::size_t>(std::find(star.begin(), star.end(), g) -
+                                                         star.begin());
+                    outside = outside || g < 0;
+                    link[i].push_back(j);
+                    link[j].push_back(i);
+                }
+            }
+            for (;;) {
+                if (components(star, true, outside) <= 1 && components(star, false, outside) <= 1)
+                    break;
+                std::int64_t best = -1;
+                for (std::int64_t h : star)
+                    if (!rKept[static_cast<std::size_t>(h)] &&
+                        (best < 0 || rScore[static_cast<std::size_t>(h)] >
+                                         rScore[static_cast<std::size_t>(best)]))
+                        best = h;
+                if (best < 0)
+                    break;  // only the outside left to add
+                rKept[static_cast<std::size_t>(best)] = 1;
+                ++added;
+                changed = true;
+            }
+        }
+    }
+    return added;
+}
+
 HexBoundary hex_boundary(const HexMesh& rMesh) {
     std::vector<std::pair<std::array<std::int64_t, 4>, std::int64_t>> faces;
     faces.reserve(rMesh.mHexes.size() * 6);

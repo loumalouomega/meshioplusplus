@@ -141,6 +141,20 @@ void linear_octree_dilate(LinearOctree& rTree, const std::vector<std::uint8_t>& 
 /// leaf's closure. A coarser leaf holding that cube is returned whatever else
 /// it shares with the leaf (a corner query can return a face neighbour), so a
 /// leaf can appear in several directions. Empty on the boundary of the forest.
+/**
+ * @brief Pair the tree for the dual hexahedral transition schemes (Pitzalis,
+ * Livesu, Cherchi, Gobbetti and Scateni, "Generalized adaptive refinement for
+ * grid-based hexahedral meshing", ACM TOG 40(6), 2021): every leaf has a parent
+ * (the roots are split once) and the eight children of every parent are all
+ * leaves or all split. Splits and rebalances for @p Kind until both hold.
+ * @return whether anything was split.
+ */
+bool linear_octree_pair(LinearOctree& rTree, OctreeAdjacency Kind, std::int64_t MaxLeaves);
+
+/// Whether every leaf has a parent and every octet of siblings is all leaves
+/// or all split; @p pWhy receives the first violation.
+bool linear_octree_is_paired(const LinearOctree& rTree, std::string* pWhy = nullptr);
+
 std::vector<std::int64_t> linear_octree_neighbours(const LinearOctree& rTree, std::size_t Leaf,
                                                    int Dx, int Dy, int Dz);
 

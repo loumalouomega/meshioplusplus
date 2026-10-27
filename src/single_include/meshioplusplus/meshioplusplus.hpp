@@ -25539,6 +25539,109 @@ MESHIOPLUSPLUS_API BoundaryLayerResult boundary_layer(const Mesh& rSurface,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/boundary_layer.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/check_conformity.hpp =====
+/**
+ * @file operations/check_conformity.hpp
+ * @brief Whether a mesh is conforming: hanging nodes, T-junctions and facets
+ * that only partly overlap, reported with a flag per point.
+ *
+ * A mesh is conforming when every two cells meet in a whole shared facet, edge
+ * or corner, with the same point ids on both sides. This check reports the ways
+ * that fails on the mesh's top-dimensional cells (volume cells when there are
+ * any, else 2-D cells; lines and vertices are ignored):
+ *
+ *  - a **hanging node** (3-D): a point some cell uses that lies on a face of a
+ *    volume cell -- in its interior or on one of its edges -- without being one
+ *    of that cell's nodes;
+ *  - a **T-junction** (2-D): a point some cell uses that lies on the interior of
+ *    an edge of a 2-D cell without being one of its nodes;
+ *  - a **partial overlap**: two unmatched facets (faces in 3-D, edges in 2-D)
+ *    that lie in one plane (on one line) and overlap over a positive area
+ *    (length) without being the same facet;
+ *  - an **unwelded** pair: two unmatched facets whose corners coincide but whose
+ *    point ids differ.
+ *
+ * Only unmatched facets -- a face of one volume cell, an edge of one 2-D cell
+ * -- are examined: a node hanging on a face is always a corner of an unmatched
+ * facet of the finer side, and a face matched by its neighbour cannot hold one.
+ * A cell's own nodes are never flagged against it, so a quadratic cell's
+ * mid-edge nodes are not hanging. Two points closer than the tolerance are one
+ * location: a point on a facet's corner is an unwelded duplicate, not a hanging
+ * node.
+ *
+ * The verdict tells a caller which `find_interface` mode suits the mesh:
+ * `"conforming"` when nothing is reported, `"weld"` when the only defect is
+ * unwelded facets (merge the coincident points, then `"conforming"`), and
+ * `"proximity"` when facets partly overlap. Points, connectivity, block order,
+ * data and regions are returned bit-identical; only the flag array is added.
+ *
+ * Deterministic: the flags are computed per point and the counts summed in
+ * facet order, so the result is identical across parallel backends and thread
+ * counts.
+ *
+ * @see doc/check_conformity.md
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Point data (Int64): 0, or `ConformityFlag::HangingNode`/`TJunction`.
+inline constexpr const char* kConformityHangingName = "conformity:hanging";
+
+/// The values of `conformity:hanging`.
+enum class ConformityFlag : std::int32_t {
+    Conforming = 0,
+    HangingNode = 1,  ///< on a face of a volume cell that does not use it
+    TJunction = 2,    ///< on an edge of a 2-D cell that does not use it
+};
+
+/// Options for `check_conformity`.
+struct ConformityOptions {
+    /// Distances at or below this fraction of the bounding-box diagonal of the
+    /// examined cells' points count as zero; must be finite and non-negative.
+    double mTolerance = 1e-9;
+    /// Attach `conformity:hanging` to the returned mesh.
+    bool mAttachFlags = true;
+};
+
+/// The verdict and the counts behind it.
+struct ConformityResult {
+    /// The input, bit-identical, with `conformity:hanging` when asked for.
+    Mesh mMesh;
+    /// 3 for volume cells, 2 for 2-D cells, 0 when the mesh has neither.
+    std::int64_t mDimension = 0;
+    std::int64_t mNumHangingNodes = 0;       ///< points flagged `HangingNode`
+    std::int64_t mNumTJunctions = 0;         ///< points flagged `TJunction`
+    std::int64_t mNumPartialOverlaps = 0;    ///< pairs of partly overlapping facets
+    std::int64_t mNumUnweldedFacets = 0;     ///< pairs of coincident, unwelded facets
+    std::int64_t mNumBoundaryFacets = 0;     ///< facets used by one cell
+    std::int64_t mNumNonManifoldFacets = 0;  ///< facets used by three or more cells
+    /// No hanging node, T-junction, partial overlap or unwelded pair.
+    bool mConforming = true;
+    /// `"conforming"`, `"weld"` or `"proximity"`: see the file comment.
+    std::string mInterfaceMode = "conforming";
+    /// What the check could not examine, one entry per line.
+    std::vector<std::string> mWarnings;
+};
+
+/**
+ * @brief Report the hanging nodes, T-junctions, partial overlaps and unwelded
+ * facets of @p rMesh.
+ * @param rMesh any mesh; its volume cells (else its 2-D cells) are examined.
+ * @param rOptions the tolerance and whether to attach the flags.
+ * @throws std::invalid_argument on a negative or non-finite tolerance.
+ */
+MESHIOPLUSPLUS_API ConformityResult check_conformity(const Mesh& rMesh,
+                                                     const ConformityOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/check_conformity.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/clean.hpp =====
 /**
  * @file operations/clean.hpp
@@ -30880,6 +30983,9 @@ struct VoxelOptions {
     std::int64_t mMaxCells = 20000000;
     /// How `VoxelFill::Inside` decides what is inside.
     SurfaceDistanceOptions mDistance;
+    /// The plane of a 2-D skin (`Auto`: the axis of zero extent, `z` first).
+    /// Ignored by the 3-D variant, as `OctreeOptions::mPlane` is.
+    detail::PlanarPlane mPlane = detail::PlanarPlane::Auto;
 };
 
 /// The result of `voxelize`: the grid and the lattice it came from.
@@ -31248,6 +31354,15 @@ enum class OctreeMeshSkinGrading {
     Uniform = 1,
 };
 
+/// How a hexahedral output grades.
+enum class OctreeMeshHexGrading {
+    /// One grid at the skin's size everywhere.
+    Uniform = 0,
+    /// The octree's own grading, made conforming by the dual transition
+    /// schemes of Livesu, Pitzalis and Cherchi (2022).
+    Graded = 1,
+};
+
 /// Which leaves a castellated output keeps.
 enum class OctreeMeshFill {
     All = 0,     ///< every leaf
@@ -31262,6 +31377,8 @@ MESHIOPLUSPLUS_API OctreeMeshConformity octree_mesh_conformity_from_name(const s
 /// Parse an `OctreeMeshSkinGrading` name (`graded`, `uniform`).
 MESHIOPLUSPLUS_API OctreeMeshSkinGrading
 octree_mesh_skin_grading_from_name(const std::string& rName);
+/// Parse an `OctreeMeshHexGrading` name (`uniform`, `graded`).
+MESHIOPLUSPLUS_API OctreeMeshHexGrading octree_mesh_hex_grading_from_name(const std::string& rName);
 /// Parse an `OctreeMeshFill` name (`all`, `inside`, `cover`).
 MESHIOPLUSPLUS_API OctreeMeshFill octree_mesh_fill_from_name(const std::string& rName);
 /// The name of an `OctreeMeshOutput` (`castellated`, `tet`, `hex`).
@@ -31339,6 +31456,8 @@ struct OctreeMeshOptions {
     bool mAttachQuality = false;
     /// Hexahedral output: insert a layer of hexahedra along the boundary.
     bool mPillow = true;
+    /// Hexahedral output: one grid at the skin's size, or the octree's grading.
+    OctreeMeshHexGrading mHexGrading = OctreeMeshHexGrading::Uniform;
     /// Hexahedral output: untangling iterations.
     std::int64_t mUntangleIterations = 50;
     /// Refuse an octree with more leaves than this.
@@ -31392,7 +31511,10 @@ struct OctreeMeshResult {
     /// `Uniform` grading, nothing snapped to features, nothing refused.
     bool mGuaranteeApplies = false;
     std::int64_t mNumWindingRechecks = 0;  ///< Winding numbers re-evaluated near 0.5.
-    QualityReport mQuality;                ///< `compute_quality` of the output.
+    /// Winding numbers not evaluated: the point lies deep in a region the
+    /// closed skin does not cut, whose integer winding number was flooded in.
+    std::int64_t mNumWindingSkipped = 0;
+    QualityReport mQuality;  ///< `compute_quality` of the output.
     /// Seconds spent in each stage, in order.
     std::vector<std::pair<std::string, double>> mTimings;
     /// Everything that did not meet its target, in order.
@@ -37448,6 +37570,20 @@ void linear_octree_dilate(LinearOctree& rTree, const std::vector<std::uint8_t>& 
 /// leaf's closure. A coarser leaf holding that cube is returned whatever else
 /// it shares with the leaf (a corner query can return a face neighbour), so a
 /// leaf can appear in several directions. Empty on the boundary of the forest.
+/**
+ * @brief Pair the tree for the dual hexahedral transition schemes (Pitzalis,
+ * Livesu, Cherchi, Gobbetti and Scateni, "Generalized adaptive refinement for
+ * grid-based hexahedral meshing", ACM TOG 40(6), 2021): every leaf has a parent
+ * (the roots are split once) and the eight children of every parent are all
+ * leaves or all split. Splits and rebalances for @p Kind until both hold.
+ * @return whether anything was split.
+ */
+bool linear_octree_pair(LinearOctree& rTree, OctreeAdjacency Kind, std::int64_t MaxLeaves);
+
+/// Whether every leaf has a parent and every octet of siblings is all leaves
+/// or all split; @p pWhy receives the first violation.
+bool linear_octree_is_paired(const LinearOctree& rTree, std::string* pWhy = nullptr);
+
 std::vector<std::int64_t> linear_octree_neighbours(const LinearOctree& rTree, std::size_t Leaf,
                                                    int Dx, int Dy, int Dz);
 
@@ -42046,9 +42182,12 @@ JunctionPoint junction_closest(const std::vector<ClosestPoint>& rSurfaces,
  * from the polyline), and the path's inner vertices are moved onto the
  * polyline and pinned. Every move goes through one guard: no tetrahedron
  * around the vertex may lose its volume or drop below a two-degree dihedral
- * angle it did not already have; a refused chain vertex tries a half and a
- * quarter of the move, a refused corner the next candidate. A corner or chain
- * that cannot be recovered is counted, never silently dropped.
+ * angle it did not already have. Only the guarded tetrahedra count: those the
+ * output keeps, so a sliver outside the skin that is about to be discarded
+ * cannot hold a rim's vertex off its chain. A vertex moves in four quarter
+ * steps and keeps the steps that succeeded; a refused corner tries the next
+ * candidate. A corner or chain that cannot be recovered is counted, never
+ * silently dropped.
  *
  * A **core-private** header: nothing installed names it.
  */
@@ -42094,12 +42233,15 @@ struct FeatureSnapReport {
  * @param rPinned per point; snapped points are set to 1 and pinned points are
  *        never moved.
  * @param rFeature per point, set to 1 on a corner and 2 on a chain.
+ * @param rGuarded per tetrahedron, 1 when it must stay positive (it reaches
+ *        the output).
  * @param rLocalSize the local mesh size at a point in space.
  */
 FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
                                const std::vector<std::array<std::int64_t, 4>>& rTets,
-                               const std::vector<std::uint8_t>& rInside, const FeatureGraph& rGraph,
-                               const std::vector<Vec3>& rSkinPoints,
+                               const std::vector<std::uint8_t>& rInside,
+                               const std::vector<std::uint8_t>& rGuarded,
+                               const FeatureGraph& rGraph, const std::vector<Vec3>& rSkinPoints,
                                const std::function<double(const Vec3&)>& rLocalSize,
                                double MinVolume, std::vector<std::uint8_t>& rPinned,
                                std::vector<std::uint8_t>& rFeature);
@@ -42382,6 +42524,104 @@ FreeformAdaptiveResult freeform_adaptive_fit(const std::vector<PatchVec>& rPts,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/freeform_adaptive.hpp =====
+// ===== begin src/cpp/src/detail/hex_dual_schemes.hpp =====
+/**
+ * @file detail/hex_dual_schemes.hpp
+ * @brief The all-hexahedral dual of a paired, strongly balanced octree, after
+ * the transition schemes of Livesu, Pitzalis and Cherchi ("Optimal dual
+ * schemes for adaptive grid based hexmeshing", ACM TOG 41(2), 2022), ported
+ * from CinoLib (MIT).
+ *
+ * The leaves are the primal mesh: hexahedra with hanging nodes where a leaf
+ * meets leaves one level finer. A **transition vertex** is the centre of a
+ * face of a parent whose eight children are leaves and whose neighbour across
+ * that face is split two levels down on that side; every coarse leaf around
+ * the transitions is replaced by one of eight polyhedral schemes, placed by
+ * the transition vertices it holds. The result is a conforming polyhedral mesh
+ * whose every interior vertex has eight cells around it, so its dual is all
+ * hexahedra: one per interior primal vertex, with a corner at the centroid of
+ * each cell around it.
+ *
+ * The port keeps CinoLib's detection, marking order and orientation rules,
+ * with every coordinate on an integer lattice of 1/20 of the finest cell (the
+ * schemes use 0, 0.3, 0.5 and 1 of a cell), so vertices weld by exact keys
+ * and every rotation and reflection is a signed permutation. Every assertion
+ * of the original is an `Unsupported` error naming the configuration, and the
+ * schemes for weakly balanced grids are not ported: the tree must be balanced
+ * across faces, edges and corners and paired (`linear_octree_pair`).
+ *
+ * A **core-private** header (the `cut_graph.hpp` precedent): nothing installed
+ * names it.
+ */
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+
+namespace meshioplusplus {
+namespace detail {
+
+/// The schemes for strongly balanced grids, in CinoLib's order.
+enum class HexTransition {
+    Flat,
+    FlatConvex,
+    Convex1,
+    Convex2,
+    Convex3,
+    Edge,
+    VertCenter,
+    VertSide,
+};
+
+constexpr std::size_t kNumHexTransitions = 8;
+
+/// One scheme: a unit cube cut into polyhedra, coordinates times 20.
+struct HexDualScheme {
+    const std::int8_t* mVerts;  ///< 3 per vertex, each in [0, 20]
+    std::size_t mNumVerts;
+    const std::uint16_t* mFaces;     ///< vertex ids of every face, concatenated
+    const std::uint16_t* mFaceEnds;  ///< one past each face's last entry
+    std::size_t mNumFaces;
+    const std::uint16_t* mPolys;     ///< face ids of every cell, concatenated
+    const std::uint16_t* mPolyEnds;  ///< one past each cell's last entry
+    std::size_t mNumPolys;
+    const std::uint8_t* mWinding;  ///< per entry of `mPolys`
+};
+
+const HexDualScheme& hex_dual_scheme(HexTransition Type);
+
+/// The dual mesh, in lattice units (1/20 of the finest cell) from the forest's
+/// lo corner.
+struct HexDualMesh {
+    std::vector<Vec3> mPoints;
+    std::vector<std::array<std::int64_t, 8>> mHexes;  ///< VTK order, positive volume
+    /// The primal vertex each hexahedron is the dual of.
+    std::vector<std::array<std::int64_t, 3>> mCentre;
+    /// The finest level among the leaves around that vertex.
+    std::vector<std::int32_t> mLevel;
+    std::int64_t mNumTransitionVertices = 0;
+    std::array<std::int64_t, kNumHexTransitions> mNumSchemes{};
+    std::int64_t mNumPrimalCells = 0;
+};
+
+/// The lattice units per finest cell.
+constexpr std::int64_t kHexDualUnit = 20;
+
+/**
+ * @brief The all-hexahedral dual of @p rTree, which must be paired and
+ * balanced across faces, edges and corners. Vertices on the forest's outer
+ * boundary have no hexahedron.
+ * @throws Unsupported naming the configuration when a scheme cannot be
+ * placed, the schemes do not conform, or an interior vertex's dual is not a
+ * hexahedron; never returns a partial mesh.
+ */
+HexDualMesh hex_dual_mesh(const LinearOctree& rTree);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/hex_dual_schemes.hpp =====
 // ===== begin src/cpp/src/detail/hex_fit.hpp =====
 /**
  * @file detail/hex_fit.hpp
@@ -42427,6 +42667,18 @@ struct HexMesh {
     std::vector<Vec3> mPoints;
     std::vector<std::array<std::int64_t, 8>> mHexes;
 };
+
+/**
+ * @brief `hex_grid_make_manifold` on an unstructured hexahedral mesh: add
+ * hexahedra to @p rKept until, around every node, the kept hexahedra and the
+ * rest (with the outside of the mesh) are each connected through the faces at
+ * that node. A failing node takes the empty hexahedron around it with the
+ * largest @p rScore first (ties: the lowest index); sweeps the nodes in
+ * ascending order until none fails.
+ * @return the hexahedra added.
+ */
+std::int64_t hex_make_manifold(const HexMesh& rMesh, std::vector<std::uint8_t>& rKept,
+                               const std::vector<double>& rScore);
 
 /// The faces of a hexahedral mesh used by one hexahedron, ordered so their
 /// normal (right-hand rule) points out of it, with the (hexahedron, facet)
@@ -50215,6 +50467,7 @@ void mesh_cad_set_face_order_seed(std::uint64_t Seed);
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -50228,6 +50481,32 @@ inline constexpr const char* kOctreeMeshPrefix = "meshio++: octree_mesh: ";
 
 /// Everything the outputs are built from. Not movable once built: the trees
 /// point into the skin's soup.
+/**
+ * @brief The inside test's shortcut for a closed skin.
+ *
+ * The winding number of a closed, consistently oriented skin is an integer
+ * that only changes across the skin. The leaves the skin does not cut join
+ * into regions through their shared faces, and one region has one winding
+ * number, evaluated at a few of its leaves. A point in a *deep* leaf -- one
+ * neither it nor any of its 26 neighbours is cut -- takes that integer instead
+ * of a winding-number evaluation: its closed box is skin-free with a margin of
+ * a leaf, so a cut flag rounded the wrong way at a shared face cannot reach it.
+ * Points beside the skin are evaluated as before, so every decision that uses a
+ * winding number's value rather than its side (the snapping, the cuts, the
+ * manifold repair's scores) sees the same numbers.
+ */
+struct OctreeMeshFlood {
+    static constexpr std::int32_t kUnknown = std::numeric_limits<std::int32_t>::min();
+    /// The tree the flood was computed on, kept as it was: a later split of a
+    /// leaf does not move the skin.
+    LinearOctree mTree;
+    /// Per leaf of `mTree`, its region's winding number, or `kUnknown`.
+    std::vector<std::int32_t> mValue;
+    std::array<double, 3> mOrigin{{0.0, 0.0, 0.0}};
+    double mFine = 0.0;
+    bool mActive = false;
+};
+
 struct OctreeMeshSetup {
     OctreeSkin mSkin;
     TriBvh mBvh;
@@ -50243,6 +50522,8 @@ struct OctreeMeshSetup {
     double mWindingSign = 1.0;
     /// Points at most this far from the skin are on it.
     double mOnSkin = 0.0;
+    /// The flooded winding numbers of a closed skin (inactive otherwise).
+    OctreeMeshFlood mFlood;
 };
 
 /// A stopwatch that records each stage's seconds in the result.
@@ -50253,6 +50534,12 @@ struct OctreeMeshClock {
 
 /// Log a warning and keep it in the result.
 void octree_mesh_warn(OctreeMeshResult& rResult, const std::string& rMessage);
+
+/// Flood the winding numbers of a closed skin through the leaves of the
+/// setup's octree it does not cut; a skin that is not closed, a winding
+/// threshold within 0.1 of an integer, or `MESHIOPLUSPLUS_OCTREE_MESH_FLOOD=0`
+/// in the environment (a test hook) leaves it inactive.
+void octree_mesh_flood(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions);
 
 /// The winding number at every point (the skin's orientation applied), with
 /// the values near the threshold re-evaluated more accurately.
@@ -76424,8 +76711,9 @@ FeatureGraph feature_graph(const std::vector<Vec3>& rPoints,
 
 FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
                                const std::vector<std::array<std::int64_t, 4>>& rTets,
-                               const std::vector<std::uint8_t>& rInside, const FeatureGraph& rGraph,
-                               const std::vector<Vec3>& rSkinPoints,
+                               const std::vector<std::uint8_t>& rInside,
+                               const std::vector<std::uint8_t>& rGuarded,
+                               const FeatureGraph& rGraph, const std::vector<Vec3>& rSkinPoints,
                                const std::function<double(const Vec3&)>& rLocalSize,
                                double MinVolume, std::vector<std::uint8_t>& rPinned,
                                std::vector<std::uint8_t>& rFeature) {
@@ -76481,6 +76769,8 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
         double lo = 180.0;
         rPositive = true;
         for (std::int64_t t : inc[static_cast<std::size_t>(V)]) {
+            if (!rGuarded[static_cast<std::size_t>(t)])
+                continue;
             Vec3 p[4];
             for (std::size_t c = 0; c < 4; ++c) {
                 const std::int64_t q = rTets[static_cast<std::size_t>(t)][c];
@@ -76497,6 +76787,8 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
     // Whether every tetrahedron around `U` stays positive with `V` at `rAt`.
     auto star_positive = [&](std::int64_t U, std::int64_t V, const Vec3& rAt) {
         for (std::int64_t t : inc[static_cast<std::size_t>(U)]) {
+            if (!rGuarded[static_cast<std::size_t>(t)])
+                continue;
             Vec3 p[4];
             for (std::size_t c = 0; c < 4; ++c) {
                 const std::int64_t q = rTets[static_cast<std::size_t>(t)][c];
@@ -78632,6 +78924,1797 @@ NDArray read_compound_member(hid_t loc, const std::string& rName, const std::str
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
 // ===== end src/cpp/src/detail/hdf5_util.cpp =====
+// ===== begin src/cpp/src/detail/hex_dual_scheme_tables.cpp =====
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+constexpr std::int8_t kHdsFlatVerts[] = {
+    0, 0,  0,  20, 0,  0,  0,  20, 0, 20, 20, 0,  0,  0, 20, 20, 0,  20,
+    0, 20, 20, 20, 20, 20, 0,  6,  0, 10, 0,  10, 0,  0, 10, 20, 0,  10,
+    0, 10, 0,  10, 6,  0,  20, 10, 0, 10, 0,  20, 10, 0, 0,  0,  10, 20,
+};
+constexpr std::uint16_t kHdsFlatFaces[] = {
+    10, 4,  15, 9,  9,  15, 5,  11, 0,  10, 9,  16, 16, 9,  11, 1,  6,  7,  3, 2,
+    10, 0,  8,  9,  16, 13, 11, 1,  14, 0,  16, 13, 8,  16, 1,  14, 13, 10, 9, 13,
+    8,  9,  11, 14, 13, 4,  15, 17, 8,  13, 12, 17, 12, 2,  6,  12, 13, 14, 3, 2,
+    8,  10, 4,  17, 12, 13, 9,  15, 17, 12, 5,  15, 17, 6,  7,  11, 5,  7,  3, 14,
+};
+constexpr std::uint16_t kHdsFlatFaceEnds[] = {
+    4, 8, 12, 16, 20, 23, 26, 29, 33, 37, 41, 45, 48, 51, 55, 60, 65, 70, 75, 80,
+};
+constexpr std::uint16_t kHdsFlatPolys[] = {
+    5, 6, 8, 10, 2, 6, 7, 9, 11, 3, 10, 13, 12, 16, 17, 0, 11, 17, 15, 19, 18, 14, 4, 1,
+};
+constexpr std::uint16_t kHdsFlatPolyEnds[] = {
+    5,
+    10,
+    16,
+    24,
+};
+constexpr std::uint8_t kHdsFlatWinding[] = {
+    0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0,
+};
+
+constexpr std::int8_t kHdsFlatConvexVerts[] = {
+    0,  0,  0,  20, 0, 0,  0,  20, 0,  20, 20, 0,  0,  0,  20, 20, 0,  20, 0,  20, 20,
+    20, 20, 20, 0,  6, 0,  10, 0,  10, 0,  0,  10, 20, 0,  10, 0,  10, 0,  10, 6,  0,
+    20, 10, 0,  10, 0, 20, 10, 0,  0,  0,  10, 20, 10, 20, 20, 20, 20, 10, 20, 10, 20,
+};
+constexpr std::uint16_t kHdsFlatConvexFaces[] = {
+    10, 4,  15, 9,  9,  15, 5,  11, 0,  10, 9,  16, 16, 9,  11, 1,  19, 3,  14, 11, 5,  20, 10, 0,
+    8,  9,  16, 13, 11, 1,  14, 0,  16, 13, 8,  16, 1,  14, 13, 10, 9,  13, 8,  9,  11, 14, 13, 4,
+    15, 17, 8,  13, 12, 17, 12, 2,  6,  12, 13, 14, 3,  2,  8,  10, 4,  17, 12, 13, 9,  15, 17, 12,
+    20, 5,  15, 17, 6,  18, 19, 3,  2,  6,  18, 18, 19, 20, 7,  19, 20, 18, 7,  20, 18, 19, 7,
+};
+constexpr std::uint16_t kHdsFlatConvexFaceEnds[] = {
+    4, 8, 12, 16, 22, 25, 28, 31, 35, 39, 43, 47, 50, 53, 57, 62, 67, 72, 78, 83, 86, 89, 92, 95,
+};
+constexpr std::uint16_t kHdsFlatConvexPolys[] = {
+    5, 6,  8,  10, 2, 6,  7,  9,  11, 3,  10, 13, 12, 16, 17,
+    0, 11, 17, 15, 4, 18, 14, 19, 1,  20, 20, 21, 22, 23,
+};
+constexpr std::uint16_t kHdsFlatConvexPolyEnds[] = {
+    5, 10, 16, 25, 29,
+};
+constexpr std::uint8_t kHdsFlatConvexWinding[] = {
+    0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0,
+};
+
+constexpr std::int8_t kHdsConvex1Verts[] = {
+    0,  0,  0, 20, 20, 20, 20, 20, 0,  20, 0,  20, 0, 20, 20, 0,  0,
+    20, 20, 0, 0,  0,  20, 0,  0,  10, 0,  10, 0,  0, 0,  0,  10,
+};
+constexpr std::uint16_t kHdsConvex1Faces[] = {
+    6,  3, 1, 2,  3, 5, 4, 1, 7,  2, 1, 4, 8, 0, 9, 8, 0, 10, 8,  9,
+    10, 0, 9, 10, 5, 3, 6, 9, 10, 6, 2, 7, 8, 9, 5, 4, 7, 8,  10,
+};
+constexpr std::uint16_t kHdsConvex1FaceEnds[] = {
+    4, 8, 12, 15, 18, 21, 24, 29, 34, 39,
+};
+constexpr std::uint16_t kHdsConvex1Polys[] = {
+    6, 3, 4, 5, 5, 7, 8, 9, 0, 1, 2,
+};
+constexpr std::uint16_t kHdsConvex1PolyEnds[] = {
+    4,
+    11,
+};
+constexpr std::uint8_t kHdsConvex1Winding[] = {
+    1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0,
+};
+
+constexpr std::int8_t kHdsConvex2Verts[] = {
+    0, 0,  0, 20, 20, 20, 20, 20, 0, 20, 0, 20, 0, 20, 20, 0,  0,  20, 20, 0,  0,
+    0, 20, 0, 0,  10, 0,  10, 0,  0, 0,  0, 10, 0, 10, 20, 10, 20, 20, 0,  20, 10,
+};
+constexpr std::uint16_t kHdsConvex2Faces[] = {
+    6, 3, 1, 2, 13, 7, 8, 10, 5, 11, 12, 1, 3, 5, 11, 8,  0,  9,  8, 0,  10, 8,  9, 10, 0,  9,  10,
+    5, 3, 6, 9, 10, 6, 2, 7,  8, 9,  13, 7, 2, 1, 12, 11, 12, 13, 4, 12, 13, 11, 4, 13, 11, 12, 4,
+};
+constexpr std::uint16_t kHdsConvex2FaceEnds[] = {
+    4, 10, 15, 18, 21, 24, 27, 32, 37, 42, 45, 48, 51, 54,
+};
+constexpr std::uint16_t kHdsConvex2Polys[] = {
+    6, 3, 4, 5, 5, 7, 8, 1, 0, 2, 9, 10, 10, 11, 12, 13,
+};
+constexpr std::uint16_t kHdsConvex2PolyEnds[] = {
+    4,
+    12,
+    16,
+};
+constexpr std::uint8_t kHdsConvex2Winding[] = {
+    1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 1,
+};
+
+constexpr std::int8_t kHdsConvex3Verts[] = {
+    0,  0,  0,  20, 20, 20, 20, 20, 0,  20, 0,  20, 0,  20, 20, 0,  0,
+    20, 20, 0,  0,  0,  20, 0,  0,  10, 0,  10, 0,  0,  0,  0,  10, 0,
+    10, 20, 10, 20, 20, 0,  20, 10, 20, 20, 10, 20, 10, 0,  10, 20, 0,
+};
+constexpr std::uint16_t kHdsConvex3Faces[] = {
+    16, 7,  8,  9,  6,  15, 13, 7,  8,  10, 5,  11, 12, 1,  3, 5,  11, 8,  0,  9,  8,  0,  10,
+    8,  9,  10, 0,  9,  10, 5,  3,  6,  9,  10, 15, 6,  3,  1, 14, 14, 1,  12, 13, 7,  16, 11,
+    12, 13, 4,  12, 13, 11, 4,  13, 11, 12, 4,  14, 15, 16, 2, 15, 16, 14, 2,  16, 14, 15, 2,
+};
+constexpr std::uint16_t kHdsConvex3FaceEnds[] = {
+    6, 12, 17, 20, 23, 26, 29, 34, 39, 45, 48, 51, 54, 57, 60, 63, 66, 69,
+};
+constexpr std::uint16_t kHdsConvex3Polys[] = {
+    6, 3, 4, 5, 5, 7, 0, 1, 8, 2, 9, 10, 14, 10, 11, 12, 13, 14, 15, 16, 17,
+};
+constexpr std::uint16_t kHdsConvex3PolyEnds[] = {
+    4,
+    13,
+    17,
+    21,
+};
+constexpr std::uint8_t kHdsConvex3Winding[] = {
+    1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1,
+};
+
+constexpr std::int8_t kHdsEdgeVerts[] = {
+    0,  0,  0,  20, 0,  20, 20, 20, 10, 20, 20, 0, 20, 20, 20, 20, 0,  6, 20, 10, 0, 20, 0,  10, 20,
+    0,  0,  0,  10, 20, 0,  0,  20, 0,  20, 10, 0, 10, 10, 0,  0,  10, 0, 20, 0,  0, 10, 0,  0,  20,
+    20, 10, 20, 0,  10, 10, 0,  10, 0,  0,  6,  0, 20, 6,  0,  10, 10, 0, 6,  10, 0, 20, 10, 20, 20,
+};
+constexpr std::uint16_t kHdsEdgeFaces[] = {
+    5,  6,  3,  2,  7,  6,  8,  5,  2,  7,  1,  4,  9,  12, 11, 16, 10, 13, 12, 9,  12,
+    15, 14, 11, 13, 0,  15, 12, 15, 18, 17, 14, 0,  19, 18, 15, 18, 6,  3,  17, 19, 8,
+    6,  18, 9,  10, 20, 12, 13, 21, 18, 19, 22, 16, 11, 24, 3,  17, 2,  10, 13, 21, 20,
+    19, 8,  5,  22, 9,  12, 21, 20, 18, 6,  5,  22, 20, 21, 23, 5,  22, 7,  22, 21, 13,
+    0,  19, 22, 21, 12, 15, 18, 22, 21, 23, 1,  7,  24, 11, 12, 21, 23, 2,  17, 18, 22,
+    7,  16, 24, 23, 20, 9,  23, 24, 4,  1,  24, 11, 14, 17, 2,  4,
+};
+constexpr std::uint16_t kHdsEdgeFaceEnds[] = {
+    5,  8,  12, 16, 20, 24, 28, 32, 36, 40, 44,  47,  50,  53,  56,
+    59, 63, 67, 71, 75, 78, 81, 86, 91, 96, 101, 106, 111, 115, 121,
+};
+constexpr std::uint16_t kHdsEdgePolys[] = {
+    4,  11, 12, 16, 18, 6,  8,  12, 13, 22, 23, 10, 13, 1,  17, 19, 3,  27, 18,
+    20, 14, 25, 9,  0,  19, 21, 15, 26, 5,  7,  25, 26, 28, 2,  29, 24, 23,
+};
+constexpr std::uint16_t kHdsEdgePolyEnds[] = {
+    5, 11, 16, 22, 28, 37,
+};
+constexpr std::uint8_t kHdsEdgeWinding[] = {
+    0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 1,
+    1, 0, 0, 0, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1,
+};
+
+constexpr std::int8_t kHdsVertCenterVerts[] = {
+    0,  0,  0,  0,  20, 10, 0,  20, 20, 0,  10, 0,  0, 10, 10, 0,  10, 20, 0,  20, 0,  0,
+    0,  10, 0,  0,  20, 10, 0,  0,  10, 0,  10, 10, 0, 20, 20, 0,  0,  20, 0,  10, 20, 0,
+    20, 10, 10, 0,  20, 10, 0,  10, 20, 0,  20, 20, 0, 20, 20, 20, 6,  20, 20, 10, 20, 20,
+    20, 6,  20, 20, 10, 20, 20, 20, 6,  20, 20, 10, 6, 10, 20, 20, 6,  10, 10, 20, 6,
+};
+constexpr std::uint16_t kHdsVertCenterFaces[] = {
+    6,  1,  4,  3,  1,  2,  5,  4,  3,  4,  7,  0,  4,  5,  8,  7,  0,  7,  10, 9,  7,
+    8,  11, 10, 9,  10, 13, 12, 10, 11, 14, 13, 16, 18, 17, 15, 16, 15, 9,  12, 15, 3,
+    0,  9,  15, 17, 6,  3,  5,  26, 20, 2,  14, 22, 27, 13, 18, 24, 28, 17, 5,  26, 4,
+    2,  20, 1,  10, 27, 13, 14, 22, 11, 15, 28, 17, 16, 24, 18, 1,  20, 26, 4,  11, 22,
+    27, 10, 16, 24, 28, 15, 20, 21, 26, 22, 23, 27, 24, 25, 28, 21, 20, 1,  6,  17, 28,
+    23, 22, 11, 8,  5,  26, 25, 24, 16, 12, 13, 27, 21, 19, 25, 28, 21, 19, 23, 26, 23,
+    19, 25, 27, 26, 4,  7,  10, 27, 23, 27, 10, 9,  15, 28, 25, 28, 15, 3,  4,  26, 21,
+};
+constexpr std::uint16_t kHdsVertCenterFaceEnds[] = {
+    4,  8,  12, 16, 20, 24, 28, 32, 36, 40,  44,  48,  52,  56,  60,  63,  66,  69,
+    72, 75, 78, 82, 86, 90, 93, 96, 99, 105, 111, 117, 121, 125, 129, 135, 141, 147,
+};
+constexpr std::uint16_t kHdsVertCenterPolys[] = {
+    1, 12, 15, 16, 21, 7,  13, 17, 18, 22, 8,  14, 19, 20, 23, 0, 11, 24, 35, 21, 19, 27, 3,
+    5, 25, 33, 22, 15, 28, 9,  6,  26, 34, 23, 17, 29, 2,  10, 4, 33, 34, 35, 30, 31, 32,
+};
+constexpr std::uint16_t kHdsVertCenterPolyEnds[] = {
+    5, 10, 15, 22, 29, 36, 45,
+};
+constexpr std::uint8_t kHdsVertCenterWinding[] = {
+    0, 1, 0, 1, 1, 0, 0, 1, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0,
+};
+
+constexpr std::int8_t kHdsVertSideVerts[] = {
+    0, 0,  10, 0, 0,  20, 0, 0,  0,  10, 0,  0,  20, 0,  0,  20, 0,  20, 6,  0,  20, 10, 0,  20, 20,
+    0, 6,  20, 0, 10, 10, 0, 6,  6,  10, 20, 20, 20, 10, 0,  10, 20, 0,  20, 10, 20, 10, 0,  0,  20,
+    0, 10, 10, 0, 0,  10, 0, 20, 20, 0,  20, 20, 20, 10, 20, 20, 0,  10, 10, 0,  20, 20, 10, 20, 0,
+};
+constexpr std::uint16_t kHdsVertSideFaces[] = {
+    4,  8,  10, 3,  1,  6,  0,  8,  9,  10, 7,  6,  0,  2,  3,  10, 7,  5,  9,  10, 6,
+    11, 22, 0,  11, 13, 22, 8,  10, 17, 15, 18, 22, 14, 16, 12, 19, 15, 8,  9,  22, 13,
+    23, 14, 6,  11, 13, 1,  12, 24, 17, 10, 9,  9,  5,  20, 12, 4,  3,  17, 15, 12, 19,
+    24, 7,  6,  11, 21, 14, 23, 5,  20, 21, 11, 7,  0,  1,  13, 22, 14, 22, 11, 21, 13,
+    23, 21, 11, 7,  11, 22, 18, 17, 10, 24, 12, 20, 21, 14, 16, 2,  0,  22, 18, 15, 17,
+    24, 19, 8,  4,  15, 17, 18, 16, 24, 10, 3,  17, 2,  3,  17, 18,
+};
+constexpr std::uint16_t kHdsVertSideFaceEnds[] = {
+    4,  7,  10, 16, 20, 24, 27, 31, 35, 40,  44,  48,  53,  57,  61,
+    64, 67, 70, 75, 79, 83, 87, 93, 99, 103, 107, 110, 114, 117, 121,
+};
+constexpr std::uint16_t kHdsVertSidePolys[] = {
+    11, 6,  1, 19, 5,  10, 21, 6,  17, 20, 8,  27, 20, 22, 12, 4,  13, 18, 23,
+    29, 24, 5, 16, 22, 3,  28, 25, 7,  9,  15, 12, 2,  14, 26, 28, 0,  7,
+};
+constexpr std::uint16_t kHdsVertSidePolyEnds[] = {
+    5, 10, 19, 26, 32, 37,
+};
+constexpr std::uint8_t kHdsVertSideWinding[] = {
+    1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 1, 0,
+    0, 1, 1, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 0,
+};
+
+}  // namespace
+
+const HexDualScheme& hex_dual_scheme(HexTransition Type) {
+    static const HexDualScheme kTable[] = {
+        {kHdsFlatVerts, 18, kHdsFlatFaces, kHdsFlatFaceEnds, 20, kHdsFlatPolys, kHdsFlatPolyEnds, 4,
+         kHdsFlatWinding},
+        {kHdsFlatConvexVerts, 21, kHdsFlatConvexFaces, kHdsFlatConvexFaceEnds, 24,
+         kHdsFlatConvexPolys, kHdsFlatConvexPolyEnds, 5, kHdsFlatConvexWinding},
+        {kHdsConvex1Verts, 11, kHdsConvex1Faces, kHdsConvex1FaceEnds, 10, kHdsConvex1Polys,
+         kHdsConvex1PolyEnds, 2, kHdsConvex1Winding},
+        {kHdsConvex2Verts, 14, kHdsConvex2Faces, kHdsConvex2FaceEnds, 14, kHdsConvex2Polys,
+         kHdsConvex2PolyEnds, 3, kHdsConvex2Winding},
+        {kHdsConvex3Verts, 17, kHdsConvex3Faces, kHdsConvex3FaceEnds, 18, kHdsConvex3Polys,
+         kHdsConvex3PolyEnds, 4, kHdsConvex3Winding},
+        {kHdsEdgeVerts, 25, kHdsEdgeFaces, kHdsEdgeFaceEnds, 30, kHdsEdgePolys, kHdsEdgePolyEnds, 6,
+         kHdsEdgeWinding},
+        {kHdsVertCenterVerts, 29, kHdsVertCenterFaces, kHdsVertCenterFaceEnds, 36,
+         kHdsVertCenterPolys, kHdsVertCenterPolyEnds, 7, kHdsVertCenterWinding},
+        {kHdsVertSideVerts, 25, kHdsVertSideFaces, kHdsVertSideFaceEnds, 30, kHdsVertSidePolys,
+         kHdsVertSidePolyEnds, 6, kHdsVertSideWinding},
+    };
+    return kTable[static_cast<std::size_t>(Type)];
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/hex_dual_scheme_tables.cpp =====
+// ===== begin src/cpp/src/detail/hex_dual_schemes.cpp =====
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <deque>
+#include <initializer_list>
+#include <map>
+#include <set>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+constexpr const char* kHdsPrefix = "meshio++: octree_mesh: graded hexahedra: ";
+
+using HdsPoint = std::array<std::int64_t, 3>;
+
+struct HdsPointHash {
+    std::size_t operator()(const HdsPoint& rP) const {
+        std::uint64_t h = static_cast<std::uint64_t>(rP[0]) * 0x9E3779B97F4A7C15ULL;
+        h ^= static_cast<std::uint64_t>(rP[1]) + 0x7F4A7C159E3779B9ULL + (h << 6) + (h >> 2);
+        h ^= static_cast<std::uint64_t>(rP[2]) + 0x94D049BB133111EBULL + (h << 6) + (h >> 2);
+        return static_cast<std::size_t>(h);
+    }
+};
+
+std::string hds_str(const HdsPoint& rP) {
+    return "(" + std::to_string(rP[0]) + ", " + std::to_string(rP[1]) + ", " +
+           std::to_string(rP[2]) + ")";
+}
+
+[[noreturn]] void hds_fail(const std::string& rWhy) {
+    throw Unsupported(std::string(kHdsPrefix) + rWhy);
+}
+
+// Directions, with CinoLib's values (symbols.h), so the ported case tables read
+// the same and sort in the same order.
+enum : int {
+    kHdsPlusX = 10,
+    kHdsPlusY = 11,
+    kHdsPlusZ = 12,
+    kHdsMinusX = 13,
+    kHdsMinusY = 14,
+    kHdsMinusZ = 15,
+};
+
+enum class HdsKind { FlatS, ConcS, CornS, ConvS };
+
+struct HdsInfo {
+    HexTransition mType = HexTransition::Flat;
+    HdsKind mKind = HdsKind::FlatS;
+    std::int64_t mScale = 0;  // the cell's edge, lattice units
+    std::vector<HdsPoint> mTVerts;
+    std::map<int, bool> mCuts;
+    std::vector<int> mOrientations;
+
+    bool Cut(int Dir) const {
+        const auto it = mCuts.find(Dir);
+        return it != mCuts.end() && it->second;
+    }
+};
+
+// ---- the primal grid: the leaves as hexahedra with hanging nodes ----------
+
+// Hexahedron corners by bits (x, y, z), its faces and its edges.
+constexpr int kHdsFaces[6][4] = {{0, 2, 6, 4}, {1, 3, 7, 5}, {0, 1, 5, 4},
+                                 {2, 3, 7, 6}, {0, 1, 3, 2}, {4, 5, 7, 6}};
+constexpr int kHdsEdges[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3},
+                                  {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+
+struct HdsGrid {
+    std::vector<HdsPoint> mVerts;
+    std::unordered_map<HdsPoint, std::int32_t, HdsPointHash> mVertId;
+    std::vector<std::array<std::int32_t, 8>> mPolyVerts;
+    std::vector<std::array<std::int32_t, 6>> mPolyFaces;
+    std::vector<std::array<std::int32_t, 12>> mPolyEdges;
+    std::vector<std::int32_t> mLabel;  // the leaf's level
+    std::vector<std::array<std::int32_t, 4>> mFaceVerts;
+    std::vector<std::vector<std::int32_t>> mFacePolys;
+    std::vector<std::array<std::int32_t, 2>> mEdgeVerts;
+    std::vector<std::vector<std::int32_t>> mEdgePolys;
+    std::unordered_map<std::uint64_t, std::int32_t> mEdgeId;
+    std::vector<std::vector<std::int32_t>> mV2P, mV2E, mV2V, mP2P;
+
+    static std::uint64_t PairKey(std::int32_t A, std::int32_t B) {
+        if (A > B)
+            std::swap(A, B);
+        return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(A)) << 32) |
+               static_cast<std::uint32_t>(B);
+    }
+    std::int32_t EdgeId(std::int32_t A, std::int32_t B) const {
+        const auto it = mEdgeId.find(PairKey(A, B));
+        return it == mEdgeId.end() ? -1 : it->second;
+    }
+    bool PolyHasVert(std::int32_t P, std::int32_t V) const {
+        const auto& r = mPolyVerts[static_cast<std::size_t>(P)];
+        return std::find(r.begin(), r.end(), V) != r.end();
+    }
+    bool PolyHasEdge(std::int32_t P, std::int32_t E) const {
+        const auto& r = mPolyEdges[static_cast<std::size_t>(P)];
+        return std::find(r.begin(), r.end(), E) != r.end();
+    }
+    const HdsPoint& Vert(std::int32_t V) const { return mVerts[static_cast<std::size_t>(V)]; }
+    std::int32_t Label(std::int32_t P) const { return mLabel[static_cast<std::size_t>(P)]; }
+    std::int64_t EdgeLength(std::int32_t E) const {
+        const auto& e = mEdgeVerts[static_cast<std::size_t>(E)];
+        const HdsPoint &a = Vert(e[0]), &b = Vert(e[1]);
+        return std::abs(a[0] - b[0]) + std::abs(a[1] - b[1]) + std::abs(a[2] - b[2]);
+    }
+    std::int64_t PolyScale(std::int32_t P) const {
+        return EdgeLength(mPolyEdges[static_cast<std::size_t>(P)][0]);
+    }
+    HdsPoint EdgeMid(std::int32_t E) const {
+        const auto& e = mEdgeVerts[static_cast<std::size_t>(E)];
+        const HdsPoint &a = Vert(e[0]), &b = Vert(e[1]);
+        return {(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2};
+    }
+    // The axis direction of edge `E` leaving vertex `V`.
+    int Orientation(std::int32_t V, std::int32_t E) const {
+        const auto& e = mEdgeVerts[static_cast<std::size_t>(E)];
+        const HdsPoint& a = Vert(V);
+        const HdsPoint& b = Vert(e[0] == V ? e[1] : e[0]);
+        for (int k = 0; k < 3; ++k) {
+            const std::int64_t d = b[static_cast<std::size_t>(k)] - a[static_cast<std::size_t>(k)];
+            if (d > 0)
+                return kHdsPlusX + k;
+            if (d < 0)
+                return kHdsMinusX + k;
+        }
+        hds_fail("a degenerate edge at " + hds_str(a));
+    }
+    int MinRef(std::int32_t V) const {
+        int r = 1 << 30;
+        for (std::int32_t p : mV2P[static_cast<std::size_t>(V)])
+            r = std::min(r, Label(p));
+        return r;
+    }
+    int MaxRef(std::int32_t V) const {
+        int r = -1;
+        for (std::int32_t p : mV2P[static_cast<std::size_t>(V)])
+            r = std::max(r, Label(p));
+        return r;
+    }
+    std::int32_t SharedFace(std::int32_t P, std::int32_t Q) const {
+        for (std::int32_t f : mPolyFaces[static_cast<std::size_t>(P)])
+            for (std::int32_t g : mPolyFaces[static_cast<std::size_t>(Q)])
+                if (f == g)
+                    return f;
+        return -1;
+    }
+    // The vertex at `rAt` among the neighbours of `V`, or -1.
+    std::int32_t NeighbourAt(std::int32_t V, const HdsPoint& rAt) const {
+        for (std::int32_t w : mV2V[static_cast<std::size_t>(V)])
+            if (Vert(w) == rAt)
+                return w;
+        return -1;
+    }
+};
+
+std::int32_t hds_vertex(HdsGrid& rG, const HdsPoint& rP) {
+    const auto it = rG.mVertId.find(rP);
+    if (it != rG.mVertId.end())
+        return it->second;
+    const auto id = static_cast<std::int32_t>(rG.mVerts.size());
+    rG.mVerts.push_back(rP);
+    rG.mVertId.emplace(rP, id);
+    return id;
+}
+
+HdsGrid hds_grid(const LinearOctree& rTree) {
+    HdsGrid g;
+    const std::size_t n = rTree.Size();
+    g.mPolyVerts.resize(n);
+    g.mPolyFaces.resize(n);
+    g.mPolyEdges.resize(n);
+    g.mLabel.resize(n);
+    std::map<std::array<std::int32_t, 4>, std::int32_t> face_id;
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto lo = rTree.Lo(i);
+        const std::int64_t s = rTree.Span(i) * kHexDualUnit;
+        g.mLabel[i] = rTree.mLevel[i];
+        for (int c = 0; c < 8; ++c)
+            g.mPolyVerts[i][static_cast<std::size_t>(c)] = hds_vertex(
+                g, {lo[0] * kHexDualUnit + (c & 1) * s, lo[1] * kHexDualUnit + ((c >> 1) & 1) * s,
+                    lo[2] * kHexDualUnit + ((c >> 2) & 1) * s});
+        const auto& pv = g.mPolyVerts[i];
+        for (int f = 0; f < 6; ++f) {
+            std::array<std::int32_t, 4> q{};
+            for (int k = 0; k < 4; ++k)
+                q[static_cast<std::size_t>(k)] = pv[static_cast<std::size_t>(kHdsFaces[f][k])];
+            std::array<std::int32_t, 4> key = q;
+            std::sort(key.begin(), key.end());
+            auto it = face_id.find(key);
+            if (it == face_id.end()) {
+                it = face_id.emplace(key, static_cast<std::int32_t>(g.mFaceVerts.size())).first;
+                g.mFaceVerts.push_back(q);
+                g.mFacePolys.emplace_back();
+            }
+            g.mPolyFaces[i][static_cast<std::size_t>(f)] = it->second;
+            g.mFacePolys[static_cast<std::size_t>(it->second)].push_back(
+                static_cast<std::int32_t>(i));
+        }
+        for (int e = 0; e < 12; ++e) {
+            const std::int32_t a = pv[static_cast<std::size_t>(kHdsEdges[e][0])];
+            const std::int32_t b = pv[static_cast<std::size_t>(kHdsEdges[e][1])];
+            auto it = g.mEdgeId.find(HdsGrid::PairKey(a, b));
+            if (it == g.mEdgeId.end()) {
+                it = g.mEdgeId
+                         .emplace(HdsGrid::PairKey(a, b),
+                                  static_cast<std::int32_t>(g.mEdgeVerts.size()))
+                         .first;
+                g.mEdgeVerts.push_back({a, b});
+                g.mEdgePolys.emplace_back();
+            }
+            g.mPolyEdges[i][static_cast<std::size_t>(e)] = it->second;
+            g.mEdgePolys[static_cast<std::size_t>(it->second)].push_back(
+                static_cast<std::int32_t>(i));
+        }
+    }
+    const std::size_t nv = g.mVerts.size();
+    g.mV2P.resize(nv);
+    g.mV2E.resize(nv);
+    g.mV2V.resize(nv);
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::int32_t v : g.mPolyVerts[i])
+            g.mV2P[static_cast<std::size_t>(v)].push_back(static_cast<std::int32_t>(i));
+    for (std::size_t e = 0; e < g.mEdgeVerts.size(); ++e) {
+        const auto& ev = g.mEdgeVerts[e];
+        g.mV2E[static_cast<std::size_t>(ev[0])].push_back(static_cast<std::int32_t>(e));
+        g.mV2E[static_cast<std::size_t>(ev[1])].push_back(static_cast<std::int32_t>(e));
+        g.mV2V[static_cast<std::size_t>(ev[0])].push_back(ev[1]);
+        g.mV2V[static_cast<std::size_t>(ev[1])].push_back(ev[0]);
+    }
+    g.mP2P.resize(n);
+    for (const auto& fp : g.mFacePolys)
+        if (fp.size() == 2) {
+            g.mP2P[static_cast<std::size_t>(fp[0])].push_back(fp[1]);
+            g.mP2P[static_cast<std::size_t>(fp[1])].push_back(fp[0]);
+        }
+    for (auto& r : g.mP2P)
+        std::sort(r.begin(), r.end());
+    return g;
+}
+
+// ---- transition vertices --------------------------------------------------
+
+// The centre of each face of a parent whose eight children are leaves, when
+// the leaves across that face at its centre are one level finer than the
+// children; its direction points into the parent. Checked against CinoLib's
+// rule (the longest edge shared by four cells), which must agree.
+void hds_transition_vertices(const LinearOctree& rTree, const HdsGrid& rG,
+                             std::vector<std::uint8_t>& rIsT, std::vector<int>& rDir) {
+    rIsT.assign(rG.mVerts.size(), 0);
+    rDir.assign(rG.mVerts.size(), 0);
+    for (std::size_t i = 0; i < rTree.Size(); ++i) {
+        const auto lo = rTree.Lo(i);
+        const std::int64_t s = rTree.Span(i);
+        const int level = rTree.mLevel[i];
+        if (level == 0 || lo[0] % (2 * s) != 0 || lo[1] % (2 * s) != 0 || lo[2] % (2 * s) != 0)
+            continue;  // not a parent's first child
+        for (int axis = 0; axis < 3; ++axis)
+            for (int side = 0; side < 2; ++side) {
+                // The four finest cells across the face, around its centre.
+                const auto ax = static_cast<std::size_t>(axis);
+                const std::size_t u = (ax + 1) % 3, w = (ax + 2) % 3;
+                std::array<std::int64_t, 3> centre{lo[0] + s, lo[1] + s, lo[2] + s};
+                centre[ax] = side == 0 ? lo[ax] : lo[ax] + 2 * s;
+                int finer = 0, same = 0;
+                for (int q = 0; q < 4; ++q) {
+                    std::array<std::int64_t, 3> c = centre;
+                    c[ax] = side == 0 ? centre[ax] - 1 : centre[ax];
+                    c[u] += (q & 1) ? 0 : -1;
+                    c[w] += (q & 2) ? 0 : -1;
+                    if (!rTree.Contains(c[0], c[1], c[2]))
+                        continue;
+                    const std::int64_t j = rTree.Locate(c[0], c[1], c[2]);
+                    const int lj = rTree.mLevel[static_cast<std::size_t>(j)];
+                    if (lj == level + 1)
+                        ++finer;
+                    else
+                        ++same;
+                }
+                if (finer == 0)
+                    continue;
+                const HdsPoint at{centre[0] * kHexDualUnit, centre[1] * kHexDualUnit,
+                                  centre[2] * kHexDualUnit};
+                if (finer != 4 || same != 0)
+                    hds_fail("the leaves across the face centre " + hds_str(at) +
+                             " are not all one level finer; pair the tree first");
+                const std::int32_t v = rG.mVertId.at(at);
+                rIsT[static_cast<std::size_t>(v)] = 1;
+                rDir[static_cast<std::size_t>(v)] =
+                    side == 0 ? kHdsPlusX + axis : kHdsMinusX + axis;
+            }
+    }
+    for (std::size_t v = 0; v < rIsT.size(); ++v) {
+        if (!rIsT[v])
+            continue;
+        const auto vid = static_cast<std::int32_t>(v);
+        if (rG.mV2P[v].size() != 8)
+            hds_fail("the transition vertex " + hds_str(rG.Vert(vid)) + " has " +
+                     std::to_string(rG.mV2P[v].size()) + " cells around it, not 8");
+        std::int64_t length = 0;
+        int dir = -1;
+        for (std::int32_t e : rG.mV2E[v])
+            if (rG.mEdgePolys[static_cast<std::size_t>(e)].size() == 4 &&
+                rG.EdgeLength(e) > length) {
+                length = rG.EdgeLength(e);
+                dir = rG.Orientation(vid, e);
+            }
+        if (dir != rDir[v])
+            hds_fail("the transition vertex " + hds_str(rG.Vert(vid)) +
+                     " points into a cell its edges do not");
+    }
+}
+
+// ---- marking (CinoLib's hex_transition_install) ---------------------------
+
+using HdsSchemes = std::map<std::int32_t, HdsInfo>;
+
+bool hds_is(const HdsSchemes& rMap, std::int32_t P, std::initializer_list<HexTransition> Types) {
+    const auto it = rMap.find(P);
+    if (it == rMap.end())
+        return false;
+    return std::find(Types.begin(), Types.end(), it->second.mType) != Types.end();
+}
+
+// Whether the vertex at the middle of edge `V`-`W` has cells of two levels
+// around it: a weakly balanced corner, which the ported schemes do not cover.
+bool hds_middle_is_cut(const HdsGrid& rG, std::int32_t From, std::int32_t V, std::int32_t W) {
+    const std::int32_t e = rG.EdgeId(V, W);
+    const HdsPoint mid = rG.EdgeMid(e);
+    const std::int32_t m = rG.NeighbourAt(From, mid);
+    if (m < 0)
+        hds_fail("no vertex at the middle " + hds_str(mid) + " of a transition edge");
+    std::set<int> refs;
+    for (std::int32_t p : rG.mV2P[static_cast<std::size_t>(m)])
+        refs.insert(rG.Label(p));
+    return refs.size() > 1;
+}
+
+void hds_mark_concave_vert(const HdsGrid& rG, const std::vector<std::int32_t>& rT,
+                           const std::vector<int>& rDir, HdsSchemes& rMap) {
+    const int min_ref = rG.MinRef(rT[0]);
+    std::set<std::int32_t> cluster;
+    for (std::int32_t v : rT)
+        for (std::int32_t p : rG.mV2P[static_cast<std::size_t>(v)])
+            if (rG.Label(p) == min_ref)
+                cluster.insert(p);
+    std::set<std::int32_t> flats = cluster;
+    std::int32_t concave = -1, conc_vert = -1;
+    std::vector<std::int32_t> adjs;
+    for (std::int32_t p : cluster) {
+        if (!(rG.PolyHasVert(p, rT[0]) && rG.PolyHasVert(p, rT[1]) && rG.PolyHasVert(p, rT[2])))
+            continue;
+        concave = p;
+        const auto& pv = rG.mPolyVerts[static_cast<std::size_t>(p)];
+        std::set<std::int32_t> rest(pv.begin(), pv.end());
+        for (std::int32_t t : rT) {
+            for (std::int32_t v : rG.mV2V[static_cast<std::size_t>(t)])
+                if (rG.PolyHasVert(p, v))
+                    rest.erase(v);
+            rest.erase(t);
+        }
+        if (rest.size() != 1)
+            hds_fail("a concave corner cell at " + hds_str(rG.Vert(rT[0])) + " has " +
+                     std::to_string(rest.size()) + " candidate corners, not 1");
+        conc_vert = *rest.begin();
+        for (std::int32_t v : rG.mV2V[static_cast<std::size_t>(conc_vert)])
+            if (rG.PolyHasVert(concave, v))
+                adjs.push_back(v);
+        if (adjs.size() != 3)
+            hds_fail("a concave corner at " + hds_str(rG.Vert(conc_vert)) + " has " +
+                     std::to_string(adjs.size()) + " edges in its cell, not 3");
+        break;
+    }
+    if (concave < 0)
+        hds_fail("no cell holds the three transition vertices of the concave corner at " +
+                 hds_str(rG.Vert(rT[0])));
+    std::map<std::int32_t, bool> v2cut;
+    if (!rMap.count(concave) ||
+        hds_is(rMap, concave,
+               {HexTransition::Flat, HexTransition::FlatConvex, HexTransition::VertSide})) {
+        HdsInfo info;
+        info.mType = HexTransition::VertCenter;
+        info.mScale = rG.PolyScale(concave);
+        for (std::int32_t v : adjs) {
+            const bool cut = hds_middle_is_cut(rG, v, conc_vert, v);
+            if (cut)
+                hds_fail("the concave corner at " + hds_str(rG.Vert(conc_vert)) +
+                         " is only weakly balanced");
+            v2cut[v] = false;
+            int ori = rG.Orientation(conc_vert, rG.EdgeId(conc_vert, v));
+            ori = ori > 12 ? ori - 3 : ori;
+            info.mCuts[ori] = false;
+        }
+        info.mKind = HdsKind::CornS;
+        for (std::int32_t t : rT)
+            info.mOrientations.push_back(rDir[static_cast<std::size_t>(t)]);
+        info.mTVerts.push_back(rG.Vert(conc_vert));
+        rMap[concave] = info;
+    }
+    flats.erase(concave);
+
+    int lateral_y = kHdsMinusY;
+    for (std::int32_t t : rT)
+        if (rDir[static_cast<std::size_t>(t)] == kHdsPlusY)
+            lateral_y = kHdsPlusY;
+
+    for (std::int32_t p : rG.mP2P[static_cast<std::size_t>(concave)]) {
+        const auto it = rMap.find(p);
+        if (it == rMap.end() ||
+            (it->second.mKind == HdsKind::CornS && it->second.mType != HexTransition::VertCenter)) {
+            HdsInfo info;
+            bool typed = false;
+            for (const auto& kv : v2cut) {
+                if (!rG.PolyHasVert(p, kv.first))
+                    continue;
+                for (std::int32_t v : rG.mV2V[static_cast<std::size_t>(kv.first)])
+                    if (rG.PolyHasVert(p, v) && hds_middle_is_cut(rG, kv.first, kv.first, v))
+                        hds_fail("the cell beside the concave corner at " +
+                                 hds_str(rG.Vert(conc_vert)) + " is only weakly balanced");
+                info.mType = HexTransition::VertSide;
+                typed = true;
+            }
+            if (!typed)
+                hds_fail("a cell beside the concave corner at " + hds_str(rG.Vert(conc_vert)) +
+                         " touches none of its edges");
+            info.mKind = HdsKind::CornS;
+            info.mScale = rG.PolyScale(concave);
+            const std::int32_t f = rG.SharedFace(p, concave);
+            for (std::int32_t v : rG.mFaceVerts[static_cast<std::size_t>(f)]) {
+                if (v == rT[0] || v == rT[1] || v == rT[2]) {
+                    info.mOrientations.push_back(rDir[static_cast<std::size_t>(v)]);
+                } else {
+                    const int cur = rG.Label(p);
+                    std::set<int> refs;
+                    for (std::int32_t q : rG.mV2P[static_cast<std::size_t>(v)])
+                        if (rG.Label(q) >= cur)
+                            refs.insert(rG.Label(q));
+                    if (refs.size() >= 2)
+                        info.mTVerts.push_back(rG.Vert(v));
+                }
+            }
+            info.mOrientations.push_back(lateral_y);
+            rMap[p] = info;
+        }
+        flats.erase(p);
+    }
+
+    for (std::int32_t p : flats) {
+        if (rMap.count(p))
+            continue;
+        HdsInfo info;
+        info.mType = HexTransition::Flat;
+        info.mKind = HdsKind::CornS;
+        info.mScale = rG.PolyScale(concave);
+        for (std::size_t k = 0; k < 3; ++k)
+            if (rG.PolyHasVert(p, rT[k])) {
+                info.mOrientations.push_back(rDir[static_cast<std::size_t>(rT[k])]);
+                for (std::size_t j = 0; j < 3; ++j)
+                    if (j != k)
+                        info.mOrientations.push_back(rDir[static_cast<std::size_t>(rT[j])]);
+                info.mTVerts.push_back(rG.Vert(rT[k]));
+                break;
+            }
+        rMap[p] = info;
+    }
+}
+
+void hds_mark_concave_edge(const HdsGrid& rG, const std::vector<std::int32_t>& rT,
+                           const std::vector<int>& rDir, HdsSchemes& rMap) {
+    std::vector<std::int32_t> a = rG.mV2V[static_cast<std::size_t>(rT[0])];
+    std::vector<std::int32_t> b = rG.mV2V[static_cast<std::size_t>(rT[1])];
+    std::sort(a.begin(), a.end());
+    std::sort(b.begin(), b.end());
+    std::vector<std::int32_t> common;
+    std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(common));
+    if (common.size() != 1 && common.size() != 2)
+        hds_fail("the concave edge between " + hds_str(rG.Vert(rT[0])) + " and " +
+                 hds_str(rG.Vert(rT[1])) + " has " + std::to_string(common.size()) +
+                 " common neighbours");
+    int ref = 0;
+    for (std::int32_t p : rG.mV2P[static_cast<std::size_t>(rT[0])])
+        if (rG.PolyHasVert(p, rT[1])) {
+            ref = rG.Label(p);
+            break;
+        }
+    std::int32_t conc = -1;
+    for (std::int32_t v : common) {
+        std::set<int> refs;
+        for (std::int32_t p : rG.mV2P[static_cast<std::size_t>(v)])
+            if (ref <= rG.Label(p))
+                refs.insert(rG.Label(p));
+        if (refs.size() == 2) {
+            conc = v;
+            break;
+        }
+        if (refs.size() == 3)
+            hds_fail("the concave edge at " + hds_str(rG.Vert(v)) + " is only weakly balanced");
+    }
+    if (conc < 0)
+        hds_fail("no concave edge vertex between " + hds_str(rG.Vert(rT[0])) + " and " +
+                 hds_str(rG.Vert(rT[1])));
+
+    std::vector<std::int32_t> concaves;
+    const int min_ref = rG.MinRef(conc);
+    for (std::int32_t p : rG.mV2P[static_cast<std::size_t>(conc)]) {
+        if (!(rG.PolyHasVert(p, rT[0]) && rG.PolyHasVert(p, rT[1])) || rG.Label(p) != min_ref)
+            continue;
+        if (rMap.count(p) && !hds_is(rMap, p, {HexTransition::Flat, HexTransition::FlatConvex}))
+            continue;
+        int orient = -1;
+        std::int32_t check = -1;
+        for (std::int32_t e : rG.mV2E[static_cast<std::size_t>(conc)]) {
+            const int o = rG.Orientation(conc, e);
+            if (rG.PolyHasEdge(p, e) && o != rDir[static_cast<std::size_t>(rT[0])] &&
+                o != rDir[static_cast<std::size_t>(rT[1])]) {
+                orient = o;
+                check = e;
+                break;
+            }
+        }
+        if (check < 0)
+            hds_fail("the concave edge cell at " + hds_str(rG.Vert(conc)) +
+                     " has no edge along it");
+        const auto& ev = rG.mEdgeVerts[static_cast<std::size_t>(check)];
+        if (hds_middle_is_cut(rG, conc, ev[0], ev[1]))
+            hds_fail("the concave edge at " + hds_str(rG.Vert(conc)) + " is only weakly balanced");
+        concaves.push_back(p);
+        HdsInfo info;
+        info.mType = HexTransition::Edge;
+        info.mScale = rG.PolyScale(p);
+        info.mTVerts.push_back(rG.Vert(conc));
+        info.mOrientations.push_back(orient);
+        info.mKind = HdsKind::ConcS;
+        rMap[p] = info;
+    }
+
+    for (std::size_t i = 0; i < rT.size(); ++i)
+        for (std::int32_t p : rG.mV2P[static_cast<std::size_t>(rT[i])]) {
+            if (rG.PolyHasVert(p, conc) || rG.Label(p) != min_ref || rMap.count(p))
+                continue;
+            HdsInfo info;
+            info.mType = HexTransition::Flat;
+            for (std::int32_t q : rG.mP2P[static_cast<std::size_t>(p)]) {
+                if (rG.PolyHasVert(q, rT[i]))
+                    continue;
+                if (hds_is(
+                        rMap, q,
+                        {HexTransition::Edge, HexTransition::VertSide, HexTransition::FlatConvex}))
+                    info.mType = HexTransition::FlatConvex;
+            }
+            info.mScale = rG.PolyScale(p);
+            info.mTVerts.push_back(rG.Vert(rT[i]));
+            info.mOrientations.push_back(rDir[static_cast<std::size_t>(rT[i])]);
+            info.mOrientations.push_back(rDir[static_cast<std::size_t>(rT[(i + 1) % rT.size()])]);
+            info.mKind = HdsKind::ConcS;
+            rMap[p] = info;
+        }
+
+    for (std::int32_t c : concaves)
+        for (std::int32_t q : rG.mP2P[static_cast<std::size_t>(c)]) {
+            const auto it = rMap.find(q);
+            if (it == rMap.end() || rG.PolyHasVert(q, rT[0]) || rG.PolyHasVert(q, rT[1]))
+                continue;
+            if (it->second.mType == HexTransition::Flat)
+                it->second.mType = HexTransition::FlatConvex;
+        }
+}
+
+void hds_mark_convex(const HdsGrid& rG, const std::vector<std::int32_t>& rT,
+                     const std::vector<int>& rDir, HdsSchemes& rMap) {
+    const std::int32_t vert = rT.back();
+    const int min_ref = rG.MinRef(vert);
+    std::vector<std::int32_t> a = rG.mV2P[static_cast<std::size_t>(rT[0])];
+    std::vector<std::int32_t> b = rG.mV2P[static_cast<std::size_t>(rT[1])];
+    std::sort(a.begin(), a.end());
+    std::sort(b.begin(), b.end());
+    std::vector<std::int32_t> common;
+    std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(common));
+    if (!common.empty())
+        return;
+    for (std::int32_t p : rG.mV2P[static_cast<std::size_t>(vert)]) {
+        if (rG.Label(p) != min_ref || rG.PolyHasVert(p, rT[0]) || rG.PolyHasVert(p, rT[1]))
+            continue;
+        int orient = -1;
+        for (std::int32_t e : rG.mV2E[static_cast<std::size_t>(vert)]) {
+            const int o = rG.Orientation(vert, e);
+            if (rG.PolyHasEdge(p, e) && o != rDir[static_cast<std::size_t>(rT[0])] &&
+                o != rDir[static_cast<std::size_t>(rT[1])]) {
+                orient = o;
+                break;
+            }
+        }
+        if (orient < 0)
+            hds_fail("the convex cell at " + hds_str(rG.Vert(vert)) + " has no edge to cut");
+        auto it = rMap.find(p);
+        if (it == rMap.end()) {
+            HdsInfo info;
+            info.mType = HexTransition::Convex1;
+            info.mKind = HdsKind::ConvS;
+            info.mCuts[orient] = true;
+            info.mScale = rG.PolyScale(p);
+            info.mTVerts.push_back(rG.Vert(vert));
+            info.mOrientations.push_back(orient);
+            rMap[p] = info;
+        } else if (it->second.mType == HexTransition::Convex1) {
+            it->second.mType = HexTransition::Convex2;
+            it->second.mCuts[orient] = true;
+            it->second.mTVerts.push_back(rG.Vert(vert));
+        } else if (it->second.mType == HexTransition::Convex2) {
+            it->second.mType = HexTransition::Convex3;
+            it->second.mCuts[orient] = true;
+            it->second.mTVerts.push_back(rG.Vert(vert));
+        }
+    }
+}
+
+void hds_mark_flat(const HdsGrid& rG, std::int32_t T, const std::vector<int>& rDir,
+                   HdsSchemes& rMap) {
+    const int min_ref = rG.MinRef(T);
+    for (std::int32_t p : rG.mV2P[static_cast<std::size_t>(T)]) {
+        if (rG.Label(p) != min_ref)
+            continue;
+        HdsInfo info;
+        info.mScale = rG.PolyScale(p);
+        info.mOrientations.push_back(rDir[static_cast<std::size_t>(T)]);
+        info.mTVerts.push_back(rG.Vert(T));
+        info.mKind = HdsKind::FlatS;
+        if (!rMap.count(p)) {
+            info.mType = HexTransition::Flat;
+            rMap[p] = info;
+        } else if (hds_is(rMap, p,
+                          {HexTransition::Flat, HexTransition::Convex1, HexTransition::Convex2,
+                           HexTransition::Convex3})) {
+            info.mType = HexTransition::FlatConvex;
+            rMap[p] = info;
+            for (std::int32_t q : rG.mP2P[static_cast<std::size_t>(p)]) {
+                const auto it = rMap.find(q);
+                if (it != rMap.end() && it->second.mType == HexTransition::Flat &&
+                    (it->second.mKind == HdsKind::ConcS || it->second.mKind == HdsKind::CornS))
+                    it->second.mType = HexTransition::FlatConvex;
+            }
+        }
+    }
+}
+
+void hds_cut_flats(const HdsGrid& rG, HdsSchemes& rMap) {
+    std::deque<std::int32_t> queue;
+    for (const auto& kv : rMap)
+        queue.push_back(kv.first);
+    while (!queue.empty()) {
+        const std::int32_t id = queue.front();
+        queue.pop_front();
+        const HdsInfo p = rMap.at(id);
+        if (p.mType == HexTransition::FlatConvex)
+            for (std::int32_t q : rG.mP2P[static_cast<std::size_t>(id)]) {
+                const auto it = rMap.find(q);
+                if (it != rMap.end() && it->second.mType == HexTransition::Flat &&
+                    (it->second.mKind == HdsKind::ConcS || it->second.mKind == HdsKind::CornS) &&
+                    p.mTVerts[0] != it->second.mTVerts[0]) {
+                    it->second.mType = HexTransition::FlatConvex;
+                    queue.push_back(q);
+                }
+            }
+        if (p.mType == HexTransition::Flat && p.mKind == HdsKind::CornS) {
+            int sides = 0;
+            for (std::int32_t q : rG.mP2P[static_cast<std::size_t>(id)])
+                if (hds_is(rMap, q, {HexTransition::VertSide}))
+                    ++sides;
+            if (sides > 2) {
+                rMap.at(id).mType = HexTransition::FlatConvex;
+                queue.push_back(id);
+            }
+        }
+    }
+}
+
+HdsSchemes hds_mark(const HdsGrid& rG, const std::vector<std::uint8_t>& rIsT,
+                    const std::vector<int>& rDir) {
+    std::set<std::int32_t> flats;
+    std::set<std::vector<std::int32_t>> concaves, corners, convexes;
+    std::set<std::int32_t> not_flats;
+    for (std::size_t p = 0; p < rG.mPolyVerts.size(); ++p) {
+        std::vector<std::int32_t> ids;
+        for (std::int32_t v : rG.mPolyVerts[p])
+            if (rIsT[static_cast<std::size_t>(v)])
+                ids.push_back(v);
+        std::sort(ids.begin(), ids.end());
+        bool flat = ids.size() == 1;
+        if (ids.size() == 2)
+            flat = flat || rG.EdgeId(ids[0], ids[1]) != -1;
+        if (flat) {
+            for (std::int32_t v : ids)
+                if (!not_flats.count(v))
+                    flats.insert(v);
+        } else if (ids.size() == 2) {
+            for (std::int32_t f : rG.mPolyFaces[p]) {
+                const auto& fv = rG.mFaceVerts[static_cast<std::size_t>(f)];
+                if (std::find(fv.begin(), fv.end(), ids[0]) == fv.end() ||
+                    std::find(fv.begin(), fv.end(), ids[1]) == fv.end())
+                    continue;
+                if (rG.MaxRef(ids[0]) == rG.MaxRef(ids[1])) {
+                    concaves.insert(ids);
+                    for (std::int32_t v : ids) {
+                        not_flats.insert(v);
+                        flats.erase(v);
+                    }
+                    break;
+                }
+            }
+        } else if (ids.size() == 3) {
+            corners.insert(ids);
+            for (std::int32_t v : ids) {
+                not_flats.insert(v);
+                flats.erase(v);
+            }
+        } else if (ids.size() > 3) {
+            hds_fail("a cell at " + hds_str(rG.Vert(ids[0])) + " holds " +
+                     std::to_string(ids.size()) + " transition vertices");
+        }
+    }
+    for (std::size_t v = 0; v < rG.mVerts.size(); ++v) {
+        if (rIsT[v])
+            continue;
+        std::vector<std::int32_t> adj;
+        for (std::int32_t w : rG.mV2V[v])
+            if (rIsT[static_cast<std::size_t>(w)])
+                adj.push_back(w);
+        if (adj.size() == 3) {
+            int top = 0;
+            for (std::int32_t w : adj)
+                top = std::max(rG.MaxRef(w), top);
+            for (std::size_t i = 0; i < 3; ++i)
+                if (rG.MaxRef(adj[i]) != top) {
+                    adj.erase(adj.begin() + static_cast<std::ptrdiff_t>(i));
+                    break;
+                }
+        }
+        if (adj.size() == 2 &&
+            rDir[static_cast<std::size_t>(adj[0])] != rDir[static_cast<std::size_t>(adj[1])]) {
+            std::sort(adj.begin(), adj.end());
+            if (!concaves.count(adj)) {
+                adj.push_back(static_cast<std::int32_t>(v));
+                convexes.insert(adj);
+            }
+        }
+    }
+    HdsSchemes map;
+    for (const auto& c : corners)
+        hds_mark_concave_vert(rG, c, rDir, map);
+    for (const auto& c : concaves)
+        hds_mark_concave_edge(rG, c, rDir, map);
+    for (const auto& c : convexes)
+        hds_mark_convex(rG, c, rDir, map);
+    for (std::int32_t f : flats)
+        hds_mark_flat(rG, f, rDir, map);
+    hds_cut_flats(rG, map);
+    return map;
+}
+
+// ---- orientation (CinoLib's hex_transition_orient) ------------------------
+
+using HdsMat = std::array<std::array<std::int64_t, 3>, 3>;
+
+// A rotation by `Quarters` quarter turns about an axis, as CinoLib's
+// `mat3d::ROT_3D` builds it (right-handed).
+HdsMat hds_rotation(char Axis, int Quarters) {
+    const std::int64_t u = Axis == 'x', v = Axis == 'y', w = Axis == 'z';
+    const int q = ((Quarters % 4) + 4) % 4;
+    const std::int64_t c = q == 0 ? 1 : (q == 2 ? -1 : 0);
+    const std::int64_t s = q == 1 ? 1 : (q == 3 ? -1 : 0);
+    HdsMat m{};
+    m[0][0] = c + u * u * (1 - c);
+    m[1][0] = w * s + v * u * (1 - c);
+    m[2][0] = -v * s + w * u * (1 - c);
+    m[0][1] = -w * s + u * v * (1 - c);
+    m[1][1] = c + v * v * (1 - c);
+    m[2][1] = u * s + w * v * (1 - c);
+    m[0][2] = v * s + u * w * (1 - c);
+    m[1][2] = -u * s + v * w * (1 - c);
+    m[2][2] = c + w * w * (1 - c);
+    return m;
+}
+
+void hds_apply(std::vector<HdsPoint>& rV, const HdsMat& rM) {
+    for (HdsPoint& p : rV) {
+        const HdsPoint q = p;
+        for (std::size_t i = 0; i < 3; ++i)
+            p[i] = rM[i][0] * q[0] + rM[i][1] * q[1] + rM[i][2] * q[2];
+    }
+}
+
+void hds_rotate(std::vector<HdsPoint>& rV, char Axis, int Quarters) {
+    hds_apply(rV, hds_rotation(Axis, Quarters));
+}
+
+// CinoLib's `reflect`: negate every axis the string does not name.
+void hds_reflect(std::vector<HdsPoint>& rV, const std::string& rAxes) {
+    for (HdsPoint& p : rV)
+        for (std::size_t k = 0; k < 3; ++k)
+            if (rAxes.find(static_cast<char>('x' + k)) == std::string::npos)
+                p[k] = -p[k];
+}
+
+struct HdsPlaced {
+    HexTransition mType;
+    std::vector<HdsPoint> mVerts;  // centred, units of the cell's edge / 20
+    HdsPoint mCentroid;
+    std::int64_t mSpan;  // the cell's edge / 20, lattice units
+
+    HdsPoint At(std::size_t I) const {
+        return {mCentroid[0] + mVerts[I][0] * mSpan, mCentroid[1] + mVerts[I][1] * mSpan,
+                mCentroid[2] + mVerts[I][2] * mSpan};
+    }
+};
+
+HdsPlaced hds_load(HexTransition Type, const HdsPoint& rCentroid, std::int64_t Scale) {
+    const HexDualScheme& s = hex_dual_scheme(Type);
+    HdsPlaced out{Type, std::vector<HdsPoint>(s.mNumVerts), rCentroid, Scale / kHexDualUnit};
+    for (std::size_t v = 0; v < s.mNumVerts; ++v)
+        for (std::size_t k = 0; k < 3; ++k)
+            out.mVerts[v][k] = s.mVerts[v * 3 + k] - kHexDualUnit / 2;
+    return out;
+}
+
+void hds_try_reflections(HdsPlaced& rS, const HdsInfo& rInfo) {
+    for (const char* axes : {"x", "y", "z", "xy", "xz", "yz"}) {
+        HdsPlaced tmp = rS;
+        hds_reflect(tmp.mVerts, axes);
+        if (tmp.At(0) == rInfo.mTVerts[0]) {
+            rS = tmp;
+            return;
+        }
+    }
+    hds_fail("no reflection puts a scheme on the transition vertex " + hds_str(rInfo.mTVerts[0]));
+}
+
+void hds_try_rotations(HdsPlaced& rS, const HdsInfo& rInfo) {
+    HdsPlaced tmp = rS;
+    for (int x = 0; x < 4; ++x) {
+        for (int y = 0; y < 4; ++y) {
+            for (int z = 0; z < 4; ++z) {
+                hds_rotate(tmp.mVerts, 'z', 1);
+                if ((rInfo.mTVerts[0] == tmp.At(0) && rInfo.mTVerts[1] == tmp.At(4)) ||
+                    (rInfo.mTVerts[0] == tmp.At(4) && rInfo.mTVerts[1] == tmp.At(0))) {
+                    rS = tmp;
+                    return;
+                }
+            }
+            hds_rotate(tmp.mVerts, 'y', 1);
+        }
+        hds_rotate(tmp.mVerts, 'x', 1);
+    }
+    hds_fail("no rotation puts a two-turn convex scheme on " + hds_str(rInfo.mTVerts[0]) + " and " +
+             hds_str(rInfo.mTVerts[1]));
+}
+
+void hds_turn_to(HdsPlaced& rS, int Dir) {
+    switch (Dir) {
+        case kHdsPlusY:
+            break;
+        case kHdsPlusX:
+            hds_rotate(rS.mVerts, 'z', -1);
+            break;
+        case kHdsPlusZ:
+            hds_rotate(rS.mVerts, 'x', 1);
+            break;
+        case kHdsMinusX:
+            hds_rotate(rS.mVerts, 'z', 1);
+            break;
+        case kHdsMinusY:
+            hds_rotate(rS.mVerts, 'z', 2);
+            break;
+        case kHdsMinusZ:
+            hds_rotate(rS.mVerts, 'x', -1);
+            break;
+        default:
+            hds_fail("a scheme with no direction");
+    }
+}
+
+HdsPlaced hds_orient_flat(HdsInfo Info, const HdsPoint& rCentroid) {
+    HdsPlaced s = hds_load(Info.mType, rCentroid, Info.mScale);
+    std::vector<int>& o = Info.mOrientations;
+    auto& v = s.mVerts;
+    if (Info.mKind == HdsKind::FlatS) {
+        hds_turn_to(s, o[0]);
+    } else if (Info.mKind == HdsKind::ConcS) {
+        switch (o[0]) {
+            case kHdsPlusX:
+                hds_rotate(v, 'z', -1);
+                if (o[1] == kHdsPlusY)
+                    break;
+                if (o[1] == kHdsPlusZ)
+                    hds_rotate(v, 'x', -1);
+                if (o[1] == kHdsMinusY)
+                    hds_rotate(v, 'x', 2);
+                if (o[1] == kHdsMinusZ)
+                    hds_rotate(v, 'x', 1);
+                break;
+            case kHdsPlusY:
+                if (o[1] == kHdsPlusX)
+                    break;
+                if (o[1] == kHdsPlusZ)
+                    hds_rotate(v, 'y', 1);
+                if (o[1] == kHdsMinusX)
+                    hds_rotate(v, 'y', 2);
+                if (o[1] == kHdsMinusZ)
+                    hds_rotate(v, 'y', -1);
+                break;
+            case kHdsPlusZ:
+                hds_rotate(v, 'x', 1);
+                if (o[1] == kHdsPlusX)
+                    break;
+                if (o[1] == kHdsPlusY)
+                    hds_rotate(v, 'z', -1);
+                if (o[1] == kHdsMinusX)
+                    hds_rotate(v, 'z', 2);
+                if (o[1] == kHdsMinusY)
+                    hds_rotate(v, 'z', 1);
+                break;
+            case kHdsMinusX:
+                hds_rotate(v, 'z', 1);
+                if (o[1] == kHdsPlusY)
+                    break;
+                if (o[1] == kHdsPlusZ)
+                    hds_rotate(v, 'x', 1);
+                if (o[1] == kHdsMinusY)
+                    hds_rotate(v, 'x', 2);
+                if (o[1] == kHdsMinusZ)
+                    hds_rotate(v, 'x', -1);
+                break;
+            case kHdsMinusY:
+                hds_rotate(v, 'z', 2);
+                if (o[1] == kHdsMinusX)
+                    break;
+                if (o[1] == kHdsMinusZ)
+                    hds_rotate(v, 'y', 1);
+                if (o[1] == kHdsPlusX)
+                    hds_rotate(v, 'y', 2);
+                if (o[1] == kHdsPlusZ)
+                    hds_rotate(v, 'y', -1);
+                break;
+            case kHdsMinusZ:
+                hds_rotate(v, 'x', -1);
+                if (o[1] == kHdsMinusX)
+                    break;
+                if (o[1] == kHdsMinusY)
+                    hds_rotate(v, 'z', -1);
+                if (o[1] == kHdsPlusX)
+                    hds_rotate(v, 'z', 2);
+                if (o[1] == kHdsPlusY)
+                    hds_rotate(v, 'z', 1);
+                break;
+            default:
+                hds_fail("a flat scheme with no direction");
+        }
+    } else {
+        std::sort(o.begin() + 1, o.end());
+        auto is = [&](int A, int B) { return o[1] == A && o[2] == B; };
+        switch (o[0]) {
+            case kHdsPlusX:
+                hds_rotate(v, 'z', -1);
+                hds_reflect(v, "xz");
+                if (is(kHdsPlusY, kHdsMinusZ))
+                    hds_reflect(v, "xy");
+                if (is(kHdsPlusZ, kHdsMinusY))
+                    hds_reflect(v, "xz");
+                if (is(kHdsMinusY, kHdsMinusZ)) {
+                    hds_reflect(v, "xy");
+                    hds_reflect(v, "xz");
+                }
+                break;
+            case kHdsPlusY:
+                hds_rotate(v, 'y', 1);
+                hds_reflect(v, "xy");
+                if (is(kHdsPlusX, kHdsMinusZ))
+                    hds_reflect(v, "xy");
+                if (is(kHdsMinusX, kHdsMinusZ))
+                    hds_reflect(v, "y");
+                if (is(kHdsPlusZ, kHdsMinusX))
+                    hds_reflect(v, "yz");
+                break;
+            case kHdsPlusZ:
+                hds_rotate(v, 'x', 1);
+                hds_reflect(v, "xz");
+                if (is(kHdsPlusY, kHdsMinusX))
+                    hds_reflect(v, "yz");
+                if (is(kHdsPlusX, kHdsMinusY))
+                    hds_reflect(v, "xz");
+                if (is(kHdsMinusX, kHdsMinusY)) {
+                    hds_reflect(v, "yz");
+                    hds_reflect(v, "xz");
+                }
+                break;
+            case kHdsMinusX:
+                hds_rotate(v, 'z', 1);
+                if (is(kHdsPlusY, kHdsMinusZ))
+                    hds_reflect(v, "xy");
+                if (is(kHdsPlusZ, kHdsMinusY))
+                    hds_reflect(v, "xz");
+                if (is(kHdsMinusY, kHdsMinusZ)) {
+                    hds_reflect(v, "yz");
+                    hds_reflect(v, "xz");
+                }
+                break;
+            case kHdsMinusY:
+                hds_rotate(v, 'y', 1);
+                hds_reflect(v, "xy");
+                hds_reflect(v, "xz");
+                if (is(kHdsPlusX, kHdsMinusZ))
+                    hds_reflect(v, "xy");
+                if (is(kHdsMinusX, kHdsMinusZ))
+                    hds_reflect(v, "y");
+                if (is(kHdsPlusZ, kHdsMinusX))
+                    hds_reflect(v, "yz");
+                break;
+            case kHdsMinusZ:
+                hds_rotate(v, 'x', -1);
+                if (is(kHdsPlusY, kHdsMinusX))
+                    hds_reflect(v, "yz");
+                if (is(kHdsPlusX, kHdsMinusY))
+                    hds_reflect(v, "xz");
+                if (is(kHdsMinusX, kHdsMinusY)) {
+                    hds_reflect(v, "yz");
+                    hds_reflect(v, "xz");
+                }
+                break;
+            default:
+                hds_fail("a corner flat scheme with no direction");
+        }
+    }
+    if (s.At(0) != Info.mTVerts[0])
+        hds_try_reflections(s, Info);
+    return s;
+}
+
+HdsPlaced hds_orient_convex(const HdsInfo& rInfo, const HdsPoint& rCentroid) {
+    HdsPlaced s = hds_load(rInfo.mType, rCentroid, rInfo.mScale);
+    auto& v = s.mVerts;
+    if (rInfo.mType == HexTransition::Convex1) {
+        hds_turn_to(s, rInfo.mOrientations[0]);
+        if (s.At(0) != rInfo.mTVerts[0])
+            hds_try_reflections(s, rInfo);
+    } else if (rInfo.mType == HexTransition::Convex2) {
+        if (!((rInfo.mTVerts[0] == s.At(0) && rInfo.mTVerts[1] == s.At(4)) ||
+              (rInfo.mTVerts[0] == s.At(4) && rInfo.mTVerts[1] == s.At(0))))
+            hds_try_rotations(s, rInfo);
+    } else {
+        auto cuts = [&](int A, int B, int C) {
+            return rInfo.Cut(A) && rInfo.Cut(B) && rInfo.Cut(C);
+        };
+        if (cuts(kHdsPlusX, kHdsPlusY, kHdsPlusZ)) {
+            hds_rotate(v, 'y', 2);
+        } else if (cuts(kHdsPlusX, kHdsPlusZ, kHdsMinusY)) {
+            hds_rotate(v, 'x', -1);
+            hds_rotate(v, 'y', 2);
+        } else if (cuts(kHdsPlusZ, kHdsMinusX, kHdsMinusY)) {
+            hds_rotate(v, 'y', 1);
+            hds_rotate(v, 'z', 1);
+        } else if (cuts(kHdsPlusX, kHdsMinusY, kHdsMinusZ)) {
+            hds_rotate(v, 'x', 2);
+            hds_rotate(v, 'y', 2);
+        } else if (cuts(kHdsPlusX, kHdsPlusY, kHdsMinusZ)) {
+            hds_rotate(v, 'y', -1);
+        } else if (cuts(kHdsPlusY, kHdsPlusZ, kHdsMinusX)) {
+            hds_rotate(v, 'x', 1);
+        } else if (cuts(kHdsMinusX, kHdsMinusY, kHdsMinusZ)) {
+            hds_rotate(v, 'z', 1);
+        } else if (!cuts(kHdsPlusY, kHdsMinusX, kHdsMinusZ)) {
+            hds_fail("a three-turn convex scheme at " + hds_str(rInfo.mTVerts[0]) +
+                     " whose cuts are not three axes of one corner");
+        }
+    }
+    return s;
+}
+
+HdsPlaced hds_orient_concave_edge(const HdsInfo& rInfo, const HdsPoint& rCentroid) {
+    HdsPlaced s = hds_load(rInfo.mType, rCentroid, rInfo.mScale);
+    auto& v = s.mVerts;
+    hds_reflect(v, "xz");
+    switch (rInfo.mOrientations[0]) {
+        case kHdsPlusY:
+            hds_reflect(v, "xz");
+            break;
+        case kHdsPlusX:
+            hds_rotate(v, 'z', -1);
+            hds_reflect(v, "yz");
+            break;
+        case kHdsPlusZ:
+            hds_rotate(v, 'x', 1);
+            hds_reflect(v, "xy");
+            break;
+        case kHdsMinusX:
+            hds_rotate(v, 'z', 1);
+            hds_reflect(v, "yz");
+            break;
+        case kHdsMinusY:
+            hds_rotate(v, 'z', 2);
+            hds_reflect(v, "xz");
+            break;
+        case kHdsMinusZ:
+            hds_rotate(v, 'x', -1);
+            hds_reflect(v, "xy");
+            break;
+        default:
+            hds_fail("a concave edge scheme with no direction");
+    }
+    if (s.At(0) != rInfo.mTVerts[0])
+        hds_try_reflections(s, rInfo);
+    return s;
+}
+
+HdsPlaced hds_orient_concave_vert(HdsInfo Info, const HdsPoint& rCentroid) {
+    HdsPlaced s = hds_load(Info.mType, rCentroid, Info.mScale);
+    auto& v = s.mVerts;
+    std::vector<int>& o = Info.mOrientations;
+    std::sort(o.begin(), o.end());
+    auto is = [&](int A, int B, int C) { return o[0] == A && o[1] == B && o[2] == C; };
+    if (is(kHdsPlusX, kHdsPlusY, kHdsMinusZ)) {
+        hds_reflect(v, "xy");
+    } else if (is(kHdsPlusY, kHdsMinusX, kHdsMinusZ)) {
+        hds_reflect(v, "y");
+    } else if (is(kHdsPlusY, kHdsPlusZ, kHdsMinusX)) {
+        hds_reflect(v, "yz");
+    } else if (is(kHdsPlusX, kHdsPlusZ, kHdsMinusY)) {
+        hds_reflect(v, "xz");
+    } else if (is(kHdsPlusX, kHdsMinusY, kHdsMinusZ)) {
+        hds_reflect(v, "xz");
+        hds_reflect(v, "xy");
+    } else if (is(kHdsMinusX, kHdsMinusY, kHdsMinusZ)) {
+        hds_reflect(v, "xz");
+        hds_reflect(v, "y");
+    } else if (is(kHdsPlusZ, kHdsMinusX, kHdsMinusY)) {
+        hds_reflect(v, "xz");
+        hds_reflect(v, "yz");
+    }
+    return s;
+}
+
+HdsPlaced hds_orient_concave_vert_side(HdsInfo Info, const HdsPoint& rCentroid) {
+    HdsPlaced s = hds_load(Info.mType, rCentroid, Info.mScale);
+    auto& v = s.mVerts;
+    const std::size_t tv = 2;
+    std::vector<int>& o = Info.mOrientations;
+    if (o.size() != 3 || Info.mTVerts.empty())
+        hds_fail("a cell beside a concave corner has " + std::to_string(Info.mTVerts.size()) +
+                 " transition vertices and " + std::to_string(o.size()) + " directions");
+    std::sort(o.begin(), o.begin() + 2);
+    auto is = [&](int A, int B) { return o[0] == A && o[1] == B; };
+    auto unless_at = [&](const char* rAxes) {
+        if (s.At(tv) != Info.mTVerts[0])
+            hds_reflect(v, rAxes);
+    };
+    if (is(kHdsPlusX, kHdsPlusY)) {
+        hds_rotate(v, 'y', 1);
+        hds_rotate(v, 'x', 1);
+        unless_at("xy");
+    } else if (is(kHdsPlusX, kHdsPlusZ)) {
+        if (o[2] == kHdsMinusY)
+            hds_reflect(v, "xz");
+    } else if (is(kHdsPlusX, kHdsMinusY)) {
+        hds_rotate(v, 'y', 1);
+        hds_rotate(v, 'x', 1);
+        hds_reflect(v, "xz");
+        unless_at("xy");
+    } else if (is(kHdsPlusX, kHdsMinusZ)) {
+        hds_reflect(v, "xy");
+        if (o[2] == kHdsMinusY)
+            hds_reflect(v, "xz");
+    } else if (is(kHdsPlusY, kHdsPlusZ)) {
+        hds_rotate(v, 'y', -1);
+        hds_rotate(v, 'z', -1);
+        unless_at("yz");
+    } else if (is(kHdsPlusY, kHdsMinusX)) {
+        hds_rotate(v, 'y', 1);
+        hds_rotate(v, 'x', 1);
+        hds_reflect(v, "yz");
+        unless_at("xy");
+    } else if (is(kHdsPlusY, kHdsMinusZ)) {
+        hds_rotate(v, 'y', -1);
+        hds_rotate(v, 'z', -1);
+        hds_reflect(v, "xy");
+        unless_at("yz");
+    } else if (is(kHdsPlusZ, kHdsMinusX)) {
+        hds_reflect(v, "yz");
+        if (o[2] == kHdsMinusY)
+            hds_reflect(v, "xz");
+    } else if (is(kHdsPlusZ, kHdsMinusY)) {
+        hds_rotate(v, 'y', -1);
+        hds_rotate(v, 'z', -1);
+        hds_reflect(v, "xz");
+        unless_at("yz");
+    } else if (is(kHdsMinusX, kHdsMinusY)) {
+        hds_rotate(v, 'y', 1);
+        hds_rotate(v, 'x', 1);
+        hds_reflect(v, "xz");
+        hds_reflect(v, "yz");
+        unless_at("xy");
+    } else if (is(kHdsMinusX, kHdsMinusZ)) {
+        hds_reflect(v, "y");
+        if (o[2] == kHdsMinusY)
+            hds_reflect(v, "xz");
+    } else if (is(kHdsMinusY, kHdsMinusZ)) {
+        hds_rotate(v, 'y', -1);
+        hds_rotate(v, 'z', -1);
+        hds_reflect(v, "xz");
+        hds_reflect(v, "xy");
+        unless_at("yz");
+    }
+    return s;
+}
+
+HdsPlaced hds_orient(const HdsInfo& rInfo, const HdsPoint& rCentroid) {
+    if (rInfo.mScale % kHexDualUnit != 0 || rInfo.mTVerts.empty())
+        hds_fail("a scheme with no transition vertex or a cell off the lattice");
+    switch (rInfo.mType) {
+        case HexTransition::Flat:
+        case HexTransition::FlatConvex:
+            return hds_orient_flat(rInfo, rCentroid);
+        case HexTransition::Convex1:
+        case HexTransition::Convex2:
+        case HexTransition::Convex3:
+            return hds_orient_convex(rInfo, rCentroid);
+        case HexTransition::Edge:
+            return hds_orient_concave_edge(rInfo, rCentroid);
+        case HexTransition::VertCenter:
+            return hds_orient_concave_vert(rInfo, rCentroid);
+        case HexTransition::VertSide:
+            return hds_orient_concave_vert_side(rInfo, rCentroid);
+    }
+    hds_fail("an unknown scheme");
+}
+
+// ---- the conforming primal mesh -------------------------------------------
+
+struct HdsPrimal {
+    std::vector<HdsPoint> mVerts;
+    std::unordered_map<HdsPoint, std::int32_t, HdsPointHash> mVertId;
+    std::vector<std::vector<std::int32_t>> mFaces;
+    std::map<std::vector<std::int32_t>, std::int32_t> mFaceId;
+    std::vector<std::vector<std::int32_t>> mPolys;  // face ids
+    std::vector<std::int32_t> mLabel;
+    std::map<std::vector<std::int32_t>, std::int32_t> mPolyId;
+
+    std::int32_t Vertex(const HdsPoint& rP) {
+        const auto it = mVertId.find(rP);
+        if (it != mVertId.end())
+            return it->second;
+        const auto id = static_cast<std::int32_t>(mVerts.size());
+        mVerts.push_back(rP);
+        mVertId.emplace(rP, id);
+        return id;
+    }
+    std::int32_t Face(const std::vector<std::int32_t>& rVerts) {
+        std::vector<std::int32_t> key = rVerts;
+        std::sort(key.begin(), key.end());
+        const auto it = mFaceId.find(key);
+        if (it != mFaceId.end())
+            return it->second;
+        const auto id = static_cast<std::int32_t>(mFaces.size());
+        mFaces.push_back(rVerts);
+        mFaceId.emplace(std::move(key), id);
+        return id;
+    }
+    void Poly(const std::vector<std::int32_t>& rFaces, std::int32_t Label) {
+        std::vector<std::int32_t> key = rFaces;
+        std::sort(key.begin(), key.end());
+        if (mPolyId.count(key))
+            return;
+        mPolyId.emplace(std::move(key), static_cast<std::int32_t>(mPolys.size()));
+        mPolys.push_back(rFaces);
+        mLabel.push_back(Label);
+    }
+};
+
+HdsPrimal hds_primal(const HdsGrid& rG, const HdsSchemes& rMap,
+                     std::array<std::int64_t, kNumHexTransitions>& rCount) {
+    HdsPrimal m;
+    for (const HdsPoint& p : rG.mVerts)
+        m.Vertex(p);
+    for (std::size_t p = 0; p < rG.mPolyVerts.size(); ++p) {
+        const auto pid = static_cast<std::int32_t>(p);
+        const auto it = rMap.find(pid);
+        if (it == rMap.end()) {
+            std::vector<std::int32_t> faces;
+            for (std::int32_t f : rG.mPolyFaces[p]) {
+                const auto& fv = rG.mFaceVerts[static_cast<std::size_t>(f)];
+                faces.push_back(m.Face({fv[0], fv[1], fv[2], fv[3]}));
+            }
+            m.Poly(faces, rG.Label(pid));
+            continue;
+        }
+        const auto& pv = rG.mPolyVerts[p];
+        const HdsPoint& lo = rG.Vert(pv[0]);
+        const HdsPoint& hi = rG.Vert(pv[7]);
+        const HdsPoint centroid{(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2};
+        const HdsPlaced s = hds_orient(it->second, centroid);
+        ++rCount[static_cast<std::size_t>(it->second.mType)];
+        const HexDualScheme& t = hex_dual_scheme(s.mType);
+        std::vector<std::int32_t> vid(t.mNumVerts);
+        for (std::size_t v = 0; v < t.mNumVerts; ++v)
+            vid[v] = m.Vertex(s.At(v));
+        std::vector<std::int32_t> fid(t.mNumFaces);
+        for (std::size_t f = 0, at = 0; f < t.mNumFaces; ++f) {
+            std::vector<std::int32_t> fv;
+            for (; at < t.mFaceEnds[f]; ++at)
+                fv.push_back(vid[t.mFaces[at]]);
+            fid[f] = m.Face(fv);
+        }
+        for (std::size_t q = 0, at = 0; q < t.mNumPolys; ++q) {
+            std::vector<std::int32_t> faces;
+            for (; at < t.mPolyEnds[q]; ++at)
+                faces.push_back(fid[t.mPolys[at]]);
+            m.Poly(faces, rG.Label(pid));
+        }
+    }
+    return m;
+}
+
+// ---- the dual (CinoLib's dual_mesh, without clipped cells) ----------------
+
+double hds_hex_volume(const std::vector<Vec3>& rP, const std::array<std::int64_t, 8>& rH) {
+    static constexpr int kTets[6][4] = {{0, 1, 2, 6}, {0, 2, 3, 6}, {0, 3, 7, 6},
+                                        {0, 7, 4, 6}, {0, 4, 5, 6}, {0, 5, 1, 6}};
+    double vol = 0.0;
+    for (const auto& t : kTets) {
+        const Vec3& a = rP[static_cast<std::size_t>(rH[static_cast<std::size_t>(t[0])])];
+        const Vec3 b =
+            vec3_sub(rP[static_cast<std::size_t>(rH[static_cast<std::size_t>(t[1])])], a);
+        const Vec3 c =
+            vec3_sub(rP[static_cast<std::size_t>(rH[static_cast<std::size_t>(t[2])])], a);
+        const Vec3 d =
+            vec3_sub(rP[static_cast<std::size_t>(rH[static_cast<std::size_t>(t[3])])], a);
+        vol += vec3_dot(b, vec3_cross(c, d)) / 6.0;
+    }
+    return vol;
+}
+
+HexDualMesh hds_dual(const HdsPrimal& rM, const LinearOctree& rTree) {
+    HexDualMesh out;
+    const std::size_t nv = rM.mVerts.size(), nf = rM.mFaces.size(), np = rM.mPolys.size();
+    std::vector<std::vector<std::int32_t>> f2p(nf);
+    for (std::size_t p = 0; p < np; ++p)
+        for (std::int32_t f : rM.mPolys[p])
+            f2p[static_cast<std::size_t>(f)].push_back(static_cast<std::int32_t>(p));
+    std::array<std::int64_t, 3> extent{};
+    for (std::size_t k = 0; k < 3; ++k)
+        extent[k] = rTree.Extent(k) * kHexDualUnit;
+    auto on_boundary = [&](const HdsPoint& rP) {
+        for (std::size_t k = 0; k < 3; ++k)
+            if (rP[k] == 0 || rP[k] == extent[k])
+                return true;
+        return false;
+    };
+    // Every face has two cells, except on the forest's boundary.
+    for (std::size_t f = 0; f < nf; ++f) {
+        const std::size_t c = f2p[f].size();
+        if (c == 2 || c == 0)
+            continue;
+        // A face of one cell must lie on one of the forest's boundary planes.
+        bool outer = false;
+        for (std::size_t k = 0; k < 3 && c == 1 && !outer; ++k) {
+            bool lo = true, hi = true;
+            for (std::int32_t v : rM.mFaces[f]) {
+                lo = lo && rM.mVerts[static_cast<std::size_t>(v)][k] == 0;
+                hi = hi && rM.mVerts[static_cast<std::size_t>(v)][k] == extent[k];
+            }
+            outer = lo || hi;
+        }
+        if (!outer)
+            hds_fail("the schemes do not conform: a face at " +
+                     hds_str(rM.mVerts[static_cast<std::size_t>(rM.mFaces[f][0])]) + " has " +
+                     std::to_string(c) + " cells");
+    }
+    // Each cell's dual point, the average of its vertices.
+    std::vector<Vec3> centroid(np);
+    std::vector<std::vector<std::int32_t>> v2p(nv);
+    for (std::size_t p = 0; p < np; ++p) {
+        std::vector<std::int32_t> verts;
+        for (std::int32_t f : rM.mPolys[p])
+            for (std::int32_t v : rM.mFaces[static_cast<std::size_t>(f)])
+                verts.push_back(v);
+        std::sort(verts.begin(), verts.end());
+        verts.erase(std::unique(verts.begin(), verts.end()), verts.end());
+        Vec3 c{0.0, 0.0, 0.0};
+        for (std::int32_t v : verts) {
+            const HdsPoint& q = rM.mVerts[static_cast<std::size_t>(v)];
+            for (std::size_t k = 0; k < 3; ++k)
+                c[k] += static_cast<double>(q[k]);
+            v2p[static_cast<std::size_t>(v)].push_back(static_cast<std::int32_t>(p));
+        }
+        for (std::size_t k = 0; k < 3; ++k)
+            c[k] /= static_cast<double>(verts.size());
+        centroid[p] = c;
+    }
+    std::vector<std::vector<std::int32_t>> v2f(nv);
+    for (std::size_t f = 0; f < nf; ++f)
+        for (std::int32_t v : rM.mFaces[f])
+            v2f[static_cast<std::size_t>(v)].push_back(static_cast<std::int32_t>(f));
+
+    std::vector<std::int64_t> point_of(np, -1);
+    for (std::size_t v = 0; v < nv; ++v) {
+        const HdsPoint& at = rM.mVerts[v];
+        if (on_boundary(at) || v2p[v].empty())
+            continue;
+        const std::vector<std::int32_t>& cells = v2p[v];
+        if (cells.size() != 8)
+            hds_fail("the interior vertex " + hds_str(at) + " has " + std::to_string(cells.size()) +
+                     " cells around it, so its dual is not a hexahedron");
+        // The cells' adjacency across the faces at the vertex: a cube's graph.
+        std::array<std::array<int, 3>, 8> nb{};
+        std::array<int, 8> deg{};
+        auto local = [&](std::int32_t P) {
+            return static_cast<int>(std::find(cells.begin(), cells.end(), P) - cells.begin());
+        };
+        bool ok = true;
+        for (std::int32_t f : v2f[v]) {
+            const auto& fp = f2p[static_cast<std::size_t>(f)];
+            if (fp.size() != 2) {
+                ok = false;
+                break;
+            }
+            const int a = local(fp[0]), b = local(fp[1]);
+            if (deg[static_cast<std::size_t>(a)] == 3 || deg[static_cast<std::size_t>(b)] == 3) {
+                ok = false;
+                break;
+            }
+            nb[static_cast<std::size_t>(a)]
+              [static_cast<std::size_t>(deg[static_cast<std::size_t>(a)]++)] = b;
+            nb[static_cast<std::size_t>(b)]
+              [static_cast<std::size_t>(deg[static_cast<std::size_t>(b)]++)] = a;
+        }
+        std::array<int, 8> label;
+        label.fill(-1);
+        if (ok) {
+            label[0] = 0;
+            for (int k = 0; k < 3 && ok; ++k) {
+                if (deg[0] != 3) {
+                    ok = false;
+                    break;
+                }
+                label[static_cast<std::size_t>(nb[0][static_cast<std::size_t>(k)])] = 1 << k;
+            }
+            // Two passes: the cells beside two labelled ones, then the last.
+            for (int pass = 0; pass < 2 && ok; ++pass)
+                for (std::size_t c = 0; c < 8; ++c) {
+                    if (label[c] >= 0)
+                        continue;
+                    int bits = 0, count = 0;
+                    for (int k = 0; k < deg[c]; ++k) {
+                        const int l =
+                            label[static_cast<std::size_t>(nb[c][static_cast<std::size_t>(k)])];
+                        if (l > 0 && (pass == 0 ? (l & (l - 1)) == 0 : (l & (l - 1)) != 0)) {
+                            bits |= l;
+                            ++count;
+                        }
+                    }
+                    if (count >= 2)
+                        label[c] = bits;
+                }
+            std::array<int, 8> seen{};
+            for (std::size_t c = 0; c < 8 && ok; ++c) {
+                if (label[c] < 0 || label[c] > 7 || deg[c] != 3 ||
+                    seen[static_cast<std::size_t>(label[c])]++) {
+                    ok = false;
+                    break;
+                }
+                for (int k = 0; k < 3; ++k) {
+                    const int x =
+                        label[c] ^
+                        label[static_cast<std::size_t>(nb[c][static_cast<std::size_t>(k)])];
+                    if (x != 1 && x != 2 && x != 4)
+                        ok = false;
+                }
+            }
+        }
+        if (!ok)
+            hds_fail("the cells around the interior vertex " + hds_str(at) +
+                     " do not meet as a cube's eight corners, so its dual is not a hexahedron");
+        std::array<std::int32_t, 8> by_label{};
+        for (std::size_t c = 0; c < 8; ++c)
+            by_label[static_cast<std::size_t>(label[c])] = cells[c];
+        std::array<std::int64_t, 8> hex{};
+        static constexpr int kVtk[8] = {0, 1, 3, 2, 4, 5, 7, 6};
+        static constexpr int kMirror[8] = {0, 1, 5, 4, 2, 3, 7, 6};
+        for (std::size_t k = 0; k < 8; ++k) {
+            const std::int32_t p = by_label[static_cast<std::size_t>(kVtk[k])];
+            std::int64_t& r = point_of[static_cast<std::size_t>(p)];
+            if (r < 0) {
+                r = static_cast<std::int64_t>(out.mPoints.size());
+                out.mPoints.push_back(centroid[static_cast<std::size_t>(p)]);
+            }
+            hex[k] = r;
+        }
+        if (hds_hex_volume(out.mPoints, hex) < 0.0)
+            for (std::size_t k = 0; k < 8; ++k)
+                hex[k] = point_of[static_cast<std::size_t>(
+                    by_label[static_cast<std::size_t>(kMirror[k])])];
+        int level = 0;
+        for (std::int32_t p : cells)
+            level = std::max(level, rM.mLabel[static_cast<std::size_t>(p)]);
+        out.mHexes.push_back(hex);
+        out.mCentre.push_back(at);
+        out.mLevel.push_back(level);
+    }
+    return out;
+}
+
+}  // namespace
+
+HexDualMesh hex_dual_mesh(const LinearOctree& rTree) {
+    const OctreeAdjacency full = OctreeAdjacency::Full;
+    std::string why;
+    if (!linear_octree_check(rTree, &full, &why))
+        hds_fail("the tree is not balanced across faces, edges and corners: " + why);
+    if (!linear_octree_is_paired(rTree, &why))
+        hds_fail("the tree is not paired: " + why);
+    const HdsGrid grid = hds_grid(rTree);
+    std::vector<std::uint8_t> is_t;
+    std::vector<int> dir;
+    hds_transition_vertices(rTree, grid, is_t, dir);
+    const HdsSchemes map = hds_mark(grid, is_t, dir);
+    std::array<std::int64_t, kNumHexTransitions> count{};
+    const HdsPrimal primal = hds_primal(grid, map, count);
+    HexDualMesh out = hds_dual(primal, rTree);
+    out.mNumSchemes = count;
+    out.mNumPrimalCells = static_cast<std::int64_t>(primal.mPolys.size());
+    for (std::uint8_t t : is_t)
+        out.mNumTransitionVertices += t;
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/hex_dual_schemes.cpp =====
 // ===== begin src/cpp/src/detail/hex_fit.cpp =====
 #include <algorithm>
 #include <array>
@@ -78746,6 +80829,129 @@ std::int64_t hex_grid_make_manifold(const std::array<std::int64_t, 3>& rN,
                         changed = true;
                     }
                 }
+    }
+    return added;
+}
+
+std::int64_t hex_make_manifold(const HexMesh& rMesh, std::vector<std::uint8_t>& rKept,
+                               const std::vector<double>& rScore) {
+    const std::size_t nh = rMesh.mHexes.size(), np = rMesh.mPoints.size();
+    // The hexahedron across each facet (-1: none).
+    std::vector<std::array<std::int64_t, 6>> across(nh);
+    {
+        std::vector<std::pair<std::array<std::int64_t, 4>, std::int64_t>> faces;
+        faces.reserve(nh * 6);
+        for (std::size_t h = 0; h < nh; ++h) {
+            across[h].fill(-1);
+            for (int f = 0; f < 6; ++f) {
+                std::array<std::int64_t, 4> key{};
+                for (int k = 0; k < 4; ++k)
+                    key[static_cast<std::size_t>(k)] =
+                        rMesh.mHexes[h][static_cast<std::size_t>(kHexfitFace[f][k])];
+                std::sort(key.begin(), key.end());
+                faces.emplace_back(key,
+                                   static_cast<std::int64_t>(h * 6 + static_cast<std::size_t>(f)));
+            }
+        }
+        std::sort(faces.begin(), faces.end());
+        for (std::size_t i = 0; i + 1 < faces.size(); ++i)
+            if (faces[i].first == faces[i + 1].first) {
+                const std::int64_t a = faces[i].second, b = faces[i + 1].second;
+                across[static_cast<std::size_t>(a / 6)][static_cast<std::size_t>(a % 6)] = b / 6;
+                across[static_cast<std::size_t>(b / 6)][static_cast<std::size_t>(b % 6)] = a / 6;
+            }
+    }
+    std::vector<std::int64_t> start(np + 1, 0), at;
+    for (const auto& h : rMesh.mHexes)
+        for (std::int64_t v : h)
+            ++start[static_cast<std::size_t>(v) + 1];
+    for (std::size_t v = 0; v < np; ++v)
+        start[v + 1] += start[v];
+    at.resize(static_cast<std::size_t>(start[np]));
+    {
+        std::vector<std::int64_t> fill(start.begin(), start.end() - 1);
+        for (std::size_t h = 0; h < nh; ++h)
+            for (std::int64_t v : rMesh.mHexes[h])
+                at[static_cast<std::size_t>(fill[static_cast<std::size_t>(v)]++)] =
+                    static_cast<std::int64_t>(h);
+    }
+    std::int64_t added = 0;
+    std::vector<std::vector<std::size_t>> link;
+    std::vector<std::uint8_t> seen;
+    // The components of the star's cells with `Kept` (the outside, index n,
+    // counting as empty).
+    auto components = [&](const std::vector<std::int64_t>& rStar, bool Kept, bool Outside) {
+        const std::size_t n = rStar.size();
+        auto member = [&](std::size_t I) {
+            if (I == n)
+                return !Kept && Outside;
+            return (rKept[static_cast<std::size_t>(rStar[I])] != 0) == Kept;
+        };
+        seen.assign(n + 1, 0);
+        int count = 0;
+        for (std::size_t i = 0; i <= n; ++i) {
+            if (seen[i] || !member(i))
+                continue;
+            ++count;
+            std::vector<std::size_t> front{i};
+            seen[i] = 1;
+            while (!front.empty()) {
+                const std::size_t u = front.back();
+                front.pop_back();
+                for (std::size_t w : link[u])
+                    if (!seen[w] && member(w)) {
+                        seen[w] = 1;
+                        front.push_back(w);
+                    }
+            }
+        }
+        return count;
+    };
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (std::size_t p = 0; p < np; ++p) {
+            const std::vector<std::int64_t> star(at.begin() + start[p], at.begin() + start[p + 1]);
+            const std::size_t n = star.size();
+            if (n == 0)
+                continue;
+            link.assign(n + 1, {});
+            bool outside = false;
+            for (std::size_t i = 0; i < n; ++i) {
+                const auto& hex = rMesh.mHexes[static_cast<std::size_t>(star[i])];
+                for (int f = 0; f < 6; ++f) {
+                    bool has = false;
+                    for (int k = 0; k < 4 && !has; ++k)
+                        has = hex[static_cast<std::size_t>(kHexfitFace[f][k])] ==
+                              static_cast<std::int64_t>(p);
+                    if (!has)
+                        continue;
+                    const std::int64_t g =
+                        across[static_cast<std::size_t>(star[i])][static_cast<std::size_t>(f)];
+                    const std::size_t j =
+                        g < 0 ? n
+                              : static_cast<std::size_t>(std::find(star.begin(), star.end(), g) -
+                                                         star.begin());
+                    outside = outside || g < 0;
+                    link[i].push_back(j);
+                    link[j].push_back(i);
+                }
+            }
+            for (;;) {
+                if (components(star, true, outside) <= 1 && components(star, false, outside) <= 1)
+                    break;
+                std::int64_t best = -1;
+                for (std::int64_t h : star)
+                    if (!rKept[static_cast<std::size_t>(h)] &&
+                        (best < 0 || rScore[static_cast<std::size_t>(h)] >
+                                         rScore[static_cast<std::size_t>(best)]))
+                        best = h;
+                if (best < 0)
+                    break;  // only the outside left to add
+                rKept[static_cast<std::size_t>(best)] = 1;
+                ++added;
+                changed = true;
+            }
+        }
     }
     return added;
 }
@@ -80885,6 +83091,68 @@ void linear_octree_dilate(LinearOctree& rTree, const std::vector<std::uint8_t>& 
                 }
     }
     linear_octree_require(rTree, std::move(req), MaxLeaves, pOrigin);
+}
+
+namespace {
+
+// The leaves that break the pairing: roots, and leaves with a split sibling.
+std::vector<std::uint8_t> linoct_unpaired(const LinearOctree& rTree) {
+    std::vector<std::uint8_t> mark(rTree.Size(), 0);
+    parallel_for(rTree.Size(), [&](std::size_t i) {
+        if (rTree.mLevel[i] == 0) {
+            mark[i] = 1;
+            return;
+        }
+        const auto lo = rTree.Lo(i);
+        const std::int64_t s = rTree.Span(i);
+        std::array<std::int64_t, 3> parent{};
+        for (std::size_t k = 0; k < 3; ++k)
+            parent[k] = lo[k] - lo[k] % (2 * s);
+        for (std::int64_t c = 0; c < 8 && !mark[i]; ++c) {
+            const std::int64_t j =
+                rTree.Locate(parent[0] + (c & 1) * s, parent[1] + ((c >> 1) & 1) * s,
+                             parent[2] + ((c >> 2) & 1) * s);
+            mark[i] = j >= 0 && rTree.mLevel[static_cast<std::size_t>(j)] > rTree.mLevel[i];
+        }
+    });
+    return mark;
+}
+
+}  // namespace
+
+bool linear_octree_pair(LinearOctree& rTree, OctreeAdjacency Kind, std::int64_t MaxLeaves) {
+    bool changed = false;
+    for (;;) {
+        const std::size_t before = rTree.Size();
+        linear_octree_balance(rTree, Kind, MaxLeaves);
+        changed = changed || rTree.Size() != before;
+        std::vector<std::uint8_t> mark = linoct_unpaired(rTree);
+        bool any = false;
+        for (std::size_t i = 0; i < mark.size(); ++i) {
+            mark[i] = mark[i] && rTree.mLevel[i] < rTree.mMaxLevel;
+            any = any || mark[i];
+        }
+        if (!any)
+            return changed;
+        linear_octree_split(rTree, mark, MaxLeaves);
+        changed = true;
+    }
+}
+
+bool linear_octree_is_paired(const LinearOctree& rTree, std::string* pWhy) {
+    const std::vector<std::uint8_t> mark = linoct_unpaired(rTree);
+    for (std::size_t i = 0; i < mark.size(); ++i)
+        if (mark[i]) {
+            if (pWhy) {
+                const auto lo = rTree.Lo(i);
+                *pWhy = "leaf " + std::to_string(i) + " at (" + std::to_string(lo[0]) + ", " +
+                        std::to_string(lo[1]) + ", " + std::to_string(lo[2]) + "), level " +
+                        std::to_string(rTree.mLevel[i]) +
+                        (rTree.mLevel[i] == 0 ? " has no parent" : " has a split sibling");
+            }
+            return false;
+        }
+    return true;
 }
 
 std::vector<std::int64_t> linear_octree_neighbours(const LinearOctree& rTree, std::size_t Leaf,
@@ -87121,11 +89389,14 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
 // ===== begin src/cpp/src/detail/planar_skin.cpp =====
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
+#include <vector>
 
 // Project includes
 
@@ -87167,6 +89438,56 @@ PlanarFrame planar_frame(const Mesh& rMesh, PlanarPlane Plane) {
         frame.mAxis = {{1, 2, 0}};
     return frame;
 }
+
+namespace {
+
+// Orient every closed loop (all its points of degree two) like its first segment in input
+// order, so a slice whose segments run both ways round still has a winding number. Loops
+// already directed one way, and components that are not simple loops, are left as they are.
+void ps_orient_loops(std::vector<std::array<std::int64_t, 2>>& rIds) {
+    const std::size_t n = rIds.size();
+    std::unordered_map<std::int64_t, std::vector<std::size_t>> incident;
+    for (std::size_t i = 0; i < n; ++i) {
+        incident[rIds[i][0]].push_back(i);
+        if (rIds[i][1] != rIds[i][0])
+            incident[rIds[i][1]].push_back(i);
+    }
+    std::vector<std::uint8_t> seen(n, 0);
+    std::vector<std::size_t> flips;
+    for (std::size_t first = 0; first < n; ++first) {
+        if (seen[first])
+            continue;
+        seen[first] = 1;
+        if (rIds[first][0] == rIds[first][1])
+            continue;
+        flips.clear();
+        bool closed = false;
+        std::size_t cur = first;
+        std::int64_t at = rIds[first][1];
+        for (;;) {
+            const auto& inc = incident.at(at);
+            if (inc.size() != 2)
+                break;
+            const std::size_t next = inc[0] == cur ? inc[1] : inc[0];
+            if (next == first) {
+                closed = true;
+                break;
+            }
+            if (seen[next])
+                break;
+            seen[next] = 1;
+            if (rIds[next][0] != at)
+                flips.push_back(next);
+            at = rIds[next][0] == at ? rIds[next][1] : rIds[next][0];
+            cur = next;
+        }
+        if (closed)
+            for (const std::size_t f : flips)
+                std::swap(rIds[f][0], rIds[f][1]);
+    }
+}
+
+}  // namespace
 
 PlanarSkin collect_planar_skin(const Mesh& rMesh, const char* pPrefix, const PlanarFrame& rFrame) {
     PlanarSkin skin;
@@ -87215,10 +89536,10 @@ PlanarSkin collect_planar_skin(const Mesh& rMesh, const char* pPrefix, const Pla
         if (rec.first == 1)
             skin.mIds.push_back(rec.second);
     }
+    ps_orient_loops(skin.mIds);
     for (const auto& id : skin.mIds)
-        skin.mSegments.push_back(
-            {rFrame.Permute(read_point(points, dim, id[0])),
-             rFrame.Permute(read_point(points, dim, id[1]))});
+        skin.mSegments.push_back({rFrame.Permute(read_point(points, dim, id[0])),
+                                  rFrame.Permute(read_point(points, dim, id[1]))});
     return skin;
 }
 
@@ -204510,6 +206831,588 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/boundary_layer.cpp =====
+// ===== begin src/cpp/src/operations/check_conformity.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace {
+
+constexpr const char* kCcPrefix = "meshio++: check_conformity: ";
+
+// The unmatched facets of the examined cells, as corner rings (CSR), each with
+// the global cell that owns it.
+struct CcFacets {
+    std::vector<std::int64_t> mStart{0};
+    std::vector<std::int64_t> mNodes;
+    std::vector<std::int64_t> mOwner;
+    std::int64_t mNumNonManifold = 0;
+
+    std::size_t Size() const { return mOwner.size(); }
+    std::size_t Corners(std::size_t Facet) const {
+        return static_cast<std::size_t>(mStart[Facet + 1] - mStart[Facet]);
+    }
+    const std::int64_t* Ring(std::size_t Facet) const { return mNodes.data() + mStart[Facet]; }
+    void Push(const std::int64_t* pIds, std::size_t Size, std::int64_t Owner) {
+        mNodes.insert(mNodes.end(), pIds, pIds + Size);
+        mStart.push_back(static_cast<std::int64_t>(mNodes.size()));
+        mOwner.push_back(Owner);
+    }
+};
+
+// The topological dimension of a block: 3, 2, or -1 for anything else.
+template <class TView>
+int cc_block_dimension(const TView& rBlock) {
+    if (rBlock.IsPolyhedron())
+        return 3;
+    const std::string type(rBlock.Type());
+    if (rBlock.IsRagged() || type.rfind("polygon", 0) == 0)
+        return 2;
+    const int dim = cell_type_dimension(cell_type_from_name(type));
+    return dim == 2 || dim == 3 ? dim : -1;
+}
+
+// Every node of a cell (all faces' nodes of a polyhedron), unsorted.
+template <class TView>
+void cc_cell_nodes(const TView& rBlock, std::size_t Row, std::vector<std::int64_t>& rOut) {
+    rOut.clear();
+    if (rBlock.IsPolyhedron()) {
+        for (std::size_t f = 0; f < rBlock.NumFaces(Row); ++f) {
+            const auto face = rBlock.Face(Row, f);
+            rOut.insert(rOut.end(), face.first, face.first + face.second);
+        }
+    } else if (rBlock.IsRagged()) {
+        rOut.assign(rBlock.Row(Row), rBlock.Row(Row) + rBlock.RowSize(Row));
+    } else {
+        const std::size_t npc = rBlock.NodesPerCell();
+        for (std::size_t k = 0; k < npc; ++k)
+            rOut.push_back(detail::read_int(rBlock.Conn(), Row * npc + k));
+    }
+}
+
+// 3-D: the faces of the volume cells that only one cell uses.
+CcFacets cc_volume_facets(const Mesh& rMesh, std::vector<std::string>& rWarnings) {
+    CcFacets out;
+    const detail::GlobalFaces gf = detail::build_global_faces(rMesh);
+    out.mNumNonManifold = gf.mNumNonManifold;
+    for (std::size_t f = 0; f < gf.NumFaces(); ++f)
+        if (gf.mNeighbour[f] < 0)
+            out.Push(gf.Face(f), gf.FaceSize(f),
+                     gf.mCellToGlobal[static_cast<std::size_t>(gf.mOwner[f])]);
+    std::size_t b = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        if (cc_block_dimension(cb) == 3 &&
+            std::find(gf.mNonCellBlocks.begin(), gf.mNonCellBlocks.end(), b) !=
+                gf.mNonCellBlocks.end() &&
+            cb.NumCells() > 0)
+            rWarnings.push_back("block " + std::to_string(b) + " ('" + std::string(cb.Type()) +
+                                "') has no known face topology and was not examined");
+        ++b;
+    }
+    if (gf.mNumUnorientable > 0)
+        rWarnings.push_back(std::to_string(gf.mNumUnorientable) +
+                            " polyhedra are not closed and orientable; their faces were "
+                            "examined as given");
+    return out;
+}
+
+// 2-D: the edges of the 2-D cells that only one cell uses, in ascending
+// (low, high) endpoint order.
+CcFacets cc_surface_facets(const Mesh& rMesh, std::vector<std::string>& rWarnings) {
+    struct Use {
+        std::int64_t mLo, mHi, mCell, mA, mB;
+    };
+    std::vector<Use> uses;
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const std::size_t npts = rMesh.NumPoints();
+    std::vector<std::int64_t> ring;
+    std::size_t b = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t block = b++;
+        if (cc_block_dimension(cb) != 2)
+            continue;
+        const std::string type(cb.Type());
+        const bool polygon = cb.IsRagged() || type.rfind("polygon", 0) == 0;
+        std::vector<std::size_t> corners;
+        if (!polygon) {
+            for (const detail::CellEdgeDef& ed : detail::cell_edges(cell_type_from_name(type)))
+                corners.push_back(ed.mNodes[0]);
+            if (corners.size() < 3) {
+                if (cb.NumCells() > 0)
+                    rWarnings.push_back("block " + std::to_string(block) + " ('" + type +
+                                        "') has no known edge topology and was not examined");
+                continue;
+            }
+        }
+        const std::size_t npc = cb.NodesPerCell();
+        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+            ring.clear();
+            if (cb.IsRagged())
+                ring.assign(cb.Row(c), cb.Row(c) + cb.RowSize(c));
+            else if (polygon)
+                for (std::size_t k = 0; k < npc; ++k)
+                    ring.push_back(detail::read_int(cb.Conn(), c * npc + k));
+            else
+                for (std::size_t k : corners)
+                    ring.push_back(detail::read_int(cb.Conn(), c * npc + k));
+            const std::int64_t g = bases[block] + static_cast<std::int64_t>(c);
+            const std::size_t n = ring.size();
+            for (std::size_t k = 0; k < n; ++k) {
+                const std::int64_t a = ring[k], bb = ring[(k + 1) % n];
+                if (a < 0 || bb < 0 || static_cast<std::size_t>(a) >= npts ||
+                    static_cast<std::size_t>(bb) >= npts)
+                    throw std::invalid_argument(std::string(kCcPrefix) +
+                                                "a cell references a point the mesh does not have");
+                if (a == bb)
+                    continue;
+                uses.push_back(Use{std::min(a, bb), std::max(a, bb), g, a, bb});
+            }
+        }
+    }
+    std::sort(uses.begin(), uses.end(), [](const Use& rX, const Use& rY) {
+        if (rX.mLo != rY.mLo)
+            return rX.mLo < rY.mLo;
+        if (rX.mHi != rY.mHi)
+            return rX.mHi < rY.mHi;
+        return rX.mCell < rY.mCell;
+    });
+    CcFacets out;
+    for (std::size_t i = 0; i < uses.size();) {
+        std::size_t j = i + 1;
+        while (j < uses.size() && uses[j].mLo == uses[i].mLo && uses[j].mHi == uses[i].mHi)
+            ++j;
+        if (j - i == 1) {
+            const std::int64_t ids[2] = {uses[i].mA, uses[i].mB};
+            out.Push(ids, 2, uses[i].mCell);
+        } else if (j - i >= 3) {
+            ++out.mNumNonManifold;
+        }
+        i = j;
+    }
+    return out;
+}
+
+detail::Vec3 cc_point(const std::vector<double>& rXyz, std::int64_t Id) {
+    const std::size_t i = static_cast<std::size_t>(Id) * 3;
+    return {{rXyz[i], rXyz[i + 1], rXyz[i + 2]}};
+}
+
+// The squared distance from P to segment AB.
+double cc_segment_distance_sq(const detail::Vec3& rP, const detail::Vec3& rA,
+                              const detail::Vec3& rB) {
+    const detail::Vec3 ab = detail::vec3_sub(rB, rA);
+    const double len_sq = detail::vec3_norm_sq(ab);
+    double t = len_sq > 0.0 ? detail::vec3_dot(detail::vec3_sub(rP, rA), ab) / len_sq : 0.0;
+    t = std::min(1.0, std::max(0.0, t));
+    return detail::vec3_norm_sq(
+        detail::vec3_sub(rP, detail::vec3_add(rA, detail::vec3_scale(ab, t))));
+}
+
+// The squared distance from P to a facet: a segment, or a polygon as the fan
+// of triangles from its first corner.
+double cc_facet_distance_sq(const detail::Vec3& rP, const std::vector<double>& rXyz,
+                            const std::int64_t* pRing, std::size_t Corners) {
+    if (Corners == 2)
+        return cc_segment_distance_sq(rP, cc_point(rXyz, pRing[0]), cc_point(rXyz, pRing[1]));
+    double best = std::numeric_limits<double>::infinity();
+    const detail::Vec3 a = cc_point(rXyz, pRing[0]);
+    for (std::size_t k = 1; k + 1 < Corners; ++k)
+        best = std::min(best, detail::closest_point_on_triangle(rP, a, cc_point(rXyz, pRing[k]),
+                                                                cc_point(rXyz, pRing[k + 1]))
+                                  .mDistanceSq);
+    return best;
+}
+
+// A facet's plane: its centroid, unit (Newell) normal and an in-plane frame.
+struct CcPlane {
+    detail::Vec3 mCentre{{0.0, 0.0, 0.0}};
+    detail::Vec3 mNormal{{0.0, 0.0, 0.0}};
+    detail::Vec3 mU{{0.0, 0.0, 0.0}};
+    detail::Vec3 mV{{0.0, 0.0, 0.0}};
+    bool mValid = false;
+};
+
+CcPlane cc_plane(const std::vector<double>& rXyz, const std::int64_t* pRing, std::size_t Corners) {
+    CcPlane plane;
+    for (std::size_t k = 0; k < Corners; ++k)
+        plane.mCentre = detail::vec3_add(plane.mCentre, cc_point(rXyz, pRing[k]));
+    plane.mCentre = detail::vec3_scale(plane.mCentre, 1.0 / static_cast<double>(Corners));
+    detail::Vec3 n{{0.0, 0.0, 0.0}};
+    for (std::size_t k = 0; k < Corners; ++k) {
+        const detail::Vec3 a = cc_point(rXyz, pRing[k]);
+        const detail::Vec3 b = cc_point(rXyz, pRing[(k + 1) % Corners]);
+        n[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        n[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    const double len = detail::vec3_norm(n);
+    if (!(len > 0.0))
+        return plane;
+    plane.mNormal = detail::vec3_scale(n, 1.0 / len);
+    const detail::Vec3 e = detail::vec3_sub(cc_point(rXyz, pRing[1]), cc_point(rXyz, pRing[0]));
+    const double elen = detail::vec3_norm(e);
+    if (!(elen > 0.0))
+        return plane;
+    plane.mU = detail::vec3_scale(e, 1.0 / elen);
+    plane.mV = detail::vec3_cross(plane.mNormal, plane.mU);
+    plane.mValid = true;
+    return plane;
+}
+
+using CcUv = std::array<double, 2>;
+
+double cc_area(const std::vector<CcUv>& rPoly) {
+    double a = 0.0;
+    for (std::size_t i = 0, n = rPoly.size(); i < n; ++i) {
+        const CcUv& p = rPoly[i];
+        const CcUv& q = rPoly[(i + 1) % n];
+        a += p[0] * q[1] - q[0] * p[1];
+    }
+    return 0.5 * a;
+}
+
+// The area of the intersection of two triangles, both counter-clockwise, by
+// clipping the first against the second's three edges (Sutherland and Hodgman).
+double cc_triangle_overlap(const std::array<CcUv, 3>& rA, const std::array<CcUv, 3>& rB) {
+    std::vector<CcUv> poly(rA.begin(), rA.end()), next;
+    for (std::size_t e = 0; e < 3 && !poly.empty(); ++e) {
+        const CcUv& p = rB[e];
+        const CcUv& q = rB[(e + 1) % 3];
+        auto side = [&](const CcUv& rX) {
+            return (q[0] - p[0]) * (rX[1] - p[1]) - (q[1] - p[1]) * (rX[0] - p[0]);
+        };
+        next.clear();
+        for (std::size_t i = 0, n = poly.size(); i < n; ++i) {
+            const CcUv& a = poly[i];
+            const CcUv& b = poly[(i + 1) % n];
+            const double sa = side(a), sb = side(b);
+            if (sa >= 0.0)
+                next.push_back(a);
+            if ((sa >= 0.0) != (sb >= 0.0)) {
+                const double t = sa / (sa - sb);
+                next.push_back({{a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])}});
+            }
+        }
+        poly.swap(next);
+    }
+    return poly.size() < 3 ? 0.0 : std::abs(cc_area(poly));
+}
+
+// A ring as the counter-clockwise fan of triangles from its first corner.
+std::vector<std::array<CcUv, 3>> cc_fan(const std::vector<CcUv>& rRing) {
+    std::vector<std::array<CcUv, 3>> fan;
+    for (std::size_t k = 1; k + 1 < rRing.size(); ++k) {
+        std::array<CcUv, 3> t{{rRing[0], rRing[k], rRing[k + 1]}};
+        const double a =
+            (t[1][0] - t[0][0]) * (t[2][1] - t[0][1]) - (t[1][1] - t[0][1]) * (t[2][0] - t[0][0]);
+        if (a < 0.0)
+            std::swap(t[1], t[2]);
+        if (a != 0.0)
+            fan.push_back(t);
+    }
+    return fan;
+}
+
+// How two unmatched facets relate.
+enum class CcPair { Apart, Unwelded, Overlap };
+
+CcPair cc_classify_polygons(const std::vector<double>& rXyz, const std::int64_t* pF, std::size_t Nf,
+                            const CcPlane& rPf, const std::int64_t* pG, std::size_t Ng,
+                            const CcPlane& rPg, double Tol) {
+    if (!rPf.mValid || !rPg.mValid)
+        return CcPair::Apart;
+    for (std::size_t k = 0; k < Ng; ++k)
+        if (std::abs(detail::vec3_dot(rPf.mNormal,
+                                      detail::vec3_sub(cc_point(rXyz, pG[k]), rPf.mCentre))) > Tol)
+            return CcPair::Apart;
+    for (std::size_t k = 0; k < Nf; ++k)
+        if (std::abs(detail::vec3_dot(rPg.mNormal,
+                                      detail::vec3_sub(cc_point(rXyz, pF[k]), rPg.mCentre))) > Tol)
+            return CcPair::Apart;
+    if (Nf == Ng) {
+        bool same = true;
+        for (std::size_t i = 0; i < Nf && same; ++i) {
+            bool found = false;
+            for (std::size_t j = 0; j < Ng && !found; ++j)
+                found = detail::vec3_norm_sq(detail::vec3_sub(cc_point(rXyz, pF[i]),
+                                                              cc_point(rXyz, pG[j]))) <= Tol * Tol;
+            same = found;
+        }
+        if (same)
+            return CcPair::Unwelded;
+    }
+    auto uv = [&](std::int64_t Id) {
+        const detail::Vec3 d = detail::vec3_sub(cc_point(rXyz, Id), rPf.mCentre);
+        return CcUv{{detail::vec3_dot(d, rPf.mU), detail::vec3_dot(d, rPf.mV)}};
+    };
+    std::vector<CcUv> f(Nf), g(Ng);
+    for (std::size_t k = 0; k < Nf; ++k)
+        f[k] = uv(pF[k]);
+    for (std::size_t k = 0; k < Ng; ++k)
+        g[k] = uv(pG[k]);
+    // The facets overlap when their intersection is a strip wider than the
+    // tolerance: its area beyond the tolerance times the smaller facet's
+    // diameter. Facets that only share a boundary intersect in a segment.
+    double area = 0.0;
+    const std::vector<std::array<CcUv, 3>> ff = cc_fan(f), gf = cc_fan(g);
+    for (const auto& a : ff)
+        for (const auto& b : gf)
+            area += cc_triangle_overlap(a, b);
+    auto diameter = [](const std::vector<CcUv>& rRing) {
+        double d = 0.0;
+        for (const CcUv& p : rRing)
+            for (const CcUv& q : rRing)
+                d = std::max(d, std::hypot(p[0] - q[0], p[1] - q[1]));
+        return d;
+    };
+    return area > Tol * std::min(diameter(f), diameter(g)) ? CcPair::Overlap : CcPair::Apart;
+}
+
+CcPair cc_classify_segments(const std::vector<double>& rXyz, const std::int64_t* pF,
+                            const std::int64_t* pG, double Tol) {
+    const detail::Vec3 a = cc_point(rXyz, pF[0]), b = cc_point(rXyz, pF[1]);
+    const detail::Vec3 c = cc_point(rXyz, pG[0]), d = cc_point(rXyz, pG[1]);
+    const detail::Vec3 ab = detail::vec3_sub(b, a), cd = detail::vec3_sub(d, c);
+    const double lf = detail::vec3_norm(ab), lg = detail::vec3_norm(cd);
+    if (!(lf > 0.0) || !(lg > 0.0))
+        return CcPair::Apart;
+    // Distance of a point from the infinite line through P0 along unit U.
+    auto off_line = [&](const detail::Vec3& rP, const detail::Vec3& rP0, const detail::Vec3& rU) {
+        const detail::Vec3 w = detail::vec3_sub(rP, rP0);
+        return detail::vec3_norm(detail::vec3_cross(w, rU));
+    };
+    const detail::Vec3 uf = detail::vec3_scale(ab, 1.0 / lf), ug = detail::vec3_scale(cd, 1.0 / lg);
+    if (off_line(c, a, uf) > Tol || off_line(d, a, uf) > Tol || off_line(a, c, ug) > Tol ||
+        off_line(b, c, ug) > Tol)
+        return CcPair::Apart;
+    const double tol_sq = Tol * Tol;
+    auto near = [&](const detail::Vec3& rX, const detail::Vec3& rY) {
+        return detail::vec3_norm_sq(detail::vec3_sub(rX, rY)) <= tol_sq;
+    };
+    if ((near(a, c) && near(b, d)) || (near(a, d) && near(b, c)))
+        return CcPair::Unwelded;
+    double t0 = detail::vec3_dot(detail::vec3_sub(c, a), uf);
+    double t1 = detail::vec3_dot(detail::vec3_sub(d, a), uf);
+    if (t0 > t1)
+        std::swap(t0, t1);
+    return std::min(lf, t1) - std::max(0.0, t0) > Tol ? CcPair::Overlap : CcPair::Apart;
+}
+
+}  // namespace
+
+ConformityResult check_conformity(const Mesh& rMesh, const ConformityOptions& rOptions) {
+    if (!(rOptions.mTolerance >= 0.0) || !std::isfinite(rOptions.mTolerance))
+        throw std::invalid_argument(std::string(kCcPrefix) +
+                                    "the tolerance must be finite and non-negative");
+    ConformityResult result;
+
+    int dim = -1;
+    for (const auto cb : rMesh.CellRange())
+        if (cb.NumCells() > 0)
+            dim = std::max(dim, cc_block_dimension(cb));
+    CcFacets facets;
+    if (dim == 3)
+        facets = cc_volume_facets(rMesh, result.mWarnings);
+    else if (dim == 2)
+        facets = cc_surface_facets(rMesh, result.mWarnings);
+    else
+        result.mWarnings.push_back("the mesh has no 2-D or 3-D cells; nothing was examined");
+    result.mDimension = dim < 2 ? 0 : dim;
+    result.mNumNonManifoldFacets = facets.mNumNonManifold;
+    const std::size_t nf = facets.Size();
+    result.mNumBoundaryFacets = static_cast<std::int64_t>(nf);
+
+    const std::size_t npts = rMesh.NumPoints();
+    std::vector<std::int64_t> flags(npts, 0);
+    if (nf > 0) {
+        const std::vector<double> xyz = detail::surface_xyz(rMesh);
+
+        // The facets' boxes and the tolerance, from the box of their corners.
+        std::vector<std::array<double, 6>> box(nf);
+        const double inf = std::numeric_limits<double>::infinity();
+        std::array<double, 3> lo{{inf, inf, inf}};
+        std::array<double, 3> hi{{-inf, -inf, -inf}};
+        double extent_sum = 0.0;
+        for (std::size_t f = 0; f < nf; ++f) {
+            std::array<double, 6>& r_box = box[f];
+            r_box = {{inf, inf, inf, -inf, -inf, -inf}};
+            const std::int64_t* ring = facets.Ring(f);
+            for (std::size_t k = 0; k < facets.Corners(f); ++k) {
+                const detail::Vec3 p = cc_point(xyz, ring[k]);
+                for (std::size_t d = 0; d < 3; ++d) {
+                    r_box[d] = std::min(r_box[d], p[d]);
+                    r_box[3 + d] = std::max(r_box[3 + d], p[d]);
+                }
+            }
+            for (std::size_t d = 0; d < 3; ++d) {
+                lo[d] = std::min(lo[d], r_box[d]);
+                hi[d] = std::max(hi[d], r_box[3 + d]);
+            }
+            extent_sum += std::max({r_box[3] - r_box[0], r_box[4] - r_box[1], r_box[5] - r_box[2]});
+        }
+        const double diag =
+            std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+                      (hi[2] - lo[2]) * (hi[2] - lo[2]));
+        const double tol = rOptions.mTolerance * diag;
+        for (std::array<double, 6>& r_box : box)
+            for (std::size_t d = 0; d < 3; ++d) {
+                r_box[d] -= tol;
+                r_box[3 + d] += tol;
+            }
+
+        // A bucket grid over the facets' boxes, sized by their mean extent and
+        // never finer than 1/256 of the diagonal, so a large facet among small
+        // ones spans a bounded number of buckets.
+        double cell = std::max(extent_sum / static_cast<double>(nf), diag / 256.0);
+        if (!(cell > 0.0))
+            cell = 1.0;
+        detail::SpatialGrid grid(cell);
+        for (std::size_t f = 0; f < nf; ++f)
+            grid.InsertBox(grid.KeyOf(box[f].data()), grid.KeyOf(box[f].data() + 3),
+                           static_cast<std::int64_t>(f));
+
+        // One view per block, and the nodes of a facet's owner on demand.
+        const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+        auto owner_has = [&](std::size_t Facet, std::int64_t Point,
+                             std::vector<std::int64_t>& rScratch) {
+            const auto br = detail::global_to_block_row(bases, facets.mOwner[Facet]);
+            cc_cell_nodes(rMesh.Cells(br.first), static_cast<std::size_t>(br.second), rScratch);
+            return std::find(rScratch.begin(), rScratch.end(), Point) != rScratch.end();
+        };
+
+        // Candidates: the nodes of the cells that own an unmatched facet.
+        std::vector<std::int64_t> owners(facets.mOwner);
+        std::sort(owners.begin(), owners.end());
+        owners.erase(std::unique(owners.begin(), owners.end()), owners.end());
+        std::vector<std::int64_t> candidates;
+        {
+            std::vector<std::int64_t> nodes;
+            for (std::int64_t g : owners) {
+                const auto br = detail::global_to_block_row(bases, g);
+                cc_cell_nodes(rMesh.Cells(br.first), static_cast<std::size_t>(br.second), nodes);
+                for (std::int64_t p : nodes)
+                    if (p >= 0 && static_cast<std::size_t>(p) < npts)
+                        candidates.push_back(p);
+            }
+        }
+        std::sort(candidates.begin(), candidates.end());
+        candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+
+        const std::int64_t flag = static_cast<std::int64_t>(dim == 3 ? ConformityFlag::HangingNode
+                                                                     : ConformityFlag::TJunction);
+        const double tol_sq = tol * tol;
+        parallel_for(candidates.size(), [&](std::size_t i) {
+            const std::int64_t p = candidates[i];
+            const detail::Vec3 x = cc_point(xyz, p);
+            const std::vector<std::int64_t>* bucket = grid.Find(grid.KeyOf(x.data()));
+            if (bucket == nullptr)
+                return;
+            std::vector<std::int64_t> scratch;
+            for (std::int64_t id : *bucket) {
+                const std::size_t f = static_cast<std::size_t>(id);
+                const std::array<double, 6>& b = box[f];
+                if (x[0] < b[0] || x[1] < b[1] || x[2] < b[2] || x[0] > b[3] || x[1] > b[4] ||
+                    x[2] > b[5])
+                    continue;
+                const std::int64_t* ring = facets.Ring(f);
+                const std::size_t nc = facets.Corners(f);
+                if (std::find(ring, ring + nc, p) != ring + nc)
+                    continue;
+                if (cc_facet_distance_sq(x, xyz, ring, nc) > tol_sq)
+                    continue;
+                // On a corner's location: an unwelded duplicate, not a hanging node.
+                bool on_corner = false;
+                for (std::size_t k = 0; k < nc && !on_corner; ++k)
+                    on_corner =
+                        detail::vec3_norm_sq(detail::vec3_sub(x, cc_point(xyz, ring[k]))) <= tol_sq;
+                if (on_corner || owner_has(f, p, scratch))
+                    continue;
+                flags[static_cast<std::size_t>(p)] = flag;
+                return;
+            }
+        });
+
+        // Facet pairs, each counted once at its lower facet.
+        std::vector<CcPlane> planes(nf);
+        if (dim == 3)
+            parallel_for(nf, [&](std::size_t f) {
+                planes[f] = cc_plane(xyz, facets.Ring(f), facets.Corners(f));
+            });
+        std::vector<std::int64_t> partial(nf, 0), unwelded(nf, 0);
+        parallel_for(nf, [&](std::size_t f) {
+            std::vector<std::int64_t> near;
+            grid.ForEachInBox(grid.KeyOf(box[f].data()), grid.KeyOf(box[f].data() + 3),
+                              [&](const std::vector<std::int64_t>& rIds) {
+                                  for (std::int64_t id : rIds)
+                                      if (static_cast<std::size_t>(id) > f)
+                                          near.push_back(id);
+                              });
+            std::sort(near.begin(), near.end());
+            near.erase(std::unique(near.begin(), near.end()), near.end());
+            const std::array<double, 6>& bf = box[f];
+            for (std::int64_t id : near) {
+                const std::size_t g = static_cast<std::size_t>(id);
+                const std::array<double, 6>& bg = box[g];
+                if (bf[0] > bg[3] || bg[0] > bf[3] || bf[1] > bg[4] || bg[1] > bf[4] ||
+                    bf[2] > bg[5] || bg[2] > bf[5])
+                    continue;
+                const CcPair kind =
+                    dim == 3
+                        ? cc_classify_polygons(xyz, facets.Ring(f), facets.Corners(f), planes[f],
+                                               facets.Ring(g), facets.Corners(g), planes[g], tol)
+                        : cc_classify_segments(xyz, facets.Ring(f), facets.Ring(g), tol);
+                if (kind == CcPair::Overlap)
+                    ++partial[f];
+                else if (kind == CcPair::Unwelded)
+                    ++unwelded[f];
+            }
+        });
+        for (std::size_t f = 0; f < nf; ++f) {
+            result.mNumPartialOverlaps += partial[f];
+            result.mNumUnweldedFacets += unwelded[f];
+        }
+    }
+
+    for (std::int64_t v : flags) {
+        result.mNumHangingNodes += v == static_cast<std::int64_t>(ConformityFlag::HangingNode);
+        result.mNumTJunctions += v == static_cast<std::int64_t>(ConformityFlag::TJunction);
+    }
+    result.mConforming = result.mNumHangingNodes == 0 && result.mNumTJunctions == 0 &&
+                         result.mNumPartialOverlaps == 0 && result.mNumUnweldedFacets == 0;
+    if (result.mNumPartialOverlaps > 0 || result.mNumHangingNodes > 0 || result.mNumTJunctions > 0)
+        result.mInterfaceMode = "proximity";
+    else if (result.mNumUnweldedFacets > 0)
+        result.mInterfaceMode = "weld";
+
+    result.mMesh = detail::clone_mesh(
+        rMesh, [&](DataLocation Location, const std::string& rName, std::string&) {
+            return !(rOptions.mAttachFlags && Location == DataLocation::Point &&
+                     rName == kConformityHangingName);
+        });
+    if (rOptions.mAttachFlags) {
+        NDArray out = NDArray::Uninit(DType::Int64, {npts});
+        std::copy(flags.begin(), flags.end(), out.As<std::int64_t>());
+        result.mMesh.AddPointData(kConformityHangingName, std::move(out));
+    }
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
+        result.mMesh.AddRegion(rMesh.Region(i));
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/check_conformity.cpp =====
 // ===== begin src/cpp/src/operations/clean.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -232820,6 +235723,8 @@ OctreeResult octree(const Mesh& rMesh, const OctreeOptions& rOptions) {
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -233000,7 +235905,99 @@ void octm_prepare(const Mesh& rMesh, const OctreeMeshOptions& rO, detail::Octree
     rResult.mSurfaceLevel = surface_level;
     rResult.mMinSize = rS.mFrame.mMinSize;
     rResult.mMaxSize = hmax;
+    octree_mesh_flood(rS, rO);
     rClock.Lap(rResult, "octree");
+}
+
+// Whether every edge of the welded skin is walked as often one way as the
+// other: a closed, consistently oriented cycle, whose winding number is an
+// integer everywhere off the skin.
+bool octm_skin_closed(const detail::OctreeSkin& rSkin) {
+    std::vector<std::array<std::int64_t, 3>> edges;
+    edges.reserve(3 * rSkin.mTris.size());
+    for (const auto& t : rSkin.mTris)
+        for (std::size_t k = 0; k < 3; ++k) {
+            const std::int64_t a = t[k], b = t[(k + 1) % 3];
+            if (a != b)
+                edges.push_back({std::min(a, b), std::max(a, b), a < b ? 1 : -1});
+        }
+    std::sort(edges.begin(), edges.end());
+    for (std::size_t i = 0; i < edges.size();) {
+        std::int64_t sum = 0;
+        std::size_t j = i;
+        for (; j < edges.size() && edges[j][0] == edges[i][0] && edges[j][1] == edges[i][1]; ++j)
+            sum += edges[j][2];
+        if (sum != 0)
+            return false;
+        i = j;
+    }
+    return !edges.empty();
+}
+
+// Per leaf, 1 when the skin reaches its box grown by a margin. The cut flags'
+// closed-box test can miss a triangle that lies exactly in the face between
+// two leaves (a cap on a lattice plane), and a flood through that face would
+// cross the skin; this test cannot, and it sees every skin triangle, not the
+// candidates a leaf inherited.
+std::vector<std::uint8_t> octm_blocked(const detail::OctreeMeshSetup& rS,
+                                       const detail::LinearOctree& rTree) {
+    using namespace detail;
+    const OctreeSkin& skin = rS.mSkin;
+    const double fine = rS.mFrame.Fine();
+    const double margin = 1e-6 * fine;
+    std::vector<std::vector<std::int64_t>> hit(skin.mTris.size());
+    parallel_for(
+        skin.mTris.size(),
+        [&](std::size_t t) {
+            const Vec3& a = skin.mPoints[static_cast<std::size_t>(skin.mTris[t][0])];
+            const Vec3& b = skin.mPoints[static_cast<std::size_t>(skin.mTris[t][1])];
+            const Vec3& c = skin.mPoints[static_cast<std::size_t>(skin.mTris[t][2])];
+            std::array<std::int64_t, 3> lo{}, hi{};
+            for (std::size_t k = 0; k < 3; ++k) {
+                const double x0 = std::min({a[k], b[k], c[k]}) - 2.0 * margin;
+                const double x1 = std::max({a[k], b[k], c[k]}) + 2.0 * margin;
+                lo[k] = std::max<std::int64_t>(
+                    0, static_cast<std::int64_t>(std::floor((x0 - rS.mFrame.mOrigin[k]) / fine)));
+                hi[k] = std::min<std::int64_t>(
+                    rTree.Extent(k) - 1,
+                    static_cast<std::int64_t>(std::floor((x1 - rS.mFrame.mOrigin[k]) / fine)));
+            }
+            std::vector<std::int64_t>& out = hit[t];
+            for (std::int64_t z = lo[2]; z <= hi[2]; ++z)
+                for (std::int64_t y = lo[1]; y <= hi[1]; ++y)
+                    for (std::int64_t x = lo[0]; x <= hi[0];) {
+                        const std::int64_t j = rTree.Locate(x, y, z);
+                        if (j < 0)
+                            break;
+                        const auto jl = rTree.Lo(static_cast<std::size_t>(j));
+                        const std::int64_t span = rTree.Span(static_cast<std::size_t>(j));
+                        Vec3 centre, half;
+                        for (std::size_t k = 0; k < 3; ++k) {
+                            half[k] = 0.5 * static_cast<double>(span) * fine + margin;
+                            centre[k] = rS.mFrame.mOrigin[k] + (static_cast<double>(jl[k]) +
+                                                                0.5 * static_cast<double>(span)) *
+                                                                   fine;
+                        }
+                        if (tri_box_overlap(centre, half, a, b, c))
+                            out.push_back(j);
+                        x = jl[0] + span;
+                    }
+        },
+        16);
+    std::vector<std::uint8_t> blocked(rTree.Size(), 0);
+    for (const auto& h : hit)
+        for (std::int64_t j : h)
+            blocked[static_cast<std::size_t>(j)] = 1;
+    return blocked;
+}
+
+// The union-find root of leaf `I`, compressing the path.
+std::size_t octm_root(std::vector<std::size_t>& rParent, std::size_t I) {
+    while (rParent[I] != I) {
+        rParent[I] = rParent[rParent[I]];
+        I = rParent[I];
+    }
+    return I;
 }
 
 // The output-independent part of the report.
@@ -233064,28 +236061,169 @@ void octree_mesh_warn(OctreeMeshResult& rResult, const std::string& rMessage) {
     rResult.mWarnings.push_back(rMessage);
 }
 
+void octree_mesh_flood(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions) {
+    OctreeMeshFlood& flood = rSetup.mFlood;
+    flood = OctreeMeshFlood{};
+    const char* p_env = std::getenv("MESHIOPLUSPLUS_OCTREE_MESH_FLOOD");
+    if (p_env != nullptr && std::string(p_env) == "0")
+        return;
+    // A threshold near an integer would put a flooded value near the cleaving
+    // levels and the near-threshold rechecks, where its exactness would show.
+    const double frac = rOptions.mWindingThreshold - std::floor(rOptions.mWindingThreshold);
+    if (frac < 0.1 || frac > 0.9 || !octm_skin_closed(rSetup.mSkin))
+        return;
+    const LinearOctree& tree = rSetup.mOctree.mTree;
+    const std::size_t n = tree.Size();
+    std::vector<std::uint8_t> cut = octm_blocked(rSetup, tree);
+    for (std::size_t i = 0; i < n; ++i)
+        cut[i] = cut[i] || rSetup.mOctree.mCut[i];
+
+    // Deep leaves: neither they nor any of their 26 neighbours is cut, and
+    // none of those neighbours lies outside the forest.
+    const std::vector<std::array<int, 3>> around = linear_octree_directions(OctreeAdjacency::Full);
+    std::vector<std::uint8_t> deep(n, 0);
+    parallel_for(n, [&](std::size_t i) {
+        if (cut[i])
+            return;
+        const auto lo = tree.Lo(i);
+        const std::int64_t s = tree.Span(i);
+        for (const auto& d : around) {
+            if (!tree.Contains(lo[0] + d[0] * s, lo[1] + d[1] * s, lo[2] + d[2] * s))
+                return;
+            for (std::int64_t j : linear_octree_neighbours(tree, i, d[0], d[1], d[2]))
+                if (cut[static_cast<std::size_t>(j)])
+                    return;
+        }
+        deep[i] = 1;
+    });
+
+    // The regions of uncut leaves joined through their faces, each rooted at
+    // its lowest leaf; one pass in leaf order, so the roots do not depend on
+    // the thread count.
+    std::vector<std::size_t> parent(n);
+    for (std::size_t i = 0; i < n; ++i)
+        parent[i] = i;
+    const int up[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    for (std::size_t i = 0; i < n; ++i) {
+        if (cut[i])
+            continue;
+        for (const auto& d : up)
+            for (std::int64_t j : linear_octree_neighbours(tree, i, d[0], d[1], d[2])) {
+                if (cut[static_cast<std::size_t>(j)])
+                    continue;
+                const std::size_t a = octm_root(parent, i);
+                const std::size_t b = octm_root(parent, static_cast<std::size_t>(j));
+                if (a != b)
+                    parent[std::max(a, b)] = std::min(a, b);
+            }
+    }
+
+    // Each region's winding number, from up to three of its deep leaves (the
+    // lowest): they must agree on one integer, each within 0.1 of it.
+    std::vector<std::size_t> root(n, 0);
+    for (std::size_t i = 0; i < n; ++i)
+        root[i] = octm_root(parent, i);
+    std::vector<std::vector<std::size_t>> probes(n);
+    for (std::size_t i = 0; i < n; ++i)
+        if (deep[i] && probes[root[i]].size() < 3)
+            probes[root[i]].push_back(i);
+    std::vector<std::size_t> regions, probe_leaf;
+    for (std::size_t r = 0; r < n; ++r)
+        if (!probes[r].empty()) {
+            regions.push_back(r);
+            probe_leaf.insert(probe_leaf.end(), probes[r].begin(), probes[r].end());
+        }
+    if (regions.empty())
+        return;
+    const std::vector<Vec3> centres = octree_mesh_leaf_centres(rSetup.mFrame, tree);
+    std::vector<Vec3> at(probe_leaf.size());
+    for (std::size_t k = 0; k < probe_leaf.size(); ++k)
+        at[k] = centres[probe_leaf[k]];
+    const double beta =
+        rOptions.mWindingBeta > 0.0 ? std::max(8.0, 4.0 * rOptions.mWindingBeta) : 0.0;
+    const std::vector<double> w = fast_windings(rSetup.mBvh, at, beta);
+    std::vector<std::int32_t> value(n, OctreeMeshFlood::kUnknown);
+    std::size_t k = 0;
+    for (std::size_t r : regions) {
+        std::int32_t v = OctreeMeshFlood::kUnknown;
+        bool agree = true;
+        for (std::size_t q = 0; q < probes[r].size(); ++q, ++k) {
+            const double x = rSetup.mWindingSign * w[k];
+            const double rounded = std::round(x);
+            if (!(std::abs(x - rounded) < 0.1) || std::abs(rounded) > 1e6)
+                agree = false;
+            else if (q == 0)
+                v = static_cast<std::int32_t>(rounded);
+            else if (static_cast<std::int32_t>(rounded) != v)
+                agree = false;
+        }
+        if (agree)
+            value[r] = v;
+    }
+    flood.mValue.assign(n, OctreeMeshFlood::kUnknown);
+    for (std::size_t i = 0; i < n; ++i)
+        if (deep[i] && value[root[i]] != OctreeMeshFlood::kUnknown) {
+            flood.mValue[i] = value[root[i]];
+            flood.mActive = true;
+        }
+    if (!flood.mActive)
+        return;
+    flood.mTree = tree;
+    flood.mOrigin = rSetup.mFrame.mOrigin;
+    flood.mFine = rSetup.mFrame.Fine();
+}
+
 std::vector<double> octree_mesh_winding(const OctreeMeshSetup& rSetup,
                                         const std::vector<Vec3>& rPoints,
                                         const OctreeMeshOptions& rOptions,
                                         OctreeMeshResult& rResult) {
-    std::vector<double> w = fast_windings(rSetup.mBvh, rPoints, rOptions.mWindingBeta);
-    for (double& v : w)
+    // The flooded value where the point lies in a deep leaf, else NaN.
+    const OctreeMeshFlood& flood = rSetup.mFlood;
+    std::vector<double> w(rPoints.size(), std::numeric_limits<double>::quiet_NaN());
+    if (flood.mActive)
+        parallel_for(rPoints.size(), [&](std::size_t i) {
+            std::array<std::int64_t, 3> cell{};
+            for (std::size_t a = 0; a < 3; ++a) {
+                const double x = std::floor((rPoints[i][a] - flood.mOrigin[a]) / flood.mFine);
+                if (!(x >= 0.0 && x < 4.0e18))
+                    return;
+                cell[a] = static_cast<std::int64_t>(x);
+            }
+            if (!flood.mTree.Contains(cell[0], cell[1], cell[2]))
+                return;
+            const std::int64_t leaf = flood.mTree.Locate(cell[0], cell[1], cell[2]);
+            if (leaf >= 0 &&
+                flood.mValue[static_cast<std::size_t>(leaf)] != OctreeMeshFlood::kUnknown)
+                w[i] = static_cast<double>(flood.mValue[static_cast<std::size_t>(leaf)]);
+        });
+    std::vector<std::size_t> todo;
+    for (std::size_t i = 0; i < w.size(); ++i)
+        if (std::isnan(w[i]))
+            todo.push_back(i);
+    rResult.mNumWindingSkipped += static_cast<std::int64_t>(w.size() - todo.size());
+
+    std::vector<Vec3> pts(todo.size());
+    for (std::size_t k = 0; k < todo.size(); ++k)
+        pts[k] = rPoints[todo[k]];
+    std::vector<double> sub = fast_windings(rSetup.mBvh, pts, rOptions.mWindingBeta);
+    for (double& v : sub)
         v *= rSetup.mWindingSign;
     if (rOptions.mWindingBeta > 0.0) {
         std::vector<std::size_t> near;
-        for (std::size_t i = 0; i < w.size(); ++i)
-            if (std::abs(w[i] - rOptions.mWindingThreshold) < 0.1)
+        for (std::size_t i = 0; i < sub.size(); ++i)
+            if (std::abs(sub[i] - rOptions.mWindingThreshold) < 0.1)
                 near.push_back(i);
         const double beta = std::max(8.0, 4.0 * rOptions.mWindingBeta);
         parallel_for(
             near.size(),
             [&](std::size_t k) {
-                w[near[k]] =
-                    rSetup.mWindingSign * fast_winding(rSetup.mBvh, rPoints[near[k]], beta);
+                sub[near[k]] = rSetup.mWindingSign * fast_winding(rSetup.mBvh, pts[near[k]], beta);
             },
             64);
         rResult.mNumWindingRechecks += static_cast<std::int64_t>(near.size());
     }
+    for (std::size_t k = 0; k < todo.size(); ++k)
+        w[todo[k]] = sub[k];
     return w;
 }
 
@@ -233163,6 +236301,14 @@ OctreeMeshSkinGrading octree_mesh_skin_grading_from_name(const std::string& rNam
     if (rName == "uniform")
         return OctreeMeshSkinGrading::Uniform;
     octm_fail("unknown skin_grading '" + rName + "' (expected 'graded' or 'uniform')");
+}
+
+OctreeMeshHexGrading octree_mesh_hex_grading_from_name(const std::string& rName) {
+    if (rName == "uniform")
+        return OctreeMeshHexGrading::Uniform;
+    if (rName == "graded")
+        return OctreeMeshHexGrading::Graded;
+    octm_fail("unknown hex_grading '" + rName + "' (expected 'uniform' or 'graded')");
 }
 
 OctreeMeshFill octree_mesh_fill_from_name(const std::string& rName) {
@@ -233506,13 +236652,13 @@ struct OctmhFeatures {
 
 // Snap the boundary nodes @p rBoundaryNodes (with the boundary quads' edges as
 // their graph) onto the feature corners and chains of the skin: a corner
-// takes the nearest unclaimed node within 1.5 sizes, a chain the shortest
-// path between its corners' nodes in a tube of 1.25 sizes around it. Snapped
+// takes the nearest unclaimed node within 1.5 of its size @p rSize, a chain the
+// shortest path between its corners' nodes in a tube of 1.25 sizes around it. Snapped
 // nodes are set to 1 (corner) or 2 (chain) in @p rFeature.
 OctmhFeatures octmh_snap(std::vector<Vec3>& rPoints,
                          const std::vector<std::array<std::int64_t, 4>>& rQuads,
-                         const FeatureGraph& rGraph, const std::vector<Vec3>& rSkin, double H,
-                         std::vector<std::uint8_t>& rFeature) {
+                         const FeatureGraph& rGraph, const std::vector<Vec3>& rSkin,
+                         const std::vector<double>& rSize, std::vector<std::uint8_t>& rFeature) {
     OctmhFeatures rep;
     rep.mCorners = static_cast<std::int64_t>(rGraph.mCorners.size());
     rep.mChains = static_cast<std::int64_t>(rGraph.mChains.size());
@@ -233535,12 +236681,12 @@ OctmhFeatures octmh_snap(std::vector<Vec3>& rPoints,
     for (std::int64_t c : rGraph.mCorners) {
         const Vec3& x = rSkin[static_cast<std::size_t>(c)];
         std::int64_t best = -1;
-        double best_d = 1.5 * H;
+        double best_d = std::numeric_limits<double>::infinity();
         for (std::int64_t v : nodes) {
             if (rFeature[static_cast<std::size_t>(v)])
                 continue;
             const double d = vec3_norm(vec3_sub(rPoints[static_cast<std::size_t>(v)], x));
-            if (d < best_d) {
+            if (d < best_d && d < 1.5 * rSize[static_cast<std::size_t>(v)]) {
                 best_d = d;
                 best = v;
             }
@@ -233584,11 +236730,13 @@ OctmhFeatures octmh_snap(std::vector<Vec3>& rPoints,
             for (std::int64_t v : adj[static_cast<std::size_t>(u)]) {
                 if (v != t && rFeature[static_cast<std::size_t>(v)])
                     continue;
-                if (off(v) > 1.25 * H)
+                if (off(v) > 1.25 * rSize[static_cast<std::size_t>(v)])
                     continue;
                 const double len = vec3_norm(vec3_sub(rPoints[static_cast<std::size_t>(v)],
                                                       rPoints[static_cast<std::size_t>(u)]));
-                const double nd = d + len * (1.0 + 16.0 * (off(u) + off(v)) / H);
+                const double h =
+                    0.5 * (rSize[static_cast<std::size_t>(u)] + rSize[static_cast<std::size_t>(v)]);
+                const double nd = d + len * (1.0 + 16.0 * (off(u) + off(v)) / h);
                 if (nd < dist[static_cast<std::size_t>(v)]) {
                     dist[static_cast<std::size_t>(v)] = nd;
                     prev[static_cast<std::size_t>(v)] = u;
@@ -233612,11 +236760,11 @@ OctmhFeatures octmh_snap(std::vector<Vec3>& rPoints,
     return rep;
 }
 
-}  // namespace
-
-void octree_mesh_hexahedra(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, OctreeMeshResult& rR) {
+// The uniform grid: every cell at the skin's level, the kept ones made
+// manifold. @p rLevel gets each hexahedron's level, @p rSize each node's size.
+void octmh_uniform(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, OctreeMeshResult& rR,
+                   HexMesh& hm, std::vector<std::int64_t>& rLevel, std::vector<double>& rSize) {
     const OctreeFrame& frame = rS.mFrame;
-    octree_mesh_report_tree(rS.mOctree.mTree, rR);
     // The grid: every cell at the skin's level.
     const double hs = rO.mSurfaceSize > 0.0 ? rO.mSurfaceSize : rS.mField.mSkinMinSize;
     const std::int32_t level = frame.LevelFor(std::max(hs, frame.mMinSize));
@@ -233660,7 +236808,6 @@ void octree_mesh_hexahedra(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
         return (K * vy + J) * vx + I;
     };
     std::vector<std::int64_t> remap(static_cast<std::size_t>(vx * vy * (n[2] + 1)), -1);
-    HexMesh hm;
     std::vector<std::int64_t> hex_cell;
     for (std::int64_t k = 0; k < n[2]; ++k)
         for (std::int64_t j = 0; j < n[1]; ++j)
@@ -233691,10 +236838,146 @@ void octree_mesh_hexahedra(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
         hm.mHexes.push_back({at(0, 0, 0), at(1, 0, 0), at(1, 1, 0), at(0, 1, 0), at(0, 0, 1),
                              at(1, 0, 1), at(1, 1, 1), at(0, 1, 1)});
     }
+    rLevel.assign(hm.mHexes.size(), level);
+    rSize.assign(hm.mPoints.size(), h);
+}
+
+// The graded hexahedra: the all-hexahedral dual of the octree, paired and
+// with its transitions replaced by Livesu, Pitzalis and Cherchi's schemes
+// (detail/hex_dual_schemes.hpp). A dual hexahedron is kept when the primal
+// vertex it surrounds is inside; @p rSize is each node's mean edge.
+void octmh_graded(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, OctreeMeshResult& rR,
+                  HexMesh& hm, std::vector<std::int64_t>& rLevel, std::vector<double>& rSize) {
+    const OctreeFrame& frame = rS.mFrame;
+    LinearOctree tree = rS.mOctree.mTree;
+    linear_octree_pair(tree, OctreeAdjacency::Full, rO.mMaxCells);
+    const HexDualMesh dual = hex_dual_mesh(tree);
+    const double unit = frame.mRootSize / static_cast<double>(std::int64_t{1} << tree.mMaxLevel) /
+                        static_cast<double>(kHexDualUnit);
+    auto world = [&](double X, double Y, double Z) {
+        return Vec3{frame.mOrigin[0] + X * unit, frame.mOrigin[1] + Y * unit,
+                    frame.mOrigin[2] + Z * unit};
+    };
+    std::vector<Vec3> centres(dual.mHexes.size());
+    for (std::size_t c = 0; c < centres.size(); ++c)
+        centres[c] =
+            world(static_cast<double>(dual.mCentre[c][0]), static_cast<double>(dual.mCentre[c][1]),
+                  static_cast<double>(dual.mCentre[c][2]));
+    const std::vector<double> w = octree_mesh_winding(rS, centres, rO, rR);
+    std::vector<std::uint8_t> kept(centres.size(), 0);
+    for (std::size_t c = 0; c < kept.size(); ++c)
+        kept[c] = w[c] > rO.mWindingThreshold;
+    // A centre is a primal vertex, on the lattice's planes, and a skin may lie on
+    // them too (a cap on a lattice plane): a hexahedron kept by a hair there
+    // would be pressed flat by the projection and the pillow. Keep only centres
+    // more than a tenth of their cell inside.
+    {
+        std::vector<std::size_t> near;
+        std::vector<Vec3> at;
+        for (std::size_t c = 0; c < kept.size(); ++c)
+            if (kept[c]) {
+                near.push_back(c);
+                at.push_back(centres[c]);
+            }
+        const std::vector<SurfaceProjection> proj = query_surface_projections(rS.mQuery, at);
+        for (std::size_t i = 0; i < near.size(); ++i) {
+            const std::size_t c = near[i];
+            const double cell =
+                frame.mRootSize / static_cast<double>(std::int64_t{1} << dual.mLevel[c]);
+            if (vec3_norm(vec3_sub(proj[i].mPoint, centres[c])) < 0.1 * cell)
+                kept[c] = 0;
+        }
+    }
+    if (std::none_of(kept.begin(), kept.end(), [](std::uint8_t k) { return k != 0; }))
+        throw std::invalid_argument(std::string(kOctreeMeshPrefix) +
+                                    "no graded hexahedron has its centre inside the skin; "
+                                    "lower min_size");
+    HexMesh all;
+    all.mPoints.reserve(dual.mPoints.size());
+    for (const Vec3& p : dual.mPoints)
+        all.mPoints.push_back(world(p[0], p[1], p[2]));
+    all.mHexes = dual.mHexes;
+    const std::int64_t added = hex_make_manifold(all, kept, w);
+    if (added > 0)
+        log::debug("{}{} cells added for a manifold boundary", kOctreeMeshPrefix, added);
+    std::int64_t level = 0;
+    for (std::int32_t l : dual.mLevel)
+        level = std::max<std::int64_t>(level, l);
+    rR.mSurfaceLevel = level;
+    std::vector<std::int64_t> remap(all.mPoints.size(), -1);
+    for (std::size_t c = 0; c < kept.size(); ++c) {
+        if (!kept[c])
+            continue;
+        std::array<std::int64_t, 8> hex{};
+        for (std::size_t k = 0; k < 8; ++k) {
+            std::int64_t& r = remap[static_cast<std::size_t>(all.mHexes[c][k])];
+            if (r < 0) {
+                r = static_cast<std::int64_t>(hm.mPoints.size());
+                hm.mPoints.push_back(all.mPoints[static_cast<std::size_t>(all.mHexes[c][k])]);
+            }
+            hex[k] = r;
+        }
+        hm.mHexes.push_back(hex);
+        rLevel.push_back(dual.mLevel[c]);
+    }
+    // Each node's size: the mean of its edges.
+    rSize.assign(hm.mPoints.size(), 0.0);
+    std::vector<std::int64_t> count(hm.mPoints.size(), 0);
+    static constexpr int kEdges[12][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6},
+                                          {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+    for (const auto& hex : hm.mHexes)
+        for (const auto& e : kEdges) {
+            const auto a = static_cast<std::size_t>(hex[static_cast<std::size_t>(e[0])]);
+            const auto b = static_cast<std::size_t>(hex[static_cast<std::size_t>(e[1])]);
+            const double len = vec3_norm(vec3_sub(hm.mPoints[a], hm.mPoints[b]));
+            rSize[a] += len;
+            rSize[b] += len;
+            ++count[a];
+            ++count[b];
+        }
+    for (std::size_t v = 0; v < rSize.size(); ++v)
+        rSize[v] /= static_cast<double>(std::max<std::int64_t>(count[v], 1));
+    std::int64_t schemes = 0;
+    for (std::int64_t n : dual.mNumSchemes)
+        schemes += n;
+    log::debug("{}{} transition vertices, {} cells replaced by schemes, {} dual hexahedra",
+               kOctreeMeshPrefix, dual.mNumTransitionVertices, schemes, dual.mHexes.size());
+}
+
+}  // namespace
+
+void octree_mesh_hexahedra(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, OctreeMeshResult& rR) {
+    octree_mesh_report_tree(rS.mOctree.mTree, rR);
+    HexMesh hm;
+    std::vector<std::int64_t> cell_level;
+    std::vector<double> size;
+    if (rO.mHexGrading == OctreeMeshHexGrading::Graded)
+        octmh_graded(rS, rO, rR, hm, cell_level, size);
+    else
+        octmh_uniform(rS, rO, rR, hm, cell_level, size);
     const std::size_t num_grid = hm.mHexes.size();
 
     // The boundary, pillowed or not, onto the skin.
     const HexBoundary grid_boundary = hex_boundary(hm);
+    if (rO.mHexGrading == OctreeMeshHexGrading::Graded) {
+        // A boundary node's size is its edges along the boundary: an edge into a
+        // coarser cell inside would push its pillow past the nodes behind it.
+        std::vector<double> along(hm.mPoints.size(), 0.0);
+        std::vector<std::int64_t> count(hm.mPoints.size(), 0);
+        for (const auto& q : grid_boundary.mQuads)
+            for (std::size_t e = 0; e < 4; ++e) {
+                const auto a = static_cast<std::size_t>(q[e]);
+                const auto b = static_cast<std::size_t>(q[(e + 1) % 4]);
+                const double len = vec3_norm(vec3_sub(hm.mPoints[a], hm.mPoints[b]));
+                along[a] += len;
+                along[b] += len;
+                ++count[a];
+                ++count[b];
+            }
+        for (std::size_t v = 0; v < along.size(); ++v)
+            if (count[v] > 0)
+                size[v] = along[v] / static_cast<double>(count[v]);
+    }
     std::vector<std::int64_t> boundary_nodes;
     for (const auto& q : grid_boundary.mQuads)
         boundary_nodes.insert(boundary_nodes.end(), q.begin(), q.end());
@@ -233706,18 +236989,23 @@ void octree_mesh_hexahedra(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
         at_nodes.push_back(hm.mPoints[static_cast<std::size_t>(v)]);
     const std::vector<SurfaceProjection> proj = query_surface_projections(rS.mQuery, at_nodes);
     std::vector<std::int64_t> copy;
-    if (rO.mPillow)
+    if (rO.mPillow) {
         copy = hex_pillow(hm, grid_boundary);
+        size.resize(hm.mPoints.size());
+        for (std::size_t v = 0; v < copy.size(); ++v)
+            if (copy[v] >= 0)
+                size[static_cast<std::size_t>(copy[v])] = size[v];
+    }
     std::vector<HexNodeMode> mode(hm.mPoints.size(), HexNodeMode::Free);
     for (std::size_t b = 0; b < boundary_nodes.size(); ++b) {
         const auto v = static_cast<std::size_t>(boundary_nodes[b]);
         const Vec3 q = proj[b].mPoint;
         if (rO.mPillow) {
-            // The copy on the skin, the grid's node half a cell inside it.
+            // The copy on the skin, the grid's node half its size inside it.
             const Vec3 nrm = vec3_scale(vec3_normalize(proj[b].mNormal), rS.mWindingSign);
             hm.mPoints[static_cast<std::size_t>(copy[v])] = q;
             mode[static_cast<std::size_t>(copy[v])] = HexNodeMode::Slide;
-            hm.mPoints[v] = vec3_sub(q, vec3_scale(nrm, 0.5 * h));
+            hm.mPoints[v] = vec3_sub(q, vec3_scale(nrm, 0.5 * size[v]));
         } else {
             hm.mPoints[v] = q;
             mode[v] = HexNodeMode::Slide;
@@ -233733,7 +237021,7 @@ void octree_mesh_hexahedra(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
             edges.push_back({e.mA, e.mB});
         const FeatureGraph graph = feature_graph(rS.mSkin.mPoints, edges, rO.mCornerAngle);
         const OctmhFeatures f =
-            octmh_snap(hm.mPoints, boundary.mQuads, graph, rS.mSkin.mPoints, h, feature);
+            octmh_snap(hm.mPoints, boundary.mQuads, graph, rS.mSkin.mPoints, size, feature);
         rR.mNumCorners = f.mCorners;
         rR.mNumCornersSnapped = f.mCornersSnapped;
         rR.mNumFeatureChains = f.mChains;
@@ -233761,9 +237049,11 @@ void octree_mesh_hexahedra(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
     for (const auto& hex : hm.mHexes)
         worst = std::min(worst, hex_min_scaled_jacobian(hm.mPoints, hex));
     if (worst <= 0.0)
-        octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) +
-                                 "untangling left a hexahedron with a non-positive corner "
-                                 "Jacobian; raise untangle_iterations or lower surface_size");
+        octree_mesh_warn(
+            rR, std::string(kOctreeMeshPrefix) +
+                    "untangling left a hexahedron with a non-positive corner "
+                    "Jacobian; raise untangle_iterations or lower " +
+                    (rO.mHexGrading == OctreeMeshHexGrading::Graded ? "min_size" : "surface_size"));
     else if (worst < 0.2)
         octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) +
                                  "the smallest corner scaled Jacobian is " + std::to_string(worst));
@@ -233780,7 +237070,10 @@ void octree_mesh_hexahedra(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
     for (std::size_t c = 0; c < hm.mHexes.size(); ++c) {
         for (std::size_t k = 0; k < 8; ++k)
             conn.As<std::int64_t>()[c * 8 + k] = hm.mHexes[c][k];
-        lv.As<std::int64_t>()[c] = level;
+        lv.As<std::int64_t>()[c] =
+            c < num_grid
+                ? cell_level[c]
+                : cell_level[static_cast<std::size_t>(grid_boundary.mSides[c - num_grid][0])];
         pillow.As<std::int64_t>()[c] = c >= num_grid ? 1 : 0;
     }
     Mesh& m = rR.mMesh;
@@ -234347,12 +237640,15 @@ void octree_mesh_snap_features(OctreeMeshSetup& rS, const OctreeMeshOptions& rO,
     for (const OctreeFeatureEdge& e : rS.mFeatures)
         edges.push_back({e.mA, e.mB});
     const FeatureGraph graph = feature_graph(rS.mSkin.mPoints, edges, rO.mCornerAngle);
-    std::vector<std::uint8_t> inside(rTets.mTets.size());
-    for (std::size_t t = 0; t < inside.size(); ++t)
+    std::vector<std::uint8_t> inside(rTets.mTets.size()), guarded(rTets.mTets.size());
+    for (std::size_t t = 0; t < inside.size(); ++t) {
         inside[t] = rTets.mMaterial[t] > 0;
+        // The tetrahedra the output keeps; the others are about to be dropped.
+        guarded[t] = inside[t] || rO.mKeepOutside;
+    }
     std::vector<std::uint8_t> claimed(rTets.mPoints.size(), 0);
     const FeatureSnapReport rep = feature_snap(
-        rTets.mPoints, rTets.mTets, inside, graph, rS.mSkin.mPoints,
+        rTets.mPoints, rTets.mTets, inside, guarded, graph, rS.mSkin.mPoints,
         [&](const Vec3& rP) { return octree_mesh_local_size(rS, rP); },
         1e-12 * std::pow(rS.mFrame.mMinSize, 3.0), claimed, rTets.mFeature);
     rR.mNumCorners = rep.mNumCorners;
@@ -236422,6 +239718,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "OverlapTolerance"}},
         {"SplitInterface", {"Region", "AddCohesive"}},
         {"QualityGate", {"Require", "MaxInverted", "MaxDegenerate"}},
+        {"CheckConformity", {"Tolerance", "Require", "AttachFlags"}},
         {"Snapshot",
          {"Path",           "Width",       "Height",        "Supersample",   "Cols",
           "Rows",           "Encoding",    "ColorDepth",    "PngCompress",   "View",
@@ -236454,7 +239751,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
         {"Voxelize",
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
-          "AttachOccupancy", "MaxCells", "Sign"}},
+          "AttachOccupancy", "MaxCells", "Sign", "Plane"}},
         {"Generate",
          {"Shape", "Dims",        "Size",        "Origin", "Center",   "Radius",       "Height",
           "N",     "Nu",          "Nv",          "Nxy",    "Nz",       "Subdivisions", "Sides",
@@ -236499,6 +239796,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "AttachDistance",
           "AttachQuality",
           "Pillow",
+          "HexGrading",
           "UntangleIterations",
           "MaxCells",
           "MaxTets"}},
@@ -237821,6 +241119,30 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"NumFailed", static_cast<double>(failed)}});
         return mesh;
     }
+    if (op == "CheckConformity") {
+        // A gate by default: a mesh that is not conforming stops the pipeline;
+        // with Require false it only reports. AttachFlags writes
+        // conformity:hanging onto the mesh that flows on.
+        ConformityOptions opts;
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 1e-9);
+        opts.mAttachFlags = pipe_flag(rStep, "AttachFlags", false);
+        ConformityResult cr = check_conformity(mesh, opts);
+        if (pipe_flag(rStep, "Require", true) && !cr.mConforming)
+            throw std::runtime_error(
+                "meshio++: pipeline: CheckConformity failed: " +
+                std::to_string(cr.mNumHangingNodes) + " hanging node(s), " +
+                std::to_string(cr.mNumTJunctions) + " T-junction(s), " +
+                std::to_string(cr.mNumPartialOverlaps) + " partial overlap(s), " +
+                std::to_string(cr.mNumUnweldedFacets) + " unwelded facet pair(s)");
+        pipe_push_step(rReport, rStep,
+                       {{"NumHangingNodes", static_cast<double>(cr.mNumHangingNodes)},
+                        {"NumTJunctions", static_cast<double>(cr.mNumTJunctions)},
+                        {"NumPartialOverlaps", static_cast<double>(cr.mNumPartialOverlaps)},
+                        {"NumUnweldedFacets", static_cast<double>(cr.mNumUnweldedFacets)}});
+        if (opts.mAttachFlags)
+            return std::move(cr.mMesh);
+        return mesh;
+    }
     if (op == "EditRegions") {
         // One edit per step: a pipeline value is flat, and a list of edits is
         // just a list of steps.
@@ -238250,6 +241572,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         if (resolution.size() == 3)
             opts.mResolution =
                 std::array<std::int64_t, 3>{{resolution[0], resolution[1], resolution[2]}};
+        else if (resolution.size() == 2)  // 2-D pixels, as `[nx, ny, 0]` is
+            opts.mResolution = std::array<std::int64_t, 3>{{resolution[0], resolution[1], 0}};
         if (pipe_find(rStep, "CellSize") != nullptr)
             opts.mCellSize = pipe_number(rStep, "CellSize", 0.0);
         const std::vector<double> bounds = pipe_dvec(rStep, "Bounds");
@@ -238262,6 +241586,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mAttachOccupancy = pipe_flag(rStep, "AttachOccupancy", false);
         opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
         opts.mDistance.mSign = sdf_sign_from_name(pipe_text(rStep, "Sign", "pseudonormal"));
+        opts.mPlane = detail::planar_plane_from_name(pipe_text(rStep, "Plane", "auto"));
         VoxelResult r = voxelize(mesh, opts);
         pipe_push_step(rReport, rStep, {{"NumOccupied", static_cast<double>(r.mNumOccupied)}});
         return std::move(r.mMesh);
@@ -238306,6 +241631,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mAttachDistance = pipe_flag(rStep, "AttachDistance", true);
         opts.mAttachQuality = pipe_flag(rStep, "AttachQuality", false);
         opts.mPillow = pipe_flag(rStep, "Pillow", true);
+        opts.mHexGrading =
+            octree_mesh_hex_grading_from_name(pipe_text(rStep, "HexGrading", "uniform"));
         opts.mUntangleIterations =
             static_cast<std::int64_t>(pipe_number(rStep, "UntangleIterations", 50.0));
         opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
@@ -261901,9 +265228,10 @@ Mesh vox_build_subset(const detail::LatticeSpec& rSpec, const std::vector<char>&
 // fastest). Selected by a resolution whose third entry is zero, or by a cell size
 // on a polyline-only mesh.
 
-Mesh vox_build_pixels(const std::array<std::int64_t, 2>& rDims, const std::array<double, 3>& rOrigin,
-                      const std::array<double, 3>& rSpacing, const std::vector<char>& rOccupied,
-                      std::int64_t Kept, const detail::PlanarFrame& rFrame) {
+Mesh vox_build_pixels(const std::array<std::int64_t, 2>& rDims,
+                      const std::array<double, 3>& rOrigin, const std::array<double, 3>& rSpacing,
+                      const std::vector<char>& rOccupied, std::int64_t Kept,
+                      const detail::PlanarFrame& rFrame) {
     Mesh out;
     const std::int64_t nx = rDims[0];
     const std::int64_t ny = rDims[1];
@@ -261963,10 +265291,11 @@ Mesh vox_build_pixels(const std::array<std::int64_t, 2>& rDims, const std::array
 }
 
 VoxelResult vox_voxelize_pixels(const Mesh& rMesh, const VoxelOptions& rOptions) {
-    // The skin's plane: the axis with zero extent, else z (so an xz or yz
-    // polyline voxelizes in its own plane). Everything below runs in the frame
-    // where that plane is xy, and the points are mapped back on emit.
-    const detail::PlanarFrame frame = detail::planar_frame(rMesh, detail::PlanarPlane::Auto);
+    // The skin's plane: the one asked for, else the axis with zero extent, else
+    // z (so an xz or yz polyline voxelizes in its own plane). Everything below
+    // runs in the frame where that plane is xy, and the points are mapped back
+    // on emit.
+    const detail::PlanarFrame frame = detail::planar_frame(rMesh, rOptions.mPlane);
     const detail::PlanarSkin skin = detail::collect_planar_skin(rMesh, kVoxPrefix, frame);
     if (rOptions.mFill == VoxelFill::Inside)
         detail::require_closed_polyline(skin, kVoxPrefix);
@@ -261977,8 +265306,8 @@ VoxelResult vox_voxelize_pixels(const Mesh& rMesh, const VoxelOptions& rOptions)
             lo[k] = (*rOptions.mBounds)[k];
             hi[k] = (*rOptions.mBounds)[3 + k];
             if (!(hi[k] >= lo[k]))
-                throw std::invalid_argument(std::string(kVoxPrefix) + "bounds are inverted on axis " +
-                                            std::to_string(k));
+                throw std::invalid_argument(std::string(kVoxPrefix) +
+                                            "bounds are inverted on axis " + std::to_string(k));
         }
     } else if (!detail::point_bbox(rMesh, lo, hi)) {
         throw std::invalid_argument(std::string(kVoxPrefix) +
@@ -262011,10 +265340,9 @@ VoxelResult vox_voxelize_pixels(const Mesh& rMesh, const VoxelOptions& rOptions)
         for (std::size_t k = 0; k < 2; ++k) {
             dims[k] = (*rOptions.mResolution)[k];
             if (dims[k] <= 0)
-                throw std::invalid_argument(std::string(kVoxPrefix) +
-                                            "resolution must be positive on every axis, got " +
-                                            std::to_string(dims[k]) + " on axis " +
-                                            std::to_string(k));
+                throw std::invalid_argument(
+                    std::string(kVoxPrefix) + "resolution must be positive on every axis, got " +
+                    std::to_string(dims[k]) + " on axis " + std::to_string(k));
             spacing[k] = (hi[k] - lo[k]) / static_cast<double>(dims[k]);
         }
     } else {
@@ -262069,9 +265397,9 @@ VoxelResult vox_voxelize_pixels(const Mesh& rMesh, const VoxelOptions& rOptions)
                     const std::size_t cid = static_cast<std::size_t>(j * nx + i);
                     if (occupied[cid])
                         continue;
-                    const detail::Vec3 centre{{origin[0] + (static_cast<double>(i) + 0.5) * spacing[0],
-                                               origin[1] + (static_cast<double>(j) + 0.5) * spacing[1],
-                                               origin[2]}};
+                    const detail::Vec3 centre{
+                        {origin[0] + (static_cast<double>(i) + 0.5) * spacing[0],
+                         origin[1] + (static_cast<double>(j) + 0.5) * spacing[1], origin[2]}};
                     if (detail::segment_box_overlap_2d(centre, half, seg[0], seg[1]))
                         occupied[cid] = 1;
                 }

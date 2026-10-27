@@ -313,3 +313,28 @@ TEST(LinearOctree, BalancingOctreesUnbalancedTreeGivesItsBalancedOne) {
         EXPECT_EQ(t.mLevel, want.mLevel);
     }
 }
+
+TEST(LinearOctree, PairingSplitsTheRootsAndLonelyLeaves) {
+    // One root split down two levels in one corner: its other children are
+    // leaves beside a split sibling, and the other roots have no parent.
+    for (const std::uint32_t seed : {1u, 2u, 3u, 4u}) {
+        LinearOctree t = lo_random_tree({{2, 1, 2}}, 4, seed, 3, 5);
+        EXPECT_FALSE(mio::detail::linear_octree_is_paired(t));
+        EXPECT_TRUE(mio::detail::linear_octree_pair(t, OctreeAdjacency::Full, kNoBudget));
+        const OctreeAdjacency full = OctreeAdjacency::Full;
+        lo_expect_valid(t, &full);
+        std::string why;
+        EXPECT_TRUE(mio::detail::linear_octree_is_paired(t, &why)) << why;
+        // A paired tree is a fixed point.
+        const LinearOctree again = t;
+        EXPECT_FALSE(mio::detail::linear_octree_pair(t, OctreeAdjacency::Full, kNoBudget));
+        EXPECT_EQ(t.mKey, again.mKey);
+        EXPECT_EQ(t.mLevel, again.mLevel);
+    }
+}
+
+TEST(LinearOctree, PairingKeepsTheBudget) {
+    LinearOctree t = lo_random_tree({{1, 1, 1}}, 5, 7, 4, 3);
+    EXPECT_THROW(mio::detail::linear_octree_pair(t, OctreeAdjacency::Full, 10),
+                 std::invalid_argument);
+}

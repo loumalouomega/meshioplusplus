@@ -1164,6 +1164,19 @@ end
     close(m)
 end
 
+@testset "operations: check_conformity" begin
+    m = fixture()
+    c = check_conformity(m)
+    @test c.dimension >= 2
+    @test c.conforming
+    @test c.interface_mode == "conforming"
+    @test "conformity:hanging" in point_data_names(c.mesh)
+    @test c.warnings isa Vector{String}
+    close(c.mesh)
+    @test_throws MeshioError check_conformity(m; tolerance=-1.0)
+    close(m)
+end
+
 @testset "operations: remesh" begin
     # A regular octahedron: the smallest closed 2-manifold triangle mesh with
     # no coplanar faces.
@@ -1686,6 +1699,11 @@ end
 
     # An unknown fill fails by name rather than silently defaulting.
     @test_throws ArgumentError voxelize(cube; resolution=[2, 2, 2], fill=:solid)
+    # An explicit plane for 2-D pixels; an unknown one fails by name.
+    flat = voxelize(cube; resolution=[4, 4, 0], plane=:xy)
+    @test flat.dims == (4, 4, 1)
+    close(flat.mesh)
+    @test_throws ArgumentError voxelize(cube; resolution=[4, 4, 0], plane=:uv)
 
     # The cube's exact SDF is known: the centre is 0.5 in, the others 1.0 out.
     d = sample_distance(cube, [0.5 2.0 -1.0; 0.5 0.5 0.5; 0.5 0.5 0.5];

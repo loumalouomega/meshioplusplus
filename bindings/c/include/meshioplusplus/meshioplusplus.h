@@ -2663,7 +2663,9 @@ typedef struct mio_voxel_opts {
     int32_t attach_occupancy; /**< nonzero to attach voxel:occupancy */
     int32_t sign;             /**< a mio_sdf_sign, used by MIO_VOXEL_INSIDE */
     int32_t watertight_check; /**< a mio_sdf_watertight_check */
-    int64_t reserved[6];      /**< must be zero; room for additive growth */
+    int32_t plane;            /**< a mio_planar_plane (2-D skins; ignored in 3-D) */
+    int32_t reserved32;       /**< must be zero */
+    int64_t reserved[5];      /**< must be zero; room for additive growth */
 } mio_voxel_opts;
 
 /** Zero-initialize voxelization options (every field its default). */
@@ -2950,6 +2952,12 @@ typedef enum mio_octree_mesh_skin_grading {
     MIO_OCTREE_MESH_UNIFORM = 1 /**< one level along the skin: the 10.7-164.8 degree bound */
 } mio_octree_mesh_skin_grading;
 
+/** How a hexahedral mio_octree_mesh output grades. */
+typedef enum mio_octree_mesh_hex_grading {
+    MIO_OCTREE_MESH_HEX_UNIFORM = 0, /**< one grid at the skin's size */
+    MIO_OCTREE_MESH_HEX_GRADED = 1   /**< the octree's grading, through dual transition schemes */
+} mio_octree_mesh_hex_grading;
+
 /** Which leaves a castellated mio_octree_mesh output keeps. */
 typedef enum mio_octree_mesh_fill {
     MIO_OCTREE_MESH_FILL_ALL = 0,    /**< every leaf */
@@ -3002,7 +3010,7 @@ typedef struct mio_octree_mesh_opts {
     int32_t attach_distance;      /**< nonzero (default): attach sdf:distance */
     int32_t attach_quality;       /**< nonzero: attach the quality:* cell data */
     int32_t pillow;               /**< nonzero (default): hexahedral output's boundary layer */
-    int32_t reserved32;           /**< must be zero */
+    int32_t hex_grading;          /**< a mio_octree_mesh_hex_grading (hexahedral; UNIFORM) */
     int64_t reserved[4];          /**< must be zero; room for additive growth */
 } mio_octree_mesh_opts;
 
@@ -3046,7 +3054,10 @@ typedef struct mio_octree_mesh_report {
     int64_t num_flips;
     int64_t num_winding_rechecks;
     int64_t num_warnings; /**< see mio_octree_mesh_warnings() */
-    int64_t reserved[8];  /**< zeroed */
+    /** Winding numbers flooded in deep inside a closed skin, not evaluated
+     *  (from the reserved tail; the struct is still 392 bytes). */
+    int64_t num_winding_skipped;
+    int64_t reserved[7]; /**< zeroed */
 } mio_octree_mesh_report;
 
 /** Initialize octree_mesh options to their defaults. */
@@ -6048,6 +6059,66 @@ MIO_API void mio_error_size_opts_init(mio_error_size_opts* opts);
  */
 MIO_API mio_mesh* mio_error_size(const mio_mesh* mesh, const mio_error_size_opts* opts,
                                  mio_error_size_report* report);
+
+/* ---- check_conformity (roadmap 3.2.1) ----------------------------------- */
+
+/** Which find_interface mode suits a mesh, as mio_check_conformity judges it. */
+typedef enum mio_conformity_mode {
+    MIO_CONFORMITY_CONFORMING = 0, /**< nothing reported */
+    MIO_CONFORMITY_WELD = 1,       /**< only unwelded facets: merge the points first */
+    MIO_CONFORMITY_PROXIMITY = 2   /**< hanging nodes or partly overlapping facets */
+} mio_conformity_mode;
+
+/**
+ * Options of mio_check_conformity. Initialise with mio_conformity_opts_init.
+ * 48 bytes, with a reserved tail.
+ */
+typedef struct mio_conformity_opts {
+    /** Distances at or below this fraction of the examined facets' bounding-box
+     *  diagonal count as zero (init: 1e-9). */
+    double tolerance;
+    /** Nonzero to attach the Int64 conformity:hanging point data (init: 1). */
+    int32_t attach_flags;
+    int32_t reserved32; /**< must be zero */
+    int64_t reserved[4];
+} mio_conformity_opts;
+
+/** What mio_check_conformity found. 104 bytes, with a reserved tail. */
+typedef struct mio_conformity_report {
+    int64_t dimension;               /**< 3, 2, or 0 when nothing was examined */
+    int64_t num_hanging_nodes;       /**< points on a volume cell's face it does not use */
+    int64_t num_t_junctions;         /**< points on a 2-D cell's edge it does not use */
+    int64_t num_partial_overlaps;    /**< pairs of partly overlapping unmatched facets */
+    int64_t num_unwelded_facets;     /**< pairs of coincident facets with other point ids */
+    int64_t num_boundary_facets;     /**< facets one cell uses */
+    int64_t num_non_manifold_facets; /**< facets three or more cells use */
+    int32_t conforming;              /**< nonzero when none of the four defects is found */
+    int32_t interface_mode;          /**< a mio_conformity_mode */
+    int64_t num_warnings;            /**< see mio_check_conformity_warnings() */
+    int64_t reserved[4];
+} mio_conformity_report;
+
+MIO_API void mio_conformity_opts_init(mio_conformity_opts* opts);
+
+/**
+ * Report the hanging nodes, T-junctions, partly overlapping and unwelded
+ * facets of a mesh's volume cells (else its 2-D cells). Points, connectivity,
+ * data and regions pass through unchanged; with attach_flags the result carries
+ * conformity:hanging (0, 1 hanging node, 2 T-junction).
+ *
+ * @param opts   options, or NULL for the mio_conformity_opts_init() defaults.
+ * @param report out, nullable.
+ * @return the mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_check_conformity(const mio_mesh* mesh, const mio_conformity_opts* opts,
+                                       mio_conformity_report* report);
+
+/**
+ * The warnings of this thread's last mio_check_conformity call, one per line.
+ * String rule 5: required byte length excluding NUL, -1 on error; the buffer
+ * may be NULL/zero to query the length.
+ */
+MIO_API int64_t mio_check_conformity_warnings(char* buf, int64_t buflen);
 
 /* ---- boundary_layer (roadmap 6.9) --------------------------------------- */
 

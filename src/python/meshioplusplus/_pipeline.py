@@ -30,6 +30,7 @@ from contextvars import ContextVar
 import numpy as np
 
 from ._agglomerate import agglomerate
+from ._check_conformity import check_conformity
 from ._clean import clean
 from ._convert_cells import convert_cells
 from ._crop import crop
@@ -275,6 +276,7 @@ _OP_TABLE = {
     ),
     "SplitInterface": ("Region", "AddCohesive"),
     "QualityGate": ("Require", "MaxInverted", "MaxDegenerate"),
+    "CheckConformity": ("Tolerance", "Require", "AttachFlags"),
     "Snapshot": (
         "Path",
         "Width",
@@ -398,6 +400,7 @@ _OP_TABLE = {
         "AttachOccupancy",
         "MaxCells",
         "Sign",
+        "Plane",
     ),
     "Generate": (
         "Shape",
@@ -461,6 +464,7 @@ _OP_TABLE = {
         "AttachDistance",
         "AttachQuality",
         "Pillow",
+        "HexGrading",
         "UntangleIterations",
         "MaxCells",
         "MaxTets",
@@ -1734,6 +1738,31 @@ def _apply_step(mesh, step, steps, warnings):
             )
         entry["NumChecks"] = len(result["checks"])
         entry["NumFailed"] = sum(not c["passed"] for c in result["checks"])
+    elif op == "CheckConformity":
+        # A gate by default: a mesh that is not conforming stops the pipeline;
+        # with Require false it only reports. AttachFlags writes
+        # conformity:hanging onto the mesh that flows on.
+        attach = _flag(step, "AttachFlags", False)
+        flagged, rep = check_conformity(
+            mesh,
+            tolerance=_number(step, "Tolerance", 1e-9),
+            attach_flags=attach,
+            return_report=True,
+        )
+        if _flag(step, "Require", True) and not rep["conforming"]:
+            raise RuntimeError(
+                "meshio++: pipeline: CheckConformity failed: "
+                f"{rep['num_hanging_nodes']} hanging node(s), "
+                f"{rep['num_t_junctions']} T-junction(s), "
+                f"{rep['num_partial_overlaps']} partial overlap(s), "
+                f"{rep['num_unwelded_facets']} unwelded facet pair(s)"
+            )
+        entry["NumHangingNodes"] = float(rep["num_hanging_nodes"])
+        entry["NumTJunctions"] = float(rep["num_t_junctions"])
+        entry["NumPartialOverlaps"] = float(rep["num_partial_overlaps"])
+        entry["NumUnweldedFacets"] = float(rep["num_unwelded_facets"])
+        if attach:
+            mesh = flagged
     elif op == "EditRegions":
         kind = _text(step, "Kind", "") or None
         edit = {
@@ -2013,6 +2042,7 @@ def _apply_step(mesh, step, steps, warnings):
             max_cells=int(_number(step, "MaxCells", 20000000.0)),
             sign=_text(step, "Sign", "pseudonormal"),
             watertight_check="off",
+            plane=_text(step, "Plane", "auto"),
             return_report=True,
         )
         entry["NumOccupied"] = float(rep["num_occupied"])
@@ -2053,6 +2083,7 @@ def _apply_step(mesh, step, steps, warnings):
             attach_distance=_flag(step, "AttachDistance", True),
             attach_quality=_flag(step, "AttachQuality", False),
             pillow=_flag(step, "Pillow", True),
+            hex_grading=_text(step, "HexGrading", "uniform"),
             untangle_iterations=int(_number(step, "UntangleIterations", 50.0)),
             max_cells=int(_number(step, "MaxCells", 20000000.0)),
             max_tets=int(_number(step, "MaxTets", 100000000.0)),

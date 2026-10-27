@@ -52,6 +52,7 @@ from .. import (
     boundary_layer,
     box,
     cell_data_to_point_data,
+    check_conformity,
     check_quality,
     clean,
     compute_bandwidth,
@@ -584,6 +585,29 @@ def tool_check_quality(
             mesh, require, max_inverted=max_inverted, max_degenerate=max_degenerate
         )
     )
+
+
+def tool_check_conformity(
+    input_path,
+    output_path=None,
+    file_format=None,
+    output_format=None,
+    tolerance=1e-9,
+):
+    """Conformity check: hanging nodes (3-D), T-junctions (2-D), partly
+    overlapping and unwelded facet pairs, the verdict and which find_interface
+    mode suits the mesh. Pass ``output_path`` to write a copy of the mesh
+    carrying the ``conformity:hanging`` point_data flags."""
+    mesh = _load(input_path, file_format)
+    out, report = check_conformity(
+        mesh,
+        tolerance=tolerance,
+        attach_flags=output_path is not None,
+        return_report=True,
+    )
+    if output_path is not None:
+        report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
 
 
 def tool_data_info(input_path, file_format=None):
@@ -1707,6 +1731,7 @@ def tool_voxelize(
     attach_occupancy=False,
     max_cells=20000000,
     sign="pseudonormal",
+    plane="auto",
 ):
     """Build a regular grid around a mesh; optionally keep only its surface or interior."""
     mesh = _load(input_path, input_format)
@@ -1722,6 +1747,7 @@ def tool_voxelize(
         max_cells=max_cells,
         sign=sign,
         watertight_check="off",
+        plane=plane,
         return_report=True,
     )
     return _result(_store(out, output_path, output_format), out, **report)
@@ -1763,6 +1789,7 @@ def tool_octree_mesh(
     attach_distance=True,
     attach_quality=False,
     pillow=True,
+    hex_grading="uniform",
     untangle_iterations=50,
     max_cells=20000000,
     max_tets=100000000,
@@ -1802,6 +1829,7 @@ def tool_octree_mesh(
         attach_distance=attach_distance,
         attach_quality=attach_quality,
         pillow=pillow,
+        hex_grading=hex_grading,
         untangle_iterations=untangle_iterations,
         max_cells=max_cells,
         max_tets=max_tets,
@@ -5545,6 +5573,14 @@ TOOL_REGISTRY = OrderedDict(
         (
             "check_quality",
             {"fn": tool_check_quality, "wraps": ("check_quality",), "gated": None},
+        ),
+        (
+            "check_conformity",
+            {
+                "fn": tool_check_conformity,
+                "wraps": ("check_conformity",),
+                "gated": None,
+            },
         ),
         ("repair", {"fn": tool_repair, "wraps": ("repair",), "gated": None}),
         (

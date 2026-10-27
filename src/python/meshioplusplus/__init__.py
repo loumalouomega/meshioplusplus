@@ -109,6 +109,7 @@ if TYPE_CHECKING:
     from ._agglomerate import agglomerate
     from ._blender import from_blender, has_blender, to_blender
     from ._boundary_layer import boundary_layer
+    from ._check_conformity import check_conformity
     from ._clean import clean
     from ._conservative_interpolate import conservative_interpolate
     from ._convert_cells import convert_cells
@@ -290,6 +291,7 @@ _LAZY_ATTRS = {
     "data_rename": "_data_manage",
     "DatasetEntry": "_dataset",
     "DatasetManifest": "_dataset",
+    "check_conformity": "_check_conformity",
     "decimate": "_decimate",
     "decimate_volume": "_decimate_volume",
     "diff": "_diff",
@@ -552,6 +554,7 @@ __all__ = [
     "edit_regions",
     "attach_quality",
     "check_quality",
+    "check_conformity",
     "sniff_format",
     "reorder",
     "compute_bandwidth",

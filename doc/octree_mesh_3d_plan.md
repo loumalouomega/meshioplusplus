@@ -12,10 +12,10 @@ The 2-D quadtree path and every existing operation keep their behaviour and thei
 
 **Status (v17.12.0).** Phases 1–8 have landed and the contract is [`doc/octree_mesh.md`](./octree_mesh.md). Three things differ from the plan below:
 - **Phase 5's `volume_fit`.** It became the operation's own optimisation stage: ODT relocation, sliding along the skin and flips under a guard on the smallest and largest dihedral angle.
-- **Phase 7 (C1) is not done.** The graded dual with transition templates is still to come: the hexahedral output is phase 7's uniform grid (C0), made manifold, pillowed, snapped and untangled.
-- **Feature recovery.** A cylinder's rims at a small `min_size` are reported missed rather than recovered.
+- **Phase 7 (C1) landed later (unreleased).** `hex_grading="graded"` is the dual of the paired octree with the transition schemes ported from CinoLib; the default stays phase 7's uniform grid (C0), made manifold, pillowed, snapped and untangled.
+- **Feature recovery.** A cylinder's rims at a small `min_size` were reported missed; since the snap guard counts only the tetrahedra the output keeps (unreleased), they are recovered.
 
-What remains is [roadmap](./roadmap.md) §3.1.4.3.
+Nothing of this plan remains open.
 
 ## What exists: `octree` (v17.8.0, PR #168)
 
@@ -215,7 +215,7 @@ Labelle and Shewchuk's 10.7°–164.8° bound holds only where the skin cuts uni
 
 ## Roadmap
 
-[`doc/roadmap.md`](./roadmap.md) admitted lattice generation and listed hexahedral meshing from a CAD-like boundary as a non-goal. The octree dual of this plan is lattice generation (index arithmetic on a balanced octree, then projection and untangling), so the non-goal is narrowed to exclude it. Hex-dominant meshing and general hexahedral meshing from a boundary stay out. §3.1.4 carries the work as it lands.
+[`doc/roadmap.md`](./roadmap.md) admitted lattice generation and listed hexahedral meshing from a CAD-like boundary as a non-goal. The octree dual of this plan is lattice generation (index arithmetic on a balanced octree, then projection and untangling), so the non-goal is narrowed to exclude it. Hex-dominant meshing and general hexahedral meshing from a boundary stay out. The work has landed; see [`octree_mesh`](./octree_mesh.md).
 
 ## Risks
 

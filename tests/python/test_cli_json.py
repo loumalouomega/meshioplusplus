@@ -205,6 +205,7 @@ CASES = [
         "check_fail",
         lambda f: ["check", f["grid"], "-r", "aspect_ratio <= 0.5 @ 10%", "--json"],
     ),
+    ("check_conformity", lambda f: ["check-conformity", f["hexes"], "--json"]),
     ("stats", lambda f: ["stats", f["grid"], "--json"]),
     (
         "iga_evaluate_nurbs",
@@ -562,6 +563,29 @@ def test_check_exit_codes(files, tmp_path):
         assert _native(["check", files["grid"], "-r", "aspect_ratio <= 0.5"])[0] == 1
         assert _native(["check", files["grid"], "-r", "bogus >= 1"])[0] == 2
         assert _native(["check", files["grid"], "--gate", str(gate)])[0] == 0
+
+
+def test_check_conformity_exit_codes(files, tmp_path):
+    # A coarse quad beside two fine ones: one T-junction, exit 1.
+    pts = np.array(
+        [[0, 0], [1, 0], [1, 1], [0, 1], [2, 0], [2, 0.5], [2, 1], [1, 0.5]],
+        dtype=float,
+    )
+    quads = np.array([[0, 1, 2, 3], [1, 4, 5, 7], [7, 5, 6, 2]])
+    t = str(tmp_path / "t.vtu")
+    mio.write(t, mio.Mesh(pts, [("quad", quads)]))
+    assert _python(["check-conformity", files["hexes"]])[0] == 0
+    assert _python(["check-conformity", t])[0] == 1
+    flagged = str(tmp_path / "flags.vtu")
+    assert _python(["check-conformity", t, flagged])[0] == 1
+    assert list(np.nonzero(mio.read(flagged).point_data["conformity:hanging"])[0]) == [
+        7
+    ]
+    assert _python(["check-conformity", str(tmp_path / "missing.vtu")])[0] == 2
+    if NATIVE is not None:
+        assert _native(["check-conformity", files["hexes"]])[0] == 0
+        assert _native(["check-conformity", t])[0] == 1
+        assert _native(["check-conformity", str(tmp_path / "missing.vtu")])[0] == 2
 
 
 @pytest.mark.parametrize(

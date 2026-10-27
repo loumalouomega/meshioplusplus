@@ -346,6 +346,8 @@ annotated = meshioplusplus.attach_quality(mesh)   # metrics as cell_data
 
 `meshioplusplus.check_quality(mesh, "scaled_jacobian >= 0.2; aspect_ratio <= 5 @ 1%")` turns the metrics into a pass/fail gate tested per cell, and the `check` CLI verb exits 1 when it fails and 2 when it could not run — what a CI job over meshes scripts; every report verb of both CLIs also takes `--json` with one shared, strictly valid shape. See `doc/mesh_quality.md` and `doc/cli.md`.
 
+`meshioplusplus.check_conformity(mesh)` reports the hanging nodes, T-junctions and partly overlapping or unwelded facets of a mesh, flags the hanging points in `conformity:hanging`, and says which `find_interface` mode suits it; the `check-conformity` CLI verb exits 1 when the mesh is not conforming. See `doc/check_conformity.md`.
+
 #### Reordering / renumbering
 
 `meshioplusplus.reorder` renumbers nodes and elements to reduce sparse-matrix bandwidth (Reverse Cuthill–McKee) or improve cache locality (Morton / Hilbert space-filling curves). It is a pure permutation — geometry and all data preserved — and returns the applied node/cell permutations so external arrays can be remapped. `compute_bandwidth` measures the before/after connectivity bandwidth. See `doc/reorder.md`.
@@ -630,7 +632,7 @@ Every uncut lattice tet has a dihedral angle from a small, mesh-size-independent
 
 #### Volume meshes on an octree (graded tetrahedra fitted to a skin)
 
-**`meshioplusplus.octree_mesh`** meshes the inside of any skin (STL, OBJ, a volume mesh's boundary; holes and self-intersections are tolerated through the fast winding number) on a 2:1-balanced octree whose leaves follow a size field (curvature, sharp features, thin gaps, a user array). The default output is a conforming graded tetrahedral mesh: a graded BCC lattice cut to the skin by isosurface stuffing, sharp corners and edges snapped, then optimised under a guard that never worsens the extreme dihedral angles; `skin_grading="uniform"` gives Labelle and Shewchuk's 10.7°–164.8° bound. `output="castellated"` gives the inside leaves as hexahedra with the `surrogate_boundary` side region and `sdf:distance`/`sdf:closest_point`, for embedded and Shifted Boundary Method solvers. The same operation is in C++, C, Fortran, Julia, R, WASM, both CLIs (`octree-mesh`), the pipeline (`OctreeMesh`) and MCP. See `doc/octree_mesh.md`.
+**`meshioplusplus.octree_mesh`** meshes the inside of any skin (STL, OBJ, a volume mesh's boundary; holes and self-intersections are tolerated through the fast winding number) on a 2:1-balanced octree whose leaves follow a size field (curvature, sharp features, thin gaps, a user array). The default output is a conforming graded tetrahedral mesh: a graded BCC lattice cut to the skin by isosurface stuffing, sharp corners and edges snapped, then optimised under a guard that never worsens the extreme dihedral angles; `skin_grading="uniform"` gives Labelle and Shewchuk's 10.7°–164.8° bound. `output="castellated"` gives the inside leaves as hexahedra with the `surrogate_boundary` side region and `sdf:distance`/`sdf:closest_point`, for embedded and Shifted Boundary Method solvers. `output="hex"` gives hexahedra only, on one grid at the skin's size, or with `hex_grading="graded"` the all-hexahedral dual of the graded octree, conforming through the transition schemes of Livesu, Pitzalis and Cherchi (ported from CinoLib). The same operation is in C++, C, Fortran, Julia, R, WASM, both CLIs (`octree-mesh`), the pipeline (`OctreeMesh`) and MCP. See `doc/octree_mesh.md`.
 
 <!--pytest-codeblocks:skip-->
 

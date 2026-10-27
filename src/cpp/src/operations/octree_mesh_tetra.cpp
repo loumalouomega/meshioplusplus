@@ -213,12 +213,15 @@ void octree_mesh_snap_features(OctreeMeshSetup& rS, const OctreeMeshOptions& rO,
     for (const OctreeFeatureEdge& e : rS.mFeatures)
         edges.push_back({e.mA, e.mB});
     const FeatureGraph graph = feature_graph(rS.mSkin.mPoints, edges, rO.mCornerAngle);
-    std::vector<std::uint8_t> inside(rTets.mTets.size());
-    for (std::size_t t = 0; t < inside.size(); ++t)
+    std::vector<std::uint8_t> inside(rTets.mTets.size()), guarded(rTets.mTets.size());
+    for (std::size_t t = 0; t < inside.size(); ++t) {
         inside[t] = rTets.mMaterial[t] > 0;
+        // The tetrahedra the output keeps; the others are about to be dropped.
+        guarded[t] = inside[t] || rO.mKeepOutside;
+    }
     std::vector<std::uint8_t> claimed(rTets.mPoints.size(), 0);
     const FeatureSnapReport rep = feature_snap(
-        rTets.mPoints, rTets.mTets, inside, graph, rS.mSkin.mPoints,
+        rTets.mPoints, rTets.mTets, inside, guarded, graph, rS.mSkin.mPoints,
         [&](const Vec3& rP) { return octree_mesh_local_size(rS, rP); },
         1e-12 * std::pow(rS.mFrame.mMinSize, 3.0), claimed, rTets.mFeature);
     rR.mNumCorners = rep.mNumCorners;

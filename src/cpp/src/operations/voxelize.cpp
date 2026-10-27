@@ -267,9 +267,10 @@ Mesh vox_build_subset(const detail::LatticeSpec& rSpec, const std::vector<char>&
 // fastest). Selected by a resolution whose third entry is zero, or by a cell size
 // on a polyline-only mesh.
 
-Mesh vox_build_pixels(const std::array<std::int64_t, 2>& rDims, const std::array<double, 3>& rOrigin,
-                      const std::array<double, 3>& rSpacing, const std::vector<char>& rOccupied,
-                      std::int64_t Kept, const detail::PlanarFrame& rFrame) {
+Mesh vox_build_pixels(const std::array<std::int64_t, 2>& rDims,
+                      const std::array<double, 3>& rOrigin, const std::array<double, 3>& rSpacing,
+                      const std::vector<char>& rOccupied, std::int64_t Kept,
+                      const detail::PlanarFrame& rFrame) {
     Mesh out;
     const std::int64_t nx = rDims[0];
     const std::int64_t ny = rDims[1];
@@ -329,10 +330,11 @@ Mesh vox_build_pixels(const std::array<std::int64_t, 2>& rDims, const std::array
 }
 
 VoxelResult vox_voxelize_pixels(const Mesh& rMesh, const VoxelOptions& rOptions) {
-    // The skin's plane: the axis with zero extent, else z (so an xz or yz
-    // polyline voxelizes in its own plane). Everything below runs in the frame
-    // where that plane is xy, and the points are mapped back on emit.
-    const detail::PlanarFrame frame = detail::planar_frame(rMesh, detail::PlanarPlane::Auto);
+    // The skin's plane: the one asked for, else the axis with zero extent, else
+    // z (so an xz or yz polyline voxelizes in its own plane). Everything below
+    // runs in the frame where that plane is xy, and the points are mapped back
+    // on emit.
+    const detail::PlanarFrame frame = detail::planar_frame(rMesh, rOptions.mPlane);
     const detail::PlanarSkin skin = detail::collect_planar_skin(rMesh, kVoxPrefix, frame);
     if (rOptions.mFill == VoxelFill::Inside)
         detail::require_closed_polyline(skin, kVoxPrefix);
@@ -343,8 +345,8 @@ VoxelResult vox_voxelize_pixels(const Mesh& rMesh, const VoxelOptions& rOptions)
             lo[k] = (*rOptions.mBounds)[k];
             hi[k] = (*rOptions.mBounds)[3 + k];
             if (!(hi[k] >= lo[k]))
-                throw std::invalid_argument(std::string(kVoxPrefix) + "bounds are inverted on axis " +
-                                            std::to_string(k));
+                throw std::invalid_argument(std::string(kVoxPrefix) +
+                                            "bounds are inverted on axis " + std::to_string(k));
         }
     } else if (!detail::point_bbox(rMesh, lo, hi)) {
         throw std::invalid_argument(std::string(kVoxPrefix) +
@@ -377,10 +379,9 @@ VoxelResult vox_voxelize_pixels(const Mesh& rMesh, const VoxelOptions& rOptions)
         for (std::size_t k = 0; k < 2; ++k) {
             dims[k] = (*rOptions.mResolution)[k];
             if (dims[k] <= 0)
-                throw std::invalid_argument(std::string(kVoxPrefix) +
-                                            "resolution must be positive on every axis, got " +
-                                            std::to_string(dims[k]) + " on axis " +
-                                            std::to_string(k));
+                throw std::invalid_argument(
+                    std::string(kVoxPrefix) + "resolution must be positive on every axis, got " +
+                    std::to_string(dims[k]) + " on axis " + std::to_string(k));
             spacing[k] = (hi[k] - lo[k]) / static_cast<double>(dims[k]);
         }
     } else {
@@ -435,9 +436,9 @@ VoxelResult vox_voxelize_pixels(const Mesh& rMesh, const VoxelOptions& rOptions)
                     const std::size_t cid = static_cast<std::size_t>(j * nx + i);
                     if (occupied[cid])
                         continue;
-                    const detail::Vec3 centre{{origin[0] + (static_cast<double>(i) + 0.5) * spacing[0],
-                                               origin[1] + (static_cast<double>(j) + 0.5) * spacing[1],
-                                               origin[2]}};
+                    const detail::Vec3 centre{
+                        {origin[0] + (static_cast<double>(i) + 0.5) * spacing[0],
+                         origin[1] + (static_cast<double>(j) + 0.5) * spacing[1], origin[2]}};
                     if (detail::segment_box_overlap_2d(centre, half, seg[0], seg[1]))
                         occupied[cid] = 1;
                 }

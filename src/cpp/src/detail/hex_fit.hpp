@@ -62,6 +62,18 @@ struct HexMesh {
     std::vector<std::array<std::int64_t, 8>> mHexes;
 };
 
+/**
+ * @brief `hex_grid_make_manifold` on an unstructured hexahedral mesh: add
+ * hexahedra to @p rKept until, around every node, the kept hexahedra and the
+ * rest (with the outside of the mesh) are each connected through the faces at
+ * that node. A failing node takes the empty hexahedron around it with the
+ * largest @p rScore first (ties: the lowest index); sweeps the nodes in
+ * ascending order until none fails.
+ * @return the hexahedra added.
+ */
+std::int64_t hex_make_manifold(const HexMesh& rMesh, std::vector<std::uint8_t>& rKept,
+                               const std::vector<double>& rScore);
+
 /// The faces of a hexahedral mesh used by one hexahedron, ordered so their
 /// normal (right-hand rule) points out of it, with the (hexahedron, facet)
 /// each comes from (facets in the `cell_faces` order of `hexahedron`).

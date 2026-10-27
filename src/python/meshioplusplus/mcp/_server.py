@@ -1104,6 +1104,7 @@ def _register_operations(server: FastMCP) -> None:
         attach_distance: bool = True,
         attach_quality: bool = False,
         pillow: bool = True,
+        hex_grading: str = "uniform",
         untangle_iterations: int = 50,
         max_cells: int = 20000000,
         max_tets: int = 100000000,
@@ -1123,6 +1124,8 @@ def _register_operations(server: FastMCP) -> None:
         winding_threshold, so holes and self-intersections are tolerated.
         skin_grading='uniform' keeps the skin at one level (the stuffing angle
         guarantee). fill='all'/'inside'/'cover' chooses the castellated leaves.
+        hex_grading='graded' grades the hexahedra with the octree (dual
+        transition schemes) instead of one grid at the skin's size.
         Reports the frame, leaf and cell counts, the quality (dihedral angles,
         scaled Jacobian, histograms), feature recovery, timings and warnings."""
         return _guard(
@@ -1162,6 +1165,7 @@ def _register_operations(server: FastMCP) -> None:
             attach_distance=attach_distance,
             attach_quality=attach_quality,
             pillow=pillow,
+            hex_grading=hex_grading,
             untangle_iterations=untangle_iterations,
             max_cells=max_cells,
             max_tets=max_tets,
@@ -1417,10 +1421,12 @@ def _register_operations(server: FastMCP) -> None:
         attach_occupancy: bool = False,
         max_cells: int = 20000000,
         sign: str = "pseudonormal",
+        plane: str = "auto",
     ) -> dict:
         """Build a regular hexahedron grid around a mesh. Give exactly one of
         resolution (nx, ny, nz; nx, ny selects 2-D quad pixels around a planar
-        polyline) or cell_size. fill='all' keeps the whole bounding
+        polyline, in plane 'xy', 'xz' or 'yz', 'auto' taking the axis of zero
+        extent) or cell_size. fill='all' keeps the whole bounding
         box, 'surface' keeps only cells a triangle passes through, and 'inside'
         keeps only cells whose centre is inside the surface. Reports the lattice
         origin/spacing/dims and how many cells were kept."""
@@ -1439,6 +1445,7 @@ def _register_operations(server: FastMCP) -> None:
             attach_occupancy=attach_occupancy,
             max_cells=max_cells,
             sign=sign,
+            plane=plane,
         )
 
     @server.tool()
@@ -1964,6 +1971,37 @@ def _register_operations(server: FastMCP) -> None:
             max_inverted=max_inverted,
             max_degenerate=max_degenerate,
             file_format=file_format,
+        )
+
+    @server.tool()
+    def check_conformity(
+        input_path: str,
+        output_path: Optional[str] = None,
+        file_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        tolerance: float = 1e-9,
+    ) -> dict:
+        """Whether a mesh is conforming: every two cells meet in a whole
+        shared face, edge or corner with the same point ids.
+
+        Examines the volume cells (else the 2-D cells). Reports
+        num_hanging_nodes (a point on a volume cell's face or edge that the
+        cell does not use), num_t_junctions (the same on a 2-D cell's edge),
+        num_partial_overlaps (unmatched facets in one plane overlapping over a
+        positive area), num_unwelded_facets (coincident facets with different
+        point ids), num_boundary_facets, num_non_manifold_facets, conforming,
+        warnings and interface_mode: "conforming", "weld" (merge the
+        coincident points first) or "proximity" -- the find_interface mode
+        that suits the mesh. tolerance is a fraction of the examined facets'
+        bounding-box diagonal. Pass output_path to write the mesh with
+        conformity:hanging point_data (1 hanging node, 2 T-junction)."""
+        return _guard(
+            _tools.tool_check_conformity,
+            input_path=input_path,
+            output_path=output_path,
+            file_format=file_format,
+            output_format=output_format,
+            tolerance=tolerance,
         )
 
     @server.tool()

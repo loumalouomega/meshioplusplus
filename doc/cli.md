@@ -96,7 +96,7 @@ Converting a 3D volume mesh to STL, PLY or glTF writes its extracted boundary sk
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -104,6 +104,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `info` | the same counts and names from a full read, plus `consistent` and `num_unused_points` (`null` when inconsistent) |
 | `quality` | `compute_quality`'s dict without the per-cell arrays |
 | `check` | `check_quality`'s dict: `passed`, the counts and `checks` |
+| `check-conformity` | `check_conformity`'s report: `dimension`, the six counts, `conforming`, `interface_mode` and `warnings` |
 | `diff` | `diff`'s report plus `equal` (the exit-code decision); the Python CLI adds its `sets` section |
 | `convert` | `input`, `output`, `num_points`, `num_cells`, `cell_blocks`, the data names and `num_regions`; for a sequence, `mode`, `num_steps` and `num_files` |
 | `agglomerate` | `cells_in`, `cells_out`, `num_faces_merged` and `num_rejected` |
@@ -197,6 +198,21 @@ meshioplusplus check [options] INFILE
 meshioplusplus check part.vtu -r "scaled_jacobian >= 0.2" -r "aspect_ratio <= 5 @ 1%" \
     || { echo "mesh failed its quality gate"; exit 1; }
 ```
+
+## meshioplusplus check-conformity
+
+The [conformity check](./check_conformity.md): hanging nodes, T-junctions, partly overlapping and unwelded facets, and the `find_interface` mode that suits the mesh. Exits **0** when the mesh is conforming, **1** when it is not, **2** when the check could not run.
+
+```
+meshioplusplus check-conformity [options] INFILE [OUTFILE]
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--tolerance T` | | Distances at or below this fraction of the facets' bounding-box diagonal count as zero (default `1e-9`) |
+| `--json` | | Print the report as JSON |
+| `--input-format FORMAT` | `-i` | Force input format |
+| `--output-format FORMAT` | `-o` | Force output format of `OUTFILE`, which carries the `conformity:hanging` point data |
 
 ---
 
@@ -2017,8 +2033,9 @@ meshioplusplus voxelize bunny.stl solid.vtu --cell-size 0.5 --fill inside
 
 | flag | meaning |
 |---|---|
-| `--resolution nx,ny,nz` | cell counts; give exactly one of this and `--cell-size` |
+| `--resolution nx,ny,nz` | cell counts; give exactly one of this and `--cell-size` (`nx,ny` selects 2-D pixels) |
 | `--cell-size S` | cubic cell size |
+| `--plane auto\|xy\|xz\|yz` | the plane of a 2-D skin; `auto` takes the axis of zero extent |
 | `--bounds=xlo,...,zhi` | explicit bounds; the mesh's own by default (negatives need the `=` form) |
 | `--padding` / `--padding-relative` | grow the box on every side |
 | `--fill all\|surface\|inside` | which cells to keep |
@@ -2084,7 +2101,7 @@ meshioplusplus octree-mesh part.stl hexes.vtu --output hex --surface-size 0.05
 | `--no-preserve-features`, `--fit-iterations N`, `--no-dihedral-floor-guard` | feature snapping and optimisation |
 | `--fill all\|inside\|cover` | castellated output: every leaf, the inside ones, or inside and cut |
 | `--keep-outside`, `--no-distance`, `--attach-quality` | also mesh the outside; skip `sdf:*`; attach `quality:*` |
-| `--no-pillow`, `--untangle-iterations N` | hexahedral output |
+| `--no-pillow`, `--hex-grading uniform\|graded`, `--untangle-iterations N` | hexahedral output |
 | `--max-cells N` / `--max-tets N` | refuse above this many leaves / output cells |
 | `--json` | the report as JSON (without the timings, which vary from run to run) |
 

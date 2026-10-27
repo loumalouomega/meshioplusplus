@@ -2251,6 +2251,14 @@ def test_octree_mesh_tool(tmp_path):
     with pytest.raises(ValueError, match="winding_threshold"):
         _tools.tool_octree_mesh(str(skin), str(out), winding_threshold=2.0)
 
+    graded = _tools.tool_octree_mesh(
+        str(skin), str(out), output="hex", hex_grading="graded", max_size=0.5
+    )
+    assert graded["output"] == "hex" and graded["num_hexahedra"] > 0
+    assert graded["num_inverted"] == 0
+    with pytest.raises(ValueError, match="hex_grading"):
+        _tools.tool_octree_mesh(str(skin), str(out), output="hex", hex_grading="bogus")
+
 
 def test_boundary_layer_tool(tmp_path):
     """Roadmap 6.9: layers grown out of the sphere's mesh are wedges."""
@@ -2556,6 +2564,50 @@ def test_octree_tool(tmp_path):
         str(skin), str(out), max_level=3, fill="inside", snap=True
     )
     assert "num_snapped" in snapped and "num_refused" in snapped
+
+
+def test_check_conformity_tool(tmp_path):
+    # One coarse quad beside two fine ones: the fine side's middle node hangs.
+    pts = np.array(
+        [[0, 0], [1, 0], [1, 1], [0, 1], [2, 0], [2, 0.5], [2, 1], [1, 0.5]],
+        dtype=float,
+    )
+    quads = np.array([[0, 1, 2, 3], [1, 4, 5, 7], [7, 5, 6, 2]])
+    src = tmp_path / "t.vtu"
+    meshioplusplus.write(src, meshioplusplus.Mesh(pts, [("quad", quads)]))
+    report = _tools.tool_check_conformity(str(src))
+    assert report["num_t_junctions"] == 1
+    assert report["conforming"] is False
+    assert report["interface_mode"] == "proximity"
+    assert "output_path" not in report
+    flagged = tmp_path / "flags.vtu"
+    report = _tools.tool_check_conformity(str(src), output_path=str(flagged))
+    assert report["output_path"] == str(flagged)
+    flags = meshioplusplus.read(flagged).point_data["conformity:hanging"]
+    assert list(np.nonzero(flags)[0]) == [7]
+    with pytest.raises(ValueError, match="tolerance"):
+        _tools.tool_check_conformity(str(src), tolerance=-1.0)
+
+
+def test_voxelize_tool_plane(tmp_path):
+    # A square polyline in the xz plane: "auto" and "xz" agree, "xy" sees a
+    # degenerate box and an unknown plane is refused by name.
+    pts = np.array([[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]], dtype=float)
+    loop = meshioplusplus.Mesh(
+        pts, [("line", np.array([[0, 1], [1, 2], [2, 3], [3, 0]]))]
+    )
+    src = tmp_path / "loop.vtu"
+    meshioplusplus.write(src, loop)
+    auto = _tools.tool_voxelize(str(src), str(tmp_path / "a.vtu"), resolution=[4, 4])
+    xz = _tools.tool_voxelize(
+        str(src), str(tmp_path / "b.vtu"), resolution=[4, 4], plane="xz"
+    )
+    assert auto["dims"] == xz["dims"] == [4, 4, 1]
+    assert auto["origin"] == xz["origin"]
+    with pytest.raises(ValueError, match="plane"):
+        _tools.tool_voxelize(
+            str(src), str(tmp_path / "c.vtu"), resolution=[4, 4], plane="uv"
+        )
 
 
 def test_compute_sdf_tool(tmp_path):

@@ -1778,6 +1778,29 @@ program test_fortran_api
         end if
     end block
 
+    ! ---- check_conformity (roadmap 3.2.1) ------------------------------------
+    block
+        type(mio_mesh) :: cm
+        type(mio_conformity_report) :: crep
+        character(:), allocatable :: cwarn
+        integer :: st
+
+        cm = m%check_conformity(report=crep, warnings=cwarn, stat=st)
+        call check(st == 0, 'check_conformity succeeded')
+        if (st == 0) then
+            call check(crep%dimension >= 2_int64, 'check_conformity examined the cells')
+            call check(crep%num_hanging_nodes == 0_int64 .and. crep%conforming /= 0, &
+                       'a mesh with shared nodes is conforming')
+            call check(crep%interface_mode == MIO_CONFORMITY_CONFORMING, &
+                       'check_conformity suggests the conforming interface mode')
+            call check(cm%num_point_data() == m%num_point_data() + 1, &
+                       'check_conformity attaches its flags')
+            call cm%free()
+        end if
+        cm = m%check_conformity(tolerance=-1.0d0, stat=st)
+        call check(st /= 0, 'check_conformity rejects a negative tolerance')
+    end block
+
     ! --- named regions (doc/regions.md) ---------------------------------------
     ! The first named groups this API can carry at all; before meshio++ 8.1 they
     ! never left the Python layer.
@@ -2283,6 +2306,14 @@ contains
         ! An unknown fill fails by name rather than silently defaulting.
         vox = cube%voxelize(resolution=[2, 2, 2], fill='solid', stat=ierr)
         call check(ierr /= 0, 'an unknown fill is refused')
+
+        ! 2-D pixels in an explicit plane; an unknown plane is refused.
+        vox = cube%voxelize(resolution=[4, 2, 0], plane='yz', dims=dims, stat=ierr)
+        call check(ierr == 0, 'voxelize took a plane')
+        call check(dims(3) == 1_int64, 'voxelize in a plane is one cell thick')
+        call vox%free()
+        vox = cube%voxelize(resolution=[4, 2, 0], plane='uv', stat=ierr)
+        call check(ierr /= 0, 'an unknown plane is refused')
 
         ! The centre is 0.5 inside; the other two are 1.0 outside.
         query = reshape([0.5d0, 0.5d0, 0.5d0, 2d0, 0.5d0, 0.5d0, -1d0, 0.5d0, 0.5d0], [3, 3])

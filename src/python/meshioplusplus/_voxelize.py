@@ -192,9 +192,10 @@ def _pixels_py(
     fill,
     attach_occupancy,
     max_cells,
+    plane="auto",
 ):
     """The numpy twin of ``vox_voxelize_pixels``: ``quad`` pixels around a planar skin."""
-    axes = _planar_skin.frame(mesh, "auto")
+    axes = _planar_skin.frame(mesh, plane)
     prims, seg_ids, has_lines = _planar_skin.collect(mesh, _PREFIX, axes)
     if fill == "inside" and has_lines:
         _planar_skin.require_closed(seg_ids, _PREFIX)
@@ -334,6 +335,7 @@ def _voxelize_py(
     attach_occupancy,
     max_cells,
     sign,
+    plane="auto",
 ):
     if _is_pixels(mesh, resolution, cell_size):
         return _pixels_py(
@@ -346,6 +348,7 @@ def _voxelize_py(
             fill,
             attach_occupancy,
             max_cells,
+            plane,
         )
     origin, spacing, dims = _resolve_lattice(
         mesh, resolution, cell_size, bounds, padding, padding_relative, max_cells
@@ -441,6 +444,7 @@ def voxelize(
     max_cells=DEFAULT_MAX_CELLS,
     sign="pseudonormal",
     watertight_check="warn",
+    plane="auto",
     return_report=False,
 ):
     """Build a regular grid around ``mesh``.
@@ -453,11 +457,19 @@ def voxelize(
     closed ``line`` polyline, or the boundary of a 2-D surface mesh). A
     ``cell_size`` on a mesh of nothing but ``line`` cells selects it too. ``fill``
     ``"inside"`` then uses the winding number of the polyline and refuses one that
-    does not close. The report's ``dims`` is ``[nx, ny, 1]``.
+    does not close. The report's ``dims`` is ``[nx, ny, 1]``. ``plane`` (``"auto"``,
+    ``"xy"``, ``"xz"`` or ``"yz"``) chooses the skin's plane; ``"auto"`` takes the
+    axis of zero extent (``z``, then ``y``, then ``x``). The 3-D variant ignores it,
+    as ``octree`` does.
     """
     if fill not in _FILLS:
         raise ValueError(
             f"{_PREFIX}unknown fill '{fill}' (expected one of: {', '.join(_FILLS)})"
+        )
+    if plane not in _planar_skin.PLANES:
+        raise ValueError(
+            f"meshio++: unknown plane '{plane}' "
+            f"(expected one of: {', '.join(_planar_skin.PLANES)})"
         )
 
     if resolution is not None and len(resolution) == 2:
@@ -480,6 +492,7 @@ def voxelize(
             int(max_cells),
             sign,
             watertight_check,
+            plane,
         )
         out = res["mesh"]
         report = {
@@ -505,6 +518,7 @@ def voxelize(
             attach_occupancy,
             max_cells,
             sign,
+            plane,
         )
 
     return (out, report) if return_report else out

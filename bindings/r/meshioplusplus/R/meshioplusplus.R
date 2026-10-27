@@ -801,7 +801,8 @@ mio_match_periodic_nodes <- function(mesh, slave, master, matrix = NULL, transla
 #'   `max_level`. `curvature_threshold`, `feature_angle` and `size_array` then
 #'   refine further.
 #' @param curvature_threshold,feature_angle,size_array Refinement criteria.
-#' @param plane `"auto"`, `"xy"`, `"xz"` or `"yz"` for a 2-D skin.
+#' @param plane `"auto"`, `"xy"`, `"xz"` or `"yz"`: the plane of a 2-D skin for
+#'   `mio_octree()` and `mio_voxelize()` (a zero third `resolution` entry).
 #' @param watertight_check `"off"`, `"warn"` or `"error"`.
 #' @param points A `3 x n` matrix of query coordinates.
 #' @param band Clamp distances beyond this; `0` is the full field.
@@ -1069,6 +1070,35 @@ mio_error_size <- function(mesh, target_error, error_array = "error:zz", order =
   .Call(R_mio_error_size, mesh, as.numeric(target_error), as.character(error_array),
         as.numeric(order), as.numeric(min_size), as.numeric(max_size),
         as.character(output), isTRUE(overwrite))
+}
+
+#' Whether a mesh is conforming
+#'
+#' Checks the mesh's volume cells (else its 2-D cells) for hanging nodes (a
+#' point on a volume cell's face or edge that the cell does not use),
+#' T-junctions (the same on a 2-D cell's edge), and partly overlapping or
+#' unwelded pairs of unmatched facets (roadmap 3.2.1). With `attach_flags` the
+#' mesh carries the `conformity:hanging` point data (1 hanging node, 2
+#' T-junction).
+#'
+#' @param mesh A mesh.
+#' @param tolerance Distances at or below this fraction of the examined facets'
+#'   bounding-box diagonal count as zero.
+#' @param attach_flags Attach the `conformity:hanging` point data.
+#' @return A list: `mesh`, `dimension`, `num_hanging_nodes`,
+#'   `num_t_junctions`, `num_partial_overlaps`, `num_unwelded_facets`,
+#'   `num_boundary_facets`, `num_non_manifold_facets`, `conforming`,
+#'   `interface_mode` (`"conforming"`, `"weld"` or `"proximity"`: the
+#'   [mio_find_interface()] mode that suits the mesh) and `warnings`.
+#' @export
+mio_check_conformity <- function(mesh, tolerance = 1e-9, attach_flags = TRUE) {
+  res <- .Call(R_mio_check_conformity, mesh, as.numeric(tolerance), isTRUE(attach_flags))
+  res$warnings <- if (nzchar(res$warnings)) {
+    strsplit(res$warnings, "\n", fixed = TRUE)[[1]]
+  } else {
+    character(0)
+  }
+  res
 }
 
 #' Remesh a surface by approximated centroidal Voronoi diagram (ACVD)
@@ -3529,6 +3559,9 @@ mio_octree <- function(mesh, root_cells = NULL, min_level = 0, max_level = 4,
 #' @param attach_quality Attach the `quality:*` cell data (default `FALSE`).
 #' @param pillow Hexahedral output: a boundary layer of hexahedra (default
 #'   `TRUE`).
+#' @param hex_grading Hexahedral output: `"uniform"` (default, one grid at the
+#'   skin's size) or `"graded"` (the octree's grading, through dual transition
+#'   schemes).
 #' @param untangle_iterations Hexahedral output: untangling iterations (default
 #'   `50`).
 #' @param max_cells Refuse an octree with more leaves (default `20000000`).
@@ -3551,8 +3584,8 @@ mio_octree_mesh <- function(mesh, output = NULL, min_size = NULL, max_size = NUL
                             fit_iterations = NULL, dihedral_floor_guard = NULL,
                             fill = NULL, keep_outside = NULL, attach_distance = NULL,
                             attach_quality = NULL, pillow = NULL,
-                            untangle_iterations = NULL, max_cells = NULL,
-                            max_tets = NULL) {
+                            hex_grading = NULL, untangle_iterations = NULL,
+                            max_cells = NULL, max_tets = NULL) {
   code <- function(value, table, what) {
     if (is.null(value)) {
       return(NULL)
@@ -3579,7 +3612,8 @@ mio_octree_mesh <- function(mesh, output = NULL, min_size = NULL, max_size = NUL
     num(alpha_long), num(alpha_short), num(max_level), num(grading_layers),
     num(fit_iterations), num(untangle_iterations), num(max_cells), num(max_tets),
     flag(gap_outside), flag(preserve_features), flag(dihedral_floor_guard),
-    flag(keep_outside), flag(attach_distance), flag(attach_quality), flag(pillow)
+    flag(keep_outside), flag(attach_distance), flag(attach_quality), flag(pillow),
+    code(hex_grading, c(uniform = 0L, graded = 1L), "hex grading")
   )
   res$warnings <- if (nzchar(res$warnings)) {
     strsplit(res$warnings, "\n", fixed = TRUE)[[1]]
@@ -3594,11 +3628,14 @@ mio_octree_mesh <- function(mesh, output = NULL, min_size = NULL, max_size = NUL
 mio_voxelize <- function(mesh, resolution = NULL, cell_size = 0, bounds = NULL,
                          padding = 0, padding_relative = 0, fill = "all",
                          sign = "pseudonormal", attach_occupancy = FALSE,
-                         max_cells = 20000000, watertight_check = "warn") {
+                         max_cells = 20000000, watertight_check = "warn",
+                         plane = "auto") {
   fills <- c(all = 0L, surface = 1L, inside = 2L)
   signs <- c(unsigned = 0L, pseudonormal = 1L, `winding-number` = 2L)
   checks <- c(off = 0L, warn = 1L, error = 2L)
+  planes <- c(auto = 0L, xy = 1L, xz = 2L, yz = 3L)
   if (!fill %in% names(fills)) stop("unknown fill '", fill, "'")
+  if (!plane %in% names(planes)) stop("unknown plane '", plane, "'")
   if (!sign %in% names(signs)) stop("unknown sign '", sign, "'")
   if (!watertight_check %in% names(checks)) {
     stop("unknown watertight check '", watertight_check, "'")
@@ -3610,7 +3647,7 @@ mio_voxelize <- function(mesh, resolution = NULL, cell_size = 0, bounds = NULL,
     if (is.null(bounds)) numeric(0) else as.numeric(bounds),
     as.numeric(padding), as.numeric(padding_relative),
     fills[[fill]], signs[[sign]], isTRUE(attach_occupancy),
-    as.numeric(max_cells), checks[[watertight_check]]
+    as.numeric(max_cells), checks[[watertight_check]], planes[[plane]]
   )
 }
 

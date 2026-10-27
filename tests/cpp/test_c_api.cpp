@@ -3987,6 +3987,54 @@ TEST(CApi, EstimateError) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, CheckConformity) {
+    // A coarse quad beside two fine ones: the fine pair's shared node sits on
+    // the coarse quad's edge, a T-junction, and the edges overlap partly.
+    const std::vector<double> pts = {0, 0, 0, 1, 0,   0, 1, 1, 0, 0, 1,   0,
+                                     2, 0, 0, 2, 0.5, 0, 2, 1, 0, 1, 0.5, 0};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3, 1, 4, 5, 7, 7, 5, 6, 2};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "quad", 3, 4, MIO_INT64, conn.data()), MIO_OK);
+
+    mio_conformity_opts o;
+    mio_conformity_opts_init(&o);
+    EXPECT_EQ(o.tolerance, 1e-9);
+    EXPECT_EQ(o.attach_flags, 1);
+    mio_conformity_report report{};
+    report.reserved[0] = 7;
+    mio_mesh* out = mio_check_conformity(m, &o, &report);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(report.dimension, 2);
+    EXPECT_EQ(report.num_t_junctions, 1);
+    EXPECT_EQ(report.num_hanging_nodes, 0);
+    EXPECT_EQ(report.num_partial_overlaps, 2);
+    EXPECT_EQ(report.num_unwelded_facets, 0);
+    EXPECT_EQ(report.conforming, 0);
+    EXPECT_EQ(report.interface_mode, MIO_CONFORMITY_PROXIMITY);
+    EXPECT_EQ(report.num_warnings, 0);
+    EXPECT_EQ(report.reserved[0], 0);
+    const void* data = nullptr;
+    mio_dtype dt = MIO_FLOAT64;
+    std::int32_t ndim = 0;
+    std::int64_t shape[MIO_MAX_NDIM] = {0};
+    ASSERT_EQ(mio_mesh_get_point_data(out, "conformity:hanging", &data, &dt, &ndim, shape), MIO_OK);
+    ASSERT_EQ(dt, MIO_INT64);
+    const std::int64_t* flags = static_cast<const std::int64_t*>(data);
+    for (std::int64_t p = 0; p < 8; ++p)
+        EXPECT_EQ(flags[p], p == 7 ? 2 : 0) << p;
+    mio_mesh_free(out);
+
+    // NULL options are the defaults; a negative tolerance is refused.
+    out = mio_check_conformity(m, nullptr, nullptr);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    mio_mesh_free(out);
+    o.tolerance = -1.0;
+    EXPECT_EQ(mio_check_conformity(m, &o, nullptr), nullptr);
+    EXPECT_EQ(mio_check_conformity_warnings(nullptr, 0), 0);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, ErrorSize) {
     // Two unit right triangles of the unit square (diameter sqrt 2), indicator
     // 1 and 4: with eta = 1 and N = 2 they ask 1 and a quarter (Zienkiewicz
@@ -5196,6 +5244,18 @@ TEST(CApi, OctreeMeshTetrahedraAndCastellatedCells) {
     EXPECT_EQ(report.num_boundary_edges_open, 0);
     mio_mesh_free(hexes);
 
+    EXPECT_EQ(opts.hex_grading, MIO_OCTREE_MESH_HEX_UNIFORM);
+    opts.hex_grading = MIO_OCTREE_MESH_HEX_GRADED;
+    mio_mesh* graded = mio_octree_mesh(cube, &opts, &report);
+    ASSERT_NE(graded, nullptr) << mio_last_error();
+    EXPECT_GT(report.num_hexahedra, 0);
+    EXPECT_EQ(report.num_inverted, 0);
+    EXPECT_EQ(report.num_boundary_edges_open, 0);
+    mio_mesh_free(graded);
+    opts.hex_grading = 99;
+    EXPECT_EQ(mio_octree_mesh(cube, &opts, nullptr), nullptr);
+    opts.hex_grading = MIO_OCTREE_MESH_HEX_UNIFORM;
+
     // Out-of-range enums fail.
     opts.output = 99;
     EXPECT_EQ(mio_octree_mesh(cube, &opts, nullptr), nullptr);
@@ -5219,6 +5279,28 @@ TEST(CApi, VoxelizeRejectsAnUnknownFill) {
     const std::int64_t res[3] = {2, 2, 2};
     opts.resolution = res;
     opts.fill = 99;  // drift guard: an out-of-range enum fails, never reinterprets
+    EXPECT_EQ(mio_voxelize(cube, &opts, nullptr, nullptr, nullptr, nullptr), nullptr);
+    mio_mesh_free(cube);
+}
+
+TEST(CApi, VoxelizeTakesAPlane) {
+    // The cube surface's boundary-free skin in 2-D: `fill` all needs only its
+    // box, and `plane` chooses which two axes it spans.
+    mio_mesh* cube = capi_cube_surface();
+    mio_voxel_opts opts;
+    mio_voxel_opts_init(&opts);
+    EXPECT_EQ(opts.plane, MIO_PLANE_AUTO);
+    const std::int64_t res[3] = {4, 2, 0};
+    opts.resolution = res;
+    opts.plane = MIO_PLANE_YZ;
+    std::int64_t dims[3] = {0, 0, 0};
+    mio_mesh* out = mio_voxelize(cube, &opts, dims, nullptr, nullptr, nullptr);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(dims[0], 4);
+    EXPECT_EQ(dims[1], 2);
+    EXPECT_EQ(dims[2], 1);
+    mio_mesh_free(out);
+    opts.plane = 7;  // drift guard, as for fill
     EXPECT_EQ(mio_voxelize(cube, &opts, nullptr, nullptr, nullptr, nullptr), nullptr);
     mio_mesh_free(cube);
 }

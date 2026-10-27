@@ -86,6 +86,8 @@ def test_castellated_regions_distances_and_report():
         "quality",
     ]
     assert report["warnings"] == []
+    # A closed skin: the points deep inside are flooded, not evaluated.
+    assert report["num_winding_skipped"] > 0
     # The distance is negative inside, the closest points lie on the skin.
     d = out.point_data["sdf:distance"]
     cp = out.point_data["sdf:closest_point"]
@@ -132,6 +134,39 @@ def test_hexahedral_output():
     # Without the pillow the grid's own cells meet the skin.
     bare = mio.octree_mesh(_sphere(), output="hex", surface_size=0.15, pillow=False)
     assert not np.any(np.asarray(bare.cell_data["octree_mesh:pillow"][0]))
+
+
+def _cylinder():
+    return mio.convert_cells(
+        mio.extract_surface(mio.cylinder(0.5, 2.0)), mode="simplexify"
+    )
+
+
+@needs_core
+def test_graded_hexahedral_output():
+    uniform, ureport = mio.octree_mesh(
+        _cylinder(), output="hex", min_size=0.05, return_report=True
+    )
+    out, report = mio.octree_mesh(
+        _cylinder(),
+        output="hex",
+        min_size=0.05,
+        hex_grading="graded",
+        return_report=True,
+    )
+    assert [c.type for c in out.cells] == ["hexahedron"]
+    assert report["num_hexahedra"] < ureport["num_hexahedra"]
+    assert report["num_inverted"] == 0
+    assert report["min_scaled_jacobian"] > 0.0
+    assert report["num_boundary_edges_open"] == 0
+    assert report["num_non_manifold_boundary_edges"] == 0
+    assert report["hausdorff_to_skin"] < 0.05
+    levels = np.asarray(out.cell_data["octree:level"][0])
+    assert len(np.unique(levels)) > 1
+    _, conformity = mio.check_conformity(out, return_report=True)
+    assert conformity["num_hanging_nodes"] == 0
+    with pytest.raises(ValueError, match="hex_grading"):
+        mio.octree_mesh(_cylinder(), output="hex", hex_grading="coarse")
 
 
 @needs_core
@@ -231,6 +266,23 @@ def test_cli_round_trip(tmp_path, capsys):
     report = json.loads(capsys.readouterr().out)
     assert "timings" not in report
     assert report["num_cells"] == len(mio.read(out).cells[0].data)
+    code = mio._cli.main(
+        [
+            "octree-mesh",
+            str(skin),
+            str(out),
+            "--output",
+            "hex",
+            "--max-size",
+            "0.5",
+            "--hex-grading",
+            "graded",
+            "--json",
+        ]
+    )
+    assert code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["num_hexahedra"] == len(mio.read(out).cells[0].data) > 0
 
 
 @needs_core
@@ -247,6 +299,7 @@ def test_pipeline_step_in_both_engines(tmp_path):
                 "MaxSize": 0.5,
                 "MinSize": 0.125,
                 "Fill": "cover",
+                "HexGrading": "graded",
             }
         ],
         "Output": {"Path": str(tmp_path / "py.vtu")},

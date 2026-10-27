@@ -49,7 +49,7 @@ Where a fine leaf meets a coarse one there are three outputs.
 
 ![the same quadtree with hanging nodes, as polygons, and as triangles](/images/octree_transitions.png)
 
-Both conforming outputs need a balanced tree (`balance` `face` or `full`), carry `octree:leaf` (the leaf, in the `hanging` output's order, each cell was cut from) beside `octree:level`/`octree:cut` and `sdf:distance`, and have no `octree:hanging` array (`num_hanging` is 0). The cells are in blocks (the untouched leaves first, then the transition cells), in leaf order within a block.
+Both conforming outputs need a balanced tree (`balance` `face` or `full`), carry `octree:leaf` (the leaf, in the `hanging` output's order, each cell was cut from) beside `octree:level`/`octree:cut` and `sdf:distance`, and have no `octree:hanging` array (`num_hanging` is 0). The cells are in blocks (the untouched leaves first, then the transition cells), in leaf order within a block. [`check_conformity`](check_conformity.md) holds them to it: on every neighbour pattern, the sphere and the quadtree it reports no hanging node and no partly overlapping face under `"polyhedra"` and `"templates"`, and under `"hanging"` it flags exactly the points `octree:hanging` marks.
 
 ## Snapping: `snap=True`
 
@@ -70,7 +70,7 @@ By default every leaf the skin cuts is split down to `max_level`. `surface_level
 
 ## Planes: `plane=`
 
-A 2-D skin lies in the plane of zero extent by default (`z`, then `y`, then `x`); `plane` `"xy"`, `"xz"` or `"yz"` chooses it. Leaves are emitted in that plane. The report's `origin` is in the skin's frame (the two in-plane axes first, the normal last). 2-D [`voxelize`](voxelize.md#2-d-pixels) picks the plane the same way automatically.
+A 2-D skin lies in the plane of zero extent by default (`z`, then `y`, then `x`); `plane` `"xy"`, `"xz"` or `"yz"` chooses it. Leaves are emitted in that plane. The report's `origin` is in the skin's frame (the two in-plane axes first, the normal last). 2-D [`voxelize`](voxelize.md#2-d-pixels) takes the same `plane` and picks it the same way under `"auto"`.
 
 ## Determinism
 
