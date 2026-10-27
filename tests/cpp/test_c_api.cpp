@@ -48,6 +48,7 @@
 #include "meshioplusplus/meshioplusplus.h"
 
 #include "meshioplusplus/formats/cad_json.hpp"
+#include "meshioplusplus/operations/tetrahedralize.hpp"
 
 #include "brep_solids.hpp"
 #include "mesh_fixtures.hpp"
@@ -56,7 +57,6 @@
 #include "meshioplusplus/formats/med.hpp"
 #include "meshioplusplus/formats/vtkhdf.hpp"
 #include "meshioplusplus/region.hpp"
-#include "meshioplusplus/operations/tetrahedralize.hpp"
 #endif
 
 namespace {
