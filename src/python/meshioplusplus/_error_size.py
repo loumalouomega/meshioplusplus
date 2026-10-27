@@ -32,7 +32,9 @@ from ._fallback import core_op_declined
 _PREFIX = "meshio++: error_size: "
 
 
-def _validate(mesh, error_array, target_error, order, min_size, max_size, output, overwrite):
+def _validate(
+    mesh, error_array, target_error, order, min_size, max_size, output, overwrite
+):
     if not (math.isfinite(target_error) and target_error > 0.0):
         raise ValueError(f"{_PREFIX}target_error must be finite and positive")
     if not (math.isfinite(order) and order > 0.0):

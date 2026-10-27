@@ -1639,7 +1639,9 @@ def test_quads_dominant_and_all(tmp_path):
     with pytest.raises(ValueError, match="quads"):
         mio.mesh_cad_surface(sphere, 0.2, quads="hex")
     # Roadmap 6.8.3: quad16, untangling with quads, and curved quad-dominant.
-    cubic, c = mio.mesh_cad_surface(sphere, 0.3, quads="all", order=3, return_report=True)
+    cubic, c = mio.mesh_cad_surface(
+        sphere, 0.3, quads="all", order=3, return_report=True
+    )
     assert {b.type for b in cubic.cells} == {"quad16", "line4"}
     assert c["num_curved_straightened"] == 0
     _, u = mio.mesh_cad_surface(
