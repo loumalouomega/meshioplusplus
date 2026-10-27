@@ -112,8 +112,7 @@ TEST(Pipeline, ErrorSizeTurnsTheIndicatorIntoSizes) {
     Mesh in = mt::tet_mesh();
     std::vector<meshioplusplus::NDArray> blocks;
     for (const auto& block : in.CellRange()) {
-        meshioplusplus::NDArray e(meshioplusplus::DType::Float64,
-                                  {static_cast<std::int64_t>(block.NumCells())});
+        meshioplusplus::NDArray e(meshioplusplus::DType::Float64, {block.NumCells()});
         for (std::size_t i = 0; i < block.NumCells(); ++i)
             e.As<double>()[i] = 0.1 * static_cast<double>(i + 1);
         blocks.push_back(std::move(e));
