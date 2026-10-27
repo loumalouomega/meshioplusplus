@@ -342,6 +342,30 @@ TEST(Voxelize, PixelsTakeAnExplicitPlane) {
     EXPECT_LT(sliver.mNumOccupied, r.mNumOccupied / 4);
 }
 
+TEST(Voxelize, PixelsInsideIgnoreHowTheLoopsSegmentsAreDirected) {
+    // A slice's segments can run both ways round one loop; the winding number
+    // needs them directed one way, so the loop is oriented before the fill.
+    VoxelOptions o;
+    o.mResolution = std::array<std::int64_t, 3>{{32, 32, 0}};
+    o.mPadding = 0.1;
+    o.mFill = VoxelFill::Inside;
+    const VoxelResult want = voxelize(circle_polyline(1.0, 64), o);
+    std::vector<std::vector<double>> pts;
+    std::vector<std::vector<std::int64_t>> lines;
+    const int n = 64;
+    for (int i = 0; i < n; ++i) {
+        pts.push_back({std::cos(2.0 * M_PI * i / n), std::sin(2.0 * M_PI * i / n), 0.0});
+        const std::int64_t a = i, b = (i + 1) % n;
+        if (i % 3 == 1)
+            lines.push_back({b, a});
+        else
+            lines.push_back({a, b});
+    }
+    const VoxelResult got = voxelize(mt::make_mesh(std::move(pts), "line", std::move(lines)), o);
+    EXPECT_GT(want.mNumOccupied, 0);
+    EXPECT_EQ(got.mNumOccupied, want.mNumOccupied);
+}
+
 TEST(Voxelize, PixelsRefuseAnOpenPolylineForInside) {
     VoxelOptions o;
     o.mResolution = std::array<std::int64_t, 3>{{8, 8, 0}};

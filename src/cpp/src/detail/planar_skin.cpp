@@ -20,11 +20,14 @@
 // System includes
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
+#include <vector>
 
 // Project includes
 #include "meshioplusplus/detail/grid_lattice.hpp"
@@ -69,6 +72,56 @@ PlanarFrame planar_frame(const Mesh& rMesh, PlanarPlane Plane) {
         frame.mAxis = {{1, 2, 0}};
     return frame;
 }
+
+namespace {
+
+// Orient every closed loop (all its points of degree two) like its first segment in input
+// order, so a slice whose segments run both ways round still has a winding number. Loops
+// already directed one way, and components that are not simple loops, are left as they are.
+void ps_orient_loops(std::vector<std::array<std::int64_t, 2>>& rIds) {
+    const std::size_t n = rIds.size();
+    std::unordered_map<std::int64_t, std::vector<std::size_t>> incident;
+    for (std::size_t i = 0; i < n; ++i) {
+        incident[rIds[i][0]].push_back(i);
+        if (rIds[i][1] != rIds[i][0])
+            incident[rIds[i][1]].push_back(i);
+    }
+    std::vector<std::uint8_t> seen(n, 0);
+    std::vector<std::size_t> flips;
+    for (std::size_t first = 0; first < n; ++first) {
+        if (seen[first])
+            continue;
+        seen[first] = 1;
+        if (rIds[first][0] == rIds[first][1])
+            continue;
+        flips.clear();
+        bool closed = false;
+        std::size_t cur = first;
+        std::int64_t at = rIds[first][1];
+        for (;;) {
+            const auto& inc = incident.at(at);
+            if (inc.size() != 2)
+                break;
+            const std::size_t next = inc[0] == cur ? inc[1] : inc[0];
+            if (next == first) {
+                closed = true;
+                break;
+            }
+            if (seen[next])
+                break;
+            seen[next] = 1;
+            if (rIds[next][0] != at)
+                flips.push_back(next);
+            at = rIds[next][0] == at ? rIds[next][1] : rIds[next][0];
+            cur = next;
+        }
+        if (closed)
+            for (const std::size_t f : flips)
+                std::swap(rIds[f][0], rIds[f][1]);
+    }
+}
+
+}  // namespace
 
 PlanarSkin collect_planar_skin(const Mesh& rMesh, const char* pPrefix, const PlanarFrame& rFrame) {
     PlanarSkin skin;
@@ -117,10 +170,10 @@ PlanarSkin collect_planar_skin(const Mesh& rMesh, const char* pPrefix, const Pla
         if (rec.first == 1)
             skin.mIds.push_back(rec.second);
     }
+    ps_orient_loops(skin.mIds);
     for (const auto& id : skin.mIds)
-        skin.mSegments.push_back(
-            {rFrame.Permute(read_point(points, dim, id[0])),
-             rFrame.Permute(read_point(points, dim, id[1]))});
+        skin.mSegments.push_back({rFrame.Permute(read_point(points, dim, id[0])),
+                                  rFrame.Permute(read_point(points, dim, id[1]))});
     return skin;
 }
 

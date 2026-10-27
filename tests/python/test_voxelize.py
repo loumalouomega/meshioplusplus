@@ -631,6 +631,29 @@ def test_pixels_refuse_an_open_polyline_for_inside():
         voxelize(_circle_polyline(close=False), resolution=(8, 8), fill="inside")
 
 
+@pytest.mark.parametrize("twin", [False, True])
+def test_pixels_inside_ignore_how_the_loops_segments_are_directed(twin):
+    # A slice's segments can run both ways round one loop; the winding number
+    # needs them directed one way, so the loop is oriented before the fill.
+    from meshioplusplus._voxelize import _voxelize_py
+
+    def run(mesh):
+        if twin:
+            args = (mesh, [32, 32, 0], None, None, 0.1, 0.0, "inside", True, 20000000)
+            return _voxelize_py(*args, "pseudonormal", "auto")[1]["num_occupied"]
+        return voxelize(
+            mesh, resolution=(32, 32), padding=0.1, fill="inside", return_report=True
+        )[1]["num_occupied"]
+
+    good = _circle_polyline(n=64)
+    lines = np.asarray(good.cells[0].data).copy()
+    lines[1::3] = lines[1::3, ::-1]
+    mixed = meshioplusplus.Mesh(good.points, [("line", lines)])
+    want = run(good)
+    assert want > 0
+    assert run(mixed) == want
+
+
 def _wobbly_xz_circle(n=128):
     # A circle in the xz plane whose y wobbles by 1e-3: no axis has zero
     # extent, so "auto" falls back to xy and sees a sliver.
