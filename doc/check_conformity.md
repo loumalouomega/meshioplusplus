@@ -45,7 +45,7 @@ The input, bit-identical — points, connectivity, block order, every data array
 
 ## Probes
 
-The tests hold the check to meshes whose defects are known by construction: `refine(closure="balanced")` flags exactly the points `refine:hanging` marks, the `"redgreen"` and `"propagate"` closures report nothing, an [`octree`](/octree) with `transition="polyhedra"` or `"templates"` reports no hanging node and with `"hanging"` flags exactly `octree:hanging`, and `undo_green`'s restored green parents leave T-junctions beside the red children they meet.
+The tests hold the check to meshes whose defects are known by construction: `refine(closure="balanced")` flags exactly the points `refine:hanging` marks, the `"redgreen"` and `"propagate"` closures report nothing, an [`octree`](/octree) with `transition="polyhedra"` or `"templates"` reports no hanging node and with `"hanging"` flags exactly `octree:hanging`, and `undo_green`'s restored green parents leave T-junctions beside the red children they meet. The notebook `example/python/43_conformity_and_planes.ipynb` runs the same probes on an octree of the Stanford bunny and on two parts meshed apart.
 
 ## Core only
 
