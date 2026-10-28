@@ -3184,6 +3184,116 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def extrude(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        direction: Optional[List[float]] = None,
+        num_layers: int = 1,
+        ratio: float = 1.0,
+        offsets: Optional[List[float]] = None,
+        record_layers: bool = False,
+        max_cells: int = 20_000_000,
+    ) -> dict:
+        """Sweep a surface into a volume, or a curve into a surface, along a
+        vector (roadmap 3.1.2): triangles to wedges, quads to hexahedra, lines
+        (when there are no 2-D cells) to quads, in num_layers layers spaced
+        uniformly, by a geometric ratio, or at explicit offsets (fractions of
+        direction, increasing, ending at 1). direction (default [0, 0, 1]) is
+        the whole displacement; faces are turned to point along it. The
+        output holds the swept cells only, with Side regions bottom, top and
+        side, and the input's regions and data carried; record_layers adds
+        extrude:layer cell data. Reports num_cells, num_hexahedra, num_wedges,
+        num_pyramids, num_tetrahedra, num_quads, num_triangles, num_flipped,
+        min_scaled_jacobian and warnings."""
+        return _guard(
+            _tools.tool_extrude,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            direction=direction if direction is not None else (0.0, 0.0, 1.0),
+            num_layers=num_layers,
+            ratio=ratio,
+            offsets=offsets,
+            record_layers=record_layers,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
+    def revolve(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        axis: Optional[List[float]] = None,
+        axis_point: Optional[List[float]] = None,
+        angle: float = 360.0,
+        num_layers: int = 16,
+        tolerance: float = 1e-9,
+        record_layers: bool = False,
+        max_cells: int = 20_000_000,
+    ) -> dict:
+        """Sweep a surface (or a curve) around an axis (roadmap 3.1.3):
+        axis (default [0, 1, 0]) through axis_point (default the origin),
+        angle degrees (right-hand rule; 360 closes the turn) in num_layers
+        steps. Points within tolerance (a fraction of the bounding-box
+        diagonal) of the axis stay put, so the cells around them collapse
+        into pyramids, tetrahedra and wedges. Side regions start, end (a
+        partial turn) and side. Reports the extrude counts, num_on_axis,
+        full, min_scaled_jacobian and warnings."""
+        return _guard(
+            _tools.tool_revolve,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            axis=axis if axis is not None else (0.0, 1.0, 0.0),
+            axis_point=axis_point if axis_point is not None else (0.0, 0.0, 0.0),
+            angle=angle,
+            num_layers=num_layers,
+            tolerance=tolerance,
+            record_layers=record_layers,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
+    def mirror(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        origin: Optional[List[float]] = None,
+        normal: Optional[List[float]] = None,
+        keep_original: bool = False,
+        weld: bool = True,
+        tolerance: float = 1e-9,
+        reflect_vector_data: bool = False,
+    ) -> dict:
+        """Reflect a mesh across the plane through origin (default the
+        origin) with normal (default [1, 0, 0]), every cell right side out
+        (roadmap 3.2.5; a reflecting transform leaves them inverted). With
+        keep_original the input followed by its image, the points on the
+        plane shared when weld (default); reflect_vector_data reflects float
+        vector and tensor data. Reports num_flipped_cells,
+        num_points_on_plane, num_dropped_cells, num_dropped_sides and
+        warnings."""
+        return _guard(
+            _tools.tool_mirror,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            origin=origin if origin is not None else (0.0, 0.0, 0.0),
+            normal=normal if normal is not None else (1.0, 0.0, 0.0),
+            keep_original=keep_original,
+            weld=weld,
+            tolerance=tolerance,
+            reflect_vector_data=reflect_vector_data,
+        )
+
+    @server.tool()
     def tetrahedralize(
         input_path: str,
         output_path: str,

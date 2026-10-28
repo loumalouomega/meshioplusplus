@@ -39,6 +39,25 @@
  * the same way in every layer. The surface (`wall`) and the last level
  * (`cap`) come out as faces, split like their columns.
  *
+ * `extrude` and `revolve` (roadmap 3.1.2, 3.1.3) ask for three more things,
+ * all off by default so `boundary_layer`'s sweep is unchanged:
+ *
+ *  - **edges**: each directed edge `a -> b` sweeps to a side face per layer,
+ *    `[a, b, b', a']` (a triangle when one end is collapsed, nothing when
+ *    both are). An edge that runs along its face's winding gives the face
+ *    of the column beside it that faces outward, so the border edges of an
+ *    open surface give its side walls, and a curve's own edges its surface.
+ *  - **periodic**: the last level is the surface itself again, so a full
+ *    turn closes on itself; there is then no wall and no cap.
+ *  - **collapsed-edge wedges**: a quad with two adjacent corners collapsed in
+ *    every layer, and the other two in none (an edge on a revolution's
+ *    axis), gives one wedge per layer instead of a split column; its wall
+ *    and cap stay quads.
+ *
+ * The id of every point at every level is returned too, so a caller can put
+ * the levels' points somewhere other than along a straight direction (a
+ * rotation) and tell which corners collapsed.
+ *
  * A **core-private** header: nothing installed names it.
  */
 
@@ -62,10 +81,17 @@ struct LayerSweepInput {
     /// does not grow that layer, and all zero is a collapsed point.
     std::vector<double> mOffsets;
     int mLayers = 1;
+    /// Directed edges to sweep into side faces (`mSideQuads`, `mSideTriangles`).
+    std::vector<std::array<std::int64_t, 2>> mEdges;
+    /// The last level is the surface again: no points of its own, no wall, no cap.
+    bool mPeriodic = false;
+    /// A quad with an edge collapsed in every layer gives wedges (see above).
+    bool mCollapsedEdgeWedges = false;
 };
 
 /// One cell or face of the sweep: its node ids (unused slots -1), the
-/// surface face it comes from and its layer (1..L; 0 the wall, L + 1 the cap).
+/// surface face (or edge) it comes from and its layer (1..L; 0 the wall, L + 1
+/// the cap).
 struct LayerSweepCell {
     std::array<std::int64_t, 8> mNodes{};
     std::int64_t mFace = 0;
@@ -80,6 +106,11 @@ struct LayerSweepResult {
     std::vector<LayerSweepCell> mHexahedra, mWedges, mPyramids, mTetrahedra;
     /// The wall and cap faces, triangles and quads apart.
     std::vector<LayerSweepCell> mWallTriangles, mWallQuads, mCapTriangles, mCapQuads;
+    /// The edges' side faces, by edge then layer; `mFace` is the edge index.
+    std::vector<LayerSweepCell> mSideQuads, mSideTriangles;
+    /// The id of point P at level K (1..L) is `mLevelIds[(K - 1) * n + P]`;
+    /// level 0 is P itself. Equal ids at K - 1 and K: P is collapsed in K.
+    std::vector<std::int64_t> mLevelIds;
 };
 
 LayerSweepResult layer_sweep(const LayerSweepInput& rIn);

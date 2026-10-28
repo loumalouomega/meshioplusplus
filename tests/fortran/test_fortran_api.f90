@@ -2216,6 +2216,47 @@ contains
         g = mio_box(cell_type='blob', stat=ierr)
         call check(ierr /= 0, 'an unknown cell type is an error')
 
+        ! Roadmap 3.1.2, 3.1.3, 3.2.5: sweeps of a rectangle, a reflected box.
+        block
+            type(mio_mesh) :: rect, swept, boxm
+            type(mio_sweep_report) :: srep
+            type(mio_mirror_report) :: mrep
+            integer(int64) :: ninv
+            character(:), allocatable :: msg
+            rect = mio_rectangle(dims=[3, 2], stat=ierr)
+            call check(ierr == 0, 'rectangle for the sweeps built')
+            swept = mio_extrude(rect, num_layers=4, report=srep, stat=ierr, errmsg=msg)
+            call check(ierr == 0 .and. srep%num_hexahedra == 24_int64, 'extrude gives hexahedra')
+            if (ierr == 0) call swept%free()
+            swept = mio_extrude(rect, offsets=[0.25_real64, 1.0_real64], report=srep, stat=ierr)
+            call check(ierr == 0 .and. srep%num_cells == 12_int64, 'extrude takes offsets')
+            if (ierr == 0) call swept%free()
+            swept = mio_extrude(rect, direction=[0.0_real64, 1.0_real64, 0.0_real64], &
+                                stat=ierr, errmsg=msg)
+            call check(ierr /= 0 .and. index(msg, 'parallel') > 0, &
+                       'extrude refuses a direction in the faces'' plane')
+            swept = mio_revolve(rect, num_layers=8, report=srep, stat=ierr, errmsg=msg)
+            call check(ierr == 0 .and. srep%full == 1 .and. srep%num_on_axis == 3_int64 .and. &
+                       srep%num_wedges == 16_int64, 'revolve closes a full turn')
+            if (ierr == 0) call swept%free()
+            call rect%free()
+            boxm = mio_box(dims=[2, 2, 2], cell_type='tetra', stat=ierr)
+            swept = mio_mirror(boxm, report=mrep, stat=ierr, errmsg=msg)
+            call check(ierr == 0 .and. mrep%num_flipped_cells == 48_int64, 'mirror flips the box')
+            if (ierr == 0) then
+                call swept%quality_counts(num_inverted=ninv)
+                call check(ninv == 0_int64, 'mirror leaves no cell inverted')
+                call swept%free()
+            end if
+            swept = mio_mirror(boxm, keep_original=.true., report=mrep, stat=ierr)
+            call check(ierr == 0 .and. mrep%num_points_on_plane == 9_int64, &
+                       'mirror welds the plane')
+            if (ierr == 0) call swept%free()
+            swept = mio_mirror(boxm, normal=[0.0_real64, 0.0_real64, 0.0_real64], stat=ierr)
+            call check(ierr /= 0, 'mirror refuses a zero normal')
+            call boxm%free()
+        end block
+
         ! The unit cube as a closed, outward-wound triangle surface.
         pts = reshape([0d0, 0d0, 0d0, 1d0, 0d0, 0d0, 1d0, 1d0, 0d0, 0d0, 1d0, 0d0, &
                        0d0, 0d0, 1d0, 1d0, 0d0, 1d0, 1d0, 1d0, 1d0, 0d0, 1d0, 1d0], [3, 8])

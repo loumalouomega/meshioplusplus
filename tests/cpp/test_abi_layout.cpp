@@ -94,6 +94,8 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/formats/radioss_th.hpp"
 #include "meshioplusplus/formats/xyz.hpp"
 #include "meshioplusplus/operations/check_conformity.hpp"
+#include "meshioplusplus/operations/extrude.hpp"
+#include "meshioplusplus/operations/mirror.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
@@ -333,6 +335,16 @@ static_assert(offsetof(meshioplusplus::VoxelOptions, mPlane) == 216, "VoxelOptio
 // ABI 36: check_conformity's options (roadmap 3.2.1), pinned from the release
 // that introduces them.
 MIO_ABI_LAYOUT(meshioplusplus::ConformityOptions, 16, 8);
+// ABI 36: the sweeps' and mirror's options (roadmap 3.1.2, 3.1.3, 3.2.5),
+// pinned from the release that introduces them. ExtrudeOptions holds a
+// std::vector, whose size is the standard library's, so only the members
+// before it are pinned.
+static_assert(offsetof(meshioplusplus::ExtrudeOptions, mRatio) == 32,
+              "ExtrudeOptions::mRatio moved");
+static_assert(offsetof(meshioplusplus::ExtrudeOptions, mOffsets) == 40,
+              "ExtrudeOptions::mOffsets moved");
+MIO_ABI_LAYOUT(meshioplusplus::RevolveOptions, 88, 8);
+MIO_ABI_LAYOUT(meshioplusplus::MirrorOptions, 72, 8);
 MIO_ABI_LAYOUT(meshioplusplus::OctreeOptions, 304, 8);
 // ABI 36: `mHexGrading` (roadmap 3.1.4.3) in the padding after `mPillow`.
 MIO_ABI_LAYOUT(meshioplusplus::OctreeMeshOptions, 336, 8);

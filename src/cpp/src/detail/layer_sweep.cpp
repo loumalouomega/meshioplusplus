@@ -114,6 +114,11 @@ LayerSweepResult layer_sweep(const LayerSweepInput& rIn) {
     std::vector<std::int64_t> level_id(nn * nl, -1);
     for (std::size_t k = 0; k < nl; ++k)
         for (std::size_t p = 0; p < nn; ++p) {
+            if (rIn.mPeriodic && k + 1 == nl) {
+                // The last level of a full turn is the surface again.
+                level_id[k * nn + p] = static_cast<std::int64_t>(p);
+                continue;
+            }
             if (!grows[k * nn + p]) {
                 level_id[k * nn + p] =
                     k == 0 ? static_cast<std::int64_t>(p) : level_id[(k - 1) * nn + p];
@@ -184,9 +189,32 @@ LayerSweepResult layer_sweep(const LayerSweepInput& rIn) {
             for (int k = 1; k <= layers && !any; ++k)
                 any = is_collapsed(r_f[static_cast<std::size_t>(i)], k);
         const auto face = static_cast<std::int64_t>(f);
-        const bool split = quad && any;
+        // An edge collapsed in every layer and the rest in none: corner S
+        // and S + 1 on the edge.
+        int edge_at = -1;
+        if (quad && any && rIn.mCollapsedEdgeWedges)
+            for (int s = 0; s < 4 && edge_at < 0; ++s) {
+                bool ok = true;
+                for (int i = 0; i < 4 && ok; ++i) {
+                    const bool on_edge = i == s || i == (s + 1) % 4;
+                    for (int k = 1; k <= layers && ok; ++k)
+                        ok = is_collapsed(r_f[static_cast<std::size_t>(i)], k) == on_edge;
+                }
+                if (ok)
+                    edge_at = s;
+            }
+        const bool split = quad && any && edge_at < 0;
         for (int k = 1; k <= layers; ++k) {
-            if (quad && !split) {
+            if (edge_at >= 0) {
+                const auto s = static_cast<std::size_t>(edge_at);
+                const std::int64_t x = r_f[s], y = r_f[(s + 1) % 4], z = r_f[(s + 2) % 4],
+                                   w = r_f[(s + 3) % 4];
+                LayerSweepCell cell;
+                cell.mFace = face;
+                cell.mLayer = k;
+                cell.mNodes = {x, at(w, k - 1), at(w, k), y, at(z, k - 1), at(z, k), -1, -1};
+                out.mWedges.push_back(cell);
+            } else if (quad && !split) {
                 LayerSweepCell cell;
                 cell.mFace = face;
                 cell.mLayer = k;
@@ -227,9 +255,37 @@ LayerSweepResult layer_sweep(const LayerSweepInput& rIn) {
                 rTris.push_back(c);
             }
         };
-        put(0, out.mWallTriangles, out.mWallQuads, 0);
-        put(layers, out.mCapTriangles, out.mCapQuads, layers + 1);
+        if (!rIn.mPeriodic) {
+            put(0, out.mWallTriangles, out.mWallQuads, 0);
+            put(layers, out.mCapTriangles, out.mCapQuads, layers + 1);
+        }
     }
+    // The edges' side faces.
+    for (std::size_t e = 0; e < rIn.mEdges.size(); ++e) {
+        const std::int64_t a = rIn.mEdges[e][0], b = rIn.mEdges[e][1];
+        for (int k = 1; k <= layers; ++k) {
+            const bool ca = is_collapsed(a, k), cb = is_collapsed(b, k);
+            if (ca && cb)
+                continue;
+            LayerSweepCell c;
+            c.mNodes.fill(-1);
+            c.mFace = static_cast<std::int64_t>(e);
+            c.mLayer = k;
+            if (!ca && !cb) {
+                c.mNodes[0] = at(a, k - 1);
+                c.mNodes[1] = at(b, k - 1);
+                c.mNodes[2] = at(b, k);
+                c.mNodes[3] = at(a, k);
+                out.mSideQuads.push_back(c);
+            } else {
+                c.mNodes[0] = at(a, k - 1);
+                c.mNodes[1] = at(b, k - 1);
+                c.mNodes[2] = ca ? at(b, k) : at(a, k);
+                out.mSideTriangles.push_back(c);
+            }
+        }
+    }
+    out.mLevelIds = std::move(level_id);
     return out;
 }
 

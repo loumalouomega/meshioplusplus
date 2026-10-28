@@ -135,6 +135,8 @@
 #include "meshioplusplus/operations/quality_gate.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/boundary_layer.hpp"
+#include "meshioplusplus/operations/extrude.hpp"
+#include "meshioplusplus/operations/mirror.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
@@ -7844,6 +7846,221 @@ mio_mesh* mio_boundary_layer(const mio_mesh* mesh, const mio_boundary_layer_opts
             report->num_front_crossings = r.mNumFrontCrossings;
         }
         return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+static_assert(sizeof(mio_extrude_opts) == 96, "mio_extrude_opts layout");
+static_assert(offsetof(mio_extrude_opts, offsets) == 32, "mio_extrude_opts layout");
+static_assert(offsetof(mio_extrude_opts, num_layers) == 56, "mio_extrude_opts layout");
+static_assert(offsetof(mio_extrude_opts, reserved) == 64, "mio_extrude_opts layout");
+static_assert(sizeof(mio_revolve_opts) == 112, "mio_revolve_opts layout");
+static_assert(offsetof(mio_revolve_opts, angle) == 48, "mio_revolve_opts layout");
+static_assert(offsetof(mio_revolve_opts, num_layers) == 72, "mio_revolve_opts layout");
+static_assert(offsetof(mio_revolve_opts, reserved) == 80, "mio_revolve_opts layout");
+static_assert(sizeof(mio_sweep_report) == 128, "mio_sweep_report layout");
+static_assert(offsetof(mio_sweep_report, min_scaled_jacobian) == 80, "mio_sweep_report layout");
+static_assert(offsetof(mio_sweep_report, full) == 88, "mio_sweep_report layout");
+static_assert(offsetof(mio_sweep_report, reserved) == 96, "mio_sweep_report layout");
+static_assert(sizeof(mio_mirror_opts) == 104, "mio_mirror_opts layout");
+static_assert(offsetof(mio_mirror_opts, keep_original) == 56, "mio_mirror_opts layout");
+static_assert(offsetof(mio_mirror_opts, reserved) == 72, "mio_mirror_opts layout");
+static_assert(sizeof(mio_mirror_report) == 72, "mio_mirror_report layout");
+static_assert(offsetof(mio_mirror_report, num_warnings) == 32, "mio_mirror_report layout");
+
+}  // extern "C"
+
+namespace {
+
+/// The warnings of this thread's last mio_extrude, mio_revolve and mio_mirror calls.
+std::string& capi_extrude_warnings() {
+    thread_local std::string warnings;
+    return warnings;
+}
+std::string& capi_revolve_warnings() {
+    thread_local std::string warnings;
+    return warnings;
+}
+std::string& capi_mirror_warnings() {
+    thread_local std::string warnings;
+    return warnings;
+}
+
+void capi_join_warnings(const std::vector<std::string>& rFrom, std::string& rInto) {
+    rInto.clear();
+    for (const std::string& w : rFrom) {
+        if (!rInto.empty())
+            rInto += '\n';
+        rInto += w;
+    }
+}
+
+void capi_sweep_report(const meshioplusplus::SweepResult& rR, mio_sweep_report* pReport) {
+    if (!pReport)
+        return;
+    *pReport = mio_sweep_report{};
+    pReport->num_cells = rR.mNumCells;
+    pReport->num_hexahedra = rR.mNumHexahedra;
+    pReport->num_wedges = rR.mNumWedges;
+    pReport->num_pyramids = rR.mNumPyramids;
+    pReport->num_tetrahedra = rR.mNumTetrahedra;
+    pReport->num_quads = rR.mNumQuads;
+    pReport->num_triangles = rR.mNumTriangles;
+    pReport->num_flipped = rR.mNumFlipped;
+    pReport->num_on_axis = rR.mNumOnAxis;
+    pReport->num_warnings = static_cast<int64_t>(rR.mWarnings.size());
+    pReport->min_scaled_jacobian = rR.mMinScaledJacobian;
+    pReport->full = rR.mFull ? 1 : 0;
+}
+
+}  // namespace
+
+extern "C" {
+
+void mio_extrude_opts_init(mio_extrude_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_extrude_opts{};
+    const meshioplusplus::ExtrudeOptions d;
+    for (int i = 0; i < 3; ++i)
+        opts->direction[i] = d.mDirection[static_cast<std::size_t>(i)];
+    opts->ratio = d.mRatio;
+    opts->max_cells = d.mMaxCells;
+    opts->num_layers = d.mNumLayers;
+}
+
+void mio_revolve_opts_init(mio_revolve_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_revolve_opts{};
+    const meshioplusplus::RevolveOptions d;
+    for (int i = 0; i < 3; ++i) {
+        opts->axis_point[i] = d.mAxisPoint[static_cast<std::size_t>(i)];
+        opts->axis[i] = d.mAxis[static_cast<std::size_t>(i)];
+    }
+    opts->angle = d.mAngle;
+    opts->tolerance = d.mTolerance;
+    opts->max_cells = d.mMaxCells;
+    opts->num_layers = d.mNumLayers;
+}
+
+mio_mesh* mio_extrude(const mio_mesh* mesh, const mio_extrude_opts* opts,
+                      mio_sweep_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        capi_extrude_warnings().clear();
+        if (!mesh)
+            throw std::invalid_argument("meshio++: extrude: mesh is NULL");
+        mio_extrude_opts defaults;
+        mio_extrude_opts_init(&defaults);
+        const mio_extrude_opts& rOpts = opts ? *opts : defaults;
+        if (rOpts.num_offsets < 0 || (rOpts.num_offsets > 0 && !rOpts.offsets))
+            throw std::invalid_argument("meshio++: extrude: offsets is NULL or its count negative");
+        meshioplusplus::ExtrudeOptions o;
+        for (int i = 0; i < 3; ++i)
+            o.mDirection[static_cast<std::size_t>(i)] = rOpts.direction[i];
+        o.mRatio = rOpts.ratio;
+        o.mOffsets.assign(rOpts.offsets, rOpts.offsets + rOpts.num_offsets);
+        o.mMaxCells = rOpts.max_cells;
+        o.mNumLayers = rOpts.num_layers;
+        o.mRecordLayers = rOpts.record_layers != 0;
+        meshioplusplus::SweepResult r = meshioplusplus::extrude(mesh->mMesh, o);
+        capi_join_warnings(r.mWarnings, capi_extrude_warnings());
+        capi_sweep_report(r, report);
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+mio_mesh* mio_revolve(const mio_mesh* mesh, const mio_revolve_opts* opts,
+                      mio_sweep_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        capi_revolve_warnings().clear();
+        if (!mesh)
+            throw std::invalid_argument("meshio++: revolve: mesh is NULL");
+        mio_revolve_opts defaults;
+        mio_revolve_opts_init(&defaults);
+        const mio_revolve_opts& rOpts = opts ? *opts : defaults;
+        meshioplusplus::RevolveOptions o;
+        for (int i = 0; i < 3; ++i) {
+            o.mAxisPoint[static_cast<std::size_t>(i)] = rOpts.axis_point[i];
+            o.mAxis[static_cast<std::size_t>(i)] = rOpts.axis[i];
+        }
+        o.mAngle = rOpts.angle;
+        o.mTolerance = rOpts.tolerance;
+        o.mMaxCells = rOpts.max_cells;
+        o.mNumLayers = rOpts.num_layers;
+        o.mRecordLayers = rOpts.record_layers != 0;
+        meshioplusplus::SweepResult r = meshioplusplus::revolve(mesh->mMesh, o);
+        capi_join_warnings(r.mWarnings, capi_revolve_warnings());
+        capi_sweep_report(r, report);
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+int64_t mio_extrude_warnings(char* buf, int64_t buflen) {
+    return guarded_ptr(int64_t{-1}, [&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative warnings buffer length");
+        return copy_string(capi_extrude_warnings(), buf, buflen);
+    });
+}
+
+int64_t mio_revolve_warnings(char* buf, int64_t buflen) {
+    return guarded_ptr(int64_t{-1}, [&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative warnings buffer length");
+        return copy_string(capi_revolve_warnings(), buf, buflen);
+    });
+}
+
+void mio_mirror_opts_init(mio_mirror_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_mirror_opts{};
+    const meshioplusplus::MirrorOptions d;
+    for (int i = 0; i < 3; ++i) {
+        opts->origin[i] = d.mOrigin[static_cast<std::size_t>(i)];
+        opts->normal[i] = d.mNormal[static_cast<std::size_t>(i)];
+    }
+    opts->tolerance = d.mTolerance;
+    opts->weld = d.mWeld ? 1 : 0;
+}
+
+mio_mesh* mio_mirror(const mio_mesh* mesh, const mio_mirror_opts* opts,
+                     mio_mirror_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        capi_mirror_warnings().clear();
+        if (!mesh)
+            throw std::invalid_argument("meshio++: mirror: mesh is NULL");
+        mio_mirror_opts defaults;
+        mio_mirror_opts_init(&defaults);
+        const mio_mirror_opts& rOpts = opts ? *opts : defaults;
+        meshioplusplus::MirrorOptions o;
+        for (int i = 0; i < 3; ++i) {
+            o.mOrigin[static_cast<std::size_t>(i)] = rOpts.origin[i];
+            o.mNormal[static_cast<std::size_t>(i)] = rOpts.normal[i];
+        }
+        o.mTolerance = rOpts.tolerance;
+        o.mKeepOriginal = rOpts.keep_original != 0;
+        o.mWeld = rOpts.weld != 0;
+        o.mReflectVectorData = rOpts.reflect_vector_data != 0;
+        meshioplusplus::MirrorResult r = meshioplusplus::mirror(mesh->mMesh, o);
+        capi_join_warnings(r.mWarnings, capi_mirror_warnings());
+        if (report) {
+            *report = mio_mirror_report{};
+            report->num_flipped_cells = r.mNumFlippedCells;
+            report->num_points_on_plane = r.mNumPointsOnPlane;
+            report->num_dropped_cells = r.mNumDroppedCells;
+            report->num_dropped_sides = r.mNumDroppedSides;
+            report->num_warnings = static_cast<int64_t>(r.mWarnings.size());
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+int64_t mio_mirror_warnings(char* buf, int64_t buflen) {
+    return guarded_ptr(int64_t{-1}, [&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative warnings buffer length");
+        return copy_string(capi_mirror_warnings(), buf, buflen);
     });
 }
 

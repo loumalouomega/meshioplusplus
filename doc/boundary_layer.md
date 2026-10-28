@@ -24,6 +24,8 @@ print(report["num_wedges"], report["min_scaled_jacobian"], report["num_shrunk"])
 
 The cells come first (`wedge`, `hexahedron`, `pyramid`, `tetra`, the blocks that are not empty), then the surface (the *wall*) and the last layer (the *cap*) as `triangle` and `quad` faces, split like their columns. The faces of the wall and the cap are oriented with their normals along the growth. The cell data `boundary_layer:layer` holds each cell's layer (1 to `num_layers`), 0 for the wall and `num_layers + 1` for the cap, and the Cell regions `boundary_layer:cells`, `boundary_layer:wall` and `boundary_layer:cap` name them. Every cell data array of the surface's faces (`cad:face` among them) is carried to the cells and faces grown from them, its point data to every copy of a point, a Cell region of the surface to everything grown from its faces and a Point region to every copy of its points; side regions are dropped with a warning.
 
+[`extrude` and `revolve`](./extrude.md) sweep a profile on the same layer sweep, along one vector or around an axis rather than along each point's normal.
+
 The volume the cap closes off is filled by [`tetrahedralize`](./tetrahedralize.md), which keeps the cap's triangles, so the tetrahedra conform to the last layer's faces (`tests/cpp/test_tetrahedralize.cpp`, the sphere's layers grown inward), or by [`octree_mesh`](./octree_mesh.md), fitted to the cap rather than conforming to it.
 
 ![A plate with a small lid over its middle, layer cells seen from the side: without the front test the layers grow through the lid; with it they stop under it; with collapse="layers" the stopped points grow fewer layers](/images/boundary_layer_front.png)

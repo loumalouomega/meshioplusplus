@@ -628,6 +628,25 @@ _OP_TABLE = {
         "NormalSmoothIterations",
         "FrontCheck",
     ),
+    # Sweeps (roadmap 3.1.2, 3.1.3) and the reflection (3.2.5).
+    "Extrude": (
+        "Direction",
+        "NumLayers",
+        "Ratio",
+        "Offsets",
+        "RecordLayers",
+        "MaxCells",
+    ),
+    "Revolve": (
+        "Axis",
+        "AxisPoint",
+        "Angle",
+        "NumLayers",
+        "Tolerance",
+        "RecordLayers",
+        "MaxCells",
+    ),
+    "Mirror": ("Point", "Normal", "KeepOriginal", "Weld", "Tolerance", "ReflectData"),
     # Tetrahedra filling the closed triangle surface (roadmap 6.7).
     "Tetrahedralize": (
         "Backend",
@@ -1328,6 +1347,63 @@ def _apply_step(mesh, step, steps, warnings):
             NumFewerLayers=float(report["num_fewer_layers"]),
             NumFrontCrossings=float(report["num_front_crossings"]),
             MinScaledJacobian=float(report["min_scaled_jacobian"]),
+        )
+    elif op == "Extrude":
+        from ._extrude import extrude
+
+        mesh, report = extrude(
+            mesh,
+            _vec3(step, "Direction") if "Direction" in step else (0.0, 0.0, 1.0),
+            num_layers=int(_number(step, "NumLayers", 1)),
+            ratio=_number(step, "Ratio", 1.0),
+            offsets=_dvec(step, "Offsets"),
+            record_layers=_flag(step, "RecordLayers", False),
+            max_cells=int(_number(step, "MaxCells", 20_000_000)),
+            return_report=True,
+        )
+        entry.update(
+            NumCells=float(report["num_cells"]),
+            NumFlipped=float(report["num_flipped"]),
+            MinScaledJacobian=float(report["min_scaled_jacobian"]),
+        )
+    elif op == "Revolve":
+        from ._extrude import revolve
+
+        mesh, report = revolve(
+            mesh,
+            _vec3(step, "Axis") if "Axis" in step else (0.0, 1.0, 0.0),
+            axis_point=(
+                _vec3(step, "AxisPoint") if "AxisPoint" in step else (0.0, 0.0, 0.0)
+            ),
+            angle=_number(step, "Angle", 360.0),
+            num_layers=int(_number(step, "NumLayers", 16)),
+            tolerance=_number(step, "Tolerance", 1e-9),
+            record_layers=_flag(step, "RecordLayers", False),
+            max_cells=int(_number(step, "MaxCells", 20_000_000)),
+            return_report=True,
+        )
+        entry.update(
+            NumCells=float(report["num_cells"]),
+            NumOnAxis=float(report["num_on_axis"]),
+            MinScaledJacobian=float(report["min_scaled_jacobian"]),
+        )
+    elif op == "Mirror":
+        from ._mirror import mirror
+
+        mesh, report = mirror(
+            mesh,
+            _vec3(step, "Point") if "Point" in step else (0.0, 0.0, 0.0),
+            _vec3(step, "Normal") if "Normal" in step else (1.0, 0.0, 0.0),
+            keep_original=_flag(step, "KeepOriginal", False),
+            weld=_flag(step, "Weld", True),
+            tolerance=_number(step, "Tolerance", 1e-9),
+            reflect_vector_data=_flag(step, "ReflectData", False),
+            return_report=True,
+        )
+        entry.update(
+            NumFlippedCells=float(report["num_flipped_cells"]),
+            NumPointsOnPlane=float(report["num_points_on_plane"]),
+            NumDroppedCells=float(report["num_dropped_cells"]),
         )
     elif op == "Tetrahedralize":
         mesh = _tetrahedralize_step(mesh, step, entry, warnings)

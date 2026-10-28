@@ -5664,6 +5664,28 @@ step('tessellate: curved tetra10 + quad9, pass-through line', () => {
     assert.throws(() => m.tessellate(curvedMesh, 1.5), /levels/);
 });
 
+step('extrude, revolve and mirror (roadmap 3.1.2, 3.1.3, 3.2.5)', () => {
+    const rect = m.rectangle([3, 2]);
+    const e = m.extrude(rect, { numLayers: 4 });
+    assert.equal(e.numHexahedra, 24);
+    assert.equal(e.mesh.points.length, m.box([3, 2, 4]).points.length);
+    assert.ok(e.mesh.regions.some((r) => r.name === 'top' && r.kind === 'side'));
+    assert.throws(() => m.extrude(rect, { direction: [0, 1, 0] }), /parallel/);
+    assert.throws(() => m.extrude(rect, { bogus: 1 }), /bogus/);
+    const v = m.revolve(rect, { numLayers: 8 });
+    assert.equal(v.full, true);
+    assert.equal(v.numOnAxis, 3);
+    assert.equal(v.numWedges, 16);
+    assert.throws(() => m.revolve(rect, { numLayers: 2 }), /3 steps/);
+    const box = m.box([2, 2, 2], null, null, 'tetra');
+    const mr = m.mirror(box);
+    assert.equal(mr.numFlippedCells, 48);
+    const k = m.mirror(box, { keepOriginal: true });
+    assert.equal(k.numPointsOnPlane, 9);
+    assert.equal(k.mesh.points.length, (2 * 27 - 9) * 3);
+    assert.throws(() => m.mirror(box, { normal: [0, 0, 0] }), /normal/);
+});
+
 step('findInterface, contactPairs and splitInterface', () => {
     const parts = {
         points: new Float64Array([

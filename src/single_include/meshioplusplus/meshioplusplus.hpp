@@ -27933,6 +27933,159 @@ MESHIOPLUSPLUS_API ErrorSizeResult error_size(const Mesh& rMesh, const ErrorSize
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/error_size.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/extrude.hpp =====
+/**
+ * @file operations/extrude.hpp
+ * @brief Sweep a surface into a volume, or a curve into a surface, along a
+ * vector (`extrude`, roadmap 3.1.2) or around an axis (`revolve`, 3.1.3).
+ *
+ * The input's top-dimensional cells are the **profile**: `triangle` and `quad`
+ * cells sweep into a volume, or, when there are none, `line` cells into a
+ * surface. Each profile cell gives one cell per layer -- a triangle a `wedge`,
+ * a quad a `hexahedron`, a line a `quad` -- between consecutive levels of
+ * copies of its points. Cells of lower dimension (a gmsh mesh's boundary
+ * lines, the vertices at a curve's ends) are not swept: what they name is
+ * carried as described below. Higher-order, polygon, polyhedron and volume
+ * cells are refused (`convert_cells` linearizes a quadratic profile).
+ *
+ * **extrude** copies the points to `L` levels along `mDirection`, the whole
+ * displacement: level `k` is `x + t_k d`, with `t_k = k / L`, a geometric
+ * grading `t_k = (r^k - 1) / (r^L - 1)` (`mRatio = r`, the ratio of each layer
+ * to the one below), or explicit increasing fractions ending at 1 (`mOffsets`).
+ * A face is turned to point along the direction first (counted in
+ * `mNumFlipped`), so every cell has a positive volume; a face or line parallel
+ * to the direction is refused by its index. A curve's quads face `(b - a) x d`
+ * for a line from `a` to `b`.
+ *
+ * **revolve** turns the points about the axis through `mAxisPoint` along
+ * `mAxis` by `mAngle` degrees (the right-hand rule; negative turns the other
+ * way) in `L` equal steps. A full turn (|angle| = 360) closes on itself: the
+ * last level is the profile again. A point on the axis (within `mTolerance` of
+ * the points' bounding-box diagonal) stays where it is, so the cells around it
+ * collapse: a triangle with a corner on the axis gives pyramids, one with two
+ * tetrahedra, a quad with an edge on the axis wedges, a quad with one corner
+ * on it pyramids and tetrahedra (split along its first diagonal), and a line
+ * with one end on it triangles. A face is turned to point along its motion;
+ * one that crosses the axis or moves within its own plane is refused, and so
+ * is a turn of more than 180 degrees of faces on both sides of the axis,
+ * which would sweep through each other. A full turn needs at least 3 steps,
+ * and no step may reach 180 degrees.
+ *
+ * **Output**: the swept cells only (wedge, hexahedron, pyramid, tetra blocks;
+ * quad, triangle for a curve), layer by layer, so extruding `rectangle` gives
+ * `box`'s points and cells exactly. Points are the profile's, then each
+ * level's own copies. Named `Side` regions, as the parametric primitives name
+ * theirs: `bottom` (the profile) and `top` (the last level), or `start` and
+ * `end` for a partial turn, and `side` (what the profile's open border sweeps
+ * to); a full turn has neither `start` nor `end`. An input region of the same
+ * name wins, with a warning.
+ *
+ * **Carried**: point data per copy, cell data per layer (an array whose dtype
+ * or width differs between the profile's blocks is dropped, with a warning),
+ * field data. A `Cell` region of profile cells names their columns; a `Point`
+ * region every copy of its points; a `Side` region of profile facets the faces
+ * their facets sweep to; a `Cell` region of lower-dimensional cells the faces
+ * (or edges) those cells sweep to, as a `Side` region. Dimensions grow by one.
+ * With `mRecordLayers`, an Int32 `extrude:layer` (`revolve:layer`) cell array
+ * holds each cell's layer, 1 to `L`.
+ *
+ * Deterministic: every index is a function of the input's order.
+ *
+ * @see doc/extrude.md
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Cell data (Int32) naming each extruded cell's layer, with `mRecordLayers`.
+inline constexpr const char* kExtrudeLayerName = "extrude:layer";
+/// Cell data (Int32) naming each revolved cell's layer, with `mRecordLayers`.
+inline constexpr const char* kRevolveLayerName = "revolve:layer";
+
+/// Options for `extrude`.
+struct ExtrudeOptions {
+    /// The whole displacement of the last level; not zero.
+    std::array<double, 3> mDirection{{0.0, 0.0, 1.0}};
+    /// Layers, 1 or more; with `mOffsets`, 1 (the default) or their count.
+    std::int32_t mNumLayers = 1;
+    /// Each layer's thickness over the one below's; positive, 1 is uniform.
+    double mRatio = 1.0;
+    /// Explicit level fractions: increasing, positive, the last 1; empty for
+    /// `mNumLayers` levels graded by `mRatio`.
+    std::vector<double> mOffsets;
+    /// Attach `extrude:layer`.
+    bool mRecordLayers = false;
+    /// Refuse a sweep of more cells (profile cells times layers); non-positive
+    /// disables the budget.
+    std::int64_t mMaxCells = 20000000;
+};
+
+/// Options for `revolve`.
+struct RevolveOptions {
+    /// A point of the axis.
+    std::array<double, 3> mAxisPoint{{0.0, 0.0, 0.0}};
+    /// The axis direction; not zero. The default turns an `(r, z)` profile in
+    /// the xy plane about the y axis.
+    std::array<double, 3> mAxis{{0.0, 1.0, 0.0}};
+    /// Degrees, 0 < |angle| <= 360; the sign follows the right-hand rule.
+    double mAngle = 360.0;
+    /// Steps of the turn; at least 3 for a full turn.
+    std::int32_t mNumLayers = 16;
+    /// "On the axis": within this fraction of the bounding-box diagonal.
+    double mTolerance = 1e-9;
+    /// Attach `revolve:layer`.
+    bool mRecordLayers = false;
+    /// As `ExtrudeOptions::mMaxCells`.
+    std::int64_t mMaxCells = 20000000;
+};
+
+/// The swept mesh and what went into it.
+struct SweepResult {
+    Mesh mMesh;
+    std::int64_t mNumCells = 0;
+    std::int64_t mNumHexahedra = 0;
+    std::int64_t mNumWedges = 0;
+    std::int64_t mNumPyramids = 0;
+    std::int64_t mNumTetrahedra = 0;
+    std::int64_t mNumQuads = 0;      ///< a swept curve's
+    std::int64_t mNumTriangles = 0;  ///< a swept curve's, where an end is on the axis
+    /// Profile cells turned to face the sweep before it.
+    std::int64_t mNumFlipped = 0;
+    /// Profile points on the axis (revolve).
+    std::int64_t mNumOnAxis = 0;
+    /// The least scaled Jacobian of a volume cell (1 for a right prism); 0 for
+    /// a swept curve.
+    double mMinScaledJacobian = 0.0;
+    /// A full turn, closed on itself (revolve).
+    bool mFull = false;
+    std::vector<std::string> mWarnings;
+};
+
+/**
+ * @brief Sweep @p rMesh's surface (or curve) along a vector.
+ * @throws std::invalid_argument on a bad option, a face or line parallel to
+ *         the direction, or an exceeded budget.
+ * @throws Unsupported for higher-order, polygon, polyhedron or volume cells.
+ */
+MESHIOPLUSPLUS_API SweepResult extrude(const Mesh& rMesh, const ExtrudeOptions& rOptions = {});
+
+/**
+ * @brief Sweep @p rMesh's surface (or curve) around an axis.
+ * @throws std::invalid_argument on a bad option, a face that crosses the axis
+ *         or turns within its own plane, or an exceeded budget.
+ * @throws Unsupported as `extrude`.
+ */
+MESHIOPLUSPLUS_API SweepResult revolve(const Mesh& rMesh, const RevolveOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/extrude.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/feature_edges.hpp =====
 /**
  * @file operations/feature_edges.hpp
@@ -30712,6 +30865,100 @@ triangulate_polygon_2d(const std::vector<std::vector<std::array<double, 2>>>& rL
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/mesh_cad.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/mirror.hpp =====
+/**
+ * @file operations/mirror.hpp
+ * @brief Reflect a mesh across a plane, keeping every cell right side out
+ * (roadmap 3.2.5).
+ *
+ * A reflecting `transform` (a matrix of negative determinant) moves the points
+ * and leaves the cells as they were, so every one of them comes out inverted:
+ * a tetrahedron of negative volume, a triangle whose normal points inward.
+ * `mirror` reflects the points across the plane through `mOrigin` with normal
+ * `mNormal` and permutes the nodes of every cell so its orientation is valid
+ * again (`detail/cell_flip`): mid-edge, mid-face and centre nodes stay in their
+ * slots, a polygon's ring and a polyhedron's face rings are reversed. `Side`
+ * region entries follow their facets to their new local numbers; cell and
+ * point regions keep their indices.
+ *
+ * With `mKeepOriginal`, the result is the input followed by its mirror image:
+ * each block holds its own cells, then their reflected copies, and the points
+ * are the input's, then the copies'. With `mWeld` as well (the default), a
+ * point on the plane -- within `mTolerance` of the bounding-box diagonal -- is
+ * its own image, so the two halves share it: a half model becomes a whole one,
+ * conforming across the plane. A cell lying entirely on the plane would be its
+ * own image too, so its copy is dropped; a `Side` facet lying on the plane is
+ * interior once both halves meet, so its entries (both copies) are dropped and
+ * counted, and its region is kept even when that leaves it empty.
+ *
+ * Data is carried row by row (a copy's row is its source's). With
+ * `mReflectVectorData`, float arrays of three columns (vectors) are reflected
+ * `v' = H v` and of nine (row-major 3x3 tensors) `A' = H A H`, with
+ * `H = I - 2 n n^T`, on the reflected copies only -- as `transform`'s
+ * `rotate_vector_data` treats them; a pseudo-vector (a vorticity, a normal
+ * stored as data) would need the opposite sign and is not singled out. Field
+ * data and property sets are copied.
+ *
+ * Two-dimensional points stay two-dimensional: the plane must then be a line
+ * of the xy plane (`mNormal[2] == 0`), likewise for one-dimensional points.
+ * Cell types without a flip (`triangle10` and beyond, the other Lagrange
+ * orders, the VTK Lagrange and Bezier families) throw `Unsupported` by name.
+ *
+ * Deterministic: every output index is a function of the input's order.
+ *
+ * @see doc/mirror.md
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Options for `mirror`.
+struct MirrorOptions {
+    /// A point of the mirror plane.
+    std::array<double, 3> mOrigin{{0.0, 0.0, 0.0}};
+    /// The plane's normal; any non-zero length.
+    std::array<double, 3> mNormal{{1.0, 0.0, 0.0}};
+    /// Return the input followed by its mirror image instead of the image alone.
+    bool mKeepOriginal = false;
+    /// With `mKeepOriginal`, share the points on the plane between both halves.
+    bool mWeld = true;
+    /// "On the plane": a distance at or below this fraction of the points'
+    /// bounding-box diagonal; finite and non-negative.
+    double mTolerance = 1e-9;
+    /// Reflect float vector (3-column) and tensor (9-column) point and cell data.
+    bool mReflectVectorData = false;
+};
+
+/// The mirrored mesh and what was done to it.
+struct MirrorResult {
+    Mesh mMesh;
+    std::int64_t mNumFlippedCells = 0;   ///< reflected cells written, after drops
+    std::int64_t mNumPointsOnPlane = 0;  ///< input points within the tolerance of the plane
+    std::int64_t mNumDroppedCells = 0;   ///< copies dropped as lying on the plane (weld only)
+    std::int64_t mNumDroppedSides = 0;   ///< Side entries dropped as interior (weld only)
+    /// One entry per region a drop emptied or shrank, and per region not carried.
+    std::vector<std::string> mWarnings;
+};
+
+/**
+ * @brief Reflect @p rMesh across a plane, cells right side out.
+ * @param rMesh any mesh.
+ * @param rOptions the plane and what to keep.
+ * @throws std::invalid_argument on a zero or non-finite normal, a non-finite
+ *         origin, a bad tolerance, or a plane that leaves the points' dimension.
+ * @throws Unsupported for a cell type with no orientation flip.
+ */
+MESHIOPLUSPLUS_API MirrorResult mirror(const Mesh& rMesh, const MirrorOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/mirror.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/neighbors.hpp =====
 /**
  * @file operations/neighbors.hpp
@@ -39299,6 +39546,52 @@ Cdt2dPolygon cdt2d_triangulate_polygon(const std::vector<std::vector<Cdt2d::Vec2
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/cdt2d.hpp =====
+// ===== begin src/cpp/src/detail/cell_flip.hpp =====
+/**
+ * @file detail/cell_flip.hpp
+ * @brief The node permutation that reverses a cell's orientation, and where it
+ * sends the cell's facets (roadmap 3.2.5, `mirror`).
+ *
+ * A reflection turns every cell inside out: a tetrahedron's volume goes
+ * negative, a triangle's normal points the other way. Permuting the nodes of
+ * each cell by `cell_flip_permutation` puts it right side out again: the
+ * permuted cell `new[i] = old[P[i]]` covers the same nodes with the opposite
+ * orientation, its mid-edge, mid-face and centre nodes still in their slots.
+ * Every permutation is an involution and keeps node 0 in place.
+ *
+ * The facets move with the nodes: `cell_flip_facet_map(Type)[f]` is the
+ * number, in the flipped cell, of what was facet `f` (a face of a 3-D cell as
+ * `cell_faces` numbers them, an edge of a 2-D one as `cell_edges` does), so a
+ * `Side` region entry `(cell, f)` becomes `(cell, map[f])`. The maps are found
+ * from the facet tables themselves, not written out.
+ *
+ * Covered: `vertex`, `line` to `line11`, `triangle`, `triangle6`, `triangle7`,
+ * `quad`, `quad8`, `quad9`, `tetra`, `tetra10`, `pyramid`, `pyramid13`,
+ * `pyramid14`, `wedge`, `wedge15`, `wedge18`, `hexahedron`, `hexahedron20` and
+ * `hexahedron27`. A polygon reverses its ring after node 0 (edge `k` becomes
+ * edge `n - 1 - k`) and a polyhedron each face ring (its faces keep their
+ * numbers); neither has a fixed table, so the caller does those. Every other
+ * type returns `nullptr`.
+ *
+ * A **core-private** header: nothing installed names it.
+ */
+
+// System includes
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/// The orientation-reversing node permutation of @p Type, or `nullptr`.
+const std::vector<int>* cell_flip_permutation(CellType Type);
+
+/// Per facet of @p Type, its number after the flip; empty for a type without
+/// facets (a vertex or a line), `nullptr` when the type has no permutation.
+const std::vector<int>* cell_flip_facet_map(CellType Type);
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/cell_flip.hpp =====
 // ===== begin src/cpp/src/detail/closed_facets.hpp =====
 /**
  * @file detail/closed_facets.hpp
@@ -43005,6 +43298,25 @@ double card_to_real_view(std::string_view Text, const std::string& rWhere,
  * the same way in every layer. The surface (`wall`) and the last level
  * (`cap`) come out as faces, split like their columns.
  *
+ * `extrude` and `revolve` (roadmap 3.1.2, 3.1.3) ask for three more things,
+ * all off by default so `boundary_layer`'s sweep is unchanged:
+ *
+ *  - **edges**: each directed edge `a -> b` sweeps to a side face per layer,
+ *    `[a, b, b', a']` (a triangle when one end is collapsed, nothing when
+ *    both are). An edge that runs along its face's winding gives the face
+ *    of the column beside it that faces outward, so the border edges of an
+ *    open surface give its side walls, and a curve's own edges its surface.
+ *  - **periodic**: the last level is the surface itself again, so a full
+ *    turn closes on itself; there is then no wall and no cap.
+ *  - **collapsed-edge wedges**: a quad with two adjacent corners collapsed in
+ *    every layer, and the other two in none (an edge on a revolution's
+ *    axis), gives one wedge per layer instead of a split column; its wall
+ *    and cap stay quads.
+ *
+ * The id of every point at every level is returned too, so a caller can put
+ * the levels' points somewhere other than along a straight direction (a
+ * rotation) and tell which corners collapsed.
+ *
  * A **core-private** header: nothing installed names it.
  */
 
@@ -43028,10 +43340,17 @@ struct LayerSweepInput {
     /// does not grow that layer, and all zero is a collapsed point.
     std::vector<double> mOffsets;
     int mLayers = 1;
+    /// Directed edges to sweep into side faces (`mSideQuads`, `mSideTriangles`).
+    std::vector<std::array<std::int64_t, 2>> mEdges;
+    /// The last level is the surface again: no points of its own, no wall, no cap.
+    bool mPeriodic = false;
+    /// A quad with an edge collapsed in every layer gives wedges (see above).
+    bool mCollapsedEdgeWedges = false;
 };
 
 /// One cell or face of the sweep: its node ids (unused slots -1), the
-/// surface face it comes from and its layer (1..L; 0 the wall, L + 1 the cap).
+/// surface face (or edge) it comes from and its layer (1..L; 0 the wall, L + 1
+/// the cap).
 struct LayerSweepCell {
     std::array<std::int64_t, 8> mNodes{};
     std::int64_t mFace = 0;
@@ -43046,6 +43365,11 @@ struct LayerSweepResult {
     std::vector<LayerSweepCell> mHexahedra, mWedges, mPyramids, mTetrahedra;
     /// The wall and cap faces, triangles and quads apart.
     std::vector<LayerSweepCell> mWallTriangles, mWallQuads, mCapTriangles, mCapQuads;
+    /// The edges' side faces, by edge then layer; `mFace` is the edge index.
+    std::vector<LayerSweepCell> mSideQuads, mSideTriangles;
+    /// The id of point P at level K (1..L) is `mLevelIds[(K - 1) * n + P]`;
+    /// level 0 is P itself. Equal ids at K - 1 and K: P is collapsed in K.
+    std::vector<std::int64_t> mLevelIds;
 };
 
 LayerSweepResult layer_sweep(const LayerSweepInput& rIn);
@@ -69660,6 +69984,147 @@ const std::vector<CellFaceDef>& cell_faces(CellType VolumeType) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/cell_faces.cpp =====
+// ===== begin src/cpp/src/detail/cell_flip.cpp =====
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <map>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+namespace {
+
+// A higher-order line lists its two ends, then its interior nodes from end 0
+// to end 1: reversed, the ends swap and the interior runs backwards.
+std::vector<int> cf_line(int N) {
+    std::vector<int> p{1, 0};
+    for (int i = N - 1; i >= 2; --i)
+        p.push_back(i);
+    return p;
+}
+
+std::vector<int> cf_concat(std::vector<int> Head, const std::vector<int>& rTail) {
+    Head.insert(Head.end(), rTail.begin(), rTail.end());
+    return Head;
+}
+
+// The corner positions of each facet of a cell type, sorted, in facet order.
+std::vector<std::vector<int>> cf_facet_corners(CellType Type) {
+    std::vector<std::vector<int>> out;
+    if (cell_type_dimension(Type) == 3) {
+        for (const CellFaceDef& r_f : cell_faces(Type))
+            out.emplace_back(r_f.mNodes.begin(), r_f.mNodes.begin() + r_f.mNumCorners);
+    } else if (cell_type_dimension(Type) == 2) {
+        for (const CellEdgeDef& r_e : cell_edges(Type))
+            out.emplace_back(r_e.mNodes.begin(), r_e.mNodes.begin() + r_e.mNumCorners);
+    }
+    for (auto& r_c : out)
+        std::sort(r_c.begin(), r_c.end());
+    return out;
+}
+
+// Facet j of the flipped cell has the corners P[c] of the original for each of
+// its corner slots c; the original facet with that corner set maps to j.
+std::vector<int> cf_facet_map(CellType Type, const std::vector<int>& rPerm) {
+    const std::vector<std::vector<int>> corners = cf_facet_corners(Type);
+    std::vector<int> map(corners.size(), -1);
+    for (std::size_t j = 0; j < corners.size(); ++j) {
+        std::vector<int> image;
+        for (const int c : corners[j])
+            image.push_back(rPerm[static_cast<std::size_t>(c)]);
+        std::sort(image.begin(), image.end());
+        for (std::size_t f = 0; f < corners.size(); ++f)
+            if (corners[f] == image)
+                map[f] = static_cast<int>(j);
+    }
+    for (const int m : map)
+        if (m < 0)
+            throw std::logic_error("meshio++: cell_flip: a facet has no image for " +
+                                   cell_type_name(Type));
+    return map;
+}
+
+struct CfEntry {
+    std::vector<int> mPerm;
+    std::vector<int> mFacets;
+};
+
+const std::map<CellType, CfEntry>& cf_table() {
+    static const std::map<CellType, CfEntry> table = [] {
+        using CT = CellType;
+        const std::vector<int> tri6{0, 2, 1, 5, 4, 3};
+        const std::vector<int> quad8{0, 3, 2, 1, 7, 6, 5, 4};
+        const std::vector<int> pyr13{0, 3, 2, 1, 4, 8, 7, 6, 5, 9, 12, 11, 10};
+        const std::vector<int> wedge15{0, 2, 1, 3, 5, 4, 8, 7, 6, 11, 10, 9, 12, 14, 13};
+        const std::vector<int> hex20{0,  3,  2,  1,  4,  7,  6,  5,  11, 10,
+                                     9,  8,  15, 14, 13, 12, 16, 19, 18, 17};
+        std::map<CT, std::vector<int>> perms = {
+            {CT::Vertex, {0}},
+            {CT::Line, cf_line(2)},
+            {CT::Line3, cf_line(3)},
+            {CT::Line4, cf_line(4)},
+            {CT::Line5, cf_line(5)},
+            {CT::Line6, cf_line(6)},
+            {CT::Line7, cf_line(7)},
+            {CT::Line8, cf_line(8)},
+            {CT::Line9, cf_line(9)},
+            {CT::Line10, cf_line(10)},
+            {CT::Line11, cf_line(11)},
+            {CT::Triangle, {0, 2, 1}},
+            {CT::Triangle6, tri6},
+            {CT::Triangle7, cf_concat(tri6, {6})},
+            {CT::Quad, {0, 3, 2, 1}},
+            {CT::Quad8, quad8},
+            {CT::Quad9, cf_concat(quad8, {8})},
+            {CT::Tetra, {0, 2, 1, 3}},
+            // Mid-edges 4=(0,1) 5=(1,2) 6=(2,0) 7=(0,3) 8=(1,3) 9=(2,3).
+            {CT::Tetra10, {0, 2, 1, 3, 6, 5, 4, 7, 9, 8}},
+            {CT::Pyramid, {0, 3, 2, 1, 4}},
+            {CT::Pyramid13, pyr13},
+            {CT::Pyramid14, cf_concat(pyr13, {13})},
+            {CT::Wedge, {0, 2, 1, 3, 5, 4}},
+            {CT::Wedge15, wedge15},
+            // Face centres 15=(0,1,4,3) 16=(1,2,5,4) 17=(2,0,3,5).
+            {CT::Wedge18, cf_concat(wedge15, {17, 16, 15})},
+            {CT::Hexahedron, {0, 3, 2, 1, 4, 7, 6, 5}},
+            {CT::Hexahedron20, hex20},
+            // Face centres 20=x-min 21=x-max 22=y-min 23=y-max 24=bottom
+            // 25=top; swapping nodes 1 and 3 swaps the x and y faces.
+            {CT::Hexahedron27, cf_concat(hex20, {22, 23, 20, 21, 24, 25, 26})},
+        };
+        std::map<CT, CfEntry> out;
+        for (auto& [type, perm] : perms) {
+            CfEntry e;
+            e.mFacets = cf_facet_map(type, perm);
+            e.mPerm = std::move(perm);
+            out.emplace(type, std::move(e));
+        }
+        return out;
+    }();
+    return table;
+}
+
+}  // namespace
+
+const std::vector<int>* cell_flip_permutation(CellType Type) {
+    const auto& r_table = cf_table();
+    const auto it = r_table.find(Type);
+    return it == r_table.end() ? nullptr : &it->second.mPerm;
+}
+
+const std::vector<int>* cell_flip_facet_map(CellType Type) {
+    const auto& r_table = cf_table();
+    const auto it = r_table.find(Type);
+    return it == r_table.end() ? nullptr : &it->second.mFacets;
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/cell_flip.cpp =====
 // ===== begin src/cpp/src/detail/cell_subdivision.cpp =====
 
 namespace meshioplusplus {
@@ -82601,6 +83066,11 @@ LayerSweepResult layer_sweep(const LayerSweepInput& rIn) {
     std::vector<std::int64_t> level_id(nn * nl, -1);
     for (std::size_t k = 0; k < nl; ++k)
         for (std::size_t p = 0; p < nn; ++p) {
+            if (rIn.mPeriodic && k + 1 == nl) {
+                // The last level of a full turn is the surface again.
+                level_id[k * nn + p] = static_cast<std::int64_t>(p);
+                continue;
+            }
             if (!grows[k * nn + p]) {
                 level_id[k * nn + p] =
                     k == 0 ? static_cast<std::int64_t>(p) : level_id[(k - 1) * nn + p];
@@ -82671,9 +83141,32 @@ LayerSweepResult layer_sweep(const LayerSweepInput& rIn) {
             for (int k = 1; k <= layers && !any; ++k)
                 any = is_collapsed(r_f[static_cast<std::size_t>(i)], k);
         const auto face = static_cast<std::int64_t>(f);
-        const bool split = quad && any;
+        // An edge collapsed in every layer and the rest in none: corner S
+        // and S + 1 on the edge.
+        int edge_at = -1;
+        if (quad && any && rIn.mCollapsedEdgeWedges)
+            for (int s = 0; s < 4 && edge_at < 0; ++s) {
+                bool ok = true;
+                for (int i = 0; i < 4 && ok; ++i) {
+                    const bool on_edge = i == s || i == (s + 1) % 4;
+                    for (int k = 1; k <= layers && ok; ++k)
+                        ok = is_collapsed(r_f[static_cast<std::size_t>(i)], k) == on_edge;
+                }
+                if (ok)
+                    edge_at = s;
+            }
+        const bool split = quad && any && edge_at < 0;
         for (int k = 1; k <= layers; ++k) {
-            if (quad && !split) {
+            if (edge_at >= 0) {
+                const auto s = static_cast<std::size_t>(edge_at);
+                const std::int64_t x = r_f[s], y = r_f[(s + 1) % 4], z = r_f[(s + 2) % 4],
+                                   w = r_f[(s + 3) % 4];
+                LayerSweepCell cell;
+                cell.mFace = face;
+                cell.mLayer = k;
+                cell.mNodes = {x, at(w, k - 1), at(w, k), y, at(z, k - 1), at(z, k), -1, -1};
+                out.mWedges.push_back(cell);
+            } else if (quad && !split) {
                 LayerSweepCell cell;
                 cell.mFace = face;
                 cell.mLayer = k;
@@ -82714,9 +83207,37 @@ LayerSweepResult layer_sweep(const LayerSweepInput& rIn) {
                 rTris.push_back(c);
             }
         };
-        put(0, out.mWallTriangles, out.mWallQuads, 0);
-        put(layers, out.mCapTriangles, out.mCapQuads, layers + 1);
+        if (!rIn.mPeriodic) {
+            put(0, out.mWallTriangles, out.mWallQuads, 0);
+            put(layers, out.mCapTriangles, out.mCapQuads, layers + 1);
+        }
     }
+    // The edges' side faces.
+    for (std::size_t e = 0; e < rIn.mEdges.size(); ++e) {
+        const std::int64_t a = rIn.mEdges[e][0], b = rIn.mEdges[e][1];
+        for (int k = 1; k <= layers; ++k) {
+            const bool ca = is_collapsed(a, k), cb = is_collapsed(b, k);
+            if (ca && cb)
+                continue;
+            LayerSweepCell c;
+            c.mNodes.fill(-1);
+            c.mFace = static_cast<std::int64_t>(e);
+            c.mLayer = k;
+            if (!ca && !cb) {
+                c.mNodes[0] = at(a, k - 1);
+                c.mNodes[1] = at(b, k - 1);
+                c.mNodes[2] = at(b, k);
+                c.mNodes[3] = at(a, k);
+                out.mSideQuads.push_back(c);
+            } else {
+                c.mNodes[0] = at(a, k - 1);
+                c.mNodes[1] = at(b, k - 1);
+                c.mNodes[2] = ca ? at(b, k) : at(a, k);
+                out.mSideTriangles.push_back(c);
+            }
+        }
+    }
+    out.mLevelIds = std::move(level_id);
     return out;
 }
 
@@ -215040,6 +215561,824 @@ ErrorSizeResult error_size(const Mesh& rMesh, const ErrorSizeOptions& rOptions) 
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/error_size.cpp =====
+// ===== begin src/cpp/src/operations/extrude.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <functional>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+using ExVec = std::array<double, 3>;
+
+ExVec ex_sub(const ExVec& rA, const ExVec& rB) {
+    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
+}
+ExVec ex_cross(const ExVec& rA, const ExVec& rB) {
+    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
+            rA[0] * rB[1] - rA[1] * rB[0]};
+}
+double ex_dot(const ExVec& rA, const ExVec& rB) {
+    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
+}
+double ex_norm(const ExVec& rA) {
+    return std::sqrt(ex_dot(rA, rA));
+}
+
+// The profile: the cells that are swept, and what else the mesh holds.
+struct ExProfile {
+    bool mCurve = false;                               // lines sweep to quads
+    std::vector<std::array<std::int64_t, 4>> mFaces;   // a triangle has -1 last
+    std::vector<std::array<std::int64_t, 2>> mLines;
+    std::vector<std::size_t> mSourceBlock;             // per element
+    std::vector<std::int64_t> mSourceRow;              // per element
+    std::vector<std::vector<std::int64_t>> mElementOf; // per input block and row, or -1
+    std::vector<char> mIsProfileBlock;                 // per input block
+    std::vector<char> mIsLowerBlock;                   // per input block
+    std::vector<double> mXyz;                          // three coordinates per point
+    std::vector<char> mUsed;                           // per point, used by an element
+    std::size_t NumElements() const { return mCurve ? mLines.size() : mFaces.size(); }
+    ExVec Point(std::int64_t P) const {
+        const auto p = static_cast<std::size_t>(P);
+        return {mXyz[3 * p], mXyz[3 * p + 1], mXyz[3 * p + 2]};
+    }
+};
+
+ExProfile ex_gather(const Mesh& rMesh, const std::string& rOp) {
+    ExProfile pr;
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+    pr.mXyz.assign(3 * n, 0.0);
+    for (std::size_t p = 0; p < n; ++p)
+        for (std::size_t d = 0; d < dim && d < 3; ++d)
+            pr.mXyz[3 * p + d] = detail::read_double(rMesh.Points(), p * dim + d);
+    pr.mUsed.assign(n, 0);
+    bool has2 = false, has1 = false;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::string type(cb.Type());
+        const int d = cell_type_dimension(cell_type_from_name(type));
+        if (d == 3 || cb.IsPolyhedron())
+            throw Unsupported("meshio++: " + rOp + ": volume cells ('" + type +
+                              "') cannot be swept; pass a surface or a curve");
+        if (cb.NumCells() == 0)
+            continue;
+        has2 = has2 || d == 2 || (cb.IsRagged() && !cb.IsPolyhedron());
+        has1 = has1 || d == 1;
+    }
+    const int profile_dim = has2 ? 2 : (has1 ? 1 : 0);
+    if (profile_dim == 0)
+        throw std::invalid_argument("meshio++: " + rOp +
+                                    ": no triangle, quad or line cells to sweep");
+    pr.mCurve = profile_dim == 1;
+    const std::size_t nb = rMesh.NumCellBlocks();
+    pr.mElementOf.resize(nb);
+    pr.mIsProfileBlock.assign(nb, 0);
+    pr.mIsLowerBlock.assign(nb, 0);
+    for (std::size_t b = 0; b < nb; ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::string type(cb.Type());
+        const CellType ct = cell_type_from_name(type);
+        const int d = cb.IsRagged() ? 2 : cell_type_dimension(ct);
+        pr.mElementOf[b].assign(cb.NumCells(), -1);
+        if (d < profile_dim) {
+            pr.mIsLowerBlock[b] = 1;
+            continue;
+        }
+        const CellType want = pr.mCurve ? CellType::Line : CellType::Triangle;
+        if (cb.IsRagged() || (ct != want && !(ct == CellType::Quad && !pr.mCurve)))
+            throw Unsupported("meshio++: " + rOp + ": cannot sweep '" + type + "' cells (" +
+                              (pr.mCurve ? std::string("line")
+                                         : std::string("triangle and quad")) +
+                              " only; convert_cells linearizes or triangulates them)");
+        pr.mIsProfileBlock[b] = 1;
+        const std::size_t npc = cb.NodesPerCell();
+        const NDArray& conn = cb.Conn();
+        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+            pr.mElementOf[b][c] = static_cast<std::int64_t>(pr.NumElements());
+            pr.mSourceBlock.push_back(b);
+            pr.mSourceRow.push_back(static_cast<std::int64_t>(c));
+            std::array<std::int64_t, 4> v{-1, -1, -1, -1};
+            for (std::size_t k = 0; k < npc; ++k) {
+                v[k] = detail::read_int(conn, c * npc + k);
+                if (v[k] < 0 || static_cast<std::size_t>(v[k]) >= n)
+                    throw std::invalid_argument("meshio++: " + rOp + ": cell " +
+                                                std::to_string(c) + " of block " +
+                                                std::to_string(b) + " names a missing point");
+                pr.mUsed[static_cast<std::size_t>(v[k])] = 1;
+            }
+            if (pr.mCurve)
+                pr.mLines.push_back({v[0], v[1]});
+            else
+                pr.mFaces.push_back(v);
+        }
+    }
+    return pr;
+}
+
+// A face's Newell normal (twice its area vector).
+ExVec ex_face_normal(const ExProfile& rPr, const std::array<std::int64_t, 4>& rF) {
+    const int k = rF[3] >= 0 ? 4 : 3;
+    ExVec nrm{0.0, 0.0, 0.0};
+    for (int i = 0; i < k; ++i) {
+        const ExVec a = rPr.Point(rF[static_cast<std::size_t>(i)]);
+        const ExVec b = rPr.Point(rF[static_cast<std::size_t>((i + 1) % k)]);
+        nrm[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        nrm[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        nrm[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    return nrm;
+}
+
+void ex_flip(std::array<std::int64_t, 4>& rF) {
+    if (rF[3] >= 0)
+        std::swap(rF[1], rF[3]);
+    else
+        std::swap(rF[1], rF[2]);
+}
+
+// How the sweep is laid out: the offsets the collapse rule reads, where each
+// new point goes, and the names.
+struct ExPlan {
+    std::string mOp;
+    int mLayers = 1;
+    std::vector<double> mOffsets;  // point-major, n * L
+    bool mPeriodic = false;
+    bool mCollapsedEdgeWedges = false;
+    std::function<void(std::size_t, int, double*)> mPlace;  // (point, level, out xyz)
+    std::string mLayerName;
+    bool mRecordLayers = false;
+    std::string mFirstName, mLastName;
+    std::int64_t mMaxCells = 0;
+};
+
+// One output cell list, sorted layer by layer.
+struct ExOutBlock {
+    const char* pType;
+    int mNodes;
+    std::vector<detail::LayerSweepCell> mCells;
+};
+
+void ex_sweep(const Mesh& rMesh, const ExProfile& rPr, const ExPlan& rPlan, SweepResult& rRes) {
+    const std::size_t n = rMesh.NumPoints();
+    const int L = rPlan.mLayers;
+    const std::size_t ne = rPr.NumElements();
+    if (rPlan.mMaxCells > 0 &&
+        static_cast<double>(ne) * static_cast<double>(L) > static_cast<double>(rPlan.mMaxCells))
+        throw std::invalid_argument("meshio++: " + rPlan.mOp + ": " + std::to_string(ne) +
+                                    " profile cells times " + std::to_string(L) +
+                                    " layers exceed max_cells = " +
+                                    std::to_string(rPlan.mMaxCells));
+    detail::LayerSweepInput in;
+    in.pPoints = rPr.mXyz.data();
+    in.mNumPoints = static_cast<std::int64_t>(n);
+    in.mDirections.assign(3 * n, 0.0);
+    in.mOffsets = rPlan.mOffsets;
+    in.mLayers = L;
+    in.mPeriodic = rPlan.mPeriodic;
+    in.mCollapsedEdgeWedges = rPlan.mCollapsedEdgeWedges;
+    if (rPr.mCurve)
+        in.mEdges = rPr.mLines;
+    else
+        in.mFaces = rPr.mFaces;
+    detail::LayerSweepResult sw = detail::layer_sweep(in);
+    const auto level_id = [&](std::int64_t P, int K) -> std::int64_t {
+        return K == 0 ? P
+                      : sw.mLevelIds[static_cast<std::size_t>(K - 1) * n +
+                                     static_cast<std::size_t>(P)];
+    };
+    // Put each level's own points where the sweep belongs.
+    for (int k = 1; k <= L; ++k)
+        for (std::size_t p = 0; p < n; ++p) {
+            const std::int64_t id = level_id(static_cast<std::int64_t>(p), k);
+            if (id >= static_cast<std::int64_t>(n) &&
+                id != level_id(static_cast<std::int64_t>(p), k - 1))
+                rPlan.mPlace(p, k, &sw.mPoints[3 * static_cast<std::size_t>(id)]);
+        }
+
+    std::vector<ExOutBlock> blocks;
+    if (rPr.mCurve) {
+        blocks = {{"quad", 4, std::move(sw.mSideQuads)},
+                  {"triangle", 3, std::move(sw.mSideTriangles)}};
+    } else {
+        blocks = {{"wedge", 6, std::move(sw.mWedges)},
+                  {"hexahedron", 8, std::move(sw.mHexahedra)},
+                  {"pyramid", 5, std::move(sw.mPyramids)},
+                  {"tetra", 4, std::move(sw.mTetrahedra)}};
+    }
+    for (auto& r_b : blocks)
+        std::stable_sort(r_b.mCells.begin(), r_b.mCells.end(),
+                         [](const detail::LayerSweepCell& rA, const detail::LayerSweepCell& rB) {
+                             return rA.mLayer < rB.mLayer;
+                         });
+    blocks.erase(std::remove_if(blocks.begin(), blocks.end(),
+                                [](const ExOutBlock& rB) { return rB.mCells.empty(); }),
+                 blocks.end());
+
+    // The mesh.
+    Mesh& out = rRes.mMesh;
+    const std::size_t npts = sw.mPoints.size() / 3;
+    {
+        NDArray pts(DType::Float64, {npts, 3});
+        std::copy(sw.mPoints.begin(), sw.mPoints.end(), pts.As<double>());
+        out.AssignPoints(std::move(pts));
+    }
+    std::vector<std::int64_t> out_element;  // per output cell (global)
+    rRes.mMinScaledJacobian = rPr.mCurve ? 0.0 : 1.0;
+    for (const ExOutBlock& r_b : blocks) {
+        const auto k = static_cast<std::size_t>(r_b.mNodes);
+        NDArray conn(DType::Int64, {r_b.mCells.size(), k});
+        std::int64_t* q = conn.As<std::int64_t>();
+        for (std::size_t c = 0; c < r_b.mCells.size(); ++c) {
+            for (std::size_t i = 0; i < k; ++i)
+                q[c * k + i] = r_b.mCells[c].mNodes[i];
+            out_element.push_back(r_b.mCells[c].mFace);
+            if (!rPr.mCurve)
+                rRes.mMinScaledJacobian =
+                    std::min(rRes.mMinScaledJacobian,
+                             detail::layer_cell_scaled_jacobian(sw.mPoints.data(), r_b.mCells[c],
+                                                                r_b.mNodes));
+        }
+        const std::string type(r_b.pType);
+        const auto count = static_cast<std::int64_t>(r_b.mCells.size());
+        if (type == "wedge")
+            rRes.mNumWedges = count;
+        else if (type == "hexahedron")
+            rRes.mNumHexahedra = count;
+        else if (type == "pyramid")
+            rRes.mNumPyramids = count;
+        else if (type == "tetra")
+            rRes.mNumTetrahedra = count;
+        else if (type == "quad")
+            rRes.mNumQuads = count;
+        else
+            rRes.mNumTriangles = count;
+        rRes.mNumCells += count;
+        out.AddCellBlock(type, std::move(conn));
+    }
+
+    // Data. Point data per copy; cell data per layer, gathered across the
+    // profile's blocks.
+    for (const std::string& name : rMesh.PointDataNames())
+        out.AddPointData(name, detail::subset_gather_rows(rMesh.PointData(name), sw.mOrigin));
+    bool lower_data = false;
+    for (const std::string& name : rMesh.CellDataNames()) {
+        const NDArray* p_first = nullptr;
+        bool ok = true;
+        std::size_t cols = 0;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const std::size_t nc = rMesh.Cells(b).NumCells();
+            if (rPr.mIsLowerBlock[b]) {
+                lower_data = lower_data || (nc > 0 && b < rMesh.CellDataNumBlocks(name));
+                continue;
+            }
+            if (!rPr.mIsProfileBlock[b] || nc == 0)
+                continue;
+            if (b >= rMesh.CellDataNumBlocks(name)) {
+                ok = false;
+                break;
+            }
+            const NDArray& a = rMesh.CellData(name, b);
+            const std::size_t c = a.Size() / nc;
+            if (p_first == nullptr) {
+                p_first = &a;
+                cols = c;
+            } else if (a.Dtype() != p_first->Dtype() || c != cols) {
+                ok = false;
+            }
+        }
+        if (!ok || p_first == nullptr) {
+            if (!ok)
+                rRes.mWarnings.push_back("cell data '" + name +
+                                         "' differs between the profile's blocks and was dropped");
+            continue;
+        }
+        const std::size_t row_bytes = cols * dtype_size(p_first->Dtype());
+        std::vector<std::size_t> shape = p_first->Shape();
+        std::vector<NDArray> arrays;
+        std::size_t g = 0;
+        for (const ExOutBlock& r_b : blocks) {
+            if (shape.empty())
+                shape = {r_b.mCells.size()};
+            else
+                shape[0] = r_b.mCells.size();
+            NDArray a = NDArray::Uninit(p_first->Dtype(), shape);
+            for (std::size_t c = 0; c < r_b.mCells.size(); ++c, ++g) {
+                const auto e = static_cast<std::size_t>(out_element[g]);
+                const NDArray& src = rMesh.CellData(name, rPr.mSourceBlock[e]);
+                if (row_bytes > 0)
+                    std::memcpy(a.Data() + c * row_bytes,
+                                src.Data() + static_cast<std::size_t>(rPr.mSourceRow[e]) * row_bytes,
+                                row_bytes);
+            }
+            arrays.push_back(std::move(a));
+        }
+        out.AddCellData(name, std::move(arrays));
+    }
+    if (lower_data)
+        rRes.mWarnings.push_back(
+            "cell data of the cells that are not swept (lower-dimensional ones) is not carried");
+    if (rPlan.mRecordLayers) {
+        std::vector<NDArray> arrays;
+        for (const ExOutBlock& r_b : blocks) {
+            NDArray a(DType::Int32, {r_b.mCells.size()});
+            for (std::size_t c = 0; c < r_b.mCells.size(); ++c)
+                a.As<std::int32_t>()[c] = r_b.mCells[c].mLayer;
+            arrays.push_back(std::move(a));
+        }
+        out.AddCellData(rPlan.mLayerName, std::move(arrays));
+    }
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        NDArray a = rMesh.FieldData(name);
+        a.MakeOwned();
+        out.AddFieldData(name, std::move(a));
+    }
+
+    // Regions. Every facet is found by its corners among the output's facets;
+    // an interior one (two owners) is given to the cell swept from WANT.
+    detail::FacetIndexOptions fio;
+    fio.mSolidFaces = !rPr.mCurve;
+    fio.mSurfaceEdges = rPr.mCurve;
+    const detail::FacetIndex index(out, fio);
+    const auto find = [&](std::vector<std::int64_t> Corners, std::int64_t Want,
+                          std::vector<std::int64_t>& rEntries) {
+        std::sort(Corners.begin(), Corners.end());
+        Corners.erase(std::unique(Corners.begin(), Corners.end()), Corners.end());
+        const detail::FacetHit* hit = index.Find(Corners.data(), Corners.size());
+        if (hit == nullptr || hit->mCount == 0)
+            return false;
+        detail::FacetOwner o = hit->mFirst;
+        if (hit->mCount > 1 && Want >= 0 &&
+            out_element[static_cast<std::size_t>(o.mCell)] != Want &&
+            out_element[static_cast<std::size_t>(hit->mSecond.mCell)] == Want)
+            o = hit->mSecond;
+        rEntries.push_back(o.mCell);
+        rEntries.push_back(o.mFacet);
+        return true;
+    };
+    // What a profile facet (or a lower-dimensional cell) with corners C sweeps
+    // to, layer by layer; false when one of its pieces is not found.
+    const auto swept = [&](const std::vector<std::int64_t>& rC, std::int64_t Want,
+                           std::vector<std::int64_t>& rEntries) {
+        bool all = true;
+        for (int k = 1; k <= L; ++k) {
+            std::vector<std::int64_t> c;
+            for (const std::int64_t v : rC) {
+                c.push_back(level_id(v, k - 1));
+                c.push_back(level_id(v, k));
+            }
+            std::vector<std::int64_t> u = c;
+            std::sort(u.begin(), u.end());
+            u.erase(std::unique(u.begin(), u.end()), u.end());
+            if (u.size() <= rC.size())
+                continue;  // collapsed to nothing in this layer
+            all = find(std::move(c), Want, rEntries) && all;
+        }
+        return all;
+    };
+    // Per element, its output cells.
+    std::vector<std::vector<std::int64_t>> cells_of(ne);
+    for (std::size_t g = 0; g < out_element.size(); ++g)
+        cells_of[static_cast<std::size_t>(out_element[g])].push_back(static_cast<std::int64_t>(g));
+    const std::vector<std::int64_t> in_bases = detail::block_bases(rMesh);
+    const auto corners_of_cell = [&](std::size_t B, std::int64_t Row) {
+        const auto cb = rMesh.Cells(B);
+        std::vector<std::int64_t> c;
+        const CellType ct = cell_type_from_name(std::string(cb.Type()));
+        if (cb.IsRagged()) {
+            c.assign(cb.Row(static_cast<std::size_t>(Row)),
+                     cb.Row(static_cast<std::size_t>(Row)) + cb.RowSize(static_cast<std::size_t>(Row)));
+            return c;
+        }
+        // Corners only: a line's two ends, a vertex's node.
+        const std::size_t npc = cb.NodesPerCell();
+        const std::size_t nc = cell_type_dimension(ct) == 1 ? std::min<std::size_t>(npc, 2)
+                                                             : std::min<std::size_t>(npc, 1);
+        for (std::size_t k = 0; k < nc; ++k)
+            c.push_back(detail::read_int(cb.Conn(), static_cast<std::size_t>(Row) * npc + k));
+        return c;
+    };
+    const int out_dim = rPr.mCurve ? 2 : 3;
+    std::vector<std::string> taken;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r_in = rMesh.Region(i);
+        const std::int64_t* e = r_in.Entries();
+        const std::size_t nent = r_in.NumEntries();
+        std::vector<std::int64_t> flat, side;
+        std::int64_t lost = 0;
+        RegionKind kind = r_in.mKind;
+        if (r_in.mKind == RegionKind::Point) {
+            for (std::size_t k = 0; k < nent; ++k) {
+                if (e[k] < 0 || static_cast<std::size_t>(e[k]) >= n) {
+                    ++lost;
+                    continue;
+                }
+                for (int l = 0; l <= L; ++l)
+                    flat.push_back(level_id(e[k], l));
+            }
+        } else {
+            const bool is_side = r_in.mKind == RegionKind::Side;
+            for (std::size_t k = 0; k < nent; ++k) {
+                const std::int64_t g = is_side ? e[2 * k] : e[k];
+                const auto [b, row] = detail::global_to_block_row(in_bases, g);
+                if (b >= rMesh.NumCellBlocks()) {
+                    ++lost;
+                    continue;
+                }
+                const std::int64_t el = rPr.mElementOf[b][static_cast<std::size_t>(row)];
+                if (!is_side && el >= 0) {
+                    const auto& r_cells = cells_of[static_cast<std::size_t>(el)];
+                    flat.insert(flat.end(), r_cells.begin(), r_cells.end());
+                } else if (!is_side && rPr.mIsLowerBlock[b]) {
+                    if (!swept(corners_of_cell(b, row), -1, side))
+                        ++lost;
+                } else if (is_side && el >= 0 && !rPr.mCurve) {
+                    const std::int64_t f = e[2 * k + 1];
+                    const auto& r_edges =
+                        detail::cell_edges(cell_type_from_name(std::string(rMesh.Cells(b).Type())));
+                    if (f < 0 || static_cast<std::size_t>(f) >= r_edges.size()) {
+                        ++lost;
+                        continue;
+                    }
+                    const auto cb = rMesh.Cells(b);
+                    const std::size_t npc = cb.NodesPerCell();
+                    std::vector<std::int64_t> c;
+                    for (std::size_t j = 0; j < 2; ++j)
+                        c.push_back(detail::read_int(
+                            cb.Conn(), static_cast<std::size_t>(row) * npc +
+                                           r_edges[static_cast<std::size_t>(f)].mNodes[j]));
+                    if (!swept(c, el, side))
+                        ++lost;
+                } else {
+                    ++lost;
+                }
+            }
+            if (!is_side && flat.empty() && !side.empty())
+                kind = RegionKind::Side;
+            else if (!is_side && !side.empty())
+                lost += static_cast<std::int64_t>(side.size() / 2);  // a mixed region keeps its cells
+            if (is_side || kind == RegionKind::Side)
+                flat = std::move(side);
+        }
+        if (lost > 0)
+            rRes.mWarnings.push_back("region '" + r_in.mName + "': " + std::to_string(lost) +
+                                     " entr(ies) could not be carried and were dropped");
+        const int dim = r_in.mDim >= 0 && r_in.mKind != RegionKind::Point ? r_in.mDim + 1
+                                                                          : r_in.mDim;
+        const bool pair = kind == RegionKind::Side;
+        NDArray entries = pair ? NDArray(DType::Int64, {flat.size() / 2, 2})
+                               : NDArray(DType::Int64, {flat.size()});
+        std::copy(flat.begin(), flat.end(), entries.As<std::int64_t>());
+        out.AddRegion(Region(r_in.mName, kind, dim, r_in.mTag, std::move(entries)));
+        taken.push_back(r_in.mName);
+    }
+
+    // The generated side regions.
+    const auto add_generated = [&](const std::string& rName, std::vector<std::int64_t> Entries) {
+        if (rName.empty())
+            return;
+        if (std::find(taken.begin(), taken.end(), rName) != taken.end()) {
+            rRes.mWarnings.push_back("the input has a region '" + rName +
+                                     "', so the generated one of that name is not added");
+            return;
+        }
+        NDArray a(DType::Int64, {Entries.size() / 2, 2});
+        std::copy(Entries.begin(), Entries.end(), a.As<std::int64_t>());
+        out.AddRegion(Region(rName, RegionKind::Side, out_dim - 1, -1, std::move(a)));
+    };
+    if (!rPlan.mPeriodic) {
+        std::vector<std::int64_t> first, last;
+        if (rPr.mCurve) {
+            for (std::size_t l = 0; l < rPr.mLines.size(); ++l) {
+                const auto& r_l = rPr.mLines[l];
+                find({r_l[0], r_l[1]}, static_cast<std::int64_t>(l), first);
+                find({level_id(r_l[0], L), level_id(r_l[1], L)}, static_cast<std::int64_t>(l),
+                     last);
+            }
+        } else {
+            const auto faces = [&](const std::vector<detail::LayerSweepCell>& rList, int K,
+                                   std::vector<std::int64_t>& rInto) {
+                for (const auto& r_c : rList) {
+                    std::vector<std::int64_t> c(r_c.mNodes.begin(),
+                                                r_c.mNodes.begin() + (K == 4 ? 4 : 3));
+                    find(std::move(c), r_c.mFace, rInto);
+                }
+            };
+            faces(sw.mWallTriangles, 3, first);
+            faces(sw.mWallQuads, 4, first);
+            faces(sw.mCapTriangles, 3, last);
+            faces(sw.mCapQuads, 4, last);
+        }
+        add_generated(rPlan.mFirstName, std::move(first));
+        add_generated(rPlan.mLastName, std::move(last));
+    }
+    {
+        // The open border: edges of one face (in its winding), or ends of one line.
+        std::vector<std::int64_t> sides;
+        if (rPr.mCurve) {
+            std::vector<std::int64_t> uses(n, 0), line_of(n, -1);
+            for (std::size_t l = 0; l < rPr.mLines.size(); ++l)
+                for (const std::int64_t v : rPr.mLines[l]) {
+                    ++uses[static_cast<std::size_t>(v)];
+                    line_of[static_cast<std::size_t>(v)] = static_cast<std::int64_t>(l);
+                }
+            for (std::size_t p = 0; p < n; ++p)
+                if (uses[p] == 1)
+                    swept({static_cast<std::int64_t>(p)}, line_of[p], sides);
+        } else {
+            struct ExEdge {
+                std::int64_t mLo, mHi, mFace;
+                std::array<std::int64_t, 2> mDirected;
+            };
+            std::vector<ExEdge> edges;
+            for (std::size_t f = 0; f < rPr.mFaces.size(); ++f) {
+                const auto& r_f = rPr.mFaces[f];
+                const int k = r_f[3] >= 0 ? 4 : 3;
+                for (int i = 0; i < k; ++i) {
+                    const std::int64_t a = r_f[static_cast<std::size_t>(i)];
+                    const std::int64_t b = r_f[static_cast<std::size_t>((i + 1) % k)];
+                    edges.push_back({std::min(a, b), std::max(a, b), static_cast<std::int64_t>(f),
+                                     {a, b}});
+                }
+            }
+            std::stable_sort(edges.begin(), edges.end(), [](const ExEdge& rA, const ExEdge& rB) {
+                return rA.mLo != rB.mLo ? rA.mLo < rB.mLo : rA.mHi < rB.mHi;
+            });
+            for (std::size_t i = 0; i < edges.size();) {
+                std::size_t j = i + 1;
+                while (j < edges.size() && edges[j].mLo == edges[i].mLo &&
+                       edges[j].mHi == edges[i].mHi)
+                    ++j;
+                if (j == i + 1)
+                    swept({edges[i].mDirected[0], edges[i].mDirected[1]}, edges[i].mFace, sides);
+                i = j;
+            }
+        }
+        add_generated("side", std::move(sides));
+    }
+}
+
+void ex_check_count(std::int64_t Layers, const std::string& rOp) {
+    if (Layers < 1)
+        throw std::invalid_argument("meshio++: " + rOp + ": num_layers must be at least 1");
+}
+
+}  // namespace
+
+SweepResult extrude(const Mesh& rMesh, const ExtrudeOptions& rOptions) {
+    const ExtrudeOptions& o = rOptions;
+    const std::string op = "extrude";
+    const ExVec d = o.mDirection;
+    for (const double c : d)
+        if (!std::isfinite(c))
+            throw std::invalid_argument("meshio++: extrude: the direction must be finite");
+    const double dl = ex_norm(d);
+    if (!(dl > 0.0))
+        throw std::invalid_argument("meshio++: extrude: the direction must not be zero");
+    if (!std::isfinite(o.mRatio) || !(o.mRatio > 0.0))
+        throw std::invalid_argument("meshio++: extrude: ratio must be positive and finite");
+    std::vector<double> t;  // level fractions, 1..L
+    if (!o.mOffsets.empty()) {
+        if (o.mRatio != 1.0)
+            throw std::invalid_argument(
+                "meshio++: extrude: give either offsets or a ratio, not both");
+        if (o.mNumLayers != 1 && static_cast<std::size_t>(o.mNumLayers) != o.mOffsets.size())
+            throw std::invalid_argument("meshio++: extrude: num_layers (" +
+                                        std::to_string(o.mNumLayers) + ") differs from the " +
+                                        std::to_string(o.mOffsets.size()) + " offsets");
+        double prev = 0.0;
+        for (const double v : o.mOffsets) {
+            if (!std::isfinite(v) || !(v > prev))
+                throw std::invalid_argument(
+                    "meshio++: extrude: offsets must be positive and increasing");
+            prev = v;
+        }
+        if (prev != 1.0)
+            throw std::invalid_argument("meshio++: extrude: the last offset must be 1");
+        t = o.mOffsets;
+    } else {
+        ex_check_count(o.mNumLayers, op);
+        const int L = o.mNumLayers;
+        for (int k = 1; k <= L; ++k) {
+            if (o.mRatio == 1.0)
+                t.push_back(static_cast<double>(k) / static_cast<double>(L));
+            else
+                t.push_back((std::pow(o.mRatio, k) - 1.0) / (std::pow(o.mRatio, L) - 1.0));
+        }
+        t.back() = 1.0;
+    }
+    const int L = static_cast<int>(t.size());
+    const bool uniform = o.mOffsets.empty() && o.mRatio == 1.0;
+
+    SweepResult res;
+    ExProfile pr = ex_gather(rMesh, op);
+    if (pr.mCurve) {
+        for (std::size_t l = 0; l < pr.mLines.size(); ++l) {
+            const ExVec e = ex_sub(pr.Point(pr.mLines[l][1]), pr.Point(pr.mLines[l][0]));
+            if (ex_norm(ex_cross(e, d)) <= 1e-9 * ex_norm(e) * dl)
+                throw std::invalid_argument("meshio++: extrude: line " + std::to_string(l) +
+                                            " is parallel to the direction (or has no length)");
+        }
+    } else {
+        for (std::size_t f = 0; f < pr.mFaces.size(); ++f) {
+            const ExVec nrm = ex_face_normal(pr, pr.mFaces[f]);
+            const double s = ex_dot(nrm, d);
+            if (std::abs(s) <= 1e-9 * ex_norm(nrm) * dl)
+                throw std::invalid_argument("meshio++: extrude: face " + std::to_string(f) +
+                                            " is parallel to the direction (or has no area)");
+            if (s < 0.0) {
+                ex_flip(pr.mFaces[f]);
+                ++res.mNumFlipped;
+            }
+        }
+    }
+    const std::size_t n = rMesh.NumPoints();
+    ExPlan plan;
+    plan.mOp = op;
+    plan.mLayers = L;
+    plan.mOffsets.assign(n * static_cast<std::size_t>(L), 0.0);
+    for (std::size_t p = 0; p < n; ++p)
+        if (pr.mUsed[p])
+            for (int k = 0; k < L; ++k)
+                plan.mOffsets[p * static_cast<std::size_t>(L) + static_cast<std::size_t>(k)] =
+                    t[static_cast<std::size_t>(k)];
+    const std::vector<double>& xyz = pr.mXyz;
+    // Uniform levels are computed as `x + (d k) / L`, the way `box` computes
+    // its coordinates, so extruding `rectangle` gives `box` bit for bit.
+    plan.mPlace = [&, uniform, L](std::size_t P, int K, double* pOut) {
+        for (std::size_t c = 0; c < 3; ++c)
+            pOut[c] = uniform ? xyz[3 * P + c] + d[c] * static_cast<double>(K) / static_cast<double>(L)
+                              : xyz[3 * P + c] + d[c] * t[static_cast<std::size_t>(K - 1)];
+    };
+    plan.mLayerName = kExtrudeLayerName;
+    plan.mRecordLayers = o.mRecordLayers;
+    plan.mFirstName = "bottom";
+    plan.mLastName = "top";
+    plan.mMaxCells = o.mMaxCells;
+    ex_sweep(rMesh, pr, plan, res);
+    return res;
+}
+
+SweepResult revolve(const Mesh& rMesh, const RevolveOptions& rOptions) {
+    const RevolveOptions& o = rOptions;
+    const std::string op = "revolve";
+    ExVec axis = o.mAxis;
+    const ExVec origin = o.mAxisPoint;
+    for (std::size_t c = 0; c < 3; ++c)
+        if (!std::isfinite(axis[c]) || !std::isfinite(origin[c]))
+            throw std::invalid_argument("meshio++: revolve: the axis must be finite");
+    const double al = ex_norm(axis);
+    if (!(al > 0.0))
+        throw std::invalid_argument("meshio++: revolve: the axis must not be zero");
+    if (!std::isfinite(o.mTolerance) || o.mTolerance < 0.0)
+        throw std::invalid_argument("meshio++: revolve: tolerance must be finite and non-negative");
+    if (!std::isfinite(o.mAngle) || o.mAngle == 0.0 || std::abs(o.mAngle) > 360.0)
+        throw std::invalid_argument("meshio++: revolve: angle must be in (0, 360] degrees, either sign");
+    ex_check_count(o.mNumLayers, op);
+    const int L = o.mNumLayers;
+    const bool full = std::abs(o.mAngle) == 360.0;
+    if (full && L < 3)
+        throw std::invalid_argument("meshio++: revolve: a full turn needs at least 3 steps");
+    double angle = o.mAngle;
+    if (angle < 0.0) {
+        angle = -angle;
+        for (double& c : axis)
+            c = -c;
+    }
+    if (angle / L >= 180.0)
+        throw std::invalid_argument("meshio++: revolve: each step must turn less than 180 degrees");
+    for (double& c : axis)
+        c /= al;
+
+    SweepResult res;
+    res.mFull = full;
+    ExProfile pr = ex_gather(rMesh, op);
+    const std::size_t n = rMesh.NumPoints();
+    // On the axis: within the tolerance of the used points' bounding-box diagonal.
+    ExVec lo{0.0, 0.0, 0.0}, hi{0.0, 0.0, 0.0};
+    bool any = false;
+    for (std::size_t p = 0; p < n; ++p) {
+        if (!pr.mUsed[p])
+            continue;
+        const ExVec x = pr.Point(static_cast<std::int64_t>(p));
+        for (std::size_t c = 0; c < 3; ++c) {
+            lo[c] = any ? std::min(lo[c], x[c]) : x[c];
+            hi[c] = any ? std::max(hi[c], x[c]) : x[c];
+        }
+        any = true;
+    }
+    const double tol = o.mTolerance * ex_norm(ex_sub(hi, lo));
+    std::vector<char> on_axis(n, 0);
+    const auto radial = [&](std::int64_t P) {
+        const ExVec r = ex_sub(pr.Point(P), origin);
+        return ex_cross(axis, r);  // the motion at P; its length is the distance to the axis
+    };
+    for (std::size_t p = 0; p < n; ++p)
+        if (pr.mUsed[p] && ex_norm(radial(static_cast<std::int64_t>(p))) <= tol) {
+            on_axis[p] = 1;
+            ++res.mNumOnAxis;
+        }
+    if (pr.mCurve) {
+        std::int64_t on = 0;
+        for (std::size_t l = 0; l < pr.mLines.size(); ++l) {
+            const auto& r_l = pr.mLines[l];
+            if (on_axis[static_cast<std::size_t>(r_l[0])] && on_axis[static_cast<std::size_t>(r_l[1])]) {
+                ++on;
+                continue;
+            }
+            const ExVec a = pr.Point(r_l[0]), b = pr.Point(r_l[1]);
+            const ExVec e = ex_sub(b, a);
+            const ExVec mid{0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1]), 0.5 * (a[2] + b[2])};
+            const ExVec m = ex_cross(axis, ex_sub(mid, origin));
+            if (ex_norm(ex_cross(e, m)) <= 1e-9 * ex_norm(e) * ex_norm(m))
+                throw std::invalid_argument("meshio++: revolve: line " + std::to_string(l) +
+                                            " moves along itself (or has no length)");
+        }
+        if (on > 0)
+            throw std::invalid_argument("meshio++: revolve: " + std::to_string(on) +
+                                        " line(s) lie on the axis and would sweep to nothing");
+    } else {
+        std::int64_t kept = 0;
+        for (std::size_t f = 0; f < pr.mFaces.size(); ++f) {
+            const ExVec nrm = ex_face_normal(pr, pr.mFaces[f]);
+            const int k = pr.mFaces[f][3] >= 0 ? 4 : 3;
+            int pos = 0, neg = 0;
+            for (int i = 0; i < k; ++i) {
+                const std::int64_t v = pr.mFaces[f][static_cast<std::size_t>(i)];
+                if (on_axis[static_cast<std::size_t>(v)])
+                    continue;
+                const ExVec m = radial(v);
+                const double s = ex_dot(nrm, m);
+                if (std::abs(s) <= 1e-9 * ex_norm(nrm) * ex_norm(m))
+                    continue;
+                (s > 0.0 ? pos : neg) += 1;
+            }
+            if (pos > 0 && neg > 0)
+                throw std::invalid_argument("meshio++: revolve: face " + std::to_string(f) +
+                                            " crosses the axis");
+            if (pos == 0 && neg == 0)
+                throw std::invalid_argument("meshio++: revolve: face " + std::to_string(f) +
+                                            " turns within its own plane (or has no area)");
+            if (neg > 0) {
+                ex_flip(pr.mFaces[f]);
+                ++res.mNumFlipped;
+            } else {
+                ++kept;
+            }
+        }
+        // Faces turned both ways lie on both sides of the axis: past half a
+        // turn, each side sweeps through the other.
+        if (kept > 0 && res.mNumFlipped > 0) {
+            if (angle > 180.0)
+                throw std::invalid_argument(
+                    "meshio++: revolve: the profile lies on both sides of the axis, so a turn "
+                    "of more than 180 degrees would sweep it through itself");
+            res.mWarnings.push_back("the profile lies on both sides of the axis");
+        }
+    }
+    ExPlan plan;
+    plan.mOp = op;
+    plan.mLayers = L;
+    plan.mPeriodic = full;
+    plan.mCollapsedEdgeWedges = true;
+    plan.mOffsets.assign(n * static_cast<std::size_t>(L), 0.0);
+    for (std::size_t p = 0; p < n; ++p)
+        if (pr.mUsed[p] && !on_axis[p])
+            for (int k = 0; k < L; ++k)
+                plan.mOffsets[p * static_cast<std::size_t>(L) + static_cast<std::size_t>(k)] = k + 1;
+    const double rad = angle * 3.14159265358979323846 / 180.0;
+    std::vector<std::array<double, 16>> rot;
+    for (int k = 1; k <= L; ++k)
+        rot.push_back(transform_rotation(axis[0], axis[1], axis[2], rad * k / L).mMatrix);
+    const std::vector<double>& xyz = pr.mXyz;
+    plan.mPlace = [&](std::size_t P, int K, double* pOut) {
+        const auto& m = rot[static_cast<std::size_t>(K - 1)];
+        const double r[3] = {xyz[3 * P] - origin[0], xyz[3 * P + 1] - origin[1],
+                             xyz[3 * P + 2] - origin[2]};
+        for (std::size_t c = 0; c < 3; ++c)
+            pOut[c] = origin[c] + m[c * 4] * r[0] + m[c * 4 + 1] * r[1] + m[c * 4 + 2] * r[2];
+    };
+    plan.mLayerName = kRevolveLayerName;
+    plan.mRecordLayers = o.mRecordLayers;
+    plan.mFirstName = "start";
+    plan.mLastName = "end";
+    plan.mMaxCells = o.mMaxCells;
+    ex_sweep(rMesh, pr, plan, res);
+    return res;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/extrude.cpp =====
 // ===== begin src/cpp/src/operations/feature_edges.cpp =====
 #include <algorithm>
 #include <cstddef>
@@ -233974,6 +235313,463 @@ Mesh triangulate_polygon_2d(const std::vector<std::vector<std::array<double, 2>>
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/mesh_cad.cpp =====
+// ===== begin src/cpp/src/operations/mirror.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+// How one block's cells are flipped: a fixed table, a polygon ring or a
+// polyhedron's face rings.
+struct MirBlockFlip {
+    const std::vector<int>* pPerm = nullptr;
+    const std::vector<int>* pFacets = nullptr;
+    std::vector<int> mPolygonPerm;  // a rectangular polygon block's own table
+    bool mRaggedPolygon = false;
+    bool mPolyhedron = false;
+};
+
+template <class CellViewT>
+MirBlockFlip mir_block_flip(const CellViewT& rCells) {
+    MirBlockFlip f;
+    const std::string type(rCells.Type());
+    const CellType ct = cell_type_from_name(type);
+    if (rCells.IsPolyhedron()) {
+        f.mPolyhedron = true;
+        return f;
+    }
+    if (ct == CellType::Polygon) {
+        if (rCells.IsRagged()) {
+            f.mRaggedPolygon = true;
+            return f;
+        }
+        // A polygon with rectangular storage: every row has the same size.
+        const int npc = static_cast<int>(rCells.NodesPerCell());
+        f.mPolygonPerm.push_back(0);
+        for (int i = npc - 1; i >= 1; --i)
+            f.mPolygonPerm.push_back(i);
+        return f;
+    }
+    f.pPerm = rCells.IsRagged() ? nullptr : detail::cell_flip_permutation(ct);
+    f.pFacets = detail::cell_flip_facet_map(ct);
+    if (f.pPerm == nullptr ||
+        static_cast<std::size_t>(cell_type_num_nodes(ct)) != rCells.NodesPerCell())
+        throw Unsupported("meshio++: mirror: no orientation flip for cell type '" + type +
+                          "' (linear and quadratic types, polygons and polyhedra only)");
+    return f;
+}
+
+// The local facet a flipped cell gives facet F of a cell with N facets (a
+// polygon's N is its node count), or -1 when F is not a facet of the cell.
+std::int64_t mir_flip_facet(const MirBlockFlip& rFlip, std::int64_t F, std::int64_t N) {
+    if (F < 0)
+        return -1;
+    if (rFlip.mPolyhedron)
+        return F < N ? F : -1;
+    if (rFlip.mRaggedPolygon || !rFlip.mPolygonPerm.empty())
+        return F < N ? N - 1 - F : -1;
+    if (rFlip.pFacets == nullptr || F >= static_cast<std::int64_t>(rFlip.pFacets->size()))
+        return -1;
+    return (*rFlip.pFacets)[static_cast<std::size_t>(F)];
+}
+
+// Reflect rows [Start, Start + Rows) of a float array of 3 (v' = H v) or 9
+// (A' = H A H, row-major) columns in place.
+void mir_reflect_rows(NDArray& rA, std::size_t Start, std::size_t Rows, std::size_t Cols,
+                      const std::array<double, 9>& rH) {
+    detail::dispatch_dtype(rA.Dtype(), [&]<class T>() {
+        T* p = rA.As<T>();
+        parallel_for_bw(Rows, [&](std::size_t r) {
+            const std::size_t b = (Start + r) * Cols;
+            if (Cols == 3) {
+                const double v[3] = {static_cast<double>(p[b]), static_cast<double>(p[b + 1]),
+                                     static_cast<double>(p[b + 2])};
+                for (std::size_t i = 0; i < 3; ++i)
+                    p[b + i] =
+                        static_cast<T>(rH[i * 3] * v[0] + rH[i * 3 + 1] * v[1] + rH[i * 3 + 2] * v[2]);
+                return;
+            }
+            double a[9], t[9];
+            for (std::size_t k = 0; k < 9; ++k)
+                a[k] = static_cast<double>(p[b + k]);
+            for (std::size_t i = 0; i < 3; ++i)
+                for (std::size_t j = 0; j < 3; ++j)
+                    t[i * 3 + j] = rH[i * 3] * a[j] + rH[i * 3 + 1] * a[3 + j] + rH[i * 3 + 2] * a[6 + j];
+            for (std::size_t i = 0; i < 3; ++i)
+                for (std::size_t j = 0; j < 3; ++j)
+                    p[b + i * 3 + j] = static_cast<T>(t[i * 3] * rH[j * 3] +
+                                                      t[i * 3 + 1] * rH[j * 3 + 1] +
+                                                      t[i * 3 + 2] * rH[j * 3 + 2]);
+        });
+    });
+}
+
+// Gather rows `rIdx` of a data array and reflect those from `Start` on, when
+// asked and the array is a float vector or tensor.
+NDArray mir_carry(const NDArray& rSrc, std::size_t SrcRows, const std::vector<std::int64_t>& rIdx,
+                  std::size_t Start, bool Reflect, const std::array<double, 9>& rH) {
+    NDArray out = detail::subset_gather_rows(rSrc, rIdx);
+    const std::size_t cols = SrcRows > 0 ? rSrc.Size() / SrcRows : 0;
+    if (Reflect && detail::is_float_dtype(rSrc.Dtype()) && (cols == 3 || cols == 9) &&
+        rIdx.size() > Start)
+        mir_reflect_rows(out, Start, rIdx.size() - Start, cols, rH);
+    return out;
+}
+
+std::vector<std::int64_t> mir_iota(std::size_t N) {
+    std::vector<std::int64_t> v(N);
+    for (std::size_t i = 0; i < N; ++i)
+        v[i] = static_cast<std::int64_t>(i);
+    return v;
+}
+
+NDArray mir_entries(const std::vector<std::int64_t>& rFlat, bool Side) {
+    const std::size_t n = Side ? rFlat.size() / 2 : rFlat.size();
+    NDArray a = Side ? NDArray(DType::Int64, {n, 2}) : NDArray(DType::Int64, {n});
+    std::copy(rFlat.begin(), rFlat.end(), a.As<std::int64_t>());
+    return a;
+}
+
+}  // namespace
+
+MirrorResult mirror(const Mesh& rMesh, const MirrorOptions& rOptions) {
+    const MirrorOptions& o = rOptions;
+    if (!std::isfinite(o.mTolerance) || o.mTolerance < 0.0)
+        throw std::invalid_argument("meshio++: mirror: tolerance must be finite and non-negative");
+    double len2 = 0.0;
+    for (std::size_t d = 0; d < 3; ++d) {
+        if (!std::isfinite(o.mOrigin[d]) || !std::isfinite(o.mNormal[d]))
+            throw std::invalid_argument("meshio++: mirror: origin and normal must be finite");
+        len2 += o.mNormal[d] * o.mNormal[d];
+    }
+    if (!(len2 > 0.0))
+        throw std::invalid_argument("meshio++: mirror: the normal must not be zero");
+    const double len = std::sqrt(len2);
+    const std::array<double, 3> nrm{{o.mNormal[0] / len, o.mNormal[1] / len, o.mNormal[2] / len}};
+
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+    for (std::size_t d = std::min<std::size_t>(dim, 3); d < 3; ++d)
+        if (nrm[d] != 0.0)
+            throw std::invalid_argument(
+                "meshio++: mirror: the points have " + std::to_string(dim) +
+                " coordinates, so the normal's component " + std::to_string(d) +
+                " must be zero (the image would leave their space)");
+    const std::size_t sdim = std::min<std::size_t>(dim, 3);
+    const std::array<double, 9> H{{1.0 - 2.0 * nrm[0] * nrm[0], -2.0 * nrm[0] * nrm[1],
+                                   -2.0 * nrm[0] * nrm[2], -2.0 * nrm[1] * nrm[0],
+                                   1.0 - 2.0 * nrm[1] * nrm[1], -2.0 * nrm[1] * nrm[2],
+                                   -2.0 * nrm[2] * nrm[0], -2.0 * nrm[2] * nrm[1],
+                                   1.0 - 2.0 * nrm[2] * nrm[2]}};
+
+    // Every block's flip, checked before anything is built.
+    std::vector<MirBlockFlip> flips;
+    for (const auto cb : rMesh.CellRange())
+        flips.push_back(mir_block_flip(cb));
+
+    // Signed distances to the plane and the points on it.
+    const NDArray& pts = rMesh.Points();
+    std::vector<double> sdist(n, 0.0);
+    std::array<double, 3> lo{{0.0, 0.0, 0.0}}, hi{{0.0, 0.0, 0.0}};
+    for (std::size_t p = 0; p < n; ++p) {
+        double s = 0.0;
+        for (std::size_t d = 0; d < sdim; ++d) {
+            const double x = detail::read_double(pts, p * dim + d);
+            s += (x - o.mOrigin[d]) * nrm[d];
+            lo[d] = p == 0 ? x : std::min(lo[d], x);
+            hi[d] = p == 0 ? x : std::max(hi[d], x);
+        }
+        sdist[p] = s;
+    }
+    double diag2 = 0.0;
+    for (std::size_t d = 0; d < sdim; ++d)
+        diag2 += (hi[d] - lo[d]) * (hi[d] - lo[d]);
+    const double tol = o.mTolerance * std::sqrt(diag2);
+    std::vector<char> on_plane(n, 0);
+    MirrorResult res;
+    for (std::size_t p = 0; p < n; ++p)
+        if (std::abs(sdist[p]) <= tol) {
+            on_plane[p] = 1;
+            ++res.mNumPointsOnPlane;
+        }
+
+    const bool keep = o.mKeepOriginal;
+    const bool weld = keep && o.mWeld;
+
+    // The image of each point, and the rows the output points come from.
+    std::vector<std::int64_t> image(n);
+    std::vector<std::int64_t> point_rows = mir_iota(n);
+    for (std::size_t p = 0; p < n; ++p) {
+        if (!keep || (weld && on_plane[p])) {
+            image[p] = static_cast<std::int64_t>(p);
+            continue;
+        }
+        image[p] = static_cast<std::int64_t>(point_rows.size());
+        point_rows.push_back(static_cast<std::int64_t>(p));
+    }
+    const std::size_t first_image = keep ? n : 0;  // the first reflected output point
+    {
+        NDArray out_pts = detail::subset_gather_rows(pts, point_rows);
+        const std::size_t nimg = point_rows.size() - first_image;
+        detail::dispatch_dtype(out_pts.Dtype(), [&]<class T>() {
+            T* q = out_pts.As<T>();
+            parallel_for_bw(nimg, [&](std::size_t i) {
+                const std::size_t row = first_image + i;
+                const double s = sdist[static_cast<std::size_t>(point_rows[row])];
+                for (std::size_t d = 0; d < sdim; ++d)
+                    q[row * dim + d] =
+                        static_cast<T>(static_cast<double>(q[row * dim + d]) - 2.0 * s * nrm[d]);
+            });
+        });
+        res.mMesh.AssignPoints(std::move(out_pts));
+    }
+
+    // The cells: per block, its own cells when kept, then the reflected ones;
+    // a reflected cell lying on the plane is dropped when welding.
+    const std::size_t nb = rMesh.NumCellBlocks();
+    std::vector<std::vector<std::int64_t>> mirrored(nb);  // per block, the kept sources
+    std::vector<std::vector<std::int64_t>> rank(nb);      // per cell, its copy's rank or -1
+    for (std::size_t b = 0; b < nb; ++b) {
+        const auto cb = rMesh.Cells(b);
+        const MirBlockFlip& r_flip = flips[b];
+        const std::size_t nc = cb.NumCells();
+        const auto all_on = [&](const std::int64_t* pNodes, std::size_t K) {
+            for (std::size_t k = 0; k < K; ++k)
+                if (!on_plane[static_cast<std::size_t>(pNodes[k])])
+                    return false;
+            return K > 0;
+        };
+        std::vector<std::int64_t>& r_rank = rank[b];
+        r_rank.assign(nc, -1);
+        std::vector<std::int64_t>& r_kept = mirrored[b];
+        const std::string type(cb.Type());
+        if (r_flip.mPolyhedron) {
+            std::vector<std::int64_t> flat, rows{0}, faces{0};
+            const auto put = [&](std::size_t c, bool Flip) {
+                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
+                    const auto face = cb.Face(c, f);
+                    for (std::size_t k = 0; k < face.second; ++k) {
+                        const std::size_t at = Flip && k > 0 ? face.second - k : k;
+                        const std::int64_t v = face.first[at];
+                        flat.push_back(Flip ? image[static_cast<std::size_t>(v)] : v);
+                    }
+                    rows.push_back(static_cast<std::int64_t>(flat.size()));
+                }
+                faces.push_back(static_cast<std::int64_t>(rows.size() - 1));
+            };
+            for (std::size_t c = 0; c < nc; ++c) {
+                bool on = weld;
+                for (std::size_t f = 0; f < cb.NumFaces(c) && on; ++f) {
+                    const auto face = cb.Face(c, f);
+                    on = all_on(face.first, face.second);
+                }
+                if (!on) {
+                    r_rank[c] = static_cast<std::int64_t>(r_kept.size());
+                    r_kept.push_back(static_cast<std::int64_t>(c));
+                }
+            }
+            if (keep)
+                for (std::size_t c = 0; c < nc; ++c)
+                    put(c, false);
+            for (const std::int64_t c : r_kept)
+                put(static_cast<std::size_t>(c), true);
+            res.mMesh.AddPolyhedronBlock(type, std::move(flat), std::move(rows), std::move(faces));
+        } else if (r_flip.mRaggedPolygon) {
+            std::vector<std::int64_t> flat, rows{0};
+            for (std::size_t c = 0; c < nc; ++c)
+                if (!(weld && all_on(cb.Row(c), cb.RowSize(c)))) {
+                    r_rank[c] = static_cast<std::int64_t>(r_kept.size());
+                    r_kept.push_back(static_cast<std::int64_t>(c));
+                }
+            if (keep)
+                for (std::size_t c = 0; c < nc; ++c) {
+                    flat.insert(flat.end(), cb.Row(c), cb.Row(c) + cb.RowSize(c));
+                    rows.push_back(static_cast<std::int64_t>(flat.size()));
+                }
+            for (const std::int64_t cc : r_kept) {
+                const auto c = static_cast<std::size_t>(cc);
+                const std::int64_t* row = cb.Row(c);
+                const std::size_t k = cb.RowSize(c);
+                for (std::size_t i = 0; i < k; ++i)
+                    flat.push_back(image[static_cast<std::size_t>(row[i == 0 ? 0 : k - i])]);
+                rows.push_back(static_cast<std::int64_t>(flat.size()));
+            }
+            res.mMesh.AddPolygonBlock(type, std::move(flat), std::move(rows));
+        } else {
+            const std::vector<int>& perm =
+                r_flip.mPolygonPerm.empty() ? *r_flip.pPerm : r_flip.mPolygonPerm;
+            const std::size_t npc = cb.NodesPerCell();
+            const NDArray& conn = cb.Conn();
+            std::vector<std::int64_t> row(npc);
+            for (std::size_t c = 0; c < nc; ++c) {
+                bool on = weld;
+                for (std::size_t k = 0; k < npc && on; ++k)
+                    on = on_plane[static_cast<std::size_t>(detail::read_int(conn, c * npc + k))] != 0;
+                if (!on || npc == 0) {
+                    r_rank[c] = static_cast<std::int64_t>(r_kept.size());
+                    r_kept.push_back(static_cast<std::int64_t>(c));
+                }
+            }
+            const std::size_t base = keep ? nc : 0;
+            NDArray out(DType::Int64, {base + r_kept.size(), npc});
+            std::int64_t* q = out.As<std::int64_t>();
+            parallel_for_bw(base, [&](std::size_t c) {
+                for (std::size_t k = 0; k < npc; ++k)
+                    q[c * npc + k] = detail::read_int(conn, c * npc + k);
+            });
+            parallel_for_bw(r_kept.size(), [&](std::size_t r) {
+                const auto c = static_cast<std::size_t>(r_kept[r]);
+                for (std::size_t k = 0; k < npc; ++k) {
+                    const std::int64_t v =
+                        detail::read_int(conn, c * npc + static_cast<std::size_t>(perm[k]));
+                    q[(base + r) * npc + k] = image[static_cast<std::size_t>(v)];
+                }
+            });
+            res.mMesh.AddCellBlock(type, std::move(out));
+        }
+        res.mNumFlippedCells += static_cast<std::int64_t>(r_kept.size());
+        res.mNumDroppedCells += static_cast<std::int64_t>(nc - r_kept.size());
+    }
+
+    // Data, row by row.
+    const bool reflect = o.mReflectVectorData;
+    for (const std::string& name : rMesh.PointDataNames())
+        res.mMesh.AddPointData(
+            name, mir_carry(rMesh.PointData(name), n, point_rows, first_image, reflect, H));
+    for (const std::string& name : rMesh.CellDataNames()) {
+        std::vector<NDArray> blocks;
+        for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name) && b < nb; ++b) {
+            const std::size_t nc = rMesh.Cells(b).NumCells();
+            std::vector<std::int64_t> rows = keep ? mir_iota(nc) : std::vector<std::int64_t>{};
+            rows.insert(rows.end(), mirrored[b].begin(), mirrored[b].end());
+            blocks.push_back(
+                mir_carry(rMesh.CellData(name, b), nc, rows, keep ? nc : 0, reflect, H));
+        }
+        res.mMesh.AddCellData(name, std::move(blocks));
+    }
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        NDArray a = rMesh.FieldData(name);
+        a.MakeOwned();
+        res.mMesh.AddFieldData(name, std::move(a));
+    }
+    for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i)
+        res.mMesh.AddPropertySet(rMesh.GetPropertySet(i));
+
+    // Regions. A cell (b, c) is out_base[b] + c when kept, and its copy
+    // out_base[b] + (kept ? n_b : 0) + rank.
+    const std::vector<std::int64_t> in_bases = detail::block_bases(rMesh);
+    std::vector<std::int64_t> out_bases(nb + 1, 0);
+    for (std::size_t b = 0; b < nb; ++b)
+        out_bases[b + 1] = out_bases[b] +
+                           (keep ? static_cast<std::int64_t>(rMesh.Cells(b).NumCells()) : 0) +
+                           static_cast<std::int64_t>(mirrored[b].size());
+    const auto original_of = [&](std::size_t B, std::int64_t C) { return out_bases[B] + C; };
+    const auto copy_of = [&](std::size_t B, std::int64_t C) -> std::int64_t {
+        const std::int64_t r = rank[B][static_cast<std::size_t>(C)];
+        if (r < 0)
+            return -1;
+        return out_bases[B] +
+               (keep ? static_cast<std::int64_t>(rMesh.Cells(B).NumCells()) : 0) + r;
+    };
+    std::vector<std::int64_t> facet;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r_in = rMesh.Region(i);
+        const std::int64_t* e = r_in.Entries();
+        const std::size_t ne = r_in.NumEntries();
+        std::vector<std::int64_t> flat;
+        std::int64_t dropped = 0, invalid = 0;
+        if (r_in.mKind == RegionKind::Point) {
+            for (std::size_t k = 0; k < ne; ++k) {
+                if (e[k] < 0 || static_cast<std::size_t>(e[k]) >= n) {
+                    ++invalid;
+                    continue;
+                }
+                flat.push_back(e[k]);
+                if (keep)
+                    flat.push_back(image[static_cast<std::size_t>(e[k])]);
+            }
+        } else if (r_in.mKind == RegionKind::Cell) {
+            for (std::size_t k = 0; k < ne; ++k) {
+                const auto [b, c] = detail::global_to_block_row(in_bases, e[k]);
+                if (b >= nb) {
+                    ++invalid;
+                    continue;
+                }
+                if (keep)
+                    flat.push_back(original_of(b, c));
+                const std::int64_t m = copy_of(b, c);
+                if (m >= 0)
+                    flat.push_back(m);
+            }
+        } else {
+            for (std::size_t k = 0; k < ne; ++k) {
+                const std::int64_t g = e[2 * k], f = e[2 * k + 1];
+                const auto [b, c] = detail::global_to_block_row(in_bases, g);
+                if (b >= nb) {
+                    ++invalid;
+                    continue;
+                }
+                const auto cb = rMesh.Cells(b);
+                const auto uc = static_cast<std::size_t>(c);
+                const std::int64_t nfac =
+                    flips[b].mPolyhedron
+                        ? static_cast<std::int64_t>(cb.NumFaces(uc))
+                        : (flips[b].mRaggedPolygon
+                               ? static_cast<std::int64_t>(cb.RowSize(uc))
+                               : static_cast<std::int64_t>(cb.NodesPerCell()));
+                const std::int64_t nf = mir_flip_facet(flips[b], f, nfac);
+                if (nf < 0) {
+                    ++invalid;
+                    continue;
+                }
+                if (weld) {
+                    CellType ft = CellType::Custom;
+                    bool on = detail::facet_nodes(rMesh, g, f, ft, facet) && !facet.empty();
+                    for (const std::int64_t v : facet)
+                        on = on && on_plane[static_cast<std::size_t>(v)];
+                    if (on) {
+                        ++dropped;
+                        continue;
+                    }
+                }
+                if (keep) {
+                    flat.push_back(original_of(b, c));
+                    flat.push_back(f);
+                }
+                const std::int64_t m = copy_of(b, c);
+                if (m >= 0) {
+                    flat.push_back(m);
+                    flat.push_back(nf);
+                }
+            }
+        }
+        res.mNumDroppedSides += dropped;
+        if (dropped > 0)
+            res.mWarnings.push_back("region '" + r_in.mName + "': " + std::to_string(dropped) +
+                                    " facet(s) on the mirror plane are interior and were dropped");
+        if (invalid > 0)
+            res.mWarnings.push_back("region '" + r_in.mName + "': " + std::to_string(invalid) +
+                                    " entr(ies) naming no entity of the mesh were dropped");
+        Region r_out(r_in.mName, r_in.mKind, r_in.mDim, r_in.mTag,
+                     mir_entries(flat, r_in.mKind == RegionKind::Side));
+        res.mMesh.AddRegion(std::move(r_out));
+    }
+    return res;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/mirror.cpp =====
 // ===== begin src/cpp/src/operations/neighbors.cpp =====
 #include <algorithm>
 #include <array>
@@ -239873,6 +241669,11 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"BoundaryLayer",
          {"FirstHeight", "NumLayers", "Growth", "Reverse", "CollisionFraction", "SmoothIterations",
           "MaxShrink", "Collapse", "NormalSmoothIterations", "FrontCheck"}},
+        // Sweeps (roadmap 3.1.2, 3.1.3) and the reflection (3.2.5).
+        {"Extrude", {"Direction", "NumLayers", "Ratio", "Offsets", "RecordLayers", "MaxCells"}},
+        {"Revolve",
+         {"Axis", "AxisPoint", "Angle", "NumLayers", "Tolerance", "RecordLayers", "MaxCells"}},
+        {"Mirror", {"Point", "Normal", "KeepOriginal", "Weld", "Tolerance", "ReflectData"}},
         // Tetrahedra filling the closed triangle surface (roadmap 6.7).
         {"Tetrahedralize",
          {"Backend", "MaxSize", "MaxVolume", "Grading", "OptimizeSteps", "MaxCells", "FaceArray"}},
@@ -240558,6 +242359,65 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"NumFewerLayers", static_cast<double>(r.mNumFewerLayers)},
                         {"NumFrontCrossings", static_cast<double>(r.mNumFrontCrossings)},
                         {"MinScaledJacobian", r.mMinScaledJacobian}});
+        return std::move(r.mMesh);
+    }
+
+    if (op == "Extrude") {
+        ExtrudeOptions o;
+        if (pipe_find(rStep, "Direction"))
+            pipe_vec3(rStep, "Direction", o.mDirection.data());
+        o.mNumLayers = static_cast<std::int32_t>(
+            pipe_number(rStep, "NumLayers", static_cast<double>(o.mNumLayers)));
+        o.mRatio = pipe_number(rStep, "Ratio", o.mRatio);
+        if (pipe_find(rStep, "Offsets"))
+            o.mOffsets = pipe_dvec(rStep, "Offsets");
+        o.mRecordLayers = pipe_flag(rStep, "RecordLayers", o.mRecordLayers);
+        o.mMaxCells = static_cast<std::int64_t>(
+            pipe_number(rStep, "MaxCells", static_cast<double>(o.mMaxCells)));
+        SweepResult r = extrude(mesh, o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumCells", static_cast<double>(r.mNumCells)},
+                        {"NumFlipped", static_cast<double>(r.mNumFlipped)},
+                        {"MinScaledJacobian", r.mMinScaledJacobian}});
+        return std::move(r.mMesh);
+    }
+
+    if (op == "Revolve") {
+        RevolveOptions o;
+        if (pipe_find(rStep, "Axis"))
+            pipe_vec3(rStep, "Axis", o.mAxis.data());
+        if (pipe_find(rStep, "AxisPoint"))
+            pipe_vec3(rStep, "AxisPoint", o.mAxisPoint.data());
+        o.mAngle = pipe_number(rStep, "Angle", o.mAngle);
+        o.mNumLayers = static_cast<std::int32_t>(
+            pipe_number(rStep, "NumLayers", static_cast<double>(o.mNumLayers)));
+        o.mTolerance = pipe_number(rStep, "Tolerance", o.mTolerance);
+        o.mRecordLayers = pipe_flag(rStep, "RecordLayers", o.mRecordLayers);
+        o.mMaxCells = static_cast<std::int64_t>(
+            pipe_number(rStep, "MaxCells", static_cast<double>(o.mMaxCells)));
+        SweepResult r = revolve(mesh, o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumCells", static_cast<double>(r.mNumCells)},
+                        {"NumOnAxis", static_cast<double>(r.mNumOnAxis)},
+                        {"MinScaledJacobian", r.mMinScaledJacobian}});
+        return std::move(r.mMesh);
+    }
+
+    if (op == "Mirror") {
+        MirrorOptions o;
+        if (pipe_find(rStep, "Point"))
+            pipe_vec3(rStep, "Point", o.mOrigin.data());
+        if (pipe_find(rStep, "Normal"))
+            pipe_vec3(rStep, "Normal", o.mNormal.data());
+        o.mKeepOriginal = pipe_flag(rStep, "KeepOriginal", o.mKeepOriginal);
+        o.mWeld = pipe_flag(rStep, "Weld", o.mWeld);
+        o.mTolerance = pipe_number(rStep, "Tolerance", o.mTolerance);
+        o.mReflectVectorData = pipe_flag(rStep, "ReflectData", o.mReflectVectorData);
+        MirrorResult r = mirror(mesh, o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumFlippedCells", static_cast<double>(r.mNumFlippedCells)},
+                        {"NumPointsOnPlane", static_cast<double>(r.mNumPointsOnPlane)},
+                        {"NumDroppedCells", static_cast<double>(r.mNumDroppedCells)}});
         return std::move(r.mMesh);
     }
 
@@ -264443,8 +266303,8 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
     const std::array<double, 16>& M = rXform.mMatrix;
     if (transform_linear_det(M) < 0.0)
         log::warn(
-            "transform: orientation-reversing (negative determinant); cell orientation "
-            "may be flipped");
+            "transform: orientation-reversing (negative determinant): every cell comes out "
+            "inverted; mirror reflects with the cells right side out");
 
     Mesh out;
 

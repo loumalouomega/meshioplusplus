@@ -277,6 +277,44 @@ CASES = [
 # Verbs that write a file: each CLI gets its own output path.
 WRITING = [
     (
+        "extrude",
+        lambda f, out: [
+            "extrude",
+            f["grid"],
+            out + ".vtu",
+            "--direction=0,0,-2",
+            "--num-layers",
+            "3",
+            "--ratio",
+            "1.5",
+            "--json",
+        ],
+    ),
+    (
+        "revolve",
+        lambda f, out: [
+            "revolve",
+            f["grid"],
+            out + ".vtu",
+            "--angle",
+            "90",
+            "--num-layers",
+            "4",
+            "--json",
+        ],
+    ),
+    (
+        "mirror",
+        lambda f, out: [
+            "mirror",
+            f["hexes"],
+            out + ".vtu",
+            "--normal=1,0,0",
+            "--keep-original",
+            "--json",
+        ],
+    ),
+    (
         "feature_edges",
         lambda f, out: ["feature-edges", f["grid"], out + ".vtu", "--json"],
     ),

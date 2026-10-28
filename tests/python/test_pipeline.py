@@ -1312,3 +1312,79 @@ def test_tetrahedralize_pipeline_step(tmp_path):
         }
         steps.append(step)
     assert all(s == steps[0] for s in steps)
+
+
+_SWEEP_STEPS = [
+    [
+        {"Op": "Generate", "Shape": "rectangle", "Dims": [3, 2]},
+        {"Op": "Extrude", "Direction": [0, 0, 1], "NumLayers": 4},
+    ],
+    [
+        {
+            "Op": "Generate",
+            "Shape": "rectangle",
+            "Dims": [2, 2],
+            "CellType": "triangle",
+        },
+        {"Op": "Extrude", "Offsets": [0.25, 1.0], "RecordLayers": True},
+    ],
+    [
+        {"Op": "Generate", "Shape": "rectangle", "Dims": [3, 2]},
+        {"Op": "Revolve", "Angle": 270, "NumLayers": 6, "Axis": [0, 1, 0]},
+    ],
+    [
+        {"Op": "Generate", "Shape": "box", "Dims": [2, 2, 2], "CellType": "tetra"},
+        {"Op": "Mirror", "Normal": [1, 0, 0], "KeepOriginal": True},
+    ],
+]
+
+
+@pytest.mark.parametrize("steps", _SWEEP_STEPS, ids=lambda s: s[1]["Op"])
+def test_sweep_and_mirror_steps_agree_in_both_engines(tmp_path, steps):
+    """``Extrude``, ``Revolve`` and ``Mirror`` (roadmap 3.1.2, 3.1.3, 3.2.5):
+    the same mesh and counters from the Python and the C++ engine."""
+    if not hasattr(_core, "extrude"):
+        pytest.skip("core predates extrude")
+    py_out, cpp_out = tmp_path / "py.vtu", tmp_path / "cpp.vtu"
+    settings = {"Version": 1, "Operations": steps, "Output": {"Path": str(py_out)}}
+    py_report = meshioplusplus.run_pipeline(settings)
+    settings["Output"]["Path"] = str(cpp_out)
+    cpp_report = _core.run_pipeline_json(json.dumps(settings))
+    assert py_report["steps"][1] == cpp_report["steps"][1]
+    built = meshioplusplus.read(py_out)
+    assert meshioplusplus.meshes_equal(built, meshioplusplus.read(cpp_out))
+    assert meshioplusplus.check_quality(built)["num_inverted"] == 0
+
+
+def test_extruding_a_generated_rectangle_is_the_generated_box(tmp_path):
+    def run(steps, name):
+        out = tmp_path / name
+        meshioplusplus.run_pipeline(
+            {"Version": 1, "Operations": steps, "Output": {"Path": str(out)}}
+        )
+        return meshioplusplus.read(out)
+
+    swept = run(
+        [
+            {"Op": "Generate", "Shape": "rectangle", "Dims": [3, 2]},
+            {"Op": "Extrude", "NumLayers": 4},
+        ],
+        "swept.vtu",
+    )
+    box = run([{"Op": "Generate", "Shape": "box", "Dims": [3, 2, 4]}], "box.vtu")
+    np.testing.assert_array_equal(swept.points, box.points)
+    np.testing.assert_array_equal(swept.cells[0].data, box.cells[0].data)
+
+
+def test_sweep_steps_refuse_unknown_keys(tmp_path):
+    for op in ("Extrude", "Revolve", "Mirror"):
+        bad = {
+            "Version": 1,
+            "Operations": [
+                {"Op": "Generate", "Shape": "rectangle"},
+                {"Op": op, "Bogus": 1},
+            ],
+            "Output": {"Path": str(tmp_path / "x.vtu")},
+        }
+        with pytest.raises(ValueError, match="Bogus"):
+            meshioplusplus.run_pipeline(bad)

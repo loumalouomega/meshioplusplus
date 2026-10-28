@@ -1406,6 +1406,121 @@ SEXP R_mio_boundary_layer(SEXP mesh, SEXP first_height, SEXP num_layers, SEXP gr
     return res;
 }
 
+/* mio_r_getstring adapters: the warnings of this thread's last extrude,
+ * revolve and mirror calls. */
+static int64_t r_extrude_warnings(void *ctx, char *buf, int64_t buflen) {
+    (void)ctx;
+    return mio_extrude_warnings(buf, buflen);
+}
+static int64_t r_revolve_warnings(void *ctx, char *buf, int64_t buflen) {
+    (void)ctx;
+    return mio_revolve_warnings(buf, buflen);
+}
+static int64_t r_mirror_warnings(void *ctx, char *buf, int64_t buflen) {
+    (void)ctx;
+    return mio_mirror_warnings(buf, buflen);
+}
+
+/* The list an extrude or revolve call returns. */
+static SEXP r_sweep_list(mio_mesh *out, const mio_sweep_report *report, SEXP warnings) {
+    SEXP v[14];
+    v[0] = PROTECT(mio_r_wrap_mesh(out));
+    v[1] = PROTECT(Rf_ScalarReal((double)report->num_cells));
+    v[2] = PROTECT(Rf_ScalarReal((double)report->num_hexahedra));
+    v[3] = PROTECT(Rf_ScalarReal((double)report->num_wedges));
+    v[4] = PROTECT(Rf_ScalarReal((double)report->num_pyramids));
+    v[5] = PROTECT(Rf_ScalarReal((double)report->num_tetrahedra));
+    v[6] = PROTECT(Rf_ScalarReal((double)report->num_quads));
+    v[7] = PROTECT(Rf_ScalarReal((double)report->num_triangles));
+    v[8] = PROTECT(Rf_ScalarReal((double)report->num_flipped));
+    v[9] = PROTECT(Rf_ScalarReal((double)report->num_on_axis));
+    v[10] = PROTECT(Rf_ScalarReal(report->min_scaled_jacobian));
+    v[11] = PROTECT(Rf_ScalarLogical(report->full != 0));
+    v[12] = warnings;
+    v[13] = R_NilValue;
+    const char *names[] = {"mesh",          "num_cells",      "num_hexahedra", "num_wedges",
+                           "num_pyramids",  "num_tetrahedra", "num_quads",     "num_triangles",
+                           "num_flipped",   "num_on_axis",    "min_scaled_jacobian",
+                           "full",          "warnings"};
+    SEXP res = PROTECT(mio_r_named_list(13, names, v));
+    UNPROTECT(13);
+    return res;
+}
+
+/* extrude (roadmap 3.1.2): a surface swept into a volume, or a curve into a
+ * surface, along a vector. Returns list(mesh, num_cells, ..., warnings). */
+SEXP R_mio_extrude(SEXP mesh, SEXP direction, SEXP num_layers, SEXP ratio, SEXP offsets,
+                   SEXP record_layers, SEXP max_cells) {
+    mio_extrude_opts opts;
+    mio_extrude_opts_init(&opts);
+    mio_r_vec3(direction, opts.direction, "direction");
+    opts.num_layers = (int32_t)mio_r_int(num_layers, "num_layers");
+    opts.ratio = mio_r_double(ratio, "ratio");
+    SEXP offs = PROTECT(Rf_coerceVector(offsets, REALSXP));
+    opts.num_offsets = (int64_t)Rf_xlength(offs);
+    opts.offsets = opts.num_offsets > 0 ? REAL(offs) : NULL;
+    opts.record_layers = mio_r_bool(record_layers, "record_layers");
+    opts.max_cells = (int64_t)mio_r_double(max_cells, "max_cells");
+    mio_sweep_report report;
+    mio_mesh *out = mio_extrude(mio_r_mesh(mesh), &opts, &report);
+    UNPROTECT(1);
+    if (out == NULL) mio_r_fail("extrude");
+    SEXP w = PROTECT(mio_r_getstring(r_extrude_warnings, NULL, "extrude"));
+    SEXP res = PROTECT(r_sweep_list(out, &report, w));
+    UNPROTECT(2);
+    return res;
+}
+
+/* revolve (roadmap 3.1.3): the same around an axis. */
+SEXP R_mio_revolve(SEXP mesh, SEXP axis, SEXP axis_point, SEXP angle, SEXP num_layers,
+                   SEXP tolerance, SEXP record_layers, SEXP max_cells) {
+    mio_revolve_opts opts;
+    mio_revolve_opts_init(&opts);
+    mio_r_vec3(axis, opts.axis, "axis");
+    mio_r_vec3(axis_point, opts.axis_point, "axis_point");
+    opts.angle = mio_r_double(angle, "angle");
+    opts.num_layers = (int32_t)mio_r_int(num_layers, "num_layers");
+    opts.tolerance = mio_r_double(tolerance, "tolerance");
+    opts.record_layers = mio_r_bool(record_layers, "record_layers");
+    opts.max_cells = (int64_t)mio_r_double(max_cells, "max_cells");
+    mio_sweep_report report;
+    mio_mesh *out = mio_revolve(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL) mio_r_fail("revolve");
+    SEXP w = PROTECT(mio_r_getstring(r_revolve_warnings, NULL, "revolve"));
+    SEXP res = PROTECT(r_sweep_list(out, &report, w));
+    UNPROTECT(2);
+    return res;
+}
+
+/* mirror (roadmap 3.2.5): reflect across a plane, every cell right side out.
+ * Returns list(mesh, num_flipped_cells, ..., warnings). */
+SEXP R_mio_mirror(SEXP mesh, SEXP origin, SEXP normal, SEXP keep_original, SEXP weld,
+                  SEXP tolerance, SEXP reflect_vector_data) {
+    mio_mirror_opts opts;
+    mio_mirror_opts_init(&opts);
+    mio_r_vec3(origin, opts.origin, "origin");
+    mio_r_vec3(normal, opts.normal, "normal");
+    opts.keep_original = mio_r_bool(keep_original, "keep_original");
+    opts.weld = mio_r_bool(weld, "weld");
+    opts.tolerance = mio_r_double(tolerance, "tolerance");
+    opts.reflect_vector_data = mio_r_bool(reflect_vector_data, "reflect_vector_data");
+    mio_mirror_report report;
+    mio_mesh *out = mio_mirror(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL) mio_r_fail("mirror");
+    SEXP v[6];
+    v[0] = PROTECT(mio_r_wrap_mesh(out));
+    v[1] = PROTECT(Rf_ScalarReal((double)report.num_flipped_cells));
+    v[2] = PROTECT(Rf_ScalarReal((double)report.num_points_on_plane));
+    v[3] = PROTECT(Rf_ScalarReal((double)report.num_dropped_cells));
+    v[4] = PROTECT(Rf_ScalarReal((double)report.num_dropped_sides));
+    v[5] = PROTECT(mio_r_getstring(r_mirror_warnings, NULL, "mirror"));
+    const char *names[] = {"mesh",              "num_flipped_cells", "num_points_on_plane",
+                           "num_dropped_cells", "num_dropped_sides", "warnings"};
+    SEXP res = PROTECT(mio_r_named_list(6, names, v));
+    UNPROTECT(7);
+    return res;
+}
+
 SEXP R_mio_has_netgen(void) {
     return Rf_ScalarLogical(mio_has_netgen() != 0);
 }

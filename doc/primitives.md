@@ -1,6 +1,6 @@
 # Parametric primitives
 
-Almost every operation transforms a mesh you already have. [`grid`](voxelize.md#grid-as-a-primitive-constructor) was the one exception; these thirteen generators build a shape from parameters, so a test, a notebook, a demo or an MCP session needs no fixture file.
+Almost every operation transforms a mesh you already have. [`grid`](voxelize.md#grid-as-a-primitive-constructor) was the one exception; these thirteen generators build a shape from parameters, so a test, a notebook, a demo or an MCP session needs no fixture file. [`extrude` and `revolve`](extrude.md) sweep the planar ones into solids with the same contract: extruding `rectangle` gives `box` exactly.
 
 | Generator | Builds | Cell types | Side regions |
 |---|---|---|---|

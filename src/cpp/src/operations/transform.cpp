@@ -204,8 +204,8 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
     const std::array<double, 16>& M = rXform.mMatrix;
     if (transform_linear_det(M) < 0.0)
         log::warn(
-            "transform: orientation-reversing (negative determinant); cell orientation "
-            "may be flipped");
+            "transform: orientation-reversing (negative determinant): every cell comes out "
+            "inverted; mirror reflects with the cells right side out");
 
     Mesh out;
 

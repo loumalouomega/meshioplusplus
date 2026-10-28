@@ -122,6 +122,7 @@ export repair, shrinkwrap, sobolev_deform
 export interpolate, conservative_interpolate, meshes_equal, stats, compute_bandwidth
 export reorder, convert_cells, subdivide, agglomerate, refine, undo_green, decimate, partition, partition_labels
 export boundary_layer
+export extrude, revolve, mirror
 export tetrahedralize, has_netgen
 export tessellate
 export data_drop, data_keep, data_rename, data_point_to_cell, data_cell_to_point

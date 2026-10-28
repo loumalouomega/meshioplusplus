@@ -150,6 +150,8 @@ meshioplusplus ascii      input.msh              # convert to ASCII format
 meshioplusplus merge      a.vtu b.vtu out.vtu    # merge meshes (optional --weld)
 
 meshioplusplus transform  in.vtu out.vtu --translate 1,2,3   # affine transform
+meshioplusplus mirror     half.vtu whole.vtu --keep-original  # reflect, cells right side out
+meshioplusplus extrude    profile.vtu slab.vtu --num-layers 4  # sweep a surface into a volume
 meshioplusplus clean      in.vtu out.vtu --weld              # weld / prune / de-dup
 meshioplusplus crop       in.vtu out.vtu --bbox 0,0,0,1,1,1  # subset by region
 meshioplusplus crop       in.vtu out.vtu --where "d<0"       # ... or by a data predicate
@@ -443,6 +445,7 @@ welded = meshioplusplus.merge([left, right], weld=True, atol=1e-8)  # fuse the s
 A bundle of dependency-free mesh-editing utilities:
 
 - **`meshioplusplus.transform`** — apply an affine transform (translate / scale / rotate / 4×4 matrix / unit-scale) to the points; connectivity and data are carried through. See `doc/transform.md`.
+- **`meshioplusplus.mirror`** — reflect across a plane with every cell right side out (a reflecting `transform` leaves them inverted); `keep_original=True` makes a whole model from a half, the points on the plane shared. See `doc/mirror.md`.
 - **`meshioplusplus.clean`** — weld coincident points (spatial hash), drop degenerate and duplicate cells, and remove orphaned points, in one toggleable pass. See `doc/clean.md`.
 - **`meshioplusplus.crop`** — extract the part of a mesh inside a bounding box or half-space, pruning unused points (`mode="all"`/`"any"`). See `doc/crop.md`.
 - **`meshioplusplus.split`** — partition a mesh into several by cell type, connected component (flood-fill), region (`cell_sets` / integer tag), or one piece per named Cell region (`by="regions"`, cross-binding, not a partition — overlapping regions overlap). See `doc/split.md`. `meshioplusplus regions` (CLI) / `read_metadata(...)["regions"]` lists a mesh's regions cheaply, without a full read where possible.
@@ -657,6 +660,8 @@ print(report["num_failed"], report["num_open_edges"], report["min_angle_deg"])
 
 **`meshioplusplus.boundary_layer`** grows prismatic layers from a triangle and quad surface: `num_layers` layers of wedges and hexahedra along the most normal normals (Aubry and Löhner 2009), the first `first_height` thick and growing by `growth`, stopped short of the surface across a gap and where the last layer's front would cross itself or the surface (`front_check`), and halved, then collapsed into pyramids and tetrahedra (or, with `collapse="layers"`, grown fewer layers) where a cell would fold. See `doc/boundary_layer.md`.
 
+**`meshioplusplus.extrude`** and **`meshioplusplus.revolve`** sweep a surface into a volume, or a curve into a surface, along a vector (graded layers) or around an axis (the cells on the axis collapsing into pyramids, tetrahedra and wedges): the swept cells only, with `bottom`/`top` (`start`/`end`) and `side` regions, the input's regions and data carried; extruding `rectangle` gives `box` exactly. See `doc/extrude.md`.
+
 **`meshioplusplus.tetrahedralize`** fills a closed triangle surface (a `mesh_cad_surface` result, a boundary layer's cap) with tetrahedra, nested shells becoming regions and `cad:face` side regions: through its native octree backend in every build (isosurface stuffing, the boundary fitted within a reported distance), or through Netgen's nglib, an optional backend that keeps the surface's triangles exactly (LGPL-2.1, linked dynamically when built with `-DMESHIOPLUSPLUS_WITH_NETGEN=ON`; `backend="auto"` takes it when present). See `doc/tetrahedralize.md`.
 
 **`meshioplusplus.error_size`** turns `estimate_error`'s per-cell indicator into a per-point size by Zienkiewicz and Zhu's adaptive procedure, a `background` for `mesh_cad_surface`, so an adaptation re-meshes from the CAD model. See `doc/error_size.md`.
@@ -665,6 +670,8 @@ print(report["num_failed"], report["num_open_edges"], report["min_angle_deg"])
 
 ```python
 layers, report = meshioplusplus.boundary_layer(surface, 1e-3, num_layers=8, growth=1.25, return_report=True)
+slab = meshioplusplus.extrude(meshioplusplus.rectangle(dims=(8, 4)), (0.0, 0.0, 0.5), num_layers=6, ratio=1.2)
+body = meshioplusplus.revolve(meshioplusplus.rectangle(dims=(4, 8)), angle=270.0, num_layers=12)
 back = meshioplusplus.project_to_cad(meshioplusplus.smooth(surface, iterations=10), meshioplusplus.read("part.cad.json"))
 volume, report = meshioplusplus.tetrahedralize(surface, max_size=0.1, return_report=True)  # Netgen if built, else octree
 ```

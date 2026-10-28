@@ -54,6 +54,8 @@
 #include "meshioplusplus/operations/iga.hpp"
 #include "meshioplusplus/operations/mesh_cad.hpp"
 #include "meshioplusplus/operations/boundary_layer.hpp"
+#include "meshioplusplus/operations/extrude.hpp"
+#include "meshioplusplus/operations/mirror.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/formats/cad_json.hpp"
@@ -556,6 +558,11 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"BoundaryLayer",
          {"FirstHeight", "NumLayers", "Growth", "Reverse", "CollisionFraction", "SmoothIterations",
           "MaxShrink", "Collapse", "NormalSmoothIterations", "FrontCheck"}},
+        // Sweeps (roadmap 3.1.2, 3.1.3) and the reflection (3.2.5).
+        {"Extrude", {"Direction", "NumLayers", "Ratio", "Offsets", "RecordLayers", "MaxCells"}},
+        {"Revolve",
+         {"Axis", "AxisPoint", "Angle", "NumLayers", "Tolerance", "RecordLayers", "MaxCells"}},
+        {"Mirror", {"Point", "Normal", "KeepOriginal", "Weld", "Tolerance", "ReflectData"}},
         // Tetrahedra filling the closed triangle surface (roadmap 6.7).
         {"Tetrahedralize",
          {"Backend", "MaxSize", "MaxVolume", "Grading", "OptimizeSteps", "MaxCells", "FaceArray"}},
@@ -1241,6 +1248,65 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"NumFewerLayers", static_cast<double>(r.mNumFewerLayers)},
                         {"NumFrontCrossings", static_cast<double>(r.mNumFrontCrossings)},
                         {"MinScaledJacobian", r.mMinScaledJacobian}});
+        return std::move(r.mMesh);
+    }
+
+    if (op == "Extrude") {
+        ExtrudeOptions o;
+        if (pipe_find(rStep, "Direction"))
+            pipe_vec3(rStep, "Direction", o.mDirection.data());
+        o.mNumLayers = static_cast<std::int32_t>(
+            pipe_number(rStep, "NumLayers", static_cast<double>(o.mNumLayers)));
+        o.mRatio = pipe_number(rStep, "Ratio", o.mRatio);
+        if (pipe_find(rStep, "Offsets"))
+            o.mOffsets = pipe_dvec(rStep, "Offsets");
+        o.mRecordLayers = pipe_flag(rStep, "RecordLayers", o.mRecordLayers);
+        o.mMaxCells = static_cast<std::int64_t>(
+            pipe_number(rStep, "MaxCells", static_cast<double>(o.mMaxCells)));
+        SweepResult r = extrude(mesh, o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumCells", static_cast<double>(r.mNumCells)},
+                        {"NumFlipped", static_cast<double>(r.mNumFlipped)},
+                        {"MinScaledJacobian", r.mMinScaledJacobian}});
+        return std::move(r.mMesh);
+    }
+
+    if (op == "Revolve") {
+        RevolveOptions o;
+        if (pipe_find(rStep, "Axis"))
+            pipe_vec3(rStep, "Axis", o.mAxis.data());
+        if (pipe_find(rStep, "AxisPoint"))
+            pipe_vec3(rStep, "AxisPoint", o.mAxisPoint.data());
+        o.mAngle = pipe_number(rStep, "Angle", o.mAngle);
+        o.mNumLayers = static_cast<std::int32_t>(
+            pipe_number(rStep, "NumLayers", static_cast<double>(o.mNumLayers)));
+        o.mTolerance = pipe_number(rStep, "Tolerance", o.mTolerance);
+        o.mRecordLayers = pipe_flag(rStep, "RecordLayers", o.mRecordLayers);
+        o.mMaxCells = static_cast<std::int64_t>(
+            pipe_number(rStep, "MaxCells", static_cast<double>(o.mMaxCells)));
+        SweepResult r = revolve(mesh, o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumCells", static_cast<double>(r.mNumCells)},
+                        {"NumOnAxis", static_cast<double>(r.mNumOnAxis)},
+                        {"MinScaledJacobian", r.mMinScaledJacobian}});
+        return std::move(r.mMesh);
+    }
+
+    if (op == "Mirror") {
+        MirrorOptions o;
+        if (pipe_find(rStep, "Point"))
+            pipe_vec3(rStep, "Point", o.mOrigin.data());
+        if (pipe_find(rStep, "Normal"))
+            pipe_vec3(rStep, "Normal", o.mNormal.data());
+        o.mKeepOriginal = pipe_flag(rStep, "KeepOriginal", o.mKeepOriginal);
+        o.mWeld = pipe_flag(rStep, "Weld", o.mWeld);
+        o.mTolerance = pipe_number(rStep, "Tolerance", o.mTolerance);
+        o.mReflectVectorData = pipe_flag(rStep, "ReflectData", o.mReflectVectorData);
+        MirrorResult r = mirror(mesh, o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumFlippedCells", static_cast<double>(r.mNumFlippedCells)},
+                        {"NumPointsOnPlane", static_cast<double>(r.mNumPointsOnPlane)},
+                        {"NumDroppedCells", static_cast<double>(r.mNumDroppedCells)}});
         return std::move(r.mMesh);
     }
 

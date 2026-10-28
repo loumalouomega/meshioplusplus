@@ -81,6 +81,7 @@ from .. import (
     estimate_error,
     extract_skin,
     extract_surface,
+    extrude,
     feature_edges,
     find_interface,
     fit_cad,
@@ -101,6 +102,7 @@ from .. import (
     match_periodic_nodes,
     merge,
     mesh_cad_surface,
+    mirror,
     ngon,
     octree,
     octree_mesh,
@@ -125,6 +127,7 @@ from .. import (
     reorder,
     repair,
     resample_grid,
+    revolve,
     run_pipeline,
     sample_distance,
     sample_grid,
@@ -3966,6 +3969,96 @@ def tool_boundary_layer(
     return _result(_store(out, output_path, output_format), out, **report)
 
 
+def tool_extrude(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    direction=(0.0, 0.0, 1.0),
+    num_layers=1,
+    ratio=1.0,
+    offsets=None,
+    record_layers=False,
+    max_cells=20_000_000,
+):
+    """Sweep a surface into a volume (or a curve into a surface) along a
+    vector. Returns num_cells, num_hexahedra, num_wedges, num_pyramids,
+    num_tetrahedra, num_quads, num_triangles, num_flipped,
+    min_scaled_jacobian and warnings alongside the mesh summary."""
+    mesh = _load(input_path, input_format)
+    out, report = extrude(
+        mesh,
+        direction=direction,
+        num_layers=num_layers,
+        ratio=ratio,
+        offsets=offsets,
+        record_layers=record_layers,
+        max_cells=max_cells,
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
+def tool_revolve(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    axis=(0.0, 1.0, 0.0),
+    axis_point=(0.0, 0.0, 0.0),
+    angle=360.0,
+    num_layers=16,
+    tolerance=1e-9,
+    record_layers=False,
+    max_cells=20_000_000,
+):
+    """Sweep a surface (or a curve) around an axis. Returns the extrude
+    counts, num_on_axis, full, min_scaled_jacobian and warnings alongside the
+    mesh summary."""
+    mesh = _load(input_path, input_format)
+    out, report = revolve(
+        mesh,
+        axis=axis,
+        axis_point=axis_point,
+        angle=angle,
+        num_layers=num_layers,
+        tolerance=tolerance,
+        record_layers=record_layers,
+        max_cells=max_cells,
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
+def tool_mirror(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    origin=(0.0, 0.0, 0.0),
+    normal=(1.0, 0.0, 0.0),
+    keep_original=False,
+    weld=True,
+    tolerance=1e-9,
+    reflect_vector_data=False,
+):
+    """Reflect a mesh across a plane with every cell right side out. Returns
+    num_flipped_cells, num_points_on_plane, num_dropped_cells,
+    num_dropped_sides and warnings alongside the mesh summary."""
+    mesh = _load(input_path, input_format)
+    out, report = mirror(
+        mesh,
+        origin=origin,
+        normal=normal,
+        keep_original=keep_original,
+        weld=weld,
+        tolerance=tolerance,
+        reflect_vector_data=reflect_vector_data,
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
 def tool_tetrahedralize(
     input_path,
     output_path,
@@ -5654,6 +5747,18 @@ TOOL_REGISTRY = OrderedDict(
                 "wraps": ("boundary_layer",),
                 "gated": None,
             },
+        ),
+        (
+            "extrude",
+            {"fn": tool_extrude, "wraps": ("extrude",), "gated": None},
+        ),
+        (
+            "revolve",
+            {"fn": tool_revolve, "wraps": ("revolve",), "gated": None},
+        ),
+        (
+            "mirror",
+            {"fn": tool_mirror, "wraps": ("mirror",), "gated": None},
         ),
         (
             "tetrahedralize",

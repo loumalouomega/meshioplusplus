@@ -3716,3 +3716,26 @@ def test_marc_and_ansys_results_formats(tmp_path):
     stress = str(tmp_path / "stress.vtu")
     _tools.tool_convert(rst, stress)
     assert "S" in meshioplusplus.read(stress).point_data
+
+
+def test_extrude_revolve_and_mirror_tools(tmp_path):
+    """Roadmap 3.1.2, 3.1.3 and 3.2.5: the sweep and reflection tools write
+    their mesh and report the operations' counters."""
+    if not hasattr(_core, "extrude"):
+        pytest.skip("core predates extrude")
+    rect = tmp_path / "rect.vtu"
+    meshioplusplus.write(rect, meshioplusplus.rectangle(dims=(3, 2)))
+    out = tmp_path / "swept.vtu"
+    report = _tools.tool_extrude(str(rect), str(out), num_layers=4)
+    assert report["num_hexahedra"] == 24 and report["num_flipped"] == 0
+    assert {c.type for c in meshioplusplus.read(out).cells} == {"hexahedron"}
+    with pytest.raises(ValueError, match="parallel"):
+        _tools.tool_extrude(str(rect), str(out), direction=[0, 1, 0])
+    report = _tools.tool_revolve(str(rect), str(out), num_layers=8)
+    assert report["full"] and report["num_on_axis"] == 3
+    box = tmp_path / "box.vtu"
+    meshioplusplus.write(box, meshioplusplus.box(dims=(2, 2, 2), cell_type="tetra"))
+    report = _tools.tool_mirror(str(box), str(out), keep_original=True)
+    assert report["num_points_on_plane"] == 9 and report["num_flipped_cells"] == 48
+    with pytest.raises(ValueError, match="normal"):
+        _tools.tool_mirror(str(box), str(out), normal=[0, 0, 0])

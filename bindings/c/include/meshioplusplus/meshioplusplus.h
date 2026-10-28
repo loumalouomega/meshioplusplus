@@ -6190,6 +6190,118 @@ MIO_API void mio_boundary_layer_opts_init(mio_boundary_layer_opts* opts);
 MIO_API mio_mesh* mio_boundary_layer(const mio_mesh* mesh, const mio_boundary_layer_opts* opts,
                                      mio_boundary_layer_report* report);
 
+/* ---- extrude and revolve (roadmap 3.1.2, 3.1.3) -------------------------- */
+
+/** Options of mio_extrude; initialise with mio_extrude_opts_init. 96 bytes. */
+typedef struct mio_extrude_opts {
+    double direction[3]; /**< the whole displacement of the last level (init: 0, 0, 1) */
+    double ratio;        /**< each layer over the one below, > 0 (init: 1, uniform) */
+    /** Explicit level fractions (increasing, the last 1), or NULL; borrowed for
+     *  the call only. */
+    const double* offsets;
+    int64_t num_offsets; /**< entries of offsets (init: 0) */
+    int64_t max_cells;   /**< profile cells times layers; <= 0 disables (init: 20000000) */
+    int32_t num_layers;  /**< >= 1; with offsets, 1 or num_offsets (init: 1) */
+    int32_t record_layers; /**< nonzero: attach Int32 extrude:layer cell data */
+    int64_t reserved[4];
+} mio_extrude_opts;
+
+/** Options of mio_revolve; initialise with mio_revolve_opts_init. 112 bytes. */
+typedef struct mio_revolve_opts {
+    double axis_point[3]; /**< a point of the axis (init: origin) */
+    double axis[3];       /**< the axis direction (init: 0, 1, 0) */
+    double angle;         /**< degrees, 0 < |angle| <= 360, right-hand rule (init: 360) */
+    double tolerance;     /**< on the axis: fraction of the bounding-box diagonal (init: 1e-9) */
+    int64_t max_cells;    /**< as mio_extrude_opts.max_cells */
+    int32_t num_layers;   /**< steps of the turn; >= 3 for a full one (init: 16) */
+    int32_t record_layers; /**< nonzero: attach Int32 revolve:layer cell data */
+    int64_t reserved[4];
+} mio_revolve_opts;
+
+/** What mio_extrude and mio_revolve did. 128 bytes. */
+typedef struct mio_sweep_report {
+    int64_t num_cells;
+    int64_t num_hexahedra;
+    int64_t num_wedges;
+    int64_t num_pyramids;
+    int64_t num_tetrahedra;
+    int64_t num_quads;     /**< a swept curve's */
+    int64_t num_triangles; /**< a swept curve's, where an end is on the axis */
+    int64_t num_flipped;   /**< profile cells turned to face the sweep */
+    int64_t num_on_axis;   /**< profile points on the axis (revolve) */
+    int64_t num_warnings;  /**< see mio_extrude_warnings() / mio_revolve_warnings() */
+    double min_scaled_jacobian; /**< of the volume cells; 0 for a swept curve */
+    int32_t full;          /**< nonzero: a full turn, closed on itself */
+    int32_t reserved32;
+    int64_t reserved[4];
+} mio_sweep_report;
+
+MIO_API void mio_extrude_opts_init(mio_extrude_opts* opts);
+MIO_API void mio_revolve_opts_init(mio_revolve_opts* opts);
+
+/**
+ * Sweep a surface's triangles and quads into wedges and hexahedra (or, with no
+ * 2-D cells, its lines into quads) along a vector, in layers: the swept cells
+ * only, layer by layer, with Side regions bottom, top and side and the input's
+ * regions and data carried.
+ *
+ * @param opts   options, or NULL for the mio_extrude_opts_init() defaults.
+ * @param report out, nullable.
+ * @return the swept mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_extrude(const mio_mesh* mesh, const mio_extrude_opts* opts,
+                              mio_sweep_report* report);
+
+/** As mio_extrude, around an axis; Side regions start, end (a partial turn) and side. */
+MIO_API mio_mesh* mio_revolve(const mio_mesh* mesh, const mio_revolve_opts* opts,
+                              mio_sweep_report* report);
+
+/** The warnings of this thread's last mio_extrude call; string rule 5. */
+MIO_API int64_t mio_extrude_warnings(char* buf, int64_t buflen);
+/** The warnings of this thread's last mio_revolve call; string rule 5. */
+MIO_API int64_t mio_revolve_warnings(char* buf, int64_t buflen);
+
+/* ---- mirror (roadmap 3.2.5) ----------------------------------------------- */
+
+/** Options of mio_mirror; initialise with mio_mirror_opts_init. 104 bytes. */
+typedef struct mio_mirror_opts {
+    double origin[3];    /**< a point of the plane (init: origin) */
+    double normal[3];    /**< the plane's normal, not zero (init: 1, 0, 0) */
+    double tolerance;    /**< on the plane: fraction of the bounding-box diagonal (init: 1e-9) */
+    int32_t keep_original; /**< nonzero: the input followed by its image */
+    int32_t weld;          /**< with keep_original, share the points on the plane (init: 1) */
+    int32_t reflect_vector_data; /**< nonzero: reflect float 3- and 9-column data */
+    int32_t reserved32;
+    int64_t reserved[4];
+} mio_mirror_opts;
+
+/** What mio_mirror did. 72 bytes. */
+typedef struct mio_mirror_report {
+    int64_t num_flipped_cells;   /**< reflected cells written */
+    int64_t num_points_on_plane; /**< input points on the plane */
+    int64_t num_dropped_cells;   /**< copies dropped as lying on the plane (weld) */
+    int64_t num_dropped_sides;   /**< Side entries dropped as interior (weld) */
+    int64_t num_warnings;        /**< see mio_mirror_warnings() */
+    int64_t reserved[4];
+} mio_mirror_report;
+
+MIO_API void mio_mirror_opts_init(mio_mirror_opts* opts);
+
+/**
+ * Reflect a mesh across a plane with every cell right side out (its nodes
+ * permuted, Side region entries moved to their facets' new numbers). With
+ * keep_original, the input followed by its image.
+ *
+ * @param opts   options, or NULL for the mio_mirror_opts_init() defaults.
+ * @param report out, nullable.
+ * @return the mirrored mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_mirror(const mio_mesh* mesh, const mio_mirror_opts* opts,
+                             mio_mirror_report* report);
+
+/** The warnings of this thread's last mio_mirror call; string rule 5. */
+MIO_API int64_t mio_mirror_warnings(char* buf, int64_t buflen);
+
 /* ---- tetrahedralize (roadmap 6.7) --------------------------------------- */
 
 /** mio_tetrahedralize_opts.backend. */

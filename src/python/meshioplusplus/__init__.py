@@ -127,6 +127,7 @@ if TYPE_CHECKING:
     from ._diff import diff, meshes_equal
     from ._error import estimate_error
     from ._error_size import error_size
+    from ._extrude import extrude, revolve
     from ._feature_edges import feature_edges
     from ._fit_cad import fit_cad
     from ._fit_primitives import fit_primitives
@@ -188,6 +189,7 @@ if TYPE_CHECKING:
     from ._isosurface import isosurface
     from ._merge import merge
     from ._mesh_cad import mesh_cad_surface, triangulate_polygon_2d
+    from ._mirror import mirror
     from ._ml import FeatureMatrix, edge_index, feature_matrix, has_zarr, write_dataset
     from ._normals import compute_normals
     from ._octree import octree
@@ -435,6 +437,9 @@ _LAZY_ATTRS = {
     "mesh_cad_surface": "_mesh_cad",
     "project_to_cad": "_project_to_cad",
     "boundary_layer": "_boundary_layer",
+    "extrude": "_extrude",
+    "revolve": "_extrude",
+    "mirror": "_mirror",
     "tetrahedralize": "_tetrahedralize",
     "triangulate_polygon_2d": "_mesh_cad",
 }
@@ -611,6 +616,9 @@ __all__ = [
     "mesh_cad_surface",
     "project_to_cad",
     "boundary_layer",
+    "extrude",
+    "revolve",
+    "mirror",
     "tetrahedralize",
     "triangulate_polygon_2d",
     "sample_distance",

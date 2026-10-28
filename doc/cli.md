@@ -122,6 +122,8 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `split-interface` | duplicated-point and cohesive-cell counts |
 | `mesh-cad-surface` | `mesh_cad_surface`'s report: the counts, the open, non-manifold and misoriented edges, the extreme angles and edge lengths, `tolerance`, `max_edge_gap`, `faces` (`status`, `reason`, counts and extremes per face, `below_bound`, `bound_deg`, `min_input_angle_deg` and `corners`), `warnings`, `num_refinement_points`, `num_faces_below_bound`, `num_smoothed`, `angle_histogram` and `num_curved_straightened` |
 | `boundary-layer` | `boundary_layer`'s report: the cell counts by type, `num_shrunk`, `num_collapsed`, `num_not_visible`, `num_fewer_layers`, `num_front_crossings`, `min_scaled_jacobian`, the thickness range, `cap_closed` and `warnings` |
+| `extrude`, `revolve` | the sweep's report: the cell counts by type, `num_flipped`, `min_scaled_jacobian`, `warnings`; `revolve` adds `num_on_axis` and `full` |
+| `mirror` | `num_flipped_cells`, `num_points_on_plane`, `num_dropped_cells`, `num_dropped_sides`, `warnings` |
 | `tetrahedralize` | `tetrahedralize`'s report: `num_tetrahedra`, `num_points`, `num_new_points`, `num_regions`, `num_boundary_triangles`, `boundary_preserved`, `hausdorff_to_surface`, the dihedral range, `volume`, `backend` and `warnings` |
 
 The exit codes are unchanged by `--json`.
@@ -2206,6 +2208,70 @@ The summary and the JSON report count, besides the cells, the points shrunk and 
 ```sh
 meshioplusplus boundary-layer skin.vtu layers.vtu --first-height 1e-3 --num-layers 8 --growth 1.25
 meshioplusplus boundary-layer skin.vtu layers.vtu --first-height 1e-3 --collapse layers --normal-smooth 5
+```
+
+## `extrude`
+
+Sweep a surface's triangles and quads into wedges and hexahedra (or, with no 2-D cells, its lines into quads) along a vector, in layers (see [sweeps](/extrude)). Both CLIs.
+
+```
+meshioplusplus extrude INFILE OUTFILE [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--direction=x,y,z` | the whole displacement of the last level (`0,0,1`; negatives need the `=` form) |
+| `--num-layers N` | how many layers (1) |
+| `--ratio R` | each layer's thickness over the one below's (1, uniform) |
+| `--offsets a,b,...` | explicit level fractions, increasing and ending at 1 (not with `--ratio`) |
+| `--record-layers` | attach the Int32 `extrude:layer` cell data |
+| `--max-cells N` | refuse more profile cells times layers (20000000) |
+| `--json` / `-q/--quiet` | the report as JSON / no summary |
+| `-i/--input-format` / `-o/--output-format` | force the input / output format |
+
+## `revolve`
+
+Sweep a surface (or a curve) around an axis; points on the axis stay put and the cells around them collapse (see [sweeps](/extrude#revolve)). Both CLIs.
+
+```
+meshioplusplus revolve INFILE OUTFILE [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--axis=x,y,z` | the axis direction (`0,1,0`) |
+| `--axis-point=x,y,z` | a point of the axis (`0,0,0`) |
+| `--angle DEG` | degrees, right-hand rule about the axis (360, a full turn) |
+| `--num-layers N` | steps of the turn (16; at least 3 for a full turn) |
+| `--tolerance T` | on the axis: a fraction of the bounding-box diagonal (1e-9) |
+| `--record-layers` | attach the Int32 `revolve:layer` cell data |
+| `--max-cells N` | refuse more profile cells times layers (20000000) |
+| `--json` / `-q/--quiet` | the report as JSON / no summary |
+| `-i/--input-format` / `-o/--output-format` | force the input / output format |
+
+## `mirror`
+
+Reflect a mesh across a plane with every cell right side out (see [mirror](/mirror)). Both CLIs.
+
+```
+meshioplusplus mirror INFILE OUTFILE [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--origin=x,y,z` | a point of the plane (`0,0,0`) |
+| `--normal=x,y,z` | the plane's normal (`1,0,0`) |
+| `--keep-original` | write the input followed by its image |
+| `--no-weld` | with `--keep-original`, duplicate the points on the plane rather than share them |
+| `--tolerance T` | on the plane: a fraction of the bounding-box diagonal (1e-9) |
+| `--reflect-data` | reflect float vector and tensor data on the reflected copies |
+| `--json` / `-q/--quiet` | the report as JSON / no summary |
+| `-i/--input-format` / `-o/--output-format` | force the input / output format |
+
+```sh
+meshioplusplus extrude profile.vtu slab.vtu --direction=0,0,-0.5 --num-layers 6 --ratio 1.2
+meshioplusplus revolve section.vtu body.vtu --angle 90 --num-layers 8
+meshioplusplus mirror half.vtu whole.vtu --normal=1,0,0 --keep-original
 ```
 
 ## `tetrahedralize`
