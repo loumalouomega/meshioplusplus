@@ -811,7 +811,11 @@ def test_check_conformity_step_gates_and_reports(tmp_path):
     )
     quads = np.array([[0, 1, 2, 3], [1, 4, 5, 7], [7, 5, 6, 2]])
     src = tmp_path / "t.vtu"
-    meshioplusplus.write(src, meshioplusplus.Mesh(pts, [("quad", quads)]))
+    # Uncompressed for the same reason settings_env is: a zlib-less C++ build
+    # cannot read back what the Python shim's zlib-default fallback wrote.
+    meshioplusplus.write(
+        src, meshioplusplus.Mesh(pts, [("quad", quads)]), compression=None
+    )
 
     def settings(step, out):
         return {
@@ -846,7 +850,9 @@ def test_voxelize_step_takes_a_plane(tmp_path):
         pts, [("line", np.array([[0, 1], [1, 2], [2, 3], [3, 0]]))]
     )
     src = tmp_path / "loop.vtu"
-    meshioplusplus.write(src, loop)
+    # Uncompressed for the same reason settings_env is: a zlib-less C++ build
+    # cannot read back what the Python shim's zlib-default fallback wrote.
+    meshioplusplus.write(src, loop, compression=None)
     settings = {
         "Version": 1,
         "Input": {"Path": str(src)},
