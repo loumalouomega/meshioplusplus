@@ -119,6 +119,46 @@ MESHIOPLUSPLUS_API Mesh read_medit_binary(const std::string& rPath);
  */
 MESHIOPLUSPLUS_API void write_medit_binary(const std::string& rPath, const Mesh& rMesh);
 
+/**
+ * @brief Read a Medit solution: ascii `.sol`, or binary `.solb` when the path
+ *        ends in `b` (libMeshb's `SolAt*` keywords, MMG's size maps and metrics).
+ *
+ * The result has no geometry: `NumPoints()` rows of zero-width points carrying
+ * the `SolAtVertices` fields as `point_data["medit:sol:<i>"]` (`(n,)` for a
+ * scalar, `(n, components)` otherwise; a symmetric matrix keeps the file's
+ * lower-triangle order) and the dimension as `field_data["medit:dimension"]`.
+ * Element sections need their mesh: they are skipped with a warning, and
+ * `read_medit_sol_into` attaches them.
+ *
+ * @throws ReadError on a malformed or truncated file.
+ */
+MESHIOPLUSPLUS_API Mesh read_medit_sol(const std::string& rPath);
+
+/**
+ * @brief Attach the fields of a Medit solution to `rMesh`: `SolAtVertices`
+ *        fields as `point_data["medit:sol:<i>"]`, `SolAt<Elements>` fields as
+ *        `cell_data["medit:sol:<i>"]` (NaN on the blocks of other types; a name
+ *        two types give different shapes gets a `:<cell type>` suffix).
+ *
+ * @throws ReadError when the file is malformed, or its dimension or row counts
+ *         disagree with the mesh.
+ */
+MESHIOPLUSPLUS_API void read_medit_sol_into(const std::string& rPath, Mesh& rMesh);
+
+/**
+ * @brief Write a mesh's floating-point point and cell data as a Medit solution:
+ *        ascii `.sol`, or little-endian binary `.solb` when the path ends in `b`.
+ *
+ * Each array becomes one field of the type its component count names in the
+ * mesh's dimension (1: scalar, `dim`: vector, `dim*(dim+1)/2`: symmetric
+ * matrix, `dim*dim`: full matrix); integer arrays and other widths are skipped
+ * with a warning. A geometry-less mesh takes its dimension from
+ * `field_data["medit:dimension"]`.
+ *
+ * @throws WriteError when there is nothing to write or no 2-D/3-D dimension.
+ */
+MESHIOPLUSPLUS_API void write_medit_sol(const std::string& rPath, const Mesh& rMesh);
+
 /// `read_medit_binary` for a path ending in `b`, else `read_medit_ascii`.
 MESHIOPLUSPLUS_API Mesh read_medit(const std::string& rPath);
 

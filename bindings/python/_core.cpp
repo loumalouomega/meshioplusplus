@@ -6566,6 +6566,29 @@ PYBIND11_MODULE(_core, m) {
                   core_nogil([&] { return meshioplusplus::read_medit_ascii(path); }));
           }));
 
+    // Medit solution writer / readers (.sol ascii, .solb binary).
+    m.def("medit_sol_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+            return meshioplusplus::write_medit_sol(path, mesh);
+        });
+    });
+    m.def("medit_sol_read", guard_read("medit_sol", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(
+                  core_nogil([&] { return meshioplusplus::read_medit_sol(path); }));
+          }));
+    // The mesh with the solution's fields attached (a copy: the caller's mesh is untouched).
+    m.def("medit_sol_read_into", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+            pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+        guard_read("medit_sol", [&](const std::string& rFile) {
+            core_nogil([&] { meshioplusplus::read_medit_sol_into(rFile, mesh); });
+            return 0;
+        })(path);
+        return meshioplusplus_py::mesh_to_py(std::move(mesh));
+    });
+
     // Kratos MDPA writer / reader (.mdpa).
     m.def("mdpa_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;

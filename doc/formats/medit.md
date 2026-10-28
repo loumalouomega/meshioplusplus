@@ -19,6 +19,7 @@ meshioplusplus.medit.write("out.mesh", mesh, float_fmt=".16e")
 ```
 
 - **`float_fmt`** (default `".16e"`) — coordinate format for the ASCII writer (the binary path's float width is dictated by the file's `MeshVersionFormatted` version, not by this kwarg).
+- **`sol`** — on read, a [Medit solution](./medit_sol.md) to attach: a path, or `True` for `<stem>.sol` (else `<stem>.solb`) beside the mesh; its fields become `point_data`/`cell_data["medit:sol:<i>"]`. On write, `sol=True` also writes the floating-point point and cell data as `<stem>.sol` (beside a `.mesh`) or `<stem>.solb` (beside a `.meshb`).
 
 The native ASCII tokenizer reads bounded views over a [`FileSource`](../mmap.md), retaining comment skipping, numeric-prefix behavior and version-driven dtypes. Returned arrays are owned; the writer and binary fallback are unchanged. See the [text-I/O measurements](../benchmarks.md#off-medit-xyz-and-unv-second-reader-batch).
 
@@ -41,7 +42,7 @@ v0 v1 v2 ref                  # n rows, 1-based
 End
 ```
 
-Recognized element keywords: `Edges`, `Triangles`, `Quadrilaterals`, `Tetrahedra`, `Prisms`, `Pyramids`, `Hexahedra` (and the alternate spelling `Hexaedra`), and since v17.16.0 the high-order `EdgesP2`, `EdgesP3`, `TrianglesP2`, `TrianglesP3` and `TetrahedraP2` with their `<Keyword>Ordering` sections ([below](#high-order-elements)). Every element keyword is followed by a count then that many rows of `<node ids> <ref>`. Several other keywords are recognized but discarded on read: `Normals`, `NormalAtVertices`, `SubDomainFromMesh`, `VertexOnGeometricVertex`/`Edge`, `EdgeOnGeometricEdge`, `Identifier`, `Geometry`, `TangentAtVertices`, `Tangents`; the id lists `Corners`, `RequiredVertices`, `Ridges`, `RequiredEdges` and `RequiredTriangles` are kept as regions (see below).
+Recognized element keywords: `Edges`, `Triangles`, `Quadrilaterals`, `Tetrahedra`, `Prisms`, `Pyramids`, `Hexahedra` (and the alternate spelling `Hexaedra`), and since v17.16.0 the high-order `EdgesP2`, `EdgesP3`, `TrianglesP2`, `TrianglesP3` and `TetrahedraP2` with their `<Keyword>Ordering` sections ([below](#high-order-elements)). Every element keyword is followed by a count then that many rows of `<node ids> <ref>`. Several other keywords are recognized but discarded on read: `Normals`, `NormalAtVertices`, `SubDomainFromMesh`, `VertexOnGeometricVertex`/`Edge`, `EdgeOnGeometricEdge`, `Identifier`, `Geometry`, `TangentAtVertices`, `Tangents`, and the solution keywords `SolAtVertices` … `SolAtPyramids` (with a warning: a solution belongs in a [`.sol`](./medit_sol.md) beside the mesh); the id lists `Corners`, `RequiredVertices`, `Ridges`, `RequiredEdges` and `RequiredTriangles` are kept as regions (see below).
 
 ### Binary (`.meshb`, libMeshb GMF)
 
@@ -90,7 +91,7 @@ How the engines handle the orderings:
 - Coordinate dtype is version-driven, not user-selectable in binary mode: ASCII `MeshVersionFormatted` 0 or 1 → `float32`, 2 → `float64`; binary version 1 → `float32`, versions 2-4 → `float64`. The binary writer always writes `float64` coordinates, little-endian, and version 3 (32-bit integers); it upgrades to version 4 when an index or reference needs 64 bits.
 - Binary record headers embed **absolute byte offsets** (`pos` fields) that the writer must track precisely while emitting records — a strict requirement for libMeshb compatibility, not merely a convenience field.
 - `Normals`/`Tangents`/etc. sections are read but discarded. `Corners`, `RequiredVertices` (point regions `medit:Corners`, `medit:RequiredVertices`), `Ridges` and `RequiredEdges` (cell regions `medit:Ridges`, `medit:RequiredEdges` over the file's Edges) and `RequiredTriangles` (cell region `medit:RequiredTriangles` over its Triangles) are kept as regions and written back as those keywords, in the ASCII variant of both engines. The binary `.meshb` path carries them as the libMeshb sections `GmfCorners`, `GmfRidges`, `GmfRequiredVertices`, `GmfRequiredEdges` and `GmfRequiredTriangles`. A cell region is written relative to the first block of its type, so entries elsewhere are dropped with a warning.
-- Both variants, ASCII `.mesh` and binary `.meshb` (including its little/big-endian variants), are read and written by the C++ core and by the Python twin, which write the same bytes. The binary reader skips the sections it has no home for (solutions, normals ...) through their next-section position, with a warning, and refuses a file whose position is outside it.
+- Both variants, ASCII `.mesh` and binary `.meshb` (including its little/big-endian variants), are read and written by the C++ core and by the Python twin, which write the same bytes. The binary reader skips the sections it has no home for (solutions, which belong in a [`.solb`](./medit_sol.md), normals ...) through their next-section position, with a warning, and refuses a file whose position is outside it.
 - Cells are written one section per cell block: in block order by the binary writers and the Python ASCII writer, grouped by keyword (in the order of the table above) by the C++ ASCII writer.
 
 ## Notes

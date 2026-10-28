@@ -326,6 +326,7 @@ export default defineConfig({
           { text: "mdpa", link: "/formats/mdpa" },
           { text: "med", link: "/formats/med" },
           { text: "medit", link: "/formats/medit" },
+          { text: "medit_sol", link: "/formats/medit_sol" },
           { text: "mfem", link: "/formats/mfem" },
           { text: "mff", link: "/formats/mff" },
           { text: "mfm", link: "/formats/mfm" },

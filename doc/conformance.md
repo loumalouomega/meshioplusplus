@@ -52,6 +52,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="mdpa">`mdpa`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | — | — | — |
 | <span id="med">`med`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | — | cell, point |
 | <span id="medit">`medit`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | — |
+| <span id="medit-sol">`medit_sol`</span> | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | none | — | — | — | — |
 | <span id="mfem">`mfem`</span> |  | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell |
 | <span id="mff">`mff`</span> | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | none | — | — | — | — |
 | <span id="mfm">`mfm`</span> |  | ? | ? | ? | ? | ? | ? |  | fails: `WriteError` | | | | |
@@ -123,6 +124,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`lsdyna_d3plot`**: Single-precision words, so coordinates and data come back rounded to float32. Only what the state layout names is kept: the nodal variables (`displacement`, `velocity`, `temperature` ...), the element variables (`stress`, `strain`, `history_variables`, the shell and beam resultants ...), `lsdyna:alive` and the `global_*` field data; the probe's arrays are not. Blocks come back by family (solids, beams, shells, SPH particles; a vertex is an SPH particle), and a cell belongs to one part, so only the first cell region holding it survives.
 - **`marc`**: A deck holds no data arrays; Marc's face and edge numbering is not mapped to facets, so side regions are dropped (roadmap §1.2.11); a `vertex` has no type; Herrmann, bubble and generalized plane strain types come back as the default type of their shape.
 - **`marc_t19`**: Reals are `e13.6`, six digits, and integers come back as float64; the model is the input deck's, so a `vertex` has no type, side regions are dropped, and Herrmann, bubble and generalized plane strain types come back as the default type of their shape. A post file is checked against meshio++'s own reader only, until a Mentat run (roadmap §1.2.11).
+- **`medit_sol`**: Fields without geometry: the float data comes back renamed medit:sol:<i>, element fields only through medit.read(path, sol=...).
 - **`mff`**: A field without geometry: one array of values, no points or cells.
 - **`mfm`**: MFM holds one element type per file, so the mixed canonical mesh is refused; each type alone round-trips.
 - **`mphtxt`**: A Selection selects elements, so point and side regions (which address points and facets, not elements) have no form in the file; several Mesh objects merge into one mesh on read and are written as one.
