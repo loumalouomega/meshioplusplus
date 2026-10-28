@@ -439,10 +439,13 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
           "AttachOccupancy", "MaxCells", "Sign", "Plane"}},
         {"Generate",
-         {"Shape", "Dims",        "Size",        "Origin", "Center",   "Radius",       "Height",
-          "N",     "Nu",          "Nv",          "Nxy",    "Nz",       "Subdivisions", "Sides",
-          "Rings", "InnerRadius", "OuterRadius", "Ntheta", "Nr",       "Nt",           "Angle",
-          "Edge",  "CellType",    "Split",       "Order",  "MaxCells", "Types",        "Pairs"}},
+         {"Shape",        "Dims",      "Size",  "Origin",      "Center",      "Radius",
+          "Height",       "N",         "Nu",    "Nv",          "Nxy",         "Nz",
+          "Subdivisions", "Sides",     "Rings", "InnerRadius", "OuterRadius", "Ntheta",
+          "Nr",           "Nt",        "Angle", "Edge",        "CellType",    "Split",
+          "Order",        "MaxCells",  "Types", "Pairs",       "Complete",    "Start",
+          "End",          "Pitch",     "Turns", "Seed",        "MajorRadius", "MinorRadius",
+          "Width",        "NumTwists", "Ncap",  "Ratio",       "Name"}},
         {"Octree", {"RootCells",    "MinLevel",       "MaxLevel",
                     "Bounds",       "Padding",        "PaddingRelative",
                     "Dimension",    "SampleDistance", "Balance",
@@ -2207,6 +2210,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         const std::int64_t max_cells =
             static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
         const int order = static_cast<int>(pipe_number(rStep, "Order", 1.0));
+        const bool complete = pipe_flag(rStep, "Complete", false);
         auto triple = [&](const char* pKey, std::array<double, 3> Default, bool PadZero) {
             std::vector<double> v = pipe_dvec(rStep, pKey);
             if (v.empty())
@@ -2232,6 +2236,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             return v;
         };
         const std::array<double, 3> zero = {{0.0, 0.0, 0.0}};
+        const std::array<double, 3> ones = {{1.0, 1.0, 1.0}};
         Mesh out;
         if (shape == "rectangle") {
             const auto d = dims_of(2, 1);
@@ -2242,27 +2247,27 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                             size.empty() ? std::array<double, 2>{{1.0, 1.0}}
                                          : std::array<double, 2>{{size[0], size[1]}},
                             triple("Origin", zero, true), pipe_text(rStep, "CellType", "quad"),
-                            pipe_text(rStep, "Split", "zigzag"), order, max_cells);
+                            pipe_text(rStep, "Split", "zigzag"), order, max_cells, complete);
         } else if (shape == "box") {
             const auto d = dims_of(3, 1);
             out = box({{d[0], d[1], d[2]}}, triple("Size", {{1.0, 1.0, 1.0}}, false),
                       triple("Origin", zero, false), pipe_text(rStep, "CellType", "hexahedron"),
-                      order, max_cells);
+                      order, max_cells, complete);
         } else if (shape == "disk") {
             out = disk(pipe_number(rStep, "Radius", 1.0), count("N", 8),
                        triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"), order,
-                       max_cells);
+                       max_cells, complete);
         } else if (shape == "uv_sphere") {
             out = uv_sphere(pipe_number(rStep, "Radius", 1.0), count("Nu", 16), count("Nv", 8),
                             triple("Center", zero, false), pipe_text(rStep, "CellType", "triangle"),
-                            order, max_cells);
+                            order, max_cells, complete);
         } else if (shape == "icosa_sphere") {
             out = icosa_sphere(pipe_number(rStep, "Radius", 1.0), count("Subdivisions", 2),
-                               triple("Center", zero, false), order, max_cells);
+                               triple("Center", zero, false), order, max_cells, complete);
         } else if (shape == "cylinder") {
             out = cylinder(pipe_number(rStep, "Radius", 1.0), pipe_number(rStep, "Height", 1.0),
                            count("Nxy", 8), count("Nz", 8), triple("Center", zero, false),
-                           pipe_text(rStep, "CellType", "hexahedron"), order, max_cells);
+                           pipe_text(rStep, "CellType", "hexahedron"), order, max_cells, complete);
         } else if (shape == "reference_triangle") {
             const std::vector<double> size = pipe_dvec(rStep, "Size");
             if (!size.empty() && size.size() != 2)
@@ -2270,25 +2275,108 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             out = reference_triangle(count("N", 4),
                                      size.empty() ? std::array<double, 2>{{1.0, 1.0}}
                                                   : std::array<double, 2>{{size[0], size[1]}},
-                                     triple("Origin", zero, true), order, max_cells);
+                                     triple("Origin", zero, true), order, max_cells, complete);
         } else if (shape == "ngon") {
             out = ngon(count("Sides", 6), pipe_number(rStep, "Radius", 1.0), count("Rings", 1),
-                       triple("Center", zero, false), order, max_cells);
+                       triple("Center", zero, false), order, max_cells, complete);
         } else if (shape == "annulus") {
             out = annulus(pipe_number(rStep, "InnerRadius", 0.5),
                           pipe_number(rStep, "OuterRadius", 1.0), count("Ntheta", 16),
                           count("Nr", 4), pipe_number(rStep, "Angle", 6.283185307179586),
                           triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"),
-                          order, max_cells);
+                          order, max_cells, complete);
         } else if (shape == "lshape") {
             out = lshape(count("N", 4), pipe_number(rStep, "Size", 2.0),
                          triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"), order,
-                         max_cells);
+                         max_cells, complete);
         } else if (shape == "plate_with_hole") {
             out =
                 plate_with_hole(pipe_number(rStep, "Radius", 0.25), pipe_number(rStep, "Size", 1.0),
                                 count("Nt", 8), count("Nr", 4), triple("Center", zero, false),
-                                pipe_text(rStep, "CellType", "quad"), order, max_cells);
+                                pipe_text(rStep, "CellType", "quad"), order, max_cells, complete);
+        } else if (shape == "line") {
+            out = line(count("N", 8), triple("Start", zero, false),
+                       triple("End", {{1.0, 0.0, 0.0}}, false), order, max_cells, complete);
+        } else if (shape == "circle") {
+            out = circle(pipe_number(rStep, "Radius", 1.0), count("N", 16),
+                         triple("Center", zero, false), order, max_cells, complete);
+        } else if (shape == "helix") {
+            out = helix(pipe_number(rStep, "Radius", 1.0), pipe_number(rStep, "Pitch", 1.0),
+                        pipe_number(rStep, "Turns", 2.0), count("N", 32),
+                        triple("Center", zero, false), order, max_cells, complete);
+        } else if (shape == "sphere_points") {
+            out = sphere_points(count("N", 100), pipe_number(rStep, "Radius", 1.0),
+                                triple("Center", zero, false), max_cells);
+        } else if (shape == "box_points") {
+            out = box_points(
+                count("N", 100), triple("Size", ones, false), triple("Origin", zero, false),
+                static_cast<std::uint64_t>(pipe_number(rStep, "Seed", 0.0)), max_cells);
+        } else if (shape == "tetra_sphere") {
+            out = tetra_sphere(pipe_number(rStep, "Radius", 1.0), count("Subdivisions", 3),
+                               triple("Center", zero, false), order, max_cells, complete);
+        } else if (shape == "octa_sphere") {
+            out = octa_sphere(pipe_number(rStep, "Radius", 1.0), count("Subdivisions", 2),
+                              triple("Center", zero, false), order, max_cells, complete);
+        } else if (shape == "cube_sphere") {
+            out = cube_sphere(pipe_number(rStep, "Radius", 1.0), count("N", 4),
+                              triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"),
+                              order, max_cells, complete);
+        } else if (shape == "geo_sphere") {
+            out = geo_sphere(pipe_number(rStep, "Radius", 1.0), count("N", 4),
+                             triple("Center", zero, false), order, max_cells, complete);
+        } else if (shape == "torus") {
+            out = torus(pipe_number(rStep, "MajorRadius", 1.0),
+                        pipe_number(rStep, "MinorRadius", 0.25), count("Nu", 32), count("Nv", 16),
+                        triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"), order,
+                        max_cells, complete);
+        } else if (shape == "moebius") {
+            out = moebius(pipe_number(rStep, "Radius", 1.0), pipe_number(rStep, "Width", 0.5),
+                          count("Nu", 32), count("Nv", 4), count("NumTwists", 1),
+                          triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"),
+                          order, max_cells, complete);
+        } else if (shape == "tube" || shape == "cone") {
+            out = (shape == "tube" ? &tube : &cone)(
+                pipe_number(rStep, "Radius", 1.0), pipe_number(rStep, "Height", 1.0),
+                count("Ntheta", 16), count("Nz", 4), triple("Center", zero, false),
+                pipe_text(rStep, "CellType", "quad"), order, max_cells, complete);
+        } else if (shape == "capsule") {
+            out = capsule(pipe_number(rStep, "Radius", 0.5), pipe_number(rStep, "Height", 1.0),
+                          count("Ntheta", 16), count("Nz", 4), count("Ncap", 4),
+                          triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"),
+                          order, max_cells, complete);
+        } else if (shape == "box_surface") {
+            const auto d = dims_of(3, 1);
+            out = box_surface({{d[0], d[1], d[2]}}, triple("Size", ones, false),
+                              triple("Origin", zero, false), pipe_text(rStep, "CellType", "quad"),
+                              order, max_cells, complete);
+        } else if (shape == "platonic") {
+            out =
+                platonic(pipe_text(rStep, "Name", "icosahedron"), pipe_number(rStep, "Radius", 1.0),
+                         triple("Center", zero, false), max_cells);
+        } else if (shape == "ball") {
+            out = ball(pipe_number(rStep, "Radius", 1.0), count("N", 4),
+                       triple("Center", zero, false), pipe_text(rStep, "CellType", "hexahedron"),
+                       order, max_cells, complete);
+        } else if (shape == "spherical_shell") {
+            out = spherical_shell(pipe_number(rStep, "InnerRadius", 0.5),
+                                  pipe_number(rStep, "OuterRadius", 1.0), count("N", 4),
+                                  count("Nr", 2), pipe_number(rStep, "Ratio", 1.0),
+                                  triple("Center", zero, false), order, max_cells, complete);
+        } else if (shape == "pipe") {
+            out =
+                pipe(pipe_number(rStep, "InnerRadius", 0.5), pipe_number(rStep, "OuterRadius", 1.0),
+                     pipe_number(rStep, "Height", 1.0), count("Ntheta", 16), count("Nr", 2),
+                     count("Nz", 4), pipe_number(rStep, "Ratio", 1.0),
+                     triple("Center", zero, false), order, max_cells, complete);
+        } else if (shape == "fichera") {
+            out = fichera(count("N", 2), pipe_number(rStep, "Size", 2.0),
+                          triple("Center", zero, false), pipe_text(rStep, "CellType", "hexahedron"),
+                          order, max_cells, complete);
+        } else if (shape == "solid_torus") {
+            out =
+                solid_torus(pipe_number(rStep, "MajorRadius", 1.0),
+                            pipe_number(rStep, "MinorRadius", 0.25), count("N", 4), count("Nu", 32),
+                            triple("Center", zero, false), order, max_cells, complete);
         } else if (shape == "honeycomb") {
             const auto d = dims_of(2, 4);
             out = honeycomb({{d[0], d[1]}}, pipe_number(rStep, "Edge", 1.0),
@@ -2300,7 +2388,10 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                 pipe_err(rStep,
                          "'Shape' must be one of rectangle, box, disk, uv_sphere, icosa_sphere, "
                          "cylinder, reference_triangle, ngon, annulus, lshape, plate_with_hole, "
-                         "honeycomb, reference_cells, not '" +
+                         "honeycomb, reference_cells, line, circle, helix, sphere_points, "
+                         "box_points, tetra_sphere, octa_sphere, cube_sphere, geo_sphere, torus, "
+                         "moebius, tube, cone, capsule, box_surface, platonic, ball, "
+                         "spherical_shell, pipe, fichera, solid_torus, not '" +
                              shape + "'"));
         }
         std::size_t cells = 0;

@@ -98,6 +98,11 @@ module meshioplusplus
     public :: mio_cylinder, mio_reference_cells
     public :: mio_reference_triangle, mio_ngon, mio_annulus, mio_lshape
     public :: mio_plate_with_hole, mio_honeycomb
+    public :: mio_line, mio_circle, mio_helix, mio_sphere_points, mio_box_points
+    public :: mio_tetra_sphere, mio_octa_sphere, mio_cube_sphere, mio_geo_sphere
+    public :: mio_torus, mio_moebius, mio_tube, mio_cone, mio_capsule
+    public :: mio_box_surface, mio_platonic, mio_ball, mio_spherical_shell
+    public :: mio_pipe, mio_fichera, mio_solid_torus
     public :: mio_frame, mio_render_settings, mio_text_settings, mio_rgba
     public :: mio_detect_color_depth
     public :: mio_data_array_info
@@ -1071,7 +1076,11 @@ module meshioplusplus
         integer(c_int32_t) :: pad = 0
         real(c_double) :: radius2 = 0.5_c_double
         real(c_double) :: angle = 6.283185307179586_c_double
-        integer(c_int64_t) :: reserved(4) = 0
+        integer(c_int32_t) :: num_twists = 1
+        integer(c_int32_t) :: complete = 0
+        real(c_double) :: ratio = 1.0_c_double
+        integer(c_int64_t) :: seed = 0
+        integer(c_int64_t) :: reserved(1) = 0
     end type
 
     !> Interop mirror of C `mio_octree_opts`. Same ABI rules as above.
@@ -3525,6 +3534,132 @@ module meshioplusplus
         end function
 
         function c_mio_honeycomb(opts) bind(c, name="mio_honeycomb") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_line(opts) bind(c, name="mio_line") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_circle(opts) bind(c, name="mio_circle") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_helix(opts) bind(c, name="mio_helix") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_sphere_points(opts) bind(c, name="mio_sphere_points") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_box_points(opts) bind(c, name="mio_box_points") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_tetra_sphere(opts) bind(c, name="mio_tetra_sphere") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_octa_sphere(opts) bind(c, name="mio_octa_sphere") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_cube_sphere(opts) bind(c, name="mio_cube_sphere") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_geo_sphere(opts) bind(c, name="mio_geo_sphere") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_torus(opts) bind(c, name="mio_torus") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_moebius(opts) bind(c, name="mio_moebius") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_tube(opts) bind(c, name="mio_tube") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_cone(opts) bind(c, name="mio_cone") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_capsule(opts) bind(c, name="mio_capsule") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_box_surface(opts) bind(c, name="mio_box_surface") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_platonic(opts) bind(c, name="mio_platonic") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_ball(opts) bind(c, name="mio_ball") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_spherical_shell(opts) bind(c, name="mio_spherical_shell") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_pipe(opts) bind(c, name="mio_pipe") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_fichera(opts) bind(c, name="mio_fichera") result(r)
+            import :: c_ptr, mio_gen_opts_t
+            type(mio_gen_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_solid_torus(opts) bind(c, name="mio_solid_torus") result(r)
             import :: c_ptr, mio_gen_opts_t
             type(mio_gen_opts_t), intent(in) :: opts
             type(c_ptr) :: r
@@ -8765,7 +8900,8 @@ contains
     end function
 
     !> Fill the options shared by the generators and run the one named by `which`.
-    function gen_run(which, opts, cell_type, split, order, max_cells, stat, errmsg) result(out)
+    function gen_run(which, opts, cell_type, split, order, max_cells, stat, errmsg, complete) &
+        result(out)
         character(*), intent(in) :: which
         type(mio_gen_opts_t), intent(inout) :: opts
         character(*), intent(in), optional :: cell_type, split
@@ -8773,10 +8909,14 @@ contains
         integer(int64), intent(in), optional :: max_cells
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
         type(mio_mesh) :: out
         integer(c_int32_t) :: code
         call check_gen_opts_layout()
         if (present(order)) opts%order = int(order, c_int32_t)
+        if (present(complete)) then
+            if (complete) opts%complete = 1
+        end if
         if (present(max_cells)) opts%max_cells = int(max_cells, c_int64_t)
         if (present(cell_type)) then
             code = gen_cell_code(cell_type)
@@ -8809,6 +8949,27 @@ contains
         case ('lshape'); out%handle = c_mio_lshape(opts)
         case ('plate_with_hole'); out%handle = c_mio_plate_with_hole(opts)
         case ('honeycomb'); out%handle = c_mio_honeycomb(opts)
+        case ('line'); out%handle = c_mio_line(opts)
+        case ('circle'); out%handle = c_mio_circle(opts)
+        case ('helix'); out%handle = c_mio_helix(opts)
+        case ('sphere_points'); out%handle = c_mio_sphere_points(opts)
+        case ('box_points'); out%handle = c_mio_box_points(opts)
+        case ('tetra_sphere'); out%handle = c_mio_tetra_sphere(opts)
+        case ('octa_sphere'); out%handle = c_mio_octa_sphere(opts)
+        case ('cube_sphere'); out%handle = c_mio_cube_sphere(opts)
+        case ('geo_sphere'); out%handle = c_mio_geo_sphere(opts)
+        case ('torus'); out%handle = c_mio_torus(opts)
+        case ('moebius'); out%handle = c_mio_moebius(opts)
+        case ('tube'); out%handle = c_mio_tube(opts)
+        case ('cone'); out%handle = c_mio_cone(opts)
+        case ('capsule'); out%handle = c_mio_capsule(opts)
+        case ('box_surface'); out%handle = c_mio_box_surface(opts)
+        case ('platonic'); out%handle = c_mio_platonic(opts)
+        case ('ball'); out%handle = c_mio_ball(opts)
+        case ('spherical_shell'); out%handle = c_mio_spherical_shell(opts)
+        case ('pipe'); out%handle = c_mio_pipe(opts)
+        case ('fichera'); out%handle = c_mio_fichera(opts)
+        case ('solid_torus'); out%handle = c_mio_solid_torus(opts)
         case default; out%handle = c_mio_cylinder(opts)
         end select
         if (.not. c_associated(out%handle)) then
@@ -8823,7 +8984,7 @@ contains
     !> ('zigzag', 'up', 'down', 'center') picks the triangle layout; `order` 2
     !> gives quadratic cells. Side regions xmin, xmax, ymin, ymax.
     function mio_rectangle(dims, lengths, origin, cell_type, split, order, max_cells, &
-                           stat, errmsg) result(out)
+                           stat, errmsg, complete) result(out)
         integer, intent(in), optional :: dims(2)
         real(real64), intent(in), optional :: lengths(2), origin(3)
         character(*), intent(in), optional :: cell_type, split
@@ -8831,18 +8992,19 @@ contains
         integer(int64), intent(in), optional :: max_cells
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
         type(mio_mesh) :: out
         type(mio_gen_opts_t) :: opts
         opts%counts = 1
         if (present(dims)) opts%counts(1:2) = int(dims, c_int64_t)
         if (present(lengths)) opts%lengths(1:2) = real(lengths, c_double)
         if (present(origin)) opts%origin = real(origin, c_double)
-        out = gen_run('rectangle', opts, cell_type, split, order, max_cells, stat, errmsg)
+        out = gen_run('rectangle', opts, cell_type, split, order, max_cells, stat, errmsg, complete=complete)
     end function
 
     !> A regular 3-D grid of `dims` = (nx, ny, nz) hexahedra (default), 'tetra'
     !> (six per cell) or 'wedge' cells. Side regions xmin ... zmax.
-    function mio_box(dims, lengths, origin, cell_type, order, max_cells, stat, errmsg) &
+    function mio_box(dims, lengths, origin, cell_type, order, max_cells, stat, errmsg, complete) &
         result(out)
         integer, intent(in), optional :: dims(3)
         real(real64), intent(in), optional :: lengths(3), origin(3)
@@ -8851,6 +9013,7 @@ contains
         integer(int64), intent(in), optional :: max_cells
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
         type(mio_mesh) :: out
         type(mio_gen_opts_t) :: opts
         opts%counts = 1
@@ -8858,12 +9021,12 @@ contains
         if (present(lengths)) opts%lengths = real(lengths, c_double)
         if (present(origin)) opts%origin = real(origin, c_double)
         out = gen_run('box', opts, cell_type, order=order, max_cells=max_cells, &
-                      stat=stat, errmsg=errmsg)
+                      stat=stat, errmsg=errmsg, complete=complete)
     end function
 
     !> A disk of `n` x `n` quads (default) or `n` rings of triangles; side
     !> region rim. `center` places it.
-    function mio_disk(radius, n, center, cell_type, order, max_cells, stat, errmsg) &
+    function mio_disk(radius, n, center, cell_type, order, max_cells, stat, errmsg, complete) &
         result(out)
         real(real64), intent(in), optional :: radius, center(3)
         integer, intent(in), optional :: n
@@ -8872,18 +9035,19 @@ contains
         integer(int64), intent(in), optional :: max_cells
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
         type(mio_mesh) :: out
         type(mio_gen_opts_t) :: opts
         if (present(radius)) opts%radius = real(radius, c_double)
         if (present(n)) opts%counts(1) = int(n, c_int64_t)
         if (present(center)) opts%origin = real(center, c_double)
         out = gen_run('disk', opts, cell_type, order=order, max_cells=max_cells, &
-                      stat=stat, errmsg=errmsg)
+                      stat=stat, errmsg=errmsg, complete=complete)
     end function
 
     !> A latitude / longitude sphere surface with `nu` points per ring and `nv`
     !> bands, oriented outward. `cell_type` is 'triangle' (default) or 'quad'.
-    function mio_uv_sphere(radius, nu, nv, center, cell_type, order, max_cells, stat, errmsg) &
+    function mio_uv_sphere(radius, nu, nv, center, cell_type, order, max_cells, stat, errmsg, complete) &
         result(out)
         real(real64), intent(in), optional :: radius, center(3)
         integer, intent(in), optional :: nu, nv
@@ -8892,6 +9056,7 @@ contains
         integer(int64), intent(in), optional :: max_cells
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
         type(mio_mesh) :: out
         type(mio_gen_opts_t) :: opts
         opts%counts(1) = 16
@@ -8901,12 +9066,12 @@ contains
         if (present(nv)) opts%counts(2) = int(nv, c_int64_t)
         if (present(center)) opts%origin = real(center, c_double)
         out = gen_run('uv_sphere', opts, cell_type, order=order, max_cells=max_cells, &
-                      stat=stat, errmsg=errmsg)
+                      stat=stat, errmsg=errmsg, complete=complete)
     end function
 
     !> An icosahedron-based sphere surface: 20 * 4**subdivisions triangles,
     !> oriented outward.
-    function mio_icosa_sphere(radius, subdivisions, center, order, max_cells, stat, errmsg) &
+    function mio_icosa_sphere(radius, subdivisions, center, order, max_cells, stat, errmsg, complete) &
         result(out)
         real(real64), intent(in), optional :: radius, center(3)
         integer, intent(in), optional :: subdivisions
@@ -8914,6 +9079,7 @@ contains
         integer(int64), intent(in), optional :: max_cells
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
         type(mio_mesh) :: out
         type(mio_gen_opts_t) :: opts
         opts%counts(1) = 2
@@ -8921,13 +9087,13 @@ contains
         if (present(subdivisions)) opts%counts(1) = int(subdivisions, c_int64_t)
         if (present(center)) opts%origin = real(center, c_double)
         out = gen_run('icosa_sphere', opts, order=order, max_cells=max_cells, &
-                      stat=stat, errmsg=errmsg)
+                      stat=stat, errmsg=errmsg, complete=complete)
     end function
 
     !> A solid cylinder along z of `nxy` cells across and `nz` layers:
     !> 'hexahedron' (default) or 'wedge' cells; side regions side, top, bottom.
     function mio_cylinder(radius, height, nxy, nz, center, cell_type, order, max_cells, &
-                          stat, errmsg) result(out)
+                          stat, errmsg, complete) result(out)
         real(real64), intent(in), optional :: radius, height, center(3)
         integer, intent(in), optional :: nxy, nz
         character(*), intent(in), optional :: cell_type
@@ -8935,6 +9101,7 @@ contains
         integer(int64), intent(in), optional :: max_cells
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
         type(mio_mesh) :: out
         type(mio_gen_opts_t) :: opts
         if (present(radius)) opts%radius = real(radius, c_double)
@@ -8943,13 +9110,13 @@ contains
         if (present(nz)) opts%counts(2) = int(nz, c_int64_t)
         if (present(center)) opts%origin = real(center, c_double)
         out = gen_run('cylinder', opts, cell_type, order=order, max_cells=max_cells, &
-                      stat=stat, errmsg=errmsg)
+                      stat=stat, errmsg=errmsg, complete=complete)
     end function
 
     !> The reference triangle (0,0) (1,0) (0,1) scaled by `lengths` (default 1, 1)
     !> and refined into `n` * `n` triangles at z = origin(3). Side regions ymin,
     !> xmin, hypotenuse.
-    function mio_reference_triangle(n, lengths, origin, order, max_cells, stat, errmsg) &
+    function mio_reference_triangle(n, lengths, origin, order, max_cells, stat, errmsg, complete) &
         result(out)
         integer, intent(in), optional :: n
         real(real64), intent(in), optional :: lengths(2), origin(3)
@@ -8957,6 +9124,7 @@ contains
         integer(int64), intent(in), optional :: max_cells
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
         type(mio_mesh) :: out
         type(mio_gen_opts_t) :: opts
         opts%counts(1) = 4
@@ -8964,12 +9132,12 @@ contains
         if (present(lengths)) opts%lengths(1:2) = real(lengths, c_double)
         if (present(origin)) opts%origin = real(origin, c_double)
         out = gen_run('reference_triangle', opts, order=order, max_cells=max_cells, &
-                      stat=stat, errmsg=errmsg)
+                      stat=stat, errmsg=errmsg, complete=complete)
     end function
 
     !> A regular polygon of `sides` sides fanned from its centre (`rings` = 1) or
     !> refined into `rings` rings of triangles; side region rim.
-    function mio_ngon(sides, radius, rings, center, order, max_cells, stat, errmsg) &
+    function mio_ngon(sides, radius, rings, center, order, max_cells, stat, errmsg, complete) &
         result(out)
         integer, intent(in), optional :: sides, rings
         real(real64), intent(in), optional :: radius, center(3)
@@ -8977,6 +9145,7 @@ contains
         integer(int64), intent(in), optional :: max_cells
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
         type(mio_mesh) :: out
         type(mio_gen_opts_t) :: opts
         opts%counts(1) = 6
@@ -8985,14 +9154,14 @@ contains
         if (present(rings)) opts%counts(2) = int(rings, c_int64_t)
         if (present(radius)) opts%radius = real(radius, c_double)
         if (present(center)) opts%origin = real(center, c_double)
-        out = gen_run('ngon', opts, order=order, max_cells=max_cells, stat=stat, errmsg=errmsg)
+        out = gen_run('ngon', opts, order=order, max_cells=max_cells, stat=stat, errmsg=errmsg, complete=complete)
     end function
 
     !> An annulus (or a sector of `angle` radians) of `ntheta` x `nr` quads
     !> (default) or triangles. Side regions inner, outer and, for a sector, start
     !> and end.
     function mio_annulus(inner_radius, outer_radius, ntheta, nr, angle, center, &
-                         cell_type, order, max_cells, stat, errmsg) result(out)
+                         cell_type, order, max_cells, stat, errmsg, complete) result(out)
         real(real64), intent(in), optional :: inner_radius, outer_radius, angle, center(3)
         integer, intent(in), optional :: ntheta, nr
         character(*), intent(in), optional :: cell_type
@@ -9000,6 +9169,7 @@ contains
         integer(int64), intent(in), optional :: max_cells
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
         type(mio_mesh) :: out
         type(mio_gen_opts_t) :: opts
         opts%counts(1) = 16
@@ -9011,13 +9181,13 @@ contains
         if (present(angle)) opts%angle = real(angle, c_double)
         if (present(center)) opts%origin = real(center, c_double)
         out = gen_run('annulus', opts, cell_type, order=order, max_cells=max_cells, &
-                      stat=stat, errmsg=errmsg)
+                      stat=stat, errmsg=errmsg, complete=complete)
     end function
 
     !> The square of side `size` (default 2) around `center` minus its fourth
     !> quadrant (x > 0, y < 0); `n` cells along half a side. Side regions xmin,
     !> xmax, ymin, ymax, notch_x, notch_y.
-    function mio_lshape(n, size, center, cell_type, order, max_cells, stat, errmsg) &
+    function mio_lshape(n, size, center, cell_type, order, max_cells, stat, errmsg, complete) &
         result(out)
         integer, intent(in), optional :: n
         real(real64), intent(in), optional :: size, center(3)
@@ -9026,6 +9196,7 @@ contains
         integer(int64), intent(in), optional :: max_cells
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
         type(mio_mesh) :: out
         type(mio_gen_opts_t) :: opts
         opts%counts(1) = 4
@@ -9034,13 +9205,13 @@ contains
         if (present(size)) opts%lengths(1) = real(size, c_double)
         if (present(center)) opts%origin = real(center, c_double)
         out = gen_run('lshape', opts, cell_type, order=order, max_cells=max_cells, &
-                      stat=stat, errmsg=errmsg)
+                      stat=stat, errmsg=errmsg, complete=complete)
     end function
 
     !> A square plate of side `size` around a circular hole of `radius`, in four
     !> quad blocks of `nt` x `nr` cells. Side regions hole, xmin, xmax, ymin, ymax.
     function mio_plate_with_hole(radius, size, nt, nr, center, cell_type, order, &
-                                 max_cells, stat, errmsg) result(out)
+                                 max_cells, stat, errmsg, complete) result(out)
         real(real64), intent(in), optional :: radius, size, center(3)
         integer, intent(in), optional :: nt, nr
         character(*), intent(in), optional :: cell_type
@@ -9048,6 +9219,7 @@ contains
         integer(int64), intent(in), optional :: max_cells
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
         type(mio_mesh) :: out
         type(mio_gen_opts_t) :: opts
         opts%counts(1) = 8
@@ -9059,7 +9231,7 @@ contains
         if (present(nr)) opts%counts(2) = int(nr, c_int64_t)
         if (present(center)) opts%origin = real(center, c_double)
         out = gen_run('plate_with_hole', opts, cell_type, order=order, max_cells=max_cells, &
-                      stat=stat, errmsg=errmsg)
+                      stat=stat, errmsg=errmsg, complete=complete)
     end function
 
     !> A tiling of `dims` = (nx, ny) pointy-top hexagons of side `edge` as one
@@ -9077,6 +9249,489 @@ contains
         if (present(edge)) opts%lengths(1) = real(edge, c_double)
         if (present(origin)) opts%origin = real(origin, c_double)
         out = gen_run('honeycomb', opts, max_cells=max_cells, stat=stat, errmsg=errmsg)
+    end function
+
+    !> A straight segment of `n` (default 8) line cells from `start_point` to `end_point`
+    !> (default the origin to (1, 0, 0)); point regions start and end.
+    function mio_line(n, start_point, end_point, order, max_cells, stat, errmsg, complete) &
+        result(out)
+        integer, intent(in), optional :: n
+        real(real64), intent(in), optional :: start_point(3), end_point(3)
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%lengths = [1.0_c_double, 0.0_c_double, 0.0_c_double]
+        if (present(n)) opts%counts(1) = int(n, c_int64_t)
+        if (present(start_point)) opts%origin = real(start_point, c_double)
+        if (present(end_point)) opts%lengths = real(end_point, c_double)
+        out = gen_run('line', opts, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg, complete=complete)
+    end function
+
+    !> A closed polyline of `n` (default 16) line cells on a circle in the
+    !> z = center(3) plane.
+    function mio_circle(radius, n, center, order, max_cells, stat, errmsg, complete) &
+        result(out)
+        real(real64), intent(in), optional :: radius, center(3)
+        integer, intent(in), optional :: n
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts(1) = 16
+        if (present(radius)) opts%radius = real(radius, c_double)
+        if (present(n)) opts%counts(1) = int(n, c_int64_t)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('circle', opts, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg, complete=complete)
+    end function
+
+    !> A helix of `n` (default 32) line cells around the z axis: `turns`
+    !> (default 2) turns rising `pitch` (default 1) per turn; point regions start, end.
+    function mio_helix(radius, pitch, turns, n, center, order, max_cells, stat, errmsg, complete) &
+        result(out)
+        real(real64), intent(in), optional :: radius, pitch, turns, center(3)
+        integer, intent(in), optional :: n
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts(1) = 32
+        opts%angle = 4.0_c_double * 3.141592653589793_c_double
+        if (present(radius)) opts%radius = real(radius, c_double)
+        if (present(pitch)) opts%height = real(pitch, c_double)
+        if (present(turns)) opts%angle = real(turns, c_double) * 2.0_c_double * 3.141592653589793_c_double
+        if (present(n)) opts%counts(1) = int(n, c_int64_t)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('helix', opts, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg, complete=complete)
+    end function
+
+    !> `n` (default 100) points on a sphere on a Fibonacci lattice, as vertex cells.
+    function mio_sphere_points(n, radius, center, max_cells, stat, errmsg) &
+        result(out)
+        integer, intent(in), optional :: n
+        real(real64), intent(in), optional :: radius, center(3)
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts(1) = 100
+        if (present(n)) opts%counts(1) = int(n, c_int64_t)
+        if (present(radius)) opts%radius = real(radius, c_double)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('sphere_points', opts, max_cells=max_cells, stat=stat, errmsg=errmsg)
+    end function
+
+    !> `n` (default 100) points drawn uniformly in a box from splitmix64 seeded
+    !> with `seed` (default 0), as vertex cells.
+    function mio_box_points(n, lengths, origin, seed, max_cells, stat, errmsg) &
+        result(out)
+        integer, intent(in), optional :: n
+        real(real64), intent(in), optional :: lengths(3), origin(3)
+        integer(int64), intent(in), optional :: seed
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts(1) = 100
+        if (present(n)) opts%counts(1) = int(n, c_int64_t)
+        if (present(lengths)) opts%lengths = real(lengths, c_double)
+        if (present(origin)) opts%origin = real(origin, c_double)
+        if (present(seed)) opts%seed = int(seed, c_int64_t)
+        out = gen_run('box_points', opts, max_cells=max_cells, stat=stat, errmsg=errmsg)
+    end function
+
+    !> A sphere surface from a subdivided tetrahedron: 4 * 4**subdivisions triangles.
+    function mio_tetra_sphere(radius, subdivisions, center, order, max_cells, stat, errmsg, complete) &
+        result(out)
+        real(real64), intent(in), optional :: radius, center(3)
+        integer, intent(in), optional :: subdivisions
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts(1) = 3
+        if (present(radius)) opts%radius = real(radius, c_double)
+        if (present(subdivisions)) opts%counts(1) = int(subdivisions, c_int64_t)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('tetra_sphere', opts, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg, complete=complete)
+    end function
+
+    !> A sphere surface from a subdivided octahedron: 8 * 4**subdivisions triangles.
+    function mio_octa_sphere(radius, subdivisions, center, order, max_cells, stat, errmsg, complete) &
+        result(out)
+        real(real64), intent(in), optional :: radius, center(3)
+        integer, intent(in), optional :: subdivisions
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts(1) = 2
+        if (present(radius)) opts%radius = real(radius, c_double)
+        if (present(subdivisions)) opts%counts(1) = int(subdivisions, c_int64_t)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('octa_sphere', opts, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg, complete=complete)
+    end function
+
+    !> A sphere surface from a cube's six faces of `n` x `n` (default 4) quads
+    !> (default) or triangles.
+    function mio_cube_sphere(radius, n, center, cell_type, order, max_cells, stat, errmsg, complete) &
+        result(out)
+        real(real64), intent(in), optional :: radius, center(3)
+        integer, intent(in), optional :: n
+        character(*), intent(in), optional :: cell_type
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts(1) = 4
+        if (present(radius)) opts%radius = real(radius, c_double)
+        if (present(n)) opts%counts(1) = int(n, c_int64_t)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('cube_sphere', opts, cell_type, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg, complete=complete)
+    end function
+
+    !> A geodesic sphere of frequency `n` (default 4): 20 * n**2 triangles.
+    function mio_geo_sphere(radius, n, center, order, max_cells, stat, errmsg, complete) &
+        result(out)
+        real(real64), intent(in), optional :: radius, center(3)
+        integer, intent(in), optional :: n
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts(1) = 4
+        if (present(radius)) opts%radius = real(radius, c_double)
+        if (present(n)) opts%counts(1) = int(n, c_int64_t)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('geo_sphere', opts, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg, complete=complete)
+    end function
+
+    !> A torus around the z axis with `nu` x `nv` (default 32 x 16) cells.
+    function mio_torus(major_radius, minor_radius, nu, nv, center, cell_type, order, max_cells, stat, errmsg, complete) &
+        result(out)
+        real(real64), intent(in), optional :: major_radius, minor_radius, center(3)
+        integer, intent(in), optional :: nu, nv
+        character(*), intent(in), optional :: cell_type
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts(1) = 32
+        opts%counts(2) = 16
+        opts%radius2 = 0.25_c_double
+        if (present(major_radius)) opts%radius = real(major_radius, c_double)
+        if (present(minor_radius)) opts%radius2 = real(minor_radius, c_double)
+        if (present(nu)) opts%counts(1) = int(nu, c_int64_t)
+        if (present(nv)) opts%counts(2) = int(nv, c_int64_t)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('torus', opts, cell_type, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg, complete=complete)
+    end function
+
+    !> A Moebius band with `num_twists` (default 1) half-twists, `nu` x `nv`
+    !> (default 32 x 4) cells; side region boundary.
+    function mio_moebius(radius, width, nu, nv, num_twists, center, cell_type, order, max_cells, stat, errmsg, complete) &
+        result(out)
+        real(real64), intent(in), optional :: radius, width, center(3)
+        integer, intent(in), optional :: nu, nv, num_twists
+        character(*), intent(in), optional :: cell_type
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts(1) = 32
+        opts%counts(2) = 4
+        if (present(radius)) opts%radius = real(radius, c_double)
+        if (present(width)) opts%radius2 = real(width, c_double)
+        if (present(nu)) opts%counts(1) = int(nu, c_int64_t)
+        if (present(nv)) opts%counts(2) = int(nv, c_int64_t)
+        if (present(num_twists)) opts%num_twists = int(num_twists, c_int32_t)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('moebius', opts, cell_type, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg, complete=complete)
+    end function
+
+    !> An open cylinder surface of `ntheta` x `nz` (default 16 x 4) cells; side
+    !> regions bottom and top.
+    function mio_tube(radius, height, ntheta, nz, center, cell_type, order, max_cells, stat, errmsg, complete) &
+        result(out)
+        real(real64), intent(in), optional :: radius, height, center(3)
+        integer, intent(in), optional :: ntheta, nz
+        character(*), intent(in), optional :: cell_type
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts(1) = 16
+        opts%counts(2) = 4
+        if (present(radius)) opts%radius = real(radius, c_double)
+        if (present(height)) opts%height = real(height, c_double)
+        if (present(ntheta)) opts%counts(1) = int(ntheta, c_int64_t)
+        if (present(nz)) opts%counts(2) = int(nz, c_int64_t)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('tube', opts, cell_type, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg, complete=complete)
+    end function
+
+    !> A closed cone surface of `ntheta` cells around and `nz` rings on the slant
+    !> and the base (default 16, 4); cell regions side and base.
+    function mio_cone(radius, height, ntheta, nz, center, cell_type, order, max_cells, stat, errmsg, complete) &
+        result(out)
+        real(real64), intent(in), optional :: radius, height, center(3)
+        integer, intent(in), optional :: ntheta, nz
+        character(*), intent(in), optional :: cell_type
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts(1) = 16
+        opts%counts(2) = 4
+        if (present(radius)) opts%radius = real(radius, c_double)
+        if (present(height)) opts%height = real(height, c_double)
+        if (present(ntheta)) opts%counts(1) = int(ntheta, c_int64_t)
+        if (present(nz)) opts%counts(2) = int(nz, c_int64_t)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('cone', opts, cell_type, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg, complete=complete)
+    end function
+
+    !> A capsule: a cylinder of `height` closed by two hemispheres; `ntheta`, `nz`
+    !> and `ncap` (default 16, 4, 4) rings.
+    function mio_capsule(radius, height, ntheta, nz, ncap, center, cell_type, order, max_cells, stat, errmsg, complete) &
+        result(out)
+        real(real64), intent(in), optional :: radius, height, center(3)
+        integer, intent(in), optional :: ntheta, nz, ncap
+        character(*), intent(in), optional :: cell_type
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts = [16_c_int64_t, 4_c_int64_t, 4_c_int64_t]
+        opts%radius = 0.5_c_double
+        if (present(radius)) opts%radius = real(radius, c_double)
+        if (present(height)) opts%height = real(height, c_double)
+        if (present(ntheta)) opts%counts(1) = int(ntheta, c_int64_t)
+        if (present(nz)) opts%counts(2) = int(nz, c_int64_t)
+        if (present(ncap)) opts%counts(3) = int(ncap, c_int64_t)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('capsule', opts, cell_type, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg, complete=complete)
+    end function
+
+    !> The boundary of a box of `dims` (default 1, 1, 1) cells as a closed
+    !> surface; cell regions xmin ... zmax.
+    function mio_box_surface(dims, lengths, origin, cell_type, order, max_cells, stat, errmsg, complete) &
+        result(out)
+        integer, intent(in), optional :: dims(3)
+        real(real64), intent(in), optional :: lengths(3), origin(3)
+        character(*), intent(in), optional :: cell_type
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts = 1
+        if (present(dims)) opts%counts = int(dims, c_int64_t)
+        if (present(lengths)) opts%lengths = real(lengths, c_double)
+        if (present(origin)) opts%origin = real(origin, c_double)
+        out = gen_run('box_surface', opts, cell_type, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg, complete=complete)
+    end function
+
+    !> A ball of hexahedra (default) or 'tetra' by the seven-block butterfly, `n`
+    !> (default 4) cells from the centre to the surface; side region surface.
+    function mio_ball(radius, n, center, cell_type, order, max_cells, stat, errmsg, complete) &
+        result(out)
+        real(real64), intent(in), optional :: radius, center(3)
+        integer, intent(in), optional :: n
+        character(*), intent(in), optional :: cell_type
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts(1) = 4
+        if (present(radius)) opts%radius = real(radius, c_double)
+        if (present(n)) opts%counts(1) = int(n, c_int64_t)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('ball', opts, cell_type, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg, complete=complete)
+    end function
+
+    !> A thick spherical shell of hexahedra, `n` (default 4) cells per cube
+    !> edge and `nr` (default 2) layers graded by `ratio`; side regions inner, outer.
+    function mio_spherical_shell(inner_radius, outer_radius, n, nr, ratio, center, order, max_cells, stat, errmsg, complete) &
+        result(out)
+        real(real64), intent(in), optional :: inner_radius, outer_radius, ratio, center(3)
+        integer, intent(in), optional :: n, nr
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts(1) = 4
+        opts%counts(2) = 2
+        if (present(inner_radius)) opts%radius2 = real(inner_radius, c_double)
+        if (present(outer_radius)) opts%radius = real(outer_radius, c_double)
+        if (present(n)) opts%counts(1) = int(n, c_int64_t)
+        if (present(nr)) opts%counts(2) = int(nr, c_int64_t)
+        if (present(ratio)) opts%ratio = real(ratio, c_double)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('spherical_shell', opts, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg, complete=complete)
+    end function
+
+    !> A thick-walled pipe of hexahedra: `ntheta`, `nr`, `nz` (default 16, 2, 4)
+    !> cells; side regions inner, outer, bottom, top.
+    function mio_pipe(inner_radius, outer_radius, height, ntheta, nr, nz, ratio, center, order, max_cells, stat, errmsg, complete) &
+        result(out)
+        real(real64), intent(in), optional :: inner_radius, outer_radius, height, ratio, center(3)
+        integer, intent(in), optional :: ntheta, nr, nz
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts = [16_c_int64_t, 2_c_int64_t, 4_c_int64_t]
+        if (present(inner_radius)) opts%radius2 = real(inner_radius, c_double)
+        if (present(outer_radius)) opts%radius = real(outer_radius, c_double)
+        if (present(height)) opts%height = real(height, c_double)
+        if (present(ntheta)) opts%counts(1) = int(ntheta, c_int64_t)
+        if (present(nr)) opts%counts(2) = int(nr, c_int64_t)
+        if (present(nz)) opts%counts(3) = int(nz, c_int64_t)
+        if (present(ratio)) opts%ratio = real(ratio, c_double)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('pipe', opts, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg, complete=complete)
+    end function
+
+    !> The Fichera corner: the cube of side `size` (default 2) minus its positive
+    !> octant, `n` (default 2) cells per half side; side regions xmin ... zmax, notch_*.
+    function mio_fichera(n, size, center, cell_type, order, max_cells, stat, errmsg, complete) &
+        result(out)
+        integer, intent(in), optional :: n
+        real(real64), intent(in), optional :: size, center(3)
+        character(*), intent(in), optional :: cell_type
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts(1) = 2
+        opts%lengths(1) = 2.0_c_double
+        if (present(n)) opts%counts(1) = int(n, c_int64_t)
+        if (present(size)) opts%lengths(1) = real(size, c_double)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('fichera', opts, cell_type, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg, complete=complete)
+    end function
+
+    !> A solid torus of hexahedra: `n` (default 4) cells across the tube and
+    !> `nu` (default 32) around the axis; side region surface.
+    function mio_solid_torus(major_radius, minor_radius, n, nu, center, order, max_cells, stat, errmsg, complete) &
+        result(out)
+        real(real64), intent(in), optional :: major_radius, minor_radius, center(3)
+        integer, intent(in), optional :: n, nu
+        integer, intent(in), optional :: order
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: complete
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts(1) = 4
+        opts%counts(2) = 32
+        opts%radius2 = 0.25_c_double
+        if (present(major_radius)) opts%radius = real(major_radius, c_double)
+        if (present(minor_radius)) opts%radius2 = real(minor_radius, c_double)
+        if (present(n)) opts%counts(1) = int(n, c_int64_t)
+        if (present(nu)) opts%counts(2) = int(nu, c_int64_t)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('solid_torus', opts, order=order, max_cells=max_cells, &
+                      stat=stat, errmsg=errmsg, complete=complete)
+    end function
+
+    !> A platonic solid's surface, one cell per face: `name` is 'tetrahedron',
+    !> 'cube', 'octahedron', 'dodecahedron' or 'icosahedron' (default).
+    function mio_platonic(name, radius, center, max_cells, stat, errmsg) result(out)
+        character(*), intent(in), optional :: name
+        real(real64), intent(in), optional :: radius, center(3)
+        integer(int64), intent(in), optional :: max_cells
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_gen_opts_t) :: opts
+        opts%counts(1) = 20
+        if (present(name)) then
+            select case (trim(name))
+            case ('tetrahedron'); opts%counts(1) = 4
+            case ('cube'); opts%counts(1) = 6
+            case ('octahedron'); opts%counts(1) = 8
+            case ('dodecahedron'); opts%counts(1) = 12
+            case ('icosahedron'); opts%counts(1) = 20
+            case default
+                call handle_failure('platonic', 'unknown name '//trim(name), stat, errmsg)
+                return
+            end select
+        end if
+        if (present(radius)) opts%radius = real(radius, c_double)
+        if (present(center)) opts%origin = real(center, c_double)
+        out = gen_run('platonic', opts, max_cells=max_cells, stat=stat, errmsg=errmsg)
     end function
 
     !> One cell of each type named in `types` (comma-separated meshio names; every

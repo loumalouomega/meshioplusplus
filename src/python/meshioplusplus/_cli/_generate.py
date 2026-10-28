@@ -1,6 +1,9 @@
 from .. import _primitives
 from .._helpers import _writer_map, write
 
+QUAD_OR_TRIANGLE = {"cell_type": ("quad", ["quad", "triangle"])}
+HEX_OR_TETRA = {"cell_type": ("hexahedron", ["hexahedron", "tetra"])}
+
 #: shape name on the command line -> (function, value options, choice options)
 _SHAPES = {
     "rectangle": (
@@ -80,6 +83,164 @@ _SHAPES = {
         {},
     ),
     "reference-cells": (_primitives.reference_cells, {}, {}),
+    "line": (
+        _primitives.line,
+        {"n": None, "start": "x,y,z", "end": "x,y,z"},
+        {},
+    ),
+    "circle": (
+        _primitives.circle,
+        {"radius": None, "n": None, "center": "x,y,z"},
+        {},
+    ),
+    "helix": (
+        _primitives.helix,
+        {
+            "radius": None,
+            "pitch": None,
+            "turns": None,
+            "n": None,
+            "center": "x,y,z",
+        },
+        {},
+    ),
+    "sphere-points": (
+        _primitives.sphere_points,
+        {"n": None, "radius": None, "center": "x,y,z"},
+        {},
+    ),
+    "box-points": (
+        _primitives.box_points,
+        {"n": None, "size": "lx,ly,lz", "origin": "x,y,z", "seed": None},
+        {},
+    ),
+    "tetra-sphere": (
+        _primitives.tetra_sphere,
+        {"radius": None, "subdivisions": None, "center": "x,y,z"},
+        {},
+    ),
+    "octa-sphere": (
+        _primitives.octa_sphere,
+        {"radius": None, "subdivisions": None, "center": "x,y,z"},
+        {},
+    ),
+    "cube-sphere": (
+        _primitives.cube_sphere,
+        {"radius": None, "n": None, "center": "x,y,z"},
+        QUAD_OR_TRIANGLE,
+    ),
+    "geo-sphere": (
+        _primitives.geo_sphere,
+        {"radius": None, "n": None, "center": "x,y,z"},
+        {},
+    ),
+    "torus": (
+        _primitives.torus,
+        {
+            "major_radius": None,
+            "minor_radius": None,
+            "nu": None,
+            "nv": None,
+            "center": "x,y,z",
+        },
+        QUAD_OR_TRIANGLE,
+    ),
+    "moebius": (
+        _primitives.moebius,
+        {
+            "radius": None,
+            "width": None,
+            "nu": None,
+            "nv": None,
+            "num_twists": None,
+            "center": "x,y,z",
+        },
+        QUAD_OR_TRIANGLE,
+    ),
+    "tube": (
+        _primitives.tube,
+        {"radius": None, "height": None, "ntheta": None, "nz": None, "center": "x,y,z"},
+        QUAD_OR_TRIANGLE,
+    ),
+    "cone": (
+        _primitives.cone,
+        {"radius": None, "height": None, "ntheta": None, "nz": None, "center": "x,y,z"},
+        QUAD_OR_TRIANGLE,
+    ),
+    "capsule": (
+        _primitives.capsule,
+        {
+            "radius": None,
+            "height": None,
+            "ntheta": None,
+            "nz": None,
+            "ncap": None,
+            "center": "x,y,z",
+        },
+        QUAD_OR_TRIANGLE,
+    ),
+    "box-surface": (
+        _primitives.box_surface,
+        {"dims": "nx,ny,nz", "size": "lx,ly,lz", "origin": "x,y,z"},
+        QUAD_OR_TRIANGLE,
+    ),
+    "platonic": (
+        _primitives.platonic,
+        {"radius": None, "center": "x,y,z"},
+        {
+            "name": (
+                "icosahedron",
+                ["tetrahedron", "cube", "octahedron", "dodecahedron", "icosahedron"],
+            )
+        },
+    ),
+    "ball": (
+        _primitives.ball,
+        {"radius": None, "n": None, "center": "x,y,z"},
+        HEX_OR_TETRA,
+    ),
+    "spherical-shell": (
+        _primitives.spherical_shell,
+        {
+            "inner_radius": None,
+            "outer_radius": None,
+            "n": None,
+            "nr": None,
+            "ratio": None,
+            "center": "x,y,z",
+        },
+        {},
+    ),
+    "pipe": (
+        _primitives.pipe,
+        {
+            "inner_radius": None,
+            "outer_radius": None,
+            "height": None,
+            "ntheta": None,
+            "nr": None,
+            "nz": None,
+            "ratio": None,
+            "center": "x,y,z",
+        },
+        {},
+    ),
+    "fichera": (
+        _primitives.fichera,
+        {"n": None, "size": None, "center": "x,y,z"},
+        HEX_OR_TETRA,
+    ),
+    "solid-torus": (
+        _primitives.solid_torus,
+        {
+            "major_radius": None,
+            "minor_radius": None,
+            "n": None,
+            "nu": None,
+            "center": "x,y,z",
+        },
+        {},
+    ),
 }
 
 _INTEGERS = {
@@ -94,13 +255,37 @@ _INTEGERS = {
     "ntheta",
     "nr",
     "nt",
+    "ncap",
+    "num_twists",
+    "seed",
 }
-_FLOATS = {"radius", "height", "inner_radius", "outer_radius", "angle", "edge"}
-_VECTOR_KINDS = {"dims": int, "size": float, "origin": float, "center": float}
+_FLOATS = {
+    "radius",
+    "height",
+    "inner_radius",
+    "outer_radius",
+    "angle",
+    "edge",
+    "pitch",
+    "turns",
+    "major_radius",
+    "minor_radius",
+    "width",
+    "ratio",
+}
+_VECTOR_KINDS = {
+    "dims": int,
+    "size": float,
+    "origin": float,
+    "center": float,
+    "start": float,
+    "end": float,
+}
 #: shapes whose ``size`` is one number (a side), not a vector
-_SCALAR_SIZE = {"lshape", "plate-with-hole"}
-#: shapes with no ``order`` option (a hexagon has no quadratic form)
-_NO_ORDER = {"reference-cells", "honeycomb"}
+_SCALAR_SIZE = {"lshape", "plate-with-hole", "fichera"}
+#: shapes with no ``order`` option (a hexagon, a point or a pentagon face has no
+#: quadratic form)
+_NO_ORDER = {"reference-cells", "honeycomb", "sphere-points", "box-points", "platonic"}
 
 
 def add_args(parser):
@@ -131,7 +316,7 @@ def add_args(parser):
                 type=str,
                 default=default,
                 choices=options,
-                help=f"cell type (default {default})",
+                help=f"{key.replace('_', ' ')} (default {default})",
             )
         if name == "reference-cells":
             p.add_argument(
@@ -151,9 +336,15 @@ def add_args(parser):
                     "--order",
                     type=int,
                     default=1,
-                    choices=[1, 2],
+                    choices=list(range(1, _primitives.MAX_ORDER + 1)),
                     help="2 for quadratic cells with mid-edge nodes on the exact "
-                    "geometry",
+                    "geometry, 3 to 10 for the VTK_LAGRANGE_* family",
+                )
+                p.add_argument(
+                    "--complete",
+                    action="store_true",
+                    help="with --order 2, quad9 / hexahedron27 / wedge18 instead of "
+                    "the serendipity types",
                 )
             p.add_argument(
                 "--max-cells",
@@ -196,6 +387,7 @@ def generate_cmd(args):
     else:
         if args.shape not in _NO_ORDER:
             kwargs["order"] = args.order
+            kwargs["complete"] = args.complete
         kwargs["max_cells"] = args.max_cells
     mesh = fn(**kwargs)
 
