@@ -81,7 +81,9 @@ export class Picker {
             return null;
         }
 
-        const cellId = this.picker.getCellId();
+        // The picker reports an id on what is drawn, which is a subset of the
+        // surface while cells are hidden.
+        const cellId = this.renderer.toOriginalCell(this.picker.getCellId());
         if (cellId < 0 || cellId >= polydata.getNumberOfCells()) {
             this.clear();
             return null;
@@ -102,6 +104,19 @@ export class Picker {
             cellValues: valuesAt(polydata.getCellData(), cellId),
             pointValues: valuesAt(polydata.getPointData(), pointId),
         };
+    }
+
+    /**
+     * The surface cell under a canvas position, without inspecting it or
+     * drawing the inspect highlight. Used by the selection tool.
+     */
+    cellAt(x: number, y: number, height: number): number | null {
+        const polydata = this.renderer.data;
+        if (!polydata) return null;
+        this.picker.pick([x, height - y, 0], this.renderer.scene);
+        if (this.picker.getActors().length === 0) return null;
+        const id = this.renderer.toOriginalCell(this.picker.getCellId());
+        return id >= 0 && id < polydata.getNumberOfCells() ? id : null;
     }
 
     /** Outline just the picked cell, as its own tiny polydata. */

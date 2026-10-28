@@ -92,6 +92,67 @@
           </label>
         </section>
 
+        <section class="sb-section" id="selection-section" hidden>
+          <h2 id="h-selection">Selection</h2>
+          <div class="ui-segments" id="sel-tools" role="group" aria-label="Selection tool">
+            <button type="button" data-tool="click" aria-pressed="false" title="Pick cells by clicking (S)">Click</button>
+            <button type="button" data-tool="box" aria-pressed="false" title="Drag a rectangle (B)">Box</button>
+            <button type="button" data-tool="lasso" aria-pressed="false" title="Draw a free-form loop (L)">Lasso</button>
+          </div>
+          <label class="check"
+            ><input type="checkbox" id="sel-front" checked /> visible side only</label
+          >
+          <p class="hint" id="sel-hint">
+            Pick a tool, then click or drag on the mesh. Shift adds, Ctrl removes.
+          </p>
+          <ul id="sel-sets" class="sel-sets"></ul>
+          <div class="btn-row">
+            <button type="button" id="sel-new" title="Start a new selection set">New set</button>
+            <button type="button" id="sel-clear" title="Empty the active set">Clear</button>
+          </div>
+          <div class="btn-row">
+            <button type="button" id="sel-invert" title="Select what is not selected (I)">Invert</button>
+            <button type="button" id="sel-grow" title="Add the ring of cells around the selection (G)">Grow</button>
+            <button type="button" id="sel-shrink" title="Remove the outer ring of the selection (Shift+G)">Shrink</button>
+            <button type="button" id="sel-connected" title="Select everything connected to the selection">Connected</button>
+          </div>
+          <div class="btn-row">
+            <button type="button" id="sel-hide" title="Hide the selected cells (H)">Hide</button>
+            <button type="button" id="sel-isolate" title="Hide everything else (X)">Isolate</button>
+            <button type="button" id="sel-show" title="Show every cell again (Shift+H)">Show all</button>
+          </div>
+          <details class="op" id="sel-value">
+            <summary>By value</summary>
+            <label class="row"><span>array</span><select id="sel-array"></select></label>
+            <div class="row">
+              <input type="number" id="sel-min" step="any" aria-label="Lower bound" />
+              <input type="number" id="sel-max" step="any" aria-label="Upper bound" />
+            </div>
+            <label class="row"
+              ><span>corners</span>
+              <select id="sel-rule">
+                <option value="all">all in range</option>
+                <option value="any">any in range</option>
+              </select></label
+            >
+            <label class="row"
+              ><span>combine</span>
+              <select id="sel-how">
+                <option value="replace">replace</option>
+                <option value="add">add</option>
+                <option value="subtract">subtract</option>
+              </select></label
+            >
+            <button type="button" id="sel-by-value">Select</button>
+          </details>
+          <div id="sel-stats" class="sel-stats"></div>
+          <div class="btn-row">
+            <button type="button" id="sel-copy" title="Copy the selected cell ids">Copy ids</button>
+            <button type="button" id="sel-csv" title="Save the ids as CSV">CSV</button>
+            <button type="button" id="sel-json" title="Save the ids as JSON">JSON</button>
+          </div>
+        </section>
+
         <section class="sb-section" id="ops-section" hidden>
           <h2>Operations</h2>
           <div class="ops-header">
@@ -373,9 +434,13 @@
       <main id="stage">
         <div id="render"></div>
         <div id="legend"></div>
+        <svg id="sel-overlay" hidden aria-hidden="true"><rect id="sel-rect" /><polygon id="sel-poly" /></svg>
         <div id="viewport-tools">
           <button type="button" id="tool-reset" title="Reset the camera">Fit</button>
           <button type="button" id="tool-screenshot" title="Save a PNG">PNG</button>
+          <button type="button" id="tool-select" aria-pressed="false" title="Select cells (S)">
+            Select
+          </button>
           <button
             type="button"
             id="tool-inspect"

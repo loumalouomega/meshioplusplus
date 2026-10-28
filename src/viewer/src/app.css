@@ -356,3 +356,154 @@ body.viewer .sb-body .row > input[type='range'] {
     min-width: 0;
     width: auto;
 }
+
+/* --- selection ------------------------------------------------------------ */
+
+.ui-segments {
+    display: flex;
+    gap: 1px;
+    padding: 1px;
+    border-radius: var(--ui-r-sm);
+    background: var(--ds-input-border);
+}
+
+.ui-segments button {
+    flex: 1;
+    padding: 3px 6px;
+    border-radius: var(--ui-r-xs);
+    font-size: var(--ui-fs-md);
+    background: var(--ds-input-bg);
+    color: var(--ds-input-fg);
+}
+
+.ui-segments button:hover {
+    background: var(--ds-hover);
+}
+
+.ui-segments button[aria-pressed='true'] {
+    background: var(--ds-primary);
+    color: var(--ds-primary-fg);
+}
+
+.btn-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--ui-s-1);
+    margin-top: var(--ui-s-2);
+}
+
+.btn-row button {
+    flex: 1 1 auto;
+    padding: 4px 6px;
+    font-size: var(--ui-fs-md);
+}
+
+body.viewer #sel-tools,
+body.viewer #sel-front {
+    margin-top: var(--ui-s-2);
+}
+
+.sel-sets {
+    list-style: none;
+    margin: var(--ui-s-3) 0 0;
+    padding: 0;
+}
+
+.sel-sets li {
+    display: flex;
+    align-items: center;
+    gap: var(--ui-s-2);
+    padding: 3px var(--ui-s-2);
+    border-radius: var(--ui-r-xs);
+    font-size: var(--ui-fs-md);
+    cursor: pointer;
+}
+
+.sel-sets li:hover {
+    background: var(--ds-hover);
+}
+
+.sel-sets li[aria-current='true'] {
+    background: var(--ds-list-sel-bg);
+    color: var(--ds-list-sel-fg);
+}
+
+.sel-swatch {
+    flex: none;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 1px solid var(--ds-hairline);
+}
+
+.sel-sets .sel-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sel-sets .sel-count {
+    font-family: var(--ui-font-mono);
+    font-size: var(--ui-fs-sm);
+    opacity: 0.8;
+}
+
+.sel-sets .sel-remove {
+    padding: 0 4px;
+    background: transparent;
+    color: inherit;
+    opacity: 0.7;
+}
+
+.sel-sets input.sel-rename {
+    flex: 1;
+    min-width: 0;
+    padding: 0 4px;
+}
+
+.sel-stats {
+    margin-top: var(--ui-s-3);
+    font-size: var(--ui-fs-sm);
+}
+
+.sel-stats table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.sel-stats th {
+    text-align: left;
+    font-weight: 400;
+    color: var(--ds-description-fg);
+    padding-right: var(--ui-s-2);
+}
+
+.sel-stats td {
+    text-align: right;
+    font-family: var(--ui-font-mono);
+    font-variant-numeric: tabular-nums;
+    padding-left: var(--ui-s-2);
+}
+
+#sel-overlay {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 12;
+}
+
+#sel-overlay rect,
+#sel-overlay polygon {
+    fill: color-mix(in srgb, var(--ds-focus) 18%, transparent);
+    stroke: var(--ds-focus);
+    stroke-width: 1;
+    stroke-dasharray: 4 3;
+}
+
+#stage.selecting #render {
+    cursor: crosshair;
+}

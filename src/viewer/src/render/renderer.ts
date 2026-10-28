@@ -25,6 +25,14 @@ import vtkXMLPolyDataReader from '@kitware/vtk.js/IO/XML/XMLPolyDataReader';
 import type { SurfaceBuffers } from '@meshioplusplus/wasm';
 
 import type { ArrayEntry, ScalarRange, Vector3 } from '../types';
+import type { CellTopology, PointCells } from '../selection/topology';
+import {
+    buildCellTopology,
+    buildPointCells,
+    cellCentroids,
+    cellNormals,
+} from '../selection/topology';
+import { subsetCells, takeTuples } from './subset';
 import { DEFAULT_COLORMAP, makeColorTransferFunction } from './colormaps';
 import {
     SOLID_COLOR,
@@ -43,6 +51,26 @@ export type RepresentationMode = (typeof Representation)[keyof typeof Representa
 
 /** Default body colour when no array is selected (until a theme sets one). */
 const BODY_COLOR: Vector3 = [0.78, 0.82, 0.88];
+
+/** What screen-space selection needs from the camera, in CSS pixels. */
+export interface CameraProjection {
+    /** Row-major world -> clip matrix. */
+    matrix: number[];
+    width: number;
+    height: number;
+    eye: Vector3;
+    /** Unit view direction (the way the camera looks). */
+    direction: Vector3;
+    parallel: boolean;
+}
+
+/** Per-surface geometry the selection tools use, built on first need. */
+export interface SurfaceGeometry {
+    topo: CellTopology;
+    centroids: Float64Array;
+    normals: Float32Array;
+    pointCells: PointCells;
+}
 
 export interface LoadResult {
     numPoints: number;
@@ -73,7 +101,12 @@ export class Renderer {
 
     private lut: vtkColorTransferFunction;
     private colormapName = DEFAULT_COLORMAP;
+    /** The full surface. Ranges, picking ids and exports always refer to this. */
     private polydata: vtkPolyData | null = null;
+    /** What the mappers draw: `polydata`, or a subset of it while cells are hidden. */
+    private shown: vtkPolyData | null = null;
+    private cellMap: Uint32Array | null = null;
+    private geometry: SurfaceGeometry | null = null;
     private currentEntry: ArrayEntry | null = null;
     private currentRange: ScalarRange | null = null;
     private bodyColor: Vector3 = BODY_COLOR;
@@ -183,6 +216,9 @@ export class Renderer {
 
     private show(polydata: vtkPolyData): LoadResult {
         this.polydata = polydata;
+        this.shown = polydata;
+        this.cellMap = null;
+        this.geometry = null;
         this.bodyMapper.setInputData(polydata);
         this.edgeMapper.setInputData(polydata);
         this.setColorBy(SOLID_COLOR);
@@ -191,6 +227,104 @@ export class Renderer {
             numPoints: polydata.getNumberOfPoints(),
             numCells: polydata.getNumberOfCells(),
             arrays: this.arrays(),
+        };
+    }
+
+    /** The raw VTK legacy cell arrays of the full surface. */
+    private rawCells(): { verts: Uint32Array; lines: Uint32Array; polys: Uint32Array } | null {
+        const p = this.polydata;
+        if (!p) return null;
+        const get = (cells: { getData(): ArrayLike<number> } | null | undefined) =>
+            Uint32Array.from(cells ? cells.getData() : []);
+        return { verts: get(p.getVerts()), lines: get(p.getLines()), polys: get(p.getPolys()) };
+    }
+
+    /** Topology, centroids and normals of the full surface (cached per surface). */
+    surfaceGeometry(): SurfaceGeometry | null {
+        if (this.geometry) return this.geometry;
+        const p = this.polydata;
+        const raw = this.rawCells();
+        if (!p || !raw) return null;
+        const coords = p.getPoints().getData();
+        const topo = buildCellTopology(raw.verts, raw.lines, raw.polys);
+        this.geometry = {
+            topo,
+            centroids: cellCentroids(coords, topo),
+            normals: cellNormals(coords, topo),
+            pointCells: buildPointCells(topo, p.getNumberOfPoints()),
+        };
+        return this.geometry;
+    }
+
+    /**
+     * Show only the cells in `mask` (1 = visible); `null` shows everything.
+     * Points are shared with the full surface; per-cell arrays are restricted
+     * to the subset so colouring by them still works.
+     */
+    setVisibleMask(mask: Uint8Array | null): void {
+        const full = this.polydata;
+        const raw = this.rawCells();
+        if (!full || !raw) return;
+        if (!mask) {
+            this.shown = full;
+            this.cellMap = null;
+        } else {
+            const subset = subsetCells(raw.verts, raw.lines, raw.polys, mask);
+            const sub = vtkPolyData.newInstance();
+            sub.setPoints(full.getPoints());
+            if (subset.verts.length) sub.setVerts(vtkCellArray.newInstance({ values: subset.verts }));
+            if (subset.lines.length) sub.setLines(vtkCellArray.newInstance({ values: subset.lines }));
+            if (subset.polys.length) sub.setPolys(vtkCellArray.newInstance({ values: subset.polys }));
+            const pd = full.getPointData();
+            for (let i = 0; i < pd.getNumberOfArrays(); i++) {
+                const a = pd.getArrayByIndex(i);
+                if (a) sub.getPointData().addArray(a);
+            }
+            const cd = full.getCellData();
+            for (let i = 0; i < cd.getNumberOfArrays(); i++) {
+                const a = cd.getArrayByIndex(i);
+                if (!a) continue;
+                const comps = a.getNumberOfComponents();
+                sub.getCellData().addArray(
+                    vtkDataArray.newInstance({
+                        name: a.getName(),
+                        numberOfComponents: comps,
+                        values: takeTuples(a.getData() as Float32Array, comps, subset.cellMap),
+                    })
+                );
+            }
+            this.shown = sub;
+            this.cellMap = subset.cellMap;
+        }
+        this.bodyMapper.setInputData(this.shown);
+        this.edgeMapper.setInputData(this.shown);
+        this.bodyMapper.modified();
+        this.render();
+    }
+
+    /** The full-surface cell id behind a cell id of what is drawn. */
+    toOriginalCell(id: number): number {
+        return this.cellMap ? (this.cellMap[id] ?? -1) : id;
+    }
+
+    /** The camera as selection needs it, or null before anything is drawn. */
+    cameraProjection(): CameraProjection | null {
+        const canvas = this.view.getCanvas();
+        if (!canvas) return null;
+        const width = canvas.clientWidth;
+        const height = canvas.clientHeight;
+        if (width <= 0 || height <= 0) return null;
+        const camera = this.renderer.getActiveCamera();
+        const m = camera.getCompositeProjectionMatrix(width / height, -1, 1);
+        const pos = camera.getPosition();
+        const dir = camera.getDirectionOfProjection();
+        return {
+            matrix: Array.from(m),
+            width,
+            height,
+            eye: [pos[0], pos[1], pos[2]],
+            direction: [dir[0], dir[1], dir[2]],
+            parallel: camera.getParallelProjection(),
         };
     }
 
@@ -247,6 +381,12 @@ export class Renderer {
         const hi = max > min ? max : min + 1e-12;
         this.lut.setMappingRange(min, hi);
         this.lut.updateRange();
+    }
+
+    /** The data range of any colourable array, without colouring by it. */
+    rangeOf(entry: ArrayEntry): ScalarRange | null {
+        const array = arrayOf(this.polydata, entry);
+        return array ? computeRange(array, entry.component) : null;
     }
 
     /** The full data range of the current array, for "rescale to data". */

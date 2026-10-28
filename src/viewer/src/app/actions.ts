@@ -58,10 +58,14 @@ export function matchShortcut(shortcut: string, e: KeyLike): boolean {
     const ctrl = e.ctrlKey || e.metaKey;
     if (want.has('ctrl') !== ctrl) return false;
     if (want.has('alt') !== e.altKey) return false;
-    // Shift is part of the character for punctuation ("?"), so only insist on
-    // it when the shortcut names it explicitly.
-    if (want.has('shift') && !e.shiftKey) return false;
-    if (!want.has('shift') && e.shiftKey && key.length > 1) return false;
+    // Letters and digits must match Shift exactly (so `I` and `Shift+I` are
+    // different shortcuts). Punctuation such as `?` is typed with Shift, so
+    // Shift only has to be present when the shortcut names it.
+    if (/^[a-z0-9]$/i.test(key)) {
+        if (want.has('shift') !== e.shiftKey) return false;
+    } else if (want.has('shift') && !e.shiftKey) {
+        return false;
+    }
     const k = e.key === 'Escape' ? 'Esc' : e.key;
     return k.length === 1 ? k.toLowerCase() === key.toLowerCase() : k === key;
 }

@@ -53,6 +53,15 @@ export interface PickInfo {
     pointValues: PickValue[];
 }
 
+/** The selection tool's state, for the test hook. */
+export interface SelectionState {
+    tool: 'off' | 'click' | 'box' | 'lasso';
+    active: number | null;
+    sets: { id: number; name: string; count: number }[];
+    /** How many surface cells are currently hidden. */
+    hidden: number;
+}
+
 export type ViewerStatus = 'booting' | 'idle' | 'loading' | 'ready' | 'error';
 
 /**
@@ -68,4 +77,5 @@ export interface ViewerState {
     name: string;
     /** The most recent click-to-inspect result, or null. */
     picked: PickInfo | null;
+    selection: SelectionState;
 }

@@ -31,6 +31,9 @@ import { initMenus, setMenuChecked } from './ui/menu';
 import { findByShortcut, registerAction } from './app/actions';
 import { initSidebar, showShortcuts } from './features/shell';
 import { setStatusBar } from './features/statusbar';
+import { SelectionController } from './features/selection';
+import { SCENE_THEMES } from './ui/theme';
+import { opsPreserveCellIds } from './worker/opsIds';
 import type { ArrayEntry, PickInfo, ScalarRange, ViewerStatus } from './types';
 import type { SurfaceBuffers } from '@meshioplusplus/wasm';
 
@@ -54,6 +57,7 @@ window.__viewerState = {
     arrays: [],
     name: '',
     picked: null,
+    selection: { tool: 'off', active: null, sets: [], hidden: 0 },
 };
 
 function setStatus(status: ViewerStatus, message = ''): void {
@@ -81,7 +85,12 @@ const legend = new Legend($('legend'), {
 // --- display ------------------------------------------------------------- //
 
 /** A worker's surface, or the VTP the offline embedded page carries. */
-function show3d(source: SurfaceBuffers | ArrayBuffer, meta: MeshMeta | null, name: string): void {
+function show3d(
+    source: SurfaceBuffers | ArrayBuffer,
+    meta: MeshMeta | null,
+    name: string,
+    keepSelection = false
+): void {
     const info = source instanceof ArrayBuffer ? renderer.load(source) : renderer.loadSurface(source);
     arrays = info.arrays;
 
@@ -104,6 +113,7 @@ function show3d(source: SurfaceBuffers | ArrayBuffer, meta: MeshMeta | null, nam
     legend.hide();
     picker.clear();
     renderPick(null);
+    selection.attachSurface(keepSelection);
     renderInfo(meta, info.numCells, name);
     setStatusBar({ file: name, points: info.numPoints, cells: info.numCells, selected: 0 });
     setStatus('ready');
@@ -202,6 +212,15 @@ if (canvas) setupOrientationCube(renderer, canvas);
 // --- click to inspect ----------------------------------------------------- //
 
 const picker = new Picker(renderer);
+const selection = new SelectionController({
+    renderer,
+    picker,
+    palette: () => SCENE_THEMES[theme.resolved].palette,
+    onToolOn: () => setInspecting(false),
+    onState: (state) => {
+        window.__viewerState.selection = state;
+    },
+});
 let inspecting = false;
 
 function formatComponents(values: number[]): string {
@@ -278,6 +297,8 @@ $('tool-inspect').addEventListener('click', () => {
         return;
     }
     setInspecting(!inspecting);
+    // The inspector and the selection tool both own a plain click.
+    if (inspecting) selection.setTool('off');
 });
 $('pick-close').addEventListener('click', () => setInspecting(false));
 
@@ -470,8 +491,8 @@ function embeddedConfig(): { colorBy?: string } | null {
 }
 
 /** Whatever the page was given, however it arrived. */
-function present(result: RenderResult, name: string): void {
-    show3d(result.surface, result.meta, name);
+function present(result: RenderResult, name: string, keepSelection = false): void {
+    show3d(result.surface, result.meta, name, keepSelection);
     opsPanel.showReport(result.report);
 }
 
@@ -523,7 +544,7 @@ async function boot(): Promise<void> {
         setStatus('loading', ops.length ? 'applying operations…' : 'reverting…');
         apply(ops)
             .then((result) => {
-                present(result, currentFile?.name ?? window.__viewerState.name);
+                present(result, currentFile?.name ?? window.__viewerState.name, opsPreserveCellIds(ops));
                 opsPanel.setBusy(false);
             })
             .catch((e: Error) => {
