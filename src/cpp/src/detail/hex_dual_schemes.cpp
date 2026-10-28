@@ -49,6 +49,7 @@
 #include <cstdint>
 #include <deque>
 #include <initializer_list>
+#include <iterator>
 #include <map>
 #include <set>
 #include <string>
