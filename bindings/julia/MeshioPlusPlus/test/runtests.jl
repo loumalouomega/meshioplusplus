@@ -1177,6 +1177,39 @@ end
     close(m)
 end
 
+@testset "operations: extrude, revolve, mirror" begin
+    r = rectangle(dims=(3, 2))
+    e = extrude(r; direction=(0.0, 0.0, 1.0), num_layers=4)
+    @test e.num_hexahedra == 24
+    @test e.num_flipped == 0
+    @test num_points(e.mesh) == num_points(box(dims=(3, 2, 4)))
+    @test e.warnings isa Vector{String}
+    close(e.mesh)
+    g = extrude(r; offsets=[0.25, 1.0])
+    @test g.num_cells == 12
+    close(g.mesh)
+    @test_throws MeshioError extrude(r; direction=(0.0, 1.0, 0.0))
+    @test_throws ArgumentError extrude(r; direction=(0.0, 1.0))
+    v = revolve(r; num_layers=8)
+    @test v.full
+    @test v.num_on_axis == 3
+    @test v.num_wedges == 2 * 8
+    close(v.mesh)
+    @test_throws MeshioError revolve(r; num_layers=2)
+    close(r)
+    b = box(dims=(2, 2, 2), cell_type="tetra")
+    mr = mirror(b; normal=(1.0, 0.0, 0.0))
+    @test mr.num_flipped_cells == 48
+    @test quality_counts(mr.mesh).num_inverted == 0
+    close(mr.mesh)
+    k = mirror(b; keep_original=true)
+    @test k.num_points_on_plane == 9
+    @test num_points(k.mesh) == 2 * num_points(b) - 9
+    close(k.mesh)
+    @test_throws MeshioError mirror(b; normal=(0.0, 0.0, 0.0))
+    close(b)
+end
+
 @testset "operations: remesh" begin
     # A regular octahedron: the smallest closed 2-manifold triangle mesh with
     # no coplanar faces.

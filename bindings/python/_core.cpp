@@ -191,6 +191,8 @@
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/boundary_layer.hpp"
+#include "meshioplusplus/operations/extrude.hpp"
+#include "meshioplusplus/operations/mirror.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
@@ -3111,6 +3113,108 @@ PYBIND11_MODULE(_core, m) {
         py::arg("num_layers") = 3, py::arg("reverse") = false, py::arg("collision_fraction") = 0.45,
         py::arg("smooth_iterations") = 5, py::arg("max_shrink") = 6, py::arg("collapse") = "points",
         py::arg("normal_smooth_iterations") = 0, py::arg("front_check") = true);
+
+    // extrude / revolve (roadmap 3.1.2, 3.1.3): a surface swept into a volume
+    // or a curve into a surface, along a vector or around an axis. Return a
+    // dict {mesh, num_cells, ...}. See operations/extrude.hpp.
+    const auto sweep_report = [](meshioplusplus::SweepResult& rR) {
+        py::dict out;
+        out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(rR.mMesh));
+        out["num_cells"] = rR.mNumCells;
+        out["num_hexahedra"] = rR.mNumHexahedra;
+        out["num_wedges"] = rR.mNumWedges;
+        out["num_pyramids"] = rR.mNumPyramids;
+        out["num_tetrahedra"] = rR.mNumTetrahedra;
+        out["num_quads"] = rR.mNumQuads;
+        out["num_triangles"] = rR.mNumTriangles;
+        out["num_flipped"] = rR.mNumFlipped;
+        out["num_on_axis"] = rR.mNumOnAxis;
+        out["min_scaled_jacobian"] = rR.mMinScaledJacobian;
+        out["full"] = rR.mFull;
+        out["warnings"] = rR.mWarnings;
+        return out;
+    };
+    m.def(
+        "extrude",
+        [sweep_report](py::object pymesh, const std::array<double, 3>& direction, int num_layers,
+                       double ratio, const std::vector<double>& offsets, bool record_layers,
+                       std::int64_t max_cells) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::ExtrudeOptions o;
+            o.mDirection = direction;
+            o.mNumLayers = num_layers;
+            o.mRatio = ratio;
+            o.mOffsets = offsets;
+            o.mRecordLayers = record_layers;
+            o.mMaxCells = max_cells;
+            meshioplusplus::SweepResult r =
+                core_nogil([&] { return meshioplusplus::extrude(mesh, o); });
+            return sweep_report(r);
+        },
+        py::arg("mesh"), py::arg("direction") = std::array<double, 3>{{0.0, 0.0, 1.0}},
+        py::arg("num_layers") = 1, py::arg("ratio") = 1.0,
+        py::arg("offsets") = std::vector<double>{}, py::arg("record_layers") = false,
+        py::arg("max_cells") = 20000000);
+    m.def(
+        "revolve",
+        [sweep_report](py::object pymesh, const std::array<double, 3>& axis,
+                       const std::array<double, 3>& axis_point, double angle, int num_layers,
+                       double tolerance, bool record_layers, std::int64_t max_cells) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::RevolveOptions o;
+            o.mAxis = axis;
+            o.mAxisPoint = axis_point;
+            o.mAngle = angle;
+            o.mNumLayers = num_layers;
+            o.mTolerance = tolerance;
+            o.mRecordLayers = record_layers;
+            o.mMaxCells = max_cells;
+            meshioplusplus::SweepResult r =
+                core_nogil([&] { return meshioplusplus::revolve(mesh, o); });
+            return sweep_report(r);
+        },
+        py::arg("mesh"), py::arg("axis") = std::array<double, 3>{{0.0, 1.0, 0.0}},
+        py::arg("axis_point") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("angle") = 360.0,
+        py::arg("num_layers") = 16, py::arg("tolerance") = 1e-9, py::arg("record_layers") = false,
+        py::arg("max_cells") = 20000000);
+
+    // mirror (roadmap 3.2.5): reflect across a plane with every cell right
+    // side out. Returns a dict {mesh, num_flipped_cells, ...}. See
+    // operations/mirror.hpp.
+    m.def(
+        "mirror",
+        [](py::object pymesh, const std::array<double, 3>& origin,
+           const std::array<double, 3>& normal, bool keep_original, bool weld, double tolerance,
+           bool reflect_vector_data) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::MirrorOptions o;
+            o.mOrigin = origin;
+            o.mNormal = normal;
+            o.mKeepOriginal = keep_original;
+            o.mWeld = weld;
+            o.mTolerance = tolerance;
+            o.mReflectVectorData = reflect_vector_data;
+            meshioplusplus::MirrorResult r =
+                core_nogil([&] { return meshioplusplus::mirror(mesh, o); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_flipped_cells"] = r.mNumFlippedCells;
+            out["num_points_on_plane"] = r.mNumPointsOnPlane;
+            out["num_dropped_cells"] = r.mNumDroppedCells;
+            out["num_dropped_sides"] = r.mNumDroppedSides;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("mesh"), py::arg("origin") = std::array<double, 3>{{0.0, 0.0, 0.0}},
+        py::arg("normal") = std::array<double, 3>{{1.0, 0.0, 0.0}},
+        py::arg("keep_original") = false, py::arg("weld") = true, py::arg("tolerance") = 1e-9,
+        py::arg("reflect_vector_data") = false);
 
     // Tetrahedra filling a closed triangle surface (roadmap 6.7): through
     // Netgen, its triangles kept, or the native octree backend, its boundary

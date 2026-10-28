@@ -801,6 +801,111 @@ function boundary_layer(mesh::Mesh; first_height::Real, num_layers::Integer=3,
      cap_closed=r.cap_closed != 0)
 end
 
+_vec3(v, name) = length(v) == 3 ? (Cdouble(v[1]), Cdouble(v[2]), Cdouble(v[3])) :
+                 throw(ArgumentError("meshio++: $name must have 3 entries"))
+
+function _sweep_result(out::Mesh, r::_CSweepReport, text::AbstractString)
+    (mesh=out, num_cells=Int(r.num_cells), num_hexahedra=Int(r.num_hexahedra),
+     num_wedges=Int(r.num_wedges), num_pyramids=Int(r.num_pyramids),
+     num_tetrahedra=Int(r.num_tetrahedra), num_quads=Int(r.num_quads),
+     num_triangles=Int(r.num_triangles), num_flipped=Int(r.num_flipped),
+     num_on_axis=Int(r.num_on_axis), min_scaled_jacobian=Float64(r.min_scaled_jacobian),
+     full=r.full != 0, warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
+"""
+    extrude(mesh; direction=(0.0, 0.0, 1.0), num_layers=1, ratio=1.0, offsets=nothing,
+            record_layers=false, max_cells=20_000_000)
+        -> (; mesh, num_cells, num_hexahedra, num_wedges, num_pyramids, num_tetrahedra,
+              num_quads, num_triangles, num_flipped, num_on_axis, min_scaled_jacobian,
+              full, warnings)
+
+Sweep a surface's triangles and quads into wedges and hexahedra (or, with no
+2-D cells, its lines into quads) along `direction`, the whole displacement, in
+`num_layers` layers spaced uniformly, by the geometric `ratio`, or at the
+explicit `offsets` (fractions, increasing, ending at 1) (roadmap 3.1.2). The
+result holds the swept cells only, with `Side` regions `bottom`, `top` and
+`side`. See `doc/extrude.md`.
+"""
+function extrude(m::Mesh; direction=(0.0, 0.0, 1.0), num_layers::Integer=1, ratio::Real=1.0,
+                 offsets=nothing, record_layers::Bool=false, max_cells::Integer=20_000_000)
+    offs = offsets === nothing ? Cdouble[] : Cdouble.(collect(offsets))
+    report = Ref{_CSweepReport}()
+    ptr = GC.@preserve offs begin
+        opts = _CExtrudeOpts(_vec3(direction, "extrude: direction"), Cdouble(ratio),
+                             isempty(offs) ? Ptr{Cdouble}(C_NULL) : pointer(offs),
+                             Int64(length(offs)), Int64(max_cells), Int32(num_layers),
+                             Int32(record_layers), (0, 0, 0, 0))
+        ccall(_sym(:mio_extrude), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CExtrudeOpts}, Ref{_CSweepReport}),
+              _handle(m), Ref(opts), report)
+    end
+    out = Mesh(_check_ptr(ptr))
+    text = _getstring((buf, n) -> ccall(_sym(:mio_extrude_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    _sweep_result(out, report[], text)
+end
+
+"""
+    revolve(mesh; axis=(0.0, 1.0, 0.0), axis_point=(0.0, 0.0, 0.0), angle=360.0,
+            num_layers=16, tolerance=1e-9, record_layers=false, max_cells=20_000_000)
+        -> the named tuple of [`extrude`](@ref)
+
+Sweep a surface (or a curve) around the axis through `axis_point` along `axis`
+by `angle` degrees (right-hand rule; 360 closes the turn) in `num_layers` steps
+(roadmap 3.1.3). Points within `tolerance` (a fraction of the bounding-box
+diagonal) of the axis stay put, so the cells around them collapse into
+pyramids, tetrahedra and wedges. `Side` regions `start`, `end` (a partial turn)
+and `side`. See `doc/extrude.md`.
+"""
+function revolve(m::Mesh; axis=(0.0, 1.0, 0.0), axis_point=(0.0, 0.0, 0.0), angle::Real=360.0,
+                 num_layers::Integer=16, tolerance::Real=1e-9, record_layers::Bool=false,
+                 max_cells::Integer=20_000_000)
+    opts = _CRevolveOpts(_vec3(axis_point, "revolve: axis_point"), _vec3(axis, "revolve: axis"),
+                         Cdouble(angle), Cdouble(tolerance), Int64(max_cells),
+                         Int32(num_layers), Int32(record_layers), (0, 0, 0, 0))
+    report = Ref{_CSweepReport}()
+    ptr = ccall(_sym(:mio_revolve), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CRevolveOpts}, Ref{_CSweepReport}),
+                _handle(m), Ref(opts), report)
+    out = Mesh(_check_ptr(ptr))
+    text = _getstring((buf, n) -> ccall(_sym(:mio_revolve_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    _sweep_result(out, report[], text)
+end
+
+"""
+    mirror(mesh; origin=(0.0, 0.0, 0.0), normal=(1.0, 0.0, 0.0), keep_original=false,
+           weld=true, tolerance=1e-9, reflect_vector_data=false)
+        -> (; mesh, num_flipped_cells, num_points_on_plane, num_dropped_cells,
+              num_dropped_sides, warnings)
+
+Reflect `mesh` across the plane through `origin` with `normal`, every cell
+right side out (roadmap 3.2.5): nodes permuted, `Side` region entries moved to
+their facets' new numbers. With `keep_original` the input followed by its
+image, the points on the plane shared when `weld`; `reflect_vector_data`
+reflects float vector and tensor data. See `doc/mirror.md`.
+"""
+function mirror(m::Mesh; origin=(0.0, 0.0, 0.0), normal=(1.0, 0.0, 0.0),
+                keep_original::Bool=false, weld::Bool=true, tolerance::Real=1e-9,
+                reflect_vector_data::Bool=false)
+    opts = _CMirrorOpts(_vec3(origin, "mirror: origin"), _vec3(normal, "mirror: normal"),
+                        Cdouble(tolerance), Int32(keep_original), Int32(weld),
+                        Int32(reflect_vector_data), Int32(0), (0, 0, 0, 0))
+    report = Ref{_CMirrorReport}()
+    ptr = ccall(_sym(:mio_mirror), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CMirrorOpts}, Ref{_CMirrorReport}),
+                _handle(m), Ref(opts), report)
+    out = Mesh(_check_ptr(ptr))
+    text = _getstring((buf, n) -> ccall(_sym(:mio_mirror_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    r = report[]
+    (mesh=out, num_flipped_cells=Int(r.num_flipped_cells),
+     num_points_on_plane=Int(r.num_points_on_plane), num_dropped_cells=Int(r.num_dropped_cells),
+     num_dropped_sides=Int(r.num_dropped_sides),
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
 """
     has_netgen() -> Bool
 

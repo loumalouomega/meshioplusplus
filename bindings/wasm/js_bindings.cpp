@@ -177,6 +177,8 @@
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/boundary_layer.hpp"
+#include "meshioplusplus/operations/extrude.hpp"
+#include "meshioplusplus/operations/mirror.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
@@ -7702,6 +7704,134 @@ val boundary_layer_js(const val& rMeshObj, const val& rOptions) {
     });
 }
 
+// A JS array of three numbers, for the sweep and mirror options.
+std::array<double, 3> js_vec3(const val& rV, const char* pWhat) {
+    if (rV["length"].as<unsigned>() != 3)
+        throw std::invalid_argument(std::string("meshio++: ") + pWhat + " must have 3 entries");
+    return {rV[0].as<double>(), rV[1].as<double>(), rV[2].as<double>()};
+}
+
+val sweep_result_js(meshioplusplus::SweepResult& rR, bool Revolve) {
+    val out = val::object();
+    out.set("mesh", mesh_to_val(rR.mMesh));
+    out.set("numCells", static_cast<double>(rR.mNumCells));
+    out.set("numHexahedra", static_cast<double>(rR.mNumHexahedra));
+    out.set("numWedges", static_cast<double>(rR.mNumWedges));
+    out.set("numPyramids", static_cast<double>(rR.mNumPyramids));
+    out.set("numTetrahedra", static_cast<double>(rR.mNumTetrahedra));
+    out.set("numQuads", static_cast<double>(rR.mNumQuads));
+    out.set("numTriangles", static_cast<double>(rR.mNumTriangles));
+    out.set("numFlipped", static_cast<double>(rR.mNumFlipped));
+    if (Revolve) {
+        out.set("numOnAxis", static_cast<double>(rR.mNumOnAxis));
+        out.set("full", rR.mFull);
+    }
+    out.set("minScaledJacobian", rR.mMinScaledJacobian);
+    val warnings = val::array();
+    for (const std::string& w : rR.mWarnings)
+        warnings.call<void>("push", w);
+    out.set("warnings", warnings);
+    return out;
+}
+
+// extrude (roadmap 3.1.2): a surface swept into a volume (a curve into a
+// surface) along a vector; options {direction, numLayers, ratio, offsets,
+// recordLayers, maxCells}, all optional.
+val extrude_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ExtrudeOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the extrude options",
+                                {"direction", "numLayers", "ratio", "offsets", "recordLayers",
+                                 "maxCells"});
+            if (rOptions.hasOwnProperty("direction"))
+                o.mDirection = js_vec3(rOptions["direction"], "extrude: direction");
+            if (rOptions.hasOwnProperty("numLayers"))
+                o.mNumLayers = rOptions["numLayers"].as<int>();
+            if (rOptions.hasOwnProperty("ratio"))
+                o.mRatio = rOptions["ratio"].as<double>();
+            if (rOptions.hasOwnProperty("offsets")) {
+                const val offs = rOptions["offsets"];
+                const unsigned n = offs["length"].as<unsigned>();
+                for (unsigned i = 0; i < n; ++i)
+                    o.mOffsets.push_back(offs[i].as<double>());
+            }
+            if (rOptions.hasOwnProperty("recordLayers"))
+                o.mRecordLayers = rOptions["recordLayers"].as<bool>();
+            if (rOptions.hasOwnProperty("maxCells"))
+                o.mMaxCells = static_cast<std::int64_t>(rOptions["maxCells"].as<double>());
+        }
+        meshioplusplus::SweepResult r = meshioplusplus::extrude(val_to_mesh(rMeshObj), o);
+        return sweep_result_js(r, false);
+    });
+}
+
+// revolve (roadmap 3.1.3): the same around an axis; options {axis, axisPoint,
+// angle (degrees), numLayers, tolerance, recordLayers, maxCells}.
+val revolve_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::RevolveOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the revolve options",
+                                {"axis", "axisPoint", "angle", "numLayers", "tolerance",
+                                 "recordLayers", "maxCells"});
+            if (rOptions.hasOwnProperty("axis"))
+                o.mAxis = js_vec3(rOptions["axis"], "revolve: axis");
+            if (rOptions.hasOwnProperty("axisPoint"))
+                o.mAxisPoint = js_vec3(rOptions["axisPoint"], "revolve: axisPoint");
+            if (rOptions.hasOwnProperty("angle"))
+                o.mAngle = rOptions["angle"].as<double>();
+            if (rOptions.hasOwnProperty("numLayers"))
+                o.mNumLayers = rOptions["numLayers"].as<int>();
+            if (rOptions.hasOwnProperty("tolerance"))
+                o.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("recordLayers"))
+                o.mRecordLayers = rOptions["recordLayers"].as<bool>();
+            if (rOptions.hasOwnProperty("maxCells"))
+                o.mMaxCells = static_cast<std::int64_t>(rOptions["maxCells"].as<double>());
+        }
+        meshioplusplus::SweepResult r = meshioplusplus::revolve(val_to_mesh(rMeshObj), o);
+        return sweep_result_js(r, true);
+    });
+}
+
+// mirror (roadmap 3.2.5): reflect across a plane, every cell right side out;
+// options {origin, normal, keepOriginal, weld, tolerance, reflectVectorData}.
+val mirror_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::MirrorOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the mirror options",
+                                {"origin", "normal", "keepOriginal", "weld", "tolerance",
+                                 "reflectVectorData"});
+            if (rOptions.hasOwnProperty("origin"))
+                o.mOrigin = js_vec3(rOptions["origin"], "mirror: origin");
+            if (rOptions.hasOwnProperty("normal"))
+                o.mNormal = js_vec3(rOptions["normal"], "mirror: normal");
+            if (rOptions.hasOwnProperty("keepOriginal"))
+                o.mKeepOriginal = rOptions["keepOriginal"].as<bool>();
+            if (rOptions.hasOwnProperty("weld"))
+                o.mWeld = rOptions["weld"].as<bool>();
+            if (rOptions.hasOwnProperty("tolerance"))
+                o.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("reflectVectorData"))
+                o.mReflectVectorData = rOptions["reflectVectorData"].as<bool>();
+        }
+        meshioplusplus::MirrorResult r = meshioplusplus::mirror(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numFlippedCells", static_cast<double>(r.mNumFlippedCells));
+        out.set("numPointsOnPlane", static_cast<double>(r.mNumPointsOnPlane));
+        out.set("numDroppedCells", static_cast<double>(r.mNumDroppedCells));
+        out.set("numDroppedSides", static_cast<double>(r.mNumDroppedSides));
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
 // tetrahedralize (roadmap 6.7): tetrahedra filling a closed triangle surface;
 // options {backend ("auto" | "netgen" | "octree"), maxSize, maxVolume,
 // grading, optimizeSteps, maxCells, faceArray}, all optional. No WebAssembly
@@ -8330,6 +8460,9 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("meshCadSurface", &mesh_cad_surface_js);
     emscripten::function("projectToCad", &project_to_cad_js);
     emscripten::function("boundaryLayer", &boundary_layer_js);
+    emscripten::function("extrude", &extrude_js);
+    emscripten::function("revolve", &revolve_js);
+    emscripten::function("mirror", &mirror_js);
     emscripten::function("tetrahedralize", &tetrahedralize_js);
     emscripten::function("hasNetgen", &has_netgen_js);
     emscripten::function("igaEvaluate", &iga_evaluate_js);

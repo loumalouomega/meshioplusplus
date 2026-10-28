@@ -95,6 +95,8 @@
 #include "meshioplusplus/operations/octree.hpp"
 #include "meshioplusplus/operations/mesh_cad.hpp"
 #include "meshioplusplus/operations/boundary_layer.hpp"
+#include "meshioplusplus/operations/extrude.hpp"
+#include "meshioplusplus/operations/mirror.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/octree_mesh.hpp"
@@ -485,6 +487,18 @@ void print_usage(std::ostream& os) {
           "                            [--smooth N] [--max-shrink N]\n"
           "                            [--collapse points|layers] [--normal-smooth N]\n"
           "                            [--no-front-check] [--json]\n"
+          "  extrude                 Sweep a surface into a volume (or a curve into a\n"
+          "                            surface) along a vector: [--direction=x,y,z]\n"
+          "                            [--num-layers N] [--ratio R] [--offsets a,b,..]\n"
+          "                            [--record-layers] [--max-cells N] [--json]\n"
+          "  revolve                 Sweep a surface (or a curve) around an axis:\n"
+          "                            [--axis=x,y,z] [--axis-point=x,y,z]\n"
+          "                            [--angle DEG] [--num-layers N] [--tolerance T]\n"
+          "                            [--record-layers] [--max-cells N] [--json]\n"
+          "  mirror                  Reflect across a plane, cells right side out:\n"
+          "                            [--origin=x,y,z] [--normal=x,y,z]\n"
+          "                            [--keep-original] [--no-weld] [--tolerance T]\n"
+          "                            [--reflect-data] [--json]\n"
           "  tetrahedralize          Fill a closed triangle surface with tetrahedra,\n"
           "                            its triangles kept (Netgen): [--max-size H]\n"
           "                            [--max-volume V] [--grading G]\n"
@@ -5324,6 +5338,176 @@ int cmd_boundary_layer(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+// The --name=x,y,z vector of a sweep or mirror verb, or its default.
+std::array<double, 3> cli_vec3(const cli_parsed& rP, const char* pName, const char* pVerb,
+                               const std::array<double, 3>& rDefault) {
+    if (!has_opt(rP, pName))
+        return rDefault;
+    const auto v = parse_doubles(opt_value(rP, pName));
+    if (v.size() != 3)
+        throw std::runtime_error(std::string(pVerb) + ": --" + pName + " expects 'x,y,z'");
+    return {v[0], v[1], v[2]};
+}
+
+void cli_sweep_report(const meshioplusplus::SweepResult& rR, const cli_parsed& rP, bool Revolve) {
+    if (has_flag(rP, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_cells", rR.mNumCells);
+        json.Field("num_hexahedra", rR.mNumHexahedra);
+        json.Field("num_wedges", rR.mNumWedges);
+        json.Field("num_pyramids", rR.mNumPyramids);
+        json.Field("num_tetrahedra", rR.mNumTetrahedra);
+        json.Field("num_quads", rR.mNumQuads);
+        json.Field("num_triangles", rR.mNumTriangles);
+        json.Field("num_flipped", rR.mNumFlipped);
+        if (Revolve)
+            json.Field("num_on_axis", rR.mNumOnAxis);
+        json.Field("min_scaled_jacobian", rR.mMinScaledJacobian);
+        if (Revolve)
+            json.Field("full", rR.mFull);
+        json.Key("warnings");
+        json.BeginArray();
+        for (const std::string& w : rR.mWarnings)
+            json.String(w);
+        json.EndArray();
+        json.EndObject();
+        std::cout << "\n";
+    } else if (!has_flag(rP, "quiet")) {
+        char sj[32];
+        meshioplusplus::detail::snprintf_c(sj, sizeof(sj), "%.3f", rR.mMinScaledJacobian);
+        std::cout << rR.mNumCells << " cells (" << rR.mNumHexahedra << " hexahedra, "
+                  << rR.mNumWedges << " wedges, " << rR.mNumPyramids << " pyramids, "
+                  << rR.mNumTetrahedra << " tetrahedra, " << rR.mNumQuads << " quads, "
+                  << rR.mNumTriangles << " triangles), " << rR.mNumFlipped
+                  << " profile cells turned";
+        if (Revolve)
+            std::cout << ", " << rR.mNumOnAxis << " points on the axis"
+                      << (rR.mFull ? ", a full turn" : "");
+        std::cout << "; least scaled Jacobian " << sj << "\n";
+        for (const std::string& w : rR.mWarnings)
+            std::cerr << "warning: " << w << "\n";
+    }
+}
+
+int cmd_extrude(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"direction", {}, true},
+                                  {"num-layers", {}, true},
+                                  {"ratio", {}, true},
+                                  {"offsets", {}, true},
+                                  {"record-layers", {}, false},
+                                  {"max-cells", {}, true},
+                                  {"json", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("extrude requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::ExtrudeOptions o;
+    o.mDirection = cli_vec3(p, "direction", "extrude", o.mDirection);
+    if (has_opt(p, "num-layers"))
+        o.mNumLayers = std::stoi(opt_value(p, "num-layers"));
+    if (has_opt(p, "ratio"))
+        o.mRatio = meshioplusplus::detail::stod_c(opt_value(p, "ratio"));
+    if (has_opt(p, "offsets"))
+        o.mOffsets = parse_doubles(opt_value(p, "offsets"));
+    o.mRecordLayers = has_flag(p, "record-layers");
+    if (has_opt(p, "max-cells"))
+        o.mMaxCells = std::stoll(opt_value(p, "max-cells"));
+    auto r = meshioplusplus::extrude(mesh, o);
+    cli_sweep_report(r, p, false);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_revolve(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"axis", {}, true},
+                                  {"axis-point", {}, true},
+                                  {"angle", {}, true},
+                                  {"num-layers", {}, true},
+                                  {"tolerance", {}, true},
+                                  {"record-layers", {}, false},
+                                  {"max-cells", {}, true},
+                                  {"json", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("revolve requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::RevolveOptions o;
+    o.mAxis = cli_vec3(p, "axis", "revolve", o.mAxis);
+    o.mAxisPoint = cli_vec3(p, "axis-point", "revolve", o.mAxisPoint);
+    if (has_opt(p, "angle"))
+        o.mAngle = meshioplusplus::detail::stod_c(opt_value(p, "angle"));
+    if (has_opt(p, "num-layers"))
+        o.mNumLayers = std::stoi(opt_value(p, "num-layers"));
+    if (has_opt(p, "tolerance"))
+        o.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    o.mRecordLayers = has_flag(p, "record-layers");
+    if (has_opt(p, "max-cells"))
+        o.mMaxCells = std::stoll(opt_value(p, "max-cells"));
+    auto r = meshioplusplus::revolve(mesh, o);
+    cli_sweep_report(r, p, true);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_mirror(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"origin", {}, true},
+                                  {"normal", {}, true},
+                                  {"keep-original", {}, false},
+                                  {"no-weld", {}, false},
+                                  {"tolerance", {}, true},
+                                  {"reflect-data", {}, false},
+                                  {"json", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("mirror requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::MirrorOptions o;
+    o.mOrigin = cli_vec3(p, "origin", "mirror", o.mOrigin);
+    o.mNormal = cli_vec3(p, "normal", "mirror", o.mNormal);
+    o.mKeepOriginal = has_flag(p, "keep-original");
+    o.mWeld = !has_flag(p, "no-weld");
+    if (has_opt(p, "tolerance"))
+        o.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    o.mReflectVectorData = has_flag(p, "reflect-data");
+    auto r = meshioplusplus::mirror(mesh, o);
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_flipped_cells", r.mNumFlippedCells);
+        json.Field("num_points_on_plane", r.mNumPointsOnPlane);
+        json.Field("num_dropped_cells", r.mNumDroppedCells);
+        json.Field("num_dropped_sides", r.mNumDroppedSides);
+        json.Key("warnings");
+        json.BeginArray();
+        for (const std::string& w : r.mWarnings)
+            json.String(w);
+        json.EndArray();
+        json.EndObject();
+        std::cout << "\n";
+    } else if (!has_flag(p, "quiet")) {
+        std::cout << r.mNumFlippedCells << " cells reflected, " << r.mNumPointsOnPlane
+                  << " points on the plane, " << r.mNumDroppedCells << " cells and "
+                  << r.mNumDroppedSides << " side entries dropped\n";
+        for (const std::string& w : r.mWarnings)
+            std::cerr << "warning: " << w << "\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
 int cmd_tetrahedralize(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -7702,6 +7886,12 @@ int main(int argc, char** argv) {
             return cmd_project_to_cad(rest);
         if (cmd == "boundary-layer")
             return cmd_boundary_layer(rest);
+        if (cmd == "extrude")
+            return cmd_extrude(rest);
+        if (cmd == "revolve")
+            return cmd_revolve(rest);
+        if (cmd == "mirror")
+            return cmd_mirror(rest);
         if (cmd == "tetrahedralize")
             return cmd_tetrahedralize(rest);
         if (cmd == "sdf")

@@ -133,6 +133,9 @@ extern SEXP R_mio_tetrahedralize(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP)
 extern SEXP R_mio_has_netgen(void);
 extern SEXP R_mio_error_size(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_check_conformity(SEXP, SEXP, SEXP);
+extern SEXP R_mio_extrude(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_revolve(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_mirror(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_project_to_cad(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_meshes_equal(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_diff(SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -336,6 +339,9 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_has_netgen, 0),
                                               CALLDEF(R_mio_error_size, 8),
                                               CALLDEF(R_mio_check_conformity, 3),
+                                              CALLDEF(R_mio_extrude, 7),
+                                              CALLDEF(R_mio_revolve, 8),
+                                              CALLDEF(R_mio_mirror, 7),
                                               CALLDEF(R_mio_project_to_cad, 6),
                                               CALLDEF(R_mio_meshes_equal, 5),
                                               CALLDEF(R_mio_diff, 5),

@@ -24,6 +24,7 @@ from . import (
     _decompress,
     _diff,
     _extract_surface,
+    _extrude,
     _feature_edges,
     _find_interface,
     _fit_primitives,
@@ -37,6 +38,7 @@ from . import (
     _isosurface,
     _merge,
     _mesh_cad,
+    _mirror,
     _normals,
     _octree,
     _octree_mesh,
@@ -58,6 +60,7 @@ from . import (
     _reorder,
     _repair,
     _resample,
+    _revolve,
     _sdf,
     _segment,
     _shrinkwrap,
@@ -388,6 +391,27 @@ def main(argv=None):
     )
     _boundary_layer.add_args(parser)
     parser.set_defaults(func=_boundary_layer.boundary_layer_cmd)
+
+    parser = subparsers.add_parser(
+        "extrude",
+        help="Sweep a surface into a volume (or a curve into a surface) along a vector",
+    )
+    _extrude.add_args(parser)
+    parser.set_defaults(func=_extrude.extrude_cmd)
+
+    parser = subparsers.add_parser(
+        "revolve",
+        help="Sweep a surface (or a curve) around an axis",
+    )
+    _revolve.add_args(parser)
+    parser.set_defaults(func=_revolve.revolve_cmd)
+
+    parser = subparsers.add_parser(
+        "mirror",
+        help="Reflect a mesh across a plane, every cell right side out",
+    )
+    _mirror.add_args(parser)
+    parser.set_defaults(func=_mirror.mirror_cmd)
 
     parser = subparsers.add_parser(
         "tetrahedralize",

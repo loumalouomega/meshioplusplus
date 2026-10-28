@@ -30,7 +30,7 @@ meshioplusplus.write("part_moved.vtu", t)
 | `scale_units` | a scalar unit-conversion factor |
 | `rotate_vector_data` | when true, rotate vector (dim 3) / tensor (dim 9) `point_data` **and `cell_data`** by the linear part; off by default |
 
-Several builders compose (in the fixed order units → scale → rotate → translate). An orientation-reversing transform (negative determinant of the 3×3 linear block) logs a warning that cell orientation may be flipped.
+Several builders compose (in the fixed order units → scale → rotate → translate). An orientation-reversing transform (negative determinant of the 3×3 linear block) logs a warning: the connectivity is kept, so every cell comes out inverted (negative volumes, inward normals) and `Side` regions name facets by their old local numbers. [`mirror`](./mirror.md) reflects with every cell right side out.
 
 ## What changes
 

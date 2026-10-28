@@ -593,6 +593,89 @@ export interface BoundaryLayerResult {
   warnings: string[];
 }
 
+/** Options of `extrude` (doc/extrude.md). */
+export interface ExtrudeOptions {
+  /** The whole displacement of the last level (default `[0, 0, 1]`). */
+  direction?: number[];
+  /** Layers, 1 or more (default 1); with `offsets`, 1 or their count. */
+  numLayers?: number;
+  /** Each layer's thickness over the one below's (default 1, uniform). */
+  ratio?: number;
+  /** Explicit level fractions, increasing, positive, the last 1. */
+  offsets?: number[];
+  /** Attach Int32 `extrude:layer` cell data (default false). */
+  recordLayers?: boolean;
+  /** Refuse more profile cells times layers (default 20000000). */
+  maxCells?: number;
+}
+
+/** Options of `revolve` (doc/extrude.md). */
+export interface RevolveOptions {
+  /** The axis direction (default `[0, 1, 0]`). */
+  axis?: number[];
+  /** A point of the axis (default the origin). */
+  axisPoint?: number[];
+  /** Degrees, 0 < |angle| <= 360, right-hand rule (default 360, a full turn). */
+  angle?: number;
+  /** Steps of the turn (default 16; at least 3 for a full turn). */
+  numLayers?: number;
+  /** On the axis: a fraction of the bounding-box diagonal (default 1e-9). */
+  tolerance?: number;
+  /** Attach Int32 `revolve:layer` cell data (default false). */
+  recordLayers?: boolean;
+  /** Refuse more profile cells times layers (default 20000000). */
+  maxCells?: number;
+}
+
+/** What `extrude` and `revolve` return. */
+export interface SweepResult {
+  mesh: Mesh;
+  numCells: number;
+  numHexahedra: number;
+  numWedges: number;
+  numPyramids: number;
+  numTetrahedra: number;
+  /** A swept curve's quads. */
+  numQuads: number;
+  /** A swept curve's triangles, where an end is on the axis. */
+  numTriangles: number;
+  /** Profile cells turned to face the sweep. */
+  numFlipped: number;
+  /** `revolve` only: profile points on the axis. */
+  numOnAxis?: number;
+  /** `revolve` only: a full turn, closed on itself. */
+  full?: boolean;
+  /** The least scaled Jacobian of a volume cell; 0 for a swept curve. */
+  minScaledJacobian: number;
+  warnings: string[];
+}
+
+/** Options of `mirror` (doc/mirror.md). */
+export interface MirrorOptions {
+  /** A point of the plane (default the origin). */
+  origin?: number[];
+  /** The plane's normal (default `[1, 0, 0]`). */
+  normal?: number[];
+  /** The input followed by its image (default false). */
+  keepOriginal?: boolean;
+  /** With `keepOriginal`, share the points on the plane (default true). */
+  weld?: boolean;
+  /** On the plane: a fraction of the bounding-box diagonal (default 1e-9). */
+  tolerance?: number;
+  /** Reflect float vector and tensor data on the copies (default false). */
+  reflectVectorData?: boolean;
+}
+
+/** What `mirror` returns. */
+export interface MirrorResult {
+  mesh: Mesh;
+  numFlippedCells: number;
+  numPointsOnPlane: number;
+  numDroppedCells: number;
+  numDroppedSides: number;
+  warnings: string[];
+}
+
 /** Options of `tetrahedralize` (doc/tetrahedralize.md). */
 export interface TetrahedralizeOptions {
   /**
@@ -3347,6 +3430,33 @@ export interface MeshioPlusPlusModule {
    * quads, manifold and consistently oriented.
    */
   boundaryLayer(mesh: Mesh, options: BoundaryLayerOptions): BoundaryLayerResult;
+
+  /**
+   * Sweep a surface's triangles and quads into wedges and hexahedra (or, with
+   * no 2-D cells, its lines into quads) along a vector, in layers (roadmap
+   * 3.1.2): the swept cells only, with side regions `bottom`, `top` and
+   * `side`.
+   * @throws {Error} on a bad option, a face or line parallel to the
+   * direction, higher-order or volume cells, or an exceeded budget.
+   */
+  extrude(mesh: Mesh, options?: ExtrudeOptions): SweepResult;
+
+  /**
+   * Sweep a surface (or a curve) around an axis (roadmap 3.1.3); points on
+   * the axis stay put and the cells around them collapse. Side regions
+   * `start`, `end` (a partial turn) and `side`.
+   * @throws {Error} on a bad option, a face that crosses the axis or turns
+   * within its own plane, or an exceeded budget.
+   */
+  revolve(mesh: Mesh, options?: RevolveOptions): SweepResult;
+
+  /**
+   * Reflect a mesh across a plane, every cell right side out (roadmap
+   * 3.2.5); with `keepOriginal` the input followed by its image.
+   * @throws {Error} on a zero normal, a bad tolerance or a cell type with no
+   * orientation flip.
+   */
+  mirror(mesh: Mesh, options?: MirrorOptions): MirrorResult;
 
   /**
    * Fill a closed, manifold, consistently oriented triangle surface with

@@ -71,6 +71,8 @@ module meshioplusplus
     public :: MIO_MESH_CAD_QUAD_PAIRS_MATCHING, MIO_MESH_CAD_QUAD_PAIRS_GREEDY
     public :: mio_project_to_cad, mio_project_to_cad_report, mio_project_to_cad_outside_trim
     public :: mio_boundary_layer, mio_boundary_layer_report
+    public :: mio_extrude, mio_revolve, mio_sweep_report
+    public :: mio_mirror, mio_mirror_report
     public :: mio_tetrahedralize, mio_tetrahedralize_report, mio_has_netgen
     public :: mio_error_size_report
     public :: mio_conformity_report
@@ -635,6 +637,71 @@ module meshioplusplus
         !> Last-layer face pairs the front test found crossing or touching.
         integer(c_int64_t) :: num_front_crossings = 0
         integer(c_int64_t) :: reserved(2) = 0
+    end type
+
+    !> Interop mirror of C `mio_extrude_opts` (96 bytes with 8-byte pointers;
+    !> roadmap 3.1.2). `offsets` is borrowed for one call.
+    type, bind(c) :: mio_extrude_opts_t
+        real(c_double) :: direction(3) = [0.0_c_double, 0.0_c_double, 1.0_c_double]
+        real(c_double) :: ratio = 1.0_c_double
+        type(c_ptr) :: offsets = c_null_ptr
+        integer(c_int64_t) :: num_offsets = 0
+        integer(c_int64_t) :: max_cells = 20000000_c_int64_t
+        integer(c_int32_t) :: num_layers = 1
+        integer(c_int32_t) :: record_layers = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_revolve_opts` (112 bytes; roadmap 3.1.3).
+    type, bind(c) :: mio_revolve_opts_t
+        real(c_double) :: axis_point(3) = 0.0_c_double
+        real(c_double) :: axis(3) = [0.0_c_double, 1.0_c_double, 0.0_c_double]
+        real(c_double) :: angle = 360.0_c_double
+        real(c_double) :: tolerance = 1.0e-9_c_double
+        integer(c_int64_t) :: max_cells = 20000000_c_int64_t
+        integer(c_int32_t) :: num_layers = 16
+        integer(c_int32_t) :: record_layers = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_sweep_report` (128 bytes): what `mio_extrude` and `mio_revolve` did.
+    type, bind(c) :: mio_sweep_report
+        integer(c_int64_t) :: num_cells = 0
+        integer(c_int64_t) :: num_hexahedra = 0
+        integer(c_int64_t) :: num_wedges = 0
+        integer(c_int64_t) :: num_pyramids = 0
+        integer(c_int64_t) :: num_tetrahedra = 0
+        integer(c_int64_t) :: num_quads = 0
+        integer(c_int64_t) :: num_triangles = 0
+        integer(c_int64_t) :: num_flipped = 0
+        integer(c_int64_t) :: num_on_axis = 0
+        integer(c_int64_t) :: num_warnings = 0
+        real(c_double) :: min_scaled_jacobian = 0.0_c_double
+        integer(c_int32_t) :: full = 0
+        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_mirror_opts` (104 bytes; roadmap 3.2.5).
+    type, bind(c) :: mio_mirror_opts_t
+        real(c_double) :: origin(3) = 0.0_c_double
+        real(c_double) :: normal(3) = [1.0_c_double, 0.0_c_double, 0.0_c_double]
+        real(c_double) :: tolerance = 1.0e-9_c_double
+        integer(c_int32_t) :: keep_original = 0
+        integer(c_int32_t) :: weld = 1
+        integer(c_int32_t) :: reflect_vector_data = 0
+        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_mirror_report` (72 bytes): what `mio_mirror` did.
+    type, bind(c) :: mio_mirror_report
+        integer(c_int64_t) :: num_flipped_cells = 0
+        integer(c_int64_t) :: num_points_on_plane = 0
+        integer(c_int64_t) :: num_dropped_cells = 0
+        integer(c_int64_t) :: num_dropped_sides = 0
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(4) = 0
     end type
 
     !> Interop mirror of C `mio_tetrahedralize_opts` (80 bytes with 8-byte
@@ -4649,6 +4716,30 @@ module meshioplusplus
             type(c_ptr), value :: mesh
             type(mio_boundary_layer_opts_t), intent(in) :: opts
             type(mio_boundary_layer_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_extrude(mesh, opts, report) bind(c, name="mio_extrude") result(h)
+            import :: c_ptr, mio_extrude_opts_t, mio_sweep_report
+            type(c_ptr), value :: mesh
+            type(mio_extrude_opts_t), intent(in) :: opts
+            type(mio_sweep_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_revolve(mesh, opts, report) bind(c, name="mio_revolve") result(h)
+            import :: c_ptr, mio_revolve_opts_t, mio_sweep_report
+            type(c_ptr), value :: mesh
+            type(mio_revolve_opts_t), intent(in) :: opts
+            type(mio_sweep_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_mirror(mesh, opts, report) bind(c, name="mio_mirror") result(h)
+            import :: c_ptr, mio_mirror_opts_t, mio_mirror_report
+            type(c_ptr), value :: mesh
+            type(mio_mirror_opts_t), intent(in) :: opts
+            type(mio_mirror_report), intent(out) :: report
             type(c_ptr) :: h
         end function
 
@@ -12996,6 +13087,134 @@ contains
         out%handle = c_mio_boundary_layer(mesh%handle, opts, rep)
         if (.not. c_associated(out%handle)) then
             call handle_failure('boundary_layer', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Sweep the triangles and quads of `mesh` into wedges and hexahedra (or,
+    !> with no 2-D cells, its lines into quads) along `direction` (default
+    !> [0, 0, 1], the whole displacement) in `num_layers` (1) layers spaced
+    !> uniformly, by the geometric `ratio` (1), or at the explicit `offsets`
+    !> (fractions, increasing, ending at 1) (roadmap 3.1.2). The result holds
+    !> the swept cells only, with side regions bottom, top and side;
+    !> `record_layers` attaches extrude:layer. The optional `report` counts
+    !> the cells.
+    function mio_extrude(mesh, direction, num_layers, ratio, offsets, record_layers, max_cells, &
+                         report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        real(real64), intent(in), optional :: direction(3), ratio
+        integer, intent(in), optional :: num_layers
+        real(real64), intent(in), optional :: offsets(:)
+        logical, intent(in), optional :: record_layers
+        integer(int64), intent(in), optional :: max_cells
+        type(mio_sweep_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_extrude_opts_t) :: opts
+        type(mio_sweep_report) :: rep
+        real(c_double), allocatable, target :: offs(:)
+        if ((c_sizeof(c_null_ptr) == 8_c_size_t .and. c_sizeof(opts) /= 96_c_size_t) .or. &
+            c_sizeof(rep) /= 128_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: extrude layout mismatch'
+            error stop 1
+        end if
+        if (present(direction)) opts%direction = real(direction, c_double)
+        if (present(num_layers)) opts%num_layers = int(num_layers, c_int32_t)
+        if (present(ratio)) opts%ratio = real(ratio, c_double)
+        if (present(offsets)) then
+            if (size(offsets) > 0) then
+                offs = real(offsets, c_double)
+                opts%offsets = c_loc(offs(1))
+                opts%num_offsets = int(size(offs), c_int64_t)
+            end if
+        end if
+        if (present(record_layers)) &
+            opts%record_layers = merge(1_c_int32_t, 0_c_int32_t, record_layers)
+        if (present(max_cells)) opts%max_cells = int(max_cells, c_int64_t)
+        out%handle = c_mio_extrude(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('extrude', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Sweep `mesh` (a surface or a curve) around the axis through
+    !> `axis_point` (default the origin) along `axis` ([0, 1, 0]) by `angle`
+    !> (360) degrees in `num_layers` (16) steps (roadmap 3.1.3). Points within
+    !> `tolerance` (1e-9 of the bounding-box diagonal) of the axis stay put and
+    !> the cells around them collapse. Side regions start, end (a partial
+    !> turn) and side.
+    function mio_revolve(mesh, axis, axis_point, angle, num_layers, tolerance, record_layers, &
+                         max_cells, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        real(real64), intent(in), optional :: axis(3), axis_point(3), angle, tolerance
+        integer, intent(in), optional :: num_layers
+        logical, intent(in), optional :: record_layers
+        integer(int64), intent(in), optional :: max_cells
+        type(mio_sweep_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_revolve_opts_t) :: opts
+        type(mio_sweep_report) :: rep
+        if (c_sizeof(opts) /= 112_c_size_t .or. c_sizeof(rep) /= 128_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: revolve layout mismatch'
+            error stop 1
+        end if
+        if (present(axis)) opts%axis = real(axis, c_double)
+        if (present(axis_point)) opts%axis_point = real(axis_point, c_double)
+        if (present(angle)) opts%angle = real(angle, c_double)
+        if (present(num_layers)) opts%num_layers = int(num_layers, c_int32_t)
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(record_layers)) &
+            opts%record_layers = merge(1_c_int32_t, 0_c_int32_t, record_layers)
+        if (present(max_cells)) opts%max_cells = int(max_cells, c_int64_t)
+        out%handle = c_mio_revolve(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('revolve', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Reflect `mesh` across the plane through `origin` (default the origin)
+    !> with `normal` ([1, 0, 0]), every cell right side out (roadmap 3.2.5):
+    !> nodes permuted, side region entries moved to their facets' new numbers.
+    !> With `keep_original` the input followed by its image, the points on the
+    !> plane shared when `weld` (.true.); `reflect_vector_data` reflects float
+    !> vector and tensor data.
+    function mio_mirror(mesh, origin, normal, keep_original, weld, tolerance, &
+                        reflect_vector_data, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        real(real64), intent(in), optional :: origin(3), normal(3), tolerance
+        logical, intent(in), optional :: keep_original, weld, reflect_vector_data
+        type(mio_mirror_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_mirror_opts_t) :: opts
+        type(mio_mirror_report) :: rep
+        if (c_sizeof(opts) /= 104_c_size_t .or. c_sizeof(rep) /= 72_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: mirror layout mismatch'
+            error stop 1
+        end if
+        if (present(origin)) opts%origin = real(origin, c_double)
+        if (present(normal)) opts%normal = real(normal, c_double)
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(keep_original)) &
+            opts%keep_original = merge(1_c_int32_t, 0_c_int32_t, keep_original)
+        if (present(weld)) opts%weld = merge(1_c_int32_t, 0_c_int32_t, weld)
+        if (present(reflect_vector_data)) &
+            opts%reflect_vector_data = merge(1_c_int32_t, 0_c_int32_t, reflect_vector_data)
+        out%handle = c_mio_mirror(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('mirror', mio_error_message(), stat, errmsg)
             return
         end if
         if (present(report)) report = rep

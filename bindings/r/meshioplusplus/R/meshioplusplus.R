@@ -2835,6 +2835,84 @@ mio_boundary_layer <- function(mesh, first_height, num_layers = 3, growth = 1.2,
         as.integer(normal_smooth_iterations), isTRUE(front_check))
 }
 
+#' Sweep a surface (or a curve) along a vector or around an axis
+#'
+#' `mio_extrude()` sweeps the triangles and quads of `mesh` into wedges and
+#' hexahedra (or, with no 2-D cells, its lines into quads) along `direction`,
+#' the whole displacement, in `num_layers` layers spaced uniformly, by the
+#' geometric `ratio`, or at the explicit `offsets` (fractions, increasing,
+#' ending at 1) (roadmap 3.1.2). `mio_revolve()` turns them around the axis
+#' through `axis_point` along `axis` by `angle` degrees in `num_layers` steps
+#' (3.1.3); points within `tolerance` of the axis stay put and the cells around
+#' them collapse. The result holds the swept cells only, with `Side` regions
+#' `bottom`, `top` (`start`, `end` for a partial turn) and `side`.
+#'
+#' @param mesh A triangle and quad surface, or a curve of lines.
+#' @param direction The whole displacement, `c(x, y, z)`.
+#' @param num_layers Layers (steps of the turn).
+#' @param ratio Each layer's thickness over the one below's.
+#' @param offsets Explicit level fractions, or `numeric(0)`.
+#' @param record_layers Attach `extrude:layer` (`revolve:layer`) cell data.
+#' @param max_cells Refuse more profile cells times layers.
+#' @param axis,axis_point The axis direction and a point of it.
+#' @param angle Degrees, right-hand rule; 360 closes the turn.
+#' @param tolerance On the axis: a fraction of the bounding-box diagonal.
+#' @return A list: `mesh`, `num_cells`, `num_hexahedra`, `num_wedges`,
+#'   `num_pyramids`, `num_tetrahedra`, `num_quads`, `num_triangles`,
+#'   `num_flipped`, `num_on_axis`, `min_scaled_jacobian`, `full` and
+#'   `warnings`.
+#' @export
+mio_extrude <- function(mesh, direction = c(0, 0, 1), num_layers = 1, ratio = 1,
+                        offsets = numeric(0), record_layers = FALSE, max_cells = 20000000) {
+  res <- .Call(R_mio_extrude, mesh, as.numeric(direction), as.integer(num_layers),
+               as.numeric(ratio), as.numeric(offsets), isTRUE(record_layers),
+               as.numeric(max_cells))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+#' @rdname mio_extrude
+#' @export
+mio_revolve <- function(mesh, axis = c(0, 1, 0), axis_point = c(0, 0, 0), angle = 360,
+                        num_layers = 16, tolerance = 1e-9, record_layers = FALSE,
+                        max_cells = 20000000) {
+  res <- .Call(R_mio_revolve, mesh, as.numeric(axis), as.numeric(axis_point),
+               as.numeric(angle), as.integer(num_layers), as.numeric(tolerance),
+               isTRUE(record_layers), as.numeric(max_cells))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+#' Reflect a mesh across a plane
+#'
+#' Reflects `mesh` across the plane through `origin` with `normal`, every cell
+#' right side out (roadmap 3.2.5): its nodes permuted and `Side` region entries
+#' moved to their facets' new numbers. With `keep_original` the input followed
+#' by its image, the points on the plane shared when `weld`.
+#'
+#' @param mesh A mesh.
+#' @param origin A point of the plane, `c(x, y, z)`.
+#' @param normal The plane's normal.
+#' @param keep_original Return the input followed by its image.
+#' @param weld With `keep_original`, share the points on the plane.
+#' @param tolerance On the plane: a fraction of the bounding-box diagonal.
+#' @param reflect_vector_data Reflect float vector and tensor data.
+#' @return A list: `mesh`, `num_flipped_cells`, `num_points_on_plane`,
+#'   `num_dropped_cells`, `num_dropped_sides` and `warnings`.
+#' @export
+mio_mirror <- function(mesh, origin = c(0, 0, 0), normal = c(1, 0, 0), keep_original = FALSE,
+                       weld = TRUE, tolerance = 1e-9, reflect_vector_data = FALSE) {
+  res <- .Call(R_mio_mirror, mesh, as.numeric(origin), as.numeric(normal),
+               isTRUE(keep_original), isTRUE(weld), as.numeric(tolerance),
+               isTRUE(reflect_vector_data))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+mio_split_warnings_ <- function(text) {
+  if (nzchar(text)) strsplit(text, "\n", fixed = TRUE)[[1]] else character(0)
+}
+
 #' Whether the library carries the Netgen backend
 #'
 #' [mio_tetrahedralize()] needs a library built with
