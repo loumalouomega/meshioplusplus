@@ -18,7 +18,9 @@ import vtkMapper from '@kitware/vtk.js/Rendering/Core/Mapper';
 import vtkColorTransferFunction from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction';
 import vtkCellArray from '@kitware/vtk.js/Common/Core/CellArray';
 import vtkDataArray from '@kitware/vtk.js/Common/Core/DataArray';
+import vtkPlane from '@kitware/vtk.js/Common/DataModel/Plane';
 import vtkPolyData from '@kitware/vtk.js/Common/DataModel/PolyData';
+import { Scale } from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction/Constants';
 import vtkGenericRenderWindow from '@kitware/vtk.js/Rendering/Misc/GenericRenderWindow';
 import vtkXMLPolyDataReader from '@kitware/vtk.js/IO/XML/XMLPolyDataReader';
 
@@ -32,7 +34,9 @@ import {
     cellCentroids,
     cellNormals,
 } from '../selection/topology';
+import { canLogScale } from './scale';
 import { subsetCells, takeTuples } from './subset';
+import { type CameraState, type ViewName, viewPose } from './camera';
 import { DEFAULT_COLORMAP, makeColorTransferFunction } from './colormaps';
 import {
     SOLID_COLOR,
@@ -54,6 +58,20 @@ export type RepresentationMode = (typeof Representation)[keyof typeof Representa
 
 /** Default body colour when no array is selected (until a theme sets one). */
 const BODY_COLOR: Vector3 = [0.78, 0.82, 0.88];
+
+/** A live clipping plane: an axis, a position along it (0..1 over the bounds) and a side. */
+export interface ClipSpec {
+    axis: 0 | 1 | 2;
+    t: number;
+    flip: boolean;
+}
+
+export interface LightingSpec {
+    ambient: number;
+    diffuse: number;
+    specular: number;
+    specularPower: number;
+}
 
 /** What screen-space selection needs from the camera, in CSS pixels. */
 export interface CameraProjection {
@@ -110,6 +128,14 @@ export class Renderer {
     private shown: vtkPolyData | null = null;
     private cellMap: Uint32Array | null = null;
     private visibleMask: Uint8Array | null = null;
+    private scaleLog = false;
+    private scaleBands = 0;
+    /** Original point coordinates while a deformation is applied. */
+    private restPoints: Float32Array | null = null;
+    private readonly clipPlane = vtkPlane.newInstance();
+    private clip: ClipSpec | null = null;
+    private readonly clippables = new Set<vtkMapper>();
+    private readonly geometryListeners = new Set<() => void>();
     private geometry: SurfaceGeometry | null = null;
     private currentEntry: ArrayEntry | null = null;
     private currentRange: ScalarRange | null = null;
@@ -149,6 +175,9 @@ export class Renderer {
         this.edgeActor.setVisibility(false);
         this.setEdgeColorFromBody();
         this.renderer.addActor(this.edgeActor);
+
+        this.makeClippable(this.bodyMapper);
+        this.makeClippable(this.edgeMapper);
 
         this.window.resize();
         window.addEventListener('resize', () => this.window.resize());
@@ -224,6 +253,7 @@ export class Renderer {
         this.cellMap = null;
         this.visibleMask = null;
         this.geometry = null;
+        this.restPoints = null;
         this.bodyMapper.setInputData(polydata);
         this.edgeMapper.setInputData(polydata);
         this.setColorBy(SOLID_COLOR);
@@ -458,6 +488,7 @@ export class Renderer {
         const hi = max > min ? max : min + 1e-12;
         this.lut.setMappingRange(min, hi);
         this.lut.updateRange();
+        this.applyScalarOptions();
     }
 
     /** The data range of any colourable array, without colouring by it. */
@@ -485,6 +516,7 @@ export class Renderer {
         this.colormapName = name;
         const previous = this.lut.getMappingRange();
         this.lut = makeColorTransferFunction(name, previous[0], previous[1]);
+        this.applyScalarOptions();
         this.bodyMapper.setLookupTable(this.lut);
         if (this.currentEntry) {
             configureScalarMapper(this.bodyMapper, this.lut, this.currentEntry);
@@ -535,17 +567,224 @@ export class Renderer {
         return this.background;
     }
 
-    resetCamera(): void {
-        // A three-quarter view, not vtk.js's default axis-aligned one: looking
-        // straight down an axis renders a box as a flat rectangle, which reads
-        // as a broken viewer rather than as a camera choice.
+    resetCamera(view: ViewName = 'iso'): void {
+        // The default is a three-quarter view, not vtk.js's axis-aligned one:
+        // looking straight down an axis renders a box as a flat rectangle,
+        // which reads as a broken viewer rather than as a camera choice.
+        const pose = viewPose(view);
         const camera = this.renderer.getActiveCamera();
-        camera.setPosition(1, -1, 0.6);
+        camera.setPosition(...pose.direction);
         camera.setFocalPoint(0, 0, 0);
-        camera.setViewUp(0, 0, 1);
+        camera.setViewUp(...pose.up);
         this.renderer.resetCamera();
         this.renderer.resetCameraClippingRange();
         this.render();
+    }
+
+    get parallel(): boolean {
+        return this.renderer.getActiveCamera().getParallelProjection();
+    }
+
+    setParallel(on: boolean): void {
+        const camera = this.renderer.getActiveCamera();
+        if (camera.getParallelProjection() === on) return;
+        if (on) {
+            // Match the apparent size of what the perspective camera frames.
+            const p = camera.getPosition();
+            const f = camera.getFocalPoint();
+            const distance = Math.hypot(p[0] - f[0], p[1] - f[1], p[2] - f[2]);
+            const angle = (camera.getViewAngle() * Math.PI) / 180;
+            camera.setParallelScale(distance * Math.tan(angle / 2));
+        }
+        camera.setParallelProjection(on);
+        this.renderer.resetCameraClippingRange();
+        this.render();
+    }
+
+    getCameraState(): CameraState {
+        const c = this.renderer.getActiveCamera();
+        const v = (a: number[]): [number, number, number] => [a[0], a[1], a[2]];
+        return {
+            position: v(c.getPosition()),
+            focalPoint: v(c.getFocalPoint()),
+            viewUp: v(c.getViewUp()),
+            parallel: c.getParallelProjection(),
+            parallelScale: c.getParallelScale(),
+            viewAngle: c.getViewAngle(),
+        };
+    }
+
+    setCameraState(state: CameraState): void {
+        const c = this.renderer.getActiveCamera();
+        c.setPosition(...state.position);
+        c.setFocalPoint(...state.focalPoint);
+        c.setViewUp(...state.viewUp);
+        c.setParallelProjection(state.parallel);
+        if (state.parallelScale) c.setParallelScale(state.parallelScale);
+        if (state.viewAngle) c.setViewAngle(state.viewAngle);
+        this.renderer.resetCameraClippingRange();
+        this.render();
+    }
+
+    // --- colour scale -------------------------------------------------------
+
+    /** Log scaling and banding of the colour map (vtk.js's own LOG10 and discretisation). */
+    setScalarOptions(options: { log: boolean; bands: number }): void {
+        this.scaleLog = options.log;
+        this.scaleBands = options.bands;
+        this.applyScalarOptions();
+        this.bodyMapper.modified();
+        this.render();
+    }
+
+    /** Whether the log scale is in effect: it needs a strictly positive range. */
+    get logActive(): boolean {
+        if (!this.scaleLog) return false;
+        const [lo, hi] = this.lut.getMappingRange();
+        return canLogScale(lo, hi);
+    }
+
+    private applyScalarOptions(): void {
+        this.lut.setScale(this.logActive ? Scale.LOG10 : Scale.LINEAR);
+        this.lut.setDiscretize(this.scaleBands > 0);
+        if (this.scaleBands > 0) this.lut.setNumberOfValues(this.scaleBands);
+    }
+
+    // --- lighting -----------------------------------------------------------
+
+    setLighting(spec: LightingSpec): void {
+        const p = this.bodyActor.getProperty();
+        p.setAmbient(spec.ambient);
+        p.setDiffuse(spec.diffuse);
+        p.setSpecular(spec.specular);
+        p.setSpecularPower(spec.specularPower);
+        this.render();
+    }
+
+    setBackfaceCulling(on: boolean): void {
+        this.bodyActor.getProperty().setBackfaceCulling(on);
+        this.render();
+    }
+
+    // --- deformation ----------------------------------------------------------
+
+    /** Names of the point arrays that can displace the mesh (2 or 3 components). */
+    vectorArrays(): string[] {
+        const pd = this.polydata?.getPointData();
+        if (!pd) return [];
+        const out: string[] = [];
+        for (let i = 0; i < pd.getNumberOfArrays(); i++) {
+            const a = pd.getArrayByIndex(i);
+            if (a && [2, 3].includes(a.getNumberOfComponents()) && !a.getName().startsWith('viewer:')) {
+                out.push(a.getName());
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Displace the points by a vector point array, scaled so that
+     * `percent = 100` moves the largest displacement by 10% of the model's
+     * diagonal (so the result is visible whatever the field's units are).
+     * `name = null` puts the points back. Returns the largest displacement drawn.
+     */
+    setDeform(name: string | null, percent: number): number {
+        const p = this.polydata;
+        if (!p) return 0;
+        const points = p.getPoints();
+        if (!this.restPoints) this.restPoints = Float32Array.from(points.getData());
+        const rest = this.restPoints;
+
+        const array = name ? p.getPointData().getArrayByName(name) : null;
+        let drawn = 0;
+        if (!array) {
+            points.setData(rest.slice(), 3);
+        } else {
+            const comps = array.getNumberOfComponents();
+            const vec = array.getData();
+            const n = Math.floor(rest.length / 3);
+            let maxMag = 0;
+            for (let i = 0; i < n; i++) {
+                let s = 0;
+                for (let k = 0; k < comps; k++) s += vec[i * comps + k] ** 2;
+                maxMag = Math.max(maxMag, Math.sqrt(s));
+            }
+            const b = p.getBounds();
+            const diag = Math.hypot(b[1] - b[0], b[3] - b[2], b[5] - b[4]);
+            const scale = maxMag > 0 ? ((percent / 100) * 0.1 * diag) / maxMag : 0;
+            const next = new Float32Array(rest.length);
+            for (let i = 0; i < n; i++) {
+                for (let k = 0; k < 3; k++) {
+                    next[i * 3 + k] = rest[i * 3 + k] + (k < comps ? scale * vec[i * comps + k] : 0);
+                }
+            }
+            points.setData(next, 3);
+            drawn = maxMag * scale;
+        }
+        points.modified();
+        p.modified();
+        this.shown?.modified();
+        this.geometry = null;
+        this.bodyMapper.modified();
+        this.edgeMapper.modified();
+        this.renderer.resetCameraClippingRange();
+        this.render();
+        for (const listener of [...this.geometryListeners]) listener();
+        return drawn;
+    }
+
+    /** Called after the point positions changed (a deformation was applied or removed). */
+    onGeometryChanged(listener: () => void): () => void {
+        this.geometryListeners.add(listener);
+        return () => this.geometryListeners.delete(listener);
+    }
+
+    // --- clipping -----------------------------------------------------------------
+
+    /** Make a mapper honour the live clip plane (now and whenever it changes). */
+    makeClippable(mapper: vtkMapper): void {
+        this.clippables.add(mapper);
+        mapper.removeAllClippingPlanes();
+        if (this.clip) mapper.addClippingPlane(this.clipPlane);
+    }
+
+    forgetClippable(mapper: vtkMapper): void {
+        this.clippables.delete(mapper);
+    }
+
+    /** Clip the surface by a plane perpendicular to an axis; `null` turns clipping off. */
+    setClip(spec: ClipSpec | null): void {
+        const wasOn = this.clip !== null;
+        this.clip = spec;
+        if (spec) {
+            const b = this.polydata?.getBounds() ?? [0, 1, 0, 1, 0, 1];
+            const lo = b[spec.axis * 2];
+            const hi = b[spec.axis * 2 + 1];
+            const origin: [number, number, number] = [0, 0, 0];
+            origin[spec.axis] = lo + Math.min(1, Math.max(0, spec.t)) * (hi - lo);
+            const normal: [number, number, number] = [0, 0, 0];
+            // vtk keeps what the normal points away from; flip swaps the side.
+            normal[spec.axis] = spec.flip ? 1 : -1;
+            this.clipPlane.setOrigin(...origin);
+            this.clipPlane.setNormal(...normal);
+        }
+        if (wasOn !== (spec !== null)) {
+            for (const mapper of this.clippables) {
+                mapper.removeAllClippingPlanes();
+                if (spec) mapper.addClippingPlane(this.clipPlane);
+            }
+        }
+        for (const mapper of this.clippables) mapper.modified();
+        this.render();
+    }
+
+    /** Whether a world position lies on the clipped-away side of the live plane. */
+    isClipped(position: [number, number, number]): boolean {
+        if (!this.clip) return false;
+        const n = this.clipPlane.getNormal();
+        const o = this.clipPlane.getOrigin();
+        const d = n[0] * (position[0] - o[0]) + n[1] * (position[1] - o[1]) + n[2] * (position[2] - o[2]);
+        return d > 0;
     }
 
     render(): void {

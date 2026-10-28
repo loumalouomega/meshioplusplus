@@ -14,8 +14,8 @@
  * Under `__VIEWER_EMBEDDED__` only (1) is compiled in, so Rollup drops the
  * worker and the WASM binary from the wheel-bundled build.
  */
-import { COLORMAPS, DEFAULT_COLORMAP } from './render/colormaps';
 import { Legend } from './render/legend';
+import { type ViewController, initView } from './features/view';
 import { setupOrientationCube } from './render/orientation';
 import { Renderer, SOLID_COLOR, colorKey } from './render/renderer';
 import type { RepresentationMode } from './render/renderer';
@@ -68,6 +68,17 @@ window.__viewerState = {
     picked: null,
     selection: { tool: 'off', active: null, sets: [], hidden: 0 },
     groups: { status: 'none', groups: [] },
+    view: {
+        parallel: false,
+        direction: [0, 0, 1],
+        logScale: false,
+        bands: 0,
+        clip: false,
+        deformed: 0,
+        measuring: false,
+        measured: null,
+        bookmarks: [],
+    },
 };
 
 function setStatus(status: ViewerStatus, message = ''): void {
@@ -122,6 +133,7 @@ function show3d(
     selection.attachSurface(keepSelection);
     groups.attachSurface(info.numCells, keepSelection, idsPreserved);
     syncConvertGroups();
+    view.attachSurface();
     surfaceOnlyPolygons =
         !!meta &&
         meta.cellBlocks.length > 0 &&
@@ -240,12 +252,6 @@ function applyColorBy(key: string): void {
 
 // --- static wiring -------------------------------------------------------- //
 
-setOptions(
-    $<HTMLSelectElement>('colormap'),
-    COLORMAPS.map((name) => ({ value: name, label: name })),
-    DEFAULT_COLORMAP
-);
-
 $('color-by').addEventListener('change', (e) =>
     applyColorBy((e.target as HTMLSelectElement).value)
 );
@@ -302,7 +308,10 @@ const selection: SelectionController = new SelectionController({
     picker,
     visibility,
     palette: () => SCENE_THEMES[theme.resolved].palette,
-    onToolOn: () => setInspecting(false),
+    onToolOn: () => {
+        setInspecting(false);
+        view.setMeasuring(false);
+    },
     onSaveGroup: (name, mask, color) => groups.addUserGroup(name, mask, color),
     onShowAll: () => groups.showAll(),
     onState: (state) => {
@@ -326,6 +335,20 @@ const groups: GroupsController = new GroupsController({
 });
 visibility.onChange(() => selection.refresh());
 let inspecting = false;
+
+const view: ViewController = initView({
+    renderer,
+    legend,
+    picker,
+    onMeasureOn: () => {
+        setInspecting(false);
+        selection.setTool('off');
+    },
+    notify: (message) => setStatus('ready', message),
+    onState: (state) => {
+        window.__viewerState.view = state;
+    },
+});
 
 function formatComponents(values: number[]): string {
     return values
@@ -401,8 +424,11 @@ $('tool-inspect').addEventListener('click', () => {
         return;
     }
     setInspecting(!inspecting);
-    // The inspector and the selection tool both own a plain click.
-    if (inspecting) selection.setTool('off');
+    // The inspector, measuring and the selection tool all own a plain click.
+    if (inspecting) {
+        selection.setTool('off');
+        view.setMeasuring(false);
+    }
 });
 $('pick-close').addEventListener('click', () => setInspecting(false));
 

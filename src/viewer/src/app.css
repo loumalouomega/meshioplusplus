@@ -594,3 +594,108 @@ body.viewer #sel-front {
     color: var(--ds-fg);
     background: var(--ds-toolbar-hover);
 }
+
+/* --- view tools ------------------------------------------------------------- */
+
+.ui-segments label {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--ui-s-1);
+    padding: 3px 6px;
+    border-radius: var(--ui-r-xs);
+    font-size: var(--ui-fs-md);
+    background: var(--ds-input-bg);
+    color: var(--ds-input-fg);
+    cursor: pointer;
+}
+
+.ui-segments label:has(input:checked) {
+    background: var(--ds-primary);
+    color: var(--ds-primary-fg);
+}
+
+.ui-segments input[type='radio'] {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.ui-segments label:has(input:focus-visible) {
+    outline: 1px solid var(--ds-focus);
+}
+
+.view-buttons {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: var(--ui-s-1);
+    margin-bottom: var(--ui-s-3);
+}
+
+.view-buttons button {
+    padding: 3px 4px;
+    font-size: var(--ui-fs-md);
+}
+
+#view-section details.op {
+    margin-top: var(--ui-s-3);
+}
+
+#view-section input[type='range'] {
+    width: 100%;
+}
+
+#view-section .ui-segments {
+    margin: var(--ui-s-2) 0;
+}
+
+.bm-list {
+    list-style: none;
+    margin: var(--ui-s-2) 0;
+    padding: 0;
+}
+
+.bm-list li {
+    display: flex;
+    align-items: center;
+    gap: var(--ui-s-2);
+}
+
+.bm-list .bm-go {
+    flex: 1;
+    text-align: left;
+    background: transparent;
+    border: 0;
+    padding: 3px 4px;
+    color: var(--ds-fg);
+}
+
+.bm-list .bm-go:hover {
+    background: var(--ds-hover);
+}
+
+.bm-list .icon-btn {
+    background: transparent;
+    border: 0;
+    padding: 2px;
+    color: var(--ds-description-fg);
+    display: inline-flex;
+}
+
+#measure-result > div {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--ui-s-3);
+    padding: 1px 0;
+}
+
+#measure-result span {
+    color: var(--ds-description-fg);
+}
+
+#measure-result b {
+    font-weight: 400;
+    font-family: var(--ui-font-mono);
+    font-variant-numeric: tabular-nums;
+}

@@ -46,6 +46,7 @@ export class Picker {
         prop.setLineWidth(3);
         // The highlight lies exactly on the surface it outlines; without an
         // offset toward the viewer it z-fights into a dashed mess.
+        renderer.makeClippable(this.highlightMapper);
         this.highlightMapper.setResolveCoincidentTopologyToPolygonOffset();
         this.highlightMapper.setRelativeCoincidentTopologyLineOffsetParameters(-8, -8);
         this.highlightActor.setVisibility(false);
@@ -76,7 +77,7 @@ export class Picker {
 
         // Display space is y-up; the browser gives y-down.
         this.picker.pick([x, height - y, 0], this.renderer.scene);
-        if (this.picker.getActors().length === 0) {
+        if (this.picker.getActors().length === 0 || this.hitIsClipped()) {
             this.clear();
             return null;
         }
@@ -100,6 +101,7 @@ export class Picker {
             cellType: cellTypeName(polydata, cellId),
             pointId,
             position: pointCoordinates(polydata, pointId),
+            hit: [position[0], position[1], position[2]],
             parentCell: parentCellOf(polydata, cellId),
             cellValues: valuesAt(polydata.getCellData(), cellId),
             pointValues: valuesAt(polydata.getPointData(), pointId),
@@ -114,9 +116,15 @@ export class Picker {
         const polydata = this.renderer.data;
         if (!polydata) return null;
         this.picker.pick([x, height - y, 0], this.renderer.scene);
-        if (this.picker.getActors().length === 0) return null;
+        if (this.picker.getActors().length === 0 || this.hitIsClipped()) return null;
         const id = this.renderer.toOriginalCell(this.picker.getCellId());
         return id >= 0 && id < polydata.getNumberOfCells() ? id : null;
+    }
+
+    /** The picker ignores clipping planes, so a hit on the clipped-away side is refused here. */
+    private hitIsClipped(): boolean {
+        const p = this.picker.getPickPosition();
+        return this.renderer.isClipped([p[0], p[1], p[2]]);
     }
 
     /** Outline just the picked cell, as its own tiny polydata. */

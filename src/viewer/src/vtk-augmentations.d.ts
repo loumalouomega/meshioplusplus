@@ -20,6 +20,11 @@ declare module '@kitware/vtk.js/Rendering/Core/ColorTransferFunction' {
         setUseBelowRangeColor(v: boolean): boolean;
         setAboveRangeColor(r: number, g: number, b: number, a?: number): boolean;
         setBelowRangeColor(r: number, g: number, b: number, a?: number): boolean;
+        /** ColorTransferFunction.js — `Scale.LINEAR`/`LOG10` mapping of the range. */
+        setScale(scale: number): boolean;
+        /** Quantise the colours to `setNumberOfValues` bands. */
+        setDiscretize(v: boolean): boolean;
+        setNumberOfValues(n: number): boolean;
     }
 }
 

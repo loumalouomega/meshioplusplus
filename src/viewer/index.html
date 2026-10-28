@@ -76,6 +76,24 @@
             <select id="colormap"></select>
           </label>
           <label class="row">
+            <span>Scale</span>
+            <select id="color-scale" title="Log needs a strictly positive range">
+              <option value="linear" selected>Linear</option>
+              <option value="log">Logarithmic</option>
+            </select>
+          </label>
+          <label class="row">
+            <span>Bands</span>
+            <select id="color-bands" title="Quantise the colours into flat bands">
+              <option value="0" selected>Continuous</option>
+              <option value="5">5</option>
+              <option value="8">8</option>
+              <option value="10">10</option>
+              <option value="16">16</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" id="colormap-safe" /> colour-blind safe maps only</label>
+          <label class="row">
             <span>Draw as</span>
             <select id="representation">
               <option value="2" selected>Surface</option>
@@ -90,6 +108,76 @@
           <label class="row">
             <input type="checkbox" id="edges" /> <span>Show edges</span>
           </label>
+        </section>
+
+        <section class="sb-section" id="view-section" hidden>
+          <h2 id="h-view">View</h2>
+          <div class="view-buttons" id="view-buttons" role="group" aria-label="Standard views">
+            <button type="button" data-view="front" title="Front (1)">Front</button>
+            <button type="button" data-view="back" title="Back (2)">Back</button>
+            <button type="button" data-view="right" title="Right (3)">Right</button>
+            <button type="button" data-view="left" title="Left (4)">Left</button>
+            <button type="button" data-view="top" title="Top (5)">Top</button>
+            <button type="button" data-view="bottom" title="Bottom (6)">Bottom</button>
+            <button type="button" data-view="iso" title="Isometric (0)">Iso</button>
+          </div>
+          <label class="row">
+            <span>Projection</span>
+            <select id="view-projection">
+              <option value="persp" selected>Perspective</option>
+              <option value="ortho">Orthographic</option>
+            </select>
+          </label>
+
+          <details class="op" id="view-bookmarks">
+            <summary>Camera bookmarks</summary>
+            <div class="row">
+              <input type="text" id="bm-name" placeholder="name" maxlength="40" aria-label="Bookmark name" />
+              <button type="button" id="bm-save">Save</button>
+            </div>
+            <ul id="bm-list" class="bm-list"></ul>
+            <div class="btn-row">
+              <button type="button" id="bm-copy" title="Copy the camera as JSON">Copy camera</button>
+              <button type="button" id="bm-paste" title="Apply a camera pasted as JSON">Paste camera</button>
+            </div>
+            <p class="hint" id="bm-note"></p>
+          </details>
+
+          <details class="op" id="view-light">
+            <summary>Lighting</summary>
+            <label class="row"><span>Ambient</span><input type="range" id="light-ambient" min="0" max="100" value="10" /></label>
+            <label class="row"><span>Diffuse</span><input type="range" id="light-diffuse" min="0" max="100" value="100" /></label>
+            <label class="row"><span>Specular</span><input type="range" id="light-specular" min="0" max="100" value="0" /></label>
+            <label class="check"><input type="checkbox" id="light-cull" /> hide back faces</label>
+            <div class="btn-row"><button type="button" id="light-reset">Reset</button></div>
+          </details>
+
+          <details class="op" id="view-warp">
+            <summary>Deformed shape</summary>
+            <label class="row"><span>Displace by</span><select id="warp-array"></select></label>
+            <label class="row"><span>Scale</span><input type="range" id="warp-scale" min="0" max="300" value="100" /></label>
+            <p class="hint" id="warp-note">Pick a vector point array to move the mesh by it.</p>
+          </details>
+
+          <details class="op" id="view-clip">
+            <summary>Clip plane</summary>
+            <label class="check"><input type="checkbox" id="clip-on" /> clip the surface</label>
+            <div class="ui-segments" id="clip-axis" role="group" aria-label="Clip axis">
+              <label><input type="radio" name="clip-axis" value="0" /> X</label>
+              <label><input type="radio" name="clip-axis" value="1" /> Y</label>
+              <label><input type="radio" name="clip-axis" value="2" checked /> Z</label>
+            </div>
+            <input type="range" id="clip-pos" min="0" max="100" value="50" aria-label="Clip position" />
+            <label class="check"><input type="checkbox" id="clip-flip" /> keep the other side</label>
+            <p class="hint">A display clip only. The cut operation further down slices the mesh itself.</p>
+          </details>
+
+          <details class="op" id="view-measure">
+            <summary>Measure</summary>
+            <p class="hint" id="measure-hint">Turn on <em>Measure</em> in the toolbar (M), then click two points on the mesh.</p>
+            <label class="check"><input type="checkbox" id="measure-snap" /> snap to the nearest vertex</label>
+            <div id="measure-result" class="sel-stats"></div>
+          </details>
         </section>
 
         <section class="sb-section" id="groups-section" hidden>
@@ -471,6 +559,9 @@
           <button type="button" id="tool-screenshot" title="Save a PNG">PNG</button>
           <button type="button" id="tool-select" aria-pressed="false" title="Select cells (S)">
             Select
+          </button>
+          <button type="button" id="tool-measure" aria-pressed="false" title="Measure the distance between two points (M)">
+            Measure
           </button>
           <button
             type="button"

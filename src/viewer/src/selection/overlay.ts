@@ -71,6 +71,7 @@ export class SelectionOverlay {
             mapper.setResolveCoincidentTopologyToPolygonOffset();
             mapper.setRelativeCoincidentTopologyPolygonOffsetParameters(-3, -3);
             mapper.setRelativeCoincidentTopologyLineOffsetParameters(-6, -6);
+            this.renderer.makeClippable(mapper);
             const actor = vtkActor.newInstance({ mapper });
             actor.setPickable(false);
             const prop = actor.getProperty();
@@ -94,6 +95,7 @@ export class SelectionOverlay {
         const entry = this.entries.get(id);
         if (!entry) return;
         this.renderer.scene.removeActor(entry.actor);
+        this.renderer.forgetClippable(entry.mapper);
         entry.actor.delete();
         this.entries.delete(id);
         this.renderer.render();
