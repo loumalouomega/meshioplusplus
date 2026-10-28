@@ -41,8 +41,8 @@ export { SOLID_COLOR, colorKey };
 export const Representation = { POINTS: 0, WIREFRAME: 1, SURFACE: 2 } as const;
 export type RepresentationMode = (typeof Representation)[keyof typeof Representation];
 
-/** Default body colour when no array is selected. */
-const BODY_COLOR: Vector3 = [0.85, 0.87, 0.9];
+/** Default body colour when no array is selected (until a theme sets one). */
+const BODY_COLOR: Vector3 = [0.78, 0.82, 0.88];
 
 export interface LoadResult {
     numPoints: number;
@@ -76,10 +76,12 @@ export class Renderer {
     private polydata: vtkPolyData | null = null;
     private currentEntry: ArrayEntry | null = null;
     private currentRange: ScalarRange | null = null;
+    private bodyColor: Vector3 = BODY_COLOR;
+    private background: Vector3 = [0.118, 0.118, 0.118];
 
     constructor(container: HTMLElement) {
         this.window = vtkGenericRenderWindow.newInstance({
-            background: [0.09, 0.1, 0.13],
+            background: [0.118, 0.118, 0.118],
         });
         this.window.setContainer(container);
         this.renderer = this.window.getRenderer();
@@ -94,7 +96,7 @@ export class Renderer {
         this.bodyMapper.setLookupTable(this.lut);
 
         this.bodyActor = vtkActor.newInstance({ mapper: this.bodyMapper });
-        this.bodyActor.getProperty().setColor(...BODY_COLOR);
+        this.bodyActor.getProperty().setColor(...this.bodyColor);
         this.renderer.addActor(this.bodyActor);
 
         this.edgeMapper = vtkMapper.newInstance({ scalarVisibility: false });
@@ -299,9 +301,21 @@ export class Renderer {
     }
 
     setBackground(color: Vector3): void {
+        this.background = color;
         this.renderer.setBackground(...color);
         this.setEdgeColorFromBody();
         this.render();
+    }
+
+    /** Scene colours for a colour scheme: background plus the plain-surface colour. */
+    setSceneTheme(background: Vector3, body: Vector3): void {
+        this.bodyColor = body;
+        this.bodyActor.getProperty().setColor(...body);
+        this.setBackground(background);
+    }
+
+    get backgroundColor(): Vector3 {
+        return this.background;
     }
 
     resetCamera(): void {
@@ -326,11 +340,9 @@ export class Renderer {
     }
 
     private setEdgeColorFromBody(): void {
-        // Half the body colour: bright enough to read against the surface,
-        // dark enough not to compete with the data colours.
-        // Dark enough not to compete with the data colours, bright enough to
-        // read against them.
-        const [r, g, b] = BODY_COLOR;
-        this.edgeActor.getProperty().setColor(r * 0.22, g * 0.22, b * 0.22);
+        // A dark line over the surface colour reads against both a light and a
+        // dark scene, and stays quieter than the data colours.
+        const [r, g, b] = this.bodyColor;
+        this.edgeActor.getProperty().setColor(r * 0.25, g * 0.25, b * 0.25);
     }
 }

@@ -50,4 +50,9 @@ await build({
     logLevel: 'warning',
 });
 
-execFileSync(process.execPath, ['--test', outdir], { stdio: 'inherit' });
+// Explicit files, not the directory: Node 22 resolves a directory argument as a
+// module path instead of scanning it for tests.
+const bundled = readdirSync(outdir)
+    .filter((f) => f.endsWith('.test.mjs'))
+    .map((f) => path.join(outdir, f));
+execFileSync(process.execPath, ['--test', ...bundled], { stdio: 'inherit' });

@@ -1,0 +1,358 @@
+/*
+ * The viewer's own chrome (index.html only): menubar, workspace, sidebar
+ * sections, status bar, dialogs. Colours and metrics come from tokens.css; the
+ * dataset manager does not load this file.
+ */
+
+body.viewer {
+    overflow: hidden;
+}
+
+body.viewer #app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+}
+
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
+
+.spacer {
+    flex: 1;
+}
+
+/* --- menubar ------------------------------------------------------------ */
+
+#menubar {
+    display: flex;
+    align-items: center;
+    gap: var(--ui-s-1);
+    height: var(--ui-menubar-h);
+    flex: none;
+    padding: 0 var(--ui-s-3);
+    background: var(--ds-header-bg);
+    border-bottom: 1px solid var(--ds-header-border);
+    font-size: var(--ui-fs-lg);
+}
+
+#menubar .brand {
+    margin-right: var(--ui-s-4);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+#menubar .brand span {
+    color: var(--ds-description-fg);
+    font-weight: 400;
+}
+
+#menubar .menu-trigger {
+    padding: 3px 9px;
+    background: transparent;
+    color: var(--ds-fg);
+    font-size: var(--ui-fs-lg);
+}
+
+#menubar .menu-trigger:hover,
+#menubar .menu-trigger[aria-expanded='true'] {
+    background: var(--ds-toolbar-hover);
+}
+
+.theme-picker select {
+    width: auto;
+    padding: 2px 6px;
+    font-size: var(--ui-fs-md);
+}
+
+.menu {
+    position: fixed;
+    z-index: 100;
+    min-width: 220px;
+    padding: var(--ui-s-1);
+    border-radius: var(--ui-r-md);
+    background: var(--ds-menu-bg);
+    color: var(--ds-menu-fg);
+    border: 1px solid var(--ds-menu-border);
+    box-shadow: var(--ui-elev-2);
+}
+
+.menu button {
+    display: flex;
+    align-items: center;
+    gap: var(--ui-s-3);
+    width: 100%;
+    padding: 5px 10px 5px 26px;
+    text-align: left;
+    background: transparent;
+    color: inherit;
+    border-radius: var(--ui-r-xs);
+    font-size: var(--ui-fs-md);
+    position: relative;
+}
+
+.menu button:hover,
+.menu button:focus-visible {
+    background: var(--ds-menu-sel-bg);
+    color: var(--ds-menu-sel-fg);
+    outline: none;
+}
+
+.menu button .kbd {
+    margin-left: auto;
+    opacity: 0.7;
+    font-family: var(--ui-font-mono);
+    font-size: var(--ui-fs-sm);
+}
+
+/* A checked checkbox item shows a tick in the reserved left column. */
+.menu button[aria-checked='true']::before {
+    content: '✓';
+    position: absolute;
+    left: 9px;
+}
+
+.menu hr {
+    border: 0;
+    border-top: 1px solid var(--ds-menu-sep);
+    margin: var(--ui-s-1) 0;
+}
+
+/* --- workspace ----------------------------------------------------------- */
+
+#workspace {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: var(--sidebar-w, 300px) 0 1fr;
+}
+
+#workspace.sidebar-hidden {
+    grid-template-columns: 0 0 1fr;
+}
+
+#workspace.sidebar-hidden #panel {
+    display: none;
+}
+
+@media (max-width: 720px) {
+    #workspace {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr;
+    }
+    #sidebar-resizer {
+        display: none;
+    }
+    #panel {
+        max-height: 40vh;
+        border-right: 0;
+        border-bottom: 1px solid var(--ds-sidebar-border);
+    }
+}
+
+body.viewer #panel {
+    padding: 0;
+    gap: 0;
+    min-width: 0;
+}
+
+#sidebar-resizer {
+    position: relative;
+    width: 0;
+    cursor: col-resize;
+    z-index: 20;
+}
+
+/* A 6px hit area straddling the sidebar's right border; invisible at rest. */
+#sidebar-resizer::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -3px;
+    width: 6px;
+}
+
+#sidebar-resizer:hover::before,
+#sidebar-resizer:focus-visible::before,
+#sidebar-resizer.dragging::before {
+    background: var(--ds-focus);
+    opacity: 0.6;
+}
+
+#sidebar-resizer:focus-visible {
+    outline: none;
+}
+
+/* --- sidebar sections ------------------------------------------------------ */
+
+body.viewer #panel > section {
+    padding: var(--ui-s-4) var(--ui-s-5);
+    border-bottom: 1px solid var(--ds-sidebar-border);
+}
+
+body.viewer #panel > section.sb-section {
+    padding: 0;
+}
+
+.sb-header {
+    display: flex;
+    align-items: center;
+    gap: var(--ui-s-1);
+    padding: var(--ui-s-2) var(--ui-s-3);
+    cursor: pointer;
+    user-select: none;
+}
+
+.sb-header:hover {
+    background: var(--ds-hover);
+}
+
+body.viewer #panel .sb-header h2 {
+    margin: 0;
+    flex: 1;
+}
+
+.sb-chevron {
+    display: inline-flex;
+    padding: 2px;
+    background: transparent;
+    color: var(--ds-section-header-fg);
+}
+
+.sb-chevron .ui-glyph svg {
+    width: 14px;
+    height: 14px;
+    transition: transform 0.12s;
+}
+
+.sb-section.collapsed .sb-chevron .ui-glyph svg {
+    transform: rotate(-90deg);
+}
+
+.sb-section.collapsed .sb-body {
+    display: none;
+}
+
+.sb-body {
+    padding: var(--ui-s-2) var(--ui-s-5) var(--ui-s-4);
+}
+
+body.viewer #panel footer {
+    padding: var(--ui-s-4) var(--ui-s-5);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .sb-chevron .ui-glyph svg {
+        transition: none;
+    }
+}
+
+/* --- glyph sizing ------------------------------------------------------------ */
+
+.ui-glyph {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    vertical-align: middle;
+}
+
+.ui-glyph svg {
+    width: 14px;
+    height: 14px;
+}
+
+#viewport-tools button {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ui-s-2);
+}
+
+/* --- status bar ----------------------------------------------------------------- */
+
+#statusbar {
+    display: flex;
+    align-items: center;
+    gap: var(--ui-s-5);
+    flex: none;
+    height: var(--ui-statusbar-h);
+    padding: 0 var(--ui-s-4);
+    background: var(--ds-header-bg);
+    border-top: 1px solid var(--ds-header-border);
+    color: var(--ds-description-fg);
+    font-size: var(--ui-fs-sm);
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+#statusbar .sb-item:empty {
+    display: none;
+}
+
+/* --- dialog -------------------------------------------------------------------------- */
+
+dialog {
+    max-width: 520px;
+    width: calc(100% - 32px);
+    padding: var(--ui-s-5);
+    border: 1px solid var(--ds-widget-border);
+    border-radius: var(--ui-r-md);
+    background: var(--ds-menu-bg);
+    color: var(--ds-fg);
+    box-shadow: var(--ui-elev-3);
+}
+
+dialog::backdrop {
+    background: rgba(0, 0, 0, 0.45);
+}
+
+dialog h2 {
+    margin: 0 0 var(--ui-s-3);
+    font-size: var(--ui-fs-xl);
+}
+
+dialog form {
+    margin-top: var(--ui-s-4);
+    text-align: right;
+}
+
+.shortcut-group {
+    margin-top: var(--ui-s-3);
+    font-size: var(--ui-fs-label);
+    letter-spacing: var(--ui-track-caps);
+    text-transform: uppercase;
+    color: var(--ds-description-fg);
+}
+
+.shortcut-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 2px 0;
+    font-size: var(--ui-fs-md);
+}
+
+.shortcut-row kbd {
+    font-family: var(--ui-font-mono);
+    font-size: var(--ui-fs-sm);
+    padding: 0 6px;
+    border: 1px solid var(--ds-widget-border);
+    border-radius: var(--ui-r-xs);
+    background: var(--ds-secondary);
+}
+
+/* Label/control rows in the sidebar: labels share a column so selects align. */
+body.viewer .sb-body .row > span:first-child {
+    min-width: 68px;
+}
+
+body.viewer .sb-body .row > select,
+body.viewer .sb-body .row > input[type='range'] {
+    flex: 1;
+    min-width: 0;
+    width: auto;
+}

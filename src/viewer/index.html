@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>meshio++ viewer</title>
     <link rel="stylesheet" href="./src/style.css" />
+    <link rel="stylesheet" href="./src/app.css" />
   </head>
-  <body>
+  <body class="viewer">
     <!--
       Payload slots. `meshioplusplus.view(backend="browser")` fills these before
       writing the page out. Dedicated elements with stable ids, rather than
@@ -18,29 +19,58 @@
     <script type="application/json" id="view-config"></script>
 
     <div id="app">
+      <header id="menubar" role="menubar">
+        <div class="brand" aria-label="meshio++ viewer">meshio++ <span>viewer</span></div>
+        <button type="button" class="menu-trigger" data-menu="file">File</button>
+        <button type="button" class="menu-trigger" data-menu="view">View</button>
+        <button type="button" class="menu-trigger" data-menu="help">Help</button>
+        <div class="spacer"></div>
+        <label class="theme-picker">
+          <span class="visually-hidden">Colour scheme</span>
+          <select id="theme-select" title="Colour scheme">
+            <option value="auto">Auto</option>
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+            <option value="scientific">Scientific</option>
+          </select>
+        </label>
+      </header>
+
+      <div id="menu-file" class="menu" role="menu" hidden>
+        <button type="button" role="menuitem" data-action="file.open">Open mesh…</button>
+        <button type="button" role="menuitem" data-action="file.screenshot">Save screenshot (PNG)</button>
+        <button type="button" role="menuitem" data-action="file.convert">Convert to another format…</button>
+      </div>
+      <div id="menu-view" class="menu" role="menu" hidden>
+        <button type="button" role="menuitem" data-action="view.fit">Fit to window</button>
+        <button type="button" role="menuitemcheckbox" aria-checked="false" data-action="view.edges">Show edges</button>
+        <button type="button" role="menuitemcheckbox" aria-checked="false" data-action="view.wireframe">Wireframe</button>
+        <button type="button" role="menuitemcheckbox" aria-checked="false" data-action="view.inspect">Inspect cells</button>
+        <button type="button" role="menuitem" data-action="view.sidebar">Toggle sidebar</button>
+      </div>
+      <div id="menu-help" class="menu" role="menu" hidden>
+        <button type="button" role="menuitem" data-action="help.shortcuts">Keyboard shortcuts</button>
+        <button type="button" role="menuitem" data-action="help.docs">Documentation</button>
+      </div>
+
+      <div id="workspace">
       <aside id="panel">
-        <header>
-          <h1>meshio++ <span>viewer</span></h1>
-          <p class="sub">
-            Everything runs in your browser. No file is uploaded anywhere.
-          </p>
-        </header>
 
         <section id="load-section">
           <label class="button" for="file">Open a mesh…</label>
           <input id="file" type="file" hidden />
-          <p class="hint">…or drop one anywhere on this page.</p>
+          <p class="hint">…or drop one anywhere on this page. Everything runs in your browser; no file is uploaded.</p>
           <div id="samples"></div>
         </section>
 
-        <section id="info-section" hidden>
+        <section class="sb-section" id="info-section" hidden>
           <h2 id="h-mesh">Mesh</h2>
           <dl id="info"></dl>
         </section>
 
-        <section id="color-section" hidden>
-          <h2 id="h-color">Colour by</h2>
-          <select id="color-by"></select>
+        <section class="sb-section" id="color-section" hidden>
+          <h2 id="h-color">Display</h2>
+          <label class="row"><span>Colour by</span><select id="color-by"></select></label>
           <label class="row">
             <span>Colour map</span>
             <select id="colormap"></select>
@@ -62,7 +92,7 @@
           </label>
         </section>
 
-        <section id="ops-section" hidden>
+        <section class="sb-section" id="ops-section" hidden>
           <h2>Operations</h2>
           <div class="ops-header">
             <button type="button" id="ops-undo" title="Undo the last operation">
@@ -322,7 +352,7 @@
           </details>
         </section>
 
-        <section id="convert-section" hidden>
+        <section class="sb-section" id="convert-section" hidden>
           <h2>Convert</h2>
           <p class="hint">
             Writes the full mesh — not just the surface shown here.
@@ -338,6 +368,7 @@
           · rendered with <a href="https://kitware.github.io/vtk-js/">vtk.js</a>
         </footer>
       </aside>
+      <div id="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabindex="0"></div>
 
       <main id="stage">
         <div id="render"></div>
@@ -361,7 +392,23 @@
         </div>
         <div id="drop-overlay" hidden><span>Drop to open</span></div>
       </main>
+      </div>
+
+      <footer id="statusbar" aria-label="Status bar">
+        <span id="sb-file" class="sb-item"></span>
+        <span id="sb-points" class="sb-item ui-num"></span>
+        <span id="sb-cells" class="sb-item ui-num"></span>
+        <span id="sb-selection" class="sb-item ui-num"></span>
+        <span class="spacer"></span>
+        <span id="sb-hint" class="sb-item"></span>
+      </footer>
     </div>
+
+    <dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title">
+      <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+      <div id="shortcuts-body"></div>
+      <form method="dialog"><button type="submit">Close</button></form>
+    </dialog>
 
     <script type="module" src="./src/main.ts"></script>
   </body>

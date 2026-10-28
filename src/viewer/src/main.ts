@@ -23,13 +23,22 @@ import { Picker } from './render/pick';
 import { downloadPng } from './render/screenshot';
 import { OpsPanel } from './ops/panel';
 import { ICONS } from './ui/icons';
+import { glyph } from './ui/glyphs';
 import { $, maybe, setOptions, show } from './ui/dom';
+import { initTheme, isThemeMode } from './ui/theme';
+import { initSections, setCollapsed } from './ui/section';
+import { initMenus, setMenuChecked } from './ui/menu';
+import { findByShortcut, registerAction } from './app/actions';
+import { initSidebar, showShortcuts } from './features/shell';
+import { setStatusBar } from './features/statusbar';
 import type { ArrayEntry, PickInfo, ScalarRange, ViewerStatus } from './types';
 import type { SurfaceBuffers } from '@meshioplusplus/wasm';
 
 import type { MeshMeta, OpSpec, RenderResult } from './worker/protocol';
 
 const renderer = new Renderer($('render'));
+const theme = initTheme();
+theme.onChange((_resolved, scene) => renderer.setSceneTheme(scene.background, scene.body));
 const opsPanel = new OpsPanel({ onChange: (ops) => applyOps(ops) });
 let arrays: ArrayEntry[] = [];
 let currentFile: File | null = null;
@@ -96,6 +105,7 @@ function show3d(source: SurfaceBuffers | ArrayBuffer, meta: MeshMeta | null, nam
     picker.clear();
     renderPick(null);
     renderInfo(meta, info.numCells, name);
+    setStatusBar({ file: name, points: info.numPoints, cells: info.numCells, selected: 0 });
     setStatus('ready');
 }
 
@@ -167,8 +177,9 @@ $('edges').addEventListener('change', (e) =>
 );
 decorate('h-mesh', 'info');
 decorate('h-color', 'colormap');
-decorate('tool-reset', 'reset');
-decorate('tool-screenshot', 'screenshot');
+prependGlyph('tool-reset', 'maximize');
+prependGlyph('tool-screenshot', 'camera');
+prependGlyph('tool-inspect', 'crosshair');
 decorate('ops-undo', 'undo');
 decorate('ops-revert', 'revert');
 decorate('op-quality-apply', 'quality');
@@ -287,7 +298,136 @@ if (canvas) {
     });
 }
 
+// --- chrome: menus, shortcuts, sections ------------------------------------ //
+
+const sidebar = initSidebar(() => renderer.resize());
+const themeSelect = $<HTMLSelectElement>('theme-select');
+themeSelect.value = theme.mode;
+themeSelect.addEventListener('change', () => {
+    if (isThemeMode(themeSelect.value)) theme.setMode(themeSelect.value);
+});
+
+/** Change a control the way a user would, so every listener on it runs. */
+function driveControl(el: HTMLInputElement | HTMLSelectElement, value: string | boolean): void {
+    if (el instanceof HTMLInputElement && typeof value === 'boolean') el.checked = value;
+    else el.value = String(value);
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+function syncViewMenu(): void {
+    setMenuChecked('view.edges', $<HTMLInputElement>('edges').checked);
+    setMenuChecked('view.wireframe', $<HTMLSelectElement>('representation').value === '1');
+    setMenuChecked('view.inspect', inspecting);
+}
+$('edges').addEventListener('change', syncViewMenu);
+$('representation').addEventListener('change', syncViewMenu);
+$('tool-inspect').addEventListener('click', () => queueMicrotask(syncViewMenu));
+$('pick-close').addEventListener('click', () => queueMicrotask(syncViewMenu));
+
+const WEB_ONLY = () => !__VIEWER_EMBEDDED__;
+
+registerAction({
+    id: 'file.open',
+    label: 'Open a mesh',
+    shortcut: 'Ctrl+O',
+    group: 'File',
+    enabled: WEB_ONLY,
+    run: () => $<HTMLInputElement>('file').click(),
+});
+registerAction({
+    id: 'file.screenshot',
+    label: 'Save a PNG screenshot',
+    shortcut: 'P',
+    group: 'File',
+    run: () => $('tool-screenshot').click(),
+});
+registerAction({
+    id: 'file.convert',
+    label: 'Convert to another format',
+    group: 'File',
+    enabled: WEB_ONLY,
+    run: () => {
+        const section = $('convert-section');
+        if (section.hidden) return;
+        setCollapsed(section, false);
+        $('convert-format').focus();
+    },
+});
+registerAction({
+    id: 'view.fit',
+    label: 'Fit the mesh to the window',
+    shortcut: 'F',
+    group: 'View',
+    run: () => renderer.resetCamera(),
+});
+registerAction({
+    id: 'view.edges',
+    label: 'Show or hide edges',
+    shortcut: 'E',
+    group: 'View',
+    run: () => driveControl($<HTMLInputElement>('edges'), !$<HTMLInputElement>('edges').checked),
+});
+registerAction({
+    id: 'view.wireframe',
+    label: 'Toggle wireframe',
+    shortcut: 'W',
+    group: 'View',
+    run: () =>
+        driveControl(
+            $<HTMLSelectElement>('representation'),
+            $<HTMLSelectElement>('representation').value === '1' ? '2' : '1'
+        ),
+});
+registerAction({
+    id: 'view.inspect',
+    label: 'Inspect cells by clicking',
+    shortcut: 'Shift+I',
+    group: 'View',
+    run: () => $('tool-inspect').click(),
+});
+registerAction({
+    id: 'view.sidebar',
+    label: 'Show or hide the sidebar',
+    shortcut: 'Ctrl+B',
+    group: 'View',
+    run: () => sidebar.toggle(),
+});
+registerAction({
+    id: 'help.shortcuts',
+    label: 'Show the keyboard shortcuts',
+    shortcut: '?',
+    group: 'Help',
+    run: showShortcuts,
+});
+registerAction({
+    id: 'help.docs',
+    label: 'Open the documentation',
+    group: 'Help',
+    run: () => window.open('https://loumalouomega.github.io/meshioplusplus/viewer', '_blank', 'noopener'),
+});
+
+document.addEventListener('keydown', (e) => {
+    const target = e.target as HTMLElement | null;
+    // Typing in a field, a select or a dialog is never a shortcut.
+    if (target?.closest('input, select, textarea, dialog, [contenteditable="true"]')) return;
+    const action = findByShortcut(e);
+    if (!action) return;
+    e.preventDefault();
+    action.run();
+});
+
+initMenus();
+initSections();
+syncViewMenu();
+
 // --- payload resolution --------------------------------------------------- //
+
+/** Prefix a control with one of the line glyphs, if the control exists. */
+function prependGlyph(id: string, name: Parameters<typeof glyph>[0]): void {
+    const el = maybe(id);
+    if (!el) return;
+    el.insertAdjacentHTML('afterbegin', glyph(name));
+}
 
 /** Prefix a control with its inline SVG icon, if the control exists. */
 function decorate(id: string, icon: keyof typeof ICONS): void {
