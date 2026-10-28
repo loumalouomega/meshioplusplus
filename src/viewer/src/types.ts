@@ -43,6 +43,8 @@ export interface PickInfo {
     cellType: string;
     pointId: number;
     position: Vector3;
+    /** Where the ray actually hit the surface (not snapped to a vertex). */
+    hit: Vector3;
     /**
      * The originating cell, from `surface:parent_cell` — meaningful only when
      * no operations have been applied, since after one it names a cell of the
@@ -51,6 +53,43 @@ export interface PickInfo {
     parentCell: number | null;
     cellValues: PickValue[];
     pointValues: PickValue[];
+}
+
+/** The selection tool's state, for the test hook. */
+export interface SelectionState {
+    tool: 'off' | 'click' | 'box' | 'lasso';
+    active: number | null;
+    sets: { id: number; name: string; count: number }[];
+    /** How many surface cells are currently hidden. */
+    hidden: number;
+}
+
+/** The groups panel's state, for the test hook. */
+export interface GroupsState {
+    status: 'none' | 'loading' | 'ready' | 'unavailable' | 'failed';
+    groups: { id: number; name: string; list: 'regions' | 'blocks'; cells: number; visible: boolean; user: boolean }[];
+}
+
+/** The viewing tools' state, for the test hook. */
+export interface ViewState {
+    parallel: boolean;
+    /** Unit vector from the focal point toward the eye, rounded to 3 places. */
+    direction: Vector3;
+    logScale: boolean;
+    bands: number;
+    clip: boolean;
+    /** Largest displacement drawn by the deformed shape (0 = none). */
+    deformed: number;
+    measuring: boolean;
+    /** Distance between the two measure marks, or null. */
+    measured: number | null;
+    bookmarks: string[];
+}
+
+/** The table and statistics panels' state, for the test hook. */
+export interface AnalysisState {
+    table: { open: boolean; kind: 'cells' | 'points'; rows: number; sortedBy: string | null; direction: 'asc' | 'desc' };
+    histogram: { array: string | null; counts: number[] };
 }
 
 export type ViewerStatus = 'booting' | 'idle' | 'loading' | 'ready' | 'error';
@@ -68,4 +107,8 @@ export interface ViewerState {
     name: string;
     /** The most recent click-to-inspect result, or null. */
     picked: PickInfo | null;
+    selection: SelectionState;
+    groups: GroupsState;
+    view: ViewState;
+    analysis: AnalysisState;
 }

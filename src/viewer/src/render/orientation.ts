@@ -27,8 +27,21 @@ import type { Vector3 } from '../types';
 import type { Renderer } from './renderer';
 import { placeAxes, setAxesConfig } from '../vtk-shims';
 
-/** Muted so the cube reads as a control, not as part of the mesh. */
-const FACE_BASE = '#242833';
+/*
+ * Look and colours follow the Kratos MDPA Preview extension's cube (itself
+ * matched to CAD-Preview's), so the family reads alike: uniform light-blue
+ * faces drawn unlit so the scene light cannot shade them unevenly, a darker
+ * blue groove between faces, bold white labels sized to fit "BOTTOM", and the
+ * conventional red/green/blue axis arrows emerging through the face centres.
+ */
+const FACE_COLOR = '#85b5da';
+const EDGE_COLOR = '#5a87ae';
+/** X red, Y green, Z blue, 0..255. */
+const AXIS_COLORS: readonly [Vector3, Vector3, Vector3] = [
+    [255, 54, 83],
+    [138, 219, 0],
+    [44, 143, 255],
+];
 
 export interface OrientationHandle {
     /** Snap the camera along a world direction, as a face click would. */
@@ -38,7 +51,8 @@ export interface OrientationHandle {
 
 export function setupOrientationCube(
     renderer: Renderer,
-    canvas: HTMLCanvasElement
+    canvas: HTMLCanvasElement,
+    onSnap?: () => void
 ): OrientationHandle {
     const scene = renderer.scene;
     const interactor = renderer.interactor;
@@ -49,47 +63,52 @@ export function setupOrientationCube(
         fontStyle: 'bold',
         fontFamily: 'Arial',
         fontColor: 'white',
-        faceColor: FACE_BASE,
-        // A dark groove between faces so adjacent faces stay distinguishable
-        // when the cube is nearly edge-on.
+        // vtk.js's default scale overflows the face and crops longer words.
+        fontSizeScale: (resolution: number) => resolution / 5,
+        faceColor: FACE_COLOR,
         edgeThickness: 0.08,
-        edgeColor: '#0b0d12',
+        edgeColor: EDGE_COLOR,
         resolution: 400,
     });
+    // Unlit: the faces show their true colour whatever the scene light does.
+    cube.getProperty().setAmbient(1);
+    cube.getProperty().setDiffuse(0);
 
-    // Z-up: +Z is TOP, +Y is BACK. Axis colours follow the usual X=red,
-    // Y=green, Z=blue convention so the cube and the arrows agree.
-    cube.setXPlusFaceProperty({ text: 'RIGHT', faceColor: '#7a2222' });
-    cube.setXMinusFaceProperty({ text: 'LEFT', faceColor: '#4a1414' });
-    cube.setYPlusFaceProperty({ text: 'BACK', faceColor: '#1f6b2a' });
-    cube.setYMinusFaceProperty({ text: 'FRONT', faceColor: '#134018' });
-    cube.setZPlusFaceProperty({ text: 'TOP', faceColor: '#22447f' });
-    cube.setZMinusFaceProperty({ text: 'BOTTOM', faceColor: '#122654' });
+    // Z-up: +Z is TOP, -Y is FRONT.
+    cube.setXPlusFaceProperty({ text: 'RIGHT' });
+    cube.setXMinusFaceProperty({ text: 'LEFT' });
+    cube.setYPlusFaceProperty({ text: 'BACK' });
+    cube.setYMinusFaceProperty({ text: 'FRONT' });
+    cube.setZPlusFaceProperty({ text: 'TOP' });
+    cube.setZMinusFaceProperty({ text: 'BOTTOM' });
 
     const widget = vtkOrientationMarkerWidget.newInstance();
     widget.setActor(cube);
     widget.setInteractor(interactor);
     widget.setViewportCorner(vtkOrientationMarkerWidget.Corners.BOTTOM_LEFT);
-    widget.setViewportSize(0.14);
+    widget.setViewportSize(0.15);
     widget.setMinPixelSize(80);
     widget.setMaxPixelSize(160);
     widget.setEnabled(true);
 
     // Axes go into the *widget's* renderer, not the scene, so the arrows
-    // rotate with the cube instead of sitting in the mesh.
+    // rotate with the cube. Anchored at its centre, each arrow leaves through
+    // the middle of its face; the labelled faces already name the directions,
+    // so the arrows carry no letters.
     const axes = vtkAxesActor.newInstance();
     setAxesConfig(axes, {
         recenter: false,
-        xLabel: 'X',
-        yLabel: 'Y',
-        zLabel: 'Z',
-        tipLength: 0.25,
-        tipRadius: 0.1,
-        shaftRadius: 0.03,
+        xLabel: '',
+        yLabel: '',
+        zLabel: '',
+        tipLength: 0.3,
+        tipRadius: 0.12,
+        shaftRadius: 0.035,
     });
-    // Anchored at the back-bottom-left corner and over-scaled so the tips
-    // protrude past the opposing faces and stay readable head-on.
-    placeAxes(axes, [-0.5, -0.5, -0.5], 1.65);
+    axes.setXAxisColor(AXIS_COLORS[0]);
+    axes.setYAxisColor(AXIS_COLORS[1]);
+    axes.setZAxisColor(AXIS_COLORS[2]);
+    placeAxes(axes, [0, 0, 0], 1.15);
     widget.getRenderer().addActor(axes);
 
     const picker = vtkCellPicker.newInstance();
@@ -112,6 +131,7 @@ export function setupOrientationCube(
         }
         scene.resetCameraClippingRange();
         renderer.render();
+        onSnap?.();
     }
 
     canvas.addEventListener(
@@ -132,7 +152,10 @@ export function setupOrientationCube(
             // Capture phase: stop vtk.js starting a rotate behind the widget.
             ev.stopImmediatePropagation();
 
-            picker.pick([displayX, displayY, 0], widget.getRenderer());
+            // The picker works in canvas pixels (CSS pixels x device pixel ratio).
+            const sx = rect.width > 0 ? canvas.width / rect.width : 1;
+            const sy = rect.height > 0 ? canvas.height / rect.height : 1;
+            picker.pick([displayX * sx, displayY * sy, 0], widget.getRenderer());
             if (picker.getActors().length === 0) return;
 
             const n = picker.getMapperNormal();

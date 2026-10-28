@@ -63,6 +63,19 @@ the old behaviour). The second one is the expensive one.
 CI never hits this: it builds the package with emsdk and then runs `npm ci`,
 which wipes `node_modules` first.
 
+## Source layout
+
+`src/main.ts` only wires things together. The pieces:
+
+- `app/` — the action registry (menus, buttons and shortcuts are one list) and the `Visibility` composer that ANDs named layers of hidden cells.
+- `features/` — the panels, each an `init…(options)` with its DOM ids: `selection`, `groups`, `view`, `analysis`, `prefs`, `shell` (menus, sidebar, sash), `statusbar`.
+- `selection/`, `groups/`, `analysis/`, `state/` — pure modules (typed arrays in, typed arrays out) with unit tests in `tests/viewer/unit/`: cell topology and masks, screen-space box/lasso tests, region-to-surface mapping, table sorting and CSV, histograms, preference validation.
+- `render/` — the only code that touches vtk.js: `renderer.ts` (surface, colouring, camera, lighting, deformation, clip), `legend.ts`, `pick.ts`, `measure.ts`, plus pure `camera.ts`, `scale.ts`, `colormaps.ts`.
+- `worker/` — the meshio++ worker. Region reading (`regions.ts`) and operation id-preservation (`opsIds.ts`) live here; `client.embedded.ts` stubs the client for the offline page.
+- `ui/` — design tokens helpers, theme, icons, menus, collapsible sections.
+
+Anything under `features/` that needs the worker is dead-code-eliminated from the embed build (`__VIEWER_EMBEDDED__`); the wheel page has a 2,000,000 byte budget, checked in CI.
+
 ## Pages
 
 The web build ships two pages: `index.html` (the viewer) and `dataset.html`

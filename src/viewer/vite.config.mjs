@@ -72,6 +72,12 @@ function checkWasmPackage() {
             // Both artifacts must be present and current: the sequential
             // meshioplusplus_wasm and the threaded meshioplusplus_wasm_mt (the
             // loader auto-selects between them, and the worker imports both).
+            // Local development without an Emscripten toolchain: the package was
+            // installed from npm (`npm install --no-save @meshioplusplus/wasm`),
+            // so there is no ../wasm/dist to compare against. The API-name check
+            // above still runs. Never set this in CI.
+            if (process.env.VIEWER_WASM_FROM_NPM) return;
+
             for (const binary of [
                 'dist/meshioplusplus_wasm.wasm',
                 'dist/meshioplusplus_wasm_mt.wasm',

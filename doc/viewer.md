@@ -144,6 +144,36 @@ Picking is a CPU ray/cell intersection, so it does not depend on the renderer, b
 The provenance array names a cell of whatever mesh the boundary was extracted from. After a refine or a section that is the *operated* mesh, not the file, so the row is relabelled "Cell (after ops)" rather than pretending otherwise. Chaining ids through every operation is possible but genuinely hard for marginal value.
 :::
 
+### The interface
+
+The page is laid out like an editor: a menu bar (File, View, Help, and a colour-scheme picker), a resizable sidebar of collapsible sections, the render, and a status bar with the file name, the point and cell counts and the size of the selection. The colour scheme is automatic (it follows the system), dark, light, or **scientific** (white scene, for figures); the chrome uses the same design tokens and VS Code default palettes as the [Kratos MDPA Preview](https://github.com/loumalouomega/VSCode-MDPA-Preview) extension's browser-side panels, so the two front ends of one mesh look alike, and the choice is remembered. Press `?` for the keyboard shortcuts; every menu entry, button and shortcut is one registered action, so the sheet is generated from the same list.
+
+### Selecting cells
+
+The **Select** tool (`S`) picks cells of the surface by **click**, **box** (`B`) or **lasso** (`L`); `Ctrl` or `Shift` adds, and a second gesture on a selected cell removes it. By default a box or lasso takes only the cells facing you (a cheap visibility test on the cell normals); untick *visible side only* to take every cell inside the shape, hidden ones too. Selections live in named, coloured **sets**; the active set can be inverted (`I`), grown or shrunk by one ring of neighbouring cells (`G`, `Shift+G`), extended to everything connected to it, hidden (`H`), isolated (`X`) or shown again (`Shift+H`), framed, and **selected by value**: a lower and upper bound on any cell array, or on a point array with an *all corners* or *any corner* rule. The panel reports the minimum, maximum and mean of every array over the active set, and the ids can be copied or saved as CSV or JSON (the surface ids, and for a solid the ids of the volume cells they came from).
+
+Selections are masks over the drawn surface, so they survive any operation that keeps the cells in order (Quality, Smooth, Partition, Gradient) and are dropped by one that does not (Clean, Section, Isosurface, voxelization).
+
+### Groups and regions
+
+The **Groups** section lists the file's **named regions** (gmsh physical groups, Abaqus sets, Exodus blocks, MED families and so on, read through `readMesh`) and its **cell blocks**, and the groups you make yourself from a selection (**Save as group**). Each group can be shown or hidden, isolated, selected, framed, recoloured, and used to colour the whole surface (*Colour by → Groups*). The mapping onto the drawn surface depends on the mesh: for a solid, a region of volume cells appears where its cells touch the boundary (the panel says "N of M cells on the surface"), and a region of lower-dimension cells (boundary patches) is matched to boundary facets by their corner nodes; for a surface mesh, regions map directly. Side regions are not drawn. Regions are valid only while the cells are in file order, so after an operation that renumbers them the panel says so and keeps your own groups; reading regions is skipped above 1.5 million cells, where a second copy of the mesh in the worker would not fit in the 32-bit WebAssembly heap.
+
+![The zones sample coloured by its four named regions, with the Groups legend](/viewer/browser-viewer-groups.png)
+
+*A gmsh mesh with four physical groups, drawn by its boundary and coloured by region: the two zones of hexahedra and the inlet and outlet patches.*
+
+Groups feed the operations: **Refine** can be limited to a region, a saved group or the current selection, and **Convert** can write your saved groups into the file as cell regions (for formats that carry them, with no operations applied).
+
+### Viewing tools
+
+The **View** section collects the camera and display tools: the standard views (`1`–`6`, `0` for the isometric corner), perspective or orthographic projection (`O`), named **camera bookmarks** that persist in the browser plus *Copy camera* and *Paste camera* as JSON for sharing, **lighting** (ambient, diffuse, specular, back-face culling), a **deformed shape** that moves the points by any 2- or 3-component point array (100 % moves the largest displacement by a tenth of the mesh size, so it is visible whatever the field's units), a **clip plane** along X, Y or Z that hides one side of the surface for display (the *Section* operation is the real cut), and **Measure** (`M`), which reports the distance and the per-axis difference between two clicked points, optionally snapped to the nearest vertex. Clicking never picks through a clipped-away surface.
+
+The **Display** section adds a logarithmic colour scale (only for a strictly positive range) and a banded one (5 to 16 flat bands), both reflected in the legend, and 35 colour maps in sequential, diverging and rainbow groups, with a filter for the ones their sources rate colour-blind safe. Colour map, scale, bands, draw mode, opacity, edges, lighting and projection are remembered between visits.
+
+### Table and statistics
+
+**Table** (`T`) opens a data table of the cells or the points: ids, vertex counts or coordinates, then every array (a column per component, plus the magnitude of a vector). Only the visible rows are in the page, so a large surface scrolls smoothly; a click on a header sorts, the *Columns* menu hides columns, **CSV** saves the table in the order and with the columns shown, and a click on a row selects that cell (or the cells around that point) and frames it. **Statistics** draws a histogram of any array (10, 20 or 40 bins) with its count, mean and standard deviation, non-finite values counted apart; clicking a bar selects the cells whose value falls in that bin.
+
 ### Design
 
 Everything routes through meshio++, so all supported formats work and neither viewer hand-rolls any rendering:
@@ -183,6 +213,8 @@ The web build ships a second page, [`dataset.html`](https://loumalouomega.github
 ```python
 meshioplusplus.view(mesh, backend="browser", quality=True, color_by="temperature")
 ```
+
+The offline page has the interface, selection, saved groups, viewing tools, table and statistics above; what needs the WebAssembly worker (operations, conversion, reading a file's regions) is absent.
 
 `quality=True` bakes in per-cell metrics (off by default — it can double the page size), and geometric statistics of the *volume* mesh are always embedded, since the page renders only the boundary and could not derive them itself.
 
