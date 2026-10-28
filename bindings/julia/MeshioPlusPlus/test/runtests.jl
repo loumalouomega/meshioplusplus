@@ -1652,6 +1652,30 @@ end
     @test num_points(lshape(n=3)) == 40
     @test num_points(plate_with_hole(nt=3, nr=2)) == 36
     @test num_points(honeycomb(dims=(3, 2))) == 22
+    @test num_points(line(n=4, stop=(0.0, 0.0, 2.0))) == 5
+    @test num_points(circle(n=6, order=2)) == 12
+    @test num_points(helix(n=10)) == 11
+    @test num_points(sphere_points(n=7)) == 7
+    @test num_points(box_points(n=7, seed=3)) == 7
+    @test num_points(tetra_sphere(subdivisions=1)) == 10
+    @test num_points(octa_sphere(subdivisions=1)) == 18
+    @test num_points(cube_sphere(n=2)) == 26
+    @test num_points(geo_sphere(n=2)) == 42
+    @test num_points(torus(nu=6, nv=4)) == 24
+    @test num_points(moebius(nu=6, nv=2)) == 18
+    @test num_points(tube(ntheta=6, nz=2)) == 18
+    @test num_points(cone(ntheta=6, nz=2)) == 20
+    @test num_points(capsule(ntheta=6, nz=1, ncap=2)) == 26
+    @test num_points(box_surface(dims=(1, 2, 3))) == 24
+    @test num_points(platonic("dodecahedron")) == 20
+    @test num_points(ball(n=1)) == 27
+    @test num_points(spherical_shell(n=2, nr=1)) == 52
+    @test num_points(pipe(ntheta=6, nr=1, nz=2)) == 36
+    @test num_points(fichera(n=1)) == 26
+    @test num_points(solid_torus(n=2, nu=5)) == 45
+    @test num_points(box(order=2, complete=true)) == 27
+    @test num_points(ball(n=1, order=3)) == 343
+    @test_throws Exception platonic("sphere")
     @test_throws Exception plate_with_hole(radius=0.9)
 
     # An unknown cell type is refused by name, a bad count by the core.

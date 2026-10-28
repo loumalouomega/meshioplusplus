@@ -2652,62 +2652,62 @@ export interface MeshioPlusPlusModule {
    *   above `maxCells`.
    */
   rectangle(dims?: number[] | null, size?: number[] | null, origin?: number[] | null,
-            cellType?: string, split?: string, order?: number, maxCells?: number): Mesh;
+            cellType?: string, split?: string, order?: number, maxCells?: number, complete?: boolean): Mesh;
 
   /** A regular 3-D grid of `'hexahedron'`, `'tetra'` (six Kuhn tetrahedra per
    * cell) or `'wedge'` cells. Side regions `xmin` ... `zmax`. */
   box(dims?: number[] | null, size?: number[] | null, origin?: number[] | null,
-      cellType?: string, order?: number, maxCells?: number): Mesh;
+      cellType?: string, order?: number, maxCells?: number, complete?: boolean): Mesh;
 
   /** A disk of `n x n` quads (squircle map) or `n` rings of triangles. Side
    * region `rim`. */
   disk(radius?: number, n?: number, center?: number[] | null, cellType?: string,
-       order?: number, maxCells?: number): Mesh;
+       order?: number, maxCells?: number, complete?: boolean): Mesh;
 
   /** A latitude / longitude sphere surface, oriented outward; `cellType: 'quad'`
    * gives quads between the rings and triangle caps. */
   uvSphere(radius?: number, nu?: number, nv?: number, center?: number[] | null,
-           cellType?: string, order?: number, maxCells?: number): Mesh;
+           cellType?: string, order?: number, maxCells?: number, complete?: boolean): Mesh;
 
   /** A sphere surface of `20 * 4^subdivisions` triangles, oriented outward. */
   icosaSphere(radius?: number, subdivisions?: number, center?: number[] | null,
-              order?: number, maxCells?: number): Mesh;
+              order?: number, maxCells?: number, complete?: boolean): Mesh;
 
   /** A solid cylinder along z, `'hexahedron'` or `'wedge'` cells. Side regions
    * `side`, `top`, `bottom`. */
   cylinder(radius?: number, height?: number, nxy?: number, nz?: number,
            center?: number[] | null, cellType?: string, order?: number,
-           maxCells?: number): Mesh;
+           maxCells?: number, complete?: boolean): Mesh;
 
   /** The reference triangle `(0,0) (1,0) (0,1)`, scaled by `size` and refined into
    * `n * n` triangles in barycentric lattice order. Side regions `ymin`, `xmin`,
    * `hypotenuse`. */
   referenceTriangle(n?: number, size?: number[] | null, origin?: number[] | null,
-                    order?: number, maxCells?: number): Mesh;
+                    order?: number, maxCells?: number, complete?: boolean): Mesh;
 
   /** A regular polygon fanned from its centre (`rings: 1`), or refined into
    * `rings` rings of triangles. Side region `rim`. */
   ngon(sides?: number, radius?: number, rings?: number, center?: number[] | null,
-       order?: number, maxCells?: number): Mesh;
+       order?: number, maxCells?: number, complete?: boolean): Mesh;
 
   /** An annulus, or a sector of `angle` radians whose two end rays stay separate
    * node chains (the seam pair `periodic` links). Side regions `inner`, `outer`
    * and, for a sector, `start` and `end`. */
   annulus(innerRadius?: number, outerRadius?: number, ntheta?: number, nr?: number,
           angle?: number, center?: number[] | null, cellType?: string, order?: number,
-          maxCells?: number): Mesh;
+          maxCells?: number, complete?: boolean): Mesh;
 
   /** The square of side `size` minus its fourth quadrant (`x > 0`, `y < 0`), the
    * re-entrant corner at `center`. Side regions `xmin`, `xmax`, `ymin`, `ymax`,
    * `notch_x`, `notch_y`. */
   lshape(n?: number, size?: number, center?: number[] | null, cellType?: string,
-         order?: number, maxCells?: number): Mesh;
+         order?: number, maxCells?: number, complete?: boolean): Mesh;
 
   /** A square plate of side `size` around a circular hole, in four quad blocks of
    * `nt x nr` cells. Side regions `hole`, `xmin`, `xmax`, `ymin`, `ymax`. */
   plateWithHole(radius?: number, size?: number, nt?: number, nr?: number,
                 center?: number[] | null, cellType?: string, order?: number,
-                maxCells?: number): Mesh;
+                maxCells?: number, complete?: boolean): Mesh;
 
   /** A tiling of pointy-top hexagons as one ragged `polygon` block. Side region
    * `boundary`. */
@@ -2718,6 +2718,69 @@ export interface MeshioPlusPlusModule {
    * by side (every supported type when `types` is omitted); `pairs` gives two
    * cells sharing a facet, for linear types. */
   referenceCells(types?: string[] | null, pairs?: boolean): Mesh;
+
+  /** A straight segment of `n` `line` cells from `start` to `end`. Point regions `start` and `end`. */
+  line(n?: number, start?: number[] | null, end?: number[] | null, order?: number, maxCells?: number, complete?: boolean): Mesh;
+
+  /** A closed polyline of `n` `line` cells on a circle in the `z = center[2]` plane. */
+  circle(radius?: number, n?: number, center?: number[] | null, order?: number, maxCells?: number, complete?: boolean): Mesh;
+
+  /** A helix of `n` `line` cells around the z axis, rising `pitch` per turn. Point regions `start` and `end`. */
+  helix(radius?: number, pitch?: number, turns?: number, n?: number, center?: number[] | null, order?: number, maxCells?: number, complete?: boolean): Mesh;
+
+  /** `n` points on a sphere on a Fibonacci lattice, as `vertex` cells. */
+  spherePoints(n?: number, radius?: number, center?: number[] | null, maxCells?: number): Mesh;
+
+  /** `n` points drawn uniformly in a box from splitmix64 seeded with `seed`, as `vertex` cells. */
+  boxPoints(n?: number, size?: number[] | null, origin?: number[] | null, seed?: number, maxCells?: number): Mesh;
+
+  /** A sphere surface from a regular tetrahedron split in four `subdivisions` times. */
+  tetraSphere(radius?: number, subdivisions?: number, center?: number[] | null, order?: number, maxCells?: number, complete?: boolean): Mesh;
+
+  /** A sphere surface from a regular octahedron split in four `subdivisions` times. */
+  octaSphere(radius?: number, subdivisions?: number, center?: number[] | null, order?: number, maxCells?: number, complete?: boolean): Mesh;
+
+  /** A sphere surface from a cube's six faces of `n x n` cells. */
+  cubeSphere(radius?: number, n?: number, center?: number[] | null, cellType?: string, order?: number, maxCells?: number, complete?: boolean): Mesh;
+
+  /** A geodesic sphere of frequency `n` (`20 n^2` triangles). */
+  geoSphere(radius?: number, n?: number, center?: number[] | null, order?: number, maxCells?: number, complete?: boolean): Mesh;
+
+  /** A torus around the z axis, periodic both ways and welded. */
+  torus(majorRadius?: number, minorRadius?: number, nu?: number, nv?: number, center?: number[] | null, cellType?: string, order?: number, maxCells?: number, complete?: boolean): Mesh;
+
+  /** A Moebius band with `numTwists` half-twists (odd: non-orientable). Side region `boundary`. */
+  moebius(radius?: number, width?: number, nu?: number, nv?: number, numTwists?: number, center?: number[] | null, cellType?: string, order?: number, maxCells?: number, complete?: boolean): Mesh;
+
+  /** An open cylinder surface around the z axis. Side regions `bottom` and `top`. */
+  tube(radius?: number, height?: number, ntheta?: number, nz?: number, center?: number[] | null, cellType?: string, order?: number, maxCells?: number, complete?: boolean): Mesh;
+
+  /** A closed cone surface with a sharp rim. Cell regions `side` and `base`. */
+  cone(radius?: number, height?: number, ntheta?: number, nz?: number, center?: number[] | null, cellType?: string, order?: number, maxCells?: number, complete?: boolean): Mesh;
+
+  /** A cylinder of length `height` closed by two hemispheres. */
+  capsule(radius?: number, height?: number, ntheta?: number, nz?: number, ncap?: number, center?: number[] | null, cellType?: string, order?: number, maxCells?: number, complete?: boolean): Mesh;
+
+  /** The boundary of a box as a closed surface. Cell regions `xmin` ... `zmax`. */
+  boxSurface(dims?: number[] | null, size?: number[] | null, origin?: number[] | null, cellType?: string, order?: number, maxCells?: number, complete?: boolean): Mesh;
+
+  /** A platonic solid's surface, one cell per face: `'tetrahedron'`, `'cube'`, `'octahedron'`, `'dodecahedron'` (a `polygon` block) or `'icosahedron'`. */
+  platonic(name?: string, radius?: number, center?: number[] | null, maxCells?: number): Mesh;
+
+  /** A ball by the seven-block butterfly, `n` cells from the centre to the surface. Side region `surface`. */
+  ball(radius?: number, n?: number, center?: number[] | null, cellType?: string, order?: number, maxCells?: number, complete?: boolean): Mesh;
+
+  /** A thick spherical shell of hexahedra, `ratio` grading the layers. Side regions `inner` and `outer`. */
+  sphericalShell(innerRadius?: number, outerRadius?: number, n?: number, nr?: number, ratio?: number, center?: number[] | null, order?: number, maxCells?: number, complete?: boolean): Mesh;
+
+  /** A thick-walled pipe of hexahedra. Side regions `inner`, `outer`, `bottom`, `top`. */
+  pipe(innerRadius?: number, outerRadius?: number, height?: number, ntheta?: number, nr?: number, nz?: number, ratio?: number, center?: number[] | null, order?: number, maxCells?: number, complete?: boolean): Mesh;
+
+  /** The cube of side `size` minus its positive octant. Side regions `xmin` ... `zmax`, `notch_x`, `notch_y`, `notch_z`. */
+  fichera(n?: number, size?: number, center?: number[] | null, cellType?: string, order?: number, maxCells?: number, complete?: boolean): Mesh;
+
+  /** A solid torus of hexahedra, the squircle disk swept around the z axis. Side region `surface`. */
+  solidTorus(majorRadius?: number, minorRadius?: number, n?: number, nu?: number, center?: number[] | null, order?: number, maxCells?: number, complete?: boolean): Mesh;
 
   /**
    * Build a regular grid around a mesh. Give exactly one of `resolution` and

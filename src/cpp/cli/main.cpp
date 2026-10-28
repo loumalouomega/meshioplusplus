@@ -453,8 +453,14 @@ void print_usage(std::ostream& os) {
           "                            rectangle | box | disk | uv-sphere | icosa-sphere |\n"
           "                            cylinder | reference-triangle | ngon | annulus |\n"
           "                            lshape | plate-with-hole | honeycomb |\n"
-          "                            reference-cells; --order 2 for curved\n"
-          "                            quadratic cells\n"
+          "                            reference-cells | line | circle | helix |\n"
+          "                            sphere-points | box-points | tetra-sphere |\n"
+          "                            octa-sphere | cube-sphere | geo-sphere | torus |\n"
+          "                            moebius | tube | cone | capsule | box-surface |\n"
+          "                            platonic | ball | spherical-shell | pipe |\n"
+          "                            fichera | solid-torus; --order 2 for curved\n"
+          "                            quadratic cells (--complete: full Lagrange),\n"
+          "                            3..10 for VTK Lagrange\n"
           "  voxelize                Regular hexahedron grid around a mesh\n"
           "                            exactly one of --resolution/--cell-size;\n"
           "                            --fill all|surface|inside\n"
@@ -4299,6 +4305,19 @@ int cmd_generate(const std::vector<std::string>& rArgs) {
                                   {"max-cells", {}, true},
                                   {"types", {}, true},
                                   {"pairs", {}, false},
+                                  {"complete", {}, false},
+                                  {"start", {}, true},
+                                  {"end", {}, true},
+                                  {"pitch", {}, true},
+                                  {"turns", {}, true},
+                                  {"seed", {}, true},
+                                  {"major-radius", {}, true},
+                                  {"minor-radius", {}, true},
+                                  {"width", {}, true},
+                                  {"num-twists", {}, true},
+                                  {"ncap", {}, true},
+                                  {"ratio", {}, true},
+                                  {"name", {}, true},
                                   {"quiet", {"-q"}, false},
                               });
     if (p.positionals.size() != 2)
@@ -4325,6 +4344,35 @@ int cmd_generate(const std::vector<std::string>& rArgs) {
          {"radius", "size", "nt", "nr", "center", "cell-type", "order", "max-cells"}},
         {"honeycomb", {"dims", "edge", "origin", "max-cells"}},
         {"reference-cells", {"types", "pairs"}},
+        {"line", {"n", "start", "end", "order", "max-cells"}},
+        {"circle", {"radius", "n", "center", "order", "max-cells"}},
+        {"helix", {"radius", "pitch", "turns", "n", "center", "order", "max-cells"}},
+        {"sphere-points", {"n", "radius", "center", "max-cells"}},
+        {"box-points", {"n", "size", "origin", "seed", "max-cells"}},
+        {"tetra-sphere", {"radius", "subdivisions", "center", "order", "max-cells"}},
+        {"octa-sphere", {"radius", "subdivisions", "center", "order", "max-cells"}},
+        {"cube-sphere", {"radius", "n", "center", "cell-type", "order", "max-cells"}},
+        {"geo-sphere", {"radius", "n", "center", "order", "max-cells"}},
+        {"torus",
+         {"major-radius", "minor-radius", "nu", "nv", "center", "cell-type", "order", "max-cells"}},
+        {"moebius",
+         {"radius", "width", "nu", "nv", "num-twists", "center", "cell-type", "order",
+          "max-cells"}},
+        {"tube", {"radius", "height", "ntheta", "nz", "center", "cell-type", "order", "max-cells"}},
+        {"cone", {"radius", "height", "ntheta", "nz", "center", "cell-type", "order", "max-cells"}},
+        {"capsule",
+         {"radius", "height", "ntheta", "nz", "ncap", "center", "cell-type", "order", "max-cells"}},
+        {"box-surface", {"dims", "size", "origin", "cell-type", "order", "max-cells"}},
+        {"platonic", {"name", "radius", "center", "max-cells"}},
+        {"ball", {"radius", "n", "center", "cell-type", "order", "max-cells"}},
+        {"spherical-shell",
+         {"inner-radius", "outer-radius", "n", "nr", "ratio", "center", "order", "max-cells"}},
+        {"pipe",
+         {"inner-radius", "outer-radius", "height", "ntheta", "nr", "nz", "ratio", "center",
+          "order", "max-cells"}},
+        {"fichera", {"n", "size", "center", "cell-type", "order", "max-cells"}},
+        {"solid-torus",
+         {"major-radius", "minor-radius", "n", "nu", "center", "order", "max-cells"}},
     };
     const auto allowed = kAllowed.find(shape);
     if (allowed == kAllowed.end())
@@ -4332,12 +4380,16 @@ int cmd_generate(const std::vector<std::string>& rArgs) {
             "generate: unknown shape '" + shape +
             "' (expected one of: rectangle, box, disk, uv-sphere, icosa-sphere, cylinder, "
             "reference-triangle, ngon, annulus, lshape, plate-with-hole, honeycomb, "
-            "reference-cells)");
+            "reference-cells, line, circle, helix, sphere-points, box-points, tetra-sphere, "
+            "octa-sphere, cube-sphere, geo-sphere, torus, moebius, tube, cone, capsule, "
+            "box-surface, platonic, ball, spherical-shell, pipe, fichera, solid-torus)");
     for (const auto& kv : p.values)
         if (kv.first != "output-format" && kv.first != "quiet" && !allowed->second.count(kv.first))
             throw std::runtime_error("generate " + shape + ": --" + kv.first + " does not apply");
     if (p.flags.count("pairs") && shape != "reference-cells")
         throw std::runtime_error("generate " + shape + ": --pairs does not apply");
+    if (p.flags.count("complete") && !allowed->second.count("order"))
+        throw std::runtime_error("generate " + shape + ": --complete does not apply");
 
     auto number = [&](const char* pName, double Default) {
         return p.values.count(pName) ? meshioplusplus::detail::stod_c(opt_value(p, pName))
@@ -4381,53 +4433,141 @@ int cmd_generate(const std::vector<std::string>& rArgs) {
     };
     const int order = static_cast<int>(count("order", 1));
     const std::int64_t max_cells = count("max-cells", 20000000);
+    const bool complete = has_flag(p, "complete");
     const std::array<double, 3> zero = {{0.0, 0.0, 0.0}};
+    const std::array<double, 3> ones = {{1.0, 1.0, 1.0}};
 
     Mesh mesh;
     if (shape == "rectangle") {
         const auto d = dims(2, 1);
-        mesh = meshioplusplus::rectangle(
-            {{d[0], d[1]}}, vec2("size", {{1.0, 1.0}}), vec3("origin", zero, true),
-            opt_value(p, "cell-type", "quad"), opt_value(p, "split", "zigzag"), order, max_cells);
+        mesh =
+            meshioplusplus::rectangle({{d[0], d[1]}}, vec2("size", {{1.0, 1.0}}),
+                                      vec3("origin", zero, true), opt_value(p, "cell-type", "quad"),
+                                      opt_value(p, "split", "zigzag"), order, max_cells, complete);
     } else if (shape == "box") {
         const auto d = dims(3, 1);
         mesh = meshioplusplus::box({{d[0], d[1], d[2]}}, vec3("size", {{1.0, 1.0, 1.0}}, false),
                                    vec3("origin", zero, false),
-                                   opt_value(p, "cell-type", "hexahedron"), order, max_cells);
+                                   opt_value(p, "cell-type", "hexahedron"), order, max_cells,
+                                   complete);
     } else if (shape == "disk") {
         mesh =
             meshioplusplus::disk(number("radius", 1.0), count("n", 8), vec3("center", zero, false),
-                                 opt_value(p, "cell-type", "quad"), order, max_cells);
+                                 opt_value(p, "cell-type", "quad"), order, max_cells, complete);
     } else if (shape == "uv-sphere") {
-        mesh = meshioplusplus::uv_sphere(number("radius", 1.0), count("nu", 16), count("nv", 8),
-                                         vec3("center", zero, false),
-                                         opt_value(p, "cell-type", "triangle"), order, max_cells);
+        mesh = meshioplusplus::uv_sphere(
+            number("radius", 1.0), count("nu", 16), count("nv", 8), vec3("center", zero, false),
+            opt_value(p, "cell-type", "triangle"), order, max_cells, complete);
     } else if (shape == "icosa-sphere") {
-        mesh = meshioplusplus::icosa_sphere(number("radius", 1.0), count("subdivisions", 2),
-                                            vec3("center", zero, false), order, max_cells);
+        mesh =
+            meshioplusplus::icosa_sphere(number("radius", 1.0), count("subdivisions", 2),
+                                         vec3("center", zero, false), order, max_cells, complete);
     } else if (shape == "cylinder") {
         mesh = meshioplusplus::cylinder(
             number("radius", 1.0), number("height", 1.0), count("nxy", 8), count("nz", 8),
-            vec3("center", zero, false), opt_value(p, "cell-type", "hexahedron"), order, max_cells);
+            vec3("center", zero, false), opt_value(p, "cell-type", "hexahedron"), order, max_cells,
+            complete);
     } else if (shape == "reference-triangle") {
         mesh = meshioplusplus::reference_triangle(count("n", 4), vec2("size", {{1.0, 1.0}}),
-                                                  vec3("origin", zero, true), order, max_cells);
+                                                  vec3("origin", zero, true), order, max_cells,
+                                                  complete);
     } else if (shape == "ngon") {
         mesh = meshioplusplus::ngon(count("sides", 6), number("radius", 1.0), count("rings", 1),
-                                    vec3("center", zero, false), order, max_cells);
+                                    vec3("center", zero, false), order, max_cells, complete);
     } else if (shape == "annulus") {
         mesh = meshioplusplus::annulus(
             number("inner-radius", 0.5), number("outer-radius", 1.0), count("ntheta", 16),
             count("nr", 4), number("angle", 6.283185307179586), vec3("center", zero, false),
-            opt_value(p, "cell-type", "quad"), order, max_cells);
+            opt_value(p, "cell-type", "quad"), order, max_cells, complete);
     } else if (shape == "lshape") {
         mesh =
             meshioplusplus::lshape(count("n", 4), number("size", 2.0), vec3("center", zero, false),
-                                   opt_value(p, "cell-type", "quad"), order, max_cells);
+                                   opt_value(p, "cell-type", "quad"), order, max_cells, complete);
     } else if (shape == "plate-with-hole") {
         mesh = meshioplusplus::plate_with_hole(
             number("radius", 0.25), number("size", 1.0), count("nt", 8), count("nr", 4),
-            vec3("center", zero, false), opt_value(p, "cell-type", "quad"), order, max_cells);
+            vec3("center", zero, false), opt_value(p, "cell-type", "quad"), order, max_cells,
+            complete);
+    } else if (shape == "line") {
+        mesh =
+            meshioplusplus::line(count("n", 8), vec3("start", zero, false),
+                                 vec3("end", {{1.0, 0.0, 0.0}}, false), order, max_cells, complete);
+    } else if (shape == "circle") {
+        mesh = meshioplusplus::circle(number("radius", 1.0), count("n", 16),
+                                      vec3("center", zero, false), order, max_cells, complete);
+    } else if (shape == "helix") {
+        mesh = meshioplusplus::helix(number("radius", 1.0), number("pitch", 1.0),
+                                     number("turns", 2.0), count("n", 32),
+                                     vec3("center", zero, false), order, max_cells, complete);
+    } else if (shape == "sphere-points") {
+        mesh = meshioplusplus::sphere_points(count("n", 100), number("radius", 1.0),
+                                             vec3("center", zero, false), max_cells);
+    } else if (shape == "box-points") {
+        mesh = meshioplusplus::box_points(
+            count("n", 100), vec3("size", ones, false), vec3("origin", zero, false),
+            p.values.count("seed") ? std::stoull(opt_value(p, "seed")) : 0ULL, max_cells);
+    } else if (shape == "tetra-sphere") {
+        mesh =
+            meshioplusplus::tetra_sphere(number("radius", 1.0), count("subdivisions", 3),
+                                         vec3("center", zero, false), order, max_cells, complete);
+    } else if (shape == "octa-sphere") {
+        mesh = meshioplusplus::octa_sphere(number("radius", 1.0), count("subdivisions", 2),
+                                           vec3("center", zero, false), order, max_cells, complete);
+    } else if (shape == "cube-sphere") {
+        mesh = meshioplusplus::cube_sphere(
+            number("radius", 1.0), count("n", 4), vec3("center", zero, false),
+            opt_value(p, "cell-type", "quad"), order, max_cells, complete);
+    } else if (shape == "geo-sphere") {
+        mesh = meshioplusplus::geo_sphere(number("radius", 1.0), count("n", 4),
+                                          vec3("center", zero, false), order, max_cells, complete);
+    } else if (shape == "torus") {
+        mesh = meshioplusplus::torus(number("major-radius", 1.0), number("minor-radius", 0.25),
+                                     count("nu", 32), count("nv", 16), vec3("center", zero, false),
+                                     opt_value(p, "cell-type", "quad"), order, max_cells, complete);
+    } else if (shape == "moebius") {
+        mesh = meshioplusplus::moebius(
+            number("radius", 1.0), number("width", 0.5), count("nu", 32), count("nv", 4),
+            count("num-twists", 1), vec3("center", zero, false), opt_value(p, "cell-type", "quad"),
+            order, max_cells, complete);
+    } else if (shape == "tube" || shape == "cone") {
+        const auto make = shape == "tube" ? &meshioplusplus::tube : &meshioplusplus::cone;
+        mesh = make(number("radius", 1.0), number("height", 1.0), count("ntheta", 16),
+                    count("nz", 4), vec3("center", zero, false), opt_value(p, "cell-type", "quad"),
+                    order, max_cells, complete);
+    } else if (shape == "capsule") {
+        mesh = meshioplusplus::capsule(
+            number("radius", 0.5), number("height", 1.0), count("ntheta", 16), count("nz", 4),
+            count("ncap", 4), vec3("center", zero, false), opt_value(p, "cell-type", "quad"), order,
+            max_cells, complete);
+    } else if (shape == "box-surface") {
+        const auto d = dims(3, 1);
+        mesh = meshioplusplus::box_surface(
+            {{d[0], d[1], d[2]}}, vec3("size", ones, false), vec3("origin", zero, false),
+            opt_value(p, "cell-type", "quad"), order, max_cells, complete);
+    } else if (shape == "platonic") {
+        mesh = meshioplusplus::platonic(opt_value(p, "name", "icosahedron"), number("radius", 1.0),
+                                        vec3("center", zero, false), max_cells);
+    } else if (shape == "ball") {
+        mesh = meshioplusplus::ball(
+            number("radius", 1.0), count("n", 4), vec3("center", zero, false),
+            opt_value(p, "cell-type", "hexahedron"), order, max_cells, complete);
+    } else if (shape == "spherical-shell") {
+        mesh = meshioplusplus::spherical_shell(
+            number("inner-radius", 0.5), number("outer-radius", 1.0), count("n", 4), count("nr", 2),
+            number("ratio", 1.0), vec3("center", zero, false), order, max_cells, complete);
+    } else if (shape == "pipe") {
+        mesh = meshioplusplus::pipe(number("inner-radius", 0.5), number("outer-radius", 1.0),
+                                    number("height", 1.0), count("ntheta", 16), count("nr", 2),
+                                    count("nz", 4), number("ratio", 1.0),
+                                    vec3("center", zero, false), order, max_cells, complete);
+    } else if (shape == "fichera") {
+        mesh = meshioplusplus::fichera(
+            count("n", 2), number("size", 2.0), vec3("center", zero, false),
+            opt_value(p, "cell-type", "hexahedron"), order, max_cells, complete);
+    } else if (shape == "solid-torus") {
+        mesh = meshioplusplus::solid_torus(
+            number("major-radius", 1.0), number("minor-radius", 0.25), count("n", 4),
+            count("nu", 32), vec3("center", zero, false), order, max_cells, complete);
     } else if (shape == "honeycomb") {
         const auto d = dims(2, 4);
         mesh = meshioplusplus::honeycomb({{d[0], d[1]}}, number("edge", 1.0),

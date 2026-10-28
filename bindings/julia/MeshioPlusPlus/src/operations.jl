@@ -2003,7 +2003,8 @@ const _GEN_SPLITS = Dict("zigzag" => Int32(0), "up" => Int32(1), "down" => Int32
 
 function _gen_opts(; counts=(8, 8, 8), size=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0.0),
                    radius=1.0, height=1.0, radius2=0.5, angle=2pi, max_cells=20_000_000,
-                   cell_type="", split="zigzag", order=1)
+                   cell_type="", split="zigzag", order=1, num_twists=1, complete=false,
+                   ratio=1.0, seed=0)
     c = Int64[Int64(v) for v in counts]
     length(c) <= 3 || throw(ArgumentError("meshio++: at most three counts"))
     append!(c, fill(Int64(1), 3 - length(c)))
@@ -2016,8 +2017,8 @@ function _gen_opts(; counts=(8, 8, 8), size=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0
     _CGenOpts((c[1], c[2], c[3]), (sz[1], sz[2], sz[3]), (o[1], o[2], o[3]),
               Cdouble(radius), Cdouble(height), Int64(max_cells),
               _code(_GEN_CELLS, cell_type, "cell type"), _code(_GEN_SPLITS, split, "split"),
-              Int32(order), Int32(0), Cdouble(radius2), Cdouble(angle),
-              ntuple(_ -> Int64(0), 4))
+              Int32(order), Int32(0), Cdouble(radius2), Cdouble(angle), Int32(num_twists),
+              Int32(complete ? 1 : 0), Cdouble(ratio), UInt64(seed), (Int64(0),))
 end
 
 function _generate(sym::Symbol; kwargs...)
@@ -2028,137 +2029,137 @@ end
 
 """
     rectangle(; dims=(1, 1), size=(1.0, 1.0), origin=(0.0, 0.0, 0.0), cell_type="quad",
-              split="zigzag", order=1, max_cells=20_000_000) -> Mesh
+              split="zigzag", order=1, max_cells=20_000_000, complete=false) -> Mesh
 
 A regular 2-D grid of quads or triangles at `z = origin[3]`, points x fastest. `split`
 (`"zigzag"`, `"up"`, `"down"`, `"center"`) lays out the triangles; `order=2` gives
 `quad8` / `triangle6` cells. Side regions `xmin`, `xmax`, `ymin`, `ymax`.
 """
 rectangle(; dims=(1, 1), size=(1.0, 1.0), origin=(0.0, 0.0, 0.0), cell_type="quad",
-          split="zigzag", order=1, max_cells=20_000_000) =
+          split="zigzag", order=1, max_cells=20_000_000, complete=false) =
     _generate(:mio_rectangle; counts=dims, size=size, origin=origin, cell_type=cell_type,
-              split=split, order=order, max_cells=max_cells)
+              split=split, order=order, max_cells=max_cells, complete=complete)
 
 """
     box(; dims=(1, 1, 1), size=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0.0),
-        cell_type="hexahedron", order=1, max_cells=20_000_000) -> Mesh
+        cell_type="hexahedron", order=1, max_cells=20_000_000, complete=false) -> Mesh
 
 A regular 3-D grid of hexahedra, tetrahedra (six Kuhn tetrahedra per cell) or wedges.
 Side regions `xmin` ... `zmax`.
 """
 box(; dims=(1, 1, 1), size=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0.0), cell_type="hexahedron",
-    order=1, max_cells=20_000_000) =
+    order=1, max_cells=20_000_000, complete=false) =
     _generate(:mio_box; counts=dims, size=size, origin=origin, cell_type=cell_type,
-              order=order, max_cells=max_cells)
+              order=order, max_cells=max_cells, complete=complete)
 
 """
     disk(; radius=1.0, n=8, center=(0.0, 0.0, 0.0), cell_type="quad", order=1,
-         max_cells=20_000_000) -> Mesh
+         max_cells=20_000_000, complete=false) -> Mesh
 
 A disk of `n x n` quads (squircle map) or `n` rings of triangles. Side region `rim`.
 """
 disk(; radius=1.0, n=8, center=(0.0, 0.0, 0.0), cell_type="quad", order=1,
-     max_cells=20_000_000) =
+     max_cells=20_000_000, complete=false) =
     _generate(:mio_disk; radius=radius, counts=(n,), origin=center, cell_type=cell_type,
-              order=order, max_cells=max_cells)
+              order=order, max_cells=max_cells, complete=complete)
 
 """
     uv_sphere(; radius=1.0, nu=16, nv=8, center=(0.0, 0.0, 0.0), cell_type="triangle",
-              order=1, max_cells=20_000_000) -> Mesh
+              order=1, max_cells=20_000_000, complete=false) -> Mesh
 
 A latitude / longitude sphere surface, oriented outward; `cell_type="quad"` gives quads
 between the rings and triangle caps.
 """
 uv_sphere(; radius=1.0, nu=16, nv=8, center=(0.0, 0.0, 0.0), cell_type="triangle", order=1,
-          max_cells=20_000_000) =
+          max_cells=20_000_000, complete=false) =
     _generate(:mio_uv_sphere; radius=radius, counts=(nu, nv), origin=center,
-              cell_type=cell_type, order=order, max_cells=max_cells)
+              cell_type=cell_type, order=order, max_cells=max_cells, complete=complete)
 
 """
     icosa_sphere(; radius=1.0, subdivisions=2, center=(0.0, 0.0, 0.0), order=1,
-                 max_cells=20_000_000) -> Mesh
+                 max_cells=20_000_000, complete=false) -> Mesh
 
 A sphere surface of `20 * 4^subdivisions` triangles, oriented outward.
 """
 icosa_sphere(; radius=1.0, subdivisions=2, center=(0.0, 0.0, 0.0), order=1,
-             max_cells=20_000_000) =
+             max_cells=20_000_000, complete=false) =
     _generate(:mio_icosa_sphere; radius=radius, counts=(subdivisions,), origin=center,
-              order=order, max_cells=max_cells)
+              order=order, max_cells=max_cells, complete=complete)
 
 """
     cylinder(; radius=1.0, height=1.0, nxy=8, nz=8, center=(0.0, 0.0, 0.0),
-             cell_type="hexahedron", order=1, max_cells=20_000_000) -> Mesh
+             cell_type="hexahedron", order=1, max_cells=20_000_000, complete=false) -> Mesh
 
 A solid cylinder along z, hexahedra or wedges. Side regions `side`, `top`, `bottom`.
 """
 cylinder(; radius=1.0, height=1.0, nxy=8, nz=8, center=(0.0, 0.0, 0.0),
-         cell_type="hexahedron", order=1, max_cells=20_000_000) =
+         cell_type="hexahedron", order=1, max_cells=20_000_000, complete=false) =
     _generate(:mio_cylinder; radius=radius, height=height, counts=(nxy, nz), origin=center,
-              cell_type=cell_type, order=order, max_cells=max_cells)
+              cell_type=cell_type, order=order, max_cells=max_cells, complete=complete)
 
 """
     reference_triangle(; n=4, size=(1.0, 1.0), origin=(0.0, 0.0, 0.0), order=1,
-                       max_cells=20_000_000) -> Mesh
+                       max_cells=20_000_000, complete=false) -> Mesh
 
 The reference triangle `(0,0) (1,0) (0,1)`, scaled by `size` and refined into `n^2`
 triangles in barycentric lattice order. Side regions `ymin`, `xmin`, `hypotenuse`.
 """
 reference_triangle(; n=4, size=(1.0, 1.0), origin=(0.0, 0.0, 0.0), order=1,
-                   max_cells=20_000_000) =
+                   max_cells=20_000_000, complete=false) =
     _generate(:mio_reference_triangle; counts=(n,), size=size, origin=origin, order=order,
-              max_cells=max_cells)
+              max_cells=max_cells, complete=complete)
 
 """
     ngon(; sides=6, radius=1.0, rings=1, center=(0.0, 0.0, 0.0), order=1,
-         max_cells=20_000_000) -> Mesh
+         max_cells=20_000_000, complete=false) -> Mesh
 
 A regular polygon fanned from its centre (`rings=1`), or refined into `rings` rings of
 triangles. Side region `rim`.
 """
 ngon(; sides=6, radius=1.0, rings=1, center=(0.0, 0.0, 0.0), order=1,
-     max_cells=20_000_000) =
+     max_cells=20_000_000, complete=false) =
     _generate(:mio_ngon; radius=radius, counts=(sides, rings), origin=center, order=order,
-              max_cells=max_cells)
+              max_cells=max_cells, complete=complete)
 
 """
     annulus(; inner_radius=0.5, outer_radius=1.0, ntheta=16, nr=4, angle=2pi,
             center=(0.0, 0.0, 0.0), cell_type="quad", order=1,
-            max_cells=20_000_000) -> Mesh
+            max_cells=20_000_000, complete=false) -> Mesh
 
 An annulus, or a sector of `angle` radians whose two end rays stay separate node chains
 (the seam pair `match_periodic_nodes` links). Side regions `inner`, `outer` and, for a
 sector, `start` and `end`.
 """
 annulus(; inner_radius=0.5, outer_radius=1.0, ntheta=16, nr=4, angle=2pi,
-        center=(0.0, 0.0, 0.0), cell_type="quad", order=1, max_cells=20_000_000) =
+        center=(0.0, 0.0, 0.0), cell_type="quad", order=1, max_cells=20_000_000, complete=false) =
     _generate(:mio_annulus; radius=outer_radius, radius2=inner_radius,
               counts=(ntheta, nr), angle=angle, origin=center, cell_type=cell_type,
-              order=order, max_cells=max_cells)
+              order=order, max_cells=max_cells, complete=complete)
 
 """
     lshape(; n=4, size=2.0, center=(0.0, 0.0, 0.0), cell_type="quad", order=1,
-           max_cells=20_000_000) -> Mesh
+           max_cells=20_000_000, complete=false) -> Mesh
 
 The square of side `size` minus its fourth quadrant (`x > 0`, `y < 0`), the re-entrant
 corner at `center`. Side regions `xmin`, `xmax`, `ymin`, `ymax`, `notch_x`, `notch_y`.
 """
 lshape(; n=4, size=2.0, center=(0.0, 0.0, 0.0), cell_type="quad", order=1,
-       max_cells=20_000_000) =
+       max_cells=20_000_000, complete=false) =
     _generate(:mio_lshape; counts=(n,), size=(size, size, size), origin=center,
-              cell_type=cell_type, order=order, max_cells=max_cells)
+              cell_type=cell_type, order=order, max_cells=max_cells, complete=complete)
 
 """
     plate_with_hole(; radius=0.25, size=1.0, nt=8, nr=4, center=(0.0, 0.0, 0.0),
-                    cell_type="quad", order=1, max_cells=20_000_000) -> Mesh
+                    cell_type="quad", order=1, max_cells=20_000_000, complete=false) -> Mesh
 
 A square plate of side `size` around a circular hole, in four quad blocks of `nt x nr`
 cells. Side regions `hole`, `xmin`, `xmax`, `ymin`, `ymax`.
 """
 plate_with_hole(; radius=0.25, size=1.0, nt=8, nr=4, center=(0.0, 0.0, 0.0),
-                cell_type="quad", order=1, max_cells=20_000_000) =
+                cell_type="quad", order=1, max_cells=20_000_000, complete=false) =
     _generate(:mio_plate_with_hole; radius=radius, size=(size, size, size),
               counts=(nt, nr), origin=center, cell_type=cell_type, order=order,
-              max_cells=max_cells)
+              max_cells=max_cells, complete=complete)
 
 """
     honeycomb(; dims=(4, 4), edge=1.0, origin=(0.0, 0.0, 0.0), max_cells=20_000_000) -> Mesh
@@ -2168,6 +2169,263 @@ A tiling of pointy-top hexagons as one ragged `polygon` block. Side region `boun
 honeycomb(; dims=(4, 4), edge=1.0, origin=(0.0, 0.0, 0.0), max_cells=20_000_000) =
     _generate(:mio_honeycomb; counts=dims, size=(edge, edge, edge), origin=origin,
               max_cells=max_cells)
+
+# --- curves and point clouds ---
+
+"""
+    line(; n=8, start=(0.0, 0.0, 0.0), stop=(1.0, 0.0, 0.0), order=1,
+         max_cells=20_000_000, complete=false) -> Mesh
+
+A straight segment of `n` `line` cells from `start` to `stop`. Point regions `start`
+and `end`.
+"""
+line(; n=8, start=(0.0, 0.0, 0.0), stop=(1.0, 0.0, 0.0), order=1, max_cells=20_000_000,
+     complete=false) =
+    _generate(:mio_line; counts=(n,), origin=start, size=stop, order=order,
+              max_cells=max_cells, complete=complete)
+
+"""
+    circle(; radius=1.0, n=16, center=(0.0, 0.0, 0.0), order=1, max_cells=20_000_000,
+           complete=false) -> Mesh
+
+A closed polyline of `n` `line` cells on a circle in the `z = center[3]` plane.
+"""
+circle(; radius=1.0, n=16, center=(0.0, 0.0, 0.0), order=1, max_cells=20_000_000,
+       complete=false) =
+    _generate(:mio_circle; radius=radius, counts=(n,), origin=center, order=order,
+              max_cells=max_cells, complete=complete)
+
+"""
+    helix(; radius=1.0, pitch=1.0, turns=2.0, n=32, center=(0.0, 0.0, 0.0), order=1,
+          max_cells=20_000_000, complete=false) -> Mesh
+
+A helix of `n` `line` cells around the z axis, rising `pitch` per turn. Point regions
+`start` and `end`.
+"""
+helix(; radius=1.0, pitch=1.0, turns=2.0, n=32, center=(0.0, 0.0, 0.0), order=1,
+      max_cells=20_000_000, complete=false) =
+    _generate(:mio_helix; radius=radius, height=pitch, angle=2pi * turns, counts=(n,),
+              origin=center, order=order, max_cells=max_cells, complete=complete)
+
+"""
+    sphere_points(; n=100, radius=1.0, center=(0.0, 0.0, 0.0), max_cells=20_000_000) -> Mesh
+
+`n` points on a sphere on a Fibonacci lattice, as `vertex` cells.
+"""
+sphere_points(; n=100, radius=1.0, center=(0.0, 0.0, 0.0), max_cells=20_000_000) =
+    _generate(:mio_sphere_points; counts=(n,), radius=radius, origin=center,
+              max_cells=max_cells)
+
+"""
+    box_points(; n=100, size=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0.0), seed=0,
+               max_cells=20_000_000) -> Mesh
+
+`n` points drawn uniformly in a box from splitmix64 seeded with `seed`, as `vertex`
+cells: the same cloud on every platform and binding.
+"""
+box_points(; n=100, size=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0.0), seed=0,
+           max_cells=20_000_000) =
+    _generate(:mio_box_points; counts=(n,), size=size, origin=origin, seed=seed,
+              max_cells=max_cells)
+
+# --- surfaces ---
+
+"""
+    tetra_sphere(; radius=1.0, subdivisions=3, center=(0.0, 0.0, 0.0), order=1,
+                 max_cells=20_000_000, complete=false) -> Mesh
+
+A sphere surface from a regular tetrahedron split in four `subdivisions` times.
+"""
+tetra_sphere(; radius=1.0, subdivisions=3, center=(0.0, 0.0, 0.0), order=1,
+             max_cells=20_000_000, complete=false) =
+    _generate(:mio_tetra_sphere; radius=radius, counts=(subdivisions,), origin=center,
+              order=order, max_cells=max_cells, complete=complete)
+
+"""
+    octa_sphere(; radius=1.0, subdivisions=2, center=(0.0, 0.0, 0.0), order=1,
+                max_cells=20_000_000, complete=false) -> Mesh
+
+A sphere surface from a regular octahedron split in four `subdivisions` times.
+"""
+octa_sphere(; radius=1.0, subdivisions=2, center=(0.0, 0.0, 0.0), order=1,
+            max_cells=20_000_000, complete=false) =
+    _generate(:mio_octa_sphere; radius=radius, counts=(subdivisions,), origin=center,
+              order=order, max_cells=max_cells, complete=complete)
+
+"""
+    cube_sphere(; radius=1.0, n=4, center=(0.0, 0.0, 0.0), cell_type="quad", order=1,
+                max_cells=20_000_000, complete=false) -> Mesh
+
+A sphere surface from a cube's six faces of `n x n` cells pushed onto the sphere.
+"""
+cube_sphere(; radius=1.0, n=4, center=(0.0, 0.0, 0.0), cell_type="quad", order=1,
+            max_cells=20_000_000, complete=false) =
+    _generate(:mio_cube_sphere; radius=radius, counts=(n,), origin=center,
+              cell_type=cell_type, order=order, max_cells=max_cells, complete=complete)
+
+"""
+    geo_sphere(; radius=1.0, n=4, center=(0.0, 0.0, 0.0), order=1, max_cells=20_000_000,
+               complete=false) -> Mesh
+
+A geodesic sphere of frequency `n` (`20 n^2` triangles).
+"""
+geo_sphere(; radius=1.0, n=4, center=(0.0, 0.0, 0.0), order=1, max_cells=20_000_000,
+           complete=false) =
+    _generate(:mio_geo_sphere; radius=radius, counts=(n,), origin=center, order=order,
+              max_cells=max_cells, complete=complete)
+
+"""
+    torus(; major_radius=1.0, minor_radius=0.25, nu=32, nv=16, center=(0.0, 0.0, 0.0),
+          cell_type="quad", order=1, max_cells=20_000_000, complete=false) -> Mesh
+
+A torus around the z axis, periodic both ways and welded.
+"""
+torus(; major_radius=1.0, minor_radius=0.25, nu=32, nv=16, center=(0.0, 0.0, 0.0),
+      cell_type="quad", order=1, max_cells=20_000_000, complete=false) =
+    _generate(:mio_torus; radius=major_radius, radius2=minor_radius, counts=(nu, nv),
+              origin=center, cell_type=cell_type, order=order, max_cells=max_cells,
+              complete=complete)
+
+"""
+    moebius(; radius=1.0, width=0.5, nu=32, nv=4, num_twists=1, center=(0.0, 0.0, 0.0),
+            cell_type="quad", order=1, max_cells=20_000_000, complete=false) -> Mesh
+
+A Moebius band with `num_twists` half-twists (odd: non-orientable). Side region
+`boundary`.
+"""
+moebius(; radius=1.0, width=0.5, nu=32, nv=4, num_twists=1, center=(0.0, 0.0, 0.0),
+        cell_type="quad", order=1, max_cells=20_000_000, complete=false) =
+    _generate(:mio_moebius; radius=radius, radius2=width, counts=(nu, nv),
+              num_twists=num_twists, origin=center, cell_type=cell_type, order=order,
+              max_cells=max_cells, complete=complete)
+
+"""
+    tube(; radius=1.0, height=1.0, ntheta=16, nz=4, center=(0.0, 0.0, 0.0),
+         cell_type="quad", order=1, max_cells=20_000_000, complete=false) -> Mesh
+
+An open cylinder surface around the z axis. Side regions `bottom` and `top`.
+"""
+tube(; radius=1.0, height=1.0, ntheta=16, nz=4, center=(0.0, 0.0, 0.0), cell_type="quad",
+     order=1, max_cells=20_000_000, complete=false) =
+    _generate(:mio_tube; radius=radius, height=height, counts=(ntheta, nz), origin=center,
+              cell_type=cell_type, order=order, max_cells=max_cells, complete=complete)
+
+"""
+    cone(; radius=1.0, height=1.0, ntheta=16, nz=4, center=(0.0, 0.0, 0.0),
+         cell_type="quad", order=1, max_cells=20_000_000, complete=false) -> Mesh
+
+A closed cone surface with a sharp rim. Cell regions `side` and `base`.
+"""
+cone(; radius=1.0, height=1.0, ntheta=16, nz=4, center=(0.0, 0.0, 0.0), cell_type="quad",
+     order=1, max_cells=20_000_000, complete=false) =
+    _generate(:mio_cone; radius=radius, height=height, counts=(ntheta, nz), origin=center,
+              cell_type=cell_type, order=order, max_cells=max_cells, complete=complete)
+
+"""
+    capsule(; radius=0.5, height=1.0, ntheta=16, nz=4, ncap=4, center=(0.0, 0.0, 0.0),
+            cell_type="quad", order=1, max_cells=20_000_000, complete=false) -> Mesh
+
+A cylinder of length `height` closed by two hemispheres.
+"""
+capsule(; radius=0.5, height=1.0, ntheta=16, nz=4, ncap=4, center=(0.0, 0.0, 0.0),
+        cell_type="quad", order=1, max_cells=20_000_000, complete=false) =
+    _generate(:mio_capsule; radius=radius, height=height, counts=(ntheta, nz, ncap),
+              origin=center, cell_type=cell_type, order=order, max_cells=max_cells,
+              complete=complete)
+
+"""
+    box_surface(; dims=(1, 1, 1), size=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0.0),
+                cell_type="quad", order=1, max_cells=20_000_000, complete=false) -> Mesh
+
+The boundary of a box as a closed surface. Cell regions `xmin` ... `zmax`.
+"""
+box_surface(; dims=(1, 1, 1), size=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0.0),
+            cell_type="quad", order=1, max_cells=20_000_000, complete=false) =
+    _generate(:mio_box_surface; counts=dims, size=size, origin=origin, cell_type=cell_type,
+              order=order, max_cells=max_cells, complete=complete)
+
+const _PLATONIC_FACES = Dict("tetrahedron" => 4, "cube" => 6, "octahedron" => 8,
+                             "dodecahedron" => 12, "icosahedron" => 20)
+
+"""
+    platonic(name="icosahedron"; radius=1.0, center=(0.0, 0.0, 0.0),
+             max_cells=20_000_000) -> Mesh
+
+A platonic solid's surface, one cell per face: `"tetrahedron"`, `"cube"`,
+`"octahedron"`, `"dodecahedron"` (a `polygon` block) or `"icosahedron"`.
+"""
+function platonic(name::AbstractString="icosahedron"; radius=1.0, center=(0.0, 0.0, 0.0),
+                  max_cells=20_000_000)
+    haskey(_PLATONIC_FACES, name) ||
+        throw(ArgumentError("meshio++: platonic: unknown name '$name'"))
+    _generate(:mio_platonic; counts=(_PLATONIC_FACES[name],), radius=radius, origin=center,
+              max_cells=max_cells)
+end
+
+# --- solids ---
+
+"""
+    ball(; radius=1.0, n=4, center=(0.0, 0.0, 0.0), cell_type="hexahedron", order=1,
+         max_cells=20_000_000, complete=false) -> Mesh
+
+A ball by the seven-block butterfly, `n` cells from the centre to the surface. Side
+region `surface`.
+"""
+ball(; radius=1.0, n=4, center=(0.0, 0.0, 0.0), cell_type="hexahedron", order=1,
+     max_cells=20_000_000, complete=false) =
+    _generate(:mio_ball; radius=radius, counts=(n,), origin=center, cell_type=cell_type,
+              order=order, max_cells=max_cells, complete=complete)
+
+"""
+    spherical_shell(; inner_radius=0.5, outer_radius=1.0, n=4, nr=2, ratio=1.0,
+                    center=(0.0, 0.0, 0.0), order=1, max_cells=20_000_000,
+                    complete=false) -> Mesh
+
+A thick spherical shell of hexahedra, `ratio` grading the layers. Side regions `inner`
+and `outer`.
+"""
+spherical_shell(; inner_radius=0.5, outer_radius=1.0, n=4, nr=2, ratio=1.0,
+                center=(0.0, 0.0, 0.0), order=1, max_cells=20_000_000, complete=false) =
+    _generate(:mio_spherical_shell; radius=outer_radius, radius2=inner_radius,
+              counts=(n, nr), ratio=ratio, origin=center, order=order, max_cells=max_cells,
+              complete=complete)
+
+"""
+    pipe(; inner_radius=0.5, outer_radius=1.0, height=1.0, ntheta=16, nr=2, nz=4,
+         ratio=1.0, center=(0.0, 0.0, 0.0), order=1, max_cells=20_000_000,
+         complete=false) -> Mesh
+
+A thick-walled pipe of hexahedra. Side regions `inner`, `outer`, `bottom`, `top`.
+"""
+pipe(; inner_radius=0.5, outer_radius=1.0, height=1.0, ntheta=16, nr=2, nz=4, ratio=1.0,
+     center=(0.0, 0.0, 0.0), order=1, max_cells=20_000_000, complete=false) =
+    _generate(:mio_pipe; radius=outer_radius, radius2=inner_radius, height=height,
+              counts=(ntheta, nr, nz), ratio=ratio, origin=center, order=order,
+              max_cells=max_cells, complete=complete)
+
+"""
+    fichera(; n=2, size=2.0, center=(0.0, 0.0, 0.0), cell_type="hexahedron", order=1,
+            max_cells=20_000_000, complete=false) -> Mesh
+
+The cube of side `size` minus its positive octant. Side regions `xmin` ... `zmax`,
+`notch_x`, `notch_y`, `notch_z`.
+"""
+fichera(; n=2, size=2.0, center=(0.0, 0.0, 0.0), cell_type="hexahedron", order=1,
+        max_cells=20_000_000, complete=false) =
+    _generate(:mio_fichera; counts=(n,), size=(size, size, size), origin=center,
+              cell_type=cell_type, order=order, max_cells=max_cells, complete=complete)
+
+"""
+    solid_torus(; major_radius=1.0, minor_radius=0.25, n=4, nu=32, center=(0.0, 0.0, 0.0),
+                order=1, max_cells=20_000_000, complete=false) -> Mesh
+
+A solid torus of hexahedra, the squircle disk swept around the z axis. Side region
+`surface`.
+"""
+solid_torus(; major_radius=1.0, minor_radius=0.25, n=4, nu=32, center=(0.0, 0.0, 0.0),
+            order=1, max_cells=20_000_000, complete=false) =
+    _generate(:mio_solid_torus; radius=major_radius, radius2=minor_radius, counts=(n, nu),
+              origin=center, order=order, max_cells=max_cells, complete=complete)
 
 """
     reference_cells(types=String[]; pairs=false) -> Mesh

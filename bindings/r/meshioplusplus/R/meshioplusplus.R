@@ -3412,8 +3412,21 @@ mio_grid <- function(dims, origin = c(0, 0, 0), spacing = c(1, 1, 1),
 #'   `"wedge"`, as the shape allows; `""` is the shape's default.
 #' @param split Triangle layout of `mio_rectangle()`: `"zigzag"`, `"up"`,
 #'   `"down"` or `"center"`.
-#' @param order 1, or 2 for quadratic cells on the exact geometry.
+#' @param order 1, 2 for quadratic cells on the exact geometry, or 3 to 10 for
+#'   the `VTK_LAGRANGE_*` family.
 #' @param max_cells Refuse a mesh larger than this, by name.
+#' @param complete With `order = 2`, the full-Lagrange types (`quad9`,
+#'   `hexahedron27`, `wedge18`) instead of the serendipity ones.
+#' @param start,end End points of `mio_line()`.
+#' @param pitch,turns Rise per turn and number of turns of `mio_helix()`.
+#' @param seed The splitmix64 seed of `mio_box_points()`.
+#' @param major_radius,minor_radius Radii of `mio_torus()` and
+#'   `mio_solid_torus()`.
+#' @param width,num_twists Width and half-twists of `mio_moebius()`.
+#' @param ncap Rings on each cap of `mio_capsule()`.
+#' @param name The solid of `mio_platonic()`: `"tetrahedron"`, `"cube"`,
+#'   `"octahedron"`, `"dodecahedron"` or `"icosahedron"`.
+#' @param ratio Layer thickness ratio of `mio_spherical_shell()` and `mio_pipe()`.
 #' @param types Comma-separated meshio cell type names for
 #'   `mio_reference_cells()`; `""` means every supported type.
 #' @param pairs Two cells sharing a facet instead of one (linear types).
@@ -3424,12 +3437,14 @@ NULL
 mio_generate_ <- function(shape, counts, size = c(1, 1, 1), origin = c(0, 0, 0),
                           radius = 1, height = 1, cell_type = "", split = "zigzag",
                           order = 1, max_cells = 20000000, radius2 = 0.5,
-                          angle = 2 * pi) {
+                          angle = 2 * pi, num_twists = 1, complete = FALSE, ratio = 1,
+                          seed = 0) {
   .Call(
     R_mio_generate, as.character(shape), as.numeric(counts), as.numeric(size),
     as.numeric(origin), as.numeric(radius), as.numeric(height),
     as.character(cell_type), as.character(split), as.integer(order),
-    as.numeric(max_cells), as.numeric(radius2), as.numeric(angle)
+    as.numeric(max_cells), as.numeric(radius2), as.numeric(angle),
+    as.integer(num_twists), as.logical(complete), as.numeric(ratio), as.numeric(seed)
   )
 }
 
@@ -3437,94 +3452,94 @@ mio_generate_ <- function(shape, counts, size = c(1, 1, 1), origin = c(0, 0, 0),
 #' @export
 mio_rectangle <- function(dims = c(1, 1), size = c(1, 1), origin = c(0, 0, 0),
                           cell_type = "quad", split = "zigzag", order = 1,
-                          max_cells = 20000000) {
+                          max_cells = 20000000, complete = FALSE) {
   mio_generate_("rectangle", dims, c(size, 1)[1:3], origin, cell_type = cell_type,
-                split = split, order = order, max_cells = max_cells)
+                split = split, order = order, max_cells = max_cells, complete = complete)
 }
 
 #' @rdname mio_generators
 #' @export
 mio_box <- function(dims = c(1, 1, 1), size = c(1, 1, 1), origin = c(0, 0, 0),
-                    cell_type = "hexahedron", order = 1, max_cells = 20000000) {
+                    cell_type = "hexahedron", order = 1, max_cells = 20000000, complete = FALSE) {
   mio_generate_("box", dims, size, origin, cell_type = cell_type, order = order,
-                max_cells = max_cells)
+                max_cells = max_cells, complete = complete)
 }
 
 #' @rdname mio_generators
 #' @export
 mio_disk <- function(radius = 1, n = 8, center = c(0, 0, 0), cell_type = "quad",
-                     order = 1, max_cells = 20000000) {
+                     order = 1, max_cells = 20000000, complete = FALSE) {
   mio_generate_("disk", n, origin = center, radius = radius, cell_type = cell_type,
-                order = order, max_cells = max_cells)
+                order = order, max_cells = max_cells, complete = complete)
 }
 
 #' @rdname mio_generators
 #' @export
 mio_uv_sphere <- function(radius = 1, nu = 16, nv = 8, center = c(0, 0, 0),
-                          cell_type = "triangle", order = 1, max_cells = 20000000) {
+                          cell_type = "triangle", order = 1, max_cells = 20000000, complete = FALSE) {
   mio_generate_("uv_sphere", c(nu, nv), origin = center, radius = radius,
-                cell_type = cell_type, order = order, max_cells = max_cells)
+                cell_type = cell_type, order = order, max_cells = max_cells, complete = complete)
 }
 
 #' @rdname mio_generators
 #' @export
 mio_icosa_sphere <- function(radius = 1, subdivisions = 2, center = c(0, 0, 0),
-                             order = 1, max_cells = 20000000) {
+                             order = 1, max_cells = 20000000, complete = FALSE) {
   mio_generate_("icosa_sphere", subdivisions, origin = center, radius = radius,
-                order = order, max_cells = max_cells)
+                order = order, max_cells = max_cells, complete = complete)
 }
 
 #' @rdname mio_generators
 #' @export
 mio_cylinder <- function(radius = 1, height = 1, nxy = 8, nz = 8,
                          center = c(0, 0, 0), cell_type = "hexahedron", order = 1,
-                         max_cells = 20000000) {
+                         max_cells = 20000000, complete = FALSE) {
   mio_generate_("cylinder", c(nxy, nz), origin = center, radius = radius,
                 height = height, cell_type = cell_type, order = order,
-                max_cells = max_cells)
+                max_cells = max_cells, complete = complete)
 }
 
 #' @rdname mio_generators
 #' @export
 mio_reference_triangle <- function(n = 4, size = c(1, 1), origin = c(0, 0, 0),
-                                   order = 1, max_cells = 20000000) {
+                                   order = 1, max_cells = 20000000, complete = FALSE) {
   mio_generate_("reference_triangle", n, c(size, 1)[1:3], origin, order = order,
-                max_cells = max_cells)
+                max_cells = max_cells, complete = complete)
 }
 
 #' @rdname mio_generators
 #' @export
 mio_ngon <- function(sides = 6, radius = 1, rings = 1, center = c(0, 0, 0),
-                     order = 1, max_cells = 20000000) {
+                     order = 1, max_cells = 20000000, complete = FALSE) {
   mio_generate_("ngon", c(sides, rings), origin = center, radius = radius,
-                order = order, max_cells = max_cells)
+                order = order, max_cells = max_cells, complete = complete)
 }
 
 #' @rdname mio_generators
 #' @export
 mio_annulus <- function(inner_radius = 0.5, outer_radius = 1, ntheta = 16, nr = 4,
                         angle = 2 * pi, center = c(0, 0, 0), cell_type = "quad",
-                        order = 1, max_cells = 20000000) {
+                        order = 1, max_cells = 20000000, complete = FALSE) {
   mio_generate_("annulus", c(ntheta, nr), origin = center, radius = outer_radius,
                 radius2 = inner_radius, angle = angle, cell_type = cell_type,
-                order = order, max_cells = max_cells)
+                order = order, max_cells = max_cells, complete = complete)
 }
 
 #' @rdname mio_generators
 #' @export
 mio_lshape <- function(n = 4, size = 2, center = c(0, 0, 0), cell_type = "quad",
-                       order = 1, max_cells = 20000000) {
+                       order = 1, max_cells = 20000000, complete = FALSE) {
   mio_generate_("lshape", n, rep(size, 3), center, cell_type = cell_type,
-                order = order, max_cells = max_cells)
+                order = order, max_cells = max_cells, complete = complete)
 }
 
 #' @rdname mio_generators
 #' @export
 mio_plate_with_hole <- function(radius = 0.25, size = 1, nt = 8, nr = 4,
                                 center = c(0, 0, 0), cell_type = "quad", order = 1,
-                                max_cells = 20000000) {
+                                max_cells = 20000000, complete = FALSE) {
   mio_generate_("plate_with_hole", c(nt, nr), rep(size, 3), center, radius = radius,
-                cell_type = cell_type, order = order, max_cells = max_cells)
+                cell_type = cell_type, order = order, max_cells = max_cells, complete = complete)
 }
 
 #' @rdname mio_generators
@@ -3532,6 +3547,195 @@ mio_plate_with_hole <- function(radius = 0.25, size = 1, nt = 8, nr = 4,
 mio_honeycomb <- function(dims = c(4, 4), edge = 1, origin = c(0, 0, 0),
                           max_cells = 20000000) {
   mio_generate_("honeycomb", dims, rep(edge, 3), origin, max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_line <- function(n = 8, start = c(0, 0, 0), end = c(1, 0, 0), order = 1,
+                     max_cells = 20000000, complete = FALSE) {
+  mio_generate_("line", n, end, start, order = order, max_cells = max_cells,
+                complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_circle <- function(radius = 1, n = 16, center = c(0, 0, 0), order = 1,
+                       max_cells = 20000000, complete = FALSE) {
+  mio_generate_("circle", n, origin = center, radius = radius, order = order,
+                max_cells = max_cells, complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_helix <- function(radius = 1, pitch = 1, turns = 2, n = 32, center = c(0, 0, 0),
+                      order = 1, max_cells = 20000000, complete = FALSE) {
+  mio_generate_("helix", n, origin = center, radius = radius, height = pitch,
+                angle = 2 * pi * turns, order = order, max_cells = max_cells,
+                complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_sphere_points <- function(n = 100, radius = 1, center = c(0, 0, 0),
+                              max_cells = 20000000) {
+  mio_generate_("sphere_points", n, origin = center, radius = radius,
+                max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_box_points <- function(n = 100, size = c(1, 1, 1), origin = c(0, 0, 0), seed = 0,
+                           max_cells = 20000000) {
+  mio_generate_("box_points", n, size, origin, seed = seed, max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_tetra_sphere <- function(radius = 1, subdivisions = 3, center = c(0, 0, 0),
+                             order = 1, max_cells = 20000000, complete = FALSE) {
+  mio_generate_("tetra_sphere", subdivisions, origin = center, radius = radius,
+                order = order, max_cells = max_cells, complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_octa_sphere <- function(radius = 1, subdivisions = 2, center = c(0, 0, 0),
+                            order = 1, max_cells = 20000000, complete = FALSE) {
+  mio_generate_("octa_sphere", subdivisions, origin = center, radius = radius,
+                order = order, max_cells = max_cells, complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_cube_sphere <- function(radius = 1, n = 4, center = c(0, 0, 0), cell_type = "quad",
+                            order = 1, max_cells = 20000000, complete = FALSE) {
+  mio_generate_("cube_sphere", n, origin = center, radius = radius,
+                cell_type = cell_type, order = order, max_cells = max_cells,
+                complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_geo_sphere <- function(radius = 1, n = 4, center = c(0, 0, 0), order = 1,
+                           max_cells = 20000000, complete = FALSE) {
+  mio_generate_("geo_sphere", n, origin = center, radius = radius, order = order,
+                max_cells = max_cells, complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_torus <- function(major_radius = 1, minor_radius = 0.25, nu = 32, nv = 16,
+                      center = c(0, 0, 0), cell_type = "quad", order = 1,
+                      max_cells = 20000000, complete = FALSE) {
+  mio_generate_("torus", c(nu, nv), origin = center, radius = major_radius,
+                radius2 = minor_radius, cell_type = cell_type, order = order,
+                max_cells = max_cells, complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_moebius <- function(radius = 1, width = 0.5, nu = 32, nv = 4, num_twists = 1,
+                        center = c(0, 0, 0), cell_type = "quad", order = 1,
+                        max_cells = 20000000, complete = FALSE) {
+  mio_generate_("moebius", c(nu, nv), origin = center, radius = radius, radius2 = width,
+                num_twists = num_twists, cell_type = cell_type, order = order,
+                max_cells = max_cells, complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_tube <- function(radius = 1, height = 1, ntheta = 16, nz = 4, center = c(0, 0, 0),
+                     cell_type = "quad", order = 1, max_cells = 20000000,
+                     complete = FALSE) {
+  mio_generate_("tube", c(ntheta, nz), origin = center, radius = radius, height = height,
+                cell_type = cell_type, order = order, max_cells = max_cells,
+                complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_cone <- function(radius = 1, height = 1, ntheta = 16, nz = 4, center = c(0, 0, 0),
+                     cell_type = "quad", order = 1, max_cells = 20000000,
+                     complete = FALSE) {
+  mio_generate_("cone", c(ntheta, nz), origin = center, radius = radius, height = height,
+                cell_type = cell_type, order = order, max_cells = max_cells,
+                complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_capsule <- function(radius = 0.5, height = 1, ntheta = 16, nz = 4, ncap = 4,
+                        center = c(0, 0, 0), cell_type = "quad", order = 1,
+                        max_cells = 20000000, complete = FALSE) {
+  mio_generate_("capsule", c(ntheta, nz, ncap), origin = center, radius = radius,
+                height = height, cell_type = cell_type, order = order,
+                max_cells = max_cells, complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_box_surface <- function(dims = c(1, 1, 1), size = c(1, 1, 1), origin = c(0, 0, 0),
+                            cell_type = "quad", order = 1, max_cells = 20000000,
+                            complete = FALSE) {
+  mio_generate_("box_surface", dims, size, origin, cell_type = cell_type, order = order,
+                max_cells = max_cells, complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_platonic <- function(name = "icosahedron", radius = 1, center = c(0, 0, 0),
+                         max_cells = 20000000) {
+  faces <- c(tetrahedron = 4, cube = 6, octahedron = 8, dodecahedron = 12,
+             icosahedron = 20)
+  if (!name %in% names(faces)) stop("unknown platonic solid '", name, "'")
+  mio_generate_("platonic", faces[[name]], origin = center, radius = radius,
+                max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_ball <- function(radius = 1, n = 4, center = c(0, 0, 0), cell_type = "hexahedron",
+                     order = 1, max_cells = 20000000, complete = FALSE) {
+  mio_generate_("ball", n, origin = center, radius = radius, cell_type = cell_type,
+                order = order, max_cells = max_cells, complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_spherical_shell <- function(inner_radius = 0.5, outer_radius = 1, n = 4, nr = 2,
+                                ratio = 1, center = c(0, 0, 0), order = 1,
+                                max_cells = 20000000, complete = FALSE) {
+  mio_generate_("spherical_shell", c(n, nr), origin = center, radius = outer_radius,
+                radius2 = inner_radius, ratio = ratio, order = order,
+                max_cells = max_cells, complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_pipe <- function(inner_radius = 0.5, outer_radius = 1, height = 1, ntheta = 16,
+                     nr = 2, nz = 4, ratio = 1, center = c(0, 0, 0), order = 1,
+                     max_cells = 20000000, complete = FALSE) {
+  mio_generate_("pipe", c(ntheta, nr, nz), origin = center, radius = outer_radius,
+                radius2 = inner_radius, height = height, ratio = ratio, order = order,
+                max_cells = max_cells, complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_fichera <- function(n = 2, size = 2, center = c(0, 0, 0), cell_type = "hexahedron",
+                        order = 1, max_cells = 20000000, complete = FALSE) {
+  mio_generate_("fichera", n, rep(size, 3), center, cell_type = cell_type,
+                order = order, max_cells = max_cells, complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_solid_torus <- function(major_radius = 1, minor_radius = 0.25, n = 4, nu = 32,
+                            center = c(0, 0, 0), order = 1, max_cells = 20000000,
+                            complete = FALSE) {
+  mio_generate_("solid_torus", c(n, nu), origin = center, radius = major_radius,
+                radius2 = minor_radius, order = order, max_cells = max_cells,
+                complete = complete)
 }
 
 #' @rdname mio_generators

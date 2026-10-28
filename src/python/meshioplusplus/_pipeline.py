@@ -29,6 +29,7 @@ from contextvars import ContextVar
 
 import numpy as np
 
+from . import _primitives
 from ._agglomerate import agglomerate
 from ._check_conformity import check_conformity
 from ._clean import clean
@@ -431,6 +432,19 @@ _OP_TABLE = {
         "MaxCells",
         "Types",
         "Pairs",
+        "Complete",
+        "Start",
+        "End",
+        "Pitch",
+        "Turns",
+        "Seed",
+        "MajorRadius",
+        "MinorRadius",
+        "Width",
+        "NumTwists",
+        "Ncap",
+        "Ratio",
+        "Name",
     ),
     "OctreeMesh": (
         "Output",
@@ -1077,7 +1091,167 @@ _GENERATE_SHAPES = (
     "plate_with_hole",
     "honeycomb",
     "reference_cells",
+    "line",
+    "circle",
+    "helix",
+    "sphere_points",
+    "box_points",
+    "tetra_sphere",
+    "octa_sphere",
+    "cube_sphere",
+    "geo_sphere",
+    "torus",
+    "moebius",
+    "tube",
+    "cone",
+    "capsule",
+    "box_surface",
+    "platonic",
+    "ball",
+    "spherical_shell",
+    "pipe",
+    "fichera",
+    "solid_torus",
 )
+
+_ORIGIN = ("origin", "triple", [0.0, 0.0, 0.0])
+_CENTER = ("center", "triple", [0.0, 0.0, 0.0])
+_QUAD = ("cell_type", "text", "quad")
+_HEX = ("cell_type", "text", "hexahedron")
+_SURFACE = {
+    "Radius": ("radius", "number", 1.0),
+    "Height": ("height", "number", 1.0),
+    "Ntheta": ("ntheta", "count", 16),
+    "Nz": ("nz", "count", 4),
+    "Center": _CENTER,
+    "CellType": _QUAD,
+}
+#: The second tier of shapes: pipeline key -> (keyword, kind, default). The
+#: ``order``, ``complete`` and ``max_cells`` keywords are added by
+#: :func:`_generate` unless the shape is in ``_GENERATE_LINEAR``.
+_GENERATE_SPECS = {
+    "line": {
+        "N": ("n", "count", 8),
+        "Start": ("start", "triple", [0.0, 0.0, 0.0]),
+        "End": ("end", "triple", [1.0, 0.0, 0.0]),
+    },
+    "circle": {
+        "Radius": ("radius", "number", 1.0),
+        "N": ("n", "count", 16),
+        "Center": _CENTER,
+    },
+    "helix": {
+        "Radius": ("radius", "number", 1.0),
+        "Pitch": ("pitch", "number", 1.0),
+        "Turns": ("turns", "number", 2.0),
+        "N": ("n", "count", 32),
+        "Center": _CENTER,
+    },
+    "sphere_points": {
+        "N": ("n", "count", 100),
+        "Radius": ("radius", "number", 1.0),
+        "Center": _CENTER,
+    },
+    "box_points": {
+        "N": ("n", "count", 100),
+        "Size": ("size", "triple", [1.0, 1.0, 1.0]),
+        "Origin": _ORIGIN,
+        "Seed": ("seed", "count", 0),
+    },
+    "tetra_sphere": {
+        "Radius": ("radius", "number", 1.0),
+        "Subdivisions": ("subdivisions", "count", 3),
+        "Center": _CENTER,
+    },
+    "octa_sphere": {
+        "Radius": ("radius", "number", 1.0),
+        "Subdivisions": ("subdivisions", "count", 2),
+        "Center": _CENTER,
+    },
+    "cube_sphere": {
+        "Radius": ("radius", "number", 1.0),
+        "N": ("n", "count", 4),
+        "Center": _CENTER,
+        "CellType": _QUAD,
+    },
+    "geo_sphere": {
+        "Radius": ("radius", "number", 1.0),
+        "N": ("n", "count", 4),
+        "Center": _CENTER,
+    },
+    "torus": {
+        "MajorRadius": ("major_radius", "number", 1.0),
+        "MinorRadius": ("minor_radius", "number", 0.25),
+        "Nu": ("nu", "count", 32),
+        "Nv": ("nv", "count", 16),
+        "Center": _CENTER,
+        "CellType": _QUAD,
+    },
+    "moebius": {
+        "Radius": ("radius", "number", 1.0),
+        "Width": ("width", "number", 0.5),
+        "Nu": ("nu", "count", 32),
+        "Nv": ("nv", "count", 4),
+        "NumTwists": ("num_twists", "count", 1),
+        "Center": _CENTER,
+        "CellType": _QUAD,
+    },
+    "tube": _SURFACE,
+    "cone": _SURFACE,
+    "capsule": dict(
+        _SURFACE, Radius=("radius", "number", 0.5), Ncap=("ncap", "count", 4)
+    ),
+    "box_surface": {
+        "Dims": ("dims", "dims3", 1),
+        "Size": ("size", "triple", [1.0, 1.0, 1.0]),
+        "Origin": _ORIGIN,
+        "CellType": _QUAD,
+    },
+    "platonic": {
+        "Name": ("name", "text", "icosahedron"),
+        "Radius": ("radius", "number", 1.0),
+        "Center": _CENTER,
+    },
+    "ball": {
+        "Radius": ("radius", "number", 1.0),
+        "N": ("n", "count", 4),
+        "Center": _CENTER,
+        "CellType": _HEX,
+    },
+    "spherical_shell": {
+        "InnerRadius": ("inner_radius", "number", 0.5),
+        "OuterRadius": ("outer_radius", "number", 1.0),
+        "N": ("n", "count", 4),
+        "Nr": ("nr", "count", 2),
+        "Ratio": ("ratio", "number", 1.0),
+        "Center": _CENTER,
+    },
+    "pipe": {
+        "InnerRadius": ("inner_radius", "number", 0.5),
+        "OuterRadius": ("outer_radius", "number", 1.0),
+        "Height": ("height", "number", 1.0),
+        "Ntheta": ("ntheta", "count", 16),
+        "Nr": ("nr", "count", 2),
+        "Nz": ("nz", "count", 4),
+        "Ratio": ("ratio", "number", 1.0),
+        "Center": _CENTER,
+    },
+    "fichera": {
+        "N": ("n", "count", 2),
+        "Size": ("size", "number", 2.0),
+        "Center": _CENTER,
+        "CellType": _HEX,
+    },
+    "solid_torus": {
+        "MajorRadius": ("major_radius", "number", 1.0),
+        "MinorRadius": ("minor_radius", "number", 0.25),
+        "N": ("n", "count", 4),
+        "Nu": ("nu", "count", 32),
+        "Center": _CENTER,
+    },
+}
+#: Shapes of the second tier without ``order`` (points and polygon faces).
+_GENERATE_LINEAR = {"sphere_points", "box_points", "platonic"}
 
 
 def _generate(step):
@@ -1085,6 +1259,7 @@ def _generate(step):
     shape = _text(step, "Shape", "")
     max_cells = int(_number(step, "MaxCells", 20000000.0))
     order = int(_number(step, "Order", 1.0))
+    complete = _flag(step, "Complete", False)
 
     def triple(key, default, pad_zero=False):
         v = _dvec(step, key)
@@ -1121,6 +1296,7 @@ def _generate(step):
             split=_text(step, "Split", "zigzag"),
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
     if shape == "box":
         return box(
@@ -1130,6 +1306,7 @@ def _generate(step):
             cell_type=_text(step, "CellType", "hexahedron"),
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
     if shape == "disk":
         return disk(
@@ -1139,6 +1316,7 @@ def _generate(step):
             cell_type=_text(step, "CellType", "quad"),
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
     if shape == "uv_sphere":
         return uv_sphere(
@@ -1149,6 +1327,7 @@ def _generate(step):
             cell_type=_text(step, "CellType", "triangle"),
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
     if shape == "icosa_sphere":
         return icosa_sphere(
@@ -1157,6 +1336,7 @@ def _generate(step):
             center=triple("Center", zero),
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
     if shape == "cylinder":
         return cylinder(
@@ -1168,6 +1348,7 @@ def _generate(step):
             cell_type=_text(step, "CellType", "hexahedron"),
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
     if shape == "reference_triangle":
         size = _dvec(step, "Size")
@@ -1179,6 +1360,7 @@ def _generate(step):
             origin=triple("Origin", zero, True),
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
     if shape == "ngon":
         return ngon(
@@ -1188,6 +1370,7 @@ def _generate(step):
             center=triple("Center", zero),
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
     if shape == "annulus":
         return annulus(
@@ -1200,6 +1383,7 @@ def _generate(step):
             cell_type=_text(step, "CellType", "quad"),
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
     if shape == "lshape":
         return lshape(
@@ -1209,6 +1393,7 @@ def _generate(step):
             cell_type=_text(step, "CellType", "quad"),
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
     if shape == "plate_with_hole":
         return plate_with_hole(
@@ -1220,6 +1405,7 @@ def _generate(step):
             cell_type=_text(step, "CellType", "quad"),
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
     if shape == "honeycomb":
         return honeycomb(
@@ -1232,6 +1418,24 @@ def _generate(step):
         return reference_cells(
             types=_svec(step, "Types") or None, pairs=_flag(step, "Pairs", False)
         )
+    if shape in _GENERATE_SPECS:
+        kwargs = {}
+        for key, (name, kind, default) in _GENERATE_SPECS[shape].items():
+            if kind == "number":
+                kwargs[name] = _number(step, key, default)
+            elif kind == "count":
+                kwargs[name] = count(key, default)
+            elif kind == "text":
+                kwargs[name] = _text(step, key, default)
+            elif kind == "dims3":
+                kwargs[name] = dims_of(3, default)
+            else:
+                kwargs[name] = triple(key, default)
+        if shape not in _GENERATE_LINEAR:
+            kwargs["order"] = order
+            kwargs["complete"] = complete
+        kwargs["max_cells"] = max_cells
+        return getattr(_primitives, shape)(**kwargs)
     raise _err(
         "Generate",
         f"'Shape' must be one of {', '.join(_GENERATE_SHAPES)}, not '{shape}'",

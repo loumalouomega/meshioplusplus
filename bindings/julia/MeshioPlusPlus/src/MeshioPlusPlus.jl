@@ -115,6 +115,9 @@ export remesh_volume
 export grid, voxelize, octree, octree_mesh
 export rectangle, box, disk, uv_sphere, icosa_sphere, cylinder, reference_cells
 export reference_triangle, ngon, annulus, lshape, plate_with_hole, honeycomb
+export line, circle, helix, sphere_points, box_points
+export tetra_sphere, octa_sphere, cube_sphere, geo_sphere, torus, moebius, tube, cone
+export capsule, box_surface, platonic, ball, spherical_shell, pipe, fichera, solid_torus
 export sample_distance, distance_to_surface, surface_watertight_check, compute_sdf
 export compute_curvature, compute_normals, feature_edges, hausdorff_distance, check_quality
 export segment, fit_primitives, refine_patches, fit_cad, has_occt

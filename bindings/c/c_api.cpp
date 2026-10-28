@@ -5536,6 +5536,10 @@ static_assert(static_cast<int>(meshioplusplus::SdfWatertightCheck::Off) == MIO_S
 static_assert(sizeof(mio_sdf_opts) == 104, "mio_sdf_opts grew outside its reserved tail");
 static_assert(sizeof(mio_voxel_opts) == 112, "mio_voxel_opts grew outside its reserved tail");
 static_assert(sizeof(mio_gen_opts) == 160, "mio_gen_opts grew outside its reserved tail");
+static_assert(offsetof(mio_gen_opts, num_twists) == 128 &&
+                  offsetof(mio_gen_opts, complete) == 132 && offsetof(mio_gen_opts, ratio) == 136 &&
+                  offsetof(mio_gen_opts, seed) == 144,
+              "mio_gen_opts layout changed");
 static_assert(sizeof(mio_octree_opts) == 176, "mio_octree_opts grew outside its reserved tail");
 static_assert(sizeof(mio_octree_report) == 96, "mio_octree_report layout changed");
 static_assert(sizeof(mio_octree_mesh_opts) == 264,
@@ -5864,6 +5868,8 @@ void mio_gen_opts_init(mio_gen_opts* opts) {
     opts->angle = 6.283185307179586;
     opts->max_cells = 20000000;
     opts->order = 1;
+    opts->num_twists = 1;
+    opts->ratio = 1.0;
 }
 
 void mio_octree_opts_init(mio_octree_opts* opts) {
@@ -6055,10 +6061,10 @@ mio_mesh* mio_rectangle(const mio_gen_opts* opts) {
         static const char* const splits[] = {"zigzag", "up", "down", "center"};
         if (o.split < 0 || o.split > 3)
             throw meshioplusplus::ReadError("meshio++: rectangle: split is not a mio_gen_split");
-        return new mio_mesh{meshioplusplus::rectangle({{o.counts[0], o.counts[1]}},
-                                                      {{o.size[0], o.size[1]}},
-                                                      {{o.origin[0], o.origin[1], o.origin[2]}},
-                                                      type, splits[o.split], o.order, o.max_cells)};
+        return new mio_mesh{
+            meshioplusplus::rectangle({{o.counts[0], o.counts[1]}}, {{o.size[0], o.size[1]}},
+                                      {{o.origin[0], o.origin[1], o.origin[2]}}, type,
+                                      splits[o.split], o.order, o.max_cells, o.complete != 0)};
     });
 }
 
@@ -6069,9 +6075,10 @@ mio_mesh* mio_box(const mio_gen_opts* opts) {
                                                {{MIO_GEN_HEXAHEDRON, "hexahedron"},
                                                 {MIO_GEN_TETRA, "tetra"},
                                                 {MIO_GEN_WEDGE, "wedge"}});
-        return new mio_mesh{meshioplusplus::box(
-            {{o.counts[0], o.counts[1], o.counts[2]}}, {{o.size[0], o.size[1], o.size[2]}},
-            {{o.origin[0], o.origin[1], o.origin[2]}}, type, o.order, o.max_cells)};
+        return new mio_mesh{meshioplusplus::box({{o.counts[0], o.counts[1], o.counts[2]}},
+                                                {{o.size[0], o.size[1], o.size[2]}},
+                                                {{o.origin[0], o.origin[1], o.origin[2]}}, type,
+                                                o.order, o.max_cells, o.complete != 0)};
     });
 }
 
@@ -6082,7 +6089,7 @@ mio_mesh* mio_disk(const mio_gen_opts* opts) {
             o, "disk", "quad", {{MIO_GEN_QUAD, "quad"}, {MIO_GEN_TRIANGLE, "triangle"}});
         return new mio_mesh{meshioplusplus::disk(o.radius, o.counts[0],
                                                  {{o.origin[0], o.origin[1], o.origin[2]}}, type,
-                                                 o.order, o.max_cells)};
+                                                 o.order, o.max_cells, o.complete != 0)};
     });
 }
 
@@ -6093,7 +6100,7 @@ mio_mesh* mio_uv_sphere(const mio_gen_opts* opts) {
             o, "uv_sphere", "triangle", {{MIO_GEN_TRIANGLE, "triangle"}, {MIO_GEN_QUAD, "quad"}});
         return new mio_mesh{meshioplusplus::uv_sphere(o.radius, o.counts[0], o.counts[1],
                                                       {{o.origin[0], o.origin[1], o.origin[2]}},
-                                                      type, o.order, o.max_cells)};
+                                                      type, o.order, o.max_cells, o.complete != 0)};
     });
 }
 
@@ -6105,7 +6112,7 @@ mio_mesh* mio_icosa_sphere(const mio_gen_opts* opts) {
                 "meshio++: icosa_sphere: cell_type is not built by this shape");
         return new mio_mesh{meshioplusplus::icosa_sphere(o.radius, o.counts[0],
                                                          {{o.origin[0], o.origin[1], o.origin[2]}},
-                                                         o.order, o.max_cells)};
+                                                         o.order, o.max_cells, o.complete != 0)};
     });
 }
 
@@ -6117,7 +6124,7 @@ mio_mesh* mio_cylinder(const mio_gen_opts* opts) {
                           {{MIO_GEN_HEXAHEDRON, "hexahedron"}, {MIO_GEN_WEDGE, "wedge"}});
         return new mio_mesh{meshioplusplus::cylinder(o.radius, o.height, o.counts[0], o.counts[1],
                                                      {{o.origin[0], o.origin[1], o.origin[2]}},
-                                                     type, o.order, o.max_cells)};
+                                                     type, o.order, o.max_cells, o.complete != 0)};
     });
 }
 
@@ -6129,7 +6136,7 @@ mio_mesh* mio_reference_triangle(const mio_gen_opts* opts) {
                 "meshio++: reference_triangle: cell_type is not built by this shape");
         return new mio_mesh{meshioplusplus::reference_triangle(
             o.counts[0], {{o.size[0], o.size[1]}}, {{o.origin[0], o.origin[1], o.origin[2]}},
-            o.order, o.max_cells)};
+            o.order, o.max_cells, o.complete != 0)};
     });
 }
 
@@ -6140,7 +6147,7 @@ mio_mesh* mio_ngon(const mio_gen_opts* opts) {
             throw meshioplusplus::ReadError("meshio++: ngon: cell_type is not built by this shape");
         return new mio_mesh{meshioplusplus::ngon(o.counts[0], o.radius, o.counts[1],
                                                  {{o.origin[0], o.origin[1], o.origin[2]}}, o.order,
-                                                 o.max_cells)};
+                                                 o.max_cells, o.complete != 0)};
     });
 }
 
@@ -6152,7 +6159,7 @@ mio_mesh* mio_annulus(const mio_gen_opts* opts) {
         return new mio_mesh{meshioplusplus::annulus(
             o.radius2 == 0.0 ? 0.5 : o.radius2, o.radius, o.counts[0], o.counts[1],
             o.angle == 0.0 ? 6.283185307179586 : o.angle, {{o.origin[0], o.origin[1], o.origin[2]}},
-            type, o.order, o.max_cells)};
+            type, o.order, o.max_cells, o.complete != 0)};
     });
 }
 
@@ -6163,7 +6170,7 @@ mio_mesh* mio_lshape(const mio_gen_opts* opts) {
             o, "lshape", "quad", {{MIO_GEN_QUAD, "quad"}, {MIO_GEN_TRIANGLE, "triangle"}});
         return new mio_mesh{meshioplusplus::lshape(o.counts[0], o.size[0],
                                                    {{o.origin[0], o.origin[1], o.origin[2]}}, type,
-                                                   o.order, o.max_cells)};
+                                                   o.order, o.max_cells, o.complete != 0)};
     });
 }
 
@@ -6172,9 +6179,10 @@ mio_mesh* mio_plate_with_hole(const mio_gen_opts* opts) {
         const mio_gen_opts o = capi_gen_defaults(opts);
         const std::string type = capi_gen_cell(
             o, "plate_with_hole", "quad", {{MIO_GEN_QUAD, "quad"}, {MIO_GEN_TRIANGLE, "triangle"}});
-        return new mio_mesh{meshioplusplus::plate_with_hole(
-            o.radius, o.size[0], o.counts[0], o.counts[1],
-            {{o.origin[0], o.origin[1], o.origin[2]}}, type, o.order, o.max_cells)};
+        return new mio_mesh{
+            meshioplusplus::plate_with_hole(o.radius, o.size[0], o.counts[0], o.counts[1],
+                                            {{o.origin[0], o.origin[1], o.origin[2]}}, type,
+                                            o.order, o.max_cells, o.complete != 0)};
     });
 }
 
@@ -6190,6 +6198,270 @@ mio_mesh* mio_honeycomb(const mio_gen_opts* opts) {
         return new mio_mesh{meshioplusplus::honeycomb({{o.counts[0], o.counts[1]}}, o.size[0],
                                                       {{o.origin[0], o.origin[1], o.origin[2]}},
                                                       o.max_cells)};
+    });
+}
+
+namespace {
+
+void capi_gen_linear_only(const mio_gen_opts& rOpts, const char* pShape) {
+    if (rOpts.cell_type != MIO_GEN_DEFAULT)
+        throw meshioplusplus::ReadError(std::string("meshio++: ") + pShape +
+                                        ": cell_type is not built by this shape");
+    if (rOpts.order != 1)
+        throw meshioplusplus::ReadError(std::string("meshio++: ") + pShape +
+                                        ": order must be 1, this shape has no higher order");
+}
+
+void capi_gen_no_cell(const mio_gen_opts& rOpts, const char* pShape) {
+    if (rOpts.cell_type != MIO_GEN_DEFAULT)
+        throw meshioplusplus::ReadError(std::string("meshio++: ") + pShape +
+                                        ": cell_type is not built by this shape");
+}
+
+std::array<double, 3> capi_gen_origin(const mio_gen_opts& rOpts) {
+    return {{rOpts.origin[0], rOpts.origin[1], rOpts.origin[2]}};
+}
+
+double capi_gen_or(double Value, double Default) {
+    return Value == 0.0 ? Default : Value;
+}
+
+std::string capi_gen_surface_cell(const mio_gen_opts& rOpts, const char* pShape) {
+    return capi_gen_cell(rOpts, pShape, "quad",
+                         {{MIO_GEN_QUAD, "quad"}, {MIO_GEN_TRIANGLE, "triangle"}});
+}
+
+std::string capi_gen_solid_cell(const mio_gen_opts& rOpts, const char* pShape) {
+    return capi_gen_cell(rOpts, pShape, "hexahedron",
+                         {{MIO_GEN_HEXAHEDRON, "hexahedron"}, {MIO_GEN_TETRA, "tetra"}});
+}
+
+}  // namespace
+
+mio_mesh* mio_line(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        capi_gen_no_cell(o, "line");
+        return new mio_mesh{meshioplusplus::line(o.counts[0], capi_gen_origin(o),
+                                                 {{o.size[0], o.size[1], o.size[2]}}, o.order,
+                                                 o.max_cells, o.complete != 0)};
+    });
+}
+
+mio_mesh* mio_circle(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        capi_gen_no_cell(o, "circle");
+        return new mio_mesh{meshioplusplus::circle(o.radius, o.counts[0], capi_gen_origin(o),
+                                                   o.order, o.max_cells, o.complete != 0)};
+    });
+}
+
+mio_mesh* mio_helix(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        capi_gen_no_cell(o, "helix");
+        const double turns =
+            capi_gen_or(o.angle, 4.0 * 3.141592653589793) / (2.0 * 3.141592653589793);
+        return new mio_mesh{meshioplusplus::helix(o.radius, o.height, turns, o.counts[0],
+                                                  capi_gen_origin(o), o.order, o.max_cells,
+                                                  o.complete != 0)};
+    });
+}
+
+mio_mesh* mio_sphere_points(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        capi_gen_linear_only(o, "sphere_points");
+        return new mio_mesh{
+            meshioplusplus::sphere_points(o.counts[0], o.radius, capi_gen_origin(o), o.max_cells)};
+    });
+}
+
+mio_mesh* mio_box_points(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        capi_gen_linear_only(o, "box_points");
+        return new mio_mesh{meshioplusplus::box_points(o.counts[0],
+                                                       {{o.size[0], o.size[1], o.size[2]}},
+                                                       capi_gen_origin(o), o.seed, o.max_cells)};
+    });
+}
+
+mio_mesh* mio_tetra_sphere(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        if (o.cell_type != MIO_GEN_DEFAULT && o.cell_type != MIO_GEN_TRIANGLE)
+            capi_gen_no_cell(o, "tetra_sphere");
+        return new mio_mesh{meshioplusplus::tetra_sphere(o.radius, o.counts[0], capi_gen_origin(o),
+                                                         o.order, o.max_cells, o.complete != 0)};
+    });
+}
+
+mio_mesh* mio_octa_sphere(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        if (o.cell_type != MIO_GEN_DEFAULT && o.cell_type != MIO_GEN_TRIANGLE)
+            capi_gen_no_cell(o, "octa_sphere");
+        return new mio_mesh{meshioplusplus::octa_sphere(o.radius, o.counts[0], capi_gen_origin(o),
+                                                        o.order, o.max_cells, o.complete != 0)};
+    });
+}
+
+mio_mesh* mio_cube_sphere(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        return new mio_mesh{meshioplusplus::cube_sphere(o.radius, o.counts[0], capi_gen_origin(o),
+                                                        capi_gen_surface_cell(o, "cube_sphere"),
+                                                        o.order, o.max_cells, o.complete != 0)};
+    });
+}
+
+mio_mesh* mio_geo_sphere(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        if (o.cell_type != MIO_GEN_DEFAULT && o.cell_type != MIO_GEN_TRIANGLE)
+            capi_gen_no_cell(o, "geo_sphere");
+        return new mio_mesh{meshioplusplus::geo_sphere(o.radius, o.counts[0], capi_gen_origin(o),
+                                                       o.order, o.max_cells, o.complete != 0)};
+    });
+}
+
+mio_mesh* mio_torus(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        return new mio_mesh{meshioplusplus::torus(
+            o.radius, capi_gen_or(o.radius2, 0.25), o.counts[0], o.counts[1], capi_gen_origin(o),
+            capi_gen_surface_cell(o, "torus"), o.order, o.max_cells, o.complete != 0)};
+    });
+}
+
+mio_mesh* mio_moebius(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        return new mio_mesh{meshioplusplus::moebius(
+            o.radius, capi_gen_or(o.radius2, 0.5), o.counts[0], o.counts[1], o.num_twists,
+            capi_gen_origin(o), capi_gen_surface_cell(o, "moebius"), o.order, o.max_cells,
+            o.complete != 0)};
+    });
+}
+
+mio_mesh* mio_tube(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        return new mio_mesh{meshioplusplus::tube(
+            o.radius, o.height, o.counts[0], o.counts[1], capi_gen_origin(o),
+            capi_gen_surface_cell(o, "tube"), o.order, o.max_cells, o.complete != 0)};
+    });
+}
+
+mio_mesh* mio_cone(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        return new mio_mesh{meshioplusplus::cone(
+            o.radius, o.height, o.counts[0], o.counts[1], capi_gen_origin(o),
+            capi_gen_surface_cell(o, "cone"), o.order, o.max_cells, o.complete != 0)};
+    });
+}
+
+mio_mesh* mio_capsule(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        return new mio_mesh{meshioplusplus::capsule(
+            o.radius, o.height, o.counts[0], o.counts[1], o.counts[2], capi_gen_origin(o),
+            capi_gen_surface_cell(o, "capsule"), o.order, o.max_cells, o.complete != 0)};
+    });
+}
+
+mio_mesh* mio_box_surface(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        return new mio_mesh{meshioplusplus::box_surface(
+            {{o.counts[0], o.counts[1], o.counts[2]}}, {{o.size[0], o.size[1], o.size[2]}},
+            capi_gen_origin(o), capi_gen_surface_cell(o, "box_surface"), o.order, o.max_cells,
+            o.complete != 0)};
+    });
+}
+
+mio_mesh* mio_platonic(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        capi_gen_linear_only(o, "platonic");
+        const char* name = nullptr;
+        switch (o.counts[0]) {
+            case 4:
+                name = "tetrahedron";
+                break;
+            case 6:
+                name = "cube";
+                break;
+            case 8:
+                name = "octahedron";
+                break;
+            case 12:
+                name = "dodecahedron";
+                break;
+            case 20:
+                name = "icosahedron";
+                break;
+            default:
+                throw meshioplusplus::ReadError(
+                    "meshio++: platonic: counts[0] must be a face count: 4, 6, 8, 12 or 20, got " +
+                    std::to_string(o.counts[0]));
+        }
+        return new mio_mesh{
+            meshioplusplus::platonic(name, o.radius, capi_gen_origin(o), o.max_cells)};
+    });
+}
+
+mio_mesh* mio_ball(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        return new mio_mesh{meshioplusplus::ball(o.radius, o.counts[0], capi_gen_origin(o),
+                                                 capi_gen_solid_cell(o, "ball"), o.order,
+                                                 o.max_cells, o.complete != 0)};
+    });
+}
+
+mio_mesh* mio_spherical_shell(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        if (o.cell_type != MIO_GEN_DEFAULT && o.cell_type != MIO_GEN_HEXAHEDRON)
+            capi_gen_no_cell(o, "spherical_shell");
+        return new mio_mesh{meshioplusplus::spherical_shell(
+            capi_gen_or(o.radius2, 0.5), o.radius, o.counts[0], o.counts[1],
+            capi_gen_or(o.ratio, 1.0), capi_gen_origin(o), o.order, o.max_cells, o.complete != 0)};
+    });
+}
+
+mio_mesh* mio_pipe(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        if (o.cell_type != MIO_GEN_DEFAULT && o.cell_type != MIO_GEN_HEXAHEDRON)
+            capi_gen_no_cell(o, "pipe");
+        return new mio_mesh{meshioplusplus::pipe(
+            capi_gen_or(o.radius2, 0.5), o.radius, o.height, o.counts[0], o.counts[1], o.counts[2],
+            capi_gen_or(o.ratio, 1.0), capi_gen_origin(o), o.order, o.max_cells, o.complete != 0)};
+    });
+}
+
+mio_mesh* mio_fichera(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        return new mio_mesh{meshioplusplus::fichera(o.counts[0], o.size[0], capi_gen_origin(o),
+                                                    capi_gen_solid_cell(o, "fichera"), o.order,
+                                                    o.max_cells, o.complete != 0)};
+    });
+}
+
+mio_mesh* mio_solid_torus(const mio_gen_opts* opts) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        const mio_gen_opts o = capi_gen_defaults(opts);
+        if (o.cell_type != MIO_GEN_DEFAULT && o.cell_type != MIO_GEN_HEXAHEDRON)
+            capi_gen_no_cell(o, "solid_torus");
+        return new mio_mesh{meshioplusplus::solid_torus(
+            o.radius, capi_gen_or(o.radius2, 0.25), o.counts[0], o.counts[1], capi_gen_origin(o),
+            o.order, o.max_cells, o.complete != 0)};
     });
 }
 

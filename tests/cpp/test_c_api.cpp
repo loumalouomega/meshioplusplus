@@ -27,12 +27,14 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 // External includes
@@ -4851,9 +4853,146 @@ TEST(CApi, GenOptsInitDefaultsAndLayout) {
     EXPECT_EQ(opts.pad, 0);
     EXPECT_EQ(opts.radius2, 0.5);
     EXPECT_EQ(opts.angle, 6.283185307179586);
+    EXPECT_EQ(opts.num_twists, 1);
+    EXPECT_EQ(opts.complete, 0);
+    EXPECT_EQ(opts.ratio, 1.0);
+    EXPECT_EQ(opts.seed, 0u);
+    EXPECT_EQ(offsetof(mio_gen_opts, num_twists), 128u);
+    EXPECT_EQ(offsetof(mio_gen_opts, seed), 144u);
     for (int64_t r : opts.reserved)
         EXPECT_EQ(r, 0);
     mio_gen_opts_init(nullptr);  // a NULL options pointer is a no-op, not a crash
+}
+
+namespace {
+
+// Points, cells and the first block's type name of a generated mesh (freed).
+struct CapiGen {
+    int64_t mPoints = -1;
+    int64_t mCells = 0;
+    std::string mType;
+};
+
+CapiGen capi_gen(mio_mesh* pMesh) {
+    CapiGen out;
+    if (!pMesh)
+        return out;
+    out.mPoints = mio_mesh_num_points(pMesh);
+    for (int64_t b = 0; b < mio_mesh_num_cell_blocks(pMesh); ++b) {
+        mio_cell_block_info info{};
+        EXPECT_EQ(mio_mesh_cell_block_info_ex(pMesh, b, &info), MIO_OK);
+        out.mCells += info.num_cells;
+    }
+    char buf[64] = {0};
+    if (mio_mesh_num_cell_blocks(pMesh) > 0)
+        mio_mesh_cell_block_type(pMesh, 0, buf, sizeof buf);
+    out.mType = buf;
+    mio_mesh_free(pMesh);
+    return out;
+}
+
+}  // namespace
+
+TEST(CApi, SecondTierGeneratorsReadTheirFields) {
+    mio_gen_opts o;
+    mio_gen_opts_init(&o);
+    o.counts[0] = 4;
+    o.size[0] = 0.0;
+    o.size[1] = 0.0;
+    o.size[2] = 2.0;  // the end point
+    CapiGen g = capi_gen(mio_line(&o));
+    EXPECT_EQ(g.mPoints, 5);
+    EXPECT_EQ(g.mType, "line");
+
+    mio_gen_opts_init(&o);
+    o.counts[0] = 6;
+    o.order = 2;
+    g = capi_gen(mio_circle(&o));
+    EXPECT_EQ(g.mPoints, 12);
+    EXPECT_EQ(g.mType, "line3");
+
+    mio_gen_opts_init(&o);
+    o.counts[0] = 10;
+    o.angle = 0.0;  // two turns
+    g = capi_gen(mio_helix(&o));
+    EXPECT_EQ(g.mCells, 10);
+
+    mio_gen_opts_init(&o);
+    o.counts[0] = 7;
+    o.seed = 9;
+    EXPECT_EQ(capi_gen(mio_sphere_points(&o)).mType, "vertex");
+    EXPECT_EQ(capi_gen(mio_box_points(&o)).mPoints, 7);
+    o.order = 2;  // a point has no quadratic form
+    EXPECT_EQ(mio_box_points(&o), nullptr);
+
+    mio_gen_opts_init(&o);
+    o.counts[0] = 1;
+    EXPECT_EQ(capi_gen(mio_tetra_sphere(&o)).mCells, 16);
+    EXPECT_EQ(capi_gen(mio_octa_sphere(&o)).mCells, 32);
+    o.counts[0] = 2;
+    EXPECT_EQ(capi_gen(mio_geo_sphere(&o)).mCells, 80);
+    o.order = 2;
+    o.complete = 1;
+    g = capi_gen(mio_cube_sphere(&o));
+    EXPECT_EQ(g.mCells, 24);
+    EXPECT_EQ(g.mType, "quad9");
+
+    mio_gen_opts_init(&o);
+    o.counts[0] = 6;
+    o.counts[1] = 4;
+    o.radius2 = 0.0;  // the default minor radius, 0.25
+    o.cell_type = MIO_GEN_TRIANGLE;
+    EXPECT_EQ(capi_gen(mio_torus(&o)).mCells, 48);
+    o.cell_type = MIO_GEN_DEFAULT;
+    o.counts[1] = 2;
+    o.num_twists = 3;
+    EXPECT_EQ(capi_gen(mio_moebius(&o)).mCells, 12);
+    o.counts[2] = 2;
+    EXPECT_EQ(capi_gen(mio_tube(&o)).mCells, 12);
+    EXPECT_EQ(capi_gen(mio_cone(&o)).mCells, 6 * 4);
+    o.radius = 0.5;
+    EXPECT_EQ(capi_gen(mio_capsule(&o)).mCells, 6 * (2 * 2 + 2 - 1 + 1));
+
+    mio_gen_opts_init(&o);
+    o.counts[0] = 1;
+    o.counts[1] = 2;
+    o.counts[2] = 3;
+    EXPECT_EQ(capi_gen(mio_box_surface(&o)).mCells, 22);
+
+    mio_gen_opts_init(&o);
+    for (const auto& [faces, corners] :
+         std::vector<std::pair<int64_t, int64_t>>{{4, 4}, {6, 8}, {8, 6}, {12, 20}, {20, 12}}) {
+        o.counts[0] = faces;
+        g = capi_gen(mio_platonic(&o));
+        EXPECT_EQ(g.mCells, faces);
+        EXPECT_EQ(g.mPoints, corners);
+    }
+    o.counts[0] = 7;  // not a platonic face count
+    EXPECT_EQ(mio_platonic(&o), nullptr);
+
+    mio_gen_opts_init(&o);
+    o.counts[0] = 1;
+    o.cell_type = MIO_GEN_TETRA;
+    EXPECT_EQ(capi_gen(mio_ball(&o)).mCells, 48);
+    EXPECT_EQ(capi_gen(mio_fichera(&o)).mCells, 7 * 6);
+    o.cell_type = MIO_GEN_DEFAULT;
+    o.counts[0] = 2;
+    o.counts[1] = 1;
+    o.radius2 = 0.0;  // the default inner radius, 0.5
+    o.ratio = 0.0;    // a uniform wall
+    EXPECT_EQ(capi_gen(mio_spherical_shell(&o)).mCells, 24);
+    o.counts[0] = 6;
+    o.counts[1] = 1;
+    o.counts[2] = 2;
+    EXPECT_EQ(capi_gen(mio_pipe(&o)).mCells, 12);
+    o.counts[0] = 2;
+    o.counts[1] = 5;
+    o.order = 3;
+    g = capi_gen(mio_solid_torus(&o));
+    EXPECT_EQ(g.mCells, 20);
+    EXPECT_EQ(g.mType, "VTK_LAGRANGE_HEXAHEDRON");
+    o.cell_type = MIO_GEN_WEDGE;  // not built by this shape
+    EXPECT_EQ(mio_solid_torus(&o), nullptr);
 }
 
 TEST(CApi, GeneratorsBuildMeshesAndRefuseBadRequests) {
@@ -4992,7 +5131,7 @@ TEST(CApi, GeneratorsBuildMeshesAndRefuseBadRequests) {
     o.cell_type = MIO_GEN_WEDGE;
     EXPECT_EQ(mio_disk(&o), nullptr);
     mio_gen_opts_init(&o);
-    o.reserved[2] = 1;
+    o.reserved[0] = 1;
     EXPECT_EQ(mio_box(&o), nullptr);
     mio_gen_opts_init(&o);
     o.counts[0] = -1;
