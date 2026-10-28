@@ -2674,7 +2674,7 @@ static int32_t mio_r_gen_split(const char *name) {
 
 SEXP R_mio_generate(SEXP shape, SEXP counts, SEXP size, SEXP origin, SEXP radius, SEXP height,
                     SEXP cell_type, SEXP split, SEXP order, SEXP max_cells, SEXP radius2,
-                    SEXP angle) {
+                    SEXP angle, SEXP num_twists, SEXP complete, SEXP ratio, SEXP seed) {
     mio_gen_opts opts;
     mio_gen_opts_init(&opts);
     SEXP c = PROTECT(Rf_coerceVector(counts, REALSXP));
@@ -2695,6 +2695,10 @@ SEXP R_mio_generate(SEXP shape, SEXP counts, SEXP size, SEXP origin, SEXP radius
     opts.split = mio_r_gen_split(mio_r_string(split, "split"));
     opts.order = (int32_t)mio_r_int(order, "order");
     opts.max_cells = mio_r_int64(max_cells, "max_cells");
+    opts.num_twists = (int32_t)mio_r_int(num_twists, "num_twists");
+    opts.complete = mio_r_bool(complete, "complete") ? 1 : 0;
+    opts.ratio = mio_r_double(ratio, "ratio");
+    opts.seed = (uint64_t)mio_r_double(seed, "seed");
 
     const char *name = mio_r_string(shape, "shape");
     mio_mesh *out = NULL;
@@ -2710,6 +2714,27 @@ SEXP R_mio_generate(SEXP shape, SEXP counts, SEXP size, SEXP origin, SEXP radius
     else if (strcmp(name, "lshape") == 0) out = mio_lshape(&opts);
     else if (strcmp(name, "plate_with_hole") == 0) out = mio_plate_with_hole(&opts);
     else if (strcmp(name, "honeycomb") == 0) out = mio_honeycomb(&opts);
+    else if (strcmp(name, "line") == 0) out = mio_line(&opts);
+    else if (strcmp(name, "circle") == 0) out = mio_circle(&opts);
+    else if (strcmp(name, "helix") == 0) out = mio_helix(&opts);
+    else if (strcmp(name, "sphere_points") == 0) out = mio_sphere_points(&opts);
+    else if (strcmp(name, "box_points") == 0) out = mio_box_points(&opts);
+    else if (strcmp(name, "tetra_sphere") == 0) out = mio_tetra_sphere(&opts);
+    else if (strcmp(name, "octa_sphere") == 0) out = mio_octa_sphere(&opts);
+    else if (strcmp(name, "cube_sphere") == 0) out = mio_cube_sphere(&opts);
+    else if (strcmp(name, "geo_sphere") == 0) out = mio_geo_sphere(&opts);
+    else if (strcmp(name, "torus") == 0) out = mio_torus(&opts);
+    else if (strcmp(name, "moebius") == 0) out = mio_moebius(&opts);
+    else if (strcmp(name, "tube") == 0) out = mio_tube(&opts);
+    else if (strcmp(name, "cone") == 0) out = mio_cone(&opts);
+    else if (strcmp(name, "capsule") == 0) out = mio_capsule(&opts);
+    else if (strcmp(name, "box_surface") == 0) out = mio_box_surface(&opts);
+    else if (strcmp(name, "platonic") == 0) out = mio_platonic(&opts);
+    else if (strcmp(name, "ball") == 0) out = mio_ball(&opts);
+    else if (strcmp(name, "spherical_shell") == 0) out = mio_spherical_shell(&opts);
+    else if (strcmp(name, "pipe") == 0) out = mio_pipe(&opts);
+    else if (strcmp(name, "fichera") == 0) out = mio_fichera(&opts);
+    else if (strcmp(name, "solid_torus") == 0) out = mio_solid_torus(&opts);
     else Rf_error("unknown shape '%s'", name);
     if (out == NULL) mio_r_fail(name);
     return mio_r_wrap_mesh(out);

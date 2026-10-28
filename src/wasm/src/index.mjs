@@ -283,19 +283,40 @@ export class MeshioPlusPlusLoadError extends Error {
  *   slice: (mesh: Mesh, origin: number[], normal: number[], recordParentIds?: boolean) => Mesh,
  *   isosurface: (mesh: Mesh, array: string, isovalues: number|number[], component?: number, recordParentIds?: boolean) => Mesh,
  *   grid: (dims: number[], origin?: number[], spacing?: number[], maxCells?: number) => Mesh,
- *   rectangle: (dims?: number[], size?: number[], origin?: number[], cellType?: string, split?: string, order?: number, maxCells?: number) => Mesh,
- *   box: (dims?: number[], size?: number[], origin?: number[], cellType?: string, order?: number, maxCells?: number) => Mesh,
- *   disk: (radius?: number, n?: number, center?: number[], cellType?: string, order?: number, maxCells?: number) => Mesh,
- *   uvSphere: (radius?: number, nu?: number, nv?: number, center?: number[], cellType?: string, order?: number, maxCells?: number) => Mesh,
- *   icosaSphere: (radius?: number, subdivisions?: number, center?: number[], order?: number, maxCells?: number) => Mesh,
- *   cylinder: (radius?: number, height?: number, nxy?: number, nz?: number, center?: number[], cellType?: string, order?: number, maxCells?: number) => Mesh,
- *   referenceTriangle: (n?: number, size?: number[], origin?: number[], order?: number, maxCells?: number) => Mesh,
- *   ngon: (sides?: number, radius?: number, rings?: number, center?: number[], order?: number, maxCells?: number) => Mesh,
- *   annulus: (innerRadius?: number, outerRadius?: number, ntheta?: number, nr?: number, angle?: number, center?: number[], cellType?: string, order?: number, maxCells?: number) => Mesh,
- *   lshape: (n?: number, size?: number, center?: number[], cellType?: string, order?: number, maxCells?: number) => Mesh,
- *   plateWithHole: (radius?: number, size?: number, nt?: number, nr?: number, center?: number[], cellType?: string, order?: number, maxCells?: number) => Mesh,
+ *   rectangle: (dims?: number[], size?: number[], origin?: number[], cellType?: string, split?: string, order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   box: (dims?: number[], size?: number[], origin?: number[], cellType?: string, order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   disk: (radius?: number, n?: number, center?: number[], cellType?: string, order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   uvSphere: (radius?: number, nu?: number, nv?: number, center?: number[], cellType?: string, order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   icosaSphere: (radius?: number, subdivisions?: number, center?: number[], order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   cylinder: (radius?: number, height?: number, nxy?: number, nz?: number, center?: number[], cellType?: string, order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   referenceTriangle: (n?: number, size?: number[], origin?: number[], order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   ngon: (sides?: number, radius?: number, rings?: number, center?: number[], order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   annulus: (innerRadius?: number, outerRadius?: number, ntheta?: number, nr?: number, angle?: number, center?: number[], cellType?: string, order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   lshape: (n?: number, size?: number, center?: number[], cellType?: string, order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   plateWithHole: (radius?: number, size?: number, nt?: number, nr?: number, center?: number[], cellType?: string, order?: number, maxCells?: number, complete?: boolean) => Mesh,
  *   honeycomb: (dims?: number[], edge?: number, origin?: number[], maxCells?: number) => Mesh,
  *   referenceCells: (types?: string[], pairs?: boolean) => Mesh,
+ *   line: (n?: number, start?: number[], end?: number[], order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   circle: (radius?: number, n?: number, center?: number[], order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   helix: (radius?: number, pitch?: number, turns?: number, n?: number, center?: number[], order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   spherePoints: (n?: number, radius?: number, center?: number[], maxCells?: number) => Mesh,
+ *   boxPoints: (n?: number, size?: number[], origin?: number[], seed?: number, maxCells?: number) => Mesh,
+ *   tetraSphere: (radius?: number, subdivisions?: number, center?: number[], order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   octaSphere: (radius?: number, subdivisions?: number, center?: number[], order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   cubeSphere: (radius?: number, n?: number, center?: number[], cellType?: string, order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   geoSphere: (radius?: number, n?: number, center?: number[], order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   torus: (majorRadius?: number, minorRadius?: number, nu?: number, nv?: number, center?: number[], cellType?: string, order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   moebius: (radius?: number, width?: number, nu?: number, nv?: number, numTwists?: number, center?: number[], cellType?: string, order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   tube: (radius?: number, height?: number, ntheta?: number, nz?: number, center?: number[], cellType?: string, order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   cone: (radius?: number, height?: number, ntheta?: number, nz?: number, center?: number[], cellType?: string, order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   capsule: (radius?: number, height?: number, ntheta?: number, nz?: number, ncap?: number, center?: number[], cellType?: string, order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   boxSurface: (dims?: number[], size?: number[], origin?: number[], cellType?: string, order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   platonic: (name?: string, radius?: number, center?: number[], maxCells?: number) => Mesh,
+ *   ball: (radius?: number, n?: number, center?: number[], cellType?: string, order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   sphericalShell: (innerRadius?: number, outerRadius?: number, n?: number, nr?: number, ratio?: number, center?: number[], order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   pipe: (innerRadius?: number, outerRadius?: number, height?: number, ntheta?: number, nr?: number, nz?: number, ratio?: number, center?: number[], order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   fichera: (n?: number, size?: number, center?: number[], cellType?: string, order?: number, maxCells?: number, complete?: boolean) => Mesh,
+ *   solidTorus: (majorRadius?: number, minorRadius?: number, n?: number, nu?: number, center?: number[], order?: number, maxCells?: number, complete?: boolean) => Mesh,
  *   voxelize: (mesh: Mesh, resolution?: number[], cellSize?: number, bounds?: number[], padding?: number, paddingRelative?: number, fill?: string, sign?: string, attachOccupancy?: boolean, maxCells?: number, watertightCheck?: string, plane?: string) => {mesh: Mesh, dims: number[], origin: number[], spacing: number[], numOccupied: number},
  *   octree: (mesh: Mesh, rootCells?: number[], minLevel?: number, maxLevel?: number, bounds?: number[], padding?: number, paddingRelative?: number, dimension?: number, sampleDistance?: number, balance?: string, fill?: string, sign?: string, attachDistance?: boolean, evenOdd?: boolean, maxCells?: number, watertightCheck?: string, transition?: string, snap?: boolean, surfaceLevel?: number, curvatureThreshold?: number, featureAngle?: number, sizeArray?: string, plane?: string) => {mesh: Mesh, dimension: number, numLeaves: number, numHanging: number, finestLevel: number, origin: number[], rootSize: number, numSnapped: number, numRefused: number},
  *   octreeMesh: (mesh: Mesh, options?: {output?: 'tet' | 'castellated' | 'hex', minSize?: number, maxSize?: number, maxLevel?: number, bounds?: number[], padding?: number, paddingRelative?: number, curvatureAngle?: number, featureAngle?: number, cornerAngle?: number, featureSize?: number, gapCells?: number, gapOutside?: boolean, sizeArray?: string, surfaceRegion?: string, gradingLayers?: number, skinGrading?: 'graded' | 'uniform', surfaceSize?: number, windingThreshold?: number, windingBeta?: number, conformity?: 'stuffing' | 'cleaving', alphaLong?: number, alphaShort?: number, preserveFeatures?: boolean, fitIterations?: number, dihedralFloorGuard?: boolean, fill?: 'inside' | 'all' | 'cover', keepOutside?: boolean, attachDistance?: boolean, attachQuality?: boolean, pillow?: boolean, hexGrading?: 'uniform' | 'graded', untangleIterations?: number, maxCells?: number, maxTets?: number}) => object,
@@ -771,46 +792,135 @@ export async function loadMeshioPlusPlus(
             Module.grid(dims, origin, spacing, maxCells),
         rectangle: (
             dims = null, size = null, origin = null, cellType = 'quad', split = 'zigzag',
-            order = 1, maxCells = 20000000,
-        ) => Module.rectangle(dims, size, origin, cellType, split, order, maxCells),
+            order = 1, maxCells = 20000000, complete = false,
+        ) => Module.rectangle(dims, size, origin, cellType, split, order, maxCells, complete),
         box: (
             dims = null, size = null, origin = null, cellType = 'hexahedron', order = 1,
-            maxCells = 20000000,
-        ) => Module.box(dims, size, origin, cellType, order, maxCells),
+            maxCells = 20000000, complete = false,
+        ) => Module.box(dims, size, origin, cellType, order, maxCells, complete),
         disk: (
             radius = 1, n = 8, center = null, cellType = 'quad', order = 1, maxCells = 20000000,
-        ) => Module.disk(radius, n, center, cellType, order, maxCells),
+            complete = false,
+        ) => Module.disk(radius, n, center, cellType, order, maxCells, complete),
         uvSphere: (
             radius = 1, nu = 16, nv = 8, center = null, cellType = 'triangle', order = 1,
-            maxCells = 20000000,
-        ) => Module.uvSphere(radius, nu, nv, center, cellType, order, maxCells),
-        icosaSphere: (radius = 1, subdivisions = 2, center = null, order = 1, maxCells = 20000000) =>
-            Module.icosaSphere(radius, subdivisions, center, order, maxCells),
+            maxCells = 20000000, complete = false,
+        ) => Module.uvSphere(radius, nu, nv, center, cellType, order, maxCells, complete),
+        icosaSphere: (
+            radius = 1, subdivisions = 2, center = null, order = 1, maxCells = 20000000,
+            complete = false,
+        ) =>
+            Module.icosaSphere(radius, subdivisions, center, order, maxCells, complete),
         cylinder: (
             radius = 1, height = 1, nxy = 8, nz = 8, center = null, cellType = 'hexahedron',
-            order = 1, maxCells = 20000000,
-        ) => Module.cylinder(radius, height, nxy, nz, center, cellType, order, maxCells),
+            order = 1, maxCells = 20000000, complete = false,
+        ) => Module.cylinder(radius, height, nxy, nz, center, cellType, order, maxCells, complete),
         referenceTriangle: (
-            n = 4, size = null, origin = null, order = 1, maxCells = 20000000,
-        ) => Module.referenceTriangle(n, size, origin, order, maxCells),
+            n = 4, size = null, origin = null, order = 1, maxCells = 20000000, complete = false,
+        ) => Module.referenceTriangle(n, size, origin, order, maxCells, complete),
         ngon: (
             sides = 6, radius = 1, rings = 1, center = null, order = 1, maxCells = 20000000,
-        ) => Module.ngon(sides, radius, rings, center, order, maxCells),
+            complete = false,
+        ) => Module.ngon(sides, radius, rings, center, order, maxCells, complete),
         annulus: (
             innerRadius = 0.5, outerRadius = 1, ntheta = 16, nr = 4, angle = 2 * Math.PI,
-            center = null, cellType = 'quad', order = 1, maxCells = 20000000,
+            center = null, cellType = 'quad', order = 1, maxCells = 20000000, complete = false,
         ) => Module.annulus(innerRadius, outerRadius, ntheta, nr, angle, center, cellType,
-            order, maxCells),
+            order, maxCells, complete),
         lshape: (
             n = 4, size = 2, center = null, cellType = 'quad', order = 1, maxCells = 20000000,
-        ) => Module.lshape(n, size, center, cellType, order, maxCells),
+            complete = false,
+        ) => Module.lshape(n, size, center, cellType, order, maxCells, complete),
         plateWithHole: (
             radius = 0.25, size = 1, nt = 8, nr = 4, center = null, cellType = 'quad', order = 1,
-            maxCells = 20000000,
-        ) => Module.plateWithHole(radius, size, nt, nr, center, cellType, order, maxCells),
+            maxCells = 20000000, complete = false,
+        ) => Module.plateWithHole(radius, size, nt, nr, center, cellType, order, maxCells, complete),
         honeycomb: (dims = null, edge = 1, origin = null, maxCells = 20000000) =>
             Module.honeycomb(dims, edge, origin, maxCells),
         referenceCells: (types = null, pairs = false) => Module.referenceCells(types, pairs),
+        line: (
+            n = 8, start = null, end = null, order = 1, maxCells = 20000000, complete = false,
+        ) => Module.line(n, start, end, order, maxCells, complete),
+        circle: (
+            radius = 1, n = 16, center = null, order = 1, maxCells = 20000000, complete = false,
+        ) => Module.circle(radius, n, center, order, maxCells, complete),
+        helix: (
+            radius = 1, pitch = 1, turns = 2, n = 32, center = null, order = 1, maxCells = 20000000,
+            complete = false,
+        ) => Module.helix(radius, pitch, turns, n, center, order, maxCells, complete),
+        spherePoints: (
+            n = 100, radius = 1, center = null, maxCells = 20000000,
+        ) => Module.spherePoints(n, radius, center, maxCells),
+        boxPoints: (
+            n = 100, size = null, origin = null, seed = 0, maxCells = 20000000,
+        ) => Module.boxPoints(n, size, origin, seed, maxCells),
+        tetraSphere: (
+            radius = 1, subdivisions = 3, center = null, order = 1, maxCells = 20000000, complete =
+            false,
+        ) => Module.tetraSphere(radius, subdivisions, center, order, maxCells, complete),
+        octaSphere: (
+            radius = 1, subdivisions = 2, center = null, order = 1, maxCells = 20000000, complete =
+            false,
+        ) => Module.octaSphere(radius, subdivisions, center, order, maxCells, complete),
+        cubeSphere: (
+            radius = 1, n = 4, center = null, cellType = 'quad', order = 1, maxCells = 20000000,
+            complete = false,
+        ) => Module.cubeSphere(radius, n, center, cellType, order, maxCells, complete),
+        geoSphere: (
+            radius = 1, n = 4, center = null, order = 1, maxCells = 20000000, complete = false,
+        ) => Module.geoSphere(radius, n, center, order, maxCells, complete),
+        torus: (
+            majorRadius = 1, minorRadius = 0.25, nu = 32, nv = 16, center = null, cellType = 'quad',
+            order = 1, maxCells = 20000000, complete = false,
+        ) => Module.torus(majorRadius, minorRadius, nu, nv, center, cellType, order, maxCells,
+            complete),
+        moebius: (
+            radius = 1, width = 0.5, nu = 32, nv = 4, numTwists = 1, center = null, cellType =
+            'quad', order = 1, maxCells = 20000000, complete = false,
+        ) => Module.moebius(radius, width, nu, nv, numTwists, center, cellType, order, maxCells,
+            complete),
+        tube: (
+            radius = 1, height = 1, ntheta = 16, nz = 4, center = null, cellType = 'quad', order =
+            1, maxCells = 20000000, complete = false,
+        ) => Module.tube(radius, height, ntheta, nz, center, cellType, order, maxCells, complete),
+        cone: (
+            radius = 1, height = 1, ntheta = 16, nz = 4, center = null, cellType = 'quad', order =
+            1, maxCells = 20000000, complete = false,
+        ) => Module.cone(radius, height, ntheta, nz, center, cellType, order, maxCells, complete),
+        capsule: (
+            radius = 0.5, height = 1, ntheta = 16, nz = 4, ncap = 4, center = null, cellType =
+            'quad', order = 1, maxCells = 20000000, complete = false,
+        ) => Module.capsule(radius, height, ntheta, nz, ncap, center, cellType, order, maxCells,
+            complete),
+        boxSurface: (
+            dims = null, size = null, origin = null, cellType = 'quad', order = 1, maxCells =
+            20000000, complete = false,
+        ) => Module.boxSurface(dims, size, origin, cellType, order, maxCells, complete),
+        platonic: (
+            name = 'icosahedron', radius = 1, center = null, maxCells = 20000000,
+        ) => Module.platonic(name, radius, center, maxCells),
+        ball: (
+            radius = 1, n = 4, center = null, cellType = 'hexahedron', order = 1, maxCells =
+            20000000, complete = false,
+        ) => Module.ball(radius, n, center, cellType, order, maxCells, complete),
+        sphericalShell: (
+            innerRadius = 0.5, outerRadius = 1, n = 4, nr = 2, ratio = 1, center = null, order = 1,
+            maxCells = 20000000, complete = false,
+        ) => Module.sphericalShell(innerRadius, outerRadius, n, nr, ratio, center, order, maxCells,
+            complete),
+        pipe: (
+            innerRadius = 0.5, outerRadius = 1, height = 1, ntheta = 16, nr = 2, nz = 4, ratio = 1,
+            center = null, order = 1, maxCells = 20000000, complete = false,
+        ) => Module.pipe(innerRadius, outerRadius, height, ntheta, nr, nz, ratio, center, order,
+            maxCells, complete),
+        fichera: (
+            n = 2, size = 2, center = null, cellType = 'hexahedron', order = 1, maxCells = 20000000,
+            complete = false,
+        ) => Module.fichera(n, size, center, cellType, order, maxCells, complete),
+        solidTorus: (
+            majorRadius = 1, minorRadius = 0.25, n = 4, nu = 32, center = null, order = 1, maxCells
+            = 20000000, complete = false,
+        ) => Module.solidTorus(majorRadius, minorRadius, n, nu, center, order, maxCells, complete),
         voxelize: (
             mesh,
             resolution = null,

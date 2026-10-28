@@ -500,7 +500,11 @@ struct _CGenOpts
     pad::Int32
     radius2::Cdouble
     angle::Cdouble
-    reserved::NTuple{4,Int64}
+    num_twists::Int32
+    complete::Int32
+    ratio::Cdouble
+    seed::UInt64
+    reserved::NTuple{1,Int64}
 end
 
 """

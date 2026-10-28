@@ -2755,11 +2755,50 @@ typedef enum mio_gen_split {
  *                     centre); cell_type QUAD or TRIANGLE.
  *  - mio_honeycomb:   counts[0..1] (nx, ny), size[0] (edge length), origin (lower-
  *                     left corner of the bounding box); order must be 1.
- * Every shape reads order and max_cells.
+ *  - mio_line:        counts[0] (n), origin (start), size[0..2] (the END point).
+ *  - mio_circle:      radius, counts[0] (n), origin (centre).
+ *  - mio_helix:       radius, height (pitch: rise per turn), angle (total sweep
+ *                     in radians: turns * 2 pi; 0 means two turns), counts[0]
+ *                     (n), origin (axis point level with the first node).
+ *  - mio_sphere_points: counts[0] (n), radius, origin (centre); order must be 1.
+ *  - mio_box_points:  counts[0] (n), size[0..2], origin (lo corner), seed;
+ *                     order must be 1.
+ *  - mio_tetra_sphere, mio_octa_sphere: radius, counts[0] (subdivisions),
+ *                     origin (centre).
+ *  - mio_cube_sphere: radius, counts[0] (n), origin; cell_type QUAD or TRIANGLE.
+ *  - mio_geo_sphere:  radius, counts[0] (frequency n), origin.
+ *  - mio_torus:       radius (major), radius2 (minor; 0 means 0.25), counts[0..1]
+ *                     (nu, nv), origin; cell_type QUAD or TRIANGLE.
+ *  - mio_moebius:     radius (centre line), radius2 (WIDTH; 0 means 0.5),
+ *                     counts[0..1] (nu, nv), num_twists, origin; cell_type QUAD
+ *                     or TRIANGLE.
+ *  - mio_tube, mio_cone: radius, height, counts[0..1] (ntheta, nz), origin;
+ *                     cell_type QUAD or TRIANGLE.
+ *  - mio_capsule:     radius, height (cylinder length), counts[0..2] (ntheta,
+ *                     nz, ncap), origin; cell_type QUAD or TRIANGLE.
+ *  - mio_box_surface: counts[0..2], size[0..2], origin (lo corner); cell_type
+ *                     QUAD or TRIANGLE.
+ *  - mio_platonic:    counts[0] (the FACE COUNT: 4 tetrahedron, 6 cube, 8
+ *                     octahedron, 12 dodecahedron, 20 icosahedron), radius
+ *                     (circumradius), origin; order must be 1.
+ *  - mio_ball:        radius, counts[0] (n), origin; cell_type HEXAHEDRON or
+ *                     TETRA.
+ *  - mio_spherical_shell: radius (OUTER), radius2 (inner; 0 means 0.5),
+ *                     counts[0..1] (n, nr), ratio, origin.
+ *  - mio_pipe:        radius (OUTER), radius2 (inner; 0 means 0.5), height,
+ *                     counts[0..2] (ntheta, nr, nz), ratio, origin.
+ *  - mio_fichera:     counts[0] (n), size[0] (side of the bounding cube), origin
+ *                     (its centre); cell_type HEXAHEDRON or TETRA.
+ *  - mio_solid_torus: radius (major), radius2 (minor; 0 means 0.25), counts[0..1]
+ *                     (n, nu), origin.
+ * Every shape reads order (1 to 10: 2 quadratic, 3 and up the VTK Lagrange
+ * family), complete (with order 2, quad9 / hexahedron27 / wedge18 instead of
+ * the serendipity types) and max_cells.
  *
  * radius2 and angle were carved out of the reserved tail, so a struct filled by
  * an older caller (both zero) reads as "use the default": radius2 = 0.5 and
- * angle = 2 pi.
+ * angle = 2 pi. num_twists, complete, ratio and seed came the same way: a zero
+ * ratio means 1 (a uniform wall); num_twists and seed take zero as given.
  */
 typedef struct mio_gen_opts {
     int64_t counts[3];   /**< cell or division counts; see the table above */
@@ -2774,12 +2813,16 @@ typedef struct mio_gen_opts {
     int32_t pad;         /**< must be zero */
     double radius2;      /**< inner radius of an annulus; 0 means 0.5 */
     double angle;        /**< opening angle of an annulus in radians; 0 means 2 pi */
-    int64_t reserved[4]; /**< must be zero; room for additive growth */
+    int32_t num_twists;  /**< half-twists of a Moebius band */
+    int32_t complete;    /**< nonzero: full-Lagrange order 2 */
+    double ratio;        /**< wall grading of a shell or pipe; 0 means 1 */
+    uint64_t seed;       /**< splitmix64 seed of mio_box_points */
+    int64_t reserved[1]; /**< must be zero; room for additive growth */
 } mio_gen_opts;
 
 /**
  * Zero-initialize generator options: counts 8, unit size and radius, order 1,
- * annulus inner radius 0.5 and opening angle 2 pi.
+ * annulus inner radius 0.5 and opening angle 2 pi, one half-twist, ratio 1.
  */
 MIO_API void mio_gen_opts_init(mio_gen_opts* opts);
 
@@ -2807,6 +2850,48 @@ MIO_API mio_mesh* mio_lshape(const mio_gen_opts* opts);
 MIO_API mio_mesh* mio_plate_with_hole(const mio_gen_opts* opts);
 /** A tiling of pointy-top hexagons as one ragged polygon block. */
 MIO_API mio_mesh* mio_honeycomb(const mio_gen_opts* opts);
+/** A straight segment of counts[0] line cells; point regions start and end. */
+MIO_API mio_mesh* mio_line(const mio_gen_opts* opts);
+/** A closed polyline on a circle in the z = origin[2] plane. */
+MIO_API mio_mesh* mio_circle(const mio_gen_opts* opts);
+/** A helix around the z axis; point regions start and end. */
+MIO_API mio_mesh* mio_helix(const mio_gen_opts* opts);
+/** Points on a sphere on a Fibonacci lattice, as vertex cells. */
+MIO_API mio_mesh* mio_sphere_points(const mio_gen_opts* opts);
+/** Points drawn uniformly in a box from splitmix64(seed), as vertex cells. */
+MIO_API mio_mesh* mio_box_points(const mio_gen_opts* opts);
+/** A sphere surface from a subdivided tetrahedron. */
+MIO_API mio_mesh* mio_tetra_sphere(const mio_gen_opts* opts);
+/** A sphere surface from a subdivided octahedron. */
+MIO_API mio_mesh* mio_octa_sphere(const mio_gen_opts* opts);
+/** A sphere surface from a cube's six gridded faces. */
+MIO_API mio_mesh* mio_cube_sphere(const mio_gen_opts* opts);
+/** A geodesic sphere of frequency counts[0]. */
+MIO_API mio_mesh* mio_geo_sphere(const mio_gen_opts* opts);
+/** A torus around the z axis. */
+MIO_API mio_mesh* mio_torus(const mio_gen_opts* opts);
+/** A Moebius band; side region boundary. */
+MIO_API mio_mesh* mio_moebius(const mio_gen_opts* opts);
+/** An open cylinder surface; side regions bottom and top. */
+MIO_API mio_mesh* mio_tube(const mio_gen_opts* opts);
+/** A closed cone surface; cell regions side and base. */
+MIO_API mio_mesh* mio_cone(const mio_gen_opts* opts);
+/** A capsule: a cylinder closed by two hemispheres. */
+MIO_API mio_mesh* mio_capsule(const mio_gen_opts* opts);
+/** The boundary of a box; cell regions xmin ... zmax. */
+MIO_API mio_mesh* mio_box_surface(const mio_gen_opts* opts);
+/** A platonic solid's surface, one cell per face (counts[0] faces). */
+MIO_API mio_mesh* mio_platonic(const mio_gen_opts* opts);
+/** A ball by the seven-block butterfly; side region surface. */
+MIO_API mio_mesh* mio_ball(const mio_gen_opts* opts);
+/** A thick spherical shell of hexahedra; side regions inner and outer. */
+MIO_API mio_mesh* mio_spherical_shell(const mio_gen_opts* opts);
+/** A thick-walled pipe of hexahedra; side regions inner, outer, bottom, top. */
+MIO_API mio_mesh* mio_pipe(const mio_gen_opts* opts);
+/** The Fichera corner; side regions xmin ... zmax, notch_x, notch_y, notch_z. */
+MIO_API mio_mesh* mio_fichera(const mio_gen_opts* opts);
+/** A solid torus of hexahedra; side region surface. */
+MIO_API mio_mesh* mio_solid_torus(const mio_gen_opts* opts);
 /**
  * One cell of each requested type in reference coordinates, side by side.
  *

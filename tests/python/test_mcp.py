@@ -2198,7 +2198,7 @@ def test_every_tool_function_is_callable():
 
 
 def test_generator_tools(tmp_path):
-    """The thirteen parametric generators read no input and write a mesh."""
+    """The parametric generators read no input and write a mesh."""
     cases = [
         ("rectangle", dict(dims=[3, 2], cell_type="triangle", split="center"), 24),
         ("box", dict(dims=[2, 2, 2], cell_type="tetra", order=2), 48),
@@ -2213,6 +2213,27 @@ def test_generator_tools(tmp_path):
         ("plate_with_hole", dict(nt=3, nr=2), 24),
         ("honeycomb", dict(dims=[3, 2]), 6),
         ("reference_cells", dict(types=["tetra", "wedge"]), 2),
+        ("line", dict(n=5, end=[0.0, 0.0, 2.0], order=3), 5),
+        ("circle", dict(n=6, order=2), 6),
+        ("helix", dict(n=10, turns=1.0), 10),
+        ("sphere_points", dict(n=17), 17),
+        ("box_points", dict(n=9, seed=4), 9),
+        ("tetra_sphere", dict(subdivisions=1), 16),
+        ("octa_sphere", dict(subdivisions=1), 32),
+        ("cube_sphere", dict(n=2, order=2, complete=True), 24),
+        ("geo_sphere", dict(n=2), 80),
+        ("torus", dict(nu=6, nv=4, cell_type="triangle"), 48),
+        ("moebius", dict(nu=8, nv=2, num_twists=3), 16),
+        ("tube", dict(ntheta=6, nz=2), 12),
+        ("cone", dict(ntheta=6, nz=2), 6 * 4),
+        ("capsule", dict(ntheta=6, nz=1, ncap=2), 6 * 5),
+        ("box_surface", dict(dims=[1, 2, 3]), 22),
+        ("platonic", dict(name="dodecahedron"), 12),
+        ("ball", dict(n=1, cell_type="tetra"), 48),
+        ("spherical_shell", dict(n=2, nr=1, ratio=1.5), 24),
+        ("pipe", dict(ntheta=6, nr=1, nz=2), 12),
+        ("fichera", dict(n=1), 7),
+        ("solid_torus", dict(n=2, nu=5, order=2), 20),
     ]
     for name, kwargs, num_cells in cases:
         out = tmp_path / f"{name}.vtu"

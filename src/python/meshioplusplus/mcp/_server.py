@@ -726,6 +726,7 @@ def _register_operations(server: FastMCP) -> None:
         split: str = "zigzag",
         order: int = 1,
         max_cells: int = 20000000,
+        complete: bool = False,
     ) -> dict:
         """Generate a regular 2-D grid of dims=(nx, ny) quads or triangles at
         z = origin[2]. split (triangles) is zigzag, up, down or center; order=2
@@ -742,6 +743,7 @@ def _register_operations(server: FastMCP) -> None:
             split=split,
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
 
     @server.tool()
@@ -754,6 +756,7 @@ def _register_operations(server: FastMCP) -> None:
         cell_type: str = "hexahedron",
         order: int = 1,
         max_cells: int = 20000000,
+        complete: bool = False,
     ) -> dict:
         """Generate a regular 3-D grid of dims=(nx, ny, nz) hexahedra, tetrahedra
         (six Kuhn tetrahedra per cell) or wedges. order=2 gives hexahedron20,
@@ -769,6 +772,7 @@ def _register_operations(server: FastMCP) -> None:
             cell_type=cell_type,
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
 
     @server.tool()
@@ -781,6 +785,7 @@ def _register_operations(server: FastMCP) -> None:
         cell_type: str = "quad",
         order: int = 1,
         max_cells: int = 20000000,
+        complete: bool = False,
     ) -> dict:
         """Generate a disk of quads (an n x n grid pushed onto the disk) or
         triangles (n rings, 6 n^2 triangles). order=2 curves the rim. The mesh
@@ -795,6 +800,7 @@ def _register_operations(server: FastMCP) -> None:
             cell_type=cell_type,
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
 
     @server.tool()
@@ -808,6 +814,7 @@ def _register_operations(server: FastMCP) -> None:
         cell_type: str = "triangle",
         order: int = 1,
         max_cells: int = 20000000,
+        complete: bool = False,
     ) -> dict:
         """Generate a latitude/longitude sphere surface with nu points per ring and
         nv bands, oriented outward. cell_type is triangle, or quad with triangle
@@ -824,6 +831,7 @@ def _register_operations(server: FastMCP) -> None:
             cell_type=cell_type,
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
 
     @server.tool()
@@ -835,6 +843,7 @@ def _register_operations(server: FastMCP) -> None:
         center: Optional[List[float]] = None,
         order: int = 1,
         max_cells: int = 20000000,
+        complete: bool = False,
     ) -> dict:
         """Generate a sphere surface from an icosahedron split in four
         `subdivisions` times (20 * 4^subdivisions triangles), oriented outward.
@@ -849,6 +858,7 @@ def _register_operations(server: FastMCP) -> None:
             center=center,
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
 
     @server.tool()
@@ -863,6 +873,7 @@ def _register_operations(server: FastMCP) -> None:
         cell_type: str = "hexahedron",
         order: int = 1,
         max_cells: int = 20000000,
+        complete: bool = False,
     ) -> dict:
         """Generate a solid cylinder along z: hexahedra (the disk grid, extruded)
         or wedges. order=2 curves the side. The mesh carries side regions side,
@@ -879,6 +890,7 @@ def _register_operations(server: FastMCP) -> None:
             cell_type=cell_type,
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
 
     @server.tool()
@@ -890,6 +902,7 @@ def _register_operations(server: FastMCP) -> None:
         origin: Optional[List[float]] = None,
         order: int = 1,
         max_cells: int = 20000000,
+        complete: bool = False,
     ) -> dict:
         """Generate the reference triangle (0,0) (1,0) (0,1), scaled by size and
         refined into n*n triangles in barycentric lattice order. The mesh carries
@@ -904,6 +917,7 @@ def _register_operations(server: FastMCP) -> None:
             origin=origin,
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
 
     @server.tool()
@@ -916,6 +930,7 @@ def _register_operations(server: FastMCP) -> None:
         center: Optional[List[float]] = None,
         order: int = 1,
         max_cells: int = 20000000,
+        complete: bool = False,
     ) -> dict:
         """Generate a regular polygon of `sides` sides fanned from its centre
         (rings=1), or refined into `rings` rings of triangles. The mesh carries a
@@ -930,6 +945,7 @@ def _register_operations(server: FastMCP) -> None:
             center=center,
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
 
     @server.tool()
@@ -945,6 +961,7 @@ def _register_operations(server: FastMCP) -> None:
         cell_type: str = "quad",
         order: int = 1,
         max_cells: int = 20000000,
+        complete: bool = False,
     ) -> dict:
         """Generate an annulus of ntheta x nr quads or triangles, or a sector of
         `angle` radians whose two end rays stay separate node chains (the seam
@@ -964,6 +981,7 @@ def _register_operations(server: FastMCP) -> None:
             cell_type=cell_type,
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
 
     @server.tool()
@@ -976,6 +994,7 @@ def _register_operations(server: FastMCP) -> None:
         cell_type: str = "quad",
         order: int = 1,
         max_cells: int = 20000000,
+        complete: bool = False,
     ) -> dict:
         """Generate the L-shaped domain: the square of side `size` minus its
         fourth quadrant, with the re-entrant corner at the centre (a singular
@@ -992,6 +1011,7 @@ def _register_operations(server: FastMCP) -> None:
             cell_type=cell_type,
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
 
     @server.tool()
@@ -1006,6 +1026,7 @@ def _register_operations(server: FastMCP) -> None:
         cell_type: str = "quad",
         order: int = 1,
         max_cells: int = 20000000,
+        complete: bool = False,
     ) -> dict:
         """Generate a square plate of side `size` around a circular hole of
         `radius`, in four quad blocks (the stress-concentration benchmark).
@@ -1023,6 +1044,7 @@ def _register_operations(server: FastMCP) -> None:
             cell_type=cell_type,
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
 
     @server.tool()
@@ -1046,6 +1068,613 @@ def _register_operations(server: FastMCP) -> None:
             edge=edge,
             origin=origin,
             max_cells=max_cells,
+        )
+
+    @server.tool()
+    def line(
+        output_path: str,
+        output_format: Optional[str] = None,
+        n: int = 8,
+        start: Optional[List[float]] = None,
+        end: Optional[List[float]] = None,
+        order: int = 1,
+        max_cells: int = 20000000,
+        complete: bool = False,
+    ) -> dict:
+        """Generate a straight segment of n line cells from start to end (default
+        the origin to (1, 0, 0)), a 1-D and beam-format fixture. The mesh
+        carries point regions start and end. Reads no input mesh: it creates
+        one."""
+        return _guard(
+            _tools.tool_line,
+            output_path=output_path,
+            output_format=output_format,
+            n=n,
+            start=start,
+            end=end,
+            order=order,
+            max_cells=max_cells,
+            complete=complete,
+        )
+
+    @server.tool()
+    def circle(
+        output_path: str,
+        output_format: Optional[str] = None,
+        radius: float = 1.0,
+        n: int = 16,
+        center: Optional[List[float]] = None,
+        order: int = 1,
+        max_cells: int = 20000000,
+        complete: bool = False,
+    ) -> dict:
+        """Generate a closed polyline of n line cells on a circle in the z =
+        center[2] plane, the seam welded. order=2 puts the mid-edge nodes on the
+        arc. Reads no input mesh: it creates one."""
+        return _guard(
+            _tools.tool_circle,
+            output_path=output_path,
+            output_format=output_format,
+            radius=radius,
+            n=n,
+            center=center,
+            order=order,
+            max_cells=max_cells,
+            complete=complete,
+        )
+
+    @server.tool()
+    def helix(
+        output_path: str,
+        output_format: Optional[str] = None,
+        radius: float = 1.0,
+        pitch: float = 1.0,
+        turns: float = 2.0,
+        n: int = 32,
+        center: Optional[List[float]] = None,
+        order: int = 1,
+        max_cells: int = 20000000,
+        complete: bool = False,
+    ) -> dict:
+        """Generate a helix (a spring) of n line cells around the z axis: turns
+        turns rising pitch per turn. The mesh carries point regions start and
+        end. Reads no input mesh: it creates one."""
+        return _guard(
+            _tools.tool_helix,
+            output_path=output_path,
+            output_format=output_format,
+            radius=radius,
+            pitch=pitch,
+            turns=turns,
+            n=n,
+            center=center,
+            order=order,
+            max_cells=max_cells,
+            complete=complete,
+        )
+
+    @server.tool()
+    def sphere_points(
+        output_path: str,
+        output_format: Optional[str] = None,
+        n: int = 100,
+        radius: float = 1.0,
+        center: Optional[List[float]] = None,
+        max_cells: int = 20000000,
+    ) -> dict:
+        """Generate n points on a sphere on a Fibonacci lattice, as vertex cells: a
+        point-cloud fixture without poles or seams. Reads no input mesh: it
+        creates one."""
+        return _guard(
+            _tools.tool_sphere_points,
+            output_path=output_path,
+            output_format=output_format,
+            n=n,
+            radius=radius,
+            center=center,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
+    def box_points(
+        output_path: str,
+        output_format: Optional[str] = None,
+        n: int = 100,
+        size: Optional[List[float]] = None,
+        origin: Optional[List[float]] = None,
+        seed: int = 0,
+        max_cells: int = 20000000,
+    ) -> dict:
+        """Generate n points drawn uniformly in a box from splitmix64 seeded with
+        seed, as vertex cells: the same cloud on every platform and binding.
+        Reads no input mesh: it creates one."""
+        return _guard(
+            _tools.tool_box_points,
+            output_path=output_path,
+            output_format=output_format,
+            n=n,
+            size=size,
+            origin=origin,
+            seed=seed,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
+    def tetra_sphere(
+        output_path: str,
+        output_format: Optional[str] = None,
+        radius: float = 1.0,
+        subdivisions: int = 3,
+        center: Optional[List[float]] = None,
+        order: int = 1,
+        max_cells: int = 20000000,
+        complete: bool = False,
+    ) -> dict:
+        """Generate a sphere surface from a regular tetrahedron split in four
+        subdivisions times (4 * 4**subdivisions triangles), the most uneven
+        seed: a mesh-quality probe. Reads no input mesh: it creates one."""
+        return _guard(
+            _tools.tool_tetra_sphere,
+            output_path=output_path,
+            output_format=output_format,
+            radius=radius,
+            subdivisions=subdivisions,
+            center=center,
+            order=order,
+            max_cells=max_cells,
+            complete=complete,
+        )
+
+    @server.tool()
+    def octa_sphere(
+        output_path: str,
+        output_format: Optional[str] = None,
+        radius: float = 1.0,
+        subdivisions: int = 2,
+        center: Optional[List[float]] = None,
+        order: int = 1,
+        max_cells: int = 20000000,
+        complete: bool = False,
+    ) -> dict:
+        """Generate a sphere surface from a regular octahedron split in four
+        subdivisions times (8 * 4**subdivisions triangles), with the six axis
+        points exact. Reads no input mesh: it creates one."""
+        return _guard(
+            _tools.tool_octa_sphere,
+            output_path=output_path,
+            output_format=output_format,
+            radius=radius,
+            subdivisions=subdivisions,
+            center=center,
+            order=order,
+            max_cells=max_cells,
+            complete=complete,
+        )
+
+    @server.tool()
+    def cube_sphere(
+        output_path: str,
+        output_format: Optional[str] = None,
+        radius: float = 1.0,
+        n: int = 4,
+        center: Optional[List[float]] = None,
+        cell_type: str = "quad",
+        order: int = 1,
+        max_cells: int = 20000000,
+        complete: bool = False,
+    ) -> dict:
+        """Generate a sphere surface from a cube's six faces of n x n quads (or
+        triangles) pushed radially onto the sphere. Reads no input mesh: it
+        creates one."""
+        return _guard(
+            _tools.tool_cube_sphere,
+            output_path=output_path,
+            output_format=output_format,
+            radius=radius,
+            n=n,
+            center=center,
+            cell_type=cell_type,
+            order=order,
+            max_cells=max_cells,
+            complete=complete,
+        )
+
+    @server.tool()
+    def geo_sphere(
+        output_path: str,
+        output_format: Optional[str] = None,
+        radius: float = 1.0,
+        n: int = 4,
+        center: Optional[List[float]] = None,
+        order: int = 1,
+        max_cells: int = 20000000,
+        complete: bool = False,
+    ) -> dict:
+        """Generate a geodesic sphere of frequency n: every icosahedron face cut
+        into an n x n triangle lattice (20 n**2 triangles) on the sphere. Reads
+        no input mesh: it creates one."""
+        return _guard(
+            _tools.tool_geo_sphere,
+            output_path=output_path,
+            output_format=output_format,
+            radius=radius,
+            n=n,
+            center=center,
+            order=order,
+            max_cells=max_cells,
+            complete=complete,
+        )
+
+    @server.tool()
+    def torus(
+        output_path: str,
+        output_format: Optional[str] = None,
+        major_radius: float = 1.0,
+        minor_radius: float = 0.25,
+        nu: int = 32,
+        nv: int = 16,
+        center: Optional[List[float]] = None,
+        cell_type: str = "quad",
+        order: int = 1,
+        max_cells: int = 20000000,
+        complete: bool = False,
+    ) -> dict:
+        """Generate a torus around the z axis, periodic both ways and welded: genus
+        one (Euler characteristic zero), with negative Gaussian curvature on the
+        inner rim. Reads no input mesh: it creates one."""
+        return _guard(
+            _tools.tool_torus,
+            output_path=output_path,
+            output_format=output_format,
+            major_radius=major_radius,
+            minor_radius=minor_radius,
+            nu=nu,
+            nv=nv,
+            center=center,
+            cell_type=cell_type,
+            order=order,
+            max_cells=max_cells,
+            complete=complete,
+        )
+
+    @server.tool()
+    def moebius(
+        output_path: str,
+        output_format: Optional[str] = None,
+        radius: float = 1.0,
+        width: float = 0.5,
+        nu: int = 32,
+        nv: int = 4,
+        num_twists: int = 1,
+        center: Optional[List[float]] = None,
+        cell_type: str = "quad",
+        order: int = 1,
+        max_cells: int = 20000000,
+        complete: bool = False,
+    ) -> dict:
+        """Generate a Moebius band with num_twists half-twists: an odd count has no
+        consistent orientation (the compute_normals inconsistent_pairs probe).
+        The mesh carries a side region boundary. Reads no input mesh: it creates
+        one."""
+        return _guard(
+            _tools.tool_moebius,
+            output_path=output_path,
+            output_format=output_format,
+            radius=radius,
+            width=width,
+            nu=nu,
+            nv=nv,
+            num_twists=num_twists,
+            center=center,
+            cell_type=cell_type,
+            order=order,
+            max_cells=max_cells,
+            complete=complete,
+        )
+
+    @server.tool()
+    def tube(
+        output_path: str,
+        output_format: Optional[str] = None,
+        radius: float = 1.0,
+        height: float = 1.0,
+        ntheta: int = 16,
+        nz: int = 4,
+        center: Optional[List[float]] = None,
+        cell_type: str = "quad",
+        order: int = 1,
+        max_cells: int = 20000000,
+        complete: bool = False,
+    ) -> dict:
+        """Generate an open cylinder surface around the z axis, oriented outward.
+        The mesh carries side regions bottom and top. Reads no input mesh: it
+        creates one."""
+        return _guard(
+            _tools.tool_tube,
+            output_path=output_path,
+            output_format=output_format,
+            radius=radius,
+            height=height,
+            ntheta=ntheta,
+            nz=nz,
+            center=center,
+            cell_type=cell_type,
+            order=order,
+            max_cells=max_cells,
+            complete=complete,
+        )
+
+    @server.tool()
+    def cone(
+        output_path: str,
+        output_format: Optional[str] = None,
+        radius: float = 1.0,
+        height: float = 1.0,
+        ntheta: int = 16,
+        nz: int = 4,
+        center: Optional[List[float]] = None,
+        cell_type: str = "quad",
+        order: int = 1,
+        max_cells: int = 20000000,
+        complete: bool = False,
+    ) -> dict:
+        """Generate a closed cone surface, the base disk at center and the apex
+        height above it, the rim a sharp edge (a feature_edges probe). The mesh
+        carries cell regions side and base. Reads no input mesh: it creates one."""
+        return _guard(
+            _tools.tool_cone,
+            output_path=output_path,
+            output_format=output_format,
+            radius=radius,
+            height=height,
+            ntheta=ntheta,
+            nz=nz,
+            center=center,
+            cell_type=cell_type,
+            order=order,
+            max_cells=max_cells,
+            complete=complete,
+        )
+
+    @server.tool()
+    def capsule(
+        output_path: str,
+        output_format: Optional[str] = None,
+        radius: float = 0.5,
+        height: float = 1.0,
+        ntheta: int = 16,
+        nz: int = 4,
+        ncap: int = 4,
+        center: Optional[List[float]] = None,
+        cell_type: str = "quad",
+        order: int = 1,
+        max_cells: int = 20000000,
+        complete: bool = False,
+    ) -> dict:
+        """Generate a capsule: a cylinder of length height closed by two
+        hemispheres, smooth where they meet. Reads no input mesh: it creates
+        one."""
+        return _guard(
+            _tools.tool_capsule,
+            output_path=output_path,
+            output_format=output_format,
+            radius=radius,
+            height=height,
+            ntheta=ntheta,
+            nz=nz,
+            ncap=ncap,
+            center=center,
+            cell_type=cell_type,
+            order=order,
+            max_cells=max_cells,
+            complete=complete,
+        )
+
+    @server.tool()
+    def box_surface(
+        output_path: str,
+        output_format: Optional[str] = None,
+        dims: Optional[List[int]] = None,
+        size: Optional[List[float]] = None,
+        origin: Optional[List[float]] = None,
+        cell_type: str = "quad",
+        order: int = 1,
+        max_cells: int = 20000000,
+        complete: bool = False,
+    ) -> dict:
+        """Generate the boundary of a box as a closed surface, each face a grid,
+        oriented outward. The mesh carries cell regions xmin ... zmax, one per
+        face. Reads no input mesh: it creates one."""
+        return _guard(
+            _tools.tool_box_surface,
+            output_path=output_path,
+            output_format=output_format,
+            dims=dims,
+            size=size,
+            origin=origin,
+            cell_type=cell_type,
+            order=order,
+            max_cells=max_cells,
+            complete=complete,
+        )
+
+    @server.tool()
+    def platonic(
+        output_path: str,
+        output_format: Optional[str] = None,
+        name: str = "icosahedron",
+        radius: float = 1.0,
+        center: Optional[List[float]] = None,
+        max_cells: int = 20000000,
+    ) -> dict:
+        """Generate a platonic solid's surface with one cell per face: tetrahedron,
+        octahedron or icosahedron (triangles), cube (quads) or dodecahedron (a
+        polygon block of pentagons). Reads no input mesh: it creates one."""
+        return _guard(
+            _tools.tool_platonic,
+            output_path=output_path,
+            output_format=output_format,
+            name=name,
+            radius=radius,
+            center=center,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
+    def ball(
+        output_path: str,
+        output_format: Optional[str] = None,
+        radius: float = 1.0,
+        n: int = 4,
+        center: Optional[List[float]] = None,
+        cell_type: str = "hexahedron",
+        order: int = 1,
+        max_cells: int = 20000000,
+        complete: bool = False,
+    ) -> dict:
+        """Generate a solid ball of hexahedra (or tetra) by the seven-block
+        butterfly, so no cell degenerates at the centre; n cells from the centre
+        to the surface. The mesh carries a side region surface. Reads no input
+        mesh: it creates one."""
+        return _guard(
+            _tools.tool_ball,
+            output_path=output_path,
+            output_format=output_format,
+            radius=radius,
+            n=n,
+            center=center,
+            cell_type=cell_type,
+            order=order,
+            max_cells=max_cells,
+            complete=complete,
+        )
+
+    @server.tool()
+    def spherical_shell(
+        output_path: str,
+        output_format: Optional[str] = None,
+        inner_radius: float = 0.5,
+        outer_radius: float = 1.0,
+        n: int = 4,
+        nr: int = 2,
+        ratio: float = 1.0,
+        center: Optional[List[float]] = None,
+        order: int = 1,
+        max_cells: int = 20000000,
+        complete: bool = False,
+    ) -> dict:
+        """Generate a thick spherical shell of hexahedra between two radii, nr
+        layers graded by ratio (each layer's thickness over the one inside it).
+        The mesh carries side regions inner and outer. Reads no input mesh: it
+        creates one."""
+        return _guard(
+            _tools.tool_spherical_shell,
+            output_path=output_path,
+            output_format=output_format,
+            inner_radius=inner_radius,
+            outer_radius=outer_radius,
+            n=n,
+            nr=nr,
+            ratio=ratio,
+            center=center,
+            order=order,
+            max_cells=max_cells,
+            complete=complete,
+        )
+
+    @server.tool()
+    def pipe(
+        output_path: str,
+        output_format: Optional[str] = None,
+        inner_radius: float = 0.5,
+        outer_radius: float = 1.0,
+        height: float = 1.0,
+        ntheta: int = 16,
+        nr: int = 2,
+        nz: int = 4,
+        ratio: float = 1.0,
+        center: Optional[List[float]] = None,
+        order: int = 1,
+        max_cells: int = 20000000,
+        complete: bool = False,
+    ) -> dict:
+        """Generate a thick-walled pipe of hexahedra around the z axis, nr layers
+        through the wall graded by ratio. The mesh carries side regions inner,
+        outer, bottom and top. Reads no input mesh: it creates one."""
+        return _guard(
+            _tools.tool_pipe,
+            output_path=output_path,
+            output_format=output_format,
+            inner_radius=inner_radius,
+            outer_radius=outer_radius,
+            height=height,
+            ntheta=ntheta,
+            nr=nr,
+            nz=nz,
+            ratio=ratio,
+            center=center,
+            order=order,
+            max_cells=max_cells,
+            complete=complete,
+        )
+
+    @server.tool()
+    def fichera(
+        output_path: str,
+        output_format: Optional[str] = None,
+        n: int = 2,
+        size: float = 2.0,
+        center: Optional[List[float]] = None,
+        cell_type: str = "hexahedron",
+        order: int = 1,
+        max_cells: int = 20000000,
+        complete: bool = False,
+    ) -> dict:
+        """Generate the Fichera corner: the cube of side size minus its positive
+        octant, the 3-D L-shape with a re-entrant vertex at the centre. The mesh
+        carries side regions xmin ... zmax, notch_x, notch_y and notch_z. Reads
+        no input mesh: it creates one."""
+        return _guard(
+            _tools.tool_fichera,
+            output_path=output_path,
+            output_format=output_format,
+            n=n,
+            size=size,
+            center=center,
+            cell_type=cell_type,
+            order=order,
+            max_cells=max_cells,
+            complete=complete,
+        )
+
+    @server.tool()
+    def solid_torus(
+        output_path: str,
+        output_format: Optional[str] = None,
+        major_radius: float = 1.0,
+        minor_radius: float = 0.25,
+        n: int = 4,
+        nu: int = 32,
+        center: Optional[List[float]] = None,
+        order: int = 1,
+        max_cells: int = 20000000,
+        complete: bool = False,
+    ) -> dict:
+        """Generate a solid torus of hexahedra: the squircle disk swept around the
+        z axis and welded. The mesh carries a side region surface. Reads no
+        input mesh: it creates one."""
+        return _guard(
+            _tools.tool_solid_torus,
+            output_path=output_path,
+            output_format=output_format,
+            major_radius=major_radius,
+            minor_radius=minor_radius,
+            n=n,
+            nu=nu,
+            center=center,
+            order=order,
+            max_cells=max_cells,
+            complete=complete,
         )
 
     @server.tool()

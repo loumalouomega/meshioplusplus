@@ -108,7 +108,7 @@ extern SEXP R_mio_remesh_volume(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, 
                                 SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_grid(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_generate(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
-                           SEXP);
+                           SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_reference_cells(SEXP, SEXP);
 extern SEXP R_mio_voxelize(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
                            SEXP);
@@ -321,7 +321,7 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_sobolev_deform, 8),
                                               CALLDEF(R_mio_remesh_volume, 14),
                                               CALLDEF(R_mio_grid, 4),
-                                              CALLDEF(R_mio_generate, 12),
+                                              CALLDEF(R_mio_generate, 16),
                                               CALLDEF(R_mio_reference_cells, 2),
                                               CALLDEF(R_mio_voxelize, 12),
                                               CALLDEF(R_mio_octree, 23),
