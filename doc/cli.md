@@ -2006,21 +2006,29 @@ meshioplusplus generate uv-sphere ball.vtu --radius 2 --nu 32 --nv 16 --cell-typ
 meshioplusplus generate reference-cells cells.vtu --types tetra,hexahedron20,polyhedron
 ```
 
-Build a mesh from parameters, in both CLIs. `SHAPE` is `rectangle`, `box`, `disk`, `uv-sphere`, `icosa-sphere`, `cylinder`, `reference-triangle`, `ngon`, `annulus`, `lshape`, `plate-with-hole`, `honeycomb` or `reference-cells`, and `OUTFILE` is written in the format its extension names (`-o/--output-format` overrides it). Vector flags take comma-separated values, and negatives need the `=` form (`--origin=-1,-1,0`).
+Build a mesh from parameters, in both CLIs. `SHAPE` is `rectangle`, `box`, `disk`, `uv-sphere`, `icosa-sphere`, `cylinder`, `reference-triangle`, `ngon`, `annulus`, `lshape`, `plate-with-hole`, `honeycomb`, `reference-cells`, `line`, `circle`, `helix`, `sphere-points`, `box-points`, `tetra-sphere`, `octa-sphere`, `cube-sphere`, `geo-sphere`, `torus`, `moebius`, `tube`, `cone`, `capsule`, `box-surface`, `platonic`, `ball`, `spherical-shell`, `pipe`, `fichera` or `solid-torus`, and `OUTFILE` is written in the format its extension names (`-o/--output-format` overrides it). Vector flags take comma-separated values, and negatives need the `=` form (`--origin=-1,-1,0`).
 
 | flag | shapes | meaning |
 |---|---|---|
-| `--dims nx,ny[,nz]` | `rectangle`, `box`, `honeycomb` | cell counts |
-| `--size lx,ly[,lz]` / `--size L` | `rectangle`, `box`, `reference-triangle` / `lshape`, `plate-with-hole` | side lengths / one side |
+| `--dims nx,ny[,nz]` | `rectangle`, `box`, `honeycomb`, `box-surface` | cell counts |
+| `--size lx,ly[,lz]` / `--size L` | `rectangle`, `box`, `reference-triangle`, `box-points`, `box-surface` / `lshape`, `plate-with-hole`, `fichera` | side lengths / one side |
 | `--origin x,y[,z]` | `rectangle`, `box`, `reference-triangle`, `honeycomb` | lo corner |
 | `--center x,y,z` | the round shapes, `ngon`, `annulus`, `lshape`, `plate-with-hole` | centre |
 | `--radius R` / `--height H` | round shapes, `ngon`, `plate-with-hole` (the hole) / `cylinder` | radius and height |
 | `--inner-radius R --outer-radius R --ntheta N --nr N --angle A` | `annulus` | radii, cells around and across, opening angle in radians (a sector keeps its seam pair) |
 | `--n N` / `--nu N --nv N` / `--subdivisions N` / `--nxy N --nz N` | `disk`, `reference-triangle`, `lshape` / `uv-sphere` / `icosa-sphere` / `cylinder` | the counts of each shape |
 | `--sides N --rings N` / `--nt N --nr N` / `--edge L` | `ngon` / `plate-with-hole` / `honeycomb` | the counts and the hexagon edge |
+| `--start x,y,z --end x,y,z` | `line` | the two end points |
+| `--pitch P --turns T` | `helix` | rise per turn and number of turns |
+| `--seed S` | `box-points` | the splitmix64 seed |
+| `--major-radius R --minor-radius r` | `torus`, `solid-torus` | the centre circle and the tube |
+| `--width W --num-twists K` | `moebius` | the band's width and half-twists |
+| `--ncap N` | `capsule` | rings on each cap |
+| `--ratio Q` | `spherical-shell`, `pipe` | each wall layer's thickness over the one inside it |
+| `--name N` | `platonic` | `tetrahedron`, `cube`, `octahedron`, `dodecahedron` or `icosahedron` |
 | `--cell-type T` | the shapes that build more than one cell type | `quad`, `triangle`, `hexahedron`, `tetra` or `wedge`, as the shape allows |
 | `--split S` | `rectangle` | `zigzag`, `up`, `down` or `center` triangle layout |
-| `--order 2` | all but `reference-cells`, `honeycomb` | quadratic cells with mid-edge nodes on the exact geometry |
+| `--order 2` / `--order 3..10` / `--complete` | all but `reference-cells`, `honeycomb`, `platonic` and the point clouds | quadratic cells with mid-edge nodes on the exact geometry / the `VTK_LAGRANGE_*` family / with order 2, `quad9`, `hexahedron27` and `wedge18` |
 | `--max-cells N` | all but `reference-cells` | refuse above this many cells (default 20 000 000, 0 lifts it) |
 | `--types a,b` / `--pairs` | `reference-cells` | the cell types (all by default) / two cells sharing a facet |
 

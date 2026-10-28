@@ -1033,14 +1033,13 @@ def roadmap_map():
         (
             "§3 operations",
             [
-                ("primitives: fixtures · catalog", "S"),
                 ("octree: plane= · probes", "S"),
                 ("conformity · intersections", "M"),
                 ("select · thickness", "M"),
                 ("MMG backend · its WASM port", "M"),
                 ("optimize_volume: worst-cell moves", "M"),
             ],
-            [(1, 2)],
+            [(0, 1)],
         ),
         (
             "§4 ecosystem reach",
