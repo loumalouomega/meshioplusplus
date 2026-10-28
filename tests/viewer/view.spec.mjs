@@ -180,3 +180,14 @@ test('display choices survive a reload, and a bad stored value is ignored', asyn
     await expect(page.locator('#colormap')).toHaveValue('Cool to Warm');
     await expect(page.locator('#edges')).not.toBeChecked();
 });
+
+test('clicking the orientation cube snaps the camera to an axis', async ({ page }) => {
+    await open(page, 'Block (volume)');
+    const before = (await view(page)).direction;
+    const box = await page.locator('#render').boundingBox();
+    // The cube sits in the bottom-left corner of the render.
+    await page.mouse.click(box.x + 40, box.y + box.height - 45);
+    const after = (await view(page)).direction;
+    expect(after).not.toEqual(before);
+    expect(after.filter((v) => Math.abs(v) === 1)).toHaveLength(1);
+});

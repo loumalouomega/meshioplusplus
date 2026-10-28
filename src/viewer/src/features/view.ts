@@ -37,6 +37,8 @@ export interface ViewOptions {
 export interface ViewController {
     /** A new surface was loaded: refresh the vector list, drop the deformation, keep the rest. */
     attachSurface(): void;
+    /** The camera changed from outside (the orientation cube): republish the test-hook state. */
+    refresh(): void;
     setMeasuring(on: boolean): void;
     readonly measuring: boolean;
 }
@@ -379,6 +381,7 @@ export function initView(opts: ViewOptions): ViewController {
             applyClip();
             if (measuring) setMeasuring(true);
         },
+        refresh: publish,
         setMeasuring,
         get measuring() {
             return measuring;

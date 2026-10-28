@@ -301,7 +301,7 @@ $('tool-screenshot').addEventListener('click', () => {
 });
 
 const canvas = renderer.view.getCanvas();
-if (canvas) setupOrientationCube(renderer, canvas);
+if (canvas) setupOrientationCube(renderer, canvas, () => view.refresh());
 
 // --- click to inspect ----------------------------------------------------- //
 
