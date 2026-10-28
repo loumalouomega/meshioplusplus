@@ -507,3 +507,90 @@ body.viewer #sel-front {
 #stage.selecting #render {
     cursor: crosshair;
 }
+
+/* --- groups ---------------------------------------------------------------- */
+
+.sub-head {
+    margin: var(--ui-s-3) 0 var(--ui-s-1);
+    font-size: var(--ui-fs-label);
+    letter-spacing: var(--ui-track-caps);
+    text-transform: uppercase;
+    color: var(--ds-description-fg);
+}
+
+.groups-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 220px;
+    overflow-y: auto;
+}
+
+.groups-list li {
+    display: flex;
+    align-items: center;
+    gap: var(--ui-s-2);
+    padding: 2px var(--ui-s-1);
+    border-radius: var(--ui-r-xs);
+    font-size: var(--ui-fs-md);
+}
+
+.groups-list li:hover {
+    background: var(--ds-hover);
+}
+
+.groups-list li.g-disabled {
+    opacity: 0.55;
+}
+
+.g-color {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: 1px solid var(--ds-hairline);
+    border-radius: 50%;
+    background: transparent;
+    cursor: pointer;
+}
+
+.g-color::-webkit-color-swatch-wrapper {
+    padding: 0;
+}
+
+.g-color::-webkit-color-swatch {
+    border: 0;
+    border-radius: 50%;
+}
+
+.g-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.g-count {
+    font-family: var(--ui-font-mono);
+    font-size: var(--ui-fs-sm);
+    color: var(--ds-description-fg);
+}
+
+.g-action {
+    display: inline-flex;
+    padding: 2px;
+    background: transparent;
+    color: var(--ds-description-fg);
+    opacity: 0;
+}
+
+.groups-list li:hover .g-action,
+.g-action:focus-visible {
+    opacity: 1;
+}
+
+.g-action:hover {
+    color: var(--ds-fg);
+    background: var(--ds-toolbar-hover);
+}

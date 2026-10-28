@@ -582,3 +582,54 @@ button .toolbar-icon {
     outline: 1px solid var(--ds-focus);
     outline-offset: -1px;
 }
+
+/* --- categorical legend (colour by group) -------------------------------- */
+
+#legend .legend-cats {
+    display: none;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 260px;
+    overflow-y: auto;
+}
+
+#legend.categorical {
+    width: 168px;
+}
+
+#legend.categorical .legend-cats {
+    display: block;
+}
+
+#legend.categorical .legend-body,
+#legend.categorical .legend-range,
+#legend.categorical .legend-rescale,
+#legend.categorical .legend-note {
+    display: none;
+}
+
+.legend-cats li {
+    display: flex;
+    align-items: center;
+    gap: var(--ui-s-2);
+    padding: 1px 0;
+}
+
+.legend-cats li span:last-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.legend-swatch {
+    flex: none;
+    width: 10px;
+    height: 10px;
+    border-radius: var(--ui-r-xs);
+    border: 1px solid var(--ds-hairline);
+}
+
+.legend-more {
+    color: var(--ds-description-fg);
+}

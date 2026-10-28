@@ -11,6 +11,7 @@
  * alongside when the surface came from a solid.
  */
 import { registerAction } from '../app/actions';
+import type { Visibility } from '../app/visibility';
 import { arrayOf } from '../render/scalars';
 import type { Picker } from '../render/pick';
 import type { Renderer } from '../render/renderer';
@@ -48,6 +49,12 @@ interface SelectionSet {
 export interface SelectionOptions {
     renderer: Renderer;
     picker: Picker;
+    /** Cell visibility shared with the groups panel; this tool owns the `selection` layer. */
+    visibility: Visibility;
+    /** Promote a set to a named group. */
+    onSaveGroup: (name: string, mask: Mask, color: Vector3) => void;
+    /** "Show all" also reveals what the groups panel hid. */
+    onShowAll: () => void;
     /** Colours for new sets (the scene palette of the current scheme). */
     palette: () => Vector3[];
     /** The selection tool took over the pointer: turn the inspector off. */
@@ -67,8 +74,6 @@ export class SelectionController {
     private nextId = 1;
     private tool: SelectionTool = 'off';
     private lastTool: Exclude<SelectionTool, 'off'> = 'box';
-    /** 1 = drawn. Null means every cell is visible. */
-    private visible: Mask | null = null;
     private arrays: ArrayEntry[] = [];
 
     constructor(options: SelectionOptions) {
@@ -94,16 +99,23 @@ export class SelectionController {
         if (!same) {
             this.sets = [];
             this.activeId = null;
-            this.visible = null;
+            this.o.visibility.set('selection', null);
             if (n > 0) this.newSet();
-        } else if (this.visible && this.visible.length !== n) {
-            this.visible = null;
         }
         this.arrays = this.o.renderer.arrays().filter((a) => this.valuesOf(a) !== null);
         this.fillArrayList();
         show($('selection-section'), n > 0);
-        this.o.renderer.setVisibleMask(this.visible);
         this.redraw();
+    }
+
+    /** Redraw highlights after the visible cells changed from outside. */
+    refresh(): void {
+        this.redraw();
+    }
+
+    /** Fold a mask (for example a group's cells) into the active set. */
+    selectMask(mask: Mask, how: Combine = 'replace'): void {
+        this.apply(mask, how);
     }
 
     private cellCount(): number {
@@ -169,7 +181,7 @@ export class SelectionController {
     }
 
     private redraw(): void {
-        for (const set of this.sets) this.overlay.set(set.id, set.color, set.mask, this.visible);
+        for (const set of this.sets) this.overlay.set(set.id, set.color, set.mask, this.o.visibility.combined());
         this.renderSets();
         this.renderStats();
         const total = this.active() ? countMask(this.active()!.mask) : 0;
@@ -182,7 +194,7 @@ export class SelectionController {
             tool: this.tool,
             active: this.activeId,
             sets: this.sets.map((s) => ({ id: s.id, name: s.name, count: countMask(s.mask) })),
-            hidden: this.visible ? this.visible.length - countMask(this.visible) : 0,
+            hidden: this.o.visibility.hiddenCount(),
         });
     }
 
@@ -321,7 +333,7 @@ export class SelectionController {
                 : { kind: 'polygon', points };
         const proj = projectPoints(geometry.centroids, cam.matrix, cam.width, cam.height);
 
-        let eligible: Mask | null = this.visible;
+        let eligible: Mask | null = this.o.visibility.combined();
         if ($<HTMLInputElement>('sel-front').checked) {
             const facing = facingMask(
                 geometry.centroids,
@@ -353,7 +365,8 @@ export class SelectionController {
     invert(): void {
         this.modify((m) => {
             const out = invertMask(m);
-            if (this.visible) for (let i = 0; i < out.length; i++) out[i] &= this.visible[i];
+            const visible = this.o.visibility.combined();
+            if (visible) for (let i = 0; i < out.length; i++) out[i] &= visible[i];
             return out;
         });
     }
@@ -381,25 +394,32 @@ export class SelectionController {
         const set = this.active();
         if (!set || countMask(set.mask) === 0) return;
         const n = this.cellCount();
-        const next = this.visible ? this.visible.slice() : new Uint8Array(n).fill(1);
+        const current = this.o.visibility.get('selection');
+        const next = current ? current.slice() : new Uint8Array(n).fill(1);
         for (let i = 0; i < n; i++) if (set.mask[i]) next[i] = 0;
-        this.setVisible(next);
+        this.o.visibility.set('selection', next);
     }
 
     isolate(): void {
         const set = this.active();
         if (!set || countMask(set.mask) === 0) return;
-        this.setVisible(set.mask.slice());
+        this.o.visibility.set('selection', set.mask.slice());
     }
 
     showAll(): void {
-        this.setVisible(null);
+        this.o.visibility.set('selection', null);
+        this.o.onShowAll();
     }
 
-    private setVisible(mask: Mask | null): void {
-        this.visible = mask;
-        this.o.renderer.setVisibleMask(mask);
-        this.redraw();
+    /** Bring the active set into view. */
+    frame(): void {
+        const set = this.active();
+        if (set && countMask(set.mask) > 0) this.o.renderer.frameCells(set.mask);
+    }
+
+    saveAsGroup(): void {
+        const set = this.active();
+        if (set && countMask(set.mask) > 0) this.o.onSaveGroup(set.name, set.mask.slice(), set.color);
     }
 
     // --- selection by value ---------------------------------------------------------------
@@ -449,7 +469,8 @@ export class SelectionController {
             const rule = $<HTMLSelectElement>('sel-rule').value === 'any' ? 'any' : 'all';
             incoming = thresholdPointValues(values, comps, entry.component, lo, hi, geometry.topo, rule);
         }
-        if (this.visible) for (let i = 0; i < incoming.length; i++) incoming[i] &= this.visible[i];
+        const visible = this.o.visibility.combined();
+        if (visible) for (let i = 0; i < incoming.length; i++) incoming[i] &= visible[i];
         this.apply(incoming, $<HTMLSelectElement>('sel-how').value as Combine);
     }
 
@@ -514,6 +535,8 @@ export class SelectionController {
         $('sel-hide').addEventListener('click', () => this.hideSelected());
         $('sel-isolate').addEventListener('click', () => this.isolate());
         $('sel-show').addEventListener('click', () => this.showAll());
+        $('sel-frame').addEventListener('click', () => this.frame());
+        $('sel-group').addEventListener('click', () => this.saveAsGroup());
         $('sel-array').addEventListener('change', () => this.fillRange());
         $('sel-by-value').addEventListener('click', () => this.selectByValue());
         $('sel-csv').addEventListener('click', () => this.exportIds('csv'));

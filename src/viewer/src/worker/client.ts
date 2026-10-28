@@ -10,6 +10,7 @@ import type {
     DistributiveOmit,
     InitResult,
     OpSpec,
+    RegionsResult,
     RenderResult,
     Request,
     Response,
@@ -90,9 +91,16 @@ export const applyOps = (
     onProgress?: (stage: string) => void
 ): Promise<RenderResult> => request<RenderResult>({ type: 'apply', ops }, { onProgress });
 
+/** The staged file's regions and blocks, mapped onto the surface of `numSurfaceCells` cells. */
+export const getRegions = (epoch: number, numSurfaceCells: number): Promise<RegionsResult> =>
+    request<RegionsResult>({ type: 'regions', epoch, numSurfaceCells });
+
 /** Convert the staged file (with `ops` applied) to another format. */
-export const convertTo = (outFormat: string, ops: OpSpec[]): Promise<ConvertResult> =>
-    request<ConvertResult>({ type: 'convert', outFormat, ops });
+export const convertTo = (
+    outFormat: string,
+    ops: OpSpec[],
+    groups?: { name: string; surfaceCells: Uint32Array }[]
+): Promise<ConvertResult> => request<ConvertResult>({ type: 'convert', outFormat, ops, groups });
 
 // --- dataset-manager requests (dataset.html) ------------------------------ //
 

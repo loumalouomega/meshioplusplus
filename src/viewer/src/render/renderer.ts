@@ -15,7 +15,7 @@ import '@kitware/vtk.js/Rendering/Profiles/Geometry';
 
 import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor';
 import vtkMapper from '@kitware/vtk.js/Rendering/Core/Mapper';
-import type vtkColorTransferFunction from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction';
+import vtkColorTransferFunction from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction';
 import vtkCellArray from '@kitware/vtk.js/Common/Core/CellArray';
 import vtkDataArray from '@kitware/vtk.js/Common/Core/DataArray';
 import vtkPolyData from '@kitware/vtk.js/Common/DataModel/PolyData';
@@ -44,6 +44,9 @@ import {
 } from './scalars';
 
 export { SOLID_COLOR, colorKey };
+
+/** The per-cell label array behind colour-by-group (never offered in the colour-by menu). */
+const LABEL_ARRAY = 'viewer:label';
 
 /** How the surface is drawn. Matches vtk.js's `Property.Representation`. */
 export const Representation = { POINTS: 0, WIREFRAME: 1, SURFACE: 2 } as const;
@@ -106,6 +109,7 @@ export class Renderer {
     /** What the mappers draw: `polydata`, or a subset of it while cells are hidden. */
     private shown: vtkPolyData | null = null;
     private cellMap: Uint32Array | null = null;
+    private visibleMask: Uint8Array | null = null;
     private geometry: SurfaceGeometry | null = null;
     private currentEntry: ArrayEntry | null = null;
     private currentRange: ScalarRange | null = null;
@@ -218,6 +222,7 @@ export class Renderer {
         this.polydata = polydata;
         this.shown = polydata;
         this.cellMap = null;
+        this.visibleMask = null;
         this.geometry = null;
         this.bodyMapper.setInputData(polydata);
         this.edgeMapper.setInputData(polydata);
@@ -262,6 +267,7 @@ export class Renderer {
      * to the subset so colouring by them still works.
      */
     setVisibleMask(mask: Uint8Array | null): void {
+        this.visibleMask = mask;
         const full = this.polydata;
         const raw = this.rawCells();
         if (!full || !raw) return;
@@ -302,6 +308,36 @@ export class Renderer {
         this.render();
     }
 
+    /** Fit the camera to the cells in `mask` (1 = include), keeping the view direction. */
+    frameCells(mask: Uint8Array): void {
+        const g = this.surfaceGeometry();
+        const p = this.polydata;
+        if (!g || !p) return;
+        const coords = p.getPoints().getData();
+        const b: [number, number, number, number, number, number] = [
+            Infinity,
+            -Infinity,
+            Infinity,
+            -Infinity,
+            Infinity,
+            -Infinity,
+        ];
+        for (let c = 0; c < g.topo.numCells; c++) {
+            if (!mask[c]) continue;
+            for (let i = g.topo.offsets[c]; i < g.topo.offsets[c + 1]; i++) {
+                const q = g.topo.points[i] * 3;
+                for (let k = 0; k < 3; k++) {
+                    b[k * 2] = Math.min(b[k * 2], coords[q + k]);
+                    b[k * 2 + 1] = Math.max(b[k * 2 + 1], coords[q + k]);
+                }
+            }
+        }
+        if (!Number.isFinite(b[0])) return;
+        this.renderer.resetCamera(b);
+        this.renderer.resetCameraClippingRange();
+        this.render();
+    }
+
     /** The full-surface cell id behind a cell id of what is drawn. */
     toOriginalCell(id: number): number {
         return this.cellMap ? (this.cellMap[id] ?? -1) : id;
@@ -337,6 +373,9 @@ export class Renderer {
      * surface. Returns the range that was applied, for the legend.
      */
     setColorBy(key: string): ScalarRange | null {
+        // A previous categorical colouring swapped the lookup table; the normal
+        // colour maps always go through the shared one.
+        this.bodyMapper.setLookupTable(this.lut);
         const entry = this.arrays().find((a) => colorKey(a) === key) ?? null;
         this.currentEntry = entry;
         if (!entry) {
@@ -365,6 +404,44 @@ export class Renderer {
         configureScalarMapper(this.bodyMapper, this.lut, entry);
         this.render();
         return range;
+    }
+
+    /**
+     * Colour each cell by an integer label (group index), one distinct colour
+     * per label; -1 draws the neutral grey. Replaces any colouring by an array.
+     */
+    setLabelColoring(labels: Int32Array, colors: Vector3[]): void {
+        const full = this.polydata;
+        if (!full) return;
+        const values = new Float32Array(labels.length);
+        for (let i = 0; i < labels.length; i++) values[i] = labels[i] < 0 ? Number.NaN : labels[i];
+        full.getCellData().removeArray(LABEL_ARRAY);
+        full.getCellData().addArray(
+            vtkDataArray.newInstance({ name: LABEL_ARRAY, values, numberOfComponents: 1 })
+        );
+        // Rebuild what is drawn so the subset (if any) carries the new array.
+        this.setVisibleMask(this.visibleMask);
+
+        // A step function over integer labels: each label owns [i-0.5, i+0.5].
+        const lut = vtkColorTransferFunction.newInstance();
+        colors.forEach(([r, g, b], i) => {
+            lut.addRGBPoint(i - 0.4999, r, g, b);
+            lut.addRGBPoint(i + 0.4999, r, g, b);
+        });
+        lut.setNanColor(0.55, 0.55, 0.55, 1);
+        lut.setMappingRange(-0.5, Math.max(0.5, colors.length - 0.5));
+        lut.updateRange();
+        this.bodyMapper.setLookupTable(lut);
+        configureScalarMapper(this.bodyMapper, lut, {
+            location: 'cell',
+            name: LABEL_ARRAY,
+            component: -1,
+            label: '',
+        });
+        this.currentEntry = null;
+        this.currentRange = null;
+        this.bodyMapper.modified();
+        this.render();
     }
 
     /** Narrow or widen the colour range without changing the array. */

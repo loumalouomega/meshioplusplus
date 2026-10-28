@@ -11,7 +11,7 @@
  * Nothing here should ever run — `main.ts` returns before reaching it under
  * `__VIEWER_EMBEDDED__` — so these throw rather than fail quietly.
  */
-import type { ConvertResult, InitResult, RenderResult } from './protocol';
+import type { ConvertResult, InitResult, RegionsResult, RenderResult } from './protocol';
 
 function unavailable(): never {
     throw new Error(
@@ -24,3 +24,4 @@ export const init = (): Promise<InitResult> => unavailable();
 export const openFile = (): Promise<RenderResult> => unavailable();
 export const applyOps = (): Promise<RenderResult> => unavailable();
 export const convertTo = (): Promise<ConvertResult> => unavailable();
+export const getRegions = (): Promise<RegionsResult> => unavailable();

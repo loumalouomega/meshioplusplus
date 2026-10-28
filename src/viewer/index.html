@@ -92,6 +92,19 @@
           </label>
         </section>
 
+        <section class="sb-section" id="groups-section" hidden>
+          <h2 id="h-groups">Groups</h2>
+          <p class="hint" id="groups-note" hidden></p>
+          <div class="sub-head" id="groups-regions-head" hidden>Regions</div>
+          <ul id="groups-regions" class="groups-list" hidden></ul>
+          <div class="sub-head" id="groups-blocks-head" hidden>Cell blocks</div>
+          <ul id="groups-blocks" class="groups-list" hidden></ul>
+          <div class="btn-row">
+            <button type="button" id="groups-show-all" title="Show every group again">Show all groups</button>
+          </div>
+          <p class="hint">Colour by <em>Groups</em> in the Display section to see them on the surface.</p>
+        </section>
+
         <section class="sb-section" id="selection-section" hidden>
           <h2 id="h-selection">Selection</h2>
           <div class="ui-segments" id="sel-tools" role="group" aria-label="Selection tool">
@@ -120,6 +133,10 @@
             <button type="button" id="sel-hide" title="Hide the selected cells (H)">Hide</button>
             <button type="button" id="sel-isolate" title="Hide everything else (X)">Isolate</button>
             <button type="button" id="sel-show" title="Show every cell again (Shift+H)">Show all</button>
+          </div>
+          <div class="btn-row">
+            <button type="button" id="sel-frame" title="Zoom to the active set">Frame</button>
+            <button type="button" id="sel-group" title="Keep the active set as a named group">Save as group</button>
           </div>
           <details class="op" id="sel-value">
             <summary>By value</summary>
@@ -227,6 +244,12 @@
               ><span>levels</span>
               <input type="number" id="op-refine-levels" value="1" min="1" max="3"
             /></label>
+            <label class="row"
+              ><span>in</span>
+              <select id="op-refine-target" title="Refine only a group or the selection">
+                <option value="">the whole mesh</option>
+              </select></label
+            >
             <label class="row"
               ><span>where</span>
               <select id="op-refine-array">
@@ -422,6 +445,14 @@
             <select id="convert-format"></select>
             <button id="convert-download" type="button">Download</button>
           </div>
+          <label class="check" id="convert-groups-row" hidden
+            ><input type="checkbox" id="convert-groups" checked /> include my saved groups as cell
+            regions</label
+          >
+          <p class="hint" id="convert-groups-hint" hidden>
+            On a solid, a group drawn on its surface is written as the solid cells that own those
+            faces. Not every format stores named regions; the result says which were kept.
+          </p>
         </section>
 
         <footer>

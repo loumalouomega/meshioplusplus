@@ -62,6 +62,12 @@ export interface SelectionState {
     hidden: number;
 }
 
+/** The groups panel's state, for the test hook. */
+export interface GroupsState {
+    status: 'none' | 'loading' | 'ready' | 'unavailable' | 'failed';
+    groups: { id: number; name: string; list: 'regions' | 'blocks'; cells: number; visible: boolean; user: boolean }[];
+}
+
 export type ViewerStatus = 'booting' | 'idle' | 'loading' | 'ready' | 'error';
 
 /**
@@ -78,4 +84,5 @@ export interface ViewerState {
     /** The most recent click-to-inspect result, or null. */
     picked: PickInfo | null;
     selection: SelectionState;
+    groups: GroupsState;
 }

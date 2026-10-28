@@ -47,7 +47,8 @@ export class Legend {
               <input type="number" class="legend-max" step="any" aria-label="Range maximum" />
             </div>
             <button type="button" class="legend-rescale">Rescale to data</button>
-            <div class="legend-note"></div>`;
+            <div class="legend-note"></div>
+            <ul class="legend-cats"></ul>`;
 
         this.title = must(root, '.legend-title');
         this.bar = must(root, '.legend-bar');
@@ -78,8 +79,44 @@ export class Legend {
         this.root.hidden = true;
     }
 
+    /**
+     * A legend of named colours instead of a gradient: one swatch row per
+     * category (colour-by-group). Long lists are cut with a count, since the
+     * legend sits over the render and must not cover it.
+     */
+    showCategories(
+        label: string,
+        items: { label: string; color: [number, number, number] }[],
+        max = 12
+    ): void {
+        this.root.hidden = false;
+        this.root.classList.add('categorical');
+        this.title.textContent = label;
+        const list = must(this.root, '.legend-cats');
+        const rows = items.slice(0, max).map((item) => {
+            const li = document.createElement('li');
+            const swatch = document.createElement('span');
+            swatch.className = 'legend-swatch';
+            const c = (v: number) => Math.round(Math.min(1, Math.max(0, v)) * 255);
+            swatch.style.background = `rgb(${c(item.color[0])}, ${c(item.color[1])}, ${c(item.color[2])})`;
+            const name = document.createElement('span');
+            name.textContent = item.label;
+            name.title = item.label;
+            li.append(swatch, name);
+            return li;
+        });
+        if (items.length > max) {
+            const more = document.createElement('li');
+            more.className = 'legend-more';
+            more.textContent = `+ ${items.length - max} more`;
+            rows.push(more);
+        }
+        list.replaceChildren(...rows);
+    }
+
     /** Show the legend for `label`, coloured by `colormap`, spanning `range`. */
     show(label: string, colormap: string, range: ScalarRange): void {
+        this.root.classList.remove('categorical');
         this.root.hidden = false;
         this.title.textContent = label;
         this.bar.style.background = cssGradient(colormap, 'to top');
