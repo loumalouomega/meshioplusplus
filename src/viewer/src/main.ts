@@ -15,6 +15,8 @@
  * worker and the WASM binary from the wheel-bundled build.
  */
 import { Legend } from './render/legend';
+import { initPrefs } from './features/prefs';
+import { type AnalysisController, initAnalysis } from './features/analysis';
 import { type ViewController, initView } from './features/view';
 import { setupOrientationCube } from './render/orientation';
 import { Renderer, SOLID_COLOR, colorKey } from './render/renderer';
@@ -68,6 +70,10 @@ window.__viewerState = {
     picked: null,
     selection: { tool: 'off', active: null, sets: [], hidden: 0 },
     groups: { status: 'none', groups: [] },
+    analysis: {
+        table: { open: false, kind: 'cells', rows: 0, sortedBy: null, direction: 'asc' },
+        histogram: { array: null, counts: [] },
+    },
     view: {
         parallel: false,
         direction: [0, 0, 1],
@@ -134,6 +140,7 @@ function show3d(
     groups.attachSurface(info.numCells, keepSelection, idsPreserved);
     syncConvertGroups();
     view.attachSurface();
+    analysis.attachSurface();
     surfaceOnlyPolygons =
         !!meta &&
         meta.cellBlocks.length > 0 &&
@@ -335,6 +342,23 @@ const groups: GroupsController = new GroupsController({
 });
 visibility.onChange(() => selection.refresh());
 let inspecting = false;
+
+const analysis: AnalysisController = initAnalysis({
+    renderer,
+    select: (mask) => selection.selectMask(mask),
+    download: (name, text, mime) => {
+        const url = URL.createObjectURL(new Blob([text], { type: mime }));
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        a.click();
+        URL.revokeObjectURL(url);
+    },
+    onState: (state) => {
+        window.__viewerState.analysis = state;
+    },
+    fileBase: () => (window.__viewerState.name || 'mesh').replace(/\.[^.]*$/, ''),
+});
 
 const view: ViewController = initView({
     renderer,
@@ -556,6 +580,8 @@ registerAction({
     group: 'Help',
     run: () => window.open('https://loumalouomega.github.io/meshioplusplus/viewer', '_blank', 'noopener'),
 });
+
+initPrefs();
 
 document.addEventListener('keydown', (e) => {
     const target = e.target as HTMLElement | null;

@@ -180,6 +180,23 @@
           </details>
         </section>
 
+        <section class="sb-section" id="stats-section" hidden>
+          <h2 id="h-stats">Statistics</h2>
+          <label class="row"><span>Array</span><select id="stats-array"></select></label>
+          <label class="row">
+            <span>Bins</span>
+            <select id="stats-bins">
+              <option value="10">10</option>
+              <option value="20" selected>20</option>
+              <option value="40">40</option>
+            </select>
+          </label>
+          <div id="hist" class="hist" role="img" aria-label="Histogram"></div>
+          <div id="hist-axis" class="hist-axis"><span id="hist-min"></span><span id="hist-max"></span></div>
+          <div id="hist-summary" class="sel-stats"></div>
+          <p class="hint">Click a bar to select the cells in that range.</p>
+        </section>
+
         <section class="sb-section" id="groups-section" hidden>
           <h2 id="h-groups">Groups</h2>
           <p class="hint" id="groups-note" hidden></p>
@@ -560,6 +577,7 @@
           <button type="button" id="tool-select" aria-pressed="false" title="Select cells (S)">
             Select
           </button>
+          <button type="button" id="tool-table" aria-pressed="false" title="Show the data table (T)">Table</button>
           <button type="button" id="tool-measure" aria-pressed="false" title="Measure the distance between two points (M)">
             Measure
           </button>
@@ -571,6 +589,19 @@
           >
             Inspect
           </button>
+        </div>
+        <div id="table-panel" hidden>
+          <div class="tbl-bar">
+            <div class="ui-segments" id="tbl-kind" role="group" aria-label="Table rows">
+              <button type="button" data-kind="cells" aria-pressed="true">Cells</button>
+              <button type="button" data-kind="points" aria-pressed="false">Points</button>
+            </div>
+            <span id="tbl-count" class="ui-num"></span>
+            <details id="tbl-columns" class="tbl-columns"><summary>Columns</summary><div id="tbl-column-list"></div></details>
+            <button type="button" id="tbl-csv" title="Save the table as CSV">CSV</button>
+            <button type="button" id="tbl-close" title="Close the table" aria-label="Close the table">×</button>
+          </div>
+          <div id="tbl-scroll" tabindex="0"><div id="tbl-head"></div><div id="tbl-body"><div id="tbl-rows"></div></div></div>
         </div>
         <div id="status" role="status"></div>
         <div id="pick-popover" hidden>

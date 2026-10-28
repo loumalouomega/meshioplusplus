@@ -26,7 +26,7 @@ export const SOLID_COLOR = '';
  * provenance row, and `viewer:label` carries the colour-by-group labels; neither
  * may reach the menu.
  */
-const INTERNAL_PREFIXES = ['surface:', 'viewer:'];
+export const INTERNAL_PREFIXES = ['surface:', 'viewer:'];
 
 /** Stable identifier for one colour-by choice. */
 export function colorKey(entry: ArrayEntry): string {

@@ -160,3 +160,23 @@ test('measuring and the selection tool do not both own the click', async ({ page
     expect((await view(page)).measuring).toBe(false);
     expect((await page.evaluate(() => window.__viewerState.selection)).tool).toBe('box');
 });
+
+test('display choices survive a reload, and a bad stored value is ignored', async ({ page }) => {
+    await open(page, 'Cube (surface)');
+    await page.selectOption('#colormap', 'Viridis');
+    await page.check('#edges');
+    await page.locator('#opacity').fill('60');
+    await page.reload();
+    await open(page, 'Cube (surface)');
+    await expect(page.locator('#colormap')).toHaveValue('Viridis');
+    await expect(page.locator('#edges')).toBeChecked();
+    await expect(page.locator('#opacity')).toHaveValue('60');
+
+    await page.evaluate(() =>
+        localStorage.setItem('meshioplusplus.viewer.prefs', JSON.stringify({ colormap: 'No such map', opacity: 'x', edges: 'maybe' }))
+    );
+    await page.reload();
+    await open(page, 'Cube (surface)');
+    await expect(page.locator('#colormap')).toHaveValue('Cool to Warm');
+    await expect(page.locator('#edges')).not.toBeChecked();
+});

@@ -86,6 +86,12 @@ export interface ViewState {
     bookmarks: string[];
 }
 
+/** The table and statistics panels' state, for the test hook. */
+export interface AnalysisState {
+    table: { open: boolean; kind: 'cells' | 'points'; rows: number; sortedBy: string | null; direction: 'asc' | 'desc' };
+    histogram: { array: string | null; counts: number[] };
+}
+
 export type ViewerStatus = 'booting' | 'idle' | 'loading' | 'ready' | 'error';
 
 /**
@@ -104,4 +110,5 @@ export interface ViewerState {
     selection: SelectionState;
     groups: GroupsState;
     view: ViewState;
+    analysis: AnalysisState;
 }

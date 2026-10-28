@@ -64,3 +64,14 @@ test('histogram of a vector uses the magnitude, and a constant array fills one b
     assert.deepEqual([...c.counts], [3, 0, 0, 0, 0]);
     assert.equal(histogram([NaN], 1).count, 0);
 });
+
+import { PREF_FIELDS, parsePrefs } from '../../../src/viewer/src/state/prefs.ts';
+
+test('preferences keep known controls with the right type and drop the rest', () => {
+    const p = parsePrefs({ edges: true, colormap: 'Viridis', opacity: '55', 'light-cull': 'yes', bogus: 1, 'color-bands': 8 });
+    assert.deepEqual(p, { edges: true, colormap: 'Viridis', opacity: '55' });
+    assert.deepEqual(parsePrefs(null), {});
+    assert.deepEqual(parsePrefs([1, 2]), {});
+    assert.deepEqual(parsePrefs({ opacity: 'abc' }), {});
+    assert.ok(PREF_FIELDS.findIndex((f) => f.id === 'colormap-safe') < PREF_FIELDS.findIndex((f) => f.id === 'colormap'));
+});
