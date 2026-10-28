@@ -205,8 +205,8 @@ TEST(Extrude, TrianglesGiveWedgesAndGradingSpacesTheLevels) {
     for (const double v : z)
         EXPECT_NEAR(v, want[i++], 1e-15);
     const NDArray& layer = r.mMesh.CellData(meshioplusplus::kExtrudeLayerName, 0);
-    EXPECT_EQ(layer.As<std::int32_t>()[0], 1);
-    EXPECT_EQ(layer.As<std::int32_t>()[layer.Size() - 1], 3);
+    EXPECT_EQ(meshioplusplus::detail::read_int(layer, 0), 1);
+    EXPECT_EQ(meshioplusplus::detail::read_int(layer, layer.Size() - 1), 3);
     // Explicit offsets give the same levels.
     ExtrudeOptions e;
     e.mDirection = o.mDirection;
@@ -292,8 +292,10 @@ TEST(Extrude, RegionsAndDataAreCarried) {
     const SweepResult r = meshioplusplus::extrude(rect, o);
     ASSERT_EQ(r.mMesh.NumCellBlocks(), 1u);
     const NDArray& id = r.mMesh.CellData("id", 0);
-    EXPECT_EQ(std::vector<std::int32_t>(id.As<std::int32_t>(), id.As<std::int32_t>() + 4),
-              (std::vector<std::int32_t>{10, 20, 10, 20}));
+    std::vector<std::int64_t> ids;
+    for (std::size_t i = 0; i < 4; ++i)
+        ids.push_back(meshioplusplus::detail::read_int(id, i));
+    EXPECT_EQ(ids, (std::vector<std::int64_t>{10, 20, 10, 20}));
     EXPECT_EQ(ex_entries(r.mMesh, "right", RegionKind::Cell), (std::vector<std::int64_t>{1, 3}));
     EXPECT_EQ(ex_entries(r.mMesh, "corner", RegionKind::Point).size(), 3u);
     const std::size_t wall = r.mMesh.FindRegion("wall", RegionKind::Side);

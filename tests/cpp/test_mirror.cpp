@@ -209,9 +209,9 @@ TEST(Mirror, BoxesComeOutRightSideOut) {
 // Mid-edge and centre nodes stay where they belong: every facet's k-th mid
 // node is the midpoint of its corners k and k + 1 after the flip, as before.
 TEST(Mirror, QuadraticNodesStayInTheirSlots) {
-    std::vector<Mesh> meshes = {meshioplusplus::reference_cells({"line3", "triangle6", "quad8",
-                                                                 "tetra10", "hexahedron20",
-                                                                 "wedge15", "pyramid13"})};
+    std::vector<Mesh> meshes;
+    meshes.push_back(meshioplusplus::reference_cells(
+        {"line3", "triangle6", "quad8", "tetra10", "hexahedron20", "wedge15", "pyramid13"}));
     meshes.push_back(mt::wedge18_mesh());
     meshes.push_back(mt::pyramid14_mesh());
     for (const Mesh& m : meshes) {
@@ -395,8 +395,8 @@ TEST(Mirror, RegionsAndDataFollowTheCopies) {
     EXPECT_EQ(v.As<double>()[3 * m.NumPoints() + 1], 2.0);
     const NDArray& t = r.mMesh.CellData("tag", 0);
     ASSERT_EQ(t.Size(), 4u);
-    EXPECT_EQ(t.As<std::int32_t>()[0], 7);
-    EXPECT_EQ(t.As<std::int32_t>()[3], 9);
+    EXPECT_EQ(meshioplusplus::detail::read_int(t, 0), 7);
+    EXPECT_EQ(meshioplusplus::detail::read_int(t, 3), 9);
     const auto& r_cell = r.mMesh.Region(r.mMesh.FindRegion("top_cell", RegionKind::Cell));
     EXPECT_EQ(mir_entries(r_cell), (std::vector<std::int64_t>{1, 3}));
     // Mirroring the image back gives the input's connectivity bit for bit.
