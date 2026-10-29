@@ -31,7 +31,7 @@ meshioplusplus.write("part_quality.vtu", annotated)
 
 A metric that does not apply to a cell type is `NaN` for that cell. Ideal (perfectly regular) elements give the ideal value: `scaled_jacobian = 1`, `aspect_ratio = 1`, `skewness = 0`, `warpage = 0`, triangle angles `= 60°`, tetra dihedral `≈ 70.53°`.
 
-- **`quality:scaled_jacobian`** of a quad (unreleased) is Verdict's: the least over its corners of `(e1 × e2) · n / (|e1| |e2|)`, `e1` and `e2` the corner's edges and `n` the quad's unit normal (`+z` in 2D, its vector area in 3D); 1 for a rectangle, below 0 at a reflex or inverted corner.
+- **`quality:scaled_jacobian`** of a quad (v17.23.0) is Verdict's: the least over its corners of `(e1 × e2) · n / (|e1| |e2|)`, `e1` and `e2` the corner's edges and `n` the quad's unit normal (`+z` in 2D, its vector area in 3D); 1 for a rectangle, below 0 at a reflex or inverted corner.
 - **`quality:inverted`** is `1.0` when the signed volume/area is negative (a 2D triangle/quad embedded in 3D is unsigned, so never flagged).
 - **`quality:degenerate`** is `1.0` when the cell is near-zero (collapsed volume/area, a zero-length edge, or a vanishing Jacobian); its divide-prone metrics are then `NaN`.
 

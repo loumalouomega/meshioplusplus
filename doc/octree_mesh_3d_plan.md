@@ -12,8 +12,8 @@ The 2-D quadtree path and every existing operation keep their behaviour and thei
 
 **Status (v17.12.0).** Phases 1–8 have landed and the contract is [`doc/octree_mesh.md`](./octree_mesh.md). Three things differ from the plan below:
 - **Phase 5's `volume_fit`.** It became the operation's own optimisation stage: ODT relocation, sliding along the skin and flips under a guard on the smallest and largest dihedral angle.
-- **Phase 7 (C1) landed later (unreleased).** `hex_grading="graded"` is the dual of the paired octree with the transition schemes ported from CinoLib; the default stays phase 7's uniform grid (C0), made manifold, pillowed, snapped and untangled.
-- **Feature recovery.** A cylinder's rims at a small `min_size` were reported missed; since the snap guard counts only the tetrahedra the output keeps (unreleased), they are recovered.
+- **Phase 7 (C1) landed later (v17.23.0).** `hex_grading="graded"` is the dual of the paired octree with the transition schemes ported from CinoLib; the default stays phase 7's uniform grid (C0), made manifold, pillowed, snapped and untangled.
+- **Feature recovery.** A cylinder's rims at a small `min_size` were reported missed; since the snap guard counts only the tetrahedra the output keeps (v17.23.0), they are recovered.
 
 Nothing of this plan remains open.
 
