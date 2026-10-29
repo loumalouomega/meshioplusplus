@@ -39,7 +39,7 @@
     "cad",
     "scientific-computing"
   ],
-  "license": "MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)",
+  "license": "MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0) AND LGPL-2.1-only",
   "author": "Vicente Mataix Ferrandiz",
   "homepage": "https://github.com/loumalouomega/meshioplusplus",
   "repository": {

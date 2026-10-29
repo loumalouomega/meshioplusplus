@@ -2390,8 +2390,8 @@ export interface MeshioPlusPlusModule {
   hasOcct(): boolean;
 
   /**
-   * Whether `tetrahedralize`'s Netgen backend is linked in: always false in
-   * WebAssembly, where no Netgen build exists (the octree backend always is).
+   * Whether `tetrahedralize`'s Netgen backend is linked in: true in the full
+   * artifact, false in the lean one (the octree backend always is).
    */
   hasNetgen(): boolean;
 
@@ -3616,12 +3616,12 @@ export interface MeshioPlusPlusModule {
 
   /**
    * Fill a closed, manifold, consistently oriented triangle surface with
-   * tetrahedra (roadmap 6.7). No WebAssembly build carries Netgen, which
-   * keeps the surface's triangles (`hasNetgen()` is false), so `"auto"` is the
-   * native octree backend: isosurface stuffing whose boundary is fitted to
-   * the surface within `hausdorffToSurface` (`boundaryPreserved` false), with
-   * a warning saying so.
-   * @throws {Error} for `backend: "netgen"` naming `MESHIOPLUSPLUS_WITH_NETGEN`;
+   * tetrahedra (roadmap 6.7). The full artifact carries Netgen
+   * (`hasNetgen()` is true), so `"auto"` keeps the surface's triangles
+   * there; the lean one does not, so `"auto"` is the native octree backend:
+   * isosurface stuffing whose boundary is fitted to the surface within
+   * `hausdorffToSurface` (`boundaryPreserved` false), with a warning saying so.
+   * @throws {Error} for `backend: "netgen"` in the lean artifact, naming the full one;
    * on a bad option or an open, non-manifold or misoriented surface by name.
    */
   tetrahedralize(mesh: Mesh, options?: TetrahedralizeOptions): TetrahedralizeResult;

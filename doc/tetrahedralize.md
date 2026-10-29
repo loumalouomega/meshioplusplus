@@ -25,7 +25,7 @@ The result holds the points, a `tetra` block (positively oriented, region by reg
 
 Netgen (J. Schöberl, 1997) meshes the volume by an advancing front with Delaunay insertion and then optimises it: its volume mesher keeps the surface mesh it is given, which `tetrahedralize` checks (`boundary_preserved`, with `hausdorff_to_surface` zero when it holds), and `optimize_steps` passes of its volume optimisation follow. `max_size` bounds the tetrahedra's edges, `max_volume` adds the edge of a regular tetrahedron of that volume, `(6 √2 V)^(1/3)`, to the bound, and `grading` sets how fast the size grows away from the surface; with neither bound the surface's triangles size the inside. nglib keeps global state, so calls into it are serialised behind one lock and a region is meshed in one thread: the result is deterministic, the same bytes run after run.
 
-Netgen is LGPL-2.1. It is linked dynamically, never vendored, and never in the published wheels or binaries ([third-party notices](https://github.com/loumalouomega/meshioplusplus/blob/main/THIRD_PARTY_NOTICES.md)); `build/configure.sh --with-netgen` (or `--netgen-root <prefix>`) enables it against a distribution's `libnglib-dev` or an install of its own. The WebAssembly build has no Netgen (`hasNetgen()` is false), so `tetrahedralize` there is the octree backend.
+Netgen is LGPL-2.1. Natively it is linked dynamically, never vendored, and never in the published wheels or binaries ([third-party notices](https://github.com/loumalouomega/meshioplusplus/blob/main/THIRD_PARTY_NOTICES.md)); `build/configure.sh --with-netgen` (or `--netgen-root <prefix>`) enables it against a distribution's `libnglib-dev` or an install of its own. In the browser the [full WebAssembly artifact](./wasm.md#lean-and-full-builds) links Netgen 6.2.2401 statically (`hasNetgen()` is true there), built from source by `build/build-wasm-deps.sh --full`; the lean artifact has none, so `tetrahedralize` there is the octree backend.
 
 ## Octree: the skin fitted
 
@@ -84,7 +84,7 @@ A native constrained tetrahedralisation stays a non-goal: the Delaunay kernel is
 | Fortran | `mio_tetrahedralize(...)`, see [Fortran](./fortran.md) |
 | Julia | `tetrahedralize(mesh; backend, max_size, max_volume, grading, optimize_steps, max_cells, face_array)` |
 | R | `mio_tetrahedralize(mesh, ...)` |
-| WASM | `tetrahedralize(mesh, {backend, maxSize, maxVolume, grading, optimizeSteps, maxCells, faceArray})`: the octree backend (`hasNetgen()` is `false`; `backend: "netgen"` throws by name) |
+| WASM | `tetrahedralize(mesh, {backend, maxSize, maxVolume, grading, optimizeSteps, maxCells, faceArray})`: Netgen in the full artifact (`hasNetgen()` is `true`), the octree backend in the lean one, where `backend: "netgen"` throws naming the full artifact |
 | CLI | `tetrahedralize INFILE OUTFILE [--max-size H] [--max-volume V] [--grading G] [--optimize-steps N] [--max-cells N] [--face-array NAME] [--backend auto\|netgen\|octree] [--json]`, both CLIs |
 | MCP | `tetrahedralize(input_path, output_path, ...)` |
 | Pipeline | `Tetrahedralize` with `Backend`, `MaxSize`, `MaxVolume`, `Grading`, `OptimizeSteps`, `MaxCells`, `FaceArray` |

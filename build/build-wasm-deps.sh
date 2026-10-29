@@ -12,8 +12,9 @@
 #   ./build-wasm-deps.sh --print-full-prefix mt
 #
 # The full artifact (meshioplusplus_wasm_full, configure-wasm.sh --full) links
-# four more libraries: OpenCASCADE (STEP/IGES reading and fit_cad), zstd and
-# lz4 (VTK XML block compression), and the serial KaHIP kaffpa partitioner.
+# five more libraries: OpenCASCADE (STEP/IGES reading and fit_cad), zstd and
+# lz4 (VTK XML block compression), the serial KaHIP kaffpa partitioner and
+# Netgen's nglib (the tetrahedralize backend that keeps the surface).
 # bzip2 is Emscripten's own port, like zlib, and needs nothing here. They
 # install into their own prefix, one per threading flavour: OCCT's reference
 # counts are std::atomic, and an object compiled without -pthread has its
@@ -68,9 +69,14 @@ CGNS_COMMIT="3a972d92559787a49c5f9a54974ea1946ecb9d21"
 # build/occt-recipe.sh's, shared with the native static build the wheels and
 # CLI binaries link (build/build-occt.sh). zstd and lz4 are their release
 # tarballs, whose checksums match the .sha256 files published beside them.
-# KaHIP is its release tarball, checksummed the same way; the serial kaffpa
-# interface only (PARHIP off, no MPI, no OpenMP under Emscripten), matching the
-# native KaHIP integration's link surface.
+# KaHIP is its release tarball, checksummed the same way (or, where the archive
+# is refused, the clone of its tag verified against KAHIP_COMMIT); the serial
+# kaffpa interface only (PARHIP off, no MPI, no OpenMP under Emscripten),
+# matching the native KaHIP integration's link surface. Netgen is a shallow
+# clone of its tag, refused unless it is NETGEN_COMMIT, as OpenCASCADE is: its
+# nglib and ngcore only (no GUI, Python, OCC, MPI or CGNS), the tetrahedralize
+# backend, and the same 6.2.2401 the native CI job links (Ubuntu 24.04's
+# libnglib-dev).
 OCCT_RECIPE_DIR="$SCRIPT_DIR"
 . "$SCRIPT_DIR/occt-recipe.sh"
 ZSTD_VERSION="1.5.7"
@@ -79,6 +85,9 @@ LZ4_VERSION="1.10.0"
 LZ4_SHA256="537512904744b35e232912055ccf8ec66d768639ff3abe5788d90d792ec5f48b"
 KAHIP_VERSION="3.25"
 KAHIP_SHA256="3abad20158887b585b4d4792c35fa9023b7fd634b2bc4494334a3951b69f4842"
+KAHIP_COMMIT="2e86d3da2065bcf6ddbf6fb84d2b52f33db1061f"
+NETGEN_VERSION="6.2.2401"
+NETGEN_COMMIT="2ff886457fe899685d9d826c8a29f58a31889dda"
 
 WITH_HDF5="yes"
 WITH_NETCDF="yes"
@@ -147,7 +156,7 @@ DEPS_ROOT="$SCRIPT_DIR/wasm-deps"
 full_prefix() {  # full_prefix <seq|mt>
     name="full"
     [ "$WITH_OCCT" = "yes" ] && name="$name-occt-$OCCT_VERSION"
-    name="$name-zstd-$ZSTD_VERSION-lz4-$LZ4_VERSION-kahip-$KAHIP_VERSION"
+    name="$name-zstd-$ZSTD_VERSION-lz4-$LZ4_VERSION-kahip-$KAHIP_VERSION-netgen-$NETGEN_VERSION"
     [ "$1" = "mt" ] && name="$name-mt"
     echo "$DEPS_ROOT/$name"
 }
@@ -573,14 +582,15 @@ for target_file in "$PREFIX/cmake/hdf5-targets.cmake" \
 done
 
 # --------------------------------------------------------------------------
-# The full artifact's libraries: OpenCASCADE, zstd, lz4, KaHIP (--full)
+# The full artifact's libraries: OpenCASCADE, zstd, lz4, KaHIP, Netgen (--full)
 #
 # One prefix per threading flavour (see the header). Each is built with
 # -fwasm-exceptions, the exception model the core compiles with: fit_cad and
 # the STEP/IGES readers catch Standard_Failure across the library boundary,
 # and wasm-ld refuses to mix exception models. The lean CFLAGS above (-Oz,
-# the zlib port) do not apply: none of these needs zlib, and OCCT is compute-
-# bound, so it keeps its Release optimisation.
+# the zlib port) do not apply: only Netgen takes the zlib port (its file I/O,
+# which tetrahedralize does not call), and OCCT and Netgen are compute-bound,
+# so they keep their Release optimisation.
 # --------------------------------------------------------------------------
 build_full_flavour() {  # build_full_flavour <seq|mt>
     flavour="$1"
@@ -647,10 +657,11 @@ build_full_flavour() {  # build_full_flavour <seq|mt>
         echo "== KaHIP $KAHIP_VERSION ($flavour) already installed, skipping =="
     else
         echo "== KaHIP $KAHIP_VERSION ($flavour) =="
-        fetch "https://github.com/KaHIP/KaHIP/archive/refs/tags/v$KAHIP_VERSION.tar.gz" \
-              "kahip-$KAHIP_VERSION.tar.gz" "$KAHIP_SHA256" || exit 1
         rm -rf "$WORK_DIR/KaHIP-$KAHIP_VERSION" "$WORK_DIR/build-kahip-$flavour"
-        tar -xzf "$DL_DIR/kahip-$KAHIP_VERSION.tar.gz" -C "$WORK_DIR"
+        unpack_tag "https://github.com/KaHIP/KaHIP/archive/refs/tags/v$KAHIP_VERSION.tar.gz" \
+              "kahip-$KAHIP_VERSION.tar.gz" "$KAHIP_SHA256" \
+              "https://github.com/KaHIP/KaHIP.git" "v$KAHIP_VERSION" "$KAHIP_COMMIT" \
+              "KaHIP-$KAHIP_VERSION"
         apply_patches "kahip-$KAHIP_VERSION" "$WORK_DIR/KaHIP-$KAHIP_VERSION"
         CFLAGS="-Oz $pt" CXXFLAGS="-Oz $pt" emcmake cmake -S "$WORK_DIR/KaHIP-$KAHIP_VERSION" \
             -B "$WORK_DIR/build-kahip-$flavour" \
@@ -660,6 +671,49 @@ build_full_flavour() {  # build_full_flavour <seq|mt>
             -DCMAKE_DISABLE_FIND_PACKAGE_OpenMP=TRUE
         cmake --build "$WORK_DIR/build-kahip-$flavour" -j "$JOBS"
         cmake --install "$WORK_DIR/build-kahip-$flavour"
+    fi
+
+    # ------------------------------------------------------------------
+    # Netgen (nglib and ngcore, the tetrahedralize backend, full artifact only)
+    #
+    # Static, -fwasm-exceptions like the core (nglib throws ngcore::Exception
+    # through Ng_GenerateVolumeMesh). Two adjustments, both for Emscripten
+    # 6.0.3: the patch drops the JS exception catching and the web-only link
+    # settings ngcore imposes on its consumers, and -DEMSCRIPTEN restores the
+    # macro its sources still test (Emscripten predefines only
+    # __EMSCRIPTEN__ now), which keeps the thread-priority calls the seq
+    # flavour has no symbols for out of the task manager. The version is
+    # passed in: the sources are a git archive, which has no history for
+    # Netgen's `git describe`.
+    # ------------------------------------------------------------------
+    if [ "$FORCE" = "no" ] && [ -f "$fprefix/lib/libnglib.a" ]; then
+        echo "== Netgen $NETGEN_VERSION ($flavour) already installed, skipping =="
+    else
+        echo "== Netgen $NETGEN_VERSION ($flavour) =="
+        fetch_git "https://github.com/NGSolve/netgen.git" "v$NETGEN_VERSION" "$NETGEN_COMMIT" \
+            "netgen-$NETGEN_VERSION.git"
+        rm -rf "$WORK_DIR/netgen-$NETGEN_VERSION" "$WORK_DIR/build-netgen-$flavour"
+        mkdir -p "$WORK_DIR/netgen-$NETGEN_VERSION"
+        (cd "$DL_DIR/netgen-$NETGEN_VERSION.git" && git archive --format=tar HEAD) |
+            tar -xf - -C "$WORK_DIR/netgen-$NETGEN_VERSION"
+        apply_patches "netgen-$NETGEN_VERSION" "$WORK_DIR/netgen-$NETGEN_VERSION"
+        CFLAGS="-DEMSCRIPTEN -sUSE_ZLIB=1 $pt" \
+        CXXFLAGS="-DEMSCRIPTEN -fwasm-exceptions -sUSE_ZLIB=1 $pt" \
+        emcmake cmake -S "$WORK_DIR/netgen-$NETGEN_VERSION" \
+            -B "$WORK_DIR/build-netgen-$flavour" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$fprefix" \
+            -DNETGEN_VERSION_GIT="v$NETGEN_VERSION-0-g$(echo "$NETGEN_COMMIT" | cut -c1-7)" \
+            -DUSE_SUPERBUILD=OFF -DUSE_GUI=OFF -DUSE_PYTHON=OFF -DUSE_OCC=OFF \
+            -DUSE_MPI=OFF -DUSE_NATIVE_ARCH=OFF -DUSE_JPEG=OFF -DUSE_MPEG=OFF \
+            -DUSE_CGNS=OFF -DBUILD_STUB_FILES=OFF -DENABLE_UNIT_TESTS=OFF \
+            -DNGLIB_LIBRARY_TYPE=STATIC -DNGCORE_LIBRARY_TYPE=STATIC \
+            -DNGGUI_LIBRARY_TYPE=STATIC \
+            -DZLIB_INCLUDE_DIRS="$SYSROOT/include"
+        cmake --build "$WORK_DIR/build-netgen-$flavour" -j "$JOBS"
+        cmake --install "$WORK_DIR/build-netgen-$flavour"
+        # Its tutorials and manual are installed too; the link needs none.
+        rm -rf "$WORK_DIR/build-netgen-$flavour" "$fprefix/share/netgen"
     fi
 
     [ "$WITH_OCCT" = "yes" ] || return 0

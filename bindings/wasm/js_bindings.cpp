@@ -8164,10 +8164,11 @@ val thickness_js(const val& rMeshObj, const val& rOptions) {
 
 // tetrahedralize (roadmap 6.7): tetrahedra filling a closed triangle surface;
 // options {backend ("auto" | "netgen" | "octree"), maxSize, maxVolume,
-// grading, optimizeSteps, maxCells, faceArray}, all optional. No WebAssembly
-// build of Netgen exists (`hasNetgen()` is false), so "auto" is the native
-// octree backend, its boundary fitted, and "netgen" throws naming
-// MESHIOPLUSPLUS_WITH_NETGEN.
+// grading, optimizeSteps, maxCells, faceArray}, all optional. The full
+// artifact links Netgen (`hasNetgen()` is true), so "auto" keeps the
+// surface's triangles there; the lean one has none, so "auto" is the native
+// octree backend, its boundary fitted, and "netgen" throws pointing at the
+// full artifact.
 val tetrahedralize_js(const val& rMeshObj, const val& rOptions) {
     return with_js_errors([&]() -> val {
         meshioplusplus::TetrahedralizeOptions o;
@@ -8202,6 +8203,11 @@ val tetrahedralize_js(const val& rMeshObj, const val& rOptions) {
             if (rOptions.hasOwnProperty("faceArray"))
                 o.mFaceArray = rOptions["faceArray"].as<std::string>();
         }
+        if (o.mBackend == meshioplusplus::TetrahedralizeBackend::Netgen &&
+            !meshioplusplus::tetrahedralize_has_netgen())
+            throw meshioplusplus::Unsupported(
+                "meshio++: tetrahedralize: this artifact has no Netgen; the full one carries "
+                "it: loadMeshioPlusPlus({}, {full: true})");
         meshioplusplus::TetrahedralizeResult r =
             meshioplusplus::tetrahedralize(val_to_mesh(rMeshObj), o);
         val out = val::object();
@@ -8225,8 +8231,8 @@ val tetrahedralize_js(const val& rMeshObj, const val& rOptions) {
     });
 }
 
-/// Whether tetrahedralize's Netgen backend is linked in: never in a
-/// WebAssembly build (the octree backend always is).
+/// Whether tetrahedralize's Netgen backend is linked in: in the full
+/// artifact only (the octree backend always is).
 bool has_netgen_js() {
     return meshioplusplus::tetrahedralize_has_netgen();
 }

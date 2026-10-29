@@ -105,14 +105,14 @@ option(MESHIOPLUSPLUS_WASM_THREADS
 
 # The full WebAssembly artifact (roadmap 6.2): the same core and JS API as the
 # lean one, linked with every optional library the Emscripten toolchain
-# cross-compiles -- OpenCASCADE, zstd, lz4 and the bzip2 port -- and named
+# cross-compiles -- OpenCASCADE, zstd, lz4, Netgen and the bzip2 port -- and named
 # meshioplusplus_wasm_full[_mt]. Only under it are those libraries probed for
 # a wasm target, and only in the prefix build/build-wasm-deps.sh --full built
 # (on CMAKE_FIND_ROOT_PATH); the lean build never picks them up. KaHIP is in
 # the full artifact only; ADIOS2 and TecIO stay out of both
 # (doc/wasm.md#what-stays-out).
 option(MESHIOPLUSPLUS_WASM_FULL
-  "Emscripten only: build the full wasm artifact (OpenCASCADE, zstd, lz4, bzip2)" OFF)
+  "Emscripten only: build the full wasm artifact (OpenCASCADE, zstd, lz4, bzip2, Netgen)" OFF)
 if(MESHIOPLUSPLUS_WASM_FULL AND NOT EMSCRIPTEN)
   message(FATAL_ERROR "meshio++: MESHIOPLUSPLUS_WASM_FULL needs the Emscripten toolchain "
                       "(build/configure-wasm.sh --full).")
@@ -256,11 +256,11 @@ endif()
 # 6.7): a closed triangle surface meshed into tetrahedra that keep its
 # triangles. OFF by default and bring-your-own, as KaHIP is: located via the
 # in-repo cmake/FindNetgen.cmake (NETGEN_ROOT or the system's libnglib-dev),
-# never vendored, never downloaded, and linked dynamically. Not under
-# Emscripten: no wasm build of Netgen is known, so tetrahedralize raises by
-# name in both WASM artifacts.
+# never vendored, and natively linked dynamically. Under Emscripten only the
+# full artifact probes it, for the static wasm32 nglib and ngcore
+# build-wasm-deps.sh --full builds; the lean one raises by name.
 option(MESHIOPLUSPLUS_WITH_NETGEN "Build the Netgen tetrahedralize backend" OFF)
-if(MESHIOPLUSPLUS_WITH_NETGEN AND NOT EMSCRIPTEN)
+if(MESHIOPLUSPLUS_WITH_NETGEN AND _mio_probe_optional)
   list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
   find_package(Netgen QUIET)
 endif()
@@ -973,7 +973,7 @@ endif()
 # its availableFormats()/has*() reporters that is not linked would be a lie.
 # configure-wasm.sh --without-occt leaves OpenCASCADE unrequested instead.
 if(MESHIOPLUSPLUS_WASM_FULL)
-  foreach(_mio_full_lib OCCT ZSTD LZ4 BZIP2)
+  foreach(_mio_full_lib OCCT ZSTD LZ4 BZIP2 NETGEN)
     if(MESHIOPLUSPLUS_WITH_${_mio_full_lib} AND NOT "MESHIOPLUSPLUS_HAS_${_mio_full_lib}" IN_LIST _mio_core_defs)
       message(FATAL_ERROR
               "meshio++: the full wasm artifact asks for ${_mio_full_lib} but its wasm32 build was "
