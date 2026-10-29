@@ -1103,6 +1103,32 @@ end
     close(m)
 end
 
+@testset "operations: MMG backend" begin
+    # Roadmap 3.2: adapt with MMG, or its refusal by name without it.
+    sq = rectangle(dims=(4, 4), cell_type="triangle")
+    if has_mmg()
+        r = adapt(sq; hsiz=0.1, frozen=[13])
+        @test r.status == "success" && r.library == "mmg2d"
+        @test r.num_elements_out > r.num_elements_in
+        @test r.num_points_out == num_points(r.mesh)
+        xy = points(sq)
+        add_point_data!(sq, "phi", [hypot(xy[1, i] - 0.5, xy[2, i] - 0.5) - 0.3
+                                    for i in 1:num_points(sq)])
+        ls = discretize_levelset(sq, "phi"; hmax=0.1)
+        @test ls.status == "success" && ls.library == "mmg2d"
+        box = Mesh()
+        set_points!(box, [0.0 1.0 1.0 0.0; 0.0 0.0 1.0 1.0])
+        add_cell_block!(box, "line", [1 2 3 4; 2 3 4 1])
+        d = mesh_domain(box; hsiz=0.1)
+        @test d.num_subdomains == 1 && d.num_holes == 0 && d.num_elements_out > 100
+        @test_throws MeshioError move(sq, "phi", "nope")
+    else
+        @test !has_mmg_elas()
+        @test_throws MeshioError adapt(sq; hsiz=0.1)
+        @test_throws MeshioError mesh_domain(sq; hsiz=0.1)
+    end
+end
+
 @testset "operations: tetrahedralize" begin
     # Roadmap 6.7: a closed triangle surface filled with tetrahedra, its skin kept.
     s = icosa_sphere(subdivisions=2)

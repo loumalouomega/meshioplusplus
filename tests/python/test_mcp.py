@@ -1456,6 +1456,114 @@ def test_tessellate_reports_counts_and_watertightness(tmp_path):
     assert bad["error_type"] == "ValueError" and "levels" in bad["error"]
 
 
+def test_adapt_tool_reports_the_capability(tmp_path):
+    # Roadmap 3.2: the MMG backend, or its absence named, with mmg_available.
+    src = str(tmp_path / "square.vtu")
+    meshioplusplus.write(
+        src, meshioplusplus.rectangle(dims=(4, 4), cell_type="triangle")
+    )
+    out = _dump(
+        _tools.call_tool(
+            "adapt",
+            {"input_path": src, "output_path": str(tmp_path / "a.vtu"), "hsiz": 0.1},
+        )
+    )
+    assert out["mmg_available"] is meshioplusplus.has_mmg()
+    if meshioplusplus.has_mmg():
+        assert out["library"] == "mmg2d" and out["status"] == "success"
+        assert out["num_elements_out"] > out["num_elements_in"]
+    else:
+        assert out["error_type"] == "NotImplementedError"
+        assert "MESHIOPLUSPLUS_WITH_MMG" in out["error"]
+
+
+def test_discretize_levelset_and_mesh_domain_tools(tmp_path):
+    # Roadmap 3.2.2 and 3.2.3, or their absence named, with mmg_available.
+    square = meshioplusplus.rectangle(
+        dims=(8, 8), size=(2, 2), origin=(-1, -1, 0), cell_type="triangle"
+    )
+    square.point_data["ls"] = np.linalg.norm(square.points[:, :2], axis=1) - 0.5
+    src = str(tmp_path / "square.vtu")
+    meshioplusplus.write(src, square)
+    cut = _dump(
+        _tools.call_tool(
+            "discretize_levelset",
+            {
+                "input_path": src,
+                "output_path": str(tmp_path / "c.vtu"),
+                "level_set": "ls",
+            },
+        )
+    )
+    th = np.linspace(0, 2 * np.pi, 17)[:-1]
+    lines = np.array([[i, (i + 1) % 16] for i in range(16)])
+    circle = meshioplusplus.Mesh(np.c_[np.cos(th), np.sin(th)], [("line", lines)])
+    bnd = str(tmp_path / "circle.vtu")
+    meshioplusplus.write(bnd, circle)
+    dom = _dump(
+        _tools.call_tool(
+            "mesh_domain",
+            {"input_path": bnd, "output_path": str(tmp_path / "d.vtu"), "hsiz": 0.2},
+        )
+    )
+    for out in (cut, dom):
+        assert out["mmg_available"] is meshioplusplus.has_mmg()
+    if meshioplusplus.has_mmg():
+        assert cut["library"] == "mmg2d" and cut["status"] == "success"
+        assert dom["num_subdomains"] == 1 and dom["num_holes"] == 0
+        assert dom["num_elements_out"] > 50
+    else:
+        for out in (cut, dom):
+            assert out["error_type"] == "NotImplementedError"
+
+
+def test_move_tool_reports_the_capability(tmp_path):
+    # Roadmap 3.2.4: a box's xmax face pushed out, or the missing backend named.
+    box = meshioplusplus.box(dims=(4, 4, 4), cell_type="tetra")
+    d = np.zeros((len(box.points), 3))
+    d[np.isclose(box.points[:, 0], 1.0), 0] = 0.1
+    box.point_data["d"] = d
+    src = str(tmp_path / "box.vtu")
+    meshioplusplus.write(src, box)
+    dst = str(tmp_path / "moved.vtu")
+    out = _dump(
+        _tools.call_tool(
+            "move",
+            {
+                "input_path": src,
+                "output_path": dst,
+                "displacement": "d",
+                "moving": ["xmax"],
+            },
+        )
+    )
+    assert out["mmg_available"] is meshioplusplus.has_mmg()
+    if meshioplusplus.has_mmg() and meshioplusplus.has_mmg_elas():
+        assert out["library"] == "mmg3d" and out["status"] == "success"
+        assert np.isclose(meshioplusplus.read(dst).points[:, 0].max(), 1.1)
+    else:
+        assert out["error_type"] == "NotImplementedError"
+
+
+def test_metric_from_hessian_tool(tmp_path):
+    mesh = meshioplusplus.rectangle(dims=(2, 2), cell_type="triangle")
+    mesh.point_data["h"] = np.tile(
+        [2.0, 0, 0, 0, 20.0, 0, 0, 0, 0], (len(mesh.points), 1)
+    )
+    src = str(tmp_path / "h.vtu")
+    meshioplusplus.write(src, mesh)
+    dst = str(tmp_path / "m.vtu")
+    out = _dump(
+        _tools.call_tool(
+            "metric_from_hessian",
+            {"input_path": src, "output_path": dst, "hessian": "h", "hmax": 10.0},
+        )
+    )
+    assert "error" not in out, out
+    metric = meshioplusplus.read(dst).point_data["metric"]
+    assert metric.shape == (len(mesh.points), 6)
+
+
 def test_fit_cad_tool_reports_the_capability(tmp_path):
     from meshioplusplus._fit_cad import has_occt
 
@@ -2041,6 +2149,8 @@ _NOT_TOOLS = {
     "view",  # interactive; screenshot is the headless tool
     "tui",  # interactive (it takes over a terminal); render_mesh is the headless tool
     "has_viewer",
+    "has_mmg",  # capability probes; the adapt tool reports mmg_available
+    "has_mmg_elas",
     "to_pyvista",
     "from_pyvista",
     "to_trimesh",

@@ -74,6 +74,9 @@ module meshioplusplus
     public :: mio_extrude, mio_revolve, mio_sweep_report
     public :: mio_mirror, mio_mirror_report
     public :: mio_tetrahedralize, mio_tetrahedralize_report, mio_has_netgen
+    public :: mio_has_mmg, mio_has_mmg_elas, mio_mmg_index_bits
+    public :: mio_adapt, mio_mmg_report, mio_metric_from_hessian
+    public :: mio_discretize_levelset, mio_mesh_domain, mio_move
     public :: mio_error_size_report
     public :: mio_conformity_report
     public :: MIO_CONFORMITY_CONFORMING, MIO_CONFORMITY_WELD, MIO_CONFORMITY_PROXIMITY
@@ -737,6 +740,93 @@ module meshioplusplus
         integer(c_int32_t) :: boundary_preserved = 0
         integer(c_int32_t) :: backend = 0
         integer(c_int64_t) :: reserved(6) = 0
+    end type
+
+    !> Interop mirror of C `mio_mmg_params` (168 bytes): the parameters every
+    !> MMG operation shares. A negative size leaves MMG's default.
+    type, bind(c) :: mio_mmg_params_t
+        real(c_double) :: hmin = -1.0_c_double
+        real(c_double) :: hmax = -1.0_c_double
+        real(c_double) :: hausd = -1.0_c_double
+        real(c_double) :: hgrad = -1.0_c_double
+        real(c_double) :: hgradreq = -1.0_c_double
+        real(c_double) :: angle_detection = 45.0_c_double
+        integer(c_int32_t) :: optim = 0
+        integer(c_int32_t) :: noinsert = 0
+        integer(c_int32_t) :: noswap = 0
+        integer(c_int32_t) :: nomove = 0
+        integer(c_int32_t) :: nosurf = 0
+        integer(c_int32_t) :: nreg = 0
+        integer(c_int32_t) :: opnbdy = 0
+        integer(c_int32_t) :: verbose = -1
+        integer(c_int64_t) :: mem = -1
+        type(c_ptr) :: frozen = c_null_ptr
+        integer(c_int64_t) :: num_frozen = 0
+        type(c_ptr) :: required = c_null_ptr
+        integer(c_int64_t) :: num_required = 0
+        type(c_ptr) :: local = c_null_ptr
+        integer(c_int64_t) :: num_local = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_adapt_opts` (224 bytes).
+    type, bind(c) :: mio_adapt_opts_t
+        type(mio_mmg_params_t) :: params
+        real(c_double) :: hsiz = -1.0_c_double
+        type(c_ptr) :: size = c_null_ptr
+        type(c_ptr) :: metric = c_null_ptr
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_discretize_levelset_opts` (240 bytes).
+    type, bind(c) :: mio_discretize_levelset_opts_t
+        type(mio_mmg_params_t) :: params
+        type(c_ptr) :: level_set = c_null_ptr
+        real(c_double) :: isovalue = 0.0_c_double
+        real(c_double) :: remove_small_components = -1.0_c_double
+        type(c_ptr) :: materials = c_null_ptr
+        integer(c_int64_t) :: num_materials = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_mesh_domain_opts` (232 bytes).
+    type, bind(c) :: mio_mesh_domain_opts_t
+        type(mio_mmg_params_t) :: params
+        real(c_double) :: hsiz = -1.0_c_double
+        type(c_ptr) :: size = c_null_ptr
+        type(c_ptr) :: holes = c_null_ptr
+        integer(c_int64_t) :: num_holes = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_move_opts` (232 bytes).
+    type, bind(c) :: mio_move_opts_t
+        type(mio_mmg_params_t) :: params
+        type(c_ptr) :: displacement = c_null_ptr
+        type(c_ptr) :: moving = c_null_ptr
+        integer(c_int64_t) :: num_moving = 0
+        integer(c_int32_t) :: lagrangian = 1
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_mmg_report` (192 bytes): what an MMG operation did. `status` is 0
+    !> for MMG5_SUCCESS, 1 for MMG5_LOWFAILURE (a valid mesh MMG could not
+    !> finish); `library` is 'mmg2d', 'mmgs' or 'mmg3d', NUL-terminated.
+    type, bind(c) :: mio_mmg_report
+        integer(c_int32_t) :: status = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        character(kind=c_char) :: library(8) = c_null_char
+        integer(c_int64_t) :: num_points_in = 0
+        integer(c_int64_t) :: num_points_out = 0
+        integer(c_int64_t) :: num_elements_in = 0
+        integer(c_int64_t) :: num_elements_out = 0
+        real(c_double) :: quality_min = 0.0_c_double
+        real(c_double) :: quality_mean = 0.0_c_double
+        real(c_double) :: quality_max = 0.0_c_double
+        integer(c_int64_t) :: quality_histogram(10) = 0
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(4) = 0
     end type
 
     !> Interop mirror of C `mio_mesh_cad_surface_opts` (104 bytes, checked once
@@ -4892,6 +4982,65 @@ module meshioplusplus
             integer(c_int) :: r
         end function
 
+        function c_mio_has_mmg() bind(c, name="mio_has_mmg") result(r)
+            import :: c_int
+            integer(c_int) :: r
+        end function
+
+        function c_mio_adapt(mesh, opts, report) bind(c, name="mio_adapt") result(h)
+            import :: c_ptr, mio_adapt_opts_t, mio_mmg_report
+            type(c_ptr), value :: mesh
+            type(mio_adapt_opts_t), intent(in) :: opts
+            type(mio_mmg_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_discretize_levelset(mesh, opts, report) &
+                bind(c, name="mio_discretize_levelset") result(h)
+            import :: c_ptr, mio_discretize_levelset_opts_t, mio_mmg_report
+            type(c_ptr), value :: mesh
+            type(mio_discretize_levelset_opts_t), intent(in) :: opts
+            type(mio_mmg_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_move(mesh, opts, report) bind(c, name="mio_move") result(h)
+            import :: c_ptr, mio_move_opts_t, mio_mmg_report
+            type(c_ptr), value :: mesh
+            type(mio_move_opts_t), intent(in) :: opts
+            type(mio_mmg_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_mesh_domain(mesh, opts, report, num_subdomains, num_holes) &
+                bind(c, name="mio_mesh_domain") result(h)
+            import :: c_ptr, c_int64_t, mio_mesh_domain_opts_t, mio_mmg_report
+            type(c_ptr), value :: mesh
+            type(mio_mesh_domain_opts_t), intent(in) :: opts
+            type(mio_mmg_report), intent(out) :: report
+            integer(c_int64_t), intent(out) :: num_subdomains, num_holes
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_metric_from_hessian(mesh, hessian, error, hmin, hmax, output) &
+                bind(c, name="mio_metric_from_hessian") result(h)
+            import :: c_ptr, c_double, c_char
+            type(c_ptr), value :: mesh
+            character(kind=c_char), intent(in) :: hessian(*), output(*)
+            real(c_double), value :: error, hmin, hmax
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_has_mmg_elas() bind(c, name="mio_has_mmg_elas") result(r)
+            import :: c_int
+            integer(c_int) :: r
+        end function
+
+        function c_mio_mmg_index_bits() bind(c, name="mio_mmg_index_bits") result(r)
+            import :: c_int
+            integer(c_int) :: r
+        end function
+
         function c_mio_check_conformity(mesh, opts, report) &
                 bind(c, name="mio_check_conformity") result(h)
             import :: c_ptr, mio_conformity_opts_t, mio_conformity_report
@@ -5698,6 +5847,255 @@ contains
     function mio_has_netgen() result(has)
         logical :: has
         has = c_mio_has_netgen() /= 0
+    end function
+
+    !> Whether the library carries the MMG backend (adapt, discretize_levelset,
+    !> mesh_domain, move): a build with MESHIOPLUSPLUS_WITH_MMG.
+    function mio_has_mmg() result(has)
+        logical :: has
+        has = c_mio_has_mmg() /= 0
+    end function
+
+    !> Remesh `mesh` to a size or a metric with MMG (roadmap 3.2.1; doc/mmg.md):
+    !> mmg3d for tetrahedra, mmg2d for a planar triangle mesh, mmgs for another
+    !> triangle surface. Give at most one of `hsiz` (a constant edge size),
+    !> `size_field` (a one-component point-data name) and `metric` (a six-component
+    !> point-data name, three in 2-D, in the lower-triangle order of a Medit
+    !> .sol). `hmin`, `hmax`, `hausd`, `hgrad` and `angle_detection` (45; 0
+    !> off) are MMG's; `frozen` lists 1-based points MMG must keep and
+    !> `required` the regions whose entities it must keep. Cell and side
+    !> regions come back under their names. Without MMG (`mio_has_mmg()` is
+    !> false) it fails naming MESHIOPLUSPLUS_WITH_MMG.
+    function mio_adapt(mesh, hsiz, size_field, metric, hmin, hmax, hausd, hgrad, angle_detection, &
+                       frozen, required, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        real(real64), intent(in), optional :: hsiz, hmin, hmax, hausd, hgrad, angle_detection
+        character(*), intent(in), optional :: size_field, metric
+        integer(int64), intent(in), optional :: frozen(:)
+        character(*), intent(in), optional :: required(:)
+        type(mio_mmg_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_adapt_opts_t) :: opts
+        type(mio_mmg_report) :: rep
+        ! NUL-terminated copies and the id buffer must outlive the call.
+        character(kind=c_char, len=:), allocatable, target :: size_c, metric_c
+        character(kind=c_char, len=:), allocatable, target :: required_c(:)
+        type(c_ptr), allocatable, target :: required_p(:)
+        integer(c_int64_t), allocatable, target :: frozen_ids(:)
+        integer :: k
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. &
+            (c_sizeof(opts) /= 224_c_size_t .or. c_sizeof(rep) /= 192_c_size_t)) then
+            write (error_unit, '(a)') 'meshio++: adapt layout mismatch'
+            error stop 1
+        end if
+        if (present(hsiz)) opts%hsiz = real(hsiz, c_double)
+        if (present(hmin)) opts%params%hmin = real(hmin, c_double)
+        if (present(hmax)) opts%params%hmax = real(hmax, c_double)
+        if (present(hausd)) opts%params%hausd = real(hausd, c_double)
+        if (present(hgrad)) opts%params%hgrad = real(hgrad, c_double)
+        if (present(angle_detection)) opts%params%angle_detection = real(angle_detection, c_double)
+        if (present(size_field)) then
+            size_c = c_str(size_field)
+            opts%size = c_loc(size_c(1:1))
+        end if
+        if (present(metric)) then
+            metric_c = c_str(metric)
+            opts%metric = c_loc(metric_c(1:1))
+        end if
+        if (present(frozen)) then
+            allocate (frozen_ids(max(size(frozen), 1)))
+            frozen_ids = 0_c_int64_t
+            if (size(frozen) > 0) frozen_ids(1:size(frozen)) = int(frozen, c_int64_t) - 1_c_int64_t
+            opts%params%frozen = c_loc(frozen_ids(1))
+            opts%params%num_frozen = int(size(frozen), c_int64_t)
+        end if
+        if (present(required)) then
+            if (size(required) > 0) then
+                allocate (character(kind=c_char, len=len(required) + 1) :: required_c(size(required)))
+                allocate (required_p(size(required)))
+                do k = 1, size(required)
+                    required_c(k) = trim(required(k))//c_null_char
+                    required_p(k) = c_loc(required_c(k))
+                end do
+                opts%params%required = c_loc(required_p(1))
+                opts%params%num_required = int(size(required), c_int64_t)
+            end if
+        end if
+        out%handle = c_mio_adapt(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('adapt', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Embed the isovalue (0) of the point-data level set `level_set` in
+    !> `mesh` and remesh both sides with MMG (roadmap 3.2.2). The elements
+    !> carry MMG's references as cell data medit:ref (3 inside, 2 outside) and
+    !> the cell regions inside/outside; the interface is the side region
+    !> "interface". `hausd` and `hmax` are MMG's.
+    function mio_discretize_levelset(mesh, level_set, isovalue, hausd, hmax, report, stat, &
+                                     errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in) :: level_set
+        real(real64), intent(in), optional :: isovalue, hausd, hmax
+        type(mio_mmg_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_discretize_levelset_opts_t) :: opts
+        type(mio_mmg_report) :: rep
+        character(kind=c_char, len=:), allocatable, target :: name_c
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. c_sizeof(opts) /= 240_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: discretize_levelset layout mismatch'
+            error stop 1
+        end if
+        name_c = c_str(level_set)
+        opts%level_set = c_loc(name_c(1:1))
+        if (present(isovalue)) opts%isovalue = real(isovalue, c_double)
+        if (present(hausd)) opts%params%hausd = real(hausd, c_double)
+        if (present(hmax)) opts%params%hmax = real(hmax, c_double)
+        out%handle = c_mio_discretize_levelset(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('discretize_levelset', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Triangulate the planar domain bounded by the line cells of `boundary`
+    !> with MMG (roadmap 3.2.3), at the edge size `hsiz`. `holes(2, k)` holds a
+    !> point inside each hole, whose region is left out; each enclosed region
+    !> is a cell region subdomain:<k>.
+    function mio_mesh_domain(boundary, hsiz, holes, report, num_subdomains, stat, errmsg) &
+            result(out)
+        type(mio_mesh), intent(in) :: boundary
+        real(real64), intent(in), optional :: hsiz
+        real(real64), intent(in), optional :: holes(:, :)
+        type(mio_mmg_report), intent(out), optional :: report
+        integer(int64), intent(out), optional :: num_subdomains
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_mesh_domain_opts_t) :: opts
+        type(mio_mmg_report) :: rep
+        real(c_double), allocatable, target :: xy(:)
+        integer(c_int64_t) :: nsub, nholes
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. c_sizeof(opts) /= 232_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: mesh_domain layout mismatch'
+            error stop 1
+        end if
+        if (present(hsiz)) opts%hsiz = real(hsiz, c_double)
+        if (present(holes)) then
+            if (size(holes, 2) > 0) then
+                allocate (xy(2*size(holes, 2)))
+                xy = real(reshape(holes(1:2, :), [2*size(holes, 2)]), c_double)
+                opts%holes = c_loc(xy(1))
+                opts%num_holes = int(size(holes, 2), c_int64_t)
+            end if
+        end if
+        out%handle = c_mio_mesh_domain(boundary%handle, opts, rep, nsub, nholes)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('mesh_domain', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        if (present(num_subdomains)) num_subdomains = int(nsub, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Move `mesh` by the point-data vector `displacement` of the boundary
+    !> facets of the regions `moving`, remeshing as it deforms (MMG's
+    !> Lagrangian mode, roadmap 3.2.4): MMG extends the displacement inward by
+    !> linear elasticity (ELAS) and keeps the rest of the boundary in place.
+    !> `lagrangian` is MMG's lag (0, 1 the default, or 2). Fails naming
+    !> MESHIOPLUSPLUS_WITH_MMG without MMG, or ELAS without it.
+    function mio_move(mesh, displacement, moving, lagrangian, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in) :: displacement
+        character(*), intent(in) :: moving(:)
+        integer, intent(in), optional :: lagrangian
+        type(mio_mmg_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_move_opts_t) :: opts
+        type(mio_mmg_report) :: rep
+        character(kind=c_char, len=:), allocatable, target :: name_c
+        character(kind=c_char, len=:), allocatable, target :: moving_c(:)
+        type(c_ptr), allocatable, target :: moving_p(:)
+        integer :: k
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. c_sizeof(opts) /= 232_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: move layout mismatch'
+            error stop 1
+        end if
+        name_c = c_str(displacement)
+        opts%displacement = c_loc(name_c(1:1))
+        if (size(moving) > 0) then
+            allocate (character(kind=c_char, len=len(moving) + 1) :: moving_c(size(moving)))
+            allocate (moving_p(size(moving)))
+            do k = 1, size(moving)
+                moving_c(k) = trim(moving(k))//c_null_char
+                moving_p(k) = c_loc(moving_c(k))
+            end do
+            opts%moving = c_loc(moving_p(1))
+            opts%num_moving = int(size(moving), c_int64_t)
+        end if
+        if (present(lagrangian)) opts%lagrangian = int(lagrangian, c_int32_t)
+        out%handle = c_mio_move(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('move', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The anisotropic metric of the row-major point-data Hessian `hessian`
+    !> ((n, 9), or (n, 4) in 2-D) for `mio_adapt`, as point data `output`
+    !> ('metric'): M = c/error |H|, its sizes clamped to [hmin, hmax]. Needs no
+    !> MMG.
+    function mio_metric_from_hessian(mesh, hessian, error, hmin, hmax, output, stat, errmsg) &
+            result(out)
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in) :: hessian
+        real(real64), intent(in), optional :: error, hmin, hmax
+        character(*), intent(in), optional :: output
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        real(c_double) :: e, lo, hi
+        character(:), allocatable :: name
+        e = 1.0e-2_c_double
+        lo = 1.0e-3_c_double
+        hi = 1.0_c_double
+        if (present(error)) e = real(error, c_double)
+        if (present(hmin)) lo = real(hmin, c_double)
+        if (present(hmax)) hi = real(hmax, c_double)
+        name = 'metric'
+        if (present(output)) name = output
+        out%handle = c_mio_metric_from_hessian(mesh%handle, c_str(hessian), e, lo, hi, c_str(name))
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('metric_from_hessian', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Whether the linked MMG has ELAS, which `move` needs.
+    function mio_has_mmg_elas() result(has)
+        logical :: has
+        has = c_mio_has_mmg_elas() /= 0
+    end function
+
+    !> The width in bits of the linked MMG's MMG5_int (32 or 64), 0 without MMG.
+    function mio_mmg_index_bits() result(bits)
+        integer :: bits
+        bits = int(c_mio_mmg_index_bits())
     end function
 
     function mio_pipeline_has_json() result(has)

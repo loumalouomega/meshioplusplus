@@ -14,6 +14,8 @@ from .._exceptions import ReadError, WriteError
 from .._files import open_file
 from .._mesh import Mesh
 from .._regions import Region
+from ..medit_sol._medit_sol import SOL_KEYWORDS as _SOL_KEYWORDS
+from ..medit_sol._medit_sol import components as _sol_components
 from ._medit_internal import medit_codes
 
 
@@ -471,6 +473,27 @@ def read_ascii_buffer(f):
             ).reshape(num_edge_on_geometric_edge, 2)
         elif items[0] == "Identifier" or items[0] == "Geometry":
             f.readline()
+        elif items[0] in _SOL_KEYWORDS:
+            # A solution inside the mesh file: its home is a `.sol` beside it.
+            num_rows = int(f.readline())
+            head = np.fromfile(f, count=1, dtype=int, sep=" ")
+            num_types = int(head[0]) if len(head) else -1
+            types = np.fromfile(f, count=max(num_types, 0), dtype=int, sep=" ")
+            if (
+                num_rows < 0
+                or num_types < 1
+                or len(types) != num_types
+                or dim not in (2, 3)
+            ):
+                raise ReadError(f"Medit: {items[0]} has an impossible header")
+            total = sum(_sol_components(int(t), dim) for t in types)
+            values = np.fromfile(f, count=num_rows * total, dtype=float, sep=" ")
+            if len(values) != num_rows * total:
+                raise ReadError(f"Medit: {items[0]} is truncated")
+            warn(
+                f"Medit: {items[0]} in a mesh file is skipped; keep the solution in "
+                "a .sol beside the mesh and read it with medit.read(path, sol=...)"
+            )
         elif items[0] in [
             "TangentAtVertices",
             "Tangents",

@@ -934,6 +934,25 @@ SPEC: dict[str, dict] = {
         "field_data": False,
         "regions": [],
     },
+    "medit_sol": {
+        "cells": {
+            "vertex": "lost",
+            "line": "lost",
+            "triangle": "lost",
+            "quad": "lost",
+            "tetra": "lost",
+            "hexahedron": "lost",
+            "wedge": "lost",
+            "pyramid": "lost",
+        },
+        "points": "none",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": [],
+        "note": "Fields without geometry: the float data comes back renamed "
+        "`medit:sol:<i>`, element fields only through `medit.read(path, sol=...)`.",
+    },
     "mfem": {
         "cells": {
             "line": "lost",

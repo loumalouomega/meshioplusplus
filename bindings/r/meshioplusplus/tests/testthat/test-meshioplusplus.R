@@ -1926,6 +1926,36 @@ test_that("extrude, revolve and mirror sweep and reflect (roadmap 3.1.2, 3.1.3, 
   expect_error(mio_mirror(b, normal = c(0, 0, 0)), "normal")
   mio_release(b)
 })
+test_that("adapt runs with MMG and names the flag without it (roadmap 3.2)", {
+  sq <- mio_rectangle(dims = c(4, 4), cell_type = "triangle")
+  on.exit(mio_release(sq))
+  if (mio_has_mmg()) {
+    r <- mio_adapt(sq, hsiz = 0.1, frozen = 13)
+    expect_equal(r$status, "success")
+    expect_equal(r$library, "mmg2d")
+    expect_gt(r$num_elements_out, r$num_elements_in)
+    mio_release(r$mesh)
+    xy <- mio_points(sq)
+    mio_add_point_data(sq, "phi", sqrt((xy[1, ] - 0.5)^2 + (xy[2, ] - 0.5)^2) - 0.3)
+    ls <- mio_discretize_levelset(sq, "phi", hmax = 0.1)
+    expect_equal(ls$library, "mmg2d")
+    mio_release(ls$mesh)
+    box <- mio_mesh()
+    on.exit(mio_release(box), add = TRUE)
+    mio_set_points(box, matrix(c(0, 0, 1, 0, 1, 1, 0, 1), nrow = 2))
+    mio_add_cell_block(box, "line", matrix(c(1, 2, 2, 3, 3, 4, 4, 1), nrow = 2))
+    d <- mio_mesh_domain(box, hsiz = 0.1)
+    expect_equal(d$num_subdomains, 1)
+    expect_gt(d$num_elements_out, 100)
+    mio_release(d$mesh)
+    expect_error(mio_move(sq, "phi", "nope"))
+  } else {
+    expect_false(mio_has_mmg_elas())
+    expect_error(mio_adapt(sq, hsiz = 0.1), "MESHIOPLUSPLUS_WITH_MMG")
+    expect_error(mio_mesh_domain(sq, hsiz = 0.1), "MESHIOPLUSPLUS_WITH_MMG")
+  }
+})
+
 test_that("tetrahedralize fills a closed surface keeping its skin (roadmap 6.7)", {
   s <- mio_icosa_sphere(subdivisions = 2)
   on.exit(mio_release(s))

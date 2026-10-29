@@ -46,6 +46,7 @@ from .. import (
     GeometryGuard,
     GridArray,
     GridSpec,
+    adapt,
     agglomerate,
     annulus,
     attach_quality,
@@ -81,6 +82,7 @@ from .. import (
     decimate,
     decimate_volume,
     diff,
+    discretize_levelset,
     disk,
     distance_to_surface,
     edit_regions,
@@ -98,6 +100,8 @@ from .. import (
     geometry_descriptors,
     gradient,
     grid,
+    has_mmg,
+    has_mmg_elas,
     hausdorff_distance,
     helix,
     hessian,
@@ -113,8 +117,11 @@ from .. import (
     match_periodic_nodes,
     merge,
     mesh_cad_surface,
+    mesh_domain,
+    metric_from_hessian,
     mirror,
     moebius,
+    move,
     ngon,
     octa_sphere,
     octree,
@@ -4169,6 +4176,294 @@ def tool_decimate_volume(
     return _result(_store(out, output_path, output_format), out, **report)
 
 
+def _mmg_unavailable(op):
+    """The guarded error shape for an MMG tool in a build without MMG, plus the capability."""
+    return {
+        "error": f"meshio++: {op}: the MMG backend is not built in: rebuild with "
+        "-DMESHIOPLUSPLUS_WITH_MMG=ON and a shared MMG install (build/build-mmg.sh; "
+        "see doc/mmg.md); the PyPI wheels do not carry it",
+        "error_type": "NotImplementedError",
+        "mmg_available": False,
+    }
+
+
+def tool_adapt(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    hsiz=None,
+    size=None,
+    metric=None,
+    hmin=None,
+    hmax=None,
+    hausd=None,
+    hgrad=None,
+    hgradreq=None,
+    angle_detection=45.0,
+    optim=False,
+    noinsert=False,
+    noswap=False,
+    nomove=False,
+    nosurf=False,
+    nreg=False,
+    opnbdy=False,
+    frozen=None,
+    required=None,
+    local=None,
+):
+    """Remesh to a constant size (hsiz), a size field or an anisotropic metric
+    (point_data names) with MMG: mmg3d for tetrahedra, mmg2d for a planar
+    triangle mesh, mmgs for another triangle surface. Cell and side regions
+    come back under their names; other point/cell data is dropped. Reports
+    status, library, counts in and out and the aspect-ratio quality."""
+    if not has_mmg():
+        return _mmg_unavailable("adapt")
+    mesh = _load(input_path, input_format)
+    out, report = adapt(
+        mesh,
+        hsiz=hsiz,
+        size=size,
+        metric=metric,
+        hmin=hmin,
+        hmax=hmax,
+        hausd=hausd,
+        hgrad=hgrad,
+        hgradreq=hgradreq,
+        angle_detection=angle_detection,
+        optim=optim,
+        noinsert=noinsert,
+        noswap=noswap,
+        nomove=nomove,
+        nosurf=nosurf,
+        nreg=nreg,
+        opnbdy=opnbdy,
+        frozen=frozen,
+        required=required,
+        local=local,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format), out, mmg_available=True, **report
+    )
+
+
+def tool_discretize_levelset(
+    input_path,
+    output_path,
+    level_set,
+    input_format=None,
+    output_format=None,
+    isovalue=0.0,
+    materials=None,
+    remove_small_components=None,
+    hmin=None,
+    hmax=None,
+    hausd=None,
+    hgrad=None,
+    hgradreq=None,
+    angle_detection=45.0,
+    optim=False,
+    noinsert=False,
+    noswap=False,
+    nomove=False,
+    nosurf=False,
+    nreg=False,
+    opnbdy=False,
+    frozen=None,
+    required=None,
+    local=None,
+):
+    """Embed the isovalue of a point_data level set conformally and remesh
+    both sides with MMG. The elements carry medit:ref (3 inside, 2 outside, or
+    the materials') and the cell regions inside/outside; the interface is the
+    side region interface. Reports as adapt."""
+    if not has_mmg():
+        return _mmg_unavailable("discretize_levelset")
+    mesh = _load(input_path, input_format)
+    out, report = discretize_levelset(
+        mesh,
+        level_set,
+        isovalue,
+        materials=[tuple(m) for m in materials or []],
+        remove_small_components=remove_small_components,
+        hmin=hmin,
+        hmax=hmax,
+        hausd=hausd,
+        hgrad=hgrad,
+        hgradreq=hgradreq,
+        angle_detection=angle_detection,
+        optim=optim,
+        noinsert=noinsert,
+        noswap=noswap,
+        nomove=nomove,
+        nosurf=nosurf,
+        nreg=nreg,
+        opnbdy=opnbdy,
+        frozen=frozen,
+        required=required,
+        local=local,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format), out, mmg_available=True, **report
+    )
+
+
+def tool_mesh_domain(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    hsiz=None,
+    size=None,
+    holes=None,
+    hmin=None,
+    hmax=None,
+    hausd=None,
+    hgrad=None,
+    hgradreq=None,
+    angle_detection=45.0,
+    optim=False,
+    noinsert=False,
+    noswap=False,
+    nomove=False,
+    nosurf=False,
+    nreg=False,
+    opnbdy=False,
+    frozen=None,
+    required=None,
+    local=None,
+):
+    """Triangulate the planar domain the line cells of a mesh bound with MMG
+    (MMG2D_mmg2dmesh). Each enclosed region is a cell region subdomain:<k>;
+    holes lists one (x, y) point inside each region to leave out. Reports as
+    adapt plus num_subdomains and num_holes."""
+    if not has_mmg():
+        return _mmg_unavailable("mesh_domain")
+    boundary = _load(input_path, input_format)
+    out, report = mesh_domain(
+        boundary,
+        hsiz=hsiz,
+        size=size,
+        holes=[tuple(h) for h in holes or []],
+        hmin=hmin,
+        hmax=hmax,
+        hausd=hausd,
+        hgrad=hgrad,
+        hgradreq=hgradreq,
+        angle_detection=angle_detection,
+        optim=optim,
+        noinsert=noinsert,
+        noswap=noswap,
+        nomove=nomove,
+        nosurf=nosurf,
+        nreg=nreg,
+        opnbdy=opnbdy,
+        frozen=frozen,
+        required=required,
+        local=local,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format), out, mmg_available=True, **report
+    )
+
+
+def tool_move(
+    input_path,
+    output_path,
+    displacement,
+    moving,
+    input_format=None,
+    output_format=None,
+    lagrangian=1,
+    hmin=None,
+    hmax=None,
+    hausd=None,
+    hgrad=None,
+    hgradreq=None,
+    angle_detection=45.0,
+    optim=False,
+    noinsert=False,
+    noswap=False,
+    nomove=False,
+    nosurf=False,
+    nreg=False,
+    opnbdy=False,
+    frozen=None,
+    required=None,
+    local=None,
+):
+    """Move a mesh by the point_data displacement of the boundary facets of
+    the regions moving, remeshing as it deforms with MMG's Lagrangian mode
+    (needs MMG with ELAS). Reports as adapt, plus mmg_elas_available."""
+    if not has_mmg():
+        return _mmg_unavailable("move")
+    if not has_mmg_elas():
+        return {
+            "error": "meshio++: move: the linked MMG was built without ELAS, which "
+            "its Lagrangian mode needs: rebuild MMG with build/build-mmg.sh "
+            "--with-elas (GPL-3.0; see doc/mmg.md)",
+            "error_type": "NotImplementedError",
+            "mmg_available": True,
+            "mmg_elas_available": False,
+        }
+    mesh = _load(input_path, input_format)
+    out, report = move(
+        mesh,
+        displacement,
+        moving,
+        lagrangian=lagrangian,
+        hmin=hmin,
+        hmax=hmax,
+        hausd=hausd,
+        hgrad=hgrad,
+        hgradreq=hgradreq,
+        angle_detection=angle_detection,
+        optim=optim,
+        noinsert=noinsert,
+        noswap=noswap,
+        nomove=nomove,
+        nosurf=nosurf,
+        nreg=nreg,
+        opnbdy=opnbdy,
+        frozen=frozen,
+        required=required,
+        local=local,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        mmg_available=True,
+        mmg_elas_available=True,
+        **report,
+    )
+
+
+def tool_metric_from_hessian(
+    input_path,
+    output_path,
+    hessian,
+    input_format=None,
+    output_format=None,
+    error=1e-2,
+    hmin=1e-3,
+    hmax=1.0,
+    output="metric",
+):
+    """The anisotropic metric of a point_data Hessian (n, 9) or (n, 4), for
+    adapt: M = c/error |H|, its sizes clamped to [hmin, hmax], written as
+    point_data output in the lower-triangle order of a Medit .sol. Needs no
+    MMG."""
+    mesh = _load(input_path, input_format)
+    out = metric_from_hessian(
+        mesh, hessian, error=error, hmin=hmin, hmax=hmax, output=output
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
 def tool_remesh(
     input_path,
     output_path,
@@ -6467,6 +6762,28 @@ TOOL_REGISTRY = OrderedDict(
         (
             "decimate_volume",
             {"fn": tool_decimate_volume, "wraps": ("decimate_volume",), "gated": None},
+        ),
+        ("adapt", {"fn": tool_adapt, "wraps": ("adapt",), "gated": None}),
+        (
+            "discretize_levelset",
+            {
+                "fn": tool_discretize_levelset,
+                "wraps": ("discretize_levelset",),
+                "gated": None,
+            },
+        ),
+        (
+            "mesh_domain",
+            {"fn": tool_mesh_domain, "wraps": ("mesh_domain",), "gated": None},
+        ),
+        ("move", {"fn": tool_move, "wraps": ("move",), "gated": None}),
+        (
+            "metric_from_hessian",
+            {
+                "fn": tool_metric_from_hessian,
+                "wraps": ("metric_from_hessian",),
+                "gated": None,
+            },
         ),
         ("remesh", {"fn": tool_remesh, "wraps": ("remesh",), "gated": None}),
         (

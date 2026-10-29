@@ -39,6 +39,7 @@ from . import (
     _merge,
     _mesh_cad,
     _mirror,
+    _mmg,
     _normals,
     _octree,
     _octree_mesh,
@@ -585,6 +586,34 @@ def main(argv=None):
     )
     _decimate_volume.add_args(parser)
     parser.set_defaults(func=_decimate_volume.decimate_volume_cmd)
+
+    parser = subparsers.add_parser(
+        "adapt",
+        help="Remesh to a size or a metric with MMG (a build with MESHIOPLUSPLUS_WITH_MMG)",
+    )
+    _mmg.add_adapt_args(parser)
+    parser.set_defaults(func=_mmg.adapt_cmd)
+
+    parser = subparsers.add_parser(
+        "discretize-levelset",
+        help="Embed a level set conformally and remesh both sides with MMG",
+    )
+    _mmg.add_discretize_levelset_args(parser)
+    parser.set_defaults(func=_mmg.discretize_levelset_cmd)
+
+    parser = subparsers.add_parser(
+        "mesh-2d",
+        help="Triangulate the planar domain a line mesh bounds with MMG",
+    )
+    _mmg.add_mesh_2d_args(parser)
+    parser.set_defaults(func=_mmg.mesh_2d_cmd)
+
+    parser = subparsers.add_parser(
+        "move",
+        help="Move a mesh by a boundary displacement and remesh with MMG (needs ELAS)",
+    )
+    _mmg.add_move_args(parser)
+    parser.set_defaults(func=_mmg.move_cmd)
 
     parser = subparsers.add_parser(
         "remesh",

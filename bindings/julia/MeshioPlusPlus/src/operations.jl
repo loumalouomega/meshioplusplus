@@ -915,6 +915,229 @@ Whether the library carries the Netgen backend [`tetrahedralize`](@ref) needs
 has_netgen() = ccall(_sym(:mio_has_netgen), Cint, ()) != 0
 
 """
+    has_mmg() -> Bool
+
+Whether the library carries the MMG backend (a build with
+`-DMESHIOPLUSPLUS_WITH_MMG=ON`): `adapt`, `discretize_levelset`, `mesh_domain`
+and `move` throw without it.
+"""
+has_mmg() = ccall(_sym(:mio_has_mmg), Cint, ()) != 0
+
+"""
+    has_mmg_elas() -> Bool
+
+Whether the linked MMG was built with ELAS, which `move` needs.
+"""
+has_mmg_elas() = ccall(_sym(:mio_has_mmg_elas), Cint, ()) != 0
+
+_cstring(s::AbstractString) = push!(Vector{UInt8}(codeunits(String(s))), 0x00)
+
+# The shared MMG parameters, and the buffers they point into (kept alive by the caller).
+function _mmg_params(mesh::Mesh, hmin, hmax, hausd, hgrad, hgradreq, angle_detection, optim,
+                     noinsert, noswap, nomove, nosurf, nreg, opnbdy, mem, verbose, frozen,
+                     required, local_params)
+    frozen_ids = Int64[Int64(i) - 1 for i in frozen]  # 1-based in, 0-based to C
+    names = [_cstring(r) for r in required]
+    name_ptrs = Ptr{UInt8}[pointer(n) for n in names]
+    local_names = [_cstring(String(k)) for (k, _) in local_params]
+    locals = _CMmgLocal[_CMmgLocal(pointer(local_names[i]),
+                                   Cdouble(get(v, "hmin", get(v, :hmin, -1.0))),
+                                   Cdouble(get(v, "hmax", get(v, :hmax, -1.0))),
+                                   Cdouble(get(v, "hausd", get(v, :hausd, -1.0))))
+                        for (i, (_, v)) in enumerate(local_params)]
+    angle = angle_detection === nothing || angle_detection === false ? -1.0 :
+            Cdouble(angle_detection)
+    p = _CMmgParams(Cdouble(hmin), Cdouble(hmax), Cdouble(hausd), Cdouble(hgrad),
+                    Cdouble(hgradreq), angle, Int32(optim), Int32(noinsert), Int32(noswap),
+                    Int32(nomove), Int32(nosurf), Int32(nreg), Int32(opnbdy), Int32(verbose),
+                    Int64(mem), isempty(frozen_ids) ? Ptr{Int64}(C_NULL) : pointer(frozen_ids),
+                    Int64(length(frozen_ids)),
+                    isempty(name_ptrs) ? Ptr{Ptr{UInt8}}(C_NULL) : pointer(name_ptrs),
+                    Int64(length(name_ptrs)),
+                    isempty(locals) ? Ptr{_CMmgLocal}(C_NULL) : pointer(locals),
+                    Int64(length(locals)), (0, 0, 0, 0))
+    return p, (frozen_ids, names, name_ptrs, local_names, locals)
+end
+
+function _mmg_report(r::_CMmgReport)
+    lib = String(UInt8[c for c in r.library if c != 0x00])
+    (status=r.status == 0 ? "success" : "low_failure", library=lib,
+     num_points_in=Int(r.num_points_in), num_points_out=Int(r.num_points_out),
+     num_elements_in=Int(r.num_elements_in), num_elements_out=Int(r.num_elements_out),
+     quality=(min=Float64(r.quality_min), mean=Float64(r.quality_mean),
+              max=Float64(r.quality_max), histogram=collect(Int, r.quality_histogram)),
+     num_warnings=Int(r.num_warnings))
+end
+
+"""
+    adapt(mesh; hsiz=nothing, size=nothing, metric=nothing, hmin=-1, hmax=-1, hausd=-1,
+          hgrad=-1, hgradreq=-1, angle_detection=45.0, optim=false, noinsert=false,
+          noswap=false, nomove=false, nosurf=false, nreg=false, opnbdy=false, mem=-1,
+          verbose=-1, frozen=Int[], required=String[], local_params=Dict())
+        -> (mesh, status, library, num_points_in, ..., quality)
+
+Remesh `mesh` to a size or a metric with MMG (roadmap 3.2.1, `doc/mmg.md`):
+mmg3d for tetrahedra, mmg2d for a planar triangle mesh, mmgs for another
+triangle surface. `size` and `metric` name point data (a metric in the
+lower-triangle order of a Medit `.sol`); `frozen` lists 1-based points MMG must
+keep, `required` the regions whose entities it must keep, `local_params` maps a
+region to its `hmin`/`hmax`/`hausd`. Throws naming `MESHIOPLUSPLUS_WITH_MMG`
+without the backend ([`has_mmg`](@ref)).
+"""
+function adapt(mesh::Mesh; hsiz=nothing, size=nothing, metric=nothing, hmin::Real=-1.0,
+               hmax::Real=-1.0, hausd::Real=-1.0, hgrad::Real=-1.0, hgradreq::Real=-1.0,
+               angle_detection=45.0, optim::Bool=false, noinsert::Bool=false,
+               noswap::Bool=false, nomove::Bool=false, nosurf::Bool=false, nreg::Bool=false,
+               opnbdy::Bool=false, mem::Integer=-1, verbose::Integer=-1,
+               frozen=Int[], required=String[], local_params=Dict{String,Any}())
+    params, keep = _mmg_params(mesh, hmin, hmax, hausd, hgrad, hgradreq, angle_detection,
+                               optim, noinsert, noswap, nomove, nosurf, nreg, opnbdy, mem,
+                               verbose, frozen, required, local_params)
+    size_c = size === nothing ? UInt8[0x00] : _cstring(size)
+    metric_c = metric === nothing ? UInt8[0x00] : _cstring(metric)
+    report = Ref{_CMmgReport}()
+    ptr = GC.@preserve keep size_c metric_c begin
+        opts = _CAdaptOpts(params, hsiz === nothing ? -1.0 : Cdouble(hsiz),
+                           size === nothing ? Ptr{UInt8}(C_NULL) : pointer(size_c),
+                           metric === nothing ? Ptr{UInt8}(C_NULL) : pointer(metric_c),
+                           (0, 0, 0, 0))
+        ccall(_sym(:mio_adapt), Ptr{Cvoid}, (Ptr{Cvoid}, Ref{_CAdaptOpts}, Ref{_CMmgReport}),
+              _handle(mesh), Ref(opts), report)
+    end
+    out = Mesh(_check_ptr(ptr))
+    merge((mesh=out,), _mmg_report(report[]))
+end
+
+"""
+    discretize_levelset(mesh, level_set; isovalue=0.0, remove_small_components=nothing,
+                        materials=[], <adapt's MMG parameters>)
+        -> (mesh, status, library, num_points_in, ..., quality)
+
+Embed the `isovalue` of the one-component point data `level_set` in `mesh`
+conformally and remesh both sides with MMG (roadmap 3.2.2, `doc/mmg.md`). The
+elements carry cell data `medit:ref` (3 inside, 2 outside) and the cell regions
+`inside`/`outside`; the interface is the side region `interface`.
+`remove_small_components` is MMG's `rmc` volume fraction; `materials` lists
+`(ref, split, ref_inside, ref_outside)` tuples for MMG's multi-material mode.
+"""
+function discretize_levelset(mesh::Mesh, level_set::AbstractString; isovalue::Real=0.0,
+                             remove_small_components=nothing, materials=(),
+                             hmin::Real=-1.0, hmax::Real=-1.0, hausd::Real=-1.0,
+                             hgrad::Real=-1.0, hgradreq::Real=-1.0, angle_detection=45.0,
+                             optim::Bool=false, noinsert::Bool=false, noswap::Bool=false,
+                             nomove::Bool=false, nosurf::Bool=false, nreg::Bool=false,
+                             opnbdy::Bool=false, mem::Integer=-1, verbose::Integer=-1,
+                             frozen=Int[], required=String[], local_params=Dict{String,Any}())
+    params, keep = _mmg_params(mesh, hmin, hmax, hausd, hgrad, hgradreq, angle_detection,
+                               optim, noinsert, noswap, nomove, nosurf, nreg, opnbdy, mem,
+                               verbose, frozen, required, local_params)
+    ls_c = _cstring(level_set)
+    mats = _CMmgMaterial[_CMmgMaterial(Int64(m[1]), Int32(Bool(m[2])), Int32(0),
+                                       Int64(m[3]), Int64(m[4])) for m in materials]
+    report = Ref{_CMmgReport}()
+    ptr = GC.@preserve keep ls_c mats begin
+        opts = _CDiscretizeLevelsetOpts(params, pointer(ls_c), Cdouble(isovalue),
+                                        remove_small_components === nothing ? -1.0 :
+                                        Cdouble(remove_small_components),
+                                        isempty(mats) ? Ptr{_CMmgMaterial}(C_NULL) :
+                                        pointer(mats), Int64(length(mats)), (0, 0, 0, 0))
+        ccall(_sym(:mio_discretize_levelset), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CDiscretizeLevelsetOpts}, Ref{_CMmgReport}),
+              _handle(mesh), Ref(opts), report)
+    end
+    out = Mesh(_check_ptr(ptr))
+    merge((mesh=out,), _mmg_report(report[]))
+end
+
+"""
+    mesh_domain(boundary; hsiz=nothing, size=nothing, holes=[], <adapt's MMG parameters>)
+        -> (mesh, num_subdomains, num_holes, status, library, ...)
+
+Triangulate the planar domain bounded by the `line` cells of `boundary` with
+MMG (`MMG2D_mmg2dmesh`, roadmap 3.2.3, `doc/mmg.md`). Each enclosed region is a
+cell region `subdomain:<k>`; `holes` lists one `(x, y)` point inside each region
+to leave out.
+"""
+function mesh_domain(boundary::Mesh; hsiz=nothing, size=nothing, holes=(),
+                     hmin::Real=-1.0, hmax::Real=-1.0, hausd::Real=-1.0, hgrad::Real=-1.0,
+                     hgradreq::Real=-1.0, angle_detection=45.0, optim::Bool=false,
+                     noinsert::Bool=false, noswap::Bool=false, nomove::Bool=false,
+                     nosurf::Bool=false, nreg::Bool=false, opnbdy::Bool=false,
+                     mem::Integer=-1, verbose::Integer=-1, frozen=Int[], required=String[],
+                     local_params=Dict{String,Any}())
+    params, keep = _mmg_params(boundary, hmin, hmax, hausd, hgrad, hgradreq, angle_detection,
+                               optim, noinsert, noswap, nomove, nosurf, nreg, opnbdy, mem,
+                               verbose, frozen, required, local_params)
+    size_c = size === nothing ? UInt8[0x00] : _cstring(size)
+    xy = Cdouble[c for h in holes for c in (Cdouble(h[1]), Cdouble(h[2]))]
+    report = Ref{_CMmgReport}()
+    nsub = Ref{Int64}(0)
+    nholes = Ref{Int64}(0)
+    ptr = GC.@preserve keep size_c xy begin
+        opts = _CMeshDomainOpts(params, hsiz === nothing ? -1.0 : Cdouble(hsiz),
+                                size === nothing ? Ptr{UInt8}(C_NULL) : pointer(size_c),
+                                isempty(xy) ? Ptr{Cdouble}(C_NULL) : pointer(xy),
+                                Int64(length(xy) ÷ 2), (0, 0, 0, 0))
+        ccall(_sym(:mio_mesh_domain), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CMeshDomainOpts}, Ref{_CMmgReport}, Ref{Int64}, Ref{Int64}),
+              _handle(boundary), Ref(opts), report, nsub, nholes)
+    end
+    out = Mesh(_check_ptr(ptr))
+    merge((mesh=out, num_subdomains=Int(nsub[]), num_holes=Int(nholes[])),
+          _mmg_report(report[]))
+end
+
+"""
+    move(mesh, displacement, moving; lagrangian=1, <adapt's MMG parameters>)
+        -> (mesh, status, library, num_points_in, ..., quality)
+
+Move `mesh` by the point-data vector `displacement` of the boundary facets of
+the regions `moving` (a name or a list) and remesh as it deforms, with MMG's
+Lagrangian mode (roadmap 3.2.4, `doc/mmg.md`): MMG extends the displacement
+inward by linear elasticity (ELAS) and keeps the rest of the boundary in place.
+`lagrangian` is MMG's `lag` (0, 1 or 2). Throws naming `MESHIOPLUSPLUS_WITH_MMG`
+without MMG, or ELAS without it ([`has_mmg_elas`](@ref)).
+"""
+function move(mesh::Mesh, displacement::AbstractString, moving; lagrangian::Integer=1,
+              hmin::Real=-1.0, hmax::Real=-1.0, hausd::Real=-1.0, hgrad::Real=-1.0,
+              hgradreq::Real=-1.0, angle_detection=45.0, optim::Bool=false,
+              noinsert::Bool=false, noswap::Bool=false, nomove::Bool=false, nosurf::Bool=false,
+              nreg::Bool=false, opnbdy::Bool=false, mem::Integer=-1, verbose::Integer=-1,
+              frozen=Int[], required=String[], local_params=Dict{String,Any}())
+    params, keep = _mmg_params(mesh, hmin, hmax, hausd, hgrad, hgradreq, angle_detection,
+                               optim, noinsert, noswap, nomove, nosurf, nreg, opnbdy, mem,
+                               verbose, frozen, required, local_params)
+    disp_c = _cstring(displacement)
+    names = [_cstring(r) for r in (moving isa AbstractString ? [moving] : moving)]
+    name_ptrs = Ptr{UInt8}[pointer(n) for n in names]
+    report = Ref{_CMmgReport}()
+    ptr = GC.@preserve keep disp_c names name_ptrs begin
+        opts = _CMoveOpts(params, pointer(disp_c),
+                          isempty(name_ptrs) ? Ptr{Ptr{UInt8}}(C_NULL) : pointer(name_ptrs),
+                          Int64(length(name_ptrs)), Int32(lagrangian), Int32(0), (0, 0, 0, 0))
+        ccall(_sym(:mio_move), Ptr{Cvoid}, (Ptr{Cvoid}, Ref{_CMoveOpts}, Ref{_CMmgReport}),
+              _handle(mesh), Ref(opts), report)
+    end
+    out = Mesh(_check_ptr(ptr))
+    merge((mesh=out,), _mmg_report(report[]))
+end
+
+"""
+    metric_from_hessian(mesh, hessian; error=1e-2, hmin=1e-3, hmax=1.0, output="metric") -> Mesh
+
+The anisotropic metric of the row-major point-data Hessian `hessian` ((n, 9), or
+(n, 4) in 2-D) for [`adapt`](@ref): `M = c/error |H|`, its sizes clamped to
+`[hmin, hmax]`, as point data `output` in the lower-triangle order of a Medit
+`.sol`. Needs no MMG.
+"""
+function metric_from_hessian(mesh::Mesh, hessian::AbstractString; error::Real=1e-2,
+                             hmin::Real=1e-3, hmax::Real=1.0, output::AbstractString="metric")
+    Mesh(_check_ptr(ccall(_sym(:mio_metric_from_hessian), Ptr{Cvoid},
+                          (Ptr{Cvoid}, Cstring, Cdouble, Cdouble, Cdouble, Cstring),
+                          _handle(mesh), hessian, error, hmin, hmax, output)))
+end
+
+"""
     tetrahedralize(mesh; backend="auto", max_size=0.0, max_volume=0.0, grading=0.3,
                    optimize_steps=3, max_cells=50_000_000, face_array="cad:face")
         -> (; mesh, num_tetrahedra, num_points, num_new_points, num_regions,

@@ -35,6 +35,7 @@ set(MESHIOPLUSPLUS_WITH_LZMA @_mio_has_LZMA@)
 set(MESHIOPLUSPLUS_WITH_BZIP2 @_mio_has_BZIP2@)
 set(MESHIOPLUSPLUS_WITH_KAHIP @_mio_has_KAHIP@)
 set(MESHIOPLUSPLUS_WITH_NETGEN @_mio_has_NETGEN@)
+set(MESHIOPLUSPLUS_WITH_MMG @_mio_has_MMG@)
 set(MESHIOPLUSPLUS_WITH_ADIOS2 @_mio_has_ADIOS2@)
 set(MESHIOPLUSPLUS_WITH_TECIO @_mio_has_TECIO@)
 set(MESHIOPLUSPLUS_WITH_OCCT @_mio_has_OCCT@)
@@ -104,6 +105,11 @@ if(@MESHIOPLUSPLUS_INSTALL_CPP@)
     # point KAHIP_ROOT at an install.
     list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}")
     find_dependency(KaHIP)
+  endif()
+  if(MESHIOPLUSPLUS_WITH_MMG)
+    # MMG ships its own CMake package (the Mmg:: targets); point mmg_DIR at an
+    # install, as at build time.
+    find_dependency(mmg CONFIG)
   endif()
   if(MESHIOPLUSPLUS_WITH_NETGEN)
     # FindNetgen.cmake is installed beside this file, as FindKaHIP.cmake is;

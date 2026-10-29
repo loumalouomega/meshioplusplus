@@ -82,6 +82,7 @@
 #include "meshioplusplus/formats/med.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/decimate_volume.hpp"
+#include "meshioplusplus/operations/mmg.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
@@ -544,6 +545,14 @@ void print_usage(std::ostream& os) {
           "                            exactly one of --ratio/--target-faces/--max-error\n"
           "  decimate-volume         Reduce a tet mesh's cell count (QEM tet-edge collapse)\n"
           "                            exactly one of --ratio/--target-cells/--max-error\n"
+          "  adapt                   Remesh to a size or a metric with MMG (a build with\n"
+          "                            MESHIOPLUSPLUS_WITH_MMG); --hsiz, --size or --metric\n"
+          "  discretize-levelset     Embed a level set conformally and remesh both sides\n"
+          "                            with MMG; --level-set NAME, --isovalue, --material\n"
+          "  mesh-2d                 Triangulate the planar domain a line mesh bounds with\n"
+          "                            MMG; --hsiz or --size, --hole X,Y (repeatable)\n"
+          "  move                    Move a mesh by a boundary displacement and remesh with\n"
+          "                            MMG (needs ELAS); --displacement NAME, --moving REGION\n"
           "  remesh                  Replace a surface's triangulation with a new,\n"
           "                            well-shaped one (ACVD clustering); --num-clusters\n"
           "                            is required, --metric isotropic|quadric|anisotropic\n"
@@ -5909,6 +5918,187 @@ int cmd_decimate_volume(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+// The options every MMG subcommand takes (roadmap 3.2).
+std::vector<cli_opt_spec> cli_mmg_options(std::vector<cli_opt_spec> Extra) {
+    std::vector<cli_opt_spec> options = {
+        {"input-format", {"-i"}, true},
+        {"output-format", {"-o"}, true},
+        {"hmin", {}, true},
+        {"hmax", {}, true},
+        {"hausd", {}, true},
+        {"hgrad", {}, true},
+        {"hgradreq", {}, true},
+        {"angle-detection", {}, true},
+        {"optim", {}, false},
+        {"noinsert", {}, false},
+        {"noswap", {}, false},
+        {"nomove", {}, false},
+        {"nosurf", {}, false},
+        {"nreg", {}, false},
+        {"opnbdy", {}, false},
+        {"frozen", {}, true},
+        {"required", {}, true},
+        {"verbose-mmg", {}, true},
+        {"quiet", {"-q"}, false},
+    };
+    options.insert(options.end(), Extra.begin(), Extra.end());
+    return options;
+}
+
+meshioplusplus::MmgParameters cli_mmg_parameters(const cli_parsed& rP, const Mesh& rMesh) {
+    meshioplusplus::MmgParameters o;
+    const auto num = [&](const char* pName, double& rOut) {
+        if (has_opt(rP, pName))
+            rOut = meshioplusplus::detail::stod_c(opt_value(rP, pName));
+    };
+    num("hmin", o.mHmin);
+    num("hmax", o.mHmax);
+    num("hausd", o.mHausd);
+    num("hgrad", o.mHgrad);
+    num("hgradreq", o.mHgradreq);
+    num("angle-detection", o.mAngleDetection);
+    o.mOptim = has_flag(rP, "optim");
+    o.mNoInsert = has_flag(rP, "noinsert");
+    o.mNoSwap = has_flag(rP, "noswap");
+    o.mNoMove = has_flag(rP, "nomove");
+    o.mNoSurf = has_flag(rP, "nosurf");
+    o.mNreg = has_flag(rP, "nreg");
+    o.mOpnbdy = has_flag(rP, "opnbdy");
+    o.mVerbose = std::stoi(opt_value(rP, "verbose-mmg", "-1"));
+    for (const std::string& name : meshioplusplus::cli::opt_values(rP, "required"))
+        o.mRequired.push_back(name);
+    if (has_opt(rP, "frozen")) {
+        // A point region's name: its points are frozen.
+        const std::string name = opt_value(rP, "frozen");
+        const std::size_t r = rMesh.FindRegion(name, meshioplusplus::RegionKind::Point);
+        if (r == Mesh::npos)
+            throw std::runtime_error("--frozen: no point region named '" + name + "'");
+        const meshioplusplus::Region& region = rMesh.Region(r);
+        o.mFrozen.assign(rMesh.NumPoints(), 0);
+        for (std::size_t k = 0; k < region.NumEntries(); ++k)
+            o.mFrozen[static_cast<std::size_t>(region.Entries()[k])] = 1;
+    }
+    return o;
+}
+
+void cli_mmg_summary(const char* pWhat, const meshioplusplus::MmgReport& rR) {
+    std::cout << pWhat << " with " << rR.mLibrary
+              << (rR.mStatus == meshioplusplus::MmgStatus::Success ? " (success)"
+                                                                   : " (low failure)")
+              << ": " << rR.mNumPointsIn << " -> " << rR.mNumPointsOut << " points, "
+              << rR.mNumElementsIn << " -> " << rR.mNumElementsOut << " elements\n";
+    for (const std::string& w : rR.mWarnings)
+        std::cout << "  warning: " << w << "\n";
+}
+
+int cmd_adapt(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_mmg_options({
+                                  {"hsiz", {}, true},
+                                  {"size", {}, true},
+                                  {"metric", {}, true},
+                              }));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("adapt requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::AdaptOptions options;
+    options.mParameters = cli_mmg_parameters(p, mesh);
+    if (has_opt(p, "hsiz"))
+        options.mHsiz = meshioplusplus::detail::stod_c(opt_value(p, "hsiz"));
+    options.mSize = opt_value(p, "size", "");
+    options.mMetric = opt_value(p, "metric", "");
+    auto r = meshioplusplus::adapt(mesh, options);
+    if (!has_flag(p, "quiet"))
+        cli_mmg_summary("adapted", r.mReport);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_discretize_levelset(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_mmg_options({
+                                  {"level-set", {}, true},
+                                  {"isovalue", {}, true},
+                                  {"rmc", {}, true},
+                                  {"material", {}, true},
+                              }));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("discretize-levelset requires exactly INFILE and OUTFILE");
+    if (!has_opt(p, "level-set"))
+        throw std::runtime_error("discretize-levelset: --level-set is required");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::DiscretizeLevelsetOptions options;
+    options.mParameters = cli_mmg_parameters(p, mesh);
+    options.mLevelSet = opt_value(p, "level-set");
+    options.mIsovalue = meshioplusplus::detail::stod_c(opt_value(p, "isovalue", "0"));
+    if (has_opt(p, "rmc"))
+        options.mRemoveSmallComponents = meshioplusplus::detail::stod_c(opt_value(p, "rmc"));
+    for (const std::string& text : meshioplusplus::cli::opt_values(p, "material")) {
+        const std::vector<double> v = parse_doubles(text);
+        if (v.size() != 4)
+            throw std::runtime_error("--material expects REF,SPLIT,IN,OUT, got '" + text + "'");
+        options.mMaterials.push_back(meshioplusplus::MmgMaterial{
+            static_cast<std::int64_t>(v[0]), v[1] != 0.0, static_cast<std::int64_t>(v[2]),
+            static_cast<std::int64_t>(v[3])});
+    }
+    auto r = meshioplusplus::discretize_levelset(mesh, options);
+    if (!has_flag(p, "quiet"))
+        cli_mmg_summary("cut", r.mReport);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_mesh_2d(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_mmg_options({
+                                  {"hsiz", {}, true},
+                                  {"size", {}, true},
+                                  {"hole", {}, true},
+                              }));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("mesh-2d requires exactly INFILE and OUTFILE");
+    Mesh boundary = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::MeshDomainOptions options;
+    options.mParameters = cli_mmg_parameters(p, boundary);
+    if (has_opt(p, "hsiz"))
+        options.mHsiz = meshioplusplus::detail::stod_c(opt_value(p, "hsiz"));
+    options.mSize = opt_value(p, "size", "");
+    for (const std::string& text : meshioplusplus::cli::opt_values(p, "hole")) {
+        const std::vector<double> v = parse_doubles(text);
+        if (v.size() != 2)
+            throw std::runtime_error("--hole expects X,Y, got '" + text + "'");
+        options.mHoles.insert(options.mHoles.end(), v.begin(), v.end());
+    }
+    auto r = meshioplusplus::mesh_domain(boundary, options);
+    if (!has_flag(p, "quiet")) {
+        cli_mmg_summary("triangulated", r.mReport);
+        std::cout << "  " << r.mNumSubdomains << " subdomain(s), " << r.mNumHoles << " hole(s)\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_move(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_mmg_options({
+                                  {"displacement", {}, true},
+                                  {"moving", {}, true},
+                                  {"lagrangian", {}, true},
+                              }));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("move requires exactly INFILE and OUTFILE");
+    if (!has_opt(p, "displacement") || !has_opt(p, "moving"))
+        throw std::runtime_error("move: --displacement and --moving are required");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::MoveOptions options;
+    options.mParameters = cli_mmg_parameters(p, mesh);
+    options.mDisplacement = opt_value(p, "displacement");
+    for (const std::string& name : meshioplusplus::cli::opt_values(p, "moving"))
+        options.mMoving.push_back(name);
+    options.mLagrangian = std::stoi(opt_value(p, "lagrangian", "1"));
+    auto r = meshioplusplus::move(mesh, options);
+    if (!has_flag(p, "quiet"))
+        cli_mmg_summary("moved", r.mReport);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
 int cmd_remesh(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -8058,6 +8248,14 @@ int main(int argc, char** argv) {
             return cmd_decimate(rest);
         if (cmd == "decimate-volume")
             return cmd_decimate_volume(rest);
+        if (cmd == "adapt")
+            return cmd_adapt(rest);
+        if (cmd == "discretize-levelset")
+            return cmd_discretize_levelset(rest);
+        if (cmd == "mesh-2d")
+            return cmd_mesh_2d(rest);
+        if (cmd == "move")
+            return cmd_move(rest);
         if (cmd == "remesh")
             return cmd_remesh(rest);
         if (cmd == "remesh-volume")

@@ -856,6 +856,105 @@ meshioplusplus decimate-volume solid.vtu coarse.vtu --ratio 0.1 --preserve-bound
 
 ---
 
+## meshioplusplus adapt
+
+Remesh a simplicial mesh to a size or a metric with [MMG](/mmg): mmg3d for tetrahedra, mmg2d for a planar triangle mesh, mmgs for another triangle surface. Needs a build with `MESHIOPLUSPLUS_WITH_MMG`; otherwise it fails naming the flag.
+
+```
+meshioplusplus adapt [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--hsiz H` | A constant target edge size |
+| `--size NAME` | A one-component `point_data` array: the size per point |
+| `--metric NAME` | A six-component (three in 2-D) `point_data` metric in the lower-triangle order of a Medit `.sol` |
+| `--hmin`, `--hmax`, `--hausd`, `--hgrad`, `--hgradreq` | MMG's sizes, Hausdorff distance and gradations (MMG's defaults when absent) |
+| `--angle-detection DEG` | Ridge angle in degrees (default `45`; `0` turns detection off) |
+| `--optim`, `--noinsert`, `--noswap`, `--nomove`, `--nosurf`, `--nreg`, `--opnbdy` | MMG's switches |
+| `--frozen REGION` | A point region MMG must keep |
+| `--required REGION` | A region whose entities MMG must keep (repeatable) |
+| `--verbose-mmg N` | MMG's verbosity (default `-1`, silent) |
+| `--quiet` (`-q`) | Do not print the summary |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Give at most one of `--hsiz`, `--size` and `--metric`. Cell and side regions come back under their names; other point and cell data is dropped. The summary names the MMG library, its status (`success`, or `low failure` for a valid mesh MMG could not finish) and the counts in and out.
+
+```sh
+meshioplusplus adapt part.mesh out.mesh --hsiz 0.05 --hausd 0.001
+meshioplusplus adapt square.vtu out.vtu --metric metric --required inlet
+```
+
+---
+
+## meshioplusplus discretize-levelset
+
+Embed the isovalue of a `point_data` level set conformally in a simplicial mesh and remesh both sides with [MMG](/mmg#discretize_levelset) (mmg3d, mmg2d or mmgs by the mesh, as `adapt`). Needs a build with `MESHIOPLUSPLUS_WITH_MMG`.
+
+```
+meshioplusplus discretize-levelset --level-set NAME [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--level-set NAME` | The one-component `point_data` level set (required) |
+| `--isovalue V` | The value to cut at (default `0`) |
+| `--rmc F` | Remove the cut's components smaller than this volume fraction (MMG's `rmc`) |
+| `--material REF,SPLIT,IN,OUT` | A material: the cells of `medit:ref` `REF` cut (`SPLIT` 1) into `IN` and `OUT`, or kept whole (`SPLIT` 0); repeatable |
+| `adapt`'s MMG options | `--hmin` … `--required`, `--verbose-mmg`, `--quiet`, `-i`/`-o` |
+
+The elements carry `medit:ref` (3 inside, 2 outside, or the materials') and the cell regions `inside` and `outside`; the interface is the side region `interface`.
+
+```sh
+meshioplusplus discretize-levelset box.vtu cut.vtu --level-set sdf:distance --hausd 0.005
+```
+
+---
+
+## meshioplusplus mesh-2d
+
+Triangulate the planar domain the `line` cells of a mesh bound with [MMG](/mmg#mesh_domain)'s `MMG2D_mmg2dmesh`. Needs a build with `MESHIOPLUSPLUS_WITH_MMG`.
+
+```
+meshioplusplus mesh-2d [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--hsiz H` | A constant target edge size |
+| `--size NAME` | A one-component `point_data` array: the size at the boundary's points |
+| `--hole X,Y` | A point inside a region to leave out (repeatable) |
+| `adapt`'s MMG options | `--hmin` … `--required`, `--verbose-mmg`, `--quiet`, `-i`/`-o` |
+
+Each enclosed region is a cell region `subdomain:<k>`; the summary adds the subdomain and hole counts.
+
+```sh
+meshioplusplus mesh-2d annulus.vtu out.vtu --hsiz 0.05 --hole 0,0
+```
+
+---
+
+## meshioplusplus move
+
+Move a tetrahedral or planar triangle mesh by the displacement of part of its boundary and remesh as it deforms, with [MMG](/mmg#move)'s Lagrangian mode. Needs a build with `MESHIOPLUSPLUS_WITH_MMG` and an MMG built with ELAS.
+
+```
+meshioplusplus move --displacement NAME --moving REGION [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--displacement NAME` | The `point_data` displacement vector (required) |
+| `--moving REGION` | A cell or side region whose boundary facets move (required, repeatable); the rest of the boundary stays |
+| `--lagrangian 0\|1\|2` | MMG's `lag`: 0 moves only, 1 also swaps (default), 2 also inserts and collapses |
+| `adapt`'s MMG options | `--hmin` … `--required`, `--verbose-mmg`, `--quiet`, `-i`/`-o` |
+
+```sh
+meshioplusplus move holed.vtu moved.vtu --displacement d --moving hole
+```
+
+---
+
 ## meshioplusplus remesh
 
 Replace a **surface** mesh's own triangulation with a new, near-uniformly-sized, well-shaped one at a caller-chosen vertex count, by approximated centroidal Voronoi diagram (ACVD) clustering (see [remeshing](/remesh)).

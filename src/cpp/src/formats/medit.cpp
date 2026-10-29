@@ -20,6 +20,7 @@
 #include <array>
 #include <bit>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -414,6 +415,115 @@ void medit_add_id_list_region(Mesh& rMesh, const MeditIdList& rList,
     rMesh.AddRegion(Region(rList.mRegion, rList.mKind, std::move(entries)));
 }
 
+// A solution keyword (`SolAt*`): the libMeshb code and the cell type its rows
+// belong to (null: one row per vertex).
+struct MeditSolKeyword {
+    const char* mKeyword;
+    int mCode;
+    const char* mCellType;
+};
+
+const MeditSolKeyword kMeditSolKeywords[] = {
+    {"SolAtVertices", 62, nullptr},       {"SolAtEdges", 63, "line"},
+    {"SolAtTriangles", 64, "triangle"},   {"SolAtQuadrilaterals", 65, "quad"},
+    {"SolAtTetrahedra", 66, "tetra"},     {"SolAtPrisms", 67, "wedge"},
+    {"SolAtHexahedra", 68, "hexahedron"}, {"SolAtPyramids", 26, "pyramid"},
+};
+
+const MeditSolKeyword* medit_sol_keyword(std::string_view Keyword) {
+    for (const MeditSolKeyword& k : kMeditSolKeywords)
+        if (Keyword == k.mKeyword)
+            return &k;
+    return nullptr;
+}
+
+/// Values per row of one field of libMeshb solution type `Type`: a scalar, a
+/// vector, a symmetric matrix (lower triangle) or a full matrix.
+std::size_t medit_sol_components(std::int64_t Type, std::int64_t Dim) {
+    switch (Type) {
+        case 1:
+            return 1;
+        case 2:
+            return static_cast<std::size_t>(Dim);
+        case 3:
+            return static_cast<std::size_t>(Dim * (Dim + 1) / 2);
+        case 4:
+            return static_cast<std::size_t>(Dim * Dim);
+        default:
+            throw ReadError("Medit: unknown solution type " + std::to_string(Type));
+    }
+}
+
+/// The solution type holding `Components` values in `Dim`-D, or 0.
+int medit_sol_type_of(std::size_t Components, std::size_t Dim) {
+    for (int t = 1; t <= 4; ++t)
+        if (medit_sol_components(t, static_cast<std::int64_t>(Dim)) == Components)
+            return t;
+    return 0;
+}
+
+/// One `SolAt*` section: its fields' types and `mRows x mTotal` values.
+struct MeditSolSection {
+    const MeditSolKeyword* mKeyword = nullptr;
+    std::vector<int> mTypes;
+    std::size_t mRows = 0;
+    std::size_t mTotal = 0;
+    DType mDtype = DType::Float64;
+    std::vector<double> mValues;
+};
+
+std::size_t medit_sol_total(const std::vector<int>& rTypes, std::int64_t Dim) {
+    if (rTypes.empty())
+        throw ReadError("Medit: a solution section declares no field");
+    std::size_t total = 0;
+    for (const int t : rTypes)
+        total += medit_sol_components(t, Dim);
+    return total;
+}
+
+/// An ascii `SolAt*` section, its keyword already consumed.
+MeditSolSection medit_sol_read_ascii_section(Tokenizer& rTok, const MeditSolKeyword& rKeyword,
+                                             int Dim, DType Dtype) {
+    if (Dim != 2 && Dim != 3)
+        throw ReadError(std::string("Medit: ") + rKeyword.mKeyword + " before Dimension");
+    MeditSolSection section;
+    section.mKeyword = &rKeyword;
+    section.mDtype = Dtype;
+    section.mRows = static_cast<std::size_t>(rTok.next_count());
+    const std::int64_t num_types = rTok.next_count();
+    for (std::int64_t i = 0; i < num_types; ++i)
+        section.mTypes.push_back(static_cast<int>(rTok.next_int()));
+    section.mTotal = medit_sol_total(section.mTypes, Dim);
+    // Every value takes at least two bytes of the file.
+    if (section.mRows > rTok.mBuf.size() / section.mTotal)
+        throw ReadError(std::string("Medit: ") + rKeyword.mKeyword + " is truncated");
+    section.mValues.resize(section.mRows * section.mTotal);
+    for (double& v : section.mValues) {
+        const std::string_view token = rTok.next();
+        if (token.empty())
+            throw ReadError(std::string("Medit: ") + rKeyword.mKeyword + " is truncated");
+        v = detail::parse_double_prefix(token);
+    }
+    return section;
+}
+
+/// The section's fields: `(rows,)` for a scalar, else `(rows, components)`.
+std::vector<NDArray> medit_sol_fields(const MeditSolSection& rSection, int Dim) {
+    std::vector<NDArray> out;
+    std::size_t offset = 0;
+    for (const int t : rSection.mTypes) {
+        const std::size_t c = medit_sol_components(t, Dim);
+        NDArray field = c == 1 ? NDArray(rSection.mDtype, {rSection.mRows})
+                               : NDArray(rSection.mDtype, {rSection.mRows, c});
+        for (std::size_t r = 0; r < rSection.mRows; ++r)
+            for (std::size_t j = 0; j < c; ++j)
+                store_coord(field, r * c + j, rSection.mValues[r * rSection.mTotal + offset + j]);
+        out.push_back(std::move(field));
+        offset += c;
+    }
+    return out;
+}
+
 }  // namespace
 
 Mesh read_medit_ascii(const std::string& rPath) {
@@ -516,6 +626,13 @@ Mesh read_medit_ascii(const std::string& rPath) {
                 tok.next();
         } else if (kw == "Identifier" || kw == "Geometry") {
             tok.skip_line();
+        } else if (const MeditSolKeyword* sol = medit_sol_keyword(kw)) {
+            // A solution inside the mesh file: its home is a `.sol` beside it.
+            medit_sol_read_ascii_section(tok, *sol, dim, coord_dtype);
+            log::warn(
+                "Medit: {} in a mesh file is skipped; keep the solution in a .sol beside the "
+                "mesh and read it with medit.read(path, sol=...)",
+                kw);
         } else if (kw == "TangentAtVertices" || kw == "Tangents") {
             std::int64_t n = tok.next_count();
             for (std::int64_t i = 0; i < n; ++i)
@@ -998,6 +1115,469 @@ void write_medit_binary(const std::string& rPath, const Mesh& rMesh) {
     os.close();
     if (!os)
         throw WriteError("Medit: failed writing " + rPath);
+}
+
+// --- solutions (.sol ascii, .solb binary) ----------------------------------------------------
+
+namespace {
+
+using MeditSolFile = std::pair<int, std::vector<MeditSolSection>>;
+
+MeditSolFile medit_sol_read_ascii(const std::string& rPath) {
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    Tokenizer tok(source.View());
+    int dim = 0;
+    DType dtype = DType::Float64;
+    std::vector<MeditSolSection> sections;
+    while (!tok.eof()) {
+        const std::string kw(tok.next());
+        if (kw.empty())
+            break;
+        if (kw == "MeshVersionFormatted") {
+            dtype = tok.next_int() <= 1 ? DType::Float32 : DType::Float64;
+        } else if (kw == "Dimension") {
+            dim = static_cast<int>(tok.next_int());
+            if (dim != 2 && dim != 3)
+                throw ReadError("Medit: invalid solution dimension " + std::to_string(dim));
+        } else if (const MeditSolKeyword* sol = medit_sol_keyword(kw)) {
+            sections.push_back(medit_sol_read_ascii_section(tok, *sol, dim, dtype));
+        } else if (kw == "Time" || kw == "Iterations") {
+            tok.next();
+        } else if (kw == "End") {
+            break;
+        } else {
+            throw ReadError("Medit: unknown solution keyword '" + kw + "'");
+        }
+    }
+    if (dim == 0)
+        throw ReadError("Medit: expected Dimension");
+    return {dim, std::move(sections)};
+}
+
+MeditSolFile medit_sol_read_binary(const std::string& rPath) {
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    const std::string_view buf = source.View();
+    MeditBinCursor c{buf.data(), buf.size()};
+    const std::int64_t code = c.Int(4);
+    if (code == 16777216)
+        c.mSwap = true;
+    else if (code != 1)
+        throw ReadError("Medit: invalid code");
+    const std::int64_t version = c.Int(4);
+    if (version < 1 || version > 4)
+        throw ReadError("Medit: invalid version");
+    const std::size_t isize = version == 4 ? 8 : 4;
+    const std::size_t fsize = version == 1 ? 4 : 8;
+    const std::size_t psize = version >= 3 ? 8 : 4;
+    if (c.Int(4) != 3)
+        throw ReadError("Medit: expected Dimension");
+    c.Int(psize);
+    const std::int64_t dim = c.Int(4);
+    if (dim != 2 && dim != 3)
+        throw ReadError("Medit: invalid solution dimension " + std::to_string(dim));
+
+    std::vector<MeditSolSection> sections;
+    while (true) {
+        if (c.Left() < 4) {
+            log::warn("Medit: end-of-file reached before GmfEnd keyword");
+            break;
+        }
+        const std::int64_t kw = c.Int(4);
+        if (kw < 0 || kw > kMbMaxCode)
+            throw ReadError("Medit: unsupported field " + std::to_string(kw));
+        if (kw == kMbEnd)
+            break;
+        if (medit_is_reserved(static_cast<int>(kw)))
+            continue;
+        const std::int64_t next = c.Int(psize);
+        const std::size_t section_start = c.mAt;
+        const MeditSolKeyword* sol = nullptr;
+        for (const MeditSolKeyword& k : kMeditSolKeywords)
+            if (k.mCode == kw)
+                sol = &k;
+        if (sol) {
+            MeditSolSection section;
+            section.mKeyword = sol;
+            section.mDtype = version == 1 ? DType::Float32 : DType::Float64;
+            const std::int64_t rows = c.Int(isize);
+            const std::int64_t num_types = c.Int(4);
+            if (rows < 0 || num_types < 0 || static_cast<std::uint64_t>(num_types) > c.Left() / 4)
+                throw ReadError(std::string("Medit: ") + sol->mKeyword + " has an impossible size");
+            for (std::int64_t i = 0; i < num_types; ++i)
+                section.mTypes.push_back(static_cast<int>(c.Int(4)));
+            section.mTotal = medit_sol_total(section.mTypes, dim);
+            section.mRows = detail::checked_count(rows, c.Left() / (section.mTotal * fsize),
+                                                  "Medit", "solution row");
+            section.mValues.resize(section.mRows * section.mTotal);
+            for (double& v : section.mValues)
+                v = c.Real(fsize);
+            sections.push_back(std::move(section));
+        } else {
+            if (next <= static_cast<std::int64_t>(section_start) ||
+                static_cast<std::uint64_t>(next) > buf.size())
+                throw ReadError("Medit: cannot skip keyword " + std::to_string(kw) +
+                                ": its next-section position is outside the file");
+            log::warn("meshio++ doesn't know Medit keyword {}. Skipping.", kw);
+            c.mAt = static_cast<std::size_t>(next);
+        }
+    }
+    return {static_cast<int>(dim), std::move(sections)};
+}
+
+MeditSolFile medit_sol_read_file(const std::string& rPath) {
+    return !rPath.empty() && rPath.back() == 'b' ? medit_sol_read_binary(rPath)
+                                                 : medit_sol_read_ascii(rPath);
+}
+
+/// The vertex fields, named `medit:sol:<i>` in file order, and their row count.
+std::vector<NDArray> medit_sol_vertex_fields(const MeditSolFile& rFile,
+                                             std::optional<std::size_t>& rCount) {
+    std::vector<NDArray> out;
+    for (const MeditSolSection& s : rFile.second) {
+        if (s.mKeyword->mCellType)
+            continue;
+        if (rCount && *rCount != s.mRows)
+            throw ReadError("Medit: two SolAtVertices sections of different sizes");
+        rCount = s.mRows;
+        for (NDArray& f : medit_sol_fields(s, rFile.first))
+            out.push_back(std::move(f));
+    }
+    return out;
+}
+
+/// The trailing shape of a field: what follows its row count.
+std::vector<std::size_t> medit_sol_trailing(const NDArray& rA) {
+    return std::vector<std::size_t>(rA.Shape().begin() + 1, rA.Shape().end());
+}
+
+NDArray medit_sol_rows(const NDArray& rField, std::size_t First, std::size_t Count) {
+    std::vector<std::size_t> shape = rField.Shape();
+    shape[0] = Count;
+    NDArray out(rField.Dtype(), shape);
+    const std::size_t width = rField.Size() / std::max<std::size_t>(rField.Shape()[0], 1);
+    const std::size_t bytes = rField.Dtype() == DType::Float32 ? 4 : 8;
+    std::memcpy(out.Data(), rField.Data() + First * width * bytes, Count * width * bytes);
+    return out;
+}
+
+void medit_sol_attach(Mesh& rMesh, const MeditSolFile& rFile) {
+    const int dim = rFile.first;
+    if (rMesh.PointDim() != static_cast<std::size_t>(dim))
+        throw ReadError("Medit: the solution is " + std::to_string(dim) + "-D and the mesh " +
+                        std::to_string(rMesh.PointDim()) + "-D");
+    std::optional<std::size_t> count;
+    std::vector<NDArray> point_fields = medit_sol_vertex_fields(rFile, count);
+    if (count && *count != rMesh.NumPoints())
+        throw ReadError("Medit: SolAtVertices has " + std::to_string(*count) +
+                        " rows and the mesh " + std::to_string(rMesh.NumPoints()) + " points");
+    for (std::size_t i = 0; i < point_fields.size(); ++i)
+        rMesh.AddPointData("medit:sol:" + std::to_string(i), std::move(point_fields[i]));
+
+    const std::size_t num_blocks = rMesh.NumCellBlocks();
+    // name -> one array per block (absent: the fill), in the order first met
+    std::vector<std::pair<std::string, std::vector<std::optional<NDArray>>>> cell_fields;
+    for (const MeditSolSection& s : rFile.second) {
+        if (!s.mKeyword->mCellType)
+            continue;
+        std::vector<std::size_t> blocks;
+        std::size_t total = 0;
+        for (std::size_t b = 0; b < num_blocks; ++b) {
+            const auto cb = rMesh.Cells(b);
+            if (cb.Type() == s.mKeyword->mCellType) {
+                blocks.push_back(b);
+                total += cb.NumCells();
+            }
+        }
+        if (total != s.mRows)
+            throw ReadError(std::string("Medit: ") + s.mKeyword->mKeyword + " has " +
+                            std::to_string(s.mRows) + " rows and the mesh " +
+                            std::to_string(total) + " " + s.mKeyword->mCellType + " cells");
+        std::vector<NDArray> fields = medit_sol_fields(s, dim);
+        for (std::size_t j = 0; j < fields.size(); ++j) {
+            std::string name = "medit:sol:" + std::to_string(j);
+            auto find = [&](const std::string& rName) {
+                return std::find_if(cell_fields.begin(), cell_fields.end(),
+                                    [&](const auto& rEntry) { return rEntry.first == rName; });
+            };
+            auto known = find(name);
+            if (known != cell_fields.end()) {
+                const auto other = std::find_if(known->second.begin(), known->second.end(),
+                                                [](const auto& rA) { return rA.has_value(); });
+                if (medit_sol_trailing(**other) != medit_sol_trailing(fields[j]))
+                    name += std::string(":") + s.mKeyword->mCellType;
+            }
+            known = find(name);
+            if (known == cell_fields.end()) {
+                cell_fields.emplace_back(name, std::vector<std::optional<NDArray>>(num_blocks));
+                known = cell_fields.end() - 1;
+            }
+            std::size_t start = 0;
+            for (const std::size_t b : blocks) {
+                const std::size_t n = rMesh.Cells(b).NumCells();
+                known->second[b] = medit_sol_rows(fields[j], start, n);
+                start += n;
+            }
+        }
+    }
+    for (auto& [name, per_block] : cell_fields) {
+        // The fill's dtype and trailing shape, taken before the arrays move out.
+        const NDArray& sample = **std::find_if(per_block.begin(), per_block.end(),
+                                               [](const auto& rA) { return rA.has_value(); });
+        const DType dtype = sample.Dtype();
+        const std::vector<std::size_t> sample_shape = sample.Shape();
+        std::vector<NDArray> arrays;
+        for (std::size_t b = 0; b < num_blocks; ++b) {
+            if (per_block[b]) {
+                arrays.push_back(std::move(*per_block[b]));
+                continue;
+            }
+            std::vector<std::size_t> shape = sample_shape;
+            shape[0] = rMesh.Cells(b).NumCells();
+            NDArray fill(dtype, shape);
+            for (std::size_t i = 0; i < fill.Size(); ++i)
+                store_coord(fill, i, std::numeric_limits<double>::quiet_NaN());
+            arrays.push_back(std::move(fill));
+        }
+        rMesh.AddCellData(name, std::move(arrays));
+    }
+}
+
+std::size_t medit_sol_dimension(const Mesh& rMesh) {
+    const std::size_t d = rMesh.PointDim();
+    if (d == 2 || d == 3)
+        return d;
+    if (rMesh.HasFieldData("medit:dimension")) {
+        const NDArray& f = rMesh.FieldData("medit:dimension");
+        if (f.Size() > 0) {
+            const double v = detail::DoubleView(f)[0];
+            if (v == 2 || v == 3)
+                return static_cast<std::size_t>(v);
+        }
+    }
+    throw WriteError(
+        "Medit: a solution is 2-D or 3-D; give the mesh 2-D or 3-D points or "
+        "field_data['medit:dimension']");
+}
+
+/// The solution type of one array and its row width, or type 0 (with a warning).
+std::pair<int, std::size_t> medit_sol_classify(const std::string& rName, const NDArray& rA,
+                                               std::size_t Dim) {
+    if (!detail::is_float_dtype(rA.Dtype()) || rA.Ndim() == 0) {
+        if (rName != "medit:ref")
+            log::warn("Medit: a solution holds reals; '{}' is not written", rName);
+        return {0, 0};
+    }
+    const std::size_t width = rA.Shape()[0] ? rA.Size() / rA.Shape()[0] : 1;
+    const int type = medit_sol_type_of(width, Dim);
+    if (!type)
+        log::warn("Medit: '{}' has {} components, which no {}-D solution type holds; not written",
+                  rName, width, Dim);
+    return {type, width};
+}
+
+/// Append the columns of `rA` (rows x width) to a section being built.
+void medit_sol_append(MeditSolSection& rSection, int Type, std::size_t Width,
+                      const std::vector<const NDArray*>& rParts) {
+    std::size_t rows = 0;
+    for (const NDArray* p : rParts)
+        rows += Width ? p->Size() / Width : 0;
+    if (rSection.mTypes.empty())
+        rSection.mRows = rows;
+    std::vector<double> merged(rows * (rSection.mTotal + Width));
+    for (std::size_t r = 0; r < rows; ++r)
+        for (std::size_t j = 0; j < rSection.mTotal; ++j)
+            merged[r * (rSection.mTotal + Width) + j] = rSection.mValues[r * rSection.mTotal + j];
+    std::size_t r = 0;
+    for (const NDArray* p : rParts) {
+        const detail::DoubleView v(*p);
+        const std::size_t n = Width ? p->Size() / Width : 0;
+        for (std::size_t i = 0; i < n; ++i, ++r)
+            for (std::size_t j = 0; j < Width; ++j)
+                merged[r * (rSection.mTotal + Width) + rSection.mTotal + j] = v[i * Width + j];
+    }
+    rSection.mValues = std::move(merged);
+    rSection.mTotal += Width;
+    rSection.mTypes.push_back(Type);
+}
+
+std::vector<MeditSolSection> medit_sol_sections_of(const Mesh& rMesh, std::size_t Dim) {
+    std::vector<MeditSolSection> sections;
+    MeditSolSection vertices;
+    vertices.mKeyword = &kMeditSolKeywords[0];
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        const auto [type, width] = medit_sol_classify(name, a, Dim);
+        if (type)
+            medit_sol_append(vertices, type, width, {&a});
+    }
+    if (!vertices.mTypes.empty())
+        sections.push_back(std::move(vertices));
+
+    const std::size_t num_blocks = rMesh.NumCellBlocks();
+    std::vector<std::string> names;
+    for (const std::string& name : rMesh.CellDataNames()) {
+        if (name == "medit:ref" || rMesh.CellDataNumBlocks(name) == 0)
+            continue;
+        bool real = true;
+        for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name); ++b)
+            real = real && detail::is_float_dtype(rMesh.CellData(name, b).Dtype());
+        if (!real) {
+            log::warn("Medit: a solution holds reals; '{}' is not written", name);
+            continue;
+        }
+        names.push_back(name);
+        for (std::size_t b = 0; b < num_blocks && b < rMesh.CellDataNumBlocks(name); ++b) {
+            const std::string type(rMesh.Cells(b).Type());
+            if (std::any_of(std::begin(kMeditSolKeywords), std::end(kMeditSolKeywords),
+                            [&](const MeditSolKeyword& rK) {
+                                return rK.mCellType && type == rK.mCellType;
+                            }))
+                continue;
+            const NDArray& a = rMesh.CellData(name, b);
+            const detail::DoubleView v(a);
+            bool all_nan = true;
+            for (std::size_t i = 0; i < a.Size() && all_nan; ++i)
+                all_nan = std::isnan(v[i]);
+            if (!all_nan)
+                log::warn("Medit: a solution has no {} section; '{}' skips it", type, name);
+        }
+    }
+    for (const MeditSolKeyword& k : kMeditSolKeywords) {
+        if (!k.mCellType)
+            continue;
+        std::vector<std::size_t> blocks;
+        for (std::size_t b = 0; b < num_blocks; ++b)
+            if (rMesh.Cells(b).Type() == k.mCellType)
+                blocks.push_back(b);
+        if (blocks.empty())
+            continue;
+        MeditSolSection section;
+        section.mKeyword = &k;
+        for (const std::string& name : names) {
+            std::vector<const NDArray*> parts;
+            std::size_t size = 0;
+            bool all_nan = true;
+            for (const std::size_t b : blocks) {
+                if (b >= rMesh.CellDataNumBlocks(name))
+                    throw WriteError("Medit: cell data '" + name + "' misses a block");
+                const NDArray& a = rMesh.CellData(name, b);
+                parts.push_back(&a);
+                size += a.Size();
+                const detail::DoubleView v(a);
+                for (std::size_t i = 0; i < a.Size() && all_nan; ++i)
+                    all_nan = std::isnan(v[i]);
+            }
+            if (size && all_nan)
+                continue;  // the fill of a field other cell types carry
+            const auto [type, width] = medit_sol_classify(name, *parts[0], Dim);
+            if (type)
+                medit_sol_append(section, type, width, parts);
+        }
+        if (!section.mTypes.empty())
+            sections.push_back(std::move(section));
+    }
+    if (sections.empty())
+        throw WriteError("Medit: no floating-point point or cell data to write as a solution");
+    return sections;
+}
+
+void medit_sol_write_ascii(const std::string& rPath, std::size_t Dim,
+                           const std::vector<MeditSolSection>& rSections) {
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
+    os << "MeshVersionFormatted 2\nDimension " << Dim << "\n";
+    const detail::CNumber num;
+    for (const MeditSolSection& s : rSections) {
+        os << "\n" << s.mKeyword->mKeyword << "\n" << s.mRows << "\n" << s.mTypes.size();
+        for (const int t : s.mTypes)
+            os << " " << t;
+        os << "\n";
+        detail::write_row_chunks(
+            os, s.mRows, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                for (std::size_t r = First; r < Last; ++r) {
+                    for (std::size_t j = 0; j < s.mTotal; ++j)
+                        num.Append(rBuf, j ? " %.16e" : "%.16e", s.mValues[r * s.mTotal + j]);
+                    rBuf += '\n';
+                }
+            });
+    }
+    os << "\nEnd\n";
+    os.close();
+    if (!os)
+        throw WriteError("Medit: failed writing " + rPath);
+}
+
+void medit_sol_write_binary(const std::string& rPath, std::size_t Dim,
+                            const std::vector<MeditSolSection>& rSections) {
+    bool big = false;
+    for (const MeditSolSection& s : rSections)
+        big = big || s.mRows > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max());
+    const std::size_t isize = big ? 8 : 4;
+    const std::size_t psize = 8;
+    std::string out;
+    medit_put_int(out, 1, 4);
+    medit_put_int(out, big ? 4 : 3, 4);
+    medit_put_int(out, 3, 4);  // GmfDimension
+    std::int64_t pos = 4 * 4 + static_cast<std::int64_t>(psize);
+    medit_put_int(out, pos, psize);
+    medit_put_int(out, static_cast<std::int64_t>(Dim), 4);
+    for (const MeditSolSection& s : rSections) {
+        const std::size_t bytes = 4 + 4 * s.mTypes.size() + s.mRows * s.mTotal * 8;
+        pos += static_cast<std::int64_t>(bytes + 4 + psize + isize);
+        medit_put_int(out, s.mKeyword->mCode, 4);
+        medit_put_int(out, pos, psize);
+        medit_put_int(out, static_cast<std::int64_t>(s.mRows), isize);
+        medit_put_int(out, static_cast<std::int64_t>(s.mTypes.size()), 4);
+        for (const int t : s.mTypes)
+            medit_put_int(out, t, 4);
+        for (const double v : s.mValues)
+            medit_put_double(out, v);
+    }
+    medit_put_int(out, kMbEnd, 4);
+    medit_put_int(out, 0, psize);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
+    os.write(out.data(), static_cast<std::streamsize>(out.size()));
+    os.close();
+    if (!os)
+        throw WriteError("Medit: failed writing " + rPath);
+}
+
+}  // namespace
+
+Mesh read_medit_sol(const std::string& rPath) {
+    const MeditSolFile file = medit_sol_read_file(rPath);
+    std::optional<std::size_t> count;
+    std::vector<NDArray> fields = medit_sol_vertex_fields(file, count);
+    for (const MeditSolSection& s : file.second)
+        if (s.mKeyword->mCellType)
+            log::warn(
+                "Medit: {} needs the mesh it belongs to; read it with medit.read(mesh_path, "
+                "sol=...). Skipping.",
+                s.mKeyword->mKeyword);
+    Mesh mesh;
+    mesh.AssignPoints(NDArray(DType::Float64, {count.value_or(0), 0}));
+    for (std::size_t i = 0; i < fields.size(); ++i)
+        mesh.AddPointData("medit:sol:" + std::to_string(i), std::move(fields[i]));
+    NDArray dimension(DType::Int64, {1});
+    dimension.As<std::int64_t>()[0] = file.first;
+    mesh.AddFieldData("medit:dimension", std::move(dimension));
+    return mesh;
+}
+
+void read_medit_sol_into(const std::string& rPath, Mesh& rMesh) {
+    medit_sol_attach(rMesh, medit_sol_read_file(rPath));
+}
+
+void write_medit_sol(const std::string& rPath, const Mesh& rMesh) {
+    const std::size_t dim = medit_sol_dimension(rMesh);
+    const std::vector<MeditSolSection> sections = medit_sol_sections_of(rMesh, dim);
+    if (!rPath.empty() && rPath.back() == 'b')
+        medit_sol_write_binary(rPath, dim, sections);
+    else
+        medit_sol_write_ascii(rPath, dim, sections);
 }
 
 Mesh read_medit(const std::string& rPath) {

@@ -4094,6 +4094,305 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def adapt(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        hsiz: Optional[float] = None,
+        size: Optional[str] = None,
+        metric: Optional[str] = None,
+        hmin: Optional[float] = None,
+        hmax: Optional[float] = None,
+        hausd: Optional[float] = None,
+        hgrad: Optional[float] = None,
+        hgradreq: Optional[float] = None,
+        angle_detection: Optional[float] = 45.0,
+        optim: bool = False,
+        noinsert: bool = False,
+        noswap: bool = False,
+        nomove: bool = False,
+        nosurf: bool = False,
+        nreg: bool = False,
+        opnbdy: bool = False,
+        frozen: Optional[str] = None,
+        required: Optional[List[str]] = None,
+        local: Optional[Dict[str, Dict[str, float]]] = None,
+    ) -> dict:
+        """Remesh a simplicial mesh with MMG (needs a build with
+        MESHIOPLUSPLUS_WITH_MMG; otherwise returns error_type
+        NotImplementedError and mmg_available False). mmg3d for
+        tetrahedra, mmg2d for a planar triangle mesh, mmgs for another
+        triangle surface. Give at most one of hsiz (constant edge size),
+        size (point_data name of a size field) and metric (point_data name
+        of a six-component, three in 2-D, metric in Medit .sol order); none
+        lets MMG size from the mesh. hmin/hmax bound the edge sizes, hausd
+        bounds how far the boundary moves, hgrad/hgradreq set the
+        gradation, angle_detection (45 degrees; None turns it off) finds
+        ridges. optim/noinsert/noswap/nomove/nosurf/nreg/opnbdy are MMG's
+        switches. frozen names a point region MMG must keep; required
+        names regions whose entities it must keep; local maps a region to
+        {"hmin", "hmax", "hausd"}. Cell and side regions and a medit:ref
+        array come back under their names; other point/cell data is
+        dropped (use interpolate), field_data is carried. Reports status
+        ("success" or "low_failure"), library, num_points_in/out,
+        num_elements_in/out, quality (aspect ratio min/mean/max/histogram)
+        and warnings."""
+        return _guard(
+            _tools.tool_adapt,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            hsiz=hsiz,
+            size=size,
+            metric=metric,
+            hmin=hmin,
+            hmax=hmax,
+            hausd=hausd,
+            hgrad=hgrad,
+            hgradreq=hgradreq,
+            angle_detection=angle_detection,
+            optim=optim,
+            noinsert=noinsert,
+            noswap=noswap,
+            nomove=nomove,
+            nosurf=nosurf,
+            nreg=nreg,
+            opnbdy=opnbdy,
+            frozen=frozen,
+            required=required,
+            local=local,
+        )
+
+    @server.tool()
+    def discretize_levelset(
+        input_path: str,
+        output_path: str,
+        level_set: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        isovalue: float = 0.0,
+        materials: Optional[List[List[int]]] = None,
+        remove_small_components: Optional[float] = None,
+        hmin: Optional[float] = None,
+        hmax: Optional[float] = None,
+        hausd: Optional[float] = None,
+        hgrad: Optional[float] = None,
+        hgradreq: Optional[float] = None,
+        angle_detection: Optional[float] = 45.0,
+        optim: bool = False,
+        noinsert: bool = False,
+        noswap: bool = False,
+        nomove: bool = False,
+        nosurf: bool = False,
+        nreg: bool = False,
+        opnbdy: bool = False,
+        frozen: Optional[str] = None,
+        required: Optional[List[str]] = None,
+        local: Optional[Dict[str, Dict[str, float]]] = None,
+    ) -> dict:
+        """Embed the isovalue of the point_data level set `level_set` (a
+        signed distance, say) conformally in a simplicial mesh and remesh
+        both sides with MMG (needs a build with MESHIOPLUSPLUS_WITH_MMG;
+        otherwise returns error_type NotImplementedError and mmg_available
+        False): mmg3d, mmg2d or mmgs by the mesh, as adapt. The elements
+        carry cell_data medit:ref (3 inside, below the isovalue; 2 outside)
+        and the cell regions inside/outside; the interface is the side region
+        interface, on the inside elements. materials lists [ref, split,
+        ref_inside, ref_outside] over the input's medit:ref (MMG's
+        multi-material mode: split 0 keeps the cells whole);
+        remove_small_components is MMG's rmc volume fraction. The other MMG
+        parameters are adapt's. The input's side regions come back, its cell
+        regions do not. Reports as adapt."""
+        return _guard(
+            _tools.tool_discretize_levelset,
+            input_path=input_path,
+            output_path=output_path,
+            level_set=level_set,
+            input_format=input_format,
+            output_format=output_format,
+            isovalue=isovalue,
+            materials=materials,
+            remove_small_components=remove_small_components,
+            hmin=hmin,
+            hmax=hmax,
+            hausd=hausd,
+            hgrad=hgrad,
+            hgradreq=hgradreq,
+            angle_detection=angle_detection,
+            optim=optim,
+            noinsert=noinsert,
+            noswap=noswap,
+            nomove=nomove,
+            nosurf=nosurf,
+            nreg=nreg,
+            opnbdy=opnbdy,
+            frozen=frozen,
+            required=required,
+            local=local,
+        )
+
+    @server.tool()
+    def mesh_domain(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        hsiz: Optional[float] = None,
+        size: Optional[str] = None,
+        holes: Optional[List[List[float]]] = None,
+        hmin: Optional[float] = None,
+        hmax: Optional[float] = None,
+        hausd: Optional[float] = None,
+        hgrad: Optional[float] = None,
+        hgradreq: Optional[float] = None,
+        angle_detection: Optional[float] = 45.0,
+        optim: bool = False,
+        noinsert: bool = False,
+        noswap: bool = False,
+        nomove: bool = False,
+        nosurf: bool = False,
+        nreg: bool = False,
+        opnbdy: bool = False,
+        frozen: Optional[str] = None,
+        required: Optional[List[str]] = None,
+        local: Optional[Dict[str, Dict[str, float]]] = None,
+    ) -> dict:
+        """Triangulate the planar domain the line cells of a mesh bound with
+        MMG's MMG2D_mmg2dmesh (needs a build with MESHIOPLUSPLUS_WITH_MMG;
+        otherwise returns error_type NotImplementedError and mmg_available
+        False). hsiz is a constant edge size, size a point_data size field on
+        the boundary points. MMG meshes every region the lines enclose, each
+        a cell region subdomain:<k>; it has no notion of a hole, so holes
+        lists one [x, y] point inside each region to leave out. The lines'
+        cell regions also come back as side regions of the triangles. The
+        other MMG parameters are adapt's. Reports as adapt plus
+        num_subdomains and num_holes."""
+        return _guard(
+            _tools.tool_mesh_domain,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            hsiz=hsiz,
+            size=size,
+            holes=holes,
+            hmin=hmin,
+            hmax=hmax,
+            hausd=hausd,
+            hgrad=hgrad,
+            hgradreq=hgradreq,
+            angle_detection=angle_detection,
+            optim=optim,
+            noinsert=noinsert,
+            noswap=noswap,
+            nomove=nomove,
+            nosurf=nosurf,
+            nreg=nreg,
+            opnbdy=opnbdy,
+            frozen=frozen,
+            required=required,
+            local=local,
+        )
+
+    @server.tool()
+    def move(
+        input_path: str,
+        output_path: str,
+        displacement: str,
+        moving: List[str],
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        lagrangian: int = 1,
+        hmin: Optional[float] = None,
+        hmax: Optional[float] = None,
+        hausd: Optional[float] = None,
+        hgrad: Optional[float] = None,
+        hgradreq: Optional[float] = None,
+        angle_detection: Optional[float] = 45.0,
+        optim: bool = False,
+        noinsert: bool = False,
+        noswap: bool = False,
+        nomove: bool = False,
+        nosurf: bool = False,
+        nreg: bool = False,
+        opnbdy: bool = False,
+        frozen: Optional[str] = None,
+        required: Optional[List[str]] = None,
+        local: Optional[Dict[str, Dict[str, float]]] = None,
+    ) -> dict:
+        """Move a tetrahedral or planar triangle mesh by the point_data
+        vector `displacement` of the boundary facets of the regions `moving`
+        (cell or side regions), remeshing as it deforms with MMG's
+        Lagrangian mode (MMG3D_mmg3dmov, MMG2D_mmg2dmov). MMG extends the
+        displacement inward by linear elasticity (the ELAS library) and
+        keeps the rest of the boundary in place, so the displacement given
+        elsewhere is not read. lagrangian is MMG's lag: 0 moves only, 1
+        also swaps, 2 also inserts and collapses. Needs a build with
+        MESHIOPLUSPLUS_WITH_MMG and an MMG built with ELAS; otherwise returns
+        error_type NotImplementedError with mmg_available and
+        mmg_elas_available. The other MMG parameters are adapt's. Reports as
+        adapt."""
+        return _guard(
+            _tools.tool_move,
+            input_path=input_path,
+            output_path=output_path,
+            displacement=displacement,
+            moving=moving,
+            input_format=input_format,
+            output_format=output_format,
+            lagrangian=lagrangian,
+            hmin=hmin,
+            hmax=hmax,
+            hausd=hausd,
+            hgrad=hgrad,
+            hgradreq=hgradreq,
+            angle_detection=angle_detection,
+            optim=optim,
+            noinsert=noinsert,
+            noswap=noswap,
+            nomove=nomove,
+            nosurf=nosurf,
+            nreg=nreg,
+            opnbdy=opnbdy,
+            frozen=frozen,
+            required=required,
+            local=local,
+        )
+
+    @server.tool()
+    def metric_from_hessian(
+        input_path: str,
+        output_path: str,
+        hessian: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        error: float = 1e-2,
+        hmin: float = 1e-3,
+        hmax: float = 1.0,
+        output: str = "metric",
+    ) -> dict:
+        """The anisotropic metric of the point_data Hessian `hessian`
+        ((n, 9), or (n, 4) in 2-D, row-major as the hessian tool writes)
+        for the adapt tool: M = c/error |H| with c = (1/2)(d/(d+1))^2, its
+        eigenvalues clamped so the sizes lie in [hmin, hmax], written as
+        point_data `output` (six components, three in 2-D, in the
+        lower-triangle order of a Medit .sol). Needs no MMG."""
+        return _guard(
+            _tools.tool_metric_from_hessian,
+            input_path=input_path,
+            output_path=output_path,
+            hessian=hessian,
+            input_format=input_format,
+            output_format=output_format,
+            error=error,
+            hmin=hmin,
+            hmax=hmax,
+            output=output,
+        )
+
+    @server.tool()
     def remesh(
         input_path: str,
         output_path: str,

@@ -32,6 +32,8 @@ set "WITH_TECIO=OFF"
 set "TECIO_ROOT_DIR="
 set "WITH_NETGEN=OFF"
 set "NETGEN_ROOT_DIR="
+set "WITH_MMG=OFF"
+set "MMG_ROOT_DIR="
 set "TESTS=OFF"
 set "C_API=OFF"
 set "FORTRAN=OFF"
@@ -62,6 +64,8 @@ if /I "%~1"=="--without-occt"   set "WITH_OCCT=OFF" & shift & goto parse
 if /I "%~1"=="--with-tecio"     set "WITH_TECIO=ON" & set "TECIO_ROOT_DIR=%~2" & shift & shift & goto parse
 if /I "%~1"=="--with-netgen"    set "WITH_NETGEN=ON" & shift & goto parse
 if /I "%~1"=="--netgen-root"    set "WITH_NETGEN=ON" & set "NETGEN_ROOT_DIR=%~2" & shift & shift & goto parse
+if /I "%~1"=="--with-mmg"       set "WITH_MMG=ON" & shift & goto parse
+if /I "%~1"=="--mmg-root"       set "WITH_MMG=ON" & set "MMG_ROOT_DIR=%~2" & shift & shift & goto parse
 if /I "%~1"=="--tests"          set "TESTS=ON" & shift & goto parse
 if /I "%~1"=="--c-api"          set "C_API=ON" & shift & goto parse
 if /I "%~1"=="--fortran"        set "FORTRAN=ON" & set "C_API=ON" & shift & goto parse
@@ -118,6 +122,7 @@ for /f "delims=" %%P in ('"%PYTHON_EXE%" -c "import pybind11; print(pybind11.get
 if not "%TBB_DIR%"=="" set "EXTRA=%EXTRA% -DTBB_DIR=%TBB_DIR%"
 if not "%TECIO_ROOT_DIR%"=="" set "EXTRA=%EXTRA% -DTECIO_ROOT=%TECIO_ROOT_DIR%"
 if not "%NETGEN_ROOT_DIR%"=="" set "EXTRA=%EXTRA% -DNETGEN_ROOT=%NETGEN_ROOT_DIR%"
+if not "%MMG_ROOT_DIR%"=="" set "EXTRA=%EXTRA% -Dmmg_DIR=%MMG_ROOT_DIR%\lib\cmake\mmg"
 rem Commas become the semicolons CMake lists want. cmd splits UNQUOTED batch
 rem parameters on both , and ; so a multi-backend list must be quoted either
 rem way: --cpp-backends "MESHIO,KRATOS". Only passed when given, so the CMake
@@ -134,6 +139,7 @@ echo   HDF5:      %WITH_HDF5%   netCDF: %WITH_NETCDF%   zlib: %WITH_ZLIB%
 echo   gidpost:   %WITH_GIDPOST%  (GiD postprocess writer)
 echo   bzip2:     %WITH_BZIP2%   ADIOS2: %WITH_ADIOS2%   TecIO: %WITH_TECIO%   OCCT: %WITH_OCCT%
 echo   Netgen:    %WITH_NETGEN%  (tetrahedralize)
+echo   MMG:       %WITH_MMG%  (adapt, discretize_levelset, mesh_domain, move)
 echo   tests:     %TESTS%
 echo   C API:     %C_API%   Fortran: %FORTRAN%
 echo   C++ API:   %INSTALL_CPP%
@@ -154,6 +160,7 @@ cmake -S "%SOURCE_DIR%" -B "%BUILD_DIR%" ^
     -DMESHIOPLUSPLUS_WITH_OCCT=%WITH_OCCT% ^
     -DMESHIOPLUSPLUS_WITH_TECIO=%WITH_TECIO% ^
     -DMESHIOPLUSPLUS_WITH_NETGEN=%WITH_NETGEN% ^
+    -DMESHIOPLUSPLUS_WITH_MMG=%WITH_MMG% ^
     -DMESHIOPLUSPLUS_BUILD_TESTS=%TESTS% ^
     -DMESHIOPLUSPLUS_BUILD_C_API=%C_API% ^
     -DMESHIOPLUSPLUS_INSTALL_CPP=%INSTALL_CPP% ^
@@ -200,6 +207,9 @@ echo                                    ^<dir^> holds TECIO.h and tecio.lib)
 echo   --with-netgen                    Netgen-backed tetrahedralize (default: off; LGPL-2.1,
 echo                                    linked dynamically)
 echo   --netgen-root ^<dir^>              Netgen's install prefix
+echo   --with-mmg                       MMG-backed adapt, discretize_levelset, mesh_domain and
+echo                                    move (default: off; LGPL-3.0, linked dynamically)
+echo   --mmg-root ^<dir^>                 MMG's install prefix (holds lib\cmake\mmg)
 echo   --tests                          also build the GoogleTest suite (CTest)
 echo   --c-api                          build the installable libmeshioplusplus C API
 echo   --fortran                        build the Fortran module (implies --c-api;

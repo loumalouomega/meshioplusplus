@@ -107,6 +107,7 @@
 #include "meshioplusplus/operations/subdivide.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
+#include "meshioplusplus/operations/mmg.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
@@ -426,6 +427,22 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "MaxIterations", "Tolerance"}},
         {"EstimateError", {"Array", "Method", "Marking", "MarkingValue", "Output", "Marked"}},
         {"ErrorSize", {"Array", "TargetError", "Order", "MinSize", "MaxSize", "Output"}},
+        {"Adapt",
+         {"Hsiz", "Size", "Metric", "Hmin", "Hmax", "Hausd", "Hgrad", "Hgradreq", "AngleDetection",
+          "Optim", "NoInsert", "NoSwap", "NoMove", "NoSurf", "Nreg", "Opnbdy", "Frozen",
+          "Required"}},
+        {"DiscretizeLevelset",
+         {"LevelSet", "Isovalue", "RemoveSmallComponents", "Materials", "Hmin", "Hmax", "Hausd",
+          "Hgrad", "Hgradreq", "AngleDetection", "Optim", "NoInsert", "NoSwap", "NoMove", "NoSurf",
+          "Nreg", "Opnbdy", "Frozen", "Required"}},
+        {"MeshDomain",
+         {"Hsiz", "Size", "Holes", "Hmin", "Hmax", "Hausd", "Hgrad", "Hgradreq", "AngleDetection",
+          "Optim", "NoInsert", "NoSwap", "NoMove", "NoSurf", "Nreg", "Opnbdy", "Frozen",
+          "Required"}},
+        {"Move",
+         {"Displacement", "Moving", "Lagrangian", "Hmin", "Hmax", "Hausd", "Hgrad", "Hgradreq",
+          "AngleDetection", "Optim", "NoInsert", "NoSwap", "NoMove", "NoSurf", "Nreg", "Opnbdy",
+          "Frozen", "Required"}},
         {"Remesh",
          {"NumClusters", "Subdivide", "SubsampleRatio", "MaxSubdivide", "MaxIterations",
           "MaxRepairPasses", "Metric", "Gradation", "PreserveBoundary", "MaxAnisotropy"}},
@@ -655,6 +672,55 @@ void pipe_push_step(PipelineReport& rReport, const PipelineStep& rStep,
     // is, this is what lets a written file's "Operation:" lines match the
     // pipeline's own report instead of drifting from it.
     detail::provenance_add_operation(pipe_render_op(rStep));
+}
+
+/// The shared MMG parameters of a step (roadmap 3.2); `Frozen` names a point region.
+MmgParameters pipe_mmg_parameters(const PipelineStep& rStep, const Mesh& rMesh) {
+    MmgParameters o;
+    o.mHmin = pipe_number(rStep, "Hmin", -1.0);
+    o.mHmax = pipe_number(rStep, "Hmax", -1.0);
+    o.mHausd = pipe_number(rStep, "Hausd", -1.0);
+    o.mHgrad = pipe_number(rStep, "Hgrad", -1.0);
+    o.mHgradreq = pipe_number(rStep, "Hgradreq", -1.0);
+    o.mAngleDetection = pipe_number(rStep, "AngleDetection", 45.0);
+    o.mOptim = pipe_flag(rStep, "Optim", false);
+    o.mNoInsert = pipe_flag(rStep, "NoInsert", false);
+    o.mNoSwap = pipe_flag(rStep, "NoSwap", false);
+    o.mNoMove = pipe_flag(rStep, "NoMove", false);
+    o.mNoSurf = pipe_flag(rStep, "NoSurf", false);
+    o.mNreg = pipe_flag(rStep, "Nreg", false);
+    o.mOpnbdy = pipe_flag(rStep, "Opnbdy", false);
+    o.mRequired = pipe_svec(rStep, "Required");
+    const std::string frozen = pipe_text(rStep, "Frozen", "");
+    if (!frozen.empty()) {
+        const std::size_t r = rMesh.FindRegion(frozen, RegionKind::Point);
+        if (r == Mesh::npos)
+            throw std::invalid_argument(
+                pipe_err(rStep, "parameter 'Frozen' names no point region '" + frozen + "'"));
+        const meshioplusplus::Region& region = rMesh.Region(r);
+        o.mFrozen.assign(rMesh.NumPoints(), 0);
+        for (std::size_t k = 0; k < region.NumEntries(); ++k)
+            o.mFrozen[static_cast<std::size_t>(region.Entries()[k])] = 1;
+    }
+    return o;
+}
+
+/// An MMG step's counters, and its warnings into the run's.
+void pipe_mmg_report(PipelineReport& rReport, const PipelineStep& rStep, const MmgReport& rR,
+                     std::vector<std::pair<std::string, double>> extra = {}) {
+    std::vector<std::pair<std::string, double>> counters{
+        {"NumPointsIn", static_cast<double>(rR.mNumPointsIn)},
+        {"NumPointsOut", static_cast<double>(rR.mNumPointsOut)},
+        {"NumElementsIn", static_cast<double>(rR.mNumElementsIn)},
+        {"NumElementsOut", static_cast<double>(rR.mNumElementsOut)},
+        {"LowFailure", rR.mStatus == MmgStatus::LowFailure ? 1.0 : 0.0},
+        {"QualityMin", rR.mQuality.mMin},
+        {"QualityMean", rR.mQuality.mMean}};
+    for (auto& rCounter : extra)
+        counters.push_back(std::move(rCounter));
+    pipe_push_step(rReport, rStep, std::move(counters));
+    for (const std::string& w : rR.mWarnings)
+        rReport.mWarnings.push_back(w);
 }
 
 // --------------------------------------------------------------------------
@@ -2113,6 +2179,71 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             rReport.mWarnings.push_back("error_size: " + std::to_string(sr.mNumSkipped) +
                                         " cell(s) have no finite size and size no point");
         return std::move(sr.mMesh);
+    }
+    if (op == "Adapt") {
+        // MMG (roadmap 3.2.1): new points and connectivity, regions by name.
+        AdaptOptions opts;
+        opts.mParameters = pipe_mmg_parameters(rStep, mesh);
+        opts.mHsiz = pipe_number(rStep, "Hsiz", -1.0);
+        opts.mSize = pipe_text(rStep, "Size", "");
+        opts.mMetric = pipe_text(rStep, "Metric", "");
+        AdaptResult ar = adapt(mesh, opts);
+        pipe_mmg_report(rReport, rStep, ar.mReport);
+        return std::move(ar.mMesh);
+    }
+    if (op == "DiscretizeLevelset") {
+        // MMG (roadmap 3.2.2): the level set's isovalue becomes a conformal interface.
+        DiscretizeLevelsetOptions opts;
+        opts.mParameters = pipe_mmg_parameters(rStep, mesh);
+        opts.mLevelSet = pipe_text(rStep, "LevelSet", "");
+        if (opts.mLevelSet.empty())
+            throw std::invalid_argument(pipe_err(rStep, "parameter 'LevelSet' is required"));
+        opts.mIsovalue = pipe_number(rStep, "Isovalue", 0.0);
+        opts.mRemoveSmallComponents = pipe_number(rStep, "RemoveSmallComponents", -1.0);
+        const std::vector<double> mats = pipe_dvec(rStep, "Materials");
+        if (mats.size() % 4 != 0)
+            throw std::invalid_argument(
+                pipe_err(rStep,
+                         "parameter 'Materials' must hold Ref, Split, RefInside, RefOutside "
+                         "per material"));
+        for (std::size_t k = 0; k < mats.size(); k += 4)
+            opts.mMaterials.push_back(MmgMaterial{
+                static_cast<std::int64_t>(mats[k]), mats[k + 1] != 0.0,
+                static_cast<std::int64_t>(mats[k + 2]), static_cast<std::int64_t>(mats[k + 3])});
+        DiscretizeLevelsetResult lr = discretize_levelset(mesh, opts);
+        pipe_mmg_report(rReport, rStep, lr.mReport);
+        return std::move(lr.mMesh);
+    }
+    if (op == "Move") {
+        // MMG (roadmap 3.2.4): the Lagrangian mode, with ELAS.
+        MoveOptions opts;
+        opts.mParameters = pipe_mmg_parameters(rStep, mesh);
+        opts.mDisplacement = pipe_text(rStep, "Displacement", "");
+        if (opts.mDisplacement.empty())
+            throw std::invalid_argument(pipe_err(rStep, "parameter 'Displacement' is required"));
+        opts.mMoving = pipe_svec(rStep, "Moving");
+        if (opts.mMoving.empty())
+            throw std::invalid_argument(pipe_err(rStep, "parameter 'Moving' is required"));
+        opts.mLagrangian = static_cast<int>(pipe_number(rStep, "Lagrangian", 1.0));
+        AdaptResult mr = meshioplusplus::move(mesh, opts);
+        pipe_mmg_report(rReport, rStep, mr.mReport);
+        return std::move(mr.mMesh);
+    }
+    if (op == "MeshDomain") {
+        // MMG (roadmap 3.2.3): the planar domain the line cells bound, triangulated.
+        MeshDomainOptions opts;
+        opts.mParameters = pipe_mmg_parameters(rStep, mesh);
+        opts.mHsiz = pipe_number(rStep, "Hsiz", -1.0);
+        opts.mSize = pipe_text(rStep, "Size", "");
+        opts.mHoles = pipe_dvec(rStep, "Holes");
+        if (opts.mHoles.size() % 2 != 0)
+            throw std::invalid_argument(
+                pipe_err(rStep, "parameter 'Holes' must hold x, y per hole"));
+        MeshDomainResult dr = mesh_domain(mesh, opts);
+        pipe_mmg_report(rReport, rStep, dr.mReport,
+                        {{"NumSubdomains", static_cast<double>(dr.mNumSubdomains)},
+                         {"NumHoles", static_cast<double>(dr.mNumHoles)}});
+        return std::move(dr.mMesh);
     }
     if (op == "Remesh") {
         // Unlike every other step, the output has NO correspondence to the

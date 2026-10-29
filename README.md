@@ -62,7 +62,7 @@ Serial VTK XML readers (`.vtu`, `.vtp`, `.vts`, `.vtr`, `.vti`) accept multiple 
 > [LS-DYNA](https://lsdyna.ansys.com/manuals-download/) (keyword input `.k`, `.key`, `.dyn`; `*PART` and `*SET_*` as named regions, `*INCLUDE` followed),
 > [LS-DYNA d3plot](https://loumalouomega.github.io/meshioplusplus/formats/lsdyna_d3plot) (the binary state database, `d3plot` and its `d3plot01`... family, read and write; every state is a step, parts are regions, deletion flags a mask; SPH, airbag particles, rigid bodies and roads),
 > [LS-DYNA binout](https://loumalouomega.github.io/meshioplusplus/formats/lsdyna_binout) (the LSDA binary output; `nodout` outputs are steps, the other databases field data; written too, a `nodout` cloud per step with each database on its own cadence),
-> [Medit](https://people.sc.fsu.edu/~jburkardt/data/medit/medit.html) (`.mesh`, `.meshb`),
+> [Medit](https://people.sc.fsu.edu/~jburkardt/data/medit/medit.html) (`.mesh`, `.meshb`) and its solutions (`.sol`, `.solb`; size maps and metrics for MMG, vertex and element fields attached to their mesh),
 > [MFEM](https://mfem.org) mesh (`.mesh`, recognised by content; order-2 curved meshes in MFEM's own numbering, attribute sets as named regions, NURBS meshes with their patches kept and written back) and grid functions (`.gf`),
 > [MED/Salome](https://docs.salome-platform.org/latest/dev/MEDCoupling/developer/med-file.html) (`.med`; native named multi-mesh access and nodal/element profile expansion),
 > [Modulef](https://github.com/victorsndvg/FEconv) (mesh `.mfm`, field `.mff`),
@@ -261,7 +261,7 @@ meshioplusplus.write_points_cells("foo.vtk", points, cells)
 For both input and output, you can optionally specify the exact `file_format` (in case you would like to enforce ASCII over binary VTK, for example).
 
 <details>
-<summary><b>Mesh and data operations</b> — skin/surface extraction, quality, reorder, diff, merge, transform/clean/crop/split/stats, cell conversion, tessellation, subdivide/agglomerate, refine, undo-green, decimate, partition, remesh, smoothing, interpolation, slice, isosurface, derivatives, Hessian, error estimation, field integration, data ops (click to expand)</summary>
+<summary><b>Mesh and data operations</b> — skin/surface extraction, quality, reorder, diff, merge, transform/clean/crop/split/stats, cell conversion, tessellation, subdivide/agglomerate, refine, undo-green, decimate, partition, remesh, MMG adaptation, smoothing, interpolation, slice, isosurface, derivatives, Hessian, error estimation, field integration, data ops (click to expand)</summary>
 
 #### Skin extraction
 
@@ -617,6 +617,10 @@ out = meshioplusplus.remesh(mesh, num_clusters=5000, metric="anisotropic", max_a
 ```
 
 `metric="isotropic"` (default) is fast and rounds sharp features; `"quadric"` (Garland-Heckbert error) pins clusters onto edges/corners instead; `"anisotropic"` shapes clusters with a local curvature tensor, elongating elements along low-curvature directions. The output has entirely **new** points and connectivity — no point/cell map — so `point_data`/`cell_data`/named regions are dropped and `field_data` carries through; transfer a field onto the result with `interpolate`/`conservative_interpolate`.
+
+#### Adaptation with MMG (optional backend)
+
+**`meshioplusplus.adapt`** remeshes a simplicial mesh to a constant size, a size field or an anisotropic metric through [MMG](https://www.mmgtools.org/): `mmg3d` for tetrahedra, `mmg2d` for planar triangles, `mmgs` for surfaces. Cell and side regions come back under their names, required points and regions survive exactly, and `metric_from_hessian` turns a `hessian` into the metric. **`discretize_levelset`** embeds a level set's isovalue conformally between an `inside` and an `outside` region, and **`mesh_domain`** triangulates the planar domain a line mesh bounds, holes left out by a point inside each, and **`move`** moves a mesh by a displacement of part of its boundary with MMG's Lagrangian mode (an MMG built with ELAS, GPL-3.0). MMG is LGPL-3.0 and bring-your-own (`-DMESHIOPLUSPLUS_WITH_MMG=ON`, `build/build-mmg.sh`), so the published wheels do not carry it. See `doc/mmg.md`.
 
 #### Volumetric remeshing (isosurface stuffing)
 

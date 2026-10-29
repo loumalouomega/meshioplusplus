@@ -98,6 +98,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/mirror.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/operations/refine.hpp"
+#include "meshioplusplus/operations/mmg.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
@@ -408,6 +409,20 @@ MIO_ABI_LAYOUT(meshioplusplus::RefineOptions, 120, 8);
 // struct noted above: it embeds a `Mesh`, whose size is per-backend.
 MIO_ABI_LAYOUT(meshioplusplus::RemeshOptions, 64, 8);
 
+// The MMG backend's options (roadmap 3.2, unreleased): passed by const-ref
+// through the exported adapt(), discretize_levelset(), mesh_domain(), move()
+// and metric_from_hessian(). MmgParameters is embedded by value in each
+// operation's options; the *Result structs and MmgReport are not pinned (a
+// `Mesh`, and a report returned by value only inside results).
+MIO_ABI_LAYOUT(meshioplusplus::MmgLocalParameter, 56, 8);
+MIO_ABI_LAYOUT(meshioplusplus::MmgParameters, 144, 8);
+MIO_ABI_LAYOUT(meshioplusplus::AdaptOptions, 216, 8);
+MIO_ABI_LAYOUT(meshioplusplus::MmgMaterial, 32, 8);
+MIO_ABI_LAYOUT(meshioplusplus::DiscretizeLevelsetOptions, 216, 8);
+MIO_ABI_LAYOUT(meshioplusplus::MeshDomainOptions, 208, 8);
+MIO_ABI_LAYOUT(meshioplusplus::MoveOptions, 208, 8);
+MIO_ABI_LAYOUT(meshioplusplus::MetricFromHessianOptions, 88, 8);
+
 // RemeshVolumeOptions is passed by const-ref through the exported
 // `remesh_volume()`, and embeds `SurfaceDistanceOptions` BY VALUE exactly as
 // SdfOptions/VoxelOptions do above -- pinned from the release that
@@ -607,6 +622,10 @@ static_assert(sizeof(meshioplusplus::CellType) == 2,
 // primary guard lives in remesh.hpp itself (checked by every consumer that
 // compiles it, not just this suite) -- this mirror exists for the same
 // discoverability CellType's own entry has here.
+static_assert(sizeof(meshioplusplus::MmgStatus) == 4,
+              "meshio++ ABI: MmgStatus's underlying type changed width; widening "
+              "`: std::int32_t` is a Tier A break (doc/abi.md).");
+
 static_assert(sizeof(meshioplusplus::RemeshMetric) == 1,
               "meshio++ ABI: RemeshMetric's underlying type changed width. "
               "Appending enumerators is safe and expected; widening "

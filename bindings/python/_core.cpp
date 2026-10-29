@@ -196,6 +196,7 @@
 #include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
+#include "meshioplusplus/operations/mmg.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
@@ -1425,6 +1426,102 @@ void core_attach_brep(py::object& rPyMesh, meshioplusplus::BrepInfo&& rInfo) {
     rPyMesh.attr("info") = std::move(d);
 }
 
+/// The shared MMG parameters from the dict the Python wrappers build (roadmap 3.2).
+meshioplusplus::MmgParameters py_mmg_parameters(const py::dict& rP, std::size_t NumPoints,
+                                                const char* pOp) {
+    meshioplusplus::MmgParameters p;
+    const auto num = [&](const char* pKey, double& rOut) {
+        if (rP.contains(pKey) && !rP[pKey].is_none())
+            rOut = py::cast<double>(rP[pKey]);
+    };
+    const auto flag = [&](const char* pKey, bool& rOut) {
+        if (rP.contains(pKey))
+            rOut = py::cast<bool>(rP[pKey]);
+    };
+    num("hmin", p.mHmin);
+    num("hmax", p.mHmax);
+    num("hausd", p.mHausd);
+    num("hgrad", p.mHgrad);
+    num("hgradreq", p.mHgradreq);
+    if (rP.contains("angle_detection")) {
+        // None or False: detection off.
+        const py::object a = rP["angle_detection"];
+        p.mAngleDetection = a.is_none() || (py::isinstance<py::bool_>(a) && !py::cast<bool>(a))
+                                ? -1.0
+                                : py::cast<double>(a);
+    }
+    flag("optim", p.mOptim);
+    flag("noinsert", p.mNoInsert);
+    flag("noswap", p.mNoSwap);
+    flag("nomove", p.mNoMove);
+    flag("nosurf", p.mNoSurf);
+    flag("nreg", p.mNreg);
+    flag("opnbdy", p.mOpnbdy);
+    if (rP.contains("mem") && !rP["mem"].is_none())
+        p.mMem = py::cast<std::int64_t>(rP["mem"]);
+    if (rP.contains("verbose"))
+        p.mVerbose = py::cast<int>(rP["verbose"]);
+    if (rP.contains("frozen") && !rP["frozen"].is_none()) {
+        py::array_t<std::int64_t> ids =
+            py::cast<py::array_t<std::int64_t>>(py::array::ensure(rP["frozen"]));
+        p.mFrozen.assign(NumPoints, 0);
+        const auto v = ids.unchecked<1>();
+        for (py::ssize_t k = 0; k < v.shape(0); ++k) {
+            const std::int64_t id = v(k);
+            if (id < 0 || static_cast<std::size_t>(id) >= NumPoints)
+                throw std::invalid_argument(std::string("meshio++: ") + pOp + ": frozen point id " +
+                                            std::to_string(id) + " is out of range");
+            p.mFrozen[static_cast<std::size_t>(id)] = 1;
+        }
+    }
+    if (rP.contains("required") && !rP["required"].is_none())
+        p.mRequired = py::cast<std::vector<std::string>>(rP["required"]);
+    if (rP.contains("local") && !rP["local"].is_none()) {
+        for (const auto& [key, value] : py::cast<py::dict>(rP["local"])) {
+            meshioplusplus::MmgLocalParameter lp;
+            lp.mRegion = py::cast<std::string>(key);
+            const py::dict d = py::cast<py::dict>(value);
+            for (const auto& [k, v] : d) {
+                const std::string name = py::cast<std::string>(k);
+                const double x = py::cast<double>(v);
+                if (name == "hmin")
+                    lp.mHmin = x;
+                else if (name == "hmax")
+                    lp.mHmax = x;
+                else if (name == "hausd")
+                    lp.mHausd = x;
+                else
+                    throw std::invalid_argument(
+                        std::string("meshio++: ") + pOp +
+                        ": a local parameter is hmin, hmax or hausd, not '" + name + "'");
+            }
+            p.mLocal.push_back(std::move(lp));
+        }
+    }
+    return p;
+}
+
+/// An MMG operation's report as a dict.
+py::dict py_mmg_report(const meshioplusplus::MmgReport& rR) {
+    py::dict out;
+    out["status"] = rR.mStatus == meshioplusplus::MmgStatus::Success ? "success" : "low_failure";
+    out["library"] = rR.mLibrary;
+    out["num_points_in"] = rR.mNumPointsIn;
+    out["num_points_out"] = rR.mNumPointsOut;
+    out["num_elements_in"] = rR.mNumElementsIn;
+    out["num_elements_out"] = rR.mNumElementsOut;
+    py::dict q;
+    q["min"] = rR.mQuality.mMin;
+    q["max"] = rR.mQuality.mMax;
+    q["mean"] = rR.mQuality.mMean;
+    q["count"] = rR.mQuality.mCount;
+    q["histogram"] =
+        std::vector<std::int64_t>(rR.mQuality.mHistogram.begin(), rR.mQuality.mHistogram.end());
+    out["quality"] = q;
+    out["warnings"] = rR.mWarnings;
+    return out;
+}
+
 }  // namespace
 
 PYBIND11_MODULE(_core, m) {
@@ -1495,6 +1592,135 @@ PYBIND11_MODULE(_core, m) {
 #endif
     // Whether tetrahedralize has its Netgen backend (MESHIOPLUSPLUS_WITH_NETGEN).
     m.attr("__has_netgen__") = meshioplusplus::tetrahedralize_has_netgen();
+    // The MMG backend (MESHIOPLUSPLUS_WITH_MMG), and whether its MMG has ELAS for move.
+    m.attr("__has_mmg__") = meshioplusplus::mmg_available();
+    m.attr("__has_mmg_elas__") = meshioplusplus::mmg_has_elas();
+    m.attr("__mmg_index_bits__") = meshioplusplus::mmg_index_bits();
+
+    // adapt (roadmap 3.2.1): MMG remeshes to a size or a metric. Returns the
+    // report dict with the mesh under "mesh". See operations/mmg.hpp.
+    m.def(
+        "adapt",
+        [](py::object pymesh, double hsiz, const std::string& size, const std::string& metric,
+           const py::dict& params) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::AdaptOptions o;
+            o.mParameters = py_mmg_parameters(params, cpp.NumPoints(), "adapt");
+            o.mHsiz = hsiz;
+            o.mSize = size;
+            o.mMetric = metric;
+            meshioplusplus::AdaptResult r =
+                core_nogil([&] { return meshioplusplus::adapt(cpp, o); });
+            py::dict out = py_mmg_report(r.mReport);
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            return out;
+        },
+        py::arg("mesh"), py::arg("hsiz") = -1.0, py::arg("size") = "", py::arg("metric") = "",
+        py::arg("params") = py::dict());
+
+    // discretize_levelset (roadmap 3.2.2): MMG embeds a level set. Returns the
+    // report dict with the mesh under "mesh".
+    m.def(
+        "discretize_levelset",
+        [](py::object pymesh, const std::string& level_set, double isovalue,
+           double remove_small_components, const py::list& materials, const py::dict& params) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::DiscretizeLevelsetOptions o;
+            o.mParameters = py_mmg_parameters(params, cpp.NumPoints(), "discretize_levelset");
+            o.mLevelSet = level_set;
+            o.mIsovalue = isovalue;
+            o.mRemoveSmallComponents = remove_small_components;
+            for (const auto& item : materials) {
+                const auto t = py::cast<py::tuple>(item);
+                if (t.size() != 4)
+                    throw std::invalid_argument(
+                        "meshio++: discretize_levelset: a material is (ref, split, ref_inside, "
+                        "ref_outside)");
+                o.mMaterials.push_back({py::cast<std::int64_t>(t[0]), py::cast<bool>(t[1]),
+                                        py::cast<std::int64_t>(t[2]),
+                                        py::cast<std::int64_t>(t[3])});
+            }
+            meshioplusplus::DiscretizeLevelsetResult r =
+                core_nogil([&] { return meshioplusplus::discretize_levelset(cpp, o); });
+            py::dict out = py_mmg_report(r.mReport);
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            return out;
+        },
+        py::arg("mesh"), py::arg("level_set"), py::arg("isovalue") = 0.0,
+        py::arg("remove_small_components") = -1.0, py::arg("materials") = py::list(),
+        py::arg("params") = py::dict());
+
+    // mesh_domain (roadmap 3.2.3): MMG triangulates a planar domain from its
+    // boundary lines. Returns the report dict with the mesh under "mesh".
+    m.def(
+        "mesh_domain",
+        [](py::object pymesh, double hsiz, const std::string& size,
+           const std::vector<double>& holes, const py::dict& params) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::MeshDomainOptions o;
+            o.mParameters = py_mmg_parameters(params, cpp.NumPoints(), "mesh_domain");
+            o.mHsiz = hsiz;
+            o.mSize = size;
+            o.mHoles = holes;
+            meshioplusplus::MeshDomainResult r =
+                core_nogil([&] { return meshioplusplus::mesh_domain(cpp, o); });
+            py::dict out = py_mmg_report(r.mReport);
+            out["num_subdomains"] = r.mNumSubdomains;
+            out["num_holes"] = r.mNumHoles;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            return out;
+        },
+        py::arg("mesh"), py::arg("hsiz") = -1.0, py::arg("size") = "",
+        py::arg("holes") = std::vector<double>(), py::arg("params") = py::dict());
+
+    // move (roadmap 3.2.4): MMG's Lagrangian mode, with ELAS. Returns the
+    // report dict with the mesh under "mesh".
+    m.def(
+        "move",
+        [](py::object pymesh, const std::string& displacement,
+           const std::vector<std::string>& moving, int lagrangian, const py::dict& params) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::MoveOptions o;
+            o.mParameters = py_mmg_parameters(params, cpp.NumPoints(), "move");
+            o.mDisplacement = displacement;
+            o.mMoving = moving;
+            o.mLagrangian = lagrangian;
+            meshioplusplus::AdaptResult r =
+                core_nogil([&] { return meshioplusplus::move(cpp, o); });
+            py::dict out = py_mmg_report(r.mReport);
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            return out;
+        },
+        py::arg("mesh"), py::arg("displacement"), py::arg("moving"), py::arg("lagrangian") = 1,
+        py::arg("params") = py::dict());
+
+    // metric_from_hessian (roadmap 3.2.1.1): an anisotropic metric for adapt.
+    m.def(
+        "metric_from_hessian",
+        [](py::object pymesh, const std::string& hessian, double error, double hmin, double hmax,
+           const std::string& output) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::MetricFromHessianOptions o;
+            o.mHessian = hessian;
+            o.mError = error;
+            o.mHmin = hmin;
+            o.mHmax = hmax;
+            o.mOutput = output;
+            return meshioplusplus_py::mesh_to_py(
+                core_nogil([&] { return meshioplusplus::metric_from_hessian(cpp, o); }));
+        },
+        py::arg("mesh"), py::arg("hessian"), py::arg("error") = 1e-2, py::arg("hmin") = 1e-3,
+        py::arg("hmax") = 1.0, py::arg("output") = "metric");
     // The kernel version fit_cad's STEP bytes depend on ("" without it).
     m.attr("__occt_version__") = std::string(meshioplusplus::fit_cad_occt_version());
 #ifdef MESHIOPLUSPLUS_HAS_GIDPOST
@@ -6565,6 +6791,29 @@ PYBIND11_MODULE(_core, m) {
               return meshioplusplus_py::mesh_to_py(
                   core_nogil([&] { return meshioplusplus::read_medit_ascii(path); }));
           }));
+
+    // Medit solution writer / readers (.sol ascii, .solb binary).
+    m.def("medit_sol_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs)] {
+            return meshioplusplus::write_medit_sol(path, mesh);
+        });
+    });
+    m.def("medit_sol_read", guard_read("medit_sol", [](const std::string& path) {
+              return meshioplusplus_py::mesh_to_py(
+                  core_nogil([&] { return meshioplusplus::read_medit_sol(path); }));
+          }));
+    // The mesh with the solution's fields attached (a copy: the caller's mesh is untouched).
+    m.def("medit_sol_read_into", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+            pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+        guard_read("medit_sol", [&](const std::string& rFile) {
+            core_nogil([&] { meshioplusplus::read_medit_sol_into(rFile, mesh); });
+            return 0;
+        })(path);
+        return meshioplusplus_py::mesh_to_py(std::move(mesh));
+    });
 
     // Kratos MDPA writer / reader (.mdpa).
     m.def("mdpa_write", [](const std::string& path, py::object pymesh) {

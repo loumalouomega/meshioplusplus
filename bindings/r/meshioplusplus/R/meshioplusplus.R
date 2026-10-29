@@ -2924,6 +2924,146 @@ mio_has_netgen <- function() {
   .Call(R_mio_has_netgen)
 }
 
+#' Whether the library carries the MMG backend
+#'
+#' The MMG operations (adapt, discretize_levelset, mesh_domain, move) need a
+#' library built with `-DMESHIOPLUSPLUS_WITH_MMG=ON`; this reports whether the
+#' loaded one was. `mio_has_mmg_elas()` reports whether its MMG has ELAS, which
+#' move needs.
+#'
+#' @return `TRUE` or `FALSE`.
+#' @export
+mio_has_mmg <- function() {
+  .Call(R_mio_has_mmg)
+}
+
+#' @rdname mio_has_mmg
+#' @export
+mio_has_mmg_elas <- function() {
+  .Call(R_mio_has_mmg_elas)
+}
+
+#' Remesh to a size or a metric with MMG
+#'
+#' Roadmap 3.2.1 (`doc/mmg.md`): mmg3d for tetrahedra, mmg2d for a planar
+#' triangle mesh, mmgs for another triangle surface. Give at most one of
+#' `hsiz`, `size` and `metric`. Cell and side regions come back under their
+#' names. Fails naming `MESHIOPLUSPLUS_WITH_MMG` without the backend
+#' ([mio_has_mmg()]).
+#'
+#' @param mesh A mesh.
+#' @param hsiz A constant target edge size (negative: none).
+#' @param size A one-component point-data name: the size per point.
+#' @param metric A six-component (three in 2-D) point-data name: the metric in
+#'   the lower-triangle order of a Medit `.sol`.
+#' @param hmin,hmax,hausd,hgrad MMG's sizes, Hausdorff distance and gradation
+#'   (negative: MMG's default).
+#' @param angle_detection The ridge angle in degrees; 0 turns detection off.
+#' @param frozen 1-based points MMG must keep.
+#' @param required Names of regions whose entities MMG must keep.
+#' @return A list: `mesh`, `status` ("success" or "low_failure"), `library`,
+#'   point and element counts in and out, `quality` (min, mean, max of
+#'   `quality:aspect_ratio`) and `num_warnings`.
+#' @export
+mio_adapt <- function(mesh, hsiz = -1, size = "", metric = "", hmin = -1, hmax = -1,
+                      hausd = -1, hgrad = -1, angle_detection = 45, frozen = NULL,
+                      required = character(0)) {
+  .Call(R_mio_adapt, mesh, as.numeric(hsiz), as.character(size), as.character(metric),
+        as.numeric(hmin), as.numeric(hmax), as.numeric(hausd), as.numeric(hgrad),
+        as.numeric(angle_detection), frozen, as.character(required))
+}
+
+#' Embed a level set conformally with MMG
+#'
+#' Roadmap 3.2.2 (`doc/mmg.md`): the `isovalue` of the one-component point
+#' data `level_set` becomes a conformal interface and both sides are remeshed.
+#' The elements carry cell data `medit:ref` (3 inside, 2 outside) and the cell
+#' regions `inside` and `outside`; the interface is the side region
+#' `interface`.
+#'
+#' @inheritParams mio_adapt
+#' @param level_set The level set's point-data name.
+#' @param isovalue The level to embed.
+#' @param remove_small_components MMG's `rmc` volume fraction (negative: keep
+#'   every component).
+#' @param materials `NULL` or a numeric matrix with columns `ref`, `split`
+#'   (0/1), `ref_inside` and `ref_outside`: MMG's multi-material mode.
+#' @return The list [mio_adapt()] returns.
+#' @export
+mio_discretize_levelset <- function(mesh, level_set, isovalue = 0,
+                                    remove_small_components = -1, materials = NULL,
+                                    hmin = -1, hmax = -1, hausd = -1, hgrad = -1,
+                                    angle_detection = 45, frozen = NULL,
+                                    required = character(0)) {
+  if (!is.null(materials)) materials <- matrix(as.numeric(materials), ncol = 4)
+  .Call(R_mio_discretize_levelset, mesh, as.character(level_set), as.numeric(isovalue),
+        as.numeric(remove_small_components), materials, as.numeric(hmin),
+        as.numeric(hmax), as.numeric(hausd), as.numeric(hgrad),
+        as.numeric(angle_detection), frozen, as.character(required))
+}
+
+#' Triangulate a planar domain with MMG
+#'
+#' Roadmap 3.2.3 (`doc/mmg.md`): the regions the `line` cells of `boundary`
+#' enclose are triangulated by `MMG2D_mmg2dmesh`, each a cell region
+#' `subdomain:<k>`; `holes` gives one point inside each region to leave out.
+#'
+#' @inheritParams mio_adapt
+#' @param boundary A mesh of `line` cells in the plane.
+#' @param holes `NULL` or a numeric matrix with columns `x` and `y`.
+#' @return The list [mio_adapt()] returns, plus `num_subdomains` and
+#'   `num_holes`.
+#' @export
+mio_mesh_domain <- function(boundary, hsiz = -1, size = "", holes = NULL, hmin = -1,
+                            hmax = -1, hausd = -1, hgrad = -1, angle_detection = 45,
+                            frozen = NULL, required = character(0)) {
+  if (!is.null(holes)) holes <- matrix(as.numeric(holes), ncol = 2)
+  .Call(R_mio_mesh_domain, boundary, as.numeric(hsiz), as.character(size), holes,
+        as.numeric(hmin), as.numeric(hmax), as.numeric(hausd), as.numeric(hgrad),
+        as.numeric(angle_detection), frozen, as.character(required))
+}
+
+#' Move a mesh by a boundary displacement with MMG
+#'
+#' Roadmap 3.2.4 (`doc/mmg.md`): the boundary facets of the regions `moving`
+#' follow the point-data vector `displacement`, MMG extends it inward by linear
+#' elasticity (ELAS) and remeshes as the mesh deforms; the rest of the boundary
+#' stays in place. Fails naming `MESHIOPLUSPLUS_WITH_MMG` without MMG, or ELAS
+#' without it ([mio_has_mmg_elas()]).
+#'
+#' @inheritParams mio_adapt
+#' @param displacement The displacement's point-data name.
+#' @param moving Names of the cell or side regions whose boundary moves.
+#' @param lagrangian MMG's `lag`: 0 moves only, 1 also swaps, 2 also inserts.
+#' @return The list [mio_adapt()] returns.
+#' @export
+mio_move <- function(mesh, displacement, moving, lagrangian = 1, hmin = -1, hmax = -1,
+                     hausd = -1, hgrad = -1, angle_detection = 45, frozen = NULL,
+                     required = character(0)) {
+  .Call(R_mio_move, mesh, as.character(displacement), as.character(moving),
+        as.numeric(lagrangian), as.numeric(hmin), as.numeric(hmax), as.numeric(hausd),
+        as.numeric(hgrad), as.numeric(angle_detection), frozen, as.character(required))
+}
+
+#' An anisotropic metric from a Hessian
+#'
+#' The metric of the row-major point-data Hessian `hessian` ((n, 9), or (n, 4)
+#' in 2-D) for [mio_adapt()]: `M = c/error |H|`, its sizes clamped to
+#' `[hmin, hmax]`, as point data `output`. Needs no MMG.
+#'
+#' @param mesh A mesh.
+#' @param hessian The Hessian's point-data name.
+#' @param error The target interpolation error.
+#' @param hmin,hmax The smallest and largest edge size the metric asks for.
+#' @param output The result's point-data name.
+#' @return A new mesh with the metric.
+#' @export
+mio_metric_from_hessian <- function(mesh, hessian, error = 1e-2, hmin = 1e-3, hmax = 1,
+                                    output = "metric") {
+  .Call(R_mio_metric_from_hessian, mesh, as.character(hessian), as.numeric(error),
+        as.numeric(hmin), as.numeric(hmax), as.character(output))
+}
+
 #' Fill a closed triangle surface with tetrahedra
 #'
 #' The closed, manifold, consistently oriented triangle surface `mesh` is

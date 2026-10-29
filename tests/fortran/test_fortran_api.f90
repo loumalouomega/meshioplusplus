@@ -1511,6 +1511,74 @@ program test_fortran_api
             if (tst == 0) call tet_out%free()
         end block
 
+        ! The MMG backend (roadmap 3.2): adapt with it, its refusal by name
+        ! without it; metric_from_hessian needs no MMG.
+        block
+            type(mio_mesh) :: square, adapted
+            type(mio_mmg_report) :: mrep
+            integer :: mst
+            character(:), allocatable :: mmsg
+            square = mio_rectangle(dims=[4, 4], cell_type='triangle', stat=mst)
+            call check(mst == 0, 'rectangle for adapt')
+            adapted = mio_adapt(square, hsiz=0.1_real64, frozen=[13_int64], report=mrep, &
+                                stat=mst, errmsg=mmsg)
+            if (mio_has_mmg()) then
+                call check(mst == 0 .and. mrep%status == 0 .and. &
+                           mrep%num_elements_out > mrep%num_elements_in .and. &
+                           mrep%library(1) == 'm' .and. mrep%library(4) == '2', &
+                           'adapt remeshes the square with mmg2d')
+                if (mst == 0) call adapted%free()
+            else
+                call check(mst /= 0 .and. index(mmsg, 'MESHIOPLUSPLUS_WITH_MMG') > 0, &
+                           'adapt names the build flag without MMG')
+                call check(mio_mmg_index_bits() == 0, 'no MMG, no index width')
+            end if
+            call square%free()
+        end block
+
+        block
+            ! Roadmap 3.2.3: a unit square's boundary lines, triangulated by mmg2d.
+            type(mio_mesh) :: box, dom
+            type(mio_mmg_report) :: drep
+            integer(int64) :: nsub
+            integer :: dst
+            character(:), allocatable :: dmsg
+            call box%set_points(reshape([0.0_real64, 0.0_real64, 1.0_real64, 0.0_real64, &
+                                         1.0_real64, 1.0_real64, 0.0_real64, 1.0_real64], &
+                                        [2, 4]))
+            call box%add_cell_block('line', reshape([1_int64, 2_int64, 2_int64, 3_int64, &
+                                                     3_int64, 4_int64, 4_int64, 1_int64], &
+                                                    [2, 4]))
+            dom = mio_mesh_domain(box, hsiz=0.1_real64, report=drep, num_subdomains=nsub, &
+                                  stat=dst, errmsg=dmsg)
+            if (mio_has_mmg()) then
+                call check(dst == 0 .and. nsub == 1_int64 .and. drep%num_elements_out > 100, &
+                           'mesh_domain triangulates the square')
+                if (dst == 0) call dom%free()
+            else
+                call check(dst /= 0 .and. index(dmsg, 'MESHIOPLUSPLUS_WITH_MMG') > 0, &
+                           'mesh_domain names the build flag without MMG')
+            end if
+            call box%free()
+        end block
+
+        block
+            ! Roadmap 3.2.4: move refuses a region that is not there, by name,
+            ! or the build that cannot move at all.
+            type(mio_mesh) :: tets, moved
+            integer :: mvst
+            character(:), allocatable :: mvmsg
+            real(real64), allocatable :: zeros(:, :)
+            tets = mio_box(dims=[2, 2, 2], cell_type='tetra', stat=mvst)
+            call check(mvst == 0, 'box for move')
+            allocate (zeros(3, tets%num_points()))
+            zeros = 0.0_real64
+            call tets%add_point_data('d', zeros)
+            moved = mio_move(tets, 'd', ['nope'], stat=mvst, errmsg=mvmsg)
+            call check(mvst /= 0, 'move fails on an unknown region or without its backend')
+            call tets%free()
+        end block
+
         out = octa%remesh(30_int64, num_iterations=niter, subdivide_applied=subapp, &
                           num_isolated_clusters=niso, stat=st)
         call check(st == 0, 'remesh succeeded')

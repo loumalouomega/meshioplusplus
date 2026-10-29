@@ -7529,3 +7529,203 @@ TEST(CApi, ExtrudeRevolveAndMirror) {
     EXPECT_EQ(mio_mirror(box, &mo, nullptr), nullptr);
     mio_mesh_free(box);
 }
+
+// The MMG backend (roadmap 3.2): layouts, the capability queries, mio_adapt
+// with the backend or its refusal by name without it, and the MMG-free
+// mio_metric_from_hessian.
+TEST(CApi, MmgOptionLayoutsAndDefaults) {
+    EXPECT_EQ(sizeof(mio_mmg_local), 32u);
+    EXPECT_EQ(sizeof(mio_mmg_params), 168u);
+    EXPECT_EQ(sizeof(mio_mmg_report), 192u);
+    EXPECT_EQ(sizeof(mio_adapt_opts), 224u);
+    EXPECT_EQ(offsetof(mio_adapt_opts, hsiz), 168u);
+    mio_adapt_opts o;
+    mio_adapt_opts_init(&o);
+    EXPECT_EQ(o.params.hmin, -1.0);
+    EXPECT_EQ(o.params.angle_detection, 45.0);
+    EXPECT_EQ(o.params.verbose, -1);
+    EXPECT_EQ(o.hsiz, -1.0);
+    EXPECT_EQ(mio_mmg_index_bits() != 0, mio_has_mmg() != 0);
+}
+
+TEST(CApi, AdaptWithOrWithoutMmg) {
+    mio_gen_opts g;
+    mio_gen_opts_init(&g);
+    g.counts[0] = 4;
+    g.counts[1] = 4;
+    g.cell_type = MIO_GEN_TRIANGLE;
+    mio_mesh* square = mio_rectangle(&g);
+    ASSERT_NE(square, nullptr) << mio_last_error();
+    mio_adapt_opts o;
+    mio_adapt_opts_init(&o);
+    o.hsiz = 0.1;
+    const int64_t frozen[] = {12};
+    o.params.frozen = frozen;
+    o.params.num_frozen = 1;
+    mio_mmg_report report;
+    mio_mesh* out = mio_adapt(square, &o, &report);
+    if (!mio_has_mmg()) {
+        EXPECT_EQ(out, nullptr);
+        EXPECT_NE(std::string(mio_last_error()).find("MESHIOPLUSPLUS_WITH_MMG"), std::string::npos);
+    } else {
+        ASSERT_NE(out, nullptr) << mio_last_error();
+        EXPECT_EQ(report.status, 0);
+        EXPECT_STREQ(report.library, "mmg2d");
+        EXPECT_EQ(report.num_points_in, 25);
+        EXPECT_EQ(report.num_points_out, mio_mesh_num_points(out));
+        EXPECT_GT(report.num_elements_out, report.num_elements_in);
+        EXPECT_GE(report.quality_min, 1.0);
+        mio_mesh_free(out);
+        // NULL options and report are fine (MMG sizes from the mesh).
+        mio_mesh* plain = mio_adapt(square, nullptr, nullptr);
+        ASSERT_NE(plain, nullptr) << mio_last_error();
+        mio_mesh_free(plain);
+        // A frozen id out of range is refused.
+        const int64_t bad[] = {999};
+        o.params.frozen = bad;
+        EXPECT_EQ(mio_adapt(square, &o, nullptr), nullptr);
+    }
+    mio_mesh_free(square);
+}
+
+TEST(CApi, MetricFromHessian) {
+    mio_gen_opts g;
+    mio_gen_opts_init(&g);
+    g.counts[0] = 2;
+    g.counts[1] = 2;
+    g.cell_type = MIO_GEN_TRIANGLE;
+    mio_mesh* m = mio_rectangle(&g);
+    ASSERT_NE(m, nullptr) << mio_last_error();
+    const int64_t n = mio_mesh_num_points(m);
+    std::vector<double> h(static_cast<std::size_t>(n) * 4, 0.0);
+    for (int64_t i = 0; i < n; ++i)
+        h[static_cast<std::size_t>(i) * 4] = 1e6;
+    const int64_t shape[] = {n, 4};
+    ASSERT_EQ(mio_mesh_add_point_data(m, "h", MIO_FLOAT64, 2, shape, h.data()), MIO_OK);
+    mio_mesh* out = mio_metric_from_hessian(m, "h", 1.0, 0.1, 1.0, nullptr);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    const void* data = nullptr;
+    int64_t got[MIO_MAX_NDIM] = {0};
+    int32_t ndim = 0;
+    ASSERT_EQ(mio_mesh_get_point_data(out, "metric", &data, nullptr, &ndim, got), MIO_OK);
+    EXPECT_EQ(ndim, 2);
+    EXPECT_EQ(got[1], 3);
+    const double* metric = static_cast<const double*>(data);
+    EXPECT_DOUBLE_EQ(metric[0], 100.0);  // clamped to 1/hmin^2
+    EXPECT_DOUBLE_EQ(metric[2], 1.0);    // clamped to 1/hmax^2
+    mio_mesh_free(out);
+    EXPECT_EQ(mio_metric_from_hessian(m, "nope", 1.0, 0.1, 1.0, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, DiscretizeLevelsetAndMeshDomain) {
+    EXPECT_EQ(sizeof(mio_mmg_material), 32u);
+    EXPECT_EQ(sizeof(mio_discretize_levelset_opts), 240u);
+    EXPECT_EQ(sizeof(mio_mesh_domain_opts), 232u);
+    // A disc's level set in a square.
+    mio_gen_opts g;
+    mio_gen_opts_init(&g);
+    g.counts[0] = 8;
+    g.counts[1] = 8;
+    g.size[0] = g.size[1] = 2.0;
+    g.origin[0] = g.origin[1] = -1.0;
+    g.cell_type = MIO_GEN_TRIANGLE;
+    mio_mesh* square = mio_rectangle(&g);
+    ASSERT_NE(square, nullptr) << mio_last_error();
+    const int64_t n = mio_mesh_num_points(square);
+    const void* pts = nullptr;
+    ASSERT_EQ(mio_mesh_get_points(square, &pts, nullptr), MIO_OK);
+    std::vector<double> ls(static_cast<std::size_t>(n));
+    for (int64_t i = 0; i < n; ++i) {
+        const double* p = static_cast<const double*>(pts) + i * 3;
+        ls[static_cast<std::size_t>(i)] = std::sqrt(p[0] * p[0] + p[1] * p[1]) - 0.5;
+    }
+    const int64_t shape[] = {n};
+    ASSERT_EQ(mio_mesh_add_point_data(square, "ls", MIO_FLOAT64, 1, shape, ls.data()), MIO_OK);
+    mio_discretize_levelset_opts o;
+    mio_discretize_levelset_opts_init(&o);
+    o.level_set = "ls";
+    mio_mmg_report report;
+    mio_mesh* cut = mio_discretize_levelset(square, &o, &report);
+    if (!mio_has_mmg()) {
+        EXPECT_EQ(cut, nullptr);
+        EXPECT_NE(std::string(mio_last_error()).find("MESHIOPLUSPLUS_WITH_MMG"), std::string::npos);
+    } else {
+        ASSERT_NE(cut, nullptr) << mio_last_error();
+        EXPECT_STREQ(report.library, "mmg2d");
+        EXPECT_GT(report.num_elements_out, report.num_elements_in);
+        mio_mesh_free(cut);
+    }
+    EXPECT_EQ(mio_discretize_levelset(square, nullptr, nullptr), nullptr);
+    mio_mesh_free(square);
+
+    // A square's boundary, meshed.
+    const double xy[] = {0, 0, 1, 0, 1, 1, 0, 1};
+    const int64_t lines[] = {0, 1, 1, 2, 2, 3, 3, 0};
+    mio_mesh* boundary = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(boundary, MIO_FLOAT64, 4, 2, xy), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(boundary, "line", 4, 2, MIO_INT64, lines), MIO_OK);
+    mio_mesh_domain_opts d;
+    mio_mesh_domain_opts_init(&d);
+    d.hsiz = 0.1;
+    int64_t subdomains = -1, holes = -1;
+    mio_mesh* domain = mio_mesh_domain(boundary, &d, &report, &subdomains, &holes);
+    if (!mio_has_mmg()) {
+        EXPECT_EQ(domain, nullptr);
+    } else {
+        ASSERT_NE(domain, nullptr) << mio_last_error();
+        EXPECT_EQ(subdomains, 1);
+        EXPECT_EQ(holes, 0);
+        EXPECT_GT(report.num_elements_out, 100);
+        mio_mesh_free(domain);
+    }
+    mio_mesh_free(boundary);
+}
+
+TEST(CApi, MoveTranslatesAFaceOrNamesWhatIsMissing) {
+    mio_gen_opts g;
+    mio_gen_opts_init(&g);
+    g.counts[0] = g.counts[1] = g.counts[2] = 4;
+    g.cell_type = MIO_GEN_TETRA;
+    mio_mesh* box = mio_box(&g);
+    ASSERT_NE(box, nullptr) << mio_last_error();
+    const int64_t n = mio_mesh_num_points(box);
+    const void* raw = nullptr;
+    mio_dtype dt;
+    ASSERT_EQ(mio_mesh_get_points(box, &raw, &dt), MIO_OK);
+    ASSERT_EQ(dt, MIO_FLOAT64);
+    const double* p = static_cast<const double*>(raw);
+    std::vector<double> d(static_cast<std::size_t>(n) * 3, 0.0);
+    for (int64_t i = 0; i < n; ++i)
+        if (std::abs(p[i * 3] - 1.0) < 1e-12)
+            d[static_cast<std::size_t>(i) * 3] = 0.1;
+    const int64_t shape[2] = {n, 3};
+    ASSERT_EQ(mio_mesh_add_point_data(box, "d", MIO_FLOAT64, 2, shape, d.data()), MIO_OK);
+    mio_move_opts o;
+    mio_move_opts_init(&o);
+    EXPECT_EQ(o.lagrangian, 1);
+    const char* moving[] = {"xmax"};
+    o.displacement = "d";
+    o.moving = moving;
+    o.num_moving = 1;
+    mio_mmg_report report;
+    mio_mesh* out = mio_move(box, &o, &report);
+    if (!mio_has_mmg() || !mio_has_mmg_elas()) {
+        EXPECT_EQ(out, nullptr);
+        EXPECT_NE(
+            std::string(mio_last_error()).find(mio_has_mmg() ? "ELAS" : "MESHIOPLUSPLUS_WITH_MMG"),
+            std::string::npos);
+    } else {
+        ASSERT_NE(out, nullptr) << mio_last_error();
+        EXPECT_STREQ(report.library, "mmg3d");
+        const void* q = nullptr;
+        ASSERT_EQ(mio_mesh_get_points(out, &q, &dt), MIO_OK);
+        double xmax = 0.0;
+        for (int64_t i = 0; i < mio_mesh_num_points(out); ++i)
+            xmax = std::max(xmax, static_cast<const double*>(q)[i * 3]);
+        EXPECT_NEAR(xmax, 1.1, 1e-9);
+        mio_mesh_free(out);
+    }
+    EXPECT_EQ(mio_move(box, nullptr, nullptr), nullptr);
+    mio_mesh_free(box);
+}

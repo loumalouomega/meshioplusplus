@@ -250,6 +250,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   hasCgnslib: () => boolean,
  *   hasOcct: () => boolean,
  *   hasNetgen: () => boolean,
+ *   hasMmg: () => boolean,
  *   hasKahip: () => boolean,
  *   hasZstd: () => boolean,
  *   hasLz4: () => boolean,
@@ -652,6 +653,7 @@ export async function loadMeshioPlusPlus(
         // and false in the lean one. buildFlavour() names which loaded.
         hasOcct: () => Module.hasOcct(),
         hasNetgen: () => Module.hasNetgen(),
+        hasMmg: () => Module.hasMmg(),
         hasKahip: () => Module.hasKahip(),
         hasZstd: () => Module.hasZstd(),
         hasLz4: () => Module.hasLz4(),

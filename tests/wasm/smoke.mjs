@@ -2569,6 +2569,7 @@ step('every binding is reachable through the wrapper', () => {
         'availableFormats',
         'hasOcct',
         'hasNetgen',
+        'hasMmg',
         'tetrahedralize',
         'hasZstd',
         'hasLz4',
@@ -2784,6 +2785,8 @@ step('the stays-out set is exactly what this artifact reports (roadmap 6.2.4)', 
     // "auto" is the native octree backend (its boundary fitted) and "netgen"
     // is refused by name.
     assert.equal(m.hasNetgen(), false);
+    // Roadmap 3.2.8: no WebAssembly build of MMG yet, in either artifact.
+    assert.equal(m.hasMmg(), false);
     const ico = m.icosaSphere(1, 2);
     const tet = m.tetrahedralize(ico);
     assert.equal(tet.backend, 'octree');

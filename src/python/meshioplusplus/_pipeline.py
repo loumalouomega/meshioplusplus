@@ -55,6 +55,7 @@ from ._interpolate import interpolate
 from ._isosurface import isosurface
 from ._merge import merge
 from ._mesh import Mesh
+from ._mmg import adapt, discretize_levelset, mesh_domain, move
 from ._normals import compute_normals
 from ._octree import octree
 from ._octree_mesh import octree_mesh
@@ -359,6 +360,87 @@ _OP_TABLE = {
     ),
     "EstimateError": ("Array", "Method", "Marking", "MarkingValue", "Output", "Marked"),
     "ErrorSize": ("Array", "TargetError", "Order", "MinSize", "MaxSize", "Output"),
+    "Adapt": (
+        "Hsiz",
+        "Size",
+        "Metric",
+        "Hmin",
+        "Hmax",
+        "Hausd",
+        "Hgrad",
+        "Hgradreq",
+        "AngleDetection",
+        "Optim",
+        "NoInsert",
+        "NoSwap",
+        "NoMove",
+        "NoSurf",
+        "Nreg",
+        "Opnbdy",
+        "Frozen",
+        "Required",
+    ),
+    "DiscretizeLevelset": (
+        "LevelSet",
+        "Isovalue",
+        "RemoveSmallComponents",
+        "Materials",
+        "Hmin",
+        "Hmax",
+        "Hausd",
+        "Hgrad",
+        "Hgradreq",
+        "AngleDetection",
+        "Optim",
+        "NoInsert",
+        "NoSwap",
+        "NoMove",
+        "NoSurf",
+        "Nreg",
+        "Opnbdy",
+        "Frozen",
+        "Required",
+    ),
+    "MeshDomain": (
+        "Hsiz",
+        "Size",
+        "Holes",
+        "Hmin",
+        "Hmax",
+        "Hausd",
+        "Hgrad",
+        "Hgradreq",
+        "AngleDetection",
+        "Optim",
+        "NoInsert",
+        "NoSwap",
+        "NoMove",
+        "NoSurf",
+        "Nreg",
+        "Opnbdy",
+        "Frozen",
+        "Required",
+    ),
+    "Move": (
+        "Displacement",
+        "Moving",
+        "Lagrangian",
+        "Hmin",
+        "Hmax",
+        "Hausd",
+        "Hgrad",
+        "Hgradreq",
+        "AngleDetection",
+        "Optim",
+        "NoInsert",
+        "NoSwap",
+        "NoMove",
+        "NoSurf",
+        "Nreg",
+        "Opnbdy",
+        "Frozen",
+        "Required",
+    ),
     "Remesh": (
         "NumClusters",
         "Subdivide",
@@ -724,6 +806,44 @@ _MODEL_FORMATS = ("cad_json", "step", "iges", "mfem")
 
 def _err(op, what):
     return ValueError(f"meshio++: pipeline: step '{op}': {what}")
+
+
+def _mmg_kwargs(step):
+    """The shared MMG parameters of a step (roadmap 3.2); ``Frozen`` names a point region."""
+
+    def size(key):
+        value = _number(step, key, -1.0)
+        return None if value < 0 else value
+
+    return dict(
+        hmin=size("Hmin"),
+        hmax=size("Hmax"),
+        hausd=size("Hausd"),
+        hgrad=size("Hgrad"),
+        hgradreq=size("Hgradreq"),
+        angle_detection=_number(step, "AngleDetection", 45.0),
+        optim=_flag(step, "Optim", False),
+        noinsert=_flag(step, "NoInsert", False),
+        noswap=_flag(step, "NoSwap", False),
+        nomove=_flag(step, "NoMove", False),
+        nosurf=_flag(step, "NoSurf", False),
+        nreg=_flag(step, "Nreg", False),
+        opnbdy=_flag(step, "Opnbdy", False),
+        frozen=_text(step, "Frozen", "") or None,
+        required=_svec(step, "Required") or None,
+    )
+
+
+def _mmg_entry(entry, warnings, report):
+    """An MMG step's counters, as the core's pipe_mmg_report writes them."""
+    entry["NumPointsIn"] = float(report["num_points_in"])
+    entry["NumPointsOut"] = float(report["num_points_out"])
+    entry["NumElementsIn"] = float(report["num_elements_in"])
+    entry["NumElementsOut"] = float(report["num_elements_out"])
+    entry["LowFailure"] = 1.0 if report["status"] == "low_failure" else 0.0
+    entry["QualityMin"] = float(report["quality"]["min"])
+    entry["QualityMean"] = float(report["quality"]["mean"])
+    warnings.extend(report["warnings"])
 
 
 def _number(step, key, fallback):
@@ -2218,6 +2338,78 @@ def _apply_step(mesh, step, steps, warnings):
                 f"error_size: {report['num_skipped']} cell(s) have no finite size "
                 "and size no point"
             )
+    elif op == "Adapt":
+        # MMG (roadmap 3.2.1): new points and connectivity, regions by name.
+        hsiz = _number(step, "Hsiz", -1.0)
+        mesh, report = adapt(
+            mesh,
+            hsiz=hsiz if hsiz > 0 else None,
+            size=_text(step, "Size", "") or None,
+            metric=_text(step, "Metric", "") or None,
+            return_report=True,
+            **_mmg_kwargs(step),
+        )
+        _mmg_entry(entry, warnings, report)
+    elif op == "DiscretizeLevelset":
+        # MMG (roadmap 3.2.2): the level set's isovalue becomes a conformal interface.
+        level_set = _text(step, "LevelSet", "")
+        if not level_set:
+            raise _err(op, "parameter 'LevelSet' is required")
+        mats = _dvec(step, "Materials") or []
+        if len(mats) % 4:
+            raise _err(
+                op,
+                "parameter 'Materials' must hold Ref, Split, RefInside, RefOutside "
+                "per material",
+            )
+        rmc = _number(step, "RemoveSmallComponents", -1.0)
+        mesh, report = discretize_levelset(
+            mesh,
+            level_set,
+            _number(step, "Isovalue", 0.0),
+            materials=[
+                (int(mats[k]), mats[k + 1] != 0, int(mats[k + 2]), int(mats[k + 3]))
+                for k in range(0, len(mats), 4)
+            ],
+            remove_small_components=rmc if rmc > 0 else None,
+            return_report=True,
+            **_mmg_kwargs(step),
+        )
+        _mmg_entry(entry, warnings, report)
+    elif op == "Move":
+        # MMG (roadmap 3.2.4): the Lagrangian mode, with ELAS.
+        displacement = _text(step, "Displacement", "")
+        if not displacement:
+            raise _err(op, "parameter 'Displacement' is required")
+        moving = _svec(step, "Moving")
+        if not moving:
+            raise _err(op, "parameter 'Moving' is required")
+        mesh, report = move(
+            mesh,
+            displacement,
+            moving,
+            lagrangian=int(_number(step, "Lagrangian", 1.0)),
+            return_report=True,
+            **_mmg_kwargs(step),
+        )
+        _mmg_entry(entry, warnings, report)
+    elif op == "MeshDomain":
+        # MMG (roadmap 3.2.3): the planar domain the line cells bound, triangulated.
+        holes = _dvec(step, "Holes") or []
+        if len(holes) % 2:
+            raise _err(op, "parameter 'Holes' must hold x, y per hole")
+        hsiz = _number(step, "Hsiz", -1.0)
+        mesh, report = mesh_domain(
+            mesh,
+            hsiz=hsiz if hsiz > 0 else None,
+            size=_text(step, "Size", "") or None,
+            holes=[(holes[k], holes[k + 1]) for k in range(0, len(holes), 2)],
+            return_report=True,
+            **_mmg_kwargs(step),
+        )
+        _mmg_entry(entry, warnings, report)
+        entry["NumSubdomains"] = float(report["num_subdomains"])
+        entry["NumHoles"] = float(report["num_holes"])
     elif op == "Remesh":
         # Unlike every other step, the output has NO correspondence to the
         # input: new points, new connectivity. point_data/cell_data/regions
