@@ -1417,7 +1417,10 @@ def test_find_intersections_and_thickness_steps_agree_in_both_engines(tmp_path):
     if not hasattr(_core, "find_intersections"):
         pytest.skip("core predates find_intersections")
     other = tmp_path / "other.vtu"
-    meshioplusplus.write(other, meshioplusplus.icosa_sphere(1.0, 2, center=(1.0, 0, 0)))
+    # Uncompressed for the same reason settings_env is: a zlib-less C++ build
+    # cannot read back what the Python shim's zlib-default fallback wrote.
+    other_mesh = meshioplusplus.icosa_sphere(1.0, 2, center=(1.0, 0, 0))
+    meshioplusplus.write(other, other_mesh, compression=None)
     steps = [
         {"Op": "Generate", "Shape": "icosa_sphere", "Subdivisions": 2},
         {"Op": "FindIntersections", "AttachFlags": True},
