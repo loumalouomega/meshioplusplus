@@ -714,6 +714,18 @@ jobs:
           lfs: false
       - name: Initialise submodules
         uses: ./.github/actions/init-submodules
+      # The Python suite below converts LFS fixtures (the MCP format tests), so
+      # fetch them as the Python test job does.
+      - name: Compute the Git LFS cache key
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+      - name: Restore the Git LFS object cache
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+      - name: Fetch Git LFS content
+        id: lfs
+        run: bash tools/fetch-lfs.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -758,6 +770,9 @@ jobs:
           pip install . -v
       - name: Run the Python MMG suite
         run: |
+          # The test extras the Python test job installs too. h5py is what the
+          # MCP tests need to read VTKHDF pieces through the Python fallback.
+          python -m pip install h5py netCDF4 foamlib
           python -c "from meshioplusplus import _core; assert _core.__has_mmg__ and _core.__has_mmg_elas__"
           python -m pytest tests/python/test_mmg.py tests/python/test_pipeline.py tests/python/test_mcp.py -v
 
