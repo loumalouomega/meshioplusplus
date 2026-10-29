@@ -51,7 +51,7 @@ Non-manifold **edges** (used by three or more triangles) are a different problem
 
 ## Both verdicts are reported
 
-`quality_before` and `quality_after` each carry the four counts [`sample_distance`](/sdf) reports — boundary edges, non-manifold edges, inconsistently wound pairs, degenerate triangles — plus `watertight`. Reporting both is the point: it says what was fixed *and* what remains, and the "after" figure is computed from the output itself by the same predicate, so it cannot flatter the result.
+`quality_before` and `quality_after` each carry the four counts [`sample_distance`](/sdf) reports — boundary edges, non-manifold edges, inconsistently wound pairs, degenerate triangles — plus `watertight`. Reporting both is the point: it says what was fixed *and* what remains, and the "after" figure is computed from the output itself by the same predicate, so it cannot flatter the result. Neither verdict looks for triangles that cross each other — a watertight surface can still intersect itself, and `repair` does not untangle it: [`find_intersections`](/find_intersections) is that check.
 
 ## Arrays
 

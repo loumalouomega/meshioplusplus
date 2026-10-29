@@ -27,6 +27,7 @@ from . import (
     _extrude,
     _feature_edges,
     _find_interface,
+    _find_intersections,
     _fit_primitives,
     _generate,
     _grid_transfer,
@@ -75,6 +76,7 @@ from . import (
     _subdivide,
     _tessellate,
     _tetrahedralize,
+    _thickness,
     _to_cad,
     _transform,
     _tui,
@@ -159,6 +161,21 @@ def main(argv=None):
     )
     _check_conformity.add_args(parser)
     parser.set_defaults(func=_check_conformity.check_conformity_cmd)
+
+    parser = subparsers.add_parser(
+        "find-intersections",
+        help="Self-intersections of a surface, or where two surfaces meet: exit 1 "
+        "when any are found (2: could not check)",
+    )
+    _find_intersections.add_args(parser)
+    parser.set_defaults(func=_find_intersections.find_intersections_cmd)
+
+    parser = subparsers.add_parser(
+        "thickness",
+        help="Wall thickness or clearance per facet, by a ray along its normal",
+    )
+    _thickness.add_args(parser)
+    parser.set_defaults(func=_thickness.thickness_cmd)
 
     parser = subparsers.add_parser(
         "feature-edges",

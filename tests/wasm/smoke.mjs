@@ -5712,6 +5712,24 @@ step('extrude, revolve and mirror (roadmap 3.1.2, 3.1.3, 3.2.5)', () => {
     assert.throws(() => m.mirror(box, { normal: [0, 0, 0] }), /normal/);
 });
 
+step('findIntersections and thickness (roadmap 3.1.2, 3.1.4)', () => {
+    const a = m.icosaSphere(1, 3);
+    const b = m.icosaSphere(1, 3, [1, 0, 0]);
+    const one = m.findIntersections(a);
+    assert.equal(one.clean, true);
+    assert.equal(one.other, null);
+    const two = m.findIntersections(a, { other: b });
+    assert.ok(two.numPairs > 0);
+    assert.equal(two.pairs.length, 2 * two.numPairs);
+    assert.ok(two.segments.points.length > 0);
+    assert.throws(() => m.findIntersections(a, { bogus: 1 }), /bogus/);
+    const t = m.thickness(a);
+    assert.equal(t.direction, 'inward');
+    assert.equal(t.numMissed, 0);
+    assert.ok(Math.abs(t.min - 2) < 0.05);
+    assert.throws(() => m.thickness(a, { direction: 'sideways' }), /direction/);
+});
+
 step('findInterface, contactPairs and splitInterface', () => {
     const parts = {
         points: new Float64Array([

@@ -3870,3 +3870,34 @@ def test_extrude_revolve_and_mirror_tools(tmp_path):
     assert report["num_points_on_plane"] == 9 and report["num_flipped_cells"] == 48
     with pytest.raises(ValueError, match="normal"):
         _tools.tool_mirror(str(box), str(out), normal=[0, 0, 0])
+
+
+def test_find_intersections_and_thickness_tools(tmp_path):
+    """Roadmap 3.1.2 and 3.1.4: the intersection and thickness tools report
+    the operations' counts and write their meshes when asked."""
+    if not hasattr(_core, "find_intersections"):
+        pytest.skip("core predates find_intersections")
+    a = tmp_path / "a.vtu"
+    b = tmp_path / "b.vtu"
+    meshioplusplus.write(a, meshioplusplus.icosa_sphere(1.0, 2))
+    meshioplusplus.write(b, meshioplusplus.icosa_sphere(1.0, 2, center=(1.0, 0.0, 0.0)))
+    report = _tools.tool_find_intersections(str(a))
+    assert report["clean"] and report["num_pairs"] == 0
+    out = tmp_path / "flags.vtu"
+    segs = tmp_path / "segs.vtu"
+    report = _tools.tool_find_intersections(
+        str(a), str(out), other_path=str(b), segments_path=str(segs), max_pairs=3
+    )
+    assert report["num_pairs"] > 3 and len(report["pairs"]) == 3 and report["truncated"]
+    assert "intersections:count" in meshioplusplus.read(out).cell_data
+    assert report["segments_path"] and len(meshioplusplus.read(segs).cells[0].data) > 0
+    json.dumps(report)
+    report = _tools.tool_thickness(str(a), str(out), min_thickness=3.0)
+    assert report["direction"] == "inward" and not report["passed"]
+    assert report["min"] == pytest.approx(2.0, abs=0.05)
+    assert "thickness:distance" in meshioplusplus.read(out).cell_data
+    report = _tools.tool_thickness(str(a), other_path=str(b), direction="inward")
+    assert report["num_hit"] > 0
+    json.dumps(report)
+    with pytest.raises(ValueError, match="direction"):
+        _tools.tool_thickness(str(a), direction="sideways")

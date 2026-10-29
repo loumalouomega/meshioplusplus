@@ -115,6 +115,8 @@ export default defineConfig({
               { text: "Hausdorff distance", link: "/hausdorff" },
               { text: "Feature edges", link: "/feature_edges" },
               { text: "Conformity check", link: "/check_conformity" },
+              { text: "Intersections", link: "/find_intersections" },
+              { text: "Wall thickness and clearance", link: "/thickness" },
               { text: "Segment (smooth patches)", link: "/segment" },
               { text: "Refine patches", link: "/refine_patches" },
               { text: "Fit primitives", link: "/fit_primitives" },

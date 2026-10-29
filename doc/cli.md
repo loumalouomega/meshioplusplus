@@ -96,7 +96,7 @@ Converting a 3D volume mesh to STL, PLY or glTF writes its extracted boundary sk
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -105,6 +105,8 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `quality` | `compute_quality`'s dict without the per-cell arrays |
 | `check` | `check_quality`'s dict: `passed`, the counts and `checks` |
 | `check-conformity` | `check_conformity`'s report: `dimension`, the six counts, `conforming`, `interface_mode` and `warnings` |
+| `find-intersections` | `find_intersections`'s counts, `truncated`, `clean`, `pairs` (a list of `[cell_a, cell_b]`) and `warnings` |
+| `thickness` | `thickness`'s report (`direction`, the counts, `min`, `max`, `mean`, `min_cell`, `min_point`, `max_distance`, `warnings`), plus `threshold` and `passed` with `--min` |
 | `diff` | `diff`'s report plus `equal` (the exit-code decision); the Python CLI adds its `sets` section |
 | `convert` | `input`, `output`, `num_points`, `num_cells`, `cell_blocks`, the data names and `num_regions`; for a sequence, `mode`, `num_steps` and `num_files` |
 | `agglomerate` | `cells_in`, `cells_out`, `num_faces_merged` and `num_rejected` |
@@ -215,6 +217,47 @@ meshioplusplus check-conformity [options] INFILE [OUTFILE]
 | `--json` | | Print the report as JSON |
 | `--input-format FORMAT` | `-i` | Force input format |
 | `--output-format FORMAT` | `-o` | Force output format of `OUTFILE`, which carries the `conformity:hanging` point data |
+
+## meshioplusplus find-intersections
+
+[Self-intersections](./find_intersections.md) of a surface, or with `--other` where two surfaces interpenetrate or touch, by exact triangle–triangle tests. Exits **0** when nothing intersects, **1** when something does, **2** when the check could not run.
+
+```
+meshioplusplus find-intersections [options] INFILE [OUTFILE]
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--other FILE` | | A second surface: report where the two meet instead of self-intersections |
+| `--other-format FORMAT` | | Force the format of `--other` |
+| `--segments FILE` | | Write the intersection segments as a line mesh |
+| `--region R` | | Test only this named cell region |
+| `--region-other R` | | Test only this named cell region of `--other` |
+| `--max-pairs N` | | List at most `N` pairs (default 0: all); the counts still cover every pair |
+| `--json` | | Print the report as JSON |
+| `--input-format FORMAT` | `-i` | Force input format |
+| `--output-format FORMAT` | `-o` | Force output format of `OUTFILE`, which carries the `intersections:count` cell data |
+
+## meshioplusplus thickness
+
+[Wall thickness or clearance](./thickness.md) per facet of a consistently oriented surface, by a ray from each cell's centroid along its normal.
+
+```
+meshioplusplus thickness [options] INFILE [OUTFILE]
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--other FILE` | | Measure the clearance to this surface |
+| `--other-format FORMAT` | | Force the format of `--other` |
+| `--direction D` | | `inward` (wall thickness), `outward` (clearance) or `auto` (default: inward for one surface, outward for two) |
+| `--max-distance D` | | The longest ray (default 0: the bounding-box diagonal) |
+| `--min T` | | Count the facets below `T`; exit **1** when there are any |
+| `--region R` | | Measure only this named cell region |
+| `--region-other R` | | Reach only this named cell region of the target |
+| `--json` | | Print the report as JSON |
+| `--input-format FORMAT` | `-i` | Force input format |
+| `--output-format FORMAT` | `-o` | Force output format of `OUTFILE`, which carries `thickness:distance` and `thickness:hit_cell` |
 
 ---
 

@@ -136,6 +136,7 @@
 #include "meshioplusplus/operations/neighbors.hpp"
 #include "meshioplusplus/operations/blend.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/find_intersections.hpp"
 #include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/iga.hpp"
@@ -194,6 +195,7 @@
 #include "meshioplusplus/operations/extrude.hpp"
 #include "meshioplusplus/operations/mirror.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
+#include "meshioplusplus/operations/thickness.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/mmg.hpp"
@@ -3708,6 +3710,122 @@ PYBIND11_MODULE(_core, m) {
         py::arg("normal") = std::array<double, 3>{{1.0, 0.0, 0.0}},
         py::arg("keep_original") = false, py::arg("weld") = true, py::arg("tolerance") = 1e-9,
         py::arg("reflect_vector_data") = false);
+
+    // find_intersections (roadmap 3.1.2): a surface's self-intersections, or
+    // two surfaces' interpenetration, by exact triangle-triangle tests.
+    // Returns a dict {mesh, mesh_b, segments, pairs, num_pairs, ...}. See
+    // operations/find_intersections.hpp.
+    m.def(
+        "find_intersections",
+        [](py::object pymesh, py::object pyother, const std::string& region,
+           const std::string& region_other, bool attach_flags, bool segments,
+           std::int64_t max_pairs) {
+            meshioplusplus_py::PyMeshRefs refs, refs_b;
+            meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            const bool two = !pyother.is_none();
+            meshioplusplus::Mesh other;
+            if (two)
+                other = meshioplusplus_py::py_to_mesh(pyother, refs_b,
+                                                      /*lenient_field_data=*/true,
+                                                      /*allow_ragged=*/true);
+            meshioplusplus::FindIntersectionsOptions o;
+            o.mRegion = region;
+            o.mRegionB = region_other;
+            o.mAttachFlags = attach_flags;
+            o.mSegments = segments;
+            o.mMaxPairs = max_pairs;
+            meshioplusplus::FindIntersectionsResult r = core_nogil([&] {
+                return two ? meshioplusplus::find_intersections(mesh, other, o)
+                           : meshioplusplus::find_intersections(mesh, o);
+            });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["mesh_b"] =
+                two ? meshioplusplus_py::mesh_to_py(std::move(r.mMeshB)) : py::object(py::none());
+            out["segments"] = segments ? meshioplusplus_py::mesh_to_py(std::move(r.mSegments))
+                                       : py::object(py::none());
+            const auto np = static_cast<py::ssize_t>(r.mPairs.size());
+            py::array_t<std::int64_t> pairs({np, static_cast<py::ssize_t>(2)});
+            std::int64_t* p_pairs = pairs.mutable_data();
+            for (std::size_t i = 0; i < r.mPairs.size(); ++i) {
+                p_pairs[2 * i] = r.mPairs[i][0];
+                p_pairs[2 * i + 1] = r.mPairs[i][1];
+            }
+            out["pairs"] = pairs;
+            out["num_pairs"] = r.mNumPairs;
+            out["num_triangle_pairs"] = r.mNumTrianglePairs;
+            out["num_coplanar"] = r.mNumCoplanar;
+            out["num_segments"] = r.mNumSegments;
+            out["num_cells_a"] = r.mNumCellsA;
+            out["num_cells_b"] = r.mNumCellsB;
+            out["truncated"] = r.mTruncated;
+            out["clean"] = r.mClean;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("mesh"), py::arg("other") = py::none(), py::arg("region") = std::string(),
+        py::arg("region_other") = std::string(), py::arg("attach_flags") = true,
+        py::arg("segments") = true, py::arg("max_pairs") = 0);
+
+    // thickness (roadmap 3.1.4): wall thickness or clearance per facet, by a
+    // ray along its normal. Returns a dict {mesh, direction, num_hit, min,
+    // ...}. See operations/thickness.hpp.
+    m.def(
+        "thickness",
+        [](py::object pymesh, py::object pyother, const std::string& direction, double max_distance,
+           double threshold, const std::string& region, const std::string& region_target,
+           bool attach) {
+            meshioplusplus_py::PyMeshRefs refs, refs_b;
+            meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            const bool two = !pyother.is_none();
+            meshioplusplus::Mesh other;
+            if (two)
+                other = meshioplusplus_py::py_to_mesh(pyother, refs_b,
+                                                      /*lenient_field_data=*/true,
+                                                      /*allow_ragged=*/true);
+            meshioplusplus::ThicknessOptions o;
+            if (direction == "auto")
+                o.mDirection = meshioplusplus::ThicknessDirection::Auto;
+            else if (direction == "inward")
+                o.mDirection = meshioplusplus::ThicknessDirection::Inward;
+            else if (direction == "outward")
+                o.mDirection = meshioplusplus::ThicknessDirection::Outward;
+            else
+                throw std::invalid_argument(
+                    "meshio++: thickness: direction must be 'auto', 'inward' or 'outward', got '" +
+                    direction + "'");
+            o.mMaxDistance = max_distance;
+            o.mThreshold = threshold;
+            o.mRegion = region;
+            o.mRegionTarget = region_target;
+            o.mAttach = attach;
+            meshioplusplus::ThicknessResult r = core_nogil([&] {
+                return two ? meshioplusplus::thickness(mesh, other, o)
+                           : meshioplusplus::thickness(mesh, o);
+            });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["direction"] =
+                r.mDirection == meshioplusplus::ThicknessDirection::Outward ? "outward" : "inward";
+            out["num_cells"] = r.mNumCells;
+            out["num_hit"] = r.mNumHit;
+            out["num_missed"] = r.mNumMissed;
+            out["num_below"] = r.mNumBelow;
+            out["min"] = r.mMin;
+            out["max"] = r.mMax;
+            out["mean"] = r.mMean;
+            out["min_cell"] = r.mMinCell;
+            out["min_point"] = py::make_tuple(r.mMinPoint[0], r.mMinPoint[1], r.mMinPoint[2]);
+            out["max_distance"] = r.mMaxDistance;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("mesh"), py::arg("other") = py::none(), py::arg("direction") = "auto",
+        py::arg("max_distance") = 0.0, py::arg("threshold") = 0.0,
+        py::arg("region") = std::string(), py::arg("region_target") = std::string(),
+        py::arg("attach") = true);
 
     // Tetrahedra filling a closed triangle surface (roadmap 6.7): through
     // Netgen, its triangles kept, or the native octree backend, its boundary

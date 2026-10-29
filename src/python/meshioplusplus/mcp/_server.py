@@ -2634,6 +2634,89 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def find_intersections(
+        input_path: str,
+        output_path: Optional[str] = None,
+        file_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        other_path: Optional[str] = None,
+        other_format: Optional[str] = None,
+        segments_path: Optional[str] = None,
+        region: str = "",
+        region_other: str = "",
+        max_pairs: int = 0,
+    ) -> dict:
+        """Where a surface intersects itself, or where it and a second
+        surface (other_path) interpenetrate or touch.
+
+        Quads and polygons are fanned into triangles and every candidate
+        pair is decided by an exact triangle-triangle test, so every hit is
+        exact. On one surface, triangles sharing corners count only when they
+        meet beyond them; on two, any contact counts. Reports pairs (global
+        cell ids, the cell of input_path first, capped by max_pairs, 0 = all),
+        num_pairs, num_triangle_pairs, num_coplanar (overlaps in one plane,
+        which give no segment), num_segments, num_cells_a, num_cells_b,
+        truncated, clean and warnings. Surfaces only: run extract_surface on a
+        volume mesh first. Pass output_path to write the mesh with the
+        intersections:count cell data and segments_path for the intersection
+        segments as a line mesh."""
+        return _guard(
+            _tools.tool_find_intersections,
+            input_path=input_path,
+            output_path=output_path,
+            file_format=file_format,
+            output_format=output_format,
+            other_path=other_path,
+            other_format=other_format,
+            segments_path=segments_path,
+            region=region,
+            region_other=region_other,
+            max_pairs=max_pairs,
+        )
+
+    @server.tool()
+    def thickness(
+        input_path: str,
+        output_path: Optional[str] = None,
+        file_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        other_path: Optional[str] = None,
+        other_format: Optional[str] = None,
+        direction: str = "auto",
+        max_distance: float = 0.0,
+        min_thickness: Optional[float] = None,
+        region: str = "",
+        region_other: str = "",
+    ) -> dict:
+        """Wall thickness or clearance per facet of a surface, by a ray from
+        each cell's centroid along its normal.
+
+        direction "inward" stops at the far side of the wall (thickness),
+        "outward" at the next wall facing the ray (clearance); "auto" is
+        inward for one surface and outward against other_path. The surface
+        must be consistently oriented with outward normals. max_distance
+        bounds the ray (0 = the bounding-box diagonal). Reports direction,
+        num_cells, num_hit, num_missed, num_below (below min_thickness), min,
+        max, mean, min_cell, min_point, max_distance and warnings; with
+        min_thickness also threshold and passed. Pass output_path to write the
+        mesh with thickness:distance (NaN for a miss) and thickness:hit_cell
+        cell data."""
+        return _guard(
+            _tools.tool_thickness,
+            input_path=input_path,
+            output_path=output_path,
+            file_format=file_format,
+            output_format=output_format,
+            other_path=other_path,
+            other_format=other_format,
+            direction=direction,
+            max_distance=max_distance,
+            min_thickness=min_thickness,
+            region=region,
+            region_other=region_other,
+        )
+
+    @server.tool()
     def render_mesh(
         input_path: str,
         output_path: Optional[str] = None,

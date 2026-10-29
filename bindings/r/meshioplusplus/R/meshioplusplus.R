@@ -2909,6 +2909,59 @@ mio_mirror <- function(mesh, origin = c(0, 0, 0), normal = c(1, 0, 0), keep_orig
   res
 }
 
+#' Find where a surface intersects itself, or two surfaces meet
+#'
+#' Reduces the surfaces to triangles and decides every candidate pair with an
+#' exact triangle-triangle test (roadmap 3.1.2), so every hit is exact. On one
+#' surface, triangles sharing corners count only when they meet beyond them;
+#' against `other`, any contact counts, touching included.
+#'
+#' @param mesh A surface mesh (run `mio_extract_surface` on a volume mesh).
+#' @param other A second surface, or `NULL` to check `mesh` against itself.
+#' @param region,region_other Named cell regions to restrict each surface to.
+#' @param segments Build the line mesh of the intersection segments.
+#' @param max_pairs Keep at most this many pairs (0: all).
+#' @return A list: `mesh` (with the `intersections:count` cell data), `other`
+#'   (likewise, or `NULL`), `segments` (a line mesh, or `NULL`), `pairs` (an
+#'   `n x 2` matrix of 1-based global cell ids), `num_pairs`,
+#'   `num_triangle_pairs`, `num_coplanar`, `num_segments`, `num_cells_a`,
+#'   `num_cells_b`, `truncated`, `clean` and `warnings`.
+#' @export
+mio_find_intersections <- function(mesh, other = NULL, region = "", region_other = "",
+                                   segments = TRUE, max_pairs = 0) {
+  res <- .Call(R_mio_find_intersections, mesh, other, as.character(region),
+               as.character(region_other), isTRUE(segments), as.numeric(max_pairs))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+#' Wall thickness or clearance per facet
+#'
+#' Casts a ray from each 2-D cell's centroid along its normal (roadmap 3.1.4):
+#' `"inward"` stops at the far side of the wall, `"outward"` at the next wall
+#' facing the ray, and `"auto"` is inward for one surface, outward against
+#' `other`. The surface must be consistently oriented with outward normals.
+#'
+#' @param mesh A surface mesh.
+#' @param other The surface to reach, or `NULL` for `mesh` itself.
+#' @param direction `"auto"`, `"inward"` or `"outward"`.
+#' @param max_distance The longest ray (0: the bounding-box diagonal).
+#' @param threshold Count the hits below it (0: none).
+#' @param region,region_other Named cell regions measured and reached.
+#' @return A list: `mesh` (with the `thickness:distance` and
+#'   `thickness:hit_cell` cell data), `direction`, `num_cells`, `num_hit`,
+#'   `num_missed`, `num_below`, `min`, `max`, `mean`, `min_cell` (1-based, 0
+#'   when nothing was hit), `min_point`, `max_distance` and `warnings`.
+#' @export
+mio_thickness <- function(mesh, other = NULL, direction = "auto", max_distance = 0,
+                          threshold = 0, region = "", region_other = "") {
+  res <- .Call(R_mio_thickness, mesh, other, as.character(direction),
+               as.numeric(max_distance), as.numeric(threshold), as.character(region),
+               as.character(region_other))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
 mio_split_warnings_ <- function(text) {
   if (nzchar(text)) strsplit(text, "\n", fixed = TRUE)[[1]] else character(0)
 }

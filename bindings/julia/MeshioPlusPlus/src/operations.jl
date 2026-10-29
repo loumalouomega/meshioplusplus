@@ -907,6 +907,109 @@ function mirror(m::Mesh; origin=(0.0, 0.0, 0.0), normal=(1.0, 0.0, 0.0),
 end
 
 """
+    find_intersections(mesh, other=nothing; region="", region_other="", segments=true,
+                       max_pairs=0)
+        -> (; mesh, other, segments, pairs, num_pairs, num_triangle_pairs, num_coplanar,
+              num_segments, num_cells_a, num_cells_b, truncated, clean, warnings)
+
+Where the surface `mesh` intersects itself, or where it and the surface
+`other` interpenetrate or touch, by exact triangle-triangle tests (roadmap
+3.1.2). `mesh` (and `other`) come back with the `intersections:count` cell
+data, `segments` is the line mesh of the intersection segments (`nothing` when
+not asked for) and `pairs` a `2 x n` matrix of **1-based** global cell ids,
+at most `max_pairs` of them (0: all). See `doc/find_intersections.md`.
+"""
+function find_intersections(m::Mesh, other::Union{Mesh,Nothing}=nothing;
+                            region::AbstractString="", region_other::AbstractString="",
+                            segments::Bool=true, max_pairs::Integer=0)
+    report = Ref{_CFindIntersectionsReport}()
+    ra = Vector{UInt8}(codeunits(String(region) * "\0"))
+    rb = Vector{UInt8}(codeunits(String(region_other) * "\0"))
+    res = GC.@preserve ra rb begin
+        opts = _CFindIntersectionsOpts(Cstring(pointer(ra)), Cstring(pointer(rb)),
+                                       Int64(max_pairs), Int32(1), Int32(segments),
+                                       (0, 0, 0, 0))
+        ccall(_sym(:mio_find_intersections), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ptr{Cvoid}, Ref{_CFindIntersectionsOpts},
+               Ref{_CFindIntersectionsReport}),
+              _handle(m), other === nothing ? C_NULL : _handle(other), Ref(opts), report)
+    end
+    _check_ptr(res)
+    local out, out_b, segs, pairs
+    try
+        out = Mesh(_check_ptr(ccall(_sym(:mio_find_intersections_result_take_mesh), Ptr{Cvoid},
+                                    (Ptr{Cvoid},), res)))
+        pb = ccall(_sym(:mio_find_intersections_result_take_mesh_b), Ptr{Cvoid},
+                   (Ptr{Cvoid},), res)
+        out_b = pb == C_NULL ? nothing : Mesh(pb)
+        ps = ccall(_sym(:mio_find_intersections_result_take_segments), Ptr{Cvoid},
+                   (Ptr{Cvoid},), res)
+        segs = ps == C_NULL ? nothing : Mesh(ps)
+        count = Ref{Int64}(0)
+        p = ccall(_sym(:mio_find_intersections_result_pairs), Ptr{Int64},
+                  (Ptr{Cvoid}, Ref{Int64}), res, count)
+        pairs = Matrix{Int}(undef, 2, count[])
+        for k in 1:(2 * count[])
+            pairs[k] = Int(unsafe_load(p, k)) + 1
+        end
+    finally
+        ccall(_sym(:mio_find_intersections_result_free), Cvoid, (Ptr{Cvoid},), res)
+    end
+    text = _getstring((buf, n) -> ccall(_sym(:mio_find_intersections_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    r = report[]
+    (mesh=out, other=out_b, segments=segs, pairs=pairs, num_pairs=Int(r.num_pairs),
+     num_triangle_pairs=Int(r.num_triangle_pairs), num_coplanar=Int(r.num_coplanar),
+     num_segments=Int(r.num_segments), num_cells_a=Int(r.num_cells_a),
+     num_cells_b=Int(r.num_cells_b), truncated=r.truncated != 0, clean=r.clean != 0,
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
+const _THICKNESS_DIRECTIONS = Dict("auto" => Int32(0), "inward" => Int32(1),
+                                   "outward" => Int32(2))
+
+"""
+    thickness(mesh, other=nothing; direction="auto", max_distance=0.0, threshold=0.0,
+              region="", region_other="")
+        -> (; mesh, direction, num_cells, num_hit, num_missed, num_below, min, max, mean,
+              min_cell, min_point, max_distance, warnings)
+
+Wall thickness or clearance per facet of the surface `mesh`, by a ray from each
+cell's centroid along its normal (roadmap 3.1.4): `direction` `"inward"` stops
+at the far side of the wall, `"outward"` at the next wall facing the ray, and
+`"auto"` is inward for one surface, outward against `other`. `mesh` comes back
+with the `thickness:distance` (NaN for a miss) and `thickness:hit_cell` cell
+data; `min_cell` is **1-based** (0: no hit). See `doc/thickness.md`.
+"""
+function thickness(m::Mesh, other::Union{Mesh,Nothing}=nothing;
+                   direction::AbstractString="auto", max_distance::Real=0.0,
+                   threshold::Real=0.0, region::AbstractString="",
+                   region_other::AbstractString="")
+    haskey(_THICKNESS_DIRECTIONS, direction) ||
+        throw(ArgumentError("meshio++: thickness: direction must be auto, inward or outward"))
+    report = Ref{_CThicknessReport}()
+    ra = Vector{UInt8}(codeunits(String(region) * "\0"))
+    rb = Vector{UInt8}(codeunits(String(region_other) * "\0"))
+    ptr = GC.@preserve ra rb begin
+        opts = _CThicknessOpts(Cstring(pointer(ra)), Cstring(pointer(rb)), Cdouble(max_distance),
+                               Cdouble(threshold), _THICKNESS_DIRECTIONS[direction], Int32(1),
+                               (0, 0, 0, 0))
+        ccall(_sym(:mio_thickness), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ptr{Cvoid}, Ref{_CThicknessOpts}, Ref{_CThicknessReport}),
+              _handle(m), other === nothing ? C_NULL : _handle(other), Ref(opts), report)
+    end
+    out = Mesh(_check_ptr(ptr))
+    text = _getstring((buf, n) -> ccall(_sym(:mio_thickness_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    r = report[]
+    (mesh=out, direction=r.direction == 2 ? "outward" : "inward", num_cells=Int(r.num_cells),
+     num_hit=Int(r.num_hit), num_missed=Int(r.num_missed), num_below=Int(r.num_below),
+     min=r.min, max=r.max, mean=r.mean, min_cell=r.min_cell < 0 ? 0 : Int(r.min_cell) + 1,
+     min_point=collect(r.min_point), max_distance=r.max_distance,
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
+"""
     has_netgen() -> Bool
 
 Whether the library carries the Netgen backend [`tetrahedralize`](@ref) needs

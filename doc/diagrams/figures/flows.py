@@ -1033,13 +1033,11 @@ def roadmap_map():
         (
             "§3 operations",
             [
-                ("octree: plane= · probes", "S"),
-                ("conformity · intersections", "M"),
-                ("select · thickness", "M"),
-                ("MMG backend · its WASM port", "M"),
+                ("select: regions from predicates", "M"),
+                ("MMG in the browser (full WASM)", "M"),
                 ("optimize_volume: worst-cell moves", "M"),
             ],
-            [(0, 1)],
+            [],
         ),
         (
             "§4 ecosystem reach",

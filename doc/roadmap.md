@@ -98,11 +98,9 @@ The sanitizer leg, the reader fuzzing, the format conformance matrix, the proper
 
 *Admission: a new operation, or a public face for machinery that already exists privately inside one.*
 
-**3.1 Checks, selection and measurement.**
+**3.1 Selection.** The checks and measurement beside it landed: [`find_intersections`](./find_intersections.md) (3.1.2) and [`thickness`](./thickness.md) (3.1.4), sharing the exact triangle–triangle test and the core's one ray–triangle kernel.
 
-- **3.1.2 `find_intersections`** — self-intersection of a surface and mutual interpenetration of two parts, by triangle–triangle tests over the bucket grid. Returns the pairs, the intersection segments as a line mesh and a flagging `cell_data` array, with exact and "possible" hits reported separately unless the triangle–triangle test is built on the core's exact `orient3d` (`detail/predicates`, v17.13.0), which would make every hit exact; booleans stay a [non-goal](#non-goals-and-decisions-taken). Also the precondition check for `repair`, `shrinkwrap` and `remesh_volume`. Probe: two overlapping spheres. **M**
 - **3.1.3 `select`** — write `Region`s (cell, point or side) from a box, plane or sphere, a `cell_data` or quality threshold, a component label, or normal-angle patch growing bounded by `feature_edges`, so boundary-condition and contact patches are reproducible and feed `find_interface`. Reuses `crop(where=)`'s predicate parser, `feature_edges` and `split(by="component")`. **M**
-- **3.1.4 `thickness`** — wall thickness and inter-part clearance per facet, from a ray along the inward normal to the opposite surface. Needs a ray–triangle kernel that `find_intersections` also needs: write it once in `detail/`. **M**
 
 **3.2 Optional MMG backend.** The native backend landed (v17.23.0, [MMG backend](./mmg.md)): `MESHIOPLUSPLUS_WITH_MMG` links a shared MMG 5.8 install for `adapt`, `discretize_levelset`, `mesh_domain` and, with ELAS, `move`, on every native surface, beside Medit `.sol` I/O. It is LGPL-3.0, linked dynamically only and absent from the release wheels, the native CLI binaries and both WebAssembly artifacts; what is left is the browser.
 

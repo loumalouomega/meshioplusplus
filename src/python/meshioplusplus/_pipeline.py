@@ -45,6 +45,7 @@ from ._decimate_volume import decimate_volume
 from ._error import estimate_error
 from ._error_size import error_size
 from ._feature_edges import feature_edges
+from ._find_intersections import find_intersections
 from ._fit_cad import DEFAULT_RANSAC_SEED, fit_cad
 from ._fit_primitives import TYPES, fit_primitives, types_mask
 from ._gradient import gradient
@@ -101,6 +102,7 @@ from ._subdivide import subdivide
 from ._surface import extract_surface
 from ._tensor_invariants import tensor_invariants
 from ._tessellation import tessellate
+from ._thickness import thickness
 from ._transform import transform
 from ._undo_green import undo_green
 from ._voxelize import voxelize
@@ -279,6 +281,16 @@ _OP_TABLE = {
     "SplitInterface": ("Region", "AddCohesive"),
     "QualityGate": ("Require", "MaxInverted", "MaxDegenerate"),
     "CheckConformity": ("Tolerance", "Require", "AttachFlags"),
+    "FindIntersections": ("Other", "Region", "RegionOther", "Require", "AttachFlags"),
+    "Thickness": (
+        "Other",
+        "Direction",
+        "MaxDistance",
+        "Min",
+        "Region",
+        "RegionOther",
+        "Require",
+    ),
     "Snapshot": (
         "Path",
         "Width",
@@ -2163,6 +2175,57 @@ def _apply_step(mesh, step, steps, warnings):
         entry["NumUnweldedFacets"] = float(rep["num_unwelded_facets"])
         if attach:
             mesh = flagged
+    elif op == "FindIntersections":
+        # A gate by default, like CheckConformity: a surface that intersects
+        # itself (or meets Other) stops the pipeline; with Require false it
+        # only reports. AttachFlags writes intersections:count onto the mesh.
+        attach = _flag(step, "AttachFlags", False)
+        other_path = _text(step, "Other", "")
+        flagged, rep = find_intersections(
+            mesh,
+            read(other_path) if other_path else None,
+            region=_text(step, "Region", ""),
+            region_other=_text(step, "RegionOther", ""),
+            attach_flags=attach,
+            segments=False,
+            return_report=True,
+        )
+        if _flag(step, "Require", True) and not rep["clean"]:
+            raise RuntimeError(
+                "meshio++: pipeline: FindIntersections failed: "
+                f"{rep['num_pairs']} intersecting cell pair(s)"
+            )
+        entry["NumPairs"] = float(rep["num_pairs"])
+        entry["NumTrianglePairs"] = float(rep["num_triangle_pairs"])
+        entry["NumCoplanar"] = float(rep["num_coplanar"])
+        if attach:
+            mesh = flagged
+    elif op == "Thickness":
+        # thickness:distance and thickness:hit_cell flow on; with Min, a cell
+        # below it stops the pipeline unless Require is false.
+        other_path = _text(step, "Other", "")
+        threshold = _number(step, "Min", 0.0)
+        mesh, rep = thickness(
+            mesh,
+            read(other_path) if other_path else None,
+            direction=_text(step, "Direction", "auto"),
+            max_distance=_number(step, "MaxDistance", 0.0),
+            threshold=threshold,
+            region=_text(step, "Region", ""),
+            region_other=_text(step, "RegionOther", ""),
+            return_report=True,
+        )
+        if threshold > 0.0 and _flag(step, "Require", True) and rep["num_below"] > 0:
+            raise RuntimeError(
+                "meshio++: pipeline: Thickness failed: "
+                f"{rep['num_below']} cell(s) below Min"
+            )
+        entry["NumHit"] = float(rep["num_hit"])
+        entry["NumMissed"] = float(rep["num_missed"])
+        entry["NumBelow"] = float(rep["num_below"])
+        entry["Min"] = float(rep["min"])
+        entry["Max"] = float(rep["max"])
+        entry["Mean"] = float(rep["mean"])
     elif op == "EditRegions":
         kind = _text(step, "Kind", "") or None
         edit = {

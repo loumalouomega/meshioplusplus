@@ -59,6 +59,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 // Project includes
@@ -125,6 +126,22 @@ struct TriRayHit {
 /// does not slip between its triangles.
 TriRayHit tri_bvh_ray(const TriBvh& rTree, const Vec3& rOrigin, const Vec3& rDir, double TMin,
                       double TMax, std::int64_t Skip = -1);
+
+/// Whether ray `rOrigin + t rDir` meets triangle `(A, B, C)`, and where
+/// (`rT`, unbounded in sign): Möller and Trumbore, JGT 2(1), 1997, with
+/// barycentric coordinates within 1e-10 of an edge counted as a hit. The
+/// one ray-triangle kernel of the core (`tri_bvh_ray`, `thickness`).
+bool ray_triangle(const Vec3& rOrigin, const Vec3& rDir, const Vec3& rA, const Vec3& rB,
+                  const Vec3& rC, double& rT);
+
+/// Which triangles a ray may stop at: `(soup triangle id, unnormalised normal)`.
+using TriRayFilter = std::function<bool(std::int64_t, const Vec3&)>;
+
+/// `tri_bvh_ray`, stopping only at triangles @p rAccept takes: the nearest
+/// accepted hit, ties to the lower triangle id. The filter must not depend on
+/// the order it is asked in, so the hit is the same on every traversal.
+TriRayHit tri_bvh_ray_filtered(const TriBvh& rTree, const Vec3& rOrigin, const Vec3& rDir,
+                               double TMin, double TMax, const TriRayFilter& rAccept);
 
 /// Where a segment crosses the skin.
 struct TriSegmentHit {

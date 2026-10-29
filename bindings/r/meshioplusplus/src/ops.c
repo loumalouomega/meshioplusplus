@@ -1521,6 +1521,106 @@ SEXP R_mio_mirror(SEXP mesh, SEXP origin, SEXP normal, SEXP keep_original, SEXP 
     return res;
 }
 
+static int64_t r_find_intersections_warnings(void *ctx, char *buf, int64_t buflen) {
+    (void)ctx;
+    return mio_find_intersections_warnings(buf, buflen);
+}
+static int64_t r_thickness_warnings(void *ctx, char *buf, int64_t buflen) {
+    (void)ctx;
+    return mio_thickness_warnings(buf, buflen);
+}
+
+SEXP R_mio_find_intersections(SEXP mesh, SEXP other, SEXP region, SEXP region_other,
+                              SEXP segments, SEXP max_pairs) {
+    mio_find_intersections_opts opts;
+    mio_find_intersections_opts_init(&opts);
+    opts.region = mio_r_opt_string(region);
+    opts.region_b = mio_r_opt_string(region_other);
+    opts.segments = mio_r_bool(segments, "segments");
+    opts.max_pairs = (int64_t)mio_r_double(max_pairs, "max_pairs");
+    const mio_mesh *b = other == R_NilValue ? NULL : mio_r_mesh(other);
+    mio_find_intersections_report report;
+    mio_find_intersections_result *result =
+        mio_find_intersections(mio_r_mesh(mesh), b, &opts, &report);
+    if (result == NULL) mio_r_fail("find_intersections");
+    int64_t count = 0;
+    const int64_t *pairs = mio_find_intersections_result_pairs(result, &count);
+    if (count > INT_MAX) {
+        mio_find_intersections_result_free(result);
+        Rf_error("find_intersections: too many pairs for an R matrix; set max_pairs");
+    }
+    mio_mesh *flagged = mio_find_intersections_result_take_mesh(result);
+    mio_mesh *flagged_b = mio_find_intersections_result_take_mesh_b(result);
+    mio_mesh *segs = mio_find_intersections_result_take_segments(result);
+    SEXP v[13];
+    v[0] = PROTECT(mio_r_wrap_mesh(flagged));
+    v[1] = PROTECT(flagged_b ? mio_r_wrap_mesh(flagged_b) : R_NilValue);
+    v[2] = PROTECT(segs ? mio_r_wrap_mesh(segs) : R_NilValue);
+    v[3] = PROTECT(Rf_allocMatrix(REALSXP, (int)count, 2));
+    for (int64_t i = 0; i < count; ++i) {
+        REAL(v[3])[i] = (double)(pairs[2 * i] + 1);
+        REAL(v[3])[count + i] = (double)(pairs[2 * i + 1] + 1);
+    }
+    mio_find_intersections_result_free(result);
+    v[4] = PROTECT(Rf_ScalarReal((double)report.num_pairs));
+    v[5] = PROTECT(Rf_ScalarReal((double)report.num_triangle_pairs));
+    v[6] = PROTECT(Rf_ScalarReal((double)report.num_coplanar));
+    v[7] = PROTECT(Rf_ScalarReal((double)report.num_segments));
+    v[8] = PROTECT(Rf_ScalarReal((double)report.num_cells_a));
+    v[9] = PROTECT(Rf_ScalarReal((double)report.num_cells_b));
+    v[10] = PROTECT(Rf_ScalarLogical(report.truncated != 0));
+    v[11] = PROTECT(Rf_ScalarLogical(report.clean != 0));
+    v[12] = PROTECT(mio_r_getstring(r_find_intersections_warnings, NULL, "find_intersections"));
+    const char *names[] = {"mesh",          "other",       "segments",     "pairs",
+                           "num_pairs",     "num_triangle_pairs",          "num_coplanar",
+                           "num_segments",  "num_cells_a", "num_cells_b",  "truncated",
+                           "clean",         "warnings"};
+    SEXP res = PROTECT(mio_r_named_list(13, names, v));
+    UNPROTECT(14);
+    return res;
+}
+
+SEXP R_mio_thickness(SEXP mesh, SEXP other, SEXP direction, SEXP max_distance, SEXP threshold,
+                     SEXP region, SEXP region_other) {
+    mio_thickness_opts opts;
+    mio_thickness_opts_init(&opts);
+    const char *dir = mio_r_string(direction, "direction");
+    if (strcmp(dir, "auto") == 0) opts.direction = MIO_THICKNESS_AUTO;
+    else if (strcmp(dir, "inward") == 0) opts.direction = MIO_THICKNESS_INWARD;
+    else if (strcmp(dir, "outward") == 0) opts.direction = MIO_THICKNESS_OUTWARD;
+    else Rf_error("`direction` must be 'auto', 'inward' or 'outward'");
+    opts.max_distance = mio_r_double(max_distance, "max_distance");
+    opts.threshold = mio_r_double(threshold, "threshold");
+    opts.region = mio_r_opt_string(region);
+    opts.region_target = mio_r_opt_string(region_other);
+    const mio_mesh *target = other == R_NilValue ? NULL : mio_r_mesh(other);
+    mio_thickness_report r;
+    mio_mesh *out = mio_thickness(mio_r_mesh(mesh), target, &opts, &r);
+    if (out == NULL) mio_r_fail("thickness");
+    SEXP v[13];
+    v[0] = PROTECT(mio_r_wrap_mesh(out));
+    v[1] = PROTECT(Rf_mkString(r.direction == MIO_THICKNESS_OUTWARD ? "outward" : "inward"));
+    v[2] = PROTECT(Rf_ScalarReal((double)r.num_cells));
+    v[3] = PROTECT(Rf_ScalarReal((double)r.num_hit));
+    v[4] = PROTECT(Rf_ScalarReal((double)r.num_missed));
+    v[5] = PROTECT(Rf_ScalarReal((double)r.num_below));
+    v[6] = PROTECT(Rf_ScalarReal(r.min));
+    v[7] = PROTECT(Rf_ScalarReal(r.max));
+    v[8] = PROTECT(Rf_ScalarReal(r.mean));
+    v[9] = PROTECT(Rf_ScalarReal(r.min_cell < 0 ? 0.0 : (double)(r.min_cell + 1)));
+    v[10] = PROTECT(Rf_allocVector(REALSXP, 3));
+    for (int k = 0; k < 3; ++k)
+        REAL(v[10])[k] = r.min_point[k];
+    v[11] = PROTECT(Rf_ScalarReal(r.max_distance));
+    v[12] = PROTECT(mio_r_getstring(r_thickness_warnings, NULL, "thickness"));
+    const char *names[] = {"mesh",     "direction", "num_cells",    "num_hit",  "num_missed",
+                           "num_below", "min",      "max",          "mean",     "min_cell",
+                           "min_point", "max_distance", "warnings"};
+    SEXP res = PROTECT(mio_r_named_list(13, names, v));
+    UNPROTECT(14);
+    return res;
+}
+
 SEXP R_mio_has_netgen(void) {
     return Rf_ScalarLogical(mio_has_netgen() != 0);
 }

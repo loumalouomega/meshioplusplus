@@ -2042,3 +2042,20 @@ test_that("Exodus series own their grid and expose an idempotent lifecycle", {
     expect_error(mio_exodus_series_num_steps(s), "released")
   }
 })
+
+test_that("find_intersections and thickness", {
+  a <- mio_icosa_sphere(subdivisions = 3)
+  b <- mio_icosa_sphere(subdivisions = 3, center = c(1, 0, 0))
+  one <- mio_find_intersections(a)
+  expect_true(one$clean)
+  expect_null(one$other)
+  two <- mio_find_intersections(a, b)
+  expect_gt(two$num_pairs, 0)
+  expect_equal(dim(two$pairs), c(two$num_pairs, 2))
+  expect_true(min(two$pairs) >= 1)
+  t <- mio_thickness(a)
+  expect_equal(t$direction, "inward")
+  expect_equal(t$num_missed, 0)
+  expect_lt(abs(t$min - 2), 0.05)
+  expect_error(mio_thickness(a, direction = "sideways"), "direction")
+})
