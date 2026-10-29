@@ -1935,9 +1935,23 @@ test_that("adapt runs with MMG and names the flag without it (roadmap 3.2)", {
     expect_equal(r$library, "mmg2d")
     expect_gt(r$num_elements_out, r$num_elements_in)
     mio_release(r$mesh)
+    xy <- mio_points(sq)
+    mio_add_point_data(sq, "phi", sqrt((xy[1, ] - 0.5)^2 + (xy[2, ] - 0.5)^2) - 0.3)
+    ls <- mio_discretize_levelset(sq, "phi", hmax = 0.1)
+    expect_equal(ls$library, "mmg2d")
+    mio_release(ls$mesh)
+    box <- mio_mesh()
+    on.exit(mio_release(box), add = TRUE)
+    mio_set_points(box, matrix(c(0, 0, 1, 0, 1, 1, 0, 1), nrow = 2))
+    mio_add_cell_block(box, "line", matrix(c(1, 2, 2, 3, 3, 4, 4, 1), nrow = 2))
+    d <- mio_mesh_domain(box, hsiz = 0.1)
+    expect_equal(d$num_subdomains, 1)
+    expect_gt(d$num_elements_out, 100)
+    mio_release(d$mesh)
   } else {
     expect_false(mio_has_mmg_elas())
     expect_error(mio_adapt(sq, hsiz = 0.1), "MESHIOPLUSPLUS_WITH_MMG")
+    expect_error(mio_mesh_domain(sq, hsiz = 0.1), "MESHIOPLUSPLUS_WITH_MMG")
   }
 })
 

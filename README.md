@@ -620,7 +620,7 @@ out = meshioplusplus.remesh(mesh, num_clusters=5000, metric="anisotropic", max_a
 
 #### Adaptation with MMG (optional backend)
 
-**`meshioplusplus.adapt`** remeshes a simplicial mesh to a constant size, a size field or an anisotropic metric through [MMG](https://www.mmgtools.org/): `mmg3d` for tetrahedra, `mmg2d` for planar triangles, `mmgs` for surfaces. Cell and side regions come back under their names, required points and regions survive exactly, and `metric_from_hessian` turns a `hessian` into the metric. MMG is LGPL-3.0 and bring-your-own (`-DMESHIOPLUSPLUS_WITH_MMG=ON`, `build/build-mmg.sh`), so the published wheels do not carry it. See `doc/mmg.md`.
+**`meshioplusplus.adapt`** remeshes a simplicial mesh to a constant size, a size field or an anisotropic metric through [MMG](https://www.mmgtools.org/): `mmg3d` for tetrahedra, `mmg2d` for planar triangles, `mmgs` for surfaces. Cell and side regions come back under their names, required points and regions survive exactly, and `metric_from_hessian` turns a `hessian` into the metric. **`discretize_levelset`** embeds a level set's isovalue conformally between an `inside` and an `outside` region, and **`mesh_domain`** triangulates the planar domain a line mesh bounds, holes left out by a point inside each. MMG is LGPL-3.0 and bring-your-own (`-DMESHIOPLUSPLUS_WITH_MMG=ON`, `build/build-mmg.sh`), so the published wheels do not carry it. See `doc/mmg.md`.
 
 #### Volumetric remeshing (isosurface stuffing)
 

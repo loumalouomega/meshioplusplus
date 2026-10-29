@@ -1594,6 +1594,89 @@ SEXP R_mio_adapt(SEXP mesh, SEXP hsiz, SEXP size, SEXP metric, SEXP hmin, SEXP h
     return r_mmg_result(out, &report);
 }
 
+/* discretize_levelset (roadmap 3.2.2). `materials` is NULL or a numeric k x 4
+   matrix of (ref, split, ref_inside, ref_outside) rows. */
+SEXP R_mio_discretize_levelset(SEXP mesh, SEXP level_set, SEXP isovalue, SEXP rmc, SEXP materials,
+                               SEXP hmin, SEXP hmax, SEXP hausd, SEXP hgrad, SEXP angle_detection,
+                               SEXP frozen, SEXP required) {
+    mio_discretize_levelset_opts opts;
+    mio_discretize_levelset_opts_init(&opts);
+    r_mmg_params(&opts.params, hmin, hmax, hausd, hgrad, angle_detection, frozen, required);
+    opts.level_set = mio_r_string(level_set, "level_set");
+    opts.isovalue = mio_r_double(isovalue, "isovalue");
+    opts.remove_small_components = mio_r_double(rmc, "remove_small_components");
+    if (!Rf_isNull(materials)) {
+        if (!Rf_isReal(materials) || Rf_length(materials) % 4 != 0)
+            Rf_error("materials must be a numeric matrix with 4 columns");
+        R_xlen_t k = Rf_length(materials) / 4;
+        const double* m = REAL(materials);
+        mio_mmg_material* mats =
+            (mio_mmg_material*)R_alloc((size_t)(k > 0 ? k : 1), sizeof(mio_mmg_material));
+        for (R_xlen_t i = 0; i < k; ++i) {
+            memset(&mats[i], 0, sizeof(mats[i]));
+            mats[i].ref = (int64_t)m[i];
+            mats[i].split = m[i + k] != 0.0;
+            mats[i].ref_inside = (int64_t)m[i + 2 * k];
+            mats[i].ref_outside = (int64_t)m[i + 3 * k];
+        }
+        opts.materials = mats;
+        opts.num_materials = (int64_t)k;
+    }
+    mio_mmg_report report;
+    mio_mesh* out = mio_discretize_levelset(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL)
+        mio_r_fail("discretize_levelset");
+    return r_mmg_result(out, &report);
+}
+
+/* mesh_domain (roadmap 3.2.3). `holes` is NULL or a numeric k x 2 matrix of
+   points, one inside each hole. Returns the MMG report plus num_subdomains and
+   num_holes. */
+SEXP R_mio_mesh_domain(SEXP boundary, SEXP hsiz, SEXP size, SEXP holes, SEXP hmin, SEXP hmax,
+                       SEXP hausd, SEXP hgrad, SEXP angle_detection, SEXP frozen, SEXP required) {
+    mio_mesh_domain_opts opts;
+    mio_mesh_domain_opts_init(&opts);
+    r_mmg_params(&opts.params, hmin, hmax, hausd, hgrad, angle_detection, frozen, required);
+    opts.hsiz = mio_r_double(hsiz, "hsiz");
+    const char* s = mio_r_string(size, "size");
+    opts.size = s[0] ? s : NULL;
+    if (!Rf_isNull(holes)) {
+        if (!Rf_isReal(holes) || Rf_length(holes) % 2 != 0)
+            Rf_error("holes must be a numeric matrix with 2 columns");
+        R_xlen_t k = Rf_length(holes) / 2;
+        const double* h = REAL(holes);
+        double* xy = (double*)R_alloc((size_t)(k > 0 ? 2 * k : 1), sizeof(double));
+        for (R_xlen_t i = 0; i < k; ++i) {
+            xy[2 * i] = h[i];
+            xy[2 * i + 1] = h[i + k];
+        }
+        opts.holes = xy;
+        opts.num_holes = (int64_t)k;
+    }
+    mio_mmg_report report;
+    int64_t num_subdomains = 0, num_holes = 0;
+    mio_mesh* out =
+        mio_mesh_domain(mio_r_mesh(boundary), &opts, &report, &num_subdomains, &num_holes);
+    if (out == NULL)
+        mio_r_fail("mesh_domain");
+    SEXP base = PROTECT(r_mmg_result(out, &report));
+    R_xlen_t n = Rf_length(base);
+    SEXP res = PROTECT(Rf_allocVector(VECSXP, n + 2));
+    SEXP names = PROTECT(Rf_allocVector(STRSXP, n + 2));
+    SEXP base_names = Rf_getAttrib(base, R_NamesSymbol);
+    for (R_xlen_t i = 0; i < n; ++i) {
+        SET_VECTOR_ELT(res, i, VECTOR_ELT(base, i));
+        SET_STRING_ELT(names, i, STRING_ELT(base_names, i));
+    }
+    SET_VECTOR_ELT(res, n, Rf_ScalarReal((double)num_subdomains));
+    SET_STRING_ELT(names, n, Rf_mkChar("num_subdomains"));
+    SET_VECTOR_ELT(res, n + 1, Rf_ScalarReal((double)num_holes));
+    SET_STRING_ELT(names, n + 1, Rf_mkChar("num_holes"));
+    Rf_setAttrib(res, R_NamesSymbol, names);
+    UNPROTECT(3);
+    return res;
+}
+
 SEXP R_mio_metric_from_hessian(SEXP mesh, SEXP hessian, SEXP error, SEXP hmin, SEXP hmax,
                                SEXP output) {
     mio_mesh *out = mio_metric_from_hessian(

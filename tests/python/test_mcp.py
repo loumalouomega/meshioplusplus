@@ -1477,6 +1477,46 @@ def test_adapt_tool_reports_the_capability(tmp_path):
         assert "MESHIOPLUSPLUS_WITH_MMG" in out["error"]
 
 
+def test_discretize_levelset_and_mesh_domain_tools(tmp_path):
+    # Roadmap 3.2.2 and 3.2.3, or their absence named, with mmg_available.
+    square = meshioplusplus.rectangle(
+        dims=(8, 8), size=(2, 2), origin=(-1, -1, 0), cell_type="triangle"
+    )
+    square.point_data["ls"] = np.linalg.norm(square.points[:, :2], axis=1) - 0.5
+    src = str(tmp_path / "square.vtu")
+    meshioplusplus.write(src, square)
+    cut = _dump(
+        _tools.call_tool(
+            "discretize_levelset",
+            {
+                "input_path": src,
+                "output_path": str(tmp_path / "c.vtu"),
+                "level_set": "ls",
+            },
+        )
+    )
+    th = np.linspace(0, 2 * np.pi, 17)[:-1]
+    lines = np.array([[i, (i + 1) % 16] for i in range(16)])
+    circle = meshioplusplus.Mesh(np.c_[np.cos(th), np.sin(th)], [("line", lines)])
+    bnd = str(tmp_path / "circle.vtu")
+    meshioplusplus.write(bnd, circle)
+    dom = _dump(
+        _tools.call_tool(
+            "mesh_domain",
+            {"input_path": bnd, "output_path": str(tmp_path / "d.vtu"), "hsiz": 0.2},
+        )
+    )
+    for out in (cut, dom):
+        assert out["mmg_available"] is meshioplusplus.has_mmg()
+    if meshioplusplus.has_mmg():
+        assert cut["library"] == "mmg2d" and cut["status"] == "success"
+        assert dom["num_subdomains"] == 1 and dom["num_holes"] == 0
+        assert dom["num_elements_out"] > 50
+    else:
+        for out in (cut, dom):
+            assert out["error_type"] == "NotImplementedError"
+
+
 def test_metric_from_hessian_tool(tmp_path):
     mesh = meshioplusplus.rectangle(dims=(2, 2), cell_type="triangle")
     mesh.point_data["h"] = np.tile(

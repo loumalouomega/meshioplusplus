@@ -4166,6 +4166,137 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def discretize_levelset(
+        input_path: str,
+        output_path: str,
+        level_set: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        isovalue: float = 0.0,
+        materials: Optional[List[List[int]]] = None,
+        remove_small_components: Optional[float] = None,
+        hmin: Optional[float] = None,
+        hmax: Optional[float] = None,
+        hausd: Optional[float] = None,
+        hgrad: Optional[float] = None,
+        hgradreq: Optional[float] = None,
+        angle_detection: Optional[float] = 45.0,
+        optim: bool = False,
+        noinsert: bool = False,
+        noswap: bool = False,
+        nomove: bool = False,
+        nosurf: bool = False,
+        nreg: bool = False,
+        opnbdy: bool = False,
+        frozen: Optional[str] = None,
+        required: Optional[List[str]] = None,
+        local: Optional[Dict[str, Dict[str, float]]] = None,
+    ) -> dict:
+        """Embed the isovalue of the point_data level set `level_set` (a
+        signed distance, say) conformally in a simplicial mesh and remesh
+        both sides with MMG (needs a build with MESHIOPLUSPLUS_WITH_MMG;
+        otherwise returns error_type NotImplementedError and mmg_available
+        False): mmg3d, mmg2d or mmgs by the mesh, as adapt. The elements
+        carry cell_data medit:ref (3 inside, below the isovalue; 2 outside)
+        and the cell regions inside/outside; the interface is the side region
+        interface, on the inside elements. materials lists [ref, split,
+        ref_inside, ref_outside] over the input's medit:ref (MMG's
+        multi-material mode: split 0 keeps the cells whole);
+        remove_small_components is MMG's rmc volume fraction. The other MMG
+        parameters are adapt's. The input's side regions come back, its cell
+        regions do not. Reports as adapt."""
+        return _guard(
+            _tools.tool_discretize_levelset,
+            input_path=input_path,
+            output_path=output_path,
+            level_set=level_set,
+            input_format=input_format,
+            output_format=output_format,
+            isovalue=isovalue,
+            materials=materials,
+            remove_small_components=remove_small_components,
+            hmin=hmin,
+            hmax=hmax,
+            hausd=hausd,
+            hgrad=hgrad,
+            hgradreq=hgradreq,
+            angle_detection=angle_detection,
+            optim=optim,
+            noinsert=noinsert,
+            noswap=noswap,
+            nomove=nomove,
+            nosurf=nosurf,
+            nreg=nreg,
+            opnbdy=opnbdy,
+            frozen=frozen,
+            required=required,
+            local=local,
+        )
+
+    @server.tool()
+    def mesh_domain(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        hsiz: Optional[float] = None,
+        size: Optional[str] = None,
+        holes: Optional[List[List[float]]] = None,
+        hmin: Optional[float] = None,
+        hmax: Optional[float] = None,
+        hausd: Optional[float] = None,
+        hgrad: Optional[float] = None,
+        hgradreq: Optional[float] = None,
+        angle_detection: Optional[float] = 45.0,
+        optim: bool = False,
+        noinsert: bool = False,
+        noswap: bool = False,
+        nomove: bool = False,
+        nosurf: bool = False,
+        nreg: bool = False,
+        opnbdy: bool = False,
+        frozen: Optional[str] = None,
+        required: Optional[List[str]] = None,
+        local: Optional[Dict[str, Dict[str, float]]] = None,
+    ) -> dict:
+        """Triangulate the planar domain the line cells of a mesh bound with
+        MMG's MMG2D_mmg2dmesh (needs a build with MESHIOPLUSPLUS_WITH_MMG;
+        otherwise returns error_type NotImplementedError and mmg_available
+        False). hsiz is a constant edge size, size a point_data size field on
+        the boundary points. MMG meshes every region the lines enclose, each
+        a cell region subdomain:<k>; it has no notion of a hole, so holes
+        lists one [x, y] point inside each region to leave out. The lines'
+        cell regions also come back as side regions of the triangles. The
+        other MMG parameters are adapt's. Reports as adapt plus
+        num_subdomains and num_holes."""
+        return _guard(
+            _tools.tool_mesh_domain,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            hsiz=hsiz,
+            size=size,
+            holes=holes,
+            hmin=hmin,
+            hmax=hmax,
+            hausd=hausd,
+            hgrad=hgrad,
+            hgradreq=hgradreq,
+            angle_detection=angle_detection,
+            optim=optim,
+            noinsert=noinsert,
+            noswap=noswap,
+            nomove=nomove,
+            nosurf=nosurf,
+            nreg=nreg,
+            opnbdy=opnbdy,
+            frozen=frozen,
+            required=required,
+            local=local,
+        )
+
+    @server.tool()
     def metric_from_hessian(
         input_path: str,
         output_path: str,

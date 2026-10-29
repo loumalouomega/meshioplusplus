@@ -2243,6 +2243,10 @@ static_assert(sizeof(mio_mmg_local) == 32, "C ABI: mio_mmg_local layout changed"
 static_assert(sizeof(mio_mmg_params) == 168, "C ABI: mio_mmg_params layout changed");
 static_assert(sizeof(mio_mmg_report) == 192, "C ABI: mio_mmg_report layout changed");
 static_assert(sizeof(mio_adapt_opts) == 224, "C ABI: mio_adapt_opts layout changed");
+static_assert(sizeof(mio_mmg_material) == 32, "C ABI: mio_mmg_material layout changed");
+static_assert(sizeof(mio_discretize_levelset_opts) == 240,
+              "C ABI: mio_discretize_levelset_opts layout changed");
+static_assert(sizeof(mio_mesh_domain_opts) == 232, "C ABI: mio_mesh_domain_opts layout changed");
 
 mio_mesh* capi_smooth(const mio_mesh* pMesh, const meshioplusplus::SmoothOptions& rOptions,
                       int64_t* pNodesMoved, double* pMaxDisplacement, int64_t* pSkippedInversion) {
@@ -9580,6 +9584,68 @@ mio_mesh* mio_adapt(const mio_mesh* mesh, const mio_adapt_opts* opts, mio_mmg_re
             o.mMetric = r_in.metric;
         meshioplusplus::AdaptResult r = meshioplusplus::adapt(mesh->mMesh, o);
         capi_mmg_report(r.mReport, report);
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+void mio_discretize_levelset_opts_init(mio_discretize_levelset_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_discretize_levelset_opts{};
+    mio_mmg_params_init(&opts->params);
+    opts->remove_small_components = -1.0;
+}
+
+mio_mesh* mio_discretize_levelset(const mio_mesh* mesh, const mio_discretize_levelset_opts* opts,
+                                  mio_mmg_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh || !opts || !opts->level_set)
+            throw std::invalid_argument(
+                "meshio++: discretize_levelset: mesh, opts or level_set is NULL");
+        meshioplusplus::DiscretizeLevelsetOptions o;
+        o.mParameters = capi_mmg_params(mesh, opts->params, "discretize_levelset");
+        o.mLevelSet = opts->level_set;
+        o.mIsovalue = opts->isovalue;
+        o.mRemoveSmallComponents = opts->remove_small_components;
+        for (int64_t i = 0; opts->materials && i < opts->num_materials; ++i)
+            o.mMaterials.push_back({opts->materials[i].ref, opts->materials[i].split != 0,
+                                    opts->materials[i].ref_inside, opts->materials[i].ref_outside});
+        meshioplusplus::DiscretizeLevelsetResult r =
+            meshioplusplus::discretize_levelset(mesh->mMesh, o);
+        capi_mmg_report(r.mReport, report);
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+void mio_mesh_domain_opts_init(mio_mesh_domain_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_mesh_domain_opts{};
+    mio_mmg_params_init(&opts->params);
+    opts->hsiz = -1.0;
+}
+
+mio_mesh* mio_mesh_domain(const mio_mesh* boundary, const mio_mesh_domain_opts* opts,
+                          mio_mmg_report* report, int64_t* num_subdomains, int64_t* num_holes) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!boundary)
+            throw std::invalid_argument("meshio++: mesh_domain: boundary is NULL");
+        mio_mesh_domain_opts defaults;
+        mio_mesh_domain_opts_init(&defaults);
+        const mio_mesh_domain_opts& r_in = opts ? *opts : defaults;
+        meshioplusplus::MeshDomainOptions o;
+        o.mParameters = capi_mmg_params(boundary, r_in.params, "mesh_domain");
+        o.mHsiz = r_in.hsiz;
+        if (r_in.size)
+            o.mSize = r_in.size;
+        if (r_in.holes && r_in.num_holes > 0)
+            o.mHoles.assign(r_in.holes, r_in.holes + 2 * r_in.num_holes);
+        meshioplusplus::MeshDomainResult r = meshioplusplus::mesh_domain(boundary->mMesh, o);
+        capi_mmg_report(r.mReport, report);
+        if (num_subdomains)
+            *num_subdomains = r.mNumSubdomains;
+        if (num_holes)
+            *num_holes = r.mNumHoles;
         return new mio_mesh{std::move(r.mMesh)};
     });
 }

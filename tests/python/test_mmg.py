@@ -92,7 +92,9 @@ def test_side_regions_come_back_on_their_edges():
     local_edges = {0: (0, 1), 1: (1, 2), 2: (2, 0)}
     triangles = out.cells[0].data
     for region in out.regions:
-        axis, value = (0 if region.name[0] == "x" else 1), float(region.name.endswith("max"))
+        axis, value = (0 if region.name[0] == "x" else 1), float(
+            region.name.endswith("max")
+        )
         assert len(region.entries) >= 8
         for cell, facet in np.asarray(region.entries):
             nodes = triangles[cell][list(local_edges[facet])]
@@ -116,7 +118,8 @@ def test_a_required_point_region_survives_under_its_name():
     pins = [r for r in out.regions if r.name == "pins"]
     assert len(pins) == 1
     np.testing.assert_array_equal(
-        np.sort(out.points[pins[0].entries], axis=0), np.sort(mesh.points[[6, 18]], axis=0)
+        np.sort(out.points[pins[0].entries], axis=0),
+        np.sort(mesh.points[[6, 18]], axis=0),
     )
 
 
@@ -153,7 +156,9 @@ def test_a_size_field_grades_the_mesh():
     out = mio.adapt(mesh, size=size)
     corners = out.points[out.cells[0].data]
     centroid_x = corners[:, :, 0].mean(axis=1)
-    area = 0.5 * np.abs(np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0]))
+    area = 0.5 * np.abs(
+        np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+    )
     assert area[centroid_x < 0.2].mean() * 20 < area[centroid_x > 0.8].mean()
 
 
@@ -235,7 +240,9 @@ def test_metric_from_hessian():
     )
     # 2-D Hessians give 2-D metrics; clamping bounds the sizes
     mesh.point_data["h2"] = np.tile([1e6, 0, 0, 0.0], (len(mesh.points), 1))
-    out = mio.metric_from_hessian(mesh, "h2", error=1.0, hmin=0.1, hmax=1.0, output="m2")
+    out = mio.metric_from_hessian(
+        mesh, "h2", error=1.0, hmin=0.1, hmax=1.0, output="m2"
+    )
     np.testing.assert_allclose(out.point_data["m2"][0], [100, 0, 1])
     with pytest.raises(ValueError, match="positive"):
         mio.metric_from_hessian(mesh, "h", error=0.0)
@@ -265,3 +272,185 @@ def test_the_adapt_pipeline_step_in_both_engines(tmp_path):
         cpp = _core.run_pipeline_json(json.dumps(settings))["steps"][0]
         assert cpp["NumElementsOut"] == step["NumElementsOut"]
         assert cpp["NumPointsOut"] == step["NumPointsOut"]
+
+
+def _interface_area(mesh):
+    """The area between the cells of different medit:ref, by shared faces."""
+    from collections import defaultdict
+
+    tets, refs = mesh.cells[0].data, mesh.cell_data["medit:ref"][0]
+    owners = defaultdict(list)
+    for i, t in enumerate(tets):
+        for f in ((0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3)):
+            owners[tuple(sorted(t[list(f)]))].append(i)
+    area = 0.0
+    for face, cells in owners.items():
+        if len(cells) == 2 and refs[cells[0]] != refs[cells[1]]:
+            p = mesh.points[list(face)]
+            area += 0.5 * np.linalg.norm(np.cross(p[1] - p[0], p[2] - p[0]))
+    return area
+
+
+@without_mmg
+def test_the_level_set_and_domain_operations_name_the_flag_without_mmg():
+    with pytest.raises(NotImplementedError, match="MESHIOPLUSPLUS_WITH_MMG"):
+        mio.discretize_levelset(_square(), np.ones(25))
+    lines = mio.Mesh(np.eye(3)[:, :2], [("line", np.array([[0, 1], [1, 2], [2, 0]]))])
+    with pytest.raises(NotImplementedError, match="MESHIOPLUSPLUS_WITH_MMG"):
+        mio.mesh_domain(lines, hsiz=0.1)
+
+
+@needs_mmg
+def test_a_sphere_level_set_gives_its_area():
+    # Roadmap 3.2.7's probe: the interface of a sphere's signed distance has
+    # area ~ 4 pi r^2 (2% under it here, the polygonal approximation).
+    box = mio.box(
+        dims=(10, 10, 10), size=(2, 2, 2), origin=(-1, -1, -1), cell_type="tetra"
+    )
+    ls = np.linalg.norm(box.points, axis=1) - 0.6
+    out, report = mio.discretize_levelset(box, ls, hausd=0.005, return_report=True)
+    assert report["library"] == "mmg3d" and report["status"] == "success"
+    assert abs(_interface_area(out) - 4 * np.pi * 0.36) < 0.03 * 4 * np.pi * 0.36
+    names = {r.name: r for r in out.regions}
+    assert {"inside", "outside", "interface", "xmin", "zmax"} <= set(names)
+    refs = out.cell_data["medit:ref"][0]
+    assert set(np.unique(refs)) == {2, 3}
+    np.testing.assert_array_equal(
+        np.sort(names["inside"].entries), np.flatnonzero(refs == 3)
+    )
+    # the interface sides are on the inside elements
+    assert np.all(refs[np.asarray(names["interface"].entries)[:, 0]] == 3)
+    # the inside is the ball: its points are within the radius
+    inside_points = out.points[np.unique(out.cells[0].data[refs == 3])]
+    assert np.linalg.norm(inside_points, axis=1).max() < 0.6 + 0.01
+
+
+@needs_mmg
+def test_a_disc_level_set_in_the_plane():
+    square = mio.rectangle(
+        dims=(10, 10), size=(2, 2), origin=(-1, -1, 0), cell_type="triangle"
+    )
+    square.point_data["ls"] = np.linalg.norm(square.points[:, :2], axis=1) - 0.5
+    out, report = mio.discretize_levelset(square, "ls", return_report=True)
+    assert report["library"] == "mmg2d"
+    names = {r.name for r in out.regions}
+    assert {"inside", "outside", "interface", "xmin"} <= names
+    # the input's level set itself is not carried: the points are new
+    assert "ls" not in out.point_data
+
+
+@needs_mmg
+def test_level_set_materials_name_the_parts():
+    square = mio.rectangle(
+        dims=(8, 8), size=(2, 2), origin=(-1, -1, 0), cell_type="triangle"
+    )
+    n = len(square.cells[0].data)
+    square.cell_data["medit:ref"] = [np.full(n, 7)]
+    ls = np.linalg.norm(square.points[:, :2], axis=1) - 0.5
+    out = mio.discretize_levelset(square, ls, materials=[(7, True, 11, 12)])
+    assert set(np.unique(out.cell_data["medit:ref"][0])) == {11, 12}
+
+
+def _annulus(n=32):
+    th = np.linspace(0, 2 * np.pi, n + 1)[:-1]
+    outer = np.c_[np.cos(th), np.sin(th)]
+    lines = [[i, (i + 1) % n] for i in range(n)] + [
+        [n + i, n + (i + 1) % n] for i in range(n)
+    ]
+    boundary = mio.Mesh(np.vstack([outer, 0.4 * outer]), [("line", np.array(lines))])
+    boundary.regions = [
+        mio.Region("outer", "cell", np.arange(n)),
+        mio.Region("inner", "cell", np.arange(n, 2 * n)),
+    ]
+    return boundary
+
+
+@needs_mmg
+def test_mesh_domain_meshes_an_annulus_with_its_hole():
+    # Without the hole point MMG meshes both regions the circles enclose.
+    out, report = mio.mesh_domain(_annulus(), hsiz=0.1, return_report=True)
+    assert report["num_subdomains"] == 2 and report["num_holes"] == 0
+    out, report = mio.mesh_domain(
+        _annulus(), hsiz=0.1, holes=[(0, 0)], return_report=True
+    )
+    assert report["num_subdomains"] == 1 and report["num_holes"] == 1
+    triangles = out.cells[0].data
+    corners = out.points[triangles]
+    a, b = corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0]
+    area = 0.5 * np.abs(a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]).sum()
+    assert abs(area - np.pi * (1 - 0.16)) < 0.05
+    assert np.linalg.norm(out.points, axis=1).min() > 0.39  # no point in the hole
+    kinds = {(r.name, r.kind) for r in out.regions}
+    assert {("inner", "side"), ("outer", "side"), ("inner", "cell")} <= kinds
+    assert sum(r.name.startswith("subdomain:") for r in out.regions) == 1
+
+
+@needs_mmg
+def test_mesh_domain_refusals():
+    with pytest.raises(ValueError, match="line cells only"):
+        mio.mesh_domain(_square(), hsiz=0.1)
+    with pytest.raises(ValueError, match="outside the domain"):
+        mio.mesh_domain(_annulus(), hsiz=0.1, holes=[(5, 5)])
+
+
+@needs_mmg
+def test_the_level_set_and_domain_pipeline_steps_in_both_engines(tmp_path):
+    import json
+
+    square = mio.rectangle(
+        dims=(8, 8), size=(2, 2), origin=(-1, -1, 0), cell_type="triangle"
+    )
+    square.point_data["ls"] = np.linalg.norm(square.points[:, :2], axis=1) - 0.5
+    src = tmp_path / "square.vtu"
+    mio.write(str(src), square, compression=None)
+    ann = tmp_path / "annulus.vtu"
+    mio.write(str(ann), _annulus(), compression=None)
+    runs = [
+        (
+            src,
+            {"Op": "DiscretizeLevelset", "LevelSet": "ls", "Materials": [0, 1, 3, 2]},
+        ),
+        (ann, {"Op": "MeshDomain", "Hsiz": 0.1, "Holes": [0, 0]}),
+    ]
+    for path, op in runs:
+        settings = {
+            "Version": 1,
+            "Input": {"Path": str(path)},
+            "Operations": [op],
+            "Output": {"Path": str(tmp_path / "py.vtu")},
+        }
+        step = mio.run_pipeline(settings)["steps"][0]
+        assert step["LowFailure"] == 0.0 and step["NumElementsOut"] > 0
+        if op["Op"] == "MeshDomain":
+            assert step["NumSubdomains"] == 1.0 and step["NumHoles"] == 1.0
+        if hasattr(_core, "run_pipeline_json"):
+            settings["Output"]["Path"] = str(tmp_path / "cpp.vtu")
+            cpp = _core.run_pipeline_json(json.dumps(settings))["steps"][0]
+            assert cpp["NumElementsOut"] == step["NumElementsOut"]
+    bad = {"Op": "MeshDomain", "Hsiz": 0.1, "Holes": [0]}
+    with pytest.raises(ValueError, match="x, y per hole"):
+        mio.run_pipeline(
+            {
+                "Version": 1,
+                "Input": {"Path": str(ann)},
+                "Operations": [bad],
+                "Output": {"Path": str(tmp_path / "bad.vtu")},
+            }
+        )
+
+
+@needs_mmg
+def test_the_level_set_and_domain_subcommands(tmp_path, capsys):
+    from meshioplusplus._cli import main
+
+    ann = str(tmp_path / "annulus.vtu")
+    mio.write(ann, _annulus())
+    out = str(tmp_path / "out.vtu")
+    assert main(["mesh-2d", ann, out, "--hsiz", "0.1", "--hole", "0,0"]) == 0
+    assert "1 subdomain(s), 1 hole(s)" in capsys.readouterr().out
+    square = _square()
+    square.point_data["ls"] = square.points[:, 0] - 0.5
+    src = str(tmp_path / "square.vtu")
+    mio.write(src, square)
+    assert main(["discretize-levelset", src, out, "--level-set", "ls"]) == 0
+    assert {"inside", "outside", "interface"} <= {r.name for r in mio.read(out).regions}

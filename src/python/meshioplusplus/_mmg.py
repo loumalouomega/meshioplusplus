@@ -13,13 +13,22 @@ Public API:
 * :func:`has_mmg`, :func:`has_mmg_elas` -- what the compiled core carries.
 * :func:`adapt` -- remesh to a constant size, a size field or a metric.
 * :func:`metric_from_hessian` -- an anisotropic metric from a Hessian.
+* :func:`discretize_levelset` -- embed a level set and remesh both sides.
+* :func:`mesh_domain` -- triangulate a planar domain from its boundary lines.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["has_mmg", "has_mmg_elas", "adapt", "metric_from_hessian"]
+__all__ = [
+    "has_mmg",
+    "has_mmg_elas",
+    "adapt",
+    "metric_from_hessian",
+    "discretize_levelset",
+    "mesh_domain",
+]
 
 _PREFIX = "meshio++: "
 
@@ -248,6 +257,162 @@ def adapt(
         hsiz=-1.0 if hsiz is None else float(hsiz),
         size=size_name,
         metric=metric_name,
+        params=params,
+    )
+    result = out.pop("mesh")
+    return (result, out) if return_report else result
+
+
+_MMG_KEYWORDS = (
+    "hmin",
+    "hmax",
+    "hausd",
+    "hgrad",
+    "hgradreq",
+    "angle_detection",
+    "optim",
+    "noinsert",
+    "noswap",
+    "nomove",
+    "nosurf",
+    "nreg",
+    "opnbdy",
+    "mem",
+    "verbose",
+    "frozen",
+    "required",
+    "local",
+)
+
+
+def _mmg_keywords(mesh, what, options):
+    """The shared MMG parameters from keyword arguments, as :func:`adapt` takes them."""
+    unknown = sorted(set(options) - set(_MMG_KEYWORDS))
+    if unknown:
+        raise TypeError(f"{_PREFIX}{what}: unexpected keyword(s) {', '.join(unknown)}")
+    get = options.get
+    return _parameters(
+        mesh,
+        what,
+        get("hmin"),
+        get("hmax"),
+        get("hausd"),
+        get("hgrad"),
+        get("hgradreq"),
+        get("angle_detection", 45.0),
+        get("optim", False),
+        get("noinsert", False),
+        get("noswap", False),
+        get("nomove", False),
+        get("nosurf", False),
+        get("nreg", False),
+        get("opnbdy", False),
+        get("mem"),
+        get("verbose", -1),
+        get("frozen"),
+        get("required"),
+        get("local"),
+    )
+
+
+def discretize_levelset(
+    mesh,
+    level_set,
+    isovalue=0.0,
+    *,
+    materials=None,
+    remove_small_components=None,
+    return_report=False,
+    **options,
+):
+    """Embed a level set in ``mesh`` and remesh both sides with MMG (roadmap 3.2.2).
+
+    ``mmg3d`` for tetrahedra, ``mmg2d`` for a planar triangle mesh, ``mmgs``
+    for a surface. The cut follows the ``isovalue`` of ``level_set`` exactly
+    and conformally, which :func:`isosurface` (an extracted surface) and
+    :func:`crop` (whole cells) do not.
+
+    :param level_set: the level set per point: a ``point_data`` name or an
+        array (a signed distance, such as :func:`compute_sdf` gives).
+    :param isovalue: the value to cut at.
+    :param materials: several materials, ``[(ref, split, ref_inside,
+        ref_outside), ...]`` over the input's ``medit:ref``: the cells of
+        ``ref`` are cut into ``ref_inside`` and ``ref_outside``, or kept whole
+        when ``split`` is false (MMG's ``Set_multiMat``).
+    :param remove_small_components: remove the parasitic components of the
+        cut smaller than this fraction of the volume (MMG's ``rmc``).
+    :param options: :func:`adapt`'s MMG parameters (``hmin``, ``hmax``,
+        ``hausd``, ..., ``frozen``, ``required``, ``local``).
+    :returns: the cut mesh. Its elements carry MMG's references in
+        ``cell_data["medit:ref"]`` -- 3 inside (below the isovalue), 2
+        outside, or the materials' -- and the cell regions ``inside`` and
+        ``outside``; the interface is the side region ``interface``, on the
+        inside elements. The input's side regions come back, its cell regions
+        do not (name them with ``materials``); other data is dropped. With
+        ``return_report``, also :func:`adapt`'s report.
+    :raises NotImplementedError: without the MMG backend.
+    """
+    _core = _core_or_raise("discretize_levelset")
+    work, name = _field_name(
+        mesh, level_set, "discretize_levelset:ls", "discretize_levelset", "level set"
+    )
+    params = _mmg_keywords(mesh, "discretize_levelset", options)
+    out = _core.discretize_levelset(
+        work,
+        name,
+        isovalue=float(isovalue),
+        remove_small_components=(
+            -1.0 if remove_small_components is None else float(remove_small_components)
+        ),
+        materials=[
+            (int(r), bool(sp), int(rin), int(rout))
+            for r, sp, rin, rout in materials or []
+        ],
+        params=params,
+    )
+    result = out.pop("mesh")
+    return (result, out) if return_report else result
+
+
+def mesh_domain(
+    boundary, hsiz=None, size=None, *, holes=None, return_report=False, **options
+):
+    """Triangulate the planar domain bounded by ``boundary``'s lines with MMG
+    (``MMG2D_mmg2dmesh``, roadmap 3.2.3).
+
+    MMG meshes every region the lines enclose and gives each its own
+    reference; it has no notion of a hole, so ``holes`` names the regions to
+    leave out by a point inside each. :func:`triangulate_polygon_2d` meshes a
+    polygon with holes natively at one size; this adds MMG's size fields.
+
+    :param boundary: a mesh of ``line`` cells (and vertices), 2-D or planar.
+    :param hsiz: a constant target edge size.
+    :param size: the target edge size at the boundary's points: a
+        ``point_data`` name or an array.
+    :param holes: one ``(x, y)`` point inside each hole.
+    :param options: :func:`adapt`'s MMG parameters.
+    :returns: the triangles and the boundary lines; each enclosed region is a
+        cell region ``subdomain:<k>`` (``k`` MMG's reference), and the lines'
+        cell regions are also side regions of the triangles. With
+        ``return_report``, also :func:`adapt`'s report plus
+        ``num_subdomains`` and ``num_holes``.
+    :raises NotImplementedError: without the MMG backend.
+    :raises ValueError: for other cells than lines, non-planar points, or a
+        hole point outside the domain.
+    """
+    _core = _core_or_raise("mesh_domain")
+    if hsiz is not None and size is not None:
+        raise ValueError(f"{_PREFIX}mesh_domain: give one of hsiz and size")
+    work, size_name = _field_name(
+        boundary, size, "mesh_domain:size", "mesh_domain", "size"
+    )
+    params = _mmg_keywords(boundary, "mesh_domain", options)
+    flat = [float(c) for point in holes or [] for c in point[:2]]
+    out = _core.mesh_domain(
+        work,
+        hsiz=-1.0 if hsiz is None else float(hsiz),
+        size=size_name,
+        holes=flat,
         params=params,
     )
     result = out.pop("mesh")

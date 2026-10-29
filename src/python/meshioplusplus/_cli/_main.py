@@ -595,6 +595,20 @@ def main(argv=None):
     parser.set_defaults(func=_mmg.adapt_cmd)
 
     parser = subparsers.add_parser(
+        "discretize-levelset",
+        help="Embed a level set conformally and remesh both sides with MMG",
+    )
+    _mmg.add_discretize_levelset_args(parser)
+    parser.set_defaults(func=_mmg.discretize_levelset_cmd)
+
+    parser = subparsers.add_parser(
+        "mesh-2d",
+        help="Triangulate the planar domain a line mesh bounds with MMG",
+    )
+    _mmg.add_mesh_2d_args(parser)
+    parser.set_defaults(func=_mmg.mesh_2d_cmd)
+
+    parser = subparsers.add_parser(
         "remesh",
         help="Replace a surface's triangulation with a new, well-shaped one (ACVD)",
     )

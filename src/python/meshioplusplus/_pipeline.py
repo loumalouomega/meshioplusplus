@@ -55,7 +55,7 @@ from ._interpolate import interpolate
 from ._isosurface import isosurface
 from ._merge import merge
 from ._mesh import Mesh
-from ._mmg import adapt
+from ._mmg import adapt, discretize_levelset, mesh_domain
 from ._normals import compute_normals
 from ._octree import octree
 from ._octree_mesh import octree_mesh
@@ -364,6 +364,47 @@ _OP_TABLE = {
         "Hsiz",
         "Size",
         "Metric",
+        "Hmin",
+        "Hmax",
+        "Hausd",
+        "Hgrad",
+        "Hgradreq",
+        "AngleDetection",
+        "Optim",
+        "NoInsert",
+        "NoSwap",
+        "NoMove",
+        "NoSurf",
+        "Nreg",
+        "Opnbdy",
+        "Frozen",
+        "Required",
+    ),
+    "DiscretizeLevelset": (
+        "LevelSet",
+        "Isovalue",
+        "RemoveSmallComponents",
+        "Materials",
+        "Hmin",
+        "Hmax",
+        "Hausd",
+        "Hgrad",
+        "Hgradreq",
+        "AngleDetection",
+        "Optim",
+        "NoInsert",
+        "NoSwap",
+        "NoMove",
+        "NoSurf",
+        "Nreg",
+        "Opnbdy",
+        "Frozen",
+        "Required",
+    ),
+    "MeshDomain": (
+        "Hsiz",
+        "Size",
+        "Holes",
         "Hmin",
         "Hmax",
         "Hausd",
@@ -2289,6 +2330,49 @@ def _apply_step(mesh, step, steps, warnings):
             **_mmg_kwargs(step),
         )
         _mmg_entry(entry, warnings, report)
+    elif op == "DiscretizeLevelset":
+        # MMG (roadmap 3.2.2): the level set's isovalue becomes a conformal interface.
+        level_set = _text(step, "LevelSet", "")
+        if not level_set:
+            raise _err(op, "parameter 'LevelSet' is required")
+        mats = _dvec(step, "Materials") or []
+        if len(mats) % 4:
+            raise _err(
+                op,
+                "parameter 'Materials' must hold Ref, Split, RefInside, RefOutside "
+                "per material",
+            )
+        rmc = _number(step, "RemoveSmallComponents", -1.0)
+        mesh, report = discretize_levelset(
+            mesh,
+            level_set,
+            _number(step, "Isovalue", 0.0),
+            materials=[
+                (int(mats[k]), mats[k + 1] != 0, int(mats[k + 2]), int(mats[k + 3]))
+                for k in range(0, len(mats), 4)
+            ],
+            remove_small_components=rmc if rmc > 0 else None,
+            return_report=True,
+            **_mmg_kwargs(step),
+        )
+        _mmg_entry(entry, warnings, report)
+    elif op == "MeshDomain":
+        # MMG (roadmap 3.2.3): the planar domain the line cells bound, triangulated.
+        holes = _dvec(step, "Holes") or []
+        if len(holes) % 2:
+            raise _err(op, "parameter 'Holes' must hold x, y per hole")
+        hsiz = _number(step, "Hsiz", -1.0)
+        mesh, report = mesh_domain(
+            mesh,
+            hsiz=hsiz if hsiz > 0 else None,
+            size=_text(step, "Size", "") or None,
+            holes=[(holes[k], holes[k + 1]) for k in range(0, len(holes), 2)],
+            return_report=True,
+            **_mmg_kwargs(step),
+        )
+        _mmg_entry(entry, warnings, report)
+        entry["NumSubdomains"] = float(report["num_subdomains"])
+        entry["NumHoles"] = float(report["num_holes"])
     elif op == "Remesh":
         # Unlike every other step, the output has NO correspondence to the
         # input: new points, new connectivity. point_data/cell_data/regions

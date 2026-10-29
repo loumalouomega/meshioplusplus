@@ -134,6 +134,9 @@ extern SEXP R_mio_has_netgen(void);
 extern SEXP R_mio_has_mmg(void);
 extern SEXP R_mio_has_mmg_elas(void);
 extern SEXP R_mio_adapt(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_discretize_levelset(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
+                                      SEXP, SEXP);
+extern SEXP R_mio_mesh_domain(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_metric_from_hessian(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_error_size(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_check_conformity(SEXP, SEXP, SEXP);
@@ -344,6 +347,8 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_has_mmg, 0),
                                               CALLDEF(R_mio_has_mmg_elas, 0),
                                               CALLDEF(R_mio_adapt, 11),
+                                              CALLDEF(R_mio_discretize_levelset, 12),
+                                              CALLDEF(R_mio_mesh_domain, 11),
                                               CALLDEF(R_mio_metric_from_hessian, 6),
                                               CALLDEF(R_mio_error_size, 8),
                                               CALLDEF(R_mio_check_conformity, 3),

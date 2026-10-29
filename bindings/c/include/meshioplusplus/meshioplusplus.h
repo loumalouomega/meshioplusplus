@@ -7067,6 +7067,62 @@ MIO_API void mio_adapt_opts_init(mio_adapt_opts* opts);
 MIO_API mio_mesh* mio_adapt(const mio_mesh* mesh, const mio_adapt_opts* opts,
                             mio_mmg_report* report);
 
+/** One material of mio_discretize_levelset (MMG's Set_multiMat). */
+typedef struct mio_mmg_material {
+    int64_t ref;          /**< the medit:ref of the cells it applies to */
+    int32_t split;        /**< nonzero: cut them by the level set; zero: keep them whole */
+    int32_t reserved_pad; /**< zero */
+    int64_t ref_inside;   /**< the reference where the level set is below the isovalue */
+    int64_t ref_outside;  /**< ... above it */
+} mio_mmg_material;
+
+/** The options of mio_discretize_levelset. */
+typedef struct mio_discretize_levelset_opts {
+    mio_mmg_params params;
+    const char* level_set;             /**< a one-component point_data name (required) */
+    double isovalue;                   /**< default 0 */
+    double remove_small_components;    /**< MMG's rmc, a volume fraction; <= 0 keeps them */
+    const mio_mmg_material* materials; /**< NULL: one material, cut into 3 and 2 */
+    int64_t num_materials;
+    int64_t reserved[4]; /**< must be zero; room for additive growth */
+} mio_discretize_levelset_opts;
+
+MIO_API void mio_discretize_levelset_opts_init(mio_discretize_levelset_opts* opts);
+
+/**
+ * Embed a level set's isovalue in `mesh` conformally and remesh both sides
+ * with MMG (roadmap 3.2.2): mmg3d, mmg2d or mmgs by the mesh. The elements
+ * carry MMG's references as cell data medit:ref (3 inside, 2 outside, or the
+ * materials') and the cell regions "inside" and "outside"; the interface is
+ * the side region "interface". `report` may be NULL. Fails with
+ * MIO_ERR_UNSUPPORTED naming MESHIOPLUSPLUS_WITH_MMG without the backend.
+ */
+MIO_API mio_mesh* mio_discretize_levelset(const mio_mesh* mesh,
+                                          const mio_discretize_levelset_opts* opts,
+                                          mio_mmg_report* report);
+
+/** The options of mio_mesh_domain. */
+typedef struct mio_mesh_domain_opts {
+    mio_mmg_params params;
+    double hsiz;      /**< > 0: a constant target edge size */
+    const char* size; /**< a one-component point_data name, the size at the boundary (NULL: none) */
+    const double* holes; /**< x, y of one point inside each hole */
+    int64_t num_holes;   /**< points (holes has 2 * num_holes values) */
+    int64_t reserved[4]; /**< must be zero; room for additive growth */
+} mio_mesh_domain_opts;
+
+MIO_API void mio_mesh_domain_opts_init(mio_mesh_domain_opts* opts);
+
+/**
+ * Triangulate the planar domain bounded by the line cells of `boundary` with
+ * MMG (MMG2D_mmg2dmesh, roadmap 3.2.3). Each enclosed region is a cell region
+ * "subdomain:<k>"; the holes' regions are left out. `report`,
+ * `num_subdomains` and `num_holes` may be NULL.
+ */
+MIO_API mio_mesh* mio_mesh_domain(const mio_mesh* boundary, const mio_mesh_domain_opts* opts,
+                                  mio_mmg_report* report, int64_t* num_subdomains,
+                                  int64_t* num_holes);
+
 /**
  * The anisotropic metric of the row-major point_data Hessian `hessian`
  * ((n, 9) or (n, 4)), for mio_adapt: M = c/error |H|, its sizes clamped to

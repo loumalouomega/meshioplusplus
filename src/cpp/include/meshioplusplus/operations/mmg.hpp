@@ -164,6 +164,93 @@ struct AdaptResult {
  */
 MESHIOPLUSPLUS_API AdaptResult adapt(const Mesh& rMesh, const AdaptOptions& rOptions);
 
+/// One material of `discretize_levelset` (MMG's `Set_multiMat`): the cells
+/// of `medit:ref` `mRef` are cut by the level set into `mRefInside` (where it
+/// is below the isovalue) and `mRefOutside`, or kept whole when not `mSplit`.
+struct MmgMaterial {
+    std::int64_t mRef = 0;
+    bool mSplit = true;
+    std::int64_t mRefInside = 3;
+    std::int64_t mRefOutside = 2;
+};
+
+/// The options of `discretize_levelset`.
+struct DiscretizeLevelsetOptions {
+    MmgParameters mParameters;
+    /// A one-component `point_data` array: the level set, cut at `mIsovalue`.
+    std::string mLevelSet;
+    double mIsovalue = 0.0;
+    /// Remove the parasitic components of the cut smaller than this fraction
+    /// of the mesh's volume (MMG's `rmc`); zero or negative keeps them.
+    double mRemoveSmallComponents = -1.0;
+    /// Several materials (empty: the whole mesh is one, cut into 3 and 2).
+    std::vector<MmgMaterial> mMaterials;
+};
+
+/// The result of `discretize_levelset`.
+struct DiscretizeLevelsetResult {
+    Mesh mMesh;
+    MmgReport mReport;
+};
+
+/**
+ * @brief Embed the isovalue of a level set in @p rMesh conformally and remesh
+ *        both sides with MMG (roadmap 3.2.2).
+ *
+ * `MMG3D_mmg3dls` for tetrahedra, `MMG2D_mmg2dls` for a planar triangle mesh,
+ * `MMGS_mmgsls` for a surface. The result's elements carry MMG's references
+ * as `cell_data["medit:ref"]` -- 3 inside (the level set below the isovalue),
+ * 2 outside, or the materials' -- and the cell regions `inside` and
+ * `outside`; the interface is the side region `interface`, on the inside
+ * elements. Side regions of the input come back as for `adapt`; its cell
+ * regions do not (the cut gives the elements new references: name them with
+ * materials), and point and cell data are dropped.
+ *
+ * @throws Unsupported without the MMG backend; std::invalid_argument as
+ *         `adapt`, or for a missing or misshapen level set;
+ *         std::runtime_error when MMG fails.
+ */
+MESHIOPLUSPLUS_API DiscretizeLevelsetResult
+discretize_levelset(const Mesh& rMesh, const DiscretizeLevelsetOptions& rOptions);
+
+/// The options of `mesh_domain`.
+struct MeshDomainOptions {
+    MmgParameters mParameters;
+    double mHsiz = -1.0;  ///< a constant target edge size
+    std::string mSize;    ///< a one-component `point_data` size at the boundary's points
+    /// One point inside each hole, `x, y` pairs: the subdomains holding one
+    /// are not meshed.
+    std::vector<double> mHoles;
+};
+
+/// The result of `mesh_domain`.
+struct MeshDomainResult {
+    Mesh mMesh;
+    MmgReport mReport;
+    std::int64_t mNumSubdomains = 0;  ///< meshed, holes excluded
+    std::int64_t mNumHoles = 0;       ///< subdomains left out
+};
+
+/**
+ * @brief Triangulate the planar domain bounded by the `line` cells of
+ *        @p rBoundary with MMG (`MMG2D_mmg2dmesh`, roadmap 3.2.3).
+ *
+ * MMG meshes every region the lines enclose and gives each its own
+ * reference; it has no notion of a hole, so `mHoles` names the regions to
+ * leave out by a point inside each. The result has the boundary as `line`
+ * cells, each enclosed region as a cell region `subdomain:<k>` (`k` MMG's
+ * reference), and the cell regions of the lines also as side regions of the
+ * triangles. The size is `mHsiz`, the `mSize` field or MMG's own from the
+ * boundary.
+ *
+ * @throws Unsupported without the MMG backend; std::invalid_argument for a
+ *         boundary with other cells than lines (and vertices), non-planar
+ *         points, or a hole point outside the domain; std::runtime_error when
+ *         MMG fails.
+ */
+MESHIOPLUSPLUS_API MeshDomainResult mesh_domain(const Mesh& rBoundary,
+                                                const MeshDomainOptions& rOptions);
+
 /// The options of `metric_from_hessian`.
 struct MetricFromHessianOptions {
     std::string mHessian;            ///< the `point_data` Hessian: (n, 9) or (n, 4), row-major

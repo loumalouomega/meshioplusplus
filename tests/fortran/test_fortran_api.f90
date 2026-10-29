@@ -1536,6 +1536,32 @@ program test_fortran_api
             call square%free()
         end block
 
+        block
+            ! Roadmap 3.2.3: a unit square's boundary lines, triangulated by mmg2d.
+            type(mio_mesh) :: box, dom
+            type(mio_mmg_report) :: drep
+            integer(int64) :: nsub
+            integer :: dst
+            character(:), allocatable :: dmsg
+            call box%set_points(reshape([0.0_real64, 0.0_real64, 1.0_real64, 0.0_real64, &
+                                         1.0_real64, 1.0_real64, 0.0_real64, 1.0_real64], &
+                                        [2, 4]))
+            call box%add_cell_block('line', reshape([1_int64, 2_int64, 2_int64, 3_int64, &
+                                                     3_int64, 4_int64, 4_int64, 1_int64], &
+                                                    [2, 4]))
+            dom = mio_mesh_domain(box, hsiz=0.1_real64, report=drep, num_subdomains=nsub, &
+                                  stat=dst, errmsg=dmsg)
+            if (mio_has_mmg()) then
+                call check(dst == 0 .and. nsub == 1_int64 .and. drep%num_elements_out > 100, &
+                           'mesh_domain triangulates the square')
+                if (dst == 0) call dom%free()
+            else
+                call check(dst /= 0 .and. index(dmsg, 'MESHIOPLUSPLUS_WITH_MMG') > 0, &
+                           'mesh_domain names the build flag without MMG')
+            end if
+            call box%free()
+        end block
+
         out = octa%remesh(30_int64, num_iterations=niter, subdivide_applied=subapp, &
                           num_isolated_clusters=niso, stat=st)
         call check(st == 0, 'remesh succeeded')

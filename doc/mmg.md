@@ -56,15 +56,52 @@ As for [`remesh`](./remesh.md), the points are new, so other `point_data` and `c
 
 `metric_from_hessian(mesh, hessian, error=1e-2, hmin=1e-3, hmax=1.0, output="metric")` turns a row-major Hessian (`(n, 9)`, or `(n, 4)` in 2-D) into the metric `M = c/error |H|`. The Hessian is symmetrised, its eigenvalues are taken in absolute value and scaled by `c = (1/2)(d/(d+1))²` for P1 interpolation in `d` dimensions (Frey and Alauzet, *Anisotropic mesh adaptation for CFD computations*, CMAME 194, 2005), and the result is clamped to `[1/hmax², 1/hmin²]`. It is written as `point_data[output]`, six components (three for a 2-D Hessian) in the file order. It needs no MMG and is in every build.
 
+## discretize_levelset
+
+`discretize_levelset(mesh, level_set, isovalue=0.0, *, materials=None, remove_small_components=None, **options)` embeds a level set's isovalue in a simplicial mesh conformally and remeshes both sides (roadmap 3.2.2), through `MMG3D_mmg3dls`, `MMG2D_mmg2dls` or `MMGS_mmgsls`, chosen by the mesh as for `adapt`. [`isosurface`](./isosurface.md) extracts the level as a separate surface and [`crop`](./crop.md) keeps whole cells; here the interface is made of the new mesh's own facets.
+
+```python
+box = mio.box(dims=(10, 10, 10), size=(2, 2, 2), origin=(-1, -1, -1), cell_type="tetra")
+ls = np.linalg.norm(box.points, axis=1) - 0.6           # a sphere's signed distance
+out = mio.discretize_levelset(box, ls, hausd=0.005)
+```
+
+- **The level set** is a `point_data` name or an array, one value per point, such as [`compute_sdf`](./sdf.md) or [`distance_to_surface`](./sdf.md) give.
+- **Output.** The elements carry MMG's references in `cell_data["medit:ref"]`: 3 inside (below the isovalue) and 2 outside, or the materials'. The cell regions `inside` and `outside` hold them, and the interface is the side region `interface`, on the inside elements. The input's side regions come back on the new boundary as for `adapt`; its cell regions do not, since a cut cell is in both, so name the parts with `materials`.
+- **Materials.** `materials=[(ref, split, ref_inside, ref_outside), ...]` is MMG's multi-material mode (`Set_multiMat`) over the input's `medit:ref`: the cells of `ref` are cut into `ref_inside` and `ref_outside`, or kept whole as `ref` when `split` is false.
+- **`remove_small_components`** removes the cut's parasitic components smaller than that fraction of the volume (MMG's `rmc`).
+- **Parameters** are `adapt`'s; the cut is then adapted to `hmin`, `hmax` and `hausd`. The report is `adapt`'s.
+
+MMG keeps the reference 10 for interface facets and deletes any facet that already carries it, so meshio++ offsets the facet references it sends in this mode. On a 10×10×10 box, the interface of a sphere of radius 0.6 comes out within 3% of 4πr² (the tests' probe).
+
+## mesh_domain
+
+`mesh_domain(boundary, hsiz=None, size=None, *, holes=None, **options)` triangulates the planar domain the `line` cells of `boundary` bound, through `MMG2D_mmg2dmesh` (roadmap 3.2.3).
+
+```python
+th = np.linspace(0, 2 * np.pi, 33)[:-1]
+ring = np.c_[np.cos(th), np.sin(th)]
+lines = [[i, (i + 1) % 32] for i in range(32)] + [[32 + i, 32 + (i + 1) % 32] for i in range(32)]
+annulus = mio.Mesh(np.vstack([ring, 0.4 * ring]), [("line", np.array(lines))])
+out, report = mio.mesh_domain(annulus, hsiz=0.05, holes=[(0, 0)], return_report=True)
+```
+
+- **Input.** Only `line` cells (and `vertex` cells), with 2-D points or 3-D points on one z. Another cell type is refused by name.
+- **Subdomains and holes.** MMG meshes every region the lines enclose and gives each a reference of its own; it has no notion of a hole. So `holes` gives one `(x, y)` point inside each region to leave out: the region's triangles are removed after meshing, along with the points only they used. Each region kept is a cell region `subdomain:<k>`, `k` being MMG's reference. A hole point outside every region is refused. The report adds `num_subdomains` and `num_holes`.
+- **Size.** `hsiz`, or `size` (a `point_data` name or an array) at the boundary's points, or `hmax`; MMG grades from the boundary inward.
+- **Regions.** The lines' cell regions come back on the boundary lines, and also as side regions of the triangles.
+
+[`triangulate_polygon_2d`](./mesh_cad.md) triangulates a polygon with holes natively, refined by Ruppert's algorithm, and [`mesh_cad_surface`](./mesh_cad.md) meshes CAD faces; `mesh_domain` adds MMG's sizes, gradation and quality.
+
 ## Other language surfaces
 
-- **C API:** `mio_adapt(mesh, opts, report)` with `mio_adapt_opts` (which embeds the shared `mio_mmg_params`, `mio_mmg_params_init`) and `mio_mmg_report`, and `mio_metric_from_hessian`. The structs are append-only with reserved tails ([C API](./c_api.md)).
-- **Fortran:** `mio_adapt(mesh, hsiz=, size_field=, metric=, ..., frozen=, required=, report=)` (1-based `frozen`) and `mio_metric_from_hessian`.
-- **Julia:** `adapt(mesh; hsiz, size, metric, ..., frozen, required, local_params)` (1-based `frozen`) and `metric_from_hessian`.
-- **R:** `mio_adapt(mesh, hsiz, size, metric, ..., frozen, required)` (1-based `frozen`) and `mio_metric_from_hessian`.
-- **CLI:** `meshioplusplus adapt IN OUT --hsiz 0.05` (or `--size NAME`, `--metric NAME`), with `--hmin`, `--hmax`, `--hausd`, `--hgrad`, `--hgradreq`, `--angle-detection`, `--optim`, `--noinsert`, `--noswap`, `--nomove`, `--nosurf`, `--nreg`, `--opnbdy`, `--frozen REGION` and repeatable `--required REGION`, in the Python and native CLIs alike.
-- **Pipeline:** an `Adapt` step with `Hsiz`, `Size`, `Metric`, `Hmin`, `Hmax`, `Hausd`, `Hgrad`, `Hgradreq`, `AngleDetection`, the switches, `Frozen` (a point region) and `Required`; it reports `NumPointsIn/Out`, `NumElementsIn/Out`, `LowFailure`, `QualityMin` and `QualityMean` ([pipelines](./pipeline.md)).
-- **MCP:** the `adapt` tool, which reports `mmg_available` (an error with `mmg_available: false` without MMG), and `metric_from_hessian` ([MCP](./mcp.md)).
+- **C API:** `mio_adapt(mesh, opts, report)` with `mio_adapt_opts` (which embeds the shared `mio_mmg_params`, `mio_mmg_params_init`) and `mio_mmg_report`; `mio_discretize_levelset(mesh, opts, report)` with `mio_discretize_levelset_opts` and `mio_mmg_material`; `mio_mesh_domain(boundary, opts, report, &num_subdomains, &num_holes)` with `mio_mesh_domain_opts`; and `mio_metric_from_hessian`. The structs are append-only with reserved tails ([C API](./c_api.md)).
+- **Fortran:** `mio_adapt(mesh, hsiz=, size_field=, metric=, ..., frozen=, required=, report=)` (1-based `frozen`), `mio_discretize_levelset(mesh, level_set, isovalue=, hausd=, hmax=, report=)`, `mio_mesh_domain(boundary, hsiz=, holes=, report=, num_subdomains=)` (`holes(2, n)`) and `mio_metric_from_hessian`.
+- **Julia:** `adapt(mesh; hsiz, size, metric, ..., frozen, required, local_params)` (1-based `frozen`), `discretize_levelset(mesh, level_set; isovalue, remove_small_components, materials, ...)`, `mesh_domain(boundary; hsiz, size, holes, ...)` and `metric_from_hessian`.
+- **R:** `mio_adapt(mesh, hsiz, size, metric, ..., frozen, required)` (1-based `frozen`), `mio_discretize_levelset(mesh, level_set, isovalue, remove_small_components, materials, ...)` (`materials` a four-column matrix), `mio_mesh_domain(boundary, hsiz, size, holes, ...)` (`holes` a two-column matrix) and `mio_metric_from_hessian`.
+- **CLI:** `meshioplusplus adapt IN OUT --hsiz 0.05` (or `--size NAME`, `--metric NAME`), with `--hmin`, `--hmax`, `--hausd`, `--hgrad`, `--hgradreq`, `--angle-detection`, `--optim`, `--noinsert`, `--noswap`, `--nomove`, `--nosurf`, `--nreg`, `--opnbdy`, `--frozen REGION` and repeatable `--required REGION`; `discretize-levelset IN OUT --level-set NAME` (`--isovalue`, `--rmc`, repeatable `--material REF,SPLIT,IN,OUT`) and `mesh-2d IN OUT --hsiz H` (`--size`, repeatable `--hole X,Y`) with the same MMG options, in the Python and native CLIs alike ([CLI](./cli.md)).
+- **Pipeline:** an `Adapt` step with `Hsiz`, `Size`, `Metric`, `Hmin`, `Hmax`, `Hausd`, `Hgrad`, `Hgradreq`, `AngleDetection`, the switches, `Frozen` (a point region) and `Required`; it reports `NumPointsIn/Out`, `NumElementsIn/Out`, `LowFailure`, `QualityMin` and `QualityMean`. `DiscretizeLevelset` (`LevelSet`, `Isovalue`, `RemoveSmallComponents`, `Materials`) and `MeshDomain` (`Hsiz`, `Size`, `Holes`, adding `NumSubdomains` and `NumHoles`) take the same MMG parameters ([pipelines](./pipeline.md)).
+- **MCP:** the `adapt`, `discretize_levelset` and `mesh_domain` tools, which report `mmg_available` (an error with `mmg_available: false` without MMG), and `metric_from_hessian` ([MCP](./mcp.md)).
 - **WebAssembly:** only `hasMmg()`, always `false`, until roadmap 3.2.8.
 
 ## Building with MMG

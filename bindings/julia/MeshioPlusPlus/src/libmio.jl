@@ -977,6 +977,36 @@ struct _CMmgReport
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_mmg_material` (32 bytes)."""
+struct _CMmgMaterial
+    ref::Int64
+    split::Int32
+    reserved_pad::Int32
+    ref_inside::Int64
+    ref_outside::Int64
+end
+
+"""Mirror of C `mio_discretize_levelset_opts` (240 bytes)."""
+struct _CDiscretizeLevelsetOpts
+    params::_CMmgParams
+    level_set::Ptr{UInt8}
+    isovalue::Cdouble
+    remove_small_components::Cdouble
+    materials::Ptr{_CMmgMaterial}
+    num_materials::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_mesh_domain_opts` (232 bytes)."""
+struct _CMeshDomainOpts
+    params::_CMmgParams
+    hsiz::Cdouble
+    size::Ptr{UInt8}
+    holes::Ptr{Cdouble}
+    num_holes::Int64
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_tetrahedralize_report`."""
 struct _CTetrahedralizeReport
     num_tetrahedra::Int64
@@ -1702,6 +1732,12 @@ function _check_abi_layout()
                                  sizeof(_CAdaptOpts) == 224 &&
                                  fieldoffset(_CAdaptOpts, 2) == 168)) ||
         error("meshio++: mio_adapt_opts layout mismatch ($(sizeof(_CAdaptOpts)) bytes)")
+    (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CMmgMaterial) == 32 &&
+                                 sizeof(_CDiscretizeLevelsetOpts) == 240 &&
+                                 fieldoffset(_CDiscretizeLevelsetOpts, 5) == 192 &&
+                                 sizeof(_CMeshDomainOpts) == 232 &&
+                                 fieldoffset(_CMeshDomainOpts, 4) == 184)) ||
+        error("meshio++: mio_discretize_levelset_opts/mio_mesh_domain_opts layout mismatch")
     (sizeof(_CMmgReport) == 192 && fieldoffset(_CMmgReport, 4) == 16) ||
         error("meshio++: mio_mmg_report layout mismatch ($(sizeof(_CMmgReport)) bytes)")
     sizeof(_CFitCadOpts) == 80 ||

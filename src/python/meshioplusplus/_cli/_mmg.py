@@ -1,7 +1,8 @@
-"""The MMG backend's subcommands (roadmap 3.2): ``adapt``."""
+"""The MMG backend's subcommands (roadmap 3.2): ``adapt``,
+``discretize-levelset`` and ``mesh-2d``."""
 
 from .._helpers import _writer_map, read, reader_map, write
-from .._mmg import adapt
+from .._mmg import adapt, discretize_levelset, mesh_domain
 
 
 def _add_io_args(parser, what):
@@ -128,5 +129,103 @@ def adapt_cmd(args):
     )
     if not args.quiet:
         print(summary("adapted", report))
+    write(args.outfile, out, file_format=args.output_format)
+    return 0
+
+
+def add_discretize_levelset_args(parser):
+    _add_io_args(parser, "cut")
+    parser.add_argument(
+        "--level-set",
+        type=str,
+        required=True,
+        help="point_data name of the level set (a signed distance, say)",
+    )
+    parser.add_argument(
+        "--isovalue", type=float, default=0.0, help="the value to cut at (default: 0)"
+    )
+    parser.add_argument(
+        "--rmc",
+        type=float,
+        default=None,
+        help="remove cut components smaller than this volume fraction",
+    )
+    parser.add_argument(
+        "--material",
+        type=str,
+        action="append",
+        default=None,
+        metavar="REF,SPLIT,IN,OUT",
+        help="a material: the cells of medit:ref REF cut (SPLIT 1) into IN and "
+        "OUT, or kept whole (SPLIT 0); repeatable",
+    )
+    add_mmg_args(parser)
+
+
+def _material(text):
+    parts = text.split(",")
+    if len(parts) != 4:
+        raise SystemExit(f"--material expects REF,SPLIT,IN,OUT, got {text!r}")
+    ref, split, rin, rout = (int(p) for p in parts)
+    return ref, bool(split), rin, rout
+
+
+def discretize_levelset_cmd(args):
+    mesh = read(args.infile, file_format=args.input_format)
+    out, report = discretize_levelset(
+        mesh,
+        args.level_set,
+        args.isovalue,
+        materials=[_material(m) for m in args.material or []],
+        remove_small_components=args.rmc,
+        return_report=True,
+        **mmg_kwargs(args),
+    )
+    if not args.quiet:
+        print(summary("cut", report))
+    write(args.outfile, out, file_format=args.output_format)
+    return 0
+
+
+def add_mesh_2d_args(parser):
+    _add_io_args(parser, "triangulated")
+    parser.add_argument("--hsiz", type=float, default=None, help="constant edge size")
+    parser.add_argument(
+        "--size", type=str, default=None, help="point_data name of a size field"
+    )
+    parser.add_argument(
+        "--hole",
+        type=str,
+        action="append",
+        default=None,
+        metavar="X,Y",
+        help="a point inside a region to leave out (repeatable)",
+    )
+    add_mmg_args(parser)
+
+
+def _hole(text):
+    parts = text.split(",")
+    if len(parts) != 2:
+        raise SystemExit(f"--hole expects X,Y, got {text!r}")
+    return float(parts[0]), float(parts[1])
+
+
+def mesh_2d_cmd(args):
+    boundary = read(args.infile, file_format=args.input_format)
+    out, report = mesh_domain(
+        boundary,
+        hsiz=args.hsiz,
+        size=args.size,
+        holes=[_hole(h) for h in args.hole or []],
+        return_report=True,
+        **mmg_kwargs(args),
+    )
+    if not args.quiet:
+        print(
+            summary("triangulated", report)
+            + f"\n  {report['num_subdomains']} subdomain(s), "
+            f"{report['num_holes']} hole(s)"
+        )
     write(args.outfile, out, file_format=args.output_format)
     return 0

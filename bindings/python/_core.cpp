@@ -1620,6 +1620,65 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("hsiz") = -1.0, py::arg("size") = "", py::arg("metric") = "",
         py::arg("params") = py::dict());
 
+    // discretize_levelset (roadmap 3.2.2): MMG embeds a level set. Returns the
+    // report dict with the mesh under "mesh".
+    m.def(
+        "discretize_levelset",
+        [](py::object pymesh, const std::string& level_set, double isovalue,
+           double remove_small_components, const py::list& materials, const py::dict& params) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::DiscretizeLevelsetOptions o;
+            o.mParameters = py_mmg_parameters(params, cpp.NumPoints(), "discretize_levelset");
+            o.mLevelSet = level_set;
+            o.mIsovalue = isovalue;
+            o.mRemoveSmallComponents = remove_small_components;
+            for (const auto& item : materials) {
+                const auto t = py::cast<py::tuple>(item);
+                if (t.size() != 4)
+                    throw std::invalid_argument(
+                        "meshio++: discretize_levelset: a material is (ref, split, ref_inside, "
+                        "ref_outside)");
+                o.mMaterials.push_back({py::cast<std::int64_t>(t[0]), py::cast<bool>(t[1]),
+                                        py::cast<std::int64_t>(t[2]),
+                                        py::cast<std::int64_t>(t[3])});
+            }
+            meshioplusplus::DiscretizeLevelsetResult r =
+                core_nogil([&] { return meshioplusplus::discretize_levelset(cpp, o); });
+            py::dict out = py_mmg_report(r.mReport);
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            return out;
+        },
+        py::arg("mesh"), py::arg("level_set"), py::arg("isovalue") = 0.0,
+        py::arg("remove_small_components") = -1.0, py::arg("materials") = py::list(),
+        py::arg("params") = py::dict());
+
+    // mesh_domain (roadmap 3.2.3): MMG triangulates a planar domain from its
+    // boundary lines. Returns the report dict with the mesh under "mesh".
+    m.def(
+        "mesh_domain",
+        [](py::object pymesh, double hsiz, const std::string& size,
+           const std::vector<double>& holes, const py::dict& params) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::MeshDomainOptions o;
+            o.mParameters = py_mmg_parameters(params, cpp.NumPoints(), "mesh_domain");
+            o.mHsiz = hsiz;
+            o.mSize = size;
+            o.mHoles = holes;
+            meshioplusplus::MeshDomainResult r =
+                core_nogil([&] { return meshioplusplus::mesh_domain(cpp, o); });
+            py::dict out = py_mmg_report(r.mReport);
+            out["num_subdomains"] = r.mNumSubdomains;
+            out["num_holes"] = r.mNumHoles;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            return out;
+        },
+        py::arg("mesh"), py::arg("hsiz") = -1.0, py::arg("size") = "",
+        py::arg("holes") = std::vector<double>(), py::arg("params") = py::dict());
+
     // metric_from_hessian (roadmap 3.2.1.1): an anisotropic metric for adapt.
     m.def(
         "metric_from_hessian",

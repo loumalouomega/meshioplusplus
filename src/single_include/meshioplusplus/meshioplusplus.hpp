@@ -31231,6 +31231,93 @@ struct AdaptResult {
  */
 MESHIOPLUSPLUS_API AdaptResult adapt(const Mesh& rMesh, const AdaptOptions& rOptions);
 
+/// One material of `discretize_levelset` (MMG's `Set_multiMat`): the cells
+/// of `medit:ref` `mRef` are cut by the level set into `mRefInside` (where it
+/// is below the isovalue) and `mRefOutside`, or kept whole when not `mSplit`.
+struct MmgMaterial {
+    std::int64_t mRef = 0;
+    bool mSplit = true;
+    std::int64_t mRefInside = 3;
+    std::int64_t mRefOutside = 2;
+};
+
+/// The options of `discretize_levelset`.
+struct DiscretizeLevelsetOptions {
+    MmgParameters mParameters;
+    /// A one-component `point_data` array: the level set, cut at `mIsovalue`.
+    std::string mLevelSet;
+    double mIsovalue = 0.0;
+    /// Remove the parasitic components of the cut smaller than this fraction
+    /// of the mesh's volume (MMG's `rmc`); zero or negative keeps them.
+    double mRemoveSmallComponents = -1.0;
+    /// Several materials (empty: the whole mesh is one, cut into 3 and 2).
+    std::vector<MmgMaterial> mMaterials;
+};
+
+/// The result of `discretize_levelset`.
+struct DiscretizeLevelsetResult {
+    Mesh mMesh;
+    MmgReport mReport;
+};
+
+/**
+ * @brief Embed the isovalue of a level set in @p rMesh conformally and remesh
+ *        both sides with MMG (roadmap 3.2.2).
+ *
+ * `MMG3D_mmg3dls` for tetrahedra, `MMG2D_mmg2dls` for a planar triangle mesh,
+ * `MMGS_mmgsls` for a surface. The result's elements carry MMG's references
+ * as `cell_data["medit:ref"]` -- 3 inside (the level set below the isovalue),
+ * 2 outside, or the materials' -- and the cell regions `inside` and
+ * `outside`; the interface is the side region `interface`, on the inside
+ * elements. Side regions of the input come back as for `adapt`; its cell
+ * regions do not (the cut gives the elements new references: name them with
+ * materials), and point and cell data are dropped.
+ *
+ * @throws Unsupported without the MMG backend; std::invalid_argument as
+ *         `adapt`, or for a missing or misshapen level set;
+ *         std::runtime_error when MMG fails.
+ */
+MESHIOPLUSPLUS_API DiscretizeLevelsetResult
+discretize_levelset(const Mesh& rMesh, const DiscretizeLevelsetOptions& rOptions);
+
+/// The options of `mesh_domain`.
+struct MeshDomainOptions {
+    MmgParameters mParameters;
+    double mHsiz = -1.0;  ///< a constant target edge size
+    std::string mSize;    ///< a one-component `point_data` size at the boundary's points
+    /// One point inside each hole, `x, y` pairs: the subdomains holding one
+    /// are not meshed.
+    std::vector<double> mHoles;
+};
+
+/// The result of `mesh_domain`.
+struct MeshDomainResult {
+    Mesh mMesh;
+    MmgReport mReport;
+    std::int64_t mNumSubdomains = 0;  ///< meshed, holes excluded
+    std::int64_t mNumHoles = 0;       ///< subdomains left out
+};
+
+/**
+ * @brief Triangulate the planar domain bounded by the `line` cells of
+ *        @p rBoundary with MMG (`MMG2D_mmg2dmesh`, roadmap 3.2.3).
+ *
+ * MMG meshes every region the lines enclose and gives each its own
+ * reference; it has no notion of a hole, so `mHoles` names the regions to
+ * leave out by a point inside each. The result has the boundary as `line`
+ * cells, each enclosed region as a cell region `subdomain:<k>` (`k` MMG's
+ * reference), and the cell regions of the lines also as side regions of the
+ * triangles. The size is `mHsiz`, the `mSize` field or MMG's own from the
+ * boundary.
+ *
+ * @throws Unsupported without the MMG backend; std::invalid_argument for a
+ *         boundary with other cells than lines (and vertices), non-planar
+ *         points, or a hole point outside the domain; std::runtime_error when
+ *         MMG fails.
+ */
+MESHIOPLUSPLUS_API MeshDomainResult mesh_domain(const Mesh& rBoundary,
+                                                const MeshDomainOptions& rOptions);
+
 /// The options of `metric_from_hessian`.
 struct MetricFromHessianOptions {
     std::string mHessian;            ///< the `point_data` Hessian: (n, 9) or (n, 4), row-major
@@ -237176,6 +237263,14 @@ AdaptResult adapt(const Mesh&, const AdaptOptions&) {
     mmg_absent("adapt");
 }
 
+DiscretizeLevelsetResult discretize_levelset(const Mesh&, const DiscretizeLevelsetOptions&) {
+    mmg_absent("discretize_levelset");
+}
+
+MeshDomainResult mesh_domain(const Mesh&, const MeshDomainOptions&) {
+    mmg_absent("mesh_domain");
+}
+
 #else
 
 namespace {
@@ -237204,9 +237299,12 @@ struct MmgSignature {
     std::vector<std::size_t> mSideRegions;
 };
 
-/// The MMG references: one per distinct signature, numbered from 1.
+/// The MMG references: one per distinct signature, numbered from `Base() + 1`.
 class MmgRefTable {
 public:
+    /// Number the references from `Base + 1`, clear of the values MMG gives
+    /// elements and facets itself (a level set's 2, 3 and 10).
+    void SetBase(MMG5_int Base) { mBase = Base; }
     MMG5_int Ref(const MmgSignature& rSig) {
         std::vector<std::int64_t> key = {rSig.mFacet ? 1 : 0, rSig.mIsCell ? 1 : 0,
                                          rSig.mHasMeditRef ? 1 : 0, rSig.mMeditRef, -1};
@@ -237215,16 +237313,17 @@ public:
         key.push_back(-2);
         for (const std::size_t r : rSig.mSideRegions)
             key.push_back(static_cast<std::int64_t>(r));
-        auto [it, inserted] = mIndex.try_emplace(key, static_cast<MMG5_int>(mSigs.size() + 1));
+        auto [it, inserted] =
+            mIndex.try_emplace(key, mBase + static_cast<MMG5_int>(mSigs.size() + 1));
         if (inserted)
             mSigs.push_back(rSig);
         return it->second;
     }
     /// The signature of a reference MMG returns; null for 0 or one it made up.
     const MmgSignature* Find(MMG5_int Ref) const {
-        if (Ref < 1 || static_cast<std::size_t>(Ref) > mSigs.size())
+        if (Ref <= mBase || static_cast<std::size_t>(Ref - mBase) > mSigs.size())
             return nullptr;
-        return &mSigs[static_cast<std::size_t>(Ref - 1)];
+        return &mSigs[static_cast<std::size_t>(Ref - mBase - 1)];
     }
     /// The signature of a reference on an entity of that kind (facet or
     /// element): MMG gives the facets it creates the reference of an element.
@@ -237235,9 +237334,15 @@ public:
     std::size_t Size() const { return mSigs.size(); }
 
 private:
+    MMG5_int mBase = 0;
     std::map<std::vector<std::int64_t>, MMG5_int> mIndex;
     std::vector<MmgSignature> mSigs;
 };
+
+/// What an MMG operation gives MMG: a mesh to adapt, a mesh to cut by a level
+/// set (its elements keep their raw `medit:ref`, which `Set_multiMat` reads),
+/// or the boundary lines of a planar domain to mesh.
+enum class MmgEncodeMode { Adapt, LevelSet, Domain };
 
 /// A mesh laid out for MMG: 1-based connectivity, references and attributes.
 struct MmgInput {
@@ -237257,6 +237362,8 @@ struct MmgInput {
     bool mHadFacetCells = false;  ///< the input had triangle (mmg3d) or line cells
     bool mHadPointRef = false;
     bool mHadCellRef = false;
+    /// The elements carry their `medit:ref` (or 0) rather than a signature.
+    bool mRawElementRefs = false;
     std::size_t mNumElements = 0;
     /// Input points that are required, by index, to put point regions back.
     std::vector<std::uint8_t> mRequiredPoint;
@@ -237282,10 +237389,14 @@ void mmg_add_unique(std::vector<std::size_t>& rList, std::size_t Value) {
 }
 
 MmgInput mmg_encode(const Mesh& rMesh, const MmgParameters& rParams, const char* pOp,
-                    const std::vector<std::string>& rConsumed,
-                    std::vector<std::string>& rWarnings) {
+                    const std::vector<std::string>& rConsumed, std::vector<std::string>& rWarnings,
+                    MmgEncodeMode Mode = MmgEncodeMode::Adapt) {
     const std::string op(pOp);
     MmgInput in;
+    if (Mode == MmgEncodeMode::LevelSet) {
+        in.mRawElementRefs = true;
+        in.mRefs.SetBase(100000);
+    }
     const std::size_t np = rMesh.NumPoints();
     in.mPointDim = rMesh.PointDim();
     if (in.mPointDim != 2 && in.mPointDim != 3)
@@ -237314,6 +237425,18 @@ MmgInput mmg_encode(const Mesh& rMesh, const MmgParameters& rParams, const char*
                                         type + "; convert_cells(simplexify) it first");
     }
     const detail::DoubleView pts(rMesh.Points());
+    if (Mode == MmgEncodeMode::Domain) {
+        if (has_tet || has_wedge || has_tri || has_quad)
+            throw std::invalid_argument(op +
+                                        ": give the boundary as line cells only; a mesh with "
+                                        "triangles or tetrahedra is adapt's");
+        bool has_line = false;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+            has_line = has_line || rMesh.Cells(b).Type() == "line";
+        if (!has_line)
+            throw std::invalid_argument(op + ": the boundary has no line cells");
+        has_tri = true;  // mmg2d, if the points are planar (checked below)
+    }
     if (has_wedge && !has_tet)
         throw std::invalid_argument(op +
                                     ": mmg3d needs tetrahedra beside prisms; "
@@ -237340,6 +237463,10 @@ MmgInput mmg_encode(const Mesh& rMesh, const MmgParameters& rParams, const char*
             in.mPlaneZ = zmin;
         }
         in.mLib = planar ? MmgLib::Mmg2d : MmgLib::Mmgs;
+        if (Mode == MmgEncodeMode::Domain && !planar)
+            throw std::invalid_argument(op +
+                                        ": the boundary must be planar (2-D points, or 3-D "
+                                        "points on one z)");
         if (has_quad && in.mLib == MmgLib::Mmgs)
             throw std::invalid_argument(op +
                                         ": mmgs takes no quads; convert_cells(simplexify) "
@@ -237503,6 +237630,10 @@ MmgInput mmg_encode(const Mesh& rMesh, const MmgParameters& rParams, const char*
         for (std::size_t j = 0; j < K; ++j)
             rOut.push_back(static_cast<MMG5_int>(rConn[Row * K + j] + 1));
     };
+    // An element's reference: its signature's, or its raw medit:ref for a level set.
+    const auto element_ref = [&](const MmgSignature& rSig) {
+        return in.mRawElementRefs ? static_cast<MMG5_int>(rSig.mMeditRef) : in.mRefs.Ref(rSig);
+    };
     std::size_t skipped_vertices = 0;
     for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
         const auto cb = rMesh.Cells(b);
@@ -237516,12 +237647,12 @@ MmgInput mmg_encode(const Mesh& rMesh, const MmgParameters& rParams, const char*
                 ++skipped_vertices;
             } else if (type == "tetra") {
                 add_conn(in.mTets, conn, i, k);
-                in.mTetRefs.push_back(in.mRefs.Ref(sig));
+                in.mTetRefs.push_back(element_ref(sig));
                 if (cell_required[g])
                     in.mReqTets.push_back(static_cast<MMG5_int>(in.mTetRefs.size()));
             } else if (type == "wedge") {
                 add_conn(in.mPrisms, conn, i, k);
-                in.mPrismRefs.push_back(in.mRefs.Ref(sig));
+                in.mPrismRefs.push_back(element_ref(sig));
             } else if ((type == "triangle" || type == "quad") && in.mLib == MmgLib::Mmg3d) {
                 // A boundary face: merged with the side facets on the same nodes.
                 std::vector<std::int64_t> nodes(k);
@@ -237539,12 +237670,12 @@ MmgInput mmg_encode(const Mesh& rMesh, const MmgParameters& rParams, const char*
                 in.mHadFacetCells = true;
             } else if (type == "triangle") {
                 add_conn(in.mTris, conn, i, k);
-                in.mTriRefs.push_back(in.mRefs.Ref(sig));
+                in.mTriRefs.push_back(element_ref(sig));
                 if (cell_required[g])
                     in.mReqTris.push_back(static_cast<MMG5_int>(in.mTriRefs.size()));
             } else if (type == "quad") {
                 add_conn(in.mQuads, conn, i, k);
-                in.mQuadRefs.push_back(in.mRefs.Ref(sig));
+                in.mQuadRefs.push_back(element_ref(sig));
             } else if (type == "line") {
                 std::vector<std::int64_t> nodes(k);
                 for (std::size_t j = 0; j < k; ++j)
@@ -237555,8 +237686,12 @@ MmgInput mmg_encode(const Mesh& rMesh, const MmgParameters& rParams, const char*
                 f.mSig.mIsCell = true;
                 f.mSig.mHasMeditRef = sig.mHasMeditRef;
                 f.mSig.mMeditRef = sig.mMeditRef;
-                for (const std::size_t r : sig.mCellRegions)
+                for (const std::size_t r : sig.mCellRegions) {
                     mmg_add_unique(f.mSig.mCellRegions, r);
+                    // A domain's boundary regions are also the triangles' sides.
+                    if (Mode == MmgEncodeMode::Domain)
+                        mmg_add_unique(f.mSig.mSideRegions, r);
+                }
                 f.mRequired = f.mRequired || cell_required[g];
                 in.mHadFacetCells = true;
             }
@@ -238016,9 +238151,22 @@ MmgStatus mmg_run(int Ier, const char* pOp, std::vector<std::string>& rWarnings)
     return MmgStatus::Success;
 }
 
+/// What an operation adds to reading MMG's mesh back, by MMG's own references.
+struct MmgDecodeExtras {
+    /// Elements to leave out (a domain's holes); their orphaned points go too.
+    std::vector<MMG5_int> mDropElementRefs;
+    /// Facets with this reference become the side region `mInterfaceName`,
+    /// on the element whose reference is in `mInsideRefs` when both own it.
+    MMG5_int mInterfaceRef = 0;
+    std::string mInterfaceName;
+    std::vector<MMG5_int> mInsideRefs;
+    /// Named cell regions of the elements carrying the given references.
+    std::vector<std::pair<std::string, std::vector<MMG5_int> > > mElementGroups;
+};
+
 /// Read MMG's mesh back into a meshio++ mesh, with the input's regions.
 Mesh mmg_decode(MmgSession& rS, const MmgInput& rIn, const Mesh& rMesh, MmgReport& rReport,
-                const char* pOp) {
+                const char* pOp, const MmgDecodeExtras& rX = {}) {
     MMG5_int np = 0, ntet = 0, nprism = 0, ntri = 0, nquad = 0, nedge = 0;
     MMG5_pMesh m = rS.mMesh;
     switch (rS.mLib) {
@@ -238091,11 +238239,59 @@ Mesh mmg_decode(MmgSession& rS, const MmgInput& rIn, const Mesh& rMesh, MmgRepor
             break;
     }
 
+    // Leave out the elements of dropped references, then the points no entity uses.
+    if (!rX.mDropElementRefs.empty()) {
+        const auto dropped = [&](MMG5_int Ref) {
+            return std::find(rX.mDropElementRefs.begin(), rX.mDropElementRefs.end(), Ref) !=
+                   rX.mDropElementRefs.end();
+        };
+        const auto filter = [&](std::vector<MMG5_int>& rConn, std::vector<MMG5_int>& rRef,
+                                std::size_t K) {
+            std::size_t w = 0;
+            for (std::size_t i = 0; i < rRef.size(); ++i) {
+                if (dropped(rRef[i]))
+                    continue;
+                for (std::size_t j = 0; j < K; ++j)
+                    rConn[w * K + j] = rConn[i * K + j];
+                rRef[w++] = rRef[i];
+            }
+            rRef.resize(w);
+            rConn.resize(w * K);
+        };
+        if (rS.mLib == MmgLib::Mmg3d) {
+            filter(tets, tetref, 4);
+            filter(prisms, prismref, 6);
+        } else {
+            filter(tris, triref, 3);
+            filter(quads, quadref, 4);
+        }
+        std::vector<MMG5_int> renumber(unp + 1, 0);
+        for (auto* pConn : {&tets, &prisms, &tris, &quads, &edges})
+            for (const MMG5_int v : *pConn)
+                renumber[static_cast<std::size_t>(v)] = 1;
+        MMG5_int next = 0;
+        for (std::size_t i = 1; i <= unp; ++i)
+            if (renumber[i]) {
+                renumber[i] = ++next;
+                const std::size_t to = static_cast<std::size_t>(next - 1);
+                for (int c = 0; c < rIn.mDim; ++c)
+                    coords[to * rIn.mDim + c] = coords[(i - 1) * rIn.mDim + c];
+                vref[to] = vref[i - 1];
+                corner[to] = corner[i - 1];
+                req[to] = req[i - 1];
+            }
+        for (auto* pConn : {&tets, &prisms, &tris, &quads, &edges})
+            for (MMG5_int& v : *pConn)
+                v = renumber[static_cast<std::size_t>(v)];
+        np = next;
+    }
+    const auto unp_out = static_cast<std::size_t>(np);
+
     Mesh out;
     const std::size_t d = rIn.mPointDim;
-    NDArray points(DType::Float64, {unp, d});
+    NDArray points(DType::Float64, {unp_out, d});
     double* pp = points.As<double>();
-    for (std::size_t i = 0; i < unp; ++i) {
+    for (std::size_t i = 0; i < unp_out; ++i) {
         for (int c = 0; c < rIn.mDim; ++c)
             pp[i * d + c] = coords[i * rIn.mDim + c];
         if (rIn.mDim == 2 && d == 3)
@@ -238130,11 +238326,13 @@ Mesh mmg_decode(MmgSession& rS, const MmgInput& rIn, const Mesh& rMesh, MmgRepor
     // signature is a cell), and MMG's new untagged ones when the input had
     // facets of that kind at all.
     std::vector<std::vector<MMG5_int> > refs_out;
+    std::vector<std::vector<MMG5_int> > raw_out;  // MMG's own reference of each cell
+    std::vector<bool> facet_out;
     std::size_t num_elements = 0;
     for (const Block& b : blocks) {
         const std::size_t n = b.pRef->size();
         std::vector<std::int64_t> conn;
-        std::vector<MMG5_int> refs;
+        std::vector<MMG5_int> refs, raw;
         conn.reserve(n * b.mK);
         for (std::size_t i = 0; i < n; ++i) {
             const MMG5_int ref = (*b.pRef)[i];
@@ -238151,6 +238349,7 @@ Mesh mmg_decode(MmgSession& rS, const MmgInput& rIn, const Mesh& rMesh, MmgRepor
             for (std::size_t j = 0; j < b.mK; ++j)
                 conn.push_back(static_cast<std::int64_t>((*b.pConn)[i * b.mK + j]) - 1);
             refs.push_back(s ? ref : 0);
+            raw.push_back(ref);
         }
         if (!b.mFacet)
             num_elements += refs.size();
@@ -238160,22 +238359,29 @@ Mesh mmg_decode(MmgSession& rS, const MmgInput& rIn, const Mesh& rMesh, MmgRepor
         std::copy(conn.begin(), conn.end(), c.As<std::int64_t>());
         out.AddCellBlock(b.mType, std::move(c));
         refs_out.push_back(std::move(refs));
+        raw_out.push_back(std::move(raw));
+        facet_out.push_back(b.mFacet);
     }
 
     // medit:ref back, when the input had it.
     if (rIn.mHadPointRef) {
-        NDArray pr(DType::Int64, {unp});
-        for (std::size_t i = 0; i < unp; ++i)
+        NDArray pr(DType::Int64, {unp_out});
+        for (std::size_t i = 0; i < unp_out; ++i)
             pr.As<std::int64_t>()[i] = vref[i];
         out.AddPointData("medit:ref", std::move(pr));
     }
-    if (rIn.mHadCellRef) {
+    // A level set's elements carry MMG's references (its sides, or the
+    // materials'), which are what the output's medit:ref then holds.
+    if (rIn.mHadCellRef || rIn.mRawElementRefs) {
         std::vector<NDArray> arrays;
-        for (const auto& refs : refs_out) {
+        for (std::size_t b = 0; b < refs_out.size(); ++b) {
+            const auto& refs = refs_out[b];
             NDArray a(DType::Int64, {refs.size()});
             for (std::size_t i = 0; i < refs.size(); ++i) {
                 const MmgSignature* s = rIn.mRefs.Find(refs[i]);
-                a.As<std::int64_t>()[i] = s && s->mHasMeditRef ? s->mMeditRef : 0;
+                a.As<std::int64_t>()[i] = rIn.mRawElementRefs && !facet_out[b] ? raw_out[b][i]
+                                          : s && s->mHasMeditRef               ? s->mMeditRef
+                                                                               : 0;
             }
             arrays.push_back(std::move(a));
         }
@@ -238184,14 +238390,25 @@ Mesh mmg_decode(MmgSession& rS, const MmgInput& rIn, const Mesh& rMesh, MmgRepor
 
     // Cell regions, by signature; side regions through the facets' owners.
     std::vector<std::vector<std::int64_t> > cell_entries(rMesh.NumRegions());
+    std::vector<std::vector<std::int64_t> > group_entries(rX.mElementGroups.size());
+    std::vector<MMG5_int> element_raw;  // by global cell index, elements only (first)
     std::int64_t global = 0;
-    for (const auto& refs : refs_out)
-        for (const MMG5_int ref : refs) {
-            if (const MmgSignature* s = rIn.mRefs.Find(ref))
+    for (std::size_t b = 0; b < refs_out.size(); ++b)
+        for (std::size_t i = 0; i < refs_out[b].size(); ++i) {
+            if (const MmgSignature* s = rIn.mRefs.Find(refs_out[b][i]))
                 for (const std::size_t r : s->mCellRegions)
                     cell_entries[r].push_back(global);
+            if (!facet_out[b]) {
+                element_raw.push_back(raw_out[b][i]);
+                for (std::size_t g = 0; g < rX.mElementGroups.size(); ++g) {
+                    const auto& refs = rX.mElementGroups[g].second;
+                    if (std::find(refs.begin(), refs.end(), raw_out[b][i]) != refs.end())
+                        group_entries[g].push_back(global);
+                }
+            }
             ++global;
         }
+    std::vector<std::int64_t> interface_entries;
     std::vector<std::vector<std::int64_t> > side_entries(rMesh.NumRegions());
     {
         detail::FacetIndexOptions fo;
@@ -238202,7 +238419,8 @@ Mesh mmg_decode(MmgSession& rS, const MmgInput& rIn, const Mesh& rMesh, MmgRepor
                                      const std::vector<MMG5_int>& rRefs, std::size_t K) {
             for (std::size_t i = 0; i < rRefs.size(); ++i) {
                 const MmgSignature* s = rIn.mRefs.Find(rRefs[i], true);
-                if (!s || s->mSideRegions.empty())
+                const bool interface = rX.mInterfaceRef != 0 && rRefs[i] == rX.mInterfaceRef;
+                if ((!s || s->mSideRegions.empty()) && !interface)
                     continue;
                 std::int64_t corners[4];
                 for (std::size_t j = 0; j < K; ++j)
@@ -238210,6 +238428,22 @@ Mesh mmg_decode(MmgSession& rS, const MmgInput& rIn, const Mesh& rMesh, MmgRepor
                 const detail::FacetHit* hit = index.Find(corners, K);
                 if (!hit)
                     continue;
+                if (interface) {
+                    // The side of the inside element, when both sides are elements.
+                    const auto inside = [&](const detail::FacetOwner& rO) {
+                        const auto c = static_cast<std::size_t>(rO.mCell);
+                        return c < element_raw.size() &&
+                               std::find(rX.mInsideRefs.begin(), rX.mInsideRefs.end(),
+                                         element_raw[c]) != rX.mInsideRefs.end();
+                    };
+                    const detail::FacetOwner& o =
+                        hit->mCount > 1 && !inside(hit->mFirst) && inside(hit->mSecond)
+                            ? hit->mSecond
+                            : hit->mFirst;
+                    interface_entries.push_back(o.mCell);
+                    interface_entries.push_back(o.mFacet);
+                    continue;
+                }
                 for (const std::size_t r : s->mSideRegions) {
                     side_entries[r].push_back(hit->mFirst.mCell);
                     side_entries[r].push_back(hit->mFirst.mFacet);
@@ -238225,7 +238459,7 @@ Mesh mmg_decode(MmgSession& rS, const MmgInput& rIn, const Mesh& rMesh, MmgRepor
     }
     // Point regions: their points survive when required, at their own coordinates.
     std::map<std::vector<double>, std::int64_t> required_out;
-    for (std::size_t i = 0; i < unp; ++i)
+    for (std::size_t i = 0; i < unp_out; ++i)
         if (req[i] || corner[i])
             required_out.emplace(std::vector<double>(coords.begin() + i * rIn.mDim,
                                                      coords.begin() + (i + 1) * rIn.mDim),
@@ -238233,9 +238467,22 @@ Mesh mmg_decode(MmgSession& rS, const MmgInput& rIn, const Mesh& rMesh, MmgRepor
     for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
         const Region& reg = rMesh.Region(r);
         if (reg.mKind == RegionKind::Cell) {
+            if (rIn.mRawElementRefs && cell_entries[r].empty() && reg.NumEntries() > 0) {
+                rReport.mWarnings.push_back(std::string(pOp) + ": cell region '" + reg.mName +
+                                            "' is dropped: the level set gives the elements "
+                                            "new references (use materials)");
+                continue;
+            }
             NDArray e(DType::Int64, {cell_entries[r].size()});
             std::copy(cell_entries[r].begin(), cell_entries[r].end(), e.As<std::int64_t>());
             out.AddRegion(Region(reg.mName, reg.mKind, reg.mDim, reg.mTag, std::move(e)));
+            // A domain's boundary lines are also its triangles' sides.
+            if (!side_entries[r].empty()) {
+                NDArray se(DType::Int64, {side_entries[r].size() / 2, 2});
+                std::copy(side_entries[r].begin(), side_entries[r].end(), se.As<std::int64_t>());
+                out.AddRegion(
+                    Region(reg.mName, RegionKind::Side, reg.mDim, reg.mTag, std::move(se)));
+            }
         } else if (reg.mKind == RegionKind::Side) {
             NDArray e(DType::Int64, {side_entries[r].size() / 2, 2});
             std::copy(side_entries[r].begin(), side_entries[r].end(), e.As<std::int64_t>());
@@ -238270,10 +238517,20 @@ Mesh mmg_decode(MmgSession& rS, const MmgInput& rIn, const Mesh& rMesh, MmgRepor
             out.AddRegion(Region(reg.mName, reg.mKind, reg.mDim, reg.mTag, std::move(e)));
         }
     }
+    for (std::size_t g = 0; g < rX.mElementGroups.size(); ++g) {
+        NDArray e(DType::Int64, {group_entries[g].size()});
+        std::copy(group_entries[g].begin(), group_entries[g].end(), e.As<std::int64_t>());
+        out.AddRegion(Region(rX.mElementGroups[g].first, RegionKind::Cell, std::move(e)));
+    }
+    if (!rX.mInterfaceName.empty()) {
+        NDArray e(DType::Int64, {interface_entries.size() / 2, 2});
+        std::copy(interface_entries.begin(), interface_entries.end(), e.As<std::int64_t>());
+        out.AddRegion(Region(rX.mInterfaceName, RegionKind::Side, std::move(e)));
+    }
     for (const std::string& name : rMesh.FieldDataNames())
         out.AddFieldData(name, detail::data_owned_copy(rMesh.FieldData(name)));
 
-    rReport.mNumPointsOut = static_cast<std::int64_t>(unp);
+    rReport.mNumPointsOut = static_cast<std::int64_t>(unp_out);
     rReport.mNumElementsOut = static_cast<std::int64_t>(num_elements);
     const QualityReport q = compute_quality(out);
     for (const auto& [name, summary] : q.mMetrics)
@@ -238334,6 +238591,176 @@ AdaptResult adapt(const Mesh& rMesh, const AdaptOptions& rOptions) {
         }
         report.mStatus = mmg_run(ier, op, report.mWarnings);
         result.mMesh = mmg_decode(s, in, rMesh, report, op);
+    }
+    for (const std::string& w : report.mWarnings)
+        log::warn("{}", w);
+    return result;
+}
+
+DiscretizeLevelsetResult discretize_levelset(const Mesh& rMesh,
+                                             const DiscretizeLevelsetOptions& rOptions) {
+    const char* op = "discretize_levelset";
+    if (rOptions.mLevelSet.empty())
+        throw std::invalid_argument("discretize_levelset: name the level set, a point_data array");
+    DiscretizeLevelsetResult result;
+    MmgReport& report = result.mReport;
+    MmgInput in = mmg_encode(rMesh, rOptions.mParameters, op, {rOptions.mLevelSet},
+                             report.mWarnings, MmgEncodeMode::LevelSet);
+    report.mLibrary = mmg_lib_name(in.mLib);
+    report.mNumPointsIn = static_cast<std::int64_t>(rMesh.NumPoints());
+    report.mNumElementsIn = static_cast<std::int64_t>(in.mNumElements);
+    std::vector<double> ls = mmg_scalar_field(rMesh, rOptions.mLevelSet, op);
+
+    MmgDecodeExtras x;
+    x.mInterfaceRef = MG_ISO;
+    x.mInterfaceName = "interface";
+    std::vector<MMG5_int> inside = {MG_MINUS}, outside = {MG_PLUS};
+    for (const MmgMaterial& m : rOptions.mMaterials) {
+        inside.push_back(static_cast<MMG5_int>(m.mRefInside));
+        outside.push_back(static_cast<MMG5_int>(m.mRefOutside));
+    }
+    x.mInsideRefs = inside;
+    x.mElementGroups = {{"inside", inside}, {"outside", outside}};
+    {
+        detail::MmgCallGuard guard;
+        MmgSession s(in.mLib, true, false);
+        mmg_load(s, in);
+        mmg_parameters(s, in, rMesh, rOptions.mParameters, op);
+        mmg_check(mmg_set_i(s, s.mMet, MMG3D_IPARAM_iso, MMGS_IPARAM_iso, MMG2D_IPARAM_iso, 1),
+                  "the parameter iso");
+        mmg_check(mmg_set_d(s, s.mMet, MMG3D_DPARAM_ls, MMGS_DPARAM_ls, MMG2D_DPARAM_ls,
+                            rOptions.mIsovalue),
+                  "the isovalue");
+        if (rOptions.mRemoveSmallComponents > 0)
+            mmg_check(mmg_set_d(s, s.mMet, MMG3D_DPARAM_rmc, MMGS_DPARAM_rmc, MMG2D_DPARAM_rmc,
+                                rOptions.mRemoveSmallComponents),
+                      "the parameter rmc");
+        if (!rOptions.mMaterials.empty()) {
+            mmg_check(mmg_set_i(s, s.mMet, MMG3D_IPARAM_numberOfMat, MMGS_IPARAM_numberOfMat,
+                                MMG2D_IPARAM_numberOfMat,
+                                static_cast<MMG5_int>(rOptions.mMaterials.size())),
+                      "the number of materials");
+            for (const MmgMaterial& m : rOptions.mMaterials) {
+                const int split = m.mSplit ? MMG5_MMAT_Split : MMG5_MMAT_NoSplit;
+                const auto ref = static_cast<MMG5_int>(m.mRef);
+                const auto rin = static_cast<MMG5_int>(m.mRefInside);
+                const auto rout = static_cast<MMG5_int>(m.mRefOutside);
+                int ok = 0;
+                switch (in.mLib) {
+                    case MmgLib::Mmg3d:
+                        ok = MMG3D_Set_multiMat(s.mMesh, s.mLs, ref, split, rin, rout);
+                        break;
+                    case MmgLib::Mmgs:
+                        ok = MMGS_Set_multiMat(s.mMesh, s.mLs, ref, split, rin, rout);
+                        break;
+                    case MmgLib::Mmg2d:
+                        ok = MMG2D_Set_multiMat(s.mMesh, s.mLs, ref, split, rin, rout);
+                        break;
+                }
+                mmg_check(ok, "a material");
+            }
+        }
+        mmg_vertex_sol(s, s.mLs, MMG5_Scalar, ls);
+        int ier = MMG5_STRONGFAILURE;
+        switch (in.mLib) {
+            case MmgLib::Mmg3d:
+                ier = MMG3D_mmg3dls(s.mMesh, s.mLs, s.mMet);
+                break;
+            case MmgLib::Mmgs:
+                ier = MMGS_mmgsls(s.mMesh, s.mLs, s.mMet);
+                break;
+            case MmgLib::Mmg2d:
+                ier = MMG2D_mmg2dls(s.mMesh, s.mLs, s.mMet);
+                break;
+        }
+        report.mStatus = mmg_run(ier, op, report.mWarnings);
+        result.mMesh = mmg_decode(s, in, rMesh, report, op, x);
+    }
+    for (const std::string& w : report.mWarnings)
+        log::warn("{}", w);
+    return result;
+}
+
+MeshDomainResult mesh_domain(const Mesh& rBoundary, const MeshDomainOptions& rOptions) {
+    const char* op = "mesh_domain";
+    if (rOptions.mHsiz > 0 && !rOptions.mSize.empty())
+        throw std::invalid_argument("mesh_domain: give one of hsiz and size");
+    if (rOptions.mHoles.size() % 2 != 0)
+        throw std::invalid_argument("mesh_domain: holes are x, y pairs");
+    MeshDomainResult result;
+    MmgReport& report = result.mReport;
+    MmgInput in = mmg_encode(rBoundary, rOptions.mParameters, op, {rOptions.mSize},
+                             report.mWarnings, MmgEncodeMode::Domain);
+    report.mLibrary = mmg_lib_name(in.mLib);
+    report.mNumPointsIn = static_cast<std::int64_t>(rBoundary.NumPoints());
+    std::vector<double> size;
+    if (!rOptions.mSize.empty()) {
+        size = mmg_scalar_field(rBoundary, rOptions.mSize, op);
+        if (std::any_of(size.begin(), size.end(), [](double V) { return !(V > 0.0); }))
+            throw std::invalid_argument("mesh_domain: the size field must be positive everywhere");
+    }
+    {
+        detail::MmgCallGuard guard;
+        MmgSession s(in.mLib, false, false);
+        mmg_load(s, in);
+        mmg_parameters(s, in, rBoundary, rOptions.mParameters, op);
+        if (rOptions.mHsiz > 0)
+            mmg_check(MMG2D_Set_dparameter(s.mMesh, s.mMet, MMG2D_DPARAM_hsiz, rOptions.mHsiz),
+                      "the parameter hsiz");
+        if (!size.empty())
+            mmg_vertex_sol(s, s.mMet, MMG5_Scalar, size);
+        report.mStatus = mmg_run(MMG2D_mmg2dmesh(s.mMesh, s.mMet), op, report.mWarnings);
+
+        // MMG gives each enclosed region its own reference and has no holes:
+        // find the regions the hole points are in.
+        MMG5_int np = 0, nt = 0, nquad = 0, na = 0;
+        mmg_check(MMG2D_Get_meshSize(s.mMesh, &np, &nt, &nquad, &na), "to give the mesh size");
+        std::vector<double> xy(static_cast<std::size_t>(np) * 2);
+        std::vector<MMG5_int> vref(static_cast<std::size_t>(np));
+        std::vector<int> flags(static_cast<std::size_t>(std::max<MMG5_int>(np, nt) + 1));
+        std::vector<int> flags2(flags.size());
+        mmg_check(MMG2D_Get_vertices(s.mMesh, xy.data(), vref.data(), flags.data(), flags2.data()),
+                  "to give the vertices");
+        std::vector<MMG5_int> tri(static_cast<std::size_t>(nt) * 3),
+            tref(static_cast<std::size_t>(nt));
+        if (nt)
+            mmg_check(MMG2D_Get_triangles(s.mMesh, tri.data(), tref.data(), flags.data()),
+                      "to give the triangles");
+        MmgDecodeExtras x;
+        for (std::size_t h = 0; h + 1 < rOptions.mHoles.size(); h += 2) {
+            const double px = rOptions.mHoles[h], py = rOptions.mHoles[h + 1];
+            MMG5_int found = 0;
+            for (std::size_t t = 0; t < static_cast<std::size_t>(nt) && !found; ++t) {
+                const double* a = &xy[static_cast<std::size_t>(tri[t * 3] - 1) * 2];
+                const double* b = &xy[static_cast<std::size_t>(tri[t * 3 + 1] - 1) * 2];
+                const double* c = &xy[static_cast<std::size_t>(tri[t * 3 + 2] - 1) * 2];
+                const auto side = [](const double* P, const double* Q, double X, double Y) {
+                    return (Q[0] - P[0]) * (Y - P[1]) - (Q[1] - P[1]) * (X - P[0]);
+                };
+                const double d0 = side(a, b, px, py), d1 = side(b, c, px, py),
+                             d2 = side(c, a, px, py);
+                if ((d0 >= 0 && d1 >= 0 && d2 >= 0) || (d0 <= 0 && d1 <= 0 && d2 <= 0))
+                    found = tref[t];
+            }
+            if (!found)
+                throw std::invalid_argument("mesh_domain: the hole point (" + std::to_string(px) +
+                                            ", " + std::to_string(py) + ") is outside the domain");
+            if (std::find(x.mDropElementRefs.begin(), x.mDropElementRefs.end(), found) ==
+                x.mDropElementRefs.end())
+                x.mDropElementRefs.push_back(found);
+        }
+        std::vector<MMG5_int> kept;
+        for (const MMG5_int ref : tref)
+            if (std::find(kept.begin(), kept.end(), ref) == kept.end() &&
+                std::find(x.mDropElementRefs.begin(), x.mDropElementRefs.end(), ref) ==
+                    x.mDropElementRefs.end())
+                kept.push_back(ref);
+        std::sort(kept.begin(), kept.end());
+        for (const MMG5_int ref : kept)
+            x.mElementGroups.push_back({"subdomain:" + std::to_string(ref), {ref}});
+        result.mNumSubdomains = static_cast<std::int64_t>(kept.size());
+        result.mNumHoles = static_cast<std::int64_t>(x.mDropElementRefs.size());
+        result.mMesh = mmg_decode(s, in, rBoundary, report, op, x);
     }
     for (const std::string& w : report.mWarnings)
         log::warn("{}", w);
@@ -244115,6 +244542,14 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Hsiz", "Size", "Metric", "Hmin", "Hmax", "Hausd", "Hgrad", "Hgradreq", "AngleDetection",
           "Optim", "NoInsert", "NoSwap", "NoMove", "NoSurf", "Nreg", "Opnbdy", "Frozen",
           "Required"}},
+        {"DiscretizeLevelset",
+         {"LevelSet", "Isovalue", "RemoveSmallComponents", "Materials", "Hmin", "Hmax", "Hausd",
+          "Hgrad", "Hgradreq", "AngleDetection", "Optim", "NoInsert", "NoSwap", "NoMove", "NoSurf",
+          "Nreg", "Opnbdy", "Frozen", "Required"}},
+        {"MeshDomain",
+         {"Hsiz", "Size", "Holes", "Hmin", "Hmax", "Hausd", "Hgrad", "Hgradreq", "AngleDetection",
+          "Optim", "NoInsert", "NoSwap", "NoMove", "NoSurf", "Nreg", "Opnbdy", "Frozen",
+          "Required"}},
         {"Remesh",
          {"NumClusters", "Subdivide", "SubsampleRatio", "MaxSubdivide", "MaxIterations",
           "MaxRepairPasses", "Metric", "Gradation", "PreserveBoundary", "MaxAnisotropy"}},
@@ -244378,15 +244813,19 @@ MmgParameters pipe_mmg_parameters(const PipelineStep& rStep, const Mesh& rMesh) 
 }
 
 /// An MMG step's counters, and its warnings into the run's.
-void pipe_mmg_report(PipelineReport& rReport, const PipelineStep& rStep, const MmgReport& rR) {
-    pipe_push_step(rReport, rStep,
-                   {{"NumPointsIn", static_cast<double>(rR.mNumPointsIn)},
-                    {"NumPointsOut", static_cast<double>(rR.mNumPointsOut)},
-                    {"NumElementsIn", static_cast<double>(rR.mNumElementsIn)},
-                    {"NumElementsOut", static_cast<double>(rR.mNumElementsOut)},
-                    {"LowFailure", rR.mStatus == MmgStatus::LowFailure ? 1.0 : 0.0},
-                    {"QualityMin", rR.mQuality.mMin},
-                    {"QualityMean", rR.mQuality.mMean}});
+void pipe_mmg_report(PipelineReport& rReport, const PipelineStep& rStep, const MmgReport& rR,
+                     std::vector<std::pair<std::string, double>> extra = {}) {
+    std::vector<std::pair<std::string, double>> counters{
+        {"NumPointsIn", static_cast<double>(rR.mNumPointsIn)},
+        {"NumPointsOut", static_cast<double>(rR.mNumPointsOut)},
+        {"NumElementsIn", static_cast<double>(rR.mNumElementsIn)},
+        {"NumElementsOut", static_cast<double>(rR.mNumElementsOut)},
+        {"LowFailure", rR.mStatus == MmgStatus::LowFailure ? 1.0 : 0.0},
+        {"QualityMin", rR.mQuality.mMin},
+        {"QualityMean", rR.mQuality.mMean}};
+    for (auto& rCounter : extra)
+        counters.push_back(std::move(rCounter));
+    pipe_push_step(rReport, rStep, std::move(counters));
     for (const std::string& w : rR.mWarnings)
         rReport.mWarnings.push_back(w);
 }
@@ -245858,6 +246297,45 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         AdaptResult ar = adapt(mesh, opts);
         pipe_mmg_report(rReport, rStep, ar.mReport);
         return std::move(ar.mMesh);
+    }
+    if (op == "DiscretizeLevelset") {
+        // MMG (roadmap 3.2.2): the level set's isovalue becomes a conformal interface.
+        DiscretizeLevelsetOptions opts;
+        opts.mParameters = pipe_mmg_parameters(rStep, mesh);
+        opts.mLevelSet = pipe_text(rStep, "LevelSet", "");
+        if (opts.mLevelSet.empty())
+            throw std::invalid_argument(pipe_err(rStep, "parameter 'LevelSet' is required"));
+        opts.mIsovalue = pipe_number(rStep, "Isovalue", 0.0);
+        opts.mRemoveSmallComponents = pipe_number(rStep, "RemoveSmallComponents", -1.0);
+        const std::vector<double> mats = pipe_dvec(rStep, "Materials");
+        if (mats.size() % 4 != 0)
+            throw std::invalid_argument(
+                pipe_err(rStep,
+                         "parameter 'Materials' must hold Ref, Split, RefInside, RefOutside "
+                         "per material"));
+        for (std::size_t k = 0; k < mats.size(); k += 4)
+            opts.mMaterials.push_back(MmgMaterial{
+                static_cast<std::int64_t>(mats[k]), mats[k + 1] != 0.0,
+                static_cast<std::int64_t>(mats[k + 2]), static_cast<std::int64_t>(mats[k + 3])});
+        DiscretizeLevelsetResult lr = discretize_levelset(mesh, opts);
+        pipe_mmg_report(rReport, rStep, lr.mReport);
+        return std::move(lr.mMesh);
+    }
+    if (op == "MeshDomain") {
+        // MMG (roadmap 3.2.3): the planar domain the line cells bound, triangulated.
+        MeshDomainOptions opts;
+        opts.mParameters = pipe_mmg_parameters(rStep, mesh);
+        opts.mHsiz = pipe_number(rStep, "Hsiz", -1.0);
+        opts.mSize = pipe_text(rStep, "Size", "");
+        opts.mHoles = pipe_dvec(rStep, "Holes");
+        if (opts.mHoles.size() % 2 != 0)
+            throw std::invalid_argument(
+                pipe_err(rStep, "parameter 'Holes' must hold x, y per hole"));
+        MeshDomainResult dr = mesh_domain(mesh, opts);
+        pipe_mmg_report(rReport, rStep, dr.mReport,
+                        {{"NumSubdomains", static_cast<double>(dr.mNumSubdomains)},
+                         {"NumHoles", static_cast<double>(dr.mNumHoles)}});
+        return std::move(dr.mMesh);
     }
     if (op == "Remesh") {
         // Unlike every other step, the output has NO correspondence to the

@@ -547,6 +547,10 @@ void print_usage(std::ostream& os) {
           "                            exactly one of --ratio/--target-cells/--max-error\n"
           "  adapt                   Remesh to a size or a metric with MMG (a build with\n"
           "                            MESHIOPLUSPLUS_WITH_MMG); --hsiz, --size or --metric\n"
+          "  discretize-levelset     Embed a level set conformally and remesh both sides\n"
+          "                            with MMG; --level-set NAME, --isovalue, --material\n"
+          "  mesh-2d                 Triangulate the planar domain a line mesh bounds with\n"
+          "                            MMG; --hsiz or --size, --hole X,Y (repeatable)\n"
           "  remesh                  Replace a surface's triangulation with a new,\n"
           "                            well-shaped one (ACVD clustering); --num-clusters\n"
           "                            is required, --metric isotropic|quadric|anisotropic\n"
@@ -6007,6 +6011,68 @@ int cmd_adapt(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+int cmd_discretize_levelset(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_mmg_options({
+                                  {"level-set", {}, true},
+                                  {"isovalue", {}, true},
+                                  {"rmc", {}, true},
+                                  {"material", {}, true},
+                              }));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("discretize-levelset requires exactly INFILE and OUTFILE");
+    if (!has_opt(p, "level-set"))
+        throw std::runtime_error("discretize-levelset: --level-set is required");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::DiscretizeLevelsetOptions options;
+    options.mParameters = cli_mmg_parameters(p, mesh);
+    options.mLevelSet = opt_value(p, "level-set");
+    options.mIsovalue = meshioplusplus::detail::stod_c(opt_value(p, "isovalue", "0"));
+    if (has_opt(p, "rmc"))
+        options.mRemoveSmallComponents = meshioplusplus::detail::stod_c(opt_value(p, "rmc"));
+    for (const std::string& text : meshioplusplus::cli::opt_values(p, "material")) {
+        const std::vector<double> v = parse_doubles(text);
+        if (v.size() != 4)
+            throw std::runtime_error("--material expects REF,SPLIT,IN,OUT, got '" + text + "'");
+        options.mMaterials.push_back(meshioplusplus::MmgMaterial{
+            static_cast<std::int64_t>(v[0]), v[1] != 0.0, static_cast<std::int64_t>(v[2]),
+            static_cast<std::int64_t>(v[3])});
+    }
+    auto r = meshioplusplus::discretize_levelset(mesh, options);
+    if (!has_flag(p, "quiet"))
+        cli_mmg_summary("cut", r.mReport);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_mesh_2d(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_mmg_options({
+                                  {"hsiz", {}, true},
+                                  {"size", {}, true},
+                                  {"hole", {}, true},
+                              }));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("mesh-2d requires exactly INFILE and OUTFILE");
+    Mesh boundary = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::MeshDomainOptions options;
+    options.mParameters = cli_mmg_parameters(p, boundary);
+    if (has_opt(p, "hsiz"))
+        options.mHsiz = meshioplusplus::detail::stod_c(opt_value(p, "hsiz"));
+    options.mSize = opt_value(p, "size", "");
+    for (const std::string& text : meshioplusplus::cli::opt_values(p, "hole")) {
+        const std::vector<double> v = parse_doubles(text);
+        if (v.size() != 2)
+            throw std::runtime_error("--hole expects X,Y, got '" + text + "'");
+        options.mHoles.insert(options.mHoles.end(), v.begin(), v.end());
+    }
+    auto r = meshioplusplus::mesh_domain(boundary, options);
+    if (!has_flag(p, "quiet")) {
+        cli_mmg_summary("triangulated", r.mReport);
+        std::cout << "  " << r.mNumSubdomains << " subdomain(s), " << r.mNumHoles << " hole(s)\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
 int cmd_remesh(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -8158,6 +8224,10 @@ int main(int argc, char** argv) {
             return cmd_decimate_volume(rest);
         if (cmd == "adapt")
             return cmd_adapt(rest);
+        if (cmd == "discretize-levelset")
+            return cmd_discretize_levelset(rest);
+        if (cmd == "mesh-2d")
+            return cmd_mesh_2d(rest);
         if (cmd == "remesh")
             return cmd_remesh(rest);
         if (cmd == "remesh-volume")

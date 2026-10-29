@@ -76,6 +76,7 @@ module meshioplusplus
     public :: mio_tetrahedralize, mio_tetrahedralize_report, mio_has_netgen
     public :: mio_has_mmg, mio_has_mmg_elas, mio_mmg_index_bits
     public :: mio_adapt, mio_mmg_report, mio_metric_from_hessian
+    public :: mio_discretize_levelset, mio_mesh_domain
     public :: mio_error_size_report
     public :: mio_conformity_report
     public :: MIO_CONFORMITY_CONFORMING, MIO_CONFORMITY_WELD, MIO_CONFORMITY_PROXIMITY
@@ -774,6 +775,27 @@ module meshioplusplus
         real(c_double) :: hsiz = -1.0_c_double
         type(c_ptr) :: size = c_null_ptr
         type(c_ptr) :: metric = c_null_ptr
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_discretize_levelset_opts` (240 bytes).
+    type, bind(c) :: mio_discretize_levelset_opts_t
+        type(mio_mmg_params_t) :: params
+        type(c_ptr) :: level_set = c_null_ptr
+        real(c_double) :: isovalue = 0.0_c_double
+        real(c_double) :: remove_small_components = -1.0_c_double
+        type(c_ptr) :: materials = c_null_ptr
+        integer(c_int64_t) :: num_materials = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_mesh_domain_opts` (232 bytes).
+    type, bind(c) :: mio_mesh_domain_opts_t
+        type(mio_mmg_params_t) :: params
+        real(c_double) :: hsiz = -1.0_c_double
+        type(c_ptr) :: size = c_null_ptr
+        type(c_ptr) :: holes = c_null_ptr
+        integer(c_int64_t) :: num_holes = 0
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
@@ -4962,6 +4984,25 @@ module meshioplusplus
             type(c_ptr) :: h
         end function
 
+        function c_mio_discretize_levelset(mesh, opts, report) &
+                bind(c, name="mio_discretize_levelset") result(h)
+            import :: c_ptr, mio_discretize_levelset_opts_t, mio_mmg_report
+            type(c_ptr), value :: mesh
+            type(mio_discretize_levelset_opts_t), intent(in) :: opts
+            type(mio_mmg_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_mesh_domain(mesh, opts, report, num_subdomains, num_holes) &
+                bind(c, name="mio_mesh_domain") result(h)
+            import :: c_ptr, c_int64_t, mio_mesh_domain_opts_t, mio_mmg_report
+            type(c_ptr), value :: mesh
+            type(mio_mesh_domain_opts_t), intent(in) :: opts
+            type(mio_mmg_report), intent(out) :: report
+            integer(c_int64_t), intent(out) :: num_subdomains, num_holes
+            type(c_ptr) :: h
+        end function
+
         function c_mio_metric_from_hessian(mesh, hessian, error, hmin, hmax, output) &
                 bind(c, name="mio_metric_from_hessian") result(h)
             import :: c_ptr, c_double, c_char
@@ -5869,6 +5910,82 @@ contains
             return
         end if
         if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Embed the isovalue (0) of the point-data level set `level_set` in
+    !> `mesh` and remesh both sides with MMG (roadmap 3.2.2). The elements
+    !> carry MMG's references as cell data medit:ref (3 inside, 2 outside) and
+    !> the cell regions inside/outside; the interface is the side region
+    !> "interface". `hausd` and `hmax` are MMG's.
+    function mio_discretize_levelset(mesh, level_set, isovalue, hausd, hmax, report, stat, &
+                                     errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in) :: level_set
+        real(real64), intent(in), optional :: isovalue, hausd, hmax
+        type(mio_mmg_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_discretize_levelset_opts_t) :: opts
+        type(mio_mmg_report) :: rep
+        character(kind=c_char, len=:), allocatable, target :: name_c
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. c_sizeof(opts) /= 240_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: discretize_levelset layout mismatch'
+            error stop 1
+        end if
+        name_c = c_str(level_set)
+        opts%level_set = c_loc(name_c(1:1))
+        if (present(isovalue)) opts%isovalue = real(isovalue, c_double)
+        if (present(hausd)) opts%params%hausd = real(hausd, c_double)
+        if (present(hmax)) opts%params%hmax = real(hmax, c_double)
+        out%handle = c_mio_discretize_levelset(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('discretize_levelset', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Triangulate the planar domain bounded by the line cells of `boundary`
+    !> with MMG (roadmap 3.2.3), at the edge size `hsiz`. `holes(2, k)` holds a
+    !> point inside each hole, whose region is left out; each enclosed region
+    !> is a cell region subdomain:<k>.
+    function mio_mesh_domain(boundary, hsiz, holes, report, num_subdomains, stat, errmsg) &
+            result(out)
+        type(mio_mesh), intent(in) :: boundary
+        real(real64), intent(in), optional :: hsiz
+        real(real64), intent(in), optional :: holes(:, :)
+        type(mio_mmg_report), intent(out), optional :: report
+        integer(int64), intent(out), optional :: num_subdomains
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_mesh_domain_opts_t) :: opts
+        type(mio_mmg_report) :: rep
+        real(c_double), allocatable, target :: xy(:)
+        integer(c_int64_t) :: nsub, nholes
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. c_sizeof(opts) /= 232_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: mesh_domain layout mismatch'
+            error stop 1
+        end if
+        if (present(hsiz)) opts%hsiz = real(hsiz, c_double)
+        if (present(holes)) then
+            if (size(holes, 2) > 0) then
+                allocate (xy(2*size(holes, 2)))
+                xy = real(reshape(holes(1:2, :), [2*size(holes, 2)]), c_double)
+                opts%holes = c_loc(xy(1))
+                opts%num_holes = int(size(holes, 2), c_int64_t)
+            end if
+        end if
+        out%handle = c_mio_mesh_domain(boundary%handle, opts, rep, nsub, nholes)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('mesh_domain', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        if (present(num_subdomains)) num_subdomains = int(nsub, int64)
         call clear_status(stat, errmsg)
     end function
 

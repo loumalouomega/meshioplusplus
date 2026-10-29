@@ -192,7 +192,14 @@ if TYPE_CHECKING:
     from ._mesh_cad import mesh_cad_surface, triangulate_polygon_2d
     from ._mirror import mirror
     from ._ml import FeatureMatrix, edge_index, feature_matrix, has_zarr, write_dataset
-    from ._mmg import adapt, has_mmg, has_mmg_elas, metric_from_hessian
+    from ._mmg import (
+        adapt,
+        discretize_levelset,
+        has_mmg,
+        has_mmg_elas,
+        mesh_domain,
+        metric_from_hessian,
+    )
     from ._normals import compute_normals
     from ._octree import octree
     from ._octree_mesh import octree_mesh
@@ -442,6 +449,8 @@ _LAZY_ATTRS = {
     "metric_from_hessian": "_mmg",
     "has_mmg": "_mmg",
     "has_mmg_elas": "_mmg",
+    "discretize_levelset": "_mmg",
+    "mesh_domain": "_mmg",
     "remesh_volume": "_remesh_volume",
     "compute_bandwidth": "_reorder",
     "render_image": "_render",
@@ -648,6 +657,8 @@ __all__ = [
     "metric_from_hessian",
     "has_mmg",
     "has_mmg_elas",
+    "discretize_levelset",
+    "mesh_domain",
     "optimize_volume",
     "grid",
     "rectangle",

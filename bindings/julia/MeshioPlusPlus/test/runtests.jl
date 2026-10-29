@@ -1111,9 +1111,20 @@ end
         @test r.status == "success" && r.library == "mmg2d"
         @test r.num_elements_out > r.num_elements_in
         @test r.num_points_out == num_points(r.mesh)
+        xy = points(sq)
+        add_point_data!(sq, "phi", [hypot(xy[1, i] - 0.5, xy[2, i] - 0.5) - 0.3
+                                    for i in 1:num_points(sq)])
+        ls = discretize_levelset(sq, "phi"; hmax=0.1)
+        @test ls.status == "success" && ls.library == "mmg2d"
+        box = Mesh()
+        set_points!(box, [0.0 1.0 1.0 0.0; 0.0 0.0 1.0 1.0])
+        add_cell_block!(box, "line", [1 2 3 4; 2 3 4 1])
+        d = mesh_domain(box; hsiz=0.1)
+        @test d.num_subdomains == 1 && d.num_holes == 0 && d.num_elements_out > 100
     else
         @test !has_mmg_elas()
         @test_throws MeshioError adapt(sq; hsiz=0.1)
+        @test_throws MeshioError mesh_domain(sq; hsiz=0.1)
     end
 end
 

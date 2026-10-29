@@ -887,6 +887,53 @@ meshioplusplus adapt square.vtu out.vtu --metric metric --required inlet
 
 ---
 
+## meshioplusplus discretize-levelset
+
+Embed the isovalue of a `point_data` level set conformally in a simplicial mesh and remesh both sides with [MMG](/mmg#discretize_levelset) (mmg3d, mmg2d or mmgs by the mesh, as `adapt`). Needs a build with `MESHIOPLUSPLUS_WITH_MMG`.
+
+```
+meshioplusplus discretize-levelset --level-set NAME [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--level-set NAME` | The one-component `point_data` level set (required) |
+| `--isovalue V` | The value to cut at (default `0`) |
+| `--rmc F` | Remove the cut's components smaller than this volume fraction (MMG's `rmc`) |
+| `--material REF,SPLIT,IN,OUT` | A material: the cells of `medit:ref` `REF` cut (`SPLIT` 1) into `IN` and `OUT`, or kept whole (`SPLIT` 0); repeatable |
+| `adapt`'s MMG options | `--hmin` … `--required`, `--verbose-mmg`, `--quiet`, `-i`/`-o` |
+
+The elements carry `medit:ref` (3 inside, 2 outside, or the materials') and the cell regions `inside` and `outside`; the interface is the side region `interface`.
+
+```sh
+meshioplusplus discretize-levelset box.vtu cut.vtu --level-set sdf:distance --hausd 0.005
+```
+
+---
+
+## meshioplusplus mesh-2d
+
+Triangulate the planar domain the `line` cells of a mesh bound with [MMG](/mmg#mesh_domain)'s `MMG2D_mmg2dmesh`. Needs a build with `MESHIOPLUSPLUS_WITH_MMG`.
+
+```
+meshioplusplus mesh-2d [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--hsiz H` | A constant target edge size |
+| `--size NAME` | A one-component `point_data` array: the size at the boundary's points |
+| `--hole X,Y` | A point inside a region to leave out (repeatable) |
+| `adapt`'s MMG options | `--hmin` … `--required`, `--verbose-mmg`, `--quiet`, `-i`/`-o` |
+
+Each enclosed region is a cell region `subdomain:<k>`; the summary adds the subdomain and hole counts.
+
+```sh
+meshioplusplus mesh-2d annulus.vtu out.vtu --hsiz 0.05 --hole 0,0
+```
+
+---
+
 ## meshioplusplus remesh
 
 Replace a **surface** mesh's own triangulation with a new, near-uniformly-sized, well-shaped one at a caller-chosen vertex count, by approximated centroidal Voronoi diagram (ACVD) clustering (see [remeshing](/remesh)).

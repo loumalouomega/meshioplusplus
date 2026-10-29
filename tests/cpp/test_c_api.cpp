@@ -7617,3 +7617,67 @@ TEST(CApi, MetricFromHessian) {
     EXPECT_EQ(mio_metric_from_hessian(m, "nope", 1.0, 0.1, 1.0, nullptr), nullptr);
     mio_mesh_free(m);
 }
+
+TEST(CApi, DiscretizeLevelsetAndMeshDomain) {
+    EXPECT_EQ(sizeof(mio_mmg_material), 32u);
+    EXPECT_EQ(sizeof(mio_discretize_levelset_opts), 240u);
+    EXPECT_EQ(sizeof(mio_mesh_domain_opts), 232u);
+    // A disc's level set in a square.
+    mio_gen_opts g;
+    mio_gen_opts_init(&g);
+    g.counts[0] = 8;
+    g.counts[1] = 8;
+    g.size[0] = g.size[1] = 2.0;
+    g.origin[0] = g.origin[1] = -1.0;
+    g.cell_type = MIO_GEN_TRIANGLE;
+    mio_mesh* square = mio_rectangle(&g);
+    ASSERT_NE(square, nullptr) << mio_last_error();
+    const int64_t n = mio_mesh_num_points(square);
+    const void* pts = nullptr;
+    ASSERT_EQ(mio_mesh_get_points(square, &pts, nullptr), MIO_OK);
+    std::vector<double> ls(static_cast<std::size_t>(n));
+    for (int64_t i = 0; i < n; ++i) {
+        const double* p = static_cast<const double*>(pts) + i * 3;
+        ls[static_cast<std::size_t>(i)] = std::sqrt(p[0] * p[0] + p[1] * p[1]) - 0.5;
+    }
+    const int64_t shape[] = {n};
+    ASSERT_EQ(mio_mesh_add_point_data(square, "ls", MIO_FLOAT64, 1, shape, ls.data()), MIO_OK);
+    mio_discretize_levelset_opts o;
+    mio_discretize_levelset_opts_init(&o);
+    o.level_set = "ls";
+    mio_mmg_report report;
+    mio_mesh* cut = mio_discretize_levelset(square, &o, &report);
+    if (!mio_has_mmg()) {
+        EXPECT_EQ(cut, nullptr);
+        EXPECT_NE(std::string(mio_last_error()).find("MESHIOPLUSPLUS_WITH_MMG"), std::string::npos);
+    } else {
+        ASSERT_NE(cut, nullptr) << mio_last_error();
+        EXPECT_STREQ(report.library, "mmg2d");
+        EXPECT_GT(report.num_elements_out, report.num_elements_in);
+        mio_mesh_free(cut);
+    }
+    EXPECT_EQ(mio_discretize_levelset(square, nullptr, nullptr), nullptr);
+    mio_mesh_free(square);
+
+    // A square's boundary, meshed.
+    const double xy[] = {0, 0, 1, 0, 1, 1, 0, 1};
+    const int64_t lines[] = {0, 1, 1, 2, 2, 3, 3, 0};
+    mio_mesh* boundary = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(boundary, MIO_FLOAT64, 4, 2, xy), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(boundary, "line", 4, 2, MIO_INT64, lines), MIO_OK);
+    mio_mesh_domain_opts d;
+    mio_mesh_domain_opts_init(&d);
+    d.hsiz = 0.1;
+    int64_t subdomains = -1, holes = -1;
+    mio_mesh* domain = mio_mesh_domain(boundary, &d, &report, &subdomains, &holes);
+    if (!mio_has_mmg()) {
+        EXPECT_EQ(domain, nullptr);
+    } else {
+        ASSERT_NE(domain, nullptr) << mio_last_error();
+        EXPECT_EQ(subdomains, 1);
+        EXPECT_EQ(holes, 0);
+        EXPECT_GT(report.num_elements_out, 100);
+        mio_mesh_free(domain);
+    }
+    mio_mesh_free(boundary);
+}

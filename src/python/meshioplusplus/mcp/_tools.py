@@ -82,6 +82,7 @@ from .. import (
     decimate,
     decimate_volume,
     diff,
+    discretize_levelset,
     disk,
     distance_to_surface,
     edit_regions,
@@ -115,6 +116,7 @@ from .. import (
     match_periodic_nodes,
     merge,
     mesh_cad_surface,
+    mesh_domain,
     metric_from_hessian,
     mirror,
     moebius,
@@ -4244,6 +4246,128 @@ def tool_adapt(
     )
 
 
+def tool_discretize_levelset(
+    input_path,
+    output_path,
+    level_set,
+    input_format=None,
+    output_format=None,
+    isovalue=0.0,
+    materials=None,
+    remove_small_components=None,
+    hmin=None,
+    hmax=None,
+    hausd=None,
+    hgrad=None,
+    hgradreq=None,
+    angle_detection=45.0,
+    optim=False,
+    noinsert=False,
+    noswap=False,
+    nomove=False,
+    nosurf=False,
+    nreg=False,
+    opnbdy=False,
+    frozen=None,
+    required=None,
+    local=None,
+):
+    """Embed the isovalue of a point_data level set conformally and remesh
+    both sides with MMG. The elements carry medit:ref (3 inside, 2 outside, or
+    the materials') and the cell regions inside/outside; the interface is the
+    side region interface. Reports as adapt."""
+    if not has_mmg():
+        return _mmg_unavailable("discretize_levelset")
+    mesh = _load(input_path, input_format)
+    out, report = discretize_levelset(
+        mesh,
+        level_set,
+        isovalue,
+        materials=[tuple(m) for m in materials or []],
+        remove_small_components=remove_small_components,
+        hmin=hmin,
+        hmax=hmax,
+        hausd=hausd,
+        hgrad=hgrad,
+        hgradreq=hgradreq,
+        angle_detection=angle_detection,
+        optim=optim,
+        noinsert=noinsert,
+        noswap=noswap,
+        nomove=nomove,
+        nosurf=nosurf,
+        nreg=nreg,
+        opnbdy=opnbdy,
+        frozen=frozen,
+        required=required,
+        local=local,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format), out, mmg_available=True, **report
+    )
+
+
+def tool_mesh_domain(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    hsiz=None,
+    size=None,
+    holes=None,
+    hmin=None,
+    hmax=None,
+    hausd=None,
+    hgrad=None,
+    hgradreq=None,
+    angle_detection=45.0,
+    optim=False,
+    noinsert=False,
+    noswap=False,
+    nomove=False,
+    nosurf=False,
+    nreg=False,
+    opnbdy=False,
+    frozen=None,
+    required=None,
+    local=None,
+):
+    """Triangulate the planar domain the line cells of a mesh bound with MMG
+    (MMG2D_mmg2dmesh). Each enclosed region is a cell region subdomain:<k>;
+    holes lists one (x, y) point inside each region to leave out. Reports as
+    adapt plus num_subdomains and num_holes."""
+    if not has_mmg():
+        return _mmg_unavailable("mesh_domain")
+    boundary = _load(input_path, input_format)
+    out, report = mesh_domain(
+        boundary,
+        hsiz=hsiz,
+        size=size,
+        holes=[tuple(h) for h in holes or []],
+        hmin=hmin,
+        hmax=hmax,
+        hausd=hausd,
+        hgrad=hgrad,
+        hgradreq=hgradreq,
+        angle_detection=angle_detection,
+        optim=optim,
+        noinsert=noinsert,
+        noswap=noswap,
+        nomove=nomove,
+        nosurf=nosurf,
+        nreg=nreg,
+        opnbdy=opnbdy,
+        frozen=frozen,
+        required=required,
+        local=local,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format), out, mmg_available=True, **report
+    )
+
+
 def tool_metric_from_hessian(
     input_path,
     output_path,
@@ -6566,6 +6690,18 @@ TOOL_REGISTRY = OrderedDict(
             {"fn": tool_decimate_volume, "wraps": ("decimate_volume",), "gated": None},
         ),
         ("adapt", {"fn": tool_adapt, "wraps": ("adapt",), "gated": None}),
+        (
+            "discretize_levelset",
+            {
+                "fn": tool_discretize_levelset,
+                "wraps": ("discretize_levelset",),
+                "gated": None,
+            },
+        ),
+        (
+            "mesh_domain",
+            {"fn": tool_mesh_domain, "wraps": ("mesh_domain",), "gated": None},
+        ),
         (
             "metric_from_hessian",
             {

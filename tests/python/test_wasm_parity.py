@@ -115,8 +115,10 @@ _C_WITHOUT_JS = {
     # The MMG backend (roadmap 3.2) is in neither WebAssembly artifact until
     # its port, roadmap 3.2.8: `hasMmg()` reports that, and the operations
     # join the wrapper with the port. metric_from_hessian goes with adapt,
-    # the one operation that reads its output.
+    # the one operation that reads its output. (mio_mesh_domain is one too,
+    # but its mesh_ prefix reads as a mesh accessor to this check.)
     "adapt",
+    "discretize_levelset",
     "metric_from_hessian",
 }
 

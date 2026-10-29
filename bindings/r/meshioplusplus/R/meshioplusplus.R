@@ -2973,6 +2973,56 @@ mio_adapt <- function(mesh, hsiz = -1, size = "", metric = "", hmin = -1, hmax =
         as.numeric(angle_detection), frozen, as.character(required))
 }
 
+#' Embed a level set conformally with MMG
+#'
+#' Roadmap 3.2.2 (`doc/mmg.md`): the `isovalue` of the one-component point
+#' data `level_set` becomes a conformal interface and both sides are remeshed.
+#' The elements carry cell data `medit:ref` (3 inside, 2 outside) and the cell
+#' regions `inside` and `outside`; the interface is the side region
+#' `interface`.
+#'
+#' @inheritParams mio_adapt
+#' @param level_set The level set's point-data name.
+#' @param isovalue The level to embed.
+#' @param remove_small_components MMG's `rmc` volume fraction (negative: keep
+#'   every component).
+#' @param materials `NULL` or a numeric matrix with columns `ref`, `split`
+#'   (0/1), `ref_inside` and `ref_outside`: MMG's multi-material mode.
+#' @return The list [mio_adapt()] returns.
+#' @export
+mio_discretize_levelset <- function(mesh, level_set, isovalue = 0,
+                                    remove_small_components = -1, materials = NULL,
+                                    hmin = -1, hmax = -1, hausd = -1, hgrad = -1,
+                                    angle_detection = 45, frozen = NULL,
+                                    required = character(0)) {
+  if (!is.null(materials)) materials <- matrix(as.numeric(materials), ncol = 4)
+  .Call(R_mio_discretize_levelset, mesh, as.character(level_set), as.numeric(isovalue),
+        as.numeric(remove_small_components), materials, as.numeric(hmin),
+        as.numeric(hmax), as.numeric(hausd), as.numeric(hgrad),
+        as.numeric(angle_detection), frozen, as.character(required))
+}
+
+#' Triangulate a planar domain with MMG
+#'
+#' Roadmap 3.2.3 (`doc/mmg.md`): the regions the `line` cells of `boundary`
+#' enclose are triangulated by `MMG2D_mmg2dmesh`, each a cell region
+#' `subdomain:<k>`; `holes` gives one point inside each region to leave out.
+#'
+#' @inheritParams mio_adapt
+#' @param boundary A mesh of `line` cells in the plane.
+#' @param holes `NULL` or a numeric matrix with columns `x` and `y`.
+#' @return The list [mio_adapt()] returns, plus `num_subdomains` and
+#'   `num_holes`.
+#' @export
+mio_mesh_domain <- function(boundary, hsiz = -1, size = "", holes = NULL, hmin = -1,
+                            hmax = -1, hausd = -1, hgrad = -1, angle_detection = 45,
+                            frozen = NULL, required = character(0)) {
+  if (!is.null(holes)) holes <- matrix(as.numeric(holes), ncol = 2)
+  .Call(R_mio_mesh_domain, boundary, as.numeric(hsiz), as.character(size), holes,
+        as.numeric(hmin), as.numeric(hmax), as.numeric(hausd), as.numeric(hgrad),
+        as.numeric(angle_detection), frozen, as.character(required))
+}
+
 #' An anisotropic metric from a Hessian
 #'
 #' The metric of the row-major point-data Hessian `hessian` ((n, 9), or (n, 4)

@@ -19,6 +19,7 @@
 // MMG. tests/python/test_mmg.py covers the same through the binding.
 
 // System includes
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
@@ -127,6 +128,90 @@ TEST(Mmg, AdaptRefusesWhatMmgDoesNotTake) {
     o.mHsiz = 0.1;
     o.mSize = "nope";
     EXPECT_THROW(meshioplusplus::adapt(mmg_test_square(), o), std::invalid_argument);
+}
+
+TEST(Mmg, LevelsetAndDomainRefuseByNameWithoutTheBackend) {
+    if (meshioplusplus::mmg_available())
+        GTEST_SKIP() << "built with MMG";
+    meshioplusplus::DiscretizeLevelsetOptions lo;
+    lo.mLevelSet = "phi";
+    EXPECT_THROW(meshioplusplus::discretize_levelset(mmg_test_square(), lo),
+                 meshioplusplus::Unsupported);
+    EXPECT_THROW(meshioplusplus::mesh_domain(mmg_test_square(), {}), meshioplusplus::Unsupported);
+}
+
+TEST(Mmg, DiscretizeLevelsetCutsADisc) {
+    if (!meshioplusplus::mmg_available())
+        GTEST_SKIP() << "built without MMG";
+    Mesh square =
+        meshioplusplus::rectangle({{10, 10}}, {{2.0, 2.0}}, {{-1.0, -1.0, 0.0}}, "triangle");
+    NDArray phi = NDArray::Uninit(DType::Float64, {square.NumPoints()});
+    const double* p = square.Points().As<double>();
+    for (std::size_t i = 0; i < square.NumPoints(); ++i)
+        phi.As<double>()[i] = std::hypot(p[i * 3], p[i * 3 + 1]) - 0.5;
+    square.AddPointData("phi", std::move(phi));
+    meshioplusplus::DiscretizeLevelsetOptions o;
+    o.mLevelSet = "phi";
+    const meshioplusplus::DiscretizeLevelsetResult r =
+        meshioplusplus::discretize_levelset(square, o);
+    EXPECT_EQ(r.mReport.mLibrary, "mmg2d");
+    EXPECT_NE(r.mMesh.FindRegion("inside", meshioplusplus::RegionKind::Cell), Mesh::npos);
+    EXPECT_NE(r.mMesh.FindRegion("outside", meshioplusplus::RegionKind::Cell), Mesh::npos);
+    const std::size_t iface = r.mMesh.FindRegion("interface", meshioplusplus::RegionKind::Side);
+    ASSERT_NE(iface, Mesh::npos);
+    EXPECT_GT(r.mMesh.Region(iface).NumEntries(), 8u);
+    // The inside's area is the disc's, pi r^2, to the polygon's error.
+    const std::size_t in = r.mMesh.FindRegion("inside", meshioplusplus::RegionKind::Cell);
+    const meshioplusplus::Region& inside = r.mMesh.Region(in);
+    const auto cb = r.mMesh.Cells(0);
+    ASSERT_EQ(cb.Type(), "triangle");
+    const std::int64_t* c = cb.Conn().As<std::int64_t>();
+    const double* q = r.mMesh.Points().As<double>();
+    const std::size_t d = r.mMesh.PointDim();
+    double area = 0.0;
+    for (std::size_t k = 0; k < inside.NumEntries(); ++k) {
+        const std::int64_t t = inside.Entries()[k];
+        const double* a = q + c[t * 3] * d;
+        const double* b = q + c[t * 3 + 1] * d;
+        const double* e = q + c[t * 3 + 2] * d;
+        area += 0.5 * std::abs((b[0] - a[0]) * (e[1] - a[1]) - (b[1] - a[1]) * (e[0] - a[0]));
+    }
+    EXPECT_NEAR(area, M_PI * 0.25, 0.02);
+}
+
+TEST(Mmg, MeshDomainKeepsTheHoleOut) {
+    if (!meshioplusplus::mmg_available())
+        GTEST_SKIP() << "built without MMG";
+    // Two squares, [0, 1]^2 around [0.4, 0.6]^2.
+    Mesh boundary;
+    const double xy[16] = {0, 0, 1, 0, 1, 1, 0, 1, 0.4, 0.4, 0.6, 0.4, 0.6, 0.6, 0.4, 0.6};
+    NDArray points = NDArray::Uninit(DType::Float64, {8, 2});
+    std::copy(xy, xy + 16, points.As<double>());
+    boundary.AssignPoints(std::move(points));
+    NDArray conn = NDArray::Uninit(DType::Int64, {8, 2});
+    const std::int64_t lines[16] = {0, 1, 1, 2, 2, 3, 3, 0, 4, 5, 5, 6, 6, 7, 7, 4};
+    std::copy(lines, lines + 16, conn.As<std::int64_t>());
+    boundary.AddCellBlock("line", std::move(conn));
+    meshioplusplus::MeshDomainOptions o;
+    o.mHsiz = 0.05;
+    const meshioplusplus::MeshDomainResult both = meshioplusplus::mesh_domain(boundary, o);
+    EXPECT_EQ(both.mNumSubdomains, 2);
+    EXPECT_EQ(both.mNumHoles, 0);
+    o.mHoles = {0.5, 0.5};
+    const meshioplusplus::MeshDomainResult r = meshioplusplus::mesh_domain(boundary, o);
+    EXPECT_EQ(r.mReport.mLibrary, "mmg2d");
+    EXPECT_EQ(r.mNumSubdomains, 1);
+    EXPECT_EQ(r.mNumHoles, 1);
+    // No point strictly inside the hole.
+    const double* q = r.mMesh.Points().As<double>();
+    const std::size_t d = r.mMesh.PointDim();
+    for (std::size_t i = 0; i < r.mMesh.NumPoints(); ++i) {
+        const bool in_hole = q[i * d] > 0.4 + 1e-9 && q[i * d] < 0.6 - 1e-9 &&
+                             q[i * d + 1] > 0.4 + 1e-9 && q[i * d + 1] < 0.6 - 1e-9;
+        EXPECT_FALSE(in_hole) << i;
+    }
+    o.mHoles = {5.0, 5.0};
+    EXPECT_THROW(meshioplusplus::mesh_domain(boundary, o), std::invalid_argument);
 }
 
 TEST(Mmg, MetricFromHessianScalesAndClamps) {
