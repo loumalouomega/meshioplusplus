@@ -951,7 +951,7 @@ SPEC: dict[str, dict] = {
         "field_data": False,
         "regions": [],
         "note": "Fields without geometry: the float data comes back renamed "
-        "medit:sol:<i>, element fields only through medit.read(path, sol=...).",
+        "`medit:sol:<i>`, element fields only through `medit.read(path, sol=...)`.",
     },
     "mfem": {
         "cells": {
