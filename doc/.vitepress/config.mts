@@ -287,6 +287,7 @@ export default defineConfig({
           { text: "3-D octree mesher: plan", link: "/octree_mesh_3d_plan" },
           { text: "Mesh generation from CAD: plan", link: "/mesh_cad_plan" },
           { text: "Boundary layers: plan", link: "/boundary_layer_plan" },
+          { text: "Split Python packages: plan", link: "/python_packages_plan" },
         ],
       },
       {

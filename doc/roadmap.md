@@ -138,6 +138,8 @@ The sanitizer leg, the reader fuzzing, the format conformance matrix, the proper
 
 - **4.6 The dataset manager shows the stored thumbnail.** A manifest entry's `Thumbnail` is a PNG path the Python API, the CLI and the MCP tools write and read, and the [browser dataset manager](./datasets.md#curating-in-the-browser) accepts, keeps and saves the key, but it still draws its own session-only preview of the entry it has open. Showing the stored picture on the entry's card, without opening the case, needs the manager to fetch the file (through the `--http` companion, or from the picked directory). **S**
 
+- **4.7 Split Python packages.** One MIT base wheel with the core as a shared library, and add-on wheels for the copyleft backends (`meshioplusplus-occt`, `-netgen`, `-mmg`) linked against it and pinned to its exact version, Kratos-style, with `[all]` installing everything; the base wheel then also gains HDF5, netCDF, CGNS, the codecs and KaHIP. Needs a runtime provider registry in the core first. The phases, the risks and the spikes that come before code are in the [plan](./python_packages_plan.md). **L–XL**
+
 ---
 
 ## Non-goals and decisions taken
@@ -211,3 +213,4 @@ Open work only; what shipped is in `CHANGELOG.md`.
 2. **The OSS-Fuzz submission ([§2](#_2-quality-of-implementation))** — calendar-bound, so it runs alongside everything else.
 3. **The MMG backend in the browser ([§3](#_3-operations))** — the native backend landed ([MMG backend](./mmg.md), v17.23.0: Medit `.sol`, then `adapt`, `discretize_levelset`, `mesh_domain` and, with ELAS, `move`); what is left is their port through the full WebAssembly build v17.2.0 shipped (3.2.8).
 4. **Registration ([§4](#_4-ecosystem-reach))** — calendar-bound, so start the submissions early and let them run alongside everything else; the dataset manager's thumbnails (4.6) needs no decision first and can run beside them.
+5. **Split Python packages ([4.7](#_4-ecosystem-reach))** — a major release (v18.0.0) that lands the provider registry, the shared core and the OpenCASCADE add-on together; the spikes of its [plan](./python_packages_plan.md) come first, then Netgen, MMG and the permissive libraries in the base wheel.

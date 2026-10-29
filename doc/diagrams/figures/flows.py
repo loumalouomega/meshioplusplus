@@ -1048,6 +1048,7 @@ def roadmap_map():
                 ("CLI chatbot over MCP tools", "M"),
                 ("viewer look · MDPA preview", "M"),
                 ("manager shows thumbnails", "S"),
+                ("split wheels (spikes first)", "L"),
             ],
             [],
         ),
