@@ -1164,6 +1164,52 @@ end
     close(m)
 end
 
+@testset "operations: check_conformity" begin
+    m = fixture()
+    c = check_conformity(m)
+    @test c.dimension >= 2
+    @test c.conforming
+    @test c.interface_mode == "conforming"
+    @test "conformity:hanging" in point_data_names(c.mesh)
+    @test c.warnings isa Vector{String}
+    close(c.mesh)
+    @test_throws MeshioError check_conformity(m; tolerance=-1.0)
+    close(m)
+end
+
+@testset "operations: extrude, revolve, mirror" begin
+    r = rectangle(dims=(3, 2))
+    e = extrude(r; direction=(0.0, 0.0, 1.0), num_layers=4)
+    @test e.num_hexahedra == 24
+    @test e.num_flipped == 0
+    @test num_points(e.mesh) == num_points(box(dims=(3, 2, 4)))
+    @test e.warnings isa Vector{String}
+    close(e.mesh)
+    g = extrude(r; offsets=[0.25, 1.0])
+    @test g.num_cells == 12
+    close(g.mesh)
+    @test_throws MeshioError extrude(r; direction=(0.0, 1.0, 0.0))
+    @test_throws ArgumentError extrude(r; direction=(0.0, 1.0))
+    v = revolve(r; num_layers=8)
+    @test v.full
+    @test v.num_on_axis == 3
+    @test v.num_wedges == 2 * 8
+    close(v.mesh)
+    @test_throws MeshioError revolve(r; num_layers=2)
+    close(r)
+    b = box(dims=(2, 2, 2), cell_type="tetra")
+    mr = mirror(b; normal=(1.0, 0.0, 0.0))
+    @test mr.num_flipped_cells == 48
+    @test quality_counts(mr.mesh).num_inverted == 0
+    close(mr.mesh)
+    k = mirror(b; keep_original=true)
+    @test k.num_points_on_plane == 9
+    @test num_points(k.mesh) == 2 * num_points(b) - 9
+    close(k.mesh)
+    @test_throws MeshioError mirror(b; normal=(0.0, 0.0, 0.0))
+    close(b)
+end
+
 @testset "operations: remesh" begin
     # A regular octahedron: the smallest closed 2-manifold triangle mesh with
     # no coplanar faces.
@@ -1606,6 +1652,30 @@ end
     @test num_points(lshape(n=3)) == 40
     @test num_points(plate_with_hole(nt=3, nr=2)) == 36
     @test num_points(honeycomb(dims=(3, 2))) == 22
+    @test num_points(line(n=4, stop=(0.0, 0.0, 2.0))) == 5
+    @test num_points(circle(n=6, order=2)) == 12
+    @test num_points(helix(n=10)) == 11
+    @test num_points(sphere_points(n=7)) == 7
+    @test num_points(box_points(n=7, seed=3)) == 7
+    @test num_points(tetra_sphere(subdivisions=1)) == 10
+    @test num_points(octa_sphere(subdivisions=1)) == 18
+    @test num_points(cube_sphere(n=2)) == 26
+    @test num_points(geo_sphere(n=2)) == 42
+    @test num_points(torus(nu=6, nv=4)) == 24
+    @test num_points(moebius(nu=6, nv=2)) == 18
+    @test num_points(tube(ntheta=6, nz=2)) == 18
+    @test num_points(cone(ntheta=6, nz=2)) == 20
+    @test num_points(capsule(ntheta=6, nz=1, ncap=2)) == 26
+    @test num_points(box_surface(dims=(1, 2, 3))) == 24
+    @test num_points(platonic("dodecahedron")) == 20
+    @test num_points(ball(n=1)) == 27
+    @test num_points(spherical_shell(n=2, nr=1)) == 52
+    @test num_points(pipe(ntheta=6, nr=1, nz=2)) == 36
+    @test num_points(fichera(n=1)) == 26
+    @test num_points(solid_torus(n=2, nu=5)) == 45
+    @test num_points(box(order=2, complete=true)) == 27
+    @test num_points(ball(n=1, order=3)) == 343
+    @test_throws Exception platonic("sphere")
     @test_throws Exception plate_with_hole(radius=0.9)
 
     # An unknown cell type is refused by name, a bad count by the core.
@@ -1686,6 +1756,11 @@ end
 
     # An unknown fill fails by name rather than silently defaulting.
     @test_throws ArgumentError voxelize(cube; resolution=[2, 2, 2], fill=:solid)
+    # An explicit plane for 2-D pixels; an unknown one fails by name.
+    flat = voxelize(cube; resolution=[4, 4, 0], plane=:xy)
+    @test flat.dims == (4, 4, 1)
+    close(flat.mesh)
+    @test_throws ArgumentError voxelize(cube; resolution=[4, 4, 0], plane=:uv)
 
     # The cube's exact SDF is known: the centre is 0.5 in, the others 1.0 out.
     d = sample_distance(cube, [0.5 2.0 -1.0; 0.5 0.5 0.5; 0.5 0.5 0.5];
@@ -1825,6 +1900,12 @@ end
                       freeform_smoothing=1e-10)
     @test general.closed && general.num_plane == 6
     close(general.mesh)
+    # The constrained primitives: off by default, and the cube keeps its faces.
+    @test plain.num_constrained_primitives == 0 && plain.num_constraint_groups == 0
+    constrained = fit_cad(cube; backend="native", constrain_primitives=true)
+    @test constrained.num_faces == 6 && constrained.num_demoted == 0
+    @test 0 <= constrained.num_constrained_primitives <= 6
+    close(constrained.mesh)
     if has_occt()
         snapped = fit_cad(cube; snap_junctions=true, face_deviation=true)
         @test snapped.valid && snapped.closed

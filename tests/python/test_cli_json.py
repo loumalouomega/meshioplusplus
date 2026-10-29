@@ -205,6 +205,7 @@ CASES = [
         "check_fail",
         lambda f: ["check", f["grid"], "-r", "aspect_ratio <= 0.5 @ 10%", "--json"],
     ),
+    ("check_conformity", lambda f: ["check-conformity", f["hexes"], "--json"]),
     ("stats", lambda f: ["stats", f["grid"], "--json"]),
     (
         "iga_evaluate_nurbs",
@@ -275,6 +276,44 @@ CASES = [
 
 # Verbs that write a file: each CLI gets its own output path.
 WRITING = [
+    (
+        "extrude",
+        lambda f, out: [
+            "extrude",
+            f["grid"],
+            out + ".vtu",
+            "--direction=0,0,-2",
+            "--num-layers",
+            "3",
+            "--ratio",
+            "1.5",
+            "--json",
+        ],
+    ),
+    (
+        "revolve",
+        lambda f, out: [
+            "revolve",
+            f["grid"],
+            out + ".vtu",
+            "--angle",
+            "90",
+            "--num-layers",
+            "4",
+            "--json",
+        ],
+    ),
+    (
+        "mirror",
+        lambda f, out: [
+            "mirror",
+            f["hexes"],
+            out + ".vtu",
+            "--normal=1,0,0",
+            "--keep-original",
+            "--json",
+        ],
+    ),
     (
         "feature_edges",
         lambda f, out: ["feature-edges", f["grid"], out + ".vtu", "--json"],
@@ -564,6 +603,29 @@ def test_check_exit_codes(files, tmp_path):
         assert _native(["check", files["grid"], "--gate", str(gate)])[0] == 0
 
 
+def test_check_conformity_exit_codes(files, tmp_path):
+    # A coarse quad beside two fine ones: one T-junction, exit 1.
+    pts = np.array(
+        [[0, 0], [1, 0], [1, 1], [0, 1], [2, 0], [2, 0.5], [2, 1], [1, 0.5]],
+        dtype=float,
+    )
+    quads = np.array([[0, 1, 2, 3], [1, 4, 5, 7], [7, 5, 6, 2]])
+    t = str(tmp_path / "t.vtu")
+    mio.write(t, mio.Mesh(pts, [("quad", quads)]))
+    assert _python(["check-conformity", files["hexes"]])[0] == 0
+    assert _python(["check-conformity", t])[0] == 1
+    flagged = str(tmp_path / "flags.vtu")
+    assert _python(["check-conformity", t, flagged])[0] == 1
+    assert list(np.nonzero(mio.read(flagged).point_data["conformity:hanging"])[0]) == [
+        7
+    ]
+    assert _python(["check-conformity", str(tmp_path / "missing.vtu")])[0] == 2
+    if NATIVE is not None:
+        assert _native(["check-conformity", files["hexes"]])[0] == 0
+        assert _native(["check-conformity", t])[0] == 1
+        assert _native(["check-conformity", str(tmp_path / "missing.vtu")])[0] == 2
+
+
 @pytest.mark.parametrize(
     "flags",
     [
@@ -580,6 +642,7 @@ def test_check_exit_codes(files, tmp_path):
             "--face-deviation",
             "--refine",
         ],
+        ["--constrain-primitives"],
     ],
 )
 def test_to_cad_json_agrees(tmp_path, flags):

@@ -93,6 +93,9 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/formats/step.hpp"
 #include "meshioplusplus/formats/radioss_th.hpp"
 #include "meshioplusplus/formats/xyz.hpp"
+#include "meshioplusplus/operations/check_conformity.hpp"
+#include "meshioplusplus/operations/extrude.hpp"
+#include "meshioplusplus/operations/mirror.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
@@ -326,9 +329,27 @@ MIO_ABI_LAYOUT(meshioplusplus::SequenceResample, 64, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SurfaceQuality, 40, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SurfaceDistanceOptions, 80, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SdfOptions, 248, 8);
-MIO_ABI_LAYOUT(meshioplusplus::VoxelOptions, 216, 8);
+// ABI 36: `mPlane`, the 2-D variant's plane (roadmap 3.1.4.1), appended.
+MIO_ABI_LAYOUT(meshioplusplus::VoxelOptions, 224, 8);
+static_assert(offsetof(meshioplusplus::VoxelOptions, mPlane) == 216, "VoxelOptions::mPlane moved");
+// ABI 36: check_conformity's options (roadmap 3.2.1), pinned from the release
+// that introduces them.
+MIO_ABI_LAYOUT(meshioplusplus::ConformityOptions, 16, 8);
+// ABI 36: the sweeps' and mirror's options (roadmap 3.1.2, 3.1.3, 3.2.5),
+// pinned from the release that introduces them. ExtrudeOptions holds a
+// std::vector, whose size is the standard library's, so only the members
+// before it are pinned.
+static_assert(offsetof(meshioplusplus::ExtrudeOptions, mRatio) == 32,
+              "ExtrudeOptions::mRatio moved");
+static_assert(offsetof(meshioplusplus::ExtrudeOptions, mOffsets) == 40,
+              "ExtrudeOptions::mOffsets moved");
+MIO_ABI_LAYOUT(meshioplusplus::RevolveOptions, 88, 8);
+MIO_ABI_LAYOUT(meshioplusplus::MirrorOptions, 72, 8);
 MIO_ABI_LAYOUT(meshioplusplus::OctreeOptions, 304, 8);
+// ABI 36: `mHexGrading` (roadmap 3.1.4.3) in the padding after `mPillow`.
 MIO_ABI_LAYOUT(meshioplusplus::OctreeMeshOptions, 336, 8);
+static_assert(offsetof(meshioplusplus::OctreeMeshOptions, mHexGrading) == 308,
+              "OctreeMeshOptions::mHexGrading moved");
 // ABI 34 (v17.15.0): the quality options of roadmap 6.2 and the fields 6.3,
 // 6.4 and 6.6 will use, appended in one layout (refused until their items
 // land), and the face record's refinement report.
@@ -446,6 +467,8 @@ MIO_ABI_LAYOUT(meshioplusplus::FitPrimitivesOptions, 72, 8);
 // freeform options: 56 -> 224, and grew FitCadResult by both reports. ABI 33
 // appended the freeform modes (mFreeformMode .. mValidateBySurfaceSampling):
 // 224 -> 288, grew FitCadResult by their report and added FitCadFaceRecord.
+// ABI 36 put mConstrainPrimitives in the tail padding (same size, a new
+// member) and grew FitCadResult by its two counts.
 MIO_ABI_LAYOUT(meshioplusplus::FitCadOptions, 288, 8);
 MIO_ABI_LAYOUT(meshioplusplus::FitCadFaceRecord, 96, 8);
 static_assert(offsetof(meshioplusplus::FitCadOptions, mMergeFaces) == 51,
@@ -472,6 +495,8 @@ static_assert(offsetof(meshioplusplus::FitCadOptions, mResegmentRounds) == 272,
               "FitCadOptions::mResegmentRounds moved");
 static_assert(offsetof(meshioplusplus::FitCadOptions, mValidateBySurfaceSampling) == 281,
               "FitCadOptions::mValidateBySurfaceSampling moved");
+static_assert(offsetof(meshioplusplus::FitCadOptions, mConstrainPrimitives) == 282,
+              "FitCadOptions::mConstrainPrimitives moved");
 // refine_patches' options (operations/refine_patches.hpp, ABI 32).
 MIO_ABI_LAYOUT(meshioplusplus::RefinePatchesOptions, 96, 8);
 // The kernel-free STEP writer's options (formats/step.hpp), from ABI 31.

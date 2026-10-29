@@ -213,7 +213,7 @@ TEST(Primitives, BadArgumentsRaiseByName) {
     EXPECT_THROW(rectangle({{2, 2}}, {{0.0, 1.0}}), std::invalid_argument);
     EXPECT_THROW(rectangle({{2, 2}}, {{1.0, 1.0}}, {{0, 0, 0}}, "hexahedron"), std::invalid_argument);
     EXPECT_THROW(rectangle({{2, 2}}, {{1.0, 1.0}}, {{0, 0, 0}}, "quad", "diag"), std::invalid_argument);
-    EXPECT_THROW(rectangle({{2, 2}}, {{1.0, 1.0}}, {{0, 0, 0}}, "quad", "zigzag", 3),
+    EXPECT_THROW(rectangle({{2, 2}}, {{1.0, 1.0}}, {{0, 0, 0}}, "quad", "zigzag", 11),
                  std::invalid_argument);
     EXPECT_THROW(box({{2, 2, 2}}, {{1, 1, 1}}, {{0, 0, 0}}, "quad"), std::invalid_argument);
     EXPECT_THROW(disk(-1.0), std::invalid_argument);
@@ -234,7 +234,7 @@ TEST(Primitives, BadArgumentsRaiseByName) {
     EXPECT_THROW(lshape(2, 0.0), std::invalid_argument);
     EXPECT_THROW(lshape(2, 2.0, {{0, 0, 0}}, "wedge"), std::invalid_argument);
     EXPECT_THROW(plate_with_hole(0.6, 1.0), std::invalid_argument);
-    EXPECT_THROW(plate_with_hole(0.25, 1.0, 4, 2, {{0, 0, 0}}, "quad", 3), std::invalid_argument);
+    EXPECT_THROW(plate_with_hole(0.25, 1.0, 4, 2, {{0, 0, 0}}, "quad", 0), std::invalid_argument);
     EXPECT_THROW(honeycomb({{2, -1}}), std::invalid_argument);
     EXPECT_THROW(honeycomb({{2, 2}}, 0.0), std::invalid_argument);
     EXPECT_THROW(reference_cells({"blob"}), std::invalid_argument);

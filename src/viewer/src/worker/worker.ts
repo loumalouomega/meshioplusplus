@@ -31,6 +31,7 @@ import wasmMtUrl from '@meshioplusplus/wasm/dist/meshioplusplus_wasm_mt.wasm?url
 import type { SurfaceBuffers } from '@meshioplusplus/wasm';
 
 import type { Vector3 } from '../types';
+import { computeRegions, regionTransfer, writeWithGroups } from './regions';
 import type {
     ArraySummary,
     MeshMeta,
@@ -387,7 +388,17 @@ async function handle(request: Request): Promise<void> {
             if (!session) throw new Error('no mesh is open');
             const outPath = `/converted.${request.outFormat}`;
             try {
-                if (request.ops.length === 0) {
+                let groupReport: { requested: number; kept: string[] } | undefined;
+                if (request.ops.length === 0 && request.groups && request.groups.length > 0) {
+                    groupReport = writeWithGroups(
+                        m,
+                        session.path,
+                        session.format,
+                        outPath,
+                        request.outFormat,
+                        request.groups
+                    );
+                } else if (request.ops.length === 0) {
                     // No operations: convert the file as it is, which keeps
                     // volume cells rather than exporting only the surface.
                     m.convert(session.path, outPath, {
@@ -408,12 +419,30 @@ async function handle(request: Request): Promise<void> {
                         kind: 'convert',
                         bytes,
                         outFormat: request.outFormat,
+                        groups: groupReport,
                     },
                     [bytes]
                 );
             } finally {
                 unlink(m, outPath);
             }
+            return;
+        }
+
+        case 'regions': {
+            if (!session) throw new Error('no mesh is open');
+            post({ id, type: 'progress', stage: 'regions' });
+            const outcome = computeRegions(
+                m,
+                session.path,
+                session.format,
+                session.meta.numCells,
+                request.numSurfaceCells
+            );
+            post(
+                { id, type: 'result', kind: 'regions', epoch: request.epoch, ...outcome },
+                regionTransfer(outcome.groups)
+            );
             return;
         }
 

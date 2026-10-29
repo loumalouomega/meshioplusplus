@@ -168,6 +168,20 @@ license: MIT
 # licence restricts commercial distribution) or TetGen (AGPL-3.0) is read
 # or vendored. See doc/mesh_cad_plan.md.
 #
+# The graded hexahedra of `octree_mesh` (src/cpp/src/detail/
+# hex_dual_schemes.cpp and hex_dual_scheme_tables.cpp) PORT CODE from
+# CinoLib (MIT, Copyright (C) 2016 Marco Livesu; Luca Pitzalis, Marco
+# Livesu, Gianmarco Cherchi): the transition schemes, their detection,
+# marking and orientation, and the dual, after
+#   M. Livesu, L. Pitzalis and G. Cherchi, "Optimal Dual Schemes for
+#   Adaptive Grid Based Hexmeshing", ACM Transactions on Graphics 41(2),
+#   2022;
+# and the pairing of
+#   L. Pitzalis, M. Livesu, G. Cherchi, E. Gobbetti and R. Scateni,
+#   "Generalized Adaptive Refinement for Grid-based Hexahedral Meshing",
+#   ACM Transactions on Graphics 40(6), 2021.
+# CinoLib's MIT notice is kept in both files; see THIRD_PARTY_NOTICES.md.
+#
 # SmoothMethod::Odt (src/cpp/src/operations/smooth.cpp) cites the
 # variational-tetrahedral-meshing literature (e.g. P. Alliez et al.,
 # "Variational Tetrahedral Meshing", SIGGRAPH 2005) for the optimal-Delaunay-

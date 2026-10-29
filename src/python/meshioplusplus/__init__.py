@@ -109,6 +109,7 @@ if TYPE_CHECKING:
     from ._agglomerate import agglomerate
     from ._blender import from_blender, has_blender, to_blender
     from ._boundary_layer import boundary_layer
+    from ._check_conformity import check_conformity
     from ._clean import clean
     from ._conservative_interpolate import conservative_interpolate
     from ._convert_cells import convert_cells
@@ -126,6 +127,7 @@ if TYPE_CHECKING:
     from ._diff import diff, meshes_equal
     from ._error import estimate_error
     from ._error_size import error_size
+    from ._extrude import extrude, revolve
     from ._feature_edges import feature_edges
     from ._fit_cad import fit_cad
     from ._fit_primitives import fit_primitives
@@ -187,6 +189,7 @@ if TYPE_CHECKING:
     from ._isosurface import isosurface
     from ._merge import merge
     from ._mesh_cad import mesh_cad_surface, triangulate_polygon_2d
+    from ._mirror import mirror
     from ._ml import FeatureMatrix, edge_index, feature_matrix, has_zarr, write_dataset
     from ._normals import compute_normals
     from ._octree import octree
@@ -198,17 +201,38 @@ if TYPE_CHECKING:
     from ._point_budget import PointBudget, select_points, subsample_points
     from ._primitives import (
         annulus,
+        ball,
         box,
+        box_points,
+        box_surface,
+        capsule,
+        circle,
+        cone,
+        cube_sphere,
         cylinder,
         disk,
+        fichera,
+        geo_sphere,
+        helix,
         honeycomb,
         icosa_sphere,
+        line,
         lshape,
+        moebius,
         ngon,
+        octa_sphere,
+        pipe,
         plate_with_hole,
+        platonic,
         rectangle,
         reference_cells,
         reference_triangle,
+        solid_torus,
+        sphere_points,
+        spherical_shell,
+        tetra_sphere,
+        torus,
+        tube,
         uv_sphere,
     )
     from ._project_to_cad import project_to_cad
@@ -290,6 +314,7 @@ _LAZY_ATTRS = {
     "data_rename": "_data_manage",
     "DatasetEntry": "_dataset",
     "DatasetManifest": "_dataset",
+    "check_conformity": "_check_conformity",
     "decimate": "_decimate",
     "decimate_volume": "_decimate_volume",
     "diff": "_diff",
@@ -328,6 +353,27 @@ _LAZY_ATTRS = {
     "plate_with_hole": "_primitives",
     "honeycomb": "_primitives",
     "reference_cells": "_primitives",
+    "line": "_primitives",
+    "circle": "_primitives",
+    "helix": "_primitives",
+    "sphere_points": "_primitives",
+    "box_points": "_primitives",
+    "tetra_sphere": "_primitives",
+    "octa_sphere": "_primitives",
+    "cube_sphere": "_primitives",
+    "geo_sphere": "_primitives",
+    "torus": "_primitives",
+    "moebius": "_primitives",
+    "tube": "_primitives",
+    "cone": "_primitives",
+    "capsule": "_primitives",
+    "box_surface": "_primitives",
+    "platonic": "_primitives",
+    "ball": "_primitives",
+    "spherical_shell": "_primitives",
+    "pipe": "_primitives",
+    "fichera": "_primitives",
+    "solid_torus": "_primitives",
     "GridArray": "_grid_transfer",
     "GridSpec": "_grid_transfer",
     "PowerSpectrum": "_grid_transfer",
@@ -433,6 +479,9 @@ _LAZY_ATTRS = {
     "mesh_cad_surface": "_mesh_cad",
     "project_to_cad": "_project_to_cad",
     "boundary_layer": "_boundary_layer",
+    "extrude": "_extrude",
+    "revolve": "_extrude",
+    "mirror": "_mirror",
     "tetrahedralize": "_tetrahedralize",
     "triangulate_polygon_2d": "_mesh_cad",
 }
@@ -552,6 +601,7 @@ __all__ = [
     "edit_regions",
     "attach_quality",
     "check_quality",
+    "check_conformity",
     "sniff_format",
     "reorder",
     "compute_bandwidth",
@@ -602,12 +652,36 @@ __all__ = [
     "plate_with_hole",
     "honeycomb",
     "reference_cells",
+    "line",
+    "circle",
+    "helix",
+    "sphere_points",
+    "box_points",
+    "tetra_sphere",
+    "octa_sphere",
+    "cube_sphere",
+    "geo_sphere",
+    "torus",
+    "moebius",
+    "tube",
+    "cone",
+    "capsule",
+    "box_surface",
+    "platonic",
+    "ball",
+    "spherical_shell",
+    "pipe",
+    "fichera",
+    "solid_torus",
     "voxelize",
     "octree",
     "octree_mesh",
     "mesh_cad_surface",
     "project_to_cad",
     "boundary_layer",
+    "extrude",
+    "revolve",
+    "mirror",
     "tetrahedralize",
     "triangulate_polygon_2d",
     "sample_distance",

@@ -1033,15 +1033,13 @@ def roadmap_map():
         (
             "§3 operations",
             [
-                ("primitives: fixtures · catalog", "S"),
-                ("extrude · revolve", "M"),
                 ("octree: plane= · probes", "S"),
                 ("conformity · intersections", "M"),
-                ("select · thickness · mirror", "M"),
-                ("MMG backend (optional)", "M"),
+                ("select · thickness", "M"),
+                ("MMG backend · its WASM port", "M"),
                 ("optimize_volume: worst-cell moves", "M"),
             ],
-            [(0, 1), (2, 3)],
+            [(0, 1)],
         ),
         (
             "§4 ecosystem reach",
@@ -1052,14 +1050,6 @@ def roadmap_map():
                 ("CLI chatbot over MCP tools", "M"),
                 ("viewer look · MDPA preview", "M"),
                 ("manager shows thumbnails", "S"),
-            ],
-            [],
-        ),
-        (
-            "§5 full WASM build",
-            [
-                ("MMG under Emscripten (after §3.3)", "M"),
-                ("skin to CAD: constraints · G1", "L"),
             ],
             [],
         ),

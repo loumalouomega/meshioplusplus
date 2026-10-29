@@ -96,7 +96,7 @@ Converting a 3D volume mesh to STL, PLY or glTF writes its extracted boundary sk
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -104,6 +104,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `info` | the same counts and names from a full read, plus `consistent` and `num_unused_points` (`null` when inconsistent) |
 | `quality` | `compute_quality`'s dict without the per-cell arrays |
 | `check` | `check_quality`'s dict: `passed`, the counts and `checks` |
+| `check-conformity` | `check_conformity`'s report: `dimension`, the six counts, `conforming`, `interface_mode` and `warnings` |
 | `diff` | `diff`'s report plus `equal` (the exit-code decision); the Python CLI adds its `sets` section |
 | `convert` | `input`, `output`, `num_points`, `num_cells`, `cell_blocks`, the data names and `num_regions`; for a sequence, `mode`, `num_steps` and `num_files` |
 | `agglomerate` | `cells_in`, `cells_out`, `num_faces_merged` and `num_rejected` |
@@ -114,13 +115,15 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `iga-refine`, `iga-sample` | `operation`, `model` (`nurbs` or `brep`), `num_patches`, `num_points`, `num_cells` and `cell_blocks` |
 | `iga-evaluate` | `num_points`, `space_dim`, `points`, `fields` (`components`, `values`), and with `--derivatives 1` `derivatives` and `normals`; for a B-rep face `inside`; arrays flattened row-major |
 | `tessellate` | `Tessellation.schema` without `version`: `levels`, `curved`, the source and output counts, `stencil_width` and the `watertight` facet counts |
-| `to-cad` | `backend` (`occt` or `native`, v17.9.0), `valid`, `tolerance`, the volumes and their ratio, `max_deviation`, the faces by type (`num_bspline`, `num_fillet` and `num_helical` among them, and of those `num_variable_fillet`, `num_blend` and `num_rounded_thread`), `num_vertex_blend` and `num_chamfer` (v17.2.0) and, of the fillets and threads, `num_conic_blend`, `num_tapered_thread` and `num_variable_pitch_thread`, `num_faceted_faces`, `num_patches`, `num_demoted`, the exact and approximated edges, `num_solids` and `num_split_patches`; `closed` (v17.11.0, always); with `--refine` (v17.11.0) also `refined`, `refine_iterations`, `num_refine_splits`, `num_refine_merges`, `initial_explained_area_fraction`, `explained_area_fraction` and `refinement_kept`; with `--freeform-general` `num_freeform_general`, `num_freeform_refinements` and `avg_freeform_poles`; with `--extend-surfaces` `num_extended_edges`; with `--snap-junctions` `num_snapped_junctions`; with `--face-deviation` `hausdorff_max` and `hausdorff_rms`; outside `--freeform-mode legacy` (v17.12.0) also `freeform_mode`, `brep_checked`, `num_freeform_adaptive`, `num_network_patches`, `num_network_edges`, `num_extraordinary_vertices`, `num_resegmented`, `num_escalations`, `facet_area_fraction`, `max_g1_angle_deg`, `max_freeform_distance`, `rms_freeform_distance` and `faces`, one record per patch tried as a surface (`patch`, `face`, `kind`, `param_method`, `num_ctrl`, `iterations`, `refinements`, `max_dist`, `rms_dist`, `reverse_max_dist`, `max_g1_angle_deg`, `escalation_steps`, `demotion_reason`) |
+| `to-cad` | `backend` (`occt` or `native`, v17.9.0), `valid`, `tolerance`, the volumes and their ratio, `max_deviation`, the faces by type (`num_bspline`, `num_fillet` and `num_helical` among them, and of those `num_variable_fillet`, `num_blend` and `num_rounded_thread`), `num_vertex_blend` and `num_chamfer` (v17.2.0) and, of the fillets and threads, `num_conic_blend`, `num_tapered_thread` and `num_variable_pitch_thread`, `num_faceted_faces`, `num_patches`, `num_demoted`, the exact and approximated edges, `num_solids` and `num_split_patches`; `closed` (v17.11.0, always); with `--refine` (v17.11.0) also `refined`, `refine_iterations`, `num_refine_splits`, `num_refine_merges`, `initial_explained_area_fraction`, `explained_area_fraction` and `refinement_kept`; with `--freeform-general` `num_freeform_general`, `num_freeform_refinements` and `avg_freeform_poles`; with `--extend-surfaces` `num_extended_edges`; with `--snap-junctions` `num_snapped_junctions`; with `--face-deviation` `hausdorff_max` and `hausdorff_rms`; with `--constrain-primitives` `num_constrained_primitives` and `num_constraint_groups`; outside `--freeform-mode legacy` (v17.12.0) also `freeform_mode`, `brep_checked`, `num_freeform_adaptive`, `num_network_patches`, `num_network_edges`, `num_extraordinary_vertices`, `num_resegmented`, `num_escalations`, `facet_area_fraction`, `max_g1_angle_deg`, `max_freeform_distance`, `rms_freeform_distance` and `faces`, one record per patch tried as a surface (`patch`, `face`, `kind`, `param_method`, `num_ctrl`, `iterations`, `refinements`, `max_dist`, `rms_dist`, `reverse_max_dist`, `max_g1_angle_deg`, `escalation_steps`, `demotion_reason`) |
 | `region-adjacency` | `facets` and `measure` |
 | `find-interface` | pair counts, area, maximum gap, unmatched counts and both Side-entry lists |
 | `contact-pairs` | `num_pairs`, the pair table and unmatched slave-point ids |
 | `split-interface` | duplicated-point and cohesive-cell counts |
 | `mesh-cad-surface` | `mesh_cad_surface`'s report: the counts, the open, non-manifold and misoriented edges, the extreme angles and edge lengths, `tolerance`, `max_edge_gap`, `faces` (`status`, `reason`, counts and extremes per face, `below_bound`, `bound_deg`, `min_input_angle_deg` and `corners`), `warnings`, `num_refinement_points`, `num_faces_below_bound`, `num_smoothed`, `angle_histogram` and `num_curved_straightened` |
 | `boundary-layer` | `boundary_layer`'s report: the cell counts by type, `num_shrunk`, `num_collapsed`, `num_not_visible`, `num_fewer_layers`, `num_front_crossings`, `min_scaled_jacobian`, the thickness range, `cap_closed` and `warnings` |
+| `extrude`, `revolve` | the sweep's report: the cell counts by type, `num_flipped`, `min_scaled_jacobian`, `warnings`; `revolve` adds `num_on_axis` and `full` |
+| `mirror` | `num_flipped_cells`, `num_points_on_plane`, `num_dropped_cells`, `num_dropped_sides`, `warnings` |
 | `tetrahedralize` | `tetrahedralize`'s report: `num_tetrahedra`, `num_points`, `num_new_points`, `num_regions`, `num_boundary_triangles`, `boundary_preserved`, `hausdorff_to_surface`, the dihedral range, `volume`, `backend` and `warnings` |
 
 The exit codes are unchanged by `--json`.
@@ -197,6 +200,21 @@ meshioplusplus check [options] INFILE
 meshioplusplus check part.vtu -r "scaled_jacobian >= 0.2" -r "aspect_ratio <= 5 @ 1%" \
     || { echo "mesh failed its quality gate"; exit 1; }
 ```
+
+## meshioplusplus check-conformity
+
+The [conformity check](./check_conformity.md): hanging nodes, T-junctions, partly overlapping and unwelded facets, and the `find_interface` mode that suits the mesh. Exits **0** when the mesh is conforming, **1** when it is not, **2** when the check could not run.
+
+```
+meshioplusplus check-conformity [options] INFILE [OUTFILE]
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--tolerance T` | | Distances at or below this fraction of the facets' bounding-box diagonal count as zero (default `1e-9`) |
+| `--json` | | Print the report as JSON |
+| `--input-format FORMAT` | `-i` | Force input format |
+| `--output-format FORMAT` | `-o` | Force output format of `OUTFILE`, which carries the `conformity:hanging` point data |
 
 ---
 
@@ -1221,6 +1239,7 @@ meshioplusplus to-cad [options] INFILE OUTFILE.step
 | `--resegment-rounds N` | Re-segmentation rounds of a residual region before demotion (default `2`) |
 | `--no-layout-snap-to-features` | Do not snap layout edges to feature edges |
 | `--no-validate-by-surface-sampling` | Accept a freeform face without sampling its surface against the skin |
+| `--constrain-primitives` | Fit related primitives together: coaxial surfaces share one axis, parallel and perpendicular planes and nearly equal radii are made exact ([constrained primitives](/fit_cad#constrained-primitives)) |
 | `--mesh-out FILE` | Also write the re-meshed solid |
 | `--cad-json FILE` | Also write the solid as [Kratos CAD JSON](formats/cad_json.md) (its faces as trimmed NURBS) |
 | `--json`, `-q/--quiet` | Machine-readable report, or no summary |
@@ -1987,21 +2006,29 @@ meshioplusplus generate uv-sphere ball.vtu --radius 2 --nu 32 --nv 16 --cell-typ
 meshioplusplus generate reference-cells cells.vtu --types tetra,hexahedron20,polyhedron
 ```
 
-Build a mesh from parameters, in both CLIs. `SHAPE` is `rectangle`, `box`, `disk`, `uv-sphere`, `icosa-sphere`, `cylinder`, `reference-triangle`, `ngon`, `annulus`, `lshape`, `plate-with-hole`, `honeycomb` or `reference-cells`, and `OUTFILE` is written in the format its extension names (`-o/--output-format` overrides it). Vector flags take comma-separated values, and negatives need the `=` form (`--origin=-1,-1,0`).
+Build a mesh from parameters, in both CLIs. `SHAPE` is `rectangle`, `box`, `disk`, `uv-sphere`, `icosa-sphere`, `cylinder`, `reference-triangle`, `ngon`, `annulus`, `lshape`, `plate-with-hole`, `honeycomb`, `reference-cells`, `line`, `circle`, `helix`, `sphere-points`, `box-points`, `tetra-sphere`, `octa-sphere`, `cube-sphere`, `geo-sphere`, `torus`, `moebius`, `tube`, `cone`, `capsule`, `box-surface`, `platonic`, `ball`, `spherical-shell`, `pipe`, `fichera` or `solid-torus`, and `OUTFILE` is written in the format its extension names (`-o/--output-format` overrides it). Vector flags take comma-separated values, and negatives need the `=` form (`--origin=-1,-1,0`).
 
 | flag | shapes | meaning |
 |---|---|---|
-| `--dims nx,ny[,nz]` | `rectangle`, `box`, `honeycomb` | cell counts |
-| `--size lx,ly[,lz]` / `--size L` | `rectangle`, `box`, `reference-triangle` / `lshape`, `plate-with-hole` | side lengths / one side |
+| `--dims nx,ny[,nz]` | `rectangle`, `box`, `honeycomb`, `box-surface` | cell counts |
+| `--size lx,ly[,lz]` / `--size L` | `rectangle`, `box`, `reference-triangle`, `box-points`, `box-surface` / `lshape`, `plate-with-hole`, `fichera` | side lengths / one side |
 | `--origin x,y[,z]` | `rectangle`, `box`, `reference-triangle`, `honeycomb` | lo corner |
 | `--center x,y,z` | the round shapes, `ngon`, `annulus`, `lshape`, `plate-with-hole` | centre |
 | `--radius R` / `--height H` | round shapes, `ngon`, `plate-with-hole` (the hole) / `cylinder` | radius and height |
 | `--inner-radius R --outer-radius R --ntheta N --nr N --angle A` | `annulus` | radii, cells around and across, opening angle in radians (a sector keeps its seam pair) |
 | `--n N` / `--nu N --nv N` / `--subdivisions N` / `--nxy N --nz N` | `disk`, `reference-triangle`, `lshape` / `uv-sphere` / `icosa-sphere` / `cylinder` | the counts of each shape |
 | `--sides N --rings N` / `--nt N --nr N` / `--edge L` | `ngon` / `plate-with-hole` / `honeycomb` | the counts and the hexagon edge |
+| `--start x,y,z --end x,y,z` | `line` | the two end points |
+| `--pitch P --turns T` | `helix` | rise per turn and number of turns |
+| `--seed S` | `box-points` | the splitmix64 seed |
+| `--major-radius R --minor-radius r` | `torus`, `solid-torus` | the centre circle and the tube |
+| `--width W --num-twists K` | `moebius` | the band's width and half-twists |
+| `--ncap N` | `capsule` | rings on each cap |
+| `--ratio Q` | `spherical-shell`, `pipe` | each wall layer's thickness over the one inside it |
+| `--name N` | `platonic` | `tetrahedron`, `cube`, `octahedron`, `dodecahedron` or `icosahedron` |
 | `--cell-type T` | the shapes that build more than one cell type | `quad`, `triangle`, `hexahedron`, `tetra` or `wedge`, as the shape allows |
 | `--split S` | `rectangle` | `zigzag`, `up`, `down` or `center` triangle layout |
-| `--order 2` | all but `reference-cells`, `honeycomb` | quadratic cells with mid-edge nodes on the exact geometry |
+| `--order 2` / `--order 3..10` / `--complete` | all but `reference-cells`, `honeycomb`, `platonic` and the point clouds | quadratic cells with mid-edge nodes on the exact geometry / the `VTK_LAGRANGE_*` family / with order 2, `quad9`, `hexahedron27` and `wedge18` |
 | `--max-cells N` | all but `reference-cells` | refuse above this many cells (default 20 000 000, 0 lifts it) |
 | `--types a,b` / `--pairs` | `reference-cells` | the cell types (all by default) / two cells sharing a facet |
 
@@ -2016,8 +2043,9 @@ meshioplusplus voxelize bunny.stl solid.vtu --cell-size 0.5 --fill inside
 
 | flag | meaning |
 |---|---|
-| `--resolution nx,ny,nz` | cell counts; give exactly one of this and `--cell-size` |
+| `--resolution nx,ny,nz` | cell counts; give exactly one of this and `--cell-size` (`nx,ny` selects 2-D pixels) |
 | `--cell-size S` | cubic cell size |
+| `--plane auto\|xy\|xz\|yz` | the plane of a 2-D skin; `auto` takes the axis of zero extent |
 | `--bounds=xlo,...,zhi` | explicit bounds; the mesh's own by default (negatives need the `=` form) |
 | `--padding` / `--padding-relative` | grow the box on every side |
 | `--fill all\|surface\|inside` | which cells to keep |
@@ -2083,7 +2111,7 @@ meshioplusplus octree-mesh part.stl hexes.vtu --output hex --surface-size 0.05
 | `--no-preserve-features`, `--fit-iterations N`, `--no-dihedral-floor-guard` | feature snapping and optimisation |
 | `--fill all\|inside\|cover` | castellated output: every leaf, the inside ones, or inside and cut |
 | `--keep-outside`, `--no-distance`, `--attach-quality` | also mesh the outside; skip `sdf:*`; attach `quality:*` |
-| `--no-pillow`, `--untangle-iterations N` | hexahedral output |
+| `--no-pillow`, `--hex-grading uniform\|graded`, `--untangle-iterations N` | hexahedral output |
 | `--max-cells N` / `--max-tets N` | refuse above this many leaves / output cells |
 | `--json` | the report as JSON (without the timings, which vary from run to run) |
 
@@ -2188,6 +2216,70 @@ The summary and the JSON report count, besides the cells, the points shrunk and 
 ```sh
 meshioplusplus boundary-layer skin.vtu layers.vtu --first-height 1e-3 --num-layers 8 --growth 1.25
 meshioplusplus boundary-layer skin.vtu layers.vtu --first-height 1e-3 --collapse layers --normal-smooth 5
+```
+
+## `extrude`
+
+Sweep a surface's triangles and quads into wedges and hexahedra (or, with no 2-D cells, its lines into quads) along a vector, in layers (see [sweeps](/extrude)). Both CLIs.
+
+```
+meshioplusplus extrude INFILE OUTFILE [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--direction=x,y,z` | the whole displacement of the last level (`0,0,1`; negatives need the `=` form) |
+| `--num-layers N` | how many layers (1) |
+| `--ratio R` | each layer's thickness over the one below's (1, uniform) |
+| `--offsets a,b,...` | explicit level fractions, increasing and ending at 1 (not with `--ratio`) |
+| `--record-layers` | attach the Int32 `extrude:layer` cell data |
+| `--max-cells N` | refuse more profile cells times layers (20000000) |
+| `--json` / `-q/--quiet` | the report as JSON / no summary |
+| `-i/--input-format` / `-o/--output-format` | force the input / output format |
+
+## `revolve`
+
+Sweep a surface (or a curve) around an axis; points on the axis stay put and the cells around them collapse (see [sweeps](/extrude#revolve)). Both CLIs.
+
+```
+meshioplusplus revolve INFILE OUTFILE [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--axis=x,y,z` | the axis direction (`0,1,0`) |
+| `--axis-point=x,y,z` | a point of the axis (`0,0,0`) |
+| `--angle DEG` | degrees, right-hand rule about the axis (360, a full turn) |
+| `--num-layers N` | steps of the turn (16; at least 3 for a full turn) |
+| `--tolerance T` | on the axis: a fraction of the bounding-box diagonal (1e-9) |
+| `--record-layers` | attach the Int32 `revolve:layer` cell data |
+| `--max-cells N` | refuse more profile cells times layers (20000000) |
+| `--json` / `-q/--quiet` | the report as JSON / no summary |
+| `-i/--input-format` / `-o/--output-format` | force the input / output format |
+
+## `mirror`
+
+Reflect a mesh across a plane with every cell right side out (see [mirror](/mirror)). Both CLIs.
+
+```
+meshioplusplus mirror INFILE OUTFILE [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--origin=x,y,z` | a point of the plane (`0,0,0`) |
+| `--normal=x,y,z` | the plane's normal (`1,0,0`) |
+| `--keep-original` | write the input followed by its image |
+| `--no-weld` | with `--keep-original`, duplicate the points on the plane rather than share them |
+| `--tolerance T` | on the plane: a fraction of the bounding-box diagonal (1e-9) |
+| `--reflect-data` | reflect float vector and tensor data on the reflected copies |
+| `--json` / `-q/--quiet` | the report as JSON / no summary |
+| `-i/--input-format` / `-o/--output-format` | force the input / output format |
+
+```sh
+meshioplusplus extrude profile.vtu slab.vtu --direction=0,0,-0.5 --num-layers 6 --ratio 1.2
+meshioplusplus revolve section.vtu body.vtu --angle 90 --num-layers 8
+meshioplusplus mirror half.vtu whole.vtu --normal=1,0,0 --keep-original
 ```
 
 ## `tetrahedralize`

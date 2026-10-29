@@ -410,7 +410,7 @@ struct _COctreeMeshOpts
     attach_distance::Int32
     attach_quality::Int32
     pillow::Int32
-    reserved32::Int32
+    hex_grading::Int32
     reserved::NTuple{4,Int64}
 end
 
@@ -456,7 +456,8 @@ struct _COctreeMeshReport
     num_flips::Int64
     num_winding_rechecks::Int64
     num_warnings::Int64
-    reserved::NTuple{8,Int64}
+    num_winding_skipped::Int64
+    reserved::NTuple{7,Int64}
 end
 
 """
@@ -478,7 +479,9 @@ struct _CVoxelOpts
     attach_occupancy::Int32
     sign::Int32
     watertight_check::Int32
-    reserved::NTuple{6,Int64}
+    plane::Int32
+    reserved32::Int32
+    reserved::NTuple{5,Int64}
 end
 
 """
@@ -497,7 +500,11 @@ struct _CGenOpts
     pad::Int32
     radius2::Cdouble
     angle::Cdouble
-    reserved::NTuple{4,Int64}
+    num_twists::Int32
+    complete::Int32
+    ratio::Cdouble
+    seed::UInt64
+    reserved::NTuple{1,Int64}
 end
 
 """
@@ -773,6 +780,29 @@ struct _CErrorSizeReport
     reserved::NTuple{3,Int64}
 end
 
+"""Mirror of C `mio_conformity_opts` (roadmap 3.2.1)."""
+struct _CConformityOpts
+    tolerance::Cdouble
+    attach_flags::Int32
+    reserved32::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_conformity_report`."""
+struct _CConformityReport
+    dimension::Int64
+    num_hanging_nodes::Int64
+    num_t_junctions::Int64
+    num_partial_overlaps::Int64
+    num_unwelded_facets::Int64
+    num_boundary_facets::Int64
+    num_non_manifold_facets::Int64
+    conforming::Int32
+    interface_mode::Int32
+    num_warnings::Int64
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_boundary_layer_opts` (roadmap 6.9)."""
 struct _CBoundaryLayerOpts
     first_height::Cdouble
@@ -807,6 +837,71 @@ struct _CBoundaryLayerReport
     num_fewer_layers::Int64
     num_front_crossings::Int64
     reserved::NTuple{2,Int64}
+end
+
+"""Mirror of C `mio_extrude_opts` (roadmap 3.1.2); `offsets` is borrowed
+for one call."""
+struct _CExtrudeOpts
+    direction::NTuple{3,Cdouble}
+    ratio::Cdouble
+    offsets::Ptr{Cdouble}
+    num_offsets::Int64
+    max_cells::Int64
+    num_layers::Int32
+    record_layers::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_revolve_opts` (roadmap 3.1.3)."""
+struct _CRevolveOpts
+    axis_point::NTuple{3,Cdouble}
+    axis::NTuple{3,Cdouble}
+    angle::Cdouble
+    tolerance::Cdouble
+    max_cells::Int64
+    num_layers::Int32
+    record_layers::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_sweep_report`."""
+struct _CSweepReport
+    num_cells::Int64
+    num_hexahedra::Int64
+    num_wedges::Int64
+    num_pyramids::Int64
+    num_tetrahedra::Int64
+    num_quads::Int64
+    num_triangles::Int64
+    num_flipped::Int64
+    num_on_axis::Int64
+    num_warnings::Int64
+    min_scaled_jacobian::Cdouble
+    full::Int32
+    reserved32::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_mirror_opts` (roadmap 3.2.5)."""
+struct _CMirrorOpts
+    origin::NTuple{3,Cdouble}
+    normal::NTuple{3,Cdouble}
+    tolerance::Cdouble
+    keep_original::Int32
+    weld::Int32
+    reflect_vector_data::Int32
+    reserved32::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_mirror_report`."""
+struct _CMirrorReport
+    num_flipped_cells::Int64
+    num_points_on_plane::Int64
+    num_dropped_cells::Int64
+    num_dropped_sides::Int64
+    num_warnings::Int64
+    reserved::NTuple{4,Int64}
 end
 
 """Mirror of C `mio_tetrahedralize_opts` (roadmap 6.7); its string is
@@ -1031,7 +1126,9 @@ struct _CFitCadOptsEx2
     resegment_rounds::Int64
     layout_snap_to_features::Int32
     validate_by_surface_sampling::Int32
-    reserved::NTuple{8,Int64}
+    constrain_primitives::Int32
+    reserved32::Int32
+    reserved::NTuple{7,Int64}
 end
 
 """Mirror of C `mio_fit_cad_report_ex3` (v17.12.0)."""
@@ -1050,7 +1147,9 @@ struct _CFitCadReportEx3
     max_freeform_distance::Cdouble
     rms_freeform_distance::Cdouble
     num_face_records::Int64
-    reserved::NTuple{10,Int64}
+    num_constrained_primitives::Int64
+    num_constraint_groups::Int64
+    reserved::NTuple{8,Int64}
 end
 
 """Mirror of C `mio_render_opts` (v16.34.0; cut-aways v16.36.0). ABI; fill it through [`render`](@ref),
@@ -1497,6 +1596,13 @@ function _check_abi_layout()
     (sizeof(_CErrorSizeReport) == 64 && fieldoffset(_CErrorSizeReport, 5) == 32) ||
         error("meshio++: mio_error_size_report layout mismatch " *
               "($(sizeof(_CErrorSizeReport)) bytes)")
+    (sizeof(_CConformityOpts) == 48 && fieldoffset(_CConformityOpts, 4) == 16) ||
+        error("meshio++: mio_conformity_opts layout mismatch " *
+              "($(sizeof(_CConformityOpts)) bytes)")
+    (sizeof(_CConformityReport) == 104 && fieldoffset(_CConformityReport, 8) == 56 &&
+     fieldoffset(_CConformityReport, 10) == 64) ||
+        error("meshio++: mio_conformity_report layout mismatch " *
+              "($(sizeof(_CConformityReport)) bytes)")
     (sizeof(_CBoundaryLayerOpts) == 64 && fieldoffset(_CBoundaryLayerOpts, 4) == 24 &&
      fieldoffset(_CBoundaryLayerOpts, 8) == 40 && fieldoffset(_CBoundaryLayerOpts, 12) == 56) ||
         error("meshio++: mio_boundary_layer_opts layout mismatch " *
@@ -1506,6 +1612,22 @@ function _check_abi_layout()
      fieldoffset(_CBoundaryLayerReport, 16) == 112) ||
         error("meshio++: mio_boundary_layer_report layout mismatch " *
               "($(sizeof(_CBoundaryLayerReport)) bytes)")
+    (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CExtrudeOpts) == 96 &&
+                                 fieldoffset(_CExtrudeOpts, 3) == 32 &&
+                                 fieldoffset(_CExtrudeOpts, 6) == 56 &&
+                                 fieldoffset(_CExtrudeOpts, 8) == 64)) ||
+        error("meshio++: mio_extrude_opts layout mismatch ($(sizeof(_CExtrudeOpts)) bytes)")
+    (sizeof(_CRevolveOpts) == 112 && fieldoffset(_CRevolveOpts, 3) == 48 &&
+     fieldoffset(_CRevolveOpts, 6) == 72 && fieldoffset(_CRevolveOpts, 8) == 80) ||
+        error("meshio++: mio_revolve_opts layout mismatch ($(sizeof(_CRevolveOpts)) bytes)")
+    (sizeof(_CSweepReport) == 128 && fieldoffset(_CSweepReport, 11) == 80 &&
+     fieldoffset(_CSweepReport, 12) == 88 && fieldoffset(_CSweepReport, 14) == 96) ||
+        error("meshio++: mio_sweep_report layout mismatch ($(sizeof(_CSweepReport)) bytes)")
+    (sizeof(_CMirrorOpts) == 104 && fieldoffset(_CMirrorOpts, 4) == 56 &&
+     fieldoffset(_CMirrorOpts, 8) == 72) ||
+        error("meshio++: mio_mirror_opts layout mismatch ($(sizeof(_CMirrorOpts)) bytes)")
+    (sizeof(_CMirrorReport) == 72 && fieldoffset(_CMirrorReport, 5) == 32) ||
+        error("meshio++: mio_mirror_report layout mismatch ($(sizeof(_CMirrorReport)) bytes)")
     (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CTetrahedralizeOpts) == 80 &&
                                  fieldoffset(_CTetrahedralizeOpts, 5) == 32 &&
                                  fieldoffset(_CTetrahedralizeOpts, 8) == 48)) ||

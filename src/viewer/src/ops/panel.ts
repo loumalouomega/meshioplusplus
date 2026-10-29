@@ -22,9 +22,19 @@ import type { OpReport, OpSpec } from '../worker/protocol';
 import { OP_DEFAULTS, describeOp } from '../worker/protocol';
 import type { Vector3 } from '../types';
 
+/** A thing Refine can be limited to: a file region, or cells the user picked. */
+export interface RefineTarget {
+    value: string;
+    label: string;
+    /** Merged into the refine spec when chosen. */
+    spec: { region?: string; cells?: number[] };
+}
+
 export interface OpsPanelCallbacks {
     /** The pipeline changed; re-render with this list. */
     onChange(ops: OpSpec[]): void;
+    /** What Refine can be limited to right now (read when the select is opened). */
+    refineTargets?(): RefineTarget[];
 }
 
 /** Refining is exponential; beyond this, ask first. */
@@ -37,6 +47,7 @@ export class OpsPanel {
     private readonly callbacks: OpsPanelCallbacks;
 
     private ops: OpSpec[] = [];
+    private refineTargets = new Map<string, RefineTarget['spec']>();
     private bounds: { min: Vector3; max: Vector3 } | null = null;
     private cellCount = 0;
     private busy = false;
@@ -257,12 +268,13 @@ export class OpsPanel {
         const levels = $<HTMLInputElement>('op-refine-levels');
         const note = $('op-refine-note');
         const array = maybe<HTMLSelectElement>('op-refine-array');
+        const target = maybe<HTMLSelectElement>('op-refine-target');
         const projected = () => {
             const n = Number(levels.value) || 1;
             // A predicate refines only the cells that match, and the closure
             // adds a bounded amount around them, so the uniform bound is only
             // honest when no predicate is set.
-            if (array && array.value) return 0;
+            if ((array && array.value) || target?.value) return 0;
             // Every supported type splits 8-for-1 in 3D, 4-for-1 in 2D; 8 is
             // the honest upper bound to warn against.
             return this.cellCount * Math.pow(8, n);
@@ -284,6 +296,27 @@ export class OpsPanel {
         array?.addEventListener('change', updateNote);
         updateNote();
 
+        const refreshTargets = () => {
+            if (!target || !this.callbacks.refineTargets) return;
+            const keep = target.value;
+            const targets = this.callbacks.refineTargets();
+            this.refineTargets = new Map(targets.map((t) => [t.value, t.spec]));
+            setOptions(
+                target,
+                [{ value: '', label: 'the whole mesh' }, ...targets.map((t) => ({ value: t.value, label: t.label }))],
+                keep
+            );
+            if (!this.refineTargets.has(target.value)) target.value = '';
+        };
+        target?.addEventListener('mousedown', refreshTargets);
+        target?.addEventListener('focus', refreshTargets);
+        target?.addEventListener('change', () => {
+            // A group or selection replaces the field predicate.
+            if (array) array.disabled = !!target.value;
+            updateNote();
+        });
+        if (target && !this.callbacks.refineTargets) target.closest('label')?.setAttribute('hidden', '');
+
         $('op-refine-apply').addEventListener('click', () => {
             const cells = projected();
             if (
@@ -295,10 +328,13 @@ export class OpsPanel {
             ) {
                 return;
             }
+            refreshTargets();
+            const chosen = target?.value ? this.refineTargets.get(target.value) : undefined;
             this.push({
                 ...OP_DEFAULTS.refine,
+                ...(chosen ?? {}),
                 levels: Number(levels.value) || 1,
-                array: array?.value ?? '',
+                array: chosen ? '' : (array?.value ?? ''),
                 compare: ($<HTMLSelectElement>('op-refine-compare').value as '<' | '>') ?? '<',
                 value: Number($<HTMLInputElement>('op-refine-value').value) || 0,
                 closure: $<HTMLSelectElement>('op-refine-closure').value as

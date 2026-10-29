@@ -801,7 +801,8 @@ mio_match_periodic_nodes <- function(mesh, slave, master, matrix = NULL, transla
 #'   `max_level`. `curvature_threshold`, `feature_angle` and `size_array` then
 #'   refine further.
 #' @param curvature_threshold,feature_angle,size_array Refinement criteria.
-#' @param plane `"auto"`, `"xy"`, `"xz"` or `"yz"` for a 2-D skin.
+#' @param plane `"auto"`, `"xy"`, `"xz"` or `"yz"`: the plane of a 2-D skin for
+#'   `mio_octree()` and `mio_voxelize()` (a zero third `resolution` entry).
 #' @param watertight_check `"off"`, `"warn"` or `"error"`.
 #' @param points A `3 x n` matrix of query coordinates.
 #' @param band Clamp distances beyond this; `0` is the full field.
@@ -1069,6 +1070,35 @@ mio_error_size <- function(mesh, target_error, error_array = "error:zz", order =
   .Call(R_mio_error_size, mesh, as.numeric(target_error), as.character(error_array),
         as.numeric(order), as.numeric(min_size), as.numeric(max_size),
         as.character(output), isTRUE(overwrite))
+}
+
+#' Whether a mesh is conforming
+#'
+#' Checks the mesh's volume cells (else its 2-D cells) for hanging nodes (a
+#' point on a volume cell's face or edge that the cell does not use),
+#' T-junctions (the same on a 2-D cell's edge), and partly overlapping or
+#' unwelded pairs of unmatched facets (roadmap 3.2.1). With `attach_flags` the
+#' mesh carries the `conformity:hanging` point data (1 hanging node, 2
+#' T-junction).
+#'
+#' @param mesh A mesh.
+#' @param tolerance Distances at or below this fraction of the examined facets'
+#'   bounding-box diagonal count as zero.
+#' @param attach_flags Attach the `conformity:hanging` point data.
+#' @return A list: `mesh`, `dimension`, `num_hanging_nodes`,
+#'   `num_t_junctions`, `num_partial_overlaps`, `num_unwelded_facets`,
+#'   `num_boundary_facets`, `num_non_manifold_facets`, `conforming`,
+#'   `interface_mode` (`"conforming"`, `"weld"` or `"proximity"`: the
+#'   [mio_find_interface()] mode that suits the mesh) and `warnings`.
+#' @export
+mio_check_conformity <- function(mesh, tolerance = 1e-9, attach_flags = TRUE) {
+  res <- .Call(R_mio_check_conformity, mesh, as.numeric(tolerance), isTRUE(attach_flags))
+  res$warnings <- if (nzchar(res$warnings)) {
+    strsplit(res$warnings, "\n", fixed = TRUE)[[1]]
+  } else {
+    character(0)
+  }
+  res
 }
 
 #' Remesh a surface by approximated centroidal Voronoi diagram (ACVD)
@@ -1522,6 +1552,10 @@ mio_has_occt <- function() {
 #' @param layout_snap_to_features Whether layout edges snap to feature edges.
 #' @param validate_by_surface_sampling Whether a freeform face's surface is
 #'   sampled against the skin too, outside the legacy mode.
+#' @param constrain_primitives Whether related primitives are fitted together
+#'   on either backend: coaxial cylinders, cones, tori and spheres share one
+#'   axis, parallel and perpendicular planes and nearly equal radii are made
+#'   exact, each change kept only where its patch still passes its fit.
 #' @return A list of `mesh` (the solid re-meshed, with cell data
 #'   `fit_cad:face`, `fit_cad:type` and `fit_cad:patch`), `valid`,
 #'   `tolerance`, `volume`, `skin_volume`, `volume_ratio`, `max_deviation`,
@@ -1545,9 +1579,10 @@ mio_has_occt <- function() {
 #'   facet faces), `num_freeform_adaptive`, `num_network_patches`,
 #'   `num_network_edges`, `num_extraordinary_vertices`, `num_resegmented`,
 #'   `num_escalations`, `max_g1_angle_deg`, `max_freeform_distance`,
-#'   `rms_freeform_distance` and `num_face_records` (the rows of the
+#'   `rms_freeform_distance`, `num_face_records` (the rows of the
 #'   `fit_cad:face_table` field data the mesh carries outside the legacy
-#'   mode).
+#'   mode), and `num_constrained_primitives` and `num_constraint_groups`
+#'   (what `constrain_primitives` changed).
 #' @export
 mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
                         types = c("plane", "sphere", "cylinder", "cone", "torus"),
@@ -1570,7 +1605,8 @@ mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
                         freeform_max_control_points = 400L, layout_target_patch_size = 0.1,
                         layout_max_valence_deviation = 2L, resegment_rounds = 2L,
                         layout_snap_to_features = TRUE,
-                        validate_by_surface_sampling = TRUE) {
+                        validate_by_surface_sampling = TRUE,
+                        constrain_primitives = FALSE) {
   known <- c("plane", "sphere", "cylinder", "cone", "torus")
   bad <- setdiff(types, known)
   if (length(bad) > 0) {
@@ -1596,7 +1632,8 @@ mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
     as.character(local_refine), as.numeric(freeform_g1_tolerance_deg),
     as.numeric(freeform_max_control_points), as.numeric(layout_target_patch_size),
     as.numeric(layout_max_valence_deviation), as.numeric(resegment_rounds),
-    isTRUE(layout_snap_to_features), isTRUE(validate_by_surface_sampling)
+    isTRUE(layout_snap_to_features), isTRUE(validate_by_surface_sampling),
+    isTRUE(constrain_primitives)
   )
 }
 
@@ -2798,6 +2835,84 @@ mio_boundary_layer <- function(mesh, first_height, num_layers = 3, growth = 1.2,
         as.integer(normal_smooth_iterations), isTRUE(front_check))
 }
 
+#' Sweep a surface (or a curve) along a vector or around an axis
+#'
+#' `mio_extrude()` sweeps the triangles and quads of `mesh` into wedges and
+#' hexahedra (or, with no 2-D cells, its lines into quads) along `direction`,
+#' the whole displacement, in `num_layers` layers spaced uniformly, by the
+#' geometric `ratio`, or at the explicit `offsets` (fractions, increasing,
+#' ending at 1) (roadmap 3.1.2). `mio_revolve()` turns them around the axis
+#' through `axis_point` along `axis` by `angle` degrees in `num_layers` steps
+#' (3.1.3); points within `tolerance` of the axis stay put and the cells around
+#' them collapse. The result holds the swept cells only, with `Side` regions
+#' `bottom`, `top` (`start`, `end` for a partial turn) and `side`.
+#'
+#' @param mesh A triangle and quad surface, or a curve of lines.
+#' @param direction The whole displacement, `c(x, y, z)`.
+#' @param num_layers Layers (steps of the turn).
+#' @param ratio Each layer's thickness over the one below's.
+#' @param offsets Explicit level fractions, or `numeric(0)`.
+#' @param record_layers Attach `extrude:layer` (`revolve:layer`) cell data.
+#' @param max_cells Refuse more profile cells times layers.
+#' @param axis,axis_point The axis direction and a point of it.
+#' @param angle Degrees, right-hand rule; 360 closes the turn.
+#' @param tolerance On the axis: a fraction of the bounding-box diagonal.
+#' @return A list: `mesh`, `num_cells`, `num_hexahedra`, `num_wedges`,
+#'   `num_pyramids`, `num_tetrahedra`, `num_quads`, `num_triangles`,
+#'   `num_flipped`, `num_on_axis`, `min_scaled_jacobian`, `full` and
+#'   `warnings`.
+#' @export
+mio_extrude <- function(mesh, direction = c(0, 0, 1), num_layers = 1, ratio = 1,
+                        offsets = numeric(0), record_layers = FALSE, max_cells = 20000000) {
+  res <- .Call(R_mio_extrude, mesh, as.numeric(direction), as.integer(num_layers),
+               as.numeric(ratio), as.numeric(offsets), isTRUE(record_layers),
+               as.numeric(max_cells))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+#' @rdname mio_extrude
+#' @export
+mio_revolve <- function(mesh, axis = c(0, 1, 0), axis_point = c(0, 0, 0), angle = 360,
+                        num_layers = 16, tolerance = 1e-9, record_layers = FALSE,
+                        max_cells = 20000000) {
+  res <- .Call(R_mio_revolve, mesh, as.numeric(axis), as.numeric(axis_point),
+               as.numeric(angle), as.integer(num_layers), as.numeric(tolerance),
+               isTRUE(record_layers), as.numeric(max_cells))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+#' Reflect a mesh across a plane
+#'
+#' Reflects `mesh` across the plane through `origin` with `normal`, every cell
+#' right side out (roadmap 3.2.5): its nodes permuted and `Side` region entries
+#' moved to their facets' new numbers. With `keep_original` the input followed
+#' by its image, the points on the plane shared when `weld`.
+#'
+#' @param mesh A mesh.
+#' @param origin A point of the plane, `c(x, y, z)`.
+#' @param normal The plane's normal.
+#' @param keep_original Return the input followed by its image.
+#' @param weld With `keep_original`, share the points on the plane.
+#' @param tolerance On the plane: a fraction of the bounding-box diagonal.
+#' @param reflect_vector_data Reflect float vector and tensor data.
+#' @return A list: `mesh`, `num_flipped_cells`, `num_points_on_plane`,
+#'   `num_dropped_cells`, `num_dropped_sides` and `warnings`.
+#' @export
+mio_mirror <- function(mesh, origin = c(0, 0, 0), normal = c(1, 0, 0), keep_original = FALSE,
+                       weld = TRUE, tolerance = 1e-9, reflect_vector_data = FALSE) {
+  res <- .Call(R_mio_mirror, mesh, as.numeric(origin), as.numeric(normal),
+               isTRUE(keep_original), isTRUE(weld), as.numeric(tolerance),
+               isTRUE(reflect_vector_data))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+mio_split_warnings_ <- function(text) {
+  if (nzchar(text)) strsplit(text, "\n", fixed = TRUE)[[1]] else character(0)
+}
+
 #' Whether the library carries the Netgen backend
 #'
 #' [mio_tetrahedralize()] needs a library built with
@@ -3297,8 +3412,21 @@ mio_grid <- function(dims, origin = c(0, 0, 0), spacing = c(1, 1, 1),
 #'   `"wedge"`, as the shape allows; `""` is the shape's default.
 #' @param split Triangle layout of `mio_rectangle()`: `"zigzag"`, `"up"`,
 #'   `"down"` or `"center"`.
-#' @param order 1, or 2 for quadratic cells on the exact geometry.
+#' @param order 1, 2 for quadratic cells on the exact geometry, or 3 to 10 for
+#'   the `VTK_LAGRANGE_*` family.
 #' @param max_cells Refuse a mesh larger than this, by name.
+#' @param complete With `order = 2`, the full-Lagrange types (`quad9`,
+#'   `hexahedron27`, `wedge18`) instead of the serendipity ones.
+#' @param start,end End points of `mio_line()`.
+#' @param pitch,turns Rise per turn and number of turns of `mio_helix()`.
+#' @param seed The splitmix64 seed of `mio_box_points()`.
+#' @param major_radius,minor_radius Radii of `mio_torus()` and
+#'   `mio_solid_torus()`.
+#' @param width,num_twists Width and half-twists of `mio_moebius()`.
+#' @param ncap Rings on each cap of `mio_capsule()`.
+#' @param name The solid of `mio_platonic()`: `"tetrahedron"`, `"cube"`,
+#'   `"octahedron"`, `"dodecahedron"` or `"icosahedron"`.
+#' @param ratio Layer thickness ratio of `mio_spherical_shell()` and `mio_pipe()`.
 #' @param types Comma-separated meshio cell type names for
 #'   `mio_reference_cells()`; `""` means every supported type.
 #' @param pairs Two cells sharing a facet instead of one (linear types).
@@ -3309,12 +3437,14 @@ NULL
 mio_generate_ <- function(shape, counts, size = c(1, 1, 1), origin = c(0, 0, 0),
                           radius = 1, height = 1, cell_type = "", split = "zigzag",
                           order = 1, max_cells = 20000000, radius2 = 0.5,
-                          angle = 2 * pi) {
+                          angle = 2 * pi, num_twists = 1, complete = FALSE, ratio = 1,
+                          seed = 0) {
   .Call(
     R_mio_generate, as.character(shape), as.numeric(counts), as.numeric(size),
     as.numeric(origin), as.numeric(radius), as.numeric(height),
     as.character(cell_type), as.character(split), as.integer(order),
-    as.numeric(max_cells), as.numeric(radius2), as.numeric(angle)
+    as.numeric(max_cells), as.numeric(radius2), as.numeric(angle),
+    as.integer(num_twists), as.logical(complete), as.numeric(ratio), as.numeric(seed)
   )
 }
 
@@ -3322,94 +3452,94 @@ mio_generate_ <- function(shape, counts, size = c(1, 1, 1), origin = c(0, 0, 0),
 #' @export
 mio_rectangle <- function(dims = c(1, 1), size = c(1, 1), origin = c(0, 0, 0),
                           cell_type = "quad", split = "zigzag", order = 1,
-                          max_cells = 20000000) {
+                          max_cells = 20000000, complete = FALSE) {
   mio_generate_("rectangle", dims, c(size, 1)[1:3], origin, cell_type = cell_type,
-                split = split, order = order, max_cells = max_cells)
+                split = split, order = order, max_cells = max_cells, complete = complete)
 }
 
 #' @rdname mio_generators
 #' @export
 mio_box <- function(dims = c(1, 1, 1), size = c(1, 1, 1), origin = c(0, 0, 0),
-                    cell_type = "hexahedron", order = 1, max_cells = 20000000) {
+                    cell_type = "hexahedron", order = 1, max_cells = 20000000, complete = FALSE) {
   mio_generate_("box", dims, size, origin, cell_type = cell_type, order = order,
-                max_cells = max_cells)
+                max_cells = max_cells, complete = complete)
 }
 
 #' @rdname mio_generators
 #' @export
 mio_disk <- function(radius = 1, n = 8, center = c(0, 0, 0), cell_type = "quad",
-                     order = 1, max_cells = 20000000) {
+                     order = 1, max_cells = 20000000, complete = FALSE) {
   mio_generate_("disk", n, origin = center, radius = radius, cell_type = cell_type,
-                order = order, max_cells = max_cells)
+                order = order, max_cells = max_cells, complete = complete)
 }
 
 #' @rdname mio_generators
 #' @export
 mio_uv_sphere <- function(radius = 1, nu = 16, nv = 8, center = c(0, 0, 0),
-                          cell_type = "triangle", order = 1, max_cells = 20000000) {
+                          cell_type = "triangle", order = 1, max_cells = 20000000, complete = FALSE) {
   mio_generate_("uv_sphere", c(nu, nv), origin = center, radius = radius,
-                cell_type = cell_type, order = order, max_cells = max_cells)
+                cell_type = cell_type, order = order, max_cells = max_cells, complete = complete)
 }
 
 #' @rdname mio_generators
 #' @export
 mio_icosa_sphere <- function(radius = 1, subdivisions = 2, center = c(0, 0, 0),
-                             order = 1, max_cells = 20000000) {
+                             order = 1, max_cells = 20000000, complete = FALSE) {
   mio_generate_("icosa_sphere", subdivisions, origin = center, radius = radius,
-                order = order, max_cells = max_cells)
+                order = order, max_cells = max_cells, complete = complete)
 }
 
 #' @rdname mio_generators
 #' @export
 mio_cylinder <- function(radius = 1, height = 1, nxy = 8, nz = 8,
                          center = c(0, 0, 0), cell_type = "hexahedron", order = 1,
-                         max_cells = 20000000) {
+                         max_cells = 20000000, complete = FALSE) {
   mio_generate_("cylinder", c(nxy, nz), origin = center, radius = radius,
                 height = height, cell_type = cell_type, order = order,
-                max_cells = max_cells)
+                max_cells = max_cells, complete = complete)
 }
 
 #' @rdname mio_generators
 #' @export
 mio_reference_triangle <- function(n = 4, size = c(1, 1), origin = c(0, 0, 0),
-                                   order = 1, max_cells = 20000000) {
+                                   order = 1, max_cells = 20000000, complete = FALSE) {
   mio_generate_("reference_triangle", n, c(size, 1)[1:3], origin, order = order,
-                max_cells = max_cells)
+                max_cells = max_cells, complete = complete)
 }
 
 #' @rdname mio_generators
 #' @export
 mio_ngon <- function(sides = 6, radius = 1, rings = 1, center = c(0, 0, 0),
-                     order = 1, max_cells = 20000000) {
+                     order = 1, max_cells = 20000000, complete = FALSE) {
   mio_generate_("ngon", c(sides, rings), origin = center, radius = radius,
-                order = order, max_cells = max_cells)
+                order = order, max_cells = max_cells, complete = complete)
 }
 
 #' @rdname mio_generators
 #' @export
 mio_annulus <- function(inner_radius = 0.5, outer_radius = 1, ntheta = 16, nr = 4,
                         angle = 2 * pi, center = c(0, 0, 0), cell_type = "quad",
-                        order = 1, max_cells = 20000000) {
+                        order = 1, max_cells = 20000000, complete = FALSE) {
   mio_generate_("annulus", c(ntheta, nr), origin = center, radius = outer_radius,
                 radius2 = inner_radius, angle = angle, cell_type = cell_type,
-                order = order, max_cells = max_cells)
+                order = order, max_cells = max_cells, complete = complete)
 }
 
 #' @rdname mio_generators
 #' @export
 mio_lshape <- function(n = 4, size = 2, center = c(0, 0, 0), cell_type = "quad",
-                       order = 1, max_cells = 20000000) {
+                       order = 1, max_cells = 20000000, complete = FALSE) {
   mio_generate_("lshape", n, rep(size, 3), center, cell_type = cell_type,
-                order = order, max_cells = max_cells)
+                order = order, max_cells = max_cells, complete = complete)
 }
 
 #' @rdname mio_generators
 #' @export
 mio_plate_with_hole <- function(radius = 0.25, size = 1, nt = 8, nr = 4,
                                 center = c(0, 0, 0), cell_type = "quad", order = 1,
-                                max_cells = 20000000) {
+                                max_cells = 20000000, complete = FALSE) {
   mio_generate_("plate_with_hole", c(nt, nr), rep(size, 3), center, radius = radius,
-                cell_type = cell_type, order = order, max_cells = max_cells)
+                cell_type = cell_type, order = order, max_cells = max_cells, complete = complete)
 }
 
 #' @rdname mio_generators
@@ -3417,6 +3547,195 @@ mio_plate_with_hole <- function(radius = 0.25, size = 1, nt = 8, nr = 4,
 mio_honeycomb <- function(dims = c(4, 4), edge = 1, origin = c(0, 0, 0),
                           max_cells = 20000000) {
   mio_generate_("honeycomb", dims, rep(edge, 3), origin, max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_line <- function(n = 8, start = c(0, 0, 0), end = c(1, 0, 0), order = 1,
+                     max_cells = 20000000, complete = FALSE) {
+  mio_generate_("line", n, end, start, order = order, max_cells = max_cells,
+                complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_circle <- function(radius = 1, n = 16, center = c(0, 0, 0), order = 1,
+                       max_cells = 20000000, complete = FALSE) {
+  mio_generate_("circle", n, origin = center, radius = radius, order = order,
+                max_cells = max_cells, complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_helix <- function(radius = 1, pitch = 1, turns = 2, n = 32, center = c(0, 0, 0),
+                      order = 1, max_cells = 20000000, complete = FALSE) {
+  mio_generate_("helix", n, origin = center, radius = radius, height = pitch,
+                angle = 2 * pi * turns, order = order, max_cells = max_cells,
+                complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_sphere_points <- function(n = 100, radius = 1, center = c(0, 0, 0),
+                              max_cells = 20000000) {
+  mio_generate_("sphere_points", n, origin = center, radius = radius,
+                max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_box_points <- function(n = 100, size = c(1, 1, 1), origin = c(0, 0, 0), seed = 0,
+                           max_cells = 20000000) {
+  mio_generate_("box_points", n, size, origin, seed = seed, max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_tetra_sphere <- function(radius = 1, subdivisions = 3, center = c(0, 0, 0),
+                             order = 1, max_cells = 20000000, complete = FALSE) {
+  mio_generate_("tetra_sphere", subdivisions, origin = center, radius = radius,
+                order = order, max_cells = max_cells, complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_octa_sphere <- function(radius = 1, subdivisions = 2, center = c(0, 0, 0),
+                            order = 1, max_cells = 20000000, complete = FALSE) {
+  mio_generate_("octa_sphere", subdivisions, origin = center, radius = radius,
+                order = order, max_cells = max_cells, complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_cube_sphere <- function(radius = 1, n = 4, center = c(0, 0, 0), cell_type = "quad",
+                            order = 1, max_cells = 20000000, complete = FALSE) {
+  mio_generate_("cube_sphere", n, origin = center, radius = radius,
+                cell_type = cell_type, order = order, max_cells = max_cells,
+                complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_geo_sphere <- function(radius = 1, n = 4, center = c(0, 0, 0), order = 1,
+                           max_cells = 20000000, complete = FALSE) {
+  mio_generate_("geo_sphere", n, origin = center, radius = radius, order = order,
+                max_cells = max_cells, complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_torus <- function(major_radius = 1, minor_radius = 0.25, nu = 32, nv = 16,
+                      center = c(0, 0, 0), cell_type = "quad", order = 1,
+                      max_cells = 20000000, complete = FALSE) {
+  mio_generate_("torus", c(nu, nv), origin = center, radius = major_radius,
+                radius2 = minor_radius, cell_type = cell_type, order = order,
+                max_cells = max_cells, complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_moebius <- function(radius = 1, width = 0.5, nu = 32, nv = 4, num_twists = 1,
+                        center = c(0, 0, 0), cell_type = "quad", order = 1,
+                        max_cells = 20000000, complete = FALSE) {
+  mio_generate_("moebius", c(nu, nv), origin = center, radius = radius, radius2 = width,
+                num_twists = num_twists, cell_type = cell_type, order = order,
+                max_cells = max_cells, complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_tube <- function(radius = 1, height = 1, ntheta = 16, nz = 4, center = c(0, 0, 0),
+                     cell_type = "quad", order = 1, max_cells = 20000000,
+                     complete = FALSE) {
+  mio_generate_("tube", c(ntheta, nz), origin = center, radius = radius, height = height,
+                cell_type = cell_type, order = order, max_cells = max_cells,
+                complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_cone <- function(radius = 1, height = 1, ntheta = 16, nz = 4, center = c(0, 0, 0),
+                     cell_type = "quad", order = 1, max_cells = 20000000,
+                     complete = FALSE) {
+  mio_generate_("cone", c(ntheta, nz), origin = center, radius = radius, height = height,
+                cell_type = cell_type, order = order, max_cells = max_cells,
+                complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_capsule <- function(radius = 0.5, height = 1, ntheta = 16, nz = 4, ncap = 4,
+                        center = c(0, 0, 0), cell_type = "quad", order = 1,
+                        max_cells = 20000000, complete = FALSE) {
+  mio_generate_("capsule", c(ntheta, nz, ncap), origin = center, radius = radius,
+                height = height, cell_type = cell_type, order = order,
+                max_cells = max_cells, complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_box_surface <- function(dims = c(1, 1, 1), size = c(1, 1, 1), origin = c(0, 0, 0),
+                            cell_type = "quad", order = 1, max_cells = 20000000,
+                            complete = FALSE) {
+  mio_generate_("box_surface", dims, size, origin, cell_type = cell_type, order = order,
+                max_cells = max_cells, complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_platonic <- function(name = "icosahedron", radius = 1, center = c(0, 0, 0),
+                         max_cells = 20000000) {
+  faces <- c(tetrahedron = 4, cube = 6, octahedron = 8, dodecahedron = 12,
+             icosahedron = 20)
+  if (!name %in% names(faces)) stop("unknown platonic solid '", name, "'")
+  mio_generate_("platonic", faces[[name]], origin = center, radius = radius,
+                max_cells = max_cells)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_ball <- function(radius = 1, n = 4, center = c(0, 0, 0), cell_type = "hexahedron",
+                     order = 1, max_cells = 20000000, complete = FALSE) {
+  mio_generate_("ball", n, origin = center, radius = radius, cell_type = cell_type,
+                order = order, max_cells = max_cells, complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_spherical_shell <- function(inner_radius = 0.5, outer_radius = 1, n = 4, nr = 2,
+                                ratio = 1, center = c(0, 0, 0), order = 1,
+                                max_cells = 20000000, complete = FALSE) {
+  mio_generate_("spherical_shell", c(n, nr), origin = center, radius = outer_radius,
+                radius2 = inner_radius, ratio = ratio, order = order,
+                max_cells = max_cells, complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_pipe <- function(inner_radius = 0.5, outer_radius = 1, height = 1, ntheta = 16,
+                     nr = 2, nz = 4, ratio = 1, center = c(0, 0, 0), order = 1,
+                     max_cells = 20000000, complete = FALSE) {
+  mio_generate_("pipe", c(ntheta, nr, nz), origin = center, radius = outer_radius,
+                radius2 = inner_radius, height = height, ratio = ratio, order = order,
+                max_cells = max_cells, complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_fichera <- function(n = 2, size = 2, center = c(0, 0, 0), cell_type = "hexahedron",
+                        order = 1, max_cells = 20000000, complete = FALSE) {
+  mio_generate_("fichera", n, rep(size, 3), center, cell_type = cell_type,
+                order = order, max_cells = max_cells, complete = complete)
+}
+
+#' @rdname mio_generators
+#' @export
+mio_solid_torus <- function(major_radius = 1, minor_radius = 0.25, n = 4, nu = 32,
+                            center = c(0, 0, 0), order = 1, max_cells = 20000000,
+                            complete = FALSE) {
+  mio_generate_("solid_torus", c(n, nu), origin = center, radius = major_radius,
+                radius2 = minor_radius, order = order, max_cells = max_cells,
+                complete = complete)
 }
 
 #' @rdname mio_generators
@@ -3522,6 +3841,9 @@ mio_octree <- function(mesh, root_cells = NULL, min_level = 0, max_level = 4,
 #' @param attach_quality Attach the `quality:*` cell data (default `FALSE`).
 #' @param pillow Hexahedral output: a boundary layer of hexahedra (default
 #'   `TRUE`).
+#' @param hex_grading Hexahedral output: `"uniform"` (default, one grid at the
+#'   skin's size) or `"graded"` (the octree's grading, through dual transition
+#'   schemes).
 #' @param untangle_iterations Hexahedral output: untangling iterations (default
 #'   `50`).
 #' @param max_cells Refuse an octree with more leaves (default `20000000`).
@@ -3544,8 +3866,8 @@ mio_octree_mesh <- function(mesh, output = NULL, min_size = NULL, max_size = NUL
                             fit_iterations = NULL, dihedral_floor_guard = NULL,
                             fill = NULL, keep_outside = NULL, attach_distance = NULL,
                             attach_quality = NULL, pillow = NULL,
-                            untangle_iterations = NULL, max_cells = NULL,
-                            max_tets = NULL) {
+                            hex_grading = NULL, untangle_iterations = NULL,
+                            max_cells = NULL, max_tets = NULL) {
   code <- function(value, table, what) {
     if (is.null(value)) {
       return(NULL)
@@ -3572,7 +3894,8 @@ mio_octree_mesh <- function(mesh, output = NULL, min_size = NULL, max_size = NUL
     num(alpha_long), num(alpha_short), num(max_level), num(grading_layers),
     num(fit_iterations), num(untangle_iterations), num(max_cells), num(max_tets),
     flag(gap_outside), flag(preserve_features), flag(dihedral_floor_guard),
-    flag(keep_outside), flag(attach_distance), flag(attach_quality), flag(pillow)
+    flag(keep_outside), flag(attach_distance), flag(attach_quality), flag(pillow),
+    code(hex_grading, c(uniform = 0L, graded = 1L), "hex grading")
   )
   res$warnings <- if (nzchar(res$warnings)) {
     strsplit(res$warnings, "\n", fixed = TRUE)[[1]]
@@ -3587,11 +3910,14 @@ mio_octree_mesh <- function(mesh, output = NULL, min_size = NULL, max_size = NUL
 mio_voxelize <- function(mesh, resolution = NULL, cell_size = 0, bounds = NULL,
                          padding = 0, padding_relative = 0, fill = "all",
                          sign = "pseudonormal", attach_occupancy = FALSE,
-                         max_cells = 20000000, watertight_check = "warn") {
+                         max_cells = 20000000, watertight_check = "warn",
+                         plane = "auto") {
   fills <- c(all = 0L, surface = 1L, inside = 2L)
   signs <- c(unsigned = 0L, pseudonormal = 1L, `winding-number` = 2L)
   checks <- c(off = 0L, warn = 1L, error = 2L)
+  planes <- c(auto = 0L, xy = 1L, xz = 2L, yz = 3L)
   if (!fill %in% names(fills)) stop("unknown fill '", fill, "'")
+  if (!plane %in% names(planes)) stop("unknown plane '", plane, "'")
   if (!sign %in% names(signs)) stop("unknown sign '", sign, "'")
   if (!watertight_check %in% names(checks)) {
     stop("unknown watertight check '", watertight_check, "'")
@@ -3603,7 +3929,7 @@ mio_voxelize <- function(mesh, resolution = NULL, cell_size = 0, bounds = NULL,
     if (is.null(bounds)) numeric(0) else as.numeric(bounds),
     as.numeric(padding), as.numeric(padding_relative),
     fills[[fill]], signs[[sign]], isTRUE(attach_occupancy),
-    as.numeric(max_cells), checks[[watertight_check]]
+    as.numeric(max_cells), checks[[watertight_check]], planes[[plane]]
   )
 }
 

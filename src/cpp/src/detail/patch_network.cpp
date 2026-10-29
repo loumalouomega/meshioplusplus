@@ -983,11 +983,19 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
                 continue;
             const BsplineSurface keep = patches[i].mSurface;
             const std::vector<double> ku = patches[i].mU, kv = patches[i].mV;
+            const std::int64_t kr = out.mPatches[i].mRefinements;
             fit(i, true);
+            // A smooth fit that leaves the tolerance gets knots where it
+            // misses before it is given up: next to an extraordinary vertex
+            // G1 needs more freedom than accuracy alone asked for.
+            while (ok[i] && !accept(i, false) &&
+                   out.mPatches[i].mRefinements < rOptions.mMaxRefinements && refine(i))
+                fit(i, true);
             if (ok[i] && !accept(i, false)) {
                 patches[i].mSurface = keep;
                 patches[i].mU = ku;
                 patches[i].mV = kv;
+                out.mPatches[i].mRefinements = kr;
             }
         }
         const double before = worst_g1;

@@ -25539,6 +25539,109 @@ MESHIOPLUSPLUS_API BoundaryLayerResult boundary_layer(const Mesh& rSurface,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/boundary_layer.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/check_conformity.hpp =====
+/**
+ * @file operations/check_conformity.hpp
+ * @brief Whether a mesh is conforming: hanging nodes, T-junctions and facets
+ * that only partly overlap, reported with a flag per point.
+ *
+ * A mesh is conforming when every two cells meet in a whole shared facet, edge
+ * or corner, with the same point ids on both sides. This check reports the ways
+ * that fails on the mesh's top-dimensional cells (volume cells when there are
+ * any, else 2-D cells; lines and vertices are ignored):
+ *
+ *  - a **hanging node** (3-D): a point some cell uses that lies on a face of a
+ *    volume cell -- in its interior or on one of its edges -- without being one
+ *    of that cell's nodes;
+ *  - a **T-junction** (2-D): a point some cell uses that lies on the interior of
+ *    an edge of a 2-D cell without being one of its nodes;
+ *  - a **partial overlap**: two unmatched facets (faces in 3-D, edges in 2-D)
+ *    that lie in one plane (on one line) and overlap over a positive area
+ *    (length) without being the same facet;
+ *  - an **unwelded** pair: two unmatched facets whose corners coincide but whose
+ *    point ids differ.
+ *
+ * Only unmatched facets -- a face of one volume cell, an edge of one 2-D cell
+ * -- are examined: a node hanging on a face is always a corner of an unmatched
+ * facet of the finer side, and a face matched by its neighbour cannot hold one.
+ * A cell's own nodes are never flagged against it, so a quadratic cell's
+ * mid-edge nodes are not hanging. Two points closer than the tolerance are one
+ * location: a point on a facet's corner is an unwelded duplicate, not a hanging
+ * node.
+ *
+ * The verdict tells a caller which `find_interface` mode suits the mesh:
+ * `"conforming"` when nothing is reported, `"weld"` when the only defect is
+ * unwelded facets (merge the coincident points, then `"conforming"`), and
+ * `"proximity"` when facets partly overlap. Points, connectivity, block order,
+ * data and regions are returned bit-identical; only the flag array is added.
+ *
+ * Deterministic: the flags are computed per point and the counts summed in
+ * facet order, so the result is identical across parallel backends and thread
+ * counts.
+ *
+ * @see doc/check_conformity.md
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Point data (Int64): 0, or `ConformityFlag::HangingNode`/`TJunction`.
+inline constexpr const char* kConformityHangingName = "conformity:hanging";
+
+/// The values of `conformity:hanging`.
+enum class ConformityFlag : std::int32_t {
+    Conforming = 0,
+    HangingNode = 1,  ///< on a face of a volume cell that does not use it
+    TJunction = 2,    ///< on an edge of a 2-D cell that does not use it
+};
+
+/// Options for `check_conformity`.
+struct ConformityOptions {
+    /// Distances at or below this fraction of the bounding-box diagonal of the
+    /// examined cells' points count as zero; must be finite and non-negative.
+    double mTolerance = 1e-9;
+    /// Attach `conformity:hanging` to the returned mesh.
+    bool mAttachFlags = true;
+};
+
+/// The verdict and the counts behind it.
+struct ConformityResult {
+    /// The input, bit-identical, with `conformity:hanging` when asked for.
+    Mesh mMesh;
+    /// 3 for volume cells, 2 for 2-D cells, 0 when the mesh has neither.
+    std::int64_t mDimension = 0;
+    std::int64_t mNumHangingNodes = 0;       ///< points flagged `HangingNode`
+    std::int64_t mNumTJunctions = 0;         ///< points flagged `TJunction`
+    std::int64_t mNumPartialOverlaps = 0;    ///< pairs of partly overlapping facets
+    std::int64_t mNumUnweldedFacets = 0;     ///< pairs of coincident, unwelded facets
+    std::int64_t mNumBoundaryFacets = 0;     ///< facets used by one cell
+    std::int64_t mNumNonManifoldFacets = 0;  ///< facets used by three or more cells
+    /// No hanging node, T-junction, partial overlap or unwelded pair.
+    bool mConforming = true;
+    /// `"conforming"`, `"weld"` or `"proximity"`: see the file comment.
+    std::string mInterfaceMode = "conforming";
+    /// What the check could not examine, one entry per line.
+    std::vector<std::string> mWarnings;
+};
+
+/**
+ * @brief Report the hanging nodes, T-junctions, partial overlaps and unwelded
+ * facets of @p rMesh.
+ * @param rMesh any mesh; its volume cells (else its 2-D cells) are examined.
+ * @param rOptions the tolerance and whether to attach the flags.
+ * @throws std::invalid_argument on a negative or non-finite tolerance.
+ */
+MESHIOPLUSPLUS_API ConformityResult check_conformity(const Mesh& rMesh,
+                                                     const ConformityOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/check_conformity.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/clean.hpp =====
 /**
  * @file operations/clean.hpp
@@ -27830,6 +27933,159 @@ MESHIOPLUSPLUS_API ErrorSizeResult error_size(const Mesh& rMesh, const ErrorSize
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/error_size.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/extrude.hpp =====
+/**
+ * @file operations/extrude.hpp
+ * @brief Sweep a surface into a volume, or a curve into a surface, along a
+ * vector (`extrude`, roadmap 3.1.2) or around an axis (`revolve`, 3.1.3).
+ *
+ * The input's top-dimensional cells are the **profile**: `triangle` and `quad`
+ * cells sweep into a volume, or, when there are none, `line` cells into a
+ * surface. Each profile cell gives one cell per layer -- a triangle a `wedge`,
+ * a quad a `hexahedron`, a line a `quad` -- between consecutive levels of
+ * copies of its points. Cells of lower dimension (a gmsh mesh's boundary
+ * lines, the vertices at a curve's ends) are not swept: what they name is
+ * carried as described below. Higher-order, polygon, polyhedron and volume
+ * cells are refused (`convert_cells` linearizes a quadratic profile).
+ *
+ * **extrude** copies the points to `L` levels along `mDirection`, the whole
+ * displacement: level `k` is `x + t_k d`, with `t_k = k / L`, a geometric
+ * grading `t_k = (r^k - 1) / (r^L - 1)` (`mRatio = r`, the ratio of each layer
+ * to the one below), or explicit increasing fractions ending at 1 (`mOffsets`).
+ * A face is turned to point along the direction first (counted in
+ * `mNumFlipped`), so every cell has a positive volume; a face or line parallel
+ * to the direction is refused by its index. A curve's quads face `(b - a) x d`
+ * for a line from `a` to `b`.
+ *
+ * **revolve** turns the points about the axis through `mAxisPoint` along
+ * `mAxis` by `mAngle` degrees (the right-hand rule; negative turns the other
+ * way) in `L` equal steps. A full turn (|angle| = 360) closes on itself: the
+ * last level is the profile again. A point on the axis (within `mTolerance` of
+ * the points' bounding-box diagonal) stays where it is, so the cells around it
+ * collapse: a triangle with a corner on the axis gives pyramids, one with two
+ * tetrahedra, a quad with an edge on the axis wedges, a quad with one corner
+ * on it pyramids and tetrahedra (split along its first diagonal), and a line
+ * with one end on it triangles. A face is turned to point along its motion;
+ * one that crosses the axis or moves within its own plane is refused, and so
+ * is a turn of more than 180 degrees of faces on both sides of the axis,
+ * which would sweep through each other. A full turn needs at least 3 steps,
+ * and no step may reach 180 degrees.
+ *
+ * **Output**: the swept cells only (wedge, hexahedron, pyramid, tetra blocks;
+ * quad, triangle for a curve), layer by layer, so extruding `rectangle` gives
+ * `box`'s points and cells exactly. Points are the profile's, then each
+ * level's own copies. Named `Side` regions, as the parametric primitives name
+ * theirs: `bottom` (the profile) and `top` (the last level), or `start` and
+ * `end` for a partial turn, and `side` (what the profile's open border sweeps
+ * to); a full turn has neither `start` nor `end`. An input region of the same
+ * name wins, with a warning.
+ *
+ * **Carried**: point data per copy, cell data per layer (an array whose dtype
+ * or width differs between the profile's blocks is dropped, with a warning),
+ * field data. A `Cell` region of profile cells names their columns; a `Point`
+ * region every copy of its points; a `Side` region of profile facets the faces
+ * their facets sweep to; a `Cell` region of lower-dimensional cells the faces
+ * (or edges) those cells sweep to, as a `Side` region. Dimensions grow by one.
+ * With `mRecordLayers`, an Int32 `extrude:layer` (`revolve:layer`) cell array
+ * holds each cell's layer, 1 to `L`.
+ *
+ * Deterministic: every index is a function of the input's order.
+ *
+ * @see doc/extrude.md
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Cell data (Int32) naming each extruded cell's layer, with `mRecordLayers`.
+inline constexpr const char* kExtrudeLayerName = "extrude:layer";
+/// Cell data (Int32) naming each revolved cell's layer, with `mRecordLayers`.
+inline constexpr const char* kRevolveLayerName = "revolve:layer";
+
+/// Options for `extrude`.
+struct ExtrudeOptions {
+    /// The whole displacement of the last level; not zero.
+    std::array<double, 3> mDirection{{0.0, 0.0, 1.0}};
+    /// Layers, 1 or more; with `mOffsets`, 1 (the default) or their count.
+    std::int32_t mNumLayers = 1;
+    /// Each layer's thickness over the one below's; positive, 1 is uniform.
+    double mRatio = 1.0;
+    /// Explicit level fractions: increasing, positive, the last 1; empty for
+    /// `mNumLayers` levels graded by `mRatio`.
+    std::vector<double> mOffsets;
+    /// Attach `extrude:layer`.
+    bool mRecordLayers = false;
+    /// Refuse a sweep of more cells (profile cells times layers); non-positive
+    /// disables the budget.
+    std::int64_t mMaxCells = 20000000;
+};
+
+/// Options for `revolve`.
+struct RevolveOptions {
+    /// A point of the axis.
+    std::array<double, 3> mAxisPoint{{0.0, 0.0, 0.0}};
+    /// The axis direction; not zero. The default turns an `(r, z)` profile in
+    /// the xy plane about the y axis.
+    std::array<double, 3> mAxis{{0.0, 1.0, 0.0}};
+    /// Degrees, 0 < |angle| <= 360; the sign follows the right-hand rule.
+    double mAngle = 360.0;
+    /// Steps of the turn; at least 3 for a full turn.
+    std::int32_t mNumLayers = 16;
+    /// "On the axis": within this fraction of the bounding-box diagonal.
+    double mTolerance = 1e-9;
+    /// Attach `revolve:layer`.
+    bool mRecordLayers = false;
+    /// As `ExtrudeOptions::mMaxCells`.
+    std::int64_t mMaxCells = 20000000;
+};
+
+/// The swept mesh and what went into it.
+struct SweepResult {
+    Mesh mMesh;
+    std::int64_t mNumCells = 0;
+    std::int64_t mNumHexahedra = 0;
+    std::int64_t mNumWedges = 0;
+    std::int64_t mNumPyramids = 0;
+    std::int64_t mNumTetrahedra = 0;
+    std::int64_t mNumQuads = 0;      ///< a swept curve's
+    std::int64_t mNumTriangles = 0;  ///< a swept curve's, where an end is on the axis
+    /// Profile cells turned to face the sweep before it.
+    std::int64_t mNumFlipped = 0;
+    /// Profile points on the axis (revolve).
+    std::int64_t mNumOnAxis = 0;
+    /// The least scaled Jacobian of a volume cell (1 for a right prism); 0 for
+    /// a swept curve.
+    double mMinScaledJacobian = 0.0;
+    /// A full turn, closed on itself (revolve).
+    bool mFull = false;
+    std::vector<std::string> mWarnings;
+};
+
+/**
+ * @brief Sweep @p rMesh's surface (or curve) along a vector.
+ * @throws std::invalid_argument on a bad option, a face or line parallel to
+ *         the direction, or an exceeded budget.
+ * @throws Unsupported for higher-order, polygon, polyhedron or volume cells.
+ */
+MESHIOPLUSPLUS_API SweepResult extrude(const Mesh& rMesh, const ExtrudeOptions& rOptions = {});
+
+/**
+ * @brief Sweep @p rMesh's surface (or curve) around an axis.
+ * @throws std::invalid_argument on a bad option, a face that crosses the axis
+ *         or turns within its own plane, or an exceeded budget.
+ * @throws Unsupported as `extrude`.
+ */
+MESHIOPLUSPLUS_API SweepResult revolve(const Mesh& rMesh, const RevolveOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/extrude.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/feature_edges.hpp =====
 /**
  * @file operations/feature_edges.hpp
@@ -28677,6 +28933,13 @@ struct FitCadOptions {
     /// Whether, outside `Legacy`, a freeform face is accepted only once
     /// samples of its surface lie within the tolerance of the skin too.
     bool mValidateBySurfaceSampling = true;
+    /// Whether related primitives are fitted together before either backend
+    /// builds a face: cylinders, cones, tori and spheres on one axis share it
+    /// exactly, planes parallel or perpendicular to an axis or to another
+    /// plane are made exactly so, and nearly equal radii are made equal, each
+    /// change kept only where its patch still passes its fit (unreleased).
+    /// Both backends; off by default.
+    bool mConstrainPrimitives = false;
 };
 
 /// The re-meshed solid and what was built.
@@ -28803,7 +29066,11 @@ struct FitCadResult {
     double mMaxFreeformDistance = 0.0;
     double mRmsFreeformDistance = 0.0;
     /// One record per patch tried as a surface, in patch-row order.
-    std::vector<FitCadFaceRecord> mFaces;
+    std::vector<FitCadFaceRecord> mFaces;    /// With `mConstrainPrimitives`: the patches whose primitive took a shared
+    /// axis, normal or radius, and the coaxial groups, parallel-normal
+    /// families and equal-radius sets of two or more it formed (unreleased).
+    std::int64_t mNumConstrainedPrimitives = 0;
+    std::int64_t mNumConstraintGroups = 0;
 };
 
 /**
@@ -30598,6 +30865,100 @@ triangulate_polygon_2d(const std::vector<std::vector<std::array<double, 2>>>& rL
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/mesh_cad.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/mirror.hpp =====
+/**
+ * @file operations/mirror.hpp
+ * @brief Reflect a mesh across a plane, keeping every cell right side out
+ * (roadmap 3.2.5).
+ *
+ * A reflecting `transform` (a matrix of negative determinant) moves the points
+ * and leaves the cells as they were, so every one of them comes out inverted:
+ * a tetrahedron of negative volume, a triangle whose normal points inward.
+ * `mirror` reflects the points across the plane through `mOrigin` with normal
+ * `mNormal` and permutes the nodes of every cell so its orientation is valid
+ * again (`detail/cell_flip`): mid-edge, mid-face and centre nodes stay in their
+ * slots, a polygon's ring and a polyhedron's face rings are reversed. `Side`
+ * region entries follow their facets to their new local numbers; cell and
+ * point regions keep their indices.
+ *
+ * With `mKeepOriginal`, the result is the input followed by its mirror image:
+ * each block holds its own cells, then their reflected copies, and the points
+ * are the input's, then the copies'. With `mWeld` as well (the default), a
+ * point on the plane -- within `mTolerance` of the bounding-box diagonal -- is
+ * its own image, so the two halves share it: a half model becomes a whole one,
+ * conforming across the plane. A cell lying entirely on the plane would be its
+ * own image too, so its copy is dropped; a `Side` facet lying on the plane is
+ * interior once both halves meet, so its entries (both copies) are dropped and
+ * counted, and its region is kept even when that leaves it empty.
+ *
+ * Data is carried row by row (a copy's row is its source's). With
+ * `mReflectVectorData`, float arrays of three columns (vectors) are reflected
+ * `v' = H v` and of nine (row-major 3x3 tensors) `A' = H A H`, with
+ * `H = I - 2 n n^T`, on the reflected copies only -- as `transform`'s
+ * `rotate_vector_data` treats them; a pseudo-vector (a vorticity, a normal
+ * stored as data) would need the opposite sign and is not singled out. Field
+ * data and property sets are copied.
+ *
+ * Two-dimensional points stay two-dimensional: the plane must then be a line
+ * of the xy plane (`mNormal[2] == 0`), likewise for one-dimensional points.
+ * Cell types without a flip (`triangle10` and beyond, the other Lagrange
+ * orders, the VTK Lagrange and Bezier families) throw `Unsupported` by name.
+ *
+ * Deterministic: every output index is a function of the input's order.
+ *
+ * @see doc/mirror.md
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Options for `mirror`.
+struct MirrorOptions {
+    /// A point of the mirror plane.
+    std::array<double, 3> mOrigin{{0.0, 0.0, 0.0}};
+    /// The plane's normal; any non-zero length.
+    std::array<double, 3> mNormal{{1.0, 0.0, 0.0}};
+    /// Return the input followed by its mirror image instead of the image alone.
+    bool mKeepOriginal = false;
+    /// With `mKeepOriginal`, share the points on the plane between both halves.
+    bool mWeld = true;
+    /// "On the plane": a distance at or below this fraction of the points'
+    /// bounding-box diagonal; finite and non-negative.
+    double mTolerance = 1e-9;
+    /// Reflect float vector (3-column) and tensor (9-column) point and cell data.
+    bool mReflectVectorData = false;
+};
+
+/// The mirrored mesh and what was done to it.
+struct MirrorResult {
+    Mesh mMesh;
+    std::int64_t mNumFlippedCells = 0;   ///< reflected cells written, after drops
+    std::int64_t mNumPointsOnPlane = 0;  ///< input points within the tolerance of the plane
+    std::int64_t mNumDroppedCells = 0;   ///< copies dropped as lying on the plane (weld only)
+    std::int64_t mNumDroppedSides = 0;   ///< Side entries dropped as interior (weld only)
+    /// One entry per region a drop emptied or shrank, and per region not carried.
+    std::vector<std::string> mWarnings;
+};
+
+/**
+ * @brief Reflect @p rMesh across a plane, cells right side out.
+ * @param rMesh any mesh.
+ * @param rOptions the plane and what to keep.
+ * @throws std::invalid_argument on a zero or non-finite normal, a non-finite
+ *         origin, a bad tolerance, or a plane that leaves the points' dimension.
+ * @throws Unsupported for a cell type with no orientation flip.
+ */
+MESHIOPLUSPLUS_API MirrorResult mirror(const Mesh& rMesh, const MirrorOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/mirror.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/neighbors.hpp =====
 /**
  * @file operations/neighbors.hpp
@@ -30869,6 +31230,9 @@ struct VoxelOptions {
     std::int64_t mMaxCells = 20000000;
     /// How `VoxelFill::Inside` decides what is inside.
     SurfaceDistanceOptions mDistance;
+    /// The plane of a 2-D skin (`Auto`: the axis of zero extent, `z` first).
+    /// Ignored by the 3-D variant, as `OctreeOptions::mPlane` is.
+    detail::PlanarPlane mPlane = detail::PlanarPlane::Auto;
 };
 
 /// The result of `voxelize`: the grid and the lattice it came from.
@@ -31237,6 +31601,15 @@ enum class OctreeMeshSkinGrading {
     Uniform = 1,
 };
 
+/// How a hexahedral output grades.
+enum class OctreeMeshHexGrading {
+    /// One grid at the skin's size everywhere.
+    Uniform = 0,
+    /// The octree's own grading, made conforming by the dual transition
+    /// schemes of Livesu, Pitzalis and Cherchi (2022).
+    Graded = 1,
+};
+
 /// Which leaves a castellated output keeps.
 enum class OctreeMeshFill {
     All = 0,     ///< every leaf
@@ -31251,6 +31624,8 @@ MESHIOPLUSPLUS_API OctreeMeshConformity octree_mesh_conformity_from_name(const s
 /// Parse an `OctreeMeshSkinGrading` name (`graded`, `uniform`).
 MESHIOPLUSPLUS_API OctreeMeshSkinGrading
 octree_mesh_skin_grading_from_name(const std::string& rName);
+/// Parse an `OctreeMeshHexGrading` name (`uniform`, `graded`).
+MESHIOPLUSPLUS_API OctreeMeshHexGrading octree_mesh_hex_grading_from_name(const std::string& rName);
 /// Parse an `OctreeMeshFill` name (`all`, `inside`, `cover`).
 MESHIOPLUSPLUS_API OctreeMeshFill octree_mesh_fill_from_name(const std::string& rName);
 /// The name of an `OctreeMeshOutput` (`castellated`, `tet`, `hex`).
@@ -31328,6 +31703,8 @@ struct OctreeMeshOptions {
     bool mAttachQuality = false;
     /// Hexahedral output: insert a layer of hexahedra along the boundary.
     bool mPillow = true;
+    /// Hexahedral output: one grid at the skin's size, or the octree's grading.
+    OctreeMeshHexGrading mHexGrading = OctreeMeshHexGrading::Uniform;
     /// Hexahedral output: untangling iterations.
     std::int64_t mUntangleIterations = 50;
     /// Refuse an octree with more leaves than this.
@@ -31381,7 +31758,10 @@ struct OctreeMeshResult {
     /// `Uniform` grading, nothing snapped to features, nothing refused.
     bool mGuaranteeApplies = false;
     std::int64_t mNumWindingRechecks = 0;  ///< Winding numbers re-evaluated near 0.5.
-    QualityReport mQuality;                ///< `compute_quality` of the output.
+    /// Winding numbers not evaluated: the point lies deep in a region the
+    /// closed skin does not cut, whose integer winding number was flooded in.
+    std::int64_t mNumWindingSkipped = 0;
+    QualityReport mQuality;  ///< `compute_quality` of the output.
     /// Seconds spent in each stage, in order.
     std::vector<std::pair<std::string, double>> mTimings;
     /// Everything that did not meet its target, in order.
@@ -32223,7 +32603,11 @@ MESHIOPLUSPLUS_API MmapMode pipeline_mmap_from_name(const std::string& rName);
  * @file operations/primitives.hpp
  * @brief Parametric mesh generators: `rectangle`, `box`, `disk`, `uv_sphere`,
  * `icosa_sphere`, `cylinder`, the planar domains `reference_triangle`, `ngon`, `annulus`,
- * `lshape`, `plate_with_hole` and `honeycomb`, and `reference_cells`.
+ * `lshape`, `plate_with_hole` and `honeycomb`, `reference_cells`, the curves and
+ * point clouds `line`, `circle`, `helix`, `sphere_points` and `box_points`, the
+ * surfaces `tetra_sphere`, `octa_sphere`, `cube_sphere`, `geo_sphere`, `torus`,
+ * `moebius`, `tube`, `cone`, `capsule`, `box_surface` and `platonic`, and the
+ * solids `ball`, `spherical_shell`, `pipe`, `fichera` and `solid_torus`.
  *
  * Almost every operation transforms a mesh you already have; `grid`
  * (`operations/voxelize.hpp`) was the one exception. These generators build a
@@ -32242,14 +32626,24 @@ MESHIOPLUSPLUS_API MmapMode pipeline_mmap_from_name(const std::string& rName);
  *    annulus, `hole` on a plate);
  *  - `Order == 2` places the mid-edge nodes on the exact geometry (a sphere or
  *    a cylinder is genuinely curved), appended after the corners in
- *    first-appearance order over the cell-major edge list of `cell_refine_edges`.
+ *    first-appearance order over the cell-major edge list of `cell_refine_edges`;
+ *    `Complete` adds the face and body centres of the full-Lagrange types
+ *    (`quad9`, `hexahedron27`, `wedge18`; `line3`, `triangle6` and `tetra10`
+ *    already are), appended after every mid-edge node in first-appearance order
+ *    over the cells;
+ *  - `Order` 3 to 10 builds the `VTK_LAGRANGE_*` family instead, its nodes on
+ *    the equispaced lattice of each cell mapped through the exact geometry and
+ *    shared between neighbours, appended in first-appearance order over the
+ *    cells, each cell's in VTK order.
  *
  * Seams and poles are welded points, never duplicates. The Python twin
  * (`_primitives.py`) is byte-identical for `rectangle`, `box`, `icosa_sphere`,
  * `reference_triangle`, `lshape`, `honeycomb` and `reference_cells` (index arithmetic and
- * `sqrt` only); `disk`, `uv_sphere`, `cylinder`, `ngon`, `annulus` and
- * `plate_with_hole` use `sin`/`cos`, which differ between libms, so the twins
- * agree on topology and to a few ulps on coordinates.
+ * `sqrt` only), as for `line`, `box_points`, `tetra_sphere`, `octa_sphere`,
+ * `cube_sphere`, `geo_sphere`, `box_surface`, `platonic`, `ball` and `fichera`
+ * (and `spherical_shell` with `Ratio == 1`); the shapes that take `sin`, `cos`
+ * or `pow` agree on topology and to a few ulps on coordinates, since those
+ * differ between libms.
  *
  * @see doc/primitives.md
  */
@@ -32273,7 +32667,8 @@ namespace meshioplusplus {
  * @param rSplit for triangles: `"zigzag"` (alternating diagonals), `"up"`
  *        (diagonal from the lo corner), `"down"` (the other diagonal) or
  *        `"center"` (four triangles around an added cell-centre node).
- * @param Order 1 or 2 (`quad8` / `triangle6`).
+ * @param Order 1 or 2 (`quad8` / `triangle6`); see the overloads with
+ *        `Complete` for full-Lagrange and higher orders.
  * @param MaxCells the cell budget; non-positive disables it.
  * @return a mesh with side regions `xmin`, `xmax`, `ymin`, `ymax`.
  * @throws std::invalid_argument on a bad argument or an exceeded budget.
@@ -32509,6 +32904,314 @@ MESHIOPLUSPLUS_API Mesh honeycomb(const std::array<std::int64_t, 2>& rDims = {{4
  */
 MESHIOPLUSPLUS_API Mesh reference_cells(const std::vector<std::string>& rTypes = {},
                                         bool Pairs = false);
+
+// ---------------------------------------------------------------------------
+// The existing generators with `Complete` (full-Lagrange order 2) and `Order`
+// up to 10; the shorter signatures above forward here with `Complete = false`.
+// ---------------------------------------------------------------------------
+
+MESHIOPLUSPLUS_API Mesh rectangle(const std::array<std::int64_t, 2>& rDims,
+                                  const std::array<double, 2>& rSize,
+                                  const std::array<double, 3>& rOrigin,
+                                  const std::string& rCellType, const std::string& rSplit,
+                                  int Order, std::int64_t MaxCells, bool Complete);
+MESHIOPLUSPLUS_API Mesh box(const std::array<std::int64_t, 3>& rDims,
+                            const std::array<double, 3>& rSize,
+                            const std::array<double, 3>& rOrigin, const std::string& rCellType,
+                            int Order, std::int64_t MaxCells, bool Complete);
+MESHIOPLUSPLUS_API Mesh disk(double Radius, std::int64_t N, const std::array<double, 3>& rCenter,
+                             const std::string& rCellType, int Order, std::int64_t MaxCells,
+                             bool Complete);
+MESHIOPLUSPLUS_API Mesh uv_sphere(double Radius, std::int64_t Nu, std::int64_t Nv,
+                                  const std::array<double, 3>& rCenter,
+                                  const std::string& rCellType, int Order, std::int64_t MaxCells,
+                                  bool Complete);
+MESHIOPLUSPLUS_API Mesh icosa_sphere(double Radius, std::int64_t Subdivisions,
+                                     const std::array<double, 3>& rCenter, int Order,
+                                     std::int64_t MaxCells, bool Complete);
+MESHIOPLUSPLUS_API Mesh cylinder(double Radius, double Height, std::int64_t Nxy, std::int64_t Nz,
+                                 const std::array<double, 3>& rCenter, const std::string& rCellType,
+                                 int Order, std::int64_t MaxCells, bool Complete);
+MESHIOPLUSPLUS_API Mesh reference_triangle(std::int64_t N, const std::array<double, 2>& rSize,
+                                           const std::array<double, 3>& rOrigin, int Order,
+                                           std::int64_t MaxCells, bool Complete);
+MESHIOPLUSPLUS_API Mesh ngon(std::int64_t Sides, double Radius, std::int64_t Rings,
+                             const std::array<double, 3>& rCenter, int Order, std::int64_t MaxCells,
+                             bool Complete);
+MESHIOPLUSPLUS_API Mesh annulus(double InnerRadius, double OuterRadius, std::int64_t Ntheta,
+                                std::int64_t Nr, double Angle, const std::array<double, 3>& rCenter,
+                                const std::string& rCellType, int Order, std::int64_t MaxCells,
+                                bool Complete);
+MESHIOPLUSPLUS_API Mesh lshape(std::int64_t N, double Size, const std::array<double, 3>& rCenter,
+                               const std::string& rCellType, int Order, std::int64_t MaxCells,
+                               bool Complete);
+MESHIOPLUSPLUS_API Mesh plate_with_hole(double Radius, double Size, std::int64_t Nt,
+                                        std::int64_t Nr, const std::array<double, 3>& rCenter,
+                                        const std::string& rCellType, int Order,
+                                        std::int64_t MaxCells, bool Complete);
+
+// ---------------------------------------------------------------------------
+// Curves and point clouds.
+// ---------------------------------------------------------------------------
+
+/**
+ * @brief A straight segment from @p rStart to @p rEnd in @p N `line` cells.
+ * @param N the cell count; a zero yields an empty mesh.
+ * @param rStart the first point.
+ * @param rEnd the last point, distinct from @p rStart.
+ * @param Order 1, 2 (`line3`) or 3 to 10 (`VTK_LAGRANGE_CURVE`).
+ * @param MaxCells the cell budget; non-positive disables it.
+ * @param Complete accepted for symmetry (`line3` is already complete).
+ * @return a mesh with point regions `start` and `end`.
+ */
+MESHIOPLUSPLUS_API Mesh line(std::int64_t N = 8,
+                             const std::array<double, 3>& rStart = {{0.0, 0.0, 0.0}},
+                             const std::array<double, 3>& rEnd = {{1.0, 0.0, 0.0}}, int Order = 1,
+                             std::int64_t MaxCells = 20000000, bool Complete = false);
+
+/**
+ * @brief A closed polyline of @p N `line` cells on the circle of @p Radius in
+ * the `z = center[2]` plane, counter-clockwise from +x; the seam is welded.
+ * @param N the cell count, at least 3; a zero yields an empty mesh.
+ * @param Order 1, 2 (`line3` on the arc) or 3 to 10.
+ */
+MESHIOPLUSPLUS_API Mesh circle(double Radius = 1.0, std::int64_t N = 16,
+                               const std::array<double, 3>& rCenter = {{0.0, 0.0, 0.0}},
+                               int Order = 1, std::int64_t MaxCells = 20000000,
+                               bool Complete = false);
+
+/**
+ * @brief A helix (a spring) of @p N `line` cells around the z axis through
+ * @p rCenter: `Turns` turns of @p Radius, rising @p Pitch per turn from
+ * `z = center[2]`, counter-clockwise from +x.
+ * @param N the cell count; more than `2 * Turns`, so no cell spans half a turn.
+ * @param Order 1, 2 (`line3` on the helix) or 3 to 10.
+ * @return a mesh with point regions `start` and `end`.
+ */
+MESHIOPLUSPLUS_API Mesh helix(double Radius = 1.0, double Pitch = 1.0, double Turns = 2.0,
+                              std::int64_t N = 32,
+                              const std::array<double, 3>& rCenter = {{0.0, 0.0, 0.0}},
+                              int Order = 1, std::int64_t MaxCells = 20000000,
+                              bool Complete = false);
+
+/**
+ * @brief @p N points on the sphere of @p Radius on a Fibonacci lattice, as
+ * `vertex` cells: point `i` at height `z = 1 - (2 i + 1) / N` and azimuth
+ * `i * pi * (3 - sqrt 5)`.
+ * @param N the point count; a zero yields an empty mesh.
+ */
+MESHIOPLUSPLUS_API Mesh sphere_points(std::int64_t N = 100, double Radius = 1.0,
+                                      const std::array<double, 3>& rCenter = {{0.0, 0.0, 0.0}},
+                                      std::int64_t MaxCells = 20000000);
+
+/**
+ * @brief @p N points drawn uniformly in the box `[origin, origin + size]`, as
+ * `vertex` cells. The draws come from splitmix64 seeded with @p Seed, three per
+ * point (x, y, z), each `(next() >> 11) * 2^-53`, so the cloud is the same on
+ * every platform and in the Python twin.
+ * @param N the point count; a zero yields an empty mesh.
+ */
+MESHIOPLUSPLUS_API Mesh box_points(std::int64_t N = 100,
+                                   const std::array<double, 3>& rSize = {{1.0, 1.0, 1.0}},
+                                   const std::array<double, 3>& rOrigin = {{0.0, 0.0, 0.0}},
+                                   std::uint64_t Seed = 0, std::int64_t MaxCells = 20000000);
+
+// ---------------------------------------------------------------------------
+// Surfaces.
+// ---------------------------------------------------------------------------
+
+/**
+ * @brief A sphere surface from a regular tetrahedron split in four
+ * @p Subdivisions times (`4 * 4^subdivisions` triangles), as `icosa_sphere`.
+ */
+MESHIOPLUSPLUS_API Mesh tetra_sphere(double Radius = 1.0, std::int64_t Subdivisions = 3,
+                                     const std::array<double, 3>& rCenter = {{0.0, 0.0, 0.0}},
+                                     int Order = 1, std::int64_t MaxCells = 20000000,
+                                     bool Complete = false);
+
+/**
+ * @brief A sphere surface from a regular octahedron split in four
+ * @p Subdivisions times (`8 * 4^subdivisions` triangles), as `icosa_sphere`.
+ */
+MESHIOPLUSPLUS_API Mesh octa_sphere(double Radius = 1.0, std::int64_t Subdivisions = 2,
+                                    const std::array<double, 3>& rCenter = {{0.0, 0.0, 0.0}},
+                                    int Order = 1, std::int64_t MaxCells = 20000000,
+                                    bool Complete = false);
+
+/**
+ * @brief A sphere surface from the six faces of a cube, each an `N x N` grid,
+ * pushed radially onto the sphere (`6 N^2` quads, or twice as many triangles).
+ * Points are the cube's boundary lattice, x fastest, then y, then z; cells run
+ * face by face (`xmin`, `xmax`, `ymin`, `ymax`, `zmin`, `zmax`).
+ * @param rCellType `"quad"` or `"triangle"` (each quad cut along its first
+ *        diagonal).
+ */
+MESHIOPLUSPLUS_API Mesh cube_sphere(double Radius = 1.0, std::int64_t N = 4,
+                                    const std::array<double, 3>& rCenter = {{0.0, 0.0, 0.0}},
+                                    const std::string& rCellType = "quad", int Order = 1,
+                                    std::int64_t MaxCells = 20000000, bool Complete = false);
+
+/**
+ * @brief A geodesic sphere: every face of an icosahedron cut into an `N x N`
+ * triangle lattice (frequency @p N, `20 N^2` triangles) pushed radially onto
+ * the sphere. Unlike `icosa_sphere`, any frequency, not only powers of two.
+ */
+MESHIOPLUSPLUS_API Mesh geo_sphere(double Radius = 1.0, std::int64_t N = 4,
+                                   const std::array<double, 3>& rCenter = {{0.0, 0.0, 0.0}},
+                                   int Order = 1, std::int64_t MaxCells = 20000000,
+                                   bool Complete = false);
+
+/**
+ * @brief A torus around the z axis: tube centre circle of @p MajorRadius, tube
+ * of @p MinorRadius; @p Nu cells around the axis and @p Nv around the tube,
+ * periodic both ways and welded. Genus one: Euler characteristic zero.
+ * @param rCellType `"quad"` or `"triangle"`.
+ */
+MESHIOPLUSPLUS_API Mesh torus(double MajorRadius = 1.0, double MinorRadius = 0.25,
+                              std::int64_t Nu = 32, std::int64_t Nv = 16,
+                              const std::array<double, 3>& rCenter = {{0.0, 0.0, 0.0}},
+                              const std::string& rCellType = "quad", int Order = 1,
+                              std::int64_t MaxCells = 20000000, bool Complete = false);
+
+/**
+ * @brief A Moebius band of centre-line @p Radius and @p Width with
+ * @p NumTwists half-twists: @p Nu cells along it and @p Nv across. An odd count
+ * has no consistent orientation (one boundary loop); an even count is an
+ * orientable band (two loops).
+ * @return a mesh with one side region, `boundary`.
+ */
+MESHIOPLUSPLUS_API Mesh moebius(double Radius = 1.0, double Width = 0.5, std::int64_t Nu = 32,
+                                std::int64_t Nv = 4, std::int64_t NumTwists = 1,
+                                const std::array<double, 3>& rCenter = {{0.0, 0.0, 0.0}},
+                                const std::string& rCellType = "quad", int Order = 1,
+                                std::int64_t MaxCells = 20000000, bool Complete = false);
+
+/**
+ * @brief An open cylinder surface around the z axis, centred on @p rCenter:
+ * @p Ntheta cells around and @p Nz along, oriented outward.
+ * @return a mesh with side regions `bottom` and `top` (its two rims).
+ */
+MESHIOPLUSPLUS_API Mesh tube(double Radius = 1.0, double Height = 1.0, std::int64_t Ntheta = 16,
+                             std::int64_t Nz = 4,
+                             const std::array<double, 3>& rCenter = {{0.0, 0.0, 0.0}},
+                             const std::string& rCellType = "quad", int Order = 1,
+                             std::int64_t MaxCells = 20000000, bool Complete = false);
+
+/**
+ * @brief A closed cone surface: base disk of @p Radius at `z = center[2]`, apex
+ * @p Height above it, @p Nz rings on the slant and on the base. The rim is a
+ * sharp edge.
+ * @param rCellType `"quad"` (triangle fans at the apex and the base centre) or
+ *        `"triangle"`.
+ * @return a mesh with cell regions `side` and `base`.
+ */
+MESHIOPLUSPLUS_API Mesh cone(double Radius = 1.0, double Height = 1.0, std::int64_t Ntheta = 16,
+                             std::int64_t Nz = 4,
+                             const std::array<double, 3>& rCenter = {{0.0, 0.0, 0.0}},
+                             const std::string& rCellType = "quad", int Order = 1,
+                             std::int64_t MaxCells = 20000000, bool Complete = false);
+
+/**
+ * @brief A capsule: a cylinder of @p Radius and length @p Height closed by two
+ * hemispheres, centred on @p rCenter along z. @p Nz rings along the cylinder
+ * and @p Ncap on each cap; smooth (G1) where they meet.
+ * @param rCellType `"quad"` (triangle fans at the poles) or `"triangle"`.
+ */
+MESHIOPLUSPLUS_API Mesh capsule(double Radius = 0.5, double Height = 1.0, std::int64_t Ntheta = 16,
+                                std::int64_t Nz = 4, std::int64_t Ncap = 4,
+                                const std::array<double, 3>& rCenter = {{0.0, 0.0, 0.0}},
+                                const std::string& rCellType = "quad", int Order = 1,
+                                std::int64_t MaxCells = 20000000, bool Complete = false);
+
+/**
+ * @brief The boundary of a box as a closed surface: each face an
+ * `n_a x n_b` grid, oriented outward, sharing its edges with its neighbours.
+ * Points and cells as `cube_sphere`.
+ * @return a mesh with cell regions `xmin` ... `zmax`, one per face.
+ */
+MESHIOPLUSPLUS_API Mesh box_surface(const std::array<std::int64_t, 3>& rDims = {{1, 1, 1}},
+                                    const std::array<double, 3>& rSize = {{1.0, 1.0, 1.0}},
+                                    const std::array<double, 3>& rOrigin = {{0.0, 0.0, 0.0}},
+                                    const std::string& rCellType = "quad", int Order = 1,
+                                    std::int64_t MaxCells = 20000000, bool Complete = false);
+
+/**
+ * @brief A platonic solid's surface with one cell per face, inscribed in the
+ * sphere of @p Radius: `"tetrahedron"`, `"octahedron"` and `"icosahedron"` in
+ * triangles, `"cube"` in quads and `"dodecahedron"` as a `polygon` block of
+ * pentagons. Linear only.
+ */
+MESHIOPLUSPLUS_API Mesh platonic(const std::string& rName = "icosahedron", double Radius = 1.0,
+                                 const std::array<double, 3>& rCenter = {{0.0, 0.0, 0.0}},
+                                 std::int64_t MaxCells = 20000000);
+
+// ---------------------------------------------------------------------------
+// Solids.
+// ---------------------------------------------------------------------------
+
+/**
+ * @brief A ball of hexahedra by the seven-block butterfly: an inner cube of
+ * half side `Radius / 2` and six blocks blending its faces into the sphere, so
+ * no cell degenerates at the centre. The lattice is `(2N + 1)^3` points, x
+ * fastest, `N` cells from the centre to the surface.
+ * @param rCellType `"hexahedron"` or `"tetra"` (six Kuhn tetrahedra per cell).
+ * @return a mesh with one side region, `surface`.
+ */
+MESHIOPLUSPLUS_API Mesh ball(double Radius = 1.0, std::int64_t N = 4,
+                             const std::array<double, 3>& rCenter = {{0.0, 0.0, 0.0}},
+                             const std::string& rCellType = "hexahedron", int Order = 1,
+                             std::int64_t MaxCells = 20000000, bool Complete = false);
+
+/**
+ * @brief A thick spherical shell of hexahedra between two radii: the
+ * `cube_sphere` lattice of @p N cells per face edge on each of `Nr + 1` layers.
+ * @param Ratio the thickness of each layer over the one inside it (1 is
+ *        uniform; above 1 grows outward, below 1 refines toward the outer wall).
+ * @return a mesh with side regions `inner` and `outer`.
+ */
+MESHIOPLUSPLUS_API Mesh spherical_shell(double InnerRadius = 0.5, double OuterRadius = 1.0,
+                                        std::int64_t N = 4, std::int64_t Nr = 2, double Ratio = 1.0,
+                                        const std::array<double, 3>& rCenter = {{0.0, 0.0, 0.0}},
+                                        int Order = 1, std::int64_t MaxCells = 20000000,
+                                        bool Complete = false);
+
+/**
+ * @brief A thick-walled pipe of hexahedra around the z axis, centred on
+ * @p rCenter: @p Ntheta cells around, @p Nr through the wall, @p Nz along.
+ * @param Ratio the radial thickness of each layer over the one inside it.
+ * @return a mesh with side regions `inner`, `outer`, `bottom` and `top`.
+ */
+MESHIOPLUSPLUS_API Mesh pipe(double InnerRadius = 0.5, double OuterRadius = 1.0,
+                             double Height = 1.0, std::int64_t Ntheta = 16, std::int64_t Nr = 2,
+                             std::int64_t Nz = 4, double Ratio = 1.0,
+                             const std::array<double, 3>& rCenter = {{0.0, 0.0, 0.0}},
+                             int Order = 1, std::int64_t MaxCells = 20000000,
+                             bool Complete = false);
+
+/**
+ * @brief The Fichera corner: the cube `[-Size/2, Size/2]^3` around @p rCenter
+ * minus its positive octant, the 3-D L-shape with a re-entrant vertex at the
+ * centre. @p N cells per half side (`7 N^3` hexahedra).
+ * @param rCellType `"hexahedron"` or `"tetra"`.
+ * @return a mesh with side regions `xmin` ... `zmax` and the notch walls
+ *         `notch_x`, `notch_y`, `notch_z` (on `x = 0`, `y = 0`, `z = 0`).
+ */
+MESHIOPLUSPLUS_API Mesh fichera(std::int64_t N = 2, double Size = 2.0,
+                                const std::array<double, 3>& rCenter = {{0.0, 0.0, 0.0}},
+                                const std::string& rCellType = "hexahedron", int Order = 1,
+                                std::int64_t MaxCells = 20000000, bool Complete = false);
+
+/**
+ * @brief A solid torus of hexahedra: the squircle disk of `disk` (@p N cells
+ * across) as the tube's cross-section, swept around the z axis in @p Nu steps
+ * and welded.
+ * @return a mesh with one side region, `surface`.
+ */
+MESHIOPLUSPLUS_API Mesh solid_torus(double MajorRadius = 1.0, double MinorRadius = 0.25,
+                                    std::int64_t N = 4, std::int64_t Nu = 32,
+                                    const std::array<double, 3>& rCenter = {{0.0, 0.0, 0.0}},
+                                    int Order = 1, std::int64_t MaxCells = 20000000,
+                                    bool Complete = false);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/primitives.hpp =====
@@ -37437,6 +38140,20 @@ void linear_octree_dilate(LinearOctree& rTree, const std::vector<std::uint8_t>& 
 /// leaf's closure. A coarser leaf holding that cube is returned whatever else
 /// it shares with the leaf (a corner query can return a face neighbour), so a
 /// leaf can appear in several directions. Empty on the boundary of the forest.
+/**
+ * @brief Pair the tree for the dual hexahedral transition schemes (Pitzalis,
+ * Livesu, Cherchi, Gobbetti and Scateni, "Generalized adaptive refinement for
+ * grid-based hexahedral meshing", ACM TOG 40(6), 2021): every leaf has a parent
+ * (the roots are split once) and the eight children of every parent are all
+ * leaves or all split. Splits and rebalances for @p Kind until both hold.
+ * @return whether anything was split.
+ */
+bool linear_octree_pair(LinearOctree& rTree, OctreeAdjacency Kind, std::int64_t MaxLeaves);
+
+/// Whether every leaf has a parent and every octet of siblings is all leaves
+/// or all split; @p pWhy receives the first violation.
+bool linear_octree_is_paired(const LinearOctree& rTree, std::string* pWhy = nullptr);
+
 std::vector<std::int64_t> linear_octree_neighbours(const LinearOctree& rTree, std::size_t Leaf,
                                                    int Dx, int Dy, int Dz);
 
@@ -39152,6 +39869,52 @@ Cdt2dPolygon cdt2d_triangulate_polygon(const std::vector<std::vector<Cdt2d::Vec2
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/cdt2d.hpp =====
+// ===== begin src/cpp/src/detail/cell_flip.hpp =====
+/**
+ * @file detail/cell_flip.hpp
+ * @brief The node permutation that reverses a cell's orientation, and where it
+ * sends the cell's facets (roadmap 3.2.5, `mirror`).
+ *
+ * A reflection turns every cell inside out: a tetrahedron's volume goes
+ * negative, a triangle's normal points the other way. Permuting the nodes of
+ * each cell by `cell_flip_permutation` puts it right side out again: the
+ * permuted cell `new[i] = old[P[i]]` covers the same nodes with the opposite
+ * orientation, its mid-edge, mid-face and centre nodes still in their slots.
+ * Every permutation is an involution and keeps node 0 in place.
+ *
+ * The facets move with the nodes: `cell_flip_facet_map(Type)[f]` is the
+ * number, in the flipped cell, of what was facet `f` (a face of a 3-D cell as
+ * `cell_faces` numbers them, an edge of a 2-D one as `cell_edges` does), so a
+ * `Side` region entry `(cell, f)` becomes `(cell, map[f])`. The maps are found
+ * from the facet tables themselves, not written out.
+ *
+ * Covered: `vertex`, `line` to `line11`, `triangle`, `triangle6`, `triangle7`,
+ * `quad`, `quad8`, `quad9`, `tetra`, `tetra10`, `pyramid`, `pyramid13`,
+ * `pyramid14`, `wedge`, `wedge15`, `wedge18`, `hexahedron`, `hexahedron20` and
+ * `hexahedron27`. A polygon reverses its ring after node 0 (edge `k` becomes
+ * edge `n - 1 - k`) and a polyhedron each face ring (its faces keep their
+ * numbers); neither has a fixed table, so the caller does those. Every other
+ * type returns `nullptr`.
+ *
+ * A **core-private** header: nothing installed names it.
+ */
+
+// System includes
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/// The orientation-reversing node permutation of @p Type, or `nullptr`.
+const std::vector<int>* cell_flip_permutation(CellType Type);
+
+/// Per facet of @p Type, its number after the flip; empty for a type without
+/// facets (a vertex or a line), `nullptr` when the type has no permutation.
+const std::vector<int>* cell_flip_facet_map(CellType Type);
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/cell_flip.hpp =====
 // ===== begin src/cpp/src/detail/closed_facets.hpp =====
 /**
  * @file detail/closed_facets.hpp
@@ -42035,9 +42798,12 @@ JunctionPoint junction_closest(const std::vector<ClosestPoint>& rSurfaces,
  * from the polyline), and the path's inner vertices are moved onto the
  * polyline and pinned. Every move goes through one guard: no tetrahedron
  * around the vertex may lose its volume or drop below a two-degree dihedral
- * angle it did not already have; a refused chain vertex tries a half and a
- * quarter of the move, a refused corner the next candidate. A corner or chain
- * that cannot be recovered is counted, never silently dropped.
+ * angle it did not already have. Only the guarded tetrahedra count: those the
+ * output keeps, so a sliver outside the skin that is about to be discarded
+ * cannot hold a rim's vertex off its chain. A vertex moves in four quarter
+ * steps and keeps the steps that succeeded; a refused corner tries the next
+ * candidate. A corner or chain that cannot be recovered is counted, never
+ * silently dropped.
  *
  * A **core-private** header: nothing installed names it.
  */
@@ -42083,12 +42849,15 @@ struct FeatureSnapReport {
  * @param rPinned per point; snapped points are set to 1 and pinned points are
  *        never moved.
  * @param rFeature per point, set to 1 on a corner and 2 on a chain.
+ * @param rGuarded per tetrahedron, 1 when it must stay positive (it reaches
+ *        the output).
  * @param rLocalSize the local mesh size at a point in space.
  */
 FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
                                const std::vector<std::array<std::int64_t, 4>>& rTets,
-                               const std::vector<std::uint8_t>& rInside, const FeatureGraph& rGraph,
-                               const std::vector<Vec3>& rSkinPoints,
+                               const std::vector<std::uint8_t>& rInside,
+                               const std::vector<std::uint8_t>& rGuarded,
+                               const FeatureGraph& rGraph, const std::vector<Vec3>& rSkinPoints,
                                const std::function<double(const Vec3&)>& rLocalSize,
                                double MinVolume, std::vector<std::uint8_t>& rPinned,
                                std::vector<std::uint8_t>& rFeature);
@@ -42371,6 +43140,104 @@ FreeformAdaptiveResult freeform_adaptive_fit(const std::vector<PatchVec>& rPts,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/freeform_adaptive.hpp =====
+// ===== begin src/cpp/src/detail/hex_dual_schemes.hpp =====
+/**
+ * @file detail/hex_dual_schemes.hpp
+ * @brief The all-hexahedral dual of a paired, strongly balanced octree, after
+ * the transition schemes of Livesu, Pitzalis and Cherchi ("Optimal dual
+ * schemes for adaptive grid based hexmeshing", ACM TOG 41(2), 2022), ported
+ * from CinoLib (MIT).
+ *
+ * The leaves are the primal mesh: hexahedra with hanging nodes where a leaf
+ * meets leaves one level finer. A **transition vertex** is the centre of a
+ * face of a parent whose eight children are leaves and whose neighbour across
+ * that face is split two levels down on that side; every coarse leaf around
+ * the transitions is replaced by one of eight polyhedral schemes, placed by
+ * the transition vertices it holds. The result is a conforming polyhedral mesh
+ * whose every interior vertex has eight cells around it, so its dual is all
+ * hexahedra: one per interior primal vertex, with a corner at the centroid of
+ * each cell around it.
+ *
+ * The port keeps CinoLib's detection, marking order and orientation rules,
+ * with every coordinate on an integer lattice of 1/20 of the finest cell (the
+ * schemes use 0, 0.3, 0.5 and 1 of a cell), so vertices weld by exact keys
+ * and every rotation and reflection is a signed permutation. Every assertion
+ * of the original is an `Unsupported` error naming the configuration, and the
+ * schemes for weakly balanced grids are not ported: the tree must be balanced
+ * across faces, edges and corners and paired (`linear_octree_pair`).
+ *
+ * A **core-private** header (the `cut_graph.hpp` precedent): nothing installed
+ * names it.
+ */
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+
+namespace meshioplusplus {
+namespace detail {
+
+/// The schemes for strongly balanced grids, in CinoLib's order.
+enum class HexTransition {
+    Flat,
+    FlatConvex,
+    Convex1,
+    Convex2,
+    Convex3,
+    Edge,
+    VertCenter,
+    VertSide,
+};
+
+constexpr std::size_t kNumHexTransitions = 8;
+
+/// One scheme: a unit cube cut into polyhedra, coordinates times 20.
+struct HexDualScheme {
+    const std::int8_t* mVerts;  ///< 3 per vertex, each in [0, 20]
+    std::size_t mNumVerts;
+    const std::uint16_t* mFaces;     ///< vertex ids of every face, concatenated
+    const std::uint16_t* mFaceEnds;  ///< one past each face's last entry
+    std::size_t mNumFaces;
+    const std::uint16_t* mPolys;     ///< face ids of every cell, concatenated
+    const std::uint16_t* mPolyEnds;  ///< one past each cell's last entry
+    std::size_t mNumPolys;
+    const std::uint8_t* mWinding;  ///< per entry of `mPolys`
+};
+
+const HexDualScheme& hex_dual_scheme(HexTransition Type);
+
+/// The dual mesh, in lattice units (1/20 of the finest cell) from the forest's
+/// lo corner.
+struct HexDualMesh {
+    std::vector<Vec3> mPoints;
+    std::vector<std::array<std::int64_t, 8>> mHexes;  ///< VTK order, positive volume
+    /// The primal vertex each hexahedron is the dual of.
+    std::vector<std::array<std::int64_t, 3>> mCentre;
+    /// The finest level among the leaves around that vertex.
+    std::vector<std::int32_t> mLevel;
+    std::int64_t mNumTransitionVertices = 0;
+    std::array<std::int64_t, kNumHexTransitions> mNumSchemes{};
+    std::int64_t mNumPrimalCells = 0;
+};
+
+/// The lattice units per finest cell.
+constexpr std::int64_t kHexDualUnit = 20;
+
+/**
+ * @brief The all-hexahedral dual of @p rTree, which must be paired and
+ * balanced across faces, edges and corners. Vertices on the forest's outer
+ * boundary have no hexahedron.
+ * @throws Unsupported naming the configuration when a scheme cannot be
+ * placed, the schemes do not conform, or an interior vertex's dual is not a
+ * hexahedron; never returns a partial mesh.
+ */
+HexDualMesh hex_dual_mesh(const LinearOctree& rTree);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/hex_dual_schemes.hpp =====
 // ===== begin src/cpp/src/detail/hex_fit.hpp =====
 /**
  * @file detail/hex_fit.hpp
@@ -42416,6 +43283,18 @@ struct HexMesh {
     std::vector<Vec3> mPoints;
     std::vector<std::array<std::int64_t, 8>> mHexes;
 };
+
+/**
+ * @brief `hex_grid_make_manifold` on an unstructured hexahedral mesh: add
+ * hexahedra to @p rKept until, around every node, the kept hexahedra and the
+ * rest (with the outside of the mesh) are each connected through the faces at
+ * that node. A failing node takes the empty hexahedron around it with the
+ * largest @p rScore first (ties: the lowest index); sweeps the nodes in
+ * ascending order until none fails.
+ * @return the hexahedra added.
+ */
+std::int64_t hex_make_manifold(const HexMesh& rMesh, std::vector<std::uint8_t>& rKept,
+                               const std::vector<double>& rScore);
 
 /// The faces of a hexahedral mesh used by one hexahedron, ordered so their
 /// normal (right-hand rule) points out of it, with the (hexahedron, facet)
@@ -42742,6 +43621,25 @@ double card_to_real_view(std::string_view Text, const std::string& rWhere,
  * the same way in every layer. The surface (`wall`) and the last level
  * (`cap`) come out as faces, split like their columns.
  *
+ * `extrude` and `revolve` (roadmap 3.1.2, 3.1.3) ask for three more things,
+ * all off by default so `boundary_layer`'s sweep is unchanged:
+ *
+ *  - **edges**: each directed edge `a -> b` sweeps to a side face per layer,
+ *    `[a, b, b', a']` (a triangle when one end is collapsed, nothing when
+ *    both are). An edge that runs along its face's winding gives the face
+ *    of the column beside it that faces outward, so the border edges of an
+ *    open surface give its side walls, and a curve's own edges its surface.
+ *  - **periodic**: the last level is the surface itself again, so a full
+ *    turn closes on itself; there is then no wall and no cap.
+ *  - **collapsed-edge wedges**: a quad with two adjacent corners collapsed in
+ *    every layer, and the other two in none (an edge on a revolution's
+ *    axis), gives one wedge per layer instead of a split column; its wall
+ *    and cap stay quads.
+ *
+ * The id of every point at every level is returned too, so a caller can put
+ * the levels' points somewhere other than along a straight direction (a
+ * rotation) and tell which corners collapsed.
+ *
  * A **core-private** header: nothing installed names it.
  */
 
@@ -42765,10 +43663,17 @@ struct LayerSweepInput {
     /// does not grow that layer, and all zero is a collapsed point.
     std::vector<double> mOffsets;
     int mLayers = 1;
+    /// Directed edges to sweep into side faces (`mSideQuads`, `mSideTriangles`).
+    std::vector<std::array<std::int64_t, 2>> mEdges;
+    /// The last level is the surface again: no points of its own, no wall, no cap.
+    bool mPeriodic = false;
+    /// A quad with an edge collapsed in every layer gives wedges (see above).
+    bool mCollapsedEdgeWedges = false;
 };
 
 /// One cell or face of the sweep: its node ids (unused slots -1), the
-/// surface face it comes from and its layer (1..L; 0 the wall, L + 1 the cap).
+/// surface face (or edge) it comes from and its layer (1..L; 0 the wall, L + 1
+/// the cap).
 struct LayerSweepCell {
     std::array<std::int64_t, 8> mNodes{};
     std::int64_t mFace = 0;
@@ -42783,6 +43688,11 @@ struct LayerSweepResult {
     std::vector<LayerSweepCell> mHexahedra, mWedges, mPyramids, mTetrahedra;
     /// The wall and cap faces, triangles and quads apart.
     std::vector<LayerSweepCell> mWallTriangles, mWallQuads, mCapTriangles, mCapQuads;
+    /// The edges' side faces, by edge then layer; `mFace` is the edge index.
+    std::vector<LayerSweepCell> mSideQuads, mSideTriangles;
+    /// The id of point P at level K (1..L) is `mLevelIds[(K - 1) * n + P]`;
+    /// level 0 is P itself. Equal ids at K - 1 and K: P is collapsed in K.
+    std::vector<std::int64_t> mLevelIds;
 };
 
 LayerSweepResult layer_sweep(const LayerSweepInput& rIn);
@@ -43841,8 +44751,12 @@ QuadLayoutFailure quad_layout_check(const QuadLayout& rLayout, const std::vector
  *     plane (`n . S_v = 0` at samples along the side, normalised to the sine
  *     of the angle), weighted so an angle at `mG1ToleranceDeg` costs what a
  *     distance at the tolerance does: block Gauss-Seidel over the patches in
- *     index order, the weight raised fourfold while the largest angle exceeds
- *     the tolerance, up to `mMaxSweeps` sweeps.
+ *     index order, the weight doubled (up to eight times its start) after a
+ *     sweep that does not lower the largest angle, up to `mMaxSweeps` sweeps.
+ *     A patch the G1 rows push out of the tolerance gets knots where it
+ *     misses (step 6) and is fitted again before its accurate surface is
+ *     restored: next to an extraordinary vertex G1 needs more poles than
+ *     accuracy alone.
  *  5. **Extraordinary vertices** (where other than four patches meet):
  *     `G0` leaves them alone (and the G1 measure skips their first span);
  *     `G1` puts the second pole of every curve leaving one, and every
@@ -44151,6 +45065,80 @@ void predicates_two_product(double A, double B, double& rX, double& rY);
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/predicates.hpp =====
+// ===== begin src/cpp/src/detail/primitive_constraints.hpp =====
+/**
+ * @file detail/primitive_constraints.hpp
+ * @brief Fit related primitives together (`FitCadOptions::mConstrainPrimitives`):
+ * the cylinders, cones, tori and spheres of a turned part share one axis
+ * exactly, planes take an axis or another plane's normal where they are
+ * parallel or perpendicular to it, and cylinders, spheres and tori of nearly
+ * equal radius take one radius.
+ *
+ * Each primitive is fitted on its own by `fit_primitives`, so the axes of a
+ * noisy turned part differ in their last digits and the B-rep built from them
+ * has sliver gaps where the faces should meet on one axis. This pass runs on
+ * the `fit:patch_*` table `fit_cad` builds on, before either backend reads it:
+ *
+ *  1. **Coaxial groups.** The axial primitives (cylinder, cone, torus) are
+ *     grouped in row order: a primitive joins the group of the first earlier
+ *     one whose axis it is parallel to and lies on, within what moves its patch
+ *     by twice its tolerance. A sphere joins a group whose axis passes through
+ *     its centre. A group of two or more is refitted jointly by
+ *     Levenberg-Marquardt: one axis, and each member's own parameters along it
+ *     (a cylinder's radius; a cone's apex height and half-angle; a torus's
+ *     centre height and radii; a sphere's centre height and radius).
+ *  2. **Planes.** In row order, a plane parallel to a reference direction (the
+ *     axes first, then the planes already seen) takes that direction as its
+ *     normal; one perpendicular to one or two references is made exactly
+ *     perpendicular to them. Its offset is refitted.
+ *  3. **Equal radii.** Cylinders, spheres and torus minor radii within the
+ *     tolerance of the first of their kind take their point-weighted mean.
+ *
+ * A change is **kept** only when the patch still passes the test
+ * `fit_primitives` accepted it under (RMS distance and share of points within
+ * the patch's tolerance) and its largest distance stays within the face
+ * tolerance the writers demote at, or no larger than it was; otherwise the
+ * primitive leaves the group and keeps its own fit. So the pass never demotes
+ * a face. Everything is serial and walked in row order, so the result does not
+ * depend on the thread count.
+ *
+ * A **core-private** header (the `crease_edges.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI.
+ */
+
+// System includes
+#include <cstdint>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// What `constrain_primitives` changed.
+struct PrimitiveConstraintReport {
+    /// Patches whose primitive took a shared axis, normal or radius.
+    std::int64_t mNumConstrained = 0;
+    /// Coaxial groups, parallel-normal families and equal-radius sets of two
+    /// or more primitives.
+    std::int64_t mNumGroups = 0;
+};
+
+/**
+ * @brief Constrain the primitives of an annotated skin in place.
+ *
+ * @param rMesh a skin with `segment:patch` cell data and the `fit:patch_*`
+ *        field data of `fit_primitives`; its `fit:patch_params`,
+ *        `fit:patch_rms`, `fit:patch_max` and `fit:patch_fraction` rows and its
+ *        `fit:rms`/`fit:max` cell data are rewritten for the patches changed.
+ *        Without the table it is left as it is.
+ * @param FaceTolerance the largest distance a face may keep from its patch
+ *        before a writer demotes it; > 0.
+ */
+PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/primitive_constraints.hpp =====
 // ===== begin src/cpp/src/detail/primitive_geom.hpp =====
 /**
  * @file detail/primitive_geom.hpp
@@ -45922,7 +46910,7 @@ BsplineFitResult thb_fit_patch(const std::vector<PatchVec>& rPts,
 /**
  * @file detail/tri_tri.hpp
  * @brief Whether two triangles in 3-D meet, decided exactly (roadmap 6.9.1;
- * the kernel `find_intersections`, roadmap 3.2.2, will share).
+ * the kernel `find_intersections`, roadmap 3.1.2, will share).
  *
  * Every decision is a sign of Shewchuk's exact `orient3d` or `orient2d`
  * (`predicates.hpp`), so the answer is the exact one for the triangles'
@@ -50126,6 +51114,7 @@ void mesh_cad_set_face_order_seed(std::uint64_t Seed);
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -50139,6 +51128,32 @@ inline constexpr const char* kOctreeMeshPrefix = "meshio++: octree_mesh: ";
 
 /// Everything the outputs are built from. Not movable once built: the trees
 /// point into the skin's soup.
+/**
+ * @brief The inside test's shortcut for a closed skin.
+ *
+ * The winding number of a closed, consistently oriented skin is an integer
+ * that only changes across the skin. The leaves the skin does not cut join
+ * into regions through their shared faces, and one region has one winding
+ * number, evaluated at a few of its leaves. A point in a *deep* leaf -- one
+ * neither it nor any of its 26 neighbours is cut -- takes that integer instead
+ * of a winding-number evaluation: its closed box is skin-free with a margin of
+ * a leaf, so a cut flag rounded the wrong way at a shared face cannot reach it.
+ * Points beside the skin are evaluated as before, so every decision that uses a
+ * winding number's value rather than its side (the snapping, the cuts, the
+ * manifold repair's scores) sees the same numbers.
+ */
+struct OctreeMeshFlood {
+    static constexpr std::int32_t kUnknown = std::numeric_limits<std::int32_t>::min();
+    /// The tree the flood was computed on, kept as it was: a later split of a
+    /// leaf does not move the skin.
+    LinearOctree mTree;
+    /// Per leaf of `mTree`, its region's winding number, or `kUnknown`.
+    std::vector<std::int32_t> mValue;
+    std::array<double, 3> mOrigin{{0.0, 0.0, 0.0}};
+    double mFine = 0.0;
+    bool mActive = false;
+};
+
 struct OctreeMeshSetup {
     OctreeSkin mSkin;
     TriBvh mBvh;
@@ -50154,6 +51169,8 @@ struct OctreeMeshSetup {
     double mWindingSign = 1.0;
     /// Points at most this far from the skin are on it.
     double mOnSkin = 0.0;
+    /// The flooded winding numbers of a closed skin (inactive otherwise).
+    OctreeMeshFlood mFlood;
 };
 
 /// A stopwatch that records each stage's seconds in the result.
@@ -50164,6 +51181,12 @@ struct OctreeMeshClock {
 
 /// Log a warning and keep it in the result.
 void octree_mesh_warn(OctreeMeshResult& rResult, const std::string& rMessage);
+
+/// Flood the winding numbers of a closed skin through the leaves of the
+/// setup's octree it does not cut; a skin that is not closed, a winding
+/// threshold within 0.1 of an integer, or `MESHIOPLUSPLUS_OCTREE_MESH_FLOOD=0`
+/// in the environment (a test hook) leaves it inactive.
+void octree_mesh_flood(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions);
 
 /// The winding number at every point (the skin's orientation applied), with
 /// the values near the threshold re-evaluated more accurately.
@@ -69284,6 +70307,147 @@ const std::vector<CellFaceDef>& cell_faces(CellType VolumeType) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/cell_faces.cpp =====
+// ===== begin src/cpp/src/detail/cell_flip.cpp =====
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <map>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+namespace {
+
+// A higher-order line lists its two ends, then its interior nodes from end 0
+// to end 1: reversed, the ends swap and the interior runs backwards.
+std::vector<int> cf_line(int N) {
+    std::vector<int> p{1, 0};
+    for (int i = N - 1; i >= 2; --i)
+        p.push_back(i);
+    return p;
+}
+
+std::vector<int> cf_concat(std::vector<int> Head, const std::vector<int>& rTail) {
+    Head.insert(Head.end(), rTail.begin(), rTail.end());
+    return Head;
+}
+
+// The corner positions of each facet of a cell type, sorted, in facet order.
+std::vector<std::vector<int>> cf_facet_corners(CellType Type) {
+    std::vector<std::vector<int>> out;
+    if (cell_type_dimension(Type) == 3) {
+        for (const CellFaceDef& r_f : cell_faces(Type))
+            out.emplace_back(r_f.mNodes.begin(), r_f.mNodes.begin() + r_f.mNumCorners);
+    } else if (cell_type_dimension(Type) == 2) {
+        for (const CellEdgeDef& r_e : cell_edges(Type))
+            out.emplace_back(r_e.mNodes.begin(), r_e.mNodes.begin() + r_e.mNumCorners);
+    }
+    for (auto& r_c : out)
+        std::sort(r_c.begin(), r_c.end());
+    return out;
+}
+
+// Facet j of the flipped cell has the corners P[c] of the original for each of
+// its corner slots c; the original facet with that corner set maps to j.
+std::vector<int> cf_facet_map(CellType Type, const std::vector<int>& rPerm) {
+    const std::vector<std::vector<int>> corners = cf_facet_corners(Type);
+    std::vector<int> map(corners.size(), -1);
+    for (std::size_t j = 0; j < corners.size(); ++j) {
+        std::vector<int> image;
+        for (const int c : corners[j])
+            image.push_back(rPerm[static_cast<std::size_t>(c)]);
+        std::sort(image.begin(), image.end());
+        for (std::size_t f = 0; f < corners.size(); ++f)
+            if (corners[f] == image)
+                map[f] = static_cast<int>(j);
+    }
+    for (const int m : map)
+        if (m < 0)
+            throw std::logic_error("meshio++: cell_flip: a facet has no image for " +
+                                   cell_type_name(Type));
+    return map;
+}
+
+struct CfEntry {
+    std::vector<int> mPerm;
+    std::vector<int> mFacets;
+};
+
+const std::map<CellType, CfEntry>& cf_table() {
+    static const std::map<CellType, CfEntry> table = [] {
+        using CT = CellType;
+        const std::vector<int> tri6{0, 2, 1, 5, 4, 3};
+        const std::vector<int> quad8{0, 3, 2, 1, 7, 6, 5, 4};
+        const std::vector<int> pyr13{0, 3, 2, 1, 4, 8, 7, 6, 5, 9, 12, 11, 10};
+        const std::vector<int> wedge15{0, 2, 1, 3, 5, 4, 8, 7, 6, 11, 10, 9, 12, 14, 13};
+        const std::vector<int> hex20{0,  3,  2,  1,  4,  7,  6,  5,  11, 10,
+                                     9,  8,  15, 14, 13, 12, 16, 19, 18, 17};
+        std::map<CT, std::vector<int>> perms = {
+            {CT::Vertex, {0}},
+            {CT::Line, cf_line(2)},
+            {CT::Line3, cf_line(3)},
+            {CT::Line4, cf_line(4)},
+            {CT::Line5, cf_line(5)},
+            {CT::Line6, cf_line(6)},
+            {CT::Line7, cf_line(7)},
+            {CT::Line8, cf_line(8)},
+            {CT::Line9, cf_line(9)},
+            {CT::Line10, cf_line(10)},
+            {CT::Line11, cf_line(11)},
+            {CT::Triangle, {0, 2, 1}},
+            {CT::Triangle6, tri6},
+            {CT::Triangle7, cf_concat(tri6, {6})},
+            {CT::Quad, {0, 3, 2, 1}},
+            {CT::Quad8, quad8},
+            {CT::Quad9, cf_concat(quad8, {8})},
+            {CT::Tetra, {0, 2, 1, 3}},
+            // Mid-edges 4=(0,1) 5=(1,2) 6=(2,0) 7=(0,3) 8=(1,3) 9=(2,3).
+            {CT::Tetra10, {0, 2, 1, 3, 6, 5, 4, 7, 9, 8}},
+            {CT::Pyramid, {0, 3, 2, 1, 4}},
+            {CT::Pyramid13, pyr13},
+            {CT::Pyramid14, cf_concat(pyr13, {13})},
+            {CT::Wedge, {0, 2, 1, 3, 5, 4}},
+            {CT::Wedge15, wedge15},
+            // Face centres 15=(0,1,4,3) 16=(1,2,5,4) 17=(2,0,3,5).
+            {CT::Wedge18, cf_concat(wedge15, {17, 16, 15})},
+            {CT::Hexahedron, {0, 3, 2, 1, 4, 7, 6, 5}},
+            {CT::Hexahedron20, hex20},
+            // Face centres 20=x-min 21=x-max 22=y-min 23=y-max 24=bottom
+            // 25=top; swapping nodes 1 and 3 swaps the x and y faces.
+            {CT::Hexahedron27, cf_concat(hex20, {22, 23, 20, 21, 24, 25, 26})},
+        };
+        std::map<CT, CfEntry> out;
+        for (auto& [type, perm] : perms) {
+            CfEntry e;
+            e.mFacets = cf_facet_map(type, perm);
+            e.mPerm = std::move(perm);
+            out.emplace(type, std::move(e));
+        }
+        return out;
+    }();
+    return table;
+}
+
+}  // namespace
+
+const std::vector<int>* cell_flip_permutation(CellType Type) {
+    const auto& r_table = cf_table();
+    const auto it = r_table.find(Type);
+    return it == r_table.end() ? nullptr : &it->second.mPerm;
+}
+
+const std::vector<int>* cell_flip_facet_map(CellType Type) {
+    const auto& r_table = cf_table();
+    const auto it = r_table.find(Type);
+    return it == r_table.end() ? nullptr : &it->second.mFacets;
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/cell_flip.cpp =====
 // ===== begin src/cpp/src/detail/cell_subdivision.cpp =====
 
 namespace meshioplusplus {
@@ -76335,8 +77499,9 @@ FeatureGraph feature_graph(const std::vector<Vec3>& rPoints,
 
 FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
                                const std::vector<std::array<std::int64_t, 4>>& rTets,
-                               const std::vector<std::uint8_t>& rInside, const FeatureGraph& rGraph,
-                               const std::vector<Vec3>& rSkinPoints,
+                               const std::vector<std::uint8_t>& rInside,
+                               const std::vector<std::uint8_t>& rGuarded,
+                               const FeatureGraph& rGraph, const std::vector<Vec3>& rSkinPoints,
                                const std::function<double(const Vec3&)>& rLocalSize,
                                double MinVolume, std::vector<std::uint8_t>& rPinned,
                                std::vector<std::uint8_t>& rFeature) {
@@ -76392,6 +77557,8 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
         double lo = 180.0;
         rPositive = true;
         for (std::int64_t t : inc[static_cast<std::size_t>(V)]) {
+            if (!rGuarded[static_cast<std::size_t>(t)])
+                continue;
             Vec3 p[4];
             for (std::size_t c = 0; c < 4; ++c) {
                 const std::int64_t q = rTets[static_cast<std::size_t>(t)][c];
@@ -76408,6 +77575,8 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
     // Whether every tetrahedron around `U` stays positive with `V` at `rAt`.
     auto star_positive = [&](std::int64_t U, std::int64_t V, const Vec3& rAt) {
         for (std::int64_t t : inc[static_cast<std::size_t>(U)]) {
+            if (!rGuarded[static_cast<std::size_t>(t)])
+                continue;
             Vec3 p[4];
             for (std::size_t c = 0; c < 4; ++c) {
                 const std::int64_t q = rTets[static_cast<std::size_t>(t)][c];
@@ -78543,6 +79712,1798 @@ NDArray read_compound_member(hid_t loc, const std::string& rName, const std::str
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5
 // ===== end src/cpp/src/detail/hdf5_util.cpp =====
+// ===== begin src/cpp/src/detail/hex_dual_scheme_tables.cpp =====
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+constexpr std::int8_t kHdsFlatVerts[] = {
+    0, 0,  0,  20, 0,  0,  0,  20, 0, 20, 20, 0,  0,  0, 20, 20, 0,  20,
+    0, 20, 20, 20, 20, 20, 0,  6,  0, 10, 0,  10, 0,  0, 10, 20, 0,  10,
+    0, 10, 0,  10, 6,  0,  20, 10, 0, 10, 0,  20, 10, 0, 0,  0,  10, 20,
+};
+constexpr std::uint16_t kHdsFlatFaces[] = {
+    10, 4,  15, 9,  9,  15, 5,  11, 0,  10, 9,  16, 16, 9,  11, 1,  6,  7,  3, 2,
+    10, 0,  8,  9,  16, 13, 11, 1,  14, 0,  16, 13, 8,  16, 1,  14, 13, 10, 9, 13,
+    8,  9,  11, 14, 13, 4,  15, 17, 8,  13, 12, 17, 12, 2,  6,  12, 13, 14, 3, 2,
+    8,  10, 4,  17, 12, 13, 9,  15, 17, 12, 5,  15, 17, 6,  7,  11, 5,  7,  3, 14,
+};
+constexpr std::uint16_t kHdsFlatFaceEnds[] = {
+    4, 8, 12, 16, 20, 23, 26, 29, 33, 37, 41, 45, 48, 51, 55, 60, 65, 70, 75, 80,
+};
+constexpr std::uint16_t kHdsFlatPolys[] = {
+    5, 6, 8, 10, 2, 6, 7, 9, 11, 3, 10, 13, 12, 16, 17, 0, 11, 17, 15, 19, 18, 14, 4, 1,
+};
+constexpr std::uint16_t kHdsFlatPolyEnds[] = {
+    5,
+    10,
+    16,
+    24,
+};
+constexpr std::uint8_t kHdsFlatWinding[] = {
+    0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0,
+};
+
+constexpr std::int8_t kHdsFlatConvexVerts[] = {
+    0,  0,  0,  20, 0, 0,  0,  20, 0,  20, 20, 0,  0,  0,  20, 20, 0,  20, 0,  20, 20,
+    20, 20, 20, 0,  6, 0,  10, 0,  10, 0,  0,  10, 20, 0,  10, 0,  10, 0,  10, 6,  0,
+    20, 10, 0,  10, 0, 20, 10, 0,  0,  0,  10, 20, 10, 20, 20, 20, 20, 10, 20, 10, 20,
+};
+constexpr std::uint16_t kHdsFlatConvexFaces[] = {
+    10, 4,  15, 9,  9,  15, 5,  11, 0,  10, 9,  16, 16, 9,  11, 1,  19, 3,  14, 11, 5,  20, 10, 0,
+    8,  9,  16, 13, 11, 1,  14, 0,  16, 13, 8,  16, 1,  14, 13, 10, 9,  13, 8,  9,  11, 14, 13, 4,
+    15, 17, 8,  13, 12, 17, 12, 2,  6,  12, 13, 14, 3,  2,  8,  10, 4,  17, 12, 13, 9,  15, 17, 12,
+    20, 5,  15, 17, 6,  18, 19, 3,  2,  6,  18, 18, 19, 20, 7,  19, 20, 18, 7,  20, 18, 19, 7,
+};
+constexpr std::uint16_t kHdsFlatConvexFaceEnds[] = {
+    4, 8, 12, 16, 22, 25, 28, 31, 35, 39, 43, 47, 50, 53, 57, 62, 67, 72, 78, 83, 86, 89, 92, 95,
+};
+constexpr std::uint16_t kHdsFlatConvexPolys[] = {
+    5, 6,  8,  10, 2, 6,  7,  9,  11, 3,  10, 13, 12, 16, 17,
+    0, 11, 17, 15, 4, 18, 14, 19, 1,  20, 20, 21, 22, 23,
+};
+constexpr std::uint16_t kHdsFlatConvexPolyEnds[] = {
+    5, 10, 16, 25, 29,
+};
+constexpr std::uint8_t kHdsFlatConvexWinding[] = {
+    0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0,
+};
+
+constexpr std::int8_t kHdsConvex1Verts[] = {
+    0,  0,  0, 20, 20, 20, 20, 20, 0,  20, 0,  20, 0, 20, 20, 0,  0,
+    20, 20, 0, 0,  0,  20, 0,  0,  10, 0,  10, 0,  0, 0,  0,  10,
+};
+constexpr std::uint16_t kHdsConvex1Faces[] = {
+    6,  3, 1, 2,  3, 5, 4, 1, 7,  2, 1, 4, 8, 0, 9, 8, 0, 10, 8,  9,
+    10, 0, 9, 10, 5, 3, 6, 9, 10, 6, 2, 7, 8, 9, 5, 4, 7, 8,  10,
+};
+constexpr std::uint16_t kHdsConvex1FaceEnds[] = {
+    4, 8, 12, 15, 18, 21, 24, 29, 34, 39,
+};
+constexpr std::uint16_t kHdsConvex1Polys[] = {
+    6, 3, 4, 5, 5, 7, 8, 9, 0, 1, 2,
+};
+constexpr std::uint16_t kHdsConvex1PolyEnds[] = {
+    4,
+    11,
+};
+constexpr std::uint8_t kHdsConvex1Winding[] = {
+    1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0,
+};
+
+constexpr std::int8_t kHdsConvex2Verts[] = {
+    0, 0,  0, 20, 20, 20, 20, 20, 0, 20, 0, 20, 0, 20, 20, 0,  0,  20, 20, 0,  0,
+    0, 20, 0, 0,  10, 0,  10, 0,  0, 0,  0, 10, 0, 10, 20, 10, 20, 20, 0,  20, 10,
+};
+constexpr std::uint16_t kHdsConvex2Faces[] = {
+    6, 3, 1, 2, 13, 7, 8, 10, 5, 11, 12, 1, 3, 5, 11, 8,  0,  9,  8, 0,  10, 8,  9, 10, 0,  9,  10,
+    5, 3, 6, 9, 10, 6, 2, 7,  8, 9,  13, 7, 2, 1, 12, 11, 12, 13, 4, 12, 13, 11, 4, 13, 11, 12, 4,
+};
+constexpr std::uint16_t kHdsConvex2FaceEnds[] = {
+    4, 10, 15, 18, 21, 24, 27, 32, 37, 42, 45, 48, 51, 54,
+};
+constexpr std::uint16_t kHdsConvex2Polys[] = {
+    6, 3, 4, 5, 5, 7, 8, 1, 0, 2, 9, 10, 10, 11, 12, 13,
+};
+constexpr std::uint16_t kHdsConvex2PolyEnds[] = {
+    4,
+    12,
+    16,
+};
+constexpr std::uint8_t kHdsConvex2Winding[] = {
+    1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 1,
+};
+
+constexpr std::int8_t kHdsConvex3Verts[] = {
+    0,  0,  0,  20, 20, 20, 20, 20, 0,  20, 0,  20, 0,  20, 20, 0,  0,
+    20, 20, 0,  0,  0,  20, 0,  0,  10, 0,  10, 0,  0,  0,  0,  10, 0,
+    10, 20, 10, 20, 20, 0,  20, 10, 20, 20, 10, 20, 10, 0,  10, 20, 0,
+};
+constexpr std::uint16_t kHdsConvex3Faces[] = {
+    16, 7,  8,  9,  6,  15, 13, 7,  8,  10, 5,  11, 12, 1,  3, 5,  11, 8,  0,  9,  8,  0,  10,
+    8,  9,  10, 0,  9,  10, 5,  3,  6,  9,  10, 15, 6,  3,  1, 14, 14, 1,  12, 13, 7,  16, 11,
+    12, 13, 4,  12, 13, 11, 4,  13, 11, 12, 4,  14, 15, 16, 2, 15, 16, 14, 2,  16, 14, 15, 2,
+};
+constexpr std::uint16_t kHdsConvex3FaceEnds[] = {
+    6, 12, 17, 20, 23, 26, 29, 34, 39, 45, 48, 51, 54, 57, 60, 63, 66, 69,
+};
+constexpr std::uint16_t kHdsConvex3Polys[] = {
+    6, 3, 4, 5, 5, 7, 0, 1, 8, 2, 9, 10, 14, 10, 11, 12, 13, 14, 15, 16, 17,
+};
+constexpr std::uint16_t kHdsConvex3PolyEnds[] = {
+    4,
+    13,
+    17,
+    21,
+};
+constexpr std::uint8_t kHdsConvex3Winding[] = {
+    1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1,
+};
+
+constexpr std::int8_t kHdsEdgeVerts[] = {
+    0,  0,  0,  20, 0,  20, 20, 20, 10, 20, 20, 0, 20, 20, 20, 20, 0,  6, 20, 10, 0, 20, 0,  10, 20,
+    0,  0,  0,  10, 20, 0,  0,  20, 0,  20, 10, 0, 10, 10, 0,  0,  10, 0, 20, 0,  0, 10, 0,  0,  20,
+    20, 10, 20, 0,  10, 10, 0,  10, 0,  0,  6,  0, 20, 6,  0,  10, 10, 0, 6,  10, 0, 20, 10, 20, 20,
+};
+constexpr std::uint16_t kHdsEdgeFaces[] = {
+    5,  6,  3,  2,  7,  6,  8,  5,  2,  7,  1,  4,  9,  12, 11, 16, 10, 13, 12, 9,  12,
+    15, 14, 11, 13, 0,  15, 12, 15, 18, 17, 14, 0,  19, 18, 15, 18, 6,  3,  17, 19, 8,
+    6,  18, 9,  10, 20, 12, 13, 21, 18, 19, 22, 16, 11, 24, 3,  17, 2,  10, 13, 21, 20,
+    19, 8,  5,  22, 9,  12, 21, 20, 18, 6,  5,  22, 20, 21, 23, 5,  22, 7,  22, 21, 13,
+    0,  19, 22, 21, 12, 15, 18, 22, 21, 23, 1,  7,  24, 11, 12, 21, 23, 2,  17, 18, 22,
+    7,  16, 24, 23, 20, 9,  23, 24, 4,  1,  24, 11, 14, 17, 2,  4,
+};
+constexpr std::uint16_t kHdsEdgeFaceEnds[] = {
+    5,  8,  12, 16, 20, 24, 28, 32, 36, 40, 44,  47,  50,  53,  56,
+    59, 63, 67, 71, 75, 78, 81, 86, 91, 96, 101, 106, 111, 115, 121,
+};
+constexpr std::uint16_t kHdsEdgePolys[] = {
+    4,  11, 12, 16, 18, 6,  8,  12, 13, 22, 23, 10, 13, 1,  17, 19, 3,  27, 18,
+    20, 14, 25, 9,  0,  19, 21, 15, 26, 5,  7,  25, 26, 28, 2,  29, 24, 23,
+};
+constexpr std::uint16_t kHdsEdgePolyEnds[] = {
+    5, 11, 16, 22, 28, 37,
+};
+constexpr std::uint8_t kHdsEdgeWinding[] = {
+    0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 0, 1,
+    1, 0, 0, 0, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1,
+};
+
+constexpr std::int8_t kHdsVertCenterVerts[] = {
+    0,  0,  0,  0,  20, 10, 0,  20, 20, 0,  10, 0,  0, 10, 10, 0,  10, 20, 0,  20, 0,  0,
+    0,  10, 0,  0,  20, 10, 0,  0,  10, 0,  10, 10, 0, 20, 20, 0,  0,  20, 0,  10, 20, 0,
+    20, 10, 10, 0,  20, 10, 0,  10, 20, 0,  20, 20, 0, 20, 20, 20, 6,  20, 20, 10, 20, 20,
+    20, 6,  20, 20, 10, 20, 20, 20, 6,  20, 20, 10, 6, 10, 20, 20, 6,  10, 10, 20, 6,
+};
+constexpr std::uint16_t kHdsVertCenterFaces[] = {
+    6,  1,  4,  3,  1,  2,  5,  4,  3,  4,  7,  0,  4,  5,  8,  7,  0,  7,  10, 9,  7,
+    8,  11, 10, 9,  10, 13, 12, 10, 11, 14, 13, 16, 18, 17, 15, 16, 15, 9,  12, 15, 3,
+    0,  9,  15, 17, 6,  3,  5,  26, 20, 2,  14, 22, 27, 13, 18, 24, 28, 17, 5,  26, 4,
+    2,  20, 1,  10, 27, 13, 14, 22, 11, 15, 28, 17, 16, 24, 18, 1,  20, 26, 4,  11, 22,
+    27, 10, 16, 24, 28, 15, 20, 21, 26, 22, 23, 27, 24, 25, 28, 21, 20, 1,  6,  17, 28,
+    23, 22, 11, 8,  5,  26, 25, 24, 16, 12, 13, 27, 21, 19, 25, 28, 21, 19, 23, 26, 23,
+    19, 25, 27, 26, 4,  7,  10, 27, 23, 27, 10, 9,  15, 28, 25, 28, 15, 3,  4,  26, 21,
+};
+constexpr std::uint16_t kHdsVertCenterFaceEnds[] = {
+    4,  8,  12, 16, 20, 24, 28, 32, 36, 40,  44,  48,  52,  56,  60,  63,  66,  69,
+    72, 75, 78, 82, 86, 90, 93, 96, 99, 105, 111, 117, 121, 125, 129, 135, 141, 147,
+};
+constexpr std::uint16_t kHdsVertCenterPolys[] = {
+    1, 12, 15, 16, 21, 7,  13, 17, 18, 22, 8,  14, 19, 20, 23, 0, 11, 24, 35, 21, 19, 27, 3,
+    5, 25, 33, 22, 15, 28, 9,  6,  26, 34, 23, 17, 29, 2,  10, 4, 33, 34, 35, 30, 31, 32,
+};
+constexpr std::uint16_t kHdsVertCenterPolyEnds[] = {
+    5, 10, 15, 22, 29, 36, 45,
+};
+constexpr std::uint8_t kHdsVertCenterWinding[] = {
+    0, 1, 0, 1, 1, 0, 0, 1, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0,
+};
+
+constexpr std::int8_t kHdsVertSideVerts[] = {
+    0, 0,  10, 0, 0,  20, 0, 0,  0,  10, 0,  0,  20, 0,  0,  20, 0,  20, 6,  0,  20, 10, 0,  20, 20,
+    0, 6,  20, 0, 10, 10, 0, 6,  6,  10, 20, 20, 20, 10, 0,  10, 20, 0,  20, 10, 20, 10, 0,  0,  20,
+    0, 10, 10, 0, 0,  10, 0, 20, 20, 0,  20, 20, 20, 10, 20, 20, 0,  10, 10, 0,  20, 20, 10, 20, 0,
+};
+constexpr std::uint16_t kHdsVertSideFaces[] = {
+    4,  8,  10, 3,  1,  6,  0,  8,  9,  10, 7,  6,  0,  2,  3,  10, 7,  5,  9,  10, 6,
+    11, 22, 0,  11, 13, 22, 8,  10, 17, 15, 18, 22, 14, 16, 12, 19, 15, 8,  9,  22, 13,
+    23, 14, 6,  11, 13, 1,  12, 24, 17, 10, 9,  9,  5,  20, 12, 4,  3,  17, 15, 12, 19,
+    24, 7,  6,  11, 21, 14, 23, 5,  20, 21, 11, 7,  0,  1,  13, 22, 14, 22, 11, 21, 13,
+    23, 21, 11, 7,  11, 22, 18, 17, 10, 24, 12, 20, 21, 14, 16, 2,  0,  22, 18, 15, 17,
+    24, 19, 8,  4,  15, 17, 18, 16, 24, 10, 3,  17, 2,  3,  17, 18,
+};
+constexpr std::uint16_t kHdsVertSideFaceEnds[] = {
+    4,  7,  10, 16, 20, 24, 27, 31, 35, 40,  44,  48,  53,  57,  61,
+    64, 67, 70, 75, 79, 83, 87, 93, 99, 103, 107, 110, 114, 117, 121,
+};
+constexpr std::uint16_t kHdsVertSidePolys[] = {
+    11, 6,  1, 19, 5,  10, 21, 6,  17, 20, 8,  27, 20, 22, 12, 4,  13, 18, 23,
+    29, 24, 5, 16, 22, 3,  28, 25, 7,  9,  15, 12, 2,  14, 26, 28, 0,  7,
+};
+constexpr std::uint16_t kHdsVertSidePolyEnds[] = {
+    5, 10, 19, 26, 32, 37,
+};
+constexpr std::uint8_t kHdsVertSideWinding[] = {
+    1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 1, 0,
+    0, 1, 1, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 0,
+};
+
+}  // namespace
+
+const HexDualScheme& hex_dual_scheme(HexTransition Type) {
+    static const HexDualScheme kTable[] = {
+        {kHdsFlatVerts, 18, kHdsFlatFaces, kHdsFlatFaceEnds, 20, kHdsFlatPolys, kHdsFlatPolyEnds, 4,
+         kHdsFlatWinding},
+        {kHdsFlatConvexVerts, 21, kHdsFlatConvexFaces, kHdsFlatConvexFaceEnds, 24,
+         kHdsFlatConvexPolys, kHdsFlatConvexPolyEnds, 5, kHdsFlatConvexWinding},
+        {kHdsConvex1Verts, 11, kHdsConvex1Faces, kHdsConvex1FaceEnds, 10, kHdsConvex1Polys,
+         kHdsConvex1PolyEnds, 2, kHdsConvex1Winding},
+        {kHdsConvex2Verts, 14, kHdsConvex2Faces, kHdsConvex2FaceEnds, 14, kHdsConvex2Polys,
+         kHdsConvex2PolyEnds, 3, kHdsConvex2Winding},
+        {kHdsConvex3Verts, 17, kHdsConvex3Faces, kHdsConvex3FaceEnds, 18, kHdsConvex3Polys,
+         kHdsConvex3PolyEnds, 4, kHdsConvex3Winding},
+        {kHdsEdgeVerts, 25, kHdsEdgeFaces, kHdsEdgeFaceEnds, 30, kHdsEdgePolys, kHdsEdgePolyEnds, 6,
+         kHdsEdgeWinding},
+        {kHdsVertCenterVerts, 29, kHdsVertCenterFaces, kHdsVertCenterFaceEnds, 36,
+         kHdsVertCenterPolys, kHdsVertCenterPolyEnds, 7, kHdsVertCenterWinding},
+        {kHdsVertSideVerts, 25, kHdsVertSideFaces, kHdsVertSideFaceEnds, 30, kHdsVertSidePolys,
+         kHdsVertSidePolyEnds, 6, kHdsVertSideWinding},
+    };
+    return kTable[static_cast<std::size_t>(Type)];
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/hex_dual_scheme_tables.cpp =====
+// ===== begin src/cpp/src/detail/hex_dual_schemes.cpp =====
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <deque>
+#include <initializer_list>
+#include <iterator>
+#include <map>
+#include <set>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+constexpr const char* kHdsPrefix = "meshio++: octree_mesh: graded hexahedra: ";
+
+using HdsPoint = std::array<std::int64_t, 3>;
+
+struct HdsPointHash {
+    std::size_t operator()(const HdsPoint& rP) const {
+        std::uint64_t h = static_cast<std::uint64_t>(rP[0]) * 0x9E3779B97F4A7C15ULL;
+        h ^= static_cast<std::uint64_t>(rP[1]) + 0x7F4A7C159E3779B9ULL + (h << 6) + (h >> 2);
+        h ^= static_cast<std::uint64_t>(rP[2]) + 0x94D049BB133111EBULL + (h << 6) + (h >> 2);
+        return static_cast<std::size_t>(h);
+    }
+};
+
+std::string hds_str(const HdsPoint& rP) {
+    return "(" + std::to_string(rP[0]) + ", " + std::to_string(rP[1]) + ", " +
+           std::to_string(rP[2]) + ")";
+}
+
+[[noreturn]] void hds_fail(const std::string& rWhy) {
+    throw Unsupported(std::string(kHdsPrefix) + rWhy);
+}
+
+// Directions, with CinoLib's values (symbols.h), so the ported case tables read
+// the same and sort in the same order.
+enum : int {
+    kHdsPlusX = 10,
+    kHdsPlusY = 11,
+    kHdsPlusZ = 12,
+    kHdsMinusX = 13,
+    kHdsMinusY = 14,
+    kHdsMinusZ = 15,
+};
+
+enum class HdsKind { FlatS, ConcS, CornS, ConvS };
+
+struct HdsInfo {
+    HexTransition mType = HexTransition::Flat;
+    HdsKind mKind = HdsKind::FlatS;
+    std::int64_t mScale = 0;  // the cell's edge, lattice units
+    std::vector<HdsPoint> mTVerts;
+    std::map<int, bool> mCuts;
+    std::vector<int> mOrientations;
+
+    bool Cut(int Dir) const {
+        const auto it = mCuts.find(Dir);
+        return it != mCuts.end() && it->second;
+    }
+};
+
+// ---- the primal grid: the leaves as hexahedra with hanging nodes ----------
+
+// Hexahedron corners by bits (x, y, z), its faces and its edges.
+constexpr int kHdsFaces[6][4] = {{0, 2, 6, 4}, {1, 3, 7, 5}, {0, 1, 5, 4},
+                                 {2, 3, 7, 6}, {0, 1, 3, 2}, {4, 5, 7, 6}};
+constexpr int kHdsEdges[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3},
+                                  {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+
+struct HdsGrid {
+    std::vector<HdsPoint> mVerts;
+    std::unordered_map<HdsPoint, std::int32_t, HdsPointHash> mVertId;
+    std::vector<std::array<std::int32_t, 8>> mPolyVerts;
+    std::vector<std::array<std::int32_t, 6>> mPolyFaces;
+    std::vector<std::array<std::int32_t, 12>> mPolyEdges;
+    std::vector<std::int32_t> mLabel;  // the leaf's level
+    std::vector<std::array<std::int32_t, 4>> mFaceVerts;
+    std::vector<std::vector<std::int32_t>> mFacePolys;
+    std::vector<std::array<std::int32_t, 2>> mEdgeVerts;
+    std::vector<std::vector<std::int32_t>> mEdgePolys;
+    std::unordered_map<std::uint64_t, std::int32_t> mEdgeId;
+    std::vector<std::vector<std::int32_t>> mV2P, mV2E, mV2V, mP2P;
+
+    static std::uint64_t PairKey(std::int32_t A, std::int32_t B) {
+        if (A > B)
+            std::swap(A, B);
+        return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(A)) << 32) |
+               static_cast<std::uint32_t>(B);
+    }
+    std::int32_t EdgeId(std::int32_t A, std::int32_t B) const {
+        const auto it = mEdgeId.find(PairKey(A, B));
+        return it == mEdgeId.end() ? -1 : it->second;
+    }
+    bool PolyHasVert(std::int32_t P, std::int32_t V) const {
+        const auto& r = mPolyVerts[static_cast<std::size_t>(P)];
+        return std::find(r.begin(), r.end(), V) != r.end();
+    }
+    bool PolyHasEdge(std::int32_t P, std::int32_t E) const {
+        const auto& r = mPolyEdges[static_cast<std::size_t>(P)];
+        return std::find(r.begin(), r.end(), E) != r.end();
+    }
+    const HdsPoint& Vert(std::int32_t V) const { return mVerts[static_cast<std::size_t>(V)]; }
+    std::int32_t Label(std::int32_t P) const { return mLabel[static_cast<std::size_t>(P)]; }
+    std::int64_t EdgeLength(std::int32_t E) const {
+        const auto& e = mEdgeVerts[static_cast<std::size_t>(E)];
+        const HdsPoint &a = Vert(e[0]), &b = Vert(e[1]);
+        return std::abs(a[0] - b[0]) + std::abs(a[1] - b[1]) + std::abs(a[2] - b[2]);
+    }
+    std::int64_t PolyScale(std::int32_t P) const {
+        return EdgeLength(mPolyEdges[static_cast<std::size_t>(P)][0]);
+    }
+    HdsPoint EdgeMid(std::int32_t E) const {
+        const auto& e = mEdgeVerts[static_cast<std::size_t>(E)];
+        const HdsPoint &a = Vert(e[0]), &b = Vert(e[1]);
+        return {(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2};
+    }
+    // The axis direction of edge `E` leaving vertex `V`.
+    int Orientation(std::int32_t V, std::int32_t E) const {
+        const auto& e = mEdgeVerts[static_cast<std::size_t>(E)];
+        const HdsPoint& a = Vert(V);
+        const HdsPoint& b = Vert(e[0] == V ? e[1] : e[0]);
+        for (int k = 0; k < 3; ++k) {
+            const std::int64_t d = b[static_cast<std::size_t>(k)] - a[static_cast<std::size_t>(k)];
+            if (d > 0)
+                return kHdsPlusX + k;
+            if (d < 0)
+                return kHdsMinusX + k;
+        }
+        hds_fail("a degenerate edge at " + hds_str(a));
+    }
+    int MinRef(std::int32_t V) const {
+        int r = 1 << 30;
+        for (std::int32_t p : mV2P[static_cast<std::size_t>(V)])
+            r = std::min(r, Label(p));
+        return r;
+    }
+    int MaxRef(std::int32_t V) const {
+        int r = -1;
+        for (std::int32_t p : mV2P[static_cast<std::size_t>(V)])
+            r = std::max(r, Label(p));
+        return r;
+    }
+    std::int32_t SharedFace(std::int32_t P, std::int32_t Q) const {
+        for (std::int32_t f : mPolyFaces[static_cast<std::size_t>(P)])
+            for (std::int32_t g : mPolyFaces[static_cast<std::size_t>(Q)])
+                if (f == g)
+                    return f;
+        return -1;
+    }
+    // The vertex at `rAt` among the neighbours of `V`, or -1.
+    std::int32_t NeighbourAt(std::int32_t V, const HdsPoint& rAt) const {
+        for (std::int32_t w : mV2V[static_cast<std::size_t>(V)])
+            if (Vert(w) == rAt)
+                return w;
+        return -1;
+    }
+};
+
+std::int32_t hds_vertex(HdsGrid& rG, const HdsPoint& rP) {
+    const auto it = rG.mVertId.find(rP);
+    if (it != rG.mVertId.end())
+        return it->second;
+    const auto id = static_cast<std::int32_t>(rG.mVerts.size());
+    rG.mVerts.push_back(rP);
+    rG.mVertId.emplace(rP, id);
+    return id;
+}
+
+HdsGrid hds_grid(const LinearOctree& rTree) {
+    HdsGrid g;
+    const std::size_t n = rTree.Size();
+    g.mPolyVerts.resize(n);
+    g.mPolyFaces.resize(n);
+    g.mPolyEdges.resize(n);
+    g.mLabel.resize(n);
+    std::map<std::array<std::int32_t, 4>, std::int32_t> face_id;
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto lo = rTree.Lo(i);
+        const std::int64_t s = rTree.Span(i) * kHexDualUnit;
+        g.mLabel[i] = rTree.mLevel[i];
+        for (int c = 0; c < 8; ++c)
+            g.mPolyVerts[i][static_cast<std::size_t>(c)] = hds_vertex(
+                g, {lo[0] * kHexDualUnit + (c & 1) * s, lo[1] * kHexDualUnit + ((c >> 1) & 1) * s,
+                    lo[2] * kHexDualUnit + ((c >> 2) & 1) * s});
+        const auto& pv = g.mPolyVerts[i];
+        for (int f = 0; f < 6; ++f) {
+            std::array<std::int32_t, 4> q{};
+            for (int k = 0; k < 4; ++k)
+                q[static_cast<std::size_t>(k)] = pv[static_cast<std::size_t>(kHdsFaces[f][k])];
+            std::array<std::int32_t, 4> key = q;
+            std::sort(key.begin(), key.end());
+            auto it = face_id.find(key);
+            if (it == face_id.end()) {
+                it = face_id.emplace(key, static_cast<std::int32_t>(g.mFaceVerts.size())).first;
+                g.mFaceVerts.push_back(q);
+                g.mFacePolys.emplace_back();
+            }
+            g.mPolyFaces[i][static_cast<std::size_t>(f)] = it->second;
+            g.mFacePolys[static_cast<std::size_t>(it->second)].push_back(
+                static_cast<std::int32_t>(i));
+        }
+        for (int e = 0; e < 12; ++e) {
+            const std::int32_t a = pv[static_cast<std::size_t>(kHdsEdges[e][0])];
+            const std::int32_t b = pv[static_cast<std::size_t>(kHdsEdges[e][1])];
+            auto it = g.mEdgeId.find(HdsGrid::PairKey(a, b));
+            if (it == g.mEdgeId.end()) {
+                it = g.mEdgeId
+                         .emplace(HdsGrid::PairKey(a, b),
+                                  static_cast<std::int32_t>(g.mEdgeVerts.size()))
+                         .first;
+                g.mEdgeVerts.push_back({a, b});
+                g.mEdgePolys.emplace_back();
+            }
+            g.mPolyEdges[i][static_cast<std::size_t>(e)] = it->second;
+            g.mEdgePolys[static_cast<std::size_t>(it->second)].push_back(
+                static_cast<std::int32_t>(i));
+        }
+    }
+    const std::size_t nv = g.mVerts.size();
+    g.mV2P.resize(nv);
+    g.mV2E.resize(nv);
+    g.mV2V.resize(nv);
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::int32_t v : g.mPolyVerts[i])
+            g.mV2P[static_cast<std::size_t>(v)].push_back(static_cast<std::int32_t>(i));
+    for (std::size_t e = 0; e < g.mEdgeVerts.size(); ++e) {
+        const auto& ev = g.mEdgeVerts[e];
+        g.mV2E[static_cast<std::size_t>(ev[0])].push_back(static_cast<std::int32_t>(e));
+        g.mV2E[static_cast<std::size_t>(ev[1])].push_back(static_cast<std::int32_t>(e));
+        g.mV2V[static_cast<std::size_t>(ev[0])].push_back(ev[1]);
+        g.mV2V[static_cast<std::size_t>(ev[1])].push_back(ev[0]);
+    }
+    g.mP2P.resize(n);
+    for (const auto& fp : g.mFacePolys)
+        if (fp.size() == 2) {
+            g.mP2P[static_cast<std::size_t>(fp[0])].push_back(fp[1]);
+            g.mP2P[static_cast<std::size_t>(fp[1])].push_back(fp[0]);
+        }
+    for (auto& r : g.mP2P)
+        std::sort(r.begin(), r.end());
+    return g;
+}
+
+// ---- transition vertices --------------------------------------------------
+
+// The centre of each face of a parent whose eight children are leaves, when
+// the leaves across that face at its centre are one level finer than the
+// children; its direction points into the parent. Checked against CinoLib's
+// rule (the longest edge shared by four cells), which must agree.
+void hds_transition_vertices(const LinearOctree& rTree, const HdsGrid& rG,
+                             std::vector<std::uint8_t>& rIsT, std::vector<int>& rDir) {
+    rIsT.assign(rG.mVerts.size(), 0);
+    rDir.assign(rG.mVerts.size(), 0);
+    for (std::size_t i = 0; i < rTree.Size(); ++i) {
+        const auto lo = rTree.Lo(i);
+        const std::int64_t s = rTree.Span(i);
+        const int level = rTree.mLevel[i];
+        if (level == 0 || lo[0] % (2 * s) != 0 || lo[1] % (2 * s) != 0 || lo[2] % (2 * s) != 0)
+            continue;  // not a parent's first child
+        for (int axis = 0; axis < 3; ++axis)
+            for (int side = 0; side < 2; ++side) {
+                // The four finest cells across the face, around its centre.
+                const auto ax = static_cast<std::size_t>(axis);
+                const std::size_t u = (ax + 1) % 3, w = (ax + 2) % 3;
+                std::array<std::int64_t, 3> centre{lo[0] + s, lo[1] + s, lo[2] + s};
+                centre[ax] = side == 0 ? lo[ax] : lo[ax] + 2 * s;
+                int finer = 0, same = 0;
+                for (int q = 0; q < 4; ++q) {
+                    std::array<std::int64_t, 3> c = centre;
+                    c[ax] = side == 0 ? centre[ax] - 1 : centre[ax];
+                    c[u] += (q & 1) ? 0 : -1;
+                    c[w] += (q & 2) ? 0 : -1;
+                    if (!rTree.Contains(c[0], c[1], c[2]))
+                        continue;
+                    const std::int64_t j = rTree.Locate(c[0], c[1], c[2]);
+                    const int lj = rTree.mLevel[static_cast<std::size_t>(j)];
+                    if (lj == level + 1)
+                        ++finer;
+                    else
+                        ++same;
+                }
+                if (finer == 0)
+                    continue;
+                const HdsPoint at{centre[0] * kHexDualUnit, centre[1] * kHexDualUnit,
+                                  centre[2] * kHexDualUnit};
+                if (finer != 4 || same != 0)
+                    hds_fail("the leaves across the face centre " + hds_str(at) +
+                             " are not all one level finer; pair the tree first");
+                const std::int32_t v = rG.mVertId.at(at);
+                rIsT[static_cast<std::size_t>(v)] = 1;
+                rDir[static_cast<std::size_t>(v)] =
+                    side == 0 ? kHdsPlusX + axis : kHdsMinusX + axis;
+            }
+    }
+    for (std::size_t v = 0; v < rIsT.size(); ++v) {
+        if (!rIsT[v])
+            continue;
+        const auto vid = static_cast<std::int32_t>(v);
+        if (rG.mV2P[v].size() != 8)
+            hds_fail("the transition vertex " + hds_str(rG.Vert(vid)) + " has " +
+                     std::to_string(rG.mV2P[v].size()) + " cells around it, not 8");
+        std::int64_t length = 0;
+        int dir = -1;
+        for (std::int32_t e : rG.mV2E[v])
+            if (rG.mEdgePolys[static_cast<std::size_t>(e)].size() == 4 &&
+                rG.EdgeLength(e) > length) {
+                length = rG.EdgeLength(e);
+                dir = rG.Orientation(vid, e);
+            }
+        if (dir != rDir[v])
+            hds_fail("the transition vertex " + hds_str(rG.Vert(vid)) +
+                     " points into a cell its edges do not");
+    }
+}
+
+// ---- marking (CinoLib's hex_transition_install) ---------------------------
+
+using HdsSchemes = std::map<std::int32_t, HdsInfo>;
+
+bool hds_is(const HdsSchemes& rMap, std::int32_t P, std::initializer_list<HexTransition> Types) {
+    const auto it = rMap.find(P);
+    if (it == rMap.end())
+        return false;
+    return std::find(Types.begin(), Types.end(), it->second.mType) != Types.end();
+}
+
+// Whether the vertex at the middle of edge `V`-`W` has cells of two levels
+// around it: a weakly balanced corner, which the ported schemes do not cover.
+bool hds_middle_is_cut(const HdsGrid& rG, std::int32_t From, std::int32_t V, std::int32_t W) {
+    const std::int32_t e = rG.EdgeId(V, W);
+    const HdsPoint mid = rG.EdgeMid(e);
+    const std::int32_t m = rG.NeighbourAt(From, mid);
+    if (m < 0)
+        hds_fail("no vertex at the middle " + hds_str(mid) + " of a transition edge");
+    std::set<int> refs;
+    for (std::int32_t p : rG.mV2P[static_cast<std::size_t>(m)])
+        refs.insert(rG.Label(p));
+    return refs.size() > 1;
+}
+
+void hds_mark_concave_vert(const HdsGrid& rG, const std::vector<std::int32_t>& rT,
+                           const std::vector<int>& rDir, HdsSchemes& rMap) {
+    const int min_ref = rG.MinRef(rT[0]);
+    std::set<std::int32_t> cluster;
+    for (std::int32_t v : rT)
+        for (std::int32_t p : rG.mV2P[static_cast<std::size_t>(v)])
+            if (rG.Label(p) == min_ref)
+                cluster.insert(p);
+    std::set<std::int32_t> flats = cluster;
+    std::int32_t concave = -1, conc_vert = -1;
+    std::vector<std::int32_t> adjs;
+    for (std::int32_t p : cluster) {
+        if (!(rG.PolyHasVert(p, rT[0]) && rG.PolyHasVert(p, rT[1]) && rG.PolyHasVert(p, rT[2])))
+            continue;
+        concave = p;
+        const auto& pv = rG.mPolyVerts[static_cast<std::size_t>(p)];
+        std::set<std::int32_t> rest(pv.begin(), pv.end());
+        for (std::int32_t t : rT) {
+            for (std::int32_t v : rG.mV2V[static_cast<std::size_t>(t)])
+                if (rG.PolyHasVert(p, v))
+                    rest.erase(v);
+            rest.erase(t);
+        }
+        if (rest.size() != 1)
+            hds_fail("a concave corner cell at " + hds_str(rG.Vert(rT[0])) + " has " +
+                     std::to_string(rest.size()) + " candidate corners, not 1");
+        conc_vert = *rest.begin();
+        for (std::int32_t v : rG.mV2V[static_cast<std::size_t>(conc_vert)])
+            if (rG.PolyHasVert(concave, v))
+                adjs.push_back(v);
+        if (adjs.size() != 3)
+            hds_fail("a concave corner at " + hds_str(rG.Vert(conc_vert)) + " has " +
+                     std::to_string(adjs.size()) + " edges in its cell, not 3");
+        break;
+    }
+    if (concave < 0)
+        hds_fail("no cell holds the three transition vertices of the concave corner at " +
+                 hds_str(rG.Vert(rT[0])));
+    std::map<std::int32_t, bool> v2cut;
+    if (!rMap.count(concave) ||
+        hds_is(rMap, concave,
+               {HexTransition::Flat, HexTransition::FlatConvex, HexTransition::VertSide})) {
+        HdsInfo info;
+        info.mType = HexTransition::VertCenter;
+        info.mScale = rG.PolyScale(concave);
+        for (std::int32_t v : adjs) {
+            const bool cut = hds_middle_is_cut(rG, v, conc_vert, v);
+            if (cut)
+                hds_fail("the concave corner at " + hds_str(rG.Vert(conc_vert)) +
+                         " is only weakly balanced");
+            v2cut[v] = false;
+            int ori = rG.Orientation(conc_vert, rG.EdgeId(conc_vert, v));
+            ori = ori > 12 ? ori - 3 : ori;
+            info.mCuts[ori] = false;
+        }
+        info.mKind = HdsKind::CornS;
+        for (std::int32_t t : rT)
+            info.mOrientations.push_back(rDir[static_cast<std::size_t>(t)]);
+        info.mTVerts.push_back(rG.Vert(conc_vert));
+        rMap[concave] = info;
+    }
+    flats.erase(concave);
+
+    int lateral_y = kHdsMinusY;
+    for (std::int32_t t : rT)
+        if (rDir[static_cast<std::size_t>(t)] == kHdsPlusY)
+            lateral_y = kHdsPlusY;
+
+    for (std::int32_t p : rG.mP2P[static_cast<std::size_t>(concave)]) {
+        const auto it = rMap.find(p);
+        if (it == rMap.end() ||
+            (it->second.mKind == HdsKind::CornS && it->second.mType != HexTransition::VertCenter)) {
+            HdsInfo info;
+            bool typed = false;
+            for (const auto& kv : v2cut) {
+                if (!rG.PolyHasVert(p, kv.first))
+                    continue;
+                for (std::int32_t v : rG.mV2V[static_cast<std::size_t>(kv.first)])
+                    if (rG.PolyHasVert(p, v) && hds_middle_is_cut(rG, kv.first, kv.first, v))
+                        hds_fail("the cell beside the concave corner at " +
+                                 hds_str(rG.Vert(conc_vert)) + " is only weakly balanced");
+                info.mType = HexTransition::VertSide;
+                typed = true;
+            }
+            if (!typed)
+                hds_fail("a cell beside the concave corner at " + hds_str(rG.Vert(conc_vert)) +
+                         " touches none of its edges");
+            info.mKind = HdsKind::CornS;
+            info.mScale = rG.PolyScale(concave);
+            const std::int32_t f = rG.SharedFace(p, concave);
+            for (std::int32_t v : rG.mFaceVerts[static_cast<std::size_t>(f)]) {
+                if (v == rT[0] || v == rT[1] || v == rT[2]) {
+                    info.mOrientations.push_back(rDir[static_cast<std::size_t>(v)]);
+                } else {
+                    const int cur = rG.Label(p);
+                    std::set<int> refs;
+                    for (std::int32_t q : rG.mV2P[static_cast<std::size_t>(v)])
+                        if (rG.Label(q) >= cur)
+                            refs.insert(rG.Label(q));
+                    if (refs.size() >= 2)
+                        info.mTVerts.push_back(rG.Vert(v));
+                }
+            }
+            info.mOrientations.push_back(lateral_y);
+            rMap[p] = info;
+        }
+        flats.erase(p);
+    }
+
+    for (std::int32_t p : flats) {
+        if (rMap.count(p))
+            continue;
+        HdsInfo info;
+        info.mType = HexTransition::Flat;
+        info.mKind = HdsKind::CornS;
+        info.mScale = rG.PolyScale(concave);
+        for (std::size_t k = 0; k < 3; ++k)
+            if (rG.PolyHasVert(p, rT[k])) {
+                info.mOrientations.push_back(rDir[static_cast<std::size_t>(rT[k])]);
+                for (std::size_t j = 0; j < 3; ++j)
+                    if (j != k)
+                        info.mOrientations.push_back(rDir[static_cast<std::size_t>(rT[j])]);
+                info.mTVerts.push_back(rG.Vert(rT[k]));
+                break;
+            }
+        rMap[p] = info;
+    }
+}
+
+void hds_mark_concave_edge(const HdsGrid& rG, const std::vector<std::int32_t>& rT,
+                           const std::vector<int>& rDir, HdsSchemes& rMap) {
+    std::vector<std::int32_t> a = rG.mV2V[static_cast<std::size_t>(rT[0])];
+    std::vector<std::int32_t> b = rG.mV2V[static_cast<std::size_t>(rT[1])];
+    std::sort(a.begin(), a.end());
+    std::sort(b.begin(), b.end());
+    std::vector<std::int32_t> common;
+    std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(common));
+    if (common.size() != 1 && common.size() != 2)
+        hds_fail("the concave edge between " + hds_str(rG.Vert(rT[0])) + " and " +
+                 hds_str(rG.Vert(rT[1])) + " has " + std::to_string(common.size()) +
+                 " common neighbours");
+    int ref = 0;
+    for (std::int32_t p : rG.mV2P[static_cast<std::size_t>(rT[0])])
+        if (rG.PolyHasVert(p, rT[1])) {
+            ref = rG.Label(p);
+            break;
+        }
+    std::int32_t conc = -1;
+    for (std::int32_t v : common) {
+        std::set<int> refs;
+        for (std::int32_t p : rG.mV2P[static_cast<std::size_t>(v)])
+            if (ref <= rG.Label(p))
+                refs.insert(rG.Label(p));
+        if (refs.size() == 2) {
+            conc = v;
+            break;
+        }
+        if (refs.size() == 3)
+            hds_fail("the concave edge at " + hds_str(rG.Vert(v)) + " is only weakly balanced");
+    }
+    if (conc < 0)
+        hds_fail("no concave edge vertex between " + hds_str(rG.Vert(rT[0])) + " and " +
+                 hds_str(rG.Vert(rT[1])));
+
+    std::vector<std::int32_t> concaves;
+    const int min_ref = rG.MinRef(conc);
+    for (std::int32_t p : rG.mV2P[static_cast<std::size_t>(conc)]) {
+        if (!(rG.PolyHasVert(p, rT[0]) && rG.PolyHasVert(p, rT[1])) || rG.Label(p) != min_ref)
+            continue;
+        if (rMap.count(p) && !hds_is(rMap, p, {HexTransition::Flat, HexTransition::FlatConvex}))
+            continue;
+        int orient = -1;
+        std::int32_t check = -1;
+        for (std::int32_t e : rG.mV2E[static_cast<std::size_t>(conc)]) {
+            const int o = rG.Orientation(conc, e);
+            if (rG.PolyHasEdge(p, e) && o != rDir[static_cast<std::size_t>(rT[0])] &&
+                o != rDir[static_cast<std::size_t>(rT[1])]) {
+                orient = o;
+                check = e;
+                break;
+            }
+        }
+        if (check < 0)
+            hds_fail("the concave edge cell at " + hds_str(rG.Vert(conc)) +
+                     " has no edge along it");
+        const auto& ev = rG.mEdgeVerts[static_cast<std::size_t>(check)];
+        if (hds_middle_is_cut(rG, conc, ev[0], ev[1]))
+            hds_fail("the concave edge at " + hds_str(rG.Vert(conc)) + " is only weakly balanced");
+        concaves.push_back(p);
+        HdsInfo info;
+        info.mType = HexTransition::Edge;
+        info.mScale = rG.PolyScale(p);
+        info.mTVerts.push_back(rG.Vert(conc));
+        info.mOrientations.push_back(orient);
+        info.mKind = HdsKind::ConcS;
+        rMap[p] = info;
+    }
+
+    for (std::size_t i = 0; i < rT.size(); ++i)
+        for (std::int32_t p : rG.mV2P[static_cast<std::size_t>(rT[i])]) {
+            if (rG.PolyHasVert(p, conc) || rG.Label(p) != min_ref || rMap.count(p))
+                continue;
+            HdsInfo info;
+            info.mType = HexTransition::Flat;
+            for (std::int32_t q : rG.mP2P[static_cast<std::size_t>(p)]) {
+                if (rG.PolyHasVert(q, rT[i]))
+                    continue;
+                if (hds_is(
+                        rMap, q,
+                        {HexTransition::Edge, HexTransition::VertSide, HexTransition::FlatConvex}))
+                    info.mType = HexTransition::FlatConvex;
+            }
+            info.mScale = rG.PolyScale(p);
+            info.mTVerts.push_back(rG.Vert(rT[i]));
+            info.mOrientations.push_back(rDir[static_cast<std::size_t>(rT[i])]);
+            info.mOrientations.push_back(rDir[static_cast<std::size_t>(rT[(i + 1) % rT.size()])]);
+            info.mKind = HdsKind::ConcS;
+            rMap[p] = info;
+        }
+
+    for (std::int32_t c : concaves)
+        for (std::int32_t q : rG.mP2P[static_cast<std::size_t>(c)]) {
+            const auto it = rMap.find(q);
+            if (it == rMap.end() || rG.PolyHasVert(q, rT[0]) || rG.PolyHasVert(q, rT[1]))
+                continue;
+            if (it->second.mType == HexTransition::Flat)
+                it->second.mType = HexTransition::FlatConvex;
+        }
+}
+
+void hds_mark_convex(const HdsGrid& rG, const std::vector<std::int32_t>& rT,
+                     const std::vector<int>& rDir, HdsSchemes& rMap) {
+    const std::int32_t vert = rT.back();
+    const int min_ref = rG.MinRef(vert);
+    std::vector<std::int32_t> a = rG.mV2P[static_cast<std::size_t>(rT[0])];
+    std::vector<std::int32_t> b = rG.mV2P[static_cast<std::size_t>(rT[1])];
+    std::sort(a.begin(), a.end());
+    std::sort(b.begin(), b.end());
+    std::vector<std::int32_t> common;
+    std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(common));
+    if (!common.empty())
+        return;
+    for (std::int32_t p : rG.mV2P[static_cast<std::size_t>(vert)]) {
+        if (rG.Label(p) != min_ref || rG.PolyHasVert(p, rT[0]) || rG.PolyHasVert(p, rT[1]))
+            continue;
+        int orient = -1;
+        for (std::int32_t e : rG.mV2E[static_cast<std::size_t>(vert)]) {
+            const int o = rG.Orientation(vert, e);
+            if (rG.PolyHasEdge(p, e) && o != rDir[static_cast<std::size_t>(rT[0])] &&
+                o != rDir[static_cast<std::size_t>(rT[1])]) {
+                orient = o;
+                break;
+            }
+        }
+        if (orient < 0)
+            hds_fail("the convex cell at " + hds_str(rG.Vert(vert)) + " has no edge to cut");
+        auto it = rMap.find(p);
+        if (it == rMap.end()) {
+            HdsInfo info;
+            info.mType = HexTransition::Convex1;
+            info.mKind = HdsKind::ConvS;
+            info.mCuts[orient] = true;
+            info.mScale = rG.PolyScale(p);
+            info.mTVerts.push_back(rG.Vert(vert));
+            info.mOrientations.push_back(orient);
+            rMap[p] = info;
+        } else if (it->second.mType == HexTransition::Convex1) {
+            it->second.mType = HexTransition::Convex2;
+            it->second.mCuts[orient] = true;
+            it->second.mTVerts.push_back(rG.Vert(vert));
+        } else if (it->second.mType == HexTransition::Convex2) {
+            it->second.mType = HexTransition::Convex3;
+            it->second.mCuts[orient] = true;
+            it->second.mTVerts.push_back(rG.Vert(vert));
+        }
+    }
+}
+
+void hds_mark_flat(const HdsGrid& rG, std::int32_t T, const std::vector<int>& rDir,
+                   HdsSchemes& rMap) {
+    const int min_ref = rG.MinRef(T);
+    for (std::int32_t p : rG.mV2P[static_cast<std::size_t>(T)]) {
+        if (rG.Label(p) != min_ref)
+            continue;
+        HdsInfo info;
+        info.mScale = rG.PolyScale(p);
+        info.mOrientations.push_back(rDir[static_cast<std::size_t>(T)]);
+        info.mTVerts.push_back(rG.Vert(T));
+        info.mKind = HdsKind::FlatS;
+        if (!rMap.count(p)) {
+            info.mType = HexTransition::Flat;
+            rMap[p] = info;
+        } else if (hds_is(rMap, p,
+                          {HexTransition::Flat, HexTransition::Convex1, HexTransition::Convex2,
+                           HexTransition::Convex3})) {
+            info.mType = HexTransition::FlatConvex;
+            rMap[p] = info;
+            for (std::int32_t q : rG.mP2P[static_cast<std::size_t>(p)]) {
+                const auto it = rMap.find(q);
+                if (it != rMap.end() && it->second.mType == HexTransition::Flat &&
+                    (it->second.mKind == HdsKind::ConcS || it->second.mKind == HdsKind::CornS))
+                    it->second.mType = HexTransition::FlatConvex;
+            }
+        }
+    }
+}
+
+void hds_cut_flats(const HdsGrid& rG, HdsSchemes& rMap) {
+    std::deque<std::int32_t> queue;
+    for (const auto& kv : rMap)
+        queue.push_back(kv.first);
+    while (!queue.empty()) {
+        const std::int32_t id = queue.front();
+        queue.pop_front();
+        const HdsInfo p = rMap.at(id);
+        if (p.mType == HexTransition::FlatConvex)
+            for (std::int32_t q : rG.mP2P[static_cast<std::size_t>(id)]) {
+                const auto it = rMap.find(q);
+                if (it != rMap.end() && it->second.mType == HexTransition::Flat &&
+                    (it->second.mKind == HdsKind::ConcS || it->second.mKind == HdsKind::CornS) &&
+                    p.mTVerts[0] != it->second.mTVerts[0]) {
+                    it->second.mType = HexTransition::FlatConvex;
+                    queue.push_back(q);
+                }
+            }
+        if (p.mType == HexTransition::Flat && p.mKind == HdsKind::CornS) {
+            int sides = 0;
+            for (std::int32_t q : rG.mP2P[static_cast<std::size_t>(id)])
+                if (hds_is(rMap, q, {HexTransition::VertSide}))
+                    ++sides;
+            if (sides > 2) {
+                rMap.at(id).mType = HexTransition::FlatConvex;
+                queue.push_back(id);
+            }
+        }
+    }
+}
+
+HdsSchemes hds_mark(const HdsGrid& rG, const std::vector<std::uint8_t>& rIsT,
+                    const std::vector<int>& rDir) {
+    std::set<std::int32_t> flats;
+    std::set<std::vector<std::int32_t>> concaves, corners, convexes;
+    std::set<std::int32_t> not_flats;
+    for (std::size_t p = 0; p < rG.mPolyVerts.size(); ++p) {
+        std::vector<std::int32_t> ids;
+        for (std::int32_t v : rG.mPolyVerts[p])
+            if (rIsT[static_cast<std::size_t>(v)])
+                ids.push_back(v);
+        std::sort(ids.begin(), ids.end());
+        bool flat = ids.size() == 1;
+        if (ids.size() == 2)
+            flat = flat || rG.EdgeId(ids[0], ids[1]) != -1;
+        if (flat) {
+            for (std::int32_t v : ids)
+                if (!not_flats.count(v))
+                    flats.insert(v);
+        } else if (ids.size() == 2) {
+            for (std::int32_t f : rG.mPolyFaces[p]) {
+                const auto& fv = rG.mFaceVerts[static_cast<std::size_t>(f)];
+                if (std::find(fv.begin(), fv.end(), ids[0]) == fv.end() ||
+                    std::find(fv.begin(), fv.end(), ids[1]) == fv.end())
+                    continue;
+                if (rG.MaxRef(ids[0]) == rG.MaxRef(ids[1])) {
+                    concaves.insert(ids);
+                    for (std::int32_t v : ids) {
+                        not_flats.insert(v);
+                        flats.erase(v);
+                    }
+                    break;
+                }
+            }
+        } else if (ids.size() == 3) {
+            corners.insert(ids);
+            for (std::int32_t v : ids) {
+                not_flats.insert(v);
+                flats.erase(v);
+            }
+        } else if (ids.size() > 3) {
+            hds_fail("a cell at " + hds_str(rG.Vert(ids[0])) + " holds " +
+                     std::to_string(ids.size()) + " transition vertices");
+        }
+    }
+    for (std::size_t v = 0; v < rG.mVerts.size(); ++v) {
+        if (rIsT[v])
+            continue;
+        std::vector<std::int32_t> adj;
+        for (std::int32_t w : rG.mV2V[v])
+            if (rIsT[static_cast<std::size_t>(w)])
+                adj.push_back(w);
+        if (adj.size() == 3) {
+            int top = 0;
+            for (std::int32_t w : adj)
+                top = std::max(rG.MaxRef(w), top);
+            for (std::size_t i = 0; i < 3; ++i)
+                if (rG.MaxRef(adj[i]) != top) {
+                    adj.erase(adj.begin() + static_cast<std::ptrdiff_t>(i));
+                    break;
+                }
+        }
+        if (adj.size() == 2 &&
+            rDir[static_cast<std::size_t>(adj[0])] != rDir[static_cast<std::size_t>(adj[1])]) {
+            std::sort(adj.begin(), adj.end());
+            if (!concaves.count(adj)) {
+                adj.push_back(static_cast<std::int32_t>(v));
+                convexes.insert(adj);
+            }
+        }
+    }
+    HdsSchemes map;
+    for (const auto& c : corners)
+        hds_mark_concave_vert(rG, c, rDir, map);
+    for (const auto& c : concaves)
+        hds_mark_concave_edge(rG, c, rDir, map);
+    for (const auto& c : convexes)
+        hds_mark_convex(rG, c, rDir, map);
+    for (std::int32_t f : flats)
+        hds_mark_flat(rG, f, rDir, map);
+    hds_cut_flats(rG, map);
+    return map;
+}
+
+// ---- orientation (CinoLib's hex_transition_orient) ------------------------
+
+using HdsMat = std::array<std::array<std::int64_t, 3>, 3>;
+
+// A rotation by `Quarters` quarter turns about an axis, as CinoLib's
+// `mat3d::ROT_3D` builds it (right-handed).
+HdsMat hds_rotation(char Axis, int Quarters) {
+    const std::int64_t u = Axis == 'x', v = Axis == 'y', w = Axis == 'z';
+    const int q = ((Quarters % 4) + 4) % 4;
+    const std::int64_t c = q == 0 ? 1 : (q == 2 ? -1 : 0);
+    const std::int64_t s = q == 1 ? 1 : (q == 3 ? -1 : 0);
+    HdsMat m{};
+    m[0][0] = c + u * u * (1 - c);
+    m[1][0] = w * s + v * u * (1 - c);
+    m[2][0] = -v * s + w * u * (1 - c);
+    m[0][1] = -w * s + u * v * (1 - c);
+    m[1][1] = c + v * v * (1 - c);
+    m[2][1] = u * s + w * v * (1 - c);
+    m[0][2] = v * s + u * w * (1 - c);
+    m[1][2] = -u * s + v * w * (1 - c);
+    m[2][2] = c + w * w * (1 - c);
+    return m;
+}
+
+void hds_apply(std::vector<HdsPoint>& rV, const HdsMat& rM) {
+    for (HdsPoint& p : rV) {
+        const HdsPoint q = p;
+        for (std::size_t i = 0; i < 3; ++i)
+            p[i] = rM[i][0] * q[0] + rM[i][1] * q[1] + rM[i][2] * q[2];
+    }
+}
+
+void hds_rotate(std::vector<HdsPoint>& rV, char Axis, int Quarters) {
+    hds_apply(rV, hds_rotation(Axis, Quarters));
+}
+
+// CinoLib's `reflect`: negate every axis the string does not name.
+void hds_reflect(std::vector<HdsPoint>& rV, const std::string& rAxes) {
+    for (HdsPoint& p : rV)
+        for (std::size_t k = 0; k < 3; ++k)
+            if (rAxes.find(static_cast<char>('x' + k)) == std::string::npos)
+                p[k] = -p[k];
+}
+
+struct HdsPlaced {
+    HexTransition mType;
+    std::vector<HdsPoint> mVerts;  // centred, units of the cell's edge / 20
+    HdsPoint mCentroid;
+    std::int64_t mSpan;  // the cell's edge / 20, lattice units
+
+    HdsPoint At(std::size_t I) const {
+        return {mCentroid[0] + mVerts[I][0] * mSpan, mCentroid[1] + mVerts[I][1] * mSpan,
+                mCentroid[2] + mVerts[I][2] * mSpan};
+    }
+};
+
+HdsPlaced hds_load(HexTransition Type, const HdsPoint& rCentroid, std::int64_t Scale) {
+    const HexDualScheme& s = hex_dual_scheme(Type);
+    HdsPlaced out{Type, std::vector<HdsPoint>(s.mNumVerts), rCentroid, Scale / kHexDualUnit};
+    for (std::size_t v = 0; v < s.mNumVerts; ++v)
+        for (std::size_t k = 0; k < 3; ++k)
+            out.mVerts[v][k] = s.mVerts[v * 3 + k] - kHexDualUnit / 2;
+    return out;
+}
+
+void hds_try_reflections(HdsPlaced& rS, const HdsInfo& rInfo) {
+    for (const char* axes : {"x", "y", "z", "xy", "xz", "yz"}) {
+        HdsPlaced tmp = rS;
+        hds_reflect(tmp.mVerts, axes);
+        if (tmp.At(0) == rInfo.mTVerts[0]) {
+            rS = tmp;
+            return;
+        }
+    }
+    hds_fail("no reflection puts a scheme on the transition vertex " + hds_str(rInfo.mTVerts[0]));
+}
+
+void hds_try_rotations(HdsPlaced& rS, const HdsInfo& rInfo) {
+    HdsPlaced tmp = rS;
+    for (int x = 0; x < 4; ++x) {
+        for (int y = 0; y < 4; ++y) {
+            for (int z = 0; z < 4; ++z) {
+                hds_rotate(tmp.mVerts, 'z', 1);
+                if ((rInfo.mTVerts[0] == tmp.At(0) && rInfo.mTVerts[1] == tmp.At(4)) ||
+                    (rInfo.mTVerts[0] == tmp.At(4) && rInfo.mTVerts[1] == tmp.At(0))) {
+                    rS = tmp;
+                    return;
+                }
+            }
+            hds_rotate(tmp.mVerts, 'y', 1);
+        }
+        hds_rotate(tmp.mVerts, 'x', 1);
+    }
+    hds_fail("no rotation puts a two-turn convex scheme on " + hds_str(rInfo.mTVerts[0]) + " and " +
+             hds_str(rInfo.mTVerts[1]));
+}
+
+void hds_turn_to(HdsPlaced& rS, int Dir) {
+    switch (Dir) {
+        case kHdsPlusY:
+            break;
+        case kHdsPlusX:
+            hds_rotate(rS.mVerts, 'z', -1);
+            break;
+        case kHdsPlusZ:
+            hds_rotate(rS.mVerts, 'x', 1);
+            break;
+        case kHdsMinusX:
+            hds_rotate(rS.mVerts, 'z', 1);
+            break;
+        case kHdsMinusY:
+            hds_rotate(rS.mVerts, 'z', 2);
+            break;
+        case kHdsMinusZ:
+            hds_rotate(rS.mVerts, 'x', -1);
+            break;
+        default:
+            hds_fail("a scheme with no direction");
+    }
+}
+
+HdsPlaced hds_orient_flat(HdsInfo Info, const HdsPoint& rCentroid) {
+    HdsPlaced s = hds_load(Info.mType, rCentroid, Info.mScale);
+    std::vector<int>& o = Info.mOrientations;
+    auto& v = s.mVerts;
+    if (Info.mKind == HdsKind::FlatS) {
+        hds_turn_to(s, o[0]);
+    } else if (Info.mKind == HdsKind::ConcS) {
+        switch (o[0]) {
+            case kHdsPlusX:
+                hds_rotate(v, 'z', -1);
+                if (o[1] == kHdsPlusY)
+                    break;
+                if (o[1] == kHdsPlusZ)
+                    hds_rotate(v, 'x', -1);
+                if (o[1] == kHdsMinusY)
+                    hds_rotate(v, 'x', 2);
+                if (o[1] == kHdsMinusZ)
+                    hds_rotate(v, 'x', 1);
+                break;
+            case kHdsPlusY:
+                if (o[1] == kHdsPlusX)
+                    break;
+                if (o[1] == kHdsPlusZ)
+                    hds_rotate(v, 'y', 1);
+                if (o[1] == kHdsMinusX)
+                    hds_rotate(v, 'y', 2);
+                if (o[1] == kHdsMinusZ)
+                    hds_rotate(v, 'y', -1);
+                break;
+            case kHdsPlusZ:
+                hds_rotate(v, 'x', 1);
+                if (o[1] == kHdsPlusX)
+                    break;
+                if (o[1] == kHdsPlusY)
+                    hds_rotate(v, 'z', -1);
+                if (o[1] == kHdsMinusX)
+                    hds_rotate(v, 'z', 2);
+                if (o[1] == kHdsMinusY)
+                    hds_rotate(v, 'z', 1);
+                break;
+            case kHdsMinusX:
+                hds_rotate(v, 'z', 1);
+                if (o[1] == kHdsPlusY)
+                    break;
+                if (o[1] == kHdsPlusZ)
+                    hds_rotate(v, 'x', 1);
+                if (o[1] == kHdsMinusY)
+                    hds_rotate(v, 'x', 2);
+                if (o[1] == kHdsMinusZ)
+                    hds_rotate(v, 'x', -1);
+                break;
+            case kHdsMinusY:
+                hds_rotate(v, 'z', 2);
+                if (o[1] == kHdsMinusX)
+                    break;
+                if (o[1] == kHdsMinusZ)
+                    hds_rotate(v, 'y', 1);
+                if (o[1] == kHdsPlusX)
+                    hds_rotate(v, 'y', 2);
+                if (o[1] == kHdsPlusZ)
+                    hds_rotate(v, 'y', -1);
+                break;
+            case kHdsMinusZ:
+                hds_rotate(v, 'x', -1);
+                if (o[1] == kHdsMinusX)
+                    break;
+                if (o[1] == kHdsMinusY)
+                    hds_rotate(v, 'z', -1);
+                if (o[1] == kHdsPlusX)
+                    hds_rotate(v, 'z', 2);
+                if (o[1] == kHdsPlusY)
+                    hds_rotate(v, 'z', 1);
+                break;
+            default:
+                hds_fail("a flat scheme with no direction");
+        }
+    } else {
+        std::sort(o.begin() + 1, o.end());
+        auto is = [&](int A, int B) { return o[1] == A && o[2] == B; };
+        switch (o[0]) {
+            case kHdsPlusX:
+                hds_rotate(v, 'z', -1);
+                hds_reflect(v, "xz");
+                if (is(kHdsPlusY, kHdsMinusZ))
+                    hds_reflect(v, "xy");
+                if (is(kHdsPlusZ, kHdsMinusY))
+                    hds_reflect(v, "xz");
+                if (is(kHdsMinusY, kHdsMinusZ)) {
+                    hds_reflect(v, "xy");
+                    hds_reflect(v, "xz");
+                }
+                break;
+            case kHdsPlusY:
+                hds_rotate(v, 'y', 1);
+                hds_reflect(v, "xy");
+                if (is(kHdsPlusX, kHdsMinusZ))
+                    hds_reflect(v, "xy");
+                if (is(kHdsMinusX, kHdsMinusZ))
+                    hds_reflect(v, "y");
+                if (is(kHdsPlusZ, kHdsMinusX))
+                    hds_reflect(v, "yz");
+                break;
+            case kHdsPlusZ:
+                hds_rotate(v, 'x', 1);
+                hds_reflect(v, "xz");
+                if (is(kHdsPlusY, kHdsMinusX))
+                    hds_reflect(v, "yz");
+                if (is(kHdsPlusX, kHdsMinusY))
+                    hds_reflect(v, "xz");
+                if (is(kHdsMinusX, kHdsMinusY)) {
+                    hds_reflect(v, "yz");
+                    hds_reflect(v, "xz");
+                }
+                break;
+            case kHdsMinusX:
+                hds_rotate(v, 'z', 1);
+                if (is(kHdsPlusY, kHdsMinusZ))
+                    hds_reflect(v, "xy");
+                if (is(kHdsPlusZ, kHdsMinusY))
+                    hds_reflect(v, "xz");
+                if (is(kHdsMinusY, kHdsMinusZ)) {
+                    hds_reflect(v, "yz");
+                    hds_reflect(v, "xz");
+                }
+                break;
+            case kHdsMinusY:
+                hds_rotate(v, 'y', 1);
+                hds_reflect(v, "xy");
+                hds_reflect(v, "xz");
+                if (is(kHdsPlusX, kHdsMinusZ))
+                    hds_reflect(v, "xy");
+                if (is(kHdsMinusX, kHdsMinusZ))
+                    hds_reflect(v, "y");
+                if (is(kHdsPlusZ, kHdsMinusX))
+                    hds_reflect(v, "yz");
+                break;
+            case kHdsMinusZ:
+                hds_rotate(v, 'x', -1);
+                if (is(kHdsPlusY, kHdsMinusX))
+                    hds_reflect(v, "yz");
+                if (is(kHdsPlusX, kHdsMinusY))
+                    hds_reflect(v, "xz");
+                if (is(kHdsMinusX, kHdsMinusY)) {
+                    hds_reflect(v, "yz");
+                    hds_reflect(v, "xz");
+                }
+                break;
+            default:
+                hds_fail("a corner flat scheme with no direction");
+        }
+    }
+    if (s.At(0) != Info.mTVerts[0])
+        hds_try_reflections(s, Info);
+    return s;
+}
+
+HdsPlaced hds_orient_convex(const HdsInfo& rInfo, const HdsPoint& rCentroid) {
+    HdsPlaced s = hds_load(rInfo.mType, rCentroid, rInfo.mScale);
+    auto& v = s.mVerts;
+    if (rInfo.mType == HexTransition::Convex1) {
+        hds_turn_to(s, rInfo.mOrientations[0]);
+        if (s.At(0) != rInfo.mTVerts[0])
+            hds_try_reflections(s, rInfo);
+    } else if (rInfo.mType == HexTransition::Convex2) {
+        if (!((rInfo.mTVerts[0] == s.At(0) && rInfo.mTVerts[1] == s.At(4)) ||
+              (rInfo.mTVerts[0] == s.At(4) && rInfo.mTVerts[1] == s.At(0))))
+            hds_try_rotations(s, rInfo);
+    } else {
+        auto cuts = [&](int A, int B, int C) {
+            return rInfo.Cut(A) && rInfo.Cut(B) && rInfo.Cut(C);
+        };
+        if (cuts(kHdsPlusX, kHdsPlusY, kHdsPlusZ)) {
+            hds_rotate(v, 'y', 2);
+        } else if (cuts(kHdsPlusX, kHdsPlusZ, kHdsMinusY)) {
+            hds_rotate(v, 'x', -1);
+            hds_rotate(v, 'y', 2);
+        } else if (cuts(kHdsPlusZ, kHdsMinusX, kHdsMinusY)) {
+            hds_rotate(v, 'y', 1);
+            hds_rotate(v, 'z', 1);
+        } else if (cuts(kHdsPlusX, kHdsMinusY, kHdsMinusZ)) {
+            hds_rotate(v, 'x', 2);
+            hds_rotate(v, 'y', 2);
+        } else if (cuts(kHdsPlusX, kHdsPlusY, kHdsMinusZ)) {
+            hds_rotate(v, 'y', -1);
+        } else if (cuts(kHdsPlusY, kHdsPlusZ, kHdsMinusX)) {
+            hds_rotate(v, 'x', 1);
+        } else if (cuts(kHdsMinusX, kHdsMinusY, kHdsMinusZ)) {
+            hds_rotate(v, 'z', 1);
+        } else if (!cuts(kHdsPlusY, kHdsMinusX, kHdsMinusZ)) {
+            hds_fail("a three-turn convex scheme at " + hds_str(rInfo.mTVerts[0]) +
+                     " whose cuts are not three axes of one corner");
+        }
+    }
+    return s;
+}
+
+HdsPlaced hds_orient_concave_edge(const HdsInfo& rInfo, const HdsPoint& rCentroid) {
+    HdsPlaced s = hds_load(rInfo.mType, rCentroid, rInfo.mScale);
+    auto& v = s.mVerts;
+    hds_reflect(v, "xz");
+    switch (rInfo.mOrientations[0]) {
+        case kHdsPlusY:
+            hds_reflect(v, "xz");
+            break;
+        case kHdsPlusX:
+            hds_rotate(v, 'z', -1);
+            hds_reflect(v, "yz");
+            break;
+        case kHdsPlusZ:
+            hds_rotate(v, 'x', 1);
+            hds_reflect(v, "xy");
+            break;
+        case kHdsMinusX:
+            hds_rotate(v, 'z', 1);
+            hds_reflect(v, "yz");
+            break;
+        case kHdsMinusY:
+            hds_rotate(v, 'z', 2);
+            hds_reflect(v, "xz");
+            break;
+        case kHdsMinusZ:
+            hds_rotate(v, 'x', -1);
+            hds_reflect(v, "xy");
+            break;
+        default:
+            hds_fail("a concave edge scheme with no direction");
+    }
+    if (s.At(0) != rInfo.mTVerts[0])
+        hds_try_reflections(s, rInfo);
+    return s;
+}
+
+HdsPlaced hds_orient_concave_vert(HdsInfo Info, const HdsPoint& rCentroid) {
+    HdsPlaced s = hds_load(Info.mType, rCentroid, Info.mScale);
+    auto& v = s.mVerts;
+    std::vector<int>& o = Info.mOrientations;
+    std::sort(o.begin(), o.end());
+    auto is = [&](int A, int B, int C) { return o[0] == A && o[1] == B && o[2] == C; };
+    if (is(kHdsPlusX, kHdsPlusY, kHdsMinusZ)) {
+        hds_reflect(v, "xy");
+    } else if (is(kHdsPlusY, kHdsMinusX, kHdsMinusZ)) {
+        hds_reflect(v, "y");
+    } else if (is(kHdsPlusY, kHdsPlusZ, kHdsMinusX)) {
+        hds_reflect(v, "yz");
+    } else if (is(kHdsPlusX, kHdsPlusZ, kHdsMinusY)) {
+        hds_reflect(v, "xz");
+    } else if (is(kHdsPlusX, kHdsMinusY, kHdsMinusZ)) {
+        hds_reflect(v, "xz");
+        hds_reflect(v, "xy");
+    } else if (is(kHdsMinusX, kHdsMinusY, kHdsMinusZ)) {
+        hds_reflect(v, "xz");
+        hds_reflect(v, "y");
+    } else if (is(kHdsPlusZ, kHdsMinusX, kHdsMinusY)) {
+        hds_reflect(v, "xz");
+        hds_reflect(v, "yz");
+    }
+    return s;
+}
+
+HdsPlaced hds_orient_concave_vert_side(HdsInfo Info, const HdsPoint& rCentroid) {
+    HdsPlaced s = hds_load(Info.mType, rCentroid, Info.mScale);
+    auto& v = s.mVerts;
+    const std::size_t tv = 2;
+    std::vector<int>& o = Info.mOrientations;
+    if (o.size() != 3 || Info.mTVerts.empty())
+        hds_fail("a cell beside a concave corner has " + std::to_string(Info.mTVerts.size()) +
+                 " transition vertices and " + std::to_string(o.size()) + " directions");
+    std::sort(o.begin(), o.begin() + 2);
+    auto is = [&](int A, int B) { return o[0] == A && o[1] == B; };
+    auto unless_at = [&](const char* rAxes) {
+        if (s.At(tv) != Info.mTVerts[0])
+            hds_reflect(v, rAxes);
+    };
+    if (is(kHdsPlusX, kHdsPlusY)) {
+        hds_rotate(v, 'y', 1);
+        hds_rotate(v, 'x', 1);
+        unless_at("xy");
+    } else if (is(kHdsPlusX, kHdsPlusZ)) {
+        if (o[2] == kHdsMinusY)
+            hds_reflect(v, "xz");
+    } else if (is(kHdsPlusX, kHdsMinusY)) {
+        hds_rotate(v, 'y', 1);
+        hds_rotate(v, 'x', 1);
+        hds_reflect(v, "xz");
+        unless_at("xy");
+    } else if (is(kHdsPlusX, kHdsMinusZ)) {
+        hds_reflect(v, "xy");
+        if (o[2] == kHdsMinusY)
+            hds_reflect(v, "xz");
+    } else if (is(kHdsPlusY, kHdsPlusZ)) {
+        hds_rotate(v, 'y', -1);
+        hds_rotate(v, 'z', -1);
+        unless_at("yz");
+    } else if (is(kHdsPlusY, kHdsMinusX)) {
+        hds_rotate(v, 'y', 1);
+        hds_rotate(v, 'x', 1);
+        hds_reflect(v, "yz");
+        unless_at("xy");
+    } else if (is(kHdsPlusY, kHdsMinusZ)) {
+        hds_rotate(v, 'y', -1);
+        hds_rotate(v, 'z', -1);
+        hds_reflect(v, "xy");
+        unless_at("yz");
+    } else if (is(kHdsPlusZ, kHdsMinusX)) {
+        hds_reflect(v, "yz");
+        if (o[2] == kHdsMinusY)
+            hds_reflect(v, "xz");
+    } else if (is(kHdsPlusZ, kHdsMinusY)) {
+        hds_rotate(v, 'y', -1);
+        hds_rotate(v, 'z', -1);
+        hds_reflect(v, "xz");
+        unless_at("yz");
+    } else if (is(kHdsMinusX, kHdsMinusY)) {
+        hds_rotate(v, 'y', 1);
+        hds_rotate(v, 'x', 1);
+        hds_reflect(v, "xz");
+        hds_reflect(v, "yz");
+        unless_at("xy");
+    } else if (is(kHdsMinusX, kHdsMinusZ)) {
+        hds_reflect(v, "y");
+        if (o[2] == kHdsMinusY)
+            hds_reflect(v, "xz");
+    } else if (is(kHdsMinusY, kHdsMinusZ)) {
+        hds_rotate(v, 'y', -1);
+        hds_rotate(v, 'z', -1);
+        hds_reflect(v, "xz");
+        hds_reflect(v, "xy");
+        unless_at("yz");
+    }
+    return s;
+}
+
+HdsPlaced hds_orient(const HdsInfo& rInfo, const HdsPoint& rCentroid) {
+    if (rInfo.mScale % kHexDualUnit != 0 || rInfo.mTVerts.empty())
+        hds_fail("a scheme with no transition vertex or a cell off the lattice");
+    switch (rInfo.mType) {
+        case HexTransition::Flat:
+        case HexTransition::FlatConvex:
+            return hds_orient_flat(rInfo, rCentroid);
+        case HexTransition::Convex1:
+        case HexTransition::Convex2:
+        case HexTransition::Convex3:
+            return hds_orient_convex(rInfo, rCentroid);
+        case HexTransition::Edge:
+            return hds_orient_concave_edge(rInfo, rCentroid);
+        case HexTransition::VertCenter:
+            return hds_orient_concave_vert(rInfo, rCentroid);
+        case HexTransition::VertSide:
+            return hds_orient_concave_vert_side(rInfo, rCentroid);
+    }
+    hds_fail("an unknown scheme");
+}
+
+// ---- the conforming primal mesh -------------------------------------------
+
+struct HdsPrimal {
+    std::vector<HdsPoint> mVerts;
+    std::unordered_map<HdsPoint, std::int32_t, HdsPointHash> mVertId;
+    std::vector<std::vector<std::int32_t>> mFaces;
+    std::map<std::vector<std::int32_t>, std::int32_t> mFaceId;
+    std::vector<std::vector<std::int32_t>> mPolys;  // face ids
+    std::vector<std::int32_t> mLabel;
+    std::map<std::vector<std::int32_t>, std::int32_t> mPolyId;
+
+    std::int32_t Vertex(const HdsPoint& rP) {
+        const auto it = mVertId.find(rP);
+        if (it != mVertId.end())
+            return it->second;
+        const auto id = static_cast<std::int32_t>(mVerts.size());
+        mVerts.push_back(rP);
+        mVertId.emplace(rP, id);
+        return id;
+    }
+    std::int32_t Face(const std::vector<std::int32_t>& rVerts) {
+        std::vector<std::int32_t> key = rVerts;
+        std::sort(key.begin(), key.end());
+        const auto it = mFaceId.find(key);
+        if (it != mFaceId.end())
+            return it->second;
+        const auto id = static_cast<std::int32_t>(mFaces.size());
+        mFaces.push_back(rVerts);
+        mFaceId.emplace(std::move(key), id);
+        return id;
+    }
+    void Poly(const std::vector<std::int32_t>& rFaces, std::int32_t Label) {
+        std::vector<std::int32_t> key = rFaces;
+        std::sort(key.begin(), key.end());
+        if (mPolyId.count(key))
+            return;
+        mPolyId.emplace(std::move(key), static_cast<std::int32_t>(mPolys.size()));
+        mPolys.push_back(rFaces);
+        mLabel.push_back(Label);
+    }
+};
+
+HdsPrimal hds_primal(const HdsGrid& rG, const HdsSchemes& rMap,
+                     std::array<std::int64_t, kNumHexTransitions>& rCount) {
+    HdsPrimal m;
+    for (const HdsPoint& p : rG.mVerts)
+        m.Vertex(p);
+    for (std::size_t p = 0; p < rG.mPolyVerts.size(); ++p) {
+        const auto pid = static_cast<std::int32_t>(p);
+        const auto it = rMap.find(pid);
+        if (it == rMap.end()) {
+            std::vector<std::int32_t> faces;
+            for (std::int32_t f : rG.mPolyFaces[p]) {
+                const auto& fv = rG.mFaceVerts[static_cast<std::size_t>(f)];
+                faces.push_back(m.Face({fv[0], fv[1], fv[2], fv[3]}));
+            }
+            m.Poly(faces, rG.Label(pid));
+            continue;
+        }
+        const auto& pv = rG.mPolyVerts[p];
+        const HdsPoint& lo = rG.Vert(pv[0]);
+        const HdsPoint& hi = rG.Vert(pv[7]);
+        const HdsPoint centroid{(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2};
+        const HdsPlaced s = hds_orient(it->second, centroid);
+        ++rCount[static_cast<std::size_t>(it->second.mType)];
+        const HexDualScheme& t = hex_dual_scheme(s.mType);
+        std::vector<std::int32_t> vid(t.mNumVerts);
+        for (std::size_t v = 0; v < t.mNumVerts; ++v)
+            vid[v] = m.Vertex(s.At(v));
+        std::vector<std::int32_t> fid(t.mNumFaces);
+        for (std::size_t f = 0, at = 0; f < t.mNumFaces; ++f) {
+            std::vector<std::int32_t> fv;
+            for (; at < t.mFaceEnds[f]; ++at)
+                fv.push_back(vid[t.mFaces[at]]);
+            fid[f] = m.Face(fv);
+        }
+        for (std::size_t q = 0, at = 0; q < t.mNumPolys; ++q) {
+            std::vector<std::int32_t> faces;
+            for (; at < t.mPolyEnds[q]; ++at)
+                faces.push_back(fid[t.mPolys[at]]);
+            m.Poly(faces, rG.Label(pid));
+        }
+    }
+    return m;
+}
+
+// ---- the dual (CinoLib's dual_mesh, without clipped cells) ----------------
+
+double hds_hex_volume(const std::vector<Vec3>& rP, const std::array<std::int64_t, 8>& rH) {
+    static constexpr int kTets[6][4] = {{0, 1, 2, 6}, {0, 2, 3, 6}, {0, 3, 7, 6},
+                                        {0, 7, 4, 6}, {0, 4, 5, 6}, {0, 5, 1, 6}};
+    double vol = 0.0;
+    for (const auto& t : kTets) {
+        const Vec3& a = rP[static_cast<std::size_t>(rH[static_cast<std::size_t>(t[0])])];
+        const Vec3 b =
+            vec3_sub(rP[static_cast<std::size_t>(rH[static_cast<std::size_t>(t[1])])], a);
+        const Vec3 c =
+            vec3_sub(rP[static_cast<std::size_t>(rH[static_cast<std::size_t>(t[2])])], a);
+        const Vec3 d =
+            vec3_sub(rP[static_cast<std::size_t>(rH[static_cast<std::size_t>(t[3])])], a);
+        vol += vec3_dot(b, vec3_cross(c, d)) / 6.0;
+    }
+    return vol;
+}
+
+HexDualMesh hds_dual(const HdsPrimal& rM, const LinearOctree& rTree) {
+    HexDualMesh out;
+    const std::size_t nv = rM.mVerts.size(), nf = rM.mFaces.size(), np = rM.mPolys.size();
+    std::vector<std::vector<std::int32_t>> f2p(nf);
+    for (std::size_t p = 0; p < np; ++p)
+        for (std::int32_t f : rM.mPolys[p])
+            f2p[static_cast<std::size_t>(f)].push_back(static_cast<std::int32_t>(p));
+    std::array<std::int64_t, 3> extent{};
+    for (std::size_t k = 0; k < 3; ++k)
+        extent[k] = rTree.Extent(k) * kHexDualUnit;
+    auto on_boundary = [&](const HdsPoint& rP) {
+        for (std::size_t k = 0; k < 3; ++k)
+            if (rP[k] == 0 || rP[k] == extent[k])
+                return true;
+        return false;
+    };
+    // Every face has two cells, except on the forest's boundary.
+    for (std::size_t f = 0; f < nf; ++f) {
+        const std::size_t c = f2p[f].size();
+        if (c == 2 || c == 0)
+            continue;
+        // A face of one cell must lie on one of the forest's boundary planes.
+        bool outer = false;
+        for (std::size_t k = 0; k < 3 && c == 1 && !outer; ++k) {
+            bool lo = true, hi = true;
+            for (std::int32_t v : rM.mFaces[f]) {
+                lo = lo && rM.mVerts[static_cast<std::size_t>(v)][k] == 0;
+                hi = hi && rM.mVerts[static_cast<std::size_t>(v)][k] == extent[k];
+            }
+            outer = lo || hi;
+        }
+        if (!outer)
+            hds_fail("the schemes do not conform: a face at " +
+                     hds_str(rM.mVerts[static_cast<std::size_t>(rM.mFaces[f][0])]) + " has " +
+                     std::to_string(c) + " cells");
+    }
+    // Each cell's dual point, the average of its vertices.
+    std::vector<Vec3> centroid(np);
+    std::vector<std::vector<std::int32_t>> v2p(nv);
+    for (std::size_t p = 0; p < np; ++p) {
+        std::vector<std::int32_t> verts;
+        for (std::int32_t f : rM.mPolys[p])
+            for (std::int32_t v : rM.mFaces[static_cast<std::size_t>(f)])
+                verts.push_back(v);
+        std::sort(verts.begin(), verts.end());
+        verts.erase(std::unique(verts.begin(), verts.end()), verts.end());
+        Vec3 c{0.0, 0.0, 0.0};
+        for (std::int32_t v : verts) {
+            const HdsPoint& q = rM.mVerts[static_cast<std::size_t>(v)];
+            for (std::size_t k = 0; k < 3; ++k)
+                c[k] += static_cast<double>(q[k]);
+            v2p[static_cast<std::size_t>(v)].push_back(static_cast<std::int32_t>(p));
+        }
+        for (std::size_t k = 0; k < 3; ++k)
+            c[k] /= static_cast<double>(verts.size());
+        centroid[p] = c;
+    }
+    std::vector<std::vector<std::int32_t>> v2f(nv);
+    for (std::size_t f = 0; f < nf; ++f)
+        for (std::int32_t v : rM.mFaces[f])
+            v2f[static_cast<std::size_t>(v)].push_back(static_cast<std::int32_t>(f));
+
+    std::vector<std::int64_t> point_of(np, -1);
+    for (std::size_t v = 0; v < nv; ++v) {
+        const HdsPoint& at = rM.mVerts[v];
+        if (on_boundary(at) || v2p[v].empty())
+            continue;
+        const std::vector<std::int32_t>& cells = v2p[v];
+        if (cells.size() != 8)
+            hds_fail("the interior vertex " + hds_str(at) + " has " + std::to_string(cells.size()) +
+                     " cells around it, so its dual is not a hexahedron");
+        // The cells' adjacency across the faces at the vertex: a cube's graph.
+        std::array<std::array<int, 3>, 8> nb{};
+        std::array<int, 8> deg{};
+        auto local = [&](std::int32_t P) {
+            return static_cast<int>(std::find(cells.begin(), cells.end(), P) - cells.begin());
+        };
+        bool ok = true;
+        for (std::int32_t f : v2f[v]) {
+            const auto& fp = f2p[static_cast<std::size_t>(f)];
+            if (fp.size() != 2) {
+                ok = false;
+                break;
+            }
+            const int a = local(fp[0]), b = local(fp[1]);
+            if (deg[static_cast<std::size_t>(a)] == 3 || deg[static_cast<std::size_t>(b)] == 3) {
+                ok = false;
+                break;
+            }
+            nb[static_cast<std::size_t>(a)]
+              [static_cast<std::size_t>(deg[static_cast<std::size_t>(a)]++)] = b;
+            nb[static_cast<std::size_t>(b)]
+              [static_cast<std::size_t>(deg[static_cast<std::size_t>(b)]++)] = a;
+        }
+        std::array<int, 8> label;
+        label.fill(-1);
+        if (ok) {
+            label[0] = 0;
+            for (int k = 0; k < 3 && ok; ++k) {
+                if (deg[0] != 3) {
+                    ok = false;
+                    break;
+                }
+                label[static_cast<std::size_t>(nb[0][static_cast<std::size_t>(k)])] = 1 << k;
+            }
+            // Two passes: the cells beside two labelled ones, then the last.
+            for (int pass = 0; pass < 2 && ok; ++pass)
+                for (std::size_t c = 0; c < 8; ++c) {
+                    if (label[c] >= 0)
+                        continue;
+                    int bits = 0, count = 0;
+                    for (int k = 0; k < deg[c]; ++k) {
+                        const int l =
+                            label[static_cast<std::size_t>(nb[c][static_cast<std::size_t>(k)])];
+                        if (l > 0 && (pass == 0 ? (l & (l - 1)) == 0 : (l & (l - 1)) != 0)) {
+                            bits |= l;
+                            ++count;
+                        }
+                    }
+                    if (count >= 2)
+                        label[c] = bits;
+                }
+            std::array<int, 8> seen{};
+            for (std::size_t c = 0; c < 8 && ok; ++c) {
+                if (label[c] < 0 || label[c] > 7 || deg[c] != 3 ||
+                    seen[static_cast<std::size_t>(label[c])]++) {
+                    ok = false;
+                    break;
+                }
+                for (int k = 0; k < 3; ++k) {
+                    const int x =
+                        label[c] ^
+                        label[static_cast<std::size_t>(nb[c][static_cast<std::size_t>(k)])];
+                    if (x != 1 && x != 2 && x != 4)
+                        ok = false;
+                }
+            }
+        }
+        if (!ok)
+            hds_fail("the cells around the interior vertex " + hds_str(at) +
+                     " do not meet as a cube's eight corners, so its dual is not a hexahedron");
+        std::array<std::int32_t, 8> by_label{};
+        for (std::size_t c = 0; c < 8; ++c)
+            by_label[static_cast<std::size_t>(label[c])] = cells[c];
+        std::array<std::int64_t, 8> hex{};
+        static constexpr int kVtk[8] = {0, 1, 3, 2, 4, 5, 7, 6};
+        static constexpr int kMirror[8] = {0, 1, 5, 4, 2, 3, 7, 6};
+        for (std::size_t k = 0; k < 8; ++k) {
+            const std::int32_t p = by_label[static_cast<std::size_t>(kVtk[k])];
+            std::int64_t& r = point_of[static_cast<std::size_t>(p)];
+            if (r < 0) {
+                r = static_cast<std::int64_t>(out.mPoints.size());
+                out.mPoints.push_back(centroid[static_cast<std::size_t>(p)]);
+            }
+            hex[k] = r;
+        }
+        if (hds_hex_volume(out.mPoints, hex) < 0.0)
+            for (std::size_t k = 0; k < 8; ++k)
+                hex[k] = point_of[static_cast<std::size_t>(
+                    by_label[static_cast<std::size_t>(kMirror[k])])];
+        int level = 0;
+        for (std::int32_t p : cells)
+            level = std::max(level, rM.mLabel[static_cast<std::size_t>(p)]);
+        out.mHexes.push_back(hex);
+        out.mCentre.push_back(at);
+        out.mLevel.push_back(level);
+    }
+    return out;
+}
+
+}  // namespace
+
+HexDualMesh hex_dual_mesh(const LinearOctree& rTree) {
+    const OctreeAdjacency full = OctreeAdjacency::Full;
+    std::string why;
+    if (!linear_octree_check(rTree, &full, &why))
+        hds_fail("the tree is not balanced across faces, edges and corners: " + why);
+    if (!linear_octree_is_paired(rTree, &why))
+        hds_fail("the tree is not paired: " + why);
+    const HdsGrid grid = hds_grid(rTree);
+    std::vector<std::uint8_t> is_t;
+    std::vector<int> dir;
+    hds_transition_vertices(rTree, grid, is_t, dir);
+    const HdsSchemes map = hds_mark(grid, is_t, dir);
+    std::array<std::int64_t, kNumHexTransitions> count{};
+    const HdsPrimal primal = hds_primal(grid, map, count);
+    HexDualMesh out = hds_dual(primal, rTree);
+    out.mNumSchemes = count;
+    out.mNumPrimalCells = static_cast<std::int64_t>(primal.mPolys.size());
+    for (std::uint8_t t : is_t)
+        out.mNumTransitionVertices += t;
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/hex_dual_schemes.cpp =====
 // ===== begin src/cpp/src/detail/hex_fit.cpp =====
 #include <algorithm>
 #include <array>
@@ -78657,6 +81618,129 @@ std::int64_t hex_grid_make_manifold(const std::array<std::int64_t, 3>& rN,
                         changed = true;
                     }
                 }
+    }
+    return added;
+}
+
+std::int64_t hex_make_manifold(const HexMesh& rMesh, std::vector<std::uint8_t>& rKept,
+                               const std::vector<double>& rScore) {
+    const std::size_t nh = rMesh.mHexes.size(), np = rMesh.mPoints.size();
+    // The hexahedron across each facet (-1: none).
+    std::vector<std::array<std::int64_t, 6>> across(nh);
+    {
+        std::vector<std::pair<std::array<std::int64_t, 4>, std::int64_t>> faces;
+        faces.reserve(nh * 6);
+        for (std::size_t h = 0; h < nh; ++h) {
+            across[h].fill(-1);
+            for (int f = 0; f < 6; ++f) {
+                std::array<std::int64_t, 4> key{};
+                for (int k = 0; k < 4; ++k)
+                    key[static_cast<std::size_t>(k)] =
+                        rMesh.mHexes[h][static_cast<std::size_t>(kHexfitFace[f][k])];
+                std::sort(key.begin(), key.end());
+                faces.emplace_back(key,
+                                   static_cast<std::int64_t>(h * 6 + static_cast<std::size_t>(f)));
+            }
+        }
+        std::sort(faces.begin(), faces.end());
+        for (std::size_t i = 0; i + 1 < faces.size(); ++i)
+            if (faces[i].first == faces[i + 1].first) {
+                const std::int64_t a = faces[i].second, b = faces[i + 1].second;
+                across[static_cast<std::size_t>(a / 6)][static_cast<std::size_t>(a % 6)] = b / 6;
+                across[static_cast<std::size_t>(b / 6)][static_cast<std::size_t>(b % 6)] = a / 6;
+            }
+    }
+    std::vector<std::int64_t> start(np + 1, 0), at;
+    for (const auto& h : rMesh.mHexes)
+        for (std::int64_t v : h)
+            ++start[static_cast<std::size_t>(v) + 1];
+    for (std::size_t v = 0; v < np; ++v)
+        start[v + 1] += start[v];
+    at.resize(static_cast<std::size_t>(start[np]));
+    {
+        std::vector<std::int64_t> fill(start.begin(), start.end() - 1);
+        for (std::size_t h = 0; h < nh; ++h)
+            for (std::int64_t v : rMesh.mHexes[h])
+                at[static_cast<std::size_t>(fill[static_cast<std::size_t>(v)]++)] =
+                    static_cast<std::int64_t>(h);
+    }
+    std::int64_t added = 0;
+    std::vector<std::vector<std::size_t>> link;
+    std::vector<std::uint8_t> seen;
+    // The components of the star's cells with `Kept` (the outside, index n,
+    // counting as empty).
+    auto components = [&](const std::vector<std::int64_t>& rStar, bool Kept, bool Outside) {
+        const std::size_t n = rStar.size();
+        auto member = [&](std::size_t I) {
+            if (I == n)
+                return !Kept && Outside;
+            return (rKept[static_cast<std::size_t>(rStar[I])] != 0) == Kept;
+        };
+        seen.assign(n + 1, 0);
+        int count = 0;
+        for (std::size_t i = 0; i <= n; ++i) {
+            if (seen[i] || !member(i))
+                continue;
+            ++count;
+            std::vector<std::size_t> front{i};
+            seen[i] = 1;
+            while (!front.empty()) {
+                const std::size_t u = front.back();
+                front.pop_back();
+                for (std::size_t w : link[u])
+                    if (!seen[w] && member(w)) {
+                        seen[w] = 1;
+                        front.push_back(w);
+                    }
+            }
+        }
+        return count;
+    };
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (std::size_t p = 0; p < np; ++p) {
+            const std::vector<std::int64_t> star(at.begin() + start[p], at.begin() + start[p + 1]);
+            const std::size_t n = star.size();
+            if (n == 0)
+                continue;
+            link.assign(n + 1, {});
+            bool outside = false;
+            for (std::size_t i = 0; i < n; ++i) {
+                const auto& hex = rMesh.mHexes[static_cast<std::size_t>(star[i])];
+                for (int f = 0; f < 6; ++f) {
+                    bool has = false;
+                    for (int k = 0; k < 4 && !has; ++k)
+                        has = hex[static_cast<std::size_t>(kHexfitFace[f][k])] ==
+                              static_cast<std::int64_t>(p);
+                    if (!has)
+                        continue;
+                    const std::int64_t g =
+                        across[static_cast<std::size_t>(star[i])][static_cast<std::size_t>(f)];
+                    const std::size_t j =
+                        g < 0 ? n
+                              : static_cast<std::size_t>(std::find(star.begin(), star.end(), g) -
+                                                         star.begin());
+                    outside = outside || g < 0;
+                    link[i].push_back(j);
+                    link[j].push_back(i);
+                }
+            }
+            for (;;) {
+                if (components(star, true, outside) <= 1 && components(star, false, outside) <= 1)
+                    break;
+                std::int64_t best = -1;
+                for (std::int64_t h : star)
+                    if (!rKept[static_cast<std::size_t>(h)] &&
+                        (best < 0 || rScore[static_cast<std::size_t>(h)] >
+                                         rScore[static_cast<std::size_t>(best)]))
+                        best = h;
+                if (best < 0)
+                    break;  // only the outside left to add
+                rKept[static_cast<std::size_t>(best)] = 1;
+                ++added;
+                changed = true;
+            }
+        }
     }
     return added;
 }
@@ -80305,6 +83389,11 @@ LayerSweepResult layer_sweep(const LayerSweepInput& rIn) {
     std::vector<std::int64_t> level_id(nn * nl, -1);
     for (std::size_t k = 0; k < nl; ++k)
         for (std::size_t p = 0; p < nn; ++p) {
+            if (rIn.mPeriodic && k + 1 == nl) {
+                // The last level of a full turn is the surface again.
+                level_id[k * nn + p] = static_cast<std::int64_t>(p);
+                continue;
+            }
             if (!grows[k * nn + p]) {
                 level_id[k * nn + p] =
                     k == 0 ? static_cast<std::int64_t>(p) : level_id[(k - 1) * nn + p];
@@ -80375,9 +83464,32 @@ LayerSweepResult layer_sweep(const LayerSweepInput& rIn) {
             for (int k = 1; k <= layers && !any; ++k)
                 any = is_collapsed(r_f[static_cast<std::size_t>(i)], k);
         const auto face = static_cast<std::int64_t>(f);
-        const bool split = quad && any;
+        // An edge collapsed in every layer and the rest in none: corner S
+        // and S + 1 on the edge.
+        int edge_at = -1;
+        if (quad && any && rIn.mCollapsedEdgeWedges)
+            for (int s = 0; s < 4 && edge_at < 0; ++s) {
+                bool ok = true;
+                for (int i = 0; i < 4 && ok; ++i) {
+                    const bool on_edge = i == s || i == (s + 1) % 4;
+                    for (int k = 1; k <= layers && ok; ++k)
+                        ok = is_collapsed(r_f[static_cast<std::size_t>(i)], k) == on_edge;
+                }
+                if (ok)
+                    edge_at = s;
+            }
+        const bool split = quad && any && edge_at < 0;
         for (int k = 1; k <= layers; ++k) {
-            if (quad && !split) {
+            if (edge_at >= 0) {
+                const auto s = static_cast<std::size_t>(edge_at);
+                const std::int64_t x = r_f[s], y = r_f[(s + 1) % 4], z = r_f[(s + 2) % 4],
+                                   w = r_f[(s + 3) % 4];
+                LayerSweepCell cell;
+                cell.mFace = face;
+                cell.mLayer = k;
+                cell.mNodes = {x, at(w, k - 1), at(w, k), y, at(z, k - 1), at(z, k), -1, -1};
+                out.mWedges.push_back(cell);
+            } else if (quad && !split) {
                 LayerSweepCell cell;
                 cell.mFace = face;
                 cell.mLayer = k;
@@ -80418,9 +83530,37 @@ LayerSweepResult layer_sweep(const LayerSweepInput& rIn) {
                 rTris.push_back(c);
             }
         };
-        put(0, out.mWallTriangles, out.mWallQuads, 0);
-        put(layers, out.mCapTriangles, out.mCapQuads, layers + 1);
+        if (!rIn.mPeriodic) {
+            put(0, out.mWallTriangles, out.mWallQuads, 0);
+            put(layers, out.mCapTriangles, out.mCapQuads, layers + 1);
+        }
     }
+    // The edges' side faces.
+    for (std::size_t e = 0; e < rIn.mEdges.size(); ++e) {
+        const std::int64_t a = rIn.mEdges[e][0], b = rIn.mEdges[e][1];
+        for (int k = 1; k <= layers; ++k) {
+            const bool ca = is_collapsed(a, k), cb = is_collapsed(b, k);
+            if (ca && cb)
+                continue;
+            LayerSweepCell c;
+            c.mNodes.fill(-1);
+            c.mFace = static_cast<std::int64_t>(e);
+            c.mLayer = k;
+            if (!ca && !cb) {
+                c.mNodes[0] = at(a, k - 1);
+                c.mNodes[1] = at(b, k - 1);
+                c.mNodes[2] = at(b, k);
+                c.mNodes[3] = at(a, k);
+                out.mSideQuads.push_back(c);
+            } else {
+                c.mNodes[0] = at(a, k - 1);
+                c.mNodes[1] = at(b, k - 1);
+                c.mNodes[2] = ca ? at(b, k) : at(a, k);
+                out.mSideTriangles.push_back(c);
+            }
+        }
+    }
+    out.mLevelIds = std::move(level_id);
     return out;
 }
 
@@ -80796,6 +83936,68 @@ void linear_octree_dilate(LinearOctree& rTree, const std::vector<std::uint8_t>& 
                 }
     }
     linear_octree_require(rTree, std::move(req), MaxLeaves, pOrigin);
+}
+
+namespace {
+
+// The leaves that break the pairing: roots, and leaves with a split sibling.
+std::vector<std::uint8_t> linoct_unpaired(const LinearOctree& rTree) {
+    std::vector<std::uint8_t> mark(rTree.Size(), 0);
+    parallel_for(rTree.Size(), [&](std::size_t i) {
+        if (rTree.mLevel[i] == 0) {
+            mark[i] = 1;
+            return;
+        }
+        const auto lo = rTree.Lo(i);
+        const std::int64_t s = rTree.Span(i);
+        std::array<std::int64_t, 3> parent{};
+        for (std::size_t k = 0; k < 3; ++k)
+            parent[k] = lo[k] - lo[k] % (2 * s);
+        for (std::int64_t c = 0; c < 8 && !mark[i]; ++c) {
+            const std::int64_t j =
+                rTree.Locate(parent[0] + (c & 1) * s, parent[1] + ((c >> 1) & 1) * s,
+                             parent[2] + ((c >> 2) & 1) * s);
+            mark[i] = j >= 0 && rTree.mLevel[static_cast<std::size_t>(j)] > rTree.mLevel[i];
+        }
+    });
+    return mark;
+}
+
+}  // namespace
+
+bool linear_octree_pair(LinearOctree& rTree, OctreeAdjacency Kind, std::int64_t MaxLeaves) {
+    bool changed = false;
+    for (;;) {
+        const std::size_t before = rTree.Size();
+        linear_octree_balance(rTree, Kind, MaxLeaves);
+        changed = changed || rTree.Size() != before;
+        std::vector<std::uint8_t> mark = linoct_unpaired(rTree);
+        bool any = false;
+        for (std::size_t i = 0; i < mark.size(); ++i) {
+            mark[i] = mark[i] && rTree.mLevel[i] < rTree.mMaxLevel;
+            any = any || mark[i];
+        }
+        if (!any)
+            return changed;
+        linear_octree_split(rTree, mark, MaxLeaves);
+        changed = true;
+    }
+}
+
+bool linear_octree_is_paired(const LinearOctree& rTree, std::string* pWhy) {
+    const std::vector<std::uint8_t> mark = linoct_unpaired(rTree);
+    for (std::size_t i = 0; i < mark.size(); ++i)
+        if (mark[i]) {
+            if (pWhy) {
+                const auto lo = rTree.Lo(i);
+                *pWhy = "leaf " + std::to_string(i) + " at (" + std::to_string(lo[0]) + ", " +
+                        std::to_string(lo[1]) + ", " + std::to_string(lo[2]) + "), level " +
+                        std::to_string(rTree.mLevel[i]) +
+                        (rTree.mLevel[i] == 0 ? " has no parent" : " has a split sibling");
+            }
+            return false;
+        }
+    return true;
 }
 
 std::vector<std::int64_t> linear_octree_neighbours(const LinearOctree& rTree, std::size_t Leaf,
@@ -86967,11 +90169,19 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
                 continue;
             const BsplineSurface keep = patches[i].mSurface;
             const std::vector<double> ku = patches[i].mU, kv = patches[i].mV;
+            const std::int64_t kr = out.mPatches[i].mRefinements;
             fit(i, true);
+            // A smooth fit that leaves the tolerance gets knots where it
+            // misses before it is given up: next to an extraordinary vertex
+            // G1 needs more freedom than accuracy alone asked for.
+            while (ok[i] && !accept(i, false) &&
+                   out.mPatches[i].mRefinements < rOptions.mMaxRefinements && refine(i))
+                fit(i, true);
             if (ok[i] && !accept(i, false)) {
                 patches[i].mSurface = keep;
                 patches[i].mU = ku;
                 patches[i].mV = kv;
+                out.mPatches[i].mRefinements = kr;
             }
         }
         const double before = worst_g1;
@@ -87024,11 +90234,14 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
 // ===== begin src/cpp/src/detail/planar_skin.cpp =====
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
+#include <vector>
 
 // Project includes
 
@@ -87070,6 +90283,56 @@ PlanarFrame planar_frame(const Mesh& rMesh, PlanarPlane Plane) {
         frame.mAxis = {{1, 2, 0}};
     return frame;
 }
+
+namespace {
+
+// Orient every closed loop (all its points of degree two) like its first segment in input
+// order, so a slice whose segments run both ways round still has a winding number. Loops
+// already directed one way, and components that are not simple loops, are left as they are.
+void ps_orient_loops(std::vector<std::array<std::int64_t, 2>>& rIds) {
+    const std::size_t n = rIds.size();
+    std::unordered_map<std::int64_t, std::vector<std::size_t>> incident;
+    for (std::size_t i = 0; i < n; ++i) {
+        incident[rIds[i][0]].push_back(i);
+        if (rIds[i][1] != rIds[i][0])
+            incident[rIds[i][1]].push_back(i);
+    }
+    std::vector<std::uint8_t> seen(n, 0);
+    std::vector<std::size_t> flips;
+    for (std::size_t first = 0; first < n; ++first) {
+        if (seen[first])
+            continue;
+        seen[first] = 1;
+        if (rIds[first][0] == rIds[first][1])
+            continue;
+        flips.clear();
+        bool closed = false;
+        std::size_t cur = first;
+        std::int64_t at = rIds[first][1];
+        for (;;) {
+            const auto& inc = incident.at(at);
+            if (inc.size() != 2)
+                break;
+            const std::size_t next = inc[0] == cur ? inc[1] : inc[0];
+            if (next == first) {
+                closed = true;
+                break;
+            }
+            if (seen[next])
+                break;
+            seen[next] = 1;
+            if (rIds[next][0] != at)
+                flips.push_back(next);
+            at = rIds[next][0] == at ? rIds[next][1] : rIds[next][0];
+            cur = next;
+        }
+        if (closed)
+            for (const std::size_t f : flips)
+                std::swap(rIds[f][0], rIds[f][1]);
+    }
+}
+
+}  // namespace
 
 PlanarSkin collect_planar_skin(const Mesh& rMesh, const char* pPrefix, const PlanarFrame& rFrame) {
     PlanarSkin skin;
@@ -87118,10 +90381,10 @@ PlanarSkin collect_planar_skin(const Mesh& rMesh, const char* pPrefix, const Pla
         if (rec.first == 1)
             skin.mIds.push_back(rec.second);
     }
+    ps_orient_loops(skin.mIds);
     for (const auto& id : skin.mIds)
-        skin.mSegments.push_back(
-            {rFrame.Permute(read_point(points, dim, id[0])),
-             rFrame.Permute(read_point(points, dim, id[1]))});
+        skin.mSegments.push_back({rFrame.Permute(read_point(points, dim, id[0])),
+                                  rFrame.Permute(read_point(points, dim, id[1]))});
     return skin;
 }
 
@@ -88236,6 +91499,692 @@ double lens_angle(const double* pA, const double* pB, const double* pP) {
 #endif
 #undef MESHIOPLUSPLUS_PRED_NO_CONTRACT
 // ===== end src/cpp/src/detail/predicates.cpp =====
+// ===== begin src/cpp/src/detail/primitive_constraints.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+namespace {
+
+constexpr const char* kPcPrefix = "fit_cad: ";
+// The most samples a joint fit reads; a larger group is read with a stride.
+constexpr std::size_t kPcMaxJointSamples = 20000;
+// How far, in multiples of a patch's tolerance, a shared axis or normal may
+// move the patch for it to be tried.
+constexpr double kPcReach = 2.0;
+
+double pc_dot(const double* pA, const double* pB) {
+    return pA[0] * pB[0] + pA[1] * pB[1] + pA[2] * pB[2];
+}
+
+void pc_cross(const double* pA, const double* pB, double* pOut) {
+    pOut[0] = pA[1] * pB[2] - pA[2] * pB[1];
+    pOut[1] = pA[2] * pB[0] - pA[0] * pB[2];
+    pOut[2] = pA[0] * pB[1] - pA[1] * pB[0];
+}
+
+bool pc_normalize(double* pV) {
+    const double n = std::sqrt(pc_dot(pV, pV));
+    if (!(n > 0.0) || !std::isfinite(n))
+        return false;
+    for (int k = 0; k < 3; ++k)
+        pV[k] /= n;
+    return true;
+}
+
+// The sign convention of `fit:patch_params`: the largest-magnitude component
+// (the first on a tie) positive.
+void pc_canonical(double* pD) {
+    int k = 0;
+    for (int j = 1; j < 3; ++j)
+        if (std::fabs(pD[j]) > std::fabs(pD[k]))
+            k = j;
+    if (pD[k] < 0.0)
+        for (int j = 0; j < 3; ++j)
+            pD[j] = -pD[j];
+}
+
+// The sine of the angle between two unit directions, sign ignored.
+double pc_sin(const double* pA, const double* pB) {
+    double c[3];
+    pc_cross(pA, pB, c);
+    return std::sqrt(pc_dot(c, c));
+}
+
+struct PcStats {
+    double mRms = 0.0;
+    double mMax = 0.0;
+    double mFraction = 0.0;
+};
+
+struct PcPatch {
+    std::int64_t mType = 0;
+    double mParams[kPrimitiveParams] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    double mOriginal[kPrimitiveParams] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    std::vector<double> mPts;  // the patch's points, three per point
+    double mCentroid[3] = {0.0, 0.0, 0.0};
+    double mExtent = 0.0;  // the diagonal of the points' bounding box
+    double mTol = 0.0;
+    PcStats mStats;  // of mParams
+
+    std::size_t NumPts() const { return mPts.size() / 3; }
+    bool Axial() const { return mType == 3 || mType == 4 || mType == 5; }
+};
+
+PcStats pc_stats(std::int64_t Type, const double* pParams, const std::vector<double>& rPts,
+                 double Tol) {
+    PcStats s;
+    const std::size_t n = rPts.size() / 3;
+    if (n == 0)
+        return s;
+    double sum = 0.0;
+    std::size_t within = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double d = primitive_point_distance(Type, pParams, &rPts[i * 3]);
+        sum += d * d;
+        s.mMax = std::max(s.mMax, d);
+        if (d <= Tol)
+            ++within;
+    }
+    s.mRms = std::sqrt(sum / static_cast<double>(n));
+    s.mFraction = static_cast<double>(within) / static_cast<double>(n);
+    return s;
+}
+
+// Whether a constrained fit still passes: the test the patch was accepted
+// under (its tolerance, and no smaller share of points within it than the
+// default or the patch had), and a largest distance no writer demotes at
+// unless the patch's own fit already exceeded it.
+bool pc_accept(const PcPatch& rPatch, const double* pParams, double FaceTol, double MinFraction,
+               PcStats& rOut) {
+    for (int k = 0; k < kPrimitiveParams; ++k)
+        if (!std::isfinite(pParams[k]))
+            return false;
+    rOut = pc_stats(rPatch.mType, pParams, rPatch.mPts, rPatch.mTol);
+    if (!std::isfinite(rOut.mRms) || !std::isfinite(rOut.mMax))
+        return false;
+    return rOut.mRms <= rPatch.mTol &&
+           rOut.mFraction >= std::min(MinFraction, rPatch.mStats.mFraction) &&
+           (rOut.mMax <= FaceTol || rOut.mMax <= rPatch.mStats.mMax);
+}
+
+// An axial primitive's axis point (a cylinder's axis point, a cone's apex, a
+// torus's or sphere's centre) moved along its axis to the height of the
+// patch's centroid.
+void pc_axis_point(const PcPatch& rPatch, double* pOut) {
+    const double* x = rPatch.mParams;
+    const double* d = rPatch.mParams + 3;
+    const double v[3] = {rPatch.mCentroid[0] - x[0], rPatch.mCentroid[1] - x[1],
+                         rPatch.mCentroid[2] - x[2]};
+    const double h = pc_dot(v, d);
+    for (int k = 0; k < 3; ++k)
+        pOut[k] = x[k] + h * d[k];
+}
+
+// The distance from pP to the line through pX along the unit pD.
+double pc_line_distance(const double* pX, const double* pD, const double* pP) {
+    const double v[3] = {pP[0] - pX[0], pP[1] - pX[1], pP[2] - pX[2]};
+    const double h = pc_dot(v, pD);
+    const double r[3] = {v[0] - h * pD[0], v[1] - h * pD[1], v[2] - h * pD[2]};
+    return std::sqrt(pc_dot(r, r));
+}
+
+// Whether a patch's primitive can take the axis (pX, pD): an axial one whose
+// axis is parallel to it and lies on it, a sphere whose centre is on it, each
+// within what moves the patch by kPcReach of its tolerance.
+bool pc_on_axis(const PcPatch& rPatch, const double* pX, const double* pD) {
+    const double reach = kPcReach * rPatch.mTol;
+    if (rPatch.mType == 2)
+        return pc_line_distance(pX, pD, rPatch.mParams) <= reach;
+    if (!rPatch.Axial())
+        return false;
+    if (pc_sin(pD, rPatch.mParams + 3) * rPatch.mExtent > reach)
+        return false;
+    double p[3];
+    pc_axis_point(rPatch, p);
+    return pc_line_distance(pX, pD, p) <= reach;
+}
+
+// One member of a coaxial group, parametrised along the shared axis.
+struct PcMember {
+    std::size_t mRow = 0;
+    double mSign = 1.0;  // a cone's axis along (+1) or against (-1) the shared one
+    std::size_t mFirst = 0;  // its first parameter in the joint vector
+};
+
+std::size_t pc_member_params(std::int64_t Type) {
+    switch (Type) {
+        case 2:
+            return 2;  // centre height, radius
+        case 3:
+            return 1;  // radius
+        case 4:
+            return 2;  // apex height, half-angle
+        case 5:
+            return 3;  // centre height, major and minor radius
+        default:
+            return 0;
+    }
+}
+
+// The primitive of a member given the shared axis (pP, pD) and its own
+// parameters pTheta.
+void pc_member_build(const PcPatch& rPatch, const PcMember& rMember, const double* pP,
+                     const double* pD, const double* pTheta, double* pOut) {
+    std::fill(pOut, pOut + kPrimitiveParams, 0.0);
+    double axis[3] = {pD[0], pD[1], pD[2]};
+    switch (rPatch.mType) {
+        case 2:
+            for (int k = 0; k < 3; ++k)
+                pOut[k] = pP[k] + pTheta[0] * pD[k];
+            pOut[6] = pTheta[1];
+            return;
+        case 3: {
+            const double v[3] = {rPatch.mCentroid[0] - pP[0], rPatch.mCentroid[1] - pP[1],
+                                 rPatch.mCentroid[2] - pP[2]};
+            const double h = pc_dot(v, pD);
+            pc_canonical(axis);
+            for (int k = 0; k < 3; ++k) {
+                pOut[k] = pP[k] + h * pD[k];
+                pOut[3 + k] = axis[k];
+            }
+            pOut[6] = pTheta[0];
+            return;
+        }
+        case 4:
+            for (int k = 0; k < 3; ++k) {
+                pOut[k] = pP[k] + pTheta[0] * pD[k];
+                pOut[3 + k] = rMember.mSign * pD[k];
+            }
+            pOut[8] = pTheta[1];
+            return;
+        case 5:
+            pc_canonical(axis);
+            for (int k = 0; k < 3; ++k) {
+                pOut[k] = pP[k] + pTheta[0] * pD[k];
+                pOut[3 + k] = axis[k];
+            }
+            pOut[6] = pTheta[1];
+            pOut[7] = pTheta[2];
+            return;
+        default:
+            return;
+    }
+}
+
+// A member's own parameters read off its primitive, its centre or apex
+// projected on the axis (pP, pD).
+void pc_member_start(const PcPatch& rPatch, const double* pP, const double* pD, double* pTheta) {
+    const double* x = rPatch.mParams;
+    const double v[3] = {x[0] - pP[0], x[1] - pP[1], x[2] - pP[2]};
+    const double h = pc_dot(v, pD);
+    switch (rPatch.mType) {
+        case 2:
+            pTheta[0] = h;
+            pTheta[1] = x[6];
+            return;
+        case 3:
+            pTheta[0] = x[6];
+            return;
+        case 4:
+            pTheta[0] = h;
+            pTheta[1] = x[8];
+            return;
+        case 5:
+            pTheta[0] = h;
+            pTheta[1] = x[6];
+            pTheta[2] = x[7];
+            return;
+        default:
+            return;
+    }
+}
+
+// Fit the rows of a coaxial group jointly: one axis, each member's own
+// parameters along it. Writes each member's constrained primitive to rOut.
+void pc_fit_group(const std::vector<PcPatch>& rPatches, const std::vector<std::size_t>& rRows,
+                  std::vector<std::vector<double>>& rOut) {
+    // The start: the point-weighted mean of the axial members' axes, signed
+    // alike, through the weighted mean of their axis points.
+    double d0[3] = {0.0, 0.0, 0.0}, p0[3] = {0.0, 0.0, 0.0}, w = 0.0;
+    const double* seed = nullptr;
+    double extent = 0.0;
+    for (std::size_t r : rRows) {
+        const PcPatch& p = rPatches[r];
+        extent = std::max(extent, p.mExtent);
+        if (!p.Axial())
+            continue;
+        const double* a = p.mParams + 3;
+        if (!seed)
+            seed = a;
+        const double s = pc_dot(a, seed) < 0.0 ? -1.0 : 1.0;
+        const double wi = static_cast<double>(p.NumPts());
+        double x[3];
+        pc_axis_point(p, x);
+        for (int k = 0; k < 3; ++k) {
+            d0[k] += wi * s * a[k];
+            p0[k] += wi * x[k];
+        }
+        w += wi;
+    }
+    rOut.assign(rRows.size(), std::vector<double>());
+    if (!seed || !(w > 0.0) || !pc_normalize(d0))
+        return;
+    for (int k = 0; k < 3; ++k)
+        p0[k] /= w;
+    double e1[3], e2[3];
+    lsq_frame(d0, e1, e2);
+
+    std::vector<PcMember> members(rRows.size());
+    std::vector<double> theta = {0.0, 0.0, 0.0, 0.0};
+    std::vector<double> typical = {1.0, 1.0, extent > 0.0 ? extent : 1.0,
+                                   extent > 0.0 ? extent : 1.0};
+    for (std::size_t i = 0; i < rRows.size(); ++i) {
+        const PcPatch& p = rPatches[rRows[i]];
+        PcMember& m = members[i];
+        m.mRow = rRows[i];
+        m.mSign = (p.mType == 4 && pc_dot(p.mParams + 3, d0) < 0.0) ? -1.0 : 1.0;
+        m.mFirst = theta.size();
+        const std::size_t np = pc_member_params(p.mType);
+        double start[3] = {0.0, 0.0, 0.0};
+        pc_member_start(p, p0, d0, start);
+        for (std::size_t k = 0; k < np; ++k) {
+            theta.push_back(start[k]);
+            // A cone's half-angle is in degrees; everything else a length.
+            const bool angle = p.mType == 4 && k == 1;
+            typical.push_back(angle ? 10.0 : (extent > 0.0 ? extent : 1.0));
+        }
+    }
+
+    // The samples: every point of every member, read with one stride when the
+    // group holds more than kPcMaxJointSamples.
+    std::size_t total = 0;
+    for (std::size_t r : rRows)
+        total += rPatches[r].NumPts();
+    const std::size_t stride =
+        total > kPcMaxJointSamples ? (total + kPcMaxJointSamples - 1) / kPcMaxJointSamples : 1;
+    std::vector<std::pair<std::size_t, std::size_t>> samples;  // (member, point)
+    for (std::size_t i = 0; i < rRows.size(); ++i)
+        for (std::size_t j = 0; j < rPatches[rRows[i]].NumPts(); j += stride)
+            samples.emplace_back(i, j);
+
+    const auto axis_of = [&](const std::vector<double>& rTheta, double* pP, double* pD) {
+        for (int k = 0; k < 3; ++k) {
+            pD[k] = d0[k] + rTheta[0] * e1[k] + rTheta[1] * e2[k];
+            pP[k] = p0[k] + rTheta[2] * e1[k] + rTheta[3] * e2[k];
+        }
+        pc_normalize(pD);
+    };
+    const LsqResidual residual = [&](const std::vector<double>& rTheta, double* pOut) {
+        double p[3], d[3];
+        axis_of(rTheta, p, d);
+        std::vector<std::vector<double>> prim(rRows.size(), std::vector<double>(kPrimitiveParams));
+        for (std::size_t i = 0; i < rRows.size(); ++i)
+            pc_member_build(rPatches[rRows[i]], members[i], p, d, &rTheta[members[i].mFirst],
+                            prim[i].data());
+        for (std::size_t s = 0; s < samples.size(); ++s) {
+            const std::size_t i = samples[s].first;
+            const PcPatch& patch = rPatches[rRows[i]];
+            pOut[s] = primitive_point_distance(patch.mType, prim[i].data(),
+                                               &patch.mPts[samples[s].second * 3]);
+        }
+    };
+    lsq_levenberg_marquardt(theta, typical, samples.size(), residual, 50);
+
+    double p[3], d[3];
+    axis_of(theta, p, d);
+    for (std::size_t i = 0; i < rRows.size(); ++i) {
+        rOut[i].assign(kPrimitiveParams, 0.0);
+        pc_member_build(rPatches[rRows[i]], members[i], p, d, &theta[members[i].mFirst],
+                        rOut[i].data());
+    }
+}
+
+}  // namespace
+
+PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance) {
+    PrimitiveConstraintReport report;
+    for (const char* name : {"fit:patch_id", "fit:patch_type", "fit:patch_params",
+                             "fit:patch_rms", "fit:patch_max", "fit:patch_fraction",
+                             "fit:patch_tolerance"})
+        if (!rMesh.HasFieldData(name))
+            return report;
+    if (!rMesh.HasCellData(kSegmentPatchName))
+        return report;
+
+    const NDArray& ids = rMesh.FieldData("fit:patch_id");
+    const NDArray& types = rMesh.FieldData("fit:patch_type");
+    const NDArray& params = rMesh.FieldData("fit:patch_params");
+    const NDArray& tols = rMesh.FieldData("fit:patch_tolerance");
+    const NDArray& rms = rMesh.FieldData("fit:patch_rms");
+    const NDArray& maxs = rMesh.FieldData("fit:patch_max");
+    const NDArray& fracs = rMesh.FieldData("fit:patch_fraction");
+    const std::size_t m = ids.Size();
+    if (types.Size() != m || params.Size() != m * kPrimitiveParams || tols.Size() != m ||
+        rms.Size() != m || maxs.Size() != m || fracs.Size() != m)
+        return report;
+
+    std::map<std::int64_t, std::size_t> row_of;
+    for (std::size_t r = 0; r < m; ++r)
+        row_of.emplace(read_int(ids, r), r);
+
+    // Each row's patch: its points (each once), centroid and extent.
+    const std::vector<std::int64_t> bases = block_bases(rMesh);
+    const std::size_t ncells = static_cast<std::size_t>(total_cells(bases));
+    std::vector<std::int64_t> cell_row(ncells, -1);
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const NDArray& a = rMesh.CellData(kSegmentPatchName, b);
+        const std::size_t nc = rMesh.Cells(b).NumCells();
+        const std::size_t base = static_cast<std::size_t>(bases[b]);
+        for (std::size_t c = 0; c < nc && c < a.Size(); ++c) {
+            auto it = row_of.find(read_int(a, c));
+            if (it != row_of.end())
+                cell_row[base + c] = static_cast<std::int64_t>(it->second);
+        }
+    }
+    const std::vector<std::uint8_t> all(ncells, 1);
+    const SurfaceRings rings = surface_rings(rMesh, all, kPcPrefix);
+    const std::vector<double> xyz = surface_xyz(rMesh);
+    std::vector<std::vector<std::int64_t>> verts(m);
+    for (std::size_t f = 0; f < rings.NumFaces(); ++f) {
+        const std::int64_t r = cell_row[static_cast<std::size_t>(rings.mCell[f])];
+        if (r < 0)
+            continue;
+        for (std::int64_t k = rings.mStart[f]; k < rings.mStart[f + 1]; ++k)
+            verts[static_cast<std::size_t>(r)].push_back(rings.mNodes[static_cast<std::size_t>(k)]);
+    }
+
+    std::vector<PcPatch> patches(m);
+    for (std::size_t r = 0; r < m; ++r) {
+        PcPatch& p = patches[r];
+        p.mType = read_int(types, r);
+        bool finite = true;
+        for (int k = 0; k < kPrimitiveParams; ++k) {
+            p.mParams[k] = p.mOriginal[k] =
+                read_double(params, r * kPrimitiveParams + static_cast<std::size_t>(k));
+            finite = finite && std::isfinite(p.mParams[k]);
+        }
+        p.mTol = read_double(tols, r);
+        p.mStats.mRms = read_double(rms, r);
+        p.mStats.mMax = read_double(maxs, r);
+        p.mStats.mFraction = read_double(fracs, r);
+        if (p.mType < 1 || p.mType > 5 || !finite || !(p.mTol > 0.0)) {
+            p.mType = 0;  // nothing to constrain
+            continue;
+        }
+        std::vector<std::int64_t>& v = verts[r];
+        std::sort(v.begin(), v.end());
+        v.erase(std::unique(v.begin(), v.end()), v.end());
+        p.mPts.resize(v.size() * 3);
+        double lo[3] = {0.0, 0.0, 0.0}, hi[3] = {0.0, 0.0, 0.0};
+        for (std::size_t i = 0; i < v.size(); ++i)
+            for (std::size_t k = 0; k < 3; ++k) {
+                const double x = xyz[static_cast<std::size_t>(v[i]) * 3 + k];
+                p.mPts[i * 3 + k] = x;
+                p.mCentroid[k] += x;
+                lo[k] = i == 0 ? x : std::min(lo[k], x);
+                hi[k] = i == 0 ? x : std::max(hi[k], x);
+            }
+        if (v.empty()) {
+            p.mType = 0;
+            continue;
+        }
+        for (std::size_t k = 0; k < 3; ++k)
+            p.mCentroid[k] /= static_cast<double>(v.size());
+        const double ext[3] = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
+        p.mExtent = std::sqrt(pc_dot(ext, ext));
+    }
+    const double min_fraction = FitPrimitivesOptions().mMinInlierFraction;
+    const auto keep = [&](PcPatch& rPatch, const double* pParams) {
+        PcStats s;
+        if (!pc_accept(rPatch, pParams, FaceTolerance, min_fraction, s))
+            return false;
+        std::copy(pParams, pParams + kPrimitiveParams, rPatch.mParams);
+        rPatch.mStats = s;
+        return true;
+    };
+
+    // 1. Coaxial groups, seeded in row order by the axial primitives.
+    std::vector<std::uint8_t> grouped(m, 0);
+    std::vector<std::vector<double>> references;  // unit directions, axes first
+    for (std::size_t a = 0; a < m; ++a) {
+        if (grouped[a] || !patches[a].Axial())
+            continue;
+        grouped[a] = 1;
+        double x[3];
+        pc_axis_point(patches[a], x);
+        const double* d = patches[a].mParams + 3;
+        std::vector<std::size_t> rows = {a};
+        // Every other row not yet grouped, in order: a sphere before the
+        // seed too (an earlier axial row seeded its own group already).
+        for (std::size_t b = 0; b < m; ++b)
+            if (b != a && !grouped[b] && pc_on_axis(patches[b], x, d))
+                rows.push_back(b);
+        // Fit jointly; a member that no longer passes leaves and the rest are
+        // fitted again, until every member passes or one is left.
+        while (rows.size() >= 2) {
+            std::vector<std::vector<double>> fitted;
+            pc_fit_group(patches, rows, fitted);
+            std::vector<std::size_t> passing;
+            for (std::size_t i = 0; i < rows.size(); ++i) {
+                PcStats s;
+                if (!fitted[i].empty() &&
+                    pc_accept(patches[rows[i]], fitted[i].data(), FaceTolerance, min_fraction, s))
+                    passing.push_back(i);
+            }
+            if (passing.size() == rows.size()) {
+                for (std::size_t i = 0; i < rows.size(); ++i) {
+                    keep(patches[rows[i]], fitted[i].data());
+                    grouped[rows[i]] = 1;
+                }
+                ++report.mNumGroups;
+                break;
+            }
+            // Only the seed's own fit can leave the group unformed.
+            if (passing.empty() || passing.front() != 0)
+                break;
+            std::vector<std::size_t> next;
+            for (std::size_t i : passing)
+                next.push_back(rows[i]);
+            rows = std::move(next);
+        }
+        double axis[3] = {patches[a].mParams[3], patches[a].mParams[4], patches[a].mParams[5]};
+        pc_canonical(axis);
+        references.push_back({axis[0], axis[1], axis[2]});
+    }
+
+    // 2. Planes against the references: the axes, then the planes seen.
+    std::vector<std::uint8_t> family(references.size(), 0);
+    for (std::size_t r = 0; r < m; ++r) {
+        PcPatch& p = patches[r];
+        if (p.mType != 1)
+            continue;
+        const double budget = p.mExtent > 0.0 ? kPcReach * p.mTol / p.mExtent : 0.0;
+        const double* n = p.mParams + 3;
+        double target[3];
+        bool have = false;
+        std::size_t parallel = references.size();
+        for (std::size_t i = 0; i < references.size() && !have; ++i) {
+            const double* ref = references[i].data();
+            if (pc_sin(n, ref) <= budget) {
+                const double s = pc_dot(n, ref) < 0.0 ? -1.0 : 1.0;
+                for (int k = 0; k < 3; ++k)
+                    target[k] = s * ref[k];
+                have = true;
+                parallel = i;
+            }
+        }
+        if (!have) {
+            std::vector<std::size_t> perp;
+            for (std::size_t i = 0; i < references.size(); ++i)
+                if (std::fabs(pc_dot(n, references[i].data())) <= budget)
+                    perp.push_back(i);
+            if (!perp.empty()) {
+                const double* r1 = references[perp[0]].data();
+                const double* r2 = nullptr;
+                for (std::size_t j = 1; j < perp.size() && !r2; ++j)
+                    if (pc_sin(r1, references[perp[j]].data()) > 1e-6)
+                        r2 = references[perp[j]].data();
+                if (r2) {
+                    pc_cross(r1, r2, target);
+                } else {
+                    const double h = pc_dot(n, r1);
+                    for (int k = 0; k < 3; ++k)
+                        target[k] = n[k] - h * r1[k];
+                }
+                have = pc_normalize(target);
+                if (have && pc_dot(target, n) < 0.0)
+                    for (int k = 0; k < 3; ++k)
+                        target[k] = -target[k];
+            }
+        }
+        bool snapped = false;
+        if (have && (target[0] != n[0] || target[1] != n[1] || target[2] != n[2])) {
+            // The offset refitted: the mean height of the points along it.
+            double off = 0.0;
+            for (std::size_t i = 0; i < p.NumPts(); ++i)
+                off += pc_dot(target, &p.mPts[i * 3]);
+            off /= static_cast<double>(p.NumPts());
+            const double h = off - pc_dot(target, p.mCentroid);
+            double cand[kPrimitiveParams] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+            for (int k = 0; k < 3; ++k) {
+                cand[k] = p.mCentroid[k] + h * target[k];
+                cand[3 + k] = target[k];
+            }
+            snapped = keep(p, cand);
+        }
+        if (snapped && parallel < references.size())
+            family[parallel] = 1;
+        else if (parallel == references.size()) {
+            references.push_back({p.mParams[3], p.mParams[4], p.mParams[5]});
+            family.push_back(0);
+        }
+    }
+    for (std::uint8_t f : family)
+        report.mNumGroups += f;
+
+    // 3. Equal radii: cylinders and spheres by their radius, tori by their
+    // minor radius, each against the first of its kind in row order.
+    const auto radius_slot = [](std::int64_t Type) { return Type == 5 ? 7 : 6; };
+    std::vector<std::uint8_t> sized(m, 0);
+    for (std::size_t a = 0; a < m; ++a) {
+        const std::int64_t t = patches[a].mType;
+        if (sized[a] || (t != 2 && t != 3 && t != 5))
+            continue;
+        sized[a] = 1;
+        const int slot = radius_slot(t);
+        std::vector<std::size_t> rows = {a};
+        for (std::size_t b = a + 1; b < m; ++b)
+            if (!sized[b] && patches[b].mType == t &&
+                std::fabs(patches[b].mParams[slot] - patches[a].mParams[slot]) <=
+                    std::min(patches[a].mTol, patches[b].mTol))
+                rows.push_back(b);
+        while (rows.size() >= 2) {
+            double sum = 0.0, w = 0.0;
+            for (std::size_t r : rows) {
+                const double wi = static_cast<double>(patches[r].NumPts());
+                sum += wi * patches[r].mParams[slot];
+                w += wi;
+            }
+            const double radius = sum / w;
+            std::vector<std::size_t> passing;
+            for (std::size_t r : rows) {
+                double cand[kPrimitiveParams];
+                std::copy(patches[r].mParams, patches[r].mParams + kPrimitiveParams, cand);
+                cand[slot] = radius;
+                PcStats s;
+                if (pc_accept(patches[r], cand, FaceTolerance, min_fraction, s))
+                    passing.push_back(r);
+            }
+            if (passing.size() == rows.size()) {
+                bool changed = false;
+                for (std::size_t r : rows) {
+                    double cand[kPrimitiveParams];
+                    std::copy(patches[r].mParams, patches[r].mParams + kPrimitiveParams, cand);
+                    changed = changed || cand[slot] != radius;
+                    cand[slot] = radius;
+                    keep(patches[r], cand);
+                    sized[r] = 1;
+                }
+                if (changed)
+                    ++report.mNumGroups;
+                break;
+            }
+            rows = std::move(passing);
+        }
+    }
+
+    // Write back the rows that changed.
+    std::vector<std::uint8_t> changed(m, 0);
+    for (std::size_t r = 0; r < m; ++r)
+        for (int k = 0; k < kPrimitiveParams && patches[r].mType != 0; ++k)
+            if (patches[r].mParams[k] != patches[r].mOriginal[k])
+                changed[r] = 1;
+    for (std::uint8_t c : changed)
+        report.mNumConstrained += c;
+    if (report.mNumConstrained == 0)
+        return report;
+
+    NDArray new_params = NDArray::Uninit(
+        DType::Float64, {m, static_cast<std::size_t>(kPrimitiveParams)});
+    NDArray new_rms = NDArray::Uninit(DType::Float64, {m});
+    NDArray new_max = NDArray::Uninit(DType::Float64, {m});
+    NDArray new_frac = NDArray::Uninit(DType::Float64, {m});
+    for (std::size_t r = 0; r < m; ++r) {
+        for (int k = 0; k < kPrimitiveParams; ++k) {
+            const std::size_t i = r * kPrimitiveParams + static_cast<std::size_t>(k);
+            new_params.As<double>()[i] =
+                changed[r] ? patches[r].mParams[k] : read_double(params, i);
+        }
+        new_rms.As<double>()[r] = changed[r] ? patches[r].mStats.mRms : read_double(rms, r);
+        new_max.As<double>()[r] = changed[r] ? patches[r].mStats.mMax : read_double(maxs, r);
+        new_frac.As<double>()[r] =
+            changed[r] ? patches[r].mStats.mFraction : read_double(fracs, r);
+    }
+    if (rMesh.HasCellData(kFitRmsName) && rMesh.HasCellData(kFitMaxName)) {
+        std::vector<NDArray> rms_blocks, max_blocks;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const NDArray& old_rms = rMesh.CellData(kFitRmsName, b);
+            const NDArray& old_max = rMesh.CellData(kFitMaxName, b);
+            const std::size_t nc = old_rms.Size();
+            const std::size_t base = static_cast<std::size_t>(bases[b]);
+            NDArray br = NDArray::Uninit(DType::Float64, {nc});
+            NDArray bm = NDArray::Uninit(DType::Float64, {nc});
+            for (std::size_t c = 0; c < nc; ++c) {
+                const std::int64_t row = base + c < ncells ? cell_row[base + c] : -1;
+                const bool ch = row >= 0 && changed[static_cast<std::size_t>(row)];
+                br.As<double>()[c] =
+                    ch ? patches[static_cast<std::size_t>(row)].mStats.mRms : read_double(old_rms, c);
+                bm.As<double>()[c] = ch ? patches[static_cast<std::size_t>(row)].mStats.mMax
+                                        : (c < old_max.Size() ? read_double(old_max, c) : 0.0);
+            }
+            rms_blocks.push_back(std::move(br));
+            max_blocks.push_back(std::move(bm));
+        }
+        rMesh.AddCellData(kFitRmsName, std::move(rms_blocks));
+        rMesh.AddCellData(kFitMaxName, std::move(max_blocks));
+    }
+    rMesh.AddFieldData("fit:patch_params", std::move(new_params));
+    rMesh.AddFieldData("fit:patch_rms", std::move(new_rms));
+    rMesh.AddFieldData("fit:patch_max", std::move(new_max));
+    rMesh.AddFieldData("fit:patch_fraction", std::move(new_frac));
+    return report;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/primitive_constraints.cpp =====
 // ===== begin src/cpp/src/detail/primitive_geom.cpp =====
 #include <cmath>
 #include <cstdint>
@@ -203731,6 +207680,588 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/boundary_layer.cpp =====
+// ===== begin src/cpp/src/operations/check_conformity.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace {
+
+constexpr const char* kCcPrefix = "meshio++: check_conformity: ";
+
+// The unmatched facets of the examined cells, as corner rings (CSR), each with
+// the global cell that owns it.
+struct CcFacets {
+    std::vector<std::int64_t> mStart{0};
+    std::vector<std::int64_t> mNodes;
+    std::vector<std::int64_t> mOwner;
+    std::int64_t mNumNonManifold = 0;
+
+    std::size_t Size() const { return mOwner.size(); }
+    std::size_t Corners(std::size_t Facet) const {
+        return static_cast<std::size_t>(mStart[Facet + 1] - mStart[Facet]);
+    }
+    const std::int64_t* Ring(std::size_t Facet) const { return mNodes.data() + mStart[Facet]; }
+    void Push(const std::int64_t* pIds, std::size_t Size, std::int64_t Owner) {
+        mNodes.insert(mNodes.end(), pIds, pIds + Size);
+        mStart.push_back(static_cast<std::int64_t>(mNodes.size()));
+        mOwner.push_back(Owner);
+    }
+};
+
+// The topological dimension of a block: 3, 2, or -1 for anything else.
+template <class TView>
+int cc_block_dimension(const TView& rBlock) {
+    if (rBlock.IsPolyhedron())
+        return 3;
+    const std::string type(rBlock.Type());
+    if (rBlock.IsRagged() || type.rfind("polygon", 0) == 0)
+        return 2;
+    const int dim = cell_type_dimension(cell_type_from_name(type));
+    return dim == 2 || dim == 3 ? dim : -1;
+}
+
+// Every node of a cell (all faces' nodes of a polyhedron), unsorted.
+template <class TView>
+void cc_cell_nodes(const TView& rBlock, std::size_t Row, std::vector<std::int64_t>& rOut) {
+    rOut.clear();
+    if (rBlock.IsPolyhedron()) {
+        for (std::size_t f = 0; f < rBlock.NumFaces(Row); ++f) {
+            const auto face = rBlock.Face(Row, f);
+            rOut.insert(rOut.end(), face.first, face.first + face.second);
+        }
+    } else if (rBlock.IsRagged()) {
+        rOut.assign(rBlock.Row(Row), rBlock.Row(Row) + rBlock.RowSize(Row));
+    } else {
+        const std::size_t npc = rBlock.NodesPerCell();
+        for (std::size_t k = 0; k < npc; ++k)
+            rOut.push_back(detail::read_int(rBlock.Conn(), Row * npc + k));
+    }
+}
+
+// 3-D: the faces of the volume cells that only one cell uses.
+CcFacets cc_volume_facets(const Mesh& rMesh, std::vector<std::string>& rWarnings) {
+    CcFacets out;
+    const detail::GlobalFaces gf = detail::build_global_faces(rMesh);
+    out.mNumNonManifold = gf.mNumNonManifold;
+    for (std::size_t f = 0; f < gf.NumFaces(); ++f)
+        if (gf.mNeighbour[f] < 0)
+            out.Push(gf.Face(f), gf.FaceSize(f),
+                     gf.mCellToGlobal[static_cast<std::size_t>(gf.mOwner[f])]);
+    std::size_t b = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        if (cc_block_dimension(cb) == 3 &&
+            std::find(gf.mNonCellBlocks.begin(), gf.mNonCellBlocks.end(), b) !=
+                gf.mNonCellBlocks.end() &&
+            cb.NumCells() > 0)
+            rWarnings.push_back("block " + std::to_string(b) + " ('" + std::string(cb.Type()) +
+                                "') has no known face topology and was not examined");
+        ++b;
+    }
+    if (gf.mNumUnorientable > 0)
+        rWarnings.push_back(std::to_string(gf.mNumUnorientable) +
+                            " polyhedra are not closed and orientable; their faces were "
+                            "examined as given");
+    return out;
+}
+
+// 2-D: the edges of the 2-D cells that only one cell uses, in ascending
+// (low, high) endpoint order.
+CcFacets cc_surface_facets(const Mesh& rMesh, std::vector<std::string>& rWarnings) {
+    struct Use {
+        std::int64_t mLo, mHi, mCell, mA, mB;
+    };
+    std::vector<Use> uses;
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const std::size_t npts = rMesh.NumPoints();
+    std::vector<std::int64_t> ring;
+    std::size_t b = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t block = b++;
+        if (cc_block_dimension(cb) != 2)
+            continue;
+        const std::string type(cb.Type());
+        const bool polygon = cb.IsRagged() || type.rfind("polygon", 0) == 0;
+        std::vector<std::size_t> corners;
+        if (!polygon) {
+            for (const detail::CellEdgeDef& ed : detail::cell_edges(cell_type_from_name(type)))
+                corners.push_back(ed.mNodes[0]);
+            if (corners.size() < 3) {
+                if (cb.NumCells() > 0)
+                    rWarnings.push_back("block " + std::to_string(block) + " ('" + type +
+                                        "') has no known edge topology and was not examined");
+                continue;
+            }
+        }
+        const std::size_t npc = cb.NodesPerCell();
+        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+            ring.clear();
+            if (cb.IsRagged())
+                ring.assign(cb.Row(c), cb.Row(c) + cb.RowSize(c));
+            else if (polygon)
+                for (std::size_t k = 0; k < npc; ++k)
+                    ring.push_back(detail::read_int(cb.Conn(), c * npc + k));
+            else
+                for (std::size_t k : corners)
+                    ring.push_back(detail::read_int(cb.Conn(), c * npc + k));
+            const std::int64_t g = bases[block] + static_cast<std::int64_t>(c);
+            const std::size_t n = ring.size();
+            for (std::size_t k = 0; k < n; ++k) {
+                const std::int64_t a = ring[k], bb = ring[(k + 1) % n];
+                if (a < 0 || bb < 0 || static_cast<std::size_t>(a) >= npts ||
+                    static_cast<std::size_t>(bb) >= npts)
+                    throw std::invalid_argument(std::string(kCcPrefix) +
+                                                "a cell references a point the mesh does not have");
+                if (a == bb)
+                    continue;
+                uses.push_back(Use{std::min(a, bb), std::max(a, bb), g, a, bb});
+            }
+        }
+    }
+    std::sort(uses.begin(), uses.end(), [](const Use& rX, const Use& rY) {
+        if (rX.mLo != rY.mLo)
+            return rX.mLo < rY.mLo;
+        if (rX.mHi != rY.mHi)
+            return rX.mHi < rY.mHi;
+        return rX.mCell < rY.mCell;
+    });
+    CcFacets out;
+    for (std::size_t i = 0; i < uses.size();) {
+        std::size_t j = i + 1;
+        while (j < uses.size() && uses[j].mLo == uses[i].mLo && uses[j].mHi == uses[i].mHi)
+            ++j;
+        if (j - i == 1) {
+            const std::int64_t ids[2] = {uses[i].mA, uses[i].mB};
+            out.Push(ids, 2, uses[i].mCell);
+        } else if (j - i >= 3) {
+            ++out.mNumNonManifold;
+        }
+        i = j;
+    }
+    return out;
+}
+
+detail::Vec3 cc_point(const std::vector<double>& rXyz, std::int64_t Id) {
+    const std::size_t i = static_cast<std::size_t>(Id) * 3;
+    return {{rXyz[i], rXyz[i + 1], rXyz[i + 2]}};
+}
+
+// The squared distance from P to segment AB.
+double cc_segment_distance_sq(const detail::Vec3& rP, const detail::Vec3& rA,
+                              const detail::Vec3& rB) {
+    const detail::Vec3 ab = detail::vec3_sub(rB, rA);
+    const double len_sq = detail::vec3_norm_sq(ab);
+    double t = len_sq > 0.0 ? detail::vec3_dot(detail::vec3_sub(rP, rA), ab) / len_sq : 0.0;
+    t = std::min(1.0, std::max(0.0, t));
+    return detail::vec3_norm_sq(
+        detail::vec3_sub(rP, detail::vec3_add(rA, detail::vec3_scale(ab, t))));
+}
+
+// The squared distance from P to a facet: a segment, or a polygon as the fan
+// of triangles from its first corner.
+double cc_facet_distance_sq(const detail::Vec3& rP, const std::vector<double>& rXyz,
+                            const std::int64_t* pRing, std::size_t Corners) {
+    if (Corners == 2)
+        return cc_segment_distance_sq(rP, cc_point(rXyz, pRing[0]), cc_point(rXyz, pRing[1]));
+    double best = std::numeric_limits<double>::infinity();
+    const detail::Vec3 a = cc_point(rXyz, pRing[0]);
+    for (std::size_t k = 1; k + 1 < Corners; ++k)
+        best = std::min(best, detail::closest_point_on_triangle(rP, a, cc_point(rXyz, pRing[k]),
+                                                                cc_point(rXyz, pRing[k + 1]))
+                                  .mDistanceSq);
+    return best;
+}
+
+// A facet's plane: its centroid, unit (Newell) normal and an in-plane frame.
+struct CcPlane {
+    detail::Vec3 mCentre{{0.0, 0.0, 0.0}};
+    detail::Vec3 mNormal{{0.0, 0.0, 0.0}};
+    detail::Vec3 mU{{0.0, 0.0, 0.0}};
+    detail::Vec3 mV{{0.0, 0.0, 0.0}};
+    bool mValid = false;
+};
+
+CcPlane cc_plane(const std::vector<double>& rXyz, const std::int64_t* pRing, std::size_t Corners) {
+    CcPlane plane;
+    for (std::size_t k = 0; k < Corners; ++k)
+        plane.mCentre = detail::vec3_add(plane.mCentre, cc_point(rXyz, pRing[k]));
+    plane.mCentre = detail::vec3_scale(plane.mCentre, 1.0 / static_cast<double>(Corners));
+    detail::Vec3 n{{0.0, 0.0, 0.0}};
+    for (std::size_t k = 0; k < Corners; ++k) {
+        const detail::Vec3 a = cc_point(rXyz, pRing[k]);
+        const detail::Vec3 b = cc_point(rXyz, pRing[(k + 1) % Corners]);
+        n[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        n[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    const double len = detail::vec3_norm(n);
+    if (!(len > 0.0))
+        return plane;
+    plane.mNormal = detail::vec3_scale(n, 1.0 / len);
+    const detail::Vec3 e = detail::vec3_sub(cc_point(rXyz, pRing[1]), cc_point(rXyz, pRing[0]));
+    const double elen = detail::vec3_norm(e);
+    if (!(elen > 0.0))
+        return plane;
+    plane.mU = detail::vec3_scale(e, 1.0 / elen);
+    plane.mV = detail::vec3_cross(plane.mNormal, plane.mU);
+    plane.mValid = true;
+    return plane;
+}
+
+using CcUv = std::array<double, 2>;
+
+double cc_area(const std::vector<CcUv>& rPoly) {
+    double a = 0.0;
+    for (std::size_t i = 0, n = rPoly.size(); i < n; ++i) {
+        const CcUv& p = rPoly[i];
+        const CcUv& q = rPoly[(i + 1) % n];
+        a += p[0] * q[1] - q[0] * p[1];
+    }
+    return 0.5 * a;
+}
+
+// The area of the intersection of two triangles, both counter-clockwise, by
+// clipping the first against the second's three edges (Sutherland and Hodgman).
+double cc_triangle_overlap(const std::array<CcUv, 3>& rA, const std::array<CcUv, 3>& rB) {
+    std::vector<CcUv> poly(rA.begin(), rA.end()), next;
+    for (std::size_t e = 0; e < 3 && !poly.empty(); ++e) {
+        const CcUv& p = rB[e];
+        const CcUv& q = rB[(e + 1) % 3];
+        auto side = [&](const CcUv& rX) {
+            return (q[0] - p[0]) * (rX[1] - p[1]) - (q[1] - p[1]) * (rX[0] - p[0]);
+        };
+        next.clear();
+        for (std::size_t i = 0, n = poly.size(); i < n; ++i) {
+            const CcUv& a = poly[i];
+            const CcUv& b = poly[(i + 1) % n];
+            const double sa = side(a), sb = side(b);
+            if (sa >= 0.0)
+                next.push_back(a);
+            if ((sa >= 0.0) != (sb >= 0.0)) {
+                const double t = sa / (sa - sb);
+                next.push_back({{a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])}});
+            }
+        }
+        poly.swap(next);
+    }
+    return poly.size() < 3 ? 0.0 : std::abs(cc_area(poly));
+}
+
+// A ring as the counter-clockwise fan of triangles from its first corner.
+std::vector<std::array<CcUv, 3>> cc_fan(const std::vector<CcUv>& rRing) {
+    std::vector<std::array<CcUv, 3>> fan;
+    for (std::size_t k = 1; k + 1 < rRing.size(); ++k) {
+        std::array<CcUv, 3> t{{rRing[0], rRing[k], rRing[k + 1]}};
+        const double a =
+            (t[1][0] - t[0][0]) * (t[2][1] - t[0][1]) - (t[1][1] - t[0][1]) * (t[2][0] - t[0][0]);
+        if (a < 0.0)
+            std::swap(t[1], t[2]);
+        if (a != 0.0)
+            fan.push_back(t);
+    }
+    return fan;
+}
+
+// How two unmatched facets relate.
+enum class CcPair { Apart, Unwelded, Overlap };
+
+CcPair cc_classify_polygons(const std::vector<double>& rXyz, const std::int64_t* pF, std::size_t Nf,
+                            const CcPlane& rPf, const std::int64_t* pG, std::size_t Ng,
+                            const CcPlane& rPg, double Tol) {
+    if (!rPf.mValid || !rPg.mValid)
+        return CcPair::Apart;
+    for (std::size_t k = 0; k < Ng; ++k)
+        if (std::abs(detail::vec3_dot(rPf.mNormal,
+                                      detail::vec3_sub(cc_point(rXyz, pG[k]), rPf.mCentre))) > Tol)
+            return CcPair::Apart;
+    for (std::size_t k = 0; k < Nf; ++k)
+        if (std::abs(detail::vec3_dot(rPg.mNormal,
+                                      detail::vec3_sub(cc_point(rXyz, pF[k]), rPg.mCentre))) > Tol)
+            return CcPair::Apart;
+    if (Nf == Ng) {
+        bool same = true;
+        for (std::size_t i = 0; i < Nf && same; ++i) {
+            bool found = false;
+            for (std::size_t j = 0; j < Ng && !found; ++j)
+                found = detail::vec3_norm_sq(detail::vec3_sub(cc_point(rXyz, pF[i]),
+                                                              cc_point(rXyz, pG[j]))) <= Tol * Tol;
+            same = found;
+        }
+        if (same)
+            return CcPair::Unwelded;
+    }
+    auto uv = [&](std::int64_t Id) {
+        const detail::Vec3 d = detail::vec3_sub(cc_point(rXyz, Id), rPf.mCentre);
+        return CcUv{{detail::vec3_dot(d, rPf.mU), detail::vec3_dot(d, rPf.mV)}};
+    };
+    std::vector<CcUv> f(Nf), g(Ng);
+    for (std::size_t k = 0; k < Nf; ++k)
+        f[k] = uv(pF[k]);
+    for (std::size_t k = 0; k < Ng; ++k)
+        g[k] = uv(pG[k]);
+    // The facets overlap when their intersection is a strip wider than the
+    // tolerance: its area beyond the tolerance times the smaller facet's
+    // diameter. Facets that only share a boundary intersect in a segment.
+    double area = 0.0;
+    const std::vector<std::array<CcUv, 3>> ff = cc_fan(f), gf = cc_fan(g);
+    for (const auto& a : ff)
+        for (const auto& b : gf)
+            area += cc_triangle_overlap(a, b);
+    auto diameter = [](const std::vector<CcUv>& rRing) {
+        double d = 0.0;
+        for (const CcUv& p : rRing)
+            for (const CcUv& q : rRing)
+                d = std::max(d, std::hypot(p[0] - q[0], p[1] - q[1]));
+        return d;
+    };
+    return area > Tol * std::min(diameter(f), diameter(g)) ? CcPair::Overlap : CcPair::Apart;
+}
+
+CcPair cc_classify_segments(const std::vector<double>& rXyz, const std::int64_t* pF,
+                            const std::int64_t* pG, double Tol) {
+    const detail::Vec3 a = cc_point(rXyz, pF[0]), b = cc_point(rXyz, pF[1]);
+    const detail::Vec3 c = cc_point(rXyz, pG[0]), d = cc_point(rXyz, pG[1]);
+    const detail::Vec3 ab = detail::vec3_sub(b, a), cd = detail::vec3_sub(d, c);
+    const double lf = detail::vec3_norm(ab), lg = detail::vec3_norm(cd);
+    if (!(lf > 0.0) || !(lg > 0.0))
+        return CcPair::Apart;
+    // Distance of a point from the infinite line through P0 along unit U.
+    auto off_line = [&](const detail::Vec3& rP, const detail::Vec3& rP0, const detail::Vec3& rU) {
+        const detail::Vec3 w = detail::vec3_sub(rP, rP0);
+        return detail::vec3_norm(detail::vec3_cross(w, rU));
+    };
+    const detail::Vec3 uf = detail::vec3_scale(ab, 1.0 / lf), ug = detail::vec3_scale(cd, 1.0 / lg);
+    if (off_line(c, a, uf) > Tol || off_line(d, a, uf) > Tol || off_line(a, c, ug) > Tol ||
+        off_line(b, c, ug) > Tol)
+        return CcPair::Apart;
+    const double tol_sq = Tol * Tol;
+    auto near = [&](const detail::Vec3& rX, const detail::Vec3& rY) {
+        return detail::vec3_norm_sq(detail::vec3_sub(rX, rY)) <= tol_sq;
+    };
+    if ((near(a, c) && near(b, d)) || (near(a, d) && near(b, c)))
+        return CcPair::Unwelded;
+    double t0 = detail::vec3_dot(detail::vec3_sub(c, a), uf);
+    double t1 = detail::vec3_dot(detail::vec3_sub(d, a), uf);
+    if (t0 > t1)
+        std::swap(t0, t1);
+    return std::min(lf, t1) - std::max(0.0, t0) > Tol ? CcPair::Overlap : CcPair::Apart;
+}
+
+}  // namespace
+
+ConformityResult check_conformity(const Mesh& rMesh, const ConformityOptions& rOptions) {
+    if (!(rOptions.mTolerance >= 0.0) || !std::isfinite(rOptions.mTolerance))
+        throw std::invalid_argument(std::string(kCcPrefix) +
+                                    "the tolerance must be finite and non-negative");
+    ConformityResult result;
+
+    int dim = -1;
+    for (const auto cb : rMesh.CellRange())
+        if (cb.NumCells() > 0)
+            dim = std::max(dim, cc_block_dimension(cb));
+    CcFacets facets;
+    if (dim == 3)
+        facets = cc_volume_facets(rMesh, result.mWarnings);
+    else if (dim == 2)
+        facets = cc_surface_facets(rMesh, result.mWarnings);
+    else
+        result.mWarnings.push_back("the mesh has no 2-D or 3-D cells; nothing was examined");
+    result.mDimension = dim < 2 ? 0 : dim;
+    result.mNumNonManifoldFacets = facets.mNumNonManifold;
+    const std::size_t nf = facets.Size();
+    result.mNumBoundaryFacets = static_cast<std::int64_t>(nf);
+
+    const std::size_t npts = rMesh.NumPoints();
+    std::vector<std::int64_t> flags(npts, 0);
+    if (nf > 0) {
+        const std::vector<double> xyz = detail::surface_xyz(rMesh);
+
+        // The facets' boxes and the tolerance, from the box of their corners.
+        std::vector<std::array<double, 6>> box(nf);
+        const double inf = std::numeric_limits<double>::infinity();
+        std::array<double, 3> lo{{inf, inf, inf}};
+        std::array<double, 3> hi{{-inf, -inf, -inf}};
+        double extent_sum = 0.0;
+        for (std::size_t f = 0; f < nf; ++f) {
+            std::array<double, 6>& r_box = box[f];
+            r_box = {{inf, inf, inf, -inf, -inf, -inf}};
+            const std::int64_t* ring = facets.Ring(f);
+            for (std::size_t k = 0; k < facets.Corners(f); ++k) {
+                const detail::Vec3 p = cc_point(xyz, ring[k]);
+                for (std::size_t d = 0; d < 3; ++d) {
+                    r_box[d] = std::min(r_box[d], p[d]);
+                    r_box[3 + d] = std::max(r_box[3 + d], p[d]);
+                }
+            }
+            for (std::size_t d = 0; d < 3; ++d) {
+                lo[d] = std::min(lo[d], r_box[d]);
+                hi[d] = std::max(hi[d], r_box[3 + d]);
+            }
+            extent_sum += std::max({r_box[3] - r_box[0], r_box[4] - r_box[1], r_box[5] - r_box[2]});
+        }
+        const double diag =
+            std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+                      (hi[2] - lo[2]) * (hi[2] - lo[2]));
+        const double tol = rOptions.mTolerance * diag;
+        for (std::array<double, 6>& r_box : box)
+            for (std::size_t d = 0; d < 3; ++d) {
+                r_box[d] -= tol;
+                r_box[3 + d] += tol;
+            }
+
+        // A bucket grid over the facets' boxes, sized by their mean extent and
+        // never finer than 1/256 of the diagonal, so a large facet among small
+        // ones spans a bounded number of buckets.
+        double cell = std::max(extent_sum / static_cast<double>(nf), diag / 256.0);
+        if (!(cell > 0.0))
+            cell = 1.0;
+        detail::SpatialGrid grid(cell);
+        for (std::size_t f = 0; f < nf; ++f)
+            grid.InsertBox(grid.KeyOf(box[f].data()), grid.KeyOf(box[f].data() + 3),
+                           static_cast<std::int64_t>(f));
+
+        // One view per block, and the nodes of a facet's owner on demand.
+        const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+        auto owner_has = [&](std::size_t Facet, std::int64_t Point,
+                             std::vector<std::int64_t>& rScratch) {
+            const auto br = detail::global_to_block_row(bases, facets.mOwner[Facet]);
+            cc_cell_nodes(rMesh.Cells(br.first), static_cast<std::size_t>(br.second), rScratch);
+            return std::find(rScratch.begin(), rScratch.end(), Point) != rScratch.end();
+        };
+
+        // Candidates: the nodes of the cells that own an unmatched facet.
+        std::vector<std::int64_t> owners(facets.mOwner);
+        std::sort(owners.begin(), owners.end());
+        owners.erase(std::unique(owners.begin(), owners.end()), owners.end());
+        std::vector<std::int64_t> candidates;
+        {
+            std::vector<std::int64_t> nodes;
+            for (std::int64_t g : owners) {
+                const auto br = detail::global_to_block_row(bases, g);
+                cc_cell_nodes(rMesh.Cells(br.first), static_cast<std::size_t>(br.second), nodes);
+                for (std::int64_t p : nodes)
+                    if (p >= 0 && static_cast<std::size_t>(p) < npts)
+                        candidates.push_back(p);
+            }
+        }
+        std::sort(candidates.begin(), candidates.end());
+        candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+
+        const std::int64_t flag = static_cast<std::int64_t>(dim == 3 ? ConformityFlag::HangingNode
+                                                                     : ConformityFlag::TJunction);
+        const double tol_sq = tol * tol;
+        parallel_for(candidates.size(), [&](std::size_t i) {
+            const std::int64_t p = candidates[i];
+            const detail::Vec3 x = cc_point(xyz, p);
+            const std::vector<std::int64_t>* bucket = grid.Find(grid.KeyOf(x.data()));
+            if (bucket == nullptr)
+                return;
+            std::vector<std::int64_t> scratch;
+            for (std::int64_t id : *bucket) {
+                const std::size_t f = static_cast<std::size_t>(id);
+                const std::array<double, 6>& b = box[f];
+                if (x[0] < b[0] || x[1] < b[1] || x[2] < b[2] || x[0] > b[3] || x[1] > b[4] ||
+                    x[2] > b[5])
+                    continue;
+                const std::int64_t* ring = facets.Ring(f);
+                const std::size_t nc = facets.Corners(f);
+                if (std::find(ring, ring + nc, p) != ring + nc)
+                    continue;
+                if (cc_facet_distance_sq(x, xyz, ring, nc) > tol_sq)
+                    continue;
+                // On a corner's location: an unwelded duplicate, not a hanging node.
+                bool on_corner = false;
+                for (std::size_t k = 0; k < nc && !on_corner; ++k)
+                    on_corner =
+                        detail::vec3_norm_sq(detail::vec3_sub(x, cc_point(xyz, ring[k]))) <= tol_sq;
+                if (on_corner || owner_has(f, p, scratch))
+                    continue;
+                flags[static_cast<std::size_t>(p)] = flag;
+                return;
+            }
+        });
+
+        // Facet pairs, each counted once at its lower facet.
+        std::vector<CcPlane> planes(nf);
+        if (dim == 3)
+            parallel_for(nf, [&](std::size_t f) {
+                planes[f] = cc_plane(xyz, facets.Ring(f), facets.Corners(f));
+            });
+        std::vector<std::int64_t> partial(nf, 0), unwelded(nf, 0);
+        parallel_for(nf, [&](std::size_t f) {
+            std::vector<std::int64_t> near;
+            grid.ForEachInBox(grid.KeyOf(box[f].data()), grid.KeyOf(box[f].data() + 3),
+                              [&](const std::vector<std::int64_t>& rIds) {
+                                  for (std::int64_t id : rIds)
+                                      if (static_cast<std::size_t>(id) > f)
+                                          near.push_back(id);
+                              });
+            std::sort(near.begin(), near.end());
+            near.erase(std::unique(near.begin(), near.end()), near.end());
+            const std::array<double, 6>& bf = box[f];
+            for (std::int64_t id : near) {
+                const std::size_t g = static_cast<std::size_t>(id);
+                const std::array<double, 6>& bg = box[g];
+                if (bf[0] > bg[3] || bg[0] > bf[3] || bf[1] > bg[4] || bg[1] > bf[4] ||
+                    bf[2] > bg[5] || bg[2] > bf[5])
+                    continue;
+                const CcPair kind =
+                    dim == 3
+                        ? cc_classify_polygons(xyz, facets.Ring(f), facets.Corners(f), planes[f],
+                                               facets.Ring(g), facets.Corners(g), planes[g], tol)
+                        : cc_classify_segments(xyz, facets.Ring(f), facets.Ring(g), tol);
+                if (kind == CcPair::Overlap)
+                    ++partial[f];
+                else if (kind == CcPair::Unwelded)
+                    ++unwelded[f];
+            }
+        });
+        for (std::size_t f = 0; f < nf; ++f) {
+            result.mNumPartialOverlaps += partial[f];
+            result.mNumUnweldedFacets += unwelded[f];
+        }
+    }
+
+    for (std::int64_t v : flags) {
+        result.mNumHangingNodes += v == static_cast<std::int64_t>(ConformityFlag::HangingNode);
+        result.mNumTJunctions += v == static_cast<std::int64_t>(ConformityFlag::TJunction);
+    }
+    result.mConforming = result.mNumHangingNodes == 0 && result.mNumTJunctions == 0 &&
+                         result.mNumPartialOverlaps == 0 && result.mNumUnweldedFacets == 0;
+    if (result.mNumPartialOverlaps > 0 || result.mNumHangingNodes > 0 || result.mNumTJunctions > 0)
+        result.mInterfaceMode = "proximity";
+    else if (result.mNumUnweldedFacets > 0)
+        result.mInterfaceMode = "weld";
+
+    result.mMesh = detail::clone_mesh(
+        rMesh, [&](DataLocation Location, const std::string& rName, std::string&) {
+            return !(rOptions.mAttachFlags && Location == DataLocation::Point &&
+                     rName == kConformityHangingName);
+        });
+    if (rOptions.mAttachFlags) {
+        NDArray out = NDArray::Uninit(DType::Int64, {npts});
+        std::copy(flags.begin(), flags.end(), out.As<std::int64_t>());
+        result.mMesh.AddPointData(kConformityHangingName, std::move(out));
+    }
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
+        result.mMesh.AddRegion(rMesh.Region(i));
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/check_conformity.cpp =====
 // ===== begin src/cpp/src/operations/clean.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -211357,6 +215888,824 @@ ErrorSizeResult error_size(const Mesh& rMesh, const ErrorSizeOptions& rOptions) 
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/error_size.cpp =====
+// ===== begin src/cpp/src/operations/extrude.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <functional>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+using ExVec = std::array<double, 3>;
+
+ExVec ex_sub(const ExVec& rA, const ExVec& rB) {
+    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
+}
+ExVec ex_cross(const ExVec& rA, const ExVec& rB) {
+    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
+            rA[0] * rB[1] - rA[1] * rB[0]};
+}
+double ex_dot(const ExVec& rA, const ExVec& rB) {
+    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
+}
+double ex_norm(const ExVec& rA) {
+    return std::sqrt(ex_dot(rA, rA));
+}
+
+// The profile: the cells that are swept, and what else the mesh holds.
+struct ExProfile {
+    bool mCurve = false;                               // lines sweep to quads
+    std::vector<std::array<std::int64_t, 4>> mFaces;   // a triangle has -1 last
+    std::vector<std::array<std::int64_t, 2>> mLines;
+    std::vector<std::size_t> mSourceBlock;             // per element
+    std::vector<std::int64_t> mSourceRow;              // per element
+    std::vector<std::vector<std::int64_t>> mElementOf; // per input block and row, or -1
+    std::vector<char> mIsProfileBlock;                 // per input block
+    std::vector<char> mIsLowerBlock;                   // per input block
+    std::vector<double> mXyz;                          // three coordinates per point
+    std::vector<char> mUsed;                           // per point, used by an element
+    std::size_t NumElements() const { return mCurve ? mLines.size() : mFaces.size(); }
+    ExVec Point(std::int64_t P) const {
+        const auto p = static_cast<std::size_t>(P);
+        return {mXyz[3 * p], mXyz[3 * p + 1], mXyz[3 * p + 2]};
+    }
+};
+
+ExProfile ex_gather(const Mesh& rMesh, const std::string& rOp) {
+    ExProfile pr;
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+    pr.mXyz.assign(3 * n, 0.0);
+    for (std::size_t p = 0; p < n; ++p)
+        for (std::size_t d = 0; d < dim && d < 3; ++d)
+            pr.mXyz[3 * p + d] = detail::read_double(rMesh.Points(), p * dim + d);
+    pr.mUsed.assign(n, 0);
+    bool has2 = false, has1 = false;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::string type(cb.Type());
+        const int d = cell_type_dimension(cell_type_from_name(type));
+        if (d == 3 || cb.IsPolyhedron())
+            throw Unsupported("meshio++: " + rOp + ": volume cells ('" + type +
+                              "') cannot be swept; pass a surface or a curve");
+        if (cb.NumCells() == 0)
+            continue;
+        has2 = has2 || d == 2 || (cb.IsRagged() && !cb.IsPolyhedron());
+        has1 = has1 || d == 1;
+    }
+    const int profile_dim = has2 ? 2 : (has1 ? 1 : 0);
+    if (profile_dim == 0)
+        throw std::invalid_argument("meshio++: " + rOp +
+                                    ": no triangle, quad or line cells to sweep");
+    pr.mCurve = profile_dim == 1;
+    const std::size_t nb = rMesh.NumCellBlocks();
+    pr.mElementOf.resize(nb);
+    pr.mIsProfileBlock.assign(nb, 0);
+    pr.mIsLowerBlock.assign(nb, 0);
+    for (std::size_t b = 0; b < nb; ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::string type(cb.Type());
+        const CellType ct = cell_type_from_name(type);
+        const int d = cb.IsRagged() ? 2 : cell_type_dimension(ct);
+        pr.mElementOf[b].assign(cb.NumCells(), -1);
+        if (d < profile_dim) {
+            pr.mIsLowerBlock[b] = 1;
+            continue;
+        }
+        const CellType want = pr.mCurve ? CellType::Line : CellType::Triangle;
+        if (cb.IsRagged() || (ct != want && !(ct == CellType::Quad && !pr.mCurve)))
+            throw Unsupported("meshio++: " + rOp + ": cannot sweep '" + type + "' cells (" +
+                              (pr.mCurve ? std::string("line")
+                                         : std::string("triangle and quad")) +
+                              " only; convert_cells linearizes or triangulates them)");
+        pr.mIsProfileBlock[b] = 1;
+        const std::size_t npc = cb.NodesPerCell();
+        const NDArray& conn = cb.Conn();
+        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+            pr.mElementOf[b][c] = static_cast<std::int64_t>(pr.NumElements());
+            pr.mSourceBlock.push_back(b);
+            pr.mSourceRow.push_back(static_cast<std::int64_t>(c));
+            std::array<std::int64_t, 4> v{-1, -1, -1, -1};
+            for (std::size_t k = 0; k < npc; ++k) {
+                v[k] = detail::read_int(conn, c * npc + k);
+                if (v[k] < 0 || static_cast<std::size_t>(v[k]) >= n)
+                    throw std::invalid_argument("meshio++: " + rOp + ": cell " +
+                                                std::to_string(c) + " of block " +
+                                                std::to_string(b) + " names a missing point");
+                pr.mUsed[static_cast<std::size_t>(v[k])] = 1;
+            }
+            if (pr.mCurve)
+                pr.mLines.push_back({v[0], v[1]});
+            else
+                pr.mFaces.push_back(v);
+        }
+    }
+    return pr;
+}
+
+// A face's Newell normal (twice its area vector).
+ExVec ex_face_normal(const ExProfile& rPr, const std::array<std::int64_t, 4>& rF) {
+    const int k = rF[3] >= 0 ? 4 : 3;
+    ExVec nrm{0.0, 0.0, 0.0};
+    for (int i = 0; i < k; ++i) {
+        const ExVec a = rPr.Point(rF[static_cast<std::size_t>(i)]);
+        const ExVec b = rPr.Point(rF[static_cast<std::size_t>((i + 1) % k)]);
+        nrm[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        nrm[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        nrm[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    return nrm;
+}
+
+void ex_flip(std::array<std::int64_t, 4>& rF) {
+    if (rF[3] >= 0)
+        std::swap(rF[1], rF[3]);
+    else
+        std::swap(rF[1], rF[2]);
+}
+
+// How the sweep is laid out: the offsets the collapse rule reads, where each
+// new point goes, and the names.
+struct ExPlan {
+    std::string mOp;
+    int mLayers = 1;
+    std::vector<double> mOffsets;  // point-major, n * L
+    bool mPeriodic = false;
+    bool mCollapsedEdgeWedges = false;
+    std::function<void(std::size_t, int, double*)> mPlace;  // (point, level, out xyz)
+    std::string mLayerName;
+    bool mRecordLayers = false;
+    std::string mFirstName, mLastName;
+    std::int64_t mMaxCells = 0;
+};
+
+// One output cell list, sorted layer by layer.
+struct ExOutBlock {
+    const char* pType;
+    int mNodes;
+    std::vector<detail::LayerSweepCell> mCells;
+};
+
+void ex_sweep(const Mesh& rMesh, const ExProfile& rPr, const ExPlan& rPlan, SweepResult& rRes) {
+    const std::size_t n = rMesh.NumPoints();
+    const int L = rPlan.mLayers;
+    const std::size_t ne = rPr.NumElements();
+    if (rPlan.mMaxCells > 0 &&
+        static_cast<double>(ne) * static_cast<double>(L) > static_cast<double>(rPlan.mMaxCells))
+        throw std::invalid_argument("meshio++: " + rPlan.mOp + ": " + std::to_string(ne) +
+                                    " profile cells times " + std::to_string(L) +
+                                    " layers exceed max_cells = " +
+                                    std::to_string(rPlan.mMaxCells));
+    detail::LayerSweepInput in;
+    in.pPoints = rPr.mXyz.data();
+    in.mNumPoints = static_cast<std::int64_t>(n);
+    in.mDirections.assign(3 * n, 0.0);
+    in.mOffsets = rPlan.mOffsets;
+    in.mLayers = L;
+    in.mPeriodic = rPlan.mPeriodic;
+    in.mCollapsedEdgeWedges = rPlan.mCollapsedEdgeWedges;
+    if (rPr.mCurve)
+        in.mEdges = rPr.mLines;
+    else
+        in.mFaces = rPr.mFaces;
+    detail::LayerSweepResult sw = detail::layer_sweep(in);
+    const auto level_id = [&](std::int64_t P, int K) -> std::int64_t {
+        return K == 0 ? P
+                      : sw.mLevelIds[static_cast<std::size_t>(K - 1) * n +
+                                     static_cast<std::size_t>(P)];
+    };
+    // Put each level's own points where the sweep belongs.
+    for (int k = 1; k <= L; ++k)
+        for (std::size_t p = 0; p < n; ++p) {
+            const std::int64_t id = level_id(static_cast<std::int64_t>(p), k);
+            if (id >= static_cast<std::int64_t>(n) &&
+                id != level_id(static_cast<std::int64_t>(p), k - 1))
+                rPlan.mPlace(p, k, &sw.mPoints[3 * static_cast<std::size_t>(id)]);
+        }
+
+    std::vector<ExOutBlock> blocks;
+    if (rPr.mCurve) {
+        blocks = {{"quad", 4, std::move(sw.mSideQuads)},
+                  {"triangle", 3, std::move(sw.mSideTriangles)}};
+    } else {
+        blocks = {{"wedge", 6, std::move(sw.mWedges)},
+                  {"hexahedron", 8, std::move(sw.mHexahedra)},
+                  {"pyramid", 5, std::move(sw.mPyramids)},
+                  {"tetra", 4, std::move(sw.mTetrahedra)}};
+    }
+    for (auto& r_b : blocks)
+        std::stable_sort(r_b.mCells.begin(), r_b.mCells.end(),
+                         [](const detail::LayerSweepCell& rA, const detail::LayerSweepCell& rB) {
+                             return rA.mLayer < rB.mLayer;
+                         });
+    blocks.erase(std::remove_if(blocks.begin(), blocks.end(),
+                                [](const ExOutBlock& rB) { return rB.mCells.empty(); }),
+                 blocks.end());
+
+    // The mesh.
+    Mesh& out = rRes.mMesh;
+    const std::size_t npts = sw.mPoints.size() / 3;
+    {
+        NDArray pts(DType::Float64, {npts, 3});
+        std::copy(sw.mPoints.begin(), sw.mPoints.end(), pts.As<double>());
+        out.AssignPoints(std::move(pts));
+    }
+    std::vector<std::int64_t> out_element;  // per output cell (global)
+    rRes.mMinScaledJacobian = rPr.mCurve ? 0.0 : 1.0;
+    for (const ExOutBlock& r_b : blocks) {
+        const auto k = static_cast<std::size_t>(r_b.mNodes);
+        NDArray conn(DType::Int64, {r_b.mCells.size(), k});
+        std::int64_t* q = conn.As<std::int64_t>();
+        for (std::size_t c = 0; c < r_b.mCells.size(); ++c) {
+            for (std::size_t i = 0; i < k; ++i)
+                q[c * k + i] = r_b.mCells[c].mNodes[i];
+            out_element.push_back(r_b.mCells[c].mFace);
+            if (!rPr.mCurve)
+                rRes.mMinScaledJacobian =
+                    std::min(rRes.mMinScaledJacobian,
+                             detail::layer_cell_scaled_jacobian(sw.mPoints.data(), r_b.mCells[c],
+                                                                r_b.mNodes));
+        }
+        const std::string type(r_b.pType);
+        const auto count = static_cast<std::int64_t>(r_b.mCells.size());
+        if (type == "wedge")
+            rRes.mNumWedges = count;
+        else if (type == "hexahedron")
+            rRes.mNumHexahedra = count;
+        else if (type == "pyramid")
+            rRes.mNumPyramids = count;
+        else if (type == "tetra")
+            rRes.mNumTetrahedra = count;
+        else if (type == "quad")
+            rRes.mNumQuads = count;
+        else
+            rRes.mNumTriangles = count;
+        rRes.mNumCells += count;
+        out.AddCellBlock(type, std::move(conn));
+    }
+
+    // Data. Point data per copy; cell data per layer, gathered across the
+    // profile's blocks.
+    for (const std::string& name : rMesh.PointDataNames())
+        out.AddPointData(name, detail::subset_gather_rows(rMesh.PointData(name), sw.mOrigin));
+    bool lower_data = false;
+    for (const std::string& name : rMesh.CellDataNames()) {
+        const NDArray* p_first = nullptr;
+        bool ok = true;
+        std::size_t cols = 0;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const std::size_t nc = rMesh.Cells(b).NumCells();
+            if (rPr.mIsLowerBlock[b]) {
+                lower_data = lower_data || (nc > 0 && b < rMesh.CellDataNumBlocks(name));
+                continue;
+            }
+            if (!rPr.mIsProfileBlock[b] || nc == 0)
+                continue;
+            if (b >= rMesh.CellDataNumBlocks(name)) {
+                ok = false;
+                break;
+            }
+            const NDArray& a = rMesh.CellData(name, b);
+            const std::size_t c = a.Size() / nc;
+            if (p_first == nullptr) {
+                p_first = &a;
+                cols = c;
+            } else if (a.Dtype() != p_first->Dtype() || c != cols) {
+                ok = false;
+            }
+        }
+        if (!ok || p_first == nullptr) {
+            if (!ok)
+                rRes.mWarnings.push_back("cell data '" + name +
+                                         "' differs between the profile's blocks and was dropped");
+            continue;
+        }
+        const std::size_t row_bytes = cols * dtype_size(p_first->Dtype());
+        std::vector<std::size_t> shape = p_first->Shape();
+        std::vector<NDArray> arrays;
+        std::size_t g = 0;
+        for (const ExOutBlock& r_b : blocks) {
+            if (shape.empty())
+                shape = {r_b.mCells.size()};
+            else
+                shape[0] = r_b.mCells.size();
+            NDArray a = NDArray::Uninit(p_first->Dtype(), shape);
+            for (std::size_t c = 0; c < r_b.mCells.size(); ++c, ++g) {
+                const auto e = static_cast<std::size_t>(out_element[g]);
+                const NDArray& src = rMesh.CellData(name, rPr.mSourceBlock[e]);
+                if (row_bytes > 0)
+                    std::memcpy(a.Data() + c * row_bytes,
+                                src.Data() + static_cast<std::size_t>(rPr.mSourceRow[e]) * row_bytes,
+                                row_bytes);
+            }
+            arrays.push_back(std::move(a));
+        }
+        out.AddCellData(name, std::move(arrays));
+    }
+    if (lower_data)
+        rRes.mWarnings.push_back(
+            "cell data of the cells that are not swept (lower-dimensional ones) is not carried");
+    if (rPlan.mRecordLayers) {
+        std::vector<NDArray> arrays;
+        for (const ExOutBlock& r_b : blocks) {
+            NDArray a(DType::Int32, {r_b.mCells.size()});
+            for (std::size_t c = 0; c < r_b.mCells.size(); ++c)
+                a.As<std::int32_t>()[c] = r_b.mCells[c].mLayer;
+            arrays.push_back(std::move(a));
+        }
+        out.AddCellData(rPlan.mLayerName, std::move(arrays));
+    }
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        NDArray a = rMesh.FieldData(name);
+        a.MakeOwned();
+        out.AddFieldData(name, std::move(a));
+    }
+
+    // Regions. Every facet is found by its corners among the output's facets;
+    // an interior one (two owners) is given to the cell swept from WANT.
+    detail::FacetIndexOptions fio;
+    fio.mSolidFaces = !rPr.mCurve;
+    fio.mSurfaceEdges = rPr.mCurve;
+    const detail::FacetIndex index(out, fio);
+    const auto find = [&](std::vector<std::int64_t> Corners, std::int64_t Want,
+                          std::vector<std::int64_t>& rEntries) {
+        std::sort(Corners.begin(), Corners.end());
+        Corners.erase(std::unique(Corners.begin(), Corners.end()), Corners.end());
+        const detail::FacetHit* hit = index.Find(Corners.data(), Corners.size());
+        if (hit == nullptr || hit->mCount == 0)
+            return false;
+        detail::FacetOwner o = hit->mFirst;
+        if (hit->mCount > 1 && Want >= 0 &&
+            out_element[static_cast<std::size_t>(o.mCell)] != Want &&
+            out_element[static_cast<std::size_t>(hit->mSecond.mCell)] == Want)
+            o = hit->mSecond;
+        rEntries.push_back(o.mCell);
+        rEntries.push_back(o.mFacet);
+        return true;
+    };
+    // What a profile facet (or a lower-dimensional cell) with corners C sweeps
+    // to, layer by layer; false when one of its pieces is not found.
+    const auto swept = [&](const std::vector<std::int64_t>& rC, std::int64_t Want,
+                           std::vector<std::int64_t>& rEntries) {
+        bool all = true;
+        for (int k = 1; k <= L; ++k) {
+            std::vector<std::int64_t> c;
+            for (const std::int64_t v : rC) {
+                c.push_back(level_id(v, k - 1));
+                c.push_back(level_id(v, k));
+            }
+            std::vector<std::int64_t> u = c;
+            std::sort(u.begin(), u.end());
+            u.erase(std::unique(u.begin(), u.end()), u.end());
+            if (u.size() <= rC.size())
+                continue;  // collapsed to nothing in this layer
+            all = find(std::move(c), Want, rEntries) && all;
+        }
+        return all;
+    };
+    // Per element, its output cells.
+    std::vector<std::vector<std::int64_t>> cells_of(ne);
+    for (std::size_t g = 0; g < out_element.size(); ++g)
+        cells_of[static_cast<std::size_t>(out_element[g])].push_back(static_cast<std::int64_t>(g));
+    const std::vector<std::int64_t> in_bases = detail::block_bases(rMesh);
+    const auto corners_of_cell = [&](std::size_t B, std::int64_t Row) {
+        const auto cb = rMesh.Cells(B);
+        std::vector<std::int64_t> c;
+        const CellType ct = cell_type_from_name(std::string(cb.Type()));
+        if (cb.IsRagged()) {
+            c.assign(cb.Row(static_cast<std::size_t>(Row)),
+                     cb.Row(static_cast<std::size_t>(Row)) + cb.RowSize(static_cast<std::size_t>(Row)));
+            return c;
+        }
+        // Corners only: a line's two ends, a vertex's node.
+        const std::size_t npc = cb.NodesPerCell();
+        const std::size_t nc = cell_type_dimension(ct) == 1 ? std::min<std::size_t>(npc, 2)
+                                                             : std::min<std::size_t>(npc, 1);
+        for (std::size_t k = 0; k < nc; ++k)
+            c.push_back(detail::read_int(cb.Conn(), static_cast<std::size_t>(Row) * npc + k));
+        return c;
+    };
+    const int out_dim = rPr.mCurve ? 2 : 3;
+    std::vector<std::string> taken;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r_in = rMesh.Region(i);
+        const std::int64_t* e = r_in.Entries();
+        const std::size_t nent = r_in.NumEntries();
+        std::vector<std::int64_t> flat, side;
+        std::int64_t lost = 0;
+        RegionKind kind = r_in.mKind;
+        if (r_in.mKind == RegionKind::Point) {
+            for (std::size_t k = 0; k < nent; ++k) {
+                if (e[k] < 0 || static_cast<std::size_t>(e[k]) >= n) {
+                    ++lost;
+                    continue;
+                }
+                for (int l = 0; l <= L; ++l)
+                    flat.push_back(level_id(e[k], l));
+            }
+        } else {
+            const bool is_side = r_in.mKind == RegionKind::Side;
+            for (std::size_t k = 0; k < nent; ++k) {
+                const std::int64_t g = is_side ? e[2 * k] : e[k];
+                const auto [b, row] = detail::global_to_block_row(in_bases, g);
+                if (b >= rMesh.NumCellBlocks()) {
+                    ++lost;
+                    continue;
+                }
+                const std::int64_t el = rPr.mElementOf[b][static_cast<std::size_t>(row)];
+                if (!is_side && el >= 0) {
+                    const auto& r_cells = cells_of[static_cast<std::size_t>(el)];
+                    flat.insert(flat.end(), r_cells.begin(), r_cells.end());
+                } else if (!is_side && rPr.mIsLowerBlock[b]) {
+                    if (!swept(corners_of_cell(b, row), -1, side))
+                        ++lost;
+                } else if (is_side && el >= 0 && !rPr.mCurve) {
+                    const std::int64_t f = e[2 * k + 1];
+                    const auto& r_edges =
+                        detail::cell_edges(cell_type_from_name(std::string(rMesh.Cells(b).Type())));
+                    if (f < 0 || static_cast<std::size_t>(f) >= r_edges.size()) {
+                        ++lost;
+                        continue;
+                    }
+                    const auto cb = rMesh.Cells(b);
+                    const std::size_t npc = cb.NodesPerCell();
+                    std::vector<std::int64_t> c;
+                    for (std::size_t j = 0; j < 2; ++j)
+                        c.push_back(detail::read_int(
+                            cb.Conn(), static_cast<std::size_t>(row) * npc +
+                                           r_edges[static_cast<std::size_t>(f)].mNodes[j]));
+                    if (!swept(c, el, side))
+                        ++lost;
+                } else {
+                    ++lost;
+                }
+            }
+            if (!is_side && flat.empty() && !side.empty())
+                kind = RegionKind::Side;
+            else if (!is_side && !side.empty())
+                lost += static_cast<std::int64_t>(side.size() / 2);  // a mixed region keeps its cells
+            if (is_side || kind == RegionKind::Side)
+                flat = std::move(side);
+        }
+        if (lost > 0)
+            rRes.mWarnings.push_back("region '" + r_in.mName + "': " + std::to_string(lost) +
+                                     " entr(ies) could not be carried and were dropped");
+        const int dim = r_in.mDim >= 0 && r_in.mKind != RegionKind::Point ? r_in.mDim + 1
+                                                                          : r_in.mDim;
+        const bool pair = kind == RegionKind::Side;
+        NDArray entries = pair ? NDArray(DType::Int64, {flat.size() / 2, 2})
+                               : NDArray(DType::Int64, {flat.size()});
+        std::copy(flat.begin(), flat.end(), entries.As<std::int64_t>());
+        out.AddRegion(Region(r_in.mName, kind, dim, r_in.mTag, std::move(entries)));
+        taken.push_back(r_in.mName);
+    }
+
+    // The generated side regions.
+    const auto add_generated = [&](const std::string& rName, std::vector<std::int64_t> Entries) {
+        if (rName.empty())
+            return;
+        if (std::find(taken.begin(), taken.end(), rName) != taken.end()) {
+            rRes.mWarnings.push_back("the input has a region '" + rName +
+                                     "', so the generated one of that name is not added");
+            return;
+        }
+        NDArray a(DType::Int64, {Entries.size() / 2, 2});
+        std::copy(Entries.begin(), Entries.end(), a.As<std::int64_t>());
+        out.AddRegion(Region(rName, RegionKind::Side, out_dim - 1, -1, std::move(a)));
+    };
+    if (!rPlan.mPeriodic) {
+        std::vector<std::int64_t> first, last;
+        if (rPr.mCurve) {
+            for (std::size_t l = 0; l < rPr.mLines.size(); ++l) {
+                const auto& r_l = rPr.mLines[l];
+                find({r_l[0], r_l[1]}, static_cast<std::int64_t>(l), first);
+                find({level_id(r_l[0], L), level_id(r_l[1], L)}, static_cast<std::int64_t>(l),
+                     last);
+            }
+        } else {
+            const auto faces = [&](const std::vector<detail::LayerSweepCell>& rList, int K,
+                                   std::vector<std::int64_t>& rInto) {
+                for (const auto& r_c : rList) {
+                    std::vector<std::int64_t> c(r_c.mNodes.begin(),
+                                                r_c.mNodes.begin() + (K == 4 ? 4 : 3));
+                    find(std::move(c), r_c.mFace, rInto);
+                }
+            };
+            faces(sw.mWallTriangles, 3, first);
+            faces(sw.mWallQuads, 4, first);
+            faces(sw.mCapTriangles, 3, last);
+            faces(sw.mCapQuads, 4, last);
+        }
+        add_generated(rPlan.mFirstName, std::move(first));
+        add_generated(rPlan.mLastName, std::move(last));
+    }
+    {
+        // The open border: edges of one face (in its winding), or ends of one line.
+        std::vector<std::int64_t> sides;
+        if (rPr.mCurve) {
+            std::vector<std::int64_t> uses(n, 0), line_of(n, -1);
+            for (std::size_t l = 0; l < rPr.mLines.size(); ++l)
+                for (const std::int64_t v : rPr.mLines[l]) {
+                    ++uses[static_cast<std::size_t>(v)];
+                    line_of[static_cast<std::size_t>(v)] = static_cast<std::int64_t>(l);
+                }
+            for (std::size_t p = 0; p < n; ++p)
+                if (uses[p] == 1)
+                    swept({static_cast<std::int64_t>(p)}, line_of[p], sides);
+        } else {
+            struct ExEdge {
+                std::int64_t mLo, mHi, mFace;
+                std::array<std::int64_t, 2> mDirected;
+            };
+            std::vector<ExEdge> edges;
+            for (std::size_t f = 0; f < rPr.mFaces.size(); ++f) {
+                const auto& r_f = rPr.mFaces[f];
+                const int k = r_f[3] >= 0 ? 4 : 3;
+                for (int i = 0; i < k; ++i) {
+                    const std::int64_t a = r_f[static_cast<std::size_t>(i)];
+                    const std::int64_t b = r_f[static_cast<std::size_t>((i + 1) % k)];
+                    edges.push_back({std::min(a, b), std::max(a, b), static_cast<std::int64_t>(f),
+                                     {a, b}});
+                }
+            }
+            std::stable_sort(edges.begin(), edges.end(), [](const ExEdge& rA, const ExEdge& rB) {
+                return rA.mLo != rB.mLo ? rA.mLo < rB.mLo : rA.mHi < rB.mHi;
+            });
+            for (std::size_t i = 0; i < edges.size();) {
+                std::size_t j = i + 1;
+                while (j < edges.size() && edges[j].mLo == edges[i].mLo &&
+                       edges[j].mHi == edges[i].mHi)
+                    ++j;
+                if (j == i + 1)
+                    swept({edges[i].mDirected[0], edges[i].mDirected[1]}, edges[i].mFace, sides);
+                i = j;
+            }
+        }
+        add_generated("side", std::move(sides));
+    }
+}
+
+void ex_check_count(std::int64_t Layers, const std::string& rOp) {
+    if (Layers < 1)
+        throw std::invalid_argument("meshio++: " + rOp + ": num_layers must be at least 1");
+}
+
+}  // namespace
+
+SweepResult extrude(const Mesh& rMesh, const ExtrudeOptions& rOptions) {
+    const ExtrudeOptions& o = rOptions;
+    const std::string op = "extrude";
+    const ExVec d = o.mDirection;
+    for (const double c : d)
+        if (!std::isfinite(c))
+            throw std::invalid_argument("meshio++: extrude: the direction must be finite");
+    const double dl = ex_norm(d);
+    if (!(dl > 0.0))
+        throw std::invalid_argument("meshio++: extrude: the direction must not be zero");
+    if (!std::isfinite(o.mRatio) || !(o.mRatio > 0.0))
+        throw std::invalid_argument("meshio++: extrude: ratio must be positive and finite");
+    std::vector<double> t;  // level fractions, 1..L
+    if (!o.mOffsets.empty()) {
+        if (o.mRatio != 1.0)
+            throw std::invalid_argument(
+                "meshio++: extrude: give either offsets or a ratio, not both");
+        if (o.mNumLayers != 1 && static_cast<std::size_t>(o.mNumLayers) != o.mOffsets.size())
+            throw std::invalid_argument("meshio++: extrude: num_layers (" +
+                                        std::to_string(o.mNumLayers) + ") differs from the " +
+                                        std::to_string(o.mOffsets.size()) + " offsets");
+        double prev = 0.0;
+        for (const double v : o.mOffsets) {
+            if (!std::isfinite(v) || !(v > prev))
+                throw std::invalid_argument(
+                    "meshio++: extrude: offsets must be positive and increasing");
+            prev = v;
+        }
+        if (prev != 1.0)
+            throw std::invalid_argument("meshio++: extrude: the last offset must be 1");
+        t = o.mOffsets;
+    } else {
+        ex_check_count(o.mNumLayers, op);
+        const int L = o.mNumLayers;
+        for (int k = 1; k <= L; ++k) {
+            if (o.mRatio == 1.0)
+                t.push_back(static_cast<double>(k) / static_cast<double>(L));
+            else
+                t.push_back((std::pow(o.mRatio, k) - 1.0) / (std::pow(o.mRatio, L) - 1.0));
+        }
+        t.back() = 1.0;
+    }
+    const int L = static_cast<int>(t.size());
+    const bool uniform = o.mOffsets.empty() && o.mRatio == 1.0;
+
+    SweepResult res;
+    ExProfile pr = ex_gather(rMesh, op);
+    if (pr.mCurve) {
+        for (std::size_t l = 0; l < pr.mLines.size(); ++l) {
+            const ExVec e = ex_sub(pr.Point(pr.mLines[l][1]), pr.Point(pr.mLines[l][0]));
+            if (ex_norm(ex_cross(e, d)) <= 1e-9 * ex_norm(e) * dl)
+                throw std::invalid_argument("meshio++: extrude: line " + std::to_string(l) +
+                                            " is parallel to the direction (or has no length)");
+        }
+    } else {
+        for (std::size_t f = 0; f < pr.mFaces.size(); ++f) {
+            const ExVec nrm = ex_face_normal(pr, pr.mFaces[f]);
+            const double s = ex_dot(nrm, d);
+            if (std::abs(s) <= 1e-9 * ex_norm(nrm) * dl)
+                throw std::invalid_argument("meshio++: extrude: face " + std::to_string(f) +
+                                            " is parallel to the direction (or has no area)");
+            if (s < 0.0) {
+                ex_flip(pr.mFaces[f]);
+                ++res.mNumFlipped;
+            }
+        }
+    }
+    const std::size_t n = rMesh.NumPoints();
+    ExPlan plan;
+    plan.mOp = op;
+    plan.mLayers = L;
+    plan.mOffsets.assign(n * static_cast<std::size_t>(L), 0.0);
+    for (std::size_t p = 0; p < n; ++p)
+        if (pr.mUsed[p])
+            for (int k = 0; k < L; ++k)
+                plan.mOffsets[p * static_cast<std::size_t>(L) + static_cast<std::size_t>(k)] =
+                    t[static_cast<std::size_t>(k)];
+    const std::vector<double>& xyz = pr.mXyz;
+    // Uniform levels are computed as `x + (d k) / L`, the way `box` computes
+    // its coordinates, so extruding `rectangle` gives `box` bit for bit.
+    plan.mPlace = [&, uniform, L](std::size_t P, int K, double* pOut) {
+        for (std::size_t c = 0; c < 3; ++c)
+            pOut[c] = uniform ? xyz[3 * P + c] + d[c] * static_cast<double>(K) / static_cast<double>(L)
+                              : xyz[3 * P + c] + d[c] * t[static_cast<std::size_t>(K - 1)];
+    };
+    plan.mLayerName = kExtrudeLayerName;
+    plan.mRecordLayers = o.mRecordLayers;
+    plan.mFirstName = "bottom";
+    plan.mLastName = "top";
+    plan.mMaxCells = o.mMaxCells;
+    ex_sweep(rMesh, pr, plan, res);
+    return res;
+}
+
+SweepResult revolve(const Mesh& rMesh, const RevolveOptions& rOptions) {
+    const RevolveOptions& o = rOptions;
+    const std::string op = "revolve";
+    ExVec axis = o.mAxis;
+    const ExVec origin = o.mAxisPoint;
+    for (std::size_t c = 0; c < 3; ++c)
+        if (!std::isfinite(axis[c]) || !std::isfinite(origin[c]))
+            throw std::invalid_argument("meshio++: revolve: the axis must be finite");
+    const double al = ex_norm(axis);
+    if (!(al > 0.0))
+        throw std::invalid_argument("meshio++: revolve: the axis must not be zero");
+    if (!std::isfinite(o.mTolerance) || o.mTolerance < 0.0)
+        throw std::invalid_argument("meshio++: revolve: tolerance must be finite and non-negative");
+    if (!std::isfinite(o.mAngle) || o.mAngle == 0.0 || std::abs(o.mAngle) > 360.0)
+        throw std::invalid_argument("meshio++: revolve: angle must be in (0, 360] degrees, either sign");
+    ex_check_count(o.mNumLayers, op);
+    const int L = o.mNumLayers;
+    const bool full = std::abs(o.mAngle) == 360.0;
+    if (full && L < 3)
+        throw std::invalid_argument("meshio++: revolve: a full turn needs at least 3 steps");
+    double angle = o.mAngle;
+    if (angle < 0.0) {
+        angle = -angle;
+        for (double& c : axis)
+            c = -c;
+    }
+    if (angle / L >= 180.0)
+        throw std::invalid_argument("meshio++: revolve: each step must turn less than 180 degrees");
+    for (double& c : axis)
+        c /= al;
+
+    SweepResult res;
+    res.mFull = full;
+    ExProfile pr = ex_gather(rMesh, op);
+    const std::size_t n = rMesh.NumPoints();
+    // On the axis: within the tolerance of the used points' bounding-box diagonal.
+    ExVec lo{0.0, 0.0, 0.0}, hi{0.0, 0.0, 0.0};
+    bool any = false;
+    for (std::size_t p = 0; p < n; ++p) {
+        if (!pr.mUsed[p])
+            continue;
+        const ExVec x = pr.Point(static_cast<std::int64_t>(p));
+        for (std::size_t c = 0; c < 3; ++c) {
+            lo[c] = any ? std::min(lo[c], x[c]) : x[c];
+            hi[c] = any ? std::max(hi[c], x[c]) : x[c];
+        }
+        any = true;
+    }
+    const double tol = o.mTolerance * ex_norm(ex_sub(hi, lo));
+    std::vector<char> on_axis(n, 0);
+    const auto radial = [&](std::int64_t P) {
+        const ExVec r = ex_sub(pr.Point(P), origin);
+        return ex_cross(axis, r);  // the motion at P; its length is the distance to the axis
+    };
+    for (std::size_t p = 0; p < n; ++p)
+        if (pr.mUsed[p] && ex_norm(radial(static_cast<std::int64_t>(p))) <= tol) {
+            on_axis[p] = 1;
+            ++res.mNumOnAxis;
+        }
+    if (pr.mCurve) {
+        std::int64_t on = 0;
+        for (std::size_t l = 0; l < pr.mLines.size(); ++l) {
+            const auto& r_l = pr.mLines[l];
+            if (on_axis[static_cast<std::size_t>(r_l[0])] && on_axis[static_cast<std::size_t>(r_l[1])]) {
+                ++on;
+                continue;
+            }
+            const ExVec a = pr.Point(r_l[0]), b = pr.Point(r_l[1]);
+            const ExVec e = ex_sub(b, a);
+            const ExVec mid{0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1]), 0.5 * (a[2] + b[2])};
+            const ExVec m = ex_cross(axis, ex_sub(mid, origin));
+            if (ex_norm(ex_cross(e, m)) <= 1e-9 * ex_norm(e) * ex_norm(m))
+                throw std::invalid_argument("meshio++: revolve: line " + std::to_string(l) +
+                                            " moves along itself (or has no length)");
+        }
+        if (on > 0)
+            throw std::invalid_argument("meshio++: revolve: " + std::to_string(on) +
+                                        " line(s) lie on the axis and would sweep to nothing");
+    } else {
+        std::int64_t kept = 0;
+        for (std::size_t f = 0; f < pr.mFaces.size(); ++f) {
+            const ExVec nrm = ex_face_normal(pr, pr.mFaces[f]);
+            const int k = pr.mFaces[f][3] >= 0 ? 4 : 3;
+            int pos = 0, neg = 0;
+            for (int i = 0; i < k; ++i) {
+                const std::int64_t v = pr.mFaces[f][static_cast<std::size_t>(i)];
+                if (on_axis[static_cast<std::size_t>(v)])
+                    continue;
+                const ExVec m = radial(v);
+                const double s = ex_dot(nrm, m);
+                if (std::abs(s) <= 1e-9 * ex_norm(nrm) * ex_norm(m))
+                    continue;
+                (s > 0.0 ? pos : neg) += 1;
+            }
+            if (pos > 0 && neg > 0)
+                throw std::invalid_argument("meshio++: revolve: face " + std::to_string(f) +
+                                            " crosses the axis");
+            if (pos == 0 && neg == 0)
+                throw std::invalid_argument("meshio++: revolve: face " + std::to_string(f) +
+                                            " turns within its own plane (or has no area)");
+            if (neg > 0) {
+                ex_flip(pr.mFaces[f]);
+                ++res.mNumFlipped;
+            } else {
+                ++kept;
+            }
+        }
+        // Faces turned both ways lie on both sides of the axis: past half a
+        // turn, each side sweeps through the other.
+        if (kept > 0 && res.mNumFlipped > 0) {
+            if (angle > 180.0)
+                throw std::invalid_argument(
+                    "meshio++: revolve: the profile lies on both sides of the axis, so a turn "
+                    "of more than 180 degrees would sweep it through itself");
+            res.mWarnings.push_back("the profile lies on both sides of the axis");
+        }
+    }
+    ExPlan plan;
+    plan.mOp = op;
+    plan.mLayers = L;
+    plan.mPeriodic = full;
+    plan.mCollapsedEdgeWedges = true;
+    plan.mOffsets.assign(n * static_cast<std::size_t>(L), 0.0);
+    for (std::size_t p = 0; p < n; ++p)
+        if (pr.mUsed[p] && !on_axis[p])
+            for (int k = 0; k < L; ++k)
+                plan.mOffsets[p * static_cast<std::size_t>(L) + static_cast<std::size_t>(k)] = k + 1;
+    const double rad = angle * 3.14159265358979323846 / 180.0;
+    std::vector<std::array<double, 16>> rot;
+    for (int k = 1; k <= L; ++k)
+        rot.push_back(transform_rotation(axis[0], axis[1], axis[2], rad * k / L).mMatrix);
+    const std::vector<double>& xyz = pr.mXyz;
+    plan.mPlace = [&](std::size_t P, int K, double* pOut) {
+        const auto& m = rot[static_cast<std::size_t>(K - 1)];
+        const double r[3] = {xyz[3 * P] - origin[0], xyz[3 * P + 1] - origin[1],
+                             xyz[3 * P + 2] - origin[2]};
+        for (std::size_t c = 0; c < 3; ++c)
+            pOut[c] = origin[c] + m[c * 4] * r[0] + m[c * 4 + 1] * r[1] + m[c * 4 + 2] * r[2];
+    };
+    plan.mLayerName = kRevolveLayerName;
+    plan.mRecordLayers = o.mRecordLayers;
+    plan.mFirstName = "start";
+    plan.mLastName = "end";
+    plan.mMaxCells = o.mMaxCells;
+    ex_sweep(rMesh, pr, plan, res);
+    return res;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/extrude.cpp =====
 // ===== begin src/cpp/src/operations/feature_edges.cpp =====
 #include <algorithm>
 #include <cstddef>
@@ -211847,29 +217196,65 @@ const Mesh* fcn_annotate(const Mesh& rMesh, Mesh& rOwned) {
     return &rOwned;
 }
 
-// What the refinement did, for the report.
+// What the refinement and the primitive constraints did, for the report.
 struct FcnRefined {
     bool mRan = false;
     RefinePatchesResult mResult;
+    detail::PrimitiveConstraintReport mConstraints;
 };
 
-// The annotated skin, refined by `refine_patches` when asked.
+// The tolerance a face may keep from its patch before a writer demotes it,
+// from the table alone: the requested one, or three times the largest patch
+// tolerance (`fcn_tolerance` without its bounding-box fallback).
+double fcn_face_tolerance(const Mesh& rMesh, double Requested) {
+    if (Requested > 0.0)
+        return Requested;
+    double largest = 0.0;
+    if (rMesh.HasFieldData("fit:patch_tolerance")) {
+        const NDArray& tols = rMesh.FieldData("fit:patch_tolerance");
+        for (std::size_t r = 0; r < tols.Size(); ++r) {
+            const double t = detail::read_double(tols, r);
+            if (std::isfinite(t))
+                largest = std::max(largest, t);
+        }
+    }
+    return 3.0 * largest;
+}
+
+// The annotated skin, refined by `refine_patches` and its primitives
+// constrained when asked.
 const Mesh* fcn_prepare(const Mesh& rMesh, Mesh& rOwned, const FitCadOptions& rOptions,
                         FcnRefined& rRefined) {
     const Mesh* work = fcn_annotate(rMesh, rOwned);
-    if (!rOptions.mRefineSegmentation)
-        return work;
-    rRefined.mResult = refine_patches(*work, rOptions.mRefine);
-    rRefined.mRan = true;
-    log::info("fit_cad: refined the patches: {} -> {} of the area explained by primitives",
-              rRefined.mResult.mInitialExplainedAreaFraction,
-              rRefined.mResult.mExplainedAreaFraction);
-    rOwned = std::move(rRefined.mResult.mMesh);
-    return &rOwned;
+    if (rOptions.mRefineSegmentation) {
+        rRefined.mResult = refine_patches(*work, rOptions.mRefine);
+        rRefined.mRan = true;
+        log::info("fit_cad: refined the patches: {} -> {} of the area explained by primitives",
+                  rRefined.mResult.mInitialExplainedAreaFraction,
+                  rRefined.mResult.mExplainedAreaFraction);
+        rOwned = std::move(rRefined.mResult.mMesh);
+        work = &rOwned;
+    }
+    if (rOptions.mConstrainPrimitives) {
+        const double face_tol = fcn_face_tolerance(*work, rOptions.mTolerance);
+        if (face_tol > 0.0) {
+            if (work != &rOwned) {
+                rOwned = detail::clone_mesh(
+                    *work, [](DataLocation, const std::string&, std::string&) { return true; });
+                work = &rOwned;
+            }
+            rRefined.mConstraints = detail::constrain_primitives(rOwned, face_tol);
+            log::info("fit_cad: constrained {} primitive(s) in {} group(s)",
+                      rRefined.mConstraints.mNumConstrained, rRefined.mConstraints.mNumGroups);
+        }
+    }
+    return work;
 }
 
 // The refinement's report and its `refine:*` field data on the result.
 void fcn_report_refined(const FcnRefined& rRefined, const Mesh& rWork, FitCadResult& rResult) {
+    rResult.mNumConstrainedPrimitives = rRefined.mConstraints.mNumConstrained;
+    rResult.mNumConstraintGroups = rRefined.mConstraints.mNumGroups;
     if (!rRefined.mRan)
         return;
     const RefinePatchesResult& r = rRefined.mResult;
@@ -217426,8 +222811,11 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
 
 #endif  // MESHIOPLUSPLUS_HAS_OCCT
 
-FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
-                     const FitCadOptions& rOptions) {
+// One build of the solid, as `fit_cad` makes it: the options checked, the
+// backend chosen, the freeform modes' general fit run first. `fit_cad` adds the
+// constrained-primitives choice on top of it.
+static FitCadResult fit_cad_build(const Mesh& rMesh, const std::string& rStepPath,
+                                  const FitCadOptions& rOptions) {
     if (std::isnan(rOptions.mTolerance) || std::isinf(rOptions.mTolerance))
         throw std::invalid_argument(std::string(kFcnPrefix) + "tolerance must be finite");
     if ((rOptions.mTypes & ~kFitAllTypes) != 0)
@@ -217492,7 +222880,7 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         FitCadOptions general = rOptions;
         general.mFreeformGeneral = true;
         general.mExtendSurfaces = true;
-        return fit_cad(rMesh, rStepPath, general);
+        return fit_cad_build(rMesh, rStepPath, general);
     }
 #ifdef MESHIOPLUSPLUS_HAS_OCCT
     if (rOptions.mBackend != FitCadBackend::Native)
@@ -217518,6 +222906,36 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     }
 #endif
     return fcn_native_fit_cad(rMesh, rStepPath, rOptions);
+}
+
+FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
+                     const FitCadOptions& rOptions) {
+    if (!rOptions.mConstrainPrimitives)
+        return fit_cad_build(rMesh, rStepPath, rOptions);
+    // The constrained surfaces are fitted within tolerance, but the solid built
+    // from them can lose a junction the unconstrained surfaces kept (a fillet
+    // tangent to its wall, say), so the constrained solid is kept only where it
+    // demotes no more patches than the unconstrained one. The constrained solid
+    // is written to `rStepPath`; the unconstrained one is built unwritten, and
+    // written only when it is the one kept.
+    FitCadResult on = fit_cad_build(rMesh, rStepPath, rOptions);
+    FitCadOptions plain = rOptions;
+    plain.mConstrainPrimitives = false;
+    const FitCadResult off = fit_cad_build(rMesh, "", plain);
+    const bool keep_on = !(off.mValid && (!on.mValid || off.mNumDemoted < on.mNumDemoted));
+    if (keep_on)
+        return on;
+    if (!on.mValid)
+        log::warn("fit_cad: the constrained primitives give a solid that is not valid; the "
+                  "unconstrained solid is returned");
+    else
+        log::warn("fit_cad: the constrained primitives demote {} patch(es) against {} for the "
+                  "unconstrained solid; the unconstrained solid is returned",
+                  on.mNumDemoted, off.mNumDemoted);
+    FitCadResult out = fit_cad_build(rMesh, rStepPath, plain);
+    out.mNumConstrainedPrimitives = 0;
+    out.mNumConstraintGroups = 0;
+    return out;
 }
 
 }  // namespace meshioplusplus
@@ -230222,6 +235640,463 @@ Mesh triangulate_polygon_2d(const std::vector<std::vector<std::array<double, 2>>
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/mesh_cad.cpp =====
+// ===== begin src/cpp/src/operations/mirror.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+// How one block's cells are flipped: a fixed table, a polygon ring or a
+// polyhedron's face rings.
+struct MirBlockFlip {
+    const std::vector<int>* pPerm = nullptr;
+    const std::vector<int>* pFacets = nullptr;
+    std::vector<int> mPolygonPerm;  // a rectangular polygon block's own table
+    bool mRaggedPolygon = false;
+    bool mPolyhedron = false;
+};
+
+template <class CellViewT>
+MirBlockFlip mir_block_flip(const CellViewT& rCells) {
+    MirBlockFlip f;
+    const std::string type(rCells.Type());
+    const CellType ct = cell_type_from_name(type);
+    if (rCells.IsPolyhedron()) {
+        f.mPolyhedron = true;
+        return f;
+    }
+    if (ct == CellType::Polygon) {
+        if (rCells.IsRagged()) {
+            f.mRaggedPolygon = true;
+            return f;
+        }
+        // A polygon with rectangular storage: every row has the same size.
+        const int npc = static_cast<int>(rCells.NodesPerCell());
+        f.mPolygonPerm.push_back(0);
+        for (int i = npc - 1; i >= 1; --i)
+            f.mPolygonPerm.push_back(i);
+        return f;
+    }
+    f.pPerm = rCells.IsRagged() ? nullptr : detail::cell_flip_permutation(ct);
+    f.pFacets = detail::cell_flip_facet_map(ct);
+    if (f.pPerm == nullptr ||
+        static_cast<std::size_t>(cell_type_num_nodes(ct)) != rCells.NodesPerCell())
+        throw Unsupported("meshio++: mirror: no orientation flip for cell type '" + type +
+                          "' (linear and quadratic types, polygons and polyhedra only)");
+    return f;
+}
+
+// The local facet a flipped cell gives facet F of a cell with N facets (a
+// polygon's N is its node count), or -1 when F is not a facet of the cell.
+std::int64_t mir_flip_facet(const MirBlockFlip& rFlip, std::int64_t F, std::int64_t N) {
+    if (F < 0)
+        return -1;
+    if (rFlip.mPolyhedron)
+        return F < N ? F : -1;
+    if (rFlip.mRaggedPolygon || !rFlip.mPolygonPerm.empty())
+        return F < N ? N - 1 - F : -1;
+    if (rFlip.pFacets == nullptr || F >= static_cast<std::int64_t>(rFlip.pFacets->size()))
+        return -1;
+    return (*rFlip.pFacets)[static_cast<std::size_t>(F)];
+}
+
+// Reflect rows [Start, Start + Rows) of a float array of 3 (v' = H v) or 9
+// (A' = H A H, row-major) columns in place.
+void mir_reflect_rows(NDArray& rA, std::size_t Start, std::size_t Rows, std::size_t Cols,
+                      const std::array<double, 9>& rH) {
+    detail::dispatch_dtype(rA.Dtype(), [&]<class T>() {
+        T* p = rA.As<T>();
+        parallel_for_bw(Rows, [&](std::size_t r) {
+            const std::size_t b = (Start + r) * Cols;
+            if (Cols == 3) {
+                const double v[3] = {static_cast<double>(p[b]), static_cast<double>(p[b + 1]),
+                                     static_cast<double>(p[b + 2])};
+                for (std::size_t i = 0; i < 3; ++i)
+                    p[b + i] =
+                        static_cast<T>(rH[i * 3] * v[0] + rH[i * 3 + 1] * v[1] + rH[i * 3 + 2] * v[2]);
+                return;
+            }
+            double a[9], t[9];
+            for (std::size_t k = 0; k < 9; ++k)
+                a[k] = static_cast<double>(p[b + k]);
+            for (std::size_t i = 0; i < 3; ++i)
+                for (std::size_t j = 0; j < 3; ++j)
+                    t[i * 3 + j] = rH[i * 3] * a[j] + rH[i * 3 + 1] * a[3 + j] + rH[i * 3 + 2] * a[6 + j];
+            for (std::size_t i = 0; i < 3; ++i)
+                for (std::size_t j = 0; j < 3; ++j)
+                    p[b + i * 3 + j] = static_cast<T>(t[i * 3] * rH[j * 3] +
+                                                      t[i * 3 + 1] * rH[j * 3 + 1] +
+                                                      t[i * 3 + 2] * rH[j * 3 + 2]);
+        });
+    });
+}
+
+// Gather rows `rIdx` of a data array and reflect those from `Start` on, when
+// asked and the array is a float vector or tensor.
+NDArray mir_carry(const NDArray& rSrc, std::size_t SrcRows, const std::vector<std::int64_t>& rIdx,
+                  std::size_t Start, bool Reflect, const std::array<double, 9>& rH) {
+    NDArray out = detail::subset_gather_rows(rSrc, rIdx);
+    const std::size_t cols = SrcRows > 0 ? rSrc.Size() / SrcRows : 0;
+    if (Reflect && detail::is_float_dtype(rSrc.Dtype()) && (cols == 3 || cols == 9) &&
+        rIdx.size() > Start)
+        mir_reflect_rows(out, Start, rIdx.size() - Start, cols, rH);
+    return out;
+}
+
+std::vector<std::int64_t> mir_iota(std::size_t N) {
+    std::vector<std::int64_t> v(N);
+    for (std::size_t i = 0; i < N; ++i)
+        v[i] = static_cast<std::int64_t>(i);
+    return v;
+}
+
+NDArray mir_entries(const std::vector<std::int64_t>& rFlat, bool Side) {
+    const std::size_t n = Side ? rFlat.size() / 2 : rFlat.size();
+    NDArray a = Side ? NDArray(DType::Int64, {n, 2}) : NDArray(DType::Int64, {n});
+    std::copy(rFlat.begin(), rFlat.end(), a.As<std::int64_t>());
+    return a;
+}
+
+}  // namespace
+
+MirrorResult mirror(const Mesh& rMesh, const MirrorOptions& rOptions) {
+    const MirrorOptions& o = rOptions;
+    if (!std::isfinite(o.mTolerance) || o.mTolerance < 0.0)
+        throw std::invalid_argument("meshio++: mirror: tolerance must be finite and non-negative");
+    double len2 = 0.0;
+    for (std::size_t d = 0; d < 3; ++d) {
+        if (!std::isfinite(o.mOrigin[d]) || !std::isfinite(o.mNormal[d]))
+            throw std::invalid_argument("meshio++: mirror: origin and normal must be finite");
+        len2 += o.mNormal[d] * o.mNormal[d];
+    }
+    if (!(len2 > 0.0))
+        throw std::invalid_argument("meshio++: mirror: the normal must not be zero");
+    const double len = std::sqrt(len2);
+    const std::array<double, 3> nrm{{o.mNormal[0] / len, o.mNormal[1] / len, o.mNormal[2] / len}};
+
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+    for (std::size_t d = std::min<std::size_t>(dim, 3); d < 3; ++d)
+        if (nrm[d] != 0.0)
+            throw std::invalid_argument(
+                "meshio++: mirror: the points have " + std::to_string(dim) +
+                " coordinates, so the normal's component " + std::to_string(d) +
+                " must be zero (the image would leave their space)");
+    const std::size_t sdim = std::min<std::size_t>(dim, 3);
+    const std::array<double, 9> H{{1.0 - 2.0 * nrm[0] * nrm[0], -2.0 * nrm[0] * nrm[1],
+                                   -2.0 * nrm[0] * nrm[2], -2.0 * nrm[1] * nrm[0],
+                                   1.0 - 2.0 * nrm[1] * nrm[1], -2.0 * nrm[1] * nrm[2],
+                                   -2.0 * nrm[2] * nrm[0], -2.0 * nrm[2] * nrm[1],
+                                   1.0 - 2.0 * nrm[2] * nrm[2]}};
+
+    // Every block's flip, checked before anything is built.
+    std::vector<MirBlockFlip> flips;
+    for (const auto cb : rMesh.CellRange())
+        flips.push_back(mir_block_flip(cb));
+
+    // Signed distances to the plane and the points on it.
+    const NDArray& pts = rMesh.Points();
+    std::vector<double> sdist(n, 0.0);
+    std::array<double, 3> lo{{0.0, 0.0, 0.0}}, hi{{0.0, 0.0, 0.0}};
+    for (std::size_t p = 0; p < n; ++p) {
+        double s = 0.0;
+        for (std::size_t d = 0; d < sdim; ++d) {
+            const double x = detail::read_double(pts, p * dim + d);
+            s += (x - o.mOrigin[d]) * nrm[d];
+            lo[d] = p == 0 ? x : std::min(lo[d], x);
+            hi[d] = p == 0 ? x : std::max(hi[d], x);
+        }
+        sdist[p] = s;
+    }
+    double diag2 = 0.0;
+    for (std::size_t d = 0; d < sdim; ++d)
+        diag2 += (hi[d] - lo[d]) * (hi[d] - lo[d]);
+    const double tol = o.mTolerance * std::sqrt(diag2);
+    std::vector<char> on_plane(n, 0);
+    MirrorResult res;
+    for (std::size_t p = 0; p < n; ++p)
+        if (std::abs(sdist[p]) <= tol) {
+            on_plane[p] = 1;
+            ++res.mNumPointsOnPlane;
+        }
+
+    const bool keep = o.mKeepOriginal;
+    const bool weld = keep && o.mWeld;
+
+    // The image of each point, and the rows the output points come from.
+    std::vector<std::int64_t> image(n);
+    std::vector<std::int64_t> point_rows = mir_iota(n);
+    for (std::size_t p = 0; p < n; ++p) {
+        if (!keep || (weld && on_plane[p])) {
+            image[p] = static_cast<std::int64_t>(p);
+            continue;
+        }
+        image[p] = static_cast<std::int64_t>(point_rows.size());
+        point_rows.push_back(static_cast<std::int64_t>(p));
+    }
+    const std::size_t first_image = keep ? n : 0;  // the first reflected output point
+    {
+        NDArray out_pts = detail::subset_gather_rows(pts, point_rows);
+        const std::size_t nimg = point_rows.size() - first_image;
+        detail::dispatch_dtype(out_pts.Dtype(), [&]<class T>() {
+            T* q = out_pts.As<T>();
+            parallel_for_bw(nimg, [&](std::size_t i) {
+                const std::size_t row = first_image + i;
+                const double s = sdist[static_cast<std::size_t>(point_rows[row])];
+                for (std::size_t d = 0; d < sdim; ++d)
+                    q[row * dim + d] =
+                        static_cast<T>(static_cast<double>(q[row * dim + d]) - 2.0 * s * nrm[d]);
+            });
+        });
+        res.mMesh.AssignPoints(std::move(out_pts));
+    }
+
+    // The cells: per block, its own cells when kept, then the reflected ones;
+    // a reflected cell lying on the plane is dropped when welding.
+    const std::size_t nb = rMesh.NumCellBlocks();
+    std::vector<std::vector<std::int64_t>> mirrored(nb);  // per block, the kept sources
+    std::vector<std::vector<std::int64_t>> rank(nb);      // per cell, its copy's rank or -1
+    for (std::size_t b = 0; b < nb; ++b) {
+        const auto cb = rMesh.Cells(b);
+        const MirBlockFlip& r_flip = flips[b];
+        const std::size_t nc = cb.NumCells();
+        const auto all_on = [&](const std::int64_t* pNodes, std::size_t K) {
+            for (std::size_t k = 0; k < K; ++k)
+                if (!on_plane[static_cast<std::size_t>(pNodes[k])])
+                    return false;
+            return K > 0;
+        };
+        std::vector<std::int64_t>& r_rank = rank[b];
+        r_rank.assign(nc, -1);
+        std::vector<std::int64_t>& r_kept = mirrored[b];
+        const std::string type(cb.Type());
+        if (r_flip.mPolyhedron) {
+            std::vector<std::int64_t> flat, rows{0}, faces{0};
+            const auto put = [&](std::size_t c, bool Flip) {
+                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
+                    const auto face = cb.Face(c, f);
+                    for (std::size_t k = 0; k < face.second; ++k) {
+                        const std::size_t at = Flip && k > 0 ? face.second - k : k;
+                        const std::int64_t v = face.first[at];
+                        flat.push_back(Flip ? image[static_cast<std::size_t>(v)] : v);
+                    }
+                    rows.push_back(static_cast<std::int64_t>(flat.size()));
+                }
+                faces.push_back(static_cast<std::int64_t>(rows.size() - 1));
+            };
+            for (std::size_t c = 0; c < nc; ++c) {
+                bool on = weld;
+                for (std::size_t f = 0; f < cb.NumFaces(c) && on; ++f) {
+                    const auto face = cb.Face(c, f);
+                    on = all_on(face.first, face.second);
+                }
+                if (!on) {
+                    r_rank[c] = static_cast<std::int64_t>(r_kept.size());
+                    r_kept.push_back(static_cast<std::int64_t>(c));
+                }
+            }
+            if (keep)
+                for (std::size_t c = 0; c < nc; ++c)
+                    put(c, false);
+            for (const std::int64_t c : r_kept)
+                put(static_cast<std::size_t>(c), true);
+            res.mMesh.AddPolyhedronBlock(type, std::move(flat), std::move(rows), std::move(faces));
+        } else if (r_flip.mRaggedPolygon) {
+            std::vector<std::int64_t> flat, rows{0};
+            for (std::size_t c = 0; c < nc; ++c)
+                if (!(weld && all_on(cb.Row(c), cb.RowSize(c)))) {
+                    r_rank[c] = static_cast<std::int64_t>(r_kept.size());
+                    r_kept.push_back(static_cast<std::int64_t>(c));
+                }
+            if (keep)
+                for (std::size_t c = 0; c < nc; ++c) {
+                    flat.insert(flat.end(), cb.Row(c), cb.Row(c) + cb.RowSize(c));
+                    rows.push_back(static_cast<std::int64_t>(flat.size()));
+                }
+            for (const std::int64_t cc : r_kept) {
+                const auto c = static_cast<std::size_t>(cc);
+                const std::int64_t* row = cb.Row(c);
+                const std::size_t k = cb.RowSize(c);
+                for (std::size_t i = 0; i < k; ++i)
+                    flat.push_back(image[static_cast<std::size_t>(row[i == 0 ? 0 : k - i])]);
+                rows.push_back(static_cast<std::int64_t>(flat.size()));
+            }
+            res.mMesh.AddPolygonBlock(type, std::move(flat), std::move(rows));
+        } else {
+            const std::vector<int>& perm =
+                r_flip.mPolygonPerm.empty() ? *r_flip.pPerm : r_flip.mPolygonPerm;
+            const std::size_t npc = cb.NodesPerCell();
+            const NDArray& conn = cb.Conn();
+            std::vector<std::int64_t> row(npc);
+            for (std::size_t c = 0; c < nc; ++c) {
+                bool on = weld;
+                for (std::size_t k = 0; k < npc && on; ++k)
+                    on = on_plane[static_cast<std::size_t>(detail::read_int(conn, c * npc + k))] != 0;
+                if (!on || npc == 0) {
+                    r_rank[c] = static_cast<std::int64_t>(r_kept.size());
+                    r_kept.push_back(static_cast<std::int64_t>(c));
+                }
+            }
+            const std::size_t base = keep ? nc : 0;
+            NDArray out(DType::Int64, {base + r_kept.size(), npc});
+            std::int64_t* q = out.As<std::int64_t>();
+            parallel_for_bw(base, [&](std::size_t c) {
+                for (std::size_t k = 0; k < npc; ++k)
+                    q[c * npc + k] = detail::read_int(conn, c * npc + k);
+            });
+            parallel_for_bw(r_kept.size(), [&](std::size_t r) {
+                const auto c = static_cast<std::size_t>(r_kept[r]);
+                for (std::size_t k = 0; k < npc; ++k) {
+                    const std::int64_t v =
+                        detail::read_int(conn, c * npc + static_cast<std::size_t>(perm[k]));
+                    q[(base + r) * npc + k] = image[static_cast<std::size_t>(v)];
+                }
+            });
+            res.mMesh.AddCellBlock(type, std::move(out));
+        }
+        res.mNumFlippedCells += static_cast<std::int64_t>(r_kept.size());
+        res.mNumDroppedCells += static_cast<std::int64_t>(nc - r_kept.size());
+    }
+
+    // Data, row by row.
+    const bool reflect = o.mReflectVectorData;
+    for (const std::string& name : rMesh.PointDataNames())
+        res.mMesh.AddPointData(
+            name, mir_carry(rMesh.PointData(name), n, point_rows, first_image, reflect, H));
+    for (const std::string& name : rMesh.CellDataNames()) {
+        std::vector<NDArray> blocks;
+        for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name) && b < nb; ++b) {
+            const std::size_t nc = rMesh.Cells(b).NumCells();
+            std::vector<std::int64_t> rows = keep ? mir_iota(nc) : std::vector<std::int64_t>{};
+            rows.insert(rows.end(), mirrored[b].begin(), mirrored[b].end());
+            blocks.push_back(
+                mir_carry(rMesh.CellData(name, b), nc, rows, keep ? nc : 0, reflect, H));
+        }
+        res.mMesh.AddCellData(name, std::move(blocks));
+    }
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        NDArray a = rMesh.FieldData(name);
+        a.MakeOwned();
+        res.mMesh.AddFieldData(name, std::move(a));
+    }
+    for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i)
+        res.mMesh.AddPropertySet(rMesh.GetPropertySet(i));
+
+    // Regions. A cell (b, c) is out_base[b] + c when kept, and its copy
+    // out_base[b] + (kept ? n_b : 0) + rank.
+    const std::vector<std::int64_t> in_bases = detail::block_bases(rMesh);
+    std::vector<std::int64_t> out_bases(nb + 1, 0);
+    for (std::size_t b = 0; b < nb; ++b)
+        out_bases[b + 1] = out_bases[b] +
+                           (keep ? static_cast<std::int64_t>(rMesh.Cells(b).NumCells()) : 0) +
+                           static_cast<std::int64_t>(mirrored[b].size());
+    const auto original_of = [&](std::size_t B, std::int64_t C) { return out_bases[B] + C; };
+    const auto copy_of = [&](std::size_t B, std::int64_t C) -> std::int64_t {
+        const std::int64_t r = rank[B][static_cast<std::size_t>(C)];
+        if (r < 0)
+            return -1;
+        return out_bases[B] +
+               (keep ? static_cast<std::int64_t>(rMesh.Cells(B).NumCells()) : 0) + r;
+    };
+    std::vector<std::int64_t> facet;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r_in = rMesh.Region(i);
+        const std::int64_t* e = r_in.Entries();
+        const std::size_t ne = r_in.NumEntries();
+        std::vector<std::int64_t> flat;
+        std::int64_t dropped = 0, invalid = 0;
+        if (r_in.mKind == RegionKind::Point) {
+            for (std::size_t k = 0; k < ne; ++k) {
+                if (e[k] < 0 || static_cast<std::size_t>(e[k]) >= n) {
+                    ++invalid;
+                    continue;
+                }
+                flat.push_back(e[k]);
+                if (keep)
+                    flat.push_back(image[static_cast<std::size_t>(e[k])]);
+            }
+        } else if (r_in.mKind == RegionKind::Cell) {
+            for (std::size_t k = 0; k < ne; ++k) {
+                const auto [b, c] = detail::global_to_block_row(in_bases, e[k]);
+                if (b >= nb) {
+                    ++invalid;
+                    continue;
+                }
+                if (keep)
+                    flat.push_back(original_of(b, c));
+                const std::int64_t m = copy_of(b, c);
+                if (m >= 0)
+                    flat.push_back(m);
+            }
+        } else {
+            for (std::size_t k = 0; k < ne; ++k) {
+                const std::int64_t g = e[2 * k], f = e[2 * k + 1];
+                const auto [b, c] = detail::global_to_block_row(in_bases, g);
+                if (b >= nb) {
+                    ++invalid;
+                    continue;
+                }
+                const auto cb = rMesh.Cells(b);
+                const auto uc = static_cast<std::size_t>(c);
+                const std::int64_t nfac =
+                    flips[b].mPolyhedron
+                        ? static_cast<std::int64_t>(cb.NumFaces(uc))
+                        : (flips[b].mRaggedPolygon
+                               ? static_cast<std::int64_t>(cb.RowSize(uc))
+                               : static_cast<std::int64_t>(cb.NodesPerCell()));
+                const std::int64_t nf = mir_flip_facet(flips[b], f, nfac);
+                if (nf < 0) {
+                    ++invalid;
+                    continue;
+                }
+                if (weld) {
+                    CellType ft = CellType::Custom;
+                    bool on = detail::facet_nodes(rMesh, g, f, ft, facet) && !facet.empty();
+                    for (const std::int64_t v : facet)
+                        on = on && on_plane[static_cast<std::size_t>(v)];
+                    if (on) {
+                        ++dropped;
+                        continue;
+                    }
+                }
+                if (keep) {
+                    flat.push_back(original_of(b, c));
+                    flat.push_back(f);
+                }
+                const std::int64_t m = copy_of(b, c);
+                if (m >= 0) {
+                    flat.push_back(m);
+                    flat.push_back(nf);
+                }
+            }
+        }
+        res.mNumDroppedSides += dropped;
+        if (dropped > 0)
+            res.mWarnings.push_back("region '" + r_in.mName + "': " + std::to_string(dropped) +
+                                    " facet(s) on the mirror plane are interior and were dropped");
+        if (invalid > 0)
+            res.mWarnings.push_back("region '" + r_in.mName + "': " + std::to_string(invalid) +
+                                    " entr(ies) naming no entity of the mesh were dropped");
+        Region r_out(r_in.mName, r_in.mKind, r_in.mDim, r_in.mTag,
+                     mir_entries(flat, r_in.mKind == RegionKind::Side));
+        res.mMesh.AddRegion(std::move(r_out));
+    }
+    return res;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/mirror.cpp =====
 // ===== begin src/cpp/src/operations/neighbors.cpp =====
 #include <algorithm>
 #include <array>
@@ -231972,6 +237847,8 @@ OctreeResult octree(const Mesh& rMesh, const OctreeOptions& rOptions) {
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -232152,7 +238029,99 @@ void octm_prepare(const Mesh& rMesh, const OctreeMeshOptions& rO, detail::Octree
     rResult.mSurfaceLevel = surface_level;
     rResult.mMinSize = rS.mFrame.mMinSize;
     rResult.mMaxSize = hmax;
+    octree_mesh_flood(rS, rO);
     rClock.Lap(rResult, "octree");
+}
+
+// Whether every edge of the welded skin is walked as often one way as the
+// other: a closed, consistently oriented cycle, whose winding number is an
+// integer everywhere off the skin.
+bool octm_skin_closed(const detail::OctreeSkin& rSkin) {
+    std::vector<std::array<std::int64_t, 3>> edges;
+    edges.reserve(3 * rSkin.mTris.size());
+    for (const auto& t : rSkin.mTris)
+        for (std::size_t k = 0; k < 3; ++k) {
+            const std::int64_t a = t[k], b = t[(k + 1) % 3];
+            if (a != b)
+                edges.push_back({std::min(a, b), std::max(a, b), a < b ? 1 : -1});
+        }
+    std::sort(edges.begin(), edges.end());
+    for (std::size_t i = 0; i < edges.size();) {
+        std::int64_t sum = 0;
+        std::size_t j = i;
+        for (; j < edges.size() && edges[j][0] == edges[i][0] && edges[j][1] == edges[i][1]; ++j)
+            sum += edges[j][2];
+        if (sum != 0)
+            return false;
+        i = j;
+    }
+    return !edges.empty();
+}
+
+// Per leaf, 1 when the skin reaches its box grown by a margin. The cut flags'
+// closed-box test can miss a triangle that lies exactly in the face between
+// two leaves (a cap on a lattice plane), and a flood through that face would
+// cross the skin; this test cannot, and it sees every skin triangle, not the
+// candidates a leaf inherited.
+std::vector<std::uint8_t> octm_blocked(const detail::OctreeMeshSetup& rS,
+                                       const detail::LinearOctree& rTree) {
+    using namespace detail;
+    const OctreeSkin& skin = rS.mSkin;
+    const double fine = rS.mFrame.Fine();
+    const double margin = 1e-6 * fine;
+    std::vector<std::vector<std::int64_t>> hit(skin.mTris.size());
+    parallel_for(
+        skin.mTris.size(),
+        [&](std::size_t t) {
+            const Vec3& a = skin.mPoints[static_cast<std::size_t>(skin.mTris[t][0])];
+            const Vec3& b = skin.mPoints[static_cast<std::size_t>(skin.mTris[t][1])];
+            const Vec3& c = skin.mPoints[static_cast<std::size_t>(skin.mTris[t][2])];
+            std::array<std::int64_t, 3> lo{}, hi{};
+            for (std::size_t k = 0; k < 3; ++k) {
+                const double x0 = std::min({a[k], b[k], c[k]}) - 2.0 * margin;
+                const double x1 = std::max({a[k], b[k], c[k]}) + 2.0 * margin;
+                lo[k] = std::max<std::int64_t>(
+                    0, static_cast<std::int64_t>(std::floor((x0 - rS.mFrame.mOrigin[k]) / fine)));
+                hi[k] = std::min<std::int64_t>(
+                    rTree.Extent(k) - 1,
+                    static_cast<std::int64_t>(std::floor((x1 - rS.mFrame.mOrigin[k]) / fine)));
+            }
+            std::vector<std::int64_t>& out = hit[t];
+            for (std::int64_t z = lo[2]; z <= hi[2]; ++z)
+                for (std::int64_t y = lo[1]; y <= hi[1]; ++y)
+                    for (std::int64_t x = lo[0]; x <= hi[0];) {
+                        const std::int64_t j = rTree.Locate(x, y, z);
+                        if (j < 0)
+                            break;
+                        const auto jl = rTree.Lo(static_cast<std::size_t>(j));
+                        const std::int64_t span = rTree.Span(static_cast<std::size_t>(j));
+                        Vec3 centre, half;
+                        for (std::size_t k = 0; k < 3; ++k) {
+                            half[k] = 0.5 * static_cast<double>(span) * fine + margin;
+                            centre[k] = rS.mFrame.mOrigin[k] + (static_cast<double>(jl[k]) +
+                                                                0.5 * static_cast<double>(span)) *
+                                                                   fine;
+                        }
+                        if (tri_box_overlap(centre, half, a, b, c))
+                            out.push_back(j);
+                        x = jl[0] + span;
+                    }
+        },
+        16);
+    std::vector<std::uint8_t> blocked(rTree.Size(), 0);
+    for (const auto& h : hit)
+        for (std::int64_t j : h)
+            blocked[static_cast<std::size_t>(j)] = 1;
+    return blocked;
+}
+
+// The union-find root of leaf `I`, compressing the path.
+std::size_t octm_root(std::vector<std::size_t>& rParent, std::size_t I) {
+    while (rParent[I] != I) {
+        rParent[I] = rParent[rParent[I]];
+        I = rParent[I];
+    }
+    return I;
 }
 
 // The output-independent part of the report.
@@ -232216,28 +238185,169 @@ void octree_mesh_warn(OctreeMeshResult& rResult, const std::string& rMessage) {
     rResult.mWarnings.push_back(rMessage);
 }
 
+void octree_mesh_flood(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions) {
+    OctreeMeshFlood& flood = rSetup.mFlood;
+    flood = OctreeMeshFlood{};
+    const char* p_env = std::getenv("MESHIOPLUSPLUS_OCTREE_MESH_FLOOD");
+    if (p_env != nullptr && std::string(p_env) == "0")
+        return;
+    // A threshold near an integer would put a flooded value near the cleaving
+    // levels and the near-threshold rechecks, where its exactness would show.
+    const double frac = rOptions.mWindingThreshold - std::floor(rOptions.mWindingThreshold);
+    if (frac < 0.1 || frac > 0.9 || !octm_skin_closed(rSetup.mSkin))
+        return;
+    const LinearOctree& tree = rSetup.mOctree.mTree;
+    const std::size_t n = tree.Size();
+    std::vector<std::uint8_t> cut = octm_blocked(rSetup, tree);
+    for (std::size_t i = 0; i < n; ++i)
+        cut[i] = cut[i] || rSetup.mOctree.mCut[i];
+
+    // Deep leaves: neither they nor any of their 26 neighbours is cut, and
+    // none of those neighbours lies outside the forest.
+    const std::vector<std::array<int, 3>> around = linear_octree_directions(OctreeAdjacency::Full);
+    std::vector<std::uint8_t> deep(n, 0);
+    parallel_for(n, [&](std::size_t i) {
+        if (cut[i])
+            return;
+        const auto lo = tree.Lo(i);
+        const std::int64_t s = tree.Span(i);
+        for (const auto& d : around) {
+            if (!tree.Contains(lo[0] + d[0] * s, lo[1] + d[1] * s, lo[2] + d[2] * s))
+                return;
+            for (std::int64_t j : linear_octree_neighbours(tree, i, d[0], d[1], d[2]))
+                if (cut[static_cast<std::size_t>(j)])
+                    return;
+        }
+        deep[i] = 1;
+    });
+
+    // The regions of uncut leaves joined through their faces, each rooted at
+    // its lowest leaf; one pass in leaf order, so the roots do not depend on
+    // the thread count.
+    std::vector<std::size_t> parent(n);
+    for (std::size_t i = 0; i < n; ++i)
+        parent[i] = i;
+    const int up[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    for (std::size_t i = 0; i < n; ++i) {
+        if (cut[i])
+            continue;
+        for (const auto& d : up)
+            for (std::int64_t j : linear_octree_neighbours(tree, i, d[0], d[1], d[2])) {
+                if (cut[static_cast<std::size_t>(j)])
+                    continue;
+                const std::size_t a = octm_root(parent, i);
+                const std::size_t b = octm_root(parent, static_cast<std::size_t>(j));
+                if (a != b)
+                    parent[std::max(a, b)] = std::min(a, b);
+            }
+    }
+
+    // Each region's winding number, from up to three of its deep leaves (the
+    // lowest): they must agree on one integer, each within 0.1 of it.
+    std::vector<std::size_t> root(n, 0);
+    for (std::size_t i = 0; i < n; ++i)
+        root[i] = octm_root(parent, i);
+    std::vector<std::vector<std::size_t>> probes(n);
+    for (std::size_t i = 0; i < n; ++i)
+        if (deep[i] && probes[root[i]].size() < 3)
+            probes[root[i]].push_back(i);
+    std::vector<std::size_t> regions, probe_leaf;
+    for (std::size_t r = 0; r < n; ++r)
+        if (!probes[r].empty()) {
+            regions.push_back(r);
+            probe_leaf.insert(probe_leaf.end(), probes[r].begin(), probes[r].end());
+        }
+    if (regions.empty())
+        return;
+    const std::vector<Vec3> centres = octree_mesh_leaf_centres(rSetup.mFrame, tree);
+    std::vector<Vec3> at(probe_leaf.size());
+    for (std::size_t k = 0; k < probe_leaf.size(); ++k)
+        at[k] = centres[probe_leaf[k]];
+    const double beta =
+        rOptions.mWindingBeta > 0.0 ? std::max(8.0, 4.0 * rOptions.mWindingBeta) : 0.0;
+    const std::vector<double> w = fast_windings(rSetup.mBvh, at, beta);
+    std::vector<std::int32_t> value(n, OctreeMeshFlood::kUnknown);
+    std::size_t k = 0;
+    for (std::size_t r : regions) {
+        std::int32_t v = OctreeMeshFlood::kUnknown;
+        bool agree = true;
+        for (std::size_t q = 0; q < probes[r].size(); ++q, ++k) {
+            const double x = rSetup.mWindingSign * w[k];
+            const double rounded = std::round(x);
+            if (!(std::abs(x - rounded) < 0.1) || std::abs(rounded) > 1e6)
+                agree = false;
+            else if (q == 0)
+                v = static_cast<std::int32_t>(rounded);
+            else if (static_cast<std::int32_t>(rounded) != v)
+                agree = false;
+        }
+        if (agree)
+            value[r] = v;
+    }
+    flood.mValue.assign(n, OctreeMeshFlood::kUnknown);
+    for (std::size_t i = 0; i < n; ++i)
+        if (deep[i] && value[root[i]] != OctreeMeshFlood::kUnknown) {
+            flood.mValue[i] = value[root[i]];
+            flood.mActive = true;
+        }
+    if (!flood.mActive)
+        return;
+    flood.mTree = tree;
+    flood.mOrigin = rSetup.mFrame.mOrigin;
+    flood.mFine = rSetup.mFrame.Fine();
+}
+
 std::vector<double> octree_mesh_winding(const OctreeMeshSetup& rSetup,
                                         const std::vector<Vec3>& rPoints,
                                         const OctreeMeshOptions& rOptions,
                                         OctreeMeshResult& rResult) {
-    std::vector<double> w = fast_windings(rSetup.mBvh, rPoints, rOptions.mWindingBeta);
-    for (double& v : w)
+    // The flooded value where the point lies in a deep leaf, else NaN.
+    const OctreeMeshFlood& flood = rSetup.mFlood;
+    std::vector<double> w(rPoints.size(), std::numeric_limits<double>::quiet_NaN());
+    if (flood.mActive)
+        parallel_for(rPoints.size(), [&](std::size_t i) {
+            std::array<std::int64_t, 3> cell{};
+            for (std::size_t a = 0; a < 3; ++a) {
+                const double x = std::floor((rPoints[i][a] - flood.mOrigin[a]) / flood.mFine);
+                if (!(x >= 0.0 && x < 4.0e18))
+                    return;
+                cell[a] = static_cast<std::int64_t>(x);
+            }
+            if (!flood.mTree.Contains(cell[0], cell[1], cell[2]))
+                return;
+            const std::int64_t leaf = flood.mTree.Locate(cell[0], cell[1], cell[2]);
+            if (leaf >= 0 &&
+                flood.mValue[static_cast<std::size_t>(leaf)] != OctreeMeshFlood::kUnknown)
+                w[i] = static_cast<double>(flood.mValue[static_cast<std::size_t>(leaf)]);
+        });
+    std::vector<std::size_t> todo;
+    for (std::size_t i = 0; i < w.size(); ++i)
+        if (std::isnan(w[i]))
+            todo.push_back(i);
+    rResult.mNumWindingSkipped += static_cast<std::int64_t>(w.size() - todo.size());
+
+    std::vector<Vec3> pts(todo.size());
+    for (std::size_t k = 0; k < todo.size(); ++k)
+        pts[k] = rPoints[todo[k]];
+    std::vector<double> sub = fast_windings(rSetup.mBvh, pts, rOptions.mWindingBeta);
+    for (double& v : sub)
         v *= rSetup.mWindingSign;
     if (rOptions.mWindingBeta > 0.0) {
         std::vector<std::size_t> near;
-        for (std::size_t i = 0; i < w.size(); ++i)
-            if (std::abs(w[i] - rOptions.mWindingThreshold) < 0.1)
+        for (std::size_t i = 0; i < sub.size(); ++i)
+            if (std::abs(sub[i] - rOptions.mWindingThreshold) < 0.1)
                 near.push_back(i);
         const double beta = std::max(8.0, 4.0 * rOptions.mWindingBeta);
         parallel_for(
             near.size(),
             [&](std::size_t k) {
-                w[near[k]] =
-                    rSetup.mWindingSign * fast_winding(rSetup.mBvh, rPoints[near[k]], beta);
+                sub[near[k]] = rSetup.mWindingSign * fast_winding(rSetup.mBvh, pts[near[k]], beta);
             },
             64);
         rResult.mNumWindingRechecks += static_cast<std::int64_t>(near.size());
     }
+    for (std::size_t k = 0; k < todo.size(); ++k)
+        w[todo[k]] = sub[k];
     return w;
 }
 
@@ -232315,6 +238425,14 @@ OctreeMeshSkinGrading octree_mesh_skin_grading_from_name(const std::string& rNam
     if (rName == "uniform")
         return OctreeMeshSkinGrading::Uniform;
     octm_fail("unknown skin_grading '" + rName + "' (expected 'graded' or 'uniform')");
+}
+
+OctreeMeshHexGrading octree_mesh_hex_grading_from_name(const std::string& rName) {
+    if (rName == "uniform")
+        return OctreeMeshHexGrading::Uniform;
+    if (rName == "graded")
+        return OctreeMeshHexGrading::Graded;
+    octm_fail("unknown hex_grading '" + rName + "' (expected 'uniform' or 'graded')");
 }
 
 OctreeMeshFill octree_mesh_fill_from_name(const std::string& rName) {
@@ -232658,13 +238776,13 @@ struct OctmhFeatures {
 
 // Snap the boundary nodes @p rBoundaryNodes (with the boundary quads' edges as
 // their graph) onto the feature corners and chains of the skin: a corner
-// takes the nearest unclaimed node within 1.5 sizes, a chain the shortest
-// path between its corners' nodes in a tube of 1.25 sizes around it. Snapped
+// takes the nearest unclaimed node within 1.5 of its size @p rSize, a chain the
+// shortest path between its corners' nodes in a tube of 1.25 sizes around it. Snapped
 // nodes are set to 1 (corner) or 2 (chain) in @p rFeature.
 OctmhFeatures octmh_snap(std::vector<Vec3>& rPoints,
                          const std::vector<std::array<std::int64_t, 4>>& rQuads,
-                         const FeatureGraph& rGraph, const std::vector<Vec3>& rSkin, double H,
-                         std::vector<std::uint8_t>& rFeature) {
+                         const FeatureGraph& rGraph, const std::vector<Vec3>& rSkin,
+                         const std::vector<double>& rSize, std::vector<std::uint8_t>& rFeature) {
     OctmhFeatures rep;
     rep.mCorners = static_cast<std::int64_t>(rGraph.mCorners.size());
     rep.mChains = static_cast<std::int64_t>(rGraph.mChains.size());
@@ -232687,12 +238805,12 @@ OctmhFeatures octmh_snap(std::vector<Vec3>& rPoints,
     for (std::int64_t c : rGraph.mCorners) {
         const Vec3& x = rSkin[static_cast<std::size_t>(c)];
         std::int64_t best = -1;
-        double best_d = 1.5 * H;
+        double best_d = std::numeric_limits<double>::infinity();
         for (std::int64_t v : nodes) {
             if (rFeature[static_cast<std::size_t>(v)])
                 continue;
             const double d = vec3_norm(vec3_sub(rPoints[static_cast<std::size_t>(v)], x));
-            if (d < best_d) {
+            if (d < best_d && d < 1.5 * rSize[static_cast<std::size_t>(v)]) {
                 best_d = d;
                 best = v;
             }
@@ -232736,11 +238854,13 @@ OctmhFeatures octmh_snap(std::vector<Vec3>& rPoints,
             for (std::int64_t v : adj[static_cast<std::size_t>(u)]) {
                 if (v != t && rFeature[static_cast<std::size_t>(v)])
                     continue;
-                if (off(v) > 1.25 * H)
+                if (off(v) > 1.25 * rSize[static_cast<std::size_t>(v)])
                     continue;
                 const double len = vec3_norm(vec3_sub(rPoints[static_cast<std::size_t>(v)],
                                                       rPoints[static_cast<std::size_t>(u)]));
-                const double nd = d + len * (1.0 + 16.0 * (off(u) + off(v)) / H);
+                const double h =
+                    0.5 * (rSize[static_cast<std::size_t>(u)] + rSize[static_cast<std::size_t>(v)]);
+                const double nd = d + len * (1.0 + 16.0 * (off(u) + off(v)) / h);
                 if (nd < dist[static_cast<std::size_t>(v)]) {
                     dist[static_cast<std::size_t>(v)] = nd;
                     prev[static_cast<std::size_t>(v)] = u;
@@ -232764,11 +238884,11 @@ OctmhFeatures octmh_snap(std::vector<Vec3>& rPoints,
     return rep;
 }
 
-}  // namespace
-
-void octree_mesh_hexahedra(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, OctreeMeshResult& rR) {
+// The uniform grid: every cell at the skin's level, the kept ones made
+// manifold. @p rLevel gets each hexahedron's level, @p rSize each node's size.
+void octmh_uniform(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, OctreeMeshResult& rR,
+                   HexMesh& hm, std::vector<std::int64_t>& rLevel, std::vector<double>& rSize) {
     const OctreeFrame& frame = rS.mFrame;
-    octree_mesh_report_tree(rS.mOctree.mTree, rR);
     // The grid: every cell at the skin's level.
     const double hs = rO.mSurfaceSize > 0.0 ? rO.mSurfaceSize : rS.mField.mSkinMinSize;
     const std::int32_t level = frame.LevelFor(std::max(hs, frame.mMinSize));
@@ -232812,7 +238932,6 @@ void octree_mesh_hexahedra(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
         return (K * vy + J) * vx + I;
     };
     std::vector<std::int64_t> remap(static_cast<std::size_t>(vx * vy * (n[2] + 1)), -1);
-    HexMesh hm;
     std::vector<std::int64_t> hex_cell;
     for (std::int64_t k = 0; k < n[2]; ++k)
         for (std::int64_t j = 0; j < n[1]; ++j)
@@ -232843,10 +238962,146 @@ void octree_mesh_hexahedra(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
         hm.mHexes.push_back({at(0, 0, 0), at(1, 0, 0), at(1, 1, 0), at(0, 1, 0), at(0, 0, 1),
                              at(1, 0, 1), at(1, 1, 1), at(0, 1, 1)});
     }
+    rLevel.assign(hm.mHexes.size(), level);
+    rSize.assign(hm.mPoints.size(), h);
+}
+
+// The graded hexahedra: the all-hexahedral dual of the octree, paired and
+// with its transitions replaced by Livesu, Pitzalis and Cherchi's schemes
+// (detail/hex_dual_schemes.hpp). A dual hexahedron is kept when the primal
+// vertex it surrounds is inside; @p rSize is each node's mean edge.
+void octmh_graded(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, OctreeMeshResult& rR,
+                  HexMesh& hm, std::vector<std::int64_t>& rLevel, std::vector<double>& rSize) {
+    const OctreeFrame& frame = rS.mFrame;
+    LinearOctree tree = rS.mOctree.mTree;
+    linear_octree_pair(tree, OctreeAdjacency::Full, rO.mMaxCells);
+    const HexDualMesh dual = hex_dual_mesh(tree);
+    const double unit = frame.mRootSize / static_cast<double>(std::int64_t{1} << tree.mMaxLevel) /
+                        static_cast<double>(kHexDualUnit);
+    auto world = [&](double X, double Y, double Z) {
+        return Vec3{frame.mOrigin[0] + X * unit, frame.mOrigin[1] + Y * unit,
+                    frame.mOrigin[2] + Z * unit};
+    };
+    std::vector<Vec3> centres(dual.mHexes.size());
+    for (std::size_t c = 0; c < centres.size(); ++c)
+        centres[c] =
+            world(static_cast<double>(dual.mCentre[c][0]), static_cast<double>(dual.mCentre[c][1]),
+                  static_cast<double>(dual.mCentre[c][2]));
+    const std::vector<double> w = octree_mesh_winding(rS, centres, rO, rR);
+    std::vector<std::uint8_t> kept(centres.size(), 0);
+    for (std::size_t c = 0; c < kept.size(); ++c)
+        kept[c] = w[c] > rO.mWindingThreshold;
+    // A centre is a primal vertex, on the lattice's planes, and a skin may lie on
+    // them too (a cap on a lattice plane): a hexahedron kept by a hair there
+    // would be pressed flat by the projection and the pillow. Keep only centres
+    // more than a tenth of their cell inside.
+    {
+        std::vector<std::size_t> near;
+        std::vector<Vec3> at;
+        for (std::size_t c = 0; c < kept.size(); ++c)
+            if (kept[c]) {
+                near.push_back(c);
+                at.push_back(centres[c]);
+            }
+        const std::vector<SurfaceProjection> proj = query_surface_projections(rS.mQuery, at);
+        for (std::size_t i = 0; i < near.size(); ++i) {
+            const std::size_t c = near[i];
+            const double cell =
+                frame.mRootSize / static_cast<double>(std::int64_t{1} << dual.mLevel[c]);
+            if (vec3_norm(vec3_sub(proj[i].mPoint, centres[c])) < 0.1 * cell)
+                kept[c] = 0;
+        }
+    }
+    if (std::none_of(kept.begin(), kept.end(), [](std::uint8_t k) { return k != 0; }))
+        throw std::invalid_argument(std::string(kOctreeMeshPrefix) +
+                                    "no graded hexahedron has its centre inside the skin; "
+                                    "lower min_size");
+    HexMesh all;
+    all.mPoints.reserve(dual.mPoints.size());
+    for (const Vec3& p : dual.mPoints)
+        all.mPoints.push_back(world(p[0], p[1], p[2]));
+    all.mHexes = dual.mHexes;
+    const std::int64_t added = hex_make_manifold(all, kept, w);
+    if (added > 0)
+        log::debug("{}{} cells added for a manifold boundary", kOctreeMeshPrefix, added);
+    std::int64_t level = 0;
+    for (std::int32_t l : dual.mLevel)
+        level = std::max<std::int64_t>(level, l);
+    rR.mSurfaceLevel = level;
+    std::vector<std::int64_t> remap(all.mPoints.size(), -1);
+    for (std::size_t c = 0; c < kept.size(); ++c) {
+        if (!kept[c])
+            continue;
+        std::array<std::int64_t, 8> hex{};
+        for (std::size_t k = 0; k < 8; ++k) {
+            std::int64_t& r = remap[static_cast<std::size_t>(all.mHexes[c][k])];
+            if (r < 0) {
+                r = static_cast<std::int64_t>(hm.mPoints.size());
+                hm.mPoints.push_back(all.mPoints[static_cast<std::size_t>(all.mHexes[c][k])]);
+            }
+            hex[k] = r;
+        }
+        hm.mHexes.push_back(hex);
+        rLevel.push_back(dual.mLevel[c]);
+    }
+    // Each node's size: the mean of its edges.
+    rSize.assign(hm.mPoints.size(), 0.0);
+    std::vector<std::int64_t> count(hm.mPoints.size(), 0);
+    static constexpr int kEdges[12][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6},
+                                          {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+    for (const auto& hex : hm.mHexes)
+        for (const auto& e : kEdges) {
+            const auto a = static_cast<std::size_t>(hex[static_cast<std::size_t>(e[0])]);
+            const auto b = static_cast<std::size_t>(hex[static_cast<std::size_t>(e[1])]);
+            const double len = vec3_norm(vec3_sub(hm.mPoints[a], hm.mPoints[b]));
+            rSize[a] += len;
+            rSize[b] += len;
+            ++count[a];
+            ++count[b];
+        }
+    for (std::size_t v = 0; v < rSize.size(); ++v)
+        rSize[v] /= static_cast<double>(std::max<std::int64_t>(count[v], 1));
+    std::int64_t schemes = 0;
+    for (std::int64_t n : dual.mNumSchemes)
+        schemes += n;
+    log::debug("{}{} transition vertices, {} cells replaced by schemes, {} dual hexahedra",
+               kOctreeMeshPrefix, dual.mNumTransitionVertices, schemes, dual.mHexes.size());
+}
+
+}  // namespace
+
+void octree_mesh_hexahedra(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, OctreeMeshResult& rR) {
+    octree_mesh_report_tree(rS.mOctree.mTree, rR);
+    HexMesh hm;
+    std::vector<std::int64_t> cell_level;
+    std::vector<double> size;
+    if (rO.mHexGrading == OctreeMeshHexGrading::Graded)
+        octmh_graded(rS, rO, rR, hm, cell_level, size);
+    else
+        octmh_uniform(rS, rO, rR, hm, cell_level, size);
     const std::size_t num_grid = hm.mHexes.size();
 
     // The boundary, pillowed or not, onto the skin.
     const HexBoundary grid_boundary = hex_boundary(hm);
+    if (rO.mHexGrading == OctreeMeshHexGrading::Graded) {
+        // A boundary node's size is its edges along the boundary: an edge into a
+        // coarser cell inside would push its pillow past the nodes behind it.
+        std::vector<double> along(hm.mPoints.size(), 0.0);
+        std::vector<std::int64_t> count(hm.mPoints.size(), 0);
+        for (const auto& q : grid_boundary.mQuads)
+            for (std::size_t e = 0; e < 4; ++e) {
+                const auto a = static_cast<std::size_t>(q[e]);
+                const auto b = static_cast<std::size_t>(q[(e + 1) % 4]);
+                const double len = vec3_norm(vec3_sub(hm.mPoints[a], hm.mPoints[b]));
+                along[a] += len;
+                along[b] += len;
+                ++count[a];
+                ++count[b];
+            }
+        for (std::size_t v = 0; v < along.size(); ++v)
+            if (count[v] > 0)
+                size[v] = along[v] / static_cast<double>(count[v]);
+    }
     std::vector<std::int64_t> boundary_nodes;
     for (const auto& q : grid_boundary.mQuads)
         boundary_nodes.insert(boundary_nodes.end(), q.begin(), q.end());
@@ -232858,18 +239113,23 @@ void octree_mesh_hexahedra(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
         at_nodes.push_back(hm.mPoints[static_cast<std::size_t>(v)]);
     const std::vector<SurfaceProjection> proj = query_surface_projections(rS.mQuery, at_nodes);
     std::vector<std::int64_t> copy;
-    if (rO.mPillow)
+    if (rO.mPillow) {
         copy = hex_pillow(hm, grid_boundary);
+        size.resize(hm.mPoints.size());
+        for (std::size_t v = 0; v < copy.size(); ++v)
+            if (copy[v] >= 0)
+                size[static_cast<std::size_t>(copy[v])] = size[v];
+    }
     std::vector<HexNodeMode> mode(hm.mPoints.size(), HexNodeMode::Free);
     for (std::size_t b = 0; b < boundary_nodes.size(); ++b) {
         const auto v = static_cast<std::size_t>(boundary_nodes[b]);
         const Vec3 q = proj[b].mPoint;
         if (rO.mPillow) {
-            // The copy on the skin, the grid's node half a cell inside it.
+            // The copy on the skin, the grid's node half its size inside it.
             const Vec3 nrm = vec3_scale(vec3_normalize(proj[b].mNormal), rS.mWindingSign);
             hm.mPoints[static_cast<std::size_t>(copy[v])] = q;
             mode[static_cast<std::size_t>(copy[v])] = HexNodeMode::Slide;
-            hm.mPoints[v] = vec3_sub(q, vec3_scale(nrm, 0.5 * h));
+            hm.mPoints[v] = vec3_sub(q, vec3_scale(nrm, 0.5 * size[v]));
         } else {
             hm.mPoints[v] = q;
             mode[v] = HexNodeMode::Slide;
@@ -232885,7 +239145,7 @@ void octree_mesh_hexahedra(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
             edges.push_back({e.mA, e.mB});
         const FeatureGraph graph = feature_graph(rS.mSkin.mPoints, edges, rO.mCornerAngle);
         const OctmhFeatures f =
-            octmh_snap(hm.mPoints, boundary.mQuads, graph, rS.mSkin.mPoints, h, feature);
+            octmh_snap(hm.mPoints, boundary.mQuads, graph, rS.mSkin.mPoints, size, feature);
         rR.mNumCorners = f.mCorners;
         rR.mNumCornersSnapped = f.mCornersSnapped;
         rR.mNumFeatureChains = f.mChains;
@@ -232913,9 +239173,11 @@ void octree_mesh_hexahedra(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
     for (const auto& hex : hm.mHexes)
         worst = std::min(worst, hex_min_scaled_jacobian(hm.mPoints, hex));
     if (worst <= 0.0)
-        octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) +
-                                 "untangling left a hexahedron with a non-positive corner "
-                                 "Jacobian; raise untangle_iterations or lower surface_size");
+        octree_mesh_warn(
+            rR, std::string(kOctreeMeshPrefix) +
+                    "untangling left a hexahedron with a non-positive corner "
+                    "Jacobian; raise untangle_iterations or lower " +
+                    (rO.mHexGrading == OctreeMeshHexGrading::Graded ? "min_size" : "surface_size"));
     else if (worst < 0.2)
         octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) +
                                  "the smallest corner scaled Jacobian is " + std::to_string(worst));
@@ -232932,7 +239194,10 @@ void octree_mesh_hexahedra(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
     for (std::size_t c = 0; c < hm.mHexes.size(); ++c) {
         for (std::size_t k = 0; k < 8; ++k)
             conn.As<std::int64_t>()[c * 8 + k] = hm.mHexes[c][k];
-        lv.As<std::int64_t>()[c] = level;
+        lv.As<std::int64_t>()[c] =
+            c < num_grid
+                ? cell_level[c]
+                : cell_level[static_cast<std::size_t>(grid_boundary.mSides[c - num_grid][0])];
         pillow.As<std::int64_t>()[c] = c >= num_grid ? 1 : 0;
     }
     Mesh& m = rR.mMesh;
@@ -233499,12 +239764,15 @@ void octree_mesh_snap_features(OctreeMeshSetup& rS, const OctreeMeshOptions& rO,
     for (const OctreeFeatureEdge& e : rS.mFeatures)
         edges.push_back({e.mA, e.mB});
     const FeatureGraph graph = feature_graph(rS.mSkin.mPoints, edges, rO.mCornerAngle);
-    std::vector<std::uint8_t> inside(rTets.mTets.size());
-    for (std::size_t t = 0; t < inside.size(); ++t)
+    std::vector<std::uint8_t> inside(rTets.mTets.size()), guarded(rTets.mTets.size());
+    for (std::size_t t = 0; t < inside.size(); ++t) {
         inside[t] = rTets.mMaterial[t] > 0;
+        // The tetrahedra the output keeps; the others are about to be dropped.
+        guarded[t] = inside[t] || rO.mKeepOutside;
+    }
     std::vector<std::uint8_t> claimed(rTets.mPoints.size(), 0);
     const FeatureSnapReport rep = feature_snap(
-        rTets.mPoints, rTets.mTets, inside, graph, rS.mSkin.mPoints,
+        rTets.mPoints, rTets.mTets, inside, guarded, graph, rS.mSkin.mPoints,
         [&](const Vec3& rP) { return octree_mesh_local_size(rS, rP); },
         1e-12 * std::pow(rS.mFrame.mMinSize, 3.0), claimed, rTets.mFeature);
     rR.mNumCorners = rep.mNumCorners;
@@ -235562,7 +241830,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "LayoutMaxValenceDeviation",
           "ResegmentRounds",
           "LayoutSnapToFeatures",
-          "ValidateBySurfaceSampling"}},
+          "ValidateBySurfaceSampling",
+          "ConstrainPrimitives"}},
         {"RefinePatches",
          {"Tolerance", "Relative", "NormalWeight", "Epsilon", "FeatureAngle", "MaxIterations",
           "MinPatchCells", "RansacSeed", "Types", "AllowSplit", "AllowMerge", "Prefix"}},
@@ -235573,6 +241842,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "OverlapTolerance"}},
         {"SplitInterface", {"Region", "AddCohesive"}},
         {"QualityGate", {"Require", "MaxInverted", "MaxDegenerate"}},
+        {"CheckConformity", {"Tolerance", "Require", "AttachFlags"}},
         {"Snapshot",
          {"Path",           "Width",       "Height",        "Supersample",   "Cols",
           "Rows",           "Encoding",    "ColorDepth",    "PngCompress",   "View",
@@ -235605,12 +241875,15 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
         {"Voxelize",
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
-          "AttachOccupancy", "MaxCells", "Sign"}},
+          "AttachOccupancy", "MaxCells", "Sign", "Plane"}},
         {"Generate",
-         {"Shape", "Dims",        "Size",        "Origin", "Center",   "Radius",       "Height",
-          "N",     "Nu",          "Nv",          "Nxy",    "Nz",       "Subdivisions", "Sides",
-          "Rings", "InnerRadius", "OuterRadius", "Ntheta", "Nr",       "Nt",           "Angle",
-          "Edge",  "CellType",    "Split",       "Order",  "MaxCells", "Types",        "Pairs"}},
+         {"Shape",        "Dims",      "Size",  "Origin",      "Center",      "Radius",
+          "Height",       "N",         "Nu",    "Nv",          "Nxy",         "Nz",
+          "Subdivisions", "Sides",     "Rings", "InnerRadius", "OuterRadius", "Ntheta",
+          "Nr",           "Nt",        "Angle", "Edge",        "CellType",    "Split",
+          "Order",        "MaxCells",  "Types", "Pairs",       "Complete",    "Start",
+          "End",          "Pitch",     "Turns", "Seed",        "MajorRadius", "MinorRadius",
+          "Width",        "NumTwists", "Ncap",  "Ratio",       "Name"}},
         {"Octree", {"RootCells",    "MinLevel",       "MaxLevel",
                     "Bounds",       "Padding",        "PaddingRelative",
                     "Dimension",    "SampleDistance", "Balance",
@@ -235650,6 +241923,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "AttachDistance",
           "AttachQuality",
           "Pillow",
+          "HexGrading",
           "UntangleIterations",
           "MaxCells",
           "MaxTets"}},
@@ -235725,6 +241999,11 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"BoundaryLayer",
          {"FirstHeight", "NumLayers", "Growth", "Reverse", "CollisionFraction", "SmoothIterations",
           "MaxShrink", "Collapse", "NormalSmoothIterations", "FrontCheck"}},
+        // Sweeps (roadmap 3.1.2, 3.1.3) and the reflection (3.2.5).
+        {"Extrude", {"Direction", "NumLayers", "Ratio", "Offsets", "RecordLayers", "MaxCells"}},
+        {"Revolve",
+         {"Axis", "AxisPoint", "Angle", "NumLayers", "Tolerance", "RecordLayers", "MaxCells"}},
+        {"Mirror", {"Point", "Normal", "KeepOriginal", "Weld", "Tolerance", "ReflectData"}},
         // Tetrahedra filling the closed triangle surface (roadmap 6.7).
         {"Tetrahedralize",
          {"Backend", "MaxSize", "MaxVolume", "Grading", "OptimizeSteps", "MaxCells", "FaceArray"}},
@@ -236413,6 +242692,65 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         return std::move(r.mMesh);
     }
 
+    if (op == "Extrude") {
+        ExtrudeOptions o;
+        if (pipe_find(rStep, "Direction"))
+            pipe_vec3(rStep, "Direction", o.mDirection.data());
+        o.mNumLayers = static_cast<std::int32_t>(
+            pipe_number(rStep, "NumLayers", static_cast<double>(o.mNumLayers)));
+        o.mRatio = pipe_number(rStep, "Ratio", o.mRatio);
+        if (pipe_find(rStep, "Offsets"))
+            o.mOffsets = pipe_dvec(rStep, "Offsets");
+        o.mRecordLayers = pipe_flag(rStep, "RecordLayers", o.mRecordLayers);
+        o.mMaxCells = static_cast<std::int64_t>(
+            pipe_number(rStep, "MaxCells", static_cast<double>(o.mMaxCells)));
+        SweepResult r = extrude(mesh, o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumCells", static_cast<double>(r.mNumCells)},
+                        {"NumFlipped", static_cast<double>(r.mNumFlipped)},
+                        {"MinScaledJacobian", r.mMinScaledJacobian}});
+        return std::move(r.mMesh);
+    }
+
+    if (op == "Revolve") {
+        RevolveOptions o;
+        if (pipe_find(rStep, "Axis"))
+            pipe_vec3(rStep, "Axis", o.mAxis.data());
+        if (pipe_find(rStep, "AxisPoint"))
+            pipe_vec3(rStep, "AxisPoint", o.mAxisPoint.data());
+        o.mAngle = pipe_number(rStep, "Angle", o.mAngle);
+        o.mNumLayers = static_cast<std::int32_t>(
+            pipe_number(rStep, "NumLayers", static_cast<double>(o.mNumLayers)));
+        o.mTolerance = pipe_number(rStep, "Tolerance", o.mTolerance);
+        o.mRecordLayers = pipe_flag(rStep, "RecordLayers", o.mRecordLayers);
+        o.mMaxCells = static_cast<std::int64_t>(
+            pipe_number(rStep, "MaxCells", static_cast<double>(o.mMaxCells)));
+        SweepResult r = revolve(mesh, o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumCells", static_cast<double>(r.mNumCells)},
+                        {"NumOnAxis", static_cast<double>(r.mNumOnAxis)},
+                        {"MinScaledJacobian", r.mMinScaledJacobian}});
+        return std::move(r.mMesh);
+    }
+
+    if (op == "Mirror") {
+        MirrorOptions o;
+        if (pipe_find(rStep, "Point"))
+            pipe_vec3(rStep, "Point", o.mOrigin.data());
+        if (pipe_find(rStep, "Normal"))
+            pipe_vec3(rStep, "Normal", o.mNormal.data());
+        o.mKeepOriginal = pipe_flag(rStep, "KeepOriginal", o.mKeepOriginal);
+        o.mWeld = pipe_flag(rStep, "Weld", o.mWeld);
+        o.mTolerance = pipe_number(rStep, "Tolerance", o.mTolerance);
+        o.mReflectVectorData = pipe_flag(rStep, "ReflectData", o.mReflectVectorData);
+        MirrorResult r = mirror(mesh, o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumFlippedCells", static_cast<double>(r.mNumFlippedCells)},
+                        {"NumPointsOnPlane", static_cast<double>(r.mNumPointsOnPlane)},
+                        {"NumDroppedCells", static_cast<double>(r.mNumDroppedCells)}});
+        return std::move(r.mMesh);
+    }
+
     if (op == "Tetrahedralize") {
         TetrahedralizeOptions o;
         const std::string backend = pipe_text(rStep, "Backend", "auto");
@@ -236824,6 +243162,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             static_cast<std::int64_t>(pipe_number(rStep, "ResegmentRounds", 2.0));
         opts.mLayoutSnapToFeatures = pipe_flag(rStep, "LayoutSnapToFeatures", true);
         opts.mValidateBySurfaceSampling = pipe_flag(rStep, "ValidateBySurfaceSampling", true);
+        opts.mConstrainPrimitives = pipe_flag(rStep, "ConstrainPrimitives", false);
         FitCadResult cr = fit_cad(mesh, pipe_text(rStep, "Path", ""), opts);
         std::vector<std::pair<std::string, double>> counters = {
             {"Valid", cr.mValid ? 1.0 : 0.0},
@@ -236871,6 +243210,12 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         if (opts.mFaceDeviation) {
             counters.emplace_back("HausdorffMax", cr.mHausdorffMax);
             counters.emplace_back("HausdorffRms", cr.mHausdorffRms);
+        }
+        if (opts.mConstrainPrimitives) {
+            counters.emplace_back("NumConstrainedPrimitives",
+                                  static_cast<double>(cr.mNumConstrainedPrimitives));
+            counters.emplace_back("NumConstraintGroups",
+                                  static_cast<double>(cr.mNumConstraintGroups));
         }
         // The freeform modes (v17.12.0) report only outside the legacy mode.
         if (opts.mFreeformMode != FitCadFreeformMode::Legacy) {
@@ -236963,6 +243308,30 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         pipe_push_step(rReport, rStep,
                        {{"NumChecks", static_cast<double>(qr.mChecks.size())},
                         {"NumFailed", static_cast<double>(failed)}});
+        return mesh;
+    }
+    if (op == "CheckConformity") {
+        // A gate by default: a mesh that is not conforming stops the pipeline;
+        // with Require false it only reports. AttachFlags writes
+        // conformity:hanging onto the mesh that flows on.
+        ConformityOptions opts;
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 1e-9);
+        opts.mAttachFlags = pipe_flag(rStep, "AttachFlags", false);
+        ConformityResult cr = check_conformity(mesh, opts);
+        if (pipe_flag(rStep, "Require", true) && !cr.mConforming)
+            throw std::runtime_error(
+                "meshio++: pipeline: CheckConformity failed: " +
+                std::to_string(cr.mNumHangingNodes) + " hanging node(s), " +
+                std::to_string(cr.mNumTJunctions) + " T-junction(s), " +
+                std::to_string(cr.mNumPartialOverlaps) + " partial overlap(s), " +
+                std::to_string(cr.mNumUnweldedFacets) + " unwelded facet pair(s)");
+        pipe_push_step(rReport, rStep,
+                       {{"NumHangingNodes", static_cast<double>(cr.mNumHangingNodes)},
+                        {"NumTJunctions", static_cast<double>(cr.mNumTJunctions)},
+                        {"NumPartialOverlaps", static_cast<double>(cr.mNumPartialOverlaps)},
+                        {"NumUnweldedFacets", static_cast<double>(cr.mNumUnweldedFacets)}});
+        if (opts.mAttachFlags)
+            return std::move(cr.mMesh);
         return mesh;
     }
     if (op == "EditRegions") {
@@ -237279,6 +243648,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         const std::int64_t max_cells =
             static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
         const int order = static_cast<int>(pipe_number(rStep, "Order", 1.0));
+        const bool complete = pipe_flag(rStep, "Complete", false);
         auto triple = [&](const char* pKey, std::array<double, 3> Default, bool PadZero) {
             std::vector<double> v = pipe_dvec(rStep, pKey);
             if (v.empty())
@@ -237304,6 +243674,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             return v;
         };
         const std::array<double, 3> zero = {{0.0, 0.0, 0.0}};
+        const std::array<double, 3> ones = {{1.0, 1.0, 1.0}};
         Mesh out;
         if (shape == "rectangle") {
             const auto d = dims_of(2, 1);
@@ -237314,27 +243685,27 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                             size.empty() ? std::array<double, 2>{{1.0, 1.0}}
                                          : std::array<double, 2>{{size[0], size[1]}},
                             triple("Origin", zero, true), pipe_text(rStep, "CellType", "quad"),
-                            pipe_text(rStep, "Split", "zigzag"), order, max_cells);
+                            pipe_text(rStep, "Split", "zigzag"), order, max_cells, complete);
         } else if (shape == "box") {
             const auto d = dims_of(3, 1);
             out = box({{d[0], d[1], d[2]}}, triple("Size", {{1.0, 1.0, 1.0}}, false),
                       triple("Origin", zero, false), pipe_text(rStep, "CellType", "hexahedron"),
-                      order, max_cells);
+                      order, max_cells, complete);
         } else if (shape == "disk") {
             out = disk(pipe_number(rStep, "Radius", 1.0), count("N", 8),
                        triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"), order,
-                       max_cells);
+                       max_cells, complete);
         } else if (shape == "uv_sphere") {
             out = uv_sphere(pipe_number(rStep, "Radius", 1.0), count("Nu", 16), count("Nv", 8),
                             triple("Center", zero, false), pipe_text(rStep, "CellType", "triangle"),
-                            order, max_cells);
+                            order, max_cells, complete);
         } else if (shape == "icosa_sphere") {
             out = icosa_sphere(pipe_number(rStep, "Radius", 1.0), count("Subdivisions", 2),
-                               triple("Center", zero, false), order, max_cells);
+                               triple("Center", zero, false), order, max_cells, complete);
         } else if (shape == "cylinder") {
             out = cylinder(pipe_number(rStep, "Radius", 1.0), pipe_number(rStep, "Height", 1.0),
                            count("Nxy", 8), count("Nz", 8), triple("Center", zero, false),
-                           pipe_text(rStep, "CellType", "hexahedron"), order, max_cells);
+                           pipe_text(rStep, "CellType", "hexahedron"), order, max_cells, complete);
         } else if (shape == "reference_triangle") {
             const std::vector<double> size = pipe_dvec(rStep, "Size");
             if (!size.empty() && size.size() != 2)
@@ -237342,25 +243713,108 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             out = reference_triangle(count("N", 4),
                                      size.empty() ? std::array<double, 2>{{1.0, 1.0}}
                                                   : std::array<double, 2>{{size[0], size[1]}},
-                                     triple("Origin", zero, true), order, max_cells);
+                                     triple("Origin", zero, true), order, max_cells, complete);
         } else if (shape == "ngon") {
             out = ngon(count("Sides", 6), pipe_number(rStep, "Radius", 1.0), count("Rings", 1),
-                       triple("Center", zero, false), order, max_cells);
+                       triple("Center", zero, false), order, max_cells, complete);
         } else if (shape == "annulus") {
             out = annulus(pipe_number(rStep, "InnerRadius", 0.5),
                           pipe_number(rStep, "OuterRadius", 1.0), count("Ntheta", 16),
                           count("Nr", 4), pipe_number(rStep, "Angle", 6.283185307179586),
                           triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"),
-                          order, max_cells);
+                          order, max_cells, complete);
         } else if (shape == "lshape") {
             out = lshape(count("N", 4), pipe_number(rStep, "Size", 2.0),
                          triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"), order,
-                         max_cells);
+                         max_cells, complete);
         } else if (shape == "plate_with_hole") {
             out =
                 plate_with_hole(pipe_number(rStep, "Radius", 0.25), pipe_number(rStep, "Size", 1.0),
                                 count("Nt", 8), count("Nr", 4), triple("Center", zero, false),
-                                pipe_text(rStep, "CellType", "quad"), order, max_cells);
+                                pipe_text(rStep, "CellType", "quad"), order, max_cells, complete);
+        } else if (shape == "line") {
+            out = line(count("N", 8), triple("Start", zero, false),
+                       triple("End", {{1.0, 0.0, 0.0}}, false), order, max_cells, complete);
+        } else if (shape == "circle") {
+            out = circle(pipe_number(rStep, "Radius", 1.0), count("N", 16),
+                         triple("Center", zero, false), order, max_cells, complete);
+        } else if (shape == "helix") {
+            out = helix(pipe_number(rStep, "Radius", 1.0), pipe_number(rStep, "Pitch", 1.0),
+                        pipe_number(rStep, "Turns", 2.0), count("N", 32),
+                        triple("Center", zero, false), order, max_cells, complete);
+        } else if (shape == "sphere_points") {
+            out = sphere_points(count("N", 100), pipe_number(rStep, "Radius", 1.0),
+                                triple("Center", zero, false), max_cells);
+        } else if (shape == "box_points") {
+            out = box_points(
+                count("N", 100), triple("Size", ones, false), triple("Origin", zero, false),
+                static_cast<std::uint64_t>(pipe_number(rStep, "Seed", 0.0)), max_cells);
+        } else if (shape == "tetra_sphere") {
+            out = tetra_sphere(pipe_number(rStep, "Radius", 1.0), count("Subdivisions", 3),
+                               triple("Center", zero, false), order, max_cells, complete);
+        } else if (shape == "octa_sphere") {
+            out = octa_sphere(pipe_number(rStep, "Radius", 1.0), count("Subdivisions", 2),
+                              triple("Center", zero, false), order, max_cells, complete);
+        } else if (shape == "cube_sphere") {
+            out = cube_sphere(pipe_number(rStep, "Radius", 1.0), count("N", 4),
+                              triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"),
+                              order, max_cells, complete);
+        } else if (shape == "geo_sphere") {
+            out = geo_sphere(pipe_number(rStep, "Radius", 1.0), count("N", 4),
+                             triple("Center", zero, false), order, max_cells, complete);
+        } else if (shape == "torus") {
+            out = torus(pipe_number(rStep, "MajorRadius", 1.0),
+                        pipe_number(rStep, "MinorRadius", 0.25), count("Nu", 32), count("Nv", 16),
+                        triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"), order,
+                        max_cells, complete);
+        } else if (shape == "moebius") {
+            out = moebius(pipe_number(rStep, "Radius", 1.0), pipe_number(rStep, "Width", 0.5),
+                          count("Nu", 32), count("Nv", 4), count("NumTwists", 1),
+                          triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"),
+                          order, max_cells, complete);
+        } else if (shape == "tube" || shape == "cone") {
+            out = (shape == "tube" ? &tube : &cone)(
+                pipe_number(rStep, "Radius", 1.0), pipe_number(rStep, "Height", 1.0),
+                count("Ntheta", 16), count("Nz", 4), triple("Center", zero, false),
+                pipe_text(rStep, "CellType", "quad"), order, max_cells, complete);
+        } else if (shape == "capsule") {
+            out = capsule(pipe_number(rStep, "Radius", 0.5), pipe_number(rStep, "Height", 1.0),
+                          count("Ntheta", 16), count("Nz", 4), count("Ncap", 4),
+                          triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"),
+                          order, max_cells, complete);
+        } else if (shape == "box_surface") {
+            const auto d = dims_of(3, 1);
+            out = box_surface({{d[0], d[1], d[2]}}, triple("Size", ones, false),
+                              triple("Origin", zero, false), pipe_text(rStep, "CellType", "quad"),
+                              order, max_cells, complete);
+        } else if (shape == "platonic") {
+            out =
+                platonic(pipe_text(rStep, "Name", "icosahedron"), pipe_number(rStep, "Radius", 1.0),
+                         triple("Center", zero, false), max_cells);
+        } else if (shape == "ball") {
+            out = ball(pipe_number(rStep, "Radius", 1.0), count("N", 4),
+                       triple("Center", zero, false), pipe_text(rStep, "CellType", "hexahedron"),
+                       order, max_cells, complete);
+        } else if (shape == "spherical_shell") {
+            out = spherical_shell(pipe_number(rStep, "InnerRadius", 0.5),
+                                  pipe_number(rStep, "OuterRadius", 1.0), count("N", 4),
+                                  count("Nr", 2), pipe_number(rStep, "Ratio", 1.0),
+                                  triple("Center", zero, false), order, max_cells, complete);
+        } else if (shape == "pipe") {
+            out =
+                pipe(pipe_number(rStep, "InnerRadius", 0.5), pipe_number(rStep, "OuterRadius", 1.0),
+                     pipe_number(rStep, "Height", 1.0), count("Ntheta", 16), count("Nr", 2),
+                     count("Nz", 4), pipe_number(rStep, "Ratio", 1.0),
+                     triple("Center", zero, false), order, max_cells, complete);
+        } else if (shape == "fichera") {
+            out = fichera(count("N", 2), pipe_number(rStep, "Size", 2.0),
+                          triple("Center", zero, false), pipe_text(rStep, "CellType", "hexahedron"),
+                          order, max_cells, complete);
+        } else if (shape == "solid_torus") {
+            out =
+                solid_torus(pipe_number(rStep, "MajorRadius", 1.0),
+                            pipe_number(rStep, "MinorRadius", 0.25), count("N", 4), count("Nu", 32),
+                            triple("Center", zero, false), order, max_cells, complete);
         } else if (shape == "honeycomb") {
             const auto d = dims_of(2, 4);
             out = honeycomb({{d[0], d[1]}}, pipe_number(rStep, "Edge", 1.0),
@@ -237372,7 +243826,10 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                 pipe_err(rStep,
                          "'Shape' must be one of rectangle, box, disk, uv_sphere, icosa_sphere, "
                          "cylinder, reference_triangle, ngon, annulus, lshape, plate_with_hole, "
-                         "honeycomb, reference_cells, not '" +
+                         "honeycomb, reference_cells, line, circle, helix, sphere_points, "
+                         "box_points, tetra_sphere, octa_sphere, cube_sphere, geo_sphere, torus, "
+                         "moebius, tube, cone, capsule, box_surface, platonic, ball, "
+                         "spherical_shell, pipe, fichera, solid_torus, not '" +
                              shape + "'"));
         }
         std::size_t cells = 0;
@@ -237394,6 +243851,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         if (resolution.size() == 3)
             opts.mResolution =
                 std::array<std::int64_t, 3>{{resolution[0], resolution[1], resolution[2]}};
+        else if (resolution.size() == 2)  // 2-D pixels, as `[nx, ny, 0]` is
+            opts.mResolution = std::array<std::int64_t, 3>{{resolution[0], resolution[1], 0}};
         if (pipe_find(rStep, "CellSize") != nullptr)
             opts.mCellSize = pipe_number(rStep, "CellSize", 0.0);
         const std::vector<double> bounds = pipe_dvec(rStep, "Bounds");
@@ -237406,6 +243865,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mAttachOccupancy = pipe_flag(rStep, "AttachOccupancy", false);
         opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
         opts.mDistance.mSign = sdf_sign_from_name(pipe_text(rStep, "Sign", "pseudonormal"));
+        opts.mPlane = detail::planar_plane_from_name(pipe_text(rStep, "Plane", "auto"));
         VoxelResult r = voxelize(mesh, opts);
         pipe_push_step(rReport, rStep, {{"NumOccupied", static_cast<double>(r.mNumOccupied)}});
         return std::move(r.mMesh);
@@ -237450,6 +243910,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mAttachDistance = pipe_flag(rStep, "AttachDistance", true);
         opts.mAttachQuality = pipe_flag(rStep, "AttachQuality", false);
         opts.mPillow = pipe_flag(rStep, "Pillow", true);
+        opts.mHexGrading =
+            octree_mesh_hex_grading_from_name(pipe_text(rStep, "HexGrading", "uniform"));
         opts.mUntangleIterations =
             static_cast<std::int64_t>(pipe_number(rStep, "UntangleIterations", 50.0));
         opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
@@ -238616,6 +245078,7 @@ PipelineReport run_sequence_file(const std::string& rPath) {
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -238623,6 +245086,7 @@ PipelineReport run_sequence_file(const std::string& rPath) {
 #include <vector>
 
 // Project includes
+
 
 namespace meshioplusplus {
 
@@ -238639,7 +245103,28 @@ constexpr std::uint16_t kPrimDegenerate = 0x8000;
 // coordinate, an angle, a unit vector); the map is applied once, at the end, to
 // corners and mid-edge nodes alike, so a quadratic cell lands on the true
 // geometry rather than on a chord.
-enum class PrimMap { Identity, Squircle, Polar, Sphere, Unit, Plate };
+//
+// The maps after Plate came with the second tier: Project pushes a point of a
+// flat lattice (a cube face, an icosahedron face) radially onto the sphere;
+// Torus, Moebius, Capsule, Graded and SolidTorus are surfaces and solids of
+// revolution in angles; Ball blends the butterfly's inner cube into the sphere
+// and Shell a cube-surface direction times a radial parameter.
+enum class PrimMap {
+    Identity,
+    Squircle,
+    Polar,
+    Sphere,
+    Unit,
+    Plate,
+    Project,
+    Torus,
+    Moebius,
+    Capsule,
+    Ball,
+    Shell,
+    Graded,
+    SolidTorus
+};
 
 struct PrimBlock {
     CellType mType = CellType::Vertex;
@@ -238656,6 +245141,14 @@ struct PrimSoup {
     double mHalf = 1.0;
     double mPeriod = 1.0;
     double mNt = 1.0;
+    // Torus / SolidTorus: the minor radius. Shell / Graded: the outer radius
+    // (mRadius is the inner one), the grading ratio and the layer count.
+    // Moebius: mHalf is the half width, mTwists the half-twists. Capsule: mHalf
+    // is half the cylinder length.
+    double mRadius2 = 0.5;
+    double mRatio = 1.0;
+    double mLayers = 1.0;
+    std::int64_t mTwists = 1;
     std::vector<double> mParam;
     std::vector<std::uint16_t> mMask;
     std::vector<PrimBlock> mBlocks;
@@ -238696,9 +245189,12 @@ void prim_check_positive(const char* pShape, const char* pWhat, double Value) {
         prim_fail(pShape, std::string(pWhat) + " must be positive, got " + std::to_string(Value));
 }
 
+constexpr int kPrimMaxOrder = 10;
+
 void prim_check_order(const char* pShape, int Order) {
-    if (Order != 1 && Order != 2)
-        prim_fail(pShape, "order must be 1 or 2, got " + std::to_string(Order));
+    if (Order < 1 || Order > kPrimMaxOrder)
+        prim_fail(pShape, "order must be between 1 and " + std::to_string(kPrimMaxOrder) +
+                              ", got " + std::to_string(Order));
 }
 
 [[noreturn]] void prim_bad_choice(const char* pShape, const char* pWhat, const std::string& rGot,
@@ -238733,6 +245229,17 @@ Mesh prim_empty() {
 // ---------------------------------------------------------------------------
 // Parameter space -> position, and the mid-edge average in parameter space.
 // ---------------------------------------------------------------------------
+
+// The radial parameter t in [0, 1] of a graded wall: uniform for a ratio of 1,
+// else layer thicknesses in geometric progression (q^(n t) - 1) / (q^n - 1).
+double prim_grade(const PrimSoup& rSoup, double T) {
+    if (rSoup.mRatio == 1.0)
+        return T;
+    if (T >= 1.0)
+        return 1.0;
+    return (std::pow(rSoup.mRatio, rSoup.mLayers * T) - 1.0) /
+           (std::pow(rSoup.mRatio, rSoup.mLayers) - 1.0);
+}
 
 void prim_position(const PrimSoup& rSoup, std::size_t Node, double* pOut) {
     const double* p = rSoup.mParam.data() + 3 * Node;
@@ -238809,6 +245316,107 @@ void prim_position(const PrimSoup& rSoup, std::size_t Node, double* pOut) {
             pOut[2] = cz + p[2];
             break;
         }
+        case PrimMap::Project: {
+            const double len = std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+            pOut[0] = cx + r * (p[0] / len);
+            pOut[1] = cy + r * (p[1] / len);
+            pOut[2] = cz + r * (p[2] / len);
+            break;
+        }
+        case PrimMap::Torus: {
+            // p[0] the angle around the axis, p[1] the angle around the tube.
+            const double rho = r + rSoup.mRadius2 * std::cos(p[1]);
+            pOut[0] = cx + rho * std::cos(p[0]);
+            pOut[1] = cy + rho * std::sin(p[0]);
+            pOut[2] = cz + rSoup.mRadius2 * std::sin(p[1]);
+            break;
+        }
+        case PrimMap::Moebius: {
+            // p[0] the angle along the band, p[1] in [-1, 1] across it.
+            const double tw = (static_cast<double>(rSoup.mTwists) * p[0]) / 2.0;
+            const double off = rSoup.mHalf * p[1];
+            const double rho = r + off * std::cos(tw);
+            pOut[0] = cx + rho * std::cos(p[0]);
+            pOut[1] = cy + rho * std::sin(p[0]);
+            pOut[2] = cz + off * std::sin(tw);
+            break;
+        }
+        case PrimMap::Capsule: {
+            // p[0] the arc length along the profile over the radius, from the
+            // north pole: a quarter circle, the straight side, a quarter circle.
+            const double h = rSoup.mHalf;
+            const double side = (2.0 * h) / r;
+            if (rSoup.mMask[Node] & kPrimDegenerate) {
+                pOut[0] = cx;
+                pOut[1] = cy;
+                pOut[2] = p[0] == 0.0 ? cz + h + r : cz - h - r;
+                break;
+            }
+            double rho, z;
+            if (p[0] <= kPrimPi / 2.0) {
+                rho = r * std::sin(p[0]);
+                z = h + r * std::cos(p[0]);
+            } else if (p[0] <= kPrimPi / 2.0 + side) {
+                rho = r;
+                z = h - r * (p[0] - kPrimPi / 2.0);
+            } else {
+                const double t = p[0] - side;
+                rho = r * std::sin(t);
+                z = -h + r * std::cos(t);
+            }
+            pOut[0] = cx + rho * std::cos(p[1]);
+            pOut[1] = cy + rho * std::sin(p[1]);
+            pOut[2] = cz + z;
+            break;
+        }
+        case PrimMap::Ball: {
+            // A lattice point of [-1, 1]^3: the inner cube (max norm up to 1/2)
+            // scaled by the radius, blended outside it into the sphere along the
+            // ray from the centre.
+            const double s = std::max(std::max(std::fabs(p[0]), std::fabs(p[1])), std::fabs(p[2]));
+            if (s <= 0.5) {
+                pOut[0] = cx + r * p[0];
+                pOut[1] = cy + r * p[1];
+                pOut[2] = cz + r * p[2];
+                break;
+            }
+            const double d0 = p[0] / s, d1 = p[1] / s, d2 = p[2] / s;
+            const double len = std::sqrt(d0 * d0 + d1 * d1 + d2 * d2);
+            const double lam = 2.0 * s - 1.0;
+            pOut[0] = cx + r * ((1.0 - lam) * 0.5 * d0 + lam * (d0 / len));
+            pOut[1] = cy + r * ((1.0 - lam) * 0.5 * d1 + lam * (d1 / len));
+            pOut[2] = cz + r * ((1.0 - lam) * 0.5 * d2 + lam * (d2 / len));
+            break;
+        }
+        case PrimMap::Shell: {
+            // A cube-surface direction times t in [1, 2]: t - 1 is the radial
+            // parameter, graded between the inner and the outer radius.
+            const double s = std::max(std::max(std::fabs(p[0]), std::fabs(p[1])), std::fabs(p[2]));
+            const double d0 = p[0] / s, d1 = p[1] / s, d2 = p[2] / s;
+            const double len = std::sqrt(d0 * d0 + d1 * d1 + d2 * d2);
+            const double rad = r + (rSoup.mRadius2 - r) * prim_grade(rSoup, s - 1.0);
+            pOut[0] = cx + rad * (d0 / len);
+            pOut[1] = cy + rad * (d1 / len);
+            pOut[2] = cz + rad * (d2 / len);
+            break;
+        }
+        case PrimMap::Graded: {
+            const double rad = r + (rSoup.mRadius2 - r) * prim_grade(rSoup, p[0]);
+            pOut[0] = cx + rad * std::cos(p[1]);
+            pOut[1] = cy + rad * std::sin(p[1]);
+            pOut[2] = cz + p[2];
+            break;
+        }
+        case PrimMap::SolidTorus: {
+            // The squircle disk (p[0], p[1]) as the cross-section, p[2] the angle
+            // around the axis.
+            const double a = rSoup.mRadius2 * p[0] * std::sqrt(1.0 - p[1] * p[1] / 2.0);
+            const double b = rSoup.mRadius2 * p[1] * std::sqrt(1.0 - p[0] * p[0] / 2.0);
+            pOut[0] = cx + (r + a) * std::cos(p[2]);
+            pOut[1] = cy + (r + a) * std::sin(p[2]);
+            pOut[2] = cz + b;
+            break;
+        }
     }
 }
 
@@ -238823,6 +245431,113 @@ double prim_mid_angle(double A, bool DegenA, double B, bool DegenB) {
     double d = B - A;
     d -= two_pi * std::floor(d / two_pi + 0.5);
     return A + 0.5 * d;
+}
+
+// A weighted combination of K nodes in parameter space: the face and body
+// centres of the full-Lagrange types, the lattice nodes of the VTK Lagrange
+// family and the mid-edge nodes of the maps after Plate. Lattice coordinates
+// average; an angle averages along the short way from the first node with a
+// meaningful one (a pole or an apex has none); a unit vector is the normalised
+// sum; and a Moebius node seen across the seam flips across the band.
+void prim_combine(const PrimSoup& rSoup, const std::int64_t* pNodes, const double* pW,
+                  std::size_t K, double* pOut) {
+    const double two_pi = 2.0 * kPrimPi;
+    auto param = [&](std::size_t I) {
+        return rSoup.mParam.data() + 3 * static_cast<std::size_t>(pNodes[I]);
+    };
+    auto degenerate = [&](std::size_t I) {
+        return (rSoup.mMask[static_cast<std::size_t>(pNodes[I])] & kPrimDegenerate) != 0;
+    };
+    double wsum = 0.0;
+    for (std::size_t i = 0; i < K; ++i)
+        wsum += pW[i];
+    auto linear = [&](std::size_t C) {
+        double acc = 0.0;
+        for (std::size_t i = 0; i < K; ++i)
+            acc += pW[i] * param(i)[C];
+        return acc / wsum;
+    };
+    auto angular = [&](std::size_t C, double Period) {
+        std::size_t ref = 0;
+        while (ref < K && degenerate(ref))
+            ++ref;
+        if (ref == K)
+            return param(0)[C];
+        const double base = param(ref)[C];
+        double acc = 0.0, ws = 0.0;
+        for (std::size_t i = 0; i < K; ++i) {
+            if (degenerate(i))
+                continue;
+            double d = param(i)[C] - base;
+            d -= Period * std::floor(d / Period + 0.5);
+            acc += pW[i] * (base + d);
+            ws += pW[i];
+        }
+        return acc / ws;
+    };
+    switch (rSoup.mMap) {
+        case PrimMap::Unit: {
+            const double x = linear(0), y = linear(1), z = linear(2);
+            const double len = std::sqrt(x * x + y * y + z * z);
+            pOut[0] = x / len;
+            pOut[1] = y / len;
+            pOut[2] = z / len;
+            return;
+        }
+        case PrimMap::Polar:
+        case PrimMap::Graded:
+        case PrimMap::Sphere:
+        case PrimMap::Capsule:
+            pOut[0] = linear(0);
+            pOut[1] = angular(1, two_pi);
+            pOut[2] = linear(2);
+            return;
+        case PrimMap::Torus:
+            pOut[0] = angular(0, two_pi);
+            pOut[1] = angular(1, two_pi);
+            pOut[2] = linear(2);
+            return;
+        case PrimMap::SolidTorus:
+            pOut[0] = linear(0);
+            pOut[1] = linear(1);
+            pOut[2] = angular(2, two_pi);
+            return;
+        case PrimMap::Plate: {
+            pOut[0] = linear(0);
+            double q = angular(1, rSoup.mPeriod);
+            if (q < 0.0)
+                q += rSoup.mPeriod;
+            pOut[1] = q;
+            pOut[2] = linear(2);
+            return;
+        }
+        case PrimMap::Moebius: {
+            const double base = param(0)[0];
+            double au = 0.0, aw = 0.0;
+            for (std::size_t i = 0; i < K; ++i) {
+                double d = param(i)[0] - base;
+                const double turns = std::floor(d / two_pi + 0.5);
+                d -= two_pi * turns;
+                const bool flip =
+                    (static_cast<std::int64_t>(std::fabs(turns)) * rSoup.mTwists) % 2 != 0;
+                au += pW[i] * (base + d);
+                aw += pW[i] * (flip ? -param(i)[1] : param(i)[1]);
+            }
+            pOut[0] = au / wsum;
+            pOut[1] = aw / wsum;
+            pOut[2] = linear(2);
+            return;
+        }
+        case PrimMap::Identity:
+        case PrimMap::Squircle:
+        case PrimMap::Project:
+        case PrimMap::Ball:
+        case PrimMap::Shell:
+            break;
+    }
+    pOut[0] = linear(0);
+    pOut[1] = linear(1);
+    pOut[2] = linear(2);
 }
 
 // Parameters of the node midway along edge (A, B), A < B.
@@ -238872,6 +245587,20 @@ void prim_mid(const PrimSoup& rSoup, std::size_t A, std::size_t B, double* pOut)
             pOut[2] = (a[2] + b[2]) * 0.5;
             break;
         }
+        case PrimMap::Project:
+        case PrimMap::Torus:
+        case PrimMap::Moebius:
+        case PrimMap::Capsule:
+        case PrimMap::Ball:
+        case PrimMap::Shell:
+        case PrimMap::Graded:
+        case PrimMap::SolidTorus: {
+            const std::int64_t nodes[2] = {static_cast<std::int64_t>(A),
+                                           static_cast<std::int64_t>(B)};
+            const double w[2] = {1.0, 1.0};
+            prim_combine(rSoup, nodes, w, 2, pOut);
+            break;
+        }
     }
 }
 
@@ -238881,6 +245610,8 @@ std::uint64_t prim_edge_key(std::int64_t A, std::int64_t B) {
 
 CellType prim_elevated(CellType Type) {
     switch (Type) {
+        case CellType::Line:
+            return CellType::Line3;
         case CellType::Triangle:
             return CellType::Triangle6;
         case CellType::Quad:
@@ -238936,15 +245667,182 @@ void prim_elevate(const char* pShape, PrimSoup& rSoup) {
     }
 }
 
+// The centre node a full-Lagrange type adds over its serendipity twin, and the
+// corners it averages, by local node index: quad9's node 8, hexahedron27's face
+// centres 20-25 (cell_faces' own order) and body centre 26, wedge18's three
+// quad-face centres 15-17.
+std::vector<std::pair<std::size_t, std::vector<std::size_t>>> prim_centres(CellType Full) {
+    std::vector<std::pair<std::size_t, std::vector<std::size_t>>> out;
+    if (Full == CellType::Quad9) {
+        out.push_back({8, {0, 1, 2, 3}});
+        return out;
+    }
+    for (const auto& face : detail::cell_faces(Full))
+        if (face.mNumNodes == 9)
+            out.push_back(
+                {face.mNodes[8], {face.mNodes[0], face.mNodes[1], face.mNodes[2], face.mNodes[3]}});
+    if (Full == CellType::Hexahedron27)
+        out.push_back({26, {0, 1, 2, 3, 4, 5, 6, 7}});
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+// Order 2 with Complete: the serendipity cells gain their face and body
+// centres, appended after every mid-edge node in first-appearance order over
+// the cells, each cell's in local node order, and shared by every cell on the
+// face.
+void prim_complete(PrimSoup& rSoup) {
+    std::map<std::vector<std::int64_t>, std::int64_t> ids;
+    for (PrimBlock& blk : rSoup.mBlocks) {
+        CellType full;
+        std::size_t width;
+        switch (blk.mType) {
+            case CellType::Quad8:
+                full = CellType::Quad9;
+                width = 9;
+                break;
+            case CellType::Hexahedron20:
+                full = CellType::Hexahedron27;
+                width = 27;
+                break;
+            case CellType::Wedge15:
+                full = CellType::Wedge18;
+                width = 18;
+                break;
+            default:
+                continue;
+        }
+        const auto centres = prim_centres(full);
+        const std::size_t ncells = blk.mConn.size() / blk.mWidth;
+        std::vector<std::int64_t> conn(ncells * width);
+        for (std::size_t c = 0; c < ncells; ++c) {
+            const std::int64_t* row = blk.mConn.data() + c * blk.mWidth;
+            std::int64_t* dst = conn.data() + c * width;
+            std::copy(row, row + blk.mWidth, dst);
+            for (const auto& [local, corners] : centres) {
+                std::vector<std::int64_t> nodes;
+                for (std::size_t k : corners)
+                    nodes.push_back(row[k]);
+                std::vector<std::int64_t> key = nodes;
+                std::sort(key.begin(), key.end());
+                auto found = ids.find(key);
+                if (found == ids.end()) {
+                    const std::vector<double> w(nodes.size(), 1.0);
+                    double centre[3];
+                    prim_combine(rSoup, nodes.data(), w.data(), nodes.size(), centre);
+                    found =
+                        ids.emplace(key, rSoup.AddNode(centre[0], centre[1], centre[2], 0)).first;
+                }
+                dst[local] = found->second;
+            }
+        }
+        blk.mConn = std::move(conn);
+        blk.mWidth = width;
+        blk.mType = full;
+    }
+}
+
+// Order 3 and up: every linear cell becomes its VTK Lagrange twin. A lattice
+// node is named by the corners it combines (lagrange::lattice_weights), so two
+// cells on one edge or face share it; it is appended on first appearance over
+// the cells, each cell's in VTK order, its parameters the same weighted
+// combination of the corners'.
+void prim_lagrange(const char* pShape, PrimSoup& rSoup, int Order) {
+    std::map<std::vector<std::int64_t>, std::int64_t> ids;
+    for (PrimBlock& blk : rSoup.mBlocks) {
+        lagrange::Shape shape;
+        CellType out;
+        switch (blk.mType) {
+            case CellType::Line:
+                shape = lagrange::Shape::Line;
+                out = CellType::VtkLagrangeCurve;
+                break;
+            case CellType::Triangle:
+                shape = lagrange::Shape::Triangle;
+                out = CellType::VtkLagrangeTriangle;
+                break;
+            case CellType::Quad:
+                shape = lagrange::Shape::Quad;
+                out = CellType::VtkLagrangeQuadrilateral;
+                break;
+            case CellType::Tetra:
+                shape = lagrange::Shape::Tetra;
+                out = CellType::VtkLagrangeTetrahedron;
+                break;
+            case CellType::Hexahedron:
+                shape = lagrange::Shape::Hexahedron;
+                out = CellType::VtkLagrangeHexahedron;
+                break;
+            case CellType::Wedge:
+                shape = lagrange::Shape::Wedge;
+                out = CellType::VtkLagrangeWedge;
+                break;
+            default:
+                prim_fail(pShape, std::string("order ") + std::to_string(Order) +
+                                      " is not available for " + cell_type_name(blk.mType) +
+                                      " cells");
+        }
+        const auto lattice = lagrange::vtk_lattice(shape, Order);
+        std::vector<std::vector<std::pair<int, std::int64_t>>> weights;
+        weights.reserve(lattice.size());
+        for (const auto& ijk : lattice)
+            weights.push_back(lagrange::lattice_weights(shape, Order, ijk));
+        const std::size_t width = lattice.size();
+        const std::size_t ncells = blk.mConn.size() / blk.mWidth;
+        std::vector<std::int64_t> conn(ncells * width);
+        std::vector<std::int64_t> nodes;
+        std::vector<double> w;
+        for (std::size_t c = 0; c < ncells; ++c) {
+            const std::int64_t* row = blk.mConn.data() + c * blk.mWidth;
+            std::int64_t* dst = conn.data() + c * width;
+            for (std::size_t l = 0; l < width; ++l) {
+                const auto& wl = weights[l];
+                if (wl.size() == 1) {
+                    dst[l] = row[wl[0].first];
+                    continue;
+                }
+                std::vector<std::pair<std::int64_t, std::int64_t>> pairs;
+                for (const auto& [corner, weight] : wl)
+                    pairs.emplace_back(row[corner], weight);
+                std::sort(pairs.begin(), pairs.end());
+                std::vector<std::int64_t> key;
+                for (const auto& [node, weight] : pairs) {
+                    key.push_back(node);
+                    key.push_back(weight);
+                }
+                auto found = ids.find(key);
+                if (found == ids.end()) {
+                    nodes.clear();
+                    w.clear();
+                    for (const auto& [corner, weight] : wl) {
+                        nodes.push_back(row[corner]);
+                        w.push_back(static_cast<double>(weight));
+                    }
+                    double param[3];
+                    prim_combine(rSoup, nodes.data(), w.data(), nodes.size(), param);
+                    found =
+                        ids.emplace(std::move(key), rSoup.AddNode(param[0], param[1], param[2], 0))
+                            .first;
+                }
+                dst[l] = found->second;
+            }
+        }
+        blk.mConn = std::move(conn);
+        blk.mWidth = width;
+        blk.mType = out;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Boundary regions: a boundary facet joins the first region whose bit every one
 // of its corners carries.
 // ---------------------------------------------------------------------------
 
-void prim_add_regions(Mesh& rMesh, const PrimSoup& rSoup,
-                      const std::vector<PrimRegionSpec>& rSpecs, int FacetDim) {
+std::vector<Region> prim_side_regions(const Mesh& rMesh, const PrimSoup& rSoup,
+                                      const std::vector<PrimRegionSpec>& rSpecs, int FacetDim) {
+    std::vector<Region> out;
     if (rSpecs.empty())
-        return;
+        return out;
     const detail::FacetIndex index(rMesh);
     std::vector<std::vector<std::pair<std::int64_t, std::int64_t>>> entries(rSpecs.size());
     std::int64_t cell = 0;
@@ -238997,14 +245895,12 @@ void prim_add_regions(Mesh& rMesh, const PrimSoup& rSoup,
             dst[2 * i] = entries[r][i].first;
             dst[2 * i + 1] = entries[r][i].second;
         }
-        rMesh.AddRegion(Region(rSpecs[r].mName, RegionKind::Side, FacetDim, -1, std::move(ids)));
+        out.emplace_back(rSpecs[r].mName, RegionKind::Side, FacetDim, -1, std::move(ids));
     }
+    return out;
 }
 
-Mesh prim_finish(const char* pShape, PrimSoup& rSoup, int Order,
-                 const std::vector<PrimRegionSpec>& rSpecs, int FacetDim) {
-    if (Order == 2)
-        prim_elevate(pShape, rSoup);
+Mesh prim_build(const PrimSoup& rSoup) {
     Mesh out;
     const std::size_t n = rSoup.mMask.size();
     NDArray points = NDArray::Uninit(DType::Float64, {n, std::size_t{3}});
@@ -239012,15 +245908,59 @@ Mesh prim_finish(const char* pShape, PrimSoup& rSoup, int Order,
     for (std::size_t i = 0; i < n; ++i)
         prim_position(rSoup, i, dst + 3 * i);
     out.AssignPoints(std::move(points));
-    for (PrimBlock& blk : rSoup.mBlocks) {
+    for (const PrimBlock& blk : rSoup.mBlocks) {
         if (blk.mConn.empty())
             continue;
         NDArray conn = NDArray::Uninit(DType::Int64, {blk.mConn.size() / blk.mWidth, blk.mWidth});
         std::copy(blk.mConn.begin(), blk.mConn.end(), conn.As<std::int64_t>());
         out.AddCellBlock(cell_type_name(blk.mType), std::move(conn));
     }
-    prim_add_regions(out, rSoup, rSpecs, FacetDim);
     return out;
+}
+
+// Order 2 elevates (and with Complete completes) before the side regions are
+// found on the result; order 3 and up finds them on the linear cells first,
+// since the VTK Lagrange types have no facet table: a region names a facet by
+// the linear type's local number, which is the Lagrange cell's too.
+Mesh prim_finish(const char* pShape, PrimSoup& rSoup, int Order, bool Complete,
+                 const std::vector<PrimRegionSpec>& rSpecs, int FacetDim) {
+    std::vector<Region> regions;
+    if (Order >= 3 && !rSpecs.empty())
+        regions = prim_side_regions(prim_build(rSoup), rSoup, rSpecs, FacetDim);
+    if (Order == 2) {
+        prim_elevate(pShape, rSoup);
+        if (Complete)
+            prim_complete(rSoup);
+    } else if (Order >= 3) {
+        prim_lagrange(pShape, rSoup, Order);
+    }
+    Mesh out = prim_build(rSoup);
+    if (Order < 3)
+        regions = prim_side_regions(out, rSoup, rSpecs, FacetDim);
+    for (Region& region : regions)
+        out.AddRegion(std::move(region));
+    return out;
+}
+
+// Cell regions from one label per cell (block-major, in soup order; empty
+// blocks add no cells), label k naming rNames[k].
+void prim_add_cell_regions(Mesh& rMesh, const std::vector<std::uint8_t>& rLabels,
+                           const std::vector<const char*>& rNames, int Dim) {
+    for (std::size_t k = 0; k < rNames.size(); ++k) {
+        std::vector<std::int64_t> ids;
+        for (std::size_t c = 0; c < rLabels.size(); ++c)
+            if (rLabels[c] == k)
+                ids.push_back(static_cast<std::int64_t>(c));
+        NDArray arr = NDArray::Uninit(DType::Int64, {ids.size()});
+        std::copy(ids.begin(), ids.end(), arr.As<std::int64_t>());
+        rMesh.AddRegion(Region(rNames[k], RegionKind::Cell, Dim, -1, std::move(arr)));
+    }
+}
+
+void prim_add_point_region(Mesh& rMesh, const char* pName, std::int64_t Point) {
+    NDArray arr = NDArray::Uninit(DType::Int64, {std::size_t{1}});
+    arr.As<std::int64_t>()[0] = Point;
+    rMesh.AddRegion(Region(pName, RegionKind::Point, 0, -1, std::move(arr)));
 }
 
 // ---------------------------------------------------------------------------
@@ -239122,7 +246062,7 @@ void prim_polar_triangles(std::int64_t N, std::int64_t Base, Emit&& rEmit,
 
 Mesh rectangle(const std::array<std::int64_t, 2>& rDims, const std::array<double, 2>& rSize,
                const std::array<double, 3>& rOrigin, const std::string& rCellType,
-               const std::string& rSplit, int Order, std::int64_t MaxCells) {
+               const std::string& rSplit, int Order, std::int64_t MaxCells, bool Complete) {
     constexpr const char* shape = "rectangle";
     for (std::size_t k = 0; k < 2; ++k) {
         prim_check_count(shape, "cell counts", rDims[k]);
@@ -239192,7 +246132,7 @@ Mesh rectangle(const std::array<std::int64_t, 2>& rDims, const std::array<double
                 }
             }
         }
-    return prim_finish(shape, soup, Order,
+    return prim_finish(shape, soup, Order, Complete,
                        {{"xmin", 1}, {"xmax", 2}, {"ymin", 4}, {"ymax", 8}}, 1);
 }
 
@@ -239202,7 +246142,7 @@ Mesh rectangle(const std::array<std::int64_t, 2>& rDims, const std::array<double
 
 Mesh box(const std::array<std::int64_t, 3>& rDims, const std::array<double, 3>& rSize,
          const std::array<double, 3>& rOrigin, const std::string& rCellType, int Order,
-         std::int64_t MaxCells) {
+         std::int64_t MaxCells, bool Complete) {
     constexpr const char* shape = "box";
     for (std::size_t k = 0; k < 3; ++k) {
         prim_check_count(shape, "cell counts", rDims[k]);
@@ -239266,10 +246206,9 @@ Mesh box(const std::array<std::int64_t, 3>& rDims, const std::array<double, 3>& 
                     prim_push(blk, {h[0], h[2], h[3], h[4], h[6], h[7]});
                 }
             }
-    return prim_finish(shape, soup, Order,
-                       {{"xmin", 1}, {"xmax", 2}, {"ymin", 4}, {"ymax", 8}, {"zmin", 16},
-                        {"zmax", 32}},
-                       2);
+    return prim_finish(
+        shape, soup, Order, Complete,
+        {{"xmin", 1}, {"xmax", 2}, {"ymin", 4}, {"ymax", 8}, {"zmin", 16}, {"zmax", 32}}, 2);
 }
 
 // ===========================================================================
@@ -239277,7 +246216,7 @@ Mesh box(const std::array<std::int64_t, 3>& rDims, const std::array<double, 3>& 
 // ===========================================================================
 
 Mesh disk(double Radius, std::int64_t N, const std::array<double, 3>& rCenter,
-          const std::string& rCellType, int Order, std::int64_t MaxCells) {
+          const std::string& rCellType, int Order, std::int64_t MaxCells, bool Complete) {
     constexpr const char* shape = "disk";
     prim_check_positive(shape, "radius", Radius);
     prim_check_count(shape, "n", N);
@@ -239310,15 +246249,16 @@ Mesh disk(double Radius, std::int64_t N, const std::array<double, 3>& rCenter,
                 prim_push(blk, {a, a + 1, a + p + 1, a + p});
             }
     }
-    return prim_finish(shape, soup, Order, {{"rim", 4}}, 1);
+    return prim_finish(shape, soup, Order, Complete, {{"rim", 4}}, 1);
 }
 
 // ===========================================================================
 // uv_sphere
 // ===========================================================================
 
-Mesh uv_sphere(double Radius, std::int64_t Nu, std::int64_t Nv, const std::array<double, 3>& rCenter,
-               const std::string& rCellType, int Order, std::int64_t MaxCells) {
+Mesh uv_sphere(double Radius, std::int64_t Nu, std::int64_t Nv,
+               const std::array<double, 3>& rCenter, const std::string& rCellType, int Order,
+               std::int64_t MaxCells, bool Complete) {
     constexpr const char* shape = "uv_sphere";
     prim_check_positive(shape, "radius", Radius);
     prim_check_count(shape, "nu", Nu);
@@ -239367,15 +246307,20 @@ Mesh uv_sphere(double Radius, std::int64_t Nu, std::int64_t Nv, const std::array
             }
     for (std::int64_t i = 0; i < Nu; ++i)
         prim_push(tris, {south, ring(Nv - 1, i + 1), ring(Nv - 1, i)});
-    return prim_finish(shape, soup, Order, {}, 2);
+    return prim_finish(shape, soup, Order, Complete, {}, 2);
 }
 
 // ===========================================================================
 // icosa_sphere
 // ===========================================================================
 
+namespace {
+void prim_subdivide_sphere(PrimSoup& rSoup, std::vector<std::int64_t>& rFaces,
+                           std::int64_t Subdivisions);
+}  // namespace
+
 Mesh icosa_sphere(double Radius, std::int64_t Subdivisions, const std::array<double, 3>& rCenter,
-                  int Order, std::int64_t MaxCells) {
+                  int Order, std::int64_t MaxCells, bool Complete) {
     constexpr const char* shape = "icosa_sphere";
     prim_check_positive(shape, "radius", Radius);
     prim_check_count(shape, "subdivisions", Subdivisions);
@@ -239404,6 +246349,20 @@ Mesh icosa_sphere(double Radius, std::int64_t Subdivisions, const std::array<dou
     std::vector<std::int64_t> faces;
     for (const auto& f : kFaces)
         faces.insert(faces.end(), {f[0], f[1], f[2]});
+    prim_subdivide_sphere(soup, faces, Subdivisions);
+    PrimBlock& blk = soup.Block(CellType::Triangle, 3);
+    blk.mConn = std::move(faces);
+    return prim_finish(shape, soup, Order, Complete, {}, 2);
+}
+
+namespace {
+
+// Each level splits every triangle in four through its edge midpoints, pushed
+// onto the sphere (PrimMap::Unit).
+void prim_subdivide_sphere(PrimSoup& rSoup, std::vector<std::int64_t>& rFaces,
+                           std::int64_t Subdivisions) {
+    PrimSoup& soup = rSoup;
+    std::vector<std::int64_t>& faces = rFaces;
     for (std::int64_t level = 0; level < Subdivisions; ++level) {
         std::unordered_map<std::uint64_t, std::int64_t> mids;
         auto midpoint = [&](std::int64_t A, std::int64_t B) {
@@ -239429,10 +246388,9 @@ Mesh icosa_sphere(double Radius, std::int64_t Subdivisions, const std::array<dou
         }
         faces = std::move(next);
     }
-    PrimBlock& blk = soup.Block(CellType::Triangle, 3);
-    blk.mConn = std::move(faces);
-    return prim_finish(shape, soup, Order, {}, 2);
 }
+
+}  // namespace
 
 // ===========================================================================
 // cylinder
@@ -239440,7 +246398,7 @@ Mesh icosa_sphere(double Radius, std::int64_t Subdivisions, const std::array<dou
 
 Mesh cylinder(double Radius, double Height, std::int64_t Nxy, std::int64_t Nz,
               const std::array<double, 3>& rCenter, const std::string& rCellType, int Order,
-              std::int64_t MaxCells) {
+              std::int64_t MaxCells, bool Complete) {
     constexpr const char* shape = "cylinder";
     prim_check_positive(shape, "radius", Radius);
     prim_check_positive(shape, "height", Height);
@@ -239492,7 +246450,7 @@ Mesh cylinder(double Radius, double Height, std::int64_t Nxy, std::int64_t Nz,
                 }
         }
     }
-    return prim_finish(shape, soup, Order, {{"side", 4}, {"top", 1}, {"bottom", 2}}, 2);
+    return prim_finish(shape, soup, Order, Complete, {{"side", 4}, {"top", 1}, {"bottom", 2}}, 2);
 }
 
 // ===========================================================================
@@ -239500,7 +246458,8 @@ Mesh cylinder(double Radius, double Height, std::int64_t Nxy, std::int64_t Nz,
 // ===========================================================================
 
 Mesh reference_triangle(std::int64_t N, const std::array<double, 2>& rSize,
-                        const std::array<double, 3>& rOrigin, int Order, std::int64_t MaxCells) {
+                        const std::array<double, 3>& rOrigin, int Order, std::int64_t MaxCells,
+                        bool Complete) {
     constexpr const char* shape = "reference_triangle";
     prim_check_count(shape, "n", N);
     prim_check_order(shape, Order);
@@ -239534,7 +246493,8 @@ Mesh reference_triangle(std::int64_t N, const std::array<double, 2>& rSize,
             if (i < N - 1 - j)
                 prim_push(blk, {id(i + 1, j), id(i + 1, j + 1), id(i, j + 1)});
         }
-    return prim_finish(shape, soup, Order, {{"ymin", 1}, {"xmin", 2}, {"hypotenuse", 4}}, 1);
+    return prim_finish(shape, soup, Order, Complete, {{"ymin", 1}, {"xmin", 2}, {"hypotenuse", 4}},
+                       1);
 }
 
 // ===========================================================================
@@ -239542,7 +246502,7 @@ Mesh reference_triangle(std::int64_t N, const std::array<double, 2>& rSize,
 // ===========================================================================
 
 Mesh ngon(std::int64_t Sides, double Radius, std::int64_t Rings,
-          const std::array<double, 3>& rCenter, int Order, std::int64_t MaxCells) {
+          const std::array<double, 3>& rCenter, int Order, std::int64_t MaxCells, bool Complete) {
     constexpr const char* shape = "ngon";
     prim_check_count(shape, "sides", Sides);
     prim_check_count(shape, "rings", Rings);
@@ -239577,7 +246537,7 @@ Mesh ngon(std::int64_t Sides, double Radius, std::int64_t Rings,
     prim_polar_triangles(
         Rings, 0,
         [&](std::int64_t A, std::int64_t B, std::int64_t C) { prim_push(blk, {A, B, C}); }, Sides);
-    return prim_finish(shape, soup, Order, {{"rim", 1}}, 1);
+    return prim_finish(shape, soup, Order, Complete, {{"rim", 1}}, 1);
 }
 
 // ===========================================================================
@@ -239586,7 +246546,7 @@ Mesh ngon(std::int64_t Sides, double Radius, std::int64_t Rings,
 
 Mesh annulus(double InnerRadius, double OuterRadius, std::int64_t Ntheta, std::int64_t Nr,
              double Angle, const std::array<double, 3>& rCenter, const std::string& rCellType,
-             int Order, std::int64_t MaxCells) {
+             int Order, std::int64_t MaxCells, bool Complete) {
     constexpr const char* shape = "annulus";
     prim_check_count(shape, "ntheta", Ntheta);
     prim_check_count(shape, "nr", Nr);
@@ -239647,7 +246607,7 @@ Mesh annulus(double InnerRadius, double OuterRadius, std::int64_t Ntheta, std::i
         specs.push_back({"start", 4});
         specs.push_back({"end", 8});
     }
-    return prim_finish(shape, soup, Order, specs, 1);
+    return prim_finish(shape, soup, Order, Complete, specs, 1);
 }
 
 // ===========================================================================
@@ -239655,7 +246615,7 @@ Mesh annulus(double InnerRadius, double OuterRadius, std::int64_t Ntheta, std::i
 // ===========================================================================
 
 Mesh lshape(std::int64_t N, double Size, const std::array<double, 3>& rCenter,
-            const std::string& rCellType, int Order, std::int64_t MaxCells) {
+            const std::string& rCellType, int Order, std::int64_t MaxCells, bool Complete) {
     constexpr const char* shape = "lshape";
     prim_check_count(shape, "n", N);
     prim_check_order(shape, Order);
@@ -239705,7 +246665,7 @@ Mesh lshape(std::int64_t N, double Size, const std::array<double, 3>& rCenter,
             prim_push_quad(blk, tri, at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1));
         }
     return prim_finish(
-        shape, soup, Order,
+        shape, soup, Order, Complete,
         {{"xmin", 1}, {"xmax", 2}, {"ymin", 4}, {"ymax", 8}, {"notch_x", 16}, {"notch_y", 32}}, 1);
 }
 
@@ -239715,7 +246675,7 @@ Mesh lshape(std::int64_t N, double Size, const std::array<double, 3>& rCenter,
 
 Mesh plate_with_hole(double Radius, double Size, std::int64_t Nt, std::int64_t Nr,
                      const std::array<double, 3>& rCenter, const std::string& rCellType, int Order,
-                     std::int64_t MaxCells) {
+                     std::int64_t MaxCells, bool Complete) {
     constexpr const char* shape = "plate_with_hole";
     prim_check_count(shape, "nt", Nt);
     prim_check_count(shape, "nr", Nr);
@@ -239763,7 +246723,7 @@ Mesh plate_with_hole(double Radius, double Size, std::int64_t Nt, std::int64_t N
             const std::int64_t p1 = (p + 1) % m;
             prim_push_quad(blk, tri, k * m + p, (k + 1) * m + p, (k + 1) * m + p1, k * m + p1);
         }
-    return prim_finish(shape, soup, Order,
+    return prim_finish(shape, soup, Order, Complete,
                        {{"hole", 1}, {"xmin", 2}, {"xmax", 4}, {"ymin", 8}, {"ymax", 16}}, 1);
 }
 
@@ -240043,6 +247003,1176 @@ Mesh reference_cells(const std::vector<std::string>& rTypes, bool Pairs) {
         out.AddCellBlock(blk.mName, std::move(conn));
     }
     return out;
+}
+
+// ===========================================================================
+// line, circle, helix
+// ===========================================================================
+
+Mesh line(std::int64_t N, const std::array<double, 3>& rStart, const std::array<double, 3>& rEnd,
+          int Order, std::int64_t MaxCells, bool Complete) {
+    constexpr const char* shape = "line";
+    prim_check_count(shape, "n", N);
+    prim_check_order(shape, Order);
+    if (N == 0)
+        return prim_empty();
+    if (rStart == rEnd)
+        prim_fail(shape, "start and end must differ");
+    prim_check_budget(shape, N, MaxCells);
+
+    PrimSoup soup;
+    for (std::int64_t i = 0; i <= N; ++i) {
+        double q[3];
+        for (std::size_t k = 0; k < 3; ++k)
+            q[k] = i == N ? rEnd[k]
+                          : rStart[k] + ((rEnd[k] - rStart[k]) * static_cast<double>(i)) /
+                                            static_cast<double>(N);
+        soup.AddNode(q[0], q[1], q[2], 0);
+    }
+    PrimBlock& blk = soup.Block(CellType::Line, 2);
+    for (std::int64_t i = 0; i < N; ++i)
+        prim_push(blk, {i, i + 1});
+    Mesh out = prim_finish(shape, soup, Order, Complete, {}, 0);
+    prim_add_point_region(out, "start", 0);
+    prim_add_point_region(out, "end", N);
+    return out;
+}
+
+Mesh circle(double Radius, std::int64_t N, const std::array<double, 3>& rCenter, int Order,
+            std::int64_t MaxCells, bool Complete) {
+    constexpr const char* shape = "circle";
+    prim_check_positive(shape, "radius", Radius);
+    prim_check_count(shape, "n", N);
+    prim_check_order(shape, Order);
+    if (N == 0)
+        return prim_empty();
+    if (N < 3)
+        prim_fail(shape, "n must be at least 3, got " + std::to_string(N));
+    prim_check_budget(shape, N, MaxCells);
+
+    PrimSoup soup;
+    soup.mMap = PrimMap::Polar;
+    soup.mRadius = Radius;
+    soup.mCenter = rCenter;
+    for (std::int64_t i = 0; i < N; ++i)
+        soup.AddNode(1.0, (2.0 * kPrimPi * static_cast<double>(i)) / static_cast<double>(N), 0.0,
+                     0);
+    PrimBlock& blk = soup.Block(CellType::Line, 2);
+    for (std::int64_t i = 0; i < N; ++i)
+        prim_push(blk, {i, (i + 1) % N});
+    return prim_finish(shape, soup, Order, Complete, {}, 0);
+}
+
+Mesh helix(double Radius, double Pitch, double Turns, std::int64_t N,
+           const std::array<double, 3>& rCenter, int Order, std::int64_t MaxCells, bool Complete) {
+    constexpr const char* shape = "helix";
+    prim_check_positive(shape, "radius", Radius);
+    prim_check_positive(shape, "turns", Turns);
+    prim_check_count(shape, "n", N);
+    prim_check_order(shape, Order);
+    if (N == 0)
+        return prim_empty();
+    if (!(Pitch != 0.0) || !std::isfinite(Pitch))
+        prim_fail(shape, "pitch must be finite and nonzero, got " + std::to_string(Pitch));
+    if (!(static_cast<double>(N) > 2.0 * Turns))
+        prim_fail(shape, "n must exceed 2 * turns so no cell spans half a turn, got n " +
+                             std::to_string(N) + " and turns " + std::to_string(Turns));
+    prim_check_budget(shape, N, MaxCells);
+
+    PrimSoup soup;
+    soup.mMap = PrimMap::Polar;
+    soup.mRadius = Radius;
+    soup.mCenter = rCenter;
+    for (std::int64_t i = 0; i <= N; ++i)
+        soup.AddNode(1.0, (2.0 * kPrimPi * Turns * static_cast<double>(i)) / static_cast<double>(N),
+                     (Pitch * Turns * static_cast<double>(i)) / static_cast<double>(N), 0);
+    PrimBlock& blk = soup.Block(CellType::Line, 2);
+    for (std::int64_t i = 0; i < N; ++i)
+        prim_push(blk, {i, i + 1});
+    Mesh out = prim_finish(shape, soup, Order, Complete, {}, 0);
+    prim_add_point_region(out, "start", 0);
+    prim_add_point_region(out, "end", N);
+    return out;
+}
+
+// ===========================================================================
+// sphere_points, box_points
+// ===========================================================================
+
+namespace {
+
+std::uint64_t prim_splitmix(std::uint64_t& rState) {
+    rState += 0x9E3779B97F4A7C15ULL;
+    std::uint64_t z = rState;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+}
+
+// A uniform draw in [0, 1): the top 53 bits, exact in a double.
+double prim_draw(std::uint64_t& rState) {
+    return static_cast<double>(prim_splitmix(rState) >> 11) * (1.0 / 9007199254740992.0);
+}
+
+Mesh prim_vertices(PrimSoup& rSoup) {
+    const std::int64_t n = static_cast<std::int64_t>(rSoup.mMask.size());
+    PrimBlock& blk = rSoup.Block(CellType::Vertex, 1);
+    blk.mConn.resize(static_cast<std::size_t>(n));
+    for (std::int64_t i = 0; i < n; ++i)
+        blk.mConn[static_cast<std::size_t>(i)] = i;
+    return prim_build(rSoup);
+}
+
+}  // namespace
+
+Mesh sphere_points(std::int64_t N, double Radius, const std::array<double, 3>& rCenter,
+                   std::int64_t MaxCells) {
+    constexpr const char* shape = "sphere_points";
+    prim_check_count(shape, "n", N);
+    if (N == 0)
+        return prim_empty();
+    prim_check_positive(shape, "radius", Radius);
+    prim_check_budget(shape, N, MaxCells);
+    const double golden = kPrimPi * (3.0 - std::sqrt(5.0));
+    PrimSoup soup;
+    for (std::int64_t i = 0; i < N; ++i) {
+        const double z = 1.0 - static_cast<double>(2 * i + 1) / static_cast<double>(N);
+        const double rho = std::sqrt(1.0 - z * z);
+        const double phi = golden * static_cast<double>(i);
+        soup.AddNode(rCenter[0] + Radius * rho * std::cos(phi),
+                     rCenter[1] + Radius * rho * std::sin(phi), rCenter[2] + Radius * z, 0);
+    }
+    return prim_vertices(soup);
+}
+
+Mesh box_points(std::int64_t N, const std::array<double, 3>& rSize,
+                const std::array<double, 3>& rOrigin, std::uint64_t Seed, std::int64_t MaxCells) {
+    constexpr const char* shape = "box_points";
+    prim_check_count(shape, "n", N);
+    if (N == 0)
+        return prim_empty();
+    for (std::size_t k = 0; k < 3; ++k)
+        prim_check_positive(shape, "size", rSize[k]);
+    prim_check_budget(shape, N, MaxCells);
+    PrimSoup soup;
+    std::uint64_t state = Seed;
+    for (std::int64_t i = 0; i < N; ++i) {
+        const double u = prim_draw(state);
+        const double v = prim_draw(state);
+        const double w = prim_draw(state);
+        soup.AddNode(rOrigin[0] + rSize[0] * u, rOrigin[1] + rSize[1] * v,
+                     rOrigin[2] + rSize[2] * w, 0);
+    }
+    return prim_vertices(soup);
+}
+
+// ===========================================================================
+// tetra_sphere, octa_sphere
+// ===========================================================================
+
+namespace {
+
+template <std::size_t NV, std::size_t NF>
+Mesh prim_seeded_sphere(const char* pShape, const double (&rVerts)[NV][3],
+                        const std::int64_t (&rFaces)[NF][3], double Radius,
+                        std::int64_t Subdivisions, const std::array<double, 3>& rCenter, int Order,
+                        std::int64_t MaxCells, bool Complete) {
+    prim_check_positive(pShape, "radius", Radius);
+    prim_check_count(pShape, "subdivisions", Subdivisions);
+    prim_check_order(pShape, Order);
+    std::int64_t cells = static_cast<std::int64_t>(NF);
+    for (std::int64_t s = 0; s < Subdivisions; ++s)
+        cells = prim_mul(cells, 4);
+    prim_check_budget(pShape, cells, MaxCells);
+    PrimSoup soup;
+    soup.mMap = PrimMap::Unit;
+    soup.mRadius = Radius;
+    soup.mCenter = rCenter;
+    for (const auto& v : rVerts)
+        soup.AddNode(v[0], v[1], v[2], 0);
+    std::vector<std::int64_t> faces;
+    for (const auto& f : rFaces)
+        faces.insert(faces.end(), {f[0], f[1], f[2]});
+    prim_subdivide_sphere(soup, faces, Subdivisions);
+    PrimBlock& blk = soup.Block(CellType::Triangle, 3);
+    blk.mConn = std::move(faces);
+    return prim_finish(pShape, soup, Order, Complete, {}, 2);
+}
+
+}  // namespace
+
+Mesh tetra_sphere(double Radius, std::int64_t Subdivisions, const std::array<double, 3>& rCenter,
+                  int Order, std::int64_t MaxCells, bool Complete) {
+    const double a = 1.0 / std::sqrt(3.0);
+    const double verts[4][3] = {{a, a, a}, {a, -a, -a}, {-a, a, -a}, {-a, -a, a}};
+    static const std::int64_t kFaces[4][3] = {{0, 1, 2}, {0, 2, 3}, {0, 3, 1}, {1, 3, 2}};
+    return prim_seeded_sphere("tetra_sphere", verts, kFaces, Radius, Subdivisions, rCenter, Order,
+                              MaxCells, Complete);
+}
+
+Mesh octa_sphere(double Radius, std::int64_t Subdivisions, const std::array<double, 3>& rCenter,
+                 int Order, std::int64_t MaxCells, bool Complete) {
+    static const double kVerts[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
+                                        {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+    static const std::int64_t kFaces[8][3] = {{0, 2, 4}, {0, 3, 5}, {0, 4, 3}, {0, 5, 2},
+                                              {1, 2, 5}, {1, 3, 4}, {1, 4, 2}, {1, 5, 3}};
+    return prim_seeded_sphere("octa_sphere", kVerts, kFaces, Radius, Subdivisions, rCenter, Order,
+                              MaxCells, Complete);
+}
+
+// ===========================================================================
+// The boundary lattice of a box: cube_sphere, box_surface, spherical_shell
+// ===========================================================================
+
+namespace {
+
+// The nodes of an nx x ny x nz lattice on the box boundary, numbered in lattice
+// order (x fastest, then y, then z) with the interior skipped: the full bottom
+// and top layers, and a ring on each layer between.
+struct PrimCubeLattice {
+    std::int64_t mNx, mNy, mNz;
+
+    std::int64_t Full() const { return (mNx + 1) * (mNy + 1); }
+    std::int64_t Ring() const { return 2 * (mNx + 1) + 2 * (mNy - 1); }
+    std::int64_t Count() const { return 2 * Full() + (mNz - 1) * Ring(); }
+
+    std::int64_t Id(std::int64_t I, std::int64_t J, std::int64_t K) const {
+        if (K == 0)
+            return J * (mNx + 1) + I;
+        const std::int64_t base = Full() + (K - 1) * Ring();
+        if (K == mNz)
+            return base + J * (mNx + 1) + I;
+        if (J == 0)
+            return base + I;
+        if (J == mNy)
+            return base + (mNx + 1) + 2 * (mNy - 1) + I;
+        return base + (mNx + 1) + 2 * (J - 1) + (I == 0 ? 0 : 1);
+    }
+
+    bool OnBoundary(std::int64_t I, std::int64_t J, std::int64_t K) const {
+        return I == 0 || I == mNx || J == 0 || J == mNy || K == 0 || K == mNz;
+    }
+
+    // Every face quad, oriented outward, face by face: xmin, xmax, ymin, ymax,
+    // zmin, zmax; on each, the second in-plane index outer.
+    template <typename Emit>
+    void Faces(Emit&& rEmit) const {
+        const std::int64_t nx = mNx, ny = mNy, nz = mNz;
+        for (std::int64_t k = 0; k < nz; ++k)
+            for (std::int64_t j = 0; j < ny; ++j)
+                rEmit(0, Id(0, j, k), Id(0, j, k + 1), Id(0, j + 1, k + 1), Id(0, j + 1, k));
+        for (std::int64_t k = 0; k < nz; ++k)
+            for (std::int64_t j = 0; j < ny; ++j)
+                rEmit(1, Id(nx, j, k), Id(nx, j + 1, k), Id(nx, j + 1, k + 1), Id(nx, j, k + 1));
+        for (std::int64_t k = 0; k < nz; ++k)
+            for (std::int64_t i = 0; i < nx; ++i)
+                rEmit(2, Id(i, 0, k), Id(i + 1, 0, k), Id(i + 1, 0, k + 1), Id(i, 0, k + 1));
+        for (std::int64_t k = 0; k < nz; ++k)
+            for (std::int64_t i = 0; i < nx; ++i)
+                rEmit(3, Id(i, ny, k), Id(i, ny, k + 1), Id(i + 1, ny, k + 1), Id(i + 1, ny, k));
+        for (std::int64_t j = 0; j < ny; ++j)
+            for (std::int64_t i = 0; i < nx; ++i)
+                rEmit(4, Id(i, j, 0), Id(i, j + 1, 0), Id(i + 1, j + 1, 0), Id(i + 1, j, 0));
+        for (std::int64_t j = 0; j < ny; ++j)
+            for (std::int64_t i = 0; i < nx; ++i)
+                rEmit(5, Id(i, j, nz), Id(i + 1, j, nz), Id(i + 1, j + 1, nz), Id(i, j + 1, nz));
+    }
+
+    std::int64_t NumFaces() const {
+        return 2 * (prim_mul(mNx, mNy) + prim_mul(mNy, mNz) + prim_mul(mNx, mNz));
+    }
+};
+
+// The boundary nodes of the lattice in order, each through rAdd(i, j, k).
+template <typename Add>
+void prim_cube_nodes(const PrimCubeLattice& rLat, Add&& rAdd) {
+    for (std::int64_t k = 0; k <= rLat.mNz; ++k)
+        for (std::int64_t j = 0; j <= rLat.mNy; ++j)
+            for (std::int64_t i = 0; i <= rLat.mNx; ++i)
+                if (rLat.OnBoundary(i, j, k))
+                    rAdd(i, j, k);
+}
+
+}  // namespace
+
+Mesh cube_sphere(double Radius, std::int64_t N, const std::array<double, 3>& rCenter,
+                 const std::string& rCellType, int Order, std::int64_t MaxCells, bool Complete) {
+    constexpr const char* shape = "cube_sphere";
+    prim_check_positive(shape, "radius", Radius);
+    prim_check_count(shape, "n", N);
+    prim_check_order(shape, Order);
+    const bool tri = rCellType == "triangle";
+    if (!tri && rCellType != "quad")
+        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    if (N == 0)
+        return prim_empty();
+    const PrimCubeLattice lat{N, N, N};
+    prim_check_budget(shape, prim_mul(lat.NumFaces(), tri ? 2 : 1), MaxCells);
+
+    PrimSoup soup;
+    soup.mMap = PrimMap::Project;
+    soup.mRadius = Radius;
+    soup.mCenter = rCenter;
+    const double n = static_cast<double>(N);
+    prim_cube_nodes(lat, [&](std::int64_t I, std::int64_t J, std::int64_t K) {
+        soup.AddNode(static_cast<double>(2 * I - N) / n, static_cast<double>(2 * J - N) / n,
+                     static_cast<double>(2 * K - N) / n, 0);
+    });
+    PrimBlock& blk = soup.Block(tri ? CellType::Triangle : CellType::Quad, tri ? 3 : 4);
+    lat.Faces([&](int, std::int64_t A, std::int64_t B, std::int64_t C, std::int64_t D) {
+        prim_push_quad(blk, tri, A, B, C, D);
+    });
+    return prim_finish(shape, soup, Order, Complete, {}, 2);
+}
+
+Mesh box_surface(const std::array<std::int64_t, 3>& rDims, const std::array<double, 3>& rSize,
+                 const std::array<double, 3>& rOrigin, const std::string& rCellType, int Order,
+                 std::int64_t MaxCells, bool Complete) {
+    constexpr const char* shape = "box_surface";
+    for (std::size_t k = 0; k < 3; ++k) {
+        prim_check_count(shape, "cell counts", rDims[k]);
+        if (rDims[k] > 0)
+            prim_check_positive(shape, "size", rSize[k]);
+    }
+    prim_check_order(shape, Order);
+    const bool tri = rCellType == "triangle";
+    if (!tri && rCellType != "quad")
+        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    if (rDims[0] == 0 || rDims[1] == 0 || rDims[2] == 0)
+        return prim_empty();
+    const PrimCubeLattice lat{rDims[0], rDims[1], rDims[2]};
+    prim_check_budget(shape, prim_mul(lat.NumFaces(), tri ? 2 : 1), MaxCells);
+
+    PrimSoup soup;
+    prim_cube_nodes(lat, [&](std::int64_t I, std::int64_t J, std::int64_t K) {
+        soup.AddNode(
+            rOrigin[0] + (rSize[0] * static_cast<double>(I)) / static_cast<double>(rDims[0]),
+            rOrigin[1] + (rSize[1] * static_cast<double>(J)) / static_cast<double>(rDims[1]),
+            rOrigin[2] + (rSize[2] * static_cast<double>(K)) / static_cast<double>(rDims[2]), 0);
+    });
+    PrimBlock& blk = soup.Block(tri ? CellType::Triangle : CellType::Quad, tri ? 3 : 4);
+    std::vector<std::uint8_t> labels;
+    lat.Faces([&](int Face, std::int64_t A, std::int64_t B, std::int64_t C, std::int64_t D) {
+        prim_push_quad(blk, tri, A, B, C, D);
+        labels.insert(labels.end(), tri ? 2 : 1, static_cast<std::uint8_t>(Face));
+    });
+    Mesh out = prim_finish(shape, soup, Order, Complete, {}, 2);
+    prim_add_cell_regions(out, labels, {"xmin", "xmax", "ymin", "ymax", "zmin", "zmax"}, 2);
+    return out;
+}
+
+// ===========================================================================
+// geo_sphere
+// ===========================================================================
+
+Mesh geo_sphere(double Radius, std::int64_t N, const std::array<double, 3>& rCenter, int Order,
+                std::int64_t MaxCells, bool Complete) {
+    constexpr const char* shape = "geo_sphere";
+    prim_check_positive(shape, "radius", Radius);
+    prim_check_count(shape, "n", N);
+    prim_check_order(shape, Order);
+    if (N == 0)
+        return prim_empty();
+    prim_check_budget(shape, prim_mul(20, prim_mul(N, N)), MaxCells);
+
+    PrimSoup soup;
+    soup.mMap = PrimMap::Project;
+    soup.mRadius = Radius;
+    soup.mCenter = rCenter;
+    const double t = (1.0 + std::sqrt(5.0)) / 2.0;
+    const double len = std::sqrt(1.0 + t * t);
+    const double one = 1.0 / len, tau = t / len;
+    const double verts[12][3] = {{-one, tau, 0}, {one, tau, 0}, {-one, -tau, 0}, {one, -tau, 0},
+                                 {0, -one, tau}, {0, one, tau}, {0, -one, -tau}, {0, one, -tau},
+                                 {tau, 0, -one}, {tau, 0, one}, {-tau, 0, -one}, {-tau, 0, one}};
+    static const std::int64_t kFaces[20][3] = {
+        {0, 11, 5},  {0, 5, 1},  {0, 1, 7},  {0, 7, 10}, {0, 10, 11}, {1, 5, 9}, {5, 11, 4},
+        {11, 10, 2}, {10, 7, 6}, {7, 1, 8},  {3, 9, 4},  {3, 4, 2},   {3, 2, 6}, {3, 6, 8},
+        {3, 8, 9},   {4, 9, 5},  {2, 4, 11}, {6, 2, 10}, {8, 6, 7},   {9, 8, 1}};
+    for (const auto& v : verts)
+        soup.AddNode(v[0], v[1], v[2], 0);
+    const double n = static_cast<double>(N);
+    // The 30 edges in first-appearance order over the faces' (v0 v1, v1 v2,
+    // v2 v0), then N - 1 nodes on each from its lower vertex.
+    std::unordered_map<std::uint64_t, std::int64_t> edge_index;
+    std::vector<std::pair<std::int64_t, std::int64_t>> edges;
+    for (const auto& f : kFaces)
+        for (int e = 0; e < 3; ++e) {
+            std::int64_t a = f[e], b = f[(e + 1) % 3];
+            if (a > b)
+                std::swap(a, b);
+            if (edge_index.emplace(prim_edge_key(a, b), static_cast<std::int64_t>(edges.size()))
+                    .second)
+                edges.emplace_back(a, b);
+        }
+    const std::int64_t edge_base = 12;
+    for (const auto& [a, b] : edges)
+        for (std::int64_t s = 1; s < N; ++s) {
+            const double wa = static_cast<double>(N - s), wb = static_cast<double>(s);
+            soup.AddNode((verts[a][0] * wa + verts[b][0] * wb) / n,
+                         (verts[a][1] * wa + verts[b][1] * wb) / n,
+                         (verts[a][2] * wa + verts[b][2] * wb) / n, 0);
+        }
+    const std::int64_t face_base = edge_base + 30 * (N - 1);
+    const std::int64_t per_face = ((N - 1) * (N - 2)) / 2;
+    for (const auto& f : kFaces)
+        for (std::int64_t j = 1; j + 1 < N; ++j)
+            for (std::int64_t i = 1; i + j < N; ++i) {
+                const double w0 = static_cast<double>(N - i - j);
+                const double w1 = static_cast<double>(i), w2 = static_cast<double>(j);
+                soup.AddNode((verts[f[0]][0] * w0 + verts[f[1]][0] * w1 + verts[f[2]][0] * w2) / n,
+                             (verts[f[0]][1] * w0 + verts[f[1]][1] * w1 + verts[f[2]][1] * w2) / n,
+                             (verts[f[0]][2] * w0 + verts[f[1]][2] * w1 + verts[f[2]][2] * w2) / n,
+                             0);
+            }
+    // The node at (N - i - j, i, j) of face F over its corners (v0, v1, v2).
+    auto on_edge = [&](std::int64_t From, std::int64_t To, std::int64_t Steps) {
+        const std::int64_t lo = std::min(From, To), hi = std::max(From, To);
+        const std::int64_t e = edge_index.at(prim_edge_key(lo, hi));
+        const std::int64_t s = From == lo ? Steps : N - Steps;
+        return edge_base + e * (N - 1) + (s - 1);
+    };
+    auto id = [&](std::size_t F, std::int64_t I, std::int64_t J) -> std::int64_t {
+        const auto& f = kFaces[F];
+        if (I == 0 && J == 0)
+            return f[0];
+        if (I == N)
+            return f[1];
+        if (J == N)
+            return f[2];
+        if (J == 0)
+            return on_edge(f[0], f[1], I);
+        if (I == 0)
+            return on_edge(f[0], f[2], J);
+        if (I + J == N)
+            return on_edge(f[1], f[2], J);
+        return face_base + static_cast<std::int64_t>(F) * per_face + (J - 1) * (N - 1) -
+               ((J - 1) * J) / 2 + (I - 1);
+    };
+    PrimBlock& blk = soup.Block(CellType::Triangle, 3);
+    for (std::size_t f = 0; f < 20; ++f)
+        for (std::int64_t j = 0; j < N; ++j)
+            for (std::int64_t i = 0; i < N - j; ++i) {
+                prim_push(blk, {id(f, i, j), id(f, i + 1, j), id(f, i, j + 1)});
+                if (i < N - 1 - j)
+                    prim_push(blk, {id(f, i + 1, j), id(f, i + 1, j + 1), id(f, i, j + 1)});
+            }
+    return prim_finish(shape, soup, Order, Complete, {}, 2);
+}
+
+// ===========================================================================
+// torus, moebius, tube
+// ===========================================================================
+
+Mesh torus(double MajorRadius, double MinorRadius, std::int64_t Nu, std::int64_t Nv,
+           const std::array<double, 3>& rCenter, const std::string& rCellType, int Order,
+           std::int64_t MaxCells, bool Complete) {
+    constexpr const char* shape = "torus";
+    prim_check_positive(shape, "major_radius", MajorRadius);
+    prim_check_positive(shape, "minor_radius", MinorRadius);
+    if (!(MinorRadius < MajorRadius))
+        prim_fail(shape, "minor_radius must be less than major_radius, got " +
+                             std::to_string(MinorRadius) + " and " + std::to_string(MajorRadius));
+    prim_check_count(shape, "nu", Nu);
+    prim_check_count(shape, "nv", Nv);
+    prim_check_order(shape, Order);
+    const bool tri = rCellType == "triangle";
+    if (!tri && rCellType != "quad")
+        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    if (Nu == 0 || Nv == 0)
+        return prim_empty();
+    if (Nu < 3 || Nv < 3)
+        prim_fail(shape, "nu and nv must be at least 3, got " + std::to_string(Nu) + " and " +
+                             std::to_string(Nv));
+    prim_check_budget(shape, prim_mul(prim_mul(Nu, Nv), tri ? 2 : 1), MaxCells);
+
+    PrimSoup soup;
+    soup.mMap = PrimMap::Torus;
+    soup.mRadius = MajorRadius;
+    soup.mRadius2 = MinorRadius;
+    soup.mCenter = rCenter;
+    for (std::int64_t i = 0; i < Nu; ++i)
+        for (std::int64_t j = 0; j < Nv; ++j)
+            soup.AddNode((2.0 * kPrimPi * static_cast<double>(i)) / static_cast<double>(Nu),
+                         (2.0 * kPrimPi * static_cast<double>(j)) / static_cast<double>(Nv), 0.0,
+                         0);
+    PrimBlock& blk = soup.Block(tri ? CellType::Triangle : CellType::Quad, tri ? 3 : 4);
+    for (std::int64_t i = 0; i < Nu; ++i)
+        for (std::int64_t j = 0; j < Nv; ++j) {
+            const std::int64_t i1 = (i + 1) % Nu, j1 = (j + 1) % Nv;
+            prim_push_quad(blk, tri, i * Nv + j, i1 * Nv + j, i1 * Nv + j1, i * Nv + j1);
+        }
+    return prim_finish(shape, soup, Order, Complete, {}, 2);
+}
+
+Mesh moebius(double Radius, double Width, std::int64_t Nu, std::int64_t Nv, std::int64_t NumTwists,
+             const std::array<double, 3>& rCenter, const std::string& rCellType, int Order,
+             std::int64_t MaxCells, bool Complete) {
+    constexpr const char* shape = "moebius";
+    prim_check_positive(shape, "radius", Radius);
+    prim_check_positive(shape, "width", Width);
+    if (!(Width < 2.0 * Radius))
+        prim_fail(shape, "width must be less than twice the radius, got " + std::to_string(Width) +
+                             " and " + std::to_string(Radius));
+    prim_check_count(shape, "nu", Nu);
+    prim_check_count(shape, "nv", Nv);
+    prim_check_count(shape, "num_twists", NumTwists);
+    prim_check_order(shape, Order);
+    const bool tri = rCellType == "triangle";
+    if (!tri && rCellType != "quad")
+        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    if (Nu == 0 || Nv == 0)
+        return prim_empty();
+    if (Nu < 3)
+        prim_fail(shape, "nu must be at least 3, got " + std::to_string(Nu));
+    prim_check_budget(shape, prim_mul(prim_mul(Nu, Nv), tri ? 2 : 1), MaxCells);
+
+    PrimSoup soup;
+    soup.mMap = PrimMap::Moebius;
+    soup.mRadius = Radius;
+    soup.mHalf = Width / 2.0;
+    soup.mTwists = NumTwists;
+    soup.mCenter = rCenter;
+    const std::int64_t p = Nv + 1;
+    for (std::int64_t i = 0; i < Nu; ++i)
+        for (std::int64_t j = 0; j <= Nv; ++j)
+            soup.AddNode((2.0 * kPrimPi * static_cast<double>(i)) / static_cast<double>(Nu),
+                         static_cast<double>(2 * j - Nv) / static_cast<double>(Nv), 0.0,
+                         (j == 0 || j == Nv) ? 1 : 0);
+    // Across the seam, an odd count of half-twists meets the first ring upside
+    // down: node j there is node Nv - j.
+    const bool flip = NumTwists % 2 != 0;
+    PrimBlock& blk = soup.Block(tri ? CellType::Triangle : CellType::Quad, tri ? 3 : 4);
+    for (std::int64_t i = 0; i < Nu; ++i)
+        for (std::int64_t j = 0; j < Nv; ++j) {
+            const std::int64_t a = i * p + j, d = a + 1;
+            std::int64_t b, c;
+            if (i + 1 < Nu) {
+                b = (i + 1) * p + j;
+                c = b + 1;
+            } else {
+                b = flip ? Nv - j : j;
+                c = flip ? Nv - j - 1 : j + 1;
+            }
+            prim_push_quad(blk, tri, a, b, c, d);
+        }
+    return prim_finish(shape, soup, Order, Complete, {{"boundary", 1}}, 1);
+}
+
+Mesh tube(double Radius, double Height, std::int64_t Ntheta, std::int64_t Nz,
+          const std::array<double, 3>& rCenter, const std::string& rCellType, int Order,
+          std::int64_t MaxCells, bool Complete) {
+    constexpr const char* shape = "tube";
+    prim_check_positive(shape, "radius", Radius);
+    prim_check_positive(shape, "height", Height);
+    prim_check_count(shape, "ntheta", Ntheta);
+    prim_check_count(shape, "nz", Nz);
+    prim_check_order(shape, Order);
+    const bool tri = rCellType == "triangle";
+    if (!tri && rCellType != "quad")
+        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    if (Ntheta == 0 || Nz == 0)
+        return prim_empty();
+    if (Ntheta < 3)
+        prim_fail(shape, "ntheta must be at least 3, got " + std::to_string(Ntheta));
+    prim_check_budget(shape, prim_mul(prim_mul(Ntheta, Nz), tri ? 2 : 1), MaxCells);
+
+    PrimSoup soup;
+    soup.mMap = PrimMap::Polar;
+    soup.mRadius = Radius;
+    soup.mCenter = rCenter;
+    for (std::int64_t k = 0; k <= Nz; ++k) {
+        const double z = (Height * static_cast<double>(2 * k - Nz)) / static_cast<double>(2 * Nz);
+        const std::uint16_t mask = (k == 0 ? 1 : 0) | (k == Nz ? 2 : 0);
+        for (std::int64_t i = 0; i < Ntheta; ++i)
+            soup.AddNode(1.0,
+                         (2.0 * kPrimPi * static_cast<double>(i)) / static_cast<double>(Ntheta), z,
+                         mask);
+    }
+    PrimBlock& blk = soup.Block(tri ? CellType::Triangle : CellType::Quad, tri ? 3 : 4);
+    for (std::int64_t k = 0; k < Nz; ++k)
+        for (std::int64_t i = 0; i < Ntheta; ++i) {
+            const std::int64_t i1 = (i + 1) % Ntheta;
+            prim_push_quad(blk, tri, k * Ntheta + i, k * Ntheta + i1, (k + 1) * Ntheta + i1,
+                           (k + 1) * Ntheta + i);
+        }
+    return prim_finish(shape, soup, Order, Complete, {{"bottom", 1}, {"top", 2}}, 1);
+}
+
+// ===========================================================================
+// cone, capsule: closed surfaces of revolution in rings between two poles
+// ===========================================================================
+
+namespace {
+
+// Cells between a pole (node 0), Rings rings of Ntheta nodes (ring r from 1)
+// and a second pole (node Last), as uv_sphere lays them out: quads between the
+// rings and triangle fans at the poles (or triangles throughout), oriented
+// outward when the rings run from the first pole to the second with the angle
+// increasing counter-clockwise seen from the first. rLabel(r) labels the band
+// between rings r and r + 1 (r = 0 the first fan, r = Rings the second).
+template <typename Label>
+void prim_ring_cells(PrimSoup& rSoup, std::int64_t Rings, std::int64_t Ntheta, std::int64_t Last,
+                     bool Tri, Label&& rLabel, std::vector<std::uint8_t>& rLabels) {
+    auto ring = [&](std::int64_t R, std::int64_t I) { return 1 + (R - 1) * Ntheta + (I % Ntheta); };
+    if (!Tri) {
+        PrimBlock& body = rSoup.Block(CellType::Quad, 4);
+        for (std::int64_t r = 1; r < Rings; ++r)
+            for (std::int64_t i = 0; i < Ntheta; ++i) {
+                prim_push(body, {ring(r, i), ring(r + 1, i), ring(r + 1, i + 1), ring(r, i + 1)});
+                rLabels.push_back(rLabel(r));
+            }
+    }
+    PrimBlock& tris = rSoup.Block(CellType::Triangle, 3);
+    for (std::int64_t i = 0; i < Ntheta; ++i) {
+        prim_push(tris, {0, ring(1, i), ring(1, i + 1)});
+        rLabels.push_back(rLabel(0));
+    }
+    if (Tri)
+        for (std::int64_t r = 1; r < Rings; ++r)
+            for (std::int64_t i = 0; i < Ntheta; ++i) {
+                const std::int64_t a = ring(r, i), b = ring(r, i + 1);
+                const std::int64_t c = ring(r + 1, i + 1), d = ring(r + 1, i);
+                prim_push(tris, {a, d, c});
+                prim_push(tris, {a, c, b});
+                rLabels.insert(rLabels.end(), 2, rLabel(r));
+            }
+    for (std::int64_t i = 0; i < Ntheta; ++i) {
+        prim_push(tris, {Last, ring(Rings, i + 1), ring(Rings, i)});
+        rLabels.push_back(rLabel(Rings));
+    }
+}
+
+std::int64_t prim_ring_cell_count(std::int64_t Rings, std::int64_t Ntheta, bool Tri) {
+    return prim_mul(Ntheta, Tri ? 2 * Rings : Rings + 1);
+}
+
+}  // namespace
+
+Mesh cone(double Radius, double Height, std::int64_t Ntheta, std::int64_t Nz,
+          const std::array<double, 3>& rCenter, const std::string& rCellType, int Order,
+          std::int64_t MaxCells, bool Complete) {
+    constexpr const char* shape = "cone";
+    prim_check_positive(shape, "radius", Radius);
+    prim_check_positive(shape, "height", Height);
+    prim_check_count(shape, "ntheta", Ntheta);
+    prim_check_count(shape, "nz", Nz);
+    prim_check_order(shape, Order);
+    const bool tri = rCellType == "triangle";
+    if (!tri && rCellType != "quad")
+        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    if (Ntheta == 0 || Nz == 0)
+        return prim_empty();
+    if (Ntheta < 3)
+        prim_fail(shape, "ntheta must be at least 3, got " + std::to_string(Ntheta));
+    const std::int64_t rings = 2 * Nz - 1;
+    prim_check_budget(shape, prim_ring_cell_count(rings, Ntheta, tri), MaxCells);
+
+    PrimSoup soup;
+    soup.mMap = PrimMap::Polar;
+    soup.mRadius = Radius;
+    soup.mCenter = rCenter;
+    soup.AddNode(0.0, 0.0, Height, kPrimDegenerate);
+    for (std::int64_t r = 1; r <= rings; ++r) {
+        // Down the slant to the rim (r = Nz), then in across the base.
+        const std::int64_t m = r <= Nz ? r : 2 * Nz - r;
+        const double rho = static_cast<double>(m) / static_cast<double>(Nz);
+        const double z =
+            r <= Nz ? (Height * static_cast<double>(Nz - r)) / static_cast<double>(Nz) : 0.0;
+        for (std::int64_t i = 0; i < Ntheta; ++i)
+            soup.AddNode(
+                rho, (2.0 * kPrimPi * static_cast<double>(i)) / static_cast<double>(Ntheta), z, 0);
+    }
+    const std::int64_t last = soup.AddNode(0.0, 0.0, 0.0, kPrimDegenerate);
+    std::vector<std::uint8_t> labels;
+    prim_ring_cells(
+        soup, rings, Ntheta, last, tri,
+        [&](std::int64_t R) { return static_cast<std::uint8_t>(R < Nz ? 0 : 1); }, labels);
+    Mesh out = prim_finish(shape, soup, Order, Complete, {}, 2);
+    prim_add_cell_regions(out, labels, {"side", "base"}, 2);
+    return out;
+}
+
+Mesh capsule(double Radius, double Height, std::int64_t Ntheta, std::int64_t Nz, std::int64_t Ncap,
+             const std::array<double, 3>& rCenter, const std::string& rCellType, int Order,
+             std::int64_t MaxCells, bool Complete) {
+    constexpr const char* shape = "capsule";
+    prim_check_positive(shape, "radius", Radius);
+    prim_check_positive(shape, "height", Height);
+    prim_check_count(shape, "ntheta", Ntheta);
+    prim_check_count(shape, "nz", Nz);
+    prim_check_count(shape, "ncap", Ncap);
+    prim_check_order(shape, Order);
+    const bool tri = rCellType == "triangle";
+    if (!tri && rCellType != "quad")
+        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    if (Ntheta == 0 || Nz == 0 || Ncap == 0)
+        return prim_empty();
+    if (Ntheta < 3)
+        prim_fail(shape, "ntheta must be at least 3, got " + std::to_string(Ntheta));
+    const std::int64_t rings = 2 * Ncap + Nz - 1;
+    prim_check_budget(shape, prim_ring_cell_count(rings, Ntheta, tri), MaxCells);
+
+    PrimSoup soup;
+    soup.mMap = PrimMap::Capsule;
+    soup.mRadius = Radius;
+    soup.mHalf = Height / 2.0;
+    soup.mCenter = rCenter;
+    const double side = (2.0 * soup.mHalf) / Radius;
+    soup.AddNode(0.0, 0.0, 0.0, kPrimDegenerate);
+    for (std::int64_t r = 1; r <= rings; ++r) {
+        double t;
+        if (r <= Ncap)
+            t = (kPrimPi * static_cast<double>(r)) / static_cast<double>(2 * Ncap);
+        else if (r < Ncap + Nz)
+            t = kPrimPi / 2.0 + (side * static_cast<double>(r - Ncap)) / static_cast<double>(Nz);
+        else
+            t = kPrimPi / 2.0 + side +
+                (kPrimPi * static_cast<double>(r - Ncap - Nz)) / static_cast<double>(2 * Ncap);
+        for (std::int64_t i = 0; i < Ntheta; ++i)
+            soup.AddNode(t, (2.0 * kPrimPi * static_cast<double>(i)) / static_cast<double>(Ntheta),
+                         0.0, 0);
+    }
+    const std::int64_t last = soup.AddNode(kPrimPi + side, 0.0, 0.0, kPrimDegenerate);
+    std::vector<std::uint8_t> labels;
+    prim_ring_cells(
+        soup, rings, Ntheta, last, tri, [](std::int64_t) { return std::uint8_t{0}; }, labels);
+    return prim_finish(shape, soup, Order, Complete, {}, 2);
+}
+
+// ===========================================================================
+// platonic
+// ===========================================================================
+
+Mesh platonic(const std::string& rName, double Radius, const std::array<double, 3>& rCenter,
+              std::int64_t MaxCells) {
+    constexpr const char* shape = "platonic";
+    prim_check_positive(shape, "radius", Radius);
+    const double a = 1.0 / std::sqrt(3.0);
+    std::vector<std::array<double, 3>> verts;
+    std::vector<std::vector<std::int64_t>> faces;
+    if (rName == "tetrahedron") {
+        verts = {{a, a, a}, {a, -a, -a}, {-a, a, -a}, {-a, -a, a}};
+        faces = {{0, 1, 2}, {0, 2, 3}, {0, 3, 1}, {1, 3, 2}};
+    } else if (rName == "cube") {
+        for (int z = -1; z <= 1; z += 2)
+            for (int y = -1; y <= 1; y += 2)
+                for (int x = -1; x <= 1; x += 2)
+                    verts.push_back({x * a, y * a, z * a});
+        faces = {{0, 1, 5, 4}, {0, 2, 3, 1}, {0, 4, 6, 2},
+                 {1, 3, 7, 5}, {2, 6, 7, 3}, {4, 5, 7, 6}};
+    } else if (rName == "octahedron") {
+        verts = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+        faces = {{0, 2, 4}, {0, 3, 5}, {0, 4, 3}, {0, 5, 2},
+                 {1, 2, 5}, {1, 3, 4}, {1, 4, 2}, {1, 5, 3}};
+    } else if (rName == "dodecahedron") {
+        const double phi = (1.0 + std::sqrt(5.0)) / 2.0;
+        const double ip = 1.0 / phi;
+        for (int z = -1; z <= 1; z += 2)
+            for (int y = -1; y <= 1; y += 2)
+                for (int x = -1; x <= 1; x += 2)
+                    verts.push_back({x * a, y * a, z * a});
+        for (int s1 = -1; s1 <= 1; s1 += 2)
+            for (int s2 = -1; s2 <= 1; s2 += 2)
+                verts.push_back({0.0, (s1 * ip) * a, (s2 * phi) * a});
+        for (int s1 = -1; s1 <= 1; s1 += 2)
+            for (int s2 = -1; s2 <= 1; s2 += 2)
+                verts.push_back({(s1 * ip) * a, (s2 * phi) * a, 0.0});
+        for (int s1 = -1; s1 <= 1; s1 += 2)
+            for (int s2 = -1; s2 <= 1; s2 += 2)
+                verts.push_back({(s1 * phi) * a, 0.0, (s2 * ip) * a});
+        faces = {{0, 8, 1, 14, 12},  {0, 12, 4, 17, 16}, {0, 16, 2, 10, 8},  {1, 8, 10, 3, 18},
+                 {1, 18, 19, 5, 14}, {2, 13, 15, 3, 10}, {2, 16, 17, 6, 13}, {3, 15, 7, 19, 18},
+                 {4, 9, 11, 6, 17},  {4, 12, 14, 5, 9},  {5, 19, 7, 11, 9},  {6, 11, 7, 15, 13}};
+    } else if (rName == "icosahedron") {
+        const double t = (1.0 + std::sqrt(5.0)) / 2.0;
+        const double len = std::sqrt(1.0 + t * t);
+        const double one = 1.0 / len, tau = t / len;
+        verts = {{-one, tau, 0}, {one, tau, 0}, {-one, -tau, 0}, {one, -tau, 0},
+                 {0, -one, tau}, {0, one, tau}, {0, -one, -tau}, {0, one, -tau},
+                 {tau, 0, -one}, {tau, 0, one}, {-tau, 0, -one}, {-tau, 0, one}};
+        faces = {{0, 11, 5}, {0, 5, 1},  {0, 1, 7},   {0, 7, 10}, {0, 10, 11},
+                 {1, 5, 9},  {5, 11, 4}, {11, 10, 2}, {10, 7, 6}, {7, 1, 8},
+                 {3, 9, 4},  {3, 4, 2},  {3, 2, 6},   {3, 6, 8},  {3, 8, 9},
+                 {4, 9, 5},  {2, 4, 11}, {6, 2, 10},  {8, 6, 7},  {9, 8, 1}};
+    } else {
+        prim_bad_choice(shape, "name", rName,
+                        "tetrahedron, cube, octahedron, dodecahedron, icosahedron");
+    }
+    prim_check_budget(shape, static_cast<std::int64_t>(faces.size()), MaxCells);
+
+    Mesh out;
+    NDArray points = NDArray::Uninit(DType::Float64, {verts.size(), std::size_t{3}});
+    double* dst = points.As<double>();
+    for (std::size_t i = 0; i < verts.size(); ++i)
+        for (std::size_t k = 0; k < 3; ++k)
+            dst[3 * i + k] = rCenter[k] + Radius * verts[i][k];
+    out.AssignPoints(std::move(points));
+    const std::size_t width = faces[0].size();
+    if (width == 5) {
+        std::vector<std::int64_t> flat, offsets{0};
+        for (const auto& f : faces) {
+            flat.insert(flat.end(), f.begin(), f.end());
+            offsets.push_back(static_cast<std::int64_t>(flat.size()));
+        }
+        out.AddPolygonBlock("polygon", std::move(flat), std::move(offsets));
+    } else {
+        NDArray conn = NDArray::Uninit(DType::Int64, {faces.size(), width});
+        std::int64_t* c = conn.As<std::int64_t>();
+        for (std::size_t f = 0; f < faces.size(); ++f)
+            std::copy(faces[f].begin(), faces[f].end(), c + f * width);
+        out.AddCellBlock(width == 3 ? "triangle" : "quad", std::move(conn));
+    }
+    return out;
+}
+
+// ===========================================================================
+// ball, spherical_shell, pipe, fichera, solid_torus
+// ===========================================================================
+
+namespace {
+
+void prim_push_hex(PrimBlock& rBlock, bool Tetra, const std::int64_t* pHex) {
+    static const std::int64_t kKuhn[6][4] = {{0, 1, 2, 6}, {0, 2, 3, 6}, {0, 3, 7, 6},
+                                             {0, 7, 4, 6}, {0, 4, 5, 6}, {0, 5, 1, 6}};
+    if (Tetra) {
+        for (const auto& t : kKuhn)
+            prim_push(rBlock, {pHex[t[0]], pHex[t[1]], pHex[t[2]], pHex[t[3]]});
+    } else {
+        prim_push(rBlock, {pHex[0], pHex[1], pHex[2], pHex[3], pHex[4], pHex[5], pHex[6], pHex[7]});
+    }
+}
+
+}  // namespace
+
+Mesh ball(double Radius, std::int64_t N, const std::array<double, 3>& rCenter,
+          const std::string& rCellType, int Order, std::int64_t MaxCells, bool Complete) {
+    constexpr const char* shape = "ball";
+    prim_check_positive(shape, "radius", Radius);
+    prim_check_count(shape, "n", N);
+    prim_check_order(shape, Order);
+    const bool tet = rCellType == "tetra";
+    if (!tet && rCellType != "hexahedron")
+        prim_bad_choice(shape, "cell_type", rCellType, "hexahedron, tetra");
+    if (N == 0)
+        return prim_empty();
+    const std::int64_t m = 2 * N;
+    prim_check_budget(shape, prim_mul(prim_mul(prim_mul(m, m), m), tet ? 6 : 1), MaxCells);
+
+    PrimSoup soup;
+    soup.mMap = PrimMap::Ball;
+    soup.mRadius = Radius;
+    soup.mCenter = rCenter;
+    const double n = static_cast<double>(N);
+    for (std::int64_t k = 0; k <= m; ++k)
+        for (std::int64_t j = 0; j <= m; ++j)
+            for (std::int64_t i = 0; i <= m; ++i) {
+                const bool rim = i == 0 || i == m || j == 0 || j == m || k == 0 || k == m;
+                soup.AddNode(static_cast<double>(i - N) / n, static_cast<double>(j - N) / n,
+                             static_cast<double>(k - N) / n, rim ? 1 : 0);
+            }
+    PrimBlock& blk = soup.Block(tet ? CellType::Tetra : CellType::Hexahedron, tet ? 4 : 8);
+    for (std::int64_t k = 0; k < m; ++k)
+        for (std::int64_t j = 0; j < m; ++j)
+            for (std::int64_t i = 0; i < m; ++i) {
+                std::int64_t h[8];
+                prim_hex_nodes(i, j, k, m + 1, m + 1, h);
+                prim_push_hex(blk, tet, h);
+            }
+    return prim_finish(shape, soup, Order, Complete, {{"surface", 1}}, 2);
+}
+
+Mesh spherical_shell(double InnerRadius, double OuterRadius, std::int64_t N, std::int64_t Nr,
+                     double Ratio, const std::array<double, 3>& rCenter, int Order,
+                     std::int64_t MaxCells, bool Complete) {
+    constexpr const char* shape = "spherical_shell";
+    prim_check_count(shape, "n", N);
+    prim_check_count(shape, "nr", Nr);
+    prim_check_order(shape, Order);
+    if (N == 0 || Nr == 0)
+        return prim_empty();
+    prim_check_positive(shape, "inner_radius", InnerRadius);
+    if (!(OuterRadius > InnerRadius))
+        prim_fail(shape, "outer_radius must exceed inner_radius, got " +
+                             std::to_string(OuterRadius) + " and " + std::to_string(InnerRadius));
+    prim_check_positive(shape, "ratio", Ratio);
+    const PrimCubeLattice lat{N, N, N};
+    prim_check_budget(shape, prim_mul(lat.NumFaces(), Nr), MaxCells);
+
+    PrimSoup soup;
+    soup.mMap = PrimMap::Shell;
+    soup.mRadius = InnerRadius;
+    soup.mRadius2 = OuterRadius;
+    soup.mRatio = Ratio;
+    soup.mLayers = static_cast<double>(Nr);
+    soup.mCenter = rCenter;
+    const double n = static_cast<double>(N);
+    for (std::int64_t k = 0; k <= Nr; ++k) {
+        const double t = static_cast<double>(Nr + k) / static_cast<double>(Nr);
+        const std::uint16_t mask = (k == 0 ? 1 : 0) | (k == Nr ? 2 : 0);
+        prim_cube_nodes(lat, [&](std::int64_t I, std::int64_t J, std::int64_t K) {
+            soup.AddNode((static_cast<double>(2 * I - N) / n) * t,
+                         (static_cast<double>(2 * J - N) / n) * t,
+                         (static_cast<double>(2 * K - N) / n) * t, mask);
+        });
+    }
+    const std::int64_t layer = lat.Count();
+    PrimBlock& blk = soup.Block(CellType::Hexahedron, 8);
+    for (std::int64_t k = 0; k < Nr; ++k) {
+        const std::int64_t lo = k * layer, hi = lo + layer;
+        lat.Faces([&](int, std::int64_t A, std::int64_t B, std::int64_t C, std::int64_t D) {
+            prim_push(blk, {A + lo, B + lo, C + lo, D + lo, A + hi, B + hi, C + hi, D + hi});
+        });
+    }
+    return prim_finish(shape, soup, Order, Complete, {{"inner", 1}, {"outer", 2}}, 2);
+}
+
+Mesh pipe(double InnerRadius, double OuterRadius, double Height, std::int64_t Ntheta,
+          std::int64_t Nr, std::int64_t Nz, double Ratio, const std::array<double, 3>& rCenter,
+          int Order, std::int64_t MaxCells, bool Complete) {
+    constexpr const char* shape = "pipe";
+    prim_check_count(shape, "ntheta", Ntheta);
+    prim_check_count(shape, "nr", Nr);
+    prim_check_count(shape, "nz", Nz);
+    prim_check_order(shape, Order);
+    if (Ntheta == 0 || Nr == 0 || Nz == 0)
+        return prim_empty();
+    prim_check_positive(shape, "inner_radius", InnerRadius);
+    if (!(OuterRadius > InnerRadius))
+        prim_fail(shape, "outer_radius must exceed inner_radius, got " +
+                             std::to_string(OuterRadius) + " and " + std::to_string(InnerRadius));
+    prim_check_positive(shape, "height", Height);
+    prim_check_positive(shape, "ratio", Ratio);
+    if (Ntheta < 3)
+        prim_fail(shape, "ntheta must be at least 3, got " + std::to_string(Ntheta));
+    prim_check_budget(shape, prim_mul(prim_mul(Ntheta, Nr), Nz), MaxCells);
+
+    PrimSoup soup;
+    soup.mMap = PrimMap::Graded;
+    soup.mRadius = InnerRadius;
+    soup.mRadius2 = OuterRadius;
+    soup.mRatio = Ratio;
+    soup.mLayers = static_cast<double>(Nr);
+    soup.mCenter = rCenter;
+    for (std::int64_t k = 0; k <= Nz; ++k) {
+        const double z = (Height * static_cast<double>(2 * k - Nz)) / static_cast<double>(2 * Nz);
+        for (std::int64_t m = 0; m <= Nr; ++m) {
+            const std::uint16_t mask =
+                (m == 0 ? 1 : 0) | (m == Nr ? 2 : 0) | (k == 0 ? 4 : 0) | (k == Nz ? 8 : 0);
+            for (std::int64_t i = 0; i < Ntheta; ++i)
+                soup.AddNode(static_cast<double>(m) / static_cast<double>(Nr),
+                             (2.0 * kPrimPi * static_cast<double>(i)) / static_cast<double>(Ntheta),
+                             z, mask);
+        }
+    }
+    auto id = [&](std::int64_t K, std::int64_t M, std::int64_t I) {
+        return (K * (Nr + 1) + M) * Ntheta + (I % Ntheta);
+    };
+    PrimBlock& blk = soup.Block(CellType::Hexahedron, 8);
+    for (std::int64_t k = 0; k < Nz; ++k)
+        for (std::int64_t m = 0; m < Nr; ++m)
+            for (std::int64_t i = 0; i < Ntheta; ++i)
+                prim_push(blk, {id(k, m, i), id(k, m + 1, i), id(k, m + 1, i + 1), id(k, m, i + 1),
+                                id(k + 1, m, i), id(k + 1, m + 1, i), id(k + 1, m + 1, i + 1),
+                                id(k + 1, m, i + 1)});
+    return prim_finish(shape, soup, Order, Complete,
+                       {{"inner", 1}, {"outer", 2}, {"bottom", 4}, {"top", 8}}, 2);
+}
+
+Mesh fichera(std::int64_t N, double Size, const std::array<double, 3>& rCenter,
+             const std::string& rCellType, int Order, std::int64_t MaxCells, bool Complete) {
+    constexpr const char* shape = "fichera";
+    prim_check_count(shape, "n", N);
+    prim_check_order(shape, Order);
+    const bool tet = rCellType == "tetra";
+    if (!tet && rCellType != "hexahedron")
+        prim_bad_choice(shape, "cell_type", rCellType, "hexahedron, tetra");
+    if (N == 0)
+        return prim_empty();
+    prim_check_positive(shape, "size", Size);
+    prim_check_budget(shape, prim_mul(prim_mul(7, prim_mul(prim_mul(N, N), N)), tet ? 6 : 1),
+                      MaxCells);
+
+    PrimSoup soup;
+    const std::int64_t w = 2 * N + 1, top = 2 * N;
+    // Nodes strictly inside the removed octant (x, y, z > 0) are skipped; the
+    // lattice keeps the notch walls.
+    std::vector<std::int64_t> ids(static_cast<std::size_t>(w * w * w), -1);
+    for (std::int64_t k = 0; k < w; ++k)
+        for (std::int64_t j = 0; j < w; ++j)
+            for (std::int64_t i = 0; i < w; ++i) {
+                if (i > N && j > N && k > N)
+                    continue;
+                std::uint16_t mask = 0;
+                if (i == 0)
+                    mask |= 1;
+                if (i == top)
+                    mask |= 2;
+                if (j == 0)
+                    mask |= 4;
+                if (j == top)
+                    mask |= 8;
+                if (k == 0)
+                    mask |= 16;
+                if (k == top)
+                    mask |= 32;
+                if (i == N && j >= N && k >= N)
+                    mask |= 64;
+                if (j == N && i >= N && k >= N)
+                    mask |= 128;
+                if (k == N && i >= N && j >= N)
+                    mask |= 256;
+                ids[static_cast<std::size_t>((k * w + j) * w + i)] = soup.AddNode(
+                    rCenter[0] + (Size * static_cast<double>(i - N)) / static_cast<double>(2 * N),
+                    rCenter[1] + (Size * static_cast<double>(j - N)) / static_cast<double>(2 * N),
+                    rCenter[2] + (Size * static_cast<double>(k - N)) / static_cast<double>(2 * N),
+                    mask);
+            }
+    auto at = [&](std::int64_t I, std::int64_t J, std::int64_t K) {
+        return ids[static_cast<std::size_t>((K * w + J) * w + I)];
+    };
+    PrimBlock& blk = soup.Block(tet ? CellType::Tetra : CellType::Hexahedron, tet ? 4 : 8);
+    for (std::int64_t k = 0; k < top; ++k)
+        for (std::int64_t j = 0; j < top; ++j)
+            for (std::int64_t i = 0; i < top; ++i) {
+                if (i >= N && j >= N && k >= N)
+                    continue;
+                const std::int64_t h[8] = {at(i, j, k),
+                                           at(i + 1, j, k),
+                                           at(i + 1, j + 1, k),
+                                           at(i, j + 1, k),
+                                           at(i, j, k + 1),
+                                           at(i + 1, j, k + 1),
+                                           at(i + 1, j + 1, k + 1),
+                                           at(i, j + 1, k + 1)};
+                prim_push_hex(blk, tet, h);
+            }
+    return prim_finish(shape, soup, Order, Complete,
+                       {{"xmin", 1},
+                        {"xmax", 2},
+                        {"ymin", 4},
+                        {"ymax", 8},
+                        {"zmin", 16},
+                        {"zmax", 32},
+                        {"notch_x", 64},
+                        {"notch_y", 128},
+                        {"notch_z", 256}},
+                       2);
+}
+
+Mesh solid_torus(double MajorRadius, double MinorRadius, std::int64_t N, std::int64_t Nu,
+                 const std::array<double, 3>& rCenter, int Order, std::int64_t MaxCells,
+                 bool Complete) {
+    constexpr const char* shape = "solid_torus";
+    prim_check_positive(shape, "major_radius", MajorRadius);
+    prim_check_positive(shape, "minor_radius", MinorRadius);
+    if (!(MinorRadius < MajorRadius))
+        prim_fail(shape, "minor_radius must be less than major_radius, got " +
+                             std::to_string(MinorRadius) + " and " + std::to_string(MajorRadius));
+    prim_check_count(shape, "n", N);
+    prim_check_count(shape, "nu", Nu);
+    prim_check_order(shape, Order);
+    if (N == 0 || Nu == 0)
+        return prim_empty();
+    if (Nu < 3)
+        prim_fail(shape, "nu must be at least 3, got " + std::to_string(Nu));
+    prim_check_budget(shape, prim_mul(prim_mul(N, N), Nu), MaxCells);
+
+    PrimSoup soup;
+    soup.mMap = PrimMap::SolidTorus;
+    soup.mRadius = MajorRadius;
+    soup.mRadius2 = MinorRadius;
+    soup.mCenter = rCenter;
+    const std::int64_t p = N + 1, layer = p * p;
+    for (std::int64_t i = 0; i < Nu; ++i) {
+        const double u = (2.0 * kPrimPi * static_cast<double>(i)) / static_cast<double>(Nu);
+        for (std::int64_t jj = 0; jj <= N; ++jj)
+            for (std::int64_t ii = 0; ii <= N; ++ii) {
+                const bool rim = ii == 0 || ii == N || jj == 0 || jj == N;
+                soup.AddNode(static_cast<double>(2 * ii - N) / static_cast<double>(N),
+                             static_cast<double>(2 * jj - N) / static_cast<double>(N), u,
+                             rim ? 4 : 0);
+            }
+    }
+    PrimBlock& blk = soup.Block(CellType::Hexahedron, 8);
+    for (std::int64_t i = 0; i < Nu; ++i) {
+        const std::int64_t i1 = (i + 1) % Nu;
+        for (std::int64_t jj = 0; jj < N; ++jj)
+            for (std::int64_t ii = 0; ii < N; ++ii) {
+                // The cross-section quad runs clockwise in (s, t), so the hexahedron
+                // swept counter-clockwise around the axis has a positive volume.
+                const std::int64_t a = i * layer + jj * p + ii;
+                const std::int64_t b = i1 * layer + jj * p + ii;
+                prim_push(blk, {a, a + p, a + p + 1, a + 1, b, b + p, b + p + 1, b + 1});
+            }
+    }
+    return prim_finish(shape, soup, Order, Complete, {{"surface", 4}}, 2);
+}
+
+// ===========================================================================
+// The shorter signatures: Complete = false.
+// ===========================================================================
+
+Mesh rectangle(const std::array<std::int64_t, 2>& rDims, const std::array<double, 2>& rSize,
+               const std::array<double, 3>& rOrigin, const std::string& rCellType,
+               const std::string& rSplit, int Order, std::int64_t MaxCells) {
+    return rectangle(rDims, rSize, rOrigin, rCellType, rSplit, Order, MaxCells, false);
+}
+
+Mesh box(const std::array<std::int64_t, 3>& rDims, const std::array<double, 3>& rSize,
+         const std::array<double, 3>& rOrigin, const std::string& rCellType, int Order,
+         std::int64_t MaxCells) {
+    return box(rDims, rSize, rOrigin, rCellType, Order, MaxCells, false);
+}
+
+Mesh disk(double Radius, std::int64_t N, const std::array<double, 3>& rCenter,
+          const std::string& rCellType, int Order, std::int64_t MaxCells) {
+    return disk(Radius, N, rCenter, rCellType, Order, MaxCells, false);
+}
+
+Mesh uv_sphere(double Radius, std::int64_t Nu, std::int64_t Nv,
+               const std::array<double, 3>& rCenter, const std::string& rCellType, int Order,
+               std::int64_t MaxCells) {
+    return uv_sphere(Radius, Nu, Nv, rCenter, rCellType, Order, MaxCells, false);
+}
+
+Mesh icosa_sphere(double Radius, std::int64_t Subdivisions, const std::array<double, 3>& rCenter,
+                  int Order, std::int64_t MaxCells) {
+    return icosa_sphere(Radius, Subdivisions, rCenter, Order, MaxCells, false);
+}
+
+Mesh cylinder(double Radius, double Height, std::int64_t Nxy, std::int64_t Nz,
+              const std::array<double, 3>& rCenter, const std::string& rCellType, int Order,
+              std::int64_t MaxCells) {
+    return cylinder(Radius, Height, Nxy, Nz, rCenter, rCellType, Order, MaxCells, false);
+}
+
+Mesh reference_triangle(std::int64_t N, const std::array<double, 2>& rSize,
+                        const std::array<double, 3>& rOrigin, int Order, std::int64_t MaxCells) {
+    return reference_triangle(N, rSize, rOrigin, Order, MaxCells, false);
+}
+
+Mesh ngon(std::int64_t Sides, double Radius, std::int64_t Rings,
+          const std::array<double, 3>& rCenter, int Order, std::int64_t MaxCells) {
+    return ngon(Sides, Radius, Rings, rCenter, Order, MaxCells, false);
+}
+
+Mesh annulus(double InnerRadius, double OuterRadius, std::int64_t Ntheta, std::int64_t Nr,
+             double Angle, const std::array<double, 3>& rCenter, const std::string& rCellType,
+             int Order, std::int64_t MaxCells) {
+    return annulus(InnerRadius, OuterRadius, Ntheta, Nr, Angle, rCenter, rCellType, Order, MaxCells,
+                   false);
+}
+
+Mesh lshape(std::int64_t N, double Size, const std::array<double, 3>& rCenter,
+            const std::string& rCellType, int Order, std::int64_t MaxCells) {
+    return lshape(N, Size, rCenter, rCellType, Order, MaxCells, false);
+}
+
+Mesh plate_with_hole(double Radius, double Size, std::int64_t Nt, std::int64_t Nr,
+                     const std::array<double, 3>& rCenter, const std::string& rCellType, int Order,
+                     std::int64_t MaxCells) {
+    return plate_with_hole(Radius, Size, Nt, Nr, rCenter, rCellType, Order, MaxCells, false);
 }
 
 }  // namespace meshioplusplus
@@ -260259,8 +268389,8 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
     const std::array<double, 16>& M = rXform.mMatrix;
     if (transform_linear_det(M) < 0.0)
         log::warn(
-            "transform: orientation-reversing (negative determinant); cell orientation "
-            "may be flipped");
+            "transform: orientation-reversing (negative determinant): every cell comes out "
+            "inverted; mirror reflects with the cells right side out");
 
     Mesh out;
 
@@ -261045,9 +269175,10 @@ Mesh vox_build_subset(const detail::LatticeSpec& rSpec, const std::vector<char>&
 // fastest). Selected by a resolution whose third entry is zero, or by a cell size
 // on a polyline-only mesh.
 
-Mesh vox_build_pixels(const std::array<std::int64_t, 2>& rDims, const std::array<double, 3>& rOrigin,
-                      const std::array<double, 3>& rSpacing, const std::vector<char>& rOccupied,
-                      std::int64_t Kept, const detail::PlanarFrame& rFrame) {
+Mesh vox_build_pixels(const std::array<std::int64_t, 2>& rDims,
+                      const std::array<double, 3>& rOrigin, const std::array<double, 3>& rSpacing,
+                      const std::vector<char>& rOccupied, std::int64_t Kept,
+                      const detail::PlanarFrame& rFrame) {
     Mesh out;
     const std::int64_t nx = rDims[0];
     const std::int64_t ny = rDims[1];
@@ -261107,10 +269238,11 @@ Mesh vox_build_pixels(const std::array<std::int64_t, 2>& rDims, const std::array
 }
 
 VoxelResult vox_voxelize_pixels(const Mesh& rMesh, const VoxelOptions& rOptions) {
-    // The skin's plane: the axis with zero extent, else z (so an xz or yz
-    // polyline voxelizes in its own plane). Everything below runs in the frame
-    // where that plane is xy, and the points are mapped back on emit.
-    const detail::PlanarFrame frame = detail::planar_frame(rMesh, detail::PlanarPlane::Auto);
+    // The skin's plane: the one asked for, else the axis with zero extent, else
+    // z (so an xz or yz polyline voxelizes in its own plane). Everything below
+    // runs in the frame where that plane is xy, and the points are mapped back
+    // on emit.
+    const detail::PlanarFrame frame = detail::planar_frame(rMesh, rOptions.mPlane);
     const detail::PlanarSkin skin = detail::collect_planar_skin(rMesh, kVoxPrefix, frame);
     if (rOptions.mFill == VoxelFill::Inside)
         detail::require_closed_polyline(skin, kVoxPrefix);
@@ -261121,8 +269253,8 @@ VoxelResult vox_voxelize_pixels(const Mesh& rMesh, const VoxelOptions& rOptions)
             lo[k] = (*rOptions.mBounds)[k];
             hi[k] = (*rOptions.mBounds)[3 + k];
             if (!(hi[k] >= lo[k]))
-                throw std::invalid_argument(std::string(kVoxPrefix) + "bounds are inverted on axis " +
-                                            std::to_string(k));
+                throw std::invalid_argument(std::string(kVoxPrefix) +
+                                            "bounds are inverted on axis " + std::to_string(k));
         }
     } else if (!detail::point_bbox(rMesh, lo, hi)) {
         throw std::invalid_argument(std::string(kVoxPrefix) +
@@ -261155,10 +269287,9 @@ VoxelResult vox_voxelize_pixels(const Mesh& rMesh, const VoxelOptions& rOptions)
         for (std::size_t k = 0; k < 2; ++k) {
             dims[k] = (*rOptions.mResolution)[k];
             if (dims[k] <= 0)
-                throw std::invalid_argument(std::string(kVoxPrefix) +
-                                            "resolution must be positive on every axis, got " +
-                                            std::to_string(dims[k]) + " on axis " +
-                                            std::to_string(k));
+                throw std::invalid_argument(
+                    std::string(kVoxPrefix) + "resolution must be positive on every axis, got " +
+                    std::to_string(dims[k]) + " on axis " + std::to_string(k));
             spacing[k] = (hi[k] - lo[k]) / static_cast<double>(dims[k]);
         }
     } else {
@@ -261213,9 +269344,9 @@ VoxelResult vox_voxelize_pixels(const Mesh& rMesh, const VoxelOptions& rOptions)
                     const std::size_t cid = static_cast<std::size_t>(j * nx + i);
                     if (occupied[cid])
                         continue;
-                    const detail::Vec3 centre{{origin[0] + (static_cast<double>(i) + 0.5) * spacing[0],
-                                               origin[1] + (static_cast<double>(j) + 0.5) * spacing[1],
-                                               origin[2]}};
+                    const detail::Vec3 centre{
+                        {origin[0] + (static_cast<double>(i) + 0.5) * spacing[0],
+                         origin[1] + (static_cast<double>(j) + 0.5) * spacing[1], origin[2]}};
                     if (detail::segment_box_overlap_2d(centre, half, seg[0], seg[1]))
                         occupied[cid] = 1;
                 }

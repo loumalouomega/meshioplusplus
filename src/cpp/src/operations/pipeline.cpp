@@ -54,6 +54,8 @@
 #include "meshioplusplus/operations/iga.hpp"
 #include "meshioplusplus/operations/mesh_cad.hpp"
 #include "meshioplusplus/operations/boundary_layer.hpp"
+#include "meshioplusplus/operations/extrude.hpp"
+#include "meshioplusplus/operations/mirror.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/formats/cad_json.hpp"
@@ -67,6 +69,7 @@
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
+#include "meshioplusplus/operations/check_conformity.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
@@ -389,7 +392,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "LayoutMaxValenceDeviation",
           "ResegmentRounds",
           "LayoutSnapToFeatures",
-          "ValidateBySurfaceSampling"}},
+          "ValidateBySurfaceSampling",
+          "ConstrainPrimitives"}},
         {"RefinePatches",
          {"Tolerance", "Relative", "NormalWeight", "Epsilon", "FeatureAngle", "MaxIterations",
           "MinPatchCells", "RansacSeed", "Types", "AllowSplit", "AllowMerge", "Prefix"}},
@@ -400,6 +404,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "OverlapTolerance"}},
         {"SplitInterface", {"Region", "AddCohesive"}},
         {"QualityGate", {"Require", "MaxInverted", "MaxDegenerate"}},
+        {"CheckConformity", {"Tolerance", "Require", "AttachFlags"}},
         {"Snapshot",
          {"Path",           "Width",       "Height",        "Supersample",   "Cols",
           "Rows",           "Encoding",    "ColorDepth",    "PngCompress",   "View",
@@ -432,12 +437,15 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
         {"Voxelize",
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
-          "AttachOccupancy", "MaxCells", "Sign"}},
+          "AttachOccupancy", "MaxCells", "Sign", "Plane"}},
         {"Generate",
-         {"Shape", "Dims",        "Size",        "Origin", "Center",   "Radius",       "Height",
-          "N",     "Nu",          "Nv",          "Nxy",    "Nz",       "Subdivisions", "Sides",
-          "Rings", "InnerRadius", "OuterRadius", "Ntheta", "Nr",       "Nt",           "Angle",
-          "Edge",  "CellType",    "Split",       "Order",  "MaxCells", "Types",        "Pairs"}},
+         {"Shape",        "Dims",      "Size",  "Origin",      "Center",      "Radius",
+          "Height",       "N",         "Nu",    "Nv",          "Nxy",         "Nz",
+          "Subdivisions", "Sides",     "Rings", "InnerRadius", "OuterRadius", "Ntheta",
+          "Nr",           "Nt",        "Angle", "Edge",        "CellType",    "Split",
+          "Order",        "MaxCells",  "Types", "Pairs",       "Complete",    "Start",
+          "End",          "Pitch",     "Turns", "Seed",        "MajorRadius", "MinorRadius",
+          "Width",        "NumTwists", "Ncap",  "Ratio",       "Name"}},
         {"Octree", {"RootCells",    "MinLevel",       "MaxLevel",
                     "Bounds",       "Padding",        "PaddingRelative",
                     "Dimension",    "SampleDistance", "Balance",
@@ -477,6 +485,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "AttachDistance",
           "AttachQuality",
           "Pillow",
+          "HexGrading",
           "UntangleIterations",
           "MaxCells",
           "MaxTets"}},
@@ -552,6 +561,11 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"BoundaryLayer",
          {"FirstHeight", "NumLayers", "Growth", "Reverse", "CollisionFraction", "SmoothIterations",
           "MaxShrink", "Collapse", "NormalSmoothIterations", "FrontCheck"}},
+        // Sweeps (roadmap 3.1.2, 3.1.3) and the reflection (3.2.5).
+        {"Extrude", {"Direction", "NumLayers", "Ratio", "Offsets", "RecordLayers", "MaxCells"}},
+        {"Revolve",
+         {"Axis", "AxisPoint", "Angle", "NumLayers", "Tolerance", "RecordLayers", "MaxCells"}},
+        {"Mirror", {"Point", "Normal", "KeepOriginal", "Weld", "Tolerance", "ReflectData"}},
         // Tetrahedra filling the closed triangle surface (roadmap 6.7).
         {"Tetrahedralize",
          {"Backend", "MaxSize", "MaxVolume", "Grading", "OptimizeSteps", "MaxCells", "FaceArray"}},
@@ -1240,6 +1254,65 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         return std::move(r.mMesh);
     }
 
+    if (op == "Extrude") {
+        ExtrudeOptions o;
+        if (pipe_find(rStep, "Direction"))
+            pipe_vec3(rStep, "Direction", o.mDirection.data());
+        o.mNumLayers = static_cast<std::int32_t>(
+            pipe_number(rStep, "NumLayers", static_cast<double>(o.mNumLayers)));
+        o.mRatio = pipe_number(rStep, "Ratio", o.mRatio);
+        if (pipe_find(rStep, "Offsets"))
+            o.mOffsets = pipe_dvec(rStep, "Offsets");
+        o.mRecordLayers = pipe_flag(rStep, "RecordLayers", o.mRecordLayers);
+        o.mMaxCells = static_cast<std::int64_t>(
+            pipe_number(rStep, "MaxCells", static_cast<double>(o.mMaxCells)));
+        SweepResult r = extrude(mesh, o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumCells", static_cast<double>(r.mNumCells)},
+                        {"NumFlipped", static_cast<double>(r.mNumFlipped)},
+                        {"MinScaledJacobian", r.mMinScaledJacobian}});
+        return std::move(r.mMesh);
+    }
+
+    if (op == "Revolve") {
+        RevolveOptions o;
+        if (pipe_find(rStep, "Axis"))
+            pipe_vec3(rStep, "Axis", o.mAxis.data());
+        if (pipe_find(rStep, "AxisPoint"))
+            pipe_vec3(rStep, "AxisPoint", o.mAxisPoint.data());
+        o.mAngle = pipe_number(rStep, "Angle", o.mAngle);
+        o.mNumLayers = static_cast<std::int32_t>(
+            pipe_number(rStep, "NumLayers", static_cast<double>(o.mNumLayers)));
+        o.mTolerance = pipe_number(rStep, "Tolerance", o.mTolerance);
+        o.mRecordLayers = pipe_flag(rStep, "RecordLayers", o.mRecordLayers);
+        o.mMaxCells = static_cast<std::int64_t>(
+            pipe_number(rStep, "MaxCells", static_cast<double>(o.mMaxCells)));
+        SweepResult r = revolve(mesh, o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumCells", static_cast<double>(r.mNumCells)},
+                        {"NumOnAxis", static_cast<double>(r.mNumOnAxis)},
+                        {"MinScaledJacobian", r.mMinScaledJacobian}});
+        return std::move(r.mMesh);
+    }
+
+    if (op == "Mirror") {
+        MirrorOptions o;
+        if (pipe_find(rStep, "Point"))
+            pipe_vec3(rStep, "Point", o.mOrigin.data());
+        if (pipe_find(rStep, "Normal"))
+            pipe_vec3(rStep, "Normal", o.mNormal.data());
+        o.mKeepOriginal = pipe_flag(rStep, "KeepOriginal", o.mKeepOriginal);
+        o.mWeld = pipe_flag(rStep, "Weld", o.mWeld);
+        o.mTolerance = pipe_number(rStep, "Tolerance", o.mTolerance);
+        o.mReflectVectorData = pipe_flag(rStep, "ReflectData", o.mReflectVectorData);
+        MirrorResult r = mirror(mesh, o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumFlippedCells", static_cast<double>(r.mNumFlippedCells)},
+                        {"NumPointsOnPlane", static_cast<double>(r.mNumPointsOnPlane)},
+                        {"NumDroppedCells", static_cast<double>(r.mNumDroppedCells)}});
+        return std::move(r.mMesh);
+    }
+
     if (op == "Tetrahedralize") {
         TetrahedralizeOptions o;
         const std::string backend = pipe_text(rStep, "Backend", "auto");
@@ -1651,6 +1724,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             static_cast<std::int64_t>(pipe_number(rStep, "ResegmentRounds", 2.0));
         opts.mLayoutSnapToFeatures = pipe_flag(rStep, "LayoutSnapToFeatures", true);
         opts.mValidateBySurfaceSampling = pipe_flag(rStep, "ValidateBySurfaceSampling", true);
+        opts.mConstrainPrimitives = pipe_flag(rStep, "ConstrainPrimitives", false);
         FitCadResult cr = fit_cad(mesh, pipe_text(rStep, "Path", ""), opts);
         std::vector<std::pair<std::string, double>> counters = {
             {"Valid", cr.mValid ? 1.0 : 0.0},
@@ -1698,6 +1772,12 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         if (opts.mFaceDeviation) {
             counters.emplace_back("HausdorffMax", cr.mHausdorffMax);
             counters.emplace_back("HausdorffRms", cr.mHausdorffRms);
+        }
+        if (opts.mConstrainPrimitives) {
+            counters.emplace_back("NumConstrainedPrimitives",
+                                  static_cast<double>(cr.mNumConstrainedPrimitives));
+            counters.emplace_back("NumConstraintGroups",
+                                  static_cast<double>(cr.mNumConstraintGroups));
         }
         // The freeform modes (v17.12.0) report only outside the legacy mode.
         if (opts.mFreeformMode != FitCadFreeformMode::Legacy) {
@@ -1790,6 +1870,30 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         pipe_push_step(rReport, rStep,
                        {{"NumChecks", static_cast<double>(qr.mChecks.size())},
                         {"NumFailed", static_cast<double>(failed)}});
+        return mesh;
+    }
+    if (op == "CheckConformity") {
+        // A gate by default: a mesh that is not conforming stops the pipeline;
+        // with Require false it only reports. AttachFlags writes
+        // conformity:hanging onto the mesh that flows on.
+        ConformityOptions opts;
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 1e-9);
+        opts.mAttachFlags = pipe_flag(rStep, "AttachFlags", false);
+        ConformityResult cr = check_conformity(mesh, opts);
+        if (pipe_flag(rStep, "Require", true) && !cr.mConforming)
+            throw std::runtime_error(
+                "meshio++: pipeline: CheckConformity failed: " +
+                std::to_string(cr.mNumHangingNodes) + " hanging node(s), " +
+                std::to_string(cr.mNumTJunctions) + " T-junction(s), " +
+                std::to_string(cr.mNumPartialOverlaps) + " partial overlap(s), " +
+                std::to_string(cr.mNumUnweldedFacets) + " unwelded facet pair(s)");
+        pipe_push_step(rReport, rStep,
+                       {{"NumHangingNodes", static_cast<double>(cr.mNumHangingNodes)},
+                        {"NumTJunctions", static_cast<double>(cr.mNumTJunctions)},
+                        {"NumPartialOverlaps", static_cast<double>(cr.mNumPartialOverlaps)},
+                        {"NumUnweldedFacets", static_cast<double>(cr.mNumUnweldedFacets)}});
+        if (opts.mAttachFlags)
+            return std::move(cr.mMesh);
         return mesh;
     }
     if (op == "EditRegions") {
@@ -2106,6 +2210,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         const std::int64_t max_cells =
             static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
         const int order = static_cast<int>(pipe_number(rStep, "Order", 1.0));
+        const bool complete = pipe_flag(rStep, "Complete", false);
         auto triple = [&](const char* pKey, std::array<double, 3> Default, bool PadZero) {
             std::vector<double> v = pipe_dvec(rStep, pKey);
             if (v.empty())
@@ -2131,6 +2236,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             return v;
         };
         const std::array<double, 3> zero = {{0.0, 0.0, 0.0}};
+        const std::array<double, 3> ones = {{1.0, 1.0, 1.0}};
         Mesh out;
         if (shape == "rectangle") {
             const auto d = dims_of(2, 1);
@@ -2141,27 +2247,27 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                             size.empty() ? std::array<double, 2>{{1.0, 1.0}}
                                          : std::array<double, 2>{{size[0], size[1]}},
                             triple("Origin", zero, true), pipe_text(rStep, "CellType", "quad"),
-                            pipe_text(rStep, "Split", "zigzag"), order, max_cells);
+                            pipe_text(rStep, "Split", "zigzag"), order, max_cells, complete);
         } else if (shape == "box") {
             const auto d = dims_of(3, 1);
             out = box({{d[0], d[1], d[2]}}, triple("Size", {{1.0, 1.0, 1.0}}, false),
                       triple("Origin", zero, false), pipe_text(rStep, "CellType", "hexahedron"),
-                      order, max_cells);
+                      order, max_cells, complete);
         } else if (shape == "disk") {
             out = disk(pipe_number(rStep, "Radius", 1.0), count("N", 8),
                        triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"), order,
-                       max_cells);
+                       max_cells, complete);
         } else if (shape == "uv_sphere") {
             out = uv_sphere(pipe_number(rStep, "Radius", 1.0), count("Nu", 16), count("Nv", 8),
                             triple("Center", zero, false), pipe_text(rStep, "CellType", "triangle"),
-                            order, max_cells);
+                            order, max_cells, complete);
         } else if (shape == "icosa_sphere") {
             out = icosa_sphere(pipe_number(rStep, "Radius", 1.0), count("Subdivisions", 2),
-                               triple("Center", zero, false), order, max_cells);
+                               triple("Center", zero, false), order, max_cells, complete);
         } else if (shape == "cylinder") {
             out = cylinder(pipe_number(rStep, "Radius", 1.0), pipe_number(rStep, "Height", 1.0),
                            count("Nxy", 8), count("Nz", 8), triple("Center", zero, false),
-                           pipe_text(rStep, "CellType", "hexahedron"), order, max_cells);
+                           pipe_text(rStep, "CellType", "hexahedron"), order, max_cells, complete);
         } else if (shape == "reference_triangle") {
             const std::vector<double> size = pipe_dvec(rStep, "Size");
             if (!size.empty() && size.size() != 2)
@@ -2169,25 +2275,108 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             out = reference_triangle(count("N", 4),
                                      size.empty() ? std::array<double, 2>{{1.0, 1.0}}
                                                   : std::array<double, 2>{{size[0], size[1]}},
-                                     triple("Origin", zero, true), order, max_cells);
+                                     triple("Origin", zero, true), order, max_cells, complete);
         } else if (shape == "ngon") {
             out = ngon(count("Sides", 6), pipe_number(rStep, "Radius", 1.0), count("Rings", 1),
-                       triple("Center", zero, false), order, max_cells);
+                       triple("Center", zero, false), order, max_cells, complete);
         } else if (shape == "annulus") {
             out = annulus(pipe_number(rStep, "InnerRadius", 0.5),
                           pipe_number(rStep, "OuterRadius", 1.0), count("Ntheta", 16),
                           count("Nr", 4), pipe_number(rStep, "Angle", 6.283185307179586),
                           triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"),
-                          order, max_cells);
+                          order, max_cells, complete);
         } else if (shape == "lshape") {
             out = lshape(count("N", 4), pipe_number(rStep, "Size", 2.0),
                          triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"), order,
-                         max_cells);
+                         max_cells, complete);
         } else if (shape == "plate_with_hole") {
             out =
                 plate_with_hole(pipe_number(rStep, "Radius", 0.25), pipe_number(rStep, "Size", 1.0),
                                 count("Nt", 8), count("Nr", 4), triple("Center", zero, false),
-                                pipe_text(rStep, "CellType", "quad"), order, max_cells);
+                                pipe_text(rStep, "CellType", "quad"), order, max_cells, complete);
+        } else if (shape == "line") {
+            out = line(count("N", 8), triple("Start", zero, false),
+                       triple("End", {{1.0, 0.0, 0.0}}, false), order, max_cells, complete);
+        } else if (shape == "circle") {
+            out = circle(pipe_number(rStep, "Radius", 1.0), count("N", 16),
+                         triple("Center", zero, false), order, max_cells, complete);
+        } else if (shape == "helix") {
+            out = helix(pipe_number(rStep, "Radius", 1.0), pipe_number(rStep, "Pitch", 1.0),
+                        pipe_number(rStep, "Turns", 2.0), count("N", 32),
+                        triple("Center", zero, false), order, max_cells, complete);
+        } else if (shape == "sphere_points") {
+            out = sphere_points(count("N", 100), pipe_number(rStep, "Radius", 1.0),
+                                triple("Center", zero, false), max_cells);
+        } else if (shape == "box_points") {
+            out = box_points(
+                count("N", 100), triple("Size", ones, false), triple("Origin", zero, false),
+                static_cast<std::uint64_t>(pipe_number(rStep, "Seed", 0.0)), max_cells);
+        } else if (shape == "tetra_sphere") {
+            out = tetra_sphere(pipe_number(rStep, "Radius", 1.0), count("Subdivisions", 3),
+                               triple("Center", zero, false), order, max_cells, complete);
+        } else if (shape == "octa_sphere") {
+            out = octa_sphere(pipe_number(rStep, "Radius", 1.0), count("Subdivisions", 2),
+                              triple("Center", zero, false), order, max_cells, complete);
+        } else if (shape == "cube_sphere") {
+            out = cube_sphere(pipe_number(rStep, "Radius", 1.0), count("N", 4),
+                              triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"),
+                              order, max_cells, complete);
+        } else if (shape == "geo_sphere") {
+            out = geo_sphere(pipe_number(rStep, "Radius", 1.0), count("N", 4),
+                             triple("Center", zero, false), order, max_cells, complete);
+        } else if (shape == "torus") {
+            out = torus(pipe_number(rStep, "MajorRadius", 1.0),
+                        pipe_number(rStep, "MinorRadius", 0.25), count("Nu", 32), count("Nv", 16),
+                        triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"), order,
+                        max_cells, complete);
+        } else if (shape == "moebius") {
+            out = moebius(pipe_number(rStep, "Radius", 1.0), pipe_number(rStep, "Width", 0.5),
+                          count("Nu", 32), count("Nv", 4), count("NumTwists", 1),
+                          triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"),
+                          order, max_cells, complete);
+        } else if (shape == "tube" || shape == "cone") {
+            out = (shape == "tube" ? &tube : &cone)(
+                pipe_number(rStep, "Radius", 1.0), pipe_number(rStep, "Height", 1.0),
+                count("Ntheta", 16), count("Nz", 4), triple("Center", zero, false),
+                pipe_text(rStep, "CellType", "quad"), order, max_cells, complete);
+        } else if (shape == "capsule") {
+            out = capsule(pipe_number(rStep, "Radius", 0.5), pipe_number(rStep, "Height", 1.0),
+                          count("Ntheta", 16), count("Nz", 4), count("Ncap", 4),
+                          triple("Center", zero, false), pipe_text(rStep, "CellType", "quad"),
+                          order, max_cells, complete);
+        } else if (shape == "box_surface") {
+            const auto d = dims_of(3, 1);
+            out = box_surface({{d[0], d[1], d[2]}}, triple("Size", ones, false),
+                              triple("Origin", zero, false), pipe_text(rStep, "CellType", "quad"),
+                              order, max_cells, complete);
+        } else if (shape == "platonic") {
+            out =
+                platonic(pipe_text(rStep, "Name", "icosahedron"), pipe_number(rStep, "Radius", 1.0),
+                         triple("Center", zero, false), max_cells);
+        } else if (shape == "ball") {
+            out = ball(pipe_number(rStep, "Radius", 1.0), count("N", 4),
+                       triple("Center", zero, false), pipe_text(rStep, "CellType", "hexahedron"),
+                       order, max_cells, complete);
+        } else if (shape == "spherical_shell") {
+            out = spherical_shell(pipe_number(rStep, "InnerRadius", 0.5),
+                                  pipe_number(rStep, "OuterRadius", 1.0), count("N", 4),
+                                  count("Nr", 2), pipe_number(rStep, "Ratio", 1.0),
+                                  triple("Center", zero, false), order, max_cells, complete);
+        } else if (shape == "pipe") {
+            out =
+                pipe(pipe_number(rStep, "InnerRadius", 0.5), pipe_number(rStep, "OuterRadius", 1.0),
+                     pipe_number(rStep, "Height", 1.0), count("Ntheta", 16), count("Nr", 2),
+                     count("Nz", 4), pipe_number(rStep, "Ratio", 1.0),
+                     triple("Center", zero, false), order, max_cells, complete);
+        } else if (shape == "fichera") {
+            out = fichera(count("N", 2), pipe_number(rStep, "Size", 2.0),
+                          triple("Center", zero, false), pipe_text(rStep, "CellType", "hexahedron"),
+                          order, max_cells, complete);
+        } else if (shape == "solid_torus") {
+            out =
+                solid_torus(pipe_number(rStep, "MajorRadius", 1.0),
+                            pipe_number(rStep, "MinorRadius", 0.25), count("N", 4), count("Nu", 32),
+                            triple("Center", zero, false), order, max_cells, complete);
         } else if (shape == "honeycomb") {
             const auto d = dims_of(2, 4);
             out = honeycomb({{d[0], d[1]}}, pipe_number(rStep, "Edge", 1.0),
@@ -2199,7 +2388,10 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                 pipe_err(rStep,
                          "'Shape' must be one of rectangle, box, disk, uv_sphere, icosa_sphere, "
                          "cylinder, reference_triangle, ngon, annulus, lshape, plate_with_hole, "
-                         "honeycomb, reference_cells, not '" +
+                         "honeycomb, reference_cells, line, circle, helix, sphere_points, "
+                         "box_points, tetra_sphere, octa_sphere, cube_sphere, geo_sphere, torus, "
+                         "moebius, tube, cone, capsule, box_surface, platonic, ball, "
+                         "spherical_shell, pipe, fichera, solid_torus, not '" +
                              shape + "'"));
         }
         std::size_t cells = 0;
@@ -2221,6 +2413,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         if (resolution.size() == 3)
             opts.mResolution =
                 std::array<std::int64_t, 3>{{resolution[0], resolution[1], resolution[2]}};
+        else if (resolution.size() == 2)  // 2-D pixels, as `[nx, ny, 0]` is
+            opts.mResolution = std::array<std::int64_t, 3>{{resolution[0], resolution[1], 0}};
         if (pipe_find(rStep, "CellSize") != nullptr)
             opts.mCellSize = pipe_number(rStep, "CellSize", 0.0);
         const std::vector<double> bounds = pipe_dvec(rStep, "Bounds");
@@ -2233,6 +2427,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mAttachOccupancy = pipe_flag(rStep, "AttachOccupancy", false);
         opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
         opts.mDistance.mSign = sdf_sign_from_name(pipe_text(rStep, "Sign", "pseudonormal"));
+        opts.mPlane = detail::planar_plane_from_name(pipe_text(rStep, "Plane", "auto"));
         VoxelResult r = voxelize(mesh, opts);
         pipe_push_step(rReport, rStep, {{"NumOccupied", static_cast<double>(r.mNumOccupied)}});
         return std::move(r.mMesh);
@@ -2277,6 +2472,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mAttachDistance = pipe_flag(rStep, "AttachDistance", true);
         opts.mAttachQuality = pipe_flag(rStep, "AttachQuality", false);
         opts.mPillow = pipe_flag(rStep, "Pillow", true);
+        opts.mHexGrading =
+            octree_mesh_hex_grading_from_name(pipe_text(rStep, "HexGrading", "uniform"));
         opts.mUntangleIterations =
             static_cast<std::int64_t>(pipe_number(rStep, "UntangleIterations", 50.0));
         opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));

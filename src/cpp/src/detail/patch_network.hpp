@@ -41,8 +41,12 @@
  *     plane (`n . S_v = 0` at samples along the side, normalised to the sine
  *     of the angle), weighted so an angle at `mG1ToleranceDeg` costs what a
  *     distance at the tolerance does: block Gauss-Seidel over the patches in
- *     index order, the weight raised fourfold while the largest angle exceeds
- *     the tolerance, up to `mMaxSweeps` sweeps.
+ *     index order, the weight doubled (up to eight times its start) after a
+ *     sweep that does not lower the largest angle, up to `mMaxSweeps` sweeps.
+ *     A patch the G1 rows push out of the tolerance gets knots where it
+ *     misses (step 6) and is fitted again before its accurate surface is
+ *     restored: next to an extraordinary vertex G1 needs more poles than
+ *     accuracy alone.
  *  5. **Extraordinary vertices** (where other than four patches meet):
  *     `G0` leaves them alone (and the G1 measure skips their first span);
  *     `G1` puts the second pole of every curve leaving one, and every

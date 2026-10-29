@@ -35,6 +35,14 @@ const SHOTS = [
         colorBy: 'layer',
         edges: true,
     },
+    {
+        // Named regions mapped onto the surface, one colour per region.
+        name: 'browser-viewer-groups',
+        sample: 'Zones (regions)',
+        colorBy: 'Groups',
+        edges: true,
+        waitForGroups: true,
+    },
 ];
 
 const browser = await chromium.launch({
@@ -54,6 +62,9 @@ for (const shot of SHOTS) {
     await page.getByRole('button', { name: shot.sample }).click();
     await page.waitForFunction(() => window.__viewerState?.status === 'ready');
 
+    if (shot.waitForGroups) {
+        await page.waitForFunction(() => window.__viewerState?.groups?.status === 'ready');
+    }
     const option = await page
         .locator('#color-by option')
         .filter({ hasText: shot.colorBy })
@@ -66,6 +77,12 @@ for (const shot of SHOTS) {
     await page.waitForTimeout(1200);
     await page.screenshot({ path: `${OUT}${shot.name}.png` });
     console.log(`wrote ${OUT}${shot.name}.png`);
+}
+
+// VIEWER_SHOTS_ONLY=1 refreshes just the viewer pictures.
+if (process.env.VIEWER_SHOTS_ONLY) {
+    await browser.close();
+    process.exit(0);
 }
 
 // --- the dataset-manager page ---------------------------------------------- //

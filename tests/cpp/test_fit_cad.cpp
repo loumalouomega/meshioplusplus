@@ -34,13 +34,16 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
+#include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/operations/segment.hpp"
+#include "meshioplusplus/operations/transform.hpp"
 #include "analytic_surfaces.hpp"
 #include "fit_cad_fixtures.hpp"
 #include "mesh_fixtures.hpp"
 
 #include "../../src/cpp/src/detail/nurbs_eval.hpp"
+#include "../../src/cpp/src/detail/primitive_constraints.hpp"
 
 using namespace meshioplusplus;
 
@@ -877,6 +880,163 @@ TEST(FitCad, JunctionSnapPlacesTheCorners) {
     const FitCadResult t = fit_cad(fitted(analytic::turned_part()), "", o);
     EXPECT_TRUE(t.mValid);
     EXPECT_LE(t.mMaxDeviation, t.mTolerance);
+}
+
+namespace {
+
+// The noisy turned part of the goldens, tilted off the coordinate axes so no
+// shared direction is exact by accident: a plane, a cylinder, a torus, a
+// plane, a cone and a sphere about one axis.
+Mesh noisy_tilted_turned_part() {
+    const Mesh skin = transform(analytic::turned_part(), transform_rotation(1.0, 2.0, 0.5, 0.3));
+    return fitted(fcfix::jittered(skin, 1e-3), 1.0, 2e-3, 20);
+}
+
+// The `fit:patch_params` rows of a fitted skin.
+std::vector<std::vector<double>> patch_rows(const Mesh& rMesh) {
+    const NDArray& a = rMesh.FieldData("fit:patch_params");
+    std::vector<std::vector<double>> rows(a.Shape()[0]);
+    for (std::size_t r = 0; r < rows.size(); ++r)
+        rows[r].assign(a.As<double>() + r * 10, a.As<double>() + r * 10 + 10);
+    return rows;
+}
+
+std::vector<std::int64_t> patch_types(const Mesh& rMesh) {
+    const NDArray& a = rMesh.FieldData("fit:patch_type");
+    return std::vector<std::int64_t>(a.As<std::int64_t>(), a.As<std::int64_t>() + a.Size());
+}
+
+// The distance from a point to the line through rX along the unit rD.
+double line_distance(const double* pX, const double* pD, const double* pP) {
+    const double v[3] = {pP[0] - pX[0], pP[1] - pX[1], pP[2] - pX[2]};
+    const double h = v[0] * pD[0] + v[1] * pD[1] + v[2] * pD[2];
+    const double r[3] = {v[0] - h * pD[0], v[1] - h * pD[1], v[2] - h * pD[2]};
+    return std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
+}
+
+}  // namespace
+
+TEST(FitCad, ConstrainedPrimitivesShareOneAxis) {
+    Mesh m = noisy_tilted_turned_part();
+    const std::vector<std::int64_t> types = patch_types(m);
+    const std::vector<std::vector<double>> before = patch_rows(m);
+    const double tol = 3.0 * m.FieldData("fit:patch_tolerance").As<double>()[0];
+    const detail::PrimitiveConstraintReport rep = detail::constrain_primitives(m, tol);
+    const std::vector<std::vector<double>> after = patch_rows(m);
+    EXPECT_GE(rep.mNumGroups, 2);  // the axis, and the planes' normal along it
+
+    // The shared axis: the first axial row's.
+    const double* axis = nullptr;
+    const double* point = nullptr;
+    std::size_t num_axial = 0, num_planes = 0, num_spheres = 0;
+    double spread_before = 0.0;
+    for (std::size_t r = 0; r < types.size(); ++r) {
+        if (types[r] < 3 || types[r] > 5)
+            continue;
+        ++num_axial;
+        if (!axis) {
+            axis = after[r].data() + 3;
+            point = after[r].data();
+        }
+        // Cylinders and tori carry the canonical sign, a cone points into itself.
+        const double s = after[r][3] * axis[0] + after[r][4] * axis[1] + after[r][5] * axis[2];
+        for (int k = 0; k < 3; ++k)
+            EXPECT_EQ(after[r][3 + k], (s < 0.0 ? -1.0 : 1.0) * axis[k]) << "row " << r;
+        EXPECT_LT(line_distance(point, axis, after[r].data()), 1e-12) << "row " << r;
+        const double* d0 = before[r].data() + 3;
+        const double c = std::fabs(d0[0] * axis[0] + d0[1] * axis[1] + d0[2] * axis[2]);
+        spread_before = std::max(spread_before, std::sqrt(std::max(0.0, 1.0 - c * c)));
+    }
+    for (std::size_t r = 0; r < types.size(); ++r) {
+        if (types[r] == 1) {
+            ++num_planes;
+            const double s = after[r][3] * axis[0] + after[r][4] * axis[1] + after[r][5] * axis[2];
+            for (int k = 0; k < 3; ++k)
+                EXPECT_EQ(after[r][3 + k], (s < 0.0 ? -1.0 : 1.0) * axis[k]) << "row " << r;
+        } else if (types[r] == 2) {
+            ++num_spheres;
+            EXPECT_LT(line_distance(point, axis, after[r].data()), 1e-12);
+        }
+    }
+    EXPECT_EQ(num_axial, 3u);
+    EXPECT_EQ(num_planes, 2u);
+    EXPECT_EQ(num_spheres, 1u);
+    EXPECT_EQ(rep.mNumConstrained, 6);
+    // Fitted one by one, the axes disagree.
+    EXPECT_GT(spread_before, 1e-9);
+    // Every patch still passes its fit.
+    const NDArray& rms = m.FieldData("fit:patch_rms");
+    const NDArray& ptol = m.FieldData("fit:patch_tolerance");
+    for (std::size_t r = 0; r < types.size(); ++r)
+        EXPECT_LE(rms.As<double>()[r], ptol.As<double>()[r]);
+}
+
+TEST(FitCad, ConstrainedPrimitivesLeaveAnOffAxisPrimitive) {
+    Mesh m = noisy_tilted_turned_part();
+    const std::vector<std::int64_t> types = patch_types(m);
+    // Move the cylinder's axis by ten tolerances: it no longer lies on the
+    // others' axis, so it keeps its own (now poor) fit.
+    const double tol = m.FieldData("fit:patch_tolerance").As<double>()[0];
+    std::size_t cyl = types.size();
+    for (std::size_t r = 0; r < types.size() && cyl == types.size(); ++r)
+        if (types[r] == 3)
+            cyl = r;
+    ASSERT_LT(cyl, types.size());
+    std::vector<std::vector<double>> rows = patch_rows(m);
+    double* row = rows[cyl].data();
+    // A direction perpendicular to the axis.
+    const double perp[3] = {row[4], -row[3], 0.0};
+    const double n = std::sqrt(perp[0] * perp[0] + perp[1] * perp[1]);
+    for (int k = 0; k < 3; ++k)
+        row[k] += 10.0 * tol * perp[k] / n;
+    NDArray params = NDArray::Uninit(DType::Float64, {rows.size(), 10});
+    for (std::size_t r = 0; r < rows.size(); ++r)
+        std::copy(rows[r].begin(), rows[r].end(), params.As<double>() + r * 10);
+    m.AddFieldData("fit:patch_params", std::move(params));
+    const std::vector<double> moved = rows[cyl];
+    detail::constrain_primitives(m, 1e3 * tol);
+    EXPECT_EQ(patch_rows(m)[cyl], moved);
+}
+
+TEST(FitCad, ConstrainedPrimitivesEqualRadii) {
+    // Two capped cylinders side by side whose radii differ by less than the
+    // tolerance: they take one radius, their own axes kept.
+    const Mesh a = analytic::capped_cylinder(1.0);
+    const Mesh b = transform(analytic::capped_cylinder(1.002), transform_translation(4.0, 0.0, 0.0));
+    Mesh m = fitted(merge({&a, &b}).mMesh, 0.0, 1e-3);
+    const std::vector<std::int64_t> types = patch_types(m);
+    const detail::PrimitiveConstraintReport rep = detail::constrain_primitives(m, 1.0);
+    const std::vector<std::vector<double>> rows = patch_rows(m);
+    std::vector<double> radii;
+    for (std::size_t r = 0; r < types.size(); ++r)
+        if (types[r] == 3)
+            radii.push_back(rows[r][6]);
+    ASSERT_EQ(radii.size(), 2u);
+    EXPECT_EQ(radii[0], radii[1]);
+    EXPECT_NEAR(radii[0], 1.001, 1e-3);
+    EXPECT_GE(rep.mNumGroups, 1);
+}
+
+TEST(FitCad, ConstrainedPrimitivesInBothBackends) {
+    const Mesh skin = noisy_tilted_turned_part();
+    FitCadOptions o;
+    for (const FitCadBackend b : {FitCadBackend::Occt, FitCadBackend::Native}) {
+        o.mBackend = b;
+        o.mConstrainPrimitives = false;
+        const FitCadResult off = fit_cad(skin, "", o);
+        EXPECT_EQ(off.mNumConstrainedPrimitives, 0);
+        EXPECT_EQ(off.mNumConstraintGroups, 0);
+        o.mConstrainPrimitives = true;
+        const FitCadResult on = fit_cad(skin, "", o);
+        EXPECT_TRUE(on.mValid);
+        EXPECT_EQ(on.mNumDemoted, 0);
+        EXPECT_EQ(on.mNumConstrainedPrimitives, 6);
+        EXPECT_GE(on.mNumConstraintGroups, 2);
+        EXPECT_EQ(on.mNumFaces, off.mNumFaces);
+        EXPECT_LE(on.mMaxDeviation, on.mTolerance);
+        if (b == FitCadBackend::Occt)
+            EXPECT_NEAR(on.mVolumeRatio, 1.0, 0.01);
+    }
 }
 
 TEST(FitCad, FaceHausdorffBoundsGlobal) {

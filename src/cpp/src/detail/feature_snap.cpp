@@ -194,8 +194,9 @@ FeatureGraph feature_graph(const std::vector<Vec3>& rPoints,
 
 FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
                                const std::vector<std::array<std::int64_t, 4>>& rTets,
-                               const std::vector<std::uint8_t>& rInside, const FeatureGraph& rGraph,
-                               const std::vector<Vec3>& rSkinPoints,
+                               const std::vector<std::uint8_t>& rInside,
+                               const std::vector<std::uint8_t>& rGuarded,
+                               const FeatureGraph& rGraph, const std::vector<Vec3>& rSkinPoints,
                                const std::function<double(const Vec3&)>& rLocalSize,
                                double MinVolume, std::vector<std::uint8_t>& rPinned,
                                std::vector<std::uint8_t>& rFeature) {
@@ -251,6 +252,8 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
         double lo = 180.0;
         rPositive = true;
         for (std::int64_t t : inc[static_cast<std::size_t>(V)]) {
+            if (!rGuarded[static_cast<std::size_t>(t)])
+                continue;
             Vec3 p[4];
             for (std::size_t c = 0; c < 4; ++c) {
                 const std::int64_t q = rTets[static_cast<std::size_t>(t)][c];
@@ -267,6 +270,8 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
     // Whether every tetrahedron around `U` stays positive with `V` at `rAt`.
     auto star_positive = [&](std::int64_t U, std::int64_t V, const Vec3& rAt) {
         for (std::int64_t t : inc[static_cast<std::size_t>(U)]) {
+            if (!rGuarded[static_cast<std::size_t>(t)])
+                continue;
             Vec3 p[4];
             for (std::size_t c = 0; c < 4; ++c) {
                 const std::int64_t q = rTets[static_cast<std::size_t>(t)][c];

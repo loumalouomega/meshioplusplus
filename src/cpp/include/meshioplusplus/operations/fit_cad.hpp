@@ -434,6 +434,13 @@ struct FitCadOptions {
     /// Whether, outside `Legacy`, a freeform face is accepted only once
     /// samples of its surface lie within the tolerance of the skin too.
     bool mValidateBySurfaceSampling = true;
+    /// Whether related primitives are fitted together before either backend
+    /// builds a face: cylinders, cones, tori and spheres on one axis share it
+    /// exactly, planes parallel or perpendicular to an axis or to another
+    /// plane are made exactly so, and nearly equal radii are made equal, each
+    /// change kept only where its patch still passes its fit (unreleased).
+    /// Both backends; off by default.
+    bool mConstrainPrimitives = false;
 };
 
 /// The re-meshed solid and what was built.
@@ -560,7 +567,11 @@ struct FitCadResult {
     double mMaxFreeformDistance = 0.0;
     double mRmsFreeformDistance = 0.0;
     /// One record per patch tried as a surface, in patch-row order.
-    std::vector<FitCadFaceRecord> mFaces;
+    std::vector<FitCadFaceRecord> mFaces;    /// With `mConstrainPrimitives`: the patches whose primitive took a shared
+    /// axis, normal or radius, and the coaxial groups, parallel-normal
+    /// families and equal-radius sets of two or more it formed (unreleased).
+    std::int64_t mNumConstrainedPrimitives = 0;
+    std::int64_t mNumConstraintGroups = 0;
 };
 
 /**

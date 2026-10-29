@@ -28,6 +28,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -46,6 +47,32 @@ inline constexpr const char* kOctreeMeshPrefix = "meshio++: octree_mesh: ";
 
 /// Everything the outputs are built from. Not movable once built: the trees
 /// point into the skin's soup.
+/**
+ * @brief The inside test's shortcut for a closed skin.
+ *
+ * The winding number of a closed, consistently oriented skin is an integer
+ * that only changes across the skin. The leaves the skin does not cut join
+ * into regions through their shared faces, and one region has one winding
+ * number, evaluated at a few of its leaves. A point in a *deep* leaf -- one
+ * neither it nor any of its 26 neighbours is cut -- takes that integer instead
+ * of a winding-number evaluation: its closed box is skin-free with a margin of
+ * a leaf, so a cut flag rounded the wrong way at a shared face cannot reach it.
+ * Points beside the skin are evaluated as before, so every decision that uses a
+ * winding number's value rather than its side (the snapping, the cuts, the
+ * manifold repair's scores) sees the same numbers.
+ */
+struct OctreeMeshFlood {
+    static constexpr std::int32_t kUnknown = std::numeric_limits<std::int32_t>::min();
+    /// The tree the flood was computed on, kept as it was: a later split of a
+    /// leaf does not move the skin.
+    LinearOctree mTree;
+    /// Per leaf of `mTree`, its region's winding number, or `kUnknown`.
+    std::vector<std::int32_t> mValue;
+    std::array<double, 3> mOrigin{{0.0, 0.0, 0.0}};
+    double mFine = 0.0;
+    bool mActive = false;
+};
+
 struct OctreeMeshSetup {
     OctreeSkin mSkin;
     TriBvh mBvh;
@@ -61,6 +88,8 @@ struct OctreeMeshSetup {
     double mWindingSign = 1.0;
     /// Points at most this far from the skin are on it.
     double mOnSkin = 0.0;
+    /// The flooded winding numbers of a closed skin (inactive otherwise).
+    OctreeMeshFlood mFlood;
 };
 
 /// A stopwatch that records each stage's seconds in the result.
@@ -71,6 +100,12 @@ struct OctreeMeshClock {
 
 /// Log a warning and keep it in the result.
 void octree_mesh_warn(OctreeMeshResult& rResult, const std::string& rMessage);
+
+/// Flood the winding numbers of a closed skin through the leaves of the
+/// setup's octree it does not cut; a skin that is not closed, a winding
+/// threshold within 0.1 of an integer, or `MESHIOPLUSPLUS_OCTREE_MESH_FLOOD=0`
+/// in the environment (a test hook) leaves it inactive.
+void octree_mesh_flood(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions);
 
 /// The winding number at every point (the skin's orientation applied), with
 /// the values near the threshold re-evaluated more accurately.

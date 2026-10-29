@@ -2663,7 +2663,9 @@ typedef struct mio_voxel_opts {
     int32_t attach_occupancy; /**< nonzero to attach voxel:occupancy */
     int32_t sign;             /**< a mio_sdf_sign, used by MIO_VOXEL_INSIDE */
     int32_t watertight_check; /**< a mio_sdf_watertight_check */
-    int64_t reserved[6];      /**< must be zero; room for additive growth */
+    int32_t plane;            /**< a mio_planar_plane (2-D skins; ignored in 3-D) */
+    int32_t reserved32;       /**< must be zero */
+    int64_t reserved[5];      /**< must be zero; room for additive growth */
 } mio_voxel_opts;
 
 /** Zero-initialize voxelization options (every field its default). */
@@ -2753,11 +2755,50 @@ typedef enum mio_gen_split {
  *                     centre); cell_type QUAD or TRIANGLE.
  *  - mio_honeycomb:   counts[0..1] (nx, ny), size[0] (edge length), origin (lower-
  *                     left corner of the bounding box); order must be 1.
- * Every shape reads order and max_cells.
+ *  - mio_line:        counts[0] (n), origin (start), size[0..2] (the END point).
+ *  - mio_circle:      radius, counts[0] (n), origin (centre).
+ *  - mio_helix:       radius, height (pitch: rise per turn), angle (total sweep
+ *                     in radians: turns * 2 pi; 0 means two turns), counts[0]
+ *                     (n), origin (axis point level with the first node).
+ *  - mio_sphere_points: counts[0] (n), radius, origin (centre); order must be 1.
+ *  - mio_box_points:  counts[0] (n), size[0..2], origin (lo corner), seed;
+ *                     order must be 1.
+ *  - mio_tetra_sphere, mio_octa_sphere: radius, counts[0] (subdivisions),
+ *                     origin (centre).
+ *  - mio_cube_sphere: radius, counts[0] (n), origin; cell_type QUAD or TRIANGLE.
+ *  - mio_geo_sphere:  radius, counts[0] (frequency n), origin.
+ *  - mio_torus:       radius (major), radius2 (minor; 0 means 0.25), counts[0..1]
+ *                     (nu, nv), origin; cell_type QUAD or TRIANGLE.
+ *  - mio_moebius:     radius (centre line), radius2 (WIDTH; 0 means 0.5),
+ *                     counts[0..1] (nu, nv), num_twists, origin; cell_type QUAD
+ *                     or TRIANGLE.
+ *  - mio_tube, mio_cone: radius, height, counts[0..1] (ntheta, nz), origin;
+ *                     cell_type QUAD or TRIANGLE.
+ *  - mio_capsule:     radius, height (cylinder length), counts[0..2] (ntheta,
+ *                     nz, ncap), origin; cell_type QUAD or TRIANGLE.
+ *  - mio_box_surface: counts[0..2], size[0..2], origin (lo corner); cell_type
+ *                     QUAD or TRIANGLE.
+ *  - mio_platonic:    counts[0] (the FACE COUNT: 4 tetrahedron, 6 cube, 8
+ *                     octahedron, 12 dodecahedron, 20 icosahedron), radius
+ *                     (circumradius), origin; order must be 1.
+ *  - mio_ball:        radius, counts[0] (n), origin; cell_type HEXAHEDRON or
+ *                     TETRA.
+ *  - mio_spherical_shell: radius (OUTER), radius2 (inner; 0 means 0.5),
+ *                     counts[0..1] (n, nr), ratio, origin.
+ *  - mio_pipe:        radius (OUTER), radius2 (inner; 0 means 0.5), height,
+ *                     counts[0..2] (ntheta, nr, nz), ratio, origin.
+ *  - mio_fichera:     counts[0] (n), size[0] (side of the bounding cube), origin
+ *                     (its centre); cell_type HEXAHEDRON or TETRA.
+ *  - mio_solid_torus: radius (major), radius2 (minor; 0 means 0.25), counts[0..1]
+ *                     (n, nu), origin.
+ * Every shape reads order (1 to 10: 2 quadratic, 3 and up the VTK Lagrange
+ * family), complete (with order 2, quad9 / hexahedron27 / wedge18 instead of
+ * the serendipity types) and max_cells.
  *
  * radius2 and angle were carved out of the reserved tail, so a struct filled by
  * an older caller (both zero) reads as "use the default": radius2 = 0.5 and
- * angle = 2 pi.
+ * angle = 2 pi. num_twists, complete, ratio and seed came the same way: a zero
+ * ratio means 1 (a uniform wall); num_twists and seed take zero as given.
  */
 typedef struct mio_gen_opts {
     int64_t counts[3];   /**< cell or division counts; see the table above */
@@ -2772,12 +2813,16 @@ typedef struct mio_gen_opts {
     int32_t pad;         /**< must be zero */
     double radius2;      /**< inner radius of an annulus; 0 means 0.5 */
     double angle;        /**< opening angle of an annulus in radians; 0 means 2 pi */
-    int64_t reserved[4]; /**< must be zero; room for additive growth */
+    int32_t num_twists;  /**< half-twists of a Moebius band */
+    int32_t complete;    /**< nonzero: full-Lagrange order 2 */
+    double ratio;        /**< wall grading of a shell or pipe; 0 means 1 */
+    uint64_t seed;       /**< splitmix64 seed of mio_box_points */
+    int64_t reserved[1]; /**< must be zero; room for additive growth */
 } mio_gen_opts;
 
 /**
  * Zero-initialize generator options: counts 8, unit size and radius, order 1,
- * annulus inner radius 0.5 and opening angle 2 pi.
+ * annulus inner radius 0.5 and opening angle 2 pi, one half-twist, ratio 1.
  */
 MIO_API void mio_gen_opts_init(mio_gen_opts* opts);
 
@@ -2805,6 +2850,48 @@ MIO_API mio_mesh* mio_lshape(const mio_gen_opts* opts);
 MIO_API mio_mesh* mio_plate_with_hole(const mio_gen_opts* opts);
 /** A tiling of pointy-top hexagons as one ragged polygon block. */
 MIO_API mio_mesh* mio_honeycomb(const mio_gen_opts* opts);
+/** A straight segment of counts[0] line cells; point regions start and end. */
+MIO_API mio_mesh* mio_line(const mio_gen_opts* opts);
+/** A closed polyline on a circle in the z = origin[2] plane. */
+MIO_API mio_mesh* mio_circle(const mio_gen_opts* opts);
+/** A helix around the z axis; point regions start and end. */
+MIO_API mio_mesh* mio_helix(const mio_gen_opts* opts);
+/** Points on a sphere on a Fibonacci lattice, as vertex cells. */
+MIO_API mio_mesh* mio_sphere_points(const mio_gen_opts* opts);
+/** Points drawn uniformly in a box from splitmix64(seed), as vertex cells. */
+MIO_API mio_mesh* mio_box_points(const mio_gen_opts* opts);
+/** A sphere surface from a subdivided tetrahedron. */
+MIO_API mio_mesh* mio_tetra_sphere(const mio_gen_opts* opts);
+/** A sphere surface from a subdivided octahedron. */
+MIO_API mio_mesh* mio_octa_sphere(const mio_gen_opts* opts);
+/** A sphere surface from a cube's six gridded faces. */
+MIO_API mio_mesh* mio_cube_sphere(const mio_gen_opts* opts);
+/** A geodesic sphere of frequency counts[0]. */
+MIO_API mio_mesh* mio_geo_sphere(const mio_gen_opts* opts);
+/** A torus around the z axis. */
+MIO_API mio_mesh* mio_torus(const mio_gen_opts* opts);
+/** A Moebius band; side region boundary. */
+MIO_API mio_mesh* mio_moebius(const mio_gen_opts* opts);
+/** An open cylinder surface; side regions bottom and top. */
+MIO_API mio_mesh* mio_tube(const mio_gen_opts* opts);
+/** A closed cone surface; cell regions side and base. */
+MIO_API mio_mesh* mio_cone(const mio_gen_opts* opts);
+/** A capsule: a cylinder closed by two hemispheres. */
+MIO_API mio_mesh* mio_capsule(const mio_gen_opts* opts);
+/** The boundary of a box; cell regions xmin ... zmax. */
+MIO_API mio_mesh* mio_box_surface(const mio_gen_opts* opts);
+/** A platonic solid's surface, one cell per face (counts[0] faces). */
+MIO_API mio_mesh* mio_platonic(const mio_gen_opts* opts);
+/** A ball by the seven-block butterfly; side region surface. */
+MIO_API mio_mesh* mio_ball(const mio_gen_opts* opts);
+/** A thick spherical shell of hexahedra; side regions inner and outer. */
+MIO_API mio_mesh* mio_spherical_shell(const mio_gen_opts* opts);
+/** A thick-walled pipe of hexahedra; side regions inner, outer, bottom, top. */
+MIO_API mio_mesh* mio_pipe(const mio_gen_opts* opts);
+/** The Fichera corner; side regions xmin ... zmax, notch_x, notch_y, notch_z. */
+MIO_API mio_mesh* mio_fichera(const mio_gen_opts* opts);
+/** A solid torus of hexahedra; side region surface. */
+MIO_API mio_mesh* mio_solid_torus(const mio_gen_opts* opts);
 /**
  * One cell of each requested type in reference coordinates, side by side.
  *
@@ -2950,6 +3037,12 @@ typedef enum mio_octree_mesh_skin_grading {
     MIO_OCTREE_MESH_UNIFORM = 1 /**< one level along the skin: the 10.7-164.8 degree bound */
 } mio_octree_mesh_skin_grading;
 
+/** How a hexahedral mio_octree_mesh output grades. */
+typedef enum mio_octree_mesh_hex_grading {
+    MIO_OCTREE_MESH_HEX_UNIFORM = 0, /**< one grid at the skin's size */
+    MIO_OCTREE_MESH_HEX_GRADED = 1   /**< the octree's grading, through dual transition schemes */
+} mio_octree_mesh_hex_grading;
+
 /** Which leaves a castellated mio_octree_mesh output keeps. */
 typedef enum mio_octree_mesh_fill {
     MIO_OCTREE_MESH_FILL_ALL = 0,    /**< every leaf */
@@ -3002,7 +3095,7 @@ typedef struct mio_octree_mesh_opts {
     int32_t attach_distance;      /**< nonzero (default): attach sdf:distance */
     int32_t attach_quality;       /**< nonzero: attach the quality:* cell data */
     int32_t pillow;               /**< nonzero (default): hexahedral output's boundary layer */
-    int32_t reserved32;           /**< must be zero */
+    int32_t hex_grading;          /**< a mio_octree_mesh_hex_grading (hexahedral; UNIFORM) */
     int64_t reserved[4];          /**< must be zero; room for additive growth */
 } mio_octree_mesh_opts;
 
@@ -3046,7 +3139,10 @@ typedef struct mio_octree_mesh_report {
     int64_t num_flips;
     int64_t num_winding_rechecks;
     int64_t num_warnings; /**< see mio_octree_mesh_warnings() */
-    int64_t reserved[8];  /**< zeroed */
+    /** Winding numbers flooded in deep inside a closed skin, not evaluated
+     *  (from the reserved tail; the struct is still 392 bytes). */
+    int64_t num_winding_skipped;
+    int64_t reserved[7]; /**< zeroed */
 } mio_octree_mesh_report;
 
 /** Initialize octree_mesh options to their defaults. */
@@ -5391,7 +5487,14 @@ typedef struct mio_fit_cad_opts_ex2 {
     int64_t resegment_rounds;
     int32_t layout_snap_to_features;      /**< nonzero: layout edges snap to feature edges */
     int32_t validate_by_surface_sampling; /**< nonzero: freeform faces are sampled too */
-    int64_t reserved[8];                  /**< must be zero; room for additive growth */
+    /** Nonzero: related primitives are fitted together (coaxial cylinders,
+     *  cones, tori and spheres share one axis; parallel and perpendicular
+     *  planes, nearly equal radii), each change kept only where its patch
+     *  still passes its fit. Both backends; 0 (the default) leaves every
+     *  primitive as fitted on its own (unreleased). */
+    int32_t constrain_primitives;
+    int32_t reserved32;  /**< must be zero */
+    int64_t reserved[7]; /**< must be zero; room for additive growth */
 } mio_fit_cad_opts_ex2;
 
 /** Initialize the freeform-mode options to fit_cad's defaults (legacy mode). */
@@ -5421,7 +5524,12 @@ typedef struct mio_fit_cad_report_ex3 {
     /** Patches tried as a surface: the rows of "fit_cad:face_table", which the
      *  result carries as field data outside the legacy mode. */
     int64_t num_face_records;
-    int64_t reserved[10]; /**< zero; room for additive growth */
+    /** With constrain_primitives: the patches whose primitive took a shared
+     *  axis, normal or radius, and the coaxial groups, parallel-normal
+     *  families and equal-radius sets of two or more formed (unreleased). */
+    int64_t num_constrained_primitives;
+    int64_t num_constraint_groups;
+    int64_t reserved[8]; /**< zero; room for additive growth */
 } mio_fit_cad_report_ex3;
 
 /**
@@ -6037,6 +6145,66 @@ MIO_API void mio_error_size_opts_init(mio_error_size_opts* opts);
 MIO_API mio_mesh* mio_error_size(const mio_mesh* mesh, const mio_error_size_opts* opts,
                                  mio_error_size_report* report);
 
+/* ---- check_conformity (roadmap 3.2.1) ----------------------------------- */
+
+/** Which find_interface mode suits a mesh, as mio_check_conformity judges it. */
+typedef enum mio_conformity_mode {
+    MIO_CONFORMITY_CONFORMING = 0, /**< nothing reported */
+    MIO_CONFORMITY_WELD = 1,       /**< only unwelded facets: merge the points first */
+    MIO_CONFORMITY_PROXIMITY = 2   /**< hanging nodes or partly overlapping facets */
+} mio_conformity_mode;
+
+/**
+ * Options of mio_check_conformity. Initialise with mio_conformity_opts_init.
+ * 48 bytes, with a reserved tail.
+ */
+typedef struct mio_conformity_opts {
+    /** Distances at or below this fraction of the examined facets' bounding-box
+     *  diagonal count as zero (init: 1e-9). */
+    double tolerance;
+    /** Nonzero to attach the Int64 conformity:hanging point data (init: 1). */
+    int32_t attach_flags;
+    int32_t reserved32; /**< must be zero */
+    int64_t reserved[4];
+} mio_conformity_opts;
+
+/** What mio_check_conformity found. 104 bytes, with a reserved tail. */
+typedef struct mio_conformity_report {
+    int64_t dimension;               /**< 3, 2, or 0 when nothing was examined */
+    int64_t num_hanging_nodes;       /**< points on a volume cell's face it does not use */
+    int64_t num_t_junctions;         /**< points on a 2-D cell's edge it does not use */
+    int64_t num_partial_overlaps;    /**< pairs of partly overlapping unmatched facets */
+    int64_t num_unwelded_facets;     /**< pairs of coincident facets with other point ids */
+    int64_t num_boundary_facets;     /**< facets one cell uses */
+    int64_t num_non_manifold_facets; /**< facets three or more cells use */
+    int32_t conforming;              /**< nonzero when none of the four defects is found */
+    int32_t interface_mode;          /**< a mio_conformity_mode */
+    int64_t num_warnings;            /**< see mio_check_conformity_warnings() */
+    int64_t reserved[4];
+} mio_conformity_report;
+
+MIO_API void mio_conformity_opts_init(mio_conformity_opts* opts);
+
+/**
+ * Report the hanging nodes, T-junctions, partly overlapping and unwelded
+ * facets of a mesh's volume cells (else its 2-D cells). Points, connectivity,
+ * data and regions pass through unchanged; with attach_flags the result carries
+ * conformity:hanging (0, 1 hanging node, 2 T-junction).
+ *
+ * @param opts   options, or NULL for the mio_conformity_opts_init() defaults.
+ * @param report out, nullable.
+ * @return the mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_check_conformity(const mio_mesh* mesh, const mio_conformity_opts* opts,
+                                       mio_conformity_report* report);
+
+/**
+ * The warnings of this thread's last mio_check_conformity call, one per line.
+ * String rule 5: required byte length excluding NUL, -1 on error; the buffer
+ * may be NULL/zero to query the length.
+ */
+MIO_API int64_t mio_check_conformity_warnings(char* buf, int64_t buflen);
+
 /* ---- boundary_layer (roadmap 6.9) --------------------------------------- */
 
 /** Options of mio_boundary_layer; initialise with mio_boundary_layer_opts_init. 64 bytes. */
@@ -6106,6 +6274,118 @@ MIO_API void mio_boundary_layer_opts_init(mio_boundary_layer_opts* opts);
  */
 MIO_API mio_mesh* mio_boundary_layer(const mio_mesh* mesh, const mio_boundary_layer_opts* opts,
                                      mio_boundary_layer_report* report);
+
+/* ---- extrude and revolve (roadmap 3.1.2, 3.1.3) -------------------------- */
+
+/** Options of mio_extrude; initialise with mio_extrude_opts_init. 96 bytes. */
+typedef struct mio_extrude_opts {
+    double direction[3]; /**< the whole displacement of the last level (init: 0, 0, 1) */
+    double ratio;        /**< each layer over the one below, > 0 (init: 1, uniform) */
+    /** Explicit level fractions (increasing, the last 1), or NULL; borrowed for
+     *  the call only. */
+    const double* offsets;
+    int64_t num_offsets; /**< entries of offsets (init: 0) */
+    int64_t max_cells;   /**< profile cells times layers; <= 0 disables (init: 20000000) */
+    int32_t num_layers;  /**< >= 1; with offsets, 1 or num_offsets (init: 1) */
+    int32_t record_layers; /**< nonzero: attach Int32 extrude:layer cell data */
+    int64_t reserved[4];
+} mio_extrude_opts;
+
+/** Options of mio_revolve; initialise with mio_revolve_opts_init. 112 bytes. */
+typedef struct mio_revolve_opts {
+    double axis_point[3]; /**< a point of the axis (init: origin) */
+    double axis[3];       /**< the axis direction (init: 0, 1, 0) */
+    double angle;         /**< degrees, 0 < |angle| <= 360, right-hand rule (init: 360) */
+    double tolerance;     /**< on the axis: fraction of the bounding-box diagonal (init: 1e-9) */
+    int64_t max_cells;    /**< as mio_extrude_opts.max_cells */
+    int32_t num_layers;   /**< steps of the turn; >= 3 for a full one (init: 16) */
+    int32_t record_layers; /**< nonzero: attach Int32 revolve:layer cell data */
+    int64_t reserved[4];
+} mio_revolve_opts;
+
+/** What mio_extrude and mio_revolve did. 128 bytes. */
+typedef struct mio_sweep_report {
+    int64_t num_cells;
+    int64_t num_hexahedra;
+    int64_t num_wedges;
+    int64_t num_pyramids;
+    int64_t num_tetrahedra;
+    int64_t num_quads;     /**< a swept curve's */
+    int64_t num_triangles; /**< a swept curve's, where an end is on the axis */
+    int64_t num_flipped;   /**< profile cells turned to face the sweep */
+    int64_t num_on_axis;   /**< profile points on the axis (revolve) */
+    int64_t num_warnings;  /**< see mio_extrude_warnings() / mio_revolve_warnings() */
+    double min_scaled_jacobian; /**< of the volume cells; 0 for a swept curve */
+    int32_t full;          /**< nonzero: a full turn, closed on itself */
+    int32_t reserved32;
+    int64_t reserved[4];
+} mio_sweep_report;
+
+MIO_API void mio_extrude_opts_init(mio_extrude_opts* opts);
+MIO_API void mio_revolve_opts_init(mio_revolve_opts* opts);
+
+/**
+ * Sweep a surface's triangles and quads into wedges and hexahedra (or, with no
+ * 2-D cells, its lines into quads) along a vector, in layers: the swept cells
+ * only, layer by layer, with Side regions bottom, top and side and the input's
+ * regions and data carried.
+ *
+ * @param opts   options, or NULL for the mio_extrude_opts_init() defaults.
+ * @param report out, nullable.
+ * @return the swept mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_extrude(const mio_mesh* mesh, const mio_extrude_opts* opts,
+                              mio_sweep_report* report);
+
+/** As mio_extrude, around an axis; Side regions start, end (a partial turn) and side. */
+MIO_API mio_mesh* mio_revolve(const mio_mesh* mesh, const mio_revolve_opts* opts,
+                              mio_sweep_report* report);
+
+/** The warnings of this thread's last mio_extrude call; string rule 5. */
+MIO_API int64_t mio_extrude_warnings(char* buf, int64_t buflen);
+/** The warnings of this thread's last mio_revolve call; string rule 5. */
+MIO_API int64_t mio_revolve_warnings(char* buf, int64_t buflen);
+
+/* ---- mirror (roadmap 3.2.5) ----------------------------------------------- */
+
+/** Options of mio_mirror; initialise with mio_mirror_opts_init. 104 bytes. */
+typedef struct mio_mirror_opts {
+    double origin[3];    /**< a point of the plane (init: origin) */
+    double normal[3];    /**< the plane's normal, not zero (init: 1, 0, 0) */
+    double tolerance;    /**< on the plane: fraction of the bounding-box diagonal (init: 1e-9) */
+    int32_t keep_original; /**< nonzero: the input followed by its image */
+    int32_t weld;          /**< with keep_original, share the points on the plane (init: 1) */
+    int32_t reflect_vector_data; /**< nonzero: reflect float 3- and 9-column data */
+    int32_t reserved32;
+    int64_t reserved[4];
+} mio_mirror_opts;
+
+/** What mio_mirror did. 72 bytes. */
+typedef struct mio_mirror_report {
+    int64_t num_flipped_cells;   /**< reflected cells written */
+    int64_t num_points_on_plane; /**< input points on the plane */
+    int64_t num_dropped_cells;   /**< copies dropped as lying on the plane (weld) */
+    int64_t num_dropped_sides;   /**< Side entries dropped as interior (weld) */
+    int64_t num_warnings;        /**< see mio_mirror_warnings() */
+    int64_t reserved[4];
+} mio_mirror_report;
+
+MIO_API void mio_mirror_opts_init(mio_mirror_opts* opts);
+
+/**
+ * Reflect a mesh across a plane with every cell right side out (its nodes
+ * permuted, Side region entries moved to their facets' new numbers). With
+ * keep_original, the input followed by its image.
+ *
+ * @param opts   options, or NULL for the mio_mirror_opts_init() defaults.
+ * @param report out, nullable.
+ * @return the mirrored mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_mirror(const mio_mesh* mesh, const mio_mirror_opts* opts,
+                             mio_mirror_report* report);
+
+/** The warnings of this thread's last mio_mirror call; string rule 5. */
+MIO_API int64_t mio_mirror_warnings(char* buf, int64_t buflen);
 
 /* ---- tetrahedralize (roadmap 6.7) --------------------------------------- */
 

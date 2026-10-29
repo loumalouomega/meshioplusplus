@@ -49,10 +49,16 @@ from .. import (
     agglomerate,
     annulus,
     attach_quality,
+    ball,
     boundary_layer,
     box,
+    box_points,
+    box_surface,
+    capsule,
     cell_data_to_point_data,
+    check_conformity,
     check_quality,
+    circle,
     clean,
     compute_bandwidth,
     compute_curvature,
@@ -60,10 +66,12 @@ from .. import (
     compute_quality,
     compute_sdf,
     compute_stats,
+    cone,
     conservative_interpolate,
     contact_pairs,
     convert_cells,
     crop,
+    cube_sphere,
     cylinder,
     data_calc,
     data_condition,
@@ -80,14 +88,18 @@ from .. import (
     estimate_error,
     extract_skin,
     extract_surface,
+    extrude,
     feature_edges,
+    fichera,
     find_interface,
     fit_cad,
     fit_primitives,
+    geo_sphere,
     geometry_descriptors,
     gradient,
     grid,
     hausdorff_distance,
+    helix,
     hessian,
     honeycomb,
     icosa_sphere,
@@ -96,16 +108,22 @@ from .. import (
     iga_sample,
     interpolate,
     isosurface,
+    line,
     lshape,
     match_periodic_nodes,
     merge,
     mesh_cad_surface,
+    mirror,
+    moebius,
     ngon,
+    octa_sphere,
     octree,
     octree_mesh,
     optimize_volume,
     partition,
+    pipe,
     plate_with_hole,
+    platonic,
     point_data_to_cell_data,
     power_spectrum,
     project_to_cad,
@@ -124,6 +142,7 @@ from .. import (
     reorder,
     repair,
     resample_grid,
+    revolve,
     run_pipeline,
     sample_distance,
     sample_grid,
@@ -137,6 +156,9 @@ from .. import snapshot as _snapshot_fn
 from .. import (
     sniff_format,
     sobolev_deform,
+    solid_torus,
+    sphere_points,
+    spherical_shell,
     split,
     split_interface,
     subdivide,
@@ -144,8 +166,11 @@ from .. import (
     surface_watertight_check,
     tensor_invariants,
     tessellate,
+    tetra_sphere,
     tetrahedralize,
+    torus,
     transform,
+    tube,
     undo_green,
     uv_sphere,
     voxelize,
@@ -584,6 +609,29 @@ def tool_check_quality(
             mesh, require, max_inverted=max_inverted, max_degenerate=max_degenerate
         )
     )
+
+
+def tool_check_conformity(
+    input_path,
+    output_path=None,
+    file_format=None,
+    output_format=None,
+    tolerance=1e-9,
+):
+    """Conformity check: hanging nodes (3-D), T-junctions (2-D), partly
+    overlapping and unwelded facet pairs, the verdict and which find_interface
+    mode suits the mesh. Pass ``output_path`` to write a copy of the mesh
+    carrying the ``conformity:hanging`` point_data flags."""
+    mesh = _load(input_path, file_format)
+    out, report = check_conformity(
+        mesh,
+        tolerance=tolerance,
+        attach_flags=output_path is not None,
+        return_report=True,
+    )
+    if output_path is not None:
+        report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
 
 
 def tool_data_info(input_path, file_format=None):
@@ -1423,6 +1471,7 @@ def tool_rectangle(
     split="zigzag",
     order=1,
     max_cells=20000000,
+    complete=False,
 ):
     """Generate a regular 2-D grid of quads or triangles; reads no input."""
     out = rectangle(
@@ -1433,6 +1482,7 @@ def tool_rectangle(
         split=split,
         order=order,
         max_cells=max_cells,
+        complete=complete,
     )
     return _result(_store(out, output_path, output_format), out)
 
@@ -1446,6 +1496,7 @@ def tool_box(
     cell_type="hexahedron",
     order=1,
     max_cells=20000000,
+    complete=False,
 ):
     """Generate a regular 3-D grid of hexahedra, tetrahedra or wedges; reads no input."""
     out = box(
@@ -1455,6 +1506,7 @@ def tool_box(
         cell_type=cell_type,
         order=order,
         max_cells=max_cells,
+        complete=complete,
     )
     return _result(_store(out, output_path, output_format), out)
 
@@ -1468,6 +1520,7 @@ def tool_disk(
     cell_type="quad",
     order=1,
     max_cells=20000000,
+    complete=False,
 ):
     """Generate a disk of quads or triangles; reads no input."""
     out = disk(
@@ -1477,6 +1530,7 @@ def tool_disk(
         cell_type=cell_type,
         order=order,
         max_cells=max_cells,
+        complete=complete,
     )
     return _result(_store(out, output_path, output_format), out)
 
@@ -1491,6 +1545,7 @@ def tool_uv_sphere(
     cell_type="triangle",
     order=1,
     max_cells=20000000,
+    complete=False,
 ):
     """Generate a latitude/longitude sphere surface, oriented outward; reads no input."""
     out = uv_sphere(
@@ -1501,6 +1556,7 @@ def tool_uv_sphere(
         cell_type=cell_type,
         order=order,
         max_cells=max_cells,
+        complete=complete,
     )
     return _result(_store(out, output_path, output_format), out)
 
@@ -1513,6 +1569,7 @@ def tool_icosa_sphere(
     center=None,
     order=1,
     max_cells=20000000,
+    complete=False,
 ):
     """Generate an icosahedron-based sphere surface; reads no input."""
     out = icosa_sphere(
@@ -1521,6 +1578,7 @@ def tool_icosa_sphere(
         center=(0.0, 0.0, 0.0) if center is None else center,
         order=order,
         max_cells=max_cells,
+        complete=complete,
     )
     return _result(_store(out, output_path, output_format), out)
 
@@ -1536,6 +1594,7 @@ def tool_cylinder(
     cell_type="hexahedron",
     order=1,
     max_cells=20000000,
+    complete=False,
 ):
     """Generate a solid cylinder along z with side/top/bottom regions; reads no input."""
     out = cylinder(
@@ -1547,6 +1606,7 @@ def tool_cylinder(
         cell_type=cell_type,
         order=order,
         max_cells=max_cells,
+        complete=complete,
     )
     return _result(_store(out, output_path, output_format), out)
 
@@ -1559,6 +1619,7 @@ def tool_reference_triangle(
     origin=None,
     order=1,
     max_cells=20000000,
+    complete=False,
 ):
     """Generate the reference triangle refined into n*n triangles; reads no input."""
     out = reference_triangle(
@@ -1567,6 +1628,7 @@ def tool_reference_triangle(
         origin=(0.0, 0.0, 0.0) if origin is None else origin,
         order=order,
         max_cells=max_cells,
+        complete=complete,
     )
     return _result(_store(out, output_path, output_format), out)
 
@@ -1580,6 +1642,7 @@ def tool_ngon(
     center=None,
     order=1,
     max_cells=20000000,
+    complete=False,
 ):
     """Generate a regular polygon fanned from its centre; reads no input."""
     out = ngon(
@@ -1589,6 +1652,7 @@ def tool_ngon(
         center=(0.0, 0.0, 0.0) if center is None else center,
         order=order,
         max_cells=max_cells,
+        complete=complete,
     )
     return _result(_store(out, output_path, output_format), out)
 
@@ -1605,6 +1669,7 @@ def tool_annulus(
     cell_type="quad",
     order=1,
     max_cells=20000000,
+    complete=False,
 ):
     """Generate an annulus, or a sector of one with a seam pair; reads no input."""
     out = annulus(
@@ -1617,6 +1682,7 @@ def tool_annulus(
         cell_type=cell_type,
         order=order,
         max_cells=max_cells,
+        complete=complete,
     )
     return _result(_store(out, output_path, output_format), out)
 
@@ -1630,6 +1696,7 @@ def tool_lshape(
     cell_type="quad",
     order=1,
     max_cells=20000000,
+    complete=False,
 ):
     """Generate the L-shaped domain (a square minus a quadrant); reads no input."""
     out = lshape(
@@ -1639,6 +1706,7 @@ def tool_lshape(
         cell_type=cell_type,
         order=order,
         max_cells=max_cells,
+        complete=complete,
     )
     return _result(_store(out, output_path, output_format), out)
 
@@ -1654,6 +1722,7 @@ def tool_plate_with_hole(
     cell_type="quad",
     order=1,
     max_cells=20000000,
+    complete=False,
 ):
     """Generate a square plate around a circular hole; reads no input."""
     out = plate_with_hole(
@@ -1665,6 +1734,7 @@ def tool_plate_with_hole(
         cell_type=cell_type,
         order=order,
         max_cells=max_cells,
+        complete=complete,
     )
     return _result(_store(out, output_path, output_format), out)
 
@@ -1683,6 +1753,524 @@ def tool_honeycomb(
         edge=edge,
         origin=(0.0, 0.0, 0.0) if origin is None else origin,
         max_cells=max_cells,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_line(
+    output_path,
+    output_format=None,
+    n=8,
+    start=None,
+    end=None,
+    order=1,
+    max_cells=20000000,
+    complete=False,
+):
+    """Generate a straight segment of line cells; reads no input."""
+    out = line(
+        n=n,
+        start=(0.0, 0.0, 0.0) if start is None else start,
+        end=(1.0, 0.0, 0.0) if end is None else end,
+        order=order,
+        max_cells=max_cells,
+        complete=complete,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_circle(
+    output_path,
+    output_format=None,
+    radius=1.0,
+    n=16,
+    center=None,
+    order=1,
+    max_cells=20000000,
+    complete=False,
+):
+    """Generate a closed polyline on a circle; reads no input."""
+    out = circle(
+        radius=radius,
+        n=n,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        order=order,
+        max_cells=max_cells,
+        complete=complete,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_helix(
+    output_path,
+    output_format=None,
+    radius=1.0,
+    pitch=1.0,
+    turns=2.0,
+    n=32,
+    center=None,
+    order=1,
+    max_cells=20000000,
+    complete=False,
+):
+    """Generate a helix of line cells; reads no input."""
+    out = helix(
+        radius=radius,
+        pitch=pitch,
+        turns=turns,
+        n=n,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        order=order,
+        max_cells=max_cells,
+        complete=complete,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_sphere_points(
+    output_path,
+    output_format=None,
+    n=100,
+    radius=1.0,
+    center=None,
+    max_cells=20000000,
+):
+    """Generate points on a sphere (a Fibonacci lattice); reads no input."""
+    out = sphere_points(
+        n=n,
+        radius=radius,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        max_cells=max_cells,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_box_points(
+    output_path,
+    output_format=None,
+    n=100,
+    size=None,
+    origin=None,
+    seed=0,
+    max_cells=20000000,
+):
+    """Generate seeded uniform points in a box; reads no input."""
+    out = box_points(
+        n=n,
+        size=(1.0, 1.0, 1.0) if size is None else size,
+        origin=(0.0, 0.0, 0.0) if origin is None else origin,
+        seed=seed,
+        max_cells=max_cells,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_tetra_sphere(
+    output_path,
+    output_format=None,
+    radius=1.0,
+    subdivisions=3,
+    center=None,
+    order=1,
+    max_cells=20000000,
+    complete=False,
+):
+    """Generate a sphere surface from a subdivided tetrahedron; reads no input."""
+    out = tetra_sphere(
+        radius=radius,
+        subdivisions=subdivisions,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        order=order,
+        max_cells=max_cells,
+        complete=complete,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_octa_sphere(
+    output_path,
+    output_format=None,
+    radius=1.0,
+    subdivisions=2,
+    center=None,
+    order=1,
+    max_cells=20000000,
+    complete=False,
+):
+    """Generate a sphere surface from a subdivided octahedron; reads no input."""
+    out = octa_sphere(
+        radius=radius,
+        subdivisions=subdivisions,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        order=order,
+        max_cells=max_cells,
+        complete=complete,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_cube_sphere(
+    output_path,
+    output_format=None,
+    radius=1.0,
+    n=4,
+    center=None,
+    cell_type="quad",
+    order=1,
+    max_cells=20000000,
+    complete=False,
+):
+    """Generate a sphere surface from a cube's six gridded faces; reads no input."""
+    out = cube_sphere(
+        radius=radius,
+        n=n,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        cell_type=cell_type,
+        order=order,
+        max_cells=max_cells,
+        complete=complete,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_geo_sphere(
+    output_path,
+    output_format=None,
+    radius=1.0,
+    n=4,
+    center=None,
+    order=1,
+    max_cells=20000000,
+    complete=False,
+):
+    """Generate a geodesic sphere of any frequency; reads no input."""
+    out = geo_sphere(
+        radius=radius,
+        n=n,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        order=order,
+        max_cells=max_cells,
+        complete=complete,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_torus(
+    output_path,
+    output_format=None,
+    major_radius=1.0,
+    minor_radius=0.25,
+    nu=32,
+    nv=16,
+    center=None,
+    cell_type="quad",
+    order=1,
+    max_cells=20000000,
+    complete=False,
+):
+    """Generate a torus surface; reads no input."""
+    out = torus(
+        major_radius=major_radius,
+        minor_radius=minor_radius,
+        nu=nu,
+        nv=nv,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        cell_type=cell_type,
+        order=order,
+        max_cells=max_cells,
+        complete=complete,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_moebius(
+    output_path,
+    output_format=None,
+    radius=1.0,
+    width=0.5,
+    nu=32,
+    nv=4,
+    num_twists=1,
+    center=None,
+    cell_type="quad",
+    order=1,
+    max_cells=20000000,
+    complete=False,
+):
+    """Generate a Moebius band; reads no input."""
+    out = moebius(
+        radius=radius,
+        width=width,
+        nu=nu,
+        nv=nv,
+        num_twists=num_twists,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        cell_type=cell_type,
+        order=order,
+        max_cells=max_cells,
+        complete=complete,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_tube(
+    output_path,
+    output_format=None,
+    radius=1.0,
+    height=1.0,
+    ntheta=16,
+    nz=4,
+    center=None,
+    cell_type="quad",
+    order=1,
+    max_cells=20000000,
+    complete=False,
+):
+    """Generate an open cylinder surface; reads no input."""
+    out = tube(
+        radius=radius,
+        height=height,
+        ntheta=ntheta,
+        nz=nz,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        cell_type=cell_type,
+        order=order,
+        max_cells=max_cells,
+        complete=complete,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_cone(
+    output_path,
+    output_format=None,
+    radius=1.0,
+    height=1.0,
+    ntheta=16,
+    nz=4,
+    center=None,
+    cell_type="quad",
+    order=1,
+    max_cells=20000000,
+    complete=False,
+):
+    """Generate a closed cone surface; reads no input."""
+    out = cone(
+        radius=radius,
+        height=height,
+        ntheta=ntheta,
+        nz=nz,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        cell_type=cell_type,
+        order=order,
+        max_cells=max_cells,
+        complete=complete,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_capsule(
+    output_path,
+    output_format=None,
+    radius=0.5,
+    height=1.0,
+    ntheta=16,
+    nz=4,
+    ncap=4,
+    center=None,
+    cell_type="quad",
+    order=1,
+    max_cells=20000000,
+    complete=False,
+):
+    """Generate a capsule surface; reads no input."""
+    out = capsule(
+        radius=radius,
+        height=height,
+        ntheta=ntheta,
+        nz=nz,
+        ncap=ncap,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        cell_type=cell_type,
+        order=order,
+        max_cells=max_cells,
+        complete=complete,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_box_surface(
+    output_path,
+    output_format=None,
+    dims=None,
+    size=None,
+    origin=None,
+    cell_type="quad",
+    order=1,
+    max_cells=20000000,
+    complete=False,
+):
+    """Generate the closed boundary surface of a box; reads no input."""
+    out = box_surface(
+        dims=(1, 1, 1) if dims is None else dims,
+        size=(1.0, 1.0, 1.0) if size is None else size,
+        origin=(0.0, 0.0, 0.0) if origin is None else origin,
+        cell_type=cell_type,
+        order=order,
+        max_cells=max_cells,
+        complete=complete,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_platonic(
+    output_path,
+    output_format=None,
+    name="icosahedron",
+    radius=1.0,
+    center=None,
+    max_cells=20000000,
+):
+    """Generate a platonic solid's surface, one cell per face; reads no input."""
+    out = platonic(
+        name=name,
+        radius=radius,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        max_cells=max_cells,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_ball(
+    output_path,
+    output_format=None,
+    radius=1.0,
+    n=4,
+    center=None,
+    cell_type="hexahedron",
+    order=1,
+    max_cells=20000000,
+    complete=False,
+):
+    """Generate a solid ball by the seven-block butterfly; reads no input."""
+    out = ball(
+        radius=radius,
+        n=n,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        cell_type=cell_type,
+        order=order,
+        max_cells=max_cells,
+        complete=complete,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_spherical_shell(
+    output_path,
+    output_format=None,
+    inner_radius=0.5,
+    outer_radius=1.0,
+    n=4,
+    nr=2,
+    ratio=1.0,
+    center=None,
+    order=1,
+    max_cells=20000000,
+    complete=False,
+):
+    """Generate a thick spherical shell of hexahedra; reads no input."""
+    out = spherical_shell(
+        inner_radius=inner_radius,
+        outer_radius=outer_radius,
+        n=n,
+        nr=nr,
+        ratio=ratio,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        order=order,
+        max_cells=max_cells,
+        complete=complete,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_pipe(
+    output_path,
+    output_format=None,
+    inner_radius=0.5,
+    outer_radius=1.0,
+    height=1.0,
+    ntheta=16,
+    nr=2,
+    nz=4,
+    ratio=1.0,
+    center=None,
+    order=1,
+    max_cells=20000000,
+    complete=False,
+):
+    """Generate a thick-walled pipe of hexahedra; reads no input."""
+    out = pipe(
+        inner_radius=inner_radius,
+        outer_radius=outer_radius,
+        height=height,
+        ntheta=ntheta,
+        nr=nr,
+        nz=nz,
+        ratio=ratio,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        order=order,
+        max_cells=max_cells,
+        complete=complete,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_fichera(
+    output_path,
+    output_format=None,
+    n=2,
+    size=2.0,
+    center=None,
+    cell_type="hexahedron",
+    order=1,
+    max_cells=20000000,
+    complete=False,
+):
+    """Generate the Fichera corner (a cube minus an octant); reads no input."""
+    out = fichera(
+        n=n,
+        size=size,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        cell_type=cell_type,
+        order=order,
+        max_cells=max_cells,
+        complete=complete,
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
+def tool_solid_torus(
+    output_path,
+    output_format=None,
+    major_radius=1.0,
+    minor_radius=0.25,
+    n=4,
+    nu=32,
+    center=None,
+    order=1,
+    max_cells=20000000,
+    complete=False,
+):
+    """Generate a solid torus of hexahedra; reads no input."""
+    out = solid_torus(
+        major_radius=major_radius,
+        minor_radius=minor_radius,
+        n=n,
+        nu=nu,
+        center=(0.0, 0.0, 0.0) if center is None else center,
+        order=order,
+        max_cells=max_cells,
+        complete=complete,
     )
     return _result(_store(out, output_path, output_format), out)
 
@@ -1707,6 +2295,7 @@ def tool_voxelize(
     attach_occupancy=False,
     max_cells=20000000,
     sign="pseudonormal",
+    plane="auto",
 ):
     """Build a regular grid around a mesh; optionally keep only its surface or interior."""
     mesh = _load(input_path, input_format)
@@ -1722,6 +2311,7 @@ def tool_voxelize(
         max_cells=max_cells,
         sign=sign,
         watertight_check="off",
+        plane=plane,
         return_report=True,
     )
     return _result(_store(out, output_path, output_format), out, **report)
@@ -1763,6 +2353,7 @@ def tool_octree_mesh(
     attach_distance=True,
     attach_quality=False,
     pillow=True,
+    hex_grading="uniform",
     untangle_iterations=50,
     max_cells=20000000,
     max_tets=100000000,
@@ -1802,6 +2393,7 @@ def tool_octree_mesh(
         attach_distance=attach_distance,
         attach_quality=attach_quality,
         pillow=pillow,
+        hex_grading=hex_grading,
         untangle_iterations=untangle_iterations,
         max_cells=max_cells,
         max_tets=max_tets,
@@ -2768,6 +3360,7 @@ def tool_fit_cad(
     resegment_rounds=2,
     layout_snap_to_features=True,
     validate_by_surface_sampling=True,
+    constrain_primitives=False,
 ):
     """Turn the fitted patches of a closed skin into a CAD solid with analytic
     faces (and, through OpenCASCADE, rolling-ball fillet, thread flank and
@@ -2802,7 +3395,12 @@ def tool_fit_cad(
     num_network_edges, num_extraordinary_vertices, num_resegmented,
     num_escalations, max_g1_angle_deg, max_freeform_distance,
     rms_freeform_distance and faces (per patch: param_method, num_ctrl,
-    distances, escalation_steps and demotion_reason)."""
+    distances, escalation_steps and demotion_reason). constrain_primitives
+    (off) fits related primitives together on either backend -- coaxial
+    cylinders, cones, tori and spheres share one axis, parallel and
+    perpendicular planes and nearly equal radii are made exact, each change
+    kept only where its patch still passes its fit -- and adds
+    num_constrained_primitives and num_constraint_groups."""
     from .._fit_cad import has_occt
 
     occt = has_occt()
@@ -2881,6 +3479,7 @@ def tool_fit_cad(
         resegment_rounds=resegment_rounds,
         layout_snap_to_features=layout_snap_to_features,
         validate_by_surface_sampling=validate_by_surface_sampling,
+        constrain_primitives=constrain_primitives,
     )
     _cache_invalidate(step_path)
     extra = {"step_path": step_path, "occt_available": occt, **report}
@@ -3926,6 +4525,96 @@ def tool_boundary_layer(
         collapse=collapse,
         normal_smooth_iterations=normal_smooth_iterations,
         front_check=front_check,
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
+def tool_extrude(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    direction=(0.0, 0.0, 1.0),
+    num_layers=1,
+    ratio=1.0,
+    offsets=None,
+    record_layers=False,
+    max_cells=20_000_000,
+):
+    """Sweep a surface into a volume (or a curve into a surface) along a
+    vector. Returns num_cells, num_hexahedra, num_wedges, num_pyramids,
+    num_tetrahedra, num_quads, num_triangles, num_flipped,
+    min_scaled_jacobian and warnings alongside the mesh summary."""
+    mesh = _load(input_path, input_format)
+    out, report = extrude(
+        mesh,
+        direction=direction,
+        num_layers=num_layers,
+        ratio=ratio,
+        offsets=offsets,
+        record_layers=record_layers,
+        max_cells=max_cells,
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
+def tool_revolve(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    axis=(0.0, 1.0, 0.0),
+    axis_point=(0.0, 0.0, 0.0),
+    angle=360.0,
+    num_layers=16,
+    tolerance=1e-9,
+    record_layers=False,
+    max_cells=20_000_000,
+):
+    """Sweep a surface (or a curve) around an axis. Returns the extrude
+    counts, num_on_axis, full, min_scaled_jacobian and warnings alongside the
+    mesh summary."""
+    mesh = _load(input_path, input_format)
+    out, report = revolve(
+        mesh,
+        axis=axis,
+        axis_point=axis_point,
+        angle=angle,
+        num_layers=num_layers,
+        tolerance=tolerance,
+        record_layers=record_layers,
+        max_cells=max_cells,
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
+def tool_mirror(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    origin=(0.0, 0.0, 0.0),
+    normal=(1.0, 0.0, 0.0),
+    keep_original=False,
+    weld=True,
+    tolerance=1e-9,
+    reflect_vector_data=False,
+):
+    """Reflect a mesh across a plane with every cell right side out. Returns
+    num_flipped_cells, num_points_on_plane, num_dropped_cells,
+    num_dropped_sides and warnings alongside the mesh summary."""
+    mesh = _load(input_path, input_format)
+    out, report = mirror(
+        mesh,
+        origin=origin,
+        normal=normal,
+        keep_original=keep_original,
+        weld=weld,
+        tolerance=tolerance,
+        reflect_vector_data=reflect_vector_data,
         return_report=True,
     )
     return _result(_store(out, output_path, output_format), out, **report)
@@ -5539,6 +6228,14 @@ TOOL_REGISTRY = OrderedDict(
             "check_quality",
             {"fn": tool_check_quality, "wraps": ("check_quality",), "gated": None},
         ),
+        (
+            "check_conformity",
+            {
+                "fn": tool_check_conformity,
+                "wraps": ("check_conformity",),
+                "gated": None,
+            },
+        ),
         ("repair", {"fn": tool_repair, "wraps": ("repair",), "gated": None}),
         (
             "shrinkwrap",
@@ -5590,6 +6287,54 @@ TOOL_REGISTRY = OrderedDict(
             "reference_cells",
             {"fn": tool_reference_cells, "wraps": ("reference_cells",), "gated": None},
         ),
+        ("line", {"fn": tool_line, "wraps": ("line",), "gated": None}),
+        ("circle", {"fn": tool_circle, "wraps": ("circle",), "gated": None}),
+        ("helix", {"fn": tool_helix, "wraps": ("helix",), "gated": None}),
+        (
+            "sphere_points",
+            {"fn": tool_sphere_points, "wraps": ("sphere_points",), "gated": None},
+        ),
+        (
+            "box_points",
+            {"fn": tool_box_points, "wraps": ("box_points",), "gated": None},
+        ),
+        (
+            "tetra_sphere",
+            {"fn": tool_tetra_sphere, "wraps": ("tetra_sphere",), "gated": None},
+        ),
+        (
+            "octa_sphere",
+            {"fn": tool_octa_sphere, "wraps": ("octa_sphere",), "gated": None},
+        ),
+        (
+            "cube_sphere",
+            {"fn": tool_cube_sphere, "wraps": ("cube_sphere",), "gated": None},
+        ),
+        (
+            "geo_sphere",
+            {"fn": tool_geo_sphere, "wraps": ("geo_sphere",), "gated": None},
+        ),
+        ("torus", {"fn": tool_torus, "wraps": ("torus",), "gated": None}),
+        ("moebius", {"fn": tool_moebius, "wraps": ("moebius",), "gated": None}),
+        ("tube", {"fn": tool_tube, "wraps": ("tube",), "gated": None}),
+        ("cone", {"fn": tool_cone, "wraps": ("cone",), "gated": None}),
+        ("capsule", {"fn": tool_capsule, "wraps": ("capsule",), "gated": None}),
+        (
+            "box_surface",
+            {"fn": tool_box_surface, "wraps": ("box_surface",), "gated": None},
+        ),
+        ("platonic", {"fn": tool_platonic, "wraps": ("platonic",), "gated": None}),
+        ("ball", {"fn": tool_ball, "wraps": ("ball",), "gated": None}),
+        (
+            "spherical_shell",
+            {"fn": tool_spherical_shell, "wraps": ("spherical_shell",), "gated": None},
+        ),
+        ("pipe", {"fn": tool_pipe, "wraps": ("pipe",), "gated": None}),
+        ("fichera", {"fn": tool_fichera, "wraps": ("fichera",), "gated": None}),
+        (
+            "solid_torus",
+            {"fn": tool_solid_torus, "wraps": ("solid_torus",), "gated": None},
+        ),
         ("voxelize", {"fn": tool_voxelize, "wraps": ("voxelize",), "gated": None}),
         ("octree", {"fn": tool_octree, "wraps": ("octree",), "gated": None}),
         (
@@ -5611,6 +6356,18 @@ TOOL_REGISTRY = OrderedDict(
                 "wraps": ("boundary_layer",),
                 "gated": None,
             },
+        ),
+        (
+            "extrude",
+            {"fn": tool_extrude, "wraps": ("extrude",), "gated": None},
+        ),
+        (
+            "revolve",
+            {"fn": tool_revolve, "wraps": ("revolve",), "gated": None},
+        ),
+        (
+            "mirror",
+            {"fn": tool_mirror, "wraps": ("mirror",), "gated": None},
         ),
         (
             "tetrahedralize",

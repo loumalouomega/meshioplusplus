@@ -27,6 +27,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -35,6 +37,7 @@
 
 // Project includes
 #include "octree_mesh_internal.hpp"
+#include "meshioplusplus/detail/tri_box.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/octree_mesh.hpp"
@@ -213,7 +216,99 @@ void octm_prepare(const Mesh& rMesh, const OctreeMeshOptions& rO, detail::Octree
     rResult.mSurfaceLevel = surface_level;
     rResult.mMinSize = rS.mFrame.mMinSize;
     rResult.mMaxSize = hmax;
+    octree_mesh_flood(rS, rO);
     rClock.Lap(rResult, "octree");
+}
+
+// Whether every edge of the welded skin is walked as often one way as the
+// other: a closed, consistently oriented cycle, whose winding number is an
+// integer everywhere off the skin.
+bool octm_skin_closed(const detail::OctreeSkin& rSkin) {
+    std::vector<std::array<std::int64_t, 3>> edges;
+    edges.reserve(3 * rSkin.mTris.size());
+    for (const auto& t : rSkin.mTris)
+        for (std::size_t k = 0; k < 3; ++k) {
+            const std::int64_t a = t[k], b = t[(k + 1) % 3];
+            if (a != b)
+                edges.push_back({std::min(a, b), std::max(a, b), a < b ? 1 : -1});
+        }
+    std::sort(edges.begin(), edges.end());
+    for (std::size_t i = 0; i < edges.size();) {
+        std::int64_t sum = 0;
+        std::size_t j = i;
+        for (; j < edges.size() && edges[j][0] == edges[i][0] && edges[j][1] == edges[i][1]; ++j)
+            sum += edges[j][2];
+        if (sum != 0)
+            return false;
+        i = j;
+    }
+    return !edges.empty();
+}
+
+// Per leaf, 1 when the skin reaches its box grown by a margin. The cut flags'
+// closed-box test can miss a triangle that lies exactly in the face between
+// two leaves (a cap on a lattice plane), and a flood through that face would
+// cross the skin; this test cannot, and it sees every skin triangle, not the
+// candidates a leaf inherited.
+std::vector<std::uint8_t> octm_blocked(const detail::OctreeMeshSetup& rS,
+                                       const detail::LinearOctree& rTree) {
+    using namespace detail;
+    const OctreeSkin& skin = rS.mSkin;
+    const double fine = rS.mFrame.Fine();
+    const double margin = 1e-6 * fine;
+    std::vector<std::vector<std::int64_t>> hit(skin.mTris.size());
+    parallel_for(
+        skin.mTris.size(),
+        [&](std::size_t t) {
+            const Vec3& a = skin.mPoints[static_cast<std::size_t>(skin.mTris[t][0])];
+            const Vec3& b = skin.mPoints[static_cast<std::size_t>(skin.mTris[t][1])];
+            const Vec3& c = skin.mPoints[static_cast<std::size_t>(skin.mTris[t][2])];
+            std::array<std::int64_t, 3> lo{}, hi{};
+            for (std::size_t k = 0; k < 3; ++k) {
+                const double x0 = std::min({a[k], b[k], c[k]}) - 2.0 * margin;
+                const double x1 = std::max({a[k], b[k], c[k]}) + 2.0 * margin;
+                lo[k] = std::max<std::int64_t>(
+                    0, static_cast<std::int64_t>(std::floor((x0 - rS.mFrame.mOrigin[k]) / fine)));
+                hi[k] = std::min<std::int64_t>(
+                    rTree.Extent(k) - 1,
+                    static_cast<std::int64_t>(std::floor((x1 - rS.mFrame.mOrigin[k]) / fine)));
+            }
+            std::vector<std::int64_t>& out = hit[t];
+            for (std::int64_t z = lo[2]; z <= hi[2]; ++z)
+                for (std::int64_t y = lo[1]; y <= hi[1]; ++y)
+                    for (std::int64_t x = lo[0]; x <= hi[0];) {
+                        const std::int64_t j = rTree.Locate(x, y, z);
+                        if (j < 0)
+                            break;
+                        const auto jl = rTree.Lo(static_cast<std::size_t>(j));
+                        const std::int64_t span = rTree.Span(static_cast<std::size_t>(j));
+                        Vec3 centre, half;
+                        for (std::size_t k = 0; k < 3; ++k) {
+                            half[k] = 0.5 * static_cast<double>(span) * fine + margin;
+                            centre[k] = rS.mFrame.mOrigin[k] + (static_cast<double>(jl[k]) +
+                                                                0.5 * static_cast<double>(span)) *
+                                                                   fine;
+                        }
+                        if (tri_box_overlap(centre, half, a, b, c))
+                            out.push_back(j);
+                        x = jl[0] + span;
+                    }
+        },
+        16);
+    std::vector<std::uint8_t> blocked(rTree.Size(), 0);
+    for (const auto& h : hit)
+        for (std::int64_t j : h)
+            blocked[static_cast<std::size_t>(j)] = 1;
+    return blocked;
+}
+
+// The union-find root of leaf `I`, compressing the path.
+std::size_t octm_root(std::vector<std::size_t>& rParent, std::size_t I) {
+    while (rParent[I] != I) {
+        rParent[I] = rParent[rParent[I]];
+        I = rParent[I];
+    }
+    return I;
 }
 
 // The output-independent part of the report.
@@ -277,28 +372,169 @@ void octree_mesh_warn(OctreeMeshResult& rResult, const std::string& rMessage) {
     rResult.mWarnings.push_back(rMessage);
 }
 
+void octree_mesh_flood(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions) {
+    OctreeMeshFlood& flood = rSetup.mFlood;
+    flood = OctreeMeshFlood{};
+    const char* p_env = std::getenv("MESHIOPLUSPLUS_OCTREE_MESH_FLOOD");
+    if (p_env != nullptr && std::string(p_env) == "0")
+        return;
+    // A threshold near an integer would put a flooded value near the cleaving
+    // levels and the near-threshold rechecks, where its exactness would show.
+    const double frac = rOptions.mWindingThreshold - std::floor(rOptions.mWindingThreshold);
+    if (frac < 0.1 || frac > 0.9 || !octm_skin_closed(rSetup.mSkin))
+        return;
+    const LinearOctree& tree = rSetup.mOctree.mTree;
+    const std::size_t n = tree.Size();
+    std::vector<std::uint8_t> cut = octm_blocked(rSetup, tree);
+    for (std::size_t i = 0; i < n; ++i)
+        cut[i] = cut[i] || rSetup.mOctree.mCut[i];
+
+    // Deep leaves: neither they nor any of their 26 neighbours is cut, and
+    // none of those neighbours lies outside the forest.
+    const std::vector<std::array<int, 3>> around = linear_octree_directions(OctreeAdjacency::Full);
+    std::vector<std::uint8_t> deep(n, 0);
+    parallel_for(n, [&](std::size_t i) {
+        if (cut[i])
+            return;
+        const auto lo = tree.Lo(i);
+        const std::int64_t s = tree.Span(i);
+        for (const auto& d : around) {
+            if (!tree.Contains(lo[0] + d[0] * s, lo[1] + d[1] * s, lo[2] + d[2] * s))
+                return;
+            for (std::int64_t j : linear_octree_neighbours(tree, i, d[0], d[1], d[2]))
+                if (cut[static_cast<std::size_t>(j)])
+                    return;
+        }
+        deep[i] = 1;
+    });
+
+    // The regions of uncut leaves joined through their faces, each rooted at
+    // its lowest leaf; one pass in leaf order, so the roots do not depend on
+    // the thread count.
+    std::vector<std::size_t> parent(n);
+    for (std::size_t i = 0; i < n; ++i)
+        parent[i] = i;
+    const int up[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    for (std::size_t i = 0; i < n; ++i) {
+        if (cut[i])
+            continue;
+        for (const auto& d : up)
+            for (std::int64_t j : linear_octree_neighbours(tree, i, d[0], d[1], d[2])) {
+                if (cut[static_cast<std::size_t>(j)])
+                    continue;
+                const std::size_t a = octm_root(parent, i);
+                const std::size_t b = octm_root(parent, static_cast<std::size_t>(j));
+                if (a != b)
+                    parent[std::max(a, b)] = std::min(a, b);
+            }
+    }
+
+    // Each region's winding number, from up to three of its deep leaves (the
+    // lowest): they must agree on one integer, each within 0.1 of it.
+    std::vector<std::size_t> root(n, 0);
+    for (std::size_t i = 0; i < n; ++i)
+        root[i] = octm_root(parent, i);
+    std::vector<std::vector<std::size_t>> probes(n);
+    for (std::size_t i = 0; i < n; ++i)
+        if (deep[i] && probes[root[i]].size() < 3)
+            probes[root[i]].push_back(i);
+    std::vector<std::size_t> regions, probe_leaf;
+    for (std::size_t r = 0; r < n; ++r)
+        if (!probes[r].empty()) {
+            regions.push_back(r);
+            probe_leaf.insert(probe_leaf.end(), probes[r].begin(), probes[r].end());
+        }
+    if (regions.empty())
+        return;
+    const std::vector<Vec3> centres = octree_mesh_leaf_centres(rSetup.mFrame, tree);
+    std::vector<Vec3> at(probe_leaf.size());
+    for (std::size_t k = 0; k < probe_leaf.size(); ++k)
+        at[k] = centres[probe_leaf[k]];
+    const double beta =
+        rOptions.mWindingBeta > 0.0 ? std::max(8.0, 4.0 * rOptions.mWindingBeta) : 0.0;
+    const std::vector<double> w = fast_windings(rSetup.mBvh, at, beta);
+    std::vector<std::int32_t> value(n, OctreeMeshFlood::kUnknown);
+    std::size_t k = 0;
+    for (std::size_t r : regions) {
+        std::int32_t v = OctreeMeshFlood::kUnknown;
+        bool agree = true;
+        for (std::size_t q = 0; q < probes[r].size(); ++q, ++k) {
+            const double x = rSetup.mWindingSign * w[k];
+            const double rounded = std::round(x);
+            if (!(std::abs(x - rounded) < 0.1) || std::abs(rounded) > 1e6)
+                agree = false;
+            else if (q == 0)
+                v = static_cast<std::int32_t>(rounded);
+            else if (static_cast<std::int32_t>(rounded) != v)
+                agree = false;
+        }
+        if (agree)
+            value[r] = v;
+    }
+    flood.mValue.assign(n, OctreeMeshFlood::kUnknown);
+    for (std::size_t i = 0; i < n; ++i)
+        if (deep[i] && value[root[i]] != OctreeMeshFlood::kUnknown) {
+            flood.mValue[i] = value[root[i]];
+            flood.mActive = true;
+        }
+    if (!flood.mActive)
+        return;
+    flood.mTree = tree;
+    flood.mOrigin = rSetup.mFrame.mOrigin;
+    flood.mFine = rSetup.mFrame.Fine();
+}
+
 std::vector<double> octree_mesh_winding(const OctreeMeshSetup& rSetup,
                                         const std::vector<Vec3>& rPoints,
                                         const OctreeMeshOptions& rOptions,
                                         OctreeMeshResult& rResult) {
-    std::vector<double> w = fast_windings(rSetup.mBvh, rPoints, rOptions.mWindingBeta);
-    for (double& v : w)
+    // The flooded value where the point lies in a deep leaf, else NaN.
+    const OctreeMeshFlood& flood = rSetup.mFlood;
+    std::vector<double> w(rPoints.size(), std::numeric_limits<double>::quiet_NaN());
+    if (flood.mActive)
+        parallel_for(rPoints.size(), [&](std::size_t i) {
+            std::array<std::int64_t, 3> cell{};
+            for (std::size_t a = 0; a < 3; ++a) {
+                const double x = std::floor((rPoints[i][a] - flood.mOrigin[a]) / flood.mFine);
+                if (!(x >= 0.0 && x < 4.0e18))
+                    return;
+                cell[a] = static_cast<std::int64_t>(x);
+            }
+            if (!flood.mTree.Contains(cell[0], cell[1], cell[2]))
+                return;
+            const std::int64_t leaf = flood.mTree.Locate(cell[0], cell[1], cell[2]);
+            if (leaf >= 0 &&
+                flood.mValue[static_cast<std::size_t>(leaf)] != OctreeMeshFlood::kUnknown)
+                w[i] = static_cast<double>(flood.mValue[static_cast<std::size_t>(leaf)]);
+        });
+    std::vector<std::size_t> todo;
+    for (std::size_t i = 0; i < w.size(); ++i)
+        if (std::isnan(w[i]))
+            todo.push_back(i);
+    rResult.mNumWindingSkipped += static_cast<std::int64_t>(w.size() - todo.size());
+
+    std::vector<Vec3> pts(todo.size());
+    for (std::size_t k = 0; k < todo.size(); ++k)
+        pts[k] = rPoints[todo[k]];
+    std::vector<double> sub = fast_windings(rSetup.mBvh, pts, rOptions.mWindingBeta);
+    for (double& v : sub)
         v *= rSetup.mWindingSign;
     if (rOptions.mWindingBeta > 0.0) {
         std::vector<std::size_t> near;
-        for (std::size_t i = 0; i < w.size(); ++i)
-            if (std::abs(w[i] - rOptions.mWindingThreshold) < 0.1)
+        for (std::size_t i = 0; i < sub.size(); ++i)
+            if (std::abs(sub[i] - rOptions.mWindingThreshold) < 0.1)
                 near.push_back(i);
         const double beta = std::max(8.0, 4.0 * rOptions.mWindingBeta);
         parallel_for(
             near.size(),
             [&](std::size_t k) {
-                w[near[k]] =
-                    rSetup.mWindingSign * fast_winding(rSetup.mBvh, rPoints[near[k]], beta);
+                sub[near[k]] = rSetup.mWindingSign * fast_winding(rSetup.mBvh, pts[near[k]], beta);
             },
             64);
         rResult.mNumWindingRechecks += static_cast<std::int64_t>(near.size());
     }
+    for (std::size_t k = 0; k < todo.size(); ++k)
+        w[todo[k]] = sub[k];
     return w;
 }
 
@@ -376,6 +612,14 @@ OctreeMeshSkinGrading octree_mesh_skin_grading_from_name(const std::string& rNam
     if (rName == "uniform")
         return OctreeMeshSkinGrading::Uniform;
     octm_fail("unknown skin_grading '" + rName + "' (expected 'graded' or 'uniform')");
+}
+
+OctreeMeshHexGrading octree_mesh_hex_grading_from_name(const std::string& rName) {
+    if (rName == "uniform")
+        return OctreeMeshHexGrading::Uniform;
+    if (rName == "graded")
+        return OctreeMeshHexGrading::Graded;
+    octm_fail("unknown hex_grading '" + rName + "' (expected 'uniform' or 'graded')");
 }
 
 OctreeMeshFill octree_mesh_fill_from_name(const std::string& rName) {

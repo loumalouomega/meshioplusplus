@@ -19,7 +19,7 @@
 /**
  * @file detail/tri_tri.hpp
  * @brief Whether two triangles in 3-D meet, decided exactly (roadmap 6.9.1;
- * the kernel `find_intersections`, roadmap 3.2.2, will share).
+ * the kernel `find_intersections`, roadmap 3.1.2, will share).
  *
  * Every decision is a sign of Shewchuk's exact `orient3d` or `orient2d`
  * (`predicates.hpp`), so the answer is the exact one for the triangles'

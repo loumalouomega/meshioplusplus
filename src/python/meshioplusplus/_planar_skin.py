@@ -103,8 +103,46 @@ def collect(mesh, prefix, axes=(0, 1, 2)):
     for key in order:
         if boundary[key][0] == 1:
             ids.append(boundary[key][1])
+    _orient_loops(ids)
     prims = [(points[a], points[b], points[b]) for a, b in ids]
     return prims, ids, has_lines
+
+
+def _orient_loops(ids):
+    """Orient every closed loop like its first segment; the twin of ``ps_orient_loops``."""
+    incident = {}
+    for i, (a, b) in enumerate(ids):
+        incident.setdefault(a, []).append(i)
+        if b != a:
+            incident.setdefault(b, []).append(i)
+    seen = [False] * len(ids)
+    for first in range(len(ids)):
+        if seen[first]:
+            continue
+        seen[first] = True
+        if ids[first][0] == ids[first][1]:
+            continue
+        flips = []
+        closed = False
+        cur, at = first, ids[first][1]
+        while True:
+            inc = incident[at]
+            if len(inc) != 2:
+                break
+            nxt = inc[1] if inc[0] == cur else inc[0]
+            if nxt == first:
+                closed = True
+                break
+            if seen[nxt]:
+                break
+            seen[nxt] = True
+            if ids[nxt][0] != at:
+                flips.append(nxt)
+            at = ids[nxt][1] if ids[nxt][0] == at else ids[nxt][0]
+            cur = nxt
+        if closed:
+            for f in flips:
+                ids[f] = (ids[f][1], ids[f][0])
 
 
 def require_closed(ids, prefix):

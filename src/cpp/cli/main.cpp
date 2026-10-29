@@ -95,6 +95,8 @@
 #include "meshioplusplus/operations/octree.hpp"
 #include "meshioplusplus/operations/mesh_cad.hpp"
 #include "meshioplusplus/operations/boundary_layer.hpp"
+#include "meshioplusplus/operations/extrude.hpp"
+#include "meshioplusplus/operations/mirror.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/octree_mesh.hpp"
@@ -111,6 +113,7 @@
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "meshioplusplus/operations/check_conformity.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/formats/cad_json.hpp"
@@ -408,6 +411,8 @@ void print_usage(std::ostream& os) {
           "  check                   Quality gate: exit 1 when cells break thresholds\n"
           "                            (--require 'scaled_jacobian >= 0.2; ...', --gate FILE,\n"
           "                            --max-inverted/--max-degenerate; exit 2: not checked)\n"
+          "  check-conformity        Hanging nodes, T-junctions, partial overlaps: exit 1 when\n"
+          "                            not conforming (INFILE [OUTFILE] --tolerance --json)\n"
           "  curvature               Per-vertex mean/Gaussian curvature of a surface\n"
           "  normals                 Point/cell normals of a surface, optionally split at creases\n"
           "  feature-edges           Sharp/open/non-manifold edges of a surface as a line mesh\n"
@@ -448,8 +453,14 @@ void print_usage(std::ostream& os) {
           "                            rectangle | box | disk | uv-sphere | icosa-sphere |\n"
           "                            cylinder | reference-triangle | ngon | annulus |\n"
           "                            lshape | plate-with-hole | honeycomb |\n"
-          "                            reference-cells; --order 2 for curved\n"
-          "                            quadratic cells\n"
+          "                            reference-cells | line | circle | helix |\n"
+          "                            sphere-points | box-points | tetra-sphere |\n"
+          "                            octa-sphere | cube-sphere | geo-sphere | torus |\n"
+          "                            moebius | tube | cone | capsule | box-surface |\n"
+          "                            platonic | ball | spherical-shell | pipe |\n"
+          "                            fichera | solid-torus; --order 2 for curved\n"
+          "                            quadratic cells (--complete: full Lagrange),\n"
+          "                            3..10 for VTK Lagrange\n"
           "  voxelize                Regular hexahedron grid around a mesh\n"
           "                            exactly one of --resolution/--cell-size;\n"
           "                            --fill all|surface|inside\n"
@@ -482,6 +493,18 @@ void print_usage(std::ostream& os) {
           "                            [--smooth N] [--max-shrink N]\n"
           "                            [--collapse points|layers] [--normal-smooth N]\n"
           "                            [--no-front-check] [--json]\n"
+          "  extrude                 Sweep a surface into a volume (or a curve into a\n"
+          "                            surface) along a vector: [--direction=x,y,z]\n"
+          "                            [--num-layers N] [--ratio R] [--offsets a,b,..]\n"
+          "                            [--record-layers] [--max-cells N] [--json]\n"
+          "  revolve                 Sweep a surface (or a curve) around an axis:\n"
+          "                            [--axis=x,y,z] [--axis-point=x,y,z]\n"
+          "                            [--angle DEG] [--num-layers N] [--tolerance T]\n"
+          "                            [--record-layers] [--max-cells N] [--json]\n"
+          "  mirror                  Reflect across a plane, cells right side out:\n"
+          "                            [--origin=x,y,z] [--normal=x,y,z]\n"
+          "                            [--keep-original] [--no-weld] [--tolerance T]\n"
+          "                            [--reflect-data] [--json]\n"
           "  tetrahedralize          Fill a closed triangle surface with tetrahedra,\n"
           "                            its triangles kept (Netgen): [--max-size H]\n"
           "                            [--max-volume V] [--grading G]\n"
@@ -1761,6 +1784,66 @@ int cmd_check(const std::vector<std::string>& rArgs) {
     return r.mPassed ? 0 : 1;
 }
 
+int cmd_check_conformity(const std::vector<std::string>& rArgs) {
+    // 0 conforming, 1 not, 2 could not check -- the `check` verb's convention.
+    meshioplusplus::ConformityResult r;
+    bool json = false;
+    try {
+        auto p = cli_parse(rArgs, {
+                                      {"input-format", {"-i"}, true},
+                                      {"output-format", {"-o"}, true},
+                                      {"tolerance", {}, true},
+                                      {"json", {}, false},
+                                  });
+        if (p.positionals.empty() || p.positionals.size() > 2)
+            throw std::runtime_error("check-conformity requires INFILE and an optional OUTFILE");
+        json = has_flag(p, "json");
+        meshioplusplus::ConformityOptions options;
+        if (has_opt(p, "tolerance"))
+            options.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+        options.mAttachFlags = p.positionals.size() == 2;
+        Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+        r = meshioplusplus::check_conformity(mesh, options);
+        if (p.positionals.size() == 2)
+            write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    } catch (const std::exception& e) {
+        std::cerr << "error: " << e.what() << "\n";
+        return 2;
+    }
+    if (json) {
+        meshioplusplus::cli::JsonOut out(std::cout);
+        out.BeginObject();
+        out.Field("dimension", r.mDimension);
+        out.Field("num_hanging_nodes", r.mNumHangingNodes);
+        out.Field("num_t_junctions", r.mNumTJunctions);
+        out.Field("num_partial_overlaps", r.mNumPartialOverlaps);
+        out.Field("num_unwelded_facets", r.mNumUnweldedFacets);
+        out.Field("num_boundary_facets", r.mNumBoundaryFacets);
+        out.Field("num_non_manifold_facets", r.mNumNonManifoldFacets);
+        out.Field("conforming", r.mConforming);
+        out.Field("interface_mode", r.mInterfaceMode);
+        out.Key("warnings");
+        out.BeginArray();
+        for (const std::string& w : r.mWarnings)
+            out.String(w);
+        out.EndArray();
+        out.EndObject();
+    } else {
+        std::cout << (r.mConforming ? "conforming" : "NOT conforming") << " (" << r.mDimension
+                  << "-D cells examined)\n";
+        std::cout << "  hanging nodes:       " << r.mNumHangingNodes << "\n";
+        std::cout << "  T-junctions:         " << r.mNumTJunctions << "\n";
+        std::cout << "  partial overlaps:    " << r.mNumPartialOverlaps << "\n";
+        std::cout << "  unwelded facets:     " << r.mNumUnweldedFacets << "\n";
+        std::cout << "  boundary facets:     " << r.mNumBoundaryFacets << "\n";
+        std::cout << "  non-manifold facets: " << r.mNumNonManifoldFacets << "\n";
+        std::cout << "  interface mode:      " << r.mInterfaceMode << "\n";
+        for (const std::string& w : r.mWarnings)
+            std::cout << "  warning: " << w << "\n";
+    }
+    return r.mConforming ? 0 : 1;
+}
+
 int cmd_feature_edges(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -2776,6 +2859,7 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
                                   {"resegment-rounds", {}, true},
                                   {"no-layout-snap-to-features", {}, false},
                                   {"no-validate-by-surface-sampling", {}, false},
+                                  {"constrain-primitives", {}, false},
                                   {"mesh-out", {}, true},
                                   {"cad-json", {}, true},
                                   {"json", {}, false},
@@ -2930,6 +3014,7 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         options.mResegmentRounds = std::stoll(opt_value(p, "resegment-rounds"));
     options.mLayoutSnapToFeatures = !has_flag(p, "no-layout-snap-to-features");
     options.mValidateBySurfaceSampling = !has_flag(p, "no-validate-by-surface-sampling");
+    options.mConstrainPrimitives = has_flag(p, "constrain-primitives");
     const bool modes = options.mFreeformMode != meshioplusplus::FitCadFreeformMode::Legacy;
     static const char* const kModes[] = {"legacy", "adaptive", "network", "auto"};
     meshioplusplus::FitCadResult r = meshioplusplus::fit_cad(mesh, p.positionals[1], options);
@@ -2996,6 +3081,10 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         if (options.mFaceDeviation) {
             json.Field("hausdorff_max", r.mHausdorffMax);
             json.Field("hausdorff_rms", r.mHausdorffRms);
+        }
+        if (options.mConstrainPrimitives) {
+            json.Field("num_constrained_primitives", r.mNumConstrainedPrimitives);
+            json.Field("num_constraint_groups", r.mNumConstraintGroups);
         }
         // The freeform modes report only outside the legacy mode.
         if (modes) {
@@ -3094,6 +3183,9 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         if (options.mFaceDeviation)
             std::cout << "  face deviation: Hausdorff " << r.mHausdorffMax << ", RMS "
                       << r.mHausdorffRms << "\n";
+        if (options.mConstrainPrimitives)
+            std::cout << "  constrained: " << r.mNumConstrainedPrimitives << " primitive(s) in "
+                      << r.mNumConstraintGroups << " group(s)\n";
         if (modes)
             std::cout << "  freeform (" << kModes[static_cast<int>(r.mFreeformMode) & 3]
                       << "): " << r.mNumFreeformAdaptive << " adaptive face(s), "
@@ -4117,6 +4209,7 @@ int cmd_voxelize(const std::vector<std::string>& rArgs) {
                                   {"padding-relative", {}, true},
                                   {"fill", {}, true},
                                   {"sign", {}, true},
+                                  {"plane", {}, true},
                                   {"attach-occupancy", {}, false},
                                   {"max-cells", {}, true},
                                   {"quiet", {"-q"}, false},
@@ -4158,6 +4251,7 @@ int cmd_voxelize(const std::vector<std::string>& rArgs) {
     options.mFill = meshioplusplus::voxel_fill_from_name(opt_value(p, "fill", "all"));
     options.mDistance.mSign =
         meshioplusplus::sdf_sign_from_name(opt_value(p, "sign", "pseudonormal"));
+    options.mPlane = meshioplusplus::detail::planar_plane_from_name(opt_value(p, "plane", "auto"));
     options.mAttachOccupancy = has_flag(p, "attach-occupancy");
     if (p.values.count("max-cells"))
         options.mMaxCells = std::stoll(opt_value(p, "max-cells"));
@@ -4211,6 +4305,19 @@ int cmd_generate(const std::vector<std::string>& rArgs) {
                                   {"max-cells", {}, true},
                                   {"types", {}, true},
                                   {"pairs", {}, false},
+                                  {"complete", {}, false},
+                                  {"start", {}, true},
+                                  {"end", {}, true},
+                                  {"pitch", {}, true},
+                                  {"turns", {}, true},
+                                  {"seed", {}, true},
+                                  {"major-radius", {}, true},
+                                  {"minor-radius", {}, true},
+                                  {"width", {}, true},
+                                  {"num-twists", {}, true},
+                                  {"ncap", {}, true},
+                                  {"ratio", {}, true},
+                                  {"name", {}, true},
                                   {"quiet", {"-q"}, false},
                               });
     if (p.positionals.size() != 2)
@@ -4237,6 +4344,35 @@ int cmd_generate(const std::vector<std::string>& rArgs) {
          {"radius", "size", "nt", "nr", "center", "cell-type", "order", "max-cells"}},
         {"honeycomb", {"dims", "edge", "origin", "max-cells"}},
         {"reference-cells", {"types", "pairs"}},
+        {"line", {"n", "start", "end", "order", "max-cells"}},
+        {"circle", {"radius", "n", "center", "order", "max-cells"}},
+        {"helix", {"radius", "pitch", "turns", "n", "center", "order", "max-cells"}},
+        {"sphere-points", {"n", "radius", "center", "max-cells"}},
+        {"box-points", {"n", "size", "origin", "seed", "max-cells"}},
+        {"tetra-sphere", {"radius", "subdivisions", "center", "order", "max-cells"}},
+        {"octa-sphere", {"radius", "subdivisions", "center", "order", "max-cells"}},
+        {"cube-sphere", {"radius", "n", "center", "cell-type", "order", "max-cells"}},
+        {"geo-sphere", {"radius", "n", "center", "order", "max-cells"}},
+        {"torus",
+         {"major-radius", "minor-radius", "nu", "nv", "center", "cell-type", "order", "max-cells"}},
+        {"moebius",
+         {"radius", "width", "nu", "nv", "num-twists", "center", "cell-type", "order",
+          "max-cells"}},
+        {"tube", {"radius", "height", "ntheta", "nz", "center", "cell-type", "order", "max-cells"}},
+        {"cone", {"radius", "height", "ntheta", "nz", "center", "cell-type", "order", "max-cells"}},
+        {"capsule",
+         {"radius", "height", "ntheta", "nz", "ncap", "center", "cell-type", "order", "max-cells"}},
+        {"box-surface", {"dims", "size", "origin", "cell-type", "order", "max-cells"}},
+        {"platonic", {"name", "radius", "center", "max-cells"}},
+        {"ball", {"radius", "n", "center", "cell-type", "order", "max-cells"}},
+        {"spherical-shell",
+         {"inner-radius", "outer-radius", "n", "nr", "ratio", "center", "order", "max-cells"}},
+        {"pipe",
+         {"inner-radius", "outer-radius", "height", "ntheta", "nr", "nz", "ratio", "center",
+          "order", "max-cells"}},
+        {"fichera", {"n", "size", "center", "cell-type", "order", "max-cells"}},
+        {"solid-torus",
+         {"major-radius", "minor-radius", "n", "nu", "center", "order", "max-cells"}},
     };
     const auto allowed = kAllowed.find(shape);
     if (allowed == kAllowed.end())
@@ -4244,12 +4380,16 @@ int cmd_generate(const std::vector<std::string>& rArgs) {
             "generate: unknown shape '" + shape +
             "' (expected one of: rectangle, box, disk, uv-sphere, icosa-sphere, cylinder, "
             "reference-triangle, ngon, annulus, lshape, plate-with-hole, honeycomb, "
-            "reference-cells)");
+            "reference-cells, line, circle, helix, sphere-points, box-points, tetra-sphere, "
+            "octa-sphere, cube-sphere, geo-sphere, torus, moebius, tube, cone, capsule, "
+            "box-surface, platonic, ball, spherical-shell, pipe, fichera, solid-torus)");
     for (const auto& kv : p.values)
         if (kv.first != "output-format" && kv.first != "quiet" && !allowed->second.count(kv.first))
             throw std::runtime_error("generate " + shape + ": --" + kv.first + " does not apply");
     if (p.flags.count("pairs") && shape != "reference-cells")
         throw std::runtime_error("generate " + shape + ": --pairs does not apply");
+    if (p.flags.count("complete") && !allowed->second.count("order"))
+        throw std::runtime_error("generate " + shape + ": --complete does not apply");
 
     auto number = [&](const char* pName, double Default) {
         return p.values.count(pName) ? meshioplusplus::detail::stod_c(opt_value(p, pName))
@@ -4293,53 +4433,141 @@ int cmd_generate(const std::vector<std::string>& rArgs) {
     };
     const int order = static_cast<int>(count("order", 1));
     const std::int64_t max_cells = count("max-cells", 20000000);
+    const bool complete = has_flag(p, "complete");
     const std::array<double, 3> zero = {{0.0, 0.0, 0.0}};
+    const std::array<double, 3> ones = {{1.0, 1.0, 1.0}};
 
     Mesh mesh;
     if (shape == "rectangle") {
         const auto d = dims(2, 1);
-        mesh = meshioplusplus::rectangle(
-            {{d[0], d[1]}}, vec2("size", {{1.0, 1.0}}), vec3("origin", zero, true),
-            opt_value(p, "cell-type", "quad"), opt_value(p, "split", "zigzag"), order, max_cells);
+        mesh =
+            meshioplusplus::rectangle({{d[0], d[1]}}, vec2("size", {{1.0, 1.0}}),
+                                      vec3("origin", zero, true), opt_value(p, "cell-type", "quad"),
+                                      opt_value(p, "split", "zigzag"), order, max_cells, complete);
     } else if (shape == "box") {
         const auto d = dims(3, 1);
         mesh = meshioplusplus::box({{d[0], d[1], d[2]}}, vec3("size", {{1.0, 1.0, 1.0}}, false),
                                    vec3("origin", zero, false),
-                                   opt_value(p, "cell-type", "hexahedron"), order, max_cells);
+                                   opt_value(p, "cell-type", "hexahedron"), order, max_cells,
+                                   complete);
     } else if (shape == "disk") {
         mesh =
             meshioplusplus::disk(number("radius", 1.0), count("n", 8), vec3("center", zero, false),
-                                 opt_value(p, "cell-type", "quad"), order, max_cells);
+                                 opt_value(p, "cell-type", "quad"), order, max_cells, complete);
     } else if (shape == "uv-sphere") {
-        mesh = meshioplusplus::uv_sphere(number("radius", 1.0), count("nu", 16), count("nv", 8),
-                                         vec3("center", zero, false),
-                                         opt_value(p, "cell-type", "triangle"), order, max_cells);
+        mesh = meshioplusplus::uv_sphere(
+            number("radius", 1.0), count("nu", 16), count("nv", 8), vec3("center", zero, false),
+            opt_value(p, "cell-type", "triangle"), order, max_cells, complete);
     } else if (shape == "icosa-sphere") {
-        mesh = meshioplusplus::icosa_sphere(number("radius", 1.0), count("subdivisions", 2),
-                                            vec3("center", zero, false), order, max_cells);
+        mesh =
+            meshioplusplus::icosa_sphere(number("radius", 1.0), count("subdivisions", 2),
+                                         vec3("center", zero, false), order, max_cells, complete);
     } else if (shape == "cylinder") {
         mesh = meshioplusplus::cylinder(
             number("radius", 1.0), number("height", 1.0), count("nxy", 8), count("nz", 8),
-            vec3("center", zero, false), opt_value(p, "cell-type", "hexahedron"), order, max_cells);
+            vec3("center", zero, false), opt_value(p, "cell-type", "hexahedron"), order, max_cells,
+            complete);
     } else if (shape == "reference-triangle") {
         mesh = meshioplusplus::reference_triangle(count("n", 4), vec2("size", {{1.0, 1.0}}),
-                                                  vec3("origin", zero, true), order, max_cells);
+                                                  vec3("origin", zero, true), order, max_cells,
+                                                  complete);
     } else if (shape == "ngon") {
         mesh = meshioplusplus::ngon(count("sides", 6), number("radius", 1.0), count("rings", 1),
-                                    vec3("center", zero, false), order, max_cells);
+                                    vec3("center", zero, false), order, max_cells, complete);
     } else if (shape == "annulus") {
         mesh = meshioplusplus::annulus(
             number("inner-radius", 0.5), number("outer-radius", 1.0), count("ntheta", 16),
             count("nr", 4), number("angle", 6.283185307179586), vec3("center", zero, false),
-            opt_value(p, "cell-type", "quad"), order, max_cells);
+            opt_value(p, "cell-type", "quad"), order, max_cells, complete);
     } else if (shape == "lshape") {
         mesh =
             meshioplusplus::lshape(count("n", 4), number("size", 2.0), vec3("center", zero, false),
-                                   opt_value(p, "cell-type", "quad"), order, max_cells);
+                                   opt_value(p, "cell-type", "quad"), order, max_cells, complete);
     } else if (shape == "plate-with-hole") {
         mesh = meshioplusplus::plate_with_hole(
             number("radius", 0.25), number("size", 1.0), count("nt", 8), count("nr", 4),
-            vec3("center", zero, false), opt_value(p, "cell-type", "quad"), order, max_cells);
+            vec3("center", zero, false), opt_value(p, "cell-type", "quad"), order, max_cells,
+            complete);
+    } else if (shape == "line") {
+        mesh =
+            meshioplusplus::line(count("n", 8), vec3("start", zero, false),
+                                 vec3("end", {{1.0, 0.0, 0.0}}, false), order, max_cells, complete);
+    } else if (shape == "circle") {
+        mesh = meshioplusplus::circle(number("radius", 1.0), count("n", 16),
+                                      vec3("center", zero, false), order, max_cells, complete);
+    } else if (shape == "helix") {
+        mesh = meshioplusplus::helix(number("radius", 1.0), number("pitch", 1.0),
+                                     number("turns", 2.0), count("n", 32),
+                                     vec3("center", zero, false), order, max_cells, complete);
+    } else if (shape == "sphere-points") {
+        mesh = meshioplusplus::sphere_points(count("n", 100), number("radius", 1.0),
+                                             vec3("center", zero, false), max_cells);
+    } else if (shape == "box-points") {
+        mesh = meshioplusplus::box_points(
+            count("n", 100), vec3("size", ones, false), vec3("origin", zero, false),
+            p.values.count("seed") ? std::stoull(opt_value(p, "seed")) : 0ULL, max_cells);
+    } else if (shape == "tetra-sphere") {
+        mesh =
+            meshioplusplus::tetra_sphere(number("radius", 1.0), count("subdivisions", 3),
+                                         vec3("center", zero, false), order, max_cells, complete);
+    } else if (shape == "octa-sphere") {
+        mesh = meshioplusplus::octa_sphere(number("radius", 1.0), count("subdivisions", 2),
+                                           vec3("center", zero, false), order, max_cells, complete);
+    } else if (shape == "cube-sphere") {
+        mesh = meshioplusplus::cube_sphere(
+            number("radius", 1.0), count("n", 4), vec3("center", zero, false),
+            opt_value(p, "cell-type", "quad"), order, max_cells, complete);
+    } else if (shape == "geo-sphere") {
+        mesh = meshioplusplus::geo_sphere(number("radius", 1.0), count("n", 4),
+                                          vec3("center", zero, false), order, max_cells, complete);
+    } else if (shape == "torus") {
+        mesh = meshioplusplus::torus(number("major-radius", 1.0), number("minor-radius", 0.25),
+                                     count("nu", 32), count("nv", 16), vec3("center", zero, false),
+                                     opt_value(p, "cell-type", "quad"), order, max_cells, complete);
+    } else if (shape == "moebius") {
+        mesh = meshioplusplus::moebius(
+            number("radius", 1.0), number("width", 0.5), count("nu", 32), count("nv", 4),
+            count("num-twists", 1), vec3("center", zero, false), opt_value(p, "cell-type", "quad"),
+            order, max_cells, complete);
+    } else if (shape == "tube" || shape == "cone") {
+        const auto make = shape == "tube" ? &meshioplusplus::tube : &meshioplusplus::cone;
+        mesh = make(number("radius", 1.0), number("height", 1.0), count("ntheta", 16),
+                    count("nz", 4), vec3("center", zero, false), opt_value(p, "cell-type", "quad"),
+                    order, max_cells, complete);
+    } else if (shape == "capsule") {
+        mesh = meshioplusplus::capsule(
+            number("radius", 0.5), number("height", 1.0), count("ntheta", 16), count("nz", 4),
+            count("ncap", 4), vec3("center", zero, false), opt_value(p, "cell-type", "quad"), order,
+            max_cells, complete);
+    } else if (shape == "box-surface") {
+        const auto d = dims(3, 1);
+        mesh = meshioplusplus::box_surface(
+            {{d[0], d[1], d[2]}}, vec3("size", ones, false), vec3("origin", zero, false),
+            opt_value(p, "cell-type", "quad"), order, max_cells, complete);
+    } else if (shape == "platonic") {
+        mesh = meshioplusplus::platonic(opt_value(p, "name", "icosahedron"), number("radius", 1.0),
+                                        vec3("center", zero, false), max_cells);
+    } else if (shape == "ball") {
+        mesh = meshioplusplus::ball(
+            number("radius", 1.0), count("n", 4), vec3("center", zero, false),
+            opt_value(p, "cell-type", "hexahedron"), order, max_cells, complete);
+    } else if (shape == "spherical-shell") {
+        mesh = meshioplusplus::spherical_shell(
+            number("inner-radius", 0.5), number("outer-radius", 1.0), count("n", 4), count("nr", 2),
+            number("ratio", 1.0), vec3("center", zero, false), order, max_cells, complete);
+    } else if (shape == "pipe") {
+        mesh = meshioplusplus::pipe(number("inner-radius", 0.5), number("outer-radius", 1.0),
+                                    number("height", 1.0), count("ntheta", 16), count("nr", 2),
+                                    count("nz", 4), number("ratio", 1.0),
+                                    vec3("center", zero, false), order, max_cells, complete);
+    } else if (shape == "fichera") {
+        mesh = meshioplusplus::fichera(
+            count("n", 2), number("size", 2.0), vec3("center", zero, false),
+            opt_value(p, "cell-type", "hexahedron"), order, max_cells, complete);
+    } else if (shape == "solid-torus") {
+        mesh = meshioplusplus::solid_torus(
+            number("major-radius", 1.0), number("minor-radius", 0.25), count("n", 4),
+            count("nu", 32), vec3("center", zero, false), order, max_cells, complete);
     } else if (shape == "honeycomb") {
         const auto d = dims(2, 4);
         mesh = meshioplusplus::honeycomb({{d[0], d[1]}}, number("edge", 1.0),
@@ -4513,6 +4741,7 @@ int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
                                   {"no-distance", {}, false},
                                   {"attach-quality", {}, false},
                                   {"no-pillow", {}, false},
+                                  {"hex-grading", {}, true},
                                   {"untangle-iterations", {}, true},
                                   {"max-cells", {}, true},
                                   {"max-tets", {}, true},
@@ -4567,6 +4796,7 @@ int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
     o.mAttachDistance = !has_flag(p, "no-distance");
     o.mAttachQuality = has_flag(p, "attach-quality");
     o.mPillow = !has_flag(p, "no-pillow");
+    o.mHexGrading = mio::octree_mesh_hex_grading_from_name(opt_value(p, "hex-grading", "uniform"));
     o.mUntangleIterations = integer("untangle-iterations", o.mUntangleIterations);
     o.mMaxCells = integer("max-cells", o.mMaxCells);
     o.mMaxTets = integer("max-tets", o.mMaxTets);
@@ -4616,6 +4846,7 @@ int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
         json.Field("num_optimized_moves", r.mNumOptimizedMoves);
         json.Field("num_flips", r.mNumFlips);
         json.Field("num_winding_rechecks", r.mNumWindingRechecks);
+        json.Field("num_winding_skipped", r.mNumWindingSkipped);
         json.Field("root_size", r.mRootSize);
         json.Field("min_size", r.mMinSize);
         json.Field("max_size", r.mMaxSize);
@@ -5242,6 +5473,176 @@ int cmd_boundary_layer(const std::vector<std::string>& rArgs) {
                   << " collapsed, " << r.mNumFewerLayers << " with fewer layers; "
                   << r.mNumFrontCrossings << " front crossings; cap "
                   << (r.mCapClosed ? "closed" : "open") << "\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+// The --name=x,y,z vector of a sweep or mirror verb, or its default.
+std::array<double, 3> cli_vec3(const cli_parsed& rP, const char* pName, const char* pVerb,
+                               const std::array<double, 3>& rDefault) {
+    if (!has_opt(rP, pName))
+        return rDefault;
+    const auto v = parse_doubles(opt_value(rP, pName));
+    if (v.size() != 3)
+        throw std::runtime_error(std::string(pVerb) + ": --" + pName + " expects 'x,y,z'");
+    return {v[0], v[1], v[2]};
+}
+
+void cli_sweep_report(const meshioplusplus::SweepResult& rR, const cli_parsed& rP, bool Revolve) {
+    if (has_flag(rP, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_cells", rR.mNumCells);
+        json.Field("num_hexahedra", rR.mNumHexahedra);
+        json.Field("num_wedges", rR.mNumWedges);
+        json.Field("num_pyramids", rR.mNumPyramids);
+        json.Field("num_tetrahedra", rR.mNumTetrahedra);
+        json.Field("num_quads", rR.mNumQuads);
+        json.Field("num_triangles", rR.mNumTriangles);
+        json.Field("num_flipped", rR.mNumFlipped);
+        if (Revolve)
+            json.Field("num_on_axis", rR.mNumOnAxis);
+        json.Field("min_scaled_jacobian", rR.mMinScaledJacobian);
+        if (Revolve)
+            json.Field("full", rR.mFull);
+        json.Key("warnings");
+        json.BeginArray();
+        for (const std::string& w : rR.mWarnings)
+            json.String(w);
+        json.EndArray();
+        json.EndObject();
+        std::cout << "\n";
+    } else if (!has_flag(rP, "quiet")) {
+        char sj[32];
+        meshioplusplus::detail::snprintf_c(sj, sizeof(sj), "%.3f", rR.mMinScaledJacobian);
+        std::cout << rR.mNumCells << " cells (" << rR.mNumHexahedra << " hexahedra, "
+                  << rR.mNumWedges << " wedges, " << rR.mNumPyramids << " pyramids, "
+                  << rR.mNumTetrahedra << " tetrahedra, " << rR.mNumQuads << " quads, "
+                  << rR.mNumTriangles << " triangles), " << rR.mNumFlipped
+                  << " profile cells turned";
+        if (Revolve)
+            std::cout << ", " << rR.mNumOnAxis << " points on the axis"
+                      << (rR.mFull ? ", a full turn" : "");
+        std::cout << "; least scaled Jacobian " << sj << "\n";
+        for (const std::string& w : rR.mWarnings)
+            std::cerr << "warning: " << w << "\n";
+    }
+}
+
+int cmd_extrude(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"direction", {}, true},
+                                  {"num-layers", {}, true},
+                                  {"ratio", {}, true},
+                                  {"offsets", {}, true},
+                                  {"record-layers", {}, false},
+                                  {"max-cells", {}, true},
+                                  {"json", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("extrude requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::ExtrudeOptions o;
+    o.mDirection = cli_vec3(p, "direction", "extrude", o.mDirection);
+    if (has_opt(p, "num-layers"))
+        o.mNumLayers = std::stoi(opt_value(p, "num-layers"));
+    if (has_opt(p, "ratio"))
+        o.mRatio = meshioplusplus::detail::stod_c(opt_value(p, "ratio"));
+    if (has_opt(p, "offsets"))
+        o.mOffsets = parse_doubles(opt_value(p, "offsets"));
+    o.mRecordLayers = has_flag(p, "record-layers");
+    if (has_opt(p, "max-cells"))
+        o.mMaxCells = std::stoll(opt_value(p, "max-cells"));
+    auto r = meshioplusplus::extrude(mesh, o);
+    cli_sweep_report(r, p, false);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_revolve(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"axis", {}, true},
+                                  {"axis-point", {}, true},
+                                  {"angle", {}, true},
+                                  {"num-layers", {}, true},
+                                  {"tolerance", {}, true},
+                                  {"record-layers", {}, false},
+                                  {"max-cells", {}, true},
+                                  {"json", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("revolve requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::RevolveOptions o;
+    o.mAxis = cli_vec3(p, "axis", "revolve", o.mAxis);
+    o.mAxisPoint = cli_vec3(p, "axis-point", "revolve", o.mAxisPoint);
+    if (has_opt(p, "angle"))
+        o.mAngle = meshioplusplus::detail::stod_c(opt_value(p, "angle"));
+    if (has_opt(p, "num-layers"))
+        o.mNumLayers = std::stoi(opt_value(p, "num-layers"));
+    if (has_opt(p, "tolerance"))
+        o.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    o.mRecordLayers = has_flag(p, "record-layers");
+    if (has_opt(p, "max-cells"))
+        o.mMaxCells = std::stoll(opt_value(p, "max-cells"));
+    auto r = meshioplusplus::revolve(mesh, o);
+    cli_sweep_report(r, p, true);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_mirror(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"origin", {}, true},
+                                  {"normal", {}, true},
+                                  {"keep-original", {}, false},
+                                  {"no-weld", {}, false},
+                                  {"tolerance", {}, true},
+                                  {"reflect-data", {}, false},
+                                  {"json", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("mirror requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::MirrorOptions o;
+    o.mOrigin = cli_vec3(p, "origin", "mirror", o.mOrigin);
+    o.mNormal = cli_vec3(p, "normal", "mirror", o.mNormal);
+    o.mKeepOriginal = has_flag(p, "keep-original");
+    o.mWeld = !has_flag(p, "no-weld");
+    if (has_opt(p, "tolerance"))
+        o.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    o.mReflectVectorData = has_flag(p, "reflect-data");
+    auto r = meshioplusplus::mirror(mesh, o);
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_flipped_cells", r.mNumFlippedCells);
+        json.Field("num_points_on_plane", r.mNumPointsOnPlane);
+        json.Field("num_dropped_cells", r.mNumDroppedCells);
+        json.Field("num_dropped_sides", r.mNumDroppedSides);
+        json.Key("warnings");
+        json.BeginArray();
+        for (const std::string& w : r.mWarnings)
+            json.String(w);
+        json.EndArray();
+        json.EndObject();
+        std::cout << "\n";
+    } else if (!has_flag(p, "quiet")) {
+        std::cout << r.mNumFlippedCells << " cells reflected, " << r.mNumPointsOnPlane
+                  << " points on the plane, " << r.mNumDroppedCells << " cells and "
+                  << r.mNumDroppedSides << " side entries dropped\n";
+        for (const std::string& w : r.mWarnings)
+            std::cerr << "warning: " << w << "\n";
     }
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     return 0;
@@ -7561,6 +7962,8 @@ int main(int argc, char** argv) {
             return cmd_curvature(rest);
         if (cmd == "normals")
             return cmd_normals(rest);
+        if (cmd == "check-conformity")
+            return cmd_check_conformity(rest);
         if (cmd == "check")
             return cmd_check(rest);
         if (cmd == "feature-edges")
@@ -7623,6 +8026,12 @@ int main(int argc, char** argv) {
             return cmd_project_to_cad(rest);
         if (cmd == "boundary-layer")
             return cmd_boundary_layer(rest);
+        if (cmd == "extrude")
+            return cmd_extrude(rest);
+        if (cmd == "revolve")
+            return cmd_revolve(rest);
+        if (cmd == "mirror")
+            return cmd_mirror(rest);
         if (cmd == "tetrahedralize")
             return cmd_tetrahedralize(rest);
         if (cmd == "sdf")

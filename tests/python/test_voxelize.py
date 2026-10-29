@@ -631,6 +631,79 @@ def test_pixels_refuse_an_open_polyline_for_inside():
         voxelize(_circle_polyline(close=False), resolution=(8, 8), fill="inside")
 
 
+@pytest.mark.parametrize("twin", [False, True])
+def test_pixels_inside_ignore_how_the_loops_segments_are_directed(twin):
+    # A slice's segments can run both ways round one loop; the winding number
+    # needs them directed one way, so the loop is oriented before the fill.
+    from meshioplusplus._voxelize import _voxelize_py
+
+    def run(mesh):
+        if twin:
+            args = (mesh, [32, 32, 0], None, None, 0.1, 0.0, "inside", True, 20000000)
+            return _voxelize_py(*args, "pseudonormal", "auto")[1]["num_occupied"]
+        return voxelize(
+            mesh, resolution=(32, 32), padding=0.1, fill="inside", return_report=True
+        )[1]["num_occupied"]
+
+    good = _circle_polyline(n=64)
+    lines = np.asarray(good.cells[0].data).copy()
+    lines[1::3] = lines[1::3, ::-1]
+    mixed = meshioplusplus.Mesh(good.points, [("line", lines)])
+    want = run(good)
+    assert want > 0
+    assert run(mixed) == want
+
+
+def _wobbly_xz_circle(n=128):
+    # A circle in the xz plane whose y wobbles by 1e-3: no axis has zero
+    # extent, so "auto" falls back to xy and sees a sliver.
+    t = 2 * np.pi * np.arange(n) / n
+    pts = np.column_stack([np.cos(t), 1e-3 * np.sin(3 * t), np.sin(t)])
+    lines = np.column_stack([np.arange(n), (np.arange(n) + 1) % n])
+    return meshioplusplus.Mesh(pts, [("line", lines.astype(np.int64))])
+
+
+def test_pixels_take_an_explicit_plane():
+    loop = _wobbly_xz_circle()
+    mesh, rep = voxelize(
+        loop,
+        resolution=(64, 64),
+        padding=0.1,
+        fill="inside",
+        plane="xz",
+        return_report=True,
+    )
+    cell = rep["spacing"][0] * rep["spacing"][1]
+    assert abs(rep["num_occupied"] * cell - np.pi) < 0.1
+    assert np.all(np.asarray(mesh.points)[:, 1] == np.asarray(mesh.points)[0, 1])
+    _, auto = voxelize(
+        loop, resolution=(64, 64), padding=0.1, fill="inside", return_report=True
+    )
+    assert auto["num_occupied"] < rep["num_occupied"] / 4
+
+
+def test_unknown_plane_is_refused():
+    with pytest.raises(ValueError, match="unknown plane 'uv'"):
+        voxelize(_circle_polyline(), resolution=(8, 8), plane="uv")
+
+
+@pytest.mark.parametrize("plane", ["auto", "xz", "yz"])
+def test_pixels_plane_cpp_matches_python(plane):
+    core = pytest.importorskip("meshioplusplus._core")
+    from meshioplusplus._voxelize import _voxelize_py
+
+    mesh = _wobbly_xz_circle()
+    args = (mesh, [16, 12, 0], None, None, 0.05, 0.0, "inside", True, 20000000)
+    got = core.voxelize(*args, "pseudonormal", "off", plane)
+    want, report = _voxelize_py(*args, "pseudonormal", plane)
+    assert got["num_occupied"] == report["num_occupied"]
+    assert got["origin"] == report["origin"]
+    assert np.asarray(got["mesh"].points).tobytes() == np.asarray(want.points).tobytes()
+    assert len(got["mesh"].cells) == len(want.cells)
+    for a, b in zip(got["mesh"].cells, want.cells):
+        assert np.asarray(a.data).tobytes() == np.asarray(b.data).tobytes()
+
+
 @pytest.mark.parametrize("fill", ["all", "surface", "inside"])
 def test_pixels_cpp_matches_python(fill):
     core = pytest.importorskip("meshioplusplus._core")

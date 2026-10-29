@@ -511,6 +511,44 @@ function error_size(m::Mesh; target_error::Real, error_array::AbstractString="er
      max_size=Float64(r.max_size))
 end
 
+const _CONFORMITY_MODES = ("conforming", "weld", "proximity")
+
+"""
+    check_conformity(mesh; tolerance=1e-9, attach_flags=true)
+        -> (; mesh, dimension, num_hanging_nodes, num_t_junctions, num_partial_overlaps,
+              num_unwelded_facets, num_boundary_facets, num_non_manifold_facets,
+              conforming, interface_mode, warnings)
+
+Whether `mesh` is conforming (roadmap 3.2.1): its volume cells (else its 2-D
+cells) are checked for hanging nodes (a point on a volume cell's face or edge
+that the cell does not use), T-junctions (the same on a 2-D cell's edge), and
+partly overlapping or unwelded pairs of unmatched facets. `tolerance` is a
+fraction of the examined facets' bounding-box diagonal. With `attach_flags` the
+mesh carries the `conformity:hanging` point data (1 hanging node, 2 T-junction).
+`interface_mode` is `"conforming"`, `"weld"` or `"proximity"`: the
+[`find_interface`](@ref) mode that suits the mesh. See `doc/check_conformity.md`.
+"""
+function check_conformity(m::Mesh; tolerance::Real=1e-9, attach_flags::Bool=true)
+    report = Ref{_CConformityReport}()
+    opts = _CConformityOpts(Cdouble(tolerance), attach_flags ? Int32(1) : Int32(0), Int32(0),
+                            (0, 0, 0, 0))
+    ptr = ccall(_sym(:mio_check_conformity), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CConformityOpts}, Ref{_CConformityReport}),
+                _handle(m), Ref(opts), report)
+    out = Mesh(_check_ptr(ptr))
+    text = _getstring((buf, n) -> ccall(_sym(:mio_check_conformity_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    r = report[]
+    (mesh=out, dimension=Int(r.dimension), num_hanging_nodes=Int(r.num_hanging_nodes),
+     num_t_junctions=Int(r.num_t_junctions), num_partial_overlaps=Int(r.num_partial_overlaps),
+     num_unwelded_facets=Int(r.num_unwelded_facets),
+     num_boundary_facets=Int(r.num_boundary_facets),
+     num_non_manifold_facets=Int(r.num_non_manifold_facets), conforming=r.conforming != 0,
+     interface_mode=0 <= r.interface_mode < length(_CONFORMITY_MODES) ?
+                    _CONFORMITY_MODES[r.interface_mode + 1] : string(r.interface_mode),
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
 """
     remesh(mesh, num_clusters; subdivide=-1, subsample_ratio=10.0,
            max_subdivide=4, max_iterations=100, max_repair_passes=10,
@@ -761,6 +799,111 @@ function boundary_layer(mesh::Mesh; first_height::Real, num_layers::Integer=3,
      min_scaled_jacobian=Float64(r.min_scaled_jacobian),
      min_thickness=Float64(r.min_thickness), max_thickness=Float64(r.max_thickness),
      cap_closed=r.cap_closed != 0)
+end
+
+_vec3(v, name) = length(v) == 3 ? (Cdouble(v[1]), Cdouble(v[2]), Cdouble(v[3])) :
+                 throw(ArgumentError("meshio++: $name must have 3 entries"))
+
+function _sweep_result(out::Mesh, r::_CSweepReport, text::AbstractString)
+    (mesh=out, num_cells=Int(r.num_cells), num_hexahedra=Int(r.num_hexahedra),
+     num_wedges=Int(r.num_wedges), num_pyramids=Int(r.num_pyramids),
+     num_tetrahedra=Int(r.num_tetrahedra), num_quads=Int(r.num_quads),
+     num_triangles=Int(r.num_triangles), num_flipped=Int(r.num_flipped),
+     num_on_axis=Int(r.num_on_axis), min_scaled_jacobian=Float64(r.min_scaled_jacobian),
+     full=r.full != 0, warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
+"""
+    extrude(mesh; direction=(0.0, 0.0, 1.0), num_layers=1, ratio=1.0, offsets=nothing,
+            record_layers=false, max_cells=20_000_000)
+        -> (; mesh, num_cells, num_hexahedra, num_wedges, num_pyramids, num_tetrahedra,
+              num_quads, num_triangles, num_flipped, num_on_axis, min_scaled_jacobian,
+              full, warnings)
+
+Sweep a surface's triangles and quads into wedges and hexahedra (or, with no
+2-D cells, its lines into quads) along `direction`, the whole displacement, in
+`num_layers` layers spaced uniformly, by the geometric `ratio`, or at the
+explicit `offsets` (fractions, increasing, ending at 1) (roadmap 3.1.2). The
+result holds the swept cells only, with `Side` regions `bottom`, `top` and
+`side`. See `doc/extrude.md`.
+"""
+function extrude(m::Mesh; direction=(0.0, 0.0, 1.0), num_layers::Integer=1, ratio::Real=1.0,
+                 offsets=nothing, record_layers::Bool=false, max_cells::Integer=20_000_000)
+    offs = offsets === nothing ? Cdouble[] : Cdouble.(collect(offsets))
+    report = Ref{_CSweepReport}()
+    ptr = GC.@preserve offs begin
+        opts = _CExtrudeOpts(_vec3(direction, "extrude: direction"), Cdouble(ratio),
+                             isempty(offs) ? Ptr{Cdouble}(C_NULL) : pointer(offs),
+                             Int64(length(offs)), Int64(max_cells), Int32(num_layers),
+                             Int32(record_layers), (0, 0, 0, 0))
+        ccall(_sym(:mio_extrude), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CExtrudeOpts}, Ref{_CSweepReport}),
+              _handle(m), Ref(opts), report)
+    end
+    out = Mesh(_check_ptr(ptr))
+    text = _getstring((buf, n) -> ccall(_sym(:mio_extrude_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    _sweep_result(out, report[], text)
+end
+
+"""
+    revolve(mesh; axis=(0.0, 1.0, 0.0), axis_point=(0.0, 0.0, 0.0), angle=360.0,
+            num_layers=16, tolerance=1e-9, record_layers=false, max_cells=20_000_000)
+        -> the named tuple of [`extrude`](@ref)
+
+Sweep a surface (or a curve) around the axis through `axis_point` along `axis`
+by `angle` degrees (right-hand rule; 360 closes the turn) in `num_layers` steps
+(roadmap 3.1.3). Points within `tolerance` (a fraction of the bounding-box
+diagonal) of the axis stay put, so the cells around them collapse into
+pyramids, tetrahedra and wedges. `Side` regions `start`, `end` (a partial turn)
+and `side`. See `doc/extrude.md`.
+"""
+function revolve(m::Mesh; axis=(0.0, 1.0, 0.0), axis_point=(0.0, 0.0, 0.0), angle::Real=360.0,
+                 num_layers::Integer=16, tolerance::Real=1e-9, record_layers::Bool=false,
+                 max_cells::Integer=20_000_000)
+    opts = _CRevolveOpts(_vec3(axis_point, "revolve: axis_point"), _vec3(axis, "revolve: axis"),
+                         Cdouble(angle), Cdouble(tolerance), Int64(max_cells),
+                         Int32(num_layers), Int32(record_layers), (0, 0, 0, 0))
+    report = Ref{_CSweepReport}()
+    ptr = ccall(_sym(:mio_revolve), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CRevolveOpts}, Ref{_CSweepReport}),
+                _handle(m), Ref(opts), report)
+    out = Mesh(_check_ptr(ptr))
+    text = _getstring((buf, n) -> ccall(_sym(:mio_revolve_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    _sweep_result(out, report[], text)
+end
+
+"""
+    mirror(mesh; origin=(0.0, 0.0, 0.0), normal=(1.0, 0.0, 0.0), keep_original=false,
+           weld=true, tolerance=1e-9, reflect_vector_data=false)
+        -> (; mesh, num_flipped_cells, num_points_on_plane, num_dropped_cells,
+              num_dropped_sides, warnings)
+
+Reflect `mesh` across the plane through `origin` with `normal`, every cell
+right side out (roadmap 3.2.5): nodes permuted, `Side` region entries moved to
+their facets' new numbers. With `keep_original` the input followed by its
+image, the points on the plane shared when `weld`; `reflect_vector_data`
+reflects float vector and tensor data. See `doc/mirror.md`.
+"""
+function mirror(m::Mesh; origin=(0.0, 0.0, 0.0), normal=(1.0, 0.0, 0.0),
+                keep_original::Bool=false, weld::Bool=true, tolerance::Real=1e-9,
+                reflect_vector_data::Bool=false)
+    opts = _CMirrorOpts(_vec3(origin, "mirror: origin"), _vec3(normal, "mirror: normal"),
+                        Cdouble(tolerance), Int32(keep_original), Int32(weld),
+                        Int32(reflect_vector_data), Int32(0), (0, 0, 0, 0))
+    report = Ref{_CMirrorReport}()
+    ptr = ccall(_sym(:mio_mirror), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CMirrorOpts}, Ref{_CMirrorReport}),
+                _handle(m), Ref(opts), report)
+    out = Mesh(_check_ptr(ptr))
+    text = _getstring((buf, n) -> ccall(_sym(:mio_mirror_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    r = report[]
+    (mesh=out, num_flipped_cells=Int(r.num_flipped_cells),
+     num_points_on_plane=Int(r.num_points_on_plane), num_dropped_cells=Int(r.num_dropped_cells),
+     num_dropped_sides=Int(r.num_dropped_sides),
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
 end
 
 """
@@ -1860,7 +2003,8 @@ const _GEN_SPLITS = Dict("zigzag" => Int32(0), "up" => Int32(1), "down" => Int32
 
 function _gen_opts(; counts=(8, 8, 8), size=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0.0),
                    radius=1.0, height=1.0, radius2=0.5, angle=2pi, max_cells=20_000_000,
-                   cell_type="", split="zigzag", order=1)
+                   cell_type="", split="zigzag", order=1, num_twists=1, complete=false,
+                   ratio=1.0, seed=0)
     c = Int64[Int64(v) for v in counts]
     length(c) <= 3 || throw(ArgumentError("meshio++: at most three counts"))
     append!(c, fill(Int64(1), 3 - length(c)))
@@ -1873,8 +2017,8 @@ function _gen_opts(; counts=(8, 8, 8), size=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0
     _CGenOpts((c[1], c[2], c[3]), (sz[1], sz[2], sz[3]), (o[1], o[2], o[3]),
               Cdouble(radius), Cdouble(height), Int64(max_cells),
               _code(_GEN_CELLS, cell_type, "cell type"), _code(_GEN_SPLITS, split, "split"),
-              Int32(order), Int32(0), Cdouble(radius2), Cdouble(angle),
-              ntuple(_ -> Int64(0), 4))
+              Int32(order), Int32(0), Cdouble(radius2), Cdouble(angle), Int32(num_twists),
+              Int32(complete ? 1 : 0), Cdouble(ratio), UInt64(seed), (Int64(0),))
 end
 
 function _generate(sym::Symbol; kwargs...)
@@ -1885,137 +2029,137 @@ end
 
 """
     rectangle(; dims=(1, 1), size=(1.0, 1.0), origin=(0.0, 0.0, 0.0), cell_type="quad",
-              split="zigzag", order=1, max_cells=20_000_000) -> Mesh
+              split="zigzag", order=1, max_cells=20_000_000, complete=false) -> Mesh
 
 A regular 2-D grid of quads or triangles at `z = origin[3]`, points x fastest. `split`
 (`"zigzag"`, `"up"`, `"down"`, `"center"`) lays out the triangles; `order=2` gives
 `quad8` / `triangle6` cells. Side regions `xmin`, `xmax`, `ymin`, `ymax`.
 """
 rectangle(; dims=(1, 1), size=(1.0, 1.0), origin=(0.0, 0.0, 0.0), cell_type="quad",
-          split="zigzag", order=1, max_cells=20_000_000) =
+          split="zigzag", order=1, max_cells=20_000_000, complete=false) =
     _generate(:mio_rectangle; counts=dims, size=size, origin=origin, cell_type=cell_type,
-              split=split, order=order, max_cells=max_cells)
+              split=split, order=order, max_cells=max_cells, complete=complete)
 
 """
     box(; dims=(1, 1, 1), size=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0.0),
-        cell_type="hexahedron", order=1, max_cells=20_000_000) -> Mesh
+        cell_type="hexahedron", order=1, max_cells=20_000_000, complete=false) -> Mesh
 
 A regular 3-D grid of hexahedra, tetrahedra (six Kuhn tetrahedra per cell) or wedges.
 Side regions `xmin` ... `zmax`.
 """
 box(; dims=(1, 1, 1), size=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0.0), cell_type="hexahedron",
-    order=1, max_cells=20_000_000) =
+    order=1, max_cells=20_000_000, complete=false) =
     _generate(:mio_box; counts=dims, size=size, origin=origin, cell_type=cell_type,
-              order=order, max_cells=max_cells)
+              order=order, max_cells=max_cells, complete=complete)
 
 """
     disk(; radius=1.0, n=8, center=(0.0, 0.0, 0.0), cell_type="quad", order=1,
-         max_cells=20_000_000) -> Mesh
+         max_cells=20_000_000, complete=false) -> Mesh
 
 A disk of `n x n` quads (squircle map) or `n` rings of triangles. Side region `rim`.
 """
 disk(; radius=1.0, n=8, center=(0.0, 0.0, 0.0), cell_type="quad", order=1,
-     max_cells=20_000_000) =
+     max_cells=20_000_000, complete=false) =
     _generate(:mio_disk; radius=radius, counts=(n,), origin=center, cell_type=cell_type,
-              order=order, max_cells=max_cells)
+              order=order, max_cells=max_cells, complete=complete)
 
 """
     uv_sphere(; radius=1.0, nu=16, nv=8, center=(0.0, 0.0, 0.0), cell_type="triangle",
-              order=1, max_cells=20_000_000) -> Mesh
+              order=1, max_cells=20_000_000, complete=false) -> Mesh
 
 A latitude / longitude sphere surface, oriented outward; `cell_type="quad"` gives quads
 between the rings and triangle caps.
 """
 uv_sphere(; radius=1.0, nu=16, nv=8, center=(0.0, 0.0, 0.0), cell_type="triangle", order=1,
-          max_cells=20_000_000) =
+          max_cells=20_000_000, complete=false) =
     _generate(:mio_uv_sphere; radius=radius, counts=(nu, nv), origin=center,
-              cell_type=cell_type, order=order, max_cells=max_cells)
+              cell_type=cell_type, order=order, max_cells=max_cells, complete=complete)
 
 """
     icosa_sphere(; radius=1.0, subdivisions=2, center=(0.0, 0.0, 0.0), order=1,
-                 max_cells=20_000_000) -> Mesh
+                 max_cells=20_000_000, complete=false) -> Mesh
 
 A sphere surface of `20 * 4^subdivisions` triangles, oriented outward.
 """
 icosa_sphere(; radius=1.0, subdivisions=2, center=(0.0, 0.0, 0.0), order=1,
-             max_cells=20_000_000) =
+             max_cells=20_000_000, complete=false) =
     _generate(:mio_icosa_sphere; radius=radius, counts=(subdivisions,), origin=center,
-              order=order, max_cells=max_cells)
+              order=order, max_cells=max_cells, complete=complete)
 
 """
     cylinder(; radius=1.0, height=1.0, nxy=8, nz=8, center=(0.0, 0.0, 0.0),
-             cell_type="hexahedron", order=1, max_cells=20_000_000) -> Mesh
+             cell_type="hexahedron", order=1, max_cells=20_000_000, complete=false) -> Mesh
 
 A solid cylinder along z, hexahedra or wedges. Side regions `side`, `top`, `bottom`.
 """
 cylinder(; radius=1.0, height=1.0, nxy=8, nz=8, center=(0.0, 0.0, 0.0),
-         cell_type="hexahedron", order=1, max_cells=20_000_000) =
+         cell_type="hexahedron", order=1, max_cells=20_000_000, complete=false) =
     _generate(:mio_cylinder; radius=radius, height=height, counts=(nxy, nz), origin=center,
-              cell_type=cell_type, order=order, max_cells=max_cells)
+              cell_type=cell_type, order=order, max_cells=max_cells, complete=complete)
 
 """
     reference_triangle(; n=4, size=(1.0, 1.0), origin=(0.0, 0.0, 0.0), order=1,
-                       max_cells=20_000_000) -> Mesh
+                       max_cells=20_000_000, complete=false) -> Mesh
 
 The reference triangle `(0,0) (1,0) (0,1)`, scaled by `size` and refined into `n^2`
 triangles in barycentric lattice order. Side regions `ymin`, `xmin`, `hypotenuse`.
 """
 reference_triangle(; n=4, size=(1.0, 1.0), origin=(0.0, 0.0, 0.0), order=1,
-                   max_cells=20_000_000) =
+                   max_cells=20_000_000, complete=false) =
     _generate(:mio_reference_triangle; counts=(n,), size=size, origin=origin, order=order,
-              max_cells=max_cells)
+              max_cells=max_cells, complete=complete)
 
 """
     ngon(; sides=6, radius=1.0, rings=1, center=(0.0, 0.0, 0.0), order=1,
-         max_cells=20_000_000) -> Mesh
+         max_cells=20_000_000, complete=false) -> Mesh
 
 A regular polygon fanned from its centre (`rings=1`), or refined into `rings` rings of
 triangles. Side region `rim`.
 """
 ngon(; sides=6, radius=1.0, rings=1, center=(0.0, 0.0, 0.0), order=1,
-     max_cells=20_000_000) =
+     max_cells=20_000_000, complete=false) =
     _generate(:mio_ngon; radius=radius, counts=(sides, rings), origin=center, order=order,
-              max_cells=max_cells)
+              max_cells=max_cells, complete=complete)
 
 """
     annulus(; inner_radius=0.5, outer_radius=1.0, ntheta=16, nr=4, angle=2pi,
             center=(0.0, 0.0, 0.0), cell_type="quad", order=1,
-            max_cells=20_000_000) -> Mesh
+            max_cells=20_000_000, complete=false) -> Mesh
 
 An annulus, or a sector of `angle` radians whose two end rays stay separate node chains
 (the seam pair `match_periodic_nodes` links). Side regions `inner`, `outer` and, for a
 sector, `start` and `end`.
 """
 annulus(; inner_radius=0.5, outer_radius=1.0, ntheta=16, nr=4, angle=2pi,
-        center=(0.0, 0.0, 0.0), cell_type="quad", order=1, max_cells=20_000_000) =
+        center=(0.0, 0.0, 0.0), cell_type="quad", order=1, max_cells=20_000_000, complete=false) =
     _generate(:mio_annulus; radius=outer_radius, radius2=inner_radius,
               counts=(ntheta, nr), angle=angle, origin=center, cell_type=cell_type,
-              order=order, max_cells=max_cells)
+              order=order, max_cells=max_cells, complete=complete)
 
 """
     lshape(; n=4, size=2.0, center=(0.0, 0.0, 0.0), cell_type="quad", order=1,
-           max_cells=20_000_000) -> Mesh
+           max_cells=20_000_000, complete=false) -> Mesh
 
 The square of side `size` minus its fourth quadrant (`x > 0`, `y < 0`), the re-entrant
 corner at `center`. Side regions `xmin`, `xmax`, `ymin`, `ymax`, `notch_x`, `notch_y`.
 """
 lshape(; n=4, size=2.0, center=(0.0, 0.0, 0.0), cell_type="quad", order=1,
-       max_cells=20_000_000) =
+       max_cells=20_000_000, complete=false) =
     _generate(:mio_lshape; counts=(n,), size=(size, size, size), origin=center,
-              cell_type=cell_type, order=order, max_cells=max_cells)
+              cell_type=cell_type, order=order, max_cells=max_cells, complete=complete)
 
 """
     plate_with_hole(; radius=0.25, size=1.0, nt=8, nr=4, center=(0.0, 0.0, 0.0),
-                    cell_type="quad", order=1, max_cells=20_000_000) -> Mesh
+                    cell_type="quad", order=1, max_cells=20_000_000, complete=false) -> Mesh
 
 A square plate of side `size` around a circular hole, in four quad blocks of `nt x nr`
 cells. Side regions `hole`, `xmin`, `xmax`, `ymin`, `ymax`.
 """
 plate_with_hole(; radius=0.25, size=1.0, nt=8, nr=4, center=(0.0, 0.0, 0.0),
-                cell_type="quad", order=1, max_cells=20_000_000) =
+                cell_type="quad", order=1, max_cells=20_000_000, complete=false) =
     _generate(:mio_plate_with_hole; radius=radius, size=(size, size, size),
               counts=(nt, nr), origin=center, cell_type=cell_type, order=order,
-              max_cells=max_cells)
+              max_cells=max_cells, complete=complete)
 
 """
     honeycomb(; dims=(4, 4), edge=1.0, origin=(0.0, 0.0, 0.0), max_cells=20_000_000) -> Mesh
@@ -2025,6 +2169,263 @@ A tiling of pointy-top hexagons as one ragged `polygon` block. Side region `boun
 honeycomb(; dims=(4, 4), edge=1.0, origin=(0.0, 0.0, 0.0), max_cells=20_000_000) =
     _generate(:mio_honeycomb; counts=dims, size=(edge, edge, edge), origin=origin,
               max_cells=max_cells)
+
+# --- curves and point clouds ---
+
+"""
+    line(; n=8, start=(0.0, 0.0, 0.0), stop=(1.0, 0.0, 0.0), order=1,
+         max_cells=20_000_000, complete=false) -> Mesh
+
+A straight segment of `n` `line` cells from `start` to `stop`. Point regions `start`
+and `end`.
+"""
+line(; n=8, start=(0.0, 0.0, 0.0), stop=(1.0, 0.0, 0.0), order=1, max_cells=20_000_000,
+     complete=false) =
+    _generate(:mio_line; counts=(n,), origin=start, size=stop, order=order,
+              max_cells=max_cells, complete=complete)
+
+"""
+    circle(; radius=1.0, n=16, center=(0.0, 0.0, 0.0), order=1, max_cells=20_000_000,
+           complete=false) -> Mesh
+
+A closed polyline of `n` `line` cells on a circle in the `z = center[3]` plane.
+"""
+circle(; radius=1.0, n=16, center=(0.0, 0.0, 0.0), order=1, max_cells=20_000_000,
+       complete=false) =
+    _generate(:mio_circle; radius=radius, counts=(n,), origin=center, order=order,
+              max_cells=max_cells, complete=complete)
+
+"""
+    helix(; radius=1.0, pitch=1.0, turns=2.0, n=32, center=(0.0, 0.0, 0.0), order=1,
+          max_cells=20_000_000, complete=false) -> Mesh
+
+A helix of `n` `line` cells around the z axis, rising `pitch` per turn. Point regions
+`start` and `end`.
+"""
+helix(; radius=1.0, pitch=1.0, turns=2.0, n=32, center=(0.0, 0.0, 0.0), order=1,
+      max_cells=20_000_000, complete=false) =
+    _generate(:mio_helix; radius=radius, height=pitch, angle=2pi * turns, counts=(n,),
+              origin=center, order=order, max_cells=max_cells, complete=complete)
+
+"""
+    sphere_points(; n=100, radius=1.0, center=(0.0, 0.0, 0.0), max_cells=20_000_000) -> Mesh
+
+`n` points on a sphere on a Fibonacci lattice, as `vertex` cells.
+"""
+sphere_points(; n=100, radius=1.0, center=(0.0, 0.0, 0.0), max_cells=20_000_000) =
+    _generate(:mio_sphere_points; counts=(n,), radius=radius, origin=center,
+              max_cells=max_cells)
+
+"""
+    box_points(; n=100, size=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0.0), seed=0,
+               max_cells=20_000_000) -> Mesh
+
+`n` points drawn uniformly in a box from splitmix64 seeded with `seed`, as `vertex`
+cells: the same cloud on every platform and binding.
+"""
+box_points(; n=100, size=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0.0), seed=0,
+           max_cells=20_000_000) =
+    _generate(:mio_box_points; counts=(n,), size=size, origin=origin, seed=seed,
+              max_cells=max_cells)
+
+# --- surfaces ---
+
+"""
+    tetra_sphere(; radius=1.0, subdivisions=3, center=(0.0, 0.0, 0.0), order=1,
+                 max_cells=20_000_000, complete=false) -> Mesh
+
+A sphere surface from a regular tetrahedron split in four `subdivisions` times.
+"""
+tetra_sphere(; radius=1.0, subdivisions=3, center=(0.0, 0.0, 0.0), order=1,
+             max_cells=20_000_000, complete=false) =
+    _generate(:mio_tetra_sphere; radius=radius, counts=(subdivisions,), origin=center,
+              order=order, max_cells=max_cells, complete=complete)
+
+"""
+    octa_sphere(; radius=1.0, subdivisions=2, center=(0.0, 0.0, 0.0), order=1,
+                max_cells=20_000_000, complete=false) -> Mesh
+
+A sphere surface from a regular octahedron split in four `subdivisions` times.
+"""
+octa_sphere(; radius=1.0, subdivisions=2, center=(0.0, 0.0, 0.0), order=1,
+            max_cells=20_000_000, complete=false) =
+    _generate(:mio_octa_sphere; radius=radius, counts=(subdivisions,), origin=center,
+              order=order, max_cells=max_cells, complete=complete)
+
+"""
+    cube_sphere(; radius=1.0, n=4, center=(0.0, 0.0, 0.0), cell_type="quad", order=1,
+                max_cells=20_000_000, complete=false) -> Mesh
+
+A sphere surface from a cube's six faces of `n x n` cells pushed onto the sphere.
+"""
+cube_sphere(; radius=1.0, n=4, center=(0.0, 0.0, 0.0), cell_type="quad", order=1,
+            max_cells=20_000_000, complete=false) =
+    _generate(:mio_cube_sphere; radius=radius, counts=(n,), origin=center,
+              cell_type=cell_type, order=order, max_cells=max_cells, complete=complete)
+
+"""
+    geo_sphere(; radius=1.0, n=4, center=(0.0, 0.0, 0.0), order=1, max_cells=20_000_000,
+               complete=false) -> Mesh
+
+A geodesic sphere of frequency `n` (`20 n^2` triangles).
+"""
+geo_sphere(; radius=1.0, n=4, center=(0.0, 0.0, 0.0), order=1, max_cells=20_000_000,
+           complete=false) =
+    _generate(:mio_geo_sphere; radius=radius, counts=(n,), origin=center, order=order,
+              max_cells=max_cells, complete=complete)
+
+"""
+    torus(; major_radius=1.0, minor_radius=0.25, nu=32, nv=16, center=(0.0, 0.0, 0.0),
+          cell_type="quad", order=1, max_cells=20_000_000, complete=false) -> Mesh
+
+A torus around the z axis, periodic both ways and welded.
+"""
+torus(; major_radius=1.0, minor_radius=0.25, nu=32, nv=16, center=(0.0, 0.0, 0.0),
+      cell_type="quad", order=1, max_cells=20_000_000, complete=false) =
+    _generate(:mio_torus; radius=major_radius, radius2=minor_radius, counts=(nu, nv),
+              origin=center, cell_type=cell_type, order=order, max_cells=max_cells,
+              complete=complete)
+
+"""
+    moebius(; radius=1.0, width=0.5, nu=32, nv=4, num_twists=1, center=(0.0, 0.0, 0.0),
+            cell_type="quad", order=1, max_cells=20_000_000, complete=false) -> Mesh
+
+A Moebius band with `num_twists` half-twists (odd: non-orientable). Side region
+`boundary`.
+"""
+moebius(; radius=1.0, width=0.5, nu=32, nv=4, num_twists=1, center=(0.0, 0.0, 0.0),
+        cell_type="quad", order=1, max_cells=20_000_000, complete=false) =
+    _generate(:mio_moebius; radius=radius, radius2=width, counts=(nu, nv),
+              num_twists=num_twists, origin=center, cell_type=cell_type, order=order,
+              max_cells=max_cells, complete=complete)
+
+"""
+    tube(; radius=1.0, height=1.0, ntheta=16, nz=4, center=(0.0, 0.0, 0.0),
+         cell_type="quad", order=1, max_cells=20_000_000, complete=false) -> Mesh
+
+An open cylinder surface around the z axis. Side regions `bottom` and `top`.
+"""
+tube(; radius=1.0, height=1.0, ntheta=16, nz=4, center=(0.0, 0.0, 0.0), cell_type="quad",
+     order=1, max_cells=20_000_000, complete=false) =
+    _generate(:mio_tube; radius=radius, height=height, counts=(ntheta, nz), origin=center,
+              cell_type=cell_type, order=order, max_cells=max_cells, complete=complete)
+
+"""
+    cone(; radius=1.0, height=1.0, ntheta=16, nz=4, center=(0.0, 0.0, 0.0),
+         cell_type="quad", order=1, max_cells=20_000_000, complete=false) -> Mesh
+
+A closed cone surface with a sharp rim. Cell regions `side` and `base`.
+"""
+cone(; radius=1.0, height=1.0, ntheta=16, nz=4, center=(0.0, 0.0, 0.0), cell_type="quad",
+     order=1, max_cells=20_000_000, complete=false) =
+    _generate(:mio_cone; radius=radius, height=height, counts=(ntheta, nz), origin=center,
+              cell_type=cell_type, order=order, max_cells=max_cells, complete=complete)
+
+"""
+    capsule(; radius=0.5, height=1.0, ntheta=16, nz=4, ncap=4, center=(0.0, 0.0, 0.0),
+            cell_type="quad", order=1, max_cells=20_000_000, complete=false) -> Mesh
+
+A cylinder of length `height` closed by two hemispheres.
+"""
+capsule(; radius=0.5, height=1.0, ntheta=16, nz=4, ncap=4, center=(0.0, 0.0, 0.0),
+        cell_type="quad", order=1, max_cells=20_000_000, complete=false) =
+    _generate(:mio_capsule; radius=radius, height=height, counts=(ntheta, nz, ncap),
+              origin=center, cell_type=cell_type, order=order, max_cells=max_cells,
+              complete=complete)
+
+"""
+    box_surface(; dims=(1, 1, 1), size=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0.0),
+                cell_type="quad", order=1, max_cells=20_000_000, complete=false) -> Mesh
+
+The boundary of a box as a closed surface. Cell regions `xmin` ... `zmax`.
+"""
+box_surface(; dims=(1, 1, 1), size=(1.0, 1.0, 1.0), origin=(0.0, 0.0, 0.0),
+            cell_type="quad", order=1, max_cells=20_000_000, complete=false) =
+    _generate(:mio_box_surface; counts=dims, size=size, origin=origin, cell_type=cell_type,
+              order=order, max_cells=max_cells, complete=complete)
+
+const _PLATONIC_FACES = Dict("tetrahedron" => 4, "cube" => 6, "octahedron" => 8,
+                             "dodecahedron" => 12, "icosahedron" => 20)
+
+"""
+    platonic(name="icosahedron"; radius=1.0, center=(0.0, 0.0, 0.0),
+             max_cells=20_000_000) -> Mesh
+
+A platonic solid's surface, one cell per face: `"tetrahedron"`, `"cube"`,
+`"octahedron"`, `"dodecahedron"` (a `polygon` block) or `"icosahedron"`.
+"""
+function platonic(name::AbstractString="icosahedron"; radius=1.0, center=(0.0, 0.0, 0.0),
+                  max_cells=20_000_000)
+    haskey(_PLATONIC_FACES, name) ||
+        throw(ArgumentError("meshio++: platonic: unknown name '$name'"))
+    _generate(:mio_platonic; counts=(_PLATONIC_FACES[name],), radius=radius, origin=center,
+              max_cells=max_cells)
+end
+
+# --- solids ---
+
+"""
+    ball(; radius=1.0, n=4, center=(0.0, 0.0, 0.0), cell_type="hexahedron", order=1,
+         max_cells=20_000_000, complete=false) -> Mesh
+
+A ball by the seven-block butterfly, `n` cells from the centre to the surface. Side
+region `surface`.
+"""
+ball(; radius=1.0, n=4, center=(0.0, 0.0, 0.0), cell_type="hexahedron", order=1,
+     max_cells=20_000_000, complete=false) =
+    _generate(:mio_ball; radius=radius, counts=(n,), origin=center, cell_type=cell_type,
+              order=order, max_cells=max_cells, complete=complete)
+
+"""
+    spherical_shell(; inner_radius=0.5, outer_radius=1.0, n=4, nr=2, ratio=1.0,
+                    center=(0.0, 0.0, 0.0), order=1, max_cells=20_000_000,
+                    complete=false) -> Mesh
+
+A thick spherical shell of hexahedra, `ratio` grading the layers. Side regions `inner`
+and `outer`.
+"""
+spherical_shell(; inner_radius=0.5, outer_radius=1.0, n=4, nr=2, ratio=1.0,
+                center=(0.0, 0.0, 0.0), order=1, max_cells=20_000_000, complete=false) =
+    _generate(:mio_spherical_shell; radius=outer_radius, radius2=inner_radius,
+              counts=(n, nr), ratio=ratio, origin=center, order=order, max_cells=max_cells,
+              complete=complete)
+
+"""
+    pipe(; inner_radius=0.5, outer_radius=1.0, height=1.0, ntheta=16, nr=2, nz=4,
+         ratio=1.0, center=(0.0, 0.0, 0.0), order=1, max_cells=20_000_000,
+         complete=false) -> Mesh
+
+A thick-walled pipe of hexahedra. Side regions `inner`, `outer`, `bottom`, `top`.
+"""
+pipe(; inner_radius=0.5, outer_radius=1.0, height=1.0, ntheta=16, nr=2, nz=4, ratio=1.0,
+     center=(0.0, 0.0, 0.0), order=1, max_cells=20_000_000, complete=false) =
+    _generate(:mio_pipe; radius=outer_radius, radius2=inner_radius, height=height,
+              counts=(ntheta, nr, nz), ratio=ratio, origin=center, order=order,
+              max_cells=max_cells, complete=complete)
+
+"""
+    fichera(; n=2, size=2.0, center=(0.0, 0.0, 0.0), cell_type="hexahedron", order=1,
+            max_cells=20_000_000, complete=false) -> Mesh
+
+The cube of side `size` minus its positive octant. Side regions `xmin` ... `zmax`,
+`notch_x`, `notch_y`, `notch_z`.
+"""
+fichera(; n=2, size=2.0, center=(0.0, 0.0, 0.0), cell_type="hexahedron", order=1,
+        max_cells=20_000_000, complete=false) =
+    _generate(:mio_fichera; counts=(n,), size=(size, size, size), origin=center,
+              cell_type=cell_type, order=order, max_cells=max_cells, complete=complete)
+
+"""
+    solid_torus(; major_radius=1.0, minor_radius=0.25, n=4, nu=32, center=(0.0, 0.0, 0.0),
+                order=1, max_cells=20_000_000, complete=false) -> Mesh
+
+A solid torus of hexahedra, the squircle disk swept around the z axis. Side region
+`surface`.
+"""
+solid_torus(; major_radius=1.0, minor_radius=0.25, n=4, nu=32, center=(0.0, 0.0, 0.0),
+            order=1, max_cells=20_000_000, complete=false) =
+    _generate(:mio_solid_torus; radius=major_radius, radius2=minor_radius, counts=(n, nu),
+              origin=center, order=order, max_cells=max_cells, complete=complete)
 
 """
     reference_cells(types=String[]; pairs=false) -> Mesh
@@ -2044,17 +2445,20 @@ end
     voxelize(m; resolution=nothing, cell_size=nothing, bounds=nothing, padding=0.0,
              padding_relative=0.0, fill=:all, sign=:pseudonormal,
              watertight_check=:warn, attach_occupancy=false,
-             max_cells=20_000_000) -> NamedTuple
+             max_cells=20_000_000, plane=:auto) -> NamedTuple
 
 Build a regular grid around `m`. Exactly one of `resolution` and `cell_size`
-must be given. `fill` is `:all`, `:surface` or `:inside`.
+must be given. `fill` is `:all`, `:surface` or `:inside`. A zero third
+`resolution` entry selects 2-D pixels around a planar skin, whose plane is
+`plane` (`:auto`, `:xy`, `:xz` or `:yz`; `:auto` takes the axis of zero extent).
 
 Returns `(; mesh, dims, origin, spacing, num_occupied)`.
 """
 function voxelize(m::Mesh; resolution=nothing, cell_size=nothing, bounds=nothing,
                   padding::Real=0.0, padding_relative::Real=0.0, fill=:all,
                   sign=:pseudonormal, watertight_check=:warn,
-                  attach_occupancy::Bool=false, max_cells::Integer=20_000_000)
+                  attach_occupancy::Bool=false, max_cells::Integer=20_000_000,
+                  plane=:auto)
     res = resolution === nothing ? Int64[] : Int64[Int64(v) for v in resolution]
     (resolution === nothing || length(res) == 3) ||
         throw(ArgumentError("resolution must have three entries"))
@@ -2075,7 +2479,8 @@ function voxelize(m::Mesh; resolution=nothing, cell_size=nothing, bounds=nothing
                            attach_occupancy ? Int32(1) : Int32(0),
                            _code(_SDF_SIGNS, sign, "sign"),
                            _code(_SDF_CHECKS, watertight_check, "watertight check"),
-                           (Int64(0), Int64(0), Int64(0), Int64(0), Int64(0), Int64(0)))
+                           _code(_PLANAR_PLANES, plane, "plane"), Int32(0),
+                           (Int64(0), Int64(0), Int64(0), Int64(0), Int64(0)))
         ccall(_sym(:mio_voxelize), Ptr{Cvoid},
               (Ptr{Cvoid}, Ref{_CVoxelOpts}, Ptr{Int64}, Ptr{Cdouble}, Ptr{Cdouble},
                Ptr{Int64}),
@@ -2168,6 +2573,7 @@ const _OCTREE_MESH_OUTPUT_NAMES = ("castellated", "tet", "hex")
 const _OCTREE_MESH_CONFORMITIES = Dict("stuffing" => Int32(0), "cleaving" => Int32(1))
 const _OCTREE_MESH_SKIN_GRADINGS = Dict("graded" => Int32(0), "uniform" => Int32(1))
 const _OCTREE_MESH_FILLS = Dict("all" => Int32(0), "inside" => Int32(1), "cover" => Int32(2))
+const _OCTREE_MESH_HEX_GRADINGS = Dict("uniform" => Int32(0), "graded" => Int32(1))
 
 """
     octree_mesh(m; output=:tet, min_size=0.0, max_size=0.0, max_level=-1, bounds=nothing,
@@ -2179,15 +2585,16 @@ const _OCTREE_MESH_FILLS = Dict("all" => Int32(0), "inside" => Int32(1), "cover"
                 alpha_long=0.24799, alpha_short=0.40173, preserve_features=true,
                 fit_iterations=5, dihedral_floor_guard=true, fill=:inside,
                 keep_outside=false, attach_distance=true, attach_quality=false,
-                pillow=true, untangle_iterations=50, max_cells=20_000_000,
-                max_tets=100_000_000) -> NamedTuple
+                pillow=true, hex_grading=:uniform, untangle_iterations=50,
+                max_cells=20_000_000, max_tets=100_000_000) -> NamedTuple
 
 Mesh the inside of the skin `m` on a balanced octree: conforming graded
 tetrahedra by default (`output=:tet`), or the castellated leaves
 (`output=:castellated`) with surrogate-boundary regions and `sdf:distance` /
 `sdf:closest_point`; `:hex` is the all-hexahedral dual. `conformity` is
-`:stuffing` or `:cleaving`, `skin_grading` `:graded` or `:uniform`, and `fill`
-(castellated output) `:all`, `:inside` or `:cover`; an unknown one throws
+`:stuffing` or `:cleaving`, `skin_grading` `:graded` or `:uniform`, `fill`
+(castellated output) `:all`, `:inside` or `:cover`, and `hex_grading`
+(hexahedral output) `:uniform` or `:graded`; an unknown one throws
 `ArgumentError`. Every keyword left at `nothing` takes its default from
 `mio_octree_mesh_opts_init`, i.e. from the C side; the defaults shown above are
 those. See `doc/octree_mesh.md` for every option and report field.
@@ -2200,7 +2607,8 @@ num_warped, num_warp_refused, min_dihedral, max_dihedral, min_scaled_jacobian,
 hausdorff_to_skin, num_inverted, num_boundary_edges_open,
 num_non_manifold_boundary_edges, num_corners, num_corners_snapped,
 num_feature_chains, num_feature_chains_missed, num_feature_moves,
-num_optimized_moves, num_flips, num_winding_rechecks, num_warnings, warnings)`,
+num_optimized_moves, num_flips, num_winding_rechecks, num_winding_skipped, num_warnings,
+warnings)`,
 with `output` the name of the output produced and `warnings` a
 `Vector{String}`, one entry per warning.
 """
@@ -2215,7 +2623,8 @@ function octree_mesh(m::Mesh; output=nothing, min_size=nothing, max_size=nothing
                      preserve_features=nothing, fit_iterations=nothing,
                      dihedral_floor_guard=nothing, fill=nothing, keep_outside=nothing,
                      attach_distance=nothing, attach_quality=nothing, pillow=nothing,
-                     untangle_iterations=nothing, max_cells=nothing, max_tets=nothing)
+                     hex_grading=nothing, untangle_iterations=nothing, max_cells=nothing,
+                     max_tets=nothing)
     bnd = bounds === nothing ? Cdouble[] : Cdouble[Cdouble(v) for v in bounds]
     (bounds === nothing || length(bnd) == 6) ||
         throw(ArgumentError("bounds must have six entries"))
@@ -2232,6 +2641,9 @@ function octree_mesh(m::Mesh; output=nothing, min_size=nothing, max_size=nothing
         _setopt!(opts, :skin_grading,
                  _code(_OCTREE_MESH_SKIN_GRADINGS, skin_grading, "skin grading"))
     fill === nothing || _setopt!(opts, :fill, _code(_OCTREE_MESH_FILLS, fill, "fill"))
+    hex_grading === nothing ||
+        _setopt!(opts, :hex_grading,
+                 _code(_OCTREE_MESH_HEX_GRADINGS, hex_grading, "hex grading"))
     scalars = (; min_size, max_size, padding, padding_relative, curvature_angle,
                feature_angle, corner_angle, feature_size, gap_cells, surface_size,
                winding_threshold, winding_beta, alpha_long, alpha_short, max_level,
@@ -2284,7 +2696,8 @@ function octree_mesh(m::Mesh; output=nothing, min_size=nothing, max_size=nothing
      num_feature_chains_missed=Int(r.num_feature_chains_missed),
      num_feature_moves=Int(r.num_feature_moves),
      num_optimized_moves=Int(r.num_optimized_moves), num_flips=Int(r.num_flips),
-     num_winding_rechecks=Int(r.num_winding_rechecks), num_warnings=Int(r.num_warnings),
+     num_winding_rechecks=Int(r.num_winding_rechecks),
+     num_winding_skipped=Int(r.num_winding_skipped), num_warnings=Int(r.num_warnings),
      warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
 end
 
@@ -2564,7 +2977,8 @@ has_occt() = ccall(_sym(:mio_has_occt), Cint, ()) != 0
             local_refine="knots", freeform_g1_tolerance_deg=1.0,
             freeform_max_control_points=400, layout_target_patch_size=0.1,
             layout_max_valence_deviation=2, resegment_rounds=2,
-            layout_snap_to_features=true, validate_by_surface_sampling=true)
+            layout_snap_to_features=true, validate_by_surface_sampling=true,
+            constrain_primitives=false)
         -> (; mesh, backend, valid, closed, tolerance, volume, skin_volume, volume_ratio,
              max_deviation, num_faces, num_plane, num_sphere, num_cylinder,
              num_cone, num_torus, num_faceted_faces, num_patches, num_demoted,
@@ -2579,7 +2993,8 @@ has_occt() = ccall(_sym(:mio_has_occt), Cint, ()) != 0
              brep_checked, freeform_mode, facet_area_fraction, num_freeform_adaptive,
              num_network_patches, num_network_edges, num_extraordinary_vertices,
              num_resegmented, num_escalations, max_g1_angle_deg, max_freeform_distance,
-             rms_freeform_distance, num_face_records)
+             rms_freeform_distance, num_face_records, num_constrained_primitives,
+             num_constraint_groups)
 
 Build a CAD solid from the fitted patches of a closed skin through the
 OpenCASCADE backend: accepted fits become analytic faces, a patch no primitive
@@ -2634,8 +3049,12 @@ the patches no primitive or feature fit explains are treated, with
 and `validate_by_surface_sampling`; `facet_area_fraction` is the share of the
 result's area left on facet faces, `brep_checked` whether OpenCASCADE checked
 the solid, and outside the legacy mode the mesh carries the
-`fit_cad:face_table` field data (one row per patch tried as a surface). See
-`doc/fit_cad.md`.
+`fit_cad:face_table` field data (one row per patch tried as a surface).
+`constrain_primitives` fits related primitives together on either backend
+(coaxial cylinders, cones, tori and spheres share one axis; parallel and
+perpendicular planes and nearly equal radii are made exact), each change kept
+only where its patch still passes its fit; `num_constrained_primitives` and
+`num_constraint_groups` count what it changed. See `doc/fit_cad.md`.
 """
 function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                  exact_edges::Bool=true,
@@ -2661,7 +3080,8 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                  layout_target_patch_size::Real=0.1,
                  layout_max_valence_deviation::Integer=2, resegment_rounds::Integer=2,
                  layout_snap_to_features::Bool=true,
-                 validate_by_surface_sampling::Bool=true)
+                 validate_by_surface_sampling::Bool=true,
+                 constrain_primitives::Bool=false)
     pick(name, value, words) = begin
         k = findfirst(==(String(value)), words)
         k === nothing && throw(ArgumentError("meshio++: fit_cad: $(name) must be one of " *
@@ -2709,7 +3129,8 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                                Float64(layout_target_patch_size),
                                Int64(layout_max_valence_deviation), Int64(resegment_rounds),
                                Int32(layout_snap_to_features),
-                               Int32(validate_by_surface_sampling), ntuple(_ -> Int64(0), 8))
+                               Int32(validate_by_surface_sampling),
+                               Int32(constrain_primitives), Int32(0), ntuple(_ -> Int64(0), 7))
     ptr = ccall(_sym(:mio_fit_cad3), Ptr{Cvoid},
                 (Ptr{Cvoid}, Cstring, Ref{_CFitCadOpts}, Ref{_CFitCadOptsEx},
                  Ref{_CFitCadOptsEx2}, Ptr{_CFitCadReport}, Ptr{_CFitCadReportEx},
@@ -2759,7 +3180,9 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
      num_resegmented=Int(ex3.num_resegmented), num_escalations=Int(ex3.num_escalations),
      max_g1_angle_deg=ex3.max_g1_angle_deg, max_freeform_distance=ex3.max_freeform_distance,
      rms_freeform_distance=ex3.rms_freeform_distance,
-     num_face_records=Int(ex3.num_face_records))
+     num_face_records=Int(ex3.num_face_records),
+     num_constrained_primitives=Int(ex3.num_constrained_primitives),
+     num_constraint_groups=Int(ex3.num_constraint_groups))
 end
 
 """

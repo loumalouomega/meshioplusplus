@@ -122,12 +122,11 @@ TEST(Voxelize, FillSurfaceKeepsAShellAndLeavesTheInteriorEmpty) {
         for (std::size_t i = 0; i < 8; ++i)
             for (std::size_t k = 0; k < 3; ++k)
                 centre[k] += p[static_cast<std::size_t>(conn[c * 8 + i]) * 3 + k] / 8.0;
-        const double margin =
-            std::min(std::min(centre[0], centre[1]),
-                     std::min(centre[2], std::min(1.0 - centre[0],
-                                                  std::min(1.0 - centre[1], 1.0 - centre[2]))));
-        EXPECT_LT(margin, 1.0 / 6.0 + 1e-12)
-            << "a cell well inside the cube was kept as surface";
+        const double margin = std::min(
+            std::min(centre[0], centre[1]),
+            std::min(centre[2],
+                     std::min(1.0 - centre[0], std::min(1.0 - centre[1], 1.0 - centre[2]))));
+        EXPECT_LT(margin, 1.0 / 6.0 + 1e-12) << "a cell well inside the cube was kept as surface";
     }
 }
 
@@ -135,8 +134,7 @@ TEST(Voxelize, FillSurfaceUsesExactOverlapNotBoundingBoxes) {
     // A single thin diagonal triangle. Its bounding box covers the whole lattice,
     // so a bounding-box test would keep every cell; the exact separating-axis
     // test keeps only the ones it actually passes through.
-    const Mesh diagonal =
-        mt::make_mesh({{0, 0, 0}, {1, 1, 0}, {1, 1, 1}}, "triangle", {{0, 1, 2}});
+    const Mesh diagonal = mt::make_mesh({{0, 0, 0}, {1, 1, 0}, {1, 1, 1}}, "triangle", {{0, 1, 2}});
     VoxelOptions o = res(8, VoxelFill::Surface);
     o.mDistance.mWatertightCheck = meshioplusplus::SdfWatertightCheck::Off;
     const VoxelResult r = voxelize(diagonal, o);
@@ -262,18 +260,18 @@ TEST(TriBox, OverlapIsExactNotABoundingBoxTest) {
     const d::Vec3 half{{0.5, 0.5, 0.5}};
 
     // Straight through the middle.
-    EXPECT_TRUE(d::tri_box_overlap(centre, half, {{-2.0, 0.0, 0.0}}, {{2.0, 0.0, 0.0}},
-                                   {{0.0, 2.0, 0.0}}));
+    EXPECT_TRUE(
+        d::tri_box_overlap(centre, half, {{-2.0, 0.0, 0.0}}, {{2.0, 0.0, 0.0}}, {{0.0, 2.0, 0.0}}));
     // Far away.
-    EXPECT_FALSE(d::tri_box_overlap(centre, half, {{5.0, 5.0, 5.0}}, {{6.0, 5.0, 5.0}},
-                                    {{5.0, 6.0, 5.0}}));
+    EXPECT_FALSE(
+        d::tri_box_overlap(centre, half, {{5.0, 5.0, 5.0}}, {{6.0, 5.0, 5.0}}, {{5.0, 6.0, 5.0}}));
     // The case a bounding-box test gets wrong: a triangle whose bounding box
     // covers the origin but which passes well clear of it.
     EXPECT_FALSE(d::tri_box_overlap(centre, half, {{-3.0, 3.0, 0.0}}, {{3.0, 9.0, 0.0}},
                                     {{-3.0, 9.0, 0.0}}));
     // Touching the face counts as overlapping -- the documented tie rule.
-    EXPECT_TRUE(d::tri_box_overlap(centre, half, {{0.5, 0.0, 0.0}}, {{2.0, 0.0, 0.0}},
-                                   {{2.0, 1.0, 0.0}}));
+    EXPECT_TRUE(
+        d::tri_box_overlap(centre, half, {{0.5, 0.0, 0.0}}, {{2.0, 0.0, 0.0}}, {{2.0, 1.0, 0.0}}));
 }
 
 TEST(TriBox, AnEdgeOnlyCrossingIsDetected) {
@@ -282,8 +280,8 @@ TEST(TriBox, AnEdgeOnlyCrossingIsDetected) {
     // being in its plane's slab.
     const d::Vec3 centre{{0.0, 0.0, 0.0}};
     const d::Vec3 half{{1.0, 1.0, 1.0}};
-    EXPECT_TRUE(d::tri_box_overlap(centre, half, {{0.9, 0.9, -3.0}}, {{0.9, 0.9, 3.0}},
-                                   {{3.0, 3.0, 0.0}}));
+    EXPECT_TRUE(
+        d::tri_box_overlap(centre, half, {{0.9, 0.9, -3.0}}, {{0.9, 0.9, 3.0}}, {{3.0, 3.0, 0.0}}));
 }
 
 namespace {
@@ -313,6 +311,59 @@ TEST(Voxelize, PixelsInsideConvergeToTheDiskArea) {
     EXPECT_EQ(r.mDims[2], 1);
     const double area = static_cast<double>(r.mNumOccupied) * r.mSpacing[0] * r.mSpacing[1];
     EXPECT_NEAR(area, M_PI, 0.1);
+}
+
+TEST(Voxelize, PixelsTakeAnExplicitPlane) {
+    // A circle in the xz plane whose y wobbles by 1e-3: no axis has zero extent,
+    // so `Auto` falls back to xy and sees a sliver; `XZ` sees the disk.
+    const int n = 128;
+    std::vector<std::vector<double>> pts;
+    std::vector<std::vector<std::int64_t>> lines;
+    for (int i = 0; i < n; ++i) {
+        const double t = 2.0 * M_PI * i / n;
+        pts.push_back({std::cos(t), 1e-3 * std::sin(3.0 * t), std::sin(t)});
+        lines.push_back({i, (i + 1) % n});
+    }
+    const Mesh loop = mt::make_mesh(std::move(pts), "line", std::move(lines));
+    VoxelOptions o;
+    o.mResolution = std::array<std::int64_t, 3>{{64, 64, 0}};
+    o.mPadding = 0.1;
+    o.mFill = VoxelFill::Inside;
+    o.mPlane = d::PlanarPlane::XZ;
+    const VoxelResult r = voxelize(loop, o);
+    const double area = static_cast<double>(r.mNumOccupied) * r.mSpacing[0] * r.mSpacing[1];
+    EXPECT_NEAR(area, M_PI, 0.1);
+    // Every pixel corner lies in one plane y = const, the skin's frame mapped back.
+    const double* points = r.mMesh.Points().As<double>();
+    for (std::size_t p = 0; p < r.mMesh.NumPoints(); ++p)
+        EXPECT_EQ(points[p * 3 + 1], points[1]);
+    o.mPlane = d::PlanarPlane::Auto;
+    const VoxelResult sliver = voxelize(loop, o);
+    EXPECT_LT(sliver.mNumOccupied, r.mNumOccupied / 4);
+}
+
+TEST(Voxelize, PixelsInsideIgnoreHowTheLoopsSegmentsAreDirected) {
+    // A slice's segments can run both ways round one loop; the winding number
+    // needs them directed one way, so the loop is oriented before the fill.
+    VoxelOptions o;
+    o.mResolution = std::array<std::int64_t, 3>{{32, 32, 0}};
+    o.mPadding = 0.1;
+    o.mFill = VoxelFill::Inside;
+    const VoxelResult want = voxelize(circle_polyline(1.0, 64), o);
+    std::vector<std::vector<double>> pts;
+    std::vector<std::vector<std::int64_t>> lines;
+    const int n = 64;
+    for (int i = 0; i < n; ++i) {
+        pts.push_back({std::cos(2.0 * M_PI * i / n), std::sin(2.0 * M_PI * i / n), 0.0});
+        const std::int64_t a = i, b = (i + 1) % n;
+        if (i % 3 == 1)
+            lines.push_back({b, a});
+        else
+            lines.push_back({a, b});
+    }
+    const VoxelResult got = voxelize(mt::make_mesh(std::move(pts), "line", std::move(lines)), o);
+    EXPECT_GT(want.mNumOccupied, 0);
+    EXPECT_EQ(got.mNumOccupied, want.mNumOccupied);
 }
 
 TEST(Voxelize, PixelsRefuseAnOpenPolylineForInside) {

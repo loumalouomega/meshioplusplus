@@ -380,6 +380,68 @@ void linear_octree_dilate(LinearOctree& rTree, const std::vector<std::uint8_t>& 
     linear_octree_require(rTree, std::move(req), MaxLeaves, pOrigin);
 }
 
+namespace {
+
+// The leaves that break the pairing: roots, and leaves with a split sibling.
+std::vector<std::uint8_t> linoct_unpaired(const LinearOctree& rTree) {
+    std::vector<std::uint8_t> mark(rTree.Size(), 0);
+    parallel_for(rTree.Size(), [&](std::size_t i) {
+        if (rTree.mLevel[i] == 0) {
+            mark[i] = 1;
+            return;
+        }
+        const auto lo = rTree.Lo(i);
+        const std::int64_t s = rTree.Span(i);
+        std::array<std::int64_t, 3> parent{};
+        for (std::size_t k = 0; k < 3; ++k)
+            parent[k] = lo[k] - lo[k] % (2 * s);
+        for (std::int64_t c = 0; c < 8 && !mark[i]; ++c) {
+            const std::int64_t j =
+                rTree.Locate(parent[0] + (c & 1) * s, parent[1] + ((c >> 1) & 1) * s,
+                             parent[2] + ((c >> 2) & 1) * s);
+            mark[i] = j >= 0 && rTree.mLevel[static_cast<std::size_t>(j)] > rTree.mLevel[i];
+        }
+    });
+    return mark;
+}
+
+}  // namespace
+
+bool linear_octree_pair(LinearOctree& rTree, OctreeAdjacency Kind, std::int64_t MaxLeaves) {
+    bool changed = false;
+    for (;;) {
+        const std::size_t before = rTree.Size();
+        linear_octree_balance(rTree, Kind, MaxLeaves);
+        changed = changed || rTree.Size() != before;
+        std::vector<std::uint8_t> mark = linoct_unpaired(rTree);
+        bool any = false;
+        for (std::size_t i = 0; i < mark.size(); ++i) {
+            mark[i] = mark[i] && rTree.mLevel[i] < rTree.mMaxLevel;
+            any = any || mark[i];
+        }
+        if (!any)
+            return changed;
+        linear_octree_split(rTree, mark, MaxLeaves);
+        changed = true;
+    }
+}
+
+bool linear_octree_is_paired(const LinearOctree& rTree, std::string* pWhy) {
+    const std::vector<std::uint8_t> mark = linoct_unpaired(rTree);
+    for (std::size_t i = 0; i < mark.size(); ++i)
+        if (mark[i]) {
+            if (pWhy) {
+                const auto lo = rTree.Lo(i);
+                *pWhy = "leaf " + std::to_string(i) + " at (" + std::to_string(lo[0]) + ", " +
+                        std::to_string(lo[1]) + ", " + std::to_string(lo[2]) + "), level " +
+                        std::to_string(rTree.mLevel[i]) +
+                        (rTree.mLevel[i] == 0 ? " has no parent" : " has a split sibling");
+            }
+            return false;
+        }
+    return true;
+}
+
 std::vector<std::int64_t> linear_octree_neighbours(const LinearOctree& rTree, std::size_t Leaf,
                                                    int Dx, int Dy, int Dz) {
     std::vector<std::int64_t> out;

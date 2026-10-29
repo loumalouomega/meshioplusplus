@@ -165,6 +165,7 @@
 #include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/error_size.hpp"
+#include "meshioplusplus/operations/check_conformity.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/slice.hpp"
@@ -176,6 +177,8 @@
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/boundary_layer.hpp"
+#include "meshioplusplus/operations/extrude.hpp"
+#include "meshioplusplus/operations/mirror.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
@@ -3991,9 +3994,14 @@ std::vector<std::int64_t> prim_js_counts(const val& rV, std::size_t N, std::int6
     return out;
 }
 
+std::array<std::int64_t, 3> prim_js_dims3(const val& rV) {
+    const auto d = prim_js_counts(rV, 3, 1);
+    return {{d[0], d[1], d[2]}};
+}
+
 val rectangle_js(const val& rDims, const val& rSize, const val& rOrigin,
                  const std::string& rCellType, const std::string& rSplit, int order,
-                 double maxCells) {
+                 double maxCells, bool complete) {
     return with_js_errors([&]() -> val {
         const auto d = prim_js_counts(rDims, 2, 1);
         std::array<double, 2> size{{1.0, 1.0}};
@@ -4004,62 +4012,62 @@ val rectangle_js(const val& rDims, const val& rSize, const val& rOrigin,
         }
         return mesh_to_val(meshioplusplus::rectangle(
             {{d[0], d[1]}}, size, prim_js_vec3(rOrigin, {{0.0, 0.0, 0.0}}, true), rCellType, rSplit,
-            order, static_cast<std::int64_t>(maxCells)));
+            order, static_cast<std::int64_t>(maxCells), complete));
     });
 }
 
 val box_js(const val& rDims, const val& rSize, const val& rOrigin, const std::string& rCellType,
-           int order, double maxCells) {
+           int order, double maxCells, bool complete) {
     return with_js_errors([&]() -> val {
         const auto d = prim_js_counts(rDims, 3, 1);
         return mesh_to_val(
             meshioplusplus::box({{d[0], d[1], d[2]}}, prim_js_vec3(rSize, {{1.0, 1.0, 1.0}}, false),
                                 prim_js_vec3(rOrigin, {{0.0, 0.0, 0.0}}, false), rCellType, order,
-                                static_cast<std::int64_t>(maxCells)));
+                                static_cast<std::int64_t>(maxCells), complete));
     });
 }
 
 val disk_js(double radius, double n, const val& rCenter, const std::string& rCellType, int order,
-            double maxCells) {
+            double maxCells, bool complete) {
     return with_js_errors([&]() -> val {
         return mesh_to_val(meshioplusplus::disk(
             radius, static_cast<std::int64_t>(n), prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false),
-            rCellType, order, static_cast<std::int64_t>(maxCells)));
+            rCellType, order, static_cast<std::int64_t>(maxCells), complete));
     });
 }
 
 val uv_sphere_js(double radius, double nu, double nv, const val& rCenter,
-                 const std::string& rCellType, int order, double maxCells) {
+                 const std::string& rCellType, int order, double maxCells, bool complete) {
     return with_js_errors([&]() -> val {
         return mesh_to_val(meshioplusplus::uv_sphere(
             radius, static_cast<std::int64_t>(nu), static_cast<std::int64_t>(nv),
             prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false), rCellType, order,
-            static_cast<std::int64_t>(maxCells)));
+            static_cast<std::int64_t>(maxCells), complete));
     });
 }
 
 val icosa_sphere_js(double radius, double subdivisions, const val& rCenter, int order,
-                    double maxCells) {
+                    double maxCells, bool complete) {
     return with_js_errors([&]() -> val {
         return mesh_to_val(
             meshioplusplus::icosa_sphere(radius, static_cast<std::int64_t>(subdivisions),
                                          prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false), order,
-                                         static_cast<std::int64_t>(maxCells)));
+                                         static_cast<std::int64_t>(maxCells), complete));
     });
 }
 
 val cylinder_js(double radius, double height, double nxy, double nz, const val& rCenter,
-                const std::string& rCellType, int order, double maxCells) {
+                const std::string& rCellType, int order, double maxCells, bool complete) {
     return with_js_errors([&]() -> val {
         return mesh_to_val(meshioplusplus::cylinder(
             radius, height, static_cast<std::int64_t>(nxy), static_cast<std::int64_t>(nz),
             prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false), rCellType, order,
-            static_cast<std::int64_t>(maxCells)));
+            static_cast<std::int64_t>(maxCells), complete));
     });
 }
 
 val reference_triangle_js(double n, const val& rSize, const val& rOrigin, int order,
-                          double maxCells) {
+                          double maxCells, bool complete) {
     return with_js_errors([&]() -> val {
         std::array<double, 2> size{{1.0, 1.0}};
         if (!rSize.isUndefined() && !rSize.isNull()) {
@@ -4069,46 +4077,47 @@ val reference_triangle_js(double n, const val& rSize, const val& rOrigin, int or
         }
         return mesh_to_val(meshioplusplus::reference_triangle(
             static_cast<std::int64_t>(n), size, prim_js_vec3(rOrigin, {{0.0, 0.0, 0.0}}, true),
-            order, static_cast<std::int64_t>(maxCells)));
+            order, static_cast<std::int64_t>(maxCells), complete));
     });
 }
 
 val ngon_js(double sides, double radius, double rings, const val& rCenter, int order,
-            double maxCells) {
+            double maxCells, bool complete) {
     return with_js_errors([&]() -> val {
-        return mesh_to_val(meshioplusplus::ngon(static_cast<std::int64_t>(sides), radius,
-                                                static_cast<std::int64_t>(rings),
-                                                prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false),
-                                                order, static_cast<std::int64_t>(maxCells)));
+        return mesh_to_val(meshioplusplus::ngon(
+            static_cast<std::int64_t>(sides), radius, static_cast<std::int64_t>(rings),
+            prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false), order,
+            static_cast<std::int64_t>(maxCells), complete));
     });
 }
 
 val annulus_js(double innerRadius, double outerRadius, double ntheta, double nr, double angle,
-               const val& rCenter, const std::string& rCellType, int order, double maxCells) {
+               const val& rCenter, const std::string& rCellType, int order, double maxCells,
+               bool complete) {
     return with_js_errors([&]() -> val {
         return mesh_to_val(meshioplusplus::annulus(
             innerRadius, outerRadius, static_cast<std::int64_t>(ntheta),
             static_cast<std::int64_t>(nr), angle, prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false),
-            rCellType, order, static_cast<std::int64_t>(maxCells)));
+            rCellType, order, static_cast<std::int64_t>(maxCells), complete));
     });
 }
 
 val lshape_js(double n, double size, const val& rCenter, const std::string& rCellType, int order,
-              double maxCells) {
+              double maxCells, bool complete) {
     return with_js_errors([&]() -> val {
         return mesh_to_val(meshioplusplus::lshape(
             static_cast<std::int64_t>(n), size, prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false),
-            rCellType, order, static_cast<std::int64_t>(maxCells)));
+            rCellType, order, static_cast<std::int64_t>(maxCells), complete));
     });
 }
 
 val plate_with_hole_js(double radius, double size, double nt, double nr, const val& rCenter,
-                       const std::string& rCellType, int order, double maxCells) {
+                       const std::string& rCellType, int order, double maxCells, bool complete) {
     return with_js_errors([&]() -> val {
         return mesh_to_val(meshioplusplus::plate_with_hole(
             radius, size, static_cast<std::int64_t>(nt), static_cast<std::int64_t>(nr),
             prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false), rCellType, order,
-            static_cast<std::int64_t>(maxCells)));
+            static_cast<std::int64_t>(maxCells), complete));
     });
 }
 
@@ -4118,6 +4127,210 @@ val honeycomb_js(const val& rDims, double edge, const val& rOrigin, double maxCe
         return mesh_to_val(meshioplusplus::honeycomb({{d[0], d[1]}}, edge,
                                                      prim_js_vec3(rOrigin, {{0.0, 0.0, 0.0}}, true),
                                                      static_cast<std::int64_t>(maxCells)));
+    });
+}
+
+val line_js(double n, const val& rStart, const val& rEnd, int order, double maxCells,
+            bool complete) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::line(static_cast<std::int64_t>(n),
+                                                prim_js_vec3(rStart, {{0.0, 0.0, 0.0}}, false),
+                                                prim_js_vec3(rEnd, {{1.0, 0.0, 0.0}}, false), order,
+                                                static_cast<std::int64_t>(maxCells), complete));
+    });
+}
+
+val circle_js(double radius, double n, const val& rCenter, int order, double maxCells,
+              bool complete) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::circle(
+            radius, static_cast<std::int64_t>(n), prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false),
+            order, static_cast<std::int64_t>(maxCells), complete));
+    });
+}
+
+val helix_js(double radius, double pitch, double turns, double n, const val& rCenter, int order,
+             double maxCells, bool complete) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::helix(radius, pitch, turns, static_cast<std::int64_t>(n),
+                                                 prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false),
+                                                 order, static_cast<std::int64_t>(maxCells),
+                                                 complete));
+    });
+}
+
+val sphere_points_js(double n, double radius, const val& rCenter, double maxCells) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::sphere_points(
+            static_cast<std::int64_t>(n), radius, prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false),
+            static_cast<std::int64_t>(maxCells)));
+    });
+}
+
+val box_points_js(double n, const val& rSize, const val& rOrigin, double seed, double maxCells) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::box_points(
+            static_cast<std::int64_t>(n), prim_js_vec3(rSize, {{1.0, 1.0, 1.0}}, false),
+            prim_js_vec3(rOrigin, {{0.0, 0.0, 0.0}}, false), static_cast<std::uint64_t>(seed),
+            static_cast<std::int64_t>(maxCells)));
+    });
+}
+
+val tetra_sphere_js(double radius, double subdivisions, const val& rCenter, int order,
+                    double maxCells, bool complete) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(
+            meshioplusplus::tetra_sphere(radius, static_cast<std::int64_t>(subdivisions),
+                                         prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false), order,
+                                         static_cast<std::int64_t>(maxCells), complete));
+    });
+}
+
+val octa_sphere_js(double radius, double subdivisions, const val& rCenter, int order,
+                   double maxCells, bool complete) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(
+            meshioplusplus::octa_sphere(radius, static_cast<std::int64_t>(subdivisions),
+                                        prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false), order,
+                                        static_cast<std::int64_t>(maxCells), complete));
+    });
+}
+
+val cube_sphere_js(double radius, double n, const val& rCenter, const std::string& cellType,
+                   int order, double maxCells, bool complete) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::cube_sphere(
+            radius, static_cast<std::int64_t>(n), prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false),
+            cellType, order, static_cast<std::int64_t>(maxCells), complete));
+    });
+}
+
+val geo_sphere_js(double radius, double n, const val& rCenter, int order, double maxCells,
+                  bool complete) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::geo_sphere(
+            radius, static_cast<std::int64_t>(n), prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false),
+            order, static_cast<std::int64_t>(maxCells), complete));
+    });
+}
+
+val torus_js(double majorRadius, double minorRadius, double nu, double nv, const val& rCenter,
+             const std::string& cellType, int order, double maxCells, bool complete) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::torus(
+            majorRadius, minorRadius, static_cast<std::int64_t>(nu), static_cast<std::int64_t>(nv),
+            prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false), cellType, order,
+            static_cast<std::int64_t>(maxCells), complete));
+    });
+}
+
+val moebius_js(double radius, double width, double nu, double nv, double numTwists,
+               const val& rCenter, const std::string& cellType, int order, double maxCells,
+               bool complete) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::moebius(
+            radius, width, static_cast<std::int64_t>(nu), static_cast<std::int64_t>(nv),
+            static_cast<std::int64_t>(numTwists), prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false),
+            cellType, order, static_cast<std::int64_t>(maxCells), complete));
+    });
+}
+
+val tube_js(double radius, double height, double ntheta, double nz, const val& rCenter,
+            const std::string& cellType, int order, double maxCells, bool complete) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::tube(
+            radius, height, static_cast<std::int64_t>(ntheta), static_cast<std::int64_t>(nz),
+            prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false), cellType, order,
+            static_cast<std::int64_t>(maxCells), complete));
+    });
+}
+
+val cone_js(double radius, double height, double ntheta, double nz, const val& rCenter,
+            const std::string& cellType, int order, double maxCells, bool complete) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::cone(
+            radius, height, static_cast<std::int64_t>(ntheta), static_cast<std::int64_t>(nz),
+            prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false), cellType, order,
+            static_cast<std::int64_t>(maxCells), complete));
+    });
+}
+
+val capsule_js(double radius, double height, double ntheta, double nz, double ncap,
+               const val& rCenter, const std::string& cellType, int order, double maxCells,
+               bool complete) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::capsule(
+            radius, height, static_cast<std::int64_t>(ntheta), static_cast<std::int64_t>(nz),
+            static_cast<std::int64_t>(ncap), prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false),
+            cellType, order, static_cast<std::int64_t>(maxCells), complete));
+    });
+}
+
+val box_surface_js(const val& rDims, const val& rSize, const val& rOrigin,
+                   const std::string& cellType, int order, double maxCells, bool complete) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::box_surface(
+            prim_js_dims3(rDims), prim_js_vec3(rSize, {{1.0, 1.0, 1.0}}, false),
+            prim_js_vec3(rOrigin, {{0.0, 0.0, 0.0}}, false), cellType, order,
+            static_cast<std::int64_t>(maxCells), complete));
+    });
+}
+
+val platonic_js(const std::string& name, double radius, const val& rCenter, double maxCells) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::platonic(name, radius,
+                                                    prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false),
+                                                    static_cast<std::int64_t>(maxCells)));
+    });
+}
+
+val ball_js(double radius, double n, const val& rCenter, const std::string& cellType, int order,
+            double maxCells, bool complete) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::ball(
+            radius, static_cast<std::int64_t>(n), prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false),
+            cellType, order, static_cast<std::int64_t>(maxCells), complete));
+    });
+}
+
+val spherical_shell_js(double innerRadius, double outerRadius, double n, double nr, double ratio,
+                       const val& rCenter, int order, double maxCells, bool complete) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::spherical_shell(
+            innerRadius, outerRadius, static_cast<std::int64_t>(n), static_cast<std::int64_t>(nr),
+            ratio, prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false), order,
+            static_cast<std::int64_t>(maxCells), complete));
+    });
+}
+
+val pipe_js(double innerRadius, double outerRadius, double height, double ntheta, double nr,
+            double nz, double ratio, const val& rCenter, int order, double maxCells,
+            bool complete) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::pipe(
+            innerRadius, outerRadius, height, static_cast<std::int64_t>(ntheta),
+            static_cast<std::int64_t>(nr), static_cast<std::int64_t>(nz), ratio,
+            prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false), order,
+            static_cast<std::int64_t>(maxCells), complete));
+    });
+}
+
+val fichera_js(double n, double size, const val& rCenter, const std::string& cellType, int order,
+               double maxCells, bool complete) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::fichera(
+            static_cast<std::int64_t>(n), size, prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false),
+            cellType, order, static_cast<std::int64_t>(maxCells), complete));
+    });
+}
+
+val solid_torus_js(double majorRadius, double minorRadius, double n, double nu, const val& rCenter,
+                   int order, double maxCells, bool complete) {
+    return with_js_errors([&]() -> val {
+        return mesh_to_val(meshioplusplus::solid_torus(
+            majorRadius, minorRadius, static_cast<std::int64_t>(n), static_cast<std::int64_t>(nu),
+            prim_js_vec3(rCenter, {{0.0, 0.0, 0.0}}, false), order,
+            static_cast<std::int64_t>(maxCells), complete));
     });
 }
 
@@ -4139,9 +4352,10 @@ val reference_cells_js(const val& rTypes, bool pairs) {
 val voxelize_js(const val& rMeshObj, const val& rResolution, double cellSize, const val& rBounds,
                 double padding, double paddingRelative, const std::string& rFill,
                 const std::string& rSign, bool attachOccupancy, double maxCells,
-                const std::string& rWatertightCheck) {
+                const std::string& rWatertightCheck, const std::string& rPlane) {
     return with_js_errors([&]() -> val {
         meshioplusplus::VoxelOptions options;
+        options.mPlane = meshioplusplus::detail::planar_plane_from_name(rPlane);
         if (!rResolution.isUndefined() && !rResolution.isNull() &&
             rResolution["length"].as<unsigned>() == 3)
             options.mResolution = std::array<std::int64_t, 3>{
@@ -4264,11 +4478,12 @@ val octree_js(const val& rMeshObj, const val& rRootCells, double minLevel, doubl
  *   skinGrading, surfaceSize, windingThreshold, windingBeta, conformity,
  *   alphaLong, alphaShort, preserveFeatures, fitIterations,
  *   dihedralFloorGuard, fill, keepOutside, attachDistance, attachQuality,
- *   pillow, untangleIterations, maxCells, maxTets}`, every key optional
+ *   pillow, hexGrading, untangleIterations, maxCells, maxTets}`, every key optional
  *   (an unknown key is an error) and defaulting to `OctreeMeshOptions`;
  *   `output` is `'tet'`, `'castellated'` or `'hex'`, `skinGrading`
  *   `'graded'` or `'uniform'`, `conformity` `'stuffing'` or `'cleaving'`,
- *   `fill` `'inside'`, `'all'` or `'cover'`, `bounds` six numbers.
+ *   `fill` `'inside'`, `'all'` or `'cover'`, `hexGrading` `'uniform'` or
+ *   `'graded'`, `bounds` six numbers.
  * @return `mesh` and every scalar `OctreeMeshResult` field in camelCase, plus
  *   `rootCells`, `leavesPerLevel`, `origin`, `timings` (`[stage, seconds]`
  *   pairs) and `warnings` as arrays.
@@ -4309,6 +4524,7 @@ val octree_mesh_js(const val& rMeshObj, const val& rOptions) {
                                  "attachDistance",
                                  "attachQuality",
                                  "pillow",
+                                 "hexGrading",
                                  "untangleIterations",
                                  "maxCells",
                                  "maxTets"});
@@ -4395,6 +4611,9 @@ val octree_mesh_js(const val& rMeshObj, const val& rOptions) {
                 options.mAttachQuality = flag("attachQuality");
             if (has("pillow"))
                 options.mPillow = flag("pillow");
+            if (has("hexGrading"))
+                options.mHexGrading =
+                    meshioplusplus::octree_mesh_hex_grading_from_name(text("hexGrading"));
             if (has("untangleIterations"))
                 options.mUntangleIterations = integer("untangleIterations");
             if (has("maxCells"))
@@ -4460,6 +4679,7 @@ val octree_mesh_js(const val& rMeshObj, const val& rOptions) {
             {"numOptimizedMoves", r.mNumOptimizedMoves},
             {"numFlips", r.mNumFlips},
             {"numWindingRechecks", r.mNumWindingRechecks},
+            {"numWindingSkipped", r.mNumWindingSkipped},
         };
         for (const auto& [name, value] : counters)
             out.set(name, static_cast<double>(value));
@@ -4786,6 +5006,40 @@ val error_size_js(const val& rMeshObj, const val& rOptions) {
         out.set("numClamped", static_cast<double>(r.mNumClamped));
         out.set("minSize", r.mMinSize);
         out.set("maxSize", r.mMaxSize);
+        return out;
+    });
+}
+
+// check_conformity (roadmap 3.2.1): hanging nodes, T-junctions, partly
+// overlapping and unwelded facets; options {tolerance, attachFlags}.
+val check_conformity_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ConformityOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the checkConformity options",
+                                {"tolerance", "attachFlags"});
+            if (rOptions.hasOwnProperty("tolerance"))
+                o.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("attachFlags"))
+                o.mAttachFlags = rOptions["attachFlags"].as<bool>();
+        }
+        meshioplusplus::ConformityResult r =
+            meshioplusplus::check_conformity(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("dimension", static_cast<double>(r.mDimension));
+        out.set("numHangingNodes", static_cast<double>(r.mNumHangingNodes));
+        out.set("numTJunctions", static_cast<double>(r.mNumTJunctions));
+        out.set("numPartialOverlaps", static_cast<double>(r.mNumPartialOverlaps));
+        out.set("numUnweldedFacets", static_cast<double>(r.mNumUnweldedFacets));
+        out.set("numBoundaryFacets", static_cast<double>(r.mNumBoundaryFacets));
+        out.set("numNonManifoldFacets", static_cast<double>(r.mNumNonManifoldFacets));
+        out.set("conforming", r.mConforming);
+        out.set("interfaceMode", r.mInterfaceMode);
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
         return out;
     });
 }
@@ -5235,7 +5489,8 @@ val refine_patches_js(const val& rMeshObj, const val& rOptions) {
  *   ransacSeed, refineTolerance, relativeTolerance, freeformGeneral,
  *   freeformTolerance, freeformSmoothing, maxFreeformPoles,
  *   maxFreeformIterations, maxFreeformSplits, sewTolerance, extendSurfaces,
- *   snapJunctions, faceDeviation}`, every key optional;
+ *   snapJunctions, faceDeviation, the freeform-mode keys and
+ *   constrainPrimitives}`, every key optional;
  *   `types` is an array of `'plane'`, `'sphere'`, `'cylinder'`, `'cone'`,
  *   `'torus'`, `backend` one of `'auto'`, `'occt'`, `'native'`; the
  *   `refine*` keys, `normalWeight`, `allow*` and `ransacSeed` set
@@ -5296,7 +5551,8 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
                                  "layoutMaxValenceDeviation",
                                  "resegmentRounds",
                                  "layoutSnapToFeatures",
-                                 "validateBySurfaceSampling"});
+                                 "validateBySurfaceSampling",
+                                 "constrainPrimitives"});
             const auto has = [&](const char* pKey) {
                 return rOptions.hasOwnProperty(pKey) && !rOptions[pKey].isUndefined();
             };
@@ -5429,6 +5685,8 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
             if (has("validateBySurfaceSampling"))
                 options.mValidateBySurfaceSampling =
                     rOptions["validateBySurfaceSampling"].as<bool>();
+            if (has("constrainPrimitives"))
+                options.mConstrainPrimitives = rOptions["constrainPrimitives"].as<bool>();
         }
         if (options.mBackend == meshioplusplus::FitCadBackend::Occt &&
             !meshioplusplus::fit_cad_has_occt())
@@ -5483,6 +5741,8 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
             {"numExtraordinaryVertices", r.mNumExtraordinaryVertices},
             {"numResegmented", r.mNumResegmented},
             {"numEscalations", r.mNumEscalations},
+            {"numConstrainedPrimitives", r.mNumConstrainedPrimitives},
+            {"numConstraintGroups", r.mNumConstraintGroups},
         };
         for (const auto& [name, value] : counters)
             out.set(name, static_cast<double>(value));
@@ -7654,6 +7914,134 @@ val boundary_layer_js(const val& rMeshObj, const val& rOptions) {
     });
 }
 
+// A JS array of three numbers, for the sweep and mirror options.
+std::array<double, 3> js_vec3(const val& rV, const char* pWhat) {
+    if (rV["length"].as<unsigned>() != 3)
+        throw std::invalid_argument(std::string("meshio++: ") + pWhat + " must have 3 entries");
+    return {rV[0].as<double>(), rV[1].as<double>(), rV[2].as<double>()};
+}
+
+val sweep_result_js(meshioplusplus::SweepResult& rR, bool Revolve) {
+    val out = val::object();
+    out.set("mesh", mesh_to_val(rR.mMesh));
+    out.set("numCells", static_cast<double>(rR.mNumCells));
+    out.set("numHexahedra", static_cast<double>(rR.mNumHexahedra));
+    out.set("numWedges", static_cast<double>(rR.mNumWedges));
+    out.set("numPyramids", static_cast<double>(rR.mNumPyramids));
+    out.set("numTetrahedra", static_cast<double>(rR.mNumTetrahedra));
+    out.set("numQuads", static_cast<double>(rR.mNumQuads));
+    out.set("numTriangles", static_cast<double>(rR.mNumTriangles));
+    out.set("numFlipped", static_cast<double>(rR.mNumFlipped));
+    if (Revolve) {
+        out.set("numOnAxis", static_cast<double>(rR.mNumOnAxis));
+        out.set("full", rR.mFull);
+    }
+    out.set("minScaledJacobian", rR.mMinScaledJacobian);
+    val warnings = val::array();
+    for (const std::string& w : rR.mWarnings)
+        warnings.call<void>("push", w);
+    out.set("warnings", warnings);
+    return out;
+}
+
+// extrude (roadmap 3.1.2): a surface swept into a volume (a curve into a
+// surface) along a vector; options {direction, numLayers, ratio, offsets,
+// recordLayers, maxCells}, all optional.
+val extrude_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ExtrudeOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the extrude options",
+                                {"direction", "numLayers", "ratio", "offsets", "recordLayers",
+                                 "maxCells"});
+            if (rOptions.hasOwnProperty("direction"))
+                o.mDirection = js_vec3(rOptions["direction"], "extrude: direction");
+            if (rOptions.hasOwnProperty("numLayers"))
+                o.mNumLayers = rOptions["numLayers"].as<int>();
+            if (rOptions.hasOwnProperty("ratio"))
+                o.mRatio = rOptions["ratio"].as<double>();
+            if (rOptions.hasOwnProperty("offsets")) {
+                const val offs = rOptions["offsets"];
+                const unsigned n = offs["length"].as<unsigned>();
+                for (unsigned i = 0; i < n; ++i)
+                    o.mOffsets.push_back(offs[i].as<double>());
+            }
+            if (rOptions.hasOwnProperty("recordLayers"))
+                o.mRecordLayers = rOptions["recordLayers"].as<bool>();
+            if (rOptions.hasOwnProperty("maxCells"))
+                o.mMaxCells = static_cast<std::int64_t>(rOptions["maxCells"].as<double>());
+        }
+        meshioplusplus::SweepResult r = meshioplusplus::extrude(val_to_mesh(rMeshObj), o);
+        return sweep_result_js(r, false);
+    });
+}
+
+// revolve (roadmap 3.1.3): the same around an axis; options {axis, axisPoint,
+// angle (degrees), numLayers, tolerance, recordLayers, maxCells}.
+val revolve_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::RevolveOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the revolve options",
+                                {"axis", "axisPoint", "angle", "numLayers", "tolerance",
+                                 "recordLayers", "maxCells"});
+            if (rOptions.hasOwnProperty("axis"))
+                o.mAxis = js_vec3(rOptions["axis"], "revolve: axis");
+            if (rOptions.hasOwnProperty("axisPoint"))
+                o.mAxisPoint = js_vec3(rOptions["axisPoint"], "revolve: axisPoint");
+            if (rOptions.hasOwnProperty("angle"))
+                o.mAngle = rOptions["angle"].as<double>();
+            if (rOptions.hasOwnProperty("numLayers"))
+                o.mNumLayers = rOptions["numLayers"].as<int>();
+            if (rOptions.hasOwnProperty("tolerance"))
+                o.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("recordLayers"))
+                o.mRecordLayers = rOptions["recordLayers"].as<bool>();
+            if (rOptions.hasOwnProperty("maxCells"))
+                o.mMaxCells = static_cast<std::int64_t>(rOptions["maxCells"].as<double>());
+        }
+        meshioplusplus::SweepResult r = meshioplusplus::revolve(val_to_mesh(rMeshObj), o);
+        return sweep_result_js(r, true);
+    });
+}
+
+// mirror (roadmap 3.2.5): reflect across a plane, every cell right side out;
+// options {origin, normal, keepOriginal, weld, tolerance, reflectVectorData}.
+val mirror_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::MirrorOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the mirror options",
+                                {"origin", "normal", "keepOriginal", "weld", "tolerance",
+                                 "reflectVectorData"});
+            if (rOptions.hasOwnProperty("origin"))
+                o.mOrigin = js_vec3(rOptions["origin"], "mirror: origin");
+            if (rOptions.hasOwnProperty("normal"))
+                o.mNormal = js_vec3(rOptions["normal"], "mirror: normal");
+            if (rOptions.hasOwnProperty("keepOriginal"))
+                o.mKeepOriginal = rOptions["keepOriginal"].as<bool>();
+            if (rOptions.hasOwnProperty("weld"))
+                o.mWeld = rOptions["weld"].as<bool>();
+            if (rOptions.hasOwnProperty("tolerance"))
+                o.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("reflectVectorData"))
+                o.mReflectVectorData = rOptions["reflectVectorData"].as<bool>();
+        }
+        meshioplusplus::MirrorResult r = meshioplusplus::mirror(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numFlippedCells", static_cast<double>(r.mNumFlippedCells));
+        out.set("numPointsOnPlane", static_cast<double>(r.mNumPointsOnPlane));
+        out.set("numDroppedCells", static_cast<double>(r.mNumDroppedCells));
+        out.set("numDroppedSides", static_cast<double>(r.mNumDroppedSides));
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
 // tetrahedralize (roadmap 6.7): tetrahedra filling a closed triangle surface;
 // options {backend ("auto" | "netgen" | "octree"), maxSize, maxVolume,
 // grading, optimizeSteps, maxCells, faceArray}, all optional. No WebAssembly
@@ -8254,6 +8642,27 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("plateWithHole", &plate_with_hole_js);
     emscripten::function("honeycomb", &honeycomb_js);
     emscripten::function("referenceCells", &reference_cells_js);
+    emscripten::function("line", &line_js);
+    emscripten::function("circle", &circle_js);
+    emscripten::function("helix", &helix_js);
+    emscripten::function("spherePoints", &sphere_points_js);
+    emscripten::function("boxPoints", &box_points_js);
+    emscripten::function("tetraSphere", &tetra_sphere_js);
+    emscripten::function("octaSphere", &octa_sphere_js);
+    emscripten::function("cubeSphere", &cube_sphere_js);
+    emscripten::function("geoSphere", &geo_sphere_js);
+    emscripten::function("torus", &torus_js);
+    emscripten::function("moebius", &moebius_js);
+    emscripten::function("tube", &tube_js);
+    emscripten::function("cone", &cone_js);
+    emscripten::function("capsule", &capsule_js);
+    emscripten::function("boxSurface", &box_surface_js);
+    emscripten::function("platonic", &platonic_js);
+    emscripten::function("ball", &ball_js);
+    emscripten::function("sphericalShell", &spherical_shell_js);
+    emscripten::function("pipe", &pipe_js);
+    emscripten::function("fichera", &fichera_js);
+    emscripten::function("solidTorus", &solid_torus_js);
     emscripten::function("voxelize", &voxelize_js);
     emscripten::function("octree", &octree_js);
     emscripten::function("octreeMesh", &octree_mesh_js);
@@ -8265,6 +8674,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("hessian", &hessian_js);
     emscripten::function("estimateError", &estimate_error_js);
     emscripten::function("errorSize", &error_size_js);
+    emscripten::function("checkConformity", &check_conformity_js);
     emscripten::function("remesh", &remesh_js);
     emscripten::function("remeshVolume", &remesh_volume_js);
     emscripten::function("optimizeVolume", &optimize_volume_js);
@@ -8281,6 +8691,9 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("meshCadSurface", &mesh_cad_surface_js);
     emscripten::function("projectToCad", &project_to_cad_js);
     emscripten::function("boundaryLayer", &boundary_layer_js);
+    emscripten::function("extrude", &extrude_js);
+    emscripten::function("revolve", &revolve_js);
+    emscripten::function("mirror", &mirror_js);
     emscripten::function("tetrahedralize", &tetrahedralize_js);
     emscripten::function("hasNetgen", &has_netgen_js);
     emscripten::function("igaEvaluate", &iga_evaluate_js);

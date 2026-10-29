@@ -2174,6 +2174,14 @@ step('estimateError: zero on a linear field, nonzero and markable on a quadratic
     assert.throws(() => m.errorSize(e1.mesh, { targetError: 0 }), /target_error/);
     assert.throws(() => m.errorSize(e1.mesh, { targetError: 1e-3, bogus: 1 }), /bogus/);
     assert.throws(() => m.errorSize(quadField, { targetError: 1e-3 }), /error:zz/);
+
+    // Roadmap 3.2.1: a conforming mesh reports nothing and flags no point.
+    const c = m.checkConformity(e1.mesh);
+    assert.equal(c.conforming, true);
+    assert.equal(c.interfaceMode, 'conforming');
+    assert.ok(c.mesh.point_data['conformity:hanging'].every((v) => Number(v) === 0));
+    assert.throws(() => m.checkConformity(e1.mesh, { tolerance: -1 }), /tolerance/);
+    assert.throws(() => m.checkConformity(e1.mesh, { bogus: 1 }), /bogus/);
 });
 
 step('convertSurfaceOps: gradient is a chainable pipeline step', () => {
@@ -2310,6 +2318,29 @@ step('the parametric generators build meshes and refuse bad requests', () => {
     assert.equal(m.lshape(3).points.length, 40 * 3);
     assert.equal(m.plateWithHole(0.25, 1, 3, 2).points.length, 36 * 3);
     assert.equal(m.honeycomb([3, 2]).points.length, 22 * 3);
+    assert.equal(m.line(4, null, [0, 0, 2]).points.length, 5 * 3);
+    assert.equal(m.circle(1, 6, null, 2).points.length, 12 * 3);
+    assert.equal(m.helix(1, 1, 2, 10).points.length, 11 * 3);
+    assert.equal(m.spherePoints(7).points.length, 7 * 3);
+    assert.equal(m.boxPoints(7, null, null, 3).points.length, 7 * 3);
+    assert.equal(m.tetraSphere(1, 1).points.length, 10 * 3);
+    assert.equal(m.octaSphere(1, 1).points.length, 18 * 3);
+    assert.equal(m.cubeSphere(1, 2).points.length, 26 * 3);
+    assert.equal(m.geoSphere(1, 2).points.length, 42 * 3);
+    assert.equal(m.torus(1, 0.25, 6, 4).points.length, 24 * 3);
+    assert.equal(m.moebius(1, 0.5, 6, 2).points.length, 18 * 3);
+    assert.equal(m.tube(1, 1, 6, 2).points.length, 18 * 3);
+    assert.equal(m.cone(1, 1, 6, 2).points.length, 20 * 3);
+    assert.equal(m.capsule(0.5, 1, 6, 1, 2).points.length, 26 * 3);
+    assert.equal(m.boxSurface([1, 2, 3]).points.length, 24 * 3);
+    assert.equal(m.platonic('dodecahedron').points.length, 20 * 3);
+    assert.equal(m.ball(1, 1).points.length, 27 * 3);
+    assert.equal(m.sphericalShell(0.5, 1, 2, 1).points.length, 52 * 3);
+    assert.equal(m.pipe(0.5, 1, 1, 6, 1, 2).points.length, 36 * 3);
+    assert.equal(m.fichera(1).points.length, 26 * 3);
+    assert.equal(m.solidTorus(1, 0.25, 2, 5).points.length, 45 * 3);
+    assert.equal(m.box(null, null, null, 'hexahedron', 2, 20000000, true).points.length, 27 * 3);
+    assert.throws(() => m.platonic('sphere'));
     assert.throws(() => m.plateWithHole(0.9));
     assert.throws(() => m.box([2, 2, 2], null, null, 'blob'));
     assert.throws(() => m.box([100, 100, 100], null, null, 'hexahedron', 1, 1000));
@@ -2388,6 +2419,13 @@ step('voxelize keeps the whole box, the shell, or the interior', () => {
 
     // An unknown fill fails by name rather than silently defaulting.
     assert.throws(() => m.voxelize(cubeSurface, [2, 2, 2], 0, null, 0, 0, 'solid'));
+
+    // 2-D pixels in an explicit plane; an unknown plane is refused.
+    const flat = m.voxelize(cubeSurface, [4, 2, 0], 0, null, 0, 0, 'all', 'pseudonormal',
+        false, 20000000, 'off', 'yz');
+    assert.deepEqual(Array.from(flat.dims), [4, 2, 1]);
+    assert.throws(() => m.voxelize(cubeSurface, [4, 2, 0], 0, null, 0, 0, 'all',
+        'pseudonormal', false, 20000000, 'off', 'uv'));
 });
 
 step('sampleDistance matches the cube\'s closed form', () => {
@@ -2809,6 +2847,12 @@ step('the stays-out set is exactly what this artifact reports (roadmap 6.2.4)', 
     });
     assert.equal(general.closed, true);
     assert.equal(general.numFreeformGeneral, 0);
+    assert.equal(plain.numConstrainedPrimitives, 0);
+    assert.equal(plain.numConstraintGroups, 0);
+    const constrained = m.fitCad(cubeSurface, { backend: 'native', constrainPrimitives: true });
+    assert.equal(constrained.numFaces, 6);
+    assert.equal(constrained.numDemoted, 0);
+    assert.ok(constrained.numConstrainedPrimitives >= 0 && constrained.numConstrainedPrimitives <= 6);
     assert.throws(() => m.fitCad(cubeSurface, { maxFreeformPoles: 3 }), /max_freeform_poles/);
     assert.throws(() => m.fitCad(cubeSurface, { sewTolerance: -1 }), /sew_tolerance/);
     if (m.hasOcct()) {
@@ -5641,6 +5685,28 @@ step('tessellate: curved tetra10 + quad9, pass-through line', () => {
     assert.deepEqual(tsFlat.mesh.cells.map((c) => c.type), ['line', 'tetra10', 'quad9']);
     assert.throws(() => m.tessellate(curvedMesh, -1), /levels/);
     assert.throws(() => m.tessellate(curvedMesh, 1.5), /levels/);
+});
+
+step('extrude, revolve and mirror (roadmap 3.1.2, 3.1.3, 3.2.5)', () => {
+    const rect = m.rectangle([3, 2]);
+    const e = m.extrude(rect, { numLayers: 4 });
+    assert.equal(e.numHexahedra, 24);
+    assert.equal(e.mesh.points.length, m.box([3, 2, 4]).points.length);
+    assert.ok(e.mesh.regions.some((r) => r.name === 'top' && r.kind === 'side'));
+    assert.throws(() => m.extrude(rect, { direction: [0, 1, 0] }), /parallel/);
+    assert.throws(() => m.extrude(rect, { bogus: 1 }), /bogus/);
+    const v = m.revolve(rect, { numLayers: 8 });
+    assert.equal(v.full, true);
+    assert.equal(v.numOnAxis, 3);
+    assert.equal(v.numWedges, 16);
+    assert.throws(() => m.revolve(rect, { numLayers: 2 }), /3 steps/);
+    const box = m.box([2, 2, 2], null, null, 'tetra');
+    const mr = m.mirror(box);
+    assert.equal(mr.numFlippedCells, 48);
+    const k = m.mirror(box, { keepOriginal: true });
+    assert.equal(k.numPointsOnPlane, 9);
+    assert.equal(k.mesh.points.length, (2 * 27 - 9) * 3);
+    assert.throws(() => m.mirror(box, { normal: [0, 0, 0] }), /normal/);
 });
 
 step('findInterface, contactPairs and splitInterface', () => {

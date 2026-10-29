@@ -29,7 +29,9 @@ from contextvars import ContextVar
 
 import numpy as np
 
+from . import _primitives
 from ._agglomerate import agglomerate
+from ._check_conformity import check_conformity
 from ._clean import clean
 from ._convert_cells import convert_cells
 from ._crop import crop
@@ -246,6 +248,7 @@ _OP_TABLE = {
         "ResegmentRounds",
         "LayoutSnapToFeatures",
         "ValidateBySurfaceSampling",
+        "ConstrainPrimitives",
     ),
     "RefinePatches": (
         "Tolerance",
@@ -274,6 +277,7 @@ _OP_TABLE = {
     ),
     "SplitInterface": ("Region", "AddCohesive"),
     "QualityGate": ("Require", "MaxInverted", "MaxDegenerate"),
+    "CheckConformity": ("Tolerance", "Require", "AttachFlags"),
     "Snapshot": (
         "Path",
         "Width",
@@ -397,6 +401,7 @@ _OP_TABLE = {
         "AttachOccupancy",
         "MaxCells",
         "Sign",
+        "Plane",
     ),
     "Generate": (
         "Shape",
@@ -427,6 +432,19 @@ _OP_TABLE = {
         "MaxCells",
         "Types",
         "Pairs",
+        "Complete",
+        "Start",
+        "End",
+        "Pitch",
+        "Turns",
+        "Seed",
+        "MajorRadius",
+        "MinorRadius",
+        "Width",
+        "NumTwists",
+        "Ncap",
+        "Ratio",
+        "Name",
     ),
     "OctreeMesh": (
         "Output",
@@ -460,6 +478,7 @@ _OP_TABLE = {
         "AttachDistance",
         "AttachQuality",
         "Pillow",
+        "HexGrading",
         "UntangleIterations",
         "MaxCells",
         "MaxTets",
@@ -623,6 +642,25 @@ _OP_TABLE = {
         "NormalSmoothIterations",
         "FrontCheck",
     ),
+    # Sweeps (roadmap 3.1.2, 3.1.3) and the reflection (3.2.5).
+    "Extrude": (
+        "Direction",
+        "NumLayers",
+        "Ratio",
+        "Offsets",
+        "RecordLayers",
+        "MaxCells",
+    ),
+    "Revolve": (
+        "Axis",
+        "AxisPoint",
+        "Angle",
+        "NumLayers",
+        "Tolerance",
+        "RecordLayers",
+        "MaxCells",
+    ),
+    "Mirror": ("Point", "Normal", "KeepOriginal", "Weld", "Tolerance", "ReflectData"),
     # Tetrahedra filling the closed triangle surface (roadmap 6.7).
     "Tetrahedralize": (
         "Backend",
@@ -1053,7 +1091,167 @@ _GENERATE_SHAPES = (
     "plate_with_hole",
     "honeycomb",
     "reference_cells",
+    "line",
+    "circle",
+    "helix",
+    "sphere_points",
+    "box_points",
+    "tetra_sphere",
+    "octa_sphere",
+    "cube_sphere",
+    "geo_sphere",
+    "torus",
+    "moebius",
+    "tube",
+    "cone",
+    "capsule",
+    "box_surface",
+    "platonic",
+    "ball",
+    "spherical_shell",
+    "pipe",
+    "fichera",
+    "solid_torus",
 )
+
+_ORIGIN = ("origin", "triple", [0.0, 0.0, 0.0])
+_CENTER = ("center", "triple", [0.0, 0.0, 0.0])
+_QUAD = ("cell_type", "text", "quad")
+_HEX = ("cell_type", "text", "hexahedron")
+_SURFACE = {
+    "Radius": ("radius", "number", 1.0),
+    "Height": ("height", "number", 1.0),
+    "Ntheta": ("ntheta", "count", 16),
+    "Nz": ("nz", "count", 4),
+    "Center": _CENTER,
+    "CellType": _QUAD,
+}
+#: The second tier of shapes: pipeline key -> (keyword, kind, default). The
+#: ``order``, ``complete`` and ``max_cells`` keywords are added by
+#: :func:`_generate` unless the shape is in ``_GENERATE_LINEAR``.
+_GENERATE_SPECS = {
+    "line": {
+        "N": ("n", "count", 8),
+        "Start": ("start", "triple", [0.0, 0.0, 0.0]),
+        "End": ("end", "triple", [1.0, 0.0, 0.0]),
+    },
+    "circle": {
+        "Radius": ("radius", "number", 1.0),
+        "N": ("n", "count", 16),
+        "Center": _CENTER,
+    },
+    "helix": {
+        "Radius": ("radius", "number", 1.0),
+        "Pitch": ("pitch", "number", 1.0),
+        "Turns": ("turns", "number", 2.0),
+        "N": ("n", "count", 32),
+        "Center": _CENTER,
+    },
+    "sphere_points": {
+        "N": ("n", "count", 100),
+        "Radius": ("radius", "number", 1.0),
+        "Center": _CENTER,
+    },
+    "box_points": {
+        "N": ("n", "count", 100),
+        "Size": ("size", "triple", [1.0, 1.0, 1.0]),
+        "Origin": _ORIGIN,
+        "Seed": ("seed", "count", 0),
+    },
+    "tetra_sphere": {
+        "Radius": ("radius", "number", 1.0),
+        "Subdivisions": ("subdivisions", "count", 3),
+        "Center": _CENTER,
+    },
+    "octa_sphere": {
+        "Radius": ("radius", "number", 1.0),
+        "Subdivisions": ("subdivisions", "count", 2),
+        "Center": _CENTER,
+    },
+    "cube_sphere": {
+        "Radius": ("radius", "number", 1.0),
+        "N": ("n", "count", 4),
+        "Center": _CENTER,
+        "CellType": _QUAD,
+    },
+    "geo_sphere": {
+        "Radius": ("radius", "number", 1.0),
+        "N": ("n", "count", 4),
+        "Center": _CENTER,
+    },
+    "torus": {
+        "MajorRadius": ("major_radius", "number", 1.0),
+        "MinorRadius": ("minor_radius", "number", 0.25),
+        "Nu": ("nu", "count", 32),
+        "Nv": ("nv", "count", 16),
+        "Center": _CENTER,
+        "CellType": _QUAD,
+    },
+    "moebius": {
+        "Radius": ("radius", "number", 1.0),
+        "Width": ("width", "number", 0.5),
+        "Nu": ("nu", "count", 32),
+        "Nv": ("nv", "count", 4),
+        "NumTwists": ("num_twists", "count", 1),
+        "Center": _CENTER,
+        "CellType": _QUAD,
+    },
+    "tube": _SURFACE,
+    "cone": _SURFACE,
+    "capsule": dict(
+        _SURFACE, Radius=("radius", "number", 0.5), Ncap=("ncap", "count", 4)
+    ),
+    "box_surface": {
+        "Dims": ("dims", "dims3", 1),
+        "Size": ("size", "triple", [1.0, 1.0, 1.0]),
+        "Origin": _ORIGIN,
+        "CellType": _QUAD,
+    },
+    "platonic": {
+        "Name": ("name", "text", "icosahedron"),
+        "Radius": ("radius", "number", 1.0),
+        "Center": _CENTER,
+    },
+    "ball": {
+        "Radius": ("radius", "number", 1.0),
+        "N": ("n", "count", 4),
+        "Center": _CENTER,
+        "CellType": _HEX,
+    },
+    "spherical_shell": {
+        "InnerRadius": ("inner_radius", "number", 0.5),
+        "OuterRadius": ("outer_radius", "number", 1.0),
+        "N": ("n", "count", 4),
+        "Nr": ("nr", "count", 2),
+        "Ratio": ("ratio", "number", 1.0),
+        "Center": _CENTER,
+    },
+    "pipe": {
+        "InnerRadius": ("inner_radius", "number", 0.5),
+        "OuterRadius": ("outer_radius", "number", 1.0),
+        "Height": ("height", "number", 1.0),
+        "Ntheta": ("ntheta", "count", 16),
+        "Nr": ("nr", "count", 2),
+        "Nz": ("nz", "count", 4),
+        "Ratio": ("ratio", "number", 1.0),
+        "Center": _CENTER,
+    },
+    "fichera": {
+        "N": ("n", "count", 2),
+        "Size": ("size", "number", 2.0),
+        "Center": _CENTER,
+        "CellType": _HEX,
+    },
+    "solid_torus": {
+        "MajorRadius": ("major_radius", "number", 1.0),
+        "MinorRadius": ("minor_radius", "number", 0.25),
+        "N": ("n", "count", 4),
+        "Nu": ("nu", "count", 32),
+        "Center": _CENTER,
+    },
+}
+#: Shapes of the second tier without ``order`` (points and polygon faces).
+_GENERATE_LINEAR = {"sphere_points", "box_points", "platonic"}
 
 
 def _generate(step):
@@ -1061,6 +1259,7 @@ def _generate(step):
     shape = _text(step, "Shape", "")
     max_cells = int(_number(step, "MaxCells", 20000000.0))
     order = int(_number(step, "Order", 1.0))
+    complete = _flag(step, "Complete", False)
 
     def triple(key, default, pad_zero=False):
         v = _dvec(step, key)
@@ -1097,6 +1296,7 @@ def _generate(step):
             split=_text(step, "Split", "zigzag"),
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
     if shape == "box":
         return box(
@@ -1106,6 +1306,7 @@ def _generate(step):
             cell_type=_text(step, "CellType", "hexahedron"),
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
     if shape == "disk":
         return disk(
@@ -1115,6 +1316,7 @@ def _generate(step):
             cell_type=_text(step, "CellType", "quad"),
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
     if shape == "uv_sphere":
         return uv_sphere(
@@ -1125,6 +1327,7 @@ def _generate(step):
             cell_type=_text(step, "CellType", "triangle"),
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
     if shape == "icosa_sphere":
         return icosa_sphere(
@@ -1133,6 +1336,7 @@ def _generate(step):
             center=triple("Center", zero),
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
     if shape == "cylinder":
         return cylinder(
@@ -1144,6 +1348,7 @@ def _generate(step):
             cell_type=_text(step, "CellType", "hexahedron"),
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
     if shape == "reference_triangle":
         size = _dvec(step, "Size")
@@ -1155,6 +1360,7 @@ def _generate(step):
             origin=triple("Origin", zero, True),
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
     if shape == "ngon":
         return ngon(
@@ -1164,6 +1370,7 @@ def _generate(step):
             center=triple("Center", zero),
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
     if shape == "annulus":
         return annulus(
@@ -1176,6 +1383,7 @@ def _generate(step):
             cell_type=_text(step, "CellType", "quad"),
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
     if shape == "lshape":
         return lshape(
@@ -1185,6 +1393,7 @@ def _generate(step):
             cell_type=_text(step, "CellType", "quad"),
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
     if shape == "plate_with_hole":
         return plate_with_hole(
@@ -1196,6 +1405,7 @@ def _generate(step):
             cell_type=_text(step, "CellType", "quad"),
             order=order,
             max_cells=max_cells,
+            complete=complete,
         )
     if shape == "honeycomb":
         return honeycomb(
@@ -1208,6 +1418,24 @@ def _generate(step):
         return reference_cells(
             types=_svec(step, "Types") or None, pairs=_flag(step, "Pairs", False)
         )
+    if shape in _GENERATE_SPECS:
+        kwargs = {}
+        for key, (name, kind, default) in _GENERATE_SPECS[shape].items():
+            if kind == "number":
+                kwargs[name] = _number(step, key, default)
+            elif kind == "count":
+                kwargs[name] = count(key, default)
+            elif kind == "text":
+                kwargs[name] = _text(step, key, default)
+            elif kind == "dims3":
+                kwargs[name] = dims_of(3, default)
+            else:
+                kwargs[name] = triple(key, default)
+        if shape not in _GENERATE_LINEAR:
+            kwargs["order"] = order
+            kwargs["complete"] = complete
+        kwargs["max_cells"] = max_cells
+        return getattr(_primitives, shape)(**kwargs)
     raise _err(
         "Generate",
         f"'Shape' must be one of {', '.join(_GENERATE_SHAPES)}, not '{shape}'",
@@ -1323,6 +1551,63 @@ def _apply_step(mesh, step, steps, warnings):
             NumFewerLayers=float(report["num_fewer_layers"]),
             NumFrontCrossings=float(report["num_front_crossings"]),
             MinScaledJacobian=float(report["min_scaled_jacobian"]),
+        )
+    elif op == "Extrude":
+        from ._extrude import extrude
+
+        mesh, report = extrude(
+            mesh,
+            _vec3(step, "Direction") if "Direction" in step else (0.0, 0.0, 1.0),
+            num_layers=int(_number(step, "NumLayers", 1)),
+            ratio=_number(step, "Ratio", 1.0),
+            offsets=_dvec(step, "Offsets"),
+            record_layers=_flag(step, "RecordLayers", False),
+            max_cells=int(_number(step, "MaxCells", 20_000_000)),
+            return_report=True,
+        )
+        entry.update(
+            NumCells=float(report["num_cells"]),
+            NumFlipped=float(report["num_flipped"]),
+            MinScaledJacobian=float(report["min_scaled_jacobian"]),
+        )
+    elif op == "Revolve":
+        from ._extrude import revolve
+
+        mesh, report = revolve(
+            mesh,
+            _vec3(step, "Axis") if "Axis" in step else (0.0, 1.0, 0.0),
+            axis_point=(
+                _vec3(step, "AxisPoint") if "AxisPoint" in step else (0.0, 0.0, 0.0)
+            ),
+            angle=_number(step, "Angle", 360.0),
+            num_layers=int(_number(step, "NumLayers", 16)),
+            tolerance=_number(step, "Tolerance", 1e-9),
+            record_layers=_flag(step, "RecordLayers", False),
+            max_cells=int(_number(step, "MaxCells", 20_000_000)),
+            return_report=True,
+        )
+        entry.update(
+            NumCells=float(report["num_cells"]),
+            NumOnAxis=float(report["num_on_axis"]),
+            MinScaledJacobian=float(report["min_scaled_jacobian"]),
+        )
+    elif op == "Mirror":
+        from ._mirror import mirror
+
+        mesh, report = mirror(
+            mesh,
+            _vec3(step, "Point") if "Point" in step else (0.0, 0.0, 0.0),
+            _vec3(step, "Normal") if "Normal" in step else (1.0, 0.0, 0.0),
+            keep_original=_flag(step, "KeepOriginal", False),
+            weld=_flag(step, "Weld", True),
+            tolerance=_number(step, "Tolerance", 1e-9),
+            reflect_vector_data=_flag(step, "ReflectData", False),
+            return_report=True,
+        )
+        entry.update(
+            NumFlippedCells=float(report["num_flipped_cells"]),
+            NumPointsOnPlane=float(report["num_points_on_plane"]),
+            NumDroppedCells=float(report["num_dropped_cells"]),
         )
     elif op == "Tetrahedralize":
         mesh = _tetrahedralize_step(mesh, step, entry, warnings)
@@ -1619,6 +1904,7 @@ def _apply_step(mesh, step, steps, warnings):
             resegment_rounds=int(_number(step, "ResegmentRounds", 2.0)),
             layout_snap_to_features=_flag(step, "LayoutSnapToFeatures", True),
             validate_by_surface_sampling=_flag(step, "ValidateBySurfaceSampling", True),
+            constrain_primitives=_flag(step, "ConstrainPrimitives", False),
         )
         entry["Valid"] = 1.0 if report["valid"] else 0.0
         entry["Native"] = 1.0 if report["backend"] == "native" else 0.0
@@ -1660,6 +1946,9 @@ def _apply_step(mesh, step, steps, warnings):
         if "hausdorff_max" in report:
             entry["HausdorffMax"] = report["hausdorff_max"]
             entry["HausdorffRms"] = report["hausdorff_rms"]
+        if "num_constrained_primitives" in report:
+            entry["NumConstrainedPrimitives"] = report["num_constrained_primitives"]
+            entry["NumConstraintGroups"] = report["num_constraint_groups"]
         # The freeform modes (v17.12.0) report only outside the legacy mode.
         if "freeform_mode" in report:
             entry["BrepChecked"] = 1.0 if report["brep_checked"] else 0.0
@@ -1729,6 +2018,31 @@ def _apply_step(mesh, step, steps, warnings):
             )
         entry["NumChecks"] = len(result["checks"])
         entry["NumFailed"] = sum(not c["passed"] for c in result["checks"])
+    elif op == "CheckConformity":
+        # A gate by default: a mesh that is not conforming stops the pipeline;
+        # with Require false it only reports. AttachFlags writes
+        # conformity:hanging onto the mesh that flows on.
+        attach = _flag(step, "AttachFlags", False)
+        flagged, rep = check_conformity(
+            mesh,
+            tolerance=_number(step, "Tolerance", 1e-9),
+            attach_flags=attach,
+            return_report=True,
+        )
+        if _flag(step, "Require", True) and not rep["conforming"]:
+            raise RuntimeError(
+                "meshio++: pipeline: CheckConformity failed: "
+                f"{rep['num_hanging_nodes']} hanging node(s), "
+                f"{rep['num_t_junctions']} T-junction(s), "
+                f"{rep['num_partial_overlaps']} partial overlap(s), "
+                f"{rep['num_unwelded_facets']} unwelded facet pair(s)"
+            )
+        entry["NumHangingNodes"] = float(rep["num_hanging_nodes"])
+        entry["NumTJunctions"] = float(rep["num_t_junctions"])
+        entry["NumPartialOverlaps"] = float(rep["num_partial_overlaps"])
+        entry["NumUnweldedFacets"] = float(rep["num_unwelded_facets"])
+        if attach:
+            mesh = flagged
     elif op == "EditRegions":
         kind = _text(step, "Kind", "") or None
         edit = {
@@ -2008,6 +2322,7 @@ def _apply_step(mesh, step, steps, warnings):
             max_cells=int(_number(step, "MaxCells", 20000000.0)),
             sign=_text(step, "Sign", "pseudonormal"),
             watertight_check="off",
+            plane=_text(step, "Plane", "auto"),
             return_report=True,
         )
         entry["NumOccupied"] = float(rep["num_occupied"])
@@ -2048,6 +2363,7 @@ def _apply_step(mesh, step, steps, warnings):
             attach_distance=_flag(step, "AttachDistance", True),
             attach_quality=_flag(step, "AttachQuality", False),
             pillow=_flag(step, "Pillow", True),
+            hex_grading=_text(step, "HexGrading", "uniform"),
             untangle_iterations=int(_number(step, "UntangleIterations", 50.0)),
             max_cells=int(_number(step, "MaxCells", 20000000.0)),
             max_tets=int(_number(step, "MaxTets", 100000000.0)),

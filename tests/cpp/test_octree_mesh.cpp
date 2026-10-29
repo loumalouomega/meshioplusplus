@@ -28,8 +28,10 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <map>
 #include <stdexcept>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -46,6 +48,7 @@
 #include "../../src/cpp/benchmark/mesh_digest.hpp"
 #include "meshioplusplus/detail/surface_distance.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/operations/check_conformity.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/octree.hpp"
@@ -348,6 +351,118 @@ TEST(OctreeMesh, IsTheSameOnEveryThreadCount) {
 #ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
     omp_set_num_threads(saved);
 #endif
+}
+
+namespace {
+
+// Switch the flooded inside test off (the internal test hook) for a scope.
+struct OmNoFlood {
+    OmNoFlood() { om_setenv("0"); }
+    ~OmNoFlood() { om_setenv(nullptr); }
+    static void om_setenv(const char* pValue) {
+#ifdef _WIN32
+        _putenv_s("MESHIOPLUSPLUS_OCTREE_MESH_FLOOD", pValue != nullptr ? pValue : "");
+#else
+        if (pValue != nullptr)
+            setenv("MESHIOPLUSPLUS_OCTREE_MESH_FLOOD", pValue, 1);
+        else
+            unsetenv("MESHIOPLUSPLUS_OCTREE_MESH_FLOOD");
+#endif
+    }
+};
+
+std::uint64_t om_digest(const mio::Mesh& rMesh) {
+    mio::bench::MeshDigest d;
+    d.Of(rMesh);
+    return d.Value();
+}
+
+}  // namespace
+
+// Roadmap 3.1.4.3: deep inside a closed skin the winding number is flooded in
+// rather than evaluated, and every output is bit for bit what it was.
+TEST(OctreeMesh, TheFloodedInsideTestChangesNoOutput) {
+    const mio::Mesh sphere = mio::icosa_sphere(1.0, 3);
+    for (auto output : {mio::OctreeMeshOutput::Tetra, mio::OctreeMeshOutput::Castellated,
+                        mio::OctreeMeshOutput::Hexa}) {
+        mio::OctreeMeshOptions o;
+        o.mOutput = output;
+        o.mMaxSize = 0.12;
+        o.mMinSize = 0.06;
+        const auto flooded = mio::octree_mesh(sphere, o);
+        EXPECT_GT(flooded.mNumWindingSkipped, 0) << static_cast<int>(output);
+        std::uint64_t plain_digest = 0;
+        std::int64_t plain_rechecks = 0;
+        {
+            OmNoFlood off;
+            const auto plain = mio::octree_mesh(sphere, o);
+            EXPECT_EQ(plain.mNumWindingSkipped, 0);
+            plain_digest = om_digest(plain.mMesh);
+            plain_rechecks = plain.mNumWindingRechecks;
+        }
+        EXPECT_EQ(om_digest(flooded.mMesh), plain_digest) << static_cast<int>(output);
+        EXPECT_EQ(flooded.mNumWindingRechecks, plain_rechecks) << static_cast<int>(output);
+    }
+}
+
+// A cylinder whose caps lie exactly on lattice planes: the cut flags' closed
+// test may miss a cap in the face between two leaves, and a flood through it
+// would fill the outside. The flood's own test grows the boxes by a margin.
+TEST(OctreeMesh, AFloodDoesNotCrossASkinOnALatticePlane) {
+    const mio::Mesh skin = mio::convert_cells(mio::extract_surface(mio::cylinder(0.5, 2.0, 48, 16)),
+                                              {mio::ConvertCellsMode::Simplexify, false})
+                               .mMesh;
+    for (auto output : {mio::OctreeMeshOutput::Tetra, mio::OctreeMeshOutput::Castellated}) {
+        mio::OctreeMeshOptions o;
+        o.mOutput = output;
+        o.mMinSize = 0.1;
+        o.mMaxSize = 0.5;
+        const auto flooded = mio::octree_mesh(skin, o);
+        EXPECT_GT(flooded.mNumWindingSkipped, 0);
+        OmNoFlood off;
+        const auto plain = mio::octree_mesh(skin, o);
+        EXPECT_EQ(om_digest(flooded.mMesh), om_digest(plain.mMesh)) << static_cast<int>(output);
+        EXPECT_EQ(flooded.mNumCells, plain.mNumCells);
+    }
+}
+
+// Roadmap 3.1.4.3: a cylinder's rims on fine graded skins. The guard counted
+// the slivers outside the skin, which the output drops, and held rim vertices
+// off their chains; every chain is recovered now, and nothing kept inverts.
+TEST(OctreeMesh, ACylindersRimsAreRecoveredOnFineSkins) {
+    const mio::Mesh skin = mio::convert_cells(mio::extract_surface(mio::cylinder(0.5, 2.0, 48, 16)),
+                                              {mio::ConvertCellsMode::Simplexify, false})
+                               .mMesh;
+    for (double hmin : {0.1, 0.05}) {
+        mio::OctreeMeshOptions o;
+        o.mMinSize = hmin;
+        o.mMaxSize = 0.5;
+        const auto r = mio::octree_mesh(skin, o);
+        EXPECT_EQ(r.mNumFeatureChains, 4) << hmin;
+        EXPECT_EQ(r.mNumFeatureChainsMissed, 0) << hmin;
+        EXPECT_EQ(r.mNumCornersSnapped, r.mNumCorners) << hmin;
+        EXPECT_EQ(r.mNumInverted, 0) << hmin;
+        EXPECT_LT(r.mHausdorffToSkin, 0.25 * hmin) << hmin;
+        EXPECT_TRUE(mio::check_conformity(r.mMesh).mConforming) << hmin;
+    }
+}
+
+TEST(OctreeMesh, AnOpenSkinIsNotFlooded) {
+    // The sphere less one triangle: its winding number is not an integer.
+    const mio::Mesh closed = mio::icosa_sphere(1.0, 2);
+    const auto block = closed.Cells(0);
+    std::vector<std::vector<std::int64_t>> tris;
+    for (std::size_t t = 1; t < block.NumCells(); ++t)
+        tris.push_back({block.Conn().As<std::int64_t>()[t * 3],
+                        block.Conn().As<std::int64_t>()[t * 3 + 1],
+                        block.Conn().As<std::int64_t>()[t * 3 + 2]});
+    std::vector<std::vector<double>> pts;
+    const double* p = closed.Points().As<double>();
+    for (std::size_t i = 0; i < closed.NumPoints(); ++i)
+        pts.push_back({p[i * 3], p[i * 3 + 1], p[i * 3 + 2]});
+    mio::OctreeMeshOptions o = om_castellated(0.2, 0.1);
+    const auto r = mio::octree_mesh(mt::make_mesh(pts, "triangle", tris), o);
+    EXPECT_EQ(r.mNumWindingSkipped, 0);
 }
 
 TEST(OctreeMesh, RefusesBadOptionsByName) {
@@ -797,4 +912,73 @@ TEST(OctreeMeshHex, RefusesAGridAboveMaxCellsByName) {
     } catch (const std::invalid_argument& rE) {
         EXPECT_NE(std::string(rE.what()).find("max_cells"), std::string::npos);
     }
+}
+
+TEST(OctreeMeshHex, GradedHexahedraFollowTheOctree) {
+    // The sphere at a fine curvature angle and a capped cylinder whose skin
+    // grades from its rims to its caps: the graded dual has fewer hexahedra
+    // than one grid at the skin's size, none inverted, a closed manifold
+    // boundary on the skin, and every corner of positive scaled Jacobian.
+    struct Case {
+        mio::Mesh mSkin;
+        mio::OctreeMeshOptions mOptions;
+    };
+    std::vector<Case> cases;
+    {
+        auto o = om_hex(0.0);
+        o.mCurvatureAngle = 5.0;
+        o.mMaxSize = 0.5;
+        cases.push_back({mio::icosa_sphere(1.0, 5), o});
+    }
+    {
+        auto o = om_hex(0.0);
+        o.mMinSize = 0.05;
+        cases.push_back({analytic::capped_cylinder(0.5, 2.0, 6, 48), o});
+    }
+    for (const Case& c : cases) {
+        auto o = c.mOptions;
+        o.mHexGrading = mio::OctreeMeshHexGrading::Graded;
+        const auto r = mio::octree_mesh(c.mSkin, o);
+        const auto u = mio::octree_mesh(c.mSkin, c.mOptions);
+        const OmHexCheck h = om_check_hexes(r.mMesh);
+        EXPECT_LT(r.mNumHexahedra, u.mNumHexahedra);
+        EXPECT_EQ(r.mNumInverted, 0);
+        EXPECT_GT(h.mMinScaledJacobian, 0.0);
+        EXPECT_EQ(r.mNumBoundaryEdgesOpen, 0);
+        EXPECT_EQ(r.mNumNonManifoldBoundaryEdges, 0);
+        EXPECT_LT(r.mHausdorffToSkin, 0.05);
+        EXPECT_NEAR(h.mVolume, om_enclosed(c.mSkin), 0.03 * om_enclosed(c.mSkin));
+        const mio::ConformityResult cc = mio::check_conformity(r.mMesh);
+        EXPECT_EQ(cc.mNumHangingNodes, 0);
+        EXPECT_EQ(cc.mNumNonManifoldFacets, 0);
+        // More than one level, and the levels recorded per cell.
+        const mio::NDArray& lv = r.mMesh.CellData(mio::kOctreeLevelName, 0);
+        const std::int64_t* l = lv.As<std::int64_t>();
+        std::set<std::int64_t> levels(l, l + r.mMesh.Cells(0).NumCells());
+        EXPECT_GT(levels.size(), 1u);
+    }
+}
+
+TEST(OctreeMeshHex, GradedHexahedraAreTheSameOnEveryThreadCount) {
+    auto o = om_hex(0.0);
+    o.mMinSize = 0.05;
+    o.mHexGrading = mio::OctreeMeshHexGrading::Graded;
+    const mio::Mesh skin = analytic::capped_cylinder(0.5, 2.0, 6, 48);
+    std::uint64_t ref = 0;
+#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
+    const int saved = omp_get_max_threads();
+    for (int threads : {1, 2, 4}) {
+        omp_set_num_threads(threads);
+#else
+    for (int threads : {1}) {
+        (void)threads;
+#endif
+        const std::uint64_t d = om_digest(mio::octree_mesh(skin, o).mMesh);
+        if (ref == 0)
+            ref = d;
+        EXPECT_EQ(d, ref);
+    }
+#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
+    omp_set_num_threads(saved);
+#endif
 }

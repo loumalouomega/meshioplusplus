@@ -19,6 +19,7 @@
 import vtkColorTransferFunction from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction';
 
 import type { Vector3 } from '../types';
+import { COLORMAP_PRESETS } from './colormapPresets';
 
 /** `[t, r, g, b]` with every channel in 0..1. */
 export type ColorStop = readonly [number, number, number, number];
@@ -83,17 +84,78 @@ const RAINBOW: readonly ColorStop[] = [
     [1.0, 1.0, 0.0, 0.0],
 ];
 
-const MAPS: readonly Colormap[] = [
-    { name: 'Cool to Warm', stops: COOL_TO_WARM },
-    { name: 'Viridis', stops: VIRIDIS },
-    { name: 'Plasma', stops: PLASMA },
-    { name: 'Turbo', stops: TURBO },
-    { name: 'Grayscale', stops: GRAYSCALE },
-    { name: 'Rainbow', stops: RAINBOW },
+const INFERNO: readonly ColorStop[] = [
+    [0.0, 0.001, 0.0, 0.014],
+    [0.25, 0.342, 0.062, 0.429],
+    [0.5, 0.729, 0.212, 0.333],
+    [0.75, 0.965, 0.556, 0.235],
+    [1.0, 0.988, 0.998, 0.645],
+];
+
+const MAGMA: readonly ColorStop[] = [
+    [0.0, 0.001, 0.0, 0.014],
+    [0.25, 0.316, 0.072, 0.485],
+    [0.5, 0.716, 0.215, 0.475],
+    [0.75, 0.986, 0.535, 0.382],
+    [1.0, 0.987, 0.991, 0.75],
+];
+
+const CIVIDIS: readonly ColorStop[] = [
+    [0.0, 0.0, 0.135, 0.304],
+    [0.25, 0.253, 0.265, 0.44],
+    [0.5, 0.503, 0.474, 0.435],
+    [0.75, 0.771, 0.7, 0.4],
+    [1.0, 0.995, 0.909, 0.217],
+];
+
+export type ColormapCategory = 'sequential' | 'diverging' | 'rainbow';
+
+interface Entry extends Colormap {
+    category: ColormapCategory;
+    /** Rated colour-blind safe by its published source. */
+    colorblindSafe: boolean;
+}
+
+const BASE: Entry[] = [
+    { name: 'Cool to Warm', stops: COOL_TO_WARM, category: 'diverging', colorblindSafe: true },
+    { name: 'Viridis', stops: VIRIDIS, category: 'sequential', colorblindSafe: true },
+    { name: 'Plasma', stops: PLASMA, category: 'sequential', colorblindSafe: true },
+    { name: 'Inferno', stops: INFERNO, category: 'sequential', colorblindSafe: true },
+    { name: 'Magma', stops: MAGMA, category: 'sequential', colorblindSafe: true },
+    { name: 'Cividis', stops: CIVIDIS, category: 'sequential', colorblindSafe: true },
+    { name: 'Turbo', stops: TURBO, category: 'rainbow', colorblindSafe: false },
+    { name: 'Grayscale', stops: GRAYSCALE, category: 'sequential', colorblindSafe: true },
+    { name: 'Rainbow', stops: RAINBOW, category: 'rainbow', colorblindSafe: false },
+];
+
+/** The viewer's own maps first, then the ParaView presets that are not duplicates. */
+const MAPS: readonly Entry[] = [
+    ...BASE,
+    ...COLORMAP_PRESETS.filter((p) => !BASE.some((b) => b.name === p.name)).map(
+        (p): Entry => ({
+            name: p.name,
+            stops: p.stops,
+            category: p.category,
+            colorblindSafe: p.colorblindSafe,
+        })
+    ),
 ];
 
 export const COLORMAPS: readonly string[] = MAPS.map((m) => m.name);
 export const DEFAULT_COLORMAP = 'Cool to Warm';
+
+/** Maps grouped by category, optionally only the colour-blind-safe ones. */
+export function colormapGroups(onlySafe = false): { category: ColormapCategory; names: string[] }[] {
+    const order: ColormapCategory[] = ['sequential', 'diverging', 'rainbow'];
+    return order
+        .map((category) => ({
+            category,
+            names: MAPS.filter((m) => m.category === category && (!onlySafe || m.colorblindSafe)).map(
+                (m) => m.name
+            ),
+        }))
+        .filter((g) => g.names.length > 0);
+}
 
 function mapByName(name: string): Colormap {
     return MAPS.find((m) => m.name === name) ?? MAPS[0];
@@ -141,6 +203,23 @@ export function cssGradient(name: string, direction = 'to top'): string {
         return `rgb(${c(r)}, ${c(g)}, ${c(b)}) ${(t * 100).toFixed(1)}%`;
     });
     return `linear-gradient(${direction}, ${stops.join(', ')})`;
+}
+
+/**
+ * The map as `bands` flat colour blocks, matching the transfer function when it
+ * is discretised. `bands <= 0` is the continuous gradient.
+ */
+export function cssBandedGradient(name: string, bands: number, direction = 'to top'): string {
+    if (bands <= 0) return cssGradient(name, direction);
+    const c = (v: number) => Math.round(v * 255);
+    const parts: string[] = [];
+    for (let i = 0; i < bands; i++) {
+        const [r, g, b] = colorAt(name, (i + 0.5) / bands);
+        const from = ((i / bands) * 100).toFixed(2);
+        const to = (((i + 1) / bands) * 100).toFixed(2);
+        parts.push(`rgb(${c(r)}, ${c(g)}, ${c(b)}) ${from}% ${to}%`);
+    }
+    return `linear-gradient(${direction}, ${parts.join(', ')})`;
 }
 
 /**

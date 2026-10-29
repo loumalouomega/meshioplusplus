@@ -25,6 +25,8 @@ CONFORMITIES = ("stuffing", "cleaving")
 SKIN_GRADINGS = ("graded", "uniform")
 #: Which leaves a castellated output keeps.
 FILLS = ("all", "inside", "cover")
+#: How a hexahedral output grades.
+HEX_GRADINGS = ("uniform", "graded")
 
 _REPORT_INTS = (
     "max_level",
@@ -53,6 +55,7 @@ _REPORT_INTS = (
     "num_optimized_moves",
     "num_flips",
     "num_winding_rechecks",
+    "num_winding_skipped",
 )
 _REPORT_FLOATS = (
     "root_size",
@@ -115,6 +118,7 @@ def octree_mesh(
     attach_distance: bool = True,
     attach_quality: bool = False,
     pillow: bool = True,
+    hex_grading: str = "uniform",
     untangle_iterations: int = 50,
     max_cells: int = 20000000,
     max_tets: int = 100000000,
@@ -183,6 +187,10 @@ def octree_mesh(
         ``sdf:closest_point``).
     :param attach_quality: attach the ``quality:*`` cell data.
     :param pillow: hexahedral output: a layer of hexahedra along the boundary.
+    :param hex_grading: hexahedral output: ``"uniform"`` (one grid at the
+        skin's size, the default) or ``"graded"`` (the octree's own grading,
+        made conforming by the dual transition schemes of Livesu, Pitzalis and
+        Cherchi).
     :param untangle_iterations: hexahedral output: untangling iterations.
     :param max_cells: refuse an octree with more leaves.
     :param max_tets: refuse an output with more cells.
@@ -201,7 +209,8 @@ def octree_mesh(
         the features (``num_corners``, ``num_corners_snapped``,
         ``num_feature_chains``, ``num_feature_chains_missed``,
         ``num_feature_moves``), the optimisation (``num_optimized_moves``,
-        ``num_flips``), ``guarantee_applies``, ``num_winding_rechecks``, ``timings`` (seconds
+        ``num_flips``), ``guarantee_applies``, ``num_winding_rechecks``,
+        ``num_winding_skipped`` (deep inside a closed skin), ``timings`` (seconds
         per stage) and ``warnings``.
     :raises ValueError: on an option out of range.
     :raises NotImplementedError: without the compiled core.
@@ -238,6 +247,7 @@ def octree_mesh(
         "attach_distance": bool(attach_distance),
         "attach_quality": bool(attach_quality),
         "pillow": bool(pillow),
+        "hex_grading": _choice("hex_grading", hex_grading, HEX_GRADINGS),
         "untangle_iterations": int(untangle_iterations),
         "max_cells": int(max_cells),
         "max_tets": int(max_tets),

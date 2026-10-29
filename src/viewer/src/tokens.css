@@ -1,0 +1,172 @@
+/*
+ * Design tokens shared by the viewer (index.html) and the dataset manager
+ * (dataset.html).
+ *
+ * The metric scale (`--ui-*`) is the one the Kratos MDPA Preview VS Code
+ * extension uses (webview/design-system.css), so the two front ends of one mesh
+ * look like one product. The colours are VS Code's own default dark and light
+ * theme values; the extension reads them from the host theme, a browser page
+ * has no host, so they are written out here.
+ *
+ * The scheme is chosen by `data-theme` on <html> ("dark", "light" or
+ * "scientific"), set by ui/theme.ts. With no attribute the page is dark, which
+ * is what the dataset manager (which never sets one) has always been.
+ */
+
+:root {
+    /* --- metrics (copied from the extension) ----------------------------- */
+    --ui-r-xs: 3px;
+    --ui-r-sm: 5px;
+    --ui-r-md: 8px;
+    --ui-r-lg: 12px;
+    --ui-r-pill: 999px;
+
+    --ui-s-0: 2px;
+    --ui-s-1: 4px;
+    --ui-s-2: 6px;
+    --ui-s-3: 8px;
+    --ui-s-4: 12px;
+    --ui-s-5: 16px;
+    --ui-s-6: 24px;
+
+    --ui-font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    --ui-font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    --ui-fs-micro: 9px;
+    --ui-fs-label: 10px;
+    --ui-fs-sm: 11px;
+    --ui-fs-md: 12px;
+    --ui-fs-lg: 13px;
+    --ui-fs-xl: 14px;
+    --ui-lh: 1.45;
+    --ui-track-caps: 0.06em;
+
+    --ui-h-ctl: 24px;
+    --ui-menubar-h: 34px;
+    --ui-statusbar-h: 24px;
+
+    /* --- palette: dark (VS Code Dark+/Modern defaults) ------------------- */
+    --ds-fg: #cccccc;
+    --ds-bg: #1e1e1e;
+    --ds-description-fg: #9d9d9d;
+
+    --ds-sidebar-bg: #252526;
+    --ds-sidebar-border: #3c3c3c;
+    --ds-section-header-fg: #bbbbbb;
+    --ds-header-bg: #252526;
+    --ds-header-border: #454545;
+
+    --ds-widget-bg: rgba(37, 37, 38, 0.92);
+    --ds-widget-border: #454545;
+
+    --ds-primary: #0e639c;
+    --ds-primary-fg: #ffffff;
+    --ds-primary-hover: #1177bb;
+    --ds-secondary: #3a3d41;
+    --ds-secondary-fg: #cccccc;
+    --ds-secondary-hover: #45494e;
+
+    --ds-mode-on-bg: #063b49;
+    --ds-focus: #007fd4;
+
+    --ds-input-bg: #313131;
+    --ds-input-fg: #cccccc;
+    --ds-input-border: #3c3c3c;
+
+    --ds-menu-bg: #252526;
+    --ds-menu-fg: #cccccc;
+    --ds-menu-border: #454545;
+    --ds-menu-sel-bg: #094771;
+    --ds-menu-sel-fg: #ffffff;
+    --ds-menu-sep: #454545;
+
+    --ds-hover: rgba(255, 255, 255, 0.06);
+    --ds-toolbar-hover: rgba(90, 93, 94, 0.31);
+    --ds-list-sel-bg: #094771;
+    --ds-list-sel-fg: #ffffff;
+
+    --ds-track: #4a4a4a;
+    --ds-thumb: #0e70c0;
+
+    --ds-error: #f48771;
+    --ds-warning: #cca700;
+    --ds-ok: #73c991;
+    --ds-hairline: rgba(128, 128, 128, 0.35);
+
+    --ui-elev-1: 0 1px 2px rgba(0, 0, 0, 0.28);
+    --ui-elev-2: 0 2px 8px rgba(0, 0, 0, 0.36);
+    --ui-elev-3: 0 6px 20px rgba(0, 0, 0, 0.44);
+
+    /* Over the 3D view: a card that must read on any scene background. */
+    --ds-overlay-bg: rgba(37, 37, 38, 0.82);
+
+    color-scheme: dark;
+
+    /* --- legacy names, still used by style.css and the dataset manager --- */
+    --bg: var(--ds-bg);
+    --panel: var(--ds-sidebar-bg);
+    --line: var(--ds-sidebar-border);
+    --border: var(--ds-sidebar-border);
+    --text: var(--ds-fg);
+    --muted: var(--ds-description-fg);
+    --accent: #4c9ffe;
+}
+
+/* --- palette: light (VS Code Light+ defaults) --------------------------- */
+:root[data-theme='light'],
+:root[data-theme='scientific'] {
+    --ds-fg: #3b3b3b;
+    --ds-bg: #ffffff;
+    --ds-description-fg: #717171;
+
+    --ds-sidebar-bg: #f3f3f3;
+    --ds-sidebar-border: #e5e5e5;
+    --ds-section-header-fg: #424242;
+    --ds-header-bg: #f3f3f3;
+    --ds-header-border: #cecece;
+
+    --ds-widget-bg: rgba(243, 243, 243, 0.94);
+    --ds-widget-border: #c8c8c8;
+
+    --ds-primary: #007acc;
+    --ds-primary-fg: #ffffff;
+    --ds-primary-hover: #0062a3;
+    --ds-secondary: #e4e6f1;
+    --ds-secondary-fg: #3b3b3b;
+    --ds-secondary-hover: #d5d7e3;
+
+    --ds-mode-on-bg: #cfe8fb;
+    --ds-focus: #0090f1;
+
+    --ds-input-bg: #ffffff;
+    --ds-input-fg: #3b3b3b;
+    --ds-input-border: #cecece;
+
+    --ds-menu-bg: #ffffff;
+    --ds-menu-fg: #3b3b3b;
+    --ds-menu-border: #c8c8c8;
+    --ds-menu-sel-bg: #0060c0;
+    --ds-menu-sel-fg: #ffffff;
+    --ds-menu-sep: #d4d4d4;
+
+    --ds-hover: rgba(0, 0, 0, 0.05);
+    --ds-toolbar-hover: rgba(184, 184, 184, 0.31);
+    --ds-list-sel-bg: #0060c0;
+    --ds-list-sel-fg: #ffffff;
+
+    --ds-track: #c4c4c4;
+    --ds-thumb: #007acc;
+
+    --ds-error: #e51400;
+    --ds-warning: #bf8803;
+    --ds-ok: #388a34;
+    --ds-hairline: rgba(128, 128, 128, 0.35);
+
+    --ui-elev-1: 0 1px 2px rgba(0, 0, 0, 0.12);
+    --ui-elev-2: 0 2px 8px rgba(0, 0, 0, 0.16);
+    --ui-elev-3: 0 6px 20px rgba(0, 0, 0, 0.22);
+
+    --ds-overlay-bg: rgba(243, 243, 243, 0.88);
+
+    color-scheme: light;
+    --accent: #0066bf;
+}

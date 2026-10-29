@@ -45,3 +45,28 @@ test('the offline page renders its embedded mesh with no server', async ({ page 
     expect(state.arrays).toContain('layer');
     expect(errors).toEqual([]);
 });
+
+test('the offline page can select cells and switch colour scheme', async ({ page }) => {
+    test.skip(!existsSync(PAGE), `no generated page at ${PAGE}`);
+
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    await page.goto(`file://${PAGE}`);
+    await expect.poll(() => page.evaluate(() => window.__viewerState?.status)).toBe('ready');
+
+    // Selection needs no WebAssembly: it works over the surface the page holds.
+    await expect(page.locator('#selection-section')).toBeVisible();
+    await page.locator('#sel-front').uncheck();
+    await page.getByRole('button', { name: 'Box' }).click();
+    const b = await page.locator('#render').boundingBox();
+    await page.mouse.move(b.x + 10, b.y + 90);
+    await page.mouse.down();
+    await page.mouse.move(b.x + b.width - 10, b.y + b.height - 10, { steps: 4 });
+    await page.mouse.up();
+    const s = await page.evaluate(() => window.__viewerState.selection);
+    expect(s.sets[0].count).toBe(96);
+
+    await page.selectOption('#theme-select', 'light');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+    expect(errors).toEqual([]);
+});

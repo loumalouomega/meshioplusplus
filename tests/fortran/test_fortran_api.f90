@@ -1778,6 +1778,29 @@ program test_fortran_api
         end if
     end block
 
+    ! ---- check_conformity (roadmap 3.2.1) ------------------------------------
+    block
+        type(mio_mesh) :: cm
+        type(mio_conformity_report) :: crep
+        character(:), allocatable :: cwarn
+        integer :: st
+
+        cm = m%check_conformity(report=crep, warnings=cwarn, stat=st)
+        call check(st == 0, 'check_conformity succeeded')
+        if (st == 0) then
+            call check(crep%dimension >= 2_int64, 'check_conformity examined the cells')
+            call check(crep%num_hanging_nodes == 0_int64 .and. crep%conforming /= 0, &
+                       'a mesh with shared nodes is conforming')
+            call check(crep%interface_mode == MIO_CONFORMITY_CONFORMING, &
+                       'check_conformity suggests the conforming interface mode')
+            call check(cm%num_point_data() == m%num_point_data() + 1, &
+                       'check_conformity attaches its flags')
+            call cm%free()
+        end if
+        cm = m%check_conformity(tolerance=-1.0d0, stat=st)
+        call check(st /= 0, 'check_conformity rejects a negative tolerance')
+    end block
+
     ! --- named regions (doc/regions.md) ---------------------------------------
     ! The first named groups this API can carry at all; before meshio++ 8.1 they
     ! never left the Python layer.
@@ -2188,10 +2211,122 @@ contains
         g = mio_honeycomb(dims=[3, 2], stat=ierr)
         call check(ierr == 0 .and. g%num_points() == 22_int64, 'honeycomb has 22 points')
         call g%free()
+        g = mio_line(n=4, stat=ierr)
+        call check(ierr == 0 .and. g%num_points() == 5_int64, 'line has 5 points')
+        call g%free()
+        g = mio_circle(n=6, order=2, stat=ierr)
+        call check(ierr == 0 .and. g%num_points() == 12_int64, 'circle has 12 points')
+        call g%free()
+        g = mio_helix(n=10, stat=ierr)
+        call check(ierr == 0 .and. g%num_points() == 11_int64, 'helix has 11 points')
+        call g%free()
+        g = mio_sphere_points(n=7, stat=ierr)
+        call check(ierr == 0 .and. g%num_points() == 7_int64, 'sphere_points has 7 points')
+        call g%free()
+        g = mio_box_points(n=7, seed=3_int64, stat=ierr)
+        call check(ierr == 0 .and. g%num_points() == 7_int64, 'box_points has 7 points')
+        call g%free()
+        g = mio_tetra_sphere(subdivisions=1, stat=ierr)
+        call check(ierr == 0 .and. g%num_points() == 10_int64, 'tetra_sphere has 10 points')
+        call g%free()
+        g = mio_octa_sphere(subdivisions=1, stat=ierr)
+        call check(ierr == 0 .and. g%num_points() == 18_int64, 'octa_sphere has 18 points')
+        call g%free()
+        g = mio_cube_sphere(n=2, stat=ierr)
+        call check(ierr == 0 .and. g%num_points() == 26_int64, 'cube_sphere has 26 points')
+        call g%free()
+        g = mio_geo_sphere(n=2, stat=ierr)
+        call check(ierr == 0 .and. g%num_points() == 42_int64, 'geo_sphere has 42 points')
+        call g%free()
+        g = mio_torus(nu=6, nv=4, stat=ierr)
+        call check(ierr == 0 .and. g%num_points() == 24_int64, 'torus has 24 points')
+        call g%free()
+        g = mio_moebius(nu=6, nv=2, num_twists=1, stat=ierr)
+        call check(ierr == 0 .and. g%num_points() == 18_int64, 'moebius has 18 points')
+        call g%free()
+        g = mio_tube(ntheta=6, nz=2, stat=ierr)
+        call check(ierr == 0 .and. g%num_points() == 18_int64, 'tube has 18 points')
+        call g%free()
+        g = mio_cone(ntheta=6, nz=2, stat=ierr)
+        call check(ierr == 0 .and. g%num_points() == 20_int64, 'cone has 20 points')
+        call g%free()
+        g = mio_capsule(ntheta=6, nz=1, ncap=2, stat=ierr)
+        call check(ierr == 0 .and. g%num_points() == 26_int64, 'capsule has 26 points')
+        call g%free()
+        g = mio_box_surface(dims=[1, 2, 3], stat=ierr)
+        call check(ierr == 0 .and. g%num_points() == 24_int64, 'box_surface has 24 points')
+        call g%free()
+        g = mio_platonic(name='dodecahedron', stat=ierr)
+        call check(ierr == 0 .and. g%num_points() == 20_int64, 'platonic has 20 points')
+        call g%free()
+        g = mio_ball(n=1, stat=ierr)
+        call check(ierr == 0 .and. g%num_points() == 27_int64, 'ball has 27 points')
+        call g%free()
+        g = mio_spherical_shell(n=2, nr=1, stat=ierr)
+        call check(ierr == 0 .and. g%num_points() == 52_int64, 'spherical_shell has 52 points')
+        call g%free()
+        g = mio_pipe(ntheta=6, nr=1, nz=2, stat=ierr)
+        call check(ierr == 0 .and. g%num_points() == 36_int64, 'pipe has 36 points')
+        call g%free()
+        g = mio_fichera(n=1, stat=ierr)
+        call check(ierr == 0 .and. g%num_points() == 26_int64, 'fichera has 26 points')
+        call g%free()
+        g = mio_solid_torus(n=2, nu=5, stat=ierr)
+        call check(ierr == 0 .and. g%num_points() == 45_int64, 'solid_torus has 45 points')
+        call g%free()
+        g = mio_box(order=2, complete=.true., stat=ierr)
+        call check(ierr == 0 .and. g%num_points() == 27_int64, 'box has 27 points')
+        call g%free()
+        g = mio_ball(n=1, order=3, stat=ierr)
+        call check(ierr == 0 .and. g%num_points() == 343_int64, 'ball has 343 points')
+        call g%free()
+        g = mio_platonic(name='sphere', stat=ierr)
+        call check(ierr /= 0, 'an unknown platonic solid is an error')
         g = mio_plate_with_hole(radius=0.9d0, stat=ierr)
         call check(ierr /= 0, 'a hole as large as the plate is an error')
         g = mio_box(cell_type='blob', stat=ierr)
         call check(ierr /= 0, 'an unknown cell type is an error')
+
+        ! Roadmap 3.1.2, 3.1.3, 3.2.5: sweeps of a rectangle, a reflected box.
+        block
+            type(mio_mesh) :: rect, swept, boxm
+            type(mio_sweep_report) :: srep
+            type(mio_mirror_report) :: mrep
+            integer(int64) :: ninv
+            character(:), allocatable :: msg
+            rect = mio_rectangle(dims=[3, 2], stat=ierr)
+            call check(ierr == 0, 'rectangle for the sweeps built')
+            swept = mio_extrude(rect, num_layers=4, report=srep, stat=ierr, errmsg=msg)
+            call check(ierr == 0 .and. srep%num_hexahedra == 24_int64, 'extrude gives hexahedra')
+            if (ierr == 0) call swept%free()
+            swept = mio_extrude(rect, offsets=[0.25_real64, 1.0_real64], report=srep, stat=ierr)
+            call check(ierr == 0 .and. srep%num_cells == 12_int64, 'extrude takes offsets')
+            if (ierr == 0) call swept%free()
+            swept = mio_extrude(rect, direction=[0.0_real64, 1.0_real64, 0.0_real64], &
+                                stat=ierr, errmsg=msg)
+            call check(ierr /= 0 .and. index(msg, 'parallel') > 0, &
+                       'extrude refuses a direction in the faces'' plane')
+            swept = mio_revolve(rect, num_layers=8, report=srep, stat=ierr, errmsg=msg)
+            call check(ierr == 0 .and. srep%full == 1 .and. srep%num_on_axis == 3_int64 .and. &
+                       srep%num_wedges == 16_int64, 'revolve closes a full turn')
+            if (ierr == 0) call swept%free()
+            call rect%free()
+            boxm = mio_box(dims=[2, 2, 2], cell_type='tetra', stat=ierr)
+            swept = mio_mirror(boxm, report=mrep, stat=ierr, errmsg=msg)
+            call check(ierr == 0 .and. mrep%num_flipped_cells == 48_int64, 'mirror flips the box')
+            if (ierr == 0) then
+                call swept%quality_counts(num_inverted=ninv)
+                call check(ninv == 0_int64, 'mirror leaves no cell inverted')
+                call swept%free()
+            end if
+            swept = mio_mirror(boxm, keep_original=.true., report=mrep, stat=ierr)
+            call check(ierr == 0 .and. mrep%num_points_on_plane == 9_int64, &
+                       'mirror welds the plane')
+            if (ierr == 0) call swept%free()
+            swept = mio_mirror(boxm, normal=[0.0_real64, 0.0_real64, 0.0_real64], stat=ierr)
+            call check(ierr /= 0, 'mirror refuses a zero normal')
+            call boxm%free()
+        end block
 
         ! The unit cube as a closed, outward-wound triangle surface.
         pts = reshape([0d0, 0d0, 0d0, 1d0, 0d0, 0d0, 1d0, 1d0, 0d0, 0d0, 1d0, 0d0, &
@@ -2283,6 +2418,14 @@ contains
         ! An unknown fill fails by name rather than silently defaulting.
         vox = cube%voxelize(resolution=[2, 2, 2], fill='solid', stat=ierr)
         call check(ierr /= 0, 'an unknown fill is refused')
+
+        ! 2-D pixels in an explicit plane; an unknown plane is refused.
+        vox = cube%voxelize(resolution=[4, 2, 0], plane='yz', dims=dims, stat=ierr)
+        call check(ierr == 0, 'voxelize took a plane')
+        call check(dims(3) == 1_int64, 'voxelize in a plane is one cell thick')
+        call vox%free()
+        vox = cube%voxelize(resolution=[4, 2, 0], plane='uv', stat=ierr)
+        call check(ierr /= 0, 'an unknown plane is refused')
 
         ! The centre is 0.5 inside; the other two are 1.0 outside.
         query = reshape([0.5d0, 0.5d0, 0.5d0, 2d0, 0.5d0, 0.5d0, -1d0, 0.5d0, 0.5d0], [3, 3])
@@ -2590,6 +2733,15 @@ contains
                            stat=ierr)
         call check(ierr == 0 .and. .not. was_refined, 'fit_cad does not refine by default')
         call check(.not. was_kept, 'nothing refined is kept without refinement')
+        call solid%free()
+        ! The constrained primitives: the cube's six planes keep their faces.
+        solid = sq%fit_cad(backend='native', constrain_primitives=.true., num_faces=nfaces, &
+                           num_constrained_primitives=nrsplit, num_constraint_groups=nrmerge, &
+                           stat=ierr, errmsg=msg)
+        call check(ierr == 0, 'fit_cad with constrain_primitives succeeded')
+        call check(nfaces == 6_int64, 'the constrained cube still has six faces')
+        call check(nrsplit >= 0_int64 .and. nrsplit <= 6_int64, 'at most six planes constrained')
+        call check(nrmerge >= 0_int64, 'the constraint groups are counted')
         call solid%free()
         ! The Phase 3 options (v17.11.0): closed on every backend, nothing
         ! measured is NaN, and an option out of range is refused.

@@ -1603,6 +1603,22 @@ def test_refine_patches_tool_segments_then_refines(tmp_path):
     assert refined["explained_area_fraction"] == pytest.approx(1.0)
     for key in ("refine_iterations", "num_refine_splits", "num_refine_merges"):
         assert key in refined
+    # The constrained primitives report only when asked for.
+    assert "num_constrained_primitives" not in plain
+    constrained = _dump(
+        _tools.call_tool(
+            "fit_cad",
+            {
+                "input_path": src,
+                "output_path": str(tmp_path / "c.step"),
+                "backend": "native",
+                "constrain_primitives": True,
+            },
+        )
+    )
+    assert constrained["num_constrained_primitives"] >= 0
+    assert constrained["num_constraint_groups"] >= 0
+    assert constrained["num_demoted"] == 0
 
 
 def test_cad_json_brep_rides_through_convert(tmp_path):
@@ -2182,7 +2198,7 @@ def test_every_tool_function_is_callable():
 
 
 def test_generator_tools(tmp_path):
-    """The thirteen parametric generators read no input and write a mesh."""
+    """The parametric generators read no input and write a mesh."""
     cases = [
         ("rectangle", dict(dims=[3, 2], cell_type="triangle", split="center"), 24),
         ("box", dict(dims=[2, 2, 2], cell_type="tetra", order=2), 48),
@@ -2197,6 +2213,27 @@ def test_generator_tools(tmp_path):
         ("plate_with_hole", dict(nt=3, nr=2), 24),
         ("honeycomb", dict(dims=[3, 2]), 6),
         ("reference_cells", dict(types=["tetra", "wedge"]), 2),
+        ("line", dict(n=5, end=[0.0, 0.0, 2.0], order=3), 5),
+        ("circle", dict(n=6, order=2), 6),
+        ("helix", dict(n=10, turns=1.0), 10),
+        ("sphere_points", dict(n=17), 17),
+        ("box_points", dict(n=9, seed=4), 9),
+        ("tetra_sphere", dict(subdivisions=1), 16),
+        ("octa_sphere", dict(subdivisions=1), 32),
+        ("cube_sphere", dict(n=2, order=2, complete=True), 24),
+        ("geo_sphere", dict(n=2), 80),
+        ("torus", dict(nu=6, nv=4, cell_type="triangle"), 48),
+        ("moebius", dict(nu=8, nv=2, num_twists=3), 16),
+        ("tube", dict(ntheta=6, nz=2), 12),
+        ("cone", dict(ntheta=6, nz=2), 6 * 4),
+        ("capsule", dict(ntheta=6, nz=1, ncap=2), 6 * 5),
+        ("box_surface", dict(dims=[1, 2, 3]), 22),
+        ("platonic", dict(name="dodecahedron"), 12),
+        ("ball", dict(n=1, cell_type="tetra"), 48),
+        ("spherical_shell", dict(n=2, nr=1, ratio=1.5), 24),
+        ("pipe", dict(ntheta=6, nr=1, nz=2), 12),
+        ("fichera", dict(n=1), 7),
+        ("solid_torus", dict(n=2, nu=5, order=2), 20),
     ]
     for name, kwargs, num_cells in cases:
         out = tmp_path / f"{name}.vtu"
@@ -2234,6 +2271,14 @@ def test_octree_mesh_tool(tmp_path):
         _tools.tool_octree_mesh(str(skin), str(out), output="bogus")
     with pytest.raises(ValueError, match="winding_threshold"):
         _tools.tool_octree_mesh(str(skin), str(out), winding_threshold=2.0)
+
+    graded = _tools.tool_octree_mesh(
+        str(skin), str(out), output="hex", hex_grading="graded", max_size=0.5
+    )
+    assert graded["output"] == "hex" and graded["num_hexahedra"] > 0
+    assert graded["num_inverted"] == 0
+    with pytest.raises(ValueError, match="hex_grading"):
+        _tools.tool_octree_mesh(str(skin), str(out), output="hex", hex_grading="bogus")
 
 
 def test_boundary_layer_tool(tmp_path):
@@ -2540,6 +2585,50 @@ def test_octree_tool(tmp_path):
         str(skin), str(out), max_level=3, fill="inside", snap=True
     )
     assert "num_snapped" in snapped and "num_refused" in snapped
+
+
+def test_check_conformity_tool(tmp_path):
+    # One coarse quad beside two fine ones: the fine side's middle node hangs.
+    pts = np.array(
+        [[0, 0], [1, 0], [1, 1], [0, 1], [2, 0], [2, 0.5], [2, 1], [1, 0.5]],
+        dtype=float,
+    )
+    quads = np.array([[0, 1, 2, 3], [1, 4, 5, 7], [7, 5, 6, 2]])
+    src = tmp_path / "t.vtu"
+    meshioplusplus.write(src, meshioplusplus.Mesh(pts, [("quad", quads)]))
+    report = _tools.tool_check_conformity(str(src))
+    assert report["num_t_junctions"] == 1
+    assert report["conforming"] is False
+    assert report["interface_mode"] == "proximity"
+    assert "output_path" not in report
+    flagged = tmp_path / "flags.vtu"
+    report = _tools.tool_check_conformity(str(src), output_path=str(flagged))
+    assert report["output_path"] == str(flagged)
+    flags = meshioplusplus.read(flagged).point_data["conformity:hanging"]
+    assert list(np.nonzero(flags)[0]) == [7]
+    with pytest.raises(ValueError, match="tolerance"):
+        _tools.tool_check_conformity(str(src), tolerance=-1.0)
+
+
+def test_voxelize_tool_plane(tmp_path):
+    # A square polyline in the xz plane: "auto" and "xz" agree, "xy" sees a
+    # degenerate box and an unknown plane is refused by name.
+    pts = np.array([[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]], dtype=float)
+    loop = meshioplusplus.Mesh(
+        pts, [("line", np.array([[0, 1], [1, 2], [2, 3], [3, 0]]))]
+    )
+    src = tmp_path / "loop.vtu"
+    meshioplusplus.write(src, loop)
+    auto = _tools.tool_voxelize(str(src), str(tmp_path / "a.vtu"), resolution=[4, 4])
+    xz = _tools.tool_voxelize(
+        str(src), str(tmp_path / "b.vtu"), resolution=[4, 4], plane="xz"
+    )
+    assert auto["dims"] == xz["dims"] == [4, 4, 1]
+    assert auto["origin"] == xz["origin"]
+    with pytest.raises(ValueError, match="plane"):
+        _tools.tool_voxelize(
+            str(src), str(tmp_path / "c.vtu"), resolution=[4, 4], plane="uv"
+        )
 
 
 def test_compute_sdf_tool(tmp_path):
@@ -3648,3 +3737,26 @@ def test_marc_and_ansys_results_formats(tmp_path):
     stress = str(tmp_path / "stress.vtu")
     _tools.tool_convert(rst, stress)
     assert "S" in meshioplusplus.read(stress).point_data
+
+
+def test_extrude_revolve_and_mirror_tools(tmp_path):
+    """Roadmap 3.1.2, 3.1.3 and 3.2.5: the sweep and reflection tools write
+    their mesh and report the operations' counters."""
+    if not hasattr(_core, "extrude"):
+        pytest.skip("core predates extrude")
+    rect = tmp_path / "rect.vtu"
+    meshioplusplus.write(rect, meshioplusplus.rectangle(dims=(3, 2)))
+    out = tmp_path / "swept.vtu"
+    report = _tools.tool_extrude(str(rect), str(out), num_layers=4)
+    assert report["num_hexahedra"] == 24 and report["num_flipped"] == 0
+    assert {c.type for c in meshioplusplus.read(out).cells} == {"hexahedron"}
+    with pytest.raises(ValueError, match="parallel"):
+        _tools.tool_extrude(str(rect), str(out), direction=[0, 1, 0])
+    report = _tools.tool_revolve(str(rect), str(out), num_layers=8)
+    assert report["full"] and report["num_on_axis"] == 3
+    box = tmp_path / "box.vtu"
+    meshioplusplus.write(box, meshioplusplus.box(dims=(2, 2, 2), cell_type="tetra"))
+    report = _tools.tool_mirror(str(box), str(out), keep_original=True)
+    assert report["num_points_on_plane"] == 9 and report["num_flipped_cells"] == 48
+    with pytest.raises(ValueError, match="normal"):
+        _tools.tool_mirror(str(box), str(out), normal=[0, 0, 0])

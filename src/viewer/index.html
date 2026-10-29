@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>meshio++ viewer</title>
     <link rel="stylesheet" href="./src/style.css" />
+    <link rel="stylesheet" href="./src/app.css" />
   </head>
-  <body>
+  <body class="viewer">
     <!--
       Payload slots. `meshioplusplus.view(backend="browser")` fills these before
       writing the page out. Dedicated elements with stable ids, rather than
@@ -18,33 +19,80 @@
     <script type="application/json" id="view-config"></script>
 
     <div id="app">
+      <header id="menubar" role="menubar">
+        <div class="brand" aria-label="meshio++ viewer">meshio++ <span>viewer</span></div>
+        <button type="button" class="menu-trigger" data-menu="file">File</button>
+        <button type="button" class="menu-trigger" data-menu="view">View</button>
+        <button type="button" class="menu-trigger" data-menu="help">Help</button>
+        <div class="spacer"></div>
+        <label class="theme-picker">
+          <span class="visually-hidden">Colour scheme</span>
+          <select id="theme-select" title="Colour scheme">
+            <option value="auto">Auto</option>
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+            <option value="scientific">Scientific</option>
+          </select>
+        </label>
+      </header>
+
+      <div id="menu-file" class="menu" role="menu" hidden>
+        <button type="button" role="menuitem" data-action="file.open">Open mesh…</button>
+        <button type="button" role="menuitem" data-action="file.screenshot">Save screenshot (PNG)</button>
+        <button type="button" role="menuitem" data-action="file.convert">Convert to another format…</button>
+      </div>
+      <div id="menu-view" class="menu" role="menu" hidden>
+        <button type="button" role="menuitem" data-action="view.fit">Fit to window</button>
+        <button type="button" role="menuitemcheckbox" aria-checked="false" data-action="view.edges">Show edges</button>
+        <button type="button" role="menuitemcheckbox" aria-checked="false" data-action="view.wireframe">Wireframe</button>
+        <button type="button" role="menuitemcheckbox" aria-checked="false" data-action="view.inspect">Inspect cells</button>
+        <button type="button" role="menuitem" data-action="view.sidebar">Toggle sidebar</button>
+      </div>
+      <div id="menu-help" class="menu" role="menu" hidden>
+        <button type="button" role="menuitem" data-action="help.shortcuts">Keyboard shortcuts</button>
+        <button type="button" role="menuitem" data-action="help.docs">Documentation</button>
+      </div>
+
+      <div id="workspace">
       <aside id="panel">
-        <header>
-          <h1>meshio++ <span>viewer</span></h1>
-          <p class="sub">
-            Everything runs in your browser. No file is uploaded anywhere.
-          </p>
-        </header>
 
         <section id="load-section">
           <label class="button" for="file">Open a mesh…</label>
           <input id="file" type="file" hidden />
-          <p class="hint">…or drop one anywhere on this page.</p>
+          <p class="hint">…or drop one anywhere on this page. Everything runs in your browser; no file is uploaded.</p>
           <div id="samples"></div>
         </section>
 
-        <section id="info-section" hidden>
+        <section class="sb-section" id="info-section" hidden>
           <h2 id="h-mesh">Mesh</h2>
           <dl id="info"></dl>
         </section>
 
-        <section id="color-section" hidden>
-          <h2 id="h-color">Colour by</h2>
-          <select id="color-by"></select>
+        <section class="sb-section" id="color-section" hidden>
+          <h2 id="h-color">Display</h2>
+          <label class="row"><span>Colour by</span><select id="color-by"></select></label>
           <label class="row">
             <span>Colour map</span>
             <select id="colormap"></select>
           </label>
+          <label class="row">
+            <span>Scale</span>
+            <select id="color-scale" title="Log needs a strictly positive range">
+              <option value="linear" selected>Linear</option>
+              <option value="log">Logarithmic</option>
+            </select>
+          </label>
+          <label class="row">
+            <span>Bands</span>
+            <select id="color-bands" title="Quantise the colours into flat bands">
+              <option value="0" selected>Continuous</option>
+              <option value="5">5</option>
+              <option value="8">8</option>
+              <option value="10">10</option>
+              <option value="16">16</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" id="colormap-safe" /> colour-blind safe maps only</label>
           <label class="row">
             <span>Draw as</span>
             <select id="representation">
@@ -62,7 +110,172 @@
           </label>
         </section>
 
-        <section id="ops-section" hidden>
+        <section class="sb-section" id="view-section" hidden>
+          <h2 id="h-view">View</h2>
+          <div class="view-buttons" id="view-buttons" role="group" aria-label="Standard views">
+            <button type="button" data-view="front" title="Front (1)">Front</button>
+            <button type="button" data-view="back" title="Back (2)">Back</button>
+            <button type="button" data-view="right" title="Right (3)">Right</button>
+            <button type="button" data-view="left" title="Left (4)">Left</button>
+            <button type="button" data-view="top" title="Top (5)">Top</button>
+            <button type="button" data-view="bottom" title="Bottom (6)">Bottom</button>
+            <button type="button" data-view="iso" title="Isometric (0)">Iso</button>
+          </div>
+          <label class="row">
+            <span>Projection</span>
+            <select id="view-projection">
+              <option value="persp" selected>Perspective</option>
+              <option value="ortho">Orthographic</option>
+            </select>
+          </label>
+
+          <details class="op" id="view-bookmarks">
+            <summary>Camera bookmarks</summary>
+            <div class="row">
+              <input type="text" id="bm-name" placeholder="name" maxlength="40" aria-label="Bookmark name" />
+              <button type="button" id="bm-save">Save</button>
+            </div>
+            <ul id="bm-list" class="bm-list"></ul>
+            <div class="btn-row">
+              <button type="button" id="bm-copy" title="Copy the camera as JSON">Copy camera</button>
+              <button type="button" id="bm-paste" title="Apply a camera pasted as JSON">Paste camera</button>
+            </div>
+            <p class="hint" id="bm-note"></p>
+          </details>
+
+          <details class="op" id="view-light">
+            <summary>Lighting</summary>
+            <label class="row"><span>Ambient</span><input type="range" id="light-ambient" min="0" max="100" value="10" /></label>
+            <label class="row"><span>Diffuse</span><input type="range" id="light-diffuse" min="0" max="100" value="100" /></label>
+            <label class="row"><span>Specular</span><input type="range" id="light-specular" min="0" max="100" value="0" /></label>
+            <label class="check"><input type="checkbox" id="light-cull" /> hide back faces</label>
+            <div class="btn-row"><button type="button" id="light-reset">Reset</button></div>
+          </details>
+
+          <details class="op" id="view-warp">
+            <summary>Deformed shape</summary>
+            <label class="row"><span>Displace by</span><select id="warp-array"></select></label>
+            <label class="row"><span>Scale</span><input type="range" id="warp-scale" min="0" max="300" value="100" /></label>
+            <p class="hint" id="warp-note">Pick a vector point array to move the mesh by it.</p>
+          </details>
+
+          <details class="op" id="view-clip">
+            <summary>Clip plane</summary>
+            <label class="check"><input type="checkbox" id="clip-on" /> clip the surface</label>
+            <div class="ui-segments" id="clip-axis" role="group" aria-label="Clip axis">
+              <label><input type="radio" name="clip-axis" value="0" /> X</label>
+              <label><input type="radio" name="clip-axis" value="1" /> Y</label>
+              <label><input type="radio" name="clip-axis" value="2" checked /> Z</label>
+            </div>
+            <input type="range" id="clip-pos" min="0" max="100" value="50" aria-label="Clip position" />
+            <label class="check"><input type="checkbox" id="clip-flip" /> keep the other side</label>
+            <p class="hint">A display clip only. The cut operation further down slices the mesh itself.</p>
+          </details>
+
+          <details class="op" id="view-measure">
+            <summary>Measure</summary>
+            <p class="hint" id="measure-hint">Turn on <em>Measure</em> in the toolbar (M), then click two points on the mesh.</p>
+            <label class="check"><input type="checkbox" id="measure-snap" /> snap to the nearest vertex</label>
+            <div id="measure-result" class="sel-stats"></div>
+          </details>
+        </section>
+
+        <section class="sb-section" id="stats-section" hidden>
+          <h2 id="h-stats">Statistics</h2>
+          <label class="row"><span>Array</span><select id="stats-array"></select></label>
+          <label class="row">
+            <span>Bins</span>
+            <select id="stats-bins">
+              <option value="10">10</option>
+              <option value="20" selected>20</option>
+              <option value="40">40</option>
+            </select>
+          </label>
+          <div id="hist" class="hist" role="img" aria-label="Histogram"></div>
+          <div id="hist-axis" class="hist-axis"><span id="hist-min"></span><span id="hist-max"></span></div>
+          <div id="hist-summary" class="sel-stats"></div>
+          <p class="hint">Click a bar to select the cells in that range.</p>
+        </section>
+
+        <section class="sb-section" id="groups-section" hidden>
+          <h2 id="h-groups">Groups</h2>
+          <p class="hint" id="groups-note" hidden></p>
+          <div class="sub-head" id="groups-regions-head" hidden>Regions</div>
+          <ul id="groups-regions" class="groups-list" hidden></ul>
+          <div class="sub-head" id="groups-blocks-head" hidden>Cell blocks</div>
+          <ul id="groups-blocks" class="groups-list" hidden></ul>
+          <div class="btn-row">
+            <button type="button" id="groups-show-all" title="Show every group again">Show all groups</button>
+          </div>
+          <p class="hint">Colour by <em>Groups</em> in the Display section to see them on the surface.</p>
+        </section>
+
+        <section class="sb-section" id="selection-section" hidden>
+          <h2 id="h-selection">Selection</h2>
+          <div class="ui-segments" id="sel-tools" role="group" aria-label="Selection tool">
+            <button type="button" data-tool="click" aria-pressed="false" title="Pick cells by clicking (S)">Click</button>
+            <button type="button" data-tool="box" aria-pressed="false" title="Drag a rectangle (B)">Box</button>
+            <button type="button" data-tool="lasso" aria-pressed="false" title="Draw a free-form loop (L)">Lasso</button>
+          </div>
+          <label class="check"
+            ><input type="checkbox" id="sel-front" checked /> visible side only</label
+          >
+          <p class="hint" id="sel-hint">
+            Pick a tool, then click or drag on the mesh. Shift adds, Ctrl removes.
+          </p>
+          <ul id="sel-sets" class="sel-sets"></ul>
+          <div class="btn-row">
+            <button type="button" id="sel-new" title="Start a new selection set">New set</button>
+            <button type="button" id="sel-clear" title="Empty the active set">Clear</button>
+          </div>
+          <div class="btn-row">
+            <button type="button" id="sel-invert" title="Select what is not selected (I)">Invert</button>
+            <button type="button" id="sel-grow" title="Add the ring of cells around the selection (G)">Grow</button>
+            <button type="button" id="sel-shrink" title="Remove the outer ring of the selection (Shift+G)">Shrink</button>
+            <button type="button" id="sel-connected" title="Select everything connected to the selection">Connected</button>
+          </div>
+          <div class="btn-row">
+            <button type="button" id="sel-hide" title="Hide the selected cells (H)">Hide</button>
+            <button type="button" id="sel-isolate" title="Hide everything else (X)">Isolate</button>
+            <button type="button" id="sel-show" title="Show every cell again (Shift+H)">Show all</button>
+          </div>
+          <div class="btn-row">
+            <button type="button" id="sel-frame" title="Zoom to the active set">Frame</button>
+            <button type="button" id="sel-group" title="Keep the active set as a named group">Save as group</button>
+          </div>
+          <details class="op" id="sel-value">
+            <summary>By value</summary>
+            <label class="row"><span>array</span><select id="sel-array"></select></label>
+            <div class="row">
+              <input type="number" id="sel-min" step="any" aria-label="Lower bound" />
+              <input type="number" id="sel-max" step="any" aria-label="Upper bound" />
+            </div>
+            <label class="row"
+              ><span>corners</span>
+              <select id="sel-rule">
+                <option value="all">all in range</option>
+                <option value="any">any in range</option>
+              </select></label
+            >
+            <label class="row"
+              ><span>combine</span>
+              <select id="sel-how">
+                <option value="replace">replace</option>
+                <option value="add">add</option>
+                <option value="subtract">subtract</option>
+              </select></label
+            >
+            <button type="button" id="sel-by-value">Select</button>
+          </details>
+          <div id="sel-stats" class="sel-stats"></div>
+          <div class="btn-row">
+            <button type="button" id="sel-copy" title="Copy the selected cell ids">Copy ids</button>
+            <button type="button" id="sel-csv" title="Save the ids as CSV">CSV</button>
+            <button type="button" id="sel-json" title="Save the ids as JSON">JSON</button>
+          </div>
+        </section>
+
+        <section class="sb-section" id="ops-section" hidden>
           <h2>Operations</h2>
           <div class="ops-header">
             <button type="button" id="ops-undo" title="Undo the last operation">
@@ -136,6 +349,12 @@
               ><span>levels</span>
               <input type="number" id="op-refine-levels" value="1" min="1" max="3"
             /></label>
+            <label class="row"
+              ><span>in</span>
+              <select id="op-refine-target" title="Refine only a group or the selection">
+                <option value="">the whole mesh</option>
+              </select></label
+            >
             <label class="row"
               ><span>where</span>
               <select id="op-refine-array">
@@ -322,7 +541,7 @@
           </details>
         </section>
 
-        <section id="convert-section" hidden>
+        <section class="sb-section" id="convert-section" hidden>
           <h2>Convert</h2>
           <p class="hint">
             Writes the full mesh — not just the surface shown here.
@@ -331,6 +550,14 @@
             <select id="convert-format"></select>
             <button id="convert-download" type="button">Download</button>
           </div>
+          <label class="check" id="convert-groups-row" hidden
+            ><input type="checkbox" id="convert-groups" checked /> include my saved groups as cell
+            regions</label
+          >
+          <p class="hint" id="convert-groups-hint" hidden>
+            On a solid, a group drawn on its surface is written as the solid cells that own those
+            faces. Not every format stores named regions; the result says which were kept.
+          </p>
         </section>
 
         <footer>
@@ -338,13 +565,22 @@
           · rendered with <a href="https://kitware.github.io/vtk-js/">vtk.js</a>
         </footer>
       </aside>
+      <div id="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabindex="0"></div>
 
       <main id="stage">
         <div id="render"></div>
         <div id="legend"></div>
+        <svg id="sel-overlay" hidden aria-hidden="true"><rect id="sel-rect" /><polygon id="sel-poly" /></svg>
         <div id="viewport-tools">
           <button type="button" id="tool-reset" title="Reset the camera">Fit</button>
           <button type="button" id="tool-screenshot" title="Save a PNG">PNG</button>
+          <button type="button" id="tool-select" aria-pressed="false" title="Select cells (S)">
+            Select
+          </button>
+          <button type="button" id="tool-table" aria-pressed="false" title="Show the data table (T)">Table</button>
+          <button type="button" id="tool-measure" aria-pressed="false" title="Measure the distance between two points (M)">
+            Measure
+          </button>
           <button
             type="button"
             id="tool-inspect"
@@ -354,6 +590,19 @@
             Inspect
           </button>
         </div>
+        <div id="table-panel" hidden>
+          <div class="tbl-bar">
+            <div class="ui-segments" id="tbl-kind" role="group" aria-label="Table rows">
+              <button type="button" data-kind="cells" aria-pressed="true">Cells</button>
+              <button type="button" data-kind="points" aria-pressed="false">Points</button>
+            </div>
+            <span id="tbl-count" class="ui-num"></span>
+            <details id="tbl-columns" class="tbl-columns"><summary>Columns</summary><div id="tbl-column-list"></div></details>
+            <button type="button" id="tbl-csv" title="Save the table as CSV">CSV</button>
+            <button type="button" id="tbl-close" title="Close the table" aria-label="Close the table">×</button>
+          </div>
+          <div id="tbl-scroll" tabindex="0"><div id="tbl-head"></div><div id="tbl-body"><div id="tbl-rows"></div></div></div>
+        </div>
         <div id="status" role="status"></div>
         <div id="pick-popover" hidden>
           <button type="button" id="pick-close" title="Close">×</button>
@@ -361,7 +610,23 @@
         </div>
         <div id="drop-overlay" hidden><span>Drop to open</span></div>
       </main>
+      </div>
+
+      <footer id="statusbar" aria-label="Status bar">
+        <span id="sb-file" class="sb-item"></span>
+        <span id="sb-points" class="sb-item ui-num"></span>
+        <span id="sb-cells" class="sb-item ui-num"></span>
+        <span id="sb-selection" class="sb-item ui-num"></span>
+        <span class="spacer"></span>
+        <span id="sb-hint" class="sb-item"></span>
+      </footer>
     </div>
+
+    <dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title">
+      <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+      <div id="shortcuts-body"></div>
+      <form method="dialog"><button type="submit">Close</button></form>
+    </dialog>
 
     <script type="module" src="./src/main.ts"></script>
   </body>

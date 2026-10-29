@@ -25,6 +25,7 @@
 
 import type { SurfaceBuffers } from '@meshioplusplus/wasm';
 
+import type { RegionInfo } from '../groups/regionMap';
 import type { Vector3 } from '../types';
 
 /** One operation in the pipeline. */
@@ -57,6 +58,10 @@ export type OpSpec =
            * Empty `array` means "every cell" — the uniform refinement.
            */
           array: string;
+          /** Refine only the cells of this named file region (cell kind). */
+          region?: string;
+          /** Refine only these file cells (global, block-major indices). */
+          cells?: number[];
           /** `compare`, not `op`: `op` is this union's own discriminant. */
           compare: '<' | '>';
           value: number;
@@ -231,8 +236,24 @@ export type Request =
     | { id: number; type: 'init' }
     | { id: number; type: 'open'; name: string; bytes: ArrayBuffer }
     | { id: number; type: 'apply'; ops: OpSpec[] }
-    | { id: number; type: 'convert'; outFormat: string; ops: OpSpec[] }
+    | {
+          id: number;
+          type: 'convert';
+          outFormat: string;
+          ops: OpSpec[];
+          /**
+           * Saved groups to write with the mesh as cell regions. Only honoured
+           * with an empty pipeline: the groups name cells of the file as opened.
+           */
+          groups?: { name: string; surfaceCells: Uint32Array }[];
+      }
     | { id: number; type: 'close' }
+    /**
+     * The file's regions and cell blocks mapped onto the drawn surface, for the
+     * Groups panel. `numSurfaceCells` is what the page holds, as a cross-check;
+     * `epoch` is echoed so a stale answer can be dropped.
+     */
+    | { id: number; type: 'regions'; epoch: number; numSurfaceCells: number }
     | {
           id: number;
           type: 'stageEntry';
@@ -258,9 +279,22 @@ export interface RenderResult {
     bounds: { min: Vector3; max: Vector3 } | null;
 }
 
+export interface RegionsResult {
+    epoch: number;
+    ok: boolean;
+    /** Why the regions could not be mapped. */
+    reason?: string;
+    /** Set when the file is too large to read regions from. */
+    skipped?: string;
+    numSurfaceCells: number;
+    groups: RegionInfo[];
+}
+
 export interface ConvertResult {
     bytes: ArrayBuffer;
     outFormat: string;
+    /** Present when groups were requested: how many were written and how many the format kept. */
+    groups?: { requested: number; kept: string[] };
 }
 
 export type Response =
@@ -269,6 +303,7 @@ export type Response =
           | ({ kind: 'init' } & InitResult)
           | ({ kind: 'render' } & RenderResult)
           | ({ kind: 'convert' } & ConvertResult)
+          | ({ kind: 'regions' } & RegionsResult)
           | { kind: 'closed' }
           | ({ kind: 'staged' } & StageResult)
           | ({ kind: 'summary' } & SummaryResult)
@@ -343,6 +378,8 @@ export function describeOp(spec: OpSpec): string {
         case 'smooth':
             return `smooth · ${spec.method} · ${spec.iterations}`;
         case 'refine':
+            if (spec.region) return `refine · region ${spec.region}`;
+            if (spec.cells) return `refine · ${spec.cells.length.toLocaleString('en-US')} cells`;
             return spec.array
                 ? `refine · ${spec.array} ${spec.compare} ${spec.value}`
                 : `refine · ${spec.levels}×`;

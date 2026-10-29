@@ -109,11 +109,15 @@ export transform, clean, smooth, optimize_volume, crop_bbox, crop_plane, crop_pr
 export gradient
 export hessian
 export estimate_error, error_size
+export check_conformity
 export remesh
 export remesh_volume
 export grid, voxelize, octree, octree_mesh
 export rectangle, box, disk, uv_sphere, icosa_sphere, cylinder, reference_cells
 export reference_triangle, ngon, annulus, lshape, plate_with_hole, honeycomb
+export line, circle, helix, sphere_points, box_points
+export tetra_sphere, octa_sphere, cube_sphere, geo_sphere, torus, moebius, tube, cone
+export capsule, box_surface, platonic, ball, spherical_shell, pipe, fichera, solid_torus
 export sample_distance, distance_to_surface, surface_watertight_check, compute_sdf
 export compute_curvature, compute_normals, feature_edges, hausdorff_distance, check_quality
 export segment, fit_primitives, refine_patches, fit_cad, has_occt
@@ -121,6 +125,7 @@ export repair, shrinkwrap, sobolev_deform
 export interpolate, conservative_interpolate, meshes_equal, stats, compute_bandwidth
 export reorder, convert_cells, subdivide, agglomerate, refine, undo_green, decimate, partition, partition_labels
 export boundary_layer
+export extrude, revolve, mirror
 export tetrahedralize, has_netgen
 export tessellate
 export data_drop, data_keep, data_rename, data_point_to_cell, data_cell_to_point

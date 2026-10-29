@@ -66,6 +66,13 @@ def add_args(parser):
         help="how --fill=inside decides what is inside",
     )
     parser.add_argument(
+        "--plane",
+        type=str,
+        default="auto",
+        choices=["auto", "xy", "xz", "yz"],
+        help="plane of a 2-D skin ('auto': the axis of zero extent)",
+    )
+    parser.add_argument(
         "--attach-occupancy",
         action="store_true",
         help="attach the Int64 voxel:occupancy cell_data array",
@@ -107,6 +114,7 @@ def voxelize_cmd(args):
         max_cells=args.max_cells,
         sign=args.sign,
         watertight_check="warn" if args.fill == "inside" else "off",
+        plane=args.plane,
         return_report=True,
     )
 

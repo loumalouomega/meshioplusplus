@@ -14,24 +14,47 @@
  * Under `__VIEWER_EMBEDDED__` only (1) is compiled in, so Rollup drops the
  * worker and the WASM binary from the wheel-bundled build.
  */
-import { COLORMAPS, DEFAULT_COLORMAP } from './render/colormaps';
 import { Legend } from './render/legend';
+import { initPrefs } from './features/prefs';
+import { type AnalysisController, initAnalysis } from './features/analysis';
+import { type ViewController, initView } from './features/view';
 import { setupOrientationCube } from './render/orientation';
 import { Renderer, SOLID_COLOR, colorKey } from './render/renderer';
 import type { RepresentationMode } from './render/renderer';
 import { Picker } from './render/pick';
 import { downloadPng } from './render/screenshot';
 import { OpsPanel } from './ops/panel';
+import type { RefineTarget } from './ops/panel';
 import { ICONS } from './ui/icons';
+import { glyph } from './ui/glyphs';
 import { $, maybe, setOptions, show } from './ui/dom';
+import { initTheme, isThemeMode } from './ui/theme';
+import { initSections, setCollapsed } from './ui/section';
+import { initMenus, setMenuChecked } from './ui/menu';
+import { findByShortcut, registerAction } from './app/actions';
+import { initSidebar, showShortcuts } from './features/shell';
+import { setStatusBar } from './features/statusbar';
+import { SelectionController } from './features/selection';
+import { GroupsController } from './features/groups';
+import { Visibility } from './app/visibility';
+import type { RegionsResult } from './worker/protocol';
+import { SCENE_THEMES } from './ui/theme';
+import { opsPreserveCellIds } from './worker/opsIds';
 import type { ArrayEntry, PickInfo, ScalarRange, ViewerStatus } from './types';
 import type { SurfaceBuffers } from '@meshioplusplus/wasm';
 
 import type { MeshMeta, OpSpec, RenderResult } from './worker/protocol';
 
 const renderer = new Renderer($('render'));
-const opsPanel = new OpsPanel({ onChange: (ops) => applyOps(ops) });
+const theme = initTheme();
+theme.onChange((_resolved, scene) => renderer.setSceneTheme(scene.background, scene.body));
+const opsPanel = new OpsPanel({
+    onChange: (ops) => applyOps(ops),
+    refineTargets: () => refineTargets(),
+});
 let arrays: ArrayEntry[] = [];
+/** True when the open file has no volume cells and no vertex or line blocks. */
+let surfaceOnlyPolygons = false;
 let currentFile: File | null = null;
 
 /**
@@ -45,6 +68,23 @@ window.__viewerState = {
     arrays: [],
     name: '',
     picked: null,
+    selection: { tool: 'off', active: null, sets: [], hidden: 0 },
+    groups: { status: 'none', groups: [] },
+    analysis: {
+        table: { open: false, kind: 'cells', rows: 0, sortedBy: null, direction: 'asc' },
+        histogram: { array: null, counts: [] },
+    },
+    view: {
+        parallel: false,
+        direction: [0, 0, 1],
+        logScale: false,
+        bands: 0,
+        clip: false,
+        deformed: 0,
+        measuring: false,
+        measured: null,
+        bookmarks: [],
+    },
 };
 
 function setStatus(status: ViewerStatus, message = ''): void {
@@ -72,7 +112,13 @@ const legend = new Legend($('legend'), {
 // --- display ------------------------------------------------------------- //
 
 /** A worker's surface, or the VTP the offline embedded page carries. */
-function show3d(source: SurfaceBuffers | ArrayBuffer, meta: MeshMeta | null, name: string): void {
+function show3d(
+    source: SurfaceBuffers | ArrayBuffer,
+    meta: MeshMeta | null,
+    name: string,
+    keepSelection = false,
+    idsPreserved = true
+): void {
     const info = source instanceof ArrayBuffer ? renderer.load(source) : renderer.loadSurface(source);
     arrays = info.arrays;
 
@@ -83,19 +129,24 @@ function show3d(source: SurfaceBuffers | ArrayBuffer, meta: MeshMeta | null, nam
         name,
     });
 
-    setOptions(
-        $<HTMLSelectElement>('color-by'),
-        [
-            { value: SOLID_COLOR, label: 'Solid colour' },
-            ...arrays.map((a) => ({ value: colorKey(a), label: a.label })),
-        ],
-        SOLID_COLOR
-    );
+    fillColorBy(SOLID_COLOR);
     show($('color-section'));
     legend.hide();
     picker.clear();
     renderPick(null);
+    if (keepSelection) visibility.pruneTo(info.numCells);
+    else visibility.reset();
+    selection.attachSurface(keepSelection);
+    groups.attachSurface(info.numCells, keepSelection, idsPreserved);
+    syncConvertGroups();
+    view.attachSurface();
+    analysis.attachSurface();
+    surfaceOnlyPolygons =
+        !!meta &&
+        meta.cellBlocks.length > 0 &&
+        meta.cellBlocks.every((b) => /^(triangle|quad|polygon)/.test(b.type));
     renderInfo(meta, info.numCells, name);
+    setStatusBar({ file: name, points: info.numPoints, cells: info.numCells, selected: 0 });
     setStatus('ready');
 }
 
@@ -128,7 +179,75 @@ function renderInfo(meta: MeshMeta | null, renderedCells: number, name: string):
     show($('info-section'));
 }
 
+/**
+ * File cells (global, block-major indices) behind surface cells, or null when
+ * that cannot be told. A solid's facets carry their owner cell; a surface mesh
+ * of polygon blocks only is numbered like the file.
+ */
+function fileCellsOf(surfaceCells: ArrayLike<number>): number[] | null {
+    const data = renderer.data;
+    if (!data) return null;
+    const parent = data.getCellData().getArrayByName('surface:parent_cell');
+    if (parent) {
+        const values = parent.getData();
+        return [...new Set(Array.from(surfaceCells, (i) => Number(values[i])))].sort((a, b) => a - b);
+    }
+    if (surfaceOnlyPolygons) return Array.from(surfaceCells);
+    return null;
+}
+
+/** What the Refine form can be limited to: the file's cell regions, saved groups and the selection. */
+function refineTargets(): RefineTarget[] {
+    if (opsPanel.pipeline.some((op) => !opsPreserveCellIds([op]))) return [];
+    const out: RefineTarget[] = [];
+    const sel = selection.idsReport();
+    if (sel && sel.surfaceCells.length > 0) {
+        const cells = fileCellsOf(sel.surfaceCells);
+        if (cells && cells.length) {
+            out.push({
+                value: 'selection',
+                label: `Selection (${cells.length.toLocaleString('en-US')} cells)`,
+                spec: { cells },
+            });
+        }
+    }
+    for (const g of groups.listForRefine()) {
+        if (g.user) {
+            const cells = fileCellsOf(g.surfaceCells);
+            if (cells && cells.length) out.push({ value: `group:${g.name}`, label: `Group ${g.name}`, spec: { cells } });
+        } else {
+            out.push({ value: `region:${g.name}`, label: `Region ${g.name}`, spec: { region: g.name } });
+        }
+    }
+    return out;
+}
+
+/** The saved-groups checkbox of the Convert section: shown only when it can apply. */
+function syncConvertGroups(): void {
+    const usable = !__VIEWER_EMBEDDED__ && groups.userGroups().length > 0 && opsPanel.pipeline.length === 0;
+    show($('convert-groups-row'), usable);
+    show($('convert-groups-hint'), usable);
+}
+
+/** (Re)build the colour-by menu: the arrays, then any groups, keeping the choice if it survives. */
+function fillColorBy(selected?: string): void {
+    setOptions(
+        $<HTMLSelectElement>('color-by'),
+        [
+            { value: SOLID_COLOR, label: 'Solid colour' },
+            ...arrays.map((a) => ({ value: colorKey(a), label: a.label })),
+            ...groups.colorOptions(),
+        ],
+        selected
+    );
+}
+
 function applyColorBy(key: string): void {
+    if (groups.owns(key)) {
+        groups.applyColoring(key);
+        return;
+    }
+    groups.clearColoring();
     const range: ScalarRange | null = renderer.setColorBy(key);
     const entry = arrays.find((a) => colorKey(a) === key);
     if (!range || !entry) {
@@ -139,12 +258,6 @@ function applyColorBy(key: string): void {
 }
 
 // --- static wiring -------------------------------------------------------- //
-
-setOptions(
-    $<HTMLSelectElement>('colormap'),
-    COLORMAPS.map((name) => ({ value: name, label: name })),
-    DEFAULT_COLORMAP
-);
 
 $('color-by').addEventListener('change', (e) =>
     applyColorBy((e.target as HTMLSelectElement).value)
@@ -167,8 +280,10 @@ $('edges').addEventListener('change', (e) =>
 );
 decorate('h-mesh', 'info');
 decorate('h-color', 'colormap');
-decorate('tool-reset', 'reset');
-decorate('tool-screenshot', 'screenshot');
+prependGlyph('tool-reset', 'maximize');
+prependGlyph('tool-screenshot', 'camera');
+prependGlyph('tool-inspect', 'crosshair');
+prependGlyph('tool-select', 'boxSelect');
 decorate('ops-undo', 'undo');
 decorate('ops-revert', 'revert');
 decorate('op-quality-apply', 'quality');
@@ -186,12 +301,78 @@ $('tool-screenshot').addEventListener('click', () => {
 });
 
 const canvas = renderer.view.getCanvas();
-if (canvas) setupOrientationCube(renderer, canvas);
+if (canvas) setupOrientationCube(renderer, canvas, () => view.refresh());
 
 // --- click to inspect ----------------------------------------------------- //
 
 const picker = new Picker(renderer);
+const visibility = new Visibility((mask) => renderer.setVisibleMask(mask));
+/** Set once the worker module is loaded; stays null on the offline page. */
+let regionsFetcher: ((epoch: number, cells: number) => Promise<RegionsResult>) | null = null;
+
+const selection: SelectionController = new SelectionController({
+    renderer,
+    picker,
+    visibility,
+    palette: () => SCENE_THEMES[theme.resolved].palette,
+    onToolOn: () => {
+        setInspecting(false);
+        view.setMeasuring(false);
+    },
+    onSaveGroup: (name, mask, color) => groups.addUserGroup(name, mask, color),
+    onShowAll: () => groups.showAll(),
+    onState: (state) => {
+        window.__viewerState.selection = state;
+    },
+});
+const groups: GroupsController = new GroupsController({
+    renderer,
+    visibility,
+    legend,
+    palette: () => SCENE_THEMES[theme.resolved].palette,
+    selectMask: (mask, how) => selection.selectMask(mask, how),
+    fetch: () => regionsFetcher,
+    onListChanged: () => {
+        fillColorBy();
+        syncConvertGroups();
+    },
+    onState: (state) => {
+        window.__viewerState.groups = state;
+    },
+});
+visibility.onChange(() => selection.refresh());
 let inspecting = false;
+
+const analysis: AnalysisController = initAnalysis({
+    renderer,
+    select: (mask) => selection.selectMask(mask),
+    download: (name, text, mime) => {
+        const url = URL.createObjectURL(new Blob([text], { type: mime }));
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        a.click();
+        URL.revokeObjectURL(url);
+    },
+    onState: (state) => {
+        window.__viewerState.analysis = state;
+    },
+    fileBase: () => (window.__viewerState.name || 'mesh').replace(/\.[^.]*$/, ''),
+});
+
+const view: ViewController = initView({
+    renderer,
+    legend,
+    picker,
+    onMeasureOn: () => {
+        setInspecting(false);
+        selection.setTool('off');
+    },
+    notify: (message) => setStatus('ready', message),
+    onState: (state) => {
+        window.__viewerState.view = state;
+    },
+});
 
 function formatComponents(values: number[]): string {
     return values
@@ -267,6 +448,11 @@ $('tool-inspect').addEventListener('click', () => {
         return;
     }
     setInspecting(!inspecting);
+    // The inspector, measuring and the selection tool all own a plain click.
+    if (inspecting) {
+        selection.setTool('off');
+        view.setMeasuring(false);
+    }
 });
 $('pick-close').addEventListener('click', () => setInspecting(false));
 
@@ -287,7 +473,138 @@ if (canvas) {
     });
 }
 
+// --- chrome: menus, shortcuts, sections ------------------------------------ //
+
+const sidebar = initSidebar(() => renderer.resize());
+const themeSelect = $<HTMLSelectElement>('theme-select');
+themeSelect.value = theme.mode;
+themeSelect.addEventListener('change', () => {
+    if (isThemeMode(themeSelect.value)) theme.setMode(themeSelect.value);
+});
+
+/** Change a control the way a user would, so every listener on it runs. */
+function driveControl(el: HTMLInputElement | HTMLSelectElement, value: string | boolean): void {
+    if (el instanceof HTMLInputElement && typeof value === 'boolean') el.checked = value;
+    else el.value = String(value);
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+function syncViewMenu(): void {
+    setMenuChecked('view.edges', $<HTMLInputElement>('edges').checked);
+    setMenuChecked('view.wireframe', $<HTMLSelectElement>('representation').value === '1');
+    setMenuChecked('view.inspect', inspecting);
+}
+$('edges').addEventListener('change', syncViewMenu);
+$('representation').addEventListener('change', syncViewMenu);
+$('tool-inspect').addEventListener('click', () => queueMicrotask(syncViewMenu));
+$('pick-close').addEventListener('click', () => queueMicrotask(syncViewMenu));
+
+const WEB_ONLY = () => !__VIEWER_EMBEDDED__;
+
+registerAction({
+    id: 'file.open',
+    label: 'Open a mesh',
+    shortcut: 'Ctrl+O',
+    group: 'File',
+    enabled: WEB_ONLY,
+    run: () => $<HTMLInputElement>('file').click(),
+});
+registerAction({
+    id: 'file.screenshot',
+    label: 'Save a PNG screenshot',
+    shortcut: 'P',
+    group: 'File',
+    run: () => $('tool-screenshot').click(),
+});
+registerAction({
+    id: 'file.convert',
+    label: 'Convert to another format',
+    group: 'File',
+    enabled: WEB_ONLY,
+    run: () => {
+        const section = $('convert-section');
+        if (section.hidden) return;
+        setCollapsed(section, false);
+        $('convert-format').focus();
+    },
+});
+registerAction({
+    id: 'view.fit',
+    label: 'Fit the mesh to the window',
+    shortcut: 'F',
+    group: 'View',
+    run: () => renderer.resetCamera(),
+});
+registerAction({
+    id: 'view.edges',
+    label: 'Show or hide edges',
+    shortcut: 'E',
+    group: 'View',
+    run: () => driveControl($<HTMLInputElement>('edges'), !$<HTMLInputElement>('edges').checked),
+});
+registerAction({
+    id: 'view.wireframe',
+    label: 'Toggle wireframe',
+    shortcut: 'W',
+    group: 'View',
+    run: () =>
+        driveControl(
+            $<HTMLSelectElement>('representation'),
+            $<HTMLSelectElement>('representation').value === '1' ? '2' : '1'
+        ),
+});
+registerAction({
+    id: 'view.inspect',
+    label: 'Inspect cells by clicking',
+    shortcut: 'Shift+I',
+    group: 'View',
+    run: () => $('tool-inspect').click(),
+});
+registerAction({
+    id: 'view.sidebar',
+    label: 'Show or hide the sidebar',
+    shortcut: 'Ctrl+B',
+    group: 'View',
+    run: () => sidebar.toggle(),
+});
+registerAction({
+    id: 'help.shortcuts',
+    label: 'Show the keyboard shortcuts',
+    shortcut: '?',
+    group: 'Help',
+    run: showShortcuts,
+});
+registerAction({
+    id: 'help.docs',
+    label: 'Open the documentation',
+    group: 'Help',
+    run: () => window.open('https://loumalouomega.github.io/meshioplusplus/viewer', '_blank', 'noopener'),
+});
+
+initPrefs();
+
+document.addEventListener('keydown', (e) => {
+    const target = e.target as HTMLElement | null;
+    // Typing in a field, a select or a dialog is never a shortcut.
+    if (target?.closest('input, select, textarea, dialog, [contenteditable="true"]')) return;
+    const action = findByShortcut(e);
+    if (!action) return;
+    e.preventDefault();
+    action.run();
+});
+
+initMenus();
+initSections();
+syncViewMenu();
+
 // --- payload resolution --------------------------------------------------- //
+
+/** Prefix a control with one of the line glyphs, if the control exists. */
+function prependGlyph(id: string, name: Parameters<typeof glyph>[0]): void {
+    const el = maybe(id);
+    if (!el) return;
+    el.insertAdjacentHTML('afterbegin', glyph(name));
+}
 
 /** Prefix a control with its inline SVG icon, if the control exists. */
 function decorate(id: string, icon: keyof typeof ICONS): void {
@@ -330,8 +647,13 @@ function embeddedConfig(): { colorBy?: string } | null {
 }
 
 /** Whatever the page was given, however it arrived. */
-function present(result: RenderResult, name: string): void {
-    show3d(result.surface, result.meta, name);
+function present(
+    result: RenderResult,
+    name: string,
+    keepSelection = false,
+    idsPreserved = true
+): void {
+    show3d(result.surface, result.meta, name, keepSelection, idsPreserved);
     opsPanel.showReport(result.report);
 }
 
@@ -376,14 +698,16 @@ async function boot(): Promise<void> {
         return;
     }
 
-    const { applyOps: apply, convertTo, init, openFile } = await import('./worker/client');
+    const { applyOps: apply, convertTo, getRegions, init, openFile } = await import('./worker/client');
+    regionsFetcher = (epoch, cells) => getRegions(epoch, cells);
 
     applyOpsImpl = (ops) => {
         opsPanel.setBusy(true);
         setStatus('loading', ops.length ? 'applying operations…' : 'reverting…');
         apply(ops)
             .then((result) => {
-                present(result, currentFile?.name ?? window.__viewerState.name);
+                const preserved = opsPreserveCellIds(ops);
+                present(result, currentFile?.name ?? window.__viewerState.name, preserved, preserved);
                 opsPanel.setBusy(false);
             })
             .catch((e: Error) => {
@@ -429,11 +753,26 @@ async function boot(): Promise<void> {
     $('convert-download').addEventListener('click', () => {
         const outFormat = $<HTMLSelectElement>('convert-format').value;
         setStatus('loading', `converting to ${outFormat}…`);
-        convertTo(outFormat, opsPanel.pipeline)
-            .then(({ bytes }) => {
+        const wanted =
+            !$('convert-groups-row').hidden && $<HTMLInputElement>('convert-groups').checked
+                ? groups.userGroups()
+                : [];
+        convertTo(outFormat, opsPanel.pipeline, wanted.length ? wanted : undefined)
+            .then(({ bytes, groups: written }) => {
                 const base = (currentFile?.name ?? 'mesh').replace(/\.[^.]*$/, '');
                 download(bytes, `${base}.${outFormat}`);
-                setStatus('ready');
+                if (written && written.requested > 0) {
+                    const kept = written.kept.length;
+                    setStatus(
+                        'ready',
+                        kept === written.requested
+                            ? `wrote ${kept} group${kept === 1 ? '' : 's'}: ${written.kept.join(', ')}`
+                            : `${outFormat} kept ${kept} of ${written.requested} groups` +
+                                  (kept ? `: ${written.kept.join(', ')}` : '')
+                    );
+                } else {
+                    setStatus('ready');
+                }
             })
             .catch((e: Error) => setStatus('error', e.message));
     });
@@ -511,6 +850,7 @@ const SAMPLES = [
     { file: 'cube.vtp', label: 'Cube (surface)' },
     { file: 'block.vtu', label: 'Block (volume)' },
     { file: 'wave.vtp', label: 'Wave (point data)' },
+    { file: 'zones.msh', label: 'Zones (regions)' },
 ];
 
 function wireSamples(open: (file: File) => Promise<void>): void {
