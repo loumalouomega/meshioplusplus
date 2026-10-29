@@ -3023,6 +3023,28 @@ mio_mesh_domain <- function(boundary, hsiz = -1, size = "", holes = NULL, hmin =
         as.numeric(angle_detection), frozen, as.character(required))
 }
 
+#' Move a mesh by a boundary displacement with MMG
+#'
+#' Roadmap 3.2.4 (`doc/mmg.md`): the boundary facets of the regions `moving`
+#' follow the point-data vector `displacement`, MMG extends it inward by linear
+#' elasticity (ELAS) and remeshes as the mesh deforms; the rest of the boundary
+#' stays in place. Fails naming `MESHIOPLUSPLUS_WITH_MMG` without MMG, or ELAS
+#' without it ([mio_has_mmg_elas()]).
+#'
+#' @inheritParams mio_adapt
+#' @param displacement The displacement's point-data name.
+#' @param moving Names of the cell or side regions whose boundary moves.
+#' @param lagrangian MMG's `lag`: 0 moves only, 1 also swaps, 2 also inserts.
+#' @return The list [mio_adapt()] returns.
+#' @export
+mio_move <- function(mesh, displacement, moving, lagrangian = 1, hmin = -1, hmax = -1,
+                     hausd = -1, hgrad = -1, angle_detection = 45, frozen = NULL,
+                     required = character(0)) {
+  .Call(R_mio_move, mesh, as.character(displacement), as.character(moving),
+        as.numeric(lagrangian), as.numeric(hmin), as.numeric(hmax), as.numeric(hausd),
+        as.numeric(hgrad), as.numeric(angle_detection), frozen, as.character(required))
+}
+
 #' An anisotropic metric from a Hessian
 #'
 #' The metric of the row-major point-data Hessian `hessian` ((n, 9), or (n, 4)

@@ -93,15 +93,34 @@ out, report = mio.mesh_domain(annulus, hsiz=0.05, holes=[(0, 0)], return_report=
 
 [`triangulate_polygon_2d`](./mesh_cad.md) triangulates a polygon with holes natively, refined by Ruppert's algorithm, and [`mesh_cad_surface`](./mesh_cad.md) meshes CAD faces; `mesh_domain` adds MMG's sizes, gradation and quality.
 
+## move
+
+`move(mesh, displacement, moving, *, lagrangian=1, **options)` moves a mesh by the displacement of part of its boundary and remeshes as it deforms, through MMG's Lagrangian mode, `MMG3D_mmg3dmov` for tetrahedra or `MMG2D_mmg2dmov` for a planar triangle mesh (roadmap 3.2.4). It needs an MMG built with ELAS (`has_mmg_elas()`, [below](#licence)); without it, it raises naming ELAS.
+
+```python
+# Translate the hole of a holed square by +0.1 in x
+mesh = mio.mesh_domain(boundary, hsiz=0.04, holes=[(0.5, 0.5)])   # "hole": the hole's lines
+d = np.zeros((len(mesh.points), 2))
+d[on_hole, 0] = 0.1
+out = mio.move(mesh, d, "hole")
+```
+
+- **What moves.** The boundary facets (triangles in 3-D, edges in 2-D) of the `moving` cell or side regions follow `displacement`, a `point_data` vector (`(n, 3)` for mmg3d, `(n, 2)` or `(n, 3)` for mmg2d). MMG gives them its reference 10, extends their displacement into a layer of elements around them by linear elasticity (ELAS) and keeps the rest of the boundary in place, so the displacement given at other points is not read. A point the moving facets share with a fixed facet stays: pushing out a box's face moves its middle and keeps its rim, so the volume grows by less than the face's area times the distance (1.0685 rather than 1.1 for a unit box of 6×6×6 cells pushed 0.1).
+- **`lagrangian`** is MMG's `lag`: 0 moves only, 1 (the default) also swaps edges and faces, 2 also inserts and collapses points. After the motion, MMG improves the mesh as `adapt` would with the same parameters.
+- **Output.** The moved mesh, its regions as for `adapt`; the moving facets come back under their regions (when they had several references, with the union of their regions and a warning). The report is `adapt`'s. Moving a hole of a unit square by 0.1 keeps every triangle right side out and the area exactly 0.96 (the tests' probe).
+- **Refused.** A surface mesh (mmgs has no Lagrangian mode), a displacement of the wrong shape, an unknown region, or regions with no boundary facet.
+
+Two defects in the libraries are worked around. MMG 5.8's `MMG2D_Set_vectorSol` and `MMG2D_Set_vectorSols` store vertex `k` one slot before where mmg2d's motion reads it, shifting every 2-D displacement by one component, so meshio++ writes the solution array in the layout the motion reads. And ELAS compares the verbosity MMG hands it, a number, against the character `'0'`, so it always prints; while `verbose` is negative, `move` points file descriptor 1 at the null device for the call (POSIX only, and process-wide: anything another thread prints meanwhile is lost too).
+
 ## Other language surfaces
 
-- **C API:** `mio_adapt(mesh, opts, report)` with `mio_adapt_opts` (which embeds the shared `mio_mmg_params`, `mio_mmg_params_init`) and `mio_mmg_report`; `mio_discretize_levelset(mesh, opts, report)` with `mio_discretize_levelset_opts` and `mio_mmg_material`; `mio_mesh_domain(boundary, opts, report, &num_subdomains, &num_holes)` with `mio_mesh_domain_opts`; and `mio_metric_from_hessian`. The structs are append-only with reserved tails ([C API](./c_api.md)).
-- **Fortran:** `mio_adapt(mesh, hsiz=, size_field=, metric=, ..., frozen=, required=, report=)` (1-based `frozen`), `mio_discretize_levelset(mesh, level_set, isovalue=, hausd=, hmax=, report=)`, `mio_mesh_domain(boundary, hsiz=, holes=, report=, num_subdomains=)` (`holes(2, n)`) and `mio_metric_from_hessian`.
-- **Julia:** `adapt(mesh; hsiz, size, metric, ..., frozen, required, local_params)` (1-based `frozen`), `discretize_levelset(mesh, level_set; isovalue, remove_small_components, materials, ...)`, `mesh_domain(boundary; hsiz, size, holes, ...)` and `metric_from_hessian`.
-- **R:** `mio_adapt(mesh, hsiz, size, metric, ..., frozen, required)` (1-based `frozen`), `mio_discretize_levelset(mesh, level_set, isovalue, remove_small_components, materials, ...)` (`materials` a four-column matrix), `mio_mesh_domain(boundary, hsiz, size, holes, ...)` (`holes` a two-column matrix) and `mio_metric_from_hessian`.
-- **CLI:** `meshioplusplus adapt IN OUT --hsiz 0.05` (or `--size NAME`, `--metric NAME`), with `--hmin`, `--hmax`, `--hausd`, `--hgrad`, `--hgradreq`, `--angle-detection`, `--optim`, `--noinsert`, `--noswap`, `--nomove`, `--nosurf`, `--nreg`, `--opnbdy`, `--frozen REGION` and repeatable `--required REGION`; `discretize-levelset IN OUT --level-set NAME` (`--isovalue`, `--rmc`, repeatable `--material REF,SPLIT,IN,OUT`) and `mesh-2d IN OUT --hsiz H` (`--size`, repeatable `--hole X,Y`) with the same MMG options, in the Python and native CLIs alike ([CLI](./cli.md)).
-- **Pipeline:** an `Adapt` step with `Hsiz`, `Size`, `Metric`, `Hmin`, `Hmax`, `Hausd`, `Hgrad`, `Hgradreq`, `AngleDetection`, the switches, `Frozen` (a point region) and `Required`; it reports `NumPointsIn/Out`, `NumElementsIn/Out`, `LowFailure`, `QualityMin` and `QualityMean`. `DiscretizeLevelset` (`LevelSet`, `Isovalue`, `RemoveSmallComponents`, `Materials`) and `MeshDomain` (`Hsiz`, `Size`, `Holes`, adding `NumSubdomains` and `NumHoles`) take the same MMG parameters ([pipelines](./pipeline.md)).
-- **MCP:** the `adapt`, `discretize_levelset` and `mesh_domain` tools, which report `mmg_available` (an error with `mmg_available: false` without MMG), and `metric_from_hessian` ([MCP](./mcp.md)).
+- **C API:** `mio_adapt(mesh, opts, report)` with `mio_adapt_opts` (which embeds the shared `mio_mmg_params`, `mio_mmg_params_init`) and `mio_mmg_report`; `mio_discretize_levelset(mesh, opts, report)` with `mio_discretize_levelset_opts` and `mio_mmg_material`; `mio_mesh_domain(boundary, opts, report, &num_subdomains, &num_holes)` with `mio_mesh_domain_opts`; `mio_move(mesh, opts, report)` with `mio_move_opts`; and `mio_metric_from_hessian`. The structs are append-only with reserved tails ([C API](./c_api.md)).
+- **Fortran:** `mio_adapt(mesh, hsiz=, size_field=, metric=, ..., frozen=, required=, report=)` (1-based `frozen`), `mio_discretize_levelset(mesh, level_set, isovalue=, hausd=, hmax=, report=)`, `mio_mesh_domain(boundary, hsiz=, holes=, report=, num_subdomains=)` (`holes(2, n)`), `mio_move(mesh, displacement, moving(:), lagrangian=, report=)` and `mio_metric_from_hessian`.
+- **Julia:** `adapt(mesh; hsiz, size, metric, ..., frozen, required, local_params)` (1-based `frozen`), `discretize_levelset(mesh, level_set; isovalue, remove_small_components, materials, ...)`, `mesh_domain(boundary; hsiz, size, holes, ...)`, `move(mesh, displacement, moving; lagrangian, ...)` and `metric_from_hessian`.
+- **R:** `mio_adapt(mesh, hsiz, size, metric, ..., frozen, required)` (1-based `frozen`), `mio_discretize_levelset(mesh, level_set, isovalue, remove_small_components, materials, ...)` (`materials` a four-column matrix), `mio_mesh_domain(boundary, hsiz, size, holes, ...)` (`holes` a two-column matrix), `mio_move(mesh, displacement, moving, lagrangian, ...)` and `mio_metric_from_hessian`.
+- **CLI:** `meshioplusplus adapt IN OUT --hsiz 0.05` (or `--size NAME`, `--metric NAME`), with `--hmin`, `--hmax`, `--hausd`, `--hgrad`, `--hgradreq`, `--angle-detection`, `--optim`, `--noinsert`, `--noswap`, `--nomove`, `--nosurf`, `--nreg`, `--opnbdy`, `--frozen REGION` and repeatable `--required REGION`; `discretize-levelset IN OUT --level-set NAME` (`--isovalue`, `--rmc`, repeatable `--material REF,SPLIT,IN,OUT`) `mesh-2d IN OUT --hsiz H` (`--size`, repeatable `--hole X,Y`) and `move IN OUT --displacement NAME --moving REGION` (repeatable `--moving`, `--lagrangian`) with the same MMG options, in the Python and native CLIs alike ([CLI](./cli.md)).
+- **Pipeline:** an `Adapt` step with `Hsiz`, `Size`, `Metric`, `Hmin`, `Hmax`, `Hausd`, `Hgrad`, `Hgradreq`, `AngleDetection`, the switches, `Frozen` (a point region) and `Required`; it reports `NumPointsIn/Out`, `NumElementsIn/Out`, `LowFailure`, `QualityMin` and `QualityMean`. `DiscretizeLevelset` (`LevelSet`, `Isovalue`, `RemoveSmallComponents`, `Materials`) `MeshDomain` (`Hsiz`, `Size`, `Holes`, adding `NumSubdomains` and `NumHoles`) and `Move` (`Displacement`, `Moving`, `Lagrangian`) take the same MMG parameters ([pipelines](./pipeline.md)).
+- **MCP:** the `adapt`, `discretize_levelset`, `mesh_domain` and `move` tools, which report `mmg_available` (`move` also `mmg_elas_available`) (an error with `mmg_available: false` without MMG), and `metric_from_hessian` ([MCP](./mcp.md)).
 - **WebAssembly:** only `hasMmg()`, always `false`, until roadmap 3.2.8.
 
 ## Building with MMG
@@ -138,10 +157,11 @@ MMG is **LGPL-3.0-or-later**. meshio++ is MIT, and a build without MMG contains 
 
 ## Embedding MMG
 
-Three hazards of calling MMG as a library, read in the MMG 5.8.0 source, are handled once for every operation (`src/cpp/src/detail/mmg_guard.hpp`):
+Four hazards of calling MMG as a library, read in the MMG 5.8.0 source, are handled once for every operation (`src/cpp/src/detail/mmg_guard.hpp`):
 
 - **Signal handlers.** Every MMG library entry point (`MMG3D_mmg3dlib`, `MMG3D_mmg3dls`, `MMG3D_mmg3dmov`, `MMGS_mmgslib`, `MMGS_mmgsls`, `MMG2D_mmg2dlib`, `MMG2D_mmg2dmesh`, `MMG2D_mmg2dls`, `MMG2D_mmg2dmov`) calls `signal()` for `SIGABRT`, `SIGFPE`, `SIGILL`, `SIGSEGV`, `SIGTERM` and `SIGINT`, installing a handler that prints a message and calls `exit(EXIT_FAILURE)`, and never puts the old ones back. meshio++ saves the six handlers before each call and restores them after it, on every path including errors, so Python's Ctrl-C handler survives. **During** a call MMG's handlers stand: a Ctrl-C, or a crash inside MMG, ends the whole process rather than raising, so an MMG call cannot be interrupted.
 - **Index width.** `MMG5_int` is `int32_t` unless MMG was configured with `-DMMG5_INT=int64_t`. A mesh beyond the range is refused by name, before any data reaches MMG, rather than truncated; `mmg_index_bits()` reports the width.
+- **Standard output.** MMG is silent at `verbose = -1`; ELAS is not ([`move`](#move)), so `move` silences file descriptor 1 for its call.
 - **Threads.** Whether two meshes can be adapted at once in one process is not established, so every MMG call is serialised behind one mutex. ParMmg, MMG's MPI layer, is out of scope ([non-goals](./roadmap.md#non-goals-and-decisions-taken)).
 
 ## Symmetric tensors

@@ -39,6 +39,12 @@
  *   process is not established, so every call is serialised behind one mutex,
  *   taken before the handlers are saved (a second thread would otherwise save
  *   MMG's handlers as the host's).
+ * - **Standard output.** MMG prints nothing at `verbose = -1`, but ELAS,
+ *   which `move` calls, compares the verbosity MMG hands it as a number
+ *   against the character `'0'` and so always prints. `MmgStdoutSilencer`
+ *   points file descriptor 1 at the null device for the call (POSIX; a no-op
+ *   elsewhere), process-wide: anything another thread prints meanwhile is
+ *   lost too.
  * - **Index width (3.2.5.2).** `MMG5_int` is `int32_t` unless MMG was built
  *   with `-DMMG5_INT=int64_t`; `mmg_check_index_range` refuses a mesh beyond
  *   that range by name rather than let it truncate.
@@ -71,6 +77,18 @@ private:
     // Opaque storage for the saved handlers (a `struct sigaction` each on
     // POSIX, a handler pointer on Windows), sized for the larger.
     alignas(std::max_align_t) unsigned char mSaved[kMmgNumSignals * 256];
+};
+
+/// Points file descriptor 1 at the null device while it lives, when `Active`.
+class MmgStdoutSilencer {
+public:
+    explicit MmgStdoutSilencer(bool Active);
+    ~MmgStdoutSilencer();
+    MmgStdoutSilencer(const MmgStdoutSilencer&) = delete;
+    MmgStdoutSilencer& operator=(const MmgStdoutSilencer&) = delete;
+
+private:
+    int mSaved = -1;
 };
 
 /**

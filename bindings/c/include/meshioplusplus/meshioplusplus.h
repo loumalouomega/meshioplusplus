@@ -7123,6 +7123,29 @@ MIO_API mio_mesh* mio_mesh_domain(const mio_mesh* boundary, const mio_mesh_domai
                                   mio_mmg_report* report, int64_t* num_subdomains,
                                   int64_t* num_holes);
 
+/** The options of mio_move. */
+typedef struct mio_move_opts {
+    mio_mmg_params params;
+    const char* displacement;  /**< a point_data vector name, dim components (required) */
+    const char* const* moving; /**< the cell or side regions whose boundary moves */
+    int64_t num_moving;
+    int32_t lagrangian;   /**< MMG's lag: 0 moves only, 1 (default) swaps, 2 also inserts */
+    int32_t reserved_pad; /**< zero */
+    int64_t reserved[4];  /**< must be zero; room for additive growth */
+} mio_move_opts;
+
+MIO_API void mio_move_opts_init(mio_move_opts* opts);
+
+/**
+ * Move `mesh` by the displacement of the boundary facets of the `moving`
+ * regions and remesh as it deforms, with MMG's Lagrangian mode
+ * (MMG3D_mmg3dmov or MMG2D_mmg2dmov, roadmap 3.2.4): MMG extends the
+ * displacement inward by linear elasticity (ELAS) and keeps the rest of the
+ * boundary in place. `report` may be NULL. Fails with MIO_ERR_UNSUPPORTED
+ * without the backend or with an MMG built without ELAS (mio_has_mmg_elas).
+ */
+MIO_API mio_mesh* mio_move(const mio_mesh* mesh, const mio_move_opts* opts, mio_mmg_report* report);
+
 /**
  * The anisotropic metric of the row-major point_data Hessian `hessian`
  * ((n, 9) or (n, 4)), for mio_adapt: M = c/error |H|, its sizes clamped to

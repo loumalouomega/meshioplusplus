@@ -76,7 +76,7 @@ module meshioplusplus
     public :: mio_tetrahedralize, mio_tetrahedralize_report, mio_has_netgen
     public :: mio_has_mmg, mio_has_mmg_elas, mio_mmg_index_bits
     public :: mio_adapt, mio_mmg_report, mio_metric_from_hessian
-    public :: mio_discretize_levelset, mio_mesh_domain
+    public :: mio_discretize_levelset, mio_mesh_domain, mio_move
     public :: mio_error_size_report
     public :: mio_conformity_report
     public :: MIO_CONFORMITY_CONFORMING, MIO_CONFORMITY_WELD, MIO_CONFORMITY_PROXIMITY
@@ -796,6 +796,17 @@ module meshioplusplus
         type(c_ptr) :: size = c_null_ptr
         type(c_ptr) :: holes = c_null_ptr
         integer(c_int64_t) :: num_holes = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_move_opts` (232 bytes).
+    type, bind(c) :: mio_move_opts_t
+        type(mio_mmg_params_t) :: params
+        type(c_ptr) :: displacement = c_null_ptr
+        type(c_ptr) :: moving = c_null_ptr
+        integer(c_int64_t) :: num_moving = 0
+        integer(c_int32_t) :: lagrangian = 1
+        integer(c_int32_t) :: reserved_pad = 0
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
@@ -4993,6 +5004,14 @@ module meshioplusplus
             type(c_ptr) :: h
         end function
 
+        function c_mio_move(mesh, opts, report) bind(c, name="mio_move") result(h)
+            import :: c_ptr, mio_move_opts_t, mio_mmg_report
+            type(c_ptr), value :: mesh
+            type(mio_move_opts_t), intent(in) :: opts
+            type(mio_mmg_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
         function c_mio_mesh_domain(mesh, opts, report, num_subdomains, num_holes) &
                 bind(c, name="mio_mesh_domain") result(h)
             import :: c_ptr, c_int64_t, mio_mesh_domain_opts_t, mio_mmg_report
@@ -5986,6 +6005,53 @@ contains
         end if
         if (present(report)) report = rep
         if (present(num_subdomains)) num_subdomains = int(nsub, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Move `mesh` by the point-data vector `displacement` of the boundary
+    !> facets of the regions `moving`, remeshing as it deforms (MMG's
+    !> Lagrangian mode, roadmap 3.2.4): MMG extends the displacement inward by
+    !> linear elasticity (ELAS) and keeps the rest of the boundary in place.
+    !> `lagrangian` is MMG's lag (0, 1 the default, or 2). Fails naming
+    !> MESHIOPLUSPLUS_WITH_MMG without MMG, or ELAS without it.
+    function mio_move(mesh, displacement, moving, lagrangian, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in) :: displacement
+        character(*), intent(in) :: moving(:)
+        integer, intent(in), optional :: lagrangian
+        type(mio_mmg_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_move_opts_t) :: opts
+        type(mio_mmg_report) :: rep
+        character(kind=c_char, len=:), allocatable, target :: name_c
+        character(kind=c_char, len=:), allocatable, target :: moving_c(:)
+        type(c_ptr), allocatable, target :: moving_p(:)
+        integer :: k
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. c_sizeof(opts) /= 232_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: move layout mismatch'
+            error stop 1
+        end if
+        name_c = c_str(displacement)
+        opts%displacement = c_loc(name_c(1:1))
+        if (size(moving) > 0) then
+            allocate (character(kind=c_char, len=len(moving) + 1) :: moving_c(size(moving)))
+            allocate (moving_p(size(moving)))
+            do k = 1, size(moving)
+                moving_c(k) = trim(moving(k))//c_null_char
+                moving_p(k) = c_loc(moving_c(k))
+            end do
+            opts%moving = c_loc(moving_p(1))
+            opts%num_moving = int(size(moving), c_int64_t)
+        end if
+        if (present(lagrangian)) opts%lagrangian = int(lagrangian, c_int32_t)
+        out%handle = c_mio_move(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('move', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
         call clear_status(stat, errmsg)
     end function
 

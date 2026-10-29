@@ -934,6 +934,27 @@ meshioplusplus mesh-2d annulus.vtu out.vtu --hsiz 0.05 --hole 0,0
 
 ---
 
+## meshioplusplus move
+
+Move a tetrahedral or planar triangle mesh by the displacement of part of its boundary and remesh as it deforms, with [MMG](/mmg#move)'s Lagrangian mode. Needs a build with `MESHIOPLUSPLUS_WITH_MMG` and an MMG built with ELAS.
+
+```
+meshioplusplus move --displacement NAME --moving REGION [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--displacement NAME` | The `point_data` displacement vector (required) |
+| `--moving REGION` | A cell or side region whose boundary facets move (required, repeatable); the rest of the boundary stays |
+| `--lagrangian 0\|1\|2` | MMG's `lag`: 0 moves only, 1 also swaps (default), 2 also inserts and collapses |
+| `adapt`'s MMG options | `--hmin` … `--required`, `--verbose-mmg`, `--quiet`, `-i`/`-o` |
+
+```sh
+meshioplusplus move holed.vtu moved.vtu --displacement d --moving hole
+```
+
+---
+
 ## meshioplusplus remesh
 
 Replace a **surface** mesh's own triangulation with a new, near-uniformly-sized, well-shaped one at a caller-chosen vertex count, by approximated centroidal Voronoi diagram (ACVD) clustering (see [remeshing](/remesh)).

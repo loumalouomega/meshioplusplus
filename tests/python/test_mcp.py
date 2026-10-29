@@ -1517,6 +1517,34 @@ def test_discretize_levelset_and_mesh_domain_tools(tmp_path):
             assert out["error_type"] == "NotImplementedError"
 
 
+def test_move_tool_reports_the_capability(tmp_path):
+    # Roadmap 3.2.4: a box's xmax face pushed out, or the missing backend named.
+    box = meshioplusplus.box(dims=(4, 4, 4), cell_type="tetra")
+    d = np.zeros((len(box.points), 3))
+    d[np.isclose(box.points[:, 0], 1.0), 0] = 0.1
+    box.point_data["d"] = d
+    src = str(tmp_path / "box.vtu")
+    meshioplusplus.write(src, box)
+    dst = str(tmp_path / "moved.vtu")
+    out = _dump(
+        _tools.call_tool(
+            "move",
+            {
+                "input_path": src,
+                "output_path": dst,
+                "displacement": "d",
+                "moving": ["xmax"],
+            },
+        )
+    )
+    assert out["mmg_available"] is meshioplusplus.has_mmg()
+    if meshioplusplus.has_mmg() and meshioplusplus.has_mmg_elas():
+        assert out["library"] == "mmg3d" and out["status"] == "success"
+        assert np.isclose(meshioplusplus.read(dst).points[:, 0].max(), 1.1)
+    else:
+        assert out["error_type"] == "NotImplementedError"
+
+
 def test_metric_from_hessian_tool(tmp_path):
     mesh = meshioplusplus.rectangle(dims=(2, 2), cell_type="triangle")
     mesh.point_data["h"] = np.tile(

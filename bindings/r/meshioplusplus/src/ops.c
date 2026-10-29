@@ -1677,6 +1677,29 @@ SEXP R_mio_mesh_domain(SEXP boundary, SEXP hsiz, SEXP size, SEXP holes, SEXP hmi
     return res;
 }
 
+/* move (roadmap 3.2.4): MMG's Lagrangian mode, with ELAS. */
+SEXP R_mio_move(SEXP mesh, SEXP displacement, SEXP moving, SEXP lagrangian, SEXP hmin, SEXP hmax,
+                SEXP hausd, SEXP hgrad, SEXP angle_detection, SEXP frozen, SEXP required) {
+    mio_move_opts opts;
+    mio_move_opts_init(&opts);
+    r_mmg_params(&opts.params, hmin, hmax, hausd, hgrad, angle_detection, frozen, required);
+    opts.displacement = mio_r_string(displacement, "displacement");
+    R_xlen_t n_moving = Rf_length(moving);
+    if (n_moving > 0) {
+        const char** names = (const char**)R_alloc((size_t)n_moving, sizeof(char*));
+        for (R_xlen_t i = 0; i < n_moving; ++i)
+            names[i] = CHAR(STRING_ELT(moving, i));
+        opts.moving = names;
+        opts.num_moving = (int64_t)n_moving;
+    }
+    opts.lagrangian = (int32_t)mio_r_double(lagrangian, "lagrangian");
+    mio_mmg_report report;
+    mio_mesh* out = mio_move(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL)
+        mio_r_fail("move");
+    return r_mmg_result(out, &report);
+}
+
 SEXP R_mio_metric_from_hessian(SEXP mesh, SEXP hessian, SEXP error, SEXP hmin, SEXP hmax,
                                SEXP output) {
     mio_mesh *out = mio_metric_from_hessian(

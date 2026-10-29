@@ -439,6 +439,10 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Hsiz", "Size", "Holes", "Hmin", "Hmax", "Hausd", "Hgrad", "Hgradreq", "AngleDetection",
           "Optim", "NoInsert", "NoSwap", "NoMove", "NoSurf", "Nreg", "Opnbdy", "Frozen",
           "Required"}},
+        {"Move",
+         {"Displacement", "Moving", "Lagrangian", "Hmin", "Hmax", "Hausd", "Hgrad", "Hgradreq",
+          "AngleDetection", "Optim", "NoInsert", "NoSwap", "NoMove", "NoSurf", "Nreg", "Opnbdy",
+          "Frozen", "Required"}},
         {"Remesh",
          {"NumClusters", "Subdivide", "SubsampleRatio", "MaxSubdivide", "MaxIterations",
           "MaxRepairPasses", "Metric", "Gradation", "PreserveBoundary", "MaxAnisotropy"}},
@@ -2209,6 +2213,21 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         DiscretizeLevelsetResult lr = discretize_levelset(mesh, opts);
         pipe_mmg_report(rReport, rStep, lr.mReport);
         return std::move(lr.mMesh);
+    }
+    if (op == "Move") {
+        // MMG (roadmap 3.2.4): the Lagrangian mode, with ELAS.
+        MoveOptions opts;
+        opts.mParameters = pipe_mmg_parameters(rStep, mesh);
+        opts.mDisplacement = pipe_text(rStep, "Displacement", "");
+        if (opts.mDisplacement.empty())
+            throw std::invalid_argument(pipe_err(rStep, "parameter 'Displacement' is required"));
+        opts.mMoving = pipe_svec(rStep, "Moving");
+        if (opts.mMoving.empty())
+            throw std::invalid_argument(pipe_err(rStep, "parameter 'Moving' is required"));
+        opts.mLagrangian = static_cast<int>(pipe_number(rStep, "Lagrangian", 1.0));
+        AdaptResult mr = meshioplusplus::move(mesh, opts);
+        pipe_mmg_report(rReport, rStep, mr.mReport);
+        return std::move(mr.mMesh);
     }
     if (op == "MeshDomain") {
         // MMG (roadmap 3.2.3): the planar domain the line cells bound, triangulated.

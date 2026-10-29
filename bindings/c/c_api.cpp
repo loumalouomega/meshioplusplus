@@ -2247,6 +2247,7 @@ static_assert(sizeof(mio_mmg_material) == 32, "C ABI: mio_mmg_material layout ch
 static_assert(sizeof(mio_discretize_levelset_opts) == 240,
               "C ABI: mio_discretize_levelset_opts layout changed");
 static_assert(sizeof(mio_mesh_domain_opts) == 232, "C ABI: mio_mesh_domain_opts layout changed");
+static_assert(sizeof(mio_move_opts) == 232, "C ABI: mio_move_opts layout changed");
 
 mio_mesh* capi_smooth(const mio_mesh* pMesh, const meshioplusplus::SmoothOptions& rOptions,
                       int64_t* pNodesMoved, double* pMaxDisplacement, int64_t* pSkippedInversion) {
@@ -9646,6 +9647,31 @@ mio_mesh* mio_mesh_domain(const mio_mesh* boundary, const mio_mesh_domain_opts* 
             *num_subdomains = r.mNumSubdomains;
         if (num_holes)
             *num_holes = r.mNumHoles;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+void mio_move_opts_init(mio_move_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_move_opts{};
+    mio_mmg_params_init(&opts->params);
+    opts->lagrangian = 1;
+}
+
+mio_mesh* mio_move(const mio_mesh* mesh, const mio_move_opts* opts, mio_mmg_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh || !opts || !opts->displacement)
+            throw std::invalid_argument("meshio++: move: mesh, opts or displacement is NULL");
+        meshioplusplus::MoveOptions o;
+        o.mParameters = capi_mmg_params(mesh, opts->params, "move");
+        o.mDisplacement = opts->displacement;
+        for (int64_t i = 0; opts->moving && i < opts->num_moving; ++i)
+            if (opts->moving[i])
+                o.mMoving.emplace_back(opts->moving[i]);
+        o.mLagrangian = opts->lagrangian;
+        meshioplusplus::AdaptResult r = meshioplusplus::move(mesh->mMesh, o);
+        capi_mmg_report(r.mReport, report);
         return new mio_mesh{std::move(r.mMesh)};
     });
 }

@@ -1679,6 +1679,29 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("hsiz") = -1.0, py::arg("size") = "",
         py::arg("holes") = std::vector<double>(), py::arg("params") = py::dict());
 
+    // move (roadmap 3.2.4): MMG's Lagrangian mode, with ELAS. Returns the
+    // report dict with the mesh under "mesh".
+    m.def(
+        "move",
+        [](py::object pymesh, const std::string& displacement,
+           const std::vector<std::string>& moving, int lagrangian, const py::dict& params) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::MoveOptions o;
+            o.mParameters = py_mmg_parameters(params, cpp.NumPoints(), "move");
+            o.mDisplacement = displacement;
+            o.mMoving = moving;
+            o.mLagrangian = lagrangian;
+            meshioplusplus::AdaptResult r =
+                core_nogil([&] { return meshioplusplus::move(cpp, o); });
+            py::dict out = py_mmg_report(r.mReport);
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            return out;
+        },
+        py::arg("mesh"), py::arg("displacement"), py::arg("moving"), py::arg("lagrangian") = 1,
+        py::arg("params") = py::dict());
+
     // metric_from_hessian (roadmap 3.2.1.1): an anisotropic metric for adapt.
     m.def(
         "metric_from_hessian",

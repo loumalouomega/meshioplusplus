@@ -1562,6 +1562,23 @@ program test_fortran_api
             call box%free()
         end block
 
+        block
+            ! Roadmap 3.2.4: move refuses a region that is not there, by name,
+            ! or the build that cannot move at all.
+            type(mio_mesh) :: tets, moved
+            integer :: mvst
+            character(:), allocatable :: mvmsg
+            real(real64), allocatable :: zeros(:, :)
+            tets = mio_box(dims=[2, 2, 2], cell_type='tetra', stat=mvst)
+            call check(mvst == 0, 'box for move')
+            allocate (zeros(3, tets%num_points()))
+            zeros = 0.0_real64
+            call tets%add_point_data('d', zeros)
+            moved = mio_move(tets, 'd', ['nope'], stat=mvst, errmsg=mvmsg)
+            call check(mvst /= 0, 'move fails on an unknown region or without its backend')
+            call tets%free()
+        end block
+
         out = octa%remesh(30_int64, num_iterations=niter, subdivide_applied=subapp, &
                           num_isolated_clusters=niso, stat=st)
         call check(st == 0, 'remesh succeeded')

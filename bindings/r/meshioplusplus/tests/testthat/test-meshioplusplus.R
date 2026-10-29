@@ -1948,6 +1948,7 @@ test_that("adapt runs with MMG and names the flag without it (roadmap 3.2)", {
     expect_equal(d$num_subdomains, 1)
     expect_gt(d$num_elements_out, 100)
     mio_release(d$mesh)
+    expect_error(mio_move(sq, "phi", "nope"))
   } else {
     expect_false(mio_has_mmg_elas())
     expect_error(mio_adapt(sq, hsiz = 0.1), "MESHIOPLUSPLUS_WITH_MMG")

@@ -7681,3 +7681,51 @@ TEST(CApi, DiscretizeLevelsetAndMeshDomain) {
     }
     mio_mesh_free(boundary);
 }
+
+TEST(CApi, MoveTranslatesAFaceOrNamesWhatIsMissing) {
+    mio_gen_opts g;
+    mio_gen_opts_init(&g);
+    g.counts[0] = g.counts[1] = g.counts[2] = 4;
+    g.cell_type = MIO_GEN_TETRA;
+    mio_mesh* box = mio_box(&g);
+    ASSERT_NE(box, nullptr) << mio_last_error();
+    const int64_t n = mio_mesh_num_points(box);
+    const void* raw = nullptr;
+    mio_dtype dt;
+    ASSERT_EQ(mio_mesh_get_points(box, &raw, &dt), MIO_OK);
+    ASSERT_EQ(dt, MIO_FLOAT64);
+    const double* p = static_cast<const double*>(raw);
+    std::vector<double> d(static_cast<std::size_t>(n) * 3, 0.0);
+    for (int64_t i = 0; i < n; ++i)
+        if (std::abs(p[i * 3] - 1.0) < 1e-12)
+            d[static_cast<std::size_t>(i) * 3] = 0.1;
+    const int64_t shape[2] = {n, 3};
+    ASSERT_EQ(mio_mesh_add_point_data(box, "d", MIO_FLOAT64, 2, shape, d.data()), MIO_OK);
+    mio_move_opts o;
+    mio_move_opts_init(&o);
+    EXPECT_EQ(o.lagrangian, 1);
+    const char* moving[] = {"xmax"};
+    o.displacement = "d";
+    o.moving = moving;
+    o.num_moving = 1;
+    mio_mmg_report report;
+    mio_mesh* out = mio_move(box, &o, &report);
+    if (!mio_has_mmg() || !mio_has_mmg_elas()) {
+        EXPECT_EQ(out, nullptr);
+        EXPECT_NE(
+            std::string(mio_last_error()).find(mio_has_mmg() ? "ELAS" : "MESHIOPLUSPLUS_WITH_MMG"),
+            std::string::npos);
+    } else {
+        ASSERT_NE(out, nullptr) << mio_last_error();
+        EXPECT_STREQ(report.library, "mmg3d");
+        const void* q = nullptr;
+        ASSERT_EQ(mio_mesh_get_points(out, &q, &dt), MIO_OK);
+        double xmax = 0.0;
+        for (int64_t i = 0; i < mio_mesh_num_points(out); ++i)
+            xmax = std::max(xmax, static_cast<const double*>(q)[i * 3]);
+        EXPECT_NEAR(xmax, 1.1, 1e-9);
+        mio_mesh_free(out);
+    }
+    EXPECT_EQ(mio_move(box, nullptr, nullptr), nullptr);
+    mio_mesh_free(box);
+}

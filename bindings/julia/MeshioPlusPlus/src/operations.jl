@@ -1088,6 +1088,41 @@ function mesh_domain(boundary::Mesh; hsiz=nothing, size=nothing, holes=(),
 end
 
 """
+    move(mesh, displacement, moving; lagrangian=1, <adapt's MMG parameters>)
+        -> (mesh, status, library, num_points_in, ..., quality)
+
+Move `mesh` by the point-data vector `displacement` of the boundary facets of
+the regions `moving` (a name or a list) and remesh as it deforms, with MMG's
+Lagrangian mode (roadmap 3.2.4, `doc/mmg.md`): MMG extends the displacement
+inward by linear elasticity (ELAS) and keeps the rest of the boundary in place.
+`lagrangian` is MMG's `lag` (0, 1 or 2). Throws naming `MESHIOPLUSPLUS_WITH_MMG`
+without MMG, or ELAS without it ([`has_mmg_elas`](@ref)).
+"""
+function move(mesh::Mesh, displacement::AbstractString, moving; lagrangian::Integer=1,
+              hmin::Real=-1.0, hmax::Real=-1.0, hausd::Real=-1.0, hgrad::Real=-1.0,
+              hgradreq::Real=-1.0, angle_detection=45.0, optim::Bool=false,
+              noinsert::Bool=false, noswap::Bool=false, nomove::Bool=false, nosurf::Bool=false,
+              nreg::Bool=false, opnbdy::Bool=false, mem::Integer=-1, verbose::Integer=-1,
+              frozen=Int[], required=String[], local_params=Dict{String,Any}())
+    params, keep = _mmg_params(mesh, hmin, hmax, hausd, hgrad, hgradreq, angle_detection,
+                               optim, noinsert, noswap, nomove, nosurf, nreg, opnbdy, mem,
+                               verbose, frozen, required, local_params)
+    disp_c = _cstring(displacement)
+    names = [_cstring(r) for r in (moving isa AbstractString ? [moving] : moving)]
+    name_ptrs = Ptr{UInt8}[pointer(n) for n in names]
+    report = Ref{_CMmgReport}()
+    ptr = GC.@preserve keep disp_c names name_ptrs begin
+        opts = _CMoveOpts(params, pointer(disp_c),
+                          isempty(name_ptrs) ? Ptr{Ptr{UInt8}}(C_NULL) : pointer(name_ptrs),
+                          Int64(length(name_ptrs)), Int32(lagrangian), Int32(0), (0, 0, 0, 0))
+        ccall(_sym(:mio_move), Ptr{Cvoid}, (Ptr{Cvoid}, Ref{_CMoveOpts}, Ref{_CMmgReport}),
+              _handle(mesh), Ref(opts), report)
+    end
+    out = Mesh(_check_ptr(ptr))
+    merge((mesh=out,), _mmg_report(report[]))
+end
+
+"""
     metric_from_hessian(mesh, hessian; error=1e-2, hmin=1e-3, hmax=1.0, output="metric") -> Mesh
 
 The anisotropic metric of the row-major point-data Hessian `hessian` ((n, 9), or

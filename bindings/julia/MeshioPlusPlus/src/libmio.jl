@@ -1007,6 +1007,17 @@ struct _CMeshDomainOpts
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_move_opts` (232 bytes)."""
+struct _CMoveOpts
+    params::_CMmgParams
+    displacement::Ptr{UInt8}
+    moving::Ptr{Ptr{UInt8}}
+    num_moving::Int64
+    lagrangian::Int32
+    reserved_pad::Int32
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_tetrahedralize_report`."""
 struct _CTetrahedralizeReport
     num_tetrahedra::Int64
@@ -1738,6 +1749,8 @@ function _check_abi_layout()
                                  sizeof(_CMeshDomainOpts) == 232 &&
                                  fieldoffset(_CMeshDomainOpts, 4) == 184)) ||
         error("meshio++: mio_discretize_levelset_opts/mio_mesh_domain_opts layout mismatch")
+    (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CMoveOpts) == 232 && fieldoffset(_CMoveOpts, 5) == 192)) ||
+        error("meshio++: mio_move_opts layout mismatch ($(sizeof(_CMoveOpts)) bytes)")
     (sizeof(_CMmgReport) == 192 && fieldoffset(_CMmgReport, 4) == 16) ||
         error("meshio++: mio_mmg_report layout mismatch ($(sizeof(_CMmgReport)) bytes)")
     sizeof(_CFitCadOpts) == 80 ||

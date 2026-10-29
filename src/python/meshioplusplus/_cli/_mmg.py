@@ -1,8 +1,8 @@
 """The MMG backend's subcommands (roadmap 3.2): ``adapt``,
-``discretize-levelset`` and ``mesh-2d``."""
+``discretize-levelset``, ``mesh-2d`` and ``move``."""
 
 from .._helpers import _writer_map, read, reader_map, write
-from .._mmg import adapt, discretize_levelset, mesh_domain
+from .._mmg import adapt, discretize_levelset, mesh_domain, move
 
 
 def _add_io_args(parser, what):
@@ -227,5 +227,46 @@ def mesh_2d_cmd(args):
             + f"\n  {report['num_subdomains']} subdomain(s), "
             f"{report['num_holes']} hole(s)"
         )
+    write(args.outfile, out, file_format=args.output_format)
+    return 0
+
+
+def add_move_args(parser):
+    _add_io_args(parser, "moved")
+    parser.add_argument(
+        "--displacement",
+        type=str,
+        required=True,
+        help="point_data name of the displacement vector",
+    )
+    parser.add_argument(
+        "--moving",
+        type=str,
+        action="append",
+        required=True,
+        help="a cell or side region whose boundary moves (repeatable)",
+    )
+    parser.add_argument(
+        "--lagrangian",
+        type=int,
+        choices=[0, 1, 2],
+        default=1,
+        help="MMG's lag: 0 moves only, 1 also swaps (default), 2 also inserts",
+    )
+    add_mmg_args(parser)
+
+
+def move_cmd(args):
+    mesh = read(args.infile, file_format=args.input_format)
+    out, report = move(
+        mesh,
+        args.displacement,
+        args.moving,
+        lagrangian=args.lagrangian,
+        return_report=True,
+        **mmg_kwargs(args),
+    )
+    if not args.quiet:
+        print(summary("moved", report))
     write(args.outfile, out, file_format=args.output_format)
     return 0

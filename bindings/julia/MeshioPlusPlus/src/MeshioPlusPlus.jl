@@ -127,7 +127,7 @@ export reorder, convert_cells, subdivide, agglomerate, refine, undo_green, decim
 export boundary_layer
 export extrude, revolve, mirror
 export tetrahedralize, has_netgen
-export has_mmg, has_mmg_elas, adapt, metric_from_hessian, discretize_levelset, mesh_domain
+export has_mmg, has_mmg_elas, adapt, metric_from_hessian, discretize_levelset, mesh_domain, move
 export tessellate
 export data_drop, data_keep, data_rename, data_point_to_cell, data_cell_to_point
 export sets_to_data, data_to_sets

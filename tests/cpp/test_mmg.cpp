@@ -214,6 +214,88 @@ TEST(Mmg, MeshDomainKeepsTheHoleOut) {
     EXPECT_THROW(meshioplusplus::mesh_domain(boundary, o), std::invalid_argument);
 }
 
+TEST(Mmg, MoveRefusesByNameWithoutTheBackendOrElas) {
+    if (meshioplusplus::mmg_available() && meshioplusplus::mmg_has_elas())
+        GTEST_SKIP() << "built with MMG and ELAS";
+    meshioplusplus::MoveOptions o;
+    o.mDisplacement = "d";
+    o.mMoving = {"xmin"};
+    try {
+        meshioplusplus::move(mmg_test_square(), o);
+        FAIL() << "move ran without MMG or ELAS";
+    } catch (const meshioplusplus::Unsupported& e) {
+        const std::string what = e.what();
+        EXPECT_NE(what.find(meshioplusplus::mmg_available() ? "ELAS" : "MESHIOPLUSPLUS_WITH_MMG"),
+                  std::string::npos)
+            << what;
+    }
+}
+
+TEST(Mmg, MoveTranslatesAHole) {
+    if (!meshioplusplus::mmg_available() || !meshioplusplus::mmg_has_elas())
+        GTEST_SKIP() << "built without MMG or ELAS";
+    // [0, 1]^2 around the hole [0.4, 0.6]^2, the hole's lines a cell region.
+    Mesh boundary;
+    const double xy[16] = {0, 0, 1, 0, 1, 1, 0, 1, 0.4, 0.4, 0.6, 0.4, 0.6, 0.6, 0.4, 0.6};
+    NDArray points = NDArray::Uninit(DType::Float64, {8, 2});
+    std::copy(xy, xy + 16, points.As<double>());
+    boundary.AssignPoints(std::move(points));
+    NDArray conn = NDArray::Uninit(DType::Int64, {8, 2});
+    const std::int64_t lines[16] = {0, 1, 1, 2, 2, 3, 3, 0, 4, 5, 5, 6, 6, 7, 7, 4};
+    std::copy(lines, lines + 16, conn.As<std::int64_t>());
+    boundary.AddCellBlock("line", std::move(conn));
+    NDArray hole = NDArray::Uninit(DType::Int64, {4});
+    for (std::int64_t k = 0; k < 4; ++k)
+        hole.As<std::int64_t>()[k] = 4 + k;
+    boundary.AddRegion(
+        meshioplusplus::Region("hole", meshioplusplus::RegionKind::Cell, -1, 0, std::move(hole)));
+    meshioplusplus::MeshDomainOptions mo;
+    mo.mHsiz = 0.05;
+    mo.mHoles = {0.5, 0.5};
+    Mesh domain = meshioplusplus::mesh_domain(boundary, mo).mMesh;
+
+    // Translate the hole's points by +0.1 in x.
+    const std::size_t np = domain.NumPoints();
+    const std::size_t d = domain.PointDim();
+    const double* p = domain.Points().As<double>();
+    NDArray disp = NDArray::Uninit(DType::Float64, {np, 2});
+    for (std::size_t i = 0; i < np; ++i) {
+        const double x = p[i * d], y = p[i * d + 1];
+        const bool on_hole = x > 0.39 && x < 0.61 && y > 0.39 && y < 0.61;
+        disp.As<double>()[i * 2] = on_hole ? 0.1 : 0.0;
+        disp.As<double>()[i * 2 + 1] = 0.0;
+    }
+    domain.AddPointData("d", std::move(disp));
+    meshioplusplus::MoveOptions o;
+    o.mDisplacement = "d";
+    o.mMoving = {"hole"};
+    const meshioplusplus::AdaptResult r = meshioplusplus::move(domain, o);
+    EXPECT_EQ(r.mReport.mLibrary, "mmg2d");
+    EXPECT_EQ(r.mReport.mStatus, meshioplusplus::MmgStatus::Success);
+    // Every triangle keeps its orientation, and the hole region comes back.
+    const Mesh& out = r.mMesh;
+    const double* q = out.Points().As<double>();
+    const std::size_t e = out.PointDim();
+    for (std::size_t b = 0; b < out.NumCellBlocks(); ++b) {
+        const auto cb = out.Cells(b);
+        const std::int64_t* c = cb.Conn().As<std::int64_t>();
+        for (std::size_t i = 0; i < cb.NumCells(); ++i) {
+            if (cb.Type() == "triangle") {
+                const double* a = q + c[i * 3] * e;
+                const double* bb = q + c[i * 3 + 1] * e;
+                const double* cc = q + c[i * 3 + 2] * e;
+                EXPECT_GT((bb[0] - a[0]) * (cc[1] - a[1]) - (bb[1] - a[1]) * (cc[0] - a[0]), 0.0);
+            }
+        }
+    }
+    const std::size_t hole_region = out.FindRegion("hole", meshioplusplus::RegionKind::Cell);
+    ASSERT_NE(hole_region, Mesh::npos);
+    EXPECT_GT(out.Region(hole_region).NumEntries(), 0u);
+
+    o.mMoving = {"nope"};
+    EXPECT_THROW(meshioplusplus::move(domain, o), std::invalid_argument);
+}
+
 TEST(Mmg, MetricFromHessianScalesAndClamps) {
     Mesh mesh = mt::tri_mesh();
     NDArray h(DType::Float64, {mesh.NumPoints(), 9});

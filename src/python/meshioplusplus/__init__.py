@@ -199,6 +199,7 @@ if TYPE_CHECKING:
         has_mmg_elas,
         mesh_domain,
         metric_from_hessian,
+        move,
     )
     from ._normals import compute_normals
     from ._octree import octree
@@ -451,6 +452,7 @@ _LAZY_ATTRS = {
     "has_mmg_elas": "_mmg",
     "discretize_levelset": "_mmg",
     "mesh_domain": "_mmg",
+    "move": "_mmg",
     "remesh_volume": "_remesh_volume",
     "compute_bandwidth": "_reorder",
     "render_image": "_render",
@@ -659,6 +661,7 @@ __all__ = [
     "has_mmg_elas",
     "discretize_levelset",
     "mesh_domain",
+    "move",
     "optimize_volume",
     "grid",
     "rectangle",

@@ -101,6 +101,7 @@ from .. import (
     gradient,
     grid,
     has_mmg,
+    has_mmg_elas,
     hausdorff_distance,
     helix,
     hessian,
@@ -120,6 +121,7 @@ from .. import (
     metric_from_hessian,
     mirror,
     moebius,
+    move,
     ngon,
     octa_sphere,
     octree,
@@ -4368,6 +4370,78 @@ def tool_mesh_domain(
     )
 
 
+def tool_move(
+    input_path,
+    output_path,
+    displacement,
+    moving,
+    input_format=None,
+    output_format=None,
+    lagrangian=1,
+    hmin=None,
+    hmax=None,
+    hausd=None,
+    hgrad=None,
+    hgradreq=None,
+    angle_detection=45.0,
+    optim=False,
+    noinsert=False,
+    noswap=False,
+    nomove=False,
+    nosurf=False,
+    nreg=False,
+    opnbdy=False,
+    frozen=None,
+    required=None,
+    local=None,
+):
+    """Move a mesh by the point_data displacement of the boundary facets of
+    the regions moving, remeshing as it deforms with MMG's Lagrangian mode
+    (needs MMG with ELAS). Reports as adapt, plus mmg_elas_available."""
+    if not has_mmg():
+        return _mmg_unavailable("move")
+    if not has_mmg_elas():
+        return {
+            "error": "meshio++: move: the linked MMG was built without ELAS, which "
+            "its Lagrangian mode needs: rebuild MMG with build/build-mmg.sh "
+            "--with-elas (GPL-3.0; see doc/mmg.md)",
+            "error_type": "NotImplementedError",
+            "mmg_available": True,
+            "mmg_elas_available": False,
+        }
+    mesh = _load(input_path, input_format)
+    out, report = move(
+        mesh,
+        displacement,
+        moving,
+        lagrangian=lagrangian,
+        hmin=hmin,
+        hmax=hmax,
+        hausd=hausd,
+        hgrad=hgrad,
+        hgradreq=hgradreq,
+        angle_detection=angle_detection,
+        optim=optim,
+        noinsert=noinsert,
+        noswap=noswap,
+        nomove=nomove,
+        nosurf=nosurf,
+        nreg=nreg,
+        opnbdy=opnbdy,
+        frozen=frozen,
+        required=required,
+        local=local,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        mmg_available=True,
+        mmg_elas_available=True,
+        **report,
+    )
+
+
 def tool_metric_from_hessian(
     input_path,
     output_path,
@@ -6702,6 +6776,7 @@ TOOL_REGISTRY = OrderedDict(
             "mesh_domain",
             {"fn": tool_mesh_domain, "wraps": ("mesh_domain",), "gated": None},
         ),
+        ("move", {"fn": tool_move, "wraps": ("move",), "gated": None}),
         (
             "metric_from_hessian",
             {

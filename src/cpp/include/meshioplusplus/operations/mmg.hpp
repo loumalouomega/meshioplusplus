@@ -251,6 +251,36 @@ struct MeshDomainResult {
 MESHIOPLUSPLUS_API MeshDomainResult mesh_domain(const Mesh& rBoundary,
                                                 const MeshDomainOptions& rOptions);
 
+/// The options of `move`.
+struct MoveOptions {
+    MmgParameters mParameters;
+    /// A `point_data` vector (dim components; 3 or 2 with mmg2d): the displacement.
+    std::string mDisplacement;
+    /// The cell or side regions whose boundary facets move by it; the rest of
+    /// the boundary stays fixed.
+    std::vector<std::string> mMoving;
+    /// MMG's `lag`: 0 moves only, 1 also swaps edges and faces, 2 also
+    /// inserts and collapses points.
+    int mLagrangian = 1;
+};
+
+/**
+ * @brief Move @p rMesh by a displacement of part of its boundary and remesh
+ *        as it deforms, with MMG's Lagrangian mode (`MMG3D_mmg3dmov`,
+ *        `MMG2D_mmg2dmov`; roadmap 3.2.4).
+ *
+ * The facets of the `mMoving` regions follow `mDisplacement`; MMG extends it
+ * into a layer of elements around them by linear elasticity (ELAS) and keeps
+ * the rest of the boundary in place. Tetrahedra or planar triangles only.
+ * Regions come back as for `adapt`.
+ *
+ * @throws Unsupported without the MMG backend, or with an MMG built without
+ *         ELAS; std::invalid_argument for a surface mesh, a missing or
+ *         misshapen displacement, or no facet in the moving regions;
+ *         std::runtime_error when MMG fails.
+ */
+MESHIOPLUSPLUS_API AdaptResult move(const Mesh& rMesh, const MoveOptions& rOptions);
+
 /// The options of `metric_from_hessian`.
 struct MetricFromHessianOptions {
     std::string mHessian;            ///< the `point_data` Hessian: (n, 9) or (n, 4), row-major

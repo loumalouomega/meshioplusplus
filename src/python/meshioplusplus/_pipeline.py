@@ -55,7 +55,7 @@ from ._interpolate import interpolate
 from ._isosurface import isosurface
 from ._merge import merge
 from ._mesh import Mesh
-from ._mmg import adapt, discretize_levelset, mesh_domain
+from ._mmg import adapt, discretize_levelset, mesh_domain, move
 from ._normals import compute_normals
 from ._octree import octree
 from ._octree_mesh import octree_mesh
@@ -405,6 +405,26 @@ _OP_TABLE = {
         "Hsiz",
         "Size",
         "Holes",
+        "Hmin",
+        "Hmax",
+        "Hausd",
+        "Hgrad",
+        "Hgradreq",
+        "AngleDetection",
+        "Optim",
+        "NoInsert",
+        "NoSwap",
+        "NoMove",
+        "NoSurf",
+        "Nreg",
+        "Opnbdy",
+        "Frozen",
+        "Required",
+    ),
+    "Move": (
+        "Displacement",
+        "Moving",
+        "Lagrangian",
         "Hmin",
         "Hmax",
         "Hausd",
@@ -2352,6 +2372,23 @@ def _apply_step(mesh, step, steps, warnings):
                 for k in range(0, len(mats), 4)
             ],
             remove_small_components=rmc if rmc > 0 else None,
+            return_report=True,
+            **_mmg_kwargs(step),
+        )
+        _mmg_entry(entry, warnings, report)
+    elif op == "Move":
+        # MMG (roadmap 3.2.4): the Lagrangian mode, with ELAS.
+        displacement = _text(step, "Displacement", "")
+        if not displacement:
+            raise _err(op, "parameter 'Displacement' is required")
+        moving = _svec(step, "Moving")
+        if not moving:
+            raise _err(op, "parameter 'Moving' is required")
+        mesh, report = move(
+            mesh,
+            displacement,
+            moving,
+            lagrangian=int(_number(step, "Lagrangian", 1.0)),
             return_report=True,
             **_mmg_kwargs(step),
         )

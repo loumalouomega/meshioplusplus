@@ -454,3 +454,131 @@ def test_the_level_set_and_domain_subcommands(tmp_path, capsys):
     mio.write(src, square)
     assert main(["discretize-levelset", src, out, "--level-set", "ls"]) == 0
     assert {"inside", "outside", "interface"} <= {r.name for r in mio.read(out).regions}
+
+
+def _holed_square():
+    """[0, 1]^2 around the hole [0.4, 0.6]^2, meshed; the hole's lines are "hole"."""
+    outer = [[0, 0], [1, 0], [1, 1], [0, 1]]
+    inner = [[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]]
+    lines = [[i, (i + 1) % 4] for i in range(4)] + [
+        [4 + i, 4 + (i + 1) % 4] for i in range(4)
+    ]
+    boundary = mio.Mesh(np.array(outer + inner, float), [("line", np.array(lines))])
+    boundary.regions = [
+        mio.Region("outer", "cell", np.arange(4)),
+        mio.Region("hole", "cell", np.arange(4, 8)),
+    ]
+    return mio.mesh_domain(boundary, hsiz=0.04, holes=[(0.5, 0.5)])
+
+
+def _hole_points(mesh):
+    x, y = mesh.points[:, 0], mesh.points[:, 1]
+    return (x > 0.39) & (x < 0.61) & (y > 0.39) & (y < 0.61)
+
+
+needs_elas = pytest.mark.skipif(
+    not mio.has_mmg_elas(), reason="needs an MMG built with ELAS"
+)
+
+
+@pytest.mark.skipif(
+    _core is None or (mio.has_mmg() and mio.has_mmg_elas()),
+    reason="checks a build without MMG or ELAS",
+)
+def test_move_names_what_is_missing():
+    box = mio.box(dims=(2, 2, 2), cell_type="tetra")
+    word = "ELAS" if mio.has_mmg() else "MESHIOPLUSPLUS_WITH_MMG"
+    with pytest.raises(NotImplementedError, match=word):
+        mio.move(box, np.zeros((len(box.points), 3)), "xmax")
+
+
+@needs_mmg
+@needs_elas
+def test_move_translates_a_hole_rigidly():
+    # Roadmap 3.2.4's probe: the hole moves by +0.1 in x, every triangle
+    # stays right side out, and the area is the square's less the hole's.
+    mesh = _holed_square()
+    d = np.zeros((len(mesh.points), 2))
+    d[_hole_points(mesh), 0] = 0.1
+    out, report = mio.move(mesh, d, "hole", return_report=True)
+    assert report["library"] == "mmg2d" and report["status"] == "success"
+    tri = out.cells_dict["triangle"]
+    p = out.points[tri]
+    a, b = p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]
+    signed = 0.5 * (a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0])
+    assert signed.min() > 0 and np.isclose(signed.sum(), 0.96)
+    # the hole's boundary is now [0.5, 0.7] x [0.4, 0.6]
+    lines = out.cells_dict["line"]
+    edge_points = out.points[np.unique(lines)]
+    inside = (edge_points[:, 0] > 0.05) & (edge_points[:, 0] < 0.95)
+    inside &= (edge_points[:, 1] > 0.05) & (edge_points[:, 1] < 0.95)
+    hole = edge_points[inside]
+    np.testing.assert_allclose(hole[:, 0].min(), 0.5, atol=1e-9)
+    np.testing.assert_allclose(hole[:, 0].max(), 0.7, atol=1e-9)
+    names = {(r.name, r.kind) for r in out.regions}
+    assert {("hole", "cell"), ("hole", "side"), ("outer", "side")} <= names
+
+
+@needs_mmg
+@needs_elas
+def test_move_pushes_a_face_of_a_box():
+    box = mio.box(dims=(6, 6, 6), cell_type="tetra")
+    d = np.zeros((len(box.points), 3))
+    d[np.isclose(box.points[:, 0], 1.0), 0] = 0.1
+    out, report = mio.move(box, d, ["xmax"], return_report=True)
+    assert report["library"] == "mmg3d"
+    t = out.cells_dict["tetra"]
+    p = out.points[t]
+    vol = np.einsum(
+        "ij,ij->i", np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), p[:, 3] - p[:, 0]
+    )
+    assert vol.min() > 0
+    # the face's centre reaches 1.1; its rim, on the fixed faces, stays
+    assert np.isclose(out.points[:, 0].max(), 1.1)
+    assert 1.0 < vol.sum() / 6 < 1.1
+
+
+@needs_mmg
+@needs_elas
+def test_move_refusals_and_its_pipeline_step(tmp_path):
+    import json
+
+    mesh = _holed_square()
+    d = np.zeros((len(mesh.points), 2))
+    with pytest.raises(ValueError, match="no cell or side region named 'nope'"):
+        mio.move(mesh, d, "nope")
+    with pytest.raises(ValueError, match="2 components"):
+        mio.move(mesh, np.zeros(len(mesh.points)), "hole")
+    with pytest.raises(ValueError, match="not a surface"):
+        mio.move(mio.icosa_sphere(subdivisions=1), np.zeros((42, 3)), "x")
+    d[_hole_points(mesh), 0] = 0.1
+    mesh.point_data["d"] = d
+    src = tmp_path / "holed.vtu"
+    mio.write(str(src), mesh, compression=None)
+    settings = {
+        "Version": 1,
+        "Input": {"Path": str(src)},
+        "Operations": [{"Op": "Move", "Displacement": "d", "Moving": ["hole"]}],
+        "Output": {"Path": str(tmp_path / "py.vtu")},
+    }
+    step = mio.run_pipeline(settings)["steps"][0]
+    assert step["op"] == "Move" and step["LowFailure"] == 0.0
+    if hasattr(_core, "run_pipeline_json"):
+        settings["Output"]["Path"] = str(tmp_path / "cpp.vtu")
+        cpp = _core.run_pipeline_json(json.dumps(settings))["steps"][0]
+        assert cpp["NumElementsOut"] == step["NumElementsOut"]
+
+
+@needs_mmg
+@needs_elas
+def test_the_move_subcommand(tmp_path, capsys):
+    from meshioplusplus._cli import main
+
+    mesh = _holed_square()
+    d = np.zeros((len(mesh.points), 2))
+    d[_hole_points(mesh), 0] = 0.1
+    mesh.point_data["d"] = d
+    src, out = str(tmp_path / "holed.vtu"), str(tmp_path / "moved.vtu")
+    mio.write(src, mesh)
+    assert main(["move", src, out, "--displacement", "d", "--moving", "hole"]) == 0
+    assert "moved with mmg2d (success)" in capsys.readouterr().out

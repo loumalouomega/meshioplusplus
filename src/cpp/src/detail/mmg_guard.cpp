@@ -17,9 +17,15 @@
 
 // System includes
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <string>
+
+#if defined(__unix__) || defined(__APPLE__)
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 // Project includes
 #include "meshioplusplus/exceptions.hpp"
@@ -72,6 +78,35 @@ MmgCallGuard::~MmgCallGuard() {
         sigaction(kMmgSignals[i], &saved[i], nullptr);
 #endif
     }
+}
+
+MmgStdoutSilencer::MmgStdoutSilencer(bool Active) {
+#if defined(__unix__) || defined(__APPLE__)
+    if (!Active)
+        return;
+    std::fflush(stdout);
+    const int null_fd = ::open("/dev/null", O_WRONLY);
+    if (null_fd < 0)
+        return;
+    mSaved = ::dup(1);
+    if (mSaved >= 0 && ::dup2(null_fd, 1) < 0) {
+        ::close(mSaved);
+        mSaved = -1;
+    }
+    ::close(null_fd);
+#else
+    (void)Active;
+#endif
+}
+
+MmgStdoutSilencer::~MmgStdoutSilencer() {
+#if defined(__unix__) || defined(__APPLE__)
+    if (mSaved < 0)
+        return;
+    std::fflush(stdout);
+    ::dup2(mSaved, 1);
+    ::close(mSaved);
+#endif
 }
 
 void mmg_check_index_range(std::size_t Count, bool Int64, const char* pWhat, const char* pOp) {

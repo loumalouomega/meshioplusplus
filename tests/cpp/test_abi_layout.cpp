@@ -410,8 +410,8 @@ MIO_ABI_LAYOUT(meshioplusplus::RefineOptions, 120, 8);
 MIO_ABI_LAYOUT(meshioplusplus::RemeshOptions, 64, 8);
 
 // The MMG backend's options (roadmap 3.2, unreleased): passed by const-ref
-// through the exported adapt(), discretize_levelset(), mesh_domain() and
-// metric_from_hessian(). MmgParameters is embedded by value in each
+// through the exported adapt(), discretize_levelset(), mesh_domain(), move()
+// and metric_from_hessian(). MmgParameters is embedded by value in each
 // operation's options; the *Result structs and MmgReport are not pinned (a
 // `Mesh`, and a report returned by value only inside results).
 MIO_ABI_LAYOUT(meshioplusplus::MmgLocalParameter, 56, 8);
@@ -420,6 +420,7 @@ MIO_ABI_LAYOUT(meshioplusplus::AdaptOptions, 216, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MmgMaterial, 32, 8);
 MIO_ABI_LAYOUT(meshioplusplus::DiscretizeLevelsetOptions, 216, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MeshDomainOptions, 208, 8);
+MIO_ABI_LAYOUT(meshioplusplus::MoveOptions, 208, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MetricFromHessianOptions, 88, 8);
 
 // RemeshVolumeOptions is passed by const-ref through the exported

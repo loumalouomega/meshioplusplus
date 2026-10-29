@@ -609,6 +609,13 @@ def main(argv=None):
     parser.set_defaults(func=_mmg.mesh_2d_cmd)
 
     parser = subparsers.add_parser(
+        "move",
+        help="Move a mesh by a boundary displacement and remesh with MMG (needs ELAS)",
+    )
+    _mmg.add_move_args(parser)
+    parser.set_defaults(func=_mmg.move_cmd)
+
+    parser = subparsers.add_parser(
         "remesh",
         help="Replace a surface's triangulation with a new, well-shaped one (ACVD)",
     )

@@ -1121,6 +1121,7 @@ end
         add_cell_block!(box, "line", [1 2 3 4; 2 3 4 1])
         d = mesh_domain(box; hsiz=0.1)
         @test d.num_subdomains == 1 && d.num_holes == 0 && d.num_elements_out > 100
+        @test_throws MeshioError move(sq, "phi", "nope")
     else
         @test !has_mmg_elas()
         @test_throws MeshioError adapt(sq; hsiz=0.1)

@@ -120,6 +120,7 @@ _C_WITHOUT_JS = {
     "adapt",
     "discretize_levelset",
     "metric_from_hessian",
+    "move",
 }
 
 

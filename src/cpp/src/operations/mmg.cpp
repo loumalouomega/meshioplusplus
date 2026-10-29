@@ -172,6 +172,10 @@ MeshDomainResult mesh_domain(const Mesh&, const MeshDomainOptions&) {
     mmg_absent("mesh_domain");
 }
 
+AdaptResult move(const Mesh&, const MoveOptions&) {
+    mmg_absent("move");
+}
+
 #else
 
 namespace {
@@ -242,8 +246,9 @@ private:
 
 /// What an MMG operation gives MMG: a mesh to adapt, a mesh to cut by a level
 /// set (its elements keep their raw `medit:ref`, which `Set_multiMat` reads),
-/// or the boundary lines of a planar domain to mesh.
-enum class MmgEncodeMode { Adapt, LevelSet, Domain };
+/// the boundary lines of a planar domain to mesh, or a mesh to move (its
+/// references clear of the moving facets' 10).
+enum class MmgEncodeMode { Adapt, LevelSet, Domain, Move };
 
 /// A mesh laid out for MMG: 1-based connectivity, references and attributes.
 struct MmgInput {
@@ -297,6 +302,8 @@ MmgInput mmg_encode(const Mesh& rMesh, const MmgParameters& rParams, const char*
     if (Mode == MmgEncodeMode::LevelSet) {
         in.mRawElementRefs = true;
         in.mRefs.SetBase(100000);
+    } else if (Mode == MmgEncodeMode::Move) {
+        in.mRefs.SetBase(100000);  // clear of kMmgDispRef, the moving facets' 10
     }
     const std::size_t np = rMesh.NumPoints();
     in.mPointDim = rMesh.PointDim();
@@ -984,10 +991,18 @@ void mmg_vertex_sol(MmgSession& rS, MMG5_pSol pSol, int Type, std::vector<double
             break;
         case MmgLib::Mmg2d:
             ok = MMG2D_Set_solSize(rS.mMesh, pSol, MMG5_Vertex, np, Type);
-            if (ok)
-                ok = Type == MMG5_Scalar   ? MMG2D_Set_scalarSols(pSol, rValues.data())
-                     : Type == MMG5_Vector ? MMG2D_Set_vectorSols(pSol, rValues.data())
-                                           : MMG2D_Set_tensorSols(pSol, rValues.data());
+            if (ok && Type == MMG5_Vector) {
+                // MMG 5.8's MMG2D_Set_vectorSol(s) store vertex k (1-based) at
+                // m[2k-1], one slot before where mmg2d's motion and its .sol
+                // reader read it (m[2k]): write MMG's layout directly.
+                for (MMG5_int k = 1; k <= np; ++k) {
+                    pSol->m[2 * k] = rValues[static_cast<std::size_t>(2 * (k - 1))];
+                    pSol->m[2 * k + 1] = rValues[static_cast<std::size_t>(2 * (k - 1) + 1)];
+                }
+            } else if (ok) {
+                ok = Type == MMG5_Scalar ? MMG2D_Set_scalarSols(pSol, rValues.data())
+                                         : MMG2D_Set_tensorSols(pSol, rValues.data());
+            }
             break;
     }
     mmg_check(ok, "a solution");
@@ -1666,6 +1681,139 @@ MeshDomainResult mesh_domain(const Mesh& rBoundary, const MeshDomainOptions& rOp
     for (const std::string& w : report.mWarnings)
         log::warn("{}", w);
     return result;
+}
+
+AdaptResult move(const Mesh& rMesh, const MoveOptions& rOptions) {
+    const char* op = "move";
+#ifndef MESHIOPLUSPLUS_HAS_MMG_ELAS
+    (void)rMesh;
+    (void)rOptions;
+    throw Unsupported(
+        "move: the linked MMG was built without ELAS, which its Lagrangian mode needs: "
+        "rebuild MMG with build/build-mmg.sh --with-elas (GPL-3.0; see doc/mmg.md)");
+#else
+    if (rOptions.mDisplacement.empty())
+        throw std::invalid_argument("move: name the displacement, a point_data vector");
+    if (rOptions.mMoving.empty())
+        throw std::invalid_argument("move: name the regions whose boundary moves");
+    if (rOptions.mLagrangian < 0 || rOptions.mLagrangian > 2)
+        throw std::invalid_argument("move: lagrangian must be 0, 1 or 2");
+    AdaptResult result;
+    MmgReport& report = result.mReport;
+    MmgInput in = mmg_encode(rMesh, rOptions.mParameters, op, {rOptions.mDisplacement},
+                             report.mWarnings, MmgEncodeMode::Move);
+    if (in.mLib == MmgLib::Mmgs)
+        throw std::invalid_argument(
+            "move: MMG moves tetrahedra (mmg3d) and planar triangles (mmg2d), not a surface");
+    std::vector<std::size_t> moving;
+    for (const std::string& rName : rOptions.mMoving) {
+        bool found = false;
+        for (std::size_t r = 0; r < rMesh.NumRegions(); ++r)
+            if (rMesh.Region(r).mName == rName && rMesh.Region(r).mKind != RegionKind::Point) {
+                moving.push_back(r);
+                found = true;
+            }
+        if (!found)
+            throw std::invalid_argument("move: no cell or side region named '" + rName + "'");
+    }
+    report.mLibrary = mmg_lib_name(in.mLib);
+    report.mNumPointsIn = static_cast<std::int64_t>(rMesh.NumPoints());
+    report.mNumElementsIn = static_cast<std::int64_t>(in.mNumElements);
+
+    // The moving facets carry MMG5_DISPREF (10, private to MMG:
+    // mmgcommon_private.h); their own reference (merged when they had
+    // several) is put back on MMG's output.
+    constexpr MMG5_int kMmgDispRef = 10;
+    std::vector<MMG5_int>& refs = in.mLib == MmgLib::Mmg3d ? in.mTriRefs : in.mEdgeRefs;
+    MmgSignature merged;
+    merged.mFacet = true;
+    std::vector<MMG5_int> originals;
+    std::size_t num_moving = 0;
+    for (MMG5_int& rRef : refs) {
+        const MmgSignature* sig = in.mRefs.Find(rRef, true);
+        if (!sig)
+            continue;
+        const bool hit = std::any_of(moving.begin(), moving.end(), [&](std::size_t R) {
+            return std::find(sig->mCellRegions.begin(), sig->mCellRegions.end(), R) !=
+                       sig->mCellRegions.end() ||
+                   std::find(sig->mSideRegions.begin(), sig->mSideRegions.end(), R) !=
+                       sig->mSideRegions.end();
+        });
+        if (!hit)
+            continue;
+        if (std::find(originals.begin(), originals.end(), rRef) == originals.end()) {
+            originals.push_back(rRef);
+            merged.mIsCell = merged.mIsCell || sig->mIsCell;
+            if (originals.size() == 1) {
+                merged.mHasMeditRef = sig->mHasMeditRef;
+                merged.mMeditRef = sig->mMeditRef;
+            } else if (!sig->mHasMeditRef || sig->mMeditRef != merged.mMeditRef) {
+                merged.mHasMeditRef = false;
+            }
+            for (const std::size_t r : sig->mCellRegions)
+                mmg_add_unique(merged.mCellRegions, r);
+            for (const std::size_t r : sig->mSideRegions)
+                mmg_add_unique(merged.mSideRegions, r);
+        }
+        rRef = kMmgDispRef;
+        ++num_moving;
+    }
+    if (num_moving == 0)
+        throw std::invalid_argument(
+            "move: the moving regions hold no boundary facet (a side region, or facet cells)");
+    const MMG5_int restored = originals.size() == 1 ? originals[0] : in.mRefs.Ref(merged);
+    if (originals.size() > 1)
+        report.mWarnings.push_back(
+            "move: the moving facets had several references; they come back with the union of "
+            "their regions");
+
+    // The displacement, dim components per point (xy of a 3-component one for mmg2d).
+    if (!rMesh.HasPointData(rOptions.mDisplacement))
+        throw std::invalid_argument("move: no point_data '" + rOptions.mDisplacement + "'");
+    const NDArray& d = rMesh.PointData(rOptions.mDisplacement);
+    const std::size_t np = rMesh.NumPoints();
+    const std::size_t width = np ? d.Size() / np : 0;
+    const auto dim = static_cast<std::size_t>(in.mDim);
+    if (d.Size() != np * width || width < dim || width > 3)
+        throw std::invalid_argument("move: the displacement must be a point_data vector of " +
+                                    std::to_string(dim) + " components (shape (n, " +
+                                    std::to_string(dim) + "))");
+    const detail::DoubleView flat(d);
+    std::vector<double> disp(np * dim);
+    for (std::size_t i = 0; i < np; ++i)
+        for (std::size_t k = 0; k < dim; ++k)
+            disp[i * dim + k] = flat[i * width + k];
+
+    {
+        detail::MmgCallGuard guard;
+        // ELAS prints whatever the verbosity (detail/mmg_guard.hpp).
+        detail::MmgStdoutSilencer quiet(rOptions.mParameters.mVerbose < 0);
+        MmgSession s(in.mLib, false, true);
+        mmg_load(s, in);
+        mmg_parameters(s, in, rMesh, rOptions.mParameters, op);
+        mmg_check(mmg_set_i(s, s.mMet, MMG3D_IPARAM_lag, -1, MMG2D_IPARAM_lag,
+                            static_cast<MMG5_int>(rOptions.mLagrangian)),
+                  "the parameter lag");
+        mmg_vertex_sol(s, s.mDisp, MMG5_Vector, disp);
+        const int ier = in.mLib == MmgLib::Mmg3d ? MMG3D_mmg3dmov(s.mMesh, s.mMet, s.mDisp)
+                                                 : MMG2D_mmg2dmov(s.mMesh, s.mMet, s.mDisp);
+        report.mStatus = mmg_run(ier, op, report.mWarnings);
+        MMG5_pMesh m = s.mMesh;
+        if (in.mLib == MmgLib::Mmg3d) {
+            for (MMG5_int k = 1; k <= m->nt; ++k)
+                if (m->tria[k].ref == kMmgDispRef)
+                    m->tria[k].ref = restored;
+        } else {
+            for (MMG5_int k = 1; k <= m->na; ++k)
+                if (m->edge[k].ref == kMmgDispRef)
+                    m->edge[k].ref = restored;
+        }
+        result.mMesh = mmg_decode(s, in, rMesh, report, op);
+    }
+    for (const std::string& w : report.mWarnings)
+        log::warn("{}", w);
+    return result;
+#endif
 }
 
 #endif  // MESHIOPLUSPLUS_HAS_MMG

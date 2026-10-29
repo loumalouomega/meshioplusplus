@@ -4297,6 +4297,71 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def move(
+        input_path: str,
+        output_path: str,
+        displacement: str,
+        moving: List[str],
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        lagrangian: int = 1,
+        hmin: Optional[float] = None,
+        hmax: Optional[float] = None,
+        hausd: Optional[float] = None,
+        hgrad: Optional[float] = None,
+        hgradreq: Optional[float] = None,
+        angle_detection: Optional[float] = 45.0,
+        optim: bool = False,
+        noinsert: bool = False,
+        noswap: bool = False,
+        nomove: bool = False,
+        nosurf: bool = False,
+        nreg: bool = False,
+        opnbdy: bool = False,
+        frozen: Optional[str] = None,
+        required: Optional[List[str]] = None,
+        local: Optional[Dict[str, Dict[str, float]]] = None,
+    ) -> dict:
+        """Move a tetrahedral or planar triangle mesh by the point_data
+        vector `displacement` of the boundary facets of the regions `moving`
+        (cell or side regions), remeshing as it deforms with MMG's
+        Lagrangian mode (MMG3D_mmg3dmov, MMG2D_mmg2dmov). MMG extends the
+        displacement inward by linear elasticity (the ELAS library) and
+        keeps the rest of the boundary in place, so the displacement given
+        elsewhere is not read. lagrangian is MMG's lag: 0 moves only, 1
+        also swaps, 2 also inserts and collapses. Needs a build with
+        MESHIOPLUSPLUS_WITH_MMG and an MMG built with ELAS; otherwise returns
+        error_type NotImplementedError with mmg_available and
+        mmg_elas_available. The other MMG parameters are adapt's. Reports as
+        adapt."""
+        return _guard(
+            _tools.tool_move,
+            input_path=input_path,
+            output_path=output_path,
+            displacement=displacement,
+            moving=moving,
+            input_format=input_format,
+            output_format=output_format,
+            lagrangian=lagrangian,
+            hmin=hmin,
+            hmax=hmax,
+            hausd=hausd,
+            hgrad=hgrad,
+            hgradreq=hgradreq,
+            angle_detection=angle_detection,
+            optim=optim,
+            noinsert=noinsert,
+            noswap=noswap,
+            nomove=nomove,
+            nosurf=nosurf,
+            nreg=nreg,
+            opnbdy=opnbdy,
+            frozen=frozen,
+            required=required,
+            local=local,
+        )
+
+    @server.tool()
     def metric_from_hessian(
         input_path: str,
         output_path: str,

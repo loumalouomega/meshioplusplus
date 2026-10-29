@@ -419,6 +419,43 @@ def mesh_domain(
     return (result, out) if return_report else result
 
 
+def move(mesh, displacement, moving, *, lagrangian=1, return_report=False, **options):
+    """Move ``mesh`` by a displacement of part of its boundary and remesh as it
+    deforms, with MMG's Lagrangian mode (roadmap 3.2.4).
+
+    ``MMG3D_mmg3dmov`` for tetrahedra, ``MMG2D_mmg2dmov`` for a planar
+    triangle mesh. The boundary facets of the ``moving`` regions follow the
+    displacement; MMG extends it into a layer of elements around them by
+    linear elasticity (the ELAS library) and keeps the rest of the boundary
+    in place, so the displacement given elsewhere is not read.
+
+    :param displacement: the displacement per point: a ``point_data`` name or
+        an ``(n, dim)`` array (``dim`` 3 for mmg3d, 2 or 3 for mmg2d).
+    :param moving: the name of a cell or side region, or a list of them,
+        whose boundary facets move.
+    :param lagrangian: MMG's ``lag``: 0 moves only, 1 (the default) also
+        swaps edges and faces, 2 also inserts and collapses points.
+    :param options: :func:`adapt`'s MMG parameters.
+    :returns: the moved mesh, regions as for :func:`adapt`. With
+        ``return_report``, also :func:`adapt`'s report.
+    :raises NotImplementedError: without the MMG backend, or with an MMG
+        built without ELAS (:func:`has_mmg_elas`).
+    """
+    _core = _core_or_raise("move")
+    work, name = _field_name(
+        mesh, displacement, "move:displacement", "move", "displacement"
+    )
+    if not name:
+        raise ValueError(f"{_PREFIX}move: give the displacement")
+    names = [moving] if isinstance(moving, str) else list(moving)
+    params = _mmg_keywords(mesh, "move", options)
+    out = _core.move(
+        work, name, moving=names, lagrangian=int(lagrangian), params=params
+    )
+    result = out.pop("mesh")
+    return (result, out) if return_report else result
+
+
 def metric_from_hessian(
     mesh, hessian, error=1e-2, hmin=1e-3, hmax=1.0, output="metric"
 ):

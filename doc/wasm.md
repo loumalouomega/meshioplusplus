@@ -65,7 +65,7 @@ Some libraries are in neither pair, each for a reason, and each still answers by
 - **TecIO** (`szplt`): its redistribution terms; absent, and named, the same way.
 - **The Kokkos parallel backend**: CMake refuses it under Emscripten; `parallelBackend()` is `seq` or `openmp`.
 - **Memory mapping**: there is nothing to map inside MEMFS; the option is accepted and ignored.
-- **MMG**: the [native MMG backend](./mmg.md) (`adapt` and its `metric_from_hessian`, `discretize_levelset` and `mesh_domain`, unreleased) is in neither artifact; `hasMmg()` reports `false`, and the operations are not in the wrapper. Bringing them to the browser through the full pair is roadmap §3.2.8.
+- **MMG**: the [native MMG backend](./mmg.md) (`adapt` and its `metric_from_hessian`, `discretize_levelset`, `mesh_domain` and `move`, unreleased) is in neither artifact; `hasMmg()` reports `false`, and the operations are not in the wrapper. Bringing them to the browser through the full pair is roadmap §3.2.8.
 
 The smoke suite asserts this set exactly on each artifact (`MESHIOPLUSPLUS_WASM_VARIANT=full` and `full-seq` run it on the full pair).
 

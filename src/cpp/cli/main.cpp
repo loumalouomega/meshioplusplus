@@ -551,6 +551,8 @@ void print_usage(std::ostream& os) {
           "                            with MMG; --level-set NAME, --isovalue, --material\n"
           "  mesh-2d                 Triangulate the planar domain a line mesh bounds with\n"
           "                            MMG; --hsiz or --size, --hole X,Y (repeatable)\n"
+          "  move                    Move a mesh by a boundary displacement and remesh with\n"
+          "                            MMG (needs ELAS); --displacement NAME, --moving REGION\n"
           "  remesh                  Replace a surface's triangulation with a new,\n"
           "                            well-shaped one (ACVD clustering); --num-clusters\n"
           "                            is required, --metric isotropic|quadric|anisotropic\n"
@@ -6073,6 +6075,30 @@ int cmd_mesh_2d(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+int cmd_move(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_mmg_options({
+                                  {"displacement", {}, true},
+                                  {"moving", {}, true},
+                                  {"lagrangian", {}, true},
+                              }));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("move requires exactly INFILE and OUTFILE");
+    if (!has_opt(p, "displacement") || !has_opt(p, "moving"))
+        throw std::runtime_error("move: --displacement and --moving are required");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::MoveOptions options;
+    options.mParameters = cli_mmg_parameters(p, mesh);
+    options.mDisplacement = opt_value(p, "displacement");
+    for (const std::string& name : meshioplusplus::cli::opt_values(p, "moving"))
+        options.mMoving.push_back(name);
+    options.mLagrangian = std::stoi(opt_value(p, "lagrangian", "1"));
+    auto r = meshioplusplus::move(mesh, options);
+    if (!has_flag(p, "quiet"))
+        cli_mmg_summary("moved", r.mReport);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
 int cmd_remesh(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -8228,6 +8254,8 @@ int main(int argc, char** argv) {
             return cmd_discretize_levelset(rest);
         if (cmd == "mesh-2d")
             return cmd_mesh_2d(rest);
+        if (cmd == "move")
+            return cmd_move(rest);
         if (cmd == "remesh")
             return cmd_remesh(rest);
         if (cmd == "remesh-volume")
