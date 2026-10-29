@@ -31,6 +31,8 @@ WITH_TECIO="OFF"
 TECIO_ROOT_DIR=""
 WITH_NETGEN="OFF"
 NETGEN_ROOT_DIR=""
+WITH_MMG="OFF"
+MMG_ROOT_DIR=""
 TESTS="OFF"
 C_API="OFF"
 FORTRAN="OFF"
@@ -69,6 +71,10 @@ Usage: $0 [options]
   --with-netgen                   Netgen-backed tetrahedralize (default: off; LGPL-2.1,
                                   linked dynamically)
   --netgen-root <dir>             Netgen's install prefix, when not under /usr
+  --with-mmg                      MMG-backed adapt, discretize_levelset, mesh_domain and
+                                  move (default: off; LGPL-3.0, linked dynamically;
+                                  build one with build/build-mmg.sh)
+  --mmg-root <dir>                MMG's install prefix (holds lib/cmake/mmg)
   --with-polyscope                native viewer for the CLI's view/screenshot
                                   (default: off; needs OpenGL/GLFW and
                                   git submodule update --init --recursive)
@@ -111,6 +117,8 @@ while [ $# -gt 0 ]; do
         --with-tecio) WITH_TECIO="ON"; TECIO_ROOT_DIR="$2"; shift 2 ;;
         --with-netgen) WITH_NETGEN="ON"; shift ;;
         --netgen-root) WITH_NETGEN="ON"; NETGEN_ROOT_DIR="$2"; shift 2 ;;
+        --with-mmg) WITH_MMG="ON"; shift ;;
+        --mmg-root) WITH_MMG="ON"; MMG_ROOT_DIR="$2"; shift 2 ;;
         --with-polyscope) WITH_POLYSCOPE="ON"; shift ;;
         --without-polyscope) WITH_POLYSCOPE="OFF"; shift ;;
         --without-zlib) WITH_ZLIB="OFF"; shift ;;
@@ -186,6 +194,7 @@ set -- \
     -DMESHIOPLUSPLUS_WITH_OCCT="$WITH_OCCT" \
     -DMESHIOPLUSPLUS_WITH_TECIO="$WITH_TECIO" \
     -DMESHIOPLUSPLUS_WITH_NETGEN="$WITH_NETGEN" \
+    -DMESHIOPLUSPLUS_WITH_MMG="$WITH_MMG" \
     -DMESHIOPLUSPLUS_BUILD_TESTS="$TESTS" \
     -DMESHIOPLUSPLUS_BUILD_C_API="$C_API" \
     -DMESHIOPLUSPLUS_INSTALL_CPP="$INSTALL_CPP" \
@@ -215,6 +224,9 @@ fi
 if [ -n "$NETGEN_ROOT_DIR" ]; then
     set -- "$@" -DNETGEN_ROOT="$NETGEN_ROOT_DIR"
 fi
+if [ -n "$MMG_ROOT_DIR" ]; then
+    set -- "$@" -Dmmg_DIR="$MMG_ROOT_DIR/lib/cmake/mmg"
+fi
 
 echo "== meshio++ configure =="
 echo "  source:    $SOURCE_DIR"
@@ -227,6 +239,7 @@ echo "  gidpost:   $WITH_GIDPOST  (GiD postprocess writer)"
 echo "  Polyscope: $WITH_POLYSCOPE  (CLI viewer)"
 echo "  bzip2:     $WITH_BZIP2   ADIOS2: $WITH_ADIOS2   TecIO: $WITH_TECIO${TECIO_ROOT_DIR:+ ($TECIO_ROOT_DIR)}   OCCT: $WITH_OCCT"
 echo "  Netgen:    $WITH_NETGEN${NETGEN_ROOT_DIR:+ ($NETGEN_ROOT_DIR)}  (tetrahedralize)"
+echo "  MMG:       $WITH_MMG${MMG_ROOT_DIR:+ ($MMG_ROOT_DIR)}  (adapt, discretize_levelset, mesh_domain, move)"
 echo "  tests:     $TESTS"
 echo "  C API:     $C_API   Fortran: $FORTRAN"
 echo "  C++ API:   $INSTALL_CPP${CPP_BACKENDS:+  (backends: $CPP_BACKENDS)}"

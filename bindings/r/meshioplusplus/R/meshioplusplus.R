@@ -2924,6 +2924,74 @@ mio_has_netgen <- function() {
   .Call(R_mio_has_netgen)
 }
 
+#' Whether the library carries the MMG backend
+#'
+#' The MMG operations (adapt, discretize_levelset, mesh_domain, move) need a
+#' library built with `-DMESHIOPLUSPLUS_WITH_MMG=ON`; this reports whether the
+#' loaded one was. `mio_has_mmg_elas()` reports whether its MMG has ELAS, which
+#' move needs.
+#'
+#' @return `TRUE` or `FALSE`.
+#' @export
+mio_has_mmg <- function() {
+  .Call(R_mio_has_mmg)
+}
+
+#' @rdname mio_has_mmg
+#' @export
+mio_has_mmg_elas <- function() {
+  .Call(R_mio_has_mmg_elas)
+}
+
+#' Remesh to a size or a metric with MMG
+#'
+#' Roadmap 3.2.1 (`doc/mmg.md`): mmg3d for tetrahedra, mmg2d for a planar
+#' triangle mesh, mmgs for another triangle surface. Give at most one of
+#' `hsiz`, `size` and `metric`. Cell and side regions come back under their
+#' names. Fails naming `MESHIOPLUSPLUS_WITH_MMG` without the backend
+#' ([mio_has_mmg()]).
+#'
+#' @param mesh A mesh.
+#' @param hsiz A constant target edge size (negative: none).
+#' @param size A one-component point-data name: the size per point.
+#' @param metric A six-component (three in 2-D) point-data name: the metric in
+#'   the lower-triangle order of a Medit `.sol`.
+#' @param hmin,hmax,hausd,hgrad MMG's sizes, Hausdorff distance and gradation
+#'   (negative: MMG's default).
+#' @param angle_detection The ridge angle in degrees; 0 turns detection off.
+#' @param frozen 1-based points MMG must keep.
+#' @param required Names of regions whose entities MMG must keep.
+#' @return A list: `mesh`, `status` ("success" or "low_failure"), `library`,
+#'   point and element counts in and out, `quality` (min, mean, max of
+#'   `quality:aspect_ratio`) and `num_warnings`.
+#' @export
+mio_adapt <- function(mesh, hsiz = -1, size = "", metric = "", hmin = -1, hmax = -1,
+                      hausd = -1, hgrad = -1, angle_detection = 45, frozen = NULL,
+                      required = character(0)) {
+  .Call(R_mio_adapt, mesh, as.numeric(hsiz), as.character(size), as.character(metric),
+        as.numeric(hmin), as.numeric(hmax), as.numeric(hausd), as.numeric(hgrad),
+        as.numeric(angle_detection), frozen, as.character(required))
+}
+
+#' An anisotropic metric from a Hessian
+#'
+#' The metric of the row-major point-data Hessian `hessian` ((n, 9), or (n, 4)
+#' in 2-D) for [mio_adapt()]: `M = c/error |H|`, its sizes clamped to
+#' `[hmin, hmax]`, as point data `output`. Needs no MMG.
+#'
+#' @param mesh A mesh.
+#' @param hessian The Hessian's point-data name.
+#' @param error The target interpolation error.
+#' @param hmin,hmax The smallest and largest edge size the metric asks for.
+#' @param output The result's point-data name.
+#' @return A new mesh with the metric.
+#' @export
+mio_metric_from_hessian <- function(mesh, hessian, error = 1e-2, hmin = 1e-3, hmax = 1,
+                                    output = "metric") {
+  .Call(R_mio_metric_from_hessian, mesh, as.character(hessian), as.numeric(error),
+        as.numeric(hmin), as.numeric(hmax), as.character(output))
+}
+
 #' Fill a closed triangle surface with tetrahedra
 #'
 #' The closed, manifold, consistently oriented triangle surface `mesh` is

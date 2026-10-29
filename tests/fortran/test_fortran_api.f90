@@ -1511,6 +1511,31 @@ program test_fortran_api
             if (tst == 0) call tet_out%free()
         end block
 
+        ! The MMG backend (roadmap 3.2): adapt with it, its refusal by name
+        ! without it; metric_from_hessian needs no MMG.
+        block
+            type(mio_mesh) :: square, adapted
+            type(mio_mmg_report) :: mrep
+            integer :: mst
+            character(:), allocatable :: mmsg
+            square = mio_rectangle(dims=[4, 4], cell_type='triangle', stat=mst)
+            call check(mst == 0, 'rectangle for adapt')
+            adapted = mio_adapt(square, hsiz=0.1_real64, frozen=[13_int64], report=mrep, &
+                                stat=mst, errmsg=mmsg)
+            if (mio_has_mmg()) then
+                call check(mst == 0 .and. mrep%status == 0 .and. &
+                           mrep%num_elements_out > mrep%num_elements_in .and. &
+                           mrep%library(1) == 'm' .and. mrep%library(4) == '2', &
+                           'adapt remeshes the square with mmg2d')
+                if (mst == 0) call adapted%free()
+            else
+                call check(mst /= 0 .and. index(mmsg, 'MESHIOPLUSPLUS_WITH_MMG') > 0, &
+                           'adapt names the build flag without MMG')
+                call check(mio_mmg_index_bits() == 0, 'no MMG, no index width')
+            end if
+            call square%free()
+        end block
+
         out = octa%remesh(30_int64, num_iterations=niter, subdivide_applied=subapp, &
                           num_isolated_clusters=niso, stat=st)
         call check(st == 0, 'remesh succeeded')

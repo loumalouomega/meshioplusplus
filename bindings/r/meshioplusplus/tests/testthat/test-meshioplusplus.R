@@ -1926,6 +1926,21 @@ test_that("extrude, revolve and mirror sweep and reflect (roadmap 3.1.2, 3.1.3, 
   expect_error(mio_mirror(b, normal = c(0, 0, 0)), "normal")
   mio_release(b)
 })
+test_that("adapt runs with MMG and names the flag without it (roadmap 3.2)", {
+  sq <- mio_rectangle(dims = c(4, 4), cell_type = "triangle")
+  on.exit(mio_release(sq))
+  if (mio_has_mmg()) {
+    r <- mio_adapt(sq, hsiz = 0.1, frozen = 13)
+    expect_equal(r$status, "success")
+    expect_equal(r$library, "mmg2d")
+    expect_gt(r$num_elements_out, r$num_elements_in)
+    mio_release(r$mesh)
+  } else {
+    expect_false(mio_has_mmg_elas())
+    expect_error(mio_adapt(sq, hsiz = 0.1), "MESHIOPLUSPLUS_WITH_MMG")
+  }
+})
+
 test_that("tetrahedralize fills a closed surface keeping its skin (roadmap 6.7)", {
   s <- mio_icosa_sphere(subdivisions = 2)
   on.exit(mio_release(s))

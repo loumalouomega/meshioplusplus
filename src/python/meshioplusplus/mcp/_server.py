@@ -4094,6 +4094,109 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def adapt(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        hsiz: Optional[float] = None,
+        size: Optional[str] = None,
+        metric: Optional[str] = None,
+        hmin: Optional[float] = None,
+        hmax: Optional[float] = None,
+        hausd: Optional[float] = None,
+        hgrad: Optional[float] = None,
+        hgradreq: Optional[float] = None,
+        angle_detection: Optional[float] = 45.0,
+        optim: bool = False,
+        noinsert: bool = False,
+        noswap: bool = False,
+        nomove: bool = False,
+        nosurf: bool = False,
+        nreg: bool = False,
+        opnbdy: bool = False,
+        frozen: Optional[str] = None,
+        required: Optional[List[str]] = None,
+        local: Optional[Dict[str, Dict[str, float]]] = None,
+    ) -> dict:
+        """Remesh a simplicial mesh with MMG (needs a build with
+        MESHIOPLUSPLUS_WITH_MMG; otherwise returns error_type
+        NotImplementedError and mmg_available False). mmg3d for
+        tetrahedra, mmg2d for a planar triangle mesh, mmgs for another
+        triangle surface. Give at most one of hsiz (constant edge size),
+        size (point_data name of a size field) and metric (point_data name
+        of a six-component, three in 2-D, metric in Medit .sol order); none
+        lets MMG size from the mesh. hmin/hmax bound the edge sizes, hausd
+        bounds how far the boundary moves, hgrad/hgradreq set the
+        gradation, angle_detection (45 degrees; None turns it off) finds
+        ridges. optim/noinsert/noswap/nomove/nosurf/nreg/opnbdy are MMG's
+        switches. frozen names a point region MMG must keep; required
+        names regions whose entities it must keep; local maps a region to
+        {"hmin", "hmax", "hausd"}. Cell and side regions and a medit:ref
+        array come back under their names; other point/cell data is
+        dropped (use interpolate), field_data is carried. Reports status
+        ("success" or "low_failure"), library, num_points_in/out,
+        num_elements_in/out, quality (aspect ratio min/mean/max/histogram)
+        and warnings."""
+        return _guard(
+            _tools.tool_adapt,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            hsiz=hsiz,
+            size=size,
+            metric=metric,
+            hmin=hmin,
+            hmax=hmax,
+            hausd=hausd,
+            hgrad=hgrad,
+            hgradreq=hgradreq,
+            angle_detection=angle_detection,
+            optim=optim,
+            noinsert=noinsert,
+            noswap=noswap,
+            nomove=nomove,
+            nosurf=nosurf,
+            nreg=nreg,
+            opnbdy=opnbdy,
+            frozen=frozen,
+            required=required,
+            local=local,
+        )
+
+    @server.tool()
+    def metric_from_hessian(
+        input_path: str,
+        output_path: str,
+        hessian: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        error: float = 1e-2,
+        hmin: float = 1e-3,
+        hmax: float = 1.0,
+        output: str = "metric",
+    ) -> dict:
+        """The anisotropic metric of the point_data Hessian `hessian`
+        ((n, 9), or (n, 4) in 2-D, row-major as the hessian tool writes)
+        for the adapt tool: M = c/error |H| with c = (1/2)(d/(d+1))^2, its
+        eigenvalues clamped so the sizes lie in [hmin, hmax], written as
+        point_data `output` (six components, three in 2-D, in the
+        lower-triangle order of a Medit .sol). Needs no MMG."""
+        return _guard(
+            _tools.tool_metric_from_hessian,
+            input_path=input_path,
+            output_path=output_path,
+            hessian=hessian,
+            input_format=input_format,
+            output_format=output_format,
+            error=error,
+            hmin=hmin,
+            hmax=hmax,
+            output=output,
+        )
+
+    @server.tool()
     def remesh(
         input_path: str,
         output_path: str,

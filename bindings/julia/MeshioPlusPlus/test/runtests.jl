@@ -1103,6 +1103,20 @@ end
     close(m)
 end
 
+@testset "operations: MMG backend" begin
+    # Roadmap 3.2: adapt with MMG, or its refusal by name without it.
+    sq = rectangle(dims=(4, 4), cell_type="triangle")
+    if has_mmg()
+        r = adapt(sq; hsiz=0.1, frozen=[13])
+        @test r.status == "success" && r.library == "mmg2d"
+        @test r.num_elements_out > r.num_elements_in
+        @test r.num_points_out == num_points(r.mesh)
+    else
+        @test !has_mmg_elas()
+        @test_throws MeshioError adapt(sq; hsiz=0.1)
+    end
+end
+
 @testset "operations: tetrahedralize" begin
     # Roadmap 6.7: a closed triangle surface filled with tetrahedra, its skin kept.
     s = icosa_sphere(subdivisions=2)

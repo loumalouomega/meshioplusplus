@@ -1456,6 +1456,46 @@ def test_tessellate_reports_counts_and_watertightness(tmp_path):
     assert bad["error_type"] == "ValueError" and "levels" in bad["error"]
 
 
+def test_adapt_tool_reports_the_capability(tmp_path):
+    # Roadmap 3.2: the MMG backend, or its absence named, with mmg_available.
+    src = str(tmp_path / "square.vtu")
+    meshioplusplus.write(
+        src, meshioplusplus.rectangle(dims=(4, 4), cell_type="triangle")
+    )
+    out = _dump(
+        _tools.call_tool(
+            "adapt",
+            {"input_path": src, "output_path": str(tmp_path / "a.vtu"), "hsiz": 0.1},
+        )
+    )
+    assert out["mmg_available"] is meshioplusplus.has_mmg()
+    if meshioplusplus.has_mmg():
+        assert out["library"] == "mmg2d" and out["status"] == "success"
+        assert out["num_elements_out"] > out["num_elements_in"]
+    else:
+        assert out["error_type"] == "NotImplementedError"
+        assert "MESHIOPLUSPLUS_WITH_MMG" in out["error"]
+
+
+def test_metric_from_hessian_tool(tmp_path):
+    mesh = meshioplusplus.rectangle(dims=(2, 2), cell_type="triangle")
+    mesh.point_data["h"] = np.tile(
+        [2.0, 0, 0, 0, 20.0, 0, 0, 0, 0], (len(mesh.points), 1)
+    )
+    src = str(tmp_path / "h.vtu")
+    meshioplusplus.write(src, mesh)
+    dst = str(tmp_path / "m.vtu")
+    out = _dump(
+        _tools.call_tool(
+            "metric_from_hessian",
+            {"input_path": src, "output_path": dst, "hessian": "h", "hmax": 10.0},
+        )
+    )
+    assert "error" not in out, out
+    metric = meshioplusplus.read(dst).point_data["metric"]
+    assert metric.shape == (len(mesh.points), 6)
+
+
 def test_fit_cad_tool_reports_the_capability(tmp_path):
     from meshioplusplus._fit_cad import has_occt
 
@@ -2041,6 +2081,8 @@ _NOT_TOOLS = {
     "view",  # interactive; screenshot is the headless tool
     "tui",  # interactive (it takes over a terminal); render_mesh is the headless tool
     "has_viewer",
+    "has_mmg",  # capability probes; the adapt tool reports mmg_available
+    "has_mmg_elas",
     "to_pyvista",
     "from_pyvista",
     "to_trimesh",

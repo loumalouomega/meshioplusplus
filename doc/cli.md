@@ -856,6 +856,37 @@ meshioplusplus decimate-volume solid.vtu coarse.vtu --ratio 0.1 --preserve-bound
 
 ---
 
+## meshioplusplus adapt
+
+Remesh a simplicial mesh to a size or a metric with [MMG](/mmg): mmg3d for tetrahedra, mmg2d for a planar triangle mesh, mmgs for another triangle surface. Needs a build with `MESHIOPLUSPLUS_WITH_MMG`; otherwise it fails naming the flag.
+
+```
+meshioplusplus adapt [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--hsiz H` | A constant target edge size |
+| `--size NAME` | A one-component `point_data` array: the size per point |
+| `--metric NAME` | A six-component (three in 2-D) `point_data` metric in the lower-triangle order of a Medit `.sol` |
+| `--hmin`, `--hmax`, `--hausd`, `--hgrad`, `--hgradreq` | MMG's sizes, Hausdorff distance and gradations (MMG's defaults when absent) |
+| `--angle-detection DEG` | Ridge angle in degrees (default `45`; `0` turns detection off) |
+| `--optim`, `--noinsert`, `--noswap`, `--nomove`, `--nosurf`, `--nreg`, `--opnbdy` | MMG's switches |
+| `--frozen REGION` | A point region MMG must keep |
+| `--required REGION` | A region whose entities MMG must keep (repeatable) |
+| `--verbose-mmg N` | MMG's verbosity (default `-1`, silent) |
+| `--quiet` (`-q`) | Do not print the summary |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Give at most one of `--hsiz`, `--size` and `--metric`. Cell and side regions come back under their names; other point and cell data is dropped. The summary names the MMG library, its status (`success`, or `low failure` for a valid mesh MMG could not finish) and the counts in and out.
+
+```sh
+meshioplusplus adapt part.mesh out.mesh --hsiz 0.05 --hausd 0.001
+meshioplusplus adapt square.vtu out.vtu --metric metric --required inlet
+```
+
+---
+
 ## meshioplusplus remesh
 
 Replace a **surface** mesh's own triangulation with a new, near-uniformly-sized, well-shaped one at a caller-chosen vertex count, by approximated centroidal Voronoi diagram (ACVD) clustering (see [remeshing](/remesh)).

@@ -915,6 +915,115 @@ Whether the library carries the Netgen backend [`tetrahedralize`](@ref) needs
 has_netgen() = ccall(_sym(:mio_has_netgen), Cint, ()) != 0
 
 """
+    has_mmg() -> Bool
+
+Whether the library carries the MMG backend (a build with
+`-DMESHIOPLUSPLUS_WITH_MMG=ON`): `adapt`, `discretize_levelset`, `mesh_domain`
+and `move` throw without it.
+"""
+has_mmg() = ccall(_sym(:mio_has_mmg), Cint, ()) != 0
+
+"""
+    has_mmg_elas() -> Bool
+
+Whether the linked MMG was built with ELAS, which `move` needs.
+"""
+has_mmg_elas() = ccall(_sym(:mio_has_mmg_elas), Cint, ()) != 0
+
+_cstring(s::AbstractString) = push!(Vector{UInt8}(codeunits(String(s))), 0x00)
+
+# The shared MMG parameters, and the buffers they point into (kept alive by the caller).
+function _mmg_params(mesh::Mesh, hmin, hmax, hausd, hgrad, hgradreq, angle_detection, optim,
+                     noinsert, noswap, nomove, nosurf, nreg, opnbdy, mem, verbose, frozen,
+                     required, local_params)
+    frozen_ids = Int64[Int64(i) - 1 for i in frozen]  # 1-based in, 0-based to C
+    names = [_cstring(r) for r in required]
+    name_ptrs = Ptr{UInt8}[pointer(n) for n in names]
+    local_names = [_cstring(String(k)) for (k, _) in local_params]
+    locals = _CMmgLocal[_CMmgLocal(pointer(local_names[i]),
+                                   Cdouble(get(v, "hmin", get(v, :hmin, -1.0))),
+                                   Cdouble(get(v, "hmax", get(v, :hmax, -1.0))),
+                                   Cdouble(get(v, "hausd", get(v, :hausd, -1.0))))
+                        for (i, (_, v)) in enumerate(local_params)]
+    angle = angle_detection === nothing || angle_detection === false ? -1.0 :
+            Cdouble(angle_detection)
+    p = _CMmgParams(Cdouble(hmin), Cdouble(hmax), Cdouble(hausd), Cdouble(hgrad),
+                    Cdouble(hgradreq), angle, Int32(optim), Int32(noinsert), Int32(noswap),
+                    Int32(nomove), Int32(nosurf), Int32(nreg), Int32(opnbdy), Int32(verbose),
+                    Int64(mem), isempty(frozen_ids) ? Ptr{Int64}(C_NULL) : pointer(frozen_ids),
+                    Int64(length(frozen_ids)),
+                    isempty(name_ptrs) ? Ptr{Ptr{UInt8}}(C_NULL) : pointer(name_ptrs),
+                    Int64(length(name_ptrs)),
+                    isempty(locals) ? Ptr{_CMmgLocal}(C_NULL) : pointer(locals),
+                    Int64(length(locals)), (0, 0, 0, 0))
+    return p, (frozen_ids, names, name_ptrs, local_names, locals)
+end
+
+function _mmg_report(r::_CMmgReport)
+    lib = String(UInt8[c for c in r.library if c != 0x00])
+    (status=r.status == 0 ? "success" : "low_failure", library=lib,
+     num_points_in=Int(r.num_points_in), num_points_out=Int(r.num_points_out),
+     num_elements_in=Int(r.num_elements_in), num_elements_out=Int(r.num_elements_out),
+     quality=(min=Float64(r.quality_min), mean=Float64(r.quality_mean),
+              max=Float64(r.quality_max), histogram=collect(Int, r.quality_histogram)),
+     num_warnings=Int(r.num_warnings))
+end
+
+"""
+    adapt(mesh; hsiz=nothing, size=nothing, metric=nothing, hmin=-1, hmax=-1, hausd=-1,
+          hgrad=-1, hgradreq=-1, angle_detection=45.0, optim=false, noinsert=false,
+          noswap=false, nomove=false, nosurf=false, nreg=false, opnbdy=false, mem=-1,
+          verbose=-1, frozen=Int[], required=String[], local_params=Dict())
+        -> (mesh, status, library, num_points_in, ..., quality)
+
+Remesh `mesh` to a size or a metric with MMG (roadmap 3.2.1, `doc/mmg.md`):
+mmg3d for tetrahedra, mmg2d for a planar triangle mesh, mmgs for another
+triangle surface. `size` and `metric` name point data (a metric in the
+lower-triangle order of a Medit `.sol`); `frozen` lists 1-based points MMG must
+keep, `required` the regions whose entities it must keep, `local_params` maps a
+region to its `hmin`/`hmax`/`hausd`. Throws naming `MESHIOPLUSPLUS_WITH_MMG`
+without the backend ([`has_mmg`](@ref)).
+"""
+function adapt(mesh::Mesh; hsiz=nothing, size=nothing, metric=nothing, hmin::Real=-1.0,
+               hmax::Real=-1.0, hausd::Real=-1.0, hgrad::Real=-1.0, hgradreq::Real=-1.0,
+               angle_detection=45.0, optim::Bool=false, noinsert::Bool=false,
+               noswap::Bool=false, nomove::Bool=false, nosurf::Bool=false, nreg::Bool=false,
+               opnbdy::Bool=false, mem::Integer=-1, verbose::Integer=-1,
+               frozen=Int[], required=String[], local_params=Dict{String,Any}())
+    params, keep = _mmg_params(mesh, hmin, hmax, hausd, hgrad, hgradreq, angle_detection,
+                               optim, noinsert, noswap, nomove, nosurf, nreg, opnbdy, mem,
+                               verbose, frozen, required, local_params)
+    size_c = size === nothing ? UInt8[0x00] : _cstring(size)
+    metric_c = metric === nothing ? UInt8[0x00] : _cstring(metric)
+    report = Ref{_CMmgReport}()
+    ptr = GC.@preserve keep size_c metric_c begin
+        opts = _CAdaptOpts(params, hsiz === nothing ? -1.0 : Cdouble(hsiz),
+                           size === nothing ? Ptr{UInt8}(C_NULL) : pointer(size_c),
+                           metric === nothing ? Ptr{UInt8}(C_NULL) : pointer(metric_c),
+                           (0, 0, 0, 0))
+        ccall(_sym(:mio_adapt), Ptr{Cvoid}, (Ptr{Cvoid}, Ref{_CAdaptOpts}, Ref{_CMmgReport}),
+              _handle(mesh), Ref(opts), report)
+    end
+    out = Mesh(_check_ptr(ptr))
+    merge((mesh=out,), _mmg_report(report[]))
+end
+
+"""
+    metric_from_hessian(mesh, hessian; error=1e-2, hmin=1e-3, hmax=1.0, output="metric") -> Mesh
+
+The anisotropic metric of the row-major point-data Hessian `hessian` ((n, 9), or
+(n, 4) in 2-D) for [`adapt`](@ref): `M = c/error |H|`, its sizes clamped to
+`[hmin, hmax]`, as point data `output` in the lower-triangle order of a Medit
+`.sol`. Needs no MMG.
+"""
+function metric_from_hessian(mesh::Mesh, hessian::AbstractString; error::Real=1e-2,
+                             hmin::Real=1e-3, hmax::Real=1.0, output::AbstractString="metric")
+    Mesh(_check_ptr(ccall(_sym(:mio_metric_from_hessian), Ptr{Cvoid},
+                          (Ptr{Cvoid}, Cstring, Cdouble, Cdouble, Cdouble, Cstring),
+                          _handle(mesh), hessian, error, hmin, hmax, output)))
+end
+
+"""
     tetrahedralize(mesh; backend="auto", max_size=0.0, max_volume=0.0, grading=0.3,
                    optimize_steps=3, max_cells=50_000_000, face_array="cad:face")
         -> (; mesh, num_tetrahedra, num_points, num_new_points, num_regions,

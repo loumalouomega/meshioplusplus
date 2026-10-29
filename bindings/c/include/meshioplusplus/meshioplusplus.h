@@ -6971,6 +6971,113 @@ MIO_API mio_status mio_write_snapshot(const char* path, const mio_mesh* mesh,
 MIO_API int32_t mio_detect_color_depth(const char* no_color, const char* color_term,
                                        const char* term);
 
+/* ------------------------------------------------------------------------
+ * The optional MMG backend (roadmap 3.2; doc/mmg.md). MMG is LGPL-3.0 and
+ * linked dynamically only, in builds configured with
+ * -DMESHIOPLUSPLUS_WITH_MMG=ON; without it every MMG entry point fails with
+ * MIO_ERR_UNSUPPORTED naming the flag.
+ * ------------------------------------------------------------------------ */
+
+/** Nonzero when this library was built with the MMG backend. */
+MIO_API int mio_has_mmg(void);
+
+/** Nonzero when the linked MMG was built with ELAS, which mio_move needs. */
+MIO_API int mio_has_mmg_elas(void);
+
+/** The width in bits of the linked MMG's MMG5_int (32 or 64); 0 without MMG. */
+MIO_API int mio_mmg_index_bits(void);
+
+/** Sizes for the entities of one named region; a negative value keeps the global one. */
+typedef struct mio_mmg_local {
+    const char* region; /**< a cell or side region's name */
+    double hmin;
+    double hmax;
+    double hausd;
+} mio_mmg_local;
+
+/**
+ * The parameters every MMG operation shares. A negative size, distance or
+ * gradation leaves MMG's default; mio_mmg_params_init sets them all so.
+ */
+typedef struct mio_mmg_params {
+    double hmin;            /**< minimal edge size */
+    double hmax;            /**< maximal edge size */
+    double hausd;           /**< how far the boundary may move (Hausdorff distance) */
+    double hgrad;           /**< gradation */
+    double hgradreq;        /**< gradation from required entities */
+    double angle_detection; /**< ridge angle in degrees; <= 0 turns detection off; default 45 */
+    int32_t optim;          /**< nonzero: keep the size, only improve quality */
+    int32_t noinsert;       /**< nonzero: no point insertion or removal */
+    int32_t noswap;         /**< nonzero: no edge or face flip */
+    int32_t nomove;         /**< nonzero: no point relocation */
+    int32_t nosurf;         /**< nonzero: leave the boundary (not mmgs) */
+    int32_t nreg;           /**< nonzero: regularise the normals */
+    int32_t opnbdy;         /**< nonzero: keep internal open boundaries (mmg3d, mmg2d) */
+    int32_t verbose;        /**< MMG's verbosity; default -1, silent */
+    int64_t mem;            /**< MMG's memory budget in MB; <= 0 its default */
+    const int64_t* frozen;  /**< point ids MMG must keep (NULL: none) */
+    int64_t num_frozen;
+    const char* const* required; /**< region names whose entities MMG must keep */
+    int64_t num_required;
+    const mio_mmg_local* local; /**< per-region sizes */
+    int64_t num_local;
+    int64_t reserved[4]; /**< must be zero; room for additive growth */
+} mio_mmg_params;
+
+MIO_API void mio_mmg_params_init(mio_mmg_params* params);
+
+/** What an MMG operation reports. */
+typedef struct mio_mmg_report {
+    int32_t status;       /**< 0: MMG5_SUCCESS; 1: MMG5_LOWFAILURE, a valid mesh MMG could not finish */
+    int32_t reserved_pad; /**< zero */
+    char library[8];      /**< "mmg2d", "mmgs" or "mmg3d", NUL-terminated */
+    int64_t num_points_in;
+    int64_t num_points_out;
+    int64_t num_elements_in;  /**< triangles or tetrahedra (and prisms, quads) */
+    int64_t num_elements_out;
+    double quality_min;  /**< the result's quality:aspect_ratio (1 is ideal) */
+    double quality_mean;
+    double quality_max;
+    int64_t quality_histogram[10]; /**< over [quality_min, quality_max] */
+    int64_t num_warnings;
+    int64_t reserved[4]; /**< zero; room for additive growth */
+} mio_mmg_report;
+
+/** The options of mio_adapt; give at most one of hsiz, size and metric. */
+typedef struct mio_adapt_opts {
+    mio_mmg_params params;
+    double hsiz;        /**< > 0: a constant target edge size */
+    const char* size;   /**< a one-component point_data name, the size per point (NULL: none) */
+    const char* metric; /**< a symmetric-tensor point_data name, six components (three in 2-D)
+                             in the lower-triangle order of a Medit .sol (NULL: none) */
+    int64_t reserved[4]; /**< must be zero; room for additive growth */
+} mio_adapt_opts;
+
+MIO_API void mio_adapt_opts_init(mio_adapt_opts* opts);
+
+/**
+ * Remesh `mesh` to a size or a metric with MMG (roadmap 3.2.1; doc/mmg.md):
+ * mmg3d for tetrahedra, mmg2d for a planar triangle mesh, mmgs for another
+ * triangle surface. Cell and side regions (and a medit:ref array) come back
+ * under their names; point regions when their points are required; other data
+ * is dropped. `opts` and `report` may be NULL. Fails with
+ * MIO_ERR_UNSUPPORTED naming MESHIOPLUSPLUS_WITH_MMG without the backend.
+ * @return a new mesh the caller frees, or NULL with the error set.
+ */
+MIO_API mio_mesh* mio_adapt(const mio_mesh* mesh, const mio_adapt_opts* opts,
+                            mio_mmg_report* report);
+
+/**
+ * The anisotropic metric of the row-major point_data Hessian `hessian`
+ * ((n, 9) or (n, 4)), for mio_adapt: M = c/error |H|, its sizes clamped to
+ * [hmin, hmax], written as point_data `output` (NULL: "metric") in the
+ * lower-triangle order of a Medit .sol. Needs no MMG.
+ * @return a new mesh the caller frees, or NULL with the error set.
+ */
+MIO_API mio_mesh* mio_metric_from_hessian(const mio_mesh* mesh, const char* hessian,
+                                          double error, double hmin, double hmax,
+                                          const char* output);
+
 #ifdef __cplusplus
 }
 #endif

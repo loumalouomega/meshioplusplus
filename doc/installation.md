@@ -36,7 +36,7 @@ The wheels link these libraries statically into `meshioplusplus._core`:
 | pugixml 1.14 (vendored; XML parsing) | MIT |
 | nlohmann/json 3.12.0 (the JSON pipeline parser) | MIT |
 
-They leave out HDF5 and netCDF (the `[all]` extra provides h5py and netCDF4), zstd, lz4 and bzip2 (the `[codecs]` extra, or a source build), ADIOS2, TecIO and KaHIP (a source build; KaHIP also has the `[kahip]` extra), Polyscope (the `[viewer]` extra) and Eigen, which is not compiled without HDF5.
+They leave out HDF5 and netCDF (the `[all]` extra provides h5py and netCDF4), zstd, lz4 and bzip2 (the `[codecs]` extra, or a source build), ADIOS2, TecIO, KaHIP and MMG (a source build; KaHIP also has the `[kahip]` extra), Polyscope (the `[viewer]` extra) and Eigen, which is not compiled without HDF5.
 
 Linux wheels are built with the SEQ parallel backend. macOS and Windows wheels use OpenMP; the macOS build uses Homebrew's libomp, which delocate is expected to bundle into the wheel (to be confirmed in a wheel listing).
 
@@ -87,6 +87,8 @@ Two read-only formats need a library meshio++ never builds by default (v16.13.0)
 
 OpenCASCADE is on by default (`MESHIOPLUSPLUS_WITH_OCCT=ON`, auto-detected like HDF5): a build links an OpenCASCADE 7.6 or later it finds through its own CMake config (`OpenCASCADE_ROOT`, `OpenCASCADE_DIR`), so [`fit_cad`](fit_cad.md) builds trimmed, sewn and checked CAD faces and STEP/IGES read. On Ubuntu `apt-get install libocct-foundation-dev libocct-modeling-data-dev libocct-modeling-algorithms-dev libocct-data-exchange-dev libtbb-dev` gives a shared one; `build/build-occt.sh PREFIX` builds the pinned 7.6.3 static, as the PyPI wheels and the release CLI binaries link it. `-DMESHIOPLUSPLUS_REQUIRE_OCCT=ON` makes a missing kernel a configure error, and `--without-occt` (`-DMESHIOPLUSPLUS_WITH_OCCT=OFF`) leaves it out; without it `fit_cad` falls back to its kernel-free native backend with a warning and STEP/IGES reading raises naming the flag. OpenCASCADE is LGPL-2.1 with the OCCT exception: the published binaries carry it statically under [`THIRD_PARTY_NOTICES.md`](https://github.com/loumalouomega/meshioplusplus/blob/master/THIRD_PARTY_NOTICES.md). `_core.__has_occt__` reports it (Conan `with_occt`, on by default and auto-detected; vcpkg feature `occt`, a default feature).
 
+
+The [MMG backend](mmg.md) is off by default and never in the wheels: `-DMESHIOPLUSPLUS_WITH_MMG=ON -Dmmg_DIR=<prefix>/lib/cmake/mmg` (`build/configure.sh --with-mmg --mmg-root <prefix>`) links a shared MMG install, which `build/build-mmg.sh <prefix>` builds (MMG 5.8.0; `--with-elas` adds ELAS for `move`, which makes the build GPL-3.0). MMG is LGPL-3.0; see its [licence section](mmg.md#licence). Put `<prefix>/lib` on `LD_LIBRARY_PATH` when importing a Python build, whose RPATH scikit-build-core strips.
 For development, `-DMESHIOPLUSPLUS_SANITIZE="address;undefined"` (`build/configure.sh --sanitize address,undefined`, GCC or Clang) builds the core, the C API and the tests with the sanitizers, and `-DMESHIOPLUSPLUS_BUILD_FUZZERS=ON` (`--fuzzers`, Clang) the libFuzzer reader target; both refuse the Python extension and configure a separate `-san` tree ([fuzzing and sanitizers](fuzzing.md)).
 
 ### Standalone C++ build

@@ -27,6 +27,9 @@
 //      MESHIOPLUSPLUS_HAS_ADIOS2 (DOLFINx VTX .bp)           -> link adios2_cxx11
 //      MESHIOPLUSPLUS_HAS_TECIO (Tecplot .szplt)             -> link tecio (+ pthread)
 //      MESHIOPLUSPLUS_HAS_OCCT  (fit_cad, OpenCASCADE 7.6+)  -> link the TK* toolkits (LGPL-2.1)
+//      MESHIOPLUSPLUS_HAS_MMG   (adapt and the MMG operations) -> link mmg (LGPL-3.0, shared);
+//                                                         add MESHIOPLUSPLUS_MMG_INT64 for a 64-bit
+//                                                         MMG5_int, MESHIOPLUSPLUS_HAS_MMG_ELAS for move
 #pragma once
 
 #if !defined(MESHIOPLUSPLUS_PARALLEL_SEQ) && !defined(MESHIOPLUSPLUS_PARALLEL_STL) && \
@@ -30999,6 +31002,263 @@ MESHIOPLUSPLUS_API MirrorResult mirror(const Mesh& rMesh, const MirrorOptions& r
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/mirror.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/quality.hpp =====
+/**
+ * @file operations/quality.hpp
+ * @brief Per-cell mesh quality metrics + inverted-element detection, part of
+ * the dependency-free mesh-operations layer.
+ *
+ * `compute_quality` scores every cell of every block on a fixed set of
+ * geometric metrics (area/volume, scaled Jacobian, aspect ratio, skewness,
+ * interior/dihedral angles, warpage) evaluated on the cell's *corner* nodes
+ * (quadratic variants reduce to their linear parent), and aggregates a
+ * per-metric summary plus counts of inverted (negative signed volume) and
+ * degenerate (near-zero) cells. `attach_quality` returns a copy of the mesh
+ * with every metric attached as `cell_data` (name `"quality:<metric>"`), ready
+ * to write out and visualise. All metrics use only standard C++ math and the
+ * uniform mesh API, so they run under every mesh backend.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Aggregate statistics for one quality metric over all cells that have
+ * a finite value for it.
+ */
+struct QualityMetricSummary {
+    /// Number of histogram bins spanning `[mMin, mMax]`.
+    static constexpr int K = 10;
+    double mMin = std::numeric_limits<double>::quiet_NaN();
+    double mMax = std::numeric_limits<double>::quiet_NaN();
+    double mMean = std::numeric_limits<double>::quiet_NaN();
+    /// Cells contributing a finite value.
+    std::int64_t mCount = 0;
+    /// Counts per bin over `[mMin, mMax]`; all zero when `mCount == 0`.
+    std::array<std::int64_t, K> mHistogram{};
+};
+
+/**
+ * @brief The result of `compute_quality`: per-metric summaries, per-cell metric
+ * arrays (ready to attach as `cell_data`), and inverted/degenerate counts.
+ */
+struct QualityReport {
+    /// Total cells scored (across all blocks, including unsupported ones).
+    std::int64_t mNumCells = 0;
+    /// Cells with negative signed volume/area.
+    std::int64_t mNumInverted = 0;
+    /// Cells that are degenerate (near-zero volume/edge/Jacobian).
+    std::int64_t mNumDegenerate = 0;
+    /// Metric name -> summary, in the fixed metric order (see `quality.cpp`).
+    std::vector<std::pair<std::string, QualityMetricSummary>> mMetrics;
+    /// Metric name -> one `Float64` array of shape `(num_cells_in_block, 1)`
+    /// per cell block (NaN where the metric does not apply), in the same order.
+    std::vector<std::pair<std::string, std::vector<NDArray>>> mCellArrays;
+};
+
+/**
+ * @brief Compute per-cell quality metrics and their aggregate report.
+ * @param rMesh the mesh to evaluate
+ * @return the filled `QualityReport`
+ */
+MESHIOPLUSPLUS_API QualityReport compute_quality(const Mesh& rMesh);
+
+/**
+ * @brief A copy of @p rMesh with every quality metric attached as `cell_data`.
+ *
+ * Each metric becomes a `cell_data` entry named `"quality:<metric>"` with one
+ * array per cell block (NaN where the metric does not apply to that block's
+ * cell type).
+ * @param rMesh the mesh to score
+ * @return a copy carrying the metric arrays
+ */
+MESHIOPLUSPLUS_API Mesh attach_quality(const Mesh& rMesh);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/quality.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/mmg.hpp =====
+/**
+ * @file mmg.hpp
+ * @brief The optional MMG backend (roadmap 3.2): what it is built with.
+ *
+ * [MMG](https://www.mmgtools.org/) -- `mmg2d` (planar triangles), `mmgs`
+ * (surface triangles in 3-D) and `mmg3d` (tetrahedra) -- adapts a simplicial
+ * mesh to a size or an anisotropic metric, embeds a level set in it, meshes a
+ * planar domain from its boundary and moves a mesh by a displacement. It is
+ * LGPL-3.0: built with `-DMESHIOPLUSPLUS_WITH_MMG=ON` against an install
+ * (`build/build-mmg.sh`), linked dynamically only, never vendored, and absent
+ * from the release wheels and CLI binaries. Without it every MMG operation
+ * throws `Unsupported` naming the flag; there is no second implementation,
+ * since MMG's result cannot be reproduced by one (the `remesh_volume`
+ * precedent). See `doc/mmg.md` for the build, the licence and the embedding
+ * hazards (signal handlers, index width, threads) the core handles.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Whether this build has the MMG backend.
+MESHIOPLUSPLUS_API bool mmg_available() noexcept;
+
+/**
+ * @brief Whether the MMG this build links was built with ELAS, the
+ *        linear-elasticity library `move` needs (`MMG3D_mmg3dmov`,
+ *        `MMG2D_mmg2dmov`). ELAS is GPL-3.0; see `doc/mmg.md`.
+ */
+MESHIOPLUSPLUS_API bool mmg_has_elas() noexcept;
+
+/// The width in bits of the linked MMG's `MMG5_int` (32 or 64), or 0 without MMG.
+MESHIOPLUSPLUS_API int mmg_index_bits() noexcept;
+
+/// How an MMG call ended when it returned a mesh: `MMG5_SUCCESS`, or
+/// `MMG5_LOWFAILURE` (a valid mesh MMG could not finish; a warning, not an
+/// error). `MMG5_STRONGFAILURE` throws instead.
+enum class MmgStatus : std::int32_t { Success = 0, LowFailure = 1 };
+
+/// Sizes for the entities of one named region (`Set_localParameter`); a
+/// negative value keeps the global one.
+struct MmgLocalParameter {
+    std::string mRegion;
+    double mHmin = -1.0;
+    double mHmax = -1.0;
+    double mHausd = -1.0;
+};
+
+/**
+ * @brief The parameters every MMG operation shares. A negative size, distance
+ *        or gradation leaves MMG's own default.
+ */
+struct MmgParameters {
+    double mHmin = -1.0;      ///< minimal edge size
+    double mHmax = -1.0;      ///< maximal edge size
+    double mHausd = -1.0;     ///< how far the boundary may move (Hausdorff distance)
+    double mHgrad = -1.0;     ///< gradation; 0 or less than 1 is rejected by MMG
+    double mHgradreq = -1.0;  ///< gradation from required entities
+    /// Ridge detection angle in degrees (MMG's default, 45); zero or negative
+    /// turns the detection off.
+    double mAngleDetection = 45.0;
+    bool mOptim = false;     ///< keep the mesh's size, only improve quality
+    bool mNoInsert = false;  ///< no point insertion or removal
+    bool mNoSwap = false;    ///< no edge or face flip
+    bool mNoMove = false;    ///< no point relocation
+    bool mNoSurf = false;    ///< leave the boundary untouched (not mmgs)
+    bool mNreg = false;      ///< regularise the normals
+    bool mOpnbdy = false;    ///< keep internal open boundaries (mmg3d, mmg2d)
+    std::int64_t mMem = -1;  ///< MMG's memory budget in MB
+    int mVerbose = -1;       ///< MMG's verbosity; -1 is silent
+    /// One flag per point (empty: none); a nonzero point is required: MMG
+    /// neither moves nor removes it.
+    std::vector<std::uint8_t> mFrozen;
+    /// Regions whose entities are required: points, cells or sides.
+    std::vector<std::string> mRequired;
+    /// Per-region sizes.
+    std::vector<MmgLocalParameter> mLocal;
+};
+
+/// The options of `adapt`.
+struct AdaptOptions {
+    MmgParameters mParameters;
+    /// A constant target edge size (`hsiz`), when no size field or metric is given.
+    double mHsiz = -1.0;
+    /// A one-component `point_data` array: the target edge size at each point.
+    std::string mSize;
+    /// A symmetric-tensor `point_data` array, the anisotropic metric: six
+    /// components (three in 2-D) in the lower-triangle order of a Medit `.sol`,
+    /// `m11 m21 m22 m31 m32 m33` -- the order `metric_from_hessian` writes.
+    std::string mMetric;
+};
+
+/// What an MMG operation reports beside its mesh.
+struct MmgReport {
+    MmgStatus mStatus = MmgStatus::Success;
+    std::string mLibrary;  ///< "mmg2d", "mmgs" or "mmg3d"
+    std::int64_t mNumPointsIn = 0;
+    std::int64_t mNumPointsOut = 0;
+    std::int64_t mNumElementsIn = 0;  ///< triangles or tetrahedra (and prisms, quads)
+    std::int64_t mNumElementsOut = 0;
+    /// The `quality:aspect_ratio` summary of the result's elements (1 is ideal).
+    QualityMetricSummary mQuality;
+    std::vector<std::string> mWarnings;
+};
+
+/// The result of `adapt`.
+struct AdaptResult {
+    Mesh mMesh;
+    MmgReport mReport;
+};
+
+/**
+ * @brief Remesh @p rMesh to a size or a metric with MMG (roadmap 3.2.1).
+ *
+ * A mesh with tetrahedra goes to `MMG3D_mmg3dlib` (wedges pass as MMG prisms,
+ * triangles and quads as boundary faces, lines as ridges), a planar triangle
+ * mesh (2-D points, or 3-D ones with one z) to `MMG2D_mmg2dlib` (quads pass,
+ * lines are boundary edges) and any other triangle surface to `MMGS_mmgslib`
+ * (lines are ridges). The size is `mHsiz`, the `mSize` field or the `mMetric`
+ * field, else MMG's own from the mesh.
+ *
+ * Entities: cell and side regions, and a `medit:ref` cell array, become MMG
+ * references and come back under their names (a region is never lost to a
+ * renumbering; an empty one stays empty). Point regions survive when their
+ * points are required (`mFrozen`, `mRequired`, `medit:RequiredVertices`,
+ * `medit:Corners`), matched by their unchanged coordinates; others are dropped
+ * with a warning. `medit:Corners` and `medit:Ridges` become MMG corners and
+ * ridges. Boundary faces (mmg3d) or edges come back when the input had some.
+ * Other point and cell data are dropped with a warning (compose with
+ * `interpolate`); `field_data` is copied.
+ *
+ * @throws Unsupported without the MMG backend, or for a mesh beyond MMG's
+ *         `MMG5_int`; std::invalid_argument for hexahedra, pyramids,
+ *         higher-order or ragged blocks (`convert_cells` first), a mesh with
+ *         no triangle or tetrahedron, a missing or misshapen field or region,
+ *         or a frozen mask of the wrong length; std::runtime_error when MMG
+ *         fails (`MMG5_STRONGFAILURE`).
+ */
+MESHIOPLUSPLUS_API AdaptResult adapt(const Mesh& rMesh, const AdaptOptions& rOptions);
+
+/// The options of `metric_from_hessian`.
+struct MetricFromHessianOptions {
+    std::string mHessian;            ///< the `point_data` Hessian: (n, 9) or (n, 4), row-major
+    double mError = 1e-2;            ///< the target interpolation error
+    double mHmin = 1e-3;             ///< the smallest edge the metric may ask for
+    double mHmax = 1.0;              ///< the largest
+    std::string mOutput = "metric";  ///< the `point_data` name of the result
+};
+
+/**
+ * @brief The anisotropic metric of a Hessian, for `adapt` (roadmap 3.2.1.1).
+ *
+ * Per point, `M = c / error * |H|`: the Hessian symmetrised, its eigenvalues
+ * taken in absolute value, scaled by `c = (1/2) (d/(d+1))^2` for P1
+ * interpolation in `d` dimensions (Frey and Alauzet 2005) and clamped to
+ * `[1/hmax^2, 1/hmin^2]`, so the edge sizes it asks for lie in `[hmin, hmax]`.
+ * The result is `point_data[mOutput]`, six components (three for a 2-D
+ * Hessian) in the lower-triangle order of a Medit `.sol`. Needs no MMG; feed
+ * it [`hessian`](hessian.hpp)'s output. The mesh is otherwise unchanged.
+ *
+ * @throws std::invalid_argument for a missing Hessian, one of another width,
+ *         or a non-positive error or size.
+ */
+MESHIOPLUSPLUS_API Mesh metric_from_hessian(const Mesh& rMesh,
+                                            const MetricFromHessianOptions& rOptions);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/mmg.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/neighbors.hpp =====
 /**
  * @file operations/neighbors.hpp
@@ -31464,89 +31724,6 @@ MESHIOPLUSPLUS_API OctreeResult octree(const Mesh& rMesh, const OctreeOptions& r
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/octree.hpp =====
-// ===== begin src/cpp/include/meshioplusplus/operations/quality.hpp =====
-/**
- * @file operations/quality.hpp
- * @brief Per-cell mesh quality metrics + inverted-element detection, part of
- * the dependency-free mesh-operations layer.
- *
- * `compute_quality` scores every cell of every block on a fixed set of
- * geometric metrics (area/volume, scaled Jacobian, aspect ratio, skewness,
- * interior/dihedral angles, warpage) evaluated on the cell's *corner* nodes
- * (quadratic variants reduce to their linear parent), and aggregates a
- * per-metric summary plus counts of inverted (negative signed volume) and
- * degenerate (near-zero) cells. `attach_quality` returns a copy of the mesh
- * with every metric attached as `cell_data` (name `"quality:<metric>"`), ready
- * to write out and visualise. All metrics use only standard C++ math and the
- * uniform mesh API, so they run under every mesh backend.
- */
-
-// System includes
-#include <array>
-#include <cstdint>
-#include <limits>
-#include <string>
-#include <utility>
-#include <vector>
-
-// Project includes
-
-namespace meshioplusplus {
-
-/**
- * @brief Aggregate statistics for one quality metric over all cells that have
- * a finite value for it.
- */
-struct QualityMetricSummary {
-    /// Number of histogram bins spanning `[mMin, mMax]`.
-    static constexpr int K = 10;
-    double mMin = std::numeric_limits<double>::quiet_NaN();
-    double mMax = std::numeric_limits<double>::quiet_NaN();
-    double mMean = std::numeric_limits<double>::quiet_NaN();
-    /// Cells contributing a finite value.
-    std::int64_t mCount = 0;
-    /// Counts per bin over `[mMin, mMax]`; all zero when `mCount == 0`.
-    std::array<std::int64_t, K> mHistogram{};
-};
-
-/**
- * @brief The result of `compute_quality`: per-metric summaries, per-cell metric
- * arrays (ready to attach as `cell_data`), and inverted/degenerate counts.
- */
-struct QualityReport {
-    /// Total cells scored (across all blocks, including unsupported ones).
-    std::int64_t mNumCells = 0;
-    /// Cells with negative signed volume/area.
-    std::int64_t mNumInverted = 0;
-    /// Cells that are degenerate (near-zero volume/edge/Jacobian).
-    std::int64_t mNumDegenerate = 0;
-    /// Metric name -> summary, in the fixed metric order (see `quality.cpp`).
-    std::vector<std::pair<std::string, QualityMetricSummary>> mMetrics;
-    /// Metric name -> one `Float64` array of shape `(num_cells_in_block, 1)`
-    /// per cell block (NaN where the metric does not apply), in the same order.
-    std::vector<std::pair<std::string, std::vector<NDArray>>> mCellArrays;
-};
-
-/**
- * @brief Compute per-cell quality metrics and their aggregate report.
- * @param rMesh the mesh to evaluate
- * @return the filled `QualityReport`
- */
-MESHIOPLUSPLUS_API QualityReport compute_quality(const Mesh& rMesh);
-
-/**
- * @brief A copy of @p rMesh with every quality metric attached as `cell_data`.
- *
- * Each metric becomes a `cell_data` entry named `"quality:<metric>"` with one
- * array per cell block (NaN where the metric does not apply to that block's
- * cell type).
- * @param rMesh the mesh to score
- * @return a copy carrying the metric arrays
- */
-MESHIOPLUSPLUS_API Mesh attach_quality(const Mesh& rMesh);
-
-}  // namespace meshioplusplus
-// ===== end src/cpp/include/meshioplusplus/operations/quality.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/octree_mesh.hpp =====
 /**
  * @file operations/octree_mesh.hpp
@@ -44163,6 +44340,78 @@ private:
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/mesh_cad_size.hpp =====
+// ===== begin src/cpp/src/detail/mmg_guard.hpp =====
+/**
+ * @file detail/mmg_guard.hpp
+ * @brief The embedding hazards of MMG (roadmap 3.2.5), handled once for every
+ * MMG operation.
+ *
+ * A **core-private** header: no installed header names it. It needs no MMG
+ * header, so it is built and tested in every configuration.
+ *
+ * - **Signal handlers (3.2.5.1).** Every MMG 5.8 library entry point --
+ *   `MMG3D_mmg3dlib`, `MMG3D_mmg3dls`, `MMG3D_mmg3dmov`, `MMGS_mmgslib`,
+ *   `MMGS_mmgsls`, `MMG2D_mmg2dlib`, `MMG2D_mmg2dmesh`, `MMG2D_mmg2dls`,
+ *   `MMG2D_mmg2dmov`, and `MMG3D_mmg3dcheck` -- calls `signal()` for SIGABRT,
+ *   SIGFPE, SIGILL, SIGSEGV, SIGTERM and SIGINT, installing a handler that
+ *   prints a message and calls `exit(EXIT_FAILURE)`. It never puts the old
+ *   handlers back, so after one call Python's Ctrl-C handler (and any crash
+ *   reporter of the host) is gone for good. `MmgCallGuard` saves the six
+ *   handlers before the call and restores them when it leaves scope, on every
+ *   path, an exception included. During the call MMG's handlers stand: a
+ *   Ctrl-C or a crash inside MMG ends the process, which `doc/mmg.md` states.
+ * - **Threads (3.2.5.3).** Whether two meshes can be adapted at once in one
+ *   process is not established, so every call is serialised behind one mutex,
+ *   taken before the handlers are saved (a second thread would otherwise save
+ *   MMG's handlers as the host's).
+ * - **Index width (3.2.5.2).** `MMG5_int` is `int32_t` unless MMG was built
+ *   with `-DMMG5_INT=int64_t`; `mmg_check_index_range` refuses a mesh beyond
+ *   that range by name rather than let it truncate.
+ */
+
+#include <csignal>
+#include <cstddef>
+#include <mutex>
+
+namespace meshioplusplus {
+namespace detail {
+
+/// The signals MMG's entry points take over.
+inline constexpr int kMmgSignals[] = {SIGABRT, SIGFPE, SIGILL, SIGSEGV, SIGTERM, SIGINT};
+inline constexpr std::size_t kMmgNumSignals = sizeof(kMmgSignals) / sizeof(kMmgSignals[0]);
+
+/// The process-wide mutex every MMG call holds; prefer `MmgCallGuard`.
+std::mutex& mmg_mutex();
+
+/// Holds `mmg_mutex()` and the host's six signal handlers for one MMG call.
+class MmgCallGuard {
+public:
+    MmgCallGuard();
+    ~MmgCallGuard();
+    MmgCallGuard(const MmgCallGuard&) = delete;
+    MmgCallGuard& operator=(const MmgCallGuard&) = delete;
+
+private:
+    std::lock_guard<std::mutex> mLock;
+    // Opaque storage for the saved handlers (a `struct sigaction` each on
+    // POSIX, a handler pointer on Windows), sized for the larger.
+    alignas(std::max_align_t) unsigned char mSaved[kMmgNumSignals * 256];
+};
+
+/**
+ * @brief Refuse `Count` entities of `pWhat` when they overflow `MMG5_int`.
+ *
+ * @param Count The number of points, cells or the largest index to pass.
+ * @param Int64 Whether MMG was built with 64-bit `MMG5_int`.
+ * @param pWhat What is counted ("points", "tetrahedra", ...).
+ * @param pOp The operation, for the message.
+ * @throws Unsupported naming `-DMMG5_INT=int64_t` when `Count` is out of range.
+ */
+void mmg_check_index_range(std::size_t Count, bool Int64, const char* pWhat, const char* pOp);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/mmg_guard.hpp =====
 // ===== begin src/cpp/src/detail/occt_brep.hpp =====
 /**
  * @file detail/occt_brep.hpp
@@ -85796,6 +86045,81 @@ std::vector<MeshPart> carve_by_region(const Mesh& rMesh, const std::string& rCal
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/mesh_carve.cpp =====
+// ===== begin src/cpp/src/detail/mmg_guard.cpp =====
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+#if defined(_WIN32)
+using MmgSavedHandler = void (*)(int);
+#else
+using MmgSavedHandler = struct sigaction;
+#endif
+static_assert(sizeof(MmgSavedHandler) <= 256, "mmg_guard: grow MmgCallGuard::mSaved");
+
+MmgSavedHandler* mmg_saved(unsigned char* pStorage) {
+    return reinterpret_cast<MmgSavedHandler*>(pStorage);
+}
+
+}  // namespace
+
+std::mutex& mmg_mutex() {
+    static std::mutex sMutex;
+    return sMutex;
+}
+
+MmgCallGuard::MmgCallGuard() : mLock(mmg_mutex()) {
+    std::memset(mSaved, 0, sizeof(mSaved));
+    MmgSavedHandler* saved = mmg_saved(mSaved);
+    for (std::size_t i = 0; i < kMmgNumSignals; ++i) {
+#if defined(_WIN32)
+        // signal() is the only query Windows has: set, read the old, put it back.
+        saved[i] = std::signal(kMmgSignals[i], SIG_DFL);
+        std::signal(kMmgSignals[i], saved[i]);
+#else
+        sigaction(kMmgSignals[i], nullptr, &saved[i]);
+#endif
+    }
+}
+
+MmgCallGuard::~MmgCallGuard() {
+    MmgSavedHandler* saved = mmg_saved(mSaved);
+    for (std::size_t i = 0; i < kMmgNumSignals; ++i) {
+#if defined(_WIN32)
+        if (saved[i] != SIG_ERR)
+            std::signal(kMmgSignals[i], saved[i]);
+#else
+        sigaction(kMmgSignals[i], &saved[i], nullptr);
+#endif
+    }
+}
+
+void mmg_check_index_range(std::size_t Count, bool Int64, const char* pWhat, const char* pOp) {
+    // MMG numbers from 1 and keeps room for the entities it inserts: refuse
+    // well before the type's end rather than at it.
+    const std::size_t limit =
+        Int64 ? static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max() / 2)
+              : static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max() / 2);
+    if (Count <= limit)
+        return;
+    if (Int64)
+        throw Unsupported(std::string(pOp) + ": " + std::to_string(Count) + " " + pWhat +
+                          " are more than MMG can index");
+    throw Unsupported(std::string(pOp) + ": " + std::to_string(Count) + " " + pWhat +
+                      " overflow MMG's 32-bit MMG5_int; rebuild MMG with -DMMG5_INT=int64_t");
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/mmg_guard.cpp =====
 // ===== begin src/cpp/src/detail/nastran_model.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -236713,6 +237037,1313 @@ MirrorResult mirror(const Mesh& rMesh, const MirrorOptions& rOptions) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/mirror.cpp =====
+// ===== begin src/cpp/src/operations/mmg.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <map>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// External includes
+#ifdef MESHIOPLUSPLUS_HAS_MMG
+#include <mmg/libmmg.h>
+#endif
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+
+#ifdef MESHIOPLUSPLUS_HAS_MMG
+// The width CMake read from mmgcmakedefines.h must be the one the headers use.
+#ifdef MESHIOPLUSPLUS_MMG_INT64
+static_assert(sizeof(MMG5_int) == sizeof(std::int64_t), "mmg: MMG5_int is not 64-bit");
+#else
+static_assert(sizeof(MMG5_int) == sizeof(std::int32_t), "mmg: MMG5_int is not 32-bit");
+#endif
+#endif
+
+bool mmg_available() noexcept {
+#ifdef MESHIOPLUSPLUS_HAS_MMG
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool mmg_has_elas() noexcept {
+#ifdef MESHIOPLUSPLUS_HAS_MMG_ELAS
+    return true;
+#else
+    return false;
+#endif
+}
+
+int mmg_index_bits() noexcept {
+#if !defined(MESHIOPLUSPLUS_HAS_MMG)
+    return 0;
+#elif defined(MESHIOPLUSPLUS_MMG_INT64)
+    return 64;
+#else
+    return 32;
+#endif
+}
+
+namespace {
+
+[[noreturn]] void mmg_absent(const char* pOp) {
+    throw Unsupported(std::string(pOp) +
+                      ": the MMG backend is not built in: rebuild with "
+                      "-DMESHIOPLUSPLUS_WITH_MMG=ON and a shared MMG install "
+                      "(build/build-mmg.sh; see doc/mmg.md)");
+}
+
+}  // namespace
+
+// --- metric_from_hessian: no MMG needed ---------------------------------------------------
+
+Mesh metric_from_hessian(const Mesh& rMesh, const MetricFromHessianOptions& rOptions) {
+    const char* op = "metric_from_hessian";
+    if (!rMesh.HasPointData(rOptions.mHessian))
+        throw std::invalid_argument(std::string(op) + ": no point_data '" + rOptions.mHessian +
+                                    "'");
+    if (!(rOptions.mError > 0.0) || !(rOptions.mHmin > 0.0) || !(rOptions.mHmax >= rOptions.mHmin))
+        throw std::invalid_argument(std::string(op) +
+                                    ": error and hmin must be positive and hmax >= hmin");
+    if (rOptions.mOutput.empty())
+        throw std::invalid_argument(std::string(op) + ": the output name is empty");
+    const NDArray& h = rMesh.PointData(rOptions.mHessian);
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t width = n ? h.Size() / n : 0;
+    if (h.Size() != n * width || (width != 9 && width != 4))
+        throw std::invalid_argument(std::string(op) + ": '" + rOptions.mHessian +
+                                    "' needs 9 components (4 in 2-D) per point, a row-major "
+                                    "Hessian such as hessian() writes");
+    const std::size_t d = width == 9 ? 3 : 2;
+    const double c = 0.5 * std::pow(static_cast<double>(d) / static_cast<double>(d + 1), 2.0);
+    const double lo = 1.0 / (rOptions.mHmax * rOptions.mHmax);
+    const double hi = 1.0 / (rOptions.mHmin * rOptions.mHmin);
+    const std::size_t out_width = d == 3 ? 6 : 3;
+    NDArray metric(DType::Float64, {n, out_width});
+    double* m = metric.As<double>();
+    const detail::DoubleView hv(h);
+    for (std::size_t i = 0; i < n; ++i) {
+        // The symmetrised Hessian as a 3x3 (a 2-D one padded with an inert axis).
+        double a[9] = {0, 0, 0, 0, 0, 0, 0, 0, 1};
+        for (std::size_t r = 0; r < d; ++r)
+            for (std::size_t q = 0; q < d; ++q)
+                a[r * 3 + q] = 0.5 * (hv[i * width + r * d + q] + hv[i * width + q * d + r]);
+        double w[3], v[9];
+        detail::lsq_sym3_eigen(a, w, v);
+        double full[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+        for (std::size_t k = 0; k < 3; ++k) {
+            // The padding axis has eigenvector e3 and no say in a 2-D metric.
+            if (d == 2 && std::abs(v[k * 3 + 2]) > 0.5)
+                continue;
+            double lambda = c * std::abs(w[k]) / rOptions.mError;
+            if (!std::isfinite(lambda))
+                lambda = hi;
+            lambda = std::clamp(lambda, lo, hi);
+            for (std::size_t r = 0; r < 3; ++r)
+                for (std::size_t q = 0; q < 3; ++q)
+                    full[r * 3 + q] += lambda * v[k * 3 + r] * v[k * 3 + q];
+        }
+        double* row = m + i * out_width;
+        // The lower triangle, row by row: the order of a Medit .sol.
+        row[0] = full[0];
+        row[1] = full[3];
+        row[2] = full[4];
+        if (d == 3) {
+            row[3] = full[6];
+            row[4] = full[7];
+            row[5] = full[8];
+        }
+    }
+    Mesh out = detail::clone_mesh(rMesh);
+    out.AddPointData(rOptions.mOutput, std::move(metric));
+    return out;
+}
+
+#ifndef MESHIOPLUSPLUS_HAS_MMG
+
+AdaptResult adapt(const Mesh&, const AdaptOptions&) {
+    mmg_absent("adapt");
+}
+
+#else
+
+namespace {
+
+enum class MmgLib { Mmg2d, Mmgs, Mmg3d };
+
+const char* mmg_lib_name(MmgLib Lib) {
+    switch (Lib) {
+        case MmgLib::Mmg2d:
+            return "mmg2d";
+        case MmgLib::Mmgs:
+            return "mmgs";
+        default:
+            return "mmg3d";
+    }
+}
+
+/// What an MMG reference stands for: the regions and the `medit:ref` of the
+/// entities that carry it.
+struct MmgSignature {
+    bool mFacet = false;   ///< given to MMG as a facet (MMG reuses element refs on new facets)
+    bool mIsCell = false;  ///< a cell of the input (not only a side facet)
+    bool mHasMeditRef = false;
+    std::int64_t mMeditRef = 0;
+    std::vector<std::size_t> mCellRegions;  ///< indices into the mesh's regions
+    std::vector<std::size_t> mSideRegions;
+};
+
+/// The MMG references: one per distinct signature, numbered from 1.
+class MmgRefTable {
+public:
+    MMG5_int Ref(const MmgSignature& rSig) {
+        std::vector<std::int64_t> key = {rSig.mFacet ? 1 : 0, rSig.mIsCell ? 1 : 0,
+                                         rSig.mHasMeditRef ? 1 : 0, rSig.mMeditRef, -1};
+        for (const std::size_t r : rSig.mCellRegions)
+            key.push_back(static_cast<std::int64_t>(r));
+        key.push_back(-2);
+        for (const std::size_t r : rSig.mSideRegions)
+            key.push_back(static_cast<std::int64_t>(r));
+        auto [it, inserted] = mIndex.try_emplace(key, static_cast<MMG5_int>(mSigs.size() + 1));
+        if (inserted)
+            mSigs.push_back(rSig);
+        return it->second;
+    }
+    /// The signature of a reference MMG returns; null for 0 or one it made up.
+    const MmgSignature* Find(MMG5_int Ref) const {
+        if (Ref < 1 || static_cast<std::size_t>(Ref) > mSigs.size())
+            return nullptr;
+        return &mSigs[static_cast<std::size_t>(Ref - 1)];
+    }
+    /// The signature of a reference on an entity of that kind (facet or
+    /// element): MMG gives the facets it creates the reference of an element.
+    const MmgSignature* Find(MMG5_int Ref, bool Facet) const {
+        const MmgSignature* s = Find(Ref);
+        return s && s->mFacet == Facet ? s : nullptr;
+    }
+    std::size_t Size() const { return mSigs.size(); }
+
+private:
+    std::map<std::vector<std::int64_t>, MMG5_int> mIndex;
+    std::vector<MmgSignature> mSigs;
+};
+
+/// A mesh laid out for MMG: 1-based connectivity, references and attributes.
+struct MmgInput {
+    MmgLib mLib = MmgLib::Mmg3d;
+    int mDim = 3;               ///< coordinates per vertex given to MMG
+    std::size_t mPointDim = 3;  ///< the input's
+    double mPlaneZ = 0.0;       ///< the z of a planar 3-D mesh given to mmg2d
+    std::vector<double> mCoords;
+    std::vector<MMG5_int> mVertRefs;
+    // Elements: the volume (tetra, prism) or 2-D (triangle, quad) cells.
+    std::vector<MMG5_int> mTets, mTetRefs, mPrisms, mPrismRefs;
+    std::vector<MMG5_int> mTris, mTriRefs, mQuads, mQuadRefs;
+    std::vector<MMG5_int> mEdges, mEdgeRefs;
+    // 1-based ids within their kind.
+    std::vector<MMG5_int> mReqVerts, mCorners, mReqTets, mReqTris, mReqEdges, mRidges;
+    MmgRefTable mRefs;
+    bool mHadFacetCells = false;  ///< the input had triangle (mmg3d) or line cells
+    bool mHadPointRef = false;
+    bool mHadCellRef = false;
+    std::size_t mNumElements = 0;
+    /// Input points that are required, by index, to put point regions back.
+    std::vector<std::uint8_t> mRequiredPoint;
+};
+
+bool mmg_is_int(DType T) {
+    return T == DType::Int8 || T == DType::Int16 || T == DType::Int32 || T == DType::Int64 ||
+           T == DType::UInt8 || T == DType::UInt16 || T == DType::UInt32 || T == DType::UInt64;
+}
+
+/// The facets of the input given to MMG: sorted nodes -> its signature and nodes.
+struct MmgFacet {
+    std::vector<std::int64_t> mNodes;
+    MmgSignature mSig;
+    bool mRequired = false;
+};
+
+void mmg_add_unique(std::vector<std::size_t>& rList, std::size_t Value) {
+    if (std::find(rList.begin(), rList.end(), Value) == rList.end()) {
+        rList.push_back(Value);
+        std::sort(rList.begin(), rList.end());
+    }
+}
+
+MmgInput mmg_encode(const Mesh& rMesh, const MmgParameters& rParams, const char* pOp,
+                    const std::vector<std::string>& rConsumed,
+                    std::vector<std::string>& rWarnings) {
+    const std::string op(pOp);
+    MmgInput in;
+    const std::size_t np = rMesh.NumPoints();
+    in.mPointDim = rMesh.PointDim();
+    if (in.mPointDim != 2 && in.mPointDim != 3)
+        throw std::invalid_argument(op + ": the points must be 2-D or 3-D");
+
+    // Which library: tetrahedra go to mmg3d; triangles to mmg2d when planar.
+    bool has_tet = false, has_tri = false, has_quad = false, has_wedge = false;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::string type(cb.Type());
+        if (cb.IsRagged())
+            throw std::invalid_argument(op + ": a ragged " + type +
+                                        " block; convert_cells it to simplices first");
+        if (type == "tetra")
+            has_tet = true;
+        else if (type == "triangle")
+            has_tri = true;
+        else if (type == "quad")
+            has_quad = true;
+        else if (type == "wedge")
+            has_wedge = true;
+        else if (type != "line" && type != "vertex")
+            throw std::invalid_argument(op +
+                                        ": MMG takes tetrahedra, prisms, triangles, quads "
+                                        "and lines, not " +
+                                        type + "; convert_cells(simplexify) it first");
+    }
+    const detail::DoubleView pts(rMesh.Points());
+    if (has_wedge && !has_tet)
+        throw std::invalid_argument(op +
+                                    ": mmg3d needs tetrahedra beside prisms; "
+                                    "convert_cells(simplexify) the mesh first");
+    if (has_quad && !has_tri && !has_tet)
+        throw std::invalid_argument(op +
+                                    ": mmg2d needs triangles beside quads; "
+                                    "convert_cells(simplexify) the mesh first");
+    if (has_tet || has_wedge) {
+        if (in.mPointDim != 3)
+            throw std::invalid_argument(op + ": tetrahedra need 3-D points");
+        in.mLib = MmgLib::Mmg3d;
+    } else if (has_tri || has_quad) {
+        bool planar = in.mPointDim == 2;
+        if (!planar && np > 0) {
+            double zmin = pts[2], zmax = pts[2], span = 0.0;
+            for (std::size_t i = 0; i < np; ++i) {
+                zmin = std::min(zmin, pts[i * 3 + 2]);
+                zmax = std::max(zmax, pts[i * 3 + 2]);
+                for (std::size_t c = 0; c < 2; ++c)
+                    span = std::max(span, std::abs(pts[i * 3 + c] - pts[c]));
+            }
+            planar = zmax - zmin <= 1e-12 * std::max(span, 1.0);
+            in.mPlaneZ = zmin;
+        }
+        in.mLib = planar ? MmgLib::Mmg2d : MmgLib::Mmgs;
+        if (has_quad && in.mLib == MmgLib::Mmgs)
+            throw std::invalid_argument(op +
+                                        ": mmgs takes no quads; convert_cells(simplexify) "
+                                        "the surface first");
+    } else {
+        throw std::invalid_argument(op + ": the mesh has no triangle or tetrahedron");
+    }
+    in.mDim = in.mLib == MmgLib::Mmg2d ? 2 : 3;
+
+    // The index width MMG was built with (roadmap 3.2.5.2).
+    const bool int64 = mmg_index_bits() == 64;
+    detail::mmg_check_index_range(np, int64, "points", pOp);
+    std::size_t total_cells = 0;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+        total_cells += rMesh.Cells(b).NumCells();
+    detail::mmg_check_index_range(total_cells, int64, "cells", pOp);
+
+    // Points and their references.
+    in.mCoords.resize(np * static_cast<std::size_t>(in.mDim));
+    for (std::size_t i = 0; i < np; ++i)
+        for (int c = 0; c < in.mDim; ++c)
+            in.mCoords[i * in.mDim + c] = pts[i * in.mPointDim + c];
+    in.mVertRefs.assign(np, 0);
+    if (rMesh.HasPointData("medit:ref") && mmg_is_int(rMesh.PointData("medit:ref").Dtype())) {
+        const detail::Int64View refs(rMesh.PointData("medit:ref"));
+        for (std::size_t i = 0; i < np; ++i)
+            in.mVertRefs[i] = static_cast<MMG5_int>(refs[i]);
+        in.mHadPointRef = true;
+    }
+    const auto consumed = [&](const std::string& rName) {
+        return std::find(rConsumed.begin(), rConsumed.end(), rName) != rConsumed.end();
+    };
+    for (const std::string& name : rMesh.PointDataNames())
+        if (name != "medit:ref" && !consumed(name))
+            rWarnings.push_back(op + ": point_data '" + name +
+                                "' is dropped: the points are new (compose with interpolate)");
+    for (const std::string& name : rMesh.CellDataNames())
+        if (name != "medit:ref")
+            rWarnings.push_back(op + ": cell_data '" + name +
+                                "' is dropped: the cells are new (compose with interpolate)");
+
+    // Required points: the frozen mask, and required regions below.
+    in.mRequiredPoint.assign(np, 0);
+    if (!rParams.mFrozen.empty()) {
+        if (rParams.mFrozen.size() != np)
+            throw std::invalid_argument(op + ": the frozen mask has " +
+                                        std::to_string(rParams.mFrozen.size()) + " entries for " +
+                                        std::to_string(np) + " points");
+        for (std::size_t i = 0; i < np; ++i)
+            in.mRequiredPoint[i] = rParams.mFrozen[i] != 0;
+    }
+
+    // Each cell's signature: its medit:ref and its cell regions.
+    std::vector<std::size_t> block_start(rMesh.NumCellBlocks() + 1, 0);
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+        block_start[b + 1] = block_start[b] + rMesh.Cells(b).NumCells();
+    std::vector<MmgSignature> cell_sig(total_cells);
+    const bool cell_ref = rMesh.HasCellData("medit:ref") &&
+                          rMesh.CellDataNumBlocks("medit:ref") == rMesh.NumCellBlocks() &&
+                          rMesh.NumCellBlocks() > 0 &&
+                          mmg_is_int(rMesh.CellData("medit:ref", 0).Dtype());
+    in.mHadCellRef = cell_ref;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        std::vector<std::int64_t> refs(rMesh.Cells(b).NumCells(), 0);
+        if (cell_ref) {
+            const detail::Int64View v(rMesh.CellData("medit:ref", b));
+            for (std::size_t i = 0; i < refs.size(); ++i)
+                refs[i] = v[i];
+        }
+        for (std::size_t i = 0; i < refs.size(); ++i) {
+            MmgSignature& s = cell_sig[block_start[b] + i];
+            s.mIsCell = true;
+            s.mHasMeditRef = cell_ref;
+            s.mMeditRef = refs[i];
+        }
+    }
+    std::vector<std::uint8_t> cell_required(total_cells, 0);
+    std::vector<std::uint8_t> point_corner(np, 0);
+    const auto required = [&](const std::string& rName) {
+        return std::find(rParams.mRequired.begin(), rParams.mRequired.end(), rName) !=
+               rParams.mRequired.end();
+    };
+    for (const std::string& name : rParams.mRequired)
+        if (!rMesh.HasRegion(name))
+            throw std::invalid_argument(op + ": no region '" + name + "' to require");
+    for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
+        const Region& reg = rMesh.Region(r);
+        const std::int64_t* e = reg.Entries();
+        const std::size_t ne = reg.NumEntries();
+        const bool req = required(reg.mName) || reg.mName == "medit:RequiredVertices" ||
+                         reg.mName == "medit:RequiredEdges" ||
+                         reg.mName == "medit:RequiredTriangles";
+        if (reg.mKind == RegionKind::Point) {
+            for (std::size_t k = 0; k < ne; ++k) {
+                if (e[k] < 0 || static_cast<std::size_t>(e[k]) >= np)
+                    continue;
+                if (req || reg.mName == "medit:Corners")
+                    in.mRequiredPoint[static_cast<std::size_t>(e[k])] = 1;
+                if (reg.mName == "medit:Corners")
+                    point_corner[static_cast<std::size_t>(e[k])] = 1;
+            }
+        } else if (reg.mKind == RegionKind::Cell) {
+            for (std::size_t k = 0; k < ne; ++k) {
+                if (e[k] < 0 || static_cast<std::size_t>(e[k]) >= total_cells)
+                    continue;
+                mmg_add_unique(cell_sig[static_cast<std::size_t>(e[k])].mCellRegions, r);
+                if (req)
+                    cell_required[static_cast<std::size_t>(e[k])] = 1;
+            }
+        }
+    }
+
+    // The facets MMG is given: the input's own (triangles and quads in a
+    // volume, lines elsewhere) merged with the sides of side regions.
+    std::map<std::vector<std::int64_t>, MmgFacet> facets;
+    const auto facet_key = [](std::vector<std::int64_t> Nodes) {
+        std::sort(Nodes.begin(), Nodes.end());
+        return Nodes;
+    };
+    std::size_t dropped_sides = 0;
+    for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
+        const Region& reg = rMesh.Region(r);
+        if (reg.mKind != RegionKind::Side)
+            continue;
+        const std::int64_t* e = reg.Entries();
+        const bool req = required(reg.mName);
+        for (std::size_t k = 0; k + 1 < reg.NumEntries() * 2; k += 2) {
+            CellType type;
+            std::vector<std::int64_t> nodes;
+            if (!detail::facet_nodes(rMesh, e[k], e[k + 1], type, nodes) ||
+                (type != CellType::Triangle && type != CellType::Line && type != CellType::Quad)) {
+                ++dropped_sides;
+                continue;
+            }
+            // A side of the elements MMG remeshes: faces in 3-D, edges in 2-D.
+            const std::size_t cell = static_cast<std::size_t>(e[k]);
+            std::size_t b = 0;
+            while (b + 1 < block_start.size() && block_start[b + 1] <= cell)
+                ++b;
+            const std::string owner(rMesh.Cells(b).Type());
+            const bool top = in.mLib == MmgLib::Mmg3d ? (owner == "tetra" || owner == "wedge")
+                                                      : (owner == "triangle" || owner == "quad");
+            if (!top) {
+                ++dropped_sides;
+                continue;
+            }
+            MmgFacet& f = facets[facet_key(nodes)];
+            if (f.mNodes.empty())
+                f.mNodes = nodes;
+            mmg_add_unique(f.mSig.mSideRegions, r);
+            f.mRequired = f.mRequired || req;
+        }
+    }
+    if (dropped_sides)
+        rWarnings.push_back(op + ": " + std::to_string(dropped_sides) +
+                            " side entries are not on the elements MMG remeshes; dropped");
+
+    // Elements and facets.
+    const auto add_conn = [](std::vector<MMG5_int>& rOut, const detail::Int64View& rConn,
+                             std::size_t Row, std::size_t K) {
+        for (std::size_t j = 0; j < K; ++j)
+            rOut.push_back(static_cast<MMG5_int>(rConn[Row * K + j] + 1));
+    };
+    std::size_t skipped_vertices = 0;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::string type(cb.Type());
+        const std::size_t k = cb.NodesPerCell();
+        const detail::Int64View conn(cb.Conn());
+        for (std::size_t i = 0; i < cb.NumCells(); ++i) {
+            const std::size_t g = block_start[b] + i;
+            const MmgSignature& sig = cell_sig[g];
+            if (type == "vertex") {
+                ++skipped_vertices;
+            } else if (type == "tetra") {
+                add_conn(in.mTets, conn, i, k);
+                in.mTetRefs.push_back(in.mRefs.Ref(sig));
+                if (cell_required[g])
+                    in.mReqTets.push_back(static_cast<MMG5_int>(in.mTetRefs.size()));
+            } else if (type == "wedge") {
+                add_conn(in.mPrisms, conn, i, k);
+                in.mPrismRefs.push_back(in.mRefs.Ref(sig));
+            } else if ((type == "triangle" || type == "quad") && in.mLib == MmgLib::Mmg3d) {
+                // A boundary face: merged with the side facets on the same nodes.
+                std::vector<std::int64_t> nodes(k);
+                for (std::size_t j = 0; j < k; ++j)
+                    nodes[j] = conn[i * k + j];
+                MmgFacet& f = facets[facet_key(nodes)];
+                if (f.mNodes.empty())
+                    f.mNodes = nodes;
+                f.mSig.mIsCell = true;
+                f.mSig.mHasMeditRef = sig.mHasMeditRef;
+                f.mSig.mMeditRef = sig.mMeditRef;
+                for (const std::size_t r : sig.mCellRegions)
+                    mmg_add_unique(f.mSig.mCellRegions, r);
+                f.mRequired = f.mRequired || cell_required[g];
+                in.mHadFacetCells = true;
+            } else if (type == "triangle") {
+                add_conn(in.mTris, conn, i, k);
+                in.mTriRefs.push_back(in.mRefs.Ref(sig));
+                if (cell_required[g])
+                    in.mReqTris.push_back(static_cast<MMG5_int>(in.mTriRefs.size()));
+            } else if (type == "quad") {
+                add_conn(in.mQuads, conn, i, k);
+                in.mQuadRefs.push_back(in.mRefs.Ref(sig));
+            } else if (type == "line") {
+                std::vector<std::int64_t> nodes(k);
+                for (std::size_t j = 0; j < k; ++j)
+                    nodes[j] = conn[i * k + j];
+                MmgFacet& f = facets[facet_key(nodes)];
+                if (f.mNodes.empty())
+                    f.mNodes = nodes;
+                f.mSig.mIsCell = true;
+                f.mSig.mHasMeditRef = sig.mHasMeditRef;
+                f.mSig.mMeditRef = sig.mMeditRef;
+                for (const std::size_t r : sig.mCellRegions)
+                    mmg_add_unique(f.mSig.mCellRegions, r);
+                f.mRequired = f.mRequired || cell_required[g];
+                in.mHadFacetCells = true;
+            }
+        }
+    }
+    if (skipped_vertices)
+        rWarnings.push_back(op + ": " + std::to_string(skipped_vertices) +
+                            " vertex cells are dropped: MMG has no such element");
+    for (const auto& [key, f] : facets) {
+        MmgSignature sig = f.mSig;
+        sig.mFacet = true;
+        const MMG5_int ref = in.mRefs.Ref(sig);
+        if (f.mNodes.size() == 2) {
+            for (const std::int64_t v : f.mNodes)
+                in.mEdges.push_back(static_cast<MMG5_int>(v + 1));
+            in.mEdgeRefs.push_back(ref);
+            const auto id = static_cast<MMG5_int>(in.mEdgeRefs.size());
+            if (f.mRequired)
+                in.mReqEdges.push_back(id);
+            if (in.mLib != MmgLib::Mmg2d && f.mSig.mIsCell)
+                in.mRidges.push_back(id);
+        } else if (f.mNodes.size() == 3) {
+            for (const std::int64_t v : f.mNodes)
+                in.mTris.push_back(static_cast<MMG5_int>(v + 1));
+            in.mTriRefs.push_back(ref);
+            if (f.mRequired)
+                in.mReqTris.push_back(static_cast<MMG5_int>(in.mTriRefs.size()));
+        } else {
+            for (const std::int64_t v : f.mNodes)
+                in.mQuads.push_back(static_cast<MMG5_int>(v + 1));
+            in.mQuadRefs.push_back(ref);
+        }
+    }
+    for (std::size_t i = 0; i < np; ++i) {
+        if (in.mRequiredPoint[i])
+            in.mReqVerts.push_back(static_cast<MMG5_int>(i + 1));
+        if (point_corner[i])
+            in.mCorners.push_back(static_cast<MMG5_int>(i + 1));
+    }
+    in.mNumElements = in.mLib == MmgLib::Mmg3d ? in.mTetRefs.size() + in.mPrismRefs.size()
+                                               : in.mTriRefs.size() + in.mQuadRefs.size();
+    return in;
+}
+
+/// MMG's mesh and solutions, freed on every path.
+struct MmgSession {
+    MmgLib mLib;
+    MMG5_pMesh mMesh = nullptr;
+    MMG5_pSol mMet = nullptr;
+    MMG5_pSol mLs = nullptr;
+    MMG5_pSol mDisp = nullptr;
+
+    MmgSession(MmgLib Lib, bool LevelSet, bool Displacement) : mLib(Lib) {
+        int ok = 0;
+        switch (Lib) {
+            case MmgLib::Mmg3d:
+                if (LevelSet)
+                    ok = MMG3D_Init_mesh(MMG5_ARG_start, MMG5_ARG_ppMesh, &mMesh, MMG5_ARG_ppMet,
+                                         &mMet, MMG5_ARG_ppLs, &mLs, MMG5_ARG_end);
+                else if (Displacement)
+                    ok = MMG3D_Init_mesh(MMG5_ARG_start, MMG5_ARG_ppMesh, &mMesh, MMG5_ARG_ppMet,
+                                         &mMet, MMG5_ARG_ppDisp, &mDisp, MMG5_ARG_end);
+                else
+                    ok = MMG3D_Init_mesh(MMG5_ARG_start, MMG5_ARG_ppMesh, &mMesh, MMG5_ARG_ppMet,
+                                         &mMet, MMG5_ARG_end);
+                break;
+            case MmgLib::Mmgs:
+                if (LevelSet)
+                    ok = MMGS_Init_mesh(MMG5_ARG_start, MMG5_ARG_ppMesh, &mMesh, MMG5_ARG_ppMet,
+                                        &mMet, MMG5_ARG_ppLs, &mLs, MMG5_ARG_end);
+                else
+                    ok = MMGS_Init_mesh(MMG5_ARG_start, MMG5_ARG_ppMesh, &mMesh, MMG5_ARG_ppMet,
+                                        &mMet, MMG5_ARG_end);
+                break;
+            case MmgLib::Mmg2d:
+                if (LevelSet)
+                    ok = MMG2D_Init_mesh(MMG5_ARG_start, MMG5_ARG_ppMesh, &mMesh, MMG5_ARG_ppMet,
+                                         &mMet, MMG5_ARG_ppLs, &mLs, MMG5_ARG_end);
+                else if (Displacement)
+                    ok = MMG2D_Init_mesh(MMG5_ARG_start, MMG5_ARG_ppMesh, &mMesh, MMG5_ARG_ppMet,
+                                         &mMet, MMG5_ARG_ppDisp, &mDisp, MMG5_ARG_end);
+                else
+                    ok = MMG2D_Init_mesh(MMG5_ARG_start, MMG5_ARG_ppMesh, &mMesh, MMG5_ARG_ppMet,
+                                         &mMet, MMG5_ARG_end);
+                break;
+        }
+        if (!ok)
+            throw std::runtime_error("mmg: could not initialise MMG's mesh");
+    }
+    ~MmgSession() {
+        switch (mLib) {
+            case MmgLib::Mmg3d:
+                if (mLs)
+                    MMG3D_Free_all(MMG5_ARG_start, MMG5_ARG_ppMesh, &mMesh, MMG5_ARG_ppMet, &mMet,
+                                   MMG5_ARG_ppLs, &mLs, MMG5_ARG_end);
+                else if (mDisp)
+                    MMG3D_Free_all(MMG5_ARG_start, MMG5_ARG_ppMesh, &mMesh, MMG5_ARG_ppMet, &mMet,
+                                   MMG5_ARG_ppDisp, &mDisp, MMG5_ARG_end);
+                else
+                    MMG3D_Free_all(MMG5_ARG_start, MMG5_ARG_ppMesh, &mMesh, MMG5_ARG_ppMet, &mMet,
+                                   MMG5_ARG_end);
+                break;
+            case MmgLib::Mmgs:
+                if (mLs)
+                    MMGS_Free_all(MMG5_ARG_start, MMG5_ARG_ppMesh, &mMesh, MMG5_ARG_ppMet, &mMet,
+                                  MMG5_ARG_ppLs, &mLs, MMG5_ARG_end);
+                else
+                    MMGS_Free_all(MMG5_ARG_start, MMG5_ARG_ppMesh, &mMesh, MMG5_ARG_ppMet, &mMet,
+                                  MMG5_ARG_end);
+                break;
+            case MmgLib::Mmg2d:
+                if (mLs)
+                    MMG2D_Free_all(MMG5_ARG_start, MMG5_ARG_ppMesh, &mMesh, MMG5_ARG_ppMet, &mMet,
+                                   MMG5_ARG_ppLs, &mLs, MMG5_ARG_end);
+                else if (mDisp)
+                    MMG2D_Free_all(MMG5_ARG_start, MMG5_ARG_ppMesh, &mMesh, MMG5_ARG_ppMet, &mMet,
+                                   MMG5_ARG_ppDisp, &mDisp, MMG5_ARG_end);
+                else
+                    MMG2D_Free_all(MMG5_ARG_start, MMG5_ARG_ppMesh, &mMesh, MMG5_ARG_ppMet, &mMet,
+                                   MMG5_ARG_end);
+                break;
+        }
+    }
+    MmgSession(const MmgSession&) = delete;
+    MmgSession& operator=(const MmgSession&) = delete;
+};
+
+void mmg_check(int Ok, const std::string& rWhat) {
+    if (!Ok)
+        throw std::runtime_error("mmg: MMG refused " + rWhat);
+}
+
+MMG5_int* mmg_ptr(std::vector<MMG5_int>& rV) {
+    return rV.empty() ? nullptr : rV.data();
+}
+
+/// Hand the encoded mesh to MMG.
+void mmg_load(MmgSession& rS, MmgInput& rIn) {
+    const auto np = static_cast<MMG5_int>(rIn.mVertRefs.size());
+    const auto ntet = static_cast<MMG5_int>(rIn.mTetRefs.size());
+    const auto nprism = static_cast<MMG5_int>(rIn.mPrismRefs.size());
+    const auto ntri = static_cast<MMG5_int>(rIn.mTriRefs.size());
+    const auto nquad = static_cast<MMG5_int>(rIn.mQuadRefs.size());
+    const auto nedge = static_cast<MMG5_int>(rIn.mEdgeRefs.size());
+    MMG5_pMesh m = rS.mMesh;
+    switch (rS.mLib) {
+        case MmgLib::Mmg3d:
+            mmg_check(MMG3D_Set_meshSize(m, np, ntet, nprism, ntri, nquad, nedge), "the mesh size");
+            mmg_check(MMG3D_Set_vertices(m, rIn.mCoords.data(), mmg_ptr(rIn.mVertRefs)),
+                      "the vertices");
+            if (ntet)
+                mmg_check(MMG3D_Set_tetrahedra(m, mmg_ptr(rIn.mTets), mmg_ptr(rIn.mTetRefs)),
+                          "the tetrahedra");
+            if (nprism)
+                mmg_check(MMG3D_Set_prisms(m, mmg_ptr(rIn.mPrisms), mmg_ptr(rIn.mPrismRefs)),
+                          "the prisms");
+            if (ntri)
+                mmg_check(MMG3D_Set_triangles(m, mmg_ptr(rIn.mTris), mmg_ptr(rIn.mTriRefs)),
+                          "the triangles");
+            if (nquad)
+                mmg_check(MMG3D_Set_quadrilaterals(m, mmg_ptr(rIn.mQuads), mmg_ptr(rIn.mQuadRefs)),
+                          "the quadrilaterals");
+            if (nedge)
+                mmg_check(MMG3D_Set_edges(m, mmg_ptr(rIn.mEdges), mmg_ptr(rIn.mEdgeRefs)),
+                          "the edges");
+            for (const MMG5_int k : rIn.mReqVerts)
+                mmg_check(MMG3D_Set_requiredVertex(m, k), "a required vertex");
+            for (const MMG5_int k : rIn.mCorners)
+                mmg_check(MMG3D_Set_corner(m, k), "a corner");
+            for (const MMG5_int k : rIn.mReqTets)
+                mmg_check(MMG3D_Set_requiredTetrahedron(m, k), "a required tetrahedron");
+            for (const MMG5_int k : rIn.mReqTris)
+                mmg_check(MMG3D_Set_requiredTriangle(m, k), "a required triangle");
+            for (const MMG5_int k : rIn.mReqEdges)
+                mmg_check(MMG3D_Set_requiredEdge(m, k), "a required edge");
+            for (const MMG5_int k : rIn.mRidges)
+                mmg_check(MMG3D_Set_ridge(m, k), "a ridge");
+            break;
+        case MmgLib::Mmgs:
+            mmg_check(MMGS_Set_meshSize(m, np, ntri, nedge), "the mesh size");
+            mmg_check(MMGS_Set_vertices(m, rIn.mCoords.data(), mmg_ptr(rIn.mVertRefs)),
+                      "the vertices");
+            mmg_check(MMGS_Set_triangles(m, mmg_ptr(rIn.mTris), mmg_ptr(rIn.mTriRefs)),
+                      "the triangles");
+            if (nedge)
+                mmg_check(MMGS_Set_edges(m, mmg_ptr(rIn.mEdges), mmg_ptr(rIn.mEdgeRefs)),
+                          "the edges");
+            for (const MMG5_int k : rIn.mReqVerts)
+                mmg_check(MMGS_Set_requiredVertex(m, k), "a required vertex");
+            for (const MMG5_int k : rIn.mCorners)
+                mmg_check(MMGS_Set_corner(m, k), "a corner");
+            for (const MMG5_int k : rIn.mReqTris)
+                mmg_check(MMGS_Set_requiredTriangle(m, k), "a required triangle");
+            for (const MMG5_int k : rIn.mReqEdges)
+                mmg_check(MMGS_Set_requiredEdge(m, k), "a required edge");
+            for (const MMG5_int k : rIn.mRidges)
+                mmg_check(MMGS_Set_ridge(m, k), "a ridge");
+            break;
+        case MmgLib::Mmg2d:
+            mmg_check(MMG2D_Set_meshSize(m, np, ntri, nquad, nedge), "the mesh size");
+            mmg_check(MMG2D_Set_vertices(m, rIn.mCoords.data(), mmg_ptr(rIn.mVertRefs)),
+                      "the vertices");
+            if (ntri)
+                mmg_check(MMG2D_Set_triangles(m, mmg_ptr(rIn.mTris), mmg_ptr(rIn.mTriRefs)),
+                          "the triangles");
+            if (nquad)
+                mmg_check(MMG2D_Set_quadrilaterals(m, mmg_ptr(rIn.mQuads), mmg_ptr(rIn.mQuadRefs)),
+                          "the quadrilaterals");
+            if (nedge)
+                mmg_check(MMG2D_Set_edges(m, mmg_ptr(rIn.mEdges), mmg_ptr(rIn.mEdgeRefs)),
+                          "the edges");
+            for (const MMG5_int k : rIn.mReqVerts)
+                mmg_check(MMG2D_Set_requiredVertex(m, k), "a required vertex");
+            for (const MMG5_int k : rIn.mCorners)
+                mmg_check(MMG2D_Set_corner(m, k), "a corner");
+            for (const MMG5_int k : rIn.mReqTris)
+                mmg_check(MMG2D_Set_requiredTriangle(m, k), "a required triangle");
+            for (const MMG5_int k : rIn.mReqEdges)
+                mmg_check(MMG2D_Set_requiredEdge(m, k), "a required edge");
+            break;
+    }
+}
+
+int mmg_set_i(MmgSession& rS, MMG5_pSol pSol, int P3, int Ps, int P2, MMG5_int Value) {
+    switch (rS.mLib) {
+        case MmgLib::Mmg3d:
+            return MMG3D_Set_iparameter(rS.mMesh, pSol, P3, Value);
+        case MmgLib::Mmgs:
+            return Ps < 0 ? 1 : MMGS_Set_iparameter(rS.mMesh, pSol, Ps, Value);
+        default:
+            return P2 < 0 ? 1 : MMG2D_Set_iparameter(rS.mMesh, pSol, P2, Value);
+    }
+}
+
+int mmg_set_d(MmgSession& rS, MMG5_pSol pSol, int P3, int Ps, int P2, double Value) {
+    switch (rS.mLib) {
+        case MmgLib::Mmg3d:
+            return MMG3D_Set_dparameter(rS.mMesh, pSol, P3, Value);
+        case MmgLib::Mmgs:
+            return MMGS_Set_dparameter(rS.mMesh, pSol, Ps, Value);
+        default:
+            return MMG2D_Set_dparameter(rS.mMesh, pSol, P2, Value);
+    }
+}
+
+#define MIO_MMG_I(name, value)                                                                     \
+    mmg_check(mmg_set_i(rS, rS.mMet, MMG3D_IPARAM_##name, MMGS_IPARAM_##name, MMG2D_IPARAM_##name, \
+                        static_cast<MMG5_int>(value)),                                             \
+              "the parameter " #name)
+#define MIO_MMG_D(name, value)                                                                     \
+    mmg_check(mmg_set_d(rS, rS.mMet, MMG3D_DPARAM_##name, MMGS_DPARAM_##name, MMG2D_DPARAM_##name, \
+                        value),                                                                    \
+              "the parameter " #name)
+
+/// The shared parameters, and the per-region sizes through the reference table.
+void mmg_parameters(MmgSession& rS, const MmgInput& rIn, const Mesh& rMesh, const MmgParameters& rP,
+                    const char* pOp) {
+    MIO_MMG_I(verbose, rP.mVerbose);
+    if (rP.mMem > 0)
+        MIO_MMG_I(mem, rP.mMem);
+    if (rP.mHmin >= 0)
+        MIO_MMG_D(hmin, rP.mHmin);
+    if (rP.mHmax >= 0)
+        MIO_MMG_D(hmax, rP.mHmax);
+    if (rP.mHausd >= 0)
+        MIO_MMG_D(hausd, rP.mHausd);
+    if (rP.mHgrad >= 0)
+        MIO_MMG_D(hgrad, rP.mHgrad);
+    if (rP.mHgradreq >= 0)
+        MIO_MMG_D(hgradreq, rP.mHgradreq);
+    if (rP.mAngleDetection > 0) {
+        MIO_MMG_I(angle, 1);
+        MIO_MMG_D(angleDetection, rP.mAngleDetection);
+    } else {
+        MIO_MMG_I(angle, 0);
+    }
+    MIO_MMG_I(optim, rP.mOptim ? 1 : 0);
+    MIO_MMG_I(noinsert, rP.mNoInsert ? 1 : 0);
+    MIO_MMG_I(noswap, rP.mNoSwap ? 1 : 0);
+    MIO_MMG_I(nomove, rP.mNoMove ? 1 : 0);
+    MIO_MMG_I(nreg, rP.mNreg ? 1 : 0);
+    if (rS.mLib != MmgLib::Mmgs) {
+        if (rS.mLib == MmgLib::Mmg3d) {
+            mmg_check(MMG3D_Set_iparameter(rS.mMesh, rS.mMet, MMG3D_IPARAM_nosurf, rP.mNoSurf),
+                      "the parameter nosurf");
+            mmg_check(MMG3D_Set_iparameter(rS.mMesh, rS.mMet, MMG3D_IPARAM_opnbdy, rP.mOpnbdy),
+                      "the parameter opnbdy");
+        } else {
+            mmg_check(MMG2D_Set_iparameter(rS.mMesh, rS.mMet, MMG2D_IPARAM_nosurf, rP.mNoSurf),
+                      "the parameter nosurf");
+            mmg_check(MMG2D_Set_iparameter(rS.mMesh, rS.mMet, MMG2D_IPARAM_opnbdy, rP.mOpnbdy),
+                      "the parameter opnbdy");
+        }
+    } else if (rP.mNoSurf || rP.mOpnbdy) {
+        throw std::invalid_argument(std::string(pOp) + ": mmgs has no nosurf or opnbdy");
+    }
+
+    // Per-region sizes: every reference whose signature holds the region.
+    struct Local {
+        int mTyp;
+        MMG5_int mRef;
+        const MmgLocalParameter* pP;
+    };
+    std::vector<Local> locals;
+    for (const MmgLocalParameter& lp : rP.mLocal) {
+        std::vector<std::size_t> regions;
+        for (std::size_t r = 0; r < rMesh.NumRegions(); ++r)
+            if (rMesh.Region(r).mName == lp.mRegion)
+                regions.push_back(r);
+        if (regions.empty())
+            throw std::invalid_argument(std::string(pOp) + ": no region '" + lp.mRegion +
+                                        "' for a local parameter");
+        const auto holds = [&](const std::vector<std::size_t>& rList) {
+            return std::any_of(regions.begin(), regions.end(), [&](std::size_t R) {
+                return std::find(rList.begin(), rList.end(), R) != rList.end();
+            });
+        };
+        const auto add = [&](const std::vector<MMG5_int>& rRefs, int Typ) {
+            std::vector<MMG5_int> seen;
+            for (const MMG5_int ref : rRefs) {
+                const MmgSignature* s = rIn.mRefs.Find(ref);
+                if (!s || std::find(seen.begin(), seen.end(), ref) != seen.end())
+                    continue;
+                if (holds(s->mCellRegions) || holds(s->mSideRegions)) {
+                    seen.push_back(ref);
+                    locals.push_back({Typ, ref, &lp});
+                }
+            }
+        };
+        if (rS.mLib == MmgLib::Mmg3d) {
+            add(rIn.mTetRefs, MMG5_Tetrahedron);
+            add(rIn.mTriRefs, MMG5_Triangle);
+        } else {
+            add(rIn.mTriRefs, MMG5_Triangle);
+            if (rS.mLib == MmgLib::Mmg2d)
+                add(rIn.mEdgeRefs, MMG5_Edg);
+        }
+    }
+    if (locals.empty())
+        return;
+    MIO_MMG_I(numberOfLocalParam, locals.size());
+    const auto value = [](double V, double Global) { return V >= 0 ? V : Global; };
+    // MMG takes all three for each: fill an unset one from the global value or
+    // a value that leaves it free.
+    const double ghmin = rP.mHmin >= 0 ? rP.mHmin : 0.0;
+    const double ghmax = rP.mHmax >= 0 ? rP.mHmax : std::numeric_limits<double>::max() / 4;
+    const double ghausd = rP.mHausd >= 0 ? rP.mHausd : 0.01;
+    for (const Local& l : locals) {
+        const double hmin = value(l.pP->mHmin, ghmin);
+        const double hmax = value(l.pP->mHmax, ghmax);
+        const double hausd = value(l.pP->mHausd, ghausd);
+        int ok = 0;
+        switch (rS.mLib) {
+            case MmgLib::Mmg3d:
+                ok = MMG3D_Set_localParameter(rS.mMesh, rS.mMet, l.mTyp, l.mRef, hmin, hmax, hausd);
+                break;
+            case MmgLib::Mmgs:
+                ok = MMGS_Set_localParameter(rS.mMesh, rS.mMet, l.mTyp, l.mRef, hmin, hmax, hausd);
+                break;
+            case MmgLib::Mmg2d:
+                ok = MMG2D_Set_localParameter(rS.mMesh, rS.mMet, l.mTyp, l.mRef, hmin, hmax, hausd);
+                break;
+        }
+        mmg_check(ok, "a local parameter");
+    }
+}
+
+#undef MIO_MMG_I
+#undef MIO_MMG_D
+
+/// Fill a vertex solution: `Width` values per point, `Type` MMG5_Scalar or MMG5_Tensor.
+void mmg_vertex_sol(MmgSession& rS, MMG5_pSol pSol, int Type, std::vector<double>& rValues) {
+    const auto np = static_cast<MMG5_int>(rS.mMesh->np);
+    int ok = 0;
+    switch (rS.mLib) {
+        case MmgLib::Mmg3d:
+            ok = MMG3D_Set_solSize(rS.mMesh, pSol, MMG5_Vertex, np, Type);
+            if (ok)
+                ok = Type == MMG5_Scalar   ? MMG3D_Set_scalarSols(pSol, rValues.data())
+                     : Type == MMG5_Vector ? MMG3D_Set_vectorSols(pSol, rValues.data())
+                                           : MMG3D_Set_tensorSols(pSol, rValues.data());
+            break;
+        case MmgLib::Mmgs:
+            ok = MMGS_Set_solSize(rS.mMesh, pSol, MMG5_Vertex, np, Type);
+            if (ok)
+                ok = Type == MMG5_Scalar   ? MMGS_Set_scalarSols(pSol, rValues.data())
+                     : Type == MMG5_Vector ? MMGS_Set_vectorSols(pSol, rValues.data())
+                                           : MMGS_Set_tensorSols(pSol, rValues.data());
+            break;
+        case MmgLib::Mmg2d:
+            ok = MMG2D_Set_solSize(rS.mMesh, pSol, MMG5_Vertex, np, Type);
+            if (ok)
+                ok = Type == MMG5_Scalar   ? MMG2D_Set_scalarSols(pSol, rValues.data())
+                     : Type == MMG5_Vector ? MMG2D_Set_vectorSols(pSol, rValues.data())
+                                           : MMG2D_Set_tensorSols(pSol, rValues.data());
+            break;
+    }
+    mmg_check(ok, "a solution");
+}
+
+/// A scalar point field, one value per point.
+std::vector<double> mmg_scalar_field(const Mesh& rMesh, const std::string& rName, const char* pOp) {
+    if (!rMesh.HasPointData(rName))
+        throw std::invalid_argument(std::string(pOp) + ": no point_data '" + rName + "'");
+    const NDArray& a = rMesh.PointData(rName);
+    if (a.Size() != rMesh.NumPoints())
+        throw std::invalid_argument(std::string(pOp) + ": '" + rName +
+                                    "' must have one component per point");
+    const detail::DoubleView v(a);
+    std::vector<double> out(a.Size());
+    for (std::size_t i = 0; i < out.size(); ++i)
+        out[i] = v[i];
+    return out;
+}
+
+/// A metric for MMG's API (upper triangle, row by row) from the `.sol`-order field.
+std::vector<double> mmg_metric_field(const Mesh& rMesh, const std::string& rName, int Dim,
+                                     const char* pOp) {
+    if (!rMesh.HasPointData(rName))
+        throw std::invalid_argument(std::string(pOp) + ": no point_data '" + rName + "'");
+    const NDArray& a = rMesh.PointData(rName);
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t width = n ? a.Size() / n : 0;
+    if (a.Size() != n * width || (width != 6 && width != 3) || (Dim == 3 && width != 6))
+        throw std::invalid_argument(std::string(pOp) + ": the metric '" + rName +
+                                    "' needs 6 components per point (3 in 2-D), the lower "
+                                    "triangle m11 m21 m22 m31 m32 m33");
+    const detail::DoubleView v(a);
+    std::vector<double> out;
+    out.reserve(n * (Dim == 3 ? 6 : 3));
+    for (std::size_t i = 0; i < n; ++i) {
+        double f[6];
+        for (std::size_t k = 0; k < width; ++k)
+            f[k] = v[i * width + k];
+        if (Dim == 3) {
+            // file m11 m21 m22 m31 m32 m33 -> API m11 m12 m13 m22 m23 m33
+            const double api[6] = {f[0], f[1], f[3], f[2], f[4], f[5]};
+            out.insert(out.end(), api, api + 6);
+        } else {
+            // the xy block of a 3-D metric, or a 2-D one: m11 m12 m22 either way
+            out.insert(out.end(), f, f + 3);
+        }
+    }
+    return out;
+}
+
+/// Run one MMG entry point under the guard; MMG5_STRONGFAILURE throws.
+MmgStatus mmg_run(int Ier, const char* pOp, std::vector<std::string>& rWarnings) {
+    if (Ier == MMG5_STRONGFAILURE)
+        throw std::runtime_error(std::string(pOp) +
+                                 ": MMG failed (MMG5_STRONGFAILURE) and returned no mesh");
+    if (Ier == MMG5_LOWFAILURE) {
+        rWarnings.push_back(std::string(pOp) +
+                            ": MMG returned a valid mesh it could not finish (MMG5_LOWFAILURE)");
+        return MmgStatus::LowFailure;
+    }
+    return MmgStatus::Success;
+}
+
+/// Read MMG's mesh back into a meshio++ mesh, with the input's regions.
+Mesh mmg_decode(MmgSession& rS, const MmgInput& rIn, const Mesh& rMesh, MmgReport& rReport,
+                const char* pOp) {
+    MMG5_int np = 0, ntet = 0, nprism = 0, ntri = 0, nquad = 0, nedge = 0;
+    MMG5_pMesh m = rS.mMesh;
+    switch (rS.mLib) {
+        case MmgLib::Mmg3d:
+            mmg_check(MMG3D_Get_meshSize(m, &np, &ntet, &nprism, &ntri, &nquad, &nedge),
+                      "to give the mesh size");
+            break;
+        case MmgLib::Mmgs:
+            mmg_check(MMGS_Get_meshSize(m, &np, &ntri, &nedge), "to give the mesh size");
+            break;
+        case MmgLib::Mmg2d:
+            mmg_check(MMG2D_Get_meshSize(m, &np, &ntri, &nquad, &nedge), "to give the mesh size");
+            break;
+    }
+    const auto unp = static_cast<std::size_t>(np);
+    std::vector<double> coords(unp * static_cast<std::size_t>(rIn.mDim));
+    std::vector<MMG5_int> vref(unp);
+    std::vector<int> corner(unp), req(unp);
+    std::vector<MMG5_int> tets(static_cast<std::size_t>(ntet) * 4), tetref(ntet);
+    std::vector<MMG5_int> prisms(static_cast<std::size_t>(nprism) * 6), prismref(nprism);
+    std::vector<MMG5_int> tris(static_cast<std::size_t>(ntri) * 3), triref(ntri);
+    std::vector<MMG5_int> quads(static_cast<std::size_t>(nquad) * 4), quadref(nquad);
+    std::vector<MMG5_int> edges(static_cast<std::size_t>(nedge) * 2), edgeref(nedge);
+    std::vector<int> elreq(std::max<MMG5_int>({ntet, nprism, ntri, nquad, nedge, 1}));
+    std::vector<int> ridge(std::max<MMG5_int>(nedge, 1));
+    switch (rS.mLib) {
+        case MmgLib::Mmg3d:
+            mmg_check(MMG3D_Get_vertices(m, coords.data(), vref.data(), corner.data(), req.data()),
+                      "to give the vertices");
+            if (ntet)
+                mmg_check(MMG3D_Get_tetrahedra(m, tets.data(), tetref.data(), elreq.data()),
+                          "to give the tetrahedra");
+            if (nprism)
+                mmg_check(MMG3D_Get_prisms(m, prisms.data(), prismref.data(), elreq.data()),
+                          "to give the prisms");
+            if (ntri)
+                mmg_check(MMG3D_Get_triangles(m, tris.data(), triref.data(), elreq.data()),
+                          "to give the triangles");
+            if (nquad)
+                mmg_check(MMG3D_Get_quadrilaterals(m, quads.data(), quadref.data(), elreq.data()),
+                          "to give the quadrilaterals");
+            if (nedge)
+                mmg_check(
+                    MMG3D_Get_edges(m, edges.data(), edgeref.data(), ridge.data(), elreq.data()),
+                    "to give the edges");
+            break;
+        case MmgLib::Mmgs:
+            mmg_check(MMGS_Get_vertices(m, coords.data(), vref.data(), corner.data(), req.data()),
+                      "to give the vertices");
+            mmg_check(MMGS_Get_triangles(m, tris.data(), triref.data(), elreq.data()),
+                      "to give the triangles");
+            if (nedge)
+                mmg_check(
+                    MMGS_Get_edges(m, edges.data(), edgeref.data(), ridge.data(), elreq.data()),
+                    "to give the edges");
+            break;
+        case MmgLib::Mmg2d:
+            mmg_check(MMG2D_Get_vertices(m, coords.data(), vref.data(), corner.data(), req.data()),
+                      "to give the vertices");
+            if (ntri)
+                mmg_check(MMG2D_Get_triangles(m, tris.data(), triref.data(), elreq.data()),
+                          "to give the triangles");
+            if (nquad)
+                mmg_check(MMG2D_Get_quadrilaterals(m, quads.data(), quadref.data(), elreq.data()),
+                          "to give the quadrilaterals");
+            if (nedge)
+                mmg_check(
+                    MMG2D_Get_edges(m, edges.data(), edgeref.data(), ridge.data(), elreq.data()),
+                    "to give the edges");
+            break;
+    }
+
+    Mesh out;
+    const std::size_t d = rIn.mPointDim;
+    NDArray points(DType::Float64, {unp, d});
+    double* pp = points.As<double>();
+    for (std::size_t i = 0; i < unp; ++i) {
+        for (int c = 0; c < rIn.mDim; ++c)
+            pp[i * d + c] = coords[i * rIn.mDim + c];
+        if (rIn.mDim == 2 && d == 3)
+            pp[i * d + 2] = rIn.mPlaneZ;
+    }
+    out.AssignPoints(std::move(points));
+
+    // The blocks: elements first, then the facets the input had.
+    struct Block {
+        const char* mType;
+        std::vector<MMG5_int>* pConn;
+        std::vector<MMG5_int>* pRef;
+        std::size_t mK;
+        bool mFacet;
+    };
+    std::vector<Block> blocks;
+    if (rS.mLib == MmgLib::Mmg3d) {
+        blocks.push_back({"tetra", &tets, &tetref, 4, false});
+        if (nprism)
+            blocks.push_back({"wedge", &prisms, &prismref, 6, false});
+        blocks.push_back({"triangle", &tris, &triref, 3, true});
+        if (nquad)
+            blocks.push_back({"quad", &quads, &quadref, 4, true});
+        blocks.push_back({"line", &edges, &edgeref, 2, true});
+    } else {
+        blocks.push_back({"triangle", &tris, &triref, 3, false});
+        if (nquad)
+            blocks.push_back({"quad", &quads, &quadref, 4, false});
+        blocks.push_back({"line", &edges, &edgeref, 2, true});
+    }
+    // Which facets to keep as cells: the input's own (a reference whose
+    // signature is a cell), and MMG's new untagged ones when the input had
+    // facets of that kind at all.
+    std::vector<std::vector<MMG5_int> > refs_out;
+    std::size_t num_elements = 0;
+    for (const Block& b : blocks) {
+        const std::size_t n = b.pRef->size();
+        std::vector<std::int64_t> conn;
+        std::vector<MMG5_int> refs;
+        conn.reserve(n * b.mK);
+        for (std::size_t i = 0; i < n; ++i) {
+            const MMG5_int ref = (*b.pRef)[i];
+            // A reference of the other kind is MMG's own: untagged.
+            const MmgSignature* s = rIn.mRefs.Find(ref, b.mFacet);
+            if (b.mFacet) {
+                const bool lines = std::string(b.mType) == "line";
+                const bool had =
+                    lines ? !rIn.mEdgeRefs.empty() && rIn.mHadFacetCells : rIn.mHadFacetCells;
+                const bool keep = s ? s->mIsCell : had;
+                if (!keep)
+                    continue;
+            }
+            for (std::size_t j = 0; j < b.mK; ++j)
+                conn.push_back(static_cast<std::int64_t>((*b.pConn)[i * b.mK + j]) - 1);
+            refs.push_back(s ? ref : 0);
+        }
+        if (!b.mFacet)
+            num_elements += refs.size();
+        if (b.mFacet && refs.empty())
+            continue;
+        NDArray c(DType::Int64, {refs.size(), b.mK});
+        std::copy(conn.begin(), conn.end(), c.As<std::int64_t>());
+        out.AddCellBlock(b.mType, std::move(c));
+        refs_out.push_back(std::move(refs));
+    }
+
+    // medit:ref back, when the input had it.
+    if (rIn.mHadPointRef) {
+        NDArray pr(DType::Int64, {unp});
+        for (std::size_t i = 0; i < unp; ++i)
+            pr.As<std::int64_t>()[i] = vref[i];
+        out.AddPointData("medit:ref", std::move(pr));
+    }
+    if (rIn.mHadCellRef) {
+        std::vector<NDArray> arrays;
+        for (const auto& refs : refs_out) {
+            NDArray a(DType::Int64, {refs.size()});
+            for (std::size_t i = 0; i < refs.size(); ++i) {
+                const MmgSignature* s = rIn.mRefs.Find(refs[i]);
+                a.As<std::int64_t>()[i] = s && s->mHasMeditRef ? s->mMeditRef : 0;
+            }
+            arrays.push_back(std::move(a));
+        }
+        out.AddCellData("medit:ref", std::move(arrays));
+    }
+
+    // Cell regions, by signature; side regions through the facets' owners.
+    std::vector<std::vector<std::int64_t> > cell_entries(rMesh.NumRegions());
+    std::int64_t global = 0;
+    for (const auto& refs : refs_out)
+        for (const MMG5_int ref : refs) {
+            if (const MmgSignature* s = rIn.mRefs.Find(ref))
+                for (const std::size_t r : s->mCellRegions)
+                    cell_entries[r].push_back(global);
+            ++global;
+        }
+    std::vector<std::vector<std::int64_t> > side_entries(rMesh.NumRegions());
+    {
+        detail::FacetIndexOptions fo;
+        fo.mSolidFaces = rS.mLib == MmgLib::Mmg3d;
+        fo.mSurfaceEdges = rS.mLib != MmgLib::Mmg3d;
+        const detail::FacetIndex index(out, fo);
+        const auto facet_sides = [&](const std::vector<MMG5_int>& rConn,
+                                     const std::vector<MMG5_int>& rRefs, std::size_t K) {
+            for (std::size_t i = 0; i < rRefs.size(); ++i) {
+                const MmgSignature* s = rIn.mRefs.Find(rRefs[i], true);
+                if (!s || s->mSideRegions.empty())
+                    continue;
+                std::int64_t corners[4];
+                for (std::size_t j = 0; j < K; ++j)
+                    corners[j] = static_cast<std::int64_t>(rConn[i * K + j]) - 1;
+                const detail::FacetHit* hit = index.Find(corners, K);
+                if (!hit)
+                    continue;
+                for (const std::size_t r : s->mSideRegions) {
+                    side_entries[r].push_back(hit->mFirst.mCell);
+                    side_entries[r].push_back(hit->mFirst.mFacet);
+                }
+            }
+        };
+        if (rS.mLib == MmgLib::Mmg3d) {
+            facet_sides(tris, triref, 3);
+            facet_sides(quads, quadref, 4);
+        } else {
+            facet_sides(edges, edgeref, 2);
+        }
+    }
+    // Point regions: their points survive when required, at their own coordinates.
+    std::map<std::vector<double>, std::int64_t> required_out;
+    for (std::size_t i = 0; i < unp; ++i)
+        if (req[i] || corner[i])
+            required_out.emplace(std::vector<double>(coords.begin() + i * rIn.mDim,
+                                                     coords.begin() + (i + 1) * rIn.mDim),
+                                 static_cast<std::int64_t>(i));
+    for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
+        const Region& reg = rMesh.Region(r);
+        if (reg.mKind == RegionKind::Cell) {
+            NDArray e(DType::Int64, {cell_entries[r].size()});
+            std::copy(cell_entries[r].begin(), cell_entries[r].end(), e.As<std::int64_t>());
+            out.AddRegion(Region(reg.mName, reg.mKind, reg.mDim, reg.mTag, std::move(e)));
+        } else if (reg.mKind == RegionKind::Side) {
+            NDArray e(DType::Int64, {side_entries[r].size() / 2, 2});
+            std::copy(side_entries[r].begin(), side_entries[r].end(), e.As<std::int64_t>());
+            out.AddRegion(Region(reg.mName, reg.mKind, reg.mDim, reg.mTag, std::move(e)));
+        } else {
+            std::vector<std::int64_t> ids;
+            bool all = true;
+            const std::int64_t* pe = reg.Entries();
+            for (std::size_t k = 0; k < reg.NumEntries(); ++k) {
+                const std::size_t p = static_cast<std::size_t>(pe[k]);
+                if (p >= rIn.mRequiredPoint.size() || !rIn.mRequiredPoint[p]) {
+                    all = false;
+                    break;
+                }
+                std::vector<double> key(rIn.mCoords.begin() + p * rIn.mDim,
+                                        rIn.mCoords.begin() + (p + 1) * rIn.mDim);
+                auto it = required_out.find(key);
+                if (it == required_out.end()) {
+                    all = false;
+                    break;
+                }
+                ids.push_back(it->second);
+            }
+            if (!all) {
+                rReport.mWarnings.push_back(std::string(pOp) + ": point region '" + reg.mName +
+                                            "' is dropped: its points are not all required "
+                                            "(frozen or in a required region)");
+                continue;
+            }
+            NDArray e(DType::Int64, {ids.size()});
+            std::copy(ids.begin(), ids.end(), e.As<std::int64_t>());
+            out.AddRegion(Region(reg.mName, reg.mKind, reg.mDim, reg.mTag, std::move(e)));
+        }
+    }
+    for (const std::string& name : rMesh.FieldDataNames())
+        out.AddFieldData(name, detail::data_owned_copy(rMesh.FieldData(name)));
+
+    rReport.mNumPointsOut = static_cast<std::int64_t>(unp);
+    rReport.mNumElementsOut = static_cast<std::int64_t>(num_elements);
+    const QualityReport q = compute_quality(out);
+    for (const auto& [name, summary] : q.mMetrics)
+        if (name == "quality:aspect_ratio")
+            rReport.mQuality = summary;
+    return out;
+}
+
+}  // namespace
+
+AdaptResult adapt(const Mesh& rMesh, const AdaptOptions& rOptions) {
+    const char* op = "adapt";
+    const int given = (rOptions.mHsiz > 0 ? 1 : 0) + (rOptions.mSize.empty() ? 0 : 1) +
+                      (rOptions.mMetric.empty() ? 0 : 1);
+    if (given > 1)
+        throw std::invalid_argument("adapt: give one of hsiz, size and metric");
+    AdaptResult result;
+    MmgReport& report = result.mReport;
+    MmgInput in = mmg_encode(rMesh, rOptions.mParameters, op, {rOptions.mSize, rOptions.mMetric},
+                             report.mWarnings);
+    report.mLibrary = mmg_lib_name(in.mLib);
+    report.mNumPointsIn = static_cast<std::int64_t>(rMesh.NumPoints());
+    report.mNumElementsIn = static_cast<std::int64_t>(in.mNumElements);
+    std::vector<double> sol;
+    int sol_type = 0;
+    if (!rOptions.mSize.empty()) {
+        sol = mmg_scalar_field(rMesh, rOptions.mSize, op);
+        if (std::any_of(sol.begin(), sol.end(), [](double V) { return !(V > 0.0); }))
+            throw std::invalid_argument("adapt: the size field must be positive everywhere");
+        sol_type = MMG5_Scalar;
+    } else if (!rOptions.mMetric.empty()) {
+        sol = mmg_metric_field(rMesh, rOptions.mMetric, in.mDim, op);
+        sol_type = MMG5_Tensor;
+    }
+
+    {
+        detail::MmgCallGuard guard;
+        MmgSession s(in.mLib, false, false);
+        mmg_load(s, in);
+        mmg_parameters(s, in, rMesh, rOptions.mParameters, op);
+        if (rOptions.mHsiz > 0)
+            mmg_check(mmg_set_d(s, s.mMet, MMG3D_DPARAM_hsiz, MMGS_DPARAM_hsiz, MMG2D_DPARAM_hsiz,
+                                rOptions.mHsiz),
+                      "the parameter hsiz");
+        if (sol_type)
+            mmg_vertex_sol(s, s.mMet, sol_type, sol);
+        int ier = MMG5_STRONGFAILURE;
+        switch (in.mLib) {
+            case MmgLib::Mmg3d:
+                ier = MMG3D_mmg3dlib(s.mMesh, s.mMet);
+                break;
+            case MmgLib::Mmgs:
+                ier = MMGS_mmgslib(s.mMesh, s.mMet);
+                break;
+            case MmgLib::Mmg2d:
+                ier = MMG2D_mmg2dlib(s.mMesh, s.mMet);
+                break;
+        }
+        report.mStatus = mmg_run(ier, op, report.mWarnings);
+        result.mMesh = mmg_decode(s, in, rMesh, report, op);
+    }
+    for (const std::string& w : report.mWarnings)
+        log::warn("{}", w);
+    return result;
+}
+
+#endif  // MESHIOPLUSPLUS_HAS_MMG
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/mmg.cpp =====
 // ===== begin src/cpp/src/operations/neighbors.cpp =====
 #include <algorithm>
 #include <array>
@@ -242480,6 +244111,10 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "MaxIterations", "Tolerance"}},
         {"EstimateError", {"Array", "Method", "Marking", "MarkingValue", "Output", "Marked"}},
         {"ErrorSize", {"Array", "TargetError", "Order", "MinSize", "MaxSize", "Output"}},
+        {"Adapt",
+         {"Hsiz", "Size", "Metric", "Hmin", "Hmax", "Hausd", "Hgrad", "Hgradreq", "AngleDetection",
+          "Optim", "NoInsert", "NoSwap", "NoMove", "NoSurf", "Nreg", "Opnbdy", "Frozen",
+          "Required"}},
         {"Remesh",
          {"NumClusters", "Subdivide", "SubsampleRatio", "MaxSubdivide", "MaxIterations",
           "MaxRepairPasses", "Metric", "Gradation", "PreserveBoundary", "MaxAnisotropy"}},
@@ -242709,6 +244344,51 @@ void pipe_push_step(PipelineReport& rReport, const PipelineStep& rStep,
     // is, this is what lets a written file's "Operation:" lines match the
     // pipeline's own report instead of drifting from it.
     detail::provenance_add_operation(pipe_render_op(rStep));
+}
+
+/// The shared MMG parameters of a step (roadmap 3.2); `Frozen` names a point region.
+MmgParameters pipe_mmg_parameters(const PipelineStep& rStep, const Mesh& rMesh) {
+    MmgParameters o;
+    o.mHmin = pipe_number(rStep, "Hmin", -1.0);
+    o.mHmax = pipe_number(rStep, "Hmax", -1.0);
+    o.mHausd = pipe_number(rStep, "Hausd", -1.0);
+    o.mHgrad = pipe_number(rStep, "Hgrad", -1.0);
+    o.mHgradreq = pipe_number(rStep, "Hgradreq", -1.0);
+    o.mAngleDetection = pipe_number(rStep, "AngleDetection", 45.0);
+    o.mOptim = pipe_flag(rStep, "Optim", false);
+    o.mNoInsert = pipe_flag(rStep, "NoInsert", false);
+    o.mNoSwap = pipe_flag(rStep, "NoSwap", false);
+    o.mNoMove = pipe_flag(rStep, "NoMove", false);
+    o.mNoSurf = pipe_flag(rStep, "NoSurf", false);
+    o.mNreg = pipe_flag(rStep, "Nreg", false);
+    o.mOpnbdy = pipe_flag(rStep, "Opnbdy", false);
+    o.mRequired = pipe_svec(rStep, "Required");
+    const std::string frozen = pipe_text(rStep, "Frozen", "");
+    if (!frozen.empty()) {
+        const std::size_t r = rMesh.FindRegion(frozen, RegionKind::Point);
+        if (r == Mesh::npos)
+            throw std::invalid_argument(
+                pipe_err(rStep, "parameter 'Frozen' names no point region '" + frozen + "'"));
+        const meshioplusplus::Region& region = rMesh.Region(r);
+        o.mFrozen.assign(rMesh.NumPoints(), 0);
+        for (std::size_t k = 0; k < region.NumEntries(); ++k)
+            o.mFrozen[static_cast<std::size_t>(region.Entries()[k])] = 1;
+    }
+    return o;
+}
+
+/// An MMG step's counters, and its warnings into the run's.
+void pipe_mmg_report(PipelineReport& rReport, const PipelineStep& rStep, const MmgReport& rR) {
+    pipe_push_step(rReport, rStep,
+                   {{"NumPointsIn", static_cast<double>(rR.mNumPointsIn)},
+                    {"NumPointsOut", static_cast<double>(rR.mNumPointsOut)},
+                    {"NumElementsIn", static_cast<double>(rR.mNumElementsIn)},
+                    {"NumElementsOut", static_cast<double>(rR.mNumElementsOut)},
+                    {"LowFailure", rR.mStatus == MmgStatus::LowFailure ? 1.0 : 0.0},
+                    {"QualityMin", rR.mQuality.mMin},
+                    {"QualityMean", rR.mQuality.mMean}});
+    for (const std::string& w : rR.mWarnings)
+        rReport.mWarnings.push_back(w);
 }
 
 // --------------------------------------------------------------------------
@@ -244167,6 +245847,17 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             rReport.mWarnings.push_back("error_size: " + std::to_string(sr.mNumSkipped) +
                                         " cell(s) have no finite size and size no point");
         return std::move(sr.mMesh);
+    }
+    if (op == "Adapt") {
+        // MMG (roadmap 3.2.1): new points and connectivity, regions by name.
+        AdaptOptions opts;
+        opts.mParameters = pipe_mmg_parameters(rStep, mesh);
+        opts.mHsiz = pipe_number(rStep, "Hsiz", -1.0);
+        opts.mSize = pipe_text(rStep, "Size", "");
+        opts.mMetric = pipe_text(rStep, "Metric", "");
+        AdaptResult ar = adapt(mesh, opts);
+        pipe_mmg_report(rReport, rStep, ar.mReport);
+        return std::move(ar.mMesh);
     }
     if (op == "Remesh") {
         // Unlike every other step, the output has NO correspondence to the

@@ -46,6 +46,7 @@ from .. import (
     GeometryGuard,
     GridArray,
     GridSpec,
+    adapt,
     agglomerate,
     annulus,
     attach_quality,
@@ -98,6 +99,7 @@ from .. import (
     geometry_descriptors,
     gradient,
     grid,
+    has_mmg,
     hausdorff_distance,
     helix,
     hessian,
@@ -113,6 +115,7 @@ from .. import (
     match_periodic_nodes,
     merge,
     mesh_cad_surface,
+    metric_from_hessian,
     mirror,
     moebius,
     ngon,
@@ -4169,6 +4172,100 @@ def tool_decimate_volume(
     return _result(_store(out, output_path, output_format), out, **report)
 
 
+def _mmg_unavailable(op):
+    """The guarded error shape for an MMG tool in a build without MMG, plus the capability."""
+    return {
+        "error": f"meshio++: {op}: the MMG backend is not built in: rebuild with "
+        "-DMESHIOPLUSPLUS_WITH_MMG=ON and a shared MMG install (build/build-mmg.sh; "
+        "see doc/mmg.md); the PyPI wheels do not carry it",
+        "error_type": "NotImplementedError",
+        "mmg_available": False,
+    }
+
+
+def tool_adapt(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    hsiz=None,
+    size=None,
+    metric=None,
+    hmin=None,
+    hmax=None,
+    hausd=None,
+    hgrad=None,
+    hgradreq=None,
+    angle_detection=45.0,
+    optim=False,
+    noinsert=False,
+    noswap=False,
+    nomove=False,
+    nosurf=False,
+    nreg=False,
+    opnbdy=False,
+    frozen=None,
+    required=None,
+    local=None,
+):
+    """Remesh to a constant size (hsiz), a size field or an anisotropic metric
+    (point_data names) with MMG: mmg3d for tetrahedra, mmg2d for a planar
+    triangle mesh, mmgs for another triangle surface. Cell and side regions
+    come back under their names; other point/cell data is dropped. Reports
+    status, library, counts in and out and the aspect-ratio quality."""
+    if not has_mmg():
+        return _mmg_unavailable("adapt")
+    mesh = _load(input_path, input_format)
+    out, report = adapt(
+        mesh,
+        hsiz=hsiz,
+        size=size,
+        metric=metric,
+        hmin=hmin,
+        hmax=hmax,
+        hausd=hausd,
+        hgrad=hgrad,
+        hgradreq=hgradreq,
+        angle_detection=angle_detection,
+        optim=optim,
+        noinsert=noinsert,
+        noswap=noswap,
+        nomove=nomove,
+        nosurf=nosurf,
+        nreg=nreg,
+        opnbdy=opnbdy,
+        frozen=frozen,
+        required=required,
+        local=local,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format), out, mmg_available=True, **report
+    )
+
+
+def tool_metric_from_hessian(
+    input_path,
+    output_path,
+    hessian,
+    input_format=None,
+    output_format=None,
+    error=1e-2,
+    hmin=1e-3,
+    hmax=1.0,
+    output="metric",
+):
+    """The anisotropic metric of a point_data Hessian (n, 9) or (n, 4), for
+    adapt: M = c/error |H|, its sizes clamped to [hmin, hmax], written as
+    point_data output in the lower-triangle order of a Medit .sol. Needs no
+    MMG."""
+    mesh = _load(input_path, input_format)
+    out = metric_from_hessian(
+        mesh, hessian, error=error, hmin=hmin, hmax=hmax, output=output
+    )
+    return _result(_store(out, output_path, output_format), out)
+
+
 def tool_remesh(
     input_path,
     output_path,
@@ -6467,6 +6564,15 @@ TOOL_REGISTRY = OrderedDict(
         (
             "decimate_volume",
             {"fn": tool_decimate_volume, "wraps": ("decimate_volume",), "gated": None},
+        ),
+        ("adapt", {"fn": tool_adapt, "wraps": ("adapt",), "gated": None}),
+        (
+            "metric_from_hessian",
+            {
+                "fn": tool_metric_from_hessian,
+                "wraps": ("metric_from_hessian",),
+                "gated": None,
+            },
         ),
         ("remesh", {"fn": tool_remesh, "wraps": ("remesh",), "gated": None}),
         (

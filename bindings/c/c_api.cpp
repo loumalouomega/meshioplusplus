@@ -140,6 +140,7 @@
 #include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
+#include "meshioplusplus/operations/mmg.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
@@ -2186,6 +2187,62 @@ std::vector<std::uint8_t> capi_frozen_mask(const mio_mesh* pMesh, const int64_t*
     }
     return mask;
 }
+
+/// The shared MMG parameters of the C API (roadmap 3.2).
+meshioplusplus::MmgParameters capi_mmg_params(const mio_mesh* pMesh, const mio_mmg_params& rIn,
+                                              const char* pOp) {
+    meshioplusplus::MmgParameters p;
+    p.mHmin = rIn.hmin;
+    p.mHmax = rIn.hmax;
+    p.mHausd = rIn.hausd;
+    p.mHgrad = rIn.hgrad;
+    p.mHgradreq = rIn.hgradreq;
+    p.mAngleDetection = rIn.angle_detection;
+    p.mOptim = rIn.optim != 0;
+    p.mNoInsert = rIn.noinsert != 0;
+    p.mNoSwap = rIn.noswap != 0;
+    p.mNoMove = rIn.nomove != 0;
+    p.mNoSurf = rIn.nosurf != 0;
+    p.mNreg = rIn.nreg != 0;
+    p.mOpnbdy = rIn.opnbdy != 0;
+    p.mVerbose = rIn.verbose;
+    p.mMem = rIn.mem;
+    p.mFrozen = capi_frozen_mask(pMesh, rIn.frozen, rIn.num_frozen, pOp);
+    for (int64_t i = 0; rIn.required && i < rIn.num_required; ++i)
+        if (rIn.required[i])
+            p.mRequired.emplace_back(rIn.required[i]);
+    for (int64_t i = 0; rIn.local && i < rIn.num_local; ++i) {
+        if (!rIn.local[i].region)
+            throw std::invalid_argument(std::string("meshio++: ") + pOp +
+                                        ": a local parameter names no region");
+        p.mLocal.push_back(
+            {rIn.local[i].region, rIn.local[i].hmin, rIn.local[i].hmax, rIn.local[i].hausd});
+    }
+    return p;
+}
+
+void capi_mmg_report(const meshioplusplus::MmgReport& rR, mio_mmg_report* pOut) {
+    if (!pOut)
+        return;
+    *pOut = mio_mmg_report{};
+    pOut->status = static_cast<int32_t>(rR.mStatus);
+    std::strncpy(pOut->library, rR.mLibrary.c_str(), sizeof(pOut->library) - 1);
+    pOut->num_points_in = rR.mNumPointsIn;
+    pOut->num_points_out = rR.mNumPointsOut;
+    pOut->num_elements_in = rR.mNumElementsIn;
+    pOut->num_elements_out = rR.mNumElementsOut;
+    pOut->quality_min = rR.mQuality.mMin;
+    pOut->quality_mean = rR.mQuality.mMean;
+    pOut->quality_max = rR.mQuality.mMax;
+    for (std::size_t k = 0; k < 10; ++k)
+        pOut->quality_histogram[k] = rR.mQuality.mHistogram[k];
+    pOut->num_warnings = static_cast<int64_t>(rR.mWarnings.size());
+}
+
+static_assert(sizeof(mio_mmg_local) == 32, "C ABI: mio_mmg_local layout changed");
+static_assert(sizeof(mio_mmg_params) == 168, "C ABI: mio_mmg_params layout changed");
+static_assert(sizeof(mio_mmg_report) == 192, "C ABI: mio_mmg_report layout changed");
+static_assert(sizeof(mio_adapt_opts) == 224, "C ABI: mio_adapt_opts layout changed");
 
 mio_mesh* capi_smooth(const mio_mesh* pMesh, const meshioplusplus::SmoothOptions& rOptions,
                       int64_t* pNodesMoved, double* pMaxDisplacement, int64_t* pSkippedInversion) {
@@ -8296,8 +8353,7 @@ void mio_mirror_opts_init(mio_mirror_opts* opts) {
     opts->weld = d.mWeld ? 1 : 0;
 }
 
-mio_mesh* mio_mirror(const mio_mesh* mesh, const mio_mirror_opts* opts,
-                     mio_mirror_report* report) {
+mio_mesh* mio_mirror(const mio_mesh* mesh, const mio_mirror_opts* opts, mio_mirror_report* report) {
     return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
         capi_mirror_warnings().clear();
         if (!mesh)
@@ -9476,6 +9532,72 @@ int32_t mio_detect_color_depth(const char* no_color, const char* color_term, con
         default:
             return MIO_COLOR_MONO;
     }
+}
+
+int mio_has_mmg(void) {
+    return meshioplusplus::mmg_available() ? 1 : 0;
+}
+
+int mio_has_mmg_elas(void) {
+    return meshioplusplus::mmg_has_elas() ? 1 : 0;
+}
+
+int mio_mmg_index_bits(void) {
+    return meshioplusplus::mmg_index_bits();
+}
+
+void mio_mmg_params_init(mio_mmg_params* params) {
+    if (!params)
+        return;
+    *params = mio_mmg_params{};
+    params->hmin = params->hmax = params->hausd = params->hgrad = params->hgradreq = -1.0;
+    params->angle_detection = 45.0;
+    params->verbose = -1;
+    params->mem = -1;
+}
+
+void mio_adapt_opts_init(mio_adapt_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_adapt_opts{};
+    mio_mmg_params_init(&opts->params);
+    opts->hsiz = -1.0;
+}
+
+mio_mesh* mio_adapt(const mio_mesh* mesh, const mio_adapt_opts* opts, mio_mmg_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw std::invalid_argument("meshio++: adapt: mesh is NULL");
+        mio_adapt_opts defaults;
+        mio_adapt_opts_init(&defaults);
+        const mio_adapt_opts& r_in = opts ? *opts : defaults;
+        meshioplusplus::AdaptOptions o;
+        o.mParameters = capi_mmg_params(mesh, r_in.params, "adapt");
+        o.mHsiz = r_in.hsiz;
+        if (r_in.size)
+            o.mSize = r_in.size;
+        if (r_in.metric)
+            o.mMetric = r_in.metric;
+        meshioplusplus::AdaptResult r = meshioplusplus::adapt(mesh->mMesh, o);
+        capi_mmg_report(r.mReport, report);
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+mio_mesh* mio_metric_from_hessian(const mio_mesh* mesh, const char* hessian, double error,
+                                  double hmin, double hmax, const char* output) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh || !hessian)
+            throw std::invalid_argument("meshio++: metric_from_hessian: mesh or hessian is NULL");
+        meshioplusplus::MetricFromHessianOptions o;
+        o.mHessian = hessian;
+        o.mError = error;
+        o.mHmin = hmin;
+        o.mHmax = hmax;
+        if (output)
+            o.mOutput = output;
+        return new mio_mesh{meshioplusplus::metric_from_hessian(mesh->mMesh, o)};
+    });
 }
 
 }  // extern "C"

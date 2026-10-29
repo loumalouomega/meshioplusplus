@@ -917,6 +917,66 @@ struct _CTetrahedralizeOpts
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_mmg_local`."""
+struct _CMmgLocal
+    region::Ptr{UInt8}
+    hmin::Cdouble
+    hmax::Cdouble
+    hausd::Cdouble
+end
+
+"""Mirror of C `mio_mmg_params` (168 bytes)."""
+struct _CMmgParams
+    hmin::Cdouble
+    hmax::Cdouble
+    hausd::Cdouble
+    hgrad::Cdouble
+    hgradreq::Cdouble
+    angle_detection::Cdouble
+    optim::Int32
+    noinsert::Int32
+    noswap::Int32
+    nomove::Int32
+    nosurf::Int32
+    nreg::Int32
+    opnbdy::Int32
+    verbose::Int32
+    mem::Int64
+    frozen::Ptr{Int64}
+    num_frozen::Int64
+    required::Ptr{Ptr{UInt8}}
+    num_required::Int64
+    local_params::Ptr{_CMmgLocal}
+    num_local::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_adapt_opts` (224 bytes)."""
+struct _CAdaptOpts
+    params::_CMmgParams
+    hsiz::Cdouble
+    size::Ptr{UInt8}
+    metric::Ptr{UInt8}
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_mmg_report` (192 bytes)."""
+struct _CMmgReport
+    status::Int32
+    reserved_pad::Int32
+    library::NTuple{8,UInt8}
+    num_points_in::Int64
+    num_points_out::Int64
+    num_elements_in::Int64
+    num_elements_out::Int64
+    quality_min::Cdouble
+    quality_mean::Cdouble
+    quality_max::Cdouble
+    quality_histogram::NTuple{10,Int64}
+    num_warnings::Int64
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_tetrahedralize_report`."""
 struct _CTetrahedralizeReport
     num_tetrahedra::Int64
@@ -1637,6 +1697,13 @@ function _check_abi_layout()
      fieldoffset(_CTetrahedralizeReport, 12) == 80) ||
         error("meshio++: mio_tetrahedralize_report layout mismatch " *
               "($(sizeof(_CTetrahedralizeReport)) bytes)")
+    (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CMmgLocal) == 32 && sizeof(_CMmgParams) == 168 &&
+                                 fieldoffset(_CMmgParams, 15) == 80 &&
+                                 sizeof(_CAdaptOpts) == 224 &&
+                                 fieldoffset(_CAdaptOpts, 2) == 168)) ||
+        error("meshio++: mio_adapt_opts layout mismatch ($(sizeof(_CAdaptOpts)) bytes)")
+    (sizeof(_CMmgReport) == 192 && fieldoffset(_CMmgReport, 4) == 16) ||
+        error("meshio++: mio_mmg_report layout mismatch ($(sizeof(_CMmgReport)) bytes)")
     sizeof(_CFitCadOpts) == 80 ||
         error("meshio++: mio_fit_cad_opts layout mismatch ($(sizeof(_CFitCadOpts)) bytes)")
     sizeof(_CFitCadReport) == 192 ||

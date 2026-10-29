@@ -7529,3 +7529,91 @@ TEST(CApi, ExtrudeRevolveAndMirror) {
     EXPECT_EQ(mio_mirror(box, &mo, nullptr), nullptr);
     mio_mesh_free(box);
 }
+
+// The MMG backend (roadmap 3.2): layouts, the capability queries, mio_adapt
+// with the backend or its refusal by name without it, and the MMG-free
+// mio_metric_from_hessian.
+TEST(CApi, MmgOptionLayoutsAndDefaults) {
+    EXPECT_EQ(sizeof(mio_mmg_local), 32u);
+    EXPECT_EQ(sizeof(mio_mmg_params), 168u);
+    EXPECT_EQ(sizeof(mio_mmg_report), 192u);
+    EXPECT_EQ(sizeof(mio_adapt_opts), 224u);
+    EXPECT_EQ(offsetof(mio_adapt_opts, hsiz), 168u);
+    mio_adapt_opts o;
+    mio_adapt_opts_init(&o);
+    EXPECT_EQ(o.params.hmin, -1.0);
+    EXPECT_EQ(o.params.angle_detection, 45.0);
+    EXPECT_EQ(o.params.verbose, -1);
+    EXPECT_EQ(o.hsiz, -1.0);
+    EXPECT_EQ(mio_mmg_index_bits() != 0, mio_has_mmg() != 0);
+}
+
+TEST(CApi, AdaptWithOrWithoutMmg) {
+    mio_gen_opts g;
+    mio_gen_opts_init(&g);
+    g.counts[0] = 4;
+    g.counts[1] = 4;
+    g.cell_type = MIO_GEN_TRIANGLE;
+    mio_mesh* square = mio_rectangle(&g);
+    ASSERT_NE(square, nullptr) << mio_last_error();
+    mio_adapt_opts o;
+    mio_adapt_opts_init(&o);
+    o.hsiz = 0.1;
+    const int64_t frozen[] = {12};
+    o.params.frozen = frozen;
+    o.params.num_frozen = 1;
+    mio_mmg_report report;
+    mio_mesh* out = mio_adapt(square, &o, &report);
+    if (!mio_has_mmg()) {
+        EXPECT_EQ(out, nullptr);
+        EXPECT_NE(std::string(mio_last_error()).find("MESHIOPLUSPLUS_WITH_MMG"), std::string::npos);
+    } else {
+        ASSERT_NE(out, nullptr) << mio_last_error();
+        EXPECT_EQ(report.status, 0);
+        EXPECT_STREQ(report.library, "mmg2d");
+        EXPECT_EQ(report.num_points_in, 25);
+        EXPECT_EQ(report.num_points_out, mio_mesh_num_points(out));
+        EXPECT_GT(report.num_elements_out, report.num_elements_in);
+        EXPECT_GE(report.quality_min, 1.0);
+        mio_mesh_free(out);
+        // NULL options and report are fine (MMG sizes from the mesh).
+        mio_mesh* plain = mio_adapt(square, nullptr, nullptr);
+        ASSERT_NE(plain, nullptr) << mio_last_error();
+        mio_mesh_free(plain);
+        // A frozen id out of range is refused.
+        const int64_t bad[] = {999};
+        o.params.frozen = bad;
+        EXPECT_EQ(mio_adapt(square, &o, nullptr), nullptr);
+    }
+    mio_mesh_free(square);
+}
+
+TEST(CApi, MetricFromHessian) {
+    mio_gen_opts g;
+    mio_gen_opts_init(&g);
+    g.counts[0] = 2;
+    g.counts[1] = 2;
+    g.cell_type = MIO_GEN_TRIANGLE;
+    mio_mesh* m = mio_rectangle(&g);
+    ASSERT_NE(m, nullptr) << mio_last_error();
+    const int64_t n = mio_mesh_num_points(m);
+    std::vector<double> h(static_cast<std::size_t>(n) * 4, 0.0);
+    for (int64_t i = 0; i < n; ++i)
+        h[static_cast<std::size_t>(i) * 4] = 1e6;
+    const int64_t shape[] = {n, 4};
+    ASSERT_EQ(mio_mesh_add_point_data(m, "h", MIO_FLOAT64, 2, shape, h.data()), MIO_OK);
+    mio_mesh* out = mio_metric_from_hessian(m, "h", 1.0, 0.1, 1.0, nullptr);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    const void* data = nullptr;
+    int64_t got[MIO_MAX_NDIM] = {0};
+    int32_t ndim = 0;
+    ASSERT_EQ(mio_mesh_get_point_data(out, "metric", &data, nullptr, &ndim, got), MIO_OK);
+    EXPECT_EQ(ndim, 2);
+    EXPECT_EQ(got[1], 3);
+    const double* metric = static_cast<const double*>(data);
+    EXPECT_DOUBLE_EQ(metric[0], 100.0);  // clamped to 1/hmin^2
+    EXPECT_DOUBLE_EQ(metric[2], 1.0);    // clamped to 1/hmax^2
+    mio_mesh_free(out);
+    EXPECT_EQ(mio_metric_from_hessian(m, "nope", 1.0, 0.1, 1.0, nullptr), nullptr);
+    mio_mesh_free(m);
+}

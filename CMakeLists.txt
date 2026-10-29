@@ -265,6 +265,21 @@ if(MESHIOPLUSPLUS_WITH_NETGEN AND NOT EMSCRIPTEN)
   find_package(Netgen QUIET)
 endif()
 
+# MMG (LGPL-3.0), the backend of adapt, discretize_levelset, mesh_domain and
+# move (roadmap 3.2): mmg2d, mmgs and mmg3d adapt a simplicial mesh to a size
+# or a metric, embed a level set, mesh a planar domain and move a mesh. OFF by
+# default and bring-your-own, as Netgen is: found through the CMake package MMG
+# installs (mmg_DIR or CMAKE_PREFIX_PATH; build/build-mmg.sh makes one), never
+# vendored, never downloaded, linked dynamically only (the shared
+# Mmg::libmmg_so; a static-only install is refused), and absent from the
+# release wheels and CLI binaries. Not under Emscripten until the WASM probe of
+# roadmap 3.2.8: its operations raise by name in both WASM artifacts.
+option(MESHIOPLUSPLUS_WITH_MMG
+       "Build the MMG backend (adapt, discretize_levelset, mesh_domain, move)" OFF)
+if(MESHIOPLUSPLUS_WITH_MMG AND NOT EMSCRIPTEN)
+  find_package(mmg CONFIG QUIET)
+endif()
+
 # The official CGNS library (cgnslib / the CGNS Mid-Level Library). OFF by
 # default and bring-your-own, exactly like KaHIP: never vendored, never
 # downloaded. It is an ADDITIVE backend -- the hand-rolled ADF-over-HDF5 CGNS
@@ -872,6 +887,70 @@ elseif(MESHIOPLUSPLUS_WITH_NETGEN)
                  "tetrahedralize will raise")
 endif()
 
+if(MESHIOPLUSPLUS_WITH_MMG AND TARGET Mmg::libmmg_so)
+  # The library file and the headers, read for what MMG was built with: the
+  # width of MMG5_int (roadmap 3.2.5.2) from mmgcmakedefines.h, and ELAS -- the
+  # linear-elasticity library move needs -- from libmmg's reference to its
+  # LS_elastic, since MMG's headers do not record USE_ELAS.
+  set(_mio_mmg_lib "")
+  get_target_property(_mio_mmg_configs Mmg::libmmg_so IMPORTED_CONFIGURATIONS)
+  foreach(_c IN LISTS _mio_mmg_configs)
+    get_target_property(_mio_mmg_lib Mmg::libmmg_so IMPORTED_LOCATION_${_c})
+    if(_mio_mmg_lib)
+      break()
+    endif()
+  endforeach()
+  get_target_property(_mio_mmg_incs Mmg::libmmg_so INTERFACE_INCLUDE_DIRECTORIES)
+  set(_mio_mmg_int64 "")
+  foreach(_inc IN LISTS _mio_mmg_incs)
+    if(EXISTS "${_inc}/mmg/common/mmgcmakedefines.h")
+      file(STRINGS "${_inc}/mmg/common/mmgcmakedefines.h" _mio_mmg_int64
+           REGEX "define MMG5_int int64_t")
+      break()
+    endif()
+  endforeach()
+  set(_mio_mmg_elas "")
+  if(_mio_mmg_lib AND EXISTS "${_mio_mmg_lib}")
+    file(STRINGS "${_mio_mmg_lib}" _mio_mmg_elas REGEX "LS_elastic" LIMIT_COUNT 1)
+  endif()
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_MMG)
+  list(APPEND _mio_core_libs Mmg::libmmg_so)
+  if(_mio_mmg_int64)
+    list(APPEND _mio_core_defs MESHIOPLUSPLUS_MMG_INT64)
+  endif()
+  if(_mio_mmg_elas)
+    list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_MMG_ELAS)
+    # libmmg needs libElas (and its libCommons) but records no RPATH to them:
+    # link them by path, from beside libmmg, so every target resolves.
+    get_filename_component(_mio_mmg_libdir "${_mio_mmg_lib}" DIRECTORY)
+    find_library(MESHIOPLUSPLUS_ELAS_LIBRARY NAMES Elas HINTS "${_mio_mmg_libdir}" ENV ELAS_DIR
+                 PATH_SUFFIXES lib)
+    find_library(MESHIOPLUSPLUS_ELAS_COMMONS_LIBRARY NAMES Commons
+                 HINTS "${_mio_mmg_libdir}" ENV ELAS_DIR PATH_SUFFIXES lib)
+    foreach(_l MESHIOPLUSPLUS_ELAS_LIBRARY MESHIOPLUSPLUS_ELAS_COMMONS_LIBRARY)
+      if(${_l})
+        list(APPEND _mio_core_libs "${${_l}}")
+      endif()
+    endforeach()
+    # ...and let a target that reaches libmmg only through a shared library
+    # (the Fortran test, a consumer's executable) find them at link time.
+    if(UNIX AND NOT APPLE)
+      add_link_options("LINKER:-rpath-link,${_mio_mmg_libdir}")
+    endif()
+    set(_mio_mmg_with "with ELAS")
+  else()
+    set(_mio_mmg_with "without ELAS: move will raise")
+  endif()
+  message(STATUS "meshio++: MMG backend enabled (${_mio_mmg_lib}, ${_mio_mmg_with})")
+elseif(MESHIOPLUSPLUS_WITH_MMG AND TARGET Mmg::libmmg_a)
+  message(STATUS "meshio++: MMG found as a static library only - it is linked "
+                 "dynamically or not at all (rebuild it with BUILD_SHARED_LIBS=ON); "
+                 "adapt, discretize_levelset, mesh_domain and move will raise")
+elseif(MESHIOPLUSPLUS_WITH_MMG)
+  message(STATUS "meshio++: MMG requested but not found (set mmg_DIR) - "
+                 "adapt, discretize_levelset, mesh_domain and move will raise")
+endif()
+
 if(MESHIOPLUSPLUS_WITH_OCCT AND _mio_occt_libs)
   message(STATUS "meshio++: OpenCASCADE ${OpenCASCADE_VERSION} enabled (fit_cad, STEP/IGES reading)")
   list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_OCCT)
@@ -1365,7 +1444,7 @@ endif()
 # it reports what the build actually compiled in: `-DMESHIOPLUSPLUS_WITH_HDF5=OFF`
 # on a machine that happens to have HDF5 now correctly reports "no HDF5".
 # ---------------------------------------------------------------------------
-foreach(_f ZLIB ZSTD LZ4 LZMA BZIP2 KAHIP HDF5 NETCDF EIGEN JSON CGNSLIB ADIOS2 TECIO OCCT NETGEN)
+foreach(_f ZLIB ZSTD LZ4 LZMA BZIP2 KAHIP HDF5 NETCDF EIGEN JSON CGNSLIB ADIOS2 TECIO OCCT NETGEN MMG)
   if("MESHIOPLUSPLUS_HAS_${_f}" IN_LIST _mio_core_defs)
     set(_mio_has_${_f} TRUE)
   else()
@@ -1427,6 +1506,9 @@ if(_mio_has_KAHIP)
 endif()
 if(_mio_has_NETGEN)
   string(APPEND MIO_PC_LIBS_PRIVATE " -lnglib -lngcore")
+endif()
+if(_mio_has_MMG)
+  string(APPEND MIO_PC_LIBS_PRIVATE " -lmmg")
 endif()
 if(_mio_has_ADIOS2)
   string(APPEND MIO_PC_LIBS_PRIVATE " -l${_mio_adios2_pc_lib} -ladios2_core")

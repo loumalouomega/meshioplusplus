@@ -39,6 +39,7 @@ from . import (
     _merge,
     _mesh_cad,
     _mirror,
+    _mmg,
     _normals,
     _octree,
     _octree_mesh,
@@ -585,6 +586,13 @@ def main(argv=None):
     )
     _decimate_volume.add_args(parser)
     parser.set_defaults(func=_decimate_volume.decimate_volume_cmd)
+
+    parser = subparsers.add_parser(
+        "adapt",
+        help="Remesh to a size or a metric with MMG (a build with MESHIOPLUSPLUS_WITH_MMG)",
+    )
+    _mmg.add_adapt_args(parser)
+    parser.set_defaults(func=_mmg.adapt_cmd)
 
     parser = subparsers.add_parser(
         "remesh",

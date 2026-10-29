@@ -2326,6 +2326,13 @@ export interface MeshioPlusPlusModule {
   hasNetgen(): boolean;
 
   /**
+   * Whether the MMG backend (`adapt`, `discretize_levelset`, `mesh_domain`,
+   * `move`) is linked in: always false in WebAssembly until the port of
+   * roadmap 3.2.8.
+   */
+  hasMmg(): boolean;
+
+  /**
    * Whether the KaHIP kaffpa partitioner is linked in, so `partition` with
    * `method: 'kahip'` runs: true in the full artifact (`{full: true}`),
    * false in the lean one.

@@ -155,6 +155,7 @@ export default defineConfig({
               { text: "Volumetric remeshing (isosurface stuffing)", link: "/remesh_volume" },
               { text: "ODT remeshing (relocate + flip)", link: "/optimize_volume" },
               { text: "Smoothing (Laplacian / Taubin / ODT)", link: "/smooth" },
+              { text: "MMG backend (adapt, level sets, move)", link: "/mmg" },
             ],
           },
           {

@@ -261,7 +261,7 @@ meshioplusplus.write_points_cells("foo.vtk", points, cells)
 For both input and output, you can optionally specify the exact `file_format` (in case you would like to enforce ASCII over binary VTK, for example).
 
 <details>
-<summary><b>Mesh and data operations</b> — skin/surface extraction, quality, reorder, diff, merge, transform/clean/crop/split/stats, cell conversion, tessellation, subdivide/agglomerate, refine, undo-green, decimate, partition, remesh, smoothing, interpolation, slice, isosurface, derivatives, Hessian, error estimation, field integration, data ops (click to expand)</summary>
+<summary><b>Mesh and data operations</b> — skin/surface extraction, quality, reorder, diff, merge, transform/clean/crop/split/stats, cell conversion, tessellation, subdivide/agglomerate, refine, undo-green, decimate, partition, remesh, MMG adaptation, smoothing, interpolation, slice, isosurface, derivatives, Hessian, error estimation, field integration, data ops (click to expand)</summary>
 
 #### Skin extraction
 
@@ -617,6 +617,10 @@ out = meshioplusplus.remesh(mesh, num_clusters=5000, metric="anisotropic", max_a
 ```
 
 `metric="isotropic"` (default) is fast and rounds sharp features; `"quadric"` (Garland-Heckbert error) pins clusters onto edges/corners instead; `"anisotropic"` shapes clusters with a local curvature tensor, elongating elements along low-curvature directions. The output has entirely **new** points and connectivity — no point/cell map — so `point_data`/`cell_data`/named regions are dropped and `field_data` carries through; transfer a field onto the result with `interpolate`/`conservative_interpolate`.
+
+#### Adaptation with MMG (optional backend)
+
+**`meshioplusplus.adapt`** remeshes a simplicial mesh to a constant size, a size field or an anisotropic metric through [MMG](https://www.mmgtools.org/): `mmg3d` for tetrahedra, `mmg2d` for planar triangles, `mmgs` for surfaces. Cell and side regions come back under their names, required points and regions survive exactly, and `metric_from_hessian` turns a `hessian` into the metric. MMG is LGPL-3.0 and bring-your-own (`-DMESHIOPLUSPLUS_WITH_MMG=ON`, `build/build-mmg.sh`), so the published wheels do not carry it. See `doc/mmg.md`.
 
 #### Volumetric remeshing (isosurface stuffing)
 

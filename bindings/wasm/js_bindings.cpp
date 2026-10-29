@@ -182,6 +182,7 @@
 #include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
+#include "meshioplusplus/operations/mmg.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
@@ -8111,6 +8112,12 @@ bool has_netgen_js() {
     return meshioplusplus::tetrahedralize_has_netgen();
 }
 
+// The MMG backend (roadmap 3.2): never in either WebAssembly artifact until
+// the port of roadmap 3.2.8, so the MMG operations are not bound here.
+bool has_mmg_js() {
+    return meshioplusplus::mmg_available();
+}
+
 // project_to_cad (roadmap 6.10.1): every point of a mesh onto the CAD face or
 // edge its cells name; options {faceArray, edgeArray, maxDistance,
 // trimSamples}, all optional.
@@ -8696,6 +8703,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("mirror", &mirror_js);
     emscripten::function("tetrahedralize", &tetrahedralize_js);
     emscripten::function("hasNetgen", &has_netgen_js);
+    emscripten::function("hasMmg", &has_mmg_js);
     emscripten::function("igaEvaluate", &iga_evaluate_js);
     emscripten::function("render", &render_js);
     emscripten::function("renderText", &render_text_js);

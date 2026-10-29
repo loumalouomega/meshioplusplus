@@ -1525,6 +1525,84 @@ SEXP R_mio_has_netgen(void) {
     return Rf_ScalarLogical(mio_has_netgen() != 0);
 }
 
+SEXP R_mio_has_mmg(void) {
+    return Rf_ScalarLogical(mio_has_mmg() != 0);
+}
+
+SEXP R_mio_has_mmg_elas(void) {
+    return Rf_ScalarLogical(mio_has_mmg_elas() != 0);
+}
+
+/* The report of an MMG operation, with its mesh, as a named list. */
+static SEXP r_mmg_result(mio_mesh *out, const mio_mmg_report *report) {
+    SEXP v[9];
+    v[0] = PROTECT(mio_r_wrap_mesh(out));
+    v[1] = PROTECT(Rf_mkString(report->status == 0 ? "success" : "low_failure"));
+    v[2] = PROTECT(Rf_mkString(report->library));
+    v[3] = PROTECT(Rf_ScalarReal((double)report->num_points_in));
+    v[4] = PROTECT(Rf_ScalarReal((double)report->num_points_out));
+    v[5] = PROTECT(Rf_ScalarReal((double)report->num_elements_in));
+    v[6] = PROTECT(Rf_ScalarReal((double)report->num_elements_out));
+    v[7] = PROTECT(Rf_allocVector(REALSXP, 3));
+    REAL(v[7])[0] = report->quality_min;
+    REAL(v[7])[1] = report->quality_mean;
+    REAL(v[7])[2] = report->quality_max;
+    v[8] = PROTECT(Rf_ScalarReal((double)report->num_warnings));
+    const char *names[] = {"mesh",          "status",           "library",
+                           "num_points_in", "num_points_out",   "num_elements_in",
+                           "num_elements_out", "quality",       "num_warnings"};
+    SEXP res = PROTECT(mio_r_named_list(9, names, v));
+    UNPROTECT(10);
+    return res;
+}
+
+/* The shared MMG parameters: sizes, the ridge angle, 1-based frozen points and
+   the required region names. */
+static void r_mmg_params(mio_mmg_params *p, SEXP hmin, SEXP hmax, SEXP hausd, SEXP hgrad,
+                         SEXP angle_detection, SEXP frozen, SEXP required) {
+    mio_mmg_params_init(p);
+    p->hmin = mio_r_double(hmin, "hmin");
+    p->hmax = mio_r_double(hmax, "hmax");
+    p->hausd = mio_r_double(hausd, "hausd");
+    p->hgrad = mio_r_double(hgrad, "hgrad");
+    p->angle_detection = mio_r_double(angle_detection, "angle_detection");
+    R_xlen_t n_frozen = 0;
+    p->frozen = r_ids_0based(frozen, &n_frozen);
+    p->num_frozen = (int64_t)n_frozen;
+    R_xlen_t n_required = Rf_length(required);
+    if (n_required > 0) {
+        const char **names = (const char **)R_alloc((size_t)n_required, sizeof(char *));
+        for (R_xlen_t i = 0; i < n_required; ++i) names[i] = CHAR(STRING_ELT(required, i));
+        p->required = names;
+        p->num_required = (int64_t)n_required;
+    }
+}
+
+SEXP R_mio_adapt(SEXP mesh, SEXP hsiz, SEXP size, SEXP metric, SEXP hmin, SEXP hmax, SEXP hausd,
+                 SEXP hgrad, SEXP angle_detection, SEXP frozen, SEXP required) {
+    mio_adapt_opts opts;
+    mio_adapt_opts_init(&opts);
+    r_mmg_params(&opts.params, hmin, hmax, hausd, hgrad, angle_detection, frozen, required);
+    opts.hsiz = mio_r_double(hsiz, "hsiz");
+    const char *s = mio_r_string(size, "size");
+    const char *m = mio_r_string(metric, "metric");
+    opts.size = s[0] ? s : NULL;
+    opts.metric = m[0] ? m : NULL;
+    mio_mmg_report report;
+    mio_mesh *out = mio_adapt(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL) mio_r_fail("adapt");
+    return r_mmg_result(out, &report);
+}
+
+SEXP R_mio_metric_from_hessian(SEXP mesh, SEXP hessian, SEXP error, SEXP hmin, SEXP hmax,
+                               SEXP output) {
+    mio_mesh *out = mio_metric_from_hessian(
+        mio_r_mesh(mesh), mio_r_string(hessian, "hessian"), mio_r_double(error, "error"),
+        mio_r_double(hmin, "hmin"), mio_r_double(hmax, "hmax"), mio_r_string(output, "output"));
+    if (out == NULL) mio_r_fail("metric_from_hessian");
+    return mio_r_wrap_mesh(out);
+}
+
 /* tetrahedralize (roadmap 6.7): tetrahedra filling a closed triangle surface.
  * Returns list(mesh, num_tetrahedra, ..., backend). */
 SEXP R_mio_tetrahedralize(SEXP mesh, SEXP backend, SEXP max_size, SEXP max_volume, SEXP grading,
