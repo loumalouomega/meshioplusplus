@@ -75,7 +75,7 @@ CadKernelProvider fake_kernel(int& rCalls) {
     provider.mFitCad = [&rCalls](const Mesh& rMesh, const std::string&, const FitCadOptions&) {
         ++rCalls;
         FitCadResult result;
-        result.mMesh = rMesh;
+        result.mMesh = detail::clone_mesh(rMesh);
         return result;
     };
     return provider;
