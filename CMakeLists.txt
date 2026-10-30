@@ -16,10 +16,10 @@ project(
 # A split-build add-on (packages/python/meshioplusplus-<name>) builds only its
 # provider against the installed base wheel's shared core: see
 # cmake/addon_occt.cmake and doc/python_packages_plan.md.
-set(MESHIOPLUSPLUS_ADDON "" CACHE STRING "Build only this add-on wheel's extension (occt)")
+set(MESHIOPLUSPLUS_ADDON "" CACHE STRING "Build only this add-on wheel's extension (occt, netgen, mmg)")
 if(MESHIOPLUSPLUS_ADDON)
-  if(NOT MESHIOPLUSPLUS_ADDON STREQUAL "occt")
-    message(FATAL_ERROR "meshio++: unknown MESHIOPLUSPLUS_ADDON '${MESHIOPLUSPLUS_ADDON}' (occt)")
+  if(NOT MESHIOPLUSPLUS_ADDON MATCHES "^(occt|netgen|mmg)$")
+    message(FATAL_ERROR "meshio++: unknown MESHIOPLUSPLUS_ADDON '${MESHIOPLUSPLUS_ADDON}' (occt, netgen, mmg)")
   endif()
   include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/addon_${MESHIOPLUSPLUS_ADDON}.cmake)
   return()
@@ -229,6 +229,18 @@ endif()
 # are probed only for the full artifact (MESHIOPLUSPLUS_WASM_FULL), from the
 # static wasm32 builds build-wasm-deps.sh --full installs: there is no
 # -sUSE_ZSTD/-sUSE_LZ4 port, and a host library must never be picked up.
+# The PyPI wheels link HDF5, netCDF, CGNS, zstd, lz4, bzip2 and KaHIP from static
+# archives (build/build-permissive-libs.sh) so the wheel needs no copy of them
+# beside it: with this on, each is looked up static first, and a shared
+# install is only the fallback. Under MESHIOPLUSPLUS_PYTHON_SHARED_CORE the
+# archives' symbols are also kept out of the shared core's export table on
+# Linux (MESHIOPLUSPLUS_HIDDEN_ARCHIVES), because h5py and netCDF4 bring their
+# own HDF5 into the same process and an exported H5* would interpose on it.
+option(MESHIOPLUSPLUS_PREFER_STATIC_DEPS
+       "Prefer static archives for HDF5, netCDF, CGNS, zstd, lz4, bzip2 and KaHIP" OFF)
+set(MESHIOPLUSPLUS_HIDDEN_ARCHIVES
+    "libhdf5.a;libhdf5_hl.a;libnetcdf.a;libcgns.a;libzstd.a;liblz4.a;libbz2.a;libkahip_static.a;libkahip.a;libz.a"
+    CACHE STRING "Static archives whose symbols the shared core must not export (GNU ld)")
 option(MESHIOPLUSPLUS_WITH_ZSTD "Build the VTK XML zstd compression path" OFF)
 option(MESHIOPLUSPLUS_WITH_LZ4 "Build the VTK XML lz4 compression path" OFF)
 # liblzma (xz-utils, public domain): vtkLZMADataCompressor. Found through CMake's
@@ -251,7 +263,21 @@ endif()
 # artifact uses Emscripten's own bzip2 port instead (-sUSE_BZIP2=1, below).
 option(MESHIOPLUSPLUS_WITH_BZIP2 "Build the native bzip2 path (libMesh .bz2 meshes)" OFF)
 if(MESHIOPLUSPLUS_WITH_BZIP2 AND NOT EMSCRIPTEN)
-  find_package(BZip2 QUIET)
+  if(MESHIOPLUSPLUS_PREFER_STATIC_DEPS AND UNIX)
+    # FindBZip2 looks libraries up by name: put the archive suffix first, then
+    # try again with the default order if there is no archive.
+    set(_mio_saved_suffixes "${CMAKE_FIND_LIBRARY_SUFFIXES}")
+    set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+    find_package(BZip2 QUIET)
+    set(CMAKE_FIND_LIBRARY_SUFFIXES "${_mio_saved_suffixes}")
+    if(NOT BZIP2_FOUND)
+      unset(BZIP2_LIBRARIES CACHE)
+      unset(BZIP2_LIBRARY_RELEASE CACHE)
+      find_package(BZip2 QUIET)
+    endif()
+  else()
+    find_package(BZip2 QUIET)
+  endif()
 endif()
 if(MESHIOPLUSPLUS_WITH_LZ4 AND _mio_probe_optional)
   find_package(lz4 QUIET)
@@ -283,6 +309,8 @@ endif()
 # never vendored, and natively linked dynamically. Under Emscripten only the
 # full artifact probes it, for the static wasm32 nglib and ngcore
 # build-wasm-deps.sh --full builds; the lean one raises by name.
+set(MESHIOPLUSPLUS_NETGEN_VERSION "unknown" CACHE STRING
+    "The Netgen version reported by the tetrahedral mesher provider (nglib.h carries none)")
 option(MESHIOPLUSPLUS_WITH_NETGEN "Build the Netgen tetrahedralize backend" OFF)
 if(MESHIOPLUSPLUS_WITH_NETGEN AND _mio_probe_optional)
   list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -459,7 +487,16 @@ if(MESHIOPLUSPLUS_WITH_HDF5)
     set(HDF5_USE_STATIC_LIBRARIES ON)
     find_package(HDF5 QUIET COMPONENTS C)
   else()
+    if(MESHIOPLUSPLUS_PREFER_STATIC_DEPS)
+      # FindHDF5 then looks for libhdf5.a; a shared-only install is found by the
+      # retry below, which clears the request.
+      set(HDF5_USE_STATIC_LIBRARIES ON)
+    endif()
     find_package(HDF5 QUIET COMPONENTS C)
+    if(NOT HDF5_FOUND AND MESHIOPLUSPLUS_PREFER_STATIC_DEPS)
+      unset(HDF5_USE_STATIC_LIBRARIES)
+      find_package(HDF5 QUIET COMPONENTS C)
+    endif()
     if(NOT HDF5_FOUND)
       # Some distros ship only an MPI-flavoured HDF5 (e.g. Debian's
       # libhdf5-openmpi-dev); FindHDF5 prefers serial by default, so retry.
@@ -819,7 +856,9 @@ if(MESHIOPLUSPLUS_WITH_ZSTD AND (zstd_FOUND OR ZSTD_LIBRARY))
   message(STATUS "meshio++: VTK XML zstd compression enabled")
   list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_ZSTD)
   # A static-only install (the full wasm prefix) exports no shared target.
-  if(TARGET zstd::libzstd_shared)
+  if(TARGET zstd::libzstd_static AND MESHIOPLUSPLUS_PREFER_STATIC_DEPS)
+    list(APPEND _mio_core_libs zstd::libzstd_static)
+  elseif(TARGET zstd::libzstd_shared)
     list(APPEND _mio_core_libs zstd::libzstd_shared)
   elseif(TARGET zstd::libzstd_static)
     list(APPEND _mio_core_libs zstd::libzstd_static)
@@ -836,7 +875,9 @@ endif()
 if(MESHIOPLUSPLUS_WITH_LZ4 AND (lz4_FOUND OR LZ4_LIBRARY))
   message(STATUS "meshio++: VTK XML lz4 compression enabled")
   list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_LZ4)
-  if(TARGET LZ4::lz4_shared)
+  if(TARGET LZ4::lz4_static AND MESHIOPLUSPLUS_PREFER_STATIC_DEPS)
+    list(APPEND _mio_core_libs LZ4::lz4_static)
+  elseif(TARGET LZ4::lz4_shared)
     list(APPEND _mio_core_libs LZ4::lz4_shared)
   elseif(TARGET LZ4::lz4_static)
     list(APPEND _mio_core_libs LZ4::lz4_static)
@@ -902,60 +943,42 @@ elseif(MESHIOPLUSPLUS_WITH_KAHIP)
                  "partition method 'kahip' will raise")
 endif()
 
+# A provider (providers.hpp) compiled into the core: its sources join the core's,
+# and reach the private headers (detail/...) from src/cpp/src. A split build
+# leaves the option off and builds the same sources into the add-on instead
+# (cmake/addon_<name>.cmake).
+macro(meshioplusplus_add_provider_sources name)
+  file(GLOB _mio_provider_sources src/cpp/providers/${name}/*.cpp)
+  list(APPEND MESHIOPLUSPLUS_CORE_SOURCES ${_mio_provider_sources})
+  target_sources(meshioplusplus_core_obj PRIVATE ${_mio_provider_sources})
+  list(APPEND _mio_core_priv_incs ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src)
+endmacro()
+
 if(MESHIOPLUSPLUS_WITH_NETGEN AND NETGEN_FOUND)
   message(STATUS "meshio++: Netgen tetrahedralize backend enabled (${NETGEN_LIBRARIES})")
-  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_NETGEN)
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_NETGEN
+       MESHIOPLUSPLUS_NETGEN_VERSION="${MESHIOPLUSPLUS_NETGEN_VERSION}")
   list(APPEND _mio_core_libs netgen::nglib)
+  meshioplusplus_add_provider_sources(netgen)
 elseif(MESHIOPLUSPLUS_WITH_NETGEN)
   message(STATUS "meshio++: Netgen requested but not found (set NETGEN_ROOT) - "
                  "tetrahedralize will raise")
 endif()
 
 if(MESHIOPLUSPLUS_WITH_MMG AND TARGET Mmg::libmmg_so)
-  # The library file and the headers, read for what MMG was built with: the
-  # width of MMG5_int (roadmap 3.2.5.2) from mmgcmakedefines.h, and ELAS -- the
-  # linear-elasticity library move needs -- from libmmg's reference to its
-  # LS_elastic, since MMG's headers do not record USE_ELAS.
-  set(_mio_mmg_lib "")
-  get_target_property(_mio_mmg_configs Mmg::libmmg_so IMPORTED_CONFIGURATIONS)
-  foreach(_c IN LISTS _mio_mmg_configs)
-    get_target_property(_mio_mmg_lib Mmg::libmmg_so IMPORTED_LOCATION_${_c})
-    if(_mio_mmg_lib)
-      break()
-    endif()
-  endforeach()
-  get_target_property(_mio_mmg_incs Mmg::libmmg_so INTERFACE_INCLUDE_DIRECTORIES)
-  set(_mio_mmg_int64 "")
-  foreach(_inc IN LISTS _mio_mmg_incs)
-    if(EXISTS "${_inc}/mmg/common/mmgcmakedefines.h")
-      file(STRINGS "${_inc}/mmg/common/mmgcmakedefines.h" _mio_mmg_int64
-           REGEX "define MMG5_int int64_t")
-      break()
-    endif()
-  endforeach()
-  set(_mio_mmg_elas "")
-  if(_mio_mmg_lib AND EXISTS "${_mio_mmg_lib}")
-    file(STRINGS "${_mio_mmg_lib}" _mio_mmg_elas REGEX "LS_elastic" LIMIT_COUNT 1)
-  endif()
-  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_MMG)
+  include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/MmgProbe.cmake)
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_MMG
+       MESHIOPLUSPLUS_MMG_VERSION="${_mio_mmg_version}")
   list(APPEND _mio_core_libs Mmg::libmmg_so)
+  meshioplusplus_add_provider_sources(mmg)
   if(_mio_mmg_int64)
     list(APPEND _mio_core_defs MESHIOPLUSPLUS_MMG_INT64)
   endif()
   if(_mio_mmg_elas)
     list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_MMG_ELAS)
     # libmmg needs libElas (and its libCommons) but records no RPATH to them:
-    # link them by path, from beside libmmg, so every target resolves.
-    get_filename_component(_mio_mmg_libdir "${_mio_mmg_lib}" DIRECTORY)
-    find_library(MESHIOPLUSPLUS_ELAS_LIBRARY NAMES Elas HINTS "${_mio_mmg_libdir}" ENV ELAS_DIR
-                 PATH_SUFFIXES lib)
-    find_library(MESHIOPLUSPLUS_ELAS_COMMONS_LIBRARY NAMES Commons
-                 HINTS "${_mio_mmg_libdir}" ENV ELAS_DIR PATH_SUFFIXES lib)
-    foreach(_l MESHIOPLUSPLUS_ELAS_LIBRARY MESHIOPLUSPLUS_ELAS_COMMONS_LIBRARY)
-      if(${_l})
-        list(APPEND _mio_core_libs "${${_l}}")
-      endif()
-    endforeach()
+    # link them by path, so every target resolves...
+    list(APPEND _mio_core_libs ${_mio_mmg_elas_libs})
     # ...and let a target that reaches libmmg only through a shared library
     # (the Fortran test, a consumer's executable) find them at link time.
     if(UNIX AND NOT APPLE)
@@ -984,15 +1007,7 @@ if(MESHIOPLUSPLUS_WITH_OCCT AND _mio_occt_libs)
   list(APPEND _mio_core_sys_incs ${OpenCASCADE_INCLUDE_DIR})
   list(APPEND _mio_core_defs ${_mio_occt_defs})
   list(APPEND _mio_core_libs ${_mio_occt_link})
-  # The kernel is a provider (providers.hpp): compiled into the core here, and
-  # registered by register_builtin_providers(). A split build leaves
-  # MESHIOPLUSPLUS_WITH_OCCT off in the core and builds these same sources into
-  # the meshioplusplus-occt add-on instead (cmake/addon_occt.cmake). They reach
-  # the core's private headers (detail/...) from src/cpp/src.
-  file(GLOB _mio_occt_provider_sources src/cpp/providers/occt/*.cpp)
-  list(APPEND MESHIOPLUSPLUS_CORE_SOURCES ${_mio_occt_provider_sources})
-  target_sources(meshioplusplus_core_obj PRIVATE ${_mio_occt_provider_sources})
-  list(APPEND _mio_core_priv_incs ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src)
+  meshioplusplus_add_provider_sources(occt)
 elseif(MESHIOPLUSPLUS_REQUIRE_OCCT)
   message(FATAL_ERROR "meshio++: MESHIOPLUSPLUS_REQUIRE_OCCT is set but OpenCASCADE 7.6 or later "
                       "was not found (build one with build/build-occt.sh and set OpenCASCADE_DIR)")
@@ -1019,7 +1034,11 @@ if(MESHIOPLUSPLUS_WITH_CGNSLIB AND NOT MESHIOPLUSPLUS_WITH_HDF5)
           "meshio++: MESHIOPLUSPLUS_WITH_CGNSLIB needs MESHIOPLUSPLUS_WITH_HDF5=ON - "
           "the cgnslib backend augments the HDF5-backed CGNS format, it does not replace it.")
 endif()
-if(MESHIOPLUSPLUS_WITH_CGNSLIB AND TARGET CGNS::cgns_shared)
+if(MESHIOPLUSPLUS_WITH_CGNSLIB AND MESHIOPLUSPLUS_PREFER_STATIC_DEPS AND TARGET CGNS::cgns_static)
+  message(STATUS "meshio++: cgnslib CGNS backend enabled (static)")
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_CGNSLIB)
+  list(APPEND _mio_core_libs CGNS::cgns_static)
+elseif(MESHIOPLUSPLUS_WITH_CGNSLIB AND TARGET CGNS::cgns_shared)
   message(STATUS "meshio++: cgnslib CGNS backend enabled (shared)")
   list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_CGNSLIB)
   list(APPEND _mio_core_libs CGNS::cgns_shared)
@@ -1431,6 +1450,16 @@ function(meshioplusplus_add_core_variant backend)
                  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
   endif()
 
+  if(MESHIOPLUSPLUS_PYTHON_SHARED_CORE AND MESHIOPLUSPLUS_PREFER_STATIC_DEPS AND
+     CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # The static dependencies' own symbols stay local to the core. Never ALL:
+    # that would hide libstdc++ too, whose symbols must stay exported (below).
+    # macOS needs nothing: its two-level namespace binds each symbol to the
+    # image that defines it, so h5py's HDF5 and ours cannot interpose; Windows
+    # DLLs export only what they list.
+    string(REPLACE ";" "," _mio_hidden_archives "${MESHIOPLUSPLUS_HIDDEN_ARCHIVES}")
+    target_link_options(${_lib} PRIVATE "LINKER:--exclude-libs,${_mio_hidden_archives}")
+  endif()
   if(MESHIOPLUSPLUS_PYTHON_SHARED_CORE)
     set_target_properties(${_lib} PROPERTIES
       CXX_VISIBILITY_PRESET default C_VISIBILITY_PRESET default

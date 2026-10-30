@@ -293,7 +293,7 @@ if TYPE_CHECKING:
     from ._surface import extract_surface
     from ._tensor_invariants import tensor_invariants
     from ._tessellation import Tessellation, tessellate
-    from ._tetrahedralize import tetrahedralize
+    from ._tetrahedralize import has_netgen, tetrahedralize
     from ._thickness import thickness
     from ._transform import transform
     from ._tui import tui
@@ -534,6 +534,7 @@ _LAZY_ATTRS = {
     "revolve": "_extrude",
     "mirror": "_mirror",
     "tetrahedralize": "_tetrahedralize",
+    "has_netgen": "_tetrahedralize",
     "triangulate_polygon_2d": "_mesh_cad",
 }
 
@@ -744,6 +745,7 @@ __all__ = [
     "revolve",
     "mirror",
     "tetrahedralize",
+    "has_netgen",
     "triangulate_polygon_2d",
     "sample_distance",
     "distance_to_surface",

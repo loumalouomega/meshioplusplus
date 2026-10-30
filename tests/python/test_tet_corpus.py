@@ -25,7 +25,7 @@ corpus = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(corpus)
 
 needs_netgen = pytest.mark.skipif(
-    not getattr(_core, "__has_netgen__", False), reason="needs the Netgen backend"
+    not mio.has_netgen(), reason="needs the Netgen backend"
 )
 
 GEOMETRY = (

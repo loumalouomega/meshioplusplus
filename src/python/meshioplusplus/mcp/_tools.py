@@ -103,6 +103,7 @@ from .. import (
     grid,
     has_mmg,
     has_mmg_elas,
+    has_netgen,
     hausdorff_distance,
     helix,
     hessian,
@@ -4258,9 +4259,10 @@ def tool_decimate_volume(
 def _mmg_unavailable(op):
     """The guarded error shape for an MMG tool in a build without MMG, plus the capability."""
     return {
-        "error": f"meshio++: {op}: the MMG backend is not built in: rebuild with "
+        "error": f"meshio++: {op}: the MMG backend is not available: install the "
+        "meshioplusplus-mmg package (pip install meshioplusplus[mmg]), or rebuild with "
         "-DMESHIOPLUSPLUS_WITH_MMG=ON and a shared MMG install (build/build-mmg.sh; "
-        "see doc/mmg.md); the PyPI wheels do not carry it",
+        "see doc/mmg.md)",
         "error_type": "NotImplementedError",
         "mmg_available": False,
     }
@@ -5012,7 +5014,9 @@ def tool_tetrahedralize(
     Netgen when built in). Returns num_tetrahedra, num_points, num_new_points,
     num_regions, num_boundary_triangles, boundary_preserved,
     hausdorff_to_surface, min_dihedral_deg, max_dihedral_deg, volume,
-    backend and warnings alongside the mesh summary."""
+    backend and warnings alongside the mesh summary, and netgen_available
+    (whether the Netgen backend is installed: the meshioplusplus-netgen
+    package)."""
     mesh = _load(input_path, input_format)
     out, report = tetrahedralize(
         mesh,
@@ -5025,7 +5029,12 @@ def tool_tetrahedralize(
         face_array=face_array,
         return_report=True,
     )
-    return _result(_store(out, output_path, output_format), out, **report)
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        netgen_available=has_netgen(),
+        **report,
+    )
 
 
 def tool_project_to_cad(

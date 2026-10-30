@@ -27,11 +27,24 @@ import warnings
 
 from ._mesh_cad import _core_or_raise
 
-__all__ = ["tetrahedralize"]
+__all__ = ["tetrahedralize", "has_netgen"]
 
 _PREFIX = "meshio++: tetrahedralize: "
 
 _BACKENDS = ("auto", "netgen", "octree")
+
+
+def has_netgen() -> bool:
+    """Whether the Netgen backend is available (built in, or the
+    ``meshioplusplus-netgen`` add-on)."""
+    try:
+        from . import _core
+    except ImportError:
+        return False
+    from ._plugins import load_plugins
+
+    load_plugins()
+    return bool(getattr(_core, "__has_netgen__", False))
 
 _REPORT_INTS = (
     "num_tetrahedra",

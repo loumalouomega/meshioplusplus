@@ -3310,6 +3310,11 @@ def run_pipeline(settings, input_path=None, output_path=None):
         anywhere, a mis-typed parameter -- always naming the offender, never
         silently ignoring it.
     """
+    # Steps such as FitCad, Tetrahedralize and Adapt reach add-on providers
+    # from C++, with no Python helper in between to find them.
+    from ._plugins import load_plugins
+
+    load_plugins()
     doc = _resolve_settings(settings)
     if not isinstance(doc, dict):
         raise ValueError("meshio++: pipeline: the settings document must be an object")

@@ -1303,7 +1303,7 @@ def test_tetrahedralize_pipeline_step(tmp_path):
         assert step["BoundaryPreserved"] == 0.0 and step["NumTetrahedra"] > 0, name
         fitted.append(step)
     assert all(s == fitted[0] for s in fitted)
-    if not _core.__has_netgen__:
+    if not meshioplusplus.has_netgen():
         for _, run in _engines():
             with pytest.raises(NotImplementedError, match="MESHIOPLUSPLUS_WITH_NETGEN"):
                 run(

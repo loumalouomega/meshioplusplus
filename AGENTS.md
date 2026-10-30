@@ -98,12 +98,12 @@ Reference fixtures in `tests/python/meshes/` and `tests/python/input/` use Git L
 
 ## Version bumps
 
-Update all eleven files to the same release version:
+Update all of these files to the same release version:
 
 | File | Field |
 | --- | --- |
-| `pyproject.toml` | `version`, and the `meshioplusplus-occt==` pins of the `occt` and `all` extras |
-| `packages/python/meshioplusplus-occt/pyproject.toml` | `version`, and the `meshioplusplus==` pins of `build-system.requires` and `dependencies` |
+| `pyproject.toml` | `version`, and the `meshioplusplus-{occt,netgen,mmg}==` pins of the `occt`, `netgen`, `mmg` and `all` extras |
+| `packages/python/meshioplusplus-{occt,netgen,mmg}/pyproject.toml` | `version`, and the `meshioplusplus==` pins of `build-system.requires` and `dependencies` (three files) |
 | `CMakeLists.txt` | `project(... VERSION ...)` |
 | `conanfile.py` | `version` |
 | `packages/vcpkg/meshioplusplus/vcpkg.json` | `version` |

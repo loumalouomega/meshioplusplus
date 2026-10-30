@@ -41,15 +41,22 @@ def _core_or_raise(what):
             f"{_PREFIX}{what}: needs the compiled C++ core (meshioplusplus._core) "
             "built with -DMESHIOPLUSPLUS_WITH_MMG=ON; it has no numpy twin"
         ) from exc
+    from ._plugins import load_plugins
+
+    load_plugins()  # the meshioplusplus-mmg add-on registers the remesher
     return _core
 
 
 def has_mmg() -> bool:
-    """Whether the compiled core carries the MMG backend."""
+    """Whether the MMG backend is available (built in, or the ``meshioplusplus-mmg``
+    add-on)."""
     try:
         from . import _core
     except ImportError:
         return False
+    from ._plugins import load_plugins
+
+    load_plugins()
     return bool(getattr(_core, "__has_mmg__", False))
 
 
@@ -59,6 +66,9 @@ def has_mmg_elas() -> bool:
         from . import _core
     except ImportError:
         return False
+    from ._plugins import load_plugins
+
+    load_plugins()
     return bool(getattr(_core, "__has_mmg_elas__", False))
 
 

@@ -2151,6 +2151,7 @@ _NOT_TOOLS = {
     "has_viewer",
     "has_mmg",  # capability probes; the adapt tool reports mmg_available
     "has_mmg_elas",
+    "has_netgen",  # the tetrahedralize tool reports netgen_available
     "to_pyvista",
     "from_pyvista",
     "to_trimesh",
@@ -2446,7 +2447,8 @@ def test_tetrahedralize_tool(tmp_path):
     fitted = _tools.tool_tetrahedralize(str(skin), str(out), backend="octree")
     assert fitted["backend"] == "octree" and not fitted["boundary_preserved"]
     assert fitted["num_tetrahedra"] > 0 and fitted["hausdorff_to_surface"] > 0.0
-    if not _core.__has_netgen__:
+    assert fitted["netgen_available"] is meshioplusplus.has_netgen()
+    if not meshioplusplus.has_netgen():
         with pytest.raises(NotImplementedError, match="MESHIOPLUSPLUS_WITH_NETGEN"):
             _tools.tool_tetrahedralize(str(skin), str(out), backend="netgen")
         return

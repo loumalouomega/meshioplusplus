@@ -24,6 +24,39 @@ jobs:
       - name: Initialise submodules
         uses: ./.github/actions/init-submodules
 
+      # The permissively licensed libraries the base wheel links natively (roadmap
+      # 4.7.2): HDF5, netCDF, cgnslib, zstd, lz4, bzip2 and KaHIP as static,
+      # hidden-symbol archives (build/build-permissive-libs.sh), cached per runner.
+      # Linux builds them in the same manylinux_2_34 image and gcc-toolset-13 the
+      # wheel uses, through a mounted checkout, so the prefix lands on the host (and
+      # in the cache) and cibuildwheel copies it in with the project
+      # (/project/build/deps). Windows keeps these formats on h5py and netCDF4:
+      # the script has no MSVC recipe yet.
+      - name: Cache the static libraries
+        if: runner.os != 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: build/deps
+          key: deps-wheels-${{ matrix.os }}-${{ hashFiles('build/build-permissive-libs.sh', 'build/deps-pins.sh') }}
+
+      - name: Build the static libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$PWD:/project" -w /project \
+            "quay.io/pypa/manylinux_2_34_$(uname -m)" bash -c \
+            "yum install -y gcc-toolset-13-gcc gcc-toolset-13-gcc-c++ git cmake make curl &&
+             git config --global --add safe.directory '*' &&
+             CC=/opt/rh/gcc-toolset-13/root/usr/bin/gcc CXX=/opt/rh/gcc-toolset-13/root/usr/bin/g++
+             sh build/build-permissive-libs.sh build/deps --jobs \$(nproc)"
+
+      - name: Build the static libraries (universal, macOS)
+        if: runner.os == 'macOS'
+        run: sh build/build-permissive-libs.sh build/deps --universal --jobs "$(sysctl -n hw.ncpu)"
+
+      - name: Locate the static libraries
+        if: runner.os == 'macOS'
+        run: echo "DEPS_PREFIX=$PWD/build/deps" >> "$GITHUB_ENV"
+
       - name: Build wheels
         # v2.21's manylinux alias table predates _2_34, and it hardcodes cp38 for its
         # own before_all bootstrapping - manylinux_2_34 (AlmaLinux 9) doesn't ship
@@ -33,10 +66,11 @@ jobs:
         # change affects us since CIBW_BUILD never targets cp38 wheels.
         uses: pypa/cibuildwheel@v4.1.0
         env:
-          # Portable wheels: the optional HDF5/netCDF native paths are turned
-          # OFF, so the only build requirement is a C++20 compiler. HDF5/netCDF
-          # formats work through the h5py/netCDF4 runtime extras exactly as the
-          # fallback shims intend. zlib is the one exception: rather than
+          # Portable wheels: the native HDF5, netCDF, cgnslib, zstd, lz4, bzip2 and
+          # KaHIP paths are linked from the static archives built above (Linux and
+          # macOS), so the wheel needs no copy of them beside it; on Windows they
+          # are OFF and those formats work through the h5py/netCDF4 runtime extras
+          # exactly as the fallback shims intend. zlib is separate: rather than
           # falling back to the Python stdlib zlib (which VTU compression can
           # do, but the GiD postprocess writer cannot -- gidpost needs zlib
           # unconditionally), MESHIOPLUSPLUS_ZLIB_STATIC vendors a pinned,
@@ -79,19 +113,23 @@ jobs:
           # has no static-link option GCC recognizes ("-static-libgomp" isn't a real GCC
           # flag, unlike -static-libgcc/-static-libstdc++), so it would stay a dynamic
           # dependency and could still hit a versioned-symbol rejection. These wheels
-          # already trade native HDF5/netCDF for portability (see above) - SEQ
-          # keeps that trade consistent; TBB/OpenMP builds remain available from source.
+          # already trade a parallel runtime for portability - SEQ keeps that trade
+          # consistent; TBB/OpenMP builds remain available from source.
           CIBW_ENVIRONMENT_LINUX: >-
             CC="/opt/rh/gcc-toolset-13/root/usr/bin/gcc"
             CXX="/opt/rh/gcc-toolset-13/root/usr/bin/g++"
-            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=ON -DMESHIOPLUSPLUS_ZLIB_STATIC=ON -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ -DMESHIOPLUSPLUS_STATIC_RUNTIME=ON -DMESHIOPLUSPLUS_WITH_OCCT=OFF -DMESHIOPLUSPLUS_PYTHON_SHARED_CORE=ON"
+            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=ON -DMESHIOPLUSPLUS_WITH_NETCDF=ON -DMESHIOPLUSPLUS_WITH_CGNSLIB=ON -DMESHIOPLUSPLUS_WITH_ZSTD=ON -DMESHIOPLUSPLUS_WITH_LZ4=ON -DMESHIOPLUSPLUS_WITH_BZIP2=ON -DMESHIOPLUSPLUS_WITH_KAHIP=ON -DMESHIOPLUSPLUS_PREFER_STATIC_DEPS=ON -DCMAKE_PREFIX_PATH=/project/build/deps -DKAHIP_ROOT=/project/build/deps -DMESHIOPLUSPLUS_WITH_ZLIB=ON -DMESHIOPLUSPLUS_ZLIB_STATIC=ON -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ -DMESHIOPLUSPLUS_STATIC_RUNTIME=ON -DMESHIOPLUSPLUS_WITH_OCCT=OFF -DMESHIOPLUSPLUS_PYTHON_SHARED_CORE=ON"
           # -v surfaces which specific symbol/library trips the manylinux policy check,
           # instead of auditwheel's generic "too-recent versioned symbols" message.
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel -v repair -w {dest_dir} {wheel}"
-          CIBW_ENVIRONMENT: >-
-            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=ON -DMESHIOPLUSPLUS_ZLIB_STATIC=ON -DMESHIOPLUSPLUS_WITH_OCCT=OFF -DMESHIOPLUSPLUS_PYTHON_SHARED_CORE=ON"
+          CIBW_ENVIRONMENT_MACOS: >-
+            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=ON -DMESHIOPLUSPLUS_WITH_NETCDF=ON -DMESHIOPLUSPLUS_WITH_CGNSLIB=ON -DMESHIOPLUSPLUS_WITH_ZSTD=ON -DMESHIOPLUSPLUS_WITH_LZ4=ON -DMESHIOPLUSPLUS_WITH_BZIP2=ON -DMESHIOPLUSPLUS_WITH_KAHIP=ON -DMESHIOPLUSPLUS_PREFER_STATIC_DEPS=ON -DCMAKE_PREFIX_PATH=${{ env.DEPS_PREFIX }} -DKAHIP_ROOT=${{ env.DEPS_PREFIX }} -DMESHIOPLUSPLUS_WITH_ZLIB=ON -DMESHIOPLUSPLUS_ZLIB_STATIC=ON -DMESHIOPLUSPLUS_WITH_OCCT=OFF -DMESHIOPLUSPLUS_PYTHON_SHARED_CORE=ON"
             MACOSX_DEPLOYMENT_TARGET="13.3"
-          CIBW_TEST_REQUIRES: "pytest h5py"
+          # Windows keeps HDF5, netCDF and the codecs on the Python fallbacks (h5py,
+          # netCDF4, the stdlib) until build-permissive-libs.sh has an MSVC recipe.
+          CIBW_ENVIRONMENT_WINDOWS: >-
+            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=ON -DMESHIOPLUSPLUS_ZLIB_STATIC=ON -DMESHIOPLUSPLUS_WITH_OCCT=OFF -DMESHIOPLUSPLUS_PYTHON_SHARED_CORE=ON"
+          CIBW_TEST_REQUIRES: "pytest h5py netCDF4"
           # The gid round trip proves the vendored static zlib actually reached
           # this wheel's compiled _core, not just that CMake configured it.
           CIBW_TEST_COMMAND: >-
@@ -203,6 +241,203 @@ jobs:
           name: occt-wheels-${{ matrix.os }}
           path: ./wheelhouse/*.whl
 
+  # ---------------------------------------------------------------------------
+  # The meshioplusplus-netgen add-on (roadmap 4.7.1): Netgen as shared objects
+  # beside an extension that registers the provider with the base wheel's
+  # shared core. Built on the same runner as the base wheel, from the base wheel
+  # itself (PIP_FIND_LINKS points the build environment at it), so the two are
+  # one toolchain and one version; the repair tools leave the core to the base
+  # wheel. Tested as a pair with tests/wheel_netgen_smoke.py. LGPL-2.1: nglib is
+  # linked dynamically and ships in this wheel only.
+  # ---------------------------------------------------------------------------
+  build_netgen_addon:
+    name: meshioplusplus-netgen on ${{ matrix.os }}
+    needs: [build_wheels]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: base-wheelhouse
+
+      - name: Cache Netgen
+        uses: actions/cache@v4
+        with:
+          path: build/netgen-prefix
+          key: netgen-prefix-${{ matrix.os }}-${{ hashFiles('build/build-netgen.sh') }}
+
+      - name: Build Netgen (shared) (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$PWD:/project" -w /project \
+            "quay.io/pypa/manylinux_2_34_$(uname -m)" bash -c \
+            "yum install -y gcc-toolset-13-gcc gcc-toolset-13-gcc-c++ git cmake &&
+             git config --global --add safe.directory '*' &&
+             CC=/opt/rh/gcc-toolset-13/root/usr/bin/gcc CXX=/opt/rh/gcc-toolset-13/root/usr/bin/g++
+             sh build/build-netgen.sh build/netgen-prefix --jobs \$(nproc)"
+
+      - name: Build Netgen (shared) (macOS)
+        if: runner.os == 'macOS'
+        run: sh build/build-netgen.sh build/netgen-prefix --jobs "$(sysctl -n hw.ncpu)"
+
+      - name: Build Netgen (shared) (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: sh build/build-netgen.sh build/netgen-prefix 
+
+      - name: Locate the prefixes
+        shell: bash
+        run: |
+          # Forward-slash paths, as for the base wheel: cibuildwheel evaluates
+          # CIBW_ENVIRONMENT like a shell.
+          here="$( (pwd -W 2>/dev/null || pwd) )"
+          echo "ADDON_PREFIX=$here/build/netgen-prefix" >> "$GITHUB_ENV"
+          echo "BASE_WHEELHOUSE=$here/base-wheelhouse" >> "$GITHUB_ENV"
+
+      - name: Build the add-on wheels
+        uses: pypa/cibuildwheel@v4.1.0
+        with:
+          package-dir: packages/python/meshioplusplus-netgen
+        env:
+          CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-*"
+          CIBW_SKIP: "*-musllinux* *_i686 *-win32"
+          CIBW_ARCHS_MACOS: "x86_64 arm64"
+          CIBW_MANYLINUX_X86_64_IMAGE: "quay.io/pypa/manylinux_2_34_x86_64"
+          CIBW_MANYLINUX_AARCH64_IMAGE: "quay.io/pypa/manylinux_2_34_aarch64"
+          CIBW_BEFORE_ALL_LINUX: "yum install -y gcc-toolset-13-gcc gcc-toolset-13-gcc-c++"
+          CIBW_BUILD_FRONTEND: "pip; args: --no-build-isolation-package meshioplusplus"
+          CIBW_ENVIRONMENT_LINUX: >-
+            CC="/opt/rh/gcc-toolset-13/root/usr/bin/gcc"
+            CXX="/opt/rh/gcc-toolset-13/root/usr/bin/g++"
+            CMAKE_ARGS="-DMESHIOPLUSPLUS_STATIC_RUNTIME=ON -DMESHIOPLUSPLUS_NETGEN_VERSION=6.2.2401"
+            NETGEN_ROOT="/project/build/netgen-prefix"
+            PIP_FIND_LINKS="/project/base-wheelhouse"
+          CIBW_ENVIRONMENT_MACOS: >-
+            NETGEN_ROOT="${{ env.ADDON_PREFIX }}"
+            CMAKE_ARGS="-DMESHIOPLUSPLUS_NETGEN_VERSION=6.2.2401"
+            PIP_FIND_LINKS="${{ env.BASE_WHEELHOUSE }}"
+            MACOSX_DEPLOYMENT_TARGET="13.3"
+          CIBW_ENVIRONMENT_WINDOWS: >-
+            NETGEN_ROOT="${{ env.ADDON_PREFIX }}"
+            CMAKE_ARGS="-DMESHIOPLUSPLUS_NETGEN_VERSION=6.2.2401"
+            PIP_FIND_LINKS="${{ env.BASE_WHEELHOUSE }}"
+          # The core stays in the base wheel: the repair tools bundle Netgen
+          # (Netgen's nglib and ngcore) but not libmeshioplusplus_core_meshio.
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel -v repair --exclude 'libmeshioplusplus_core_meshio.so*' -w {dest_dir} {wheel}"
+          CIBW_REPAIR_WHEEL_COMMAND_MACOS: "delocate-wheel --require-archs {delocate_archs} --exclude libmeshioplusplus_core_meshio -w {dest_dir} -v {wheel}"
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: "delvewheel repair --exclude meshioplusplus_core_meshio.dll --add-path ${{ env.ADDON_PREFIX }}/bin -w {dest_dir} {wheel}"
+          CIBW_TEST_REQUIRES: "pytest"
+          CIBW_TEST_COMMAND: "python {project}/tests/wheel_netgen_smoke.py"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: netgen-wheels-${{ matrix.os }}
+          path: ./wheelhouse/*.whl
+
+  # ---------------------------------------------------------------------------
+  # The meshioplusplus-mmg add-on (roadmap 4.7.1): MMG as shared objects
+  # beside an extension that registers the provider with the base wheel's
+  # shared core. Built on the same runner as the base wheel, from the base wheel
+  # itself (PIP_FIND_LINKS points the build environment at it), so the two are
+  # one toolchain and one version; the repair tools leave the core to the base
+  # wheel. Tested as a pair with tests/wheel_mmg_smoke.py. LGPL-3.0-or-later:
+  # libmmg is linked dynamically and ships in this wheel only; built without
+  # ELAS (GPL-3.0), so `move` raises.
+  # ---------------------------------------------------------------------------
+  build_mmg_addon:
+    name: meshioplusplus-mmg on ${{ matrix.os }}
+    needs: [build_wheels]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: base-wheelhouse
+
+      - name: Cache MMG
+        uses: actions/cache@v4
+        with:
+          path: build/mmg-prefix
+          key: mmg-prefix-${{ matrix.os }}-${{ hashFiles('build/build-mmg.sh') }}
+
+      - name: Build MMG (shared, without ELAS) (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$PWD:/project" -w /project \
+            "quay.io/pypa/manylinux_2_34_$(uname -m)" bash -c \
+            "yum install -y gcc-toolset-13-gcc gcc-toolset-13-gcc-c++ git cmake &&
+             git config --global --add safe.directory '*' &&
+             CC=/opt/rh/gcc-toolset-13/root/usr/bin/gcc CXX=/opt/rh/gcc-toolset-13/root/usr/bin/g++
+             sh build/build-mmg.sh build/mmg-prefix --jobs \$(nproc)"
+
+      - name: Build MMG (shared, without ELAS) (macOS)
+        if: runner.os == 'macOS'
+        run: sh build/build-mmg.sh build/mmg-prefix --jobs "$(sysctl -n hw.ncpu)"
+
+      - name: Build MMG (shared, without ELAS) (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: sh build/build-mmg.sh build/mmg-prefix 
+
+      - name: Locate the prefixes
+        shell: bash
+        run: |
+          # Forward-slash paths, as for the base wheel: cibuildwheel evaluates
+          # CIBW_ENVIRONMENT like a shell.
+          here="$( (pwd -W 2>/dev/null || pwd) )"
+          echo "ADDON_PREFIX=$here/build/mmg-prefix" >> "$GITHUB_ENV"
+          echo "BASE_WHEELHOUSE=$here/base-wheelhouse" >> "$GITHUB_ENV"
+
+      - name: Build the add-on wheels
+        uses: pypa/cibuildwheel@v4.1.0
+        with:
+          package-dir: packages/python/meshioplusplus-mmg
+        env:
+          CIBW_BUILD: "cp39-* cp310-* cp311-* cp312-*"
+          CIBW_SKIP: "*-musllinux* *_i686 *-win32"
+          CIBW_ARCHS_MACOS: "x86_64 arm64"
+          CIBW_MANYLINUX_X86_64_IMAGE: "quay.io/pypa/manylinux_2_34_x86_64"
+          CIBW_MANYLINUX_AARCH64_IMAGE: "quay.io/pypa/manylinux_2_34_aarch64"
+          CIBW_BEFORE_ALL_LINUX: "yum install -y gcc-toolset-13-gcc gcc-toolset-13-gcc-c++"
+          CIBW_BUILD_FRONTEND: "pip; args: --no-build-isolation-package meshioplusplus"
+          CIBW_ENVIRONMENT_LINUX: >-
+            CC="/opt/rh/gcc-toolset-13/root/usr/bin/gcc"
+            CXX="/opt/rh/gcc-toolset-13/root/usr/bin/g++"
+            CMAKE_ARGS="-DMESHIOPLUSPLUS_STATIC_RUNTIME=ON"
+            mmg_DIR="/project/build/mmg-prefix/lib/cmake/mmg"
+            PIP_FIND_LINKS="/project/base-wheelhouse"
+          CIBW_ENVIRONMENT_MACOS: >-
+            mmg_DIR="${{ env.ADDON_PREFIX }}/lib/cmake/mmg"
+            PIP_FIND_LINKS="${{ env.BASE_WHEELHOUSE }}"
+            MACOSX_DEPLOYMENT_TARGET="13.3"
+          CIBW_ENVIRONMENT_WINDOWS: >-
+            mmg_DIR="${{ env.ADDON_PREFIX }}/lib/cmake/mmg"
+            PIP_FIND_LINKS="${{ env.BASE_WHEELHOUSE }}"
+          # The core stays in the base wheel: the repair tools bundle MMG
+          # (libmmg) but not libmeshioplusplus_core_meshio.
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel -v repair --exclude 'libmeshioplusplus_core_meshio.so*' -w {dest_dir} {wheel}"
+          CIBW_REPAIR_WHEEL_COMMAND_MACOS: "delocate-wheel --require-archs {delocate_archs} --exclude libmeshioplusplus_core_meshio -w {dest_dir} -v {wheel}"
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: "delvewheel repair --exclude meshioplusplus_core_meshio.dll --add-path ${{ env.ADDON_PREFIX }}/bin -w {dest_dir} {wheel}"
+          CIBW_TEST_REQUIRES: "pytest"
+          CIBW_TEST_COMMAND: "python {project}/tests/wheel_mmg_smoke.py"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mmg-wheels-${{ matrix.os }}
+          path: ./wheelhouse/*.whl
+
   build_sdist:
     name: Source distribution
     runs-on: ubuntu-latest
@@ -271,7 +506,7 @@ jobs:
 
   publish:
     name: Publish to PyPI
-    needs: [build_wheels, build_sdist, build_occt_addon]
+    needs: [build_wheels, build_sdist, build_occt_addon, build_netgen_addon, build_mmg_addon]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     environment:
@@ -304,5 +539,41 @@ jobs:
         with:
           path: dist
           pattern: occt-wheels-*
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish_netgen:
+    name: Publish meshioplusplus-netgen to PyPI
+    needs: [build_netgen_addon, publish]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment:
+      name: pypi-netgen
+      url: https://pypi.org/p/meshioplusplus-netgen
+    permissions:
+      id-token: write # OIDC trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: netgen-wheels-*
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish_mmg:
+    name: Publish meshioplusplus-mmg to PyPI
+    needs: [build_mmg_addon, publish]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment:
+      name: pypi-mmg
+      url: https://pypi.org/p/meshioplusplus-mmg
+    permissions:
+      id-token: write # OIDC trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: mmg-wheels-*
           merge-multiple: true
       - uses: pypa/gh-action-pypi-publish@release/v1

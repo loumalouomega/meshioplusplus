@@ -21,7 +21,7 @@ try:
 except ImportError:  # pragma: no cover - the numpy-only install
     _core = None
 
-HAS_NETGEN = bool(getattr(_core, "__has_netgen__", False))
+HAS_NETGEN = mio.has_netgen()
 
 needs_core = pytest.mark.skipif(
     not hasattr(_core, "tetrahedralize"), reason="core predates tetrahedralize"

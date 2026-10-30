@@ -1587,23 +1587,27 @@ PYBIND11_MODULE(_core, m) {
 #else
     m.attr("__has_kahip__") = false;
 #endif
-    // Whether a CAD kernel (OpenCASCADE) is registered. Read live through the
-    // module's __getattr__, not fixed at import: the meshioplusplus-occt
-    // add-on registers its kernel after this module is loaded.
+    // The capabilities a provider supplies -- the CAD kernel (OpenCASCADE), the
+    // Netgen tetrahedral mesher, the MMG remesher and whether its MMG has ELAS
+    // for move, and MMG's index width. Read live through the module's
+    // __getattr__, not fixed at import: the meshioplusplus-occt, -netgen and
+    // -mmg add-ons register their providers after this module is loaded.
     m.attr("__getattr__") = py::cpp_function(
         [](const std::string& rName) -> py::object {
             if (rName == "__has_occt__")
                 return py::bool_(meshioplusplus::cad_read_has_occt());
+            if (rName == "__has_netgen__")
+                return py::bool_(meshioplusplus::tetrahedralize_has_netgen());
+            if (rName == "__has_mmg__")
+                return py::bool_(meshioplusplus::mmg_available());
+            if (rName == "__has_mmg_elas__")
+                return py::bool_(meshioplusplus::mmg_has_elas());
+            if (rName == "__mmg_index_bits__")
+                return py::int_(meshioplusplus::mmg_index_bits());
             throw py::attribute_error("module 'meshioplusplus._core' has no attribute '" + rName +
                                       "'");
         },
         py::arg("name"));
-    // Whether tetrahedralize has its Netgen backend (MESHIOPLUSPLUS_WITH_NETGEN).
-    m.attr("__has_netgen__") = meshioplusplus::tetrahedralize_has_netgen();
-    // The MMG backend (MESHIOPLUSPLUS_WITH_MMG), and whether its MMG has ELAS for move.
-    m.attr("__has_mmg__") = meshioplusplus::mmg_available();
-    m.attr("__has_mmg_elas__") = meshioplusplus::mmg_has_elas();
-    m.attr("__mmg_index_bits__") = meshioplusplus::mmg_index_bits();
 
     // adapt (roadmap 3.2.1): MMG remeshes to a size or a metric. Returns the
     // report dict with the mesh under "mesh". See operations/mmg.hpp.
