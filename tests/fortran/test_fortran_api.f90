@@ -2396,6 +2396,36 @@ contains
             call boxm%free()
         end block
 
+        ! find_intersections and thickness (roadmap 3.1.2, 3.1.4).
+        block
+            type(mio_mesh) :: sa, sb, flagged, segs, thick
+            type(mio_find_intersections_report) :: frep
+            type(mio_thickness_report) :: trep
+            integer(int64), allocatable :: pairs(:, :)
+            sa = mio_icosa_sphere(subdivisions=3, stat=ierr)
+            sb = mio_icosa_sphere(subdivisions=3, center=[1.0_real64, 0.0_real64, 0.0_real64], &
+                                  stat=ierr)
+            flagged = mio_find_intersections(sa, report=frep, stat=ierr)
+            call check(ierr == 0 .and. frep%clean == 1, 'one sphere does not intersect itself')
+            if (ierr == 0) call flagged%free()
+            flagged = mio_find_intersections(sa, other=sb, segments=segs, pairs=pairs, &
+                                             report=frep, stat=ierr)
+            call check(ierr == 0 .and. frep%num_pairs > 0 .and. &
+                       size(pairs, 2) == frep%num_pairs, 'two spheres interpenetrate')
+            if (ierr == 0) then
+                call segs%free()
+                call flagged%free()
+            end if
+            thick = mio_thickness(sa, report=trep, stat=ierr)
+            call check(ierr == 0 .and. trep%num_missed == 0_int64 .and. &
+                       abs(trep%min - 2.0_real64) < 0.05_real64, 'a sphere is two thick')
+            if (ierr == 0) call thick%free()
+            thick = mio_thickness(sa, direction='sideways', stat=ierr)
+            call check(ierr /= 0, 'thickness refuses an unknown direction')
+            call sb%free()
+            call sa%free()
+        end block
+
         ! The unit cube as a closed, outward-wound triangle surface.
         pts = reshape([0d0, 0d0, 0d0, 1d0, 0d0, 0d0, 1d0, 1d0, 0d0, 0d0, 1d0, 0d0, &
                        0d0, 0d0, 1d0, 1d0, 0d0, 1d0, 1d0, 1d0, 1d0, 0d0, 1d0, 1d0], [3, 8])

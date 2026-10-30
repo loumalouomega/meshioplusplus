@@ -70,6 +70,8 @@
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
 #include "meshioplusplus/operations/check_conformity.hpp"
+#include "meshioplusplus/operations/find_intersections.hpp"
+#include "meshioplusplus/operations/thickness.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
@@ -406,6 +408,9 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"SplitInterface", {"Region", "AddCohesive"}},
         {"QualityGate", {"Require", "MaxInverted", "MaxDegenerate"}},
         {"CheckConformity", {"Tolerance", "Require", "AttachFlags"}},
+        {"FindIntersections", {"Other", "Region", "RegionOther", "Require", "AttachFlags"}},
+        {"Thickness",
+         {"Other", "Direction", "MaxDistance", "Min", "Region", "RegionOther", "Require"}},
         {"Snapshot",
          {"Path",           "Width",       "Height",        "Supersample",   "Cols",
           "Rows",           "Encoding",    "ColorDepth",    "PngCompress",   "View",
@@ -1961,6 +1966,62 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         if (opts.mAttachFlags)
             return std::move(cr.mMesh);
         return mesh;
+    }
+    if (op == "FindIntersections") {
+        // A gate by default, like CheckConformity: a surface that intersects
+        // itself (or meets `Other`) stops the pipeline; with Require false it
+        // only reports. AttachFlags writes intersections:count onto the mesh.
+        FindIntersectionsOptions opts;
+        opts.mRegion = pipe_text(rStep, "Region", "");
+        opts.mRegionB = pipe_text(rStep, "RegionOther", "");
+        opts.mAttachFlags = pipe_flag(rStep, "AttachFlags", false);
+        opts.mSegments = false;
+        const std::string other_path = pipe_text(rStep, "Other", "");
+        FindIntersectionsResult fr =
+            other_path.empty() ? find_intersections(mesh, opts)
+                               : find_intersections(mesh, pipe_read_extra(other_path), opts);
+        if (pipe_flag(rStep, "Require", true) && !fr.mClean)
+            throw std::runtime_error("meshio++: pipeline: FindIntersections failed: " +
+                                     std::to_string(fr.mNumPairs) + " intersecting cell pair(s)");
+        pipe_push_step(rReport, rStep,
+                       {{"NumPairs", static_cast<double>(fr.mNumPairs)},
+                        {"NumTrianglePairs", static_cast<double>(fr.mNumTrianglePairs)},
+                        {"NumCoplanar", static_cast<double>(fr.mNumCoplanar)}});
+        if (opts.mAttachFlags)
+            return std::move(fr.mMesh);
+        return mesh;
+    }
+    if (op == "Thickness") {
+        // thickness:distance and thickness:hit_cell flow on; with Min, a cell
+        // below it stops the pipeline unless Require is false.
+        ThicknessOptions opts;
+        const std::string dir = pipe_text(rStep, "Direction", "auto");
+        if (dir == "inward")
+            opts.mDirection = ThicknessDirection::Inward;
+        else if (dir == "outward")
+            opts.mDirection = ThicknessDirection::Outward;
+        else if (dir != "auto")
+            throw std::invalid_argument(
+                "meshio++: pipeline: Thickness: Direction must be auto, inward or outward");
+        opts.mMaxDistance = pipe_number(rStep, "MaxDistance", 0.0);
+        opts.mThreshold = pipe_number(rStep, "Min", 0.0);
+        opts.mRegion = pipe_text(rStep, "Region", "");
+        opts.mRegionTarget = pipe_text(rStep, "RegionOther", "");
+        const std::string other_path = pipe_text(rStep, "Other", "");
+        ThicknessResult tr = other_path.empty()
+                                 ? thickness(mesh, opts)
+                                 : thickness(mesh, pipe_read_extra(other_path), opts);
+        if (opts.mThreshold > 0.0 && pipe_flag(rStep, "Require", true) && tr.mNumBelow > 0)
+            throw std::runtime_error("meshio++: pipeline: Thickness failed: " +
+                                     std::to_string(tr.mNumBelow) + " cell(s) below Min");
+        pipe_push_step(rReport, rStep,
+                       {{"NumHit", static_cast<double>(tr.mNumHit)},
+                        {"NumMissed", static_cast<double>(tr.mNumMissed)},
+                        {"NumBelow", static_cast<double>(tr.mNumBelow)},
+                        {"Min", tr.mMin},
+                        {"Max", tr.mMax},
+                        {"Mean", tr.mMean}});
+        return std::move(tr.mMesh);
     }
     if (op == "EditRegions") {
         // One edit per step: a pipeline value is flat, and a list of edits is

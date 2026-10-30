@@ -188,6 +188,11 @@ def files(tmp_path_factory):
     meshes = os.path.join(ROOT, "tests", "python", "meshes")
     paths["nurbs"] = os.path.join(meshes, "mfem", "nurbs", "pipe-nurbs.mesh")
     paths["plate"] = os.path.join(meshes, "cad_json", "plate_with_hole.cad.json")
+    # two overlapping spheres, for find-intersections and thickness
+    paths["sphere_a"] = str(d / "sphere_a.vtu")
+    paths["sphere_b"] = str(d / "sphere_b.vtu")
+    mio.write(paths["sphere_a"], mio.icosa_sphere(1.0, 2))
+    mio.write(paths["sphere_b"], mio.icosa_sphere(1.0, 2, center=(1.0, 0.0, 0.0)))
     paths["dir"] = str(d)
     return paths
 
@@ -242,6 +247,37 @@ CASES = [
     (
         "hausdorff",
         lambda f: ["hausdorff", f["grid"], f["moved"], "--max", "0.1", "--json"],
+    ),
+    (
+        "find_intersections_clean",
+        lambda f: ["find-intersections", f["sphere_a"], "--json"],
+    ),
+    (
+        "find_intersections_two",
+        lambda f: [
+            "find-intersections",
+            f["sphere_a"],
+            "--other",
+            f["sphere_b"],
+            "--max-pairs",
+            "5",
+            "--json",
+        ],
+    ),
+    ("thickness", lambda f: ["thickness", f["sphere_a"], "--json"]),
+    (
+        "thickness_clearance",
+        lambda f: [
+            "thickness",
+            f["sphere_a"],
+            "--other",
+            f["sphere_b"],
+            "--direction",
+            "inward",
+            "--min",
+            "0.5",
+            "--json",
+        ],
     ),
     (
         "periodic",
@@ -696,3 +732,24 @@ def test_to_cad_json_agrees(tmp_path, flags):
         pytest.skip("the native CLI was built without OpenCASCADE")
     assert r.returncode == code_py
     _same(doc_py, _strict(r.stdout))
+
+
+def test_find_intersections_and_thickness_exit_codes(files, tmp_path):
+    a, b = files["sphere_a"], files["sphere_b"]
+    assert _python(["find-intersections", a])[0] == 0
+    flags = str(tmp_path / "flags.vtu")
+    segs = str(tmp_path / "segs.vtu")
+    assert (
+        _python(["find-intersections", a, flags, "--other", b, "--segments", segs])[0]
+        == 1
+    )
+    assert np.concatenate(mio.read(flags).cell_data["intersections:count"]).sum() > 0
+    assert len(mio.read(segs).cells[0].data) > 0
+    assert _python(["find-intersections", str(tmp_path / "missing.vtu")])[0] == 2
+    assert _python(["thickness", a, "--min", "1.0"])[0] == 0
+    assert _python(["thickness", a, "--min", "3.0"])[0] == 1
+    if NATIVE is not None:
+        assert _native(["find-intersections", a])[0] == 0
+        assert _native(["find-intersections", a, "--other", b])[0] == 1
+        assert _native(["find-intersections", str(tmp_path / "missing.vtu")])[0] == 2
+        assert _native(["thickness", a, "--min", "3.0"])[0] == 1

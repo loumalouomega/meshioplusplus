@@ -882,6 +882,59 @@ struct _CSweepReport
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_find_intersections_opts` (roadmap 3.1.2)."""
+struct _CFindIntersectionsOpts
+    region::Cstring
+    region_b::Cstring
+    max_pairs::Int64
+    attach_flags::Int32
+    segments::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_find_intersections_report`."""
+struct _CFindIntersectionsReport
+    num_pairs::Int64
+    num_triangle_pairs::Int64
+    num_coplanar::Int64
+    num_segments::Int64
+    num_cells_a::Int64
+    num_cells_b::Int64
+    truncated::Int32
+    clean::Int32
+    num_warnings::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_thickness_opts` (roadmap 3.1.4)."""
+struct _CThicknessOpts
+    region::Cstring
+    region_target::Cstring
+    max_distance::Cdouble
+    threshold::Cdouble
+    direction::Int32
+    attach::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_thickness_report`."""
+struct _CThicknessReport
+    direction::Int32
+    reserved32::Int32
+    num_cells::Int64
+    num_hit::Int64
+    num_missed::Int64
+    num_below::Int64
+    min::Cdouble
+    max::Cdouble
+    mean::Cdouble
+    min_cell::Int64
+    min_point::NTuple{3,Cdouble}
+    max_distance::Cdouble
+    num_warnings::Int64
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_mirror_opts` (roadmap 3.2.5)."""
 struct _CMirrorOpts
     origin::NTuple{3,Cdouble}
@@ -1729,6 +1782,18 @@ function _check_abi_layout()
         error("meshio++: mio_mirror_opts layout mismatch ($(sizeof(_CMirrorOpts)) bytes)")
     (sizeof(_CMirrorReport) == 72 && fieldoffset(_CMirrorReport, 5) == 32) ||
         error("meshio++: mio_mirror_report layout mismatch ($(sizeof(_CMirrorReport)) bytes)")
+    (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CFindIntersectionsOpts) == 64 &&
+                                 fieldoffset(_CFindIntersectionsOpts, 6) == 32)) ||
+        error("meshio++: mio_find_intersections_opts layout mismatch " *
+              "($(sizeof(_CFindIntersectionsOpts)) bytes)")
+    (sizeof(_CFindIntersectionsReport) == 96 && fieldoffset(_CFindIntersectionsReport, 9) == 56) ||
+        error("meshio++: mio_find_intersections_report layout mismatch " *
+              "($(sizeof(_CFindIntersectionsReport)) bytes)")
+    (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CThicknessOpts) == 72 &&
+                                 fieldoffset(_CThicknessOpts, 7) == 40)) ||
+        error("meshio++: mio_thickness_opts layout mismatch ($(sizeof(_CThicknessOpts)) bytes)")
+    (sizeof(_CThicknessReport) == 144 && fieldoffset(_CThicknessReport, 13) == 104) ||
+        error("meshio++: mio_thickness_report layout mismatch ($(sizeof(_CThicknessReport)) bytes)")
     (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CTetrahedralizeOpts) == 80 &&
                                  fieldoffset(_CTetrahedralizeOpts, 5) == 32 &&
                                  fieldoffset(_CTetrahedralizeOpts, 8) == 48)) ||

@@ -676,6 +676,76 @@ export interface MirrorResult {
   warnings: string[];
 }
 
+/** Options of `findIntersections` (doc/find_intersections.md). */
+export interface FindIntersectionsOptions {
+  /** A second surface: report where the two meet instead of self-intersections. */
+  other?: Mesh;
+  /** Restrict the mesh to this named cell region. */
+  region?: string;
+  /** Restrict `other` to this named cell region. */
+  regionOther?: string;
+  /** Build the line mesh of the intersection segments (default true). */
+  segments?: boolean;
+  /** Keep at most this many pairs (default 0: all); the counts still cover every pair. */
+  maxPairs?: number;
+}
+
+/** What `findIntersections` returns. */
+export interface FindIntersectionsResult {
+  /** The mesh with the `intersections:count` cell data. */
+  mesh: Mesh;
+  /** `other` with its counts, or null. */
+  other: Mesh | null;
+  /** The intersection segments as a line mesh, or null. */
+  segments: Mesh | null;
+  /** (cell of mesh, cell of other) global cell ids, two per pair. */
+  pairs: Int32Array;
+  numPairs: number;
+  numTrianglePairs: number;
+  numCoplanar: number;
+  numSegments: number;
+  numCellsA: number;
+  numCellsB: number;
+  truncated: boolean;
+  clean: boolean;
+  warnings: string[];
+}
+
+/** Options of `thickness` (doc/thickness.md). */
+export interface ThicknessOptions {
+  /** The surface to reach (default: the mesh itself). */
+  other?: Mesh;
+  /** "inward" (thickness), "outward" (clearance) or "auto" (default). */
+  direction?: 'auto' | 'inward' | 'outward';
+  /** The longest ray (default 0: the bounding-box diagonal). */
+  maxDistance?: number;
+  /** Count the hits below it (default 0: none). */
+  threshold?: number;
+  /** Measure only this named cell region. */
+  region?: string;
+  /** Reach only this named cell region of the target. */
+  regionOther?: string;
+}
+
+/** What `thickness` returns. */
+export interface ThicknessResult {
+  /** The mesh with `thickness:distance` (NaN for a miss) and `thickness:hit_cell`. */
+  mesh: Mesh;
+  direction: 'inward' | 'outward';
+  numCells: number;
+  numHit: number;
+  numMissed: number;
+  numBelow: number;
+  min: number;
+  max: number;
+  mean: number;
+  /** The global cell of the least distance, -1 when nothing was hit. */
+  minCell: number;
+  minPoint: Float64Array;
+  maxDistance: number;
+  warnings: string[];
+}
+
 /** Options of `tetrahedralize` (doc/tetrahedralize.md). */
 export interface TetrahedralizeOptions {
   /**
@@ -2320,8 +2390,8 @@ export interface MeshioPlusPlusModule {
   hasOcct(): boolean;
 
   /**
-   * Whether `tetrahedralize`'s Netgen backend is linked in: always false in
-   * WebAssembly, where no Netgen build exists (the octree backend always is).
+   * Whether `tetrahedralize`'s Netgen backend is linked in: true in the full
+   * artifact, false in the lean one (the octree backend always is).
    */
   hasNetgen(): boolean;
 
@@ -3529,13 +3599,29 @@ export interface MeshioPlusPlusModule {
   mirror(mesh: Mesh, options?: MirrorOptions): MirrorResult;
 
   /**
+   * Where a surface intersects itself, or (`options.other`) where two
+   * surfaces interpenetrate or touch, by exact triangle-triangle tests
+   * (roadmap 3.1.2).
+   * @throws {Error} on a volume, polyhedron or higher-order block, or an unknown region.
+   */
+  findIntersections(mesh: Mesh, options?: FindIntersectionsOptions): FindIntersectionsResult;
+
+  /**
+   * Wall thickness or clearance per facet, by a ray from each cell's
+   * centroid along its normal (roadmap 3.1.4).
+   * @throws {Error} on a volume, polyhedron or higher-order block, an unknown
+   * region or direction, or a negative distance.
+   */
+  thickness(mesh: Mesh, options?: ThicknessOptions): ThicknessResult;
+
+  /**
    * Fill a closed, manifold, consistently oriented triangle surface with
-   * tetrahedra (roadmap 6.7). No WebAssembly build carries Netgen, which
-   * keeps the surface's triangles (`hasNetgen()` is false), so `"auto"` is the
-   * native octree backend: isosurface stuffing whose boundary is fitted to
-   * the surface within `hausdorffToSurface` (`boundaryPreserved` false), with
-   * a warning saying so.
-   * @throws {Error} for `backend: "netgen"` naming `MESHIOPLUSPLUS_WITH_NETGEN`;
+   * tetrahedra (roadmap 6.7). The full artifact carries Netgen
+   * (`hasNetgen()` is true), so `"auto"` keeps the surface's triangles
+   * there; the lean one does not, so `"auto"` is the native octree backend:
+   * isosurface stuffing whose boundary is fitted to the surface within
+   * `hausdorffToSurface` (`boundaryPreserved` false), with a warning saying so.
+   * @throws {Error} for `backend: "netgen"` in the lean artifact, naming the full one;
    * on a bad option or an open, non-manifold or misoriented surface by name.
    */
   tetrahedralize(mesh: Mesh, options?: TetrahedralizeOptions): TetrahedralizeResult;

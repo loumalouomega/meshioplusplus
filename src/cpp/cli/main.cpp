@@ -115,6 +115,8 @@
 #include "meshioplusplus/operations/curvature.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/operations/check_conformity.hpp"
+#include "meshioplusplus/operations/find_intersections.hpp"
+#include "meshioplusplus/operations/thickness.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/formats/cad_json.hpp"
@@ -414,6 +416,13 @@ void print_usage(std::ostream& os) {
           "                            --max-inverted/--max-degenerate; exit 2: not checked)\n"
           "  check-conformity        Hanging nodes, T-junctions, partial overlaps: exit 1 when\n"
           "                            not conforming (INFILE [OUTFILE] --tolerance --json)\n"
+          "  find-intersections      Self-intersections of a surface, or where two meet\n"
+          "                            (--other FILE): exit 1 when any (INFILE [OUTFILE]\n"
+          "                            [--segments FILE] [--max-pairs N] --json)\n"
+          "  thickness               Wall thickness / clearance per facet by a ray:\n"
+          "                            INFILE [OUTFILE] [--other FILE]\n"
+          "                            [--direction auto|inward|outward]\n"
+          "                            [--max-distance D] [--min T] [--json]\n"
           "  curvature               Per-vertex mean/Gaussian curvature of a surface\n"
           "  normals                 Point/cell normals of a surface, optionally split at creases\n"
           "  feature-edges           Sharp/open/non-manifold edges of a surface as a line mesh\n"
@@ -1851,6 +1860,182 @@ int cmd_check_conformity(const std::vector<std::string>& rArgs) {
             std::cout << "  warning: " << w << "\n";
     }
     return r.mConforming ? 0 : 1;
+}
+
+int cmd_find_intersections(const std::vector<std::string>& rArgs) {
+    // 0 clean, 1 intersections found, 2 could not check -- the `check` verb's convention.
+    meshioplusplus::FindIntersectionsResult r;
+    bool json = false, two = false;
+    try {
+        auto p = cli_parse(rArgs, {
+                                      {"input-format", {"-i"}, true},
+                                      {"output-format", {"-o"}, true},
+                                      {"other", {}, true},
+                                      {"other-format", {}, true},
+                                      {"segments", {}, true},
+                                      {"region", {}, true},
+                                      {"region-other", {}, true},
+                                      {"max-pairs", {}, true},
+                                      {"json", {}, false},
+                                  });
+        if (p.positionals.empty() || p.positionals.size() > 2)
+            throw std::runtime_error("find-intersections requires INFILE and an optional OUTFILE");
+        json = has_flag(p, "json");
+        meshioplusplus::FindIntersectionsOptions options;
+        options.mRegion = opt_value(p, "region");
+        options.mRegionB = opt_value(p, "region-other");
+        if (has_opt(p, "max-pairs"))
+            options.mMaxPairs = std::stoll(opt_value(p, "max-pairs"));
+        options.mAttachFlags = p.positionals.size() == 2;
+        options.mSegments = has_opt(p, "segments");
+        Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+        two = has_opt(p, "other");
+        if (two) {
+            Mesh other = read_mesh_cli(opt_value(p, "other"), opt_value(p, "other-format"));
+            r = meshioplusplus::find_intersections(mesh, other, options);
+        } else {
+            r = meshioplusplus::find_intersections(mesh, options);
+        }
+        if (p.positionals.size() == 2)
+            write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+        if (options.mSegments)
+            write_mesh_cli(opt_value(p, "segments"), r.mSegments, "");
+    } catch (const std::exception& e) {
+        std::cerr << "error: " << e.what() << "\n";
+        return 2;
+    }
+    if (json) {
+        meshioplusplus::cli::JsonOut out(std::cout);
+        out.BeginObject();
+        out.Field("num_pairs", r.mNumPairs);
+        out.Field("num_triangle_pairs", r.mNumTrianglePairs);
+        out.Field("num_coplanar", r.mNumCoplanar);
+        out.Field("num_segments", r.mNumSegments);
+        out.Field("num_cells_a", r.mNumCellsA);
+        out.Field("num_cells_b", r.mNumCellsB);
+        out.Field("truncated", r.mTruncated);
+        out.Field("clean", r.mClean);
+        out.Key("pairs");
+        out.BeginArray();
+        for (const auto& r_pair : r.mPairs) {
+            out.BeginArray();
+            out.Int(r_pair[0]);
+            out.Int(r_pair[1]);
+            out.EndArray();
+        }
+        out.EndArray();
+        out.Key("warnings");
+        out.BeginArray();
+        for (const std::string& w : r.mWarnings)
+            out.String(w);
+        out.EndArray();
+        out.EndObject();
+    } else {
+        if (r.mClean)
+            std::cout << (two ? "no contacts between the two surfaces\n" : "no intersections\n");
+        else
+            std::cout << r.mNumPairs << " intersecting cell pairs (" << r.mNumTrianglePairs
+                      << " triangle pairs, " << r.mNumCoplanar << " coplanar), " << r.mNumSegments
+                      << " segments\n";
+        for (const std::string& w : r.mWarnings)
+            std::cout << "  warning: " << w << "\n";
+    }
+    return r.mClean ? 0 : 1;
+}
+
+int cmd_thickness(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"other", {}, true},
+                                  {"other-format", {}, true},
+                                  {"direction", {}, true},
+                                  {"max-distance", {}, true},
+                                  {"min", {}, true},
+                                  {"region", {}, true},
+                                  {"region-other", {}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.empty() || p.positionals.size() > 2)
+        throw std::runtime_error("thickness requires INFILE and an optional OUTFILE");
+    meshioplusplus::ThicknessOptions o;
+    const std::string direction = has_opt(p, "direction") ? opt_value(p, "direction") : "auto";
+    if (direction == "inward")
+        o.mDirection = meshioplusplus::ThicknessDirection::Inward;
+    else if (direction == "outward")
+        o.mDirection = meshioplusplus::ThicknessDirection::Outward;
+    else if (direction != "auto")
+        throw std::runtime_error("thickness: --direction must be auto, inward or outward");
+    if (has_opt(p, "max-distance"))
+        o.mMaxDistance = meshioplusplus::detail::stod_c(opt_value(p, "max-distance"));
+    const bool has_min = has_opt(p, "min");
+    if (has_min)
+        o.mThreshold = meshioplusplus::detail::stod_c(opt_value(p, "min"));
+    o.mRegion = opt_value(p, "region");
+    o.mRegionTarget = opt_value(p, "region-other");
+    o.mAttach = p.positionals.size() == 2;
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::ThicknessResult r;
+    if (has_opt(p, "other")) {
+        Mesh other = read_mesh_cli(opt_value(p, "other"), opt_value(p, "other-format"));
+        r = meshioplusplus::thickness(mesh, other, o);
+    } else {
+        r = meshioplusplus::thickness(mesh, o);
+    }
+    if (p.positionals.size() == 2)
+        write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    const bool failed = has_min && r.mNumBelow > 0;
+    const char* dir =
+        r.mDirection == meshioplusplus::ThicknessDirection::Outward ? "outward" : "inward";
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("direction", std::string(dir));
+        json.Field("num_cells", r.mNumCells);
+        json.Field("num_hit", r.mNumHit);
+        json.Field("num_missed", r.mNumMissed);
+        json.Field("num_below", r.mNumBelow);
+        json.Field("min_cell", r.mMinCell);
+        json.Field("min", r.mMin);
+        json.Field("max", r.mMax);
+        json.Field("mean", r.mMean);
+        json.Field("max_distance", r.mMaxDistance);
+        json.Key("min_point");
+        json.BeginArray();
+        for (double v : r.mMinPoint)
+            json.Number(v);
+        json.EndArray();
+        json.Key("warnings");
+        json.BeginArray();
+        for (const std::string& w : r.mWarnings)
+            json.String(w);
+        json.EndArray();
+        if (has_min) {
+            json.Field("threshold", o.mThreshold);
+            json.Field("passed", !failed);
+        }
+        json.EndObject();
+    } else {
+        auto g = [](double v) {
+            char buf[32];
+            meshioplusplus::detail::snprintf_c(buf, sizeof(buf), "%.9g", v);
+            return std::string(buf);
+        };
+        std::cout << dir << " rays from " << r.mNumCells << " cells: " << r.mNumHit << " hit, "
+                  << r.mNumMissed << " missed\n";
+        if (r.mNumHit > 0)
+            std::cout << "  min " << g(r.mMin) << " (cell " << r.mMinCell << "), max " << g(r.mMax)
+                      << ", mean " << g(r.mMean) << "\n";
+        if (has_min) {
+            char lim[32];
+            meshioplusplus::detail::snprintf_c(lim, sizeof(lim), "%g", o.mThreshold);
+            std::cout << "  " << (failed ? "FAIL" : "pass") << ": " << r.mNumBelow
+                      << " cells below " << lim << "\n";
+        }
+        for (const std::string& w : r.mWarnings)
+            std::cout << "  warning: " << w << "\n";
+    }
+    return failed ? 1 : 0;
 }
 
 int cmd_feature_edges(const std::vector<std::string>& rArgs) {
@@ -8154,6 +8339,10 @@ int main(int argc, char** argv) {
             return cmd_normals(rest);
         if (cmd == "check-conformity")
             return cmd_check_conformity(rest);
+        if (cmd == "find-intersections")
+            return cmd_find_intersections(rest);
+        if (cmd == "thickness")
+            return cmd_thickness(rest);
         if (cmd == "check")
             return cmd_check(rest);
         if (cmd == "feature-edges")

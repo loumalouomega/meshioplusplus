@@ -1409,3 +1409,47 @@ def test_sweep_steps_refuse_unknown_keys(tmp_path):
         }
         with pytest.raises(ValueError, match="Bogus"):
             meshioplusplus.run_pipeline(bad)
+
+
+def test_find_intersections_and_thickness_steps_agree_in_both_engines(tmp_path):
+    """``FindIntersections`` and ``Thickness`` (roadmap 3.1.2, 3.1.4): the same
+    counters and arrays from the Python and the C++ engine, the gates firing."""
+    if not hasattr(_core, "find_intersections"):
+        pytest.skip("core predates find_intersections")
+    other = tmp_path / "other.vtu"
+    # Uncompressed for the same reason settings_env is: a zlib-less C++ build
+    # cannot read back what the Python shim's zlib-default fallback wrote.
+    other_mesh = meshioplusplus.icosa_sphere(1.0, 2, center=(1.0, 0, 0))
+    meshioplusplus.write(other, other_mesh, compression=None)
+    steps = [
+        {"Op": "Generate", "Shape": "icosa_sphere", "Subdivisions": 2},
+        {"Op": "FindIntersections", "AttachFlags": True},
+        {"Op": "FindIntersections", "Other": str(other), "Require": False},
+        {"Op": "Thickness", "Min": 1.0},
+        {"Op": "Thickness", "Other": str(other), "Direction": "inward"},
+    ]
+    py_out, cpp_out = tmp_path / "py.vtu", tmp_path / "cpp.vtu"
+    settings = {"Version": 1, "Operations": steps, "Output": {"Path": str(py_out)}}
+    py_report = meshioplusplus.run_pipeline(settings)
+    settings["Output"]["Path"] = str(cpp_out)
+    cpp_report = _core.run_pipeline_json(json.dumps(settings))
+    for k in range(1, 5):
+        assert py_report["steps"][k] == pytest.approx(cpp_report["steps"][k])
+    assert py_report["steps"][1]["NumPairs"] == 0
+    assert py_report["steps"][2]["NumPairs"] > 0
+    built = meshioplusplus.read(py_out)
+    assert meshioplusplus.meshes_equal(built, meshioplusplus.read(cpp_out))
+    assert {"intersections:count", "thickness:distance"} <= set(built.cell_data)
+    for gate in (
+        {"Op": "FindIntersections", "Other": str(other)},
+        {"Op": "Thickness", "Min": 3.0},
+    ):
+        bad = {
+            "Version": 1,
+            "Operations": [steps[0], gate],
+            "Output": {"Path": str(tmp_path / "x.vtu")},
+        }
+        with pytest.raises(RuntimeError, match="failed"):
+            meshioplusplus.run_pipeline(bad)
+        with pytest.raises(RuntimeError, match="failed"):
+            _core.run_pipeline_json(json.dumps(bad))

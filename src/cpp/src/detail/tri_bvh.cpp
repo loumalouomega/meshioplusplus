@@ -308,8 +308,34 @@ std::vector<double> fast_windings(const TriBvh& rTree, const std::vector<Vec3>& 
     return out;
 }
 
-TriRayHit tri_bvh_ray(const TriBvh& rTree, const Vec3& rOrigin, const Vec3& rDir, double TMin,
-                      double TMax, std::int64_t Skip) {
+bool ray_triangle(const Vec3& rOrigin, const Vec3& rDir, const Vec3& rA, const Vec3& rB,
+                  const Vec3& rC, double& rT) {
+    const Vec3 e1 = vec3_sub(rB, rA), e2 = vec3_sub(rC, rA);
+    const Vec3 p = vec3_cross(rDir, e2);
+    const double det = vec3_dot(e1, p);
+    if (std::abs(det) < 1e-300)
+        return false;
+    const double inv = 1.0 / det;
+    const Vec3 s = vec3_sub(rOrigin, rA);
+    // A ray through a shared edge or vertex must not slip between the
+    // triangles there: the barycentric tests allow a sliver.
+    constexpr double kEps = 1e-10;
+    const double u = vec3_dot(s, p) * inv;
+    if (u < -kEps || u > 1.0 + kEps)
+        return false;
+    const Vec3 q = vec3_cross(s, e1);
+    const double v = vec3_dot(rDir, q) * inv;
+    if (v < -kEps || u + v > 1.0 + kEps)
+        return false;
+    rT = vec3_dot(e2, q) * inv;
+    return true;
+}
+
+namespace {
+
+template <class TAccept>
+TriRayHit tribvh_ray_impl(const TriBvh& rTree, const Vec3& rOrigin, const Vec3& rDir, double TMin,
+                          double TMax, TAccept&& rAccept) {
     TriRayHit best;
     if (rTree.mNodes.empty())
         return best;
@@ -330,38 +356,37 @@ TriRayHit tri_bvh_ray(const TriBvh& rTree, const Vec3& rOrigin, const Vec3& rDir
         }
         for (std::int32_t k = 0; k < node.mCount; ++k) {
             const std::int64_t t = rTree.mOrder[node.mBegin + k];
-            if (t == Skip)
-                continue;
             const Vec3* c = &soup.mCorners[3 * static_cast<std::size_t>(t)];
-            const Vec3 e1 = vec3_sub(c[1], c[0]), e2 = vec3_sub(c[2], c[0]);
-            const Vec3 p = vec3_cross(rDir, e2);
-            const double det = vec3_dot(e1, p);
-            if (std::abs(det) < 1e-300)
+            double th = 0.0;
+            if (!ray_triangle(rOrigin, rDir, c[0], c[1], c[2], th))
                 continue;
-            const double inv = 1.0 / det;
-            const Vec3 s = vec3_sub(rOrigin, c[0]);
-            // A ray through a shared edge or vertex must not slip between
-            // the triangles there: the barycentric tests allow a sliver.
-            constexpr double kEps = 1e-10;
-            const double u = vec3_dot(s, p) * inv;
-            if (u < -kEps || u > 1.0 + kEps)
-                continue;
-            const Vec3 q = vec3_cross(s, e1);
-            const double v = vec3_dot(rDir, q) * inv;
-            if (v < -kEps || u + v > 1.0 + kEps)
-                continue;
-            const double th = vec3_dot(e2, q) * inv;
             if (th <= TMin || th > best_t)
                 continue;
             if (th < best_t || best.mTriangle < 0 || t < best.mTriangle) {
+                const Vec3 normal = vec3_cross(vec3_sub(c[1], c[0]), vec3_sub(c[2], c[0]));
+                if (!rAccept(t, normal))
+                    continue;
                 best_t = th;
                 best.mT = th;
                 best.mTriangle = t;
-                best.mNormal = vec3_cross(e1, e2);
+                best.mNormal = normal;
             }
         }
     }
     return best;
+}
+
+}  // namespace
+
+TriRayHit tri_bvh_ray(const TriBvh& rTree, const Vec3& rOrigin, const Vec3& rDir, double TMin,
+                      double TMax, std::int64_t Skip) {
+    return tribvh_ray_impl(rTree, rOrigin, rDir, TMin, TMax,
+                           [Skip](std::int64_t T, const Vec3&) { return T != Skip; });
+}
+
+TriRayHit tri_bvh_ray_filtered(const TriBvh& rTree, const Vec3& rOrigin, const Vec3& rDir,
+                               double TMin, double TMax, const TriRayFilter& rAccept) {
+    return tribvh_ray_impl(rTree, rOrigin, rDir, TMin, TMax, rAccept);
 }
 
 std::vector<TriSegmentHit> tri_bvh_segment_hits(const TriBvh& rTree, const Vec3& rA,

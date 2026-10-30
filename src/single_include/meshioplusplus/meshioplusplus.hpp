@@ -28235,6 +28235,131 @@ MESHIOPLUSPLUS_API FeatureEdgeResult feature_edges(const Mesh& rMesh,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/feature_edges.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/find_intersections.hpp =====
+/**
+ * @file operations/find_intersections.hpp
+ * @brief Where a surface intersects itself, or where two surfaces
+ * interpenetrate: the cell pairs, the intersection segments as a line mesh
+ * and a count per cell (roadmap 3.1.2).
+ *
+ * ### What is tested
+ *
+ * The surfaces are reduced to triangles the way `build_triangle_soup` does
+ * (quads and polygons fanned from their first corner), candidate pairs are
+ * the triangles whose bounding boxes meet over a bucket grid, and each pair
+ * is decided by an exact triangle–triangle test built on Shewchuk's
+ * `orient3d` and `orient2d`. Every reported hit is therefore exact for the
+ * input's double coordinates; there is no tolerance and no "possible" class.
+ *
+ *  - **One surface.** Two triangles of one cell (a quad's fan) are never
+ *    paired. Two triangles that share corners -- bitwise-equal coordinates,
+ *    so an unwelded seam is not mistaken for a crossing -- are an
+ *    intersection only when they meet beyond what they share: on a shared
+ *    edge, when they fold flat onto each other; on a shared corner, when an
+ *    edge of one crosses the other or runs into it from the corner. Any other
+ *    contact, touching included, counts.
+ *  - **Two surfaces.** Every contact counts, touching included: two parts
+ *    resting on each other are reported, so a contact interface that must not
+ *    count is better checked for clearance with `thickness`.
+ *
+ * ### What comes back
+ *
+ * The cell pairs as global (block-major) cell ids, sorted; the segments
+ * where triangles cross, one `line` cell each with two points of its own and
+ * the cells it came from as cell data; and the inputs, bit-identical, with
+ * the number of cells each cell intersects as cell data. Two triangles in one
+ * plane that overlap meet over an area, not a segment: they are counted in
+ * `mNumCoplanar` and flagged, but give no segment.
+ *
+ * Deterministic: candidates are collected per triangle and sorted, the exact
+ * test does not depend on order, and the results are reduced in triangle
+ * order, so the output is identical across parallel backends and thread
+ * counts.
+ *
+ * @see doc/find_intersections.md
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Cell data (Int64) on the returned meshes: how many cells each cell
+/// intersects, 0 for a clean cell.
+inline constexpr const char* kIntersectionsCountName = "intersections:count";
+/// Cell data (Int64) on the segment mesh: the cell of the first surface.
+inline constexpr const char* kIntersectionsCellAName = "intersections:cell_a";
+/// Cell data (Int64) on the segment mesh: the cell of the second surface (of
+/// the first, for a self-intersection).
+inline constexpr const char* kIntersectionsCellBName = "intersections:cell_b";
+
+/// Options for `find_intersections`.
+struct FindIntersectionsOptions {
+    /// Restrict the (first) surface to this named `Cell` region; empty takes
+    /// every 2-D cell.
+    std::string mRegion;
+    /// Restrict the second surface to this named `Cell` region.
+    std::string mRegionB;
+    /// Attach `intersections:count` to the returned meshes.
+    bool mAttachFlags = true;
+    /// Build the segment mesh.
+    bool mSegments = true;
+    /// Keep at most this many pairs in `mPairs` (0 keeps all); the counts,
+    /// flags and segments still cover every pair.
+    std::int64_t mMaxPairs = 0;
+};
+
+/// The pairs, the segments and the counts.
+struct FindIntersectionsResult {
+    /// The (first) input, bit-identical, with `intersections:count`.
+    Mesh mMesh;
+    /// The second input, likewise; empty for a self-intersection check.
+    Mesh mMeshB;
+    /// One `line` cell per crossing segment, with `intersections:cell_a` and
+    /// `intersections:cell_b`; two points per segment, not welded.
+    Mesh mSegments;
+    /// The intersecting cell pairs, `(cell of A, cell of B)` (for one surface,
+    /// the lower cell first), sorted.
+    std::vector<std::array<std::int64_t, 2>> mPairs;
+    std::int64_t mNumPairs = 0;          ///< cell pairs, every one (not capped)
+    std::int64_t mNumTrianglePairs = 0;  ///< triangle pairs that meet
+    std::int64_t mNumCoplanar = 0;       ///< of those, overlapping in one plane
+    std::int64_t mNumSegments = 0;       ///< cells of `mSegments`
+    std::int64_t mNumCellsA = 0;         ///< cells of A that intersect anything
+    std::int64_t mNumCellsB = 0;         ///< cells of B that do (0 for one surface)
+    /// `mPairs` was capped by `mMaxPairs`.
+    bool mTruncated = false;
+    /// No pair at all.
+    bool mClean = true;
+    std::vector<std::string> mWarnings;
+};
+
+/**
+ * @brief Find where the surface @p rMesh intersects itself.
+ * @param rMesh a surface mesh (triangles, quads, polygons; lines and vertices
+ *        are ignored).
+ * @param rOptions the region, what to build and the pair cap.
+ * @throws std::invalid_argument on a volume, polyhedron or higher-order block
+ *         (run `extract_surface` or `linearize` first), an unknown region or a
+ *         negative cap.
+ */
+MESHIOPLUSPLUS_API FindIntersectionsResult
+find_intersections(const Mesh& rMesh, const FindIntersectionsOptions& rOptions = {});
+
+/**
+ * @brief Find where the surfaces @p rA and @p rB interpenetrate or touch.
+ * @throws std::invalid_argument as the one-surface form, for either input.
+ */
+MESHIOPLUSPLUS_API FindIntersectionsResult
+find_intersections(const Mesh& rA, const Mesh& rB, const FindIntersectionsOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/find_intersections.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/fit_primitives.hpp =====
 /**
  * @file operations/fit_primitives.hpp
@@ -37211,6 +37336,130 @@ MESHIOPLUSPLUS_API TetrahedralizeResult tetrahedralize(const Mesh& rSurface,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/tetrahedralize.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/thickness.hpp =====
+/**
+ * @file operations/thickness.hpp
+ * @brief Wall thickness and clearance per facet, from a ray along each
+ * facet's normal to the opposite surface (roadmap 3.1.4).
+ *
+ * ### The ray
+ *
+ * From each 2-D cell's area-weighted centroid, along its unit normal (the
+ * sum of its fan triangles' normals, so a quad or polygon has one), a ray is
+ * cast through a bounding-volume hierarchy of the target surface's triangles
+ * with the core's one ray–triangle kernel (Möller and Trumbore, JGT 2(1),
+ * 1997). The surface must be consistently oriented with outward normals
+ * (`repair` orients a closed shell):
+ *
+ *  - **Inward** (`ThicknessDirection::Inward`, the default for one surface):
+ *    the ray runs against the normal and stops at the first triangle it
+ *    leaves through, one whose normal points along the ray -- the far side
+ *    of the wall. The distance is the wall thickness.
+ *  - **Outward** (`Outward`, the default for two surfaces): the ray runs
+ *    along the normal and stops at the first triangle it enters, one whose
+ *    normal faces it -- the next wall across a gap. The distance is the
+ *    clearance, to the same surface or to a second one.
+ *
+ * A cell's own triangles are never hit. A ray that finds nothing within
+ * `mMaxDistance` is a miss: its distance is NaN and its hit cell -1.
+ *
+ * ### What comes back
+ *
+ * The input, bit-identical, with the distance and the cell it reached as
+ * cell data (cells that are not tested, such as lines, read as misses), and
+ * a report: the least, largest and mean distance over the hits, where the
+ * least was measured, the misses and, against a threshold, how many cells
+ * fall below it.
+ *
+ * Deterministic: each ray's hit is the nearest accepted one with ties to the
+ * lower triangle, whatever order the tree is walked in, and the report is
+ * summed in cell order, so the result is identical across parallel backends
+ * and thread counts.
+ *
+ * @see doc/thickness.md
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Cell data (Float64): the distance along the ray; NaN for a miss.
+inline constexpr const char* kThicknessDistanceName = "thickness:distance";
+/// Cell data (Int64): the global cell of the target surface the ray reached;
+/// -1 for a miss.
+inline constexpr const char* kThicknessHitCellName = "thickness:hit_cell";
+
+/// Which way the ray runs from a facet.
+enum class ThicknessDirection : std::int32_t {
+    Auto = 0,     ///< inward for one surface, outward for two
+    Inward = 1,   ///< against the normal, to the far side of the wall
+    Outward = 2,  ///< along the normal, across a gap
+};
+
+/// Options for `thickness`.
+struct ThicknessOptions {
+    ThicknessDirection mDirection = ThicknessDirection::Auto;
+    /// Longest ray; 0 takes the diagonal of both surfaces' bounding box. Must
+    /// be finite and non-negative.
+    double mMaxDistance = 0.0;
+    /// When positive, count the cells whose distance is below it.
+    double mThreshold = 0.0;
+    /// Restrict the measured cells to this named `Cell` region.
+    std::string mRegion;
+    /// Restrict the target surface (the second mesh, else the mesh itself) to
+    /// this named `Cell` region; empty takes all of it.
+    std::string mRegionTarget;
+    /// Attach `thickness:distance` and `thickness:hit_cell`.
+    bool mAttach = true;
+};
+
+/// The measured mesh and the summary.
+struct ThicknessResult {
+    /// The input, bit-identical, with the two arrays when asked for.
+    Mesh mMesh;
+    /// The direction the rays ran, `Inward` or `Outward`.
+    ThicknessDirection mDirection = ThicknessDirection::Inward;
+    std::int64_t mNumCells = 0;   ///< cells measured
+    std::int64_t mNumHit = 0;     ///< of those, rays that reached a wall
+    std::int64_t mNumMissed = 0;  ///< rays that did not
+    std::int64_t mNumBelow = 0;   ///< hits below `mThreshold` (when positive)
+    double mMin = 0.0;            ///< least distance over the hits (0 when none)
+    double mMax = 0.0;            ///< largest distance over the hits
+    double mMean = 0.0;           ///< mean distance over the hits
+    std::int64_t mMinCell = -1;   ///< the global cell of the least distance
+    std::array<double, 3> mMinPoint{{0.0, 0.0, 0.0}};  ///< where its ray started
+    double mMaxDistance = 0.0;                         ///< the ray length used
+    std::vector<std::string> mWarnings;
+};
+
+/**
+ * @brief Measure the wall thickness (or, outward, the clearance) of the
+ * surface @p rMesh against itself.
+ * @param rMesh a consistently oriented surface mesh (triangles, quads,
+ *        polygons; other cells are not measured).
+ * @throws std::invalid_argument on a volume, polyhedron or higher-order block
+ *         (run `extract_surface` or `linearize` first), an unknown region or a
+ *         negative or non-finite distance.
+ */
+MESHIOPLUSPLUS_API ThicknessResult thickness(const Mesh& rMesh,
+                                             const ThicknessOptions& rOptions = {});
+
+/**
+ * @brief Measure the clearance (or, inward, the depth) from each facet of
+ * @p rMesh to the surface @p rTarget.
+ * @throws std::invalid_argument as the one-surface form, for either input.
+ */
+MESHIOPLUSPLUS_API ThicknessResult thickness(const Mesh& rMesh, const Mesh& rTarget,
+                                             const ThicknessOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/thickness.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/undo_green.hpp =====
 /**
  * @file undo_green.hpp
@@ -44685,6 +44934,7 @@ private:
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 // Project includes
@@ -44749,6 +44999,22 @@ struct TriRayHit {
 /// does not slip between its triangles.
 TriRayHit tri_bvh_ray(const TriBvh& rTree, const Vec3& rOrigin, const Vec3& rDir, double TMin,
                       double TMax, std::int64_t Skip = -1);
+
+/// Whether ray `rOrigin + t rDir` meets triangle `(A, B, C)`, and where
+/// (`rT`, unbounded in sign): Möller and Trumbore, JGT 2(1), 1997, with
+/// barycentric coordinates within 1e-10 of an edge counted as a hit. The
+/// one ray-triangle kernel of the core (`tri_bvh_ray`, `thickness`).
+bool ray_triangle(const Vec3& rOrigin, const Vec3& rDir, const Vec3& rA, const Vec3& rB,
+                  const Vec3& rC, double& rT);
+
+/// Which triangles a ray may stop at: `(soup triangle id, unnormalised normal)`.
+using TriRayFilter = std::function<bool(std::int64_t, const Vec3&)>;
+
+/// `tri_bvh_ray`, stopping only at triangles @p rAccept takes: the nearest
+/// accepted hit, ties to the lower triangle id. The filter must not depend on
+/// the order it is asked in, so the hit is the same on every traversal.
+TriRayHit tri_bvh_ray_filtered(const TriBvh& rTree, const Vec3& rOrigin, const Vec3& rDir,
+                               double TMin, double TMax, const TriRayFilter& rAccept);
 
 /// Where a segment crosses the skin.
 struct TriSegmentHit {
@@ -47330,11 +47596,50 @@ BsplineFitResult thb_fit_patch(const std::vector<PatchVec>& rPts,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/thb_spline.hpp =====
+// ===== begin src/cpp/src/detail/tri_pairs.hpp =====
+/**
+ * @file detail/tri_pairs.hpp
+ * @brief The triangle pairs of one or two soups whose bounding boxes
+ * overlap, found over a bucket grid: the candidate search of
+ * `find_intersections`.
+ *
+ * The grid is `check_conformity`'s (a `SpatialGrid` over the boxes, a cell
+ * as large as the triangles' mean extent and never finer than 1/256 of the
+ * diagonal), so a large triangle among small ones spans a bounded number of
+ * buckets. Each triangle's candidates are collected, sorted and made unique
+ * on their own, so which bucket a pair is met in is unobservable and the
+ * candidates are the same on every backend and thread count.
+ *
+ * A **core-private** header: nothing installed names it.
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/// Called once per triangle `I` of the first soup with its candidates `rJs`,
+/// ascending: the triangles of the second soup (of the first, above `I`, when
+/// there is no second) whose boxes meet `I`'s, touching included.
+using TriPairVisitor = std::function<void(std::size_t I, const std::vector<std::int64_t>& rJs)>;
+
+/// Visit the box-overlapping pairs of @p rA with itself (@p pB null), each
+/// once at its lower triangle, or of @p rA against @p *pB. The visits run in
+/// parallel: @p rVisit writes to per-`I` storage only.
+void soup_box_pairs(const TriangleSoup& rA, const TriangleSoup* pB, const TriPairVisitor& rVisit);
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/tri_pairs.hpp =====
 // ===== begin src/cpp/src/detail/tri_tri.hpp =====
 /**
  * @file detail/tri_tri.hpp
- * @brief Whether two triangles in 3-D meet, decided exactly (roadmap 6.9.1;
- * the kernel `find_intersections`, roadmap 3.1.2, will share).
+ * @brief Whether and where two triangles in 3-D meet, decided exactly (roadmap
+ * 6.9.1; shared with `find_intersections`).
  *
  * Every decision is a sign of Shewchuk's exact `orient3d` or `orient2d`
  * (`predicates.hpp`), so the answer is the exact one for the triangles'
@@ -47359,10 +47664,30 @@ BsplineFitResult thb_fit_patch(const std::vector<PatchVec>& rPts,
  * leaves out the pairs that share a corner. A degenerate triangle (its
  * corners on a line) is treated as its segments.
  *
+ * `tri_tri_intersect_unshared` asks the question a self-intersection check
+ * needs: whether two triangles of one surface meet anywhere other than at the
+ * corners they share. `tri_tri_segment` constructs where two triangles meet;
+ * its decision is the exact one above, its end points are computed in double.
+ *
  * A **core-private** header: nothing installed names it.
  */
 
 namespace meshioplusplus::detail {
+
+/// What `tri_tri_segment` found.
+enum class TriTriContact : int {
+    None = 0,      ///< the triangles do not meet
+    Segment = 1,   ///< they meet along a segment `(mP, mQ)`
+    Point = 2,     ///< they meet at one point, `mP == mQ`
+    Coplanar = 3,  ///< they lie in one plane and overlap; no segment is given
+};
+
+/// Where two triangles meet.
+struct TriTriSegment {
+    TriTriContact mKind = TriTriContact::None;
+    double mP[3] = {0.0, 0.0, 0.0};
+    double mQ[3] = {0.0, 0.0, 0.0};
+};
 
 /// Whether the triangles `(pA, pB, pC)` and `(pD, pE, pF)` (three coordinates
 /// each) meet, touching included.
@@ -47372,6 +47697,21 @@ bool tri_tri_intersect(const double* pA, const double* pB, const double* pC, con
 /// Whether the segment `(pA, pB)` meets the triangle `(pP, pQ, pR)`.
 bool segment_tri_intersect(const double* pA, const double* pB, const double* pP, const double* pQ,
                            const double* pR);
+
+/// Whether the triangles meet anywhere other than at the corners they share,
+/// a corner being shared when its coordinates are bitwise equal in both.
+/// Two triangles on one edge meet beyond it only when they lie in one plane
+/// and fold onto each other; two on one corner meet beyond it when an edge
+/// of one crosses the other or runs into it from the corner. Two identical
+/// triangles always meet. Exact, like `tri_tri_intersect`.
+bool tri_tri_intersect_unshared(const double* pA, const double* pB, const double* pC,
+                                const double* pD, const double* pE, const double* pF);
+
+/// Where the triangles meet: exact decision (`tri_tri_intersect`), end points
+/// in double, where the edges that cross each plane cross it, clipped to the
+/// line both planes hold.
+TriTriSegment tri_tri_segment(const double* pA, const double* pB, const double* pC,
+                              const double* pD, const double* pE, const double* pF);
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/tri_tri.hpp =====
@@ -102980,8 +103320,34 @@ std::vector<double> fast_windings(const TriBvh& rTree, const std::vector<Vec3>& 
     return out;
 }
 
-TriRayHit tri_bvh_ray(const TriBvh& rTree, const Vec3& rOrigin, const Vec3& rDir, double TMin,
-                      double TMax, std::int64_t Skip) {
+bool ray_triangle(const Vec3& rOrigin, const Vec3& rDir, const Vec3& rA, const Vec3& rB,
+                  const Vec3& rC, double& rT) {
+    const Vec3 e1 = vec3_sub(rB, rA), e2 = vec3_sub(rC, rA);
+    const Vec3 p = vec3_cross(rDir, e2);
+    const double det = vec3_dot(e1, p);
+    if (std::abs(det) < 1e-300)
+        return false;
+    const double inv = 1.0 / det;
+    const Vec3 s = vec3_sub(rOrigin, rA);
+    // A ray through a shared edge or vertex must not slip between the
+    // triangles there: the barycentric tests allow a sliver.
+    constexpr double kEps = 1e-10;
+    const double u = vec3_dot(s, p) * inv;
+    if (u < -kEps || u > 1.0 + kEps)
+        return false;
+    const Vec3 q = vec3_cross(s, e1);
+    const double v = vec3_dot(rDir, q) * inv;
+    if (v < -kEps || u + v > 1.0 + kEps)
+        return false;
+    rT = vec3_dot(e2, q) * inv;
+    return true;
+}
+
+namespace {
+
+template <class TAccept>
+TriRayHit tribvh_ray_impl(const TriBvh& rTree, const Vec3& rOrigin, const Vec3& rDir, double TMin,
+                          double TMax, TAccept&& rAccept) {
     TriRayHit best;
     if (rTree.mNodes.empty())
         return best;
@@ -103002,38 +103368,37 @@ TriRayHit tri_bvh_ray(const TriBvh& rTree, const Vec3& rOrigin, const Vec3& rDir
         }
         for (std::int32_t k = 0; k < node.mCount; ++k) {
             const std::int64_t t = rTree.mOrder[node.mBegin + k];
-            if (t == Skip)
-                continue;
             const Vec3* c = &soup.mCorners[3 * static_cast<std::size_t>(t)];
-            const Vec3 e1 = vec3_sub(c[1], c[0]), e2 = vec3_sub(c[2], c[0]);
-            const Vec3 p = vec3_cross(rDir, e2);
-            const double det = vec3_dot(e1, p);
-            if (std::abs(det) < 1e-300)
+            double th = 0.0;
+            if (!ray_triangle(rOrigin, rDir, c[0], c[1], c[2], th))
                 continue;
-            const double inv = 1.0 / det;
-            const Vec3 s = vec3_sub(rOrigin, c[0]);
-            // A ray through a shared edge or vertex must not slip between
-            // the triangles there: the barycentric tests allow a sliver.
-            constexpr double kEps = 1e-10;
-            const double u = vec3_dot(s, p) * inv;
-            if (u < -kEps || u > 1.0 + kEps)
-                continue;
-            const Vec3 q = vec3_cross(s, e1);
-            const double v = vec3_dot(rDir, q) * inv;
-            if (v < -kEps || u + v > 1.0 + kEps)
-                continue;
-            const double th = vec3_dot(e2, q) * inv;
             if (th <= TMin || th > best_t)
                 continue;
             if (th < best_t || best.mTriangle < 0 || t < best.mTriangle) {
+                const Vec3 normal = vec3_cross(vec3_sub(c[1], c[0]), vec3_sub(c[2], c[0]));
+                if (!rAccept(t, normal))
+                    continue;
                 best_t = th;
                 best.mT = th;
                 best.mTriangle = t;
-                best.mNormal = vec3_cross(e1, e2);
+                best.mNormal = normal;
             }
         }
     }
     return best;
+}
+
+}  // namespace
+
+TriRayHit tri_bvh_ray(const TriBvh& rTree, const Vec3& rOrigin, const Vec3& rDir, double TMin,
+                      double TMax, std::int64_t Skip) {
+    return tribvh_ray_impl(rTree, rOrigin, rDir, TMin, TMax,
+                           [Skip](std::int64_t T, const Vec3&) { return T != Skip; });
+}
+
+TriRayHit tri_bvh_ray_filtered(const TriBvh& rTree, const Vec3& rOrigin, const Vec3& rDir,
+                               double TMin, double TMax, const TriRayFilter& rAccept) {
+    return tribvh_ray_impl(rTree, rOrigin, rDir, TMin, TMax, rAccept);
 }
 
 std::vector<TriSegmentHit> tri_bvh_segment_hits(const TriBvh& rTree, const Vec3& rA,
@@ -103099,6 +103464,106 @@ std::vector<TriSegmentHit> tri_bvh_segment_hits(const TriBvh& rTree, const Vec3&
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/tri_bvh.cpp =====
+// ===== begin src/cpp/src/detail/tri_pairs.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+namespace {
+
+using TpBox = std::array<double, 6>;
+
+std::vector<TpBox> tp_boxes(const TriangleSoup& rSoup) {
+    const double inf = std::numeric_limits<double>::infinity();
+    std::vector<TpBox> boxes(rSoup.NumTriangles());
+    parallel_for(boxes.size(), [&](std::size_t t) {
+        TpBox& r_box = boxes[t];
+        r_box = {{inf, inf, inf, -inf, -inf, -inf}};
+        for (std::size_t k = 0; k < 3; ++k) {
+            const Vec3& p = rSoup.mCorners[3 * t + k];
+            for (std::size_t d = 0; d < 3; ++d) {
+                r_box[d] = std::min(r_box[d], p[d]);
+                r_box[3 + d] = std::max(r_box[3 + d], p[d]);
+            }
+        }
+    });
+    return boxes;
+}
+
+bool tp_apart(const TpBox& rA, const TpBox& rB) {
+    return rA[0] > rB[3] || rB[0] > rA[3] || rA[1] > rB[4] || rB[1] > rA[4] || rA[2] > rB[5] ||
+           rB[2] > rA[5];
+}
+
+}  // namespace
+
+void soup_box_pairs(const TriangleSoup& rA, const TriangleSoup* pB, const TriPairVisitor& rVisit) {
+    const std::vector<TpBox> box_a = tp_boxes(rA);
+    const std::vector<TpBox> box_b = pB != nullptr ? tp_boxes(*pB) : std::vector<TpBox>{};
+    const std::vector<TpBox>& r_grid_boxes = pB != nullptr ? box_b : box_a;
+    if (box_a.empty() || r_grid_boxes.empty())
+        return;
+
+    // The grid's cell from the gridded triangles' mean extent and the diagonal
+    // of both soups.
+    const double inf = std::numeric_limits<double>::infinity();
+    std::array<double, 3> lo{{inf, inf, inf}}, hi{{-inf, -inf, -inf}};
+    double extent_sum = 0.0;
+    for (const std::vector<TpBox>* p_boxes : {&box_a, &box_b})
+        for (const TpBox& r_box : *p_boxes)
+            for (std::size_t d = 0; d < 3; ++d) {
+                lo[d] = std::min(lo[d], r_box[d]);
+                hi[d] = std::max(hi[d], r_box[3 + d]);
+            }
+    for (const TpBox& r_box : r_grid_boxes)
+        extent_sum += std::max({r_box[3] - r_box[0], r_box[4] - r_box[1], r_box[5] - r_box[2]});
+    const double diag =
+        std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+                  (hi[2] - lo[2]) * (hi[2] - lo[2]));
+    double cell = std::max(extent_sum / static_cast<double>(r_grid_boxes.size()), diag / 256.0);
+    if (!(cell > 0.0) || !std::isfinite(cell))
+        cell = 1.0;
+    SpatialGrid grid(cell);
+    for (std::size_t t = 0; t < r_grid_boxes.size(); ++t)
+        grid.InsertBox(grid.KeyOf(r_grid_boxes[t].data()), grid.KeyOf(r_grid_boxes[t].data() + 3),
+                       static_cast<std::int64_t>(t));
+
+    const bool self = pB == nullptr;
+    parallel_for(
+        box_a.size(),
+        [&](std::size_t i) {
+            const TpBox& bi = box_a[i];
+            std::vector<std::int64_t> near;
+            grid.ForEachInBox(grid.KeyOf(bi.data()), grid.KeyOf(bi.data() + 3),
+                              [&](const std::vector<std::int64_t>& rIds) {
+                                  for (std::int64_t id : rIds)
+                                      if (!self || static_cast<std::size_t>(id) > i)
+                                          near.push_back(id);
+                              });
+            std::sort(near.begin(), near.end());
+            near.erase(std::unique(near.begin(), near.end()), near.end());
+            near.erase(std::remove_if(near.begin(), near.end(),
+                                      [&](std::int64_t j) {
+                                          return tp_apart(
+                                              bi, r_grid_boxes[static_cast<std::size_t>(j)]);
+                                      }),
+                       near.end());
+            if (!near.empty())
+                rVisit(i, near);
+        },
+        64);
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/tri_pairs.cpp =====
 // ===== begin src/cpp/src/detail/tri_tri.cpp =====
 #include <array>
 #include <cmath>
@@ -103184,6 +103649,55 @@ bool ttr_coplanar(const double* const* pT1, const double* const* pT2) {
     return ttr_inside_2d(a[0], b[0], b[1], b[2]) || ttr_inside_2d(b[0], a[0], a[1], a[2]);
 }
 
+bool ttr_same(const double* pA, const double* pB) {
+    return pA[0] == pB[0] && pA[1] == pB[1] && pA[2] == pB[2];
+}
+
+// The axis the normal of triangle pqr is largest along.
+int ttr_drop_axis(const double* pP, const double* pQ, const double* pR) {
+    const double u[3] = {pQ[0] - pP[0], pQ[1] - pP[1], pQ[2] - pP[2]};
+    const double v[3] = {pR[0] - pP[0], pR[1] - pP[1], pR[2] - pP[2]};
+    const double n[3] = {std::fabs(u[1] * v[2] - u[2] * v[1]), std::fabs(u[2] * v[0] - u[0] * v[2]),
+                         std::fabs(u[0] * v[1] - u[1] * v[0])};
+    return n[0] >= n[1] && n[0] >= n[2] ? 0 : (n[1] >= n[2] ? 1 : 2);
+}
+
+// Whether the edge from corner v towards a enters triangle (v, c, d) beyond v:
+// a lies in the triangle's plane and the direction v -> a in its corner at v.
+bool ttr_enters_corner(const double* pV, const double* pA, const double* pC, const double* pD) {
+    if (orient3d(pV, pC, pD, pA) != 0.0)
+        return false;
+    const int drop = ttr_drop_axis(pV, pC, pD);
+    const auto v = ttr_project(pV, drop), a = ttr_project(pA, drop);
+    const auto c = ttr_project(pC, drop), d = ttr_project(pD, drop);
+    const int o = ttr_sign(orient2d(v.data(), c.data(), d.data()));
+    if (o == 0)
+        return false;
+    return ttr_sign(orient2d(v.data(), c.data(), a.data())) * o >= 0 &&
+           ttr_sign(orient2d(v.data(), a.data(), d.data())) * o >= 0;
+}
+
+// The points where the edges of triangle t cross the plane whose orient3d
+// values at t's corners are rD (the corners in it included).
+int ttr_plane_points(const double* const* pT, const double* pD, double (*pOut)[3]) {
+    int n = 0;
+    for (int i = 0; i < 3 && n < 3; ++i) {
+        if (pD[i] == 0.0) {
+            for (int k = 0; k < 3; ++k)
+                pOut[n][k] = pT[i][k];
+            ++n;
+        }
+        const int j = (i + 1) % 3;
+        if ((pD[i] > 0.0 && pD[j] < 0.0) || (pD[i] < 0.0 && pD[j] > 0.0)) {
+            const double w = pD[i] / (pD[i] - pD[j]);
+            for (int k = 0; k < 3; ++k)
+                pOut[n][k] = pT[i][k] + w * (pT[j][k] - pT[i][k]);
+            ++n;
+        }
+    }
+    return n;
+}
+
 }  // namespace
 
 bool segment_tri_intersect(const double* pA, const double* pB, const double* pP, const double* pQ,
@@ -103225,6 +103739,140 @@ bool tri_tri_intersect(const double* pA, const double* pB, const double* pC, con
             segment_tri_intersect(t2[i], t2[(i + 1) % 3], pA, pB, pC))
             return true;
     return false;
+}
+
+bool tri_tri_intersect_unshared(const double* pA, const double* pB, const double* pC,
+                                const double* pD, const double* pE, const double* pF) {
+    const double* t1[3] = {pA, pB, pC};
+    const double* t2[3] = {pD, pE, pF};
+    // Which corner of t2 each corner of t1 is, or -1.
+    int match[3] = {-1, -1, -1};
+    int shared = 0;
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            if (match[i] < 0 && ttr_same(t1[i], t2[j])) {
+                match[i] = j;
+                ++shared;
+                break;
+            }
+    if (shared == 0)
+        return tri_tri_intersect(pA, pB, pC, pD, pE, pF);
+    if (shared >= 3)
+        return true;
+    if (shared == 2) {
+        // On one edge pq: they overlap beyond it only folded flat onto each
+        // other, their third corners on one side of it in their common plane.
+        int r = 0;
+        while (match[r] >= 0)
+            ++r;
+        const double* p = t1[(r + 1) % 3];
+        const double* q = t1[(r + 2) % 3];
+        int s = 0;
+        while (s < 3 && (ttr_same(t2[s], p) || ttr_same(t2[s], q)))
+            ++s;
+        if (s == 3)
+            return false;
+        if (orient3d(p, q, t1[r], t2[s]) != 0.0)
+            return false;
+        const int drop = ttr_drop_axis(p, q, t1[r]);
+        const auto p2 = ttr_project(p, drop), q2 = ttr_project(q, drop);
+        const auto r2 = ttr_project(t1[r], drop), s2 = ttr_project(t2[s], drop);
+        const int sr = ttr_sign(orient2d(p2.data(), q2.data(), r2.data()));
+        const int ss = ttr_sign(orient2d(p2.data(), q2.data(), s2.data()));
+        return sr != 0 && sr == ss;
+    }
+    // On one corner v: beyond it, an opposite edge crosses the other triangle,
+    // or an edge from v runs into the other's corner at v.
+    int i = 0;
+    while (match[i] < 0)
+        ++i;
+    const int j = match[i];
+    const double* v = t1[i];
+    const double* a = t1[(i + 1) % 3];
+    const double* b = t1[(i + 2) % 3];
+    const double* c = t2[(j + 1) % 3];
+    const double* d = t2[(j + 2) % 3];
+    return segment_tri_intersect(a, b, pD, pE, pF) || segment_tri_intersect(c, d, pA, pB, pC) ||
+           ttr_enters_corner(v, a, c, d) || ttr_enters_corner(v, b, c, d) ||
+           ttr_enters_corner(v, c, a, b) || ttr_enters_corner(v, d, a, b);
+}
+
+TriTriSegment tri_tri_segment(const double* pA, const double* pB, const double* pC,
+                              const double* pD, const double* pE, const double* pF) {
+    TriTriSegment out;
+    if (!tri_tri_intersect(pA, pB, pC, pD, pE, pF))
+        return out;
+    const double* t1[3] = {pA, pB, pC};
+    const double* t2[3] = {pD, pE, pF};
+    const double d1[3] = {orient3d(pD, pE, pF, pA), orient3d(pD, pE, pF, pB),
+                          orient3d(pD, pE, pF, pC)};
+    if (d1[0] == 0.0 && d1[1] == 0.0 && d1[2] == 0.0) {
+        out.mKind = TriTriContact::Coplanar;
+        return out;
+    }
+    const double d2[3] = {orient3d(pA, pB, pC, pD), orient3d(pA, pB, pC, pE),
+                          orient3d(pA, pB, pC, pF)};
+    double p1[3][3], p2[3][3];
+    const int n1 = ttr_plane_points(t1, d1, p1);
+    const int n2 = ttr_plane_points(t2, d2, p2);
+    // Both sets lie on the line the planes share: overlap their extents along it.
+    const auto normal = [](const double* const* pT, double* pN) {
+        const double u[3] = {pT[1][0] - pT[0][0], pT[1][1] - pT[0][1], pT[1][2] - pT[0][2]};
+        const double w[3] = {pT[2][0] - pT[0][0], pT[2][1] - pT[0][1], pT[2][2] - pT[0][2]};
+        pN[0] = u[1] * w[2] - u[2] * w[1];
+        pN[1] = u[2] * w[0] - u[0] * w[2];
+        pN[2] = u[0] * w[1] - u[1] * w[0];
+    };
+    double na[3], nb[3];
+    normal(t1, na);
+    normal(t2, nb);
+    double dir[3] = {na[1] * nb[2] - na[2] * nb[1], na[2] * nb[0] - na[0] * nb[2],
+                     na[0] * nb[1] - na[1] * nb[0]};
+    if (dir[0] == 0.0 && dir[1] == 0.0 && dir[2] == 0.0) {
+        // Planes parallel in double although not exactly: take the spread of
+        // the points found.
+        const double(*src)[3] = n1 >= 2 ? p1 : p2;
+        for (int k = 0; k < 3; ++k)
+            dir[k] = src[(n1 >= 2 ? n1 : n2) - 1][k] - src[0][k];
+    }
+    const auto along = [&](const double* pX) {
+        return pX[0] * dir[0] + pX[1] * dir[1] + pX[2] * dir[2];
+    };
+    const auto extent = [&](const double(*pPts)[3], int N, int& rLo, int& rHi) {
+        rLo = rHi = 0;
+        for (int k = 1; k < N; ++k) {
+            if (along(pPts[k]) < along(pPts[rLo]))
+                rLo = k;
+            if (along(pPts[k]) > along(pPts[rHi]))
+                rHi = k;
+        }
+    };
+    if (n1 == 0 || n2 == 0) {
+        // Rounding lost the crossing the exact test saw: report a point.
+        const double* x = n1 > 0 ? p1[0] : (n2 > 0 ? p2[0] : pA);
+        out.mKind = TriTriContact::Point;
+        for (int k = 0; k < 3; ++k)
+            out.mP[k] = out.mQ[k] = x[k];
+        return out;
+    }
+    int lo1, hi1, lo2, hi2;
+    extent(p1, n1, lo1, hi1);
+    extent(p2, n2, lo2, hi2);
+    const double* lo = along(p1[lo1]) >= along(p2[lo2]) ? p1[lo1] : p2[lo2];
+    const double* hi = along(p1[hi1]) <= along(p2[hi2]) ? p1[hi1] : p2[hi2];
+    if (along(lo) > along(hi)) {
+        // Rounding inverted a touching contact: report its middle.
+        for (int k = 0; k < 3; ++k)
+            out.mP[k] = out.mQ[k] = 0.5 * (lo[k] + hi[k]);
+        out.mKind = TriTriContact::Point;
+        return out;
+    }
+    for (int k = 0; k < 3; ++k) {
+        out.mP[k] = lo[k];
+        out.mQ[k] = hi[k];
+    }
+    out.mKind = ttr_same(out.mP, out.mQ) ? TriTriContact::Point : TriTriContact::Segment;
+    return out;
 }
 
 }  // namespace meshioplusplus::detail
@@ -218056,6 +218704,184 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/feature_edges.cpp =====
+// ===== begin src/cpp/src/operations/find_intersections.cpp =====
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+
+namespace {
+
+struct FiHit {
+    std::int64_t mJ = 0;
+    detail::TriTriSegment mSegment;
+};
+
+// The input, bit-identical, with the count per cell.
+Mesh fi_flagged(const Mesh& rMesh, const std::vector<std::int64_t>& rCount, bool Attach) {
+    Mesh out = detail::clone_mesh(
+        rMesh, [&](DataLocation Location, const std::string& rName, std::string&) {
+            return !(Attach && Location == DataLocation::Cell && rName == kIntersectionsCountName);
+        });
+    if (Attach) {
+        const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+        std::vector<NDArray> blocks;
+        for (std::size_t b = 0; b + 1 < bases.size(); ++b) {
+            const auto n = static_cast<std::size_t>(bases[b + 1] - bases[b]);
+            NDArray a = NDArray::Uninit(DType::Int64, {n});
+            std::copy(rCount.begin() + bases[b], rCount.begin() + bases[b + 1],
+                      a.As<std::int64_t>());
+            blocks.push_back(std::move(a));
+        }
+        out.AddCellData(kIntersectionsCountName, std::move(blocks));
+    }
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
+        out.AddRegion(rMesh.Region(i));
+    return out;
+}
+
+FindIntersectionsResult fi_run(const Mesh& rA, const Mesh* pB,
+                               const FindIntersectionsOptions& rOptions) {
+    if (rOptions.mMaxPairs < 0)
+        throw std::invalid_argument("meshio++: find_intersections: max_pairs must be >= 0");
+    const bool self = pB == nullptr;
+    const detail::TriangleSoup soup_a = detail::build_triangle_soup(rA, rOptions.mRegion);
+    const detail::TriangleSoup soup_b =
+        self ? detail::TriangleSoup{} : detail::build_triangle_soup(*pB, rOptions.mRegionB);
+    const detail::TriangleSoup& r_other = self ? soup_a : soup_b;
+
+    FindIntersectionsResult result;
+    if (soup_a.NumTriangles() == 0)
+        result.mWarnings.emplace_back("the first mesh has no 2-D cells to test");
+    if (!self && soup_b.NumTriangles() == 0)
+        result.mWarnings.emplace_back("the second mesh has no 2-D cells to test");
+
+    // Per triangle of A, the triangles it meets, ascending.
+    std::vector<std::vector<FiHit>> hits(soup_a.NumTriangles());
+    detail::soup_box_pairs(
+        soup_a, self ? nullptr : &soup_b, [&](std::size_t I, const std::vector<std::int64_t>& rJs) {
+            const detail::Vec3* a = &soup_a.mCorners[3 * I];
+            for (std::int64_t j : rJs) {
+                const auto uj = static_cast<std::size_t>(j);
+                if (self && soup_a.mSourceCell[uj] == soup_a.mSourceCell[I])
+                    continue;
+                const detail::Vec3* b = &r_other.mCorners[3 * uj];
+                const bool meet =
+                    self ? detail::tri_tri_intersect_unshared(a[0].data(), a[1].data(), a[2].data(),
+                                                              b[0].data(), b[1].data(), b[2].data())
+                         : detail::tri_tri_intersect(a[0].data(), a[1].data(), a[2].data(),
+                                                     b[0].data(), b[1].data(), b[2].data());
+                if (!meet)
+                    continue;
+                FiHit hit;
+                hit.mJ = j;
+                hit.mSegment = detail::tri_tri_segment(a[0].data(), a[1].data(), a[2].data(),
+                                                       b[0].data(), b[1].data(), b[2].data());
+                hits[I].push_back(hit);
+            }
+        });
+
+    // Reduce in triangle order.
+    std::vector<std::array<std::int64_t, 2>> pairs;
+    std::vector<double> seg_points;
+    std::vector<std::int64_t> seg_a, seg_b;
+    for (std::size_t i = 0; i < hits.size(); ++i)
+        for (const FiHit& r_hit : hits[i]) {
+            const std::int64_t ca = soup_a.mSourceCell[i];
+            const std::int64_t cb = r_other.mSourceCell[static_cast<std::size_t>(r_hit.mJ)];
+            pairs.push_back(self ? std::array<std::int64_t, 2>{{std::min(ca, cb), std::max(ca, cb)}}
+                                 : std::array<std::int64_t, 2>{{ca, cb}});
+            ++result.mNumTrianglePairs;
+            if (r_hit.mSegment.mKind == detail::TriTriContact::Coplanar)
+                ++result.mNumCoplanar;
+            if (rOptions.mSegments && r_hit.mSegment.mKind == detail::TriTriContact::Segment) {
+                seg_points.insert(seg_points.end(), r_hit.mSegment.mP, r_hit.mSegment.mP + 3);
+                seg_points.insert(seg_points.end(), r_hit.mSegment.mQ, r_hit.mSegment.mQ + 3);
+                seg_a.push_back(ca);
+                seg_b.push_back(cb);
+            }
+        }
+    std::sort(pairs.begin(), pairs.end());
+    pairs.erase(std::unique(pairs.begin(), pairs.end()), pairs.end());
+    result.mNumPairs = static_cast<std::int64_t>(pairs.size());
+    result.mClean = pairs.empty();
+
+    // Partners per cell.
+    const std::vector<std::int64_t> bases_a = detail::block_bases(rA);
+    std::vector<std::int64_t> count_a(static_cast<std::size_t>(detail::total_cells(bases_a)), 0);
+    std::vector<std::int64_t> count_b;
+    if (!self)
+        count_b.assign(static_cast<std::size_t>(detail::total_cells(detail::block_bases(*pB))), 0);
+    for (const std::array<std::int64_t, 2>& r_pair : pairs) {
+        ++count_a[static_cast<std::size_t>(r_pair[0])];
+        ++(self ? count_a : count_b)[static_cast<std::size_t>(r_pair[1])];
+    }
+    for (std::int64_t c : count_a)
+        result.mNumCellsA += c > 0;
+    for (std::int64_t c : count_b)
+        result.mNumCellsB += c > 0;
+
+    if (rOptions.mMaxPairs > 0 && result.mNumPairs > rOptions.mMaxPairs) {
+        pairs.resize(static_cast<std::size_t>(rOptions.mMaxPairs));
+        result.mTruncated = true;
+        result.mWarnings.emplace_back(
+            "the pair list is capped at max_pairs = " + std::to_string(rOptions.mMaxPairs) +
+            " of " + std::to_string(result.mNumPairs) + " pairs");
+    }
+    result.mPairs = std::move(pairs);
+
+    result.mMesh = fi_flagged(rA, count_a, rOptions.mAttachFlags);
+    if (!self)
+        result.mMeshB = fi_flagged(*pB, count_b, rOptions.mAttachFlags);
+
+    if (rOptions.mSegments) {
+        const std::size_t ns = seg_a.size();
+        result.mNumSegments = static_cast<std::int64_t>(ns);
+        NDArray points = NDArray::Uninit(DType::Float64, {2 * ns, std::size_t{3}});
+        std::copy(seg_points.begin(), seg_points.end(), points.As<double>());
+        result.mSegments.AssignPoints(std::move(points));
+        NDArray line = NDArray::Uninit(DType::Int64, {ns, std::size_t{2}});
+        std::int64_t* p_line = line.As<std::int64_t>();
+        for (std::size_t s = 0; s < 2 * ns; ++s)
+            p_line[s] = static_cast<std::int64_t>(s);
+        result.mSegments.AddCellBlock("line", std::move(line));
+        for (const auto& [name, values] : {std::pair<const char*, const std::vector<std::int64_t>*>{
+                                               kIntersectionsCellAName, &seg_a},
+                                           std::pair<const char*, const std::vector<std::int64_t>*>{
+                                               kIntersectionsCellBName, &seg_b}}) {
+            NDArray a = NDArray::Uninit(DType::Int64, {ns});
+            std::copy(values->begin(), values->end(), a.As<std::int64_t>());
+            std::vector<NDArray> blocks;
+            blocks.push_back(std::move(a));
+            result.mSegments.AddCellData(name, std::move(blocks));
+        }
+    }
+    return result;
+}
+
+}  // namespace
+
+FindIntersectionsResult find_intersections(const Mesh& rMesh,
+                                           const FindIntersectionsOptions& rOptions) {
+    return fi_run(rMesh, nullptr, rOptions);
+}
+
+FindIntersectionsResult find_intersections(const Mesh& rA, const Mesh& rB,
+                                           const FindIntersectionsOptions& rOptions) {
+    return fi_run(rA, &rB, rOptions);
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/find_intersections.cpp =====
 // ===== begin src/cpp/src/operations/fit_cad.cpp =====
 #include <string>
 
@@ -244752,6 +245578,9 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"SplitInterface", {"Region", "AddCohesive"}},
         {"QualityGate", {"Require", "MaxInverted", "MaxDegenerate"}},
         {"CheckConformity", {"Tolerance", "Require", "AttachFlags"}},
+        {"FindIntersections", {"Other", "Region", "RegionOther", "Require", "AttachFlags"}},
+        {"Thickness",
+         {"Other", "Direction", "MaxDistance", "Min", "Region", "RegionOther", "Require"}},
         {"Snapshot",
          {"Path",           "Width",       "Height",        "Supersample",   "Cols",
           "Rows",           "Encoding",    "ColorDepth",    "PngCompress",   "View",
@@ -246307,6 +247136,62 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         if (opts.mAttachFlags)
             return std::move(cr.mMesh);
         return mesh;
+    }
+    if (op == "FindIntersections") {
+        // A gate by default, like CheckConformity: a surface that intersects
+        // itself (or meets `Other`) stops the pipeline; with Require false it
+        // only reports. AttachFlags writes intersections:count onto the mesh.
+        FindIntersectionsOptions opts;
+        opts.mRegion = pipe_text(rStep, "Region", "");
+        opts.mRegionB = pipe_text(rStep, "RegionOther", "");
+        opts.mAttachFlags = pipe_flag(rStep, "AttachFlags", false);
+        opts.mSegments = false;
+        const std::string other_path = pipe_text(rStep, "Other", "");
+        FindIntersectionsResult fr =
+            other_path.empty() ? find_intersections(mesh, opts)
+                               : find_intersections(mesh, pipe_read_extra(other_path), opts);
+        if (pipe_flag(rStep, "Require", true) && !fr.mClean)
+            throw std::runtime_error("meshio++: pipeline: FindIntersections failed: " +
+                                     std::to_string(fr.mNumPairs) + " intersecting cell pair(s)");
+        pipe_push_step(rReport, rStep,
+                       {{"NumPairs", static_cast<double>(fr.mNumPairs)},
+                        {"NumTrianglePairs", static_cast<double>(fr.mNumTrianglePairs)},
+                        {"NumCoplanar", static_cast<double>(fr.mNumCoplanar)}});
+        if (opts.mAttachFlags)
+            return std::move(fr.mMesh);
+        return mesh;
+    }
+    if (op == "Thickness") {
+        // thickness:distance and thickness:hit_cell flow on; with Min, a cell
+        // below it stops the pipeline unless Require is false.
+        ThicknessOptions opts;
+        const std::string dir = pipe_text(rStep, "Direction", "auto");
+        if (dir == "inward")
+            opts.mDirection = ThicknessDirection::Inward;
+        else if (dir == "outward")
+            opts.mDirection = ThicknessDirection::Outward;
+        else if (dir != "auto")
+            throw std::invalid_argument(
+                "meshio++: pipeline: Thickness: Direction must be auto, inward or outward");
+        opts.mMaxDistance = pipe_number(rStep, "MaxDistance", 0.0);
+        opts.mThreshold = pipe_number(rStep, "Min", 0.0);
+        opts.mRegion = pipe_text(rStep, "Region", "");
+        opts.mRegionTarget = pipe_text(rStep, "RegionOther", "");
+        const std::string other_path = pipe_text(rStep, "Other", "");
+        ThicknessResult tr = other_path.empty()
+                                 ? thickness(mesh, opts)
+                                 : thickness(mesh, pipe_read_extra(other_path), opts);
+        if (opts.mThreshold > 0.0 && pipe_flag(rStep, "Require", true) && tr.mNumBelow > 0)
+            throw std::runtime_error("meshio++: pipeline: Thickness failed: " +
+                                     std::to_string(tr.mNumBelow) + " cell(s) below Min");
+        pipe_push_step(rReport, rStep,
+                       {{"NumHit", static_cast<double>(tr.mNumHit)},
+                        {"NumMissed", static_cast<double>(tr.mNumMissed)},
+                        {"NumBelow", static_cast<double>(tr.mNumBelow)},
+                        {"Min", tr.mMin},
+                        {"Max", tr.mMax},
+                        {"Mean", tr.mMean}});
+        return std::move(tr.mMesh);
     }
     if (op == "EditRegions") {
         // One edit per step: a pipeline value is flat, and a list of edits is
@@ -270880,10 +271765,10 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
                 const int nlocal = nglib::Ng_GetNP(p_m);
                 if (status != nglib::NG_OK || ne <= 0) {
                     nglib::Ng_DeleteMesh(p_m);
-                    throw std::runtime_error(std::string(kTetPrefix) + "Netgen failed on region " +
-                                             std::to_string(s) + " (status " +
-                                             std::to_string(static_cast<int>(status)) +
-                                             "); is the surface free of self-intersections?");
+                    throw std::runtime_error(
+                        std::string(kTetPrefix) + "Netgen failed on region " + std::to_string(s) +
+                        " (status " + std::to_string(static_cast<int>(status)) +
+                        "); is the surface free of self-intersections (find_intersections)?");
                 }
                 if (static_cast<std::int64_t>(tets.size()) + ne > o.mMaxCells) {
                     nglib::Ng_DeleteMesh(p_m);
@@ -271249,6 +272134,208 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/tetrahedralize.cpp =====
+// ===== begin src/cpp/src/operations/thickness.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+
+namespace {
+
+// One measured cell: where its ray starts and which way its normal points.
+struct ThkFacet {
+    std::int64_t mCell = -1;
+    detail::Vec3 mOrigin{0.0, 0.0, 0.0};
+    detail::Vec3 mNormal{0.0, 0.0, 0.0};  // unit; zero for a degenerate cell
+};
+
+// The cells of a soup, from its runs of triangles: the area-weighted centroid
+// and the summed normal of each cell's fan.
+std::vector<ThkFacet> thk_facets(const detail::TriangleSoup& rSoup) {
+    std::vector<std::size_t> starts;
+    for (std::size_t t = 0; t < rSoup.NumTriangles(); ++t)
+        if (t == 0 || rSoup.mSourceCell[t] != rSoup.mSourceCell[t - 1])
+            starts.push_back(t);
+    starts.push_back(rSoup.NumTriangles());
+    std::vector<ThkFacet> facets(starts.size() - 1);
+    parallel_for(facets.size(), [&](std::size_t f) {
+        ThkFacet& r_facet = facets[f];
+        r_facet.mCell = rSoup.mSourceCell[starts[f]];
+        detail::Vec3 normal{0.0, 0.0, 0.0}, moment{0.0, 0.0, 0.0}, mean{0.0, 0.0, 0.0};
+        double area = 0.0;
+        for (std::size_t t = starts[f]; t < starts[f + 1]; ++t) {
+            const detail::Vec3* c = &rSoup.mCorners[3 * t];
+            const detail::Vec3 n =
+                detail::vec3_cross(detail::vec3_sub(c[1], c[0]), detail::vec3_sub(c[2], c[0]));
+            const double a = 0.5 * detail::vec3_norm(n);
+            const detail::Vec3 centre =
+                detail::vec3_scale(detail::vec3_add(detail::vec3_add(c[0], c[1]), c[2]), 1.0 / 3.0);
+            normal = detail::vec3_add(normal, n);
+            moment = detail::vec3_add(moment, detail::vec3_scale(centre, a));
+            mean = detail::vec3_add(mean, centre);
+            area += a;
+        }
+        const double len = detail::vec3_norm(normal);
+        r_facet.mOrigin =
+            area > 0.0
+                ? detail::vec3_scale(moment, 1.0 / area)
+                : detail::vec3_scale(mean, 1.0 / static_cast<double>(starts[f + 1] - starts[f]));
+        if (len > 0.0)
+            r_facet.mNormal = detail::vec3_scale(normal, 1.0 / len);
+    });
+    return facets;
+}
+
+ThicknessResult thk_run(const Mesh& rMesh, const Mesh* pTarget, const ThicknessOptions& rOptions) {
+    if (!std::isfinite(rOptions.mMaxDistance) || rOptions.mMaxDistance < 0.0)
+        throw std::invalid_argument(
+            "meshio++: thickness: max_distance must be finite and non-negative");
+    if (!std::isfinite(rOptions.mThreshold) || rOptions.mThreshold < 0.0)
+        throw std::invalid_argument(
+            "meshio++: thickness: threshold must be finite and non-negative");
+    const bool self = pTarget == nullptr;
+    ThicknessResult result;
+    result.mDirection = rOptions.mDirection != ThicknessDirection::Auto
+                            ? rOptions.mDirection
+                            : (self ? ThicknessDirection::Inward : ThicknessDirection::Outward);
+    const bool inward = result.mDirection == ThicknessDirection::Inward;
+
+    const detail::TriangleSoup soup = detail::build_triangle_soup(rMesh, rOptions.mRegion);
+    const detail::TriangleSoup target =
+        detail::build_triangle_soup(self ? rMesh : *pTarget, rOptions.mRegionTarget);
+    if (soup.NumTriangles() == 0)
+        result.mWarnings.emplace_back("the mesh has no 2-D cells to measure");
+    if (target.NumTriangles() == 0)
+        result.mWarnings.emplace_back("the target surface has no 2-D cells to reach");
+
+    // The ray length: given, or the diagonal of both surfaces.
+    double ray = rOptions.mMaxDistance;
+    if (ray == 0.0) {
+        const double inf = std::numeric_limits<double>::infinity();
+        detail::Vec3 lo{inf, inf, inf}, hi{-inf, -inf, -inf};
+        for (const detail::TriangleSoup* p_soup : {&soup, &target})
+            for (const detail::Vec3& r_p : p_soup->mCorners)
+                for (std::size_t d = 0; d < 3; ++d) {
+                    lo[d] = std::min(lo[d], r_p[d]);
+                    hi[d] = std::max(hi[d], r_p[d]);
+                }
+        ray = soup.mCorners.empty() ? 0.0 : detail::vec3_norm(detail::vec3_sub(hi, lo));
+    }
+    result.mMaxDistance = ray;
+
+    const std::vector<ThkFacet> facets = thk_facets(soup);
+    const detail::TriBvh tree = detail::build_tri_bvh(target);
+    std::vector<double> dist(facets.size(), std::numeric_limits<double>::quiet_NaN());
+    std::vector<std::int64_t> hit_cell(facets.size(), -1);
+    parallel_for(
+        facets.size(),
+        [&](std::size_t f) {
+            const ThkFacet& r_facet = facets[f];
+            if (detail::vec3_norm_sq(r_facet.mNormal) == 0.0 || !(ray > 0.0))
+                return;
+            const detail::Vec3 dir =
+                inward ? detail::vec3_scale(r_facet.mNormal, -1.0) : r_facet.mNormal;
+            const std::int64_t own = self ? r_facet.mCell : -1;
+            const detail::TriRayHit hit = detail::tri_bvh_ray_filtered(
+                tree, r_facet.mOrigin, dir, 0.0, ray,
+                [&](std::int64_t T, const detail::Vec3& rNormal) {
+                    if (target.mSourceCell[static_cast<std::size_t>(T)] == own)
+                        return false;
+                    const double facing = detail::vec3_dot(rNormal, dir);
+                    return inward ? facing > 0.0 : facing < 0.0;
+                });
+            if (hit.mTriangle < 0)
+                return;
+            dist[f] = hit.mT;
+            hit_cell[f] = target.mSourceCell[static_cast<std::size_t>(hit.mTriangle)];
+        },
+        64);
+
+    // The summary, in cell order.
+    std::int64_t degenerate = 0;
+    double sum = 0.0;
+    for (std::size_t f = 0; f < facets.size(); ++f) {
+        ++result.mNumCells;
+        degenerate += detail::vec3_norm_sq(facets[f].mNormal) == 0.0;
+        if (hit_cell[f] < 0) {
+            ++result.mNumMissed;
+            continue;
+        }
+        const double d = dist[f];
+        if (result.mNumHit == 0 || d < result.mMin) {
+            result.mMin = d;
+            result.mMinCell = facets[f].mCell;
+            result.mMinPoint = facets[f].mOrigin;
+        }
+        result.mMax = result.mNumHit == 0 ? d : std::max(result.mMax, d);
+        sum += d;
+        ++result.mNumHit;
+        if (rOptions.mThreshold > 0.0 && d < rOptions.mThreshold)
+            ++result.mNumBelow;
+    }
+    if (result.mNumHit > 0)
+        result.mMean = sum / static_cast<double>(result.mNumHit);
+    if (degenerate > 0)
+        result.mWarnings.emplace_back(std::to_string(degenerate) +
+                                      " cells have no area and no normal; they read as misses");
+
+    result.mMesh = detail::clone_mesh(
+        rMesh, [&](DataLocation Location, const std::string& rName, std::string&) {
+            return !(rOptions.mAttach && Location == DataLocation::Cell &&
+                     (rName == kThicknessDistanceName || rName == kThicknessHitCellName));
+        });
+    if (rOptions.mAttach) {
+        const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+        const auto total = static_cast<std::size_t>(detail::total_cells(bases));
+        std::vector<double> all_dist(total, std::numeric_limits<double>::quiet_NaN());
+        std::vector<std::int64_t> all_hit(total, -1);
+        for (std::size_t f = 0; f < facets.size(); ++f) {
+            const auto c = static_cast<std::size_t>(facets[f].mCell);
+            all_dist[c] = dist[f];
+            all_hit[c] = hit_cell[f];
+        }
+        std::vector<NDArray> dist_blocks, hit_blocks;
+        for (std::size_t b = 0; b + 1 < bases.size(); ++b) {
+            const auto n = static_cast<std::size_t>(bases[b + 1] - bases[b]);
+            NDArray d = NDArray::Uninit(DType::Float64, {n});
+            std::copy(all_dist.begin() + bases[b], all_dist.begin() + bases[b + 1], d.As<double>());
+            NDArray h = NDArray::Uninit(DType::Int64, {n});
+            std::copy(all_hit.begin() + bases[b], all_hit.begin() + bases[b + 1],
+                      h.As<std::int64_t>());
+            dist_blocks.push_back(std::move(d));
+            hit_blocks.push_back(std::move(h));
+        }
+        result.mMesh.AddCellData(kThicknessDistanceName, std::move(dist_blocks));
+        result.mMesh.AddCellData(kThicknessHitCellName, std::move(hit_blocks));
+    }
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
+        result.mMesh.AddRegion(rMesh.Region(i));
+    return result;
+}
+
+}  // namespace
+
+ThicknessResult thickness(const Mesh& rMesh, const ThicknessOptions& rOptions) {
+    return thk_run(rMesh, nullptr, rOptions);
+}
+
+ThicknessResult thickness(const Mesh& rMesh, const Mesh& rTarget,
+                          const ThicknessOptions& rOptions) {
+    return thk_run(rMesh, &rTarget, rOptions);
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/thickness.cpp =====
 // ===== begin src/cpp/src/operations/transform.cpp =====
 #include <array>
 #include <cmath>

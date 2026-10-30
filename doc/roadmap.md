@@ -98,11 +98,9 @@ The sanitizer leg, the reader fuzzing, the format conformance matrix, the proper
 
 *Admission: a new operation, or a public face for machinery that already exists privately inside one.*
 
-**3.1 Checks, selection and measurement.**
+**3.1 Selection.** The checks and measurement beside it landed: [`find_intersections`](./find_intersections.md) (3.1.2) and [`thickness`](./thickness.md) (3.1.4), sharing the exact triangle–triangle test and the core's one ray–triangle kernel.
 
-- **3.1.2 `find_intersections`** — self-intersection of a surface and mutual interpenetration of two parts, by triangle–triangle tests over the bucket grid. Returns the pairs, the intersection segments as a line mesh and a flagging `cell_data` array, with exact and "possible" hits reported separately unless the triangle–triangle test is built on the core's exact `orient3d` (`detail/predicates`, v17.13.0), which would make every hit exact; booleans stay a [non-goal](#non-goals-and-decisions-taken). Also the precondition check for `repair`, `shrinkwrap` and `remesh_volume`. Probe: two overlapping spheres. **M**
 - **3.1.3 `select`** — write `Region`s (cell, point or side) from a box, plane or sphere, a `cell_data` or quality threshold, a component label, or normal-angle patch growing bounded by `feature_edges`, so boundary-condition and contact patches are reproducible and feed `find_interface`. Reuses `crop(where=)`'s predicate parser, `feature_edges` and `split(by="component")`. **M**
-- **3.1.4 `thickness`** — wall thickness and inter-part clearance per facet, from a ray along the inward normal to the opposite surface. Needs a ray–triangle kernel that `find_intersections` also needs: write it once in `detail/`. **M**
 
 **3.2 Optional MMG backend.** The native backend landed (v17.23.0, [MMG backend](./mmg.md)): `MESHIOPLUSPLUS_WITH_MMG` links a shared MMG 5.8 install for `adapt`, `discretize_levelset`, `mesh_domain` and, with ELAS, `move`, on every native surface, beside Medit `.sol` I/O. It is LGPL-3.0, linked dynamically only and absent from the release wheels, the native CLI binaries and both WebAssembly artifacts; what is left is the browser.
 
@@ -139,6 +137,8 @@ The sanitizer leg, the reader fuzzing, the format conformance matrix, the proper
   - **4.4.4 Docs.** A `doc/chat.md` page modelled on [MCP](./mcp.md), plus the README and tool-table updates the `AGENTS.md` checklist requires.
 
 - **4.6 The dataset manager shows the stored thumbnail.** A manifest entry's `Thumbnail` is a PNG path the Python API, the CLI and the MCP tools write and read, and the [browser dataset manager](./datasets.md#curating-in-the-browser) accepts, keeps and saves the key, but it still draws its own session-only preview of the entry it has open. Showing the stored picture on the entry's card, without opening the case, needs the manager to fetch the file (through the `--http` companion, or from the picked directory). **S**
+
+- **4.7 Split Python packages.** One MIT base wheel with the core as a shared library, and add-on wheels for the copyleft backends (`meshioplusplus-occt`, `-netgen`, `-mmg`) linked against it and pinned to its exact version, Kratos-style, with `[all]` installing everything; the base wheel then also gains HDF5, netCDF, CGNS, the codecs and KaHIP. Needs a runtime provider registry in the core first. The phases, the risks and the spikes that come before code are in the [plan](./python_packages_plan.md). **L–XL**
 
 ---
 
@@ -213,3 +213,4 @@ Open work only; what shipped is in `CHANGELOG.md`.
 2. **The OSS-Fuzz submission ([§2](#_2-quality-of-implementation))** — calendar-bound, so it runs alongside everything else.
 3. **The MMG backend in the browser ([§3](#_3-operations))** — the native backend landed ([MMG backend](./mmg.md), v17.23.0: Medit `.sol`, then `adapt`, `discretize_levelset`, `mesh_domain` and, with ELAS, `move`); what is left is their port through the full WebAssembly build v17.2.0 shipped (3.2.8).
 4. **Registration ([§4](#_4-ecosystem-reach))** — calendar-bound, so start the submissions early and let them run alongside everything else; the dataset manager's thumbnails (4.6) needs no decision first and can run beside them.
+5. **Split Python packages ([4.7](#_4-ecosystem-reach))** — a major release (v18.0.0) that lands the provider registry, the shared core and the OpenCASCADE add-on together; the spikes of its [plan](./python_packages_plan.md) come first, then Netgen, MMG and the permissive libraries in the base wheel.

@@ -179,6 +179,8 @@
 #include "meshioplusplus/operations/boundary_layer.hpp"
 #include "meshioplusplus/operations/extrude.hpp"
 #include "meshioplusplus/operations/mirror.hpp"
+#include "meshioplusplus/operations/find_intersections.hpp"
+#include "meshioplusplus/operations/thickness.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
@@ -8043,12 +8045,130 @@ val mirror_js(const val& rMeshObj, const val& rOptions) {
     });
 }
 
+// find_intersections (roadmap 3.1.2): where a surface intersects itself, or
+// (options.other) where two surfaces meet; options {other, region,
+// regionOther, segments, maxPairs}, all optional. `pairs` is an Int32Array of
+// (cell of mesh, cell of other) global cell ids, two per pair.
+val find_intersections_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::FindIntersectionsOptions o;
+        val other = val::undefined();
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the findIntersections options",
+                                {"other", "region", "regionOther", "segments", "maxPairs"});
+            if (rOptions.hasOwnProperty("other"))
+                other = rOptions["other"];
+            if (rOptions.hasOwnProperty("region"))
+                o.mRegion = rOptions["region"].as<std::string>();
+            if (rOptions.hasOwnProperty("regionOther"))
+                o.mRegionB = rOptions["regionOther"].as<std::string>();
+            if (rOptions.hasOwnProperty("segments"))
+                o.mSegments = rOptions["segments"].as<bool>();
+            if (rOptions.hasOwnProperty("maxPairs"))
+                o.mMaxPairs = static_cast<std::int64_t>(rOptions["maxPairs"].as<double>());
+        }
+        const bool two = !other.isUndefined() && !other.isNull();
+        const meshioplusplus::Mesh mesh = val_to_mesh(rMeshObj);
+        meshioplusplus::FindIntersectionsResult r =
+            two ? meshioplusplus::find_intersections(mesh, val_to_mesh(other), o)
+                : meshioplusplus::find_intersections(mesh, o);
+        std::vector<std::int32_t> pairs;
+        pairs.reserve(2 * r.mPairs.size());
+        for (const auto& r_pair : r.mPairs)
+            for (std::int64_t c : r_pair) {
+                if (c > std::numeric_limits<std::int32_t>::max())
+                    throw std::runtime_error(
+                        "meshio++: findIntersections: a cell id does not fit in an Int32Array");
+                pairs.push_back(static_cast<std::int32_t>(c));
+            }
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("other", two ? mesh_to_val(r.mMeshB) : val::null());
+        out.set("segments", o.mSegments ? mesh_to_val(r.mSegments) : val::null());
+        out.set("pairs", int32_array_from(pairs.data(), pairs.size()));
+        out.set("numPairs", static_cast<double>(r.mNumPairs));
+        out.set("numTrianglePairs", static_cast<double>(r.mNumTrianglePairs));
+        out.set("numCoplanar", static_cast<double>(r.mNumCoplanar));
+        out.set("numSegments", static_cast<double>(r.mNumSegments));
+        out.set("numCellsA", static_cast<double>(r.mNumCellsA));
+        out.set("numCellsB", static_cast<double>(r.mNumCellsB));
+        out.set("truncated", r.mTruncated);
+        out.set("clean", r.mClean);
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+// thickness (roadmap 3.1.4): wall thickness or clearance per facet by a ray
+// along its normal; options {other, direction ("auto" | "inward" |
+// "outward"), maxDistance, threshold, region, regionOther}, all optional.
+val thickness_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ThicknessOptions o;
+        val other = val::undefined();
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(
+                rOptions, "the thickness options",
+                {"other", "direction", "maxDistance", "threshold", "region", "regionOther"});
+            if (rOptions.hasOwnProperty("other"))
+                other = rOptions["other"];
+            if (rOptions.hasOwnProperty("direction")) {
+                const std::string d = rOptions["direction"].as<std::string>();
+                if (d == "inward")
+                    o.mDirection = meshioplusplus::ThicknessDirection::Inward;
+                else if (d == "outward")
+                    o.mDirection = meshioplusplus::ThicknessDirection::Outward;
+                else if (d != "auto")
+                    throw std::invalid_argument(
+                        "meshio++: thickness: direction must be 'auto', 'inward' or 'outward'");
+            }
+            if (rOptions.hasOwnProperty("maxDistance"))
+                o.mMaxDistance = rOptions["maxDistance"].as<double>();
+            if (rOptions.hasOwnProperty("threshold"))
+                o.mThreshold = rOptions["threshold"].as<double>();
+            if (rOptions.hasOwnProperty("region"))
+                o.mRegion = rOptions["region"].as<std::string>();
+            if (rOptions.hasOwnProperty("regionOther"))
+                o.mRegionTarget = rOptions["regionOther"].as<std::string>();
+        }
+        const bool two = !other.isUndefined() && !other.isNull();
+        const meshioplusplus::Mesh mesh = val_to_mesh(rMeshObj);
+        meshioplusplus::ThicknessResult r =
+            two ? meshioplusplus::thickness(mesh, val_to_mesh(other), o)
+                : meshioplusplus::thickness(mesh, o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("direction", std::string(r.mDirection == meshioplusplus::ThicknessDirection::Outward
+                                             ? "outward"
+                                             : "inward"));
+        out.set("numCells", static_cast<double>(r.mNumCells));
+        out.set("numHit", static_cast<double>(r.mNumHit));
+        out.set("numMissed", static_cast<double>(r.mNumMissed));
+        out.set("numBelow", static_cast<double>(r.mNumBelow));
+        out.set("min", r.mMin);
+        out.set("max", r.mMax);
+        out.set("mean", r.mMean);
+        out.set("minCell", static_cast<double>(r.mMinCell));
+        out.set("minPoint", float64_array_from(r.mMinPoint.data(), 3));
+        out.set("maxDistance", r.mMaxDistance);
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
 // tetrahedralize (roadmap 6.7): tetrahedra filling a closed triangle surface;
 // options {backend ("auto" | "netgen" | "octree"), maxSize, maxVolume,
-// grading, optimizeSteps, maxCells, faceArray}, all optional. No WebAssembly
-// build of Netgen exists (`hasNetgen()` is false), so "auto" is the native
-// octree backend, its boundary fitted, and "netgen" throws naming
-// MESHIOPLUSPLUS_WITH_NETGEN.
+// grading, optimizeSteps, maxCells, faceArray}, all optional. The full
+// artifact links Netgen (`hasNetgen()` is true), so "auto" keeps the
+// surface's triangles there; the lean one has none, so "auto" is the native
+// octree backend, its boundary fitted, and "netgen" throws pointing at the
+// full artifact.
 val tetrahedralize_js(const val& rMeshObj, const val& rOptions) {
     return with_js_errors([&]() -> val {
         meshioplusplus::TetrahedralizeOptions o;
@@ -8083,6 +8203,11 @@ val tetrahedralize_js(const val& rMeshObj, const val& rOptions) {
             if (rOptions.hasOwnProperty("faceArray"))
                 o.mFaceArray = rOptions["faceArray"].as<std::string>();
         }
+        if (o.mBackend == meshioplusplus::TetrahedralizeBackend::Netgen &&
+            !meshioplusplus::tetrahedralize_has_netgen())
+            throw meshioplusplus::Unsupported(
+                "meshio++: tetrahedralize: this artifact has no Netgen; the full one carries "
+                "it: loadMeshioPlusPlus({}, {full: true})");
         meshioplusplus::TetrahedralizeResult r =
             meshioplusplus::tetrahedralize(val_to_mesh(rMeshObj), o);
         val out = val::object();
@@ -8106,8 +8231,8 @@ val tetrahedralize_js(const val& rMeshObj, const val& rOptions) {
     });
 }
 
-/// Whether tetrahedralize's Netgen backend is linked in: never in a
-/// WebAssembly build (the octree backend always is).
+/// Whether tetrahedralize's Netgen backend is linked in: in the full
+/// artifact only (the octree backend always is).
 bool has_netgen_js() {
     return meshioplusplus::tetrahedralize_has_netgen();
 }
@@ -8701,6 +8826,8 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("extrude", &extrude_js);
     emscripten::function("revolve", &revolve_js);
     emscripten::function("mirror", &mirror_js);
+    emscripten::function("findIntersections", &find_intersections_js);
+    emscripten::function("thickness", &thickness_js);
     emscripten::function("tetrahedralize", &tetrahedralize_js);
     emscripten::function("hasNetgen", &has_netgen_js);
     emscripten::function("hasMmg", &has_mmg_js);

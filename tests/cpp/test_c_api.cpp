@@ -7729,3 +7729,74 @@ TEST(CApi, MoveTranslatesAFaceOrNamesWhatIsMissing) {
     EXPECT_EQ(mio_move(box, nullptr, nullptr), nullptr);
     mio_mesh_free(box);
 }
+
+TEST(CApi, FindIntersectionsAndThickness) {
+    mio_gen_opts g;
+    mio_gen_opts_init(&g);
+    g.counts[0] = 3;
+    mio_mesh* a = mio_icosa_sphere(&g);
+    ASSERT_NE(a, nullptr) << mio_last_error();
+    g.origin[0] = 1.0;
+    mio_mesh* b = mio_icosa_sphere(&g);
+    ASSERT_NE(b, nullptr) << mio_last_error();
+
+    mio_find_intersections_opts o;
+    mio_find_intersections_opts_init(&o);
+    EXPECT_EQ(o.attach_flags, 1);
+    EXPECT_EQ(o.segments, 1);
+    mio_find_intersections_report report{};
+    report.reserved[0] = 7;
+    // One clean sphere.
+    mio_find_intersections_result* r = mio_find_intersections(a, nullptr, nullptr, &report);
+    ASSERT_NE(r, nullptr) << mio_last_error();
+    EXPECT_EQ(report.num_pairs, 0);
+    EXPECT_EQ(report.clean, 1);
+    EXPECT_EQ(report.reserved[0], 0);
+    EXPECT_EQ(mio_find_intersections_result_take_mesh_b(r), nullptr);
+    mio_find_intersections_result_free(r);
+    // Two overlapping ones.
+    r = mio_find_intersections(a, b, &o, &report);
+    ASSERT_NE(r, nullptr) << mio_last_error();
+    EXPECT_GT(report.num_pairs, 0);
+    EXPECT_EQ(report.clean, 0);
+    int64_t count = 0;
+    const int64_t* pairs = mio_find_intersections_result_pairs(r, &count);
+    EXPECT_EQ(count, report.num_pairs);
+    ASSERT_NE(pairs, nullptr);
+    EXPECT_GE(pairs[0], 0);
+    mio_mesh* flagged = mio_find_intersections_result_take_mesh(r);
+    ASSERT_NE(flagged, nullptr);
+    EXPECT_EQ(mio_find_intersections_result_take_mesh(r), nullptr);
+    EXPECT_EQ(mio_mesh_cell_data_num_blocks(flagged, "intersections:count"), 1);
+    mio_mesh* segs = mio_find_intersections_result_take_segments(r);
+    ASSERT_NE(segs, nullptr);
+    EXPECT_EQ(mio_mesh_num_points(segs), 2 * report.num_segments);
+    mio_mesh* other = mio_find_intersections_result_take_mesh_b(r);
+    ASSERT_NE(other, nullptr);
+    mio_mesh_free(other);
+    mio_mesh_free(segs);
+    mio_mesh_free(flagged);
+    mio_find_intersections_result_free(r);
+    // A bad cap is refused.
+    o.max_pairs = -1;
+    EXPECT_EQ(mio_find_intersections(a, b, &o, nullptr), nullptr);
+    EXPECT_EQ(mio_find_intersections(nullptr, b, nullptr, nullptr), nullptr);
+
+    mio_thickness_opts t;
+    mio_thickness_opts_init(&t);
+    EXPECT_EQ(t.direction, MIO_THICKNESS_AUTO);
+    EXPECT_EQ(t.attach, 1);
+    mio_thickness_report tr{};
+    mio_mesh* thick = mio_thickness(a, nullptr, &t, &tr);
+    ASSERT_NE(thick, nullptr) << mio_last_error();
+    EXPECT_EQ(tr.direction, MIO_THICKNESS_INWARD);
+    EXPECT_EQ(tr.num_missed, 0);
+    EXPECT_NEAR(tr.min, 2.0, 0.02);
+    EXPECT_EQ(mio_mesh_cell_data_num_blocks(thick, "thickness:distance"), 1);
+    mio_mesh_free(thick);
+    t.direction = 7;
+    EXPECT_EQ(mio_thickness(a, nullptr, &t, &tr), nullptr);
+    EXPECT_GE(mio_thickness_warnings(nullptr, 0), 0);
+    mio_mesh_free(b);
+    mio_mesh_free(a);
+}

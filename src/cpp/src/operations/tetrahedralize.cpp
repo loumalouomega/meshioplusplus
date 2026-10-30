@@ -363,10 +363,10 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
                 const int nlocal = nglib::Ng_GetNP(p_m);
                 if (status != nglib::NG_OK || ne <= 0) {
                     nglib::Ng_DeleteMesh(p_m);
-                    throw std::runtime_error(std::string(kTetPrefix) + "Netgen failed on region " +
-                                             std::to_string(s) + " (status " +
-                                             std::to_string(static_cast<int>(status)) +
-                                             "); is the surface free of self-intersections?");
+                    throw std::runtime_error(
+                        std::string(kTetPrefix) + "Netgen failed on region " + std::to_string(s) +
+                        " (status " + std::to_string(static_cast<int>(status)) +
+                        "); is the surface free of self-intersections (find_intersections)?");
                 }
                 if (static_cast<std::int64_t>(tets.size()) + ne > o.mMaxCells) {
                     nglib::Ng_DeleteMesh(p_m);

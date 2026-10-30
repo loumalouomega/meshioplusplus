@@ -126,6 +126,7 @@ export interpolate, conservative_interpolate, meshes_equal, stats, compute_bandw
 export reorder, convert_cells, subdivide, agglomerate, refine, undo_green, decimate, partition, partition_labels
 export boundary_layer
 export extrude, revolve, mirror
+export find_intersections, thickness
 export tetrahedralize, has_netgen
 export has_mmg, has_mmg_elas, adapt, metric_from_hessian, discretize_levelset, mesh_domain, move
 export tessellate

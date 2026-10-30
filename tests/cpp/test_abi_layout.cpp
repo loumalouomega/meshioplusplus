@@ -96,6 +96,8 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/check_conformity.hpp"
 #include "meshioplusplus/operations/extrude.hpp"
 #include "meshioplusplus/operations/mirror.hpp"
+#include "meshioplusplus/operations/find_intersections.hpp"
+#include "meshioplusplus/operations/thickness.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/mmg.hpp"
@@ -346,6 +348,14 @@ static_assert(offsetof(meshioplusplus::ExtrudeOptions, mOffsets) == 40,
               "ExtrudeOptions::mOffsets moved");
 MIO_ABI_LAYOUT(meshioplusplus::RevolveOptions, 88, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MirrorOptions, 72, 8);
+// ABI 36: find_intersections' and thickness' options (roadmap 3.1.2,
+// 3.1.4), added after v17.23.0 as pure additions (doc/abi_reviews.md).
+MIO_ABI_LAYOUT(meshioplusplus::FindIntersectionsOptions, 80, 8);
+static_assert(offsetof(meshioplusplus::FindIntersectionsOptions, mMaxPairs) == 72,
+              "FindIntersectionsOptions::mMaxPairs moved");
+MIO_ABI_LAYOUT(meshioplusplus::ThicknessOptions, 96, 8);
+static_assert(offsetof(meshioplusplus::ThicknessOptions, mRegion) == 24,
+              "ThicknessOptions::mRegion moved");
 MIO_ABI_LAYOUT(meshioplusplus::OctreeOptions, 304, 8);
 // ABI 36: `mHexGrading` (roadmap 3.1.4.3) in the padding after `mPillow`.
 MIO_ABI_LAYOUT(meshioplusplus::OctreeMeshOptions, 336, 8);

@@ -19,7 +19,7 @@ report["num_projected"], report["num_missed"], report["max_displacement"]
 
 ## One projection, not an iteration
 
-Each point moves once: `x' = x + w (p + offset·n̂ − x)`, with `p` the closest point on the target and `n̂` the unit normal there. There is no self-intersection guard and no cell-inversion guard, exactly as in NVIDIA PhysicsNeMo's own `shrinkwrap` — a wrap is a *fit*, not a smoothing. Wrapping a template far from its target, or with a large offset, can fold it; check the result with [`compute_quality`](/mesh_quality) if that is a risk, and relax it with [`smooth`](/smooth) or [`sobolev_deform`](/sobolev_deform) if it is.
+Each point moves once: `x' = x + w (p + offset·n̂ − x)`, with `p` the closest point on the target and `n̂` the unit normal there. There is no self-intersection guard and no cell-inversion guard, exactly as in NVIDIA PhysicsNeMo's own `shrinkwrap` — a wrap is a *fit*, not a smoothing. Wrapping a template far from its target, or with a large offset, can fold it; check the result with [`compute_quality`](/mesh_quality) and [`find_intersections`](/find_intersections) if that is a risk, and relax it with [`smooth`](/smooth) or [`sobolev_deform`](/sobolev_deform) if it is.
 
 The closest point comes from the same bucket-grid nearest-triangle search [`sample_distance`](/sdf) uses, so the point a query is projected *to* is the point `sample_distance` measures *to*. That search is totally ordered on `(distance², triangle id)`, so the accelerator's bucket size cannot change the answer — a property a test proves rather than assumes.
 

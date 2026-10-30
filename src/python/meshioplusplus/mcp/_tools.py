@@ -94,6 +94,7 @@ from .. import (
     feature_edges,
     fichera,
     find_interface,
+    find_intersections,
     fit_cad,
     fit_primitives,
     geo_sphere,
@@ -175,6 +176,7 @@ from .. import (
     tessellate,
     tetra_sphere,
     tetrahedralize,
+    thickness,
     torus,
     transform,
     tube,
@@ -636,6 +638,82 @@ def tool_check_conformity(
         attach_flags=output_path is not None,
         return_report=True,
     )
+    if output_path is not None:
+        report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_find_intersections(
+    input_path,
+    output_path=None,
+    file_format=None,
+    output_format=None,
+    other_path=None,
+    other_format=None,
+    segments_path=None,
+    region="",
+    region_other="",
+    max_pairs=0,
+):
+    """Self-intersections of a surface, or where it and a second surface
+    (``other_path``) meet, by exact triangle-triangle tests. Pass
+    ``output_path`` to write the mesh with ``intersections:count`` cell data
+    and ``segments_path`` for the intersection segments as a line mesh."""
+    mesh = _load(input_path, file_format)
+    other = _load(other_path, other_format) if other_path is not None else None
+    out, report = find_intersections(
+        mesh,
+        other,
+        region=region,
+        region_other=region_other,
+        attach_flags=output_path is not None,
+        segments=segments_path is not None,
+        max_pairs=max_pairs,
+        return_report=True,
+    )
+    segments = report.pop("segments")
+    report.pop("other")
+    if output_path is not None:
+        report["output_path"] = _store(out, output_path, output_format)
+    if segments_path is not None:
+        report["segments_path"] = _store(segments, segments_path, None)
+    return _json_safe(report)
+
+
+def tool_thickness(
+    input_path,
+    output_path=None,
+    file_format=None,
+    output_format=None,
+    other_path=None,
+    other_format=None,
+    direction="auto",
+    max_distance=0.0,
+    min_thickness=None,
+    region="",
+    region_other="",
+):
+    """Wall thickness (inward) or clearance (outward, the default against
+    ``other_path``) per facet by a ray along its normal; with
+    ``min_thickness``, also whether no facet falls below it. Pass
+    ``output_path`` to write the mesh with ``thickness:distance`` and
+    ``thickness:hit_cell`` cell data."""
+    mesh = _load(input_path, file_format)
+    other = _load(other_path, other_format) if other_path is not None else None
+    out, report = thickness(
+        mesh,
+        other,
+        direction=direction,
+        max_distance=max_distance,
+        threshold=min_thickness,
+        region=region,
+        region_other=region_other,
+        attach=output_path is not None,
+        return_report=True,
+    )
+    if min_thickness is not None:
+        report["threshold"] = float(min_thickness)
+        report["passed"] = bool(report["num_below"] == 0)
     if output_path is not None:
         report["output_path"] = _store(out, output_path, output_format)
     return _json_safe(report)
@@ -6530,6 +6608,18 @@ TOOL_REGISTRY = OrderedDict(
                 "wraps": ("check_conformity",),
                 "gated": None,
             },
+        ),
+        (
+            "find_intersections",
+            {
+                "fn": tool_find_intersections,
+                "wraps": ("find_intersections",),
+                "gated": None,
+            },
+        ),
+        (
+            "thickness",
+            {"fn": tool_thickness, "wraps": ("thickness",), "gated": None},
         ),
         ("repair", {"fn": tool_repair, "wraps": ("repair",), "gated": None}),
         (

@@ -2300,3 +2300,21 @@ end
 end
 
 end # testset
+
+@testset "operations: find_intersections, thickness" begin
+    a = icosa_sphere(; subdivisions=3)
+    b = icosa_sphere(; subdivisions=3, center=(1.0, 0.0, 0.0))
+    one = find_intersections(a)
+    @test one.clean
+    @test one.other === nothing
+    two = find_intersections(a, b)
+    @test two.num_pairs > 0
+    @test size(two.pairs) == (2, two.num_pairs)
+    @test minimum(two.pairs) >= 1
+    @test two.segments !== nothing
+    t = thickness(a)
+    @test t.direction == "inward"
+    @test t.num_missed == 0
+    @test isapprox(t.min, 2.0; atol=0.05)
+    @test_throws ArgumentError thickness(a; direction="sideways")
+end

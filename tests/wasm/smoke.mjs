@@ -2774,26 +2774,38 @@ step('the stays-out set is exactly what this artifact reports (roadmap 6.2.4)', 
     // (the full artifact only), ADIOS2 (vtx), TecIO
     // (szplt, redistribution terms), the Kokkos backend and memory mapping
     // stay out of the lean pair; the full artifact adds OpenCASCADE, the codecs
-    // and KaHIP.
+    // KaHIP and Netgen.
     const expected = full
-        ? { hasOcct: true, hasZstd: true, hasLz4: true, hasBzip2: true, hasKahip: true }
-        : { hasOcct: false, hasZstd: false, hasLz4: false, hasBzip2: false, hasKahip: false };
+        ? { hasOcct: true, hasZstd: true, hasLz4: true, hasBzip2: true, hasKahip: true, hasNetgen: true }
+        : { hasOcct: false, hasZstd: false, hasLz4: false, hasBzip2: false, hasKahip: false, hasNetgen: false };
     for (const [name, value] of Object.entries(expected))
         assert.equal(m[name](), value, name);
     assert.equal(m.hasCgnslib(), true);
-    // Roadmap 6.7: no WebAssembly build of Netgen, in either artifact, so
-    // "auto" is the native octree backend (its boundary fitted) and "netgen"
-    // is refused by name.
-    assert.equal(m.hasNetgen(), false);
     // Roadmap 3.2.8: no WebAssembly build of MMG yet, in either artifact.
     assert.equal(m.hasMmg(), false);
+    // Roadmap 6.7: the full artifact links Netgen, so "auto" keeps the
+    // surface's triangles; the lean one fits them with the native octree
+    // backend and refuses "netgen", naming the full artifact.
     const ico = m.icosaSphere(1, 2);
     const tet = m.tetrahedralize(ico);
-    assert.equal(tet.backend, 'octree');
-    assert.equal(tet.boundaryPreserved, false);
-    assert.ok(tet.numTetrahedra > 0 && tet.hausdorffToSurface > 0, 'octree tetrahedra');
-    assert.ok(tet.warnings.some((w) => /MESHIOPLUSPLUS_WITH_NETGEN/.test(w)), 'fallback warned');
-    assert.throws(() => m.tetrahedralize(ico, { backend: 'netgen' }), /MESHIOPLUSPLUS_WITH_NETGEN/);
+    const octree = m.tetrahedralize(ico, { backend: 'octree' });
+    assert.equal(octree.backend, 'octree');
+    assert.equal(octree.boundaryPreserved, false);
+    assert.ok(octree.numTetrahedra > 0 && octree.hausdorffToSurface > 0, 'octree tetrahedra');
+    if (full) {
+        assert.equal(tet.backend, 'netgen');
+        assert.equal(tet.boundaryPreserved, true);
+        assert.equal(tet.hausdorffToSurface, 0);
+        assert.equal(tet.numBoundaryTriangles, 320);
+        assert.equal(tet.numPoints - tet.numNewPoints, ico.points.length / 3);
+        assert.ok(tet.numTetrahedra > 0 && tet.minDihedralDeg > 0, 'netgen tetrahedra');
+        const fine = m.tetrahedralize(ico, { backend: 'netgen', maxSize: 0.2 });
+        assert.ok(fine.numTetrahedra > tet.numTetrahedra, 'maxSize refines');
+    } else {
+        assert.equal(tet.backend, 'octree');
+        assert.ok(tet.warnings.some((w) => /MESHIOPLUSPLUS_WITH_NETGEN/.test(w)), 'fallback warned');
+        assert.throws(() => m.tetrahedralize(ico, { backend: 'netgen' }), /full: true/);
+    }
     assert.throws(() => m.tetrahedralize(ico, { grading: 2 }), /grading/);
     assert.throws(() => m.tetrahedralize(ico, { backend: 'tetgen' }), /backend/);
     assert.throws(() => m.tetrahedralize(ico, { bogus: 1 }), /bogus/);
@@ -5710,6 +5722,24 @@ step('extrude, revolve and mirror (roadmap 3.1.2, 3.1.3, 3.2.5)', () => {
     assert.equal(k.numPointsOnPlane, 9);
     assert.equal(k.mesh.points.length, (2 * 27 - 9) * 3);
     assert.throws(() => m.mirror(box, { normal: [0, 0, 0] }), /normal/);
+});
+
+step('findIntersections and thickness (roadmap 3.1.2, 3.1.4)', () => {
+    const a = m.icosaSphere(1, 3);
+    const b = m.icosaSphere(1, 3, [1, 0, 0]);
+    const one = m.findIntersections(a);
+    assert.equal(one.clean, true);
+    assert.equal(one.other, null);
+    const two = m.findIntersections(a, { other: b });
+    assert.ok(two.numPairs > 0);
+    assert.equal(two.pairs.length, 2 * two.numPairs);
+    assert.ok(two.segments.points.length > 0);
+    assert.throws(() => m.findIntersections(a, { bogus: 1 }), /bogus/);
+    const t = m.thickness(a);
+    assert.equal(t.direction, 'inward');
+    assert.equal(t.numMissed, 0);
+    assert.ok(Math.abs(t.min - 2) < 0.05);
+    assert.throws(() => m.thickness(a, { direction: 'sideways' }), /direction/);
 });
 
 step('findInterface, contactPairs and splitInterface', () => {

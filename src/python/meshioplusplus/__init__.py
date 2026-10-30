@@ -130,6 +130,7 @@ if TYPE_CHECKING:
     from ._error_size import error_size
     from ._extrude import extrude, revolve
     from ._feature_edges import feature_edges
+    from ._find_intersections import find_intersections
     from ._fit_cad import fit_cad
     from ._fit_primitives import fit_primitives
     from ._gpu import (
@@ -291,6 +292,7 @@ if TYPE_CHECKING:
     from ._tensor_invariants import tensor_invariants
     from ._tessellation import Tessellation, tessellate
     from ._tetrahedralize import tetrahedralize
+    from ._thickness import thickness
     from ._transform import transform
     from ._tui import tui
     from ._undo_green import undo_green
@@ -325,6 +327,8 @@ _LAZY_ATTRS = {
     "DatasetEntry": "_dataset",
     "DatasetManifest": "_dataset",
     "check_conformity": "_check_conformity",
+    "find_intersections": "_find_intersections",
+    "thickness": "_thickness",
     "decimate": "_decimate",
     "decimate_volume": "_decimate_volume",
     "diff": "_diff",
@@ -620,6 +624,8 @@ __all__ = [
     "attach_quality",
     "check_quality",
     "check_conformity",
+    "find_intersections",
+    "thickness",
     "sniff_format",
     "reorder",
     "compute_bandwidth",

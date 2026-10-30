@@ -6522,6 +6522,123 @@ MIO_API mio_status mio_hausdorff_distance(const mio_mesh* a, const mio_mesh* b,
                                           const mio_hausdorff_opts* opts,
                                           mio_hausdorff_report* report);
 
+/* ---- find_intersections (roadmap 3.1.2) ---------------------------------- */
+
+/** Opaque result of mio_find_intersections(): owns the flagged meshes, the
+ * segment mesh and the pairs. Destroy with mio_find_intersections_result_free(). */
+typedef struct mio_find_intersections_result mio_find_intersections_result;
+
+/** Options of mio_find_intersections; initialise with
+ *  mio_find_intersections_opts_init. 64 bytes. */
+typedef struct mio_find_intersections_opts {
+    const char* region;    /**< Cell region of the first surface; NULL or "" for all */
+    const char* region_b;  /**< likewise for the second surface */
+    int64_t max_pairs;     /**< keep at most this many pairs (init: 0, all) */
+    int32_t attach_flags;  /**< attach intersections:count (init: 1) */
+    int32_t segments;      /**< build the segment mesh (init: 1) */
+    int64_t reserved[4];
+} mio_find_intersections_opts;
+
+/** What mio_find_intersections found. 96 bytes. */
+typedef struct mio_find_intersections_report {
+    int64_t num_pairs;          /**< intersecting cell pairs, every one */
+    int64_t num_triangle_pairs; /**< triangle pairs that meet */
+    int64_t num_coplanar;       /**< of those, overlapping in one plane */
+    int64_t num_segments;       /**< cells of the segment mesh */
+    int64_t num_cells_a;        /**< cells of the first surface that intersect */
+    int64_t num_cells_b;        /**< cells of the second that do (0 for one surface) */
+    int32_t truncated;          /**< the pair list was capped by max_pairs */
+    int32_t clean;              /**< no pair at all */
+    int64_t num_warnings;       /**< see mio_find_intersections_warnings() */
+    int64_t reserved[4];
+} mio_find_intersections_report;
+
+MIO_API void mio_find_intersections_opts_init(mio_find_intersections_opts* opts);
+
+/**
+ * Where the surface `a` intersects itself (`b` NULL), or where the surfaces
+ * `a` and `b` interpenetrate or touch, by exact triangle-triangle tests. See
+ * doc/find_intersections.md.
+ *
+ * @param opts   options, or NULL for the mio_find_intersections_opts_init() defaults.
+ * @param report out, nullable.
+ * @return the result (free with mio_find_intersections_result_free), or NULL on failure.
+ */
+MIO_API mio_find_intersections_result* mio_find_intersections(
+    const mio_mesh* a, const mio_mesh* b, const mio_find_intersections_opts* opts,
+    mio_find_intersections_report* report);
+/** Take the first surface with intersections:count (free with mio_mesh_free);
+ *  NULL once taken. */
+MIO_API mio_mesh* mio_find_intersections_result_take_mesh(mio_find_intersections_result* result);
+/** Take the second surface likewise; NULL for a one-surface check or once taken. */
+MIO_API mio_mesh* mio_find_intersections_result_take_mesh_b(
+    mio_find_intersections_result* result);
+/** Take the segment mesh; NULL when not built or once taken. */
+MIO_API mio_mesh* mio_find_intersections_result_take_segments(
+    mio_find_intersections_result* result);
+/** Borrow the pairs, flattened `(cell of a, cell of b)` Int64 global cell ids;
+ *  count is rows. Valid until the result is freed. */
+MIO_API const int64_t* mio_find_intersections_result_pairs(
+    const mio_find_intersections_result* result, int64_t* count);
+MIO_API void mio_find_intersections_result_free(mio_find_intersections_result* result);
+/** The warnings of this thread's last mio_find_intersections call; string rule 5. */
+MIO_API int64_t mio_find_intersections_warnings(char* buf, int64_t buflen);
+
+/* ---- thickness (roadmap 3.1.4) -------------------------------------------- */
+
+/** mio_thickness_opts.direction. */
+typedef enum mio_thickness_direction {
+    MIO_THICKNESS_AUTO = 0,    /**< inward for one surface, outward for two */
+    MIO_THICKNESS_INWARD = 1,  /**< against the normal, to the far side of the wall */
+    MIO_THICKNESS_OUTWARD = 2  /**< along the normal, across a gap */
+} mio_thickness_direction;
+
+/** Options of mio_thickness; initialise with mio_thickness_opts_init. 72 bytes. */
+typedef struct mio_thickness_opts {
+    const char* region;        /**< Cell region measured; NULL or "" for all */
+    const char* region_target; /**< Cell region of the target surface reached */
+    double max_distance;       /**< longest ray; 0 = the bounding-box diagonal (init: 0) */
+    double threshold;          /**< count hits below it when positive (init: 0) */
+    int32_t direction;         /**< a mio_thickness_direction (init: AUTO) */
+    int32_t attach;            /**< attach thickness:distance and :hit_cell (init: 1) */
+    int64_t reserved[4];
+} mio_thickness_opts;
+
+/** What mio_thickness measured. 144 bytes. */
+typedef struct mio_thickness_report {
+    int32_t direction;     /**< the direction the rays ran: INWARD or OUTWARD */
+    int32_t reserved32;
+    int64_t num_cells;     /**< cells measured */
+    int64_t num_hit;       /**< rays that reached a wall */
+    int64_t num_missed;    /**< rays that did not */
+    int64_t num_below;     /**< hits below threshold */
+    double min;            /**< least distance over the hits (0 when none) */
+    double max;            /**< largest distance over the hits */
+    double mean;           /**< mean distance over the hits */
+    int64_t min_cell;      /**< global cell of the least distance, -1 when none */
+    double min_point[3];   /**< where its ray started */
+    double max_distance;   /**< the ray length used */
+    int64_t num_warnings;  /**< see mio_thickness_warnings() */
+    int64_t reserved[4];
+} mio_thickness_report;
+
+MIO_API void mio_thickness_opts_init(mio_thickness_opts* opts);
+
+/**
+ * Wall thickness (inward) or clearance (outward) per facet of `mesh`, against
+ * itself (`target` NULL) or against `target`, by a ray along each facet's
+ * normal. See doc/thickness.md.
+ *
+ * @param opts   options, or NULL for the mio_thickness_opts_init() defaults.
+ * @param report out, nullable.
+ * @return `mesh` with the measures as cell data (free with mio_mesh_free), or
+ *         NULL on failure.
+ */
+MIO_API mio_mesh* mio_thickness(const mio_mesh* mesh, const mio_mesh* target,
+                                const mio_thickness_opts* opts, mio_thickness_report* report);
+/** The warnings of this thread's last mio_thickness call; string rule 5. */
+MIO_API int64_t mio_thickness_warnings(char* buf, int64_t buflen);
+
 /** "Any" in a mio_region_selector, "inherit" in mio_edit_regions. */
 #define MIO_REGION_ANY (-2)
 

@@ -98,7 +98,8 @@ jobs:
           if-no-files-found: error
 
   # The full artifact (roadmap 6.2): the same core linked with OpenCASCADE,
-  # zstd, lz4 and bzip2, as meshioplusplus_wasm_full and its threaded flavour.
+  # zstd, lz4, bzip2, KaHIP and Netgen, as meshioplusplus_wasm_full and its
+  # threaded flavour.
   # Its libraries take long to build (OpenCASCADE most of an hour per
   # threading flavour), so they are cached under their own key, apart from the
   # lean prefix; a cold run needs the long timeout.
@@ -125,7 +126,7 @@ jobs:
           path: build/wasm-deps/hdf5-*-netcdf-*
           key: wasm-deps-emsdk6.0.3-${{ hashFiles('build/build-wasm-deps.sh', 'build/patches/*.patch') }}
 
-      - name: Cache the full artifact's libraries (OpenCASCADE, zstd, lz4)
+      - name: Cache the full artifact's libraries (OpenCASCADE, zstd, lz4, KaHIP, Netgen)
         uses: actions/cache@v4
         with:
           path: build/wasm-deps/full-*
@@ -146,8 +147,8 @@ jobs:
 
       - name: Smoke test (full, threaded and sequential)
         # The same suite as the lean job's; the capability steps assert the
-        # larger set and the full-only steps (STEP, IGES, fitCad, the codecs)
-        # run.
+        # larger set and the full-only steps (STEP, IGES, fitCad, the codecs,
+        # tetrahedralize through Netgen) run.
         run: |
           MESHIOPLUSPLUS_WASM_VARIANT=full node tests/wasm/smoke.mjs
           MESHIOPLUSPLUS_WASM_VARIANT=full-seq node tests/wasm/smoke.mjs

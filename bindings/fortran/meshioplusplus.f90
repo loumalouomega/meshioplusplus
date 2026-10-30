@@ -73,6 +73,8 @@ module meshioplusplus
     public :: mio_boundary_layer, mio_boundary_layer_report
     public :: mio_extrude, mio_revolve, mio_sweep_report
     public :: mio_mirror, mio_mirror_report
+    public :: mio_find_intersections, mio_find_intersections_report
+    public :: mio_thickness, mio_thickness_report
     public :: mio_tetrahedralize, mio_tetrahedralize_report, mio_has_netgen
     public :: mio_has_mmg, mio_has_mmg_elas, mio_mmg_index_bits
     public :: mio_adapt, mio_mmg_report, mio_metric_from_hessian
@@ -708,6 +710,60 @@ module meshioplusplus
         integer(c_int64_t) :: num_points_on_plane = 0
         integer(c_int64_t) :: num_dropped_cells = 0
         integer(c_int64_t) :: num_dropped_sides = 0
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_find_intersections_opts` (64 bytes; roadmap 3.1.2).
+    type, bind(c) :: mio_find_intersections_opts_t
+        type(c_ptr) :: region = c_null_ptr
+        type(c_ptr) :: region_b = c_null_ptr
+        integer(c_int64_t) :: max_pairs = 0
+        integer(c_int32_t) :: attach_flags = 1
+        integer(c_int32_t) :: segments = 1
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_find_intersections_report` (96 bytes): what `mio_find_intersections` found.
+    type, bind(c) :: mio_find_intersections_report
+        integer(c_int64_t) :: num_pairs = 0
+        integer(c_int64_t) :: num_triangle_pairs = 0
+        integer(c_int64_t) :: num_coplanar = 0
+        integer(c_int64_t) :: num_segments = 0
+        integer(c_int64_t) :: num_cells_a = 0
+        integer(c_int64_t) :: num_cells_b = 0
+        integer(c_int32_t) :: truncated = 0
+        integer(c_int32_t) :: clean = 1
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_thickness_opts` (72 bytes; roadmap 3.1.4).
+    type, bind(c) :: mio_thickness_opts_t
+        type(c_ptr) :: region = c_null_ptr
+        type(c_ptr) :: region_target = c_null_ptr
+        real(c_double) :: max_distance = 0.0_c_double
+        real(c_double) :: threshold = 0.0_c_double
+        integer(c_int32_t) :: direction = 0
+        integer(c_int32_t) :: attach = 1
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_thickness_report` (144 bytes): what `mio_thickness` measured;
+    !> `direction` is 1 (inward) or 2 (outward).
+    type, bind(c) :: mio_thickness_report
+        integer(c_int32_t) :: direction = 0
+        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int64_t) :: num_cells = 0
+        integer(c_int64_t) :: num_hit = 0
+        integer(c_int64_t) :: num_missed = 0
+        integer(c_int64_t) :: num_below = 0
+        real(c_double) :: min = 0.0_c_double
+        real(c_double) :: max = 0.0_c_double
+        real(c_double) :: mean = 0.0_c_double
+        integer(c_int64_t) :: min_cell = -1
+        real(c_double) :: min_point(3) = 0.0_c_double
+        real(c_double) :: max_distance = 0.0_c_double
         integer(c_int64_t) :: num_warnings = 0
         integer(c_int64_t) :: reserved(4) = 0
     end type
@@ -4965,6 +5021,59 @@ module meshioplusplus
             type(c_ptr), value :: mesh
             type(mio_mirror_opts_t), intent(in) :: opts
             type(mio_mirror_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_find_intersections(a, b, opts, report) &
+                bind(c, name="mio_find_intersections") result(h)
+            import :: c_ptr, mio_find_intersections_opts_t, mio_find_intersections_report
+            type(c_ptr), value :: a, b
+            type(mio_find_intersections_opts_t), intent(in) :: opts
+            type(mio_find_intersections_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_find_intersections_result_take_mesh(result) &
+                bind(c, name="mio_find_intersections_result_take_mesh") result(h)
+            import :: c_ptr
+            type(c_ptr), value :: result
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_find_intersections_result_take_mesh_b(result) &
+                bind(c, name="mio_find_intersections_result_take_mesh_b") result(h)
+            import :: c_ptr
+            type(c_ptr), value :: result
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_find_intersections_result_take_segments(result) &
+                bind(c, name="mio_find_intersections_result_take_segments") result(h)
+            import :: c_ptr
+            type(c_ptr), value :: result
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_find_intersections_result_pairs(result, count) &
+                bind(c, name="mio_find_intersections_result_pairs") result(p)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: result
+            integer(c_int64_t), intent(out) :: count
+            type(c_ptr) :: p
+        end function
+
+        subroutine c_mio_find_intersections_result_free(result) &
+                bind(c, name="mio_find_intersections_result_free")
+            import :: c_ptr
+            type(c_ptr), value :: result
+        end subroutine
+
+        function c_mio_thickness(mesh, target, opts, report) &
+                bind(c, name="mio_thickness") result(h)
+            import :: c_ptr, mio_thickness_opts_t, mio_thickness_report
+            type(c_ptr), value :: mesh, target
+            type(mio_thickness_opts_t), intent(in) :: opts
+            type(mio_thickness_report), intent(out) :: report
             type(c_ptr) :: h
         end function
 
@@ -14268,6 +14377,132 @@ contains
         out%handle = c_mio_mirror(mesh%handle, opts, rep)
         if (.not. c_associated(out%handle)) then
             call handle_failure('mirror', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Where the surface `mesh` intersects itself, or (with `other`) where the
+    !> two surfaces interpenetrate or touch, by exact triangle-triangle tests
+    !> (roadmap 3.1.2). Returns `mesh` with the `intersections:count` cell
+    !> data. `segments` receives the intersection segments as a line mesh,
+    !> `other_flagged` the second surface with its counts, and `pairs` the
+    !> intersecting cells as a (2, n) array of 1-based global cell ids, at most
+    !> `max_pairs` of them (0: all). `region` and `region_other` restrict each
+    !> surface to a named cell region.
+    function mio_find_intersections(mesh, other, region, region_other, max_pairs, segments, &
+                                    other_flagged, pairs, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        type(mio_mesh), intent(in), optional :: other
+        character(*), intent(in), optional :: region, region_other
+        integer(int64), intent(in), optional :: max_pairs
+        type(mio_mesh), intent(out), optional :: segments, other_flagged
+        integer(int64), allocatable, intent(out), optional :: pairs(:, :)
+        type(mio_find_intersections_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_find_intersections_opts_t) :: opts
+        type(mio_find_intersections_report) :: rep
+        character(kind=c_char, len=STRBUF_LEN), target :: buf_a, buf_b
+        type(c_ptr) :: res, other_handle, p
+        integer(c_int64_t) :: n
+        integer(c_int64_t), pointer :: fp(:, :)
+        if (c_sizeof(opts) /= 64_c_size_t .or. c_sizeof(rep) /= 96_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: find_intersections layout mismatch'
+            error stop 1
+        end if
+        if (present(region)) then
+            buf_a = trim(region)//c_null_char
+            opts%region = c_loc(buf_a(1:1))
+        end if
+        if (present(region_other)) then
+            buf_b = trim(region_other)//c_null_char
+            opts%region_b = c_loc(buf_b(1:1))
+        end if
+        if (present(max_pairs)) opts%max_pairs = int(max_pairs, c_int64_t)
+        opts%segments = merge(1_c_int32_t, 0_c_int32_t, present(segments))
+        other_handle = c_null_ptr
+        if (present(other)) other_handle = other%handle
+        res = c_mio_find_intersections(mesh%handle, other_handle, opts, rep)
+        if (.not. c_associated(res)) then
+            call handle_failure('find_intersections', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = c_mio_find_intersections_result_take_mesh(res)
+        if (present(segments)) segments%handle = c_mio_find_intersections_result_take_segments(res)
+        if (present(other_flagged)) &
+            other_flagged%handle = c_mio_find_intersections_result_take_mesh_b(res)
+        if (present(pairs)) then
+            p = c_mio_find_intersections_result_pairs(res, n)
+            allocate (pairs(2, n))
+            if (n > 0) then
+                call c_f_pointer(p, fp, [2_c_int64_t, n])
+                pairs = int(fp, int64) + 1_int64
+            end if
+        end if
+        call c_mio_find_intersections_result_free(res)
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Wall thickness or clearance per facet of the surface `mesh`, by a ray
+    !> from each cell's centroid along its normal (roadmap 3.1.4): `direction`
+    !> 'inward' (to the far side of the wall), 'outward' (to the next wall
+    !> facing the ray) or 'auto' (default: inward for one surface, outward
+    !> against `other`). `max_distance` bounds the rays (0: the bounding-box
+    !> diagonal) and `threshold` counts the hits below it. Returns `mesh` with
+    !> the `thickness:distance` (NaN for a miss) and `thickness:hit_cell` cell
+    !> data; `report` is the C report, so its `min_cell` is 0-based (-1: none).
+    function mio_thickness(mesh, other, direction, max_distance, threshold, region, &
+                           region_other, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        type(mio_mesh), intent(in), optional :: other
+        character(*), intent(in), optional :: direction, region, region_other
+        real(real64), intent(in), optional :: max_distance, threshold
+        type(mio_thickness_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_thickness_opts_t) :: opts
+        type(mio_thickness_report) :: rep
+        character(kind=c_char, len=STRBUF_LEN), target :: buf_a, buf_b
+        type(c_ptr) :: other_handle
+        if (c_sizeof(opts) /= 72_c_size_t .or. c_sizeof(rep) /= 144_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: thickness layout mismatch'
+            error stop 1
+        end if
+        if (present(direction)) then
+            select case (trim(direction))
+            case ('auto')
+                opts%direction = 0
+            case ('inward')
+                opts%direction = 1
+            case ('outward')
+                opts%direction = 2
+            case default
+                call handle_failure('thickness', &
+                                    "direction must be 'auto', 'inward' or 'outward'", &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+        if (present(max_distance)) opts%max_distance = real(max_distance, c_double)
+        if (present(threshold)) opts%threshold = real(threshold, c_double)
+        if (present(region)) then
+            buf_a = trim(region)//c_null_char
+            opts%region = c_loc(buf_a(1:1))
+        end if
+        if (present(region_other)) then
+            buf_b = trim(region_other)//c_null_char
+            opts%region_target = c_loc(buf_b(1:1))
+        end if
+        other_handle = c_null_ptr
+        if (present(other)) other_handle = other%handle
+        out%handle = c_mio_thickness(mesh%handle, other_handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('thickness', mio_error_message(), stat, errmsg)
             return
         end if
         if (present(report)) report = rep

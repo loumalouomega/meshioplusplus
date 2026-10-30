@@ -130,6 +130,7 @@
 #include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
+#include "meshioplusplus/operations/find_intersections.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
@@ -138,6 +139,7 @@
 #include "meshioplusplus/operations/extrude.hpp"
 #include "meshioplusplus/operations/mirror.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
+#include "meshioplusplus/operations/thickness.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/mmg.hpp"
@@ -175,6 +177,14 @@ struct mio_find_interface_result {
 
 struct mio_contact_pairs_result {
     meshioplusplus::ContactPairsResult mPairs;
+};
+
+struct mio_find_intersections_result {
+    meshioplusplus::FindIntersectionsResult mResult;
+    std::vector<int64_t> mPairs;  // flattened
+    bool mHasMesh = true;
+    bool mHasMeshB = false;
+    bool mHasSegments = false;
 };
 
 struct mio_poly_conn {
@@ -8796,6 +8806,213 @@ mio_status mio_hausdorff_distance(const mio_mesh* a, const mio_mesh* b,
             report->worst_point_b[k] = r.mWorstPointB[static_cast<std::size_t>(k)];
         }
         return MIO_OK;
+    });
+}
+
+}  // extern "C"
+
+namespace {
+
+/// The warnings of this thread's last mio_find_intersections and mio_thickness calls.
+std::string& capi_find_intersections_warnings() {
+    thread_local std::string warnings;
+    return warnings;
+}
+std::string& capi_thickness_warnings() {
+    thread_local std::string warnings;
+    return warnings;
+}
+
+void capi_fi_join(const std::vector<std::string>& rFrom, std::string& rInto) {
+    rInto.clear();
+    for (const std::string& w : rFrom) {
+        if (!rInto.empty())
+            rInto += '\n';
+        rInto += w;
+    }
+}
+
+}  // namespace
+
+extern "C" {
+
+static_assert(sizeof(mio_find_intersections_opts) == 64, "mio_find_intersections_opts layout");
+static_assert(offsetof(mio_find_intersections_opts, reserved) == 32,
+              "mio_find_intersections_opts layout");
+static_assert(sizeof(mio_find_intersections_report) == 96, "mio_find_intersections_report layout");
+static_assert(offsetof(mio_find_intersections_report, num_warnings) == 56,
+              "mio_find_intersections_report layout");
+static_assert(sizeof(mio_thickness_opts) == 72, "mio_thickness_opts layout");
+static_assert(offsetof(mio_thickness_opts, reserved) == 40, "mio_thickness_opts layout");
+static_assert(sizeof(mio_thickness_report) == 144, "mio_thickness_report layout");
+static_assert(offsetof(mio_thickness_report, num_warnings) == 104, "mio_thickness_report layout");
+
+void mio_find_intersections_opts_init(mio_find_intersections_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_find_intersections_opts{};
+    opts->attach_flags = 1;
+    opts->segments = 1;
+}
+
+mio_find_intersections_result* mio_find_intersections(const mio_mesh* a, const mio_mesh* b,
+                                                      const mio_find_intersections_opts* opts,
+                                                      mio_find_intersections_report* report) {
+    return guarded_ptr(
+        static_cast<mio_find_intersections_result*>(nullptr),
+        [&]() -> mio_find_intersections_result* {
+            capi_find_intersections_warnings().clear();
+            if (!a)
+                throw std::invalid_argument("meshio++: find_intersections: mesh a is NULL");
+            mio_find_intersections_opts defaults;
+            mio_find_intersections_opts_init(&defaults);
+            const mio_find_intersections_opts& rOpts = opts ? *opts : defaults;
+            meshioplusplus::FindIntersectionsOptions o;
+            if (rOpts.region)
+                o.mRegion = rOpts.region;
+            if (rOpts.region_b)
+                o.mRegionB = rOpts.region_b;
+            o.mMaxPairs = rOpts.max_pairs;
+            o.mAttachFlags = rOpts.attach_flags != 0;
+            o.mSegments = rOpts.segments != 0;
+            auto out = std::make_unique<mio_find_intersections_result>();
+            out->mResult = b ? meshioplusplus::find_intersections(a->mMesh, b->mMesh, o)
+                             : meshioplusplus::find_intersections(a->mMesh, o);
+            const meshioplusplus::FindIntersectionsResult& r = out->mResult;
+            out->mHasMeshB = b != nullptr;
+            out->mHasSegments = o.mSegments;
+            out->mPairs.reserve(2 * r.mPairs.size());
+            for (const auto& r_pair : r.mPairs) {
+                out->mPairs.push_back(r_pair[0]);
+                out->mPairs.push_back(r_pair[1]);
+            }
+            capi_fi_join(r.mWarnings, capi_find_intersections_warnings());
+            if (report) {
+                *report = mio_find_intersections_report{};
+                report->num_pairs = r.mNumPairs;
+                report->num_triangle_pairs = r.mNumTrianglePairs;
+                report->num_coplanar = r.mNumCoplanar;
+                report->num_segments = r.mNumSegments;
+                report->num_cells_a = r.mNumCellsA;
+                report->num_cells_b = r.mNumCellsB;
+                report->truncated = r.mTruncated ? 1 : 0;
+                report->clean = r.mClean ? 1 : 0;
+                report->num_warnings = static_cast<int64_t>(r.mWarnings.size());
+            }
+            return out.release();
+        });
+}
+
+mio_mesh* mio_find_intersections_result_take_mesh(mio_find_intersections_result* result) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!result)
+            throw std::invalid_argument("meshio++: find_intersections result is NULL");
+        if (!result->mHasMesh)
+            return nullptr;
+        result->mHasMesh = false;
+        return new mio_mesh{std::move(result->mResult.mMesh)};
+    });
+}
+
+mio_mesh* mio_find_intersections_result_take_mesh_b(mio_find_intersections_result* result) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!result)
+            throw std::invalid_argument("meshio++: find_intersections result is NULL");
+        if (!result->mHasMeshB)
+            return nullptr;
+        result->mHasMeshB = false;
+        return new mio_mesh{std::move(result->mResult.mMeshB)};
+    });
+}
+
+mio_mesh* mio_find_intersections_result_take_segments(mio_find_intersections_result* result) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!result)
+            throw std::invalid_argument("meshio++: find_intersections result is NULL");
+        if (!result->mHasSegments)
+            return nullptr;
+        result->mHasSegments = false;
+        return new mio_mesh{std::move(result->mResult.mSegments)};
+    });
+}
+
+const int64_t* mio_find_intersections_result_pairs(const mio_find_intersections_result* result,
+                                                   int64_t* count) {
+    if (count)
+        *count = result ? static_cast<int64_t>(result->mPairs.size() / 2) : 0;
+    return result && !result->mPairs.empty() ? result->mPairs.data() : nullptr;
+}
+
+void mio_find_intersections_result_free(mio_find_intersections_result* result) {
+    delete result;
+}
+
+int64_t mio_find_intersections_warnings(char* buf, int64_t buflen) {
+    return guarded_ptr(int64_t{-1}, [&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative warnings buffer length");
+        return copy_string(capi_find_intersections_warnings(), buf, buflen);
+    });
+}
+
+void mio_thickness_opts_init(mio_thickness_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_thickness_opts{};
+    opts->direction = MIO_THICKNESS_AUTO;
+    opts->attach = 1;
+}
+
+mio_mesh* mio_thickness(const mio_mesh* mesh, const mio_mesh* target,
+                        const mio_thickness_opts* opts, mio_thickness_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        capi_thickness_warnings().clear();
+        if (!mesh)
+            throw std::invalid_argument("meshio++: thickness: mesh is NULL");
+        mio_thickness_opts defaults;
+        mio_thickness_opts_init(&defaults);
+        const mio_thickness_opts& rOpts = opts ? *opts : defaults;
+        meshioplusplus::ThicknessOptions o;
+        if (rOpts.direction < MIO_THICKNESS_AUTO || rOpts.direction > MIO_THICKNESS_OUTWARD)
+            throw std::invalid_argument("meshio++: thickness: unknown direction " +
+                                        std::to_string(rOpts.direction));
+        o.mDirection = static_cast<meshioplusplus::ThicknessDirection>(rOpts.direction);
+        o.mMaxDistance = rOpts.max_distance;
+        o.mThreshold = rOpts.threshold;
+        if (rOpts.region)
+            o.mRegion = rOpts.region;
+        if (rOpts.region_target)
+            o.mRegionTarget = rOpts.region_target;
+        o.mAttach = rOpts.attach != 0;
+        meshioplusplus::ThicknessResult r =
+            target ? meshioplusplus::thickness(mesh->mMesh, target->mMesh, o)
+                   : meshioplusplus::thickness(mesh->mMesh, o);
+        capi_fi_join(r.mWarnings, capi_thickness_warnings());
+        if (report) {
+            *report = mio_thickness_report{};
+            report->direction = static_cast<int32_t>(r.mDirection);
+            report->num_cells = r.mNumCells;
+            report->num_hit = r.mNumHit;
+            report->num_missed = r.mNumMissed;
+            report->num_below = r.mNumBelow;
+            report->min = r.mMin;
+            report->max = r.mMax;
+            report->mean = r.mMean;
+            report->min_cell = r.mMinCell;
+            for (int k = 0; k < 3; ++k)
+                report->min_point[k] = r.mMinPoint[static_cast<std::size_t>(k)];
+            report->max_distance = r.mMaxDistance;
+            report->num_warnings = static_cast<int64_t>(r.mWarnings.size());
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+int64_t mio_thickness_warnings(char* buf, int64_t buflen) {
+    return guarded_ptr(int64_t{-1}, [&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative warnings buffer length");
+        return copy_string(capi_thickness_warnings(), buf, buflen);
     });
 }
 

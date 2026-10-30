@@ -40,8 +40,9 @@
 # meshioplusplus_wasm_full_mt: the same core and JS API, linked with every
 # library the toolchain cross-compiles -- OpenCASCADE (STEP/IGES reading and
 # fitCad), zstd and lz4 (VTK XML block compression), Emscripten's bzip2
-# port (libMesh .bz2), and the serial KaHIP kaffpa partitioner. OpenCASCADE
-# is LGPL-2.1 with its exception, so the full pair is not plain MIT
+# port (libMesh .bz2), the serial KaHIP kaffpa partitioner and Netgen's nglib
+# (tetrahedralize keeping the surface). OpenCASCADE is LGPL-2.1 with its
+# exception and Netgen LGPL-2.1, so the full pair is not plain MIT
 # (doc/wasm.md#licence). Its libraries come from
 # build-wasm-deps.sh --full, one prefix per threading flavour, built
 # automatically when missing (OpenCASCADE takes the better part of an hour).
@@ -87,10 +88,9 @@ Usage: $0 [options]
                                   to build both, since the npm package ships both
   --full                         also build the full pair
                                   (meshioplusplus_wasm_full[_mt]): OpenCASCADE,
-                                  zstd, lz4, bzip2 and KaHIP linked in
+                                  zstd, lz4, bzip2, KaHIP and Netgen linked in
   --full-only                    build only the full pair
-  --without-occt                 leave OpenCASCADE out of the full pair (codecs
-                                  only; the artifact then stays MIT)
+  --without-occt                 leave OpenCASCADE out of the full pair
   --build                        run the build after configuring
   -h, --help                     this help
 EOF
@@ -200,6 +200,7 @@ full_deps_prefix() {  # full_deps_prefix <seq|mt>
     # shellcheck disable=SC2086
     fprefix=$("$SCRIPT_DIR/build-wasm-deps.sh" $occt_arg --print-full-prefix "$1")
     if [ ! -f "$fprefix/lib/libzstd.a" ] || [ ! -f "$fprefix/lib/liblz4.a" ] ||
+       [ ! -f "$fprefix/lib/libnglib.a" ] ||
        { [ "$WITH_OCCT" = "ON" ] && [ ! -f "$fprefix/lib/libTKernel.a" ]; }; then
         echo "== building the full artifact's libraries ($1; one-off, OpenCASCADE takes long) ==" >&2
         # shellcheck disable=SC2086
@@ -239,6 +240,7 @@ configure_variant() {
             full_args="$full_args -DMESHIOPLUSPLUS_WITH_ZSTD=ON -DMESHIOPLUSPLUS_WITH_LZ4=ON"
             full_args="$full_args -DMESHIOPLUSPLUS_WITH_BZIP2=ON"
             full_args="$full_args -DMESHIOPLUSPLUS_WITH_KAHIP=ON -DKAHIP_ROOT=$fprefix"
+            full_args="$full_args -DMESHIOPLUSPLUS_WITH_NETGEN=ON -DNETGEN_ROOT=$fprefix"
             if [ -n "$DEPS_PREFIX" ]; then
                 variant_root_arg="-DCMAKE_FIND_ROOT_PATH=$DEPS_PREFIX;$fprefix"
             else
@@ -260,7 +262,7 @@ configure_variant() {
     echo "  cgnslib:   $WITH_CGNSLIB"
     echo "  gidpost:   $WITH_GIDPOST"
     case "$variant" in
-        full*) echo "  full:      OCCT $WITH_OCCT, zstd, lz4, bzip2, KaHIP ($fprefix)" ;;
+        full*) echo "  full:      OCCT $WITH_OCCT, zstd, lz4, bzip2, KaHIP, Netgen ($fprefix)" ;;
     esac
     [ "$WITH_HDF5" = "OFF" ] || echo "  deps:      $DEPS_PREFIX"
     echo "  emcc:      $(command -v emcc)"
