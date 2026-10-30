@@ -23,6 +23,7 @@ import numpy as np
 import pytest
 
 import meshioplusplus as mio
+from meshioplusplus._fit_cad import has_occt as _has_occt
 
 try:
     from meshioplusplus import _core
@@ -1066,7 +1067,7 @@ def test_pipeline_model_step_needs_a_cad_input(tmp_path):
 
 @needs_core
 @pytest.mark.skipif(
-    not getattr(_core, "__has_occt__", False), reason="needs OpenCASCADE"
+    not _has_occt(), reason="needs OpenCASCADE"
 )
 def test_step_solid_through_opencascade(tmp_path):
     # A box skin written as a STEP solid, read back as a B-rep by
@@ -1086,7 +1087,7 @@ def test_step_solid_through_opencascade(tmp_path):
 
 @needs_core
 @pytest.mark.skipif(
-    not getattr(_core, "__has_occt__", False), reason="needs OpenCASCADE"
+    not _has_occt(), reason="needs OpenCASCADE"
 )
 def test_a_step_read_declares_its_tolerances(tmp_path):
     """Roadmap 6.5.1: an OpenCASCADE read writes each edge's tolerance and its

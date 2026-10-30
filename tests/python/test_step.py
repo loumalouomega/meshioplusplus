@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 import meshioplusplus as mio
+from meshioplusplus._fit_cad import has_occt as _has_occt
 from meshioplusplus.step import _step
 
 from .analytic_surfaces import box_skin, cylinder, torus
@@ -85,7 +86,7 @@ def test_the_format_reads_through_opencascade_only():
         mio.read("nothing.step")
 
 
-HAS_OCCT = bool(getattr(_core, "__has_occt__", False)) if _core is not None else False
+HAS_OCCT = _has_occt()
 
 
 @pytest.mark.skipif(HAS_OCCT, reason="checks the build without OpenCASCADE")

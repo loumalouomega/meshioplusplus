@@ -1587,11 +1587,17 @@ PYBIND11_MODULE(_core, m) {
 #else
     m.attr("__has_kahip__") = false;
 #endif
-#ifdef MESHIOPLUSPLUS_HAS_OCCT
-    m.attr("__has_occt__") = true;
-#else
-    m.attr("__has_occt__") = false;
-#endif
+    // Whether a CAD kernel (OpenCASCADE) is registered. Read live through the
+    // module's __getattr__, not fixed at import: the meshioplusplus-occt
+    // add-on registers its kernel after this module is loaded.
+    m.attr("__getattr__") = py::cpp_function(
+        [](const std::string& rName) -> py::object {
+            if (rName == "__has_occt__")
+                return py::bool_(meshioplusplus::cad_read_has_occt());
+            throw py::attribute_error("module 'meshioplusplus._core' has no attribute '" + rName +
+                                      "'");
+        },
+        py::arg("name"));
     // Whether tetrahedralize has its Netgen backend (MESHIOPLUSPLUS_WITH_NETGEN).
     m.attr("__has_netgen__") = meshioplusplus::tetrahedralize_has_netgen();
     // The MMG backend (MESHIOPLUSPLUS_WITH_MMG), and whether its MMG has ELAS for move.

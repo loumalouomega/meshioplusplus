@@ -148,7 +148,13 @@ def test_round_trip_matches_the_declaration(fmt):
     if spec is None:
         pytest.skip("undeclared (reported by test_every_writable_format_is_declared)")
     flag = _NEEDS_CORE.get(fmt)
-    if flag and not getattr(meshioplusplus._core, flag, False):
+    if fmt == "step":
+        from meshioplusplus._fit_cad import has_occt
+
+        flag = flag if not has_occt() else None
+    elif flag and getattr(meshioplusplus._core, flag, False):
+        flag = None
+    if flag:
         pytest.skip(f"{fmt}: this build is without {flag}")
     declared = {k: v for k, v in spec.items() if k != "note"}
     cells = list(declared["cells"]) if "cells" in declared else None

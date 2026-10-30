@@ -12,6 +12,7 @@ import sys
 import pytest
 
 import meshioplusplus as mio
+from meshioplusplus._fit_cad import has_occt as _has_occt
 
 try:
     from meshioplusplus import _core
@@ -26,7 +27,7 @@ corpus = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(corpus)
 
 needs_occt = pytest.mark.skipif(
-    not getattr(_core, "__has_occt__", False), reason="needs the OpenCASCADE backend"
+    not _has_occt(), reason="needs the OpenCASCADE backend"
 )
 
 
