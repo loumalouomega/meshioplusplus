@@ -119,6 +119,7 @@
 #include "meshioplusplus/operations/thickness.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/fit_cad.hpp"
+#include "meshioplusplus/providers.hpp"
 #include "meshioplusplus/formats/cad_json.hpp"
 #include "meshioplusplus/formats/iges.hpp"
 #include "meshioplusplus/formats/step.hpp"
@@ -8305,6 +8306,12 @@ int main(int argc, char** argv) {
 
     if (cmd == "-v" || cmd == "--version") {
         std::cout << kVersionText << "\n";
+        // The backends this run has: built in, or loaded from a plugin
+        // (MESHIOPLUSPLUS_PLUGIN_PATH, see doc/cli.md).
+        const auto yes_no = [](bool Has) { return Has ? "yes" : "no"; };
+        std::cout << "providers: OpenCASCADE " << yes_no(meshioplusplus::cad_read_has_occt())
+                  << ", Netgen " << yes_no(meshioplusplus::tetrahedralize_has_netgen())
+                  << ", MMG " << yes_no(meshioplusplus::mmg_available()) << "\n";
         return 0;
     }
     if (cmd == "-h" || cmd == "--help") {

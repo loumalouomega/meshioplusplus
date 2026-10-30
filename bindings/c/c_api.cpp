@@ -45,6 +45,7 @@
 #include <climits>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <array>
@@ -70,6 +71,7 @@
 #include "meshioplusplus/formats/xdmf_time_series.hpp"
 #include "meshioplusplus/formats/exodus.hpp"
 #include "meshioplusplus/ndarray.hpp"
+#include "meshioplusplus/providers.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
@@ -628,6 +630,15 @@ const char* mio_mesh_backend(void) {
 int mio_format_readable(const char* format) {
     return guarded_ptr(0, [&]() -> int {
         return format && meshioplusplus::registry_readers().count(format) ? 1 : 0;
+    });
+}
+
+int mio_load_plugins(const char* paths) {
+    return guarded_ptr(0, [&]() -> int {
+        // The scan of MESHIOPLUSPLUS_PLUGIN_PATH has happened or will, once; this
+        // is the explicit form, for a path the caller holds.
+        const char* p_list = paths ? paths : std::getenv("MESHIOPLUSPLUS_PLUGIN_PATH");
+        return p_list ? meshioplusplus::load_plugins(p_list) : 0;
     });
 }
 

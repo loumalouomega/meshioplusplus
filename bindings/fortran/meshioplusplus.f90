@@ -122,7 +122,7 @@ module meshioplusplus
     ! fan-out (which starts from a path, not a handle) is module-level.
     public :: mio_sequence, mio_timeseries_to_sequence
     public :: mio_sequence_pipeline_run_file, mio_sequence_pipeline_run_json
-    public :: mio_format_readable, mio_format_writable
+    public :: mio_format_readable, mio_format_writable, mio_load_plugins
     public :: mio_sniff_format
     public :: mio_read_metadata, mio_metadata, mio_cell_block_info
     public :: mio_merge
@@ -2322,6 +2322,12 @@ module meshioplusplus
         function c_mio_format_readable(format) bind(c, name="mio_format_readable") result(r)
             import :: c_char, c_int
             character(kind=c_char), dimension(*), intent(in) :: format
+            integer(c_int) :: r
+        end function
+
+        function c_mio_load_plugins(paths) bind(c, name="mio_load_plugins") result(r)
+            import :: c_char, c_int
+            character(kind=c_char), dimension(*), intent(in) :: paths
             integer(c_int) :: r
         end function
 
@@ -5747,6 +5753,16 @@ contains
         character(*), intent(in) :: format
         logical :: r
         r = c_mio_format_readable(c_str(format)) /= 0_c_int
+    end function
+
+    !> Loads provider plugins (shared libraries supplying the OpenCASCADE, Netgen or
+    !> MMG backend) from `paths`: libraries and directories separated by `:` (`;` on
+    !> Windows). Returns how many registered a provider. Call before the first
+    !> operation that needs the backend, then probe with mio_has_occt() and friends.
+    function mio_load_plugins(paths) result(n)
+        character(*), intent(in) :: paths
+        integer :: n
+        n = int(c_mio_load_plugins(c_str(paths)))
     end function
 
     !> .true. if `format` is writable in this build.

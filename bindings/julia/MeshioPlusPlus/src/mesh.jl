@@ -167,6 +167,15 @@ last_error() = unsafe_string(ccall(_sym(:mio_last_error), Cstring, ()))
 format_readable(format::AbstractString) =
     ccall(_sym(:mio_format_readable), Cint, (Cstring,), format) != 0
 
+"""    load_plugins(paths) -> Int — load provider plugins from `paths`
+
+Shared libraries that supply the OpenCASCADE, Netgen or MMG backend at run time:
+libraries and directories separated by `:` (`;` on Windows). Returns how many
+registered a provider; probe with [`has_occt`](@ref) and friends afterwards.
+"""
+load_plugins(paths::AbstractString) =
+    Int(ccall(_sym(:mio_load_plugins), Cint, (Cstring,), paths))
+
 """    format_writable(format) -> Bool — is `format` writable in this build?"""
 format_writable(format::AbstractString) =
     ccall(_sym(:mio_format_writable), Cint, (Cstring,), format) != 0

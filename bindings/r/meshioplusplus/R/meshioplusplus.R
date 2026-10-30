@@ -74,6 +74,17 @@ mio_last_error <- function() .Call(R_mio_last_error)
 #' @export
 mio_format_readable <- function(format) .Call(R_mio_format_readable, as.character(format))
 
+#' Load provider plugins
+#'
+#' Shared libraries that supply the OpenCASCADE, Netgen or MMG backend at run
+#' time. Call before the first operation that needs the backend, then probe with
+#' `mio_has_occt()` and friends.
+#' @param paths Libraries and directories (searched for `meshioplusplus_plugin_*`
+#'   libraries), separated by `:` (`;` on Windows).
+#' @return The number of plugins that registered a provider, as an integer.
+#' @export
+mio_load_plugins <- function(paths) .Call(R_mio_load_plugins, as.character(paths))
+
 #' @rdname mio_format_readable
 #' @export
 mio_format_writable <- function(format) .Call(R_mio_format_writable, as.character(format))

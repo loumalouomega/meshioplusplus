@@ -7800,3 +7800,22 @@ TEST(CApi, FindIntersectionsAndThickness) {
     mio_mesh_free(b);
     mio_mesh_free(a);
 }
+
+// --- provider plugins (roadmap 4.7.3) --------------------------------------------------
+
+#ifdef MESHIOPLUSPLUS_TEST_PLUGIN_DIR
+#include "meshioplusplus/providers.hpp"
+
+TEST(CApi, LoadPluginsRegistersAProviderFromADirectory) {
+    // A fake plugin supplies a CAD kernel: the capability the C API reports follows.
+    const auto saved = meshioplusplus::cad_kernel();
+    meshioplusplus::unregister_cad_kernel();
+    EXPECT_EQ(mio_has_occt(), 0);
+    EXPECT_EQ(mio_load_plugins("/no/such/dir"), 0);
+    EXPECT_EQ(mio_load_plugins(MESHIOPLUSPLUS_TEST_PLUGIN_DIR), 1);
+    EXPECT_EQ(mio_has_occt(), 1);
+    meshioplusplus::unregister_cad_kernel();
+    if (saved)
+        meshioplusplus::register_cad_kernel(*saved);
+}
+#endif

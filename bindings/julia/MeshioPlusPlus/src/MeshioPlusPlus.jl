@@ -84,7 +84,7 @@ export ReadOptions, MeshMetadata, DiffReport
 export version, mesh_backend, last_error, library_path
 export provenance, provenance_note, provenance_source, provenance_target
 export PROVENANCE_OFF, PROVENANCE_BEST_EFFORT, PROVENANCE_REQUIRED
-export format_readable, format_writable, sniff_format
+export format_readable, format_writable, sniff_format, load_plugins
 export cell_type_num_nodes, cell_type_dimension, reader_supports_options, read_metadata
 
 # Inspecting

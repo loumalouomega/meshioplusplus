@@ -34,14 +34,24 @@ The base wheel, `meshioplusplus`, is MIT and carries no copyleft code. The core 
 | gidpost 2.14 (vendored; the GiD writer) | BSD-2-Clause-Views |
 | pugixml 1.14 (vendored; XML parsing) | MIT |
 | nlohmann/json 3.12.0 (the JSON pipeline parser) | MIT |
+| HDF5 1.14.6, netCDF-C 4.9.3, cgnslib 4.5.2 (Linux and macOS; the native HDF5, netCDF and CGNS formats) | BSD-3-Clause, BSD-3-Clause, Zlib |
+| zstd 1.5.7, LZ4 1.10.0, bzip2 1.0.8 (Linux and macOS; the VTK XML codecs and libMesh `.bz2`) | BSD-3-Clause, BSD-2-Clause, BSD-style |
+| KaHIP 3.25 (Linux and macOS; the `kahip` partition method) | MIT |
+| Eigen (Linux and macOS; header-only, MED) | MPL-2.0 |
 
-OpenCASCADE, which STEP and IGES reading and `fit_cad`'s OpenCASCADE backend need, is the separate `meshioplusplus-occt` wheel (v18.0.0): `pip install "meshioplusplus[occt]"`, also installed by `[all]`. It pins the base wheel's exact version, ships OpenCASCADE 7.6.3 as shared libraries beside its own extension, and registers a CAD kernel with the base core when `meshioplusplus` first needs one (`MESHIOPLUSPLUS_NO_PLUGINS=1` skips the discovery). Without it, reading STEP or IGES raises `NotImplementedError` naming the add-on, and `fit_cad` uses its native backend. Upgrading `meshioplusplus` alone leaves an older add-on behind; the version check refuses it by name, and `pip install -U "meshioplusplus[occt]"` upgrades both. v18.0.0 breaks pip installs that used STEP, IGES or `fit_cad`'s OpenCASCADE backend without installing the extra.
+On Linux and macOS (v18.0.0) the libraries above are static archives with hidden symbols, so the formats they serve run natively in the wheel; h5py and netCDF4 still work beside them, because none of the wheel's HDF5 symbols are exported and each package keeps its own copy. The Windows wheels keep HDF5, netCDF and the codecs on h5py, netCDF4 and the standard library until the static build has an MSVC recipe. The three copyleft backends are separate wheels, each pinned to the base wheel's exact version, shipping its library as shared objects beside its own extension, and registering a provider with the base core when `meshioplusplus` first needs one (`MESHIOPLUSPLUS_NO_PLUGINS=1` skips the discovery):
 
-The wheels leave out HDF5 and netCDF (the `[all]` extra provides h5py and netCDF4), zstd, lz4 and bzip2 (the `[codecs]` extra, or a source build), ADIOS2, TecIO, KaHIP and MMG (a source build; KaHIP also has the `[kahip]` extra), Polyscope (the `[viewer]` extra) and Eigen, which is not compiled without HDF5.
+| Extra | Wheel | Gives | Licence |
+|---|---|---|---|
+| `[occt]` | `meshioplusplus-occt` | STEP and IGES reading, `fit_cad`'s OpenCASCADE backend | MIT AND LGPL-2.1-only WITH OCCT-exception-1.0 |
+| `[netgen]` | `meshioplusplus-netgen` | `tetrahedralize`'s Netgen backend (the native octree backend is the fallback) | MIT AND LGPL-2.1-only |
+| `[mmg]` | `meshioplusplus-mmg` | `adapt`, `discretize_levelset`, `mesh_domain` (built without ELAS, so `move` raises naming it) | MIT AND LGPL-3.0-or-later |
+
+`[all]` installs the three beside h5py, netCDF4 and polyscope. Without an add-on, each operation raises `NotImplementedError` naming it (or, for `fit_cad` and `tetrahedralize`, uses its native backend). Upgrading `meshioplusplus` alone leaves an older add-on behind; the version check refuses it by name, and `pip install -U "meshioplusplus[all]"` upgrades them together. v18.0.0 breaks pip installs that used these backends without installing the extras.
 
 Linux wheels are built with the SEQ parallel backend. macOS and Windows wheels use OpenMP; the macOS build uses Homebrew's libomp, which delocate is expected to bundle into the wheel (to be confirmed in a wheel listing).
 
-The base wheel is licensed `MIT`; the `meshioplusplus-occt` wheel is `MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)`, as [`LICENSE-BINARIES.md`](https://github.com/loumalouomega/meshioplusplus/blob/master/LICENSE-BINARIES.md) states. Each wheel ships `LICENSE`, `LICENSE-BINARIES.md` and `THIRD_PARTY_NOTICES.md` in its `.dist-info/licenses` directory, and the add-on adds the OpenCASCADE licence texts. Because the add-on keeps OpenCASCADE as shared objects, a recipient can replace the library without rebuilding anything.
+The base wheel is licensed `MIT AND MPL-2.0` (Eigen); the add-on wheels are as the table says, as [`LICENSE-BINARIES.md`](https://github.com/loumalouomega/meshioplusplus/blob/master/LICENSE-BINARIES.md) states. Each wheel ships `LICENSE`, `LICENSE-BINARIES.md` and `THIRD_PARTY_NOTICES.md` in its `.dist-info/licenses` directory, and the add-on adds the OpenCASCADE licence texts. Because each add-on keeps its LGPL library as shared objects, a recipient can replace the library without rebuilding anything.
 
 `meshioplusplus.get_cmake_dir()` returns the directory of the CMake package the base wheel ships, so an extension built against it finds the shared core with `find_package(meshioplusplus CONFIG)`; that is how the add-on is built.
 
@@ -91,7 +101,7 @@ Two read-only formats need a library meshio++ never builds by default (v16.13.0)
 OpenCASCADE is on by default (`MESHIOPLUSPLUS_WITH_OCCT=ON`, auto-detected like HDF5): a build links an OpenCASCADE 7.6 or later it finds through its own CMake config (`OpenCASCADE_ROOT`, `OpenCASCADE_DIR`), so [`fit_cad`](fit_cad.md) builds trimmed, sewn and checked CAD faces and STEP/IGES read. On Ubuntu `apt-get install libocct-foundation-dev libocct-modeling-data-dev libocct-modeling-algorithms-dev libocct-data-exchange-dev libtbb-dev` gives a shared one; `build/build-occt.sh PREFIX` builds the pinned 7.6.3 static, as the PyPI wheels and the release CLI binaries link it. `-DMESHIOPLUSPLUS_REQUIRE_OCCT=ON` makes a missing kernel a configure error, and `--without-occt` (`-DMESHIOPLUSPLUS_WITH_OCCT=OFF`) leaves it out; without it `fit_cad` falls back to its kernel-free native backend with a warning and STEP/IGES reading raises naming the flag. OpenCASCADE is LGPL-2.1 with the OCCT exception: the published binaries carry it statically under [`THIRD_PARTY_NOTICES.md`](https://github.com/loumalouomega/meshioplusplus/blob/master/THIRD_PARTY_NOTICES.md). `_core.__has_occt__` reports it (Conan `with_occt`, on by default and auto-detected; vcpkg feature `occt`, a default feature).
 
 
-The [MMG backend](mmg.md) is off by default and never in the wheels: `-DMESHIOPLUSPLUS_WITH_MMG=ON -Dmmg_DIR=<prefix>/lib/cmake/mmg` (`build/configure.sh --with-mmg --mmg-root <prefix>`) links a shared MMG install, which `build/build-mmg.sh <prefix>` builds (MMG 5.8.0; `--with-elas` adds ELAS for `move`, which makes the build GPL-3.0). MMG is LGPL-3.0; see its [licence section](mmg.md#licence). Put `<prefix>/lib` on `LD_LIBRARY_PATH` when importing a Python build, whose RPATH scikit-build-core strips.
+The [MMG backend](mmg.md) is off by default in a source build and is the `meshioplusplus-mmg` wheel on PyPI (without ELAS): `-DMESHIOPLUSPLUS_WITH_MMG=ON -Dmmg_DIR=<prefix>/lib/cmake/mmg` (`build/configure.sh --with-mmg --mmg-root <prefix>`) links a shared MMG install, which `build/build-mmg.sh <prefix>` builds (MMG 5.8.0; `--with-elas` adds ELAS for `move`, which makes the build GPL-3.0). MMG is LGPL-3.0; see its [licence section](mmg.md#licence). Put `<prefix>/lib` on `LD_LIBRARY_PATH` when importing a Python build, whose RPATH scikit-build-core strips.
 For development, `-DMESHIOPLUSPLUS_SANITIZE="address;undefined"` (`build/configure.sh --sanitize address,undefined`, GCC or Clang) builds the core, the C API and the tests with the sanitizers, and `-DMESHIOPLUSPLUS_BUILD_FUZZERS=ON` (`--fuzzers`, Clang) the libFuzzer reader target; both refuse the Python extension and configure a separate `-san` tree ([fuzzing and sanitizers](fuzzing.md)).
 
 ### Standalone C++ build
@@ -158,3 +168,7 @@ node tests/wasm/smoke.mjs
 ```
 
 See [WebAssembly / JavaScript](./wasm.md) for the full usage guide, the supported-format list (79 readable and 74 writable formats, the HDF5- and netCDF-backed ones included since v8.0.0), and known limitations.
+
+## Plugins for the native CLI and the C API
+
+The release CLI binaries and the C API library can load the same providers as shared libraries (v18.0.0, not on Windows). `-DMESHIOPLUSPLUS_BUILD_PLUGINS=ON` builds `meshioplusplus_plugin_occt`, `_netgen` and `_mmg` for whichever of the three libraries is found, and `MESHIOPLUSPLUS_PLUGIN_PATH` (`:`-separated libraries and directories) names where a run loads them from; it is read once, when the first backend is asked for, and `mio_load_plugins` loads explicitly. A plugin never replaces a backend the build already has, must come from the same release (its ABI version is checked) and uses the host's compiler and C++ runtime. `meshioplusplus --version` lists which backends the run has. Details are in [the C++ API](cpp_api.md#providers-and-plugins).

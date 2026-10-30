@@ -12,15 +12,7 @@ if(OpenCASCADE_VERSION VERSION_LESS 7.6)
   message(FATAL_ERROR "meshio++: OpenCASCADE ${OpenCASCADE_VERSION} is older than 7.6")
 endif()
 
-# The toolkits, as the core's own probe picks them: 7.8 renamed the STEP and
-# IGES ones into TKDESTEP and TKDEIGES.
-set(_mio_occt_libs TKernel TKMath TKG2d TKG3d TKBRep TKGeomBase TKGeomAlgo TKTopAlgo
-                   TKShHealing TKBO TKBool TKMesh TKPrim)
-if(TARGET TKDESTEP OR OpenCASCADE_VERSION VERSION_GREATER_EQUAL 7.8)
-  list(APPEND _mio_occt_libs TKDESTEP TKXSBase TKDEIGES)
-else()
-  list(APPEND _mio_occt_libs TKSTEP TKSTEPBase TKSTEPAttr TKSTEP209 TKXSBase TKIGES)
-endif()
+include(${CMAKE_CURRENT_LIST_DIR}/OcctToolkits.cmake)
 
 file(GLOB _mio_occt_sources src/cpp/providers/occt/*.cpp src/cpp/providers/occt/addon/*.cpp)
 pybind11_add_module(_occt ${_mio_occt_sources})

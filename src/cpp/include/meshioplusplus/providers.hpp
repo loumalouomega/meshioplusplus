@@ -131,6 +131,31 @@ MESHIOPLUSPLUS_API void unregister_cad_kernel() noexcept;
 /// registered meanwhile.
 MESHIOPLUSPLUS_API std::shared_ptr<const CadKernelProvider> cad_kernel() noexcept;
 
+// --- plugins -----------------------------------------------------------------------
+//
+// A provider can also arrive as a shared library the native CLI or the C API loads
+// at run time (the Python add-ons register by import instead). The library exports
+//
+//     extern "C" int  meshioplusplus_plugin_abi_version(void);  // MESHIOPLUSPLUS_ABI_VERSION
+//     extern "C" void meshioplusplus_register_plugin(void);     // calls register_*
+//
+// and is built without linking the core: its calls into the core resolve from the
+// host (the CLI is linked -rdynamic; the C API library is promoted to global scope
+// on load). It therefore needs the host's compiler, C++ runtime and release, which
+// the ABI version check makes explicit. A plugin never replaces a provider that is
+// already registered, so a build's own OpenCASCADE wins over a plugin's.
+//
+// MESHIOPLUSPLUS_PLUGIN_PATH names the libraries and directories to load from, `:`
+// separated (`;` on Windows); it is read once, when the first provider is asked for.
+
+/// Loads one plugin. Returns whether it registered; on failure it returns false
+/// and, when @p pError is given, says why. Never throws.
+MESHIOPLUSPLUS_API bool load_plugin(const std::string& rPath, std::string* pError = nullptr) noexcept;
+
+/// Loads every plugin named by @p rPaths (libraries, or directories searched for
+/// `meshioplusplus_plugin_*` libraries). Returns how many registered.
+MESHIOPLUSPLUS_API int load_plugins(const std::string& rPaths) noexcept;
+
 /// Registers the providers this build compiled in (`-DMESHIOPLUSPLUS_WITH_OCCT`,
 /// `_WITH_NETGEN`, `_WITH_MMG`).
 /// Idempotent, cheap after the first call, and called by every capability

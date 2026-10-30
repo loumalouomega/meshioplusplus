@@ -1673,6 +1673,14 @@ if(MESHIOPLUSPLUS_BUILD_PYTHON)
   endif()
 endif()
 
+# Provider plugins for the native CLI and the C API (roadmap 4.7.3): shared
+# libraries a host loads through MESHIOPLUSPLUS_PLUGIN_PATH. See cmake/plugins.cmake.
+option(MESHIOPLUSPLUS_BUILD_PLUGINS
+       "Build the OpenCASCADE, Netgen and MMG providers as loadable plugins (not Windows)" OFF)
+if(MESHIOPLUSPLUS_BUILD_PLUGINS)
+  include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/plugins.cmake)
+endif()
+
 # --------------------------------------------------------------------------
 # WebAssembly build (Emscripten + embind), producing the @meshioplusplus/wasm
 # npm package's native artifact. EMSCRIPTEN is set automatically by CMake when
@@ -1928,6 +1936,32 @@ if(MESHIOPLUSPLUS_BUILD_TESTS)
     target_link_libraries(meshioplusplus_tests PRIVATE meshioplusplus_c_obj)
   endif()
 
+  if(NOT WIN32)
+    # Plugin tests: the executable exports the core's functions (-rdynamic) and
+    # two fake plugins resolve them from it, as the CLI's plugins do.
+    set_target_properties(meshioplusplus_tests PROPERTIES ENABLE_EXPORTS ON)
+    foreach(_flavour fake fakebad)
+      add_library(meshioplusplus_plugin_${_flavour} MODULE tests/cpp/plugin/fake_plugin.cpp)
+      set_target_properties(meshioplusplus_plugin_${_flavour} PROPERTIES
+        PREFIX "" OUTPUT_NAME meshioplusplus_plugin_${_flavour} CXX_STANDARD 20
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test_plugins/${_flavour}")
+      target_compile_definitions(meshioplusplus_plugin_${_flavour} PRIVATE
+        MESHIOPLUSPLUS_MESH_BACKEND_${_meshioplusplus_mesh_backend})
+      target_include_directories(meshioplusplus_plugin_${_flavour} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/include)
+      if(APPLE)
+        target_link_options(meshioplusplus_plugin_${_flavour} PRIVATE -undefined dynamic_lookup)
+      endif()
+      add_dependencies(meshioplusplus_tests meshioplusplus_plugin_${_flavour})
+    endforeach()
+    # The one built for another ABI version.
+    target_compile_definitions(meshioplusplus_plugin_fakebad PRIVATE FAKE_PLUGIN_ABI=1)
+    target_compile_definitions(meshioplusplus_tests PRIVATE
+      MESHIOPLUSPLUS_TEST_PLUGIN="$<TARGET_FILE:meshioplusplus_plugin_fake>"
+      MESHIOPLUSPLUS_TEST_PLUGIN_BAD_ABI="$<TARGET_FILE:meshioplusplus_plugin_fakebad>"
+      MESHIOPLUSPLUS_TEST_PLUGIN_DIR="$<TARGET_FILE_DIR:meshioplusplus_plugin_fake>")
+  endif()
+
   include(GoogleTest)
   gtest_discover_tests(meshioplusplus_tests)
 
@@ -2082,6 +2116,10 @@ if(MESHIOPLUSPLUS_BUILD_CLI)
                                            src/cpp/cli/tui/loop.cpp src/cpp/cli/tui/probe.cpp src/cpp/cli/tui/session_file.cpp src/cpp/cli/tui/series.cpp
       src/cpp/cli/tui/music.cpp)
   target_link_libraries(meshioplusplus_cli PRIVATE meshioplusplus_core_obj)
+  if(NOT WIN32)
+    # Plugins (MESHIOPLUSPLUS_PLUGIN_PATH) resolve the core's functions from the CLI.
+    set_target_properties(meshioplusplus_cli PROPERTIES ENABLE_EXPORTS ON)
+  endif()
   target_compile_definitions(meshioplusplus_cli
     PRIVATE MESHIOPLUSPLUS_CLI_VERSION="${PROJECT_VERSION}")
 

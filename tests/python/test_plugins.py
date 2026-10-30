@@ -56,3 +56,29 @@ def test_opt_out(plugins, monkeypatch):
     _module(monkeypatch, "fake_addon_ok", __version__)
     monkeypatch.setenv("MESHIOPLUSPLUS_NO_PLUGINS", "1")
     assert plugins(_EntryPoint("occt", "fake_addon_ok")) == {}
+
+
+def test_several_addons_load_independently(plugins, monkeypatch):
+    occt = _module(monkeypatch, "fake_addon_occt", __version__)
+    netgen = _module(monkeypatch, "fake_addon_netgen", __version__)
+    _module(monkeypatch, "fake_addon_mmg", "0.0.1")  # another release: refused alone
+    with pytest.warns(UserWarning, match="mmg"):
+        loaded = plugins(
+            _EntryPoint("occt", "fake_addon_occt"),
+            _EntryPoint("netgen", "fake_addon_netgen"),
+            _EntryPoint("mmg", "fake_addon_mmg"),
+        )
+    assert loaded == {"occt": occt, "netgen": netgen}
+    assert set(_plugins.plugin_errors()) == {"mmg"}
+
+
+def test_capability_probes_agree_with_the_core():
+    import meshioplusplus as mio
+    from meshioplusplus import _core
+
+    for probe, flag in (
+        (mio.has_netgen, "__has_netgen__"),
+        (mio.has_mmg, "__has_mmg__"),
+        (mio.has_mmg_elas, "__has_mmg_elas__"),
+    ):
+        assert probe() is bool(getattr(_core, flag))

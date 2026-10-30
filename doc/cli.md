@@ -2576,3 +2576,7 @@ meshioplusplus sdf bunny.stl tree.vtu  --structure octree --max-depth 5
 | `--max-cells N` | refuse above this many cells, re-checked after every octree pass |
 
 Write the result as `.vti` to keep the grid header — no other format carries it. The octree's output is 1-irregular (it has hanging nodes). See [`doc/sdf.md`](sdf.md).
+
+## Provider plugins
+
+The release binaries build with OpenCASCADE linked in; a build without it, or without Netgen or MMG, can load them as shared libraries at run time (not on Windows). Set `MESHIOPLUSPLUS_PLUGIN_PATH` to `:`-separated plugin libraries and directories (searched for `meshioplusplus_plugin_*`), for example `MESHIOPLUSPLUS_PLUGIN_PATH=/opt/meshio/plugins meshioplusplus to-cad skin.stl part.step`; it is read once, when the first backend is asked for. `meshioplusplus --version` ends with a `providers:` line saying which of OpenCASCADE, Netgen and MMG this run has, built in or loaded. A plugin must come from the same release, uses the CLI's C++ runtime and never replaces a backend the binary already has. See [the C++ API](cpp_api.md#providers-and-plugins).

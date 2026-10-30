@@ -46,6 +46,7 @@ def has_netgen() -> bool:
     load_plugins()
     return bool(getattr(_core, "__has_netgen__", False))
 
+
 _REPORT_INTS = (
     "num_tetrahedra",
     "num_points",

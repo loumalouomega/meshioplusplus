@@ -9,6 +9,16 @@ meshio++ itself is MIT ([LICENSE](LICENSE)). The binaries the project publishes 
 | [gidpost](https://www.gidsimulation.com/) (vendored) | 2.14 | BSD-2-Clause-Views | yes | yes |
 | [pugixml](https://pugixml.org/) (vendored) | 1.14 | MIT | yes | yes |
 | [nlohmann/json](https://github.com/nlohmann/json) (submodule) | 3.12.0 | MIT | yes | yes |
+| [Netgen](https://ngsolve.org/) (nglib) | 6.2.2401 | LGPL-2.1-only | add-on wheel only (shared) | no |
+| [MMG](https://www.mmgtools.org/) | 5.8.0 | LGPL-3.0-or-later | add-on wheel only (shared, without ELAS) | no |
+| [HDF5](https://www.hdfgroup.org/solutions/hdf5/) | 1.14.6 | BSD-3-Clause | yes (Linux, macOS; static, symbols hidden) | no |
+| [netCDF-C](https://www.unidata.ucar.edu/software/netcdf/) | 4.9.3 | BSD-3-Clause | yes (Linux, macOS; static) | no |
+| [CGNS](https://cgns.github.io/) (cgnslib) | 4.5.2 | Zlib | yes (Linux, macOS; static) | no |
+| [zstd](https://facebook.github.io/zstd/) | 1.5.7 | BSD-3-Clause (the library is dual-licensed BSD/GPL-2.0; the BSD option is used) | yes (Linux, macOS; static) | no |
+| [LZ4](https://lz4.org/) | 1.10.0 | BSD-2-Clause (the library) | yes (Linux, macOS; static) | no |
+| [bzip2](https://sourceware.org/bzip2/) | 1.0.8 | bzip2-1.0.6 (BSD-style) | yes (Linux, macOS; static) | no |
+| [KaHIP](https://kahip.github.io/) | 3.25 | MIT | yes (Linux, macOS; static) | no |
+| [Eigen](https://eigen.tuxfamily.org/) (submodule; header-only) | 3.4-dev | MPL-2.0 | yes (Linux, macOS) | no |
 | [libomp](https://openmp.llvm.org/) (macOS wheels; expected as a shared library, to confirm) | the Homebrew release at build time | to confirm | yes (macOS) | no |
 
 **OpenCASCADE is LGPL-2.1 with the OCCT exception**, so the published binaries are not plain MIT: their licence is `MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)`, as [`LICENSE-BINARIES.md`](LICENSE-BINARIES.md) states in every artifact. The meshio++ sources, and a build from source that does not link OpenCASCADE (`-DMESHIOPLUSPLUS_WITH_OCCT=OFF`, or no OpenCASCADE found), are MIT.
