@@ -61,7 +61,7 @@ jobs:
           # also holds the downloaded tarballs the script no longer needs once
           # the libraries are installed.
           path: build/wasm-deps/hdf5-*-netcdf-*
-          key: wasm-deps-emsdk6.0.3-${{ hashFiles('build/build-wasm-deps.sh', 'build/patches/*.patch') }}
+          key: wasm-deps-emsdk6.0.3-${{ hashFiles('build/build-wasm-deps.sh', 'build/deps-pins.sh', 'build/patches/*.patch') }}
 
       - name: Build the wasm HDF5/netCDF/cgnslib dependencies
         run: ./build/build-wasm-deps.sh
@@ -124,13 +124,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/wasm-deps/hdf5-*-netcdf-*
-          key: wasm-deps-emsdk6.0.3-${{ hashFiles('build/build-wasm-deps.sh', 'build/patches/*.patch') }}
+          key: wasm-deps-emsdk6.0.3-${{ hashFiles('build/build-wasm-deps.sh', 'build/deps-pins.sh', 'build/patches/*.patch') }}
 
       - name: Cache the full artifact's libraries (OpenCASCADE, zstd, lz4, KaHIP, Netgen)
         uses: actions/cache@v4
         with:
           path: build/wasm-deps/full-*
-          key: wasm-full-deps-emsdk6.0.3-${{ hashFiles('build/build-wasm-deps.sh', 'build/occt-recipe.sh', 'build/patches/*.patch') }}
+          key: wasm-full-deps-emsdk6.0.3-${{ hashFiles('build/build-wasm-deps.sh', 'build/deps-pins.sh', 'build/occt-recipe.sh', 'build/patches/*.patch') }}
 
       - name: Build the wasm dependencies, lean and full
         run: ./build/build-wasm-deps.sh --full

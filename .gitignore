@@ -52,6 +52,10 @@ build/*
 !build/build-wasm-deps.sh
 !build/build-occt.sh
 !build/occt-recipe.sh
+!build/build-mmg.sh
+!build/build-netgen.sh
+!build/build-permissive-libs.sh
+!build/deps-pins.sh
 # ...and the patches it applies to the sources it fetches. The prefix and the
 # download cache it produces (build/wasm-deps/) stay ignored by the rule above.
 !build/patches/
