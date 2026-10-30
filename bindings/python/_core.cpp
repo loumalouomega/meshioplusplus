@@ -1587,17 +1587,30 @@ PYBIND11_MODULE(_core, m) {
 #else
     m.attr("__has_kahip__") = false;
 #endif
-#ifdef MESHIOPLUSPLUS_HAS_OCCT
-    m.attr("__has_occt__") = true;
-#else
-    m.attr("__has_occt__") = false;
-#endif
-    // Whether tetrahedralize has its Netgen backend (MESHIOPLUSPLUS_WITH_NETGEN).
-    m.attr("__has_netgen__") = meshioplusplus::tetrahedralize_has_netgen();
-    // The MMG backend (MESHIOPLUSPLUS_WITH_MMG), and whether its MMG has ELAS for move.
-    m.attr("__has_mmg__") = meshioplusplus::mmg_available();
-    m.attr("__has_mmg_elas__") = meshioplusplus::mmg_has_elas();
-    m.attr("__mmg_index_bits__") = meshioplusplus::mmg_index_bits();
+    // The capabilities a provider supplies -- the CAD kernel (OpenCASCADE), the
+    // Netgen tetrahedral mesher, the MMG remesher and whether its MMG has ELAS
+    // for move, and MMG's index width. Read live through the module's
+    // __getattr__, not fixed at import: the meshioplusplus-occt, -netgen and
+    // -mmg add-ons register their providers after this module is loaded.
+    m.attr("__getattr__") = py::cpp_function(
+        [](const std::string& rName) -> py::object {
+            if (rName == "__has_occt__")
+                return py::bool_(meshioplusplus::cad_read_has_occt());
+            if (rName == "__has_netgen__")
+                return py::bool_(meshioplusplus::tetrahedralize_has_netgen());
+            if (rName == "__has_mmg__")
+                return py::bool_(meshioplusplus::mmg_available());
+            if (rName == "__has_mmg_elas__")
+                return py::bool_(meshioplusplus::mmg_has_elas());
+            if (rName == "__mmg_index_bits__")
+                return py::int_(meshioplusplus::mmg_index_bits());
+            // The kernel version fit_cad's STEP bytes depend on ("" without a kernel).
+            if (rName == "__occt_version__")
+                return py::str(std::string(meshioplusplus::fit_cad_occt_version()));
+            throw py::attribute_error("module 'meshioplusplus._core' has no attribute '" + rName +
+                                      "'");
+        },
+        py::arg("name"));
 
     // adapt (roadmap 3.2.1): MMG remeshes to a size or a metric. Returns the
     // report dict with the mesh under "mesh". See operations/mmg.hpp.
@@ -1723,8 +1736,6 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("hessian"), py::arg("error") = 1e-2, py::arg("hmin") = 1e-3,
         py::arg("hmax") = 1.0, py::arg("output") = "metric");
-    // The kernel version fit_cad's STEP bytes depend on ("" without it).
-    m.attr("__occt_version__") = std::string(meshioplusplus::fit_cad_occt_version());
 #ifdef MESHIOPLUSPLUS_HAS_GIDPOST
     m.attr("__has_gidpost__") = true;
 #else

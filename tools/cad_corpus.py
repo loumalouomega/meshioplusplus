@@ -491,7 +491,7 @@ def measure_one(
 
 def run(args):
     import meshioplusplus as mio
-    from meshioplusplus import _core
+    from meshioplusplus._fit_cad import has_occt as _has_occt
 
     manifest = load_manifest(args.manifest)
     dest = pathlib.Path(args.dest)
@@ -561,7 +561,7 @@ def run(args):
     doc = {
         "Version": 1,
         "meshioplusplus": mio.__version__,
-        "occt": bool(getattr(_core, "__has_occt__", False)),
+        "occt": _has_occt(),
         "settings": {
             "size_divisor": args.size_divisor,
             "min_angle": args.min_angle,

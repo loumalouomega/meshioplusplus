@@ -10,6 +10,10 @@ SEXP R_mio_version(void) { return Rf_mkString(mio_version()); }
 SEXP R_mio_mesh_backend(void) { return Rf_mkString(mio_mesh_backend()); }
 SEXP R_mio_last_error(void) { return Rf_mkString(mio_last_error()); }
 
+SEXP R_mio_load_plugins(SEXP paths) {
+    return Rf_ScalarInteger(mio_load_plugins(mio_r_string(paths, "paths")));
+}
+
 SEXP R_mio_format_readable(SEXP format) {
     return Rf_ScalarLogical(mio_format_readable(mio_r_string(format, "format")) != 0);
 }

@@ -9,6 +9,11 @@
 #   build/build-occt.sh PREFIX                      # Linux, macOS, Windows (Git Bash)
 #   build/build-occt.sh PREFIX --universal          # macOS x86_64 + arm64, 13.3
 #   build/build-occt.sh PREFIX --msvc-static-runtime  # /MT, for the CLI binaries
+#   build/build-occt.sh PREFIX --shared             # shared libraries, for the
+#                                                   # meshioplusplus-occt add-on wheel
+#
+# The add-on ships OpenCASCADE as shared objects beside its own extension, so a
+# recipient can swap the LGPL library without rebuilding anything.
 #
 # Then configure meshio++ with -DOpenCASCADE_DIR=PREFIX/lib/cmake/opencascade
 # (MESHIOPLUSPLUS_WITH_OCCT is on by default). A source build can equally use a
@@ -26,6 +31,7 @@ OCCT_RECIPE_DIR="$SCRIPT_DIR"
 PREFIX=""
 UNIVERSAL="no"
 STATIC_CRT="no"
+SHARED="no"
 FORCE="no"
 JOBS=""
 WORK=""
@@ -35,10 +41,11 @@ usage() {
 Usage: build/build-occt.sh PREFIX [options]
   --universal             macOS: build x86_64 and arm64 (deployment target 13.3)
   --msvc-static-runtime   MSVC: link the static C runtime (/MT), as the CLI binaries do
+  --shared                build shared libraries (the meshioplusplus-occt add-on wheel)
   --work DIR              download and build directory (default: PREFIX/_work)
   --jobs N                parallel build jobs (default: all cores)
   --force                 rebuild even when PREFIX already holds the libraries
-Builds OpenCASCADE $OCCT_VERSION ($OCCT_TOOLKITS and their closure) static.
+Builds OpenCASCADE $OCCT_VERSION ($OCCT_TOOLKITS and their closure), static unless --shared.
 EOF
 }
 
@@ -46,6 +53,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --universal) UNIVERSAL="yes"; shift ;;
         --msvc-static-runtime) STATIC_CRT="yes"; shift ;;
+        --shared) SHARED="yes"; shift ;;
         --work) WORK="$2"; shift 2 ;;
         --jobs) JOBS="$2"; shift 2 ;;
         --force) FORCE="yes"; shift ;;
@@ -62,12 +70,15 @@ mkdir -p "$WORK"
 [ -n "$JOBS" ] || JOBS=$( (command -v nproc >/dev/null 2>&1 && nproc) ||
                           (sysctl -n hw.ncpu 2>/dev/null) || echo 4 )
 
-if [ "$FORCE" = "no" ] && { [ -f "$PREFIX/lib/libTKernel.a" ] || [ -f "$PREFIX/lib/TKernel.lib" ]; }; then
+if [ "$FORCE" = "no" ] && { [ -f "$PREFIX/lib/libTKernel.a" ] || [ -f "$PREFIX/lib/TKernel.lib" ] ||
+                           [ -f "$PREFIX/lib/libTKernel.so" ] || [ -f "$PREFIX/lib/libTKernel.dylib" ]; }; then
     echo "== OpenCASCADE $OCCT_VERSION already installed in $PREFIX, skipping =="
     exit 0
 fi
 
-echo "== OpenCASCADE $OCCT_VERSION (static) into $PREFIX =="
+LIBTYPE=Static
+[ "$SHARED" = "no" ] || LIBTYPE=Shared
+echo "== OpenCASCADE $OCCT_VERSION ($LIBTYPE) into $PREFIX =="
 occt_source "$WORK" "$WORK/occt-$OCCT_VERSION"
 
 set --
@@ -83,7 +94,7 @@ case "$(uname -s)" in
         fi
         ;;
 esac
-occt_configure "$WORK/occt-$OCCT_VERSION" "$WORK/build" "$PREFIX" Static \
+occt_configure "$WORK/occt-$OCCT_VERSION" "$WORK/build" "$PREFIX" "$LIBTYPE" \
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON "$@"
 cmake --build "$WORK/build" --config Release -j "$JOBS"
 cmake --install "$WORK/build" --config Release

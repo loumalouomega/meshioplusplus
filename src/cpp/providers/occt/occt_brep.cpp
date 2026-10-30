@@ -84,8 +84,8 @@
 #include "meshioplusplus/ndarray.hpp"
 
 // Project includes (private, not installed)
-#include "json_value.hpp"
-#include "nurbs_eval.hpp"
+#include "detail/json_value.hpp"
+#include "detail/nurbs_eval.hpp"
 #include "occt_brep.hpp"
 
 namespace meshioplusplus::detail {

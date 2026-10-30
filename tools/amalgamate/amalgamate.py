@@ -200,6 +200,10 @@ def main(argv=None):
     # pugiconfig.hpp) is emitted here first, at top level.
     sources = [pugixml_dir / "pugixml.cpp"]
     sources += sorted((repo / "src" / "cpp" / "src").rglob("*.cpp"))
+    # The providers (OpenCASCADE, Netgen, MMG), each guarded by its
+    # MESHIOPLUSPLUS_HAS_* macro; the add-ons' Python modules under addon/ are not
+    # part of the library.
+    sources += sorted((repo / "src" / "cpp" / "providers").glob("*/*.cpp"))
 
     prelude = []
     for s in sources:

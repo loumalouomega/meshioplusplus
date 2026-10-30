@@ -115,11 +115,15 @@ _MODE_FLOATS = (
 
 
 def has_occt() -> bool:
-    """Whether the compiled core carries the OpenCASCADE backend."""
+    """Whether the compiled core has the OpenCASCADE backend (built in, or the
+    ``meshioplusplus-occt`` add-on)."""
     try:
         from . import _core
     except ImportError:
         return False
+    from ._plugins import load_plugins
+
+    load_plugins()
     return bool(getattr(_core, "__has_occt__", False))
 
 
@@ -523,11 +527,11 @@ def fit_cad(
         raise NotImplementedError(
             f"{_PREFIX}needs the compiled core; there is no pure-Python CAD kernel"
         ) from exc
-    if opts["backend"] == "occt" and not getattr(_core, "__has_occt__", False):
+    if opts["backend"] == "occt" and not has_occt():
         raise NotImplementedError(
-            f"{_PREFIX}this build has no OpenCASCADE backend (the PyPI wheels carry "
-            f"it); rebuild with {_FLAG} (OpenCASCADE 7.6 or later), or use "
-            "backend='native'"
+            f"{_PREFIX}no OpenCASCADE backend is available (the PyPI wheels get it from "
+            f"the meshioplusplus-occt package: pip install meshioplusplus[occt]); a source "
+            f"build needs {_FLAG} (OpenCASCADE 7.6 or later); or use backend='native'"
         )
     res = _core.fit_cad(
         mesh,

@@ -1512,7 +1512,7 @@ SPEC: dict[str, dict] = {
         "note": "A B-rep solid for CAD tools (coplanar facets merged into one face), "
         "read back through OpenCASCADE as its triangulation: volume cells come back "
         "as their skin, and data is not kept. Checked only in a build with "
-        "OpenCASCADE (the wheels carry it).",
+        "OpenCASCADE (the meshioplusplus-occt wheel carries it).",
     },
     "stl": {
         "cells": {

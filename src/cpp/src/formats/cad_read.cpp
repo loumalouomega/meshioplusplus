@@ -15,72 +15,45 @@
 //
 //
 
-// STEP and IGES reading through OpenCASCADE. See formats/step.hpp and
-// formats/iges.hpp.
+// STEP and IGES reading through the registered CAD kernel (OpenCASCADE). See
+// formats/step.hpp, formats/iges.hpp and providers.hpp; the OpenCASCADE kernel
+// is providers/occt/.
 
 // System includes
-#include <cmath>
-#include <stdexcept>
+#include <functional>
 #include <string>
 
 // Project includes
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/iges.hpp"
 #include "meshioplusplus/formats/step.hpp"
-
-#ifdef MESHIOPLUSPLUS_HAS_OCCT
-// Project includes (private, not installed)
-#include "../detail/library_lock.hpp"
-#include "../detail/occt_brep.hpp"
-
-// External includes
-#include <Standard_Failure.hxx>
-#endif
+#include "meshioplusplus/providers.hpp"
 
 namespace meshioplusplus {
 
 namespace {
 
-#ifdef MESHIOPLUSPLUS_HAS_OCCT
-Mesh cad_read_shape(const std::string& rPath, bool Iges, BrepInfo& rInfo,
-                    const CadReadOptions& rOptions) {
-    const char* fmt = Iges ? "iges" : "step";
-    if (!std::isfinite(rOptions.mDeflection) || !(rOptions.mAngularDeflection > 0.0) ||
-        !std::isfinite(rOptions.mAngularDeflection))
-        throw std::invalid_argument(std::string("meshio++: ") + fmt +
-                                    ": the deflection must be finite and the angular "
-                                    "deflection positive");
-    detail::LibraryLock lock;
-    detail::OcctQuiet quiet;
-    try {
-        detail::OcctNurbs nurbs = detail::occt_nurbs(detail::occt_read_cad_file(rPath, Iges, fmt));
-        Mesh mesh = detail::occt_tessellate(nurbs.mShape, nurbs.mInfo, rOptions.mDeflection,
-                                            rOptions.mAngularDeflection);
-        rInfo = std::move(nurbs.mInfo);
-        return mesh;
-    } catch (const Standard_Failure& rErr) {
-        // Never OpenCASCADE's own exception, which is no std::exception.
-        throw ReadError(std::string("meshio++: ") + fmt + ": OpenCASCADE failed converting '" +
-                        rPath + "': " + rErr.GetMessageString());
-    }
-}
-#else
 [[noreturn]] void cad_read_unsupported(const char* pFormat) {
     throw Unsupported(std::string("meshio++: ") + pFormat +
-                      ": reading needs the OpenCASCADE backend, which the PyPI wheels and "
-                      "the release binaries carry; rebuild with -DMESHIOPLUSPLUS_WITH_OCCT=ON "
-                      "(OpenCASCADE 7.6 or later, build/build-occt.sh builds one)");
+                      ": reading needs a CAD kernel (OpenCASCADE), which the release binaries "
+                      "carry and the Python wheels provide through the meshioplusplus-occt "
+                      "package (pip install meshioplusplus[occt]); a source build needs "
+                      "-DMESHIOPLUSPLUS_WITH_OCCT=ON (OpenCASCADE 7.6 or later, "
+                      "build/build-occt.sh builds one)");
 }
-#endif
+
+Mesh cad_read(const char* pFormat, bool Iges, const std::string& rPath, BrepInfo& rInfo,
+              const CadReadOptions& rOptions) {
+    const auto p_kernel = cad_kernel();
+    if (!p_kernel || !(Iges ? p_kernel->mReadIges : p_kernel->mReadStep))
+        cad_read_unsupported(pFormat);
+    return (Iges ? p_kernel->mReadIges : p_kernel->mReadStep)(rPath, rInfo, rOptions);
+}
 
 }  // namespace
 
 bool cad_read_has_occt() noexcept {
-#ifdef MESHIOPLUSPLUS_HAS_OCCT
-    return true;
-#else
-    return false;
-#endif
+    return cad_kernel() != nullptr;
 }
 
 Mesh read_step(const std::string& rPath) {
@@ -89,14 +62,7 @@ Mesh read_step(const std::string& rPath) {
 }
 
 Mesh read_step(const std::string& rPath, BrepInfo& rInfo, const CadReadOptions& rOptions) {
-#ifdef MESHIOPLUSPLUS_HAS_OCCT
-    return cad_read_shape(rPath, false, rInfo, rOptions);
-#else
-    (void)rPath;
-    (void)rInfo;
-    (void)rOptions;
-    cad_read_unsupported("step");
-#endif
+    return cad_read("step", false, rPath, rInfo, rOptions);
 }
 
 Mesh read_iges(const std::string& rPath) {
@@ -105,14 +71,7 @@ Mesh read_iges(const std::string& rPath) {
 }
 
 Mesh read_iges(const std::string& rPath, BrepInfo& rInfo, const CadReadOptions& rOptions) {
-#ifdef MESHIOPLUSPLUS_HAS_OCCT
-    return cad_read_shape(rPath, true, rInfo, rOptions);
-#else
-    (void)rPath;
-    (void)rInfo;
-    (void)rOptions;
-    cad_read_unsupported("iges");
-#endif
+    return cad_read("iges", true, rPath, rInfo, rOptions);
 }
 
 }  // namespace meshioplusplus

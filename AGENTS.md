@@ -23,7 +23,7 @@ Run from the repository root unless specified otherwise.
 | --- | --- |
 | Development environment | `uv venv --python 3.12 .venv` if needed; install build requirements from `pyproject.toml` before using `--no-build-isolation` |
 | Editable native build | `CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=ON -DMESHIOPLUSPLUS_WITH_NETCDF=ON -DMESHIOPLUSPLUS_WITH_ZLIB=ON" uv pip install --python .venv --no-build-isolation -e .`; OpenCASCADE (on by default) is linked when found, e.g. `OpenCASCADE_ROOT=<prefix>` |
-| OpenCASCADE | `build/build-occt.sh <prefix>` builds the pinned static kernel the wheels and CLI binaries link (`build/occt-recipe.sh` holds the pin, shared with the WASM full build; `MIO_OCCT_PIN=7.9` builds the second CI pin); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) |
+| OpenCASCADE | `build/build-occt.sh <prefix>` builds the pinned static kernel the CLI binaries link (`--shared` builds the libraries the `meshioplusplus-occt` wheel ships) (`build/occt-recipe.sh` holds the pin, shared with the WASM full build; `MIO_OCCT_PIN=7.9` builds the second CI pin); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) |
 | fit_cad goldens | `tests/cpp/test_fit_cad_goldens.cpp` and `tests/python/test_fit_cad_goldens.py` (`MESHIOPLUSPLUS_FIT_CAD_GOLDENS=1`) pin `fit_cad`'s output per OpenCASCADE version; a change meant to move it re-records with `MESHIOPLUSPLUS_RECORD_GOLDENS=1` and says why |
 | Standard editable install | `pip install -e ".[all]"` in a virtual environment |
 | Python tests | `.venv/bin/python -m pytest tests/python/`; scope to affected files while developing |
@@ -72,6 +72,7 @@ See [architecture](doc/architecture.md), [mesh data model](doc/mesh_data_model.m
 - Preserve buffer ownership when cloning arrays, including rank-0 scalars: an empty shape with a buffer is one element; a default absent array is zero elements. Use owned copies where results outlive inputs.
 - Data-only operations must leave points, connectivity, and block order bit-identical. Reuse `detail/data_ops.*`, topology tables, subdivision helpers, and shared geometry kernels instead of introducing parallel implementations.
 - Use `registry_write_ex` / `WriteOptions` for parameterized native writes. The basic registry writer has fixed defaults. Flat bindings have no Python fallback; test their native paths directly.
+- Reach the CAD kernel through the provider registry (`providers.hpp`: `cad_kernel()`), never `#ifdef MESHIOPLUSPLUS_HAS_OCCT` in the core's control flow. OpenCASCADE code lives in `src/cpp/providers/occt/`, compiled into the core in a monolithic build and into the `meshioplusplus-occt` wheel in a split one; the native `fit_cad` helpers it builds on are exposed through `detail/fit_cad_native.hpp`. Exceptions cross between the shared core and an add-on, so keep the runtime exported (no `--exclude-libs`) in the split wheels. See [the plan](doc/python_packages_plan.md).
 - Use `parallel_for` for independent hot loops; preserve deterministic ordering and reduction behavior. Default parallel backend selection is `AUTO`; do not assume it means a particular runtime.
 - Prefer unordered containers for order-independent lookup. Preserve sorted data-name iteration and deterministic output. Direct mutations of MESHIO data maps must call `InvalidateNameCaches()`.
 - Follow `.clang-format`: K&R braces, four spaces. Types and methods use `PascalCase`, members `mPascalCase`, reference/pointer parameters `rName`/`pName` (excluding forwarding/move references), and free functions/local variables/files `snake_case`. Keep Python/JS API string names stable. Do not format third-party code.
@@ -97,11 +98,12 @@ Reference fixtures in `tests/python/meshes/` and `tests/python/input/` use Git L
 
 ## Version bumps
 
-Update all ten files to the same release version:
+Update all of these files to the same release version:
 
 | File | Field |
 | --- | --- |
-| `pyproject.toml` | `version` |
+| `pyproject.toml` | `version`, and the `meshioplusplus-{occt,netgen,mmg}==` pins of the `occt`, `netgen`, `mmg` and `addons` extras |
+| `packages/python/meshioplusplus-{occt,netgen,mmg}/pyproject.toml` | `version`, and the `meshioplusplus==` pins of `build-system.requires` and `dependencies` (three files) |
 | `CMakeLists.txt` | `project(... VERSION ...)` |
 | `conanfile.py` | `version` |
 | `packages/vcpkg/meshioplusplus/vcpkg.json` | `version` |
@@ -117,6 +119,7 @@ Also, in the same change:
 - Update the `find_package(meshioplusplus X.Y.Z EXACT CONFIG REQUIRED COMPONENTS CXX)` pins in `README.md` and `doc/cpp_api.md`.
 - Refresh the four `BASELINE_HASHES` in `tests/python/test_io_baseline.py`. First substitute the old version into newly written bytes and verify the old hashes: a version bump must not conceal an unrelated output regression.
 - Add a dated `CHANGELOG.md` entry; prefix breaking items with **Breaking:**. A bugfix release can use a short entry.
+- Re-record the native `fit_cad` goldens: the STEP header carries `Written by meshio++ vX.Y.Z`, so every release moves the STEP digests of `tests/cpp/test_fit_cad_goldens.cpp` and the `native` table of `tests/python/fit_cad_goldens.json` (`MESHIOPLUSPLUS_RECORD_GOLDENS=1`; the mesh and report digests must not change, which proves the fit did not).
 - Regenerate the single header. Assess C++ ABI changes separately using the policy above; a release bump alone does not imply an ABI bump.
 - Bump the two Spack recipes in [`spack/spack-packages`](https://github.com/spack/spack-packages/tree/develop/repos/spack_repo/builtin/packages) (`meshioplusplus` and `py-meshioplusplus`) in the same change: after the tag, add one `version(...)` line per release worth keeping to each, with `spack checksum` (never a hand-computed hash), re-check every `when="@X:"` variant guard and `depends_on` floor against this version's `CMakeLists.txt` and `pyproject.toml`, and run `spack style`. Add a variant for any `MESHIOPLUSPLUS_WITH_*` option that post-dates the recipes and has a Spack package to depend on. Then open the PR.
 

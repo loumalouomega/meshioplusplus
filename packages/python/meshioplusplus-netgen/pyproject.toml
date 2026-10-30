@@ -1,0 +1,25 @@
+[build-system]
+requires = ["scikit-build-core>=0.11", "pybind11>=2.11", "meshioplusplus==18.0.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "meshioplusplus-netgen"
+version = "18.0.0"
+description = "Netgen tetrahedral mesher for meshio++: the Netgen backend of tetrahedralize"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT AND LGPL-2.1-only"
+dependencies = ["meshioplusplus==18.0.0"]
+
+[project.entry-points."meshioplusplus.plugins"]
+netgen = "meshioplusplus_netgen"
+
+[tool.scikit-build]
+minimum-version = "0.11"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["src/meshioplusplus_netgen"]
+cmake.source-dir = "../../.."
+cmake.build-type = "Release"
+
+[tool.scikit-build.cmake.define]
+MESHIOPLUSPLUS_ADDON = "netgen"

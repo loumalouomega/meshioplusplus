@@ -102,6 +102,9 @@ def _core_or_raise(what):
             f"meshio++: {what}: needs the compiled C++ core (meshioplusplus._core); "
             "it has no numpy twin"
         ) from exc
+    from ._plugins import load_plugins
+
+    load_plugins()  # add-ons register their providers (OpenCASCADE, Netgen)
     return _core
 
 

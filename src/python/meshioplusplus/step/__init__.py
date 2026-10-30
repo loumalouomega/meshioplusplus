@@ -14,15 +14,19 @@ from .._helpers import register_format
 from ._step import write as _py_write
 
 _NEEDS_OCCT = (
-    "reading needs the OpenCASCADE backend, which the PyPI wheels carry; rebuild with "
-    "-DMESHIOPLUSPLUS_WITH_OCCT=ON (OpenCASCADE 7.6 or later, build/build-occt.sh "
-    "builds one)"
+    "reading needs the OpenCASCADE backend: the PyPI wheels get it from the "
+    "meshioplusplus-occt package (pip install meshioplusplus[occt]); a source build "
+    "needs -DMESHIOPLUSPLUS_WITH_OCCT=ON (OpenCASCADE 7.6 or later, "
+    "build/build-occt.sh builds one)"
 )
 
 
 def _read_cad(fmt, filename, deflection, angular_deflection):
     if is_buffer(filename, "r"):
         raise NotImplementedError(f"meshio++: {fmt}: reading needs a file path")
+    from .._plugins import load_plugins
+
+    load_plugins()
     reader = getattr(_core, f"{fmt}_read", None) if _core is not None else None
     if reader is None or not getattr(_core, "__has_occt__", False):
         raise NotImplementedError(f"meshio++: {fmt}: {_NEEDS_OCCT}")

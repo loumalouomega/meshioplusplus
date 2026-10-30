@@ -4029,11 +4029,12 @@ def _register_operations(server: FastMCP) -> None:
         tetrahedra, grading (0 to 1) is how fast the size grows inward,
         optimize_steps the backend's volume optimisation passes; face_array
         (cad:face) is carried to the triangles. backend "netgen" in a build
-        without it (-DMESHIOPLUSPLUS_WITH_NETGEN) returns an error naming the
-        flag. Reports num_tetrahedra, num_points,
+        without it (the meshioplusplus-netgen package, or
+        -DMESHIOPLUSPLUS_WITH_NETGEN in a source build) returns an error naming
+        both. Reports num_tetrahedra, num_points,
         num_new_points, num_regions, num_boundary_triangles,
         boundary_preserved, hausdorff_to_surface, min_dihedral_deg,
-        max_dihedral_deg, volume, backend and warnings."""
+        max_dihedral_deg, volume, backend, warnings and netgen_available."""
         return _guard(
             _tools.tool_tetrahedralize,
             input_path=input_path,

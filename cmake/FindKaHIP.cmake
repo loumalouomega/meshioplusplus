@@ -53,8 +53,12 @@ find_path(KAHIP_INCLUDE_DIR
 # Emscripten links the static archive: the shared libkahip.so, which the same
 # install provides, does not link into the wasm main module (undefined
 # emscripten_longjmp). Elsewhere the shared library is still preferred.
-if(EMSCRIPTEN)
+if(EMSCRIPTEN OR MESHIOPLUSPLUS_PREFER_STATIC_DEPS)
+    # The static archive first (the PyPI wheels), the shared library after it.
     set(_kahip_library_names kahip_static)
+    if(NOT EMSCRIPTEN)
+        list(APPEND _kahip_library_names kahip)
+    endif()
 else()
     set(_kahip_library_names kahip kahip_static)
 endif()

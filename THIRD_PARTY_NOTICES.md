@@ -4,11 +4,21 @@ meshio++ itself is MIT ([LICENSE](LICENSE)). The binaries the project publishes 
 
 | Component | Version | Licence | Wheels | CLI binaries |
 | --- | --- | --- | --- | --- |
-| [Open CASCADE Technology](https://github.com/Open-Cascade-SAS/OCCT) | 7.6.3 | LGPL-2.1-only WITH OCCT-exception-1.0 | yes | yes |
+| [Open CASCADE Technology](https://github.com/Open-Cascade-SAS/OCCT) | 7.6.3 | LGPL-2.1-only WITH OCCT-exception-1.0 | add-on wheel only (shared) | yes |
 | [zlib](https://zlib.net/) | 1.3.1 | Zlib | yes | yes |
 | [gidpost](https://www.gidsimulation.com/) (vendored) | 2.14 | BSD-2-Clause-Views | yes | yes |
 | [pugixml](https://pugixml.org/) (vendored) | 1.14 | MIT | yes | yes |
 | [nlohmann/json](https://github.com/nlohmann/json) (submodule) | 3.12.0 | MIT | yes | yes |
+| [Netgen](https://ngsolve.org/) (nglib) | 6.2.2401 | LGPL-2.1-only | add-on wheel only (shared) | no |
+| [MMG](https://www.mmgtools.org/) | 5.8.0 | LGPL-3.0-or-later | add-on wheel only (shared, without ELAS) | no |
+| [HDF5](https://www.hdfgroup.org/solutions/hdf5/) | 1.14.6 | BSD-3-Clause | yes (Linux, macOS; static, symbols hidden) | no |
+| [netCDF-C](https://www.unidata.ucar.edu/software/netcdf/) | 4.9.3 | BSD-3-Clause | yes (Linux, macOS; static) | no |
+| [CGNS](https://cgns.github.io/) (cgnslib) | 4.5.2 | Zlib | yes (Linux, macOS; static) | no |
+| [zstd](https://facebook.github.io/zstd/) | 1.5.7 | BSD-3-Clause (the library is dual-licensed BSD/GPL-2.0; the BSD option is used) | yes (Linux, macOS; static) | no |
+| [LZ4](https://lz4.org/) | 1.10.0 | BSD-2-Clause (the library) | yes (Linux, macOS; static) | no |
+| [bzip2](https://sourceware.org/bzip2/) | 1.0.8 | bzip2-1.0.6 (BSD-style) | yes (Linux, macOS; static) | no |
+| [KaHIP](https://kahip.github.io/) | 3.25 | MIT | yes (Linux, macOS; static) | no |
+| [Eigen](https://eigen.tuxfamily.org/) (submodule; header-only) | 3.4-dev | MPL-2.0 | yes (Linux, macOS) | no |
 | [libomp](https://openmp.llvm.org/) (macOS wheels; expected as a shared library, to confirm) | the Homebrew release at build time | to confirm | yes (macOS) | no |
 
 **OpenCASCADE is LGPL-2.1 with the OCCT exception**, so the published binaries are not plain MIT: their licence is `MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)`, as [`LICENSE-BINARIES.md`](LICENSE-BINARIES.md) states in every artifact. The meshio++ sources, and a build from source that does not link OpenCASCADE (`-DMESHIOPLUSPLUS_WITH_OCCT=OFF`, or no OpenCASCADE found), are MIT.
@@ -23,9 +33,9 @@ The exact `orient2d`, `incircle`, `orient3d` and `insphere` tests of `mesh_cad_s
 
 ## OpenCASCADE and the LGPL
 
-OpenCASCADE's licence is the GNU Lesser General Public License 2.1 (`LICENSE_LGPL_21.txt`) with the additional exception in `OCCT_LGPL_EXCEPTION.txt`, which permits using its headers' inline code and templates without the resulting object code becoming a "work based on the library". Both texts ship beside this notice in every wheel (its `.dist-info/licenses`), every CLI archive and the Blender extension, which carries the wheel.
+OpenCASCADE's licence is the GNU Lesser General Public License 2.1 (`LICENSE_LGPL_21.txt`) with the additional exception in `OCCT_LGPL_EXCEPTION.txt`, which permits using its headers' inline code and templates without the resulting object code becoming a "work based on the library". Both texts ship beside this notice in the add-on wheel (its `.dist-info/licenses`), every CLI archive and the Blender extension, which carries the wheel.
 
-The binaries link OpenCASCADE statically, as the CAD kernel of `fit_cad` and of STEP and IGES reading. To let a recipient exercise the LGPL's right to relink against a modified OpenCASCADE, every binary is reproducible from source:
+The CLI binaries link OpenCASCADE statically, as the CAD kernel of `fit_cad` and of STEP and IGES reading. The PyPI base wheel contains none of it; the `meshioplusplus-occt` add-on wheel ships it as shared libraries beside its extension, so a recipient can replace them in place, and the relink recipe below (`build/build-occt.sh PREFIX --shared`) rebuilds them. To let a recipient exercise the LGPL's right to relink against a modified OpenCASCADE, every binary is reproducible from source:
 
 1. The OpenCASCADE source is the upstream tag `V7_6_3`, commit `b079fb9877ef64d4a8158a60fa157f59b096debb`, unmodified (no patches are applied).
 2. `build/build-occt.sh PREFIX` fetches that commit, verifies it, and builds the static libraries (`build/occt-recipe.sh` holds the pin and the configuration). Configuring meshio++ with `OpenCASCADE_ROOT=PREFIX` (or `-DOpenCASCADE_DIR=PREFIX/lib/cmake/opencascade`) links them: `pip install .` for the wheel, `build/configure.sh --cli --build` for the executable. The workflows that build the published binaries, `.github/workflows/wheels.yml` and `.github/workflows/cli.yml`, run exactly these steps. All of it is in the meshio++ repository at the tag of the binary's version.

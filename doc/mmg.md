@@ -138,7 +138,7 @@ export LD_LIBRARY_PATH=$HOME/mmg-install/lib:$LD_LIBRARY_PATH   # MMG and ELAS c
 
 - **Linked dynamically only.** CMake links the shared `Mmg::libmmg_so`; an install with only the static library is refused with a status message, and the operations then raise.
 - **What CMake reads from the install.** The width of `MMG5_int` from `mmg/common/mmgcmakedefines.h` (checked again by a `static_assert` when the core compiles), and whether MMG was built with ELAS, from `libmmg`'s reference to ELAS's `LS_elastic` (MMG's headers do not record it).
-- **Never in the published binaries.** The PyPI wheels, the release CLI binaries and both WebAssembly artifacts have no MMG; the browser port is [roadmap 3.2.8](./roadmap.md).
+- **In the published binaries only as an add-on.** The base PyPI wheel, the release CLI binaries and both WebAssembly artifacts have no MMG. The `meshioplusplus-mmg` wheel (`pip install "meshioplusplus[mmg]"`, v18.0.0) supplies it to Python, built against an MMG without ELAS (which would make the combination GPL-3.0), so `move` raises naming it; the CLI and C API can load it as a [plugin](./cpp_api.md#providers-and-plugins). The browser port is [roadmap 3.2.8](./roadmap.md).
 
 Ask the build what it has:
 

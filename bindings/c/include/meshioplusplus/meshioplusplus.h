@@ -253,8 +253,8 @@ typedef struct mio_region_info {
  * c_api.cpp, and CMake hard-fails at configure time if either disagrees with
  * project(... VERSION ...), so the copies cannot drift.
  */
-#define MIO_VERSION_MAJOR 17
-#define MIO_VERSION_MINOR 23
+#define MIO_VERSION_MAJOR 18
+#define MIO_VERSION_MINOR 0
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -279,6 +279,20 @@ MIO_API const char* mio_mesh_backend(void);
 /** @return 1 if `format` (e.g. "gmsh", "vtu", "med") is readable in this
  *          build, 0 otherwise. */
 MIO_API int mio_format_readable(const char* format);
+
+/** Loads provider plugins: shared libraries that supply the OpenCASCADE, Netgen
+ *  or MMG backend at run time (roadmap 4.7.3; see `doc/c_api.md`).
+ *  @param paths libraries and directories (searched for `meshioplusplus_plugin_*`
+ *         libraries), separated by `:` (`;` on Windows). NULL reads the
+ *         `MESHIOPLUSPLUS_PLUGIN_PATH` environment variable, which this library
+ *         also reads itself when it first needs a provider.
+ *  @return the number of plugins that registered a provider (0 when none did, or
+ *          where loading is unavailable). A plugin built for another release, or
+ *          that cannot be opened, is skipped and logged; it never replaces a
+ *          provider that is already present. Call before the first operation
+ *          that needs the backend, then probe with `mio_has_occt()`,
+ *          `mio_has_netgen()` and `mio_has_mmg()`. */
+MIO_API int mio_load_plugins(const char* paths);
 
 /** @return 1 if `format` is writable in this build, 0 otherwise (read-only
  *          formats like "openfoam" report 0). */

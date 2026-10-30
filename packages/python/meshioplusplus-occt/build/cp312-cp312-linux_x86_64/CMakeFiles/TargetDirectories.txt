@@ -1,0 +1,7 @@
+/home/user/meshioplusplus/packages/python/meshioplusplus-occt/build/cp312-cp312-linux_x86_64/CMakeFiles/_occt.dir
+/home/user/meshioplusplus/packages/python/meshioplusplus-occt/build/cp312-cp312-linux_x86_64/CMakeFiles/edit_cache.dir
+/home/user/meshioplusplus/packages/python/meshioplusplus-occt/build/cp312-cp312-linux_x86_64/CMakeFiles/rebuild_cache.dir
+/home/user/meshioplusplus/packages/python/meshioplusplus-occt/build/cp312-cp312-linux_x86_64/CMakeFiles/list_install_components.dir
+/home/user/meshioplusplus/packages/python/meshioplusplus-occt/build/cp312-cp312-linux_x86_64/CMakeFiles/install.dir
+/home/user/meshioplusplus/packages/python/meshioplusplus-occt/build/cp312-cp312-linux_x86_64/CMakeFiles/install/local.dir
+/home/user/meshioplusplus/packages/python/meshioplusplus-occt/build/cp312-cp312-linux_x86_64/CMakeFiles/install/strip.dir

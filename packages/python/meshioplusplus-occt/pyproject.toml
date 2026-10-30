@@ -1,0 +1,25 @@
+[build-system]
+requires = ["scikit-build-core>=0.11", "pybind11>=2.11", "meshioplusplus==18.0.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "meshioplusplus-occt"
+version = "18.0.0"
+description = "OpenCASCADE add-on for meshio++: STEP and IGES reading and fit_cad's OpenCASCADE backend"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)"
+dependencies = ["meshioplusplus==18.0.0"]
+
+[project.entry-points."meshioplusplus.plugins"]
+occt = "meshioplusplus_occt"
+
+[tool.scikit-build]
+minimum-version = "0.11"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["src/meshioplusplus_occt"]
+cmake.source-dir = "../../.."
+cmake.build-type = "Release"
+
+[tool.scikit-build.cmake.define]
+MESHIOPLUSPLUS_ADDON = "occt"

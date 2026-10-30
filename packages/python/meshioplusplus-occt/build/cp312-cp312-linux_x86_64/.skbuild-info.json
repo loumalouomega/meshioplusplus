@@ -1,0 +1,8 @@
+{
+  "source_dir": "/home/user/meshioplusplus",
+  "build_dir": "/home/user/meshioplusplus/packages/python/meshioplusplus-occt/build/cp312-cp312-linux_x86_64",
+  "cmake_path": "/home/user/meshioplusplus/.venv/lib/python3.12/site-packages/cmake/data/bin/cmake",
+  "skbuild_path": "/home/user/meshioplusplus/.venv/lib/python3.12/site-packages/scikit_build_core",
+  "skbuild_version": "1.1.1",
+  "python_executable": "/home/user/meshioplusplus/.venv/bin/python3"
+}

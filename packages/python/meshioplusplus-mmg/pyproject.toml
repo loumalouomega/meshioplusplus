@@ -1,0 +1,25 @@
+[build-system]
+requires = ["scikit-build-core>=0.11", "pybind11>=2.11", "meshioplusplus==18.0.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "meshioplusplus-mmg"
+version = "18.0.0"
+description = "MMG remesher for meshio++: adapt, discretize_levelset, mesh_domain and move (move needs an MMG built with ELAS, which this wheel is not)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT AND LGPL-3.0-or-later"
+dependencies = ["meshioplusplus==18.0.0"]
+
+[project.entry-points."meshioplusplus.plugins"]
+mmg = "meshioplusplus_mmg"
+
+[tool.scikit-build]
+minimum-version = "0.11"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["src/meshioplusplus_mmg"]
+cmake.source-dir = "../../.."
+cmake.build-type = "Release"
+
+[tool.scikit-build.cmake.define]
+MESHIOPLUSPLUS_ADDON = "mmg"

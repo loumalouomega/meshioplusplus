@@ -1379,7 +1379,7 @@ def test_tetrahedralize_cli(tmp_path, capsys):
     fitted = json.loads(capsys.readouterr().out)
     assert fitted["backend"] == "octree" and not fitted["boundary_preserved"]
     assert fitted["num_tetrahedra"] > 0
-    if not _core.__has_netgen__:
+    if not meshioplusplus.has_netgen():
         with pytest.raises(NotImplementedError, match="MESHIOPLUSPLUS_WITH_NETGEN"):
             meshioplusplus._cli.main(args + ["--backend", "netgen"])
         return
@@ -1450,7 +1450,7 @@ def test_native_tetrahedralize_and_boundary_layer_when_available(tmp_path):
         return
     report = json.loads(result.stdout)
     assert report["boundary_preserved"] and report["num_regions"] == 1
-    if meshioplusplus._core.__has_netgen__:
+    if meshioplusplus.has_netgen():
         _, py = meshioplusplus.tetrahedralize(
             meshioplusplus.read(skin), max_size=0.3, return_report=True
         )

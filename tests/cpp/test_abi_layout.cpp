@@ -124,6 +124,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
 #include "meshioplusplus/operations/fit_cad.hpp"
+#include "meshioplusplus/providers.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/iga.hpp"
 #include "meshioplusplus/operations/segment.hpp"
@@ -248,6 +249,17 @@ MIO_ABI_LAYOUT(meshioplusplus::BrepVertex, 96, 8);
 MIO_ABI_LAYOUT(meshioplusplus::Brep, 144, 8);
 MIO_ABI_LAYOUT(meshioplusplus::BrepInfo, 152, 8);
 MIO_ABI_LAYOUT(meshioplusplus::CadReadOptions, 16, 8);
+// v18.0.0 (roadmap 4.7): the CAD kernel a provider registers. Two `std::string`s
+// and three `std::function`s, 32 bytes each with libstdc++. The add-on wheels
+// pin the base wheel's exact version, so this only has to hold within a release.
+MIO_ABI_LAYOUT(meshioplusplus::CadKernelProvider, 160, 8);
+// The tetrahedral mesher (two `std::string`s and one `std::function`) and its
+// request and result (two vectors and scalars), and the remesher (two strings, a
+// bool and an int sharing 8 bytes, four `std::function`s).
+MIO_ABI_LAYOUT(meshioplusplus::TetMeshRegionRequest, 72, 8);
+MIO_ABI_LAYOUT(meshioplusplus::TetMeshRegionResult, 56, 8);
+MIO_ABI_LAYOUT(meshioplusplus::TetMesherProvider, 96, 8);
+MIO_ABI_LAYOUT(meshioplusplus::RemesherProvider, 200, 8);
 MIO_ABI_LAYOUT(meshioplusplus::CadJsonReadOptions, 12, 4);
 // `MdpaInfo` gained six members in v16.27.0 (roadmap §4, the blocks the
 // `Mesh` cannot hold: text ModelPartData, top-level tables, geometries, Mesh
