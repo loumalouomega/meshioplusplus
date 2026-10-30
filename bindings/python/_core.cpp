@@ -1604,6 +1604,9 @@ PYBIND11_MODULE(_core, m) {
                 return py::bool_(meshioplusplus::mmg_has_elas());
             if (rName == "__mmg_index_bits__")
                 return py::int_(meshioplusplus::mmg_index_bits());
+            // The kernel version fit_cad's STEP bytes depend on ("" without a kernel).
+            if (rName == "__occt_version__")
+                return py::str(std::string(meshioplusplus::fit_cad_occt_version()));
             throw py::attribute_error("module 'meshioplusplus._core' has no attribute '" + rName +
                                       "'");
         },
@@ -1733,8 +1736,6 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("hessian"), py::arg("error") = 1e-2, py::arg("hmin") = 1e-3,
         py::arg("hmax") = 1.0, py::arg("output") = "metric");
-    // The kernel version fit_cad's STEP bytes depend on ("" without it).
-    m.attr("__occt_version__") = std::string(meshioplusplus::fit_cad_occt_version());
 #ifdef MESHIOPLUSPLUS_HAS_GIDPOST
     m.attr("__has_gidpost__") = true;
 #else
