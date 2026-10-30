@@ -30,6 +30,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/fit_cad.hpp"
+#include "meshioplusplus/providers.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
@@ -199,19 +200,14 @@
 namespace meshioplusplus {
 
 bool fit_cad_has_occt() noexcept {
-#ifdef MESHIOPLUSPLUS_HAS_OCCT
-    return true;
-#else
-    return false;
-#endif
+    const auto p_kernel = cad_kernel();
+    return p_kernel && p_kernel->mFitCad;
 }
 
 const char* fit_cad_occt_version() noexcept {
-#ifdef MESHIOPLUSPLUS_HAS_OCCT
-    return OCC_VERSION_COMPLETE;
-#else
-    return "";
-#endif
+    // The registry retains every provider it ever held, so this stays valid.
+    const auto p_kernel = cad_kernel();
+    return p_kernel ? p_kernel->mVersion.c_str() : "";
 }
 
 namespace {
@@ -5923,6 +5919,16 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
 
 }  // namespace
 
+
+namespace detail {
+
+FitCadResult builtin_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
+                                  const FitCadOptions& rOptions) {
+    return fc_occt_fit_cad(rMesh, rStepPath, rOptions);
+}
+
+}  // namespace detail
+
 #endif  // MESHIOPLUSPLUS_HAS_OCCT
 
 // One build of the solid, as `fit_cad` makes it: the options checked, the
@@ -5996,15 +6002,16 @@ static FitCadResult fit_cad_build(const Mesh& rMesh, const std::string& rStepPat
         general.mExtendSurfaces = true;
         return fit_cad_build(rMesh, rStepPath, general);
     }
-#ifdef MESHIOPLUSPLUS_HAS_OCCT
-    if (rOptions.mBackend != FitCadBackend::Native)
-        return fc_occt_fit_cad(rMesh, rStepPath, rOptions);
-#else
+    const auto p_kernel = cad_kernel();
+    if (rOptions.mBackend != FitCadBackend::Native && p_kernel && p_kernel->mFitCad)
+        return p_kernel->mFitCad(rMesh, rStepPath, rOptions);
     if (rOptions.mBackend == FitCadBackend::Occt)
         throw Unsupported(
-            "fit_cad: this build has no OpenCASCADE backend (the PyPI wheels and the release "
-            "binaries carry it); rebuild with -DMESHIOPLUSPLUS_WITH_OCCT=ON (OpenCASCADE 7.6 or "
-            "later, build/build-occt.sh builds one), or use the native backend");
+            "fit_cad: no OpenCASCADE backend is available (the release binaries carry it and "
+            "the Python wheels provide it through the meshioplusplus-occt package, pip install "
+            "meshioplusplus[occt]); a source build needs -DMESHIOPLUSPLUS_WITH_OCCT=ON "
+            "(OpenCASCADE 7.6 or later, build/build-occt.sh builds one), or use the native "
+            "backend");
     // OpenCASCADE is what the result is meant to be built with: say once that
     // this build falls back, and what that costs. An atomic flag rather than
     // std::call_once, whose libstdc++ thread-locals the xeus-cpp JIT running
@@ -6013,12 +6020,12 @@ static FitCadResult fit_cad_build(const Mesh& rMesh, const std::string& rStepPat
         static std::atomic<bool> s_fcn_fallback_warned{false};
         if (!s_fcn_fallback_warned.exchange(true))
             log::warn(
-                "fit_cad: this build has no OpenCASCADE, so the kernel-free native backend "
+                "fit_cad: no OpenCASCADE is available, so the kernel-free native backend "
                 "is used: no freeform, fillet or thread faces, no B-rep check and no solid "
-                "volume. The PyPI wheels and the release binaries carry OpenCASCADE; a "
-                "source build finds one with -DMESHIOPLUSPLUS_WITH_OCCT=ON (the default)");
+                "volume. The release binaries carry OpenCASCADE and the Python wheels get it "
+                "from the meshioplusplus-occt package; a source build finds one with "
+                "-DMESHIOPLUSPLUS_WITH_OCCT=ON (the default)");
     }
-#endif
     return fcn_native_fit_cad(rMesh, rStepPath, rOptions);
 }
 
