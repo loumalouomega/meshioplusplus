@@ -16,12 +16,11 @@
 //
 
 // STEP and IGES reading through the registered CAD kernel (OpenCASCADE). See
-// formats/step.hpp, formats/iges.hpp and providers.hpp.
+// formats/step.hpp, formats/iges.hpp and providers.hpp; the OpenCASCADE kernel
+// is providers/occt/.
 
 // System includes
-#include <cmath>
 #include <functional>
-#include <stdexcept>
 #include <string>
 
 // Project includes
@@ -30,54 +29,9 @@
 #include "meshioplusplus/formats/step.hpp"
 #include "meshioplusplus/providers.hpp"
 
-#ifdef MESHIOPLUSPLUS_HAS_OCCT
-// Project includes (private, not installed)
-#include "../detail/library_lock.hpp"
-#include "../detail/occt_brep.hpp"
-
-// External includes
-#include <Standard_Failure.hxx>
-#include <Standard_Version.hxx>
-#endif
-
 namespace meshioplusplus {
 
-#ifdef MESHIOPLUSPLUS_HAS_OCCT
-namespace detail {
-
-// Defined in operations/fit_cad.cpp.
-FitCadResult builtin_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
-                                  const FitCadOptions& rOptions);
-
-}  // namespace detail
-#endif
-
 namespace {
-
-#ifdef MESHIOPLUSPLUS_HAS_OCCT
-Mesh cad_read_shape(const std::string& rPath, bool Iges, BrepInfo& rInfo,
-                    const CadReadOptions& rOptions) {
-    const char* fmt = Iges ? "iges" : "step";
-    if (!std::isfinite(rOptions.mDeflection) || !(rOptions.mAngularDeflection > 0.0) ||
-        !std::isfinite(rOptions.mAngularDeflection))
-        throw std::invalid_argument(std::string("meshio++: ") + fmt +
-                                    ": the deflection must be finite and the angular "
-                                    "deflection positive");
-    detail::LibraryLock lock;
-    detail::OcctQuiet quiet;
-    try {
-        detail::OcctNurbs nurbs = detail::occt_nurbs(detail::occt_read_cad_file(rPath, Iges, fmt));
-        Mesh mesh = detail::occt_tessellate(nurbs.mShape, nurbs.mInfo, rOptions.mDeflection,
-                                            rOptions.mAngularDeflection);
-        rInfo = std::move(nurbs.mInfo);
-        return mesh;
-    } catch (const Standard_Failure& rErr) {
-        // Never OpenCASCADE's own exception, which is no std::exception.
-        throw ReadError(std::string("meshio++: ") + fmt + ": OpenCASCADE failed converting '" +
-                        rPath + "': " + rErr.GetMessageString());
-    }
-}
-#endif
 
 [[noreturn]] void cad_read_unsupported(const char* pFormat) {
     throw Unsupported(std::string("meshio++: ") + pFormat +
@@ -91,37 +45,12 @@ Mesh cad_read_shape(const std::string& rPath, bool Iges, BrepInfo& rInfo,
 Mesh cad_read(const char* pFormat, bool Iges, const std::string& rPath, BrepInfo& rInfo,
               const CadReadOptions& rOptions) {
     const auto p_kernel = cad_kernel();
-    const auto& r_read = p_kernel ? (Iges ? p_kernel->mReadIges : p_kernel->mReadStep)
-                                  : std::function<Mesh(const std::string&, BrepInfo&,
-                                                       const CadReadOptions&)>();
-    if (!r_read)
+    if (!p_kernel || !(Iges ? p_kernel->mReadIges : p_kernel->mReadStep))
         cad_read_unsupported(pFormat);
-    return r_read(rPath, rInfo, rOptions);
+    return (Iges ? p_kernel->mReadIges : p_kernel->mReadStep)(rPath, rInfo, rOptions);
 }
 
 }  // namespace
-
-#ifdef MESHIOPLUSPLUS_HAS_OCCT
-namespace detail {
-
-CadKernelProvider builtin_occt_provider() {
-    CadKernelProvider provider;
-    provider.mName = "occt";
-    provider.mVersion = OCC_VERSION_COMPLETE;
-    provider.mReadStep = [](const std::string& rPath, BrepInfo& rInfo,
-                            const CadReadOptions& rOptions) {
-        return cad_read_shape(rPath, false, rInfo, rOptions);
-    };
-    provider.mReadIges = [](const std::string& rPath, BrepInfo& rInfo,
-                            const CadReadOptions& rOptions) {
-        return cad_read_shape(rPath, true, rInfo, rOptions);
-    };
-    provider.mFitCad = builtin_occt_fit_cad;
-    return provider;
-}
-
-}  // namespace detail
-#endif
 
 bool cad_read_has_occt() noexcept {
     return cad_kernel() != nullptr;

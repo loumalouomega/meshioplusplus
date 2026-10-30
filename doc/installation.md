@@ -26,21 +26,24 @@ The PyPI wheels are built without HDF5 and netCDF, so these two extras are how t
 
 ## What the PyPI wheels contain
 
-The wheels link these libraries statically into `meshioplusplus._core`:
+The base wheel, `meshioplusplus`, is MIT and carries no copyleft code. The core is a shared library installed beside `_core` (`meshioplusplus/lib`, with the headers and the CMake package), and these libraries are linked statically into it:
 
 | Component | Licence |
 |---|---|
-| OpenCASCADE 7.6.3 (`fit_cad`, STEP and IGES reading) | LGPL-2.1 with the OCCT exception |
 | zlib 1.3.1 (vendored; VTU compression and the GiD writer) | Zlib |
 | gidpost 2.14 (vendored; the GiD writer) | BSD-2-Clause-Views |
 | pugixml 1.14 (vendored; XML parsing) | MIT |
 | nlohmann/json 3.12.0 (the JSON pipeline parser) | MIT |
 
-They leave out HDF5 and netCDF (the `[all]` extra provides h5py and netCDF4), zstd, lz4 and bzip2 (the `[codecs]` extra, or a source build), ADIOS2, TecIO, KaHIP and MMG (a source build; KaHIP also has the `[kahip]` extra), Polyscope (the `[viewer]` extra) and Eigen, which is not compiled without HDF5.
+OpenCASCADE, which STEP and IGES reading and `fit_cad`'s OpenCASCADE backend need, is the separate `meshioplusplus-occt` wheel (v18.0.0): `pip install "meshioplusplus[occt]"`, also installed by `[all]`. It pins the base wheel's exact version, ships OpenCASCADE 7.6.3 as shared libraries beside its own extension, and registers a CAD kernel with the base core when `meshioplusplus` first needs one (`MESHIOPLUSPLUS_NO_PLUGINS=1` skips the discovery). Without it, reading STEP or IGES raises `NotImplementedError` naming the add-on, and `fit_cad` uses its native backend. Upgrading `meshioplusplus` alone leaves an older add-on behind; the version check refuses it by name, and `pip install -U "meshioplusplus[occt]"` upgrades both. v18.0.0 breaks pip installs that used STEP, IGES or `fit_cad`'s OpenCASCADE backend without installing the extra.
+
+The wheels leave out HDF5 and netCDF (the `[all]` extra provides h5py and netCDF4), zstd, lz4 and bzip2 (the `[codecs]` extra, or a source build), ADIOS2, TecIO, KaHIP and MMG (a source build; KaHIP also has the `[kahip]` extra), Polyscope (the `[viewer]` extra) and Eigen, which is not compiled without HDF5.
 
 Linux wheels are built with the SEQ parallel backend. macOS and Windows wheels use OpenMP; the macOS build uses Homebrew's libomp, which delocate is expected to bundle into the wheel (to be confirmed in a wheel listing).
 
-The wheels are licensed `MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)`, as [`LICENSE-BINARIES.md`](https://github.com/loumalouomega/meshioplusplus/blob/master/LICENSE-BINARIES.md) states. Each wheel ships `LICENSE`, `LICENSE-BINARIES.md`, `THIRD_PARTY_NOTICES.md` and the OpenCASCADE licence texts in its `.dist-info/licenses` directory.
+The base wheel is licensed `MIT`; the `meshioplusplus-occt` wheel is `MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)`, as [`LICENSE-BINARIES.md`](https://github.com/loumalouomega/meshioplusplus/blob/master/LICENSE-BINARIES.md) states. Each wheel ships `LICENSE`, `LICENSE-BINARIES.md` and `THIRD_PARTY_NOTICES.md` in its `.dist-info/licenses` directory, and the add-on adds the OpenCASCADE licence texts. Because the add-on keeps OpenCASCADE as shared objects, a recipient can replace the library without rebuilding anything.
+
+`meshioplusplus.get_cmake_dir()` returns the directory of the CMake package the base wheel ships, so an extension built against it finds the shared core with `find_package(meshioplusplus CONFIG)`; that is how the add-on is built.
 
 ## Spack
 

@@ -27,14 +27,14 @@
 
 namespace meshioplusplus {
 
-namespace detail {
-
 #ifdef MESHIOPLUSPLUS_HAS_OCCT
-/// The OpenCASCADE provider this build compiled in (cad_read.cpp).
-CadKernelProvider builtin_occt_provider();
-#endif
+namespace providers {
 
-}  // namespace detail
+/// The OpenCASCADE provider this build compiled in (providers/occt/).
+CadKernelProvider make_occt_provider();
+
+}  // namespace providers
+#endif
 
 namespace {
 
@@ -81,7 +81,7 @@ void register_builtin_providers() noexcept {
     if (!r_state.mCad) {
         try {
             r_state.mCad =
-                std::make_shared<const CadKernelProvider>(detail::builtin_occt_provider());
+                std::make_shared<const CadKernelProvider>(providers::make_occt_provider());
             r_state.mRetained.push_back(r_state.mCad);
         } catch (...) {
         }

@@ -1,7 +1,8 @@
-"""Smoke test of a built wheel's bundled OpenCASCADE (wheels.yml's
-CIBW_TEST_COMMAND; standalone, no pytest): the core carries the kernel,
-``fit_cad`` builds a valid solid with it on a raw cube skin, and the STEP it
-writes reads back through the same kernel."""
+"""Smoke test of the meshioplusplus-occt add-on wheel installed beside the base
+wheel (wheels.yml's CIBW_TEST_COMMAND; standalone, no pytest): the add-on
+registers its kernel with the base wheel's shared core, ``fit_cad`` builds a
+valid solid with it on a raw cube skin, and the STEP it writes reads back
+through the same kernel."""
 
 import os
 import tempfile
@@ -9,9 +10,10 @@ import tempfile
 import numpy as np
 
 import meshioplusplus as mp
-from meshioplusplus import _core
+from meshioplusplus import _core, _plugins
 
-assert _core.__has_occt__, "this wheel was built without OpenCASCADE"
+assert "occt" in _plugins.load_plugins(), _plugins.plugin_errors()
+assert _core.__has_occt__, "the add-on loaded but registered no CAD kernel"
 
 points = np.array(
     [[x, y, z] for z in (0.0, 1.0) for y in (0.0, 1.0) for x in (0.0, 1.0)]

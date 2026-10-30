@@ -1,13 +1,13 @@
 # IGES (`.igs`, `.iges`)
 
-The Initial Graphics Exchange Specification, read through OpenCASCADE (included in the PyPI wheels and the release binaries): the twin of the [STEP](/formats/step#reading) reader for the older CAD exchange format many tools still write. Read-only.
+The Initial Graphics Exchange Specification, read through OpenCASCADE (the `meshioplusplus-occt` add-on wheel, `pip install "meshioplusplus[occt]"`, and the release binaries): the twin of the [STEP](/formats/step#reading) reader for the older CAD exchange format many tools still write. Read-only.
 
 | | |
 |---|---|
 | **Format name** | `iges` |
 | **Extensions** | `.igs`, `.iges` |
 | **Read / Write** | ✓ (with OpenCASCADE) / — |
-| **Extra dependencies** | OpenCASCADE 7.6 or later (LGPL-2.1 with the OCCT exception; in the wheels and release binaries, on by default from source) |
+| **Extra dependencies** | OpenCASCADE 7.6 or later (LGPL-2.1 with the OCCT exception; the `meshioplusplus-occt` wheel and the release binaries, on by default from source) |
 
 ```python
 import meshioplusplus as mp

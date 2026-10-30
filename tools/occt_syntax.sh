@@ -14,14 +14,15 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 status=0
 
 for src in \
-    src/cpp/src/detail/occt_brep.cpp \
-    src/cpp/src/formats/cad_read.cpp \
-    src/cpp/src/operations/fit_cad.cpp
+    src/cpp/providers/occt/occt_brep.cpp \
+    src/cpp/providers/occt/occt_provider.cpp \
+    src/cpp/providers/occt/fit_cad_occt.cpp
 do
     echo "== $src"
     g++ -std=c++20 -fsyntax-only -DMESHIOPLUSPLUS_HAS_OCCT \
         -isystem "$occt" \
         -I "$root/src/cpp/include" \
+        -I "$root/src/cpp/src" \
         -I "$root/src/cpp/third_party/json/single_include" \
         -I "$root/src/cpp/third_party/pugixml" \
         "$root/$src" || status=1

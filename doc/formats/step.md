@@ -1,13 +1,13 @@
 # STEP (`.step`, `.stp`)
 
-[ISO 10303-21](https://en.wikipedia.org/wiki/ISO_10303-21), read through OpenCASCADE (included in the PyPI wheels and the release binaries) and written without it. The writer is a hand-off of a closed surface to CAD: a B-rep solid in the AP214 (`AUTOMOTIVE_DESIGN`) schema that FreeCAD, OpenCASCADE-based tools and commercial CAD systems open as a solid body. By default each flat region is one planar face with its holes as inner loops, and, on a skin [`segment`](/segment) and [`fit_primitives`](/fit_primitives) annotated, each fitted cylinder, cone, sphere and torus is one analytic face — the clean body a CAD user can select, measure, section and boolean against, where an STL import gives only an unconnected triangle soup. No CAD kernel is involved. It is the CAD end of the [skin-to-CAD workflow](/cad_fit).
+[ISO 10303-21](https://en.wikipedia.org/wiki/ISO_10303-21), read through OpenCASCADE (the `meshioplusplus-occt` add-on wheel, `pip install "meshioplusplus[occt]"`, and the release binaries) and written without it. The writer is a hand-off of a closed surface to CAD: a B-rep solid in the AP214 (`AUTOMOTIVE_DESIGN`) schema that FreeCAD, OpenCASCADE-based tools and commercial CAD systems open as a solid body. By default each flat region is one planar face with its holes as inner loops, and, on a skin [`segment`](/segment) and [`fit_primitives`](/fit_primitives) annotated, each fitted cylinder, cone, sphere and torus is one analytic face — the clean body a CAD user can select, measure, section and boolean against, where an STL import gives only an unconnected triangle soup. No CAD kernel is involved. It is the CAD end of the [skin-to-CAD workflow](/cad_fit).
 
 | | |
 |---|---|
 | **Format name** | `step` |
 | **Extensions** | `.step`, `.stp` |
 | **Read / Write** | ✓ (with OpenCASCADE) / ✓ |
-| **Extra dependencies** | reading: OpenCASCADE 7.6 or later (in the wheels and release binaries; on by default from source) |
+| **Extra dependencies** | reading: OpenCASCADE 7.6 or later (the `meshioplusplus-occt` wheel and the release binaries; on by default from source) |
 
 ## Reading
 

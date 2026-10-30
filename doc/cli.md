@@ -1326,7 +1326,7 @@ meshioplusplus iga-evaluate plate.cad.json -p 0.5,0.5 -p 2,2 --derivatives 1
 
 ## meshioplusplus to-cad
 
-Turn the fitted patches of a closed skin into a CAD solid with analytic faces (and rolling-ball fillet and blend, helical thread and freeform B-spline faces for what no primitive explains) and write it as STEP (see [fit CAD](/fit_cad)). Builds with OpenCASCADE, which the release binaries and the wheels include; a source build that found no OpenCASCADE falls back, with a warning, to the kernel-free [native backend](/fit_cad#the-native-backend), which writes the fitted planes, cylinders, cones, spheres and tori as analytic faces and the rest as planar faces. A skin without `segment:patch` or the `fit:patch_*` table is segmented and fitted first. Exits with 2 when the solid fails the B-rep check.
+Turn the fitted patches of a closed skin into a CAD solid with analytic faces (and rolling-ball fillet and blend, helical thread and freeform B-spline faces for what no primitive explains) and write it as STEP (see [fit CAD](/fit_cad)). Builds with OpenCASCADE, which the release binaries and the `meshioplusplus-occt` wheel include; a source build that found no OpenCASCADE falls back, with a warning, to the kernel-free [native backend](/fit_cad#the-native-backend), which writes the fitted planes, cylinders, cones, spheres and tori as analytic faces and the rest as planar faces. A skin without `segment:patch` or the `fit:patch_*` table is segmented and fitted first. Exits with 2 when the solid fails the B-rep check.
 
 ```text
 meshioplusplus to-cad [options] INFILE OUTFILE.step

@@ -132,7 +132,7 @@ Install with
 pip install meshioplusplus[all]
 ```
 
-(`[all]` adds the h5py and netCDF4 runtime extras and the polyscope desktop viewer. By default, meshio++ uses numpy and rich.) The wheels carry the compiled core with OpenCASCADE linked in, so CAD output (`fit_cad`, `to-cad`) and STEP/IGES reading work out of the box. The wheels are licensed `MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)`, because that kernel is LGPL-2.1 with the OCCT exception; see [`LICENSE-BINARIES.md`](LICENSE-BINARIES.md) and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). You can then use the command-line tool
+(`[all]` adds the h5py and netCDF4 runtime extras, the polyscope desktop viewer and the OpenCASCADE add-on. By default, meshio++ uses numpy and rich.) The base wheel is MIT and carries no copyleft code. OpenCASCADE, which STEP/IGES reading and the OpenCASCADE backend of CAD output (`fit_cad`, `to-cad`) need, is the separate `meshioplusplus-occt` wheel: `pip install "meshioplusplus[occt]"`. That wheel is licensed `MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)`, because that kernel is LGPL-2.1 with the OCCT exception; without it `fit_cad` uses its native backend. See [`LICENSE-BINARIES.md`](LICENSE-BINARIES.md) and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). You can then use the command-line tool
 
 <!--pytest-codeblocks:skip-->
 
@@ -1437,7 +1437,7 @@ meshio++ is published under the [MIT license](https://en.wikipedia.org/wiki/MIT_
 
 Some code and test fixtures also come from [Simvia's `meshlane` fork](https://github.com/simvia-tech/meshlane) of meshio (MIT), credited per-change in [`CITATION.cff`](CITATION.cff) and [`CHANGELOG.md`](CHANGELOG.md).
 
-The C++ core has no mandatory dependency. Everything below is either optional, bundled, or confined to one binding or tool; the PyPI wheels and the release CLI binaries link OpenCASCADE, zlib, gidpost, pugixml and nlohmann/json statically ([`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)).
+The C++ core has no mandatory dependency. Everything below is either optional, bundled, or confined to one binding or tool; the PyPI base wheel links zlib, gidpost, pugixml and nlohmann/json statically (OpenCASCADE is the `meshioplusplus-occt` add-on wheel) and the release CLI binaries link OpenCASCADE as well ([`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)).
 
 <details>
 <summary><b>Dependency and credit tables</b> (click to expand)</summary>

@@ -13,6 +13,18 @@ project(
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
+# A split-build add-on (packages/python/meshioplusplus-<name>) builds only its
+# provider against the installed base wheel's shared core: see
+# cmake/addon_occt.cmake and doc/python_packages_plan.md.
+set(MESHIOPLUSPLUS_ADDON "" CACHE STRING "Build only this add-on wheel's extension (occt)")
+if(MESHIOPLUSPLUS_ADDON)
+  if(NOT MESHIOPLUSPLUS_ADDON STREQUAL "occt")
+    message(FATAL_ERROR "meshio++: unknown MESHIOPLUSPLUS_ADDON '${MESHIOPLUSPLUS_ADDON}' (occt)")
+  endif()
+  include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/addon_${MESHIOPLUSPLUS_ADDON}.cmake)
+  return()
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -954,13 +966,21 @@ endif()
 if(MESHIOPLUSPLUS_WITH_OCCT AND _mio_occt_libs)
   message(STATUS "meshio++: OpenCASCADE ${OpenCASCADE_VERSION} enabled (fit_cad, STEP/IGES reading)")
   list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_OCCT)
-  # Only fit_cad.cpp, detail/occt_brep.cpp and the STEP/IGES readers include
-  # OCCT headers, and some packagings (Debian's)
+  # Only providers/occt/ includes OCCT headers, and some packagings (Debian's)
   # export toolkit targets without include directories: add them privately,
   # as system headers so their deprecation warnings stay theirs.
   list(APPEND _mio_core_sys_incs ${OpenCASCADE_INCLUDE_DIR})
   list(APPEND _mio_core_defs ${_mio_occt_defs})
   list(APPEND _mio_core_libs ${_mio_occt_link})
+  # The kernel is a provider (providers.hpp): compiled into the core here, and
+  # registered by register_builtin_providers(). A split build leaves
+  # MESHIOPLUSPLUS_WITH_OCCT off in the core and builds these same sources into
+  # the meshioplusplus-occt add-on instead (cmake/addon_occt.cmake). They reach
+  # the core's private headers (detail/...) from src/cpp/src.
+  file(GLOB _mio_occt_provider_sources src/cpp/providers/occt/*.cpp)
+  list(APPEND MESHIOPLUSPLUS_CORE_SOURCES ${_mio_occt_provider_sources})
+  target_sources(meshioplusplus_core_obj PRIVATE ${_mio_occt_provider_sources})
+  list(APPEND _mio_core_priv_incs ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src)
 elseif(MESHIOPLUSPLUS_REQUIRE_OCCT)
   message(FATAL_ERROR "meshio++: MESHIOPLUSPLUS_REQUIRE_OCCT is set but OpenCASCADE 7.6 or later "
                       "was not found (build one with build/build-occt.sh and set OpenCASCADE_DIR)")
@@ -1332,6 +1352,28 @@ meshioplusplus_configure_core_target(${_meshioplusplus_mesh_backend} meshioplusp
 option(MESHIOPLUSPLUS_INSTALL_CPP
        "Install the full C++ API (meshioplusplus::core*) for find_package(... COMPONENTS CXX)"
        OFF)
+# The Python wheel's shared core (roadmap 4.7): `_core` links a shared
+# libmeshioplusplus_core_meshio installed beside it, with the headers and the
+# CMake package, so the add-on wheels (meshioplusplus-occt, ...) link the same
+# core instead of carrying a copy. Everything is exported (default visibility,
+# every symbol on Windows): an add-on reaches core-private helpers, valid only
+# within one release, which the add-on's exact version pin guarantees.
+option(MESHIOPLUSPLUS_PYTHON_SHARED_CORE
+       "Link the Python extension against a shared, installed core (the split wheels)" OFF)
+if(MESHIOPLUSPLUS_PYTHON_SHARED_CORE)
+  if(NOT MESHIOPLUSPLUS_BUILD_PYTHON OR NOT _meshioplusplus_mesh_backend STREQUAL "MESHIO")
+    message(FATAL_ERROR "meshio++: MESHIOPLUSPLUS_PYTHON_SHARED_CORE needs the Python build "
+                        "on the MESHIO mesh backend")
+  endif()
+  set(MESHIOPLUSPLUS_INSTALL_CPP ON CACHE BOOL "" FORCE)
+  set(MESHIOPLUSPLUS_INSTALL_CPP_BACKENDS "MESHIO" CACHE STRING "" FORCE)
+  # Relative to the wheel's platlib, under the package directory.
+  set(CMAKE_INSTALL_LIBDIR meshioplusplus/lib)
+  set(CMAKE_INSTALL_BINDIR meshioplusplus/lib)
+  set(CMAKE_INSTALL_INCLUDEDIR meshioplusplus/include)
+  # Only the shared library is compiled.
+  set_target_properties(meshioplusplus_core_obj PROPERTIES EXCLUDE_FROM_ALL ON)
+endif()
 set(MESHIOPLUSPLUS_INSTALL_CPP_BACKENDS "MESHIO;NATIVE;KRATOS" CACHE STRING
     "Mesh backends built+installed as meshioplusplus::core_<backend> when MESHIOPLUSPLUS_INSTALL_CPP=ON")
 
@@ -1348,7 +1390,11 @@ function(meshioplusplus_add_core_variant backend)
   # make install(EXPORT) fail.
   #
   # STATIC or SHARED per BUILD_SHARED_LIBS.
-  add_library(${_lib} ${MESHIOPLUSPLUS_CORE_SOURCES})
+  if(MESHIOPLUSPLUS_PYTHON_SHARED_CORE)
+    add_library(${_lib} SHARED ${MESHIOPLUSPLUS_CORE_SOURCES})
+  else()
+    add_library(${_lib} ${MESHIOPLUSPLUS_CORE_SOURCES})
+  endif()
   meshioplusplus_configure_core_target(${backend} ${_lib})
   set_target_properties(${_lib} PROPERTIES
     VERSION ${PROJECT_VERSION}
@@ -1377,6 +1423,22 @@ function(meshioplusplus_add_core_variant backend)
   if(MESHIOPLUSPLUS_STATIC_RUNTIME AND MSVC)
     set_property(TARGET ${_lib} PROPERTY
                  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  endif()
+
+  if(MESHIOPLUSPLUS_PYTHON_SHARED_CORE)
+    set_target_properties(${_lib} PROPERTIES
+      CXX_VISIBILITY_PRESET default C_VISIBILITY_PRESET default
+      VISIBILITY_INLINES_HIDDEN OFF WINDOWS_EXPORT_ALL_SYMBOLS ON
+      INSTALL_RPATH "$<IF:$<BOOL:${APPLE}>,@loader_path,$ORIGIN>")
+    # manylinux's libstdc++ is older than the compiler's, so the wheels link it
+    # statically, one copy per shared object. That works across the core, `_core`
+    # and an add-on only while the runtime's symbols stay EXPORTED (no
+    # --exclude-libs): the first-loaded copy then serves every object, which is
+    # what lets an exception cross between them (measured: with the runtime
+    # hidden, the first cross-object throw aborts).
+    if(MESHIOPLUSPLUS_STATIC_RUNTIME AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+      target_link_options(${_lib} PRIVATE -static-libgcc -static-libstdc++)
+    endif()
   endif()
 
   get_target_property(_type ${_lib} TYPE)
@@ -1533,7 +1595,14 @@ if(MESHIOPLUSPLUS_BUILD_PYTHON)
                                src/cpp/cli/tui/input.cpp
                                src/cpp/cli/tui/loop.cpp src/cpp/cli/tui/probe.cpp src/cpp/cli/tui/session_file.cpp src/cpp/cli/tui/series.cpp
       src/cpp/cli/tui/music.cpp)
-  target_link_libraries(_core PRIVATE meshioplusplus_core_obj)
+  if(MESHIOPLUSPLUS_PYTHON_SHARED_CORE)
+    target_link_libraries(_core PRIVATE meshioplusplus_core_meshio)
+    set_target_properties(_core PROPERTIES
+      INSTALL_RPATH "$<IF:$<BOOL:${APPLE}>,@loader_path/lib,$ORIGIN/lib>"
+      BUILD_WITH_INSTALL_RPATH OFF)
+  else()
+    target_link_libraries(_core PRIVATE meshioplusplus_core_obj)
+  endif()
 
   # LDFLAGS env-var seeding of CMAKE_MODULE_LINKER_FLAGS was tried first and
   # silently didn't apply to this MODULE target, hence targeting it directly.
@@ -1543,9 +1612,11 @@ if(MESHIOPLUSPLUS_BUILD_PYTHON)
   # it), and exported copies of std::cout or the locale facet ids would be
   # interposed by it, mixing two runtimes -- OpenCASCADE's first stream write
   # then crashes in a facet of the other copy.
+  # With a shared core the runtime stays exported (see the core variant): the
+  # objects pass exceptions between them through the first-loaded copy.
   if(MESHIOPLUSPLUS_STATIC_RUNTIME AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_link_options(_core PRIVATE -static-libgcc -static-libstdc++)
-    if(NOT APPLE)
+    if(NOT APPLE AND NOT MESHIOPLUSPLUS_PYTHON_SHARED_CORE)
       target_link_options(_core PRIVATE -Wl,--exclude-libs,ALL)
     endif()
   endif()

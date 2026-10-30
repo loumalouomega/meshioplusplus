@@ -1,6 +1,6 @@
 # Split Python packages: plan
 
-The design pass for roadmap 4.7: one MIT base wheel, `meshioplusplus`, and add-on wheels that carry the copyleft libraries, `meshioplusplus-occt`, `meshioplusplus-netgen` and `meshioplusplus-mmg`, each a small extension linked against the base wheel's shared core, in the way KratosMultiphysics ships its applications beside `KratosMultiphysics` with an everything extra on top. Nothing here is built yet; this page records the target, what has to change and the order to change it in.
+The design pass for roadmap 4.7: one MIT base wheel, `meshioplusplus`, and add-on wheels that carry the copyleft libraries, `meshioplusplus-occt`, `meshioplusplus-netgen` and `meshioplusplus-mmg`, each a small extension linked against the base wheel's shared core, in the way KratosMultiphysics ships its applications beside `KratosMultiphysics` with an everything extra on top. v18.0.0 built phases 0 to 3 (the provider registry, the shared core in the base wheel and `meshioplusplus-occt`); [What shipped in v18.0.0](#what-shipped-in-v18-0-0) records how they differ from the design below, and the roadmap holds what is left (4.7.1 to 4.7.3).
 
 ## The problem
 
@@ -139,3 +139,15 @@ Altogether **L to XL**: about a month for phases 0 to 3, which deliver the MIT b
 
 - **The everything option is the `[all]` extra.** It gains the three add-ons beside h5py, netCDF4 and polyscope, so `[all]` installs LGPL code; the base wheel alone never does. A separate `meshioplusplus-all` metapackage would add a release artifact without adding a choice.
 - **The add-on module names are `meshioplusplus_occt`, `meshioplusplus_netgen` and `meshioplusplus_mmg`.** They are separate top-level packages rather than `meshioplusplus.occt` namespace subpackages, because a namespace package cannot share the base's regular package directory.
+
+## What shipped in v18.0.0
+
+Phases 0 to 3 landed together, as planned. Where the build differs from the design above:
+
+- **The registry holds the CAD kernel only.** `providers.hpp` has `CadKernelProvider` with `register_cad_kernel()`, `unregister_cad_kernel()`, `cad_kernel()` and `register_builtin_providers()`. The tetrahedral-mesher and remesher slots, and the runtime format registration, come with the Netgen and MMG add-ons: `step` and `iges` were already registered stubs that dispatch to `read_step` and `read_iges`, so the OpenCASCADE add-on needs no new registry entry. `cad_kernel()` returns a `shared_ptr` and the registry retains every provider it ever held, so the `const char*` of `fit_cad_occt_version()` stays valid across a replacement.
+- **The provider sources moved** to `src/cpp/providers/occt/` (`occt_brep.*`, `occt_provider.*`, `fit_cad_occt.cpp`, and the add-on's module in `addon/`). The OpenCASCADE backend of `fit_cad` reaches the native backend's helpers (the freeform networks, the refinement, the face table, the report) through `src/cpp/src/detail/fit_cad_native.hpp`, which exports eight functions rather than the whole `detail::` surface.
+- **The shared core exports every symbol** (default visibility, `WINDOWS_EXPORT_ALL_SYMBOLS`) instead of tagging each helper with a `MESHIOPLUSPLUS_INTERNAL_API` macro. The provider sources call dozens of `detail::` helpers that no installed header declares, and the exact version pin is what makes that safe. A Windows export table has a 65,535-symbol limit, so the first Windows wheel build is where this is confirmed.
+- **The C++ runtime stays static on Linux, and exported.** Spike 0.1 measured the design's first risk. Two shared objects that each link libstdc++ statically abort on the first exception that crosses between them when `--exclude-libs,ALL` hides the runtime's symbols, which is what the single-extension wheels used; with the symbols exported, the first-loaded copy serves every object and exceptions, `std::function` and `std::string` cross correctly. The shared-core mode therefore keeps `-static-libstdc++` (manylinux's libstdc++ is older than gcc-toolset-13's) and drops `--exclude-libs`. The spike was a toy program on one toolchain; the wheel build on the CI runners is its real test.
+- **Discovery** is `meshioplusplus/_plugins.py`. `_core.__has_occt__` is read live through a module `__getattr__`, so an add-on registered after `_core` is imported is seen.
+- **`get_cmake_dir()`** is in `meshioplusplus/__init__.py` and is not in `__all__`: it describes the install, not a mesh operation.
+- **Add-on build.** `MESHIOPLUSPLUS_ADDON=occt` makes the root `CMakeLists.txt` include `cmake/addon_occt.cmake` and stop; the add-on's `pyproject.toml` sets it, with `cmake.source-dir` at the repository root. `build/build-occt.sh PREFIX --shared` builds the shared libraries it links.
