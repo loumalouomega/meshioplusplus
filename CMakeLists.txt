@@ -91,6 +91,18 @@ _mio_check_version_header(
 # at CMAKE_INSTALL_INCLUDEDIR long before that block is reached. Idempotent.
 include(GNUInstallDirs)
 
+# The Python wheel's shared core (roadmap 4.7, MESHIOPLUSPLUS_PYTHON_SHARED_CORE
+# below) installs under the package directory, relative to the wheel's platlib.
+# Set here, straight after GNUInstallDirs, because the usage requirements and the
+# install rules read these long before that option's own section.
+option(MESHIOPLUSPLUS_PYTHON_SHARED_CORE
+       "Link the Python extension against a shared, installed core (the split wheels)" OFF)
+if(MESHIOPLUSPLUS_PYTHON_SHARED_CORE)
+  set(CMAKE_INSTALL_LIBDIR meshioplusplus/lib)
+  set(CMAKE_INSTALL_BINDIR meshioplusplus/lib)
+  set(CMAKE_INSTALL_INCLUDEDIR meshioplusplus/include)
+endif()
+
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
@@ -1358,8 +1370,6 @@ option(MESHIOPLUSPLUS_INSTALL_CPP
 # core instead of carrying a copy. Everything is exported (default visibility,
 # every symbol on Windows): an add-on reaches core-private helpers, valid only
 # within one release, which the add-on's exact version pin guarantees.
-option(MESHIOPLUSPLUS_PYTHON_SHARED_CORE
-       "Link the Python extension against a shared, installed core (the split wheels)" OFF)
 if(MESHIOPLUSPLUS_PYTHON_SHARED_CORE)
   if(NOT MESHIOPLUSPLUS_BUILD_PYTHON OR NOT _meshioplusplus_mesh_backend STREQUAL "MESHIO")
     message(FATAL_ERROR "meshio++: MESHIOPLUSPLUS_PYTHON_SHARED_CORE needs the Python build "
@@ -1367,10 +1377,6 @@ if(MESHIOPLUSPLUS_PYTHON_SHARED_CORE)
   endif()
   set(MESHIOPLUSPLUS_INSTALL_CPP ON CACHE BOOL "" FORCE)
   set(MESHIOPLUSPLUS_INSTALL_CPP_BACKENDS "MESHIO" CACHE STRING "" FORCE)
-  # Relative to the wheel's platlib, under the package directory.
-  set(CMAKE_INSTALL_LIBDIR meshioplusplus/lib)
-  set(CMAKE_INSTALL_BINDIR meshioplusplus/lib)
-  set(CMAKE_INSTALL_INCLUDEDIR meshioplusplus/include)
   # Only the shared library is compiled.
   set_target_properties(meshioplusplus_core_obj PROPERTIES EXCLUDE_FROM_ALL ON)
 endif()
