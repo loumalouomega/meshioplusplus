@@ -20,6 +20,8 @@
 // build, and into the meshioplusplus-occt add-on in a split one. See
 // providers.hpp.
 
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+
 // System includes
 #include <cmath>
 #include <stdexcept>
@@ -93,3 +95,5 @@ void register_occt() {
 }  // namespace providers
 
 }  // namespace meshioplusplus
+
+#endif  // MESHIOPLUSPLUS_HAS_OCCT

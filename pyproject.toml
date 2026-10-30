@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "meshioplusplus"
-version = "17.23.0"
+version = "18.0.0"
 description = "meshio++: I/O for many mesh formats (C++20 core + Python bindings)"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -117,12 +117,12 @@ usd = ["usd-core>=24; python_version >= '3.9'"]
 adios2 = ["adios2>=2.10; python_version >= '3.9'"]
 # STEP/IGES reading and fit_cad's OpenCASCADE backend, as the LGPL add-on wheel
 # (MIT AND LGPL-2.1-only WITH OCCT-exception-1.0), pinned to this release.
-occt = ["meshioplusplus-occt==17.23.0"]
+occt = ["meshioplusplus-occt==18.0.0"]
 all = [
     "netCDF4",
     "h5py",  # CGNS, H5M, MED, XDMF formats
     "polyscope>=2.4",  # the desktop viewer backend
-    "meshioplusplus-occt==17.23.0"  # STEP/IGES, fit_cad's OpenCASCADE backend (LGPL)
+    "meshioplusplus-occt==18.0.0"  # STEP/IGES, fit_cad's OpenCASCADE backend (LGPL)
 ]
 
 [project.urls]

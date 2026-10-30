@@ -3,13 +3,6 @@ import os as _os
 import sys as _sys
 from typing import TYPE_CHECKING
 
-# A split wheel ships the shared core in lib/ beside this package; Linux and
-# macOS find it through the extension's RPATH, Windows only through a DLL
-# directory registered before `_core` is first imported.
-_LIB_DIR = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "lib")
-if _sys.platform == "win32" and _os.path.isdir(_LIB_DIR):  # pragma: no cover
-    _os.add_dll_directory(_LIB_DIR)
-
 from .__about__ import __version__
 from ._exceptions import ReadError, WriteError
 from ._helpers import (
@@ -23,25 +16,6 @@ from ._helpers import (
     write_points_cells,
 )
 from ._mesh import CellBlock, Mesh, topological_dimension
-
-
-def get_cmake_dir() -> str:
-    """The directory of the installed CMake package (``meshioplusplusConfig.cmake``).
-
-    Only a wheel built with the shared core ships it; an add-on wheel finds the
-    core through ``find_package(meshioplusplus CONFIG)`` with
-    ``meshioplusplus_DIR`` set to this, the way pybind11's ``get_cmake_dir()``
-    works.
-
-    :raises FileNotFoundError: in a build without the shared core.
-    """
-    path = _os.path.join(_LIB_DIR, "cmake", "meshioplusplus")
-    if not _os.path.isdir(path):
-        raise FileNotFoundError(
-            "meshioplusplus: this build has no shared core (the CMake package is only in the "
-            "wheels built with MESHIOPLUSPLUS_PYTHON_SHARED_CORE=ON)"
-        )
-    return path
 from ._regions import Region
 
 if TYPE_CHECKING:
@@ -327,11 +301,39 @@ if TYPE_CHECKING:
     from ._viewer import has_viewer, screenshot, view
     from ._voxelize import voxelize
 
+
 # Operations, classes and helpers are loaded on first attribute access (PEP 562)
 # rather than with the package: importing all of them costs more than the three
 # registries and ``read``/``write`` that every user needs. ``name -> module``
 # for every public name that is not imported above; format subpackages and
 # private modules need no entry, ``__getattr__`` imports a submodule of that name.
+# A split wheel ships the shared core in lib/ beside this package; Linux and
+# macOS find it through the extension's RPATH, Windows only through a DLL
+# directory registered before `_core` is first imported.
+_LIB_DIR = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "lib")
+if _sys.platform == "win32" and _os.path.isdir(_LIB_DIR):  # pragma: no cover
+    _os.add_dll_directory(_LIB_DIR)
+
+
+def get_cmake_dir() -> str:
+    """The directory of the installed CMake package (``meshioplusplusConfig.cmake``).
+
+    Only a wheel built with the shared core ships it; an add-on wheel finds the
+    core through ``find_package(meshioplusplus CONFIG)`` with
+    ``meshioplusplus_DIR`` set to this, the way pybind11's ``get_cmake_dir()``
+    works.
+
+    :raises FileNotFoundError: in a build without the shared core.
+    """
+    path = _os.path.join(_LIB_DIR, "cmake", "meshioplusplus")
+    if not _os.path.isdir(path):
+        raise FileNotFoundError(
+            "meshioplusplus: this build has no shared core (the CMake package is only in the "
+            "wheels built with MESHIOPLUSPLUS_PYTHON_SHARED_CORE=ON)"
+        )
+    return path
+
+
 _LAZY_ATTRS = {
     "agglomerate": "_agglomerate",
     "from_blender": "_blender",

@@ -12,11 +12,17 @@ import meshioplusplus as mp
 from meshioplusplus import _core
 from meshioplusplus._fit_cad import has_occt
 
-assert not has_occt() and not _core.__has_occt__, "the base wheel must carry no OpenCASCADE"
+assert (
+    not has_occt() and not _core.__has_occt__
+), "the base wheel must carry no OpenCASCADE"
 
 path = os.path.join(tempfile.mkdtemp(), "cube.step")
-points = np.array([[x, y, z] for z in (0.0, 1.0) for y in (0.0, 1.0) for x in (0.0, 1.0)])
-quads = np.array([[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [1, 3, 7, 5], [3, 2, 6, 7], [2, 0, 4, 6]])
+points = np.array(
+    [[x, y, z] for z in (0.0, 1.0) for y in (0.0, 1.0) for x in (0.0, 1.0)]
+)
+quads = np.array(
+    [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [1, 3, 7, 5], [3, 2, 6, 7], [2, 0, 4, 6]]
+)
 mp.write(path, mp.Mesh(points, [("quad", quads)]))
 try:
     mp.read(path)

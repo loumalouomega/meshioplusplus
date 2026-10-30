@@ -122,3 +122,5 @@ meshioplusplus_*.tar.gz
 
 # Julia
 bindings/julia/MeshioPlusPlus/Manifest.toml
+# scikit-build-core build tree of the add-on
+packages/python/*/build/

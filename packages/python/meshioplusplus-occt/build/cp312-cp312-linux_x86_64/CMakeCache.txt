@@ -107,7 +107,7 @@ CMAKE_FIND_PACKAGE_REDIRECTS_DIR:STATIC=/home/user/meshioplusplus/packages/pytho
 CMAKE_FIND_ROOT_PATH_MODE_PACKAGE:PATH=BOTH
 
 //Install path prefix, prepended onto install directories.
-CMAKE_INSTALL_PREFIX:PATH=/tmp/tmptqz7qsth/wheel/platlib
+CMAKE_INSTALL_PREFIX:PATH=/tmp/tmp7e0vwbjb/wheel/platlib
 
 //Path to a program.
 CMAKE_LINKER:FILEPATH=/usr/bin/x86_64-linux-gnu-ld
@@ -283,15 +283,15 @@ SKBUILD:STRING=2
 
 SKBUILD_CORE_VERSION:STRING=1.1.1
 
-SKBUILD_DATA_DIR:PATH=/tmp/tmptqz7qsth/wheel/data
+SKBUILD_DATA_DIR:PATH=/tmp/tmp7e0vwbjb/wheel/data
 
-SKBUILD_HEADERS_DIR:PATH=/tmp/tmptqz7qsth/wheel/headers
+SKBUILD_HEADERS_DIR:PATH=/tmp/tmp7e0vwbjb/wheel/headers
 
-SKBUILD_METADATA_DIR:PATH=/tmp/tmptqz7qsth/wheel/metadata
+SKBUILD_METADATA_DIR:PATH=/tmp/tmp7e0vwbjb/wheel/metadata
 
-SKBUILD_NULL_DIR:PATH=/tmp/tmptqz7qsth/wheel/null
+SKBUILD_NULL_DIR:PATH=/tmp/tmp7e0vwbjb/wheel/null
 
-SKBUILD_PLATLIB_DIR:PATH=/tmp/tmptqz7qsth/wheel/platlib
+SKBUILD_PLATLIB_DIR:PATH=/tmp/tmp7e0vwbjb/wheel/platlib
 
 SKBUILD_PROJECT_NAME:STRING=meshioplusplus_occt
 
@@ -303,7 +303,7 @@ SKBUILD_SABI_COMPONENT:STRING=
 
 SKBUILD_SABI_VERSION:STRING=
 
-SKBUILD_SCRIPTS_DIR:PATH=/tmp/tmptqz7qsth/wheel/scripts
+SKBUILD_SCRIPTS_DIR:PATH=/tmp/tmp7e0vwbjb/wheel/scripts
 
 SKBUILD_SOABI:STRING=cpython-312-x86_64-linux-gnu
 

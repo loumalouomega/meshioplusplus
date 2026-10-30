@@ -19,6 +19,8 @@
 // split build can compile it into the meshioplusplus-occt add-on. It reaches
 // the core's native helpers through detail/fit_cad_native.hpp.
 
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+
 // System includes
 #include <string>
 
@@ -4626,3 +4628,5 @@ FitCadResult occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
 }  // namespace detail
 
 }  // namespace meshioplusplus
+
+#endif  // MESHIOPLUSPLUS_HAS_OCCT

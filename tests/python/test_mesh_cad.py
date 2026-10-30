@@ -1066,9 +1066,7 @@ def test_pipeline_model_step_needs_a_cad_input(tmp_path):
 
 
 @needs_core
-@pytest.mark.skipif(
-    not _has_occt(), reason="needs OpenCASCADE"
-)
+@pytest.mark.skipif(not _has_occt(), reason="needs OpenCASCADE")
 def test_step_solid_through_opencascade(tmp_path):
     # A box skin written as a STEP solid, read back as a B-rep by
     # OpenCASCADE: watertight, area 6 and volume 1, against BRepMesh's own
@@ -1086,9 +1084,7 @@ def test_step_solid_through_opencascade(tmp_path):
 
 
 @needs_core
-@pytest.mark.skipif(
-    not _has_occt(), reason="needs OpenCASCADE"
-)
+@pytest.mark.skipif(not _has_occt(), reason="needs OpenCASCADE")
 def test_a_step_read_declares_its_tolerances(tmp_path):
     """Roadmap 6.5.1: an OpenCASCADE read writes each edge's tolerance and its
     vertices' into the edge's extra JSON, which model_tolerances reads; a
