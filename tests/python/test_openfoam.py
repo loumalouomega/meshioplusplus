@@ -2009,7 +2009,9 @@ def _zone_labels(path, zone, key):
     """One zone's label list, read through foamlib."""
     foamlib = pytest.importorskip("foamlib")
     entry = dict(foamlib.FoamFile(path)[None])[zone]
-    return np.asarray(entry[key][1], dtype=int)
+    # foamlib 1.9 returns a list as (type, values); 1.10 returns the values.
+    value = entry[key]
+    return np.asarray(value[1] if isinstance(value, tuple) else value, dtype=int)
 
 
 def test_decomposed_zones_use_processor_local_ids(tmp_path):
