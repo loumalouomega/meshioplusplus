@@ -48,6 +48,11 @@ FAKE_EXPORT void meshioplusplus_register_plugin(void) {
                             const meshioplusplus::CadReadOptions&) -> meshioplusplus::Mesh {
         throw meshioplusplus::ReadError("from the plugin");
     };
+    // A complete kernel: fit_cad_has_occt() (and so mio_has_occt()) needs mFitCad.
+    provider.mFitCad = [](const meshioplusplus::Mesh&, const std::string&,
+                          const meshioplusplus::FitCadOptions&) -> meshioplusplus::FitCadResult {
+        throw meshioplusplus::Unsupported("the fake plugin does not fit CAD");
+    };
     meshioplusplus::register_cad_kernel(std::move(provider));
 }
 

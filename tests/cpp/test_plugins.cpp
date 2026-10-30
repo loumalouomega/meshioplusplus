@@ -33,6 +33,7 @@
 // Project includes
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/step.hpp"
+#include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/providers.hpp"
 
 #if defined(MESHIOPLUSPLUS_TEST_PLUGIN)
@@ -65,6 +66,8 @@ TEST(Plugins, ALoadedPluginFillsAnEmptySlot) {
     ASSERT_NE(cad_kernel(), nullptr);
     EXPECT_EQ(cad_kernel()->mName, "plugin-fake");
     EXPECT_TRUE(cad_read_has_occt());
+    EXPECT_TRUE(fit_cad_has_occt());  // what mio_has_occt() reports
+    EXPECT_STREQ(fit_cad_occt_version(), "7.7.7");
     // The plugin's code runs: its reader throws its own message.
     try {
         read_step("any.step");
