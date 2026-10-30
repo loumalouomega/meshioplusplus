@@ -107,7 +107,7 @@ CMAKE_FIND_PACKAGE_REDIRECTS_DIR:STATIC=/home/user/meshioplusplus/packages/pytho
 CMAKE_FIND_ROOT_PATH_MODE_PACKAGE:PATH=BOTH
 
 //Install path prefix, prepended onto install directories.
-CMAKE_INSTALL_PREFIX:PATH=/tmp/tmp7e0vwbjb/wheel/platlib
+CMAKE_INSTALL_PREFIX:PATH=/tmp/tmp8rojr191/wheel/platlib
 
 //Path to a program.
 CMAKE_LINKER:FILEPATH=/usr/bin/x86_64-linux-gnu-ld
@@ -165,13 +165,13 @@ CMAKE_PROJECT_NAME:STATIC=meshioplusplus_core
 CMAKE_PROJECT_SPDX_LICENSE:STATIC=
 
 //Value Computed by CMake
-CMAKE_PROJECT_VERSION:STATIC=17.23.0
+CMAKE_PROJECT_VERSION:STATIC=18.0.0
 
 //Value Computed by CMake
-CMAKE_PROJECT_VERSION_MAJOR:STATIC=17
+CMAKE_PROJECT_VERSION_MAJOR:STATIC=18
 
 //Value Computed by CMake
-CMAKE_PROJECT_VERSION_MINOR:STATIC=23
+CMAKE_PROJECT_VERSION_MINOR:STATIC=0
 
 //Value Computed by CMake
 CMAKE_PROJECT_VERSION_PATCH:STATIC=0
@@ -244,7 +244,7 @@ CMAKE_TAPI:FILEPATH=CMAKE_TAPI-NOTFOUND
 // Studio IDE projects all commands are done without /nologo.
 CMAKE_VERBOSE_MAKEFILE:BOOL=FALSE
 
-//Build only this add-on wheel's extension (occt)
+//Build only this add-on wheel's extension (occt, netgen, mmg)
 MESHIOPLUSPLUS_ADDON:STRING=occt
 
 //Link libgcc and libstdc++ statically (GNU)
@@ -283,27 +283,27 @@ SKBUILD:STRING=2
 
 SKBUILD_CORE_VERSION:STRING=1.1.1
 
-SKBUILD_DATA_DIR:PATH=/tmp/tmp7e0vwbjb/wheel/data
+SKBUILD_DATA_DIR:PATH=/tmp/tmp8rojr191/wheel/data
 
-SKBUILD_HEADERS_DIR:PATH=/tmp/tmp7e0vwbjb/wheel/headers
+SKBUILD_HEADERS_DIR:PATH=/tmp/tmp8rojr191/wheel/headers
 
-SKBUILD_METADATA_DIR:PATH=/tmp/tmp7e0vwbjb/wheel/metadata
+SKBUILD_METADATA_DIR:PATH=/tmp/tmp8rojr191/wheel/metadata
 
-SKBUILD_NULL_DIR:PATH=/tmp/tmp7e0vwbjb/wheel/null
+SKBUILD_NULL_DIR:PATH=/tmp/tmp8rojr191/wheel/null
 
-SKBUILD_PLATLIB_DIR:PATH=/tmp/tmp7e0vwbjb/wheel/platlib
+SKBUILD_PLATLIB_DIR:PATH=/tmp/tmp8rojr191/wheel/platlib
 
 SKBUILD_PROJECT_NAME:STRING=meshioplusplus_occt
 
-SKBUILD_PROJECT_VERSION:STRING=17.23.0
+SKBUILD_PROJECT_VERSION:STRING=18.0.0
 
-SKBUILD_PROJECT_VERSION_FULL:STRING=17.23.0
+SKBUILD_PROJECT_VERSION_FULL:STRING=18.0.0
 
 SKBUILD_SABI_COMPONENT:STRING=
 
 SKBUILD_SABI_VERSION:STRING=
 
-SKBUILD_SCRIPTS_DIR:PATH=/tmp/tmp7e0vwbjb/wheel/scripts
+SKBUILD_SCRIPTS_DIR:PATH=/tmp/tmp8rojr191/wheel/scripts
 
 SKBUILD_SOABI:STRING=cpython-312-x86_64-linux-gnu
 

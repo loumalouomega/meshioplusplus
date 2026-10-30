@@ -9,9 +9,15 @@ from meshioplusplus import _plugins
 from meshioplusplus.__about__ import __version__
 
 
+class _Dist:
+    def __init__(self, version):
+        self.version = version
+
+
 class _EntryPoint:
-    def __init__(self, name, value):
+    def __init__(self, name, value, dist_version=None):
         self.name, self.value = name, value
+        self.dist = None if dist_version is None else _Dist(dist_version)
 
 
 @pytest.fixture
@@ -82,3 +88,23 @@ def test_capability_probes_agree_with_the_core():
         (mio.has_mmg_elas, "__has_mmg_elas__"),
     ):
         assert probe() is bool(getattr(_core, flag))
+
+
+def test_stale_addon_is_refused_before_it_is_imported(plugins, monkeypatch):
+    """Importing an add-on registers its provider, so a version mismatch must be
+    caught from the package metadata, not from the imported module."""
+    imported = []
+    mod = _module(monkeypatch, "fake_addon_stale", __version__)
+    monkeypatch.setattr(
+        _plugins, "import_module", lambda name: imported.append(name) or mod
+    )
+    with pytest.warns(UserWarning, match="stale"):
+        loaded = plugins(_EntryPoint("stale", "fake_addon_stale", dist_version="0.0.1"))
+    assert loaded == {} and imported == []
+    assert "0.0.1" in _plugins.plugin_errors()["stale"]
+
+
+def test_matching_metadata_version_imports_the_addon(plugins, monkeypatch):
+    mod = _module(monkeypatch, "fake_addon_fresh", __version__)
+    ep = _EntryPoint("fresh", "fake_addon_fresh", dist_version=__version__)
+    assert plugins(ep) == {"fresh": mod}

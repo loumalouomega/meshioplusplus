@@ -34,6 +34,30 @@ def _entry_points():
         return []
 
 
+def _dist_version(entry_point):
+    """The version of the distribution that supplies ``entry_point``, or None.
+
+    Read from the package metadata, without importing the add-on: importing it
+    registers its provider with the core, so the check must come first.
+    """
+    dist = getattr(entry_point, "dist", None)
+    if dist is not None:
+        return dist.version
+    try:  # Python < 3.10: entry points carry no distribution
+        from importlib.metadata import distributions
+    except ImportError:  # pragma: no cover
+        return None
+    for candidate in distributions():
+        for ep in candidate.entry_points:
+            if (
+                ep.group == GROUP
+                and ep.name == entry_point.name
+                and ep.value == entry_point.value
+            ):
+                return candidate.version
+    return None
+
+
 def _base_version():
     from .__about__ import __version__
 
@@ -52,6 +76,15 @@ def load_plugins(force=False):
         base = _base_version()
         for ep in _entry_points():
             try:
+                # An add-on of another release is refused before it is imported:
+                # importing it registers its provider with the core.
+                dist_version = _dist_version(ep)
+                if dist_version is not None and dist_version != base:
+                    raise ImportError(
+                        f"add-on {ep.name!r} is version {dist_version}, but meshioplusplus is "
+                        f"{base}; install the matching release (pip install -U "
+                        f"meshioplusplus[{ep.name}])"
+                    )
                 module = import_module(ep.value.split(":")[0].strip())
                 version = getattr(module, "__version__", None)
                 if version != base:

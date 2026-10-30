@@ -2,7 +2,7 @@
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
-  set(CMAKE_INSTALL_PREFIX "/tmp/tmp7e0vwbjb/wheel/platlib")
+  set(CMAKE_INSTALL_PREFIX "/tmp/tmp8rojr191/wheel/platlib")
 endif()
 string(REGEX REPLACE "/$" "" CMAKE_INSTALL_PREFIX "${CMAKE_INSTALL_PREFIX}")
 
@@ -47,7 +47,7 @@ if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT
      NOT IS_SYMLINK "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/meshioplusplus_occt/_occt.cpython-312-x86_64-linux-gnu.so")
     file(RPATH_CHECK
          FILE "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/meshioplusplus_occt/_occt.cpython-312-x86_64-linux-gnu.so"
-         RPATH "$ORIGIN/../meshioplusplus/lib:$ORIGIN")
+         RPATH [[$ORIGIN/../meshioplusplus/lib:$ORIGIN]])
   endif()
   file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/meshioplusplus_occt" TYPE MODULE FILES "/home/user/meshioplusplus/packages/python/meshioplusplus-occt/build/cp312-cp312-linux_x86_64/_occt.cpython-312-x86_64-linux-gnu.so")
   if(EXISTS "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/meshioplusplus_occt/_occt.cpython-312-x86_64-linux-gnu.so" AND
@@ -55,7 +55,7 @@ if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT
     file(RPATH_CHANGE
          FILE "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/meshioplusplus_occt/_occt.cpython-312-x86_64-linux-gnu.so"
          OLD_RPATH "/home/user/meshioplusplus/.venv/lib/python3.12/site-packages/meshioplusplus/lib:"
-         NEW_RPATH "$ORIGIN/../meshioplusplus/lib:$ORIGIN")
+         NEW_RPATH [[$ORIGIN/../meshioplusplus/lib:$ORIGIN]])
     if(CMAKE_INSTALL_DO_STRIP)
       execute_process(COMMAND "/usr/bin/x86_64-linux-gnu-strip" "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/meshioplusplus_occt/_occt.cpython-312-x86_64-linux-gnu.so")
     endif()
