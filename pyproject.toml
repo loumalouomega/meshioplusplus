@@ -125,13 +125,19 @@ occt = ["meshioplusplus-occt==18.0.0"]
 # (without ELAS, so `move` raises), each pinned to this release.
 netgen = ["meshioplusplus-netgen==18.0.0"]
 mmg = ["meshioplusplus-mmg==18.0.0"]
+# All three add-ons at once. Deliberately NOT part of `all`: they are pinned to this
+# exact release, so installing `.[all]` from a source checkout (every contributor,
+# and CI) could not resolve until the add-ons are on PyPI at the same version, and
+# `all` would then pull LGPL code into an everything-install that was MIT before.
+addons = [
+    "meshioplusplus-occt==18.0.0",
+    "meshioplusplus-netgen==18.0.0",
+    "meshioplusplus-mmg==18.0.0",
+]
 all = [
     "netCDF4",
     "h5py",  # CGNS, H5M, MED, XDMF formats
-    "polyscope>=2.4",  # the desktop viewer backend
-    "meshioplusplus-occt==18.0.0",  # STEP/IGES, fit_cad's OpenCASCADE backend (LGPL)
-    "meshioplusplus-netgen==18.0.0",  # tetrahedralize's Netgen backend (LGPL)
-    "meshioplusplus-mmg==18.0.0"  # adapt, discretize_levelset, mesh_domain (LGPL)
+    "polyscope>=2.4"  # the desktop viewer backend
 ]
 
 [project.urls]

@@ -132,7 +132,7 @@ Install with
 pip install meshioplusplus[all]
 ```
 
-(`[all]` adds the h5py and netCDF4 runtime extras, the polyscope desktop viewer and the OpenCASCADE add-on. By default, meshio++ uses numpy and rich.) The base wheel is MIT and carries no copyleft code. OpenCASCADE, which STEP/IGES reading and the OpenCASCADE backend of CAD output (`fit_cad`, `to-cad`) need, is the separate `meshioplusplus-occt` wheel: `pip install "meshioplusplus[occt]"`. That wheel is licensed `MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)`, because that kernel is LGPL-2.1 with the OCCT exception; without it `fit_cad` uses its native backend. See [`LICENSE-BINARIES.md`](LICENSE-BINARIES.md) and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). You can then use the command-line tool
+(`[all]` adds the h5py and netCDF4 runtime extras and the polyscope desktop viewer; `[addons]` adds the three LGPL add-on wheels described below. By default, meshio++ uses numpy and rich.) The base wheel is MIT and carries no copyleft code. OpenCASCADE, which STEP/IGES reading and the OpenCASCADE backend of CAD output (`fit_cad`, `to-cad`) need, is the separate `meshioplusplus-occt` wheel: `pip install "meshioplusplus[occt]"`. That wheel is licensed `MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0)`, because that kernel is LGPL-2.1 with the OCCT exception; without it `fit_cad` uses its native backend. See [`LICENSE-BINARIES.md`](LICENSE-BINARIES.md) and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). You can then use the command-line tool
 
 <!--pytest-codeblocks:skip-->
 

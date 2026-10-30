@@ -15,7 +15,7 @@ The PyPI wheel is one extension, `meshioplusplus._core`, with OpenCASCADE 7.6.3 
 | `meshioplusplus-netgen` | `meshioplusplus_netgen._netgen`: `tetrahedralize`'s Netgen backend, nglib and ngcore as shared libraries | MIT AND LGPL-2.1-only | `meshioplusplus==X.Y.Z` |
 | `meshioplusplus-mmg` | `meshioplusplus_mmg._mmg`: `adapt`, `discretize_levelset`, `mesh_domain`, `move` (without ELAS), libmmg as a shared library | MIT AND LGPL-3.0-or-later | `meshioplusplus==X.Y.Z` |
 
-The base package's extras then select add-ons: `meshioplusplus[occt]`, `[netgen]`, `[mmg]`, and `[all]` installing all three beside today's h5py, netCDF4 and polyscope. Because each add-on bundles its LGPL library as a shared object next to its own extension, a recipient can swap that library without rebuilding anything, which is the LGPL's preferred form of compliance, and a user who installs only the base wheel installs no copyleft code at all.
+The base package's extras then select add-ons: `meshioplusplus[occt]`, `[netgen]`, `[mmg]`, and `[addons]` installing all three. Because each add-on bundles its LGPL library as a shared object next to its own extension, a recipient can swap that library without rebuilding anything, which is the LGPL's preferred form of compliance, and a user who installs only the base wheel installs no copyleft code at all.
 
 Every wheel ships the same version, and an add-on pins the base exactly (`meshioplusplus==X.Y.Z`), so the C++ interface between them only has to be stable *within* one release. That is what Kratos relies on, and it is why the project's ABI policy ([C++ ABI](./abi.md), 36 bumps since v9.0.0) does not need to become stricter for this.
 
@@ -137,7 +137,7 @@ Altogether **L to XL**: about a month for phases 0 to 3, which deliver the MIT b
 
 ## Decided here
 
-- **The everything option is the `[all]` extra.** It gains the three add-ons beside h5py, netCDF4 and polyscope, so `[all]` installs LGPL code; the base wheel alone never does. A separate `meshioplusplus-all` metapackage would add a release artifact without adding a choice.
+- **The everything option is a separate `[addons]` extra, not `[all]`.** The first draft put the add-ons in `[all]`. It cannot work: an add-on pins the base wheel's exact version, so `pip install -e ".[all]"` from a source checkout (every contributor, and the benchmark and fuzz workflows) cannot resolve them until they are on PyPI at that version. `[all]` stays h5py, netCDF4 and polyscope, and `[addons]` installs the three LGPL wheels. A separate `meshioplusplus-all` metapackage would add a release artifact without adding a choice.
 - **The add-on module names are `meshioplusplus_occt`, `meshioplusplus_netgen` and `meshioplusplus_mmg`.** They are separate top-level packages rather than `meshioplusplus.occt` namespace subpackages, because a namespace package cannot share the base's regular package directory.
 
 ## What shipped in v18.0.0

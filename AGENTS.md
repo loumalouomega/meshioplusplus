@@ -102,7 +102,7 @@ Update all of these files to the same release version:
 
 | File | Field |
 | --- | --- |
-| `pyproject.toml` | `version`, and the `meshioplusplus-{occt,netgen,mmg}==` pins of the `occt`, `netgen`, `mmg` and `all` extras |
+| `pyproject.toml` | `version`, and the `meshioplusplus-{occt,netgen,mmg}==` pins of the `occt`, `netgen`, `mmg` and `addons` extras |
 | `packages/python/meshioplusplus-{occt,netgen,mmg}/pyproject.toml` | `version`, and the `meshioplusplus==` pins of `build-system.requires` and `dependencies` (three files) |
 | `CMakeLists.txt` | `project(... VERSION ...)` |
 | `conanfile.py` | `version` |
