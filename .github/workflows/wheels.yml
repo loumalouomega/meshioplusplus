@@ -118,12 +118,14 @@ jobs:
           CIBW_ENVIRONMENT_LINUX: >-
             CC="/opt/rh/gcc-toolset-13/root/usr/bin/gcc"
             CXX="/opt/rh/gcc-toolset-13/root/usr/bin/g++"
-            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=ON -DMESHIOPLUSPLUS_WITH_NETCDF=ON -DMESHIOPLUSPLUS_WITH_CGNSLIB=ON -DMESHIOPLUSPLUS_WITH_ZSTD=ON -DMESHIOPLUSPLUS_WITH_LZ4=ON -DMESHIOPLUSPLUS_WITH_BZIP2=ON -DMESHIOPLUSPLUS_WITH_KAHIP=ON -DMESHIOPLUSPLUS_PREFER_STATIC_DEPS=ON -DCMAKE_PREFIX_PATH=/project/build/deps -DKAHIP_ROOT=/project/build/deps -DMESHIOPLUSPLUS_WITH_ZLIB=ON -DMESHIOPLUSPLUS_ZLIB_STATIC=ON -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ -DMESHIOPLUSPLUS_STATIC_RUNTIME=ON -DMESHIOPLUSPLUS_WITH_OCCT=OFF -DMESHIOPLUSPLUS_PYTHON_SHARED_CORE=ON"
+            CMAKE_PREFIX_PATH="/project/build/deps"
+            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=ON -DMESHIOPLUSPLUS_WITH_NETCDF=ON -DMESHIOPLUSPLUS_WITH_CGNSLIB=ON -DMESHIOPLUSPLUS_WITH_ZSTD=ON -DMESHIOPLUSPLUS_WITH_LZ4=ON -DMESHIOPLUSPLUS_WITH_BZIP2=ON -DMESHIOPLUSPLUS_WITH_KAHIP=ON -DMESHIOPLUSPLUS_PREFER_STATIC_DEPS=ON -DKAHIP_ROOT=/project/build/deps -DMESHIOPLUSPLUS_WITH_ZLIB=ON -DMESHIOPLUSPLUS_ZLIB_STATIC=ON -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ -DMESHIOPLUSPLUS_STATIC_RUNTIME=ON -DMESHIOPLUSPLUS_WITH_OCCT=OFF -DMESHIOPLUSPLUS_PYTHON_SHARED_CORE=ON"
           # -v surfaces which specific symbol/library trips the manylinux policy check,
           # instead of auditwheel's generic "too-recent versioned symbols" message.
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel -v repair -w {dest_dir} {wheel}"
           CIBW_ENVIRONMENT_MACOS: >-
-            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=ON -DMESHIOPLUSPLUS_WITH_NETCDF=ON -DMESHIOPLUSPLUS_WITH_CGNSLIB=ON -DMESHIOPLUSPLUS_WITH_ZSTD=ON -DMESHIOPLUSPLUS_WITH_LZ4=ON -DMESHIOPLUSPLUS_WITH_BZIP2=ON -DMESHIOPLUSPLUS_WITH_KAHIP=ON -DMESHIOPLUSPLUS_PREFER_STATIC_DEPS=ON -DCMAKE_PREFIX_PATH=${{ env.DEPS_PREFIX }} -DKAHIP_ROOT=${{ env.DEPS_PREFIX }} -DMESHIOPLUSPLUS_WITH_ZLIB=ON -DMESHIOPLUSPLUS_ZLIB_STATIC=ON -DMESHIOPLUSPLUS_WITH_OCCT=OFF -DMESHIOPLUSPLUS_PYTHON_SHARED_CORE=ON"
+            CMAKE_PREFIX_PATH="${{ env.DEPS_PREFIX }}"
+            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=ON -DMESHIOPLUSPLUS_WITH_NETCDF=ON -DMESHIOPLUSPLUS_WITH_CGNSLIB=ON -DMESHIOPLUSPLUS_WITH_ZSTD=ON -DMESHIOPLUSPLUS_WITH_LZ4=ON -DMESHIOPLUSPLUS_WITH_BZIP2=ON -DMESHIOPLUSPLUS_WITH_KAHIP=ON -DMESHIOPLUSPLUS_PREFER_STATIC_DEPS=ON -DKAHIP_ROOT=${{ env.DEPS_PREFIX }} -DMESHIOPLUSPLUS_WITH_ZLIB=ON -DMESHIOPLUSPLUS_ZLIB_STATIC=ON -DMESHIOPLUSPLUS_WITH_OCCT=OFF -DMESHIOPLUSPLUS_PYTHON_SHARED_CORE=ON"
             MACOSX_DEPLOYMENT_TARGET="13.3"
           # Windows keeps HDF5, netCDF and the codecs on the Python fallbacks (h5py,
           # netCDF4, the stdlib) until build-permissive-libs.sh has an MSVC recipe.
@@ -131,6 +133,9 @@ jobs:
           # auto-exported one exceeds the linker's 65,535-export limit (LNK1189).
           CIBW_ENVIRONMENT_WINDOWS: >-
             CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=ON -DMESHIOPLUSPLUS_ZLIB_STATIC=ON -DMESHIOPLUSPLUS_WITH_OCCT=OFF -DMESHIOPLUSPLUS_PYTHON_SHARED_CORE=ON"
+          # The core DLL already ships inside the wheel (meshioplusplus/lib); delvewheel
+          # must not look for it elsewhere, only bundle the runtime DLLs.
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: "delvewheel repair --no-dll meshioplusplus_core_meshio.dll -w {dest_dir} {wheel}"
           CIBW_TEST_REQUIRES: "pytest h5py netCDF4"
           # The gid round trip proves the vendored static zlib actually reached
           # this wheel's compiled _core, not just that CMake configured it.
@@ -234,7 +239,7 @@ jobs:
           # (and what it needs) but not libmeshioplusplus_core_meshio.
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel -v repair --exclude 'libmeshioplusplus_core_meshio.so*' -w {dest_dir} {wheel}"
           CIBW_REPAIR_WHEEL_COMMAND_MACOS: "delocate-wheel --require-archs {delocate_archs} --exclude libmeshioplusplus_core_meshio -w {dest_dir} -v {wheel}"
-          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: "delvewheel repair --exclude meshioplusplus_core_meshio.dll --add-path ${{ env.OCCT_PREFIX }}/bin -w {dest_dir} {wheel}"
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: "delvewheel repair --no-dll meshioplusplus_core_meshio.dll --add-path ${{ env.OCCT_PREFIX }}/bin -w {dest_dir} {wheel}"
           CIBW_TEST_REQUIRES: "pytest"
           CIBW_TEST_COMMAND: "python {project}/tests/wheel_occt_smoke.py"
 
@@ -333,7 +338,7 @@ jobs:
           # (Netgen's nglib and ngcore) but not libmeshioplusplus_core_meshio.
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel -v repair --exclude 'libmeshioplusplus_core_meshio.so*' -w {dest_dir} {wheel}"
           CIBW_REPAIR_WHEEL_COMMAND_MACOS: "delocate-wheel --require-archs {delocate_archs} --exclude libmeshioplusplus_core_meshio -w {dest_dir} -v {wheel}"
-          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: "delvewheel repair --exclude meshioplusplus_core_meshio.dll --add-path ${{ env.ADDON_PREFIX }}/bin -w {dest_dir} {wheel}"
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: "delvewheel repair --no-dll meshioplusplus_core_meshio.dll --add-path ${{ env.ADDON_PREFIX }}/bin -w {dest_dir} {wheel}"
           CIBW_TEST_REQUIRES: "pytest"
           CIBW_TEST_COMMAND: "python {project}/tests/wheel_netgen_smoke.py"
 
@@ -431,7 +436,7 @@ jobs:
           # (libmmg) but not libmeshioplusplus_core_meshio.
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel -v repair --exclude 'libmeshioplusplus_core_meshio.so*' -w {dest_dir} {wheel}"
           CIBW_REPAIR_WHEEL_COMMAND_MACOS: "delocate-wheel --require-archs {delocate_archs} --exclude libmeshioplusplus_core_meshio -w {dest_dir} -v {wheel}"
-          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: "delvewheel repair --exclude meshioplusplus_core_meshio.dll --add-path ${{ env.ADDON_PREFIX }}/bin -w {dest_dir} {wheel}"
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: "delvewheel repair --no-dll meshioplusplus_core_meshio.dll --add-path ${{ env.ADDON_PREFIX }}/bin -w {dest_dir} {wheel}"
           CIBW_TEST_REQUIRES: "pytest"
           CIBW_TEST_COMMAND: "python {project}/tests/wheel_mmg_smoke.py"
 
