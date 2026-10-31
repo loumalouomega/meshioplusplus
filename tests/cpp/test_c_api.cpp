@@ -3372,6 +3372,50 @@ TEST(CApi, OptimizeVolumeFlipsAndImproves) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, OptimizeVolumeExChoosesTheObjective) {
+    const std::vector<double> pts = {0.0, 0.0,    0.0,    1.0,    0.0,    0.0,    0.3,    0.9,
+                                     0.0, 0.2252, 0.2808, 0.6977, 0.4659, 0.3149, -0.0367};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3, 0, 1, 2, 4};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 5, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "tetra", 2, 4, MIO_INT64, conn.data()), MIO_OK);
+
+    mio_optimize_volume_opts o;
+    mio_optimize_volume_opts_init(&o);
+    EXPECT_EQ(o.max_iterations, 10);  // an all-zero struct is NOT the default
+    EXPECT_EQ(o.objective, MIO_OPTIMIZE_VOLUME_WORST);
+    EXPECT_EQ(o.max_ring_size, 7);
+    mio_optimize_volume_report r;
+    mio_mesh* out = mio_optimize_volume_ex(m, &o, &r);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_GE(r.min_dihedral_after, r.min_dihedral_before);
+    EXPECT_EQ(mio_mesh_num_cell_blocks(out), 1);
+    EXPECT_EQ(r.num_flips,
+              r.num_23_flips + r.num_32_flips + r.num_edge_removals + r.num_multi_face_removals);
+    mio_mesh_free(out);
+
+    // The energy objective is the flat entry point's former behaviour.
+    o.objective = MIO_OPTIMIZE_VOLUME_ENERGY;
+    o.relocate = 0;
+    out = mio_optimize_volume_ex(m, &o, &r);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(r.num_23_flips, 1);
+    EXPECT_EQ(r.num_edge_removals + r.num_multi_face_removals + r.num_worst_smoothed, 0);
+    EXPECT_GT(r.min_quality_after, r.min_quality_before + 0.2);
+    mio_mesh_free(out);
+
+    out = mio_optimize_volume_ex(m, nullptr, nullptr);  // NULL: the defaults
+    EXPECT_NE(out, nullptr) << mio_last_error();
+    mio_mesh_free(out);
+    o.objective = 7;
+    EXPECT_EQ(mio_optimize_volume_ex(m, &o, nullptr), nullptr);
+    o.objective = MIO_OPTIMIZE_VOLUME_WORST;
+    o.max_ring_size = 2;
+    EXPECT_EQ(mio_optimize_volume_ex(m, &o, nullptr), nullptr);
+    EXPECT_EQ(mio_optimize_volume_ex(nullptr, &o, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, RefineHexIntoEight) {
     const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
                                      0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};

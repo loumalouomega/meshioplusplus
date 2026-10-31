@@ -3305,7 +3305,11 @@ export interface MeshioPlusPlusModule {
 
   /**
    * ODT-remesh a tetrahedral mesh: raise its worst element quality by
-   * relocating vertices AND flipping connectivity (2-3/3-2, predicate-free).
+   * relocating vertices AND changing connectivity, predicate-free. `objective`
+   * `'worst'` (the default) raises the least dihedral angle and never lowers
+   * it (guarded ODT relocation, 2-3 flips, edge and multi-face removal over
+   * rings of up to `maxRingSize` tets, worst-cell smoothing); `'energy'` is
+   * the ODT energy with scaled-Jacobian flips.
    * The genuine "ODT remeshing" sibling of `remeshVolume` (which generates a
    * fresh lattice mesh) and of `smooth` method `"odt"` (which only moves
    * points on fixed connectivity). Tet-only. The point set is invariant, so
@@ -3321,15 +3325,22 @@ export interface MeshioPlusPlusModule {
     flip?: boolean,
     preserveBoundary?: boolean,
     minImprovement?: number,
+    objective?: 'worst' | 'energy',
+    maxRingSize?: number,
   ): {
     mesh: Mesh;
     numFlips: number;
     num23Flips: number;
     num32Flips: number;
+    numEdgeRemovals: number;
+    numMultiFaceRemovals: number;
     numVerticesMoved: number;
+    numWorstSmoothed: number;
     numTets: number;
     minQualityBefore: number;
     minQualityAfter: number;
+    minDihedralBefore: number;
+    minDihedralAfter: number;
   };
 
   /**

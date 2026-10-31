@@ -4750,12 +4750,15 @@ def tool_optimize_volume(
     flip=True,
     preserve_boundary=True,
     min_improvement=1e-6,
+    objective="worst",
+    max_ring_size=7,
 ):
-    """ODT-remesh a tetrahedral mesh: raise its worst element quality by
-    relocating vertices AND flipping connectivity (2-3/3-2, predicate-free).
-    Tet-only and C++-core-only (no pure-Python fallback). The point set is
-    invariant, so point data and named Point regions carry; cell data and
-    Cell/Side regions are dropped (a flip has no cell correspondence)."""
+    """ODT-remesh a tetrahedral mesh: raise its least dihedral angle (objective
+    "worst", never lowering it) or its ODT energy ("energy") by relocating
+    vertices AND changing connectivity, predicate-free. Tet-only and
+    C++-core-only (no pure-Python fallback). The point set is invariant, so
+    point data and named Point regions carry; cell data and Cell/Side regions
+    are dropped (a flip has no cell correspondence)."""
     mesh = _load(input_path, input_format)
     out, report = optimize_volume(
         mesh,
@@ -4765,6 +4768,8 @@ def tool_optimize_volume(
         preserve_boundary=preserve_boundary,
         min_improvement=min_improvement,
         return_report=True,
+        objective=objective,
+        max_ring_size=max_ring_size,
     )
     return _result(_store(out, output_path, output_format), out, **report)
 

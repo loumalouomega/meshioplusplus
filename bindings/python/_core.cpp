@@ -4663,10 +4663,13 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "optimize_volume",
         [](py::object pymesh, int max_iterations, bool relocate, bool flip, bool preserve_boundary,
-           double min_improvement, py::object frozen) {
+           double min_improvement, py::object frozen, const std::string& objective,
+           int max_ring_size) {
             meshioplusplus_py::PyMeshRefs refs;
             meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
             meshioplusplus::OptimizeVolumeOptions options;
+            options.mObjective = meshioplusplus::optimize_volume_objective_from_name(objective);
+            options.mMaxRingSize = max_ring_size;
             options.mMaxIterations = max_iterations;
             options.mRelocate = relocate;
             options.mFlip = flip;
@@ -4685,11 +4688,17 @@ PYBIND11_MODULE(_core, m) {
             out["num_tets"] = r.mNumTets;
             out["min_quality_before"] = r.mMinQualityBefore;
             out["min_quality_after"] = r.mMinQualityAfter;
+            out["num_edge_removals"] = r.mNumEdgeRemovals;
+            out["num_multi_face_removals"] = r.mNumMultiFaceRemovals;
+            out["num_worst_smoothed"] = r.mNumWorstSmoothed;
+            out["min_dihedral_before"] = r.mMinDihedralBefore;
+            out["min_dihedral_after"] = r.mMinDihedralAfter;
             return out;
         },
         py::arg("mesh"), py::arg("max_iterations") = 10, py::arg("relocate") = true,
         py::arg("flip") = true, py::arg("preserve_boundary") = true,
-        py::arg("min_improvement") = 1e-6, py::arg("frozen") = py::none());
+        py::arg("min_improvement") = 1e-6, py::arg("frozen") = py::none(),
+        py::arg("objective") = "worst", py::arg("max_ring_size") = 7);
 
     // Field differential operators: the gradient / divergence / curl of a
     // point_data field, by Green-Gauss or least squares. `component` is negative

@@ -62,6 +62,8 @@ def optimize_volume(
     min_improvement=1e-6,
     frozen=None,
     return_report=False,
+    objective="worst",
+    max_ring_size=7,
 ):
     """ODT-remesh ``mesh``: relocate vertices and flip connectivity.
 
@@ -77,14 +79,24 @@ def optimize_volume(
         flips never touch the boundary, so with this on the boundary surface is
         exactly preserved). ``False`` lets boundary vertices drift off the
         surface -- there is no surface re-projection here.
-    :param min_improvement: the strict quality gain, in scaled-Jacobian units,
-        a flip must deliver to be accepted.
+    :param min_improvement: the strict quality gain a move must deliver to be
+        accepted: degrees of dihedral angle under ``objective="worst"``,
+        scaled-Jacobian units under ``"energy"``.
     :param frozen: optional pin mask for the relocation half -- either ``None``
         or a length-``len(mesh.points)`` array-like whose non-zero entries pin
         those vertices.
     :param return_report: also return a run-summary dict (``num_flips``,
-        ``num_23_flips``, ``num_32_flips``, ``num_vertices_moved``,
-        ``num_tets``, ``min_quality_before``, ``min_quality_after``).
+        ``num_23_flips``, ``num_32_flips``, ``num_edge_removals``,
+        ``num_multi_face_removals``, ``num_worst_smoothed``,
+        ``num_vertices_moved``, ``num_tets``, ``min_quality_before``,
+        ``min_quality_after``, ``min_dihedral_before``, ``min_dihedral_after``).
+    :param objective: ``"worst"`` (the default) raises the least dihedral
+        angle and never lowers it: guarded ODT relocation, 2-3 flips, edge
+        removal, multi-face removal and worst-cell smoothing. ``"energy"`` is
+        the ODT energy with flips by the least scaled Jacobian -- the only
+        behaviour up to v18.0.0, which can lower the least dihedral angle.
+    :param max_ring_size: ``"worst"`` only: the largest ring an edge removal
+        or a multi-face removal acts on, at least 3.
     :returns: the optimised mesh, or ``(mesh, report)`` if ``return_report``.
     :raises ValueError: when the mesh contains a non-``tetra`` 3D block (run
         ``convert_cells(mode="simplexify")`` first), a ragged/polyhedron block,
@@ -117,6 +129,8 @@ def optimize_volume(
         bool(preserve_boundary),
         float(min_improvement),
         None if frozen is None else [int(v) for v in frozen],
+        str(objective),
+        int(max_ring_size),
     )
     out = res["mesh"]
     if not return_report:
@@ -129,5 +143,10 @@ def optimize_volume(
         "num_tets": res["num_tets"],
         "min_quality_before": res["min_quality_before"],
         "min_quality_after": res["min_quality_after"],
+        "num_edge_removals": res["num_edge_removals"],
+        "num_multi_face_removals": res["num_multi_face_removals"],
+        "num_worst_smoothed": res["num_worst_smoothed"],
+        "min_dihedral_before": res["min_dihedral_before"],
+        "min_dihedral_after": res["min_dihedral_after"],
     }
     return out, report

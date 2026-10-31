@@ -645,6 +645,36 @@ struct _CSegmentReport
     reserved::NTuple{3,Int64}
 end
 
+"""Mirror of C `mio_optimize_volume_opts` (ABI 37). Build through
+[`optimize_volume`](@ref)."""
+struct _COptimizeVolumeOpts
+    max_iterations::Int32
+    relocate::Int32
+    flip::Int32
+    preserve_boundary::Int32
+    min_improvement::Cdouble
+    objective::Int32
+    max_ring_size::Int32
+    reserved::NTuple{8,Int64}
+end
+
+"""Mirror of C `mio_optimize_volume_report`."""
+struct _COptimizeVolumeReport
+    num_flips::Int64
+    num_23_flips::Int64
+    num_32_flips::Int64
+    num_edge_removals::Int64
+    num_multi_face_removals::Int64
+    num_vertices_moved::Int64
+    num_worst_smoothed::Int64
+    num_tets::Int64
+    min_quality_before::Cdouble
+    min_quality_after::Cdouble
+    min_dihedral_before::Cdouble
+    min_dihedral_after::Cdouble
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_select_opts`. ABI; build through [`select_region`](@ref):
 the kind defaults to a cell region, the tag and component to -1, `boundary_only`
 to 1 and the angle to 30."""
@@ -1761,6 +1791,12 @@ function _check_abi_layout()
         error("meshio++: mio_segment_opts layout mismatch ($(sizeof(_CSegmentOpts)) bytes)")
     sizeof(_CSegmentReport) == 64 ||
         error("meshio++: mio_segment_report layout mismatch ($(sizeof(_CSegmentReport)) bytes)")
+    sizeof(_COptimizeVolumeOpts) == 96 ||
+        error("meshio++: mio_optimize_volume_opts layout mismatch " *
+              "($(sizeof(_COptimizeVolumeOpts)) bytes)")
+    sizeof(_COptimizeVolumeReport) == 128 ||
+        error("meshio++: mio_optimize_volume_report layout mismatch " *
+              "($(sizeof(_COptimizeVolumeReport)) bytes)")
     sizeof(_CSelectOpts) == 328 ||
         error("meshio++: mio_select_opts layout mismatch ($(sizeof(_CSelectOpts)) bytes)")
     sizeof(_CSelectReport) == 64 ||

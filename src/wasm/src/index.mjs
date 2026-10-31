@@ -334,7 +334,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   errorSize: (mesh: Mesh, options: {targetError: number, errorArray?: string, order?: number, minSize?: number, maxSize?: number, output?: string, overwrite?: boolean}) => {mesh: Mesh, numCells: number, numSkipped: number, numClamped: number, minSize: number, maxSize: number},
  *   remesh: (mesh: Mesh, numClusters: number, subdivide?: number, subsampleRatio?: number, maxSubdivide?: number, maxIterations?: number, maxRepairPasses?: number, metric?: string, gradation?: number, preserveBoundary?: boolean, maxAnisotropy?: number) => {mesh: Mesh, numClusters: number, numIterations: number, subdivideApplied: number, numIsolatedClusters: number, numNonManifoldVertices: number},
  *   remeshVolume: (mesh: Mesh, resolution?: number[], cellSize?: number, bounds?: number[], padding?: number, paddingRelative?: number, maxCells?: number, maxTets?: number, warpFraction?: number, sign?: string, watertightCheck?: string) => {mesh: Mesh, numTets: number, numVerticesWarped: number, numTetsRejected: number, numNonManifoldEdges: number},
- *   optimizeVolume: (mesh: Mesh, maxIterations?: number, relocate?: boolean, flip?: boolean, preserveBoundary?: boolean, minImprovement?: number) => {mesh: Mesh, numFlips: number, num23Flips: number, num32Flips: number, numVerticesMoved: number, numTets: number, minQualityBefore: number, minQualityAfter: number},
+ *   optimizeVolume: (mesh: Mesh, maxIterations?: number, relocate?: boolean, flip?: boolean, preserveBoundary?: boolean, minImprovement?: number, objective?: 'worst' | 'energy', maxRingSize?: number) => {mesh: Mesh, numFlips: number, num23Flips: number, num32Flips: number, numEdgeRemovals: number, numMultiFaceRemovals: number, numVerticesMoved: number, numWorstSmoothed: number, numTets: number, minQualityBefore: number, minQualityAfter: number, minDihedralBefore: number, minDihedralAfter: number},
  *   computeCurvature: (mesh: Mesh, mean?: boolean, gaussian?: boolean, dualArea?: string, includeBoundary?: boolean, recordArea?: boolean, recordPrincipal?: boolean, region?: string) => {mesh: Mesh, numBoundary: number, numIsolated: number, numDegenerate: number, totalAngleDefect: number, quality: {boundaryEdges: number, nonManifoldEdges: number, inconsistentPairs: number, degenerateTriangles: number, watertight: boolean}},
  *   computeNormals: (mesh: Mesh, pointNormals?: boolean, cellNormals?: boolean, weight?: string, splitAngle?: number, recordParentIds?: boolean, region?: string) => {mesh: Mesh, numIsolated: number, numUndefined: number, numDegenerate: number, numSplitPoints: number, numAddedPoints: number, quality: {boundaryEdges: number, nonManifoldEdges: number, inconsistentPairs: number, degenerateTriangles: number, watertight: boolean}},
  *   checkQuality: (mesh: Mesh, require?: string, maxInverted?: number, maxDegenerate?: number) => {passed: boolean, numCells: number, numInverted: number, numDegenerate: number, checks: Array<object>, summary: string},
@@ -1107,9 +1107,11 @@ export async function loadMeshioPlusPlus(
             flip = true,
             preserveBoundary = true,
             minImprovement = 1e-6,
+            objective = 'worst',
+            maxRingSize = 7,
         ) =>
             Module.optimizeVolume(mesh, maxIterations, relocate, flip, preserveBoundary,
-                minImprovement),
+                minImprovement, objective, maxRingSize),
         computeCurvature: (
             mesh,
             mean = true,

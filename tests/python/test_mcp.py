@@ -1361,6 +1361,20 @@ def test_segment_fit_and_step(tmp_path):
     assert "step" in _tools.tool_formats()["writable"]
 
 
+def test_optimize_volume_objectives(tmp_path):
+    src = str(tmp_path / "ball.vtu")
+    meshioplusplus.write(src, meshioplusplus.ball(n=3, cell_type="tetra"))
+    worst = _dump(_tools.tool_optimize_volume(src, str(tmp_path / "w.vtu")))
+    assert worst["min_dihedral_after"] >= worst["min_dihedral_before"]
+    assert "num_edge_removals" in worst and "num_worst_smoothed" in worst
+    energy = _dump(
+        _tools.tool_optimize_volume(src, str(tmp_path / "e.vtu"), objective="energy")
+    )
+    assert energy["num_worst_smoothed"] == 0
+    with pytest.raises(ValueError, match="objective"):
+        _tools.tool_optimize_volume(src, str(tmp_path / "x.vtu"), objective="best")
+
+
 def test_select_writes_a_region(tmp_path):
     src = str(tmp_path / "cube.vtu")
     meshioplusplus.write(src, _unit_cube_quads())

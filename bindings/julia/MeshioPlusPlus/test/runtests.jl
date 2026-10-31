@@ -978,8 +978,13 @@ end
     ov = optimize_volume(m; max_iterations=5)
     @test num_points(ov.mesh) == 5                       # the point set is invariant
     @test ov.num_flips >= 0
-    @test ov.min_quality_after >= ov.min_quality_before - 1e-12
+    @test ov.min_dihedral_after >= ov.min_dihedral_before
     close(ov.mesh)
+    ov = optimize_volume(m; max_iterations=5, relocate=false, objective="energy")
+    @test ov.min_quality_after >= ov.min_quality_before - 1e-12
+    @test ov.num_edge_removals == 0 && ov.num_worst_smoothed == 0
+    close(ov.mesh)
+    @test_throws ArgumentError optimize_volume(m; objective="best")
 
     b = crop_bbox(m, [-1.0, -1.0, -1.0], [10.0, 10.0, 10.0])
     @test num_cells(b) == 2                   # the box holds everything

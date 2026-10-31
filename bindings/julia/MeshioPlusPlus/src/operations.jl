@@ -196,12 +196,19 @@ end
 
 """
     optimize_volume(mesh; max_iterations=10, relocate=true, flip=true,
-                    preserve_boundary=true, min_improvement=1e-6)
-        -> (; mesh, num_flips, num_23_flips, num_32_flips, num_vertices_moved,
-              num_tets, min_quality_before, min_quality_after)
+                    preserve_boundary=true, min_improvement=1e-6,
+                    objective="worst", max_ring_size=7)
+        -> (; mesh, num_flips, num_23_flips, num_32_flips, num_edge_removals,
+              num_multi_face_removals, num_vertices_moved, num_worst_smoothed,
+              num_tets, min_quality_before, min_quality_after,
+              min_dihedral_before, min_dihedral_after)
 
 ODT-remesh a tetrahedral mesh: raise its worst element quality by relocating
-vertices AND flipping connectivity (2-3/3-2, predicate-free). The genuine "ODT
+vertices AND changing connectivity, predicate-free. `objective="worst"` (the
+default) raises the least dihedral angle and never lowers it -- guarded ODT
+relocation, 2-3 flips, edge and multi-face removal over rings of up to
+`max_ring_size` tets, worst-cell smoothing; `"energy"` is the ODT energy with
+scaled-Jacobian flips. The genuine "ODT
 remeshing" sibling of [`remesh_volume`](@ref) (which generates a fresh lattice
 mesh) and of `smooth(method="odt")` (which only moves points on fixed
 connectivity). Tet-only, raises on any other block. The point set is invariant,
@@ -211,20 +218,26 @@ See `doc/optimize_volume.md`.
 """
 function optimize_volume(m::Mesh; max_iterations::Integer=10, relocate::Bool=true,
                          flip::Bool=true, preserve_boundary::Bool=true,
-                         min_improvement::Real=1e-6)
-    nflips = Ref{Int64}(0); n23 = Ref{Int64}(0); n32 = Ref{Int64}(0)
-    nmoved = Ref{Int64}(0); ntets = Ref{Int64}(0)
-    qb = Ref{Cdouble}(0.0); qa = Ref{Cdouble}(0.0)
-    ptr = ccall(_sym(:mio_optimize_volume), Ptr{Cvoid},
-                (Ptr{Cvoid}, Cint, Cint, Cint, Cint, Cdouble,
-                 Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64},
-                 Ptr{Cdouble}, Ptr{Cdouble}),
-                _handle(m), Cint(max_iterations), relocate ? Cint(1) : Cint(0),
-                flip ? Cint(1) : Cint(0), preserve_boundary ? Cint(1) : Cint(0),
-                Float64(min_improvement), nflips, n23, n32, nmoved, ntets, qb, qa)
-    (mesh=Mesh(_check_ptr(ptr)), num_flips=Int(nflips[]), num_23_flips=Int(n23[]),
-     num_32_flips=Int(n32[]), num_vertices_moved=Int(nmoved[]), num_tets=Int(ntets[]),
-     min_quality_before=Float64(qb[]), min_quality_after=Float64(qa[]))
+                         min_improvement::Real=1e-6, objective::AbstractString="worst",
+                         max_ring_size::Integer=7)
+    obj = objective == "worst" ? Int32(0) : objective == "energy" ? Int32(1) :
+          throw(ArgumentError("meshio++: optimize_volume: objective must be \"worst\" or \"energy\""))
+    opts = _COptimizeVolumeOpts(Int32(max_iterations), Int32(relocate), Int32(flip),
+                                Int32(preserve_boundary), Float64(min_improvement), obj,
+                                Int32(max_ring_size), ntuple(_ -> Int64(0), 8))
+    report = Ref{_COptimizeVolumeReport}()
+    ptr = ccall(_sym(:mio_optimize_volume_ex), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_COptimizeVolumeOpts}, Ptr{_COptimizeVolumeReport}),
+                _handle(m), Ref(opts), report)
+    r = _check_ptr(ptr)
+    rep = report[]
+    (mesh=Mesh(r), num_flips=Int(rep.num_flips), num_23_flips=Int(rep.num_23_flips),
+     num_32_flips=Int(rep.num_32_flips), num_edge_removals=Int(rep.num_edge_removals),
+     num_multi_face_removals=Int(rep.num_multi_face_removals),
+     num_vertices_moved=Int(rep.num_vertices_moved),
+     num_worst_smoothed=Int(rep.num_worst_smoothed), num_tets=Int(rep.num_tets),
+     min_quality_before=rep.min_quality_before, min_quality_after=rep.min_quality_after,
+     min_dihedral_before=rep.min_dihedral_before, min_dihedral_after=rep.min_dihedral_after)
 end
 
 # --- subsetting --------------------------------------------------------------

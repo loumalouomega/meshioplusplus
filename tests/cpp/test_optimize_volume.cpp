@@ -52,6 +52,7 @@ using meshioplusplus::compute_stats;
 using meshioplusplus::extract_surface;
 using meshioplusplus::Mesh;
 using meshioplusplus::optimize_volume;
+using meshioplusplus::OptimizeVolumeObjective;
 using meshioplusplus::OptimizeVolumeOptions;
 using meshioplusplus::OptimizeVolumeResult;
 
@@ -129,7 +130,8 @@ Mesh centroid_split_fixture() {
 
 TEST(OptimizeVolume, TwentyThreeFlipImprovesWorstQuality) {
     OptimizeVolumeOptions o;
-    o.mRelocate = false;  // isolate the flip
+    o.mObjective = OptimizeVolumeObjective::Energy;  // the scaled-Jacobian oracle
+    o.mRelocate = false;                             // isolate the flip
     const OptimizeVolumeResult r = optimize_volume(two_tet_23_fixture(), o);
     EXPECT_EQ(r.mNum23Flips, 1);
     EXPECT_EQ(r.mNum32Flips, 0);
@@ -143,6 +145,7 @@ TEST(OptimizeVolume, TwentyThreeFlipImprovesWorstQuality) {
 // invert them (caught here) or fail the convexity test and not flip at all.
 TEST(OptimizeVolume, TwentyThreeFlipWindingIsPositiveOnAConvexUnion) {
     OptimizeVolumeOptions o;
+    o.mObjective = OptimizeVolumeObjective::Energy;
     o.mRelocate = false;
     const OptimizeVolumeResult r = optimize_volume(two_tet_23_fixture(), o);
     ASSERT_EQ(r.mNumTets, 3);
@@ -158,6 +161,7 @@ TEST(OptimizeVolume, TwentyThreeFlipWindingIsPositiveOnAConvexUnion) {
 
 TEST(OptimizeVolume, ThirtyTwoFlipImprovesWorstQuality) {
     OptimizeVolumeOptions o;
+    o.mObjective = OptimizeVolumeObjective::Energy;
     o.mRelocate = false;
     const OptimizeVolumeResult r = optimize_volume(three_tet_32_fixture(), o);
     EXPECT_EQ(r.mNum32Flips, 1);
@@ -173,19 +177,23 @@ TEST(OptimizeVolume, ThirtyTwoFlipImprovesWorstQuality) {
 // possible by changing connectivity.
 TEST(OptimizeVolume, FlipsHelpWhereSmoothingCannot) {
     OptimizeVolumeOptions relocate_only;
+    relocate_only.mObjective = OptimizeVolumeObjective::Energy;
     relocate_only.mFlip = false;
     const OptimizeVolumeResult sm = optimize_volume(two_tet_23_fixture(), relocate_only);
     EXPECT_EQ(sm.mNumVerticesMoved, 0);
     EXPECT_NEAR(sm.mMinQualityAfter, sm.mMinQualityBefore, 1e-12);
 
     OptimizeVolumeOptions full;
+    full.mObjective = OptimizeVolumeObjective::Energy;
     const OptimizeVolumeResult r = optimize_volume(two_tet_23_fixture(), full);
     EXPECT_GT(r.mNumFlips, 0);
     EXPECT_GT(r.mMinQualityAfter, sm.mMinQualityAfter + 0.2);
 }
 
 TEST(OptimizeVolume, MonotoneQualityAndNoInversionOnACluster) {
-    const OptimizeVolumeResult r = optimize_volume(centroid_split_fixture());
+    OptimizeVolumeOptions o;
+    o.mObjective = OptimizeVolumeObjective::Energy;
+    const OptimizeVolumeResult r = optimize_volume(centroid_split_fixture(), o);
     EXPECT_GE(r.mMinQualityAfter, r.mMinQualityBefore - 1e-12);
     EXPECT_EQ(compute_stats(r.mMesh).mNumInverted, 0);
 }
@@ -272,13 +280,16 @@ std::uint64_t optimize_volume_digest(const OptimizeVolumeResult& rR) {
 // relocation context and the sort-based flip tables (roadmap §3).
 TEST(OptimizeVolume, ResultIsStableAcrossRepeatedRuns) {
     const Mesh in = jittered_cube_fixture(5);
-    const OptimizeVolumeResult first = optimize_volume(in);
-    ASSERT_GT(first.mNum23Flips, 0);
-    ASSERT_GT(first.mNum32Flips, 0);
-    ASSERT_GT(first.mNumVerticesMoved, 0);
-    const std::uint64_t digest = optimize_volume_digest(first);
-    for (int run = 0; run < 3; ++run)
-        EXPECT_EQ(optimize_volume_digest(optimize_volume(in)), digest) << "run " << run;
+    for (const auto objective : {OptimizeVolumeObjective::Energy, OptimizeVolumeObjective::Worst}) {
+        OptimizeVolumeOptions o;
+        o.mObjective = objective;
+        const OptimizeVolumeResult first = optimize_volume(in, o);
+        ASSERT_GT(first.mNum23Flips, 0);
+        ASSERT_GT(first.mNumVerticesMoved, 0);
+        const std::uint64_t digest = optimize_volume_digest(first);
+        for (int run = 0; run < 3; ++run)
+            EXPECT_EQ(optimize_volume_digest(optimize_volume(in, o)), digest) << "run " << run;
+    }
 }
 
 // The result the implementation produced before its rewrite, pinned: a change
@@ -287,11 +298,188 @@ TEST(OptimizeVolume, ResultIsStableAcrossRepeatedRuns) {
 // legitimately changes the last bits.
 #if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
 TEST(OptimizeVolume, ResultMatchesTheGoldenDigest) {
-    const OptimizeVolumeResult r = optimize_volume(jittered_cube_fixture(5));
+    // The energy objective, byte for byte what the default was up to v18.0.0.
+    OptimizeVolumeOptions o;
+    o.mObjective = OptimizeVolumeObjective::Energy;
+    const OptimizeVolumeResult r = optimize_volume(jittered_cube_fixture(5), o);
     EXPECT_EQ(optimize_volume_digest(r), 0x6c0938c3f829d96bull);
     EXPECT_EQ(r.mNum23Flips, 3);
     EXPECT_EQ(r.mNum32Flips, 2);
     EXPECT_EQ(r.mNumVerticesMoved, 62);
+}
+#endif
+
+// --- the worst-cell objective (the default since ABI 37) ---------------------
+
+// The least dihedral angle of a mesh's tets, in degrees.
+double least_dihedral(const Mesh& rMesh) {
+    double m = 180.0;
+    const auto cv = rMesh.Cells(0);
+    const auto& conn = cv.Conn();
+    const auto& p = rMesh.Points();
+    auto pt = [&](std::int64_t v) {
+        return std::array<double, 3>{meshioplusplus::detail::read_double(p, v * 3),
+                                     meshioplusplus::detail::read_double(p, v * 3 + 1),
+                                     meshioplusplus::detail::read_double(p, v * 3 + 2)};
+    };
+    auto sub = [](const std::array<double, 3>& a, const std::array<double, 3>& b) {
+        return std::array<double, 3>{a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+    };
+    auto cross = [](const std::array<double, 3>& a, const std::array<double, 3>& b) {
+        return std::array<double, 3>{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+                                     a[0] * b[1] - a[1] * b[0]};
+    };
+    auto dot = [](const std::array<double, 3>& a, const std::array<double, 3>& b) {
+        return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    };
+    static const int kE[6][4] = {{0, 1, 2, 3}, {0, 2, 1, 3}, {0, 3, 1, 2},
+                                 {1, 2, 0, 3}, {1, 3, 0, 2}, {2, 3, 0, 1}};
+    for (std::size_t c = 0; c < cv.NumCells(); ++c) {
+        std::array<std::array<double, 3>, 4> q;
+        for (int k = 0; k < 4; ++k)
+            q[static_cast<std::size_t>(k)] =
+                pt(meshioplusplus::detail::read_int(conn, c * 4 + static_cast<std::size_t>(k)));
+        for (const auto& e : kE) {
+            const auto ab = sub(q[e[1]], q[e[0]]);
+            const auto n1 = cross(ab, sub(q[e[2]], q[e[0]]));
+            const auto n2 = cross(ab, sub(q[e[3]], q[e[0]]));
+            const double cs = dot(n1, n2) / std::sqrt(dot(n1, n1) * dot(n2, n2));
+            m = std::min(m, std::acos(std::clamp(cs, -1.0, 1.0)) * 57.29577951308232);
+        }
+    }
+    return m;
+}
+
+// The k tets around the interior edge (u, v) = (k, k + 1), whose ring r_0 ..
+// r_{k-1} has a triangulation with a much better least angle than the ring's
+// tets (found by a search over perturbed rings; the comment gives both).
+Mesh edge_ring_fixture(int k) {
+    std::vector<std::vector<double>> pts;
+    if (k == 4)  // around 25.0 degrees, best triangulation 41.8
+        pts = {{0.71, 0.03, -0.04},   {0.39, 0.82, 0.07},  {-0.42, 0.32, 0.05},
+               {-0.42, -1.08, -0.02}, {0.12, -0.06, 1.31}, {0.02, -0.12, -0.98}};
+    else if (k == 5)  // 11.6 -> 31.3
+        pts = {{1.28, 0.65, -0.11},  {-0.84, 0.21, 0.08}, {-0.47, -1.16, 0.06},
+               {0.88, -0.96, -0.09}, {0.34, -0.36, 0.1},  {-0.06, -0.16, 1.22},
+               {-0.02, -0.16, -0.57}};
+    else if (k == 6)  // 8.7 -> 27.0
+        pts = {{-0.37, 0.72, -0.08},  {-1.45, 0.47, 0.12}, {-0.85, 0.09, 0.1},
+               {-0.16, -0.39, -0.05}, {0.34, -1.12, 0.09}, {1.48, -0.35, -0.05},
+               {-0.12, -0.03, 0.98},  {-0.04, -0.17, -0.8}};
+    else  // k == 7: 5.1 -> 25.6
+        pts = {{0.33, 1.03, 0.11},  {-0.29, 0.3, 0.03},   {-1.02, 0.88, -0.02},
+               {-1.04, 0.32, 0.11}, {-0.82, -0.4, -0.02}, {-0.22, -0.4, -0.14},
+               {0.17, -0.44, 0.05}, {0.01, -0.12, 0.83},  {-0.04, 0.11, -0.99}};
+    std::vector<std::vector<std::int64_t>> tets;
+    for (int i = 0; i < k; ++i)
+        tets.push_back({k, k + 1, i, (i + 1) % k});
+    return mt::make_mesh(pts, "tetra", tets);
+}
+
+TEST(OptimizeVolume, EdgeRemovalReplacesARingByItsBestTriangulation) {
+    const double best[] = {0.0, 0.0, 0.0, 0.0, 41.78, 31.33, 26.98, 25.61};
+    for (int k = 4; k <= 7; ++k) {
+        OptimizeVolumeOptions o;
+        o.mRelocate = false;  // the ring's vertices are all on its boundary anyway
+        const Mesh in = edge_ring_fixture(k);
+        const OptimizeVolumeResult r = optimize_volume(in, o);
+        EXPECT_GE(r.mNumEdgeRemovals, 1) << "k = " << k;
+        EXPECT_EQ(r.mNumTets, 2 * (k - 2)) << "k = " << k;
+        EXPECT_GT(r.mMinDihedralAfter, best[k] - 0.01) << "k = " << k;
+        EXPECT_NEAR(r.mMinDihedralAfter, least_dihedral(r.mMesh), 1e-9);
+        EXPECT_EQ(compute_stats(r.mMesh).mNumInverted, 0);
+        EXPECT_EQ(boundary_facets(in), boundary_facets(r.mMesh)) << "k = " << k;
+        // A ring larger than mMaxRingSize is left alone.
+        o.mMaxRingSize = 3;
+        const OptimizeVolumeResult small = optimize_volume(in, o);
+        EXPECT_EQ(small.mNumEdgeRemovals, 0) << "k = " << k;
+    }
+}
+
+// The inverse: three faces (0,1,2), (0,2,3), (0,3,4) of a pentagon ring
+// sandwiched between apexes 5 and 6. No 2-3 flip of one face and no edge
+// removal of one diagonal raises the least angle of the tets it touches, but
+// the five tets around the new edge (5, 6) do: 12.9 -> 28.1 degrees (found by
+// a search over perturbed rings).
+TEST(OptimizeVolume, MultiFaceRemovalInsertsTheEdgeBetweenTwoApexes) {
+    const Mesh in = mt::make_mesh(
+        {{0.38, 0.5, -0.08},
+         {-1.46, 0.23, -0.08},
+         {-0.96, -0.72, -0.03},
+         {-0.15, -0.61, 0.09},
+         {1.29, -0.55, -0.09},
+         {0.25, 0.07, 0.27},
+         {0.04, -0.02, -0.76}},
+        "tetra",
+        {{0, 1, 2, 5}, {0, 2, 1, 6}, {0, 2, 3, 5}, {0, 3, 2, 6}, {0, 3, 4, 5}, {0, 4, 3, 6}});
+    OptimizeVolumeOptions o;
+    o.mRelocate = false;
+    const OptimizeVolumeResult r = optimize_volume(in, o);
+    EXPECT_EQ(r.mNumMultiFaceRemovals, 1);
+    EXPECT_EQ(r.mNum23Flips, 0);
+    EXPECT_EQ(r.mNumEdgeRemovals, 0);
+    EXPECT_EQ(r.mNumTets, 5);
+    EXPECT_NEAR(r.mMinDihedralBefore, 12.95, 0.01);
+    EXPECT_NEAR(r.mMinDihedralAfter, 28.13, 0.01);
+    EXPECT_EQ(compute_stats(r.mMesh).mNumInverted, 0);
+    EXPECT_EQ(boundary_facets(in), boundary_facets(r.mMesh));
+    // Capped below the disc's ring, it is left alone.
+    o.mMaxRingSize = 4;
+    EXPECT_EQ(optimize_volume(in, o).mNumMultiFaceRemovals, 0);
+}
+
+// The probe of roadmap 3.2.1 on a mesh the core can build without Netgen:
+// the least dihedral angle never drops, here it rises, and the boundary holds.
+TEST(OptimizeVolume, WorstObjectiveNeverLowersTheLeastDihedralAngle) {
+    for (std::size_t n : {3u, 5u}) {
+        const Mesh in = jittered_cube_fixture(n);
+        const OptimizeVolumeResult r = optimize_volume(in);
+        EXPECT_NEAR(r.mMinDihedralBefore, least_dihedral(in), 1e-9);
+        EXPECT_NEAR(r.mMinDihedralAfter, least_dihedral(r.mMesh), 1e-9);
+        EXPECT_GT(r.mMinDihedralAfter, r.mMinDihedralBefore) << "n = " << n;
+        EXPECT_GT(r.mNumWorstSmoothed, 0);
+        EXPECT_EQ(compute_stats(r.mMesh).mNumInverted, 0);
+        EXPECT_EQ(boundary_facets(in), boundary_facets(r.mMesh));
+        // Each half alone keeps the guarantee too.
+        for (const bool relocate : {true, false}) {
+            OptimizeVolumeOptions half;
+            half.mRelocate = relocate;
+            half.mFlip = !relocate;
+            const OptimizeVolumeResult h = optimize_volume(in, half);
+            EXPECT_GE(h.mMinDihedralAfter, h.mMinDihedralBefore) << "relocate = " << relocate;
+        }
+    }
+}
+
+// Where the energy objective lowers the least angle, the worst one does not.
+TEST(OptimizeVolume, EnergyMayLowerTheLeastAngleWorstDoesNot) {
+    const Mesh in = jittered_cube_fixture(5);
+    OptimizeVolumeOptions energy;
+    energy.mObjective = OptimizeVolumeObjective::Energy;
+    const OptimizeVolumeResult e = optimize_volume(in, energy);
+    const OptimizeVolumeResult w = optimize_volume(in);
+    EXPECT_GE(w.mMinDihedralAfter, w.mMinDihedralBefore);
+    EXPECT_GE(w.mMinDihedralAfter, e.mMinDihedralAfter);
+    EXPECT_EQ(e.mNumEdgeRemovals + e.mNumMultiFaceRemovals + e.mNumWorstSmoothed, 0);
+}
+
+TEST(OptimizeVolume, ObjectiveNamesAndBadRingSize) {
+    EXPECT_EQ(meshioplusplus::optimize_volume_objective_from_name("worst"),
+              OptimizeVolumeObjective::Worst);
+    EXPECT_EQ(meshioplusplus::optimize_volume_objective_from_name("energy"),
+              OptimizeVolumeObjective::Energy);
+    EXPECT_THROW(meshioplusplus::optimize_volume_objective_from_name("best"),
+                 std::invalid_argument);
+    OptimizeVolumeOptions o;
+    o.mMaxRingSize = 2;
+    EXPECT_THROW(optimize_volume(two_tet_23_fixture(), o), std::invalid_argument);
+}
+
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+// The worst objective's result, pinned like the energy one above.
+TEST(OptimizeVolume, WorstResultMatchesTheGoldenDigest) {
+    const OptimizeVolumeResult r = optimize_volume(jittered_cube_fixture(5));
+    EXPECT_EQ(optimize_volume_digest(r), 0x3ebd8d80ee6ad35full);
 }
 #endif
 

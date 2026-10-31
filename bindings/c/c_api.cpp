@@ -2389,6 +2389,68 @@ mio_mesh* mio_optimize_volume(const mio_mesh* mesh, int max_iterations, int relo
     });
 }
 
+static_assert(sizeof(mio_optimize_volume_opts) == 96,
+              "mio_optimize_volume_opts grew outside its reserved tail");
+static_assert(sizeof(mio_optimize_volume_report) == 128,
+              "mio_optimize_volume_report grew outside its reserved tail");
+static_assert(static_cast<int>(meshioplusplus::OptimizeVolumeObjective::Energy) ==
+                  MIO_OPTIMIZE_VOLUME_ENERGY,
+              "mio_optimize_volume_objective must match OptimizeVolumeObjective");
+
+void mio_optimize_volume_opts_init(mio_optimize_volume_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_optimize_volume_opts{};
+    opts->max_iterations = 10;
+    opts->relocate = 1;
+    opts->flip = 1;
+    opts->preserve_boundary = 1;
+    opts->min_improvement = 1e-6;
+    opts->objective = MIO_OPTIMIZE_VOLUME_WORST;
+    opts->max_ring_size = 7;
+}
+
+mio_mesh* mio_optimize_volume_ex(const mio_mesh* mesh, const mio_optimize_volume_opts* opts,
+                                 mio_optimize_volume_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        mio_optimize_volume_opts defaults;
+        mio_optimize_volume_opts_init(&defaults);
+        const mio_optimize_volume_opts& o = opts ? *opts : defaults;
+        if (o.objective != MIO_OPTIMIZE_VOLUME_WORST && o.objective != MIO_OPTIMIZE_VOLUME_ENERGY) {
+            fail(MIO_ERR_INVALID_ARG, "meshio++: optimize_volume: unknown objective");
+            return nullptr;
+        }
+        meshioplusplus::OptimizeVolumeOptions options;
+        options.mMaxIterations = o.max_iterations;
+        options.mRelocate = o.relocate != 0;
+        options.mFlip = o.flip != 0;
+        options.mPreserveBoundary = o.preserve_boundary != 0;
+        options.mMinImprovement = o.min_improvement;
+        options.mObjective = static_cast<meshioplusplus::OptimizeVolumeObjective>(o.objective);
+        options.mMaxRingSize = o.max_ring_size;
+        meshioplusplus::OptimizeVolumeResult r =
+            meshioplusplus::optimize_volume(mesh->mMesh, options);
+        if (report) {
+            *report = mio_optimize_volume_report{};
+            report->num_flips = r.mNumFlips;
+            report->num_23_flips = r.mNum23Flips;
+            report->num_32_flips = r.mNum32Flips;
+            report->num_edge_removals = r.mNumEdgeRemovals;
+            report->num_multi_face_removals = r.mNumMultiFaceRemovals;
+            report->num_vertices_moved = r.mNumVerticesMoved;
+            report->num_worst_smoothed = r.mNumWorstSmoothed;
+            report->num_tets = r.mNumTets;
+            report->min_quality_before = r.mMinQualityBefore;
+            report->min_quality_after = r.mMinQualityAfter;
+            report->min_dihedral_before = r.mMinDihedralBefore;
+            report->min_dihedral_after = r.mMinDihedralAfter;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
 mio_mesh* mio_undo_green(const mio_mesh* coarse, const mio_mesh* fine, int64_t* num_groups_undone,
                          int64_t* num_cells_removed) {
     return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {

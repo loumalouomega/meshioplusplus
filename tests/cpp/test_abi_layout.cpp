@@ -459,7 +459,11 @@ MIO_ABI_LAYOUT(meshioplusplus::RemeshVolumeOptions, 224, 8);
 // `optimize_volume()` -- pinned from the release that introduces it, the
 // RefineOptions/RemeshOptions "pin in advance" lesson. OptimizeVolumeResult is
 // deliberately NOT pinned, embedding a `Mesh` like every other *Result.
-MIO_ABI_LAYOUT(meshioplusplus::OptimizeVolumeOptions, 40, 8);
+// ABI 37 appends mObjective and mMaxRingSize (worst-cell moves): 40 -> 48.
+MIO_ABI_LAYOUT(meshioplusplus::OptimizeVolumeOptions, 48, 8);
+static_assert(
+    sizeof(meshioplusplus::OptimizeVolumeObjective) == 4,
+    "meshio++ ABI: OptimizeVolumeObjective underlying width changed (Tier A, doc/abi.md)");
 
 // CurvatureOptions is passed by const-ref through the exported
 // `compute_curvature()`, and is pinned from the release that introduces it --

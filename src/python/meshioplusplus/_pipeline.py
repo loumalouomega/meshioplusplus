@@ -507,6 +507,8 @@ _OP_TABLE = {
         "Flip",
         "PreserveBoundary",
         "MinImprovement",
+        "Objective",
+        "MaxRingSize",
     ),
     "Isosurface": ("Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"),
     "Voxelize": (
@@ -2614,6 +2616,8 @@ def _apply_step(mesh, step, steps, warnings):
             preserve_boundary=_flag(step, "PreserveBoundary", True),
             min_improvement=_number(step, "MinImprovement", 1e-6),
             return_report=True,
+            objective=_text(step, "Objective", "worst"),
+            max_ring_size=int(_number(step, "MaxRingSize", 7.0)),
         )
         entry["NumFlips"] = float(report["num_flips"])
         entry["Num23Flips"] = float(report["num_23_flips"])
@@ -2622,6 +2626,11 @@ def _apply_step(mesh, step, steps, warnings):
         entry["NumTets"] = float(report["num_tets"])
         entry["MinQualityBefore"] = float(report["min_quality_before"])
         entry["MinQualityAfter"] = float(report["min_quality_after"])
+        entry["NumEdgeRemovals"] = float(report["num_edge_removals"])
+        entry["NumMultiFaceRemovals"] = float(report["num_multi_face_removals"])
+        entry["NumWorstSmoothed"] = float(report["num_worst_smoothed"])
+        entry["MinDihedralBefore"] = float(report["min_dihedral_before"])
+        entry["MinDihedralAfter"] = float(report["min_dihedral_after"])
     elif op == "Generate":
         # A mesh from parameters; like Voxelize it REPLACES the geometry, and it
         # never reads the incoming mesh, so a document may omit Input when this

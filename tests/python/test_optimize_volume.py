@@ -111,7 +111,7 @@ def test_flips_help_where_smoothing_cannot():
 def test_monotone_quality_no_inversion_and_boundary_invariant():
     mesh = _jittered_grid()
     before = _boundary_facets(mesh)
-    out, rep = optimize_volume(mesh, return_report=True)
+    out, rep = optimize_volume(mesh, objective="energy", return_report=True)
     assert rep["min_quality_after"] >= rep["min_quality_before"] - 1e-12
     assert _core.compute_stats(out)["num_inverted"] == 0
     assert _boundary_facets(out) == before
@@ -170,3 +170,34 @@ def test_no_op_when_both_halves_disabled():
     assert rep["num_flips"] == 0
     assert rep["num_vertices_moved"] == 0
     assert rep["num_tets"] == 2
+
+
+@needs_core
+def test_worst_objective_raises_the_least_dihedral_angle():
+    m = _jittered_grid()
+    out, rep = optimize_volume(m, return_report=True)
+    for key in (
+        "num_edge_removals",
+        "num_multi_face_removals",
+        "num_worst_smoothed",
+        "min_dihedral_before",
+        "min_dihedral_after",
+    ):
+        assert key in rep
+    assert rep["min_dihedral_after"] > rep["min_dihedral_before"]
+    assert _boundary_facets(out) == _boundary_facets(m)
+    q = meshioplusplus.attach_quality(out).cell_data["quality:min_dihedral"][0]
+    assert float(np.min(q)) == pytest.approx(rep["min_dihedral_after"], abs=1e-9)
+
+
+@needs_core
+def test_energy_objective_is_the_former_behaviour():
+    m = _jittered_grid()
+    out, rep = optimize_volume(m, objective="energy", return_report=True)
+    assert rep["num_edge_removals"] == 0
+    assert rep["num_multi_face_removals"] == 0
+    assert rep["num_worst_smoothed"] == 0
+    with pytest.raises(ValueError, match="objective"):
+        optimize_volume(m, objective="best")
+    with pytest.raises(ValueError, match="max_ring_size"):
+        optimize_volume(m, max_ring_size=2)

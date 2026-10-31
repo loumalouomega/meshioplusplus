@@ -579,7 +579,8 @@ void print_usage(std::ostream& os) {
           "                            is required, --warp-fraction trades boundary\n"
           "                            quality for a small chance of non-manifold edges\n"
           "  optimize-volume         ODT-remesh a tetrahedral mesh: relocate vertices and\n"
-          "                            flip connectivity (2-3/3-2) to raise element quality\n"
+          "                            flip connectivity to raise the least dihedral angle\n"
+          "                            (--objective worst, the default) or the ODT energy\n"
           "  partition               Decompose into N balanced parts (SFC / KaHIP)\n"
           "                            OUT pattern needs {part}, or is a .pvtu/.pvtp index\n"
           "                            over every part; --labels-only writes one file\n"
@@ -6591,6 +6592,8 @@ int cmd_optimize_volume(const std::vector<std::string>& rArgs) {
                                   {"no-flip", {}, false},
                                   {"no-preserve-boundary", {}, false},
                                   {"min-improvement", {}, true},
+                                  {"objective", {}, true},
+                                  {"max-ring-size", {}, true},
                                   {"quiet", {"-q"}, false},
                               });
     if (p.positionals.size() != 2)
@@ -6606,6 +6609,10 @@ int cmd_optimize_volume(const std::vector<std::string>& rArgs) {
     // form is needed for a caller to pass one.
     options.mMinImprovement =
         meshioplusplus::detail::stod_c(opt_value(p, "min-improvement", "0.000001"));
+    options.mObjective =
+        meshioplusplus::optimize_volume_objective_from_name(opt_value(p, "objective", "worst"));
+    if (p.values.count("max-ring-size"))
+        options.mMaxRingSize = static_cast<std::int32_t>(std::stoll(opt_value(p, "max-ring-size")));
 
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     meshioplusplus::OptimizeVolumeResult r = meshioplusplus::optimize_volume(mesh, options);
@@ -6614,10 +6621,17 @@ int cmd_optimize_volume(const std::vector<std::string>& rArgs) {
         std::cout << "ODT-remeshed\n";
         std::cout << "  flips (2-3 / 3-2):        " << r.mNumFlips << " (" << r.mNum23Flips << " / "
                   << r.mNum32Flips << ")\n";
+        if (options.mObjective == meshioplusplus::OptimizeVolumeObjective::Worst) {
+            std::cout << "  edge / multi-face removals: " << r.mNumEdgeRemovals << " / "
+                      << r.mNumMultiFaceRemovals << "\n";
+            std::cout << "  worst-cell smoothing moves: " << r.mNumWorstSmoothed << "\n";
+        }
         std::cout << "  vertices moved:           " << r.mNumVerticesMoved << "\n";
         std::cout << "  tets:                     " << r.mNumTets << "\n";
         std::cout << "  min quality before/after: " << r.mMinQualityBefore << " / "
                   << r.mMinQualityAfter << "\n";
+        std::cout << "  min dihedral before/after: " << r.mMinDihedralBefore << " / "
+                  << r.mMinDihedralAfter << " degrees\n";
     }
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     return 0;

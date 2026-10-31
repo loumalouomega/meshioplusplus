@@ -461,7 +461,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "MaxCells", "MaxTets",
           "WarpFraction", "Sign", "WatertightCheck"}},
         {"OptimizeVolume",
-         {"MaxIterations", "Relocate", "Flip", "PreserveBoundary", "MinImprovement"}},
+         {"MaxIterations", "Relocate", "Flip", "PreserveBoundary", "MinImprovement", "Objective",
+          "MaxRingSize"}},
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
         {"Voxelize",
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
@@ -2442,6 +2443,9 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mFlip = pipe_flag(rStep, "Flip", true);
         opts.mPreserveBoundary = pipe_flag(rStep, "PreserveBoundary", true);
         opts.mMinImprovement = pipe_number(rStep, "MinImprovement", 1e-6);
+        opts.mObjective =
+            optimize_volume_objective_from_name(pipe_text(rStep, "Objective", "worst"));
+        opts.mMaxRingSize = static_cast<std::int32_t>(pipe_number(rStep, "MaxRingSize", 7.0));
         OptimizeVolumeResult ov = optimize_volume(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumFlips", static_cast<double>(ov.mNumFlips)},
@@ -2450,7 +2454,12 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"NumVerticesMoved", static_cast<double>(ov.mNumVerticesMoved)},
                         {"NumTets", static_cast<double>(ov.mNumTets)},
                         {"MinQualityBefore", ov.mMinQualityBefore},
-                        {"MinQualityAfter", ov.mMinQualityAfter}});
+                        {"MinQualityAfter", ov.mMinQualityAfter},
+                        {"NumEdgeRemovals", static_cast<double>(ov.mNumEdgeRemovals)},
+                        {"NumMultiFaceRemovals", static_cast<double>(ov.mNumMultiFaceRemovals)},
+                        {"NumWorstSmoothed", static_cast<double>(ov.mNumWorstSmoothed)},
+                        {"MinDihedralBefore", ov.mMinDihedralBefore},
+                        {"MinDihedralAfter", ov.mMinDihedralAfter}});
         return std::move(ov.mMesh);
     }
     if (op == "Generate") {

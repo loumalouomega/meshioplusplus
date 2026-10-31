@@ -1208,18 +1208,26 @@ program test_fortran_api
     block
         type(mio_mesh) :: opt
         integer(int64) :: nflips, n23, n32, nmoved, ntets, n0
-        real(real64) :: qb, qa
+        real(real64) :: qb, qa, db, da
         integer :: st
 
         n0 = m%num_points()
         opt = m%optimize_volume(max_iterations=5, num_flips=nflips, num_23_flips=n23, &
                                 num_32_flips=n32, num_vertices_moved=nmoved, num_tets=ntets, &
-                                min_quality_before=qb, min_quality_after=qa, stat=st)
+                                min_quality_before=qb, min_quality_after=qa, stat=st, &
+                                min_dihedral_before=db, min_dihedral_after=da)
         call check(st == 0, 'optimize_volume succeeded on a tet mesh')
         call check(opt%num_points() == n0, 'optimize_volume preserves the point set')
         call check(nflips >= 0_int64, 'optimize_volume reported a flip count')
-        call check(qa >= qb - 1.0e-12_real64, 'optimize_volume never lowers worst quality')
+        call check(da >= db, 'optimize_volume never lowers the least dihedral angle')
         call opt%free()
+        opt = m%optimize_volume(max_iterations=5, relocate=.false., objective='energy', &
+                                min_quality_before=qb, min_quality_after=qa, stat=st)
+        call check(st == 0, 'optimize_volume runs the energy objective')
+        call check(qa >= qb - 1.0e-12_real64, 'energy flips never lower the worst quality')
+        call opt%free()
+        opt = m%optimize_volume(objective='best', stat=st)
+        call check(st /= 0, 'optimize_volume refuses an unknown objective')
     end block
 
     ! -- interpolate: cross-mesh field transfer --

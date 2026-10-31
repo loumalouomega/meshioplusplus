@@ -7050,9 +7050,12 @@ val sobolev_deform_js(const val& rMeshObj, const std::string& rArray, double len
 }
 
 val optimize_volume_js(const val& rMeshObj, double maxIterations, bool relocate, bool flip,
-                       bool preserveBoundary, double minImprovement) {
+                       bool preserveBoundary, double minImprovement, const std::string& rObjective,
+                       double maxRingSize) {
     return with_js_errors([&]() -> val {
         meshioplusplus::OptimizeVolumeOptions options;
+        options.mObjective = meshioplusplus::optimize_volume_objective_from_name(rObjective);
+        options.mMaxRingSize = static_cast<std::int32_t>(maxRingSize);
         options.mMaxIterations = static_cast<int>(maxIterations);
         options.mRelocate = relocate;
         options.mFlip = flip;
@@ -7069,6 +7072,11 @@ val optimize_volume_js(const val& rMeshObj, double maxIterations, bool relocate,
         out.set("numTets", static_cast<double>(r.mNumTets));
         out.set("minQualityBefore", r.mMinQualityBefore);
         out.set("minQualityAfter", r.mMinQualityAfter);
+        out.set("numEdgeRemovals", static_cast<double>(r.mNumEdgeRemovals));
+        out.set("numMultiFaceRemovals", static_cast<double>(r.mNumMultiFaceRemovals));
+        out.set("numWorstSmoothed", static_cast<double>(r.mNumWorstSmoothed));
+        out.set("minDihedralBefore", r.mMinDihedralBefore);
+        out.set("minDihedralAfter", r.mMinDihedralAfter);
         return out;
     });
 }

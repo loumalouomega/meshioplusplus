@@ -642,8 +642,13 @@ test_that("clean, smooth and crop work", {
   ov <- mio_optimize_volume(m, max_iterations = 5L)
   expect_equal(mio_num_points(ov$mesh), 5) # the point set is invariant
   expect_gte(ov$num_flips, 0)
-  expect_gte(ov$min_quality_after, ov$min_quality_before - 1e-12)
+  expect_gte(ov$min_dihedral_after, ov$min_dihedral_before)
   mio_release(ov$mesh)
+  ov <- mio_optimize_volume(m, max_iterations = 5L, relocate = FALSE, objective = "energy")
+  expect_gte(ov$min_quality_after, ov$min_quality_before - 1e-12)
+  expect_equal(ov$num_edge_removals, 0)
+  mio_release(ov$mesh)
+  expect_error(mio_optimize_volume(m, objective = "best"))
 
   b <- mio_crop_bbox(m, c(-1, -1, -1), c(10, 10, 10))
   expect_equal(mio_num_cells(b), 2) # the box holds everything

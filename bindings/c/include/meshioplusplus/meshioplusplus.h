@@ -3504,8 +3504,13 @@ MIO_API mio_mesh* mio_remesh_volume_ex(const mio_mesh* mesh, const mio_remesh_vo
  * @param relocate          nonzero to run the ODT vertex-relocation half.
  * @param flip              nonzero to run the topological-flip half.
  * @param preserve_boundary nonzero to pin boundary vertices during relocation.
- * @param min_improvement   the strict scaled-Jacobian gain a flip must deliver.
- * @param num_flips         receives the total flips accepted (2-3 + 3-2).
+ * Since ABI 37 this runs the default objective, MIO_OPTIMIZE_VOLUME_WORST
+ * (the least dihedral angle never drops); mio_optimize_volume_ex chooses the
+ * objective and reports the worst-cell counters.
+ *
+ * @param min_improvement   the strict gain a flip must deliver (degrees of
+ *                          dihedral angle under the default objective).
+ * @param num_flips         receives the total topological moves accepted.
  * @param num_23_flips      receives the 2-3 flips accepted.
  * @param num_32_flips      receives the 3-2 flips accepted.
  * @param num_vertices_moved receives the vertices the relocation half moved.
@@ -3521,6 +3526,66 @@ MIO_API mio_mesh* mio_optimize_volume(const mio_mesh* mesh, int max_iterations, 
                                       int64_t* num_32_flips, int64_t* num_vertices_moved,
                                       int64_t* num_tets, double* min_quality_before,
                                       double* min_quality_after);
+
+/** mio_optimize_volume_opts.objective: what mio_optimize_volume_ex improves. */
+typedef enum mio_optimize_volume_objective {
+    /** The worst cell: the least dihedral angle never drops (the default). */
+    MIO_OPTIMIZE_VOLUME_WORST = 0,
+    /** The ODT energy with flips by the least scaled Jacobian (before ABI 37). */
+    MIO_OPTIMIZE_VOLUME_ENERGY = 1
+} mio_optimize_volume_objective;
+
+/**
+ * Options for mio_optimize_volume_ex. Same ABI rules as mio_feature_edges_opts;
+ * always initialize through mio_optimize_volume_opts_init(): an all-zero struct
+ * is NOT the default (it would run no sweep).
+ */
+typedef struct mio_optimize_volume_opts {
+    int32_t max_iterations;    /**< optimisation sweeps (default 10) */
+    int32_t relocate;          /**< nonzero runs the relocation half (default 1) */
+    int32_t flip;              /**< nonzero runs the topological half (default 1) */
+    int32_t preserve_boundary; /**< nonzero pins boundary vertices (default 1) */
+    double min_improvement;    /**< the strict gain a move must deliver (default 1e-6) */
+    int32_t objective;         /**< a mio_optimize_volume_objective */
+    int32_t max_ring_size;     /**< largest ring an edge or multi-face removal takes (7) */
+    int64_t reserved[8];       /**< must be zero; room for additive growth */
+} mio_optimize_volume_opts;
+
+/** Initialize optimize_volume options: 10 sweeps, both halves, the boundary
+ *  pinned, 1e-6, the worst objective, rings of up to 7. */
+MIO_API void mio_optimize_volume_opts_init(mio_optimize_volume_opts* opts);
+
+/** What mio_optimize_volume_ex did. */
+typedef struct mio_optimize_volume_report {
+    int64_t num_flips;               /**< every topological move accepted */
+    int64_t num_23_flips;            /**< 2-3 flips */
+    int64_t num_32_flips;            /**< 3-2 flips (edge removals of three tets) */
+    int64_t num_edge_removals;       /**< edge removals of four or more tets */
+    int64_t num_multi_face_removals; /**< multi-face removals */
+    int64_t num_vertices_moved;      /**< vertices whose final position moved */
+    int64_t num_worst_smoothed;      /**< worst-cell smoothing moves, over the sweeps */
+    int64_t num_tets;                /**< output tets */
+    double min_quality_before;       /**< least scaled Jacobian in */
+    double min_quality_after;        /**< least scaled Jacobian out */
+    double min_dihedral_before;      /**< least dihedral angle in, degrees */
+    double min_dihedral_after;       /**< least dihedral angle out, degrees */
+    int64_t reserved[4];             /**< must be zero; room for additive growth */
+} mio_optimize_volume_report;
+
+/**
+ * mio_optimize_volume with an options struct: the objective
+ * (MIO_OPTIMIZE_VOLUME_WORST: guarded ODT relocation, 2-3 flips, edge removal,
+ * multi-face removal and worst-cell smoothing, the least dihedral angle never
+ * dropping; or MIO_OPTIMIZE_VOLUME_ENERGY) and the full report. See
+ * doc/optimize_volume.md.
+ *
+ * @param mesh   a tetra-only volume mesh.
+ * @param opts   options; NULL means every mio_optimize_volume_opts_init() default.
+ * @param report optional out: the counters.
+ * @return the optimised mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_optimize_volume_ex(const mio_mesh* mesh, const mio_optimize_volume_opts* opts,
+                                         mio_optimize_volume_report* report);
 
 /** Which dual area a per-vertex curvature is divided by. */
 typedef enum mio_curvature_dual_area {

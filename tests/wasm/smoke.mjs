@@ -1760,8 +1760,12 @@ step('optimizeVolume: ODT-remeshes a tetrahedral mesh', () => {
     assert.equal(out.mesh.cells[0].type, 'tetra');
     assert.ok(out.numTets > 0);
     assert.equal(out.mesh.points.length, tetCube.points.length); // point set invariant
-    assert.ok(out.minQualityAfter >= out.minQualityBefore - 1e-9); // monotone
+    assert.ok(out.minDihedralAfter >= out.minDihedralBefore); // the worst cell never worsens
     assert.ok(out.numFlips >= 0 && out.num23Flips >= 0 && out.num32Flips >= 0);
+    const energy = m.optimizeVolume(tetCube, 5, false, true, true, 1e-6, 'energy');
+    assert.ok(energy.minQualityAfter >= energy.minQualityBefore - 1e-9); // monotone flips
+    assert.equal(energy.numEdgeRemovals + energy.numWorstSmoothed, 0);
+    assert.throws(() => m.optimizeVolume(tetCube, 5, true, true, true, 1e-6, 'best'), /objective/);
 });
 
 step('optimizeVolume is reachable as a convertSurfaceOps pipeline step', () => {

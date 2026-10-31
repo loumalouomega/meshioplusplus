@@ -4715,9 +4715,18 @@ def _register_operations(server: FastMCP) -> None:
         flip: bool = True,
         preserve_boundary: bool = True,
         min_improvement: float = 1e-6,
+        objective: str = "worst",
+        max_ring_size: int = 7,
     ) -> dict:
         """ODT-remesh a tetrahedral mesh: raise its worst element quality by
-        relocating vertices AND flipping connectivity (2-3/3-2, predicate-free).
+        relocating vertices AND changing connectivity, predicate-free.
+        objective="worst" (the default) raises the least dihedral angle and
+        never lowers it -- guarded ODT relocation, 2-3 flips, edge removal and
+        multi-face removal over rings of up to max_ring_size tets, and
+        worst-cell smoothing; "energy" is the ODT energy with scaled-Jacobian
+        flips, which can lower it. Reports the flip counts, num_edge_removals,
+        num_multi_face_removals, num_worst_smoothed, and the least scaled
+        Jacobian and dihedral angle (min_dihedral_before/after) in and out.
         The genuine "ODT remeshing" sibling of remesh_volume (which generates a
         fresh lattice mesh) and of smooth method="odt" (which only moves points
         on fixed connectivity). Tet-only and C++-core-only. The point set is
@@ -4735,6 +4744,8 @@ def _register_operations(server: FastMCP) -> None:
             flip=flip,
             preserve_boundary=preserve_boundary,
             min_improvement=min_improvement,
+            objective=objective,
+            max_ring_size=max_ring_size,
         )
 
     @server.tool()

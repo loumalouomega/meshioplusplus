@@ -291,6 +291,36 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(3) = 0
     end type
 
+    !> Interop mirror of C `mio_optimize_volume_opts` (ABI 37). Field order/types
+    !> are ABI; the defaults mirror `mio_optimize_volume_opts_init` (called anyway).
+    type, bind(c) :: mio_optimize_volume_opts_t
+        integer(c_int32_t) :: max_iterations = 10
+        integer(c_int32_t) :: relocate = 1
+        integer(c_int32_t) :: flip = 1
+        integer(c_int32_t) :: preserve_boundary = 1
+        real(c_double) :: min_improvement = 1.0e-6_c_double
+        integer(c_int32_t) :: objective = 0
+        integer(c_int32_t) :: max_ring_size = 7
+        integer(c_int64_t) :: reserved(8) = 0
+    end type
+
+    !> Interop mirror of C `mio_optimize_volume_report`.
+    type, bind(c) :: mio_optimize_volume_report_t
+        integer(c_int64_t) :: num_flips = 0
+        integer(c_int64_t) :: num_23_flips = 0
+        integer(c_int64_t) :: num_32_flips = 0
+        integer(c_int64_t) :: num_edge_removals = 0
+        integer(c_int64_t) :: num_multi_face_removals = 0
+        integer(c_int64_t) :: num_vertices_moved = 0
+        integer(c_int64_t) :: num_worst_smoothed = 0
+        integer(c_int64_t) :: num_tets = 0
+        real(c_double) :: min_quality_before = 0.0_c_double
+        real(c_double) :: min_quality_after = 0.0_c_double
+        real(c_double) :: min_dihedral_before = 0.0_c_double
+        real(c_double) :: min_dihedral_after = 0.0_c_double
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
     !> Interop mirror of C `mio_select_opts`. Field order/types are ABI; the
     !> defaults mirror `mio_select_opts_init` (called anyway).
     type, bind(c) :: mio_select_opts_t
@@ -2895,6 +2925,21 @@ module meshioplusplus
             real(c_double), value :: minimp
             integer(c_int64_t), intent(out) :: nflips, n23, n32, nmoved, ntets
             real(c_double), intent(out) :: qbefore, qafter
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_optimize_volume_opts_init(opts) &
+                bind(c, name="mio_optimize_volume_opts_init")
+            import :: mio_optimize_volume_opts_t
+            type(mio_optimize_volume_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_optimize_volume_ex(h, opts, report) &
+                bind(c, name="mio_optimize_volume_ex") result(r)
+            import :: c_ptr, mio_optimize_volume_opts_t, mio_optimize_volume_report_t
+            type(c_ptr), value :: h
+            type(mio_optimize_volume_opts_t), intent(in) :: opts
+            type(mio_optimize_volume_report_t), intent(out) :: report
             type(c_ptr) :: r
         end function
 
@@ -7075,14 +7120,21 @@ contains
         call clear_status(stat, errmsg)
     end function
 
-    !> ODT-remesh a tetrahedral mesh: relocate vertices AND flip connectivity
-    !> (2-3/3-2, predicate-free). Tet-only. The point set is invariant, so
-    !> point_data and named Point regions carry; cell_data and Cell/Side
-    !> regions are dropped. See doc/optimize_volume.md.
+    !> ODT-remesh a tetrahedral mesh: relocate vertices AND change connectivity,
+    !> predicate-free. Tet-only. `objective='worst'` (the default since ABI 37)
+    !> raises the least dihedral angle and never lowers it, with edge and
+    !> multi-face removal over rings of up to `max_ring_size` (7) tets and
+    !> worst-cell smoothing; `objective='energy'` is the ODT energy with
+    !> scaled-Jacobian flips. The point set is invariant, so point_data and named
+    !> Point regions carry; cell_data and Cell/Side regions are dropped. See
+    !> doc/optimize_volume.md.
     function mesh_optimize_volume(self, max_iterations, relocate, flip, preserve_boundary, &
                                   min_improvement, num_flips, num_23_flips, num_32_flips, &
                                   num_vertices_moved, num_tets, min_quality_before, &
-                                  min_quality_after, stat, errmsg) result(out)
+                                  min_quality_after, stat, errmsg, objective, max_ring_size, &
+                                  num_edge_removals, num_multi_face_removals, &
+                                  num_worst_smoothed, min_dihedral_before, &
+                                  min_dihedral_after) result(out)
         class(mio_mesh), intent(in) :: self
         integer, intent(in), optional :: max_iterations
         logical, intent(in), optional :: relocate, flip, preserve_boundary
@@ -7092,40 +7144,62 @@ contains
         real(real64), intent(out), optional :: min_quality_before, min_quality_after
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        character(*), intent(in), optional :: objective
+        integer, intent(in), optional :: max_ring_size
+        integer(int64), intent(out), optional :: num_edge_removals, num_multi_face_removals, &
+                                                 num_worst_smoothed
+        real(real64), intent(out), optional :: min_dihedral_before, min_dihedral_after
         type(mio_mesh) :: out
-        integer(c_int) :: cmaxiter, crel, cflip, cpresb
-        real(c_double) :: cminimp
-        integer(c_int64_t) :: nflips, n23, n32, nmoved, ntets
-        real(c_double) :: qbefore, qafter
-        cmaxiter = 10
-        if (present(max_iterations)) cmaxiter = int(max_iterations, c_int)
-        crel = 1
+        type(mio_optimize_volume_opts_t) :: opts
+        type(mio_optimize_volume_report_t) :: rep
+        if (c_sizeof(opts) /= 96_c_size_t .or. c_sizeof(rep) /= 128_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: optimize_volume layout mismatch'
+            error stop 1
+        end if
+        call c_mio_optimize_volume_opts_init(opts)
+        if (present(max_iterations)) opts%max_iterations = int(max_iterations, c_int32_t)
         if (present(relocate)) then
-            if (.not. relocate) crel = 0
+            if (.not. relocate) opts%relocate = 0
         end if
-        cflip = 1
         if (present(flip)) then
-            if (.not. flip) cflip = 0
+            if (.not. flip) opts%flip = 0
         end if
-        cpresb = 1
         if (present(preserve_boundary)) then
-            if (.not. preserve_boundary) cpresb = 0
+            if (.not. preserve_boundary) opts%preserve_boundary = 0
         end if
-        cminimp = 1.0e-6_c_double
-        if (present(min_improvement)) cminimp = real(min_improvement, c_double)
-        out%handle = c_mio_optimize_volume(self%handle, cmaxiter, crel, cflip, cpresb, cminimp, &
-                                           nflips, n23, n32, nmoved, ntets, qbefore, qafter)
+        if (present(min_improvement)) opts%min_improvement = real(min_improvement, c_double)
+        if (present(objective)) then
+            select case (trim(objective))
+            case ('worst')
+                opts%objective = 0
+            case ('energy')
+                opts%objective = 1
+            case default
+                call handle_failure('optimize_volume', "objective must be 'worst' or 'energy'", &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+        if (present(max_ring_size)) opts%max_ring_size = int(max_ring_size, c_int32_t)
+        out%handle = c_mio_optimize_volume_ex(self%handle, opts, rep)
         if (.not. c_associated(out%handle)) then
             call handle_failure('optimize_volume', mio_error_message(), stat, errmsg)
             return
         end if
-        if (present(num_flips)) num_flips = int(nflips, int64)
-        if (present(num_23_flips)) num_23_flips = int(n23, int64)
-        if (present(num_32_flips)) num_32_flips = int(n32, int64)
-        if (present(num_vertices_moved)) num_vertices_moved = int(nmoved, int64)
-        if (present(num_tets)) num_tets = int(ntets, int64)
-        if (present(min_quality_before)) min_quality_before = real(qbefore, real64)
-        if (present(min_quality_after)) min_quality_after = real(qafter, real64)
+        if (present(num_flips)) num_flips = int(rep%num_flips, int64)
+        if (present(num_23_flips)) num_23_flips = int(rep%num_23_flips, int64)
+        if (present(num_32_flips)) num_32_flips = int(rep%num_32_flips, int64)
+        if (present(num_vertices_moved)) num_vertices_moved = int(rep%num_vertices_moved, int64)
+        if (present(num_tets)) num_tets = int(rep%num_tets, int64)
+        if (present(min_quality_before)) min_quality_before = real(rep%min_quality_before, real64)
+        if (present(min_quality_after)) min_quality_after = real(rep%min_quality_after, real64)
+        if (present(num_edge_removals)) num_edge_removals = int(rep%num_edge_removals, int64)
+        if (present(num_multi_face_removals)) &
+            num_multi_face_removals = int(rep%num_multi_face_removals, int64)
+        if (present(num_worst_smoothed)) num_worst_smoothed = int(rep%num_worst_smoothed, int64)
+        if (present(min_dihedral_before)) &
+            min_dihedral_before = real(rep%min_dihedral_before, real64)
+        if (present(min_dihedral_after)) min_dihedral_after = real(rep%min_dihedral_after, real64)
         call clear_status(stat, errmsg)
     end function
 

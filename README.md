@@ -716,8 +716,10 @@ volume, report = meshioplusplus.tetrahedralize(surface, max_size=0.1, return_rep
 ```python
 out = meshioplusplus.optimize_volume(mesh)                       # a tetrahedral mesh
 out, report = meshioplusplus.optimize_volume(mesh, return_report=True)
-print(report["num_flips"], report["min_quality_before"], report["min_quality_after"])
+print(report["min_dihedral_before"], report["min_dihedral_after"])  # never lower, by default
 ```
+
+By default (`objective="worst"`) it raises the least dihedral angle and never lowers it — guarded relocation, 2-3 flips, edge removal, multi-face removal and worst-cell smoothing (Freitag and Ollivier-Gooch 1997; Klingner and Shewchuk 2007), taking Netgen's optimised sphere from 17.4 to 32.4 degrees; `objective="energy"` is the ODT energy with scaled-Jacobian flips it ran alone up to v18.0.0. See [`doc/optimize_volume.md`](doc/optimize_volume.md).
 
 The flips touch only interior faces/edges, so the boundary surface is preserved exactly (watertight in ⇒ watertight out); the point set is invariant, so `point_data`/`field_data` and named Point regions carry through while `cell_data`/Cell/Side regions are dropped. Tet-only, and (like `remesh_volume`) C++-core only.
 
