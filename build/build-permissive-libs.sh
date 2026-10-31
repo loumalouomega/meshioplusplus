@@ -194,8 +194,15 @@ if wanted hdf5; then
         echo "== HDF5 $HDF5_VERSION =="
         fetch "https://github.com/HDFGroup/hdf5/releases/download/hdf5_$HDF5_VERSION/hdf5-$HDF5_VERSION.tar.gz" \
               "hdf5-$HDF5_VERSION.tar.gz" "$HDF5_SHA256"
-        rm -rf "$WORK/hdf5"; mkdir -p "$WORK/hdf5"
-        tar -xzf "$DL/hdf5-$HDF5_VERSION.tar.gz" -C "$WORK/hdf5" --strip-components=1
+        # The release archive's layout is not the usual single top directory
+        # (`--strip-components=1` left no CMakeLists.txt), so find the source
+        # root instead of assuming its depth.
+        rm -rf "$WORK/hdf5" "$WORK/hdf5-unpack"; mkdir -p "$WORK/hdf5-unpack"
+        tar -xzf "$DL/hdf5-$HDF5_VERSION.tar.gz" -C "$WORK/hdf5-unpack"
+        root=$(find "$WORK/hdf5-unpack" -maxdepth 3 -name CMakeLists.txt -print | awk '{ print length, $0 }' | sort -n | head -n 1 | cut -d' ' -f2-)
+        [ -n "$root" ] || { echo "error: no CMakeLists.txt in the HDF5 archive" >&2; exit 1; }
+        mv "$(dirname "$root")" "$WORK/hdf5"
+        rm -rf "$WORK/hdf5-unpack"
         cmake_build hdf5 "$WORK/hdf5" \
             -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON -DONLY_SHARED_LIBS=OFF \
             -DHDF5_BUILD_TOOLS=OFF -DHDF5_BUILD_UTILS=OFF -DHDF5_BUILD_EXAMPLES=OFF \
