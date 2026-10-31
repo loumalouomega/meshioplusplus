@@ -73,6 +73,28 @@ if [ "$got" != "$NETGEN_COMMIT" ]; then
     exit 1
 fi
 
+# Netgen's CMake requires zlib, and a Windows runner has none to find: build the
+# pinned release (the one the main CMake vendors) as a static library, linked into
+# nglib so the wheel carries no zlib DLL.
+ZLIB_ARGS=""
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        ZLIB_PREFIX="$PREFIX/zlib"
+        if [ ! -f "$ZLIB_PREFIX/lib/zlibstatic.lib" ]; then
+            ZTAR="$WORK/zlib-1.3.1.tar.gz"
+            curl -fsSL --retry 3 -o "$ZTAR" https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz
+            echo "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23  $ZTAR" | sha256sum -c -
+            rm -rf "$WORK/zlib-src"; mkdir -p "$WORK/zlib-src"
+            tar -xzf "$ZTAR" -C "$WORK/zlib-src" --strip-components=1
+            cmake -S "$WORK/zlib-src" -B "$WORK/zlib-build" -DCMAKE_INSTALL_PREFIX="$ZLIB_PREFIX" \
+                -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+            cmake --build "$WORK/zlib-build" --config Release -j "$JOBS"
+            cmake --install "$WORK/zlib-build" --config Release
+        fi
+        ZLIB_ARGS="-DZLIB_LIBRARY=$ZLIB_PREFIX/lib/zlibstatic.lib -DZLIB_INCLUDE_DIR=$ZLIB_PREFIX/include"
+        ;;
+esac
+
 # nglib needs none of Netgen's optional components, and its version comes in by
 # option because the build is not from a describe-able checkout.
 cmake -S "$SRC" -B "$WORK/build" \
@@ -84,7 +106,7 @@ cmake -S "$SRC" -B "$WORK/build" \
     -DUSE_SUPERBUILD=OFF -DUSE_GUI=OFF -DUSE_PYTHON=OFF -DUSE_OCC=OFF \
     -DUSE_MPI=OFF -DUSE_NATIVE_ARCH=OFF -DUSE_JPEG=OFF -DUSE_MPEG=OFF \
     -DUSE_CGNS=OFF -DBUILD_STUB_FILES=OFF -DENABLE_UNIT_TESTS=OFF \
-    -DNGLIB_LIBRARY_TYPE=SHARED -DNGCORE_LIBRARY_TYPE=SHARED
+    -DNGLIB_LIBRARY_TYPE=SHARED -DNGCORE_LIBRARY_TYPE=SHARED $ZLIB_ARGS
 cmake --build "$WORK/build" --config Release -j "$JOBS"
 cmake --install "$WORK/build" --config Release
 rm -rf "$WORK/build" "$PREFIX/share/netgen"
