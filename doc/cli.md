@@ -110,6 +110,8 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `diff` | `diff`'s report plus `equal` (the exit-code decision); the Python CLI adds its `sets` section |
 | `convert` | `input`, `output`, `num_points`, `num_cells`, `cell_blocks`, the data names and `num_regions`; for a sequence, `mode`, `num_steps` and `num_files` |
 | `agglomerate` | `cells_in`, `cells_out`, `num_faces_merged` and `num_rejected` |
+| `tet-to-poly` | `cells_in`, `cells_out`, `num_new_points`, `num_boundary_faces` and `num_split_vertices` |
+| `poly-to-tet` | `cells_in`, `cells_out`, `num_exact_tets` and `num_fanned_cells` |
 | `resample` | `method`, `num_steps` and the target `times` |
 | `segment` | `num_patches`, `num_merged`, `num_feature_edges`, `num_boundary_edges` and `num_non_manifold_edges` |
 | `refine-patches` | `num_patches`, `num_iterations`, `num_splits`, `num_merges`, `num_absorbed`, `num_primitive`, `num_freeform`, `num_facets`, `tolerance`, `explained_area_fraction`, `initial_explained_area_fraction`, `hausdorff_max`, `hausdorff_rms`, `initial_energy`, `energy` and `stop` (`unchanged`, `small_gain`, `iteration_cap` or `energy_rose`) |
@@ -734,6 +736,54 @@ Non-volume blocks pass through unchanged; points are never pruned or renumbered 
 ```sh
 meshioplusplus agglomerate fine.vtu coarse.vtu --target-group-size 8
 meshioplusplus agglomerate fine.vtu coarse.vtu --merge-coplanar-faces --min-sphericity 0.7 --json
+```
+
+---
+
+## meshioplusplus tet-to-poly
+
+Convert a tetrahedral mesh into its polyhedral (median) dual: one polyhedron per vertex (see [tetrahedral ⇄ polyhedral](/tet_poly)).
+
+```
+meshioplusplus tet-to-poly [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--feature-angle DEG` | Boundary triangles whose normals differ by more start a new dual boundary face (default `1`) |
+| `--point-data-to-cell-data` | Also copy each vertex's `point_data` onto its dual cells as `cell_data` |
+| `--record-vertex-ids` | Attach a `dual:vertex` `cell_data` array with each cell's source vertex |
+| `--json` | Print `cells_in`, `cells_out`, `num_new_points`, `num_boundary_faces` and `num_split_vertices` as JSON |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Each `tetra` block becomes a `polyhedron` block and each `triangle` block a `polygon` block; other blocks are dropped. The input points keep their indices.
+
+**Example:**
+
+```sh
+meshioplusplus tet-to-poly domain.msh domain_poly.vtu --json
+```
+
+---
+
+## meshioplusplus poly-to-tet
+
+Decompose a polyhedral (or mixed) mesh into tetrahedra: `convert-cells --mode simplexify`, except that a polyhedron that already is a tetrahedron becomes that one `tetra` (see [tetrahedral ⇄ polyhedral](/tet_poly)).
+
+```
+meshioplusplus poly-to-tet [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--record-parent-ids` | Attach a `convert:parent_cell` `cell_data` array |
+| `--json` | Print `cells_in`, `cells_out`, `num_exact_tets` and `num_fanned_cells` as JSON |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+**Example:**
+
+```sh
+meshioplusplus poly-to-tet domain_poly.vtu domain_tets.vtu --json
 ```
 
 ---

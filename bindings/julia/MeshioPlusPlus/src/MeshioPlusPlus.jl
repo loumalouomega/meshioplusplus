@@ -123,7 +123,7 @@ export compute_curvature, compute_normals, feature_edges, hausdorff_distance, ch
 export segment, fit_primitives, refine_patches, fit_cad, has_occt
 export repair, shrinkwrap, sobolev_deform
 export interpolate, conservative_interpolate, meshes_equal, stats, compute_bandwidth
-export reorder, convert_cells, subdivide, agglomerate, refine, undo_green, decimate, partition, partition_labels
+export reorder, convert_cells, subdivide, agglomerate, tet_to_poly, poly_to_tet, refine, undo_green, decimate, partition, partition_labels
 export boundary_layer
 export extrude, revolve, mirror
 export find_intersections, thickness

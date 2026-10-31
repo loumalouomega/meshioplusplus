@@ -157,6 +157,8 @@ extern SEXP R_mio_split(SEXP, SEXP, SEXP);
 extern SEXP R_mio_convert_cells(SEXP, SEXP, SEXP);
 extern SEXP R_mio_subdivide(SEXP, SEXP);
 extern SEXP R_mio_agglomerate(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_tet_to_poly(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_poly_to_tet(SEXP, SEXP);
 extern SEXP R_mio_blend_steps(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_refine(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_tessellate(SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -373,6 +375,8 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_convert_cells, 3),
                                               CALLDEF(R_mio_subdivide, 2),
                                               CALLDEF(R_mio_agglomerate, 5),
+                                              CALLDEF(R_mio_tet_to_poly, 4),
+                                              CALLDEF(R_mio_poly_to_tet, 2),
                                               CALLDEF(R_mio_blend_steps, 4),
                                               CALLDEF(R_mio_refine, 11),
                                               CALLDEF(R_mio_tessellate, 5),

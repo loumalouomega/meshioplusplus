@@ -249,6 +249,11 @@ mio_write_snapshot("part.png", mesh)                       # .png .txt .ansi .ht
 
 Colours are numbers `0xRRGGBBAA` (`mio_rgba(r, g, b, a)`) or `c(r, g, b[, a])`; `clip = c(2, NA)` leaves the high end alone. The text is UTF-8 whatever the session's locale. `mio_detect_color_depth(no_color, color_term, term)` returns `"truecolor"`, `"256"`, `"16"` or `"mono"`.
 
+## Tetrahedral ⇄ polyhedral additions
+
+- `mio_tet_to_poly(mesh, feature_angle = 1, point_data_to_cell_data = FALSE, record_vertex_ids = FALSE)` — the median dual of a tetrahedral mesh, one polyhedron per vertex; returns `mesh`, `vertex_map` (a single flat 1-based vector, output cell → input vertex), `num_new_points`, `num_boundary_faces` and `num_split_vertices`. See [tetrahedral ⇄ polyhedral](/tet_poly).
+- `mio_poly_to_tet(mesh, record_parent_ids = FALSE)` — `mio_convert_cells(mesh, "simplexify")`, except that a polyhedron that already is a tetrahedron becomes that one tetra; returns `mesh`, `point_map`, `cell_maps`, `num_exact_tets` and `num_fanned_cells`.
+
 ## v15.4.0 additions
 
 - `mio_compute_normals(mesh, point_normals = TRUE, cell_normals = FALSE, weight = "angle", split_angle = NULL, record_parent_ids = FALSE, region = "")` — point and cell normals of a surface, written as `normals` (an `(n, 3)` point-data matrix; a cell-data array with `cell_normals`). `split_angle = NULL` gives one smooth normal per point; a number of degrees in `[0, 180]` duplicates points at creases so every point carries exactly one normal, appending the copies after the original points while cells keep their numbering. Returns a list of `mesh`, `quality`, `num_isolated`, `num_undefined`, `num_degenerate`, `num_split_points` and `num_added_points`. Never reorients: check `quality$inconsistent_pairs`. See [normals](/normals).

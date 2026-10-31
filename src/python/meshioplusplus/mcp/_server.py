@@ -3799,6 +3799,62 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def tet_to_poly(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        feature_angle: float = 1.0,
+        point_data_to_cell_data: bool = False,
+        record_vertex_ids: bool = False,
+    ) -> dict:
+        """Convert a tetrahedral mesh into its polyhedral (median) dual: one
+        polyhedron per vertex, bounded by the ring of tetrahedron and triangle
+        centroids around each edge and, on the boundary, by the boundary
+        triangles' pieces, fused while their normals differ by at most
+        feature_angle degrees (so feature edges and corners survive). A vertex
+        on an interface between tetra blocks gets one cell per block. Each
+        tetra block becomes a polyhedron block, each triangle block a polygon
+        block of its dual faces; other blocks are dropped. cell_data is
+        volume-weighted (floats) or the largest tet's value (integers);
+        point_data_to_cell_data copies each vertex's point data onto its cells;
+        record_vertex_ids adds dual:vertex. Reports num_new_points,
+        num_boundary_faces and num_split_vertices. See doc/tet_poly.md."""
+        return _guard(
+            _tools.tool_tet_to_poly,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            feature_angle=feature_angle,
+            point_data_to_cell_data=point_data_to_cell_data,
+            record_vertex_ids=record_vertex_ids,
+        )
+
+    @server.tool()
+    def poly_to_tet(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        record_parent_ids: bool = False,
+    ) -> dict:
+        """Decompose a polyhedral (or mixed) mesh into tetrahedra:
+        convert_cells(mode="simplexify"), except that a polyhedron that already
+        is a tetrahedron becomes that one tetra with no new points. Other
+        polyhedra use the volume-conserving corner-average fan; hexahedra,
+        wedges and pyramids the fixed templates. Reports num_exact_tets and
+        num_fanned_cells. See doc/tet_poly.md."""
+        return _guard(
+            _tools.tool_poly_to_tet,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            record_parent_ids=record_parent_ids,
+        )
+
+    @server.tool()
     def refine(
         input_path: str,
         output_path: str,

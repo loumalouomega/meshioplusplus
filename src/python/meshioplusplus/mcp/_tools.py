@@ -134,6 +134,7 @@ from .. import (
     plate_with_hole,
     platonic,
     point_data_to_cell_data,
+    poly_to_tet,
     power_spectrum,
     project_to_cad,
     proximity_graph,
@@ -175,6 +176,7 @@ from .. import (
     surface_watertight_check,
     tensor_invariants,
     tessellate,
+    tet_to_poly,
     tetra_sphere,
     tetrahedralize,
     thickness,
@@ -4168,6 +4170,53 @@ def tool_agglomerate(
     )
 
 
+def tool_tet_to_poly(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    feature_angle=1.0,
+    point_data_to_cell_data=False,
+    record_vertex_ids=False,
+):
+    """Convert a tetrahedral mesh into its polyhedral (median) dual."""
+    mesh = _load(input_path, input_format)
+    out, report = tet_to_poly(
+        mesh,
+        feature_angle=feature_angle,
+        point_data_to_cell_data=point_data_to_cell_data,
+        record_vertex_ids=record_vertex_ids,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_new_points=report["num_new_points"],
+        num_boundary_faces=report["num_boundary_faces"],
+        num_split_vertices=report["num_split_vertices"],
+    )
+
+
+def tool_poly_to_tet(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    record_parent_ids=False,
+):
+    """Decompose a polyhedral mesh into tetrahedra."""
+    mesh = _load(input_path, input_format)
+    out, report = poly_to_tet(
+        mesh, record_parent_ids=record_parent_ids, return_report=True
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_exact_tets=report["num_exact_tets"],
+        num_fanned_cells=report["num_fanned_cells"],
+    )
+
+
 def tool_refine(
     input_path,
     output_path,
@@ -6852,6 +6901,14 @@ TOOL_REGISTRY = OrderedDict(
         (
             "agglomerate",
             {"fn": tool_agglomerate, "wraps": ("agglomerate",), "gated": None},
+        ),
+        (
+            "tet_to_poly",
+            {"fn": tool_tet_to_poly, "wraps": ("tet_to_poly",), "gated": None},
+        ),
+        (
+            "poly_to_tet",
+            {"fn": tool_poly_to_tet, "wraps": ("poly_to_tet",), "gated": None},
         ),
         ("refine", {"fn": tool_refine, "wraps": ("refine",), "gated": None}),
         (

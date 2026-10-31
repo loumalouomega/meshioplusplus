@@ -134,6 +134,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
+#include "meshioplusplus/operations/tet_poly.hpp"
 
 namespace {
 
@@ -693,6 +694,12 @@ MIO_ABI_LAYOUT(meshioplusplus::ContactPairsResult, 648, 8);
 static_assert(sizeof(meshioplusplus::InterfaceMode) == 4 &&
                   sizeof(meshioplusplus::InterfaceMaster) == 4,
               "meshio++ ABI: interface enum underlying width changed (Tier A, doc/abi.md)");
+
+// Tetrahedral <-> polyhedral conversion is additive; its options are passed by
+// const-ref through the exported `tet_to_poly()`/`poly_to_tet()` and pinned
+// from the release that introduces them. Both results embed a Mesh.
+MIO_ABI_LAYOUT(meshioplusplus::TetToPolyOptions, 16, 8);
+MIO_ABI_LAYOUT(meshioplusplus::PolyToTetOptions, 1, 1);
 
 // --- The mesh itself, which IS the backend ----------------------------------
 // Each backend gets its own line because Mesh is a different type per backend;

@@ -45,6 +45,13 @@ export interface AgglomerateOptions {
   minSphericity?: number;
 }
 
+/** `tetToPoly`'s options (see doc/tet_poly.md). */
+export interface TetToPolyOptions {
+  featureAngle?: number;
+  pointDataToCellData?: boolean;
+  recordVertexIds?: boolean;
+}
+
 /** `resampleSequence`'s options: the settings document's `Resample` object. */
 export interface ResampleOptions {
   Times?: number[] | { Start: number; Stop: number; Step: number };
@@ -3968,6 +3975,48 @@ export interface MeshioPlusPlusModule {
     returnMaps: true,
     options?: AgglomerateOptions,
   ): { mesh: Mesh; cellMap: Int32Array; numFacesMerged: number; numRejected: number };
+
+  /**
+   * Convert a tetrahedral mesh into its polyhedral (median) dual: one
+   * polyhedron per vertex, bounded by the ring of tetrahedron and triangle
+   * centroids around each edge and, on the boundary, by the boundary
+   * triangles' pieces, fused while their normals differ by at most
+   * `options.featureAngle` degrees (default 1). A vertex on an interface
+   * between tetra blocks gets one cell per block; each tetra block becomes a
+   * polyhedron block and each triangle block a polygon block.
+   * @throws {Error} when a volume block is not linear tetra, the mesh has no
+   *   tetrahedra, or a face is shared by three or more tetrahedra.
+   *
+   * With `returnMaps: true`, returns the flat `vertexMap` (output global
+   * cell -> input vertex) and the counts. See doc/tet_poly.md.
+   */
+  tetToPoly(mesh: Mesh, options?: TetToPolyOptions, returnMaps?: false): Mesh;
+  tetToPoly(
+    mesh: Mesh,
+    options: TetToPolyOptions | undefined,
+    returnMaps: true,
+  ): {
+    mesh: Mesh;
+    vertexMap: Int32Array;
+    numNewPoints: number;
+    numBoundaryFaces: number;
+    numSplitVertices: number;
+  };
+
+  /**
+   * Decompose a polyhedral (or mixed) mesh into tetrahedra: `convertCells`
+   * with `"simplexify"`, except that a polyhedron that already is a
+   * tetrahedron becomes that one tetra, with no new points.
+   *
+   * With `returnMaps: true`, returns `{mesh, pointMap, cellMaps}` and the
+   * counts. See doc/tet_poly.md.
+   */
+  polyToTet(mesh: Mesh, recordParentIds?: boolean, returnMaps?: false): Mesh;
+  polyToTet(
+    mesh: Mesh,
+    recordParentIds: boolean | undefined,
+    returnMaps: true,
+  ): PointCellMaps & { mesh: Mesh; numExactTets: number; numFannedCells: number };
 
   /**
    * Refine a mesh, subdividing cells into same-type children (`line` → 2,
