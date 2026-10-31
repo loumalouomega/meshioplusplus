@@ -1476,7 +1476,9 @@ function(meshioplusplus_add_core_variant backend)
     # macOS needs nothing: its two-level namespace binds each symbol to the
     # image that defines it, so h5py's HDF5 and ours cannot interpose; Windows
     # DLLs export only what they list.
-    string(REPLACE ";" "," _mio_hidden_archives "${MESHIOPLUSPLUS_HIDDEN_ARCHIVES}")
+    # Colon-separated: gcc splits -Wl,... on commas, so a comma list would hand
+    # every archive after the first to the linker as an input file.
+    string(REPLACE ";" ":" _mio_hidden_archives "${MESHIOPLUSPLUS_HIDDEN_ARCHIVES}")
     target_link_options(${_lib} PRIVATE "LINKER:--exclude-libs,${_mio_hidden_archives}")
   endif()
   if(MESHIOPLUSPLUS_PYTHON_SHARED_CORE)
