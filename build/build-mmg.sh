@@ -9,6 +9,11 @@
 #
 # libmmg is given an RPATH to PREFIX/lib, so it finds ELAS there by itself.
 #
+# Windows (Git Bash, with a Visual Studio toolchain on the PATH): the same command;
+# the DLLs land in PREFIX/bin and their import libraries in PREFIX/lib. MMG gets
+# every symbol exported (it carries no dllexport annotations) and the default /MD
+# runtime, as the Netgen and OpenCASCADE add-on builds use.
+#
 # Then configure meshio++ with -DMESHIOPLUSPLUS_WITH_MMG=ON -Dmmg_DIR=PREFIX/lib/cmake/mmg
 # (or build/configure.sh --with-mmg --mmg-root PREFIX), and put PREFIX/lib on
 # LD_LIBRARY_PATH when running a Python build, whose RPATH scikit-build-core strips.
@@ -60,7 +65,14 @@ mkdir -p "$PREFIX"
 PREFIX=$(CDPATH= cd -- "$PREFIX" && pwd)
 [ -n "$WORK" ] || WORK="$PREFIX/_work"
 mkdir -p "$WORK"
-[ -n "$JOBS" ] || JOBS=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
+[ -n "$JOBS" ] || JOBS=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo "${NUMBER_OF_PROCESSORS:-2}")
+
+# A Visual Studio generator is multi-configuration: --config picks Release on
+# build and install (the single-configuration generators ignore it).
+MMG_PLATFORM_CMAKE="-DCMAKE_INSTALL_RPATH=$PREFIX/lib"
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) MMG_PLATFORM_CMAKE="-DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON" ;;
+esac
 
 if [ "$FORCE" = "no" ] && [ -f "$PREFIX/lib/cmake/mmg/mmgConfig.cmake" ]; then
     if [ "$WITH_ELAS" = "no" ] || [ -n "$(ls "$PREFIX"/lib/libElas.* 2>/dev/null)" ]; then
@@ -86,8 +98,8 @@ if [ "$WITH_ELAS" = "yes" ]; then
     for dep in commons elas; do
         HOME="$PREFIX" cmake -S "$WORK/$dep" -B "$WORK/$dep-build" -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-        HOME="$PREFIX" cmake --build "$WORK/$dep-build" -j "$JOBS"
-        HOME="$PREFIX" cmake --install "$WORK/$dep-build"
+        HOME="$PREFIX" cmake --build "$WORK/$dep-build" --config Release -j "$JOBS"
+        HOME="$PREFIX" cmake --install "$WORK/$dep-build" --config Release
     done
     MMG_CMAKE_ELAS="-DUSE_ELAS=ON -DELAS_DIR=$PREFIX"
 fi
@@ -95,9 +107,9 @@ fi
 fetch https://github.com/MmgTools/mmg "$MMG_VERSION" "$WORK/mmg"
 # shellcheck disable=SC2086
 cmake -S "$WORK/mmg" -B "$WORK/mmg-build" -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_RPATH="$PREFIX/lib" \
+    -DCMAKE_INSTALL_PREFIX="$PREFIX" $MMG_PLATFORM_CMAKE \
     -DBUILD_SHARED_LIBS=ON -DBUILD_TESTING=OFF \
     -DUSE_SCOTCH=OFF -DUSE_VTK=OFF -DMMG5_INT=int32_t $MMG_CMAKE_ELAS
-cmake --build "$WORK/mmg-build" -j "$JOBS"
-cmake --install "$WORK/mmg-build"
+cmake --build "$WORK/mmg-build" --config Release -j "$JOBS"
+cmake --install "$WORK/mmg-build" --config Release
 echo "build-mmg: MMG $MMG_VERSION installed in $PREFIX (ELAS: $WITH_ELAS)"
