@@ -5766,6 +5766,25 @@ step('findIntersections and thickness (roadmap 3.1.2, 3.1.4)', () => {
     assert.throws(() => m.thickness(a, { direction: 'sideways' }), /direction/);
 });
 
+step('selectRegion writes one named region', () => {
+    const box = m.box([2, 2, 2], [2, 2, 2]);
+    const left = m.selectRegion(box, 'left', {
+        kind: 'side', box: [-1, -1, -1, 1e-9, 3, 3],
+    });
+    assert.equal(left.numCandidates, 24);
+    assert.equal(left.numSelected, 4);
+    assert.equal(left.numGrown, -1);
+    assert.ok(left.mesh.regions.some(r => r.name === 'left' && r.kind === 'side'));
+    const top = m.selectRegion(box, 'top', { kind: 'side', seed: [1, 1, 5] });
+    assert.equal(top.numGrown, 4);
+    const half = m.selectRegion(box, 'half', {
+        plane: [1, 0, 0, 1, 0, 0], mode: 'centroid', quality: ['scaled_jacobian', '>', 0.5],
+    });
+    assert.equal(half.numSelected, 4);
+    assert.throws(() => m.selectRegion(box, 'none'), /criterion/);
+    assert.throws(() => m.selectRegion(box, 'x', { bogus: 1 }), /bogus/);
+});
+
 step('findInterface, contactPairs and splitInterface', () => {
     const parts = {
         points: new Float64Array([

@@ -1356,6 +1356,59 @@ mio_segment <- function(mesh, feature_angle = 30, normal_tolerance = 0,
   )
 }
 
+#' Write a named region chosen by geometry, data, quality, component or growth
+#'
+#' Selects points, cells or sides and writes them as one named region; the mesh
+#' comes back unchanged plus that region (a region of the same name and kind is
+#' replaced). A candidate is selected when it passes every criterion given; at
+#' least one is required. See `doc/select.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param name The region's name.
+#' @param kind `"cell"`, `"point"` or `"side"` (faces of the 3-D cells, or
+#'   edges of the 2-D cells when there are none).
+#' @param box `c(xmin, ymin, zmin, xmax, ymax, zmax)`, or `NULL`.
+#' @param plane `c(px, py, pz, nx, ny, nz)`: inside is `(p - point) . normal >= 0`.
+#' @param sphere `c(cx, cy, cz, r)`, the closed ball.
+#' @param where_array,where_op,where_value A comparison on a scalar point-data
+#'   (points) or cell-data (cells; a side takes its cell's value) array; `""`
+#'   is off.
+#' @param quality_metric,quality_op,quality_value The same comparison on a
+#'   quality metric (as `mio_attach_quality()` names them, without the
+#'   `quality:` prefix); cells and sides only.
+#' @param component The k-th node-connected component, 1-based, in the order
+#'   `mio_split(by = "component")` returns its pieces; `NULL` is off.
+#' @param seed `c(x, y, z)`: grow a patch from the facet nearest it across the
+#'   edges no sharper than `feature_angle`; `NULL` is off.
+#' @param feature_angle The largest dihedral angle, in degrees, the growth crosses.
+#' @param normal_tolerance The largest angle, in degrees, between a grown
+#'   facet's normal and the seed's; 0 is off.
+#' @param mode How a cell or side reduces its nodes for `box`, `plane` and
+#'   `sphere`: `"all"`, `"any"` or `"centroid"`.
+#' @param boundary_only Side regions consider only facets owned by one cell.
+#' @param tag The region's integer tag; -1 for none.
+#' @return A list of `mesh`, `num_candidates`, `num_selected`, `num_grown` (-1
+#'   without a seed) and `num_components` (-1 without that criterion).
+#' @export
+mio_select <- function(mesh, name, kind = "cell", box = NULL, plane = NULL, sphere = NULL,
+                       where_array = "", where_op = "<", where_value = 0,
+                       quality_metric = "", quality_op = "<", quality_value = 0,
+                       component = NULL, seed = NULL, feature_angle = 30,
+                       normal_tolerance = 0, mode = "all", boundary_only = TRUE, tag = -1) {
+  .Call(
+    R_mio_select, mesh, as.character(name), as.character(kind), as.numeric(tag),
+    as.character(mode), as.logical(boundary_only),
+    if (is.null(box)) NULL else as.numeric(unlist(box)),
+    if (is.null(plane)) NULL else as.numeric(unlist(plane)),
+    if (is.null(sphere)) NULL else as.numeric(unlist(sphere)),
+    as.character(where_array), as.character(where_op), as.numeric(where_value),
+    as.character(quality_metric), as.character(quality_op), as.numeric(quality_value),
+    if (is.null(component)) NULL else as.numeric(component),
+    if (is.null(seed)) NULL else as.numeric(seed),
+    as.numeric(feature_angle), as.numeric(normal_tolerance)
+  )
+}
+
 #' Fit analytic primitives to the patches of a surface
 #'
 #' Fits a plane, sphere, cylinder, cone or torus to each patch (the

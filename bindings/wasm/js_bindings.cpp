@@ -123,6 +123,7 @@
 #include "meshioplusplus/operations/refine_patches.hpp"
 #include "meshioplusplus/operations/iga.hpp"
 #include "meshioplusplus/operations/segment.hpp"
+#include "meshioplusplus/operations/select.hpp"
 #include "meshioplusplus/operations/tessellate.hpp"
 #include "meshioplusplus/operations/tet_poly.hpp"
 #include "meshioplusplus/operations/render.hpp"
@@ -8105,6 +8106,94 @@ val mirror_js(const val& rMeshObj, const val& rOptions) {
     });
 }
 
+// select_region: one named region chosen by geometry, data, quality,
+// component or a grown patch; see operations/select.hpp. Options {kind, tag,
+// mode, boundaryOnly, box: [6], plane: [6], sphere: [4], where: [name, op,
+// value], quality: [metric, op, value], component, seed: [3], featureAngle,
+// normalTolerance}, all optional; at least one criterion is required.
+val select_region_js(const val& rMeshObj, const std::string& rName, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::SelectOptions o;
+        o.mName = rName;
+        const auto numbers = [&](const char* pKey, std::size_t N) {
+            const std::vector<double> v = emscripten::vecFromJSArray<double>(rOptions[pKey]);
+            if (v.size() != N)
+                throw std::invalid_argument(std::string("meshio++: selectRegion: ") + pKey +
+                                            " must hold " + std::to_string(N) + " numbers");
+            return v;
+        };
+        const auto comparison = [&](const char* pKey, std::string& rArray,
+                                    meshioplusplus::RefineCompare& rOp, double& rValue) {
+            const val t = rOptions[pKey];
+            if (t["length"].as<int>() != 3)
+                throw std::invalid_argument(std::string("meshio++: selectRegion: ") + pKey +
+                                            " must be [name, op, value]");
+            rArray = t[0].as<std::string>();
+            rOp = meshioplusplus::refine_compare_from_name(t[1].as<std::string>());
+            rValue = t[2].as<double>();
+        };
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(
+                rOptions, "the selectRegion options",
+                {"kind", "tag", "mode", "boundaryOnly", "box", "plane", "sphere", "where",
+                 "quality", "component", "seed", "featureAngle", "normalTolerance"});
+            const auto has = [&](const char* pKey) {
+                return rOptions.hasOwnProperty(pKey) && !rOptions[pKey].isUndefined() &&
+                       !rOptions[pKey].isNull();
+            };
+            if (has("kind"))
+                o.mKind = meshioplusplus::region_kind_from_name(rOptions["kind"].as<std::string>());
+            if (has("tag"))
+                o.mTag = static_cast<std::int64_t>(rOptions["tag"].as<double>());
+            if (has("mode"))
+                o.mMode = meshioplusplus::select_mode_from_name(rOptions["mode"].as<std::string>());
+            if (has("boundaryOnly"))
+                o.mBoundaryOnly = rOptions["boundaryOnly"].as<bool>();
+            if (has("box")) {
+                const auto v = numbers("box", 6);
+                o.mBox = true;
+                o.mBoxLo = {v[0], v[1], v[2]};
+                o.mBoxHi = {v[3], v[4], v[5]};
+            }
+            if (has("plane")) {
+                const auto v = numbers("plane", 6);
+                o.mPlane = true;
+                o.mPlanePoint = {v[0], v[1], v[2]};
+                o.mPlaneNormal = {v[3], v[4], v[5]};
+            }
+            if (has("sphere")) {
+                const auto v = numbers("sphere", 4);
+                o.mSphere = true;
+                o.mSphereCenter = {v[0], v[1], v[2]};
+                o.mSphereRadius = v[3];
+            }
+            if (has("where"))
+                comparison("where", o.mWhereArray, o.mWhereOp, o.mWhereValue);
+            if (has("quality"))
+                comparison("quality", o.mQualityMetric, o.mQualityOp, o.mQualityValue);
+            if (has("component"))
+                o.mComponent = static_cast<std::int64_t>(rOptions["component"].as<double>());
+            if (has("seed")) {
+                const auto v = numbers("seed", 3);
+                o.mSeed = true;
+                o.mSeedPoint = {v[0], v[1], v[2]};
+            }
+            if (has("featureAngle"))
+                o.mFeatureAngleDeg = rOptions["featureAngle"].as<double>();
+            if (has("normalTolerance"))
+                o.mNormalToleranceDeg = rOptions["normalTolerance"].as<double>();
+        }
+        meshioplusplus::SelectResult r = meshioplusplus::select_region(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numCandidates", static_cast<double>(r.mNumCandidates));
+        out.set("numSelected", static_cast<double>(r.mNumSelected));
+        out.set("numGrown", static_cast<double>(r.mNumGrown));
+        out.set("numComponents", static_cast<double>(r.mNumComponents));
+        return out;
+    });
+}
+
 // find_intersections (roadmap 3.1.2): where a surface intersects itself, or
 // (options.other) where two surfaces meet; options {other, region,
 // regionOther, segments, maxPairs}, all optional. `pairs` is an Int32Array of
@@ -8298,7 +8387,7 @@ bool has_netgen_js() {
 }
 
 // The MMG backend (roadmap 3.2): never in either WebAssembly artifact until
-// the port of roadmap 3.2.8, so the MMG operations are not bound here.
+// the port of roadmap 3.1.8, so the MMG operations are not bound here.
 bool has_mmg_js() {
     return meshioplusplus::mmg_available();
 }
@@ -8874,6 +8963,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("computeNormals", &compute_normals_js);
     emscripten::function("featureEdges", &feature_edges_js);
     emscripten::function("segment", &segment_js);
+    emscripten::function("selectRegion", &select_region_js);
     emscripten::function("fitPrimitives", &fit_primitives_js);
     emscripten::function("fitCad", &fit_cad_js);
     emscripten::function("refinePatches", &refine_patches_js);

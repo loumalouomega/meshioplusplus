@@ -142,6 +142,7 @@
 #include "meshioplusplus/operations/iga.hpp"
 #include "meshioplusplus/operations/refine_patches.hpp"
 #include "meshioplusplus/operations/segment.hpp"
+#include "meshioplusplus/operations/select.hpp"
 #include "meshioplusplus/operations/tessellate.hpp"
 #include "meshioplusplus/operations/tet_poly.hpp"
 #include "meshioplusplus/operations/render.hpp"
@@ -5178,6 +5179,86 @@ PYBIND11_MODULE(_core, m) {
         py::arg("curvature_tolerance") = 0.0, py::arg("min_patch_cells") = 1,
         py::arg("region") = "", py::arg("prefix") = "patch", py::arg("method") = "angle",
         py::arg("tolerance") = 1e-3);
+
+    // A named region chosen by geometry, data, quality, component or growth.
+    // See operations/select.hpp. Each optional criterion arrives as None or a
+    // tuple: box (lo, hi), plane (point, normal), sphere (center, radius),
+    // where/quality (name, op, value), seed (x, y, z).
+    m.def(
+        "select_region",
+        [](py::object pymesh, const std::string& name, const std::string& kind, std::int64_t tag,
+           const std::string& mode, bool boundary_only, py::object box, py::object plane,
+           py::object sphere, py::object where, py::object quality, std::int64_t component,
+           py::object seed, double feature_angle, double normal_tolerance) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            const auto vec3 = [](py::handle h, const char* what) {
+                const auto v = h.cast<std::vector<double>>();
+                if (v.size() != 3)
+                    throw py::value_error(std::string("meshio++: select: ") + what +
+                                          " must have three components");
+                return std::array<double, 3>{v[0], v[1], v[2]};
+            };
+            meshioplusplus::SelectOptions o;
+            o.mName = name;
+            o.mKind = meshioplusplus::region_kind_from_name(kind);
+            o.mTag = tag;
+            o.mMode = meshioplusplus::select_mode_from_name(mode);
+            o.mBoundaryOnly = boundary_only;
+            if (!box.is_none()) {
+                const auto t = box.cast<py::sequence>();
+                o.mBox = true;
+                o.mBoxLo = vec3(t[0], "the box's lower corner");
+                o.mBoxHi = vec3(t[1], "the box's upper corner");
+            }
+            if (!plane.is_none()) {
+                const auto t = plane.cast<py::sequence>();
+                o.mPlane = true;
+                o.mPlanePoint = vec3(t[0], "the plane's point");
+                o.mPlaneNormal = vec3(t[1], "the plane's normal");
+            }
+            if (!sphere.is_none()) {
+                const auto t = sphere.cast<py::sequence>();
+                o.mSphere = true;
+                o.mSphereCenter = vec3(t[0], "the sphere's centre");
+                o.mSphereRadius = t[1].cast<double>();
+            }
+            if (!where.is_none()) {
+                const auto t = where.cast<py::sequence>();
+                o.mWhereArray = t[0].cast<std::string>();
+                o.mWhereOp = meshioplusplus::refine_compare_from_name(t[1].cast<std::string>());
+                o.mWhereValue = t[2].cast<double>();
+            }
+            if (!quality.is_none()) {
+                const auto t = quality.cast<py::sequence>();
+                o.mQualityMetric = t[0].cast<std::string>();
+                o.mQualityOp = meshioplusplus::refine_compare_from_name(t[1].cast<std::string>());
+                o.mQualityValue = t[2].cast<double>();
+            }
+            o.mComponent = component;
+            if (!seed.is_none()) {
+                o.mSeed = true;
+                o.mSeedPoint = vec3(seed, "the seed");
+            }
+            o.mFeatureAngleDeg = feature_angle;
+            o.mNormalToleranceDeg = normal_tolerance;
+            meshioplusplus::SelectResult r =
+                core_nogil([&] { return meshioplusplus::select_region(cpp, o); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_candidates"] = r.mNumCandidates;
+            out["num_selected"] = r.mNumSelected;
+            out["num_grown"] = r.mNumGrown;
+            out["num_components"] = r.mNumComponents;
+            return out;
+        },
+        py::arg("mesh"), py::arg("name"), py::arg("kind") = "cell", py::arg("tag") = -1,
+        py::arg("mode") = "all", py::arg("boundary_only") = true, py::arg("box") = py::none(),
+        py::arg("plane") = py::none(), py::arg("sphere") = py::none(),
+        py::arg("where") = py::none(), py::arg("quality") = py::none(), py::arg("component") = -1,
+        py::arg("seed") = py::none(), py::arg("feature_angle") = 30.0,
+        py::arg("normal_tolerance") = 0.0);
 
     // Plane/sphere/cylinder/cone/torus fits per patch. See operations/fit_primitives.hpp.
     m.def(

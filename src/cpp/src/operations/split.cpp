@@ -21,7 +21,6 @@
 // operations/split.hpp for the contract.
 
 // System includes
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
@@ -38,7 +37,7 @@
 #include "meshioplusplus/region.hpp"
 
 // Project includes (private, not installed)
-#include "../detail/typed_view.hpp"
+#include "../detail/cell_components.hpp"
 
 namespace meshioplusplus {
 
@@ -53,50 +52,6 @@ struct SplitGroup {
 // Ensure every group has one (possibly empty) kept list per input block.
 void split_init_group(SplitGroup& rG, std::size_t nblocks) {
     rG.kept.assign(nblocks, {});
-}
-
-// Union-find over global cell indices (flood-fill for connected components).
-std::int64_t split_uf_find(std::vector<std::int64_t>& rParent, std::int64_t x) {
-    while (rParent[static_cast<std::size_t>(x)] != x) {
-        rParent[static_cast<std::size_t>(x)] =
-            rParent[static_cast<std::size_t>(rParent[static_cast<std::size_t>(x)])];
-        x = rParent[static_cast<std::size_t>(x)];
-    }
-    return x;
-}
-
-void split_uf_union(std::vector<std::int64_t>& rParent, std::int64_t a, std::int64_t b) {
-    std::int64_t ra = split_uf_find(rParent, a), rb = split_uf_find(rParent, b);
-    if (ra != rb)
-        rParent[static_cast<std::size_t>(std::max(ra, rb))] = std::min(ra, rb);
-}
-
-// Visit each node index of one cell (rectangular / polygon / polyhedron).
-template <class F>
-void split_visit_nodes(const Mesh::CellView& rCb, std::size_t c, F&& f) {
-    if (rCb.IsPolyhedron()) {
-        for (std::size_t face = 0; face < rCb.NumFaces(c); ++face) {
-            auto fc = rCb.Face(c, face);
-            for (std::size_t k = 0; k < fc.second; ++k)
-                f(fc.first[k]);
-        }
-    } else if (rCb.IsRagged()) {
-        for (std::size_t k = 0; k < rCb.RowSize(c); ++k)
-            f(rCb.Row(c)[k]);
-    } else {
-        const NDArray& conn = rCb.Conn();
-        const std::size_t npc = rCb.NodesPerCell();
-        for (std::size_t k = 0; k < npc; ++k)
-            f(detail::read_int(conn, c * npc + k));
-    }
-}
-
-// The same visit over a rectangular block whose connectivity was read once
-// (`pConn`, `npc` ids per cell).
-template <class F>
-void split_visit_rect(const std::int64_t* pConn, std::size_t npc, std::size_t c, F&& f) {
-    for (std::size_t k = 0; k < npc; ++k)
-        f(pConn[c * npc + k]);
 }
 
 std::vector<SplitGroup> split_by_type(const Mesh& rMesh) {
@@ -127,73 +82,23 @@ std::vector<SplitGroup> split_by_type(const Mesh& rMesh) {
 
 std::vector<SplitGroup> split_by_component(const Mesh& rMesh) {
     const std::size_t nblocks = rMesh.NumCellBlocks();
-    const std::size_t n = rMesh.NumPoints();
-
-    // Global cell numbering (blocks concatenated in order).
-    std::vector<std::size_t> block_base(nblocks + 1, 0);
-    std::size_t bi = 0;
-    for (const auto cb : rMesh.CellRange()) {
-        block_base[bi + 1] = block_base[bi] + cb.NumCells();
-        ++bi;
-    }
-    const std::size_t total = block_base[nblocks];
-
-    std::vector<std::int64_t> parent(total);
-    parallel_for_bw(total, [&](std::size_t i) { parent[i] = static_cast<std::int64_t>(i); });
-
-    // Union cells that share a node (first cell per node as the anchor). The
-    // sweep is order-dependent and stays serial; a rectangular block's
-    // connectivity is read once, not through a dtype switch per id.
-    std::vector<std::int64_t> node_first(n, -1);
-    bi = 0;
-    for (const auto cb : rMesh.CellRange()) {
-        const auto visit = [&](std::size_t c, std::int64_t node) {
-            const std::int64_t gc = static_cast<std::int64_t>(block_base[bi] + c);
-            std::int64_t& first = node_first[static_cast<std::size_t>(node)];
-            if (first < 0)
-                first = gc;
-            else
-                split_uf_union(parent, first, gc);
-        };
-        if (!cb.IsPolyhedron() && !cb.IsRagged()) {
-            const detail::Int64View conn(cb.Conn());
-            const std::size_t npc = cb.NodesPerCell();
-            for (std::size_t c = 0; c < cb.NumCells(); ++c)
-                split_visit_rect(conn.Data(), npc, c, [&](std::int64_t node) { visit(c, node); });
-        } else {
-            for (std::size_t c = 0; c < cb.NumCells(); ++c)
-                split_visit_nodes(cb, c, [&](std::int64_t node) { visit(c, node); });
-        }
-        ++bi;
-    }
-
-    // Every root is its component's smallest cell (a union points the larger
-    // root at the smaller) and parent[x] <= x, so one ascending pass resolves
-    // each cell's root. Pieces are numbered in first-seen (ascending gc)
-    // order: a component's first cell is its root, so the piece of a cell is
-    // the number of roots before its own -- a scan of the root flags.
-    for (std::size_t gc = 0; gc < total; ++gc)
-        parent[gc] = parent[static_cast<std::size_t>(parent[gc])];
-    std::vector<std::uint64_t> is_root(total);
-    parallel_for_bw(total, [&](std::size_t gc) {
-        is_root[gc] = parent[gc] == static_cast<std::int64_t>(gc) ? 1 : 0;
-    });
-    std::vector<std::uint64_t> piece_at(total);
-    const std::uint64_t npieces =
-        parallel_exclusive_scan(is_root.data(), total, piece_at.data(), std::uint64_t{0});
+    // The labelling is shared with select_region's component criterion, so the
+    // k-th piece here is its k-th component.
+    const detail::CellComponents comps = detail::cell_components(rMesh);
+    const std::size_t npieces = static_cast<std::size_t>(comps.mCount);
 
     std::vector<SplitGroup> groups(npieces);
     parallel_for(npieces, [&](std::size_t gi) {
         groups[gi].key = std::to_string(gi);
         split_init_group(groups[gi], nblocks);
     });
-    for (std::size_t b = 0; b < nblocks; ++b)
-        for (std::size_t c = 0; c < block_base[b + 1] - block_base[b]; ++c) {
-            const std::size_t gc = block_base[b] + c;
-            groups[piece_at[static_cast<std::size_t>(parent[gc])]].kept[b].push_back(
+    std::size_t gc = 0;
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const std::size_t nc = rMesh.Cells(b).NumCells();
+        for (std::size_t c = 0; c < nc; ++c, ++gc)
+            groups[static_cast<std::size_t>(comps.mLabel[gc])].kept[b].push_back(
                 static_cast<std::int64_t>(c));
-        }
-
+    }
     return groups;
 }
 

@@ -1538,6 +1538,21 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
   expect_equal(fe$num_boundary, 0)
   expect_error(mio_feature_edges(m, feature_angle = 200))
 
+  sel <- mio_select(m, "top", seed = c(0.5, 0.5, 2))
+  on.exit(mio_release(sel$mesh), add = TRUE)
+  expect_equal(sel$num_selected, 2)
+  expect_equal(sel$num_grown, 2)
+  low <- mio_select(m, "low", kind = "point", box = c(-1, -1, -1, 2, 2, 0.5))
+  on.exit(mio_release(low$mesh), add = TRUE)
+  expect_equal(low$num_selected, 4)
+  one <- mio_select(m, "all", component = 1, quality_metric = "min_angle",
+                    quality_op = ">", quality_value = 0)
+  on.exit(mio_release(one$mesh), add = TRUE)
+  expect_equal(one$num_selected, 12)
+  expect_equal(one$num_components, 1)
+  expect_error(mio_select(m, "none"))
+  expect_error(mio_select(m, "x", kind = "edge", component = 1))
+
   sg <- mio_segment(m)
   on.exit(mio_release(sg$mesh), add = TRUE)
   expect_equal(sg$num_patches, 6)

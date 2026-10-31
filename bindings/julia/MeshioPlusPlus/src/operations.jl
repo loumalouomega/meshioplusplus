@@ -3278,6 +3278,77 @@ function segment(m::Mesh; feature_angle::Real=30.0, normal_tolerance::Real=0.0,
      num_non_manifold_edges=Int(rep.num_non_manifold_edges))
 end
 
+"""
+    select_region(m, name; kind="cell", box=nothing, plane=nothing, sphere=nothing,
+                  where_array="", where_op="<", where_value=0.0, quality_metric="",
+                  quality_op="<", quality_value=0.0, component=nothing, seed=nothing,
+                  feature_angle=30.0, normal_tolerance=0.0, mode="all",
+                  boundary_only=true, tag=-1)
+        -> (; mesh, num_candidates, num_selected, num_grown, num_components)
+
+Select points, cells or sides and write them as one named region; the mesh comes
+back unchanged plus that region (a region of the same name and kind is
+replaced). `kind` is `"cell"`, `"point"` or `"side"`. Every criterion given must
+pass: `box = (lo, hi)`, `plane = (point, normal)`, `sphere = (center, radius)`,
+`where_array`/`where_op`/`where_value` on point or cell data (as `refine` spells
+it), `quality_metric`/`quality_op`/`quality_value` on a `compute_quality` metric, `component = k` (1-based, in the order
+`split(by="component")` returns its pieces) and `seed = (x, y, z)`, a patch grown from the nearest facet across
+edges no sharper than `feature_angle`. `num_grown` and `num_components` are -1
+when unused. See `doc/select.md`.
+"""
+function select_region(m::Mesh, name::AbstractString; kind::AbstractString="cell",
+                       box=nothing, plane=nothing, sphere=nothing,
+                       where_array::AbstractString="", where_op::AbstractString="<",
+                       where_value::Real=0.0, quality_metric::AbstractString="",
+                       quality_op::AbstractString="<", quality_value::Real=0.0,
+                       component=nothing, seed=nothing,
+                       feature_angle::Real=30.0, normal_tolerance::Real=0.0,
+                       mode::AbstractString="all", boundary_only::Bool=true, tag::Integer=-1)
+    kinds = ("point", "cell", "side")
+    k = findfirst(==(String(kind)), kinds)
+    k === nothing && throw(ArgumentError("meshio++: select_region: kind must be \"point\", " *
+                                         "\"cell\" or \"side\""))
+    modes = ("all", "any", "centroid")
+    md = findfirst(==(String(mode)), modes)
+    md === nothing && throw(ArgumentError("meshio++: select_region: mode must be \"all\", " *
+                                          "\"any\" or \"centroid\""))
+    v3(x) = (Float64(x[1]), Float64(x[2]), Float64(x[3]))
+    zero3 = (0.0, 0.0, 0.0)
+    cmp(op) = get(_REFINE_COMPARES, String(op)) do
+        throw(ArgumentError("meshio++: select_region: unknown comparison $(op)"))
+    end
+    name_c = Vector{UInt8}(codeunits(String(name) * "\0"))
+    where_c = Vector{UInt8}(codeunits(String(where_array) * "\0"))
+    quality_c = Vector{UInt8}(codeunits(String(quality_metric) * "\0"))
+    report = Ref{_CSelectReport}()
+    ptr = GC.@preserve name_c where_c quality_c begin
+        opts = _CSelectOpts(Cstring(pointer(name_c)), Int32(k - 1), Int32(md - 1), Int64(tag),
+                            Int32(boundary_only), Int32(box !== nothing),
+                            Int32(plane !== nothing), Int32(sphere !== nothing),
+                            Int32(seed !== nothing),
+                            cmp(where_op), cmp(quality_op), Int32(0),
+                            box === nothing ? zero3 : v3(box[1]),
+                            box === nothing ? zero3 : v3(box[2]),
+                            plane === nothing ? zero3 : v3(plane[1]),
+                            plane === nothing ? (0.0, 0.0, 1.0) : v3(plane[2]),
+                            sphere === nothing ? zero3 : v3(sphere[1]),
+                            sphere === nothing ? 0.0 : Float64(sphere[2]),
+                            Cstring(pointer(where_c)),
+                            Float64(where_value),
+                            Cstring(pointer(quality_c)),
+                            Float64(quality_value),
+                            component === nothing ? Int64(-1) : Int64(component) - 1,
+                            seed === nothing ? zero3 : v3(seed), Float64(feature_angle),
+                            Float64(normal_tolerance), ntuple(_ -> Int64(0), 8))
+        ccall(_sym(:mio_select), Ptr{Cvoid}, (Ptr{Cvoid}, Ref{_CSelectOpts}, Ptr{_CSelectReport}),
+              _handle(m), Ref(opts), report)
+    end
+    r = _check_ptr(ptr)
+    rep = report[]
+    (mesh=Mesh(r), num_candidates=Int(rep.num_candidates), num_selected=Int(rep.num_selected),
+     num_grown=Int(rep.num_grown), num_components=Int(rep.num_components))
+end
+
 const _FIT_TYPES = ("plane", "sphere", "cylinder", "cone", "torus")
 
 # Every primitive, `(1 << 1) | ... | (1 << 5)` (C `MIO_FIT_ALL_TYPES`).

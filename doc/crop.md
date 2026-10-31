@@ -2,6 +2,8 @@
 
 `meshioplusplus.crop(mesh, ...)` extracts part of a mesh — the part inside an axis-aligned **bounding box**, inside a **half-space** (a plane, keeping one side), or the cells whose value in one of the mesh's own **`cell_data` arrays** satisfies a comparison — pruning the now-unused points and remapping connectivity and all data. It is a mesh **operation** (like [split](/split) and [merge](/merge)), not a file format, and uses only standard C++/numpy, so it runs under every mesh backend.
 
+To keep the whole mesh and only name the part — a boundary patch, a material zone — use [`select`](/select), which tests the same box, half-space and `cell_data` comparisons (plus a ball, a quality threshold, a component or a grown patch) and writes them as a region instead of cutting.
+
 ![Half of a surface mesh cropped out by a bounding box](/images/crop_bbox.png)
 
 ```python

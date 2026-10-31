@@ -291,6 +291,47 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(3) = 0
     end type
 
+    !> Interop mirror of C `mio_select_opts`. Field order/types are ABI; the
+    !> defaults mirror `mio_select_opts_init` (called anyway).
+    type, bind(c) :: mio_select_opts_t
+        type(c_ptr) :: name = c_null_ptr
+        integer(c_int32_t) :: kind = 1
+        integer(c_int32_t) :: mode = 0
+        integer(c_int64_t) :: tag = -1
+        integer(c_int32_t) :: boundary_only = 1
+        integer(c_int32_t) :: use_box = 0
+        integer(c_int32_t) :: use_plane = 0
+        integer(c_int32_t) :: use_sphere = 0
+        integer(c_int32_t) :: use_seed = 0
+        integer(c_int32_t) :: where_compare = 0
+        integer(c_int32_t) :: quality_compare = 0
+        integer(c_int32_t) :: reserved32 = 0
+        real(c_double) :: box_lo(3) = 0.0_c_double
+        real(c_double) :: box_hi(3) = 0.0_c_double
+        real(c_double) :: plane_point(3) = 0.0_c_double
+        real(c_double) :: plane_normal(3) = [0.0_c_double, 0.0_c_double, 1.0_c_double]
+        real(c_double) :: sphere_center(3) = 0.0_c_double
+        real(c_double) :: sphere_radius = 0.0_c_double
+        type(c_ptr) :: where_array = c_null_ptr
+        real(c_double) :: where_value = 0.0_c_double
+        type(c_ptr) :: quality_metric = c_null_ptr
+        real(c_double) :: quality_value = 0.0_c_double
+        integer(c_int64_t) :: component = -1
+        real(c_double) :: seed(3) = 0.0_c_double
+        real(c_double) :: feature_angle = 30.0_c_double
+        real(c_double) :: normal_tolerance = 0.0_c_double
+        integer(c_int64_t) :: reserved(8) = 0
+    end type
+
+    !> Interop mirror of C `mio_select_report`.
+    type, bind(c) :: mio_select_report_t
+        integer(c_int64_t) :: num_candidates = 0
+        integer(c_int64_t) :: num_selected = 0
+        integer(c_int64_t) :: num_grown = 0
+        integer(c_int64_t) :: num_components = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
     !> Interop mirror of C `mio_fit_primitives_opts` (`types` is the C
     !> `uint32_t` bit mask, `1 << type`; 62 selects every primitive).
     type, bind(c) :: mio_fit_primitives_opts_t
@@ -1902,6 +1943,7 @@ module meshioplusplus
         procedure :: normals => mesh_normals
         procedure :: feature_edges => mesh_feature_edges
         procedure :: segment => mesh_segment
+        procedure :: select_region => mesh_select_region
         procedure :: fit_primitives => mesh_fit_primitives
         procedure :: refine_patches => mesh_refine_patches
         procedure :: fit_cad => mesh_fit_cad
@@ -3011,6 +3053,19 @@ module meshioplusplus
             type(c_ptr), value :: h
             type(mio_segment_opts_t), intent(in) :: opts
             type(mio_segment_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_select_opts_init(opts) bind(c, name="mio_select_opts_init")
+            import :: mio_select_opts_t
+            type(mio_select_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_select(h, opts, report) bind(c, name="mio_select") result(r)
+            import :: c_ptr, mio_select_opts_t, mio_select_report_t
+            type(c_ptr), value :: h
+            type(mio_select_opts_t), intent(in) :: opts
+            type(mio_select_report_t), intent(out) :: report
             type(c_ptr) :: r
         end function
 
@@ -7707,6 +7762,148 @@ contains
         if (present(num_feature_edges)) num_feature_edges = int(report%num_feature_edges, int64)
         if (present(num_boundary_edges)) &
             num_boundary_edges = int(report%num_boundary_edges, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Select points, cells or sides of this mesh and write them as one named
+    !> region; the result is the input plus that region (a region of the same
+    !> name and kind is replaced). `kind` is 'cell' (default), 'point' or
+    !> 'side'. The criteria, each optional and intersected: a box (`box_lo`,
+    !> `box_hi`), a half-space (`plane_point`, `plane_normal`), a ball
+    !> (`sphere_center`, `sphere_radius`), a data comparison (`where_array`,
+    !> `where_op` such as '<=', `where_value`), a quality comparison
+    !> (`quality_metric`, `quality_op`, `quality_value`), a node-connected
+    !> `component` (1-based, in split's piece order) and a patch grown from the
+    !> facet nearest `seed` across edges sharper than `feature_angle` (default
+    !> 30) at most, within `normal_tolerance` of the seed's normal. `mode` is
+    !> 'all', 'any' or 'centroid'; `all_facets` lets side regions take
+    !> interior facets. Not `select`, which Fortran reads as a construct. See
+    !> doc/select.md.
+    function mesh_select_region(self, name, kind, box_lo, box_hi, plane_point, plane_normal, &
+                                sphere_center, sphere_radius, where_array, where_op, &
+                                where_value, quality_metric, quality_op, quality_value, &
+                                component, seed, feature_angle, normal_tolerance, mode, &
+                                all_facets, tag, num_candidates, num_selected, num_grown, &
+                                num_components, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: name
+        character(*), intent(in), optional :: kind, mode
+        real(real64), intent(in), optional :: box_lo(3), box_hi(3)
+        real(real64), intent(in), optional :: plane_point(3), plane_normal(3)
+        real(real64), intent(in), optional :: sphere_center(3), sphere_radius
+        character(*), intent(in), optional :: where_array, where_op
+        real(real64), intent(in), optional :: where_value
+        character(*), intent(in), optional :: quality_metric, quality_op
+        real(real64), intent(in), optional :: quality_value
+        integer(int64), intent(in), optional :: component, tag
+        real(real64), intent(in), optional :: seed(3)
+        real(real64), intent(in), optional :: feature_angle, normal_tolerance
+        logical, intent(in), optional :: all_facets
+        integer(int64), intent(out), optional :: num_candidates, num_selected
+        integer(int64), intent(out), optional :: num_grown, num_components
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr) :: res
+        type(mio_select_opts_t) :: opts
+        type(mio_select_report_t) :: report
+        character(kind=c_char, len=STRBUF_LEN), target :: name_buf, where_buf, quality_buf
+
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. &
+            (c_sizeof(opts) /= 328_c_size_t .or. c_sizeof(report) /= 64_c_size_t)) then
+            write (error_unit, '(a)') 'meshio++: select layout mismatch'
+            error stop 1
+        end if
+        call c_mio_select_opts_init(opts)
+        name_buf = trim(name)//c_null_char
+        opts%name = c_loc(name_buf(1:1))
+        if (present(kind)) then
+            select case (trim(kind))
+            case ('point')
+                opts%kind = 0
+            case ('cell')
+                opts%kind = 1
+            case ('side')
+                opts%kind = 2
+            case default
+                call handle_failure('select_region', "kind must be 'point', 'cell' or 'side'", &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+        if (present(mode)) then
+            select case (trim(mode))
+            case ('all')
+                opts%mode = 0
+            case ('any')
+                opts%mode = 1
+            case ('centroid')
+                opts%mode = 2
+            case default
+                call handle_failure('select_region', "mode must be 'all', 'any' or 'centroid'", &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+        if (present(box_lo) .and. present(box_hi)) then
+            opts%use_box = 1
+            opts%box_lo = real(box_lo, c_double)
+            opts%box_hi = real(box_hi, c_double)
+        end if
+        if (present(plane_point) .and. present(plane_normal)) then
+            opts%use_plane = 1
+            opts%plane_point = real(plane_point, c_double)
+            opts%plane_normal = real(plane_normal, c_double)
+        end if
+        if (present(sphere_center) .and. present(sphere_radius)) then
+            opts%use_sphere = 1
+            opts%sphere_center = real(sphere_center, c_double)
+            opts%sphere_radius = real(sphere_radius, c_double)
+        end if
+        if (present(where_array)) then
+            where_buf = trim(where_array)//c_null_char
+            opts%where_array = c_loc(where_buf(1:1))
+            if (present(where_op)) opts%where_compare = refine_compare_code(where_op)
+            if (opts%where_compare < 0) then
+                call handle_failure('select_region', 'unknown comparison '//trim(where_op), &
+                                    stat, errmsg)
+                return
+            end if
+            if (present(where_value)) opts%where_value = real(where_value, c_double)
+        end if
+        if (present(quality_metric)) then
+            quality_buf = trim(quality_metric)//c_null_char
+            opts%quality_metric = c_loc(quality_buf(1:1))
+            if (present(quality_op)) opts%quality_compare = refine_compare_code(quality_op)
+            if (opts%quality_compare < 0) then
+                call handle_failure('select_region', 'unknown comparison '//trim(quality_op), &
+                                    stat, errmsg)
+                return
+            end if
+            if (present(quality_value)) opts%quality_value = real(quality_value, c_double)
+        end if
+        if (present(component)) opts%component = int(component, c_int64_t) - 1_c_int64_t
+        if (present(seed)) then
+            opts%use_seed = 1
+            opts%seed = real(seed, c_double)
+        end if
+        if (present(feature_angle)) opts%feature_angle = real(feature_angle, c_double)
+        if (present(normal_tolerance)) &
+            opts%normal_tolerance = real(normal_tolerance, c_double)
+        if (present(all_facets)) then
+            if (all_facets) opts%boundary_only = 0
+        end if
+        if (present(tag)) opts%tag = int(tag, c_int64_t)
+        res = c_mio_select(self%handle, opts, report)
+        if (.not. c_associated(res)) then
+            call handle_failure('select_region', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = res
+        if (present(num_candidates)) num_candidates = int(report%num_candidates, int64)
+        if (present(num_selected)) num_selected = int(report%num_selected, int64)
+        if (present(num_grown)) num_grown = int(report%num_grown, int64)
+        if (present(num_components)) num_components = int(report%num_components, int64)
         call clear_status(stat, errmsg)
     end function
 

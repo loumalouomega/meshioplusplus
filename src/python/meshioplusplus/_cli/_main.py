@@ -65,6 +65,7 @@ from . import (
     _revolve,
     _sdf,
     _segment,
+    _select,
     _shrinkwrap,
     _slice,
     _smooth,
@@ -191,6 +192,14 @@ def main(argv=None):
     )
     _segment.add_args(parser)
     parser.set_defaults(func=_segment.segment_cmd)
+
+    parser = subparsers.add_parser(
+        "select",
+        help="Write a named point, cell or side region chosen by geometry, data, "
+        "quality, component or a grown patch",
+    )
+    _select.add_args(parser)
+    parser.set_defaults(func=_select.select_cmd)
 
     parser = subparsers.add_parser(
         "fit-primitives",

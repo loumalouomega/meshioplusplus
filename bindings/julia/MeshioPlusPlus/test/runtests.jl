@@ -1899,6 +1899,24 @@ end
     close(fe.mesh)
     @test_throws MeshioError feature_edges(cube; feature_angle=200)
 
+    # select_region: the two triangles of the top face, grown from a seed above it.
+    sel = select_region(cube, "top"; seed=(0.5, 0.5, 2.0))
+    @test sel.num_selected == 2
+    @test sel.num_grown == 2
+    @test sel.num_components == -1
+    @test any(r -> r.name == "top" && r.kind == :cell, regions(sel.mesh))
+    close(sel.mesh)
+    sel = select_region(cube, "low"; kind="point", box=((-1, -1, -1), (2, 2, 0.5)))
+    @test sel.num_selected == 4
+    close(sel.mesh)
+    sel = select_region(cube, "flat"; quality_metric="min_angle", quality_op=">",
+                        quality_value=0.0, component=1)
+    @test sel.num_selected == 12
+    @test sel.num_components == 1
+    close(sel.mesh)
+    @test_throws MeshioError select_region(cube, "none")
+    @test_throws ArgumentError select_region(cube, "x"; kind="edge", component=1)
+
     seg = segment(cube)
     @test seg.num_patches == 6
     @test seg.num_feature_edges == 12

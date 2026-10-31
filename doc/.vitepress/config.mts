@@ -117,6 +117,7 @@ export default defineConfig({
               { text: "Conformity check", link: "/check_conformity" },
               { text: "Intersections", link: "/find_intersections" },
               { text: "Wall thickness and clearance", link: "/thickness" },
+              { text: "Select (named regions)", link: "/select" },
               { text: "Segment (smooth patches)", link: "/segment" },
               { text: "Refine patches", link: "/refine_patches" },
               { text: "Fit primitives", link: "/fit_primitives" },

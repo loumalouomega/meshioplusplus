@@ -121,7 +121,7 @@ Two defects in the libraries are worked around. MMG 5.8's `MMG2D_Set_vectorSol` 
 - **CLI:** `meshioplusplus adapt IN OUT --hsiz 0.05` (or `--size NAME`, `--metric NAME`), with `--hmin`, `--hmax`, `--hausd`, `--hgrad`, `--hgradreq`, `--angle-detection`, `--optim`, `--noinsert`, `--noswap`, `--nomove`, `--nosurf`, `--nreg`, `--opnbdy`, `--frozen REGION` and repeatable `--required REGION`; `discretize-levelset IN OUT --level-set NAME` (`--isovalue`, `--rmc`, repeatable `--material REF,SPLIT,IN,OUT`) `mesh-2d IN OUT --hsiz H` (`--size`, repeatable `--hole X,Y`) and `move IN OUT --displacement NAME --moving REGION` (repeatable `--moving`, `--lagrangian`) with the same MMG options, in the Python and native CLIs alike ([CLI](./cli.md)).
 - **Pipeline:** an `Adapt` step with `Hsiz`, `Size`, `Metric`, `Hmin`, `Hmax`, `Hausd`, `Hgrad`, `Hgradreq`, `AngleDetection`, the switches, `Frozen` (a point region) and `Required`; it reports `NumPointsIn/Out`, `NumElementsIn/Out`, `LowFailure`, `QualityMin` and `QualityMean`. `DiscretizeLevelset` (`LevelSet`, `Isovalue`, `RemoveSmallComponents`, `Materials`) `MeshDomain` (`Hsiz`, `Size`, `Holes`, adding `NumSubdomains` and `NumHoles`) and `Move` (`Displacement`, `Moving`, `Lagrangian`) take the same MMG parameters ([pipelines](./pipeline.md)).
 - **MCP:** the `adapt`, `discretize_levelset`, `mesh_domain` and `move` tools, which report `mmg_available` (`move` also `mmg_elas_available`) (an error with `mmg_available: false` without MMG), and `metric_from_hessian` ([MCP](./mcp.md)).
-- **WebAssembly:** only `hasMmg()`, always `false`, until roadmap 3.2.8.
+- **WebAssembly:** only `hasMmg()`, always `false`, until roadmap 3.1.8.
 
 ## Building with MMG
 

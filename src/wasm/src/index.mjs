@@ -339,6 +339,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   computeNormals: (mesh: Mesh, pointNormals?: boolean, cellNormals?: boolean, weight?: string, splitAngle?: number, recordParentIds?: boolean, region?: string) => {mesh: Mesh, numIsolated: number, numUndefined: number, numDegenerate: number, numSplitPoints: number, numAddedPoints: number, quality: {boundaryEdges: number, nonManifoldEdges: number, inconsistentPairs: number, degenerateTriangles: number, watertight: boolean}},
  *   checkQuality: (mesh: Mesh, require?: string, maxInverted?: number, maxDegenerate?: number) => {passed: boolean, numCells: number, numInverted: number, numDegenerate: number, checks: Array<object>, summary: string},
  *   featureEdges: (mesh: Mesh, featureAngle?: number, feature?: boolean, boundary?: boolean, nonManifold?: boolean, inconsistent?: boolean, region?: string) => {mesh: Mesh, numFeature: number, numBoundary: number, numNonManifold: number, numInconsistent: number},
+ *   selectRegion: (mesh: Mesh, name: string, options?: {kind?: 'cell' | 'point' | 'side', tag?: number, mode?: 'all' | 'any' | 'centroid', boundaryOnly?: boolean, box?: number[], plane?: number[], sphere?: number[], where?: [string, string, number], quality?: [string, string, number], component?: number, seed?: number[], featureAngle?: number, normalTolerance?: number}) => {mesh: Mesh, numCandidates: number, numSelected: number, numGrown: number, numComponents: number},
  *   segment: (mesh: Mesh, featureAngle?: number, normalTolerance?: number, curvatureTolerance?: number, minPatchCells?: number, region?: string, prefix?: string, method?: 'angle' | 'primitive', tolerance?: number) => {mesh: Mesh, numPatches: number, numMerged: number, numFeatureEdges: number, numBoundaryEdges: number, numNonManifoldEdges: number},
  *   igaRefine: (info: object, options?: {subdivisions?: number | number[], elevate?: number | number[], sampleSubdivisions?: number, trimSamples?: number, edges?: boolean, trim?: boolean}) => {mesh: Mesh, info: object},
  *   igaSample: (info: object, options?: {sampleSubdivisions?: number, trimSamples?: number, edges?: boolean, trim?: boolean}) => {mesh: Mesh, info: object},
@@ -1184,6 +1185,7 @@ export async function loadMeshioPlusPlus(
         revolve: (mesh, options = {}) => Module.revolve(mesh, options),
         mirror: (mesh, options = {}) => Module.mirror(mesh, options),
         findIntersections: (mesh, options = {}) => Module.findIntersections(mesh, options),
+        selectRegion: (mesh, name, options = {}) => Module.selectRegion(mesh, name, options),
         thickness: (mesh, options = {}) => Module.thickness(mesh, options),
         tetrahedralize: (mesh, options) => Module.tetrahedralize(mesh, options),
         tessellate: (mesh, levels = 2, curved = true, fields = true, recordStencil = false) =>

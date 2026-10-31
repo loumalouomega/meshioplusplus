@@ -159,7 +159,9 @@ from .. import (
     scatter_grid,
 )
 from .. import screenshot as _screenshot_fn
-from .. import segment, shrinkwrap
+from .. import segment
+from .. import select as _select_op
+from .. import shrinkwrap
 from .. import slice as _slice_op
 from .. import smooth
 from .. import snapshot as _snapshot_fn
@@ -3181,6 +3183,76 @@ def tool_segment(
         return_report=True,
         method=method,
         tolerance=tolerance,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        **{k: int(v) for k, v in report.items()},
+    )
+
+
+def tool_select(
+    input_path,
+    output_path,
+    name,
+    input_format=None,
+    output_format=None,
+    kind="cell",
+    bbox=None,
+    plane_origin=None,
+    plane_normal=None,
+    sphere_center=None,
+    sphere_radius=None,
+    where_array=None,
+    where_compare="<",
+    where_value=0.0,
+    quality_metric=None,
+    quality_compare="<",
+    quality_value=0.0,
+    component=None,
+    seed=None,
+    feature_angle=30.0,
+    normal_tolerance=0.0,
+    mode="all",
+    boundary_only=True,
+    tag=-1,
+):
+    """Write one named point, cell or side region chosen by a box, half-space,
+    ball, data or quality comparison, component or a patch grown from a seed;
+    every criterion given must pass."""
+    mesh = _load(input_path, input_format)
+    kwargs = {}
+    if bbox is not None:
+        kwargs["box"] = bbox
+    if plane_origin is not None or plane_normal is not None:
+        if plane_origin is None or plane_normal is None:
+            raise ValueError(
+                "meshio++: mcp: select needs both plane_origin and plane_normal"
+            )
+        kwargs["plane"] = (plane_origin, plane_normal)
+    if sphere_center is not None or sphere_radius is not None:
+        if sphere_center is None or sphere_radius is None:
+            raise ValueError(
+                "meshio++: mcp: select needs both sphere_center and sphere_radius"
+            )
+        kwargs["sphere"] = (sphere_center, sphere_radius)
+    if where_array is not None:
+        kwargs["where"] = (where_array, where_compare, where_value)
+    if quality_metric is not None:
+        kwargs["quality"] = (quality_metric, quality_compare, quality_value)
+    out, report = _select_op(
+        mesh,
+        name,
+        kind,
+        component=component,
+        seed=seed,
+        feature_angle=feature_angle,
+        normal_tolerance=normal_tolerance,
+        mode=mode,
+        boundary_only=boundary_only,
+        tag=tag,
+        return_report=True,
+        **kwargs,
     )
     return _result(
         _store(out, output_path, output_format),
@@ -6587,6 +6659,10 @@ TOOL_REGISTRY = OrderedDict(
         (
             "segment",
             {"fn": tool_segment, "wraps": ("segment",), "gated": None},
+        ),
+        (
+            "select",
+            {"fn": tool_select, "wraps": ("select",), "gated": None},
         ),
         (
             "fit_primitives",

@@ -113,6 +113,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `tet-to-poly` | `cells_in`, `cells_out`, `num_new_points`, `num_boundary_faces` and `num_split_vertices` |
 | `poly-to-tet` | `cells_in`, `cells_out`, `num_exact_tets` and `num_fanned_cells` |
 | `resample` | `method`, `num_steps` and the target `times` |
+| `select` | `num_candidates`, `num_selected`, `num_grown` and `num_components` |
 | `segment` | `num_patches`, `num_merged`, `num_feature_edges`, `num_boundary_edges` and `num_non_manifold_edges` |
 | `refine-patches` | `num_patches`, `num_iterations`, `num_splits`, `num_merges`, `num_absorbed`, `num_primitive`, `num_freeform`, `num_facets`, `tolerance`, `explained_area_fraction`, `initial_explained_area_fraction`, `hausdorff_max`, `hausdorff_rms`, `initial_energy`, `energy` and `stop` (`unchanged`, `small_gain`, `iteration_cap` or `energy_rose`) |
 | `fit-primitives` | `num_patches`, one count per type (`num_plane` … `num_torus`) and `num_unfitted` |
@@ -479,6 +480,40 @@ meshioplusplus crop in.vtu out.vtu --where 'quality:scaled_jacobian < 0.3'
 # inside a surface, composed:
 meshioplusplus sdf shell.stl field.vtu --resolution 64,64,64 --location center
 meshioplusplus crop field.vtu inside.vtu --where 'sdf:distance < 0'
+```
+
+---
+
+## meshioplusplus select
+
+Write one named point, cell or side region chosen by geometry, a data or quality threshold, a component or a patch grown from a seed (see [select](/select)). Every criterion given must pass; at least one is required.
+
+```text
+meshioplusplus select [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|---|---|
+| `-i/--input-format`, `-o/--output-format` | Explicit formats |
+| `-n/--name NAME` | The region's name (required); a region of the same name and kind is replaced |
+| `--kind cell\|point\|side` | What the region groups (default `cell`) |
+| `--tag N` | The region's integer tag (default `-1`, none) |
+| `--box XMIN,YMIN,ZMIN,XMAX,YMAX,ZMAX` | Inside the box |
+| `--plane PX,PY,PZ,NX,NY,NZ` | On the `+normal` side of the plane |
+| `--sphere CX,CY,CZ,R` | Inside the ball |
+| `--mode all\|any\|centroid` | How a cell or side reduces its nodes for the box, plane and ball (default `all`) |
+| `--where 'NAME OP VALUE'` | A `point_data` (points) or `cell_data` (cells and sides) comparison |
+| `--quality 'METRIC OP VALUE'` | A quality comparison, e.g. `'scaled_jacobian < 0.3'` (cells and sides) |
+| `--component K` | The k-th node-connected component, 0-based as `split --by component` numbers its pieces |
+| `--seed X,Y,Z` | A patch grown from the facet nearest the point |
+| `--feature-angle DEG` | The largest dihedral angle the growth crosses (default `30`) |
+| `--normal-tolerance DEG` | The largest angle to the seed's normal (default off) |
+| `--all-facets` | Side regions take interior facets too |
+| `--json`, `-q/--quiet` | Machine-readable counts, or no summary |
+
+```sh
+meshioplusplus select part.vtu part.vtu --name inlet --kind side --seed 0,0,-1
+meshioplusplus select part.vtu part.msh --name slivers --quality 'min_dihedral < 10'
 ```
 
 ---

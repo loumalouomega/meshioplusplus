@@ -134,6 +134,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
+#include "meshioplusplus/operations/select.hpp"
 #include "meshioplusplus/operations/tet_poly.hpp"
 
 namespace {
@@ -699,6 +700,7 @@ static_assert(sizeof(meshioplusplus::InterfaceMode) == 4 &&
 // const-ref through the exported `tet_to_poly()`/`poly_to_tet()` and pinned
 // from the release that introduces them. Both results embed a Mesh.
 MIO_ABI_LAYOUT(meshioplusplus::TetToPolyOptions, 16, 8);
+MIO_ABI_LAYOUT(meshioplusplus::SelectOptions, 352, 8);
 MIO_ABI_LAYOUT(meshioplusplus::PolyToTetOptions, 1, 1);
 
 // --- The mesh itself, which IS the backend ----------------------------------

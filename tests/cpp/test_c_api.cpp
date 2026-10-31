@@ -6152,6 +6152,74 @@ TEST(CApi, TessellateATetra10) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, SelectWritesARegion) {
+    mio_gen_opts g;
+    mio_gen_opts_init(&g);
+    g.counts[0] = g.counts[1] = g.counts[2] = 2;
+    mio_mesh* box = mio_box(&g);
+    ASSERT_NE(box, nullptr) << mio_last_error();
+
+    mio_select_opts o;
+    mio_select_opts_init(&o);
+    EXPECT_EQ(o.kind, MIO_REGION_CELL);  // an all-zero struct is NOT the default
+    EXPECT_EQ(o.tag, -1);
+    EXPECT_EQ(o.component, -1);
+    EXPECT_EQ(o.boundary_only, 1);
+    EXPECT_DOUBLE_EQ(o.feature_angle, 30.0);
+    // No name, then no criterion: refused.
+    EXPECT_EQ(mio_select(box, &o, nullptr), nullptr);
+    o.name = "left";
+    EXPECT_EQ(mio_select(box, &o, nullptr), nullptr);
+
+    o.kind = MIO_REGION_SIDE;
+    o.use_box = 1;
+    o.box_lo[0] = o.box_lo[1] = o.box_lo[2] = -1.0;
+    o.box_hi[0] = 1e-9;
+    o.box_hi[1] = o.box_hi[2] = 2.0;
+    mio_select_report report;
+    mio_mesh* out = mio_select(box, &o, &report);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(report.num_candidates, 24);
+    EXPECT_EQ(report.num_selected, 4);
+    EXPECT_EQ(report.num_grown, -1);
+    mio_regions* regions = mio_regions_create(out);
+    bool found = false;
+    for (int64_t i = 0; i < mio_regions_count(regions); ++i) {
+        char name[32];
+        mio_regions_name(regions, i, name, sizeof(name));
+        mio_region_info info;
+        ASSERT_EQ(mio_regions_info(regions, i, &info), MIO_OK);
+        if (std::string(name) == "left" && info.kind == MIO_REGION_SIDE) {
+            found = true;
+            EXPECT_EQ(info.num_entries, 4);
+            EXPECT_EQ(info.dim, 2);
+        }
+    }
+    EXPECT_TRUE(found);
+    mio_regions_free(regions);
+    mio_mesh_free(out);
+
+    // A patch grown on the boundary, intersected with a quality threshold.
+    mio_select_opts_init(&o);
+    o.name = "top";
+    o.kind = MIO_REGION_SIDE;
+    o.use_seed = 1;
+    o.seed[0] = o.seed[1] = 0.5;
+    o.seed[2] = 5.0;
+    o.quality_metric = "scaled_jacobian";
+    o.quality_compare = MIO_REFINE_GT;
+    o.quality_value = 0.5;
+    out = mio_select(box, &o, &report);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(report.num_grown, 4);
+    EXPECT_EQ(report.num_selected, 4);
+    mio_mesh_free(out);
+    o.quality_compare = 99;
+    EXPECT_EQ(mio_select(box, &o, nullptr), nullptr);
+    EXPECT_EQ(mio_select(nullptr, &o, nullptr), nullptr);
+    mio_mesh_free(box);
+}
+
 TEST(CApi, SegmentAndFitACube) {
     mio_mesh* m = capi_cube_surface();
     mio_segment_opts sopts;

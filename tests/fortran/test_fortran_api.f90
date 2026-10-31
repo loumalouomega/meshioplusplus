@@ -2820,6 +2820,20 @@ contains
         seg = sq%segment(num_patches=npatch, stat=ierr)
         call check(ierr == 0, 'segment succeeded')
         call check(npatch == 6_int64, 'a cube segments into 6 patches')
+
+        ! select_region: the face nearest a seed above the cube, then its points.
+        bad = sq%select_region('top', seed=[0.5_real64, 0.5_real64, 2.0_real64], &
+                               num_selected=npatch, stat=ierr)
+        call check(ierr == 0, 'select_region succeeded')
+        call check(npatch == 1_int64, 'the grown patch is the top face')
+        call bad%free()
+        bad = sq%select_region('top', kind='point', box_lo=[-1.0_real64, -1.0_real64, 0.5_real64], &
+                               box_hi=[2.0_real64, 2.0_real64, 2.0_real64], &
+                               num_selected=npatch, stat=ierr)
+        call check(ierr == 0 .and. npatch == 4_int64, 'select_region takes the top points')
+        call bad%free()
+        bad = sq%select_region('none', stat=ierr)
+        call check(ierr /= 0, 'select_region needs a criterion')
         fitted = seg%fit_primitives(num_plane=nplane, stat=ierr)
         call check(ierr == 0, 'fit_primitives succeeded')
         call check(nplane == 6_int64, 'every cube face fits a plane')

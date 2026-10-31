@@ -157,6 +157,7 @@ meshioplusplus extrude    profile.vtu slab.vtu --num-layers 4  # sweep a surface
 meshioplusplus clean      in.vtu out.vtu --weld              # weld / prune / de-dup
 meshioplusplus crop       in.vtu out.vtu --bbox 0,0,0,1,1,1  # subset by region
 meshioplusplus crop       in.vtu out.vtu --where "d<0"       # ... or by a data predicate
+meshioplusplus select     in.vtu out.vtu --name inlet --kind side --seed 0,0,-1  # a named BC patch
 meshioplusplus split      in.vtu 'out_{key}.vtu' --by type   # split by criterion
 meshioplusplus stats      mesh.vtu                           # geometric statistics
 meshioplusplus convert-cells in.msh out.vtu --mode simplexify  # hexes -> tetra
@@ -263,7 +264,7 @@ meshioplusplus.write_points_cells("foo.vtk", points, cells)
 For both input and output, you can optionally specify the exact `file_format` (in case you would like to enforce ASCII over binary VTK, for example).
 
 <details>
-<summary><b>Mesh and data operations</b> — skin/surface extraction, quality, reorder, diff, merge, transform/clean/crop/split/stats, cell conversion, tessellation, subdivide/agglomerate, tet_to_poly/poly_to_tet, refine, undo-green, decimate, partition, remesh, MMG adaptation, smoothing, interpolation, slice, isosurface, derivatives, Hessian, error estimation, field integration, data ops (click to expand)</summary>
+<summary><b>Mesh and data operations</b> — skin/surface extraction, quality, reorder, diff, merge, transform/clean/crop/split/stats, select (named regions), cell conversion, tessellation, subdivide/agglomerate, tet_to_poly/poly_to_tet, refine, undo-green, decimate, partition, remesh, MMG adaptation, smoothing, interpolation, slice, isosurface, derivatives, Hessian, error estimation, field integration, data ops (click to expand)</summary>
 
 #### Skin extraction
 
@@ -419,6 +420,17 @@ mesh = meshioplusplus.read("pipe-nurbs.mesh", file_format="mfem")
 fine = meshioplusplus.iga_refine(mesh, subdivisions=2, elevate=1)   # exact: same geometry
 meshioplusplus.write("fine.mesh", fine, file_format="mfem")         # patches intact
 ev = meshioplusplus.iga_evaluate(fine, [[0.3, 0.7, 0.4]], derivatives=1)
+```
+
+#### Named regions from geometry (select)
+
+**`meshioplusplus.select(mesh, name, kind)`** writes one named point, cell or side region chosen by a box, half-space or ball, a `cell_data`/`point_data` or quality threshold, a node-connected component, or a smooth patch grown from a seed point across the edges `feature_edges` would not draw — the boundary-condition patch or contact surface a solver deck names, reproducible from a script. Everything else is left bit-identical. See [`doc/select.md`](doc/select.md).
+
+<!--pytest-codeblocks:skip-->
+
+```python
+mesh = meshioplusplus.select(mesh, "inlet", "side", seed=(0.0, 0.0, -1.0))
+mesh = meshioplusplus.select(mesh, "slivers", quality=("min_dihedral", "<", 10))
 ```
 
 #### Interfaces and contact

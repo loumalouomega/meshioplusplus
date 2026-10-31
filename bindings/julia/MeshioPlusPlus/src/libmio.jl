@@ -645,6 +645,48 @@ struct _CSegmentReport
     reserved::NTuple{3,Int64}
 end
 
+"""Mirror of C `mio_select_opts`. ABI; build through [`select_region`](@ref):
+the kind defaults to a cell region, the tag and component to -1, `boundary_only`
+to 1 and the angle to 30."""
+struct _CSelectOpts
+    name::Cstring
+    kind::Int32
+    mode::Int32
+    tag::Int64
+    boundary_only::Int32
+    use_box::Int32
+    use_plane::Int32
+    use_sphere::Int32
+    use_seed::Int32
+    where_compare::Int32
+    quality_compare::Int32
+    reserved32::Int32
+    box_lo::NTuple{3,Cdouble}
+    box_hi::NTuple{3,Cdouble}
+    plane_point::NTuple{3,Cdouble}
+    plane_normal::NTuple{3,Cdouble}
+    sphere_center::NTuple{3,Cdouble}
+    sphere_radius::Cdouble
+    where_array::Cstring
+    where_value::Cdouble
+    quality_metric::Cstring
+    quality_value::Cdouble
+    component::Int64
+    seed::NTuple{3,Cdouble}
+    feature_angle::Cdouble
+    normal_tolerance::Cdouble
+    reserved::NTuple{8,Int64}
+end
+
+"""Mirror of C `mio_select_report`."""
+struct _CSelectReport
+    num_candidates::Int64
+    num_selected::Int64
+    num_grown::Int64
+    num_components::Int64
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_fit_primitives_opts`. ABI; build through
 [`fit_primitives`](@ref). `types` is the bit mask `1 << type`."""
 struct _CFitPrimitivesOpts
@@ -1719,6 +1761,10 @@ function _check_abi_layout()
         error("meshio++: mio_segment_opts layout mismatch ($(sizeof(_CSegmentOpts)) bytes)")
     sizeof(_CSegmentReport) == 64 ||
         error("meshio++: mio_segment_report layout mismatch ($(sizeof(_CSegmentReport)) bytes)")
+    sizeof(_CSelectOpts) == 328 ||
+        error("meshio++: mio_select_opts layout mismatch ($(sizeof(_CSelectOpts)) bytes)")
+    sizeof(_CSelectReport) == 64 ||
+        error("meshio++: mio_select_report layout mismatch ($(sizeof(_CSelectReport)) bytes)")
     sizeof(_CFitPrimitivesOpts) == 88 ||
         error("meshio++: mio_fit_primitives_opts layout mismatch " *
               "($(sizeof(_CFitPrimitivesOpts)) bytes)")

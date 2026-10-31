@@ -683,6 +683,48 @@ export interface MirrorResult {
   warnings: string[];
 }
 
+/** Options of `selectRegion` (doc/select.md). At least one criterion is required. */
+export interface SelectRegionOptions {
+  /** What the region groups (default 'cell'); 'side' names (cell, local facet) pairs. */
+  kind?: 'cell' | 'point' | 'side';
+  /** The region's integer tag (default -1, none). */
+  tag?: number;
+  /** How a cell or side reduces its nodes for box, plane and sphere (default 'all'). */
+  mode?: 'all' | 'any' | 'centroid';
+  /** Side regions consider only facets owned by one cell (default true). */
+  boundaryOnly?: boolean;
+  /** [xmin, ymin, zmin, xmax, ymax, zmax]. */
+  box?: number[];
+  /** [px, py, pz, nx, ny, nz]: inside is (p - point) . normal >= 0. */
+  plane?: number[];
+  /** [cx, cy, cz, r], the closed ball. */
+  sphere?: number[];
+  /** [array, op, value] on point data (points) or cell data (cells, sides). */
+  where?: [string, string, number];
+  /** [metric, op, value] on a computeQuality metric; cells and sides only. */
+  quality?: [string, string, number];
+  /** The k-th node-connected component (0-based, split's piece order). */
+  component?: number;
+  /** [x, y, z]: grow a patch from the facet nearest it. */
+  seed?: number[];
+  /** The largest dihedral angle, in degrees, the growth crosses (default 30). */
+  featureAngle?: number;
+  /** The largest angle, in degrees, to the seed's normal (default 0, off). */
+  normalTolerance?: number;
+}
+
+/** What `selectRegion` returns. */
+export interface SelectRegionResult {
+  /** The input plus the region. */
+  mesh: Mesh;
+  numCandidates: number;
+  numSelected: number;
+  /** Facets of the grown patch, or -1 without a seed. */
+  numGrown: number;
+  /** Node-connected components, or -1 without that criterion. */
+  numComponents: number;
+}
+
 /** Options of `findIntersections` (doc/find_intersections.md). */
 export interface FindIntersectionsOptions {
   /** A second surface: report where the two meet instead of self-intersections. */
@@ -2405,7 +2447,7 @@ export interface MeshioPlusPlusModule {
   /**
    * Whether the MMG backend (`adapt`, `discretize_levelset`, `mesh_domain`,
    * `move`) is linked in: always false in WebAssembly until the port of
-   * roadmap 3.2.8.
+   * roadmap 3.1.8.
    */
   hasMmg(): boolean;
 
@@ -3604,6 +3646,14 @@ export interface MeshioPlusPlusModule {
    * orientation flip.
    */
   mirror(mesh: Mesh, options?: MirrorOptions): MirrorResult;
+
+  /**
+   * Write one named region of points, cells or sides chosen by a box, plane,
+   * sphere, data or quality threshold, component, or a patch grown from a seed
+   * (doc/select.md); the mesh is otherwise unchanged.
+   * @throws {Error} on an empty name, no criterion, an unknown array or metric.
+   */
+  selectRegion(mesh: Mesh, name: string, options?: SelectRegionOptions): SelectRegionResult;
 
   /**
    * Where a surface intersects itself, or (`options.other`) where two

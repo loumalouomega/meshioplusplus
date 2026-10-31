@@ -2957,6 +2957,83 @@ def _register_operations(server: FastMCP) -> None:
             tolerance=tolerance,
         )
 
+    @server.tool(name="select")
+    def select_region(
+        input_path: str,
+        output_path: str,
+        name: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        kind: str = "cell",
+        bbox: Optional[List[float]] = None,
+        plane_origin: Optional[List[float]] = None,
+        plane_normal: Optional[List[float]] = None,
+        sphere_center: Optional[List[float]] = None,
+        sphere_radius: Optional[float] = None,
+        where_array: Optional[str] = None,
+        where_compare: str = "<",
+        where_value: float = 0.0,
+        quality_metric: Optional[str] = None,
+        quality_compare: str = "<",
+        quality_value: float = 0.0,
+        component: Optional[int] = None,
+        seed: Optional[List[float]] = None,
+        feature_angle: float = 30.0,
+        normal_tolerance: float = 0.0,
+        mode: str = "all",
+        boundary_only: bool = True,
+        tag: int = -1,
+    ) -> dict:
+        """Write one named region -- a boundary-condition patch, a contact
+        surface, a material zone -- so a solver deck or find_interface can
+        name it. The mesh is otherwise written unchanged; a region of the same
+        name and kind is replaced.
+
+        kind is 'cell' (global cell ids), 'point', or 'side' ((cell, local
+        facet) pairs: faces of the 3-D cells, or edges of the 2-D cells when
+        there are none; boundary facets only unless boundary_only=false).
+        Every criterion given must pass, and at least one is required: bbox
+        [xmin,ymin,zmin,xmax,ymax,zmax], a half-space (plane_origin +
+        plane_normal, the +normal side), a ball (sphere_center +
+        sphere_radius), a data comparison (where_array on point_data for
+        points, cell_data for cells and sides, where_compare in <, <=, >, >=,
+        ==, !=, where_value), a quality comparison (quality_metric such as
+        scaled_jacobian or min_dihedral, quality_compare, quality_value;
+        cells and sides only), the k-th node-connected component (0-based, as
+        split numbers its pieces), and seed [x,y,z]: a patch grown from the
+        facet nearest it across edges no sharper than feature_angle degrees,
+        within normal_tolerance of the seed's normal (0 = off). mode 'all',
+        'any' or 'centroid' says how a cell or side reduces its nodes for the
+        box, plane and ball. Reports num_candidates, num_selected, num_grown
+        (-1 without a seed) and num_components (-1 without that criterion)."""
+        return _guard(
+            _tools.tool_select,
+            input_path=input_path,
+            output_path=output_path,
+            name=name,
+            input_format=input_format,
+            output_format=output_format,
+            kind=kind,
+            bbox=bbox,
+            plane_origin=plane_origin,
+            plane_normal=plane_normal,
+            sphere_center=sphere_center,
+            sphere_radius=sphere_radius,
+            where_array=where_array,
+            where_compare=where_compare,
+            where_value=where_value,
+            quality_metric=quality_metric,
+            quality_compare=quality_compare,
+            quality_value=quality_value,
+            component=component,
+            seed=seed,
+            feature_angle=feature_angle,
+            normal_tolerance=normal_tolerance,
+            mode=mode,
+            boundary_only=boundary_only,
+            tag=tag,
+        )
+
     @server.tool()
     def iga_refine(
         input_path: str,

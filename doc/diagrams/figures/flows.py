@@ -1033,7 +1033,6 @@ def roadmap_map():
         (
             "§3 operations",
             [
-                ("select: regions from predicates", "M"),
                 ("MMG in the browser (full WASM)", "M"),
                 ("optimize_volume: worst-cell moves", "M"),
             ],
