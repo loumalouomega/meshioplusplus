@@ -66,6 +66,7 @@
 #include "meshioplusplus/operations/refine_patches.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/tessellate.hpp"
+#include "meshioplusplus/operations/tet_poly.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
@@ -523,6 +524,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Tessellate", {"Levels", "Curved", "Fields", "RecordStencil"}},
         {"Agglomerate",
          {"TargetGroupSize", "MergeCoplanarFaces", "CoplanarAngle", "MinSphericity"}},
+        {"TetToPoly", {"FeatureAngle", "PointDataToCellData", "RecordVertexIds"}},
+        {"PolyToTet", {"RecordParentIds"}},
         {"Crop", {"Bbox", "Point", "Normal", "Where", "Compare", "Value", "Mode", "RecordIds"}},
         {"ExtractSurface", {"RecordParentIds"}},
         {"ExtractSkin", {"Linearize"}},
@@ -2817,6 +2820,27 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         pipe_push_step(rReport, rStep,
                        {{"NumFacesMerged", static_cast<double>(result.mNumFacesMerged)},
                         {"NumRejected", static_cast<double>(result.mNumRejected)}});
+        return std::move(result.mMesh);
+    }
+    if (op == "TetToPoly") {
+        TetToPolyOptions opts;
+        opts.mFeatureAngleDeg = pipe_number(rStep, "FeatureAngle", 1.0);
+        opts.mPointDataToCellData = pipe_flag(rStep, "PointDataToCellData", false);
+        opts.mRecordVertexIds = pipe_flag(rStep, "RecordVertexIds", false);
+        auto result = tet_to_poly(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumNewPoints", static_cast<double>(result.mNumNewPoints)},
+                        {"NumBoundaryFaces", static_cast<double>(result.mNumBoundaryFaces)},
+                        {"NumSplitVertices", static_cast<double>(result.mNumSplitVertices)}});
+        return std::move(result.mMesh);
+    }
+    if (op == "PolyToTet") {
+        PolyToTetOptions opts;
+        opts.mRecordParentIds = pipe_flag(rStep, "RecordParentIds", false);
+        auto result = poly_to_tet(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumExactTets", static_cast<double>(result.mNumExactTets)},
+                        {"NumFannedCells", static_cast<double>(result.mNumFannedCells)}});
         return std::move(result.mMesh);
     }
     if (op == "Crop") {

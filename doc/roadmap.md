@@ -42,7 +42,7 @@ Every format this section queued is now read: the native FEM interchange, solver
 - **Non-MSC Nastran HDF5 dialects:** incompatible schemas; revisit with a file in hand.
 - **Partitioning niche:** gmsh `$PartitionedEntities` (Kratos partitions through MDPA).
 - **CalculiX `.dat` print files:** `frd.read_dat` stays a Python helper that returns a list of table dictionaries; it is not a `Mesh`, it has no writer, and `.dat` already belongs to Tecplot and Marc ([CalculiX results](./formats/frd.md)).
-- **Operators and tooling, not formats** (listed only because they came up in the same review): ICP registration; mesh duals; cylindrical/spherical coordinate transforms; shell completions.
+- **Operators and tooling, not formats** (listed only because they came up in the same review): ICP registration; mesh duals other than the tetrahedral median dual (now [`tet_to_poly`](./tet_poly.md)); cylindrical/spherical coordinate transforms; shell completions.
 
 Revisit any of them when a consumer asks with a file in hand — a real deck or result file, the tool version that wrote it, and the tool that needs the converted output.
 

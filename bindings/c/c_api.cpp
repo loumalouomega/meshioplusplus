@@ -101,6 +101,7 @@
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/tessellate.hpp"
+#include "meshioplusplus/operations/tet_poly.hpp"
 #include "meshioplusplus/operations/reorder.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/error.hpp"
@@ -263,6 +264,14 @@ struct mio_subdivide_result {
 struct mio_agglomerate_result {
     mio_mesh mMesh;                    // owns the coarsened mesh; borrowed via _result_mesh
     meshioplusplus::NDArray mCellMap;  // flat, unlike mio_subdivide_result's per-block vector
+};
+
+struct mio_tet_to_poly_result {
+    mio_mesh mMesh;                      // owns the dual mesh; borrowed via _result_mesh
+    meshioplusplus::NDArray mVertexMap;  // flat, output global cell -> input vertex
+    int64_t mNumNewPoints = 0;
+    int64_t mNumBoundaryFaces = 0;
+    int64_t mNumSplitVertices = 0;
 };
 
 struct mio_refine_result {
@@ -2992,6 +3001,108 @@ void mio_agglomerate_result_free(mio_agglomerate_result* result) {
     delete result;
 }
 
+void mio_tet_to_poly_opts_init(mio_tet_to_poly_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_tet_to_poly_opts{};
+    opts->feature_angle = 1.0;
+}
+
+mio_tet_to_poly_result* mio_tet_to_poly(const mio_mesh* mesh, const mio_tet_to_poly_opts* opts) {
+    return guarded_ptr(
+        static_cast<mio_tet_to_poly_result*>(nullptr), [&]() -> mio_tet_to_poly_result* {
+            if (!mesh)
+                throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+            meshioplusplus::TetToPolyOptions options;
+            if (opts) {
+                options.mFeatureAngleDeg = opts->feature_angle;
+                options.mPointDataToCellData = opts->point_data_to_cell_data != 0;
+                options.mRecordVertexIds = opts->record_vertex_ids != 0;
+            }
+            meshioplusplus::TetToPolyResult r = meshioplusplus::tet_to_poly(mesh->mMesh, options);
+            auto* out = new mio_tet_to_poly_result{};
+            out->mMesh = mio_mesh{std::move(r.mMesh)};
+            out->mVertexMap = std::move(r.mVertexMap);
+            out->mNumNewPoints = r.mNumNewPoints;
+            out->mNumBoundaryFaces = r.mNumBoundaryFaces;
+            out->mNumSplitVertices = r.mNumSplitVertices;
+            return out;
+        });
+}
+
+const mio_mesh* mio_tet_to_poly_result_mesh(const mio_tet_to_poly_result* result) {
+    return guarded_ptr(static_cast<const mio_mesh*>(nullptr), [&]() -> const mio_mesh* {
+        if (!result)
+            return nullptr;
+        return &result->mMesh;
+    });
+}
+
+mio_mesh* mio_tet_to_poly_result_take_mesh(mio_tet_to_poly_result* result) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!result)
+            throw meshioplusplus::ReadError("meshio++: result is NULL");
+        return new mio_mesh{std::move(result->mMesh.mMesh)};
+    });
+}
+
+mio_status mio_tet_to_poly_result_vertex_map(const mio_tet_to_poly_result* result,
+                                             const void** data, mio_dtype* dtype, int64_t* n) {
+    return guarded([&]() -> mio_status {
+        if (!result)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        const NDArray& a = result->mVertexMap;
+        if (data)
+            *data = a.Data();
+        if (dtype)
+            *dtype = from_dtype(a.Dtype());
+        if (n)
+            *n = a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
+        return MIO_OK;
+    });
+}
+
+mio_status mio_tet_to_poly_result_counts(const mio_tet_to_poly_result* result,
+                                         int64_t* num_new_points, int64_t* num_boundary_faces,
+                                         int64_t* num_split_vertices) {
+    return guarded([&]() -> mio_status {
+        if (!result)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        if (num_new_points)
+            *num_new_points = result->mNumNewPoints;
+        if (num_boundary_faces)
+            *num_boundary_faces = result->mNumBoundaryFaces;
+        if (num_split_vertices)
+            *num_split_vertices = result->mNumSplitVertices;
+        return MIO_OK;
+    });
+}
+
+void mio_tet_to_poly_result_free(mio_tet_to_poly_result* result) {
+    delete result;
+}
+
+mio_convert_cells_result* mio_poly_to_tet(const mio_mesh* mesh, int record_parent_ids,
+                                          int64_t* num_exact_tets, int64_t* num_fanned_cells) {
+    return guarded_ptr(
+        static_cast<mio_convert_cells_result*>(nullptr), [&]() -> mio_convert_cells_result* {
+            if (!mesh)
+                throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+            meshioplusplus::PolyToTetOptions options;
+            options.mRecordParentIds = record_parent_ids != 0;
+            meshioplusplus::PolyToTetResult r = meshioplusplus::poly_to_tet(mesh->mMesh, options);
+            if (num_exact_tets)
+                *num_exact_tets = r.mNumExactTets;
+            if (num_fanned_cells)
+                *num_fanned_cells = r.mNumFannedCells;
+            auto* out = new mio_convert_cells_result{};
+            out->mMesh = mio_mesh{std::move(r.mMesh)};
+            out->mPointMap = std::move(r.mPointMap);
+            out->mCellMaps = std::move(r.mCellMaps);
+            return out;
+        });
+}
+
 // The two flat enums duplicate the C++ ones across the ABI, so drift is a
 // compile error rather than a wrong answer -- the mio_region_kind pattern.
 static_assert(static_cast<int>(meshioplusplus::RefineClosure::RedGreen) ==
@@ -5460,6 +5571,8 @@ void mio_sequence_free(mio_sequence* seq) {
 
 static_assert(sizeof(mio_agglomerate_opts) == 80,
               "mio_agglomerate_opts grew outside its reserved tail");
+static_assert(sizeof(mio_tet_to_poly_opts) == 64,
+              "mio_tet_to_poly_opts grew outside its reserved tail");
 static_assert(sizeof(mio_resample_opts) == 80, "mio_resample_opts grew outside its reserved tail");
 
 mio_mesh* mio_blend_steps(const mio_mesh* a, const mio_mesh* b, double w, int32_t blend_points) {

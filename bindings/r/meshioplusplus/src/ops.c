@@ -2246,6 +2246,74 @@ SEXP R_mio_convert_cells(SEXP mesh, SEXP mode, SEXP record_parent_ids) {
     return res;
 }
 
+/* tet_to_poly's vertex map is a single FLAT array, like agglomerate's cell
+ * map, returned 1-based. */
+SEXP R_mio_tet_to_poly(SEXP mesh, SEXP feature_angle, SEXP point_data_to_cell_data,
+                       SEXP record_vertex_ids) {
+    mio_tet_to_poly_opts opts;
+    mio_tet_to_poly_opts_init(&opts);
+    opts.feature_angle = mio_r_double(feature_angle, "feature_angle");
+    opts.point_data_to_cell_data =
+        mio_r_bool(point_data_to_cell_data, "point_data_to_cell_data");
+    opts.record_vertex_ids = mio_r_bool(record_vertex_ids, "record_vertex_ids");
+    mio_tet_to_poly_result *r = mio_tet_to_poly(mio_r_mesh(mesh), &opts);
+    if (r == NULL) mio_r_fail("tet_to_poly");
+    const void *d = NULL;
+    mio_dtype dt;
+    int64_t len = 0, nnew = 0, nbnd = 0, nsplit = 0;
+    if (mio_tet_to_poly_result_vertex_map(r, &d, &dt, &len) != MIO_OK ||
+        mio_tet_to_poly_result_counts(r, &nnew, &nbnd, &nsplit) != MIO_OK) {
+        mio_tet_to_poly_result_free(r);
+        mio_r_fail("tet_to_poly vertex_map");
+    }
+    SEXP vm = PROTECT(mio_r_shift_map((const int64_t *)d, len));
+    mio_mesh *out = mio_tet_to_poly_result_take_mesh(r);
+    mio_tet_to_poly_result_free(r);
+    if (out == NULL) {
+        UNPROTECT(1);
+        mio_r_fail("tet_to_poly take_mesh");
+    }
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP a = PROTECT(Rf_ScalarReal((double)nnew));
+    SEXP b = PROTECT(Rf_ScalarReal((double)nbnd));
+    SEXP c = PROTECT(Rf_ScalarReal((double)nsplit));
+    const char *names[] = {"mesh", "vertex_map", "num_new_points", "num_boundary_faces",
+                           "num_split_vertices"};
+    SEXP values[] = {mo, vm, a, b, c};
+    SEXP res = PROTECT(mio_r_named_list(5, names, values));
+    UNPROTECT(6);
+    return res;
+}
+
+/* poly_to_tet returns a convert_cells result, so its maps read the same way. */
+SEXP R_mio_poly_to_tet(SEXP mesh, SEXP record_parent_ids) {
+    int64_t nexact = 0, nfanned = 0;
+    mio_convert_cells_result *r =
+        mio_poly_to_tet(mio_r_mesh(mesh), mio_r_bool(record_parent_ids, "record_parent_ids"),
+                        &nexact, &nfanned);
+    if (r == NULL) mio_r_fail("poly_to_tet");
+    SEXP pm = R_NilValue, cm = R_NilValue;
+    if (result_maps(r, 0, &pm, &cm) == NULL) {
+        mio_convert_cells_result_free(r);
+        mio_r_fail("poly_to_tet maps");
+    }
+    mio_mesh *out = mio_convert_cells_result_take_mesh(r);
+    mio_convert_cells_result_free(r);
+    if (out == NULL) {
+        UNPROTECT(2);
+        mio_r_fail("poly_to_tet take_mesh");
+    }
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP a = PROTECT(Rf_ScalarReal((double)nexact));
+    SEXP b = PROTECT(Rf_ScalarReal((double)nfanned));
+    const char *names[] = {"mesh", "point_map", "cell_maps", "num_exact_tets",
+                           "num_fanned_cells"};
+    SEXP values[] = {mo, pm, cm, a, b};
+    SEXP res = PROTECT(mio_r_named_list(5, names, values));
+    UNPROTECT(6);
+    return res;
+}
+
 /* The mio_refine_closure / mio_refine_compare code for a name, or -1. */
 static int refine_closure_code(const char *name) {
     if (name == NULL || name[0] == '\0') return MIO_REFINE_CLOSURE_REDGREEN;

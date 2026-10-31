@@ -263,7 +263,7 @@ meshioplusplus.write_points_cells("foo.vtk", points, cells)
 For both input and output, you can optionally specify the exact `file_format` (in case you would like to enforce ASCII over binary VTK, for example).
 
 <details>
-<summary><b>Mesh and data operations</b> — skin/surface extraction, quality, reorder, diff, merge, transform/clean/crop/split/stats, cell conversion, tessellation, subdivide/agglomerate, refine, undo-green, decimate, partition, remesh, MMG adaptation, smoothing, interpolation, slice, isosurface, derivatives, Hessian, error estimation, field integration, data ops (click to expand)</summary>
+<summary><b>Mesh and data operations</b> — skin/surface extraction, quality, reorder, diff, merge, transform/clean/crop/split/stats, cell conversion, tessellation, subdivide/agglomerate, tet_to_poly/poly_to_tet, refine, undo-green, decimate, partition, remesh, MMG adaptation, smoothing, interpolation, slice, isosurface, derivatives, Hessian, error estimation, field integration, data ops (click to expand)</summary>
 
 #### Skin extraction
 
@@ -516,6 +516,17 @@ coarse = meshioplusplus.agglomerate(mesh, target_group_size=8)
 coarse, report = meshioplusplus.agglomerate(
     mesh, merge_coplanar_faces=True, min_sphericity=0.7, return_report=True
 )
+```
+
+#### Tetrahedral ⇄ polyhedral conversion
+
+**`meshioplusplus.tet_to_poly`** converts a tetrahedral mesh into its polyhedral (median) dual — the tet-to-poly conversion CFD meshers perform: one polyhedron per vertex, bounded by the ring of tetrahedron and triangle centroids around each edge and, on the boundary, by the boundary triangles' pieces, fused while their normals agree within `feature_angle` so feature edges and corners survive. A vertex on an interface between `tetra` blocks gets one cell per block. **`meshioplusplus.poly_to_tet`** goes back: `convert_cells(mode="simplexify")`, except that a polyhedron that already is a tetrahedron becomes that one `tetra`. See `doc/tet_poly.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+poly, report = meshioplusplus.tet_to_poly(tets, return_report=True)
+tets_again = meshioplusplus.poly_to_tet(poly)  # valid and volume-conserving, not the original
 ```
 
 #### Refinement

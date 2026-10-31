@@ -102,6 +102,7 @@ from ._subdivide import subdivide
 from ._surface import extract_surface
 from ._tensor_invariants import tensor_invariants
 from ._tessellation import tessellate
+from ._tet_poly import poly_to_tet, tet_to_poly
 from ._thickness import thickness
 from ._transform import transform
 from ._undo_green import undo_green
@@ -634,6 +635,8 @@ _OP_TABLE = {
         "CoplanarAngle",
         "MinSphericity",
     ),
+    "TetToPoly": ("FeatureAngle", "PointDataToCellData", "RecordVertexIds"),
+    "PolyToTet": ("RecordParentIds",),
     "Crop": (
         "Bbox",
         "Point",
@@ -2759,6 +2762,25 @@ def _apply_step(mesh, step, steps, warnings):
         )
         entry["NumFacesMerged"] = float(report["num_faces_merged"])
         entry["NumRejected"] = float(report["num_rejected"])
+    elif op == "TetToPoly":
+        mesh, report = tet_to_poly(
+            mesh,
+            feature_angle=_number(step, "FeatureAngle", 1.0),
+            point_data_to_cell_data=_flag(step, "PointDataToCellData", False),
+            record_vertex_ids=_flag(step, "RecordVertexIds", False),
+            return_report=True,
+        )
+        entry["NumNewPoints"] = float(report["num_new_points"])
+        entry["NumBoundaryFaces"] = float(report["num_boundary_faces"])
+        entry["NumSplitVertices"] = float(report["num_split_vertices"])
+    elif op == "PolyToTet":
+        mesh, report = poly_to_tet(
+            mesh,
+            record_parent_ids=_flag(step, "RecordParentIds", False),
+            return_report=True,
+        )
+        entry["NumExactTets"] = float(report["num_exact_tets"])
+        entry["NumFannedCells"] = float(report["num_fanned_cells"])
     elif op == "Crop":
         has_bbox = "Bbox" in step
         has_plane = "Point" in step or "Normal" in step

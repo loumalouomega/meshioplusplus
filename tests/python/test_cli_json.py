@@ -166,6 +166,23 @@ def files(tmp_path_factory):
     )
     paths["hexes"] = str(d / "hexes.vtu")
     mio.write(paths["hexes"], mio.Mesh(hpts, [("hexahedron", hexes)]))
+    # the two tetrahedra of `parts` stored as polyhedra, for poly-to-tet
+    paths["polys"] = str(d / "polys.vtu")
+    mio.write(
+        paths["polys"],
+        mio.Mesh(
+            parts.points,
+            [
+                (
+                    "polyhedron4",
+                    [
+                        [[0, 2, 1], [0, 1, 3], [1, 2, 3], [0, 3, 2]],
+                        [[0, 1, 2], [0, 4, 1], [1, 4, 2], [0, 2, 4]],
+                    ],
+                )
+            ],
+        ),
+    )
     # a two-step sequence (times 0 and 1 by index), for resample
     for k in range(2):
         mio.write(
@@ -509,6 +526,20 @@ WRITING = [
             "0.3",
             "--json",
         ],
+    ),
+    (
+        "tet_to_poly",
+        lambda f, out: [
+            "tet-to-poly",
+            f["parts"],
+            out + ".vtu",
+            "--record-vertex-ids",
+            "--json",
+        ],
+    ),
+    (
+        "poly_to_tet",
+        lambda f, out: ["poly-to-tet", f["polys"], out + ".vtu", "--json"],
     ),
     (
         "resample",

@@ -68,6 +68,8 @@ The numpy fallback handles rectangular cell blocks; ragged/polyhedron blocks are
 
 `simplexify` and `elevate` linearize/decompose a curved cell's geometry — they keep only the corner nodes, and neither carries any provenance back from a synthetic simplex to the higher-order cell it came from. [`tessellate`](/tessellation) is the curvature-aware alternative for the five higher-order types it covers (`triangle6`/`quad8`/`quad9`/`tetra10`/`hexahedron27`): it subdivides onto a refinement lattice using each cell's own isoparametric shape functions (so a curved boundary tessellates onto the curve rather than being chopped straight), interpolates fields on the way in, and records a full point/cell provenance map that `Tessellation.gather`/`.scatter`/`.aggregate` use to move data back onto the original cell — the missing half of `convert_cells(simplexify)`'s own conformity guarantee.
 
+[`poly_to_tet`](/tet_poly) is `simplexify` with one addition, for meshes that are polyhedral: a polyhedron that already is a tetrahedron becomes exactly that one `tetra` instead of being fanned. Its counterpart [`tet_to_poly`](/tet_poly) builds the polyhedral dual of a tetrahedral mesh.
+
 ## CLI
 
 ```bash

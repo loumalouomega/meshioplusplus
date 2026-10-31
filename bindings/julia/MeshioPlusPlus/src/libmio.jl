@@ -1487,6 +1487,14 @@ struct _CAgglomerateOpts
     reserved::NTuple{6,Int64}
 end
 
+"""Mirror of C `mio_tet_to_poly_opts`."""
+struct _CTetToPolyOpts
+    feature_angle::Cdouble
+    point_data_to_cell_data::Int32
+    record_vertex_ids::Int32
+    reserved::NTuple{6,Int64}
+end
+
 """Mirror of C `mio_resample_opts` (v16.25.0)."""
 struct _CResampleOpts
     times::Ptr{Cdouble}
@@ -1877,6 +1885,8 @@ function _check_abi_layout()
         error("meshio++: mio_periodic_opts layout mismatch ($(sizeof(_CPeriodicOpts)) bytes)")
     sizeof(_CAgglomerateOpts) == 80 ||
         error("meshio++: mio_agglomerate_opts layout mismatch ($(sizeof(_CAgglomerateOpts)) bytes)")
+    sizeof(_CTetToPolyOpts) == 64 ||
+        error("meshio++: mio_tet_to_poly_opts layout mismatch ($(sizeof(_CTetToPolyOpts)) bytes)")
     sizeof(_CResampleOpts) == 80 ||
         error("meshio++: mio_resample_opts layout mismatch ($(sizeof(_CResampleOpts)) bytes)")
     sizeof(_CQualityGateReport) == 88 ||

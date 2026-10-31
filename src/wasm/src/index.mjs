@@ -365,6 +365,8 @@ export class MeshioPlusPlusLoadError extends Error {
  *   convertCells: (mesh: Mesh, mode?: string, recordParentIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
  *   subdivide: (mesh: Mesh, recordParentIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, cellMaps: Int32Array[]},
  *   agglomerate: (mesh: Mesh, targetGroupSize?: number, returnMaps?: boolean, options?: {mergeCoplanarFaces?: boolean, coplanarAngle?: number, minSphericity?: number}) => Mesh | {mesh: Mesh, cellMap: Int32Array, numFacesMerged: number, numRejected: number},
+ *   tetToPoly: (mesh: Mesh, options?: {featureAngle?: number, pointDataToCellData?: boolean, recordVertexIds?: boolean}, returnMaps?: boolean) => Mesh | {mesh: Mesh, vertexMap: Int32Array, numNewPoints: number, numBoundaryFaces: number, numSplitVertices: number},
+ *   polyToTet: (mesh: Mesh, recordParentIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[], numExactTets: number, numFannedCells: number},
  *   refine: (mesh: Mesh, levels?: number, recordParentIds?: boolean,
  *            options?: object, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
  *   decimate: (mesh: Mesh, ratio?: number, targetFaces?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, frozen?: number[]|Int32Array|null, returnMaps?: boolean) => {mesh: Mesh, facesRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number, pointMap?: Int32Array, cellMaps?: Int32Array[]},
@@ -1258,6 +1260,15 @@ export async function loadMeshioPlusPlus(
         // `options`: {mergeCoplanarFaces, coplanarAngle, minSphericity}.
         agglomerate: (mesh, targetGroupSize = 8, returnMaps = false, options = undefined) =>
             Module.agglomerate(mesh, targetGroupSize, returnMaps, options),
+        // The median dual: one polyhedron per vertex. `options`:
+        // {featureAngle, pointDataToCellData, recordVertexIds}; `returnMaps`
+        // adds the flat `vertexMap` and the counts.
+        tetToPoly: (mesh, options = undefined, returnMaps = false) =>
+            Module.tetToPoly(mesh, options, returnMaps),
+        // simplexify, keeping a polyhedron that already is a tetrahedron as one
+        // tetra; `returnMaps` adds `{pointMap, cellMaps}` and the counts.
+        polyToTet: (mesh, recordParentIds = false, returnMaps = false) =>
+            Module.polyToTet(mesh, recordParentIds, returnMaps),
         // `returnMaps` (default false): when true, returns
         // `{mesh, pointMap, cellMaps}` instead of a bare mesh.
         refine: (mesh, levels = 1, recordParentIds = false, options = undefined,

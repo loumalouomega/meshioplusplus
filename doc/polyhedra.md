@@ -104,6 +104,11 @@ See [Formats](/formats) for the current table and each format page for what it c
 | [`partition`](/partition) | fully supported, both methods: SFC works off centroids, and the KaHIP dual graph connects cells sharing a face |
 | [`clean`](/clean) | degenerate and duplicate polyhedra are dropped; the duplicate key is the sorted set of sorted faces |
 | [`data_average`](/data_average) | `Measure` weighting works, instead of falling back to a unit weight |
+| [`poly_to_tet`](/tet_poly) | decomposes into tetrahedra like `convert_cells(simplexify)`, except that a polyhedron that already is a tetrahedron becomes exactly that one `tetra`, with no new points |
+
+### Making a polyhedral mesh
+
+[`tet_to_poly`](/tet_poly) turns a tetrahedral mesh into its median dual, one polyhedron per vertex, the tet-to-poly conversion CFD meshers perform; [`agglomerate`](/agglomerate) merges groups of cells into larger polyhedra and [`subdivide`](/subdivide) splits each cell into one polyhedron per face. [`poly_to_tet`](/tet_poly) goes back to tetrahedra.
 
 ### Why `quality` reports so little
 

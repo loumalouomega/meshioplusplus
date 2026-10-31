@@ -124,6 +124,7 @@
 #include "meshioplusplus/operations/iga.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/tessellate.hpp"
+#include "meshioplusplus/operations/tet_poly.hpp"
 #include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
@@ -7188,6 +7189,65 @@ val agglomerate_js(const val& rMeshObj, int targetGroupSize, bool returnMaps, co
 }
 
 /**
+ * @brief Convert a tetrahedral mesh into its polyhedral (median) dual: one
+ * polyhedron per vertex (see doc/tet_poly.md). `options` is an optional
+ * `{featureAngle, pointDataToCellData, recordVertexIds}`. Returns the dual
+ * mesh, or `{mesh, vertexMap, numNewPoints, numBoundaryFaces,
+ * numSplitVertices}` when `returnMaps` is set -- `vertexMap` is a single flat
+ * array, output global cell -> input vertex (0-based).
+ */
+val tet_to_poly_js(const val& rMeshObj, const val& rOptions, bool returnMaps) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::TetToPolyOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the tetToPoly options",
+                                {"featureAngle", "pointDataToCellData", "recordVertexIds"});
+            if (!rOptions["featureAngle"].isUndefined())
+                options.mFeatureAngleDeg = rOptions["featureAngle"].as<double>();
+            if (!rOptions["pointDataToCellData"].isUndefined())
+                options.mPointDataToCellData = rOptions["pointDataToCellData"].as<bool>();
+            if (!rOptions["recordVertexIds"].isUndefined())
+                options.mRecordVertexIds = rOptions["recordVertexIds"].as<bool>();
+        }
+        meshioplusplus::TetToPolyResult r =
+            meshioplusplus::tet_to_poly(val_to_mesh(rMeshObj), options);
+        if (!returnMaps)
+            return mesh_to_val(r.mMesh);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("vertexMap", ndarray_to_int32_array(r.mVertexMap));
+        out.set("numNewPoints", static_cast<double>(r.mNumNewPoints));
+        out.set("numBoundaryFaces", static_cast<double>(r.mNumBoundaryFaces));
+        out.set("numSplitVertices", static_cast<double>(r.mNumSplitVertices));
+        return out;
+    });
+}
+
+/**
+ * @brief Decompose a polyhedral (or mixed) mesh into tetrahedra:
+ * `convertCells(mesh, "simplexify")`, except that a polyhedron that already is
+ * a tetrahedron becomes that one tetra. Returns the mesh, or `{mesh,
+ * pointMap, cellMaps, numExactTets, numFannedCells}` when `returnMaps` is set.
+ */
+val poly_to_tet_js(const val& rMeshObj, bool recordParentIds, bool returnMaps) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::PolyToTetOptions options;
+        options.mRecordParentIds = recordParentIds;
+        meshioplusplus::PolyToTetResult r =
+            meshioplusplus::poly_to_tet(val_to_mesh(rMeshObj), options);
+        if (!returnMaps)
+            return mesh_to_val(r.mMesh);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("pointMap", ndarray_to_int32_array(r.mPointMap));
+        out.set("cellMaps", cell_maps_to_val(r.mCellMaps));
+        out.set("numExactTets", static_cast<double>(r.mNumExactTets));
+        out.set("numFannedCells", static_cast<double>(r.mNumFannedCells));
+        return out;
+    });
+}
+
+/**
  * @brief Refine a mesh, subdividing cells into same-type children (line -> 2,
  * triangle -> 4, quad -> 4, tetra -> 8, wedge -> 8, hexahedron -> 8). Returns
  * the refined mesh (use `recordParentIds` for the `refine:parent_cell`
@@ -8853,6 +8913,8 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("convertCells", &convert_cells_js);
     emscripten::function("subdivide", &subdivide_js);
     emscripten::function("agglomerate", &agglomerate_js);
+    emscripten::function("tetToPoly", &tet_to_poly_js);
+    emscripten::function("polyToTet", &poly_to_tet_js);
     emscripten::function("refine", &refine_js);
     emscripten::function("decimate", &decimate_js);
     emscripten::function("decimateVolume", &decimate_volume_js);

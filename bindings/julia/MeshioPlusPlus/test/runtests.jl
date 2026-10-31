@@ -795,6 +795,24 @@ end
     close(m)
 end
 
+@testset "operations: tet_to_poly / poly_to_tet" begin
+    m = fixture()  # 2 tetra sharing one face, 5 vertices
+    d = tet_to_poly(m; record_vertex_ids=true)
+    @test num_cell_blocks(d.mesh) == 1
+    @test cell_block_type(d.mesh, 1) == "polyhedron"
+    @test cell_block_info(d.mesh, 1).num_cells == 5  # one cell per vertex
+    @test sort(d.vertex_map) == collect(1:5)          # 1-based vertex ids
+    @test d.num_new_points > 0
+    @test d.num_split_vertices == 0
+    b = poly_to_tet(d.mesh)
+    @test cell_block_type(b.mesh, 1) == "tetra"
+    @test b.num_exact_tets == 0
+    @test b.num_fanned_cells == 5
+    close(b.mesh)
+    close(d.mesh)
+    close(m)
+end
+
 @testset "operations: agglomerate (polyhedral coarsening)" begin
     m = fixture()  # 2 tetra sharing one face
     a = agglomerate(m; target_group_size=2)

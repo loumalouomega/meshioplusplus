@@ -145,6 +145,7 @@ export default defineConfig({
               { text: "Green-element undo", link: "/undo_green" },
               { text: "Polyhedral refinement (subdivide)", link: "/subdivide" },
               { text: "Polyhedral coarsening (agglomerate)", link: "/agglomerate" },
+              { text: "Tetrahedral ⇄ polyhedral (tet_to_poly)", link: "/tet_poly" },
               { text: "Decimation (QEM edge collapse)", link: "/decimate" },
               { text: "Volume decimation", link: "/decimate_volume" },
             ],

@@ -102,6 +102,11 @@ typedef struct mio_subdivide_result mio_subdivide_result;
  *  mio_agglomerate_result_free(). */
 typedef struct mio_agglomerate_result mio_agglomerate_result;
 
+/** Opaque result of mio_tet_to_poly(): the polyhedral dual mesh plus a FLAT
+ *  vertex map (output global cell -> the input vertex it was built around)
+ *  and the counts. Destroy with mio_tet_to_poly_result_free(). */
+typedef struct mio_tet_to_poly_result mio_tet_to_poly_result;
+
 /** Opaque result of mio_refine(): the refined mesh plus the point/cell index
  *  maps. Destroy with mio_refine_result_free(). */
 typedef struct mio_refine_result mio_refine_result;
@@ -1890,6 +1895,93 @@ MIO_API mio_status mio_agglomerate_result_cell_map(const mio_agglomerate_result*
 
 /** Free an agglomerate result (and the mesh it still owns). */
 MIO_API void mio_agglomerate_result_free(mio_agglomerate_result* result);
+
+/**
+ * Options for mio_tet_to_poly (see doc/tet_poly.md). Same ABI rules as every
+ * option struct: fields are only appended, replacing `reserved`. Initialize
+ * through mio_tet_to_poly_opts_init(): the feature angle defaults to 1
+ * degree, so an all-zero struct is NOT the default.
+ */
+typedef struct mio_tet_to_poly_opts {
+    double feature_angle;            /**< degrees in [0, 180); default 1 */
+    int32_t point_data_to_cell_data; /**< nonzero copies point_data onto the dual cells */
+    int32_t record_vertex_ids;       /**< nonzero attaches the dual:vertex cell_data array */
+    int64_t reserved[6];             /**< must be zero; room for additive growth */
+} mio_tet_to_poly_opts;
+
+/** Initialize tet_to_poly options: 1-degree feature angle, no extra data. */
+MIO_API void mio_tet_to_poly_opts_init(mio_tet_to_poly_opts* opts);
+
+/**
+ * Convert a tetrahedral mesh into its polyhedral (median) dual: one
+ * polyhedron per vertex, bounded by the ring of tetrahedron and triangle
+ * centroids around each edge leaving it and, on the boundary, by its share
+ * of the boundary triangles, fused while their normals differ by at most
+ * feature_angle degrees. A vertex on an interface between tetra blocks gets
+ * one cell per block. Each tetra block becomes a `polyhedron` block, each
+ * triangle block a `polygon` block of its dual boundary faces; any other
+ * block is dropped. The input points keep their indices.
+ * @param opts NULL means every mio_tet_to_poly_opts_init() default.
+ * @return a result handle (free with mio_tet_to_poly_result_free), or NULL on
+ *         failure -- a volume block that is not linear tetra, no tetrahedra,
+ *         2D points, a face shared by three or more tetrahedra, or a feature
+ *         angle out of range.
+ */
+MIO_API mio_tet_to_poly_result* mio_tet_to_poly(const mio_mesh* mesh,
+                                                const mio_tet_to_poly_opts* opts);
+
+/**
+ * Borrow the dual mesh. Owned by the result: valid until
+ * mio_tet_to_poly_result_free(result); do NOT pass it to mio_mesh_free().
+ * @return the dual mesh, or NULL on error.
+ */
+MIO_API const mio_mesh* mio_tet_to_poly_result_mesh(const mio_tet_to_poly_result* result);
+
+/**
+ * Transfer ownership of the dual mesh out of the result.
+ * @return a new owning mesh handle (free with mio_mesh_free), or NULL on error.
+ */
+MIO_API mio_mesh* mio_tet_to_poly_result_take_mesh(mio_tet_to_poly_result* result);
+
+/**
+ * Zero-copy borrow of the FLAT vertex map (int64, shape (total output cell
+ * count,), output global cell -> input vertex, 0-based). Any out-param may
+ * be NULL.
+ */
+MIO_API mio_status mio_tet_to_poly_result_vertex_map(const mio_tet_to_poly_result* result,
+                                                     const void** data, mio_dtype* dtype,
+                                                     int64_t* n);
+
+/**
+ * The counts of a tet_to_poly run. Any out-param may be NULL.
+ * @param num_new_points     points appended after the input points.
+ * @param num_boundary_faces boundary faces of the dual cells (each side of an
+ *                           interface counted).
+ * @param num_split_vertices vertices that yielded more than one dual cell.
+ */
+MIO_API mio_status mio_tet_to_poly_result_counts(const mio_tet_to_poly_result* result,
+                                                 int64_t* num_new_points,
+                                                 int64_t* num_boundary_faces,
+                                                 int64_t* num_split_vertices);
+
+/** Free a tet_to_poly result (and the mesh it still owns). */
+MIO_API void mio_tet_to_poly_result_free(mio_tet_to_poly_result* result);
+
+/**
+ * Decompose a polyhedral (or mixed) mesh into tetrahedra:
+ * mio_convert_cells(mesh, "simplexify", ...), except that a polyhedron that
+ * already is a tetrahedron (four triangles over four distinct nodes) becomes
+ * that one positively oriented tetra, with no new points. The result has the
+ * convert_cells shape (mesh, point map, per-block first-child cell maps).
+ * @param record_parent_ids nonzero attaches convert:parent_cell.
+ * @param num_exact_tets    optional out: polyhedra emitted as one tetra.
+ * @param num_fanned_cells  optional out: polyhedra decomposed by the fan.
+ * @return a result handle (free with mio_convert_cells_result_free), or NULL
+ *         on failure (a polyhedron that is not a closed orientable surface).
+ */
+MIO_API mio_convert_cells_result* mio_poly_to_tet(const mio_mesh* mesh, int record_parent_ids,
+                                                  int64_t* num_exact_tets,
+                                                  int64_t* num_fanned_cells);
 
 /** How mio_refine_ex resolves the hanging nodes a partial refinement leaves. */
 typedef enum mio_refine_closure {

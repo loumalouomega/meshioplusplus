@@ -22,7 +22,7 @@ An operation is a computation *on* a mesh rather than a file format: it is writt
 | Group | Operations |
 | --- | --- |
 | Inspection and topology | [quality](./mesh_quality.md), [stats](./stats.md), [diff](./diff.md), [find_intersections](./find_intersections.md), [thickness](./thickness.md), [extract_surface](./extract_surface.md), [extract_skin](./extract_skin.md), [reorder](./reorder.md), [transform](./transform.md), [mirror](./mirror.md), [clean](./clean.md), [merge](./merge.md), [crop](./crop.md), [split](./split.md), [partition](./partition.md), [convert_cells](./convert_cells.md) |
-| Refinement and coarsening | [refine](./refine.md), [undo_green](./undo_green.md), [subdivide](./subdivide.md), [agglomerate](./agglomerate.md), [decimate](./decimate.md), [decimate_volume](./decimate_volume.md) |
+| Refinement and coarsening | [refine](./refine.md), [undo_green](./undo_green.md), [subdivide](./subdivide.md), [agglomerate](./agglomerate.md), [tet_to_poly / poly_to_tet](./tet_poly.md), [decimate](./decimate.md), [decimate_volume](./decimate_volume.md) |
 | Remeshing and smoothing | [remesh](./remesh.md), [remesh_volume](./remesh_volume.md), [optimize_volume](./optimize_volume.md), [smooth](./smooth.md) |
 | Fields | [interpolate](./interpolate.md), [conservative_interpolate](./conservative_interpolate.md), [gradient](./gradient.md), [hessian](./hessian.md), [estimate_error](./error.md), [data_integrate](./field_integration.md) |
 | Cutting, grids and distance | [slice](./slice.md), [isosurface](./isosurface.md), [grid and voxelize](./voxelize.md), [parametric primitives](./primitives.md), [extrude and revolve](./extrude.md), [signed distance](./sdf.md) |

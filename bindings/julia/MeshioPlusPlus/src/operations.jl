@@ -1608,6 +1608,70 @@ function agglomerate(m::Mesh; target_group_size::Integer=8, merge_coplanar_faces
 end
 
 """
+    tet_to_poly(mesh; feature_angle=1.0, point_data_to_cell_data=false,
+                record_vertex_ids=false) -> (; mesh, vertex_map, num_new_points,
+                                              num_boundary_faces, num_split_vertices)
+
+Convert a tetrahedral mesh into its polyhedral (median) dual: one polyhedron
+per vertex, bounded by the ring of tetrahedron and triangle centroids around
+each edge leaving it and, on the boundary, by its share of the boundary
+triangles, fused while their normals differ by at most `feature_angle`
+degrees (so feature edges and corners survive). A vertex on an interface
+between tetra blocks gets one cell per block. Each tetra block becomes a
+polyhedron block and each triangle block a polygon block; any other block is
+dropped. The input points keep their indices.
+
+`vertex_map` is a single flat 1-based array: output global cell → the input
+vertex it was built around. See `doc/tet_poly.md`.
+"""
+function tet_to_poly(m::Mesh; feature_angle::Real=1.0, point_data_to_cell_data::Bool=false,
+                     record_vertex_ids::Bool=false)
+    opts = _CTetToPolyOpts(Float64(feature_angle), Int32(point_data_to_cell_data),
+                           Int32(record_vertex_ids), ntuple(_ -> Int64(0), 6))
+    result = _check_ptr(ccall(_sym(:mio_tet_to_poly), Ptr{Cvoid},
+                              (Ptr{Cvoid}, Ref{_CTetToPolyOpts}), _handle(m), Ref(opts)))
+    try
+        vm = _result_map(result, :mio_tet_to_poly_result_vertex_map)
+        nnew, nbnd, nsplit = Ref{Int64}(0), Ref{Int64}(0), Ref{Int64}(0)
+        _check(ccall(_sym(:mio_tet_to_poly_result_counts), Cint,
+                     (Ptr{Cvoid}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64}), result, nnew, nbnd, nsplit))
+        out = Mesh(_check_ptr(ccall(_sym(:mio_tet_to_poly_result_take_mesh), Ptr{Cvoid},
+                                    (Ptr{Cvoid},), result)))
+        (mesh=out, vertex_map=vm, num_new_points=Int(nnew[]),
+         num_boundary_faces=Int(nbnd[]), num_split_vertices=Int(nsplit[]))
+    finally
+        ccall(_sym(:mio_tet_to_poly_result_free), Cvoid, (Ptr{Cvoid},), result)
+    end
+end
+
+"""
+    poly_to_tet(mesh; record_parent_ids=false) -> (; mesh, point_map, cell_maps,
+                                                   num_exact_tets, num_fanned_cells)
+
+Decompose a polyhedral (or mixed) mesh into tetrahedra:
+[`convert_cells`](@ref) with `"simplexify"`, except that a polyhedron that
+already is a tetrahedron becomes that one tetra, with no new points. The maps
+have `convert_cells`' shape. See `doc/tet_poly.md`.
+"""
+function poly_to_tet(m::Mesh; record_parent_ids::Bool=false)
+    nexact, nfanned = Ref{Int64}(0), Ref{Int64}(0)
+    result = _check_ptr(ccall(_sym(:mio_poly_to_tet), Ptr{Cvoid},
+                              (Ptr{Cvoid}, Cint, Ptr{Int64}, Ptr{Int64}), _handle(m),
+                              record_parent_ids ? Cint(1) : Cint(0), nexact, nfanned))
+    try
+        pm = _result_map(result, :mio_convert_cells_result_point_map)
+        cm = _result_cell_maps(result, :mio_convert_cells_result_num_cell_maps,
+                               :mio_convert_cells_result_cell_map)
+        out = Mesh(_check_ptr(ccall(_sym(:mio_convert_cells_result_take_mesh), Ptr{Cvoid},
+                                    (Ptr{Cvoid},), result)))
+        (mesh=out, point_map=pm, cell_maps=cm, num_exact_tets=Int(nexact[]),
+         num_fanned_cells=Int(nfanned[]))
+    finally
+        ccall(_sym(:mio_convert_cells_result_free), Cvoid, (Ptr{Cvoid},), result)
+    end
+end
+
+"""
     blend_steps(a, b, w; blend_points=false) -> Mesh
 
 `a` with every floating-point data array replaced by `(1 - w) a + w b`; the two

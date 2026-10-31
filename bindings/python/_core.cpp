@@ -143,6 +143,7 @@
 #include "meshioplusplus/operations/refine_patches.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/operations/tessellate.hpp"
+#include "meshioplusplus/operations/tet_poly.hpp"
 #include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
@@ -2591,6 +2592,59 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("target_group_size") = 8, py::arg("merge_coplanar_faces") = false,
         py::arg("coplanar_angle") = 1.0, py::arg("min_sphericity") = 0.0);
+
+    // Tetrahedral -> polyhedral: the median dual, one polyhedron per vertex.
+    // Returns a dict {mesh, vertex_map, num_new_points, num_boundary_faces,
+    // num_split_vertices}. See operations/tet_poly.hpp.
+    m.def(
+        "tet_to_poly",
+        [](py::object pymesh, double feature_angle, bool point_data_to_cell_data,
+           bool record_vertex_ids) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::TetToPolyOptions options;
+            options.mFeatureAngleDeg = feature_angle;
+            options.mPointDataToCellData = point_data_to_cell_data;
+            options.mRecordVertexIds = record_vertex_ids;
+            meshioplusplus::TetToPolyResult r =
+                core_nogil([&] { return meshioplusplus::tet_to_poly(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["vertex_map"] = meshioplusplus_py::numpy_from_ndarray(std::move(r.mVertexMap));
+            out["num_new_points"] = r.mNumNewPoints;
+            out["num_boundary_faces"] = r.mNumBoundaryFaces;
+            out["num_split_vertices"] = r.mNumSplitVertices;
+            return out;
+        },
+        py::arg("mesh"), py::arg("feature_angle") = 1.0, py::arg("point_data_to_cell_data") = false,
+        py::arg("record_vertex_ids") = false);
+
+    // Polyhedral -> tetrahedral: simplexify, emitting a polyhedron that already
+    // is a tetrahedron as that one tetra. Returns a dict {mesh, point_map,
+    // cell_maps, num_exact_tets, num_fanned_cells}. See operations/tet_poly.hpp.
+    m.def(
+        "poly_to_tet",
+        [](py::object pymesh, bool record_parent_ids) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::PolyToTetOptions options;
+            options.mRecordParentIds = record_parent_ids;
+            meshioplusplus::PolyToTetResult r =
+                core_nogil([&] { return meshioplusplus::poly_to_tet(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["point_map"] = meshioplusplus_py::numpy_from_ndarray(std::move(r.mPointMap));
+            py::list cell_maps;
+            for (meshioplusplus::NDArray& a : r.mCellMaps)
+                cell_maps.append(meshioplusplus_py::numpy_from_ndarray(std::move(a)));
+            out["cell_maps"] = cell_maps;
+            out["num_exact_tets"] = r.mNumExactTets;
+            out["num_fanned_cells"] = r.mNumFannedCells;
+            return out;
+        },
+        py::arg("mesh"), py::arg("record_parent_ids") = false);
 
     // Linear interpolation between two steps of one mesh. See
     // operations/blend.hpp.

@@ -266,6 +266,11 @@ write_snapshot("part.png", mesh)                       # .png .txt .ansi .html .
 
 `render` copies the frame out of the library, so a `Frame` owns its arrays and nothing needs closing. Colours are `0xRRGGBBAA` integers or `(r, g, b[, a])` tuples (`rgba(r, g, b, a)` builds the integer); `shading`, `edges`, `scale` and `diagnostic` take their names (`"smooth"`, `"feature"`, `"log"`, `"orientation"`, ...). `render_text(...; format="html")` returns a self-contained page, which a notebook shows with `display("text/html", ...)`. An unknown option or enum name is an `ErrorException` listing the choices; a library failure (an unknown array, a bad range) is a `MeshioError`. `detect_color_depth(; no_color, color_term, term)` returns `"truecolor"`, `"256"`, `"16"` or `"mono"`.
 
+## Tetrahedral ⇄ polyhedral additions
+
+- `tet_to_poly(mesh; feature_angle=1.0, point_data_to_cell_data=false, record_vertex_ids=false) -> (; mesh, vertex_map, num_new_points, num_boundary_faces, num_split_vertices)` — the median dual of a tetrahedral mesh, one polyhedron per vertex; `vertex_map` is a single flat 1-based array, output cell → input vertex. See [tetrahedral ⇄ polyhedral](/tet_poly).
+- `poly_to_tet(mesh; record_parent_ids=false) -> (; mesh, point_map, cell_maps, num_exact_tets, num_fanned_cells)` — `convert_cells(mesh, "simplexify")`, except that a polyhedron that already is a tetrahedron becomes that one tetra.
+
 ## v16.25.0 additions
 
 - `agglomerate(mesh; target_group_size=8, merge_coplanar_faces=false, coplanar_angle=1.0, min_sphericity=0.0) -> (; mesh, cell_map, num_faces_merged, num_rejected)` — the coplanar-face merge and sphericity gate of [agglomerate](/agglomerate).

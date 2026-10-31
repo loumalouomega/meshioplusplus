@@ -1051,6 +1051,30 @@ step('agglomerate rejects a non-manifold mesh', () => {
     assert.throws(() => m.agglomerate(tets));
 });
 
+step('tetToPoly builds one polyhedron per vertex; polyToTet fans them back', () => {
+    const twoTets = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -1]),
+        dim: 3,
+        cells: [
+            { type: 'tetra', data: new Int32Array([0, 1, 2, 3, 0, 2, 1, 4]), nodesPerCell: 4 },
+        ],
+        point_data: {},
+        cell_data: {},
+        field_data: {},
+    };
+    const r = m.tetToPoly(twoTets, { recordVertexIds: true }, true);
+    assert.equal(r.mesh.cells.length, 1);
+    assert.equal(r.mesh.cells[0].type, 'polyhedron');
+    assert.equal(r.mesh.cells[0].cellOffsets.length, 6);  // 5 vertices -> 5 cells
+    assert.equal(r.vertexMap.length, 5);
+    assert.equal(r.numSplitVertices, 0);
+    const back = m.polyToTet(r.mesh, false, true);
+    assert.equal(back.mesh.cells[0].type, 'tetra');
+    assert.equal(back.numExactTets, 0);
+    assert.equal(back.numFannedCells, 5);
+    assert.throws(() => m.tetToPoly(twoHexes));
+});
+
 step('agglomerate is reachable as a convertSurfaceOps pipeline step', () => {
     m.writeMesh('/agg.vtu', twoHexes);
     const out = m.convertSurfaceOps('/agg.vtu', '/agg.vtp', [

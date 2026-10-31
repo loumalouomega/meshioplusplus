@@ -3101,6 +3101,54 @@ TEST(CApi, AgglomerateTwoHexesThroughTheAbi) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, TetToPolyAndPolyToTetThroughTheAbi) {
+    mio_mesh* m = build_tet_mesh();
+    mio_tet_to_poly_opts opts;
+    mio_tet_to_poly_opts_init(&opts);
+    EXPECT_DOUBLE_EQ(opts.feature_angle, 1.0);
+    opts.record_vertex_ids = 1;
+    mio_tet_to_poly_result* r = mio_tet_to_poly(m, &opts);
+    ASSERT_NE(r, nullptr);
+    const mio_mesh* out = mio_tet_to_poly_result_mesh(r);
+    ASSERT_NE(out, nullptr);
+    ASSERT_EQ(mio_mesh_num_cell_blocks(out), 1);
+    EXPECT_EQ(block_type(out, 0), "polyhedron");
+    mio_cell_block_info info{};
+    ASSERT_EQ(mio_mesh_cell_block_info_ex(out, 0, &info), MIO_OK);
+    EXPECT_EQ(info.num_cells, 5);  // one cell per vertex
+    EXPECT_EQ(info.is_polyhedron, 1);
+
+    const void* data = nullptr;
+    mio_dtype dtype = MIO_FLOAT64;
+    std::int64_t n = -1;
+    ASSERT_EQ(mio_tet_to_poly_result_vertex_map(r, &data, &dtype, &n), MIO_OK);
+    EXPECT_EQ(dtype, MIO_INT64);
+    EXPECT_EQ(n, 5);
+    std::int64_t num_new = -1, num_boundary = -1, num_split = -1;
+    ASSERT_EQ(mio_tet_to_poly_result_counts(r, &num_new, &num_boundary, &num_split), MIO_OK);
+    EXPECT_GT(num_new, 0);
+    EXPECT_GT(num_boundary, 0);
+    EXPECT_EQ(num_split, 0);
+
+    std::int64_t exact = -1, fanned = -1;
+    mio_convert_cells_result* back = mio_poly_to_tet(out, 0, &exact, &fanned);
+    ASSERT_NE(back, nullptr);
+    EXPECT_EQ(exact, 0);
+    EXPECT_EQ(fanned, 5);
+    EXPECT_EQ(block_type(mio_convert_cells_result_mesh(back), 0), "tetra");
+    mio_convert_cells_result_free(back);
+
+    mio_mesh* owned = mio_tet_to_poly_result_take_mesh(r);
+    ASSERT_NE(owned, nullptr);
+    mio_mesh_free(owned);
+    mio_tet_to_poly_result_free(r);
+    mio_tet_to_poly_result_free(nullptr);  // NULL-safe
+
+    // A non-tetrahedral mesh is refused through the guard, not thrown.
+    EXPECT_EQ(mio_tet_to_poly(nullptr, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, AgglomerateErrorsAreGuardedNotThrown) {
     mio_mesh* m = build_tet_mesh();
     EXPECT_EQ(mio_agglomerate(nullptr, 8), nullptr);

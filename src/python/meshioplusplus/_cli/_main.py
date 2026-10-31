@@ -75,6 +75,7 @@ from . import (
     _stats,
     _subdivide,
     _tessellate,
+    _tet_poly,
     _tetrahedralize,
     _thickness,
     _to_cad,
@@ -559,6 +560,26 @@ def main(argv=None):
     )
     _agglomerate.add_args(parser)
     parser.set_defaults(func=_agglomerate.agglomerate_cmd)
+
+    parser = subparsers.add_parser(
+        "tet-to-poly",
+        help=(
+            "Convert a tetrahedral mesh into its polyhedral (median) dual: one "
+            "polyhedron per vertex"
+        ),
+    )
+    _tet_poly.add_tet_to_poly_args(parser)
+    parser.set_defaults(func=_tet_poly.tet_to_poly_cmd)
+
+    parser = subparsers.add_parser(
+        "poly-to-tet",
+        help=(
+            "Decompose a polyhedral mesh into tetrahedra, keeping polyhedra "
+            "that already are tetrahedra as one tetra"
+        ),
+    )
+    _tet_poly.add_poly_to_tet_args(parser)
+    parser.set_defaults(func=_tet_poly.poly_to_tet_cmd)
 
     parser = subparsers.add_parser(
         "resample",

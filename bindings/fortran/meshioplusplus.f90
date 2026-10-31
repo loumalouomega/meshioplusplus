@@ -1064,6 +1064,14 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(6) = 0
     end type
 
+    !> Interop mirror of C `mio_tet_to_poly_opts`.
+    type, bind(c) :: mio_tet_to_poly_opts_t
+        real(c_double) :: feature_angle = 1.0_c_double
+        integer(c_int32_t) :: point_data_to_cell_data = 0
+        integer(c_int32_t) :: record_vertex_ids = 0
+        integer(c_int64_t) :: reserved(6) = 0
+    end type
+
     !> Interop mirror of C `mio_resample_opts` (v16.25.0).
     type, bind(c) :: mio_resample_opts_t
         type(c_ptr) :: times = c_null_ptr
@@ -1912,6 +1920,8 @@ module meshioplusplus
         procedure :: convert_cells => mesh_convert_cells
         procedure :: subdivide => mesh_subdivide
         procedure :: agglomerate => mesh_agglomerate
+        procedure :: tet_to_poly => mesh_tet_to_poly
+        procedure :: poly_to_tet => mesh_poly_to_tet
         procedure :: refine => mesh_refine
         procedure :: tessellate => mesh_tessellate
         procedure :: decimate => mesh_decimate
@@ -3557,6 +3567,45 @@ module meshioplusplus
             import :: c_ptr
             type(c_ptr), value :: r
         end subroutine
+
+        function c_mio_tet_to_poly(h, opts) bind(c, name="mio_tet_to_poly") result(r)
+            import :: c_ptr, mio_tet_to_poly_opts_t
+            type(c_ptr), value :: h
+            type(mio_tet_to_poly_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_tet_to_poly_result_take_mesh(r) &
+                bind(c, name="mio_tet_to_poly_result_take_mesh") result(m)
+            import :: c_ptr
+            type(c_ptr), value :: r
+            type(c_ptr) :: m
+        end function
+
+        function c_mio_tet_to_poly_result_counts(r, num_new_points, num_boundary_faces, &
+                                                 num_split_vertices) &
+                bind(c, name="mio_tet_to_poly_result_counts") result(s)
+            import :: c_ptr, c_int, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t), intent(out) :: num_new_points, num_boundary_faces, &
+                                               num_split_vertices
+            integer(c_int) :: s
+        end function
+
+        subroutine c_mio_tet_to_poly_result_free(r) &
+                bind(c, name="mio_tet_to_poly_result_free")
+            import :: c_ptr
+            type(c_ptr), value :: r
+        end subroutine
+
+        function c_mio_poly_to_tet(h, record_parent_ids, num_exact_tets, num_fanned_cells) &
+                bind(c, name="mio_poly_to_tet") result(r)
+            import :: c_ptr, c_int, c_int64_t
+            type(c_ptr), value :: h
+            integer(c_int), value :: record_parent_ids
+            integer(c_int64_t), intent(out) :: num_exact_tets, num_fanned_cells
+            type(c_ptr) :: r
+        end function
 
         function c_mio_refine(h, levels, record_parent_ids) &
                 bind(c, name="mio_refine") result(r)
@@ -9308,6 +9357,89 @@ contains
         call c_mio_agglomerate_result_free(res)
         if (.not. c_associated(out%handle)) then
             call handle_failure('agglomerate', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Convert a tetrahedral mesh into its polyhedral (median) dual: one
+    !> polyhedron per vertex, bounded by the ring of tetrahedron and triangle
+    !> centroids around each edge leaving it and, on the boundary, by its share
+    !> of the boundary triangles, fused while their normals differ by at most
+    !> `feature_angle` degrees (default 1). A vertex on an interface between
+    !> tetra blocks gets one cell per block. Each tetra block becomes a
+    !> polyhedron block and each triangle block a polygon block; any other block
+    !> is dropped. The input points keep their (1-based) indices.
+    !> `point_data_to_cell_data` copies each vertex's point data onto its cells;
+    !> `record_vertex_ids` attaches the dual:vertex cell data (0-based ids).
+    function mesh_tet_to_poly(self, stat, errmsg, feature_angle, point_data_to_cell_data, &
+                              record_vertex_ids, num_new_points, num_boundary_faces, &
+                              num_split_vertices) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64), intent(in), optional :: feature_angle
+        logical, intent(in), optional :: point_data_to_cell_data, record_vertex_ids
+        integer(int64), intent(out), optional :: num_new_points, num_boundary_faces, &
+                                                 num_split_vertices
+        type(mio_mesh) :: out
+        type(c_ptr) :: res
+        type(mio_tet_to_poly_opts_t) :: opts
+        integer(c_int64_t) :: nnew, nbnd, nsplit
+        integer(c_int) :: s
+        if (present(feature_angle)) opts%feature_angle = real(feature_angle, c_double)
+        if (present(point_data_to_cell_data)) &
+            opts%point_data_to_cell_data = merge(1_c_int32_t, 0_c_int32_t, point_data_to_cell_data)
+        if (present(record_vertex_ids)) &
+            opts%record_vertex_ids = merge(1_c_int32_t, 0_c_int32_t, record_vertex_ids)
+        res = c_mio_tet_to_poly(self%handle, opts)
+        if (.not. c_associated(res)) then
+            call handle_failure('tet_to_poly', mio_error_message(), stat, errmsg)
+            return
+        end if
+        s = c_mio_tet_to_poly_result_counts(res, nnew, nbnd, nsplit)
+        if (present(num_new_points)) num_new_points = int(nnew, int64)
+        if (present(num_boundary_faces)) num_boundary_faces = int(nbnd, int64)
+        if (present(num_split_vertices)) num_split_vertices = int(nsplit, int64)
+        out%handle = c_mio_tet_to_poly_result_take_mesh(res)
+        call c_mio_tet_to_poly_result_free(res)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('tet_to_poly', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Decompose a polyhedral (or mixed) mesh into tetrahedra: convert_cells
+    !> with mode "simplexify", except that a polyhedron that already is a
+    !> tetrahedron becomes that one tetra, with no new points.
+    !> `record_parent_ids` (default .false.) attaches convert:parent_cell.
+    function mesh_poly_to_tet(self, record_parent_ids, stat, errmsg, num_exact_tets, &
+                              num_fanned_cells) result(out)
+        class(mio_mesh), intent(in) :: self
+        logical, intent(in), optional :: record_parent_ids
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(int64), intent(out), optional :: num_exact_tets, num_fanned_cells
+        type(mio_mesh) :: out
+        type(c_ptr) :: res
+        integer(c_int) :: crec
+        integer(c_int64_t) :: nexact, nfanned
+        crec = 0
+        if (present(record_parent_ids)) then
+            if (record_parent_ids) crec = 1
+        end if
+        res = c_mio_poly_to_tet(self%handle, crec, nexact, nfanned)
+        if (.not. c_associated(res)) then
+            call handle_failure('poly_to_tet', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_exact_tets)) num_exact_tets = int(nexact, int64)
+        if (present(num_fanned_cells)) num_fanned_cells = int(nfanned, int64)
+        out%handle = c_mio_convert_cells_result_take_mesh(res)
+        call c_mio_convert_cells_result_free(res)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('poly_to_tet', mio_error_message(), stat, errmsg)
             return
         end if
         call clear_status(stat, errmsg)

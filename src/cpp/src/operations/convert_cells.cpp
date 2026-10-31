@@ -50,6 +50,7 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/simplexify.hpp"
 #include "../detail/typed_view.hpp"
 
 // Project includes (private, not installed)
@@ -488,7 +489,9 @@ ConvertCellsResult ccells_linearize(const Mesh& rMesh, bool RecordParentIds) {
 
 // --- mode: simplexify --------------------------------------------------------
 
-ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
+ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds,
+                                     bool ExactTets = false,
+                                     detail::SimplexifyCounts* pCounts = nullptr) {
     // Higher-order input is linearized first (which also prunes the mid nodes
     // the decomposition would otherwise orphan); the decomposition then runs on
     // a purely linear mesh.
@@ -582,6 +585,30 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds) {
                         " of polyhedron block '" + std::string(cb.Type()) +
                         "': its faces are not a closed orientable surface, so it bounds no "
                         "volume to decompose");
+                // poly_to_tet: a polyhedron that already is a tetrahedron (four
+                // triangles over four distinct nodes) becomes that one tet, with
+                // no new points. Face 0 is now wound outward, so with the fourth
+                // node d, (a, c, b, d) is positively oriented.
+                if (ExactTets && rings.NumFaces() == 4 && rings.mNodes.size() == 4 &&
+                    rings.FaceSize(0) == 3 && rings.FaceSize(1) == 3 && rings.FaceSize(2) == 3 &&
+                    rings.FaceSize(3) == 3) {
+                    const std::uint32_t* f0 = rings.Face(0);
+                    std::uint32_t apex = 0;
+                    while (apex == f0[0] || apex == f0[1] || apex == f0[2])
+                        ++apex;
+                    std::int64_t* t = tet + 4 * ntet++;
+                    t[0] = rings.mNodes[f0[0]];
+                    t[1] = rings.mNodes[f0[2]];
+                    t[2] = rings.mNodes[f0[1]];
+                    t[3] = rings.mNodes[apex];
+                    if (need_parents)
+                        parents.push_back(static_cast<std::int64_t>(c));
+                    if (pCounts != nullptr)
+                        ++pCounts->mNumExactTets;
+                    continue;
+                }
+                if (pCounts != nullptr)
+                    ++pCounts->mNumFannedCells;
                 // One new point for the cell centroid, then one per face.
                 const std::int64_t cell_pt =
                     static_cast<std::int64_t>(num_points + src_start.size() - 1);
@@ -1052,6 +1079,17 @@ void ccells_carry_regions(const Mesh& rIn, ConvertCellsResult& rRes) {
 }
 
 }  // namespace
+
+namespace detail {
+
+ConvertCellsResult simplexify_ex(const Mesh& rMesh, bool RecordParentIds, bool ExactTets,
+                                 SimplexifyCounts* pCounts) {
+    ConvertCellsResult res = ccells_simplexify(rMesh, RecordParentIds, ExactTets, pCounts);
+    ccells_carry_regions(rMesh, res);
+    return res;
+}
+
+}  // namespace detail
 
 ConvertCellsResult convert_cells(const Mesh& rMesh, const ConvertCellsOptions& rOptions) {
     ConvertCellsResult res;
