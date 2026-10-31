@@ -237,8 +237,8 @@ jobs:
             PIP_FIND_LINKS="${{ env.BASE_WHEELHOUSE }}"
           # The core stays in the base wheel: the repair tools bundle OpenCASCADE
           # (and what it needs) but not libmeshioplusplus_core_meshio.
-          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel -v repair --exclude 'libmeshioplusplus_core_meshio.so*' -w {dest_dir} {wheel}"
-          CIBW_REPAIR_WHEEL_COMMAND_MACOS: "delocate-wheel --require-archs {delocate_archs} --exclude libmeshioplusplus_core_meshio -w {dest_dir} -v {wheel}"
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "env LD_LIBRARY_PATH=/project/build/occt-shared/lib:/project/build/occt-shared/lib64 auditwheel -v repair --exclude 'libmeshioplusplus_core_meshio.so*' -w {dest_dir} {wheel}"
+          CIBW_REPAIR_WHEEL_COMMAND_MACOS: "env DYLD_LIBRARY_PATH=${{ env.OCCT_PREFIX }}/lib delocate-wheel --require-archs {delocate_archs} --exclude libmeshioplusplus_core_meshio -w {dest_dir} -v {wheel}"
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: "delvewheel repair --no-dll meshioplusplus_core_meshio.dll --add-path ${{ env.OCCT_PREFIX }}/bin -w {dest_dir} {wheel}"
           CIBW_TEST_REQUIRES: "pytest"
           CIBW_TEST_COMMAND: "python {project}/tests/wheel_occt_smoke.py"
@@ -336,8 +336,8 @@ jobs:
             PIP_FIND_LINKS="${{ env.BASE_WHEELHOUSE }}"
           # The core stays in the base wheel: the repair tools bundle Netgen
           # (Netgen's nglib and ngcore) but not libmeshioplusplus_core_meshio.
-          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel -v repair --exclude 'libmeshioplusplus_core_meshio.so*' -w {dest_dir} {wheel}"
-          CIBW_REPAIR_WHEEL_COMMAND_MACOS: "delocate-wheel --require-archs {delocate_archs} --exclude libmeshioplusplus_core_meshio -w {dest_dir} -v {wheel}"
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "env LD_LIBRARY_PATH=/project/build/netgen-prefix/lib:/project/build/netgen-prefix/lib64 auditwheel -v repair --exclude 'libmeshioplusplus_core_meshio.so*' -w {dest_dir} {wheel}"
+          CIBW_REPAIR_WHEEL_COMMAND_MACOS: "env DYLD_LIBRARY_PATH=${{ env.ADDON_PREFIX }}/lib delocate-wheel --require-archs {delocate_archs} --exclude libmeshioplusplus_core_meshio -w {dest_dir} -v {wheel}"
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: "delvewheel repair --no-dll meshioplusplus_core_meshio.dll --add-path ${{ env.ADDON_PREFIX }}/bin -w {dest_dir} {wheel}"
           CIBW_TEST_REQUIRES: "pytest"
           CIBW_TEST_COMMAND: "python {project}/tests/wheel_netgen_smoke.py"
@@ -423,7 +423,7 @@ jobs:
             CC="/opt/rh/gcc-toolset-13/root/usr/bin/gcc"
             CXX="/opt/rh/gcc-toolset-13/root/usr/bin/g++"
             CMAKE_ARGS="-DMESHIOPLUSPLUS_STATIC_RUNTIME=ON"
-            mmg_DIR="/project/build/mmg-prefix/lib/cmake/mmg"
+            CMAKE_PREFIX_PATH="/project/build/mmg-prefix"
             PIP_FIND_LINKS="/project/base-wheelhouse"
           CIBW_ENVIRONMENT_MACOS: >-
             mmg_DIR="${{ env.ADDON_PREFIX }}/lib/cmake/mmg"
@@ -434,8 +434,8 @@ jobs:
             PIP_FIND_LINKS="${{ env.BASE_WHEELHOUSE }}"
           # The core stays in the base wheel: the repair tools bundle MMG
           # (libmmg) but not libmeshioplusplus_core_meshio.
-          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel -v repair --exclude 'libmeshioplusplus_core_meshio.so*' -w {dest_dir} {wheel}"
-          CIBW_REPAIR_WHEEL_COMMAND_MACOS: "delocate-wheel --require-archs {delocate_archs} --exclude libmeshioplusplus_core_meshio -w {dest_dir} -v {wheel}"
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "env LD_LIBRARY_PATH=/project/build/mmg-prefix/lib:/project/build/mmg-prefix/lib64 auditwheel -v repair --exclude 'libmeshioplusplus_core_meshio.so*' -w {dest_dir} {wheel}"
+          CIBW_REPAIR_WHEEL_COMMAND_MACOS: "env DYLD_LIBRARY_PATH=${{ env.ADDON_PREFIX }}/lib delocate-wheel --require-archs {delocate_archs} --exclude libmeshioplusplus_core_meshio -w {dest_dir} -v {wheel}"
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: "delvewheel repair --no-dll meshioplusplus_core_meshio.dll --add-path ${{ env.ADDON_PREFIX }}/bin -w {dest_dir} {wheel}"
           CIBW_TEST_REQUIRES: "pytest"
           CIBW_TEST_COMMAND: "python {project}/tests/wheel_mmg_smoke.py"
