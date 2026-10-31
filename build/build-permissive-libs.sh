@@ -151,8 +151,21 @@ if wanted bzip2; then
               "bzip2-$BZIP2_VERSION.tar.gz" "$BZIP2_SHA256"
         rm -rf "$WORK/bzip2"; mkdir -p "$WORK/bzip2"
         tar -xzf "$DL/bzip2-$BZIP2_VERSION.tar.gz" -C "$WORK/bzip2" --strip-components=1
+        # The Makefile knows nothing of CMAKE_OSX_ARCHITECTURES: the universal macOS
+        # archive is one build per architecture joined with lipo.
+        bz_archs=""
+        if [ "$(uname -s)" = "Darwin" ] && [ "$UNIVERSAL" != "no" ]; then bz_archs="x86_64 arm64"; fi
         (cd "$WORK/bzip2" &&
-         make -j "$JOBS" libbz2.a CFLAGS="$CFLAGS_ALL -D_FILE_OFFSET_BITS=64" &&
+         if [ -n "$bz_archs" ]; then
+             for a in $bz_archs; do
+                 make clean >/dev/null &&
+                 make -j "$JOBS" libbz2.a CFLAGS="$CFLAGS_ALL -D_FILE_OFFSET_BITS=64 -arch $a -mmacosx-version-min=${MACOSX_DEPLOYMENT_TARGET:-13.3}" &&
+                 cp libbz2.a "libbz2-$a.a" || exit 1
+             done
+             lipo -create libbz2-x86_64.a libbz2-arm64.a -output libbz2.a
+         else
+             make -j "$JOBS" libbz2.a CFLAGS="$CFLAGS_ALL -D_FILE_OFFSET_BITS=64"
+         fi &&
          mkdir -p "$PREFIX/lib" "$PREFIX/include" &&
          cp libbz2.a "$PREFIX/lib/" && cp bzlib.h "$PREFIX/include/")
     fi
