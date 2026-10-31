@@ -248,6 +248,17 @@ if wanted netcdf; then
             -DENABLE_TESTS=OFF -DNETCDF_ENABLE_TESTS=OFF \
             -DENABLE_EXAMPLES=OFF -DNETCDF_ENABLE_EXAMPLES=OFF \
             -DBUILD_UTILITIES=OFF -DNETCDF_BUILD_UTILITIES=OFF
+        # netCDF's installed targets name HDF5's own CMake targets (hdf5::hdf5_hl,
+        # hdf5::hdf5), which a consumer that finds HDF5 through FindHDF5 (as
+        # meshio++'s CMake does) does not have: point them at the static archives.
+        hdf5_a=$(find "$PREFIX" -name libhdf5.a -print | head -n 1)
+        hl_a=$(find "$PREFIX" -name libhdf5_hl.a -print | head -n 1)
+        find "$PREFIX" -path '*/cmake/*' -name 'netCDFTargets*.cmake' -print |
+        while read -r f; do
+            sed -e "s#hdf5::hdf5_hl-static#$hl_a#g" -e "s#hdf5::hdf5_hl#$hl_a#g" \
+                -e "s#hdf5::hdf5-static#$hdf5_a#g" -e "s#hdf5::hdf5#$hdf5_a#g" "$f" > "$f.tmp" &&
+                mv "$f.tmp" "$f"
+        done
     fi
 fi
 
