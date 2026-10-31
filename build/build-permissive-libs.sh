@@ -226,8 +226,10 @@ if wanted netcdf; then
         unpack_tag "https://github.com/Unidata/netcdf-c/archive/refs/tags/v$NETCDF_VERSION.tar.gz" \
                    "netcdf-c-$NETCDF_VERSION.tar.gz" "$NETCDF_SHA256" \
                    "https://github.com/Unidata/netcdf-c.git" "v$NETCDF_VERSION" "$NETCDF_COMMIT" netcdf-c
+        # HDF5's installed config links ZLIB::ZLIB; the global flag keeps that
+        # imported target visible to netCDF's try_compile probes.
         cmake_build netcdf "$WORK/netcdf-c" \
-            -DBUILD_SHARED_LIBS=OFF -DHDF5_USE_STATIC_LIBRARIES=ON \
+            -DCMAKE_FIND_PACKAGE_TARGETS_GLOBAL=ON -DBUILD_SHARED_LIBS=OFF -DHDF5_USE_STATIC_LIBRARIES=ON \
             -DENABLE_HDF5=ON -DNETCDF_ENABLE_HDF5=ON \
             -DENABLE_DAP=OFF -DNETCDF_ENABLE_DAP=OFF \
             -DENABLE_DAP4=OFF -DNETCDF_ENABLE_DAP4=OFF \
@@ -253,7 +255,7 @@ if wanted cgns; then
                    "cgns-$CGNS_VERSION.tar.gz" "$CGNS_SHA256" \
                    "https://github.com/CGNS/CGNS.git" "v$CGNS_VERSION" "$CGNS_COMMIT" CGNS
         cmake_build cgns "$WORK/CGNS" \
-            -DBUILD_SHARED_LIBS=OFF -DCGNS_BUILD_SHARED=OFF -DCGNS_USE_SHARED=OFF \
+            -DCMAKE_FIND_PACKAGE_TARGETS_GLOBAL=ON -DBUILD_SHARED_LIBS=OFF -DCGNS_BUILD_SHARED=OFF -DCGNS_USE_SHARED=OFF \
             -DCGNS_ENABLE_HDF5=ON -DCGNS_ENABLE_FORTRAN=OFF -DCGNS_ENABLE_PARALLEL=OFF \
             -DCGNS_ENABLE_TESTS=OFF -DCGNS_BUILD_TESTING=OFF -DCGNS_BUILD_CGNSTOOLS=OFF \
             -DCGNS_ENABLE_64BIT=ON -DHDF5_NEED_ZLIB=ON \

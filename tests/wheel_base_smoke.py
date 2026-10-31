@@ -37,8 +37,11 @@ except NotImplementedError as exc:
 else:
     raise AssertionError("STEP reading must need the add-on")
 
-cmake_dir = mp.get_cmake_dir()
-assert os.path.isfile(os.path.join(cmake_dir, "meshioplusplusConfig.cmake")), cmake_dir
+if sys.platform != "win32":  # the Windows wheel links its core into _core
+    cmake_dir = mp.get_cmake_dir()
+    assert os.path.isfile(
+        os.path.join(cmake_dir, "meshioplusplusConfig.cmake")
+    ), cmake_dir
 
 # --- the permissive libraries (roadmap 4.7.2): Linux and macOS wheels ------------
 # Windows keeps HDF5, netCDF and the codecs on h5py, netCDF4 and the stdlib.
