@@ -1482,8 +1482,26 @@ function(meshioplusplus_add_core_variant backend)
   if(MESHIOPLUSPLUS_PYTHON_SHARED_CORE)
     set_target_properties(${_lib} PROPERTIES
       CXX_VISIBILITY_PRESET default C_VISIBILITY_PRESET default
-      VISIBILITY_INLINES_HIDDEN OFF WINDOWS_EXPORT_ALL_SYMBOLS ON
+      VISIBILITY_INLINES_HIDDEN OFF
       INSTALL_RPATH "$<IF:$<BOOL:${APPLE}>,@loader_path,$ORIGIN>")
+    if(WIN32 AND MSVC)
+      # Exporting every symbol overflows the 65,535-export limit, so the table
+      # is the core's own namespace, written from the compiled objects just
+      # before the link (cmake/gen_core_def.py). The annotated MESHIOPLUSPLUS_API
+      # entities are exported by their dllexport as well.
+      get_filename_component(_mio_link_dir "${CMAKE_LINKER}" DIRECTORY)
+      find_program(MESHIOPLUSPLUS_DUMPBIN dumpbin HINTS "${_mio_link_dir}" REQUIRED)
+      find_package(Python REQUIRED COMPONENTS Interpreter)
+      set(_mio_core_def "${CMAKE_CURRENT_BINARY_DIR}/${_lib}.def")
+      add_custom_command(TARGET ${_lib} PRE_LINK
+        COMMAND "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_core_def.py"
+                --dumpbin "${MESHIOPLUSPLUS_DUMPBIN}" --out "${_mio_core_def}"
+                "${CMAKE_CURRENT_BINARY_DIR}/${_lib}.dir"
+                "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/${_lib}.dir"
+        COMMENT "meshio++: writing the core's export table"
+        VERBATIM)
+      target_link_options(${_lib} PRIVATE "/DEF:${_mio_core_def}")
+    endif()
     # manylinux's libstdc++ is older than the compiler's, so the wheels link it
     # statically, one copy per shared object. That works across the core, `_core`
     # and an add-on only while the runtime's symbols stay EXPORTED (no

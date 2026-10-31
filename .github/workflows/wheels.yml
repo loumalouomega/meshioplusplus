@@ -126,12 +126,11 @@ jobs:
             CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=ON -DMESHIOPLUSPLUS_WITH_NETCDF=ON -DMESHIOPLUSPLUS_WITH_CGNSLIB=ON -DMESHIOPLUSPLUS_WITH_ZSTD=ON -DMESHIOPLUSPLUS_WITH_LZ4=ON -DMESHIOPLUSPLUS_WITH_BZIP2=ON -DMESHIOPLUSPLUS_WITH_KAHIP=ON -DMESHIOPLUSPLUS_PREFER_STATIC_DEPS=ON -DCMAKE_PREFIX_PATH=${{ env.DEPS_PREFIX }} -DKAHIP_ROOT=${{ env.DEPS_PREFIX }} -DMESHIOPLUSPLUS_WITH_ZLIB=ON -DMESHIOPLUSPLUS_ZLIB_STATIC=ON -DMESHIOPLUSPLUS_WITH_OCCT=OFF -DMESHIOPLUSPLUS_PYTHON_SHARED_CORE=ON"
             MACOSX_DEPLOYMENT_TARGET="13.3"
           # Windows keeps HDF5, netCDF and the codecs on the Python fallbacks (h5py,
-          # netCDF4, the stdlib) until build-permissive-libs.sh has an MSVC recipe,
-          # and links the core into _core instead of shipping it as a DLL: the
-          # auto-exported core exceeds the linker's 65,535-export limit (LNK1189), so
-          # there are no Windows add-on wheels until its export table is explicit.
+          # netCDF4, the stdlib) until build-permissive-libs.sh has an MSVC recipe.
+          # The core DLL's export table is generated (cmake/gen_core_def.py): the
+          # auto-exported one exceeds the linker's 65,535-export limit (LNK1189).
           CIBW_ENVIRONMENT_WINDOWS: >-
-            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=ON -DMESHIOPLUSPLUS_ZLIB_STATIC=ON -DMESHIOPLUSPLUS_WITH_OCCT=OFF"
+            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=ON -DMESHIOPLUSPLUS_ZLIB_STATIC=ON -DMESHIOPLUSPLUS_WITH_OCCT=OFF -DMESHIOPLUSPLUS_PYTHON_SHARED_CORE=ON"
           CIBW_TEST_REQUIRES: "pytest h5py netCDF4"
           # The gid round trip proves the vendored static zlib actually reached
           # this wheel's compiled _core, not just that CMake configured it.
@@ -163,7 +162,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -260,7 +259,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
