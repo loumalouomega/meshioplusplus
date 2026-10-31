@@ -2195,6 +2195,46 @@ mio_agglomerate <- function(mesh, target_group_size = 8, merge_coplanar_faces = 
   )
 }
 
+#' Tetrahedral <-> polyhedral conversion
+#'
+#' `mio_tet_to_poly()` converts a tetrahedral mesh into its polyhedral (median)
+#' dual: one polyhedron per vertex, bounded by the ring of tetrahedron and
+#' triangle centroids around each edge leaving it and, on the boundary, by its
+#' share of the boundary triangles, fused while their normals differ by at most
+#' `feature_angle` degrees (so feature edges and corners survive). A vertex on
+#' an interface between tetra blocks gets one cell per block. Each tetra block
+#' becomes a polyhedron block and each triangle block a polygon block; any other
+#' block is dropped. `mio_poly_to_tet()` decomposes a polyhedral mesh into
+#' tetrahedra like `mio_convert_cells(mesh, "simplexify")`, except that a
+#' polyhedron that already is a tetrahedron becomes that one tetra.
+#'
+#' @param mesh A mesh handle.
+#' @param feature_angle Degrees in `[0, 180)`; boundary triangles whose normals
+#'   differ by more start a new dual boundary face (default 1).
+#' @param point_data_to_cell_data Also copy each vertex's point data onto its
+#'   dual cells as cell data.
+#' @param record_vertex_ids Attach the `dual:vertex` cell-data array (0-based
+#'   vertex ids).
+#' @param record_parent_ids Attach the `convert:parent_cell` cell-data array.
+#' @return `mio_tet_to_poly()`: a list with `mesh`, `vertex_map` (1-based, one
+#'   entry per output cell), `num_new_points`, `num_boundary_faces` and
+#'   `num_split_vertices`. `mio_poly_to_tet()`: a list with `mesh`,
+#'   `point_map`, `cell_maps`, `num_exact_tets` and `num_fanned_cells`.
+#' @export
+mio_tet_to_poly <- function(mesh, feature_angle = 1, point_data_to_cell_data = FALSE,
+                            record_vertex_ids = FALSE) {
+  .Call(
+    R_mio_tet_to_poly, mesh, as.numeric(feature_angle),
+    isTRUE(point_data_to_cell_data), isTRUE(record_vertex_ids)
+  )
+}
+
+#' @rdname mio_tet_to_poly
+#' @export
+mio_poly_to_tet <- function(mesh, record_parent_ids = FALSE) {
+  .Call(R_mio_poly_to_tet, mesh, isTRUE(record_parent_ids))
+}
+
 #' @rdname mio_extract_surface
 #' @param cells global (block-major) **1-based** cell indices to refine. At most
 #'   one of `cells`, `region` and `where_array` may be given; with none, every

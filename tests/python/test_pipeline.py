@@ -251,6 +251,30 @@ def test_agglomerate_pipeline_step(settings_env):
         assert meshioplusplus.meshes_equal(out, out_cpp)
 
 
+def test_tet_to_poly_and_poly_to_tet_pipeline_steps(settings_env):
+    """TetToPoly and PolyToTet dispatch off the same _OP_TABLE/
+    pipeline_op_table pair and, like Agglomerate, have no numpy fallback, so
+    both engines call the same `_core.tet_to_poly`/`_core.poly_to_tet`."""
+    settings = make_settings(
+        settings_env,
+        [{"Op": "TetToPoly", "RecordVertexIds": True}, {"Op": "PolyToTet"}],
+    )
+    report = meshioplusplus.run_pipeline(settings)
+    assert [s["op"] for s in report["steps"]] == ["TetToPoly", "PolyToTet"]
+    assert report["steps"][0]["NumSplitVertices"] == 0
+    assert report["steps"][1]["NumExactTets"] == 0
+    out = meshioplusplus.read(settings_env["out"])
+    # helpers.tet_mesh's five vertices give five dual cells, each fanned back.
+    assert report["steps"][1]["NumFannedCells"] == 5
+    assert out.cells[0].type == "tetra"
+
+    if hasattr(_core, "run_pipeline_json"):
+        settings["Output"]["Path"] = str(settings_env["tmp"] / "out_cpp.vtu")
+        _core.run_pipeline_json(json.dumps(settings))
+        out_cpp = meshioplusplus.read(settings["Output"]["Path"])
+        assert meshioplusplus.meshes_equal(out, out_cpp)
+
+
 def test_decimate_volume_pipeline_step(settings_env):
     """DecimateVolume dispatches generically off the same _OP_TABLE/
     pipeline_op_table pair, and like Subdivide/Agglomerate has no numpy

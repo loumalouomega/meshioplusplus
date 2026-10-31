@@ -1951,6 +1951,19 @@ def test_check_quality(tmp_path):
         _tools.tool_check_quality(src, "bogus >= 1")
 
 
+def test_tet_to_poly_and_poly_to_tet(tmp_path):
+    src = str(tmp_path / "box.vtu")
+    meshioplusplus.write(src, meshioplusplus.box(dims=(2, 2, 2), cell_type="tetra"))
+    dual_path = str(tmp_path / "dual.vtu")
+    out = _dump(_tools.tool_tet_to_poly(src, dual_path, record_vertex_ids=True))
+    assert out["num_boundary_faces"] == 54
+    assert out["num_split_vertices"] == 0
+    assert out["num_new_points"] > 0
+    back = _dump(_tools.tool_poly_to_tet(dual_path, str(tmp_path / "back.vtu")))
+    assert back["num_exact_tets"] == 0
+    assert back["num_fanned_cells"] == 27
+
+
 def test_agglomerate_options_resample_and_blend(tmp_path):
     import numpy as np
 

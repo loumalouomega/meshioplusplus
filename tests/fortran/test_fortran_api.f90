@@ -1126,6 +1126,30 @@ program test_fortran_api
         call agg%free()
     end block
 
+    ! -- tet_to_poly / poly_to_tet: the median dual and back ----------------
+    block
+        type(mio_mesh) :: dual, back
+        integer :: st
+        integer(int64) :: nnew, nbnd, nsplit, nexact, nfanned
+
+        ! The two tetra have five vertices, so the dual has five polyhedra.
+        dual = m%tet_to_poly(stat=st, record_vertex_ids=.true., num_new_points=nnew, &
+                             num_boundary_faces=nbnd, num_split_vertices=nsplit)
+        call check(st == 0, 'tet_to_poly succeeded')
+        call check(dual%num_cell_blocks() == 1, 'tet_to_poly kept one block')
+        call check(dual%cell_block_type(1) == 'polyhedron', 'tet_to_poly produced polyhedra')
+        call check(dual%cell_block_num_cells(1) == 5_int64, 'tet_to_poly: one cell per vertex')
+        call check(nnew > 0_int64 .and. nbnd > 0_int64 .and. nsplit == 0_int64, &
+                   'tet_to_poly reports its counts')
+
+        back = dual%poly_to_tet(stat=st, num_exact_tets=nexact, num_fanned_cells=nfanned)
+        call check(st == 0, 'poly_to_tet succeeded')
+        call check(back%cell_block_type(1) == 'tetra', 'poly_to_tet produced tetra')
+        call check(nexact == 0_int64 .and. nfanned == 5_int64, 'poly_to_tet fanned every cell')
+        call back%free()
+        call dual%free()
+    end block
+
     ! -- smooth: relax coordinates, leaving topology and data intact --
     block
         type(mio_mesh) :: relaxed, bad

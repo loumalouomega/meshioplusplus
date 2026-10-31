@@ -431,6 +431,26 @@ test_that("subdivide polyhedrally refines with no point map", {
   mio_release(s$mesh)
 })
 
+test_that("tet_to_poly builds the dual and poly_to_tet decomposes it", {
+  m <- fixture()  # 2 tetra sharing one face, 5 vertices
+  on.exit(mio_release(m))
+
+  d <- mio_tet_to_poly(m, record_vertex_ids = TRUE)
+  expect_equal(mio_num_cell_blocks(d$mesh), 1)
+  expect_equal(mio_cell_block_type(d$mesh, 1), "polyhedron")
+  expect_equal(mio_cell_block_info(d$mesh, 1)$num_cells, 5) # one per vertex
+  expect_equal(sort(d$vertex_map), 1:5)
+  expect_gt(d$num_new_points, 0)
+  expect_equal(d$num_split_vertices, 0)
+
+  b <- mio_poly_to_tet(d$mesh)
+  expect_equal(mio_cell_block_type(b$mesh, 1), "tetra")
+  expect_equal(b$num_exact_tets, 0)
+  expect_equal(b$num_fanned_cells, 5)
+  mio_release(b$mesh)
+  mio_release(d$mesh)
+})
+
 test_that("agglomerate polyhedrally coarsens with a flat cell map", {
   m <- fixture()  # 2 tetra sharing one face
   on.exit(mio_release(m))

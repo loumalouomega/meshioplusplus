@@ -147,6 +147,7 @@
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/subdivide.hpp"
 #include "meshioplusplus/operations/tessellate.hpp"
+#include "meshioplusplus/operations/tet_poly.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
 // Per-format writers for the ASCII/binary/compress variants (the registry bakes
 // one default each, so these are called directly).
@@ -545,6 +546,9 @@ void print_usage(std::ostream& os) {
           "                            cell face, connected to a new interior point\n"
           "  agglomerate             Polyhedrally coarsen: merge groups of cells into\n"
           "                            single larger polyhedral cells\n"
+          "  tet-to-poly             Convert a tetrahedral mesh into its polyhedral\n"
+          "                            (median) dual: one polyhedron per vertex\n"
+          "  poly-to-tet             Decompose a polyhedral mesh into tetrahedra\n"
           "  resample                Resample a sequence onto new times (--times\n"
           "                            START:STOP:STEP | --times-from PATTERN)\n"
           "  refine                  Subdivide cells into same-type children (all, or a\n"
@@ -5427,6 +5431,68 @@ int cmd_agglomerate(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+int cmd_tet_to_poly(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"feature-angle", {}, true},
+                                  {"point-data-to-cell-data", {}, false},
+                                  {"record-vertex-ids", {}, false},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("tet-to-poly requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::TetToPolyOptions options;
+    if (has_opt(p, "feature-angle"))
+        options.mFeatureAngleDeg = meshioplusplus::detail::stod_c(opt_value(p, "feature-angle"));
+    options.mPointDataToCellData = has_flag(p, "point-data-to-cell-data");
+    options.mRecordVertexIds = has_flag(p, "record-vertex-ids");
+
+    auto result = meshioplusplus::tet_to_poly(mesh, options);
+    write_mesh_cli(p.positionals[1], result.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("cells_in", total_cells(mesh));
+        json.Field("cells_out", total_cells(result.mMesh));
+        json.Field("num_new_points", result.mNumNewPoints);
+        json.Field("num_boundary_faces", result.mNumBoundaryFaces);
+        json.Field("num_split_vertices", result.mNumSplitVertices);
+        json.EndObject();
+    }
+    return 0;
+}
+
+int cmd_poly_to_tet(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"record-parent-ids", {}, false},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("poly-to-tet requires exactly INFILE and OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+
+    meshioplusplus::PolyToTetOptions options;
+    options.mRecordParentIds = has_flag(p, "record-parent-ids");
+
+    auto result = meshioplusplus::poly_to_tet(mesh, options);
+    write_mesh_cli(p.positionals[1], result.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("cells_in", total_cells(mesh));
+        json.Field("cells_out", total_cells(result.mMesh));
+        json.Field("num_exact_tets", result.mNumExactTets);
+        json.Field("num_fanned_cells", result.mNumFannedCells);
+        json.EndObject();
+    }
+    return 0;
+}
+
 int cmd_resample(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input", {}, true},
@@ -8434,6 +8500,10 @@ int main(int argc, char** argv) {
             return cmd_subdivide(rest);
         if (cmd == "agglomerate")
             return cmd_agglomerate(rest);
+        if (cmd == "tet-to-poly")
+            return cmd_tet_to_poly(rest);
+        if (cmd == "poly-to-tet")
+            return cmd_poly_to_tet(rest);
         if (cmd == "resample")
             return cmd_resample(rest);
         if (cmd == "refine")
