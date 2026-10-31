@@ -66,6 +66,10 @@ set(MESHIOPLUSPLUS_ABI_VERSION @MESHIOPLUSPLUS_ABI_VERSION@)
 # C-API-only install would impose find_package()s on consumers that genuinely do
 # not need them -- the historical, documented behaviour of this file.
 if(@MESHIOPLUSPLUS_INSTALL_CPP@)
+  # The Python wheel's shared core carries its libraries inside (static,
+  # hidden), linked PRIVATE: a consumer, such as an add-on wheel, has nothing of
+  # theirs to find. Only the parallel runtime below stays a dependency.
+  if(NOT @MESHIOPLUSPLUS_PYTHON_SHARED_CORE@)
   if(MESHIOPLUSPLUS_WITH_ZLIB)
     find_dependency(ZLIB)
   endif()
@@ -143,6 +147,7 @@ if(@MESHIOPLUSPLUS_INSTALL_CPP@)
   endif()
   if(MESHIOPLUSPLUS_WITH_NETCDF AND @_mio_netcdf_config@)
     find_dependency(netCDF)
+  endif()
   endif()
   if(MESHIOPLUSPLUS_PARALLEL_BACKEND STREQUAL "OPENMP")
     find_dependency(OpenMP COMPONENTS CXX)
