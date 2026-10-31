@@ -213,6 +213,12 @@ if wanted hdf5; then
             -DHDF5_ENABLE_DIRECT_VFD=OFF -DHDF5_ENABLE_MIRROR_VFD=OFF \
             -DHDF5_ENABLE_SUBFILING_VFD=OFF -DHDF5_ENABLE_SZIP_SUPPORT=OFF \
             -DHDF5_ENABLE_Z_LIB_SUPPORT=ON -DHDF5_ENABLE_NONSTANDARD_FEATURE_FLOAT16=OFF
+        # The installed targets name ZLIB::ZLIB, which a consumer's try_compile
+        # probes (netCDF's check_symbol_exists) cannot resolve: CMake does not
+        # carry that imported target into the scratch project. Link plain `z`
+        # (the platform's zlib) instead.
+        find "$PREFIX" -path '*/cmake/*' -name 'hdf5*targets*.cmake' -print |
+        while read -r f; do sed 's/ZLIB::ZLIB/z/g' "$f" > "$f.tmp" && mv "$f.tmp" "$f"; done
     fi
 fi
 
