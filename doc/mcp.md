@@ -40,7 +40,7 @@ Serial VTK XML input (`vtu`, `vtp`, `vts`, `vtr`, `vti`) accepts multiple pieces
 | `meshioplusplus[mcp]` | the official [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) (MIT) | the `meshioplusplus-mcp` server |
 | `meshioplusplus[dashboard]` | the SDK plus [Starlette](https://www.starlette.io/) and [uvicorn](https://www.uvicorn.org/) (both BSD) | `meshioplusplus-mcp --http` — the [browser dataset manager](./dashboard)'s companion process and MCP over HTTP |
 
-This extra is **not** in `meshioplusplus[all]` — `[all]` means "the optional dependencies the *formats* need", the same reasoning as `[interop]`/`[viewer]`. Note the `mcp` SDK itself requires **Python ≥ 3.10** while meshio++ supports 3.8: the package (and the server's pure tool layer) works everywhere, only *running* the server needs the newer Python.
+This extra is **not** in `meshioplusplus[all]` — `[all]` means "the optional dependencies the *formats* need", the same reasoning as `[interop]`/`[viewer]`. Note the `mcp` SDK itself requires **Python ≥ 3.10**, which is also meshio++'s floor: the server's pure tool layer needs no SDK, only *running* the server does.
 
 Without the extra, everything degrades by name rather than by traceback:
 

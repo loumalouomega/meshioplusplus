@@ -17,7 +17,9 @@ adapted, report = mp.adapt(sphere, hsiz=0.4, return_report=True)
 assert len(adapted.points) > 0 and len(adapted.cells) > 0, report
 try:
     mp.move(sphere, np.zeros((len(sphere.points), 3)), "boundary")
-except NotImplementedError as exc:
+except (NotImplementedError, RuntimeError) as exc:
+    # macOS reports the core's Unsupported as RuntimeError: C++ exception types
+    # do not always compare equal across two dylibs there. The message is the same.
     assert "ELAS" in str(exc), exc
 else:
     raise AssertionError("move must not run without ELAS")

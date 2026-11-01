@@ -177,9 +177,10 @@ def fetch_https(source, into):
     into.mkdir(parents=True, exist_ok=True)
     name = source.get("file", source["url"].rsplit("/", 1)[-1])
     target = into / name
-    with urllib.request.urlopen(source["url"], timeout=300) as r, open(
-        target, "wb"
-    ) as f:
+    with (
+        urllib.request.urlopen(source["url"], timeout=300) as r,
+        open(target, "wb") as f,
+    ):
         shutil.copyfileobj(r, f)
     if source.get("archive") == "zip":
         with zipfile.ZipFile(target) as z:

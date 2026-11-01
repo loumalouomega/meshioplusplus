@@ -1,6 +1,6 @@
 """The training spec and run-directory layout: the pure half of the trainer.
 
-Everything here is stdlib + numpy and Python 3.8 -- the spec parser, the run
+Everything here is stdlib + numpy and Python 3.10 -- the spec parser, the run
 layout, the metrics/progress files, the model card -- so it is tested in the
 default CI matrix with no framework installed. ``train.py`` (the module run
 as ``python -m meshioplusplus.physicsnemo.train``) is the only place torch,
