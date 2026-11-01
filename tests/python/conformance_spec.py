@@ -862,7 +862,7 @@ SPEC: dict[str, dict] = {
         "is the input deck's, so a `vertex` has no type, side regions are dropped, and "
         "Herrmann, bubble and generalized plane strain types come back as the default type "
         "of their shape. A post file is checked against meshio++'s own reader only, until a "
-        "Mentat run (roadmap §1.2.11).",
+        "Mentat run (roadmap §2.2.11).",
     },
     "marc": {
         "cells": {
@@ -880,7 +880,7 @@ SPEC: dict[str, dict] = {
         "field_data": False,
         "regions": ["cell", "point"],
         "note": "A deck holds no data arrays; Marc's face and edge numbering is not "
-        "mapped to facets, so side regions are dropped (roadmap §1.2.11); a `vertex` has "
+        "mapped to facets, so side regions are dropped (roadmap §2.2.11); a `vertex` has "
         "no type; Herrmann, bubble and generalized plane strain types come back as the "
         "default type of their shape.",
     },
