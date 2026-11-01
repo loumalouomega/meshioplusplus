@@ -222,7 +222,9 @@ def transform(
         a full 4x4 (or flat 16-element) row-major affine matrix. When given, the
         other parameters are ignored.
     scale_units :
-        a scalar unit-conversion factor (e.g. ``0.001`` for mm -> m).
+        a scalar unit-conversion factor (e.g. ``0.001`` for mm -> m). A mesh
+        that states its length unit (``field_data["meshio:length_unit"]``,
+        metres per unit) states the converted one afterwards.
     rotate_vector_data :
         when true, rotate vector (trailing dim 3) and tensor (trailing dim 9)
         ``point_data`` by the transform's linear part. Off by default.
@@ -248,4 +250,12 @@ def transform(
         out = _transform_py(mesh, m, rotate_vector_data)
 
     _carry_sets(mesh, out)
+    if scale_units is not None and matrix is None:
+        # A unit conversion changes the unit the mesh is in (roadmap 7.1.4):
+        # millimetres scaled by 0.001 are metres.
+        from ._units import length_unit, set_length_unit
+
+        unit = length_unit(mesh)
+        if unit is not None and float(scale_units) > 0.0:
+            set_length_unit(out, unit / float(scale_units))
     return out

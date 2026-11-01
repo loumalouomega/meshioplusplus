@@ -39,6 +39,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/pipeline.hpp"
+#include "meshioplusplus/detail/length_unit.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -784,7 +785,8 @@ Mesh pipe_apply_transform(Mesh mesh, const PipelineStep& rStep, PipelineReport& 
         xf = transform_from_matrix(v.data());
         ++given;
     }
-    if (pipe_find(rStep, "ScaleUnits")) {
+    const bool units = pipe_find(rStep, "ScaleUnits");
+    if (units) {
         xf = transform_units(pipe_number(rStep, "ScaleUnits", 1.0));
         ++given;
     }
@@ -794,6 +796,9 @@ Mesh pipe_apply_transform(Mesh mesh, const PipelineStep& rStep, PipelineReport& 
                      "give exactly one of 'Translate'/'Scale'/'RotateAxis'+'RotateDegrees'/"
                      "'Matrix'/'ScaleUnits'"));
     Mesh out = transform(mesh, xf, pipe_flag(rStep, "RotateData", false));
+    // A unit conversion changes the unit a mesh states it is in (roadmap 7.1.4).
+    if (units)
+        detail::rescale_mesh_length_unit(out, pipe_number(rStep, "ScaleUnits", 1.0));
     pipe_push_step(rReport, rStep);
     return out;
 }

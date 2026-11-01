@@ -11312,6 +11312,77 @@ MESHIOPLUSPLUS_API std::string format_real_short(double Value);
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/keyword_card.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/length_unit.hpp =====
+/**
+ * @file detail/length_unit.hpp
+ * @brief Length units as metadata (roadmap 7.1.4): the `field_data` key a mesh
+ * states its length unit under, and the accessors the readers, writers and the
+ * transform share.
+ *
+ * `field_data["meshio:length_unit"]` holds one float64: the number of **metres
+ * per mesh unit** (`0.001` for millimetres). The UNV and Radioss readers fill
+ * it from the unit the file states, their writers state it, and a transform
+ * with a unit scale (`ScaleUnits`, `--scale-units`) updates it. A mesh without
+ * the key states no unit. The Python twin is `meshioplusplus._units`.
+ */
+
+// System includes
+#include <cmath>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// The `field_data` key of a mesh's length unit (metres per unit, one float64).
+inline constexpr const char* kLengthUnitName = "meshio:length_unit";
+
+/**
+ * @brief The metres per unit @p rMesh states, or `-1` when it states none (no
+ * key, or a value that is not one positive finite number).
+ */
+inline double mesh_length_unit(const Mesh& rMesh) {
+    if (!rMesh.HasFieldData(kLengthUnitName))
+        return -1.0;
+    const NDArray& value = rMesh.FieldData(kLengthUnitName);
+    if (value.Size() != 1)
+        return -1.0;
+    double v = -1.0;
+    switch (value.Dtype()) {
+        case DType::Float64:
+            v = value.As<double>()[0];
+            break;
+        case DType::Float32:
+            v = static_cast<double>(value.As<float>()[0]);
+            break;
+        default:
+            return -1.0;
+    }
+    return std::isfinite(v) && v > 0.0 ? v : -1.0;
+}
+
+/** @brief Record @p MetresPerUnit (positive) as @p rMesh's length unit. */
+inline void set_mesh_length_unit(Mesh& rMesh, double MetresPerUnit) {
+    NDArray value(DType::Float64, {std::size_t{1}});
+    value.As<double>()[0] = MetresPerUnit;
+    rMesh.AddFieldData(kLengthUnitName, std::move(value));
+}
+
+/**
+ * @brief After coordinates were multiplied by @p UnitScale (a unit conversion,
+ * `0.001` for millimetres to metres), the unit @p rMesh is in: its stated unit
+ * divided by the scale. A mesh that states no unit is left alone.
+ */
+inline void rescale_mesh_length_unit(Mesh& rMesh, double UnitScale) {
+    const double unit = mesh_length_unit(rMesh);
+    if (unit > 0.0 && std::isfinite(UnitScale) && UnitScale > 0.0)
+        set_mesh_length_unit(rMesh, unit / UnitScale);
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/length_unit.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/convert_cells.hpp =====
 /**
  * @file operations/convert_cells.hpp
@@ -182573,6 +182644,31 @@ bool rad_skew_axes(const RadSkew& rSkew, std::array<std::array<double, 3>, 3>& r
     return true;
 }
 
+// The /BEGIN name of the length unit @p rMesh states: an SI prefix and "m", an
+// imperial name, or a number of metres (14 digits, so it fits the 20-column
+// field); "m" when it states none. The Python writer's _length_name.
+std::string radw_length_name(const Mesh& rMesh) {
+    const double length = detail::mesh_length_unit(rMesh);
+    if (length <= 0.0)
+        return "m";
+    static const std::pair<const char*, double> prefixes[] = {
+        {"", 1.0},   {"y", 1e-24}, {"z", 1e-21}, {"a", 1e-18}, {"f", 1e-15}, {"p", 1e-12},
+        {"n", 1e-9}, {"mu", 1e-6}, {"m", 1e-3},  {"c", 1e-2},  {"d", 1e-1},  {"da", 1e1},
+        {"h", 1e2},  {"k", 1e3},   {"M", 1e6},   {"G", 1e9},   {"T", 1e12},  {"P", 1e15},
+        {"E", 1e18}, {"Z", 1e21},  {"Y", 1e24}};
+    for (const auto& [prefix, factor] : prefixes)
+        if (factor == length)
+            return std::string(prefix) + "m";
+    static const std::pair<const char*, double> named[] = {
+        {"in", 0.0254}, {"ft", 0.3048}, {"yd", 0.9144}, {"mi", 1609.344}};
+    for (const auto& [name, metres] : named)
+        if (metres == length)
+            return name;
+    char buf[32];
+    detail::snprintf_c(buf, sizeof(buf), "%.14g", length);
+    return buf;
+}
+
 struct RadSubset {
     std::string mTitle;
     std::vector<std::int64_t> mChildren;
@@ -182739,6 +182835,7 @@ Mesh read_radioss(const std::string& rPath) {
     std::map<std::int64_t, std::array<double, 3>> ellipsoid_skew;       // surf -> skew, n, -
     double length_scale = 1.0;
     double work_length = 0.0;  // the work length unit in metres, 0 if /BEGIN names none
+    double stated_length = 0.0;  // the unit the coordinates end up in, 0 if unknown
     // /UNIT/<id>: the local length units in metres, read first (a keyword can
     // name a unit defined further down).
     std::map<std::int64_t, double> unit_length;
@@ -182863,6 +182960,9 @@ Mesh read_radioss(const std::string& rPath) {
                                                                          : std::string_view(li));
                 const double fi = rad_length_unit(li), fw = rad_length_unit(lw);
                 work_length = fw;
+                // Converted to the work unit when both are known; read as
+                // written, so in the input unit, when only that one is.
+                stated_length = fi > 0.0 && fw > 0.0 ? fw : std::max(fi, 0.0);
                 if (!li.empty() && (fi <= 0.0 || fw <= 0.0))
                     log::warn(
                         "Radioss: unknown length unit '{}' in /BEGIN; lengths are read "
@@ -183183,6 +183283,8 @@ Mesh read_radioss(const std::string& rPath) {
             a.As<double>()[0] = length_scale;
             return a;
         }());
+    if (stated_length > 0.0)
+        detail::set_mesh_length_unit(mesh, stated_length);
 
     // --- cells: one block per type, in order of first appearance --------------------
     std::vector<std::string> block_types;
@@ -184304,7 +184406,8 @@ void write_radioss(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
             ++dropped_data;
     const std::string plane_prefix = "radioss:surf_plane:";
     for (const std::string& name : rMesh.FieldDataNames()) {
-        if (name == "radioss:version" || name == "radioss:length_scale")
+        if (name == "radioss:version" || name == "radioss:length_scale" ||
+            name == detail::kLengthUnitName)
             continue;
         if (name.rfind(plane_prefix, 0) == 0) {
             const NDArray& v = rMesh.FieldData(name);
@@ -184344,9 +184447,10 @@ void write_radioss(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
         out.push_back("# " + line);
     // The same input and work units, so the starter converts nothing and the
     // reader reads the coordinates as written.
+    // The length unit is the mesh's own when it states one (roadmap 7.1.4).
     std::string units;
-    for (const char* u : {"kg", "m", "s"})
-        units += std::string(20 - std::string(u).size(), ' ') + u;
+    for (const std::string& u : {std::string("kg"), radw_length_name(rMesh), std::string("s")})
+        units += std::string(20 - std::min<std::size_t>(20, u.size()), ' ') + u;
     std::string begin_line;
     radw_i10(begin_line, version);
     radw_i10(begin_line, 0);
@@ -195737,6 +195841,11 @@ Mesh unv_build(const UnvFile& rFile, UnvInfo& rInfo, const ReadOptions& rOpts,
         NDArray factors(DType::Float64, {std::size_t{4}});
         std::copy(rFile.mUnitFactors.begin(), rFile.mUnitFactors.end(), factors.As<double>());
         mesh.AddFieldData("unv:unit_factors", std::move(factors));
+        // The length factor converts file units to metres by division (1000 for
+        // millimetres): the shared length unit is its inverse.
+        if (rFile.mUnitFactors[0] > 0.0)
+            mesh.AddFieldData(detail::kLengthUnitName,
+                              unv_scalar(DType::Float64, 1.0 / rFile.mUnitFactors[0]));
     }
 
     // Results: one step of the sequence.
@@ -195965,14 +196074,38 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
 
     char buf[160];
 
-    // 164 units, when the mesh carries them.
+    // 164 units, when the mesh carries them: the file's own, unless the shared
+    // length unit (`meshio:length_unit`) says otherwise. Mirrors the Python
+    // writer's _units_to_write byte for byte.
+    const double length = detail::mesh_length_unit(rMesh);
+    bool write_units = false;
+    long long code = 1;
+    double v[4] = {1.0, 1.0, 1.0, 0.0};
     if (rMesh.HasFieldData("unv:units") && rMesh.HasFieldData("unv:unit_factors")) {
         const NDArray& fac = rMesh.FieldData("unv:unit_factors");
-        double v[4] = {1.0, 1.0, 1.0, 0.0};
         for (std::size_t i = 0; i < 4 && i < fac.Size(); ++i)
             v[i] = detail::read_double(fac, i);
-        std::snprintf(buf, sizeof(buf), "    -1\n   164\n%10lld%20s%10d\n",
-                      static_cast<long long>(unv_field_int(rMesh, "unv:units", 1)), "", 2);
+        if (length <= 0.0 || (v[0] > 0.0 && std::fabs(1.0 / v[0] - length) <= 1e-12 * length)) {
+            write_units = true;
+            code = static_cast<long long>(unv_field_int(rMesh, "unv:units", 1));
+        }
+    }
+    if (!write_units && length > 0.0) {
+        // I-DEAS's systems for the lengths that have one, else user-defined (9).
+        write_units = true;
+        if (length == 1.0) {
+            code = 1;
+            v[0] = 1.0, v[1] = 1.0, v[2] = 1.0, v[3] = 273.15;
+        } else if (length == 1e-3) {
+            code = 5;
+            v[0] = 1e3, v[1] = 1e3, v[2] = 1.0, v[3] = 273.15;
+        } else {
+            code = 9;
+            v[0] = 1.0 / length, v[1] = 1.0, v[2] = 1.0, v[3] = 273.15;
+        }
+    }
+    if (write_units) {
+        std::snprintf(buf, sizeof(buf), "    -1\n   164\n%10lld%20s%10d\n", code, "", 2);
         f << buf;
         for (int i = 0; i < 4; ++i) {
             detail::snprintf_c(buf, sizeof(buf), "%25.16E", v[i]);
@@ -241774,7 +241907,8 @@ Mesh pipe_apply_transform(Mesh mesh, const PipelineStep& rStep, PipelineReport& 
         xf = transform_from_matrix(v.data());
         ++given;
     }
-    if (pipe_find(rStep, "ScaleUnits")) {
+    const bool units = pipe_find(rStep, "ScaleUnits");
+    if (units) {
         xf = transform_units(pipe_number(rStep, "ScaleUnits", 1.0));
         ++given;
     }
@@ -241784,6 +241918,9 @@ Mesh pipe_apply_transform(Mesh mesh, const PipelineStep& rStep, PipelineReport& 
                      "give exactly one of 'Translate'/'Scale'/'RotateAxis'+'RotateDegrees'/"
                      "'Matrix'/'ScaleUnits'"));
     Mesh out = transform(mesh, xf, pipe_flag(rStep, "RotateData", false));
+    // A unit conversion changes the unit a mesh states it is in (roadmap 7.1.4).
+    if (units)
+        detail::rescale_mesh_length_unit(out, pipe_number(rStep, "ScaleUnits", 1.0));
     pipe_push_step(rReport, rStep);
     return out;
 }

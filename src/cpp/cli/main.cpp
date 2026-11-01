@@ -134,6 +134,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/normals.hpp"
+#include "meshioplusplus/detail/length_unit.hpp"
 #include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
@@ -4260,9 +4261,10 @@ int cmd_transform(const std::vector<std::string>& rArgs) {
         xf = meshioplusplus::transform_from_matrix(v.data());
         ++given;
     }
+    double unit_scale = 0.0;
     if (p.values.count("scale-units")) {
-        xf = meshioplusplus::transform_units(
-            meshioplusplus::detail::stod_c(opt_value(p, "scale-units")));
+        unit_scale = meshioplusplus::detail::stod_c(opt_value(p, "scale-units"));
+        xf = meshioplusplus::transform_units(unit_scale);
         ++given;
     }
     if (given != 1)
@@ -4271,6 +4273,9 @@ int cmd_transform(const std::vector<std::string>& rArgs) {
             "--translate/--scale/--rotate/--matrix/--scale-units");
 
     Mesh out = meshioplusplus::transform(mesh, xf, has_flag(p, "rotate-data"));
+    // A unit conversion changes the unit a mesh states it is in (roadmap 7.1.4).
+    if (unit_scale > 0.0)
+        meshioplusplus::detail::rescale_mesh_length_unit(out, unit_scale);
     write_mesh_cli(p.positionals[1], out, opt_value(p, "output-format"));
     return 0;
 }

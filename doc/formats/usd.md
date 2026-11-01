@@ -27,6 +27,8 @@ meshioplusplus.usd.write(
 )
 ```
 
+`meters_per_unit` defaults to the [length unit](../formats.md#length-units) the mesh states (`field_data["meshio:length_unit"]`), else 1, so a UNV file in millimetres converts to a stage with `metersPerUnit = 0.001`; a read of a stage that authors `metersPerUnit` states it the same way.
+
 A time-sampled stage from a sequence:
 
 ```python

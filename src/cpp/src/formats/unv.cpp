@@ -43,6 +43,7 @@
 #include "meshioplusplus/detail/byteswap.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "meshioplusplus/detail/length_unit.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/file_source.hpp"
 #include "meshioplusplus/detail/keyword_card.hpp"
@@ -1519,6 +1520,11 @@ Mesh unv_build(const UnvFile& rFile, UnvInfo& rInfo, const ReadOptions& rOpts,
         NDArray factors(DType::Float64, {std::size_t{4}});
         std::copy(rFile.mUnitFactors.begin(), rFile.mUnitFactors.end(), factors.As<double>());
         mesh.AddFieldData("unv:unit_factors", std::move(factors));
+        // The length factor converts file units to metres by division (1000 for
+        // millimetres): the shared length unit is its inverse.
+        if (rFile.mUnitFactors[0] > 0.0)
+            mesh.AddFieldData(detail::kLengthUnitName,
+                              unv_scalar(DType::Float64, 1.0 / rFile.mUnitFactors[0]));
     }
 
     // Results: one step of the sequence.
@@ -1747,14 +1753,38 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
 
     char buf[160];
 
-    // 164 units, when the mesh carries them.
+    // 164 units, when the mesh carries them: the file's own, unless the shared
+    // length unit (`meshio:length_unit`) says otherwise. Mirrors the Python
+    // writer's _units_to_write byte for byte.
+    const double length = detail::mesh_length_unit(rMesh);
+    bool write_units = false;
+    long long code = 1;
+    double v[4] = {1.0, 1.0, 1.0, 0.0};
     if (rMesh.HasFieldData("unv:units") && rMesh.HasFieldData("unv:unit_factors")) {
         const NDArray& fac = rMesh.FieldData("unv:unit_factors");
-        double v[4] = {1.0, 1.0, 1.0, 0.0};
         for (std::size_t i = 0; i < 4 && i < fac.Size(); ++i)
             v[i] = detail::read_double(fac, i);
-        std::snprintf(buf, sizeof(buf), "    -1\n   164\n%10lld%20s%10d\n",
-                      static_cast<long long>(unv_field_int(rMesh, "unv:units", 1)), "", 2);
+        if (length <= 0.0 || (v[0] > 0.0 && std::fabs(1.0 / v[0] - length) <= 1e-12 * length)) {
+            write_units = true;
+            code = static_cast<long long>(unv_field_int(rMesh, "unv:units", 1));
+        }
+    }
+    if (!write_units && length > 0.0) {
+        // I-DEAS's systems for the lengths that have one, else user-defined (9).
+        write_units = true;
+        if (length == 1.0) {
+            code = 1;
+            v[0] = 1.0, v[1] = 1.0, v[2] = 1.0, v[3] = 273.15;
+        } else if (length == 1e-3) {
+            code = 5;
+            v[0] = 1e3, v[1] = 1e3, v[2] = 1.0, v[3] = 273.15;
+        } else {
+            code = 9;
+            v[0] = 1.0 / length, v[1] = 1.0, v[2] = 1.0, v[3] = 273.15;
+        }
+    }
+    if (write_units) {
+        std::snprintf(buf, sizeof(buf), "    -1\n   164\n%10lld%20s%10d\n", code, "", 2);
         f << buf;
         for (int i = 0; i < 4; ++i) {
             detail::snprintf_c(buf, sizeof(buf), "%25.16E", v[i]);

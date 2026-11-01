@@ -365,10 +365,13 @@ def write(
     *,
     prim_path=DEFAULT_PRIM_PATH,
     up_axis="Z",
-    meters_per_unit=1.0,
+    meters_per_unit=None,
     time_code=None,
 ):
     """Write ``mesh`` as a single-sample USD stage.
+
+    ``meters_per_unit`` defaults to the length unit the mesh states
+    (``field_data["meshio:length_unit"]``, roadmap 7.1.4), else 1.
 
     A volume mesh is written as its boundary surface (n-gons kept -- USD holds
     them natively), a surface mesh as-is, a cell-less mesh as a point cloud.
@@ -377,6 +380,10 @@ def write(
     the extension picks it. Needs ``usd-core`` (``pip install
     meshioplusplus[usd]``).
     """
+    if meters_per_unit is None:
+        from .._units import length_unit
+
+        meters_per_unit = length_unit(mesh) or 1.0
     with SeriesWriter(
         filename,
         prim_path=prim_path,
@@ -601,6 +608,10 @@ def read(filename, time_step=0):
     field_data = {}
     if len(prims) > 1:
         field_data["usd:prim_paths"] = np.asarray(prim_paths)
+    if UsdGeom.StageHasAuthoredMetersPerUnit(stage):
+        from .._units import LENGTH_UNIT_KEY
+
+        field_data[LENGTH_UNIT_KEY] = np.array([UsdGeom.GetStageMetersPerUnit(stage)])
 
     mesh = Mesh(
         points,

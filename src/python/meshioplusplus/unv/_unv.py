@@ -23,6 +23,7 @@ from .._files import open_file
 from .._mesh import CellBlock, Mesh
 from .._node_order import node_order, node_order_keys
 from .._regions import Region
+from .._units import LENGTH_UNIT_KEY, length_unit
 from ..lsdyna._cards import parse_fortran_format, split_fixed, to_float, to_int
 
 __all__ = ["read", "write", "time_values"]
@@ -1033,6 +1034,10 @@ def read(filename, points_only=False, arrays=None, time_step=0):
     if f.units is not None:
         mesh.field_data["unv:units"] = np.array([f.units[0]], dtype=np.int64)
         mesh.field_data["unv:unit_factors"] = np.array(f.units[1], dtype=float)
+        # The length factor converts file units to metres by division (1000
+        # for millimetres): the shared length unit is its inverse.
+        if f.units[1][0] > 0.0:
+            mesh.field_data[LENGTH_UNIT_KEY] = np.array([1.0 / f.units[1][0]])
 
     if f.functions and np_ == 0:
         raise ReadError(
@@ -1183,6 +1188,32 @@ def _write_reals(f, values, fmt, per_line):
             f.write("\n")
 
 
+# Unit codes of dataset 164 for the length units that have one, with the
+# factors that convert to SI (by division) as I-DEAS writes them; any other
+# length is the user-defined system (code 9).
+_UNIT_SYSTEMS = {1.0: (1, [1.0, 1.0, 1.0, 273.15]), 1e-3: (5, [1e3, 1e3, 1.0, 273.15])}
+
+
+def _units_to_write(mesh, fd):
+    """``(code, [4 factors])`` for dataset 164, or ``None`` to write none."""
+    length = length_unit(mesh)
+    if "unv:units" in fd and "unv:unit_factors" in fd:
+        fac = [1.0, 1.0, 1.0, 0.0]
+        given = np.asarray(fd["unv:unit_factors"], dtype=float).ravel()
+        for i in range(min(4, given.size)):
+            fac[i] = float(given[i])
+        if length is None or (
+            fac[0] > 0.0 and abs(1.0 / fac[0] - length) <= 1e-12 * length
+        ):
+            return _field_scalar(mesh, "unv:units", 1, int), fac
+    if length is None:
+        return None
+    if length in _UNIT_SYSTEMS:
+        code, fac = _UNIT_SYSTEMS[length]
+        return code, list(fac)
+    return 9, [1.0 / length, 1.0, 1.0, 273.15]
+
+
 @_provenance.slotless_writer
 def write(filename, mesh, code_aster=False, node_dataset=2411):
     points = np.asarray(mesh.points)
@@ -1196,13 +1227,11 @@ def write(filename, mesh, code_aster=False, node_dataset=2411):
     # default text mode would translate "\n" to "\r\n", and test_unv.py's
     # test_writers_are_byte_identical pins the two engines against each other.
     with open_file(filename, "w", newline="\n") as f:
-        # 164 units, when the mesh carries them.
-        if "unv:units" in fd and "unv:unit_factors" in fd:
-            fac = [1.0, 1.0, 1.0, 0.0]
-            given = np.asarray(fd["unv:unit_factors"], dtype=float).ravel()
-            for i in range(min(4, given.size)):
-                fac[i] = float(given[i])
-            code = _field_scalar(mesh, "unv:units", 1, int)
+        # 164 units, when the mesh carries them: the file's own, unless the
+        # shared length unit (`meshio:length_unit`) says otherwise.
+        units = _units_to_write(mesh, fd)
+        if units is not None:
+            code, fac = units
             f.write(f"    -1\n   164\n{code:10d}{'':20s}{2:10d}\n")
             f.write("".join(f"{v:25.16E}" for v in fac[:3]) + "\n")
             f.write(f"{fac[3]:25.16E}\n")

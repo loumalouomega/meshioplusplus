@@ -233,6 +233,20 @@ A codec the build lacks raises `ReadError` naming the option to enable, and corr
 
 ---
 
+## Length units
+
+A mesh whose file states its length unit carries it as `field_data["meshio:length_unit"]`: one float64, the **metres per mesh unit** (`0.001` for millimetres, `0.0254` for inches). A mesh without it states no unit, and nothing is assumed. Readers that know their file's unit fill it, writers that can state a unit honour it, and a unit conversion updates it, so `convert part.unv part.usda` of a file in millimetres writes `metersPerUnit = 0.001`.
+
+| Format | Read | Written |
+| --- | --- | --- |
+| [UNV](./formats/unv.md) | dataset 164's length factor (both engines) | dataset 164: the file's own system when it agrees, else code 1, 5 or 9 (both engines) |
+| [Radioss](./formats/radioss.md) | `/BEGIN`'s work length unit (both engines) | `/BEGIN`'s input and work length unit (both engines) |
+| [USD](./formats/usd.md) | an authored `metersPerUnit` | `metersPerUnit` (when the call does not give one) |
+
+[`transform`](./transform.md)'s `scale_units` (the pipeline's `ScaleUnits`, both CLIs' `--scale-units`) divides the stated unit by the factor: millimetres scaled by `0.001` state metres. Every other operation carries the key as field data, and every format that writes field data keeps it. The key is `meshioplusplus._units.LENGTH_UNIT_KEY` in Python and `detail::kLengthUnitName` (`detail/length_unit.hpp`) in C++. CGNS's `DimensionalUnits`, MED's coordinate units and the STEP writer's length unit are not connected yet ([roadmap 7.1.4](./roadmap.md#new-capabilities)).
+
+---
+
 ## Remote files
 
 With the optional [`fsspec`](https://filesystem-spec.readthedocs.io) (the `remote` extra: `pip install meshioplusplus[remote]`), `read` and `read_metadata` take a URL: `read("https://example.org/cube.vtu")`, `read("s3://bucket/run/step_010.vtu.gz")`, `gs://`, `az://`, `memory://` and every protocol fsspec knows (an object store needs its own filesystem package: `s3fs`, `gcsfs`, `adlfs`). The file is fetched into a private temporary directory under the name its URL ends in (query and fragment dropped), read as a local path and removed, so format inference and [compressed files](#compressed-files) work unchanged; a chained URL such as `simplecache::https://...` keeps a local copy between reads. Sequences and [dataset manifests](./datasets.md) take URLs too, a `*`/`?` pattern being expanded on the remote filesystem.
