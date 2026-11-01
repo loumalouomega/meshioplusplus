@@ -187,6 +187,7 @@ meshioplusplus graph      in.vtu part.graph --kind cell     # dual graph as a ME
 meshioplusplus geodesic   skin.stl dist.vtu --source 0     # surface distance from a point (heat method)
 meshioplusplus coordinates rotor.vtu cyl.vtu --arrays U     # vectors/tensors in cylindrical components
 meshioplusplus hull       scan.xyz hull.stl                 # convex hull of a point cloud (--dimension 2: outline)
+meshioplusplus point-normals scan.ply scan.pcd             # normals of a point cloud (plane fits, oriented)
 meshioplusplus delaunay   survey.pcd terrain.vtu            # Delaunay triangulation in x, y (z kept)
 meshioplusplus completion bash > ~/.local/share/bash-completion/completions/meshioplusplus  # also zsh, fish
 meshioplusplus convert    case.msh.gz case.vtu            # compressed input (.gz .bz2 .xz .zst .zip) read transparently
@@ -659,6 +660,17 @@ d = out.point_data["geodesic:distance"]
 ```python
 out = meshioplusplus.convert_coordinates(rotor, "cylindrical", arrays=["U"])
 u_r, u_theta, u_z = out.point_data["U"].T
+```
+
+#### Point-cloud normals
+
+**`meshioplusplus.estimate_normals(points, k=16)`** gives every point of a scan a normal from its `k` nearest neighbours' plane fit, oriented consistently (a spanning tree over the neighbour graph, then outward) or towards a viewpoint, as the `normals` array the PCD and XYZ writers emit. See [point-cloud normals](doc/point_normals.md).
+
+<!--pytest-codeblocks:skip-->
+
+```python
+scan = meshioplusplus.estimate_normals(meshioplusplus.read("scan.ply"), k=24)
+meshioplusplus.write("scan.pcd", scan)   # with normal_x normal_y normal_z
 ```
 
 #### Convex hull and planar Delaunay

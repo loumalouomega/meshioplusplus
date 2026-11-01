@@ -396,6 +396,7 @@ _OP_TABLE = {
     ),
     "ConvexHull": ("Dimension",),
     "Delaunay2D": (),
+    "EstimateNormals": ("K", "Orientation", "Viewpoint", "RecordVariation"),
     "ConvertCoordinates": (
         "System",
         "Axis",
@@ -2456,6 +2457,24 @@ def _apply_step(mesh, step, steps, warnings):
         entry["NumFacets"] = float(report["num_facets"])
         entry["Area"] = float(report["area"])
         entry["Volume"] = float(report["volume"])
+    elif op == "EstimateNormals":
+        from ._point_normals import estimate_normals
+
+        k = _number(step, "K", 16.0)
+        if float(int(k)) != k:
+            raise ValueError("pipeline: EstimateNormals: K must be an integer")
+        mesh, report = estimate_normals(
+            mesh,
+            k=int(k),
+            orientation=_text(step, "Orientation", "consistent"),
+            viewpoint=(
+                _vec3(step, "Viewpoint") if "Viewpoint" in step else (0.0, 0.0, 0.0)
+            ),
+            record_variation=_flag(step, "RecordVariation", False),
+            return_report=True,
+        )
+        entry["NumDegenerate"] = float(report["num_degenerate"])
+        entry["NumComponents"] = float(report["num_components"])
     elif op == "Delaunay2D":
         from ._hull import delaunay_2d
 

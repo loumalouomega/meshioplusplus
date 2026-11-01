@@ -162,6 +162,7 @@
 #include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/hull.hpp"
+#include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/decimate_volume.hpp"
 #include "meshioplusplus/operations/data_calc.hpp"
@@ -6208,6 +6209,32 @@ PYBIND11_MODULE(_core, m) {
         py::arg("reference") = std::array<double, 3>{1.0, 0.0, 0.0},
         py::arg("arrays") = std::vector<std::string>{}, py::arg("inverse") = false,
         py::arg("record_coordinates") = true);
+
+    // Point-cloud normals by local plane fits. {mesh, counters}. See
+    // operations/point_normals.hpp.
+    m.def(
+        "estimate_normals",
+        [](py::object pymesh, std::int64_t k, const std::string& orientation,
+           std::array<double, 3> viewpoint, bool record_variation) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::PointNormalsOptions options;
+            options.mK = k;
+            options.mOrientation = meshioplusplus::normal_orientation_from_name(orientation);
+            options.mViewpoint = viewpoint;
+            options.mRecordVariation = record_variation;
+            meshioplusplus::PointNormalsResult r =
+                core_nogil([&] { return meshioplusplus::estimate_normals(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_degenerate"] = r.mNumDegenerate;
+            out["num_components"] = r.mNumComponents;
+            return out;
+        },
+        py::arg("mesh"), py::arg("k") = 16, py::arg("orientation") = "consistent",
+        py::arg("viewpoint") = std::array<double, 3>{0.0, 0.0, 0.0},
+        py::arg("record_variation") = false);
 
     // Convex hull and planar Delaunay triangulation of the points. {mesh,
     // counters}. See operations/hull.hpp.

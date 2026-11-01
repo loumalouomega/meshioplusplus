@@ -1687,6 +1687,15 @@ struct _CSobolevReport
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_point_normals_opts`."""
+struct _CPointNormalsOpts
+    k::Int64
+    orientation::Int32
+    record_variation::Int32
+    viewpoint::NTuple{3,Cdouble}
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_hull_report`."""
 struct _CHullReport
     dimension::Int32
@@ -2033,6 +2042,8 @@ function _check_abi_layout()
         error("meshio++: mio_shrinkwrap_opts layout mismatch ($(sizeof(_CShrinkwrapOpts)) bytes)")
     sizeof(_CShrinkwrapReport) == 136 ||
         error("meshio++: mio_shrinkwrap_report layout mismatch ($(sizeof(_CShrinkwrapReport)) bytes)")
+    sizeof(_CPointNormalsOpts) == 72 ||
+        error("meshio++: mio_point_normals_opts layout mismatch ($(sizeof(_CPointNormalsOpts)) bytes)")
     sizeof(_CHullReport) == 80 ||
         error("meshio++: mio_hull_report layout mismatch ($(sizeof(_CHullReport)) bytes)")
     sizeof(_CCoordinateOpts) == 136 ||

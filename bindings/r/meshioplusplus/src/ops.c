@@ -1245,6 +1245,42 @@ SEXP R_mio_sobolev_deform(SEXP mesh, SEXP array, SEXP length_scale, SEXP fixed_p
     return res;
 }
 
+SEXP R_mio_estimate_normals(SEXP mesh, SEXP k, SEXP orientation, SEXP viewpoint,
+                            SEXP record_variation) {
+    mio_point_normals_opts opts;
+    mio_point_normals_opts_init(&opts);
+    opts.k = (int64_t)Rf_asReal(k);
+    const char *o = mio_r_string(orientation, "orientation");
+    if (strcmp(o, "consistent") == 0) {
+        opts.orientation = MIO_NORMALS_CONSISTENT;
+    } else if (strcmp(o, "viewpoint") == 0) {
+        opts.orientation = MIO_NORMALS_VIEWPOINT;
+    } else if (strcmp(o, "none") == 0) {
+        opts.orientation = MIO_NORMALS_NONE;
+    } else {
+        Rf_error("`orientation` must be \"consistent\", \"viewpoint\" or \"none\"");
+    }
+    SEXP v = PROTECT(Rf_coerceVector(viewpoint, REALSXP));
+    if (Rf_xlength(v) != 3) {
+        UNPROTECT(1);
+        Rf_error("`viewpoint` takes three numbers");
+    }
+    for (int a = 0; a < 3; ++a) opts.viewpoint[a] = REAL(v)[a];
+    UNPROTECT(1);
+    opts.record_variation = mio_r_bool(record_variation, "record_variation") ? 1 : 0;
+    int64_t nd = 0, nc = 0;
+    mio_mesh *out = mio_estimate_normals(mio_r_mesh(mesh), &opts, &nd, &nc);
+    if (out == NULL) mio_r_fail("estimate_normals");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP a = PROTECT(Rf_ScalarReal((double)nd));
+    SEXP b = PROTECT(Rf_ScalarReal((double)nc));
+    const char *keys[] = {"mesh", "num_degenerate", "num_components"};
+    SEXP values[] = {mo, a, b};
+    SEXP res = PROTECT(mio_r_named_list(3, keys, values));
+    UNPROTECT(4);
+    return res;
+}
+
 SEXP R_mio_convex_hull(SEXP mesh, SEXP dimension) {
     const int d = Rf_asInteger(dimension);
     if (d != 0 && d != 2 && d != 3) Rf_error("`dimension` must be 0, 2 or 3");

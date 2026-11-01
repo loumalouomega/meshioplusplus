@@ -4083,6 +4083,24 @@ export interface MeshioPlusPlusModule {
   };
 
   /**
+   * Normals of a point cloud: a plane fitted to each point and its `k`
+   * nearest neighbours, as `normals` point data, oriented `'consistent'`
+   * (a spanning tree over the neighbour graph, then each piece outward),
+   * `'viewpoint'` (towards `viewpoint`) or `'none'`; `NaN` where a
+   * neighbourhood spans no plane. See doc/point_normals.md.
+   * @throws {Error} on fewer than three points or `k` below 2.
+   */
+  estimateNormals(
+    mesh: Mesh,
+    options?: {
+      k?: number;
+      orientation?: 'consistent' | 'viewpoint' | 'none';
+      viewpoint?: ArrayLike<number>;
+      recordVariation?: boolean;
+    },
+  ): { mesh: Mesh; numDegenerate: number; numComponents: number };
+
+  /**
    * The convex hull of a mesh's points (its cells are ignored): a closed
    * outward `triangle` surface in 3-D, a counter-clockwise `line` loop of the
    * x, y coordinates in 2-D. Only the extreme points are vertices, each with

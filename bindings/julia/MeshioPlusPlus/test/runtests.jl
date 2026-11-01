@@ -2038,6 +2038,10 @@ end
     @test 1.8 < gd.max_distance < 2.6
     close(gd.mesh)
     @test_throws MeshioError geodesic_distance(cube, Int[])
+    nn = estimate_normals(cube; k=3)
+    @test nn.num_degenerate == 0 && nn.num_components == 1
+    close(nn.mesh)
+    @test_throws ArgumentError estimate_normals(cube; orientation="inward")
     hh = convex_hull(cube)
     @test hh.dimension == 3 && hh.num_vertices == 8 && hh.num_facets == 12
     @test isapprox(hh.volume, 1.0)

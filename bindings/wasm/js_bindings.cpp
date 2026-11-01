@@ -133,6 +133,7 @@
 #include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/hull.hpp"
+#include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
@@ -7094,6 +7095,40 @@ val sobolev_deform_js(const val& rMeshObj, const std::string& rArray, double len
 }
 
 /**
+ * @brief Normals of a point cloud by local plane fits. @p rOptions is
+ * `{k, orientation, viewpoint, recordVariation}`, every key optional. See
+ * operations/point_normals.hpp.
+ */
+val estimate_normals_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::PointNormalsOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("k"))
+                options.mK = static_cast<std::int64_t>(rOptions["k"].as<double>());
+            if (rOptions.hasOwnProperty("orientation"))
+                options.mOrientation = meshioplusplus::normal_orientation_from_name(
+                    rOptions["orientation"].as<std::string>());
+            if (rOptions.hasOwnProperty("viewpoint")) {
+                const std::vector<double> v =
+                    emscripten::vecFromJSArray<double>(rOptions["viewpoint"]);
+                if (v.size() != 3)
+                    throw std::invalid_argument("estimateNormals: viewpoint takes three numbers");
+                options.mViewpoint = {v[0], v[1], v[2]};
+            }
+            if (rOptions.hasOwnProperty("recordVariation"))
+                options.mRecordVariation = rOptions["recordVariation"].as<bool>();
+        }
+        meshioplusplus::PointNormalsResult r =
+            meshioplusplus::estimate_normals(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numDegenerate", static_cast<double>(r.mNumDegenerate));
+        out.set("numComponents", static_cast<double>(r.mNumComponents));
+        return out;
+    });
+}
+
+/**
  * @brief The convex hull of a mesh's points. @p rOptions is `{dimension}`
  * (optional: 2, 3, or 0 to decide). See operations/hull.hpp.
  */
@@ -9444,6 +9479,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("sobolevDeform", &sobolev_deform_js);
     emscripten::function("geodesicDistance", &geodesic_distance_js);
     emscripten::function("convertCoordinates", &convert_coordinates_js);
+    emscripten::function("estimateNormals", &estimate_normals_js);
     emscripten::function("convexHull", &convex_hull_js);
     emscripten::function("delaunay2d", &delaunay_2d_js);
     emscripten::function("cropBbox", &crop_bbox_js);

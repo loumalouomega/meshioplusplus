@@ -76,6 +76,7 @@
 #include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/hull.hpp"
+#include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
@@ -7183,6 +7184,58 @@ mio_mesh* mio_sobolev_deform(const mio_mesh* mesh, const mio_sobolev_opts* opts,
             report->max_displacement = r.mMaxDisplacement;
             report->converged = r.mConverged ? 1 : 0;
         }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+// --- point-cloud normals (roadmap 7.5.2) ---------------------------------------
+
+static_assert(sizeof(mio_point_normals_opts) == 72,
+              "mio_point_normals_opts grew outside its reserved tail");
+
+void mio_point_normals_opts_init(mio_point_normals_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_point_normals_opts{};
+    opts->k = 16;
+    opts->orientation = MIO_NORMALS_CONSISTENT;
+}
+
+mio_mesh* mio_estimate_normals(const mio_mesh* mesh, const mio_point_normals_opts* opts,
+                               int64_t* num_degenerate, int64_t* num_components) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        mio_point_normals_opts o;
+        mio_point_normals_opts_init(&o);
+        if (opts)
+            o = *opts;
+        meshioplusplus::PointNormalsOptions options;
+        options.mK = o.k;
+        switch (o.orientation) {
+            case MIO_NORMALS_CONSISTENT:
+                options.mOrientation = meshioplusplus::NormalOrientation::Consistent;
+                break;
+            case MIO_NORMALS_VIEWPOINT:
+                options.mOrientation = meshioplusplus::NormalOrientation::Viewpoint;
+                break;
+            case MIO_NORMALS_NONE:
+                options.mOrientation = meshioplusplus::NormalOrientation::None;
+                break;
+            default:
+                throw std::invalid_argument(
+                    "meshio++: estimate_normals: orientation must be MIO_NORMALS_CONSISTENT, "
+                    "MIO_NORMALS_VIEWPOINT or MIO_NORMALS_NONE");
+        }
+        for (int a = 0; a < 3; ++a)
+            options.mViewpoint[a] = o.viewpoint[a];
+        options.mRecordVariation = o.record_variation != 0;
+        meshioplusplus::PointNormalsResult r =
+            meshioplusplus::estimate_normals(mesh->mMesh, options);
+        if (num_degenerate)
+            *num_degenerate = r.mNumDegenerate;
+        if (num_components)
+            *num_components = r.mNumComponents;
         return new mio_mesh{std::move(r.mMesh)};
     });
 }

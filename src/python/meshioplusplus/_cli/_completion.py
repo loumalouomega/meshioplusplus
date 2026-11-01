@@ -48,8 +48,10 @@ def verbs(parser):
         # A first positional with fixed choices (`completion bash|zsh|fish`)
         # completes like a sub-verb.
         positional = [a for a in sub._actions if not a.option_strings]
-        if positional and positional[0].choices and not isinstance(
-            positional[0], argparse._SubParsersAction
+        if (
+            positional
+            and positional[0].choices
+            and not isinstance(positional[0], argparse._SubParsersAction)
         ):
             subverbs = [str(c) for c in positional[0].choices]
         inner = _subparsers(sub)

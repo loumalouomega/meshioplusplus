@@ -257,6 +257,7 @@ export default defineConfig({
           { text: "Proximity graphs", link: "/proximity_graphs" },
           { text: "Curvature (mean / Gaussian)", link: "/curvature" },
           { text: "Normals", link: "/normals" },
+          { text: "Point-cloud normals", link: "/point_normals" },
           { text: "Surface repair", link: "/repair" },
           { text: "Shrinkwrap", link: "/shrinkwrap" },
           { text: "Sobolev deformation", link: "/sobolev_deform" },

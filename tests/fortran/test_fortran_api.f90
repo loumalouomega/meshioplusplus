@@ -3017,6 +3017,13 @@ contains
         call dist%free()
         dist = square%geodesic_distance(stat=ierr)
         call check(ierr /= 0, 'geodesic_distance needs a source')
+        ! Normals of the square's corners: one plane, facing +z.
+        dist = square%estimate_normals(k=3, num_degenerate=g_nv, stat=ierr)
+        call check(ierr == 0, 'estimate_normals succeeded')
+        call check(g_nv == 0_int64, 'no corner is degenerate')
+        call dist%free()
+        dist = square%estimate_normals(orientation='inward', stat=ierr)
+        call check(ierr /= 0, 'estimate_normals rejects an unknown orientation')
         ! Hull and Delaunay of the square's corners (2-D: z is all zero).
         dist = square%convex_hull(num_vertices=g_nv, stat=ierr)
         call check(ierr == 0, 'convex_hull succeeded')

@@ -7059,6 +7059,27 @@ TEST(CApi, ConvertCoordinates) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, EstimateNormals) {
+    mio_mesh* m = capi_cube_surface();  // 8 corners: every fit spans a plane
+    mio_point_normals_opts opts;
+    mio_point_normals_opts_init(&opts);
+    EXPECT_EQ(opts.k, 16);
+    opts.k = 3;
+    std::int64_t degenerate = -1, pieces = -1;
+    mio_mesh* out = mio_estimate_normals(m, &opts, &degenerate, &pieces);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(degenerate, 0);
+    EXPECT_EQ(pieces, 1);
+    EXPECT_EQ(mio_mesh_num_points(out), 8);
+    mio_mesh_free(out);
+    opts.orientation = 9;
+    EXPECT_EQ(mio_estimate_normals(m, &opts, nullptr, nullptr), nullptr);
+    opts.orientation = MIO_NORMALS_NONE;
+    opts.k = 1;
+    EXPECT_EQ(mio_estimate_normals(m, &opts, nullptr, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, ConvexHullAndDelaunay) {
     mio_mesh* m = capi_cube_surface();  // the unit cube's 8 corners
     mio_hull_report rep;

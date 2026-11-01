@@ -138,6 +138,7 @@
 #include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/hull.hpp"
+#include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
@@ -457,6 +458,7 @@ void print_usage(std::ostream& os) {
           "  completion              Print a bash, zsh or fish completion script\n"
           "  coordinates             Fields in cylindrical/spherical components about an axis\n"
           "  hull                    Convex hull of the points (3-D surface or 2-D loop)\n"
+          "  point-normals           Normals of a point cloud by local plane fits\n"
           "  delaunay                Delaunay triangulation of the points in the x, y plane\n"
           "  geodesic                Surface distance from source points (heat method)\n"
           "  graph                   Write a mesh's node or cell graph as a METIS or Scotch file\n"
@@ -3856,6 +3858,57 @@ std::vector<double> cli_numbers(const std::string& rText, std::size_t Count, con
                                  std::to_string(Count) + " numbers, got " +
                                  std::to_string(out.size()));
     return out;
+}
+
+// point-normals: normals of a point cloud by local plane fits. See
+// operations/point_normals.hpp.
+int cmd_point_normals(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"k", {}, true},
+                                  {"orientation", {}, true},
+                                  {"viewpoint", {}, true},
+                                  {"variation", {}, false},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("point-normals requires INFILE OUTFILE");
+    meshioplusplus::PointNormalsOptions o;
+    if (has_opt(p, "k"))
+        o.mK = std::stoll(opt_value(p, "k"));
+    if (has_opt(p, "orientation"))
+        o.mOrientation = meshioplusplus::normal_orientation_from_name(opt_value(p, "orientation"));
+    if (has_opt(p, "viewpoint")) {
+        std::vector<double> v;
+        auto in = meshioplusplus::detail::make_classic_istringstream(opt_value(p, "viewpoint"));
+        std::string item;
+        while (std::getline(in, item, ','))
+            v.push_back(meshioplusplus::detail::stod_c(item));
+        if (v.size() != 3)
+            throw std::runtime_error("point-normals: --viewpoint expects three numbers");
+        o.mViewpoint = {v[0], v[1], v[2]};
+    }
+    o.mRecordVariation = has_flag(p, "variation");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::PointNormalsResult r = meshioplusplus::estimate_normals(mesh, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Field("num_degenerate", r.mNumDegenerate);
+        json.Field("num_components", r.mNumComponents);
+        json.EndObject();
+        return 0;
+    }
+    std::cout << "normals of " << mesh.NumPoints() << " points";
+    if (r.mNumComponents > 0)
+        std::cout << " in " << r.mNumComponents << " piece(s)";
+    if (r.mNumDegenerate > 0)
+        std::cout << ", " << r.mNumDegenerate << " degenerate (NaN)";
+    std::cout << "\n";
+    return 0;
 }
 
 // hull: the convex hull of a mesh's points. See operations/hull.hpp.
@@ -8799,6 +8852,8 @@ int cli_run_verb(const std::string& cmd, const std::vector<std::string>& rest) {
         return cmd_split_interface(rest);
     if (cmd == "hausdorff")
         return cmd_hausdorff(rest);
+    if (cmd == "point-normals")
+        return cmd_point_normals(rest);
     if (cmd == "hull")
         return cmd_hull(rest);
     if (cmd == "delaunay")

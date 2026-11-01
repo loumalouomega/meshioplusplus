@@ -1225,6 +1225,15 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
+    !> Interop mirror of C `mio_point_normals_opts`. Field order/types are ABI.
+    type, bind(c) :: mio_point_normals_opts_t
+        integer(c_int64_t) :: k = 16
+        integer(c_int32_t) :: orientation = 0
+        integer(c_int32_t) :: record_variation = 0
+        real(c_double) :: viewpoint(3) = 0.0_c_double
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
     !> Interop mirror of C `mio_hull_report`. Field order/types are ABI.
     type, bind(c) :: mio_hull_report_t
         integer(c_int32_t) :: dimension = 0
@@ -2042,6 +2051,7 @@ module meshioplusplus
         procedure :: sobolev_deform => mesh_sobolev_deform
         procedure :: geodesic_distance => mesh_geodesic_distance
         procedure :: convert_coordinates => mesh_convert_coordinates
+        procedure :: estimate_normals => mesh_estimate_normals
         procedure :: convex_hull => mesh_convex_hull
         procedure :: delaunay_2d => mesh_delaunay_2d
         procedure :: remesh_volume => mesh_remesh_volume
@@ -3595,6 +3605,15 @@ module meshioplusplus
             type(c_ptr), value :: h, target
             type(mio_shrinkwrap_opts_t), intent(in) :: opts
             type(mio_shrinkwrap_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_estimate_normals(h, opts, num_degenerate, num_components) &
+                bind(c, name="mio_estimate_normals") result(r)
+            import :: c_ptr, c_int64_t, mio_point_normals_opts_t
+            type(c_ptr), value :: h
+            type(mio_point_normals_opts_t), intent(in) :: opts
+            integer(c_int64_t), intent(out) :: num_degenerate, num_components
             type(c_ptr) :: r
         end function
 
@@ -9424,6 +9443,51 @@ contains
             inconsistent_pairs_after = int(report%quality_after%inconsistent_pairs, int64)
         if (present(boundary_edges_after)) &
             boundary_edges_after = int(report%quality_after%boundary_edges, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Normals of the mesh's points by local plane fits: `normals` point data,
+    !> oriented 'consistent' (default: a spanning tree, then outward),
+    !> 'viewpoint' (towards `viewpoint`) or 'none'; NaN where a neighbourhood
+    !> spans no plane. See doc/point_normals.md.
+    function mesh_estimate_normals(self, k, orientation, viewpoint, record_variation, &
+                                   num_degenerate, num_components, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer, intent(in), optional :: k
+        character(*), intent(in), optional :: orientation
+        real(real64), intent(in), optional :: viewpoint(3)
+        logical, intent(in), optional :: record_variation
+        integer(int64), intent(out), optional :: num_degenerate, num_components
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_point_normals_opts_t) :: opts
+        integer(c_int64_t) :: nd, nc
+
+        if (present(k)) opts%k = int(k, c_int64_t)
+        if (present(orientation)) then
+            select case (trim(orientation))
+            case ('consistent')
+                opts%orientation = 0
+            case ('viewpoint')
+                opts%orientation = 1
+            case ('none')
+                opts%orientation = 2
+            case default
+                opts%orientation = -1
+            end select
+        end if
+        if (present(viewpoint)) opts%viewpoint = real(viewpoint, c_double)
+        if (present(record_variation)) then
+            if (record_variation) opts%record_variation = 1
+        end if
+        out%handle = c_mio_estimate_normals(self%handle, opts, nd, nc)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('estimate_normals', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_degenerate)) num_degenerate = int(nd, int64)
+        if (present(num_components)) num_components = int(nc, int64)
         call clear_status(stat, errmsg)
     end function
 

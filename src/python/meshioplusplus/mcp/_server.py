@@ -3656,6 +3656,38 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def estimate_normals(
+        input_path: str,
+        output_path: str,
+        k: int = 16,
+        orientation: str = "consistent",
+        viewpoint: Optional[List[float]] = None,
+        record_variation: bool = False,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Normals of a point cloud (a PLY, PCD or XYZ scan, or any mesh's
+        points): a plane fitted to each point and its k nearest neighbours,
+        written as `normals` point data (the columns the PCD and XYZ writers
+        emit). orientation: "consistent" (propagated along a spanning tree of
+        the neighbour graph, then each piece turned outward; a flat patch
+        faces +z), "viewpoint" (towards `viewpoint`, the scanner) or "none".
+        record_variation adds normals:variation (0 on a plane). Points with
+        no plane in their neighbourhood get NaN. Reports num_degenerate and
+        num_components."""
+        return _guard(
+            _tools.tool_estimate_normals,
+            input_path=input_path,
+            output_path=output_path,
+            k=k,
+            orientation=orientation,
+            viewpoint=viewpoint or (0.0, 0.0, 0.0),
+            record_variation=record_variation,
+            input_format=input_format,
+            output_format=output_format,
+        )
+
+    @server.tool()
     def convex_hull(
         input_path: str,
         output_path: str,

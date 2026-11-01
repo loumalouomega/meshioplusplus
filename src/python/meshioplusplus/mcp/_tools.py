@@ -91,6 +91,7 @@ from .. import (
     edit_regions,
     error_size,
     estimate_error,
+    estimate_normals,
     extract_skin,
     extract_surface,
     extrude,
@@ -4050,6 +4051,34 @@ def tool_convert_coordinates(
     )
 
 
+def tool_estimate_normals(
+    input_path,
+    output_path,
+    k=16,
+    orientation="consistent",
+    viewpoint=(0.0, 0.0, 0.0),
+    record_variation=False,
+    input_format=None,
+    output_format=None,
+):
+    """Normals of a file's points by local plane fits."""
+    mesh = _load(input_path, input_format)
+    out, report = estimate_normals(
+        mesh,
+        k=int(k),
+        orientation=orientation,
+        viewpoint=viewpoint,
+        record_variation=record_variation,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_degenerate=int(report["num_degenerate"]),
+        num_components=int(report["num_components"]),
+    )
+
+
 def tool_convex_hull(
     input_path, output_path, dimension=0, input_format=None, output_format=None
 ):
@@ -6894,6 +6923,14 @@ TOOL_REGISTRY = OrderedDict(
         (
             "sobolev_deform",
             {"fn": tool_sobolev_deform, "wraps": ("sobolev_deform",), "gated": None},
+        ),
+        (
+            "estimate_normals",
+            {
+                "fn": tool_estimate_normals,
+                "wraps": ("estimate_normals",),
+                "gated": None,
+            },
         ),
         (
             "convex_hull",

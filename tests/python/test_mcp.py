@@ -2157,6 +2157,16 @@ def test_convert_coordinates_tool(tmp_path):
     )
 
 
+def test_estimate_normals_tool(tmp_path):
+    src = str(tmp_path / "s.vtu")
+    meshioplusplus.write(src, meshioplusplus.icosa_sphere(subdivisions=2))
+    out = _dump(_tools.tool_estimate_normals(src, str(tmp_path / "n.vtu"), k=8))
+    assert out["num_degenerate"] == 0 and out["num_components"] == 1
+    back = meshioplusplus.read(str(tmp_path / "n.vtu"))
+    radial = back.points / np.linalg.norm(back.points, axis=1)[:, None]
+    assert np.all(np.einsum("ij,ij->i", back.point_data["normals"], radial) > 0.95)
+
+
 def test_convex_hull_and_delaunay_tools(tmp_path):
     src = str(tmp_path / "cloud.vtu")
     rng = np.random.default_rng(0)

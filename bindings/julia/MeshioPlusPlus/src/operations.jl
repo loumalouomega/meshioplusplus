@@ -3910,6 +3910,31 @@ function sobolev_deform(m::Mesh, array::AbstractString, length_scale::Real;
 end
 
 """
+    estimate_normals(m; k=16, orientation="consistent", viewpoint=(0,0,0),
+                     record_variation=false) -> (; mesh, num_degenerate, num_components)
+
+Normals of the mesh's points by local plane fits, as `normals` point data:
+oriented `"consistent"` (a spanning tree over the neighbour graph, then each
+piece outward), `"viewpoint"` (towards `viewpoint`) or `"none"`; `NaN` where a
+neighbourhood spans no plane. See `doc/point_normals.md`.
+"""
+function estimate_normals(m::Mesh; k::Integer=16, orientation::AbstractString="consistent",
+                          viewpoint=(0.0, 0.0, 0.0), record_variation::Bool=false)
+    o = orientation == "consistent" ? Int32(0) : orientation == "viewpoint" ? Int32(1) :
+        orientation == "none" ? Int32(2) :
+        throw(ArgumentError("meshio++: estimate_normals: orientation must be \"consistent\", \"viewpoint\" or \"none\""))
+    opts = _CPointNormalsOpts(Int64(k), o, record_variation ? Int32(1) : Int32(0),
+                              (Float64(viewpoint[1]), Float64(viewpoint[2]), Float64(viewpoint[3])),
+                              ntuple(_ -> Int64(0), 4))
+    nd, nc = Ref{Int64}(0), Ref{Int64}(0)
+    ptr = ccall(_sym(:mio_estimate_normals), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CPointNormalsOpts}, Ptr{Int64}, Ptr{Int64}),
+                _handle(m), Ref(opts), nd, nc)
+    r = _check_ptr(ptr)
+    (mesh=Mesh(r), num_degenerate=Int(nd[]), num_components=Int(nc[]))
+end
+
+"""
     convex_hull(m; dimension=0)
         -> (; mesh, dimension, num_vertices, num_facets, area, volume, perimeter)
 

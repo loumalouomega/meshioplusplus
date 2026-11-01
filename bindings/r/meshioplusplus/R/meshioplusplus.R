@@ -716,6 +716,29 @@ mio_match_periodic_nodes <- function(mesh, slave, master, matrix = NULL, transla
   )
 }
 
+#' Normals of a point cloud by local plane fits
+#'
+#' A plane is fitted to each point and its `k` nearest neighbours; the result
+#' is `normals` point data, oriented `"consistent"` (a spanning tree over the
+#' neighbour graph, then each piece outward), `"viewpoint"` (towards
+#' `viewpoint`) or `"none"`. A point whose neighbourhood spans no plane gets
+#' `NaN`. See `doc/point_normals.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param k Neighbours per fit (at least 2).
+#' @param orientation `"consistent"`, `"viewpoint"` or `"none"`.
+#' @param viewpoint The point normals face, with `orientation = "viewpoint"`.
+#' @param record_variation Also attach `normals:variation`.
+#' @return A list of `mesh`, `num_degenerate` and `num_components`.
+#' @export
+mio_estimate_normals <- function(mesh, k = 16, orientation = "consistent",
+                                 viewpoint = c(0, 0, 0), record_variation = FALSE) {
+  .Call(
+    R_mio_estimate_normals, mesh, as.numeric(k), as.character(orientation),
+    as.numeric(viewpoint), isTRUE(record_variation)
+  )
+}
+
 #' Convex hull of a mesh's points
 #'
 #' The mesh's cells are ignored. In 3-D the hull is a closed `triangle` surface

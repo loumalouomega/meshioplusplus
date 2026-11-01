@@ -54,6 +54,7 @@ from . import (
     _periodic,
     _pipeline,
     _point_budget,
+    _point_normals,
     _predict,
     _project_to_cad,
     _proximity,
@@ -289,6 +290,12 @@ def build_parser():
     )
     _coordinates.add_args(parser)
     parser.set_defaults(func=_coordinates.coordinates_cmd)
+
+    parser = subparsers.add_parser(
+        "point-normals", help="Normals of a point cloud by local plane fits"
+    )
+    _point_normals.add_args(parser)
+    parser.set_defaults(func=_point_normals.point_normals_cmd)
 
     parser = subparsers.add_parser(
         "hull", help="Convex hull of the points (3-D surface or 2-D loop)"

@@ -369,6 +369,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   matchPeriodicNodes: (mesh: Mesh, slave: string | {name: string, kind?: string, dim?: number, tag?: number}, master: string | {name: string, kind?: string, dim?: number, tag?: number}, matrix: ArrayLike<number>, atol?: number, requireComplete?: boolean) => {slave: Int32Array, master: Int32Array, unmatched: Int32Array, numFixed: number, maxResidual: number},
  *   repair: (mesh: Mesh, fixOrientation?: boolean, orientOutward?: boolean, fillHoles?: boolean, splitNonManifold?: boolean, maxHoleEdges?: number, weldTolerance?: number, recordProvenance?: boolean) => {mesh: Mesh, qualityBefore: object, qualityAfter: object, numFlipped: number, numComponents: number, largestComponent: number, numOrientedOutward: number, numUnorientable: number, numVerticesSplit: number, numHolesDetected: number, numHolesFilled: number, numHolesSkipped: number, numFacesAdded: number, numPointsAdded: number, pointsWelded: number},
  *   shrinkwrap: (mesh: Mesh, target: Mesh, offset?: number, maxDistance?: number, weights?: string, targetRegion?: string, normalWeight?: string, recordDistance?: boolean, recordClosestCell?: boolean) => {mesh: Mesh, quality: object, numProjected: number, numMissed: number, numSkipped: number, maxDisplacement: number},
+ *   estimateNormals: (mesh: Mesh, options?: {k?: number, orientation?: 'consistent'|'viewpoint'|'none', viewpoint?: ArrayLike<number>, recordVariation?: boolean}) => {mesh: Mesh, numDegenerate: number, numComponents: number},
  *   convexHull: (mesh: Mesh, options?: {dimension?: 0|2|3}) => {mesh: Mesh, dimension: number, numVertices: number, numFacets: number, area: number, volume: number, perimeter: number},
  *   delaunay2d: (mesh: Mesh) => {mesh: Mesh, numTriangles: number, numDuplicates: number, numBoundary: number},
  *   convertCoordinates: (mesh: Mesh, options?: {system?: 'cylindrical'|'spherical', axis?: ArrayLike<number>, origin?: ArrayLike<number>, reference?: ArrayLike<number>, arrays?: string[], inverse?: boolean, recordCoordinates?: boolean}) => {mesh: Mesh, numArrays: number, numSingular: number},
@@ -1256,6 +1257,11 @@ export async function loadMeshioPlusPlus(
         ) =>
             Module.shrinkwrap(mesh, target, offset, maxDistance, weights, targetRegion,
                 normalWeight, recordDistance, recordClosestCell),
+        estimateNormals: (mesh, options = {}) => {
+            const o = { ...options };
+            if (o.viewpoint !== undefined) o.viewpoint = Array.from(o.viewpoint);
+            return Module.estimateNormals(mesh, o);
+        },
         convexHull: (mesh, options = {}) => Module.convexHull(mesh, options),
         delaunay2d: (mesh) => Module.delaunay2d(mesh),
         convertCoordinates: (mesh, options = {}) => {

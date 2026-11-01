@@ -3931,6 +3931,40 @@ MIO_API void mio_coordinate_opts_init(mio_coordinate_opts* opts);
 MIO_API mio_mesh* mio_convert_coordinates(const mio_mesh* mesh, const mio_coordinate_opts* opts,
                                           int64_t* num_arrays, int64_t* num_singular);
 
+/** mio_point_normals_opts.orientation: propagate along a spanning tree, then outward. */
+#define MIO_NORMALS_CONSISTENT 0
+/** mio_point_normals_opts.orientation: towards `viewpoint`. */
+#define MIO_NORMALS_VIEWPOINT 1
+/** mio_point_normals_opts.orientation: each normal's largest component positive. */
+#define MIO_NORMALS_NONE 2
+
+/**
+ * Options for mio_estimate_normals. Initialize through
+ * mio_point_normals_opts_init(): k = 16, MIO_NORMALS_CONSISTENT, no variation.
+ */
+typedef struct mio_point_normals_opts {
+    int64_t k;                /**< neighbours per plane fit (at least 2) */
+    int32_t orientation;      /**< MIO_NORMALS_CONSISTENT, _VIEWPOINT or _NONE */
+    int32_t record_variation; /**< nonzero also attaches normals:variation */
+    double viewpoint[3];      /**< the point normals face, for MIO_NORMALS_VIEWPOINT */
+    int64_t reserved[4];      /**< must be zero; room for additive growth */
+} mio_point_normals_opts;
+
+/** Initialize point-normal options (see mio_point_normals_opts). */
+MIO_API void mio_point_normals_opts_init(mio_point_normals_opts* opts);
+
+/**
+ * Normals of a point cloud: a plane fitted to each point and its k nearest
+ * neighbours, oriented per `opts->orientation`, as `normals` point data (unit
+ * Float64 (n, 3); NaN where the neighbourhood spans no plane). Points, cells
+ * and other arrays pass through. See doc/point_normals.md. `opts` NULL uses
+ * the defaults; either count may be NULL.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_estimate_normals(const mio_mesh* mesh, const mio_point_normals_opts* opts,
+                                       int64_t* num_degenerate, int64_t* num_components);
+
 /** What mio_convex_hull built. */
 typedef struct mio_hull_report {
     int32_t dimension;    /**< the dimension used, 2 or 3 */

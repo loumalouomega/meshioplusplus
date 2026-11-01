@@ -5720,6 +5720,14 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.throws(() => m.matchPeriodicNodes(tagged, 'bottom', 'top', shift));
 });
 
+step('estimateNormals of the cube corners', () => {
+    const r = m.estimateNormals(cubeSurface, { k: 3 });
+    assert.equal(r.numDegenerate, 0);
+    assert.equal(r.numComponents, 1);
+    assert.ok('normals' in r.mesh.point_data);
+    assert.throws(() => m.estimateNormals(cubeSurface, { orientation: 'inward' }));
+});
+
 step('convexHull and delaunay2d of the cube corners', () => {
     const h = m.convexHull(cubeSurface);
     assert.equal(h.numVertices, 8);

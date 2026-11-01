@@ -79,6 +79,7 @@
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/hull.hpp"
+#include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
 #include "meshioplusplus/operations/crop.hpp"
@@ -442,6 +443,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "MaxIterations", "Tolerance"}},
         {"ConvexHull", {"Dimension"}},
         {"Delaunay2D", {}},
+        {"EstimateNormals", {"K", "Orientation", "Viewpoint", "RecordVariation"}},
         {"ConvertCoordinates",
          {"System", "Axis", "Origin", "Reference", "Arrays", "Inverse", "RecordCoordinates"}},
         {"GeodesicDistance",
@@ -2284,6 +2286,23 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"Area", hr.mArea},
                         {"Volume", hr.mVolume}});
         return std::move(hr.mMesh);
+    }
+    if (op == "EstimateNormals") {
+        PointNormalsOptions opts;
+        const double k = pipe_number(rStep, "K", 16.0);
+        opts.mK = static_cast<std::int64_t>(k);
+        if (static_cast<double>(opts.mK) != k)
+            throw std::invalid_argument("pipeline: EstimateNormals: K must be an integer");
+        opts.mOrientation =
+            normal_orientation_from_name(pipe_text(rStep, "Orientation", "consistent"));
+        if (pipe_find(rStep, "Viewpoint"))
+            pipe_vec3(rStep, "Viewpoint", opts.mViewpoint.data());
+        opts.mRecordVariation = pipe_flag(rStep, "RecordVariation", false);
+        PointNormalsResult nr = estimate_normals(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumDegenerate", static_cast<double>(nr.mNumDegenerate)},
+                        {"NumComponents", static_cast<double>(nr.mNumComponents)}});
+        return std::move(nr.mMesh);
     }
     if (op == "Delaunay2D") {
         Delaunay2dResult dr = delaunay_2d(mesh);

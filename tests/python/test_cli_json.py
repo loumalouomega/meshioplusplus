@@ -583,6 +583,17 @@ WRITING = [
         ],
     ),
     (
+        "point-normals",
+        lambda f, out: [
+            "point-normals",
+            f["sphere_a"],
+            out + ".vtu",
+            "--k",
+            "8",
+            "--json",
+        ],
+    ),
+    (
         "hull",
         lambda f, out: ["hull", f["sphere_a"], out + ".vtu", "--json"],
     ),

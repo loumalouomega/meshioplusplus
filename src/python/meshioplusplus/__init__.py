@@ -216,6 +216,7 @@ if TYPE_CHECKING:
     from ._periodic import match_periodic_nodes
     from ._pipeline import apply_operations, run_pipeline
     from ._point_budget import PointBudget, select_points, subsample_points
+    from ._point_normals import estimate_normals
     from ._primitives import (
         annulus,
         ball,
@@ -349,6 +350,7 @@ _LAZY_ATTRS = {
     "geodesic_distance": "_geodesic",
     "convex_hull": "_hull",
     "delaunay_2d": "_hull",
+    "estimate_normals": "_point_normals",
     "convert_coordinates": "_coordinates",
     "write_graph": "_adjacency",
     "clean": "_clean",
@@ -708,6 +710,7 @@ __all__ = [
     "geodesic_distance",
     "convex_hull",
     "delaunay_2d",
+    "estimate_normals",
     "convert_coordinates",
     "refine",
     "undo_green",
