@@ -1,7 +1,7 @@
 """The pure payload layer of the MCP server: one function per tool.
 
 Everything an MCP tool does lives here, and nothing here imports the ``mcp``
-SDK — this module runs on every Python the package supports (>= 3.8) and is
+SDK — this module runs on every Python the package supports (>= 3.10) and is
 tested in the default CI matrix with the ``[mcp]`` extra absent, exactly the
 way :mod:`meshioplusplus._interop`'s payload layer is tested without PyVista.
 The FastMCP registration in :mod:`meshioplusplus.mcp._server` is a thin,

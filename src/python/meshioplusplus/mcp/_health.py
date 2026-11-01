@@ -2,7 +2,7 @@
 summary the browser dataset manager otherwise computes from its own WASM
 scans (doc/dashboard.md).
 
-Pure stdlib + meshioplusplus, Python 3.8 -- tested in the default matrix with
+Pure stdlib + meshioplusplus, Python 3.10 -- tested in the default matrix with
 no optional extra. The shape is a superset of the browser's ``EntryScan`` /
 ``ManifestHealth`` (``src/viewer/src/dataset/types.ts``), snake_cased, so the
 page's ``health.ts:fromServerHealth`` fills the same structure and the card

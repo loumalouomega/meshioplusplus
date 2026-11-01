@@ -20,7 +20,7 @@ python3 doc/diagrams/gen_diagrams.py            # every SVG + PNG twin into doc/
 python3 doc/diagrams/gen_diagrams.py --check    # what CI's lint job runs
 ```
 
-The generator is standard library only, so it runs on any Python 3.9+ with no build and no `meshioplusplus` import. PNG twins are rasterised at 2x with `rsvg-convert` (falling back to `inkscape`, then ImageMagick); their bytes are not pinned because rasterisers differ per machine, only that they exist at the expected size.
+The generator is standard library only, so it runs on any Python 3.10+ with no build and no `meshioplusplus` import. PNG twins are rasterised at 2x with `rsvg-convert` (falling back to `inkscape`, then ImageMagick); their bytes are not pinned because rasterisers differ per machine, only that they exist at the expected size.
 
 `--check` fails when a committed SVG differs from what the generator produces (stale), when a figure has no PNG twin, when a figure is embedded by no page under `doc/` nor by `README.md`, or when a page references a figure no function produces. `tests/python/test_doc_diagrams.py` pins the same things and, in addition, that every node of the cell-type figures sits where the code's tables say it does.
 
