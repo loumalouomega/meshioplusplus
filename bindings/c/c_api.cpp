@@ -72,6 +72,7 @@
 #include "meshioplusplus/formats/exodus.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/providers.hpp"
+#include "meshioplusplus/detail/compressed_input.hpp"
 #include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
@@ -1238,6 +1239,19 @@ mio_mesh* mio_read_with_info(const char* path, const char* format, const mio_rea
         if (!path || !info)
             throw std::invalid_argument("meshio++: path/info is NULL");
         const std::string fmt = capi_resolve_read_format(path, format);
+        // The info readers below are called directly, not through the
+        // registry, so a compressed file is decompressed here (registry_read
+        // at the end decompresses its own). A compound extension a format owns
+        // (`.vol.gz`) never reaches these branches.
+        std::unique_ptr<meshioplusplus::detail::DecompressedFile> plain;
+        const meshioplusplus::detail::Compression kind =
+            meshioplusplus::detail::compression_from_suffix(path);
+        if (kind != meshioplusplus::detail::Compression::None &&
+            (fmt == "gmsh" || fmt == "mfem" || fmt == "cad_json" || fmt == "step" ||
+             fmt == "iges" || fmt == "mdpa")) {
+            plain = std::make_unique<meshioplusplus::detail::DecompressedFile>(path, kind);
+            path = plain->Path().c_str();
+        }
         if (fmt == "gmsh") {
             auto handle = std::make_unique<mio_format_info>();
             handle->mFormat = fmt;

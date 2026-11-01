@@ -40,6 +40,8 @@ The C API and C++ core this binding calls are unaffected and stay MIT. Calling t
 
 `read(path; format="gmsh")` reads non-periodic Gmsh 2.2, 4.0 and 4.1 through the native library. The 4.0 path accepts ASCII and binary with 4- or 8-byte producer counts. Periodic files use `read_with_info` / `write_with_info`; output remains 4.1 (`gmsh`) or 2.2 (`gmsh22`). Info-less reads refuse `$Periodic` rather than lose it. See [Gmsh](formats/gmsh.md).
 
+`read` reads compressed files transparently (`read("cube.msh.gz")`: `.gz`, `.bz2`, `.xz`, `.zst` or a single-member `.zip`), through the codecs the native library links. See [compressed files](formats.md#compressed-files).
+
 ## Building and installing
 
 The package binds the **installed** C library; no C++ is compiled by it.

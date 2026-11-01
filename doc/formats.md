@@ -211,6 +211,28 @@ The [deck-token pass](./benchmarks.md#remaining-deck-token-views) completes meas
 
 ---
 
+## Compressed files
+
+Every reader reads its files compressed too: `read("cube.msh.gz")`, `part.vtu.bz2`, `run.inp.xz`, `skin.stl.zst` and a `case.zip` holding one file. The compression suffix is stripped to infer the format (`cube.msh.gz` is a `.msh` file; a `case.zip` whose name has no inner extension is named by its member), the file is decompressed into a private temporary directory under the name it had inside, read, and the directory removed. An explicit `file_format` works as for an uncompressed file. Writing stays uncompressed: `write` has no compressed output.
+
+| Suffix | Python | Native core (both CLIs, C, Fortran, Julia, R, WASM) |
+| --- | --- | --- |
+| `.gz` (members concatenated) | standard library | zlib (`MESHIOPLUSPLUS_WITH_ZLIB`; in both WASM artifacts) |
+| `.zip` (one file, stored or deflated; no Zip64, no encryption) | standard library | zlib |
+| `.bz2` | standard library | bzip2 (`MESHIOPLUSPLUS_WITH_BZIP2`; full WASM artifact) |
+| `.xz` | standard library | liblzma (`MESHIOPLUSPLUS_WITH_LZMA`; not in WASM) |
+| `.zst` | Python 3.14's `compression.zstd`, the `zstandard` package (the `codecs` extra) or a core with zstd | zstd (`MESHIOPLUSPLUS_WITH_ZSTD`; full WASM artifact) |
+
+A codec the build lacks raises `ReadError` naming the option to enable, and corrupt or truncated data raises `ReadError` too. Three cases are not stripped or not read:
+
+- **A compound extension a format registers itself** is that format's own: Netgen's `.vol.gz`, libMesh's `.xda.gz`/`.xdr.bz2` and PERMAS's `.dato.gz`/`.post.gz` keep reading through their readers, which decompress them as they always did.
+- **A multi-file format** (`tetgen`, `triangle`, `ensight`, `gid`, `elmer`, `pvd`, `pvtu`, `pvtp`, `vtx`, `openfoam`, and Python's `pmsh`, `zarr` and `usd`) is refused by name: its data lives in files beside the one compressed, which the decompressed copy does not have. A single-file format that references a sibling file (an XDMF file whose heavy data is an `.h5` beside it) fails the same way when that file is read.
+- **A zip with several files**, or none, is refused, naming the count.
+
+`read_metadata` reads compressed files the same way; the C API's `mio_read`, the CLIs' `convert`, `info` and every other verb that reads go through the native registry, so `meshioplusplus convert cube.msh.gz cube.vtu` works in both. Buffers are not decompressed: `read(buffer, file_format=...)` reads the bytes it is given.
+
+---
+
 ## Provenance
 
 Since v10.15.0, every writer that carries a free-text header slot emits one canonical line, `Written by meshio++ v<release>` (`meshioplusplus._provenance.TAG` on the Python side, `detail::kProvenanceTag` on the C++ side — a single owner on each side, so the two engines emit character-identical bytes). Since v10.16.0 a caller can additionally opt into a richer block — source, target, the operation chain, conversion assumptions, a timestamp — rendered where a format's header slot can hold it; see [`doc/provenance.md`](./provenance.md) for the design and [`doc/roadmap.md`](./roadmap.md) section 1 for what remains open (reading the block back on read).

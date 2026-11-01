@@ -33,12 +33,17 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <utility>
 #include <vector>
 
 // External includes
 #include <gtest/gtest.h>
+
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+#include <zlib.h>
+#endif
 
 #include "meshioplusplus/version.hpp"
 #include "meshioplusplus/formats/stl.hpp"
@@ -6978,6 +6983,48 @@ TEST(CApi, EditRegionsAndPeriodicPairs) {
     EXPECT_EQ(mio_match_periodic_nodes(m, &in[0], &in[1], &opts), nullptr);
     mio_mesh_free(m);
 }
+
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+TEST(CApi, ReadsCompressedFiles) {
+    // A Gmsh file gzipped: mio_read infers the format from the name before
+    // `.gz`, and mio_read_with_info's direct Gmsh reader decompresses too.
+    mio_mesh* m = capi_cube_surface();
+    const std::string msh = mt::temp_path(".msh");
+    ASSERT_EQ(mio_write(msh.c_str(), m, "gmsh"), MIO_OK) << mio_last_error();
+    std::string raw;
+    {
+        std::ifstream in(msh, std::ios::binary);
+        raw.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    z_stream z{};
+    deflateInit2(&z, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 31, 8, Z_DEFAULT_STRATEGY);
+    std::string gz(deflateBound(&z, static_cast<uLong>(raw.size())) + 32, '\0');
+    z.next_in = reinterpret_cast<Bytef*>(&raw[0]);
+    z.avail_in = static_cast<uInt>(raw.size());
+    z.next_out = reinterpret_cast<Bytef*>(&gz[0]);
+    z.avail_out = static_cast<uInt>(gz.size());
+    deflate(&z, Z_FINISH);
+    gz.resize(z.total_out);
+    deflateEnd(&z);
+    const std::string path = msh + ".gz";
+    {
+        std::ofstream out(path, std::ios::binary);
+        out << gz;
+    }
+    mio_mesh* back = mio_read(path.c_str(), nullptr);
+    ASSERT_NE(back, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_points(back), 8);
+    mio_mesh_free(back);
+    mio_format_info* info = nullptr;
+    back = mio_read_with_info(path.c_str(), nullptr, nullptr, &info);
+    ASSERT_NE(back, nullptr) << mio_last_error();
+    mio_format_info_free(info);
+    mio_mesh_free(back);
+    std::filesystem::remove(msh);
+    std::filesystem::remove(path);
+    mio_mesh_free(m);
+}
+#endif
 
 TEST(CApi, AdjacencyAndGraphFiles) {
     mio_mesh* m = capi_cube_surface();

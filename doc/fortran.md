@@ -98,6 +98,8 @@ If `stat` is **absent** and the call fails, the message is printed and the progr
 | | |
 | --- | --- |
 | Lifecycle | `m%create()` (implicit in `read`/setters), `m%read(path [, format])`, `m%write(path [, format])`, `m%free()`, `m%is_valid()` |
+
+`m%read` reads compressed files transparently (`m%read('cube.msh.gz')`: `.gz`, `.bz2`, `.xz`, `.zst` or a single-member `.zip`), through the codecs the native library links. See [compressed files](formats.md#compressed-files).
 | Building | `m%set_points(points)`, `m%add_cell_block(type, conn)` (int32 or int64), `m%add_point_data(name, data)` (rank-1 or rank-2), `m%add_cell_data(name, data)` (once per block, in order), `m%add_field_data(name, data)` |
 | Counts | `m%num_points()`, `m%point_dim()`, `m%num_cell_blocks()`, `m%num_point_data()`, `m%num_cell_data()`, `m%num_field_data()`, `m%cell_data_num_blocks(name)` |
 | Cell blocks (1-based) | `m%cell_block_type(i)`, `m%cell_block_num_cells(i)`, `m%cell_block_nodes_per_cell(i)`, `m%cell_block_is_ragged(i)`, `m%cell_block_is_polyhedron(i)`, `m%get_cell_block(i, conn)` |

@@ -114,6 +114,8 @@ meshio.writeMesh("/example.msh", mesh, "gmsh");
 const { readers, writers } = meshio.availableFormats();
 ```
 
+`readMesh` reads a compressed MEMFS file transparently (`readMesh('/cube.msh.gz')`): `.gz` and a single-member `.zip` in both artifacts, `.bz2` and `.zst` in the full one; `.xz` is not built for WASM. See [compressed files](formats.md#compressed-files).
+
 `regionAdjacency(mesh, regions?)` returns the conforming facets shared by named Cell regions. When the selector list is omitted or empty, the module uses all Cell regions, or multiple cell blocks when fewer than two Cell regions exist. The result carries parent-cell/facet ids and per-facet length or area; see [region adjacency](/region_adjacency).
 
 `findInterface(mesh, regionA, regionB, options?)` returns `{mesh, report}` for conforming or proximity matching; `contactPairs(slaveMesh, slavePoints, masterCells, options?)` returns typed projection arrays; and `splitInterface(mesh, side, options?)` returns `{mesh, report}` after duplicating point fans. Cell, point, facet and subfacet ids are 0-based, matching the JS mesh representation. The `options` shapes are documented in [`index.d.ts`](https://github.com/loumalouomega/meshioplusplus/blob/main/src/wasm/index.d.ts); see also [interfaces and contact](/region_adjacency).

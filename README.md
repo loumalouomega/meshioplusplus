@@ -184,6 +184,7 @@ meshioplusplus check      part.vtu -r "scaled_jacobian >= 0.2"  # quality gate: 
 meshioplusplus regions    in.msh out.msh --union inlet=in_a,in_b --rename "Surface 3=Outlet"  # region algebra
 meshioplusplus periodic   in.msh --slave inlet --master outlet --translate 2,0,0  # periodic node pairs
 meshioplusplus graph      in.vtu part.graph --kind cell     # dual graph as a METIS file (or .grf: Scotch)
+meshioplusplus convert    case.msh.gz case.vtu            # compressed input (.gz .bz2 .xz .zst .zip) read transparently
 meshioplusplus repair     in.vtu out.vtu                     # orientation, holes, bowties
 meshioplusplus shrinkwrap in.vtu scan.stl out.vtu           # project onto a target surface
 meshioplusplus sobolev-deform in.vtu out.vtu --array d --length-scale 0.5  # filter a displacement

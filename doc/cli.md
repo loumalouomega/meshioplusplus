@@ -16,6 +16,8 @@ The same verbs are also available as a **standalone native C++ binary** that nee
 
 Convert a mesh file from one format to another.
 
+Every verb that reads a mesh reads it compressed too: `convert cube.msh.gz cube.vtu` strips `.gz`, `.bz2`, `.xz`, `.zst` or a single-member `.zip` to infer the format, in both CLIs ([compressed files](formats.md#compressed-files)).
+
 ```
 meshioplusplus convert [options] INFILE OUTFILE
 ```

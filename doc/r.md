@@ -38,6 +38,8 @@ Every exported function is prefixed `mio_`, which keeps the package clear of bas
 
 `mio_read(path, format = "gmsh")` reads non-periodic Gmsh 2.2, 4.0 and 4.1 through the native library. The 4.0 path accepts ASCII and binary with 4- or 8-byte producer counts. Periodic files use `mio_read_with_info` / `mio_write_with_info`; output remains 4.1 (`gmsh`) or 2.2 (`gmsh22`). Info-less reads refuse `$Periodic` rather than lose it. See [Gmsh](formats/gmsh.md).
 
+`mio_read` reads compressed files transparently (`mio_read("cube.msh.gz")`: `.gz`, `.bz2`, `.xz`, `.zst` or a single-member `.zip`), through the codecs the native library links. See [compressed files](formats.md#compressed-files).
+
 The package is MIT-licensed like the rest of meshio++. (The sibling [Julia](/julia) binding is deliberately not — see its page.)
 
 ## Building and installing

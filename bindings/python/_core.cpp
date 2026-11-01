@@ -29,6 +29,7 @@
 
 // Project includes
 #include "meshioplusplus/detail/colormap.hpp"
+#include "meshioplusplus/detail/compressed_input.hpp"
 #include "meshioplusplus/detail/nastran_model.hpp"
 #include "meshioplusplus/detail/node_order.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
@@ -2246,6 +2247,30 @@ PYBIND11_MODULE(_core, m) {
             return core_nogil([&] { return meshioplusplus::sniff_format(path); });
         },
         py::arg("path"));
+
+    // The native decompression a registry read of `cube.msh.gz` goes through,
+    // for the Python twin's codecs the standard library lacks (zstd before
+    // Python 3.14). See detail/compressed_input.hpp.
+    m.def(
+        "decompress",
+        [](const std::string& suffix, const py::bytes& data) {
+            const meshioplusplus::detail::Compression kind =
+                meshioplusplus::detail::compression_from_suffix("x" + suffix);
+            if (kind == meshioplusplus::detail::Compression::None)
+                throw std::invalid_argument("meshio++: decompress: unknown suffix '" + suffix +
+                                            "' (expected .gz, .bz2, .xz, .zst or .zip)");
+            const std::string in = data;
+            std::string out =
+                core_nogil([&] { return meshioplusplus::detail::decompress_bytes(kind, in); });
+            return py::bytes(out);
+        },
+        py::arg("suffix"), py::arg("data"));
+    m.def("compression_available", [](const std::string& suffix) {
+        const meshioplusplus::detail::Compression kind =
+            meshioplusplus::detail::compression_from_suffix("x" + suffix);
+        return kind != meshioplusplus::detail::Compression::None &&
+               meshioplusplus::detail::compression_available(kind);
+    });
 
     // Lightweight file summary: counts, cell-block shapes and data-array names
     // without materializing the heavy arrays. Formats lacking a native metadata
