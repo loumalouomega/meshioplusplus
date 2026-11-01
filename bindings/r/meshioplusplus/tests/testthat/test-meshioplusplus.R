@@ -1672,6 +1672,19 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
   expect_equal(p$num_fixed, 0)
   expect_error(mio_match_periodic_nodes(m, "bottom", "top", translate = c(0, 0, 0.5)))
 
+  # The triangulated cube: 12 edges and 6 face diagonals, 1-based CSR.
+  g <- mio_adjacency(m)
+  expect_length(g$indptr, 9)
+  expect_equal(g$indptr[c(1, 9)], c(1, 2 * 18 + 1))
+  expect_equal(range(g$indices), c(1, 8))
+  expect_length(mio_adjacency(m, "cell")$indptr, 12 + 1)
+  expect_error(mio_adjacency(m, "edge"), "unknown kind")
+  gpath <- tempfile(fileext = ".graph")
+  gs <- mio_write_graph(m, gpath)
+  expect_equal(c(gs$num_vertices, gs$num_edges), c(8, 18))
+  expect_equal(readLines(gpath, n = 1), "8 18")
+  expect_error(mio_write_graph(m, tempfile(fileext = ".txt")), "infer the format")
+
   q <- mio_check_quality(m, "min_angle >= 30")
   expect_true(q$passed)
   expect_equal(q$num_checks, 3)

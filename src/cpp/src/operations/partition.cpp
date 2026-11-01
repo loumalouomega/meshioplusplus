@@ -45,17 +45,10 @@
 #include "../detail/typed_view.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_KAHIP
-// System includes (KaHIP dual-graph path only)
-#include <array>
-#include <functional>
 // External includes
 #include <kaHIP_interface.h>  // IWYU pragma: keep
-// Project includes (KaHIP dual-graph path only)
-#include "meshioplusplus/cell_type.hpp"
-#include "meshioplusplus/detail/cell_edges.hpp"
-#include "meshioplusplus/detail/cell_faces.hpp"
-#include "meshioplusplus/detail/polyhedron.hpp"
-#include "../detail/slot_runs.hpp"
+// Project includes (private, not installed; KaHIP dual-graph path only)
+#include "../detail/dual_graph.hpp"
 #endif
 
 namespace meshioplusplus {
@@ -270,221 +263,6 @@ std::vector<int> partition_sfc_parts(const Mesh& rMesh, const PartitionOptions& 
 
 #ifdef MESHIOPLUSPLUS_HAS_KAHIP
 
-// Sorted corner ids of one facet, padded with -1 up to 4 entries (surface.cpp's
-// facet-key idiom; the padding lets triangular and quadrilateral facets share
-// Sorted corner ids of one facet, of any arity. detail::FacetKey rather than
-// the fixed array<int64_t,4> this used before v9.16.1: a polyhedron's face can
-// have any number of corners, and ONE shared key type is what lets a
-// hexahedron and a polyhedron that meet on a face become dual-graph
-// neighbours instead of two isolated vertices.
-using PartitionFacetKey = detail::FacetKey;
-using PartitionFacetKeyHash = detail::FacetKeyHash;
-
-// The corner-node rows of a cell type's facets in the dual-graph sense: faces
-// for 3D cells, edges for 2D cells, empty (isolated vertex) otherwise.
-struct PartitionFacetDef {
-    std::uint8_t mNumCorners;
-    std::array<std::uint8_t, 4> mNodes;
-};
-
-std::vector<PartitionFacetDef> partition_facets_for(CellType type, int dualDim) {
-    std::vector<PartitionFacetDef> defs;
-    if (dualDim == 3) {
-        for (const detail::CellFaceDef& f : detail::cell_faces(type)) {
-            PartitionFacetDef d;
-            d.mNumCorners = f.mNumCorners;
-            for (std::uint8_t k = 0; k < f.mNumCorners; ++k)
-                d.mNodes[k] = f.mNodes[k];
-            defs.push_back(d);
-        }
-    } else if (dualDim == 2) {
-        for (const detail::CellEdgeDef& e : detail::cell_edges(type)) {
-            PartitionFacetDef d;
-            d.mNumCorners = e.mNumCorners;
-            for (std::uint8_t k = 0; k < e.mNumCorners; ++k)
-                d.mNodes[k] = e.mNodes[k];
-            defs.push_back(d);
-        }
-    }
-    return defs;
-}
-
-// One facet occurrence recorded in phase 1 (keys built in parallel).
-struct PartitionFacetRecord {
-    PartitionFacetKey mKey;
-    std::int64_t mParent;  // global cell index owning the facet
-};
-
-// The dual graph in CSR form: cells are vertices, an edge where two cells
-// share a facet (each undirected edge stored twice, 0-indexed).
-struct PartitionCsr {
-    std::vector<std::int64_t> mXadj;    // size total + 1
-    std::vector<std::int64_t> mAdjncy;  // size mXadj.back()
-};
-
-PartitionCsr partition_dual_graph(const Mesh& rMesh, std::size_t total) {
-    // The dual dimension: faces when any 3D cell exists, else edges. Blocks of
-    // lower dimension (or without a facet table) become isolated vertices.
-    int dual_dim = 0;
-    for (const auto cb : rMesh.CellRange()) {
-        const int d = cb.IsPolyhedron() ? 3 : cell_type_dimension(cell_type_from_name(cb.Type()));
-        dual_dim = std::max(dual_dim, d);
-    }
-
-    // Per-block facet tables + the flat record-buffer layout.
-    struct BlockDesc {
-        const NDArray* mpConn = nullptr;
-        std::size_t mNpc = 0;
-        std::size_t mNumCells = 0;
-        std::vector<PartitionFacetDef> mFacets;
-        std::size_t mFirstFacet = 0;
-        std::int64_t mGlobalCellBase = 0;
-        bool mPolyhedron = false;
-        std::size_t mBlock = 0;
-        std::vector<std::size_t> mFaceStart;  // mNumCells + 1
-    };
-    std::vector<BlockDesc> descs;
-    std::size_t total_facets = 0;
-    std::int64_t global_cell_base = 0;
-    std::size_t block_index = 0;
-    for (const auto cb : rMesh.CellRange()) {
-        const std::size_t this_block = block_index++;
-        const std::int64_t base = global_cell_base;
-        global_cell_base += static_cast<std::int64_t>(cb.NumCells());
-        if (cb.IsPolyhedron()) {
-            // A polyhedron carries its own faces, so it needs no table -- it was
-            // an isolated vertex before v9.16.1 purely because the key could not
-            // hold an arbitrary face. KaHIP then saw a graph with no edges and
-            // produced an arbitrary (balanced but cut-blind) partition.
-            if (dual_dim != 3)
-                continue;
-            BlockDesc d;
-            d.mPolyhedron = true;
-            d.mBlock = this_block;
-            d.mNumCells = cb.NumCells();
-            d.mFirstFacet = total_facets;
-            d.mGlobalCellBase = base;
-            d.mFaceStart.reserve(d.mNumCells + 1);
-            std::size_t at = 0;
-            d.mFaceStart.push_back(0);
-            for (std::size_t c = 0; c < d.mNumCells; ++c) {
-                at += cb.NumFaces(c);
-                d.mFaceStart.push_back(at);
-            }
-            total_facets += at;
-            descs.push_back(std::move(d));
-            continue;
-        }
-        if (cb.IsRagged())
-            continue;  // isolated vertices (no facet table)
-        const CellType ct = cell_type_from_name(cb.Type());
-        if (cell_type_dimension(ct) != dual_dim)
-            continue;
-        std::vector<PartitionFacetDef> facets = partition_facets_for(ct, dual_dim);
-        if (facets.empty())
-            continue;
-        BlockDesc d;
-        d.mpConn = &cb.Conn();
-        d.mNpc = cb.NodesPerCell();
-        d.mNumCells = cb.NumCells();
-        d.mFacets = std::move(facets);
-        d.mFirstFacet = total_facets;
-        d.mGlobalCellBase = base;
-        total_facets += d.mNumCells * d.mFacets.size();
-        descs.push_back(std::move(d));
-    }
-
-    // Phase 1: build facet keys into disjoint slots (parallel-safe).
-    std::vector<PartitionFacetRecord> recs(total_facets);
-    for (const BlockDesc& d : descs) {
-        if (d.mPolyhedron) {
-            const auto cb = rMesh.Cells(d.mBlock);
-            parallel_for(d.mNumCells, [&](std::size_t cell) {
-                const std::size_t nf = cb.NumFaces(cell);
-                for (std::size_t f = 0; f < nf; ++f) {
-                    const auto face = cb.Face(cell, f);
-                    PartitionFacetRecord& r = recs[d.mFirstFacet + d.mFaceStart[cell] + f];
-                    r.mKey = PartitionFacetKey(face.first, face.second);
-                    r.mParent = d.mGlobalCellBase + static_cast<std::int64_t>(cell);
-                }
-            });
-            continue;
-        }
-        const NDArray& conn = *d.mpConn;
-        const detail::Int64View conn_v(conn);
-        const std::size_t npc = d.mNpc;
-        const std::size_t fpc = d.mFacets.size();
-        parallel_for(d.mNumCells * fpc, [&](std::size_t j) {
-            const std::size_t cell = j / fpc;
-            const PartitionFacetDef& facet = d.mFacets[j % fpc];
-            PartitionFacetRecord& r = recs[d.mFirstFacet + j];
-            std::array<std::int64_t, 4> ids{};
-            for (std::uint8_t k = 0; k < facet.mNumCorners; ++k)
-                ids[k] = conn_v[cell * npc + facet.mNodes[k]];
-            r.mKey = PartitionFacetKey(ids.data(), facet.mNumCorners);
-            r.mParent = d.mGlobalCellBase + static_cast<std::int64_t>(cell);
-        });
-    }
-
-    // Phase 2: group the records by facet key (sorted runs, detail/slot_runs.hpp).
-    // A run's head is its first record in stored order, the owner a first-seen
-    // map would keep; every later record whose parent differs from the owner
-    // adds an owner<->parent edge, so the occurrences of a non-manifold facet
-    // beyond the second all connect to the first owner.
-    const detail::SlotRuns runs = detail::group_facet_slots(
-        recs, [](const PartitionFacetRecord& rR) -> const PartitionFacetKey& { return rR.mKey; },
-        rMesh.NumPoints());
-    const std::size_t num_runs = runs.NumRuns();
-
-    // Flat adjacency with duplicates: degree count, prefix sum, fill (both serial
-    // over the runs, plain integer work, so the lists do not depend on a backend).
-    std::vector<std::int64_t> dup_start(total + 1, 0);
-    for (std::size_t r = 0; r < num_runs; ++r) {
-        const std::int64_t owner = recs[runs.Head(r)].mParent;
-        for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r); ++p) {
-            const std::int64_t parent = recs[*p].mParent;
-            if (parent != owner) {
-                ++dup_start[static_cast<std::size_t>(owner) + 1];
-                ++dup_start[static_cast<std::size_t>(parent) + 1];
-            }
-        }
-    }
-    for (std::size_t i = 0; i < total; ++i)
-        dup_start[i + 1] += dup_start[i];
-    std::vector<std::int64_t> dup(static_cast<std::size_t>(dup_start[total]));
-    std::vector<std::int64_t> cursor(dup_start.begin(), dup_start.end() - 1);
-    for (std::size_t r = 0; r < num_runs; ++r) {
-        const std::int64_t owner = recs[runs.Head(r)].mParent;
-        for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r); ++p) {
-            const std::int64_t parent = recs[*p].mParent;
-            if (parent != owner) {
-                dup[static_cast<std::size_t>(cursor[static_cast<std::size_t>(owner)]++)] = parent;
-                dup[static_cast<std::size_t>(cursor[static_cast<std::size_t>(parent)]++)] = owner;
-            }
-        }
-    }
-
-    // Dedupe neighbour lists (cells can share more than one facet) in place and
-    // pack CSR. Sorting makes each list independent of the order it was filled in.
-    std::vector<std::int64_t> kept(total);
-    parallel_for(total, [&](std::size_t i) {
-        auto first = dup.begin() + dup_start[i];
-        auto last = dup.begin() + dup_start[i + 1];
-        std::sort(first, last);
-        kept[i] = static_cast<std::int64_t>(std::unique(first, last) - first);
-    });
-    PartitionCsr csr;
-    csr.mXadj.resize(total + 1);
-    csr.mXadj[0] = 0;
-    for (std::size_t i = 0; i < total; ++i)
-        csr.mXadj[i + 1] = csr.mXadj[i] + kept[i];
-    csr.mAdjncy.reserve(static_cast<std::size_t>(csr.mXadj[total]));
-    for (std::size_t i = 0; i < total; ++i)
-        csr.mAdjncy.insert(csr.mAdjncy.end(), dup.begin() + dup_start[i],
-                           dup.begin() + dup_start[i] + kept[i]);
-    return csr;
-}
-
 // Per-cell part assignment via KaHIP's serial kaffpa() (ported from the Kratos
 // KaHIPApplication's KaHIPPartitioner). The CSR buffers are built in the index
 // width the *installed* KaHIP library uses -- kahip_sizeof_idx() at runtime,
@@ -502,7 +280,7 @@ std::vector<int> partition_kahip_parts(const Mesh& rMesh, const PartitionOptions
             "partition: mesh has " + std::to_string(total) +
             " cells; KaHIP's kaffpa interface indexes cells with a 32-bit int");
 
-    PartitionCsr graph = partition_dual_graph(rMesh, total);
+    detail::DualGraphCsr graph = detail::build_facet_dual_graph(rMesh, total);
 
     // Vertex weights: kaffpa takes int; scale so the total maps to ~2^30
     // (relative weights preserved, sums safe in a 32-bit KaHIP build), with a

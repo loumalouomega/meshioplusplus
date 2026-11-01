@@ -7098,6 +7098,42 @@ MIO_API const int64_t* mio_periodic_pairs_unmatched(const mio_periodic_pairs* pa
 /** Destroy a pairs handle. Safe to call with NULL. */
 MIO_API void mio_periodic_pairs_free(mio_periodic_pairs* pairs);
 
+/* ------------------------------------------------------------------ */
+/* Adjacency graphs and graph files (doc/adjacency.md)                 */
+/* ------------------------------------------------------------------ */
+
+/** Opaque CSR graph. Destroy with mio_adjacency_free(). */
+typedef struct mio_adjacency mio_adjacency;
+
+/**
+ * The `kind` graph of `mesh` in compressed-sparse-row form: `"node"` (nodes
+ * joined by a cell edge; NULL means this), `"clique"` (nodes sharing a cell:
+ * the FEM sparsity pattern) or `"cell"` (cells sharing a facet, numbered
+ * block-major). Rows are ascending, without duplicates or self-loops, and
+ * each undirected edge is stored both ways. Indices are 0-based.
+ * @return the graph (free with mio_adjacency_free), or NULL on failure.
+ */
+MIO_API mio_adjacency* mio_adjacency_create(const mio_mesh* mesh, const char* kind);
+
+/** Borrow the row offsets (`n + 1` entries), valid until mio_adjacency_free(). */
+MIO_API const int64_t* mio_adjacency_indptr(const mio_adjacency* graph, int64_t* count);
+
+/** Borrow the neighbour ids (`indptr[n]` entries), valid until mio_adjacency_free(). */
+MIO_API const int64_t* mio_adjacency_indices(const mio_adjacency* graph, int64_t* count);
+
+/** Destroy a graph handle. Safe to call with NULL. */
+MIO_API void mio_adjacency_free(mio_adjacency* graph);
+
+/**
+ * Write the `kind` graph of `mesh` (as mio_adjacency_create) to `path` as a
+ * METIS (`"metis"`, 1-based) or Scotch (`"scotch"`, 0-based) graph file;
+ * `format` NULL or empty infers it from the extension (`.graph`/`.metis`,
+ * `.grf`). Any out pointer may be NULL.
+ */
+MIO_API mio_status mio_write_graph(const mio_mesh* mesh, const char* kind, const char* path,
+                                   const char* format, int64_t* num_vertices,
+                                   int64_t* num_edges, int64_t* max_degree);
+
 /* --------------------------------------------------------------------------
  * Software rendering (v16.33.0 core, v16.34.0 field rendering): a
  * deterministic software rasterizer and its terminal, HTML and PNG encodings.

@@ -3428,6 +3428,34 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def graph(
+        input_path: str,
+        output_path: str,
+        kind: str = "node",
+        input_format: Optional[str] = None,
+        file_format: Optional[str] = None,
+    ) -> dict:
+        """Write a mesh's graph as a METIS or Scotch graph file, for an
+        external partitioner or a sparse-matrix preallocation.
+
+        kind "node" joins nodes that share a cell edge; "clique" joins nodes
+        that share any cell (the sparsity pattern of an assembled FEM matrix);
+        "cell" joins cells that share a facet (a face in 3-D, an edge in 2-D),
+        numbered block-major: the dual graph partitioners cut. file_format is
+        "metis" (.graph: a header "n m", then each vertex's 1-based
+        neighbours) or "scotch" (.grf, 0-based), inferred from the extension
+        (.graph/.metis, .grf) when omitted. Reports output_path, kind, format,
+        num_vertices, num_edges (undirected) and max_degree."""
+        return _guard(
+            _tools.tool_graph,
+            input_path=input_path,
+            output_path=output_path,
+            kind=kind,
+            input_format=input_format,
+            file_format=file_format,
+        )
+
+    @server.tool()
     def periodic(
         input_path: str,
         slave: str,

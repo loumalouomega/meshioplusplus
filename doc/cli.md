@@ -96,7 +96,7 @@ Converting a 3D volume mesh to STL, PLY or glTF writes its extracted boundary sk
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -125,6 +125,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `find-interface` | pair counts, area, maximum gap, unmatched counts and both Side-entry lists |
 | `contact-pairs` | `num_pairs`, the pair table and unmatched slave-point ids |
 | `split-interface` | duplicated-point and cohesive-cell counts |
+| `graph` | `output`, `kind`, `format`, `num_vertices`, `num_edges`, `max_degree` |
 | `mesh-cad-surface` | `mesh_cad_surface`'s report: the counts, the open, non-manifold and misoriented edges, the extreme angles and edge lengths, `tolerance`, `max_edge_gap`, `faces` (`status`, `reason`, counts and extremes per face, `below_bound`, `bound_deg`, `min_input_angle_deg` and `corners`), `warnings`, `num_refinement_points`, `num_faces_below_bound`, `num_smoothed`, `angle_histogram` and `num_curved_straightened` |
 | `boundary-layer` | `boundary_layer`'s report: the cell counts by type, `num_shrunk`, `num_collapsed`, `num_not_visible`, `num_fewer_layers`, `num_front_crossings`, `min_scaled_jacobian`, the thickness range, `cap_closed` and `warnings` |
 | `extrude`, `revolve` | the sweep's report: the cell counts by type, `num_flipped`, `min_scaled_jacobian`, `warnings`; `revolve` adds `num_on_axis` and `full` |
@@ -1600,6 +1601,30 @@ meshioplusplus hausdorff [options] INFILE_A INFILE_B
 
 ```sh
 meshioplusplus hausdorff part.stl part_decimated.stl --face-samples 4 --max 1e-3
+```
+
+---
+
+## meshioplusplus graph
+
+Write a mesh's node or cell graph as a METIS or Scotch graph file, for an external partitioner or a sparse-matrix preallocation (see [adjacency graphs](/adjacency)).
+
+```
+meshioplusplus graph [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--kind node\|clique\|cell` | `node` (default): nodes joined by a cell edge; `clique`: nodes sharing a cell, the FEM sparsity pattern; `cell`: cells sharing a facet, numbered block-major |
+| `--format metis\|scotch` | The dialect; by default from the extension (`.graph`/`.metis`, `.grf`) |
+| `--json` | Emit `output`, `kind`, `format`, `num_vertices`, `num_edges` and `max_degree` |
+| `--input-format` (`-i`) | Force input format |
+
+Both CLIs write the same bytes.
+
+```sh
+meshioplusplus graph bracket.vtu bracket.graph --kind cell     # then: gpmetis bracket.graph 16
+meshioplusplus graph bracket.vtu bracket.grf --kind clique --json
 ```
 
 ---

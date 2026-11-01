@@ -2119,6 +2119,26 @@ def test_edit_regions_and_periodic(tmp_path):
         _tools.tool_periodic(src, "bottom", "top", translate=[0, 0, 0.5])
 
 
+def test_graph_tool(tmp_path):
+    src = str(tmp_path / "in.vtu")
+    pts = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], dtype=float)
+    meshioplusplus.write(
+        src, meshioplusplus.Mesh(pts, [("triangle", np.array([[0, 1, 2], [0, 2, 3]]))])
+    )
+    out = _dump(_tools.tool_graph(src, str(tmp_path / "g.graph")))
+    assert out["format"] == "metis" and out["kind"] == "node"
+    assert (out["num_vertices"], out["num_edges"], out["max_degree"]) == (4, 5, 3)
+    assert (tmp_path / "g.graph").read_text() == "4 5\n2 3 4\n1 3\n1 2 4\n1 3\n"
+    cells = _dump(
+        _tools.tool_graph(
+            src, str(tmp_path / "c.txt"), kind="cell", file_format="scotch"
+        )
+    )
+    assert (cells["num_vertices"], cells["num_edges"]) == (2, 1)
+    with pytest.raises(ValueError, match="cannot infer the format"):
+        _tools.tool_graph(src, str(tmp_path / "g.txt"))
+
+
 def test_export_gltf(tmp_path):
     src = str(tmp_path / "in.vtu")
     meshioplusplus.write(
@@ -2195,6 +2215,7 @@ _NOT_TOOLS = {
     "register_format",
     "deregister_format",
     "partition_labels",  # in-memory variant of partition
+    "apply_operations",  # in-memory variant of the pipeline tool
     # A generator of (time, Mesh) pairs: the meshes never touch the filesystem,
     # so there is no path-in/path-out form. The `sequence` tool covers every
     # file-level use (fan-in, fan-out, N->N).
@@ -2227,6 +2248,7 @@ _NOT_TOOLS = {
     "has_open3d",
     "has_dolfinx",
     "edge_index",  # in-memory (2, E) array; no path-based form
+    "adjacency",  # in-memory CSR arrays; the graph tool writes them (write_graph)
     # Its input is polygons as in-memory (n, 2) arrays, not a file; the
     # mesh_cad_surface tool covers meshing a CAD file.
     "triangulate_polygon_2d",

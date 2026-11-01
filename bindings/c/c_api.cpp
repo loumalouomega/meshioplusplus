@@ -72,6 +72,7 @@
 #include "meshioplusplus/formats/exodus.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/providers.hpp"
+#include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
@@ -170,6 +171,10 @@ struct mio_regions {
 
 struct mio_periodic_pairs {
     meshioplusplus::PeriodicPairs mPairs;
+};
+
+struct mio_adjacency {
+    meshioplusplus::Adjacency mGraph;
 };
 
 struct mio_find_interface_result {
@@ -9614,6 +9619,59 @@ const int64_t* mio_periodic_pairs_unmatched(const mio_periodic_pairs* pairs, int
 
 void mio_periodic_pairs_free(mio_periodic_pairs* pairs) {
     delete pairs;
+}
+
+// --- adjacency graphs (roadmap 7.2.2) ----------------------------------------
+
+mio_adjacency* mio_adjacency_create(const mio_mesh* mesh, const char* kind) {
+    return guarded_ptr(static_cast<mio_adjacency*>(nullptr), [&]() -> mio_adjacency* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        const meshioplusplus::AdjacencyKind k =
+            meshioplusplus::adjacency_kind_from_name(kind && *kind ? kind : "node");
+        return new mio_adjacency{meshioplusplus::adjacency(mesh->mMesh, k)};
+    });
+}
+
+const int64_t* mio_adjacency_indptr(const mio_adjacency* graph, int64_t* count) {
+    if (count)
+        *count = 0;
+    return graph ? capi_periodic_ids(graph->mGraph.mIndptr, count) : nullptr;
+}
+
+const int64_t* mio_adjacency_indices(const mio_adjacency* graph, int64_t* count) {
+    if (count)
+        *count = 0;
+    return graph ? capi_periodic_ids(graph->mGraph.mIndices, count) : nullptr;
+}
+
+void mio_adjacency_free(mio_adjacency* graph) {
+    delete graph;
+}
+
+mio_status mio_write_graph(const mio_mesh* mesh, const char* kind, const char* path,
+                           const char* format, int64_t* num_vertices, int64_t* num_edges,
+                           int64_t* max_degree) {
+    return guarded([&]() -> mio_status {
+        if (!mesh)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh is NULL");
+        if (!path || !*path)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: path is NULL or empty");
+        const meshioplusplus::AdjacencyKind k =
+            meshioplusplus::adjacency_kind_from_name(kind && *kind ? kind : "node");
+        const meshioplusplus::GraphFormat f = format && *format
+                                                  ? meshioplusplus::graph_format_from_name(format)
+                                                  : meshioplusplus::graph_format_for_path(path);
+        const meshioplusplus::GraphSummary s =
+            meshioplusplus::write_graph(path, meshioplusplus::adjacency(mesh->mMesh, k), f);
+        if (num_vertices)
+            *num_vertices = s.mNumVertices;
+        if (num_edges)
+            *num_edges = s.mNumEdges;
+        if (max_degree)
+            *max_degree = s.mMaxDegree;
+        return MIO_OK;
+    });
 }
 
 // --- quality gate (v16.24.0) -------------------------------------------------

@@ -130,6 +130,7 @@
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/normals.hpp"
+#include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
@@ -6952,6 +6953,46 @@ val match_periodic_nodes_js(const val& rMeshObj, const val& rSlave, const val& r
 }
 
 /**
+ * @brief The node / clique / cell graph in CSR form (0-based, Int32Array --
+ * throws past 2^31 entries). See operations/adjacency.hpp.
+ */
+val adjacency_js(const val& rMeshObj, const std::string& rKind) {
+    return with_js_errors([&]() -> val {
+        const meshioplusplus::AdjacencyKind kind =
+            meshioplusplus::adjacency_kind_from_name(rKind.empty() ? "node" : rKind);
+        const meshioplusplus::Adjacency g = meshioplusplus::adjacency(val_to_mesh(rMeshObj), kind);
+        val out = val::object();
+        out.set("indptr", ndarray_to_int32_array(g.mIndptr));
+        out.set("indices", ndarray_to_int32_array(g.mIndices));
+        return out;
+    });
+}
+
+/**
+ * @brief Writes the mesh's graph to @p rPath (in MEMFS) as a METIS or Scotch
+ * graph file; an empty @p rFormat infers it from the extension.
+ */
+val write_graph_js(const val& rMeshObj, const std::string& rPath, const std::string& rKind,
+                   const std::string& rFormat) {
+    return with_js_errors([&]() -> val {
+        const meshioplusplus::AdjacencyKind kind =
+            meshioplusplus::adjacency_kind_from_name(rKind.empty() ? "node" : rKind);
+        const meshioplusplus::GraphFormat format =
+            rFormat.empty() ? meshioplusplus::graph_format_for_path(rPath)
+                            : meshioplusplus::graph_format_from_name(rFormat);
+        const meshioplusplus::GraphSummary s = meshioplusplus::write_graph(
+            rPath, meshioplusplus::adjacency(val_to_mesh(rMeshObj), kind), format);
+        val out = val::object();
+        out.set("format",
+                std::string(format == meshioplusplus::GraphFormat::Metis ? "metis" : "scotch"));
+        out.set("numVertices", static_cast<double>(s.mNumVertices));
+        out.set("numEdges", static_cast<double>(s.mNumEdges));
+        out.set("maxDegree", static_cast<double>(s.mMaxDegree));
+        return out;
+    });
+}
+
+/**
  * @brief Surface repair: orientation by the topological half-edge rule,
  * fan-filled holes wound to agree with the surrounding surface, and bowtie
  * splitting. See operations/repair.hpp.
@@ -9279,6 +9320,8 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("contactPairs", &contact_pairs_js);
     emscripten::function("splitInterface", &split_interface_js);
     emscripten::function("matchPeriodicNodes", &match_periodic_nodes_js);
+    emscripten::function("adjacency", &adjacency_js);
+    emscripten::function("writeGraph", &write_graph_js);
     emscripten::function("repair", &repair_js);
     emscripten::function("shrinkwrap", &shrinkwrap_js);
     emscripten::function("sobolevDeform", &sobolev_deform_js);

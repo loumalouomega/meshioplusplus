@@ -583,6 +583,30 @@ WRITING = [
         ],
     ),
     (
+        "graph_cell",
+        lambda f, out: [
+            "graph",
+            f["hexes"],
+            out + ".graph",
+            "--kind",
+            "cell",
+            "--json",
+        ],
+    ),
+    (
+        "graph_clique_scotch",
+        lambda f, out: [
+            "graph",
+            f["hexes"],
+            out + ".txt",
+            "--kind",
+            "clique",
+            "--format",
+            "scotch",
+            "--json",
+        ],
+    ),
+    (
         "regions_edit",
         lambda f, out: [
             "regions",
@@ -644,6 +668,20 @@ def test_json_output_of_writing_verbs_agrees(files, name, build):
         if isinstance(doc, dict) and "output" in doc:
             doc["output"] = "<out>"
     _same(doc_py, doc_n)
+
+
+@pytest.mark.parametrize("kind", ["node", "clique", "cell"])
+@pytest.mark.parametrize("ext", [".graph", ".grf"])
+def test_graph_files_agree(files, kind, ext):
+    base = os.path.join(files["dir"], f"graph_{kind}")
+    py_out, native_out = base + "_py" + ext, base + "_native" + ext
+    code, _ = _python(["graph", files["hexes"], py_out, "--kind", kind])
+    assert code == 0
+    if NATIVE is None:
+        pytest.skip("no native CLI binary built; checked the Python output only")
+    assert _native(["graph", files["hexes"], native_out, "--kind", kind])[0] == 0
+    with open(py_out, "rb") as a, open(native_out, "rb") as b:
+        assert a.read() == b.read()
 
 
 def test_json_is_strict_even_with_nan(files, capsys):

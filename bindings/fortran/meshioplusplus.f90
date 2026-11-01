@@ -1984,6 +1984,8 @@ module meshioplusplus
         procedure :: edit_regions => mesh_edit_regions
         procedure :: remove_region => mesh_remove_region
         procedure :: match_periodic_nodes => mesh_match_periodic_nodes
+        procedure :: adjacency => mesh_adjacency
+        procedure :: write_graph => mesh_write_graph
         procedure :: check_quality => mesh_check_quality
         procedure :: repair => mesh_repair
         procedure :: sobolev_deform => mesh_sobolev_deform
@@ -3467,6 +3469,41 @@ module meshioplusplus
             import :: c_ptr
             type(c_ptr), value :: p
         end subroutine
+
+        function c_mio_adjacency_create(h, kind) bind(c, name="mio_adjacency_create") result(r)
+            import :: c_ptr, c_char
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: kind
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_adjacency_indptr(g, count) bind(c, name="mio_adjacency_indptr") result(r)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: g
+            integer(c_int64_t), intent(out) :: count
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_adjacency_indices(g, count) bind(c, name="mio_adjacency_indices") result(r)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: g
+            integer(c_int64_t), intent(out) :: count
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_adjacency_free(g) bind(c, name="mio_adjacency_free")
+            import :: c_ptr
+            type(c_ptr), value :: g
+        end subroutine
+
+        function c_mio_write_graph(h, kind, path, format, num_vertices, num_edges, max_degree) &
+                bind(c, name="mio_write_graph") result(s)
+            import :: c_ptr, c_char, c_int, c_int64_t
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: kind, path, format
+            integer(c_int64_t), intent(out) :: num_vertices, num_edges, max_degree
+            integer(c_int) :: s
+        end function
 
         function c_mio_check_quality(h, spec, max_inverted, max_degenerate, report, summary, &
                                      summary_len) bind(c, name="mio_check_quality") result(r)
@@ -8982,6 +9019,72 @@ contains
         if (present(max_residual)) max_residual = real(res, real64)
         call c_mio_periodic_pairs_free(pairs)
         call clear_status(stat, errmsg)
+    end subroutine
+
+    !> The mesh's graph in compressed-sparse-row form, **1-based** (METIS's
+    !> Fortran numbering): the neighbours of vertex `i` are
+    !> `indices(indptr(i):indptr(i + 1) - 1)`, ascending. `kind` is "node"
+    !> (the default: nodes joined by a cell edge), "clique" (nodes sharing a
+    !> cell: the FEM sparsity pattern) or "cell" (cells sharing a facet,
+    !> numbered block-major). See doc/adjacency.md.
+    subroutine mesh_adjacency(self, indptr, indices, kind, stat, errmsg)
+        class(mio_mesh), intent(in) :: self
+        integer(int64), allocatable, intent(out) :: indptr(:), indices(:)
+        character(*), intent(in), optional :: kind
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(c_ptr) :: g, p
+        integer(c_int64_t) :: n
+        integer(c_int64_t), pointer :: ids(:)
+        character(:), allocatable :: k
+
+        k = 'node'
+        if (present(kind)) k = kind
+        g = c_mio_adjacency_create(self%handle, c_str(k))
+        if (.not. c_associated(g)) then
+            allocate (indptr(0), indices(0))
+            call handle_failure('adjacency', mio_error_message(), stat, errmsg)
+            return
+        end if
+        p = c_mio_adjacency_indptr(g, n)
+        allocate (indptr(n))
+        if (n > 0) then
+            call c_f_pointer(p, ids, [n])
+            indptr = int(ids, int64) + 1_int64
+        end if
+        p = c_mio_adjacency_indices(g, n)
+        allocate (indices(n))
+        if (n > 0) then
+            call c_f_pointer(p, ids, [n])
+            indices = int(ids, int64) + 1_int64
+        end if
+        call c_mio_adjacency_free(g)
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    !> Write the mesh's `kind` graph (see `adjacency`) to `path` as a METIS
+    !> ("metis": .graph) or Scotch ("scotch": .grf) graph file; `file_format`
+    !> defaults to the extension's. See doc/adjacency.md.
+    subroutine mesh_write_graph(self, path, kind, file_format, num_vertices, num_edges, &
+                                max_degree, stat, errmsg)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: path
+        character(*), intent(in), optional :: kind, file_format
+        integer(int64), intent(out), optional :: num_vertices, num_edges, max_degree
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(c_int64_t) :: nv, ne, md
+        character(:), allocatable :: k, f
+
+        k = 'node'
+        if (present(kind)) k = kind
+        f = ''
+        if (present(file_format)) f = file_format
+        call handle_status(c_mio_write_graph(self%handle, c_str(k), c_str(path), c_str(f), &
+                                             nv, ne, md), 'write_graph', stat, errmsg)
+        if (present(num_vertices)) num_vertices = int(nv, int64)
+        if (present(num_edges)) num_edges = int(ne, int64)
+        if (present(max_degree)) max_degree = int(md, int64)
     end subroutine
 
     !> Quality gate: score the cells and test `spec` thresholds

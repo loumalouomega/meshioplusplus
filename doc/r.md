@@ -274,6 +274,7 @@ Colours are numbers `0xRRGGBBAA` (`mio_rgba(r, g, b, a)`) or `c(r, g, b[, a])`; 
 - `mio_hausdorff_distance(a, b, face_samples = 0, region_a = "", region_b = "")` — a list of `distance`, the one-sided maxima with means and RMS, the sample counts and the worst points. See [Hausdorff distance](/hausdorff).
 - `mio_edit_regions(mesh, op, inputs, output = "", kind = NULL, dim = NULL, tag = NULL, keep_inputs = TRUE)` and `mio_remove_region(mesh, index)` (1-based). See [editing regions](/regions#editing-regions).
 - `mio_match_periodic_nodes(mesh, slave, master, matrix = NULL, translate = NULL, atol = 1e-8, require_complete = TRUE)` — a list of 1-based `slave` / `master` ids, `unmatched`, `num_fixed` and `max_residual`; `matrix` is an R 4x4 (`M %*% c(p, 1)`). See [periodic node pairs](/periodic).
+- `mio_adjacency(mesh, kind = "node")` — a list of **1-based** `indptr` and `indices`, the node (`"node"`), FEM-sparsity (`"clique"`) or facet-sharing cell (`"cell"`) graph in CSR form; `mio_write_graph(mesh, path, kind = "node", format = NULL)` writes it as a METIS `.graph` or Scotch `.grf` file and returns `num_vertices`, `num_edges` and `max_degree`. See [adjacency graphs](/adjacency).
 
 ## v10.9.0 additions
 

@@ -30,6 +30,7 @@ from . import (
     _find_intersections,
     _fit_primitives,
     _generate,
+    _graph,
     _grid_transfer,
     _guard,
     _hausdorff,
@@ -275,6 +276,13 @@ def main(argv=None):
     )
     _hausdorff.add_args(parser)
     parser.set_defaults(func=_hausdorff.hausdorff_cmd)
+
+    parser = subparsers.add_parser(
+        "graph",
+        help="Write a mesh's node or cell graph as a METIS or Scotch graph file",
+    )
+    _graph.add_args(parser)
+    parser.set_defaults(func=_graph.graph_cmd)
 
     parser = subparsers.add_parser(
         "periodic",

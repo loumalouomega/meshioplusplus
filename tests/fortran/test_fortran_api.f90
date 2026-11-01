@@ -2789,6 +2789,8 @@ contains
         logical :: cad_valid, used_native
         character(:), allocatable :: msg
         integer(int64), allocatable :: s_ids(:), m_ids(:)
+        integer(int64), allocatable :: g_ptr(:), g_idx(:)
+        integer(int64) :: g_nv, g_ne, g_md
         integer :: ierr
         real(real64) :: cube_points(3, 8), d, ab
         logical :: passed
@@ -2979,6 +2981,23 @@ contains
         call sq%match_periodic_nodes('bottom', 'top', s_ids, m_ids, &
                                      translate=[0.0_real64, 0.0_real64, 0.5_real64], stat=ierr)
         call check(ierr /= 0, 'an incomplete periodic match fails')
+
+        ! Adjacency: the cube's 12 edges, 1-based CSR; its 6 faces each meet 4.
+        call sq%adjacency(g_ptr, g_idx, stat=ierr)
+        call check(ierr == 0, 'adjacency succeeded')
+        call check(size(g_ptr) == 9, 'node graph has 8 + 1 offsets')
+        call check(g_ptr(1) == 1_int64 .and. g_ptr(9) == 25_int64, 'node graph is 1-based, 24 entries')
+        call check(minval(g_idx) == 1_int64 .and. maxval(g_idx) == 8_int64, 'neighbours are 1-based')
+        call sq%adjacency(g_ptr, g_idx, kind='cell', stat=ierr)
+        call check(ierr == 0 .and. size(g_idx) == 24, 'every face of the cube meets four')
+        call sq%adjacency(g_ptr, g_idx, kind='edge', stat=ierr)
+        call check(ierr /= 0, 'adjacency rejects an unknown kind')
+        call sq%write_graph('fortran_cube.graph', num_vertices=g_nv, num_edges=g_ne, &
+                            max_degree=g_md, stat=ierr)
+        call check(ierr == 0 .and. g_nv == 8 .and. g_ne == 12 .and. g_md == 3, &
+                   'write_graph writes the cube''s 12 edges')
+        call sq%write_graph('fortran_cube.txt', stat=ierr)
+        call check(ierr /= 0, 'write_graph needs a known extension or a format')
 
         ! Quality gate: a unit cube of squares passes aspect_ratio <= 1.5.
         passed = sq%check_quality('aspect_ratio <= 1.5', num_checks=nchecks, summary=text, &

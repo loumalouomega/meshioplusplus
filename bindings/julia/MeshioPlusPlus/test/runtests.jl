@@ -2032,6 +2032,19 @@ end
     @test p.num_fixed == 0
     @test_throws MeshioError match_periodic_nodes(cube, "bottom", "top"; translate=(0, 0, 0.5))
 
+    # A triangulated cube surface: 12 edges and 6 face diagonals, 1-based CSR.
+    g = adjacency(cube)
+    @test length(g.indptr) == 9
+    @test g.indptr[1] == 1 && g.indptr[end] == 2 * 18 + 1
+    @test extrema(g.indices) == (1, 8)
+    @test length(adjacency(cube; kind="cell").indptr) == 12 + 1
+    @test_throws MeshioError adjacency(cube; kind="edge")
+    gpath = joinpath(mktempdir(), "cube.graph")
+    gs = write_graph(gpath, cube)
+    @test (gs.num_vertices, gs.num_edges) == (8, 18)
+    @test startswith(read(gpath, String), "8 18\n")
+    @test_throws MeshioError write_graph(joinpath(mktempdir(), "cube.txt"), cube)
+
     q = check_quality(cube; require="min_angle >= 30")
     @test q.passed
     @test q.num_checks == 3

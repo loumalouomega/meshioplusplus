@@ -135,6 +135,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/select.hpp"
+#include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/tet_poly.hpp"
 
 namespace {
@@ -706,6 +707,14 @@ static_assert(sizeof(meshioplusplus::InterfaceMode) == 4 &&
 MIO_ABI_LAYOUT(meshioplusplus::TetToPolyOptions, 16, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SelectOptions, 352, 8);
 MIO_ABI_LAYOUT(meshioplusplus::PolyToTetOptions, 1, 1);
+
+// The adjacency operation is additive: GraphSummary is returned by value from
+// the exported write_graph()/graph_summary(), and Adjacency holds two NDArrays.
+MIO_ABI_LAYOUT(meshioplusplus::GraphSummary, 24, 8);
+MIO_ABI_LAYOUT(meshioplusplus::Adjacency, 144, 8);
+static_assert(sizeof(meshioplusplus::AdjacencyKind) == 4 &&
+                  sizeof(meshioplusplus::GraphFormat) == 4,
+              "meshio++ ABI: adjacency enum underlying width changed (Tier A, doc/abi.md)");
 
 // --- The mesh itself, which IS the backend ----------------------------------
 // Each backend gets its own line because Mesh is a different type per backend;

@@ -1087,7 +1087,6 @@ def roadmap_map():
         (
             "§7 new capabilities",
             [
-                ("apply_operations · adjacency", "S"),
                 ("compressed and remote input", "S"),
                 ("geodesics · eigenmodes · UVs", "M"),
                 ("morphing · untangling · metrics", "M"),

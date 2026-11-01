@@ -364,6 +364,8 @@ export class MeshioPlusPlusLoadError extends Error {
  *   findInterface: (meshA: Mesh, regionA: string | object, regionB: string | object, options?: {meshB?: Mesh, mode?: 'conforming'|'proximity', master?: 'a'|'b', gapTolerance?: number, angleTolerance?: number, overlapTolerance?: number}) => {mesh: Mesh, report: object},
  *   contactPairs: (slaveMesh: Mesh, slavePoints: string | object, masterCells: string | object, options?: {masterMesh?: Mesh, tolerance?: number, requireComplete?: boolean}) => object,
  *   splitInterface: (mesh: Mesh, side: string | object, options?: {addCohesive?: boolean}) => {mesh: Mesh, report: object},
+ *   adjacency: (mesh: Mesh, kind?: 'node'|'clique'|'cell') => {indptr: Int32Array, indices: Int32Array},
+ *   writeGraph: (mesh: Mesh, path: string, kind?: 'node'|'clique'|'cell', format?: 'metis'|'scotch') => {format: string, numVertices: number, numEdges: number, maxDegree: number},
  *   matchPeriodicNodes: (mesh: Mesh, slave: string | {name: string, kind?: string, dim?: number, tag?: number}, master: string | {name: string, kind?: string, dim?: number, tag?: number}, matrix: ArrayLike<number>, atol?: number, requireComplete?: boolean) => {slave: Int32Array, master: Int32Array, unmatched: Int32Array, numFixed: number, maxResidual: number},
  *   repair: (mesh: Mesh, fixOrientation?: boolean, orientOutward?: boolean, fillHoles?: boolean, splitNonManifold?: boolean, maxHoleEdges?: number, weldTolerance?: number, recordProvenance?: boolean) => {mesh: Mesh, qualityBefore: object, qualityAfter: object, numFlipped: number, numComponents: number, largestComponent: number, numOrientedOutward: number, numUnorientable: number, numVerticesSplit: number, numHolesDetected: number, numHolesFilled: number, numHolesSkipped: number, numFacesAdded: number, numPointsAdded: number, pointsWelded: number},
  *   shrinkwrap: (mesh: Mesh, target: Mesh, offset?: number, maxDistance?: number, weights?: string, targetRegion?: string, normalWeight?: string, recordDistance?: boolean, recordClosestCell?: boolean) => {mesh: Mesh, quality: object, numProjected: number, numMissed: number, numSkipped: number, maxDisplacement: number},
@@ -1219,6 +1221,9 @@ export async function loadMeshioPlusPlus(
         contactPairs: (slaveMesh, slavePoints, masterCells, options = {}) =>
             Module.contactPairs(slaveMesh, slavePoints, masterCells, options),
         splitInterface: (mesh, side, options = {}) => Module.splitInterface(mesh, side, options),
+        adjacency: (mesh, kind = 'node') => Module.adjacency(mesh, kind),
+        writeGraph: (mesh, path, kind = 'node', format = '') =>
+            Module.writeGraph(mesh, path, kind, format ?? ''),
         matchPeriodicNodes: (mesh, slave, master, matrix, atol = 1e-8, requireComplete = true) =>
             Module.matchPeriodicNodes(mesh, slave, master, Array.from(matrix), atol,
                 requireComplete),

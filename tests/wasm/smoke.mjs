@@ -5720,6 +5720,21 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.throws(() => m.matchPeriodicNodes(tagged, 'bottom', 'top', shift));
 });
 
+step('adjacency and writeGraph', () => {
+    const g = m.adjacency(cubeSurface);
+    assert.equal(g.indptr.length, 9);
+    assert.equal(g.indptr[8], 2 * 18); // 12 edges + 6 face diagonals
+    assert.equal(m.adjacency(cubeSurface, 'cell').indptr.length, 12 + 1);
+    assert.throws(() => m.adjacency(cubeSurface, 'edge'));
+    const s = m.writeGraph(cubeSurface, '/cube.graph');
+    assert.equal(s.format, 'metis');
+    assert.equal(s.numEdges, 18);
+    const text = new TextDecoder().decode(m.FS.readFile('/cube.graph'));
+    assert.ok(text.startsWith('8 18\n'));
+    assert.equal(m.writeGraph(cubeSurface, '/cube.grf').format, 'scotch');
+    assert.throws(() => m.writeGraph(cubeSurface, '/cube.txt'));
+});
+
 step('tessellate: curved tetra10 + quad9, pass-through line', () => {
     // A straight-sided tetra10 (points 0-9), a slightly bowed quad9
     // (points 10-18) and a pass-through line. levels 2 is 2^2 = 4 divisions per

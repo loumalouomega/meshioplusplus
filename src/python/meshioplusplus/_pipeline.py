@@ -3390,6 +3390,40 @@ def _fanout(mesh, step, pattern, out, inp, steps_spec):
     return {"op": step["Op"], "NumPieces": float(len(pieces))}
 
 
+def _run_steps(mesh, steps_spec, version, model, steps, warnings):
+    """Apply validated, non-fan-out steps in order, carrying ``model`` (the
+    CAD model a model step meshes) through the chain; appends each step's
+    report entry to ``steps``. Shared by ``run_pipeline`` and
+    ``apply_operations``, so the two cannot drift."""
+    for i, step in enumerate(steps_spec):
+        if step["Op"] in _MODEL_OPS:
+            mesh = _apply_model_step(step, model, steps, warnings)
+            continue
+        if step["Op"] == "ProjectToCad":
+            # Projected onto it, the mesh matches the model again: it stays.
+            entry = {"op": "ProjectToCad"}
+            mesh = _project_to_cad_step(mesh, step, entry, model)
+            steps.append(entry)
+            _prov_add_operation(_render_op(step))
+            continue
+        mesh = (_apply_v2 if version == 2 else _apply_step)(mesh, step, steps, warnings)
+        if step["Op"] == "FitCad":
+            # The fitted solid is the model the rest of the run carries, when
+            # the backend gave one (the native legacy mode gives none).
+            brep = (getattr(mesh, "info", None) or {}).get("brep")
+            if brep is not None and len(brep.get("faces", ())):
+                model.set("brep", brep)
+            else:
+                model.drop(
+                    "'FitCad' gave no B-rep (its native legacy freeform mode fits none)"
+                )
+        elif model.has():
+            model.drop(
+                f"step {i + 1} '{step['Op']}' changed the mesh, which drops the model"
+            )
+    return mesh
+
+
 def run_pipeline(settings, input_path=None, output_path=None):
     """Run a whole settings pipeline: read ``Input.Path``, apply
     ``Operations`` in order, write ``Output.Path``.
@@ -3552,35 +3586,11 @@ def run_pipeline(settings, input_path=None, output_path=None):
             model.set("brep", info.get("brep"))
 
     steps = []
-    for i, step in enumerate(steps_spec):
-        if fanout and i + 1 == len(steps_spec):
-            steps.append(_fanout(mesh, step, out_path, out, in_path, steps_spec))
-            return {"steps": steps, "warnings": warnings}
-        if step["Op"] in _MODEL_OPS:
-            mesh = _apply_model_step(step, model, steps, warnings)
-            continue
-        if step["Op"] == "ProjectToCad":
-            # Projected onto it, the mesh matches the model again: it stays.
-            entry = {"op": "ProjectToCad"}
-            mesh = _project_to_cad_step(mesh, step, entry, model)
-            steps.append(entry)
-            _prov_add_operation(_render_op(step))
-            continue
-        mesh = (_apply_v2 if version == 2 else _apply_step)(mesh, step, steps, warnings)
-        if step["Op"] == "FitCad":
-            # The fitted solid is the model the rest of the run carries, when
-            # the backend gave one (the native legacy mode gives none).
-            brep = (getattr(mesh, "info", None) or {}).get("brep")
-            if brep is not None and len(brep.get("faces", ())):
-                model.set("brep", brep)
-            else:
-                model.drop(
-                    "'FitCad' gave no B-rep (its native legacy freeform mode fits none)"
-                )
-        elif model.has():
-            model.drop(
-                f"step {i + 1} '{step['Op']}' changed the mesh, which drops the model"
-            )
+    if fanout:
+        mesh = _run_steps(mesh, steps_spec[:-1], version, model, steps, warnings)
+        steps.append(_fanout(mesh, steps_spec[-1], out_path, out, in_path, steps_spec))
+        return {"steps": steps, "warnings": warnings}
+    mesh = _run_steps(mesh, steps_spec, version, model, steps, warnings)
 
     out_fmt = out.get("Format") or _write_format_for_path(pathlib.Path(str(out_path)))
     out_encoding = out.get("Encoding", "default")
@@ -3593,3 +3603,111 @@ def run_pipeline(settings, input_path=None, output_path=None):
 
     write(out_path, mesh, file_format=out.get("Format") or None, **write_kwargs)
     return {"steps": steps, "warnings": warnings}
+
+
+def _model_from_info(mesh):
+    """The CAD model an in-memory mesh carries in ``mesh.info`` -- the
+    ``brep`` a CAD JSON/STEP/IGES read or ``fit_cad`` leaves, or an MFEM read's
+    ``nurbs`` patches -- as the model a whole run would carry from its Input."""
+    info = getattr(mesh, "info", None) or {}
+    model = _Model(
+        "the mesh carries none in mesh.info (read CAD JSON, STEP, IGES or an "
+        "MFEM NURBS mesh, or fit one with fit_cad)"
+    )
+    brep = info.get("brep")
+    nurbs = info.get("nurbs")
+    if brep is not None and len(brep.get("faces", ())):
+        model.set("brep", brep)
+    elif nurbs is not None and len(nurbs.get("patches", ())):
+        model.set("nurbs", nurbs)
+    return model
+
+
+def _resolve_operations(operations, version):
+    """``operations`` as ``(steps, version)``: a list of step dicts, the JSON
+    text of one, or a settings document (its ``Operations``, and its
+    ``Version`` when present)."""
+    if isinstance(operations, (str, bytes)):
+        operations = json.loads(operations)
+    if isinstance(operations, dict):
+        _check_keys(
+            operations,
+            "the settings document",
+            ("Version", "Input", "Operations", "Output"),
+        )
+        version = operations.get("Version", version)
+        operations = operations.get("Operations", [])
+    if isinstance(operations, tuple):
+        operations = list(operations)
+    if not isinstance(operations, list):
+        raise ValueError(
+            "meshio++: pipeline: operations must be a list of steps, its JSON "
+            "text or a settings document"
+        )
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or version not in (1, 2)
+    ):
+        raise ValueError(
+            f"meshio++: pipeline: unsupported Version {version!r} (this build knows 1 and 2)"
+        )
+    return operations, version
+
+
+def apply_operations(mesh, operations, *, version=1):
+    """Apply pipeline steps to a mesh in memory: ``run_pipeline`` without the
+    Input read and the Output write.
+
+    :param mesh: the mesh to start from; ``None`` when the first step is
+        ``Generate``. It is never modified.
+    :param operations: the steps -- a list of ``{"Op": ..., <keys>}`` dicts in
+        the settings vocabulary (``doc/pipeline.md``), the JSON text of such a
+        list, or a whole settings document, whose ``Operations`` (and
+        ``Version``) are used and whose ``Input``/``Output`` are ignored.
+    :param version: the schema version, 1 or 2 (a document's ``Version`` wins).
+        Version 2's ``Merge``, ``Interpolate`` and ``UndoGreen`` read their
+        ``Inputs`` paths; the mesh itself never touches a file.
+    :returns: ``(mesh, report)``, the report shaped as ``run_pipeline``'s:
+        ``{"steps": [{"op", ...counters}], "warnings": [...]}``.
+    :raises ValueError: on any schema error, before any step runs; for
+        ``Split`` and a fanned-out ``Partition`` (``RecordIds``/``GhostLayers``),
+        which write several files and need ``run_pipeline``; and for a model
+        step (``MeshCadSurface``, ``IgaSample``, ``IgaRefine``) when
+        ``mesh.info`` carries no CAD model.
+    """
+    from ._plugins import load_plugins
+
+    load_plugins()
+    steps_spec, version = _resolve_operations(operations, version)
+    for step in steps_spec:
+        _validate_step(step, version)
+        op = step["Op"]
+        if op == "Split" or (
+            op == "Partition" and ("RecordIds" in step or "GhostLayers" in step)
+        ):
+            raise _err(
+                op,
+                "writes one file per piece, so it needs run_pipeline's "
+                "Output.Pattern, not a step applied in memory",
+            )
+    generated = bool(steps_spec) and steps_spec[0]["Op"] == "Generate"
+    if mesh is None:
+        if not generated:
+            raise ValueError(
+                "meshio++: pipeline: a mesh is required unless the first step is Generate"
+            )
+        mesh = Mesh(np.zeros((0, 3)), [])
+    elif not isinstance(mesh, Mesh):
+        raise TypeError(
+            "meshio++: pipeline: mesh must be a meshioplusplus.Mesh or None"
+        )
+
+    model = (
+        _Model("the pipeline starts from Generate, not a CAD read")
+        if generated
+        else _model_from_info(mesh)
+    )
+    steps, warnings = [], []
+    mesh = _run_steps(mesh, steps_spec, version, model, steps, warnings)
+    return mesh, {"steps": steps, "warnings": warnings}

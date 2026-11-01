@@ -716,6 +716,39 @@ mio_match_periodic_nodes <- function(mesh, slave, master, matrix = NULL, transla
   )
 }
 
+#' Mesh graphs in compressed-sparse-row form
+#'
+#' `mio_adjacency()` returns the mesh's graph as **1-based** `indptr` and
+#' `indices` (the neighbours of vertex `i` are
+#' `indices[indptr[i]:(indptr[i + 1] - 1)]`, ascending, each undirected edge
+#' stored both ways). `kind` is `"node"` (nodes joined by a cell edge),
+#' `"clique"` (nodes sharing a cell: the FEM sparsity pattern) or `"cell"`
+#' (cells sharing a facet, numbered block-major). `mio_write_graph()` writes
+#' that graph as a METIS (`"metis"`, `.graph`) or Scotch (`"scotch"`, `.grf`)
+#' graph file; `format = NULL` infers it from the extension. See
+#' `doc/adjacency.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param kind `"node"`, `"clique"` or `"cell"`.
+#' @param path The graph file to write.
+#' @param format `"metis"`, `"scotch"` or `NULL` (from the extension).
+#' @return `mio_adjacency()` returns a list of `indptr` and `indices`;
+#'   `mio_write_graph()` returns a list of `num_vertices`, `num_edges` and
+#'   `max_degree`.
+#' @export
+mio_adjacency <- function(mesh, kind = "node") {
+  .Call(R_mio_adjacency, mesh, as.character(kind))
+}
+
+#' @rdname mio_adjacency
+#' @export
+mio_write_graph <- function(mesh, path, kind = "node", format = NULL) {
+  .Call(
+    R_mio_write_graph, mesh, path.expand(as.character(path)), as.character(kind),
+    if (is.null(format)) NULL else as.character(format)
+  )
+}
+
 # --- operations ---------------------------------------------------------------
 
 #' Mesh operations

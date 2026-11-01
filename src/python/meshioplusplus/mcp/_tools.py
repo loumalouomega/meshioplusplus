@@ -189,6 +189,7 @@ from .. import (
     uv_sphere,
     voxelize,
     write,
+    write_graph,
 )
 from .. import write_parquet as _write_parquet_fn
 from .._helpers import _filetypes_from_path, formats
@@ -3853,6 +3854,17 @@ def tool_edit_regions(
     )
 
 
+def tool_graph(
+    input_path, output_path, kind="node", input_format=None, file_format=None
+):
+    """Write the mesh's node, clique or cell graph as a METIS (.graph) or
+    Scotch (.grf) graph file; reports its size."""
+    mesh = _load(input_path, input_format)
+    written = _resolve(output_path, for_write=True)
+    report = write_graph(written, mesh, kind, file_format=file_format)
+    return _json_safe({"output_path": str(written), "kind": kind, **report})
+
+
 def tool_periodic(
     input_path,
     slave,
@@ -6732,6 +6744,10 @@ TOOL_REGISTRY = OrderedDict(
         (
             "edit_regions",
             {"fn": tool_edit_regions, "wraps": ("edit_regions",), "gated": None},
+        ),
+        (
+            "graph",
+            {"fn": tool_graph, "wraps": ("write_graph",), "gated": None},
         ),
         (
             "periodic",

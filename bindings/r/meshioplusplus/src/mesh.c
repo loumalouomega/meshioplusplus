@@ -1044,3 +1044,35 @@ SEXP R_mio_match_periodic_nodes(SEXP mesh, SEXP slave, SEXP master, SEXP matrix,
     UNPROTECT(6);
     return out;
 }
+
+SEXP R_mio_adjacency(SEXP mesh, SEXP kind) {
+    mio_adjacency *g = mio_adjacency_create(mio_r_mesh(mesh), mio_r_string(kind, "kind"));
+    if (g == NULL) mio_r_fail("adjacency");
+    int64_t cnt = 0;
+    const int64_t *pp = mio_adjacency_indptr(g, &cnt);
+    SEXP vp = PROTECT(mio_r_shift_map(pp, cnt));
+    const int64_t *pi = mio_adjacency_indices(g, &cnt);
+    SEXP vi = PROTECT(mio_r_shift_map(pi, cnt));
+    mio_adjacency_free(g);
+    const char *names[] = {"indptr", "indices"};
+    SEXP values[] = {vp, vi};
+    SEXP out = PROTECT(mio_r_named_list(2, names, values));
+    UNPROTECT(3);
+    return out;
+}
+
+SEXP R_mio_write_graph(SEXP mesh, SEXP path, SEXP kind, SEXP format) {
+    int64_t nv = 0, ne = 0, md = 0;
+    mio_r_check(mio_write_graph(mio_r_mesh(mesh), mio_r_string(kind, "kind"),
+                                mio_r_string(path, "path"), mio_r_opt_string(format), &nv, &ne,
+                                &md),
+                "write_graph");
+    SEXP a = PROTECT(Rf_ScalarReal((double)nv));
+    SEXP b = PROTECT(Rf_ScalarReal((double)ne));
+    SEXP c = PROTECT(Rf_ScalarReal((double)md));
+    const char *names[] = {"num_vertices", "num_edges", "max_degree"};
+    SEXP values[] = {a, b, c};
+    SEXP out = PROTECT(mio_r_named_list(3, names, values));
+    UNPROTECT(4);
+    return out;
+}

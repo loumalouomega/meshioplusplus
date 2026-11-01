@@ -157,6 +157,7 @@
 #include "meshioplusplus/operations/sobolev_deform.hpp"
 #include "meshioplusplus/operations/crop.hpp"
 #include "meshioplusplus/operations/data_average.hpp"
+#include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/decimate_volume.hpp"
 #include "meshioplusplus/operations/data_calc.hpp"
@@ -5952,6 +5953,47 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("slave"), py::arg("master"), py::arg("matrix"),
         py::arg("atol") = 1e-8, py::arg("require_complete") = true);
+
+    // The node / clique / cell graph in CSR form, and the METIS / Scotch
+    // graph files written from one. See operations/adjacency.hpp.
+    m.def(
+        "adjacency",
+        [](py::object pymesh, const std::string& kind) {
+            const meshioplusplus::AdjacencyKind k = meshioplusplus::adjacency_kind_from_name(kind);
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus::Adjacency g =
+                core_nogil([&] { return meshioplusplus::adjacency(cpp, k); });
+            return py::make_tuple(meshioplusplus_py::numpy_from_ndarray(std::move(g.mIndptr)),
+                                  meshioplusplus_py::numpy_from_ndarray(std::move(g.mIndices)));
+        },
+        py::arg("mesh"), py::arg("kind") = "node");
+    m.def(
+        "write_graph",
+        [](const std::string& path,
+           py::array_t<std::int64_t, py::array::c_style | py::array::forcecast> indptr,
+           py::array_t<std::int64_t, py::array::c_style | py::array::forcecast> indices,
+           const std::string& format) {
+            const meshioplusplus::GraphFormat f =
+                format.empty() ? meshioplusplus::graph_format_for_path(path)
+                               : meshioplusplus::graph_format_from_name(format);
+            if (indptr.ndim() != 1 || indices.ndim() != 1)
+                throw std::invalid_argument(
+                    "meshio++: write_graph: indptr and indices must be 1-D arrays");
+            meshioplusplus::Adjacency g;
+            g.mIndptr = meshioplusplus_py::view_from_numpy(indptr);
+            g.mIndices = meshioplusplus_py::view_from_numpy(indices);
+            const meshioplusplus::GraphSummary s =
+                core_nogil([&] { return meshioplusplus::write_graph(path, g, f); });
+            py::dict out;
+            out["format"] = f == meshioplusplus::GraphFormat::Metis ? "metis" : "scotch";
+            out["num_vertices"] = s.mNumVertices;
+            out["num_edges"] = s.mNumEdges;
+            out["max_degree"] = s.mMaxDegree;
+            return out;
+        },
+        py::arg("path"), py::arg("indptr"), py::arg("indices"), py::arg("format") = "");
 
     // Surface repair: orientation, holes, bowties. {mesh, point_map, cell_maps,
     // counters, quality_before, quality_after}. See operations/repair.hpp.

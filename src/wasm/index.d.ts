@@ -3969,6 +3969,32 @@ export interface MeshioPlusPlusModule {
   ): { mesh: Mesh; report: { numDuplicatedPoints: number; numCohesiveCells: number } };
 
   /**
+   * The mesh's graph in compressed-sparse-row form (0-based): the neighbours
+   * of vertex `i` are `indices[indptr[i] .. indptr[i + 1])`, ascending, each
+   * undirected edge stored both ways. `kind` is `'node'` (nodes joined by a
+   * cell edge, the default), `'clique'` (nodes sharing a cell: the FEM
+   * sparsity pattern) or `'cell'` (cells sharing a facet, numbered
+   * block-major). See doc/adjacency.md.
+   * @throws {Error} on an unknown kind, or past 2^31 entries.
+   */
+  adjacency(
+    mesh: Mesh,
+    kind?: 'node' | 'clique' | 'cell',
+  ): { indptr: Int32Array; indices: Int32Array };
+
+  /**
+   * Writes the mesh's `kind` graph to `path` (in `FS`) as a METIS
+   * (`'metis'`, `.graph`) or Scotch (`'scotch'`, `.grf`) graph file; the
+   * format defaults to the extension's. See doc/adjacency.md.
+   */
+  writeGraph(
+    mesh: Mesh,
+    path: string,
+    kind?: 'node' | 'clique' | 'cell',
+    format?: 'metis' | 'scotch',
+  ): { format: string; numVertices: number; numEdges: number; maxDegree: number };
+
+  /**
    * The master node each node of the `slave` region maps onto under the
    * row-major 4x4 affine `matrix` (16 numbers), within `atol`. `slave` is
    * ascending and `master` aligned with it (0-based point ids). See

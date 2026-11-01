@@ -164,12 +164,35 @@ The engine is `operations/pipeline.{hpp,cpp}` in the C++ core, split in two laye
 | --- | --- |
 | both CLIs | `pipeline SETTINGS.json [--input P] [--output P] [--json] [--quiet]` |
 | Python | `run_pipeline(settings, input_path=None, output_path=None)` — settings = dict \| JSON text \| path |
+| Python, in memory | `apply_operations(mesh, operations, *, version=1)` → `(mesh, report)` — [below](#in-memory-apply-operations) |
 | C | `mio_pipeline_run_file(path)`, `mio_pipeline_run_json(text)`, `mio_pipeline_has_json()` |
 | Fortran | `mio_pipeline_run_file(path [, stat, errmsg])`, `mio_pipeline_run_json(...)`, `mio_pipeline_has_json()` |
 | Julia | `run_pipeline_file(path)`, `run_pipeline_json(text)`, `pipeline_has_json()` |
 | R | `mio_pipeline_run_file(path)`, `mio_pipeline_run_json(text)`, `mio_pipeline_has_json()` |
 | WASM | `runPipeline(settings)` — object \| JSON text \| MEMFS `.json` path (no nlohmann in the wasm build; `JSON.parse` does the text forms) |
 | MCP | tool `pipeline(settings_path, input_path?, output_path?)` — the sandbox covers the paths *inside* the document too |
+
+### In memory: `apply_operations`
+
+`apply_operations(mesh, operations)` applies the steps to a mesh already in memory and returns `(mesh, report)`, the report shaped as `run_pipeline`'s: the same vocabulary, the same strict validation of every step before any runs, the same counters and warnings, without the Input read and the Output write. It gives a notebook, the [Blender add-on](blender.md) or a ParaView filter the whole pipeline without a file.
+
+```python
+import meshioplusplus as mp
+
+mesh = mp.read("part.vtu")
+out, report = mp.apply_operations(mesh, [
+    {"Op": "Refine"},
+    {"Op": "Smooth", "Iterations": 5},
+    {"Op": "Quality"},
+])
+report["steps"][0]          # {"op": "Refine", ...counters}
+
+mesh, _ = mp.apply_operations(None, [{"Op": "Generate", "Shape": "box", "Dims": [4, 4, 4]}])
+```
+
+`operations` is a list of step objects, the JSON text of one, or a whole settings document, whose `Operations` (and `Version`) are used and whose `Input` and `Output` are ignored; `version` selects the schema otherwise. The input mesh is never modified, and `None` is accepted when the first step is `Generate`. Python's `run_pipeline` and `apply_operations` share one step loop, so a chain gives the same mesh and report through either.
+
+Three things need the file run and raise naming `run_pipeline`: `Split` and a `Partition` with `RecordIds` or `GhostLayers`, which write one file per piece. A model step (`MeshCadSurface`, `IgaSample`, `IgaRefine`) meshes the CAD model the mesh carries in `mesh.info` — the `brep` a CAD JSON, STEP or IGES read or `fit_cad` leaves, or an MFEM read's `nurbs` patches — and raises naming `mesh.info` when there is none; as in a file run, a step that changes the mesh drops the model. Version 2's `Merge`, `Interpolate` and `UndoGreen` still read their `Inputs` paths. `apply_operations` is Python-only, and the MCP server lists it among the in-memory APIs it does not wrap: its `pipeline` tool is the file form.
 
 ### Structured reports on the flat ABI
 

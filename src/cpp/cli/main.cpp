@@ -134,6 +134,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/normals.hpp"
+#include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
@@ -449,6 +450,7 @@ void print_usage(std::ostream& os) {
           "  split-interface        Split point fans along a Side region\n"
           "  hausdorff               Hausdorff distance between two surfaces\n"
           "                            (--max D: nonzero exit when it is exceeded)\n"
+          "  graph                   Write a mesh's node or cell graph as a METIS or Scotch file\n"
           "  periodic                Match the nodes of two regions a transform maps together\n"
           "  repair                  Fix a surface's orientation, holes and bowties\n"
           "  shrinkwrap              Project a mesh's points onto a target surface\n"
@@ -3845,6 +3847,44 @@ std::vector<double> cli_numbers(const std::string& rText, std::size_t Count, con
                                  std::to_string(Count) + " numbers, got " +
                                  std::to_string(out.size()));
     return out;
+}
+
+// graph: the node / clique / cell graph as a METIS or Scotch graph file. See
+// operations/adjacency.hpp and doc/adjacency.md.
+int cmd_graph(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"kind", {}, true},
+                                  {"format", {}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("graph requires INFILE OUTFILE");
+    const std::string kind = has_opt(p, "kind") ? opt_value(p, "kind") : "node";
+    const meshioplusplus::AdjacencyKind k = meshioplusplus::adjacency_kind_from_name(kind);
+    const std::string& out_path = p.positionals[1];
+    const meshioplusplus::GraphFormat f =
+        has_opt(p, "format") ? meshioplusplus::graph_format_from_name(opt_value(p, "format"))
+                             : meshioplusplus::graph_format_for_path(out_path);
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    const meshioplusplus::GraphSummary s =
+        meshioplusplus::write_graph(out_path, meshioplusplus::adjacency(mesh, k), f);
+    const char* format_name = f == meshioplusplus::GraphFormat::Metis ? "metis" : "scotch";
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", out_path);
+        json.Field("kind", kind);
+        json.Field("format", std::string(format_name));
+        json.Field("num_vertices", s.mNumVertices);
+        json.Field("num_edges", s.mNumEdges);
+        json.Field("max_degree", s.mMaxDegree);
+        json.EndObject();
+        return 0;
+    }
+    std::cout << kind << " graph -> " << out_path << " (" << format_name << "): " << s.mNumVertices
+              << " vertices, " << s.mNumEdges << " edges, max degree " << s.mMaxDegree << "\n";
+    return 0;
 }
 
 int cmd_periodic(const std::vector<std::string>& rArgs) {
@@ -8570,6 +8610,8 @@ int main(int argc, char** argv) {
             return cmd_split_interface(rest);
         if (cmd == "hausdorff")
             return cmd_hausdorff(rest);
+        if (cmd == "graph")
+            return cmd_graph(rest);
         if (cmd == "periodic")
             return cmd_periodic(rest);
         if (cmd == "extract-surface" || cmd == "surface")

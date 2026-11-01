@@ -429,3 +429,49 @@ function match_periodic_nodes(m::Mesh, slave::AbstractString, master::AbstractSt
         ccall(_sym(:mio_periodic_pairs_free), Cvoid, (Ptr{Cvoid},), handle)
     end
 end
+
+"""
+    adjacency(mesh; kind="node") -> (; indptr, indices)
+
+The mesh's graph in compressed-sparse-row form, **1-based** (the layout of a
+`SparseMatrixCSC`'s `colptr`/`rowval`): the neighbours of vertex `i` are
+`indices[indptr[i]:indptr[i + 1] - 1]`, ascending, each undirected edge stored
+both ways. `kind` is `"node"` (nodes joined by a cell edge), `"clique"` (nodes
+sharing a cell: the FEM sparsity pattern) or `"cell"` (cells sharing a facet,
+numbered block-major). See `doc/adjacency.md`.
+"""
+function adjacency(m::Mesh; kind::AbstractString="node")
+    handle = ccall(_sym(:mio_adjacency_create), Ptr{Cvoid}, (Ptr{Cvoid}, Cstring),
+                   _handle(m), String(kind))
+    _check_ptr(handle)
+    try
+        take(sym) = begin
+            cnt = Ref{Int64}(0)
+            p = ccall(_sym(sym), Ptr{Int64}, (Ptr{Cvoid}, Ptr{Int64}), handle, cnt)
+            cnt[] == 0 && return Int64[]
+            p == C_NULL && _throw_status(MIO_ERR_INTERNAL)
+            unsafe_wrap(Array, p, (Int(cnt[]),); own=false) .+ 1
+        end
+        (indptr=take(:mio_adjacency_indptr), indices=take(:mio_adjacency_indices))
+    finally
+        ccall(_sym(:mio_adjacency_free), Cvoid, (Ptr{Cvoid},), handle)
+    end
+end
+
+"""
+    write_graph(path, mesh; kind="node", format=nothing)
+        -> (; num_vertices, num_edges, max_degree)
+
+Write the mesh's `kind` graph (see [`adjacency`](@ref)) as a METIS (`"metis"`,
+`.graph`) or Scotch (`"scotch"`, `.grf`) graph file; `format` defaults to the
+extension's. See `doc/adjacency.md`.
+"""
+function write_graph(path::AbstractString, m::Mesh; kind::AbstractString="node",
+                     format::Union{Nothing,AbstractString}=nothing)
+    nv, ne, md = Ref{Int64}(0), Ref{Int64}(0), Ref{Int64}(0)
+    _check(ccall(_sym(:mio_write_graph), Cint,
+                 (Ptr{Cvoid}, Cstring, Cstring, Cstring, Ptr{Int64}, Ptr{Int64}, Ptr{Int64}),
+                 _handle(m), String(kind), String(path),
+                 format === nothing ? "" : String(format), nv, ne, md))
+    (num_vertices=Int(nv[]), num_edges=Int(ne[]), max_degree=Int(md[]))
+end

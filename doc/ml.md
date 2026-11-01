@@ -27,6 +27,8 @@ ei = mio.edge_index(mesh, kind="cell")        # facet-sharing cell dual
 
 Returns a `(2, E)` C-contiguous **int64** array — rows are source and target indices, exactly what PyTorch Geometric's and DGL's `edge_index` expect.
 
+The same graphs in compressed-sparse-row form, `(indptr, indices)`, come from [`adjacency`](adjacency.md), which the C++ core builds, follows polyhedron faces and adds the `"clique"` (FEM sparsity) kind.
+
 - **`kind="node"`** (default): vertices are mesh points, edges are the unique cell edges — the same edge topology `smooth` relaxes over (the Python twin of the C++ `detail/node_adjacency.hpp` Edge kind). Ragged *and* rectangular `polygon` blocks contribute their closed rings (routed by type name — a uniform n-gon block stores rectangularly). Cell types with no known edge topology (the higher-order family, VTK-Lagrange, `custom`, `polyhedron`) contribute nothing, with one warning naming them — linearize with `convert_cells` first to keep their corners.
 - **`kind="cell"`**: vertices are cells in the **global block-major** numbering (the one regions and `partition_labels` use), edges join cells sharing a facet — faces in 3D, edges in 2D. Ragged/polyhedron blocks raise `NotImplementedError`.
 

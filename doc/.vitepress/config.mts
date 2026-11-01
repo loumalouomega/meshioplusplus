@@ -135,6 +135,7 @@ export default defineConfig({
               { text: "Merge / combine", link: "/merge" },
               { text: "Split (by criterion)", link: "/split" },
               { text: "Partitioning (N parts)", link: "/partition" },
+              { text: "Adjacency graphs (CSR, METIS, Scotch)", link: "/adjacency" },
               { text: "Cell conversion", link: "/convert_cells" },
             ],
           },

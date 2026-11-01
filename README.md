@@ -183,6 +183,7 @@ meshioplusplus hausdorff  a.stl b.stl --max 1e-3             # worst-case distan
 meshioplusplus check      part.vtu -r "scaled_jacobian >= 0.2"  # quality gate: exit 1 on failure, 2 if unchecked
 meshioplusplus regions    in.msh out.msh --union inlet=in_a,in_b --rename "Surface 3=Outlet"  # region algebra
 meshioplusplus periodic   in.msh --slave inlet --master outlet --translate 2,0,0  # periodic node pairs
+meshioplusplus graph      in.vtu part.graph --kind cell     # dual graph as a METIS file (or .grf: Scotch)
 meshioplusplus repair     in.vtu out.vtu                     # orientation, holes, bowties
 meshioplusplus shrinkwrap in.vtu scan.stl out.vtu           # project onto a target surface
 meshioplusplus sobolev-deform in.vtu out.vtu --array d --length-scale 0.5  # filter a displacement
@@ -206,7 +207,7 @@ with any of the supported formats.
 
 The same verbs are available as a **standalone C++ binary** that needs no Python: grab a ready-to-run, statically-linked build for Linux/macOS/Windows from the [GitHub Releases](https://github.com/loumalouomega/meshioplusplus/releases) page, or build it yourself with `build/configure.sh --cli --build` (or `-DMESHIOPLUSPLUS_BUILD_CLI=ON`). It links only the C++ core. Named [regions](https://loumalouomega.github.io/meshioplusplus/regions) — and so point/cell *sets* — are carried there since v8.1.0, so `info` lists them and `diff` compares them; `convert -s/-d` is still Python-only.
 
-A whole *chain* of operations can be described declaratively in one `settings.json` (`Input` → `Operations` → `Output`) and run with `meshioplusplus pipeline settings.json` — or `meshioplusplus.run_pipeline(...)` from Python, and the same engine from C/Fortran/Julia/R/WASM. See [the settings pipeline](https://loumalouomega.github.io/meshioplusplus/pipeline).
+A whole *chain* of operations can be described declaratively in one `settings.json` (`Input` → `Operations` → `Output`) and run with `meshioplusplus pipeline settings.json` — or `meshioplusplus.run_pipeline(...)` from Python, and the same engine from C/Fortran/Julia/R/WASM. `meshioplusplus.apply_operations(mesh, operations)` applies the same steps to a mesh in memory and returns `(mesh, report)`. See [the settings pipeline](https://loumalouomega.github.io/meshioplusplus/pipeline).
 
 In Python, simply do
 
@@ -630,6 +631,17 @@ quality = meshioplusplus.partition(mesh, 16, method="kahip", mode="strong")
 ```
 
 Pieces keep the input's block structure 1:1, so they recombine into the input: every cell lands in exactly one piece. `ghost_layers=N` instead grows each piece by N shared-node layers of its neighbours' cells (an MPI-style halo), tagged `partition:ghost`.
+
+#### Adjacency graphs (CSR) and METIS / Scotch files
+
+**`meshioplusplus.adjacency(mesh, kind)`** returns the mesh's graph in compressed-sparse-row form, `(indptr, indices)`: `"node"` (nodes joined by a cell edge), `"clique"` (nodes sharing a cell: the sparsity pattern of an assembled FEM matrix) or `"cell"` (cells sharing a facet: the dual graph partitioners cut), sorted, symmetric and byte-identical on every backend. **`write_graph`** writes it as a METIS `.graph` or a Scotch `.grf` file for an external partitioner. Both are on every surface — Python, C++, C, Fortran, Julia, R, WASM, both CLIs (`graph`) and MCP. See `doc/adjacency.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+indptr, indices = meshioplusplus.adjacency(mesh, "clique")   # FEM preallocation pattern
+meshioplusplus.write_graph("mesh.graph", mesh, "cell")        # gpmetis mesh.graph 16
+```
 
 #### Surface remeshing (ACVD clustering)
 

@@ -109,6 +109,7 @@ if TYPE_CHECKING:
         z88,
         zarr,
     )
+    from ._adjacency import adjacency, write_graph
     from ._agglomerate import agglomerate
     from ._blender import from_blender, has_blender, to_blender
     from ._boundary_layer import boundary_layer
@@ -210,7 +211,7 @@ if TYPE_CHECKING:
     from ._optimize_volume import optimize_volume
     from ._partition import partition, partition_labels
     from ._periodic import match_periodic_nodes
-    from ._pipeline import run_pipeline
+    from ._pipeline import apply_operations, run_pipeline
     from ._point_budget import PointBudget, select_points, subsample_points
     from ._primitives import (
         annulus,
@@ -341,6 +342,8 @@ _LAZY_ATTRS = {
     "from_blender": "_blender",
     "has_blender": "_blender",
     "to_blender": "_blender",
+    "adjacency": "_adjacency",
+    "write_graph": "_adjacency",
     "clean": "_clean",
     "conservative_interpolate": "_conservative_interpolate",
     "convert_cells": "_convert_cells",
@@ -470,6 +473,7 @@ _LAZY_ATTRS = {
     "partition_labels": "_partition",
     "match_periodic_nodes": "_periodic",
     "run_pipeline": "_pipeline",
+    "apply_operations": "_pipeline",
     "PointBudget": "_point_budget",
     "select_points": "_point_budget",
     "subsample_points": "_point_budget",
@@ -692,6 +696,8 @@ __all__ = [
     "Tessellation",
     "subdivide",
     "agglomerate",
+    "adjacency",
+    "write_graph",
     "refine",
     "undo_green",
     "decimate",
@@ -765,6 +771,7 @@ __all__ = [
     "partition",
     "partition_labels",
     "run_pipeline",
+    "apply_operations",
     "read_sequence",
     "write_sequence",
     "sequence_entries",

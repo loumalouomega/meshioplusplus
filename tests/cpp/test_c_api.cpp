@@ -6979,6 +6979,59 @@ TEST(CApi, EditRegionsAndPeriodicPairs) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, AdjacencyAndGraphFiles) {
+    mio_mesh* m = capi_cube_surface();
+    mio_adjacency* g = mio_adjacency_create(m, nullptr);  // "node"
+    ASSERT_NE(g, nullptr) << mio_last_error();
+    std::int64_t rows = 0, nnz = 0;
+    const std::int64_t* ptr = mio_adjacency_indptr(g, &rows);
+    const std::int64_t* idx = mio_adjacency_indices(g, &nnz);
+    ASSERT_EQ(rows, 9);      // 8 cube corners + 1
+    EXPECT_EQ(nnz, 2 * 18);  // 12 cube edges + 6 face diagonals
+    EXPECT_EQ(ptr[0], 0);
+    EXPECT_EQ(ptr[8], nnz);
+    EXPECT_EQ(nnz % 2, 0);
+    for (std::int64_t k = ptr[0]; k < ptr[1]; ++k)
+        EXPECT_NE(idx[k], 0);
+    mio_adjacency_free(g);
+
+    mio_adjacency* cells = mio_adjacency_create(m, "cell");
+    ASSERT_NE(cells, nullptr) << mio_last_error();
+    std::int64_t cell_rows = 0;
+    mio_adjacency_indptr(cells, &cell_rows);
+    EXPECT_EQ(cell_rows, 12 + 1);  // 12 triangles
+    mio_adjacency_free(cells);
+    mio_adjacency_free(nullptr);
+
+    EXPECT_EQ(mio_adjacency_create(m, "edge"), nullptr);
+    EXPECT_EQ(mio_adjacency_create(nullptr, "node"), nullptr);
+    EXPECT_EQ(mio_adjacency_indptr(nullptr, &rows), nullptr);
+    EXPECT_EQ(rows, 0);
+
+    const std::string path = mt::temp_path(".graph");
+    std::int64_t nv = 0, ne = 0, md = 0;
+    ASSERT_EQ(mio_write_graph(m, "node", path.c_str(), nullptr, &nv, &ne, &md), MIO_OK)
+        << mio_last_error();
+    EXPECT_EQ(nv, 8);
+    EXPECT_EQ(ne, nnz / 2);
+    EXPECT_GT(md, 0);
+    std::ifstream in(path);
+    std::int64_t header_n = 0, header_m = 0;
+    in >> header_n >> header_m;
+    EXPECT_EQ(header_n, 8);
+    EXPECT_EQ(header_m, ne);
+    in.close();
+    EXPECT_EQ(mio_write_graph(m, "node", path.c_str(), "chaco", nullptr, nullptr, nullptr),
+              MIO_ERR_INVALID_ARG);
+    const std::string unknown = mt::temp_path(".txt");
+    EXPECT_NE(mio_write_graph(m, "node", unknown.c_str(), nullptr, nullptr, nullptr, nullptr),
+              MIO_OK);
+    EXPECT_EQ(mio_write_graph(m, "node", path.c_str(), "scotch", nullptr, nullptr, nullptr),
+              MIO_OK);
+    std::filesystem::remove(path);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, CheckQualityGates) {
     mio_mesh* m = capi_cube_surface();
     mio_quality_gate_report report;
