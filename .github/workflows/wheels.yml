@@ -82,7 +82,7 @@ jobs:
           # are forced to SEQ instead - see the manylinux_2_34 comment below.
           # macOS 13.3+ is required for std::format (its floating-point
           # formatting symbols live in the OS libc++ dylib).
-          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-*"
+          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-*"
           CIBW_SKIP: "*-musllinux* *_i686 *-win32"
           CIBW_ARCHS_MACOS: "x86_64 arm64"
           # macOS: libomp gives Apple clang an OpenMP runtime (libc++ has no PSTL).
@@ -215,7 +215,7 @@ jobs:
         with:
           package-dir: packages/python/meshioplusplus-occt
         env:
-          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-*"
+          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-*"
           CIBW_SKIP: "*-musllinux* *_i686 *-win32"
           CIBW_ARCHS_MACOS: "x86_64 arm64"
           CIBW_MANYLINUX_X86_64_IMAGE: "quay.io/pypa/manylinux_2_34_x86_64"
@@ -312,7 +312,7 @@ jobs:
         with:
           package-dir: packages/python/meshioplusplus-netgen
         env:
-          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-*"
+          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-*"
           CIBW_SKIP: "*-musllinux* *_i686 *-win32"
           CIBW_ARCHS_MACOS: "x86_64 arm64"
           CIBW_MANYLINUX_X86_64_IMAGE: "quay.io/pypa/manylinux_2_34_x86_64"
@@ -412,7 +412,7 @@ jobs:
         with:
           package-dir: packages/python/meshioplusplus-mmg
         env:
-          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-*"
+          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-*"
           CIBW_SKIP: "*-musllinux* *_i686 *-win32"
           CIBW_ARCHS_MACOS: "x86_64 arm64"
           CIBW_MANYLINUX_X86_64_IMAGE: "quay.io/pypa/manylinux_2_34_x86_64"
