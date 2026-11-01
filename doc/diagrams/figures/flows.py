@@ -1013,7 +1013,15 @@ def view_backends():
 def roadmap_map():
     columns = [
         (
-            "§1 format reach",
+            "§1 correctness debts",
+            [
+                ("plugin: wedges inside out", "S"),
+                ("plugin: polygonN blocks dropped", "S"),
+            ],
+            [],
+        ),
+        (
+            "§2 format reach",
             [
                 ("route runs (.odb · .t16 · DPF)", "S"),
                 ("reader checks awaiting a licence", "S"),
@@ -1022,7 +1030,7 @@ def roadmap_map():
             [],
         ),
         (
-            "§2 quality",
+            "§3 quality",
             [
                 ("OSS-Fuzz submission", "S"),
                 ("CalculiX validators in CI", "S"),
@@ -1031,15 +1039,63 @@ def roadmap_map():
             [],
         ),
         (
-            "§3 ecosystem reach",
+            "§4 ecosystem reach",
             [
                 ("registries (calendar-bound)", "S"),
                 ("Rust bindings over the C API", "M"),
                 ("interop phase 2 (Open3D, DOLFINx)", "S"),
                 ("CLI chatbot over MCP tools", "M"),
-                ("viewer look · MDPA preview", "M"),
                 ("manager shows thumbnails", "S"),
-                ("split wheels (spikes first)", "L"),
+                ("split wheels: Windows", "M"),
+                ("CLI plugins: MMG, Netgen", "M"),
+                ("CLI plugin: Polyscope viewer", "M"),
+                ("embedded MCP (design first)", "L"),
+                ("interop 3 (scikit-fem, xarray)", "S"),
+            ],
+            [(6, 7)],
+        ),
+        (
+            "§5 performance",
+            [
+                ("harness: gate, rows, peak RSS", "M"),
+                ("parallel backend, Linux wheels", "M"),
+                ("distance query: empty space", "M"),
+                ("flat grids and facet tables", "M"),
+                ("ragged rows across Python", "M"),
+                ("text I/O: to_chars, parallel", "M"),
+                ("HDF5: appends, lock scope", "L"),
+                ("WASM copies · smooth guard", "S"),
+                ("Python layers · sequences", "M"),
+            ],
+            [(0, 1)],
+        ),
+        (
+            "§6 ParaView plugin",
+            [
+                ("payload layer (closes §1)", "S"),
+                ("polyhedra · higher order", "M"),
+                ("time steps in and out", "M"),
+                ("read options · regions", "M"),
+                ("writer inputs and options", "M"),
+                ("Pipeline filter", "M"),
+                ("dedicated filters", "L"),
+                ("CI coverage · stable names", "S"),
+                ("bundle per ParaView Python", "M"),
+            ],
+            [(0, 1), (5, 6)],
+        ),
+        (
+            "§7 new capabilities",
+            [
+                ("apply_operations · adjacency", "S"),
+                ("compressed and remote input", "S"),
+                ("geodesics · eigenmodes · UVs", "M"),
+                ("morphing · untangling · metrics", "M"),
+                ("hull · Delaunay · point clouds", "L"),
+                ("ICP · coordinates · completions", "M"),
+                ("providers: heal, mesh, quads", "L"),
+                ("surface booleans (spike first)", "XL"),
+                ("v19 defaults · TUI caps", "S"),
             ],
             [],
         ),

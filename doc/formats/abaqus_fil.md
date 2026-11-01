@@ -102,7 +102,7 @@ A series writes the model from the first step and an increment per step; a step 
 
 pybaqus 0.2.17 reads the ASCII files (it does not read binary `.fil` files); this reader reads both layouts back. They were not opened in Abaqus/CAE.
 
-**Byte order and markers.** `big_endian=True` writes the binary layout big-endian and `marker_size=8` 8-byte record markers (both go through `write`, `SeriesWriter`, `write_sequence` and the C++ `AbaqusFilWriteOptions`); the readers read every combination. The words are always 8 bytes wide, as the reader reads them; 4-byte words (a single-precision build's) are not supported by either (the rest of [roadmap 3.2.6](../roadmap.md#_3-reader-and-writer-parity)).
+**Byte order and markers.** `big_endian=True` writes the binary layout big-endian and `marker_size=8` 8-byte record markers (both go through `write`, `SeriesWriter`, `write_sequence` and the C++ `AbaqusFilWriteOptions`); the readers read every combination. The words are always 8 bytes wide, as the reader reads them; 4-byte words (a single-precision build's) are not supported by either (a sample of that layout is awaited, [roadmap 2.2.9](../roadmap.md#awaiting-a-licensed-run)).
 
 ## Validation
 
