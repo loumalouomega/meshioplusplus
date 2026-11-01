@@ -98,6 +98,20 @@ meshioplusplus convert part.vtu part.glb --split-angle 45 --up-axis z
 
 Converting a 3D volume mesh to STL, PLY or glTF writes its extracted boundary skin (the writers' default — see [Skin extraction](./extract_skin.md)); converting to SVG or TikZ renders it with the default isometric camera.
 
+## Shell completions
+
+Both CLIs write a completion script for bash, zsh or fish, generated from their own argument parsers, so it lists exactly the verbs and options that binary has: the Python CLI's from its argparse tree, the native CLI's from the option table each verb hands its parser.
+
+```sh
+meshioplusplus completion bash > ~/.local/share/bash-completion/completions/meshioplusplus
+meshioplusplus completion zsh  > "${fpath[1]}/_meshioplusplus"     # then: autoload -U compinit && compinit
+meshioplusplus completion fish > ~/.config/fish/completions/meshioplusplus.fish
+```
+
+The first word completes to a verb (or an alias such as `c`), the next to the sub-verbs of `data` and `dataset` and to the shells of `completion`, a word starting with `-` to the verb's options, and anything else to file names. Regenerate the script after upgrading, since the verbs follow the release.
+
+---
+
 ## JSON output
 
 Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:

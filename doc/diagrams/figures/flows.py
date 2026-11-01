@@ -1091,7 +1091,7 @@ def roadmap_map():
                 ("eigenmodes · UV parameterization", "M"),
                 ("morphing · untangling · metrics", "M"),
                 ("hull · Delaunay · point clouds", "L"),
-                ("ICP · coordinates · completions", "M"),
+                ("ICP · cylindrical coordinates", "M"),
                 ("providers: heal, mesh, quads", "L"),
                 ("surface booleans (spike first)", "XL"),
                 ("v19 defaults · TUI caps", "S"),

@@ -185,6 +185,7 @@ meshioplusplus regions    in.msh out.msh --union inlet=in_a,in_b --rename "Surfa
 meshioplusplus periodic   in.msh --slave inlet --master outlet --translate 2,0,0  # periodic node pairs
 meshioplusplus graph      in.vtu part.graph --kind cell     # dual graph as a METIS file (or .grf: Scotch)
 meshioplusplus geodesic   skin.stl dist.vtu --source 0     # surface distance from a point (heat method)
+meshioplusplus completion bash > ~/.local/share/bash-completion/completions/meshioplusplus  # also zsh, fish
 meshioplusplus convert    case.msh.gz case.vtu            # compressed input (.gz .bz2 .xz .zst .zip) read transparently
 meshioplusplus convert    s3://bucket/run/out.vtu out.msh # remote input through fsspec (Python CLI, [remote] extra)
 meshioplusplus repair     in.vtu out.vtu                     # orientation, holes, bowties

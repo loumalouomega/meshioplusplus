@@ -452,6 +452,7 @@ void print_usage(std::ostream& os) {
           "  split-interface        Split point fans along a Side region\n"
           "  hausdorff               Hausdorff distance between two surfaces\n"
           "                            (--max D: nonzero exit when it is exceeded)\n"
+          "  completion              Print a bash, zsh or fish completion script\n"
           "  geodesic                Surface distance from source points (heat method)\n"
           "  graph                   Write a mesh's node or cell graph as a METIS or Scotch file\n"
           "  periodic                Match the nodes of two regions a transform maps together\n"
@@ -8597,6 +8598,389 @@ int cmd_merge(const std::vector<std::string>& rArgs) {
 
 }  // namespace
 
+// The verb dispatch: `kUnknownVerb` when @p rCmd names no verb.
+constexpr int kUnknownVerb = -0x7fff;
+int cmd_completion(const std::vector<std::string>& rArgs);
+
+int cli_run_verb(const std::string& cmd, const std::vector<std::string>& rest) {
+    if (cmd == "completion")
+        return cmd_completion(rest);
+    if (cmd == "convert" || cmd == "c")
+        return cmd_convert(rest);
+    if (cmd == "info" || cmd == "i")
+        return cmd_info(rest);
+    if (cmd == "ascii" || cmd == "a")
+        return cmd_ascii_binary(rest, /*binary=*/false);
+    if (cmd == "binary" || cmd == "b")
+        return cmd_ascii_binary(rest, /*binary=*/true);
+    if (cmd == "compress")
+        return cmd_compress(rest);
+    if (cmd == "decompress")
+        return cmd_decompress(rest);
+    if (cmd == "quality" || cmd == "q")
+        return cmd_quality(rest);
+    if (cmd == "repair")
+        return cmd_repair(rest);
+    if (cmd == "shrinkwrap")
+        return cmd_shrinkwrap(rest);
+    if (cmd == "sobolev-deform")
+        return cmd_sobolev_deform(rest);
+    if (cmd == "curvature")
+        return cmd_curvature(rest);
+    if (cmd == "normals")
+        return cmd_normals(rest);
+    if (cmd == "check-conformity")
+        return cmd_check_conformity(rest);
+    if (cmd == "find-intersections")
+        return cmd_find_intersections(rest);
+    if (cmd == "thickness")
+        return cmd_thickness(rest);
+    if (cmd == "check")
+        return cmd_check(rest);
+    if (cmd == "feature-edges")
+        return cmd_feature_edges(rest);
+    if (cmd == "segment")
+        return cmd_segment(rest);
+    if (cmd == "refine-patches")
+        return cmd_refine_patches(rest);
+    if (cmd == "fit-primitives")
+        return cmd_fit_primitives(rest);
+    if (cmd == "iga-refine")
+        return cmd_iga_refine(rest);
+    if (cmd == "iga-sample")
+        return cmd_iga_sample(rest);
+    if (cmd == "iga-evaluate")
+        return cmd_iga_evaluate(rest);
+    if (cmd == "to-cad")
+        return cmd_to_cad(rest);
+    if (cmd == "region-adjacency")
+        return cmd_region_adjacency(rest);
+    if (cmd == "find-interface")
+        return cmd_find_interface(rest);
+    if (cmd == "contact-pairs")
+        return cmd_contact_pairs(rest);
+    if (cmd == "split-interface")
+        return cmd_split_interface(rest);
+    if (cmd == "hausdorff")
+        return cmd_hausdorff(rest);
+    if (cmd == "geodesic")
+        return cmd_geodesic(rest);
+    if (cmd == "graph")
+        return cmd_graph(rest);
+    if (cmd == "periodic")
+        return cmd_periodic(rest);
+    if (cmd == "extract-surface" || cmd == "surface")
+        return cmd_extract_surface(rest);
+    if (cmd == "reorder")
+        return cmd_reorder(rest);
+    if (cmd == "diff")
+        return cmd_diff(rest);
+    if (cmd == "merge")
+        return cmd_merge(rest);
+    if (cmd == "transform")
+        return cmd_transform(rest);
+    if (cmd == "clean")
+        return cmd_clean(rest);
+    if (cmd == "crop")
+        return cmd_crop(rest);
+    if (cmd == "select")
+        return cmd_select(rest);
+    if (cmd == "slice")
+        return cmd_slice(rest);
+    if (cmd == "isosurface")
+        return cmd_isosurface(rest);
+    if (cmd == "voxelize")
+        return cmd_voxelize(rest);
+    if (cmd == "generate")
+        return cmd_generate(rest);
+    if (cmd == "octree")
+        return cmd_octree(rest);
+    if (cmd == "octree-mesh")
+        return cmd_octree_mesh(rest);
+    if (cmd == "mesh-cad-surface")
+        return cmd_mesh_cad_surface(rest);
+    if (cmd == "project-to-cad")
+        return cmd_project_to_cad(rest);
+    if (cmd == "boundary-layer")
+        return cmd_boundary_layer(rest);
+    if (cmd == "extrude")
+        return cmd_extrude(rest);
+    if (cmd == "revolve")
+        return cmd_revolve(rest);
+    if (cmd == "mirror")
+        return cmd_mirror(rest);
+    if (cmd == "tetrahedralize")
+        return cmd_tetrahedralize(rest);
+    if (cmd == "sdf")
+        return cmd_sdf(rest);
+    if (cmd == "split")
+        return cmd_split(rest);
+    if (cmd == "regions")
+        return cmd_regions(rest);
+    if (cmd == "convert-cells")
+        return cmd_convert_cells(rest);
+    if (cmd == "tessellate")
+        return cmd_tessellate(rest);
+    if (cmd == "subdivide")
+        return cmd_subdivide(rest);
+    if (cmd == "agglomerate")
+        return cmd_agglomerate(rest);
+    if (cmd == "tet-to-poly")
+        return cmd_tet_to_poly(rest);
+    if (cmd == "poly-to-tet")
+        return cmd_poly_to_tet(rest);
+    if (cmd == "resample")
+        return cmd_resample(rest);
+    if (cmd == "refine")
+        return cmd_refine(rest);
+    if (cmd == "undo-green")
+        return cmd_undo_green(rest);
+    if (cmd == "decimate")
+        return cmd_decimate(rest);
+    if (cmd == "decimate-volume")
+        return cmd_decimate_volume(rest);
+    if (cmd == "adapt")
+        return cmd_adapt(rest);
+    if (cmd == "discretize-levelset")
+        return cmd_discretize_levelset(rest);
+    if (cmd == "mesh-2d")
+        return cmd_mesh_2d(rest);
+    if (cmd == "move")
+        return cmd_move(rest);
+    if (cmd == "remesh")
+        return cmd_remesh(rest);
+    if (cmd == "remesh-volume")
+        return cmd_remesh_volume(rest);
+    if (cmd == "optimize-volume")
+        return cmd_optimize_volume(rest);
+    if (cmd == "smooth")
+        return cmd_smooth(rest);
+    if (cmd == "interpolate")
+        return cmd_interpolate(rest);
+    if (cmd == "conservative-interpolate")
+        return cmd_conservative_interpolate(rest);
+    if (cmd == "partition")
+        return cmd_partition(rest);
+    if (cmd == "data")
+        return cmd_data(rest);
+    if (cmd == "pipeline")
+        return cmd_pipeline(rest);
+    if (cmd == "stats")
+        return cmd_stats(rest);
+    if (cmd == "view")
+        return cmd_view(rest);
+    if (cmd == "snapshot")
+        return cmd_snapshot(rest);
+    if (cmd == "tui")
+        return cmd_tui(rest);
+    if (cmd == "screenshot")
+        return cmd_screenshot(rest);
+    return kUnknownVerb;
+}
+
+// --- shell completions (roadmap 7.6.2) ----------------------------------------
+
+struct CompletionVerb {
+    std::string mName;
+    std::vector<std::string> mAliases;
+    std::vector<std::string> mOptions;
+    std::vector<std::string> mSubverbs;
+};
+
+// The verbs a usage text lists under @p rSection: lines "  name (alias)   ...".
+std::vector<std::pair<std::string, std::string>> completion_listed(const std::string& rText,
+                                                                   const std::string& rSection) {
+    std::vector<std::pair<std::string, std::string>> out;
+    std::istringstream in(rText);
+    std::string line;
+    bool inside = false;
+    while (std::getline(in, line)) {
+        if (line == rSection) {
+            inside = true;
+            continue;
+        }
+        if (!inside)
+            continue;
+        if (!line.empty() && line[0] != ' ')
+            break;
+        if (line.size() < 3 || line[0] != ' ' || line[1] != ' ' ||
+            !std::islower(static_cast<unsigned char>(line[2])))
+            continue;
+        std::size_t end = 2;
+        while (end < line.size() &&
+               (std::islower(static_cast<unsigned char>(line[end])) ||
+                std::isdigit(static_cast<unsigned char>(line[end])) || line[end] == '-'))
+            ++end;
+        std::string alias;
+        if (line.compare(end, 2, " (") == 0) {
+            const std::size_t close = line.find(')', end);
+            if (close != std::string::npos)
+                alias = line.substr(end + 2, close - end - 2);
+        }
+        out.emplace_back(line.substr(2, end - 2), alias);
+    }
+    return out;
+}
+
+// The options of @p rCmd (with @p rArgs, for a group's sub-verb), from the
+// table its own `cli_parse` call holds.
+std::vector<std::string> completion_options(const std::string& rCmd,
+                                            const std::vector<std::string>& rArgs) {
+    std::vector<std::string> out;
+    meshioplusplus::cli::set_cli_describe(true);
+    try {
+        cli_run_verb(rCmd, rArgs);
+    } catch (const meshioplusplus::cli::cli_describe_request& r) {
+        for (const cli_opt_spec& spec : r.specs) {
+            out.push_back("--" + spec.canonical);
+            for (const std::string& alias : spec.aliases)
+                out.push_back(alias);
+        }
+    } catch (...) {
+        // A verb that fails before parsing (a group without its sub-verb) has
+        // no options of its own to offer.
+    }
+    meshioplusplus::cli::set_cli_describe(false);
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+
+std::vector<CompletionVerb> completion_verbs() {
+    std::ostringstream usage;
+    print_usage(usage);
+    std::vector<CompletionVerb> verbs;
+    for (const auto& [name, alias] : completion_listed(usage.str(), "commands:")) {
+        if (name == "completion")
+            continue;  // its shells are written out by cmd_completion itself
+        CompletionVerb v;
+        v.mName = name;
+        if (!alias.empty())
+            v.mAliases.push_back(alias);
+        if (name == "data") {
+            std::ostringstream sub;
+            print_data_usage(sub);
+            for (const auto& entry : completion_listed(sub.str(), "subcommands:")) {
+                v.mSubverbs.push_back(entry.first);
+                for (const std::string& o : completion_options("data", {entry.first}))
+                    v.mOptions.push_back(o);
+            }
+            std::sort(v.mOptions.begin(), v.mOptions.end());
+            v.mOptions.erase(std::unique(v.mOptions.begin(), v.mOptions.end()), v.mOptions.end());
+        } else {
+            v.mOptions = completion_options(name, {});
+        }
+        verbs.push_back(std::move(v));
+    }
+    return verbs;
+}
+
+std::string completion_join(const std::vector<std::string>& rItems) {
+    std::string out;
+    for (const std::string& item : rItems)
+        out += (out.empty() ? "" : " ") + item;
+    return out;
+}
+
+// `meshioplusplus completion bash|zsh|fish`: a script the shell sources.
+int cmd_completion(const std::vector<std::string>& rArgs) {
+    if (rArgs.size() != 1 || (rArgs[0] != "bash" && rArgs[0] != "zsh" && rArgs[0] != "fish"))
+        throw std::runtime_error("completion requires one of: bash, zsh, fish");
+    const std::string& shell = rArgs[0];
+    const std::vector<CompletionVerb> verbs = completion_verbs();
+    std::vector<std::string> names;
+    for (const CompletionVerb& v : verbs) {
+        names.push_back(v.mName);
+        names.insert(names.end(), v.mAliases.begin(), v.mAliases.end());
+    }
+    names.push_back("completion");
+    std::ostream& o = std::cout;
+    const std::string prog = "meshioplusplus";
+    if (shell == "bash") {
+        o << "# bash completion for " << prog << " (meshioplusplus completion bash)\n"
+          << "_meshioplusplus() {\n"
+          << "    local cur=\"${COMP_WORDS[COMP_CWORD]}\" opts=\"\" subs=\"\"\n"
+          << "    if [ \"$COMP_CWORD\" -eq 1 ]; then\n"
+          << "        COMPREPLY=($(compgen -W \"" << completion_join(names) << "\" -- \"$cur\"))\n"
+          << "        return\n"
+          << "    fi\n"
+          << "    case \"${COMP_WORDS[1]}\" in\n";
+        for (const CompletionVerb& v : verbs) {
+            std::string pattern = v.mName;
+            for (const std::string& a : v.mAliases)
+                pattern += "|" + a;
+            o << "        " << pattern << ") opts=\"" << completion_join(v.mOptions) << "\" subs=\""
+              << completion_join(v.mSubverbs) << "\";;\n";
+        }
+        o << "        completion) subs=\"bash zsh fish\";;\n"
+          << "    esac\n"
+          << "    if [ \"$COMP_CWORD\" -eq 2 ] && [ -n \"$subs\" ]; then\n"
+          << "        COMPREPLY=($(compgen -W \"$subs\" -- \"$cur\"))\n"
+          << "    elif [[ \"$cur\" == -* ]]; then\n"
+          << "        COMPREPLY=($(compgen -W \"$opts\" -- \"$cur\"))\n"
+          << "    else\n"
+          << "        COMPREPLY=($(compgen -f -- \"$cur\"))\n"
+          << "    fi\n"
+          << "}\n"
+          << "complete -o filenames -F _meshioplusplus " << prog << "\n";
+    } else if (shell == "zsh") {
+        o << "#compdef " << prog << "\n"
+          << "# zsh completion for " << prog << " (meshioplusplus completion zsh)\n"
+          << "_meshioplusplus() {\n"
+          << "    local -a opts subs\n"
+          << "    if (( CURRENT == 2 )); then\n"
+          << "        compadd -- " << completion_join(names) << "\n"
+          << "        return\n"
+          << "    fi\n"
+          << "    case $words[2] in\n";
+        for (const CompletionVerb& v : verbs) {
+            std::string pattern = v.mName;
+            for (const std::string& a : v.mAliases)
+                pattern += "|" + a;
+            o << "        " << pattern << ") opts=(" << completion_join(v.mOptions) << ") subs=("
+              << completion_join(v.mSubverbs) << ");;\n";
+        }
+        o << "        completion) subs=(bash zsh fish);;\n"
+          << "    esac\n"
+          << "    if (( CURRENT == 3 )) && (( ${#subs} )); then\n"
+          << "        compadd -- $subs\n"
+          << "    elif [[ $PREFIX == -* ]]; then\n"
+          << "        compadd -- $opts\n"
+          << "    else\n"
+          << "        _files\n"
+          << "    fi\n"
+          << "}\n"
+          << "compdef _meshioplusplus " << prog << "\n";
+    } else {
+        o << "# fish completion for " << prog << " (meshioplusplus completion fish)\n"
+          << "complete -c " << prog << " -f\n"
+          << "complete -c " << prog << " -n __fish_use_subcommand -a '" << completion_join(names)
+          << "'\n";
+        for (const CompletionVerb& v : verbs) {
+            std::string seen = v.mName;
+            for (const std::string& a : v.mAliases)
+                seen += " " + a;
+            if (!v.mSubverbs.empty())
+                o << "complete -c " << prog << " -n '__fish_seen_subcommand_from " << seen
+                  << "' -a '" << completion_join(v.mSubverbs) << "'\n";
+            for (const std::string& opt : v.mOptions) {
+                o << "complete -c " << prog << " -n '__fish_seen_subcommand_from " << seen << "' ";
+                if (opt.rfind("--", 0) == 0)
+                    o << "-l " << opt.substr(2);
+                else if (opt.size() == 2)
+                    o << "-s " << opt.substr(1);
+                else
+                    o << "-o " << opt.substr(1);
+                o << "\n";
+            }
+            o << "complete -c " << prog << " -n '__fish_seen_subcommand_from " << seen << "' -F\n";
+        }
+        o << "complete -c " << prog
+          << " -n '__fish_seen_subcommand_from completion' -a 'bash zsh fish'\n";
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     std::vector<std::string> args(argv + (argc > 0 ? 1 : 0), argv + argc);
 
@@ -8623,176 +9007,9 @@ int main(int argc, char** argv) {
     }
 
     try {
-        if (cmd == "convert" || cmd == "c")
-            return cmd_convert(rest);
-        if (cmd == "info" || cmd == "i")
-            return cmd_info(rest);
-        if (cmd == "ascii" || cmd == "a")
-            return cmd_ascii_binary(rest, /*binary=*/false);
-        if (cmd == "binary" || cmd == "b")
-            return cmd_ascii_binary(rest, /*binary=*/true);
-        if (cmd == "compress")
-            return cmd_compress(rest);
-        if (cmd == "decompress")
-            return cmd_decompress(rest);
-        if (cmd == "quality" || cmd == "q")
-            return cmd_quality(rest);
-        if (cmd == "repair")
-            return cmd_repair(rest);
-        if (cmd == "shrinkwrap")
-            return cmd_shrinkwrap(rest);
-        if (cmd == "sobolev-deform")
-            return cmd_sobolev_deform(rest);
-        if (cmd == "curvature")
-            return cmd_curvature(rest);
-        if (cmd == "normals")
-            return cmd_normals(rest);
-        if (cmd == "check-conformity")
-            return cmd_check_conformity(rest);
-        if (cmd == "find-intersections")
-            return cmd_find_intersections(rest);
-        if (cmd == "thickness")
-            return cmd_thickness(rest);
-        if (cmd == "check")
-            return cmd_check(rest);
-        if (cmd == "feature-edges")
-            return cmd_feature_edges(rest);
-        if (cmd == "segment")
-            return cmd_segment(rest);
-        if (cmd == "refine-patches")
-            return cmd_refine_patches(rest);
-        if (cmd == "fit-primitives")
-            return cmd_fit_primitives(rest);
-        if (cmd == "iga-refine")
-            return cmd_iga_refine(rest);
-        if (cmd == "iga-sample")
-            return cmd_iga_sample(rest);
-        if (cmd == "iga-evaluate")
-            return cmd_iga_evaluate(rest);
-        if (cmd == "to-cad")
-            return cmd_to_cad(rest);
-        if (cmd == "region-adjacency")
-            return cmd_region_adjacency(rest);
-        if (cmd == "find-interface")
-            return cmd_find_interface(rest);
-        if (cmd == "contact-pairs")
-            return cmd_contact_pairs(rest);
-        if (cmd == "split-interface")
-            return cmd_split_interface(rest);
-        if (cmd == "hausdorff")
-            return cmd_hausdorff(rest);
-        if (cmd == "geodesic")
-            return cmd_geodesic(rest);
-        if (cmd == "graph")
-            return cmd_graph(rest);
-        if (cmd == "periodic")
-            return cmd_periodic(rest);
-        if (cmd == "extract-surface" || cmd == "surface")
-            return cmd_extract_surface(rest);
-        if (cmd == "reorder")
-            return cmd_reorder(rest);
-        if (cmd == "diff")
-            return cmd_diff(rest);
-        if (cmd == "merge")
-            return cmd_merge(rest);
-        if (cmd == "transform")
-            return cmd_transform(rest);
-        if (cmd == "clean")
-            return cmd_clean(rest);
-        if (cmd == "crop")
-            return cmd_crop(rest);
-        if (cmd == "select")
-            return cmd_select(rest);
-        if (cmd == "slice")
-            return cmd_slice(rest);
-        if (cmd == "isosurface")
-            return cmd_isosurface(rest);
-        if (cmd == "voxelize")
-            return cmd_voxelize(rest);
-        if (cmd == "generate")
-            return cmd_generate(rest);
-        if (cmd == "octree")
-            return cmd_octree(rest);
-        if (cmd == "octree-mesh")
-            return cmd_octree_mesh(rest);
-        if (cmd == "mesh-cad-surface")
-            return cmd_mesh_cad_surface(rest);
-        if (cmd == "project-to-cad")
-            return cmd_project_to_cad(rest);
-        if (cmd == "boundary-layer")
-            return cmd_boundary_layer(rest);
-        if (cmd == "extrude")
-            return cmd_extrude(rest);
-        if (cmd == "revolve")
-            return cmd_revolve(rest);
-        if (cmd == "mirror")
-            return cmd_mirror(rest);
-        if (cmd == "tetrahedralize")
-            return cmd_tetrahedralize(rest);
-        if (cmd == "sdf")
-            return cmd_sdf(rest);
-        if (cmd == "split")
-            return cmd_split(rest);
-        if (cmd == "regions")
-            return cmd_regions(rest);
-        if (cmd == "convert-cells")
-            return cmd_convert_cells(rest);
-        if (cmd == "tessellate")
-            return cmd_tessellate(rest);
-        if (cmd == "subdivide")
-            return cmd_subdivide(rest);
-        if (cmd == "agglomerate")
-            return cmd_agglomerate(rest);
-        if (cmd == "tet-to-poly")
-            return cmd_tet_to_poly(rest);
-        if (cmd == "poly-to-tet")
-            return cmd_poly_to_tet(rest);
-        if (cmd == "resample")
-            return cmd_resample(rest);
-        if (cmd == "refine")
-            return cmd_refine(rest);
-        if (cmd == "undo-green")
-            return cmd_undo_green(rest);
-        if (cmd == "decimate")
-            return cmd_decimate(rest);
-        if (cmd == "decimate-volume")
-            return cmd_decimate_volume(rest);
-        if (cmd == "adapt")
-            return cmd_adapt(rest);
-        if (cmd == "discretize-levelset")
-            return cmd_discretize_levelset(rest);
-        if (cmd == "mesh-2d")
-            return cmd_mesh_2d(rest);
-        if (cmd == "move")
-            return cmd_move(rest);
-        if (cmd == "remesh")
-            return cmd_remesh(rest);
-        if (cmd == "remesh-volume")
-            return cmd_remesh_volume(rest);
-        if (cmd == "optimize-volume")
-            return cmd_optimize_volume(rest);
-        if (cmd == "smooth")
-            return cmd_smooth(rest);
-        if (cmd == "interpolate")
-            return cmd_interpolate(rest);
-        if (cmd == "conservative-interpolate")
-            return cmd_conservative_interpolate(rest);
-        if (cmd == "partition")
-            return cmd_partition(rest);
-        if (cmd == "data")
-            return cmd_data(rest);
-        if (cmd == "pipeline")
-            return cmd_pipeline(rest);
-        if (cmd == "stats")
-            return cmd_stats(rest);
-        if (cmd == "view")
-            return cmd_view(rest);
-        if (cmd == "snapshot")
-            return cmd_snapshot(rest);
-        if (cmd == "tui")
-            return cmd_tui(rest);
-        if (cmd == "screenshot")
-            return cmd_screenshot(rest);
+        const int rc = cli_run_verb(cmd, rest);
+        if (rc != kUnknownVerb)
+            return rc;
     } catch (const std::exception& e) {
         std::cerr << "error: " << e.what() << "\n";
         return 1;

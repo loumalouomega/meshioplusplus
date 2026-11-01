@@ -10,6 +10,7 @@ from . import (
     _check,
     _check_conformity,
     _clean,
+    _completion,
     _compress,
     _conservative_interpolate,
     _contact_pairs,
@@ -90,7 +91,9 @@ from . import (
 )
 
 
-def main(argv=None):
+def build_parser():
+    """The whole CLI's argparse parser; shell completions are generated from it
+    (the ``completion`` verb), so they follow the verbs as they change."""
     parent_parser = argparse.ArgumentParser(
         description="Mesh input/output tools.",
         formatter_class=argparse.RawTextHelpFormatter,
@@ -791,8 +794,20 @@ def main(argv=None):
     _dataset.add_args(parser)
     parser.set_defaults(func=_dataset.dataset_cmd)
 
-    args = parent_parser.parse_args(argv)
+    parser = subparsers.add_parser(
+        "completion",
+        help="Print a bash, zsh or fish completion script for this CLI",
+    )
+    _completion.add_args(parser)
+    parser.set_defaults(
+        func=lambda args: _completion.completion_cmd(args, parent_parser)
+    )
 
+    return parent_parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
     return args.func(args)
 
 
