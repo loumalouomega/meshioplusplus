@@ -7,7 +7,7 @@ name = "meshioplusplus-mmg"
 version = "18.0.0"
 description = "MMG remesher for meshio++: adapt, discretize_levelset, mesh_domain and move (move needs an MMG built with ELAS, which this wheel is not)"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = "MIT AND LGPL-3.0-or-later"
 dependencies = ["meshioplusplus==18.0.0"]
 
