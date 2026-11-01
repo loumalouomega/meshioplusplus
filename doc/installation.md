@@ -79,7 +79,7 @@ Run the test suite with:
 pytest tests/python/
 ```
 
-or via tox (tests against Python 3.9 and 3.12):
+or via tox (tests against Python 3.10 and 3.14):
 
 ```
 tox

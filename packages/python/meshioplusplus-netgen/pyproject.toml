@@ -7,7 +7,7 @@ name = "meshioplusplus-netgen"
 version = "18.0.0"
 description = "Netgen tetrahedral mesher for meshio++: the Netgen backend of tetrahedralize"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = "MIT AND LGPL-2.1-only"
 dependencies = ["meshioplusplus==18.0.0"]
 

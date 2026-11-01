@@ -151,8 +151,21 @@ if wanted bzip2; then
               "bzip2-$BZIP2_VERSION.tar.gz" "$BZIP2_SHA256"
         rm -rf "$WORK/bzip2"; mkdir -p "$WORK/bzip2"
         tar -xzf "$DL/bzip2-$BZIP2_VERSION.tar.gz" -C "$WORK/bzip2" --strip-components=1
+        # The Makefile knows nothing of CMAKE_OSX_ARCHITECTURES: the universal macOS
+        # archive is one build per architecture joined with lipo.
+        bz_archs=""
+        if [ "$(uname -s)" = "Darwin" ] && [ "$UNIVERSAL" != "no" ]; then bz_archs="x86_64 arm64"; fi
         (cd "$WORK/bzip2" &&
-         make -j "$JOBS" libbz2.a CFLAGS="$CFLAGS_ALL -D_FILE_OFFSET_BITS=64" &&
+         if [ -n "$bz_archs" ]; then
+             for a in $bz_archs; do
+                 make clean >/dev/null &&
+                 make -j "$JOBS" libbz2.a CFLAGS="$CFLAGS_ALL -D_FILE_OFFSET_BITS=64 -arch $a -mmacosx-version-min=${MACOSX_DEPLOYMENT_TARGET:-13.3}" &&
+                 cp libbz2.a "libbz2-$a.a" || exit 1
+             done
+             lipo -create libbz2-x86_64.a libbz2-arm64.a -output libbz2.a
+         else
+             make -j "$JOBS" libbz2.a CFLAGS="$CFLAGS_ALL -D_FILE_OFFSET_BITS=64"
+         fi &&
          mkdir -p "$PREFIX/lib" "$PREFIX/include" &&
          cp libbz2.a "$PREFIX/lib/" && cp bzlib.h "$PREFIX/include/")
     fi
@@ -194,8 +207,15 @@ if wanted hdf5; then
         echo "== HDF5 $HDF5_VERSION =="
         fetch "https://github.com/HDFGroup/hdf5/releases/download/hdf5_$HDF5_VERSION/hdf5-$HDF5_VERSION.tar.gz" \
               "hdf5-$HDF5_VERSION.tar.gz" "$HDF5_SHA256"
-        rm -rf "$WORK/hdf5"; mkdir -p "$WORK/hdf5"
-        tar -xzf "$DL/hdf5-$HDF5_VERSION.tar.gz" -C "$WORK/hdf5" --strip-components=1
+        # The release archive's layout is not the usual single top directory
+        # (`--strip-components=1` left no CMakeLists.txt), so find the source
+        # root instead of assuming its depth.
+        rm -rf "$WORK/hdf5" "$WORK/hdf5-unpack"; mkdir -p "$WORK/hdf5-unpack"
+        tar -xzf "$DL/hdf5-$HDF5_VERSION.tar.gz" -C "$WORK/hdf5-unpack"
+        root=$(find "$WORK/hdf5-unpack" -maxdepth 3 -name CMakeLists.txt -print | awk '{ print length, $0 }' | sort -n | head -n 1 | cut -d' ' -f2-)
+        [ -n "$root" ] || { echo "error: no CMakeLists.txt in the HDF5 archive" >&2; exit 1; }
+        mv "$(dirname "$root")" "$WORK/hdf5"
+        rm -rf "$WORK/hdf5-unpack"
         cmake_build hdf5 "$WORK/hdf5" \
             -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON -DONLY_SHARED_LIBS=OFF \
             -DHDF5_BUILD_TOOLS=OFF -DHDF5_BUILD_UTILS=OFF -DHDF5_BUILD_EXAMPLES=OFF \
@@ -206,6 +226,12 @@ if wanted hdf5; then
             -DHDF5_ENABLE_DIRECT_VFD=OFF -DHDF5_ENABLE_MIRROR_VFD=OFF \
             -DHDF5_ENABLE_SUBFILING_VFD=OFF -DHDF5_ENABLE_SZIP_SUPPORT=OFF \
             -DHDF5_ENABLE_Z_LIB_SUPPORT=ON -DHDF5_ENABLE_NONSTANDARD_FEATURE_FLOAT16=OFF
+        # The installed targets name ZLIB::ZLIB, which a consumer's try_compile
+        # probes (netCDF's check_symbol_exists) cannot resolve: CMake does not
+        # carry that imported target into the scratch project. Link plain `z`
+        # (the platform's zlib) instead.
+        find "$PREFIX" -path '*/cmake/*' -name 'hdf5*targets*.cmake' -print |
+        while read -r f; do sed 's/ZLIB::ZLIB/z/g' "$f" > "$f.tmp" && mv "$f.tmp" "$f"; done
     fi
 fi
 
@@ -219,8 +245,10 @@ if wanted netcdf; then
         unpack_tag "https://github.com/Unidata/netcdf-c/archive/refs/tags/v$NETCDF_VERSION.tar.gz" \
                    "netcdf-c-$NETCDF_VERSION.tar.gz" "$NETCDF_SHA256" \
                    "https://github.com/Unidata/netcdf-c.git" "v$NETCDF_VERSION" "$NETCDF_COMMIT" netcdf-c
+        # HDF5's installed config links ZLIB::ZLIB; the global flag keeps that
+        # imported target visible to netCDF's try_compile probes.
         cmake_build netcdf "$WORK/netcdf-c" \
-            -DBUILD_SHARED_LIBS=OFF -DHDF5_USE_STATIC_LIBRARIES=ON \
+            -DCMAKE_FIND_PACKAGE_TARGETS_GLOBAL=ON -DBUILD_SHARED_LIBS=OFF -DHDF5_USE_STATIC_LIBRARIES=ON \
             -DENABLE_HDF5=ON -DNETCDF_ENABLE_HDF5=ON \
             -DENABLE_DAP=OFF -DNETCDF_ENABLE_DAP=OFF \
             -DENABLE_DAP4=OFF -DNETCDF_ENABLE_DAP4=OFF \
@@ -233,6 +261,17 @@ if wanted netcdf; then
             -DENABLE_TESTS=OFF -DNETCDF_ENABLE_TESTS=OFF \
             -DENABLE_EXAMPLES=OFF -DNETCDF_ENABLE_EXAMPLES=OFF \
             -DBUILD_UTILITIES=OFF -DNETCDF_BUILD_UTILITIES=OFF
+        # netCDF's installed targets name HDF5's own CMake targets (hdf5::hdf5_hl,
+        # hdf5::hdf5), which a consumer that finds HDF5 through FindHDF5 (as
+        # meshio++'s CMake does) does not have: point them at the static archives.
+        hdf5_a=$(find "$PREFIX" -name libhdf5.a -print | head -n 1)
+        hl_a=$(find "$PREFIX" -name libhdf5_hl.a -print | head -n 1)
+        find "$PREFIX" -path '*/cmake/*' -name 'netCDFTargets*.cmake' -print |
+        while read -r f; do
+            sed -e "s#hdf5::hdf5_hl-static#$hl_a#g" -e "s#hdf5::hdf5_hl#$hl_a#g" \
+                -e "s#hdf5::hdf5-static#$hdf5_a#g" -e "s#hdf5::hdf5#$hdf5_a#g" "$f" > "$f.tmp" &&
+                mv "$f.tmp" "$f"
+        done
     fi
 fi
 
@@ -246,7 +285,7 @@ if wanted cgns; then
                    "cgns-$CGNS_VERSION.tar.gz" "$CGNS_SHA256" \
                    "https://github.com/CGNS/CGNS.git" "v$CGNS_VERSION" "$CGNS_COMMIT" CGNS
         cmake_build cgns "$WORK/CGNS" \
-            -DBUILD_SHARED_LIBS=OFF -DCGNS_BUILD_SHARED=OFF -DCGNS_USE_SHARED=OFF \
+            -DCMAKE_FIND_PACKAGE_TARGETS_GLOBAL=ON -DBUILD_SHARED_LIBS=OFF -DCGNS_BUILD_SHARED=OFF -DCGNS_USE_SHARED=OFF \
             -DCGNS_ENABLE_HDF5=ON -DCGNS_ENABLE_FORTRAN=OFF -DCGNS_ENABLE_PARALLEL=OFF \
             -DCGNS_ENABLE_TESTS=OFF -DCGNS_BUILD_TESTING=OFF -DCGNS_BUILD_CGNSTOOLS=OFF \
             -DCGNS_ENABLE_64BIT=ON -DHDF5_NEED_ZLIB=ON \

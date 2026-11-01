@@ -41,7 +41,7 @@ The adapter itself never imports `torch_scatter` — only training a MeshGraphNe
 
 The CuPy/torch packaging precedent, applied a third time: `nvidia-physicsnemo` hard-depends on `torch>=2.10`, whose default Linux wheel bundles CUDA at multiple GB — a `meshioplusplus[physicsnemo]` extra would transitively pin exactly the dependency the repo already [refuses to pin for `to_torch`](./ml#packaging-deliberately-no-torch-jax-extra). Install the framework directly; `mpn.has_physicsnemo()` / `mpn.has_torch_geometric()` answer availability without raising, and a missing install raises a named error quoting the command above.
 
-Two floors to know about: meshio++ supports Python ≥ 3.8, PhysicsNeMo requires **≥ 3.11**. The mcp-SDK precedent applies — everything testable (`graph_sample`, the stats, the manifest iteration) is pure numpy and runs on every supported interpreter; only constructing the framework-facing `Reader`/`Dataset` objects needs the framework.
+Two floors to know about: meshio++ supports Python ≥ 3.10, PhysicsNeMo requires **≥ 3.11**. The mcp-SDK precedent applies — everything testable (`graph_sample`, the stats, the manifest iteration) is pure numpy and runs on every supported interpreter; only constructing the framework-facing `Reader`/`Dataset` objects needs the framework.
 
 ## Reconnaissance (verified 2026-08-06, physicsnemo 2.1.1)
 

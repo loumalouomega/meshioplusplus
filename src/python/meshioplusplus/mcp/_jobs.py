@@ -1,6 +1,6 @@
 """Training jobs: a subprocess supervisor over the run-directory layout.
 
-Pure stdlib, Python 3.8, no torch anywhere -- the manager never imports the
+Pure stdlib, Python 3.10, no torch anywhere -- the manager never imports the
 trainer, it **spawns** it (``python -m meshioplusplus.physicsnemo.train
 --spec <run_dir>/spec.json``): a long-lived server must not pay the framework
 import, and a job must be killable on its own. Each job owns a directory

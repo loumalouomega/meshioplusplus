@@ -1351,7 +1351,26 @@ function(meshioplusplus_configure_core_target backend)
       target_include_directories(${_t} SYSTEM PRIVATE ${_mio_core_sys_incs})
     endif()
     if(_mio_core_libs)
-      target_link_libraries(${_t} PUBLIC ${_mio_core_libs})
+      get_target_property(_t_type ${_t} TYPE)
+      if(_t_type STREQUAL "SHARED_LIBRARY")
+        # A shared core carries its dependencies inside: they stay PRIVATE, or
+        # install(EXPORT) would name the vendored static zlib (in no export set)
+        # and the statically built archives (imported targets a consumer's
+        # find_package could not resolve). The runtime stays PUBLIC so a
+        # consumer links the same OpenMP/TBB/threads the core uses.
+        set(_pub_libs ${_mio_core_libs})
+        list(FILTER _pub_libs INCLUDE REGEX "^(OpenMP::|TBB::|Threads::|Kokkos::)")
+        set(_priv_libs ${_mio_core_libs})
+        if(_pub_libs)
+          list(REMOVE_ITEM _priv_libs ${_pub_libs})
+          target_link_libraries(${_t} PUBLIC ${_pub_libs})
+        endif()
+        if(_priv_libs)
+          target_link_libraries(${_t} PRIVATE ${_priv_libs})
+        endif()
+      else()
+        target_link_libraries(${_t} PUBLIC ${_mio_core_libs})
+      endif()
     endif()
     if(_mio_core_copts)
       target_compile_options(${_t} PUBLIC ${_mio_core_copts})
@@ -1467,14 +1486,34 @@ function(meshioplusplus_add_core_variant backend)
     # macOS needs nothing: its two-level namespace binds each symbol to the
     # image that defines it, so h5py's HDF5 and ours cannot interpose; Windows
     # DLLs export only what they list.
-    string(REPLACE ";" "," _mio_hidden_archives "${MESHIOPLUSPLUS_HIDDEN_ARCHIVES}")
+    # Colon-separated: gcc splits -Wl,... on commas, so a comma list would hand
+    # every archive after the first to the linker as an input file.
+    string(REPLACE ";" ":" _mio_hidden_archives "${MESHIOPLUSPLUS_HIDDEN_ARCHIVES}")
     target_link_options(${_lib} PRIVATE "LINKER:--exclude-libs,${_mio_hidden_archives}")
   endif()
   if(MESHIOPLUSPLUS_PYTHON_SHARED_CORE)
     set_target_properties(${_lib} PROPERTIES
       CXX_VISIBILITY_PRESET default C_VISIBILITY_PRESET default
-      VISIBILITY_INLINES_HIDDEN OFF WINDOWS_EXPORT_ALL_SYMBOLS ON
+      VISIBILITY_INLINES_HIDDEN OFF
       INSTALL_RPATH "$<IF:$<BOOL:${APPLE}>,@loader_path,$ORIGIN>")
+    if(WIN32 AND MSVC)
+      # Exporting every symbol overflows the 65,535-export limit, so the table
+      # is the core's own namespace, written from the compiled objects just
+      # before the link (cmake/gen_core_def.py). The annotated MESHIOPLUSPLUS_API
+      # entities are exported by their dllexport as well.
+      get_filename_component(_mio_link_dir "${CMAKE_LINKER}" DIRECTORY)
+      find_program(MESHIOPLUSPLUS_DUMPBIN dumpbin HINTS "${_mio_link_dir}" REQUIRED)
+      find_package(Python REQUIRED COMPONENTS Interpreter)
+      set(_mio_core_def "${CMAKE_CURRENT_BINARY_DIR}/${_lib}.def")
+      add_custom_command(TARGET ${_lib} PRE_LINK
+        COMMAND "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_core_def.py"
+                --dumpbin "${MESHIOPLUSPLUS_DUMPBIN}" --out "${_mio_core_def}"
+                "${CMAKE_CURRENT_BINARY_DIR}/${_lib}.dir"
+                "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/${_lib}.dir"
+        COMMENT "meshio++: writing the core's export table"
+        VERBATIM)
+      target_link_options(${_lib} PRIVATE "/DEF:${_mio_core_def}")
+    endif()
     # manylinux's libstdc++ is older than the compiler's, so the wheels link it
     # statically, one copy per shared object. That works across the core, `_core`
     # and an add-on only while the runtime's symbols stay EXPORTED (no
