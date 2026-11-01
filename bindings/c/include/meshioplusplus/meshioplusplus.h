@@ -7129,6 +7129,8 @@ MIO_API void mio_adjacency_free(mio_adjacency* graph);
  * METIS (`"metis"`, 1-based) or Scotch (`"scotch"`, 0-based) graph file;
  * `format` NULL or empty infers it from the extension (`.graph`/`.metis`,
  * `.grf`). Any out pointer may be NULL.
+ * @return MIO_ERR_INVALID_ARG for an unknown kind or format, or an extension
+ *         naming neither; MIO_ERR_WRITE when the file cannot be written.
  */
 MIO_API mio_status mio_write_graph(const mio_mesh* mesh, const char* kind, const char* path,
                                    const char* format, int64_t* num_vertices,

@@ -7024,8 +7024,13 @@ TEST(CApi, AdjacencyAndGraphFiles) {
     EXPECT_EQ(mio_write_graph(m, "node", path.c_str(), "chaco", nullptr, nullptr, nullptr),
               MIO_ERR_INVALID_ARG);
     const std::string unknown = mt::temp_path(".txt");
-    EXPECT_NE(mio_write_graph(m, "node", unknown.c_str(), nullptr, nullptr, nullptr, nullptr),
-              MIO_OK);
+    EXPECT_EQ(mio_write_graph(m, "node", unknown.c_str(), nullptr, nullptr, nullptr, nullptr),
+              MIO_ERR_INVALID_ARG);
+    EXPECT_EQ(mio_write_graph(m, "edge", path.c_str(), nullptr, nullptr, nullptr, nullptr),
+              MIO_ERR_INVALID_ARG);
+    EXPECT_EQ(
+        mio_write_graph(m, "node", "/nonexistent-dir/g.graph", nullptr, nullptr, nullptr, nullptr),
+        MIO_ERR_WRITE);
     EXPECT_EQ(mio_write_graph(m, "node", path.c_str(), "scotch", nullptr, nullptr, nullptr),
               MIO_OK);
     std::filesystem::remove(path);

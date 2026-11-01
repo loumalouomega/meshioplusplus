@@ -9657,13 +9657,21 @@ mio_status mio_write_graph(const mio_mesh* mesh, const char* kind, const char* p
             return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh is NULL");
         if (!path || !*path)
             return fail(MIO_ERR_INVALID_ARG, "meshio++: path is NULL or empty");
-        const meshioplusplus::AdjacencyKind k =
-            meshioplusplus::adjacency_kind_from_name(kind && *kind ? kind : "node");
-        const meshioplusplus::GraphFormat f = format && *format
-                                                  ? meshioplusplus::graph_format_from_name(format)
-                                                  : meshioplusplus::graph_format_for_path(path);
-        const meshioplusplus::GraphSummary s =
-            meshioplusplus::write_graph(path, meshioplusplus::adjacency(mesh->mMesh, k), f);
+        meshioplusplus::GraphSummary s;
+        try {
+            const meshioplusplus::AdjacencyKind k =
+                meshioplusplus::adjacency_kind_from_name(kind && *kind ? kind : "node");
+            const meshioplusplus::GraphFormat f =
+                format && *format ? meshioplusplus::graph_format_from_name(format)
+                                  : meshioplusplus::graph_format_for_path(path);
+            s = meshioplusplus::write_graph(path, meshioplusplus::adjacency(mesh->mMesh, k), f);
+        } catch (const std::invalid_argument& e) {
+            // An unknown kind or format, or an extension naming neither.
+            return fail(MIO_ERR_INVALID_ARG, e.what());
+        } catch (const std::runtime_error& e) {
+            // The file could not be opened or written.
+            return fail(MIO_ERR_WRITE, e.what());
+        }
         if (num_vertices)
             *num_vertices = s.mNumVertices;
         if (num_edges)
