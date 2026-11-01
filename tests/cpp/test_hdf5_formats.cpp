@@ -1342,7 +1342,15 @@ void write_one_chunk(const std::string& rPath, std::size_t elem, hsize_t n, std:
         ASSERT_EQ(compress2(stored.data(), &cl, raw.data(), static_cast<uLong>(payload), 6), Z_OK);
         stored.resize(cl);
     }
-    hid_t file = H5Fcreate(rPath.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    // libhdf5 1.14.4+ refuses to create a dataset of a datatype with this many unused
+    // numeric bits unless the file integrity checks are relaxed; the file is built
+    // deliberately malformed here, and the read side must still refuse it.
+    hid_t fapl = H5Pcreate(H5P_FILE_ACCESS);
+#ifdef H5F_RFIC_ALL
+    H5Pset_relax_file_integrity_checks(fapl, H5F_RFIC_ALL);
+#endif
+    hid_t file = H5Fcreate(rPath.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, fapl);
+    H5Pclose(fapl);
     hid_t type = H5Tcopy(H5T_STD_I64LE);
     H5Tset_size(type, elem);
     hsize_t dims[1] = {n};
@@ -1526,9 +1534,12 @@ TEST(H5Util, ACompactDatasetStoredShortIsRefusedBeforeTheRead) {
         h5::read_dataset(file, "c");
         ADD_FAILURE() << "a compact dataset stored short was read";
     } catch (const meshioplusplus::ReadError& e) {
-        EXPECT_NE(std::string(e.what()).find("compact dataset 'c' stores 0 bytes"),
-                  std::string::npos)
-            << e.what();
+        // libhdf5 1.14.6 refuses such a dataset when it is opened ("size of compact
+        // dataset's data buffer doesn't match"), before our guard sees it.
+        const std::string what = e.what();
+        EXPECT_TRUE(what.find("compact dataset 'c' stores 0 bytes") != std::string::npos ||
+                    what.find("missing dataset 'c'") != std::string::npos)
+            << what;
     }
     EXPECT_THROW(h5::read_dataset_rows(file, "c", 0, 2), meshioplusplus::ReadError);
 }
