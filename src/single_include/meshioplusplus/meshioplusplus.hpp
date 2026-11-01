@@ -81054,6 +81054,11 @@ std::string read_attr_string(hid_t loc, const std::string& rName) {
     Hid t(H5Aget_type(a), H5Tclose);
     h5u_check_one_value(a, rName);
     if (H5Tis_variable_str(t) > 0) {
+        // A variable-length element is a 4-byte length plus a global-heap
+        // reference (4 or 8 byte address, 4 byte index): 12 or 16 bytes.
+        const hsize_t stored = H5Aget_storage_size(a);
+        if (stored != 12 && stored != 16)
+            throw ReadError("HDF5: attribute '" + rName + "' has a malformed string reference");
         char* p = nullptr;
         Hid mt(H5Tcopy(H5T_C_S1), H5Tclose);
         H5Tset_size(mt, H5T_VARIABLE);
