@@ -32,9 +32,19 @@ def _load_format(module: str) -> None:
         importlib.import_module(f".{module}", __package__)
 
 
+def _ensure_plugins() -> None:
+    """Register the installed third-party formats (the ``meshioplusplus.formats``
+    entry points, roadmap 7.1.3) on the first use of the registry."""
+    from ._plugins import _format_state, load_format_plugins
+
+    if not _format_state["done"]:
+        load_format_plugins()  # cheap once done: one dict lookup per call
+
+
 def _load_all() -> None:
     """Import every format subpackage in the static table (``_format_table``)."""
     global _ALL_LOADED
+    _ensure_plugins()
     if _ALL_LOADED:
         return
     for module in ALL_MODULES:
@@ -102,12 +112,14 @@ _writer_map = _Registry()
 def _ensure_extension(ext: str) -> None:
     """Load the format subpackages that register ``ext`` (a dotted, lowercase
     suffix), so the registry can be read directly afterwards."""
+    _ensure_plugins()
     for module in EXTENSION_MODULES.get(ext, ()):
         _load_format(module)
 
 
 def _ensure_format(name: str) -> None:
     """Load the format subpackage that registers the format or writer ``name``."""
+    _ensure_plugins()
     module = FORMAT_MODULES.get(name)
     if module is not None:
         _load_format(module)
