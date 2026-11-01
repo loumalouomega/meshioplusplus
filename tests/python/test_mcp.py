@@ -2119,6 +2119,24 @@ def test_edit_regions_and_periodic(tmp_path):
         _tools.tool_periodic(src, "bottom", "top", translate=[0, 0, 0.5])
 
 
+def test_tools_never_fetch_urls(tmp_path):
+    """A URL given as a tool path is resolved as a path inside the sandbox,
+    never fetched (no server-side request forgery through the MCP server),
+    even though `read` itself reads URLs through fsspec (roadmap 7.1.2)."""
+    fsspec = pytest.importorskip("fsspec")
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float)
+    local = tmp_path / "tri.vtu"
+    meshioplusplus.write(
+        str(local), meshioplusplus.Mesh(pts, [("triangle", np.array([[0, 1, 2]]))])
+    )
+    fsspec.filesystem("memory").pipe("/mcp/tri.vtu", local.read_bytes())
+    try:
+        with pytest.raises(ValueError, match="not found"):
+            _tools.tool_graph("memory://mcp/tri.vtu", str(tmp_path / "g.graph"))
+    finally:
+        fsspec.filesystem("memory").rm("/mcp/tri.vtu")
+
+
 def test_graph_tool(tmp_path):
     src = str(tmp_path / "in.vtu")
     pts = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], dtype=float)

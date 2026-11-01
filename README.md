@@ -185,6 +185,7 @@ meshioplusplus regions    in.msh out.msh --union inlet=in_a,in_b --rename "Surfa
 meshioplusplus periodic   in.msh --slave inlet --master outlet --translate 2,0,0  # periodic node pairs
 meshioplusplus graph      in.vtu part.graph --kind cell     # dual graph as a METIS file (or .grf: Scotch)
 meshioplusplus convert    case.msh.gz case.vtu            # compressed input (.gz .bz2 .xz .zst .zip) read transparently
+meshioplusplus convert    s3://bucket/run/out.vtu out.msh # remote input through fsspec (Python CLI, [remote] extra)
 meshioplusplus repair     in.vtu out.vtu                     # orientation, holes, bowties
 meshioplusplus shrinkwrap in.vtu scan.stl out.vtu           # project onto a target surface
 meshioplusplus sobolev-deform in.vtu out.vtu --array d --length-scale 0.5  # filter a displacement
@@ -1504,7 +1505,8 @@ The C++ core has no mandatory dependency. Everything below is either optional, b
 | [netCDF4](https://unidata.github.io/netcdf4-python/) | `[all]` | the Python fallback for Exodus | MIT |
 | [KaHIP](https://kahip.github.io/) | `[kahip]` / CMake | the quality graph-partitioning backend | MIT |
 | [Open CASCADE Technology](https://github.com/Open-Cascade-SAS/OCCT) | CMake (`-DMESHIOPLUSPLUS_WITH_OCCT=ON`) | `fit_cad`: analytic, freeform, fillet and thread CAD faces sewn into a STEP solid; STEP/IGES reading; on by default and auto-detected, linked statically into the PyPI wheels, the release CLI binaries, the Blender extension, the Conan and vcpkg packages (by default) and the full WASM artifact (`build/build-occt.sh`, [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)) | LGPL-2.1 with the OCCT exception |
-| [zstandard](https://github.com/indygreg/python-zstandard), [lz4](https://github.com/python-lz4/python-lz4) | `[codecs]` | the Python fallback for the optional VTK block codecs | BSD-3-Clause / BSD-2-Clause |
+| [zstandard](https://github.com/indygreg/python-zstandard), [lz4](https://github.com/python-lz4/python-lz4) | `[codecs]` | the Python fallback for the optional VTK block codecs, and `.zst` input before Python 3.14 | BSD-3-Clause / BSD-2-Clause |
+| [fsspec](https://filesystem-spec.readthedocs.io), [aiohttp](https://docs.aiohttp.org) | `[remote]` | reading meshes from URLs (`https://`, `s3://`, `gs://`...; object stores add `s3fs`/`gcsfs`/`adlfs`) | BSD-3-Clause / Apache-2.0 |
 
 #### Bundled and build-time
 

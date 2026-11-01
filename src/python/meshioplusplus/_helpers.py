@@ -390,7 +390,17 @@ def read(
     """
     if ghosts not in GHOST_POLICIES:
         raise ValueError(f"meshio++: ghosts must be 'keep' or 'drop', got {ghosts!r}")
-    if is_buffer(filename, "r"):
+    from ._remote import is_url
+
+    if is_url(filename):
+        # A URL is fetched to a local copy under its own name (`_remote.py`).
+        from ._remote import fetched
+
+        with fetched(filename, file_format) as local:
+            mesh = _read_file(
+                Path(local), file_format, points_only, arrays, time_step, piece, ghosts
+            )
+    elif is_buffer(filename, "r"):
         mesh = _read_buffer(
             filename, file_format, points_only, arrays, time_step, piece, ghosts
         )
@@ -434,6 +444,13 @@ def read_metadata(filename, file_format: Union[str, None] = None) -> dict:
     metadata path are read in full and summarized. The answer is always
     correct; this says whether it was cheap.
     """
+    from ._remote import is_url
+
+    if is_url(filename):
+        from ._remote import fetched
+
+        with fetched(filename, file_format) as local:
+            return read_metadata(local, file_format)
     if not is_buffer(filename, "r"):
         try:
             from . import _core

@@ -18,6 +18,8 @@ Convert a mesh file from one format to another.
 
 Every verb that reads a mesh reads it compressed too: `convert cube.msh.gz cube.vtu` strips `.gz`, `.bz2`, `.xz`, `.zst` or a single-member `.zip` to infer the format, in both CLIs ([compressed files](formats.md#compressed-files)).
 
+The Python CLI also reads URLs (`meshioplusplus convert https://example.org/cube.vtu cube.msh`, `s3://...`) with the optional fsspec; the native CLI reads local paths ([remote files](formats.md#remote-files)).
+
 ```
 meshioplusplus convert [options] INFILE OUTFILE
 ```

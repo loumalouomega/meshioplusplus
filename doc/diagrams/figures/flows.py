@@ -1087,7 +1087,7 @@ def roadmap_map():
         (
             "§7 new capabilities",
             [
-                ("remote input · plugins · units", "S"),
+                ("format plugins · length units", "S"),
                 ("geodesics · eigenmodes · UVs", "M"),
                 ("morphing · untangling · metrics", "M"),
                 ("hull · Delaunay · point clouds", "L"),

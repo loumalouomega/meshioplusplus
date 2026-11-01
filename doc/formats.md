@@ -233,6 +233,16 @@ A codec the build lacks raises `ReadError` naming the option to enable, and corr
 
 ---
 
+## Remote files
+
+With the optional [`fsspec`](https://filesystem-spec.readthedocs.io) (the `remote` extra: `pip install meshioplusplus[remote]`), `read` and `read_metadata` take a URL: `read("https://example.org/cube.vtu")`, `read("s3://bucket/run/step_010.vtu.gz")`, `gs://`, `az://`, `memory://` and every protocol fsspec knows (an object store needs its own filesystem package: `s3fs`, `gcsfs`, `adlfs`). The file is fetched into a private temporary directory under the name its URL ends in (query and fragment dropped), read as a local path and removed, so format inference and [compressed files](#compressed-files) work unchanged; a chained URL such as `simplecache::https://...` keeps a local copy between reads. Sequences and [dataset manifests](./datasets.md) take URLs too, a `*`/`?` pattern being expanded on the remote filesystem.
+
+- **Python only.** The native CLI, the C API and the flat bindings read local paths (the Python CLI, which reads through `read`, takes URLs). The MCP server never fetches a URL: a tool's path is resolved inside its sandbox like any other.
+- **Multi-file formats are refused by name**, as for buffers: a URL is fetched as one file, without the files beside it.
+- A missing URL is a `ReadError` naming it, and so is an unknown protocol or a missing filesystem package. Without `fsspec`, reading a URL is a `ReadError` naming the package.
+
+---
+
 ## Provenance
 
 Since v10.15.0, every writer that carries a free-text header slot emits one canonical line, `Written by meshio++ v<release>` (`meshioplusplus._provenance.TAG` on the Python side, `detail::kProvenanceTag` on the C++ side — a single owner on each side, so the two engines emit character-identical bytes). Since v10.16.0 a caller can additionally opt into a richer block — source, target, the operation chain, conversion assumptions, a timestamp — rendered where a format's header slot can hold it; see [`doc/provenance.md`](./provenance.md) for the design and [`doc/roadmap.md`](./roadmap.md) section 1 for what remains open (reading the block back on read).

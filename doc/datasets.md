@@ -61,6 +61,8 @@ A settings-family JSON (the [pipeline](./pipeline) / [sequences](./sequences) co
 
 **Relative paths resolve against the manifest file's directory** — a manifest loaded from `campaign/m.json` finds `cases/out_*.vtu` under `campaign/`, so the whole directory moves as one portable unit. A manifest loaded from a dict or JSON text (no file location) resolves against the CWD; `save(path)` makes the saved location the new anchor.
 
+**A source can be a URL** (`s3://bucket/runs/c42/out_*.vtu`, `https://...`) when the optional `fsspec` is installed (the `remote` extra, plus `s3fs`, `gcsfs` or `adlfs` for an object store): a URL is never joined to the manifest's directory, a `Pattern` is expanded on the remote filesystem with the same natural-numeric sort, and each step is fetched when it is read. See [remote files](./formats.md#remote-files).
+
 ## Python API
 
 ```python
