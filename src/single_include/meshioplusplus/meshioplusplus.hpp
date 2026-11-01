@@ -136492,6 +136492,12 @@ void read_data(GmshCursor& rCur, const std::string& rTag, bool is_ascii,
 }
 
 NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1) {
+    // Cell data shorter than the elements it annotates is corrupt input: the
+    // range must lie inside the array. Checked before anything is allocated
+    // or copied (fuzz shard 3 read 192 bytes past a 96-byte array).
+    const std::size_t nrows = rA.Shape().empty() ? 0 : rA.Shape()[0];
+    if (r0 > r1 || r1 > nrows)
+        throw ReadError("Gmsh: cell data has fewer values than the elements it annotates");
     std::size_t nc = rA.Shape().size() >= 2 ? rA.Shape()[1] : 1;
     std::size_t isz = dtype_size(rA.Dtype());
     std::vector<std::size_t> shape = rA.Shape();
