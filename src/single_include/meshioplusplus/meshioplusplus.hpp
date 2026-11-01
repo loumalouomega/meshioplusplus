@@ -25349,8 +25349,7 @@ MESHIOPLUSPLUS_API GraphFormat graph_format_for_path(const std::string& rPath);
  * @brief The @p Kind graph of @p rMesh. A connectivity entry outside the
  * points is ignored, as the shared adjacency kernels ignore it.
  */
-MESHIOPLUSPLUS_API Adjacency adjacency(const Mesh& rMesh,
-                                       AdjacencyKind Kind = AdjacencyKind::Node);
+MESHIOPLUSPLUS_API Adjacency adjacency(const Mesh& rMesh, AdjacencyKind Kind = AdjacencyKind::Node);
 
 /** @brief The vertex count, undirected edge count and largest degree of @p rGraph. */
 MESHIOPLUSPLUS_API GraphSummary graph_summary(const Adjacency& rGraph);
@@ -75920,8 +75919,7 @@ struct DualGraphFacetRecord {
 };
 
 bool dualgraph_is_polygon(const Mesh::CellView& rBlock) {
-    return !rBlock.IsPolyhedron() &&
-           (rBlock.IsRagged() || rBlock.Type().rfind("polygon", 0) == 0);
+    return !rBlock.IsPolyhedron() && (rBlock.IsRagged() || rBlock.Type().rfind("polygon", 0) == 0);
 }
 
 }  // namespace
@@ -208472,8 +208470,7 @@ NDArray adjgraph_array(const std::vector<std::int64_t>& rValues) {
 // so the shared node-adjacency kernel skips it under Kind::Edge (smooth pins
 // its nodes on purpose). Its rows are rings, which is their true edge set.
 bool adjgraph_uniform_polygon(const Mesh::CellView& rBlock) {
-    return !rBlock.IsRagged() && !rBlock.IsPolyhedron() &&
-           rBlock.Type().rfind("polygon", 0) == 0;
+    return !rBlock.IsRagged() && !rBlock.IsPolyhedron() && rBlock.Type().rfind("polygon", 0) == 0;
 }
 
 // Adds the ring edges of the uniform polygon blocks to an edge graph: a row's
@@ -208570,8 +208567,7 @@ GraphSummary adjgraph_check(const Adjacency& rGraph) {
             if (j < 0 || static_cast<std::size_t>(j) >= n)
                 throw std::invalid_argument("write_graph: row " + std::to_string(i) +
                                             " names vertex " + std::to_string(j) +
-                                            ", outside the " + std::to_string(n) +
-                                            " vertices");
+                                            ", outside the " + std::to_string(n) + " vertices");
             if (static_cast<std::size_t>(j) == i)
                 throw std::invalid_argument("write_graph: row " + std::to_string(i) +
                                             " has a self-loop, which a graph file cannot hold");
@@ -208635,8 +208631,9 @@ GraphFormat graph_format_from_name(const std::string& rName) {
 
 GraphFormat graph_format_for_path(const std::string& rPath) {
     std::string ext = std::filesystem::path(rPath).extension().string();
-    std::transform(ext.begin(), ext.end(), ext.begin(),
-                   [](unsigned char c) { return static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c); });
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
+        return static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c);
+    });
     if (ext == ".graph" || ext == ".metis")
         return GraphFormat::Metis;
     if (ext == ".grf")
@@ -208659,10 +208656,10 @@ Adjacency adjacency(const Mesh& rMesh, AdjacencyKind Kind) {
         return out;
     }
     const std::size_t n = rMesh.NumPoints();
-    detail::NodeAdjacency csr = detail::build_node_adjacency(
-        rMesh, n,
-        Kind == AdjacencyKind::Clique ? detail::NodeAdjacencyKind::Clique
-                                      : detail::NodeAdjacencyKind::Edge);
+    detail::NodeAdjacency csr = detail::build_node_adjacency(rMesh, n,
+                                                             Kind == AdjacencyKind::Clique
+                                                                 ? detail::NodeAdjacencyKind::Clique
+                                                                 : detail::NodeAdjacencyKind::Edge);
     if (Kind == AdjacencyKind::Node)
         adjgraph_add_polygon_rings(rMesh, n, csr);
     out.mIndptr = adjgraph_array(csr.mXadj);
