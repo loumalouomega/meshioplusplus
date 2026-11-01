@@ -19,6 +19,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 - Both operations are on every surface: Python, both CLIs (`tet-to-poly`, `poly-to-tet`), the pipeline (`TetToPoly`, `PolyToTet`), MCP, the C API (`mio_tet_to_poly` with `mio_tet_to_poly_opts`, and `mio_poly_to_tet`), Fortran, Julia, R and WASM (`tetToPoly`, `polyToTet`). The example notebook `48_tet_poly.ipynb` shows them.
 - **ABI:** `MESHIOPLUSPLUS_ABI_VERSION` 36 -> 37 (Tier A): `OptimizeVolumeOptions` appends `mObjective` and `mMaxRingSize` (40 -> 48 bytes) and `OptimizeVolumeResult` five fields; the new headers `operations/tet_poly.hpp` and `operations/select.hpp` ride along. See [ABI](doc/abi.md).
 - **Fixed: Gmsh 4.0 and 4.1 readers refuse cell data shorter than its elements.** The C++ reader read past the end of the array (a heap-buffer-overflow the fuzz readers shard found); both readers now raise `ReadError`. The Python reference reader also raises `ReadError`, not a bare `ValueError`, for a malformed data-section header or a non-numeric value.
+- **Fixed: HDF5 readers refuse attributes that do not hold one value of their type's size.** The attribute readers copied past the end of an attribute whose stored bytes disagreed with its type and extent, which HDF5 2.2.0 does not check either (found by the fuzz readers shard in an HMF file). Such files now raise `ReadError`. The campaign's HDF5 pin stays at 1.14.6.
 
 ## v18.0.0 (2026-10-30)
 

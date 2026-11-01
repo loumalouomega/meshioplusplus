@@ -655,10 +655,36 @@ bool has_attr(hid_t loc, const std::string& rName) {
     return H5Aexists(loc, rName.c_str()) > 0;
 }
 
+namespace {
+
+// The readers take one value from an attribute, so the attribute must hold one
+// element whose stored bytes are exactly its type's size. HDF5 2.2.0 still reads
+// past the end of an attribute whose stored size disagrees with its type (the
+// fuzz shard's HMF input stores 16 bytes for one 8-byte string), so these checks
+// run before any H5Aread instead of trusting the library.
+void h5u_check_one_value(hid_t a, const std::string& rName) {
+    Hid space(H5Aget_space(a), H5Sclose);
+    if (!space.Valid() || H5Sget_simple_extent_npoints(space) != 1)
+        throw ReadError("HDF5: attribute '" + rName + "' does not hold one value");
+}
+
+void h5u_check_stored_size(hid_t a, hid_t ftype, const std::string& rName) {
+    const std::size_t want = H5Tget_size(ftype);
+    const std::size_t stored = static_cast<std::size_t>(H5Aget_storage_size(a));
+    if (stored != want)
+        throw ReadError("HDF5: attribute '" + rName + "' stores " + std::to_string(stored) +
+                        " bytes for a " + std::to_string(want) + "-byte value");
+}
+
+}  // namespace
+
 std::int64_t read_attr_int(hid_t loc, const std::string& rName) {
     Hid a(H5Aopen(loc, rName.c_str(), H5P_DEFAULT), H5Aclose);
     if (!a.Valid())
         throw ReadError("HDF5: missing attribute '" + rName + "'");
+    Hid t(H5Aget_type(a), H5Tclose);
+    h5u_check_one_value(a, rName);
+    h5u_check_stored_size(a, t, rName);
     std::int64_t v = 0;
     if (H5Aread(a, H5T_NATIVE_INT64, &v) < 0)
         throw ReadError("HDF5: failed reading attribute '" + rName + "'");
@@ -678,6 +704,7 @@ std::string read_attr_string(hid_t loc, const std::string& rName) {
     if (!a.Valid())
         throw ReadError("HDF5: missing attribute '" + rName + "'");
     Hid t(H5Aget_type(a), H5Tclose);
+    h5u_check_one_value(a, rName);
     if (H5Tis_variable_str(t) > 0) {
         char* p = nullptr;
         Hid mt(H5Tcopy(H5T_C_S1), H5Tclose);
@@ -689,6 +716,7 @@ std::string read_attr_string(hid_t loc, const std::string& rName) {
         H5free_memory(p);
         return out;
     }
+    h5u_check_stored_size(a, t, rName);
     std::size_t sz = H5Tget_size(t);
     std::vector<char> buf(sz + 1, '\0');
     Hid mt(H5Tcopy(H5T_C_S1), H5Tclose);
