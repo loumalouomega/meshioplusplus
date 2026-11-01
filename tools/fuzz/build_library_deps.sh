@@ -11,7 +11,7 @@ export CXXFLAGS=${CXXFLAGS:-$CFLAGS}
 JOBS=${JOBS:-4}
 mkdir -p "$PREFIX" "$WORK"
 patch_hash=$(sha256sum "$(dirname "$0")/patches/netcdf-4.9.3-utf8proc-null-guard.patch" | cut -d' ' -f1)
-manifest=$(printf '%s\n' "recipe=4 zlib=1.3.1 hdf5=1.14.6 netcdf=4.9.3 hdf5-no-function-check netcdf-null-guard=$patch_hash" \
+manifest=$(printf '%s\n' "recipe=4 zlib=1.3.1 hdf5=2.2.0 netcdf=4.9.3 hdf5-no-function-check netcdf-null-guard=$patch_hash" \
     "$($CC --version)" "$($CXX --version)" "$CFLAGS" "$CXXFLAGS")
 if [ -f "$PREFIX/instrumentation.txt" ]; then
     [ "$(cat "$PREFIX/instrumentation.txt")" = "$manifest" ] || {
@@ -29,8 +29,8 @@ fetch() {
 }
 fetch https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz \
     zlib-1.3.1.tar.gz 9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23
-fetch https://github.com/HDFGroup/hdf5/releases/download/hdf5_1.14.6/hdf5-1.14.6.tar.gz \
-    hdf5-1.14.6.tar.gz e4defbac30f50d64e1556374aa49e574417c9e72c6b1de7a4ff88c4b1bea6e9b
+fetch https://github.com/HDFGroup/hdf5/releases/download/2.2.0/hdf5-2.2.0.tar.gz \
+    hdf5-2.2.0.tar.gz 1a1ab8209b35586fbc1aa279ba76d102130b95badcb20ca329587219112d8c16
 fetch https://github.com/Unidata/netcdf-c/archive/refs/tags/v4.9.3.tar.gz \
     netcdf-c-4.9.3.tar.gz 990f46d49525d6ab5dc4249f8684c6deeaf54de6fec63a187e9fb382cc0ffdff
 # Backported upstream maintenance fix for the bundled Unicode helper's
@@ -44,7 +44,7 @@ common=(-G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_INSTALL_PREFIX="$PREF
 cmake -S "$WORK/zlib-1.3.1" -B "$WORK/build-zlib" "${common[@]}" -DZLIB_BUILD_EXAMPLES=OFF
 cmake --build "$WORK/build-zlib" --parallel "$JOBS"
 cmake --install "$WORK/build-zlib"
-cmake -S "$WORK/hdf5-1.14.6" -B "$WORK/build-hdf5" "${common[@]}" \
+cmake -S "$WORK/hdf5-2.2.0" -B "$WORK/build-hdf5" "${common[@]}" \
     -DCMAKE_C_FLAGS="$CFLAGS -fno-sanitize=function" \
     -DBUILD_TESTING=OFF -DHDF5_BUILD_TOOLS=OFF -DHDF5_BUILD_UTILS=OFF \
     -DHDF5_BUILD_EXAMPLES=OFF -DHDF5_BUILD_CPP_LIB=OFF -DHDF5_BUILD_FORTRAN=OFF \
