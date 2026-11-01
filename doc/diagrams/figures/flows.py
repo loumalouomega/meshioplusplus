@@ -1031,14 +1031,7 @@ def roadmap_map():
             [],
         ),
         (
-            "§3 operations",
-            [
-                ("MMG in the browser (full WASM)", "M"),
-            ],
-            [],
-        ),
-        (
-            "§4 ecosystem reach",
+            "§3 ecosystem reach",
             [
                 ("registries (calendar-bound)", "S"),
                 ("Rust bindings over the C API", "M"),

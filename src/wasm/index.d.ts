@@ -683,6 +683,85 @@ export interface MirrorResult {
   warnings: string[];
 }
 
+/** The parameters every MMG operation shares (the C API's `mio_mmg_params`). */
+export interface MmgParameters {
+  hmin?: number;
+  hmax?: number;
+  hausd?: number;
+  hgrad?: number;
+  hgradreq?: number;
+  angleDetection?: number;
+  optim?: boolean;
+  noInsert?: boolean;
+  noSwap?: boolean;
+  noMove?: boolean;
+  noSurf?: boolean;
+  nreg?: boolean;
+  opnbdy?: boolean;
+  mem?: number;
+  verbose?: number;
+  /** Point ids MMG must keep. */
+  frozen?: number[];
+  /** Region names whose entities MMG must keep. */
+  required?: string[];
+  /** Per-region sizes. */
+  local?: { region: string; hmin?: number; hmax?: number; hausd?: number }[];
+}
+
+/** Options of `adapt`. */
+export interface AdaptOptions extends MmgParameters {
+  hsiz?: number;
+  size?: string;
+  metric?: string;
+}
+
+/** Options of `discretizeLevelset`. */
+export interface DiscretizeLevelsetOptions extends MmgParameters {
+  levelSet?: string;
+  isovalue?: number;
+  removeSmallComponents?: number;
+  materials?: { ref: number; split?: boolean; refInside?: number; refOutside?: number }[];
+}
+
+/** Options of `meshDomain`. */
+export interface MeshDomainOptions extends MmgParameters {
+  hsiz?: number;
+  size?: string;
+  /** A point inside each hole, flattened (x, y[, z]) per hole. */
+  holes?: number[];
+}
+
+/** Options of `move`. */
+export interface MoveOptions extends MmgParameters {
+  displacement?: string;
+  moving?: string[];
+  lagrangian?: number;
+}
+
+/** Options of `metricFromHessian`. */
+export interface MetricFromHessianOptions {
+  hessian?: string;
+  error?: number;
+  hmin?: number;
+  hmax?: number;
+  output?: string;
+}
+
+/** What an MMG operation returns. */
+export interface MmgResult {
+  mesh: Mesh;
+  report: {
+    status: 'success' | 'lowFailure';
+    library: string;
+    numPointsIn: number;
+    numPointsOut: number;
+    numElementsIn: number;
+    numElementsOut: number;
+    quality: { min: number; max: number; mean: number; count: number };
+    warnings: string[];
+  };
+}
+
 /** Options of `selectRegion` (doc/select.md). At least one criterion is required. */
 export interface SelectRegionOptions {
   /** What the region groups (default 'cell'); 'side' names (cell, local facet) pairs. */
@@ -2445,11 +2524,55 @@ export interface MeshioPlusPlusModule {
   hasNetgen(): boolean;
 
   /**
-   * Whether the MMG backend (`adapt`, `discretize_levelset`, `mesh_domain`,
-   * `move`) is linked in: always false in WebAssembly until the port of
-   * roadmap 3.1.8.
+   * Whether the MMG backend (`adapt`, `discretizeLevelset`, `meshDomain`,
+   * `move`) is linked in: true in the full artifact (`{full: true}`, MMG 5.8
+   * linked statically, LGPL-3.0), false in the lean one, where those
+   * operations throw by name.
    */
   hasMmg(): boolean;
+
+  /**
+   * Whether MMG has ELAS, the linear-elasticity library `move` needs: false
+   * in both artifacts (ELAS is GPL-3.0), so `move` throws by name.
+   */
+  hasMmgElas(): boolean;
+
+  /**
+   * Remesh a simplicial mesh with MMG to a constant size (`hsiz`), a
+   * one-component `point_data` size (`size`) or a `point_data` metric
+   * (`metric`), within `hmin`/`hmax`/`hausd` (doc/mmg.md). The full artifact
+   * only.
+   * @throws {Error} naming MMG and `{full: true}` in the lean artifact.
+   */
+  adapt(mesh: Mesh, options?: AdaptOptions): MmgResult;
+
+  /**
+   * Insert the `isovalue` set of a `point_data` level set as a conforming
+   * interface, splitting `materials` into inside and outside references
+   * (doc/mmg.md). The full artifact only.
+   */
+  discretizeLevelset(mesh: Mesh, options?: DiscretizeLevelsetOptions): MmgResult;
+
+  /**
+   * Mesh a planar domain from its boundary lines with mmg2d, `holes` naming a
+   * point inside each hole (doc/mmg.md). The full artifact only.
+   */
+  meshDomain(
+    boundary: Mesh,
+    options?: MeshDomainOptions,
+  ): MmgResult & { numSubdomains: number; numHoles: number };
+
+  /**
+   * Move a mesh by a `point_data` displacement (doc/mmg.md). Needs MMG with
+   * ELAS, which neither artifact has: it always throws by name.
+   */
+  move(mesh: Mesh, options?: MoveOptions): MmgResult;
+
+  /**
+   * A `point_data` metric from a `point_data` Hessian and a target error, for
+   * `adapt`'s `metric` (doc/mmg.md). Needs no MMG: both artifacts.
+   */
+  metricFromHessian(mesh: Mesh, options?: MetricFromHessianOptions): Mesh;
 
   /**
    * Whether the KaHIP kaffpa partitioner is linked in, so `partition` with

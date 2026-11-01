@@ -3,7 +3,7 @@
 meshio++ itself is MIT ([LICENSE](https://github.com/loumalouomega/meshioplusplus/blob/master/LICENSE)). The WebAssembly artifacts in `dist/` are statically linked with the libraries below. The package ships two pairs of artifacts, and which libraries an application carries depends on which pair it loads:
 
 - **Lean** (`meshioplusplus_wasm`, `meshioplusplus_wasm_mt`; `loadMeshioPlusPlus()`, the default): every component here is under a permissive licence except Eigen (MPL-2.0), which the lean pair compiles in for the MED transpose; an application that loads only the lean pair takes on the MPL-2.0 file-level obligations for Eigen's own source.
-- **Full** (`meshioplusplus_wasm_full`, `meshioplusplus_wasm_full_mt`; `loadMeshioPlusPlus({}, {full: true})`): everything in the lean pair, plus OpenCASCADE, zstd, lz4, bzip2, KaHIP and Netgen. **OpenCASCADE is LGPL-2.1 with the OCCT exception and Netgen is LGPL-2.1**, so the full pair is not plain MIT. The package's licence expression, `MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0) AND LGPL-2.1-only`, says so.
+- **Full** (`meshioplusplus_wasm_full`, `meshioplusplus_wasm_full_mt`; `loadMeshioPlusPlus({}, {full: true})`): everything in the lean pair, plus OpenCASCADE, zstd, lz4, bzip2, KaHIP, Netgen and MMG. **OpenCASCADE is LGPL-2.1 with the OCCT exception, Netgen is LGPL-2.1 and MMG is LGPL-3.0**, so the full pair is not plain MIT. The package's licence expression, `MIT AND (LGPL-2.1-only WITH OCCT-exception-1.0) AND LGPL-2.1-only AND LGPL-3.0-or-later`, says so. MMG is linked without ELAS, whose GPL-3.0 would make the full pair a GPL-3.0 work, so `move` throws by name there.
 
 | Component | Version | Licence | In the lean pair | In the full pair |
 | --- | --- | --- | --- | --- |
@@ -19,6 +19,7 @@ meshio++ itself is MIT ([LICENSE](https://github.com/loumalouomega/meshioplusplu
 | [bzip2](https://sourceware.org/bzip2/) (Emscripten's port) | 1.0.6 | bzip2-1.0.6 | no | yes |
 | [KaHIP](https://github.com/KaHIP/KaHIP) (serial kaffpa only) | 3.25 | MIT | no | yes |
 | [Netgen](https://github.com/NGSolve/netgen) (nglib and ngcore only) | 6.2.2401 | LGPL-2.1-only | no | yes |
+| [MMG](https://github.com/MmgTools/mmg) (libmmg, without SCOTCH, VTK or ELAS) | 5.8.0 | LGPL-3.0-or-later | no | yes |
 
 ## OpenCASCADE and the LGPL
 
@@ -36,8 +37,18 @@ Netgen's licence is the GNU Lesser General Public License 2.1. The full artifact
 2. `build/build-wasm-deps.sh --full` fetches that commit, verifies it, applies the patch and builds the wasm32 static libraries; `build/configure-wasm.sh --full-only --build` links them.
 3. Replacing the Netgen checkout with a modified one and re-running the two scripts produces a full artifact linked against it.
 
+## MMG and the LGPL
+
+MMG's licence is the GNU Lesser General Public License 3.0 or later. The full artifact links its `libmmg` statically into the `.wasm` binary, as the backend of `adapt`, `discretizeLevelset` and `meshDomain`; the relinking right is served the same way as OpenCASCADE's and Netgen's:
+
+1. The MMG source is the upstream tag `v5.8.0`, commit `4d8232c8aebfed877935d75d4d4a67e850962422`, with one patch, `build/patches/mmg-5.8.0-emscripten.patch`, which writes stub Fortran headers instead of running its header generator (a C program that calls `perl` through `system()`, which cannot run under node) and gives one tentative definition an initialiser (WebAssembly has no common symbols, and MMG compiles with `-fcommon`). It is built without SCOTCH, VTK and ELAS, with 32-bit `MMG5_int`.
+2. `build/build-wasm-deps.sh --full` fetches that commit, verifies it, applies the patch and builds the wasm32 static library; `build/configure-wasm.sh --full-only --build` links it.
+3. Replacing the MMG checkout with a modified one and re-running the two scripts produces a full artifact linked against it.
+
+The LGPL-3.0 adds to the LGPL-2.1's terms the installation information of the GPL-3.0 for consumer products: the two scripts are that information here, since a WebAssembly artifact runs wherever a browser or node does.
+
 An application that loads only the lean pair never fetches the full artifact's bytes, and need not ship it.
 
 ## Licence texts
 
-Each component's licence is in its own source distribution at the version above (the pins are in `build/build-wasm-deps.sh`, Netgen's `LICENSE` at its tag; zlib and bzip2 are the ports of the pinned Emscripten SDK); the vendored gidpost's is `src/cpp/third_party/gidpost/LICENSE` in the meshio++ repository.
+Each component's licence is in its own source distribution at the version above (the pins are in `build/deps-pins.sh` and `build/occt-recipe.sh`, Netgen's `LICENSE` and MMG's `LICENSE` and `COPYING.LESSER` at their tags; zlib and bzip2 are the ports of the pinned Emscripten SDK); the vendored gidpost's is `src/cpp/third_party/gidpost/LICENSE` in the meshio++ repository.

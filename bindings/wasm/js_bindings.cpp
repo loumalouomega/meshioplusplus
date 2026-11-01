@@ -8394,10 +8394,282 @@ bool has_netgen_js() {
     return meshioplusplus::tetrahedralize_has_netgen();
 }
 
-// The MMG backend (roadmap 3.2): never in either WebAssembly artifact until
-// the port of roadmap 3.1.8, so the MMG operations are not bound here.
+// The MMG backend: linked statically into the full artifact (roadmap 3.1.8),
+// absent from the lean one, where every MMG operation throws by name.
 bool has_mmg_js() {
     return meshioplusplus::mmg_available();
+}
+
+/// Whether MMG has ELAS, which `move` needs: never in either artifact (ELAS is
+/// GPL-3.0, so the full artifact links MMG without it).
+bool has_mmg_elas_js() {
+    return meshioplusplus::mmg_has_elas();
+}
+
+namespace {
+
+// The shared MMG parameters from an options object (the C API's
+// mio_mmg_params, camelCased); `frozen` is a list of point ids.
+void mmg_js_parameters(const val& rOptions, std::size_t NumPoints,
+                       meshioplusplus::MmgParameters& rParams) {
+    const auto has = [&](const char* pKey) {
+        return rOptions.hasOwnProperty(pKey) && !rOptions[pKey].isUndefined() &&
+               !rOptions[pKey].isNull();
+    };
+    const auto num = [&](const char* pKey, double& rOut) {
+        if (has(pKey))
+            rOut = rOptions[pKey].as<double>();
+    };
+    const auto flag = [&](const char* pKey, bool& rOut) {
+        if (has(pKey))
+            rOut = rOptions[pKey].as<bool>();
+    };
+    num("hmin", rParams.mHmin);
+    num("hmax", rParams.mHmax);
+    num("hausd", rParams.mHausd);
+    num("hgrad", rParams.mHgrad);
+    num("hgradreq", rParams.mHgradreq);
+    num("angleDetection", rParams.mAngleDetection);
+    flag("optim", rParams.mOptim);
+    flag("noInsert", rParams.mNoInsert);
+    flag("noSwap", rParams.mNoSwap);
+    flag("noMove", rParams.mNoMove);
+    flag("noSurf", rParams.mNoSurf);
+    flag("nreg", rParams.mNreg);
+    flag("opnbdy", rParams.mOpnbdy);
+    if (has("mem"))
+        rParams.mMem = static_cast<std::int64_t>(rOptions["mem"].as<double>());
+    if (has("verbose"))
+        rParams.mVerbose = rOptions["verbose"].as<int>();
+    if (has("frozen")) {
+        rParams.mFrozen.assign(NumPoints, 0);
+        for (double id : emscripten::vecFromJSArray<double>(rOptions["frozen"])) {
+            if (!(id >= 0.0 && id < static_cast<double>(NumPoints)))
+                throw std::invalid_argument("meshio++: mmg: a frozen point id is out of range");
+            rParams.mFrozen[static_cast<std::size_t>(id)] = 1;
+        }
+    }
+    if (has("required"))
+        rParams.mRequired = emscripten::vecFromJSArray<std::string>(rOptions["required"]);
+    if (has("local")) {
+        const val local = rOptions["local"];
+        const int n = local["length"].as<int>();
+        for (int i = 0; i < n; ++i) {
+            const val e = local[i];
+            meshioplusplus::MmgLocalParameter p;
+            p.mRegion = e["region"].as<std::string>();
+            if (e.hasOwnProperty("hmin"))
+                p.mHmin = e["hmin"].as<double>();
+            if (e.hasOwnProperty("hmax"))
+                p.mHmax = e["hmax"].as<double>();
+            if (e.hasOwnProperty("hausd"))
+                p.mHausd = e["hausd"].as<double>();
+            rParams.mLocal.push_back(std::move(p));
+        }
+    }
+}
+
+const std::vector<std::string> kMmgJsParameterKeys = {
+    "hmin",   "hmax",     "hausd",   "hgrad",  "hgradreq", "angleDetection",
+    "optim",  "noInsert", "noSwap",  "noMove", "noSurf",   "nreg",
+    "opnbdy", "mem",      "verbose", "frozen", "required", "local"};
+
+// check_settings_keys over the shared parameters and an operation's own keys.
+void mmg_js_check_keys(const val& rOptions, const char* pWhat,
+                       std::initializer_list<const char*> Own) {
+    val keys = val::global("Object").call<val>("keys", rOptions);
+    const unsigned n = keys["length"].as<unsigned>();
+    for (unsigned i = 0; i < n; ++i) {
+        const std::string key = keys[i].as<std::string>();
+        const bool known =
+            std::find(kMmgJsParameterKeys.begin(), kMmgJsParameterKeys.end(), key) !=
+                kMmgJsParameterKeys.end() ||
+            std::any_of(Own.begin(), Own.end(), [&](const char* k) { return key == k; });
+        if (!known)
+            throw meshioplusplus::ReadError("meshio++ (wasm): unknown key '" + key + "' in " +
+                                            pWhat);
+    }
+}
+
+val mmg_js_report(const meshioplusplus::MmgReport& rReport) {
+    val out = val::object();
+    out.set("status",
+            std::string(rReport.mStatus == meshioplusplus::MmgStatus::Success ? "success"
+                                                                              : "lowFailure"));
+    out.set("library", rReport.mLibrary);
+    out.set("numPointsIn", static_cast<double>(rReport.mNumPointsIn));
+    out.set("numPointsOut", static_cast<double>(rReport.mNumPointsOut));
+    out.set("numElementsIn", static_cast<double>(rReport.mNumElementsIn));
+    out.set("numElementsOut", static_cast<double>(rReport.mNumElementsOut));
+    val q = val::object();
+    q.set("min", rReport.mQuality.mMin);
+    q.set("max", rReport.mQuality.mMax);
+    q.set("mean", rReport.mQuality.mMean);
+    q.set("count", static_cast<double>(rReport.mQuality.mCount));
+    out.set("quality", q);
+    val warnings = val::array();
+    for (const std::string& w : rReport.mWarnings)
+        warnings.call<void>("push", w);
+    out.set("warnings", warnings);
+    return out;
+}
+
+// The lean artifact has no MMG: say where it is, as tetrahedralize does.
+void mmg_js_require(const char* pOp) {
+    if (!meshioplusplus::mmg_available())
+        throw meshioplusplus::Unsupported(std::string("meshio++: ") + pOp +
+                                          ": this artifact has no MMG; the full one carries "
+                                          "it: loadMeshioPlusPlus({}, {full: true})");
+}
+
+bool mmg_js_has(const val& rOptions, const char* pKey) {
+    return !rOptions.isUndefined() && !rOptions.isNull() && rOptions.hasOwnProperty(pKey) &&
+           !rOptions[pKey].isUndefined() && !rOptions[pKey].isNull();
+}
+
+}  // namespace
+
+// adapt: remesh to a size (hsiz, or a point_data `size`) or a `metric`
+// (operations/mmg.hpp). The full artifact only; the lean one throws by name.
+val adapt_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        mmg_js_require("adapt");
+        const meshioplusplus::Mesh mesh = val_to_mesh(rMeshObj);
+        meshioplusplus::AdaptOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            mmg_js_check_keys(rOptions, "the adapt options", {"hsiz", "size", "metric"});
+            mmg_js_parameters(rOptions, mesh.NumPoints(), o.mParameters);
+            if (mmg_js_has(rOptions, "hsiz"))
+                o.mHsiz = rOptions["hsiz"].as<double>();
+            if (mmg_js_has(rOptions, "size"))
+                o.mSize = rOptions["size"].as<std::string>();
+            if (mmg_js_has(rOptions, "metric"))
+                o.mMetric = rOptions["metric"].as<std::string>();
+        }
+        meshioplusplus::AdaptResult r = meshioplusplus::adapt(mesh, o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("report", mmg_js_report(r.mReport));
+        return out;
+    });
+}
+
+// discretizeLevelset: the zero (or `isovalue`) set of a point_data level set
+// inserted as a conforming interface. The full artifact only.
+val discretize_levelset_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        mmg_js_require("discretizeLevelset");
+        const meshioplusplus::Mesh mesh = val_to_mesh(rMeshObj);
+        meshioplusplus::DiscretizeLevelsetOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            mmg_js_check_keys(rOptions, "the discretizeLevelset options",
+                              {"levelSet", "isovalue", "removeSmallComponents", "materials"});
+            mmg_js_parameters(rOptions, mesh.NumPoints(), o.mParameters);
+            if (mmg_js_has(rOptions, "levelSet"))
+                o.mLevelSet = rOptions["levelSet"].as<std::string>();
+            if (mmg_js_has(rOptions, "isovalue"))
+                o.mIsovalue = rOptions["isovalue"].as<double>();
+            if (mmg_js_has(rOptions, "removeSmallComponents"))
+                o.mRemoveSmallComponents = rOptions["removeSmallComponents"].as<double>();
+            if (mmg_js_has(rOptions, "materials")) {
+                const val mats = rOptions["materials"];
+                const int n = mats["length"].as<int>();
+                for (int i = 0; i < n; ++i) {
+                    const val e = mats[i];
+                    meshioplusplus::MmgMaterial m;
+                    m.mRef = static_cast<std::int64_t>(e["ref"].as<double>());
+                    if (e.hasOwnProperty("split"))
+                        m.mSplit = e["split"].as<bool>();
+                    if (e.hasOwnProperty("refInside"))
+                        m.mRefInside = static_cast<std::int64_t>(e["refInside"].as<double>());
+                    if (e.hasOwnProperty("refOutside"))
+                        m.mRefOutside = static_cast<std::int64_t>(e["refOutside"].as<double>());
+                    o.mMaterials.push_back(m);
+                }
+            }
+        }
+        meshioplusplus::DiscretizeLevelsetResult r = meshioplusplus::discretize_levelset(mesh, o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("report", mmg_js_report(r.mReport));
+        return out;
+    });
+}
+
+// meshDomain: a planar domain meshed from its boundary lines (mmg2d). The full
+// artifact only.
+val mesh_domain_js(const val& rBoundaryObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        mmg_js_require("meshDomain");
+        const meshioplusplus::Mesh boundary = val_to_mesh(rBoundaryObj);
+        meshioplusplus::MeshDomainOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            mmg_js_check_keys(rOptions, "the meshDomain options", {"hsiz", "size", "holes"});
+            mmg_js_parameters(rOptions, boundary.NumPoints(), o.mParameters);
+            if (mmg_js_has(rOptions, "hsiz"))
+                o.mHsiz = rOptions["hsiz"].as<double>();
+            if (mmg_js_has(rOptions, "size"))
+                o.mSize = rOptions["size"].as<std::string>();
+            if (mmg_js_has(rOptions, "holes"))
+                o.mHoles = emscripten::vecFromJSArray<double>(rOptions["holes"]);
+        }
+        meshioplusplus::MeshDomainResult r = meshioplusplus::mesh_domain(boundary, o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("report", mmg_js_report(r.mReport));
+        out.set("numSubdomains", static_cast<double>(r.mNumSubdomains));
+        out.set("numHoles", static_cast<double>(r.mNumHoles));
+        return out;
+    });
+}
+
+// move: a Lagrangian motion by a point_data displacement. Needs MMG with ELAS,
+// which neither artifact has: it throws by name.
+val move_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        mmg_js_require("move");
+        const meshioplusplus::Mesh mesh = val_to_mesh(rMeshObj);
+        meshioplusplus::MoveOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            mmg_js_check_keys(rOptions, "the move options",
+                              {"displacement", "moving", "lagrangian"});
+            mmg_js_parameters(rOptions, mesh.NumPoints(), o.mParameters);
+            if (mmg_js_has(rOptions, "displacement"))
+                o.mDisplacement = rOptions["displacement"].as<std::string>();
+            if (mmg_js_has(rOptions, "moving"))
+                o.mMoving = emscripten::vecFromJSArray<std::string>(rOptions["moving"]);
+            if (mmg_js_has(rOptions, "lagrangian"))
+                o.mLagrangian = rOptions["lagrangian"].as<int>();
+        }
+        meshioplusplus::AdaptResult r = meshioplusplus::move(mesh, o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("report", mmg_js_report(r.mReport));
+        return out;
+    });
+}
+
+// metricFromHessian: a point_data metric from a Hessian and a target error,
+// for adapt's `metric`. No MMG needed: both artifacts.
+val metric_from_hessian_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::MetricFromHessianOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the metricFromHessian options",
+                                {"hessian", "error", "hmin", "hmax", "output"});
+            if (mmg_js_has(rOptions, "hessian"))
+                o.mHessian = rOptions["hessian"].as<std::string>();
+            if (mmg_js_has(rOptions, "error"))
+                o.mError = rOptions["error"].as<double>();
+            if (mmg_js_has(rOptions, "hmin"))
+                o.mHmin = rOptions["hmin"].as<double>();
+            if (mmg_js_has(rOptions, "hmax"))
+                o.mHmax = rOptions["hmax"].as<double>();
+            if (mmg_js_has(rOptions, "output"))
+                o.mOutput = rOptions["output"].as<std::string>();
+        }
+        return mesh_to_val(meshioplusplus::metric_from_hessian(val_to_mesh(rMeshObj), o));
+    });
 }
 
 // project_to_cad (roadmap 6.10.1): every point of a mesh onto the CAD face or
@@ -8989,6 +9261,12 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("tetrahedralize", &tetrahedralize_js);
     emscripten::function("hasNetgen", &has_netgen_js);
     emscripten::function("hasMmg", &has_mmg_js);
+    emscripten::function("hasMmgElas", &has_mmg_elas_js);
+    emscripten::function("adapt", &adapt_js);
+    emscripten::function("discretizeLevelset", &discretize_levelset_js);
+    emscripten::function("meshDomain", &mesh_domain_js);
+    emscripten::function("move", &move_js);
+    emscripten::function("metricFromHessian", &metric_from_hessian_js);
     emscripten::function("igaEvaluate", &iga_evaluate_js);
     emscripten::function("render", &render_js);
     emscripten::function("renderText", &render_text_js);

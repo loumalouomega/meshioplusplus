@@ -200,7 +200,7 @@ full_deps_prefix() {  # full_deps_prefix <seq|mt>
     # shellcheck disable=SC2086
     fprefix=$("$SCRIPT_DIR/build-wasm-deps.sh" $occt_arg --print-full-prefix "$1")
     if [ ! -f "$fprefix/lib/libzstd.a" ] || [ ! -f "$fprefix/lib/liblz4.a" ] ||
-       [ ! -f "$fprefix/lib/libnglib.a" ] ||
+       [ ! -f "$fprefix/lib/libnglib.a" ] || [ ! -f "$fprefix/lib/libmmg.a" ] ||
        { [ "$WITH_OCCT" = "ON" ] && [ ! -f "$fprefix/lib/libTKernel.a" ]; }; then
         echo "== building the full artifact's libraries ($1; one-off, OpenCASCADE takes long) ==" >&2
         # shellcheck disable=SC2086
@@ -241,6 +241,7 @@ configure_variant() {
             full_args="$full_args -DMESHIOPLUSPLUS_WITH_BZIP2=ON"
             full_args="$full_args -DMESHIOPLUSPLUS_WITH_KAHIP=ON -DKAHIP_ROOT=$fprefix"
             full_args="$full_args -DMESHIOPLUSPLUS_WITH_NETGEN=ON -DNETGEN_ROOT=$fprefix"
+            full_args="$full_args -DMESHIOPLUSPLUS_WITH_MMG=ON -Dmmg_DIR=$fprefix/lib/cmake/mmg"
             if [ -n "$DEPS_PREFIX" ]; then
                 variant_root_arg="-DCMAKE_FIND_ROOT_PATH=$DEPS_PREFIX;$fprefix"
             else
