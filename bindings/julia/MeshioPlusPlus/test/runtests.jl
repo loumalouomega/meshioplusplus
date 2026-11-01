@@ -2038,6 +2038,10 @@ end
     @test 1.8 < gd.max_distance < 2.6
     close(gd.mesh)
     @test_throws MeshioError geodesic_distance(cube, Int[])
+    cc = convert_coordinates(cube; system="spherical", origin=(0.5, 0.5, 0.5))
+    @test cc.num_arrays == 0 && cc.num_singular == 0
+    close(cc.mesh)
+    @test_throws ArgumentError convert_coordinates(cube; system="polar")
 
     # A triangulated cube surface: 12 edges and 6 face diagonals, 1-based CSR.
     g = adjacency(cube)

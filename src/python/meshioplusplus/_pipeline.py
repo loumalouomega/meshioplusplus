@@ -394,6 +394,15 @@ _OP_TABLE = {
         "MaxIterations",
         "Tolerance",
     ),
+    "ConvertCoordinates": (
+        "System",
+        "Axis",
+        "Origin",
+        "Reference",
+        "Arrays",
+        "Inverse",
+        "RecordCoordinates",
+    ),
     "GeodesicDistance": (
         "Sources",
         "SourceRegion",
@@ -2433,6 +2442,24 @@ def _apply_step(mesh, step, steps, warnings):
                 f"{report['num_iterations']} iteration(s); the last iterate is "
                 "returned"
             )
+    elif op == "ConvertCoordinates":
+        from ._coordinates import convert_coordinates
+
+        mesh, report = convert_coordinates(
+            mesh,
+            _text(step, "System", "cylindrical"),
+            axis=_vec3(step, "Axis") if "Axis" in step else (0.0, 0.0, 1.0),
+            origin=_vec3(step, "Origin") if "Origin" in step else (0.0, 0.0, 0.0),
+            reference=(
+                _vec3(step, "Reference") if "Reference" in step else (1.0, 0.0, 0.0)
+            ),
+            arrays=_svec(step, "Arrays") or [],
+            inverse=_flag(step, "Inverse", False),
+            record_coordinates=_flag(step, "RecordCoordinates", True),
+            return_report=True,
+        )
+        entry["NumArrays"] = float(report["num_arrays"])
+        entry["NumSingular"] = float(report["num_singular"])
     elif op == "GeodesicDistance":
         from ._geodesic import geodesic_distance
 

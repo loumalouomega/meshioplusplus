@@ -3017,6 +3017,13 @@ contains
         call dist%free()
         dist = square%geodesic_distance(stat=ierr)
         call check(ierr /= 0, 'geodesic_distance needs a source')
+        ! Coordinates: the square's corners in cylindrical components about z.
+        dist = square%convert_coordinates(num_singular=g_nv, stat=ierr)
+        call check(ierr == 0, 'convert_coordinates succeeded')
+        call check(g_nv == 1_int64, 'the corner on the axis is the one singular point')
+        call dist%free()
+        dist = square%convert_coordinates(system='polar', stat=ierr)
+        call check(ierr /= 0, 'convert_coordinates rejects an unknown system')
         call square%free()
 
         ! Quality gate: a unit cube of squares passes aspect_ratio <= 1.5.

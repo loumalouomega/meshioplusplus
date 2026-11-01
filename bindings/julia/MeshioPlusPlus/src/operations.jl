@@ -3910,6 +3910,42 @@ function sobolev_deform(m::Mesh, array::AbstractString, length_scale::Real;
 end
 
 """
+    convert_coordinates(m; system="cylindrical", axis=(0,0,1), origin=(0,0,0),
+                        reference=(1,0,0), arrays=String[], inverse=false,
+                        record_coordinates=true)
+        -> (; mesh, num_arrays, num_singular)
+
+Cylindrical or spherical components about an axis: the points stay put, their
+coordinates are recorded as point data (`coords:cylindrical` = `(r, theta, z)`,
+`coords:spherical` = `(r, theta, phi)`), and each named vector or tensor array
+(point or cell data) is rewritten in the local basis of its point, or back to
+Cartesian with `inverse=true`. See `doc/coordinates.md`.
+"""
+function convert_coordinates(m::Mesh; system::AbstractString="cylindrical", axis=(0.0, 0.0, 1.0),
+                             origin=(0.0, 0.0, 0.0), reference=(1.0, 0.0, 0.0),
+                             arrays::AbstractVector{<:AbstractString}=String[],
+                             inverse::Bool=false, record_coordinates::Bool=true)
+    sys = system == "cylindrical" ? Int32(0) : system == "spherical" ? Int32(1) :
+          throw(ArgumentError("meshio++: convert_coordinates: system must be \"cylindrical\" or \"spherical\""))
+    names = [Vector{UInt8}(codeunits(String(a) * "\0")) for a in arrays]
+    ptrs = [Cstring(pointer(n)) for n in names]
+    na, ns = Ref{Int64}(0), Ref{Int64}(0)
+    t3(v) = (Float64(v[1]), Float64(v[2]), Float64(v[3]))
+    ptr = GC.@preserve names ptrs begin
+        opts = _CCoordinateOpts(sys, inverse ? Int32(1) : Int32(0), t3(axis), t3(origin),
+                                t3(reference),
+                                isempty(ptrs) ? Ptr{Cstring}(C_NULL) : pointer(ptrs),
+                                Int64(length(ptrs)), record_coordinates ? Int32(1) : Int32(0),
+                                Int32(0), ntuple(_ -> Int64(0), 4))
+        ccall(_sym(:mio_convert_coordinates), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CCoordinateOpts}, Ptr{Int64}, Ptr{Int64}),
+              _handle(m), Ref(opts), na, ns)
+    end
+    r = _check_ptr(ptr)
+    (mesh=Mesh(r), num_arrays=Int(na[]), num_singular=Int(ns[]))
+end
+
+"""
     geodesic_distance(m, sources=Int[]; source_region="", time_factor=1.0,
                       tolerance=1e-10, max_iterations=0)
         -> (; mesh, num_sources, num_unreached, num_degenerate, max_distance,

@@ -1245,6 +1245,47 @@ SEXP R_mio_sobolev_deform(SEXP mesh, SEXP array, SEXP length_scale, SEXP fixed_p
     return res;
 }
 
+SEXP R_mio_convert_coordinates(SEXP mesh, SEXP system, SEXP axis, SEXP origin, SEXP reference,
+                               SEXP arrays, SEXP inverse, SEXP record_coordinates) {
+    mio_coordinate_opts opts;
+    mio_coordinate_opts_init(&opts);
+    const char *sys = mio_r_string(system, "system");
+    if (strcmp(sys, "spherical") == 0) {
+        opts.system = MIO_COORDS_SPHERICAL;
+    } else if (strcmp(sys, "cylindrical") != 0) {
+        Rf_error("`system` must be \"cylindrical\" or \"spherical\"");
+    }
+    SEXP vecs[3] = {axis, origin, reference};
+    double *dst[3] = {opts.axis, opts.origin, opts.reference};
+    for (int v = 0; v < 3; ++v) {
+        SEXP x = PROTECT(Rf_coerceVector(vecs[v], REALSXP));
+        if (Rf_xlength(x) != 3) {
+            UNPROTECT(1);
+            Rf_error("`axis`, `origin` and `reference` take three numbers");
+        }
+        for (int k = 0; k < 3; ++k) dst[v][k] = REAL(x)[k];
+        UNPROTECT(1);
+    }
+    const R_xlen_t n = Rf_xlength(arrays);
+    const char **names = n > 0 ? (const char **)R_alloc((size_t)n, sizeof(char *)) : NULL;
+    for (R_xlen_t i = 0; i < n; ++i) names[i] = CHAR(STRING_ELT(arrays, i));
+    opts.arrays = names;
+    opts.num_arrays = (int64_t)n;
+    opts.inverse = mio_r_bool(inverse, "inverse") ? 1 : 0;
+    opts.record_coordinates = mio_r_bool(record_coordinates, "record_coordinates") ? 1 : 0;
+    int64_t na = 0, ns = 0;
+    mio_mesh *out = mio_convert_coordinates(mio_r_mesh(mesh), &opts, &na, &ns);
+    if (out == NULL) mio_r_fail("convert_coordinates");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP a = PROTECT(Rf_ScalarReal((double)na));
+    SEXP b = PROTECT(Rf_ScalarReal((double)ns));
+    const char *keys[] = {"mesh", "num_arrays", "num_singular"};
+    SEXP values[] = {mo, a, b};
+    SEXP res = PROTECT(mio_r_named_list(3, keys, values));
+    UNPROTECT(4);
+    return res;
+}
+
 SEXP R_mio_geodesic_distance(SEXP mesh, SEXP sources, SEXP source_region, SEXP time_factor,
                              SEXP tolerance, SEXP max_iterations) {
     mio_geodesic_opts opts;

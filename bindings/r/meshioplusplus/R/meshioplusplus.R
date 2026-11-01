@@ -716,6 +716,34 @@ mio_match_periodic_nodes <- function(mesh, slave, master, matrix = NULL, transla
   )
 }
 
+#' Cylindrical or spherical components about an axis
+#'
+#' The points stay put; their coordinates are recorded as point data
+#' (`coords:cylindrical` = `(r, theta, z)`, `coords:spherical` =
+#' `(r, theta, phi)`), and each named vector or tensor array (point or cell
+#' data) is rewritten in the local basis of its point, or back to Cartesian with
+#' `inverse = TRUE`. See `doc/coordinates.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param system `"cylindrical"` or `"spherical"`.
+#' @param axis,origin,reference The axis direction, a point on it, and the
+#'   direction of angle 0.
+#' @param arrays Names of vector or tensor arrays to rewrite.
+#' @param inverse Read the arrays as local components.
+#' @param record_coordinates Attach the coordinates as point data.
+#' @return A list of `mesh`, `num_arrays` and `num_singular`.
+#' @export
+mio_convert_coordinates <- function(mesh, system = "cylindrical", axis = c(0, 0, 1),
+                                    origin = c(0, 0, 0), reference = c(1, 0, 0),
+                                    arrays = character(0), inverse = FALSE,
+                                    record_coordinates = TRUE) {
+  .Call(
+    R_mio_convert_coordinates, mesh, as.character(system), as.numeric(axis),
+    as.numeric(origin), as.numeric(reference), as.character(arrays), isTRUE(inverse),
+    isTRUE(record_coordinates)
+  )
+}
+
 #' Geodesic distance on a triangle surface
 #'
 #' The distance along the surface from the source points to every point, by the

@@ -185,6 +185,7 @@ meshioplusplus regions    in.msh out.msh --union inlet=in_a,in_b --rename "Surfa
 meshioplusplus periodic   in.msh --slave inlet --master outlet --translate 2,0,0  # periodic node pairs
 meshioplusplus graph      in.vtu part.graph --kind cell     # dual graph as a METIS file (or .grf: Scotch)
 meshioplusplus geodesic   skin.stl dist.vtu --source 0     # surface distance from a point (heat method)
+meshioplusplus coordinates rotor.vtu cyl.vtu --arrays U     # vectors/tensors in cylindrical components
 meshioplusplus completion bash > ~/.local/share/bash-completion/completions/meshioplusplus  # also zsh, fish
 meshioplusplus convert    case.msh.gz case.vtu            # compressed input (.gz .bz2 .xz .zst .zip) read transparently
 meshioplusplus convert    s3://bucket/run/out.vtu out.msh # remote input through fsspec (Python CLI, [remote] extra)
@@ -645,6 +646,17 @@ Pieces keep the input's block structure 1:1, so they recombine into the input: e
 ```python
 out = meshioplusplus.geodesic_distance(skin, "inlet")   # the points of a region
 d = out.point_data["geodesic:distance"]
+```
+
+#### Cylindrical and spherical coordinates
+
+**`meshioplusplus.convert_coordinates(mesh, system, axis=..., arrays=[...])`** records each point's `(r, θ, z)` or `(r, θ, φ)` about an axis as point data and rewrites the named vector and tensor fields in the local basis of each point (a cell's at its centroid), the components rotating machinery and pressure vessels are read in; `inverse=True` turns them back. The points do not move. See [coordinates](doc/coordinates.md).
+
+<!--pytest-codeblocks:skip-->
+
+```python
+out = meshioplusplus.convert_coordinates(rotor, "cylindrical", arrays=["U"])
+u_r, u_theta, u_z = out.point_data["U"].T
 ```
 
 #### Adjacency graphs (CSR) and METIS / Scotch files

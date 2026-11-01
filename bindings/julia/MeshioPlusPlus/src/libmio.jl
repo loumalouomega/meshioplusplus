@@ -1687,6 +1687,20 @@ struct _CSobolevReport
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_coordinate_opts`."""
+struct _CCoordinateOpts
+    system::Int32
+    inverse::Int32
+    axis::NTuple{3,Cdouble}
+    origin::NTuple{3,Cdouble}
+    reference::NTuple{3,Cdouble}
+    arrays::Ptr{Cstring}
+    num_arrays::Int64
+    record_coordinates::Int32
+    reserved_pad::Int32
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_geodesic_opts`."""
 struct _CGeodesicOpts
     sources::Ptr{Int64}
@@ -2007,6 +2021,8 @@ function _check_abi_layout()
         error("meshio++: mio_shrinkwrap_opts layout mismatch ($(sizeof(_CShrinkwrapOpts)) bytes)")
     sizeof(_CShrinkwrapReport) == 136 ||
         error("meshio++: mio_shrinkwrap_report layout mismatch ($(sizeof(_CShrinkwrapReport)) bytes)")
+    sizeof(_CCoordinateOpts) == 136 ||
+        error("meshio++: mio_coordinate_opts layout mismatch ($(sizeof(_CCoordinateOpts)) bytes)")
     sizeof(_CGeodesicOpts) == 96 ||
         error("meshio++: mio_geodesic_opts layout mismatch ($(sizeof(_CGeodesicOpts)) bytes)")
     sizeof(_CGeodesicReport) == 96 ||

@@ -3617,6 +3617,45 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def convert_coordinates(
+        input_path: str,
+        output_path: str,
+        system: str = "cylindrical",
+        axis: Optional[List[float]] = None,
+        origin: Optional[List[float]] = None,
+        reference: Optional[List[float]] = None,
+        arrays: Optional[List[str]] = None,
+        inverse: bool = False,
+        record_coordinates: bool = True,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Cylindrical or spherical components about an axis, for rotating
+        machinery and pressure vessels. The points stay put;
+        record_coordinates attaches coords:cylindrical (r, theta, z) or
+        coords:spherical (r, theta polar from the axis, phi) point data, and
+        each array in `arrays` -- point or cell data, a vector (n, 3) or a
+        tensor (n, 9)/(n, 3, 3) -- is rewritten in the local basis of its point
+        (a cell's at its centroid); inverse=true converts local components back
+        to Cartesian. The axis (default +z) passes through origin; angles are
+        measured from reference projected off the axis. Reports num_arrays and
+        num_singular (points on the axis)."""
+        return _guard(
+            _tools.tool_convert_coordinates,
+            input_path=input_path,
+            output_path=output_path,
+            system=system,
+            axis=axis or (0.0, 0.0, 1.0),
+            origin=origin or (0.0, 0.0, 0.0),
+            reference=reference or (1.0, 0.0, 0.0),
+            arrays=arrays,
+            inverse=inverse,
+            record_coordinates=record_coordinates,
+            input_format=input_format,
+            output_format=output_format,
+        )
+
+    @server.tool()
     def geodesic_distance(
         input_path: str,
         output_path: str,

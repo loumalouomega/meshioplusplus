@@ -74,6 +74,7 @@
 #include "meshioplusplus/providers.hpp"
 #include "meshioplusplus/detail/compressed_input.hpp"
 #include "meshioplusplus/operations/adjacency.hpp"
+#include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
@@ -7181,6 +7182,61 @@ mio_mesh* mio_sobolev_deform(const mio_mesh* mesh, const mio_sobolev_opts* opts,
             report->max_displacement = r.mMaxDisplacement;
             report->converged = r.mConverged ? 1 : 0;
         }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+// --- cylindrical / spherical components (roadmap 7.6.1) ----------------------
+
+static_assert(sizeof(mio_coordinate_opts) == 136,
+              "mio_coordinate_opts grew outside its reserved tail");
+
+void mio_coordinate_opts_init(mio_coordinate_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_coordinate_opts{};
+    opts->system = MIO_COORDS_CYLINDRICAL;
+    opts->axis[2] = 1.0;
+    opts->reference[0] = 1.0;
+    opts->record_coordinates = 1;
+}
+
+mio_mesh* mio_convert_coordinates(const mio_mesh* mesh, const mio_coordinate_opts* opts,
+                                  int64_t* num_arrays, int64_t* num_singular) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        if (!opts)
+            throw std::invalid_argument("meshio++: convert_coordinates: opts is NULL");
+        if (opts->system != MIO_COORDS_CYLINDRICAL && opts->system != MIO_COORDS_SPHERICAL)
+            throw std::invalid_argument(
+                "meshio++: convert_coordinates: system must be MIO_COORDS_CYLINDRICAL or "
+                "MIO_COORDS_SPHERICAL");
+        if (opts->num_arrays < 0 || (opts->num_arrays > 0 && !opts->arrays))
+            throw std::invalid_argument(
+                "meshio++: convert_coordinates: arrays is NULL or num_arrays negative");
+        meshioplusplus::CoordinateOptions options;
+        options.mSystem = opts->system == MIO_COORDS_SPHERICAL
+                              ? meshioplusplus::CoordinateSystem::Spherical
+                              : meshioplusplus::CoordinateSystem::Cylindrical;
+        for (int k = 0; k < 3; ++k) {
+            options.mAxis[k] = opts->axis[k];
+            options.mOrigin[k] = opts->origin[k];
+            options.mReference[k] = opts->reference[k];
+        }
+        for (int64_t i = 0; i < opts->num_arrays; ++i) {
+            if (!opts->arrays[i])
+                throw std::invalid_argument("meshio++: convert_coordinates: an array name is NULL");
+            options.mArrays.emplace_back(opts->arrays[i]);
+        }
+        options.mInverse = opts->inverse != 0;
+        options.mRecordCoordinates = opts->record_coordinates != 0;
+        meshioplusplus::CoordinateResult r =
+            meshioplusplus::convert_coordinates(mesh->mMesh, options);
+        if (num_arrays)
+            *num_arrays = r.mNumArrays;
+        if (num_singular)
+            *num_singular = r.mNumSingular;
         return new mio_mesh{std::move(r.mMesh)};
     });
 }

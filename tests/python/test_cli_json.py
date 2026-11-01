@@ -583,6 +583,19 @@ WRITING = [
         ],
     ),
     (
+        "coordinates",
+        lambda f, out: [
+            "coordinates",
+            f["sphere_a"],
+            out + ".vtu",
+            "--system",
+            "spherical",
+            "--axis",
+            "1,0,0",
+            "--json",
+        ],
+    ),
+    (
         "geodesic",
         lambda f, out: [
             "geodesic",

@@ -131,6 +131,7 @@
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/adjacency.hpp"
+#include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
@@ -7092,6 +7093,47 @@ val sobolev_deform_js(const val& rMeshObj, const std::string& rArray, double len
 }
 
 /**
+ * @brief Cylindrical / spherical components about an axis. @p rOptions is
+ * `{system, axis, origin, reference, arrays, inverse, recordCoordinates}`,
+ * every key optional. See operations/coordinates.hpp.
+ */
+val convert_coordinates_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::CoordinateOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("system"))
+                options.mSystem = meshioplusplus::coordinate_system_from_name(
+                    rOptions["system"].as<std::string>());
+            const auto vec3 = [&](const char* pKey, std::array<double, 3>& rOut) {
+                if (!rOptions.hasOwnProperty(pKey))
+                    return;
+                const std::vector<double> v = emscripten::vecFromJSArray<double>(rOptions[pKey]);
+                if (v.size() != 3)
+                    throw std::invalid_argument(std::string("convertCoordinates: ") + pKey +
+                                                " takes three numbers");
+                rOut = {v[0], v[1], v[2]};
+            };
+            vec3("axis", options.mAxis);
+            vec3("origin", options.mOrigin);
+            vec3("reference", options.mReference);
+            if (rOptions.hasOwnProperty("arrays"))
+                options.mArrays = emscripten::vecFromJSArray<std::string>(rOptions["arrays"]);
+            if (rOptions.hasOwnProperty("inverse"))
+                options.mInverse = rOptions["inverse"].as<bool>();
+            if (rOptions.hasOwnProperty("recordCoordinates"))
+                options.mRecordCoordinates = rOptions["recordCoordinates"].as<bool>();
+        }
+        meshioplusplus::CoordinateResult r =
+            meshioplusplus::convert_coordinates(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numArrays", static_cast<double>(r.mNumArrays));
+        out.set("numSingular", static_cast<double>(r.mNumSingular));
+        return out;
+    });
+}
+
+/**
  * @brief Geodesic distance by the heat method. @p rOptions is `{sourceRegion,
  * timeFactor, tolerance, maxIterations}`, every key optional. See
  * operations/geodesic.hpp.
@@ -9364,6 +9406,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("shrinkwrap", &shrinkwrap_js);
     emscripten::function("sobolevDeform", &sobolev_deform_js);
     emscripten::function("geodesicDistance", &geodesic_distance_js);
+    emscripten::function("convertCoordinates", &convert_coordinates_js);
     emscripten::function("cropBbox", &crop_bbox_js);
     emscripten::function("cropPlane", &crop_plane_js);
     emscripten::function("cropPredicate", &crop_predicate_js);

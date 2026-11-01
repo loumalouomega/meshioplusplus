@@ -2137,6 +2137,26 @@ def test_tools_never_fetch_urls(tmp_path):
         fsspec.filesystem("memory").rm("/mcp/tri.vtu")
 
 
+def test_convert_coordinates_tool(tmp_path):
+    src = str(tmp_path / "s.vtu")
+    sphere = meshioplusplus.icosa_sphere(subdivisions=1)
+    sphere.point_data["n"] = (
+        sphere.points / np.linalg.norm(sphere.points, axis=1)[:, None]
+    )
+    meshioplusplus.write(src, sphere)
+    out = _dump(
+        _tools.tool_convert_coordinates(
+            src, str(tmp_path / "c.vtu"), system="spherical", arrays=["n"]
+        )
+    )
+    assert out["num_arrays"] == 1 and out["system"] == "spherical"
+    back = meshioplusplus.read(str(tmp_path / "c.vtu"))
+    # The outward normal of a sphere is (1, 0, 0) in spherical components.
+    np.testing.assert_allclose(
+        back.point_data["n"], [[1.0, 0.0, 0.0]] * len(sphere.points), atol=1e-12
+    )
+
+
 def test_geodesic_distance_tool(tmp_path):
     src = str(tmp_path / "s.vtu")
     meshioplusplus.write(src, meshioplusplus.icosa_sphere(subdivisions=2))

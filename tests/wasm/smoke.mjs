@@ -5720,6 +5720,13 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.throws(() => m.matchPeriodicNodes(tagged, 'bottom', 'top', shift));
 });
 
+step('convertCoordinates about the cube centre', () => {
+    const r = m.convertCoordinates(cubeSurface, { system: 'spherical', origin: [0.5, 0.5, 0.5] });
+    assert.equal(r.numSingular, 0);
+    assert.ok('coords:spherical' in r.mesh.point_data);
+    assert.throws(() => m.convertCoordinates(cubeSurface, { axis: [0, 0, 0] }));
+});
+
 step('geodesicDistance from a cube corner', () => {
     const r = m.geodesicDistance(cubeSurface, 0);
     assert.equal(r.numSources, 1);

@@ -7026,6 +7026,39 @@ TEST(CApi, ReadsCompressedFiles) {
 }
 #endif
 
+TEST(CApi, ConvertCoordinates) {
+    mio_mesh* m = capi_cube_surface();
+    // A unit radial vector at every point: its cylindrical components are (1, 0, 0)
+    // wherever the point is off the axis.
+    std::vector<double> radial(8 * 3, 0.0);
+    const double xy[8][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}, {0, 0}, {1, 0}, {1, 1}, {0, 1}};
+    for (int i = 0; i < 8; ++i) {
+        const double r = std::hypot(xy[i][0], xy[i][1]);
+        if (r > 0) {
+            radial[i * 3 + 0] = xy[i][0] / r;
+            radial[i * 3 + 1] = xy[i][1] / r;
+        }
+    }
+    const std::int64_t shape[2] = {8, 3};
+    ASSERT_EQ(mio_mesh_add_point_data(m, "u", MIO_FLOAT64, 2, shape, radial.data()), MIO_OK)
+        << mio_last_error();
+    mio_coordinate_opts opts;
+    mio_coordinate_opts_init(&opts);
+    EXPECT_EQ(opts.axis[2], 1.0);
+    const char* names[] = {"u"};
+    opts.arrays = names;
+    opts.num_arrays = 1;
+    std::int64_t converted = -1, singular = -1;
+    mio_mesh* out = mio_convert_coordinates(m, &opts, &converted, &singular);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(converted, 1);
+    EXPECT_EQ(singular, 2);  // the two corners on the z axis
+    mio_mesh_free(out);
+    opts.system = 7;
+    EXPECT_EQ(mio_convert_coordinates(m, &opts, nullptr, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, GeodesicDistance) {
     mio_mesh* m = capi_cube_surface();
     mio_geodesic_opts opts;

@@ -136,6 +136,7 @@
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/detail/length_unit.hpp"
 #include "meshioplusplus/operations/adjacency.hpp"
+#include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
@@ -453,6 +454,7 @@ void print_usage(std::ostream& os) {
           "  hausdorff               Hausdorff distance between two surfaces\n"
           "                            (--max D: nonzero exit when it is exceeded)\n"
           "  completion              Print a bash, zsh or fish completion script\n"
+          "  coordinates             Fields in cylindrical/spherical components about an axis\n"
           "  geodesic                Surface distance from source points (heat method)\n"
           "  graph                   Write a mesh's node or cell graph as a METIS or Scotch file\n"
           "  periodic                Match the nodes of two regions a transform maps together\n"
@@ -3851,6 +3853,69 @@ std::vector<double> cli_numbers(const std::string& rText, std::size_t Count, con
                                  std::to_string(Count) + " numbers, got " +
                                  std::to_string(out.size()));
     return out;
+}
+
+// coordinates: positions, vector and tensor fields in cylindrical or spherical
+// components about an axis. See operations/coordinates.hpp.
+int cmd_coordinates(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"system", {}, true},
+                                  {"axis", {}, true},
+                                  {"origin", {}, true},
+                                  {"reference", {}, true},
+                                  {"arrays", {}, true},
+                                  {"inverse", {}, false},
+                                  {"no-record", {}, false},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("coordinates requires INFILE OUTFILE");
+    meshioplusplus::CoordinateOptions o;
+    const std::string system = has_opt(p, "system") ? opt_value(p, "system") : "cylindrical";
+    o.mSystem = meshioplusplus::coordinate_system_from_name(system);
+    const auto vec3 = [&](const char* pName, std::array<double, 3>& rOut) {
+        if (!has_opt(p, pName))
+            return;
+        std::vector<double> v;
+        auto in = meshioplusplus::detail::make_classic_istringstream(opt_value(p, pName));
+        std::string item;
+        while (std::getline(in, item, ','))
+            v.push_back(meshioplusplus::detail::stod_c(item));
+        if (v.size() != 3)
+            throw std::runtime_error(std::string("coordinates: --") + pName +
+                                     " expects three numbers");
+        rOut = {v[0], v[1], v[2]};
+    };
+    vec3("axis", o.mAxis);
+    vec3("origin", o.mOrigin);
+    vec3("reference", o.mReference);
+    if (has_opt(p, "arrays")) {
+        auto in = meshioplusplus::detail::make_classic_istringstream(opt_value(p, "arrays"));
+        std::string name;
+        while (std::getline(in, name, ','))
+            if (!name.empty())
+                o.mArrays.push_back(name);
+    }
+    o.mInverse = has_flag(p, "inverse");
+    o.mRecordCoordinates = !has_flag(p, "no-record");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::CoordinateResult r = meshioplusplus::convert_coordinates(mesh, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Field("system", system);
+        json.Field("num_arrays", r.mNumArrays);
+        json.Field("num_singular", r.mNumSingular);
+        json.EndObject();
+        return 0;
+    }
+    std::cout << system << " components: " << r.mNumArrays << " array(s) rewritten, "
+              << r.mNumSingular << " point(s) on the axis\n";
+    return 0;
 }
 
 // geodesic: the surface distance from source points by the heat method. See
@@ -8663,6 +8728,8 @@ int cli_run_verb(const std::string& cmd, const std::vector<std::string>& rest) {
         return cmd_split_interface(rest);
     if (cmd == "hausdorff")
         return cmd_hausdorff(rest);
+    if (cmd == "coordinates")
+        return cmd_coordinates(rest);
     if (cmd == "geodesic")
         return cmd_geodesic(rest);
     if (cmd == "graph")
@@ -8791,7 +8858,7 @@ struct CompletionVerb {
 std::vector<std::pair<std::string, std::string>> completion_listed(const std::string& rText,
                                                                    const std::string& rSection) {
     std::vector<std::pair<std::string, std::string>> out;
-    std::istringstream in(rText);
+    auto in = meshioplusplus::detail::make_classic_istringstream(rText);
     std::string line;
     bool inside = false;
     while (std::getline(in, line)) {
@@ -8847,7 +8914,7 @@ std::vector<std::string> completion_options(const std::string& rCmd,
 }
 
 std::vector<CompletionVerb> completion_verbs() {
-    std::ostringstream usage;
+    auto usage = meshioplusplus::detail::make_classic_ostringstream();
     print_usage(usage);
     std::vector<CompletionVerb> verbs;
     for (const auto& [name, alias] : completion_listed(usage.str(), "commands:")) {
@@ -8858,7 +8925,7 @@ std::vector<CompletionVerb> completion_verbs() {
         if (!alias.empty())
             v.mAliases.push_back(alias);
         if (name == "data") {
-            std::ostringstream sub;
+            auto sub = meshioplusplus::detail::make_classic_ostringstream();
             print_data_usage(sub);
             for (const auto& entry : completion_listed(sub.str(), "subcommands:")) {
                 v.mSubverbs.push_back(entry.first);

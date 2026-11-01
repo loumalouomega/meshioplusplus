@@ -121,7 +121,7 @@ export capsule, box_surface, platonic, ball, spherical_shell, pipe, fichera, sol
 export sample_distance, distance_to_surface, surface_watertight_check, compute_sdf
 export compute_curvature, compute_normals, feature_edges, hausdorff_distance, check_quality
 export segment, select_region, fit_primitives, refine_patches, fit_cad, has_occt
-export repair, shrinkwrap, sobolev_deform, geodesic_distance
+export repair, shrinkwrap, sobolev_deform, geodesic_distance, convert_coordinates
 export interpolate, conservative_interpolate, meshes_equal, stats, compute_bandwidth
 export reorder, convert_cells, subdivide, agglomerate, tet_to_poly, poly_to_tet, refine, undo_green, decimate, partition, partition_labels
 export boundary_layer

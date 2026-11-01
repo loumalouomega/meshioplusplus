@@ -71,6 +71,7 @@ from .. import (
     conservative_interpolate,
     contact_pairs,
     convert_cells,
+    convert_coordinates,
     crop,
     cube_sphere,
     cylinder,
@@ -4011,6 +4012,42 @@ def tool_shrinkwrap(
     )
 
 
+def tool_convert_coordinates(
+    input_path,
+    output_path,
+    system="cylindrical",
+    axis=(0.0, 0.0, 1.0),
+    origin=(0.0, 0.0, 0.0),
+    reference=(1.0, 0.0, 0.0),
+    arrays=None,
+    inverse=False,
+    record_coordinates=True,
+    input_format=None,
+    output_format=None,
+):
+    """Positions, vector and tensor fields in cylindrical or spherical
+    components about an axis."""
+    mesh = _load(input_path, input_format)
+    out, report = convert_coordinates(
+        mesh,
+        system,
+        axis=axis,
+        origin=origin,
+        reference=reference,
+        arrays=list(arrays or []),
+        inverse=inverse,
+        record_coordinates=record_coordinates,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        system=system,
+        num_arrays=int(report["num_arrays"]),
+        num_singular=int(report["num_singular"]),
+    )
+
+
 def tool_geodesic_distance(
     input_path,
     output_path,
@@ -6823,6 +6860,14 @@ TOOL_REGISTRY = OrderedDict(
         (
             "sobolev_deform",
             {"fn": tool_sobolev_deform, "wraps": ("sobolev_deform",), "gated": None},
+        ),
+        (
+            "convert_coordinates",
+            {
+                "fn": tool_convert_coordinates,
+                "wraps": ("convert_coordinates",),
+                "gated": None,
+            },
         ),
         (
             "geodesic_distance",

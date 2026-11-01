@@ -77,6 +77,7 @@
 #include "meshioplusplus/operations/thickness.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/repair.hpp"
+#include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
 #include "meshioplusplus/operations/crop.hpp"
@@ -438,6 +439,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"SobolevDeform",
          {"Array", "LengthScale", "FixedPointsArray", "FixBoundary", "RecordFiltered",
           "MaxIterations", "Tolerance"}},
+        {"ConvertCoordinates",
+         {"System", "Axis", "Origin", "Reference", "Arrays", "Inverse", "RecordCoordinates"}},
         {"GeodesicDistance",
          {"Sources", "SourceRegion", "TimeFactor", "Tolerance", "MaxIterations"}},
         {"EstimateError", {"Array", "Method", "Marking", "MarkingValue", "Output", "Marked"}},
@@ -2263,6 +2266,24 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                                         std::to_string(sr.mNumIterations) +
                                         " iteration(s); the last iterate is returned");
         return std::move(sr.mMesh);
+    }
+    if (op == "ConvertCoordinates") {
+        CoordinateOptions opts;
+        opts.mSystem = coordinate_system_from_name(pipe_text(rStep, "System", "cylindrical"));
+        if (pipe_find(rStep, "Axis"))
+            pipe_vec3(rStep, "Axis", opts.mAxis.data());
+        if (pipe_find(rStep, "Origin"))
+            pipe_vec3(rStep, "Origin", opts.mOrigin.data());
+        if (pipe_find(rStep, "Reference"))
+            pipe_vec3(rStep, "Reference", opts.mReference.data());
+        opts.mArrays = pipe_svec(rStep, "Arrays");
+        opts.mInverse = pipe_flag(rStep, "Inverse", false);
+        opts.mRecordCoordinates = pipe_flag(rStep, "RecordCoordinates", true);
+        CoordinateResult cr = convert_coordinates(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumArrays", static_cast<double>(cr.mNumArrays)},
+                        {"NumSingular", static_cast<double>(cr.mNumSingular)}});
+        return std::move(cr.mMesh);
     }
     if (op == "GeodesicDistance") {
         GeodesicOptions opts;

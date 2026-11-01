@@ -16,6 +16,7 @@ from . import (
     _contact_pairs,
     _convert,
     _convert_cells,
+    _coordinates,
     _crop,
     _curvature,
     _data,
@@ -280,6 +281,13 @@ def build_parser():
     )
     _hausdorff.add_args(parser)
     parser.set_defaults(func=_hausdorff.hausdorff_cmd)
+
+    parser = subparsers.add_parser(
+        "coordinates",
+        help="Positions, vector and tensor fields in cylindrical/spherical components",
+    )
+    _coordinates.add_args(parser)
+    parser.set_defaults(func=_coordinates.coordinates_cmd)
 
     parser = subparsers.add_parser(
         "geodesic",

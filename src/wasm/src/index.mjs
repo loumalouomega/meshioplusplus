@@ -369,6 +369,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   matchPeriodicNodes: (mesh: Mesh, slave: string | {name: string, kind?: string, dim?: number, tag?: number}, master: string | {name: string, kind?: string, dim?: number, tag?: number}, matrix: ArrayLike<number>, atol?: number, requireComplete?: boolean) => {slave: Int32Array, master: Int32Array, unmatched: Int32Array, numFixed: number, maxResidual: number},
  *   repair: (mesh: Mesh, fixOrientation?: boolean, orientOutward?: boolean, fillHoles?: boolean, splitNonManifold?: boolean, maxHoleEdges?: number, weldTolerance?: number, recordProvenance?: boolean) => {mesh: Mesh, qualityBefore: object, qualityAfter: object, numFlipped: number, numComponents: number, largestComponent: number, numOrientedOutward: number, numUnorientable: number, numVerticesSplit: number, numHolesDetected: number, numHolesFilled: number, numHolesSkipped: number, numFacesAdded: number, numPointsAdded: number, pointsWelded: number},
  *   shrinkwrap: (mesh: Mesh, target: Mesh, offset?: number, maxDistance?: number, weights?: string, targetRegion?: string, normalWeight?: string, recordDistance?: boolean, recordClosestCell?: boolean) => {mesh: Mesh, quality: object, numProjected: number, numMissed: number, numSkipped: number, maxDisplacement: number},
+ *   convertCoordinates: (mesh: Mesh, options?: {system?: 'cylindrical'|'spherical', axis?: ArrayLike<number>, origin?: ArrayLike<number>, reference?: ArrayLike<number>, arrays?: string[], inverse?: boolean, recordCoordinates?: boolean}) => {mesh: Mesh, numArrays: number, numSingular: number},
  *   geodesicDistance: (mesh: Mesh, sources: ArrayLike<number> | number, options?: {sourceRegion?: string, timeFactor?: number, tolerance?: number, maxIterations?: number}) => {mesh: Mesh, numSources: number, numUnreached: number, numDegenerate: number, maxDistance: number, timeStep: number, heatIterations: number, poissonIterations: number, converged: boolean},
  *   sobolevDeform: (mesh: Mesh, array: string, lengthScale: number, fixedPointsArray?: string, fixBoundary?: boolean, recordFiltered?: boolean, maxIterations?: number, tolerance?: number) => {mesh: Mesh, numIterations: number, residual: number, converged: boolean, numFixed: number, numIsolated: number, maxDisplacement: number},
  *   split: (mesh: Mesh, by: string, tagName?: string, returnMaps?: boolean) => {key: string, mesh: Mesh, pointMap?: Int32Array, cellMaps?: Int32Array[]}[],
@@ -1253,6 +1254,12 @@ export async function loadMeshioPlusPlus(
         ) =>
             Module.shrinkwrap(mesh, target, offset, maxDistance, weights, targetRegion,
                 normalWeight, recordDistance, recordClosestCell),
+        convertCoordinates: (mesh, options = {}) => {
+            const o = { ...options };
+            for (const key of ['axis', 'origin', 'reference'])
+                if (o[key] !== undefined) o[key] = Array.from(o[key]);
+            return Module.convertCoordinates(mesh, o);
+        },
         geodesicDistance: (mesh, sources = [], options = {}) =>
             Module.geodesicDistance(
                 mesh,

@@ -1225,6 +1225,20 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
+    !> Interop mirror of C `mio_coordinate_opts`. Field order/types are ABI.
+    type, bind(c) :: mio_coordinate_opts_t
+        integer(c_int32_t) :: system = 0
+        integer(c_int32_t) :: inverse = 0
+        real(c_double) :: axis(3) = [0.0_c_double, 0.0_c_double, 1.0_c_double]
+        real(c_double) :: origin(3) = 0.0_c_double
+        real(c_double) :: reference(3) = [1.0_c_double, 0.0_c_double, 0.0_c_double]
+        type(c_ptr) :: arrays = c_null_ptr
+        integer(c_int64_t) :: num_arrays = 0
+        integer(c_int32_t) :: record_coordinates = 1
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
     !> Interop mirror of C `mio_geodesic_opts`. Field order/types are ABI.
     type, bind(c) :: mio_geodesic_opts_t
         type(c_ptr) :: sources = c_null_ptr
@@ -2015,6 +2029,7 @@ module meshioplusplus
         procedure :: repair => mesh_repair
         procedure :: sobolev_deform => mesh_sobolev_deform
         procedure :: geodesic_distance => mesh_geodesic_distance
+        procedure :: convert_coordinates => mesh_convert_coordinates
         procedure :: remesh_volume => mesh_remesh_volume
         procedure :: split => mesh_split
         procedure :: convert_cells => mesh_convert_cells
@@ -3566,6 +3581,20 @@ module meshioplusplus
             type(c_ptr), value :: h, target
             type(mio_shrinkwrap_opts_t), intent(in) :: opts
             type(mio_shrinkwrap_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_coordinate_opts_init(opts) bind(c, name="mio_coordinate_opts_init")
+            import :: mio_coordinate_opts_t
+            type(mio_coordinate_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_convert_coordinates(h, opts, num_arrays, num_singular) &
+                bind(c, name="mio_convert_coordinates") result(r)
+            import :: c_ptr, c_int64_t, mio_coordinate_opts_t
+            type(c_ptr), value :: h
+            type(mio_coordinate_opts_t), intent(in) :: opts
+            integer(c_int64_t), intent(out) :: num_arrays, num_singular
             type(c_ptr) :: r
         end function
 
@@ -9365,6 +9394,56 @@ contains
             inconsistent_pairs_after = int(report%quality_after%inconsistent_pairs, int64)
         if (present(boundary_edges_after)) &
             boundary_edges_after = int(report%quality_after%boundary_edges, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Cylindrical or spherical components about an axis: a new mesh whose
+    !> points stay put, with coords:<system> point data (unless
+    !> `record_coordinates = .false.`) and each named vector/tensor array
+    !> rewritten in local components (or back to Cartesian with `inverse`).
+    !> `system` is 'cylindrical' (default) or 'spherical'. See doc/coordinates.md.
+    function mesh_convert_coordinates(self, system, axis, origin, reference, arrays, inverse, &
+                                      record_coordinates, num_arrays, num_singular, stat, &
+                                      errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in), optional :: system
+        real(real64), intent(in), optional :: axis(3), origin(3), reference(3)
+        character(*), intent(in), optional :: arrays(:)
+        logical, intent(in), optional :: inverse, record_coordinates
+        integer(int64), intent(out), optional :: num_arrays, num_singular
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_coordinate_opts_t) :: opts
+        character(kind=c_char), allocatable, target :: storage(:, :)
+        type(c_ptr), allocatable, target :: cptrs(:)
+        integer(c_int64_t) :: na, ns
+
+        call c_mio_coordinate_opts_init(opts)
+        if (present(system)) then
+            if (trim(system) == 'spherical') then
+                opts%system = 1
+            else if (trim(system) /= 'cylindrical') then
+                opts%system = -1
+            end if
+        end if
+        if (present(axis)) opts%axis = real(axis, c_double)
+        if (present(origin)) opts%origin = real(origin, c_double)
+        if (present(reference)) opts%reference = real(reference, c_double)
+        if (present(arrays)) call c_str_array(arrays, storage, cptrs, opts%arrays, opts%num_arrays)
+        if (present(inverse)) then
+            if (inverse) opts%inverse = 1
+        end if
+        if (present(record_coordinates)) then
+            if (.not. record_coordinates) opts%record_coordinates = 0
+        end if
+        out%handle = c_mio_convert_coordinates(self%handle, opts, na, ns)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('convert_coordinates', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_arrays)) num_arrays = int(na, int64)
+        if (present(num_singular)) num_singular = int(ns, int64)
         call clear_status(stat, errmsg)
     end function
 

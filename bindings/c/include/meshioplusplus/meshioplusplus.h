@@ -3893,6 +3893,44 @@ typedef struct mio_sobolev_report {
 MIO_API mio_mesh* mio_sobolev_deform(const mio_mesh* mesh, const mio_sobolev_opts* opts,
                                      mio_sobolev_report* report);
 
+/** mio_coordinate_opts.system: cylindrical (r, theta, z) components. */
+#define MIO_COORDS_CYLINDRICAL 0
+/** mio_coordinate_opts.system: spherical (r, theta polar, phi) components. */
+#define MIO_COORDS_SPHERICAL 1
+
+/**
+ * Options for mio_convert_coordinates. Initialize through
+ * mio_coordinate_opts_init(): cylindrical about +z through the origin, angle 0
+ * along +x, coordinates recorded, no arrays.
+ */
+typedef struct mio_coordinate_opts {
+    int32_t system;             /**< MIO_COORDS_CYLINDRICAL or MIO_COORDS_SPHERICAL */
+    int32_t inverse;            /**< nonzero reads the arrays as local components */
+    double axis[3];             /**< the axis direction (nonzero) */
+    double origin[3];           /**< a point on the axis (the spherical centre) */
+    double reference[3];        /**< the direction of angle 0, projected off the axis */
+    const char* const* arrays;  /**< vector/tensor point or cell data to rewrite (borrowed) */
+    int64_t num_arrays;         /**< entries of `arrays` */
+    int32_t record_coordinates; /**< nonzero attaches coords:cylindrical / coords:spherical */
+    int32_t reserved_pad;       /**< must be zero */
+    int64_t reserved[4];        /**< must be zero; room for additive growth */
+} mio_coordinate_opts;
+
+/** Initialize coordinate options (see mio_coordinate_opts). */
+MIO_API void mio_coordinate_opts_init(mio_coordinate_opts* opts);
+
+/**
+ * Cylindrical or spherical components about an axis: the points stay put, their
+ * coordinates are recorded as point data, and each named vector (n,3) or tensor
+ * (n,9)/(n,3,3) array (point or cell data) is rewritten in the local basis of
+ * its point (a cell's at its centroid), or back to Cartesian with `inverse`.
+ * See doc/coordinates.md. Either count may be NULL.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_convert_coordinates(const mio_mesh* mesh, const mio_coordinate_opts* opts,
+                                          int64_t* num_arrays, int64_t* num_singular);
+
 /**
  * Options for mio_geodesic_distance. Initialize through
  * mio_geodesic_opts_init(); give `sources`, `source_region` or both.

@@ -1680,6 +1680,10 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
   expect_gt(gd$max_distance, 1.8)
   expect_lt(gd$max_distance, 2.6)
   expect_error(mio_geodesic_distance(m), "source")
+  cc <- mio_convert_coordinates(m, "spherical", origin = c(0.5, 0.5, 0.5))
+  on.exit(mio_release(cc$mesh), add = TRUE)
+  expect_equal(cc$num_singular, 0)
+  expect_error(mio_convert_coordinates(m, "polar"), "cylindrical")
 
   # The triangulated cube: 12 edges and 6 face diagonals, 1-based CSR.
   g <- mio_adjacency(m)

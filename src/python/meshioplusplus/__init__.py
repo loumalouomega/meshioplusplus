@@ -117,6 +117,7 @@ if TYPE_CHECKING:
     from ._clean import clean
     from ._conservative_interpolate import conservative_interpolate
     from ._convert_cells import convert_cells
+    from ._coordinates import convert_coordinates
     from ._crop import crop
     from ._curvature import compute_curvature
     from ._data_average import cell_data_to_point_data, point_data_to_cell_data
@@ -345,6 +346,7 @@ _LAZY_ATTRS = {
     "to_blender": "_blender",
     "adjacency": "_adjacency",
     "geodesic_distance": "_geodesic",
+    "convert_coordinates": "_coordinates",
     "write_graph": "_adjacency",
     "clean": "_clean",
     "conservative_interpolate": "_conservative_interpolate",
@@ -701,6 +703,7 @@ __all__ = [
     "adjacency",
     "write_graph",
     "geodesic_distance",
+    "convert_coordinates",
     "refine",
     "undo_green",
     "decimate",

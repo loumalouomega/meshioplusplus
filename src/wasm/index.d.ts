@@ -4083,6 +4083,29 @@ export interface MeshioPlusPlusModule {
   };
 
   /**
+   * Cylindrical or spherical components about an axis: the points stay put,
+   * their coordinates are recorded as point data (`coords:cylindrical` =
+   * `(r, theta, z)`, `coords:spherical` = `(r, theta, phi)`), and each named
+   * vector `(n, 3)` or tensor `(n, 9)` array is rewritten in the local basis of
+   * its point (a cell's at its centroid), or back to Cartesian with
+   * `inverse`. See doc/coordinates.md.
+   * @throws {Error} on a zero axis or an array that is missing or not a 3-D
+   *   vector or tensor.
+   */
+  convertCoordinates(
+    mesh: Mesh,
+    options?: {
+      system?: 'cylindrical' | 'spherical';
+      axis?: ArrayLike<number>;
+      origin?: ArrayLike<number>;
+      reference?: ArrayLike<number>;
+      arrays?: string[];
+      inverse?: boolean;
+      recordCoordinates?: boolean;
+    },
+  ): { mesh: Mesh; numArrays: number; numSingular: number };
+
+  /**
    * Geodesic distance on a triangle surface by the heat method: `mesh`
    * carries the point data `geodesic:distance`, the distance along the surface
    * to the nearest source (0-based point ids, and/or the points of

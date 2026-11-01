@@ -159,6 +159,7 @@
 #include "meshioplusplus/operations/crop.hpp"
 #include "meshioplusplus/operations/data_average.hpp"
 #include "meshioplusplus/operations/adjacency.hpp"
+#include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/decimate_volume.hpp"
@@ -6173,6 +6174,39 @@ PYBIND11_MODULE(_core, m) {
         py::arg("fixed_points") = py::none(), py::arg("fixed_points_array") = "",
         py::arg("fix_boundary") = false, py::arg("record_filtered") = false,
         py::arg("max_iterations") = 128, py::arg("tolerance") = 1e-10);
+
+    // Cylindrical / spherical components about an axis. {mesh, num_arrays,
+    // num_singular}. See operations/coordinates.hpp.
+    m.def(
+        "convert_coordinates",
+        [](py::object pymesh, const std::string& system, std::array<double, 3> axis,
+           std::array<double, 3> origin, std::array<double, 3> reference,
+           std::vector<std::string> arrays, bool inverse, bool record_coordinates) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::CoordinateOptions options;
+            options.mSystem = meshioplusplus::coordinate_system_from_name(system);
+            options.mAxis = axis;
+            options.mOrigin = origin;
+            options.mReference = reference;
+            options.mArrays = std::move(arrays);
+            options.mInverse = inverse;
+            options.mRecordCoordinates = record_coordinates;
+            meshioplusplus::CoordinateResult r =
+                core_nogil([&] { return meshioplusplus::convert_coordinates(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_arrays"] = r.mNumArrays;
+            out["num_singular"] = r.mNumSingular;
+            return out;
+        },
+        py::arg("mesh"), py::arg("system") = "cylindrical",
+        py::arg("axis") = std::array<double, 3>{0.0, 0.0, 1.0},
+        py::arg("origin") = std::array<double, 3>{0.0, 0.0, 0.0},
+        py::arg("reference") = std::array<double, 3>{1.0, 0.0, 0.0},
+        py::arg("arrays") = std::vector<std::string>{}, py::arg("inverse") = false,
+        py::arg("record_coordinates") = true);
 
     // Geodesic distance by the heat method. {mesh, counters}. See
     // operations/geodesic.hpp.
