@@ -3017,6 +3017,17 @@ contains
         call dist%free()
         dist = square%geodesic_distance(stat=ierr)
         call check(ierr /= 0, 'geodesic_distance needs a source')
+        ! Hull and Delaunay of the square's corners (2-D: z is all zero).
+        dist = square%convex_hull(num_vertices=g_nv, stat=ierr)
+        call check(ierr == 0, 'convex_hull succeeded')
+        call check(g_nv == 4_int64, 'the square hull has four vertices')
+        call dist%free()
+        dist = square%convex_hull(dimension=3, stat=ierr)
+        call check(ierr /= 0, 'convex_hull refuses a 3-D hull of coplanar points')
+        dist = square%delaunay_2d(num_triangles=g_nv, stat=ierr)
+        call check(ierr == 0, 'delaunay_2d succeeded')
+        call check(g_nv == 2_int64, 'the square triangulates into two triangles')
+        call dist%free()
         ! Coordinates: the square's corners in cylindrical components about z.
         dist = square%convert_coordinates(num_singular=g_nv, stat=ierr)
         call check(ierr == 0, 'convert_coordinates succeeded')

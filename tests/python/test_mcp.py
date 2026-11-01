@@ -2157,6 +2157,24 @@ def test_convert_coordinates_tool(tmp_path):
     )
 
 
+def test_convex_hull_and_delaunay_tools(tmp_path):
+    src = str(tmp_path / "cloud.vtu")
+    rng = np.random.default_rng(0)
+    pts = rng.random((200, 3))
+    meshioplusplus.write(
+        src, meshioplusplus.Mesh(pts, [("vertex", np.arange(200)[:, None])])
+    )
+    hull = _dump(_tools.tool_convex_hull(src, str(tmp_path / "h.vtu")))
+    assert hull["dimension"] == 3 and hull["num_facets"] == 2 * hull["num_vertices"] - 4
+    assert 0 < hull["volume"] < 1
+    flat = _dump(_tools.tool_convex_hull(src, str(tmp_path / "f.vtu"), dimension=2))
+    assert flat["dimension"] == 2 and flat["perimeter"] > 0
+    tri = _dump(_tools.tool_delaunay_2d(src, str(tmp_path / "t.vtu")))
+    assert tri["num_triangles"] == 2 * 200 - tri["num_boundary"] - 2
+    back = meshioplusplus.read(str(tmp_path / "t.vtu"))
+    np.testing.assert_allclose(back.points, pts)
+
+
 def test_geodesic_distance_tool(tmp_path):
     src = str(tmp_path / "s.vtu")
     meshioplusplus.write(src, meshioplusplus.icosa_sphere(subdivisions=2))

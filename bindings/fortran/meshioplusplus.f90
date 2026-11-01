@@ -1225,6 +1225,18 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
+    !> Interop mirror of C `mio_hull_report`. Field order/types are ABI.
+    type, bind(c) :: mio_hull_report_t
+        integer(c_int32_t) :: dimension = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: num_vertices = 0
+        integer(c_int64_t) :: num_facets = 0
+        real(c_double) :: area = 0.0_c_double
+        real(c_double) :: volume = 0.0_c_double
+        real(c_double) :: perimeter = 0.0_c_double
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
     !> Interop mirror of C `mio_coordinate_opts`. Field order/types are ABI.
     type, bind(c) :: mio_coordinate_opts_t
         integer(c_int32_t) :: system = 0
@@ -2030,6 +2042,8 @@ module meshioplusplus
         procedure :: sobolev_deform => mesh_sobolev_deform
         procedure :: geodesic_distance => mesh_geodesic_distance
         procedure :: convert_coordinates => mesh_convert_coordinates
+        procedure :: convex_hull => mesh_convex_hull
+        procedure :: delaunay_2d => mesh_delaunay_2d
         procedure :: remesh_volume => mesh_remesh_volume
         procedure :: split => mesh_split
         procedure :: convert_cells => mesh_convert_cells
@@ -3581,6 +3595,22 @@ module meshioplusplus
             type(c_ptr), value :: h, target
             type(mio_shrinkwrap_opts_t), intent(in) :: opts
             type(mio_shrinkwrap_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_convex_hull(h, dimension, report) bind(c, name="mio_convex_hull") result(r)
+            import :: c_ptr, c_int32_t, mio_hull_report_t
+            type(c_ptr), value :: h
+            integer(c_int32_t), value :: dimension
+            type(mio_hull_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_delaunay_2d(h, num_triangles, num_duplicates, num_boundary) &
+                bind(c, name="mio_delaunay_2d") result(r)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: h
+            integer(c_int64_t), intent(out) :: num_triangles, num_duplicates, num_boundary
             type(c_ptr) :: r
         end function
 
@@ -9394,6 +9424,63 @@ contains
             inconsistent_pairs_after = int(report%quality_after%inconsistent_pairs, int64)
         if (present(boundary_edges_after)) &
             boundary_edges_after = int(report%quality_after%boundary_edges, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The convex hull of the mesh's points (its cells are ignored): a closed
+    !> outward `triangle` surface in 3-D, a counter-clockwise `line` loop of the
+    !> x, y coordinates in 2-D; only the extreme points, each with
+    !> `hull:point_id` (its 0-based input point). `dimension` is 2, 3 or 0
+    !> (default: decide from the points). `area` is the enclosed area in 2-D
+    !> and the surface area in 3-D. See doc/hull.md.
+    function mesh_convex_hull(self, dimension, num_vertices, num_facets, area, volume, &
+                              perimeter, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer, intent(in), optional :: dimension
+        integer(int64), intent(out), optional :: num_vertices, num_facets
+        real(real64), intent(out), optional :: area, volume, perimeter
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_hull_report_t) :: rep
+        integer(c_int32_t) :: d
+
+        d = 0
+        if (present(dimension)) d = int(dimension, c_int32_t)
+        out%handle = c_mio_convex_hull(self%handle, d, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('convex_hull', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_vertices)) num_vertices = int(rep%num_vertices, int64)
+        if (present(num_facets)) num_facets = int(rep%num_facets, int64)
+        if (present(area)) area = real(rep%area, real64)
+        if (present(volume)) volume = real(rep%volume, real64)
+        if (present(perimeter)) perimeter = real(rep%perimeter, real64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The Delaunay triangulation of the mesh's points in the x, y plane: every
+    !> point kept (with its z and point data), one counter-clockwise `triangle`
+    !> block; a point coinciding in x, y with an earlier one is in no triangle.
+    !> See doc/hull.md.
+    function mesh_delaunay_2d(self, num_triangles, num_duplicates, num_boundary, stat, &
+                              errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer(int64), intent(out), optional :: num_triangles, num_duplicates, num_boundary
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int64_t) :: nt, nd, nb
+
+        out%handle = c_mio_delaunay_2d(self%handle, nt, nd, nb)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('delaunay_2d', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_triangles)) num_triangles = int(nt, int64)
+        if (present(num_duplicates)) num_duplicates = int(nd, int64)
+        if (present(num_boundary)) num_boundary = int(nb, int64)
         call clear_status(stat, errmsg)
     end function
 

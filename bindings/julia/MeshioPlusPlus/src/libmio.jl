@@ -1687,6 +1687,18 @@ struct _CSobolevReport
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_hull_report`."""
+struct _CHullReport
+    dimension::Int32
+    reserved_pad::Int32
+    num_vertices::Int64
+    num_facets::Int64
+    area::Cdouble
+    volume::Cdouble
+    perimeter::Cdouble
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_coordinate_opts`."""
 struct _CCoordinateOpts
     system::Int32
@@ -2021,6 +2033,8 @@ function _check_abi_layout()
         error("meshio++: mio_shrinkwrap_opts layout mismatch ($(sizeof(_CShrinkwrapOpts)) bytes)")
     sizeof(_CShrinkwrapReport) == 136 ||
         error("meshio++: mio_shrinkwrap_report layout mismatch ($(sizeof(_CShrinkwrapReport)) bytes)")
+    sizeof(_CHullReport) == 80 ||
+        error("meshio++: mio_hull_report layout mismatch ($(sizeof(_CHullReport)) bytes)")
     sizeof(_CCoordinateOpts) == 136 ||
         error("meshio++: mio_coordinate_opts layout mismatch ($(sizeof(_CCoordinateOpts)) bytes)")
     sizeof(_CGeodesicOpts) == 96 ||

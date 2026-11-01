@@ -166,6 +166,7 @@ if TYPE_CHECKING:
     from ._guard import GeometryGuard, geometry_descriptors
     from ._hausdorff import hausdorff_distance
     from ._hessian import hessian
+    from ._hull import convex_hull, delaunay_2d
     from ._iga import iga_evaluate, iga_refine, iga_sample
     from ._interfaces import (
         contact_pairs,
@@ -346,6 +347,8 @@ _LAZY_ATTRS = {
     "to_blender": "_blender",
     "adjacency": "_adjacency",
     "geodesic_distance": "_geodesic",
+    "convex_hull": "_hull",
+    "delaunay_2d": "_hull",
     "convert_coordinates": "_coordinates",
     "write_graph": "_adjacency",
     "clean": "_clean",
@@ -703,6 +706,8 @@ __all__ = [
     "adjacency",
     "write_graph",
     "geodesic_distance",
+    "convex_hull",
+    "delaunay_2d",
     "convert_coordinates",
     "refine",
     "undo_green",

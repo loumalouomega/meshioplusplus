@@ -131,6 +131,7 @@ export default defineConfig({
               { text: "Reordering / renumbering", link: "/reorder" },
               { text: "Affine transform", link: "/transform" },
               { text: "Cylindrical and spherical coordinates", link: "/coordinates" },
+              { text: "Convex hull and planar Delaunay", link: "/hull" },
               { text: "Reflection (mirror)", link: "/mirror" },
               { text: "Clean (weld / prune)", link: "/clean" },
               { text: "Merge / combine", link: "/merge" },

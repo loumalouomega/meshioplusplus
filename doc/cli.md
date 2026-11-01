@@ -114,7 +114,7 @@ The first word completes to a verb (or an alias such as `c`), the next to the su
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `coordinates`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `coordinates`, `hull`, `delaunay`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -146,6 +146,8 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `graph` | `output`, `kind`, `format`, `num_vertices`, `num_edges`, `max_degree` |
 | `geodesic` | `output`, `num_sources`, `num_unreached`, `num_degenerate`, `max_distance`, `time_step`, `heat_iterations`, `poisson_iterations`, `converged` |
 | `coordinates` | `output`, `system`, `num_arrays`, `num_singular` |
+| `hull` | `output`, `dimension`, `num_vertices`, `num_facets`, `area`, `volume`, `perimeter` |
+| `delaunay` | `output`, `num_triangles`, `num_duplicates`, `num_boundary` |
 | `mesh-cad-surface` | `mesh_cad_surface`'s report: the counts, the open, non-manifold and misoriented edges, the extreme angles and edge lengths, `tolerance`, `max_edge_gap`, `faces` (`status`, `reason`, counts and extremes per face, `below_bound`, `bound_deg`, `min_input_angle_deg` and `corners`), `warnings`, `num_refinement_points`, `num_faces_below_bound`, `num_smoothed`, `angle_histogram` and `num_curved_straightened` |
 | `boundary-layer` | `boundary_layer`'s report: the cell counts by type, `num_shrunk`, `num_collapsed`, `num_not_visible`, `num_fewer_layers`, `num_front_crossings`, `min_scaled_jacobian`, the thickness range, `cap_closed` and `warnings` |
 | `extrude`, `revolve` | the sweep's report: the cell counts by type, `num_flipped`, `min_scaled_jacobian`, `warnings`; `revolve` adds `num_on_axis` and `full` |
@@ -1742,6 +1744,43 @@ meshioplusplus shrinkwrap template.vtu scan.stl wrapped.vtu
 meshioplusplus shrinkwrap template.vtu scan.stl wrapped.vtu --offset=0.5
 meshioplusplus shrinkwrap template.vtu scan.stl wrapped.vtu --max-distance 2.0
 meshioplusplus shrinkwrap template.vtu scan.stl out.vtu --weights mask --record-distance
+```
+
+---
+
+## meshioplusplus hull
+
+The convex hull of a file's points (see [hull](/hull)): a closed `triangle` surface in 3-D, a `line` loop of the `x, y` outline in 2-D; the extreme points alone, each with `hull:point_id`.
+
+```
+meshioplusplus hull [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--dimension 0\|2\|3` | 2 (the `x, y` outline), 3, or 0 to decide from the points (default) |
+| `--json` | Emit the report: `output`, `dimension`, `num_vertices`, `num_facets`, `area`, `volume`, `perimeter` |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+## meshioplusplus delaunay
+
+The Delaunay triangulation of a file's points in the `x, y` plane (see [hull](/hull)): every point kept with its `z`, one `triangle` block; a point repeating an earlier one in `x, y` is left out.
+
+```
+meshioplusplus delaunay [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--json` | Emit the report: `output`, `num_triangles`, `num_duplicates`, `num_boundary` |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Both CLIs print the same JSON.
+
+```sh
+meshioplusplus hull scan.xyz hull.stl --json
+meshioplusplus hull scan.xyz outline.vtu --dimension 2
+meshioplusplus delaunay survey.pcd terrain.vtu
 ```
 
 ---

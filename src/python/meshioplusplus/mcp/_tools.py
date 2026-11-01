@@ -72,6 +72,7 @@ from .. import (
     contact_pairs,
     convert_cells,
     convert_coordinates,
+    convex_hull,
     crop,
     cube_sphere,
     cylinder,
@@ -82,6 +83,7 @@ from .. import (
     data_manage,
     decimate,
     decimate_volume,
+    delaunay_2d,
     diff,
     discretize_levelset,
     disk,
@@ -4048,6 +4050,38 @@ def tool_convert_coordinates(
     )
 
 
+def tool_convex_hull(
+    input_path, output_path, dimension=0, input_format=None, output_format=None
+):
+    """The convex hull of a file's points: a closed triangle surface (3-D) or
+    a line loop (2-D)."""
+    mesh = _load(input_path, input_format)
+    out, report = convex_hull(mesh, dimension=int(dimension), return_report=True)
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        dimension=int(report["dimension"]),
+        num_vertices=int(report["num_vertices"]),
+        num_facets=int(report["num_facets"]),
+        area=float(report["area"]),
+        volume=float(report["volume"]),
+        perimeter=float(report["perimeter"]),
+    )
+
+
+def tool_delaunay_2d(input_path, output_path, input_format=None, output_format=None):
+    """The Delaunay triangulation of a file's points in the x, y plane."""
+    mesh = _load(input_path, input_format)
+    out, report = delaunay_2d(mesh, return_report=True)
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_triangles=int(report["num_triangles"]),
+        num_duplicates=int(report["num_duplicates"]),
+        num_boundary=int(report["num_boundary"]),
+    )
+
+
 def tool_geodesic_distance(
     input_path,
     output_path,
@@ -6860,6 +6894,22 @@ TOOL_REGISTRY = OrderedDict(
         (
             "sobolev_deform",
             {"fn": tool_sobolev_deform, "wraps": ("sobolev_deform",), "gated": None},
+        ),
+        (
+            "convex_hull",
+            {
+                "fn": tool_convex_hull,
+                "wraps": ("convex_hull",),
+                "gated": None,
+            },
+        ),
+        (
+            "delaunay_2d",
+            {
+                "fn": tool_delaunay_2d,
+                "wraps": ("delaunay_2d",),
+                "gated": None,
+            },
         ),
         (
             "convert_coordinates",

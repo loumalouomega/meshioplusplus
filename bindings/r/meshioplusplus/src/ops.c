@@ -1245,6 +1245,42 @@ SEXP R_mio_sobolev_deform(SEXP mesh, SEXP array, SEXP length_scale, SEXP fixed_p
     return res;
 }
 
+SEXP R_mio_convex_hull(SEXP mesh, SEXP dimension) {
+    const int d = Rf_asInteger(dimension);
+    if (d != 0 && d != 2 && d != 3) Rf_error("`dimension` must be 0, 2 or 3");
+    mio_hull_report rep;
+    mio_mesh *out = mio_convex_hull(mio_r_mesh(mesh), (int32_t)d, &rep);
+    if (out == NULL) mio_r_fail("convex_hull");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP a = PROTECT(Rf_ScalarInteger(rep.dimension));
+    SEXP b = PROTECT(Rf_ScalarReal((double)rep.num_vertices));
+    SEXP c = PROTECT(Rf_ScalarReal((double)rep.num_facets));
+    SEXP e = PROTECT(Rf_ScalarReal(rep.area));
+    SEXP f = PROTECT(Rf_ScalarReal(rep.volume));
+    SEXP g = PROTECT(Rf_ScalarReal(rep.perimeter));
+    const char *keys[] = {"mesh", "dimension", "num_vertices", "num_facets",
+                          "area", "volume", "perimeter"};
+    SEXP values[] = {mo, a, b, c, e, f, g};
+    SEXP res = PROTECT(mio_r_named_list(7, keys, values));
+    UNPROTECT(8);
+    return res;
+}
+
+SEXP R_mio_delaunay_2d(SEXP mesh) {
+    int64_t nt = 0, nd = 0, nb = 0;
+    mio_mesh *out = mio_delaunay_2d(mio_r_mesh(mesh), &nt, &nd, &nb);
+    if (out == NULL) mio_r_fail("delaunay_2d");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP a = PROTECT(Rf_ScalarReal((double)nt));
+    SEXP b = PROTECT(Rf_ScalarReal((double)nd));
+    SEXP c = PROTECT(Rf_ScalarReal((double)nb));
+    const char *keys[] = {"mesh", "num_triangles", "num_duplicates", "num_boundary"};
+    SEXP values[] = {mo, a, b, c};
+    SEXP res = PROTECT(mio_r_named_list(4, keys, values));
+    UNPROTECT(5);
+    return res;
+}
+
 SEXP R_mio_convert_coordinates(SEXP mesh, SEXP system, SEXP axis, SEXP origin, SEXP reference,
                                SEXP arrays, SEXP inverse, SEXP record_coordinates) {
     mio_coordinate_opts opts;

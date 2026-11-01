@@ -7059,6 +7059,38 @@ TEST(CApi, ConvertCoordinates) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, ConvexHullAndDelaunay) {
+    mio_mesh* m = capi_cube_surface();  // the unit cube's 8 corners
+    mio_hull_report rep;
+    mio_mesh* hull = mio_convex_hull(m, 0, &rep);
+    ASSERT_NE(hull, nullptr) << mio_last_error();
+    EXPECT_EQ(rep.dimension, 3);
+    EXPECT_EQ(rep.num_vertices, 8);
+    EXPECT_EQ(rep.num_facets, 12);
+    EXPECT_DOUBLE_EQ(rep.volume, 1.0);
+    EXPECT_DOUBLE_EQ(rep.area, 6.0);
+    EXPECT_EQ(mio_mesh_num_points(hull), 8);
+    mio_mesh_free(hull);
+    mio_mesh* flat = mio_convex_hull(m, 2, &rep);
+    ASSERT_NE(flat, nullptr) << mio_last_error();
+    EXPECT_EQ(rep.dimension, 2);
+    EXPECT_EQ(rep.num_vertices, 4);
+    EXPECT_DOUBLE_EQ(rep.perimeter, 4.0);
+    mio_mesh_free(flat);
+    EXPECT_EQ(mio_convex_hull(m, 5, nullptr), nullptr);
+    std::int64_t tris = -1, dups = -1, boundary = -1;
+    mio_mesh* del = mio_delaunay_2d(m, &tris, &dups, &boundary);
+    ASSERT_NE(del, nullptr) << mio_last_error();
+    EXPECT_EQ(tris, 2);
+    EXPECT_EQ(dups, 4);  // the top face's corners repeat the bottom's in x, y
+    EXPECT_EQ(boundary, 4);
+    EXPECT_EQ(mio_mesh_num_points(del), 8);
+    EXPECT_EQ(mio_mesh_num_cell_blocks(del), 1);
+    mio_mesh_free(del);
+    EXPECT_EQ(mio_delaunay_2d(nullptr, nullptr, nullptr, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, GeodesicDistance) {
     mio_mesh* m = capi_cube_surface();
     mio_geodesic_opts opts;

@@ -78,6 +78,7 @@
 #include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/coordinates.hpp"
+#include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
 #include "meshioplusplus/operations/crop.hpp"
@@ -439,6 +440,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"SobolevDeform",
          {"Array", "LengthScale", "FixedPointsArray", "FixBoundary", "RecordFiltered",
           "MaxIterations", "Tolerance"}},
+        {"ConvexHull", {"Dimension"}},
+        {"Delaunay2D", {}},
         {"ConvertCoordinates",
          {"System", "Axis", "Origin", "Reference", "Arrays", "Inverse", "RecordCoordinates"}},
         {"GeodesicDistance",
@@ -2266,6 +2269,28 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                                         std::to_string(sr.mNumIterations) +
                                         " iteration(s); the last iterate is returned");
         return std::move(sr.mMesh);
+    }
+    if (op == "ConvexHull") {
+        ConvexHullOptions opts;
+        const double dimension = pipe_number(rStep, "Dimension", 0.0);
+        opts.mDimension = static_cast<std::int32_t>(dimension);
+        if (static_cast<double>(opts.mDimension) != dimension)
+            throw std::invalid_argument("pipeline: ConvexHull: Dimension must be 0, 2 or 3");
+        ConvexHullResult hr = convex_hull(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"Dimension", static_cast<double>(hr.mDimension)},
+                        {"NumVertices", static_cast<double>(hr.mNumVertices)},
+                        {"NumFacets", static_cast<double>(hr.mNumFacets)},
+                        {"Area", hr.mArea},
+                        {"Volume", hr.mVolume}});
+        return std::move(hr.mMesh);
+    }
+    if (op == "Delaunay2D") {
+        Delaunay2dResult dr = delaunay_2d(mesh);
+        pipe_push_step(rReport, rStep,
+                       {{"NumTriangles", static_cast<double>(dr.mNumTriangles)},
+                        {"NumDuplicates", static_cast<double>(dr.mNumDuplicates)}});
+        return std::move(dr.mMesh);
     }
     if (op == "ConvertCoordinates") {
         CoordinateOptions opts;

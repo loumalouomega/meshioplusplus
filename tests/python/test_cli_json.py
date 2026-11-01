@@ -583,6 +583,25 @@ WRITING = [
         ],
     ),
     (
+        "hull",
+        lambda f, out: ["hull", f["sphere_a"], out + ".vtu", "--json"],
+    ),
+    (
+        "hull-2d",
+        lambda f, out: [
+            "hull",
+            f["sphere_a"],
+            out + ".vtu",
+            "--dimension",
+            "2",
+            "--json",
+        ],
+    ),
+    (
+        "delaunay",
+        lambda f, out: ["delaunay", f["sphere_a"], out + ".vtu", "--json"],
+    ),
+    (
         "coordinates",
         lambda f, out: [
             "coordinates",

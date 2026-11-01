@@ -4083,6 +4083,40 @@ export interface MeshioPlusPlusModule {
   };
 
   /**
+   * The convex hull of a mesh's points (its cells are ignored): a closed
+   * outward `triangle` surface in 3-D, a counter-clockwise `line` loop of the
+   * x, y coordinates in 2-D. Only the extreme points are vertices, each with
+   * `hull:point_id` (its 0-based input point). `dimension` is 2, 3, or 0 to
+   * decide from the points. See doc/hull.md.
+   * @throws {Error} on collinear (2-D) or coplanar (3-D) points.
+   */
+  convexHull(
+    mesh: Mesh,
+    options?: { dimension?: 0 | 2 | 3 },
+  ): {
+    mesh: Mesh;
+    dimension: number;
+    numVertices: number;
+    numFacets: number;
+    area: number;
+    volume: number;
+    perimeter: number;
+  };
+
+  /**
+   * The Delaunay triangulation of a mesh's points in the x, y plane: every
+   * point kept (with its z and point data), one counter-clockwise `triangle`
+   * block; a point coinciding in x, y with an earlier one is in no triangle.
+   * See doc/hull.md.
+   */
+  delaunay2d(mesh: Mesh): {
+    mesh: Mesh;
+    numTriangles: number;
+    numDuplicates: number;
+    numBoundary: number;
+  };
+
+  /**
    * Cylindrical or spherical components about an axis: the points stay put,
    * their coordinates are recorded as point data (`coords:cylindrical` =
    * `(r, theta, z)`, `coords:spherical` = `(r, theta, phi)`), and each named

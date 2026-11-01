@@ -3656,6 +3656,51 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def convex_hull(
+        input_path: str,
+        output_path: str,
+        dimension: int = 0,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """The convex hull of a file's points (a scan, a point cloud, or any
+        mesh: its cells are ignored). 3-D: a closed triangle surface wound
+        outward; 2-D (the x, y footprint): a counter-clockwise line loop.
+        dimension is 2, 3, or 0 to decide from the points. Only extreme
+        points are vertices; each carries hull:point_id (its 0-based input
+        point). Exact predicates, so coplanar points are handled without a
+        tolerance. Reports dimension, num_vertices, num_facets, area (enclosed
+        in 2-D, surface in 3-D), volume and perimeter."""
+        return _guard(
+            _tools.tool_convex_hull,
+            input_path=input_path,
+            output_path=output_path,
+            dimension=dimension,
+            input_format=input_format,
+            output_format=output_format,
+        )
+
+    @server.tool()
+    def delaunay_2d(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """The Delaunay triangulation of a file's points in the x, y plane:
+        scattered xyz/pcd points turned into a terrain (each point keeps its
+        z and point data). One counter-clockwise triangle block covering the
+        convex hull; a point coinciding in x, y with an earlier one is left
+        out. Reports num_triangles, num_duplicates and num_boundary."""
+        return _guard(
+            _tools.tool_delaunay_2d,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+        )
+
+    @server.tool()
     def geodesic_distance(
         input_path: str,
         output_path: str,

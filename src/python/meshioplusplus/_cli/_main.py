@@ -37,6 +37,7 @@ from . import (
     _grid_transfer,
     _guard,
     _hausdorff,
+    _hull,
     _iga,
     _info,
     _interpolate,
@@ -288,6 +289,18 @@ def build_parser():
     )
     _coordinates.add_args(parser)
     parser.set_defaults(func=_coordinates.coordinates_cmd)
+
+    parser = subparsers.add_parser(
+        "hull", help="Convex hull of the points (3-D surface or 2-D loop)"
+    )
+    _hull.add_hull_args(parser)
+    parser.set_defaults(func=_hull.hull_cmd)
+
+    parser = subparsers.add_parser(
+        "delaunay", help="Delaunay triangulation of the points in the x, y plane"
+    )
+    _hull.add_delaunay_args(parser)
+    parser.set_defaults(func=_hull.delaunay_cmd)
 
     parser = subparsers.add_parser(
         "geodesic",

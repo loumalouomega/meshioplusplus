@@ -2038,6 +2038,13 @@ end
     @test 1.8 < gd.max_distance < 2.6
     close(gd.mesh)
     @test_throws MeshioError geodesic_distance(cube, Int[])
+    hh = convex_hull(cube)
+    @test hh.dimension == 3 && hh.num_vertices == 8 && hh.num_facets == 12
+    @test isapprox(hh.volume, 1.0)
+    close(hh.mesh)
+    dd = delaunay_2d(cube)
+    @test dd.num_triangles == 2 && dd.num_duplicates == 4
+    close(dd.mesh)
     cc = convert_coordinates(cube; system="spherical", origin=(0.5, 0.5, 0.5))
     @test cc.num_arrays == 0 && cc.num_singular == 0
     close(cc.mesh)

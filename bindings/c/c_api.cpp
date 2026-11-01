@@ -75,6 +75,7 @@
 #include "meshioplusplus/detail/compressed_input.hpp"
 #include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/coordinates.hpp"
+#include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
@@ -7182,6 +7183,46 @@ mio_mesh* mio_sobolev_deform(const mio_mesh* mesh, const mio_sobolev_opts* opts,
             report->max_displacement = r.mMaxDisplacement;
             report->converged = r.mConverged ? 1 : 0;
         }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+// --- convex hull and planar Delaunay (roadmap 7.5.1) --------------------------
+
+static_assert(sizeof(mio_hull_report) == 80, "mio_hull_report grew outside its reserved tail");
+
+mio_mesh* mio_convex_hull(const mio_mesh* mesh, int32_t dimension, mio_hull_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::ConvexHullOptions options;
+        options.mDimension = dimension;
+        meshioplusplus::ConvexHullResult r = meshioplusplus::convex_hull(mesh->mMesh, options);
+        if (report) {
+            *report = mio_hull_report{};
+            report->dimension = r.mDimension;
+            report->num_vertices = r.mNumVertices;
+            report->num_facets = r.mNumFacets;
+            report->area = r.mArea;
+            report->volume = r.mVolume;
+            report->perimeter = r.mPerimeter;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+mio_mesh* mio_delaunay_2d(const mio_mesh* mesh, int64_t* num_triangles, int64_t* num_duplicates,
+                          int64_t* num_boundary) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::Delaunay2dResult r = meshioplusplus::delaunay_2d(mesh->mMesh);
+        if (num_triangles)
+            *num_triangles = r.mNumTriangles;
+        if (num_duplicates)
+            *num_duplicates = r.mNumDuplicates;
+        if (num_boundary)
+            *num_boundary = r.mNumBoundary;
         return new mio_mesh{std::move(r.mMesh)};
     });
 }

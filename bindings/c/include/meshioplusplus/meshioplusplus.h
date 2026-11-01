@@ -3931,6 +3931,42 @@ MIO_API void mio_coordinate_opts_init(mio_coordinate_opts* opts);
 MIO_API mio_mesh* mio_convert_coordinates(const mio_mesh* mesh, const mio_coordinate_opts* opts,
                                           int64_t* num_arrays, int64_t* num_singular);
 
+/** What mio_convex_hull built. */
+typedef struct mio_hull_report {
+    int32_t dimension;    /**< the dimension used, 2 or 3 */
+    int32_t reserved_pad; /**< zero */
+    int64_t num_vertices; /**< hull vertices (extreme points) */
+    int64_t num_facets;   /**< triangles (3-D) or edges (2-D) */
+    double area;          /**< 2-D: enclosed area; 3-D: surface area */
+    double volume;        /**< 3-D: enclosed volume; 2-D: 0 */
+    double perimeter;     /**< 2-D: perimeter; 3-D: 0 */
+    int64_t reserved[4];  /**< zero; room for additive growth */
+} mio_hull_report;
+
+/**
+ * The convex hull of a mesh's points (its cells are ignored): a closed
+ * outward-wound `triangle` surface in 3-D, a counter-clockwise `line` loop of
+ * the x, y coordinates in 2-D. The output holds the extreme points alone with
+ * their point data and `hull:point_id` (Int64, the 0-based input point).
+ * `dimension` is 2, 3, or 0 to decide from the points. See doc/hull.md.
+ * `report` may be NULL.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure
+ *         (MIO_ERR_INVALID_ARG for collinear/coplanar points).
+ */
+MIO_API mio_mesh* mio_convex_hull(const mio_mesh* mesh, int32_t dimension, mio_hull_report* report);
+
+/**
+ * The Delaunay triangulation of a mesh's points in the x, y plane: every input
+ * point kept (with its z and point data), one counter-clockwise `triangle`
+ * block. A point coinciding in x, y with an earlier one is in no triangle.
+ * See doc/hull.md. Any count may be NULL.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_delaunay_2d(const mio_mesh* mesh, int64_t* num_triangles,
+                                  int64_t* num_duplicates, int64_t* num_boundary);
+
 /**
  * Options for mio_geodesic_distance. Initialize through
  * mio_geodesic_opts_init(); give `sources`, `source_region` or both.

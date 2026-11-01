@@ -394,6 +394,8 @@ _OP_TABLE = {
         "MaxIterations",
         "Tolerance",
     ),
+    "ConvexHull": ("Dimension",),
+    "Delaunay2D": (),
     "ConvertCoordinates": (
         "System",
         "Axis",
@@ -2442,6 +2444,24 @@ def _apply_step(mesh, step, steps, warnings):
                 f"{report['num_iterations']} iteration(s); the last iterate is "
                 "returned"
             )
+    elif op == "ConvexHull":
+        from ._hull import convex_hull
+
+        dimension = _number(step, "Dimension", 0.0)
+        if float(int(dimension)) != dimension:
+            raise ValueError("pipeline: ConvexHull: Dimension must be 0, 2 or 3")
+        mesh, report = convex_hull(mesh, dimension=int(dimension), return_report=True)
+        entry["Dimension"] = float(report["dimension"])
+        entry["NumVertices"] = float(report["num_vertices"])
+        entry["NumFacets"] = float(report["num_facets"])
+        entry["Area"] = float(report["area"])
+        entry["Volume"] = float(report["volume"])
+    elif op == "Delaunay2D":
+        from ._hull import delaunay_2d
+
+        mesh, report = delaunay_2d(mesh, return_report=True)
+        entry["NumTriangles"] = float(report["num_triangles"])
+        entry["NumDuplicates"] = float(report["num_duplicates"])
     elif op == "ConvertCoordinates":
         from ._coordinates import convert_coordinates
 

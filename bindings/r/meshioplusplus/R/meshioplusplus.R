@@ -716,6 +716,36 @@ mio_match_periodic_nodes <- function(mesh, slave, master, matrix = NULL, transla
   )
 }
 
+#' Convex hull of a mesh's points
+#'
+#' The mesh's cells are ignored. In 3-D the hull is a closed `triangle` surface
+#' wound outward; in 2-D (the x, y coordinates) a counter-clockwise `line`
+#' loop. Only the extreme points are vertices, each with `hull:point_id` (its
+#' 0-based input point). See `doc/hull.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param dimension 2, 3, or 0 to decide from the points.
+#' @return A list of `mesh`, `dimension`, `num_vertices`, `num_facets`, `area`
+#'   (enclosed in 2-D, surface in 3-D), `volume` and `perimeter`.
+#' @export
+mio_convex_hull <- function(mesh, dimension = 0L) {
+  .Call(R_mio_convex_hull, mesh, as.integer(dimension))
+}
+
+#' Delaunay triangulation of a mesh's points in the x, y plane
+#'
+#' Every point is kept (with its z and point data) under one counter-clockwise
+#' `triangle` block; a point coinciding in x, y with an earlier one is in no
+#' triangle. See `doc/hull.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @return A list of `mesh`, `num_triangles`, `num_duplicates` and
+#'   `num_boundary`.
+#' @export
+mio_delaunay_2d <- function(mesh) {
+  .Call(R_mio_delaunay_2d, mesh)
+}
+
 #' Cylindrical or spherical components about an axis
 #'
 #' The points stay put; their coordinates are recorded as point data

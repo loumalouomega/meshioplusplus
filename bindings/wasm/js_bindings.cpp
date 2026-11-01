@@ -132,6 +132,7 @@
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/coordinates.hpp"
+#include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
@@ -7093,6 +7094,42 @@ val sobolev_deform_js(const val& rMeshObj, const std::string& rArray, double len
 }
 
 /**
+ * @brief The convex hull of a mesh's points. @p rOptions is `{dimension}`
+ * (optional: 2, 3, or 0 to decide). See operations/hull.hpp.
+ */
+val convex_hull_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ConvexHullOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull() && rOptions.hasOwnProperty("dimension"))
+            options.mDimension = rOptions["dimension"].as<int>();
+        meshioplusplus::ConvexHullResult r =
+            meshioplusplus::convex_hull(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("dimension", r.mDimension);
+        out.set("numVertices", static_cast<double>(r.mNumVertices));
+        out.set("numFacets", static_cast<double>(r.mNumFacets));
+        out.set("area", r.mArea);
+        out.set("volume", r.mVolume);
+        out.set("perimeter", r.mPerimeter);
+        return out;
+    });
+}
+
+/// The Delaunay triangulation of a mesh's points in the x, y plane.
+val delaunay_2d_js(const val& rMeshObj) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::Delaunay2dResult r = meshioplusplus::delaunay_2d(val_to_mesh(rMeshObj));
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numTriangles", static_cast<double>(r.mNumTriangles));
+        out.set("numDuplicates", static_cast<double>(r.mNumDuplicates));
+        out.set("numBoundary", static_cast<double>(r.mNumBoundary));
+        return out;
+    });
+}
+
+/**
  * @brief Cylindrical / spherical components about an axis. @p rOptions is
  * `{system, axis, origin, reference, arrays, inverse, recordCoordinates}`,
  * every key optional. See operations/coordinates.hpp.
@@ -9407,6 +9444,8 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("sobolevDeform", &sobolev_deform_js);
     emscripten::function("geodesicDistance", &geodesic_distance_js);
     emscripten::function("convertCoordinates", &convert_coordinates_js);
+    emscripten::function("convexHull", &convex_hull_js);
+    emscripten::function("delaunay2d", &delaunay_2d_js);
     emscripten::function("cropBbox", &crop_bbox_js);
     emscripten::function("cropPlane", &crop_plane_js);
     emscripten::function("cropPredicate", &crop_predicate_js);

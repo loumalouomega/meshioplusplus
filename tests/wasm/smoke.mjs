@@ -5720,6 +5720,16 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.throws(() => m.matchPeriodicNodes(tagged, 'bottom', 'top', shift));
 });
 
+step('convexHull and delaunay2d of the cube corners', () => {
+    const h = m.convexHull(cubeSurface);
+    assert.equal(h.numVertices, 8);
+    assert.equal(h.numFacets, 12);
+    assert.ok(Math.abs(h.volume - 1) < 1e-12);
+    assert.equal(m.convexHull(cubeSurface, { dimension: 2 }).numVertices, 4);
+    assert.equal(m.delaunay2d(cubeSurface).numTriangles, 2);
+    assert.throws(() => m.convexHull(cubeSurface, { dimension: 5 }));
+});
+
 step('convertCoordinates about the cube centre', () => {
     const r = m.convertCoordinates(cubeSurface, { system: 'spherical', origin: [0.5, 0.5, 0.5] });
     assert.equal(r.numSingular, 0);

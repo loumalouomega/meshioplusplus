@@ -186,6 +186,8 @@ meshioplusplus periodic   in.msh --slave inlet --master outlet --translate 2,0,0
 meshioplusplus graph      in.vtu part.graph --kind cell     # dual graph as a METIS file (or .grf: Scotch)
 meshioplusplus geodesic   skin.stl dist.vtu --source 0     # surface distance from a point (heat method)
 meshioplusplus coordinates rotor.vtu cyl.vtu --arrays U     # vectors/tensors in cylindrical components
+meshioplusplus hull       scan.xyz hull.stl                 # convex hull of a point cloud (--dimension 2: outline)
+meshioplusplus delaunay   survey.pcd terrain.vtu            # Delaunay triangulation in x, y (z kept)
 meshioplusplus completion bash > ~/.local/share/bash-completion/completions/meshioplusplus  # also zsh, fish
 meshioplusplus convert    case.msh.gz case.vtu            # compressed input (.gz .bz2 .xz .zst .zip) read transparently
 meshioplusplus convert    s3://bucket/run/out.vtu out.msh # remote input through fsspec (Python CLI, [remote] extra)
@@ -657,6 +659,17 @@ d = out.point_data["geodesic:distance"]
 ```python
 out = meshioplusplus.convert_coordinates(rotor, "cylindrical", arrays=["U"])
 u_r, u_theta, u_z = out.point_data["U"].T
+```
+
+#### Convex hull and planar Delaunay
+
+**`meshioplusplus.convex_hull(points)`** is the closed hull of scattered points (a `triangle` surface, or with `dimension=2` the `x, y` outline as a `line` loop), its vertices the extreme points alone with `hull:point_id`; **`meshioplusplus.delaunay_2d(points)`** triangulates the points' `x, y` coordinates, every point keeping its `z` and data, so survey scatter becomes a terrain. Every decision is an exact predicate: coplanar and cocircular points need no tolerance. See [hull](doc/hull.md).
+
+<!--pytest-codeblocks:skip-->
+
+```python
+hull = meshioplusplus.convex_hull(meshioplusplus.read("scan.xyz"))
+terrain = meshioplusplus.delaunay_2d(meshioplusplus.read("survey.pcd"))
 ```
 
 #### Adjacency graphs (CSR) and METIS / Scotch files

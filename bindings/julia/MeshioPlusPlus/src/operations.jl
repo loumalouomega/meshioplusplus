@@ -3910,6 +3910,42 @@ function sobolev_deform(m::Mesh, array::AbstractString, length_scale::Real;
 end
 
 """
+    convex_hull(m; dimension=0)
+        -> (; mesh, dimension, num_vertices, num_facets, area, volume, perimeter)
+
+The convex hull of the mesh's points (its cells are ignored): a closed outward
+`triangle` surface in 3-D, a counter-clockwise `line` loop of the x, y
+coordinates in 2-D. Only the extreme points are vertices, each with
+`hull:point_id` (its 0-based input point). `dimension` is 2, 3, or 0 to decide
+from the points. See `doc/hull.md`.
+"""
+function convex_hull(m::Mesh; dimension::Integer=0)
+    rep = Ref{_CHullReport}()
+    ptr = ccall(_sym(:mio_convex_hull), Ptr{Cvoid}, (Ptr{Cvoid}, Int32, Ref{_CHullReport}),
+                _handle(m), Int32(dimension), rep)
+    r = _check_ptr(ptr)
+    h = rep[]
+    (mesh=Mesh(r), dimension=Int(h.dimension), num_vertices=Int(h.num_vertices),
+     num_facets=Int(h.num_facets), area=h.area, volume=h.volume, perimeter=h.perimeter)
+end
+
+"""
+    delaunay_2d(m) -> (; mesh, num_triangles, num_duplicates, num_boundary)
+
+The Delaunay triangulation of the mesh's points in the x, y plane: every point
+kept (with its z and point data), one counter-clockwise `triangle` block; a
+point coinciding in x, y with an earlier one is in no triangle. See
+`doc/hull.md`.
+"""
+function delaunay_2d(m::Mesh)
+    nt, nd, nb = Ref{Int64}(0), Ref{Int64}(0), Ref{Int64}(0)
+    ptr = ccall(_sym(:mio_delaunay_2d), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64}), _handle(m), nt, nd, nb)
+    r = _check_ptr(ptr)
+    (mesh=Mesh(r), num_triangles=Int(nt[]), num_duplicates=Int(nd[]), num_boundary=Int(nb[]))
+end
+
+"""
     convert_coordinates(m; system="cylindrical", axis=(0,0,1), origin=(0,0,0),
                         reference=(1,0,0), arrays=String[], inverse=false,
                         record_coordinates=true)

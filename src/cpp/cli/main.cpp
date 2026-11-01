@@ -137,6 +137,7 @@
 #include "meshioplusplus/detail/length_unit.hpp"
 #include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/coordinates.hpp"
+#include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
@@ -455,6 +456,8 @@ void print_usage(std::ostream& os) {
           "                            (--max D: nonzero exit when it is exceeded)\n"
           "  completion              Print a bash, zsh or fish completion script\n"
           "  coordinates             Fields in cylindrical/spherical components about an axis\n"
+          "  hull                    Convex hull of the points (3-D surface or 2-D loop)\n"
+          "  delaunay                Delaunay triangulation of the points in the x, y plane\n"
           "  geodesic                Surface distance from source points (heat method)\n"
           "  graph                   Write a mesh's node or cell graph as a METIS or Scotch file\n"
           "  periodic                Match the nodes of two regions a transform maps together\n"
@@ -3853,6 +3856,74 @@ std::vector<double> cli_numbers(const std::string& rText, std::size_t Count, con
                                  std::to_string(Count) + " numbers, got " +
                                  std::to_string(out.size()));
     return out;
+}
+
+// hull: the convex hull of a mesh's points. See operations/hull.hpp.
+int cmd_hull(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"dimension", {}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("hull requires INFILE OUTFILE");
+    meshioplusplus::ConvexHullOptions o;
+    if (has_opt(p, "dimension")) {
+        const std::string d = opt_value(p, "dimension");
+        if (d != "0" && d != "2" && d != "3")
+            throw std::runtime_error("hull: --dimension must be 0, 2 or 3");
+        o.mDimension = d[0] - '0';
+    }
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::ConvexHullResult r = meshioplusplus::convex_hull(mesh, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Field("dimension", static_cast<std::int64_t>(r.mDimension));
+        json.Field("num_vertices", r.mNumVertices);
+        json.Field("num_facets", r.mNumFacets);
+        json.Field("area", r.mArea);
+        json.Field("volume", r.mVolume);
+        json.Field("perimeter", r.mPerimeter);
+        json.EndObject();
+        return 0;
+    }
+    std::cout << r.mDimension << "-D hull: " << r.mNumVertices << " vertices, " << r.mNumFacets
+              << (r.mDimension == 3 ? " triangles" : " edges") << "\n";
+    return 0;
+}
+
+// delaunay: the Delaunay triangulation of a mesh's points in the x, y plane.
+// See operations/hull.hpp.
+int cmd_delaunay(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("delaunay requires INFILE OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::Delaunay2dResult r = meshioplusplus::delaunay_2d(mesh);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Field("num_triangles", r.mNumTriangles);
+        json.Field("num_duplicates", r.mNumDuplicates);
+        json.Field("num_boundary", r.mNumBoundary);
+        json.EndObject();
+        return 0;
+    }
+    std::cout << "Delaunay triangulation: " << r.mNumTriangles << " triangles";
+    if (r.mNumDuplicates > 0)
+        std::cout << ", " << r.mNumDuplicates << " duplicate point(s) left out";
+    std::cout << "\n";
+    return 0;
 }
 
 // coordinates: positions, vector and tensor fields in cylindrical or spherical
@@ -8728,6 +8799,10 @@ int cli_run_verb(const std::string& cmd, const std::vector<std::string>& rest) {
         return cmd_split_interface(rest);
     if (cmd == "hausdorff")
         return cmd_hausdorff(rest);
+    if (cmd == "hull")
+        return cmd_hull(rest);
+    if (cmd == "delaunay")
+        return cmd_delaunay(rest);
     if (cmd == "coordinates")
         return cmd_coordinates(rest);
     if (cmd == "geodesic")
