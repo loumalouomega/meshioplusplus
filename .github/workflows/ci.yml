@@ -48,7 +48,7 @@ jobs:
   cpp-tests:
     name: C++ tests (${{ matrix.mesh }} mesh / ${{ matrix.parallel }})
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -232,7 +232,7 @@ jobs:
   cpp-sanitize:
     name: C++ tests (ASan + UBSan)
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1035,7 +1035,7 @@ jobs:
   kokkos:
     name: Kokkos parallel backend
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1177,7 +1177,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
@@ -1626,8 +1626,12 @@ jobs:
           # libvtkcgns-9.7.so.1, which paraview 6.2.0 links, so pvpython exits
           # 127. Pin the build that passed on master (2026-10-21) until
           # conda-forge ships a fixed vtk-base; drop the pin then.
+          # libabseil: the solver picks 20260817, but pvpython's VTK needs the
+          # absl lts_20260526 symbols (undefined symbol at startup, exit 127).
+          # Pin the 20260526 LTS build until the paraview and libabseil packages
+          # agree; drop the pin then.
           create-args: >-
-            -c conda-forge python=3.12 paraview hdf5=1.14 vtk-base=9.7.0=py312h3887a20_1 cxx-compiler cmake ninja pybind11 scikit-build-core numpy pytest
+            -c conda-forge python=3.12 paraview hdf5=1.14 vtk-base=9.7.0=py312h3887a20_1 libabseil=20260526 cxx-compiler cmake ninja pybind11 scikit-build-core numpy pytest
       - name: Build meshio++ into ParaView's environment
         env:
           CMAKE_ARGS: -DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF

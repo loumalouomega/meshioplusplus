@@ -60,7 +60,7 @@ def _floats(text):
 _COMPARES = ("<=", ">=", "==", "!=", "<", ">")
 
 
-def _parse_where(text):
+def _parse_where(text, verb="crop"):
     """Split ``NAME OP VALUE`` on the comparison operator.
 
     Scanned longest-operator-first from the RIGHT-hand end of the name, because
@@ -75,7 +75,8 @@ def _parse_where(text):
             if name and value:
                 return name, op, float(value)
     raise ValueError(
-        "crop: --where expects 'NAME OP VALUE', with OP one of " + ", ".join(_COMPARES)
+        f"{verb}: --where expects 'NAME OP VALUE', with OP one of "
+        + ", ".join(_COMPARES)
     )
 
 

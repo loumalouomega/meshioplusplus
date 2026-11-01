@@ -642,8 +642,13 @@ test_that("clean, smooth and crop work", {
   ov <- mio_optimize_volume(m, max_iterations = 5L)
   expect_equal(mio_num_points(ov$mesh), 5) # the point set is invariant
   expect_gte(ov$num_flips, 0)
-  expect_gte(ov$min_quality_after, ov$min_quality_before - 1e-12)
+  expect_gte(ov$min_dihedral_after, ov$min_dihedral_before)
   mio_release(ov$mesh)
+  ov <- mio_optimize_volume(m, max_iterations = 5L, relocate = FALSE, objective = "energy")
+  expect_gte(ov$min_quality_after, ov$min_quality_before - 1e-12)
+  expect_equal(ov$num_edge_removals, 0)
+  mio_release(ov$mesh)
+  expect_error(mio_optimize_volume(m, objective = "best"))
 
   b <- mio_crop_bbox(m, c(-1, -1, -1), c(10, 10, 10))
   expect_equal(mio_num_cells(b), 2) # the box holds everything
@@ -1537,6 +1542,21 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
   expect_equal(fe$num_feature, 12)
   expect_equal(fe$num_boundary, 0)
   expect_error(mio_feature_edges(m, feature_angle = 200))
+
+  sel <- mio_select(m, "top", seed = c(0.5, 0.5, 2))
+  on.exit(mio_release(sel$mesh), add = TRUE)
+  expect_equal(sel$num_selected, 2)
+  expect_equal(sel$num_grown, 2)
+  low <- mio_select(m, "low", kind = "point", box = c(-1, -1, -1, 2, 2, 0.5))
+  on.exit(mio_release(low$mesh), add = TRUE)
+  expect_equal(low$num_selected, 4)
+  one <- mio_select(m, "all", component = 1, quality_metric = "min_angle",
+                    quality_op = ">", quality_value = 0)
+  on.exit(mio_release(one$mesh), add = TRUE)
+  expect_equal(one$num_selected, 12)
+  expect_equal(one$num_components, 1)
+  expect_error(mio_select(m, "none"))
+  expect_error(mio_select(m, "x", kind = "edge", component = 1))
 
   sg <- mio_segment(m)
   on.exit(mio_release(sg$mesh), add = TRUE)

@@ -65,6 +65,7 @@
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/refine_patches.hpp"
 #include "meshioplusplus/operations/segment.hpp"
+#include "meshioplusplus/operations/select.hpp"
 #include "meshioplusplus/operations/tessellate.hpp"
 #include "meshioplusplus/operations/tet_poly.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
@@ -350,6 +351,10 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Segment",
          {"FeatureAngle", "NormalTolerance", "CurvatureTolerance", "MinPatchCells", "Region",
           "Prefix", "Method", "Tolerance"}},
+        {"Select",
+         {"Name", "Kind", "Tag", "Mode", "BoundaryOnly", "Bbox", "Point", "Normal", "Center",
+          "Radius", "Where", "Compare", "Value", "Quality", "QualityCompare", "QualityValue",
+          "Component", "Seed", "FeatureAngle", "NormalTolerance"}},
         {"FitPrimitives",
          {"PatchData", "Tolerance", "Relative", "MinInlierFraction", "Types", "MaxIterations"}},
         {"FitCad",
@@ -456,7 +461,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "MaxCells", "MaxTets",
           "WarpFraction", "Sign", "WatertightCheck"}},
         {"OptimizeVolume",
-         {"MaxIterations", "Relocate", "Flip", "PreserveBoundary", "MinImprovement"}},
+         {"MaxIterations", "Relocate", "Flip", "PreserveBoundary", "MinImprovement", "Objective",
+          "MaxRingSize"}},
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
         {"Voxelize",
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
@@ -1697,6 +1703,58 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"NumBoundaryEdges", static_cast<double>(sr.mNumBoundaryEdges)}});
         return std::move(sr.mMesh);
     }
+    if (op == "Select") {
+        // A data step: one named region is written, nothing moves.
+        SelectOptions opts;
+        opts.mName = pipe_text(rStep, "Name", "");
+        opts.mKind = region_kind_from_name(pipe_text(rStep, "Kind", "cell"));
+        opts.mTag = static_cast<std::int64_t>(pipe_number(rStep, "Tag", -1.0));
+        opts.mMode = select_mode_from_name(pipe_text(rStep, "Mode", "all"));
+        opts.mBoundaryOnly = pipe_flag(rStep, "BoundaryOnly", true);
+        if (pipe_find(rStep, "Bbox") != nullptr) {
+            const std::vector<double> b = pipe_dvec(rStep, "Bbox");
+            if (b.size() != 6)
+                throw std::invalid_argument(
+                    pipe_err(rStep, "'Bbox' must be [xmin, ymin, zmin, xmax, ymax, zmax]"));
+            opts.mBox = true;
+            opts.mBoxLo = {b[0], b[1], b[2]};
+            opts.mBoxHi = {b[3], b[4], b[5]};
+        }
+        if (pipe_find(rStep, "Point") != nullptr || pipe_find(rStep, "Normal") != nullptr) {
+            opts.mPlane = true;
+            pipe_vec3(rStep, "Point", opts.mPlanePoint.data());
+            pipe_vec3(rStep, "Normal", opts.mPlaneNormal.data());
+        }
+        if (pipe_find(rStep, "Center") != nullptr || pipe_find(rStep, "Radius") != nullptr) {
+            opts.mSphere = true;
+            pipe_vec3(rStep, "Center", opts.mSphereCenter.data());
+            opts.mSphereRadius = pipe_number(rStep, "Radius", 0.0);
+        }
+        if (pipe_find(rStep, "Where") != nullptr) {
+            opts.mWhereArray = pipe_text(rStep, "Where", "");
+            opts.mWhereOp = refine_compare_from_name(pipe_text(rStep, "Compare", "<"));
+            opts.mWhereValue = pipe_number(rStep, "Value", 0.0);
+        }
+        if (pipe_find(rStep, "Quality") != nullptr) {
+            opts.mQualityMetric = pipe_text(rStep, "Quality", "");
+            opts.mQualityOp = refine_compare_from_name(pipe_text(rStep, "QualityCompare", "<"));
+            opts.mQualityValue = pipe_number(rStep, "QualityValue", 0.0);
+        }
+        opts.mComponent = static_cast<std::int64_t>(pipe_number(rStep, "Component", -1.0));
+        if (pipe_find(rStep, "Seed") != nullptr) {
+            opts.mSeed = true;
+            pipe_vec3(rStep, "Seed", opts.mSeedPoint.data());
+        }
+        opts.mFeatureAngleDeg = pipe_number(rStep, "FeatureAngle", 30.0);
+        opts.mNormalToleranceDeg = pipe_number(rStep, "NormalTolerance", 0.0);
+        SelectResult sr = select_region(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumCandidates", static_cast<double>(sr.mNumCandidates)},
+                        {"NumSelected", static_cast<double>(sr.mNumSelected)},
+                        {"NumGrown", static_cast<double>(sr.mNumGrown)},
+                        {"NumComponents", static_cast<double>(sr.mNumComponents)}});
+        return std::move(sr.mMesh);
+    }
     if (op == "FitPrimitives") {
         FitPrimitivesOptions opts;
         opts.mPatchData = pipe_text(rStep, "PatchData", "segment:patch");
@@ -2385,6 +2443,9 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mFlip = pipe_flag(rStep, "Flip", true);
         opts.mPreserveBoundary = pipe_flag(rStep, "PreserveBoundary", true);
         opts.mMinImprovement = pipe_number(rStep, "MinImprovement", 1e-6);
+        opts.mObjective =
+            optimize_volume_objective_from_name(pipe_text(rStep, "Objective", "worst"));
+        opts.mMaxRingSize = static_cast<std::int32_t>(pipe_number(rStep, "MaxRingSize", 7.0));
         OptimizeVolumeResult ov = optimize_volume(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumFlips", static_cast<double>(ov.mNumFlips)},
@@ -2393,7 +2454,12 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"NumVerticesMoved", static_cast<double>(ov.mNumVerticesMoved)},
                         {"NumTets", static_cast<double>(ov.mNumTets)},
                         {"MinQualityBefore", ov.mMinQualityBefore},
-                        {"MinQualityAfter", ov.mMinQualityAfter}});
+                        {"MinQualityAfter", ov.mMinQualityAfter},
+                        {"NumEdgeRemovals", static_cast<double>(ov.mNumEdgeRemovals)},
+                        {"NumMultiFaceRemovals", static_cast<double>(ov.mNumMultiFaceRemovals)},
+                        {"NumWorstSmoothed", static_cast<double>(ov.mNumWorstSmoothed)},
+                        {"MinDihedralBefore", ov.mMinDihedralBefore},
+                        {"MinDihedralAfter", ov.mMinDihedralAfter}});
         return std::move(ov.mMesh);
     }
     if (op == "Generate") {

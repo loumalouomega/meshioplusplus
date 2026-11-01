@@ -291,6 +291,77 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(3) = 0
     end type
 
+    !> Interop mirror of C `mio_optimize_volume_opts` (ABI 37). Field order/types
+    !> are ABI; the defaults mirror `mio_optimize_volume_opts_init` (called anyway).
+    type, bind(c) :: mio_optimize_volume_opts_t
+        integer(c_int32_t) :: max_iterations = 10
+        integer(c_int32_t) :: relocate = 1
+        integer(c_int32_t) :: flip = 1
+        integer(c_int32_t) :: preserve_boundary = 1
+        real(c_double) :: min_improvement = 1.0e-6_c_double
+        integer(c_int32_t) :: objective = 0
+        integer(c_int32_t) :: max_ring_size = 7
+        integer(c_int64_t) :: reserved(8) = 0
+    end type
+
+    !> Interop mirror of C `mio_optimize_volume_report`.
+    type, bind(c) :: mio_optimize_volume_report_t
+        integer(c_int64_t) :: num_flips = 0
+        integer(c_int64_t) :: num_23_flips = 0
+        integer(c_int64_t) :: num_32_flips = 0
+        integer(c_int64_t) :: num_edge_removals = 0
+        integer(c_int64_t) :: num_multi_face_removals = 0
+        integer(c_int64_t) :: num_vertices_moved = 0
+        integer(c_int64_t) :: num_worst_smoothed = 0
+        integer(c_int64_t) :: num_tets = 0
+        real(c_double) :: min_quality_before = 0.0_c_double
+        real(c_double) :: min_quality_after = 0.0_c_double
+        real(c_double) :: min_dihedral_before = 0.0_c_double
+        real(c_double) :: min_dihedral_after = 0.0_c_double
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_select_opts`. Field order/types are ABI; the
+    !> defaults mirror `mio_select_opts_init` (called anyway).
+    type, bind(c) :: mio_select_opts_t
+        type(c_ptr) :: name = c_null_ptr
+        integer(c_int32_t) :: kind = 1
+        integer(c_int32_t) :: mode = 0
+        integer(c_int64_t) :: tag = -1
+        integer(c_int32_t) :: boundary_only = 1
+        integer(c_int32_t) :: use_box = 0
+        integer(c_int32_t) :: use_plane = 0
+        integer(c_int32_t) :: use_sphere = 0
+        integer(c_int32_t) :: use_seed = 0
+        integer(c_int32_t) :: where_compare = 0
+        integer(c_int32_t) :: quality_compare = 0
+        integer(c_int32_t) :: reserved32 = 0
+        real(c_double) :: box_lo(3) = 0.0_c_double
+        real(c_double) :: box_hi(3) = 0.0_c_double
+        real(c_double) :: plane_point(3) = 0.0_c_double
+        real(c_double) :: plane_normal(3) = [0.0_c_double, 0.0_c_double, 1.0_c_double]
+        real(c_double) :: sphere_center(3) = 0.0_c_double
+        real(c_double) :: sphere_radius = 0.0_c_double
+        type(c_ptr) :: where_array = c_null_ptr
+        real(c_double) :: where_value = 0.0_c_double
+        type(c_ptr) :: quality_metric = c_null_ptr
+        real(c_double) :: quality_value = 0.0_c_double
+        integer(c_int64_t) :: component = -1
+        real(c_double) :: seed(3) = 0.0_c_double
+        real(c_double) :: feature_angle = 30.0_c_double
+        real(c_double) :: normal_tolerance = 0.0_c_double
+        integer(c_int64_t) :: reserved(8) = 0
+    end type
+
+    !> Interop mirror of C `mio_select_report`.
+    type, bind(c) :: mio_select_report_t
+        integer(c_int64_t) :: num_candidates = 0
+        integer(c_int64_t) :: num_selected = 0
+        integer(c_int64_t) :: num_grown = 0
+        integer(c_int64_t) :: num_components = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
     !> Interop mirror of C `mio_fit_primitives_opts` (`types` is the C
     !> `uint32_t` bit mask, `1 << type`; 62 selects every primitive).
     type, bind(c) :: mio_fit_primitives_opts_t
@@ -1902,6 +1973,7 @@ module meshioplusplus
         procedure :: normals => mesh_normals
         procedure :: feature_edges => mesh_feature_edges
         procedure :: segment => mesh_segment
+        procedure :: select_region => mesh_select_region
         procedure :: fit_primitives => mesh_fit_primitives
         procedure :: refine_patches => mesh_refine_patches
         procedure :: fit_cad => mesh_fit_cad
@@ -2856,6 +2928,21 @@ module meshioplusplus
             type(c_ptr) :: r
         end function
 
+        subroutine c_mio_optimize_volume_opts_init(opts) &
+                bind(c, name="mio_optimize_volume_opts_init")
+            import :: mio_optimize_volume_opts_t
+            type(mio_optimize_volume_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_optimize_volume_ex(h, opts, report) &
+                bind(c, name="mio_optimize_volume_ex") result(r)
+            import :: c_ptr, mio_optimize_volume_opts_t, mio_optimize_volume_report_t
+            type(c_ptr), value :: h
+            type(mio_optimize_volume_opts_t), intent(in) :: opts
+            type(mio_optimize_volume_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
         function c_mio_crop_bbox(h, lo, hi, mode, record_ids) &
                 bind(c, name="mio_crop_bbox") result(r)
             import :: c_ptr, c_int, c_double
@@ -3011,6 +3098,19 @@ module meshioplusplus
             type(c_ptr), value :: h
             type(mio_segment_opts_t), intent(in) :: opts
             type(mio_segment_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_select_opts_init(opts) bind(c, name="mio_select_opts_init")
+            import :: mio_select_opts_t
+            type(mio_select_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_select(h, opts, report) bind(c, name="mio_select") result(r)
+            import :: c_ptr, mio_select_opts_t, mio_select_report_t
+            type(c_ptr), value :: h
+            type(mio_select_opts_t), intent(in) :: opts
+            type(mio_select_report_t), intent(out) :: report
             type(c_ptr) :: r
         end function
 
@@ -7020,14 +7120,21 @@ contains
         call clear_status(stat, errmsg)
     end function
 
-    !> ODT-remesh a tetrahedral mesh: relocate vertices AND flip connectivity
-    !> (2-3/3-2, predicate-free). Tet-only. The point set is invariant, so
-    !> point_data and named Point regions carry; cell_data and Cell/Side
-    !> regions are dropped. See doc/optimize_volume.md.
+    !> ODT-remesh a tetrahedral mesh: relocate vertices AND change connectivity,
+    !> predicate-free. Tet-only. `objective='worst'` (the default since ABI 37)
+    !> raises the least dihedral angle and never lowers it, with edge and
+    !> multi-face removal over rings of up to `max_ring_size` (7) tets and
+    !> worst-cell smoothing; `objective='energy'` is the ODT energy with
+    !> scaled-Jacobian flips. The point set is invariant, so point_data and named
+    !> Point regions carry; cell_data and Cell/Side regions are dropped. See
+    !> doc/optimize_volume.md.
     function mesh_optimize_volume(self, max_iterations, relocate, flip, preserve_boundary, &
                                   min_improvement, num_flips, num_23_flips, num_32_flips, &
                                   num_vertices_moved, num_tets, min_quality_before, &
-                                  min_quality_after, stat, errmsg) result(out)
+                                  min_quality_after, stat, errmsg, objective, max_ring_size, &
+                                  num_edge_removals, num_multi_face_removals, &
+                                  num_worst_smoothed, min_dihedral_before, &
+                                  min_dihedral_after) result(out)
         class(mio_mesh), intent(in) :: self
         integer, intent(in), optional :: max_iterations
         logical, intent(in), optional :: relocate, flip, preserve_boundary
@@ -7037,40 +7144,62 @@ contains
         real(real64), intent(out), optional :: min_quality_before, min_quality_after
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        character(*), intent(in), optional :: objective
+        integer, intent(in), optional :: max_ring_size
+        integer(int64), intent(out), optional :: num_edge_removals, num_multi_face_removals, &
+                                                 num_worst_smoothed
+        real(real64), intent(out), optional :: min_dihedral_before, min_dihedral_after
         type(mio_mesh) :: out
-        integer(c_int) :: cmaxiter, crel, cflip, cpresb
-        real(c_double) :: cminimp
-        integer(c_int64_t) :: nflips, n23, n32, nmoved, ntets
-        real(c_double) :: qbefore, qafter
-        cmaxiter = 10
-        if (present(max_iterations)) cmaxiter = int(max_iterations, c_int)
-        crel = 1
+        type(mio_optimize_volume_opts_t) :: opts
+        type(mio_optimize_volume_report_t) :: rep
+        if (c_sizeof(opts) /= 96_c_size_t .or. c_sizeof(rep) /= 128_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: optimize_volume layout mismatch'
+            error stop 1
+        end if
+        call c_mio_optimize_volume_opts_init(opts)
+        if (present(max_iterations)) opts%max_iterations = int(max_iterations, c_int32_t)
         if (present(relocate)) then
-            if (.not. relocate) crel = 0
+            if (.not. relocate) opts%relocate = 0
         end if
-        cflip = 1
         if (present(flip)) then
-            if (.not. flip) cflip = 0
+            if (.not. flip) opts%flip = 0
         end if
-        cpresb = 1
         if (present(preserve_boundary)) then
-            if (.not. preserve_boundary) cpresb = 0
+            if (.not. preserve_boundary) opts%preserve_boundary = 0
         end if
-        cminimp = 1.0e-6_c_double
-        if (present(min_improvement)) cminimp = real(min_improvement, c_double)
-        out%handle = c_mio_optimize_volume(self%handle, cmaxiter, crel, cflip, cpresb, cminimp, &
-                                           nflips, n23, n32, nmoved, ntets, qbefore, qafter)
+        if (present(min_improvement)) opts%min_improvement = real(min_improvement, c_double)
+        if (present(objective)) then
+            select case (trim(objective))
+            case ('worst')
+                opts%objective = 0
+            case ('energy')
+                opts%objective = 1
+            case default
+                call handle_failure('optimize_volume', "objective must be 'worst' or 'energy'", &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+        if (present(max_ring_size)) opts%max_ring_size = int(max_ring_size, c_int32_t)
+        out%handle = c_mio_optimize_volume_ex(self%handle, opts, rep)
         if (.not. c_associated(out%handle)) then
             call handle_failure('optimize_volume', mio_error_message(), stat, errmsg)
             return
         end if
-        if (present(num_flips)) num_flips = int(nflips, int64)
-        if (present(num_23_flips)) num_23_flips = int(n23, int64)
-        if (present(num_32_flips)) num_32_flips = int(n32, int64)
-        if (present(num_vertices_moved)) num_vertices_moved = int(nmoved, int64)
-        if (present(num_tets)) num_tets = int(ntets, int64)
-        if (present(min_quality_before)) min_quality_before = real(qbefore, real64)
-        if (present(min_quality_after)) min_quality_after = real(qafter, real64)
+        if (present(num_flips)) num_flips = int(rep%num_flips, int64)
+        if (present(num_23_flips)) num_23_flips = int(rep%num_23_flips, int64)
+        if (present(num_32_flips)) num_32_flips = int(rep%num_32_flips, int64)
+        if (present(num_vertices_moved)) num_vertices_moved = int(rep%num_vertices_moved, int64)
+        if (present(num_tets)) num_tets = int(rep%num_tets, int64)
+        if (present(min_quality_before)) min_quality_before = real(rep%min_quality_before, real64)
+        if (present(min_quality_after)) min_quality_after = real(rep%min_quality_after, real64)
+        if (present(num_edge_removals)) num_edge_removals = int(rep%num_edge_removals, int64)
+        if (present(num_multi_face_removals)) &
+            num_multi_face_removals = int(rep%num_multi_face_removals, int64)
+        if (present(num_worst_smoothed)) num_worst_smoothed = int(rep%num_worst_smoothed, int64)
+        if (present(min_dihedral_before)) &
+            min_dihedral_before = real(rep%min_dihedral_before, real64)
+        if (present(min_dihedral_after)) min_dihedral_after = real(rep%min_dihedral_after, real64)
         call clear_status(stat, errmsg)
     end function
 
@@ -7707,6 +7836,148 @@ contains
         if (present(num_feature_edges)) num_feature_edges = int(report%num_feature_edges, int64)
         if (present(num_boundary_edges)) &
             num_boundary_edges = int(report%num_boundary_edges, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Select points, cells or sides of this mesh and write them as one named
+    !> region; the result is the input plus that region (a region of the same
+    !> name and kind is replaced). `kind` is 'cell' (default), 'point' or
+    !> 'side'. The criteria, each optional and intersected: a box (`box_lo`,
+    !> `box_hi`), a half-space (`plane_point`, `plane_normal`), a ball
+    !> (`sphere_center`, `sphere_radius`), a data comparison (`where_array`,
+    !> `where_op` such as '<=', `where_value`), a quality comparison
+    !> (`quality_metric`, `quality_op`, `quality_value`), a node-connected
+    !> `component` (1-based, in split's piece order) and a patch grown from the
+    !> facet nearest `seed` across edges sharper than `feature_angle` (default
+    !> 30) at most, within `normal_tolerance` of the seed's normal. `mode` is
+    !> 'all', 'any' or 'centroid'; `all_facets` lets side regions take
+    !> interior facets. Not `select`, which Fortran reads as a construct. See
+    !> doc/select.md.
+    function mesh_select_region(self, name, kind, box_lo, box_hi, plane_point, plane_normal, &
+                                sphere_center, sphere_radius, where_array, where_op, &
+                                where_value, quality_metric, quality_op, quality_value, &
+                                component, seed, feature_angle, normal_tolerance, mode, &
+                                all_facets, tag, num_candidates, num_selected, num_grown, &
+                                num_components, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: name
+        character(*), intent(in), optional :: kind, mode
+        real(real64), intent(in), optional :: box_lo(3), box_hi(3)
+        real(real64), intent(in), optional :: plane_point(3), plane_normal(3)
+        real(real64), intent(in), optional :: sphere_center(3), sphere_radius
+        character(*), intent(in), optional :: where_array, where_op
+        real(real64), intent(in), optional :: where_value
+        character(*), intent(in), optional :: quality_metric, quality_op
+        real(real64), intent(in), optional :: quality_value
+        integer(int64), intent(in), optional :: component, tag
+        real(real64), intent(in), optional :: seed(3)
+        real(real64), intent(in), optional :: feature_angle, normal_tolerance
+        logical, intent(in), optional :: all_facets
+        integer(int64), intent(out), optional :: num_candidates, num_selected
+        integer(int64), intent(out), optional :: num_grown, num_components
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr) :: res
+        type(mio_select_opts_t) :: opts
+        type(mio_select_report_t) :: report
+        character(kind=c_char, len=STRBUF_LEN), target :: name_buf, where_buf, quality_buf
+
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. &
+            (c_sizeof(opts) /= 328_c_size_t .or. c_sizeof(report) /= 64_c_size_t)) then
+            write (error_unit, '(a)') 'meshio++: select layout mismatch'
+            error stop 1
+        end if
+        call c_mio_select_opts_init(opts)
+        name_buf = trim(name)//c_null_char
+        opts%name = c_loc(name_buf(1:1))
+        if (present(kind)) then
+            select case (trim(kind))
+            case ('point')
+                opts%kind = 0
+            case ('cell')
+                opts%kind = 1
+            case ('side')
+                opts%kind = 2
+            case default
+                call handle_failure('select_region', "kind must be 'point', 'cell' or 'side'", &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+        if (present(mode)) then
+            select case (trim(mode))
+            case ('all')
+                opts%mode = 0
+            case ('any')
+                opts%mode = 1
+            case ('centroid')
+                opts%mode = 2
+            case default
+                call handle_failure('select_region', "mode must be 'all', 'any' or 'centroid'", &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+        if (present(box_lo) .and. present(box_hi)) then
+            opts%use_box = 1
+            opts%box_lo = real(box_lo, c_double)
+            opts%box_hi = real(box_hi, c_double)
+        end if
+        if (present(plane_point) .and. present(plane_normal)) then
+            opts%use_plane = 1
+            opts%plane_point = real(plane_point, c_double)
+            opts%plane_normal = real(plane_normal, c_double)
+        end if
+        if (present(sphere_center) .and. present(sphere_radius)) then
+            opts%use_sphere = 1
+            opts%sphere_center = real(sphere_center, c_double)
+            opts%sphere_radius = real(sphere_radius, c_double)
+        end if
+        if (present(where_array)) then
+            where_buf = trim(where_array)//c_null_char
+            opts%where_array = c_loc(where_buf(1:1))
+            if (present(where_op)) opts%where_compare = refine_compare_code(where_op)
+            if (opts%where_compare < 0) then
+                call handle_failure('select_region', 'unknown comparison '//trim(where_op), &
+                                    stat, errmsg)
+                return
+            end if
+            if (present(where_value)) opts%where_value = real(where_value, c_double)
+        end if
+        if (present(quality_metric)) then
+            quality_buf = trim(quality_metric)//c_null_char
+            opts%quality_metric = c_loc(quality_buf(1:1))
+            if (present(quality_op)) opts%quality_compare = refine_compare_code(quality_op)
+            if (opts%quality_compare < 0) then
+                call handle_failure('select_region', 'unknown comparison '//trim(quality_op), &
+                                    stat, errmsg)
+                return
+            end if
+            if (present(quality_value)) opts%quality_value = real(quality_value, c_double)
+        end if
+        if (present(component)) opts%component = int(component, c_int64_t) - 1_c_int64_t
+        if (present(seed)) then
+            opts%use_seed = 1
+            opts%seed = real(seed, c_double)
+        end if
+        if (present(feature_angle)) opts%feature_angle = real(feature_angle, c_double)
+        if (present(normal_tolerance)) &
+            opts%normal_tolerance = real(normal_tolerance, c_double)
+        if (present(all_facets)) then
+            if (all_facets) opts%boundary_only = 0
+        end if
+        if (present(tag)) opts%tag = int(tag, c_int64_t)
+        res = c_mio_select(self%handle, opts, report)
+        if (.not. c_associated(res)) then
+            call handle_failure('select_region', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = res
+        if (present(num_candidates)) num_candidates = int(report%num_candidates, int64)
+        if (present(num_selected)) num_selected = int(report%num_selected, int64)
+        if (present(num_grown)) num_grown = int(report%num_grown, int64)
+        if (present(num_components)) num_components = int(report%num_components, int64)
         call clear_status(stat, errmsg)
     end function
 

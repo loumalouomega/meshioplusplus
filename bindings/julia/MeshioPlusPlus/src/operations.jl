@@ -196,12 +196,19 @@ end
 
 """
     optimize_volume(mesh; max_iterations=10, relocate=true, flip=true,
-                    preserve_boundary=true, min_improvement=1e-6)
-        -> (; mesh, num_flips, num_23_flips, num_32_flips, num_vertices_moved,
-              num_tets, min_quality_before, min_quality_after)
+                    preserve_boundary=true, min_improvement=1e-6,
+                    objective="worst", max_ring_size=7)
+        -> (; mesh, num_flips, num_23_flips, num_32_flips, num_edge_removals,
+              num_multi_face_removals, num_vertices_moved, num_worst_smoothed,
+              num_tets, min_quality_before, min_quality_after,
+              min_dihedral_before, min_dihedral_after)
 
 ODT-remesh a tetrahedral mesh: raise its worst element quality by relocating
-vertices AND flipping connectivity (2-3/3-2, predicate-free). The genuine "ODT
+vertices AND changing connectivity, predicate-free. `objective="worst"` (the
+default) raises the least dihedral angle and never lowers it -- guarded ODT
+relocation, 2-3 flips, edge and multi-face removal over rings of up to
+`max_ring_size` tets, worst-cell smoothing; `"energy"` is the ODT energy with
+scaled-Jacobian flips. The genuine "ODT
 remeshing" sibling of [`remesh_volume`](@ref) (which generates a fresh lattice
 mesh) and of `smooth(method="odt")` (which only moves points on fixed
 connectivity). Tet-only, raises on any other block. The point set is invariant,
@@ -211,20 +218,26 @@ See `doc/optimize_volume.md`.
 """
 function optimize_volume(m::Mesh; max_iterations::Integer=10, relocate::Bool=true,
                          flip::Bool=true, preserve_boundary::Bool=true,
-                         min_improvement::Real=1e-6)
-    nflips = Ref{Int64}(0); n23 = Ref{Int64}(0); n32 = Ref{Int64}(0)
-    nmoved = Ref{Int64}(0); ntets = Ref{Int64}(0)
-    qb = Ref{Cdouble}(0.0); qa = Ref{Cdouble}(0.0)
-    ptr = ccall(_sym(:mio_optimize_volume), Ptr{Cvoid},
-                (Ptr{Cvoid}, Cint, Cint, Cint, Cint, Cdouble,
-                 Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64},
-                 Ptr{Cdouble}, Ptr{Cdouble}),
-                _handle(m), Cint(max_iterations), relocate ? Cint(1) : Cint(0),
-                flip ? Cint(1) : Cint(0), preserve_boundary ? Cint(1) : Cint(0),
-                Float64(min_improvement), nflips, n23, n32, nmoved, ntets, qb, qa)
-    (mesh=Mesh(_check_ptr(ptr)), num_flips=Int(nflips[]), num_23_flips=Int(n23[]),
-     num_32_flips=Int(n32[]), num_vertices_moved=Int(nmoved[]), num_tets=Int(ntets[]),
-     min_quality_before=Float64(qb[]), min_quality_after=Float64(qa[]))
+                         min_improvement::Real=1e-6, objective::AbstractString="worst",
+                         max_ring_size::Integer=7)
+    obj = objective == "worst" ? Int32(0) : objective == "energy" ? Int32(1) :
+          throw(ArgumentError("meshio++: optimize_volume: objective must be \"worst\" or \"energy\""))
+    opts = _COptimizeVolumeOpts(Int32(max_iterations), Int32(relocate), Int32(flip),
+                                Int32(preserve_boundary), Float64(min_improvement), obj,
+                                Int32(max_ring_size), ntuple(_ -> Int64(0), 8))
+    report = Ref{_COptimizeVolumeReport}()
+    ptr = ccall(_sym(:mio_optimize_volume_ex), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_COptimizeVolumeOpts}, Ptr{_COptimizeVolumeReport}),
+                _handle(m), Ref(opts), report)
+    r = _check_ptr(ptr)
+    rep = report[]
+    (mesh=Mesh(r), num_flips=Int(rep.num_flips), num_23_flips=Int(rep.num_23_flips),
+     num_32_flips=Int(rep.num_32_flips), num_edge_removals=Int(rep.num_edge_removals),
+     num_multi_face_removals=Int(rep.num_multi_face_removals),
+     num_vertices_moved=Int(rep.num_vertices_moved),
+     num_worst_smoothed=Int(rep.num_worst_smoothed), num_tets=Int(rep.num_tets),
+     min_quality_before=rep.min_quality_before, min_quality_after=rep.min_quality_after,
+     min_dihedral_before=rep.min_dihedral_before, min_dihedral_after=rep.min_dihedral_after)
 end
 
 # --- subsetting --------------------------------------------------------------
@@ -3276,6 +3289,77 @@ function segment(m::Mesh; feature_angle::Real=30.0, normal_tolerance::Real=0.0,
      num_feature_edges=Int(rep.num_feature_edges),
      num_boundary_edges=Int(rep.num_boundary_edges),
      num_non_manifold_edges=Int(rep.num_non_manifold_edges))
+end
+
+"""
+    select_region(m, name; kind="cell", box=nothing, plane=nothing, sphere=nothing,
+                  where_array="", where_op="<", where_value=0.0, quality_metric="",
+                  quality_op="<", quality_value=0.0, component=nothing, seed=nothing,
+                  feature_angle=30.0, normal_tolerance=0.0, mode="all",
+                  boundary_only=true, tag=-1)
+        -> (; mesh, num_candidates, num_selected, num_grown, num_components)
+
+Select points, cells or sides and write them as one named region; the mesh comes
+back unchanged plus that region (a region of the same name and kind is
+replaced). `kind` is `"cell"`, `"point"` or `"side"`. Every criterion given must
+pass: `box = (lo, hi)`, `plane = (point, normal)`, `sphere = (center, radius)`,
+`where_array`/`where_op`/`where_value` on point or cell data (as `refine` spells
+it), `quality_metric`/`quality_op`/`quality_value` on a `compute_quality` metric, `component = k` (1-based, in the order
+`split(by="component")` returns its pieces) and `seed = (x, y, z)`, a patch grown from the nearest facet across
+edges no sharper than `feature_angle`. `num_grown` and `num_components` are -1
+when unused. See `doc/select.md`.
+"""
+function select_region(m::Mesh, name::AbstractString; kind::AbstractString="cell",
+                       box=nothing, plane=nothing, sphere=nothing,
+                       where_array::AbstractString="", where_op::AbstractString="<",
+                       where_value::Real=0.0, quality_metric::AbstractString="",
+                       quality_op::AbstractString="<", quality_value::Real=0.0,
+                       component=nothing, seed=nothing,
+                       feature_angle::Real=30.0, normal_tolerance::Real=0.0,
+                       mode::AbstractString="all", boundary_only::Bool=true, tag::Integer=-1)
+    kinds = ("point", "cell", "side")
+    k = findfirst(==(String(kind)), kinds)
+    k === nothing && throw(ArgumentError("meshio++: select_region: kind must be \"point\", " *
+                                         "\"cell\" or \"side\""))
+    modes = ("all", "any", "centroid")
+    md = findfirst(==(String(mode)), modes)
+    md === nothing && throw(ArgumentError("meshio++: select_region: mode must be \"all\", " *
+                                          "\"any\" or \"centroid\""))
+    v3(x) = (Float64(x[1]), Float64(x[2]), Float64(x[3]))
+    zero3 = (0.0, 0.0, 0.0)
+    cmp(op) = get(_REFINE_COMPARES, String(op)) do
+        throw(ArgumentError("meshio++: select_region: unknown comparison $(op)"))
+    end
+    name_c = Vector{UInt8}(codeunits(String(name) * "\0"))
+    where_c = Vector{UInt8}(codeunits(String(where_array) * "\0"))
+    quality_c = Vector{UInt8}(codeunits(String(quality_metric) * "\0"))
+    report = Ref{_CSelectReport}()
+    ptr = GC.@preserve name_c where_c quality_c begin
+        opts = _CSelectOpts(Cstring(pointer(name_c)), Int32(k - 1), Int32(md - 1), Int64(tag),
+                            Int32(boundary_only), Int32(box !== nothing),
+                            Int32(plane !== nothing), Int32(sphere !== nothing),
+                            Int32(seed !== nothing),
+                            cmp(where_op), cmp(quality_op), Int32(0),
+                            box === nothing ? zero3 : v3(box[1]),
+                            box === nothing ? zero3 : v3(box[2]),
+                            plane === nothing ? zero3 : v3(plane[1]),
+                            plane === nothing ? (0.0, 0.0, 1.0) : v3(plane[2]),
+                            sphere === nothing ? zero3 : v3(sphere[1]),
+                            sphere === nothing ? 0.0 : Float64(sphere[2]),
+                            Cstring(pointer(where_c)),
+                            Float64(where_value),
+                            Cstring(pointer(quality_c)),
+                            Float64(quality_value),
+                            component === nothing ? Int64(-1) : Int64(component) - 1,
+                            seed === nothing ? zero3 : v3(seed), Float64(feature_angle),
+                            Float64(normal_tolerance), ntuple(_ -> Int64(0), 8))
+        ccall(_sym(:mio_select), Ptr{Cvoid}, (Ptr{Cvoid}, Ref{_CSelectOpts}, Ptr{_CSelectReport}),
+              _handle(m), Ref(opts), report)
+    end
+    r = _check_ptr(ptr)
+    rep = report[]
+    (mesh=Mesh(r), num_candidates=Int(rep.num_candidates), num_selected=Int(rep.num_selected),
+     num_grown=Int(rep.num_grown), num_components=Int(rep.num_components))
 end
 
 const _FIT_TYPES = ("plane", "sphere", "cylinder", "cone", "torus")

@@ -683,6 +683,127 @@ export interface MirrorResult {
   warnings: string[];
 }
 
+/** The parameters every MMG operation shares (the C API's `mio_mmg_params`). */
+export interface MmgParameters {
+  hmin?: number;
+  hmax?: number;
+  hausd?: number;
+  hgrad?: number;
+  hgradreq?: number;
+  angleDetection?: number;
+  optim?: boolean;
+  noInsert?: boolean;
+  noSwap?: boolean;
+  noMove?: boolean;
+  noSurf?: boolean;
+  nreg?: boolean;
+  opnbdy?: boolean;
+  mem?: number;
+  verbose?: number;
+  /** Point ids MMG must keep. */
+  frozen?: number[];
+  /** Region names whose entities MMG must keep. */
+  required?: string[];
+  /** Per-region sizes. */
+  local?: { region: string; hmin?: number; hmax?: number; hausd?: number }[];
+}
+
+/** Options of `adapt`. */
+export interface AdaptOptions extends MmgParameters {
+  hsiz?: number;
+  size?: string;
+  metric?: string;
+}
+
+/** Options of `discretizeLevelset`. */
+export interface DiscretizeLevelsetOptions extends MmgParameters {
+  levelSet?: string;
+  isovalue?: number;
+  removeSmallComponents?: number;
+  materials?: { ref: number; split?: boolean; refInside?: number; refOutside?: number }[];
+}
+
+/** Options of `meshDomain`. */
+export interface MeshDomainOptions extends MmgParameters {
+  hsiz?: number;
+  size?: string;
+  /** A point inside each hole, flattened (x, y[, z]) per hole. */
+  holes?: number[];
+}
+
+/** Options of `move`. */
+export interface MoveOptions extends MmgParameters {
+  displacement?: string;
+  moving?: string[];
+  lagrangian?: number;
+}
+
+/** Options of `metricFromHessian`. */
+export interface MetricFromHessianOptions {
+  hessian?: string;
+  error?: number;
+  hmin?: number;
+  hmax?: number;
+  output?: string;
+}
+
+/** What an MMG operation returns. */
+export interface MmgResult {
+  mesh: Mesh;
+  report: {
+    status: 'success' | 'lowFailure';
+    library: string;
+    numPointsIn: number;
+    numPointsOut: number;
+    numElementsIn: number;
+    numElementsOut: number;
+    quality: { min: number; max: number; mean: number; count: number };
+    warnings: string[];
+  };
+}
+
+/** Options of `selectRegion` (doc/select.md). At least one criterion is required. */
+export interface SelectRegionOptions {
+  /** What the region groups (default 'cell'); 'side' names (cell, local facet) pairs. */
+  kind?: 'cell' | 'point' | 'side';
+  /** The region's integer tag (default -1, none). */
+  tag?: number;
+  /** How a cell or side reduces its nodes for box, plane and sphere (default 'all'). */
+  mode?: 'all' | 'any' | 'centroid';
+  /** Side regions consider only facets owned by one cell (default true). */
+  boundaryOnly?: boolean;
+  /** [xmin, ymin, zmin, xmax, ymax, zmax]. */
+  box?: number[];
+  /** [px, py, pz, nx, ny, nz]: inside is (p - point) . normal >= 0. */
+  plane?: number[];
+  /** [cx, cy, cz, r], the closed ball. */
+  sphere?: number[];
+  /** [array, op, value] on point data (points) or cell data (cells, sides). */
+  where?: [string, string, number];
+  /** [metric, op, value] on a computeQuality metric; cells and sides only. */
+  quality?: [string, string, number];
+  /** The k-th node-connected component (0-based, split's piece order). */
+  component?: number;
+  /** [x, y, z]: grow a patch from the facet nearest it. */
+  seed?: number[];
+  /** The largest dihedral angle, in degrees, the growth crosses (default 30). */
+  featureAngle?: number;
+  /** The largest angle, in degrees, to the seed's normal (default 0, off). */
+  normalTolerance?: number;
+}
+
+/** What `selectRegion` returns. */
+export interface SelectRegionResult {
+  /** The input plus the region. */
+  mesh: Mesh;
+  numCandidates: number;
+  numSelected: number;
+  /** Facets of the grown patch, or -1 without a seed. */
+  numGrown: number;
+  /** Node-connected components, or -1 without that criterion. */
+  numComponents: number;
+}
+
 /** Options of `findIntersections` (doc/find_intersections.md). */
 export interface FindIntersectionsOptions {
   /** A second surface: report where the two meet instead of self-intersections. */
@@ -2403,11 +2524,55 @@ export interface MeshioPlusPlusModule {
   hasNetgen(): boolean;
 
   /**
-   * Whether the MMG backend (`adapt`, `discretize_levelset`, `mesh_domain`,
-   * `move`) is linked in: always false in WebAssembly until the port of
-   * roadmap 3.2.8.
+   * Whether the MMG backend (`adapt`, `discretizeLevelset`, `meshDomain`,
+   * `move`) is linked in: true in the full artifact (`{full: true}`, MMG 5.8
+   * linked statically, LGPL-3.0), false in the lean one, where those
+   * operations throw by name.
    */
   hasMmg(): boolean;
+
+  /**
+   * Whether MMG has ELAS, the linear-elasticity library `move` needs: false
+   * in both artifacts (ELAS is GPL-3.0), so `move` throws by name.
+   */
+  hasMmgElas(): boolean;
+
+  /**
+   * Remesh a simplicial mesh with MMG to a constant size (`hsiz`), a
+   * one-component `point_data` size (`size`) or a `point_data` metric
+   * (`metric`), within `hmin`/`hmax`/`hausd` (doc/mmg.md). The full artifact
+   * only.
+   * @throws {Error} naming MMG and `{full: true}` in the lean artifact.
+   */
+  adapt(mesh: Mesh, options?: AdaptOptions): MmgResult;
+
+  /**
+   * Insert the `isovalue` set of a `point_data` level set as a conforming
+   * interface, splitting `materials` into inside and outside references
+   * (doc/mmg.md). The full artifact only.
+   */
+  discretizeLevelset(mesh: Mesh, options?: DiscretizeLevelsetOptions): MmgResult;
+
+  /**
+   * Mesh a planar domain from its boundary lines with mmg2d, `holes` naming a
+   * point inside each hole (doc/mmg.md). The full artifact only.
+   */
+  meshDomain(
+    boundary: Mesh,
+    options?: MeshDomainOptions,
+  ): MmgResult & { numSubdomains: number; numHoles: number };
+
+  /**
+   * Move a mesh by a `point_data` displacement (doc/mmg.md). Needs MMG with
+   * ELAS, which neither artifact has: it always throws by name.
+   */
+  move(mesh: Mesh, options?: MoveOptions): MmgResult;
+
+  /**
+   * A `point_data` metric from a `point_data` Hessian and a target error, for
+   * `adapt`'s `metric` (doc/mmg.md). Needs no MMG: both artifacts.
+   */
+  metricFromHessian(mesh: Mesh, options?: MetricFromHessianOptions): Mesh;
 
   /**
    * Whether the KaHIP kaffpa partitioner is linked in, so `partition` with
@@ -3263,7 +3428,11 @@ export interface MeshioPlusPlusModule {
 
   /**
    * ODT-remesh a tetrahedral mesh: raise its worst element quality by
-   * relocating vertices AND flipping connectivity (2-3/3-2, predicate-free).
+   * relocating vertices AND changing connectivity, predicate-free. `objective`
+   * `'worst'` (the default) raises the least dihedral angle and never lowers
+   * it (guarded ODT relocation, 2-3 flips, edge and multi-face removal over
+   * rings of up to `maxRingSize` tets, worst-cell smoothing); `'energy'` is
+   * the ODT energy with scaled-Jacobian flips.
    * The genuine "ODT remeshing" sibling of `remeshVolume` (which generates a
    * fresh lattice mesh) and of `smooth` method `"odt"` (which only moves
    * points on fixed connectivity). Tet-only. The point set is invariant, so
@@ -3279,15 +3448,22 @@ export interface MeshioPlusPlusModule {
     flip?: boolean,
     preserveBoundary?: boolean,
     minImprovement?: number,
+    objective?: 'worst' | 'energy',
+    maxRingSize?: number,
   ): {
     mesh: Mesh;
     numFlips: number;
     num23Flips: number;
     num32Flips: number;
+    numEdgeRemovals: number;
+    numMultiFaceRemovals: number;
     numVerticesMoved: number;
+    numWorstSmoothed: number;
     numTets: number;
     minQualityBefore: number;
     minQualityAfter: number;
+    minDihedralBefore: number;
+    minDihedralAfter: number;
   };
 
   /**
@@ -3604,6 +3780,14 @@ export interface MeshioPlusPlusModule {
    * orientation flip.
    */
   mirror(mesh: Mesh, options?: MirrorOptions): MirrorResult;
+
+  /**
+   * Write one named region of points, cells or sides chosen by a box, plane,
+   * sphere, data or quality threshold, component, or a patch grown from a seed
+   * (doc/select.md); the mesh is otherwise unchanged.
+   * @throws {Error} on an empty name, no criterion, an unknown array or metric.
+   */
+  selectRegion(mesh: Mesh, name: string, options?: SelectRegionOptions): SelectRegionResult;
 
   /**
    * Where a surface intersects itself, or (`options.other`) where two

@@ -272,6 +272,7 @@ if TYPE_CHECKING:
         surface_watertight_check,
     )
     from ._segment import segment
+    from ._select import select
     from ._sequence import (
         TimeSeries,
         blend_steps,
@@ -373,6 +374,7 @@ _LAZY_ATTRS = {
     "iga_refine": "_iga",
     "iga_sample": "_iga",
     "segment": "_segment",
+    "select": "_select",
     "refine_patches": "_refine_patches",
     "from_cupy": "_gpu",
     "has_cuda_device": "_gpu",
@@ -651,6 +653,7 @@ __all__ = [
     "iga_refine",
     "iga_sample",
     "segment",
+    "select",
     "refine_patches",
     "hausdorff_distance",
     "match_periodic_nodes",

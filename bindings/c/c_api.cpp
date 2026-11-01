@@ -131,6 +131,7 @@
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/iga.hpp"
 #include "meshioplusplus/operations/segment.hpp"
+#include "meshioplusplus/operations/select.hpp"
 #include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/find_intersections.hpp"
@@ -2384,6 +2385,68 @@ mio_mesh* mio_optimize_volume(const mio_mesh* mesh, int max_iterations, int relo
             *min_quality_before = r.mMinQualityBefore;
         if (min_quality_after)
             *min_quality_after = r.mMinQualityAfter;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+static_assert(sizeof(mio_optimize_volume_opts) == 96,
+              "mio_optimize_volume_opts grew outside its reserved tail");
+static_assert(sizeof(mio_optimize_volume_report) == 128,
+              "mio_optimize_volume_report grew outside its reserved tail");
+static_assert(static_cast<int>(meshioplusplus::OptimizeVolumeObjective::Energy) ==
+                  MIO_OPTIMIZE_VOLUME_ENERGY,
+              "mio_optimize_volume_objective must match OptimizeVolumeObjective");
+
+void mio_optimize_volume_opts_init(mio_optimize_volume_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_optimize_volume_opts{};
+    opts->max_iterations = 10;
+    opts->relocate = 1;
+    opts->flip = 1;
+    opts->preserve_boundary = 1;
+    opts->min_improvement = 1e-6;
+    opts->objective = MIO_OPTIMIZE_VOLUME_WORST;
+    opts->max_ring_size = 7;
+}
+
+mio_mesh* mio_optimize_volume_ex(const mio_mesh* mesh, const mio_optimize_volume_opts* opts,
+                                 mio_optimize_volume_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        mio_optimize_volume_opts defaults;
+        mio_optimize_volume_opts_init(&defaults);
+        const mio_optimize_volume_opts& o = opts ? *opts : defaults;
+        if (o.objective != MIO_OPTIMIZE_VOLUME_WORST && o.objective != MIO_OPTIMIZE_VOLUME_ENERGY) {
+            fail(MIO_ERR_INVALID_ARG, "meshio++: optimize_volume: unknown objective");
+            return nullptr;
+        }
+        meshioplusplus::OptimizeVolumeOptions options;
+        options.mMaxIterations = o.max_iterations;
+        options.mRelocate = o.relocate != 0;
+        options.mFlip = o.flip != 0;
+        options.mPreserveBoundary = o.preserve_boundary != 0;
+        options.mMinImprovement = o.min_improvement;
+        options.mObjective = static_cast<meshioplusplus::OptimizeVolumeObjective>(o.objective);
+        options.mMaxRingSize = o.max_ring_size;
+        meshioplusplus::OptimizeVolumeResult r =
+            meshioplusplus::optimize_volume(mesh->mMesh, options);
+        if (report) {
+            *report = mio_optimize_volume_report{};
+            report->num_flips = r.mNumFlips;
+            report->num_23_flips = r.mNum23Flips;
+            report->num_32_flips = r.mNum32Flips;
+            report->num_edge_removals = r.mNumEdgeRemovals;
+            report->num_multi_face_removals = r.mNumMultiFaceRemovals;
+            report->num_vertices_moved = r.mNumVerticesMoved;
+            report->num_worst_smoothed = r.mNumWorstSmoothed;
+            report->num_tets = r.mNumTets;
+            report->min_quality_before = r.mMinQualityBefore;
+            report->min_quality_after = r.mMinQualityAfter;
+            report->min_dihedral_before = r.mMinDihedralBefore;
+            report->min_dihedral_after = r.mMinDihedralAfter;
+        }
         return new mio_mesh{std::move(r.mMesh)};
     });
 }
@@ -7115,6 +7178,11 @@ static_assert(sizeof(mio_feature_edges_report) == 64,
 static_assert(sizeof(mio_segment_opts) == 96, "mio_segment_opts grew outside its reserved tail");
 static_assert(sizeof(mio_segment_report) == 64,
               "mio_segment_report grew outside its reserved tail");
+static_assert(sizeof(void*) != 8 || sizeof(mio_select_opts) == 328,
+              "mio_select_opts grew outside its reserved tail");
+static_assert(sizeof(mio_select_report) == 64, "mio_select_report grew outside its reserved tail");
+static_assert(static_cast<int>(meshioplusplus::SelectMode::Centroid) == MIO_SELECT_CENTROID,
+              "mio_select_mode must match SelectMode");
 static_assert(sizeof(mio_fit_primitives_opts) == 88,
               "mio_fit_primitives_opts grew outside its reserved tail");
 static_assert(sizeof(mio_fit_primitives_report) == 96,
@@ -7322,6 +7390,86 @@ mio_mesh* mio_segment(const mio_mesh* mesh, const mio_segment_opts* opts,
             report->num_feature_edges = r.mNumFeatureEdges;
             report->num_boundary_edges = r.mNumBoundaryEdges;
             report->num_non_manifold_edges = r.mNumNonManifoldEdges;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+void mio_select_opts_init(mio_select_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_select_opts{};
+    opts->kind = MIO_REGION_CELL;
+    opts->mode = MIO_SELECT_ALL;
+    opts->tag = -1;
+    opts->boundary_only = 1;
+    opts->plane_normal[2] = 1.0;
+    opts->component = -1;
+    opts->feature_angle = 30.0;
+}
+
+mio_mesh* mio_select(const mio_mesh* mesh, const mio_select_opts* opts, mio_select_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        if (!opts || !opts->name) {
+            fail(MIO_ERR_INVALID_ARG, "meshio++: select: the options and their name are required");
+            return nullptr;
+        }
+        if (opts->kind < MIO_REGION_POINT || opts->kind > MIO_REGION_SIDE ||
+            opts->mode < MIO_SELECT_ALL || opts->mode > MIO_SELECT_CENTROID) {
+            fail(MIO_ERR_INVALID_ARG, "meshio++: select: unknown kind or mode");
+            return nullptr;
+        }
+        const bool where = opts->where_array && opts->where_array[0] != '\0';
+        const bool quality = opts->quality_metric && opts->quality_metric[0] != '\0';
+        if ((where &&
+             (opts->where_compare < MIO_REFINE_LT || opts->where_compare > MIO_REFINE_NE)) ||
+            (quality &&
+             (opts->quality_compare < MIO_REFINE_LT || opts->quality_compare > MIO_REFINE_NE))) {
+            fail(MIO_ERR_INVALID_ARG, "meshio++: select: unknown comparison");
+            return nullptr;
+        }
+        meshioplusplus::SelectOptions o;
+        o.mName = opts->name;
+        o.mKind = static_cast<meshioplusplus::RegionKind>(opts->kind);
+        o.mMode = static_cast<meshioplusplus::SelectMode>(opts->mode);
+        o.mTag = opts->tag;
+        o.mBoundaryOnly = opts->boundary_only != 0;
+        const auto vec3 = [](const double* pV) {
+            return std::array<double, 3>{pV[0], pV[1], pV[2]};
+        };
+        o.mBox = opts->use_box != 0;
+        o.mBoxLo = vec3(opts->box_lo);
+        o.mBoxHi = vec3(opts->box_hi);
+        o.mPlane = opts->use_plane != 0;
+        o.mPlanePoint = vec3(opts->plane_point);
+        o.mPlaneNormal = vec3(opts->plane_normal);
+        o.mSphere = opts->use_sphere != 0;
+        o.mSphereCenter = vec3(opts->sphere_center);
+        o.mSphereRadius = opts->sphere_radius;
+        if (where) {
+            o.mWhereArray = opts->where_array;
+            o.mWhereOp = static_cast<meshioplusplus::RefineCompare>(opts->where_compare);
+            o.mWhereValue = opts->where_value;
+        }
+        if (quality) {
+            o.mQualityMetric = opts->quality_metric;
+            o.mQualityOp = static_cast<meshioplusplus::RefineCompare>(opts->quality_compare);
+            o.mQualityValue = opts->quality_value;
+        }
+        o.mComponent = opts->component;
+        o.mSeed = opts->use_seed != 0;
+        o.mSeedPoint = vec3(opts->seed);
+        o.mFeatureAngleDeg = opts->feature_angle;
+        o.mNormalToleranceDeg = opts->normal_tolerance;
+        meshioplusplus::SelectResult r = meshioplusplus::select_region(mesh->mMesh, o);
+        if (report) {
+            *report = mio_select_report{};
+            report->num_candidates = r.mNumCandidates;
+            report->num_selected = r.mNumSelected;
+            report->num_grown = r.mNumGrown;
+            report->num_components = r.mNumComponents;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });

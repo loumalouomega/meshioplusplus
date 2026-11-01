@@ -280,6 +280,9 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
             oo.mFlip = true;
             oo.mPreserveBoundary = true;
             oo.mFrozen = frozen;
+            // The flips by scaled Jacobian this mesher was tuned with; it keeps
+            // its own dihedral floor below.
+            oo.mObjective = OptimizeVolumeObjective::Energy;
             const OptimizeVolumeResult r = optimize_volume(m, oo);
             if (r.mNumFlips > 0 && r.mMesh.NumPoints() == np) {
                 const auto block = r.mMesh.Cells(0);

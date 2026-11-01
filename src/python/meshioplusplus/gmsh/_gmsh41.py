@@ -7,7 +7,7 @@ from functools import partial
 
 import numpy as np
 
-from .._common import cell_data_from_raw, num_nodes_per_cell, raw_from_cell_data, warn
+from .._common import num_nodes_per_cell, raw_from_cell_data, warn
 from .._exceptions import ReadError, WriteError
 from .._mesh import CellBlock, Mesh
 from .common import (
@@ -24,6 +24,7 @@ from .common import (
     _remap_periodic,
     _write_data,
     _write_physical_names,
+    checked_cell_data,
 )
 
 c_int = np.dtype("i")
@@ -100,7 +101,7 @@ def read_buffer(f, is_ascii: bool, data_size):
 
     if cells is None:
         raise ReadError("$Element section not found.")
-    cell_data = cell_data_from_raw(cells, cell_data_raw)
+    cell_data = checked_cell_data(cells, cell_data_raw)
     cell_data.update(cell_tags)
 
     # Add node entity information to the point data

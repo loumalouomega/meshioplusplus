@@ -22,3 +22,8 @@ KAHIP_SHA256="3abad20158887b585b4d4792c35fa9023b7fd634b2bc4494334a3951b69f4842"
 KAHIP_COMMIT="2e86d3da2065bcf6ddbf6fb84d2b52f33db1061f"
 NETGEN_VERSION="6.2.2401"
 NETGEN_COMMIT="2ff886457fe899685d9d826c8a29f58a31889dda"
+# MMG (the full WebAssembly artifact's adapt, discretize_levelset and
+# mesh_domain): a clone of its tag, refused unless it is MMG_COMMIT, as Netgen
+# is -- the same 5.8.0 build/build-mmg.sh builds natively.
+MMG_VERSION="5.8.0"
+MMG_COMMIT="4d8232c8aebfed877935d75d4d4a67e850962422"

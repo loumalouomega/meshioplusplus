@@ -93,6 +93,7 @@ from ._reorder import reorder
 from ._repair import repair
 from ._sdf import compute_sdf
 from ._segment import segment
+from ._select import select
 from ._skin import extract_skin
 from ._slice import slice as _slice
 from ._smooth import smooth
@@ -198,6 +199,28 @@ _OP_TABLE = {
         "Prefix",
         "Method",
         "Tolerance",
+    ),
+    "Select": (
+        "Name",
+        "Kind",
+        "Tag",
+        "Mode",
+        "BoundaryOnly",
+        "Bbox",
+        "Point",
+        "Normal",
+        "Center",
+        "Radius",
+        "Where",
+        "Compare",
+        "Value",
+        "Quality",
+        "QualityCompare",
+        "QualityValue",
+        "Component",
+        "Seed",
+        "FeatureAngle",
+        "NormalTolerance",
     ),
     "FitPrimitives": (
         "PatchData",
@@ -484,6 +507,8 @@ _OP_TABLE = {
         "Flip",
         "PreserveBoundary",
         "MinImprovement",
+        "Objective",
+        "MaxRingSize",
     ),
     "Isosurface": ("Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"),
     "Voxelize": (
@@ -1955,6 +1980,48 @@ def _apply_step(mesh, step, steps, warnings):
         entry["NumMerged"] = report["num_merged"]
         entry["NumFeatureEdges"] = report["num_feature_edges"]
         entry["NumBoundaryEdges"] = report["num_boundary_edges"]
+    elif op == "Select":
+        kwargs = {}
+        if "Bbox" in step:
+            kwargs["box"] = _dvec(step, "Bbox")
+            if len(kwargs["box"]) != 6:
+                raise _err(op, "'Bbox' must be [xmin, ymin, zmin, xmax, ymax, zmax]")
+        if "Point" in step or "Normal" in step:
+            kwargs["plane"] = (_vec3(step, "Point"), _vec3(step, "Normal"))
+        if "Center" in step or "Radius" in step:
+            kwargs["sphere"] = (_vec3(step, "Center"), _number(step, "Radius", 0.0))
+        if "Where" in step:
+            kwargs["where"] = (
+                _text(step, "Where", ""),
+                _text(step, "Compare", "<"),
+                _number(step, "Value", 0.0),
+            )
+        if "Quality" in step:
+            kwargs["quality"] = (
+                _text(step, "Quality", ""),
+                _text(step, "QualityCompare", "<"),
+                _number(step, "QualityValue", 0.0),
+            )
+        if "Component" in step and _number(step, "Component", -1.0) >= 0:
+            kwargs["component"] = int(_number(step, "Component", -1.0))
+        if "Seed" in step:
+            kwargs["seed"] = _vec3(step, "Seed")
+        mesh, report = select(
+            mesh,
+            _text(step, "Name", ""),
+            _text(step, "Kind", "cell"),
+            feature_angle=_number(step, "FeatureAngle", 30.0),
+            normal_tolerance=_number(step, "NormalTolerance", 0.0),
+            mode=_text(step, "Mode", "all"),
+            boundary_only=_flag(step, "BoundaryOnly", True),
+            tag=int(_number(step, "Tag", -1.0)),
+            return_report=True,
+            **kwargs,
+        )
+        entry["NumCandidates"] = report["num_candidates"]
+        entry["NumSelected"] = report["num_selected"]
+        entry["NumGrown"] = report["num_grown"]
+        entry["NumComponents"] = report["num_components"]
     elif op == "FitPrimitives":
         types = _svec(step, "Types")
         try:
@@ -2549,6 +2616,8 @@ def _apply_step(mesh, step, steps, warnings):
             preserve_boundary=_flag(step, "PreserveBoundary", True),
             min_improvement=_number(step, "MinImprovement", 1e-6),
             return_report=True,
+            objective=_text(step, "Objective", "worst"),
+            max_ring_size=int(_number(step, "MaxRingSize", 7.0)),
         )
         entry["NumFlips"] = float(report["num_flips"])
         entry["Num23Flips"] = float(report["num_23_flips"])
@@ -2557,6 +2626,11 @@ def _apply_step(mesh, step, steps, warnings):
         entry["NumTets"] = float(report["num_tets"])
         entry["MinQualityBefore"] = float(report["min_quality_before"])
         entry["MinQualityAfter"] = float(report["min_quality_after"])
+        entry["NumEdgeRemovals"] = float(report["num_edge_removals"])
+        entry["NumMultiFaceRemovals"] = float(report["num_multi_face_removals"])
+        entry["NumWorstSmoothed"] = float(report["num_worst_smoothed"])
+        entry["MinDihedralBefore"] = float(report["min_dihedral_before"])
+        entry["MinDihedralAfter"] = float(report["min_dihedral_after"])
     elif op == "Generate":
         # A mesh from parameters; like Voxelize it REPLACES the geometry, and it
         # never reads the incoming mesh, so a document may omit Input when this

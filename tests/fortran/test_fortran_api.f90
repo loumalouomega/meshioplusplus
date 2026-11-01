@@ -1208,18 +1208,26 @@ program test_fortran_api
     block
         type(mio_mesh) :: opt
         integer(int64) :: nflips, n23, n32, nmoved, ntets, n0
-        real(real64) :: qb, qa
+        real(real64) :: qb, qa, db, da
         integer :: st
 
         n0 = m%num_points()
         opt = m%optimize_volume(max_iterations=5, num_flips=nflips, num_23_flips=n23, &
                                 num_32_flips=n32, num_vertices_moved=nmoved, num_tets=ntets, &
-                                min_quality_before=qb, min_quality_after=qa, stat=st)
+                                min_quality_before=qb, min_quality_after=qa, stat=st, &
+                                min_dihedral_before=db, min_dihedral_after=da)
         call check(st == 0, 'optimize_volume succeeded on a tet mesh')
         call check(opt%num_points() == n0, 'optimize_volume preserves the point set')
         call check(nflips >= 0_int64, 'optimize_volume reported a flip count')
-        call check(qa >= qb - 1.0e-12_real64, 'optimize_volume never lowers worst quality')
+        call check(da >= db, 'optimize_volume never lowers the least dihedral angle')
         call opt%free()
+        opt = m%optimize_volume(max_iterations=5, relocate=.false., objective='energy', &
+                                min_quality_before=qb, min_quality_after=qa, stat=st)
+        call check(st == 0, 'optimize_volume runs the energy objective')
+        call check(qa >= qb - 1.0e-12_real64, 'energy flips never lower the worst quality')
+        call opt%free()
+        opt = m%optimize_volume(objective='best', stat=st)
+        call check(st /= 0, 'optimize_volume refuses an unknown objective')
     end block
 
     ! -- interpolate: cross-mesh field transfer --
@@ -2820,6 +2828,20 @@ contains
         seg = sq%segment(num_patches=npatch, stat=ierr)
         call check(ierr == 0, 'segment succeeded')
         call check(npatch == 6_int64, 'a cube segments into 6 patches')
+
+        ! select_region: the face nearest a seed above the cube, then its points.
+        bad = sq%select_region('top', seed=[0.5_real64, 0.5_real64, 2.0_real64], &
+                               num_selected=npatch, stat=ierr)
+        call check(ierr == 0, 'select_region succeeded')
+        call check(npatch == 1_int64, 'the grown patch is the top face')
+        call bad%free()
+        bad = sq%select_region('top', kind='point', box_lo=[-1.0_real64, -1.0_real64, 0.5_real64], &
+                               box_hi=[2.0_real64, 2.0_real64, 2.0_real64], &
+                               num_selected=npatch, stat=ierr)
+        call check(ierr == 0 .and. npatch == 4_int64, 'select_region takes the top points')
+        call bad%free()
+        bad = sq%select_region('none', stat=ierr)
+        call check(ierr /= 0, 'select_region needs a criterion')
         fitted = seg%fit_primitives(num_plane=nplane, stat=ierr)
         call check(ierr == 0, 'fit_primitives succeeded')
         call check(nplane == 6_int64, 'every cube face fits a plane')

@@ -96,6 +96,9 @@ _JS_TO_C = {
     "writeMedMulti": "med_write_multi",
     # The JS wrapper renders and encodes in one call; C holds the frame between.
     "renderPng": "frame_png",
+    # `select` is a reserved-looking name in JS (and Fortran/Julia spell it
+    # select_region too); C keeps the plain verb.
+    "selectRegion": "select",
 }
 
 # `mio_*` operation entry points (first parameter `const mio_mesh*`) with no

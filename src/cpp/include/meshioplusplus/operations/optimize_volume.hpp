@@ -71,6 +71,34 @@
  * quality), the process is **monotone in worst quality** and therefore
  * terminates -- no Delaunay optimality argument, and no predicate, is needed.
  *
+ * ### Two objectives
+ *
+ * The rule above, with the scaled Jacobian, lowers an energy summed over the
+ * cells and is kept as `OptimizeVolumeObjective::Energy`. Measured on Netgen's
+ * output it can **lower** the least dihedral angle: an ODT relocation moves a
+ * vertex to improve the energy of its star even when one of its tets gets
+ * worse. The default since ABI 37, `OptimizeVolumeObjective::Worst`, targets
+ * the worst cell instead (Freitag and Ollivier-Gooch 1997; Klingner and
+ * Shewchuk 2007), with the least dihedral angle as the quality and every
+ * step accepted only when it raises the least angle of the tets it touches:
+ *
+ *  1. the ODT relocation, **guarded**: a vertex whose star's least angle
+ *     fell below what it was before the pass is put back, repeatedly, until
+ *     every moved vertex's star is at least as good as before;
+ *  2. where the worst tet replaced is below 40 degrees: the 2-3 flip;
+ *     **edge removal**, the replacement of the k tets around an interior edge (3 <= k <= `mMaxRingSize`) by the best triangulation of
+ *     their ring, found by the dynamic program over polygon triangulations
+ *     (k = 3 is the 3-2 flip); and **multi-face removal**, its inverse: the
+ *     faces sandwiched between two vertices, forming a disc of at most
+ *     `mMaxRingSize` boundary vertices, become the tets around a new edge
+ *     between them;
+ *  3. **worst-cell smoothing**: each free interior vertex of a tet below 40
+ *     degrees, worst first, climbs the least dihedral angle of its star along
+ *     the shortest vector in the convex hull of the active angles' gradients,
+ *     with a backtracking line search that accepts only a rise.
+ *
+ * So `mMinDihedralAfter >= mMinDihedralBefore` always holds under `Worst`.
+ *
  * ### Boundary is invariant by construction
  *
  * A 2-3 flip acts only on an *interior* triangular face (shared by two tets);
@@ -119,6 +147,7 @@
 
 // System includes
 #include <cstdint>
+#include <string>
 #include <vector>
 
 // Project includes
@@ -126,6 +155,15 @@
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
+
+/// What `optimize_volume` improves.
+enum class OptimizeVolumeObjective : std::int32_t {
+    /// The worst cell: the least dihedral angle never drops (the default).
+    Worst = 0,
+    /// The ODT energy, with flips by the least scaled Jacobian -- the
+    /// behaviour before ABI 37, which can lower the least dihedral angle.
+    Energy = 1,
+};
 
 /// Options for `optimize_volume`.
 struct OptimizeVolumeOptions {
@@ -152,9 +190,10 @@ struct OptimizeVolumeOptions {
     /// caveat `smooth` documents -- there is no surface re-projection here.
     bool mPreserveBoundary = true;
 
-    /// The strict quality gain, in scaled-Jacobian units, a flip must deliver
-    /// to be accepted: `min(quality of new tets) > min(quality of replaced
-    /// tets) + mMinImprovement`. A small positive value both guarantees
+    /// The strict quality gain a flip must deliver to be accepted:
+    /// `min(quality of new tets) > min(quality of replaced tets) +
+    /// mMinImprovement`, in scaled-Jacobian units under `Energy` and degrees
+    /// of dihedral angle under `Worst`. A small positive value both guarantees
     /// progress (monotone worst quality) and prevents cycling on ties.
     double mMinImprovement = 1e-6;
 
@@ -164,6 +203,13 @@ struct OptimizeVolumeOptions {
     /// on the flat C ABI, a documented gap like `smooth`'s / `decimate`'s own
     /// `frozen`.
     std::vector<std::uint8_t> mFrozen;
+
+    /// What to improve (since ABI 37); see the file comment.
+    OptimizeVolumeObjective mObjective = OptimizeVolumeObjective::Worst;
+
+    /// `Worst` only: the largest ring an edge removal or a multi-face removal
+    /// acts on, at least 3 (since ABI 37).
+    std::int32_t mMaxRingSize = 7;
 };
 
 /// The result of `optimize_volume`: the improved mesh plus what the run did.
@@ -173,7 +219,8 @@ struct OptimizeVolumeResult {
     /// regions dropped.
     Mesh mMesh;
 
-    /// Total flips accepted (`mNum23Flips + mNum32Flips`).
+    /// Total topological moves accepted (`mNum23Flips + mNum32Flips +
+    /// mNumEdgeRemovals + mNumMultiFaceRemovals`).
     std::int64_t mNumFlips = 0;
     /// 2-3 flips accepted (an interior face's two tets became three).
     std::int64_t mNum23Flips = 0;
@@ -192,10 +239,30 @@ struct OptimizeVolumeResult {
     /// negatively-stored but well-shaped tet reads as good, and a degenerate
     /// one as 0).
     double mMinQualityBefore = 0.0;
-    /// Minimum scaled Jacobian over the output tets, same convention. Never
-    /// less than `mMinQualityBefore`.
+    /// Minimum scaled Jacobian over the output tets, same convention. The
+    /// flips never lower it, but a relocation can.
     double mMinQualityAfter = 0.0;
+
+    /// `Worst` only: edge removals of rings of four or more tets (since ABI 37).
+    std::int64_t mNumEdgeRemovals = 0;
+    /// `Worst` only: multi-face removals (since ABI 37).
+    std::int64_t mNumMultiFaceRemovals = 0;
+    /// `Worst` only: vertices worst-cell smoothing moved, summed over the
+    /// sweeps (since ABI 37).
+    std::int64_t mNumWorstSmoothed = 0;
+    /// The least dihedral angle over the input tets, in degrees (since ABI 37).
+    double mMinDihedralBefore = 0.0;
+    /// The least dihedral angle over the output tets, in degrees; never below
+    /// `mMinDihedralBefore` under `Worst` (since ABI 37).
+    double mMinDihedralAfter = 0.0;
 };
+
+/**
+ * @brief Parse an `OptimizeVolumeObjective` from `"worst"` or `"energy"`.
+ * @throws std::invalid_argument naming the accepted values.
+ */
+MESHIOPLUSPLUS_API OptimizeVolumeObjective
+optimize_volume_objective_from_name(const std::string& rName);
 
 /**
  * @brief ODT-remesh a tetrahedral mesh: relocate vertices and flip
