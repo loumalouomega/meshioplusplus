@@ -9,7 +9,7 @@ from functools import partial
 
 import numpy as np
 
-from .._common import cell_data_from_raw, num_nodes_per_cell, raw_from_cell_data
+from .._common import num_nodes_per_cell, raw_from_cell_data
 from .._exceptions import ReadError
 from .._mesh import CellBlock, Mesh
 from .common import (
@@ -25,6 +25,7 @@ from .common import (
     _remap_periodic,
     _write_data,
     _write_physical_names,
+    checked_cell_data,
 )
 
 c_int = np.dtype("i")
@@ -81,7 +82,7 @@ def read_buffer(f, is_ascii: bool, data_size) -> Mesh:
             # skip environment
             _fast_forward_to_end_block(f, environ)
 
-    cell_data = cell_data_from_raw(cells, cell_data_raw)
+    cell_data = checked_cell_data(cells, cell_data_raw)
     cell_data.update(cell_tags)
 
     periodic = _remap_periodic(periodic, point_tags)

@@ -324,11 +324,12 @@ endif()
 # installs (mmg_DIR or CMAKE_PREFIX_PATH; build/build-mmg.sh makes one), never
 # vendored, never downloaded, linked dynamically only (the shared
 # Mmg::libmmg_so; a static-only install is refused), and absent from the
-# release wheels and CLI binaries. Not under Emscripten until the WASM probe of
-# roadmap 3.2.8: its operations raise by name in both WASM artifacts.
+# release wheels and CLI binaries. The one exception is the full WebAssembly
+# artifact, which links the static Mmg::libmmg_a build/build-wasm-deps.sh
+# --full makes (without ELAS, so `move` raises there); the lean one has none.
 option(MESHIOPLUSPLUS_WITH_MMG
        "Build the MMG backend (adapt, discretize_levelset, mesh_domain, move)" OFF)
-if(MESHIOPLUSPLUS_WITH_MMG AND NOT EMSCRIPTEN)
+if(MESHIOPLUSPLUS_WITH_MMG AND (NOT EMSCRIPTEN OR MESHIOPLUSPLUS_WASM_FULL))
   find_package(mmg CONFIG QUIET)
 endif()
 
@@ -965,11 +966,20 @@ elseif(MESHIOPLUSPLUS_WITH_NETGEN)
                  "tetrahedralize will raise")
 endif()
 
-if(MESHIOPLUSPLUS_WITH_MMG AND TARGET Mmg::libmmg_so)
+# The MMG library linked: the shared one, or under Emscripten for the full
+# artifact the static one (a wasm module has no shared libraries to load).
+set(_mio_mmg_target "")
+if(MESHIOPLUSPLUS_WITH_MMG AND TARGET Mmg::libmmg_so AND NOT EMSCRIPTEN)
+  set(_mio_mmg_target Mmg::libmmg_so)
+elseif(MESHIOPLUSPLUS_WITH_MMG AND TARGET Mmg::libmmg_a AND EMSCRIPTEN
+       AND MESHIOPLUSPLUS_WASM_FULL)
+  set(_mio_mmg_target Mmg::libmmg_a)
+endif()
+if(_mio_mmg_target)
   include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/MmgProbe.cmake)
   list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_MMG
        MESHIOPLUSPLUS_MMG_VERSION="${_mio_mmg_version}")
-  list(APPEND _mio_core_libs Mmg::libmmg_so)
+  list(APPEND _mio_core_libs ${_mio_mmg_target})
   meshioplusplus_add_provider_sources(mmg)
   if(_mio_mmg_int64)
     list(APPEND _mio_core_defs MESHIOPLUSPLUS_MMG_INT64)
@@ -1020,7 +1030,7 @@ endif()
 # its availableFormats()/has*() reporters that is not linked would be a lie.
 # configure-wasm.sh --without-occt leaves OpenCASCADE unrequested instead.
 if(MESHIOPLUSPLUS_WASM_FULL)
-  foreach(_mio_full_lib OCCT ZSTD LZ4 BZIP2 NETGEN)
+  foreach(_mio_full_lib OCCT ZSTD LZ4 BZIP2 NETGEN MMG KAHIP)
     if(MESHIOPLUSPLUS_WITH_${_mio_full_lib} AND NOT "MESHIOPLUSPLUS_HAS_${_mio_full_lib}" IN_LIST _mio_core_defs)
       message(FATAL_ERROR
               "meshio++: the full wasm artifact asks for ${_mio_full_lib} but its wasm32 build was "

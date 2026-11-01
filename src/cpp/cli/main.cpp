@@ -128,6 +128,7 @@
 #include "meshioplusplus/formats/mfem.hpp"
 #include "meshioplusplus/operations/iga.hpp"
 #include "meshioplusplus/operations/segment.hpp"
+#include "meshioplusplus/operations/select.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -460,6 +461,9 @@ void print_usage(std::ostream& os) {
           "  clean                   Weld / prune / de-dup a mesh\n"
           "  crop                    Subset by bounding box, half-space or a data\n"
           "                            predicate: --bbox / --plane / --where 'N < V'\n"
+          "  select                  Write a named point/cell/side region (--name) chosen by\n"
+          "                            --box / --plane / --sphere / --where / --quality /\n"
+          "                            --component / a patch grown from --seed X,Y,Z\n"
           "  slice                   Planar cross-section (volume->surface, surface->lines)\n"
           "  generate                Build a mesh from parameters: SHAPE OUTFILE with\n"
           "                            rectangle | box | disk | uv-sphere | icosa-sphere |\n"
@@ -575,7 +579,8 @@ void print_usage(std::ostream& os) {
           "                            is required, --warp-fraction trades boundary\n"
           "                            quality for a small chance of non-manifold edges\n"
           "  optimize-volume         ODT-remesh a tetrahedral mesh: relocate vertices and\n"
-          "                            flip connectivity (2-3/3-2) to raise element quality\n"
+          "                            flip connectivity to raise the least dihedral angle\n"
+          "                            (--objective worst, the default) or the ODT energy\n"
           "  partition               Decompose into N balanced parts (SFC / KaHIP)\n"
           "                            OUT pattern needs {part}, or is a .pvtu/.pvtp index\n"
           "                            over every part; --labels-only writes one file\n"
@@ -4366,6 +4371,114 @@ int cmd_crop(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+// `select`: one named region from geometry, data, quality, component or a
+// grown patch; see operations/select.hpp.
+int cmd_select(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"name", {"-n"}, true},
+                                  {"kind", {}, true},
+                                  {"tag", {}, true},
+                                  {"box", {}, true},
+                                  {"plane", {}, true},
+                                  {"sphere", {}, true},
+                                  {"where", {}, true},
+                                  {"quality", {}, true},
+                                  {"component", {}, true},
+                                  {"seed", {}, true},
+                                  {"feature-angle", {}, true},
+                                  {"normal-tolerance", {}, true},
+                                  {"mode", {}, true},
+                                  {"all-facets", {}, false},
+                                  {"json", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("select requires exactly INFILE and OUTFILE");
+    if (!has_opt(p, "name"))
+        throw std::runtime_error("select: --name is required");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::SelectOptions o;
+    o.mName = opt_value(p, "name");
+    o.mKind = meshioplusplus::region_kind_from_name(opt_value(p, "kind", "cell"));
+    if (has_opt(p, "tag"))
+        o.mTag = std::stoll(opt_value(p, "tag"));
+    o.mMode = meshioplusplus::select_mode_from_name(opt_value(p, "mode", "all"));
+    o.mBoundaryOnly = !has_flag(p, "all-facets");
+    const auto numbers = [&](const char* pKey, std::size_t N) {
+        const std::vector<double> v = parse_doubles(opt_value(p, pKey));
+        if (v.size() != N)
+            throw std::runtime_error(std::string("select: --") + pKey + " expects " +
+                                     std::to_string(N) + " comma-separated numbers");
+        return v;
+    };
+    if (has_opt(p, "box")) {
+        const auto v = numbers("box", 6);
+        o.mBox = true;
+        o.mBoxLo = {v[0], v[1], v[2]};
+        o.mBoxHi = {v[3], v[4], v[5]};
+    }
+    if (has_opt(p, "plane")) {
+        const auto v = numbers("plane", 6);
+        o.mPlane = true;
+        o.mPlanePoint = {v[0], v[1], v[2]};
+        o.mPlaneNormal = {v[3], v[4], v[5]};
+    }
+    if (has_opt(p, "sphere")) {
+        const auto v = numbers("sphere", 4);
+        o.mSphere = true;
+        o.mSphereCenter = {v[0], v[1], v[2]};
+        o.mSphereRadius = v[3];
+    }
+    if (has_opt(p, "where")) {
+        const auto pred = cli_parse_where(opt_value(p, "where"), "select");
+        o.mWhereArray = pred.mName;
+        o.mWhereOp = pred.mOp;
+        o.mWhereValue = pred.mValue;
+    }
+    if (has_opt(p, "quality")) {
+        const auto pred = cli_parse_where(opt_value(p, "quality"), "select");
+        o.mQualityMetric = pred.mName;
+        o.mQualityOp = pred.mOp;
+        o.mQualityValue = pred.mValue;
+    }
+    if (has_opt(p, "component")) {
+        o.mComponent = std::stoll(opt_value(p, "component"));
+        if (o.mComponent < 0)
+            throw std::runtime_error("select: --component must be >= 0");
+    }
+    if (has_opt(p, "seed")) {
+        const auto v = numbers("seed", 3);
+        o.mSeed = true;
+        o.mSeedPoint = {v[0], v[1], v[2]};
+    }
+    if (has_opt(p, "feature-angle"))
+        o.mFeatureAngleDeg = meshioplusplus::detail::stod_c(opt_value(p, "feature-angle"));
+    if (has_opt(p, "normal-tolerance"))
+        o.mNormalToleranceDeg = meshioplusplus::detail::stod_c(opt_value(p, "normal-tolerance"));
+    meshioplusplus::SelectResult r = meshioplusplus::select_region(mesh, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_candidates", r.mNumCandidates);
+        json.Field("num_selected", r.mNumSelected);
+        json.Field("num_grown", r.mNumGrown);
+        json.Field("num_components", r.mNumComponents);
+        json.EndObject();
+    } else if (!has_flag(p, "quiet")) {
+        std::cout << "select: " << r.mNumSelected << " of " << r.mNumCandidates << " "
+                  << meshioplusplus::region_kind_name(o.mKind) << "(s) in region '" << o.mName
+                  << "'\n";
+        if (r.mNumGrown >= 0)
+            std::cout << "  grown patch:  " << r.mNumGrown << " facet(s)\n";
+        if (r.mNumComponents >= 0)
+            std::cout << "  components:   " << r.mNumComponents << "\n";
+    }
+    return 0;
+}
+
 int cmd_slice(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -6479,6 +6592,8 @@ int cmd_optimize_volume(const std::vector<std::string>& rArgs) {
                                   {"no-flip", {}, false},
                                   {"no-preserve-boundary", {}, false},
                                   {"min-improvement", {}, true},
+                                  {"objective", {}, true},
+                                  {"max-ring-size", {}, true},
                                   {"quiet", {"-q"}, false},
                               });
     if (p.positionals.size() != 2)
@@ -6494,6 +6609,10 @@ int cmd_optimize_volume(const std::vector<std::string>& rArgs) {
     // form is needed for a caller to pass one.
     options.mMinImprovement =
         meshioplusplus::detail::stod_c(opt_value(p, "min-improvement", "0.000001"));
+    options.mObjective =
+        meshioplusplus::optimize_volume_objective_from_name(opt_value(p, "objective", "worst"));
+    if (p.values.count("max-ring-size"))
+        options.mMaxRingSize = static_cast<std::int32_t>(std::stoll(opt_value(p, "max-ring-size")));
 
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     meshioplusplus::OptimizeVolumeResult r = meshioplusplus::optimize_volume(mesh, options);
@@ -6502,10 +6621,17 @@ int cmd_optimize_volume(const std::vector<std::string>& rArgs) {
         std::cout << "ODT-remeshed\n";
         std::cout << "  flips (2-3 / 3-2):        " << r.mNumFlips << " (" << r.mNum23Flips << " / "
                   << r.mNum32Flips << ")\n";
+        if (options.mObjective == meshioplusplus::OptimizeVolumeObjective::Worst) {
+            std::cout << "  edge / multi-face removals: " << r.mNumEdgeRemovals << " / "
+                      << r.mNumMultiFaceRemovals << "\n";
+            std::cout << "  worst-cell smoothing moves: " << r.mNumWorstSmoothed << "\n";
+        }
         std::cout << "  vertices moved:           " << r.mNumVerticesMoved << "\n";
         std::cout << "  tets:                     " << r.mNumTets << "\n";
         std::cout << "  min quality before/after: " << r.mMinQualityBefore << " / "
                   << r.mMinQualityAfter << "\n";
+        std::cout << "  min dihedral before/after: " << r.mMinDihedralBefore << " / "
+                  << r.mMinDihedralAfter << " degrees\n";
     }
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     return 0;
@@ -8460,6 +8586,8 @@ int main(int argc, char** argv) {
             return cmd_clean(rest);
         if (cmd == "crop")
             return cmd_crop(rest);
+        if (cmd == "select")
+            return cmd_select(rest);
         if (cmd == "slice")
             return cmd_slice(rest);
         if (cmd == "isosurface")

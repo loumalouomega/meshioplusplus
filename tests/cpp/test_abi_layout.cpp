@@ -134,6 +134,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
+#include "meshioplusplus/operations/select.hpp"
 #include "meshioplusplus/operations/tet_poly.hpp"
 
 namespace {
@@ -458,7 +459,11 @@ MIO_ABI_LAYOUT(meshioplusplus::RemeshVolumeOptions, 224, 8);
 // `optimize_volume()` -- pinned from the release that introduces it, the
 // RefineOptions/RemeshOptions "pin in advance" lesson. OptimizeVolumeResult is
 // deliberately NOT pinned, embedding a `Mesh` like every other *Result.
-MIO_ABI_LAYOUT(meshioplusplus::OptimizeVolumeOptions, 40, 8);
+// ABI 37 appends mObjective and mMaxRingSize (worst-cell moves): 40 -> 48.
+MIO_ABI_LAYOUT(meshioplusplus::OptimizeVolumeOptions, 48, 8);
+static_assert(
+    sizeof(meshioplusplus::OptimizeVolumeObjective) == 4,
+    "meshio++ ABI: OptimizeVolumeObjective underlying width changed (Tier A, doc/abi.md)");
 
 // CurvatureOptions is passed by const-ref through the exported
 // `compute_curvature()`, and is pinned from the release that introduces it --
@@ -699,6 +704,7 @@ static_assert(sizeof(meshioplusplus::InterfaceMode) == 4 &&
 // const-ref through the exported `tet_to_poly()`/`poly_to_tet()` and pinned
 // from the release that introduces them. Both results embed a Mesh.
 MIO_ABI_LAYOUT(meshioplusplus::TetToPolyOptions, 16, 8);
+MIO_ABI_LAYOUT(meshioplusplus::SelectOptions, 352, 8);
 MIO_ABI_LAYOUT(meshioplusplus::PolyToTetOptions, 1, 1);
 
 // --- The mesh itself, which IS the backend ----------------------------------

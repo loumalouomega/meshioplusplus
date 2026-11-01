@@ -121,7 +121,7 @@ Two defects in the libraries are worked around. MMG 5.8's `MMG2D_Set_vectorSol` 
 - **CLI:** `meshioplusplus adapt IN OUT --hsiz 0.05` (or `--size NAME`, `--metric NAME`), with `--hmin`, `--hmax`, `--hausd`, `--hgrad`, `--hgradreq`, `--angle-detection`, `--optim`, `--noinsert`, `--noswap`, `--nomove`, `--nosurf`, `--nreg`, `--opnbdy`, `--frozen REGION` and repeatable `--required REGION`; `discretize-levelset IN OUT --level-set NAME` (`--isovalue`, `--rmc`, repeatable `--material REF,SPLIT,IN,OUT`) `mesh-2d IN OUT --hsiz H` (`--size`, repeatable `--hole X,Y`) and `move IN OUT --displacement NAME --moving REGION` (repeatable `--moving`, `--lagrangian`) with the same MMG options, in the Python and native CLIs alike ([CLI](./cli.md)).
 - **Pipeline:** an `Adapt` step with `Hsiz`, `Size`, `Metric`, `Hmin`, `Hmax`, `Hausd`, `Hgrad`, `Hgradreq`, `AngleDetection`, the switches, `Frozen` (a point region) and `Required`; it reports `NumPointsIn/Out`, `NumElementsIn/Out`, `LowFailure`, `QualityMin` and `QualityMean`. `DiscretizeLevelset` (`LevelSet`, `Isovalue`, `RemoveSmallComponents`, `Materials`) `MeshDomain` (`Hsiz`, `Size`, `Holes`, adding `NumSubdomains` and `NumHoles`) and `Move` (`Displacement`, `Moving`, `Lagrangian`) take the same MMG parameters ([pipelines](./pipeline.md)).
 - **MCP:** the `adapt`, `discretize_levelset`, `mesh_domain` and `move` tools, which report `mmg_available` (`move` also `mmg_elas_available`) (an error with `mmg_available: false` without MMG), and `metric_from_hessian` ([MCP](./mcp.md)).
-- **WebAssembly:** only `hasMmg()`, always `false`, until roadmap 3.2.8.
+- **WebAssembly:** the full artifact (`loadMeshioPlusPlus({}, {full: true})`) links MMG statically: `adapt(mesh, {hsiz, size, metric, ...})`, `discretizeLevelset(mesh, {levelSet, ...})`, `meshDomain(boundary, {hsiz, holes, ...})` and `move` (which throws naming ELAS, absent there), with the MMG parameters camelCased, and `metricFromHessian` in both artifacts; `hasMmg()` and `hasMmgElas()` report it. The lean artifact throws naming the full one ([WebAssembly](./wasm.md#mmg-in-the-full-artifact)).
 
 ## Building with MMG
 
@@ -136,9 +136,9 @@ CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_MMG=ON -Dmmg_DIR=$HOME/mmg-install/lib/cmake/m
 export LD_LIBRARY_PATH=$HOME/mmg-install/lib:$LD_LIBRARY_PATH   # MMG and ELAS carry no RPATH
 ```
 
-- **Linked dynamically only.** CMake links the shared `Mmg::libmmg_so`; an install with only the static library is refused with a status message, and the operations then raise.
+- **Linked dynamically only.** CMake links the shared `Mmg::libmmg_so`; an install with only the static library is refused with a status message, and the operations then raise. The one exception is the full WebAssembly artifact, which has no shared libraries to load: it links the static `Mmg::libmmg_a` `build/build-wasm-deps.sh --full` makes.
 - **What CMake reads from the install.** The width of `MMG5_int` from `mmg/common/mmgcmakedefines.h` (checked again by a `static_assert` when the core compiles), and whether MMG was built with ELAS, from `libmmg`'s reference to ELAS's `LS_elastic` (MMG's headers do not record it).
-- **In the published binaries only as an add-on.** The base PyPI wheel, the release CLI binaries and both WebAssembly artifacts have no MMG. The `meshioplusplus-mmg` wheel (`pip install "meshioplusplus[mmg]"`, v18.0.0) supplies it to Python, built against an MMG without ELAS (which would make the combination GPL-3.0), so `move` raises naming it; the CLI and C API can load it as a [plugin](./cpp_api.md#providers-and-plugins). The browser port is [roadmap 3.2.8](./roadmap.md).
+- **In the published binaries only as an add-on, or in the full WebAssembly artifact.** The base PyPI wheel, the release CLI binaries and the lean WebAssembly artifact have no MMG. The `meshioplusplus-mmg` wheel (`pip install "meshioplusplus[mmg]"`, v18.0.0) supplies it to Python, built against an MMG without ELAS (which would make the combination GPL-3.0), so `move` raises naming it; the CLI and C API can load it as a [plugin](./cpp_api.md#providers-and-plugins). The full WebAssembly artifact links it statically, without ELAS too ([WebAssembly](./wasm.md#mmg-in-the-full-artifact)).
 
 Ask the build what it has:
 
@@ -147,11 +147,11 @@ from meshioplusplus import _core
 _core.__has_mmg__, _core.__has_mmg_elas__
 ```
 
-The C API has `mio_has_mmg()`, `mio_has_mmg_elas()` and `mio_mmg_index_bits()`; Fortran `mio_has_mmg()`, `mio_has_mmg_elas()` and `mio_mmg_index_bits()`; Julia `has_mmg()` and `has_mmg_elas()`; R `mio_has_mmg()` and `mio_has_mmg_elas()`; WebAssembly `hasMmg()`, always `false`; C++ `mmg_available()`, `mmg_has_elas()` and `mmg_index_bits()` in `operations/mmg.hpp`.
+The C API has `mio_has_mmg()`, `mio_has_mmg_elas()` and `mio_mmg_index_bits()`; Fortran `mio_has_mmg()`, `mio_has_mmg_elas()` and `mio_mmg_index_bits()`; Julia `has_mmg()` and `has_mmg_elas()`; R `mio_has_mmg()` and `mio_has_mmg_elas()`; WebAssembly `hasMmg()` (true in the full artifact) and `hasMmgElas()` (false in both); C++ `mmg_available()`, `mmg_has_elas()` and `mmg_index_bits()` in `operations/mmg.hpp`.
 
 ## Licence
 
-MMG is **LGPL-3.0-or-later**. meshio++ is MIT, and a build without MMG contains no MMG code. A build with it links `libmmg` dynamically, so a recipient can replace MMG without rebuilding meshio++; whoever redistributes such a build owes the LGPL-3.0's obligations for MMG (its licence text, its source or a written offer of it, and the freedom to relink against a modified `libmmg`). This is why MMG is in none of the published binaries.
+MMG is **LGPL-3.0-or-later**. meshio++ is MIT, and a build without MMG contains no MMG code. A build with it links `libmmg` dynamically, so a recipient can replace MMG without rebuilding meshio++; whoever redistributes such a build owes the LGPL-3.0's obligations for MMG (its licence text, its source or a written offer of it, and the freedom to relink against a modified `libmmg`). This is why MMG is in none of the published native binaries. The full WebAssembly artifact links it statically and serves the relinking right by being rebuilt from source with the pinned MMG, or a modified one, by two scripts ([its notices](https://github.com/loumalouomega/meshioplusplus/blob/master/src/wasm/THIRD_PARTY_NOTICES.md)); its licence expression names `LGPL-3.0-or-later`.
 
 **ELAS is GPL-3.0.** `move` needs an MMG built with [ELAS](https://github.com/ISCDtoolbox/LinearElasticity) and its [Commons](https://github.com/ISCDtoolbox/Commons), both GPL-3.0. An MMG linked to them, and a meshio++ linked to that MMG, form a GPL-3.0 work when distributed. `build/build-mmg.sh` builds ELAS only when asked (`--with-elas`); a build without it keeps MMG's LGPL terms and refuses `move` by name. See [third-party notices](https://github.com/loumalouomega/meshioplusplus/blob/master/THIRD_PARTY_NOTICES.md#mmg).
 

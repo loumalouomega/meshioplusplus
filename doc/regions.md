@@ -228,6 +228,10 @@ mesh.regions; // [{ name, kind, dim, tag, entries }]
 
 **Native CLI** — `meshioplusplus info` prints `Point sets:` / `Cell sets:` / `Side sets:`, and `meshioplusplus diff` reports regions added, removed and changed, folding them into its nonzero exit code. (`meshes_equal` deliberately does **not** consider them: it is documented to compare geometry and data.)
 
+## Creating regions from geometry
+
+A mesh that arrives without the groups a solver needs — an STL skin, a tetrahedralized volume, an isosurface — gets them from [`select`](/select): `select(mesh, "inlet", "side", seed=(0, 0, -1))` writes the boundary faces of the smooth patch nearest a point, and a box, half-space, ball, `cell_data` or quality threshold, or connected component selects points, cells or sides the same way. The result is the mesh plus that one region, so the edits below and the interface operations take it as they take a region read from a file.
+
 ## Editing regions
 
 `edit_regions(mesh, edits)` (v16.23.0) applies a list of edits, in order, to a copy of the mesh's regions, leaving points, cells, data and property sets untouched. It is what a consumer building boundary conditions otherwise hand-rolls: "the inlet is these two gmsh groups", "the wall is the skin minus the inlet and outlet", "call it `Inlet` and give it tag 10".

@@ -69,7 +69,9 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 # clone of its tag, refused unless it is NETGEN_COMMIT, as OpenCASCADE is: its
 # nglib and ngcore only (no GUI, Python, OCC, MPI or CGNS), the tetrahedralize
 # backend, and the same 6.2.2401 the native CI job links (Ubuntu 24.04's
-# libnglib-dev).
+# libnglib-dev). MMG is a shallow clone of its tag, refused unless it is
+# MMG_COMMIT: its static libmmg only, without SCOTCH, VTK or ELAS (the GPL-3.0
+# library `move` needs), so the full artifact stays LGPL.
 OCCT_RECIPE_DIR="$SCRIPT_DIR"
 . "$SCRIPT_DIR/occt-recipe.sh"
 
@@ -95,7 +97,7 @@ Usage: $0 [options]
   --without-netcdf          skip netCDF
   --without-cgnslib         skip cgnslib (the CGNS MLL backend)
   --full                    also build the full artifact's libraries (OCCT,
-                            zstd, lz4, KaHIP) into their own prefix(es)
+                            zstd, lz4, KaHIP, Netgen, MMG) into their own prefix(es)
   --full-only               build only those (skip HDF5/netCDF/cgnslib)
   --threads <seq|mt|both>   which flavours of the full libraries (default: both)
   --without-occt            leave OpenCASCADE out of the full prefix
@@ -106,7 +108,8 @@ Usage: $0 [options]
   -h, --help                this help
 
 Pinned versions: HDF5 $HDF5_VERSION, netcdf-c $NETCDF_VERSION, cgnslib $CGNS_VERSION,
-                 OCCT $OCCT_VERSION, zstd $ZSTD_VERSION, lz4 $LZ4_VERSION, KaHIP $KAHIP_VERSION (full only)
+                 OCCT $OCCT_VERSION, zstd $ZSTD_VERSION, lz4 $LZ4_VERSION, KaHIP $KAHIP_VERSION,
+                 Netgen $NETGEN_VERSION, MMG $MMG_VERSION (full only)
 EOF
 }
 
@@ -141,6 +144,7 @@ full_prefix() {  # full_prefix <seq|mt>
     name="full"
     [ "$WITH_OCCT" = "yes" ] && name="$name-occt-$OCCT_VERSION"
     name="$name-zstd-$ZSTD_VERSION-lz4-$LZ4_VERSION-kahip-$KAHIP_VERSION-netgen-$NETGEN_VERSION"
+    name="$name-mmg-$MMG_VERSION"
     [ "$1" = "mt" ] && name="$name-mt"
     echo "$DEPS_ROOT/$name"
 }
@@ -698,6 +702,43 @@ build_full_flavour() {  # build_full_flavour <seq|mt>
         cmake --install "$WORK_DIR/build-netgen-$flavour"
         # Its tutorials and manual are installed too; the link needs none.
         rm -rf "$WORK_DIR/build-netgen-$flavour" "$fprefix/share/netgen"
+    fi
+
+    # ------------------------------------------------------------------
+    # MMG (adapt, discretize_levelset and mesh_domain; full artifact only)
+    #
+    # Static libmmg, 32-bit MMG5_int, without SCOTCH, VTK or ELAS: ELAS is
+    # GPL-3.0, so `move` throws by name here as in the add-on wheel. MMG is C;
+    # -sSUPPORT_LONGJMP is not needed (it has no setjmp). The patch stubs the
+    # Fortran headers, whose generator runs perl through system() and so
+    # cannot run under node, and gives the one tentative definition (`ddb`)
+    # an initialiser: MMG forces -fcommon, and wasm has no common symbols.
+    # Emscripten's libm is libc, so M_LIB names it by flag.
+    # ------------------------------------------------------------------
+    if [ "$FORCE" = "no" ] && [ -f "$fprefix/lib/libmmg.a" ]; then
+        echo "== MMG $MMG_VERSION ($flavour) already installed, skipping =="
+    else
+        echo "== MMG $MMG_VERSION ($flavour) =="
+        fetch_git "https://github.com/MmgTools/mmg.git" "v$MMG_VERSION" "$MMG_COMMIT" \
+            "mmg-$MMG_VERSION.git"
+        rm -rf "$WORK_DIR/mmg-$MMG_VERSION" "$WORK_DIR/build-mmg-$flavour"
+        mkdir -p "$WORK_DIR/mmg-$MMG_VERSION"
+        (cd "$DL_DIR/mmg-$MMG_VERSION.git" && git archive --format=tar HEAD) |
+            tar -xf - -C "$WORK_DIR/mmg-$MMG_VERSION"
+        apply_patches "mmg-$MMG_VERSION" "$WORK_DIR/mmg-$MMG_VERSION"
+        CFLAGS="-Oz $pt" emcmake cmake -S "$WORK_DIR/mmg-$MMG_VERSION" \
+            -B "$WORK_DIR/build-mmg-$flavour" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$fprefix" \
+            -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF \
+            -DUSE_SCOTCH=OFF -DUSE_VTK=OFF -DUSE_ELAS=OFF \
+            -DMMG5_INT=int32_t -DM_LIB=-lm
+        cmake --build "$WORK_DIR/build-mmg-$flavour" -j "$JOBS"
+        cmake --install "$WORK_DIR/build-mmg-$flavour"
+        # The command-line programs are installed too; the link needs none.
+        rm -f "$fprefix/bin/mmg2d_O3" "$fprefix/bin/mmgs_O3" "$fprefix/bin/mmg3d_O3" \
+              "$fprefix"/bin/mmg*.wasm "$fprefix"/bin/mmg*.js
+        rm -rf "$WORK_DIR/build-mmg-$flavour"
     fi
 
     [ "$WITH_OCCT" = "yes" ] || return 0

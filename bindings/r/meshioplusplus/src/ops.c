@@ -149,30 +149,56 @@ SEXP R_mio_smooth(SEXP mesh, SEXP method, SEXP iterations, SEXP lambda, SEXP mu,
 }
 
 SEXP R_mio_optimize_volume(SEXP mesh, SEXP max_iterations, SEXP relocate, SEXP flip,
-                           SEXP preserve_boundary, SEXP min_improvement) {
-    int64_t nflips = 0, n23 = 0, n32 = 0, nmoved = 0, ntets = 0;
-    double qbefore = 0.0, qafter = 0.0;
-    mio_mesh *out = mio_optimize_volume(
-        mio_r_mesh(mesh), mio_r_int(max_iterations, "max_iterations"),
-        mio_r_bool(relocate, "relocate"), mio_r_bool(flip, "flip"),
-        mio_r_bool(preserve_boundary, "preserve_boundary"),
-        mio_r_double(min_improvement, "min_improvement"), &nflips, &n23, &n32, &nmoved, &ntets,
-        &qbefore, &qafter);
+                           SEXP preserve_boundary, SEXP min_improvement, SEXP objective,
+                           SEXP max_ring_size) {
+    mio_optimize_volume_opts opts;
+    mio_optimize_volume_report rep;
+    const char *obj;
+    mio_optimize_volume_opts_init(&opts);
+    opts.max_iterations = mio_r_int(max_iterations, "max_iterations");
+    opts.relocate = mio_r_bool(relocate, "relocate");
+    opts.flip = mio_r_bool(flip, "flip");
+    opts.preserve_boundary = mio_r_bool(preserve_boundary, "preserve_boundary");
+    opts.min_improvement = mio_r_double(min_improvement, "min_improvement");
+    obj = mio_r_string(objective, "objective");
+    if (strcmp(obj, "worst") == 0)
+        opts.objective = MIO_OPTIMIZE_VOLUME_WORST;
+    else if (strcmp(obj, "energy") == 0)
+        opts.objective = MIO_OPTIMIZE_VOLUME_ENERGY;
+    else
+        Rf_error("meshio++: optimize_volume: objective must be \"worst\" or \"energy\"");
+    opts.max_ring_size = mio_r_int(max_ring_size, "max_ring_size");
+    mio_mesh *out = mio_optimize_volume_ex(mio_r_mesh(mesh), &opts, &rep);
     if (out == NULL) mio_r_fail("optimize_volume");
     SEXP mo = PROTECT(mio_r_wrap_mesh(out));
-    SEXP v0 = PROTECT(Rf_ScalarReal((double)nflips));
-    SEXP v1 = PROTECT(Rf_ScalarReal((double)n23));
-    SEXP v2 = PROTECT(Rf_ScalarReal((double)n32));
-    SEXP v3 = PROTECT(Rf_ScalarReal((double)nmoved));
-    SEXP v4 = PROTECT(Rf_ScalarReal((double)ntets));
-    SEXP v5 = PROTECT(Rf_ScalarReal(qbefore));
-    SEXP v6 = PROTECT(Rf_ScalarReal(qafter));
-    const char *names[] = {"mesh",     "num_flips",          "num_23_flips",
-                           "num_32_flips", "num_vertices_moved", "num_tets",
-                           "min_quality_before", "min_quality_after"};
-    SEXP values[] = {mo, v0, v1, v2, v3, v4, v5, v6};
-    SEXP res = PROTECT(mio_r_named_list(8, names, values));
-    UNPROTECT(9);
+    SEXP v0 = PROTECT(Rf_ScalarReal((double)rep.num_flips));
+    SEXP v1 = PROTECT(Rf_ScalarReal((double)rep.num_23_flips));
+    SEXP v2 = PROTECT(Rf_ScalarReal((double)rep.num_32_flips));
+    SEXP v3 = PROTECT(Rf_ScalarReal((double)rep.num_vertices_moved));
+    SEXP v4 = PROTECT(Rf_ScalarReal((double)rep.num_tets));
+    SEXP v5 = PROTECT(Rf_ScalarReal(rep.min_quality_before));
+    SEXP v6 = PROTECT(Rf_ScalarReal(rep.min_quality_after));
+    SEXP v7 = PROTECT(Rf_ScalarReal((double)rep.num_edge_removals));
+    SEXP v8 = PROTECT(Rf_ScalarReal((double)rep.num_multi_face_removals));
+    SEXP v9 = PROTECT(Rf_ScalarReal((double)rep.num_worst_smoothed));
+    SEXP v10 = PROTECT(Rf_ScalarReal(rep.min_dihedral_before));
+    SEXP v11 = PROTECT(Rf_ScalarReal(rep.min_dihedral_after));
+    const char *names[] = {"mesh",
+                           "num_flips",
+                           "num_23_flips",
+                           "num_32_flips",
+                           "num_vertices_moved",
+                           "num_tets",
+                           "min_quality_before",
+                           "min_quality_after",
+                           "num_edge_removals",
+                           "num_multi_face_removals",
+                           "num_worst_smoothed",
+                           "min_dihedral_before",
+                           "min_dihedral_after"};
+    SEXP values[] = {mo, v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11};
+    SEXP res = PROTECT(mio_r_named_list(13, names, values));
+    UNPROTECT(14);
     return res;
 }
 
@@ -3630,4 +3656,100 @@ SEXP R_mio_provenance_set_target(SEXP format, SEXP encoding, SEXP codec, SEXP fl
                               mio_r_string(codec, "codec"),
                               mio_r_string(float_format, "float_format"));
     return R_NilValue;
+}
+
+/* A numeric vector of exactly `n` values into `dst`; returns 0 when `s` is
+ * NULL or empty (the criterion is off). */
+static int select_vec(SEXP s, double *dst, R_xlen_t n, const char *what) {
+    R_xlen_t i;
+    SEXP r;
+    if (Rf_isNull(s) || Rf_xlength(s) == 0) return 0;
+    if (!Rf_isNumeric(s) || Rf_xlength(s) != n)
+        Rf_error("meshio++: select: %s must be %d numbers", what, (int)n);
+    r = PROTECT(Rf_coerceVector(s, REALSXP));
+    for (i = 0; i < n; ++i) dst[i] = REAL(r)[i];
+    UNPROTECT(1);
+    return 1;
+}
+
+SEXP R_mio_select(SEXP mesh, SEXP name, SEXP kind, SEXP tag, SEXP mode, SEXP boundary_only,
+                  SEXP box, SEXP plane, SEXP sphere, SEXP where_array, SEXP where_op,
+                  SEXP where_value, SEXP quality_metric, SEXP quality_op, SEXP quality_value,
+                  SEXP component, SEXP seed, SEXP feature_angle, SEXP normal_tolerance) {
+    mio_select_opts opts;
+    mio_select_report report;
+    mio_mesh *out;
+    double v[6];
+    const char *k, *m;
+
+    mio_select_opts_init(&opts);
+    opts.name = mio_r_string(name, "name");
+    k = mio_r_string(kind, "kind");
+    if (strcmp(k, "point") == 0)
+        opts.kind = MIO_REGION_POINT;
+    else if (strcmp(k, "cell") == 0)
+        opts.kind = MIO_REGION_CELL;
+    else if (strcmp(k, "side") == 0)
+        opts.kind = MIO_REGION_SIDE;
+    else
+        Rf_error("meshio++: select: kind must be \"point\", \"cell\" or \"side\"");
+    opts.tag = (int64_t)mio_r_double(tag, "tag");
+    m = mio_r_string(mode, "mode");
+    if (strcmp(m, "all") == 0)
+        opts.mode = MIO_SELECT_ALL;
+    else if (strcmp(m, "any") == 0)
+        opts.mode = MIO_SELECT_ANY;
+    else if (strcmp(m, "centroid") == 0)
+        opts.mode = MIO_SELECT_CENTROID;
+    else
+        Rf_error("meshio++: select: mode must be \"all\", \"any\" or \"centroid\"");
+    opts.boundary_only = mio_r_bool(boundary_only, "boundary_only") ? 1 : 0;
+    if (select_vec(box, v, 6, "box")) {
+        opts.use_box = 1;
+        memcpy(opts.box_lo, v, 3 * sizeof(double));
+        memcpy(opts.box_hi, v + 3, 3 * sizeof(double));
+    }
+    if (select_vec(plane, v, 6, "plane")) {
+        opts.use_plane = 1;
+        memcpy(opts.plane_point, v, 3 * sizeof(double));
+        memcpy(opts.plane_normal, v + 3, 3 * sizeof(double));
+    }
+    if (select_vec(sphere, v, 4, "sphere")) {
+        opts.use_sphere = 1;
+        memcpy(opts.sphere_center, v, 3 * sizeof(double));
+        opts.sphere_radius = v[3];
+    }
+    opts.where_array = mio_r_opt_string(where_array);
+    opts.where_compare = refine_compare_code(mio_r_opt_string(where_op));
+    if (opts.where_compare < 0) Rf_error("meshio++: select: unknown comparison in where_op");
+    opts.where_value = mio_r_double(where_value, "where_value");
+    opts.quality_metric = mio_r_opt_string(quality_metric);
+    opts.quality_compare = refine_compare_code(mio_r_opt_string(quality_op));
+    if (opts.quality_compare < 0) Rf_error("meshio++: select: unknown comparison in quality_op");
+    opts.quality_value = mio_r_double(quality_value, "quality_value");
+    /* 1-based in R, like every other index here. */
+    if (!Rf_isNull(component) && Rf_xlength(component) > 0) {
+        opts.component = (int64_t)mio_r_double(component, "component") - 1;
+        if (opts.component < 0) Rf_error("meshio++: select: component must be >= 1");
+    }
+    if (select_vec(seed, v, 3, "seed")) {
+        opts.use_seed = 1;
+        memcpy(opts.seed, v, 3 * sizeof(double));
+    }
+    opts.feature_angle = mio_r_double(feature_angle, "feature_angle");
+    opts.normal_tolerance = mio_r_double(normal_tolerance, "normal_tolerance");
+
+    out = mio_select(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL) mio_r_fail("select");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP nc = PROTECT(Rf_ScalarReal((double)report.num_candidates));
+    SEXP ns = PROTECT(Rf_ScalarReal((double)report.num_selected));
+    SEXP ng = PROTECT(Rf_ScalarReal((double)report.num_grown));
+    SEXP nk = PROTECT(Rf_ScalarReal((double)report.num_components));
+    const char *names[] = {"mesh", "num_candidates", "num_selected", "num_grown",
+                           "num_components"};
+    SEXP values[] = {mo, nc, ns, ng, nk};
+    SEXP res = PROTECT(mio_r_named_list(5, names, values));
+    UNPROTECT(6);
+    return res;
 }

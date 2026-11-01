@@ -1361,6 +1361,46 @@ def test_segment_fit_and_step(tmp_path):
     assert "step" in _tools.tool_formats()["writable"]
 
 
+def test_optimize_volume_objectives(tmp_path):
+    src = str(tmp_path / "ball.vtu")
+    meshioplusplus.write(src, meshioplusplus.ball(n=3, cell_type="tetra"))
+    worst = _dump(_tools.tool_optimize_volume(src, str(tmp_path / "w.vtu")))
+    assert worst["min_dihedral_after"] >= worst["min_dihedral_before"]
+    assert "num_edge_removals" in worst and "num_worst_smoothed" in worst
+    energy = _dump(
+        _tools.tool_optimize_volume(src, str(tmp_path / "e.vtu"), objective="energy")
+    )
+    assert energy["num_worst_smoothed"] == 0
+    with pytest.raises(ValueError, match="objective"):
+        _tools.tool_optimize_volume(src, str(tmp_path / "x.vtu"), objective="best")
+
+
+def test_select_writes_a_region(tmp_path):
+    src = str(tmp_path / "cube.vtu")
+    meshioplusplus.write(src, _unit_cube_quads())
+    out = _dump(
+        _tools.tool_select(src, str(tmp_path / "top.vtu"), "top", seed=[0.5, 0.5, 2.0])
+    )
+    assert out["num_selected"] == 1
+    assert out["num_grown"] == 1
+    assert out["num_components"] == -1
+    low = _dump(
+        _tools.tool_select(
+            src,
+            str(tmp_path / "low.vtu"),
+            "low",
+            kind="point",
+            plane_origin=[0, 0, 0.5],
+            plane_normal=[0, 0, -1],
+        )
+    )
+    assert low["num_selected"] == 4
+    with pytest.raises(ValueError, match="both sphere_center and sphere_radius"):
+        _tools.tool_select(src, str(tmp_path / "x.vtu"), "x", sphere_radius=1.0)
+    with pytest.raises(ValueError, match="criterion"):
+        _tools.tool_select(src, str(tmp_path / "x.vtu"), "x")
+
+
 def test_iga_tools_refine_sample_and_evaluate(tmp_path):
     nurbs = str(
         pathlib.Path(__file__).parent / "meshes" / "mfem" / "nurbs" / "pipe-nurbs.mesh"

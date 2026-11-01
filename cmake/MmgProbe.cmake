@@ -1,7 +1,8 @@
 # What the found MMG was built with, read from its library and headers (MMG's own
 # config records neither). Included by the root build and by cmake/addon_mmg.cmake
-# once Mmg::libmmg_so exists. Sets:
-#   _mio_mmg_lib        the libmmg shared library file
+# once Mmg::libmmg_so exists (or, in the full WebAssembly build, Mmg::libmmg_a):
+# the target probed is ${_mio_mmg_target}, Mmg::libmmg_so when unset. Sets:
+#   _mio_mmg_lib        the libmmg library file
 #   _mio_mmg_incs       its include directories
 #   _mio_mmg_int64      non-empty when MMG5_int is 64-bit
 #   _mio_mmg_elas       non-empty when libmmg references ELAS (LS_elastic)
@@ -13,15 +14,18 @@
 # width of MMG5_int (roadmap 3.2.5.2) from mmgcmakedefines.h, and ELAS -- the
 # linear-elasticity library move needs -- from libmmg's reference to its
 # LS_elastic, since MMG's headers do not record USE_ELAS.
+if(NOT _mio_mmg_target)
+  set(_mio_mmg_target Mmg::libmmg_so)
+endif()
 set(_mio_mmg_lib "")
-get_target_property(_mio_mmg_configs Mmg::libmmg_so IMPORTED_CONFIGURATIONS)
+get_target_property(_mio_mmg_configs ${_mio_mmg_target} IMPORTED_CONFIGURATIONS)
 foreach(_c IN LISTS _mio_mmg_configs)
-  get_target_property(_mio_mmg_lib Mmg::libmmg_so IMPORTED_LOCATION_${_c})
+  get_target_property(_mio_mmg_lib ${_mio_mmg_target} IMPORTED_LOCATION_${_c})
   if(_mio_mmg_lib)
     break()
   endif()
 endforeach()
-get_target_property(_mio_mmg_incs Mmg::libmmg_so INTERFACE_INCLUDE_DIRECTORIES)
+get_target_property(_mio_mmg_incs ${_mio_mmg_target} INTERFACE_INCLUDE_DIRECTORIES)
 set(_mio_mmg_int64 "")
 foreach(_inc IN LISTS _mio_mmg_incs)
   if(EXISTS "${_inc}/mmg/common/mmgcmakedefines.h")

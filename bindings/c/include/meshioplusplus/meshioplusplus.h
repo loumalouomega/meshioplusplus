@@ -3504,8 +3504,13 @@ MIO_API mio_mesh* mio_remesh_volume_ex(const mio_mesh* mesh, const mio_remesh_vo
  * @param relocate          nonzero to run the ODT vertex-relocation half.
  * @param flip              nonzero to run the topological-flip half.
  * @param preserve_boundary nonzero to pin boundary vertices during relocation.
- * @param min_improvement   the strict scaled-Jacobian gain a flip must deliver.
- * @param num_flips         receives the total flips accepted (2-3 + 3-2).
+ * Since ABI 37 this runs the default objective, MIO_OPTIMIZE_VOLUME_WORST
+ * (the least dihedral angle never drops); mio_optimize_volume_ex chooses the
+ * objective and reports the worst-cell counters.
+ *
+ * @param min_improvement   the strict gain a flip must deliver (degrees of
+ *                          dihedral angle under the default objective).
+ * @param num_flips         receives the total topological moves accepted.
  * @param num_23_flips      receives the 2-3 flips accepted.
  * @param num_32_flips      receives the 3-2 flips accepted.
  * @param num_vertices_moved receives the vertices the relocation half moved.
@@ -3521,6 +3526,66 @@ MIO_API mio_mesh* mio_optimize_volume(const mio_mesh* mesh, int max_iterations, 
                                       int64_t* num_32_flips, int64_t* num_vertices_moved,
                                       int64_t* num_tets, double* min_quality_before,
                                       double* min_quality_after);
+
+/** mio_optimize_volume_opts.objective: what mio_optimize_volume_ex improves. */
+typedef enum mio_optimize_volume_objective {
+    /** The worst cell: the least dihedral angle never drops (the default). */
+    MIO_OPTIMIZE_VOLUME_WORST = 0,
+    /** The ODT energy with flips by the least scaled Jacobian (before ABI 37). */
+    MIO_OPTIMIZE_VOLUME_ENERGY = 1
+} mio_optimize_volume_objective;
+
+/**
+ * Options for mio_optimize_volume_ex. Same ABI rules as mio_feature_edges_opts;
+ * always initialize through mio_optimize_volume_opts_init(): an all-zero struct
+ * is NOT the default (it would run no sweep).
+ */
+typedef struct mio_optimize_volume_opts {
+    int32_t max_iterations;    /**< optimisation sweeps (default 10) */
+    int32_t relocate;          /**< nonzero runs the relocation half (default 1) */
+    int32_t flip;              /**< nonzero runs the topological half (default 1) */
+    int32_t preserve_boundary; /**< nonzero pins boundary vertices (default 1) */
+    double min_improvement;    /**< the strict gain a move must deliver (default 1e-6) */
+    int32_t objective;         /**< a mio_optimize_volume_objective */
+    int32_t max_ring_size;     /**< largest ring an edge or multi-face removal takes (7) */
+    int64_t reserved[8];       /**< must be zero; room for additive growth */
+} mio_optimize_volume_opts;
+
+/** Initialize optimize_volume options: 10 sweeps, both halves, the boundary
+ *  pinned, 1e-6, the worst objective, rings of up to 7. */
+MIO_API void mio_optimize_volume_opts_init(mio_optimize_volume_opts* opts);
+
+/** What mio_optimize_volume_ex did. */
+typedef struct mio_optimize_volume_report {
+    int64_t num_flips;               /**< every topological move accepted */
+    int64_t num_23_flips;            /**< 2-3 flips */
+    int64_t num_32_flips;            /**< 3-2 flips (edge removals of three tets) */
+    int64_t num_edge_removals;       /**< edge removals of four or more tets */
+    int64_t num_multi_face_removals; /**< multi-face removals */
+    int64_t num_vertices_moved;      /**< vertices whose final position moved */
+    int64_t num_worst_smoothed;      /**< worst-cell smoothing moves, over the sweeps */
+    int64_t num_tets;                /**< output tets */
+    double min_quality_before;       /**< least scaled Jacobian in */
+    double min_quality_after;        /**< least scaled Jacobian out */
+    double min_dihedral_before;      /**< least dihedral angle in, degrees */
+    double min_dihedral_after;       /**< least dihedral angle out, degrees */
+    int64_t reserved[4];             /**< must be zero; room for additive growth */
+} mio_optimize_volume_report;
+
+/**
+ * mio_optimize_volume with an options struct: the objective
+ * (MIO_OPTIMIZE_VOLUME_WORST: guarded ODT relocation, 2-3 flips, edge removal,
+ * multi-face removal and worst-cell smoothing, the least dihedral angle never
+ * dropping; or MIO_OPTIMIZE_VOLUME_ENERGY) and the full report. See
+ * doc/optimize_volume.md.
+ *
+ * @param mesh   a tetra-only volume mesh.
+ * @param opts   options; NULL means every mio_optimize_volume_opts_init() default.
+ * @param report optional out: the counters.
+ * @return the optimised mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_optimize_volume_ex(const mio_mesh* mesh, const mio_optimize_volume_opts* opts,
+                                         mio_optimize_volume_report* report);
 
 /** Which dual area a per-vertex curvature is divided by. */
 typedef enum mio_curvature_dual_area {
@@ -5082,6 +5147,99 @@ typedef struct mio_segment_report {
  */
 MIO_API mio_mesh* mio_segment(const mio_mesh* mesh, const mio_segment_opts* opts,
                               mio_segment_report* report);
+
+/* ---------------------------------------------------------------------
+ * Selection: one named region from geometry, data, quality, component or a
+ * grown patch. See doc/select.md.
+ * --------------------------------------------------------------------- */
+
+/** mio_select_opts.mode: how a cell or side reduces its nodes for the box,
+ *  plane and sphere. */
+typedef enum mio_select_mode {
+    MIO_SELECT_ALL = 0,     /**< every node inside */
+    MIO_SELECT_ANY = 1,     /**< at least one node inside */
+    MIO_SELECT_CENTROID = 2 /**< the mean of its distinct nodes inside */
+} mio_select_mode;
+
+/**
+ * Options for mio_select. Same ABI rules as mio_feature_edges_opts; always
+ * initialize through mio_select_opts_init(): the kind defaults to
+ * MIO_REGION_CELL, the tag and component to -1, boundary_only to 1 and the
+ * feature angle to 30, so an all-zero struct is NOT the default. A candidate
+ * is selected when it passes every criterion set; at least one is required.
+ */
+typedef struct mio_select_opts {
+    /** The region's name; required. A region of the same name and kind is replaced. */
+    const char* name;
+    /** A mio_region_kind: what the region groups. */
+    int32_t kind;
+    /** A mio_select_mode, for the box, plane and sphere. */
+    int32_t mode;
+    /** The region's tag; -1 for none. */
+    int64_t tag;
+    /** Side regions: nonzero considers only facets owned by one cell. */
+    int32_t boundary_only;
+    /** Nonzero enables the box criterion: box_lo <= p <= box_hi. */
+    int32_t use_box;
+    /** Nonzero enables the half-space criterion: (p - plane_point) . plane_normal >= 0. */
+    int32_t use_plane;
+    /** Nonzero enables the ball criterion: |p - sphere_center| <= sphere_radius. */
+    int32_t use_sphere;
+    /** Nonzero grows a patch from the facet nearest `seed`. */
+    int32_t use_seed;
+    /** A mio_refine_compare for where_array. */
+    int32_t where_compare;
+    /** A mio_refine_compare for quality_metric. */
+    int32_t quality_compare;
+    int32_t reserved32; /**< must be zero */
+    double box_lo[3];
+    double box_hi[3];
+    double plane_point[3];
+    double plane_normal[3];
+    double sphere_center[3];
+    double sphere_radius;
+    /** A scalar point_data (points) or cell_data (cells, sides) array; NULL or "" = off. */
+    const char* where_array;
+    double where_value;
+    /** A compute_quality metric (cells and sides only); NULL or "" = off. */
+    const char* quality_metric;
+    double quality_value;
+    /** The k-th node-connected component, as split's "component" pieces; -1 = off. */
+    int64_t component;
+    double seed[3];
+    /** The largest dihedral angle, in degrees, the growth crosses; [0, 180]. */
+    double feature_angle;
+    /** The largest angle, in degrees, between a grown facet's normal and the seed's; 0 = off. */
+    double normal_tolerance;
+    int64_t reserved[8]; /**< must be zero; room for additive growth */
+} mio_select_opts;
+
+/** Initialize select options: a cell region, mode all, no tag, boundary
+ *  facets only, no criterion, 30 degrees, no normal tolerance. */
+MIO_API void mio_select_opts_init(mio_select_opts* opts);
+
+/** What mio_select found. */
+typedef struct mio_select_report {
+    int64_t num_candidates; /**< points, cells or sides considered */
+    int64_t num_selected;   /**< the region's size */
+    int64_t num_grown;      /**< facets of the grown patch; -1 without a seed */
+    int64_t num_components; /**< node-connected components; -1 without that criterion */
+    int64_t reserved[4];    /**< must be zero; room for additive growth */
+} mio_select_report;
+
+/**
+ * Select points, cells or sides and write them as one named region. Returns
+ * the input unchanged -- points, connectivity, data and the other regions --
+ * plus the region (Cell entries are global block-major cell indices, Side
+ * entries (cell, local facet) pairs).
+ *
+ * @param mesh   the input mesh.
+ * @param opts   options (required: the name).
+ * @param report optional out: the counts.
+ * @return the mesh with the region (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_select(const mio_mesh* mesh, const mio_select_opts* opts,
+                             mio_select_report* report);
 
 /** The values of "fit:type" / "fit:patch_type"; `1 << type` selects a type. */
 typedef enum mio_fit_type {

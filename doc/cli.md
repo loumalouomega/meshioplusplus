@@ -113,6 +113,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `tet-to-poly` | `cells_in`, `cells_out`, `num_new_points`, `num_boundary_faces` and `num_split_vertices` |
 | `poly-to-tet` | `cells_in`, `cells_out`, `num_exact_tets` and `num_fanned_cells` |
 | `resample` | `method`, `num_steps` and the target `times` |
+| `select` | `num_candidates`, `num_selected`, `num_grown` and `num_components` |
 | `segment` | `num_patches`, `num_merged`, `num_feature_edges`, `num_boundary_edges` and `num_non_manifold_edges` |
 | `refine-patches` | `num_patches`, `num_iterations`, `num_splits`, `num_merges`, `num_absorbed`, `num_primitive`, `num_freeform`, `num_facets`, `tolerance`, `explained_area_fraction`, `initial_explained_area_fraction`, `hausdorff_max`, `hausdorff_rms`, `initial_energy`, `energy` and `stop` (`unchanged`, `small_gain`, `iteration_cap` or `energy_rose`) |
 | `fit-primitives` | `num_patches`, one count per type (`num_plane` … `num_torus`) and `num_unfitted` |
@@ -479,6 +480,40 @@ meshioplusplus crop in.vtu out.vtu --where 'quality:scaled_jacobian < 0.3'
 # inside a surface, composed:
 meshioplusplus sdf shell.stl field.vtu --resolution 64,64,64 --location center
 meshioplusplus crop field.vtu inside.vtu --where 'sdf:distance < 0'
+```
+
+---
+
+## meshioplusplus select
+
+Write one named point, cell or side region chosen by geometry, a data or quality threshold, a component or a patch grown from a seed (see [select](/select)). Every criterion given must pass; at least one is required.
+
+```text
+meshioplusplus select [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|---|---|
+| `-i/--input-format`, `-o/--output-format` | Explicit formats |
+| `-n/--name NAME` | The region's name (required); a region of the same name and kind is replaced |
+| `--kind cell\|point\|side` | What the region groups (default `cell`) |
+| `--tag N` | The region's integer tag (default `-1`, none) |
+| `--box XMIN,YMIN,ZMIN,XMAX,YMAX,ZMAX` | Inside the box |
+| `--plane PX,PY,PZ,NX,NY,NZ` | On the `+normal` side of the plane |
+| `--sphere CX,CY,CZ,R` | Inside the ball |
+| `--mode all\|any\|centroid` | How a cell or side reduces its nodes for the box, plane and ball (default `all`) |
+| `--where 'NAME OP VALUE'` | A `point_data` (points) or `cell_data` (cells and sides) comparison |
+| `--quality 'METRIC OP VALUE'` | A quality comparison, e.g. `'scaled_jacobian < 0.3'` (cells and sides) |
+| `--component K` | The k-th node-connected component, 0-based as `split --by component` numbers its pieces |
+| `--seed X,Y,Z` | A patch grown from the facet nearest the point |
+| `--feature-angle DEG` | The largest dihedral angle the growth crosses (default `30`) |
+| `--normal-tolerance DEG` | The largest angle to the seed's normal (default off) |
+| `--all-facets` | Side regions take interior facets too |
+| `--json`, `-q/--quiet` | Machine-readable counts, or no summary |
+
+```sh
+meshioplusplus select part.vtu part.vtu --name inlet --kind side --seed 0,0,-1
+meshioplusplus select part.vtu part.msh --name slivers --quality 'min_dihedral < 10'
 ```
 
 ---
@@ -1121,7 +1156,7 @@ meshioplusplus remesh-volume surface.stl out.vtu --cell-size 0.3 --watertight-ch
 
 ## meshioplusplus optimize-volume
 
-ODT-remesh a **tetrahedral** mesh: raise its worst element quality by relocating vertices AND flipping connectivity (2-3/3-2, predicate-free) — the genuine "ODT remeshing" sibling of `remesh-volume` (which generates a fresh lattice mesh) and of `smooth --method odt` (which only moves points on fixed connectivity). See [ODT remeshing](/optimize_volume).
+ODT-remesh a **tetrahedral** mesh: raise its worst element quality by relocating vertices AND changing connectivity, predicate-free — by default raising the least dihedral angle and never lowering it (guarded relocation, 2-3 flips, edge and multi-face removal, worst-cell smoothing), or with `--objective energy` the ODT energy with scaled-Jacobian flips — the genuine "ODT remeshing" sibling of `remesh-volume` (which generates a fresh lattice mesh) and of `smooth --method odt` (which only moves points on fixed connectivity). See [ODT remeshing](/optimize_volume).
 
 ```sh
 meshioplusplus optimize-volume [options] INFILE OUTFILE
@@ -1133,7 +1168,9 @@ meshioplusplus optimize-volume [options] INFILE OUTFILE
 | `--no-relocate` | skip the ODT vertex-relocation half (flips only) |
 | `--no-flip` | skip the topological-flip half (reduces to ODT smoothing) |
 | `--no-preserve-boundary` | allow boundary vertices to move during relocation (may drift off the surface) |
-| `--min-improvement E` | strict scaled-Jacobian gain a flip must deliver to be accepted (default: 1e-6) |
+| `--min-improvement E` | strict gain a move must deliver to be accepted: degrees of dihedral angle under `worst`, scaled Jacobian under `energy` (default: 1e-6) |
+| `--objective worst\|energy` | `worst` (default): the least dihedral angle, never lowered; `energy`: the ODT energy, as up to v18.0.0 |
+| `--max-ring-size K` | `worst` only: the largest ring an edge or multi-face removal takes (default: 7) |
 | `--quiet`, `-q` | suppress the summary |
 
 The point set is invariant, so `point_data`/`field_data` and named Point regions carry through; `cell_data` and Cell/Side regions are dropped (a flip has no cell correspondence). With `--no-preserve-boundary` off (the default) the boundary surface is exactly preserved. Tet-only: a non-`tetra` block errors pointing at `convert-cells --mode simplexify`.
@@ -1143,6 +1180,7 @@ The point set is invariant, so `point_data`/`field_data` and named Point regions
 ```sh
 meshioplusplus optimize-volume volume.vtu optimized.vtu
 meshioplusplus optimize-volume volume.vtu optimized.vtu --max-iterations 20
+meshioplusplus optimize-volume volume.vtu optimized.vtu --objective energy
 ```
 
 ---

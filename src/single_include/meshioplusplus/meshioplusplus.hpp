@@ -125,7 +125,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 36
+#define MESHIOPLUSPLUS_ABI_VERSION 37
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -32287,6 +32287,34 @@ MESHIOPLUSPLUS_API OctreeMeshResult octree_mesh(const Mesh& rSkin,
  * quality), the process is **monotone in worst quality** and therefore
  * terminates -- no Delaunay optimality argument, and no predicate, is needed.
  *
+ * ### Two objectives
+ *
+ * The rule above, with the scaled Jacobian, lowers an energy summed over the
+ * cells and is kept as `OptimizeVolumeObjective::Energy`. Measured on Netgen's
+ * output it can **lower** the least dihedral angle: an ODT relocation moves a
+ * vertex to improve the energy of its star even when one of its tets gets
+ * worse. The default since ABI 37, `OptimizeVolumeObjective::Worst`, targets
+ * the worst cell instead (Freitag and Ollivier-Gooch 1997; Klingner and
+ * Shewchuk 2007), with the least dihedral angle as the quality and every
+ * step accepted only when it raises the least angle of the tets it touches:
+ *
+ *  1. the ODT relocation, **guarded**: a vertex whose star's least angle
+ *     fell below what it was before the pass is put back, repeatedly, until
+ *     every moved vertex's star is at least as good as before;
+ *  2. where the worst tet replaced is below 40 degrees: the 2-3 flip;
+ *     **edge removal**, the replacement of the k tets around an interior edge (3 <= k <= `mMaxRingSize`) by the best triangulation of
+ *     their ring, found by the dynamic program over polygon triangulations
+ *     (k = 3 is the 3-2 flip); and **multi-face removal**, its inverse: the
+ *     faces sandwiched between two vertices, forming a disc of at most
+ *     `mMaxRingSize` boundary vertices, become the tets around a new edge
+ *     between them;
+ *  3. **worst-cell smoothing**: each free interior vertex of a tet below 40
+ *     degrees, worst first, climbs the least dihedral angle of its star along
+ *     the shortest vector in the convex hull of the active angles' gradients,
+ *     with a backtracking line search that accepts only a rise.
+ *
+ * So `mMinDihedralAfter >= mMinDihedralBefore` always holds under `Worst`.
+ *
  * ### Boundary is invariant by construction
  *
  * A 2-3 flip acts only on an *interior* triangular face (shared by two tets);
@@ -32335,11 +32363,21 @@ MESHIOPLUSPLUS_API OctreeMeshResult octree_mesh(const Mesh& rSkin,
 
 // System includes
 #include <cstdint>
+#include <string>
 #include <vector>
 
 // Project includes
 
 namespace meshioplusplus {
+
+/// What `optimize_volume` improves.
+enum class OptimizeVolumeObjective : std::int32_t {
+    /// The worst cell: the least dihedral angle never drops (the default).
+    Worst = 0,
+    /// The ODT energy, with flips by the least scaled Jacobian -- the
+    /// behaviour before ABI 37, which can lower the least dihedral angle.
+    Energy = 1,
+};
 
 /// Options for `optimize_volume`.
 struct OptimizeVolumeOptions {
@@ -32366,9 +32404,10 @@ struct OptimizeVolumeOptions {
     /// caveat `smooth` documents -- there is no surface re-projection here.
     bool mPreserveBoundary = true;
 
-    /// The strict quality gain, in scaled-Jacobian units, a flip must deliver
-    /// to be accepted: `min(quality of new tets) > min(quality of replaced
-    /// tets) + mMinImprovement`. A small positive value both guarantees
+    /// The strict quality gain a flip must deliver to be accepted:
+    /// `min(quality of new tets) > min(quality of replaced tets) +
+    /// mMinImprovement`, in scaled-Jacobian units under `Energy` and degrees
+    /// of dihedral angle under `Worst`. A small positive value both guarantees
     /// progress (monotone worst quality) and prevents cycling on ties.
     double mMinImprovement = 1e-6;
 
@@ -32378,6 +32417,13 @@ struct OptimizeVolumeOptions {
     /// on the flat C ABI, a documented gap like `smooth`'s / `decimate`'s own
     /// `frozen`.
     std::vector<std::uint8_t> mFrozen;
+
+    /// What to improve (since ABI 37); see the file comment.
+    OptimizeVolumeObjective mObjective = OptimizeVolumeObjective::Worst;
+
+    /// `Worst` only: the largest ring an edge removal or a multi-face removal
+    /// acts on, at least 3 (since ABI 37).
+    std::int32_t mMaxRingSize = 7;
 };
 
 /// The result of `optimize_volume`: the improved mesh plus what the run did.
@@ -32387,7 +32433,8 @@ struct OptimizeVolumeResult {
     /// regions dropped.
     Mesh mMesh;
 
-    /// Total flips accepted (`mNum23Flips + mNum32Flips`).
+    /// Total topological moves accepted (`mNum23Flips + mNum32Flips +
+    /// mNumEdgeRemovals + mNumMultiFaceRemovals`).
     std::int64_t mNumFlips = 0;
     /// 2-3 flips accepted (an interior face's two tets became three).
     std::int64_t mNum23Flips = 0;
@@ -32406,10 +32453,30 @@ struct OptimizeVolumeResult {
     /// negatively-stored but well-shaped tet reads as good, and a degenerate
     /// one as 0).
     double mMinQualityBefore = 0.0;
-    /// Minimum scaled Jacobian over the output tets, same convention. Never
-    /// less than `mMinQualityBefore`.
+    /// Minimum scaled Jacobian over the output tets, same convention. The
+    /// flips never lower it, but a relocation can.
     double mMinQualityAfter = 0.0;
+
+    /// `Worst` only: edge removals of rings of four or more tets (since ABI 37).
+    std::int64_t mNumEdgeRemovals = 0;
+    /// `Worst` only: multi-face removals (since ABI 37).
+    std::int64_t mNumMultiFaceRemovals = 0;
+    /// `Worst` only: vertices worst-cell smoothing moved, summed over the
+    /// sweeps (since ABI 37).
+    std::int64_t mNumWorstSmoothed = 0;
+    /// The least dihedral angle over the input tets, in degrees (since ABI 37).
+    double mMinDihedralBefore = 0.0;
+    /// The least dihedral angle over the output tets, in degrees; never below
+    /// `mMinDihedralBefore` under `Worst` (since ABI 37).
+    double mMinDihedralAfter = 0.0;
 };
+
+/**
+ * @brief Parse an `OptimizeVolumeObjective` from `"worst"` or `"energy"`.
+ * @throws std::invalid_argument naming the accepted values.
+ */
+MESHIOPLUSPLUS_API OptimizeVolumeObjective
+optimize_volume_objective_from_name(const std::string& rName);
 
 /**
  * @brief ODT-remesh a tetrahedral mesh: relocate vertices and flip
@@ -35409,6 +35476,198 @@ MESHIOPLUSPLUS_API SegmentResult segment(const Mesh& rMesh, const SegmentOptions
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/segment.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/select.hpp =====
+/**
+ * @file operations/select.hpp
+ * @brief Write a named `Region` (of points, cells or cell sides) chosen by
+ * geometry, by a data or quality threshold, by connected component, or by
+ * growing a smooth patch from a seed point -- so boundary-condition and contact
+ * patches are reproducible from a script rather than painted by hand.
+ *
+ * ### Contract
+ *
+ * `select_region` returns a copy of the input with **one region added**:
+ * points, connectivity, block order, data and every other region are
+ * bit-identical. A region of the same name and kind is replaced (whatever its
+ * dimension or tag), so running the same selection twice leaves one region.
+ * The region's dimension is `-1` for `Point` and `Cell` regions and the facet
+ * dimension (2 for faces, 1 for edges) for `Side` regions; its tag is
+ * `SelectOptions::mTag`.
+ *
+ * ### The candidates
+ *
+ *  - `Point`: every point.
+ *  - `Cell`: every cell (global, block-major index).
+ *  - `Side`: the facets of the cells of the mesh's highest dimension -- faces
+ *    of 3-D cells, or edges of 2-D cells when there are none --, named
+ *    `(cell, local facet)` in the numbering `doc/regions.md` gives. With
+ *    `mBoundaryOnly` (the default) only facets owned by one such cell are
+ *    candidates. Cells whose type has no facet table (the VTK Lagrange types)
+ *    contribute no sides.
+ *
+ * ### The criteria
+ *
+ * At least one is required; a candidate is selected when it passes **every**
+ * criterion that is set.
+ *
+ *  - **Box, plane, sphere** (`mBox`, `mPlane`, `mSphere`): together they
+ *    form one region, the intersection of those set. A point is inside when
+ *    it lies in the box (`lo <= p <= hi`), on the non-negative side of the
+ *    plane (`(p - point) . normal >= 0`) and in the closed ball. A cell or
+ *    side passes by `mMode`: all of its nodes inside (`All`), any of them
+ *    (`Any`), or its centroid, the mean of its distinct nodes (`Centroid`).
+ *  - **Where** (`mWhereArray`, `mWhereOp`, `mWhereValue`): a comparison on a
+ *    scalar `point_data` array for points, or a scalar `cell_data` array for
+ *    cells and sides (a side takes its owner cell's value). The comparison is
+ *    `refine_compare_value`'s, so a NaN never matches.
+ *  - **Quality** (`mQualityMetric`, ...): the same comparison on one of
+ *    `compute_quality`'s metrics (`scaled_jacobian`, `min_dihedral`, ...),
+ *    computed on the fly (with or without the `quality:` prefix `attach_quality`
+ *    gives it); cells and sides only. A metric that does not apply
+ *    to a cell is NaN there, so the cell never matches.
+ *  - **Component** (`mComponent >= 0`): the cells of the k-th node-connected
+ *    component, numbered in the order of each component's lowest cell -- the
+ *    numbering `split(by="component")` gives its pieces. Points pass when a
+ *    cell of the component uses them, sides when their owner is in it.
+ *  - **Grow** (`mSeed`): a patch grown from the facet nearest `mSeed` (by
+ *    centroid; ties: the lowest index) across the edges `feature_edges` would
+ *    not draw -- an edge is crossed when exactly two facets use it and their
+ *    dihedral is at most `mFeatureAngleDeg` --, and, when
+ *    `mNormalToleranceDeg > 0`, only onto facets whose normal is within that
+ *    angle of the seed's. The facets grown over are the 2-D cells for `Cell`
+ *    regions; the boundary faces of the 3-D cells (or every candidate face
+ *    with `mBoundaryOnly` off) for `Side` regions; and, for `Point` regions,
+ *    the 2-D cells or, when there are none, the boundary faces, whose nodes
+ *    are selected. Growing needs faces: a `Side` selection on a mesh whose
+ *    highest dimension is 2 (whose sides are edges) refuses it.
+ *
+ * Every criterion is evaluated over all candidates, independently, and the
+ * results intersected -- a patch is grown over the whole surface even when a
+ * box also restricts the selection.
+ *
+ * ### Determinism
+ *
+ * Per-candidate tests run in parallel into disjoint slots; the growth is a
+ * serial breadth-first walk with neighbours in ascending order. The region is
+ * the same on every backend and thread count.
+ *
+ * ### Feeding the interface operations
+ *
+ * `Cell` regions are what `find_interface`, `region_adjacency` and
+ * `contact_pairs` select by; `Side` regions are what `split_interface` takes
+ * and what solver input decks call surfaces or sidesets.
+ *
+ * Everything is standard C++ over the uniform mesh API, so it compiles under
+ * every mesh backend.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// How a cell or side reduces its nodes to one verdict for a box, plane or sphere.
+enum class SelectMode : std::int32_t {
+    All = 0,       ///< every node inside
+    Any = 1,       ///< at least one node inside
+    Centroid = 2,  ///< the mean of its distinct nodes inside
+};
+
+/**
+ * @brief Parse a `SelectMode` from `"all"`, `"any"` or `"centroid"`.
+ * @throws std::invalid_argument naming the accepted values.
+ */
+MESHIOPLUSPLUS_API SelectMode select_mode_from_name(const std::string& rName);
+
+/// The lower-case spelling of a `SelectMode`.
+MESHIOPLUSPLUS_API const char* select_mode_name(SelectMode Mode);
+
+/// What `select_region` selects and how.
+struct SelectOptions {
+    /// The region's name; must not be empty.
+    std::string mName;
+    /// The kind of region written.
+    RegionKind mKind = RegionKind::Cell;
+    /// The region's tag (`Region::mTag`); `-1` for none.
+    std::int64_t mTag = -1;
+    /// How a cell or side reduces its nodes for the box, plane and sphere.
+    SelectMode mMode = SelectMode::All;
+    /// `Side` regions: only facets owned by one cell are candidates.
+    bool mBoundaryOnly = true;
+
+    /// Box criterion: `mBoxLo <= p <= mBoxHi` component-wise.
+    bool mBox = false;
+    std::array<double, 3> mBoxLo{0.0, 0.0, 0.0};
+    std::array<double, 3> mBoxHi{0.0, 0.0, 0.0};
+
+    /// Half-space criterion: `(p - mPlanePoint) . mPlaneNormal >= 0`.
+    bool mPlane = false;
+    std::array<double, 3> mPlanePoint{0.0, 0.0, 0.0};
+    std::array<double, 3> mPlaneNormal{0.0, 0.0, 1.0};
+
+    /// Ball criterion: `|p - mSphereCenter| <= mSphereRadius`.
+    bool mSphere = false;
+    std::array<double, 3> mSphereCenter{0.0, 0.0, 0.0};
+    double mSphereRadius = 0.0;
+
+    /// Data criterion: a scalar array compared with `mWhereValue`; empty disables it.
+    std::string mWhereArray;
+    RefineCompare mWhereOp = RefineCompare::Less;
+    double mWhereValue = 0.0;
+
+    /// Quality criterion: a `compute_quality` metric; empty disables it.
+    std::string mQualityMetric;
+    RefineCompare mQualityOp = RefineCompare::Less;
+    double mQualityValue = 0.0;
+
+    /// Component criterion: the component number; negative disables it.
+    std::int64_t mComponent = -1;
+
+    /// Grow criterion: a patch grown from the facet nearest `mSeedPoint`.
+    bool mSeed = false;
+    std::array<double, 3> mSeedPoint{0.0, 0.0, 0.0};
+    /// The largest dihedral angle, in degrees, the growth crosses; in `[0, 180]`.
+    double mFeatureAngleDeg = 30.0;
+    /// The largest angle, in degrees, between a facet's normal and the seed's;
+    /// `0` disables the test. In `[0, 180]`.
+    double mNormalToleranceDeg = 0.0;
+};
+
+/// The mesh with its new region, and what the selection found.
+struct SelectResult {
+    /// The input with the region added (or replaced).
+    Mesh mMesh;
+    /// The region written, canonical (sorted, no duplicates).
+    meshioplusplus::Region mRegion;
+    /// Candidates considered (points, cells or sides).
+    std::int64_t mNumCandidates = 0;
+    /// Candidates selected: the region's size.
+    std::int64_t mNumSelected = 0;
+    /// Facets the grown patch covers, or -1 when no seed was given.
+    std::int64_t mNumGrown = -1;
+    /// Node-connected components, or -1 when no component was asked for.
+    std::int64_t mNumComponents = -1;
+};
+
+/**
+ * @brief Select points, cells or sides and write them as a named region.
+ *
+ * @param rMesh the input mesh.
+ * @param rOptions see `SelectOptions`.
+ * @return the mesh with the region, and counts.
+ * @throws std::invalid_argument on an empty name, no criterion, an option out
+ *         of range, an unknown or non-scalar array, an unknown quality metric,
+ *         a quality criterion on a `Point` region, a seed with no facet to grow
+ *         over, or a `Side` region on a mesh with no 2-D or 3-D cells.
+ */
+MESHIOPLUSPLUS_API SelectResult select_region(const Mesh& rMesh, const SelectOptions& rOptions);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/select.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/sequence.hpp =====
 /**
  * @file operations/sequence.hpp
@@ -40868,6 +41127,47 @@ Cdt2dPolygon cdt2d_triangulate_polygon(const std::vector<std::vector<Cdt2d::Vec2
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/cdt2d.hpp =====
+// ===== begin src/cpp/src/detail/cell_components.hpp =====
+/**
+ * @file detail/cell_components.hpp
+ * @brief Node-connected components of a mesh's cells: two cells are in one
+ * component when a chain of cells, each sharing a node with the next, joins
+ * them.
+ *
+ * A **core-private** header (the `crease_edges.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI. `split`'s
+ * `by="component"` pieces and `select_region`'s component criterion share it,
+ * so the k-th piece of one is the k-th component of the other.
+ *
+ * Components are numbered in the order of each one's lowest global
+ * (block-major) cell. The union sweep is order-dependent and serial; the label
+ * resolution is a scan, so the numbering is the same on every backend and
+ * thread count.
+ */
+
+// System includes
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// The component of every cell, and how many components there are.
+struct CellComponents {
+    /// One label per global (block-major) cell, in `[0, mCount)`.
+    std::vector<std::int64_t> mLabel;
+    /// Number of components.
+    std::int64_t mCount = 0;
+};
+
+/// Label the node-connected components of @p rMesh's cells.
+CellComponents cell_components(const Mesh& rMesh);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/cell_components.hpp =====
 // ===== begin src/cpp/src/detail/cell_flip.hpp =====
 /**
  * @file detail/cell_flip.hpp
@@ -71366,6 +71666,116 @@ void cell_node_neighbors(const CellIncidence& rCellNodes, const CellIncidence& r
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/cell_adjacency.cpp =====
+// ===== begin src/cpp/src/detail/cell_components.cpp =====
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+std::int64_t ccomp_find(std::vector<std::int64_t>& rParent, std::int64_t x) {
+    while (rParent[static_cast<std::size_t>(x)] != x) {
+        rParent[static_cast<std::size_t>(x)] =
+            rParent[static_cast<std::size_t>(rParent[static_cast<std::size_t>(x)])];
+        x = rParent[static_cast<std::size_t>(x)];
+    }
+    return x;
+}
+
+void ccomp_union(std::vector<std::int64_t>& rParent, std::int64_t a, std::int64_t b) {
+    const std::int64_t ra = ccomp_find(rParent, a), rb = ccomp_find(rParent, b);
+    if (ra != rb)
+        rParent[static_cast<std::size_t>(std::max(ra, rb))] = std::min(ra, rb);
+}
+
+}  // namespace
+
+CellComponents cell_components(const Mesh& rMesh) {
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    const std::size_t n = rMesh.NumPoints();
+
+    std::vector<std::size_t> block_base(nblocks + 1, 0);
+    std::size_t bi = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        block_base[bi + 1] = block_base[bi] + cb.NumCells();
+        ++bi;
+    }
+    const std::size_t total = block_base[nblocks];
+
+    std::vector<std::int64_t> parent(total);
+    parallel_for_bw(total, [&](std::size_t i) { parent[i] = static_cast<std::int64_t>(i); });
+
+    // Union cells that share a node (the first cell per node as the anchor). The
+    // sweep is order-dependent and stays serial; a rectangular block's
+    // connectivity is read once, not through a dtype switch per id.
+    std::vector<std::int64_t> node_first(n, -1);
+    bi = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const auto visit = [&](std::size_t c, std::int64_t node) {
+            const std::int64_t gc = static_cast<std::int64_t>(block_base[bi] + c);
+            std::int64_t& first = node_first[static_cast<std::size_t>(node)];
+            if (first < 0)
+                first = gc;
+            else
+                ccomp_union(parent, first, gc);
+        };
+        if (cb.IsPolyhedron()) {
+            for (std::size_t c = 0; c < cb.NumCells(); ++c)
+                for (std::size_t face = 0; face < cb.NumFaces(c); ++face) {
+                    const auto fc = cb.Face(c, face);
+                    for (std::size_t k = 0; k < fc.second; ++k)
+                        visit(c, fc.first[k]);
+                }
+        } else if (cb.IsRagged()) {
+            for (std::size_t c = 0; c < cb.NumCells(); ++c)
+                for (std::size_t k = 0; k < cb.RowSize(c); ++k)
+                    visit(c, cb.Row(c)[k]);
+        } else {
+            const Int64View conn(cb.Conn());
+            const std::int64_t* p = conn.Data();
+            const std::size_t npc = cb.NodesPerCell();
+            for (std::size_t c = 0; c < cb.NumCells(); ++c)
+                for (std::size_t k = 0; k < npc; ++k)
+                    visit(c, p[c * npc + k]);
+        }
+        ++bi;
+    }
+
+    // Every root is its component's smallest cell (a union points the larger
+    // root at the smaller) and parent[x] <= x, so one ascending pass resolves
+    // each cell's root. Components are numbered in first-seen (ascending cell)
+    // order: a component's first cell is its root, so the label of a cell is
+    // the number of roots before its own -- a scan of the root flags.
+    for (std::size_t gc = 0; gc < total; ++gc)
+        parent[gc] = parent[static_cast<std::size_t>(parent[gc])];
+    std::vector<std::uint64_t> is_root(total);
+    parallel_for_bw(total, [&](std::size_t gc) {
+        is_root[gc] = parent[gc] == static_cast<std::int64_t>(gc) ? 1 : 0;
+    });
+    std::vector<std::uint64_t> label_at(total);
+    const std::uint64_t count =
+        parallel_exclusive_scan(is_root.data(), total, label_at.data(), std::uint64_t{0});
+
+    CellComponents out;
+    out.mCount = static_cast<std::int64_t>(count);
+    out.mLabel.resize(total);
+    parallel_for_bw(total, [&](std::size_t gc) {
+        out.mLabel[gc] = static_cast<std::int64_t>(label_at[static_cast<std::size_t>(parent[gc])]);
+    });
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/cell_components.cpp =====
 // ===== begin src/cpp/src/detail/cell_edges.cpp =====
 
 namespace meshioplusplus {
@@ -80593,10 +81003,36 @@ bool has_attr(hid_t loc, const std::string& rName) {
     return H5Aexists(loc, rName.c_str()) > 0;
 }
 
+namespace {
+
+// The readers take one value from an attribute, so the attribute must hold one
+// element whose stored bytes are exactly its type's size. HDF5 2.2.0 still reads
+// past the end of an attribute whose stored size disagrees with its type (the
+// fuzz shard's HMF input stores 16 bytes for one 8-byte string), so these checks
+// run before any H5Aread instead of trusting the library.
+void h5u_check_one_value(hid_t a, const std::string& rName) {
+    Hid space(H5Aget_space(a), H5Sclose);
+    if (!space.Valid() || H5Sget_simple_extent_npoints(space) != 1)
+        throw ReadError("HDF5: attribute '" + rName + "' does not hold one value");
+}
+
+void h5u_check_stored_size(hid_t a, hid_t ftype, const std::string& rName) {
+    const std::size_t want = H5Tget_size(ftype);
+    const std::size_t stored = static_cast<std::size_t>(H5Aget_storage_size(a));
+    if (stored != want)
+        throw ReadError("HDF5: attribute '" + rName + "' stores " + std::to_string(stored) +
+                        " bytes for a " + std::to_string(want) + "-byte value");
+}
+
+}  // namespace
+
 std::int64_t read_attr_int(hid_t loc, const std::string& rName) {
     Hid a(H5Aopen(loc, rName.c_str(), H5P_DEFAULT), H5Aclose);
     if (!a.Valid())
         throw ReadError("HDF5: missing attribute '" + rName + "'");
+    Hid t(H5Aget_type(a), H5Tclose);
+    h5u_check_one_value(a, rName);
+    h5u_check_stored_size(a, t, rName);
     std::int64_t v = 0;
     if (H5Aread(a, H5T_NATIVE_INT64, &v) < 0)
         throw ReadError("HDF5: failed reading attribute '" + rName + "'");
@@ -80616,7 +81052,13 @@ std::string read_attr_string(hid_t loc, const std::string& rName) {
     if (!a.Valid())
         throw ReadError("HDF5: missing attribute '" + rName + "'");
     Hid t(H5Aget_type(a), H5Tclose);
+    h5u_check_one_value(a, rName);
     if (H5Tis_variable_str(t) > 0) {
+        // A variable-length element is a 4-byte length plus a global-heap
+        // reference (4 or 8 byte address, 4 byte index): 12 or 16 bytes.
+        const hsize_t stored = H5Aget_storage_size(a);
+        if (stored != 12 && stored != 16)
+            throw ReadError("HDF5: attribute '" + rName + "' has a malformed string reference");
         char* p = nullptr;
         Hid mt(H5Tcopy(H5T_C_S1), H5Tclose);
         H5Tset_size(mt, H5T_VARIABLE);
@@ -80627,6 +81069,7 @@ std::string read_attr_string(hid_t loc, const std::string& rName) {
         H5free_memory(p);
         return out;
     }
+    h5u_check_stored_size(a, t, rName);
     std::size_t sz = H5Tget_size(t);
     std::vector<char> buf(sz + 1, '\0');
     Hid mt(H5Tcopy(H5T_C_S1), H5Tclose);
@@ -136082,6 +136525,12 @@ void read_data(GmshCursor& rCur, const std::string& rTag, bool is_ascii,
 }
 
 NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1) {
+    // Cell data shorter than the elements it annotates is corrupt input: the
+    // range must lie inside the array. Checked before anything is allocated
+    // or copied (fuzz shard 3 read 192 bytes past a 96-byte array).
+    const std::size_t nrows = rA.Shape().empty() ? 0 : rA.Shape()[0];
+    if (r0 > r1 || r1 > nrows)
+        throw ReadError("Gmsh: cell data has fewer values than the elements it annotates");
     std::size_t nc = rA.Shape().size() >= 2 ? rA.Shape()[1] : 1;
     std::size_t isz = dtype_size(rA.Dtype());
     std::vector<std::size_t> shape = rA.Shape();
@@ -236835,6 +237284,9 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
             oo.mFlip = true;
             oo.mPreserveBoundary = true;
             oo.mFrozen = frozen;
+            // The flips by scaled Jacobian this mesher was tuned with; it keeps
+            // its own dihedral floor below.
+            oo.mObjective = OptimizeVolumeObjective::Energy;
             const OptimizeVolumeResult r = optimize_volume(m, oo);
             if (r.mNumFlips > 0 && r.mMesh.NumPoints() == np) {
                 const auto block = r.mMesh.Cells(0);
@@ -237335,6 +237787,7 @@ void octree_mesh_emit_tets(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -237483,8 +237936,10 @@ std::array<std::int64_t, 3> optvol_face_ordered(const Tet& t, int lf) {
 // two tets with three around the segment joining their apexes, iff the segment
 // lies inside the (convex) union -- a pure signed-volume test -- and the worst
 // of the three new tets is strictly better than the worst of the two old ones.
+template <class TQuality>
 std::int64_t optvol_pass_23(std::vector<double>& rXyz, std::vector<Tet>& rTets, double min_improve,
-                            double eps_len, double eps_vol6) {
+                            double eps_vol6, TQuality&& rQuality,
+                            double SkipAbove = std::numeric_limits<double>::infinity()) {
     const std::size_t nt = rTets.size();
     std::vector<std::uint8_t> alive(nt, 1);
 
@@ -237569,11 +238024,10 @@ std::int64_t optvol_pass_23(std::vector<double>& rXyz, std::vector<Tet>& rTets, 
             const double vC = optvol_svol6(g2, g0, pe, pd);
             if (vA <= eps_vol6 || vB <= eps_vol6 || vC <= eps_vol6)
                 continue;  // non-convex union -> invalid flip
-            const double q_new = std::min({optvol_quality_tet(rXyz, A, eps_len),
-                                           optvol_quality_tet(rXyz, B, eps_len),
-                                           optvol_quality_tet(rXyz, C, eps_len)});
-            const double q_old = std::min(optvol_quality_tet(rXyz, rTets[t], eps_len),
-                                          optvol_quality_tet(rXyz, rTets[u], eps_len));
+            const double q_old = std::min(rQuality(rTets[t]), rQuality(rTets[u]));
+            if (q_old >= SkipAbove)
+                continue;  // both tets already good enough: not a worst cell
+            const double q_new = std::min({rQuality(A), rQuality(B), rQuality(C)});
             if (q_new <= q_old + min_improve)
                 continue;
             alive[t] = 0;
@@ -237729,6 +238183,704 @@ std::int64_t optvol_pass_32(std::vector<double>& rXyz, std::vector<Tet>& rTets, 
     return applied;
 }
 
+// --- the worst-cell objective (OptimizeVolumeObjective::Worst) ---------------
+// The objective is the least dihedral angle. Every move below is accepted only
+// when it raises the least angle of the tets it touches, so the least angle of
+// the mesh never drops: the relocation pass is guarded vertex by vertex, the
+// topological moves compare the worst new tet with the worst old one, and the
+// worst-cell smoothing accepts a step only when its vertex's star improves.
+
+constexpr double kOptvolRadToDeg = 57.295779513082320876798;
+
+// The least dihedral angle of a tet, in degrees, whatever its orientation: the
+// angle between the two faces through each edge. 0 for a degenerate tet.
+double optvol_min_dihedral(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Vec3& rD) {
+    const Vec3 p[4] = {rA, rB, rC, rD};
+    // The edge (i, j) has the opposite edge (k, l); its dihedral angle is the
+    // angle between the normals of faces (i, j, k) and (i, j, l).
+    constexpr int kEdge[6][4] = {{0, 1, 2, 3}, {0, 2, 1, 3}, {0, 3, 1, 2},
+                                 {1, 2, 0, 3}, {1, 3, 0, 2}, {2, 3, 0, 1}};
+    double least = 180.0;
+    for (const auto& e : kEdge) {
+        const Vec3& a = p[e[0]];
+        const Vec3 ab = detail::vec3_sub(p[e[1]], a);
+        const Vec3 n1 = detail::vec3_cross(ab, detail::vec3_sub(p[e[2]], a));
+        const Vec3 n2 = detail::vec3_cross(ab, detail::vec3_sub(p[e[3]], a));
+        const double den = std::sqrt(detail::vec3_dot(n1, n1) * detail::vec3_dot(n2, n2));
+        if (!(den > 0.0))
+            return 0.0;
+        const double c = std::clamp(detail::vec3_dot(n1, n2) / den, -1.0, 1.0);
+        least = std::min(least, std::acos(c) * kOptvolRadToDeg);
+    }
+    return least;
+}
+
+double optvol_min_dihedral_tet(const std::vector<double>& rXyz, const Tet& t) {
+    return optvol_min_dihedral(optvol_point(rXyz, t[0]), optvol_point(rXyz, t[1]),
+                               optvol_point(rXyz, t[2]), optvol_point(rXyz, t[3]));
+}
+
+// The worst-cell quality of a tet as stored: its least dihedral angle when it
+// is positively oriented by more than the volume tolerance, else -1, so an
+// inverted or flat tet is never accepted and never mistaken for a good one.
+double optvol_worst_q(const std::vector<double>& rXyz, const Tet& t, double eps_vol6) {
+    const Vec3 a = optvol_point(rXyz, t[0]), b = optvol_point(rXyz, t[1]),
+               c = optvol_point(rXyz, t[2]), d = optvol_point(rXyz, t[3]);
+    if (optvol_svol6(a, b, c, d) <= eps_vol6)
+        return -1.0;
+    return optvol_min_dihedral(a, b, c, d);
+}
+
+// The tets around each vertex (CSR, ascending tet order).
+struct OptvolStar {
+    std::vector<std::int64_t> mStart;
+    std::vector<std::int64_t> mTets;
+};
+
+OptvolStar optvol_star(std::size_t N, const std::vector<Tet>& rTets) {
+    OptvolStar s;
+    s.mStart.assign(N + 1, 0);
+    for (const Tet& t : rTets)
+        for (std::int64_t v : t)
+            ++s.mStart[static_cast<std::size_t>(v) + 1];
+    for (std::size_t i = 0; i < N; ++i)
+        s.mStart[i + 1] += s.mStart[i];
+    s.mTets.resize(static_cast<std::size_t>(s.mStart[N]));
+    std::vector<std::int64_t> fill(s.mStart.begin(), s.mStart.end() - 1);
+    for (std::size_t t = 0; t < rTets.size(); ++t)
+        for (std::int64_t v : rTets[t])
+            s.mTets[static_cast<std::size_t>(fill[static_cast<std::size_t>(v)]++)] =
+                static_cast<std::int64_t>(t);
+    return s;
+}
+
+double optvol_star_min(const std::vector<double>& rXyz, const std::vector<Tet>& rTets,
+                       const OptvolStar& rStar, std::size_t V, double eps_vol6) {
+    double m = 180.0;
+    for (std::int64_t k = rStar.mStart[V]; k < rStar.mStart[V + 1]; ++k)
+        m = std::min(
+            m, optvol_worst_q(
+                   rXyz, rTets[static_cast<std::size_t>(rStar.mTets[static_cast<std::size_t>(k)])],
+                   eps_vol6));
+    return m;
+}
+
+// One ODT pass, then the guard: a vertex whose star's least angle fell below
+// what it was before the pass goes back, in ascending order, until no moved
+// vertex's star is worse than before. Every tet that changed has a moved
+// vertex, so no tet ends below the least angle the pass started from.
+std::int64_t optvol_guarded_odt(std::vector<double>& rXyz, const std::vector<Tet>& rTets,
+                                const std::vector<std::uint8_t>& rPinned, const SmoothOptions& rOdt,
+                                double eps_vol6) {
+    const std::size_t n = rXyz.size() / 3;
+    const std::vector<double> before = rXyz;
+    detail::smooth_odt_pass(rXyz, rTets, rPinned, rOdt);
+    std::vector<std::uint8_t> moved(n, 0);
+    std::vector<std::int64_t> work;
+    for (std::size_t i = 0; i < n; ++i)
+        if (rXyz[3 * i] != before[3 * i] || rXyz[3 * i + 1] != before[3 * i + 1] ||
+            rXyz[3 * i + 2] != before[3 * i + 2]) {
+            moved[i] = 1;
+            work.push_back(static_cast<std::int64_t>(i));
+        }
+    if (work.empty())
+        return 0;
+    const OptvolStar star = optvol_star(n, rTets);
+    std::vector<double> floor(n, 0.0);
+    parallel_for(work.size(), [&](std::size_t k) {
+        const auto v = static_cast<std::size_t>(work[k]);
+        floor[v] = optvol_star_min(before, rTets, star, v, eps_vol6);
+    });
+    while (!work.empty()) {
+        std::vector<std::int64_t> next;
+        for (const std::int64_t v64 : work) {
+            const auto v = static_cast<std::size_t>(v64);
+            if (!moved[v] || optvol_star_min(rXyz, rTets, star, v, eps_vol6) >= floor[v])
+                continue;
+            for (int d = 0; d < 3; ++d)
+                rXyz[3 * v + static_cast<std::size_t>(d)] =
+                    before[3 * v + static_cast<std::size_t>(d)];
+            moved[v] = 0;
+            for (std::int64_t k = star.mStart[v]; k < star.mStart[v + 1]; ++k)
+                for (const std::int64_t w :
+                     rTets[static_cast<std::size_t>(star.mTets[static_cast<std::size_t>(k)])])
+                    if (moved[static_cast<std::size_t>(w)])
+                        next.push_back(w);
+        }
+        std::sort(next.begin(), next.end());
+        next.erase(std::unique(next.begin(), next.end()), next.end());
+        work.swap(next);
+    }
+    std::int64_t count = 0;
+    for (std::size_t i = 0; i < n; ++i)
+        count += moved[i];
+    return count;
+}
+
+// Edge removal (Klingner and Shewchuk 2007): an interior edge (u, v) whose k
+// tets form a closed ring r_0 .. r_{k-1} is replaced by the 2 (k - 2) tets
+// over the triangulation of the ring that maximises their least angle, found
+// by the dynamic program over the triangulations of a polygon. Each triangle
+// (r_i, r_j, r_l) gives the tets (r_i, r_j, r_l, u) and (r_i, r_l, r_j, v),
+// both of which must be positively oriented. k = 3 is the 3-2 flip.
+std::int64_t optvol_pass_edge_removal(std::vector<double>& rXyz, std::vector<Tet>& rTets,
+                                      double min_improve, double eps_vol6, int max_ring,
+                                      double SkipAbove, std::int64_t& rNum32) {
+    const std::size_t nt = rTets.size();
+    std::vector<std::uint8_t> alive(nt, 1);
+    static const int kEdges[6][2] = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}};
+    struct EdgeRec {
+        std::array<std::int64_t, 2> mKey;
+        std::size_t mTet;
+    };
+    std::vector<EdgeRec> recs;
+    recs.reserve(nt * 6);
+    for (std::size_t t = 0; t < nt; ++t)
+        for (auto& ev : kEdges)
+            recs.push_back({optvol_edge_key(rTets[t][ev[0]], rTets[t][ev[1]]), t});
+    parallel_sort(recs.begin(), recs.end(), [](const EdgeRec& a, const EdgeRec& b) {
+        return a.mKey != b.mKey ? a.mKey < b.mKey : a.mTet < b.mTet;
+    });
+
+    std::vector<Tet> new_tets;
+    std::int64_t applied = 0;
+    std::vector<std::size_t> ring_tets;
+    std::vector<std::int64_t> ring;
+    for (std::size_t r0 = 0, r1 = 0; r0 < recs.size(); r0 = r1) {
+        for (r1 = r0 + 1; r1 < recs.size() && recs[r1].mKey == recs[r0].mKey; ++r1) {
+        }
+        const std::int64_t uu = recs[r0].mKey[0], vv = recs[r0].mKey[1];
+        ring_tets.clear();
+        bool dead = false;
+        for (std::size_t r = r0; r < r1; ++r) {
+            if (!alive[recs[r].mTet])
+                dead = true;
+            ring_tets.push_back(recs[r].mTet);
+        }
+        const int k = static_cast<int>(ring_tets.size());
+        if (dead || k < 3 || k > max_ring)
+            continue;
+        double q_old = 180.0;
+        for (const std::size_t t : ring_tets)
+            q_old = std::min(q_old, optvol_worst_q(rXyz, rTets[t], eps_vol6));
+        if (q_old >= SkipAbove)
+            continue;  // every tet around the edge is already good enough
+        // Each tet holds one ring edge (a, b); chain them into a closed cycle.
+        std::vector<std::array<std::int64_t, 2>> link(static_cast<std::size_t>(k));
+        for (int i = 0; i < k; ++i) {
+            int w = 0;
+            for (std::int64_t nd : rTets[ring_tets[static_cast<std::size_t>(i)]])
+                if (nd != uu && nd != vv && w < 2)
+                    link[static_cast<std::size_t>(i)][static_cast<std::size_t>(w++)] = nd;
+        }
+        ring.assign(1, link[0][0]);
+        std::int64_t prev_tet = 0, cur = link[0][1];
+        bool closed = false;
+        for (int step = 1; step <= k; ++step) {
+            if (cur == ring[0]) {
+                closed = step == k;
+                break;
+            }
+            ring.push_back(cur);
+            int found = -1;
+            for (int i = 0; i < k; ++i)
+                if (i != prev_tet && (link[static_cast<std::size_t>(i)][0] == cur ||
+                                      link[static_cast<std::size_t>(i)][1] == cur)) {
+                    if (found >= 0) {
+                        found = -2;  // a ring vertex on three tets: not a simple ring
+                        break;
+                    }
+                    found = i;
+                }
+            if (found < 0)
+                break;
+            prev_tet = found;
+            const auto& l = link[static_cast<std::size_t>(found)];
+            cur = l[0] == cur ? l[1] : l[0];
+        }
+        if (!closed || static_cast<int>(ring.size()) != k)
+            continue;  // a boundary edge (open fan) or a non-manifold one
+        // Orient the ring so that (r_i, r_j, r_l, u) is positive for i < j < l.
+        const Vec3 pu = optvol_point(rXyz, uu), pv = optvol_point(rXyz, vv);
+        if (optvol_svol6(pu, pv, optvol_point(rXyz, ring[0]), optvol_point(rXyz, ring[1])) > 0.0)
+            std::reverse(ring.begin() + 1, ring.end());
+
+        double old_sum = 0.0;
+        for (const std::size_t t : ring_tets) {
+            const Tet& o = rTets[t];
+            old_sum += std::fabs(optvol_svol6(optvol_point(rXyz, o[0]), optvol_point(rXyz, o[1]),
+                                              optvol_point(rXyz, o[2]), optvol_point(rXyz, o[3])));
+        }
+        // best[i][l]: the best least angle over triangulations of r_i .. r_l.
+        const auto K = static_cast<std::size_t>(k);
+        constexpr double kNone = -std::numeric_limits<double>::infinity();
+        std::vector<double> best(K * K, std::numeric_limits<double>::infinity());
+        std::vector<int> pick(K * K, -1);
+        const auto tri_q = [&](int i, int j, int l) {
+            const Tet a{ring[static_cast<std::size_t>(i)], ring[static_cast<std::size_t>(j)],
+                        ring[static_cast<std::size_t>(l)], uu};
+            const Tet b{ring[static_cast<std::size_t>(i)], ring[static_cast<std::size_t>(l)],
+                        ring[static_cast<std::size_t>(j)], vv};
+            const double qa = optvol_worst_q(rXyz, a, eps_vol6);
+            const double qb = optvol_worst_q(rXyz, b, eps_vol6);
+            return qa < 0.0 || qb < 0.0 ? kNone : std::min(qa, qb);
+        };
+        for (int len = 2; len < k; ++len)
+            for (int i = 0; i + len < k; ++i) {
+                const int l = i + len;
+                double b = kNone;
+                int arg = -1;
+                for (int j = i + 1; j < l; ++j) {
+                    const double q = std::min(
+                        {best[static_cast<std::size_t>(i) * K + static_cast<std::size_t>(j)],
+                         best[static_cast<std::size_t>(j) * K + static_cast<std::size_t>(l)],
+                         tri_q(i, j, l)});
+                    if (q > b) {
+                        b = q;
+                        arg = j;
+                    }
+                }
+                best[static_cast<std::size_t>(i) * K + static_cast<std::size_t>(l)] = b;
+                pick[static_cast<std::size_t>(i) * K + static_cast<std::size_t>(l)] = arg;
+            }
+        const double q_new = best[K - 1];
+        if (!(q_new > q_old + min_improve))
+            continue;
+        std::vector<Tet> made;
+        std::vector<std::array<int, 2>> todo{{0, k - 1}};
+        while (!todo.empty()) {
+            const auto [i, l] = todo.back();
+            todo.pop_back();
+            if (l - i < 2)
+                continue;
+            const int j = pick[static_cast<std::size_t>(i) * K + static_cast<std::size_t>(l)];
+            made.push_back({ring[static_cast<std::size_t>(i)], ring[static_cast<std::size_t>(j)],
+                            ring[static_cast<std::size_t>(l)], uu});
+            made.push_back({ring[static_cast<std::size_t>(i)], ring[static_cast<std::size_t>(l)],
+                            ring[static_cast<std::size_t>(j)], vv});
+            todo.push_back({i, j});
+            todo.push_back({j, l});
+        }
+        double new_sum = 0.0;
+        for (const Tet& o : made)
+            new_sum += optvol_svol6(optvol_point(rXyz, o[0]), optvol_point(rXyz, o[1]),
+                                    optvol_point(rXyz, o[2]), optvol_point(rXyz, o[3]));
+        if (std::fabs(new_sum - old_sum) > 1e-9 * old_sum + eps_vol6)
+            continue;  // not a clean tiling of the ring
+        for (const std::size_t t : ring_tets)
+            alive[t] = 0;
+        new_tets.insert(new_tets.end(), made.begin(), made.end());
+        ++applied;
+        if (k == 3)
+            ++rNum32;
+    }
+
+    std::vector<Tet> out;
+    out.reserve(nt + new_tets.size());
+    for (std::size_t t = 0; t < nt; ++t)
+        if (alive[t])
+            out.push_back(rTets[t]);
+    out.insert(out.end(), new_tets.begin(), new_tets.end());
+    rTets.swap(out);
+    return applied;
+}
+
+// Multi-face removal (Klingner and Shewchuk 2007), the inverse of edge
+// removal: the faces sandwiched between two vertices a and b -- each face f
+// with the tets (f, a) and (f, b) -- that form a disc bounded by a ring of
+// k <= max_ring vertices are replaced by the k tets around the new edge (a, b).
+// The disc is grown from an interior face across its edges as long as the
+// neighbouring face is sandwiched by the same two vertices; one face alone is
+// the 2-3 flip, which its own pass handles.
+std::int64_t optvol_pass_multi_face(std::vector<double>& rXyz, std::vector<Tet>& rTets,
+                                    double min_improve, double eps_vol6, int max_ring,
+                                    double SkipAbove) {
+    const std::size_t nt = rTets.size();
+    std::vector<std::uint8_t> alive(nt, 1);
+    struct FaceRec {
+        std::array<std::int64_t, 3> mKey;
+        std::size_t mTet;
+        std::int64_t mApex;
+    };
+    std::vector<FaceRec> recs(nt * 4);
+    for (std::size_t t = 0; t < nt; ++t)
+        for (int lf = 0; lf < 4; ++lf) {
+            const auto fo = optvol_face_ordered(rTets[t], lf);
+            recs[t * 4 + static_cast<std::size_t>(lf)] = {optvol_face_key(fo[0], fo[1], fo[2]), t,
+                                                          rTets[t][lf]};
+        }
+    parallel_sort(recs.begin(), recs.end(), [](const FaceRec& a, const FaceRec& b) {
+        return a.mKey != b.mKey ? a.mKey < b.mKey : a.mTet < b.mTet;
+    });
+    std::vector<std::array<std::int64_t, 2>> edges;
+    edges.reserve(nt * 6);
+    for (const Tet& t : rTets)
+        for (int i = 0; i < 4; ++i)
+            for (int j = i + 1; j < 4; ++j)
+                edges.push_back(optvol_edge_key(t[i], t[j]));
+    parallel_sort(edges.begin(), edges.end());
+    edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+    const auto has_edge = [&](std::int64_t a, std::int64_t b) {
+        return std::binary_search(edges.begin(), edges.end(), optvol_edge_key(a, b));
+    };
+    // The (tet, apex) pairs of an interior face, or nullptr.
+    const auto face_pair = [&](const std::array<std::int64_t, 3>& rKey) -> const FaceRec* {
+        auto it = std::lower_bound(
+            recs.begin(), recs.end(), rKey,
+            [](const FaceRec& r, const std::array<std::int64_t, 3>& k) { return r.mKey < k; });
+        if (it == recs.end() || it->mKey != rKey || it + 1 == recs.end() || (it + 1)->mKey != rKey)
+            return nullptr;
+        if (it + 2 != recs.end() && (it + 2)->mKey == rKey)
+            return nullptr;  // non-manifold
+        return &*it;
+    };
+    // The apex across the face (x, y, apex) from the tet `from`, or -1.
+    const auto across = [&](std::int64_t x, std::int64_t y, std::int64_t apex,
+                            std::size_t from) -> std::pair<std::int64_t, std::size_t> {
+        const FaceRec* p = face_pair(optvol_face_key(x, y, apex));
+        if (p == nullptr)
+            return {-1, 0};
+        const FaceRec& other = p[0].mTet == from ? p[1] : p[0];
+        if (other.mTet == from)
+            return {-1, 0};
+        return {other.mApex, other.mTet};
+    };
+
+    std::vector<Tet> new_tets;
+    std::int64_t applied = 0;
+    for (std::size_t r = 0; r + 1 < recs.size(); ++r) {
+        if (recs[r].mKey != recs[r + 1].mKey || (r > 0 && recs[r - 1].mKey == recs[r].mKey))
+            continue;  // the first record of an interior face only
+        if (r + 2 < recs.size() && recs[r + 2].mKey == recs[r].mKey)
+            continue;
+        const std::size_t ta = recs[r].mTet, tb = recs[r + 1].mTet;
+        if (!alive[ta] || !alive[tb])
+            continue;
+        const std::int64_t a = recs[r].mApex, b = recs[r + 1].mApex;
+        if (a == b ||
+            std::min(optvol_worst_q(rXyz, rTets[ta], eps_vol6),
+                     optvol_worst_q(rXyz, rTets[tb], eps_vol6)) >= SkipAbove ||
+            has_edge(a, b))
+            continue;
+        // Grow the sandwiched disc.
+        struct SFace {
+            std::array<std::int64_t, 3> mV;
+            std::size_t mTa, mTb;
+        };
+        std::vector<SFace> disc{{recs[r].mKey, ta, tb}};
+        std::vector<std::array<std::int64_t, 3>> seen{recs[r].mKey};
+        bool too_big = false;
+        for (std::size_t q = 0; q < disc.size() && !too_big; ++q) {
+            const SFace f = disc[q];
+            for (int e = 0; e < 3 && !too_big; ++e) {
+                const std::int64_t x = f.mV[static_cast<std::size_t>(e)];
+                const std::int64_t y = f.mV[static_cast<std::size_t>((e + 1) % 3)];
+                const auto [wa, na] = across(x, y, a, f.mTa);
+                const auto [wb, nb] = across(x, y, b, f.mTb);
+                if (wa < 0 || wa != wb || wa == a || wa == b || !alive[na] || !alive[nb])
+                    continue;
+                const auto key = optvol_face_key(x, y, wa);
+                if (std::find(seen.begin(), seen.end(), key) != seen.end())
+                    continue;
+                seen.push_back(key);
+                disc.push_back({key, na, nb});
+                if (static_cast<int>(disc.size()) + 2 > max_ring)
+                    too_big = true;
+            }
+        }
+        if (too_big || disc.size() < 2)
+            continue;
+        // The disc's boundary: the edges one face of it uses, chained into a ring.
+        std::vector<std::array<std::int64_t, 2>> bnd;
+        for (const SFace& f : disc)
+            for (int e = 0; e < 3; ++e)
+                bnd.push_back(optvol_edge_key(f.mV[static_cast<std::size_t>(e)],
+                                              f.mV[static_cast<std::size_t>((e + 1) % 3)]));
+        std::sort(bnd.begin(), bnd.end());
+        std::vector<std::array<std::int64_t, 2>> once;
+        for (std::size_t i = 0; i < bnd.size();) {
+            std::size_t j = i + 1;
+            while (j < bnd.size() && bnd[j] == bnd[i])
+                ++j;
+            if (j - i == 1)
+                once.push_back(bnd[i]);
+            i = j;
+        }
+        const std::size_t k = once.size();
+        if (k != disc.size() + 2)
+            continue;  // not a disc
+        std::vector<std::int64_t> ring{once[0][0], once[0][1]};
+        std::vector<std::uint8_t> used(k, 0);
+        used[0] = 1;
+        bool ok = true;
+        while (ring.size() < k && ok) {
+            ok = false;
+            for (std::size_t i = 0; i < k; ++i)
+                if (!used[i] && (once[i][0] == ring.back() || once[i][1] == ring.back())) {
+                    const std::int64_t nxt = once[i][0] == ring.back() ? once[i][1] : once[i][0];
+                    if (std::find(ring.begin(), ring.end(), nxt) != ring.end())
+                        break;
+                    used[i] = 1;
+                    ring.push_back(nxt);
+                    ok = true;
+                    break;
+                }
+        }
+        if (ring.size() != k)
+            continue;
+        const Vec3 pa = optvol_point(rXyz, a), pb = optvol_point(rXyz, b);
+        const double sign =
+            optvol_svol6(pa, pb, optvol_point(rXyz, ring[0]), optvol_point(rXyz, ring[1])) > 0.0
+                ? 1.0
+                : -1.0;
+        std::vector<Tet> made;
+        double new_sum = 0.0;
+        bool valid = true;
+        for (std::size_t i = 0; i < k && valid; ++i) {
+            Tet t{a, b, ring[i], ring[(i + 1) % k]};
+            const double s6 =
+                optvol_svol6(pa, pb, optvol_point(rXyz, t[2]), optvol_point(rXyz, t[3]));
+            if (s6 * sign <= eps_vol6)
+                valid = false;
+            if (sign < 0.0)
+                std::swap(t[2], t[3]);
+            new_sum += std::fabs(s6);
+            made.push_back(t);
+        }
+        if (!valid)
+            continue;
+        double q_old = 180.0, old_sum = 0.0;
+        for (const SFace& f : disc)
+            for (const std::size_t t : {f.mTa, f.mTb}) {
+                q_old = std::min(q_old, optvol_worst_q(rXyz, rTets[t], eps_vol6));
+                const Tet& o = rTets[t];
+                old_sum +=
+                    std::fabs(optvol_svol6(optvol_point(rXyz, o[0]), optvol_point(rXyz, o[1]),
+                                           optvol_point(rXyz, o[2]), optvol_point(rXyz, o[3])));
+            }
+        if (std::fabs(new_sum - old_sum) > 1e-9 * old_sum + eps_vol6)
+            continue;
+        double q_new = 180.0;
+        for (const Tet& t : made)
+            q_new = std::min(q_new, optvol_worst_q(rXyz, t, eps_vol6));
+        if (!(q_new > q_old + min_improve))
+            continue;
+        for (const SFace& f : disc) {
+            alive[f.mTa] = 0;
+            alive[f.mTb] = 0;
+        }
+        new_tets.insert(new_tets.end(), made.begin(), made.end());
+        ++applied;
+    }
+
+    std::vector<Tet> out;
+    out.reserve(nt + new_tets.size());
+    for (std::size_t t = 0; t < nt; ++t)
+        if (alive[t])
+            out.push_back(rTets[t]);
+    out.insert(out.end(), new_tets.begin(), new_tets.end());
+    rTets.swap(out);
+    return applied;
+}
+
+// The six dihedral angles of a tet in a fixed edge order, in degrees.
+std::array<double, 6> optvol_dihedrals(const Vec3& rA, const Vec3& rB, const Vec3& rC,
+                                       const Vec3& rD) {
+    const Vec3 p[4] = {rA, rB, rC, rD};
+    constexpr int kEdge[6][4] = {{0, 1, 2, 3}, {0, 2, 1, 3}, {0, 3, 1, 2},
+                                 {1, 2, 0, 3}, {1, 3, 0, 2}, {2, 3, 0, 1}};
+    std::array<double, 6> out{};
+    for (std::size_t e = 0; e < 6; ++e) {
+        const Vec3& a = p[kEdge[e][0]];
+        const Vec3 ab = detail::vec3_sub(p[kEdge[e][1]], a);
+        const Vec3 n1 = detail::vec3_cross(ab, detail::vec3_sub(p[kEdge[e][2]], a));
+        const Vec3 n2 = detail::vec3_cross(ab, detail::vec3_sub(p[kEdge[e][3]], a));
+        const double den = std::sqrt(detail::vec3_dot(n1, n1) * detail::vec3_dot(n2, n2));
+        out[e] = den > 0.0 ? std::acos(std::clamp(detail::vec3_dot(n1, n2) / den, -1.0, 1.0)) *
+                                 kOptvolRadToDeg
+                           : 0.0;
+    }
+    return out;
+}
+
+// Worst-cell smoothing (Freitag and Ollivier-Gooch 1997): a non-smooth ascent
+// on the least dihedral angle of one vertex's star. The search direction is
+// the shortest vector in the convex hull of the gradients of the angles within
+// a small band of the least one (central differences); a backtracking line
+// search accepts a step only when the star's least angle rises. Vertices of
+// tets below `Threshold` degrees are visited worst first.
+std::int64_t optvol_smooth_worst(std::vector<double>& rXyz, const std::vector<Tet>& rTets,
+                                 const std::vector<std::uint8_t>& rFixed, double eps_vol6,
+                                 double Threshold) {
+    const std::size_t n = rXyz.size() / 3;
+    const OptvolStar star = optvol_star(n, rTets);
+    std::vector<double> q(rTets.size());
+    parallel_for(rTets.size(),
+                 [&](std::size_t t) { q[t] = optvol_worst_q(rXyz, rTets[t], eps_vol6); });
+    std::vector<std::pair<double, std::int64_t>> order;
+    for (std::size_t v = 0; v < n; ++v) {
+        if (rFixed[v] || star.mStart[v] == star.mStart[v + 1])
+            continue;
+        double m = 180.0;
+        for (std::int64_t k = star.mStart[v]; k < star.mStart[v + 1]; ++k)
+            m = std::min(m, q[static_cast<std::size_t>(star.mTets[static_cast<std::size_t>(k)])]);
+        if (m < Threshold && m >= 0.0)
+            order.push_back({m, static_cast<std::int64_t>(v)});
+    }
+    std::sort(order.begin(), order.end());
+
+    std::int64_t improved = 0;
+    for (const auto& [m0, v64] : order) {
+        (void)m0;
+        const auto v = static_cast<std::size_t>(v64);
+        // The star's tets with v as corner 0, so a move of v moves corner 0.
+        std::vector<Tet> local;
+        double shortest = std::numeric_limits<double>::infinity();
+        for (std::int64_t k = star.mStart[v]; k < star.mStart[v + 1]; ++k) {
+            const Tet& t = rTets[static_cast<std::size_t>(star.mTets[static_cast<std::size_t>(k)])];
+            local.push_back(t);
+            for (std::int64_t w : t)
+                if (w != v64) {
+                    const Vec3 d = detail::vec3_sub(optvol_point(rXyz, w), optvol_point(rXyz, v64));
+                    shortest = std::min(shortest, std::sqrt(detail::vec3_dot(d, d)));
+                }
+        }
+        const auto f_at = [&](const Vec3& x) {
+            double m = 180.0;
+            for (const Tet& t : local) {
+                Vec3 p[4];
+                for (int c = 0; c < 4; ++c)
+                    p[c] = t[static_cast<std::size_t>(c)] == v64
+                               ? x
+                               : optvol_point(rXyz, t[static_cast<std::size_t>(c)]);
+                if (optvol_svol6(p[0], p[1], p[2], p[3]) <= eps_vol6)
+                    return -1.0;
+                m = std::min(m, optvol_min_dihedral(p[0], p[1], p[2], p[3]));
+            }
+            return m;
+        };
+        // Every angle of the star as a function of the vertex position.
+        const auto angles_at = [&](const Vec3& x, std::vector<double>& rOut) {
+            rOut.clear();
+            for (const Tet& t : local) {
+                Vec3 p[4];
+                for (int c = 0; c < 4; ++c)
+                    p[c] = t[static_cast<std::size_t>(c)] == v64
+                               ? x
+                               : optvol_point(rXyz, t[static_cast<std::size_t>(c)]);
+                const auto a = optvol_dihedrals(p[0], p[1], p[2], p[3]);
+                rOut.insert(rOut.end(), a.begin(), a.end());
+            }
+        };
+        Vec3 x = optvol_point(rXyz, v64);
+        const Vec3 x0 = x;
+        double fx = f_at(x);
+        if (fx < 0.0 || !std::isfinite(shortest) || !(shortest > 0.0))
+            continue;
+        const double h = 1e-6 * shortest;
+        std::vector<double> base;
+        for (int iter = 0; iter < 8; ++iter) {
+            angles_at(x, base);
+            // The active set: angles within a band of the least; only their
+            // tets are differentiated (central differences).
+            const double band = 1e-3 + 1e-6 * fx;
+            std::vector<std::array<double, 3>> act;
+            for (std::size_t a = 0; a < base.size(); ++a) {
+                if (base[a] > fx + band)
+                    continue;
+                const Tet& t = local[a / 6];
+                std::array<double, 3> g{};
+                for (int d = 0; d < 3; ++d) {
+                    Vec3 xp = x, xm = x;
+                    xp[static_cast<std::size_t>(d)] += h;
+                    xm[static_cast<std::size_t>(d)] -= h;
+                    Vec3 pp[4], pm[4];
+                    for (int c = 0; c < 4; ++c) {
+                        const std::int64_t w = t[static_cast<std::size_t>(c)];
+                        pp[c] = w == v64 ? xp : optvol_point(rXyz, w);
+                        pm[c] = w == v64 ? xm : optvol_point(rXyz, w);
+                    }
+                    const auto ap = optvol_dihedrals(pp[0], pp[1], pp[2], pp[3]);
+                    const auto am = optvol_dihedrals(pm[0], pm[1], pm[2], pm[3]);
+                    g[static_cast<std::size_t>(d)] = (ap[a % 6] - am[a % 6]) / (2.0 * h);
+                }
+                act.push_back(g);
+            }
+            if (act.empty())
+                break;
+            // The shortest vector in their convex hull (Frank-Wolfe).
+            std::array<double, 3> g = act[0];
+            for (int it = 0; it < 64 && act.size() > 1; ++it) {
+                std::size_t best_i = 0;
+                double best_dot = std::numeric_limits<double>::infinity();
+                for (std::size_t i = 0; i < act.size(); ++i) {
+                    const double dt = g[0] * act[i][0] + g[1] * act[i][1] + g[2] * act[i][2];
+                    if (dt < best_dot) {
+                        best_dot = dt;
+                        best_i = i;
+                    }
+                }
+                const std::array<double, 3> s{act[best_i][0] - g[0], act[best_i][1] - g[1],
+                                              act[best_i][2] - g[2]};
+                const double ss = s[0] * s[0] + s[1] * s[1] + s[2] * s[2];
+                const double gs = -(g[0] * s[0] + g[1] * s[1] + g[2] * s[2]);
+                if (ss <= 0.0 || gs <= 1e-15 * ss)
+                    break;
+                const double lam = std::min(1.0, gs / ss);
+                for (int c = 0; c < 3; ++c)
+                    g[static_cast<std::size_t>(c)] += lam * s[static_cast<std::size_t>(c)];
+            }
+            const double gn = std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
+            if (!(gn > 0.0) || !std::isfinite(gn))
+                break;  // stationary: no direction raises every active angle
+            bool stepped = false;
+            for (int k = 0; k < 14; ++k) {
+                const double alpha = 0.2 * shortest * std::ldexp(1.0, -k);
+                const Vec3 y{x[0] + alpha * g[0] / gn, x[1] + alpha * g[1] / gn,
+                             x[2] + alpha * g[2] / gn};
+                const double fy = f_at(y);
+                if (fy > fx + 1e-9) {
+                    x = y;
+                    fx = fy;
+                    stepped = true;
+                    break;
+                }
+            }
+            if (!stepped)
+                break;
+        }
+        if (x != x0) {
+            for (int d = 0; d < 3; ++d)
+                rXyz[3 * v + static_cast<std::size_t>(d)] = x[static_cast<std::size_t>(d)];
+            ++improved;
+        }
+    }
+    return improved;
+}
+
+// The boundary vertices: those on a face only one tet has.
+std::vector<std::uint8_t> optvol_boundary_mask(std::size_t N, const std::vector<Tet>& rTets) {
+    std::vector<std::array<std::int64_t, 3>> faces;
+    faces.reserve(rTets.size() * 4);
+    for (const Tet& t : rTets)
+        for (int lf = 0; lf < 4; ++lf) {
+            const auto fo = optvol_face_ordered(t, lf);
+            faces.push_back(optvol_face_key(fo[0], fo[1], fo[2]));
+        }
+    parallel_sort(faces.begin(), faces.end());
+    std::vector<std::uint8_t> on(N, 0);
+    for (std::size_t i = 0; i < faces.size();) {
+        std::size_t j = i + 1;
+        while (j < faces.size() && faces[j] == faces[i])
+            ++j;
+        if (j - i == 1)
+            for (std::int64_t v : faces[i])
+                on[static_cast<std::size_t>(v)] = 1;
+        i = j;
+    }
+    return on;
+}
+
 // --- ODT relocation half (smooth's SmoothMethod::Odt) -----------------------
 // The options of the one-iteration ODT pass each sweep runs: smooth's own
 // boundary/feature/frozen pinning and inversion guard.
@@ -237764,6 +238916,15 @@ std::vector<std::uint8_t> optvol_pin_mask(const std::vector<double>& rXyz,
 }
 
 }  // namespace
+
+OptimizeVolumeObjective optimize_volume_objective_from_name(const std::string& rName) {
+    if (rName == "worst")
+        return OptimizeVolumeObjective::Worst;
+    if (rName == "energy")
+        return OptimizeVolumeObjective::Energy;
+    throw std::invalid_argument(std::string(kOvPrefix) + "unknown objective '" + rName +
+                                "' (expected 'worst' or 'energy')");
+}
 
 OptimizeVolumeResult optimize_volume(const Mesh& rMesh, const OptimizeVolumeOptions& rOptions) {
     optvol_check_blocks(rMesh);
@@ -237826,40 +238987,96 @@ OptimizeVolumeResult optimize_volume(const Mesh& rMesh, const OptimizeVolumeOpti
     };
     result.mMinQualityBefore = min_quality(tets);
 
+    auto min_dihedral = [&](const std::vector<Tet>& ts) {
+        double m = 180.0;
+        for (const Tet& t : ts)
+            m = std::min(m, optvol_min_dihedral_tet(xyz, t));
+        return ts.empty() ? 0.0 : m;
+    };
+    result.mMinDihedralBefore = min_dihedral(tets);
+
     // --- the optimisation loop ------------------------------------------------
     const SmoothOptions odt = optvol_odt_options(rOptions);
     std::vector<std::uint8_t> pinned;
     if (rOptions.mRelocate && rOptions.mMaxIterations > 0)
         pinned = optvol_pin_mask(xyz, tets, odt);
-    for (int sweep = 0; sweep < rOptions.mMaxIterations; ++sweep) {
-        std::int64_t moved_before = 0;
-        if (rOptions.mRelocate) {
-            const std::vector<double> before = xyz;
-            detail::smooth_odt_pass(xyz, tets, pinned, odt);
-            for (std::size_t i = 0; i < n; ++i) {
-                const double dx = xyz[i * 3] - before[i * 3];
-                const double dy = xyz[i * 3 + 1] - before[i * 3 + 1];
-                const double dz = xyz[i * 3 + 2] - before[i * 3 + 2];
-                if (std::sqrt(dx * dx + dy * dy + dz * dz) > 1e-12 * (L > 0.0 ? L : 1.0))
-                    ++moved_before;
+    if (rOptions.mObjective == OptimizeVolumeObjective::Energy) {
+        const auto quality = [&](const Tet& t) { return optvol_quality_tet(xyz, t, eps_len); };
+        for (int sweep = 0; sweep < rOptions.mMaxIterations; ++sweep) {
+            std::int64_t moved_before = 0;
+            if (rOptions.mRelocate) {
+                const std::vector<double> before = xyz;
+                detail::smooth_odt_pass(xyz, tets, pinned, odt);
+                for (std::size_t i = 0; i < n; ++i) {
+                    const double dx = xyz[i * 3] - before[i * 3];
+                    const double dy = xyz[i * 3 + 1] - before[i * 3 + 1];
+                    const double dz = xyz[i * 3 + 2] - before[i * 3 + 2];
+                    if (std::sqrt(dx * dx + dy * dy + dz * dz) > 1e-12 * (L > 0.0 ? L : 1.0))
+                        ++moved_before;
+                }
             }
+            std::int64_t flips_this_sweep = 0;
+            if (rOptions.mFlip) {
+                const std::int64_t n23 =
+                    optvol_pass_23(xyz, tets, rOptions.mMinImprovement, eps_vol6, quality);
+                const std::int64_t n32 =
+                    optvol_pass_32(xyz, tets, rOptions.mMinImprovement, eps_len, eps_vol6);
+                result.mNum23Flips += n23;
+                result.mNum32Flips += n32;
+                flips_this_sweep = n23 + n32;
+            }
+            result.mNumFlips += flips_this_sweep;
+            if (moved_before == 0 && flips_this_sweep == 0)
+                break;  // fixed point
         }
-        std::int64_t flips_this_sweep = 0;
-        if (rOptions.mFlip) {
-            const std::int64_t n23 =
-                optvol_pass_23(xyz, tets, rOptions.mMinImprovement, eps_len, eps_vol6);
-            const std::int64_t n32 =
-                optvol_pass_32(xyz, tets, rOptions.mMinImprovement, eps_len, eps_vol6);
-            result.mNum23Flips += n23;
-            result.mNum32Flips += n32;
-            flips_this_sweep = n23 + n32;
+    } else {
+        // The worst-cell schedule: guarded relocation, then the topological
+        // moves, then worst-cell smoothing; every step keeps the least angle.
+        if (rOptions.mMaxRingSize < 3)
+            throw std::invalid_argument(std::string(kOvPrefix) + "max_ring_size must be >= 3");
+        for (Tet& t : tets)
+            t = optvol_orient_positive(xyz, t);
+        const auto quality = [&](const Tet& t) { return optvol_worst_q(xyz, t, eps_vol6); };
+        std::vector<std::uint8_t> fixed;
+        if (rOptions.mRelocate && rOptions.mMaxIterations > 0) {
+            fixed = optvol_boundary_mask(n, tets);
+            for (std::size_t i = 0; i < n; ++i)
+                fixed[i] = static_cast<std::uint8_t>(fixed[i] || pinned[i]);
         }
-        result.mNumFlips += flips_this_sweep;
-        if (moved_before == 0 && flips_this_sweep == 0)
-            break;  // fixed point
+        constexpr double kWorstThresholdDeg = 40.0;
+        for (int sweep = 0; sweep < rOptions.mMaxIterations; ++sweep) {
+            std::int64_t moved = 0;
+            if (rOptions.mRelocate)
+                moved = optvol_guarded_odt(xyz, tets, pinned, odt, eps_vol6);
+            std::int64_t flips = 0;
+            if (rOptions.mFlip) {
+                const std::int64_t n23 = optvol_pass_23(xyz, tets, rOptions.mMinImprovement,
+                                                        eps_vol6, quality, kWorstThresholdDeg);
+                std::int64_t n32 = 0;
+                const std::int64_t nedge = optvol_pass_edge_removal(
+                    xyz, tets, rOptions.mMinImprovement, eps_vol6, rOptions.mMaxRingSize,
+                    kWorstThresholdDeg, n32);
+                const std::int64_t nmulti =
+                    optvol_pass_multi_face(xyz, tets, rOptions.mMinImprovement, eps_vol6,
+                                           rOptions.mMaxRingSize, kWorstThresholdDeg);
+                result.mNum23Flips += n23;
+                result.mNum32Flips += n32;
+                result.mNumEdgeRemovals += nedge - n32;
+                result.mNumMultiFaceRemovals += nmulti;
+                flips = n23 + nedge + nmulti;
+            }
+            result.mNumFlips += flips;
+            std::int64_t smoothed = 0;
+            if (rOptions.mRelocate)
+                smoothed = optvol_smooth_worst(xyz, tets, fixed, eps_vol6, kWorstThresholdDeg);
+            result.mNumWorstSmoothed += smoothed;
+            if (moved == 0 && flips == 0 && smoothed == 0)
+                break;  // fixed point
+        }
     }
 
     result.mMinQualityAfter = min_quality(tets);
+    result.mMinDihedralAfter = min_dihedral(tets);
     result.mNumTets = static_cast<std::int64_t>(tets.size());
     for (std::size_t i = 0; i < n; ++i) {
         const double dx = xyz[i * 3] - xyz0[i * 3];
@@ -239113,6 +240330,10 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Segment",
          {"FeatureAngle", "NormalTolerance", "CurvatureTolerance", "MinPatchCells", "Region",
           "Prefix", "Method", "Tolerance"}},
+        {"Select",
+         {"Name", "Kind", "Tag", "Mode", "BoundaryOnly", "Bbox", "Point", "Normal", "Center",
+          "Radius", "Where", "Compare", "Value", "Quality", "QualityCompare", "QualityValue",
+          "Component", "Seed", "FeatureAngle", "NormalTolerance"}},
         {"FitPrimitives",
          {"PatchData", "Tolerance", "Relative", "MinInlierFraction", "Types", "MaxIterations"}},
         {"FitCad",
@@ -239219,7 +240440,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "MaxCells", "MaxTets",
           "WarpFraction", "Sign", "WatertightCheck"}},
         {"OptimizeVolume",
-         {"MaxIterations", "Relocate", "Flip", "PreserveBoundary", "MinImprovement"}},
+         {"MaxIterations", "Relocate", "Flip", "PreserveBoundary", "MinImprovement", "Objective",
+          "MaxRingSize"}},
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
         {"Voxelize",
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
@@ -240460,6 +241682,58 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"NumBoundaryEdges", static_cast<double>(sr.mNumBoundaryEdges)}});
         return std::move(sr.mMesh);
     }
+    if (op == "Select") {
+        // A data step: one named region is written, nothing moves.
+        SelectOptions opts;
+        opts.mName = pipe_text(rStep, "Name", "");
+        opts.mKind = region_kind_from_name(pipe_text(rStep, "Kind", "cell"));
+        opts.mTag = static_cast<std::int64_t>(pipe_number(rStep, "Tag", -1.0));
+        opts.mMode = select_mode_from_name(pipe_text(rStep, "Mode", "all"));
+        opts.mBoundaryOnly = pipe_flag(rStep, "BoundaryOnly", true);
+        if (pipe_find(rStep, "Bbox") != nullptr) {
+            const std::vector<double> b = pipe_dvec(rStep, "Bbox");
+            if (b.size() != 6)
+                throw std::invalid_argument(
+                    pipe_err(rStep, "'Bbox' must be [xmin, ymin, zmin, xmax, ymax, zmax]"));
+            opts.mBox = true;
+            opts.mBoxLo = {b[0], b[1], b[2]};
+            opts.mBoxHi = {b[3], b[4], b[5]};
+        }
+        if (pipe_find(rStep, "Point") != nullptr || pipe_find(rStep, "Normal") != nullptr) {
+            opts.mPlane = true;
+            pipe_vec3(rStep, "Point", opts.mPlanePoint.data());
+            pipe_vec3(rStep, "Normal", opts.mPlaneNormal.data());
+        }
+        if (pipe_find(rStep, "Center") != nullptr || pipe_find(rStep, "Radius") != nullptr) {
+            opts.mSphere = true;
+            pipe_vec3(rStep, "Center", opts.mSphereCenter.data());
+            opts.mSphereRadius = pipe_number(rStep, "Radius", 0.0);
+        }
+        if (pipe_find(rStep, "Where") != nullptr) {
+            opts.mWhereArray = pipe_text(rStep, "Where", "");
+            opts.mWhereOp = refine_compare_from_name(pipe_text(rStep, "Compare", "<"));
+            opts.mWhereValue = pipe_number(rStep, "Value", 0.0);
+        }
+        if (pipe_find(rStep, "Quality") != nullptr) {
+            opts.mQualityMetric = pipe_text(rStep, "Quality", "");
+            opts.mQualityOp = refine_compare_from_name(pipe_text(rStep, "QualityCompare", "<"));
+            opts.mQualityValue = pipe_number(rStep, "QualityValue", 0.0);
+        }
+        opts.mComponent = static_cast<std::int64_t>(pipe_number(rStep, "Component", -1.0));
+        if (pipe_find(rStep, "Seed") != nullptr) {
+            opts.mSeed = true;
+            pipe_vec3(rStep, "Seed", opts.mSeedPoint.data());
+        }
+        opts.mFeatureAngleDeg = pipe_number(rStep, "FeatureAngle", 30.0);
+        opts.mNormalToleranceDeg = pipe_number(rStep, "NormalTolerance", 0.0);
+        SelectResult sr = select_region(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumCandidates", static_cast<double>(sr.mNumCandidates)},
+                        {"NumSelected", static_cast<double>(sr.mNumSelected)},
+                        {"NumGrown", static_cast<double>(sr.mNumGrown)},
+                        {"NumComponents", static_cast<double>(sr.mNumComponents)}});
+        return std::move(sr.mMesh);
+    }
     if (op == "FitPrimitives") {
         FitPrimitivesOptions opts;
         opts.mPatchData = pipe_text(rStep, "PatchData", "segment:patch");
@@ -241148,6 +242422,9 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mFlip = pipe_flag(rStep, "Flip", true);
         opts.mPreserveBoundary = pipe_flag(rStep, "PreserveBoundary", true);
         opts.mMinImprovement = pipe_number(rStep, "MinImprovement", 1e-6);
+        opts.mObjective =
+            optimize_volume_objective_from_name(pipe_text(rStep, "Objective", "worst"));
+        opts.mMaxRingSize = static_cast<std::int32_t>(pipe_number(rStep, "MaxRingSize", 7.0));
         OptimizeVolumeResult ov = optimize_volume(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumFlips", static_cast<double>(ov.mNumFlips)},
@@ -241156,7 +242433,12 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"NumVerticesMoved", static_cast<double>(ov.mNumVerticesMoved)},
                         {"NumTets", static_cast<double>(ov.mNumTets)},
                         {"MinQualityBefore", ov.mMinQualityBefore},
-                        {"MinQualityAfter", ov.mMinQualityAfter}});
+                        {"MinQualityAfter", ov.mMinQualityAfter},
+                        {"NumEdgeRemovals", static_cast<double>(ov.mNumEdgeRemovals)},
+                        {"NumMultiFaceRemovals", static_cast<double>(ov.mNumMultiFaceRemovals)},
+                        {"NumWorstSmoothed", static_cast<double>(ov.mNumWorstSmoothed)},
+                        {"MinDihedralBefore", ov.mMinDihedralBefore},
+                        {"MinDihedralAfter", ov.mMinDihedralAfter}});
         return std::move(ov.mMesh);
     }
     if (op == "Generate") {
@@ -258092,6 +259374,795 @@ SegmentResult segment(const Mesh& rMesh, const SegmentOptions& rOptions) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/segment.cpp =====
+// ===== begin src/cpp/src/operations/select.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <deque>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::Vec3;
+
+constexpr double kSelPi = 3.14159265358979323846;
+
+// The facets a Side selection (or a growth) runs over: CSR node lists, corners
+// first, with each facet's owner cell, local facet number and corner count.
+struct SelFacets {
+    std::vector<std::int64_t> mOwner;
+    std::vector<std::int64_t> mLocal;
+    std::vector<std::int64_t> mStart{0};
+    std::vector<std::int64_t> mNodes;
+    std::vector<std::int32_t> mCorners;
+
+    std::size_t Size() const { return mOwner.size(); }
+    void Add(std::int64_t Owner, std::int64_t Local, const std::int64_t* pNodes, std::size_t N,
+             std::size_t Corners) {
+        mOwner.push_back(Owner);
+        mLocal.push_back(Local);
+        mNodes.insert(mNodes.end(), pNodes, pNodes + N);
+        mStart.push_back(static_cast<std::int64_t>(mNodes.size()));
+        mCorners.push_back(static_cast<std::int32_t>(Corners));
+    }
+};
+
+// A block's topological dimension; polygons are 2, polyhedra 3.
+int sel_block_dim(const Mesh::CellView& rCb) {
+    if (rCb.IsPolyhedron())
+        return 3;
+    return cell_type_dimension(cell_type_from_name(std::string(rCb.Type())));
+}
+
+// Every node of one cell, as stored (a polyhedron's nodes once per face).
+void sel_cell_nodes(const Mesh::CellView& rCb, const std::int64_t* pConn, std::size_t c,
+                    std::vector<std::int64_t>& rOut) {
+    rOut.clear();
+    if (rCb.IsPolyhedron()) {
+        for (std::size_t f = 0; f < rCb.NumFaces(c); ++f) {
+            const auto face = rCb.Face(c, f);
+            rOut.insert(rOut.end(), face.first, face.first + face.second);
+        }
+    } else if (rCb.IsRagged()) {
+        const std::int64_t* row = rCb.Row(c);
+        rOut.assign(row, row + rCb.RowSize(c));
+    } else {
+        const std::size_t npc = rCb.NodesPerCell();
+        rOut.assign(pConn + c * npc, pConn + (c + 1) * npc);
+    }
+}
+
+// A rectangular block's connectivity as Int64 (a copy only when it is not).
+NDArray sel_int64_conn(const Mesh::CellView& rCb) {
+    if (rCb.IsPolyhedron() || rCb.IsRagged())
+        return NDArray();
+    const NDArray& conn = rCb.Conn();
+    if (conn.Dtype() == DType::Int64)
+        return conn;
+    NDArray out = NDArray::Uninit(DType::Int64, {conn.Size()});
+    std::int64_t* dst = out.As<std::int64_t>();
+    for (std::size_t i = 0; i < conn.Size(); ++i)
+        dst[i] = detail::read_int(conn, i);
+    return out;
+}
+
+// The facets of every cell of dimension `Dim` (faces for 3, edges for 2).
+SelFacets sel_collect_facets(const Mesh& rMesh, int Dim) {
+    SelFacets out;
+    std::int64_t base = 0;
+    std::vector<std::int64_t> nodes;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::size_t nc = cb.NumCells();
+        if (sel_block_dim(cb) != Dim) {
+            base += static_cast<std::int64_t>(nc);
+            continue;
+        }
+        const NDArray conn = sel_int64_conn(cb);
+        const std::int64_t* pc = conn.Size() ? conn.As<std::int64_t>() : nullptr;
+        const CellType type =
+            cb.IsPolyhedron() ? CellType::Polyhedron : cell_type_from_name(std::string(cb.Type()));
+        for (std::size_t c = 0; c < nc; ++c) {
+            const std::int64_t cell = base + static_cast<std::int64_t>(c);
+            if (cb.IsPolyhedron()) {
+                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
+                    const auto face = cb.Face(c, f);
+                    out.Add(cell, static_cast<std::int64_t>(f), face.first, face.second,
+                            face.second);
+                }
+                continue;
+            }
+            if (cb.IsRagged() || type == CellType::Polygon) {
+                sel_cell_nodes(cb, pc, c, nodes);
+                const std::size_t n = nodes.size();
+                for (std::size_t k = 0; k < n; ++k) {
+                    const std::int64_t e[2] = {nodes[k], nodes[(k + 1) % n]};
+                    out.Add(cell, static_cast<std::int64_t>(k), e, 2, 2);
+                }
+                continue;
+            }
+            const std::size_t npc = cb.NodesPerCell();
+            const std::int64_t* row = pc + c * npc;
+            std::int64_t buf[9];
+            if (Dim == 3) {
+                const auto& defs = detail::cell_faces(type);
+                for (std::size_t f = 0; f < defs.size(); ++f) {
+                    for (std::size_t k = 0; k < defs[f].mNumNodes; ++k)
+                        buf[k] = row[defs[f].mNodes[k]];
+                    out.Add(cell, static_cast<std::int64_t>(f), buf, defs[f].mNumNodes,
+                            defs[f].mNumCorners);
+                }
+            } else {
+                const auto& defs = detail::cell_edges(type);
+                for (std::size_t f = 0; f < defs.size(); ++f) {
+                    for (std::size_t k = 0; k < defs[f].mNumNodes; ++k)
+                        buf[k] = row[defs[f].mNodes[k]];
+                    out.Add(cell, static_cast<std::int64_t>(f), buf, defs[f].mNumNodes,
+                            defs[f].mNumCorners);
+                }
+            }
+        }
+        base += static_cast<std::int64_t>(nc);
+    }
+    return out;
+}
+
+// How many facets share each facet's corner set (1 on the boundary).
+std::vector<std::int64_t> sel_facet_multiplicity(const SelFacets& rF) {
+    const std::size_t n = rF.Size();
+    std::vector<std::int64_t> keys(rF.mNodes.size());
+    parallel_for(n, [&](std::size_t f) {
+        const auto s = static_cast<std::size_t>(rF.mStart[f]);
+        const auto nc = static_cast<std::size_t>(rF.mCorners[f]);
+        std::copy(rF.mNodes.begin() + static_cast<std::ptrdiff_t>(s),
+                  rF.mNodes.begin() + static_cast<std::ptrdiff_t>(s + nc),
+                  keys.begin() + static_cast<std::ptrdiff_t>(s));
+        std::sort(keys.begin() + static_cast<std::ptrdiff_t>(s),
+                  keys.begin() + static_cast<std::ptrdiff_t>(s + nc));
+    });
+    const auto key_less = [&](std::size_t a, std::size_t b) {
+        const auto na = static_cast<std::size_t>(rF.mCorners[a]);
+        const auto nb = static_cast<std::size_t>(rF.mCorners[b]);
+        if (na != nb)
+            return na < nb;
+        const std::int64_t* ka = keys.data() + rF.mStart[a];
+        const std::int64_t* kb = keys.data() + rF.mStart[b];
+        for (std::size_t k = 0; k < na; ++k)
+            if (ka[k] != kb[k])
+                return ka[k] < kb[k];
+        return a < b;
+    };
+    const auto key_equal = [&](std::size_t a, std::size_t b) {
+        const auto na = static_cast<std::size_t>(rF.mCorners[a]);
+        if (na != static_cast<std::size_t>(rF.mCorners[b]))
+            return false;
+        return std::equal(keys.data() + rF.mStart[a], keys.data() + rF.mStart[a] + na,
+                          keys.data() + rF.mStart[b]);
+    };
+    std::vector<std::size_t> order(n);
+    for (std::size_t i = 0; i < n; ++i)
+        order[i] = i;
+    parallel_sort(order.begin(), order.end(), key_less);
+    std::vector<std::int64_t> mult(n, 0);
+    for (std::size_t i = 0; i < n;) {
+        std::size_t j = i + 1;
+        while (j < n && key_equal(order[i], order[j]))
+            ++j;
+        for (std::size_t k = i; k < j; ++k)
+            mult[order[k]] = static_cast<std::int64_t>(j - i);
+        i = j;
+    }
+    return mult;
+}
+
+// Keep only the facets whose flag is set, in order.
+SelFacets sel_filter_facets(const SelFacets& rF, const std::vector<char>& rKeep) {
+    SelFacets out;
+    for (std::size_t f = 0; f < rF.Size(); ++f) {
+        if (!rKeep[f])
+            continue;
+        const auto s = static_cast<std::size_t>(rF.mStart[f]);
+        const auto e = static_cast<std::size_t>(rF.mStart[f + 1]);
+        out.Add(rF.mOwner[f], rF.mLocal[f], rF.mNodes.data() + s, e - s,
+                static_cast<std::size_t>(rF.mCorners[f]));
+    }
+    return out;
+}
+
+// The facets of the 2-D cells, as faces to grow over (rings of corners).
+SelFacets sel_surface_cells(const Mesh& rMesh) {
+    SelFacets out;
+    std::int64_t base = 0;
+    std::vector<std::int64_t> nodes;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::size_t nc = cb.NumCells();
+        if (sel_block_dim(cb) == 2) {
+            const NDArray conn = sel_int64_conn(cb);
+            const std::int64_t* pc = conn.Size() ? conn.As<std::int64_t>() : nullptr;
+            const CellType type = cell_type_from_name(std::string(cb.Type()));
+            const bool polygon = cb.IsRagged() || type == CellType::Polygon;
+            const std::size_t corners = polygon ? 0 : detail::cell_edges(type).size();
+            for (std::size_t c = 0; c < nc; ++c) {
+                sel_cell_nodes(cb, pc, c, nodes);
+                const std::size_t nk = polygon ? nodes.size() : corners;
+                if (nk < 3)
+                    continue;  // a 2-D type with no edge table has no ring
+                out.Add(base + static_cast<std::int64_t>(c), -1, nodes.data(), nodes.size(), nk);
+            }
+        }
+        base += static_cast<std::int64_t>(nc);
+    }
+    return out;
+}
+
+// The grown patch: a flag per facet of rF.
+std::vector<char> sel_grow(const SelFacets& rF, const std::vector<double>& rXyz,
+                           const SelectOptions& rOpt, std::int64_t& rNumGrown) {
+    const std::size_t n = rF.Size();
+    if (n == 0)
+        throw std::invalid_argument("select: a seed needs faces to grow over, and there are none");
+    // Rings of corners, their normals and centroids.
+    std::vector<std::int64_t> start(n + 1, 0), ring;
+    for (std::size_t f = 0; f < n; ++f) {
+        const auto s = static_cast<std::size_t>(rF.mStart[f]);
+        ring.insert(ring.end(), rF.mNodes.begin() + static_cast<std::ptrdiff_t>(s),
+                    rF.mNodes.begin() + static_cast<std::ptrdiff_t>(s) + rF.mCorners[f]);
+        start[f + 1] = static_cast<std::int64_t>(ring.size());
+    }
+    std::vector<double> normal(3 * n, 0.0), centroid(3 * n, 0.0);
+    parallel_for(n, [&](std::size_t f) {
+        const auto s = static_cast<std::size_t>(start[f]);
+        const auto k = static_cast<std::size_t>(start[f + 1] - start[f]);
+        detail::ring_unit_normal(rXyz.data(), ring.data() + s, k, normal.data() + 3 * f);
+        for (std::size_t i = 0; i < k; ++i)
+            for (int d = 0; d < 3; ++d)
+                centroid[3 * f + d] += rXyz[3 * static_cast<std::size_t>(ring[s + i]) + d];
+        for (int d = 0; d < 3; ++d)
+            centroid[3 * f + d] /= static_cast<double>(k);
+    });
+
+    // The seed: the facet whose centroid is nearest (ties: the lowest index).
+    std::size_t seed = 0;
+    double best = std::numeric_limits<double>::infinity();
+    for (std::size_t f = 0; f < n; ++f) {
+        double d2 = 0.0;
+        for (int d = 0; d < 3; ++d) {
+            const double t = centroid[3 * f + d] - rOpt.mSeedPoint[static_cast<std::size_t>(d)];
+            d2 += t * t;
+        }
+        if (d2 < best) {
+            best = d2;
+            seed = f;
+        }
+    }
+
+    // Smooth edges: used by exactly two faces and not sharp.
+    const std::vector<detail::CreaseEdge> creases =
+        detail::crease_edges(start, ring, normal, rOpt.mFeatureAngleDeg);
+    struct Use {
+        std::int64_t mLo, mHi, mFace;
+    };
+    std::vector<Use> uses;
+    uses.reserve(ring.size());
+    for (std::size_t f = 0; f < n; ++f) {
+        const auto s = static_cast<std::size_t>(start[f]);
+        const auto k = static_cast<std::size_t>(start[f + 1] - start[f]);
+        for (std::size_t i = 0; i < k; ++i) {
+            std::int64_t a = ring[s + i], b = ring[s + (i + 1) % k];
+            if (a == b)
+                continue;
+            if (a > b)
+                std::swap(a, b);
+            uses.push_back({a, b, static_cast<std::int64_t>(f)});
+        }
+    }
+    parallel_sort(uses.begin(), uses.end(), [](const Use& rA, const Use& rB) {
+        if (rA.mLo != rB.mLo)
+            return rA.mLo < rB.mLo;
+        if (rA.mHi != rB.mHi)
+            return rA.mHi < rB.mHi;
+        return rA.mFace < rB.mFace;
+    });
+    std::vector<std::vector<std::int64_t>> adj(n);
+    for (std::size_t i = 0; i < uses.size();) {
+        std::size_t j = i + 1;
+        while (j < uses.size() && uses[j].mLo == uses[i].mLo && uses[j].mHi == uses[i].mHi)
+            ++j;
+        if (j - i == 2 && uses[i].mFace != uses[i + 1].mFace) {
+            const auto it =
+                std::lower_bound(creases.begin(), creases.end(), uses[i],
+                                 [](const detail::CreaseEdge& rE, const Use& rU) {
+                                     return rE.mLo != rU.mLo ? rE.mLo < rU.mLo : rE.mHi < rU.mHi;
+                                 });
+            const bool listed =
+                it != creases.end() && it->mLo == uses[i].mLo && it->mHi == uses[i].mHi;
+            if (!listed || !it->IsCrease()) {
+                adj[static_cast<std::size_t>(uses[i].mFace)].push_back(uses[i + 1].mFace);
+                adj[static_cast<std::size_t>(uses[i + 1].mFace)].push_back(uses[i].mFace);
+            }
+        }
+        i = j;
+    }
+    parallel_for(n, [&](std::size_t f) { std::sort(adj[f].begin(), adj[f].end()); });
+
+    const bool normal_test = rOpt.mNormalToleranceDeg > 0.0;
+    const double cos_tol = std::cos(rOpt.mNormalToleranceDeg * kSelPi / 180.0);
+    const double* ns = normal.data() + 3 * seed;
+    std::vector<char> grown(n, 0);
+    std::deque<std::size_t> queue{seed};
+    grown[seed] = 1;
+    rNumGrown = 1;
+    while (!queue.empty()) {
+        const std::size_t f = queue.front();
+        queue.pop_front();
+        for (const std::int64_t g64 : adj[f]) {
+            const auto g = static_cast<std::size_t>(g64);
+            if (grown[g])
+                continue;
+            if (normal_test) {
+                const double* ng = normal.data() + 3 * g;
+                if (ns[0] * ng[0] + ns[1] * ng[1] + ns[2] * ng[2] < cos_tol)
+                    continue;
+            }
+            grown[g] = 1;
+            ++rNumGrown;
+            queue.push_back(g);
+        }
+    }
+    return grown;
+}
+
+// A scalar per global cell from a cell_data array covering every block.
+std::vector<double> sel_cell_values(const Mesh& rMesh, const std::string& rArray) {
+    if (!rMesh.HasCellData(rArray)) {
+        if (rMesh.HasPointData(rArray))
+            throw std::invalid_argument(
+                "select: '" + rArray +
+                "' is point_data; a cell or side selection compares cell_data (convert it "
+                "first with `data to-cell`, or select points)");
+        throw std::invalid_argument("select: " +
+                                    data_unknown_key_message(rMesh, DataLocation::Cell, rArray));
+    }
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    if (rMesh.CellDataNumBlocks(rArray) != nblocks)
+        throw std::invalid_argument("select: cell_data '" + rArray +
+                                    "' does not cover every cell block");
+    std::vector<double> out;
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const NDArray& a = rMesh.CellData(rArray, b);
+        const std::size_t nc = rMesh.Cells(b).NumCells();
+        if (detail::rows(a) != nc)
+            throw std::invalid_argument("select: cell_data '" + rArray + "' has " +
+                                        std::to_string(detail::rows(a)) + " rows on a block of " +
+                                        std::to_string(nc) + " cells");
+        if (nc != 0 && data_num_components(a) != 1)
+            throw std::invalid_argument("select: cell_data '" + rArray +
+                                        "' must be scalar (one value per cell)");
+        const std::size_t off = out.size();
+        out.resize(off + nc);
+        parallel_for(nc, [&](std::size_t c) { out[off + c] = detail::read_double(a, c); });
+    }
+    return out;
+}
+
+void sel_check_angle(double Value, const char* pName) {
+    if (!(Value >= 0.0 && Value <= 180.0))
+        throw std::invalid_argument(std::string("select: ") + pName + " must be in [0, 180]");
+}
+
+}  // namespace
+
+SelectMode select_mode_from_name(const std::string& rName) {
+    if (rName == "all")
+        return SelectMode::All;
+    if (rName == "any")
+        return SelectMode::Any;
+    if (rName == "centroid")
+        return SelectMode::Centroid;
+    throw std::invalid_argument("select: unknown mode '" + rName +
+                                "' (expected 'all', 'any' or 'centroid')");
+}
+
+const char* select_mode_name(SelectMode Mode) {
+    switch (Mode) {
+        case SelectMode::Any:
+            return "any";
+        case SelectMode::Centroid:
+            return "centroid";
+        case SelectMode::All:
+        default:
+            return "all";
+    }
+}
+
+SelectResult select_region(const Mesh& rMesh, const SelectOptions& rOpt) {
+    if (rOpt.mName.empty())
+        throw std::invalid_argument("select: the region name must not be empty");
+    const bool geometric = rOpt.mBox || rOpt.mPlane || rOpt.mSphere;
+    const bool where = !rOpt.mWhereArray.empty();
+    const bool quality = !rOpt.mQualityMetric.empty();
+    const bool component = rOpt.mComponent >= 0;
+    if (!geometric && !where && !quality && !component && !rOpt.mSeed)
+        throw std::invalid_argument(
+            "select: no criterion given (box, plane, sphere, where, quality, component or seed)");
+    if (rOpt.mMode != SelectMode::All && rOpt.mMode != SelectMode::Any &&
+        rOpt.mMode != SelectMode::Centroid)
+        throw std::invalid_argument("select: unknown mode");
+    if (rOpt.mKind != RegionKind::Point && rOpt.mKind != RegionKind::Cell &&
+        rOpt.mKind != RegionKind::Side)
+        throw std::invalid_argument("select: unknown region kind");
+    if (rOpt.mSphere && !(rOpt.mSphereRadius >= 0.0))
+        throw std::invalid_argument("select: the sphere radius must be non-negative");
+    if (rOpt.mPlane && rOpt.mPlaneNormal[0] == 0.0 && rOpt.mPlaneNormal[1] == 0.0 &&
+        rOpt.mPlaneNormal[2] == 0.0)
+        throw std::invalid_argument("select: the plane normal must not be zero");
+    if (quality && rOpt.mKind == RegionKind::Point)
+        throw std::invalid_argument(
+            "select: a quality criterion scores cells; select cells or sides, not points");
+    if (rOpt.mSeed) {
+        sel_check_angle(rOpt.mFeatureAngleDeg, "feature_angle");
+        sel_check_angle(rOpt.mNormalToleranceDeg, "normal_tolerance");
+    }
+
+    const std::size_t npoints = rMesh.NumPoints();
+    const std::size_t pdim = rMesh.PointDim();
+    std::vector<double> xyz(3 * npoints, 0.0);
+    {
+        const NDArray& pts = rMesh.Points();
+        parallel_for(npoints, [&](std::size_t i) {
+            const Vec3 p = detail::read_point(pts, pdim, static_cast<std::int64_t>(i));
+            xyz[3 * i] = p[0];
+            xyz[3 * i + 1] = p[1];
+            xyz[3 * i + 2] = p[2];
+        });
+    }
+    const auto point_at = [&](std::int64_t v) {
+        const auto i = static_cast<std::size_t>(v);
+        return Vec3{xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]};
+    };
+    const auto inside = [&](const Vec3& p) {
+        if (rOpt.mBox)
+            for (std::size_t d = 0; d < 3; ++d)
+                if (p[d] < rOpt.mBoxLo[d] || p[d] > rOpt.mBoxHi[d])
+                    return false;
+        if (rOpt.mPlane) {
+            double s = 0.0;
+            for (std::size_t d = 0; d < 3; ++d)
+                s += (p[d] - rOpt.mPlanePoint[d]) * rOpt.mPlaneNormal[d];
+            if (s < 0.0)
+                return false;
+        }
+        if (rOpt.mSphere) {
+            double s = 0.0;
+            for (std::size_t d = 0; d < 3; ++d) {
+                const double t = p[d] - rOpt.mSphereCenter[d];
+                s += t * t;
+            }
+            if (s > rOpt.mSphereRadius * rOpt.mSphereRadius)
+                return false;
+        }
+        return true;
+    };
+    // A node list's verdict under the mode.
+    const auto nodes_inside = [&](const std::int64_t* pNodes, std::size_t N,
+                                  std::vector<std::int64_t>& rScratch) {
+        if (N == 0)
+            return false;
+        if (rOpt.mMode == SelectMode::Centroid) {
+            rScratch.assign(pNodes, pNodes + N);
+            std::sort(rScratch.begin(), rScratch.end());
+            rScratch.erase(std::unique(rScratch.begin(), rScratch.end()), rScratch.end());
+            Vec3 c{0.0, 0.0, 0.0};
+            for (const std::int64_t v : rScratch) {
+                const Vec3 p = point_at(v);
+                for (std::size_t d = 0; d < 3; ++d)
+                    c[d] += p[d];
+            }
+            for (std::size_t d = 0; d < 3; ++d)
+                c[d] /= static_cast<double>(rScratch.size());
+            return inside(c);
+        }
+        const bool all = rOpt.mMode == SelectMode::All;
+        for (std::size_t k = 0; k < N; ++k) {
+            const bool in = inside(point_at(pNodes[k]));
+            if (all && !in)
+                return false;
+            if (!all && in)
+                return true;
+        }
+        return all;
+    };
+
+    // Global cell numbering and dimensions.
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    std::vector<std::int64_t> base(nblocks + 1, 0);
+    int top_dim = -1;
+    bool has_surface = false;
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const auto cb = rMesh.Cells(b);
+        base[b + 1] = base[b] + static_cast<std::int64_t>(cb.NumCells());
+        const int d = sel_block_dim(cb);
+        if (cb.NumCells() > 0) {
+            top_dim = std::max(top_dim, d);
+            has_surface = has_surface || d == 2;
+        }
+    }
+    const auto ncells = static_cast<std::size_t>(base[nblocks]);
+
+    SelectResult result;
+    // The candidates, and for sides their facets.
+    SelFacets sides;
+    std::size_t ncand = 0;
+    if (rOpt.mKind == RegionKind::Point) {
+        ncand = npoints;
+    } else if (rOpt.mKind == RegionKind::Cell) {
+        ncand = ncells;
+    } else {
+        if (top_dim < 2)
+            throw std::invalid_argument(
+                "select: side regions name faces of 3-D cells or edges of 2-D cells, and this "
+                "mesh has neither");
+        sides = sel_collect_facets(rMesh, top_dim);
+        if (rOpt.mBoundaryOnly) {
+            const std::vector<std::int64_t> mult = sel_facet_multiplicity(sides);
+            std::vector<char> keep(sides.Size());
+            for (std::size_t f = 0; f < sides.Size(); ++f)
+                keep[f] = mult[f] == 1 ? 1 : 0;
+            sides = sel_filter_facets(sides, keep);
+        }
+        ncand = sides.Size();
+    }
+    result.mNumCandidates = static_cast<std::int64_t>(ncand);
+    std::vector<char> pass(ncand, 1);
+
+    // The owner cell of a candidate, for the per-cell criteria.
+    const auto owner_of = [&](std::size_t i) -> std::size_t {
+        return rOpt.mKind == RegionKind::Side ? static_cast<std::size_t>(sides.mOwner[i]) : i;
+    };
+
+    // Geometry.
+    if (geometric) {
+        if (rOpt.mKind == RegionKind::Point) {
+            parallel_for(ncand, [&](std::size_t i) {
+                if (!inside(point_at(static_cast<std::int64_t>(i))))
+                    pass[i] = 0;
+            });
+        } else if (rOpt.mKind == RegionKind::Side) {
+            parallel_for(ncand, [&](std::size_t i) {
+                std::vector<std::int64_t> scratch;
+                const auto s = static_cast<std::size_t>(sides.mStart[i]);
+                const auto e = static_cast<std::size_t>(sides.mStart[i + 1]);
+                if (!nodes_inside(sides.mNodes.data() + s, e - s, scratch))
+                    pass[i] = 0;
+            });
+        } else {
+            for (std::size_t b = 0; b < nblocks; ++b) {
+                const auto cb = rMesh.Cells(b);
+                const NDArray conn = sel_int64_conn(cb);
+                const std::int64_t* pc = conn.Size() ? conn.As<std::int64_t>() : nullptr;
+                const auto off = static_cast<std::size_t>(base[b]);
+                parallel_for(cb.NumCells(), [&](std::size_t c) {
+                    std::vector<std::int64_t> nodes, scratch;
+                    sel_cell_nodes(cb, pc, c, nodes);
+                    if (!nodes_inside(nodes.data(), nodes.size(), scratch))
+                        pass[off + c] = 0;
+                });
+            }
+        }
+    }
+
+    // Data.
+    if (where) {
+        if (rOpt.mKind == RegionKind::Point) {
+            if (!rMesh.HasPointData(rOpt.mWhereArray)) {
+                if (rMesh.HasCellData(rOpt.mWhereArray))
+                    throw std::invalid_argument(
+                        "select: '" + rOpt.mWhereArray +
+                        "' is cell_data; a point selection compares point_data (convert it first "
+                        "with `data to-point`, or select cells)");
+                throw std::invalid_argument(
+                    "select: " +
+                    data_unknown_key_message(rMesh, DataLocation::Point, rOpt.mWhereArray));
+            }
+            const NDArray& a = rMesh.PointData(rOpt.mWhereArray);
+            if (detail::rows(a) != npoints || (npoints != 0 && data_num_components(a) != 1))
+                throw std::invalid_argument("select: point_data '" + rOpt.mWhereArray +
+                                            "' must be scalar (one value per point)");
+            parallel_for(ncand, [&](std::size_t i) {
+                if (!refine_compare_value(detail::read_double(a, i), rOpt.mWhereOp,
+                                          rOpt.mWhereValue))
+                    pass[i] = 0;
+            });
+        } else {
+            const std::vector<double> v = sel_cell_values(rMesh, rOpt.mWhereArray);
+            parallel_for(ncand, [&](std::size_t i) {
+                if (!refine_compare_value(v[owner_of(i)], rOpt.mWhereOp, rOpt.mWhereValue))
+                    pass[i] = 0;
+            });
+        }
+    }
+
+    // Quality.
+    if (quality) {
+        const QualityReport report = compute_quality(rMesh);
+        // The metric as compute_quality names it, with or without the
+        // `quality:` prefix attach_quality's arrays carry.
+        static const std::string kPrefix = "quality:";
+        const std::string& want = rOpt.mQualityMetric;
+        const std::string bare =
+            want.compare(0, kPrefix.size(), kPrefix) == 0 ? want.substr(kPrefix.size()) : want;
+        const std::vector<NDArray>* arrays = nullptr;
+        std::string known;
+        for (const auto& entry : report.mCellArrays) {
+            const std::string name = entry.first.compare(0, kPrefix.size(), kPrefix) == 0
+                                         ? entry.first.substr(kPrefix.size())
+                                         : entry.first;
+            if (name == bare)
+                arrays = &entry.second;
+            known += (known.empty() ? "" : ", ") + name;
+        }
+        if (arrays == nullptr)
+            throw std::invalid_argument("select: unknown quality metric '" + rOpt.mQualityMetric +
+                                        "' (known: " + known + ")");
+        std::vector<double> v(ncells, std::numeric_limits<double>::quiet_NaN());
+        for (std::size_t b = 0; b < nblocks && b < arrays->size(); ++b) {
+            const NDArray& a = (*arrays)[b];
+            const auto off = static_cast<std::size_t>(base[b]);
+            const std::size_t nc = static_cast<std::size_t>(base[b + 1] - base[b]);
+            if (detail::rows(a) != nc)
+                continue;
+            parallel_for(nc, [&](std::size_t c) { v[off + c] = detail::read_double(a, c); });
+        }
+        parallel_for(ncand, [&](std::size_t i) {
+            if (!refine_compare_value(v[owner_of(i)], rOpt.mQualityOp, rOpt.mQualityValue))
+                pass[i] = 0;
+        });
+    }
+
+    // Component.
+    if (component) {
+        const detail::CellComponents comps = detail::cell_components(rMesh);
+        result.mNumComponents = comps.mCount;
+        if (rOpt.mKind == RegionKind::Point) {
+            std::vector<char> used(npoints, 0);
+            std::vector<std::int64_t> nodes;
+            for (std::size_t b = 0; b < nblocks; ++b) {
+                const auto cb = rMesh.Cells(b);
+                const NDArray conn = sel_int64_conn(cb);
+                const std::int64_t* pc = conn.Size() ? conn.As<std::int64_t>() : nullptr;
+                for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+                    if (comps.mLabel[static_cast<std::size_t>(base[b]) + c] != rOpt.mComponent)
+                        continue;
+                    sel_cell_nodes(cb, pc, c, nodes);
+                    for (const std::int64_t v : nodes)
+                        used[static_cast<std::size_t>(v)] = 1;
+                }
+            }
+            parallel_for(ncand, [&](std::size_t i) {
+                if (!used[i])
+                    pass[i] = 0;
+            });
+        } else {
+            parallel_for(ncand, [&](std::size_t i) {
+                if (comps.mLabel[owner_of(i)] != rOpt.mComponent)
+                    pass[i] = 0;
+            });
+        }
+    }
+
+    // Growth.
+    if (rOpt.mSeed) {
+        if (rOpt.mKind == RegionKind::Cell) {
+            const SelFacets faces = sel_surface_cells(rMesh);
+            if (faces.Size() == 0)
+                throw std::invalid_argument(
+                    "select: growing a cell region needs surface (2-D) cells; for the boundary "
+                    "of a volume mesh select sides instead");
+            const std::vector<char> grown = sel_grow(faces, xyz, rOpt, result.mNumGrown);
+            std::vector<char> in_patch(ncells, 0);
+            for (std::size_t f = 0; f < faces.Size(); ++f)
+                if (grown[f])
+                    in_patch[static_cast<std::size_t>(faces.mOwner[f])] = 1;
+            parallel_for(ncand, [&](std::size_t i) {
+                if (!in_patch[i])
+                    pass[i] = 0;
+            });
+        } else if (rOpt.mKind == RegionKind::Side) {
+            if (top_dim != 3)
+                throw std::invalid_argument(
+                    "select: growing needs faces; the sides of this mesh are edges (select "
+                    "cells of the surface instead)");
+            const std::vector<char> grown = sel_grow(sides, xyz, rOpt, result.mNumGrown);
+            parallel_for(ncand, [&](std::size_t i) {
+                if (!grown[i])
+                    pass[i] = 0;
+            });
+        } else {
+            SelFacets faces;
+            if (has_surface) {
+                faces = sel_surface_cells(rMesh);
+            } else if (top_dim == 3) {
+                SelFacets all = sel_collect_facets(rMesh, 3);
+                const std::vector<std::int64_t> mult = sel_facet_multiplicity(all);
+                std::vector<char> keep(all.Size());
+                for (std::size_t f = 0; f < all.Size(); ++f)
+                    keep[f] = mult[f] == 1 ? 1 : 0;
+                faces = sel_filter_facets(all, keep);
+            }
+            if (faces.Size() == 0)
+                throw std::invalid_argument(
+                    "select: growing needs surface cells or the faces of volume cells, and this "
+                    "mesh has neither");
+            const std::vector<char> grown = sel_grow(faces, xyz, rOpt, result.mNumGrown);
+            std::vector<char> used(npoints, 0);
+            for (std::size_t f = 0; f < faces.Size(); ++f) {
+                if (!grown[f])
+                    continue;
+                for (auto k = faces.mStart[f]; k < faces.mStart[f + 1]; ++k)
+                    used[static_cast<std::size_t>(faces.mNodes[static_cast<std::size_t>(k)])] = 1;
+            }
+            parallel_for(ncand, [&](std::size_t i) {
+                if (!used[i])
+                    pass[i] = 0;
+            });
+        }
+    }
+
+    // The region.
+    std::size_t nsel = 0;
+    for (std::size_t i = 0; i < ncand; ++i)
+        nsel += pass[i] ? 1 : 0;
+    result.mNumSelected = static_cast<std::int64_t>(nsel);
+    const bool side = rOpt.mKind == RegionKind::Side;
+    NDArray entries = side ? NDArray::Uninit(DType::Int64, {nsel, std::size_t{2}})
+                           : NDArray::Uninit(DType::Int64, {nsel});
+    if (nsel > 0) {
+        std::int64_t* dst = entries.As<std::int64_t>();
+        std::size_t j = 0;
+        for (std::size_t i = 0; i < ncand; ++i) {
+            if (!pass[i])
+                continue;
+            if (side) {
+                dst[2 * j] = sides.mOwner[i];
+                dst[2 * j + 1] = sides.mLocal[i];
+            } else {
+                dst[j] = static_cast<std::int64_t>(i);
+            }
+            ++j;
+        }
+    }
+    meshioplusplus::Region region(rOpt.mName, rOpt.mKind, side ? top_dim - 1 : -1, rOpt.mTag,
+                                  std::move(entries));
+    region.Canonicalize();
+
+    Mesh& out = result.mMesh;
+    out = detail::clone_mesh(rMesh,
+                             [](DataLocation, const std::string&, std::string&) { return true; });
+    for (std::size_t i = out.NumRegions(); i-- > 0;) {
+        const meshioplusplus::Region& r = out.Region(i);
+        if (r.mKind == rOpt.mKind && r.mName == rOpt.mName)
+            out.RemoveRegion(i);
+    }
+    out.AddRegion(region);
+    result.mRegion = std::move(region);
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/select.cpp =====
 // ===== begin src/cpp/src/operations/sequence.cpp =====
 #include <algorithm>
 #include <array>
@@ -262275,7 +264346,6 @@ SobolevResult sobolev_deform(const Mesh& rMesh, const SobolevOptions& rOptions) 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/sobolev_deform.cpp =====
 // ===== begin src/cpp/src/operations/split.cpp =====
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
@@ -262300,50 +264370,6 @@ struct SplitGroup {
 // Ensure every group has one (possibly empty) kept list per input block.
 void split_init_group(SplitGroup& rG, std::size_t nblocks) {
     rG.kept.assign(nblocks, {});
-}
-
-// Union-find over global cell indices (flood-fill for connected components).
-std::int64_t split_uf_find(std::vector<std::int64_t>& rParent, std::int64_t x) {
-    while (rParent[static_cast<std::size_t>(x)] != x) {
-        rParent[static_cast<std::size_t>(x)] =
-            rParent[static_cast<std::size_t>(rParent[static_cast<std::size_t>(x)])];
-        x = rParent[static_cast<std::size_t>(x)];
-    }
-    return x;
-}
-
-void split_uf_union(std::vector<std::int64_t>& rParent, std::int64_t a, std::int64_t b) {
-    std::int64_t ra = split_uf_find(rParent, a), rb = split_uf_find(rParent, b);
-    if (ra != rb)
-        rParent[static_cast<std::size_t>(std::max(ra, rb))] = std::min(ra, rb);
-}
-
-// Visit each node index of one cell (rectangular / polygon / polyhedron).
-template <class F>
-void split_visit_nodes(const Mesh::CellView& rCb, std::size_t c, F&& f) {
-    if (rCb.IsPolyhedron()) {
-        for (std::size_t face = 0; face < rCb.NumFaces(c); ++face) {
-            auto fc = rCb.Face(c, face);
-            for (std::size_t k = 0; k < fc.second; ++k)
-                f(fc.first[k]);
-        }
-    } else if (rCb.IsRagged()) {
-        for (std::size_t k = 0; k < rCb.RowSize(c); ++k)
-            f(rCb.Row(c)[k]);
-    } else {
-        const NDArray& conn = rCb.Conn();
-        const std::size_t npc = rCb.NodesPerCell();
-        for (std::size_t k = 0; k < npc; ++k)
-            f(detail::read_int(conn, c * npc + k));
-    }
-}
-
-// The same visit over a rectangular block whose connectivity was read once
-// (`pConn`, `npc` ids per cell).
-template <class F>
-void split_visit_rect(const std::int64_t* pConn, std::size_t npc, std::size_t c, F&& f) {
-    for (std::size_t k = 0; k < npc; ++k)
-        f(pConn[c * npc + k]);
 }
 
 std::vector<SplitGroup> split_by_type(const Mesh& rMesh) {
@@ -262374,73 +264400,23 @@ std::vector<SplitGroup> split_by_type(const Mesh& rMesh) {
 
 std::vector<SplitGroup> split_by_component(const Mesh& rMesh) {
     const std::size_t nblocks = rMesh.NumCellBlocks();
-    const std::size_t n = rMesh.NumPoints();
-
-    // Global cell numbering (blocks concatenated in order).
-    std::vector<std::size_t> block_base(nblocks + 1, 0);
-    std::size_t bi = 0;
-    for (const auto cb : rMesh.CellRange()) {
-        block_base[bi + 1] = block_base[bi] + cb.NumCells();
-        ++bi;
-    }
-    const std::size_t total = block_base[nblocks];
-
-    std::vector<std::int64_t> parent(total);
-    parallel_for_bw(total, [&](std::size_t i) { parent[i] = static_cast<std::int64_t>(i); });
-
-    // Union cells that share a node (first cell per node as the anchor). The
-    // sweep is order-dependent and stays serial; a rectangular block's
-    // connectivity is read once, not through a dtype switch per id.
-    std::vector<std::int64_t> node_first(n, -1);
-    bi = 0;
-    for (const auto cb : rMesh.CellRange()) {
-        const auto visit = [&](std::size_t c, std::int64_t node) {
-            const std::int64_t gc = static_cast<std::int64_t>(block_base[bi] + c);
-            std::int64_t& first = node_first[static_cast<std::size_t>(node)];
-            if (first < 0)
-                first = gc;
-            else
-                split_uf_union(parent, first, gc);
-        };
-        if (!cb.IsPolyhedron() && !cb.IsRagged()) {
-            const detail::Int64View conn(cb.Conn());
-            const std::size_t npc = cb.NodesPerCell();
-            for (std::size_t c = 0; c < cb.NumCells(); ++c)
-                split_visit_rect(conn.Data(), npc, c, [&](std::int64_t node) { visit(c, node); });
-        } else {
-            for (std::size_t c = 0; c < cb.NumCells(); ++c)
-                split_visit_nodes(cb, c, [&](std::int64_t node) { visit(c, node); });
-        }
-        ++bi;
-    }
-
-    // Every root is its component's smallest cell (a union points the larger
-    // root at the smaller) and parent[x] <= x, so one ascending pass resolves
-    // each cell's root. Pieces are numbered in first-seen (ascending gc)
-    // order: a component's first cell is its root, so the piece of a cell is
-    // the number of roots before its own -- a scan of the root flags.
-    for (std::size_t gc = 0; gc < total; ++gc)
-        parent[gc] = parent[static_cast<std::size_t>(parent[gc])];
-    std::vector<std::uint64_t> is_root(total);
-    parallel_for_bw(total, [&](std::size_t gc) {
-        is_root[gc] = parent[gc] == static_cast<std::int64_t>(gc) ? 1 : 0;
-    });
-    std::vector<std::uint64_t> piece_at(total);
-    const std::uint64_t npieces =
-        parallel_exclusive_scan(is_root.data(), total, piece_at.data(), std::uint64_t{0});
+    // The labelling is shared with select_region's component criterion, so the
+    // k-th piece here is its k-th component.
+    const detail::CellComponents comps = detail::cell_components(rMesh);
+    const std::size_t npieces = static_cast<std::size_t>(comps.mCount);
 
     std::vector<SplitGroup> groups(npieces);
     parallel_for(npieces, [&](std::size_t gi) {
         groups[gi].key = std::to_string(gi);
         split_init_group(groups[gi], nblocks);
     });
-    for (std::size_t b = 0; b < nblocks; ++b)
-        for (std::size_t c = 0; c < block_base[b + 1] - block_base[b]; ++c) {
-            const std::size_t gc = block_base[b] + c;
-            groups[piece_at[static_cast<std::size_t>(parent[gc])]].kept[b].push_back(
+    std::size_t gc = 0;
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const std::size_t nc = rMesh.Cells(b).NumCells();
+        for (std::size_t c = 0; c < nc; ++c, ++gc)
+            groups[static_cast<std::size_t>(comps.mLabel[gc])].kept[b].push_back(
                 static_cast<std::int64_t>(c));
-        }
-
+    }
     return groups;
 }
 

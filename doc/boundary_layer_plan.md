@@ -14,7 +14,7 @@ A viscous flow needs thin cells along its walls: layers whose thickness grows fr
 
 **Folding cells.** Where the surface is concave, a stack grown at full height folds its cells over one another. Every cell is judged by its least corner Jacobian; the points of a folding cell have their stacks halved, and after six halvings collapsed. Collapsing rather than stopping keeps the mesh conforming without a front: a collapsed point stays on the surface in every layer, a wedge with one collapsed corner becomes a pyramid on its opposite side face and with two a tetrahedron, and a quad with a collapsed corner is split into two triangles' columns in every layer, so the faces the cells share agree. Garimella and Shephard grow fewer layers there and close the stack with pyramids and tetrahedra on top; collapsing to zero is the simpler end of the same idea and is what is done.
 
-**Sweep.** Copying each point at L levels and joining the levels into cells is `extrude`'s operation too ([roadmap 3.1.2](./roadmap.md#_3-operations)). It is written once, in `detail/layer_sweep`, taking a direction and offsets per point, so `extrude` is a uniform direction and offsets on the same kernel.
+**Sweep.** Copying each point at L levels and joining the levels into cells is `extrude`'s operation too ([roadmap 3.1.2](./extrude.md)). It is written once, in `detail/layer_sweep`, taking a direction and offsets per point, so `extrude` is a uniform direction and offsets on the same kernel.
 
 ## Native or a backend
 

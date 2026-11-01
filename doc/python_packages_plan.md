@@ -1,6 +1,6 @@
 # Split Python packages: plan
 
-The design pass for roadmap 4.7: one MIT base wheel, `meshioplusplus`, and add-on wheels that carry the copyleft libraries, `meshioplusplus-occt`, `meshioplusplus-netgen` and `meshioplusplus-mmg`, each a small extension linked against the base wheel's shared core, in the way KratosMultiphysics ships its applications beside `KratosMultiphysics` with an everything extra on top. v18.0.0 built every phase except Windows for the permissive libraries and for plugins; [What shipped in v18.0.0](#what-shipped-in-v18-0-0) records how the build differs from the design below, and the roadmap holds what is left (4.7).
+The design pass for roadmap 4.7 (3.7 since the operations section closed): one MIT base wheel, `meshioplusplus`, and add-on wheels that carry the copyleft libraries, `meshioplusplus-occt`, `meshioplusplus-netgen` and `meshioplusplus-mmg`, each a small extension linked against the base wheel's shared core, in the way KratosMultiphysics ships its applications beside `KratosMultiphysics` with an everything extra on top. v18.0.0 built every phase except Windows for the permissive libraries and for plugins; [What shipped in v18.0.0](#what-shipped-in-v18-0-0) records how the build differs from the design below, and the roadmap holds what is left (4.7).
 
 ## The problem
 

@@ -548,6 +548,34 @@ def test_gmsh40_partial_physical_tags_keep_block_alignment(tmp_path):
     ]
 
 
+# The fuzz readers shard's minimized input (tests/fuzz/regressions/gmsh): the
+# C++ reader refuses it with ReadError; the Python reference reader must too,
+# not with a bare ValueError from an integer header.
+GMSH_REGRESSIONS = (
+    pathlib.Path(__file__).resolve().parents[2] / "tests/fuzz/regressions/gmsh"
+)
+
+
+def test_gmsh_fuzz_regression_input_is_a_read_error():
+    from meshioplusplus.gmsh import main as py_gmsh
+
+    with pytest.raises(meshioplusplus.ReadError):
+        py_gmsh.read(GMSH_REGRESSIONS / "cell-data-short-of-elements")
+
+
+def test_gmsh40_short_cell_data_raises_read_error(tmp_path):
+    from meshioplusplus.gmsh import main as py_gmsh
+
+    # One value for the fixture's four elements.
+    text = gmsh40_fixture().decode() + (
+        '$ElementData\n1\n"u"\n1\n0\n3\n0\n1\n1\n90 2.5\n$EndElementData\n'
+    )
+    path = tmp_path / "short40.msh"
+    path.write_text(text)
+    with pytest.raises(meshioplusplus.ReadError, match="fewer values"):
+        py_gmsh.read(path)
+
+
 @pytest.mark.parametrize("binary,count_bytes", [(False, 8), (True, 4), (True, 8)])
 def test_gmsh40_empty_mesh(binary, count_bytes, tmp_path):
     from meshioplusplus import _core

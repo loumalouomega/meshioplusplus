@@ -3372,6 +3372,50 @@ TEST(CApi, OptimizeVolumeFlipsAndImproves) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, OptimizeVolumeExChoosesTheObjective) {
+    const std::vector<double> pts = {0.0, 0.0,    0.0,    1.0,    0.0,    0.0,    0.3,    0.9,
+                                     0.0, 0.2252, 0.2808, 0.6977, 0.4659, 0.3149, -0.0367};
+    const std::vector<std::int64_t> conn = {0, 1, 2, 3, 0, 1, 2, 4};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 5, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "tetra", 2, 4, MIO_INT64, conn.data()), MIO_OK);
+
+    mio_optimize_volume_opts o;
+    mio_optimize_volume_opts_init(&o);
+    EXPECT_EQ(o.max_iterations, 10);  // an all-zero struct is NOT the default
+    EXPECT_EQ(o.objective, MIO_OPTIMIZE_VOLUME_WORST);
+    EXPECT_EQ(o.max_ring_size, 7);
+    mio_optimize_volume_report r;
+    mio_mesh* out = mio_optimize_volume_ex(m, &o, &r);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_GE(r.min_dihedral_after, r.min_dihedral_before);
+    EXPECT_EQ(mio_mesh_num_cell_blocks(out), 1);
+    EXPECT_EQ(r.num_flips,
+              r.num_23_flips + r.num_32_flips + r.num_edge_removals + r.num_multi_face_removals);
+    mio_mesh_free(out);
+
+    // The energy objective is the flat entry point's former behaviour.
+    o.objective = MIO_OPTIMIZE_VOLUME_ENERGY;
+    o.relocate = 0;
+    out = mio_optimize_volume_ex(m, &o, &r);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(r.num_23_flips, 1);
+    EXPECT_EQ(r.num_edge_removals + r.num_multi_face_removals + r.num_worst_smoothed, 0);
+    EXPECT_GT(r.min_quality_after, r.min_quality_before + 0.2);
+    mio_mesh_free(out);
+
+    out = mio_optimize_volume_ex(m, nullptr, nullptr);  // NULL: the defaults
+    EXPECT_NE(out, nullptr) << mio_last_error();
+    mio_mesh_free(out);
+    o.objective = 7;
+    EXPECT_EQ(mio_optimize_volume_ex(m, &o, nullptr), nullptr);
+    o.objective = MIO_OPTIMIZE_VOLUME_WORST;
+    o.max_ring_size = 2;
+    EXPECT_EQ(mio_optimize_volume_ex(m, &o, nullptr), nullptr);
+    EXPECT_EQ(mio_optimize_volume_ex(nullptr, &o, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, RefineHexIntoEight) {
     const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
                                      0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
@@ -6150,6 +6194,74 @@ TEST(CApi, TessellateATetra10) {
     EXPECT_NE(std::string(mio_last_error()).find("levels"), std::string::npos) << mio_last_error();
     EXPECT_EQ(mio_tessellate(nullptr, nullptr, nullptr), nullptr);
     mio_mesh_free(m);
+}
+
+TEST(CApi, SelectWritesARegion) {
+    mio_gen_opts g;
+    mio_gen_opts_init(&g);
+    g.counts[0] = g.counts[1] = g.counts[2] = 2;
+    mio_mesh* box = mio_box(&g);
+    ASSERT_NE(box, nullptr) << mio_last_error();
+
+    mio_select_opts o;
+    mio_select_opts_init(&o);
+    EXPECT_EQ(o.kind, MIO_REGION_CELL);  // an all-zero struct is NOT the default
+    EXPECT_EQ(o.tag, -1);
+    EXPECT_EQ(o.component, -1);
+    EXPECT_EQ(o.boundary_only, 1);
+    EXPECT_DOUBLE_EQ(o.feature_angle, 30.0);
+    // No name, then no criterion: refused.
+    EXPECT_EQ(mio_select(box, &o, nullptr), nullptr);
+    o.name = "left";
+    EXPECT_EQ(mio_select(box, &o, nullptr), nullptr);
+
+    o.kind = MIO_REGION_SIDE;
+    o.use_box = 1;
+    o.box_lo[0] = o.box_lo[1] = o.box_lo[2] = -1.0;
+    o.box_hi[0] = 1e-9;
+    o.box_hi[1] = o.box_hi[2] = 2.0;
+    mio_select_report report;
+    mio_mesh* out = mio_select(box, &o, &report);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(report.num_candidates, 24);
+    EXPECT_EQ(report.num_selected, 4);
+    EXPECT_EQ(report.num_grown, -1);
+    mio_regions* regions = mio_regions_create(out);
+    bool found = false;
+    for (int64_t i = 0; i < mio_regions_count(regions); ++i) {
+        char name[32];
+        mio_regions_name(regions, i, name, sizeof(name));
+        mio_region_info info;
+        ASSERT_EQ(mio_regions_info(regions, i, &info), MIO_OK);
+        if (std::string(name) == "left" && info.kind == MIO_REGION_SIDE) {
+            found = true;
+            EXPECT_EQ(info.num_entries, 4);
+            EXPECT_EQ(info.dim, 2);
+        }
+    }
+    EXPECT_TRUE(found);
+    mio_regions_free(regions);
+    mio_mesh_free(out);
+
+    // A patch grown on the boundary, intersected with a quality threshold.
+    mio_select_opts_init(&o);
+    o.name = "top";
+    o.kind = MIO_REGION_SIDE;
+    o.use_seed = 1;
+    o.seed[0] = o.seed[1] = 0.5;
+    o.seed[2] = 5.0;
+    o.quality_metric = "scaled_jacobian";
+    o.quality_compare = MIO_REFINE_GT;
+    o.quality_value = 0.5;
+    out = mio_select(box, &o, &report);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(report.num_grown, 4);
+    EXPECT_EQ(report.num_selected, 4);
+    mio_mesh_free(out);
+    o.quality_compare = 99;
+    EXPECT_EQ(mio_select(box, &o, nullptr), nullptr);
+    EXPECT_EQ(mio_select(nullptr, &o, nullptr), nullptr);
+    mio_mesh_free(box);
 }
 
 TEST(CApi, SegmentAndFitACube) {

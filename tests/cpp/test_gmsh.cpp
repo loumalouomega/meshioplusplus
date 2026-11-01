@@ -815,3 +815,18 @@ TEST(Gmsh, TwoUntaggedRegionsSharingACellWarnsAndKeepsTheFirst) {
     EXPECT_EQ(first.NumEntries(), 2u);
     std::remove(path.c_str());
 }
+
+// Cell data with fewer values than the elements it annotates used to be read
+// past the end of its array (fuzz shard 3: heap-buffer-overflow in slice_rows).
+TEST(Gmsh, ShortCellDataIsAReadError) {
+    const std::string text = mt::gmsh40_fixture(false) +
+                             "$ElementData\n1\n\"u\"\n1\n0\n3\n0\n1\n1\n90 2.5\n$EndElementData\n";
+    const std::string path = gmsh_write_fixture(text);
+    try {
+        meshioplusplus::read_gmsh(path);
+        ADD_FAILURE() << "cell data with one value for four elements was read";
+    } catch (const meshioplusplus::ReadError& e) {
+        EXPECT_NE(std::string(e.what()).find("fewer values"), std::string::npos) << e.what();
+    }
+    std::remove(path.c_str());
+}

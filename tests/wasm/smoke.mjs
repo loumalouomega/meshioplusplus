@@ -1760,8 +1760,12 @@ step('optimizeVolume: ODT-remeshes a tetrahedral mesh', () => {
     assert.equal(out.mesh.cells[0].type, 'tetra');
     assert.ok(out.numTets > 0);
     assert.equal(out.mesh.points.length, tetCube.points.length); // point set invariant
-    assert.ok(out.minQualityAfter >= out.minQualityBefore - 1e-9); // monotone
+    assert.ok(out.minDihedralAfter >= out.minDihedralBefore); // the worst cell never worsens
     assert.ok(out.numFlips >= 0 && out.num23Flips >= 0 && out.num32Flips >= 0);
+    const energy = m.optimizeVolume(tetCube, 5, false, true, true, 1e-6, 'energy');
+    assert.ok(energy.minQualityAfter >= energy.minQualityBefore - 1e-9); // monotone flips
+    assert.equal(energy.numEdgeRemovals + energy.numWorstSmoothed, 0);
+    assert.throws(() => m.optimizeVolume(tetCube, 5, true, true, true, 1e-6, 'best'), /objective/);
 });
 
 step('optimizeVolume is reachable as a convertSurfaceOps pipeline step', () => {
@@ -2594,6 +2598,12 @@ step('every binding is reachable through the wrapper', () => {
         'hasOcct',
         'hasNetgen',
         'hasMmg',
+        'hasMmgElas',
+        'adapt',
+        'discretizeLevelset',
+        'meshDomain',
+        'move',
+        'metricFromHessian',
         'tetrahedralize',
         'hasZstd',
         'hasLz4',
@@ -2793,6 +2803,47 @@ step('availableFormats reports what this build can read and write', () => {
         assert.equal(readers.includes(fmt), full, `${fmt} reader in the ${full ? 'full' : 'lean'} build`);
 });
 
+step('MMG: the full artifact remeshes, the lean one names it (roadmap 3.1.8)', () => {
+    const sq = m.rectangle([4, 4], null, null, 'triangle');
+    const n = sq.points.length / 3;
+    // metricFromHessian needs no MMG: both artifacts. f = x^2 + 10 y^2.
+    const h = new Float64Array(n * 9);
+    for (let i = 0; i < n; ++i) {
+        h[9 * i] = 2;
+        h[9 * i + 4] = 20;
+    }
+    const withH = { ...sq, point_data: { h }, point_data_components: { h: 9 } };
+    const metric = m.metricFromHessian(withH, { hessian: 'h', error: 0.01, hmin: 1e-3, hmax: 10 });
+    assert.equal(metric.point_data.metric.length, n * 6);
+    assert.throws(() => m.metricFromHessian(withH, { hessian: 'h', bogus: 1 }), /bogus/);
+    // A unit square's boundary, for meshDomain; a level set, for discretizeLevelset.
+    const boundary = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0]),
+        dim: 3,
+        cells: [{ type: 'line', data: new Int32Array([0, 1, 1, 2, 2, 3, 3, 0]), nodesPerCell: 2 }],
+    };
+    const ls = new Float64Array(n);
+    for (let i = 0; i < n; ++i) ls[i] = sq.points[3 * i] - 0.5;
+    const withLs = { ...sq, point_data: { ls }, point_data_components: { ls: 1 } };
+    if (full) {
+        const a = m.adapt(sq, { hsiz: 0.1 });
+        assert.equal(a.report.status, 'success');
+        assert.ok(a.report.numPointsOut > a.report.numPointsIn, 'adapt refines to hsiz');
+        assert.ok(['mmg2d', 'mmgs'].includes(a.report.library), a.report.library);
+        const d = m.meshDomain(boundary, { hsiz: 0.2 });
+        assert.equal(d.numSubdomains, 1);
+        assert.ok(d.mesh.cells.some((c) => c.type === 'triangle'), 'meshDomain makes triangles');
+        const l = m.discretizeLevelset(withLs, { levelSet: 'ls' });
+        assert.ok(l.mesh.regions.some((r) => r.name === 'interface'), 'the interface region');
+        assert.throws(() => m.move(sq, { displacement: 'd' }), /ELAS/);
+        assert.throws(() => m.adapt(sq, { hsiz: 0.1, bogus: 1 }), /bogus/);
+    } else {
+        for (const [op, args] of [['adapt', [sq, { hsiz: 0.1 }]], ['meshDomain', [boundary, { hsiz: 0.2 }]],
+            ['discretizeLevelset', [withLs, { levelSet: 'ls' }]], ['move', [sq, { displacement: 'd' }]]])
+            assert.throws(() => m[op](...args), /full: true/, op);
+    }
+});
+
 step('the stays-out set is exactly what this artifact reports (roadmap 6.2.4)', () => {
     // One table per artifact: what each links, and what neither does. KaHIP
     // (the full artifact only), ADIOS2 (vtx), TecIO
@@ -2800,13 +2851,13 @@ step('the stays-out set is exactly what this artifact reports (roadmap 6.2.4)', 
     // stay out of the lean pair; the full artifact adds OpenCASCADE, the codecs
     // KaHIP and Netgen.
     const expected = full
-        ? { hasOcct: true, hasZstd: true, hasLz4: true, hasBzip2: true, hasKahip: true, hasNetgen: true }
-        : { hasOcct: false, hasZstd: false, hasLz4: false, hasBzip2: false, hasKahip: false, hasNetgen: false };
+        ? { hasOcct: true, hasZstd: true, hasLz4: true, hasBzip2: true, hasKahip: true, hasNetgen: true, hasMmg: true }
+        : { hasOcct: false, hasZstd: false, hasLz4: false, hasBzip2: false, hasKahip: false, hasNetgen: false, hasMmg: false };
     for (const [name, value] of Object.entries(expected))
         assert.equal(m[name](), value, name);
     assert.equal(m.hasCgnslib(), true);
-    // Roadmap 3.2.8: no WebAssembly build of MMG yet, in either artifact.
-    assert.equal(m.hasMmg(), false);
+    // Roadmap 3.1.8: MMG reaches the full artifact without ELAS (GPL-3.0).
+    assert.equal(m.hasMmgElas(), false);
     // Roadmap 6.7: the full artifact links Netgen, so "auto" keeps the
     // surface's triangles; the lean one fits them with the native octree
     // backend and refuses "netgen", naming the full artifact.
@@ -5764,6 +5815,25 @@ step('findIntersections and thickness (roadmap 3.1.2, 3.1.4)', () => {
     assert.equal(t.numMissed, 0);
     assert.ok(Math.abs(t.min - 2) < 0.05);
     assert.throws(() => m.thickness(a, { direction: 'sideways' }), /direction/);
+});
+
+step('selectRegion writes one named region', () => {
+    const box = m.box([2, 2, 2], [2, 2, 2]);
+    const left = m.selectRegion(box, 'left', {
+        kind: 'side', box: [-1, -1, -1, 1e-9, 3, 3],
+    });
+    assert.equal(left.numCandidates, 24);
+    assert.equal(left.numSelected, 4);
+    assert.equal(left.numGrown, -1);
+    assert.ok(left.mesh.regions.some(r => r.name === 'left' && r.kind === 'side'));
+    const top = m.selectRegion(box, 'top', { kind: 'side', seed: [1, 1, 5] });
+    assert.equal(top.numGrown, 4);
+    const half = m.selectRegion(box, 'half', {
+        plane: [1, 0, 0, 1, 0, 0], mode: 'centroid', quality: ['scaled_jacobian', '>', 0.5],
+    });
+    assert.equal(half.numSelected, 4);
+    assert.throws(() => m.selectRegion(box, 'none'), /criterion/);
+    assert.throws(() => m.selectRegion(box, 'x', { bogus: 1 }), /bogus/);
 });
 
 step('findInterface, contactPairs and splitInterface', () => {
