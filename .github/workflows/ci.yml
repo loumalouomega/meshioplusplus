@@ -48,7 +48,7 @@ jobs:
   cpp-tests:
     name: C++ tests (${{ matrix.mesh }} mesh / ${{ matrix.parallel }})
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -232,7 +232,7 @@ jobs:
   cpp-sanitize:
     name: C++ tests (ASan + UBSan)
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1177,7 +1177,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
         python-version: ["3.9", "3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
