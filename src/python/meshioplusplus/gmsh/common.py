@@ -6,11 +6,38 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from .. import _node_order
-from .._common import warn
+from .._common import cell_data_from_raw, warn
 from .._exceptions import ReadError, WriteError
 
 c_int = np.dtype("int32")
 c_double = np.dtype("float64")
+
+
+def _header_int(f, tag):
+    """One integer header line of a data section; anything else is ReadError."""
+    line = f.readline().decode()
+    try:
+        return int(line)
+    except ValueError:
+        raise ReadError(
+            f"Gmsh ${tag}: header line {line.strip()!r} is not an integer"
+        ) from None
+
+
+def checked_cell_data(cells, cell_data_raw):
+    """``cell_data_from_raw`` for the Gmsh readers: short cell data is refused.
+
+    The other formats share ``cell_data_from_raw``, which splits silently; a
+    Gmsh ElementData array with fewer values than the elements it annotates is
+    corrupt input, the same case the C++ reader refuses.
+    """
+    total = sum(len(c) for c in cells)
+    for data in cell_data_raw.values():
+        if len(data) < total:
+            raise ReadError(
+                "Gmsh: cell data has fewer values than the elements it annotates"
+            )
+    return cell_data_from_raw(cells, cell_data_raw)
 
 
 def _remap_periodic(periodic, point_tags):
@@ -125,19 +152,23 @@ def _read_physical_names(f, field_data):
 
 def _read_data(f, tag, data_dict, data_size, is_ascii):
     # Read string tags
-    num_string_tags = int(f.readline().decode())
+    num_string_tags = _header_int(f, tag)
     string_tags = [
         f.readline().decode().strip().replace('"', "") for _ in range(num_string_tags)
     ]
     # The real tags typically only contain one value, the time.
     # Discard it.
-    num_real_tags = int(f.readline().decode())
+    num_real_tags = _header_int(f, tag)
     for _ in range(num_real_tags):
         f.readline()
-    num_integer_tags = int(f.readline().decode())
-    integer_tags = [int(f.readline().decode()) for _ in range(num_integer_tags)]
+    num_integer_tags = _header_int(f, tag)
+    if num_integer_tags < 3:
+        raise ReadError(f"Gmsh ${tag}: needs at least three integer tags")
+    integer_tags = [_header_int(f, tag) for _ in range(num_integer_tags)]
     num_components = integer_tags[1]
     num_items = integer_tags[2]
+    if num_components < 0 or num_items < 0:
+        raise ReadError(f"Gmsh ${tag}: negative component or item count")
     if is_ascii:
         # We need to read num_items * (1 + num_components) floats.
         # np.fromfile(..., sep=" ") can be flaky if there are newlines or other
@@ -148,7 +179,12 @@ def _read_data(f, tag, data_dict, data_size, is_ascii):
             line = f.readline().decode().split()
             if not line:
                 break
-            data.extend([float(val) for val in line])
+            try:
+                data.extend([float(val) for val in line])
+            except ValueError:
+                raise ReadError(
+                    f"Gmsh ${tag}: value line {line!r} is not numeric"
+                ) from None
         data = np.array(data).reshape((num_items, 1 + num_components))
         # The first entry is the node number
         data = data[:, 1:]

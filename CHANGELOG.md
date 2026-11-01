@@ -18,6 +18,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 - **Added: `poly_to_tet`** ([tetrahedral ⇄ polyhedral](doc/tet_poly.md)): `convert_cells(mode="simplexify")`, except that a polyhedron that already is a tetrahedron becomes exactly that one `tetra`, with no new points, so a tetrahedral mesh stored as `polyhedron4` cells comes back exactly. `convert_cells` itself is unchanged.
 - Both operations are on every surface: Python, both CLIs (`tet-to-poly`, `poly-to-tet`), the pipeline (`TetToPoly`, `PolyToTet`), MCP, the C API (`mio_tet_to_poly` with `mio_tet_to_poly_opts`, and `mio_poly_to_tet`), Fortran, Julia, R and WASM (`tetToPoly`, `polyToTet`). The example notebook `48_tet_poly.ipynb` shows them.
 - **ABI:** `MESHIOPLUSPLUS_ABI_VERSION` 36 -> 37 (Tier A): `OptimizeVolumeOptions` appends `mObjective` and `mMaxRingSize` (40 -> 48 bytes) and `OptimizeVolumeResult` five fields; the new headers `operations/tet_poly.hpp` and `operations/select.hpp` ride along. See [ABI](doc/abi.md).
+- **Fixed: Gmsh 4.0 and 4.1 readers refuse cell data shorter than its elements.** The C++ reader read past the end of the array (a heap-buffer-overflow the fuzz readers shard found); both readers now raise `ReadError`. The Python reference reader also raises `ReadError`, not a bare `ValueError`, for a malformed data-section header or a non-numeric value.
 
 ## v18.0.0 (2026-10-30)
 
