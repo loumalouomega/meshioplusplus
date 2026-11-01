@@ -159,6 +159,7 @@
 #include "meshioplusplus/operations/crop.hpp"
 #include "meshioplusplus/operations/data_average.hpp"
 #include "meshioplusplus/operations/adjacency.hpp"
+#include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/decimate_volume.hpp"
 #include "meshioplusplus/operations/data_calc.hpp"
@@ -6172,6 +6173,39 @@ PYBIND11_MODULE(_core, m) {
         py::arg("fixed_points") = py::none(), py::arg("fixed_points_array") = "",
         py::arg("fix_boundary") = false, py::arg("record_filtered") = false,
         py::arg("max_iterations") = 128, py::arg("tolerance") = 1e-10);
+
+    // Geodesic distance by the heat method. {mesh, counters}. See
+    // operations/geodesic.hpp.
+    m.def(
+        "geodesic_distance",
+        [](py::object pymesh, std::vector<std::int64_t> sources, const std::string& source_region,
+           double time_factor, double tolerance, std::int64_t max_iterations) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::GeodesicOptions options;
+            options.mSources = std::move(sources);
+            options.mSourceRegion = source_region;
+            options.mTimeFactor = time_factor;
+            options.mTolerance = tolerance;
+            options.mMaxIterations = max_iterations;
+            meshioplusplus::GeodesicResult r =
+                core_nogil([&] { return meshioplusplus::geodesic_distance(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_sources"] = r.mNumSources;
+            out["num_unreached"] = r.mNumUnreached;
+            out["num_degenerate"] = r.mNumDegenerate;
+            out["max_distance"] = r.mMaxDistance;
+            out["time_step"] = r.mTimeStep;
+            out["heat_iterations"] = r.mHeatIterations;
+            out["poisson_iterations"] = r.mPoissonIterations;
+            out["converged"] = r.mConverged;
+            return out;
+        },
+        py::arg("mesh"), py::arg("sources") = std::vector<std::int64_t>{},
+        py::arg("source_region") = "", py::arg("time_factor") = 1.0, py::arg("tolerance") = 1e-10,
+        py::arg("max_iterations") = 0);
 
     m.def(
         "hessian",

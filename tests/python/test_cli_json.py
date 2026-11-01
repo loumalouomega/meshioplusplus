@@ -583,6 +583,17 @@ WRITING = [
         ],
     ),
     (
+        "geodesic",
+        lambda f, out: [
+            "geodesic",
+            f["sphere_a"],
+            out + ".vtu",
+            "--source",
+            "0,3",
+            "--json",
+        ],
+    ),
+    (
         "graph_cell",
         lambda f, out: [
             "graph",

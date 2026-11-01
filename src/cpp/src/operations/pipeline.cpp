@@ -77,6 +77,7 @@
 #include "meshioplusplus/operations/thickness.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/repair.hpp"
+#include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
 #include "meshioplusplus/operations/crop.hpp"
 #include "meshioplusplus/operations/data_average.hpp"
@@ -352,10 +353,10 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Segment",
          {"FeatureAngle", "NormalTolerance", "CurvatureTolerance", "MinPatchCells", "Region",
           "Prefix", "Method", "Tolerance"}},
-        {"Select",
-         {"Name", "Kind", "Tag", "Mode", "BoundaryOnly", "Bbox", "Point", "Normal", "Center",
-          "Radius", "Where", "Compare", "Value", "Quality", "QualityCompare", "QualityValue",
-          "Component", "Seed", "FeatureAngle", "NormalTolerance"}},
+        {"Select", {"Name",         "Kind",      "Tag",    "Mode",         "BoundaryOnly",
+                    "Bbox",         "Point",     "Normal", "Center",       "Radius",
+                    "Where",        "Compare",   "Value",  "Quality",      "QualityCompare",
+                    "QualityValue", "Component", "Seed",   "FeatureAngle", "NormalTolerance"}},
         {"FitPrimitives",
          {"PatchData", "Tolerance", "Relative", "MinInlierFraction", "Types", "MaxIterations"}},
         {"FitCad",
@@ -437,6 +438,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"SobolevDeform",
          {"Array", "LengthScale", "FixedPointsArray", "FixBoundary", "RecordFiltered",
           "MaxIterations", "Tolerance"}},
+        {"GeodesicDistance",
+         {"Sources", "SourceRegion", "TimeFactor", "Tolerance", "MaxIterations"}},
         {"EstimateError", {"Array", "Method", "Marking", "MarkingValue", "Output", "Marked"}},
         {"ErrorSize", {"Array", "TargetError", "Order", "MinSize", "MaxSize", "Output"}},
         {"Adapt",
@@ -2260,6 +2263,24 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                                         std::to_string(sr.mNumIterations) +
                                         " iteration(s); the last iterate is returned");
         return std::move(sr.mMesh);
+    }
+    if (op == "GeodesicDistance") {
+        GeodesicOptions opts;
+        opts.mSources = pipe_ivec(rStep, "Sources");
+        opts.mSourceRegion = pipe_text(rStep, "SourceRegion", "");
+        opts.mTimeFactor = pipe_number(rStep, "TimeFactor", 1.0);
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 1e-10);
+        opts.mMaxIterations = static_cast<std::int64_t>(pipe_number(rStep, "MaxIterations", 0));
+        GeodesicResult gr = geodesic_distance(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumSources", static_cast<double>(gr.mNumSources)},
+                        {"NumUnreached", static_cast<double>(gr.mNumUnreached)},
+                        {"MaxDistance", gr.mMaxDistance},
+                        {"Converged", gr.mConverged ? 1.0 : 0.0}});
+        if (!gr.mConverged)
+            rReport.mWarnings.push_back(
+                "geodesic_distance: a solve hit its iteration cap; the distance is approximate");
+        return std::move(gr.mMesh);
     }
     if (op == "EstimateError") {
         // A pure data step: geometry is untouched, so the pipeline carries the

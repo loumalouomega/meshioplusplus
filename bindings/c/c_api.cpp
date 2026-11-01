@@ -74,6 +74,7 @@
 #include "meshioplusplus/providers.hpp"
 #include "meshioplusplus/detail/compressed_input.hpp"
 #include "meshioplusplus/operations/adjacency.hpp"
+#include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
@@ -7178,6 +7179,54 @@ mio_mesh* mio_sobolev_deform(const mio_mesh* mesh, const mio_sobolev_opts* opts,
             report->num_isolated = r.mNumIsolated;
             report->residual = r.mResidual;
             report->max_displacement = r.mMaxDisplacement;
+            report->converged = r.mConverged ? 1 : 0;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+// --- geodesic distance (roadmap 7.3.1) ---------------------------------------
+
+static_assert(sizeof(mio_geodesic_opts) == 96, "mio_geodesic_opts grew outside its reserved tail");
+static_assert(sizeof(mio_geodesic_report) == 96,
+              "mio_geodesic_report grew outside its reserved tail");
+
+void mio_geodesic_opts_init(mio_geodesic_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_geodesic_opts{};
+    opts->time_factor = 1.0;
+    opts->tolerance = 1e-10;
+}
+
+mio_mesh* mio_geodesic_distance(const mio_mesh* mesh, const mio_geodesic_opts* opts,
+                                mio_geodesic_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        if (!opts)
+            throw std::invalid_argument("meshio++: geodesic_distance: opts is NULL");
+        if (opts->num_sources < 0 || (opts->num_sources > 0 && !opts->sources))
+            throw std::invalid_argument(
+                "meshio++: geodesic_distance: sources is NULL or num_sources negative");
+        meshioplusplus::GeodesicOptions options;
+        if (opts->num_sources > 0)
+            options.mSources.assign(opts->sources, opts->sources + opts->num_sources);
+        if (opts->source_region)
+            options.mSourceRegion = opts->source_region;
+        options.mTimeFactor = opts->time_factor;
+        options.mTolerance = opts->tolerance;
+        options.mMaxIterations = opts->max_iterations;
+        meshioplusplus::GeodesicResult r = meshioplusplus::geodesic_distance(mesh->mMesh, options);
+        if (report) {
+            *report = mio_geodesic_report{};
+            report->num_sources = r.mNumSources;
+            report->num_unreached = r.mNumUnreached;
+            report->num_degenerate = r.mNumDegenerate;
+            report->heat_iterations = r.mHeatIterations;
+            report->poisson_iterations = r.mPoissonIterations;
+            report->max_distance = r.mMaxDistance;
+            report->time_step = r.mTimeStep;
             report->converged = r.mConverged ? 1 : 0;
         }
         return new mio_mesh{std::move(r.mMesh)};

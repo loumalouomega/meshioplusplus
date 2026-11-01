@@ -98,6 +98,7 @@ from .. import (
     fit_cad,
     fit_primitives,
     geo_sphere,
+    geodesic_distance,
     geometry_descriptors,
     gradient,
     grid,
@@ -4010,6 +4011,43 @@ def tool_shrinkwrap(
     )
 
 
+def tool_geodesic_distance(
+    input_path,
+    output_path,
+    sources=None,
+    source_region="",
+    input_format=None,
+    output_format=None,
+    time_factor=1.0,
+    tolerance=1e-10,
+    max_iterations=0,
+):
+    """The distance along a triangle surface from source points to every
+    point, by the heat method; writes point_data geodesic:distance."""
+    mesh = _load(input_path, input_format)
+    out, report = geodesic_distance(
+        mesh,
+        [int(v) for v in (sources or [])],
+        source_region=source_region or None,
+        time_factor=time_factor,
+        tolerance=tolerance,
+        max_iterations=max_iterations,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_sources=int(report["num_sources"]),
+        num_unreached=int(report["num_unreached"]),
+        num_degenerate=int(report["num_degenerate"]),
+        max_distance=float(report["max_distance"]),
+        time_step=float(report["time_step"]),
+        heat_iterations=int(report["heat_iterations"]),
+        poisson_iterations=int(report["poisson_iterations"]),
+        converged=bool(report["converged"]),
+    )
+
+
 def tool_sobolev_deform(
     input_path,
     output_path,
@@ -6785,6 +6823,14 @@ TOOL_REGISTRY = OrderedDict(
         (
             "sobolev_deform",
             {"fn": tool_sobolev_deform, "wraps": ("sobolev_deform",), "gated": None},
+        ),
+        (
+            "geodesic_distance",
+            {
+                "fn": tool_geodesic_distance,
+                "wraps": ("geodesic_distance",),
+                "gated": None,
+            },
         ),
         (
             "estimate_error",

@@ -1225,6 +1225,31 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
+    !> Interop mirror of C `mio_geodesic_opts`. Field order/types are ABI.
+    type, bind(c) :: mio_geodesic_opts_t
+        type(c_ptr) :: sources = c_null_ptr
+        integer(c_int64_t) :: num_sources = 0
+        type(c_ptr) :: source_region = c_null_ptr
+        real(c_double) :: time_factor = 1.0_c_double
+        real(c_double) :: tolerance = 1.0e-10_c_double
+        integer(c_int64_t) :: max_iterations = 0
+        integer(c_int64_t) :: reserved(6) = 0
+    end type
+
+    !> Interop mirror of C `mio_geodesic_report`. Field order/types are ABI.
+    type, bind(c) :: mio_geodesic_report_t
+        integer(c_int64_t) :: num_sources = 0
+        integer(c_int64_t) :: num_unreached = 0
+        integer(c_int64_t) :: num_degenerate = 0
+        integer(c_int64_t) :: heat_iterations = 0
+        integer(c_int64_t) :: poisson_iterations = 0
+        real(c_double) :: max_distance = 0.0_c_double
+        real(c_double) :: time_step = 0.0_c_double
+        integer(c_int32_t) :: converged = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
     !> Interop mirror of C `mio_sobolev_opts`. Field order/types are ABI.
     type, bind(c) :: mio_sobolev_opts_t
         type(c_ptr) :: array = c_null_ptr
@@ -1989,6 +2014,7 @@ module meshioplusplus
         procedure :: check_quality => mesh_check_quality
         procedure :: repair => mesh_repair
         procedure :: sobolev_deform => mesh_sobolev_deform
+        procedure :: geodesic_distance => mesh_geodesic_distance
         procedure :: remesh_volume => mesh_remesh_volume
         procedure :: split => mesh_split
         procedure :: convert_cells => mesh_convert_cells
@@ -3540,6 +3566,20 @@ module meshioplusplus
             type(c_ptr), value :: h, target
             type(mio_shrinkwrap_opts_t), intent(in) :: opts
             type(mio_shrinkwrap_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_geodesic_opts_init(opts) bind(c, name="mio_geodesic_opts_init")
+            import :: mio_geodesic_opts_t
+            type(mio_geodesic_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_geodesic_distance(h, opts, report) &
+                bind(c, name="mio_geodesic_distance") result(r)
+            import :: c_ptr, mio_geodesic_opts_t, mio_geodesic_report_t
+            type(c_ptr), value :: h
+            type(mio_geodesic_opts_t), intent(in) :: opts
+            type(mio_geodesic_report_t), intent(out) :: report
             type(c_ptr) :: r
         end function
 
@@ -9325,6 +9365,57 @@ contains
             inconsistent_pairs_after = int(report%quality_after%inconsistent_pairs, int64)
         if (present(boundary_edges_after)) &
             boundary_edges_after = int(report%quality_after%boundary_edges, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Geodesic distance on a triangle surface by the heat method: a new mesh
+    !> with point data "geodesic:distance". `sources` are **1-based** point ids;
+    !> `source_region` names a region whose points are sources too. A point in
+    !> no triangle, or in a piece with no source, gets NaN. See doc/geodesic.md.
+    function mesh_geodesic_distance(self, sources, source_region, time_factor, tolerance, &
+                                    max_iterations, num_unreached, max_distance, converged, &
+                                    stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer(int64), intent(in), optional :: sources(:)
+        character(*), intent(in), optional :: source_region
+        real(real64), intent(in), optional :: time_factor, tolerance
+        integer(int64), intent(in), optional :: max_iterations
+        integer(int64), intent(out), optional :: num_unreached
+        real(real64), intent(out), optional :: max_distance
+        logical, intent(out), optional :: converged
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr) :: res
+        type(mio_geodesic_opts_t) :: opts
+        type(mio_geodesic_report_t) :: report
+        integer(c_int64_t), allocatable, target :: ids(:)
+        character(kind=c_char, len=STRBUF_LEN), target :: region_buf
+
+        call c_mio_geodesic_opts_init(opts)
+        if (present(sources)) then
+            allocate (ids(size(sources)))
+            ids = int(sources, c_int64_t) - 1_c_int64_t
+            opts%num_sources = int(size(sources), c_int64_t)
+            if (size(sources) > 0) opts%sources = c_loc(ids(1))
+        end if
+        if (present(source_region)) then
+            region_buf = trim(source_region)//c_null_char
+            opts%source_region = c_loc(region_buf(1:1))
+        end if
+        if (present(time_factor)) opts%time_factor = real(time_factor, c_double)
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(max_iterations)) opts%max_iterations = int(max_iterations, c_int64_t)
+
+        res = c_mio_geodesic_distance(self%handle, opts, report)
+        if (.not. c_associated(res)) then
+            call handle_failure('geodesic_distance', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = res
+        if (present(num_unreached)) num_unreached = int(report%num_unreached, int64)
+        if (present(max_distance)) max_distance = real(report%max_distance, real64)
+        if (present(converged)) converged = report%converged /= 0
         call clear_status(stat, errmsg)
     end function
 

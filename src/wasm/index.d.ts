@@ -4083,6 +4083,36 @@ export interface MeshioPlusPlusModule {
   };
 
   /**
+   * Geodesic distance on a triangle surface by the heat method: `mesh`
+   * carries the point data `geodesic:distance`, the distance along the surface
+   * to the nearest source (0-based point ids, and/or the points of
+   * `options.sourceRegion`). A point in no triangle, or in a piece with no
+   * source, gets `NaN`. See doc/geodesic.md.
+   * @throws {Error} without a source, or on a cell type that is not a linear
+   *   triangle of a surface (naming the operation that makes one).
+   */
+  geodesicDistance(
+    mesh: Mesh,
+    sources: ArrayLike<number> | number,
+    options?: {
+      sourceRegion?: string;
+      timeFactor?: number;
+      tolerance?: number;
+      maxIterations?: number;
+    },
+  ): {
+    mesh: Mesh;
+    numSources: number;
+    numUnreached: number;
+    numDegenerate: number;
+    maxDistance: number;
+    timeStep: number;
+    heatIterations: number;
+    poissonIterations: number;
+    converged: boolean;
+  };
+
+  /**
    * Sobolev (Helmholtz-filtered) deformation: solve `(M + l^2 K) u = M d`
    * over the mesh's own P1 operators and move the points by `u` -- a
    * screened-Poisson low-pass filter of the raw displacement whose cutoff

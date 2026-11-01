@@ -136,6 +136,7 @@
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/detail/length_unit.hpp"
 #include "meshioplusplus/operations/adjacency.hpp"
+#include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
@@ -451,6 +452,7 @@ void print_usage(std::ostream& os) {
           "  split-interface        Split point fans along a Side region\n"
           "  hausdorff               Hausdorff distance between two surfaces\n"
           "                            (--max D: nonzero exit when it is exceeded)\n"
+          "  geodesic                Surface distance from source points (heat method)\n"
           "  graph                   Write a mesh's node or cell graph as a METIS or Scotch file\n"
           "  periodic                Match the nodes of two regions a transform maps together\n"
           "  repair                  Fix a surface's orientation, holes and bowties\n"
@@ -3848,6 +3850,70 @@ std::vector<double> cli_numbers(const std::string& rText, std::size_t Count, con
                                  std::to_string(Count) + " numbers, got " +
                                  std::to_string(out.size()));
     return out;
+}
+
+// geodesic: the surface distance from source points by the heat method. See
+// operations/geodesic.hpp and doc/geodesic.md.
+int cmd_geodesic(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"source", {}, true},
+                                  {"source-region", {}, true},
+                                  {"time-factor", {}, true},
+                                  {"tolerance", {}, true},
+                                  {"max-iterations", {}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("geodesic requires INFILE OUTFILE");
+    meshioplusplus::GeodesicOptions o;
+    if (has_opt(p, "source")) {
+        const std::string text = opt_value(p, "source");
+        std::size_t at = 0;
+        while (at <= text.size()) {
+            const std::size_t comma = std::min(text.find(',', at), text.size());
+            const std::string item = text.substr(at, comma - at);
+            if (item.find_first_not_of(" \t") != std::string::npos) {
+                try {
+                    o.mSources.push_back(std::stoll(item));
+                } catch (const std::exception&) {
+                    throw std::runtime_error("geodesic: --source expects comma-separated integers");
+                }
+            }
+            at = comma + 1;
+        }
+    }
+    o.mSourceRegion = opt_value(p, "source-region");
+    if (has_opt(p, "time-factor"))
+        o.mTimeFactor = meshioplusplus::detail::stod_c(opt_value(p, "time-factor"));
+    if (has_opt(p, "tolerance"))
+        o.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    if (has_opt(p, "max-iterations"))
+        o.mMaxIterations = std::stoll(opt_value(p, "max-iterations"));
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::GeodesicResult r = meshioplusplus::geodesic_distance(mesh, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Field("num_sources", r.mNumSources);
+        json.Field("num_unreached", r.mNumUnreached);
+        json.Field("num_degenerate", r.mNumDegenerate);
+        json.Field("max_distance", r.mMaxDistance);
+        json.Field("time_step", r.mTimeStep);
+        json.Field("heat_iterations", r.mHeatIterations);
+        json.Field("poisson_iterations", r.mPoissonIterations);
+        json.Field("converged", r.mConverged);
+        json.EndObject();
+        return 0;
+    }
+    char buf[64];
+    meshioplusplus::detail::snprintf_c(buf, sizeof(buf), "%.6g", r.mMaxDistance);
+    std::cout << "geodesic distance from " << r.mNumSources << " source(s): max " << buf << ", "
+              << r.mNumUnreached << " unreached point(s)\n";
+    return 0;
 }
 
 // graph: the node / clique / cell graph as a METIS or Scotch graph file. See
@@ -8615,6 +8681,8 @@ int main(int argc, char** argv) {
             return cmd_split_interface(rest);
         if (cmd == "hausdorff")
             return cmd_hausdorff(rest);
+        if (cmd == "geodesic")
+            return cmd_geodesic(rest);
         if (cmd == "graph")
             return cmd_graph(rest);
         if (cmd == "periodic")

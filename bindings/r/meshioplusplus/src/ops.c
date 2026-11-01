@@ -1245,6 +1245,38 @@ SEXP R_mio_sobolev_deform(SEXP mesh, SEXP array, SEXP length_scale, SEXP fixed_p
     return res;
 }
 
+SEXP R_mio_geodesic_distance(SEXP mesh, SEXP sources, SEXP source_region, SEXP time_factor,
+                             SEXP tolerance, SEXP max_iterations) {
+    mio_geodesic_opts opts;
+    mio_geodesic_report report;
+    mio_geodesic_opts_init(&opts);
+    SEXP src = PROTECT(Rf_coerceVector(sources, REALSXP));
+    const R_xlen_t n = Rf_xlength(src);
+    int64_t *ids = n > 0 ? (int64_t *)R_alloc((size_t)n, sizeof(int64_t)) : NULL;
+    for (R_xlen_t i = 0; i < n; ++i) ids[i] = (int64_t)REAL(src)[i] - 1; /* 1-based in R */
+    opts.sources = ids;
+    opts.num_sources = (int64_t)n;
+    opts.source_region = mio_r_opt_string(source_region);
+    opts.time_factor = mio_r_double(time_factor, "time_factor");
+    opts.tolerance = mio_r_double(tolerance, "tolerance");
+    opts.max_iterations = (int64_t)mio_r_double(max_iterations, "max_iterations");
+    mio_mesh *out = mio_geodesic_distance(mio_r_mesh(mesh), &opts, &report);
+    UNPROTECT(1);
+    if (out == NULL) mio_r_fail("geodesic_distance");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP ns = PROTECT(Rf_ScalarReal((double)report.num_sources));
+    SEXP nu = PROTECT(Rf_ScalarReal((double)report.num_unreached));
+    SEXP md = PROTECT(Rf_ScalarReal(report.max_distance));
+    SEXP ts = PROTECT(Rf_ScalarReal(report.time_step));
+    SEXP cv = PROTECT(Rf_ScalarLogical(report.converged != 0));
+    const char *names[] = {"mesh", "num_sources", "num_unreached", "max_distance", "time_step",
+                           "converged"};
+    SEXP values[] = {mo, ns, nu, md, ts, cv};
+    SEXP res = PROTECT(mio_r_named_list(6, names, values));
+    UNPROTECT(7);
+    return res;
+}
+
 /* --- combining / comparing ---------------------------------------------- */
 
 SEXP R_mio_merge(SEXP meshes, SEXP weld, SEXP atol, SEXP source_tag, SEXP data_policy,

@@ -131,6 +131,7 @@
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/adjacency.hpp"
+#include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
@@ -7090,6 +7091,43 @@ val sobolev_deform_js(const val& rMeshObj, const std::string& rArray, double len
     });
 }
 
+/**
+ * @brief Geodesic distance by the heat method. @p rOptions is `{sourceRegion,
+ * timeFactor, tolerance, maxIterations}`, every key optional. See
+ * operations/geodesic.hpp.
+ */
+val geodesic_distance_js(const val& rMeshObj, const val& rSources, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::GeodesicOptions options;
+        for (const double id : emscripten::vecFromJSArray<double>(rSources))
+            options.mSources.push_back(static_cast<std::int64_t>(id));
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("sourceRegion"))
+                options.mSourceRegion = rOptions["sourceRegion"].as<std::string>();
+            if (rOptions.hasOwnProperty("timeFactor"))
+                options.mTimeFactor = rOptions["timeFactor"].as<double>();
+            if (rOptions.hasOwnProperty("tolerance"))
+                options.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("maxIterations"))
+                options.mMaxIterations =
+                    static_cast<std::int64_t>(rOptions["maxIterations"].as<double>());
+        }
+        meshioplusplus::GeodesicResult r =
+            meshioplusplus::geodesic_distance(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numSources", static_cast<double>(r.mNumSources));
+        out.set("numUnreached", static_cast<double>(r.mNumUnreached));
+        out.set("numDegenerate", static_cast<double>(r.mNumDegenerate));
+        out.set("maxDistance", r.mMaxDistance);
+        out.set("timeStep", r.mTimeStep);
+        out.set("heatIterations", static_cast<double>(r.mHeatIterations));
+        out.set("poissonIterations", static_cast<double>(r.mPoissonIterations));
+        out.set("converged", r.mConverged);
+        return out;
+    });
+}
+
 val optimize_volume_js(const val& rMeshObj, double maxIterations, bool relocate, bool flip,
                        bool preserveBoundary, double minImprovement, const std::string& rObjective,
                        double maxRingSize) {
@@ -9325,6 +9363,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("repair", &repair_js);
     emscripten::function("shrinkwrap", &shrinkwrap_js);
     emscripten::function("sobolevDeform", &sobolev_deform_js);
+    emscripten::function("geodesicDistance", &geodesic_distance_js);
     emscripten::function("cropBbox", &crop_bbox_js);
     emscripten::function("cropPlane", &crop_plane_js);
     emscripten::function("cropPredicate", &crop_predicate_js);

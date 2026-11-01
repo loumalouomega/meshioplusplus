@@ -3910,6 +3910,42 @@ function sobolev_deform(m::Mesh, array::AbstractString, length_scale::Real;
 end
 
 """
+    geodesic_distance(m, sources=Int[]; source_region="", time_factor=1.0,
+                      tolerance=1e-10, max_iterations=0)
+        -> (; mesh, num_sources, num_unreached, num_degenerate, max_distance,
+             time_step, heat_iterations, poisson_iterations, converged)
+
+Geodesic distance on a triangle surface by the heat method: `mesh` carries the
+point data `geodesic:distance`, the distance along the surface to the nearest
+source. `sources` are **1-based** point ids; `source_region` names a region
+whose points are sources too. A point in no triangle, or in a piece with no
+source, gets `NaN`. See `doc/geodesic.md`.
+"""
+function geodesic_distance(m::Mesh, sources::AbstractVector{<:Integer}=Int[];
+                           source_region::AbstractString="", time_factor::Real=1.0,
+                           tolerance::Real=1e-10, max_iterations::Integer=0)
+    report = Ref{_CGeodesicReport}()
+    ids = Int64[Int64(s) - 1 for s in sources]
+    region_c = Vector{UInt8}(codeunits(String(source_region) * "\0"))
+    ptr = GC.@preserve ids region_c begin
+        opts = _CGeodesicOpts(isempty(ids) ? Ptr{Int64}(C_NULL) : pointer(ids),
+                              Int64(length(ids)), Cstring(pointer(region_c)),
+                              Float64(time_factor), Float64(tolerance), Int64(max_iterations),
+                              ntuple(_ -> Int64(0), 6))
+        ccall(_sym(:mio_geodesic_distance), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CGeodesicOpts}, Ptr{_CGeodesicReport}),
+              _handle(m), Ref(opts), report)
+    end
+    r = _check_ptr(ptr)
+    rep = report[]
+    (mesh=Mesh(r), num_sources=Int(rep.num_sources), num_unreached=Int(rep.num_unreached),
+     num_degenerate=Int(rep.num_degenerate), max_distance=Float64(rep.max_distance),
+     time_step=Float64(rep.time_step), heat_iterations=Int(rep.heat_iterations),
+     poisson_iterations=Int(rep.poisson_iterations), converged=rep.converged != 0)
+end
+geodesic_distance(m::Mesh, source::Integer; kwargs...) = geodesic_distance(m, [source]; kwargs...)
+
+"""
     surface_watertight_check(m) -> NamedTuple
 
 What is wrong with a surface, in numbers: boundary edges, non-manifold edges,

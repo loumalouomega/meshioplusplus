@@ -394,6 +394,13 @@ _OP_TABLE = {
         "MaxIterations",
         "Tolerance",
     ),
+    "GeodesicDistance": (
+        "Sources",
+        "SourceRegion",
+        "TimeFactor",
+        "Tolerance",
+        "MaxIterations",
+    ),
     "EstimateError": ("Array", "Method", "Marking", "MarkingValue", "Output", "Marked"),
     "ErrorSize": ("Array", "TargetError", "Order", "MinSize", "MaxSize", "Output"),
     "Adapt": (
@@ -2425,6 +2432,27 @@ def _apply_step(mesh, step, steps, warnings):
                 f"sobolev_deform: conjugate gradients did not converge in "
                 f"{report['num_iterations']} iteration(s); the last iterate is "
                 "returned"
+            )
+    elif op == "GeodesicDistance":
+        from ._geodesic import geodesic_distance
+
+        mesh, report = geodesic_distance(
+            mesh,
+            [int(v) for v in (_dvec(step, "Sources") or [])],
+            source_region=_text(step, "SourceRegion", "") or None,
+            time_factor=_number(step, "TimeFactor", 1.0),
+            tolerance=_number(step, "Tolerance", 1e-10),
+            max_iterations=int(_number(step, "MaxIterations", 0)),
+            return_report=True,
+        )
+        entry["NumSources"] = float(report["num_sources"])
+        entry["NumUnreached"] = float(report["num_unreached"])
+        entry["MaxDistance"] = float(report["max_distance"])
+        entry["Converged"] = 1.0 if report["converged"] else 0.0
+        if not report["converged"]:
+            warnings.append(
+                "geodesic_distance: a solve hit its iteration cap; the distance is "
+                "approximate"
             )
     elif op == "EstimateError":
         mesh, report = estimate_error(

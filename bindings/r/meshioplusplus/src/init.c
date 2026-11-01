@@ -61,6 +61,7 @@ extern SEXP R_mio_edit_regions(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_remove_region(SEXP, SEXP);
 extern SEXP R_mio_match_periodic_nodes(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_adjacency(SEXP, SEXP);
+extern SEXP R_mio_geodesic_distance(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_write_graph(SEXP, SEXP, SEXP, SEXP);
 
 /* ops.c */
@@ -299,6 +300,7 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_remove_region, 2),
                                               CALLDEF(R_mio_match_periodic_nodes, 6),
                                               CALLDEF(R_mio_adjacency, 2),
+                                              CALLDEF(R_mio_geodesic_distance, 6),
                                               CALLDEF(R_mio_write_graph, 4),
                                               CALLDEF(R_mio_extract_surface, 2),
                                               CALLDEF(R_mio_extract_skin, 2),

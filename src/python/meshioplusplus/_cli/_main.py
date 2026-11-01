@@ -30,6 +30,7 @@ from . import (
     _find_intersections,
     _fit_primitives,
     _generate,
+    _geodesic,
     _graph,
     _grid_transfer,
     _guard,
@@ -276,6 +277,13 @@ def main(argv=None):
     )
     _hausdorff.add_args(parser)
     parser.set_defaults(func=_hausdorff.hausdorff_cmd)
+
+    parser = subparsers.add_parser(
+        "geodesic",
+        help="Surface distance from source points (heat method)",
+    )
+    _geodesic.add_args(parser)
+    parser.set_defaults(func=_geodesic.geodesic_cmd)
 
     parser = subparsers.add_parser(
         "graph",

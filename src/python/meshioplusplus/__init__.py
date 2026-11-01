@@ -136,6 +136,7 @@ if TYPE_CHECKING:
     from ._find_intersections import find_intersections
     from ._fit_cad import fit_cad
     from ._fit_primitives import fit_primitives
+    from ._geodesic import geodesic_distance
     from ._gpu import (
         from_cupy,
         has_cuda_device,
@@ -343,6 +344,7 @@ _LAZY_ATTRS = {
     "has_blender": "_blender",
     "to_blender": "_blender",
     "adjacency": "_adjacency",
+    "geodesic_distance": "_geodesic",
     "write_graph": "_adjacency",
     "clean": "_clean",
     "conservative_interpolate": "_conservative_interpolate",
@@ -698,6 +700,7 @@ __all__ = [
     "agglomerate",
     "adjacency",
     "write_graph",
+    "geodesic_distance",
     "refine",
     "undo_green",
     "decimate",

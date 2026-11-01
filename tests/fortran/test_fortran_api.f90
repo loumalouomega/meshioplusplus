@@ -2791,6 +2791,9 @@ contains
         integer(int64), allocatable :: s_ids(:), m_ids(:)
         integer(int64), allocatable :: g_ptr(:), g_idx(:)
         integer(int64) :: g_nv, g_ne, g_md
+        type(mio_mesh) :: square, dist
+        real(real64) :: g_far
+        logical :: g_ok
         integer :: ierr
         real(real64) :: cube_points(3, 8), d, ab
         logical :: passed
@@ -2998,6 +3001,23 @@ contains
                    'write_graph writes the cube''s 12 edges')
         call sq%write_graph('fortran_cube.txt', stat=ierr)
         call check(ierr /= 0, 'write_graph needs a known extension or a format')
+
+        ! Geodesic distance on two triangles: the far corner is about sqrt(2) away.
+        call square%create()
+        call square%set_points(reshape([0.0_real64, 0.0_real64, 0.0_real64, &
+                                        1.0_real64, 0.0_real64, 0.0_real64, &
+                                        1.0_real64, 1.0_real64, 0.0_real64, &
+                                        0.0_real64, 1.0_real64, 0.0_real64], [3, 4]))
+        call square%add_cell_block('triangle', reshape([1_int64, 2_int64, 3_int64, &
+                                                        1_int64, 3_int64, 4_int64], [3, 2]))
+        dist = square%geodesic_distance(sources=[1_int64], max_distance=g_far, &
+                                        converged=g_ok, stat=ierr)
+        call check(ierr == 0 .and. g_ok, 'geodesic_distance succeeded')
+        call check(abs(g_far - sqrt(2.0_real64)) < 0.3_real64, 'the far corner is about sqrt(2) away')
+        call dist%free()
+        dist = square%geodesic_distance(stat=ierr)
+        call check(ierr /= 0, 'geodesic_distance needs a source')
+        call square%free()
 
         ! Quality gate: a unit cube of squares passes aspect_ratio <= 1.5.
         passed = sq%check_quality('aspect_ratio <= 1.5', num_checks=nchecks, summary=text, &

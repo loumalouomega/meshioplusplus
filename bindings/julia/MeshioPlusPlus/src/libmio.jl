@@ -1687,6 +1687,31 @@ struct _CSobolevReport
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_geodesic_opts`."""
+struct _CGeodesicOpts
+    sources::Ptr{Int64}
+    num_sources::Int64
+    source_region::Cstring
+    time_factor::Cdouble
+    tolerance::Cdouble
+    max_iterations::Int64
+    reserved::NTuple{6,Int64}
+end
+
+"""Mirror of C `mio_geodesic_report`."""
+struct _CGeodesicReport
+    num_sources::Int64
+    num_unreached::Int64
+    num_degenerate::Int64
+    heat_iterations::Int64
+    poisson_iterations::Int64
+    max_distance::Cdouble
+    time_step::Cdouble
+    converged::Int32
+    reserved_pad::Int32
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_remesh_report`."""
 struct _CRemeshReport
     num_clusters::Int64
@@ -1982,6 +2007,10 @@ function _check_abi_layout()
         error("meshio++: mio_shrinkwrap_opts layout mismatch ($(sizeof(_CShrinkwrapOpts)) bytes)")
     sizeof(_CShrinkwrapReport) == 136 ||
         error("meshio++: mio_shrinkwrap_report layout mismatch ($(sizeof(_CShrinkwrapReport)) bytes)")
+    sizeof(_CGeodesicOpts) == 96 ||
+        error("meshio++: mio_geodesic_opts layout mismatch ($(sizeof(_CGeodesicOpts)) bytes)")
+    sizeof(_CGeodesicReport) == 96 ||
+        error("meshio++: mio_geodesic_report layout mismatch ($(sizeof(_CGeodesicReport)) bytes)")
     sizeof(_CSobolevOpts) == 88 ||
         error("meshio++: mio_sobolev_opts layout mismatch ($(sizeof(_CSobolevOpts)) bytes)")
     sizeof(_CSobolevReport) == 80 ||

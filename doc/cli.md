@@ -100,7 +100,7 @@ Converting a 3D volume mesh to STL, PLY or glTF writes its extracted boundary sk
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -130,6 +130,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `contact-pairs` | `num_pairs`, the pair table and unmatched slave-point ids |
 | `split-interface` | duplicated-point and cohesive-cell counts |
 | `graph` | `output`, `kind`, `format`, `num_vertices`, `num_edges`, `max_degree` |
+| `geodesic` | `output`, `num_sources`, `num_unreached`, `num_degenerate`, `max_distance`, `time_step`, `heat_iterations`, `poisson_iterations`, `converged` |
 | `mesh-cad-surface` | `mesh_cad_surface`'s report: the counts, the open, non-manifold and misoriented edges, the extreme angles and edge lengths, `tolerance`, `max_edge_gap`, `faces` (`status`, `reason`, counts and extremes per face, `below_bound`, `bound_deg`, `min_input_angle_deg` and `corners`), `warnings`, `num_refinement_points`, `num_faces_below_bound`, `num_smoothed`, `angle_histogram` and `num_curved_straightened` |
 | `boundary-layer` | `boundary_layer`'s report: the cell counts by type, `num_shrunk`, `num_collapsed`, `num_not_visible`, `num_fewer_layers`, `num_front_crossings`, `min_scaled_jacobian`, the thickness range, `cap_closed` and `warnings` |
 | `extrude`, `revolve` | the sweep's report: the cell counts by type, `num_flipped`, `min_scaled_jacobian`, `warnings`; `revolve` adds `num_on_axis` and `full` |
@@ -1726,6 +1727,33 @@ meshioplusplus shrinkwrap template.vtu scan.stl wrapped.vtu
 meshioplusplus shrinkwrap template.vtu scan.stl wrapped.vtu --offset=0.5
 meshioplusplus shrinkwrap template.vtu scan.stl wrapped.vtu --max-distance 2.0
 meshioplusplus shrinkwrap template.vtu scan.stl out.vtu --weights mask --record-distance
+```
+
+---
+
+## meshioplusplus geodesic
+
+The distance along a triangle surface from source points to every point, by the heat method (see [geodesic distance](/geodesic)).
+
+```
+meshioplusplus geodesic [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--source ID[,ID...]` | Source point ids, 0-based |
+| `--source-region NAME` | A region whose points are sources too |
+| `--time-factor F` | Heat time `F h^2`, `h` the mean edge length (default `1`) |
+| `--tolerance T` | Relative tolerance of both solves (default `1e-10`) |
+| `--max-iterations N` | Iteration cap of each solve (default `0`: automatic) |
+| `--json` | Emit the report: `output`, `num_sources`, `num_unreached`, `num_degenerate`, `max_distance`, `time_step`, `heat_iterations`, `poisson_iterations`, `converged` |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+The output carries `geodesic:distance` point data; a point in no triangle, or in a piece with no source, is `NaN`. Both CLIs print the same JSON.
+
+```sh
+meshioplusplus geodesic skin.stl dist.vtu --source 0
+meshioplusplus geodesic part.vtu dist.vtu --source-region inlet --time-factor 4 --json
 ```
 
 ---

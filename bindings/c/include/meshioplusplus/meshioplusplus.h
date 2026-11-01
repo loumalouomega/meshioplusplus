@@ -3893,6 +3893,49 @@ typedef struct mio_sobolev_report {
 MIO_API mio_mesh* mio_sobolev_deform(const mio_mesh* mesh, const mio_sobolev_opts* opts,
                                      mio_sobolev_report* report);
 
+/**
+ * Options for mio_geodesic_distance. Initialize through
+ * mio_geodesic_opts_init(); give `sources`, `source_region` or both.
+ */
+typedef struct mio_geodesic_opts {
+    const int64_t* sources;    /**< source point ids, 0-based (borrowed); may be NULL */
+    int64_t num_sources;       /**< entries of `sources` */
+    const char* source_region; /**< a region whose points are sources too; NULL or "" for none */
+    double time_factor;        /**< heat time = time_factor * h^2, h the mean edge (default 1) */
+    double tolerance;          /**< relative tolerance of both solves (default 1e-10) */
+    int64_t max_iterations;    /**< iteration cap of each solve; 0 picks one (default) */
+    int64_t reserved[6];       /**< must be zero; room for additive growth */
+} mio_geodesic_opts;
+
+/** Initialize geodesic options: no source, time factor 1, tolerance 1e-10. */
+MIO_API void mio_geodesic_opts_init(mio_geodesic_opts* opts);
+
+/** What mio_geodesic_distance did. */
+typedef struct mio_geodesic_report {
+    int64_t num_sources;        /**< distinct source points */
+    int64_t num_unreached;      /**< points given NaN: in no triangle, or a sourceless piece */
+    int64_t num_degenerate;     /**< zero-area triangles left out */
+    int64_t heat_iterations;    /**< sweeps of the heat solve */
+    int64_t poisson_iterations; /**< conjugate-gradient iterations of the Poisson solve */
+    double max_distance;        /**< the largest finite distance */
+    double time_step;           /**< the heat time used */
+    int32_t converged;          /**< zero when a solve hit its cap */
+    int32_t reserved_pad;       /**< must be zero */
+    int64_t reserved[4];        /**< must be zero; room for additive growth */
+} mio_geodesic_report;
+
+/**
+ * Geodesic distance on a triangle surface by the heat method: the mesh with
+ * point_data "geodesic:distance", the distance along the surface to the
+ * nearest source (NaN for a point in no triangle or a piece with no source).
+ * The surface is the mesh's triangle blocks; a volume, quad, polygon or
+ * higher-order cell is refused. See doc/geodesic.md.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_geodesic_distance(const mio_mesh* mesh, const mio_geodesic_opts* opts,
+                                        mio_geodesic_report* report);
+
 /* ------------------------------------------------------------------------- */
 /* Data operations                                                           */
 /*                                                                           */

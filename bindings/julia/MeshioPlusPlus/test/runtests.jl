@@ -2032,6 +2032,13 @@ end
     @test p.num_fixed == 0
     @test_throws MeshioError match_periodic_nodes(cube, "bottom", "top"; translate=(0, 0, 0.5))
 
+    # Geodesic distance from one cube corner: the far one is about 2.24 away.
+    gd = geodesic_distance(cube, [1])
+    @test gd.converged && gd.num_sources == 1 && gd.num_unreached == 0
+    @test 1.8 < gd.max_distance < 2.6
+    close(gd.mesh)
+    @test_throws MeshioError geodesic_distance(cube, Int[])
+
     # A triangulated cube surface: 12 edges and 6 face diagonals, 1-based CSR.
     g = adjacency(cube)
     @test length(g.indptr) == 9

@@ -2137,6 +2137,19 @@ def test_tools_never_fetch_urls(tmp_path):
         fsspec.filesystem("memory").rm("/mcp/tri.vtu")
 
 
+def test_geodesic_distance_tool(tmp_path):
+    src = str(tmp_path / "s.vtu")
+    meshioplusplus.write(src, meshioplusplus.icosa_sphere(subdivisions=2))
+    out = _dump(
+        _tools.tool_geodesic_distance(src, str(tmp_path / "d.vtu"), sources=[0, 1])
+    )
+    assert out["num_sources"] == 2 and out["converged"] and out["num_unreached"] == 0
+    back = meshioplusplus.read(str(tmp_path / "d.vtu"))
+    assert "geodesic:distance" in back.point_data
+    with pytest.raises(ValueError, match="at least one source"):
+        _tools.tool_geodesic_distance(src, str(tmp_path / "e.vtu"))
+
+
 def test_graph_tool(tmp_path):
     src = str(tmp_path / "in.vtu")
     pts = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], dtype=float)

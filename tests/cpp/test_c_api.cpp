@@ -7026,6 +7026,29 @@ TEST(CApi, ReadsCompressedFiles) {
 }
 #endif
 
+TEST(CApi, GeodesicDistance) {
+    mio_mesh* m = capi_cube_surface();
+    mio_geodesic_opts opts;
+    mio_geodesic_opts_init(&opts);
+    EXPECT_EQ(opts.time_factor, 1.0);
+    const std::int64_t corner = 0;
+    opts.sources = &corner;
+    opts.num_sources = 1;
+    mio_geodesic_report report;
+    mio_mesh* out = mio_geodesic_distance(m, &opts, &report);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(report.num_sources, 1);
+    EXPECT_EQ(report.num_unreached, 0);
+    EXPECT_EQ(report.converged, 1);
+    // The far corner of a unit cube is about 2.24 away along its faces.
+    EXPECT_GT(report.max_distance, 1.8);
+    EXPECT_LT(report.max_distance, 2.6);
+    mio_mesh_free(out);
+    opts.num_sources = 0;
+    EXPECT_EQ(mio_geodesic_distance(m, &opts, nullptr), nullptr);  // no source
+    mio_mesh_free(m);
+}
+
 TEST(CApi, AdjacencyAndGraphFiles) {
     mio_mesh* m = capi_cube_surface();
     mio_adjacency* g = mio_adjacency_create(m, nullptr);  // "node"

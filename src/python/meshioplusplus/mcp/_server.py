@@ -3617,6 +3617,45 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def geodesic_distance(
+        input_path: str,
+        output_path: str,
+        sources: Optional[List[int]] = None,
+        source_region: str = "",
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        time_factor: float = 1.0,
+        tolerance: float = 1e-10,
+        max_iterations: int = 0,
+    ) -> dict:
+        """Geodesic distance on a triangle surface: the distance along the
+        surface from the source points to every point, written as point_data
+        geodesic:distance, by the heat method (Crane et al. 2013) -- a short
+        heat flow from the sources (time time_factor * h^2, h the mean edge
+        length), its normalised gradient, and a Poisson solve.
+
+        Sources are point ids (0-based) and/or the points of a region
+        (source_region). The surface is the mesh's triangle blocks; a volume,
+        quad, polygon or higher-order cell is refused naming the operation that
+        makes triangles. A point in no triangle, or in a piece with no source,
+        gets NaN (num_unreached). The method is first-order accurate (about 1%
+        on a sphere at h = 0.03); a larger time_factor smooths it. Reports
+        num_sources, num_unreached, num_degenerate, max_distance, time_step,
+        heat_iterations, poisson_iterations and converged."""
+        return _guard(
+            _tools.tool_geodesic_distance,
+            input_path=input_path,
+            output_path=output_path,
+            sources=sources,
+            source_region=source_region,
+            input_format=input_format,
+            output_format=output_format,
+            time_factor=time_factor,
+            tolerance=tolerance,
+            max_iterations=max_iterations,
+        )
+
+    @server.tool()
     def sobolev_deform(
         input_path: str,
         output_path: str,

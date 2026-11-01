@@ -1088,7 +1088,7 @@ def roadmap_map():
             "§7 new capabilities",
             [
                 ("length units as metadata", "S"),
-                ("geodesics · eigenmodes · UVs", "M"),
+                ("eigenmodes · UV parameterization", "M"),
                 ("morphing · untangling · metrics", "M"),
                 ("hull · Delaunay · point clouds", "L"),
                 ("ICP · coordinates · completions", "M"),

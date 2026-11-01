@@ -1672,6 +1672,15 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
   expect_equal(p$num_fixed, 0)
   expect_error(mio_match_periodic_nodes(m, "bottom", "top", translate = c(0, 0, 0.5)))
 
+  # Geodesic distance from one cube corner: the far one is about 2.24 away.
+  gd <- mio_geodesic_distance(m, 1)
+  on.exit(mio_release(gd$mesh), add = TRUE)
+  expect_true(gd$converged)
+  expect_equal(gd$num_unreached, 0)
+  expect_gt(gd$max_distance, 1.8)
+  expect_lt(gd$max_distance, 2.6)
+  expect_error(mio_geodesic_distance(m), "source")
+
   # The triangulated cube: 12 edges and 6 face diagonals, 1-based CSR.
   g <- mio_adjacency(m)
   expect_length(g$indptr, 9)

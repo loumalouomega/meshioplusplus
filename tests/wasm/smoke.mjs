@@ -5720,6 +5720,16 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.throws(() => m.matchPeriodicNodes(tagged, 'bottom', 'top', shift));
 });
 
+step('geodesicDistance from a cube corner', () => {
+    const r = m.geodesicDistance(cubeSurface, 0);
+    assert.equal(r.numSources, 1);
+    assert.equal(r.numUnreached, 0);
+    assert.ok(r.converged);
+    assert.ok(r.maxDistance > 1.8 && r.maxDistance < 2.6);
+    assert.ok('geodesic:distance' in r.mesh.point_data);
+    assert.throws(() => m.geodesicDistance(cubeSurface, []));
+});
+
 step('adjacency and writeGraph', () => {
     const g = m.adjacency(cubeSurface);
     assert.equal(g.indptr.length, 9);

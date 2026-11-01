@@ -258,6 +258,7 @@ export default defineConfig({
           { text: "Surface repair", link: "/repair" },
           { text: "Shrinkwrap", link: "/shrinkwrap" },
           { text: "Sobolev deformation", link: "/sobolev_deform" },
+          { text: "Geodesic distance (heat method)", link: "/geodesic" },
           { text: "Curved tessellation", link: "/tessellation" },
           { text: "Geometry guardrails", link: "/geometry_guardrails" },
           { text: "Dataset manifests", link: "/datasets" },

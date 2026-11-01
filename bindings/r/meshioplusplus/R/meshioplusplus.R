@@ -716,6 +716,33 @@ mio_match_periodic_nodes <- function(mesh, slave, master, matrix = NULL, transla
   )
 }
 
+#' Geodesic distance on a triangle surface
+#'
+#' The distance along the surface from the source points to every point, by the
+#' heat method: a short heat flow from the sources, its normalised gradient and
+#' a Poisson solve. The mesh's triangle blocks are the surface; a volume, quad,
+#' polygon or higher-order cell is refused. A point in no triangle, or in a
+#' piece with no source, gets `NaN`. See `doc/geodesic.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param sources 1-based source point ids.
+#' @param source_region A region whose points are sources too, or `NULL`.
+#' @param time_factor The heat time is `time_factor * h^2`, `h` the mean edge.
+#' @param tolerance Relative tolerance of both solves.
+#' @param max_iterations Iteration cap of each solve; 0 picks one.
+#' @return A list of `mesh` (with point data `geodesic:distance`),
+#'   `num_sources`, `num_unreached`, `max_distance`, `time_step` and
+#'   `converged`.
+#' @export
+mio_geodesic_distance <- function(mesh, sources = integer(0), source_region = NULL,
+                                  time_factor = 1, tolerance = 1e-10, max_iterations = 0) {
+  .Call(
+    R_mio_geodesic_distance, mesh, as.numeric(sources),
+    if (is.null(source_region)) NULL else as.character(source_region),
+    as.numeric(time_factor), as.numeric(tolerance), as.numeric(max_iterations)
+  )
+}
+
 #' Mesh graphs in compressed-sparse-row form
 #'
 #' `mio_adjacency()` returns the mesh's graph as **1-based** `indptr` and

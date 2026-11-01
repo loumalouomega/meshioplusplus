@@ -136,6 +136,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/select.hpp"
 #include "meshioplusplus/operations/adjacency.hpp"
+#include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/tet_poly.hpp"
 
 namespace {
@@ -712,6 +713,7 @@ MIO_ABI_LAYOUT(meshioplusplus::PolyToTetOptions, 1, 1);
 // the exported write_graph()/graph_summary(), and Adjacency holds two NDArrays.
 MIO_ABI_LAYOUT(meshioplusplus::GraphSummary, 24, 8);
 MIO_ABI_LAYOUT(meshioplusplus::Adjacency, 144, 8);
+MIO_ABI_LAYOUT(meshioplusplus::GeodesicOptions, 80, 8);
 static_assert(sizeof(meshioplusplus::AdjacencyKind) == 4 &&
                   sizeof(meshioplusplus::GraphFormat) == 4,
               "meshio++ ABI: adjacency enum underlying width changed (Tier A, doc/abi.md)");

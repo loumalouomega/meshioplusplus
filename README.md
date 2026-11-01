@@ -184,6 +184,7 @@ meshioplusplus check      part.vtu -r "scaled_jacobian >= 0.2"  # quality gate: 
 meshioplusplus regions    in.msh out.msh --union inlet=in_a,in_b --rename "Surface 3=Outlet"  # region algebra
 meshioplusplus periodic   in.msh --slave inlet --master outlet --translate 2,0,0  # periodic node pairs
 meshioplusplus graph      in.vtu part.graph --kind cell     # dual graph as a METIS file (or .grf: Scotch)
+meshioplusplus geodesic   skin.stl dist.vtu --source 0     # surface distance from a point (heat method)
 meshioplusplus convert    case.msh.gz case.vtu            # compressed input (.gz .bz2 .xz .zst .zip) read transparently
 meshioplusplus convert    s3://bucket/run/out.vtu out.msh # remote input through fsspec (Python CLI, [remote] extra)
 meshioplusplus repair     in.vtu out.vtu                     # orientation, holes, bowties
@@ -633,6 +634,17 @@ quality = meshioplusplus.partition(mesh, 16, method="kahip", mode="strong")
 ```
 
 Pieces keep the input's block structure 1:1, so they recombine into the input: every cell lands in exactly one piece. `ghost_layers=N` instead grows each piece by N shared-node layers of its neighbours' cells (an MPI-style halo), tagged `partition:ghost`.
+
+#### Geodesic distance (heat method)
+
+**`meshioplusplus.geodesic_distance(mesh, sources)`** measures the distance along a triangle surface from source points (ids, or a region's points) to every point, as `geodesic:distance` point data, by Crane et al.'s heat method over the surface's own cotangent operators: a heat step, its normalised gradient, a Poisson solve. Deterministic, about 1% accurate on a sphere at `h = 0.04`, on every surface — Python, C++, C, Fortran, Julia, R, WASM, both CLIs (`geodesic`), the pipeline (`GeodesicDistance`) and MCP. See `doc/geodesic.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+out = meshioplusplus.geodesic_distance(skin, "inlet")   # the points of a region
+d = out.point_data["geodesic:distance"]
+```
 
 #### Adjacency graphs (CSR) and METIS / Scotch files
 
