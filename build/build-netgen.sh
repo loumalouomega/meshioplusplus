@@ -77,6 +77,14 @@ fi
 # pinned release (the one the main CMake vendors) as a static library, linked into
 # nglib so the wheel carries no zlib DLL.
 ZLIB_ARGS=""
+# macOS: both architectures (the wheels are universal), and Netgen's own install
+# layout there is an app bundle (Contents/MacOS), which FindNetgen does not search.
+case "$(uname -s)" in
+    Darwin)
+        ZLIB_ARGS="-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-13.3}"
+        ZLIB_ARGS="$ZLIB_ARGS -DNG_INSTALL_DIR_BIN=bin -DNG_INSTALL_DIR_LIB=lib -DNG_INSTALL_DIR_INCLUDE=include -DNG_INSTALL_DIR_CMAKE=lib/cmake/netgen -DNG_INSTALL_DIR_RES=share/netgen"
+        ;;
+esac
 case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*)
         ZLIB_PREFIX="$PREFIX/zlib"

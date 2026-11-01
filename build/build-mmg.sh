@@ -72,6 +72,9 @@ mkdir -p "$WORK"
 MMG_PLATFORM_CMAKE="-DCMAKE_INSTALL_RPATH=$PREFIX/lib"
 case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*) MMG_PLATFORM_CMAKE="-DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON" ;;
+    # Both architectures: the macOS wheels are universal and the extension links
+    # with dynamic lookup, so a one-architecture libmmg only fails at import.
+    Darwin) MMG_PLATFORM_CMAKE="$MMG_PLATFORM_CMAKE -DCMAKE_OSX_ARCHITECTURES=x86_64;arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-13.3}" ;;
 esac
 
 if [ "$FORCE" = "no" ] && [ -f "$PREFIX/lib/cmake/mmg/mmgConfig.cmake" ]; then
