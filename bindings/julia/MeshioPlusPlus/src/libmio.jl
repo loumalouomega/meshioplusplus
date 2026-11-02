@@ -1809,6 +1809,35 @@ struct _CPointNormalsOpts
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_reconstruct_surface_opts`."""
+struct _CReconstructSurfaceOpts
+    normals::Cstring
+    k::Int64
+    cell_size::Cdouble
+    resolution::Int64
+    max_distance::Cdouble
+    estimate_normals::Int32
+    reserved_pad::Int32
+    normals_k::Int64
+    max_cells::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_reconstruct_surface_report`."""
+struct _CReconstructSurfaceReport
+    num_samples::Int64
+    spacing::Cdouble
+    cell_size::Cdouble
+    max_distance::Cdouble
+    num_lattice_points::Int64
+    num_undefined::Int64
+    num_triangles::Int64
+    num_components::Int64
+    estimated_normals::Int32
+    reserved_pad::Int32
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_hull_report`."""
 struct _CHullReport
     dimension::Int32
@@ -2195,6 +2224,10 @@ function _check_abi_layout()
         error("meshio++: mio_registration_report layout mismatch ($(sizeof(_CRegistrationReport)) bytes)")
     sizeof(_CPointNormalsOpts) == 72 ||
         error("meshio++: mio_point_normals_opts layout mismatch ($(sizeof(_CPointNormalsOpts)) bytes)")
+    sizeof(_CReconstructSurfaceOpts) == 96 ||
+        error("meshio++: mio_reconstruct_surface_opts layout mismatch ($(sizeof(_CReconstructSurfaceOpts)) bytes)")
+    sizeof(_CReconstructSurfaceReport) == 104 ||
+        error("meshio++: mio_reconstruct_surface_report layout mismatch ($(sizeof(_CReconstructSurfaceReport)) bytes)")
     sizeof(_CHullReport) == 80 ||
         error("meshio++: mio_hull_report layout mismatch ($(sizeof(_CHullReport)) bytes)")
     sizeof(_CCoordinateOpts) == 136 ||

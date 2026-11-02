@@ -193,6 +193,7 @@ meshioplusplus metric     flow.vtu sized.vtu --arrays m_p,m_T --target-vertices 
 meshioplusplus coordinates rotor.vtu cyl.vtu --arrays U     # vectors/tensors in cylindrical components
 meshioplusplus hull       scan.xyz hull.stl                 # convex hull of a point cloud (--dimension 2: outline)
 meshioplusplus point-normals scan.ply scan.pcd             # normals of a point cloud (plane fits, oriented)
+meshioplusplus reconstruct scan.ply surface.stl            # a triangle surface through an oriented point cloud
 meshioplusplus register   scan.ply design.stl --method point_to_plane --output aligned.vtu  # ICP
 meshioplusplus delaunay   survey.pcd terrain.vtu            # Delaunay triangulation in x, y (z kept)
 meshioplusplus completion bash > ~/.local/share/bash-completion/completions/meshioplusplus  # also zsh, fish
@@ -740,6 +741,17 @@ aligned = meshioplusplus.transform(scan, matrix=matrix)
 ```python
 scan = meshioplusplus.estimate_normals(meshioplusplus.read("scan.ply"), k=24)
 meshioplusplus.write("scan.pcd", scan)   # with normal_x normal_y normal_z
+```
+
+#### Surface reconstruction
+
+**`meshioplusplus.reconstruct_surface(cloud)`** turns an oriented point cloud into a triangle surface: the zero level set of the signed distance to the samples' tangent planes (Hoppe et al. 1992), cut by marching tetrahedra on a band of lattice cells about the samples. Normals come from the cloud's `normals` array or are estimated; an open scan stays open. See [surface reconstruction](doc/reconstruct_surface.md).
+
+<!--pytest-codeblocks:skip-->
+
+```python
+surface = meshioplusplus.reconstruct_surface(meshioplusplus.read("scan.ply"))
+meshioplusplus.write("scan.stl", surface)
 ```
 
 #### Convex hull and planar Delaunay

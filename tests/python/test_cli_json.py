@@ -685,6 +685,17 @@ WRITING = [
         ],
     ),
     (
+        "reconstruct",
+        lambda f, out: [
+            "reconstruct",
+            f["sphere_a"],
+            out + ".vtu",
+            "--resolution",
+            "16",
+            "--json",
+        ],
+    ),
+    (
         "hull",
         lambda f, out: ["hull", f["sphere_a"], out + ".vtu", "--json"],
     ),

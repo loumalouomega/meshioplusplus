@@ -80,6 +80,7 @@
 #include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
+#include "meshioplusplus/operations/reconstruct_surface.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -450,6 +451,9 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"ConvexHull", {"Dimension"}},
         {"Delaunay2D", {}},
         {"EstimateNormals", {"K", "Orientation", "Viewpoint", "RecordVariation"}},
+        {"ReconstructSurface",
+         {"Normals", "K", "CellSize", "Resolution", "MaxDistance", "EstimateNormals", "NormalsK",
+          "MaxCells"}},
         {"LaplacianEigenmodes", {"NumModes", "Tolerance", "MaxIterations"}},
         {"Untangle", {"FixBoundary", "Rings", "Smooth", "MaxSweeps"}},
         {"PrepareMetric",
@@ -2438,6 +2442,37 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                        {{"NumDegenerate", static_cast<double>(nr.mNumDegenerate)},
                         {"NumComponents", static_cast<double>(nr.mNumComponents)}});
         return std::move(nr.mMesh);
+    }
+    if (op == "ReconstructSurface") {
+        ReconstructSurfaceOptions opts;
+        const auto integer = [&](const char* pKey, std::int64_t Fallback) {
+            const double v = pipe_number(rStep, pKey, static_cast<double>(Fallback));
+            const auto i = static_cast<std::int64_t>(v);
+            if (static_cast<double>(i) != v)
+                throw std::invalid_argument(std::string("pipeline: ReconstructSurface: ") + pKey +
+                                            " must be an integer");
+            return i;
+        };
+        opts.mNormalsName = pipe_text(rStep, "Normals", "normals");
+        opts.mK = integer("K", opts.mK);
+        opts.mCellSize = pipe_number(rStep, "CellSize", 0.0);
+        opts.mResolution = integer("Resolution", 0);
+        opts.mMaxDistance = pipe_number(rStep, "MaxDistance", 0.0);
+        opts.mEstimateNormals = pipe_flag(rStep, "EstimateNormals", true);
+        opts.mNormalsK = integer("NormalsK", opts.mNormalsK);
+        opts.mMaxCells = integer("MaxCells", opts.mMaxCells);
+        ReconstructSurfaceResult rr = reconstruct_surface(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumSamples", static_cast<double>(rr.mNumSamples)},
+                        {"Spacing", rr.mSpacing},
+                        {"CellSize", rr.mCellSize},
+                        {"MaxDistance", rr.mMaxDistance},
+                        {"NumLatticePoints", static_cast<double>(rr.mNumLatticePoints)},
+                        {"NumUndefined", static_cast<double>(rr.mNumUndefined)},
+                        {"NumTriangles", static_cast<double>(rr.mNumTriangles)},
+                        {"NumComponents", static_cast<double>(rr.mNumComponents)},
+                        {"EstimatedNormals", rr.mEstimatedNormals ? 1.0 : 0.0}});
+        return std::move(rr.mMesh);
     }
     if (op == "Delaunay2D") {
         Delaunay2dResult dr = delaunay_2d(mesh);

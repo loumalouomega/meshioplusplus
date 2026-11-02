@@ -134,6 +134,7 @@
 #include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
+#include "meshioplusplus/operations/reconstruct_surface.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -7331,6 +7332,51 @@ val estimate_normals_js(const val& rMeshObj, const val& rOptions) {
 }
 
 /**
+ * @brief A triangle surface through an oriented point cloud. @p rOptions is
+ * `{normals, k, cellSize, resolution, maxDistance, estimateNormals, normalsK,
+ * maxCells}`, every key optional. See operations/reconstruct_surface.hpp.
+ */
+val reconstruct_surface_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ReconstructSurfaceOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            const auto integer = [&](const char* pKey, std::int64_t& rOut) {
+                if (rOptions.hasOwnProperty(pKey))
+                    rOut = static_cast<std::int64_t>(rOptions[pKey].as<double>());
+            };
+            const auto number = [&](const char* pKey, double& rOut) {
+                if (rOptions.hasOwnProperty(pKey))
+                    rOut = rOptions[pKey].as<double>();
+            };
+            if (rOptions.hasOwnProperty("normals"))
+                options.mNormalsName = rOptions["normals"].as<std::string>();
+            integer("k", options.mK);
+            number("cellSize", options.mCellSize);
+            integer("resolution", options.mResolution);
+            number("maxDistance", options.mMaxDistance);
+            if (rOptions.hasOwnProperty("estimateNormals"))
+                options.mEstimateNormals = rOptions["estimateNormals"].as<bool>();
+            integer("normalsK", options.mNormalsK);
+            integer("maxCells", options.mMaxCells);
+        }
+        meshioplusplus::ReconstructSurfaceResult r =
+            meshioplusplus::reconstruct_surface(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numSamples", static_cast<double>(r.mNumSamples));
+        out.set("spacing", r.mSpacing);
+        out.set("cellSize", r.mCellSize);
+        out.set("maxDistance", r.mMaxDistance);
+        out.set("numLatticePoints", static_cast<double>(r.mNumLatticePoints));
+        out.set("numUndefined", static_cast<double>(r.mNumUndefined));
+        out.set("numTriangles", static_cast<double>(r.mNumTriangles));
+        out.set("numComponents", static_cast<double>(r.mNumComponents));
+        out.set("estimatedNormals", r.mEstimatedNormals);
+        return out;
+    });
+}
+
+/**
  * @brief The convex hull of a mesh's points. @p rOptions is `{dimension}`
  * (optional: 2, 3, or 0 to decide). See operations/hull.hpp.
  */
@@ -9716,6 +9762,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("laplacianEigenmodes", &laplacian_eigenmodes_js);
     emscripten::function("registerRigid", &register_rigid_js);
     emscripten::function("estimateNormals", &estimate_normals_js);
+    emscripten::function("reconstructSurface", &reconstruct_surface_js);
     emscripten::function("convexHull", &convex_hull_js);
     emscripten::function("delaunay2d", &delaunay_2d_js);
     emscripten::function("cropBbox", &crop_bbox_js);

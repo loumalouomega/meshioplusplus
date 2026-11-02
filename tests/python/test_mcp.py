@@ -2255,6 +2255,25 @@ def test_estimate_normals_tool(tmp_path):
     assert np.all(np.einsum("ij,ij->i", back.point_data["normals"], radial) > 0.95)
 
 
+def test_reconstruct_surface_tool(tmp_path):
+    src = str(tmp_path / "cloud.vtu")
+    pts = meshioplusplus.sphere_points(1500).points
+    meshioplusplus.write(
+        src,
+        meshioplusplus.Mesh(
+            pts,
+            [("vertex", np.arange(len(pts))[:, None])],
+            point_data={"normals": pts.copy()},
+        ),
+    )
+    out = _dump(_tools.tool_reconstruct_surface(src, str(tmp_path / "s.vtu")))
+    assert out["num_samples"] == 1500 and not out["estimated_normals"]
+    assert out["num_components"] == 1 and out["num_triangles"] > 0
+    back = meshioplusplus.read(str(tmp_path / "s.vtu"))
+    assert back.cells[0].type == "triangle"
+    assert np.abs(np.linalg.norm(back.points, axis=1) - 1.0).max() < out["spacing"]
+
+
 def test_convex_hull_and_delaunay_tools(tmp_path):
     src = str(tmp_path / "cloud.vtu")
     rng = np.random.default_rng(0)

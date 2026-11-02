@@ -5759,6 +5759,17 @@ step('estimateNormals of the cube corners', () => {
     assert.throws(() => m.estimateNormals(cubeSurface, { orientation: 'inward' }));
 });
 
+step('reconstructSurface of a sphere cloud', () => {
+    const cloud = m.spherePoints(800);
+    const r = m.reconstructSurface(cloud);
+    assert.ok(r.estimatedNormals);
+    assert.equal(r.numComponents, 1);
+    assert.ok(r.numTriangles > 0);
+    assert.equal(r.mesh.cells[0].type, 'triangle');
+    assert.throws(() => m.reconstructSurface(cloud, { k: 0 }));
+    assert.throws(() => m.reconstructSurface(cloud, { estimateNormals: false }));
+});
+
 step('convexHull and delaunay2d of the cube corners', () => {
     const h = m.convexHull(cubeSurface);
     assert.equal(h.numVertices, 8);

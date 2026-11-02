@@ -1350,6 +1350,35 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
+    !> Interop mirror of C `mio_reconstruct_surface_opts`. Field order/types are ABI.
+    type, bind(c) :: mio_reconstruct_surface_opts_t
+        type(c_ptr) :: normals = c_null_ptr
+        integer(c_int64_t) :: k = 8
+        real(c_double) :: cell_size = 0.0_c_double
+        integer(c_int64_t) :: resolution = 0
+        real(c_double) :: max_distance = 0.0_c_double
+        integer(c_int32_t) :: estimate_normals = 1
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: normals_k = 16
+        integer(c_int64_t) :: max_cells = 20000000_c_int64_t
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_reconstruct_surface_report`. Field order/types are ABI.
+    type, bind(c) :: mio_reconstruct_surface_report_t
+        integer(c_int64_t) :: num_samples = 0
+        real(c_double) :: spacing = 0.0_c_double
+        real(c_double) :: cell_size = 0.0_c_double
+        real(c_double) :: max_distance = 0.0_c_double
+        integer(c_int64_t) :: num_lattice_points = 0
+        integer(c_int64_t) :: num_undefined = 0
+        integer(c_int64_t) :: num_triangles = 0
+        integer(c_int64_t) :: num_components = 0
+        integer(c_int32_t) :: estimated_normals = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
     !> Interop mirror of C `mio_hull_report`. Field order/types are ABI.
     type, bind(c) :: mio_hull_report_t
         integer(c_int32_t) :: dimension = 0
@@ -2187,6 +2216,7 @@ module meshioplusplus
         procedure :: parameterize => mesh_parameterize
         procedure :: convert_coordinates => mesh_convert_coordinates
         procedure :: estimate_normals => mesh_estimate_normals
+        procedure :: reconstruct_surface => mesh_reconstruct_surface
         procedure :: register_rigid => mesh_register_rigid
         procedure :: laplacian_eigenmodes => mesh_laplacian_eigenmodes
         procedure :: morph => mesh_morph
@@ -3797,6 +3827,15 @@ module meshioplusplus
             type(c_ptr), value :: h
             type(mio_point_normals_opts_t), intent(in) :: opts
             integer(c_int64_t), intent(out) :: num_degenerate, num_components
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_reconstruct_surface(h, opts, report) &
+                bind(c, name="mio_reconstruct_surface") result(r)
+            import :: c_ptr, mio_reconstruct_surface_opts_t, mio_reconstruct_surface_report_t
+            type(c_ptr), value :: h
+            type(mio_reconstruct_surface_opts_t), intent(in) :: opts
+            type(mio_reconstruct_surface_report_t), intent(out) :: report
             type(c_ptr) :: r
         end function
 
@@ -9888,6 +9927,61 @@ contains
         end if
         if (present(num_degenerate)) num_degenerate = int(nd, int64)
         if (present(num_components)) num_components = int(nc, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> A triangle surface through the mesh's points, an oriented point cloud:
+    !> the zero level set of the signed distance to the samples' tangent planes
+    !> (Hoppe et al. 1992), cut by marching tetrahedra on a band of lattice
+    !> cells. `normals` names the point data (default "normals"; estimated when
+    !> absent unless `estimate_normals` is false); `cell_size` 0 and
+    !> `resolution` 0 take the sample spacing, `max_distance` 0 the automatic
+    !> trim. See doc/reconstruct_surface.md.
+    function mesh_reconstruct_surface(self, normals, k, cell_size, resolution, max_distance, &
+                                      estimate_normals, num_triangles, num_components, &
+                                      spacing, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in), optional :: normals
+        integer, intent(in), optional :: k, resolution
+        real(real64), intent(in), optional :: cell_size, max_distance
+        logical, intent(in), optional :: estimate_normals
+        integer(int64), intent(out), optional :: num_triangles, num_components
+        real(real64), intent(out), optional :: spacing
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_reconstruct_surface_opts_t) :: opts
+        type(mio_reconstruct_surface_report_t) :: rep
+        character(kind=c_char), allocatable, target :: s_normals(:, :)
+        type(c_ptr), allocatable, target :: p_normals(:)
+        type(c_ptr) :: unused
+        integer(c_int64_t) :: count
+
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. &
+            (c_sizeof(opts) /= 96_c_size_t .or. c_sizeof(rep) /= 104_c_size_t)) then
+            call handle_failure('reconstruct_surface', 'reconstruct_surface option layout mismatch', &
+                                stat, errmsg)
+            return
+        end if
+        if (present(normals)) then
+            call c_str_array([normals], s_normals, p_normals, unused, count)
+            opts%normals = p_normals(1)
+        end if
+        if (present(k)) opts%k = int(k, c_int64_t)
+        if (present(cell_size)) opts%cell_size = real(cell_size, c_double)
+        if (present(resolution)) opts%resolution = int(resolution, c_int64_t)
+        if (present(max_distance)) opts%max_distance = real(max_distance, c_double)
+        if (present(estimate_normals)) then
+            if (.not. estimate_normals) opts%estimate_normals = 0
+        end if
+        out%handle = c_mio_reconstruct_surface(self%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('reconstruct_surface', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_triangles)) num_triangles = int(rep%num_triangles, int64)
+        if (present(num_components)) num_components = int(rep%num_components, int64)
+        if (present(spacing)) spacing = real(rep%spacing, real64)
         call clear_status(stat, errmsg)
     end function
 

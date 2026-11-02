@@ -2255,7 +2255,7 @@ contains
         character(:), allocatable :: omwarn
         real(real64) :: pts(3, 8), query(3, 3), d(3)
         real(real64) :: origin(3), spacing(3)
-        integer(int64) :: tri(3, 12), dims(3), occupied, depth
+        integer(int64) :: tri(3, 12), dims(3), occupied, depth, rs_tris, rs_pieces
         integer :: ierr
 
         ! A lattice from nothing: 2 x 2 x 2 cells means 27 points.
@@ -2322,6 +2322,13 @@ contains
         call g%free()
         g = mio_sphere_points(n=7, stat=ierr)
         call check(ierr == 0 .and. g%num_points() == 7_int64, 'sphere_points has 7 points')
+        call g%free()
+        ! An oriented cloud on a sphere reconstructs as one closed piece.
+        g = mio_sphere_points(n=800, stat=ierr)
+        kept = g%reconstruct_surface(num_triangles=rs_tris, num_components=rs_pieces, stat=ierr)
+        call check(ierr == 0, 'reconstruct_surface succeeded')
+        call check(rs_tris > 0_int64 .and. rs_pieces == 1_int64, 'the sphere is one piece')
+        call kept%free()
         call g%free()
         g = mio_box_points(n=7, seed=3_int64, stat=ierr)
         call check(ierr == 0 .and. g%num_points() == 7_int64, 'box_points has 7 points')
@@ -3057,6 +3064,12 @@ contains
         call dist%free()
         dist = square%estimate_normals(orientation='inward', stat=ierr)
         call check(ierr /= 0, 'estimate_normals rejects an unknown orientation')
+        ! Reconstruction refuses a flat cloud's missing normals when told not to
+        ! estimate them, and a zero k.
+        dist = square%reconstruct_surface(estimate_normals=.false., stat=ierr)
+        call check(ierr /= 0, 'reconstruct_surface refuses missing normals')
+        dist = square%reconstruct_surface(k=0, stat=ierr)
+        call check(ierr /= 0, 'reconstruct_surface rejects k = 0')
         ! Hull and Delaunay of the square's corners (2-D: z is all zero).
         dist = square%convex_hull(num_vertices=g_nv, stat=ierr)
         call check(ierr == 0, 'convex_hull succeeded')

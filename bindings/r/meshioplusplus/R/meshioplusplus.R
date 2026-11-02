@@ -860,6 +860,43 @@ mio_estimate_normals <- function(mesh, k = 16, orientation = "consistent",
   )
 }
 
+#' A triangle surface through an oriented point cloud
+#'
+#' The zero level set of the signed distance to the samples' tangent planes
+#' (Hoppe et al. 1992), cut by marching tetrahedra on a band of lattice cells
+#' about the samples; `k = 1` is Hoppe's field exactly, larger `k` blends that
+#' many planes. A lattice node whose projection onto its nearest sample's
+#' plane lies farther than `max_distance` from that sample is undefined, which
+#' keeps an open scan open. See `doc/reconstruct_surface.md`.
+#'
+#' @param mesh A `mio_mesh` (its points; cells are ignored).
+#' @param normals The normals' point data; estimated when absent unless
+#'   `estimate_normals = FALSE`.
+#' @param k Tangent planes blended per lattice node (at least 1).
+#' @param cell_size The lattice cell size; 0 for `resolution`, or the sample
+#'   spacing.
+#' @param resolution Cells along the longest axis when `cell_size` is 0.
+#' @param max_distance The trim distance; 0 for twice the larger of the
+#'   spacing and the cell size.
+#' @param estimate_normals Estimate missing normals (16 neighbours, consistent
+#'   orientation).
+#' @param normals_k Neighbours per normal fit, when estimated.
+#' @param max_cells The most lattice cells the band may hold.
+#' @return A list of `mesh`, `num_samples`, `spacing`, `cell_size`,
+#'   `max_distance`, `num_lattice_points`, `num_undefined`, `num_triangles`,
+#'   `num_components` and `estimated_normals`.
+#' @export
+mio_reconstruct_surface <- function(mesh, normals = "normals", k = 8, cell_size = 0,
+                                    resolution = 0, max_distance = 0,
+                                    estimate_normals = TRUE, normals_k = 16,
+                                    max_cells = 2e7) {
+  .Call(
+    R_mio_reconstruct_surface, mesh, as.character(normals), as.numeric(k),
+    as.numeric(cell_size), as.numeric(resolution), as.numeric(max_distance),
+    isTRUE(estimate_normals), as.numeric(normals_k), as.numeric(max_cells)
+  )
+}
+
 #' Convex hull of a mesh's points
 #'
 #' The mesh's cells are ignored. In 3-D the hull is a closed `triangle` surface

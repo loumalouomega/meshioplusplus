@@ -260,6 +260,7 @@ export default defineConfig({
           { text: "Curvature (mean / Gaussian)", link: "/curvature" },
           { text: "Normals", link: "/normals" },
           { text: "Point-cloud normals", link: "/point_normals" },
+          { text: "Surface reconstruction", link: "/reconstruct_surface" },
           { text: "Surface repair", link: "/repair" },
           { text: "Shrinkwrap", link: "/shrinkwrap" },
           { text: "Sobolev deformation", link: "/sobolev_deform" },

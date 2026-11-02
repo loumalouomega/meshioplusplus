@@ -164,6 +164,7 @@
 #include "meshioplusplus/operations/parameterize.hpp"
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
+#include "meshioplusplus/operations/reconstruct_surface.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -6404,6 +6405,45 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("k") = 16, py::arg("orientation") = "consistent",
         py::arg("viewpoint") = std::array<double, 3>{0.0, 0.0, 0.0},
         py::arg("record_variation") = false);
+
+    // A triangle surface from an oriented point cloud. {mesh, counters}. See
+    // operations/reconstruct_surface.hpp.
+    m.def(
+        "reconstruct_surface",
+        [](py::object pymesh, const std::string& normals, std::int64_t k, double cell_size,
+           std::int64_t resolution, double max_distance, bool estimate_normals,
+           std::int64_t normals_k, std::int64_t max_cells) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::ReconstructSurfaceOptions options;
+            options.mNormalsName = normals;
+            options.mK = k;
+            options.mCellSize = cell_size;
+            options.mResolution = resolution;
+            options.mMaxDistance = max_distance;
+            options.mEstimateNormals = estimate_normals;
+            options.mNormalsK = normals_k;
+            options.mMaxCells = max_cells;
+            meshioplusplus::ReconstructSurfaceResult r =
+                core_nogil([&] { return meshioplusplus::reconstruct_surface(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_samples"] = r.mNumSamples;
+            out["spacing"] = r.mSpacing;
+            out["cell_size"] = r.mCellSize;
+            out["max_distance"] = r.mMaxDistance;
+            out["num_lattice_points"] = r.mNumLatticePoints;
+            out["num_undefined"] = r.mNumUndefined;
+            out["num_triangles"] = r.mNumTriangles;
+            out["num_components"] = r.mNumComponents;
+            out["estimated_normals"] = r.mEstimatedNormals;
+            return out;
+        },
+        py::arg("mesh"), py::arg("normals") = "normals", py::arg("k") = 8,
+        py::arg("cell_size") = 0.0, py::arg("resolution") = 0, py::arg("max_distance") = 0.0,
+        py::arg("estimate_normals") = true, py::arg("normals_k") = 16,
+        py::arg("max_cells") = 20000000);
 
     // Convex hull and planar Delaunay triangulation of the points. {mesh,
     // counters}. See operations/hull.hpp.

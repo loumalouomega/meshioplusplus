@@ -28,7 +28,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/registration.hpp"
-#include "meshioplusplus/detail/spatial_hash.hpp"
+#include "../detail/point_knn.hpp"
 #include "meshioplusplus/detail/surface_distance.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -223,9 +223,7 @@ public:
         const double extent = std::max({e[0], e[1], e[2]});
         double cell = area > 0.0 ? std::sqrt(4.0 * area / static_cast<double>(n)) : extent;
         cell = std::max(cell, std::max(extent, 1.0) * 1e-9);
-        mGrid = detail::SpatialGrid(cell);
-        for (std::size_t i = 0; i < n; ++i)
-            mGrid.Insert(mGrid.KeyOf(mPoints[i].data()), static_cast<std::int64_t>(i));
+        mKnn = detail::PointKnn(mPoints, cell);
     }
 
     /// The closest target point (and normal) of each moved source point.
@@ -245,7 +243,7 @@ public:
             return;
         }
         parallel_for(m, [&](std::size_t i) {
-            const std::int64_t j = Nearest(rMoved[i]);
+            const std::int64_t j = mKnn.Nearest(rMoved[i]);
             rQ[i] = mPoints[static_cast<std::size_t>(j)];
             if (NeedNormals)
                 rN[i] = mPointNormal[static_cast<std::size_t>(j)];
@@ -258,47 +256,8 @@ private:
     std::vector<RegVec> mCellNormal;
     detail::TriangleSoup mSoup;
     detail::DistanceQuery mQuery;
-    detail::SpatialGrid mGrid{1.0};
+    detail::PointKnn mKnn;
     bool mSurface = false;
-
-    /// The nearest cloud point, by expanding shells (ties to the lower id).
-    std::int64_t Nearest(const RegVec& rP) const {
-        const detail::GridKey k = mGrid.KeyOf(rP.data());
-        const detail::GridKey& lo = mGrid.OccupiedLo();
-        const detail::GridKey& hi = mGrid.OccupiedHi();
-        const auto cap = [](std::int64_t v, std::int64_t a, std::int64_t b) {
-            return std::max(v > a ? v - a : a - v, v > b ? v - b : b - v);
-        };
-        const auto start = [](std::int64_t v, std::int64_t a, std::int64_t b) {
-            return v < a ? a - v : (v > b ? v - b : std::int64_t{0});
-        };
-        const std::int64_t rcap =
-            std::max({cap(k.x, lo.x, hi.x), cap(k.y, lo.y, hi.y), cap(k.z, lo.z, hi.z)});
-        const std::int64_t r0 =
-            std::max({start(k.x, lo.x, hi.x), start(k.y, lo.y, hi.y), start(k.z, lo.z, hi.z)});
-        const double cell = mGrid.CellSize();
-        double best_d2 = std::numeric_limits<double>::infinity();
-        std::int64_t best = -1;
-        for (std::int64_t r = r0; r <= rcap; ++r) {
-            if (best >= 0 && r >= 1) {
-                const double ring = static_cast<double>(r - 1) * cell;
-                if (ring * ring > best_d2)
-                    break;
-            }
-            mGrid.ForEachInShell(k, r, [&](const std::vector<std::int64_t>& rIds) {
-                for (const std::int64_t id : rIds) {
-                    const RegVec& q = mPoints[static_cast<std::size_t>(id)];
-                    const double dx = rP[0] - q[0], dy = rP[1] - q[1], dz = rP[2] - q[2];
-                    const double d2 = dx * dx + dy * dy + dz * dz;
-                    if (d2 < best_d2 || (d2 == best_d2 && id < best)) {
-                        best_d2 = d2;
-                        best = id;
-                    }
-                }
-            });
-        }
-        return best;
-    }
 };
 
 /// The pairs under the transform (R, t), within `MaxDistance` when positive,

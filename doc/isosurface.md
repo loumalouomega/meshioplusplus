@@ -7,7 +7,7 @@
 
 ![Three nested level sets of a radial field through the bracket, coloured by iso:value](/images/isosurface_shells.png)
 
-This is the **data-driven sibling of [`slice`](/slice)**: slice cuts where `dot(x − origin, normal) = 0`, isosurface where `f(x) − isovalue = 0`. They share one cutter, so everything below about watertightness, winding, degeneracy and determinism is literally the same code.
+This is the **data-driven sibling of [`slice`](/slice)**: slice cuts where `dot(x − origin, normal) = 0`, isosurface where `f(x) − isovalue = 0`. They share one cutter, so everything below about watertightness, winding, degeneracy and determinism is literally the same code. [`reconstruct_surface`](/reconstruct_surface) uses it too, on a field it computes from a point cloud.
 
 ```python
 import meshioplusplus

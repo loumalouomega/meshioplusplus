@@ -77,6 +77,7 @@
 #include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
+#include "meshioplusplus/operations/reconstruct_surface.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -7486,6 +7487,61 @@ mio_mesh* mio_estimate_normals(const mio_mesh* mesh, const mio_point_normals_opt
             *num_degenerate = r.mNumDegenerate;
         if (num_components)
             *num_components = r.mNumComponents;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+// --- surface reconstruction (roadmap 7.5.2) -----------------------------------
+
+static_assert(sizeof(mio_reconstruct_surface_opts) == 96,
+              "mio_reconstruct_surface_opts grew outside its reserved tail");
+static_assert(sizeof(mio_reconstruct_surface_report) == 104,
+              "mio_reconstruct_surface_report grew outside its reserved tail");
+
+void mio_reconstruct_surface_opts_init(mio_reconstruct_surface_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_reconstruct_surface_opts{};
+    const meshioplusplus::ReconstructSurfaceOptions d;
+    opts->k = d.mK;
+    opts->estimate_normals = d.mEstimateNormals ? 1 : 0;
+    opts->normals_k = d.mNormalsK;
+    opts->max_cells = d.mMaxCells;
+}
+
+mio_mesh* mio_reconstruct_surface(const mio_mesh* mesh, const mio_reconstruct_surface_opts* opts,
+                                  mio_reconstruct_surface_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        mio_reconstruct_surface_opts o;
+        mio_reconstruct_surface_opts_init(&o);
+        if (opts)
+            o = *opts;
+        meshioplusplus::ReconstructSurfaceOptions options;
+        if (o.normals)
+            options.mNormalsName = o.normals;
+        options.mK = o.k;
+        options.mCellSize = o.cell_size;
+        options.mResolution = o.resolution;
+        options.mMaxDistance = o.max_distance;
+        options.mEstimateNormals = o.estimate_normals != 0;
+        options.mNormalsK = o.normals_k;
+        options.mMaxCells = o.max_cells;
+        meshioplusplus::ReconstructSurfaceResult r =
+            meshioplusplus::reconstruct_surface(mesh->mMesh, options);
+        if (report) {
+            *report = mio_reconstruct_surface_report{};
+            report->num_samples = r.mNumSamples;
+            report->spacing = r.mSpacing;
+            report->cell_size = r.mCellSize;
+            report->max_distance = r.mMaxDistance;
+            report->num_lattice_points = r.mNumLatticePoints;
+            report->num_undefined = r.mNumUndefined;
+            report->num_triangles = r.mNumTriangles;
+            report->num_components = r.mNumComponents;
+            report->estimated_normals = r.mEstimatedNormals ? 1 : 0;
+        }
         return new mio_mesh{std::move(r.mMesh)};
     });
 }

@@ -397,6 +397,16 @@ _OP_TABLE = {
     "ConvexHull": ("Dimension",),
     "Delaunay2D": (),
     "EstimateNormals": ("K", "Orientation", "Viewpoint", "RecordVariation"),
+    "ReconstructSurface": (
+        "Normals",
+        "K",
+        "CellSize",
+        "Resolution",
+        "MaxDistance",
+        "EstimateNormals",
+        "NormalsK",
+        "MaxCells",
+    ),
     "LaplacianEigenmodes": ("NumModes", "Tolerance", "MaxIterations"),
     "Untangle": ("FixBoundary", "Rings", "Smooth", "MaxSweeps"),
     "PrepareMetric": (
@@ -2643,6 +2653,38 @@ def _apply_step(mesh, step, steps, warnings):
         )
         entry["NumDegenerate"] = float(report["num_degenerate"])
         entry["NumComponents"] = float(report["num_components"])
+    elif op == "ReconstructSurface":
+        from ._reconstruct_surface import reconstruct_surface
+
+        def _integer(key, fallback):
+            v = _number(step, key, float(fallback))
+            if float(int(v)) != v:
+                raise ValueError(
+                    f"pipeline: ReconstructSurface: {key} must be an integer"
+                )
+            return int(v)
+
+        mesh, report = reconstruct_surface(
+            mesh,
+            normals=_text(step, "Normals", "normals"),
+            k=_integer("K", 8),
+            cell_size=_number(step, "CellSize", 0.0),
+            resolution=_integer("Resolution", 0),
+            max_distance=_number(step, "MaxDistance", 0.0),
+            estimate_normals=_flag(step, "EstimateNormals", True),
+            normals_k=_integer("NormalsK", 16),
+            max_cells=_integer("MaxCells", 20_000_000),
+            return_report=True,
+        )
+        entry["NumSamples"] = float(report["num_samples"])
+        entry["Spacing"] = float(report["spacing"])
+        entry["CellSize"] = float(report["cell_size"])
+        entry["MaxDistance"] = float(report["max_distance"])
+        entry["NumLatticePoints"] = float(report["num_lattice_points"])
+        entry["NumUndefined"] = float(report["num_undefined"])
+        entry["NumTriangles"] = float(report["num_triangles"])
+        entry["NumComponents"] = float(report["num_components"])
+        entry["EstimatedNormals"] = 1.0 if report["estimated_normals"] else 0.0
     elif op == "Delaunay2D":
         from ._hull import delaunay_2d
 

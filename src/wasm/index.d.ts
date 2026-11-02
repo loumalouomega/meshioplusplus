@@ -4222,6 +4222,44 @@ export interface MeshioPlusPlusModule {
   ): { mesh: Mesh; numDegenerate: number; numComponents: number };
 
   /**
+   * A triangle surface through an oriented point cloud: the zero level set of
+   * the signed distance to the samples' tangent planes (Hoppe et al. 1992),
+   * cut by marching tetrahedra on a band of lattice cells about the samples.
+   * `k: 1` is Hoppe's field exactly; a lattice node whose projection onto its
+   * nearest sample's plane lies farther than `maxDistance` from it is
+   * undefined, which keeps an open scan open. The normals are the `normals`
+   * point data, estimated when absent unless `estimateNormals` is false. A
+   * `cellSize` and `maxDistance` of 0 are automatic. See
+   * doc/reconstruct_surface.md.
+   * @throws {Error} on fewer than three samples, missing normals with
+   *   `estimateNormals: false`, `k` below 1, or a band over `maxCells`.
+   */
+  reconstructSurface(
+    mesh: Mesh,
+    options?: {
+      normals?: string;
+      k?: number;
+      cellSize?: number;
+      resolution?: number;
+      maxDistance?: number;
+      estimateNormals?: boolean;
+      normalsK?: number;
+      maxCells?: number;
+    },
+  ): {
+    mesh: Mesh;
+    numSamples: number;
+    spacing: number;
+    cellSize: number;
+    maxDistance: number;
+    numLatticePoints: number;
+    numUndefined: number;
+    numTriangles: number;
+    numComponents: number;
+    estimatedNormals: boolean;
+  };
+
+  /**
    * The convex hull of a mesh's points (its cells are ignored): a closed
    * outward `triangle` surface in 3-D, a counter-clockwise `line` loop of the
    * x, y coordinates in 2-D. Only the extreme points are vertices, each with

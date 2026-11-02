@@ -2060,6 +2060,13 @@ end
     @test nn.num_degenerate == 0 && nn.num_components == 1
     close(nn.mesh)
     @test_throws ArgumentError estimate_normals(cube; orientation="inward")
+    cloud = sphere_points(; n=800)
+    rs = reconstruct_surface(cloud)
+    @test rs.estimated_normals && rs.num_components == 1 && rs.num_triangles > 0
+    close(rs.mesh)
+    @test_throws MeshioError reconstruct_surface(cloud; k=0)
+    @test_throws MeshioError reconstruct_surface(cloud; estimate_normals=false)
+    close(cloud)
     hh = convex_hull(cube)
     @test hh.dimension == 3 && hh.num_vertices == 8 && hh.num_facets == 12
     @test isapprox(hh.volume, 1.0)
