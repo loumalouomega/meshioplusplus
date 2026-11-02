@@ -109,6 +109,7 @@ if TYPE_CHECKING:
         z88,
         zarr,
     )
+    from ._adjacency import adjacency, write_graph
     from ._agglomerate import agglomerate
     from ._blender import from_blender, has_blender, to_blender
     from ._boundary_layer import boundary_layer
@@ -116,6 +117,7 @@ if TYPE_CHECKING:
     from ._clean import clean
     from ._conservative_interpolate import conservative_interpolate
     from ._convert_cells import convert_cells
+    from ._coordinates import convert_coordinates
     from ._crop import crop
     from ._curvature import compute_curvature
     from ._data_average import cell_data_to_point_data, point_data_to_cell_data
@@ -128,6 +130,7 @@ if TYPE_CHECKING:
     from ._decimate import decimate
     from ._decimate_volume import decimate_volume
     from ._diff import diff, meshes_equal
+    from ._eigenmodes import laplacian_eigenmodes
     from ._error import estimate_error
     from ._error_size import error_size
     from ._extrude import extrude, revolve
@@ -135,6 +138,7 @@ if TYPE_CHECKING:
     from ._find_intersections import find_intersections
     from ._fit_cad import fit_cad
     from ._fit_primitives import fit_primitives
+    from ._geodesic import geodesic_distance
     from ._gpu import (
         from_cupy,
         has_cuda_device,
@@ -163,6 +167,7 @@ if TYPE_CHECKING:
     from ._guard import GeometryGuard, geometry_descriptors
     from ._hausdorff import hausdorff_distance
     from ._hessian import hessian
+    from ._hull import convex_hull, delaunay_2d
     from ._iga import iga_evaluate, iga_refine, iga_sample
     from ._interfaces import (
         contact_pairs,
@@ -193,6 +198,7 @@ if TYPE_CHECKING:
     from ._isosurface import isosurface
     from ._merge import merge
     from ._mesh_cad import mesh_cad_surface, triangulate_polygon_2d
+    from ._metric import prepare_metric
     from ._mirror import mirror
     from ._ml import FeatureMatrix, edge_index, feature_matrix, has_zarr, write_dataset
     from ._mmg import (
@@ -204,14 +210,17 @@ if TYPE_CHECKING:
         metric_from_hessian,
         move,
     )
+    from ._morph import morph
     from ._normals import compute_normals
     from ._octree import octree
     from ._octree_mesh import octree_mesh
     from ._optimize_volume import optimize_volume
+    from ._parameterize import parameterize
     from ._partition import partition, partition_labels
     from ._periodic import match_periodic_nodes
-    from ._pipeline import run_pipeline
+    from ._pipeline import apply_operations, run_pipeline
     from ._point_budget import PointBudget, select_points, subsample_points
+    from ._point_normals import estimate_normals
     from ._primitives import (
         annulus,
         ball,
@@ -260,6 +269,7 @@ if TYPE_CHECKING:
     from ._refine import refine
     from ._refine_patches import refine_patches
     from ._region_ops import edit_regions
+    from ._registration import register_rigid
     from ._remesh import remesh
     from ._remesh_volume import remesh_volume
     from ._render import render_image, render_text, snapshot
@@ -300,6 +310,7 @@ if TYPE_CHECKING:
     from ._transform import transform
     from ._tui import tui
     from ._undo_green import undo_green
+    from ._untangle import untangle
     from ._viewer import has_viewer, screenshot, view
     from ._voxelize import voxelize
 
@@ -341,6 +352,19 @@ _LAZY_ATTRS = {
     "from_blender": "_blender",
     "has_blender": "_blender",
     "to_blender": "_blender",
+    "adjacency": "_adjacency",
+    "geodesic_distance": "_geodesic",
+    "parameterize": "_parameterize",
+    "laplacian_eigenmodes": "_eigenmodes",
+    "convex_hull": "_hull",
+    "delaunay_2d": "_hull",
+    "estimate_normals": "_point_normals",
+    "morph": "_morph",
+    "prepare_metric": "_metric",
+    "untangle": "_untangle",
+    "register_rigid": "_registration",
+    "convert_coordinates": "_coordinates",
+    "write_graph": "_adjacency",
     "clean": "_clean",
     "conservative_interpolate": "_conservative_interpolate",
     "convert_cells": "_convert_cells",
@@ -470,6 +494,7 @@ _LAZY_ATTRS = {
     "partition_labels": "_partition",
     "match_periodic_nodes": "_periodic",
     "run_pipeline": "_pipeline",
+    "apply_operations": "_pipeline",
     "PointBudget": "_point_budget",
     "select_points": "_point_budget",
     "subsample_points": "_point_budget",
@@ -692,6 +717,19 @@ __all__ = [
     "Tessellation",
     "subdivide",
     "agglomerate",
+    "adjacency",
+    "write_graph",
+    "geodesic_distance",
+    "parameterize",
+    "laplacian_eigenmodes",
+    "convex_hull",
+    "delaunay_2d",
+    "estimate_normals",
+    "morph",
+    "prepare_metric",
+    "untangle",
+    "register_rigid",
+    "convert_coordinates",
     "refine",
     "undo_green",
     "decimate",
@@ -765,6 +803,7 @@ __all__ = [
     "partition",
     "partition_labels",
     "run_pipeline",
+    "apply_operations",
     "read_sequence",
     "write_sequence",
     "sequence_entries",

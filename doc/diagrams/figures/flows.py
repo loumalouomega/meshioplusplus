@@ -1087,15 +1087,11 @@ def roadmap_map():
         (
             "§7 new capabilities",
             [
-                ("apply_operations · adjacency", "S"),
-                ("compressed and remote input", "S"),
-                ("geodesics · eigenmodes · UVs", "M"),
-                ("morphing · untangling · metrics", "M"),
-                ("hull · Delaunay · point clouds", "L"),
-                ("ICP · coordinates · completions", "M"),
+                ("length units: CAD reads", "S"),
+                ("point-cloud surfaces", "L"),
                 ("providers: heal, mesh, quads", "L"),
                 ("surface booleans (spike first)", "XL"),
-                ("v19 defaults · TUI caps", "S"),
+                ("v19 defaults", "S"),
             ],
             [],
         ),

@@ -40,6 +40,8 @@ The C API and C++ core this binding calls are unaffected and stay MIT. Calling t
 
 `read(path; format="gmsh")` reads non-periodic Gmsh 2.2, 4.0 and 4.1 through the native library. The 4.0 path accepts ASCII and binary with 4- or 8-byte producer counts. Periodic files use `read_with_info` / `write_with_info`; output remains 4.1 (`gmsh`) or 2.2 (`gmsh22`). Info-less reads refuse `$Periodic` rather than lose it. See [Gmsh](formats/gmsh.md).
 
+`read` reads compressed files transparently (`read("cube.msh.gz")`: `.gz`, `.bz2`, `.xz`, `.zst` or a single-member `.zip`), through the codecs the native library links. See [compressed files](formats.md#compressed-files).
+
 ## Building and installing
 
 The package binds the **installed** C library; no C++ is compiled by it.
@@ -260,7 +262,7 @@ png = render_png(mesh; width=800, height=600)          # Vector{UInt8}
 write_snapshot("part.png", mesh)                       # .png .txt .ansi .html .cast
 ```
 
-**Cut-aways (v16.36.0).** `cutaway=[px, py, pz, nx, ny, nz]` (a point and the normal of the side kept), or a collection of up to two such planes, with `cutaway_tint=rgba(...)`, clips the geometry away and tints the back faces now in view: `render(mesh; view="-x", cutaway=[0.5, 0, 0, 1, 0, 0])`. A wrong length is an `ErrorException`; a zero normal a `MeshioError`.
+**Cut-aways (v16.36.0).** `cutaway=[px, py, pz, nx, ny, nz]` (a point and the normal of the side kept), or a collection of up to two such planes, with `cutaway_tint=rgba(...)`, clips the geometry away, caps the cut through a volume or a closed surface, and tints the back faces of an open one now in view: `render(mesh; view="-x", cutaway=[0.5, 0, 0, 1, 0, 0])`. A wrong length is an `ErrorException`; a zero normal a `MeshioError`.
 
 **Streamlines (v16.37.0).** `streamlines="velocity"` follows a vector point array over the mesh's cells, with `stream_seeds` (default 40), `stream_length` (model diagonals each way, default 0.5) and `stream_color=rgba(...)`: `render(mesh; streamlines="velocity", stream_seeds=60)`. An unknown array or a seed count outside 1 to 10000 is a `MeshioError`.
 
@@ -297,6 +299,17 @@ write_snapshot("part.png", mesh)                       # .png .txt .ansi .html .
 - `region_adjacency(mesh; regions=nothing) -> Mesh` returns conforming shared facets between Cell regions, falling back to multiple cell blocks when fewer than two Cell regions exist — see [region adjacency](/region_adjacency).
 - `find_interface(mesh_a, region_a, region_b; mesh_b=nothing, mode=:conforming, master=:a, gap_tolerance=0, angle_tolerance=30, overlap_tolerance=0) -> (; mesh, report)` returns the master facets and source Side entries; `contact_pairs(slave, slave_points, master_cells; master_mesh=nothing, tolerance=0, require_complete=false)` returns copied point/facet projections; `split_interface(mesh, side; add_cohesive=false)` duplicates the incident-cell fans. Point and global cell ids are 1-based; local facet/subfacet ordinals remain 0-based. See [interfaces and contact](/region_adjacency).
 - `match_periodic_nodes(mesh, slave, master; translate=nothing, matrix=nothing, atol=1e-8, require_complete=true) -> (; slave, master, unmatched, num_fixed, max_residual)` — 1-based node ids; `matrix` is 16 numbers, row-major. See [periodic node pairs](/periodic).
+- `geodesic_distance(mesh, sources=Int[]; source_region="", time_factor=1.0, tolerance=1e-10, max_iterations=0) -> (; mesh, num_sources, num_unreached, num_degenerate, max_distance, time_step, heat_iterations, poisson_iterations, converged)` — the heat-method surface distance from 1-based source points, as `geodesic:distance` point data. See [geodesic distance](/geodesic).
+- `parameterize(mesh; padding=0.02, max_depth=8, max_stretch=2.0) -> (; mesh, num_charts, num_flipped, stretch, packing_efficiency, num_seam_points)` — a UV atlas of a triangle surface: `uv` point data, the surface split at its seams (`parameterize:parent_point`, 0-based) — see [parameterize](/parameterize).
+- `laplacian_eigenmodes(mesh; num_modes=10, tolerance=1e-8, max_iterations=0) -> (; mesh, iterations, max_residual, converged, num_degenerate)` — the lowest Laplace–Beltrami eigenpairs, as `laplacian:modes` point data and `laplacian:eigenvalues` field data. See [eigenmodes](/eigenmodes).
+- `morph(mesh, array; fix_boundary=true, constrained_array="", stiffening=1.0, steps=1, allow_inverted=false, tolerance=1e-10, max_iterations=0) -> (; mesh, num_constrained, num_free, num_inverted, iterations, max_displacement, converged)` — boundary-driven morphing by harmonic extension. See [morphing](/morph).
+- `untangle(mesh; fix_boundary=true, rings=2, smooth=false, max_sweeps=100) -> (; mesh, num_inverted_before, num_inverted_after, min_quality_before, min_quality_after, sweeps, moves)` — repair inverted tetrahedra and hexahedra. See [untangling](/untangle).
+- `prepare_metric(mesh, arrays; output="metric", target_vertices=0.0, norm=2.0, hmin=0.0, hmax=0.0, gradation=0.0, max_sweeps=100) -> (; mesh, complexity_before, complexity_after, num_graded, sweeps)` — intersect, normalise, clamp and grade metric fields. See [metric toolbox](/metric).
+- `convert_coordinates(mesh; system="cylindrical", axis=(0.0, 0.0, 1.0), origin=(0.0, 0.0, 0.0), reference=(1.0, 0.0, 0.0), arrays=String[], inverse=false, record_coordinates=true) -> (; mesh, num_arrays, num_singular)` — `coords:<system>` point data and the named vector/tensor arrays in cylindrical or spherical components. See [coordinates](/coordinates).
+- `convex_hull(mesh; dimension=0) -> (; mesh, dimension, num_vertices, num_facets, area, volume, perimeter)` and `delaunay_2d(mesh) -> (; mesh, num_triangles, num_duplicates, num_boundary)` — the convex hull of the points (extreme points with `hull:point_id`, 0-based) and their Delaunay triangulation in `x, y`. See [hull](/hull).
+- `estimate_normals(mesh; k=16, orientation="consistent", viewpoint=(0.0, 0.0, 0.0), record_variation=false) -> (; mesh, num_degenerate, num_components)` — normals of a point cloud by local plane fits, as `normals` point data. See [point-cloud normals](/point_normals).
+- `register_rigid(source, target; method="point_to_point", max_iterations=50, tolerance=1e-10, max_distance=0.0, initial=nothing) -> (; matrix, initial_rms, rms, iterations, num_pairs, converged)` — rigid registration by iterative closest points; `matrix` is 4 × 4. See [rigid registration](/registration).
+- `adjacency(mesh; kind="node") -> (; indptr, indices)` — the node (`"node"`), FEM-sparsity (`"clique"`) or facet-sharing cell (`"cell"`) graph in CSR form, both arrays **1-based** (a `SparseMatrixCSC`'s `colptr`/`rowval` layout); `write_graph(path, mesh; kind="node", format=nothing) -> (; num_vertices, num_edges, max_degree)` writes it as a METIS `.graph` or Scotch `.grf` file. See [adjacency graphs](/adjacency).
 
 ## v10.9.0 additions
 

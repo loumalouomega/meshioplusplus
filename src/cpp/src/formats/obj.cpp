@@ -18,6 +18,7 @@
 // System includes
 #include <array>
 #include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -26,11 +27,13 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 // Project includes
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
+#include "meshioplusplus/detail/subset.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/obj_off.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
@@ -46,6 +49,7 @@ namespace {
 struct FaceBlock {
     std::size_t mSize = 0;
     std::vector<std::int64_t> mIdx;  // flat, 0-based
+    std::vector<std::int64_t> mVt;   // per corner, the 0-based `vt` index (-1 none)
     std::vector<std::int64_t> mGids;
     std::size_t mCount = 0;
 };
@@ -128,6 +132,7 @@ Mesh read_obj(const std::string& rPath) {
     std::int64_t group_id = -1;
     std::vector<double> row;
     std::vector<std::int64_t> dat;
+    std::vector<std::int64_t> dat_vt;
 
     while (!cursor.AtEnd()) {
         std::string_view line = cursor.Line();
@@ -159,6 +164,7 @@ Mesh read_obj(const std::string& rPath) {
             (tag == "vn" ? vn : vt).AddRow(row.data(), row.size());
         } else if (tag == "f") {
             dat.clear();
+            dat_vt.clear();
             std::size_t i = 0;
             while (true) {
                 while (i < rest.size() && detail::text_is_blank(rest[i]))
@@ -174,6 +180,19 @@ Mesh read_obj(const std::string& rPath) {
                 }
                 const std::size_t last = slash == std::string_view::npos ? i : slash;
                 dat.push_back(obj_stoll(rest.substr(first, last - first)) - 1);
+                // `v/vt`, `v/vt/vn`: the texture index; `v` and `v//vn` have none.
+                std::int64_t vt_index = -1;
+                if (slash != std::string_view::npos && slash + 1 < i && rest[slash + 1] != '/') {
+                    std::size_t end = slash + 1;
+                    while (end < i && rest[end] != '/')
+                        ++end;
+                    try {
+                        vt_index = obj_stoll(rest.substr(slash + 1, end - slash - 1)) - 1;
+                    } catch (const std::exception&) {
+                        vt_index = -1;
+                    }
+                }
+                dat_vt.push_back(vt_index);
             }
             std::size_t sz = dat.size();
             if (blocks.empty() || (blocks.back().mCount > 0 && blocks.back().mSize != sz)) {
@@ -185,6 +204,7 @@ Mesh read_obj(const std::string& rPath) {
             if (cur.mCount == 0)
                 cur.mSize = sz;
             cur.mIdx.insert(cur.mIdx.end(), dat.begin(), dat.end());
+            cur.mVt.insert(cur.mVt.end(), dat_vt.begin(), dat_vt.end());
             cur.mGids.push_back(group_id);
             ++cur.mCount;
         } else if (tag == "g") {
@@ -201,6 +221,54 @@ Mesh read_obj(const std::string& rPath) {
         if (fb.mCount > 0)
             nonempty.push_back(std::move(fb));
 
+    // Texture coordinates by corner (`f v/vt`): when every corner names a `vt`,
+    // each point gets one `uv`; a point whose corners name different ones (a
+    // seam) is split, the first copy keeping its index and the others appended
+    // in the order met, with `obj:parent_point` naming the point each copies.
+    const std::size_t np_in = points.size() / 3;
+    std::vector<double> uv;
+    std::vector<std::int64_t> parent;
+    bool has_uv = vt.mRows > 0 && vt.mUniform && vt.mWidth >= 2 && !nonempty.empty();
+    for (const auto& fb : nonempty)
+        for (std::size_t k = 0; has_uv && k < fb.mVt.size(); ++k)
+            has_uv = fb.mVt[k] >= 0 && static_cast<std::size_t>(fb.mVt[k]) < vt.mRows &&
+                     fb.mIdx[k] >= 0 && static_cast<std::size_t>(fb.mIdx[k]) < np_in;
+    if (has_uv) {
+        std::vector<std::vector<std::pair<std::int64_t, std::int64_t>>> copies(np_in);
+        parent.resize(np_in);
+        for (std::size_t p = 0; p < np_in; ++p)
+            parent[p] = static_cast<std::int64_t>(p);
+        uv.assign(2 * np_in, std::nan(""));
+        for (auto& fb : nonempty)
+            for (std::size_t k = 0; k < fb.mIdx.size(); ++k) {
+                const std::int64_t p = fb.mIdx[k];
+                const std::int64_t t = fb.mVt[k];
+                auto& list = copies[static_cast<std::size_t>(p)];
+                std::int64_t id = -1;
+                for (const auto& [vt_at, out] : list)
+                    if (vt_at == t)
+                        id = out;
+                if (id < 0) {
+                    id = list.empty() ? p : static_cast<std::int64_t>(parent.size());
+                    if (!list.empty()) {
+                        parent.push_back(p);
+                        const std::size_t at = 3 * static_cast<std::size_t>(p);
+                        const std::array<double, 3> xyz = {points[at], points[at + 1],
+                                                           points[at + 2]};
+                        points.insert(points.end(), xyz.begin(), xyz.end());
+                        uv.push_back(0.0);
+                        uv.push_back(0.0);
+                    }
+                    list.emplace_back(t, id);
+                    uv[2 * static_cast<std::size_t>(id)] =
+                        vt.mValues[static_cast<std::size_t>(t) * vt.mWidth];
+                    uv[2 * static_cast<std::size_t>(id) + 1] =
+                        vt.mValues[static_cast<std::size_t>(t) * vt.mWidth + 1];
+                }
+                fb.mIdx[k] = id;
+            }
+    }
+
     Mesh mesh;
     std::size_t np = points.size() / 3;
     NDArray pts(DType::Float64, {np, 3});
@@ -208,10 +276,32 @@ Mesh read_obj(const std::string& rPath) {
         std::memcpy(pts.As<double>(), points.data(), points.size() * sizeof(double));
     mesh.AssignPoints(std::move(pts));
 
-    if (vt.mRows > 0)
-        mesh.AddPointData("obj:vt", make_point_data(vt));
+    // The raw rows; one per input point is carried to the seam copies. Once
+    // `uv` holds the texture coordinates, `vt` rows that are not one per point
+    // (a seamed file's) say nothing more and are left out.
+    auto raw_rows = [&](const AttributeRows& rRows) {
+        NDArray a = make_point_data(rRows);
+        if (np == np_in || rRows.mRows != np_in)
+            return a;
+        return detail::subset_gather_rows(a, parent);
+    };
+    if (vt.mRows > 0) {
+        NDArray rows = raw_rows(vt);
+        if (!has_uv || vt.mRows == np_in)
+            mesh.AddPointData("obj:vt", std::move(rows));
+    }
     if (vn.mRows > 0)
-        mesh.AddPointData("obj:vn", make_point_data(vn));
+        mesh.AddPointData("obj:vn", raw_rows(vn));
+    if (has_uv) {
+        NDArray uv_array(DType::Float64, {np, 2});
+        std::memcpy(uv_array.As<double>(), uv.data(), uv.size() * sizeof(double));
+        mesh.AddPointData("uv", std::move(uv_array));
+        if (np > np_in) {
+            NDArray parents(DType::Int64, {np});
+            std::memcpy(parents.As<std::int64_t>(), parent.data(), np * sizeof(std::int64_t));
+            mesh.AddPointData("obj:parent_point", std::move(parents));
+        }
+    }
 
     if (!nonempty.empty()) {
         std::vector<NDArray> gid_blocks;
@@ -273,7 +363,27 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
         }
     };
     write_pd("obj:vn", "vn");
-    write_pd("obj:vt", "vt");
+    // `uv` (one pair per point) becomes one `vt` per point, which every face
+    // corner names (`f v/vt`); it replaces the raw `obj:vt` rows.
+    bool with_uv = false;
+    if (rMesh.HasPointData("uv")) {
+        const NDArray& d = rMesh.PointData("uv");
+        with_uv = d.Shape().size() == 2 && d.Shape()[0] == num_points && d.Shape()[1] >= 2;
+    }
+    if (with_uv) {
+        const NDArray& d = rMesh.PointData("uv");
+        const std::size_t nc = d.Shape()[1];
+        const detail::DoubleView values(d);
+        for (std::size_t r = 0; r < num_points; ++r) {
+            double u = values[r * nc], v = values[r * nc + 1];
+            if (!std::isfinite(u) || !std::isfinite(v))
+                u = v = 0.0;  // a point no face uses
+            detail::snprintf_c(buf, sizeof(buf), "vt %.17g %.17g\n", u, v);
+            os << buf;
+        }
+    } else {
+        write_pd("obj:vt", "vt");
+    }
 
     for (const auto cb : rMesh.CellRange()) {
         const NDArray& conn_array = cb.Conn();
@@ -281,8 +391,11 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
         const detail::Int64View conn(conn_array);
         for (std::size_t r = 0; r < cb.NumCells(); ++r) {
             os << 'f';
-            for (std::size_t j = 0; j < k; ++j)
+            for (std::size_t j = 0; j < k; ++j) {
                 os << ' ' << (conn[r * k + j] + 1);
+                if (with_uv)
+                    os << '/' << (conn[r * k + j] + 1);
+            }
             os << '\n';
         }
     }

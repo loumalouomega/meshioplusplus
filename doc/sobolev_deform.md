@@ -28,7 +28,7 @@ with `K` the P1 stiffness matrix, `M` a uniform vertex mass and `ℓ` the `lengt
 
 `length_scale = 0` short-circuits to applying `d` directly at the free points, with no solve.
 
-Compare with [`smooth`](/smooth), which moves points toward their neighbours' centroid and knows nothing about a field: `smooth` improves a mesh's *shape*, this filters a *displacement* the caller already has and then applies it.
+To move only the boundary by a displacement and have the interior follow, see [`morph`](/morph). Compare with [`smooth`](/smooth), which moves points toward their neighbours' centroid and knows nothing about a field: `smooth` improves a mesh's *shape*, this filters a *displacement* the caller already has and then applies it.
 
 ## Three choices matched to the reference
 

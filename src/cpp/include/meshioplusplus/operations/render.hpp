@@ -265,9 +265,12 @@ struct RenderOptions {
 
     /// Up to two planes; the geometry on the far side of any is clipped away
     /// (faces, lines, points and the extra layers; a face crossing a plane is
-    /// cut and keeps its colour and shading). A cut surface is hollow: the
-    /// back faces now in view, those turned away from the camera, are drawn
-    /// in `mCutawayTint` so the inside reads as inside. Empty: nothing is cut.
+    /// cut and keeps its colour and shading). The cut through a volume, or
+    /// through a surface that closes, is capped (a section in the colour of
+    /// the cells cut, or a fill-coloured face); where an open surface leaves
+    /// it hollow, the back faces now in view, those turned away from the
+    /// camera, are drawn in `mCutawayTint` so the inside reads as inside.
+    /// Empty: nothing is cut.
     /// A draw-time option: `render_scene` takes it from its own options.
     std::vector<RenderCutaway> mCutaways;
     RenderColor mCutawayTint = {232, 128, 52, 255};

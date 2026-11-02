@@ -542,6 +542,22 @@ def _time_from_mesh(mesh):
     return None
 
 
+def _remote_glob(pattern):
+    """The URLs a remote ``*``/``?`` pattern matches, naturally sorted."""
+    from ._remote import glob
+
+    found = glob(pattern)
+    if not found:
+        raise ReadError(f"meshio++: sequence: pattern '{pattern}' matched no files")
+    return sorted(found, key=_natural_sort_key)
+
+
+def _remote_exists(url):
+    from ._remote import exists
+
+    return exists(url)
+
+
 def sequence_entries(
     source, *, file_format=None, times=None, time_from="auto", sort=False
 ):
@@ -571,7 +587,12 @@ def sequence_entries(
 
     if isinstance(source, (str, os.PathLike)):
         text = os.fspath(source) if isinstance(source, os.PathLike) else source
-        files = _glob(text) if ("*" in text or "?" in text) else [text]
+        if "*" in text or "?" in text:
+            from ._remote import is_url
+
+            files = _remote_glob(text) if is_url(text) else _glob(text)
+        else:
+            files = [text]
     else:
         files = [os.fspath(p) if isinstance(p, os.PathLike) else str(p) for p in source]
         if not files:
@@ -580,8 +601,10 @@ def sequence_entries(
             files = sorted(files, key=_natural_sort_key)
 
     entries = []
+    from ._remote import is_url
+
     for path in files:
-        if not os.path.exists(path):
+        if not (_remote_exists(path) if is_url(path) else os.path.exists(path)):
             raise ReadError(f"meshio++: sequence: input file not found: '{path}'")
         step_times = []
         if time_from in ("auto", "file"):

@@ -394,6 +394,56 @@ _OP_TABLE = {
         "MaxIterations",
         "Tolerance",
     ),
+    "ConvexHull": ("Dimension",),
+    "Delaunay2D": (),
+    "EstimateNormals": ("K", "Orientation", "Viewpoint", "RecordVariation"),
+    "LaplacianEigenmodes": ("NumModes", "Tolerance", "MaxIterations"),
+    "Untangle": ("FixBoundary", "Rings", "Smooth", "MaxSweeps"),
+    "PrepareMetric": (
+        "Arrays",
+        "Output",
+        "TargetVertices",
+        "Norm",
+        "Hmin",
+        "Hmax",
+        "Gradation",
+        "MaxSweeps",
+    ),
+    "Morph": (
+        "Array",
+        "FixBoundary",
+        "ConstrainedArray",
+        "Stiffening",
+        "Steps",
+        "AllowInverted",
+        "Tolerance",
+        "MaxIterations",
+    ),
+    "RegisterRigid": (
+        "Target",
+        "Method",
+        "MaxIterations",
+        "Tolerance",
+        "MaxDistance",
+        "RotateData",
+    ),
+    "ConvertCoordinates": (
+        "System",
+        "Axis",
+        "Origin",
+        "Reference",
+        "Arrays",
+        "Inverse",
+        "RecordCoordinates",
+    ),
+    "GeodesicDistance": (
+        "Sources",
+        "SourceRegion",
+        "TimeFactor",
+        "Tolerance",
+        "MaxIterations",
+    ),
+    "Parameterize": ("Padding", "MaxDepth", "MaxStretch"),
     "EstimateError": ("Array", "Method", "Marking", "MarkingValue", "Output", "Marked"),
     "ErrorSize": ("Array", "TargetError", "Order", "MinSize", "MaxSize", "Output"),
     "Adapt": (
@@ -2426,6 +2476,232 @@ def _apply_step(mesh, step, steps, warnings):
                 f"{report['num_iterations']} iteration(s); the last iterate is "
                 "returned"
             )
+    elif op == "ConvexHull":
+        from ._hull import convex_hull
+
+        dimension = _number(step, "Dimension", 0.0)
+        if float(int(dimension)) != dimension:
+            raise ValueError("pipeline: ConvexHull: Dimension must be 0, 2 or 3")
+        mesh, report = convex_hull(mesh, dimension=int(dimension), return_report=True)
+        entry["Dimension"] = float(report["dimension"])
+        entry["NumVertices"] = float(report["num_vertices"])
+        entry["NumFacets"] = float(report["num_facets"])
+        entry["Area"] = float(report["area"])
+        entry["Volume"] = float(report["volume"])
+    elif op == "PrepareMetric":
+        from ._metric import prepare_metric
+
+        sweeps = _number(step, "MaxSweeps", 100.0)
+        if float(int(sweeps)) != sweeps:
+            raise ValueError(
+                "meshio++: pipeline: PrepareMetric: 'MaxSweeps' must be an integer"
+            )
+        mesh, report = prepare_metric(
+            mesh,
+            _svec(step, "Arrays") or [],
+            output=_text(step, "Output", "metric"),
+            target_vertices=_number(step, "TargetVertices", 0.0),
+            norm=_number(step, "Norm", 2.0),
+            hmin=_number(step, "Hmin", 0.0),
+            hmax=_number(step, "Hmax", 0.0),
+            gradation=_number(step, "Gradation", 0.0),
+            max_sweeps=int(sweeps),
+            return_report=True,
+        )
+        entry["ComplexityBefore"] = float(report["complexity_before"])
+        entry["ComplexityAfter"] = float(report["complexity_after"])
+        entry["NumGraded"] = float(report["num_graded"])
+    elif op == "Untangle":
+        from ._untangle import untangle
+
+        rings = _number(step, "Rings", 2.0)
+        sweeps = _number(step, "MaxSweeps", 100.0)
+        if float(int(rings)) != rings or float(int(sweeps)) != sweeps:
+            raise ValueError(
+                "meshio++: pipeline: Untangle: 'Rings' and 'MaxSweeps' must be integers"
+            )
+        mesh, report = untangle(
+            mesh,
+            fix_boundary=_flag(step, "FixBoundary", True),
+            rings=int(rings),
+            smooth=_flag(step, "Smooth", False),
+            max_sweeps=int(sweeps),
+            return_report=True,
+        )
+        entry["NumInvertedBefore"] = float(report["num_inverted_before"])
+        entry["NumInvertedAfter"] = float(report["num_inverted_after"])
+        entry["MinQualityAfter"] = float(report["min_quality_after"])
+        entry["Sweeps"] = float(report["sweeps"])
+        if report["num_inverted_after"]:
+            warnings.append("untangle: cells are still inverted after MaxSweeps")
+    elif op == "Morph":
+        from ._morph import morph
+
+        n_steps = _number(step, "Steps", 1.0)
+        iters = _number(step, "MaxIterations", 0.0)
+        if float(int(n_steps)) != n_steps or float(int(iters)) != iters:
+            raise ValueError(
+                "meshio++: pipeline: Morph: 'Steps' and 'MaxIterations' must be "
+                "integers"
+            )
+        constrained = _text(step, "ConstrainedArray", "")
+        mesh, report = morph(
+            mesh,
+            _text(step, "Array", ""),
+            fix_boundary=_flag(step, "FixBoundary", True),
+            constrained=constrained if constrained else None,
+            stiffening=_number(step, "Stiffening", 1.0),
+            steps=int(n_steps),
+            allow_inverted=_flag(step, "AllowInverted", False),
+            tolerance=_number(step, "Tolerance", 1e-10),
+            max_iterations=int(iters),
+            return_report=True,
+        )
+        entry["NumConstrained"] = float(report["num_constrained"])
+        entry["NumInverted"] = float(report["num_inverted"])
+        entry["MaxDisplacement"] = float(report["max_displacement"])
+        entry["Converged"] = 1.0 if report["converged"] else 0.0
+        if not report["converged"]:
+            warnings.append(
+                "morph: a solve hit its iteration cap; the motion is approximate"
+            )
+    elif op == "LaplacianEigenmodes":
+        from ._eigenmodes import laplacian_eigenmodes
+
+        modes = _number(step, "NumModes", 10.0)
+        iters = _number(step, "MaxIterations", 0.0)
+        if float(int(modes)) != modes or float(int(iters)) != iters:
+            raise ValueError(
+                "meshio++: pipeline: LaplacianEigenmodes: 'NumModes' and "
+                "'MaxIterations' must be integers"
+            )
+        mesh, report = laplacian_eigenmodes(
+            mesh,
+            int(modes),
+            tolerance=_number(step, "Tolerance", 1e-8),
+            max_iterations=int(iters),
+            return_report=True,
+        )
+        entry["Iterations"] = float(report["iterations"])
+        entry["MaxResidual"] = float(report["max_residual"])
+        entry["Converged"] = 1.0 if report["converged"] else 0.0
+        if not report["converged"]:
+            warnings.append(
+                "laplacian_eigenmodes: no convergence within MaxIterations; the modes "
+                "are the last iterate"
+            )
+    elif op == "RegisterRigid":
+        from ._registration import register_rigid
+        from ._transform import transform
+
+        target = _text(step, "Target", "")
+        if not target:
+            raise ValueError(
+                "meshio++: pipeline: RegisterRigid: needs 'Target', the mesh to "
+                "register onto"
+            )
+        iters = _number(step, "MaxIterations", 50.0)
+        if float(int(iters)) != iters:
+            raise ValueError(
+                "meshio++: pipeline: RegisterRigid: 'MaxIterations' must be an integer"
+            )
+        matrix, report = register_rigid(
+            mesh,
+            read(target),
+            method=_text(step, "Method", "point_to_point"),
+            max_iterations=int(iters),
+            tolerance=_number(step, "Tolerance", 1e-10),
+            max_distance=_number(step, "MaxDistance", 0.0),
+        )
+        mesh = transform(
+            mesh, matrix=matrix, rotate_vector_data=_flag(step, "RotateData", False)
+        )
+        entry["InitialRms"] = float(report["initial_rms"])
+        entry["Rms"] = float(report["rms"])
+        entry["Iterations"] = float(report["iterations"])
+        entry["Converged"] = 1.0 if report["converged"] else 0.0
+        if not report["converged"]:
+            warnings.append(
+                "register_rigid: no convergence within MaxIterations; the transform is "
+                "the last iterate"
+            )
+    elif op == "EstimateNormals":
+        from ._point_normals import estimate_normals
+
+        k = _number(step, "K", 16.0)
+        if float(int(k)) != k:
+            raise ValueError("pipeline: EstimateNormals: K must be an integer")
+        mesh, report = estimate_normals(
+            mesh,
+            k=int(k),
+            orientation=_text(step, "Orientation", "consistent"),
+            viewpoint=(
+                _vec3(step, "Viewpoint") if "Viewpoint" in step else (0.0, 0.0, 0.0)
+            ),
+            record_variation=_flag(step, "RecordVariation", False),
+            return_report=True,
+        )
+        entry["NumDegenerate"] = float(report["num_degenerate"])
+        entry["NumComponents"] = float(report["num_components"])
+    elif op == "Delaunay2D":
+        from ._hull import delaunay_2d
+
+        mesh, report = delaunay_2d(mesh, return_report=True)
+        entry["NumTriangles"] = float(report["num_triangles"])
+        entry["NumDuplicates"] = float(report["num_duplicates"])
+    elif op == "ConvertCoordinates":
+        from ._coordinates import convert_coordinates
+
+        mesh, report = convert_coordinates(
+            mesh,
+            _text(step, "System", "cylindrical"),
+            axis=_vec3(step, "Axis") if "Axis" in step else (0.0, 0.0, 1.0),
+            origin=_vec3(step, "Origin") if "Origin" in step else (0.0, 0.0, 0.0),
+            reference=(
+                _vec3(step, "Reference") if "Reference" in step else (1.0, 0.0, 0.0)
+            ),
+            arrays=_svec(step, "Arrays") or [],
+            inverse=_flag(step, "Inverse", False),
+            record_coordinates=_flag(step, "RecordCoordinates", True),
+            return_report=True,
+        )
+        entry["NumArrays"] = float(report["num_arrays"])
+        entry["NumSingular"] = float(report["num_singular"])
+    elif op == "GeodesicDistance":
+        from ._geodesic import geodesic_distance
+
+        mesh, report = geodesic_distance(
+            mesh,
+            [int(v) for v in (_dvec(step, "Sources") or [])],
+            source_region=_text(step, "SourceRegion", "") or None,
+            time_factor=_number(step, "TimeFactor", 1.0),
+            tolerance=_number(step, "Tolerance", 1e-10),
+            max_iterations=int(_number(step, "MaxIterations", 0)),
+            return_report=True,
+        )
+        entry["NumSources"] = float(report["num_sources"])
+        entry["NumUnreached"] = float(report["num_unreached"])
+        entry["MaxDistance"] = float(report["max_distance"])
+        entry["Converged"] = 1.0 if report["converged"] else 0.0
+        if not report["converged"]:
+            warnings.append(
+                "geodesic_distance: a solve hit its iteration cap; the distance is "
+                "approximate"
+            )
+    elif op == "Parameterize":
+        from ._parameterize import parameterize
+
+        mesh, report = parameterize(
+            mesh,
+            padding=_number(step, "Padding", 0.02),
+            max_depth=int(_number(step, "MaxDepth", 8)),
+            max_stretch=_number(step, "MaxStretch", 2.0),
+            return_report=True,
+        )
+        entry["NumCharts"] = float(report["num_charts"])
+        entry["NumFlipped"] = float(report["num_flipped"])
+        entry["Stretch"] = float(report["stretch"])
+        entry["PackingEfficiency"] = float(report["packing_efficiency"])
     elif op == "EstimateError":
         mesh, report = estimate_error(
             mesh,
@@ -3390,6 +3666,40 @@ def _fanout(mesh, step, pattern, out, inp, steps_spec):
     return {"op": step["Op"], "NumPieces": float(len(pieces))}
 
 
+def _run_steps(mesh, steps_spec, version, model, steps, warnings):
+    """Apply validated, non-fan-out steps in order, carrying ``model`` (the
+    CAD model a model step meshes) through the chain; appends each step's
+    report entry to ``steps``. Shared by ``run_pipeline`` and
+    ``apply_operations``, so the two cannot drift."""
+    for i, step in enumerate(steps_spec):
+        if step["Op"] in _MODEL_OPS:
+            mesh = _apply_model_step(step, model, steps, warnings)
+            continue
+        if step["Op"] == "ProjectToCad":
+            # Projected onto it, the mesh matches the model again: it stays.
+            entry = {"op": "ProjectToCad"}
+            mesh = _project_to_cad_step(mesh, step, entry, model)
+            steps.append(entry)
+            _prov_add_operation(_render_op(step))
+            continue
+        mesh = (_apply_v2 if version == 2 else _apply_step)(mesh, step, steps, warnings)
+        if step["Op"] == "FitCad":
+            # The fitted solid is the model the rest of the run carries, when
+            # the backend gave one (the native legacy mode gives none).
+            brep = (getattr(mesh, "info", None) or {}).get("brep")
+            if brep is not None and len(brep.get("faces", ())):
+                model.set("brep", brep)
+            else:
+                model.drop(
+                    "'FitCad' gave no B-rep (its native legacy freeform mode fits none)"
+                )
+        elif model.has():
+            model.drop(
+                f"step {i + 1} '{step['Op']}' changed the mesh, which drops the model"
+            )
+    return mesh
+
+
 def run_pipeline(settings, input_path=None, output_path=None):
     """Run a whole settings pipeline: read ``Input.Path``, apply
     ``Operations`` in order, write ``Output.Path``.
@@ -3552,35 +3862,11 @@ def run_pipeline(settings, input_path=None, output_path=None):
             model.set("brep", info.get("brep"))
 
     steps = []
-    for i, step in enumerate(steps_spec):
-        if fanout and i + 1 == len(steps_spec):
-            steps.append(_fanout(mesh, step, out_path, out, in_path, steps_spec))
-            return {"steps": steps, "warnings": warnings}
-        if step["Op"] in _MODEL_OPS:
-            mesh = _apply_model_step(step, model, steps, warnings)
-            continue
-        if step["Op"] == "ProjectToCad":
-            # Projected onto it, the mesh matches the model again: it stays.
-            entry = {"op": "ProjectToCad"}
-            mesh = _project_to_cad_step(mesh, step, entry, model)
-            steps.append(entry)
-            _prov_add_operation(_render_op(step))
-            continue
-        mesh = (_apply_v2 if version == 2 else _apply_step)(mesh, step, steps, warnings)
-        if step["Op"] == "FitCad":
-            # The fitted solid is the model the rest of the run carries, when
-            # the backend gave one (the native legacy mode gives none).
-            brep = (getattr(mesh, "info", None) or {}).get("brep")
-            if brep is not None and len(brep.get("faces", ())):
-                model.set("brep", brep)
-            else:
-                model.drop(
-                    "'FitCad' gave no B-rep (its native legacy freeform mode fits none)"
-                )
-        elif model.has():
-            model.drop(
-                f"step {i + 1} '{step['Op']}' changed the mesh, which drops the model"
-            )
+    if fanout:
+        mesh = _run_steps(mesh, steps_spec[:-1], version, model, steps, warnings)
+        steps.append(_fanout(mesh, steps_spec[-1], out_path, out, in_path, steps_spec))
+        return {"steps": steps, "warnings": warnings}
+    mesh = _run_steps(mesh, steps_spec, version, model, steps, warnings)
 
     out_fmt = out.get("Format") or _write_format_for_path(pathlib.Path(str(out_path)))
     out_encoding = out.get("Encoding", "default")
@@ -3593,3 +3879,111 @@ def run_pipeline(settings, input_path=None, output_path=None):
 
     write(out_path, mesh, file_format=out.get("Format") or None, **write_kwargs)
     return {"steps": steps, "warnings": warnings}
+
+
+def _model_from_info(mesh):
+    """The CAD model an in-memory mesh carries in ``mesh.info`` -- the
+    ``brep`` a CAD JSON/STEP/IGES read or ``fit_cad`` leaves, or an MFEM read's
+    ``nurbs`` patches -- as the model a whole run would carry from its Input."""
+    info = getattr(mesh, "info", None) or {}
+    model = _Model(
+        "the mesh carries none in mesh.info (read CAD JSON, STEP, IGES or an "
+        "MFEM NURBS mesh, or fit one with fit_cad)"
+    )
+    brep = info.get("brep")
+    nurbs = info.get("nurbs")
+    if brep is not None and len(brep.get("faces", ())):
+        model.set("brep", brep)
+    elif nurbs is not None and len(nurbs.get("patches", ())):
+        model.set("nurbs", nurbs)
+    return model
+
+
+def _resolve_operations(operations, version):
+    """``operations`` as ``(steps, version)``: a list of step dicts, the JSON
+    text of one, or a settings document (its ``Operations``, and its
+    ``Version`` when present)."""
+    if isinstance(operations, (str, bytes)):
+        operations = json.loads(operations)
+    if isinstance(operations, dict):
+        _check_keys(
+            operations,
+            "the settings document",
+            ("Version", "Input", "Operations", "Output"),
+        )
+        version = operations.get("Version", version)
+        operations = operations.get("Operations", [])
+    if isinstance(operations, tuple):
+        operations = list(operations)
+    if not isinstance(operations, list):
+        raise ValueError(
+            "meshio++: pipeline: operations must be a list of steps, its JSON "
+            "text or a settings document"
+        )
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or version not in (1, 2)
+    ):
+        raise ValueError(
+            f"meshio++: pipeline: unsupported Version {version!r} (this build knows 1 and 2)"
+        )
+    return operations, version
+
+
+def apply_operations(mesh, operations, *, version=1):
+    """Apply pipeline steps to a mesh in memory: ``run_pipeline`` without the
+    Input read and the Output write.
+
+    :param mesh: the mesh to start from; ``None`` when the first step is
+        ``Generate``. It is never modified.
+    :param operations: the steps -- a list of ``{"Op": ..., <keys>}`` dicts in
+        the settings vocabulary (``doc/pipeline.md``), the JSON text of such a
+        list, or a whole settings document, whose ``Operations`` (and
+        ``Version``) are used and whose ``Input``/``Output`` are ignored.
+    :param version: the schema version, 1 or 2 (a document's ``Version`` wins).
+        Version 2's ``Merge``, ``Interpolate`` and ``UndoGreen`` read their
+        ``Inputs`` paths; the mesh itself never touches a file.
+    :returns: ``(mesh, report)``, the report shaped as ``run_pipeline``'s:
+        ``{"steps": [{"op", ...counters}], "warnings": [...]}``.
+    :raises ValueError: on any schema error, before any step runs; for
+        ``Split`` and a fanned-out ``Partition`` (``RecordIds``/``GhostLayers``),
+        which write several files and need ``run_pipeline``; and for a model
+        step (``MeshCadSurface``, ``IgaSample``, ``IgaRefine``) when
+        ``mesh.info`` carries no CAD model.
+    """
+    from ._plugins import load_plugins
+
+    load_plugins()
+    steps_spec, version = _resolve_operations(operations, version)
+    for step in steps_spec:
+        _validate_step(step, version)
+        op = step["Op"]
+        if op == "Split" or (
+            op == "Partition" and ("RecordIds" in step or "GhostLayers" in step)
+        ):
+            raise _err(
+                op,
+                "writes one file per piece, so it needs run_pipeline's "
+                "Output.Pattern, not a step applied in memory",
+            )
+    generated = bool(steps_spec) and steps_spec[0]["Op"] == "Generate"
+    if mesh is None:
+        if not generated:
+            raise ValueError(
+                "meshio++: pipeline: a mesh is required unless the first step is Generate"
+            )
+        mesh = Mesh(np.zeros((0, 3)), [])
+    elif not isinstance(mesh, Mesh):
+        raise TypeError(
+            "meshio++: pipeline: mesh must be a meshioplusplus.Mesh or None"
+        )
+
+    model = (
+        _Model("the pipeline starts from Generate, not a CAD read")
+        if generated
+        else _model_from_info(mesh)
+    )
+    steps, warnings = [], []
+    mesh = _run_steps(mesh, steps_spec, version, model, steps, warnings)
+    return mesh, {"steps": steps, "warnings": warnings}

@@ -26,7 +26,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -39,6 +41,7 @@
 #include "meshioplusplus/detail/colormap.hpp"
 #include "meshioplusplus/detail/face_color.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/marching.hpp"
 #include "meshioplusplus/detail/projection.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
@@ -52,6 +55,7 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/cdt2d.hpp"
 #include "../detail/crease_edges.hpp"
 #include "../detail/raster.hpp"
 #include "../detail/render_field.hpp"
@@ -909,6 +913,33 @@ struct RndPrepared {
     bool mDeferCategoryEdges = false;  ///< orientation categories need the camera
     std::array<double, 3> mCentre = {0.0, 0.0, 0.0};  ///< bounding sphere of what is drawn
     double mRadius = 1.0;
+
+    // Caps for a cut-away. The volume cells (polyhedra aside) at the drawn
+    // positions, sectioned by the plane; simplexified on the first cut only.
+    std::shared_ptr<const Mesh> mCapMesh;
+    std::vector<std::int64_t> mCapIds;  ///< per cell of mCapMesh: the input cell
+    std::vector<double> mCapValues;     ///< per cell of mCapMesh: its value (empty: fill colour)
+    mutable std::once_flag mCapOnce;
+    mutable std::shared_ptr<const detail::MarchingInput> mCapInput;
+    // The input's own 2-D faces when they close (every edge shared by two),
+    // whose cut loops are filled: rings into mXyz's original points.
+    std::vector<std::int64_t> mCapStart;
+    std::vector<std::int64_t> mCapNodes;
+
+    /// The simplexified volume, or null when there is none (or it cannot be).
+    const detail::MarchingInput* CapInput() const {
+        std::call_once(mCapOnce, [this] {
+            if (!mCapMesh)
+                return;
+            try {
+                mCapInput = std::make_shared<const detail::MarchingInput>(
+                    detail::marching_prepare(*mCapMesh));
+            } catch (const std::exception& rErr) {
+                log::warn("render: the cut-away is not capped ({})", rErr.what());
+            }
+        });
+        return mCapInput.get();
+    }
 };
 
 /// The lines between faces whose categories differ: every interior edge shared by
@@ -1037,6 +1068,8 @@ struct RndClipped {
     std::vector<double> mFNormal;
     std::vector<double> mFValues;
     std::vector<double> mVNormal;  // grown with the new corners, NaN where unknown
+    std::vector<std::uint8_t>
+        mCap;  // per face: 0 drawn, 1 a cap with a value, 2 a cap in the fill colour
     struct Line {
         std::int64_t mA;
         std::int64_t mB;
@@ -1169,6 +1202,68 @@ std::shared_ptr<const RndPrepared> rnd_prepare(const Mesh& rMesh, const RenderOp
             g.mXyz[i] += rOpt.mWarpScale * disp[i];
     }
 
+    // What a cut-away caps: the volume cells (polyhedra aside), copied at the
+    // drawn positions for the section, and the input's own 2-D faces when they
+    // close.
+    std::shared_ptr<Mesh> cap_mesh;
+    RndGroup cap_cells;  // one primitive per cell of cap_mesh, for its colour
+    cap_cells.mpDraw = &src;
+    {
+        auto lean = std::make_shared<Mesh>();
+        NDArray pts = NDArray::Uninit(DType::Float64, {num_source_points, 3});
+        std::copy(g.mXyz.begin(),
+                  g.mXyz.begin() + static_cast<std::ptrdiff_t>(3 * num_source_points),
+                  pts.As<double>());
+        lean->AssignPoints(std::move(pts));
+        std::int64_t block_base = 0;
+        for (const auto cb : src.CellRange()) {
+            const std::size_t n = cb.NumCells();
+            const CellType ct = cell_type_from_name(cb.Type());
+            if (n > 0 && !cb.IsPolyhedron() && !cb.IsRagged() && cell_type_dimension(ct) == 3) {
+                const NDArray& conn = cb.Conn();
+                const std::size_t cols = conn.Size() / n;
+                NDArray copy = NDArray::Uninit(DType::Int64, {n, cols});
+                std::int64_t* p_out = copy.As<std::int64_t>();
+                for (std::size_t r = 0; r < n; ++r) {
+                    for (std::size_t k = 0; k < cols; ++k)
+                        p_out[r * cols + k] = detail::read_int(conn, r * cols + k);
+                    const std::int64_t cell = block_base + static_cast<std::int64_t>(r);
+                    rnd_push(cap_cells, p_out + r * cols, cols, cell, cell);
+                }
+                lean->AddCellBlock(cb.Type(), std::move(copy));
+            }
+            block_base += static_cast<std::int64_t>(n);
+        }
+        if (!cap_cells.mIds.empty())
+            cap_mesh = std::move(lean);
+    }
+    std::vector<std::int64_t> cap_start;
+    std::vector<std::int64_t> cap_nodes;
+    {
+        const std::size_t first = g.mSkinFaces.mIds.size();
+        std::map<std::pair<std::int64_t, std::int64_t>, int> uses;
+        for (std::size_t f = first; f < num_faces; ++f) {
+            const std::int64_t lo = f_start[f];
+            const std::int64_t n = f_start[f + 1] - lo;
+            for (std::int64_t k = 0; k < n; ++k) {
+                const std::int64_t a = f_nodes[static_cast<std::size_t>(lo + k)];
+                const std::int64_t b = f_nodes[static_cast<std::size_t>(lo + (k + 1) % n)];
+                ++uses[{std::min(a, b), std::max(a, b)}];
+            }
+        }
+        const bool closed =
+            !uses.empty() && std::all_of(uses.begin(), uses.end(),
+                                         [](const auto& rUse) { return rUse.second == 2; });
+        if (closed) {
+            cap_start.push_back(0);
+            for (std::size_t f = first; f < num_faces; ++f) {
+                cap_nodes.insert(cap_nodes.end(), f_nodes.begin() + f_start[f],
+                                 f_nodes.begin() + f_start[f + 1]);
+                cap_start.push_back(static_cast<std::int64_t>(cap_nodes.size()));
+            }
+        }
+    }
+
     // Face normals (Newell's, from the shared crease kernel).
     std::vector<double> f_normal(3 * num_faces, 0.0);
     parallel_for(num_faces, [&](std::size_t f) {
@@ -1185,6 +1280,7 @@ std::shared_ptr<const RndPrepared> rnd_prepare(const Mesh& rMesh, const RenderOp
     std::vector<double> f_values(num_faces, 0.0);
     std::vector<double> l_values(g.mLines.mIds.size(), 0.0);
     std::vector<double> p_values(g.mPoints.mIds.size(), 0.0);
+    std::vector<double> cap_values;  // per capped cell; empty: the caps take the fill colour
     std::vector<std::string> keys;
     bool continuous = false;
     bool categorical = false;
@@ -1234,6 +1330,9 @@ std::shared_ptr<const RndPrepared> rnd_prepare(const Mesh& rMesh, const RenderOp
             l_values[i] = region_of(g.mLines.mIds[i]);
         for (std::size_t i = 0; i < p_values.size(); ++i)
             p_values[i] = region_of(g.mPoints.mIds[i]);
+        cap_values.resize(cap_cells.mIds.size());
+        for (std::size_t i = 0; i < cap_values.size(); ++i)
+            cap_values[i] = region_of(cap_cells.mIds[i]);
         categorical = true;
         for (std::size_t r = 0; r < region_names.size(); ++r) {
             const auto& pal = detail::render_category_palette();
@@ -1252,9 +1351,10 @@ std::shared_ptr<const RndPrepared> rnd_prepare(const Mesh& rMesh, const RenderOp
         f_values.insert(f_values.end(), own.begin(), own.end());
         l_values = rnd_group_values(spec, src, g.mLines, is_point);
         p_values = rnd_group_values(spec, src, g.mPoints, is_point);
+        cap_values = rnd_group_values(spec, src, cap_cells, is_point);
         if (diag_flag) {
             // 0 or 1; a cell the metric does not apply to is not flagged.
-            for (std::vector<double>* p_list : {&f_values, &l_values, &p_values})
+            for (std::vector<double>* p_list : {&f_values, &l_values, &p_values, &cap_values})
                 for (double& v : *p_list)
                     v = std::isfinite(v) && v > 0.5 ? 1.0 : 0.0;
             coloring.mPalette = {rOpt.mFillColor, {220, 40, 40, 255}};
@@ -1287,6 +1387,13 @@ std::shared_ptr<const RndPrepared> rnd_prepare(const Mesh& rMesh, const RenderOp
                 for (double& v : *p_list)
                     if (std::isfinite(v))
                         v = static_cast<double>(index_of(v));
+            // A cap's value is its cell's, which need not be one a face shows.
+            for (double& v : cap_values) {
+                const auto at = std::lower_bound(distinct.begin(), distinct.end(), v);
+                v = std::isfinite(v) && at != distinct.end() && *at == v
+                        ? static_cast<double>(at - distinct.begin())
+                        : std::nan("");
+            }
             const auto& pal = detail::render_category_palette();
             for (std::size_t i = 0; i < distinct.size(); ++i) {
                 const RndColor c = pal[i % pal.size()];
@@ -1689,6 +1796,11 @@ std::shared_ptr<const RndPrepared> rnd_prepare(const Mesh& rMesh, const RenderOp
     prep->mArrows = std::move(arrows);
     prep->mEdgeLines = std::move(edge_lines);
     prep->mDeferCategoryEdges = defer_category_edges;
+    prep->mCapMesh = std::move(cap_mesh);
+    prep->mCapIds = std::move(cap_cells.mIds);
+    prep->mCapValues = std::move(cap_values);
+    prep->mCapStart = std::move(cap_start);
+    prep->mCapNodes = std::move(cap_nodes);
     return prep;
 }
 
@@ -1853,6 +1965,207 @@ Frame rnd_draw(const RndPrepared& rPrep, const RenderOptions& rCamera, bool Fixe
             clipped.mFNormal.insert(clipped.mFNormal.end(), rPrep.mFNormal.begin() + 3 * f,
                                     rPrep.mFNormal.begin() + 3 * f + 3);
             clipped.mFValues.push_back(rPrep.mFValues[f]);
+            clipped.mCap.push_back(0);
+        }
+
+        // Caps: the section of each plane through the volume and through a
+        // closed surface, facing the removed side, cut by the other plane.
+        std::size_t num_caps = 0;
+        auto add_cap = [&](std::vector<RndClipCorner>& rPoly, std::size_t Own, std::int64_t Id,
+                           double Value, bool Fill) {
+            for (std::size_t q = 0; q < planes.size(); ++q)
+                if (q != Own)
+                    rnd_clip_polygon(planes[q], rPoly);
+            if (rPoly.size() < 3)
+                return;
+            for (const RndClipCorner& corner : rPoly)
+                clipped.mFNodes.push_back(new_vertex(corner));
+            clipped.mFStart.push_back(static_cast<std::int64_t>(clipped.mFNodes.size()));
+            clipped.mFIds.push_back(Id);
+            for (std::size_t k = 0; k < 3; ++k)
+                clipped.mFNormal.push_back(-planes[Own].mN[k]);
+            clipped.mFValues.push_back(Value);
+            clipped.mCap.push_back(Fill ? 2 : 1);
+            ++num_caps;
+        };
+        auto cap_corner = [&](const double* pX, const RndPlane& rPlane) {
+            RndClipCorner corner;
+            for (std::size_t k = 0; k < 3; ++k) {
+                corner.mX[k] = pX[k];
+                corner.mN[k] = -rPlane.mN[k];
+            }
+            corner.mId = -1;
+            return corner;
+        };
+        const detail::MarchingInput* p_volume = rPrep.CapInput();
+        for (std::size_t q = 0; q < planes.size(); ++q) {
+            const RndPlane& plane = planes[q];
+            if (p_volume != nullptr) {
+                const Mesh& simp = p_volume->Simp();
+                const std::size_t dim = simp.PointDim();
+                const NDArray& simp_points = simp.Points();
+                std::vector<double> dist(simp.NumPoints(), 0.0);
+                parallel_for(dist.size(), [&](std::size_t i) {
+                    double x[3] = {0.0, 0.0, 0.0};
+                    for (std::size_t k = 0; k < dim && k < 3; ++k)
+                        x[k] = detail::read_double(simp_points, i * dim + k);
+                    dist[i] = rnd_dist(plane, x);
+                });
+                detail::MarchingOptions cut_options;
+                cut_options.mProvenanceName = "render:parent_cell";
+                cut_options.mRecordParentIds = true;
+                cut_options.mOrientation = detail::MarchingOrientation::FixedDirection;
+                cut_options.mDirection = {-plane.mN[0], -plane.mN[1], -plane.mN[2]};
+                const Mesh section = detail::marching_cut(*p_volume, dist, cut_options);
+                if (section.NumPoints() > 0) {
+                    const NDArray& sp = section.Points();
+                    const std::size_t sdim = section.PointDim();
+                    std::size_t b = 0;
+                    for (const auto cb : section.CellRange()) {
+                        const NDArray& parents = section.CellData("render:parent_cell", b++);
+                        const NDArray& conn = cb.Conn();
+                        const std::size_t n = cb.NumCells();
+                        const std::size_t cols = n == 0 ? 0 : conn.Size() / n;
+                        for (std::size_t r = 0; r < n; ++r) {
+                            std::vector<RndClipCorner> poly;
+                            for (std::size_t k = 0; k < cols; ++k) {
+                                const std::size_t v =
+                                    static_cast<std::size_t>(detail::read_int(conn, r * cols + k));
+                                double x[3] = {0.0, 0.0, 0.0};
+                                for (std::size_t c = 0; c < sdim && c < 3; ++c)
+                                    x[c] = detail::read_double(sp, v * sdim + c);
+                                poly.push_back(cap_corner(x, plane));
+                            }
+                            const std::size_t parent =
+                                static_cast<std::size_t>(detail::read_int(parents, r));
+                            const bool fill = rPrep.mCapValues.empty();
+                            add_cap(poly, q, rPrep.mCapIds[parent],
+                                    fill ? std::nan("") : rPrep.mCapValues[parent], fill);
+                        }
+                    }
+                }
+            }
+            if (!rPrep.mCapStart.empty()) {
+                // Each face the plane crosses gives segments between the points
+                // where its edges cross; an edge's point is computed from its
+                // sorted ends, so the two faces sharing it agree exactly.
+                std::map<std::pair<std::int64_t, std::int64_t>, std::size_t> point_of;
+                std::vector<std::array<double, 3>> cut_points;
+                std::vector<std::vector<std::size_t>> links;
+                auto crossing = [&](std::int64_t A, std::int64_t B) {
+                    const std::pair<std::int64_t, std::int64_t> key = {std::min(A, B),
+                                                                       std::max(A, B)};
+                    const auto found = point_of.find(key);
+                    if (found != point_of.end())
+                        return found->second;
+                    const double* pa = &xyz[3 * static_cast<std::size_t>(key.first)];
+                    const double* pb = &xyz[3 * static_cast<std::size_t>(key.second)];
+                    const double da = rnd_dist(plane, pa);
+                    const double db = rnd_dist(plane, pb);
+                    const double t = da / (da - db);
+                    std::array<double, 3> x;
+                    for (std::size_t k = 0; k < 3; ++k)
+                        x[k] = pa[k] + t * (pb[k] - pa[k]);
+                    cut_points.push_back(x);
+                    links.emplace_back();
+                    point_of.emplace(key, cut_points.size() - 1);
+                    return cut_points.size() - 1;
+                };
+                const std::size_t num_rings = rPrep.mCapStart.size() - 1;
+                for (std::size_t f = 0; f < num_rings; ++f) {
+                    const std::int64_t* ring = rPrep.mCapNodes.data() + rPrep.mCapStart[f];
+                    const std::int64_t n = rPrep.mCapStart[f + 1] - rPrep.mCapStart[f];
+                    // The crossings in ring order, each marked by whether the
+                    // ring leaves the kept side there.
+                    std::vector<std::pair<std::size_t, bool>> cuts;
+                    for (std::int64_t k = 0; k < n; ++k) {
+                        const std::int64_t a = ring[k];
+                        const std::int64_t b = ring[(k + 1) % n];
+                        const bool ka =
+                            rnd_dist(plane, &xyz[3 * static_cast<std::size_t>(a)]) >= 0.0;
+                        const bool kb =
+                            rnd_dist(plane, &xyz[3 * static_cast<std::size_t>(b)]) >= 0.0;
+                        if (ka != kb)
+                            cuts.emplace_back(crossing(a, b), ka);
+                    }
+                    if (cuts.empty())
+                        continue;
+                    std::size_t start = 0;
+                    while (start < cuts.size() && !cuts[start].second)
+                        ++start;
+                    for (std::size_t i = 0; i + 1 < cuts.size(); i += 2) {
+                        const std::size_t u = cuts[(start + i) % cuts.size()].first;
+                        const std::size_t v = cuts[(start + i + 1) % cuts.size()].first;
+                        if (u == v)
+                            continue;
+                        links[u].push_back(v);
+                        links[v].push_back(u);
+                    }
+                }
+                bool closed = !cut_points.empty();
+                for (const std::vector<std::size_t>& rLink : links)
+                    closed = closed && rLink.size() == 2;
+                if (closed) {
+                    // In-plane axes with e1 x e2 = -n, so the triangles face
+                    // the removed side.
+                    const double* nrm = plane.mN;
+                    const double axis[3] = {std::fabs(nrm[0]) < 0.9 ? 1.0 : 0.0,
+                                            std::fabs(nrm[0]) < 0.9 ? 0.0 : 1.0, 0.0};
+                    double e1[3] = {nrm[1] * axis[2] - nrm[2] * axis[1],
+                                    nrm[2] * axis[0] - nrm[0] * axis[2],
+                                    nrm[0] * axis[1] - nrm[1] * axis[0]};
+                    const double l1 = std::sqrt(e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2]);
+                    for (double& c : e1)
+                        c /= l1;
+                    const double e2[3] = {e1[1] * nrm[2] - e1[2] * nrm[1],
+                                          e1[2] * nrm[0] - e1[0] * nrm[2],
+                                          e1[0] * nrm[1] - e1[1] * nrm[0]};
+                    double origin[3];
+                    for (std::size_t k = 0; k < 3; ++k)
+                        origin[k] = -plane.mD * nrm[k];
+                    std::vector<std::vector<detail::Cdt2d::Vec2>> loops;
+                    std::vector<std::uint8_t> seen(cut_points.size(), 0);
+                    for (std::size_t s0 = 0; s0 < cut_points.size(); ++s0) {
+                        if (seen[s0])
+                            continue;
+                        std::vector<detail::Cdt2d::Vec2> loop;
+                        std::size_t prev = s0;
+                        std::size_t at = s0;
+                        do {
+                            seen[at] = 1;
+                            double d[3];
+                            for (std::size_t k = 0; k < 3; ++k)
+                                d[k] = cut_points[at][k] - origin[k];
+                            loop.push_back({d[0] * e1[0] + d[1] * e1[1] + d[2] * e1[2],
+                                            d[0] * e2[0] + d[1] * e2[1] + d[2] * e2[2]});
+                            const std::size_t next =
+                                links[at][0] != prev || links[at][0] == links[at][1] ? links[at][0]
+                                                                                     : links[at][1];
+                            prev = at;
+                            at = next;
+                        } while (at != s0 && !seen[at]);
+                        if (loop.size() >= 3)
+                            loops.push_back(std::move(loop));
+                    }
+                    detail::Cdt2dPolygon fill;
+                    if (!loops.empty())
+                        fill = detail::cdt2d_triangulate_polygon(loops, 0.0);
+                    if (!loops.empty() && fill.mStatus == detail::Cdt2dStatus::Ok) {
+                        for (const detail::Cdt2d::Tri& tri : fill.mTriangles) {
+                            std::vector<RndClipCorner> poly;
+                            for (std::int64_t corner : tri) {
+                                const detail::Cdt2d::Vec2& uv =
+                                    fill.mPoints[static_cast<std::size_t>(corner)];
+                                double x[3];
+                                for (std::size_t k = 0; k < 3; ++k)
+                                    x[k] = origin[k] + uv[0] * e1[k] + uv[1] * e2[k];
+                                poly.push_back(cap_corner(x, plane));
+                            }
+                            add_cap(poly, q, -1, std::nan(""), true);
+                        }
+                    }
+                }
+            }
         }
         clipped.mNumFaces = clipped.mFIds.size();
         for (std::size_t i = 0; i < rPrep.mLines.mIds.size(); ++i) {
@@ -1882,8 +2195,8 @@ Frame rnd_draw(const RndPrepared& rPrep, const RenderOptions& rCamera, bool Fixe
                 clipped.mPoints.push_back(i);
         }
         keys.push_back("cutaway: " + std::to_string(planes.size()) + " plane" +
-                       (planes.size() == 1 ? "" : "s") + ", inside in " +
-                       rnd_hex(rOpt.mCutawayTint));
+                       (planes.size() == 1 ? "" : "s") + (num_caps > 0 ? ", capped" : "") +
+                       ", inside in " + rnd_hex(rOpt.mCutawayTint));
     }
     const std::size_t num_faces = clip_on ? clipped.mNumFaces : rPrep.mNumFaces;
     const std::vector<std::int64_t>& f_start = clip_on ? clipped.mFStart : rPrep.mFStart;
@@ -2134,7 +2447,10 @@ Frame rnd_draw(const RndPrepared& rPrep, const RenderOptions& rCamera, bool Fixe
         if (n < 3)
             continue;
         RndColor color = coloring.Map(f_values[f], rOpt.mFillColor);
-        if (clip_on && !orientation && faces_away(f))
+        const std::uint8_t cap = clip_on ? clipped.mCap[f] : 0;
+        if (cap == 2 && !orientation)
+            color = rOpt.mFillColor;
+        else if (cap == 0 && clip_on && !orientation && faces_away(f))
             color = rOpt.mCutawayTint;
         const double face_i =
             rOpt.mShading == RenderShading::None ? 1.0 : rnd_lambert(&f_normal[3 * f], light, rOpt);
@@ -2233,9 +2549,15 @@ Frame rnd_draw(const RndPrepared& rPrep, const RenderOptions& rCamera, bool Fixe
         text += ")";
         frame.mNotes.push_back(text);
         std::size_t non_finite = 0;
-        for (const std::vector<double>* p_list : {&f_values, &l_values, &p_values})
+        auto off_scale = [&](double v) {
+            return !std::isfinite(v) || (rOpt.mScale == RenderScale::Log && !(v > 0.0));
+        };
+        for (std::size_t f = 0; f < f_values.size(); ++f)
+            if (off_scale(f_values[f]) && !(clip_on && clipped.mCap[f] == 2))
+                ++non_finite;  // a fill-coloured cap has no value to show
+        for (const std::vector<double>* p_list : {&l_values, &p_values})
             for (double v : *p_list)
-                if (!std::isfinite(v) || (rOpt.mScale == RenderScale::Log && !(v > 0.0)))
+                if (off_scale(v))
                     ++non_finite;
         if (rOpt.mDiagnostic == RenderDiagnostic::EdgeLength)
             non_finite -= std::min(non_finite, l_values.size() + p_values.size());

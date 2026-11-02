@@ -39,6 +39,27 @@ meshioplusplus.register_format(
 )
 ```
 
+## Shipping a format as a package
+
+A separate package adds its format to every program that uses meshio++ by declaring a `meshioplusplus.formats` entry point; installing the package is all it takes. The entry point names a callable taking no arguments that calls `register_format` (or a module that calls it when imported):
+
+```toml
+# pyproject.toml of the package `meshioplusplus-foo`
+[project.entry-points."meshioplusplus.formats"]
+foo = "meshioplusplus_foo:register"
+```
+
+```python
+# meshioplusplus_foo/__init__.py
+import meshioplusplus
+
+
+def register():
+    meshioplusplus.register_format("foo", [".foo"], read, {"foo": write})
+```
+
+The entry points are read once, on the first use of the format registry (a `read`, a `write`, `formats()` or a CLI's format list), so `import meshioplusplus` stays as cheap as before and `read("x.foo")` just works. A plugin that fails to load is skipped with a `RuntimeWarning` naming it, and the others still load; `meshioplusplus._plugins.format_plugin_errors()` says why each one failed. `MESHIOPLUSPLUS_NO_PLUGINS=1` skips discovery, as it does for the add-on wheels. Unlike those add-ons (the `meshioplusplus.plugins` group, pinned to the release), a format package is not tied to a meshio++ version: `register_format` is the contract. Such a format is Python-only — the native CLI, the C API and the flat bindings read the formats of the C++ registry.
+
 ## Deregistering a format
 
 ```python

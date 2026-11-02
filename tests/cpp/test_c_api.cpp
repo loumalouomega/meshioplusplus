@@ -33,12 +33,17 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <utility>
 #include <vector>
 
 // External includes
 #include <gtest/gtest.h>
+
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+#include <zlib.h>
+#endif
 
 #include "meshioplusplus/version.hpp"
 #include "meshioplusplus/formats/stl.hpp"
@@ -6979,6 +6984,369 @@ TEST(CApi, EditRegionsAndPeriodicPairs) {
     mio_mesh_free(m);
 }
 
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+TEST(CApi, ReadsCompressedFiles) {
+    // A Gmsh file gzipped: mio_read infers the format from the name before
+    // `.gz`, and mio_read_with_info's direct Gmsh reader decompresses too.
+    mio_mesh* m = capi_cube_surface();
+    const std::string msh = mt::temp_path(".msh");
+    ASSERT_EQ(mio_write(msh.c_str(), m, "gmsh"), MIO_OK) << mio_last_error();
+    std::string raw;
+    {
+        std::ifstream in(msh, std::ios::binary);
+        raw.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    z_stream z{};
+    deflateInit2(&z, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 31, 8, Z_DEFAULT_STRATEGY);
+    std::string gz(deflateBound(&z, static_cast<uLong>(raw.size())) + 32, '\0');
+    z.next_in = reinterpret_cast<Bytef*>(&raw[0]);
+    z.avail_in = static_cast<uInt>(raw.size());
+    z.next_out = reinterpret_cast<Bytef*>(&gz[0]);
+    z.avail_out = static_cast<uInt>(gz.size());
+    deflate(&z, Z_FINISH);
+    gz.resize(z.total_out);
+    deflateEnd(&z);
+    const std::string path = msh + ".gz";
+    {
+        std::ofstream out(path, std::ios::binary);
+        out << gz;
+    }
+    mio_mesh* back = mio_read(path.c_str(), nullptr);
+    ASSERT_NE(back, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_points(back), 8);
+    mio_mesh_free(back);
+    mio_format_info* info = nullptr;
+    back = mio_read_with_info(path.c_str(), nullptr, nullptr, &info);
+    ASSERT_NE(back, nullptr) << mio_last_error();
+    mio_format_info_free(info);
+    mio_mesh_free(back);
+    std::filesystem::remove(msh);
+    std::filesystem::remove(path);
+    mio_mesh_free(m);
+}
+#endif
+
+TEST(CApi, ConvertCoordinates) {
+    mio_mesh* m = capi_cube_surface();
+    // A unit radial vector at every point: its cylindrical components are (1, 0, 0)
+    // wherever the point is off the axis.
+    std::vector<double> radial(8 * 3, 0.0);
+    const double xy[8][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}, {0, 0}, {1, 0}, {1, 1}, {0, 1}};
+    for (int i = 0; i < 8; ++i) {
+        const double r = std::hypot(xy[i][0], xy[i][1]);
+        if (r > 0) {
+            radial[i * 3 + 0] = xy[i][0] / r;
+            radial[i * 3 + 1] = xy[i][1] / r;
+        }
+    }
+    const std::int64_t shape[2] = {8, 3};
+    ASSERT_EQ(mio_mesh_add_point_data(m, "u", MIO_FLOAT64, 2, shape, radial.data()), MIO_OK)
+        << mio_last_error();
+    mio_coordinate_opts opts;
+    mio_coordinate_opts_init(&opts);
+    EXPECT_EQ(opts.axis[2], 1.0);
+    const char* names[] = {"u"};
+    opts.arrays = names;
+    opts.num_arrays = 1;
+    std::int64_t converted = -1, singular = -1;
+    mio_mesh* out = mio_convert_coordinates(m, &opts, &converted, &singular);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(converted, 1);
+    EXPECT_EQ(singular, 2);  // the two corners on the z axis
+    mio_mesh_free(out);
+    opts.system = 7;
+    EXPECT_EQ(mio_convert_coordinates(m, &opts, nullptr, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, PrepareMetric) {
+    mio_mesh* m = capi_cube_surface();  // triangles: a 2-D metric needs 3 components
+    std::vector<double> a(8 * 3, 0.0), b(8 * 3, 0.0);
+    for (int i = 0; i < 8; ++i) {
+        a[i * 3] = 100.0, a[i * 3 + 2] = 1.0;
+        b[i * 3] = 1.0, b[i * 3 + 2] = 100.0;
+    }
+    const std::int64_t shape[2] = {8, 3};
+    ASSERT_EQ(mio_mesh_add_point_data(m, "a", MIO_FLOAT64, 2, shape, a.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_point_data(m, "b", MIO_FLOAT64, 2, shape, b.data()), MIO_OK);
+    mio_metric_opts opts;
+    mio_metric_opts_init(&opts);
+    EXPECT_EQ(opts.norm, 2.0);
+    const char* names[] = {"a", "b"};
+    opts.arrays = names;
+    opts.num_arrays = 2;
+    mio_metric_report rep;
+    mio_mesh* out = mio_prepare_metric(m, &opts, &rep);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(rep.num_graded, 0);
+    mio_mesh_free(out);
+    opts.num_arrays = 0;
+    EXPECT_EQ(mio_prepare_metric(m, &opts, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, Untangle) {
+    // One tetrahedron is valid; flipping its last node through the opposite
+    // face (with the other three pinned) is undone only if the node may move.
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 0, 1, 0, 0.2, 0.2, -0.5};
+    const std::vector<std::int64_t> tet = {0, 1, 2, 3};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 4, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "tetra", 1, 4, MIO_INT64, tet.data()), MIO_OK);
+    mio_untangle_opts opts;
+    mio_untangle_opts_init(&opts);
+    EXPECT_EQ(opts.rings, 2);
+    opts.fix_boundary = 0;  // every face of a lone tetrahedron is boundary
+    const std::vector<std::uint8_t> frozen = {1, 1, 1, 0};
+    opts.frozen = frozen.data();
+    opts.num_frozen = 4;
+    mio_untangle_report rep;
+    mio_mesh* out = mio_untangle(m, &opts, &rep);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(rep.num_inverted_before, 1);
+    EXPECT_EQ(rep.num_inverted_after, 0);
+    EXPECT_GT(rep.min_quality_after, 0.0);
+    mio_mesh_free(out);
+    opts.num_frozen = 3;
+    EXPECT_EQ(mio_untangle(m, &opts, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, Morph) {
+    mio_mesh* m = capi_cube_surface();
+    // A closed surface has no boundary: the mask constrains every point.
+    std::vector<double> d(8 * 3, 0.0);
+    for (int i = 0; i < 8; ++i)
+        d[i * 3 + 2] = 0.5;
+    const std::int64_t shape[2] = {8, 3};
+    ASSERT_EQ(mio_mesh_add_point_data(m, "d", MIO_FLOAT64, 2, shape, d.data()), MIO_OK);
+    mio_morph_opts opts;
+    mio_morph_opts_init(&opts);
+    EXPECT_EQ(opts.fix_boundary, 1);
+    opts.array = "d";
+    const std::vector<std::uint8_t> all(8, 1);
+    opts.constrained = all.data();
+    opts.num_constrained = 8;
+    mio_morph_report rep;
+    mio_mesh* out = mio_morph(m, &opts, &rep);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(rep.num_constrained, 8);
+    EXPECT_EQ(rep.num_inverted, 0);
+    EXPECT_DOUBLE_EQ(rep.max_displacement, 0.5);
+    mio_mesh_free(out);
+    opts.array = "missing";
+    EXPECT_EQ(mio_morph(m, &opts, nullptr), nullptr);
+    opts.array = nullptr;
+    EXPECT_EQ(mio_morph(m, &opts, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, LaplacianEigenmodes) {
+    mio_mesh* m = capi_cube_surface();
+    mio_eigenmode_opts opts;
+    mio_eigenmode_opts_init(&opts);
+    EXPECT_EQ(opts.num_modes, 10);
+    opts.num_modes = 4;
+    mio_eigenmode_report rep;
+    mio_mesh* out = mio_laplacian_eigenmodes(m, &opts, &rep);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_TRUE(rep.converged);
+    EXPECT_EQ(rep.num_degenerate, 0);
+    EXPECT_GE(mio_mesh_num_point_data(out), 1);
+    mio_mesh_free(out);
+    opts.num_modes = 9;  // the cube has 8 points
+    EXPECT_EQ(mio_laplacian_eigenmodes(m, &opts, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, RegisterRigid) {
+    mio_mesh* target = capi_cube_surface();
+    // The source: the cube's corners shifted by (0.01, -0.02, 0.03).
+    const std::vector<double> pts = {0.01,  -0.02, 0.03, 1.01, -0.02, 0.03,  1.01, 0.98,
+                                     0.03,  0.01,  0.98, 0.03, 0.01,  -0.02, 1.03, 1.01,
+                                     -0.02, 1.03,  1.01, 0.98, 1.03,  0.01,  0.98, 1.03};
+    mio_mesh* source = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(source, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    mio_registration_opts opts;
+    mio_registration_opts_init(&opts);
+    EXPECT_EQ(opts.initial[0], 1.0);
+    EXPECT_EQ(opts.initial[15], 1.0);
+    mio_registration_report rep;
+    ASSERT_EQ(mio_register_rigid(source, target, &opts, &rep), MIO_OK) << mio_last_error();
+    EXPECT_TRUE(rep.converged);
+    EXPECT_NEAR(rep.matrix[3], -0.01, 1e-8);
+    EXPECT_NEAR(rep.matrix[7], 0.02, 1e-8);
+    EXPECT_NEAR(rep.matrix[11], -0.03, 1e-8);
+    EXPECT_LT(rep.rms, 1e-8);
+    EXPECT_EQ(rep.num_pairs, 8);
+    opts.method = 7;
+    EXPECT_EQ(mio_register_rigid(source, target, &opts, &rep), MIO_ERR_INVALID_ARG);
+    EXPECT_EQ(mio_register_rigid(source, target, nullptr, nullptr), MIO_ERR_INVALID_ARG);
+    mio_mesh_free(source);
+    mio_mesh_free(target);
+}
+
+TEST(CApi, EstimateNormals) {
+    mio_mesh* m = capi_cube_surface();  // 8 corners: every fit spans a plane
+    mio_point_normals_opts opts;
+    mio_point_normals_opts_init(&opts);
+    EXPECT_EQ(opts.k, 16);
+    opts.k = 3;
+    std::int64_t degenerate = -1, pieces = -1;
+    mio_mesh* out = mio_estimate_normals(m, &opts, &degenerate, &pieces);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(degenerate, 0);
+    EXPECT_EQ(pieces, 1);
+    EXPECT_EQ(mio_mesh_num_points(out), 8);
+    mio_mesh_free(out);
+    opts.orientation = 9;
+    EXPECT_EQ(mio_estimate_normals(m, &opts, nullptr, nullptr), nullptr);
+    opts.orientation = MIO_NORMALS_NONE;
+    opts.k = 1;
+    EXPECT_EQ(mio_estimate_normals(m, &opts, nullptr, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, ConvexHullAndDelaunay) {
+    mio_mesh* m = capi_cube_surface();  // the unit cube's 8 corners
+    mio_hull_report rep;
+    mio_mesh* hull = mio_convex_hull(m, 0, &rep);
+    ASSERT_NE(hull, nullptr) << mio_last_error();
+    EXPECT_EQ(rep.dimension, 3);
+    EXPECT_EQ(rep.num_vertices, 8);
+    EXPECT_EQ(rep.num_facets, 12);
+    EXPECT_DOUBLE_EQ(rep.volume, 1.0);
+    EXPECT_DOUBLE_EQ(rep.area, 6.0);
+    EXPECT_EQ(mio_mesh_num_points(hull), 8);
+    mio_mesh_free(hull);
+    mio_mesh* flat = mio_convex_hull(m, 2, &rep);
+    ASSERT_NE(flat, nullptr) << mio_last_error();
+    EXPECT_EQ(rep.dimension, 2);
+    EXPECT_EQ(rep.num_vertices, 4);
+    EXPECT_DOUBLE_EQ(rep.perimeter, 4.0);
+    mio_mesh_free(flat);
+    EXPECT_EQ(mio_convex_hull(m, 5, nullptr), nullptr);
+    std::int64_t tris = -1, dups = -1, boundary = -1;
+    mio_mesh* del = mio_delaunay_2d(m, &tris, &dups, &boundary);
+    ASSERT_NE(del, nullptr) << mio_last_error();
+    EXPECT_EQ(tris, 2);
+    EXPECT_EQ(dups, 4);  // the top face's corners repeat the bottom's in x, y
+    EXPECT_EQ(boundary, 4);
+    EXPECT_EQ(mio_mesh_num_points(del), 8);
+    EXPECT_EQ(mio_mesh_num_cell_blocks(del), 1);
+    mio_mesh_free(del);
+    EXPECT_EQ(mio_delaunay_2d(nullptr, nullptr, nullptr, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, GeodesicDistance) {
+    mio_mesh* m = capi_cube_surface();
+    mio_geodesic_opts opts;
+    mio_geodesic_opts_init(&opts);
+    EXPECT_EQ(opts.time_factor, 1.0);
+    const std::int64_t corner = 0;
+    opts.sources = &corner;
+    opts.num_sources = 1;
+    mio_geodesic_report report;
+    mio_mesh* out = mio_geodesic_distance(m, &opts, &report);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(report.num_sources, 1);
+    EXPECT_EQ(report.num_unreached, 0);
+    EXPECT_EQ(report.converged, 1);
+    // The far corner of a unit cube is about 2.24 away along its faces.
+    EXPECT_GT(report.max_distance, 1.8);
+    EXPECT_LT(report.max_distance, 2.6);
+    mio_mesh_free(out);
+    opts.num_sources = 0;
+    EXPECT_EQ(mio_geodesic_distance(m, &opts, nullptr), nullptr);  // no source
+    mio_mesh_free(m);
+}
+
+TEST(CApi, Parameterize) {
+    mio_mesh* m = capi_cube_surface();
+    mio_parameterize_opts opts;
+    mio_parameterize_opts_init(&opts);
+    EXPECT_EQ(opts.padding, 0.02);
+    EXPECT_EQ(opts.max_depth, 8);
+    EXPECT_EQ(opts.max_stretch, 2.0);
+    mio_parameterize_report report;
+    mio_mesh* out = mio_parameterize(m, &opts, &report);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    // A closed cube needs at least two charts and some seam points.
+    EXPECT_GE(report.num_charts, 2);
+    EXPECT_EQ(report.num_flipped, 0);
+    EXPECT_GT(report.num_seam_points, 0);
+    EXPECT_GE(report.stretch, 1.0 - 1e-9);
+    EXPECT_GT(report.packing_efficiency, 0.0);
+    EXPECT_EQ(mio_mesh_num_points(out), 8 + report.num_seam_points);
+    mio_mesh_free(out);
+    opts.max_stretch = 0.5;  // below 1
+    EXPECT_EQ(mio_parameterize(m, &opts, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("max_stretch"), std::string::npos);
+    mio_parameterize_opts_init(&opts);
+    opts.reserved[0] = 1;
+    EXPECT_EQ(mio_parameterize(m, &opts, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, AdjacencyAndGraphFiles) {
+    mio_mesh* m = capi_cube_surface();
+    mio_adjacency* g = mio_adjacency_create(m, nullptr);  // "node"
+    ASSERT_NE(g, nullptr) << mio_last_error();
+    std::int64_t rows = 0, nnz = 0;
+    const std::int64_t* ptr = mio_adjacency_indptr(g, &rows);
+    const std::int64_t* idx = mio_adjacency_indices(g, &nnz);
+    ASSERT_EQ(rows, 9);      // 8 cube corners + 1
+    EXPECT_EQ(nnz, 2 * 18);  // 12 cube edges + 6 face diagonals
+    EXPECT_EQ(ptr[0], 0);
+    EXPECT_EQ(ptr[8], nnz);
+    EXPECT_EQ(nnz % 2, 0);
+    for (std::int64_t k = ptr[0]; k < ptr[1]; ++k)
+        EXPECT_NE(idx[k], 0);
+    mio_adjacency_free(g);
+
+    mio_adjacency* cells = mio_adjacency_create(m, "cell");
+    ASSERT_NE(cells, nullptr) << mio_last_error();
+    std::int64_t cell_rows = 0;
+    mio_adjacency_indptr(cells, &cell_rows);
+    EXPECT_EQ(cell_rows, 12 + 1);  // 12 triangles
+    mio_adjacency_free(cells);
+    mio_adjacency_free(nullptr);
+
+    EXPECT_EQ(mio_adjacency_create(m, "edge"), nullptr);
+    EXPECT_EQ(mio_adjacency_create(nullptr, "node"), nullptr);
+    EXPECT_EQ(mio_adjacency_indptr(nullptr, &rows), nullptr);
+    EXPECT_EQ(rows, 0);
+
+    const std::string path = mt::temp_path(".graph");
+    std::int64_t nv = 0, ne = 0, md = 0;
+    ASSERT_EQ(mio_write_graph(m, "node", path.c_str(), nullptr, &nv, &ne, &md), MIO_OK)
+        << mio_last_error();
+    EXPECT_EQ(nv, 8);
+    EXPECT_EQ(ne, nnz / 2);
+    EXPECT_GT(md, 0);
+    std::ifstream in(path);
+    std::int64_t header_n = 0, header_m = 0;
+    in >> header_n >> header_m;
+    EXPECT_EQ(header_n, 8);
+    EXPECT_EQ(header_m, ne);
+    in.close();
+    EXPECT_EQ(mio_write_graph(m, "node", path.c_str(), "chaco", nullptr, nullptr, nullptr),
+              MIO_ERR_INVALID_ARG);
+    const std::string unknown = mt::temp_path(".txt");
+    EXPECT_EQ(mio_write_graph(m, "node", unknown.c_str(), nullptr, nullptr, nullptr, nullptr),
+              MIO_ERR_INVALID_ARG);
+    EXPECT_EQ(mio_write_graph(m, "edge", path.c_str(), nullptr, nullptr, nullptr, nullptr),
+              MIO_ERR_INVALID_ARG);
+    EXPECT_EQ(
+        mio_write_graph(m, "node", "/nonexistent-dir/g.graph", nullptr, nullptr, nullptr, nullptr),
+        MIO_ERR_WRITE);
+    EXPECT_EQ(mio_write_graph(m, "node", path.c_str(), "scotch", nullptr, nullptr, nullptr),
+              MIO_OK);
+    std::filesystem::remove(path);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, CheckQualityGates) {
     mio_mesh* m = capi_cube_surface();
     mio_quality_gate_report report;
@@ -7380,7 +7748,8 @@ TEST(CApi, RenderCutawaysClipAndAreValidated) {
                                                mio_frame_rgba(whole) + 32 * 32 * 4);
     mio_frame_free(whole);
 
-    // One plane keeping x >= 0.5: the near face goes, the far one shows from inside.
+    // One plane keeping x >= 0.5: the near face goes, and the cube, which
+    // closes, is capped there (no cell, the fill colour, not the tint).
     const double plane[6] = {0.5, 0, 0, 1, 0, 0};
     o.cutaways = plane;
     o.num_cutaways = 1;
@@ -7388,11 +7757,12 @@ TEST(CApi, RenderCutawaysClipAndAreValidated) {
     mio_frame* cut = mio_render(cube, &o);
     ASSERT_NE(cut, nullptr) << mio_last_error();
     EXPECT_NE(mio_frame_cell_ids(cut)[16 * 32 + 16], whole_centre);
+    EXPECT_EQ(mio_frame_cell_ids(cut)[16 * 32 + 16], -1);
     const std::uint8_t* centre = mio_frame_rgba(cut) + (16 * 32 + 16) * 4;
-    EXPECT_EQ(centre[0], 0x0A);
-    EXPECT_EQ(centre[1], 0xC8);
-    EXPECT_EQ(centre[2], 0x1E);
-    EXPECT_NE(std::vector<std::uint8_t>(mio_frame_rgba(cut), mio_frame_rgba(cut) + 32 * 32 * 4),
+    EXPECT_NE(centre[1], 0xC8);
+    // Flat and unshaded, the cap looks like the face it replaces: only the
+    // ids tell them apart.
+    EXPECT_EQ(std::vector<std::uint8_t>(mio_frame_rgba(cut), mio_frame_rgba(cut) + 32 * 32 * 4),
               whole_rgba);
     mio_frame_free(cut);
 

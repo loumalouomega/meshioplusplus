@@ -38,6 +38,7 @@
 // Project includes
 #include "meshioplusplus/formats/radioss.hpp"
 #include "meshioplusplus/cell_type.hpp"
+#include "meshioplusplus/detail/length_unit.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/degenerate_solid.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
@@ -275,6 +276,31 @@ bool rad_skew_axes(const RadSkew& rSkew, std::array<std::array<double, 3>, 3>& r
     return true;
 }
 
+// The /BEGIN name of the length unit @p rMesh states: an SI prefix and "m", an
+// imperial name, or a number of metres (14 digits, so it fits the 20-column
+// field); "m" when it states none. The Python writer's _length_name.
+std::string radw_length_name(const Mesh& rMesh) {
+    const double length = detail::mesh_length_unit(rMesh);
+    if (length <= 0.0)
+        return "m";
+    static const std::pair<const char*, double> prefixes[] = {
+        {"", 1.0},   {"y", 1e-24}, {"z", 1e-21}, {"a", 1e-18}, {"f", 1e-15}, {"p", 1e-12},
+        {"n", 1e-9}, {"mu", 1e-6}, {"m", 1e-3},  {"c", 1e-2},  {"d", 1e-1},  {"da", 1e1},
+        {"h", 1e2},  {"k", 1e3},   {"M", 1e6},   {"G", 1e9},   {"T", 1e12},  {"P", 1e15},
+        {"E", 1e18}, {"Z", 1e21},  {"Y", 1e24}};
+    for (const auto& [prefix, factor] : prefixes)
+        if (factor == length)
+            return std::string(prefix) + "m";
+    static const std::pair<const char*, double> named[] = {
+        {"in", 0.0254}, {"ft", 0.3048}, {"yd", 0.9144}, {"mi", 1609.344}};
+    for (const auto& [name, metres] : named)
+        if (metres == length)
+            return name;
+    char buf[32];
+    detail::snprintf_c(buf, sizeof(buf), "%.14g", length);
+    return buf;
+}
+
 struct RadSubset {
     std::string mTitle;
     std::vector<std::int64_t> mChildren;
@@ -441,6 +467,7 @@ Mesh read_radioss(const std::string& rPath) {
     std::map<std::int64_t, std::array<double, 3>> ellipsoid_skew;       // surf -> skew, n, -
     double length_scale = 1.0;
     double work_length = 0.0;  // the work length unit in metres, 0 if /BEGIN names none
+    double stated_length = 0.0;  // the unit the coordinates end up in, 0 if unknown
     // /UNIT/<id>: the local length units in metres, read first (a keyword can
     // name a unit defined further down).
     std::map<std::int64_t, double> unit_length;
@@ -565,6 +592,9 @@ Mesh read_radioss(const std::string& rPath) {
                                                                          : std::string_view(li));
                 const double fi = rad_length_unit(li), fw = rad_length_unit(lw);
                 work_length = fw;
+                // Converted to the work unit when both are known; read as
+                // written, so in the input unit, when only that one is.
+                stated_length = fi > 0.0 && fw > 0.0 ? fw : std::max(fi, 0.0);
                 if (!li.empty() && (fi <= 0.0 || fw <= 0.0))
                     log::warn(
                         "Radioss: unknown length unit '{}' in /BEGIN; lengths are read "
@@ -885,6 +915,8 @@ Mesh read_radioss(const std::string& rPath) {
             a.As<double>()[0] = length_scale;
             return a;
         }());
+    if (stated_length > 0.0)
+        detail::set_mesh_length_unit(mesh, stated_length);
 
     // --- cells: one block per type, in order of first appearance --------------------
     std::vector<std::string> block_types;
@@ -2006,7 +2038,8 @@ void write_radioss(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
             ++dropped_data;
     const std::string plane_prefix = "radioss:surf_plane:";
     for (const std::string& name : rMesh.FieldDataNames()) {
-        if (name == "radioss:version" || name == "radioss:length_scale")
+        if (name == "radioss:version" || name == "radioss:length_scale" ||
+            name == detail::kLengthUnitName)
             continue;
         if (name.rfind(plane_prefix, 0) == 0) {
             const NDArray& v = rMesh.FieldData(name);
@@ -2046,9 +2079,10 @@ void write_radioss(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
         out.push_back("# " + line);
     // The same input and work units, so the starter converts nothing and the
     // reader reads the coordinates as written.
+    // The length unit is the mesh's own when it states one (roadmap 7.1.4).
     std::string units;
-    for (const char* u : {"kg", "m", "s"})
-        units += std::string(20 - std::string(u).size(), ' ') + u;
+    for (const std::string& u : {std::string("kg"), radw_length_name(rMesh), std::string("s")})
+        units += std::string(20 - std::min<std::size_t>(20, u.size()), ' ') + u;
     std::string begin_line;
     radw_i10(begin_line, version);
     radw_i10(begin_line, 0);

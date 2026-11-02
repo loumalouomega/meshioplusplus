@@ -24,6 +24,13 @@ from .._common import num_nodes_per_cell
 from .._exceptions import ReadError, WriteError
 from .._mesh import Mesh, topological_dimension
 from .._regions import Region, canonical_regions
+from .._units import (
+    CGNS_LENGTH_UNITS,
+    LENGTH_UNIT_KEY,
+    length_unit,
+    set_length_unit,
+    unit_name,
+)
 
 # meshio++ <-> CGNS ElementType_t table, kept in exact sync with
 # src/cpp/src/formats/cgns.cpp's cgns_type_table(). The SIDS node order of
@@ -288,11 +295,59 @@ def _read_c1(node):
     return bytes(raw).decode("latin-1").strip("\0 ")
 
 
-def _write_field_data(zone, mesh):
+_UNIT_SLOTS = 5  # Mass, Length, Time, Temperature, Angle
+_UNIT_WIDTH = 32
+
+
+def _write_dimensional_units(base, mesh):
+    """The mesh's length unit as the base's ``DimensionalUnits_t`` (Length
+    named, the other four ``Null``); False when it has none CGNS can name."""
+    unit = length_unit(mesh)
+    if unit is None:
+        return False
+    name = unit_name(unit, CGNS_LENGTH_UNITS)
+    if name is None:
+        warnings.warn(
+            f"CGNS: a length unit of {unit!r} m has no DimensionalUnits name "
+            "(Meter, Centimeter, Millimeter, Foot, Inch); kept as field data only.",
+            stacklevel=3,
+        )
+        return False
+    rows = ["Null", name, "Null", "Null", "Null"]
+    data = np.frombuffer(
+        b"".join(r.encode("ascii").ljust(_UNIT_WIDTH, b" ") for r in rows), "i1"
+    ).reshape(_UNIT_SLOTS, _UNIT_WIDTH)
+    node = _create_group(base, "DimensionalUnits")
+    _write_node_attrs(node, "DimensionalUnits", "DimensionalUnits_t", "C1")
+    node.create_dataset(" data", data=data)
+    return True
+
+
+def _read_dimensional_units(node):
+    """The metres per unit a parent's ``DimensionalUnits_t`` child names, or
+    ``None``."""
+    for child in node:
+        if child.startswith(" "):
+            continue
+        if _read_attr_str(node[child], "label") != "DimensionalUnits_t":
+            continue
+        if " data" not in node[child]:
+            return None
+        raw = np.asarray(node[child][" data"][()]).astype("i1").reshape(-1)
+        if raw.size < 2 * _UNIT_WIDTH:
+            return None
+        text = bytes(raw[_UNIT_WIDTH : 2 * _UNIT_WIDTH]).decode("latin-1")
+        return CGNS_LENGTH_UNITS.get(text.strip("\0 "))
+    return None
+
+
+def _write_field_data(zone, mesh, skip=()):
     """``field_data`` as ``DataArray_t`` children of a ``UserDefinedData_t`` node
     (the arrays keep their shape; CGNS has no per-zone global variable node)."""
     names = []
     for name in sorted(mesh.field_data):
+        if name in skip:
+            continue
         a = np.asarray(mesh.field_data[name])
         if not _valid_node_name(name) or a.dtype.kind not in "iuf" or a.size == 0:
             warnings.warn(
@@ -547,6 +602,7 @@ def write(filename, mesh, compression="gzip", compression_opts=4):
     base = _create_group(f, "Base")
     _write_node_attrs(base, "Base", "CGNSBase_t", "I4")
     base.create_dataset(" data", data=np.array([cgns_cell_dim, phys_dim], dtype="<i4"))
+    units_written = _write_dimensional_units(base, mesh)
 
     wide = n_points > np.iinfo(np.int32).max or n_cells_at_dim > np.iinfo(np.int32).max
     zone_np_dt = np.dtype("<i8") if wide else np.dtype("<i4")
@@ -701,7 +757,7 @@ def write(filename, mesh, compression="gzip", compression_opts=4):
                         sol, _component_name(name, k, i), merged[:, i], gzip_kwargs
                     )
 
-    _write_field_data(zone, mesh)
+    _write_field_data(zone, mesh, skip=(LENGTH_UNIT_KEY,) if units_written else ())
     _write_regions(
         zone,
         mesh,
@@ -753,6 +809,7 @@ def _read_spec(f):
             stacklevel=2,
         )
     base = f[base_name]
+    unit = _read_dimensional_units(base)
 
     point_chunks = []
     cells = []
@@ -779,6 +836,9 @@ def _read_spec(f):
         if _read_attr_str(zone, "label") != "Zone_t":
             continue
 
+        zone_unit = _read_dimensional_units(zone)
+        if zone_unit is not None:
+            unit = zone_unit
         if "ZoneType" in zone and " data" in zone["ZoneType"]:
             zt_raw = zone["ZoneType"][" data"][()]
             zt_name = bytes(np.asarray(zt_raw).astype("i1")).decode("ascii", "ignore")
@@ -951,7 +1011,7 @@ def _read_spec(f):
         if len(point_chunks) == 1
         else np.concatenate(point_chunks, axis=0)
     )
-    return Mesh(
+    out = Mesh(
         points,
         cells,
         point_data=point_data,
@@ -959,6 +1019,9 @@ def _read_spec(f):
         field_data=field_data,
         regions=regions,
     )
+    if unit is not None:
+        set_length_unit(out, unit)
+    return out
 
 
 def _read_legacy(f):

@@ -71,6 +71,8 @@ from .. import (
     conservative_interpolate,
     contact_pairs,
     convert_cells,
+    convert_coordinates,
+    convex_hull,
     crop,
     cube_sphere,
     cylinder,
@@ -81,6 +83,7 @@ from .. import (
     data_manage,
     decimate,
     decimate_volume,
+    delaunay_2d,
     diff,
     discretize_levelset,
     disk,
@@ -88,6 +91,7 @@ from .. import (
     edit_regions,
     error_size,
     estimate_error,
+    estimate_normals,
     extract_skin,
     extract_surface,
     extrude,
@@ -98,6 +102,7 @@ from .. import (
     fit_cad,
     fit_primitives,
     geo_sphere,
+    geodesic_distance,
     geometry_descriptors,
     gradient,
     grid,
@@ -114,6 +119,7 @@ from .. import (
     iga_sample,
     interpolate,
     isosurface,
+    laplacian_eigenmodes,
     line,
     lshape,
     match_periodic_nodes,
@@ -123,12 +129,14 @@ from .. import (
     metric_from_hessian,
     mirror,
     moebius,
+    morph,
     move,
     ngon,
     octa_sphere,
     octree,
     octree_mesh,
     optimize_volume,
+    parameterize,
     partition,
     pipe,
     plate_with_hole,
@@ -136,6 +144,7 @@ from .. import (
     point_data_to_cell_data,
     poly_to_tet,
     power_spectrum,
+    prepare_metric,
     project_to_cad,
     proximity_graph,
     read,
@@ -146,6 +155,7 @@ from .. import (
     refine,
     refine_patches,
     region_adjacency,
+    register_rigid,
     remesh,
     remesh_volume,
     render_text,
@@ -186,9 +196,11 @@ from .. import (
     transform,
     tube,
     undo_green,
+    untangle,
     uv_sphere,
     voxelize,
     write,
+    write_graph,
 )
 from .. import write_parquet as _write_parquet_fn
 from .._helpers import _filetypes_from_path, formats
@@ -3853,6 +3865,17 @@ def tool_edit_regions(
     )
 
 
+def tool_graph(
+    input_path, output_path, kind="node", input_format=None, file_format=None
+):
+    """Write the mesh's node, clique or cell graph as a METIS (.graph) or
+    Scotch (.grf) graph file; reports its size."""
+    mesh = _load(input_path, input_format)
+    written = _resolve(output_path, for_write=True)
+    report = write_graph(written, mesh, kind, file_format=file_format)
+    return _json_safe({"output_path": str(written), "kind": kind, **report})
+
+
 def tool_periodic(
     input_path,
     slave,
@@ -3995,6 +4018,319 @@ def tool_shrinkwrap(
         num_skipped=int(report["num_skipped"]),
         max_displacement=float(report["max_displacement"]),
         quality=report["quality"],
+    )
+
+
+def tool_convert_coordinates(
+    input_path,
+    output_path,
+    system="cylindrical",
+    axis=(0.0, 0.0, 1.0),
+    origin=(0.0, 0.0, 0.0),
+    reference=(1.0, 0.0, 0.0),
+    arrays=None,
+    inverse=False,
+    record_coordinates=True,
+    input_format=None,
+    output_format=None,
+):
+    """Positions, vector and tensor fields in cylindrical or spherical
+    components about an axis."""
+    mesh = _load(input_path, input_format)
+    out, report = convert_coordinates(
+        mesh,
+        system,
+        axis=axis,
+        origin=origin,
+        reference=reference,
+        arrays=list(arrays or []),
+        inverse=inverse,
+        record_coordinates=record_coordinates,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        system=system,
+        num_arrays=int(report["num_arrays"]),
+        num_singular=int(report["num_singular"]),
+    )
+
+
+def tool_prepare_metric(
+    input_path,
+    output_path,
+    arrays,
+    output="metric",
+    target_vertices=0.0,
+    norm=2.0,
+    hmin=0.0,
+    hmax=0.0,
+    gradation=0.0,
+    input_format=None,
+    output_format=None,
+):
+    """Intersect, normalise, clamp and grade metric fields."""
+    mesh = _load(input_path, input_format)
+    out, report = prepare_metric(
+        mesh,
+        list(arrays) if not isinstance(arrays, str) else [arrays],
+        output=output,
+        target_vertices=float(target_vertices),
+        norm=float(norm),
+        hmin=float(hmin),
+        hmax=float(hmax),
+        gradation=float(gradation),
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
+def tool_untangle(
+    input_path,
+    output_path,
+    fix_boundary=True,
+    frozen=None,
+    rings=2,
+    smooth=False,
+    max_sweeps=100,
+    input_format=None,
+    output_format=None,
+):
+    """Move nodes until no tetrahedron or hexahedron corner is inverted."""
+    mesh = _load(input_path, input_format)
+    out, report = untangle(
+        mesh,
+        fix_boundary=bool(fix_boundary),
+        frozen=frozen or None,
+        rings=int(rings),
+        smooth=bool(smooth),
+        max_sweeps=int(max_sweeps),
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
+def tool_morph(
+    input_path,
+    output_path,
+    array,
+    fix_boundary=True,
+    constrained=None,
+    stiffening=1.0,
+    steps=1,
+    allow_inverted=False,
+    input_format=None,
+    output_format=None,
+):
+    """Move the boundary (or chosen points) by a displacement, harmonically
+    extended into the mesh."""
+    mesh = _load(input_path, input_format)
+    out, report = morph(
+        mesh,
+        array,
+        fix_boundary=bool(fix_boundary),
+        constrained=constrained or None,
+        stiffening=float(stiffening),
+        steps=int(steps),
+        allow_inverted=bool(allow_inverted),
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_constrained=int(report["num_constrained"]),
+        num_free=int(report["num_free"]),
+        num_inverted=int(report["num_inverted"]),
+        max_displacement=float(report["max_displacement"]),
+        converged=bool(report["converged"]),
+    )
+
+
+def tool_laplacian_eigenmodes(
+    input_path,
+    output_path,
+    num_modes=10,
+    tolerance=1e-8,
+    max_iterations=0,
+    input_format=None,
+    output_format=None,
+):
+    """The lowest eigenpairs of a surface's Laplace-Beltrami operator."""
+    mesh = _load(input_path, input_format)
+    out, report = laplacian_eigenmodes(
+        mesh,
+        int(num_modes),
+        tolerance=float(tolerance),
+        max_iterations=int(max_iterations),
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        eigenvalues=[float(v) for v in report["eigenvalues"]],
+        iterations=int(report["iterations"]),
+        max_residual=float(report["max_residual"]),
+        converged=bool(report["converged"]),
+    )
+
+
+def tool_register_rigid(
+    source_path,
+    target_path,
+    output_path=None,
+    method="point_to_point",
+    max_iterations=50,
+    tolerance=1e-10,
+    max_distance=0.0,
+    rotate_data=False,
+    source_format=None,
+    target_format=None,
+    output_format=None,
+):
+    """The rigid motion laying one mesh or point cloud onto another (ICP); with
+    output_path, also the moved source."""
+    source = _load(source_path, source_format)
+    matrix, report = register_rigid(
+        source,
+        _load(target_path, target_format),
+        method=method,
+        max_iterations=int(max_iterations),
+        tolerance=float(tolerance),
+        max_distance=float(max_distance),
+    )
+    out = {"matrix": [[float(v) for v in row] for row in matrix]}
+    out.update(report)
+    if output_path:
+        moved = transform(source, matrix=matrix, rotate_vector_data=bool(rotate_data))
+        out["output_path"] = _store(moved, output_path, output_format)
+    return _json_safe(out)
+
+
+def tool_estimate_normals(
+    input_path,
+    output_path,
+    k=16,
+    orientation="consistent",
+    viewpoint=(0.0, 0.0, 0.0),
+    record_variation=False,
+    input_format=None,
+    output_format=None,
+):
+    """Normals of a file's points by local plane fits."""
+    mesh = _load(input_path, input_format)
+    out, report = estimate_normals(
+        mesh,
+        k=int(k),
+        orientation=orientation,
+        viewpoint=viewpoint,
+        record_variation=record_variation,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_degenerate=int(report["num_degenerate"]),
+        num_components=int(report["num_components"]),
+    )
+
+
+def tool_convex_hull(
+    input_path, output_path, dimension=0, input_format=None, output_format=None
+):
+    """The convex hull of a file's points: a closed triangle surface (3-D) or
+    a line loop (2-D)."""
+    mesh = _load(input_path, input_format)
+    out, report = convex_hull(mesh, dimension=int(dimension), return_report=True)
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        dimension=int(report["dimension"]),
+        num_vertices=int(report["num_vertices"]),
+        num_facets=int(report["num_facets"]),
+        area=float(report["area"]),
+        volume=float(report["volume"]),
+        perimeter=float(report["perimeter"]),
+    )
+
+
+def tool_delaunay_2d(input_path, output_path, input_format=None, output_format=None):
+    """The Delaunay triangulation of a file's points in the x, y plane."""
+    mesh = _load(input_path, input_format)
+    out, report = delaunay_2d(mesh, return_report=True)
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_triangles=int(report["num_triangles"]),
+        num_duplicates=int(report["num_duplicates"]),
+        num_boundary=int(report["num_boundary"]),
+    )
+
+
+def tool_geodesic_distance(
+    input_path,
+    output_path,
+    sources=None,
+    source_region="",
+    input_format=None,
+    output_format=None,
+    time_factor=1.0,
+    tolerance=1e-10,
+    max_iterations=0,
+):
+    """The distance along a triangle surface from source points to every
+    point, by the heat method; writes point_data geodesic:distance."""
+    mesh = _load(input_path, input_format)
+    out, report = geodesic_distance(
+        mesh,
+        [int(v) for v in (sources or [])],
+        source_region=source_region or None,
+        time_factor=time_factor,
+        tolerance=tolerance,
+        max_iterations=max_iterations,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_sources=int(report["num_sources"]),
+        num_unreached=int(report["num_unreached"]),
+        num_degenerate=int(report["num_degenerate"]),
+        max_distance=float(report["max_distance"]),
+        time_step=float(report["time_step"]),
+        heat_iterations=int(report["heat_iterations"]),
+        poisson_iterations=int(report["poisson_iterations"]),
+        converged=bool(report["converged"]),
+    )
+
+
+def tool_parameterize(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    padding=0.02,
+    max_depth=8,
+    max_stretch=2.0,
+):
+    """A UV atlas of a triangle surface: writes point_data uv (the surface split
+    at its seams), texture coordinates in OBJ, glTF and USD."""
+    mesh = _load(input_path, input_format)
+    out, report = parameterize(
+        mesh,
+        padding=padding,
+        max_depth=max_depth,
+        max_stretch=max_stretch,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_charts=int(report["num_charts"]),
+        num_flipped=int(report["num_flipped"]),
+        stretch=float(report["stretch"]),
+        packing_efficiency=float(report["packing_efficiency"]),
+        num_seam_points=int(report["num_seam_points"]),
     )
 
 
@@ -6734,6 +7070,10 @@ TOOL_REGISTRY = OrderedDict(
             {"fn": tool_edit_regions, "wraps": ("edit_regions",), "gated": None},
         ),
         (
+            "graph",
+            {"fn": tool_graph, "wraps": ("write_graph",), "gated": None},
+        ),
+        (
             "periodic",
             {"fn": tool_periodic, "wraps": ("match_periodic_nodes",), "gated": None},
         ),
@@ -6769,6 +7109,90 @@ TOOL_REGISTRY = OrderedDict(
         (
             "sobolev_deform",
             {"fn": tool_sobolev_deform, "wraps": ("sobolev_deform",), "gated": None},
+        ),
+        (
+            "prepare_metric",
+            {
+                "fn": tool_prepare_metric,
+                "wraps": ("prepare_metric",),
+                "gated": None,
+            },
+        ),
+        (
+            "untangle",
+            {
+                "fn": tool_untangle,
+                "wraps": ("untangle",),
+                "gated": None,
+            },
+        ),
+        (
+            "morph",
+            {
+                "fn": tool_morph,
+                "wraps": ("morph",),
+                "gated": None,
+            },
+        ),
+        (
+            "laplacian_eigenmodes",
+            {
+                "fn": tool_laplacian_eigenmodes,
+                "wraps": ("laplacian_eigenmodes",),
+                "gated": None,
+            },
+        ),
+        (
+            "register_rigid",
+            {
+                "fn": tool_register_rigid,
+                "wraps": ("register_rigid",),
+                "gated": None,
+            },
+        ),
+        (
+            "estimate_normals",
+            {
+                "fn": tool_estimate_normals,
+                "wraps": ("estimate_normals",),
+                "gated": None,
+            },
+        ),
+        (
+            "convex_hull",
+            {
+                "fn": tool_convex_hull,
+                "wraps": ("convex_hull",),
+                "gated": None,
+            },
+        ),
+        (
+            "delaunay_2d",
+            {
+                "fn": tool_delaunay_2d,
+                "wraps": ("delaunay_2d",),
+                "gated": None,
+            },
+        ),
+        (
+            "convert_coordinates",
+            {
+                "fn": tool_convert_coordinates,
+                "wraps": ("convert_coordinates",),
+                "gated": None,
+            },
+        ),
+        (
+            "geodesic_distance",
+            {
+                "fn": tool_geodesic_distance,
+                "wraps": ("geodesic_distance",),
+                "gated": None,
+            },
+        ),
+        (
+            "parameterize",
+            {"fn": tool_parameterize, "wraps": ("parameterize",), "gated": None},
         ),
         (
             "estimate_error",

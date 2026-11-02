@@ -32,9 +32,19 @@ def _load_format(module: str) -> None:
         importlib.import_module(f".{module}", __package__)
 
 
+def _ensure_plugins() -> None:
+    """Register the installed third-party formats (the ``meshioplusplus.formats``
+    entry points, roadmap 7.1.3) on the first use of the registry."""
+    from ._plugins import _format_state, load_format_plugins
+
+    if not _format_state["done"]:
+        load_format_plugins()  # cheap once done: one dict lookup per call
+
+
 def _load_all() -> None:
     """Import every format subpackage in the static table (``_format_table``)."""
     global _ALL_LOADED
+    _ensure_plugins()
     if _ALL_LOADED:
         return
     for module in ALL_MODULES:
@@ -102,12 +112,14 @@ _writer_map = _Registry()
 def _ensure_extension(ext: str) -> None:
     """Load the format subpackages that register ``ext`` (a dotted, lowercase
     suffix), so the registry can be read directly afterwards."""
+    _ensure_plugins()
     for module in EXTENSION_MODULES.get(ext, ()):
         _load_format(module)
 
 
 def _ensure_format(name: str) -> None:
     """Load the format subpackage that registers the format or writer ``name``."""
+    _ensure_plugins()
     module = FORMAT_MODULES.get(name)
     if module is not None:
         _load_format(module)
@@ -390,7 +402,17 @@ def read(
     """
     if ghosts not in GHOST_POLICIES:
         raise ValueError(f"meshio++: ghosts must be 'keep' or 'drop', got {ghosts!r}")
-    if is_buffer(filename, "r"):
+    from ._remote import is_url
+
+    if is_url(filename):
+        # A URL is fetched to a local copy under its own name (`_remote.py`).
+        from ._remote import fetched
+
+        with fetched(filename, file_format) as local:
+            mesh = _read_file(
+                Path(local), file_format, points_only, arrays, time_step, piece, ghosts
+            )
+    elif is_buffer(filename, "r"):
         mesh = _read_buffer(
             filename, file_format, points_only, arrays, time_step, piece, ghosts
         )
@@ -434,6 +456,13 @@ def read_metadata(filename, file_format: Union[str, None] = None) -> dict:
     metadata path are read in full and summarized. The answer is always
     correct; this says whether it was cheap.
     """
+    from ._remote import is_url
+
+    if is_url(filename):
+        from ._remote import fetched
+
+        with fetched(filename, file_format) as local:
+            return read_metadata(local, file_format)
     if not is_buffer(filename, "r"):
         try:
             from . import _core
@@ -574,6 +603,14 @@ def _read_file(
     if not path.exists():
         raise ReadError(f"File {path} not found.")
 
+    from ._compressed import compression_of
+
+    suffix = compression_of(path) if path.is_file() else ""
+    if suffix:
+        return _read_compressed(
+            path, suffix, file_format, points_only, arrays, time_step, piece, ghosts
+        )
+
     if file_format:
         possible_file_formats = [file_format]
     else:
@@ -633,6 +670,30 @@ def _read_file(
         msg = f"Couldn't read file {path} as either of {lst} ({detail})"
 
     raise ReadError(msg) from (failures[-1][1] if failures else None)
+
+
+def _read_compressed(
+    path, suffix, file_format, points_only, arrays, time_step, piece, ghosts
+):
+    """``cube.msh.gz``: read through a decompressed copy, the format inferred
+    from the name before compression (roadmap 7.1.1, ``_compressed.py``)."""
+    from ._compressed import decompressed, decompressed_name, refuse_multi_file
+
+    if file_format:
+        refuse_multi_file(file_format, path)
+    else:
+        try:
+            candidates = _filetypes_from_path(decompressed_name(path, suffix))
+        except ReadError:
+            candidates = []  # the decompressed bytes are sniffed instead
+        if candidates and all(
+            f in _MULTIFILE_FORMATS or f == "openfoam" for f in candidates
+        ):
+            refuse_multi_file(candidates[0], path)
+    with decompressed(path, suffix) as inner:
+        return _read_file(
+            inner, file_format, points_only, arrays, time_step, piece, ghosts
+        )
 
 
 def write_points_cells(

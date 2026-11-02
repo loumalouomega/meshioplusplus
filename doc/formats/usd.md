@@ -27,6 +27,8 @@ meshioplusplus.usd.write(
 )
 ```
 
+`meters_per_unit` defaults to the [length unit](../formats.md#length-units) the mesh states (`field_data["meshio:length_unit"]`), else 1, so a UNV file in millimetres converts to a stage with `metersPerUnit = 0.001`; a read of a stage that authors `metersPerUnit` states it the same way.
+
 A time-sampled stage from a sequence:
 
 ```python
@@ -50,7 +52,7 @@ On the way back, faces are grouped by vertex count into `triangle`, `quad` and o
 
 ## Data mapping
 
-`point_data` becomes `vertex`-interpolated primvars and `cell_data` `uniform` ones — getting the interpolation token wrong renders plausible, wrong colours, so it is a contract rather than a detail. A width-3 array is a `Float3Array`, an integer array an `IntArray`, and anything else a flat array with `SetElementSize`. `faceVarying` and `constant` primvars have no meshio++ counterpart and are skipped with a warning.
+`point_data` becomes `vertex`-interpolated primvars and `cell_data` `uniform` ones — getting the interpolation token wrong renders plausible, wrong colours, so it is a contract rather than a detail. A width-3 array is a `Float3Array`, an integer array an `IntArray`, and anything else a flat array with `SetElementSize`. `uv` (two values per point) is written as the texture coordinates renderers look for, `primvars:st` (`texCoord2f[]`, `vertex`), and `primvars:st` reads back as `uv`; see [parameterize](../parameterize.md). `faceVarying` and `constant` primvars have no meshio++ counterpart and are skipped with a warning.
 
 A volume mesh's `cell_data` is gathered onto its skin through the parent-cell map, so a solid arrives coloured by its per-cell material.
 

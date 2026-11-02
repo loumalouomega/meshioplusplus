@@ -16,6 +16,10 @@ The same verbs are also available as a **standalone native C++ binary** that nee
 
 Convert a mesh file from one format to another.
 
+Every verb that reads a mesh reads it compressed too: `convert cube.msh.gz cube.vtu` strips `.gz`, `.bz2`, `.xz`, `.zst` or a single-member `.zip` to infer the format, in both CLIs ([compressed files](formats.md#compressed-files)).
+
+The Python CLI also reads URLs (`meshioplusplus convert https://example.org/cube.vtu cube.msh`, `s3://...`) with the optional fsspec; the native CLI reads local paths ([remote files](formats.md#remote-files)).
+
 ```
 meshioplusplus convert [options] INFILE OUTFILE
 ```
@@ -94,9 +98,23 @@ meshioplusplus convert part.vtu part.glb --split-angle 45 --up-axis z
 
 Converting a 3D volume mesh to STL, PLY or glTF writes its extracted boundary skin (the writers' default — see [Skin extraction](./extract_skin.md)); converting to SVG or TikZ renders it with the default isometric camera.
 
+## Shell completions
+
+Both CLIs write a completion script for bash, zsh or fish, generated from their own argument parsers, so it lists exactly the verbs and options that binary has: the Python CLI's from its argparse tree, the native CLI's from the option table each verb hands its parser.
+
+```sh
+meshioplusplus completion bash > ~/.local/share/bash-completion/completions/meshioplusplus
+meshioplusplus completion zsh  > "${fpath[1]}/_meshioplusplus"     # then: autoload -U compinit && compinit
+meshioplusplus completion fish > ~/.config/fish/completions/meshioplusplus.fish
+```
+
+The first word completes to a verb (or an alias such as `c`), the next to the sub-verbs of `data` and `dataset` and to the shells of `completion`, a word starting with `-` to the verb's options, and anything else to file names. Regenerate the script after upgrading, since the verbs follow the release.
+
+---
+
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `parameterize`, `eigenmodes`, `morph`, `untangle`, `metric`, `coordinates`, `hull`, `delaunay`, `point-normals`, `register`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -125,6 +143,18 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `find-interface` | pair counts, area, maximum gap, unmatched counts and both Side-entry lists |
 | `contact-pairs` | `num_pairs`, the pair table and unmatched slave-point ids |
 | `split-interface` | duplicated-point and cohesive-cell counts |
+| `graph` | `output`, `kind`, `format`, `num_vertices`, `num_edges`, `max_degree` |
+| `geodesic` | `output`, `num_sources`, `num_unreached`, `num_degenerate`, `max_distance`, `time_step`, `heat_iterations`, `poisson_iterations`, `converged` |
+| `parameterize` | `output`, `num_charts`, `num_flipped`, `stretch`, `packing_efficiency`, `num_seam_points` |
+| `eigenmodes` | `output`, `eigenvalues`, `iterations`, `max_residual`, `converged`, `num_degenerate` |
+| `morph` | `output`, `num_constrained`, `num_free`, `num_inverted`, `iterations`, `max_displacement`, `converged` |
+| `untangle` | `output`, `num_inverted_before`, `num_inverted_after`, `min_quality_before`, `min_quality_after`, `sweeps`, `moves` |
+| `metric` | `output`, `complexity_before`, `complexity_after`, `num_graded`, `sweeps` |
+| `coordinates` | `output`, `system`, `num_arrays`, `num_singular` |
+| `hull` | `output`, `dimension`, `num_vertices`, `num_facets`, `area`, `volume`, `perimeter` |
+| `point-normals` | `output`, `num_degenerate`, `num_components` |
+| `register` | `output` (with `--output`), `matrix` (4 rows of 4), `initial_rms`, `rms`, `iterations`, `num_pairs`, `converged` |
+| `delaunay` | `output`, `num_triangles`, `num_duplicates`, `num_boundary` |
 | `mesh-cad-surface` | `mesh_cad_surface`'s report: the counts, the open, non-manifold and misoriented edges, the extreme angles and edge lengths, `tolerance`, `max_edge_gap`, `faces` (`status`, `reason`, counts and extremes per face, `below_bound`, `bound_deg`, `min_input_angle_deg` and `corners`), `warnings`, `num_refinement_points`, `num_faces_below_bound`, `num_smoothed`, `angle_histogram` and `num_curved_straightened` |
 | `boundary-layer` | `boundary_layer`'s report: the cell counts by type, `num_shrunk`, `num_collapsed`, `num_not_visible`, `num_fewer_layers`, `num_front_crossings`, `min_scaled_jacobian`, the thickness range, `cap_closed` and `warnings` |
 | `extrude`, `revolve` | the sweep's report: the cell counts by type, `num_flipped`, `min_scaled_jacobian`, `warnings`; `revolve` adds `num_on_axis` and `full` |
@@ -1604,6 +1634,30 @@ meshioplusplus hausdorff part.stl part_decimated.stl --face-samples 4 --max 1e-3
 
 ---
 
+## meshioplusplus graph
+
+Write a mesh's node or cell graph as a METIS or Scotch graph file, for an external partitioner or a sparse-matrix preallocation (see [adjacency graphs](/adjacency)).
+
+```
+meshioplusplus graph [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--kind node\|clique\|cell` | `node` (default): nodes joined by a cell edge; `clique`: nodes sharing a cell, the FEM sparsity pattern; `cell`: cells sharing a facet, numbered block-major |
+| `--format metis\|scotch` | The dialect; by default from the extension (`.graph`/`.metis`, `.grf`) |
+| `--json` | Emit `output`, `kind`, `format`, `num_vertices`, `num_edges` and `max_degree` |
+| `--input-format` (`-i`) | Force input format |
+
+Both CLIs write the same bytes.
+
+```sh
+meshioplusplus graph bracket.vtu bracket.graph --kind cell     # then: gpmetis bracket.graph 16
+meshioplusplus graph bracket.vtu bracket.grf --kind clique --json
+```
+
+---
+
 ## meshioplusplus periodic
 
 Match the nodes of two regions that an affine transform maps onto each other — the node pairs of a periodic boundary condition (see [periodic node pairs](/periodic)).
@@ -1697,6 +1751,286 @@ meshioplusplus shrinkwrap template.vtu scan.stl wrapped.vtu
 meshioplusplus shrinkwrap template.vtu scan.stl wrapped.vtu --offset=0.5
 meshioplusplus shrinkwrap template.vtu scan.stl wrapped.vtu --max-distance 2.0
 meshioplusplus shrinkwrap template.vtu scan.stl out.vtu --weights mask --record-distance
+```
+
+---
+
+## meshioplusplus register
+
+The rigid motion laying SOURCE onto TARGET by iterative closest points (see [rigid registration](/registration)), printed as a 4 × 4 matrix; with `--output`, the moved source is written too.
+
+```
+meshioplusplus register [options] SOURCE TARGET
+```
+
+| Option | Description |
+|--------|-------------|
+| `--output PATH` | Write the moved source here |
+| `--method point_to_point\|point_to_plane` | The error minimised (default `point_to_point`; `point_to_plane` converges far faster onto a surface) |
+| `--max-iterations N` | Iteration cap (default `50`) |
+| `--tolerance T` | Stop below this rotation (radians) and relative motion (default `1e-10`) |
+| `--max-distance D` | Drop pairs farther apart than `D` (default `0`: keep all) |
+| `--rotate-data` | Rotate vector and tensor data of the written source too |
+| `--json` | Emit the report: `output`, `matrix`, `initial_rms`, `rms`, `iterations`, `num_pairs`, `converged` |
+| `--input-format-source` / `--input-format-target` / `--output-format` (`-o`) | Force formats |
+
+Both CLIs print the same JSON.
+
+```sh
+meshioplusplus register scan.ply design.stl --method point_to_plane --output aligned.vtu
+meshioplusplus register run2.vtu run1.vtu --json
+```
+
+---
+
+## meshioplusplus point-normals
+
+Normals of a point cloud by local plane fits (see [point-cloud normals](/point_normals)), written as `normals` point data: the normal columns of a `.pcd` or `.xyz` output.
+
+```
+meshioplusplus point-normals [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--k N` | Neighbours per plane fit (default `16`) |
+| `--orientation consistent\|viewpoint\|none` | How each normal's side is chosen (default `consistent`: a spanning tree, then outward) |
+| `--viewpoint X,Y,Z` | The point normals face, with `--orientation viewpoint` |
+| `--variation` | Also attach `normals:variation` |
+| `--json` | Emit the report: `output`, `num_degenerate`, `num_components` |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Both CLIs print the same JSON.
+
+```sh
+meshioplusplus point-normals scan.ply scan.pcd
+meshioplusplus point-normals scan.xyz out.xyz --k 24 --orientation viewpoint --viewpoint 0,0,2.5 --json
+```
+
+---
+
+## meshioplusplus hull
+
+The convex hull of a file's points (see [hull](/hull)): a closed `triangle` surface in 3-D, a `line` loop of the `x, y` outline in 2-D; the extreme points alone, each with `hull:point_id`.
+
+```
+meshioplusplus hull [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--dimension 0\|2\|3` | 2 (the `x, y` outline), 3, or 0 to decide from the points (default) |
+| `--json` | Emit the report: `output`, `dimension`, `num_vertices`, `num_facets`, `area`, `volume`, `perimeter` |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+## meshioplusplus delaunay
+
+The Delaunay triangulation of a file's points in the `x, y` plane (see [hull](/hull)): every point kept with its `z`, one `triangle` block; a point repeating an earlier one in `x, y` is left out.
+
+```
+meshioplusplus delaunay [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--json` | Emit the report: `output`, `num_triangles`, `num_duplicates`, `num_boundary` |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Both CLIs print the same JSON.
+
+```sh
+meshioplusplus hull scan.xyz hull.stl --json
+meshioplusplus hull scan.xyz outline.vtu --dimension 2
+meshioplusplus delaunay survey.pcd terrain.vtu
+```
+
+---
+
+## meshioplusplus coordinates
+
+Positions, and vector and tensor fields, in cylindrical or spherical components about an axis (see [coordinates](/coordinates)).
+
+```
+meshioplusplus coordinates [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--system cylindrical\|spherical` | The system (default `cylindrical`) |
+| `--axis X,Y,Z` | Axis direction (default `0,0,1`) |
+| `--origin X,Y,Z` | A point on the axis, the spherical centre (default `0,0,0`) |
+| `--reference X,Y,Z` | Direction of angle 0, projected off the axis (default `1,0,0`) |
+| `--arrays A,B` | Vector or tensor point/cell data to rewrite in local components |
+| `--inverse` | Read the arrays as local components and rewrite them as Cartesian |
+| `--no-record` | Do not attach `coords:<system>` point data |
+| `--json` | Emit the report: `output`, `system`, `num_arrays`, `num_singular` |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+The points do not move. Both CLIs print the same JSON.
+
+```sh
+meshioplusplus coordinates rotor.vtu rotor_cyl.vtu --arrays U,stress
+meshioplusplus coordinates vessel.vtu out.vtu --system spherical --origin 0,0,1.5 --arrays sigma --json
+```
+
+---
+
+## meshioplusplus metric
+
+Intersect, normalise, clamp and grade metric fields (see [metric toolbox](/metric)).
+
+```
+meshioplusplus metric [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--arrays A,B` | The metric fields (point data) to intersect (required) |
+| `--output NAME` | The result's name (default `metric`) |
+| `--target-vertices N` | The vertex count to normalise to (default `0`: skip) |
+| `--norm P` | The L^p norm of the normalisation (default `2`; `0`: infinity) |
+| `--hmin H` / `--hmax H` | The size range (default `0`: open) |
+| `--gradation B` | The largest size growth per unit length, > 1 (default `0`: skip) |
+| `--max-sweeps N` | Gradation sweeps at most (default `100`) |
+| `--json` | Emit the report: `output`, `complexity_before`, `complexity_after`, `num_graded`, `sweeps` |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Both CLIs print the same JSON.
+
+```sh
+meshioplusplus metric flow.vtu sized.vtu --arrays m_p,m_T --target-vertices 20000 --hmin 1e-3 --hmax 0.2 --gradation 1.5
+```
+
+---
+
+## meshioplusplus untangle
+
+Move nodes until no tetrahedron or hexahedron corner is inverted, keeping the connectivity (see [untangling](/untangle)).
+
+```
+meshioplusplus untangle [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--no-fix-boundary` | Let the boundary nodes move |
+| `--rings N` | Edge rings around the inverted cells whose nodes may move (default `2`) |
+| `--smooth` | Untangle and smooth the whole mesh |
+| `--max-sweeps N` | Sweeps at most (default `100`) |
+| `--json` | Emit the report: `output`, `num_inverted_before`, `num_inverted_after`, `min_quality_before`, `min_quality_after`, `sweeps`, `moves` |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Both CLIs print the same JSON.
+
+```sh
+meshioplusplus untangle deformed.vtu fixed.vtu
+meshioplusplus untangle deformed.vtu fixed.vtu --no-fix-boundary --rings 3 --json
+```
+
+---
+
+## meshioplusplus morph
+
+Move the boundary (or chosen points) by a displacement and carry it into the mesh (see [morphing](/morph)).
+
+```
+meshioplusplus morph [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--array NAME` | Point data: the displacement (required) |
+| `--no-fix-boundary` | Do not constrain the boundary points |
+| `--constrained-array NAME` | Point data whose nonzero entries constrain their points too |
+| `--stiffening S` | Stiffening exponent (default `1`; `0`: plain Laplace) |
+| `--steps N` | Increments the displacement is applied in (default `1`) |
+| `--allow-inverted` | Write a result with inverted cells instead of failing |
+| `--tolerance T` / `--max-iterations N` | Each solve's relative residual (default `1e-10`) and cap (default `0`: automatic) |
+| `--json` | Emit the report: `output`, `num_constrained`, `num_free`, `num_inverted`, `iterations`, `max_displacement`, `converged` |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Both CLIs print the same JSON.
+
+```sh
+meshioplusplus morph duct.vtu moved.vtu --array d
+meshioplusplus morph fluid.vtu fluid_t1.vtu --array wall_motion --steps 4 --json
+```
+
+---
+
+## meshioplusplus eigenmodes
+
+The lowest eigenpairs of a triangle surface's Laplace–Beltrami operator (see [eigenmodes](/eigenmodes)), written as `laplacian:modes` point data and `laplacian:eigenvalues` field data.
+
+```
+meshioplusplus eigenmodes [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--num-modes N` (`-k`) | Eigenpairs wanted (default `10`) |
+| `--tolerance T` | Relative residual every pair must reach (default `1e-8`) |
+| `--max-iterations N` | Block iterations at most (default `0`: 300) |
+| `--json` | Emit the report: `output`, `eigenvalues`, `iterations`, `max_residual`, `converged`, `num_degenerate` |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Both CLIs print the same JSON.
+
+```sh
+meshioplusplus eigenmodes skin.stl modes.vtu -k 16
+meshioplusplus eigenmodes skin.stl modes.vtu -k 32 --json
+```
+
+---
+
+## meshioplusplus geodesic
+
+The distance along a triangle surface from source points to every point, by the heat method (see [geodesic distance](/geodesic)).
+
+```
+meshioplusplus geodesic [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--source ID[,ID...]` | Source point ids, 0-based |
+| `--source-region NAME` | A region whose points are sources too |
+| `--time-factor F` | Heat time `F h^2`, `h` the mean edge length (default `1`) |
+| `--tolerance T` | Relative tolerance of both solves (default `1e-10`) |
+| `--max-iterations N` | Iteration cap of each solve (default `0`: automatic) |
+| `--json` | Emit the report: `output`, `num_sources`, `num_unreached`, `num_degenerate`, `max_distance`, `time_step`, `heat_iterations`, `poisson_iterations`, `converged` |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+The output carries `geodesic:distance` point data; a point in no triangle, or in a piece with no source, is `NaN`. Both CLIs print the same JSON.
+
+```sh
+meshioplusplus geodesic skin.stl dist.vtu --source 0
+meshioplusplus geodesic part.vtu dist.vtu --source-region inlet --time-factor 4 --json
+```
+
+---
+
+## meshioplusplus parameterize
+
+A UV atlas of a triangle surface: charts cut, flattened without flipping a triangle and packed into the unit square (see [parameterize](/parameterize)).
+
+```
+meshioplusplus parameterize [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--padding F` | Gap between charts, a fraction of the square root of the surface area (default `0.02`) |
+| `--max-depth N` | How many times a piece that does not flatten may be halved (default `8`) |
+| `--max-stretch S` | A chart whose L2 stretch exceeds `S` is halved again (default `2`; `inf` keeps every chart that does not fold) |
+| `--json` | Emit the report: `output`, `num_charts`, `num_flipped`, `stretch`, `packing_efficiency`, `num_seam_points` |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+The output carries `uv` point data, the surface split at its seams; written as OBJ, glTF or USD it becomes texture coordinates. Both CLIs print the same JSON.
+
+```sh
+meshioplusplus parameterize bunny.stl bunny.obj
+meshioplusplus parameterize part.stl part.glb --max-stretch 1.5 --json
 ```
 
 ---

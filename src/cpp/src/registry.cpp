@@ -33,6 +33,7 @@
 // Project includes
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "meshioplusplus/detail/compressed_input.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/read_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -129,9 +130,58 @@ namespace {
  * fuzz targets -- then sees one exception for "not a file this reader reads"
  * (detail/read_guard.hpp explains why that matters to the Python fallback).
  */
+// The codec a path's compression suffix names, unless a format registers the
+// whole compound extension itself (Netgen's `.vol.gz`, libMesh's `.xda.gz`):
+// that one decompresses its own files. See detail/compressed_input.hpp.
+detail::Compression registry_compression(const std::string& rPath) {
+    const detail::Compression kind = detail::compression_from_suffix(rPath);
+    if (kind == detail::Compression::None)
+        return kind;
+    std::string base = std::filesystem::path(rPath).filename().string();
+    for (char& c : base)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    const auto& defaults = registry_extension_defaults();
+    const std::string own = detail::compression_suffix(kind);
+    for (std::size_t pos = base.find('.'); pos != std::string::npos;
+         pos = base.find('.', pos + 1)) {
+        const std::string suffix = base.substr(pos);
+        if (suffix != own && defaults.count(suffix))
+            return detail::Compression::None;
+    }
+    return kind;
+}
+
+// Formats whose file names other files beside it (or is a directory): a
+// decompressed copy in a temporary directory would lose them, so a compressed
+// one is refused by name rather than read half.
+bool registry_is_multi_file(const std::string& rFormat) {
+    static const char* const kMulti[] = {"tetgen", "triangle", "ensight", "gid", "elmer",
+                                         "pvd",    "pvtu",     "pvtp",    "vtx", "openfoam"};
+    for (const char* name : kMulti)
+        if (rFormat == name)
+            return true;
+    return false;
+}
+
+void registry_refuse_multi_file(const std::string& rFormat, const std::string& rPath) {
+    if (registry_is_multi_file(rFormat))
+        throw meshioplusplus::ReadError(
+            "meshio++: '" + rPath + "' is a compressed " + rFormat +
+            " file, whose data spans several files; decompress it first");
+}
+
 std::map<std::string, ReadFn> registry_guard_readers(std::map<std::string, ReadFn> raw) {
     for (auto& [name, fn] : raw) {
         fn = [format = name, inner = std::move(fn)](const std::string& rPath) {
+            // A compressed file is read through a decompressed copy, so every
+            // flat binding and both CLIs read `cube.msh.gz` with no code of
+            // their own (roadmap 7.1.1).
+            const detail::Compression kind = registry_compression(rPath);
+            if (kind != detail::Compression::None) {
+                registry_refuse_multi_file(format, rPath);
+                const detail::DecompressedFile plain(rPath, kind);
+                return detail::guarded_read(format.c_str(), [&] { return inner(plain.Path()); });
+            }
             return detail::guarded_read(format.c_str(), [&] { return inner(rPath); });
         };
     }
@@ -807,6 +857,10 @@ std::string registry_resolve(const std::string& rPath, const std::string& rForma
             return "marc";
         return it->second;
     }
+    // `cube.msh.gz`: the format is the one the name had before compression.
+    const detail::Compression kind = registry_compression(rPath);
+    if (kind != detail::Compression::None)
+        return registry_resolve(detail::decompressed_name(rPath, kind), "", /*Content=*/false);
     throw meshioplusplus::ReadError("meshio++: cannot infer format from '" + rPath +
                                     "' -- pass an explicit format argument");
 }
@@ -1067,6 +1121,12 @@ const ReadFn& registry_full_reader(const std::string& rFormat) {
 
 Mesh registry_read(const std::string& rPath, const std::string& rFormat,
                    const ReadOptions& rOptions) {
+    const detail::Compression kind = registry_compression(rPath);
+    if (kind != detail::Compression::None) {
+        registry_refuse_multi_file(rFormat, rPath);
+        const detail::DecompressedFile plain(rPath, kind);
+        return registry_read(plain.Path(), rFormat, rOptions);
+    }
     auto it = registry_readers_ex().find(rFormat);
     if (it != registry_readers_ex().end())
         return detail::guarded_read(rFormat.c_str(), [&] { return it->second(rPath, rOptions); });
@@ -1076,6 +1136,12 @@ Mesh registry_read(const std::string& rPath, const std::string& rFormat,
 
 MeshMetadata registry_read_metadata(const std::string& rPath, const std::string& rFormat,
                                     const ReadOptions& rOptions) {
+    const detail::Compression kind = registry_compression(rPath);
+    if (kind != detail::Compression::None) {
+        registry_refuse_multi_file(rFormat, rPath);
+        const detail::DecompressedFile plain(rPath, kind);
+        return registry_read_metadata(plain.Path(), rFormat, rOptions);
+    }
     // Best-effort, on every path: the block lives in the file's bytes, so
     // unlike everything else in a summary it cannot come from
     // `metadata_from_mesh`. A reader that fills it natively (exodus, whose

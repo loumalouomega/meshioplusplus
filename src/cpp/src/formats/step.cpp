@@ -30,6 +30,7 @@
 // Project includes
 #include "meshioplusplus/formats/step.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/length_unit.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
@@ -118,6 +119,7 @@ void detail::write_step_report(const std::string& rPath, const Mesh& rMesh,
         brep.mFreeform = pFreeform;
         brep.mEdgeCurves = pEdgeCurves;
         brep.mBrep = BuildBrep;
+        brep.mLengthUnit = detail::mesh_length_unit(rMesh);
         detail::StepBrepResult r = detail::step_brep_write(rPath, surface, shell, brep);
         if (pReport != nullptr)
             *pReport = std::move(r);
@@ -205,7 +207,7 @@ void detail::write_step_report(const std::string& rPath, const Mesh& rMesh,
     std::sort(used.begin(), used.end());
     used.erase(std::unique(used.begin(), used.end()), used.end());
 
-    detail::StepStream st(rPath, "meshio++ faceted B-rep");
+    detail::StepStream st(rPath, "meshio++ faceted B-rep", detail::mesh_length_unit(rMesh));
     auto ent = [&](const std::string& rBody) { return st.Ent(rBody); };
     auto ref = [](std::int64_t Id) { return detail::StepStream::Ref(Id); };
     auto triple = [](const double* pV) { return detail::StepStream::Triple(pV); };

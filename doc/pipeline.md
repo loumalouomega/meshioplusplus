@@ -83,6 +83,17 @@ meshioplusplus pipeline settings.json --json     # machine-readable report
 | `FindIntersections` | `Other` ("": a mesh file to test against), `Region`, `RegionOther` (""), `Require` (true), `AttachFlags` (false) | a gate by default: a surface that intersects itself (or meets `Other`) stops the pipeline, naming the pair count; with `Require` false it only reports, and `AttachFlags` writes `intersections:count` onto the mesh that flows on; counters `NumPairs`, `NumTrianglePairs`, `NumCoplanar`; see [intersections](/find_intersections) |
 | `Thickness` | `Other` (""), `Direction` ("auto"), `MaxDistance` (0), `Min` (0), `Region`, `RegionOther` (""), `Require` (true) | `thickness:distance` and `thickness:hit_cell` flow on; with `Min`, a facet below it stops the pipeline unless `Require` is false; counters `NumHit`, `NumMissed`, `NumBelow`, `Min`, `Max`, `Mean`; see [thickness](/thickness) |
 | `Snapshot` | `Path` (required: `.png`, `.txt`, `.ansi`, `.html` or `.cast`), `Width` (320), `Height` (240), `Supersample` (1), `Cols` (100), `Rows` (40), `Encoding` ("halfblock" \| "quadrant" \| "sextant" \| "braille" \| "ascii"), `ColorDepth` ("truecolor" \| "256" \| "16" \| "mono"), `PngCompress` (0), the camera `View`, `Azimuth`, `Elevation`, `Roll`, `Perspective`, `Fov`, `Zoom`, `Shading`, `Edges`, `FeatureAngle`, the colours `Background` and `FillColor` (`#rrggbb[aa]` or `none`), colouring by `ColorBy`, `Component`, `Cmap`, `VMin`, `VMax`, `Colorbar`, `Axes`, `ScaleBar`, and the field options `Reduce`, `Expr`, `ClipLow`, `ClipHigh`, `Symmetric`, `Scale`, `ScaleThreshold`, `Categorical`, `ColorRegions`, `CategoryEdges`, `Isolines`, `IsoLevels`, `Vectors`, `VectorCount`, `Warp`, `WarpScale`, `WarpOutline`, `Diagnostic`, `QualityMetric`, and the cut-away `Cutaway` (a flat list of numbers, six per plane, at most two: a point, then the normal of the side kept) with `CutawayTint`, and the streamlines `Streamlines` (a vector point array), `StreamSeeds` (40), `StreamLength` (0.5) and `StreamColor`, and the [theme](./tui#the-synthwave-theme) `Theme` ("none" \| "synthwave"), `GridFloor`, `Bloom`, `Fringe` and `Scanlines` | a side output, not a transform: the mesh passes through untouched and the [software rasterizer](/tui) writes the frame as it stands at this point, so a `Smooth` or `Decimate` can be shown before and after in a report; counters `Width`, `Height`. The parameters are the options of `snapshot`, with the same names in PascalCase |
+| `GeodesicDistance` | `Sources` (point ids), `SourceRegion`, `TimeFactor` (1), `Tolerance` (1e-10), `MaxIterations` (0: automatic) | attaches `geodesic:distance` point data ([geodesic distance](geodesic.md)); counters `NumSources`, `NumUnreached`, `MaxDistance`, `Converged` |
+| `Parameterize` | `Padding` (0.02), `MaxDepth` (8), `MaxStretch` (2) | a UV atlas: `uv` point data, the surface split at its seams ([parameterize](parameterize.md)); counters `NumCharts`, `NumFlipped`, `Stretch`, `PackingEfficiency` |
+| `LaplacianEigenmodes` | `NumModes` (10), `Tolerance` (1e-8), `MaxIterations` (0: 300) | attaches `laplacian:modes` point data and `laplacian:eigenvalues` field data ([eigenmodes](eigenmodes.md)); counters `Iterations`, `MaxResidual`, `Converged` |
+| `Morph` | `Array` (required: the displacement point data), `FixBoundary` (true), `ConstrainedArray` (""), `Stiffening` (1), `Steps` (1), `AllowInverted` (false), `Tolerance` (1e-10), `MaxIterations` (0) | moves the constrained points by `Array` and the rest by its harmonic extension ([morphing](morph.md)); counters `NumConstrained`, `NumInverted`, `MaxDisplacement`, `Converged` |
+| `Untangle` | `FixBoundary` (true), `Rings` (2), `Smooth` (false), `MaxSweeps` (100) | moves nodes until no tetrahedron or hexahedron corner is inverted ([untangling](untangle.md)); counters `NumInvertedBefore`, `NumInvertedAfter`, `MinQualityAfter`, `Sweeps` |
+| `PrepareMetric` | `Arrays` (required: the metric fields), `Output` ("metric"), `TargetVertices` (0: skip), `Norm` (2; 0: infinity), `Hmin`, `Hmax` (0: open), `Gradation` (0: skip), `MaxSweeps` (100) | intersects, normalises, clamps and grades metric fields into point data `Output` ([metric toolbox](metric.md)); counters `ComplexityBefore`, `ComplexityAfter`, `NumGraded` |
+| `ConvertCoordinates` | `System` ("cylindrical" or "spherical"), `Axis` ([0, 0, 1]), `Origin` ([0, 0, 0]), `Reference` ([1, 0, 0]), `Arrays` (vector/tensor names), `Inverse` (false), `RecordCoordinates` (true) | records `coords:<system>` point data and rewrites the named arrays in local components ([coordinates](coordinates.md)); counters `NumArrays`, `NumSingular` |
+| `ConvexHull` | `Dimension` (0: 2 for flat points, else 3; or 2, 3) | replaces the mesh with the convex hull of its points: a `triangle` surface or a `line` loop of the extreme points with `hull:point_id` ([hull](hull.md)); counters `Dimension`, `NumVertices`, `NumFacets`, `Area`, `Volume` |
+| `EstimateNormals` | `K` (16), `Orientation` ("consistent", "viewpoint" or "none"), `Viewpoint` ([0, 0, 0]), `RecordVariation` (false) | attaches `normals` point data from local plane fits ([point-cloud normals](point_normals.md)); counters `NumDegenerate`, `NumComponents` |
+| `RegisterRigid` | `Target` (required: the mesh file to register onto), `Method` ("point_to_point" or "point_to_plane"), `MaxIterations` (50), `Tolerance` (1e-10), `MaxDistance` (0: keep all pairs), `RotateData` (false) | moves the mesh onto `Target` by iterative closest points ([rigid registration](registration.md)); counters `InitialRms`, `Rms`, `Iterations`, `Converged` |
+| `Delaunay2D` | — | replaces the cells with the Delaunay triangulation of the points' `x, y` (every point kept) ([hull](hull.md)); counters `NumTriangles`, `NumDuplicates` |
 | `EstimateError` | `Array` (required), `Method` ("zz"), `Marking` ("none" \| "absolute" \| "fraction" \| "dorfler"), `MarkingValue` (0), `Output`, `Marked` | attaches `error:zz` (and `error:marked` when `Marking` isn't "none"); counters `GlobalError`, `NumSkipped`, `NumMarked`; warns on skipped cells |
 | `ErrorSize` | `TargetError` (required, positive), `Array` ("error:zz"), `Order` (1), `MinSize` (0: no bound), `MaxSize` (0: no bound), `Output` ("size") | a data step (roadmap 6.10.2): the per-cell indicator an `EstimateError` step attached becomes a per-point size array by the Zienkiewicz-Zhu adaptive procedure ([error estimation](/error)), what a later mesh_cad_surface's `background` reads; geometry untouched, an existing `Output` replaced. Counters `NumCells`, `NumSkipped`, `NumClamped`, `MinSize`, `MaxSize`; warns on skipped cells |
 | `Isosurface` | `Array` (required), `Isovalue` (0) or `Isovalues`, `Component`, `RecordParentIds` (false) | counter `ContourCells`; warns when empty |
@@ -164,12 +175,35 @@ The engine is `operations/pipeline.{hpp,cpp}` in the C++ core, split in two laye
 | --- | --- |
 | both CLIs | `pipeline SETTINGS.json [--input P] [--output P] [--json] [--quiet]` |
 | Python | `run_pipeline(settings, input_path=None, output_path=None)` — settings = dict \| JSON text \| path |
+| Python, in memory | `apply_operations(mesh, operations, *, version=1)` → `(mesh, report)` — [below](#in-memory-apply-operations) |
 | C | `mio_pipeline_run_file(path)`, `mio_pipeline_run_json(text)`, `mio_pipeline_has_json()` |
 | Fortran | `mio_pipeline_run_file(path [, stat, errmsg])`, `mio_pipeline_run_json(...)`, `mio_pipeline_has_json()` |
 | Julia | `run_pipeline_file(path)`, `run_pipeline_json(text)`, `pipeline_has_json()` |
 | R | `mio_pipeline_run_file(path)`, `mio_pipeline_run_json(text)`, `mio_pipeline_has_json()` |
 | WASM | `runPipeline(settings)` — object \| JSON text \| MEMFS `.json` path (no nlohmann in the wasm build; `JSON.parse` does the text forms) |
 | MCP | tool `pipeline(settings_path, input_path?, output_path?)` — the sandbox covers the paths *inside* the document too |
+
+### In memory: `apply_operations`
+
+`apply_operations(mesh, operations)` applies the steps to a mesh already in memory and returns `(mesh, report)`, the report shaped as `run_pipeline`'s: the same vocabulary, the same strict validation of every step before any runs, the same counters and warnings, without the Input read and the Output write. It gives a notebook, the [Blender add-on](blender.md) or a ParaView filter the whole pipeline without a file.
+
+```python
+import meshioplusplus as mp
+
+mesh = mp.read("part.vtu")
+out, report = mp.apply_operations(mesh, [
+    {"Op": "Refine"},
+    {"Op": "Smooth", "Iterations": 5},
+    {"Op": "Quality"},
+])
+report["steps"][0]          # {"op": "Refine", ...counters}
+
+mesh, _ = mp.apply_operations(None, [{"Op": "Generate", "Shape": "box", "Dims": [4, 4, 4]}])
+```
+
+`operations` is a list of step objects, the JSON text of one, or a whole settings document, whose `Operations` (and `Version`) are used and whose `Input` and `Output` are ignored; `version` selects the schema otherwise. The input mesh is never modified, and `None` is accepted when the first step is `Generate`. Python's `run_pipeline` and `apply_operations` share one step loop, so a chain gives the same mesh and report through either.
+
+Three things need the file run and raise naming `run_pipeline`: `Split` and a `Partition` with `RecordIds` or `GhostLayers`, which write one file per piece. A model step (`MeshCadSurface`, `IgaSample`, `IgaRefine`) meshes the CAD model the mesh carries in `mesh.info` — the `brep` a CAD JSON, STEP or IGES read or `fit_cad` leaves, or an MFEM read's `nurbs` patches — and raises naming `mesh.info` when there is none; as in a file run, a step that changes the mesh drops the model. Version 2's `Merge`, `Interpolate` and `UndoGreen` still read their `Inputs` paths. `apply_operations` is Python-only, and the MCP server lists it among the in-memory APIs it does not wrap: its `pipeline` tool is the file form.
 
 ### Structured reports on the flat ABI
 

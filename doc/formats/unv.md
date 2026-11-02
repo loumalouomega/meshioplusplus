@@ -43,11 +43,13 @@ The native reader normalizes short Fortran real fields in a terminated stack buf
 | **2411** nodes (double precision, `D` exponents), **781**, legacy **15** | ✓ | 2411 or 781 | `points` |
 | **2412** elements, legacy **780** | ✓ | 2412 | cell blocks, `cell_data["unv:pid"]` / `["unv:mid"]` |
 | **2467**, **2477**, **2452**, **2435** permanent groups (entity quadruples); **2417**, **2429**, **2430**, **2432** (entity pairs) | ✓ | 2467 | point and cell [regions](../regions.md) |
-| **164** units | ✓ | when the mesh carries it | `field_data["unv:units"]`, `["unv:unit_factors"]` |
+| **164** units | ✓ | when the mesh carries it, or states a [length unit](../formats.md#length-units) | `field_data["unv:units"]`, `["unv:unit_factors"]`, and the shared `["meshio:length_unit"]` (1 ÷ the length factor) |
 | **2420** coordinate systems | ✓ (applied to nodes) | — | node coordinates |
 | **2414** analysis data at nodes (location 1) / on elements (location 2) | ✓ | ✓ (default) | `point_data` / `cell_data`, one step each |
 | **55** data at nodes, **56** data on elements | ✓ | with `code_aster=True` | `point_data` / `cell_data`, one step each |
 | **58** / **58b** function at nodal DOF (ASCII / binary) | ✓ | — | `point_data`, one step per abscissa value |
+
+The length unit is shared with the other formats that state one ([length units](../formats.md#length-units)): a read sets `field_data["meshio:length_unit"]` to the metres per file unit (`0.001` for code 5, millimetres), and a write states the mesh's unit in dataset 164 — the file's own `unv:units` and factors when they agree with it, else code 1 (metres) or 5 (millimetres) with I-DEAS's factors, and the user-defined code 9 with the length factor `1 / unit` for any other length. Both engines write the same bytes.
 
 Any other dataset is skipped. Data at nodes on elements (dataset 57, 2414 location 3) and data at points (2414 location 5) are skipped with a warning.
 

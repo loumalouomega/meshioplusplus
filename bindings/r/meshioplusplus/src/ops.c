@@ -1245,6 +1245,319 @@ SEXP R_mio_sobolev_deform(SEXP mesh, SEXP array, SEXP length_scale, SEXP fixed_p
     return res;
 }
 
+SEXP R_mio_prepare_metric(SEXP mesh, SEXP arrays, SEXP output, SEXP target_vertices,
+                          SEXP norm, SEXP hmin, SEXP hmax, SEXP gradation) {
+    mio_metric_opts opts;
+    mio_metric_opts_init(&opts);
+    const R_xlen_t n = Rf_xlength(arrays);
+    const char **names = n > 0 ? (const char **)R_alloc((size_t)n, sizeof(char *)) : NULL;
+    for (R_xlen_t i = 0; i < n; ++i) names[i] = CHAR(STRING_ELT(arrays, i));
+    opts.arrays = names;
+    opts.num_arrays = (int64_t)n;
+    opts.output = mio_r_string(output, "output");
+    opts.target_vertices = Rf_asReal(target_vertices);
+    opts.norm = Rf_asReal(norm);
+    opts.hmin = Rf_asReal(hmin);
+    opts.hmax = Rf_asReal(hmax);
+    opts.gradation = Rf_asReal(gradation);
+    mio_metric_report rep;
+    mio_mesh *out = mio_prepare_metric(mio_r_mesh(mesh), &opts, &rep);
+    if (out == NULL) mio_r_fail("prepare_metric");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP a = PROTECT(Rf_ScalarReal(rep.complexity_before));
+    SEXP b = PROTECT(Rf_ScalarReal(rep.complexity_after));
+    SEXP c = PROTECT(Rf_ScalarReal((double)rep.num_graded));
+    const char *keys[] = {"mesh", "complexity_before", "complexity_after", "num_graded"};
+    SEXP values[] = {mo, a, b, c};
+    SEXP res = PROTECT(mio_r_named_list(4, keys, values));
+    UNPROTECT(5);
+    return res;
+}
+
+SEXP R_mio_untangle(SEXP mesh, SEXP fix_boundary, SEXP rings, SEXP smooth, SEXP max_sweeps) {
+    mio_untangle_opts opts;
+    mio_untangle_opts_init(&opts);
+    opts.fix_boundary = mio_r_bool(fix_boundary, "fix_boundary") ? 1 : 0;
+    opts.rings = (int64_t)Rf_asReal(rings);
+    opts.smooth = mio_r_bool(smooth, "smooth") ? 1 : 0;
+    opts.max_sweeps = (int64_t)Rf_asReal(max_sweeps);
+    mio_untangle_report rep;
+    mio_mesh *out = mio_untangle(mio_r_mesh(mesh), &opts, &rep);
+    if (out == NULL) mio_r_fail("untangle");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP a = PROTECT(Rf_ScalarReal((double)rep.num_inverted_before));
+    SEXP b = PROTECT(Rf_ScalarReal((double)rep.num_inverted_after));
+    SEXP c = PROTECT(Rf_ScalarReal(rep.min_quality_before));
+    SEXP d = PROTECT(Rf_ScalarReal(rep.min_quality_after));
+    SEXP e = PROTECT(Rf_ScalarReal((double)rep.sweeps));
+    const char *keys[] = {"mesh", "num_inverted_before", "num_inverted_after",
+                          "min_quality_before", "min_quality_after", "sweeps"};
+    SEXP values[] = {mo, a, b, c, d, e};
+    SEXP res = PROTECT(mio_r_named_list(6, keys, values));
+    UNPROTECT(7);
+    return res;
+}
+
+SEXP R_mio_morph(SEXP mesh, SEXP array, SEXP fix_boundary, SEXP constrained_array,
+                 SEXP stiffening, SEXP steps, SEXP allow_inverted) {
+    mio_morph_opts opts;
+    mio_morph_opts_init(&opts);
+    opts.array = mio_r_string(array, "array");
+    if (!Rf_isNull(constrained_array))
+        opts.constrained_array = mio_r_string(constrained_array, "constrained_array");
+    opts.fix_boundary = mio_r_bool(fix_boundary, "fix_boundary") ? 1 : 0;
+    opts.stiffening = Rf_asReal(stiffening);
+    opts.steps = (int64_t)Rf_asReal(steps);
+    opts.allow_inverted = mio_r_bool(allow_inverted, "allow_inverted") ? 1 : 0;
+    mio_morph_report rep;
+    mio_mesh *out = mio_morph(mio_r_mesh(mesh), &opts, &rep);
+    if (out == NULL) mio_r_fail("morph");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP a = PROTECT(Rf_ScalarReal((double)rep.num_constrained));
+    SEXP b = PROTECT(Rf_ScalarReal((double)rep.num_free));
+    SEXP c = PROTECT(Rf_ScalarReal((double)rep.num_inverted));
+    SEXP d = PROTECT(Rf_ScalarReal(rep.max_displacement));
+    SEXP e = PROTECT(Rf_ScalarLogical(rep.converged != 0));
+    const char *keys[] = {"mesh", "num_constrained", "num_free", "num_inverted",
+                          "max_displacement", "converged"};
+    SEXP values[] = {mo, a, b, c, d, e};
+    SEXP res = PROTECT(mio_r_named_list(6, keys, values));
+    UNPROTECT(7);
+    return res;
+}
+
+SEXP R_mio_laplacian_eigenmodes(SEXP mesh, SEXP num_modes, SEXP tolerance,
+                                SEXP max_iterations) {
+    mio_eigenmode_opts opts;
+    mio_eigenmode_opts_init(&opts);
+    opts.num_modes = (int64_t)Rf_asReal(num_modes);
+    opts.tolerance = Rf_asReal(tolerance);
+    opts.max_iterations = (int64_t)Rf_asReal(max_iterations);
+    mio_eigenmode_report rep;
+    mio_mesh *out = mio_laplacian_eigenmodes(mio_r_mesh(mesh), &opts, &rep);
+    if (out == NULL) mio_r_fail("laplacian_eigenmodes");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP a = PROTECT(Rf_ScalarReal((double)rep.iterations));
+    SEXP b = PROTECT(Rf_ScalarReal(rep.max_residual));
+    SEXP c = PROTECT(Rf_ScalarLogical(rep.converged != 0));
+    const char *keys[] = {"mesh", "iterations", "max_residual", "converged"};
+    SEXP values[] = {mo, a, b, c};
+    SEXP res = PROTECT(mio_r_named_list(4, keys, values));
+    UNPROTECT(5);
+    return res;
+}
+
+SEXP R_mio_register_rigid(SEXP source, SEXP target, SEXP method, SEXP max_iterations,
+                          SEXP tolerance, SEXP max_distance, SEXP initial) {
+    mio_registration_opts opts;
+    mio_registration_opts_init(&opts);
+    const char *m = mio_r_string(method, "method");
+    if (strcmp(m, "point_to_plane") == 0) {
+        opts.method = MIO_REGISTER_POINT_TO_PLANE;
+    } else if (strcmp(m, "point_to_point") != 0) {
+        Rf_error("`method` must be \"point_to_point\" or \"point_to_plane\"");
+    }
+    opts.max_iterations = (int64_t)Rf_asReal(max_iterations);
+    opts.tolerance = Rf_asReal(tolerance);
+    opts.max_distance = Rf_asReal(max_distance);
+    if (!Rf_isNull(initial)) {
+        SEXP x = PROTECT(Rf_coerceVector(initial, REALSXP));
+        if (Rf_xlength(x) != 16) {
+            UNPROTECT(1);
+            Rf_error("`initial` must be a 4 x 4 matrix");
+        }
+        /* R stores column-major: element (i, j) at j * 4 + i */
+        for (int i = 0; i < 4; ++i)
+            for (int j = 0; j < 4; ++j) opts.initial[4 * i + j] = REAL(x)[j * 4 + i];
+        UNPROTECT(1);
+    }
+    mio_registration_report rep;
+    if (mio_register_rigid(mio_r_mesh(source), mio_r_mesh(target), &opts, &rep) != MIO_OK)
+        mio_r_fail("register_rigid");
+    SEXP mat = PROTECT(Rf_allocMatrix(REALSXP, 4, 4));
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) REAL(mat)[j * 4 + i] = rep.matrix[4 * i + j];
+    SEXP a = PROTECT(Rf_ScalarReal(rep.initial_rms));
+    SEXP b = PROTECT(Rf_ScalarReal(rep.rms));
+    SEXP c = PROTECT(Rf_ScalarReal((double)rep.iterations));
+    SEXP d = PROTECT(Rf_ScalarReal((double)rep.num_pairs));
+    SEXP e = PROTECT(Rf_ScalarLogical(rep.converged != 0));
+    const char *keys[] = {"matrix", "initial_rms", "rms", "iterations", "num_pairs", "converged"};
+    SEXP values[] = {mat, a, b, c, d, e};
+    SEXP res = PROTECT(mio_r_named_list(6, keys, values));
+    UNPROTECT(7);
+    return res;
+}
+
+SEXP R_mio_estimate_normals(SEXP mesh, SEXP k, SEXP orientation, SEXP viewpoint,
+                            SEXP record_variation) {
+    mio_point_normals_opts opts;
+    mio_point_normals_opts_init(&opts);
+    opts.k = (int64_t)Rf_asReal(k);
+    const char *o = mio_r_string(orientation, "orientation");
+    if (strcmp(o, "consistent") == 0) {
+        opts.orientation = MIO_NORMALS_CONSISTENT;
+    } else if (strcmp(o, "viewpoint") == 0) {
+        opts.orientation = MIO_NORMALS_VIEWPOINT;
+    } else if (strcmp(o, "none") == 0) {
+        opts.orientation = MIO_NORMALS_NONE;
+    } else {
+        Rf_error("`orientation` must be \"consistent\", \"viewpoint\" or \"none\"");
+    }
+    SEXP v = PROTECT(Rf_coerceVector(viewpoint, REALSXP));
+    if (Rf_xlength(v) != 3) {
+        UNPROTECT(1);
+        Rf_error("`viewpoint` takes three numbers");
+    }
+    for (int a = 0; a < 3; ++a) opts.viewpoint[a] = REAL(v)[a];
+    UNPROTECT(1);
+    opts.record_variation = mio_r_bool(record_variation, "record_variation") ? 1 : 0;
+    int64_t nd = 0, nc = 0;
+    mio_mesh *out = mio_estimate_normals(mio_r_mesh(mesh), &opts, &nd, &nc);
+    if (out == NULL) mio_r_fail("estimate_normals");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP a = PROTECT(Rf_ScalarReal((double)nd));
+    SEXP b = PROTECT(Rf_ScalarReal((double)nc));
+    const char *keys[] = {"mesh", "num_degenerate", "num_components"};
+    SEXP values[] = {mo, a, b};
+    SEXP res = PROTECT(mio_r_named_list(3, keys, values));
+    UNPROTECT(4);
+    return res;
+}
+
+SEXP R_mio_convex_hull(SEXP mesh, SEXP dimension) {
+    const int d = Rf_asInteger(dimension);
+    if (d != 0 && d != 2 && d != 3) Rf_error("`dimension` must be 0, 2 or 3");
+    mio_hull_report rep;
+    mio_mesh *out = mio_convex_hull(mio_r_mesh(mesh), (int32_t)d, &rep);
+    if (out == NULL) mio_r_fail("convex_hull");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP a = PROTECT(Rf_ScalarInteger(rep.dimension));
+    SEXP b = PROTECT(Rf_ScalarReal((double)rep.num_vertices));
+    SEXP c = PROTECT(Rf_ScalarReal((double)rep.num_facets));
+    SEXP e = PROTECT(Rf_ScalarReal(rep.area));
+    SEXP f = PROTECT(Rf_ScalarReal(rep.volume));
+    SEXP g = PROTECT(Rf_ScalarReal(rep.perimeter));
+    const char *keys[] = {"mesh", "dimension", "num_vertices", "num_facets",
+                          "area", "volume", "perimeter"};
+    SEXP values[] = {mo, a, b, c, e, f, g};
+    SEXP res = PROTECT(mio_r_named_list(7, keys, values));
+    UNPROTECT(8);
+    return res;
+}
+
+SEXP R_mio_delaunay_2d(SEXP mesh) {
+    int64_t nt = 0, nd = 0, nb = 0;
+    mio_mesh *out = mio_delaunay_2d(mio_r_mesh(mesh), &nt, &nd, &nb);
+    if (out == NULL) mio_r_fail("delaunay_2d");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP a = PROTECT(Rf_ScalarReal((double)nt));
+    SEXP b = PROTECT(Rf_ScalarReal((double)nd));
+    SEXP c = PROTECT(Rf_ScalarReal((double)nb));
+    const char *keys[] = {"mesh", "num_triangles", "num_duplicates", "num_boundary"};
+    SEXP values[] = {mo, a, b, c};
+    SEXP res = PROTECT(mio_r_named_list(4, keys, values));
+    UNPROTECT(5);
+    return res;
+}
+
+SEXP R_mio_convert_coordinates(SEXP mesh, SEXP system, SEXP axis, SEXP origin, SEXP reference,
+                               SEXP arrays, SEXP inverse, SEXP record_coordinates) {
+    mio_coordinate_opts opts;
+    mio_coordinate_opts_init(&opts);
+    const char *sys = mio_r_string(system, "system");
+    if (strcmp(sys, "spherical") == 0) {
+        opts.system = MIO_COORDS_SPHERICAL;
+    } else if (strcmp(sys, "cylindrical") != 0) {
+        Rf_error("`system` must be \"cylindrical\" or \"spherical\"");
+    }
+    SEXP vecs[3] = {axis, origin, reference};
+    double *dst[3] = {opts.axis, opts.origin, opts.reference};
+    for (int v = 0; v < 3; ++v) {
+        SEXP x = PROTECT(Rf_coerceVector(vecs[v], REALSXP));
+        if (Rf_xlength(x) != 3) {
+            UNPROTECT(1);
+            Rf_error("`axis`, `origin` and `reference` take three numbers");
+        }
+        for (int k = 0; k < 3; ++k) dst[v][k] = REAL(x)[k];
+        UNPROTECT(1);
+    }
+    const R_xlen_t n = Rf_xlength(arrays);
+    const char **names = n > 0 ? (const char **)R_alloc((size_t)n, sizeof(char *)) : NULL;
+    for (R_xlen_t i = 0; i < n; ++i) names[i] = CHAR(STRING_ELT(arrays, i));
+    opts.arrays = names;
+    opts.num_arrays = (int64_t)n;
+    opts.inverse = mio_r_bool(inverse, "inverse") ? 1 : 0;
+    opts.record_coordinates = mio_r_bool(record_coordinates, "record_coordinates") ? 1 : 0;
+    int64_t na = 0, ns = 0;
+    mio_mesh *out = mio_convert_coordinates(mio_r_mesh(mesh), &opts, &na, &ns);
+    if (out == NULL) mio_r_fail("convert_coordinates");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP a = PROTECT(Rf_ScalarReal((double)na));
+    SEXP b = PROTECT(Rf_ScalarReal((double)ns));
+    const char *keys[] = {"mesh", "num_arrays", "num_singular"};
+    SEXP values[] = {mo, a, b};
+    SEXP res = PROTECT(mio_r_named_list(3, keys, values));
+    UNPROTECT(4);
+    return res;
+}
+
+SEXP R_mio_geodesic_distance(SEXP mesh, SEXP sources, SEXP source_region, SEXP time_factor,
+                             SEXP tolerance, SEXP max_iterations) {
+    mio_geodesic_opts opts;
+    mio_geodesic_report report;
+    mio_geodesic_opts_init(&opts);
+    SEXP src = PROTECT(Rf_coerceVector(sources, REALSXP));
+    const R_xlen_t n = Rf_xlength(src);
+    int64_t *ids = n > 0 ? (int64_t *)R_alloc((size_t)n, sizeof(int64_t)) : NULL;
+    for (R_xlen_t i = 0; i < n; ++i) ids[i] = (int64_t)REAL(src)[i] - 1; /* 1-based in R */
+    opts.sources = ids;
+    opts.num_sources = (int64_t)n;
+    opts.source_region = mio_r_opt_string(source_region);
+    opts.time_factor = mio_r_double(time_factor, "time_factor");
+    opts.tolerance = mio_r_double(tolerance, "tolerance");
+    opts.max_iterations = (int64_t)mio_r_double(max_iterations, "max_iterations");
+    mio_mesh *out = mio_geodesic_distance(mio_r_mesh(mesh), &opts, &report);
+    UNPROTECT(1);
+    if (out == NULL) mio_r_fail("geodesic_distance");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP ns = PROTECT(Rf_ScalarReal((double)report.num_sources));
+    SEXP nu = PROTECT(Rf_ScalarReal((double)report.num_unreached));
+    SEXP md = PROTECT(Rf_ScalarReal(report.max_distance));
+    SEXP ts = PROTECT(Rf_ScalarReal(report.time_step));
+    SEXP cv = PROTECT(Rf_ScalarLogical(report.converged != 0));
+    const char *names[] = {"mesh", "num_sources", "num_unreached", "max_distance", "time_step",
+                           "converged"};
+    SEXP values[] = {mo, ns, nu, md, ts, cv};
+    SEXP res = PROTECT(mio_r_named_list(6, names, values));
+    UNPROTECT(7);
+    return res;
+}
+
+SEXP R_mio_parameterize(SEXP mesh, SEXP padding, SEXP max_depth, SEXP max_stretch) {
+    mio_parameterize_opts opts;
+    mio_parameterize_report report;
+    mio_parameterize_opts_init(&opts);
+    opts.padding = mio_r_double(padding, "padding");
+    opts.max_depth = (int64_t)mio_r_double(max_depth, "max_depth");
+    opts.max_stretch = mio_r_double(max_stretch, "max_stretch");
+    mio_mesh* out = mio_parameterize(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL)
+        mio_r_fail("parameterize");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP nc = PROTECT(Rf_ScalarReal((double)report.num_charts));
+    SEXP nf = PROTECT(Rf_ScalarReal((double)report.num_flipped));
+    SEXP st = PROTECT(Rf_ScalarReal(report.stretch));
+    SEXP pe = PROTECT(Rf_ScalarReal(report.packing_efficiency));
+    SEXP ns = PROTECT(Rf_ScalarReal((double)report.num_seam_points));
+    const char* names[] = {"mesh",    "num_charts",         "num_flipped",
+                           "stretch", "packing_efficiency", "num_seam_points"};
+    SEXP values[] = {mo, nc, nf, st, pe, ns};
+    SEXP res = PROTECT(mio_r_named_list(6, names, values));
+    UNPROTECT(7);
+    return res;
+}
+
 /* --- combining / comparing ---------------------------------------------- */
 
 SEXP R_mio_merge(SEXP meshes, SEXP weld, SEXP atol, SEXP source_tag, SEXP data_policy,

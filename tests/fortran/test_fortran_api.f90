@@ -2789,6 +2789,13 @@ contains
         logical :: cad_valid, used_native
         character(:), allocatable :: msg
         integer(int64), allocatable :: s_ids(:), m_ids(:)
+        integer(int64), allocatable :: g_ptr(:), g_idx(:)
+        integer(int64) :: g_nv, g_ne, g_md
+        type(mio_mesh) :: square, dist, atlas
+        real(real64) :: g_far, p_stretch
+        integer(int64) :: p_charts, p_flipped
+        real(real64) :: g_matrix(4, 4)
+        logical :: g_ok
         integer :: ierr
         real(real64) :: cube_points(3, 8), d, ab
         logical :: passed
@@ -2980,6 +2987,96 @@ contains
                                      translate=[0.0_real64, 0.0_real64, 0.5_real64], stat=ierr)
         call check(ierr /= 0, 'an incomplete periodic match fails')
 
+        ! Adjacency: the cube's 12 edges, 1-based CSR; its 6 faces each meet 4.
+        call sq%adjacency(g_ptr, g_idx, stat=ierr)
+        call check(ierr == 0, 'adjacency succeeded')
+        call check(size(g_ptr) == 9, 'node graph has 8 + 1 offsets')
+        call check(g_ptr(1) == 1_int64 .and. g_ptr(9) == 25_int64, 'node graph is 1-based, 24 entries')
+        call check(minval(g_idx) == 1_int64 .and. maxval(g_idx) == 8_int64, 'neighbours are 1-based')
+        call sq%adjacency(g_ptr, g_idx, kind='cell', stat=ierr)
+        call check(ierr == 0 .and. size(g_idx) == 24, 'every face of the cube meets four')
+        call sq%adjacency(g_ptr, g_idx, kind='edge', stat=ierr)
+        call check(ierr /= 0, 'adjacency rejects an unknown kind')
+        call sq%write_graph('fortran_cube.graph', num_vertices=g_nv, num_edges=g_ne, &
+                            max_degree=g_md, stat=ierr)
+        call check(ierr == 0 .and. g_nv == 8 .and. g_ne == 12 .and. g_md == 3, &
+                   'write_graph writes the cube''s 12 edges')
+        call sq%write_graph('fortran_cube.txt', stat=ierr)
+        call check(ierr /= 0, 'write_graph needs a known extension or a format')
+
+        ! Geodesic distance on two triangles: the far corner is about sqrt(2) away.
+        call square%create()
+        call square%set_points(reshape([0.0_real64, 0.0_real64, 0.0_real64, &
+                                        1.0_real64, 0.0_real64, 0.0_real64, &
+                                        1.0_real64, 1.0_real64, 0.0_real64, &
+                                        0.0_real64, 1.0_real64, 0.0_real64], [3, 4]))
+        call square%add_cell_block('triangle', reshape([1_int64, 2_int64, 3_int64, &
+                                                        1_int64, 3_int64, 4_int64], [3, 2]))
+        dist = square%geodesic_distance(sources=[1_int64], max_distance=g_far, &
+                                        converged=g_ok, stat=ierr)
+        call check(ierr == 0 .and. g_ok, 'geodesic_distance succeeded')
+        call check(abs(g_far - sqrt(2.0_real64)) < 0.3_real64, 'the far corner is about sqrt(2) away')
+        call dist%free()
+        dist = square%geodesic_distance(stat=ierr)
+        call check(ierr /= 0, 'geodesic_distance needs a source')
+        ! Parameterize the two triangles: one flat chart, nothing flipped.
+        atlas = square%parameterize(num_charts=p_charts, num_flipped=p_flipped, &
+                                    stretch=p_stretch, stat=ierr)
+        call check(ierr == 0 .and. p_charts == 1_int64 .and. p_flipped == 0_int64, &
+                   'parameterize made one chart')
+        call check(abs(p_stretch - 1.0_real64) < 1.0e-6_real64, 'a flat square keeps its lengths')
+        call atlas%free()
+        atlas = square%parameterize(max_stretch=0.5_real64, stat=ierr)
+        call check(ierr /= 0, 'parameterize refuses max_stretch below 1')
+        ! prepare_metric on the square: a missing metric field is refused.
+        dist = square%prepare_metric([character(7) :: 'missing'], stat=ierr)
+        call check(ierr /= 0, 'prepare_metric refuses a missing metric field')
+        ! Untangle of the square: it has no tetrahedron or hexahedron.
+        dist = square%untangle(stat=ierr)
+        call check(ierr /= 0, 'untangle refuses a mesh with no volume cell')
+        ! Morph of the square: a missing displacement array is refused.
+        dist = square%morph('missing', stat=ierr)
+        call check(ierr /= 0, 'morph refuses a missing displacement array')
+        ! Eigenmodes of the square: four corners, two triangles.
+        dist = square%laplacian_eigenmodes(num_modes=2, converged=g_ok, stat=ierr)
+        call check(ierr == 0 .and. g_ok, 'laplacian_eigenmodes succeeded')
+        call dist%free()
+        dist = square%laplacian_eigenmodes(num_modes=9, stat=ierr)
+        call check(ierr /= 0, 'laplacian_eigenmodes refuses more modes than points')
+        ! Registration of the square onto itself: the identity.
+        call square%register_rigid(square, g_matrix, iterations=g_nv, converged=g_ok, stat=ierr)
+        call check(ierr == 0 .and. g_ok, 'register_rigid succeeded')
+        call check(abs(g_matrix(1, 1) - 1.0_real64) < 1.0e-12_real64 .and. &
+                   abs(g_matrix(1, 4)) < 1.0e-12_real64, 'the square registers onto itself')
+        call square%register_rigid(square, g_matrix, method='affine', stat=ierr)
+        call check(ierr /= 0, 'register_rigid rejects an unknown method')
+        ! Normals of the square's corners: one plane, facing +z.
+        dist = square%estimate_normals(k=3, num_degenerate=g_nv, stat=ierr)
+        call check(ierr == 0, 'estimate_normals succeeded')
+        call check(g_nv == 0_int64, 'no corner is degenerate')
+        call dist%free()
+        dist = square%estimate_normals(orientation='inward', stat=ierr)
+        call check(ierr /= 0, 'estimate_normals rejects an unknown orientation')
+        ! Hull and Delaunay of the square's corners (2-D: z is all zero).
+        dist = square%convex_hull(num_vertices=g_nv, stat=ierr)
+        call check(ierr == 0, 'convex_hull succeeded')
+        call check(g_nv == 4_int64, 'the square hull has four vertices')
+        call dist%free()
+        dist = square%convex_hull(dimension=3, stat=ierr)
+        call check(ierr /= 0, 'convex_hull refuses a 3-D hull of coplanar points')
+        dist = square%delaunay_2d(num_triangles=g_nv, stat=ierr)
+        call check(ierr == 0, 'delaunay_2d succeeded')
+        call check(g_nv == 2_int64, 'the square triangulates into two triangles')
+        call dist%free()
+        ! Coordinates: the square's corners in cylindrical components about z.
+        dist = square%convert_coordinates(num_singular=g_nv, stat=ierr)
+        call check(ierr == 0, 'convert_coordinates succeeded')
+        call check(g_nv == 1_int64, 'the corner on the axis is the one singular point')
+        call dist%free()
+        dist = square%convert_coordinates(system='polar', stat=ierr)
+        call check(ierr /= 0, 'convert_coordinates rejects an unknown system')
+        call square%free()
+
         ! Quality gate: a unit cube of squares passes aspect_ratio <= 1.5.
         passed = sq%check_quality('aspect_ratio <= 1.5', num_checks=nchecks, summary=text, &
                                   stat=ierr)
@@ -3082,7 +3179,8 @@ contains
         call check(ierr /= 0, 'an unknown scale is refused')
 
         ! A cut-away: the camera sits on -x and a plane keeps x >= 0.5, so the near
-        ! face goes and the far one (cell 5) shows from inside, in the tint.
+        ! face goes. The cube closes, so the cut is capped (no cell, the fill colour)
+        ! rather than showing the far face from inside in the tint.
         set = mio_render_settings()
         set%width = 32
         set%height = 32
@@ -3095,9 +3193,8 @@ contains
         call check(ierr == 0 .and. f%is_valid(), 'render with a cut-away succeeded')
         call f%get_cell_ids(ids)
         call f%get_rgba(rgba)
-        call check(ids(17, 17) == 5, 'the cut shows the far face at the centre')
-        call check(rgba(1, 17, 17) == 10 .and. rgba(2, 17, 17) == 200 .and. rgba(3, 17, 17) == 30, &
-                   'the inside is drawn in the tint')
+        call check(ids(17, 17) == -1, 'the cut is capped at the centre')
+        call check(rgba(2, 17, 17) /= 200, 'the cap is not drawn in the tint')
         call f%free()
         set%cutaways = [0.5_real64, 0.0_real64, 0.0_real64, 1.0_real64, 0.0_real64, 0.0_real64, &
                         0.0_real64, 0.5_real64, 0.0_real64, 0.0_real64, 1.0_real64, 0.0_real64]

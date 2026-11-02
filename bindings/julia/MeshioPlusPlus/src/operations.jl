@@ -3910,6 +3910,303 @@ function sobolev_deform(m::Mesh, array::AbstractString, length_scale::Real;
 end
 
 """
+    prepare_metric(m, arrays; output="metric", target_vertices=0.0, norm=2.0, hmin=0.0,
+                   hmax=0.0, gradation=0.0, max_sweeps=100)
+        -> (; mesh, complexity_before, complexity_after, num_graded, sweeps)
+
+The metric toolbox: intersect the metric fields `arrays`, normalise to
+`target_vertices`, clamp to `[hmin, hmax]` and grade, into point data `output`.
+See `doc/metric.md`.
+"""
+function prepare_metric(m::Mesh, arrays::AbstractVector{<:AbstractString}; output::AbstractString="metric",
+                        target_vertices::Real=0.0, norm::Real=2.0, hmin::Real=0.0, hmax::Real=0.0,
+                        gradation::Real=0.0, max_sweeps::Integer=100)
+    names = [Vector{UInt8}(codeunits(String(a) * "\0")) for a in arrays]
+    ptrs = [Cstring(pointer(n)) for n in names]
+    rep = Ref{_CMetricReport}()
+    ptr = GC.@preserve names ptrs output begin
+        opts = _CMetricOpts(isempty(ptrs) ? Ptr{Cstring}(C_NULL) : pointer(ptrs), Int64(length(ptrs)),
+                            Base.unsafe_convert(Cstring, output), Float64(target_vertices),
+                            Float64(norm), Float64(hmin), Float64(hmax), Float64(gradation),
+                            Int64(max_sweeps), ntuple(_ -> Int64(0), 4))
+        ccall(_sym(:mio_prepare_metric), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CMetricOpts}, Ref{_CMetricReport}), _handle(m), Ref(opts), rep)
+    end
+    r = _check_ptr(ptr)
+    h = rep[]
+    (mesh=Mesh(r), complexity_before=h.complexity_before, complexity_after=h.complexity_after,
+     num_graded=Int(h.num_graded), sweeps=Int(h.sweeps))
+end
+
+"""
+    untangle(m; fix_boundary=true, rings=2, smooth=false, max_sweeps=100)
+        -> (; mesh, num_inverted_before, num_inverted_after, min_quality_before,
+              min_quality_after, sweeps, moves)
+
+Untangle tetrahedra and hexahedra: move nodes until every corner has a positive
+signed volume (Escobar et al.'s functional). See `doc/untangle.md`.
+"""
+function untangle(m::Mesh; fix_boundary::Bool=true, rings::Integer=2, smooth::Bool=false,
+                  max_sweeps::Integer=100)
+    opts = _CUntangleOpts(Ptr{UInt8}(C_NULL), Int64(0), Int64(rings), Int64(max_sweeps),
+                          fix_boundary ? Int32(1) : Int32(0), smooth ? Int32(1) : Int32(0),
+                          ntuple(_ -> Int64(0), 4))
+    rep = Ref{_CUntangleReport}()
+    ptr = ccall(_sym(:mio_untangle), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CUntangleOpts}, Ref{_CUntangleReport}), _handle(m), Ref(opts), rep)
+    r = _check_ptr(ptr)
+    h = rep[]
+    (mesh=Mesh(r), num_inverted_before=Int(h.num_inverted_before),
+     num_inverted_after=Int(h.num_inverted_after), min_quality_before=h.min_quality_before,
+     min_quality_after=h.min_quality_after, sweeps=Int(h.sweeps), moves=Int(h.moves))
+end
+
+"""
+    morph(m, array; fix_boundary=true, constrained_array="", stiffening=1.0, steps=1,
+          allow_inverted=false, tolerance=1e-10, max_iterations=0)
+        -> (; mesh, num_constrained, num_free, num_inverted, iterations, max_displacement, converged)
+
+Boundary-driven morphing: the constrained points (the boundary, and the
+nonzero entries of point data `constrained_array`) move by point data `array`,
+the rest by its harmonic extension with Jacobian-based stiffening; inverted
+cells raise unless `allow_inverted`. See `doc/morph.md`.
+"""
+function morph(m::Mesh, array::AbstractString; fix_boundary::Bool=true,
+               constrained_array::AbstractString="", stiffening::Real=1.0, steps::Integer=1,
+               allow_inverted::Bool=false, tolerance::Real=1e-10, max_iterations::Integer=0)
+    rep = Ref{_CMorphReport}()
+    ptr = GC.@preserve array constrained_array begin
+        opts = _CMorphOpts(Base.unsafe_convert(Cstring, array),
+                           isempty(constrained_array) ? Cstring(C_NULL) :
+                           Base.unsafe_convert(Cstring, constrained_array),
+                           Ptr{UInt8}(C_NULL), Int64(0), Float64(stiffening), Int64(steps),
+                           Float64(tolerance), Int64(max_iterations),
+                           fix_boundary ? Int32(1) : Int32(0), allow_inverted ? Int32(1) : Int32(0),
+                           ntuple(_ -> Int64(0), 4))
+        ccall(_sym(:mio_morph), Ptr{Cvoid}, (Ptr{Cvoid}, Ref{_CMorphOpts}, Ref{_CMorphReport}),
+              _handle(m), Ref(opts), rep)
+    end
+    r = _check_ptr(ptr)
+    h = rep[]
+    (mesh=Mesh(r), num_constrained=Int(h.num_constrained), num_free=Int(h.num_free),
+     num_inverted=Int(h.num_inverted), iterations=Int(h.iterations),
+     max_displacement=h.max_displacement, converged=h.converged != 0)
+end
+
+"""
+    laplacian_eigenmodes(m; num_modes=10, tolerance=1e-8, max_iterations=0)
+        -> (; mesh, iterations, max_residual, converged, num_degenerate)
+
+The lowest eigenpairs of a triangle surface's Laplace-Beltrami operator: the
+mesh carries point data `laplacian:modes` (n x num_modes, M-orthonormal) and
+field data `laplacian:eigenvalues` (ascending). See `doc/eigenmodes.md`.
+"""
+function laplacian_eigenmodes(m::Mesh; num_modes::Integer=10, tolerance::Real=1e-8,
+                              max_iterations::Integer=0)
+    opts = _CEigenmodeOpts(Int64(num_modes), Float64(tolerance), Int64(max_iterations),
+                           ntuple(_ -> Int64(0), 4))
+    rep = Ref{_CEigenmodeReport}()
+    ptr = ccall(_sym(:mio_laplacian_eigenmodes), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CEigenmodeOpts}, Ref{_CEigenmodeReport}),
+                _handle(m), Ref(opts), rep)
+    r = _check_ptr(ptr)
+    h = rep[]
+    (mesh=Mesh(r), iterations=Int(h.iterations), max_residual=h.max_residual,
+     converged=h.converged != 0, num_degenerate=Int(h.num_degenerate))
+end
+
+"""
+    register_rigid(source, target; method="point_to_point", max_iterations=50,
+                   tolerance=1e-10, max_distance=0.0, initial=nothing)
+        -> (; matrix, initial_rms, rms, iterations, num_pairs, converged)
+
+Rigid registration by iterative closest points: `matrix` (4x4, `matrix[i, j]`
+row `i`) lays `source`'s points onto `target` (its surface when it has surface
+cells, else its points); apply it with `transform(source; matrix=...)`.
+`initial` is a starting 4x4 matrix. See `doc/registration.md`.
+"""
+function register_rigid(source::Mesh, target::Mesh; method::AbstractString="point_to_point",
+                        max_iterations::Integer=50, tolerance::Real=1e-10,
+                        max_distance::Real=0.0, initial=nothing)
+    meth = method == "point_to_point" ? Int32(0) : method == "point_to_plane" ? Int32(1) :
+           throw(ArgumentError("meshio++: register_rigid: method must be \"point_to_point\" or \"point_to_plane\""))
+    start = initial === nothing ? Matrix{Float64}(I4) : Matrix{Float64}(initial)
+    size(start) == (4, 4) || throw(ArgumentError("meshio++: register_rigid: initial must be 4x4"))
+    flat = ntuple(k -> start[(k - 1) ÷ 4 + 1, (k - 1) % 4 + 1], 16)
+    opts = _CRegistrationOpts(meth, Int32(0), Int64(max_iterations), Float64(tolerance),
+                              Float64(max_distance), flat, ntuple(_ -> Int64(0), 4))
+    rep = Ref{_CRegistrationReport}()
+    st = ccall(_sym(:mio_register_rigid), Cint,
+               (Ptr{Cvoid}, Ptr{Cvoid}, Ref{_CRegistrationOpts}, Ref{_CRegistrationReport}),
+               _handle(source), _handle(target), Ref(opts), rep)
+    _check(st)
+    r = rep[]
+    matrix = [r.matrix[4 * (i - 1) + j] for i in 1:4, j in 1:4]
+    (matrix=matrix, initial_rms=r.initial_rms, rms=r.rms, iterations=Int(r.iterations),
+     num_pairs=Int(r.num_pairs), converged=r.converged != 0)
+end
+
+const I4 = [1.0 0.0 0.0 0.0; 0.0 1.0 0.0 0.0; 0.0 0.0 1.0 0.0; 0.0 0.0 0.0 1.0]
+
+"""
+    estimate_normals(m; k=16, orientation="consistent", viewpoint=(0,0,0),
+                     record_variation=false) -> (; mesh, num_degenerate, num_components)
+
+Normals of the mesh's points by local plane fits, as `normals` point data:
+oriented `"consistent"` (a spanning tree over the neighbour graph, then each
+piece outward), `"viewpoint"` (towards `viewpoint`) or `"none"`; `NaN` where a
+neighbourhood spans no plane. See `doc/point_normals.md`.
+"""
+function estimate_normals(m::Mesh; k::Integer=16, orientation::AbstractString="consistent",
+                          viewpoint=(0.0, 0.0, 0.0), record_variation::Bool=false)
+    o = orientation == "consistent" ? Int32(0) : orientation == "viewpoint" ? Int32(1) :
+        orientation == "none" ? Int32(2) :
+        throw(ArgumentError("meshio++: estimate_normals: orientation must be \"consistent\", \"viewpoint\" or \"none\""))
+    opts = _CPointNormalsOpts(Int64(k), o, record_variation ? Int32(1) : Int32(0),
+                              (Float64(viewpoint[1]), Float64(viewpoint[2]), Float64(viewpoint[3])),
+                              ntuple(_ -> Int64(0), 4))
+    nd, nc = Ref{Int64}(0), Ref{Int64}(0)
+    ptr = ccall(_sym(:mio_estimate_normals), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CPointNormalsOpts}, Ptr{Int64}, Ptr{Int64}),
+                _handle(m), Ref(opts), nd, nc)
+    r = _check_ptr(ptr)
+    (mesh=Mesh(r), num_degenerate=Int(nd[]), num_components=Int(nc[]))
+end
+
+"""
+    convex_hull(m; dimension=0)
+        -> (; mesh, dimension, num_vertices, num_facets, area, volume, perimeter)
+
+The convex hull of the mesh's points (its cells are ignored): a closed outward
+`triangle` surface in 3-D, a counter-clockwise `line` loop of the x, y
+coordinates in 2-D. Only the extreme points are vertices, each with
+`hull:point_id` (its 0-based input point). `dimension` is 2, 3, or 0 to decide
+from the points. See `doc/hull.md`.
+"""
+function convex_hull(m::Mesh; dimension::Integer=0)
+    rep = Ref{_CHullReport}()
+    ptr = ccall(_sym(:mio_convex_hull), Ptr{Cvoid}, (Ptr{Cvoid}, Int32, Ref{_CHullReport}),
+                _handle(m), Int32(dimension), rep)
+    r = _check_ptr(ptr)
+    h = rep[]
+    (mesh=Mesh(r), dimension=Int(h.dimension), num_vertices=Int(h.num_vertices),
+     num_facets=Int(h.num_facets), area=h.area, volume=h.volume, perimeter=h.perimeter)
+end
+
+"""
+    delaunay_2d(m) -> (; mesh, num_triangles, num_duplicates, num_boundary)
+
+The Delaunay triangulation of the mesh's points in the x, y plane: every point
+kept (with its z and point data), one counter-clockwise `triangle` block; a
+point coinciding in x, y with an earlier one is in no triangle. See
+`doc/hull.md`.
+"""
+function delaunay_2d(m::Mesh)
+    nt, nd, nb = Ref{Int64}(0), Ref{Int64}(0), Ref{Int64}(0)
+    ptr = ccall(_sym(:mio_delaunay_2d), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64}), _handle(m), nt, nd, nb)
+    r = _check_ptr(ptr)
+    (mesh=Mesh(r), num_triangles=Int(nt[]), num_duplicates=Int(nd[]), num_boundary=Int(nb[]))
+end
+
+"""
+    convert_coordinates(m; system="cylindrical", axis=(0,0,1), origin=(0,0,0),
+                        reference=(1,0,0), arrays=String[], inverse=false,
+                        record_coordinates=true)
+        -> (; mesh, num_arrays, num_singular)
+
+Cylindrical or spherical components about an axis: the points stay put, their
+coordinates are recorded as point data (`coords:cylindrical` = `(r, theta, z)`,
+`coords:spherical` = `(r, theta, phi)`), and each named vector or tensor array
+(point or cell data) is rewritten in the local basis of its point, or back to
+Cartesian with `inverse=true`. See `doc/coordinates.md`.
+"""
+function convert_coordinates(m::Mesh; system::AbstractString="cylindrical", axis=(0.0, 0.0, 1.0),
+                             origin=(0.0, 0.0, 0.0), reference=(1.0, 0.0, 0.0),
+                             arrays::AbstractVector{<:AbstractString}=String[],
+                             inverse::Bool=false, record_coordinates::Bool=true)
+    sys = system == "cylindrical" ? Int32(0) : system == "spherical" ? Int32(1) :
+          throw(ArgumentError("meshio++: convert_coordinates: system must be \"cylindrical\" or \"spherical\""))
+    names = [Vector{UInt8}(codeunits(String(a) * "\0")) for a in arrays]
+    ptrs = [Cstring(pointer(n)) for n in names]
+    na, ns = Ref{Int64}(0), Ref{Int64}(0)
+    t3(v) = (Float64(v[1]), Float64(v[2]), Float64(v[3]))
+    ptr = GC.@preserve names ptrs begin
+        opts = _CCoordinateOpts(sys, inverse ? Int32(1) : Int32(0), t3(axis), t3(origin),
+                                t3(reference),
+                                isempty(ptrs) ? Ptr{Cstring}(C_NULL) : pointer(ptrs),
+                                Int64(length(ptrs)), record_coordinates ? Int32(1) : Int32(0),
+                                Int32(0), ntuple(_ -> Int64(0), 4))
+        ccall(_sym(:mio_convert_coordinates), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CCoordinateOpts}, Ptr{Int64}, Ptr{Int64}),
+              _handle(m), Ref(opts), na, ns)
+    end
+    r = _check_ptr(ptr)
+    (mesh=Mesh(r), num_arrays=Int(na[]), num_singular=Int(ns[]))
+end
+
+"""
+    geodesic_distance(m, sources=Int[]; source_region="", time_factor=1.0,
+                      tolerance=1e-10, max_iterations=0)
+        -> (; mesh, num_sources, num_unreached, num_degenerate, max_distance,
+             time_step, heat_iterations, poisson_iterations, converged)
+
+Geodesic distance on a triangle surface by the heat method: `mesh` carries the
+point data `geodesic:distance`, the distance along the surface to the nearest
+source. `sources` are **1-based** point ids; `source_region` names a region
+whose points are sources too. A point in no triangle, or in a piece with no
+source, gets `NaN`. See `doc/geodesic.md`.
+"""
+function geodesic_distance(m::Mesh, sources::AbstractVector{<:Integer}=Int[];
+                           source_region::AbstractString="", time_factor::Real=1.0,
+                           tolerance::Real=1e-10, max_iterations::Integer=0)
+    report = Ref{_CGeodesicReport}()
+    ids = Int64[Int64(s) - 1 for s in sources]
+    region_c = Vector{UInt8}(codeunits(String(source_region) * "\0"))
+    ptr = GC.@preserve ids region_c begin
+        opts = _CGeodesicOpts(isempty(ids) ? Ptr{Int64}(C_NULL) : pointer(ids),
+                              Int64(length(ids)), Cstring(pointer(region_c)),
+                              Float64(time_factor), Float64(tolerance), Int64(max_iterations),
+                              ntuple(_ -> Int64(0), 6))
+        ccall(_sym(:mio_geodesic_distance), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CGeodesicOpts}, Ptr{_CGeodesicReport}),
+              _handle(m), Ref(opts), report)
+    end
+    r = _check_ptr(ptr)
+    rep = report[]
+    (mesh=Mesh(r), num_sources=Int(rep.num_sources), num_unreached=Int(rep.num_unreached),
+     num_degenerate=Int(rep.num_degenerate), max_distance=Float64(rep.max_distance),
+     time_step=Float64(rep.time_step), heat_iterations=Int(rep.heat_iterations),
+     poisson_iterations=Int(rep.poisson_iterations), converged=rep.converged != 0)
+end
+geodesic_distance(m::Mesh, source::Integer; kwargs...) = geodesic_distance(m, [source]; kwargs...)
+
+"""
+    parameterize(m; padding=0.02, max_depth=8, max_stretch=2.0)
+        -> (; mesh, num_charts, num_flipped, stretch, packing_efficiency, num_seam_points)
+
+A UV atlas of a triangle surface: `mesh` carries the point data `uv` (two
+texture coordinates per point in the unit square), split at the seams
+(`parameterize:parent_point` names each point's input point, 0-based), and the
+cell data `parameterize:chart`. A chart that folds, or whose L2 stretch exceeds
+`max_stretch`, is halved up to `max_depth` times. See `doc/parameterize.md`.
+"""
+function parameterize(m::Mesh; padding::Real=0.02, max_depth::Integer=8,
+                      max_stretch::Real=2.0)
+    report = Ref{_CParameterizeReport}()
+    opts = _CParameterizeOpts(Float64(padding), Int64(max_depth), Float64(max_stretch),
+                              ntuple(_ -> Int64(0), 5))
+    ptr = ccall(_sym(:mio_parameterize), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CParameterizeOpts}, Ptr{_CParameterizeReport}),
+                _handle(m), Ref(opts), report)
+    r = _check_ptr(ptr)
+    rep = report[]
+    (mesh=Mesh(r), num_charts=Int(rep.num_charts), num_flipped=Int(rep.num_flipped),
+     stretch=Float64(rep.stretch), packing_efficiency=Float64(rep.packing_efficiency),
+     num_seam_points=Int(rep.num_seam_points))
+end
+
+"""
     surface_watertight_check(m) -> NamedTuple
 
 What is wrong with a surface, in numbers: boundary edges, non-manifold edges,

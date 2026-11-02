@@ -1225,6 +1225,200 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
+    !> Interop mirror of C `mio_metric_opts`. Field order/types are ABI.
+    type, bind(c) :: mio_metric_opts_t
+        type(c_ptr) :: arrays = c_null_ptr
+        integer(c_int64_t) :: num_arrays = 0
+        type(c_ptr) :: output = c_null_ptr
+        real(c_double) :: target_vertices = 0.0_c_double
+        real(c_double) :: norm = 2.0_c_double
+        real(c_double) :: hmin = 0.0_c_double
+        real(c_double) :: hmax = 0.0_c_double
+        real(c_double) :: gradation = 0.0_c_double
+        integer(c_int64_t) :: max_sweeps = 100
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_metric_report`. Field order/types are ABI.
+    type, bind(c) :: mio_metric_report_t
+        real(c_double) :: complexity_before = 0.0_c_double
+        real(c_double) :: complexity_after = 0.0_c_double
+        integer(c_int64_t) :: num_graded = 0
+        integer(c_int64_t) :: sweeps = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_untangle_opts`. Field order/types are ABI.
+    type, bind(c) :: mio_untangle_opts_t
+        type(c_ptr) :: frozen = c_null_ptr
+        integer(c_int64_t) :: num_frozen = 0
+        integer(c_int64_t) :: rings = 2
+        integer(c_int64_t) :: max_sweeps = 100
+        integer(c_int32_t) :: fix_boundary = 1
+        integer(c_int32_t) :: smooth = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_untangle_report`. Field order/types are ABI.
+    type, bind(c) :: mio_untangle_report_t
+        integer(c_int64_t) :: num_inverted_before = 0
+        integer(c_int64_t) :: num_inverted_after = 0
+        real(c_double) :: min_quality_before = 0.0_c_double
+        real(c_double) :: min_quality_after = 0.0_c_double
+        integer(c_int64_t) :: sweeps = 0
+        integer(c_int64_t) :: moves = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_morph_opts`. Field order/types are ABI.
+    type, bind(c) :: mio_morph_opts_t
+        type(c_ptr) :: array = c_null_ptr
+        type(c_ptr) :: constrained_array = c_null_ptr
+        type(c_ptr) :: constrained = c_null_ptr
+        integer(c_int64_t) :: num_constrained = 0
+        real(c_double) :: stiffening = 1.0_c_double
+        integer(c_int64_t) :: steps = 1
+        real(c_double) :: tolerance = 1.0e-10_c_double
+        integer(c_int64_t) :: max_iterations = 0
+        integer(c_int32_t) :: fix_boundary = 1
+        integer(c_int32_t) :: allow_inverted = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_morph_report`. Field order/types are ABI.
+    type, bind(c) :: mio_morph_report_t
+        integer(c_int64_t) :: num_constrained = 0
+        integer(c_int64_t) :: num_free = 0
+        integer(c_int64_t) :: num_inverted = 0
+        integer(c_int64_t) :: iterations = 0
+        real(c_double) :: max_displacement = 0.0_c_double
+        integer(c_int32_t) :: converged = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_eigenmode_opts`. Field order/types are ABI.
+    type, bind(c) :: mio_eigenmode_opts_t
+        integer(c_int64_t) :: num_modes = 10
+        real(c_double) :: tolerance = 1.0e-8_c_double
+        integer(c_int64_t) :: max_iterations = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_eigenmode_report`. Field order/types are ABI.
+    type, bind(c) :: mio_eigenmode_report_t
+        integer(c_int64_t) :: iterations = 0
+        real(c_double) :: max_residual = 0.0_c_double
+        integer(c_int32_t) :: converged = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: num_degenerate = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_registration_opts`. Field order/types are ABI.
+    type, bind(c) :: mio_registration_opts_t
+        integer(c_int32_t) :: method = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: max_iterations = 50
+        real(c_double) :: tolerance = 1.0e-10_c_double
+        real(c_double) :: max_distance = 0.0_c_double
+        real(c_double) :: initial(16) = [1.0_c_double, 0.0_c_double, 0.0_c_double, 0.0_c_double, &
+                                         0.0_c_double, 1.0_c_double, 0.0_c_double, 0.0_c_double, &
+                                         0.0_c_double, 0.0_c_double, 1.0_c_double, 0.0_c_double, &
+                                         0.0_c_double, 0.0_c_double, 0.0_c_double, 1.0_c_double]
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_registration_report`. Field order/types are ABI.
+    type, bind(c) :: mio_registration_report_t
+        real(c_double) :: matrix(16) = 0.0_c_double
+        real(c_double) :: initial_rms = 0.0_c_double
+        real(c_double) :: rms = 0.0_c_double
+        integer(c_int64_t) :: iterations = 0
+        integer(c_int64_t) :: num_pairs = 0
+        integer(c_int32_t) :: converged = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_point_normals_opts`. Field order/types are ABI.
+    type, bind(c) :: mio_point_normals_opts_t
+        integer(c_int64_t) :: k = 16
+        integer(c_int32_t) :: orientation = 0
+        integer(c_int32_t) :: record_variation = 0
+        real(c_double) :: viewpoint(3) = 0.0_c_double
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_hull_report`. Field order/types are ABI.
+    type, bind(c) :: mio_hull_report_t
+        integer(c_int32_t) :: dimension = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: num_vertices = 0
+        integer(c_int64_t) :: num_facets = 0
+        real(c_double) :: area = 0.0_c_double
+        real(c_double) :: volume = 0.0_c_double
+        real(c_double) :: perimeter = 0.0_c_double
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_coordinate_opts`. Field order/types are ABI.
+    type, bind(c) :: mio_coordinate_opts_t
+        integer(c_int32_t) :: system = 0
+        integer(c_int32_t) :: inverse = 0
+        real(c_double) :: axis(3) = [0.0_c_double, 0.0_c_double, 1.0_c_double]
+        real(c_double) :: origin(3) = 0.0_c_double
+        real(c_double) :: reference(3) = [1.0_c_double, 0.0_c_double, 0.0_c_double]
+        type(c_ptr) :: arrays = c_null_ptr
+        integer(c_int64_t) :: num_arrays = 0
+        integer(c_int32_t) :: record_coordinates = 1
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_geodesic_opts`. Field order/types are ABI.
+    type, bind(c) :: mio_geodesic_opts_t
+        type(c_ptr) :: sources = c_null_ptr
+        integer(c_int64_t) :: num_sources = 0
+        type(c_ptr) :: source_region = c_null_ptr
+        real(c_double) :: time_factor = 1.0_c_double
+        real(c_double) :: tolerance = 1.0e-10_c_double
+        integer(c_int64_t) :: max_iterations = 0
+        integer(c_int64_t) :: reserved(6) = 0
+    end type
+
+    !> Interop mirror of C `mio_geodesic_report`. Field order/types are ABI.
+    type, bind(c) :: mio_geodesic_report_t
+        integer(c_int64_t) :: num_sources = 0
+        integer(c_int64_t) :: num_unreached = 0
+        integer(c_int64_t) :: num_degenerate = 0
+        integer(c_int64_t) :: heat_iterations = 0
+        integer(c_int64_t) :: poisson_iterations = 0
+        real(c_double) :: max_distance = 0.0_c_double
+        real(c_double) :: time_step = 0.0_c_double
+        integer(c_int32_t) :: converged = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_parameterize_opts`. Field order/types are ABI.
+    type, bind(c) :: mio_parameterize_opts_t
+        real(c_double) :: padding = 0.02_c_double
+        integer(c_int64_t) :: max_depth = 8
+        real(c_double) :: max_stretch = 2.0_c_double
+        integer(c_int64_t) :: reserved(5) = 0
+    end type
+
+    !> Interop mirror of C `mio_parameterize_report`. Field order/types are ABI.
+    type, bind(c) :: mio_parameterize_report_t
+        integer(c_int64_t) :: num_charts = 0
+        integer(c_int64_t) :: num_flipped = 0
+        integer(c_int64_t) :: num_seam_points = 0
+        real(c_double) :: stretch = 0.0_c_double
+        real(c_double) :: packing_efficiency = 0.0_c_double
+        integer(c_int64_t) :: reserved(3) = 0
+    end type
+
     !> Interop mirror of C `mio_sobolev_opts`. Field order/types are ABI.
     type, bind(c) :: mio_sobolev_opts_t
         type(c_ptr) :: array = c_null_ptr
@@ -1984,9 +2178,22 @@ module meshioplusplus
         procedure :: edit_regions => mesh_edit_regions
         procedure :: remove_region => mesh_remove_region
         procedure :: match_periodic_nodes => mesh_match_periodic_nodes
+        procedure :: adjacency => mesh_adjacency
+        procedure :: write_graph => mesh_write_graph
         procedure :: check_quality => mesh_check_quality
         procedure :: repair => mesh_repair
         procedure :: sobolev_deform => mesh_sobolev_deform
+        procedure :: geodesic_distance => mesh_geodesic_distance
+        procedure :: parameterize => mesh_parameterize
+        procedure :: convert_coordinates => mesh_convert_coordinates
+        procedure :: estimate_normals => mesh_estimate_normals
+        procedure :: register_rigid => mesh_register_rigid
+        procedure :: laplacian_eigenmodes => mesh_laplacian_eigenmodes
+        procedure :: morph => mesh_morph
+        procedure :: untangle => mesh_untangle
+        procedure :: prepare_metric => mesh_prepare_metric
+        procedure :: convex_hull => mesh_convex_hull
+        procedure :: delaunay_2d => mesh_delaunay_2d
         procedure :: remesh_volume => mesh_remesh_volume
         procedure :: split => mesh_split
         procedure :: convert_cells => mesh_convert_cells
@@ -3468,6 +3675,41 @@ module meshioplusplus
             type(c_ptr), value :: p
         end subroutine
 
+        function c_mio_adjacency_create(h, kind) bind(c, name="mio_adjacency_create") result(r)
+            import :: c_ptr, c_char
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: kind
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_adjacency_indptr(g, count) bind(c, name="mio_adjacency_indptr") result(r)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: g
+            integer(c_int64_t), intent(out) :: count
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_adjacency_indices(g, count) bind(c, name="mio_adjacency_indices") result(r)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: g
+            integer(c_int64_t), intent(out) :: count
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_adjacency_free(g) bind(c, name="mio_adjacency_free")
+            import :: c_ptr
+            type(c_ptr), value :: g
+        end subroutine
+
+        function c_mio_write_graph(h, kind, path, format, num_vertices, num_edges, max_degree) &
+                bind(c, name="mio_write_graph") result(s)
+            import :: c_ptr, c_char, c_int, c_int64_t
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: kind, path, format
+            integer(c_int64_t), intent(out) :: num_vertices, num_edges, max_degree
+            integer(c_int) :: s
+        end function
+
         function c_mio_check_quality(h, spec, max_inverted, max_degenerate, report, summary, &
                                      summary_len) bind(c, name="mio_check_quality") result(r)
             import :: c_ptr, c_int, c_int64_t, c_char, mio_quality_gate_report_t
@@ -3503,6 +3745,116 @@ module meshioplusplus
             type(c_ptr), value :: h, target
             type(mio_shrinkwrap_opts_t), intent(in) :: opts
             type(mio_shrinkwrap_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_prepare_metric(h, opts, report) bind(c, name="mio_prepare_metric") &
+                result(r)
+            import :: c_ptr, mio_metric_opts_t, mio_metric_report_t
+            type(c_ptr), value :: h
+            type(mio_metric_opts_t), intent(in) :: opts
+            type(mio_metric_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_untangle(h, opts, report) bind(c, name="mio_untangle") result(r)
+            import :: c_ptr, mio_untangle_opts_t, mio_untangle_report_t
+            type(c_ptr), value :: h
+            type(mio_untangle_opts_t), intent(in) :: opts
+            type(mio_untangle_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_morph(h, opts, report) bind(c, name="mio_morph") result(r)
+            import :: c_ptr, mio_morph_opts_t, mio_morph_report_t
+            type(c_ptr), value :: h
+            type(mio_morph_opts_t), intent(in) :: opts
+            type(mio_morph_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_laplacian_eigenmodes(h, opts, report) &
+                bind(c, name="mio_laplacian_eigenmodes") result(r)
+            import :: c_ptr, mio_eigenmode_opts_t, mio_eigenmode_report_t
+            type(c_ptr), value :: h
+            type(mio_eigenmode_opts_t), intent(in) :: opts
+            type(mio_eigenmode_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_register_rigid(source, target, opts, report) &
+                bind(c, name="mio_register_rigid") result(r)
+            import :: c_ptr, c_int, mio_registration_opts_t, mio_registration_report_t
+            type(c_ptr), value :: source, target
+            type(mio_registration_opts_t), intent(in) :: opts
+            type(mio_registration_report_t), intent(out) :: report
+            integer(c_int) :: r
+        end function
+
+        function c_mio_estimate_normals(h, opts, num_degenerate, num_components) &
+                bind(c, name="mio_estimate_normals") result(r)
+            import :: c_ptr, c_int64_t, mio_point_normals_opts_t
+            type(c_ptr), value :: h
+            type(mio_point_normals_opts_t), intent(in) :: opts
+            integer(c_int64_t), intent(out) :: num_degenerate, num_components
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_convex_hull(h, dimension, report) bind(c, name="mio_convex_hull") result(r)
+            import :: c_ptr, c_int32_t, mio_hull_report_t
+            type(c_ptr), value :: h
+            integer(c_int32_t), value :: dimension
+            type(mio_hull_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_delaunay_2d(h, num_triangles, num_duplicates, num_boundary) &
+                bind(c, name="mio_delaunay_2d") result(r)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: h
+            integer(c_int64_t), intent(out) :: num_triangles, num_duplicates, num_boundary
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_coordinate_opts_init(opts) bind(c, name="mio_coordinate_opts_init")
+            import :: mio_coordinate_opts_t
+            type(mio_coordinate_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_convert_coordinates(h, opts, num_arrays, num_singular) &
+                bind(c, name="mio_convert_coordinates") result(r)
+            import :: c_ptr, c_int64_t, mio_coordinate_opts_t
+            type(c_ptr), value :: h
+            type(mio_coordinate_opts_t), intent(in) :: opts
+            integer(c_int64_t), intent(out) :: num_arrays, num_singular
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_geodesic_opts_init(opts) bind(c, name="mio_geodesic_opts_init")
+            import :: mio_geodesic_opts_t
+            type(mio_geodesic_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_geodesic_distance(h, opts, report) &
+                bind(c, name="mio_geodesic_distance") result(r)
+            import :: c_ptr, mio_geodesic_opts_t, mio_geodesic_report_t
+            type(c_ptr), value :: h
+            type(mio_geodesic_opts_t), intent(in) :: opts
+            type(mio_geodesic_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_parameterize_opts_init(opts) bind(c, name="mio_parameterize_opts_init")
+            import :: mio_parameterize_opts_t
+            type(mio_parameterize_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_parameterize(h, opts, report) &
+                bind(c, name="mio_parameterize") result(r)
+            import :: c_ptr, mio_parameterize_opts_t, mio_parameterize_report_t
+            type(c_ptr), value :: h
+            type(mio_parameterize_opts_t), intent(in) :: opts
+            type(mio_parameterize_report_t), intent(out) :: report
             type(c_ptr) :: r
         end function
 
@@ -8984,6 +9336,72 @@ contains
         call clear_status(stat, errmsg)
     end subroutine
 
+    !> The mesh's graph in compressed-sparse-row form, **1-based** (METIS's
+    !> Fortran numbering): the neighbours of vertex `i` are
+    !> `indices(indptr(i):indptr(i + 1) - 1)`, ascending. `kind` is "node"
+    !> (the default: nodes joined by a cell edge), "clique" (nodes sharing a
+    !> cell: the FEM sparsity pattern) or "cell" (cells sharing a facet,
+    !> numbered block-major). See doc/adjacency.md.
+    subroutine mesh_adjacency(self, indptr, indices, kind, stat, errmsg)
+        class(mio_mesh), intent(in) :: self
+        integer(int64), allocatable, intent(out) :: indptr(:), indices(:)
+        character(*), intent(in), optional :: kind
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(c_ptr) :: g, p
+        integer(c_int64_t) :: n
+        integer(c_int64_t), pointer :: ids(:)
+        character(:), allocatable :: k
+
+        k = 'node'
+        if (present(kind)) k = kind
+        g = c_mio_adjacency_create(self%handle, c_str(k))
+        if (.not. c_associated(g)) then
+            allocate (indptr(0), indices(0))
+            call handle_failure('adjacency', mio_error_message(), stat, errmsg)
+            return
+        end if
+        p = c_mio_adjacency_indptr(g, n)
+        allocate (indptr(n))
+        if (n > 0) then
+            call c_f_pointer(p, ids, [n])
+            indptr = int(ids, int64) + 1_int64
+        end if
+        p = c_mio_adjacency_indices(g, n)
+        allocate (indices(n))
+        if (n > 0) then
+            call c_f_pointer(p, ids, [n])
+            indices = int(ids, int64) + 1_int64
+        end if
+        call c_mio_adjacency_free(g)
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    !> Write the mesh's `kind` graph (see `adjacency`) to `path` as a METIS
+    !> ("metis": .graph) or Scotch ("scotch": .grf) graph file; `file_format`
+    !> defaults to the extension's. See doc/adjacency.md.
+    subroutine mesh_write_graph(self, path, kind, file_format, num_vertices, num_edges, &
+                                max_degree, stat, errmsg)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: path
+        character(*), intent(in), optional :: kind, file_format
+        integer(int64), intent(out), optional :: num_vertices, num_edges, max_degree
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(c_int64_t) :: nv, ne, md
+        character(:), allocatable :: k, f
+
+        k = 'node'
+        if (present(kind)) k = kind
+        f = ''
+        if (present(file_format)) f = file_format
+        call handle_status(c_mio_write_graph(self%handle, c_str(k), c_str(path), c_str(f), &
+                                             nv, ne, md), 'write_graph', stat, errmsg)
+        if (present(num_vertices)) num_vertices = int(nv, int64)
+        if (present(num_edges)) num_edges = int(ne, int64)
+        if (present(max_degree)) max_degree = int(md, int64)
+    end subroutine
+
     !> Quality gate: score the cells and test `spec` thresholds
     !> ("scaled_jacobian >= 0.2; aspect_ratio <= 5 @ 1%"), plus the inverted
     !> and degenerate counts (`max_inverted`/`max_degenerate`, default 0,
@@ -9222,6 +9640,448 @@ contains
             inconsistent_pairs_after = int(report%quality_after%inconsistent_pairs, int64)
         if (present(boundary_edges_after)) &
             boundary_edges_after = int(report%quality_after%boundary_edges, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The metric toolbox: intersect the metric fields `arrays`, normalise to
+    !> `target_vertices`, clamp to [hmin, hmax] and grade, into point data
+    !> `output` (default 'metric'). See doc/metric.md.
+    function mesh_prepare_metric(self, arrays, output, target_vertices, norm, hmin, hmax, &
+                                 gradation, complexity_after, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: arrays(:)
+        character(*), intent(in), optional :: output
+        real(real64), intent(in), optional :: target_vertices, norm, hmin, hmax, gradation
+        real(real64), intent(out), optional :: complexity_after
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_metric_opts_t) :: opts
+        type(mio_metric_report_t) :: rep
+        character(kind=c_char), allocatable, target :: storage(:, :), s_out(:, :)
+        type(c_ptr), allocatable, target :: cptrs(:), p_out(:)
+        type(c_ptr) :: unused
+        integer(c_int64_t) :: count
+
+        call c_str_array(arrays, storage, cptrs, opts%arrays, opts%num_arrays)
+        if (present(output)) then
+            call c_str_array([output], s_out, p_out, unused, count)
+            opts%output = p_out(1)
+        end if
+        if (present(target_vertices)) opts%target_vertices = real(target_vertices, c_double)
+        if (present(norm)) opts%norm = real(norm, c_double)
+        if (present(hmin)) opts%hmin = real(hmin, c_double)
+        if (present(hmax)) opts%hmax = real(hmax, c_double)
+        if (present(gradation)) opts%gradation = real(gradation, c_double)
+        out%handle = c_mio_prepare_metric(self%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('prepare_metric', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(complexity_after)) complexity_after = real(rep%complexity_after, real64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Untangle tetrahedra and hexahedra: move nodes until every corner has a
+    !> positive signed volume. See doc/untangle.md.
+    function mesh_untangle(self, fix_boundary, rings, smooth, max_sweeps, &
+                           num_inverted_after, min_quality_after, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        logical, intent(in), optional :: fix_boundary, smooth
+        integer, intent(in), optional :: rings, max_sweeps
+        integer(int64), intent(out), optional :: num_inverted_after
+        real(real64), intent(out), optional :: min_quality_after
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_untangle_opts_t) :: opts
+        type(mio_untangle_report_t) :: rep
+
+        if (present(fix_boundary)) then
+            if (.not. fix_boundary) opts%fix_boundary = 0
+        end if
+        if (present(smooth)) then
+            if (smooth) opts%smooth = 1
+        end if
+        if (present(rings)) opts%rings = int(rings, c_int64_t)
+        if (present(max_sweeps)) opts%max_sweeps = int(max_sweeps, c_int64_t)
+        out%handle = c_mio_untangle(self%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('untangle', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_inverted_after)) num_inverted_after = int(rep%num_inverted_after, int64)
+        if (present(min_quality_after)) min_quality_after = real(rep%min_quality_after, real64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Boundary-driven morphing: the constrained points (the boundary unless
+    !> `fix_boundary = .false.`, and the nonzero entries of point data
+    !> `constrained_array`) move by point data `array`, the rest by its
+    !> harmonic extension with Jacobian-based stiffening. Inverted cells fail
+    !> the call unless `allow_inverted`. See doc/morph.md.
+    function mesh_morph(self, array, fix_boundary, constrained_array, stiffening, steps, &
+                        allow_inverted, num_inverted, max_displacement, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: array
+        logical, intent(in), optional :: fix_boundary, allow_inverted
+        character(*), intent(in), optional :: constrained_array
+        real(real64), intent(in), optional :: stiffening
+        integer, intent(in), optional :: steps
+        integer(int64), intent(out), optional :: num_inverted
+        real(real64), intent(out), optional :: max_displacement
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_morph_opts_t) :: opts
+        type(mio_morph_report_t) :: rep
+        character(kind=c_char), allocatable, target :: s_array(:, :), s_constrained(:, :)
+        type(c_ptr), allocatable, target :: p_array(:), p_constrained(:)
+        type(c_ptr) :: unused
+        integer(c_int64_t) :: count
+
+        call c_str_array([array], s_array, p_array, unused, count)
+        opts%array = p_array(1)
+        if (present(constrained_array)) then
+            call c_str_array([constrained_array], s_constrained, p_constrained, unused, count)
+            opts%constrained_array = p_constrained(1)
+        end if
+        if (present(fix_boundary)) then
+            if (.not. fix_boundary) opts%fix_boundary = 0
+        end if
+        if (present(allow_inverted)) then
+            if (allow_inverted) opts%allow_inverted = 1
+        end if
+        if (present(stiffening)) opts%stiffening = real(stiffening, c_double)
+        if (present(steps)) opts%steps = int(steps, c_int64_t)
+        out%handle = c_mio_morph(self%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('morph', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_inverted)) num_inverted = int(rep%num_inverted, int64)
+        if (present(max_displacement)) max_displacement = real(rep%max_displacement, real64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The lowest eigenpairs of the surface Laplacian: a new mesh with point
+    !> data `laplacian:modes` (n, num_modes) and field data
+    !> `laplacian:eigenvalues` (read them with the field-data accessors).
+    !> See doc/eigenmodes.md.
+    function mesh_laplacian_eigenmodes(self, num_modes, tolerance, max_iterations, &
+                                       iterations, max_residual, converged, stat, errmsg) &
+            result(out)
+        class(mio_mesh), intent(in) :: self
+        integer, intent(in), optional :: num_modes, max_iterations
+        real(real64), intent(in), optional :: tolerance
+        integer(int64), intent(out), optional :: iterations
+        real(real64), intent(out), optional :: max_residual
+        logical, intent(out), optional :: converged
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_eigenmode_opts_t) :: opts
+        type(mio_eigenmode_report_t) :: rep
+
+        if (present(num_modes)) opts%num_modes = int(num_modes, c_int64_t)
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(max_iterations)) opts%max_iterations = int(max_iterations, c_int64_t)
+        out%handle = c_mio_laplacian_eigenmodes(self%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('laplacian_eigenmodes', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(iterations)) iterations = int(rep%iterations, int64)
+        if (present(max_residual)) max_residual = real(rep%max_residual, real64)
+        if (present(converged)) converged = rep%converged /= 0
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Rigid registration by iterative closest points: `matrix(4, 4)` (row i
+    !> of the motion in `matrix(i, :)`) lays this mesh's points onto `target`
+    !> (its surface when it has surface cells, else its points). `method` is
+    !> 'point_to_point' (default) or 'point_to_plane'. See doc/registration.md.
+    subroutine mesh_register_rigid(self, target, matrix, method, max_iterations, tolerance, &
+                                   max_distance, rms, iterations, converged, stat, errmsg)
+        class(mio_mesh), intent(in) :: self
+        type(mio_mesh), intent(in) :: target
+        real(real64), intent(out) :: matrix(4, 4)
+        character(*), intent(in), optional :: method
+        integer, intent(in), optional :: max_iterations
+        real(real64), intent(in), optional :: tolerance, max_distance
+        real(real64), intent(out), optional :: rms
+        integer(int64), intent(out), optional :: iterations
+        logical, intent(out), optional :: converged
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_registration_opts_t) :: opts
+        type(mio_registration_report_t) :: rep
+        integer(c_int) :: rc
+        integer :: i, j
+
+        if (present(method)) then
+            if (trim(method) == 'point_to_plane') then
+                opts%method = 1
+            else if (trim(method) /= 'point_to_point') then
+                opts%method = -1
+            end if
+        end if
+        if (present(max_iterations)) opts%max_iterations = int(max_iterations, c_int64_t)
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(max_distance)) opts%max_distance = real(max_distance, c_double)
+        rc = c_mio_register_rigid(self%handle, target%handle, opts, rep)
+        if (rc /= 0) then
+            matrix = 0.0_real64
+            call handle_failure('register_rigid', mio_error_message(), stat, errmsg)
+            return
+        end if
+        do i = 1, 4
+            do j = 1, 4
+                matrix(i, j) = real(rep%matrix(4 * (i - 1) + j), real64)
+            end do
+        end do
+        if (present(rms)) rms = real(rep%rms, real64)
+        if (present(iterations)) iterations = int(rep%iterations, int64)
+        if (present(converged)) converged = rep%converged /= 0
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    !> Normals of the mesh's points by local plane fits: `normals` point data,
+    !> oriented 'consistent' (default: a spanning tree, then outward),
+    !> 'viewpoint' (towards `viewpoint`) or 'none'; NaN where a neighbourhood
+    !> spans no plane. See doc/point_normals.md.
+    function mesh_estimate_normals(self, k, orientation, viewpoint, record_variation, &
+                                   num_degenerate, num_components, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer, intent(in), optional :: k
+        character(*), intent(in), optional :: orientation
+        real(real64), intent(in), optional :: viewpoint(3)
+        logical, intent(in), optional :: record_variation
+        integer(int64), intent(out), optional :: num_degenerate, num_components
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_point_normals_opts_t) :: opts
+        integer(c_int64_t) :: nd, nc
+
+        if (present(k)) opts%k = int(k, c_int64_t)
+        if (present(orientation)) then
+            select case (trim(orientation))
+            case ('consistent')
+                opts%orientation = 0
+            case ('viewpoint')
+                opts%orientation = 1
+            case ('none')
+                opts%orientation = 2
+            case default
+                opts%orientation = -1
+            end select
+        end if
+        if (present(viewpoint)) opts%viewpoint = real(viewpoint, c_double)
+        if (present(record_variation)) then
+            if (record_variation) opts%record_variation = 1
+        end if
+        out%handle = c_mio_estimate_normals(self%handle, opts, nd, nc)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('estimate_normals', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_degenerate)) num_degenerate = int(nd, int64)
+        if (present(num_components)) num_components = int(nc, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The convex hull of the mesh's points (its cells are ignored): a closed
+    !> outward `triangle` surface in 3-D, a counter-clockwise `line` loop of the
+    !> x, y coordinates in 2-D; only the extreme points, each with
+    !> `hull:point_id` (its 0-based input point). `dimension` is 2, 3 or 0
+    !> (default: decide from the points). `area` is the enclosed area in 2-D
+    !> and the surface area in 3-D. See doc/hull.md.
+    function mesh_convex_hull(self, dimension, num_vertices, num_facets, area, volume, &
+                              perimeter, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer, intent(in), optional :: dimension
+        integer(int64), intent(out), optional :: num_vertices, num_facets
+        real(real64), intent(out), optional :: area, volume, perimeter
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_hull_report_t) :: rep
+        integer(c_int32_t) :: d
+
+        d = 0
+        if (present(dimension)) d = int(dimension, c_int32_t)
+        out%handle = c_mio_convex_hull(self%handle, d, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('convex_hull', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_vertices)) num_vertices = int(rep%num_vertices, int64)
+        if (present(num_facets)) num_facets = int(rep%num_facets, int64)
+        if (present(area)) area = real(rep%area, real64)
+        if (present(volume)) volume = real(rep%volume, real64)
+        if (present(perimeter)) perimeter = real(rep%perimeter, real64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The Delaunay triangulation of the mesh's points in the x, y plane: every
+    !> point kept (with its z and point data), one counter-clockwise `triangle`
+    !> block; a point coinciding in x, y with an earlier one is in no triangle.
+    !> See doc/hull.md.
+    function mesh_delaunay_2d(self, num_triangles, num_duplicates, num_boundary, stat, &
+                              errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer(int64), intent(out), optional :: num_triangles, num_duplicates, num_boundary
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int64_t) :: nt, nd, nb
+
+        out%handle = c_mio_delaunay_2d(self%handle, nt, nd, nb)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('delaunay_2d', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_triangles)) num_triangles = int(nt, int64)
+        if (present(num_duplicates)) num_duplicates = int(nd, int64)
+        if (present(num_boundary)) num_boundary = int(nb, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Cylindrical or spherical components about an axis: a new mesh whose
+    !> points stay put, with coords:<system> point data (unless
+    !> `record_coordinates = .false.`) and each named vector/tensor array
+    !> rewritten in local components (or back to Cartesian with `inverse`).
+    !> `system` is 'cylindrical' (default) or 'spherical'. See doc/coordinates.md.
+    function mesh_convert_coordinates(self, system, axis, origin, reference, arrays, inverse, &
+                                      record_coordinates, num_arrays, num_singular, stat, &
+                                      errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in), optional :: system
+        real(real64), intent(in), optional :: axis(3), origin(3), reference(3)
+        character(*), intent(in), optional :: arrays(:)
+        logical, intent(in), optional :: inverse, record_coordinates
+        integer(int64), intent(out), optional :: num_arrays, num_singular
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_coordinate_opts_t) :: opts
+        character(kind=c_char), allocatable, target :: storage(:, :)
+        type(c_ptr), allocatable, target :: cptrs(:)
+        integer(c_int64_t) :: na, ns
+
+        call c_mio_coordinate_opts_init(opts)
+        if (present(system)) then
+            if (trim(system) == 'spherical') then
+                opts%system = 1
+            else if (trim(system) /= 'cylindrical') then
+                opts%system = -1
+            end if
+        end if
+        if (present(axis)) opts%axis = real(axis, c_double)
+        if (present(origin)) opts%origin = real(origin, c_double)
+        if (present(reference)) opts%reference = real(reference, c_double)
+        if (present(arrays)) call c_str_array(arrays, storage, cptrs, opts%arrays, opts%num_arrays)
+        if (present(inverse)) then
+            if (inverse) opts%inverse = 1
+        end if
+        if (present(record_coordinates)) then
+            if (.not. record_coordinates) opts%record_coordinates = 0
+        end if
+        out%handle = c_mio_convert_coordinates(self%handle, opts, na, ns)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('convert_coordinates', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_arrays)) num_arrays = int(na, int64)
+        if (present(num_singular)) num_singular = int(ns, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Geodesic distance on a triangle surface by the heat method: a new mesh
+    !> with point data "geodesic:distance". `sources` are **1-based** point ids;
+    !> `source_region` names a region whose points are sources too. A point in
+    !> no triangle, or in a piece with no source, gets NaN. See doc/geodesic.md.
+    function mesh_geodesic_distance(self, sources, source_region, time_factor, tolerance, &
+                                    max_iterations, num_unreached, max_distance, converged, &
+                                    stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer(int64), intent(in), optional :: sources(:)
+        character(*), intent(in), optional :: source_region
+        real(real64), intent(in), optional :: time_factor, tolerance
+        integer(int64), intent(in), optional :: max_iterations
+        integer(int64), intent(out), optional :: num_unreached
+        real(real64), intent(out), optional :: max_distance
+        logical, intent(out), optional :: converged
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr) :: res
+        type(mio_geodesic_opts_t) :: opts
+        type(mio_geodesic_report_t) :: report
+        integer(c_int64_t), allocatable, target :: ids(:)
+        character(kind=c_char, len=STRBUF_LEN), target :: region_buf
+
+        call c_mio_geodesic_opts_init(opts)
+        if (present(sources)) then
+            allocate (ids(size(sources)))
+            ids = int(sources, c_int64_t) - 1_c_int64_t
+            opts%num_sources = int(size(sources), c_int64_t)
+            if (size(sources) > 0) opts%sources = c_loc(ids(1))
+        end if
+        if (present(source_region)) then
+            region_buf = trim(source_region)//c_null_char
+            opts%source_region = c_loc(region_buf(1:1))
+        end if
+        if (present(time_factor)) opts%time_factor = real(time_factor, c_double)
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(max_iterations)) opts%max_iterations = int(max_iterations, c_int64_t)
+
+        res = c_mio_geodesic_distance(self%handle, opts, report)
+        if (.not. c_associated(res)) then
+            call handle_failure('geodesic_distance', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = res
+        if (present(num_unreached)) num_unreached = int(report%num_unreached, int64)
+        if (present(max_distance)) max_distance = real(report%max_distance, real64)
+        if (present(converged)) converged = report%converged /= 0
+        call clear_status(stat, errmsg)
+    end function
+
+    !> A UV atlas of a triangle surface: a new mesh with point data "uv" (two
+    !> texture coordinates per point in the unit square), split at the seams
+    !> ("parameterize:parent_point" names each point's input point, 0-based),
+    !> and cell data "parameterize:chart". See doc/parameterize.md.
+    function mesh_parameterize(self, padding, max_depth, max_stretch, num_charts, num_flipped, &
+                               stretch, packing_efficiency, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        real(real64), intent(in), optional :: padding, max_stretch
+        integer(int64), intent(in), optional :: max_depth
+        integer(int64), intent(out), optional :: num_charts, num_flipped
+        real(real64), intent(out), optional :: stretch, packing_efficiency
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr) :: res
+        type(mio_parameterize_opts_t) :: opts
+        type(mio_parameterize_report_t) :: report
+
+        call c_mio_parameterize_opts_init(opts)
+        if (present(padding)) opts%padding = real(padding, c_double)
+        if (present(max_depth)) opts%max_depth = int(max_depth, c_int64_t)
+        if (present(max_stretch)) opts%max_stretch = real(max_stretch, c_double)
+
+        res = c_mio_parameterize(self%handle, opts, report)
+        if (.not. c_associated(res)) then
+            call handle_failure('parameterize', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = res
+        if (present(num_charts)) num_charts = int(report%num_charts, int64)
+        if (present(num_flipped)) num_flipped = int(report%num_flipped, int64)
+        if (present(stretch)) stretch = real(report%stretch, real64)
+        if (present(packing_efficiency)) packing_efficiency = real(report%packing_efficiency, real64)
         call clear_status(stat, errmsg)
     end function
 

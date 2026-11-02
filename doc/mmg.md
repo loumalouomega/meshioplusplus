@@ -54,6 +54,8 @@ As for [`remesh`](./remesh.md), the points are new, so other `point_data` and `c
 
 ## metric_from_hessian
 
+To combine several fields' metrics, normalise to a vertex count or grade the result, see the [metric toolbox](/metric).
+
 `metric_from_hessian(mesh, hessian, error=1e-2, hmin=1e-3, hmax=1.0, output="metric")` turns a row-major Hessian (`(n, 9)`, or `(n, 4)` in 2-D) into the metric `M = c/error |H|`. The Hessian is symmetrised, its eigenvalues are taken in absolute value and scaled by `c = (1/2)(d/(d+1))²` for P1 interpolation in `d` dimensions (Frey and Alauzet, *Anisotropic mesh adaptation for CFD computations*, CMAME 194, 2005), and the result is clamped to `[1/hmax², 1/hmin²]`. It is written as `point_data[output]`, six components (three for a 2-D Hessian) in the file order. It needs no MMG and is in every build.
 
 ## discretize_levelset

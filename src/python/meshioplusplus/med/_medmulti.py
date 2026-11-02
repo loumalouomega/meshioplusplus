@@ -26,6 +26,7 @@ import numpy as np
 from .._common import num_nodes_per_cell
 from .._exceptions import WriteError
 from .._mesh import Mesh
+from .._units import med_length_unit, med_unit_coords, set_length_unit
 from ._med import (
     MED_FLOAT64,
     _med_cells_for_write,
@@ -280,7 +281,13 @@ def _write_med_multi(filename, meshes, mesh_names=None, med_version="4.1.0", **k
 
         # preserve original metadata (DESCRIPTION kept verbatim)
         med_mesh.attrs.create("UNT", _bytes_attr(getattr(mesh, "unit_time", "")))
-        med_mesh.attrs.create("UNI", _bytes_attr(getattr(mesh, "unit_coords", "")))
+        med_mesh.attrs.create(
+            "UNI",
+            _bytes_attr(
+                getattr(mesh, "unit_coords", "")
+                or med_unit_coords(mesh, mesh.points.shape[1])
+            ),
+        )
         med_mesh.attrs.create("SRT", 1)
         axis_names = ["X", "Y", "Z"][: mesh.points.shape[1]]
         med_mesh.attrs.create("NOM", np.bytes_("".join(f"{n:<16}" for n in axis_names)))
@@ -535,4 +542,7 @@ def _read_single_mesh(f, name):
     result.description = description
     result.unit_time = unit_time
     result.unit_coords = unit_coords
+    unit = med_length_unit(unit_coords)
+    if unit is not None:
+        set_length_unit(result, unit)
     return result

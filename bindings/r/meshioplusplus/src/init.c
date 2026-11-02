@@ -60,6 +60,19 @@ extern SEXP R_mio_add_region(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_edit_regions(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_remove_region(SEXP, SEXP);
 extern SEXP R_mio_match_periodic_nodes(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_adjacency(SEXP, SEXP);
+extern SEXP R_mio_geodesic_distance(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_parameterize(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_convert_coordinates(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_convex_hull(SEXP, SEXP);
+extern SEXP R_mio_delaunay_2d(SEXP);
+extern SEXP R_mio_estimate_normals(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_register_rigid(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_laplacian_eigenmodes(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_morph(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_untangle(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_prepare_metric(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_write_graph(SEXP, SEXP, SEXP, SEXP);
 
 /* ops.c */
 extern SEXP R_mio_extract_surface(SEXP, SEXP);
@@ -296,6 +309,19 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_edit_regions, 8),
                                               CALLDEF(R_mio_remove_region, 2),
                                               CALLDEF(R_mio_match_periodic_nodes, 6),
+                                              CALLDEF(R_mio_adjacency, 2),
+                                              CALLDEF(R_mio_geodesic_distance, 6),
+                                              CALLDEF(R_mio_parameterize, 4),
+                                              CALLDEF(R_mio_convert_coordinates, 8),
+                                              CALLDEF(R_mio_convex_hull, 2),
+                                              CALLDEF(R_mio_delaunay_2d, 1),
+                                              CALLDEF(R_mio_estimate_normals, 5),
+                                              CALLDEF(R_mio_register_rigid, 7),
+                                              CALLDEF(R_mio_laplacian_eigenmodes, 4),
+                                              CALLDEF(R_mio_morph, 7),
+                                              CALLDEF(R_mio_untangle, 5),
+                                              CALLDEF(R_mio_prepare_metric, 8),
+                                              CALLDEF(R_mio_write_graph, 4),
                                               CALLDEF(R_mio_extract_surface, 2),
                                               CALLDEF(R_mio_extract_skin, 2),
                                               CALLDEF(R_mio_attach_quality, 1),

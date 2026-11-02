@@ -51,8 +51,13 @@ public:
      * product named after @p rPath's basename, millimetres and radians, and
      * the world placement.
      * @param rDescription the `FILE_DESCRIPTION` text.
+     * @param LengthUnit the length unit the file declares, metres per unit
+     *        (`meshio:length_unit`): an SI prefix of the metre when it is one
+     *        (1, 0.01, 0.001, 1e-6, 1000), else a `CONVERSION_BASED_UNIT` on
+     *        the millimetre ('INCH', 'FOOT', or 'LENGTH UNIT'); at most 0 is
+     *        millimetres, as before units were connected.
      */
-    StepStream(const std::string& rPath, const std::string& rDescription);
+    StepStream(const std::string& rPath, const std::string& rDescription, double LengthUnit = -1.0);
 
     /// Add an entity; returns its id.
     std::int64_t Ent(const std::string& rBody);

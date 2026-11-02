@@ -8,8 +8,9 @@ hierarchy, and the writer's root node (up axis, scale, recentring) undone.
 ``line`` cells and ``TRIANGLES``/``TRIANGLE_STRIP``/``TRIANGLE_FAN``
 ``triangle`` cells, in that block order reversed (triangle, line, vertex).
 A node name becomes a cell region, ``_NAME`` attributes become ``point_data``,
-``COLOR_0`` becomes ``gltf:color`` and a ``POINTS`` primitive's ``NORMAL``
-becomes ``normals``. Draco and meshopt are refused by name.
+``COLOR_0`` becomes ``gltf:color``, ``TEXCOORD_0`` becomes ``uv`` (``v``
+flipped back) and a ``POINTS`` primitive's ``NORMAL`` becomes ``normals``.
+Draco and meshopt are refused by name.
 """
 
 from __future__ import annotations
@@ -451,6 +452,8 @@ def _field_name(attr, accessor, mode):
         return "gltf:color"
     if attr == "NORMAL":
         return "normals" if mode == 0 else ""
+    if attr == "TEXCOORD_0":
+        return "uv" if accessor.ncomp == 2 else ""
     if len(attr) > 1 and attr[0] == "_":
         return accessor.name or attr[1:]
     return ""
@@ -501,7 +504,9 @@ def _primitive(ctx, prim, world, offset, region, state):
                 continue
             if not isinstance(ref, (int, float)):
                 continue
-            if not key or (key[0] != "_" and key not in ("COLOR_0", "NORMAL")):
+            if not key or (
+                key[0] != "_" and key not in ("COLOR_0", "NORMAL", "TEXCOORD_0")
+            ):
                 continue
             acc = _read_accessor(ctx, _uint(ref, key))
             if acc.count != nv:
@@ -514,7 +519,11 @@ def _primitive(ctx, prim, world, offset, region, state):
                     state.warned.add("dup:" + name)
                     warn(f"gltf: two attributes map to '{name}'; the first is kept.")
                 continue
-            local[name] = acc.values
+            values = acc.values
+            if key == "TEXCOORD_0":  # back to a bottom-left origin
+                values = values.astype(np.float64, copy=True)
+                values[:, 1] = 1.0 - values[:, 1]
+            local[name] = values
     for name, values in local.items():
         entry = state.fields.get(name)
         if entry is None:

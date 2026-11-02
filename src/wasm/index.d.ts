@@ -3969,6 +3969,32 @@ export interface MeshioPlusPlusModule {
   ): { mesh: Mesh; report: { numDuplicatedPoints: number; numCohesiveCells: number } };
 
   /**
+   * The mesh's graph in compressed-sparse-row form (0-based): the neighbours
+   * of vertex `i` are `indices[indptr[i] .. indptr[i + 1])`, ascending, each
+   * undirected edge stored both ways. `kind` is `'node'` (nodes joined by a
+   * cell edge, the default), `'clique'` (nodes sharing a cell: the FEM
+   * sparsity pattern) or `'cell'` (cells sharing a facet, numbered
+   * block-major). See doc/adjacency.md.
+   * @throws {Error} on an unknown kind, or past 2^31 entries.
+   */
+  adjacency(
+    mesh: Mesh,
+    kind?: 'node' | 'clique' | 'cell',
+  ): { indptr: Int32Array; indices: Int32Array };
+
+  /**
+   * Writes the mesh's `kind` graph to `path` (in `FS`) as a METIS
+   * (`'metis'`, `.graph`) or Scotch (`'scotch'`, `.grf`) graph file; the
+   * format defaults to the extension's. See doc/adjacency.md.
+   */
+  writeGraph(
+    mesh: Mesh,
+    path: string,
+    kind?: 'node' | 'clique' | 'cell',
+    format?: 'metis' | 'scotch',
+  ): { format: string; numVertices: number; numEdges: number; maxDegree: number };
+
+  /**
    * The master node each node of the `slave` region maps onto under the
    * row-major 4x4 affine `matrix` (16 numbers), within `atol`. `slave` is
    * ascending and `master` aligned with it (0-based point ids). See
@@ -4054,6 +4080,254 @@ export interface MeshioPlusPlusModule {
     numMissed: number;
     numSkipped: number;
     maxDisplacement: number;
+  };
+
+  /**
+   * The metric toolbox: intersect the metric fields `arrays` (point data, 6
+   * components in 3-D or 3 in 2-D), normalise to `targetVertices`, clamp to
+   * `[hmin, hmax]` and grade, into point data `output`. See doc/metric.md.
+   * @throws {Error} on a missing or misshapen field, or bad options.
+   */
+  prepareMetric(
+    mesh: Mesh,
+    options: {
+      arrays: string[];
+      output?: string;
+      targetVertices?: number;
+      norm?: number;
+      hmin?: number;
+      hmax?: number;
+      gradation?: number;
+      maxSweeps?: number;
+    },
+  ): { mesh: Mesh; complexityBefore: number; complexityAfter: number; numGraded: number; sweeps: number };
+
+  /**
+   * Untangle tetrahedra and hexahedra: move nodes until every corner has a
+   * positive signed volume (Escobar et al.'s functional), keeping the
+   * connectivity. See doc/untangle.md.
+   * @throws {Error} on a mesh with no tetrahedron or hexahedron.
+   */
+  untangle(
+    mesh: Mesh,
+    options?: {
+      fixBoundary?: boolean;
+      frozen?: ArrayLike<number>;
+      rings?: number;
+      smooth?: boolean;
+      maxSweeps?: number;
+    },
+  ): {
+    mesh: Mesh;
+    numInvertedBefore: number;
+    numInvertedAfter: number;
+    minQualityBefore: number;
+    minQualityAfter: number;
+    sweeps: number;
+    moves: number;
+  };
+
+  /**
+   * Boundary-driven morphing: the constrained points (the boundary unless
+   * `fixBoundary` is false, and those `constrainedArray` / `constrained`
+   * mark) move by the point-data displacement `array`; every other point by
+   * its harmonic extension with Jacobian-based stiffening. See doc/morph.md.
+   * @throws {Error} on a missing array or, unless `allowInverted`, a result
+   *   with inverted cells.
+   */
+  morph(
+    mesh: Mesh,
+    options: {
+      array: string;
+      fixBoundary?: boolean;
+      constrainedArray?: string;
+      constrained?: ArrayLike<number>;
+      stiffening?: number;
+      steps?: number;
+      allowInverted?: boolean;
+      tolerance?: number;
+      maxIterations?: number;
+    },
+  ): {
+    mesh: Mesh;
+    numConstrained: number;
+    numFree: number;
+    numInverted: number;
+    iterations: number;
+    maxDisplacement: number;
+    converged: boolean;
+  };
+
+  /**
+   * The lowest eigenpairs of a triangle surface's Laplace-Beltrami operator:
+   * `mesh` carries point data `laplacian:modes` (n x numModes,
+   * M-orthonormal) and field data `laplacian:eigenvalues` (ascending). See
+   * doc/eigenmodes.md.
+   * @throws {Error} on a non-triangle surface cell or more modes than points.
+   */
+  laplacianEigenmodes(
+    mesh: Mesh,
+    options?: { numModes?: number; tolerance?: number; maxIterations?: number },
+  ): {
+    mesh: Mesh;
+    eigenvalues: number[];
+    iterations: number;
+    maxResidual: number;
+    converged: boolean;
+  };
+
+  /**
+   * Rigid registration by iterative closest points: `matrix` (16 numbers,
+   * row-major 4x4) lays `source`'s points onto `target` (its surface when it
+   * has surface cells, else its points); apply it with `transform`. See
+   * doc/registration.md.
+   * @throws {Error} on an unknown method, a target with volume cells, or
+   *   `point_to_plane` against a cloud with no `normals`.
+   */
+  registerRigid(
+    source: Mesh,
+    target: Mesh,
+    options?: {
+      method?: 'point_to_point' | 'point_to_plane';
+      maxIterations?: number;
+      tolerance?: number;
+      maxDistance?: number;
+      initial?: ArrayLike<number>;
+    },
+  ): {
+    matrix: number[];
+    initialRms: number;
+    rms: number;
+    iterations: number;
+    numPairs: number;
+    converged: boolean;
+  };
+
+  /**
+   * Normals of a point cloud: a plane fitted to each point and its `k`
+   * nearest neighbours, as `normals` point data, oriented `'consistent'`
+   * (a spanning tree over the neighbour graph, then each piece outward),
+   * `'viewpoint'` (towards `viewpoint`) or `'none'`; `NaN` where a
+   * neighbourhood spans no plane. See doc/point_normals.md.
+   * @throws {Error} on fewer than three points or `k` below 2.
+   */
+  estimateNormals(
+    mesh: Mesh,
+    options?: {
+      k?: number;
+      orientation?: 'consistent' | 'viewpoint' | 'none';
+      viewpoint?: ArrayLike<number>;
+      recordVariation?: boolean;
+    },
+  ): { mesh: Mesh; numDegenerate: number; numComponents: number };
+
+  /**
+   * The convex hull of a mesh's points (its cells are ignored): a closed
+   * outward `triangle` surface in 3-D, a counter-clockwise `line` loop of the
+   * x, y coordinates in 2-D. Only the extreme points are vertices, each with
+   * `hull:point_id` (its 0-based input point). `dimension` is 2, 3, or 0 to
+   * decide from the points. See doc/hull.md.
+   * @throws {Error} on collinear (2-D) or coplanar (3-D) points.
+   */
+  convexHull(
+    mesh: Mesh,
+    options?: { dimension?: 0 | 2 | 3 },
+  ): {
+    mesh: Mesh;
+    dimension: number;
+    numVertices: number;
+    numFacets: number;
+    area: number;
+    volume: number;
+    perimeter: number;
+  };
+
+  /**
+   * The Delaunay triangulation of a mesh's points in the x, y plane: every
+   * point kept (with its z and point data), one counter-clockwise `triangle`
+   * block; a point coinciding in x, y with an earlier one is in no triangle.
+   * See doc/hull.md.
+   */
+  delaunay2d(mesh: Mesh): {
+    mesh: Mesh;
+    numTriangles: number;
+    numDuplicates: number;
+    numBoundary: number;
+  };
+
+  /**
+   * Cylindrical or spherical components about an axis: the points stay put,
+   * their coordinates are recorded as point data (`coords:cylindrical` =
+   * `(r, theta, z)`, `coords:spherical` = `(r, theta, phi)`), and each named
+   * vector `(n, 3)` or tensor `(n, 9)` array is rewritten in the local basis of
+   * its point (a cell's at its centroid), or back to Cartesian with
+   * `inverse`. See doc/coordinates.md.
+   * @throws {Error} on a zero axis or an array that is missing or not a 3-D
+   *   vector or tensor.
+   */
+  convertCoordinates(
+    mesh: Mesh,
+    options?: {
+      system?: 'cylindrical' | 'spherical';
+      axis?: ArrayLike<number>;
+      origin?: ArrayLike<number>;
+      reference?: ArrayLike<number>;
+      arrays?: string[];
+      inverse?: boolean;
+      recordCoordinates?: boolean;
+    },
+  ): { mesh: Mesh; numArrays: number; numSingular: number };
+
+  /**
+   * Geodesic distance on a triangle surface by the heat method: `mesh`
+   * carries the point data `geodesic:distance`, the distance along the surface
+   * to the nearest source (0-based point ids, and/or the points of
+   * `options.sourceRegion`). A point in no triangle, or in a piece with no
+   * source, gets `NaN`. See doc/geodesic.md.
+   * @throws {Error} without a source, or on a cell type that is not a linear
+   *   triangle of a surface (naming the operation that makes one).
+   */
+  geodesicDistance(
+    mesh: Mesh,
+    sources: ArrayLike<number> | number,
+    options?: {
+      sourceRegion?: string;
+      timeFactor?: number;
+      tolerance?: number;
+      maxIterations?: number;
+    },
+  ): {
+    mesh: Mesh;
+    numSources: number;
+    numUnreached: number;
+    numDegenerate: number;
+    maxDistance: number;
+    timeStep: number;
+    heatIterations: number;
+    poissonIterations: number;
+    converged: boolean;
+  };
+
+  /**
+   * A UV atlas of a triangle surface: `mesh` carries the point data `uv` (two
+   * texture coordinates per point in the unit square), split at the seams
+   * (`parameterize:parent_point` names each point's input point) with the
+   * cell data `parameterize:chart`. A chart that folds, or whose L2 stretch
+   * exceeds `maxStretch`, is halved up to `maxDepth` times. See
+   * doc/parameterize.md.
+   * @throws {Error} on a cell type that is not a linear triangle of a surface
+   *   (naming the operation that makes one), or a bad option.
+   */
+  parameterize(
+    mesh: Mesh,
+    options?: { padding?: number; maxDepth?: number; maxStretch?: number },
+  ): {
+    mesh: Mesh;
+    numCharts: number;
+    numFlipped: number;
+    stretch: number;
+    packingEfficiency: number;
+    numSeamPoints: number;
   };
 
   /**

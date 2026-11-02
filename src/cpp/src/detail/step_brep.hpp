@@ -113,6 +113,9 @@ struct StepBrepOptions {
     /// Also build the solid as trimmed NURBS faces (`StepBrepResult::mBrep`,
     /// `detail/brep_nurbs`), the file unchanged.
     bool mBrep = false;
+    /// The length unit the file declares, metres per unit; at most 0 is
+    /// millimetres (`StepStream`).
+    double mLengthUnit = -1.0;
 };
 
 /// What the B-rep writer wrote.

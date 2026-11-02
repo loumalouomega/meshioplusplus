@@ -45,6 +45,17 @@ struct cli_parsed {
     std::vector<std::pair<std::string, std::string>> ordered;
 };
 
+/// Thrown by `cli_parse` in describe mode instead of parsing: the option table
+/// of the verb that called it. Deliberately not a `std::exception`, so the verbs
+/// that turn parse errors into exit codes do not catch it. Shell completions
+/// are generated from it (`completion`), so they are the parsers' own tables.
+struct cli_describe_request {
+    std::vector<cli_opt_spec> specs;
+};
+
+/// Switch describe mode on or off (see `cli_describe_request`).
+void set_cli_describe(bool On);
+
 /// Parse `args` against `specs`. Throws std::runtime_error on an unknown option
 /// or a value-option missing its argument. `--` stops option parsing.
 cli_parsed cli_parse(const std::vector<std::string>& rArgs,

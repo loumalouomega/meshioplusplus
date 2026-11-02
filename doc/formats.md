@@ -211,6 +211,59 @@ The [deck-token pass](./benchmarks.md#remaining-deck-token-views) completes meas
 
 ---
 
+## Compressed files
+
+Every reader reads its files compressed too: `read("cube.msh.gz")`, `part.vtu.bz2`, `run.inp.xz`, `skin.stl.zst` and a `case.zip` holding one file. The compression suffix is stripped to infer the format (`cube.msh.gz` is a `.msh` file; a `case.zip` whose name has no inner extension is named by its member), the file is decompressed into a private temporary directory under the name it had inside, read, and the directory removed. An explicit `file_format` works as for an uncompressed file. Writing stays uncompressed: `write` has no compressed output.
+
+| Suffix | Python | Native core (both CLIs, C, Fortran, Julia, R, WASM) |
+| --- | --- | --- |
+| `.gz` (members concatenated) | standard library | zlib (`MESHIOPLUSPLUS_WITH_ZLIB`; in both WASM artifacts) |
+| `.zip` (one file, stored or deflated; no Zip64, no encryption) | standard library | zlib |
+| `.bz2` | standard library | bzip2 (`MESHIOPLUSPLUS_WITH_BZIP2`; full WASM artifact) |
+| `.xz` | standard library | liblzma (`MESHIOPLUSPLUS_WITH_LZMA`; not in WASM) |
+| `.zst` | Python 3.14's `compression.zstd`, the `zstandard` package (the `codecs` extra) or a core with zstd | zstd (`MESHIOPLUSPLUS_WITH_ZSTD`; full WASM artifact) |
+
+A codec the build lacks raises `ReadError` naming the option to enable, and corrupt or truncated data raises `ReadError` too. Three cases are not stripped or not read:
+
+- **A compound extension a format registers itself** is that format's own: Netgen's `.vol.gz`, libMesh's `.xda.gz`/`.xdr.bz2` and PERMAS's `.dato.gz`/`.post.gz` keep reading through their readers, which decompress them as they always did.
+- **A multi-file format** (`tetgen`, `triangle`, `ensight`, `gid`, `elmer`, `pvd`, `pvtu`, `pvtp`, `vtx`, `openfoam`, and Python's `pmsh`, `zarr` and `usd`) is refused by name: its data lives in files beside the one compressed, which the decompressed copy does not have. A single-file format that references a sibling file (an XDMF file whose heavy data is an `.h5` beside it) fails the same way when that file is read.
+- **A zip with several files**, or none, is refused, naming the count.
+
+`read_metadata` reads compressed files the same way; the C API's `mio_read`, the CLIs' `convert`, `info` and every other verb that reads go through the native registry, so `meshioplusplus convert cube.msh.gz cube.vtu` works in both. Buffers are not decompressed: `read(buffer, file_format=...)` reads the bytes it is given.
+
+---
+
+## Length units
+
+A mesh whose file states its length unit carries it as `field_data["meshio:length_unit"]`: one float64, the **metres per mesh unit** (`0.001` for millimetres, `0.0254` for inches). A mesh without it states no unit, and nothing is assumed. Readers that know their file's unit fill it, writers that can state a unit honour it, and a unit conversion updates it, so `convert part.unv part.usda` of a file in millimetres writes `metersPerUnit = 0.001`.
+
+| Format | Read | Written |
+| --- | --- | --- |
+| [UNV](./formats/unv.md) | dataset 164's length factor (both engines) | dataset 164: the file's own system when it agrees, else code 1, 5 or 9 (both engines) |
+| [Radioss](./formats/radioss.md) | `/BEGIN`'s work length unit (both engines) | `/BEGIN`'s input and work length unit (both engines) |
+| [USD](./formats/usd.md) | an authored `metersPerUnit` | `metersPerUnit` (when the call does not give one) |
+| [CGNS](./formats/cgns.md) | `DimensionalUnits_t`'s `LengthUnits` of the base, or of the zone, which overrides it (both engines, and the cgnslib reader) | the base's `DimensionalUnits_t` when the unit is `Meter`, `Centimeter`, `Millimeter`, `Foot` or `Inch`; any other unit stays field data, with a warning (both engines) |
+| [MED](./formats/med.md) | `UNI` when every axis names the same `m`, `cm`, `mm`, `um`/`µm`, `km`, `in` or `ft` (both engines) | `UNI`, that name per axis, when `unit_coords` is empty (both engines) |
+| [STEP](./formats/step.md) | not yet: OpenCASCADE returns millimetres, and the read does not say so | the length unit: an `SI_UNIT` of the metre (no prefix, `CENTI`, `MILLI`, `MICRO`, `KILO`), or a `CONVERSION_BASED_UNIT` on the millimetre (`INCH`, `FOOT`, else `LENGTH UNIT`); millimetres without one (both engines) |
+
+[`transform`](./transform.md)'s `scale_units` (the pipeline's `ScaleUnits`, both CLIs' `--scale-units`) divides the stated unit by the factor: millimetres scaled by `0.001` state metres. Every other operation carries the key as field data, and every format that writes field data keeps it. The key is `meshioplusplus._units.LENGTH_UNIT_KEY` in Python and `detail::kLengthUnitName` (`detail/length_unit.hpp`) in C++.
+
+---
+
+## Texture coordinates
+
+A mesh with texture coordinates carries them as `point_data["uv"]`: Float64 `(n, 2)`, one `u, v` per point, `v` up (the convention OBJ and USD use). [`parameterize`](./parameterize.md) makes them. Three writers turn `uv` into their own texture coordinates and their readers turn them back: [OBJ](./formats/obj.md) as `vt` rows named by every face corner (`f v/vt`; a seamed file is split on reading), [glTF](./formats/gltf.md) as `TEXCOORD_0` on the triangles (`v` flipped to glTF's top-left origin), and [USD](./formats/usd.md) as `primvars:st`. Every other format that keeps point data keeps `uv` as an ordinary array.
+
+## Remote files
+
+With the optional [`fsspec`](https://filesystem-spec.readthedocs.io) (the `remote` extra: `pip install meshioplusplus[remote]`), `read` and `read_metadata` take a URL: `read("https://example.org/cube.vtu")`, `read("s3://bucket/run/step_010.vtu.gz")`, `gs://`, `az://`, `memory://` and every protocol fsspec knows (an object store needs its own filesystem package: `s3fs`, `gcsfs`, `adlfs`). The file is fetched into a private temporary directory under the name its URL ends in (query and fragment dropped), read as a local path and removed, so format inference and [compressed files](#compressed-files) work unchanged; a chained URL such as `simplecache::https://...` keeps a local copy between reads. Sequences and [dataset manifests](./datasets.md) take URLs too, a `*`/`?` pattern being expanded on the remote filesystem.
+
+- **Python only.** The native CLI, the C API and the flat bindings read local paths (the Python CLI, which reads through `read`, takes URLs). The MCP server never fetches a URL: a tool's path is resolved inside its sandbox like any other.
+- **Multi-file formats are refused by name**, as for buffers: a URL is fetched as one file, without the files beside it.
+- A missing URL is a `ReadError` naming it, and so is an unknown protocol or a missing filesystem package. Without `fsspec`, reading a URL is a `ReadError` naming the package.
+
+---
+
 ## Provenance
 
 Since v10.15.0, every writer that carries a free-text header slot emits one canonical line, `Written by meshio++ v<release>` (`meshioplusplus._provenance.TAG` on the Python side, `detail::kProvenanceTag` on the C++ side — a single owner on each side, so the two engines emit character-identical bytes). Since v10.16.0 a caller can additionally opt into a richer block — source, target, the operation chain, conversion assumptions, a timestamp — rendered where a format's header slot can hold it; see [`doc/provenance.md`](./provenance.md) for the design and [`doc/roadmap.md`](./roadmap.md) section 1 for what remains open (reading the block back on read).
