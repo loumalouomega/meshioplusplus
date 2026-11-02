@@ -5720,6 +5720,10 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.throws(() => m.matchPeriodicNodes(tagged, 'bottom', 'top', shift));
 });
 
+step('prepareMetric refuses a missing field', () => {
+    assert.throws(() => m.prepareMetric(cubeSurface, { arrays: ['missing'] }));
+});
+
 step('untangle refuses a surface', () => {
     assert.throws(() => m.untangle(cubeSurface));
 });

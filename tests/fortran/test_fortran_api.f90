@@ -3018,6 +3018,9 @@ contains
         call dist%free()
         dist = square%geodesic_distance(stat=ierr)
         call check(ierr /= 0, 'geodesic_distance needs a source')
+        ! prepare_metric on the square: a missing metric field is refused.
+        dist = square%prepare_metric([character(7) :: 'missing'], stat=ierr)
+        call check(ierr /= 0, 'prepare_metric refuses a missing metric field')
         ! Untangle of the square: it has no tetrahedron or hexahedron.
         dist = square%untangle(stat=ierr)
         call check(ierr /= 0, 'untangle refuses a mesh with no volume cell')

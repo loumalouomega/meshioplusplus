@@ -164,6 +164,7 @@ export default defineConfig({
               { text: "ODT remeshing (relocate + flip)", link: "/optimize_volume" },
               { text: "Smoothing (Laplacian / Taubin / ODT)", link: "/smooth" },
               { text: "MMG backend (adapt, level sets, move)", link: "/mmg" },
+              { text: "Metric toolbox", link: "/metric" },
             ],
           },
           {

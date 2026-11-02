@@ -716,6 +716,31 @@ mio_match_periodic_nodes <- function(mesh, slave, master, matrix = NULL, transla
   )
 }
 
+#' The metric toolbox: intersect, normalise, clamp and grade metric fields
+#'
+#' Intersects the metric fields `arrays` (point data, 6 components in 3-D or
+#' 3 in 2-D), normalises to `target_vertices`, clamps every size to
+#' `[hmin, hmax]` and grades, into point data `output`. See `doc/metric.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param arrays The metric fields' names.
+#' @param output The result's name.
+#' @param target_vertices The vertex count to normalise to (0: skip).
+#' @param norm The L^p norm (at least 1; 0: infinity).
+#' @param hmin,hmax The size range (0: that side open).
+#' @param gradation The largest size growth per unit length (> 1; 0: skip).
+#' @return A list of `mesh`, `complexity_before`, `complexity_after` and
+#'   `num_graded`.
+#' @export
+mio_prepare_metric <- function(mesh, arrays, output = "metric", target_vertices = 0,
+                               norm = 2, hmin = 0, hmax = 0, gradation = 0) {
+  .Call(
+    R_mio_prepare_metric, mesh, as.character(arrays), as.character(output),
+    as.numeric(target_vertices), as.numeric(norm), as.numeric(hmin), as.numeric(hmax),
+    as.numeric(gradation)
+  )
+}
+
 #' Untangle inverted tetrahedra and hexahedra
 #'
 #' Move nodes until every tetrahedron and hexahedron corner has a positive

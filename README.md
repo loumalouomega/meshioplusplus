@@ -188,6 +188,7 @@ meshioplusplus geodesic   skin.stl dist.vtu --source 0     # surface distance fr
 meshioplusplus eigenmodes skin.stl modes.vtu -k 16         # lowest Laplace-Beltrami eigenpairs
 meshioplusplus morph      duct.vtu moved.vtu --array d     # move the boundary, carry it into the mesh
 meshioplusplus untangle   deformed.vtu fixed.vtu          # repair inverted tetrahedra and hexahedra
+meshioplusplus metric     flow.vtu sized.vtu --arrays m_p,m_T --target-vertices 20000  # combine metrics
 meshioplusplus coordinates rotor.vtu cyl.vtu --arrays U     # vectors/tensors in cylindrical components
 meshioplusplus hull       scan.xyz hull.stl                 # convex hull of a point cloud (--dimension 2: outline)
 meshioplusplus point-normals scan.ply scan.pcd             # normals of a point cloud (plane fits, oriented)
@@ -653,6 +654,16 @@ Pieces keep the input's block structure 1:1, so they recombine into the input: e
 ```python
 out = meshioplusplus.geodesic_distance(skin, "inlet")   # the points of a region
 d = out.point_data["geodesic:distance"]
+```
+
+#### Metric toolbox
+
+**`meshioplusplus.prepare_metric(mesh, arrays)`** intersects the anisotropic metrics of several fields (so one mesh resolves them all), normalises the result to a target vertex count (continuous-mesh L^p), clamps its sizes and grades it, with no MMG needed: the input `adapt` takes. See [metric toolbox](doc/metric.md).
+
+<!--pytest-codeblocks:skip-->
+
+```python
+m = meshioplusplus.prepare_metric(mesh, ["m_p", "m_T"], target_vertices=20000, gradation=1.5)
 ```
 
 #### Untangling

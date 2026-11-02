@@ -234,6 +234,16 @@ def files(tmp_path_factory):
     centre = int(np.argmin(np.linalg.norm(tangled - 0.5, axis=1)))
     tangled[centre] = [0.5, 0.5, 0.92]
     paths["tangled"] = str(d / "tangled.vtu")
+    # a triangulated square carrying two crossed 2-D metrics, for metric
+    sq = mio.convert_cells(mio.rectangle(dims=(6, 6)), mode="simplexify")
+    m2 = np.zeros((len(sq.points), 3))
+    m2[:, 0] = 1.0 + 900.0 * np.exp(-((sq.points[:, 0] - 0.5) ** 2) / 0.01)
+    m2[:, 2] = 1.0
+    m3 = m2[:, [2, 1, 0]].copy()
+    sq.point_data["a"] = m2
+    sq.point_data["b"] = m3
+    paths["metrics"] = str(d / "metrics.vtu")
+    mio.write(paths["metrics"], sq)
     mio.write(paths["tangled"], mio.Mesh(tangled, cube.cells))
     mio.write(paths["moved"], moved)
     mio.write(paths["tagged"], tagged)
@@ -620,6 +630,25 @@ WRITING = [
             "0.2,0.9",
             "--method",
             "nearest",
+            "--json",
+        ],
+    ),
+    (
+        "metric",
+        lambda f, out: [
+            "metric",
+            f["metrics"],
+            out + ".vtu",
+            "--arrays",
+            "a,b",
+            "--target-vertices",
+            "200",
+            "--hmin",
+            "0.01",
+            "--hmax",
+            "0.5",
+            "--gradation",
+            "1.5",
             "--json",
         ],
     ),

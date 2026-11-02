@@ -70,6 +70,7 @@ extern SEXP R_mio_register_rigid(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_laplacian_eigenmodes(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_morph(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_untangle(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_prepare_metric(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_write_graph(SEXP, SEXP, SEXP, SEXP);
 
 /* ops.c */
@@ -317,6 +318,7 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_laplacian_eigenmodes, 4),
                                               CALLDEF(R_mio_morph, 7),
                                               CALLDEF(R_mio_untangle, 5),
+                                              CALLDEF(R_mio_prepare_metric, 8),
                                               CALLDEF(R_mio_write_graph, 4),
                                               CALLDEF(R_mio_extract_surface, 2),
                                               CALLDEF(R_mio_extract_skin, 2),

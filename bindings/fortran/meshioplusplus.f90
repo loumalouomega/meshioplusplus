@@ -1225,6 +1225,29 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
+    !> Interop mirror of C `mio_metric_opts`. Field order/types are ABI.
+    type, bind(c) :: mio_metric_opts_t
+        type(c_ptr) :: arrays = c_null_ptr
+        integer(c_int64_t) :: num_arrays = 0
+        type(c_ptr) :: output = c_null_ptr
+        real(c_double) :: target_vertices = 0.0_c_double
+        real(c_double) :: norm = 2.0_c_double
+        real(c_double) :: hmin = 0.0_c_double
+        real(c_double) :: hmax = 0.0_c_double
+        real(c_double) :: gradation = 0.0_c_double
+        integer(c_int64_t) :: max_sweeps = 100
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_metric_report`. Field order/types are ABI.
+    type, bind(c) :: mio_metric_report_t
+        real(c_double) :: complexity_before = 0.0_c_double
+        real(c_double) :: complexity_after = 0.0_c_double
+        integer(c_int64_t) :: num_graded = 0
+        integer(c_int64_t) :: sweeps = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
     !> Interop mirror of C `mio_untangle_opts`. Field order/types are ABI.
     type, bind(c) :: mio_untangle_opts_t
         type(c_ptr) :: frozen = c_null_ptr
@@ -2149,6 +2172,7 @@ module meshioplusplus
         procedure :: laplacian_eigenmodes => mesh_laplacian_eigenmodes
         procedure :: morph => mesh_morph
         procedure :: untangle => mesh_untangle
+        procedure :: prepare_metric => mesh_prepare_metric
         procedure :: convex_hull => mesh_convex_hull
         procedure :: delaunay_2d => mesh_delaunay_2d
         procedure :: remesh_volume => mesh_remesh_volume
@@ -3702,6 +3726,15 @@ module meshioplusplus
             type(c_ptr), value :: h, target
             type(mio_shrinkwrap_opts_t), intent(in) :: opts
             type(mio_shrinkwrap_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_prepare_metric(h, opts, report) bind(c, name="mio_prepare_metric") &
+                result(r)
+            import :: c_ptr, mio_metric_opts_t, mio_metric_report_t
+            type(c_ptr), value :: h
+            type(mio_metric_opts_t), intent(in) :: opts
+            type(mio_metric_report_t), intent(out) :: report
             type(c_ptr) :: r
         end function
 
@@ -9574,6 +9607,45 @@ contains
             inconsistent_pairs_after = int(report%quality_after%inconsistent_pairs, int64)
         if (present(boundary_edges_after)) &
             boundary_edges_after = int(report%quality_after%boundary_edges, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The metric toolbox: intersect the metric fields `arrays`, normalise to
+    !> `target_vertices`, clamp to [hmin, hmax] and grade, into point data
+    !> `output` (default 'metric'). See doc/metric.md.
+    function mesh_prepare_metric(self, arrays, output, target_vertices, norm, hmin, hmax, &
+                                 gradation, complexity_after, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: arrays(:)
+        character(*), intent(in), optional :: output
+        real(real64), intent(in), optional :: target_vertices, norm, hmin, hmax, gradation
+        real(real64), intent(out), optional :: complexity_after
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_metric_opts_t) :: opts
+        type(mio_metric_report_t) :: rep
+        character(kind=c_char), allocatable, target :: storage(:, :), s_out(:, :)
+        type(c_ptr), allocatable, target :: cptrs(:), p_out(:)
+        type(c_ptr) :: unused
+        integer(c_int64_t) :: count
+
+        call c_str_array(arrays, storage, cptrs, opts%arrays, opts%num_arrays)
+        if (present(output)) then
+            call c_str_array([output], s_out, p_out, unused, count)
+            opts%output = p_out(1)
+        end if
+        if (present(target_vertices)) opts%target_vertices = real(target_vertices, c_double)
+        if (present(norm)) opts%norm = real(norm, c_double)
+        if (present(hmin)) opts%hmin = real(hmin, c_double)
+        if (present(hmax)) opts%hmax = real(hmax, c_double)
+        if (present(gradation)) opts%gradation = real(gradation, c_double)
+        out%handle = c_mio_prepare_metric(self%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('prepare_metric', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(complexity_after)) complexity_after = real(rep%complexity_after, real64)
         call clear_status(stat, errmsg)
     end function
 

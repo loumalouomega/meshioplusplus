@@ -114,7 +114,7 @@ The first word completes to a verb (or an alias such as `c`), the next to the su
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `eigenmodes`, `morph`, `untangle`, `coordinates`, `hull`, `delaunay`, `point-normals`, `register`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `eigenmodes`, `morph`, `untangle`, `metric`, `coordinates`, `hull`, `delaunay`, `point-normals`, `register`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -148,6 +148,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `eigenmodes` | `output`, `eigenvalues`, `iterations`, `max_residual`, `converged`, `num_degenerate` |
 | `morph` | `output`, `num_constrained`, `num_free`, `num_inverted`, `iterations`, `max_displacement`, `converged` |
 | `untangle` | `output`, `num_inverted_before`, `num_inverted_after`, `min_quality_before`, `min_quality_after`, `sweeps`, `moves` |
+| `metric` | `output`, `complexity_before`, `complexity_after`, `num_graded`, `sweeps` |
 | `coordinates` | `output`, `system`, `num_arrays`, `num_singular` |
 | `hull` | `output`, `dimension`, `num_vertices`, `num_facets`, `area`, `volume`, `perimeter` |
 | `point-normals` | `output`, `num_degenerate`, `num_components` |
@@ -1869,6 +1870,34 @@ The points do not move. Both CLIs print the same JSON.
 ```sh
 meshioplusplus coordinates rotor.vtu rotor_cyl.vtu --arrays U,stress
 meshioplusplus coordinates vessel.vtu out.vtu --system spherical --origin 0,0,1.5 --arrays sigma --json
+```
+
+---
+
+## meshioplusplus metric
+
+Intersect, normalise, clamp and grade metric fields (see [metric toolbox](/metric)).
+
+```
+meshioplusplus metric [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--arrays A,B` | The metric fields (point data) to intersect (required) |
+| `--output NAME` | The result's name (default `metric`) |
+| `--target-vertices N` | The vertex count to normalise to (default `0`: skip) |
+| `--norm P` | The L^p norm of the normalisation (default `2`; `0`: infinity) |
+| `--hmin H` / `--hmax H` | The size range (default `0`: open) |
+| `--gradation B` | The largest size growth per unit length, > 1 (default `0`: skip) |
+| `--max-sweeps N` | Gradation sweeps at most (default `100`) |
+| `--json` | Emit the report: `output`, `complexity_before`, `complexity_after`, `num_graded`, `sweeps` |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Both CLIs print the same JSON.
+
+```sh
+meshioplusplus metric flow.vtu sized.vtu --arrays m_p,m_T --target-vertices 20000 --hmin 1e-3 --hmax 0.2 --gradation 1.5
 ```
 
 ---

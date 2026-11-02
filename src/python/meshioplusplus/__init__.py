@@ -198,6 +198,7 @@ if TYPE_CHECKING:
     from ._isosurface import isosurface
     from ._merge import merge
     from ._mesh_cad import mesh_cad_surface, triangulate_polygon_2d
+    from ._metric import prepare_metric
     from ._mirror import mirror
     from ._ml import FeatureMatrix, edge_index, feature_matrix, has_zarr, write_dataset
     from ._mmg import (
@@ -357,6 +358,7 @@ _LAZY_ATTRS = {
     "delaunay_2d": "_hull",
     "estimate_normals": "_point_normals",
     "morph": "_morph",
+    "prepare_metric": "_metric",
     "untangle": "_untangle",
     "register_rigid": "_registration",
     "convert_coordinates": "_coordinates",
@@ -721,6 +723,7 @@ __all__ = [
     "delaunay_2d",
     "estimate_normals",
     "morph",
+    "prepare_metric",
     "untangle",
     "register_rigid",
     "convert_coordinates",

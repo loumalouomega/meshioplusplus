@@ -3932,6 +3932,45 @@ MIO_API mio_mesh* mio_convert_coordinates(const mio_mesh* mesh, const mio_coordi
                                           int64_t* num_arrays, int64_t* num_singular);
 
 /**
+ * Options for mio_prepare_metric. Initialize through mio_metric_opts_init():
+ * output "metric", norm 2, no normalisation, clamping or gradation.
+ */
+typedef struct mio_metric_opts {
+    const char* const* arrays; /**< the metric fields' point-data names (borrowed) */
+    int64_t num_arrays;        /**< entries of `arrays`, at least 1 */
+    const char* output;        /**< the result's name, or NULL for "metric" */
+    double target_vertices;    /**< the vertex count to normalise to; 0 skips */
+    double norm;               /**< the L^p norm, at least 1; 0 is infinity */
+    double hmin;               /**< the smallest size asked; 0 open */
+    double hmax;               /**< the largest; 0 open */
+    double gradation;          /**< the largest growth per unit length (> 1); 0 skips */
+    int64_t max_sweeps;        /**< gradation sweeps at most */
+    int64_t reserved[4];       /**< must be zero; room for additive growth */
+} mio_metric_opts;
+
+/** What mio_prepare_metric did. */
+typedef struct mio_metric_report {
+    double complexity_before; /**< integral of sqrt(det M), of the intersection */
+    double complexity_after;  /**< and of the result */
+    int64_t num_graded;       /**< points the gradation changed */
+    int64_t sweeps;           /**< gradation sweeps */
+    int64_t reserved[4];      /**< zero; room for additive growth */
+} mio_metric_report;
+
+/** Initialize metric options (see mio_metric_opts). */
+MIO_API void mio_metric_opts_init(mio_metric_opts* opts);
+
+/**
+ * The metric toolbox: intersect the metric fields `arrays`, normalise to
+ * `target_vertices`, clamp to [hmin, hmax] and grade, writing point data
+ * `output`. See doc/metric.md. `report` may be NULL.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_prepare_metric(const mio_mesh* mesh, const mio_metric_opts* opts,
+                                     mio_metric_report* report);
+
+/**
  * Options for mio_untangle. Initialize through mio_untangle_opts_init():
  * boundary fixed, two rings, no smoothing, 100 sweeps.
  */

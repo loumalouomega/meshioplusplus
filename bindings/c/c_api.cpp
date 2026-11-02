@@ -81,6 +81,7 @@
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
+#include "meshioplusplus/operations/metric.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
@@ -7187,6 +7188,56 @@ mio_mesh* mio_sobolev_deform(const mio_mesh* mesh, const mio_sobolev_opts* opts,
             report->residual = r.mResidual;
             report->max_displacement = r.mMaxDisplacement;
             report->converged = r.mConverged ? 1 : 0;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+// --- the metric toolbox (roadmap 7.4.3) ---------------------------------------
+
+static_assert(sizeof(mio_metric_opts) == 104, "mio_metric_opts grew outside its reserved tail");
+static_assert(sizeof(mio_metric_report) == 64, "mio_metric_report grew outside its reserved tail");
+
+void mio_metric_opts_init(mio_metric_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_metric_opts{};
+    opts->norm = 2.0;
+    opts->max_sweeps = 100;
+}
+
+mio_mesh* mio_prepare_metric(const mio_mesh* mesh, const mio_metric_opts* opts,
+                             mio_metric_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        if (!opts)
+            throw std::invalid_argument("meshio++: prepare_metric: opts is NULL");
+        if (opts->num_arrays < 0 || (opts->num_arrays > 0 && !opts->arrays))
+            throw std::invalid_argument(
+                "meshio++: prepare_metric: arrays is NULL or num_arrays negative");
+        meshioplusplus::PrepareMetricOptions options;
+        for (int64_t i = 0; i < opts->num_arrays; ++i) {
+            if (!opts->arrays[i])
+                throw std::invalid_argument("meshio++: prepare_metric: an array name is NULL");
+            options.mArrays.emplace_back(opts->arrays[i]);
+        }
+        if (opts->output)
+            options.mOutput = opts->output;
+        options.mTargetVertices = opts->target_vertices;
+        options.mNorm = opts->norm;
+        options.mHmin = opts->hmin;
+        options.mHmax = opts->hmax;
+        options.mGradation = opts->gradation;
+        options.mMaxSweeps = opts->max_sweeps;
+        meshioplusplus::PrepareMetricResult r =
+            meshioplusplus::prepare_metric(mesh->mMesh, options);
+        if (report) {
+            *report = mio_metric_report{};
+            report->complexity_before = r.mComplexityBefore;
+            report->complexity_after = r.mComplexityAfter;
+            report->num_graded = r.mNumGraded;
+            report->sweeps = r.mSweeps;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });

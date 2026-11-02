@@ -143,6 +143,7 @@ from .. import (
     point_data_to_cell_data,
     poly_to_tet,
     power_spectrum,
+    prepare_metric,
     project_to_cad,
     proximity_graph,
     read,
@@ -4055,6 +4056,35 @@ def tool_convert_coordinates(
     )
 
 
+def tool_prepare_metric(
+    input_path,
+    output_path,
+    arrays,
+    output="metric",
+    target_vertices=0.0,
+    norm=2.0,
+    hmin=0.0,
+    hmax=0.0,
+    gradation=0.0,
+    input_format=None,
+    output_format=None,
+):
+    """Intersect, normalise, clamp and grade metric fields."""
+    mesh = _load(input_path, input_format)
+    out, report = prepare_metric(
+        mesh,
+        list(arrays) if not isinstance(arrays, str) else [arrays],
+        output=output,
+        target_vertices=float(target_vertices),
+        norm=float(norm),
+        hmin=float(hmin),
+        hmax=float(hmax),
+        gradation=float(gradation),
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
 def tool_untangle(
     input_path,
     output_path,
@@ -7048,6 +7078,14 @@ TOOL_REGISTRY = OrderedDict(
         (
             "sobolev_deform",
             {"fn": tool_sobolev_deform, "wraps": ("sobolev_deform",), "gated": None},
+        ),
+        (
+            "prepare_metric",
+            {
+                "fn": tool_prepare_metric,
+                "wraps": ("prepare_metric",),
+                "gated": None,
+            },
         ),
         (
             "untangle",

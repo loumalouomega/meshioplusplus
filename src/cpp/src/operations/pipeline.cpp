@@ -84,6 +84,7 @@
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
+#include "meshioplusplus/operations/metric.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
 #include "meshioplusplus/operations/crop.hpp"
@@ -450,6 +451,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"EstimateNormals", {"K", "Orientation", "Viewpoint", "RecordVariation"}},
         {"LaplacianEigenmodes", {"NumModes", "Tolerance", "MaxIterations"}},
         {"Untangle", {"FixBoundary", "Rings", "Smooth", "MaxSweeps"}},
+        {"PrepareMetric",
+         {"Arrays", "Output", "TargetVertices", "Norm", "Hmin", "Hmax", "Gradation", "MaxSweeps"}},
         {"Morph",
          {"Array", "FixBoundary", "ConstrainedArray", "Stiffening", "Steps", "AllowInverted",
           "Tolerance", "MaxIterations"}},
@@ -2297,6 +2300,26 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"Area", hr.mArea},
                         {"Volume", hr.mVolume}});
         return std::move(hr.mMesh);
+    }
+    if (op == "PrepareMetric") {
+        PrepareMetricOptions opts;
+        opts.mArrays = pipe_svec(rStep, "Arrays");
+        opts.mOutput = pipe_text(rStep, "Output", "metric");
+        opts.mTargetVertices = pipe_number(rStep, "TargetVertices", 0.0);
+        opts.mNorm = pipe_number(rStep, "Norm", 2.0);
+        opts.mHmin = pipe_number(rStep, "Hmin", 0.0);
+        opts.mHmax = pipe_number(rStep, "Hmax", 0.0);
+        opts.mGradation = pipe_number(rStep, "Gradation", 0.0);
+        const double sweeps = pipe_number(rStep, "MaxSweeps", 100.0);
+        opts.mMaxSweeps = static_cast<std::int64_t>(sweeps);
+        if (static_cast<double>(opts.mMaxSweeps) != sweeps)
+            throw std::invalid_argument(pipe_err(rStep, "'MaxSweeps' must be an integer"));
+        PrepareMetricResult pr = prepare_metric(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"ComplexityBefore", pr.mComplexityBefore},
+                        {"ComplexityAfter", pr.mComplexityAfter},
+                        {"NumGraded", static_cast<double>(pr.mNumGraded)}});
+        return std::move(pr.mMesh);
     }
     if (op == "Untangle") {
         UntangleOptions opts;

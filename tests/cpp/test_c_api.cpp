@@ -7059,6 +7059,32 @@ TEST(CApi, ConvertCoordinates) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, PrepareMetric) {
+    mio_mesh* m = capi_cube_surface();  // triangles: a 2-D metric needs 3 components
+    std::vector<double> a(8 * 3, 0.0), b(8 * 3, 0.0);
+    for (int i = 0; i < 8; ++i) {
+        a[i * 3] = 100.0, a[i * 3 + 2] = 1.0;
+        b[i * 3] = 1.0, b[i * 3 + 2] = 100.0;
+    }
+    const std::int64_t shape[2] = {8, 3};
+    ASSERT_EQ(mio_mesh_add_point_data(m, "a", MIO_FLOAT64, 2, shape, a.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_point_data(m, "b", MIO_FLOAT64, 2, shape, b.data()), MIO_OK);
+    mio_metric_opts opts;
+    mio_metric_opts_init(&opts);
+    EXPECT_EQ(opts.norm, 2.0);
+    const char* names[] = {"a", "b"};
+    opts.arrays = names;
+    opts.num_arrays = 2;
+    mio_metric_report rep;
+    mio_mesh* out = mio_prepare_metric(m, &opts, &rep);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(rep.num_graded, 0);
+    mio_mesh_free(out);
+    opts.num_arrays = 0;
+    EXPECT_EQ(mio_prepare_metric(m, &opts, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, Untangle) {
     // One tetrahedron is valid; flipping its last node through the opposite
     // face (with the other three pinned) is undone only if the node may move.

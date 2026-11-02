@@ -4083,6 +4083,26 @@ export interface MeshioPlusPlusModule {
   };
 
   /**
+   * The metric toolbox: intersect the metric fields `arrays` (point data, 6
+   * components in 3-D or 3 in 2-D), normalise to `targetVertices`, clamp to
+   * `[hmin, hmax]` and grade, into point data `output`. See doc/metric.md.
+   * @throws {Error} on a missing or misshapen field, or bad options.
+   */
+  prepareMetric(
+    mesh: Mesh,
+    options: {
+      arrays: string[];
+      output?: string;
+      targetVertices?: number;
+      norm?: number;
+      hmin?: number;
+      hmax?: number;
+      gradation?: number;
+      maxSweeps?: number;
+    },
+  ): { mesh: Mesh; complexityBefore: number; complexityAfter: number; numGraded: number; sweeps: number };
+
+  /**
    * Untangle tetrahedra and hexahedra: move nodes until every corner has a
    * positive signed volume (Escobar et al.'s functional), keeping the
    * connectivity. See doc/untangle.md.

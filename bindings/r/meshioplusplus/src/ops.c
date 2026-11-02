@@ -1245,6 +1245,35 @@ SEXP R_mio_sobolev_deform(SEXP mesh, SEXP array, SEXP length_scale, SEXP fixed_p
     return res;
 }
 
+SEXP R_mio_prepare_metric(SEXP mesh, SEXP arrays, SEXP output, SEXP target_vertices,
+                          SEXP norm, SEXP hmin, SEXP hmax, SEXP gradation) {
+    mio_metric_opts opts;
+    mio_metric_opts_init(&opts);
+    const R_xlen_t n = Rf_xlength(arrays);
+    const char **names = n > 0 ? (const char **)R_alloc((size_t)n, sizeof(char *)) : NULL;
+    for (R_xlen_t i = 0; i < n; ++i) names[i] = CHAR(STRING_ELT(arrays, i));
+    opts.arrays = names;
+    opts.num_arrays = (int64_t)n;
+    opts.output = mio_r_string(output, "output");
+    opts.target_vertices = Rf_asReal(target_vertices);
+    opts.norm = Rf_asReal(norm);
+    opts.hmin = Rf_asReal(hmin);
+    opts.hmax = Rf_asReal(hmax);
+    opts.gradation = Rf_asReal(gradation);
+    mio_metric_report rep;
+    mio_mesh *out = mio_prepare_metric(mio_r_mesh(mesh), &opts, &rep);
+    if (out == NULL) mio_r_fail("prepare_metric");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP a = PROTECT(Rf_ScalarReal(rep.complexity_before));
+    SEXP b = PROTECT(Rf_ScalarReal(rep.complexity_after));
+    SEXP c = PROTECT(Rf_ScalarReal((double)rep.num_graded));
+    const char *keys[] = {"mesh", "complexity_before", "complexity_after", "num_graded"};
+    SEXP values[] = {mo, a, b, c};
+    SEXP res = PROTECT(mio_r_named_list(4, keys, values));
+    UNPROTECT(5);
+    return res;
+}
+
 SEXP R_mio_untangle(SEXP mesh, SEXP fix_boundary, SEXP rings, SEXP smooth, SEXP max_sweeps) {
     mio_untangle_opts opts;
     mio_untangle_opts_init(&opts);

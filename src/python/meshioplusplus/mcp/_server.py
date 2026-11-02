@@ -3656,6 +3656,43 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def prepare_metric(
+        input_path: str,
+        output_path: str,
+        arrays: List[str],
+        output: str = "metric",
+        target_vertices: float = 0.0,
+        norm: float = 2.0,
+        hmin: float = 0.0,
+        hmax: float = 0.0,
+        gradation: float = 0.0,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """The metric toolbox, no MMG needed: intersect several anisotropic
+        metric fields (point data, 6 components in 3-D or 3 in 2-D, as
+        metric_from_hessian writes) so one mesh resolves every field,
+        normalise to target_vertices (L^p, norm = p, 0 = infinity), clamp
+        sizes to [hmin, hmax] and grade (gradation = largest size growth per
+        unit length, > 1). Writes point data `output` for adapt. Reports
+        complexity_before/after (about the vertex count), num_graded,
+        sweeps."""
+        return _guard(
+            _tools.tool_prepare_metric,
+            input_path=input_path,
+            output_path=output_path,
+            arrays=arrays,
+            output=output,
+            target_vertices=target_vertices,
+            norm=norm,
+            hmin=hmin,
+            hmax=hmax,
+            gradation=gradation,
+            input_format=input_format,
+            output_format=output_format,
+        )
+
+    @server.tool()
     def untangle(
         input_path: str,
         output_path: str,

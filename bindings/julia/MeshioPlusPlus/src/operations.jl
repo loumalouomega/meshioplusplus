@@ -3910,6 +3910,35 @@ function sobolev_deform(m::Mesh, array::AbstractString, length_scale::Real;
 end
 
 """
+    prepare_metric(m, arrays; output="metric", target_vertices=0.0, norm=2.0, hmin=0.0,
+                   hmax=0.0, gradation=0.0, max_sweeps=100)
+        -> (; mesh, complexity_before, complexity_after, num_graded, sweeps)
+
+The metric toolbox: intersect the metric fields `arrays`, normalise to
+`target_vertices`, clamp to `[hmin, hmax]` and grade, into point data `output`.
+See `doc/metric.md`.
+"""
+function prepare_metric(m::Mesh, arrays::AbstractVector{<:AbstractString}; output::AbstractString="metric",
+                        target_vertices::Real=0.0, norm::Real=2.0, hmin::Real=0.0, hmax::Real=0.0,
+                        gradation::Real=0.0, max_sweeps::Integer=100)
+    names = [Vector{UInt8}(codeunits(String(a) * "\0")) for a in arrays]
+    ptrs = [Cstring(pointer(n)) for n in names]
+    rep = Ref{_CMetricReport}()
+    ptr = GC.@preserve names ptrs output begin
+        opts = _CMetricOpts(isempty(ptrs) ? Ptr{Cstring}(C_NULL) : pointer(ptrs), Int64(length(ptrs)),
+                            Base.unsafe_convert(Cstring, output), Float64(target_vertices),
+                            Float64(norm), Float64(hmin), Float64(hmax), Float64(gradation),
+                            Int64(max_sweeps), ntuple(_ -> Int64(0), 4))
+        ccall(_sym(:mio_prepare_metric), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CMetricOpts}, Ref{_CMetricReport}), _handle(m), Ref(opts), rep)
+    end
+    r = _check_ptr(ptr)
+    h = rep[]
+    (mesh=Mesh(r), complexity_before=h.complexity_before, complexity_after=h.complexity_after,
+     num_graded=Int(h.num_graded), sweeps=Int(h.sweeps))
+end
+
+"""
     untangle(m; fix_boundary=true, rings=2, smooth=false, max_sweeps=100)
         -> (; mesh, num_inverted_before, num_inverted_after, min_quality_before,
               min_quality_after, sweeps, moves)

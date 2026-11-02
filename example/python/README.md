@@ -59,6 +59,7 @@ Jupyter notebooks demonstrating meshio++'s Python bindings on the bundled
 | [`58_laplacian_eigenmodes.ipynb`](58_laplacian_eigenmodes.ipynb) | Unreleased: `laplacian_eigenmodes` — the unit sphere's spectrum against `l (l + 1)` with its multiplicities and three of its modes, the second-order convergence under refinement, and the first eight modes of a plate with a hole, unchanged by renumbering the points. |
 | [`59_mesh_morphing.ipynb`](59_mesh_morphing.ipynb) | Unreleased: `morph` — an annulus whose inner circle turns 90°, inverting cells under the plain Laplace extension and staying valid with stiffening in four steps, the inversion guard refusing the former, and the roadmap probe: a hexahedral box's top face lifted by a bump with the interior following. |
 | [`60_untangling.ipynb`](60_untangling.ipynb) | Unreleased: `untangle` — a tetrahedral cube with 486 inverted cells, highlighted before and gone after, with the corner-quality histogram; the comparison with `smooth` and `optimize_volume`; and a hexahedral box with its centre node pushed through, unfolded. |
+| [`61_metric_toolbox.ipynb`](61_metric_toolbox.ipynb) | Unreleased: `prepare_metric` — two fronts' Hessian metrics drawn as size ellipses and their intersection resolving both, then the intersection normalised to 1 500 vertices, clamped, and graded so sizes grow smoothly away from the fronts. |
 
 See [`../cpp/`](../cpp/) for the same tour written directly against the **C++ core** (no Python), running on the [xeus-cpp](https://github.com/compiler-research/xeus-cpp) Jupyter kernel.
 

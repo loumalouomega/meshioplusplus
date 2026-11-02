@@ -123,7 +123,7 @@ export compute_curvature, compute_normals, feature_edges, hausdorff_distance, ch
 export segment, select_region, fit_primitives, refine_patches, fit_cad, has_occt
 export repair, shrinkwrap, sobolev_deform, geodesic_distance, convert_coordinates,
        convex_hull, delaunay_2d, estimate_normals, register_rigid, laplacian_eigenmodes, morph,
-       untangle
+       untangle, prepare_metric
 export interpolate, conservative_interpolate, meshes_equal, stats, compute_bandwidth
 export reorder, convert_cells, subdivide, agglomerate, tet_to_poly, poly_to_tet, refine, undo_green, decimate, partition, partition_labels
 export boundary_layer

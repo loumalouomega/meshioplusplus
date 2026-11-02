@@ -167,6 +167,7 @@
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
+#include "meshioplusplus/operations/metric.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/decimate_volume.hpp"
 #include "meshioplusplus/operations/data_calc.hpp"
@@ -6213,6 +6214,39 @@ PYBIND11_MODULE(_core, m) {
         py::arg("reference") = std::array<double, 3>{1.0, 0.0, 0.0},
         py::arg("arrays") = std::vector<std::string>{}, py::arg("inverse") = false,
         py::arg("record_coordinates") = true);
+
+    // The metric toolbox: intersect, normalise, clamp, grade. {mesh, counters}.
+    // See operations/metric.hpp.
+    m.def(
+        "prepare_metric",
+        [](py::object pymesh, std::vector<std::string> arrays, const std::string& output,
+           double target_vertices, double norm, double hmin, double hmax, double gradation,
+           std::int64_t max_sweeps) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::PrepareMetricOptions options;
+            options.mArrays = std::move(arrays);
+            options.mOutput = output;
+            options.mTargetVertices = target_vertices;
+            options.mNorm = norm;
+            options.mHmin = hmin;
+            options.mHmax = hmax;
+            options.mGradation = gradation;
+            options.mMaxSweeps = max_sweeps;
+            meshioplusplus::PrepareMetricResult r =
+                core_nogil([&] { return meshioplusplus::prepare_metric(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["complexity_before"] = r.mComplexityBefore;
+            out["complexity_after"] = r.mComplexityAfter;
+            out["num_graded"] = r.mNumGraded;
+            out["sweeps"] = r.mSweeps;
+            return out;
+        },
+        py::arg("mesh"), py::arg("arrays"), py::arg("output") = "metric",
+        py::arg("target_vertices") = 0.0, py::arg("norm") = 2.0, py::arg("hmin") = 0.0,
+        py::arg("hmax") = 0.0, py::arg("gradation") = 0.0, py::arg("max_sweeps") = 100);
 
     // Untangling inverted tetrahedra and hexahedra. {mesh, counters}. See
     // operations/untangle.hpp.

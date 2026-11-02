@@ -45,6 +45,7 @@ from . import (
     _isosurface,
     _merge,
     _mesh_cad,
+    _metric,
     _mirror,
     _mmg,
     _morph,
@@ -294,6 +295,12 @@ def build_parser():
     )
     _coordinates.add_args(parser)
     parser.set_defaults(func=_coordinates.coordinates_cmd)
+
+    parser = subparsers.add_parser(
+        "metric", help="Intersect, normalise, clamp and grade metric fields"
+    )
+    _metric.add_args(parser)
+    parser.set_defaults(func=_metric.metric_cmd)
 
     parser = subparsers.add_parser(
         "untangle", help="Move nodes until no tetrahedron or hexahedron is inverted"

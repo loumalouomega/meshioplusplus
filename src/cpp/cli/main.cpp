@@ -143,6 +143,7 @@
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
+#include "meshioplusplus/operations/metric.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
@@ -467,6 +468,7 @@ void print_usage(std::ostream& os) {
           "  eigenmodes              Lowest eigenpairs of a surface's Laplace-Beltrami operator\n"
           "  morph                   Move the boundary by a displacement, carried into the mesh\n"
           "  untangle                Move nodes until no tetrahedron or hexahedron is inverted\n"
+          "  metric                  Intersect, normalise, clamp and grade metric fields\n"
           "  delaunay                Delaunay triangulation of the points in the x, y plane\n"
           "  geodesic                Surface distance from source points (heat method)\n"
           "  graph                   Write a mesh's node or cell graph as a METIS or Scotch file\n"
@@ -3866,6 +3868,66 @@ std::vector<double> cli_numbers(const std::string& rText, std::size_t Count, con
                                  std::to_string(Count) + " numbers, got " +
                                  std::to_string(out.size()));
     return out;
+}
+
+// metric: intersect, normalise, clamp and grade metric fields. See
+// operations/metric.hpp.
+int cmd_metric(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"arrays", {}, true},
+                                  {"output", {}, true},
+                                  {"target-vertices", {}, true},
+                                  {"norm", {}, true},
+                                  {"hmin", {}, true},
+                                  {"hmax", {}, true},
+                                  {"gradation", {}, true},
+                                  {"max-sweeps", {}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("metric requires INFILE OUTFILE");
+    meshioplusplus::PrepareMetricOptions o;
+    {
+        auto in = meshioplusplus::detail::make_classic_istringstream(opt_value(p, "arrays"));
+        std::string name;
+        while (std::getline(in, name, ','))
+            if (!name.empty())
+                o.mArrays.push_back(name);
+    }
+    if (has_opt(p, "output"))
+        o.mOutput = opt_value(p, "output");
+    const auto number = [&](const char* pName, double& rOut) {
+        if (has_opt(p, pName))
+            rOut = meshioplusplus::detail::stod_c(opt_value(p, pName));
+    };
+    number("target-vertices", o.mTargetVertices);
+    number("norm", o.mNorm);
+    number("hmin", o.mHmin);
+    number("hmax", o.mHmax);
+    number("gradation", o.mGradation);
+    if (has_opt(p, "max-sweeps"))
+        o.mMaxSweeps = std::stoll(opt_value(p, "max-sweeps"));
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::PrepareMetricResult r = meshioplusplus::prepare_metric(mesh, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Field("complexity_before", r.mComplexityBefore);
+        json.Field("complexity_after", r.mComplexityAfter);
+        json.Field("num_graded", r.mNumGraded);
+        json.Field("sweeps", r.mSweeps);
+        json.EndObject();
+        return 0;
+    }
+    char buf[96];
+    meshioplusplus::detail::snprintf_c(buf, sizeof(buf), "%.6g -> %.6g", r.mComplexityBefore,
+                                       r.mComplexityAfter);
+    std::cout << "metric complexity " << buf << "; " << r.mNumGraded << " point(s) graded\n";
+    return 0;
 }
 
 // untangle: move nodes until no tetrahedron or hexahedron corner is inverted.
@@ -9086,6 +9148,8 @@ int cli_run_verb(const std::string& cmd, const std::vector<std::string>& rest) {
         return cmd_split_interface(rest);
     if (cmd == "hausdorff")
         return cmd_hausdorff(rest);
+    if (cmd == "metric")
+        return cmd_metric(rest);
     if (cmd == "untangle")
         return cmd_untangle(rest);
     if (cmd == "morph")

@@ -138,6 +138,7 @@
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
+#include "meshioplusplus/operations/metric.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
@@ -7099,6 +7100,43 @@ val sobolev_deform_js(const val& rMeshObj, const std::string& rArray, double len
 }
 
 /**
+ * @brief The metric toolbox. @p rOptions is `{arrays (required), output,
+ * targetVertices, norm, hmin, hmax, gradation, maxSweeps}`. See
+ * operations/metric.hpp.
+ */
+val prepare_metric_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::PrepareMetricOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("arrays"))
+                options.mArrays = emscripten::vecFromJSArray<std::string>(rOptions["arrays"]);
+            if (rOptions.hasOwnProperty("output"))
+                options.mOutput = rOptions["output"].as<std::string>();
+            const auto number = [&](const char* pKey, double& rOut) {
+                if (rOptions.hasOwnProperty(pKey))
+                    rOut = rOptions[pKey].as<double>();
+            };
+            number("targetVertices", options.mTargetVertices);
+            number("norm", options.mNorm);
+            number("hmin", options.mHmin);
+            number("hmax", options.mHmax);
+            number("gradation", options.mGradation);
+            if (rOptions.hasOwnProperty("maxSweeps"))
+                options.mMaxSweeps = static_cast<std::int64_t>(rOptions["maxSweeps"].as<double>());
+        }
+        meshioplusplus::PrepareMetricResult r =
+            meshioplusplus::prepare_metric(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("complexityBefore", r.mComplexityBefore);
+        out.set("complexityAfter", r.mComplexityAfter);
+        out.set("numGraded", static_cast<double>(r.mNumGraded));
+        out.set("sweeps", static_cast<double>(r.mSweeps));
+        return out;
+    });
+}
+
+/**
  * @brief Untangle tetrahedra and hexahedra. @p rOptions is `{fixBoundary,
  * frozen (a 0/1 array), rings, smooth, maxSweeps}`, every key optional. See
  * operations/untangle.hpp.
@@ -9642,6 +9680,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("sobolevDeform", &sobolev_deform_js);
     emscripten::function("geodesicDistance", &geodesic_distance_js);
     emscripten::function("convertCoordinates", &convert_coordinates_js);
+    emscripten::function("prepareMetric", &prepare_metric_js);
     emscripten::function("untangle", &untangle_js);
     emscripten::function("morph", &morph_js);
     emscripten::function("laplacianEigenmodes", &laplacian_eigenmodes_js);

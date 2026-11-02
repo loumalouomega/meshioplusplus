@@ -2157,6 +2157,25 @@ def test_convert_coordinates_tool(tmp_path):
     )
 
 
+def test_prepare_metric_tool(tmp_path):
+    sq = meshioplusplus.convert_cells(
+        meshioplusplus.rectangle(dims=(4, 4)), mode="simplexify"
+    )
+    sq.point_data["a"] = np.tile([100.0, 0.0, 1.0], (len(sq.points), 1))
+    sq.point_data["b"] = np.tile([1.0, 0.0, 100.0], (len(sq.points), 1))
+    src = str(tmp_path / "m.vtu")
+    meshioplusplus.write(src, sq)
+    out = _dump(
+        _tools.tool_prepare_metric(
+            src, str(tmp_path / "o.vtu"), ["a", "b"], target_vertices=500
+        )
+    )
+    assert out["complexity_before"] == pytest.approx(100.0)
+    assert out["complexity_after"] == pytest.approx(500.0)
+    back = meshioplusplus.read(str(tmp_path / "o.vtu"))
+    np.testing.assert_allclose(back.point_data["metric"][:, 0], 500.0)
+
+
 def test_untangle_tool(tmp_path):
     tets = meshioplusplus.convert_cells(
         meshioplusplus.box(dims=(4, 4, 4)), mode="simplexify"
