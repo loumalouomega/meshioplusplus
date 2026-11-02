@@ -18,11 +18,15 @@
 // face-connected kept and empty cells (checked by brute force) and only adds
 // cells; the repaired cells' boundary is closed and edge-manifold and
 // encloses their volume; a pillow layer keeps every hexahedron positive with
-// one face on the new boundary; and the untangler recovers an inverted node.
+// one face on the new boundary; the untangler recovers an inverted node; and
+// its robust mode leaves a plateau the plain pattern search stalls on, where
+// a hexahedron has flat corners at two nodes; and the boundary normals of a
+// box point out of its faces, edges and corners.
 
 // System includes
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <random>
@@ -214,7 +218,8 @@ TEST(HexFit, UntangleRecoversAnInvertedNode) {
     std::vector<det::HexNodeMode> mode(m.mPoints.size(), det::HexNodeMode::Fixed);
     mode[centre] = det::HexNodeMode::Free;
     const auto rep = det::hex_untangle(
-        m.mPoints, m.mHexes, mode, [](const Vec3& rP) { return rP; }, det::HexUntangleOptions{});
+        m.mPoints, m.mHexes, mode, [](std::size_t, const Vec3& rP) { return rP; },
+        det::HexUntangleOptions{});
     double after = 1.0;
     for (const auto& h : m.mHexes)
         after = std::min(after, det::hex_min_scaled_jacobian(m.mPoints, h));
@@ -222,4 +227,66 @@ TEST(HexFit, UntangleRecoversAnInvertedNode) {
     EXPECT_GT(rep.mMoves, 0);
     // A fixed node never moves.
     EXPECT_EQ(m.mPoints[0], (Vec3{0.0, 0.0, 0.0}));
+}
+
+// Two nodes of one hexahedron each put on the line through two of their edge
+// neighbours: both corners are flat, so moving either node alone cannot raise
+// the hexahedron's smallest corner, and the plain search, which takes a move
+// only when that rises, stalls. The robust search also takes a move that keeps
+// the smallest corner and raises the corners around the node.
+TEST(HexFit, RobustUntangleLeavesATwoNodePlateau) {
+    const std::array<std::int64_t, 3> n{{3, 3, 3}};
+    std::vector<std::uint8_t> kept(27, 1);
+    const det::HexMesh grid = hf_grid(n, kept);
+    auto node = [](int I, int J, int K) { return static_cast<std::size_t>((K * 4 + J) * 4 + I); };
+    const std::size_t a = node(1, 1, 1), b = node(1, 1, 2);
+    auto run = [&](bool Robust) {
+        det::HexMesh m = grid;
+        m.mPoints[a] = {1.5, 1.5, 1.0};
+        m.mPoints[b] = {1.5, 1.5, 2.0};
+        std::vector<det::HexNodeMode> mode(m.mPoints.size(), det::HexNodeMode::Fixed);
+        mode[a] = mode[b] = det::HexNodeMode::Free;
+        det::HexUntangleOptions o;
+        o.mRobust = Robust;
+        det::hex_untangle(
+            m.mPoints, m.mHexes, mode, [](std::size_t, const Vec3& rP) { return rP; }, o);
+        double worst = 1.0;
+        for (const auto& h : m.mHexes)
+            worst = std::min(worst, det::hex_min_scaled_jacobian(m.mPoints, h));
+        return worst;
+    };
+    const double plain = run(false), robust = run(true);
+    EXPECT_LE(plain, 0.0);
+    EXPECT_GT(robust, 0.5);
+}
+
+// The normals of a box's boundary: a face's interior nodes point along its
+// axis, an edge's along the sum of its two faces', a corner's along the sum
+// of its three; smoothing keeps them unit and outward.
+TEST(HexFit, BoundaryNormalsPointOutOfABox) {
+    const std::array<std::int64_t, 3> n{{3, 3, 3}};
+    std::vector<std::uint8_t> kept(27, 1);
+    const det::HexMesh m = hf_grid(n, kept);
+    const det::HexBoundary b = det::hex_boundary(m);
+    auto node = [](int I, int J, int K) { return static_cast<std::size_t>((K * 4 + J) * 4 + I); };
+    const std::vector<Vec3> raw = det::hex_boundary_normals(m.mPoints, b.mQuads, 0);
+    const double r3 = 1.0 / std::sqrt(3.0), r2 = 1.0 / std::sqrt(2.0);
+    auto near = [](const Vec3& rA, const Vec3& rB) {
+        for (std::size_t k = 0; k < 3; ++k)
+            if (std::abs(rA[k] - rB[k]) > 1e-12)
+                return false;
+        return true;
+    };
+    EXPECT_TRUE(near(raw[node(1, 1, 0)], Vec3{0.0, 0.0, -1.0}));
+    EXPECT_TRUE(near(raw[node(3, 1, 0)], Vec3{r2, 0.0, -r2}));
+    EXPECT_TRUE(near(raw[node(3, 3, 3)], Vec3{r3, r3, r3}));
+    EXPECT_TRUE(near(raw[node(1, 1, 1)], Vec3{0.0, 0.0, 0.0}));  // interior
+    const std::vector<Vec3> smooth = det::hex_boundary_normals(m.mPoints, b.mQuads, 2);
+    for (const auto& q : b.mQuads)
+        for (std::int64_t v : q) {
+            const Vec3& x = smooth[static_cast<std::size_t>(v)];
+            EXPECT_NEAR(det::vec3_norm(x), 1.0, 1e-12);
+            const Vec3 out = det::vec3_sub(m.mPoints[static_cast<std::size_t>(v)], {1.5, 1.5, 1.5});
+            EXPECT_GT(det::vec3_dot(x, out), 0.0);
+        }
 }

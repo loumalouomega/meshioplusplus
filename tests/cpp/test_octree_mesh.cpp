@@ -857,7 +857,7 @@ TEST(OctreeMeshHex, CubeCornersAndEdgesArePreserved) {
             .mMesh;
     const auto r = mio::octree_mesh(cube, om_hex(0.15));
     const OmHexCheck c = om_check_hexes(r.mMesh);
-    EXPECT_GE(c.mMinScaledJacobian, 0.2);
+    EXPECT_GE(c.mMinScaledJacobian, 0.5);
     EXPECT_EQ(r.mNumCorners, 8);
     EXPECT_EQ(r.mNumCornersSnapped, 8);
     EXPECT_EQ(r.mNumFeatureChains, 12);
@@ -918,7 +918,7 @@ TEST(OctreeMeshHex, GradedHexahedraFollowTheOctree) {
     // The sphere at a fine curvature angle and a capped cylinder whose skin
     // grades from its rims to its caps: the graded dual has fewer hexahedra
     // than one grid at the skin's size, none inverted, a closed manifold
-    // boundary on the skin, and every corner of positive scaled Jacobian.
+    // boundary on the skin, and every corner of scaled Jacobian 0.2 or more.
     struct Case {
         mio::Mesh mSkin;
         mio::OctreeMeshOptions mOptions;
@@ -943,7 +943,7 @@ TEST(OctreeMeshHex, GradedHexahedraFollowTheOctree) {
         const OmHexCheck h = om_check_hexes(r.mMesh);
         EXPECT_LT(r.mNumHexahedra, u.mNumHexahedra);
         EXPECT_EQ(r.mNumInverted, 0);
-        EXPECT_GT(h.mMinScaledJacobian, 0.0);
+        EXPECT_GE(h.mMinScaledJacobian, 0.2);
         EXPECT_EQ(r.mNumBoundaryEdgesOpen, 0);
         EXPECT_EQ(r.mNumNonManifoldBoundaryEdges, 0);
         EXPECT_LT(r.mHausdorffToSkin, 0.05);
@@ -980,5 +980,139 @@ TEST(OctreeMeshHex, GradedHexahedraAreTheSameOnEveryThreadCount) {
     }
 #ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
     omp_set_num_threads(saved);
+#endif
+}
+
+namespace {
+
+// Set the hexahedral fit's internal test hook for a scope ("body_fitted": the
+// 18.0.0 fit alone; "robust": the robust fit alone).
+struct OmHexFit {
+    explicit OmHexFit(const char* pValue) { om_setenv(pValue); }
+    ~OmHexFit() { om_setenv(nullptr); }
+    static void om_setenv(const char* pValue) {
+#ifdef _WIN32
+        _putenv_s("MESHIOPLUSPLUS_OCTREE_MESH_HEX_FIT", pValue != nullptr ? pValue : "");
+#else
+        if (pValue != nullptr)
+            setenv("MESHIOPLUSPLUS_OCTREE_MESH_HEX_FIT", pValue, 1);
+        else
+            unsetenv("MESHIOPLUSPLUS_OCTREE_MESH_HEX_FIT");
+#endif
+    }
+};
+
+// The hexahedra's corners with a non-positive scaled Jacobian.
+std::int64_t om_flat_corners(const mio::Mesh& rM) {
+    std::vector<Vec3> pts;
+    const double* p = rM.Points().As<double>();
+    for (std::size_t v = 0; v < rM.NumPoints(); ++v)
+        pts.push_back({p[3 * v], p[3 * v + 1], p[3 * v + 2]});
+    const auto block = rM.Cells(0);
+    const std::int64_t* c = block.Conn().As<std::int64_t>();
+    std::int64_t flat = 0;
+    for (std::size_t h = 0; h < block.NumCells(); ++h) {
+        std::array<std::int64_t, 8> hex{};
+        for (std::size_t k = 0; k < 8; ++k)
+            hex[k] = c[8 * h + k];
+        for (double j : mio::detail::hex_corner_scaled_jacobians(pts, hex))
+            flat += j <= 0.0;
+    }
+    return flat;
+}
+
+// A unit box on the lattice's planes, its faces split into triangles.
+mio::Mesh om_unit_box() {
+    return mio::convert_cells(mio::extract_surface(mio::box({{4, 4, 4}}, {{1.0, 1.0, 1.0}})),
+                              {mio::ConvertCellsMode::Simplexify, false})
+        .mMesh;
+}
+
+}  // namespace
+
+// The capped cylinder of the hexahedral table (radius 0.5, height 2,
+// min_size 0.05): its rims are chains a staircase follows by turning inside
+// quadrilaterals, which the robust fit releases from the chain rather than
+// flatten, and every corner keeps a scaled Jacobian of at least 0.2.
+TEST(OctreeMeshHex, ACappedCylindersHexahedraKeepAFifth) {
+    const mio::Mesh skin = analytic::capped_cylinder(0.5, 2.0, 6, 48);
+    for (auto grading : {mio::OctreeMeshHexGrading::Uniform, mio::OctreeMeshHexGrading::Graded}) {
+        auto o = om_hex(0.0);
+        o.mMinSize = 0.05;
+        o.mHexGrading = grading;
+        const auto r = mio::octree_mesh(skin, o);
+        const OmHexCheck c = om_check_hexes(r.mMesh);
+        EXPECT_GE(c.mMinScaledJacobian, 0.2) << static_cast<int>(grading);
+        EXPECT_EQ(om_flat_corners(r.mMesh), 0);
+        EXPECT_EQ(r.mNumInverted, 0);
+        EXPECT_EQ(r.mNumCornersSnapped, r.mNumCorners);
+        EXPECT_EQ(r.mNumFeatureChainsMissed, 0);
+        EXPECT_LT(r.mHausdorffToSkin, 0.01);
+        EXPECT_NEAR(c.mVolume, om_enclosed(skin), 0.03 * om_enclosed(skin));
+        EXPECT_TRUE(r.mWarnings.empty());
+    }
+}
+
+// Features off (feature_angle 0, or preserve_features false): near a box's
+// edges and corners a graded boundary node is about as near two or three
+// faces, and its closest point put a face's pillow copies on the side face,
+// flattening the pillow cells (the 18.0.0 fit, kept here as the hook, has
+// hundreds of such corners). Placed along the boundary's own normal, none is
+// flat.
+TEST(OctreeMeshHex, ABoxWithoutFeaturesHasNoFlatCorner) {
+    const mio::Mesh box = om_unit_box();
+    for (auto grading : {mio::OctreeMeshHexGrading::Uniform, mio::OctreeMeshHexGrading::Graded})
+        for (bool angle_off : {true, false}) {
+            auto o = om_hex(0.0);
+            o.mMinSize = 0.05;
+            o.mHexGrading = grading;
+            if (angle_off)
+                o.mFeatureAngle = 0.0;
+            else
+                o.mPreserveFeatures = false;
+            const auto r = mio::octree_mesh(box, o);
+            EXPECT_EQ(r.mNumCorners, 0);
+            EXPECT_EQ(om_flat_corners(r.mMesh), 0) << static_cast<int>(grading) << angle_off;
+            const OmHexCheck c = om_check_hexes(r.mMesh);
+            EXPECT_GE(c.mMinScaledJacobian, 0.2);
+            EXPECT_NEAR(c.mVolume, 1.0, 0.03);
+            EXPECT_TRUE(r.mWarnings.empty());
+            if (grading == mio::OctreeMeshHexGrading::Graded) {
+                const OmHexFit hook("body_fitted");
+                EXPECT_GT(om_flat_corners(mio::octree_mesh(box, o).mMesh), 100);
+            }
+        }
+}
+
+// With features on, a chain node beside a corner went to the corner itself
+// (two nodes on one point), and the same box kept a few flat corners.
+TEST(OctreeMeshHex, ABoxWithFeaturesHasNoFlatCorner) {
+    auto o = om_hex(0.0);
+    o.mMinSize = 0.05;
+    o.mHexGrading = mio::OctreeMeshHexGrading::Graded;
+    const auto r = mio::octree_mesh(om_unit_box(), o);
+    EXPECT_EQ(om_flat_corners(r.mMesh), 0);
+    EXPECT_EQ(r.mNumCornersSnapped, 8);
+    EXPECT_EQ(r.mNumFeatureChainsMissed, 0);
+    EXPECT_GE(om_check_hexes(r.mMesh).mMinScaledJacobian, 0.2);
+}
+
+// The robust fit is compared with the body-fitted fit of 18.0.0 when it
+// misses a fifth, and the better is kept: the hook that forces the old fit
+// gives its output bit for bit (digests recorded from 18.0.0).
+TEST(OctreeMeshHex, TheBodyFittedHookIsTheFitOfVersion18) {
+    const OmHexFit hook("body_fitted");
+    const auto torus = mio::octree_mesh(analytic::torus(1.0, 0.4, 32, 16), om_hex(0.12));
+    auto o = om_hex(0.0);
+    o.mMinSize = 0.05;
+    o.mHexGrading = mio::OctreeMeshHexGrading::Graded;
+    const auto cylinder = mio::octree_mesh(analytic::capped_cylinder(0.5, 2.0, 6, 48), o);
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+    EXPECT_EQ(om_digest(torus.mMesh), 0x7d1e198a5fb3cc33ULL) << std::hex << om_digest(torus.mMesh);
+    EXPECT_EQ(om_digest(cylinder.mMesh), 0x1c72bfbe7f7003f1ULL)
+        << std::hex << om_digest(cylinder.mMesh);
+#else
+    EXPECT_GT(torus.mNumHexahedra, 0);
+    EXPECT_GT(cylinder.mNumHexahedra, 0);
 #endif
 }

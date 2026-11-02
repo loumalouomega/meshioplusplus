@@ -7,7 +7,9 @@ pipeline step in both engines. The geometry itself is tested in the core
 """
 
 import json
+import os
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -136,6 +138,40 @@ def test_hexahedral_output():
     assert not np.any(np.asarray(bare.cell_data["octree_mesh:pillow"][0]))
 
 
+# Each hexahedron corner's three edge neighbours, right-handed (VTK order).
+_HEX_CORNER = np.array(
+    [
+        [1, 3, 4],
+        [2, 0, 5],
+        [3, 1, 6],
+        [0, 2, 7],
+        [7, 5, 0],
+        [4, 6, 1],
+        [5, 7, 2],
+        [6, 4, 3],
+    ]
+)
+
+
+def _corner_jacobians(mesh):
+    """The scaled Jacobian of every hexahedron corner, shape (n, 8)."""
+    points = np.asarray(mesh.points, dtype=float)
+    hexes = np.asarray(mesh.cells[0].data, dtype=np.int64)
+    out = np.empty(hexes.shape)
+    for c in range(8):
+        o = points[hexes[:, c]]
+        a, b, d = (points[hexes[:, _HEX_CORNER[c, k]]] - o for k in range(3))
+        length = np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1)
+        length *= np.linalg.norm(d, axis=1)
+        triple = np.einsum("ij,ij->i", np.cross(a, b), d)
+        out[:, c] = np.where(length > 0, triple / np.where(length > 0, length, 1), -1.0)
+    return out
+
+
+def _flat_corners(mesh):
+    return int((_corner_jacobians(mesh) <= 0).sum())
+
+
 def _cylinder():
     return mio.convert_cells(
         mio.extract_surface(mio.cylinder(0.5, 2.0)), mode="simplexify"
@@ -157,16 +193,73 @@ def test_graded_hexahedral_output():
     assert [c.type for c in out.cells] == ["hexahedron"]
     assert report["num_hexahedra"] < ureport["num_hexahedra"]
     assert report["num_inverted"] == 0
-    assert report["min_scaled_jacobian"] > 0.0
+    # The rims are chains the staircase follows by turning inside
+    # quadrilaterals; the fit releases those nodes rather than flatten them.
+    assert ureport["min_scaled_jacobian"] >= 0.2
+    assert report["min_scaled_jacobian"] >= 0.2
+    assert _flat_corners(uniform) == _flat_corners(out) == 0
+    assert ureport["warnings"] == report["warnings"] == []
     assert report["num_boundary_edges_open"] == 0
     assert report["num_non_manifold_boundary_edges"] == 0
-    assert report["hausdorff_to_skin"] < 0.05
+    assert ureport["hausdorff_to_skin"] < 0.01
+    assert report["hausdorff_to_skin"] < 0.01
     levels = np.asarray(out.cell_data["octree:level"][0])
     assert len(np.unique(levels)) > 1
     _, conformity = mio.check_conformity(out, return_report=True)
     assert conformity["num_hanging_nodes"] == 0
     with pytest.raises(ValueError, match="hex_grading"):
         mio.octree_mesh(_cylinder(), output="hex", hex_grading="coarse")
+
+
+@needs_core
+@pytest.mark.parametrize("grading", ["uniform", "graded"])
+@pytest.mark.parametrize("off", [{"feature_angle": 0}, {"preserve_features": False}])
+def test_hexahedral_box_without_features_has_no_flat_corner(grading, off):
+    # Near a box's edges and corners a graded boundary node is about as near
+    # two or three faces; projected to its closest point, a face's pillow
+    # copies went to the side face and flattened the pillow cells.
+    box = mio.convert_cells(
+        mio.extract_surface(mio.box((4, 4, 4), (1.0, 1.0, 1.0))), mode="simplexify"
+    )
+    out, report = mio.octree_mesh(
+        box, output="hex", min_size=0.05, hex_grading=grading, return_report=True, **off
+    )
+    assert report["num_corners"] == 0
+    assert _flat_corners(out) == 0
+    assert report["min_scaled_jacobian"] >= 0.2
+    assert report["warnings"] == []
+
+
+_BUNNY = Path(__file__).resolve().parents[2] / "example" / "Bunny.stl"
+
+
+@needs_core
+@pytest.mark.skipif(
+    os.environ.get("MESHIOPLUSPLUS_OCTREE_MESH_BUNNY") != "1" or not _BUNNY.exists(),
+    reason="the Stanford bunny's hexahedra take a minute; set MESHIOPLUSPLUS_OCTREE_MESH_BUNNY=1",
+)
+@pytest.mark.parametrize("grading", ["uniform", "graded"])
+def test_hexahedral_bunny(grading):
+    # The bunny of doc/octree_mesh.md's hexahedral table.
+    out, report = mio.octree_mesh(
+        mio.read(_BUNNY),
+        output="hex",
+        min_size=1.5,
+        max_size=8.0,
+        feature_angle=60,
+        hex_grading=grading,
+        return_report=True,
+    )
+    assert report["num_inverted"] == 0
+    assert report["num_boundary_edges_open"] == 0
+    if grading == "graded":
+        assert report["min_scaled_jacobian"] >= 0.2
+        assert _flat_corners(out) == 0
+    else:
+        # Open (doc/octree_mesh.md): a few pillow cells at the ear tips keep a
+        # corner just below zero, which the warnings report.
+        assert report["min_scaled_jacobian"] > -0.01
+        assert any("non-positive corner" in w for w in report["warnings"])
 
 
 @needs_core

@@ -65,6 +65,12 @@ int hexfit_components(unsigned Mask) {
     return n;
 }
 
+// Each VTK corner's position in the unit cube, as bits (x, y, z) = (1, 2, 4).
+constexpr int kHexfitBits[8] = {0, 1, 3, 2, 4, 5, 7, 6};
+
+// The VTK corner at each bit pattern (the inverse of kHexfitBits).
+constexpr int kHexfitAtBits[8] = {0, 1, 3, 2, 4, 5, 7, 6};
+
 // Per mask of kept cells in a 2x2x2 block, whether the boundary is manifold there.
 std::array<std::uint8_t, 256> hexfit_valid_table() {
     std::array<std::uint8_t, 256> t{};
@@ -338,10 +344,58 @@ double hex_min_scaled_jacobian(const std::vector<Vec3>& rPoints,
     return lo;
 }
 
+std::array<double, 8> hex_corner_scaled_jacobians(const std::vector<Vec3>& rPoints,
+                                                  const std::array<std::int64_t, 8>& rHex) {
+    std::array<double, 8> out{};
+    for (int c = 0; c < 8; ++c)
+        out[static_cast<std::size_t>(c)] = hexfit_corner(rPoints, rHex, c);
+    return out;
+}
+
+std::vector<Vec3> hex_boundary_normals(const std::vector<Vec3>& rPoints,
+                                       const std::vector<std::array<std::int64_t, 4>>& rQuads,
+                                       int Smooth) {
+    const std::size_t np = rPoints.size();
+    std::vector<Vec3> n(np, Vec3{0.0, 0.0, 0.0});
+    std::vector<std::vector<std::int64_t>> nbr(np);
+    for (const auto& q : rQuads) {
+        const Vec3 d1 = vec3_sub(rPoints[static_cast<std::size_t>(q[2])],
+                                 rPoints[static_cast<std::size_t>(q[0])]);
+        const Vec3 d2 = vec3_sub(rPoints[static_cast<std::size_t>(q[3])],
+                                 rPoints[static_cast<std::size_t>(q[1])]);
+        const Vec3 area = vec3_scale(vec3_cross(d1, d2), 0.5);
+        for (std::size_t e = 0; e < 4; ++e) {
+            const auto v = static_cast<std::size_t>(q[e]);
+            n[v] = vec3_add(n[v], area);
+            nbr[v].push_back(q[(e + 1) % 4]);
+            nbr[v].push_back(q[(e + 3) % 4]);
+        }
+    }
+    for (auto& a : nbr) {
+        std::sort(a.begin(), a.end());
+        a.erase(std::unique(a.begin(), a.end()), a.end());
+    }
+    for (std::size_t v = 0; v < np; ++v)
+        if (vec3_norm(n[v]) > 0.0)
+            n[v] = vec3_normalize(n[v]);
+    for (int s = 0; s < Smooth; ++s) {
+        std::vector<Vec3> next(np, Vec3{0.0, 0.0, 0.0});
+        for (std::size_t v = 0; v < np; ++v) {
+            if (nbr[v].empty())
+                continue;
+            Vec3 sum = n[v];
+            for (std::int64_t u : nbr[v])
+                sum = vec3_add(sum, n[static_cast<std::size_t>(u)]);
+            next[v] = vec3_norm(sum) > 0.0 ? vec3_normalize(sum) : Vec3{0.0, 0.0, 0.0};
+        }
+        n.swap(next);
+    }
+    return n;
+}
+
 HexUntangleReport hex_untangle(std::vector<Vec3>& rPoints,
                                const std::vector<std::array<std::int64_t, 8>>& rHexes,
-                               const std::vector<HexNodeMode>& rMode,
-                               const std::function<Vec3(const Vec3&)>& rProject,
+                               const std::vector<HexNodeMode>& rMode, const HexProjector& rProject,
                                const HexUntangleOptions& rOptions) {
     const std::size_t np = rPoints.size();
     // Incident hexahedra and edge neighbours of every node.
@@ -363,15 +417,58 @@ HexUntangleReport hex_untangle(std::vector<Vec3>& rPoints,
             w = std::min(w, hex_min_scaled_jacobian(rPoints, rHexes[static_cast<std::size_t>(h)]));
         return w;
     };
+    // The robust tie-break: the corners around node @p V, each capped at the
+    // target, summed. A hexahedron with two poor corners at different nodes
+    // keeps its minimum when either node moves alone, so a strict rise of
+    // the minimum never comes; a move that keeps the minimum and raises this
+    // sum still makes progress, and the pair only grows, so it cannot cycle.
+    auto capped = [&](std::size_t V) {
+        double sum = 0.0;
+        for (std::int64_t h : inc[V])
+            for (int c = 0; c < 8; ++c)
+                sum += std::min(rOptions.mTarget,
+                                hexfit_corner(rPoints, rHexes[static_cast<std::size_t>(h)], c));
+        return sum;
+    };
+    // The mean of the trilinear reflections of node @p V: per incident
+    // hexahedron, the position that cancels its twist (the alternating sum
+    // of its corners), which a parallelepiped's corner satisfies.
+    auto reflection = [&](std::size_t V) {
+        Vec3 sum{0.0, 0.0, 0.0};
+        for (std::int64_t h : inc[V]) {
+            const auto& hex = rHexes[static_cast<std::size_t>(h)];
+            int at = 0;
+            while (static_cast<std::size_t>(hex[static_cast<std::size_t>(at)]) != V)
+                ++at;
+            const int b0 = kHexfitBits[at];
+            Vec3 p{0.0, 0.0, 0.0};
+            for (int b = 0; b < 8; ++b) {
+                if (b == b0)
+                    continue;
+                int flips = 0;
+                for (int k = 0; k < 3; ++k)
+                    flips += ((b ^ b0) >> k) & 1;
+                const Vec3& x = rPoints[static_cast<std::size_t>(
+                    hex[static_cast<std::size_t>(kHexfitAtBits[b])])];
+                p = flips % 2 ? vec3_add(p, x) : vec3_sub(p, x);
+            }
+            sum = vec3_add(sum, p);
+        }
+        return vec3_scale(sum, 1.0 / static_cast<double>(inc[V].size()));
+    };
     HexUntangleReport rep;
     // Only nodes whose neighbourhood changed (or that are still below the
     // target) can move: the others would be skipped again, so the result is
     // that of visiting every node.
     std::vector<std::uint8_t> active(np, 1), next(np, 0);
+    std::int64_t step_base = 0;  // the sweep the step size counts from
+    bool restarted = false;
+    std::vector<Vec3> cand;
     for (std::int64_t sweep = 0; sweep < rOptions.mIterations; ++sweep) {
         ++rep.mSweeps;
-        const double scale = 0.2 * std::pow(0.5, static_cast<double>(sweep / 10));
+        const double scale = 0.2 * std::pow(0.5, static_cast<double>((sweep - step_base) / 10));
         std::int64_t moves = 0;
+        double low = 1.0;  // the worst corner of the nodes visited
         std::fill(next.begin(), next.end(), 0);
         for (std::size_t v = 0; v < np; ++v) {
             if (!active[v] || rMode[v] == HexNodeMode::Fixed || inc[v].empty())
@@ -390,25 +487,65 @@ HexUntangleReport hex_untangle(std::vector<Vec3>& rPoints,
             }
             edge /= static_cast<double>(nbr[v].size());
             mean = vec3_scale(mean, 1.0 / static_cast<double>(nbr[v].size()));
-            std::array<Vec3, 7> cand{};
-            cand[0] = mean;
-            for (std::size_t k = 0; k < 6; ++k) {
-                cand[k + 1] = keep;
-                cand[k + 1][k / 2] += (k % 2 ? -1.0 : 1.0) * scale * edge;
+            cand.clear();
+            cand.push_back(mean);
+            const bool wide = rOptions.mRobust && now < 0.2;
+            if (rOptions.mRobust)
+                cand.push_back(reflection(v));
+            if (wide) {
+                for (int dz = -1; dz <= 1; ++dz)
+                    for (int dy = -1; dy <= 1; ++dy)
+                        for (int dx = -1; dx <= 1; ++dx) {
+                            if (dx == 0 && dy == 0 && dz == 0)
+                                continue;
+                            const Vec3 d = vec3_normalize(Vec3{static_cast<double>(dx),
+                                                               static_cast<double>(dy),
+                                                               static_cast<double>(dz)});
+                            cand.push_back(vec3_add(keep, vec3_scale(d, scale * edge)));
+                        }
+            } else {
+                for (std::size_t k = 0; k < 6; ++k) {
+                    Vec3 c = keep;
+                    c[k / 2] += (k % 2 ? -1.0 : 1.0) * scale * edge;
+                    cand.push_back(c);
+                }
             }
             double best = now;
+            double best_sum = rOptions.mRobust ? capped(v) : 0.0;
             Vec3 best_at = keep;
-            for (Vec3 c : cand) {
+            auto attempt = [&](Vec3 C) {
                 if (rMode[v] == HexNodeMode::Slide)
-                    c = rProject(c);
-                rPoints[v] = c;
+                    C = rProject(v, C);
+                rPoints[v] = C;
                 const double w = worst(v);
                 if (w > best + 1e-12) {
                     best = w;
-                    best_at = c;
+                    best_at = C;
+                    if (rOptions.mRobust)
+                        best_sum = capped(v);
+                    return true;
                 }
+                if (rOptions.mRobust && w >= best) {
+                    const double sum = capped(v);
+                    if (sum > best_sum + 1e-12) {
+                        best = w;
+                        best_sum = sum;
+                        best_at = C;
+                        return true;
+                    }
+                }
+                return false;
+            };
+            for (const Vec3& c : cand)
+                attempt(c);
+            if (wide && best_at != keep) {
+                // A line search along the best step: further, then shorter.
+                const Vec3 d = vec3_sub(best_at, keep);
+                if (!attempt(vec3_add(keep, vec3_scale(d, 2.0))))
+                    attempt(vec3_add(keep, vec3_scale(d, 0.5)));
             }
             rPoints[v] = best_at;
+            low = std::min(low, best);
             if (best_at != keep) {
                 ++moves;
                 for (std::int64_t h : inc[v])
@@ -420,8 +557,13 @@ HexUntangleReport hex_untangle(std::vector<Vec3>& rPoints,
         }
         active.swap(next);
         rep.mMoves += moves;
-        if (moves == 0)
-            break;
+        if (moves == 0) {
+            if (!rOptions.mRobust || restarted || low >= 0.2)
+                break;
+            // Stalled with a poor corner left: start the steps again, once.
+            restarted = true;
+            step_base = sweep + 1;
+        }
     }
     return rep;
 }
