@@ -99,6 +99,12 @@ _JS_TO_C = {
     # `select` is a reserved-looking name in JS (and Fortran/Julia spell it
     # select_region too); C keeps the plain verb.
     "selectRegion": "select",
+    # The JS call returns both arrays at once; C hands out a handle whose
+    # arrays are borrowed (mio_adjacency_create / _indptr / _indices / _free).
+    "adjacency": "adjacency_create",
+    # camelCase of delaunay_2d would read "delaunay2D"; the JS name keeps the
+    # "2d" of the operation it wraps.
+    "delaunay2d": "delaunay_2d",
 }
 
 # `mio_*` operation entry points (first parameter `const mio_mesh*`) with no
