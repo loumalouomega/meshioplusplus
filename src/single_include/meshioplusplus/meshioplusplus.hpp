@@ -118842,7 +118842,11 @@ Mesh cad_read(const char* pFormat, bool Iges, const std::string& rPath, BrepInfo
     const auto p_kernel = cad_kernel();
     if (!p_kernel || !(Iges ? p_kernel->mReadIges : p_kernel->mReadStep))
         cad_read_unsupported(pFormat);
-    return (Iges ? p_kernel->mReadIges : p_kernel->mReadStep)(rPath, rInfo, rOptions);
+    Mesh mesh = (Iges ? p_kernel->mReadIges : p_kernel->mReadStep)(rPath, rInfo, rOptions);
+    // The kernel converts the file's unit to millimetres (OpenCASCADE's
+    // xstep.cad.unit, which the provider pins), so the mesh says so.
+    detail::set_mesh_length_unit(mesh, 1e-3);
+    return mesh;
 }
 
 }  // namespace
@@ -285607,6 +285611,7 @@ FitCadResult occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
 #include <Message_Messenger.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <IGESControl_Reader.hxx>
+#include <Interface_Static.hxx>
 #include <Poly_Triangulation.hxx>
 #include <STEPControl_Reader.hxx>
 #include <Standard_Failure.hxx>
@@ -286004,12 +286009,17 @@ TopoDS_Shape occt_read_cad_file(const std::string& rPath, bool Iges, const char*
         TopoDS_Shape shape;
         if (Iges) {
             IGESControl_Reader reader;
+            // The reader's constructor registers the static; the core states
+            // the mesh in millimetres (cad_read), so pin the target unit
+            // rather than rely on its default.
+            Interface_Static::SetCVal("xstep.cad.unit", "MM");
             if (reader.ReadFile(rPath.c_str()) != IFSelect_RetDone)
                 throw ReadError(prefix + "OpenCASCADE cannot read '" + rPath + "'");
             reader.TransferRoots();
             shape = reader.OneShape();
         } else {
             STEPControl_Reader reader;
+            Interface_Static::SetCVal("xstep.cad.unit", "MM");
             if (reader.ReadFile(rPath.c_str()) != IFSelect_RetDone)
                 throw ReadError(prefix + "OpenCASCADE cannot read '" + rPath + "'");
             reader.TransferRoots();

@@ -33,6 +33,7 @@
 
 #include "meshioplusplus/detail/cell_subdivision.hpp"
 #include "meshioplusplus/detail/hdf5_util.hpp"
+#include "meshioplusplus/detail/length_unit.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/cgns.hpp"
@@ -928,6 +929,62 @@ TEST(CgnsMll, ReadsNgonNfacePolyhedralSections) {
     // right arity proves nothing about whether the node ids landed correctly.
     EXPECT_NEAR(meshioplusplus::compute_stats(got).mUnsignedVolume, 1.0, 1e-12);
 
+    std::remove(path.c_str());
+}
+
+TEST(CgnsMll, LengthUnitsAgreeWithCgnslib) {
+    // Both directions of DimensionalUnits_t against cgnslib itself: a file
+    // cgnslib writes (the base in centimetres, then a zone overriding it in
+    // millimetres) reads with that unit through the MLL, and the unit
+    // meshio++'s writer puts under the base is what cg_units_read returns.
+    const std::string path = mt::temp_path("_mll_units.cgns");
+    for (const bool zone_override : {false, true}) {
+        std::remove(path.c_str());
+        int fn = 0, B = 0, Z = 0, S = 0, c = 0;
+        ASSERT_EQ(cg_open(path.c_str(), CG_MODE_WRITE, &fn), CG_OK) << cg_get_error();
+        ASSERT_EQ(cg_base_write(fn, "Base", 3, 3, &B), CG_OK);
+        ASSERT_EQ(cg_goto(fn, B, "end"), CG_OK);
+        ASSERT_EQ(cg_units_write(CGNS_ENUMV(Kilogram), CGNS_ENUMV(Centimeter), CGNS_ENUMV(Second),
+                                 CGNS_ENUMV(Kelvin), CGNS_ENUMV(Degree)),
+                  CG_OK);
+        cgsize_t zsize[3] = {4, 1, 0};
+        ASSERT_EQ(cg_zone_write(fn, B, "Zone", zsize, CGNS_ENUMV(Unstructured), &Z), CG_OK);
+        const double x[4] = {0, 1, 0, 0}, y[4] = {0, 0, 1, 0}, z[4] = {0, 0, 0, 1};
+        ASSERT_EQ(cg_coord_write(fn, B, Z, CGNS_ENUMV(RealDouble), "CoordinateX", x, &c), CG_OK);
+        ASSERT_EQ(cg_coord_write(fn, B, Z, CGNS_ENUMV(RealDouble), "CoordinateY", y, &c), CG_OK);
+        ASSERT_EQ(cg_coord_write(fn, B, Z, CGNS_ENUMV(RealDouble), "CoordinateZ", z, &c), CG_OK);
+        const cgsize_t tet[4] = {1, 2, 3, 4};
+        ASSERT_EQ(cg_section_write(fn, B, Z, "Tets", CGNS_ENUMV(TETRA_4), 1, 1, 0, tet, &S), CG_OK);
+        if (zone_override) {
+            ASSERT_EQ(cg_goto(fn, B, "Zone_t", Z, "end"), CG_OK);
+            ASSERT_EQ(cg_units_write(CGNS_ENUMV(Kilogram), CGNS_ENUMV(Millimeter),
+                                     CGNS_ENUMV(Second), CGNS_ENUMV(Kelvin), CGNS_ENUMV(Degree)),
+                      CG_OK);
+        }
+        ASSERT_EQ(cg_close(fn), CG_OK);
+        const double want = zone_override ? 1e-3 : 1e-2;
+        EXPECT_DOUBLE_EQ(
+            meshioplusplus::detail::mesh_length_unit(meshioplusplus::read_cgns_mll(path)), want);
+    }
+
+    mt::Mesh m =
+        mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}}, "tetra", {{0, 1, 2, 3}});
+    meshioplusplus::detail::set_mesh_length_unit(m, 0.0254);
+    std::remove(path.c_str());
+    meshioplusplus::write_cgns(path, m, -1);
+    int fn = 0;
+    ASSERT_EQ(cg_open(path.c_str(), CG_MODE_READ, &fn), CG_OK) << cg_get_error();
+    ASSERT_EQ(cg_goto(fn, 1, "end"), CG_OK);
+    CGNS_ENUMT(MassUnits_t) mass;
+    CGNS_ENUMT(LengthUnits_t) length;
+    CGNS_ENUMT(TimeUnits_t) time;
+    CGNS_ENUMT(TemperatureUnits_t) temperature;
+    CGNS_ENUMT(AngleUnits_t) angle;
+    ASSERT_EQ(cg_units_read(&mass, &length, &time, &temperature, &angle), CG_OK) << cg_get_error();
+    EXPECT_EQ(length, CGNS_ENUMV(Inch));
+    ASSERT_EQ(cg_close(fn), CG_OK);
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::mesh_length_unit(meshioplusplus::read_cgns_mll(path)),
+                     0.0254);
     std::remove(path.c_str());
 }
 

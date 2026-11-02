@@ -24,6 +24,7 @@
 #include <string>
 
 // Project includes
+#include "meshioplusplus/detail/length_unit.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/iges.hpp"
 #include "meshioplusplus/formats/step.hpp"
@@ -47,7 +48,11 @@ Mesh cad_read(const char* pFormat, bool Iges, const std::string& rPath, BrepInfo
     const auto p_kernel = cad_kernel();
     if (!p_kernel || !(Iges ? p_kernel->mReadIges : p_kernel->mReadStep))
         cad_read_unsupported(pFormat);
-    return (Iges ? p_kernel->mReadIges : p_kernel->mReadStep)(rPath, rInfo, rOptions);
+    Mesh mesh = (Iges ? p_kernel->mReadIges : p_kernel->mReadStep)(rPath, rInfo, rOptions);
+    // The kernel converts the file's unit to millimetres (OpenCASCADE's
+    // xstep.cad.unit, which the provider pins), so the mesh says so.
+    detail::set_mesh_length_unit(mesh, 1e-3);
+    return mesh;
 }
 
 }  // namespace
