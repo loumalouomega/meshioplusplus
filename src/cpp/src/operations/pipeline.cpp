@@ -82,6 +82,7 @@
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
+#include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
 #include "meshioplusplus/operations/crop.hpp"
@@ -447,6 +448,9 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Delaunay2D", {}},
         {"EstimateNormals", {"K", "Orientation", "Viewpoint", "RecordVariation"}},
         {"LaplacianEigenmodes", {"NumModes", "Tolerance", "MaxIterations"}},
+        {"Morph",
+         {"Array", "FixBoundary", "ConstrainedArray", "Stiffening", "Steps", "AllowInverted",
+          "Tolerance", "MaxIterations"}},
         {"RegisterRigid",
          {"Target", "Method", "MaxIterations", "Tolerance", "MaxDistance", "RotateData"}},
         {"ConvertCoordinates",
@@ -2291,6 +2295,34 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"Area", hr.mArea},
                         {"Volume", hr.mVolume}});
         return std::move(hr.mMesh);
+    }
+    if (op == "Morph") {
+        MorphOptions opts;
+        opts.mArray = pipe_text(rStep, "Array", "");
+        opts.mFixBoundary = pipe_flag(rStep, "FixBoundary", true);
+        opts.mConstrainedArray = pipe_text(rStep, "ConstrainedArray", "");
+        opts.mStiffening = pipe_number(rStep, "Stiffening", 1.0);
+        const double steps = pipe_number(rStep, "Steps", 1.0);
+        const double iters = pipe_number(rStep, "MaxIterations", 0.0);
+        opts.mSteps = static_cast<std::int64_t>(steps);
+        opts.mMaxIterations = static_cast<std::int64_t>(iters);
+        if (static_cast<double>(opts.mSteps) != steps ||
+            static_cast<double>(opts.mMaxIterations) != iters)
+            throw std::invalid_argument(
+                pipe_err(rStep, "'Steps' and 'MaxIterations' must be integers"));
+        opts.mAllowInverted = pipe_flag(rStep, "AllowInverted", false);
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 1e-10);
+        MorphResult mr = morph(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumConstrained", static_cast<double>(mr.mNumConstrained)},
+                        {"NumInverted", static_cast<double>(mr.mNumInverted)},
+                        {"MaxDisplacement", mr.mMaxDisplacement},
+                        {"Converged", mr.mConverged ? 1.0 : 0.0}});
+        if (!mr.mConverged)
+            rReport.mWarnings.push_back(
+                "morph: a solve hit its iteration cap; the motion is "
+                "approximate");
+        return std::move(mr.mMesh);
     }
     if (op == "LaplacianEigenmodes") {
         EigenmodeOptions opts;

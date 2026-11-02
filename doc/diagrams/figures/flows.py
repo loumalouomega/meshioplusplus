@@ -1089,7 +1089,7 @@ def roadmap_map():
             [
                 ("length units as metadata", "S"),
                 ("UV parameterization", "M"),
-                ("morphing · untangling · metrics", "M"),
+                ("untangling · metrics", "M"),
                 ("point-cloud surfaces", "L"),
                 ("providers: heal, mesh, quads", "L"),
                 ("surface booleans (spike first)", "XL"),

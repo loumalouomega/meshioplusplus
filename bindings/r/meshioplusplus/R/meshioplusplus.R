@@ -716,6 +716,33 @@ mio_match_periodic_nodes <- function(mesh, slave, master, matrix = NULL, transla
   )
 }
 
+#' Boundary-driven mesh morphing
+#'
+#' The constrained points (the boundary unless `fix_boundary = FALSE`, and the
+#' nonzero entries of point data `constrained_array`) move by point data
+#' `array`; every other point moves by its harmonic extension with
+#' Jacobian-based stiffening. A result with inverted cells is an error unless
+#' `allow_inverted = TRUE`. See `doc/morph.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param array Point data: the displacement.
+#' @param fix_boundary Constrain the boundary points.
+#' @param constrained_array Point data whose nonzero entries constrain too.
+#' @param stiffening The stiffening exponent (0: plain Laplace).
+#' @param steps Increments the displacement is applied in.
+#' @param allow_inverted Return a mesh with inverted cells instead of failing.
+#' @return A list of `mesh`, `num_constrained`, `num_free`, `num_inverted`,
+#'   `max_displacement` and `converged`.
+#' @export
+mio_morph <- function(mesh, array, fix_boundary = TRUE, constrained_array = NULL,
+                      stiffening = 1, steps = 1, allow_inverted = FALSE) {
+  .Call(
+    R_mio_morph, mesh, as.character(array), isTRUE(fix_boundary),
+    if (is.null(constrained_array)) NULL else as.character(constrained_array),
+    as.numeric(stiffening), as.numeric(steps), isTRUE(allow_inverted)
+  )
+}
+
 #' Laplace-Beltrami eigenmodes of a triangle surface
 #'
 #' The lowest eigenpairs of the cotangent Laplacian against the lumped mass:

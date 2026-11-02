@@ -1687,6 +1687,33 @@ struct _CSobolevReport
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_morph_opts`."""
+struct _CMorphOpts
+    array::Cstring
+    constrained_array::Cstring
+    constrained::Ptr{UInt8}
+    num_constrained::Int64
+    stiffening::Cdouble
+    steps::Int64
+    tolerance::Cdouble
+    max_iterations::Int64
+    fix_boundary::Int32
+    allow_inverted::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_morph_report`."""
+struct _CMorphReport
+    num_constrained::Int64
+    num_free::Int64
+    num_inverted::Int64
+    iterations::Int64
+    max_displacement::Cdouble
+    converged::Int32
+    reserved_pad::Int32
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_eigenmode_opts`."""
 struct _CEigenmodeOpts
     num_modes::Int64
@@ -2083,6 +2110,10 @@ function _check_abi_layout()
         error("meshio++: mio_shrinkwrap_opts layout mismatch ($(sizeof(_CShrinkwrapOpts)) bytes)")
     sizeof(_CShrinkwrapReport) == 136 ||
         error("meshio++: mio_shrinkwrap_report layout mismatch ($(sizeof(_CShrinkwrapReport)) bytes)")
+    sizeof(_CMorphOpts) == 104 ||
+        error("meshio++: mio_morph_opts layout mismatch ($(sizeof(_CMorphOpts)) bytes)")
+    sizeof(_CMorphReport) == 80 ||
+        error("meshio++: mio_morph_report layout mismatch ($(sizeof(_CMorphReport)) bytes)")
     sizeof(_CEigenmodeOpts) == 56 ||
         error("meshio++: mio_eigenmode_opts layout mismatch ($(sizeof(_CEigenmodeOpts)) bytes)")
     sizeof(_CEigenmodeReport) == 64 ||

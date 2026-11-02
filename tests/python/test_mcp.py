@@ -2157,6 +2157,23 @@ def test_convert_coordinates_tool(tmp_path):
     )
 
 
+def test_morph_tool(tmp_path):
+    box = meshioplusplus.convert_cells(
+        meshioplusplus.box(dims=(3, 3, 3)), mode="simplexify"
+    )
+    lift = np.zeros((len(box.points), 3))
+    top = box.points[:, 2] == box.points[:, 2].max()
+    lift[top, 2] = 0.05
+    box.point_data["d"] = lift
+    src = str(tmp_path / "box.vtu")
+    meshioplusplus.write(src, box)
+    out = _dump(_tools.tool_morph(src, str(tmp_path / "m.vtu"), "d"))
+    assert out["num_inverted"] == 0 and out["converged"]
+    assert out["max_displacement"] == pytest.approx(0.05)
+    with pytest.raises(ValueError, match="no point data"):
+        _tools.tool_morph(src, str(tmp_path / "x.vtu"), "missing")
+
+
 def test_laplacian_eigenmodes_tool(tmp_path):
     src = str(tmp_path / "s.vtu")
     meshioplusplus.write(src, meshioplusplus.icosa_sphere(subdivisions=2))

@@ -129,6 +129,7 @@ from .. import (
     metric_from_hessian,
     mirror,
     moebius,
+    morph,
     move,
     ngon,
     octa_sphere,
@@ -4053,6 +4054,42 @@ def tool_convert_coordinates(
     )
 
 
+def tool_morph(
+    input_path,
+    output_path,
+    array,
+    fix_boundary=True,
+    constrained=None,
+    stiffening=1.0,
+    steps=1,
+    allow_inverted=False,
+    input_format=None,
+    output_format=None,
+):
+    """Move the boundary (or chosen points) by a displacement, harmonically
+    extended into the mesh."""
+    mesh = _load(input_path, input_format)
+    out, report = morph(
+        mesh,
+        array,
+        fix_boundary=bool(fix_boundary),
+        constrained=constrained or None,
+        stiffening=float(stiffening),
+        steps=int(steps),
+        allow_inverted=bool(allow_inverted),
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_constrained=int(report["num_constrained"]),
+        num_free=int(report["num_free"]),
+        num_inverted=int(report["num_inverted"]),
+        max_displacement=float(report["max_displacement"]),
+        converged=bool(report["converged"]),
+    )
+
+
 def tool_laplacian_eigenmodes(
     input_path,
     output_path,
@@ -6985,6 +7022,14 @@ TOOL_REGISTRY = OrderedDict(
         (
             "sobolev_deform",
             {"fn": tool_sobolev_deform, "wraps": ("sobolev_deform",), "gated": None},
+        ),
+        (
+            "morph",
+            {
+                "fn": tool_morph,
+                "wraps": ("morph",),
+                "gated": None,
+            },
         ),
         (
             "laplacian_eigenmodes",

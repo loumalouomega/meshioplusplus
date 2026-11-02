@@ -209,6 +209,7 @@ if TYPE_CHECKING:
         metric_from_hessian,
         move,
     )
+    from ._morph import morph
     from ._normals import compute_normals
     from ._octree import octree
     from ._octree_mesh import octree_mesh
@@ -354,6 +355,7 @@ _LAZY_ATTRS = {
     "convex_hull": "_hull",
     "delaunay_2d": "_hull",
     "estimate_normals": "_point_normals",
+    "morph": "_morph",
     "register_rigid": "_registration",
     "convert_coordinates": "_coordinates",
     "write_graph": "_adjacency",
@@ -716,6 +718,7 @@ __all__ = [
     "convex_hull",
     "delaunay_2d",
     "estimate_normals",
+    "morph",
     "register_rigid",
     "convert_coordinates",
     "refine",

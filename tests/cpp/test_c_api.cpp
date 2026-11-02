@@ -7059,6 +7059,35 @@ TEST(CApi, ConvertCoordinates) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, Morph) {
+    mio_mesh* m = capi_cube_surface();
+    // A closed surface has no boundary: the mask constrains every point.
+    std::vector<double> d(8 * 3, 0.0);
+    for (int i = 0; i < 8; ++i)
+        d[i * 3 + 2] = 0.5;
+    const std::int64_t shape[2] = {8, 3};
+    ASSERT_EQ(mio_mesh_add_point_data(m, "d", MIO_FLOAT64, 2, shape, d.data()), MIO_OK);
+    mio_morph_opts opts;
+    mio_morph_opts_init(&opts);
+    EXPECT_EQ(opts.fix_boundary, 1);
+    opts.array = "d";
+    const std::vector<std::uint8_t> all(8, 1);
+    opts.constrained = all.data();
+    opts.num_constrained = 8;
+    mio_morph_report rep;
+    mio_mesh* out = mio_morph(m, &opts, &rep);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(rep.num_constrained, 8);
+    EXPECT_EQ(rep.num_inverted, 0);
+    EXPECT_DOUBLE_EQ(rep.max_displacement, 0.5);
+    mio_mesh_free(out);
+    opts.array = "missing";
+    EXPECT_EQ(mio_morph(m, &opts, nullptr), nullptr);
+    opts.array = nullptr;
+    EXPECT_EQ(mio_morph(m, &opts, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, LaplacianEigenmodes) {
     mio_mesh* m = capi_cube_surface();
     mio_eigenmode_opts opts;

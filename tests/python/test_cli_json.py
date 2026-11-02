@@ -198,6 +198,37 @@ def files(tmp_path_factory):
     paths["curved"] = str(d / "curved.vtu")
     mio.write(paths["curved"], curved)
     mio.write(paths["grid"], grid)
+    # a tetrahedral cube whose top face is displaced, for morph
+    cube = mio.convert_cells(
+        mio.Mesh(
+            np.array(
+                [
+                    [i, j, k]
+                    for k in (0, 0.5, 1)
+                    for j in (0, 0.5, 1)
+                    for i in (0, 0.5, 1)
+                ],
+                dtype=float,
+            ),
+            [
+                (
+                    "hexahedron",
+                    np.array(
+                        [
+                            [a, a + 1, a + 4, a + 3, a + 9, a + 10, a + 13, a + 12]
+                            for a in (0, 1, 3, 4, 9, 10, 12, 13)
+                        ]
+                    ),
+                )
+            ],
+        ),
+        mode="simplexify",
+    )
+    lift = np.zeros((len(cube.points), 3))
+    lift[cube.points[:, 2] == 1.0, 2] = 0.1
+    cube.point_data["d"] = lift
+    paths["morphable"] = str(d / "morphable.vtu")
+    mio.write(paths["morphable"], cube)
     mio.write(paths["moved"], moved)
     mio.write(paths["tagged"], tagged)
     mio.write(paths["parts"], parts)
@@ -583,6 +614,19 @@ WRITING = [
             "0.2,0.9",
             "--method",
             "nearest",
+            "--json",
+        ],
+    ),
+    (
+        "morph",
+        lambda f, out: [
+            "morph",
+            f["morphable"],
+            out + ".vtu",
+            "--array",
+            "d",
+            "--steps",
+            "2",
             "--json",
         ],
     ),

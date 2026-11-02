@@ -3932,6 +3932,50 @@ MIO_API mio_mesh* mio_convert_coordinates(const mio_mesh* mesh, const mio_coordi
                                           int64_t* num_arrays, int64_t* num_singular);
 
 /**
+ * Options for mio_morph. Initialize through mio_morph_opts_init(): boundary
+ * constrained, stiffening 1, one step, inversions refused.
+ */
+typedef struct mio_morph_opts {
+    const char* array;             /**< point data: the displacement (required, borrowed) */
+    const char* constrained_array; /**< point data whose nonzero entries pin, or NULL */
+    const uint8_t* constrained;    /**< a mask, one entry per point (nonzero pins), or NULL */
+    int64_t num_constrained;       /**< entries of `constrained`: 0 or the point count */
+    double stiffening;             /**< stiffness scaled by (mean / measure)^stiffening */
+    int64_t steps;                 /**< increments, at least 1 */
+    double tolerance;              /**< relative residual of each solve */
+    int64_t max_iterations;        /**< each solve's cap; 0 picks one */
+    int32_t fix_boundary;          /**< nonzero constrains the boundary points */
+    int32_t allow_inverted;        /**< nonzero returns a mesh with inverted cells */
+    int64_t reserved[4];           /**< must be zero; room for additive growth */
+} mio_morph_opts;
+
+/** What mio_morph did. */
+typedef struct mio_morph_report {
+    int64_t num_constrained; /**< points that took the prescribed displacement */
+    int64_t num_free;        /**< points solved for */
+    int64_t num_inverted;    /**< cells turned inside out (0 unless allowed) */
+    int64_t iterations;      /**< conjugate-gradient iterations, all solves */
+    double max_displacement; /**< the largest point displacement */
+    int32_t converged;       /**< zero when a solve hit its cap */
+    int32_t reserved_pad;    /**< zero */
+    int64_t reserved[4];     /**< zero; room for additive growth */
+} mio_morph_report;
+
+/** Initialize morph options (see mio_morph_opts). */
+MIO_API void mio_morph_opts_init(mio_morph_opts* opts);
+
+/**
+ * Boundary-driven morphing: the constrained points (boundary, masks) move by
+ * the `array` displacement, the rest by its harmonic extension with
+ * Jacobian-based stiffening; a result with inverted cells fails unless
+ * `allow_inverted`. See doc/morph.md. `report` may be NULL.
+ *
+ * @return the moved mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_morph(const mio_mesh* mesh, const mio_morph_opts* opts,
+                            mio_morph_report* report);
+
+/**
  * Options for mio_laplacian_eigenmodes. Initialize through
  * mio_eigenmode_opts_init(): 10 modes, tolerance 1e-8, automatic cap.
  */

@@ -398,6 +398,16 @@ _OP_TABLE = {
     "Delaunay2D": (),
     "EstimateNormals": ("K", "Orientation", "Viewpoint", "RecordVariation"),
     "LaplacianEigenmodes": ("NumModes", "Tolerance", "MaxIterations"),
+    "Morph": (
+        "Array",
+        "FixBoundary",
+        "ConstrainedArray",
+        "Stiffening",
+        "Steps",
+        "AllowInverted",
+        "Tolerance",
+        "MaxIterations",
+    ),
     "RegisterRigid": (
         "Target",
         "Method",
@@ -2466,6 +2476,37 @@ def _apply_step(mesh, step, steps, warnings):
         entry["NumFacets"] = float(report["num_facets"])
         entry["Area"] = float(report["area"])
         entry["Volume"] = float(report["volume"])
+    elif op == "Morph":
+        from ._morph import morph
+
+        n_steps = _number(step, "Steps", 1.0)
+        iters = _number(step, "MaxIterations", 0.0)
+        if float(int(n_steps)) != n_steps or float(int(iters)) != iters:
+            raise ValueError(
+                "meshio++: pipeline: Morph: 'Steps' and 'MaxIterations' must be "
+                "integers"
+            )
+        constrained = _text(step, "ConstrainedArray", "")
+        mesh, report = morph(
+            mesh,
+            _text(step, "Array", ""),
+            fix_boundary=_flag(step, "FixBoundary", True),
+            constrained=constrained if constrained else None,
+            stiffening=_number(step, "Stiffening", 1.0),
+            steps=int(n_steps),
+            allow_inverted=_flag(step, "AllowInverted", False),
+            tolerance=_number(step, "Tolerance", 1e-10),
+            max_iterations=int(iters),
+            return_report=True,
+        )
+        entry["NumConstrained"] = float(report["num_constrained"])
+        entry["NumInverted"] = float(report["num_inverted"])
+        entry["MaxDisplacement"] = float(report["max_displacement"])
+        entry["Converged"] = 1.0 if report["converged"] else 0.0
+        if not report["converged"]:
+            warnings.append(
+                "morph: a solve hit its iteration cap; the motion is approximate"
+            )
     elif op == "LaplacianEigenmodes":
         from ._eigenmodes import laplacian_eigenmodes
 

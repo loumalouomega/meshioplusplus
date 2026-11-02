@@ -136,6 +136,7 @@
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
+#include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
@@ -7097,6 +7098,53 @@ val sobolev_deform_js(const val& rMeshObj, const std::string& rArray, double len
 }
 
 /**
+ * @brief Boundary-driven morphing. @p rOptions is `{array (required),
+ * fixBoundary, constrainedArray, constrained (a 0/1 array), stiffening, steps,
+ * allowInverted, tolerance, maxIterations}`. See operations/morph.hpp.
+ */
+val morph_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::MorphOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("array"))
+                options.mArray = rOptions["array"].as<std::string>();
+            if (rOptions.hasOwnProperty("fixBoundary"))
+                options.mFixBoundary = rOptions["fixBoundary"].as<bool>();
+            if (rOptions.hasOwnProperty("constrainedArray"))
+                options.mConstrainedArray = rOptions["constrainedArray"].as<std::string>();
+            if (rOptions.hasOwnProperty("constrained")) {
+                const std::vector<double> m =
+                    emscripten::vecFromJSArray<double>(rOptions["constrained"]);
+                options.mConstrained.reserve(m.size());
+                for (const double v : m)
+                    options.mConstrained.push_back(v != 0.0 ? 1 : 0);
+            }
+            if (rOptions.hasOwnProperty("stiffening"))
+                options.mStiffening = rOptions["stiffening"].as<double>();
+            if (rOptions.hasOwnProperty("steps"))
+                options.mSteps = static_cast<std::int64_t>(rOptions["steps"].as<double>());
+            if (rOptions.hasOwnProperty("allowInverted"))
+                options.mAllowInverted = rOptions["allowInverted"].as<bool>();
+            if (rOptions.hasOwnProperty("tolerance"))
+                options.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("maxIterations"))
+                options.mMaxIterations =
+                    static_cast<std::int64_t>(rOptions["maxIterations"].as<double>());
+        }
+        meshioplusplus::MorphResult r = meshioplusplus::morph(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numConstrained", static_cast<double>(r.mNumConstrained));
+        out.set("numFree", static_cast<double>(r.mNumFree));
+        out.set("numInverted", static_cast<double>(r.mNumInverted));
+        out.set("iterations", static_cast<double>(r.mIterations));
+        out.set("maxDisplacement", r.mMaxDisplacement);
+        out.set("converged", r.mConverged);
+        return out;
+    });
+}
+
+/**
  * @brief The lowest eigenpairs of a surface's Laplace-Beltrami operator.
  * @p rOptions is `{numModes, tolerance, maxIterations}`, every key optional.
  * See operations/eigenmodes.hpp.
@@ -9556,6 +9604,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("sobolevDeform", &sobolev_deform_js);
     emscripten::function("geodesicDistance", &geodesic_distance_js);
     emscripten::function("convertCoordinates", &convert_coordinates_js);
+    emscripten::function("morph", &morph_js);
     emscripten::function("laplacianEigenmodes", &laplacian_eigenmodes_js);
     emscripten::function("registerRigid", &register_rigid_js);
     emscripten::function("estimateNormals", &estimate_normals_js);

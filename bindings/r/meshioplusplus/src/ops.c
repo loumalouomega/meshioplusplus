@@ -1245,6 +1245,34 @@ SEXP R_mio_sobolev_deform(SEXP mesh, SEXP array, SEXP length_scale, SEXP fixed_p
     return res;
 }
 
+SEXP R_mio_morph(SEXP mesh, SEXP array, SEXP fix_boundary, SEXP constrained_array,
+                 SEXP stiffening, SEXP steps, SEXP allow_inverted) {
+    mio_morph_opts opts;
+    mio_morph_opts_init(&opts);
+    opts.array = mio_r_string(array, "array");
+    if (!Rf_isNull(constrained_array))
+        opts.constrained_array = mio_r_string(constrained_array, "constrained_array");
+    opts.fix_boundary = mio_r_bool(fix_boundary, "fix_boundary") ? 1 : 0;
+    opts.stiffening = Rf_asReal(stiffening);
+    opts.steps = (int64_t)Rf_asReal(steps);
+    opts.allow_inverted = mio_r_bool(allow_inverted, "allow_inverted") ? 1 : 0;
+    mio_morph_report rep;
+    mio_mesh *out = mio_morph(mio_r_mesh(mesh), &opts, &rep);
+    if (out == NULL) mio_r_fail("morph");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP a = PROTECT(Rf_ScalarReal((double)rep.num_constrained));
+    SEXP b = PROTECT(Rf_ScalarReal((double)rep.num_free));
+    SEXP c = PROTECT(Rf_ScalarReal((double)rep.num_inverted));
+    SEXP d = PROTECT(Rf_ScalarReal(rep.max_displacement));
+    SEXP e = PROTECT(Rf_ScalarLogical(rep.converged != 0));
+    const char *keys[] = {"mesh", "num_constrained", "num_free", "num_inverted",
+                          "max_displacement", "converged"};
+    SEXP values[] = {mo, a, b, c, d, e};
+    SEXP res = PROTECT(mio_r_named_list(6, keys, values));
+    UNPROTECT(7);
+    return res;
+}
+
 SEXP R_mio_laplacian_eigenmodes(SEXP mesh, SEXP num_modes, SEXP tolerance,
                                 SEXP max_iterations) {
     mio_eigenmode_opts opts;

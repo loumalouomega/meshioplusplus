@@ -262,6 +262,7 @@ export default defineConfig({
           { text: "Surface repair", link: "/repair" },
           { text: "Shrinkwrap", link: "/shrinkwrap" },
           { text: "Sobolev deformation", link: "/sobolev_deform" },
+          { text: "Mesh morphing", link: "/morph" },
           { text: "Geodesic distance (heat method)", link: "/geodesic" },
           { text: "Laplacian eigenmodes", link: "/eigenmodes" },
           { text: "Curved tessellation", link: "/tessellation" },

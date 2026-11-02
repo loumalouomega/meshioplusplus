@@ -47,6 +47,7 @@ from . import (
     _mesh_cad,
     _mirror,
     _mmg,
+    _morph,
     _normals,
     _octree,
     _octree_mesh,
@@ -292,6 +293,12 @@ def build_parser():
     )
     _coordinates.add_args(parser)
     parser.set_defaults(func=_coordinates.coordinates_cmd)
+
+    parser = subparsers.add_parser(
+        "morph", help="Move the boundary by a displacement, carried into the mesh"
+    )
+    _morph.add_args(parser)
+    parser.set_defaults(func=_morph.morph_cmd)
 
     parser = subparsers.add_parser(
         "eigenmodes",

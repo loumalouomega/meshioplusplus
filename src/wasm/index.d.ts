@@ -4083,6 +4083,37 @@ export interface MeshioPlusPlusModule {
   };
 
   /**
+   * Boundary-driven morphing: the constrained points (the boundary unless
+   * `fixBoundary` is false, and those `constrainedArray` / `constrained`
+   * mark) move by the point-data displacement `array`; every other point by
+   * its harmonic extension with Jacobian-based stiffening. See doc/morph.md.
+   * @throws {Error} on a missing array or, unless `allowInverted`, a result
+   *   with inverted cells.
+   */
+  morph(
+    mesh: Mesh,
+    options: {
+      array: string;
+      fixBoundary?: boolean;
+      constrainedArray?: string;
+      constrained?: ArrayLike<number>;
+      stiffening?: number;
+      steps?: number;
+      allowInverted?: boolean;
+      tolerance?: number;
+      maxIterations?: number;
+    },
+  ): {
+    mesh: Mesh;
+    numConstrained: number;
+    numFree: number;
+    numInverted: number;
+    iterations: number;
+    maxDisplacement: number;
+    converged: boolean;
+  };
+
+  /**
    * The lowest eigenpairs of a triangle surface's Laplace-Beltrami operator:
    * `mesh` carries point data `laplacian:modes` (n x numModes,
    * M-orthonormal) and field data `laplacian:eigenvalues` (ascending). See

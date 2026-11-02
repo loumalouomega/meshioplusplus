@@ -114,7 +114,7 @@ The first word completes to a verb (or an alias such as `c`), the next to the su
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `eigenmodes`, `coordinates`, `hull`, `delaunay`, `point-normals`, `register`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `eigenmodes`, `morph`, `coordinates`, `hull`, `delaunay`, `point-normals`, `register`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -146,6 +146,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `graph` | `output`, `kind`, `format`, `num_vertices`, `num_edges`, `max_degree` |
 | `geodesic` | `output`, `num_sources`, `num_unreached`, `num_degenerate`, `max_distance`, `time_step`, `heat_iterations`, `poisson_iterations`, `converged` |
 | `eigenmodes` | `output`, `eigenvalues`, `iterations`, `max_residual`, `converged`, `num_degenerate` |
+| `morph` | `output`, `num_constrained`, `num_free`, `num_inverted`, `iterations`, `max_displacement`, `converged` |
 | `coordinates` | `output`, `system`, `num_arrays`, `num_singular` |
 | `hull` | `output`, `dimension`, `num_vertices`, `num_facets`, `area`, `volume`, `perimeter` |
 | `point-normals` | `output`, `num_degenerate`, `num_components` |
@@ -1867,6 +1868,35 @@ The points do not move. Both CLIs print the same JSON.
 ```sh
 meshioplusplus coordinates rotor.vtu rotor_cyl.vtu --arrays U,stress
 meshioplusplus coordinates vessel.vtu out.vtu --system spherical --origin 0,0,1.5 --arrays sigma --json
+```
+
+---
+
+## meshioplusplus morph
+
+Move the boundary (or chosen points) by a displacement and carry it into the mesh (see [morphing](/morph)).
+
+```
+meshioplusplus morph [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--array NAME` | Point data: the displacement (required) |
+| `--no-fix-boundary` | Do not constrain the boundary points |
+| `--constrained-array NAME` | Point data whose nonzero entries constrain their points too |
+| `--stiffening S` | Stiffening exponent (default `1`; `0`: plain Laplace) |
+| `--steps N` | Increments the displacement is applied in (default `1`) |
+| `--allow-inverted` | Write a result with inverted cells instead of failing |
+| `--tolerance T` / `--max-iterations N` | Each solve's relative residual (default `1e-10`) and cap (default `0`: automatic) |
+| `--json` | Emit the report: `output`, `num_constrained`, `num_free`, `num_inverted`, `iterations`, `max_displacement`, `converged` |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Both CLIs print the same JSON.
+
+```sh
+meshioplusplus morph duct.vtu moved.vtu --array d
+meshioplusplus morph fluid.vtu fluid_t1.vtu --array wall_motion --steps 4 --json
 ```
 
 ---

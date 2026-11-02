@@ -79,6 +79,7 @@
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
+#include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
@@ -7183,6 +7184,56 @@ mio_mesh* mio_sobolev_deform(const mio_mesh* mesh, const mio_sobolev_opts* opts,
             report->num_fixed = r.mNumFixed;
             report->num_isolated = r.mNumIsolated;
             report->residual = r.mResidual;
+            report->max_displacement = r.mMaxDisplacement;
+            report->converged = r.mConverged ? 1 : 0;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+// --- boundary-driven morphing (roadmap 7.4.1) ----------------------------------
+
+static_assert(sizeof(mio_morph_opts) == 104, "mio_morph_opts grew outside its reserved tail");
+static_assert(sizeof(mio_morph_report) == 80, "mio_morph_report grew outside its reserved tail");
+
+void mio_morph_opts_init(mio_morph_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_morph_opts{};
+    opts->stiffening = 1.0;
+    opts->steps = 1;
+    opts->tolerance = 1e-10;
+    opts->fix_boundary = 1;
+}
+
+mio_mesh* mio_morph(const mio_mesh* mesh, const mio_morph_opts* opts, mio_morph_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        if (!opts || !opts->array)
+            throw std::invalid_argument("meshio++: morph: opts->array is NULL");
+        meshioplusplus::MorphOptions options;
+        options.mArray = opts->array;
+        if (opts->constrained_array)
+            options.mConstrainedArray = opts->constrained_array;
+        if (opts->num_constrained < 0 || (opts->num_constrained > 0 && !opts->constrained))
+            throw std::invalid_argument(
+                "meshio++: morph: constrained is NULL or num_constrained negative");
+        options.mConstrained.assign(
+            opts->constrained, opts->constrained + static_cast<std::size_t>(opts->num_constrained));
+        options.mStiffening = opts->stiffening;
+        options.mSteps = opts->steps;
+        options.mTolerance = opts->tolerance;
+        options.mMaxIterations = opts->max_iterations;
+        options.mFixBoundary = opts->fix_boundary != 0;
+        options.mAllowInverted = opts->allow_inverted != 0;
+        meshioplusplus::MorphResult r = meshioplusplus::morph(mesh->mMesh, options);
+        if (report) {
+            *report = mio_morph_report{};
+            report->num_constrained = r.mNumConstrained;
+            report->num_free = r.mNumFree;
+            report->num_inverted = r.mNumInverted;
+            report->iterations = r.mIterations;
             report->max_displacement = r.mMaxDisplacement;
             report->converged = r.mConverged ? 1 : 0;
         }

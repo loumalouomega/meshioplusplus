@@ -3656,6 +3656,43 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def morph(
+        input_path: str,
+        output_path: str,
+        array: str,
+        fix_boundary: bool = True,
+        constrained: Optional[str] = None,
+        stiffening: float = 1.0,
+        steps: int = 1,
+        allow_inverted: bool = False,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Boundary-driven mesh morphing (shape optimisation, fluid-structure
+        mesh motion): the constrained points -- the boundary unless
+        fix_boundary is false, plus the point_set or nonzero point-data array
+        named by `constrained` -- move by the point-data displacement `array`
+        exactly; every other point moves by its harmonic extension with
+        Jacobian-based stiffening (small cells move nearly rigidly). Give
+        boundary points that stay put a zero displacement. Larger motions:
+        more `steps`. A result with inverted cells fails unless
+        allow_inverted. Reports num_constrained, num_free, num_inverted,
+        max_displacement, converged."""
+        return _guard(
+            _tools.tool_morph,
+            input_path=input_path,
+            output_path=output_path,
+            array=array,
+            fix_boundary=fix_boundary,
+            constrained=constrained,
+            stiffening=stiffening,
+            steps=steps,
+            allow_inverted=allow_inverted,
+            input_format=input_format,
+            output_format=output_format,
+        )
+
+    @server.tool()
     def laplacian_eigenmodes(
         input_path: str,
         output_path: str,

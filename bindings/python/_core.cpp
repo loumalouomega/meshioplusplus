@@ -165,6 +165,7 @@
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
+#include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/decimate_volume.hpp"
 #include "meshioplusplus/operations/data_calc.hpp"
@@ -6211,6 +6212,44 @@ PYBIND11_MODULE(_core, m) {
         py::arg("reference") = std::array<double, 3>{1.0, 0.0, 0.0},
         py::arg("arrays") = std::vector<std::string>{}, py::arg("inverse") = false,
         py::arg("record_coordinates") = true);
+
+    // Boundary-driven morphing by harmonic extension. {mesh, counters}. See
+    // operations/morph.hpp.
+    m.def(
+        "morph",
+        [](py::object pymesh, const std::string& array, bool fix_boundary,
+           std::vector<std::uint8_t> constrained, const std::string& constrained_array,
+           double stiffening, std::int64_t steps, bool allow_inverted, double tolerance,
+           std::int64_t max_iterations) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::MorphOptions options;
+            options.mArray = array;
+            options.mFixBoundary = fix_boundary;
+            options.mConstrained = std::move(constrained);
+            options.mConstrainedArray = constrained_array;
+            options.mStiffening = stiffening;
+            options.mSteps = steps;
+            options.mAllowInverted = allow_inverted;
+            options.mTolerance = tolerance;
+            options.mMaxIterations = max_iterations;
+            meshioplusplus::MorphResult r =
+                core_nogil([&] { return meshioplusplus::morph(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_constrained"] = r.mNumConstrained;
+            out["num_free"] = r.mNumFree;
+            out["num_inverted"] = r.mNumInverted;
+            out["iterations"] = r.mIterations;
+            out["max_displacement"] = r.mMaxDisplacement;
+            out["converged"] = r.mConverged;
+            return out;
+        },
+        py::arg("mesh"), py::arg("array"), py::arg("fix_boundary") = true,
+        py::arg("constrained") = std::vector<std::uint8_t>{}, py::arg("constrained_array") = "",
+        py::arg("stiffening") = 1.0, py::arg("steps") = 1, py::arg("allow_inverted") = false,
+        py::arg("tolerance") = 1e-10, py::arg("max_iterations") = 0);
 
     // Laplace-Beltrami eigenmodes of a triangle surface. {mesh, counters}. See
     // operations/eigenmodes.hpp.

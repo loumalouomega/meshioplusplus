@@ -186,6 +186,7 @@ meshioplusplus periodic   in.msh --slave inlet --master outlet --translate 2,0,0
 meshioplusplus graph      in.vtu part.graph --kind cell     # dual graph as a METIS file (or .grf: Scotch)
 meshioplusplus geodesic   skin.stl dist.vtu --source 0     # surface distance from a point (heat method)
 meshioplusplus eigenmodes skin.stl modes.vtu -k 16         # lowest Laplace-Beltrami eigenpairs
+meshioplusplus morph      duct.vtu moved.vtu --array d     # move the boundary, carry it into the mesh
 meshioplusplus coordinates rotor.vtu cyl.vtu --arrays U     # vectors/tensors in cylindrical components
 meshioplusplus hull       scan.xyz hull.stl                 # convex hull of a point cloud (--dimension 2: outline)
 meshioplusplus point-normals scan.ply scan.pcd             # normals of a point cloud (plane fits, oriented)
@@ -651,6 +652,16 @@ Pieces keep the input's block structure 1:1, so they recombine into the input: e
 ```python
 out = meshioplusplus.geodesic_distance(skin, "inlet")   # the points of a region
 d = out.point_data["geodesic:distance"]
+```
+
+#### Mesh morphing
+
+**`meshioplusplus.morph(mesh, displacement)`** moves the boundary (or chosen points) by a prescribed displacement and carries it into the rest of the mesh by a harmonic extension with Jacobian-based stiffening, in increments for large motions, refusing a result with inverted cells: shape optimisation and fluid–structure mesh motion. See [morphing](doc/morph.md).
+
+<!--pytest-codeblocks:skip-->
+
+```python
+moved = meshioplusplus.morph(fluid, "wall_motion", steps=4)
 ```
 
 #### Laplacian eigenmodes

@@ -1225,6 +1225,33 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
+    !> Interop mirror of C `mio_morph_opts`. Field order/types are ABI.
+    type, bind(c) :: mio_morph_opts_t
+        type(c_ptr) :: array = c_null_ptr
+        type(c_ptr) :: constrained_array = c_null_ptr
+        type(c_ptr) :: constrained = c_null_ptr
+        integer(c_int64_t) :: num_constrained = 0
+        real(c_double) :: stiffening = 1.0_c_double
+        integer(c_int64_t) :: steps = 1
+        real(c_double) :: tolerance = 1.0e-10_c_double
+        integer(c_int64_t) :: max_iterations = 0
+        integer(c_int32_t) :: fix_boundary = 1
+        integer(c_int32_t) :: allow_inverted = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_morph_report`. Field order/types are ABI.
+    type, bind(c) :: mio_morph_report_t
+        integer(c_int64_t) :: num_constrained = 0
+        integer(c_int64_t) :: num_free = 0
+        integer(c_int64_t) :: num_inverted = 0
+        integer(c_int64_t) :: iterations = 0
+        real(c_double) :: max_displacement = 0.0_c_double
+        integer(c_int32_t) :: converged = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
     !> Interop mirror of C `mio_eigenmode_opts`. Field order/types are ABI.
     type, bind(c) :: mio_eigenmode_opts_t
         integer(c_int64_t) :: num_modes = 10
@@ -2098,6 +2125,7 @@ module meshioplusplus
         procedure :: estimate_normals => mesh_estimate_normals
         procedure :: register_rigid => mesh_register_rigid
         procedure :: laplacian_eigenmodes => mesh_laplacian_eigenmodes
+        procedure :: morph => mesh_morph
         procedure :: convex_hull => mesh_convex_hull
         procedure :: delaunay_2d => mesh_delaunay_2d
         procedure :: remesh_volume => mesh_remesh_volume
@@ -3651,6 +3679,14 @@ module meshioplusplus
             type(c_ptr), value :: h, target
             type(mio_shrinkwrap_opts_t), intent(in) :: opts
             type(mio_shrinkwrap_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_morph(h, opts, report) bind(c, name="mio_morph") result(r)
+            import :: c_ptr, mio_morph_opts_t, mio_morph_report_t
+            type(c_ptr), value :: h
+            type(mio_morph_opts_t), intent(in) :: opts
+            type(mio_morph_report_t), intent(out) :: report
             type(c_ptr) :: r
         end function
 
@@ -9507,6 +9543,55 @@ contains
             inconsistent_pairs_after = int(report%quality_after%inconsistent_pairs, int64)
         if (present(boundary_edges_after)) &
             boundary_edges_after = int(report%quality_after%boundary_edges, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Boundary-driven morphing: the constrained points (the boundary unless
+    !> `fix_boundary = .false.`, and the nonzero entries of point data
+    !> `constrained_array`) move by point data `array`, the rest by its
+    !> harmonic extension with Jacobian-based stiffening. Inverted cells fail
+    !> the call unless `allow_inverted`. See doc/morph.md.
+    function mesh_morph(self, array, fix_boundary, constrained_array, stiffening, steps, &
+                        allow_inverted, num_inverted, max_displacement, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: array
+        logical, intent(in), optional :: fix_boundary, allow_inverted
+        character(*), intent(in), optional :: constrained_array
+        real(real64), intent(in), optional :: stiffening
+        integer, intent(in), optional :: steps
+        integer(int64), intent(out), optional :: num_inverted
+        real(real64), intent(out), optional :: max_displacement
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_morph_opts_t) :: opts
+        type(mio_morph_report_t) :: rep
+        character(kind=c_char), allocatable, target :: s_array(:, :), s_constrained(:, :)
+        type(c_ptr), allocatable, target :: p_array(:), p_constrained(:)
+        type(c_ptr) :: unused
+        integer(c_int64_t) :: count
+
+        call c_str_array([array], s_array, p_array, unused, count)
+        opts%array = p_array(1)
+        if (present(constrained_array)) then
+            call c_str_array([constrained_array], s_constrained, p_constrained, unused, count)
+            opts%constrained_array = p_constrained(1)
+        end if
+        if (present(fix_boundary)) then
+            if (.not. fix_boundary) opts%fix_boundary = 0
+        end if
+        if (present(allow_inverted)) then
+            if (allow_inverted) opts%allow_inverted = 1
+        end if
+        if (present(stiffening)) opts%stiffening = real(stiffening, c_double)
+        if (present(steps)) opts%steps = int(steps, c_int64_t)
+        out%handle = c_mio_morph(self%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('morph', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_inverted)) num_inverted = int(rep%num_inverted, int64)
+        if (present(max_displacement)) max_displacement = real(rep%max_displacement, real64)
         call clear_status(stat, errmsg)
     end function
 

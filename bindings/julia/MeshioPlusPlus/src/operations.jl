@@ -3910,6 +3910,38 @@ function sobolev_deform(m::Mesh, array::AbstractString, length_scale::Real;
 end
 
 """
+    morph(m, array; fix_boundary=true, constrained_array="", stiffening=1.0, steps=1,
+          allow_inverted=false, tolerance=1e-10, max_iterations=0)
+        -> (; mesh, num_constrained, num_free, num_inverted, iterations, max_displacement, converged)
+
+Boundary-driven morphing: the constrained points (the boundary, and the
+nonzero entries of point data `constrained_array`) move by point data `array`,
+the rest by its harmonic extension with Jacobian-based stiffening; inverted
+cells raise unless `allow_inverted`. See `doc/morph.md`.
+"""
+function morph(m::Mesh, array::AbstractString; fix_boundary::Bool=true,
+               constrained_array::AbstractString="", stiffening::Real=1.0, steps::Integer=1,
+               allow_inverted::Bool=false, tolerance::Real=1e-10, max_iterations::Integer=0)
+    rep = Ref{_CMorphReport}()
+    ptr = GC.@preserve array constrained_array begin
+        opts = _CMorphOpts(Base.unsafe_convert(Cstring, array),
+                           isempty(constrained_array) ? Cstring(C_NULL) :
+                           Base.unsafe_convert(Cstring, constrained_array),
+                           Ptr{UInt8}(C_NULL), Int64(0), Float64(stiffening), Int64(steps),
+                           Float64(tolerance), Int64(max_iterations),
+                           fix_boundary ? Int32(1) : Int32(0), allow_inverted ? Int32(1) : Int32(0),
+                           ntuple(_ -> Int64(0), 4))
+        ccall(_sym(:mio_morph), Ptr{Cvoid}, (Ptr{Cvoid}, Ref{_CMorphOpts}, Ref{_CMorphReport}),
+              _handle(m), Ref(opts), rep)
+    end
+    r = _check_ptr(ptr)
+    h = rep[]
+    (mesh=Mesh(r), num_constrained=Int(h.num_constrained), num_free=Int(h.num_free),
+     num_inverted=Int(h.num_inverted), iterations=Int(h.iterations),
+     max_displacement=h.max_displacement, converged=h.converged != 0)
+end
+
+"""
     laplacian_eigenmodes(m; num_modes=10, tolerance=1e-8, max_iterations=0)
         -> (; mesh, iterations, max_residual, converged, num_degenerate)
 

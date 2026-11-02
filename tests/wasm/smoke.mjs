@@ -5720,6 +5720,10 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.throws(() => m.matchPeriodicNodes(tagged, 'bottom', 'top', shift));
 });
 
+step('morph refuses a missing displacement', () => {
+    assert.throws(() => m.morph(cubeSurface, { array: 'missing' }));
+});
+
 step('laplacianEigenmodes of the cube surface', () => {
     const r = m.laplacianEigenmodes(cubeSurface, { numModes: 4 });
     assert.ok(r.converged);
