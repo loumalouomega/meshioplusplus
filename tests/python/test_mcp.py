@@ -2231,16 +2231,17 @@ def test_register_rigid_tool(tmp_path):
         compression=None,
     )
     meshioplusplus.write(tgt, target, compression=None)
+    # Legacy VTK: the tool writes it uncompressed, and the build may have no zlib.
     out = _dump(
         _tools.tool_register_rigid(
-            src, tgt, str(tmp_path / "moved.vtu"), method="point_to_plane"
+            src, tgt, str(tmp_path / "moved.vtk"), method="point_to_plane"
         )
     )
     assert out["converged"] and out["rms"] < 1e-8
     np.testing.assert_allclose(
         np.asarray(out["matrix"])[:3, 3], [-0.02, 0.01, -0.03], atol=1e-8
     )
-    moved = meshioplusplus.read(str(tmp_path / "moved.vtu"))
+    moved = meshioplusplus.read(str(tmp_path / "moved.vtk"))
     np.testing.assert_allclose(moved.points, target.points, atol=1e-8)
 
 

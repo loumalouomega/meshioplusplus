@@ -57,7 +57,19 @@ def test_every_python_verb_and_option_is_listed():
     ]
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def _bash_usable():
+    """A bash that runs a command. On Windows the first `bash` on PATH can be
+    the WSL launcher, which fails when no distribution is installed."""
+    exe = shutil.which("bash")
+    if exe is None:
+        return False
+    try:
+        return subprocess.run([exe, "-c", "true"], capture_output=True).returncode == 0
+    except OSError:
+        return False
+
+
+@pytest.mark.skipif(not _bash_usable(), reason="needs a working bash")
 @pytest.mark.parametrize("engine", ["python", "native"])
 def test_bash_script_completes(engine, tmp_path):
     if engine == "native" and NATIVE is None:
