@@ -7721,7 +7721,8 @@ TEST(CApi, RenderCutawaysClipAndAreValidated) {
                                                mio_frame_rgba(whole) + 32 * 32 * 4);
     mio_frame_free(whole);
 
-    // One plane keeping x >= 0.5: the near face goes, the far one shows from inside.
+    // One plane keeping x >= 0.5: the near face goes, and the cube, which
+    // closes, is capped there (no cell, the fill colour, not the tint).
     const double plane[6] = {0.5, 0, 0, 1, 0, 0};
     o.cutaways = plane;
     o.num_cutaways = 1;
@@ -7729,11 +7730,12 @@ TEST(CApi, RenderCutawaysClipAndAreValidated) {
     mio_frame* cut = mio_render(cube, &o);
     ASSERT_NE(cut, nullptr) << mio_last_error();
     EXPECT_NE(mio_frame_cell_ids(cut)[16 * 32 + 16], whole_centre);
+    EXPECT_EQ(mio_frame_cell_ids(cut)[16 * 32 + 16], -1);
     const std::uint8_t* centre = mio_frame_rgba(cut) + (16 * 32 + 16) * 4;
-    EXPECT_EQ(centre[0], 0x0A);
-    EXPECT_EQ(centre[1], 0xC8);
-    EXPECT_EQ(centre[2], 0x1E);
-    EXPECT_NE(std::vector<std::uint8_t>(mio_frame_rgba(cut), mio_frame_rgba(cut) + 32 * 32 * 4),
+    EXPECT_NE(centre[1], 0xC8);
+    // Flat and unshaded, the cap looks like the face it replaces: only the
+    // ids tell them apart.
+    EXPECT_EQ(std::vector<std::uint8_t>(mio_frame_rgba(cut), mio_frame_rgba(cut) + 32 * 32 * 4),
               whole_rgba);
     mio_frame_free(cut);
 

@@ -493,7 +493,7 @@ def _centre(image, info):
     )
 
 
-def test_a_cutaway_shows_the_tinted_inside_of_a_cube():
+def test_a_cutaway_caps_a_closed_cube():
     cube = _cube()
     kw = dict(view="-x", shading="none", background=(0, 0, 0, 255), return_info=True)
     image, info = mio.render_image(cube, 64, 64, **kw)
@@ -507,8 +507,45 @@ def test_a_cutaway_shows_the_tinted_inside_of_a_cube():
         image, info = mio.render_image(
             cube, 64, 64, cutaway=plane, cutaway_tint=(10, 200, 30), **kw
         )
-        assert _centre(image, info) == (5, (10, 200, 30, 255)), plane
-    assert any(n.startswith("cutaway: 1 plane") for n in info["notes"])
+        # The cube closes: the cut is filled by a cap, of no cell, in the fill.
+        assert _centre(image, info) == (-1, (200, 197, 189, 255)), plane
+    assert any(n.startswith("cutaway: 1 plane, capped") for n in info["notes"])
+
+
+def test_a_cutaway_shows_the_tinted_inside_of_an_open_surface():
+    cube = _cube()
+    open_box = mio.Mesh(cube.points, [("quad", np.delete(cube.cells[0].data, 1, 0))])
+    image, info = mio.render_image(
+        open_box,
+        64,
+        64,
+        view="-x",
+        shading="none",
+        background=(0, 0, 0, 255),
+        return_info=True,
+        cutaway="+x:0.5",
+        cutaway_tint=(10, 200, 30),
+    )
+    assert _centre(image, info) == (4, (10, 200, 30, 255))  # the x = 1 face
+    assert any(n.startswith("cutaway: 1 plane, inside in") for n in info["notes"])
+
+
+def test_a_cutaway_caps_a_volume_in_its_field_colour():
+    cube = _cube()
+    box = mio.Mesh(cube.points, [("hexahedron", np.arange(8)[None, :])])
+    box.point_data["x"] = cube.point_data["x"]
+    image, info = mio.render_image(
+        box,
+        64,
+        64,
+        view="-x",
+        shading="none",
+        return_info=True,
+        cutaway="+x:0.5",
+        color_by="x",
+    )
+    cell, colour = _centre(image, info)
+    assert cell == 0 and colour[:3] != (200, 197, 189)
 
 
 def test_cutaway_forms_are_validated():

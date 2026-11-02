@@ -92,8 +92,9 @@ Field rendering (v16.34.0):
 ``cutaway``, ``cutaway_tint``
     up to two planes that clip the geometry away: each is six numbers (a point,
     then the normal of the side kept), or ``"+x:0.5"`` for the side the axis
-    points to; a single plane may be given alone. A cut surface is hollow, so
-    the back faces now in view are drawn in ``cutaway_tint``.
+    points to; a single plane may be given alone. The cut through a volume or a
+    closed surface is capped; an open surface is hollow, so the back faces now
+    in view are drawn in ``cutaway_tint``.
 ``diagnostic``, ``quality_metric``
     ``"quality"`` (with a ``quality_metric`` such as ``"scaled_jacobian"``),
     ``"inverted"``, ``"degenerate"``, ``"orientation"`` (front and back faces),

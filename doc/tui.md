@@ -292,13 +292,13 @@ A few commands have their own meaning:
 
 ### Cut-aways
 
-![The bunny cut open at the middle, its inside drawn in orange](/images/tui_cutaway.svg)
+![The bunny cut open at the middle, the cut filled by a cap](/images/tui_cutaway.svg)
 
-*`x` once, then `,` twice: the plane keeps x ≥ 24.55 and the camera looks at the cut from the −x side. The inside, the back faces now in view, is orange.*
+*`x` once, then `,` twice: the plane keeps x ≥ 24.55 and the camera looks at the cut from the −x side. The bunny's surface closes, so the cut is capped in the fill colour.*
 
-A cut-away clips the drawn geometry against up to two planes (`--cutaway PX,PY,PZ,NX,NY,NZ` or `--cutaway AXIS:OFFSET`, a point and the normal of the side kept; `-x:0.5` keeps x ≤ 0.5). A face a plane crosses is cut in two and keeps its colour, its id and its smooth shading (the normals are interpolated along the cut); lines and points on the far side are dropped. A cut surface is hollow, so the back faces now in view, those turned away from the camera, are drawn in `--cutaway-tint` (default orange) and the inside reads as inside. No cap is built.
+A cut-away clips the drawn geometry against up to two planes (`--cutaway PX,PY,PZ,NX,NY,NZ` or `--cutaway AXIS:OFFSET`, a point and the normal of the side kept; `-x:0.5` keeps x ≤ 0.5). A face a plane crosses is cut in two and keeps its colour, its id and its smooth shading (the normals are interpolated along the cut); lines and points on the far side are dropped. Where the plane cuts a solid, the cut is **capped**: a volume (its cells other than polyhedra) is sectioned as [`slice`](./slice.md) sections it, each piece of the section in the colour of the cell it cuts and carrying that cell's id, so the probe and picking see it; a surface that closes, every edge shared by two of its faces, has the loops the plane cuts out of it filled (a constrained triangulation, so a hole stays a hole) in the fill colour, with no cell id. A cap faces the removed side, is lit like any face, and is cut by the other plane. A surface that does not close has nothing to fill, so the back faces now in view, those turned away from the camera, are drawn in `--cutaway-tint` (default orange) and the inside reads as inside. The cut-away's note says `capped` when a cap was drawn.
 
-The cut is a *draw-time* option: the prepared scene is untouched, so sliding the plane with `,` and `.` costs only a redraw, and a frame with no plane is byte-identical to one rendered before cut-aways existed. The frame stays fitted to the whole model, not to what is left, so the part you keep does not change size or place when you cut. The same option is `cutaway=` in Python (`"+x:0.5"`, six numbers, or a list of up to two), `cutaway` in the `Snapshot` pipeline step (a flat list, six numbers per plane), `render_mesh`'s `cutaway` and `cutaway_tint`, and a field of the C, Fortran, Julia, R and WebAssembly render options.
+The cut is a *draw-time* option: the prepared scene is untouched (a volume is simplexified once, at the first cut), so sliding the plane with `,` and `.` costs only a redraw, and a frame with no plane is byte-identical to one rendered before cut-aways existed. The frame stays fitted to the whole model, not to what is left, so the part you keep does not change size or place when you cut. The same option is `cutaway=` in Python (`"+x:0.5"`, six numbers, or a list of up to two), `cutaway` in the `Snapshot` pipeline step (a flat list, six numbers per plane), `render_mesh`'s `cutaway` and `cutaway_tint`, and a field of the C, Fortran, Julia, R and WebAssembly render options.
 
 ### Comparing two meshes
 
@@ -424,6 +424,6 @@ At XL both rows cost about the same although the second draws 400 times as many 
 - Streamlines are not drawn: they need a sampler and a step integrator. Vector arrows sit at the drawn points, not along a flow.
 - Isolines are the piecewise-linear contours of the interpolant on each triangle (a quad is split on its shorter diagonal); they are not smoothed.
 - The id buffer of a supersampled frame reports the cell at the centre sample of each pixel.
-- A cut-away has no cap: the inside is the hollow back of the surface, tinted. Real caps are a follow-up.
+- A cut-away caps volumes and closed surfaces only: an open surface shows its tinted back, a polyhedron block is not capped, and a surface cap is one flat colour (a surface has no values inside).
 - Probing reads the mesh the viewer was given; after `:warp` the cell is still the input cell, at its undeformed position.
 - The Kitty, iTerm2 and Sixel encoders are written to their specifications but are not tested against every terminal; the cell encodings are the portable choice.

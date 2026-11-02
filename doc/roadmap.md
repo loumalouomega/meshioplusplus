@@ -233,7 +233,6 @@ The sanitizer leg, the reader fuzzing, the format conformance matrix, the proper
 - **7.8 Surface booleans, spike first.** Reopened as a spike only. [`find_intersections`](./find_intersections.md) decides every triangle pair exactly but rounds its segment endpoints, and the planar triangulation and the fast winding number (`detail/tri_bvh`) exist; a union, intersection or difference of closed surfaces needs exact constructions and an arrangement on top of them. The spike builds an arrangement-based boolean, measures it on Thingi10K pairs and states its size, which decides whether the decision moves; B-rep booleans stay the CAD kernel's. **XL**
 - **7.9 Deferred defaults and follow-ups.**
   - **7.9.1 `model_tolerances` and `virtual_faces` on by default, in v19.** On the CAD corpus they lose no face and together mesh 55 more of its 16,503; they stay off because the released `mio_mesh_cad_surface_opts_ex` reads zero as off, and [mesh generation](./mesh_cad.md#measured-and-parked) defers them to the next major version, when the C struct can change. v18.0.0 was that version and did not take them, so they wait for v19, with the C struct change. **S**
-  - **7.9.2 Caps on the terminal viewer's cut-away.** A cut-away shows the hollow back of the surface ([terminal rendering](./tui.md)); [`slice`](./slice.md) produces the cap polygons a real cap needs. **S–M**
 
 ---
 

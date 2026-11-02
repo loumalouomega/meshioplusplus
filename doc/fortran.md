@@ -200,7 +200,7 @@ text = mesh%render_text(set, tset)           ! tset%cols x tset%rows cells; mio_
 call mesh%write_snapshot('part.png', set)    ! .png .txt .ansi .html .cast
 ```
 
-**Cut-aways (v16.36.0).** `set%cutaways` is an allocatable `real(real64)` array of one or two planes, six numbers each (a point, then the normal of the side kept), and `set%cutaway_tint` a colour (`mio_rgba`); the geometry on the far side is clipped away and the back faces now in view are tinted. A length that is not 6 or 12, or a zero normal, is refused by name: `set%cutaways = [0.5_real64, 0.0_real64, 0.0_real64, 1.0_real64, 0.0_real64, 0.0_real64]`.
+**Cut-aways (v16.36.0).** `set%cutaways` is an allocatable `real(real64)` array of one or two planes, six numbers each (a point, then the normal of the side kept), and `set%cutaway_tint` a colour (`mio_rgba`); the geometry on the far side is clipped away, the cut through a volume or a closed surface is capped, and the back faces of an open one now in view are tinted. A length that is not 6 or 12, or a zero normal, is refused by name: `set%cutaways = [0.5_real64, 0.0_real64, 0.0_real64, 1.0_real64, 0.0_real64, 0.0_real64]`.
 
 **Streamlines (v16.37.0).** `set%streamlines` names a vector point array to follow; `set%stream_seeds` (default 40), `set%stream_length` (model diagonals each way, default 0.5) and `set%stream_color` (`mio_rgba`) shape the lines. An unknown array or a seed count outside 1 to 10000 is refused by name: `set%streamlines = 'velocity'`.
 

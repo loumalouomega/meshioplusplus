@@ -1092,7 +1092,7 @@ def roadmap_map():
                 ("point-cloud surfaces", "L"),
                 ("providers: heal, mesh, quads", "L"),
                 ("surface booleans (spike first)", "XL"),
-                ("v19 defaults · TUI caps", "S"),
+                ("v19 defaults", "S"),
             ],
             [],
         ),

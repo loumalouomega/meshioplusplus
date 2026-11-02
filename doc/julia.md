@@ -262,7 +262,7 @@ png = render_png(mesh; width=800, height=600)          # Vector{UInt8}
 write_snapshot("part.png", mesh)                       # .png .txt .ansi .html .cast
 ```
 
-**Cut-aways (v16.36.0).** `cutaway=[px, py, pz, nx, ny, nz]` (a point and the normal of the side kept), or a collection of up to two such planes, with `cutaway_tint=rgba(...)`, clips the geometry away and tints the back faces now in view: `render(mesh; view="-x", cutaway=[0.5, 0, 0, 1, 0, 0])`. A wrong length is an `ErrorException`; a zero normal a `MeshioError`.
+**Cut-aways (v16.36.0).** `cutaway=[px, py, pz, nx, ny, nz]` (a point and the normal of the side kept), or a collection of up to two such planes, with `cutaway_tint=rgba(...)`, clips the geometry away, caps the cut through a volume or a closed surface, and tints the back faces of an open one now in view: `render(mesh; view="-x", cutaway=[0.5, 0, 0, 1, 0, 0])`. A wrong length is an `ErrorException`; a zero normal a `MeshioError`.
 
 **Streamlines (v16.37.0).** `streamlines="velocity"` follows a vector point array over the mesh's cells, with `stream_seeds` (default 40), `stream_length` (model diagonals each way, default 0.5) and `stream_color=rgba(...)`: `render(mesh; streamlines="velocity", stream_seeds=60)`. An unknown array or a seed count outside 1 to 10000 is a `MeshioError`.
 
