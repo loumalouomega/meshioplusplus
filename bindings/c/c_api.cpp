@@ -78,6 +78,7 @@
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/registration.hpp"
+#include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
@@ -7184,6 +7185,47 @@ mio_mesh* mio_sobolev_deform(const mio_mesh* mesh, const mio_sobolev_opts* opts,
             report->residual = r.mResidual;
             report->max_displacement = r.mMaxDisplacement;
             report->converged = r.mConverged ? 1 : 0;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+// --- Laplacian eigenmodes (roadmap 7.3.2) --------------------------------------
+
+static_assert(sizeof(mio_eigenmode_opts) == 56,
+              "mio_eigenmode_opts grew outside its reserved tail");
+static_assert(sizeof(mio_eigenmode_report) == 64,
+              "mio_eigenmode_report grew outside its reserved tail");
+
+void mio_eigenmode_opts_init(mio_eigenmode_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_eigenmode_opts{};
+    opts->num_modes = 10;
+    opts->tolerance = 1e-8;
+}
+
+mio_mesh* mio_laplacian_eigenmodes(const mio_mesh* mesh, const mio_eigenmode_opts* opts,
+                                   mio_eigenmode_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        mio_eigenmode_opts o;
+        mio_eigenmode_opts_init(&o);
+        if (opts)
+            o = *opts;
+        meshioplusplus::EigenmodeOptions options;
+        options.mNumModes = o.num_modes;
+        options.mTolerance = o.tolerance;
+        options.mMaxIterations = o.max_iterations;
+        meshioplusplus::EigenmodeResult r =
+            meshioplusplus::laplacian_eigenmodes(mesh->mMesh, options);
+        if (report) {
+            *report = mio_eigenmode_report{};
+            report->iterations = r.mIterations;
+            report->max_residual = r.mMaxResidual;
+            report->converged = r.mConverged ? 1 : 0;
+            report->num_degenerate = r.mNumDegenerate;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });

@@ -7059,6 +7059,24 @@ TEST(CApi, ConvertCoordinates) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, LaplacianEigenmodes) {
+    mio_mesh* m = capi_cube_surface();
+    mio_eigenmode_opts opts;
+    mio_eigenmode_opts_init(&opts);
+    EXPECT_EQ(opts.num_modes, 10);
+    opts.num_modes = 4;
+    mio_eigenmode_report rep;
+    mio_mesh* out = mio_laplacian_eigenmodes(m, &opts, &rep);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_TRUE(rep.converged);
+    EXPECT_EQ(rep.num_degenerate, 0);
+    EXPECT_GE(mio_mesh_num_point_data(out), 1);
+    mio_mesh_free(out);
+    opts.num_modes = 9;  // the cube has 8 points
+    EXPECT_EQ(mio_laplacian_eigenmodes(m, &opts, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, RegisterRigid) {
     mio_mesh* target = capi_cube_surface();
     // The source: the cube's corners shifted by (0.01, -0.02, 0.03).

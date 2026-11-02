@@ -140,6 +140,7 @@
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/registration.hpp"
+#include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
@@ -461,6 +462,7 @@ void print_usage(std::ostream& os) {
           "  hull                    Convex hull of the points (3-D surface or 2-D loop)\n"
           "  point-normals           Normals of a point cloud by local plane fits\n"
           "  register                Rigid registration of one mesh onto another (ICP)\n"
+          "  eigenmodes              Lowest eigenpairs of a surface's Laplace-Beltrami operator\n"
           "  delaunay                Delaunay triangulation of the points in the x, y plane\n"
           "  geodesic                Surface distance from source points (heat method)\n"
           "  graph                   Write a mesh's node or cell graph as a METIS or Scotch file\n"
@@ -3860,6 +3862,57 @@ std::vector<double> cli_numbers(const std::string& rText, std::size_t Count, con
                                  std::to_string(Count) + " numbers, got " +
                                  std::to_string(out.size()));
     return out;
+}
+
+// eigenmodes: the lowest eigenpairs of a surface's Laplace-Beltrami operator.
+// See operations/eigenmodes.hpp.
+int cmd_eigenmodes(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"num-modes", {"-k"}, true},
+                                  {"tolerance", {}, true},
+                                  {"max-iterations", {}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("eigenmodes requires INFILE OUTFILE");
+    meshioplusplus::EigenmodeOptions o;
+    if (has_opt(p, "num-modes"))
+        o.mNumModes = std::stoll(opt_value(p, "num-modes"));
+    if (has_opt(p, "tolerance"))
+        o.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    if (has_opt(p, "max-iterations"))
+        o.mMaxIterations = std::stoll(opt_value(p, "max-iterations"));
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::EigenmodeResult r = meshioplusplus::laplacian_eigenmodes(mesh, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Key("eigenvalues");
+        json.BeginArray();
+        for (const double v : r.mEigenvalues)
+            json.Number(v);
+        json.EndArray();
+        json.Field("iterations", r.mIterations);
+        json.Field("max_residual", r.mMaxResidual);
+        json.Field("converged", r.mConverged);
+        json.Field("num_degenerate", r.mNumDegenerate);
+        json.EndObject();
+        return 0;
+    }
+    std::cout << "eigenvalues:";
+    char buf[32];
+    for (const double v : r.mEigenvalues) {
+        meshioplusplus::detail::snprintf_c(buf, sizeof(buf), " %.9g", v);
+        std::cout << buf;
+    }
+    std::cout << "\n"
+              << r.mIterations << " iteration(s)" << (r.mConverged ? "" : ", not converged")
+              << "\n";
+    return 0;
 }
 
 // register: the rigid motion laying SOURCE onto TARGET, by iterative closest
@@ -8927,6 +8980,8 @@ int cli_run_verb(const std::string& cmd, const std::vector<std::string>& rest) {
         return cmd_split_interface(rest);
     if (cmd == "hausdorff")
         return cmd_hausdorff(rest);
+    if (cmd == "eigenmodes")
+        return cmd_eigenmodes(rest);
     if (cmd == "register")
         return cmd_register(rest);
     if (cmd == "point-normals")

@@ -2038,6 +2038,10 @@ end
     @test 1.8 < gd.max_distance < 2.6
     close(gd.mesh)
     @test_throws MeshioError geodesic_distance(cube, Int[])
+    ee = laplacian_eigenmodes(cube; num_modes=4)
+    @test ee.converged && ee.num_degenerate == 0
+    close(ee.mesh)
+    @test_throws MeshioError laplacian_eigenmodes(cube; num_modes=9)
     rr = register_rigid(cube, cube)
     @test rr.converged && rr.rms < 1e-12
     @test isapprox(rr.matrix, [1.0 0 0 0; 0 1 0 0; 0 0 1 0; 0 0 0 1]; atol=1e-12)

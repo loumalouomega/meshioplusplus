@@ -47,6 +47,10 @@ data = Data(
 )
 ```
 
+### Positional encodings from the surface's own spectrum
+
+A graph network that sees only coordinates and connectivity cannot tell two points apart by where they sit on the shape. The lowest Laplace–Beltrami eigenmodes of a surface ([`laplacian_eigenmodes`](./eigenmodes.md), `point_data["laplacian:modes"]`) are the usual remedy: smooth functions that vary across the surface at increasing frequency, independent of the point numbering and of rigid motion, which `feature_matrix` picks up like any other point array. A geodesic distance from a feature ([`geodesic_distance`](./geodesic.md)) is another such channel.
+
 ## The feature matrix and its contract: `feature_matrix`
 
 ```python

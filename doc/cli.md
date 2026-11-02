@@ -114,7 +114,7 @@ The first word completes to a verb (or an alias such as `c`), the next to the su
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `coordinates`, `hull`, `delaunay`, `point-normals`, `register`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `eigenmodes`, `coordinates`, `hull`, `delaunay`, `point-normals`, `register`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -145,6 +145,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `split-interface` | duplicated-point and cohesive-cell counts |
 | `graph` | `output`, `kind`, `format`, `num_vertices`, `num_edges`, `max_degree` |
 | `geodesic` | `output`, `num_sources`, `num_unreached`, `num_degenerate`, `max_distance`, `time_step`, `heat_iterations`, `poisson_iterations`, `converged` |
+| `eigenmodes` | `output`, `eigenvalues`, `iterations`, `max_residual`, `converged`, `num_degenerate` |
 | `coordinates` | `output`, `system`, `num_arrays`, `num_singular` |
 | `hull` | `output`, `dimension`, `num_vertices`, `num_facets`, `area`, `volume`, `perimeter` |
 | `point-normals` | `output`, `num_degenerate`, `num_components` |
@@ -1866,6 +1867,31 @@ The points do not move. Both CLIs print the same JSON.
 ```sh
 meshioplusplus coordinates rotor.vtu rotor_cyl.vtu --arrays U,stress
 meshioplusplus coordinates vessel.vtu out.vtu --system spherical --origin 0,0,1.5 --arrays sigma --json
+```
+
+---
+
+## meshioplusplus eigenmodes
+
+The lowest eigenpairs of a triangle surface's Laplace–Beltrami operator (see [eigenmodes](/eigenmodes)), written as `laplacian:modes` point data and `laplacian:eigenvalues` field data.
+
+```
+meshioplusplus eigenmodes [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--num-modes N` (`-k`) | Eigenpairs wanted (default `10`) |
+| `--tolerance T` | Relative residual every pair must reach (default `1e-8`) |
+| `--max-iterations N` | Block iterations at most (default `0`: 300) |
+| `--json` | Emit the report: `output`, `eigenvalues`, `iterations`, `max_residual`, `converged`, `num_degenerate` |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Both CLIs print the same JSON.
+
+```sh
+meshioplusplus eigenmodes skin.stl modes.vtu -k 16
+meshioplusplus eigenmodes skin.stl modes.vtu -k 32 --json
 ```
 
 ---

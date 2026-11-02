@@ -3931,6 +3931,42 @@ MIO_API void mio_coordinate_opts_init(mio_coordinate_opts* opts);
 MIO_API mio_mesh* mio_convert_coordinates(const mio_mesh* mesh, const mio_coordinate_opts* opts,
                                           int64_t* num_arrays, int64_t* num_singular);
 
+/**
+ * Options for mio_laplacian_eigenmodes. Initialize through
+ * mio_eigenmode_opts_init(): 10 modes, tolerance 1e-8, automatic cap.
+ */
+typedef struct mio_eigenmode_opts {
+    int64_t num_modes;      /**< eigenpairs wanted, the smallest (at least 1) */
+    double tolerance;       /**< the relative residual every pair must reach */
+    int64_t max_iterations; /**< block iterations at most; 0 takes 300 */
+    int64_t reserved[4];    /**< must be zero; room for additive growth */
+} mio_eigenmode_opts;
+
+/** What mio_laplacian_eigenmodes found (the eigenvalues are field data). */
+typedef struct mio_eigenmode_report {
+    int64_t iterations;     /**< block iterations run */
+    double max_residual;    /**< the largest relative residual of the pairs */
+    int32_t converged;      /**< nonzero unless max_iterations ran out first */
+    int32_t reserved_pad;   /**< zero */
+    int64_t num_degenerate; /**< triangles left out for zero area */
+    int64_t reserved[4];    /**< zero; room for additive growth */
+} mio_eigenmode_report;
+
+/** Initialize eigenmode options (see mio_eigenmode_opts). */
+MIO_API void mio_eigenmode_opts_init(mio_eigenmode_opts* opts);
+
+/**
+ * The lowest eigenpairs of a triangle surface's Laplace-Beltrami operator
+ * (cotangent stiffness against lumped mass): the mesh with point data
+ * `laplacian:modes` (Float64 (n, num_modes), M-orthonormal) and field data
+ * `laplacian:eigenvalues` (ascending). See doc/eigenmodes.md. `opts` NULL uses
+ * the defaults; `report` may be NULL.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_laplacian_eigenmodes(const mio_mesh* mesh, const mio_eigenmode_opts* opts,
+                                           mio_eigenmode_report* report);
+
 /** mio_registration_opts.method: summed squared point distances. */
 #define MIO_REGISTER_POINT_TO_POINT 0
 /** mio_registration_opts.method: summed squared distances to the target's tangent planes. */

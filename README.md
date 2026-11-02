@@ -185,6 +185,7 @@ meshioplusplus regions    in.msh out.msh --union inlet=in_a,in_b --rename "Surfa
 meshioplusplus periodic   in.msh --slave inlet --master outlet --translate 2,0,0  # periodic node pairs
 meshioplusplus graph      in.vtu part.graph --kind cell     # dual graph as a METIS file (or .grf: Scotch)
 meshioplusplus geodesic   skin.stl dist.vtu --source 0     # surface distance from a point (heat method)
+meshioplusplus eigenmodes skin.stl modes.vtu -k 16         # lowest Laplace-Beltrami eigenpairs
 meshioplusplus coordinates rotor.vtu cyl.vtu --arrays U     # vectors/tensors in cylindrical components
 meshioplusplus hull       scan.xyz hull.stl                 # convex hull of a point cloud (--dimension 2: outline)
 meshioplusplus point-normals scan.ply scan.pcd             # normals of a point cloud (plane fits, oriented)
@@ -650,6 +651,17 @@ Pieces keep the input's block structure 1:1, so they recombine into the input: e
 ```python
 out = meshioplusplus.geodesic_distance(skin, "inlet")   # the points of a region
 d = out.point_data["geodesic:distance"]
+```
+
+#### Laplacian eigenmodes
+
+**`meshioplusplus.laplacian_eigenmodes(surface, num_modes)`** computes the lowest eigenpairs of a triangle surface's Laplace–Beltrami operator (cotangent stiffness against lumped mass) as `laplacian:modes` point data and `laplacian:eigenvalues` field data: spectral positional encodings for graph networks, and shape descriptors. Repeated eigenvalues come out whole (a sphere's `l (l + 1)`, `2 l + 1` times). See [eigenmodes](doc/eigenmodes.md).
+
+<!--pytest-codeblocks:skip-->
+
+```python
+out = meshioplusplus.laplacian_eigenmodes(skin, 16)
+encoding = out.point_data["laplacian:modes"]   # (n, 16)
 ```
 
 #### Cylindrical and spherical coordinates

@@ -119,6 +119,7 @@ from .. import (
     iga_sample,
     interpolate,
     isosurface,
+    laplacian_eigenmodes,
     line,
     lshape,
     match_periodic_nodes,
@@ -4052,6 +4053,34 @@ def tool_convert_coordinates(
     )
 
 
+def tool_laplacian_eigenmodes(
+    input_path,
+    output_path,
+    num_modes=10,
+    tolerance=1e-8,
+    max_iterations=0,
+    input_format=None,
+    output_format=None,
+):
+    """The lowest eigenpairs of a surface's Laplace-Beltrami operator."""
+    mesh = _load(input_path, input_format)
+    out, report = laplacian_eigenmodes(
+        mesh,
+        int(num_modes),
+        tolerance=float(tolerance),
+        max_iterations=int(max_iterations),
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        eigenvalues=[float(v) for v in report["eigenvalues"]],
+        iterations=int(report["iterations"]),
+        max_residual=float(report["max_residual"]),
+        converged=bool(report["converged"]),
+    )
+
+
 def tool_register_rigid(
     source_path,
     target_path,
@@ -6956,6 +6985,14 @@ TOOL_REGISTRY = OrderedDict(
         (
             "sobolev_deform",
             {"fn": tool_sobolev_deform, "wraps": ("sobolev_deform",), "gated": None},
+        ),
+        (
+            "laplacian_eigenmodes",
+            {
+                "fn": tool_laplacian_eigenmodes,
+                "wraps": ("laplacian_eigenmodes",),
+                "gated": None,
+            },
         ),
         (
             "register_rigid",

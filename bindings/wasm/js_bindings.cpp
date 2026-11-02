@@ -135,6 +135,7 @@
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/registration.hpp"
+#include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
@@ -7096,6 +7097,38 @@ val sobolev_deform_js(const val& rMeshObj, const std::string& rArray, double len
 }
 
 /**
+ * @brief The lowest eigenpairs of a surface's Laplace-Beltrami operator.
+ * @p rOptions is `{numModes, tolerance, maxIterations}`, every key optional.
+ * See operations/eigenmodes.hpp.
+ */
+val laplacian_eigenmodes_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::EigenmodeOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("numModes"))
+                options.mNumModes = static_cast<std::int64_t>(rOptions["numModes"].as<double>());
+            if (rOptions.hasOwnProperty("tolerance"))
+                options.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("maxIterations"))
+                options.mMaxIterations =
+                    static_cast<std::int64_t>(rOptions["maxIterations"].as<double>());
+        }
+        meshioplusplus::EigenmodeResult r =
+            meshioplusplus::laplacian_eigenmodes(val_to_mesh(rMeshObj), options);
+        val values = val::array();
+        for (const double v : r.mEigenvalues)
+            values.call<void>("push", v);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("eigenvalues", values);
+        out.set("iterations", static_cast<double>(r.mIterations));
+        out.set("maxResidual", r.mMaxResidual);
+        out.set("converged", r.mConverged);
+        return out;
+    });
+}
+
+/**
  * @brief Rigid registration by iterative closest points. @p rOptions is
  * `{method, maxIterations, tolerance, maxDistance, initial}`, every key
  * optional (`initial` 16 numbers, row-major). See operations/registration.hpp.
@@ -9523,6 +9556,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("sobolevDeform", &sobolev_deform_js);
     emscripten::function("geodesicDistance", &geodesic_distance_js);
     emscripten::function("convertCoordinates", &convert_coordinates_js);
+    emscripten::function("laplacianEigenmodes", &laplacian_eigenmodes_js);
     emscripten::function("registerRigid", &register_rigid_js);
     emscripten::function("estimateNormals", &estimate_normals_js);
     emscripten::function("convexHull", &convex_hull_js);

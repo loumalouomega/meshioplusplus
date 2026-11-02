@@ -716,6 +716,27 @@ mio_match_periodic_nodes <- function(mesh, slave, master, matrix = NULL, transla
   )
 }
 
+#' Laplace-Beltrami eigenmodes of a triangle surface
+#'
+#' The lowest eigenpairs of the cotangent Laplacian against the lumped mass:
+#' the mesh carries point data `laplacian:modes` (n x num_modes,
+#' M-orthonormal) and field data `laplacian:eigenvalues` (ascending). See
+#' `doc/eigenmodes.md`.
+#'
+#' @param mesh A `mio_mesh` of triangles.
+#' @param num_modes Eigenpairs wanted, the smallest.
+#' @param tolerance The relative residual every pair must reach.
+#' @param max_iterations Block iterations at most; 0 takes 300.
+#' @return A list of `mesh`, `iterations`, `max_residual` and `converged`.
+#' @export
+mio_laplacian_eigenmodes <- function(mesh, num_modes = 10, tolerance = 1e-8,
+                                     max_iterations = 0) {
+  .Call(
+    R_mio_laplacian_eigenmodes, mesh, as.numeric(num_modes), as.numeric(tolerance),
+    as.numeric(max_iterations)
+  )
+}
+
 #' Rigid registration by iterative closest points
 #'
 #' The rotation and translation laying `source`'s points onto `target` (its

@@ -2157,6 +2157,18 @@ def test_convert_coordinates_tool(tmp_path):
     )
 
 
+def test_laplacian_eigenmodes_tool(tmp_path):
+    src = str(tmp_path / "s.vtu")
+    meshioplusplus.write(src, meshioplusplus.icosa_sphere(subdivisions=2))
+    out = _dump(
+        _tools.tool_laplacian_eigenmodes(src, str(tmp_path / "e.vtu"), num_modes=4)
+    )
+    assert out["converged"] and len(out["eigenvalues"]) == 4
+    assert out["eigenvalues"][0] == 0.0
+    back = meshioplusplus.read(str(tmp_path / "e.vtu"))
+    assert back.point_data["laplacian:modes"].shape == (len(back.points), 4)
+
+
 def test_register_rigid_tool(tmp_path):
     target = meshioplusplus.icosa_sphere(subdivisions=3)
     target = meshioplusplus.Mesh(

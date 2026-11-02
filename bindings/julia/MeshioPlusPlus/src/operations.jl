@@ -3910,6 +3910,28 @@ function sobolev_deform(m::Mesh, array::AbstractString, length_scale::Real;
 end
 
 """
+    laplacian_eigenmodes(m; num_modes=10, tolerance=1e-8, max_iterations=0)
+        -> (; mesh, iterations, max_residual, converged, num_degenerate)
+
+The lowest eigenpairs of a triangle surface's Laplace-Beltrami operator: the
+mesh carries point data `laplacian:modes` (n x num_modes, M-orthonormal) and
+field data `laplacian:eigenvalues` (ascending). See `doc/eigenmodes.md`.
+"""
+function laplacian_eigenmodes(m::Mesh; num_modes::Integer=10, tolerance::Real=1e-8,
+                              max_iterations::Integer=0)
+    opts = _CEigenmodeOpts(Int64(num_modes), Float64(tolerance), Int64(max_iterations),
+                           ntuple(_ -> Int64(0), 4))
+    rep = Ref{_CEigenmodeReport}()
+    ptr = ccall(_sym(:mio_laplacian_eigenmodes), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CEigenmodeOpts}, Ref{_CEigenmodeReport}),
+                _handle(m), Ref(opts), rep)
+    r = _check_ptr(ptr)
+    h = rep[]
+    (mesh=Mesh(r), iterations=Int(h.iterations), max_residual=h.max_residual,
+     converged=h.converged != 0, num_degenerate=Int(h.num_degenerate))
+end
+
+"""
     register_rigid(source, target; method="point_to_point", max_iterations=50,
                    tolerance=1e-10, max_distance=0.0, initial=nothing)
         -> (; matrix, initial_rms, rms, iterations, num_pairs, converged)

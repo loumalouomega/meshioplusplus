@@ -1245,6 +1245,27 @@ SEXP R_mio_sobolev_deform(SEXP mesh, SEXP array, SEXP length_scale, SEXP fixed_p
     return res;
 }
 
+SEXP R_mio_laplacian_eigenmodes(SEXP mesh, SEXP num_modes, SEXP tolerance,
+                                SEXP max_iterations) {
+    mio_eigenmode_opts opts;
+    mio_eigenmode_opts_init(&opts);
+    opts.num_modes = (int64_t)Rf_asReal(num_modes);
+    opts.tolerance = Rf_asReal(tolerance);
+    opts.max_iterations = (int64_t)Rf_asReal(max_iterations);
+    mio_eigenmode_report rep;
+    mio_mesh *out = mio_laplacian_eigenmodes(mio_r_mesh(mesh), &opts, &rep);
+    if (out == NULL) mio_r_fail("laplacian_eigenmodes");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP a = PROTECT(Rf_ScalarReal((double)rep.iterations));
+    SEXP b = PROTECT(Rf_ScalarReal(rep.max_residual));
+    SEXP c = PROTECT(Rf_ScalarLogical(rep.converged != 0));
+    const char *keys[] = {"mesh", "iterations", "max_residual", "converged"};
+    SEXP values[] = {mo, a, b, c};
+    SEXP res = PROTECT(mio_r_named_list(4, keys, values));
+    UNPROTECT(5);
+    return res;
+}
+
 SEXP R_mio_register_rigid(SEXP source, SEXP target, SEXP method, SEXP max_iterations,
                           SEXP tolerance, SEXP max_distance, SEXP initial) {
     mio_registration_opts opts;

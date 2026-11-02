@@ -164,6 +164,7 @@
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/registration.hpp"
+#include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/decimate_volume.hpp"
 #include "meshioplusplus/operations/data_calc.hpp"
@@ -6210,6 +6211,33 @@ PYBIND11_MODULE(_core, m) {
         py::arg("reference") = std::array<double, 3>{1.0, 0.0, 0.0},
         py::arg("arrays") = std::vector<std::string>{}, py::arg("inverse") = false,
         py::arg("record_coordinates") = true);
+
+    // Laplace-Beltrami eigenmodes of a triangle surface. {mesh, counters}. See
+    // operations/eigenmodes.hpp.
+    m.def(
+        "laplacian_eigenmodes",
+        [](py::object pymesh, std::int64_t num_modes, double tolerance,
+           std::int64_t max_iterations) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::EigenmodeOptions options;
+            options.mNumModes = num_modes;
+            options.mTolerance = tolerance;
+            options.mMaxIterations = max_iterations;
+            meshioplusplus::EigenmodeResult r =
+                core_nogil([&] { return meshioplusplus::laplacian_eigenmodes(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["eigenvalues"] = r.mEigenvalues;
+            out["iterations"] = r.mIterations;
+            out["max_residual"] = r.mMaxResidual;
+            out["converged"] = r.mConverged;
+            out["num_degenerate"] = r.mNumDegenerate;
+            return out;
+        },
+        py::arg("mesh"), py::arg("num_modes") = 10, py::arg("tolerance") = 1e-8,
+        py::arg("max_iterations") = 0);
 
     // Rigid registration by iterative closest points. {matrix (16, row-major),
     // counters}. See operations/registration.hpp.

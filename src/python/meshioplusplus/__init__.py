@@ -130,6 +130,7 @@ if TYPE_CHECKING:
     from ._decimate import decimate
     from ._decimate_volume import decimate_volume
     from ._diff import diff, meshes_equal
+    from ._eigenmodes import laplacian_eigenmodes
     from ._error import estimate_error
     from ._error_size import error_size
     from ._extrude import extrude, revolve
@@ -349,6 +350,7 @@ _LAZY_ATTRS = {
     "to_blender": "_blender",
     "adjacency": "_adjacency",
     "geodesic_distance": "_geodesic",
+    "laplacian_eigenmodes": "_eigenmodes",
     "convex_hull": "_hull",
     "delaunay_2d": "_hull",
     "estimate_normals": "_point_normals",
@@ -710,6 +712,7 @@ __all__ = [
     "adjacency",
     "write_graph",
     "geodesic_distance",
+    "laplacian_eigenmodes",
     "convex_hull",
     "delaunay_2d",
     "estimate_normals",

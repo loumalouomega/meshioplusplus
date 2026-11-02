@@ -44,6 +44,7 @@
 
 // Project includes (private, not installed)
 #include "../detail/sparse_solve.hpp"
+#include "../detail/surface_fem.hpp"
 
 namespace meshioplusplus {
 
@@ -69,11 +70,7 @@ double geo_norm(const GeoVec& rA) {
 }
 
 // One surface triangle and its cotangents (at corners 0, 1, 2).
-struct GeoTriangle {
-    std::array<std::int64_t, 3> mNodes;
-    std::array<double, 3> mCot;
-    double mDoubleArea;
-};
+using GeoTriangle = detail::SurfaceFemTriangle;
 
 // The points a region names (the periodic operation's rule).
 std::vector<std::int64_t> geo_region_points(const Mesh& rMesh, const Region& rR) {
@@ -153,76 +150,12 @@ GeodesicResult geodesic_distance(const Mesh& rMesh, const GeodesicOptions& rOpti
     if (!(rOptions.mTolerance > 0.0))
         throw std::invalid_argument("geodesic_distance: the tolerance must be positive");
     const std::size_t n = rMesh.NumPoints();
-    const std::size_t dim = rMesh.PointDim();
-
-    // --- the surface: every triangle block, nothing else of dimension >= 2 ---
-    std::vector<GeoTriangle> tris;
-    for (const auto cb : rMesh.CellRange()) {
-        const std::string& type = cb.Type();
-        if (cb.IsPolyhedron())
-            throw std::invalid_argument(
-                "geodesic_distance: a volume mesh; take its surface with extract_surface first");
-        const int d = cb.IsRagged() ? 2 : cell_type_dimension(cell_type_from_name(type));
-        if (type == "triangle" && !cb.IsRagged()) {
-            const NDArray& conn = cb.Conn();
-            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
-                GeoTriangle t{};
-                for (std::size_t k = 0; k < 3; ++k) {
-                    t.mNodes[k] = detail::read_int(conn, c * 3 + k);
-                    if (t.mNodes[k] < 0 || static_cast<std::size_t>(t.mNodes[k]) >= n)
-                        throw std::invalid_argument(
-                            "geodesic_distance: a triangle names a point outside the mesh");
-                }
-                tris.push_back(t);
-            }
-        } else if (d >= 3) {
-            throw std::invalid_argument("geodesic_distance: '" + type +
-                                        "' cells make a volume; take its surface with "
-                                        "extract_surface first");
-        } else if (d == 2 || type.rfind("polygon", 0) == 0) {
-            throw std::invalid_argument(
-                "geodesic_distance: '" + type +
-                "' cells are not linear triangles; triangulate them with "
-                "convert_cells(mode=\"simplexify\") (or \"linearize\" a higher-order one) first");
-        }
-    }
-    if (tris.empty())
-        throw std::invalid_argument("geodesic_distance: the mesh has no triangle");
-
-    const NDArray& points = rMesh.Points();
-    std::vector<GeoVec> xyz(n, GeoVec{0.0, 0.0, 0.0});
-    for (std::size_t i = 0; i < n; ++i)
-        for (std::size_t k = 0; k < dim && k < 3; ++k)
-            xyz[i][k] = detail::read_double(points, i * dim + k);
-
-    // --- cotangents, areas, the mean edge length ---------------------------
+    const detail::SurfaceFem fem = detail::build_surface_fem(rMesh, "geodesic_distance");
+    const std::vector<GeoVec>& xyz = fem.mPoints;
+    const std::vector<GeoTriangle>& good = fem.mTriangles;
     GeodesicResult result;
-    std::vector<GeoTriangle> good;
-    good.reserve(tris.size());
-    double edge_sum = 0.0;
-    std::size_t edge_count = 0;
-    for (GeoTriangle t : tris) {
-        const GeoVec& a = xyz[t.mNodes[0]];
-        const GeoVec& b = xyz[t.mNodes[1]];
-        const GeoVec& c = xyz[t.mNodes[2]];
-        const double ab = geo_norm(geo_sub(b, a)), bc = geo_norm(geo_sub(c, b)),
-                     ca = geo_norm(geo_sub(a, c));
-        t.mDoubleArea = geo_norm(geo_cross(geo_sub(b, a), geo_sub(c, a)));
-        const double longest = std::max({ab, bc, ca});
-        if (!(t.mDoubleArea > 1e-14 * longest * longest)) {
-            ++result.mNumDegenerate;
-            continue;
-        }
-        t.mCot[0] = geo_dot(geo_sub(b, a), geo_sub(c, a)) / t.mDoubleArea;
-        t.mCot[1] = geo_dot(geo_sub(a, b), geo_sub(c, b)) / t.mDoubleArea;
-        t.mCot[2] = geo_dot(geo_sub(a, c), geo_sub(b, c)) / t.mDoubleArea;
-        edge_sum += ab + bc + ca;
-        edge_count += 3;
-        good.push_back(t);
-    }
-    if (good.empty())
-        throw std::invalid_argument("geodesic_distance: every triangle has zero area");
-    const double h = edge_sum / static_cast<double>(edge_count);
+    result.mNumDegenerate = fem.mNumDegenerate;
+    const double h = fem.mMeanEdge;
     result.mTimeStep = rOptions.mTimeFactor * h * h;
 
     // --- on the surface, and its connected pieces -------------------------
@@ -262,25 +195,12 @@ GeodesicResult geodesic_distance(const Mesh& rMesh, const GeodesicOptions& rOpti
     result.mNumSources = static_cast<std::int64_t>(sources.size());
 
     // --- 1. heat: (M + t K) u = delta ---------------------------------------
-    std::vector<double> mass(n, 0.0);
+    std::vector<double> mass;
     std::vector<detail::SparseTriplet> stiffness;
-    stiffness.reserve(good.size() * 12);
-    for (const GeoTriangle& t : good) {
-        for (std::size_t k = 0; k < 3; ++k) {
-            mass[t.mNodes[k]] += t.mDoubleArea / 6.0;
-            // The edge opposite corner k, weighted by half its cotangent.
-            const std::size_t i = static_cast<std::size_t>(t.mNodes[(k + 1) % 3]);
-            const std::size_t j = static_cast<std::size_t>(t.mNodes[(k + 2) % 3]);
-            const double w = 0.5 * t.mCot[k];
-            stiffness.push_back({i, j, -w});
-            stiffness.push_back({j, i, -w});
-            stiffness.push_back({i, i, w});
-            stiffness.push_back({j, j, w});
-        }
-    }
+    detail::surface_fem_assemble(fem, mass, stiffness);
     const std::size_t cap = rOptions.mMaxIterations > 0
                                 ? static_cast<std::size_t>(rOptions.mMaxIterations)
-                                : 2 * n + 10;
+                                : std::max<std::size_t>(2 * n + 10, 1000);
     std::vector<double> u(n, 0.0);
     {
         std::vector<detail::SparseTriplet> heat;

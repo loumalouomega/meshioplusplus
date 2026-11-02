@@ -587,6 +587,10 @@ WRITING = [
         ],
     ),
     (
+        "eigenmodes",
+        lambda f, out: ["eigenmodes", f["sphere_a"], out + ".vtu", "-k", "4", "--json"],
+    ),
+    (
         "point-normals",
         lambda f, out: [
             "point-normals",

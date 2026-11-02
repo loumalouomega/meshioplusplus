@@ -3656,6 +3656,35 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def laplacian_eigenmodes(
+        input_path: str,
+        output_path: str,
+        num_modes: int = 10,
+        tolerance: float = 1e-8,
+        max_iterations: int = 0,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """The lowest eigenpairs of a triangle surface's Laplace-Beltrami
+        operator (cotangent stiffness against lumped mass, Neumann on a
+        boundary): writes point data laplacian:modes (n, num_modes),
+        M-orthonormal, and field data laplacian:eigenvalues, ascending -- a
+        spectral positional encoding for graph networks, or a shape
+        descriptor. Quads and polygons are refused naming convert_cells
+        simplexify, volumes naming extract_surface. Reports eigenvalues,
+        iterations, max_residual, converged."""
+        return _guard(
+            _tools.tool_laplacian_eigenmodes,
+            input_path=input_path,
+            output_path=output_path,
+            num_modes=num_modes,
+            tolerance=tolerance,
+            max_iterations=max_iterations,
+            input_format=input_format,
+            output_format=output_format,
+        )
+
+    @server.tool()
     def register_rigid(
         source_path: str,
         target_path: str,

@@ -1687,6 +1687,24 @@ struct _CSobolevReport
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_eigenmode_opts`."""
+struct _CEigenmodeOpts
+    num_modes::Int64
+    tolerance::Cdouble
+    max_iterations::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_eigenmode_report`."""
+struct _CEigenmodeReport
+    iterations::Int64
+    max_residual::Cdouble
+    converged::Int32
+    reserved_pad::Int32
+    num_degenerate::Int64
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_registration_opts`."""
 struct _CRegistrationOpts
     method::Int32
@@ -2065,6 +2083,10 @@ function _check_abi_layout()
         error("meshio++: mio_shrinkwrap_opts layout mismatch ($(sizeof(_CShrinkwrapOpts)) bytes)")
     sizeof(_CShrinkwrapReport) == 136 ||
         error("meshio++: mio_shrinkwrap_report layout mismatch ($(sizeof(_CShrinkwrapReport)) bytes)")
+    sizeof(_CEigenmodeOpts) == 56 ||
+        error("meshio++: mio_eigenmode_opts layout mismatch ($(sizeof(_CEigenmodeOpts)) bytes)")
+    sizeof(_CEigenmodeReport) == 64 ||
+        error("meshio++: mio_eigenmode_report layout mismatch ($(sizeof(_CEigenmodeReport)) bytes)")
     sizeof(_CRegistrationOpts) == 192 ||
         error("meshio++: mio_registration_opts layout mismatch ($(sizeof(_CRegistrationOpts)) bytes)")
     sizeof(_CRegistrationReport) == 200 ||

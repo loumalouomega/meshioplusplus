@@ -28088,6 +28088,87 @@ MESHIOPLUSPLUS_API bool meshes_equal(const Mesh& rA, const Mesh& rB, double atol
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/diff.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/eigenmodes.hpp =====
+/**
+ * @file operations/eigenmodes.hpp
+ * @brief The lowest eigenpairs of a triangle surface's Laplace-Beltrami
+ * operator (roadmap 7.3.2): the surface's own Fourier basis. The modes are
+ * spectral positional encodings for graph networks, shape descriptors
+ * (the eigenvalues are invariant to rigid motion and parameterisation), and
+ * the first modes of a membrane's vibration.
+ *
+ * `laplacian_eigenmodes(mesh, {num_modes})` solves the generalised problem
+ * `K phi = lambda M phi` over the surface's P1 elements (`detail/surface_fem`,
+ * the operators `geodesic_distance` uses): `K` the cotangent stiffness, `M` the
+ * lumped (one-third area) mass, with the natural (Neumann) condition on a
+ * boundary. The `num_modes` smallest eigenvalues come by block inverse
+ * iteration with a shift (`(K + s M)^-1 M`, `s` one over the surface's area,
+ * each solve Jacobi-preconditioned conjugate gradients) and Rayleigh-Ritz
+ * over twice as many vectors (at least `num_modes + 8`), so repeated
+ * eigenvalues (a sphere's `l (l + 1)`, `2 l + 1` times) come out whole. It
+ * stops when every wanted pair's residual `|K phi - lambda M phi|` (in the
+ * `M^-1` norm, relative to `lambda + s`) is below `mTolerance`.
+ *
+ * The result is `point_data["laplacian:modes"]`, Float64 `(n, num_modes)`,
+ * the eigenvectors `M`-orthonormal (`phi_i^T M phi_j = delta_ij`), each signed
+ * so its largest-magnitude entry is positive; and
+ * `field_data["laplacian:eigenvalues"]`, ascending. A connected piece has a
+ * zero eigenvalue with a constant mode. A point in no triangle gets `NaN`.
+ * Within a repeated eigenvalue the basis is one of many, the same on every
+ * run. Everything is the same on every backend and thread count.
+ */
+
+// System includes
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Point data: Float64 `(n, num_modes)`, the eigenvectors.
+inline constexpr const char* kLaplacianModesName = "laplacian:modes";
+/// Field data: Float64 `(num_modes,)`, the eigenvalues, ascending.
+inline constexpr const char* kLaplacianEigenvaluesName = "laplacian:eigenvalues";
+
+/// What `laplacian_eigenmodes` computes.
+struct EigenmodeOptions {
+    /// Eigenpairs wanted, the smallest; at least 1, at most the surface's points.
+    std::int64_t mNumModes = 10;
+    /// The relative residual every wanted pair must reach.
+    double mTolerance = 1e-8;
+    /// Block iterations at most; 0 takes 300.
+    std::int64_t mMaxIterations = 0;
+};
+
+/// What `laplacian_eigenmodes` found.
+struct EigenmodeResult {
+    /// The mesh with `laplacian:modes` and `laplacian:eigenvalues`.
+    Mesh mMesh;
+    /// The eigenvalues, ascending.
+    std::vector<double> mEigenvalues;
+    /// Block iterations run.
+    std::int64_t mIterations = 0;
+    /// The largest relative residual among the wanted pairs.
+    double mMaxResidual = 0.0;
+    /// False when `mMaxIterations` ran out first (the last iterate is kept).
+    bool mConverged = false;
+    /// Triangles left out for (near) zero area.
+    std::int64_t mNumDegenerate = 0;
+};
+
+/**
+ * @brief The lowest eigenpairs of the surface Laplacian (see the file comment).
+ * @throws std::invalid_argument on a volume, quad, polygon or higher-order
+ *         cell (naming the operation that makes linear triangles), no
+ *         triangle, `mNumModes` below 1 or above the surface's points, or a
+ *         non-positive tolerance.
+ */
+MESHIOPLUSPLUS_API EigenmodeResult laplacian_eigenmodes(const Mesh& rMesh,
+                                                        const EigenmodeOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/eigenmodes.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/error.hpp =====
 /**
  * @file operations/error.hpp
@@ -29720,7 +29801,8 @@ struct GeodesicOptions {
     double mTimeFactor = 1.0;
     /// Relative residual tolerance of both solves.
     double mTolerance = 1e-10;
-    /// Iteration cap of each solve; 0 takes twice the point count plus 10.
+    /// Iteration cap of each solve; 0 takes twice the point count plus 10, at
+    /// least 1000 (Gauss-Seidel on a tiny surface can need more than 2 n + 10).
     std::int64_t mMaxIterations = 0;
 };
 
@@ -48882,6 +48964,72 @@ DistanceQuery build_distance_query_from_runs(const TriangleSoup& rSoup,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/surface_edge_runs.hpp =====
+// ===== begin src/cpp/src/detail/surface_fem.hpp =====
+/**
+ * @file detail/surface_fem.hpp
+ * @brief The P1 finite elements of a triangle surface: its cotangent stiffness
+ * and lumped (one-third area) mass, shared by `geodesic_distance` and
+ * `laplacian_eigenmodes` so the two read the same operators.
+ *
+ * `build_surface_fem` takes the mesh's `triangle` blocks and refuses, naming
+ * the operation that fixes it, a volume cell (`extract_surface`), a quad or
+ * polygon (`convert_cells(mode="simplexify")`) or a higher-order surface cell
+ * (`linearize`); line and vertex blocks are ignored. A triangle whose doubled
+ * area is not above `1e-14` times its longest edge squared is degenerate and
+ * left out (counted). Everything is serial and in input order, so the
+ * operators are the same on every backend.
+ *
+ * A **core-private** header: nothing installed names it.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// One surface triangle and its cotangents (at corners 0, 1, 2).
+struct SurfaceFemTriangle {
+    std::array<std::int64_t, 3> mNodes;
+    std::array<double, 3> mCot;
+    double mDoubleArea;
+};
+
+struct SurfaceFem {
+    /// Every mesh point, as three coordinates (2-D points get z = 0).
+    std::vector<std::array<double, 3>> mPoints;
+    /// The non-degenerate triangles, in input order.
+    std::vector<SurfaceFemTriangle> mTriangles;
+    /// Triangles left out for (near) zero area.
+    std::int64_t mNumDegenerate = 0;
+    /// The mean edge length of the kept triangles (each edge once per triangle).
+    double mMeanEdge = 0.0;
+};
+
+/**
+ * @brief The surface of @p rMesh as P1 triangles (see the file comment).
+ * @param rOp the operation's name, which every refusal starts with.
+ * @throws std::invalid_argument on an out-of-scope cell, a triangle naming a
+ *         point outside the mesh, no triangle, or every triangle degenerate.
+ */
+SurfaceFem build_surface_fem(const Mesh& rMesh, const std::string& rOp);
+
+/**
+ * @brief The lumped mass (one third of each triangle's area per corner, into
+ * @p rMass, sized to the point count) and the cotangent stiffness triplets
+ * (appended to @p rStiffness), in triangle then corner order.
+ */
+void surface_fem_assemble(const SurfaceFem& rFem, std::vector<double>& rMass,
+                          std::vector<SparseTriplet>& rStiffness);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/surface_fem.hpp =====
 // ===== begin src/cpp/src/detail/surface_project.hpp =====
 /**
  * @file detail/surface_project.hpp
@@ -103105,6 +103253,136 @@ std::vector<SurfaceProjection> query_surface_projections(const DistanceQuery& rQ
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/surface_distance.cpp =====
+// ===== begin src/cpp/src/detail/surface_fem.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <stdexcept>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+using SfVec = std::array<double, 3>;
+
+SfVec sf_sub(const SfVec& rA, const SfVec& rB) {
+    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
+}
+
+double sf_dot(const SfVec& rA, const SfVec& rB) {
+    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
+}
+
+SfVec sf_cross(const SfVec& rA, const SfVec& rB) {
+    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
+            rA[0] * rB[1] - rA[1] * rB[0]};
+}
+
+double sf_norm(const SfVec& rA) {
+    return std::sqrt(sf_dot(rA, rA));
+}
+
+}  // namespace
+
+SurfaceFem build_surface_fem(const Mesh& rMesh, const std::string& rOp) {
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+
+    // --- the surface: every triangle block, nothing else of dimension >= 2 ---
+    std::vector<SurfaceFemTriangle> tris;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::string& type = cb.Type();
+        if (cb.IsPolyhedron())
+            throw std::invalid_argument(
+                rOp + ": a volume mesh; take its surface with extract_surface first");
+        const int d = cb.IsRagged() ? 2 : cell_type_dimension(cell_type_from_name(type));
+        if (type == "triangle" && !cb.IsRagged()) {
+            const NDArray& conn = cb.Conn();
+            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+                SurfaceFemTriangle t{};
+                for (std::size_t k = 0; k < 3; ++k) {
+                    t.mNodes[k] = read_int(conn, c * 3 + k);
+                    if (t.mNodes[k] < 0 || static_cast<std::size_t>(t.mNodes[k]) >= n)
+                        throw std::invalid_argument(rOp +
+                                                    ": a triangle names a point outside the mesh");
+                }
+                tris.push_back(t);
+            }
+        } else if (d >= 3) {
+            throw std::invalid_argument(rOp + ": '" + type +
+                                        "' cells make a volume; take its surface with "
+                                        "extract_surface first");
+        } else if (d == 2 || type.rfind("polygon", 0) == 0) {
+            throw std::invalid_argument(
+                rOp + ": '" + type +
+                "' cells are not linear triangles; triangulate them with "
+                "convert_cells(mode=\"simplexify\") (or \"linearize\" a higher-order one) first");
+        }
+    }
+    if (tris.empty())
+        throw std::invalid_argument(rOp + ": the mesh has no triangle");
+
+    SurfaceFem fem;
+    const NDArray& points = rMesh.Points();
+    fem.mPoints.assign(n, SfVec{0.0, 0.0, 0.0});
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t k = 0; k < dim && k < 3; ++k)
+            fem.mPoints[i][k] = read_double(points, i * dim + k);
+
+    // --- cotangents, areas, the mean edge length ---------------------------
+    fem.mTriangles.reserve(tris.size());
+    double edge_sum = 0.0;
+    std::size_t edge_count = 0;
+    for (SurfaceFemTriangle t : tris) {
+        const SfVec& a = fem.mPoints[t.mNodes[0]];
+        const SfVec& b = fem.mPoints[t.mNodes[1]];
+        const SfVec& c = fem.mPoints[t.mNodes[2]];
+        const double ab = sf_norm(sf_sub(b, a)), bc = sf_norm(sf_sub(c, b)),
+                     ca = sf_norm(sf_sub(a, c));
+        t.mDoubleArea = sf_norm(sf_cross(sf_sub(b, a), sf_sub(c, a)));
+        const double longest = std::max({ab, bc, ca});
+        if (!(t.mDoubleArea > 1e-14 * longest * longest)) {
+            ++fem.mNumDegenerate;
+            continue;
+        }
+        t.mCot[0] = sf_dot(sf_sub(b, a), sf_sub(c, a)) / t.mDoubleArea;
+        t.mCot[1] = sf_dot(sf_sub(a, b), sf_sub(c, b)) / t.mDoubleArea;
+        t.mCot[2] = sf_dot(sf_sub(a, c), sf_sub(b, c)) / t.mDoubleArea;
+        edge_sum += ab + bc + ca;
+        edge_count += 3;
+        fem.mTriangles.push_back(t);
+    }
+    if (fem.mTriangles.empty())
+        throw std::invalid_argument(rOp + ": every triangle has zero area");
+    fem.mMeanEdge = edge_sum / static_cast<double>(edge_count);
+    return fem;
+}
+
+void surface_fem_assemble(const SurfaceFem& rFem, std::vector<double>& rMass,
+                          std::vector<SparseTriplet>& rStiffness) {
+    rMass.assign(rFem.mPoints.size(), 0.0);
+    rStiffness.reserve(rStiffness.size() + rFem.mTriangles.size() * 12);
+    for (const SurfaceFemTriangle& t : rFem.mTriangles) {
+        for (std::size_t k = 0; k < 3; ++k) {
+            rMass[t.mNodes[k]] += t.mDoubleArea / 6.0;
+            // The edge opposite corner k, weighted by half its cotangent.
+            const std::size_t i = static_cast<std::size_t>(t.mNodes[(k + 1) % 3]);
+            const std::size_t j = static_cast<std::size_t>(t.mNodes[(k + 2) % 3]);
+            const double w = 0.5 * t.mCot[k];
+            rStiffness.push_back({i, j, -w});
+            rStiffness.push_back({j, i, -w});
+            rStiffness.push_back({i, i, w});
+            rStiffness.push_back({j, j, w});
+        }
+    }
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/surface_fem.cpp =====
 // ===== begin src/cpp/src/detail/surface_normals.cpp =====
 #include <algorithm>
 #include <array>
@@ -219530,6 +219808,277 @@ bool meshes_equal(const Mesh& rA, const Mesh& rB, double atol, double rtol) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/diff.cpp =====
+// ===== begin src/cpp/src/operations/eigenmodes.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <numeric>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+
+namespace {
+
+using LapColumn = std::vector<double>;
+
+/// A deterministic value in [-1, 1) for (row, column): splitmix64.
+double lap_hash(std::uint64_t Row, std::uint64_t Col) {
+    std::uint64_t z = Row * 0x9E3779B97F4A7C15ull + Col * 0xD1B54A32D192ED03ull + 1;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    z ^= z >> 31;
+    return static_cast<double>(z >> 11) * (2.0 / 9007199254740992.0) - 1.0;
+}
+
+/// `sum a_i M_i b_i`, the M-inner product (M diagonal), in fixed chunks.
+double lap_mdot(const LapColumn& rA, const LapColumn& rB, const std::vector<double>& rMass) {
+    const std::size_t n = rA.size();
+    const std::size_t chunks = (n + detail::kSparseChunk - 1) / detail::kSparseChunk;
+    std::vector<double> part(chunks, 0.0);
+    parallel_for(chunks, [&](std::size_t c) {
+        const std::size_t lo = c * detail::kSparseChunk;
+        const std::size_t hi = std::min(n, lo + detail::kSparseChunk);
+        double s = 0.0;
+        for (std::size_t i = lo; i < hi; ++i)
+            s += rA[i] * rMass[i] * rB[i];
+        part[c] = s;
+    });
+    double s = 0.0;
+    for (const double v : part)
+        s += v;
+    return s;
+}
+
+/// Eigen-decomposition of a symmetric P x P matrix (row-major) by cyclic
+/// Jacobi: eigenvalues in `rW`, eigenvectors as the columns of `rV`.
+void lap_jacobi(std::vector<double> A, std::size_t P, std::vector<double>& rW,
+                std::vector<double>& rV) {
+    rV.assign(P * P, 0.0);
+    for (std::size_t i = 0; i < P; ++i)
+        rV[i * P + i] = 1.0;
+    for (int sweep = 0; sweep < 100; ++sweep) {
+        double off = 0.0, diag = 0.0;
+        for (std::size_t i = 0; i < P; ++i) {
+            diag += A[i * P + i] * A[i * P + i];
+            for (std::size_t j = i + 1; j < P; ++j)
+                off += A[i * P + j] * A[i * P + j];
+        }
+        if (off == 0.0 || off <= 1e-32 * diag)
+            break;
+        for (std::size_t p = 0; p < P; ++p)
+            for (std::size_t q = p + 1; q < P; ++q) {
+                const double apq = A[p * P + q];
+                if (apq == 0.0)
+                    continue;
+                const double theta = (A[q * P + q] - A[p * P + p]) / (2.0 * apq);
+                const double t = (theta >= 0.0 ? 1.0 : -1.0) /
+                                 (std::abs(theta) + std::sqrt(theta * theta + 1.0));
+                const double c = 1.0 / std::sqrt(t * t + 1.0), s = t * c;
+                for (std::size_t k = 0; k < P; ++k) {
+                    const double akp = A[k * P + p], akq = A[k * P + q];
+                    A[k * P + p] = c * akp - s * akq;
+                    A[k * P + q] = s * akp + c * akq;
+                }
+                for (std::size_t k = 0; k < P; ++k) {
+                    const double apk = A[p * P + k], aqk = A[q * P + k];
+                    A[p * P + k] = c * apk - s * aqk;
+                    A[q * P + k] = s * apk + c * aqk;
+                }
+                for (std::size_t k = 0; k < P; ++k) {
+                    const double vkp = rV[k * P + p], vkq = rV[k * P + q];
+                    rV[k * P + p] = c * vkp - s * vkq;
+                    rV[k * P + q] = s * vkp + c * vkq;
+                }
+            }
+    }
+    rW.resize(P);
+    for (std::size_t i = 0; i < P; ++i)
+        rW[i] = A[i * P + i];
+}
+
+/// M-orthonormalise the block in place (modified Gram-Schmidt, twice); a
+/// column that collapses is replaced by a fresh deterministic one.
+void lap_orthonormalise(std::vector<LapColumn>& rY, const std::vector<double>& rMass,
+                        std::uint64_t& rSeed) {
+    const std::size_t n = rMass.size();
+    for (std::size_t j = 0; j < rY.size(); ++j) {
+        for (int attempt = 0;; ++attempt) {
+            const double before = std::sqrt(lap_mdot(rY[j], rY[j], rMass));
+            for (int pass = 0; pass < 2; ++pass)
+                for (std::size_t i = 0; i < j; ++i) {
+                    const double c = lap_mdot(rY[i], rY[j], rMass);
+                    for (std::size_t r = 0; r < n; ++r)
+                        rY[j][r] -= c * rY[i][r];
+                }
+            const double norm = std::sqrt(lap_mdot(rY[j], rY[j], rMass));
+            if (norm > 1e-10 * before && norm > 0.0) {
+                for (double& v : rY[j])
+                    v /= norm;
+                break;
+            }
+            if (attempt > 8)
+                throw std::runtime_error(
+                    "laplacian_eigenmodes: internal error: the block lost its rank");
+            ++rSeed;
+            for (std::size_t r = 0; r < n; ++r)
+                rY[j][r] = lap_hash(r, rSeed + 1000003ull);
+        }
+    }
+}
+
+}  // namespace
+
+EigenmodeResult laplacian_eigenmodes(const Mesh& rMesh, const EigenmodeOptions& rOptions) {
+    if (!(rOptions.mTolerance > 0.0))
+        throw std::invalid_argument("laplacian_eigenmodes: the tolerance must be positive");
+    if (rOptions.mNumModes < 1)
+        throw std::invalid_argument("laplacian_eigenmodes: num_modes must be at least 1");
+    const detail::SurfaceFem fem = detail::build_surface_fem(rMesh, "laplacian_eigenmodes");
+    const std::size_t n_all = rMesh.NumPoints();
+    std::vector<double> mass_all;
+    std::vector<detail::SparseTriplet> stiff_all;
+    detail::surface_fem_assemble(fem, mass_all, stiff_all);
+
+    // The problem lives on the surface's points alone.
+    std::vector<std::int64_t> local(n_all, -1);
+    std::vector<std::size_t> global;
+    for (std::size_t i = 0; i < n_all; ++i)
+        if (mass_all[i] > 0.0) {
+            local[i] = static_cast<std::int64_t>(global.size());
+            global.push_back(i);
+        }
+    const std::size_t n = global.size();
+    const std::size_t k = static_cast<std::size_t>(rOptions.mNumModes);
+    if (k > n)
+        throw std::invalid_argument("laplacian_eigenmodes: num_modes (" + std::to_string(k) +
+                                    ") exceeds the surface's " + std::to_string(n) + " points");
+    std::vector<double> mass(n);
+    double area = 0.0;
+    for (std::size_t r = 0; r < n; ++r) {
+        mass[r] = mass_all[global[r]];
+        area += mass[r];
+    }
+    const double shift = 1.0 / area;
+    std::vector<detail::SparseTriplet> kt, at;
+    kt.reserve(stiff_all.size());
+    at.reserve(stiff_all.size() + n);
+    for (const detail::SparseTriplet& e : stiff_all) {
+        const detail::SparseTriplet t{static_cast<std::size_t>(local[e.mRow]),
+                                      static_cast<std::size_t>(local[e.mCol]), e.mValue};
+        kt.push_back(t);
+        at.push_back(t);
+    }
+    for (std::size_t r = 0; r < n; ++r)
+        at.push_back({r, r, shift * mass[r]});
+    const detail::SparseCsr stiffness = detail::csr_from_triplets(n, n, std::move(kt));
+    const detail::SparseCsr shifted = detail::csr_from_triplets(n, n, std::move(at));
+
+    const std::size_t p = std::min(n, std::max(2 * k, k + 8));
+    std::vector<LapColumn> x(p, LapColumn(n));
+    for (std::size_t j = 0; j < p; ++j)
+        for (std::size_t r = 0; r < n; ++r)
+            x[j][r] = lap_hash(global[r], j);
+    std::uint64_t seed = p;
+    lap_orthonormalise(x, mass, seed);
+    std::vector<double> theta(p, std::numeric_limits<double>::quiet_NaN());
+
+    EigenmodeResult result;
+    result.mNumDegenerate = fem.mNumDegenerate;
+    const std::int64_t cap = rOptions.mMaxIterations > 0 ? rOptions.mMaxIterations : 300;
+    std::vector<LapColumn> y(p, LapColumn(n)), ky(p, LapColumn(n));
+    std::vector<double> rhs(n);
+    // Inexact inverse iteration: each solve only as accurate as the block
+    // already is (Rayleigh-Ritz then judges the pairs exactly), tightening
+    // as the residual falls.
+    double solve_tol = 1e-4;
+    for (std::int64_t it = 1; it <= cap; ++it) {
+        // y_j = (K + s M)^-1 M x_j, warm-started from x_j / (theta_j + s).
+        for (std::size_t j = 0; j < p; ++j) {
+            for (std::size_t r = 0; r < n; ++r) {
+                rhs[r] = mass[r] * x[j][r];
+                y[j][r] = std::isfinite(theta[j]) ? x[j][r] / (theta[j] + shift) : 0.0;
+            }
+            detail::csr_pcg(shifted, rhs.data(), y[j].data(), solve_tol, 20 * n + 100);
+        }
+        lap_orthonormalise(y, mass, seed);
+        // Rayleigh-Ritz: the projected stiffness in the M-orthonormal basis.
+        for (std::size_t j = 0; j < p; ++j)
+            detail::csr_multiply(stiffness, y[j].data(), ky[j].data());
+        std::vector<double> kp(p * p);
+        for (std::size_t i = 0; i < p; ++i)
+            for (std::size_t j = i; j < p; ++j)
+                kp[i * p + j] = kp[j * p + i] = detail::sparse_dot(y[i].data(), ky[j].data(), n);
+        std::vector<double> w, v;
+        lap_jacobi(kp, p, w, v);
+        std::vector<std::size_t> order(p);
+        std::iota(order.begin(), order.end(), std::size_t{0});
+        std::stable_sort(order.begin(), order.end(),
+                         [&](std::size_t A, std::size_t B) { return w[A] < w[B]; });
+        for (std::size_t j = 0; j < p; ++j) {
+            const std::size_t c = order[j];
+            theta[j] = w[c];
+            std::fill(x[j].begin(), x[j].end(), 0.0);
+            for (std::size_t i = 0; i < p; ++i) {
+                const double coef = v[i * p + c];
+                for (std::size_t r = 0; r < n; ++r)
+                    x[j][r] += coef * y[i][r];
+            }
+        }
+        // The wanted pairs' residuals |K x - theta M x|_{M^-1} / (theta + s).
+        double worst = 0.0;
+        std::vector<double> kx(n);
+        for (std::size_t j = 0; j < k; ++j) {
+            detail::csr_multiply(stiffness, x[j].data(), kx.data());
+            double s = 0.0;
+            for (std::size_t r = 0; r < n; ++r) {
+                const double d = kx[r] - theta[j] * mass[r] * x[j][r];
+                s += d * d / mass[r];
+            }
+            worst = std::max(worst, std::sqrt(s) / (std::abs(theta[j]) + shift));
+        }
+        result.mIterations = it;
+        result.mMaxResidual = worst;
+        if (worst <= rOptions.mTolerance) {
+            result.mConverged = true;
+            break;
+        }
+        solve_tol = std::max(1e-14, std::min(solve_tol, 1e-2 * worst));
+    }
+
+    NDArray modes(DType::Float64, {n_all, k});
+    double* pm = modes.As<double>();
+    std::fill(pm, pm + n_all * k, std::numeric_limits<double>::quiet_NaN());
+    NDArray values(DType::Float64, {k});
+    for (std::size_t j = 0; j < k; ++j) {
+        std::size_t big = 0;
+        for (std::size_t r = 1; r < n; ++r)
+            if (std::abs(x[j][r]) > std::abs(x[j][big]))
+                big = r;
+        const double sign = x[j][big] < 0.0 ? -1.0 : 1.0;
+        for (std::size_t r = 0; r < n; ++r)
+            pm[global[r] * k + j] = sign * x[j][r];
+        // A zero eigenvalue comes out as rounding either side of it.
+        const double lambda = std::abs(theta[j]) <= 1e-12 * shift ? 0.0 : theta[j];
+        values.As<double>()[j] = lambda;
+        result.mEigenvalues.push_back(lambda);
+    }
+    result.mMesh = detail::clone_mesh(rMesh);
+    result.mMesh.AddPointData(kLaplacianModesName, std::move(modes));
+    result.mMesh.AddFieldData(kLaplacianEigenvaluesName, std::move(values));
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/eigenmodes.cpp =====
 // ===== begin src/cpp/src/operations/error.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -223552,11 +224101,7 @@ double geo_norm(const GeoVec& rA) {
 }
 
 // One surface triangle and its cotangents (at corners 0, 1, 2).
-struct GeoTriangle {
-    std::array<std::int64_t, 3> mNodes;
-    std::array<double, 3> mCot;
-    double mDoubleArea;
-};
+using GeoTriangle = detail::SurfaceFemTriangle;
 
 // The points a region names (the periodic operation's rule).
 std::vector<std::int64_t> geo_region_points(const Mesh& rMesh, const Region& rR) {
@@ -223636,76 +224181,12 @@ GeodesicResult geodesic_distance(const Mesh& rMesh, const GeodesicOptions& rOpti
     if (!(rOptions.mTolerance > 0.0))
         throw std::invalid_argument("geodesic_distance: the tolerance must be positive");
     const std::size_t n = rMesh.NumPoints();
-    const std::size_t dim = rMesh.PointDim();
-
-    // --- the surface: every triangle block, nothing else of dimension >= 2 ---
-    std::vector<GeoTriangle> tris;
-    for (const auto cb : rMesh.CellRange()) {
-        const std::string& type = cb.Type();
-        if (cb.IsPolyhedron())
-            throw std::invalid_argument(
-                "geodesic_distance: a volume mesh; take its surface with extract_surface first");
-        const int d = cb.IsRagged() ? 2 : cell_type_dimension(cell_type_from_name(type));
-        if (type == "triangle" && !cb.IsRagged()) {
-            const NDArray& conn = cb.Conn();
-            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
-                GeoTriangle t{};
-                for (std::size_t k = 0; k < 3; ++k) {
-                    t.mNodes[k] = detail::read_int(conn, c * 3 + k);
-                    if (t.mNodes[k] < 0 || static_cast<std::size_t>(t.mNodes[k]) >= n)
-                        throw std::invalid_argument(
-                            "geodesic_distance: a triangle names a point outside the mesh");
-                }
-                tris.push_back(t);
-            }
-        } else if (d >= 3) {
-            throw std::invalid_argument("geodesic_distance: '" + type +
-                                        "' cells make a volume; take its surface with "
-                                        "extract_surface first");
-        } else if (d == 2 || type.rfind("polygon", 0) == 0) {
-            throw std::invalid_argument(
-                "geodesic_distance: '" + type +
-                "' cells are not linear triangles; triangulate them with "
-                "convert_cells(mode=\"simplexify\") (or \"linearize\" a higher-order one) first");
-        }
-    }
-    if (tris.empty())
-        throw std::invalid_argument("geodesic_distance: the mesh has no triangle");
-
-    const NDArray& points = rMesh.Points();
-    std::vector<GeoVec> xyz(n, GeoVec{0.0, 0.0, 0.0});
-    for (std::size_t i = 0; i < n; ++i)
-        for (std::size_t k = 0; k < dim && k < 3; ++k)
-            xyz[i][k] = detail::read_double(points, i * dim + k);
-
-    // --- cotangents, areas, the mean edge length ---------------------------
+    const detail::SurfaceFem fem = detail::build_surface_fem(rMesh, "geodesic_distance");
+    const std::vector<GeoVec>& xyz = fem.mPoints;
+    const std::vector<GeoTriangle>& good = fem.mTriangles;
     GeodesicResult result;
-    std::vector<GeoTriangle> good;
-    good.reserve(tris.size());
-    double edge_sum = 0.0;
-    std::size_t edge_count = 0;
-    for (GeoTriangle t : tris) {
-        const GeoVec& a = xyz[t.mNodes[0]];
-        const GeoVec& b = xyz[t.mNodes[1]];
-        const GeoVec& c = xyz[t.mNodes[2]];
-        const double ab = geo_norm(geo_sub(b, a)), bc = geo_norm(geo_sub(c, b)),
-                     ca = geo_norm(geo_sub(a, c));
-        t.mDoubleArea = geo_norm(geo_cross(geo_sub(b, a), geo_sub(c, a)));
-        const double longest = std::max({ab, bc, ca});
-        if (!(t.mDoubleArea > 1e-14 * longest * longest)) {
-            ++result.mNumDegenerate;
-            continue;
-        }
-        t.mCot[0] = geo_dot(geo_sub(b, a), geo_sub(c, a)) / t.mDoubleArea;
-        t.mCot[1] = geo_dot(geo_sub(a, b), geo_sub(c, b)) / t.mDoubleArea;
-        t.mCot[2] = geo_dot(geo_sub(a, c), geo_sub(b, c)) / t.mDoubleArea;
-        edge_sum += ab + bc + ca;
-        edge_count += 3;
-        good.push_back(t);
-    }
-    if (good.empty())
-        throw std::invalid_argument("geodesic_distance: every triangle has zero area");
-    const double h = edge_sum / static_cast<double>(edge_count);
+    result.mNumDegenerate = fem.mNumDegenerate;
+    const double h = fem.mMeanEdge;
     result.mTimeStep = rOptions.mTimeFactor * h * h;
 
     // --- on the surface, and its connected pieces -------------------------
@@ -223745,25 +224226,12 @@ GeodesicResult geodesic_distance(const Mesh& rMesh, const GeodesicOptions& rOpti
     result.mNumSources = static_cast<std::int64_t>(sources.size());
 
     // --- 1. heat: (M + t K) u = delta ---------------------------------------
-    std::vector<double> mass(n, 0.0);
+    std::vector<double> mass;
     std::vector<detail::SparseTriplet> stiffness;
-    stiffness.reserve(good.size() * 12);
-    for (const GeoTriangle& t : good) {
-        for (std::size_t k = 0; k < 3; ++k) {
-            mass[t.mNodes[k]] += t.mDoubleArea / 6.0;
-            // The edge opposite corner k, weighted by half its cotangent.
-            const std::size_t i = static_cast<std::size_t>(t.mNodes[(k + 1) % 3]);
-            const std::size_t j = static_cast<std::size_t>(t.mNodes[(k + 2) % 3]);
-            const double w = 0.5 * t.mCot[k];
-            stiffness.push_back({i, j, -w});
-            stiffness.push_back({j, i, -w});
-            stiffness.push_back({i, i, w});
-            stiffness.push_back({j, j, w});
-        }
-    }
+    detail::surface_fem_assemble(fem, mass, stiffness);
     const std::size_t cap = rOptions.mMaxIterations > 0
                                 ? static_cast<std::size_t>(rOptions.mMaxIterations)
-                                : 2 * n + 10;
+                                : std::max<std::size_t>(2 * n + 10, 1000);
     std::vector<double> u(n, 0.0);
     {
         std::vector<detail::SparseTriplet> heat;
@@ -243331,6 +243799,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"ConvexHull", {"Dimension"}},
         {"Delaunay2D", {}},
         {"EstimateNormals", {"K", "Orientation", "Viewpoint", "RecordVariation"}},
+        {"LaplacianEigenmodes", {"NumModes", "Tolerance", "MaxIterations"}},
         {"RegisterRigid",
          {"Target", "Method", "MaxIterations", "Tolerance", "MaxDistance", "RotateData"}},
         {"ConvertCoordinates",
@@ -245175,6 +245644,28 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"Area", hr.mArea},
                         {"Volume", hr.mVolume}});
         return std::move(hr.mMesh);
+    }
+    if (op == "LaplacianEigenmodes") {
+        EigenmodeOptions opts;
+        const double modes = pipe_number(rStep, "NumModes", 10.0);
+        const double iters = pipe_number(rStep, "MaxIterations", 0.0);
+        opts.mNumModes = static_cast<std::int64_t>(modes);
+        opts.mMaxIterations = static_cast<std::int64_t>(iters);
+        if (static_cast<double>(opts.mNumModes) != modes ||
+            static_cast<double>(opts.mMaxIterations) != iters)
+            throw std::invalid_argument(
+                pipe_err(rStep, "'NumModes' and 'MaxIterations' must be integers"));
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 1e-8);
+        EigenmodeResult er = laplacian_eigenmodes(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"Iterations", static_cast<double>(er.mIterations)},
+                        {"MaxResidual", er.mMaxResidual},
+                        {"Converged", er.mConverged ? 1.0 : 0.0}});
+        if (!er.mConverged)
+            rReport.mWarnings.push_back(
+                "laplacian_eigenmodes: no convergence within MaxIterations; the modes are the "
+                "last iterate");
+        return std::move(er.mMesh);
     }
     if (op == "RegisterRigid") {
         const std::string target = pipe_text(rStep, "Target", "");

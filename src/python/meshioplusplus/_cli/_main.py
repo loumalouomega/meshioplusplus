@@ -25,6 +25,7 @@ from . import (
     _decimate_volume,
     _decompress,
     _diff,
+    _eigenmodes,
     _extract_surface,
     _extrude,
     _feature_edges,
@@ -291,6 +292,13 @@ def build_parser():
     )
     _coordinates.add_args(parser)
     parser.set_defaults(func=_coordinates.coordinates_cmd)
+
+    parser = subparsers.add_parser(
+        "eigenmodes",
+        help="Lowest eigenpairs of a surface's Laplace-Beltrami operator",
+    )
+    _eigenmodes.add_args(parser)
+    parser.set_defaults(func=_eigenmodes.eigenmodes_cmd)
 
     parser = subparsers.add_parser(
         "register", help="Rigid registration of one mesh onto another (ICP)"

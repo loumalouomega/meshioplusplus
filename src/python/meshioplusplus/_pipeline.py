@@ -397,6 +397,7 @@ _OP_TABLE = {
     "ConvexHull": ("Dimension",),
     "Delaunay2D": (),
     "EstimateNormals": ("K", "Orientation", "Viewpoint", "RecordVariation"),
+    "LaplacianEigenmodes": ("NumModes", "Tolerance", "MaxIterations"),
     "RegisterRigid": (
         "Target",
         "Method",
@@ -2465,6 +2466,31 @@ def _apply_step(mesh, step, steps, warnings):
         entry["NumFacets"] = float(report["num_facets"])
         entry["Area"] = float(report["area"])
         entry["Volume"] = float(report["volume"])
+    elif op == "LaplacianEigenmodes":
+        from ._eigenmodes import laplacian_eigenmodes
+
+        modes = _number(step, "NumModes", 10.0)
+        iters = _number(step, "MaxIterations", 0.0)
+        if float(int(modes)) != modes or float(int(iters)) != iters:
+            raise ValueError(
+                "meshio++: pipeline: LaplacianEigenmodes: 'NumModes' and "
+                "'MaxIterations' must be integers"
+            )
+        mesh, report = laplacian_eigenmodes(
+            mesh,
+            int(modes),
+            tolerance=_number(step, "Tolerance", 1e-8),
+            max_iterations=int(iters),
+            return_report=True,
+        )
+        entry["Iterations"] = float(report["iterations"])
+        entry["MaxResidual"] = float(report["max_residual"])
+        entry["Converged"] = 1.0 if report["converged"] else 0.0
+        if not report["converged"]:
+            warnings.append(
+                "laplacian_eigenmodes: no convergence within MaxIterations; the modes "
+                "are the last iterate"
+            )
     elif op == "RegisterRigid":
         from ._registration import register_rigid
         from ._transform import transform

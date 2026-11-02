@@ -3018,6 +3018,12 @@ contains
         call dist%free()
         dist = square%geodesic_distance(stat=ierr)
         call check(ierr /= 0, 'geodesic_distance needs a source')
+        ! Eigenmodes of the square: four corners, two triangles.
+        dist = square%laplacian_eigenmodes(num_modes=2, converged=g_ok, stat=ierr)
+        call check(ierr == 0 .and. g_ok, 'laplacian_eigenmodes succeeded')
+        call dist%free()
+        dist = square%laplacian_eigenmodes(num_modes=9, stat=ierr)
+        call check(ierr /= 0, 'laplacian_eigenmodes refuses more modes than points')
         ! Registration of the square onto itself: the identity.
         call square%register_rigid(square, g_matrix, iterations=g_nv, converged=g_ok, stat=ierr)
         call check(ierr == 0 .and. g_ok, 'register_rigid succeeded')

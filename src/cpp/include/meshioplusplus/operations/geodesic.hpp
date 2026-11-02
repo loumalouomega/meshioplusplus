@@ -80,7 +80,8 @@ struct GeodesicOptions {
     double mTimeFactor = 1.0;
     /// Relative residual tolerance of both solves.
     double mTolerance = 1e-10;
-    /// Iteration cap of each solve; 0 takes twice the point count plus 10.
+    /// Iteration cap of each solve; 0 takes twice the point count plus 10, at
+    /// least 1000 (Gauss-Seidel on a tiny surface can need more than 2 n + 10).
     std::int64_t mMaxIterations = 0;
 };
 

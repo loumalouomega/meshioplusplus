@@ -4083,6 +4083,24 @@ export interface MeshioPlusPlusModule {
   };
 
   /**
+   * The lowest eigenpairs of a triangle surface's Laplace-Beltrami operator:
+   * `mesh` carries point data `laplacian:modes` (n x numModes,
+   * M-orthonormal) and field data `laplacian:eigenvalues` (ascending). See
+   * doc/eigenmodes.md.
+   * @throws {Error} on a non-triangle surface cell or more modes than points.
+   */
+  laplacianEigenmodes(
+    mesh: Mesh,
+    options?: { numModes?: number; tolerance?: number; maxIterations?: number },
+  ): {
+    mesh: Mesh;
+    eigenvalues: number[];
+    iterations: number;
+    maxResidual: number;
+    converged: boolean;
+  };
+
+  /**
    * Rigid registration by iterative closest points: `matrix` (16 numbers,
    * row-major 4x4) lays `source`'s points onto `target` (its surface when it
    * has surface cells, else its points); apply it with `transform`. See

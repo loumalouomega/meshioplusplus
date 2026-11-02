@@ -1225,6 +1225,24 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
+    !> Interop mirror of C `mio_eigenmode_opts`. Field order/types are ABI.
+    type, bind(c) :: mio_eigenmode_opts_t
+        integer(c_int64_t) :: num_modes = 10
+        real(c_double) :: tolerance = 1.0e-8_c_double
+        integer(c_int64_t) :: max_iterations = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_eigenmode_report`. Field order/types are ABI.
+    type, bind(c) :: mio_eigenmode_report_t
+        integer(c_int64_t) :: iterations = 0
+        real(c_double) :: max_residual = 0.0_c_double
+        integer(c_int32_t) :: converged = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: num_degenerate = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
     !> Interop mirror of C `mio_registration_opts`. Field order/types are ABI.
     type, bind(c) :: mio_registration_opts_t
         integer(c_int32_t) :: method = 0
@@ -2079,6 +2097,7 @@ module meshioplusplus
         procedure :: convert_coordinates => mesh_convert_coordinates
         procedure :: estimate_normals => mesh_estimate_normals
         procedure :: register_rigid => mesh_register_rigid
+        procedure :: laplacian_eigenmodes => mesh_laplacian_eigenmodes
         procedure :: convex_hull => mesh_convex_hull
         procedure :: delaunay_2d => mesh_delaunay_2d
         procedure :: remesh_volume => mesh_remesh_volume
@@ -3632,6 +3651,15 @@ module meshioplusplus
             type(c_ptr), value :: h, target
             type(mio_shrinkwrap_opts_t), intent(in) :: opts
             type(mio_shrinkwrap_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_laplacian_eigenmodes(h, opts, report) &
+                bind(c, name="mio_laplacian_eigenmodes") result(r)
+            import :: c_ptr, mio_eigenmode_opts_t, mio_eigenmode_report_t
+            type(c_ptr), value :: h
+            type(mio_eigenmode_opts_t), intent(in) :: opts
+            type(mio_eigenmode_report_t), intent(out) :: report
             type(c_ptr) :: r
         end function
 
@@ -9479,6 +9507,39 @@ contains
             inconsistent_pairs_after = int(report%quality_after%inconsistent_pairs, int64)
         if (present(boundary_edges_after)) &
             boundary_edges_after = int(report%quality_after%boundary_edges, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The lowest eigenpairs of the surface Laplacian: a new mesh with point
+    !> data `laplacian:modes` (n, num_modes) and field data
+    !> `laplacian:eigenvalues` (read them with the field-data accessors).
+    !> See doc/eigenmodes.md.
+    function mesh_laplacian_eigenmodes(self, num_modes, tolerance, max_iterations, &
+                                       iterations, max_residual, converged, stat, errmsg) &
+            result(out)
+        class(mio_mesh), intent(in) :: self
+        integer, intent(in), optional :: num_modes, max_iterations
+        real(real64), intent(in), optional :: tolerance
+        integer(int64), intent(out), optional :: iterations
+        real(real64), intent(out), optional :: max_residual
+        logical, intent(out), optional :: converged
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_eigenmode_opts_t) :: opts
+        type(mio_eigenmode_report_t) :: rep
+
+        if (present(num_modes)) opts%num_modes = int(num_modes, c_int64_t)
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(max_iterations)) opts%max_iterations = int(max_iterations, c_int64_t)
+        out%handle = c_mio_laplacian_eigenmodes(self%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('laplacian_eigenmodes', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(iterations)) iterations = int(rep%iterations, int64)
+        if (present(max_residual)) max_residual = real(rep%max_residual, real64)
+        if (present(converged)) converged = rep%converged /= 0
         call clear_status(stat, errmsg)
     end function
 

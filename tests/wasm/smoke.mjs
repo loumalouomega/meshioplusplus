@@ -5720,6 +5720,15 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.throws(() => m.matchPeriodicNodes(tagged, 'bottom', 'top', shift));
 });
 
+step('laplacianEigenmodes of the cube surface', () => {
+    const r = m.laplacianEigenmodes(cubeSurface, { numModes: 4 });
+    assert.ok(r.converged);
+    assert.equal(r.eigenvalues.length, 4);
+    assert.equal(r.eigenvalues[0], 0);
+    assert.ok('laplacian:modes' in r.mesh.point_data);
+    assert.throws(() => m.laplacianEigenmodes(cubeSurface, { numModes: 9 }));
+});
+
 step('registerRigid of the cube onto itself', () => {
     const r = m.registerRigid(cubeSurface, cubeSurface);
     assert.ok(r.converged);

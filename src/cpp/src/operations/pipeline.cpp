@@ -81,6 +81,7 @@
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/registration.hpp"
+#include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
 #include "meshioplusplus/operations/crop.hpp"
@@ -445,6 +446,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"ConvexHull", {"Dimension"}},
         {"Delaunay2D", {}},
         {"EstimateNormals", {"K", "Orientation", "Viewpoint", "RecordVariation"}},
+        {"LaplacianEigenmodes", {"NumModes", "Tolerance", "MaxIterations"}},
         {"RegisterRigid",
          {"Target", "Method", "MaxIterations", "Tolerance", "MaxDistance", "RotateData"}},
         {"ConvertCoordinates",
@@ -2289,6 +2291,28 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"Area", hr.mArea},
                         {"Volume", hr.mVolume}});
         return std::move(hr.mMesh);
+    }
+    if (op == "LaplacianEigenmodes") {
+        EigenmodeOptions opts;
+        const double modes = pipe_number(rStep, "NumModes", 10.0);
+        const double iters = pipe_number(rStep, "MaxIterations", 0.0);
+        opts.mNumModes = static_cast<std::int64_t>(modes);
+        opts.mMaxIterations = static_cast<std::int64_t>(iters);
+        if (static_cast<double>(opts.mNumModes) != modes ||
+            static_cast<double>(opts.mMaxIterations) != iters)
+            throw std::invalid_argument(
+                pipe_err(rStep, "'NumModes' and 'MaxIterations' must be integers"));
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 1e-8);
+        EigenmodeResult er = laplacian_eigenmodes(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"Iterations", static_cast<double>(er.mIterations)},
+                        {"MaxResidual", er.mMaxResidual},
+                        {"Converged", er.mConverged ? 1.0 : 0.0}});
+        if (!er.mConverged)
+            rReport.mWarnings.push_back(
+                "laplacian_eigenmodes: no convergence within MaxIterations; the modes are the "
+                "last iterate");
+        return std::move(er.mMesh);
     }
     if (op == "RegisterRigid") {
         const std::string target = pipe_text(rStep, "Target", "");
