@@ -230,6 +230,42 @@ def test_hexahedral_box_without_features_has_no_flat_corner(grading, off):
     assert report["warnings"] == []
 
 
+@needs_core
+@pytest.mark.parametrize("grading", ["uniform", "graded"])
+def test_hexahedral_cleaving_gives_the_tetrahedral_materials(grading):
+    # Nested shells: with conformity="cleaving" the hexahedra carry one
+    # material per shell, named as the tetrahedral output names them.
+    skin = mio.merge([mio.icosa_sphere(1.0, 4), mio.icosa_sphere(0.5, 4)])
+    size = {"surface_size": 0.1} if grading == "uniform" else {}
+    hexes, report = mio.octree_mesh(
+        skin,
+        output="hex",
+        conformity="cleaving",
+        hex_grading=grading,
+        min_size=0.1,
+        return_report=True,
+        **size,
+    )
+    tets = mio.octree_mesh(skin, conformity="cleaving", min_size=0.1, max_size=0.4)
+    material = np.asarray(hexes.cell_data["octree_mesh:material"][0])
+    assert sorted(np.unique(material).tolist()) == [1, 2]
+    names = {r.name for r in hexes.regions}
+    assert {"material_1", "material_2"} <= names
+    assert {n for n in names if n.startswith("material_")} == {
+        r.name for r in tets.regions if r.name.startswith("material_")
+    }
+    assert report["min_scaled_jacobian"] >= 0.2
+    assert report["num_inverted"] == 0
+    assert report["warnings"] == []
+    _, conformity = mio.check_conformity(hexes, return_report=True)
+    assert conformity["num_hanging_nodes"] == 0
+    # Without cleaving the same skin is one material, as before.
+    plain = mio.octree_mesh(
+        skin, output="hex", hex_grading=grading, min_size=0.1, **size
+    )
+    assert "octree_mesh:material" not in plain.cell_data
+
+
 _BUNNY = Path(__file__).resolve().parents[2] / "example" / "Bunny.stl"
 
 

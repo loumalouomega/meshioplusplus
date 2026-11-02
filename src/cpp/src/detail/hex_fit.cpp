@@ -141,8 +141,14 @@ std::int64_t hex_grid_make_manifold(const std::array<std::int64_t, 3>& rN,
     return added;
 }
 
-std::int64_t hex_make_manifold(const HexMesh& rMesh, std::vector<std::uint8_t>& rKept,
-                               const std::vector<double>& rScore) {
+namespace {
+
+// `hex_make_manifold` and `hex_shrink_manifold`: around every node, add the
+// empty hexahedron with the largest score (among @p pAllowed), or, with
+// @p Shrink, remove the kept one with the smallest, until the node passes.
+std::int64_t hexfit_star_repair(const HexMesh& rMesh, std::vector<std::uint8_t>& rKept,
+                                const std::vector<double>& rScore,
+                                const std::vector<std::uint8_t>* pAllowed, bool Shrink) {
     const std::size_t nh = rMesh.mHexes.size(), np = rMesh.mPoints.size();
     // The hexahedron across each facet (-1: none).
     std::vector<std::array<std::int64_t, 6>> across(nh);
@@ -248,20 +254,112 @@ std::int64_t hex_make_manifold(const HexMesh& rMesh, std::vector<std::uint8_t>& 
                 if (components(star, true, outside) <= 1 && components(star, false, outside) <= 1)
                     break;
                 std::int64_t best = -1;
-                for (std::int64_t h : star)
-                    if (!rKept[static_cast<std::size_t>(h)] &&
-                        (best < 0 || rScore[static_cast<std::size_t>(h)] >
-                                         rScore[static_cast<std::size_t>(best)]))
+                for (std::int64_t h : star) {
+                    const auto u = static_cast<std::size_t>(h);
+                    if (Shrink) {
+                        if (rKept[u] &&
+                            (best < 0 || rScore[u] < rScore[static_cast<std::size_t>(best)]))
+                            best = h;
+                    } else if (!rKept[u] && (pAllowed == nullptr || (*pAllowed)[u]) &&
+                               (best < 0 || rScore[u] > rScore[static_cast<std::size_t>(best)])) {
                         best = h;
+                    }
+                }
                 if (best < 0)
-                    break;  // only the outside left to add
-                rKept[static_cast<std::size_t>(best)] = 1;
+                    break;  // only the outside (or nothing allowed) left to add
+                rKept[static_cast<std::size_t>(best)] = Shrink ? 0 : 1;
                 ++added;
                 changed = true;
             }
         }
     }
     return added;
+}
+
+}  // namespace
+
+std::int64_t hex_make_manifold(const HexMesh& rMesh, std::vector<std::uint8_t>& rKept,
+                               const std::vector<double>& rScore,
+                               const std::vector<std::uint8_t>* pAllowed) {
+    return hexfit_star_repair(rMesh, rKept, rScore, pAllowed, false);
+}
+
+std::int64_t hex_shrink_manifold(const HexMesh& rMesh, std::vector<std::uint8_t>& rKept,
+                                 const std::vector<double>& rScore) {
+    return hexfit_star_repair(rMesh, rKept, rScore, nullptr, true);
+}
+
+HexInterface hex_pillow_interface(HexMesh& rMesh, const std::vector<std::uint8_t>& rInner) {
+    const std::size_t nh = rMesh.mHexes.size(), np = rMesh.mPoints.size();
+    HexInterface out;
+    out.mShell.assign(np, -1);
+    out.mInner.assign(np, -1);
+    out.mFirstHex = nh;
+    std::vector<std::pair<std::array<std::int64_t, 4>, std::int64_t>> faces;
+    faces.reserve(nh * 6);
+    for (std::size_t h = 0; h < nh; ++h)
+        for (std::int64_t f = 0; f < 6; ++f) {
+            std::array<std::int64_t, 4> key{};
+            for (std::size_t c = 0; c < 4; ++c)
+                key[c] = rMesh.mHexes[h][static_cast<std::size_t>(kHexfitFace[f][c])];
+            std::sort(key.begin(), key.end());
+            faces.emplace_back(key, static_cast<std::int64_t>(h) * 6 + f);
+        }
+    parallel_sort(faces.begin(), faces.end());
+    // The faces between an inner hexahedron and an outer one, from the inner.
+    for (std::size_t i = 0; i + 1 < faces.size(); ++i) {
+        if (faces[i].first != faces[i + 1].first)
+            continue;
+        std::int64_t a = faces[i].second, b = faces[i + 1].second;
+        const bool ia = rInner[static_cast<std::size_t>(a / 6)] != 0;
+        const bool ib = rInner[static_cast<std::size_t>(b / 6)] != 0;
+        if (ia == ib)
+            continue;
+        if (!ia)
+            std::swap(a, b);
+        const auto h = static_cast<std::size_t>(a / 6);
+        const auto f = static_cast<std::size_t>(a % 6);
+        std::array<std::int64_t, 4> q{};
+        for (std::size_t c = 0; c < 4; ++c)
+            q[c] = rMesh.mHexes[h][static_cast<std::size_t>(kHexfitFace[f][c])];
+        out.mQuads.push_back(q);
+        out.mInnerHex.push_back(static_cast<std::int64_t>(h));
+    }
+    for (const auto& q : out.mQuads)
+        for (std::int64_t v : q)
+            out.mShell[static_cast<std::size_t>(v)] = 0;
+    for (std::size_t v = 0; v < np; ++v)
+        if (out.mShell[v] == 0) {
+            out.mShell[v] = static_cast<std::int64_t>(rMesh.mPoints.size());
+            rMesh.mPoints.push_back(rMesh.mPoints[v]);
+            out.mInner[v] = static_cast<std::int64_t>(rMesh.mPoints.size());
+            rMesh.mPoints.push_back(rMesh.mPoints[v]);
+        }
+    // The inner hexahedra move onto the inner copies (all of them at a node:
+    // the inner set is manifold, so they meet the outer ones only there).
+    for (std::size_t h = 0; h < nh; ++h)
+        if (rInner[h])
+            for (std::int64_t& v : rMesh.mHexes[h])
+                if (out.mInner[static_cast<std::size_t>(v)] >= 0)
+                    v = out.mInner[static_cast<std::size_t>(v)];
+    // A face points out of its inner hexahedron, towards the outer side: the
+    // inner layer runs from the inner copies to the shell nodes, the outer one
+    // from the shell nodes to the outer nodes, both on the face's positive side.
+    for (const auto& q : out.mQuads) {
+        std::array<std::int64_t, 8> inner{}, outer{};
+        for (std::size_t c = 0; c < 4; ++c) {
+            const auto v = static_cast<std::size_t>(q[c]);
+            inner[c] = out.mInner[v];
+            inner[c + 4] = out.mShell[v];
+            outer[c] = out.mShell[v];
+            outer[c + 4] = q[c];
+        }
+        rMesh.mHexes.push_back(inner);
+        rMesh.mHexes.push_back(outer);
+    }
+    out.mShell.resize(rMesh.mPoints.size(), -1);
+    out.mInner.resize(rMesh.mPoints.size(), -1);
+    return out;
 }
 
 HexBoundary hex_boundary(const HexMesh& rMesh) {

@@ -148,7 +148,8 @@ def add_args(parser):
         type=str,
         default="stuffing",
         choices=list(CONFORMITIES),
-        help="how tetrahedra conform to the skin",
+        help="how tetrahedra conform to the skin; cleaving: one material per nested "
+        "shell (tetrahedral and hexahedral outputs)",
     )
     parser.add_argument(
         "--alpha-long",

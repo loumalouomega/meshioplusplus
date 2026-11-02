@@ -1116,3 +1116,181 @@ TEST(OctreeMeshHex, TheBodyFittedHookIsTheFitOfVersion18) {
     EXPECT_GT(cylinder.mNumHexahedra, 0);
 #endif
 }
+
+namespace {
+
+// The volume of each material of a hexahedral output (each hexahedron as six
+// tetrahedra around its 0-6 diagonal), indexed by material.
+std::vector<double> om_material_volumes(const mio::Mesh& rM) {
+    const double* p = rM.Points().As<double>();
+    const std::int64_t* c = rM.Cells(0).Conn().As<std::int64_t>();
+    const std::int64_t* mat = rM.CellData(mio::kOctreeMeshMaterialName, 0).As<std::int64_t>();
+    std::vector<double> out;
+    static constexpr int kTets[6][4] = {{0, 1, 2, 6}, {0, 2, 3, 6}, {0, 3, 7, 6},
+                                        {0, 7, 4, 6}, {0, 4, 5, 6}, {0, 5, 1, 6}};
+    for (std::size_t h = 0; h < rM.Cells(0).NumCells(); ++h) {
+        const auto m = static_cast<std::size_t>(mat[h]);
+        if (out.size() <= m)
+            out.resize(m + 1, 0.0);
+        auto at = [&](int K) {
+            const std::int64_t v = c[8 * h + static_cast<std::size_t>(K)];
+            return Vec3{p[3 * v], p[3 * v + 1], p[3 * v + 2]};
+        };
+        for (const auto& t : kTets) {
+            const Vec3 o = at(t[0]);
+            out[m] += mio::detail::triple_product(mio::detail::vec3_sub(at(t[1]), o),
+                                                  mio::detail::vec3_sub(at(t[2]), o),
+                                                  mio::detail::vec3_sub(at(t[3]), o)) /
+                      6.0;
+        }
+    }
+    return out;
+}
+
+mio::Mesh om_nested_spheres(const std::vector<double>& rRadii) {
+    std::vector<mio::Mesh> parts;
+    for (double r : rRadii)
+        parts.push_back(mio::icosa_sphere(r, 4));
+    std::vector<const mio::Mesh*> ptrs;
+    for (const auto& m : parts)
+        ptrs.push_back(&m);
+    return mio::merge(ptrs, mio::MergeOptions{}).mMesh;
+}
+
+}  // namespace
+
+// Roadmap 7.9.3: `conformity = Cleaving` gives the hexahedral output one
+// material per winding level, each interface pillowed on both sides: the
+// materials conform (no hanging node, no facet in three cells), each takes
+// its shell's volume, and every corner keeps a fifth.
+TEST(OctreeMeshHex, CleavingNestedShellsGivesConformingMaterials) {
+    const double pi = kPi;
+    for (const std::vector<double>& radii :
+         {std::vector<double>{1.0, 0.5}, std::vector<double>{1.0, 0.6, 0.3}}) {
+        const mio::Mesh skin = om_nested_spheres(radii);
+        for (auto grading :
+             {mio::OctreeMeshHexGrading::Uniform, mio::OctreeMeshHexGrading::Graded}) {
+            auto o = om_hex(grading == mio::OctreeMeshHexGrading::Uniform ? 0.1 : 0.0);
+            o.mMinSize = radii.size() > 2 ? 0.05 : 0.1;
+            if (grading == mio::OctreeMeshHexGrading::Uniform)
+                o.mSurfaceSize = o.mMinSize;
+            o.mHexGrading = grading;
+            o.mConformity = mio::OctreeMeshConformity::Cleaving;
+            const auto r = mio::octree_mesh(skin, o);
+            const OmHexCheck c = om_check_hexes(r.mMesh);
+            EXPECT_GE(c.mMinScaledJacobian, 0.2) << radii.size() << static_cast<int>(grading);
+            EXPECT_EQ(om_flat_corners(r.mMesh), 0);
+            EXPECT_EQ(r.mNumInverted, 0);
+            EXPECT_TRUE(r.mWarnings.empty());
+            EXPECT_LT(r.mHausdorffToSkin, 0.05);
+            const mio::ConformityResult cc = mio::check_conformity(r.mMesh);
+            EXPECT_EQ(cc.mNumHangingNodes, 0);
+            EXPECT_EQ(cc.mNumNonManifoldFacets, 0);
+            const std::vector<double> vol = om_material_volumes(r.mMesh);
+            ASSERT_EQ(vol.size(), radii.size() + 1);
+            for (std::size_t k = 0; k < radii.size(); ++k) {
+                const double ball = 4.0 / 3.0 * pi * std::pow(radii[k], 3);
+                const double hole =
+                    k + 1 < radii.size() ? 4.0 / 3.0 * pi * std::pow(radii[k + 1], 3) : 0.0;
+                EXPECT_NEAR(vol[k + 1], ball - hole, 0.03 * (ball - hole)) << k;
+                EXPECT_FALSE(om_region(r.mMesh, ("material_" + std::to_string(k + 1)).c_str(),
+                                       mio::RegionKind::Cell)
+                                 .empty());
+            }
+        }
+    }
+}
+
+// A skin with one shell has one material: cleaving gives stuffing's bytes.
+TEST(OctreeMeshHex, CleavingOneShellIsStuffing) {
+    for (auto grading : {mio::OctreeMeshHexGrading::Uniform, mio::OctreeMeshHexGrading::Graded}) {
+        auto o = om_hex(0.15);
+        o.mHexGrading = grading;
+        const std::uint64_t plain = om_digest(mio::octree_mesh(mio::icosa_sphere(1.0, 3), o).mMesh);
+        o.mConformity = mio::OctreeMeshConformity::Cleaving;
+        EXPECT_EQ(om_digest(mio::octree_mesh(mio::icosa_sphere(1.0, 3), o).mMesh), plain);
+    }
+}
+
+// Graded hexahedra used to drop the dual centres within a tenth of a cell of
+// any skin, which opened a cavity at a nested shell: the inner sphere became
+// an inner boundary, pillowed and folded. Only the boundary's centres drop now.
+TEST(OctreeMeshHex, GradedNestedShellsLeaveNoCavity) {
+    auto o = om_hex(0.0);
+    o.mMinSize = 0.1;
+    o.mHexGrading = mio::OctreeMeshHexGrading::Graded;
+    const mio::Mesh skin = om_nested_spheres({1.0, 0.5});
+    const auto r = mio::octree_mesh(skin, o);
+    const OmHexCheck c = om_check_hexes(r.mMesh);
+    EXPECT_GE(c.mMinScaledJacobian, 0.2);
+    EXPECT_EQ(r.mNumInverted, 0);
+    // The whole ball is meshed, and the boundary is the outer sphere only.
+    EXPECT_NEAR(c.mVolume, 4.0 / 3.0 * kPi, 0.03 * 4.0 / 3.0 * kPi);
+    const double* p = r.mMesh.Points().As<double>();
+    const std::int64_t* conn = r.mMesh.Cells(0).Conn().As<std::int64_t>();
+    const auto sides = om_region(r.mMesh, mio::kOctreeMeshBoundaryRegion, mio::RegionKind::Side);
+    for (std::size_t s = 0; s < sides.size(); s += 2)
+        for (int k = 0; k < 4; ++k) {
+            const std::int64_t v =
+                conn[8 * sides[s] + static_cast<std::size_t>(kFacet[sides[s + 1]][k])];
+            EXPECT_NEAR(std::sqrt(p[3 * v] * p[3 * v] + p[3 * v + 1] * p[3 * v + 1] +
+                                  p[3 * v + 2] * p[3 * v + 2]),
+                        1.0, 0.05);
+        }
+}
+
+TEST(OctreeMeshHex, CleavingIsTheSameOnEveryThreadCount) {
+    auto o = om_hex(0.0);
+    o.mMinSize = 0.1;
+    o.mHexGrading = mio::OctreeMeshHexGrading::Graded;
+    o.mConformity = mio::OctreeMeshConformity::Cleaving;
+    const mio::Mesh skin = om_nested_spheres({1.0, 0.5});
+    std::uint64_t ref = 0;
+#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
+    const int saved = omp_get_max_threads();
+    for (int threads : {1, 2, 4}) {
+        omp_set_num_threads(threads);
+#else
+    for (int threads : {1}) {
+        (void)threads;
+#endif
+        const std::uint64_t d = om_digest(mio::octree_mesh(skin, o).mMesh);
+        if (ref == 0)
+            ref = d;
+        EXPECT_EQ(d, ref);
+    }
+#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
+    omp_set_num_threads(saved);
+#endif
+}
+
+// Roadmap 7.9.4: a crease shorter than a cell (a scan's noise) is not
+// snapped, and says so; the cube's edges, longer than a cell, still are.
+TEST(OctreeMeshHex, CreasesShorterThanACellAreNotSnapped) {
+    // A unit box whose face centre is pushed out: four short creases there.
+    mio::Mesh box =
+        mio::convert_cells(
+            mio::extract_surface(mio::box({{8, 8, 8}}, {{1.0, 1.0, 1.0}}, {{-0.51, -0.53, -0.55}})),
+            {mio::ConvertCellsMode::Simplexify, false})
+            .mMesh;
+    {
+        const std::size_t np = box.NumPoints();
+        mio::NDArray pts = mio::NDArray::Uninit(mio::DType::Float64, {np, std::size_t{3}});
+        const double* src = box.Points().As<double>();
+        double* p = pts.As<double>();
+        std::copy(src, src + 3 * np, p);
+        for (std::size_t v = 0; v < np; ++v)
+            if (std::abs(p[3 * v] - 0.49) < 1e-9 && std::abs(p[3 * v + 1] + 0.03) < 1e-9 &&
+                std::abs(p[3 * v + 2] + 0.05) < 1e-9)
+                p[3 * v] += 0.1;
+        box.AssignPoints(std::move(pts));
+    }
+    const auto r = mio::octree_mesh(box, om_hex(0.3));
+    EXPECT_EQ(om_flat_corners(r.mMesh), 0);
+    EXPECT_GE(r.mNumCornersSnapped, 8);
+    bool said = false;
+    for (const std::string& w : r.mWarnings)
+        said = said || w.find("shorter than a cell") != std::string::npos;
+    EXPECT_TRUE(said);
+    EXPECT_GT(r.mNumFeatureChainsMissed, 0);
+}

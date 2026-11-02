@@ -290,3 +290,75 @@ TEST(HexFit, BoundaryNormalsPointOutOfABox) {
             EXPECT_GT(det::vec3_dot(x, out), 0.0);
         }
 }
+
+// The interface pillow: on a 4x4x4 block whose inner 2x2x2 is the inner set,
+// every hexahedron stays positive, the inner ones move onto the copies, and
+// each new hexahedron has exactly one face on the shell nodes' surface.
+TEST(HexFit, InterfacePillowKeepsEveryHexahedronPositive) {
+    const std::array<std::int64_t, 3> n{{4, 4, 4}};
+    std::vector<std::uint8_t> kept(64, 1);
+    det::HexMesh m = hf_grid(n, kept);
+    std::vector<std::uint8_t> inner(m.mHexes.size(), 0);
+    for (std::int64_t k = 1; k < 3; ++k)
+        for (std::int64_t j = 1; j < 3; ++j)
+            for (std::int64_t i = 1; i < 3; ++i)
+                inner[static_cast<std::size_t>((k * 4 + j) * 4 + i)] = 1;
+    const std::size_t before = m.mHexes.size();
+    const det::HexInterface itf = det::hex_pillow_interface(m, inner);
+    EXPECT_EQ(itf.mQuads.size(), 24u);  // the inner cube's 6 faces of 4 quads
+    EXPECT_EQ(m.mHexes.size(), before + 2 * 24);
+    // Move the layers apart as a fit would: shell nodes stay, inner copies go
+    // a quarter towards the centre, outer nodes a quarter away.
+    const Vec3 centre{2.0, 2.0, 2.0};
+    for (std::size_t v = 0; v < itf.mShell.size(); ++v) {
+        if (itf.mShell[v] < 0)
+            continue;
+        const Vec3 x = m.mPoints[v];
+        const Vec3 d = det::vec3_sub(x, centre);
+        m.mPoints[static_cast<std::size_t>(itf.mInner[v])] =
+            det::vec3_sub(x, det::vec3_scale(d, 0.25 / det::vec3_norm(d)));
+        m.mPoints[v] = det::vec3_add(x, det::vec3_scale(d, 0.25 / det::vec3_norm(d)));
+    }
+    for (const auto& h : m.mHexes)
+        EXPECT_GT(det::hex_min_scaled_jacobian(m.mPoints, h), 0.0);
+    // The inner hexahedra use no original interface node any more.
+    for (std::size_t h = 0; h < before; ++h)
+        if (inner[h])
+            for (std::int64_t v : m.mHexes[h])
+                EXPECT_LT(itf.mShell[static_cast<std::size_t>(v)], 0);
+    EXPECT_EQ(det::hex_boundary(m).mNumOpenEdges, 0);
+}
+
+// The masked repair adds only allowed hexahedra; without a mask it is the
+// plain one; and the shrinking repair always ends manifold.
+TEST(HexFit, MaskedAndShrinkingRepairs) {
+    const std::array<std::int64_t, 3> n{{4, 4, 4}};
+    std::vector<std::uint8_t> all(64, 1);
+    const det::HexMesh m = hf_grid(n, all);
+    std::mt19937 rng(7);
+    for (int trial = 0; trial < 20; ++trial) {
+        std::vector<std::uint8_t> kept(64), allowed(64);
+        std::vector<double> score(64);
+        for (std::size_t c = 0; c < 64; ++c) {
+            kept[c] = rng() % 3 == 0;
+            allowed[c] = rng() % 2 == 0;
+            score[c] = static_cast<double>(rng() % 1000);
+        }
+        std::vector<std::uint8_t> a = kept, b = kept, s = kept;
+        det::hex_make_manifold(m, a, score);
+        det::hex_make_manifold(m, b, score, nullptr);
+        EXPECT_EQ(a, b);
+        std::vector<std::uint8_t> masked = kept;
+        det::hex_make_manifold(m, masked, score, &allowed);
+        for (std::size_t c = 0; c < 64; ++c)
+            if (masked[c] && !kept[c])
+                EXPECT_TRUE(allowed[c]);
+        det::hex_shrink_manifold(m, s, score);
+        for (std::size_t c = 0; c < 64; ++c)
+            EXPECT_LE(s[c], kept[c]);
+        // Shrunk: a second repair finds nothing to do.
+        std::vector<std::uint8_t> again = s;
+        EXPECT_EQ(det::hex_make_manifold(m, again, score, &s), 0);
+        EXPECT_EQ(again, s);
+    }
+}
