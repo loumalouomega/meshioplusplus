@@ -134,6 +134,7 @@
 #include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
+#include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
@@ -7095,6 +7096,49 @@ val sobolev_deform_js(const val& rMeshObj, const std::string& rArray, double len
 }
 
 /**
+ * @brief Rigid registration by iterative closest points. @p rOptions is
+ * `{method, maxIterations, tolerance, maxDistance, initial}`, every key
+ * optional (`initial` 16 numbers, row-major). See operations/registration.hpp.
+ */
+val register_rigid_js(const val& rSource, const val& rTarget, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::RegistrationOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("method"))
+                options.mMethod = meshioplusplus::registration_method_from_name(
+                    rOptions["method"].as<std::string>());
+            if (rOptions.hasOwnProperty("maxIterations"))
+                options.mMaxIterations =
+                    static_cast<std::int64_t>(rOptions["maxIterations"].as<double>());
+            if (rOptions.hasOwnProperty("tolerance"))
+                options.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("maxDistance"))
+                options.mMaxDistance = rOptions["maxDistance"].as<double>();
+            if (rOptions.hasOwnProperty("initial")) {
+                const std::vector<double> m =
+                    emscripten::vecFromJSArray<double>(rOptions["initial"]);
+                if (m.size() != 16)
+                    throw std::invalid_argument("registerRigid: initial takes 16 numbers");
+                std::copy(m.begin(), m.end(), options.mInitial.begin());
+            }
+        }
+        const meshioplusplus::RegistrationResult r =
+            meshioplusplus::register_rigid(val_to_mesh(rSource), val_to_mesh(rTarget), options);
+        val matrix = val::array();
+        for (std::size_t k = 0; k < 16; ++k)
+            matrix.call<void>("push", r.mMatrix[k]);
+        val out = val::object();
+        out.set("matrix", matrix);
+        out.set("initialRms", r.mInitialRms);
+        out.set("rms", r.mRms);
+        out.set("iterations", static_cast<double>(r.mIterations));
+        out.set("numPairs", static_cast<double>(r.mNumPairs));
+        out.set("converged", r.mConverged);
+        return out;
+    });
+}
+
+/**
  * @brief Normals of a point cloud by local plane fits. @p rOptions is
  * `{k, orientation, viewpoint, recordVariation}`, every key optional. See
  * operations/point_normals.hpp.
@@ -9479,6 +9523,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("sobolevDeform", &sobolev_deform_js);
     emscripten::function("geodesicDistance", &geodesic_distance_js);
     emscripten::function("convertCoordinates", &convert_coordinates_js);
+    emscripten::function("registerRigid", &register_rigid_js);
     emscripten::function("estimateNormals", &estimate_normals_js);
     emscripten::function("convexHull", &convex_hull_js);
     emscripten::function("delaunay2d", &delaunay_2d_js);

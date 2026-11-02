@@ -163,6 +163,7 @@
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
+#include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/decimate_volume.hpp"
 #include "meshioplusplus/operations/data_calc.hpp"
@@ -6209,6 +6210,40 @@ PYBIND11_MODULE(_core, m) {
         py::arg("reference") = std::array<double, 3>{1.0, 0.0, 0.0},
         py::arg("arrays") = std::vector<std::string>{}, py::arg("inverse") = false,
         py::arg("record_coordinates") = true);
+
+    // Rigid registration by iterative closest points. {matrix (16, row-major),
+    // counters}. See operations/registration.hpp.
+    m.def(
+        "register_rigid",
+        [](py::object pysource, py::object pytarget, const std::string& method,
+           std::int64_t max_iterations, double tolerance, double max_distance,
+           std::array<double, 16> initial) {
+            meshioplusplus_py::PyMeshRefs refs_s, refs_t;
+            meshioplusplus::Mesh source = meshioplusplus_py::py_to_mesh(
+                pysource, refs_s, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::Mesh target = meshioplusplus_py::py_to_mesh(
+                pytarget, refs_t, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::RegistrationOptions options;
+            options.mMethod = meshioplusplus::registration_method_from_name(method);
+            options.mMaxIterations = max_iterations;
+            options.mTolerance = tolerance;
+            options.mMaxDistance = max_distance;
+            options.mInitial = initial;
+            const meshioplusplus::RegistrationResult r =
+                core_nogil([&] { return meshioplusplus::register_rigid(source, target, options); });
+            py::dict out;
+            out["matrix"] = std::vector<double>(r.mMatrix.begin(), r.mMatrix.end());
+            out["initial_rms"] = r.mInitialRms;
+            out["rms"] = r.mRms;
+            out["iterations"] = r.mIterations;
+            out["num_pairs"] = r.mNumPairs;
+            out["converged"] = r.mConverged;
+            return out;
+        },
+        py::arg("source"), py::arg("target"), py::arg("method") = "point_to_point",
+        py::arg("max_iterations") = 50, py::arg("tolerance") = 1e-10, py::arg("max_distance") = 0.0,
+        py::arg("initial") =
+            std::array<double, 16>{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1});
 
     // Point-cloud normals by local plane fits. {mesh, counters}. See
     // operations/point_normals.hpp.

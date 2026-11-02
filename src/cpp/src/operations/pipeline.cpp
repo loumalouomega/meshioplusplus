@@ -80,6 +80,7 @@
 #include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
+#include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
 #include "meshioplusplus/operations/crop.hpp"
@@ -444,6 +445,8 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"ConvexHull", {"Dimension"}},
         {"Delaunay2D", {}},
         {"EstimateNormals", {"K", "Orientation", "Viewpoint", "RecordVariation"}},
+        {"RegisterRigid",
+         {"Target", "Method", "MaxIterations", "Tolerance", "MaxDistance", "RotateData"}},
         {"ConvertCoordinates",
          {"System", "Axis", "Origin", "Reference", "Arrays", "Inverse", "RecordCoordinates"}},
         {"GeodesicDistance",
@@ -2286,6 +2289,33 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"Area", hr.mArea},
                         {"Volume", hr.mVolume}});
         return std::move(hr.mMesh);
+    }
+    if (op == "RegisterRigid") {
+        const std::string target = pipe_text(rStep, "Target", "");
+        if (target.empty())
+            throw std::invalid_argument(
+                pipe_err(rStep, "needs 'Target', the mesh to register onto"));
+        RegistrationOptions opts;
+        opts.mMethod = registration_method_from_name(pipe_text(rStep, "Method", "point_to_point"));
+        const double iters = pipe_number(rStep, "MaxIterations", 50.0);
+        opts.mMaxIterations = static_cast<std::int64_t>(iters);
+        if (static_cast<double>(opts.mMaxIterations) != iters)
+            throw std::invalid_argument(pipe_err(rStep, "'MaxIterations' must be an integer"));
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 1e-10);
+        opts.mMaxDistance = pipe_number(rStep, "MaxDistance", 0.0);
+        const RegistrationResult rr = register_rigid(mesh, pipe_read_extra(target), opts);
+        if (!rr.mConverged)
+            rReport.mWarnings.push_back(
+                "register_rigid: no convergence within MaxIterations; the transform is the last "
+                "iterate");
+        Mesh moved = transform(mesh, transform_from_matrix(rr.mMatrix.data()),
+                               pipe_flag(rStep, "RotateData", false));
+        pipe_push_step(rReport, rStep,
+                       {{"InitialRms", rr.mInitialRms},
+                        {"Rms", rr.mRms},
+                        {"Iterations", static_cast<double>(rr.mIterations)},
+                        {"Converged", rr.mConverged ? 1.0 : 0.0}});
+        return moved;
     }
     if (op == "EstimateNormals") {
         PointNormalsOptions opts;

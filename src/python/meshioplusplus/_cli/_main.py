@@ -63,6 +63,7 @@ from . import (
     _refine_patches,
     _region_adjacency,
     _regions,
+    _register,
     _remesh,
     _remesh_volume,
     _reorder,
@@ -290,6 +291,12 @@ def build_parser():
     )
     _coordinates.add_args(parser)
     parser.set_defaults(func=_coordinates.coordinates_cmd)
+
+    parser = subparsers.add_parser(
+        "register", help="Rigid registration of one mesh onto another (ICP)"
+    )
+    _register.add_args(parser)
+    parser.set_defaults(func=_register.register_cmd)
 
     parser = subparsers.add_parser(
         "point-normals", help="Normals of a point cloud by local plane fits"

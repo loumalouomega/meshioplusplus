@@ -139,6 +139,7 @@
 #include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
+#include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
@@ -459,6 +460,7 @@ void print_usage(std::ostream& os) {
           "  coordinates             Fields in cylindrical/spherical components about an axis\n"
           "  hull                    Convex hull of the points (3-D surface or 2-D loop)\n"
           "  point-normals           Normals of a point cloud by local plane fits\n"
+          "  register                Rigid registration of one mesh onto another (ICP)\n"
           "  delaunay                Delaunay triangulation of the points in the x, y plane\n"
           "  geodesic                Surface distance from source points (heat method)\n"
           "  graph                   Write a mesh's node or cell graph as a METIS or Scotch file\n"
@@ -3858,6 +3860,79 @@ std::vector<double> cli_numbers(const std::string& rText, std::size_t Count, con
                                  std::to_string(Count) + " numbers, got " +
                                  std::to_string(out.size()));
     return out;
+}
+
+// register: the rigid motion laying SOURCE onto TARGET, by iterative closest
+// points. See operations/registration.hpp.
+int cmd_register(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format-source", {}, true},
+                                  {"input-format-target", {}, true},
+                                  {"output", {}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"method", {}, true},
+                                  {"max-iterations", {}, true},
+                                  {"tolerance", {}, true},
+                                  {"max-distance", {}, true},
+                                  {"rotate-data", {}, false},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("register requires SOURCE TARGET");
+    meshioplusplus::RegistrationOptions o;
+    if (has_opt(p, "method"))
+        o.mMethod = meshioplusplus::registration_method_from_name(opt_value(p, "method"));
+    if (has_opt(p, "max-iterations"))
+        o.mMaxIterations = std::stoll(opt_value(p, "max-iterations"));
+    if (has_opt(p, "tolerance"))
+        o.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    if (has_opt(p, "max-distance"))
+        o.mMaxDistance = meshioplusplus::detail::stod_c(opt_value(p, "max-distance"));
+    Mesh source = read_mesh_cli(p.positionals[0], opt_value(p, "input-format-source"));
+    Mesh target = read_mesh_cli(p.positionals[1], opt_value(p, "input-format-target"));
+    const meshioplusplus::RegistrationResult r = meshioplusplus::register_rigid(source, target, o);
+    const std::string output = opt_value(p, "output");
+    if (!output.empty())
+        write_mesh_cli(output,
+                       meshioplusplus::transform(
+                           source, meshioplusplus::transform_from_matrix(r.mMatrix.data()),
+                           has_flag(p, "rotate-data")),
+                       opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        if (!output.empty())
+            json.Field("output", output);
+        json.Key("matrix");
+        json.BeginArray();
+        for (int row = 0; row < 4; ++row) {
+            json.BeginArray();
+            for (int col = 0; col < 4; ++col)
+                json.Number(r.mMatrix[static_cast<std::size_t>(4 * row + col)]);
+            json.EndArray();
+        }
+        json.EndArray();
+        json.Field("initial_rms", r.mInitialRms);
+        json.Field("rms", r.mRms);
+        json.Field("iterations", r.mIterations);
+        json.Field("num_pairs", r.mNumPairs);
+        json.Field("converged", r.mConverged);
+        json.EndObject();
+        return 0;
+    }
+    char line[160];
+    for (int row = 0; row < 4; ++row) {
+        meshioplusplus::detail::snprintf_c(line, sizeof(line), "%14.9g %14.9g %14.9g %14.9g\n",
+                                           r.mMatrix[4 * row], r.mMatrix[4 * row + 1],
+                                           r.mMatrix[4 * row + 2], r.mMatrix[4 * row + 3]);
+        std::cout << line;
+    }
+    meshioplusplus::detail::snprintf_c(line, sizeof(line),
+                                       "rms %.9g (from %.9g) after %lld iteration(s)%s\n", r.mRms,
+                                       r.mInitialRms, static_cast<long long>(r.mIterations),
+                                       r.mConverged ? "" : ", not converged");
+    std::cout << line;
+    return 0;
 }
 
 // point-normals: normals of a point cloud by local plane fits. See
@@ -8852,6 +8927,8 @@ int cli_run_verb(const std::string& cmd, const std::vector<std::string>& rest) {
         return cmd_split_interface(rest);
     if (cmd == "hausdorff")
         return cmd_hausdorff(rest);
+    if (cmd == "register")
+        return cmd_register(rest);
     if (cmd == "point-normals")
         return cmd_point_normals(rest);
     if (cmd == "hull")

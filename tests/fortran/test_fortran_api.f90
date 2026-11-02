@@ -2793,6 +2793,7 @@ contains
         integer(int64) :: g_nv, g_ne, g_md
         type(mio_mesh) :: square, dist
         real(real64) :: g_far
+        real(real64) :: g_matrix(4, 4)
         logical :: g_ok
         integer :: ierr
         real(real64) :: cube_points(3, 8), d, ab
@@ -3017,6 +3018,13 @@ contains
         call dist%free()
         dist = square%geodesic_distance(stat=ierr)
         call check(ierr /= 0, 'geodesic_distance needs a source')
+        ! Registration of the square onto itself: the identity.
+        call square%register_rigid(square, g_matrix, iterations=g_nv, converged=g_ok, stat=ierr)
+        call check(ierr == 0 .and. g_ok, 'register_rigid succeeded')
+        call check(abs(g_matrix(1, 1) - 1.0_real64) < 1.0e-12_real64 .and. &
+                   abs(g_matrix(1, 4)) < 1.0e-12_real64, 'the square registers onto itself')
+        call square%register_rigid(square, g_matrix, method='affine', stat=ierr)
+        call check(ierr /= 0, 'register_rigid rejects an unknown method')
         ! Normals of the square's corners: one plane, facing +z.
         dist = square%estimate_normals(k=3, num_degenerate=g_nv, stat=ierr)
         call check(ierr == 0, 'estimate_normals succeeded')

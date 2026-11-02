@@ -3656,6 +3656,44 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def register_rigid(
+        source_path: str,
+        target_path: str,
+        output_path: Optional[str] = None,
+        method: str = "point_to_point",
+        max_iterations: int = 50,
+        tolerance: float = 1e-10,
+        max_distance: float = 0.0,
+        rotate_data: bool = False,
+        source_format: Optional[str] = None,
+        target_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Rigid registration by iterative closest points: the 4x4 matrix
+        (rows) laying the source's points onto the target -- its surface when
+        it has surface cells, else its points -- e.g. a scan onto its design.
+        method "point_to_point" or "point_to_plane" (tangent planes, fewer
+        iterations; a point-cloud target needs normals point data, see
+        estimate_normals). max_distance > 0 drops pairs farther apart
+        (outliers). ICP finds the nearest optimum, so the two should start
+        roughly aligned. With output_path the moved source is written too.
+        Reports matrix, initial_rms, rms, iterations, num_pairs, converged."""
+        return _guard(
+            _tools.tool_register_rigid,
+            source_path=source_path,
+            target_path=target_path,
+            output_path=output_path,
+            method=method,
+            max_iterations=max_iterations,
+            tolerance=tolerance,
+            max_distance=max_distance,
+            rotate_data=rotate_data,
+            source_format=source_format,
+            target_format=target_format,
+            output_format=output_format,
+        )
+
+    @server.tool()
     def estimate_normals(
         input_path: str,
         output_path: str,

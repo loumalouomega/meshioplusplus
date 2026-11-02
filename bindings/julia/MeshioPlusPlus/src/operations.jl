@@ -3910,6 +3910,39 @@ function sobolev_deform(m::Mesh, array::AbstractString, length_scale::Real;
 end
 
 """
+    register_rigid(source, target; method="point_to_point", max_iterations=50,
+                   tolerance=1e-10, max_distance=0.0, initial=nothing)
+        -> (; matrix, initial_rms, rms, iterations, num_pairs, converged)
+
+Rigid registration by iterative closest points: `matrix` (4x4, `matrix[i, j]`
+row `i`) lays `source`'s points onto `target` (its surface when it has surface
+cells, else its points); apply it with `transform(source; matrix=...)`.
+`initial` is a starting 4x4 matrix. See `doc/registration.md`.
+"""
+function register_rigid(source::Mesh, target::Mesh; method::AbstractString="point_to_point",
+                        max_iterations::Integer=50, tolerance::Real=1e-10,
+                        max_distance::Real=0.0, initial=nothing)
+    meth = method == "point_to_point" ? Int32(0) : method == "point_to_plane" ? Int32(1) :
+           throw(ArgumentError("meshio++: register_rigid: method must be \"point_to_point\" or \"point_to_plane\""))
+    start = initial === nothing ? Matrix{Float64}(I4) : Matrix{Float64}(initial)
+    size(start) == (4, 4) || throw(ArgumentError("meshio++: register_rigid: initial must be 4x4"))
+    flat = ntuple(k -> start[(k - 1) ÷ 4 + 1, (k - 1) % 4 + 1], 16)
+    opts = _CRegistrationOpts(meth, Int32(0), Int64(max_iterations), Float64(tolerance),
+                              Float64(max_distance), flat, ntuple(_ -> Int64(0), 4))
+    rep = Ref{_CRegistrationReport}()
+    st = ccall(_sym(:mio_register_rigid), Cint,
+               (Ptr{Cvoid}, Ptr{Cvoid}, Ref{_CRegistrationOpts}, Ref{_CRegistrationReport}),
+               _handle(source), _handle(target), Ref(opts), rep)
+    _check(st)
+    r = rep[]
+    matrix = [r.matrix[4 * (i - 1) + j] for i in 1:4, j in 1:4]
+    (matrix=matrix, initial_rms=r.initial_rms, rms=r.rms, iterations=Int(r.iterations),
+     num_pairs=Int(r.num_pairs), converged=r.converged != 0)
+end
+
+const I4 = [1.0 0.0 0.0 0.0; 0.0 1.0 0.0 0.0; 0.0 0.0 1.0 0.0; 0.0 0.0 0.0 1.0]
+
+"""
     estimate_normals(m; k=16, orientation="consistent", viewpoint=(0,0,0),
                      record_variation=false) -> (; mesh, num_degenerate, num_components)
 

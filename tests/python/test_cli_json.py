@@ -266,6 +266,10 @@ CASES = [
         lambda f: ["hausdorff", f["grid"], f["moved"], "--max", "0.1", "--json"],
     ),
     (
+        "register",
+        lambda f: ["register", f["moved"], f["grid"], "--json"],
+    ),
+    (
         "find_intersections_clean",
         lambda f: ["find-intersections", f["sphere_a"], "--json"],
     ),

@@ -114,7 +114,7 @@ The first word completes to a verb (or an alias such as `c`), the next to the su
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `coordinates`, `hull`, `delaunay`, `point-normals`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `coordinates`, `hull`, `delaunay`, `point-normals`, `register`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -148,6 +148,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `coordinates` | `output`, `system`, `num_arrays`, `num_singular` |
 | `hull` | `output`, `dimension`, `num_vertices`, `num_facets`, `area`, `volume`, `perimeter` |
 | `point-normals` | `output`, `num_degenerate`, `num_components` |
+| `register` | `output` (with `--output`), `matrix` (4 rows of 4), `initial_rms`, `rms`, `iterations`, `num_pairs`, `converged` |
 | `delaunay` | `output`, `num_triangles`, `num_duplicates`, `num_boundary` |
 | `mesh-cad-surface` | `mesh_cad_surface`'s report: the counts, the open, non-manifold and misoriented edges, the extreme angles and edge lengths, `tolerance`, `max_edge_gap`, `faces` (`status`, `reason`, counts and extremes per face, `below_bound`, `bound_deg`, `min_input_angle_deg` and `corners`), `warnings`, `num_refinement_points`, `num_faces_below_bound`, `num_smoothed`, `angle_histogram` and `num_curved_straightened` |
 | `boundary-layer` | `boundary_layer`'s report: the cell counts by type, `num_shrunk`, `num_collapsed`, `num_not_visible`, `num_fewer_layers`, `num_front_crossings`, `min_scaled_jacobian`, the thickness range, `cap_closed` and `warnings` |
@@ -1745,6 +1746,34 @@ meshioplusplus shrinkwrap template.vtu scan.stl wrapped.vtu
 meshioplusplus shrinkwrap template.vtu scan.stl wrapped.vtu --offset=0.5
 meshioplusplus shrinkwrap template.vtu scan.stl wrapped.vtu --max-distance 2.0
 meshioplusplus shrinkwrap template.vtu scan.stl out.vtu --weights mask --record-distance
+```
+
+---
+
+## meshioplusplus register
+
+The rigid motion laying SOURCE onto TARGET by iterative closest points (see [rigid registration](/registration)), printed as a 4 × 4 matrix; with `--output`, the moved source is written too.
+
+```
+meshioplusplus register [options] SOURCE TARGET
+```
+
+| Option | Description |
+|--------|-------------|
+| `--output PATH` | Write the moved source here |
+| `--method point_to_point\|point_to_plane` | The error minimised (default `point_to_point`; `point_to_plane` converges far faster onto a surface) |
+| `--max-iterations N` | Iteration cap (default `50`) |
+| `--tolerance T` | Stop below this rotation (radians) and relative motion (default `1e-10`) |
+| `--max-distance D` | Drop pairs farther apart than `D` (default `0`: keep all) |
+| `--rotate-data` | Rotate vector and tensor data of the written source too |
+| `--json` | Emit the report: `output`, `matrix`, `initial_rms`, `rms`, `iterations`, `num_pairs`, `converged` |
+| `--input-format-source` / `--input-format-target` / `--output-format` (`-o`) | Force formats |
+
+Both CLIs print the same JSON.
+
+```sh
+meshioplusplus register scan.ply design.stl --method point_to_plane --output aligned.vtu
+meshioplusplus register run2.vtu run1.vtu --json
 ```
 
 ---

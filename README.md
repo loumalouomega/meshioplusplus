@@ -188,6 +188,7 @@ meshioplusplus geodesic   skin.stl dist.vtu --source 0     # surface distance fr
 meshioplusplus coordinates rotor.vtu cyl.vtu --arrays U     # vectors/tensors in cylindrical components
 meshioplusplus hull       scan.xyz hull.stl                 # convex hull of a point cloud (--dimension 2: outline)
 meshioplusplus point-normals scan.ply scan.pcd             # normals of a point cloud (plane fits, oriented)
+meshioplusplus register   scan.ply design.stl --method point_to_plane --output aligned.vtu  # ICP
 meshioplusplus delaunay   survey.pcd terrain.vtu            # Delaunay triangulation in x, y (z kept)
 meshioplusplus completion bash > ~/.local/share/bash-completion/completions/meshioplusplus  # also zsh, fish
 meshioplusplus convert    case.msh.gz case.vtu            # compressed input (.gz .bz2 .xz .zst .zip) read transparently
@@ -660,6 +661,17 @@ d = out.point_data["geodesic:distance"]
 ```python
 out = meshioplusplus.convert_coordinates(rotor, "cylindrical", arrays=["U"])
 u_r, u_theta, u_z = out.point_data["U"].T
+```
+
+#### Rigid registration (ICP)
+
+**`meshioplusplus.register_rigid(source, target)`** finds the rotation and translation laying a scan onto its design (or one run's mesh onto another's) by iterative closest points, point-to-point or point-to-plane, and returns the 4 × 4 matrix `transform` applies. See [rigid registration](doc/registration.md).
+
+<!--pytest-codeblocks:skip-->
+
+```python
+matrix, report = meshioplusplus.register_rigid(scan, design, method="point_to_plane")
+aligned = meshioplusplus.transform(scan, matrix=matrix)
 ```
 
 #### Point-cloud normals

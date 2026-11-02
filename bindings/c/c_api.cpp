@@ -77,6 +77,7 @@
 #include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
+#include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
@@ -7185,6 +7186,62 @@ mio_mesh* mio_sobolev_deform(const mio_mesh* mesh, const mio_sobolev_opts* opts,
             report->converged = r.mConverged ? 1 : 0;
         }
         return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+// --- rigid registration (roadmap 7.5.3) ----------------------------------------
+
+static_assert(sizeof(mio_registration_opts) == 192,
+              "mio_registration_opts grew outside its reserved tail");
+static_assert(sizeof(mio_registration_report) == 200,
+              "mio_registration_report grew outside its reserved tail");
+
+void mio_registration_opts_init(mio_registration_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_registration_opts{};
+    opts->method = MIO_REGISTER_POINT_TO_POINT;
+    opts->max_iterations = 50;
+    opts->tolerance = 1e-10;
+    for (int k = 0; k < 4; ++k)
+        opts->initial[5 * k] = 1.0;
+}
+
+mio_status mio_register_rigid(const mio_mesh* source, const mio_mesh* target,
+                              const mio_registration_opts* opts, mio_registration_report* report) {
+    return guarded([&]() -> mio_status {
+        if (!source || !target || !report)
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: register_rigid: source/target/report is NULL");
+        mio_registration_opts o;
+        mio_registration_opts_init(&o);
+        if (opts)
+            o = *opts;
+        meshioplusplus::RegistrationOptions options;
+        if (o.method == MIO_REGISTER_POINT_TO_POINT)
+            options.mMethod = meshioplusplus::RegistrationMethod::PointToPoint;
+        else if (o.method == MIO_REGISTER_POINT_TO_PLANE)
+            options.mMethod = meshioplusplus::RegistrationMethod::PointToPlane;
+        else
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: register_rigid: method must be MIO_REGISTER_POINT_TO_POINT or "
+                        "MIO_REGISTER_POINT_TO_PLANE");
+        options.mMaxIterations = o.max_iterations;
+        options.mTolerance = o.tolerance;
+        options.mMaxDistance = o.max_distance;
+        for (std::size_t k = 0; k < 16; ++k)
+            options.mInitial[k] = o.initial[k];
+        const meshioplusplus::RegistrationResult r =
+            meshioplusplus::register_rigid(source->mMesh, target->mMesh, options);
+        *report = mio_registration_report{};
+        for (std::size_t k = 0; k < 16; ++k)
+            report->matrix[k] = r.mMatrix[k];
+        report->initial_rms = r.mInitialRms;
+        report->rms = r.mRms;
+        report->iterations = r.mIterations;
+        report->num_pairs = r.mNumPairs;
+        report->converged = r.mConverged ? 1 : 0;
+        return MIO_OK;
     });
 }
 

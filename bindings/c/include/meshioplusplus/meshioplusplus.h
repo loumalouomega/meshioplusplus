@@ -3931,6 +3931,54 @@ MIO_API void mio_coordinate_opts_init(mio_coordinate_opts* opts);
 MIO_API mio_mesh* mio_convert_coordinates(const mio_mesh* mesh, const mio_coordinate_opts* opts,
                                           int64_t* num_arrays, int64_t* num_singular);
 
+/** mio_registration_opts.method: summed squared point distances. */
+#define MIO_REGISTER_POINT_TO_POINT 0
+/** mio_registration_opts.method: summed squared distances to the target's tangent planes. */
+#define MIO_REGISTER_POINT_TO_PLANE 1
+
+/**
+ * Options for mio_register_rigid. Initialize through
+ * mio_registration_opts_init(): point-to-point, 50 iterations, tolerance 1e-10,
+ * every pair kept, the identity as the start.
+ */
+typedef struct mio_registration_opts {
+    int32_t method;         /**< MIO_REGISTER_POINT_TO_POINT or _POINT_TO_PLANE */
+    int32_t reserved_pad;   /**< must be zero */
+    int64_t max_iterations; /**< the iteration cap, at least 1 */
+    double tolerance;       /**< stop below this rotation (rad) and relative move */
+    double max_distance;    /**< drop pairs farther apart; 0 keeps all */
+    double initial[16];     /**< the starting rigid transform, row-major 4x4 */
+    int64_t reserved[4];    /**< must be zero; room for additive growth */
+} mio_registration_opts;
+
+/** What mio_register_rigid found. */
+typedef struct mio_registration_report {
+    double matrix[16];    /**< row-major 4x4: source coordinates onto the target's */
+    double initial_rms;   /**< RMS pair distance under `initial` */
+    double rms;           /**< RMS pair distance at the end */
+    int64_t iterations;   /**< iterations run */
+    int64_t num_pairs;    /**< pairs kept at the end */
+    int32_t converged;    /**< nonzero unless max_iterations ran out first */
+    int32_t reserved_pad; /**< zero */
+    int64_t reserved[4];  /**< zero; room for additive growth */
+} mio_registration_report;
+
+/** Initialize registration options (see mio_registration_opts). */
+MIO_API void mio_registration_opts_init(mio_registration_opts* opts);
+
+/**
+ * Rigid registration by iterative closest points: the rotation and
+ * translation laying `source`'s points onto `target` (its surface when it has
+ * surface cells, else its points; point-to-plane on a cloud needs its `normals`
+ * point data). Apply `report->matrix` with mio_transform. See
+ * doc/registration.md. `opts` NULL uses the defaults.
+ *
+ * @return MIO_OK, or an error status (MIO_ERR_INVALID_ARG for bad input).
+ */
+MIO_API mio_status mio_register_rigid(const mio_mesh* source, const mio_mesh* target,
+                                      const mio_registration_opts* opts,
+                                      mio_registration_report* report);
+
 /** mio_point_normals_opts.orientation: propagate along a spanning tree, then outward. */
 #define MIO_NORMALS_CONSISTENT 0
 /** mio_point_normals_opts.orientation: towards `viewpoint`. */

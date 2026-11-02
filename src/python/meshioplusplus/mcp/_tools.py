@@ -151,6 +151,7 @@ from .. import (
     refine,
     refine_patches,
     region_adjacency,
+    register_rigid,
     remesh,
     remesh_volume,
     render_text,
@@ -4051,6 +4052,38 @@ def tool_convert_coordinates(
     )
 
 
+def tool_register_rigid(
+    source_path,
+    target_path,
+    output_path=None,
+    method="point_to_point",
+    max_iterations=50,
+    tolerance=1e-10,
+    max_distance=0.0,
+    rotate_data=False,
+    source_format=None,
+    target_format=None,
+    output_format=None,
+):
+    """The rigid motion laying one mesh or point cloud onto another (ICP); with
+    output_path, also the moved source."""
+    source = _load(source_path, source_format)
+    matrix, report = register_rigid(
+        source,
+        _load(target_path, target_format),
+        method=method,
+        max_iterations=int(max_iterations),
+        tolerance=float(tolerance),
+        max_distance=float(max_distance),
+    )
+    out = {"matrix": [[float(v) for v in row] for row in matrix]}
+    out.update(report)
+    if output_path:
+        moved = transform(source, matrix=matrix, rotate_vector_data=bool(rotate_data))
+        out["output_path"] = _store(moved, output_path, output_format)
+    return _json_safe(out)
+
+
 def tool_estimate_normals(
     input_path,
     output_path,
@@ -6923,6 +6956,14 @@ TOOL_REGISTRY = OrderedDict(
         (
             "sobolev_deform",
             {"fn": tool_sobolev_deform, "wraps": ("sobolev_deform",), "gated": None},
+        ),
+        (
+            "register_rigid",
+            {
+                "fn": tool_register_rigid,
+                "wraps": ("register_rigid",),
+                "gated": None,
+            },
         ),
         (
             "estimate_normals",

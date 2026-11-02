@@ -134,18 +134,15 @@
 <rect x="514.67" y="730" width="176" height="40" rx="5" fill="#1c5cab" fill-opacity="0.9" stroke="#1c5cab" stroke-width="1.2"/>
 <text x="520.67" y="747" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#ffffff">point-cloud surfaces</text>
 <text x="520.67" y="761" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#ffffff">L</text>
-<rect x="514.67" y="780" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2"/>
-<text x="520.67" y="797" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">ICP registration</text>
-<text x="520.67" y="811" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
-<rect x="514.67" y="830" width="176" height="40" rx="5" fill="#1c5cab" fill-opacity="0.9" stroke="#1c5cab" stroke-width="1.2"/>
-<text x="520.67" y="847" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#ffffff">providers: heal, mesh, quads</text>
-<text x="520.67" y="861" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#ffffff">L</text>
-<rect x="514.67" y="880" width="176" height="40" rx="5" fill="#0d366b" fill-opacity="0.9" stroke="#0d366b" stroke-width="1.2" stroke-dasharray="5 3"/>
-<text x="520.67" y="897" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#ffffff">surface booleans (spike first)</text>
-<text x="520.67" y="911" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#ffffff">XL</text>
-<rect x="514.67" y="930" width="176" height="40" rx="5" fill="#86b6ef" fill-opacity="0.55" stroke="#86b6ef" stroke-width="1.2"/>
-<text x="520.67" y="947" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">v19 defaults · TUI caps</text>
-<text x="520.67" y="961" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">S</text>
+<rect x="514.67" y="780" width="176" height="40" rx="5" fill="#1c5cab" fill-opacity="0.9" stroke="#1c5cab" stroke-width="1.2"/>
+<text x="520.67" y="797" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#ffffff">providers: heal, mesh, quads</text>
+<text x="520.67" y="811" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#ffffff">L</text>
+<rect x="514.67" y="830" width="176" height="40" rx="5" fill="#0d366b" fill-opacity="0.9" stroke="#0d366b" stroke-width="1.2" stroke-dasharray="5 3"/>
+<text x="520.67" y="847" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#ffffff">surface booleans (spike first)</text>
+<text x="520.67" y="861" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#ffffff">XL</text>
+<rect x="514.67" y="880" width="176" height="40" rx="5" fill="#86b6ef" fill-opacity="0.55" stroke="#86b6ef" stroke-width="1.2"/>
+<text x="520.67" y="897" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">v19 defaults · TUI caps</text>
+<text x="520.67" y="911" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">S</text>
 <rect x="24" y="1046" width="12" height="12" rx="2" fill="#86b6ef" fill-opacity="0.36" stroke="#86b6ef" stroke-width="1"/>
 <text x="41" y="1056" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="11" fill="#52514e">S: days</text>
 <rect x="102.12" y="1046" width="12" height="12" rx="2" fill="#3987e5" fill-opacity="0.36" stroke="#3987e5" stroke-width="1"/>

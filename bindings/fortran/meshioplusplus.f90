@@ -1225,6 +1225,32 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
+    !> Interop mirror of C `mio_registration_opts`. Field order/types are ABI.
+    type, bind(c) :: mio_registration_opts_t
+        integer(c_int32_t) :: method = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: max_iterations = 50
+        real(c_double) :: tolerance = 1.0e-10_c_double
+        real(c_double) :: max_distance = 0.0_c_double
+        real(c_double) :: initial(16) = [1.0_c_double, 0.0_c_double, 0.0_c_double, 0.0_c_double, &
+                                         0.0_c_double, 1.0_c_double, 0.0_c_double, 0.0_c_double, &
+                                         0.0_c_double, 0.0_c_double, 1.0_c_double, 0.0_c_double, &
+                                         0.0_c_double, 0.0_c_double, 0.0_c_double, 1.0_c_double]
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_registration_report`. Field order/types are ABI.
+    type, bind(c) :: mio_registration_report_t
+        real(c_double) :: matrix(16) = 0.0_c_double
+        real(c_double) :: initial_rms = 0.0_c_double
+        real(c_double) :: rms = 0.0_c_double
+        integer(c_int64_t) :: iterations = 0
+        integer(c_int64_t) :: num_pairs = 0
+        integer(c_int32_t) :: converged = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
     !> Interop mirror of C `mio_point_normals_opts`. Field order/types are ABI.
     type, bind(c) :: mio_point_normals_opts_t
         integer(c_int64_t) :: k = 16
@@ -2052,6 +2078,7 @@ module meshioplusplus
         procedure :: geodesic_distance => mesh_geodesic_distance
         procedure :: convert_coordinates => mesh_convert_coordinates
         procedure :: estimate_normals => mesh_estimate_normals
+        procedure :: register_rigid => mesh_register_rigid
         procedure :: convex_hull => mesh_convex_hull
         procedure :: delaunay_2d => mesh_delaunay_2d
         procedure :: remesh_volume => mesh_remesh_volume
@@ -3606,6 +3633,15 @@ module meshioplusplus
             type(mio_shrinkwrap_opts_t), intent(in) :: opts
             type(mio_shrinkwrap_report_t), intent(out) :: report
             type(c_ptr) :: r
+        end function
+
+        function c_mio_register_rigid(source, target, opts, report) &
+                bind(c, name="mio_register_rigid") result(r)
+            import :: c_ptr, c_int, mio_registration_opts_t, mio_registration_report_t
+            type(c_ptr), value :: source, target
+            type(mio_registration_opts_t), intent(in) :: opts
+            type(mio_registration_report_t), intent(out) :: report
+            integer(c_int) :: r
         end function
 
         function c_mio_estimate_normals(h, opts, num_degenerate, num_components) &
@@ -9445,6 +9481,55 @@ contains
             boundary_edges_after = int(report%quality_after%boundary_edges, int64)
         call clear_status(stat, errmsg)
     end function
+
+    !> Rigid registration by iterative closest points: `matrix(4, 4)` (row i
+    !> of the motion in `matrix(i, :)`) lays this mesh's points onto `target`
+    !> (its surface when it has surface cells, else its points). `method` is
+    !> 'point_to_point' (default) or 'point_to_plane'. See doc/registration.md.
+    subroutine mesh_register_rigid(self, target, matrix, method, max_iterations, tolerance, &
+                                   max_distance, rms, iterations, converged, stat, errmsg)
+        class(mio_mesh), intent(in) :: self
+        type(mio_mesh), intent(in) :: target
+        real(real64), intent(out) :: matrix(4, 4)
+        character(*), intent(in), optional :: method
+        integer, intent(in), optional :: max_iterations
+        real(real64), intent(in), optional :: tolerance, max_distance
+        real(real64), intent(out), optional :: rms
+        integer(int64), intent(out), optional :: iterations
+        logical, intent(out), optional :: converged
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_registration_opts_t) :: opts
+        type(mio_registration_report_t) :: rep
+        integer(c_int) :: rc
+        integer :: i, j
+
+        if (present(method)) then
+            if (trim(method) == 'point_to_plane') then
+                opts%method = 1
+            else if (trim(method) /= 'point_to_point') then
+                opts%method = -1
+            end if
+        end if
+        if (present(max_iterations)) opts%max_iterations = int(max_iterations, c_int64_t)
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(max_distance)) opts%max_distance = real(max_distance, c_double)
+        rc = c_mio_register_rigid(self%handle, target%handle, opts, rep)
+        if (rc /= 0) then
+            matrix = 0.0_real64
+            call handle_failure('register_rigid', mio_error_message(), stat, errmsg)
+            return
+        end if
+        do i = 1, 4
+            do j = 1, 4
+                matrix(i, j) = real(rep%matrix(4 * (i - 1) + j), real64)
+            end do
+        end do
+        if (present(rms)) rms = real(rep%rms, real64)
+        if (present(iterations)) iterations = int(rep%iterations, int64)
+        if (present(converged)) converged = rep%converged /= 0
+        call clear_status(stat, errmsg)
+    end subroutine
 
     !> Normals of the mesh's points by local plane fits: `normals` point data,
     !> oriented 'consistent' (default: a spanning tree, then outward),

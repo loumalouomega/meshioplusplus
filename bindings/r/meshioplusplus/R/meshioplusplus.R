@@ -716,6 +716,32 @@ mio_match_periodic_nodes <- function(mesh, slave, master, matrix = NULL, transla
   )
 }
 
+#' Rigid registration by iterative closest points
+#'
+#' The rotation and translation laying `source`'s points onto `target` (its
+#' surface when it has surface cells, else its points), as a 4 x 4 matrix to
+#' apply with `mio_transform()`. See `doc/registration.md`.
+#'
+#' @param source,target `mio_mesh` objects.
+#' @param method `"point_to_point"` or `"point_to_plane"` (a point-cloud
+#'   target then needs `normals` point data, see `mio_estimate_normals()`).
+#' @param max_iterations The iteration cap.
+#' @param tolerance Stop below this rotation (radians) and relative motion.
+#' @param max_distance Drop pairs farther apart than this; 0 keeps all.
+#' @param initial A starting 4 x 4 matrix, or `NULL` for the identity.
+#' @return A list of `matrix`, `initial_rms`, `rms`, `iterations`,
+#'   `num_pairs` and `converged`.
+#' @export
+mio_register_rigid <- function(source, target, method = "point_to_point",
+                               max_iterations = 50, tolerance = 1e-10,
+                               max_distance = 0, initial = NULL) {
+  .Call(
+    R_mio_register_rigid, source, target, as.character(method),
+    as.numeric(max_iterations), as.numeric(tolerance), as.numeric(max_distance),
+    if (is.null(initial)) NULL else as.numeric(initial)
+  )
+}
+
 #' Normals of a point cloud by local plane fits
 #'
 #' A plane is fitted to each point and its `k` nearest neighbours; the result

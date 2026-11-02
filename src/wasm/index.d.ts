@@ -4083,6 +4083,33 @@ export interface MeshioPlusPlusModule {
   };
 
   /**
+   * Rigid registration by iterative closest points: `matrix` (16 numbers,
+   * row-major 4x4) lays `source`'s points onto `target` (its surface when it
+   * has surface cells, else its points); apply it with `transform`. See
+   * doc/registration.md.
+   * @throws {Error} on an unknown method, a target with volume cells, or
+   *   `point_to_plane` against a cloud with no `normals`.
+   */
+  registerRigid(
+    source: Mesh,
+    target: Mesh,
+    options?: {
+      method?: 'point_to_point' | 'point_to_plane';
+      maxIterations?: number;
+      tolerance?: number;
+      maxDistance?: number;
+      initial?: ArrayLike<number>;
+    },
+  ): {
+    matrix: number[];
+    initialRms: number;
+    rms: number;
+    iterations: number;
+    numPairs: number;
+    converged: boolean;
+  };
+
+  /**
    * Normals of a point cloud: a plane fitted to each point and its `k`
    * nearest neighbours, as `normals` point data, oriented `'consistent'`
    * (a spanning tree over the neighbour graph, then each piece outward),

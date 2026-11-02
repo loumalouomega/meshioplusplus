@@ -1687,6 +1687,29 @@ struct _CSobolevReport
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_registration_opts`."""
+struct _CRegistrationOpts
+    method::Int32
+    reserved_pad::Int32
+    max_iterations::Int64
+    tolerance::Cdouble
+    max_distance::Cdouble
+    initial::NTuple{16,Cdouble}
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_registration_report`."""
+struct _CRegistrationReport
+    matrix::NTuple{16,Cdouble}
+    initial_rms::Cdouble
+    rms::Cdouble
+    iterations::Int64
+    num_pairs::Int64
+    converged::Int32
+    reserved_pad::Int32
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_point_normals_opts`."""
 struct _CPointNormalsOpts
     k::Int64
@@ -2042,6 +2065,10 @@ function _check_abi_layout()
         error("meshio++: mio_shrinkwrap_opts layout mismatch ($(sizeof(_CShrinkwrapOpts)) bytes)")
     sizeof(_CShrinkwrapReport) == 136 ||
         error("meshio++: mio_shrinkwrap_report layout mismatch ($(sizeof(_CShrinkwrapReport)) bytes)")
+    sizeof(_CRegistrationOpts) == 192 ||
+        error("meshio++: mio_registration_opts layout mismatch ($(sizeof(_CRegistrationOpts)) bytes)")
+    sizeof(_CRegistrationReport) == 200 ||
+        error("meshio++: mio_registration_report layout mismatch ($(sizeof(_CRegistrationReport)) bytes)")
     sizeof(_CPointNormalsOpts) == 72 ||
         error("meshio++: mio_point_normals_opts layout mismatch ($(sizeof(_CPointNormalsOpts)) bytes)")
     sizeof(_CHullReport) == 80 ||

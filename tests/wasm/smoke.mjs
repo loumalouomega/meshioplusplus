@@ -5720,6 +5720,14 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.throws(() => m.matchPeriodicNodes(tagged, 'bottom', 'top', shift));
 });
 
+step('registerRigid of the cube onto itself', () => {
+    const r = m.registerRigid(cubeSurface, cubeSurface);
+    assert.ok(r.converged);
+    assert.equal(r.matrix.length, 16);
+    assert.ok(Math.abs(r.matrix[0] - 1) < 1e-12 && Math.abs(r.matrix[3]) < 1e-12);
+    assert.throws(() => m.registerRigid(cubeSurface, cubeSurface, { method: 'affine' }));
+});
+
 step('estimateNormals of the cube corners', () => {
     const r = m.estimateNormals(cubeSurface, { k: 3 });
     assert.equal(r.numDegenerate, 0);

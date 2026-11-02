@@ -2157,6 +2157,30 @@ def test_convert_coordinates_tool(tmp_path):
     )
 
 
+def test_register_rigid_tool(tmp_path):
+    target = meshioplusplus.icosa_sphere(subdivisions=3)
+    target = meshioplusplus.Mesh(
+        target.points * [1.5, 1.0, 0.7], target.cells
+    )  # an ellipsoid: no rotational symmetry to settle into
+    src = str(tmp_path / "src.vtu")
+    tgt = str(tmp_path / "tgt.vtu")
+    meshioplusplus.write(
+        src, meshioplusplus.Mesh(target.points + [0.02, -0.01, 0.03], [])
+    )
+    meshioplusplus.write(tgt, target)
+    out = _dump(
+        _tools.tool_register_rigid(
+            src, tgt, str(tmp_path / "moved.vtu"), method="point_to_plane"
+        )
+    )
+    assert out["converged"] and out["rms"] < 1e-8
+    np.testing.assert_allclose(
+        np.asarray(out["matrix"])[:3, 3], [-0.02, 0.01, -0.03], atol=1e-8
+    )
+    moved = meshioplusplus.read(str(tmp_path / "moved.vtu"))
+    np.testing.assert_allclose(moved.points, target.points, atol=1e-8)
+
+
 def test_estimate_normals_tool(tmp_path):
     src = str(tmp_path / "s.vtu")
     meshioplusplus.write(src, meshioplusplus.icosa_sphere(subdivisions=2))

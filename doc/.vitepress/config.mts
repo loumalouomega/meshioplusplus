@@ -130,6 +130,7 @@ export default defineConfig({
               { text: "Skin extraction", link: "/extract_skin" },
               { text: "Reordering / renumbering", link: "/reorder" },
               { text: "Affine transform", link: "/transform" },
+              { text: "Rigid registration (ICP)", link: "/registration" },
               { text: "Cylindrical and spherical coordinates", link: "/coordinates" },
               { text: "Convex hull and planar Delaunay", link: "/hull" },
               { text: "Reflection (mirror)", link: "/mirror" },

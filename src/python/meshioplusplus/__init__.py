@@ -265,6 +265,7 @@ if TYPE_CHECKING:
     from ._refine import refine
     from ._refine_patches import refine_patches
     from ._region_ops import edit_regions
+    from ._registration import register_rigid
     from ._remesh import remesh
     from ._remesh_volume import remesh_volume
     from ._render import render_image, render_text, snapshot
@@ -351,6 +352,7 @@ _LAZY_ATTRS = {
     "convex_hull": "_hull",
     "delaunay_2d": "_hull",
     "estimate_normals": "_point_normals",
+    "register_rigid": "_registration",
     "convert_coordinates": "_coordinates",
     "write_graph": "_adjacency",
     "clean": "_clean",
@@ -711,6 +713,7 @@ __all__ = [
     "convex_hull",
     "delaunay_2d",
     "estimate_normals",
+    "register_rigid",
     "convert_coordinates",
     "refine",
     "undo_green",

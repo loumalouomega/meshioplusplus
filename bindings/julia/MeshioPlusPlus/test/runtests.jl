@@ -2038,6 +2038,10 @@ end
     @test 1.8 < gd.max_distance < 2.6
     close(gd.mesh)
     @test_throws MeshioError geodesic_distance(cube, Int[])
+    rr = register_rigid(cube, cube)
+    @test rr.converged && rr.rms < 1e-12
+    @test isapprox(rr.matrix, [1.0 0 0 0; 0 1 0 0; 0 0 1 0; 0 0 0 1]; atol=1e-12)
+    @test_throws ArgumentError register_rigid(cube, cube; method="affine")
     nn = estimate_normals(cube; k=3)
     @test nn.num_degenerate == 0 && nn.num_components == 1
     close(nn.mesh)

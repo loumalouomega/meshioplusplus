@@ -1245,6 +1245,48 @@ SEXP R_mio_sobolev_deform(SEXP mesh, SEXP array, SEXP length_scale, SEXP fixed_p
     return res;
 }
 
+SEXP R_mio_register_rigid(SEXP source, SEXP target, SEXP method, SEXP max_iterations,
+                          SEXP tolerance, SEXP max_distance, SEXP initial) {
+    mio_registration_opts opts;
+    mio_registration_opts_init(&opts);
+    const char *m = mio_r_string(method, "method");
+    if (strcmp(m, "point_to_plane") == 0) {
+        opts.method = MIO_REGISTER_POINT_TO_PLANE;
+    } else if (strcmp(m, "point_to_point") != 0) {
+        Rf_error("`method` must be \"point_to_point\" or \"point_to_plane\"");
+    }
+    opts.max_iterations = (int64_t)Rf_asReal(max_iterations);
+    opts.tolerance = Rf_asReal(tolerance);
+    opts.max_distance = Rf_asReal(max_distance);
+    if (!Rf_isNull(initial)) {
+        SEXP x = PROTECT(Rf_coerceVector(initial, REALSXP));
+        if (Rf_xlength(x) != 16) {
+            UNPROTECT(1);
+            Rf_error("`initial` must be a 4 x 4 matrix");
+        }
+        /* R stores column-major: element (i, j) at j * 4 + i */
+        for (int i = 0; i < 4; ++i)
+            for (int j = 0; j < 4; ++j) opts.initial[4 * i + j] = REAL(x)[j * 4 + i];
+        UNPROTECT(1);
+    }
+    mio_registration_report rep;
+    if (mio_register_rigid(mio_r_mesh(source), mio_r_mesh(target), &opts, &rep) != MIO_OK)
+        mio_r_fail("register_rigid");
+    SEXP mat = PROTECT(Rf_allocMatrix(REALSXP, 4, 4));
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) REAL(mat)[j * 4 + i] = rep.matrix[4 * i + j];
+    SEXP a = PROTECT(Rf_ScalarReal(rep.initial_rms));
+    SEXP b = PROTECT(Rf_ScalarReal(rep.rms));
+    SEXP c = PROTECT(Rf_ScalarReal((double)rep.iterations));
+    SEXP d = PROTECT(Rf_ScalarReal((double)rep.num_pairs));
+    SEXP e = PROTECT(Rf_ScalarLogical(rep.converged != 0));
+    const char *keys[] = {"matrix", "initial_rms", "rms", "iterations", "num_pairs", "converged"};
+    SEXP values[] = {mat, a, b, c, d, e};
+    SEXP res = PROTECT(mio_r_named_list(6, keys, values));
+    UNPROTECT(7);
+    return res;
+}
+
 SEXP R_mio_estimate_normals(SEXP mesh, SEXP k, SEXP orientation, SEXP viewpoint,
                             SEXP record_variation) {
     mio_point_normals_opts opts;

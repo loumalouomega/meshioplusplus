@@ -397,6 +397,14 @@ _OP_TABLE = {
     "ConvexHull": ("Dimension",),
     "Delaunay2D": (),
     "EstimateNormals": ("K", "Orientation", "Viewpoint", "RecordVariation"),
+    "RegisterRigid": (
+        "Target",
+        "Method",
+        "MaxIterations",
+        "Tolerance",
+        "MaxDistance",
+        "RotateData",
+    ),
     "ConvertCoordinates": (
         "System",
         "Axis",
@@ -2457,6 +2465,41 @@ def _apply_step(mesh, step, steps, warnings):
         entry["NumFacets"] = float(report["num_facets"])
         entry["Area"] = float(report["area"])
         entry["Volume"] = float(report["volume"])
+    elif op == "RegisterRigid":
+        from ._registration import register_rigid
+        from ._transform import transform
+
+        target = _text(step, "Target", "")
+        if not target:
+            raise ValueError(
+                "meshio++: pipeline: RegisterRigid: needs 'Target', the mesh to "
+                "register onto"
+            )
+        iters = _number(step, "MaxIterations", 50.0)
+        if float(int(iters)) != iters:
+            raise ValueError(
+                "meshio++: pipeline: RegisterRigid: 'MaxIterations' must be an integer"
+            )
+        matrix, report = register_rigid(
+            mesh,
+            read(target),
+            method=_text(step, "Method", "point_to_point"),
+            max_iterations=int(iters),
+            tolerance=_number(step, "Tolerance", 1e-10),
+            max_distance=_number(step, "MaxDistance", 0.0),
+        )
+        mesh = transform(
+            mesh, matrix=matrix, rotate_vector_data=_flag(step, "RotateData", False)
+        )
+        entry["InitialRms"] = float(report["initial_rms"])
+        entry["Rms"] = float(report["rms"])
+        entry["Iterations"] = float(report["iterations"])
+        entry["Converged"] = 1.0 if report["converged"] else 0.0
+        if not report["converged"]:
+            warnings.append(
+                "register_rigid: no convergence within MaxIterations; the transform is "
+                "the last iterate"
+            )
     elif op == "EstimateNormals":
         from ._point_normals import estimate_normals
 

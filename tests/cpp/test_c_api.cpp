@@ -7059,6 +7059,33 @@ TEST(CApi, ConvertCoordinates) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, RegisterRigid) {
+    mio_mesh* target = capi_cube_surface();
+    // The source: the cube's corners shifted by (0.01, -0.02, 0.03).
+    const std::vector<double> pts = {0.01,  -0.02, 0.03, 1.01, -0.02, 0.03,  1.01, 0.98,
+                                     0.03,  0.01,  0.98, 0.03, 0.01,  -0.02, 1.03, 1.01,
+                                     -0.02, 1.03,  1.01, 0.98, 1.03,  0.01,  0.98, 1.03};
+    mio_mesh* source = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(source, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    mio_registration_opts opts;
+    mio_registration_opts_init(&opts);
+    EXPECT_EQ(opts.initial[0], 1.0);
+    EXPECT_EQ(opts.initial[15], 1.0);
+    mio_registration_report rep;
+    ASSERT_EQ(mio_register_rigid(source, target, &opts, &rep), MIO_OK) << mio_last_error();
+    EXPECT_TRUE(rep.converged);
+    EXPECT_NEAR(rep.matrix[3], -0.01, 1e-8);
+    EXPECT_NEAR(rep.matrix[7], 0.02, 1e-8);
+    EXPECT_NEAR(rep.matrix[11], -0.03, 1e-8);
+    EXPECT_LT(rep.rms, 1e-8);
+    EXPECT_EQ(rep.num_pairs, 8);
+    opts.method = 7;
+    EXPECT_EQ(mio_register_rigid(source, target, &opts, &rep), MIO_ERR_INVALID_ARG);
+    EXPECT_EQ(mio_register_rigid(source, target, nullptr, nullptr), MIO_ERR_INVALID_ARG);
+    mio_mesh_free(source);
+    mio_mesh_free(target);
+}
+
 TEST(CApi, EstimateNormals) {
     mio_mesh* m = capi_cube_surface();  // 8 corners: every fit spans a plane
     mio_point_normals_opts opts;
