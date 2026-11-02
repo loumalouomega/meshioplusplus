@@ -59,14 +59,16 @@ def test_every_python_verb_and_option_is_listed():
 
 def _bash_usable():
     """A bash that runs a command. On Windows the first `bash` on PATH can be
-    the WSL launcher, which fails when no distribution is installed."""
+    the WSL launcher, which with no distribution installed prints a (UTF-16)
+    message and still exits 0 for `-c true`, so the output is checked too."""
     exe = shutil.which("bash")
     if exe is None:
         return False
     try:
-        return subprocess.run([exe, "-c", "true"], capture_output=True).returncode == 0
+        r = subprocess.run([exe, "-c", "echo ok"], capture_output=True)
     except OSError:
         return False
+    return r.returncode == 0 and r.stdout.strip() == b"ok"
 
 
 @pytest.mark.skipif(not _bash_usable(), reason="needs a working bash")
