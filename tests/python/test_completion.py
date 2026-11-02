@@ -29,6 +29,11 @@ def _native_script(shell):
     return r.stdout
 
 
+# The bash the tests drive, by its full path: on Windows a bare `bash` is looked
+# up in System32 before PATH, and finds the WSL launcher there.
+BASH = shutil.which("bash")
+
+
 def _complete(script, words, cword, tmp_path):
     """COMPREPLY for `words` in a real bash with `script` sourced."""
     path = tmp_path / "c.bash"
@@ -36,7 +41,7 @@ def _complete(script, words, cword, tmp_path):
     array = " ".join(f"'{w}'" for w in words)
     cmd = f"source '{path.as_posix()}'; COMP_WORDS=({array}); COMP_CWORD={cword}; _meshioplusplus; "
     cmd += 'printf "%s\\n" "${COMPREPLY[@]}"'
-    r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, check=True)
+    r = subprocess.run([BASH, "-c", cmd], capture_output=True, text=True, check=True)
     return r.stdout.split()
 
 
@@ -61,11 +66,10 @@ def _bash_usable():
     """A bash that runs a command. On Windows the first `bash` on PATH can be
     the WSL launcher, which with no distribution installed prints a (UTF-16)
     message and still exits 0 for `-c true`, so the output is checked too."""
-    exe = shutil.which("bash")
-    if exe is None:
+    if BASH is None:
         return False
     try:
-        r = subprocess.run([exe, "-c", "echo ok"], capture_output=True)
+        r = subprocess.run([BASH, "-c", "echo ok"], capture_output=True)
     except OSError:
         return False
     return r.returncode == 0 and r.stdout.strip() == b"ok"
@@ -77,7 +81,7 @@ def test_bash_script_completes(engine, tmp_path):
     if engine == "native" and NATIVE is None:
         pytest.skip("no native CLI binary built")
     script = _python_script("bash") if engine == "python" else _native_script("bash")
-    subprocess.run(["bash", "-n"], input=script.encode(), check=True)
+    subprocess.run([BASH, "-n"], input=script.encode(), check=True)
     assert _complete(script, ["meshioplusplus", "geod"], 1, tmp_path) == ["geodesic"]
     assert _complete(script, ["meshioplusplus", "graph", "--ki"], 2, tmp_path) == [
         "--kind"
@@ -105,7 +109,7 @@ def test_zsh_and_fish_scripts(engine, shell):
             in script
         )
     if shutil.which(shell):
-        subprocess.run([shell, "-n"], input=script.encode(), check=True)
+        subprocess.run([shutil.which(shell), "-n"], input=script.encode(), check=True)
 
 
 def test_the_native_verbs_options_match_their_parsers():
