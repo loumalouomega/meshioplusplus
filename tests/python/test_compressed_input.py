@@ -160,6 +160,8 @@ def test_no_temporary_copies_are_left(cube):
 def test_native_registry_reads_them_too(cube, suffix):
     """The core's registry (what both CLIs, the C API and the flat bindings
     read through) decompresses the same files."""
+    if not getattr(_core, "__has_zlib__", False):
+        pytest.skip("the core is built without zlib")
     tmp, raw = cube
     path = tmp / ("cube.vtu" + suffix)
     data = raw["cube.vtu"]

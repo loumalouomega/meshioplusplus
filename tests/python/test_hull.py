@@ -156,7 +156,11 @@ def test_pipeline_step_in_both_engines(tmp_path, step):
     rng = np.random.default_rng(3)
     src = tmp_path / "cloud.vtu"
     pts = rng.random((300, 3))
-    mp.write(str(src), mp.Mesh(pts, [("vertex", np.arange(300)[:, None])]))
+    mp.write(
+        str(src),
+        mp.Mesh(pts, [("vertex", np.arange(300)[:, None])]),
+        compression=None,  # the build may have no zlib
+    )
     doc = {
         "Version": 1,
         "Input": {"Path": str(src)},

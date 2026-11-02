@@ -108,7 +108,11 @@ def test_degenerate_and_refusals():
 def test_pipeline_step_in_both_engines(tmp_path):
     src = tmp_path / "cloud.vtu"
     pts = _sphere_cloud(500, seed=4)
-    mp.write(str(src), mp.Mesh(pts, [("vertex", np.arange(500)[:, None])]))
+    mp.write(
+        str(src),
+        mp.Mesh(pts, [("vertex", np.arange(500)[:, None])]),
+        compression=None,  # the build may have no zlib
+    )
     doc = {
         "Version": 1,
         "Input": {"Path": str(src)},

@@ -120,8 +120,13 @@ def test_pipeline_step_in_both_engines(tmp_path):
     target = _ellipsoid()
     tgt = tmp_path / "target.vtu"
     src = tmp_path / "source.vtu"
-    mp.write(str(tgt), target)
-    mp.write(str(src), mp.Mesh(_apply(_motion(), target.points), target.cells))
+    # Uncompressed: the build may have no zlib.
+    mp.write(str(tgt), target, compression=None)
+    mp.write(
+        str(src),
+        mp.Mesh(_apply(_motion(), target.points), target.cells),
+        compression=None,
+    )
     doc = {
         "Version": 1,
         "Input": {"Path": str(src)},

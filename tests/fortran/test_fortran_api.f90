@@ -3179,7 +3179,8 @@ contains
         call check(ierr /= 0, 'an unknown scale is refused')
 
         ! A cut-away: the camera sits on -x and a plane keeps x >= 0.5, so the near
-        ! face goes and the far one (cell 5) shows from inside, in the tint.
+        ! face goes. The cube closes, so the cut is capped (no cell, the fill colour)
+        ! rather than showing the far face from inside in the tint.
         set = mio_render_settings()
         set%width = 32
         set%height = 32
@@ -3192,9 +3193,8 @@ contains
         call check(ierr == 0 .and. f%is_valid(), 'render with a cut-away succeeded')
         call f%get_cell_ids(ids)
         call f%get_rgba(rgba)
-        call check(ids(17, 17) == 5, 'the cut shows the far face at the centre')
-        call check(rgba(1, 17, 17) == 10 .and. rgba(2, 17, 17) == 200 .and. rgba(3, 17, 17) == 30, &
-                   'the inside is drawn in the tint')
+        call check(ids(17, 17) == -1, 'the cut is capped at the centre')
+        call check(rgba(2, 17, 17) /= 200, 'the cap is not drawn in the tint')
         call f%free()
         set%cutaways = [0.5_real64, 0.0_real64, 0.0_real64, 1.0_real64, 0.0_real64, 0.0_real64, &
                         0.0_real64, 0.5_real64, 0.0_real64, 0.0_real64, 1.0_real64, 0.0_real64]

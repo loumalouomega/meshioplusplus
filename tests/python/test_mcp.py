@@ -2224,10 +2224,13 @@ def test_register_rigid_tool(tmp_path):
     )  # an ellipsoid: no rotational symmetry to settle into
     src = str(tmp_path / "src.vtu")
     tgt = str(tmp_path / "tgt.vtu")
+    # Uncompressed: the build may have no zlib.
     meshioplusplus.write(
-        src, meshioplusplus.Mesh(target.points + [0.02, -0.01, 0.03], [])
+        src,
+        meshioplusplus.Mesh(target.points + [0.02, -0.01, 0.03], []),
+        compression=None,
     )
-    meshioplusplus.write(tgt, target)
+    meshioplusplus.write(tgt, target, compression=None)
     out = _dump(
         _tools.tool_register_rigid(
             src, tgt, str(tmp_path / "moved.vtu"), method="point_to_plane"

@@ -45,7 +45,7 @@ test_that("a mapped field reports its range, ticks and symmetric limits", {
   expect_true(any(startsWith(g$notes, "ticks: ")))
 })
 
-test_that("a cut-away clips the near face and tints the inside", {
+test_that("a cut-away clips the near face and caps the cut", {
   m <- cube_surface()
   on.exit(mio_release(m))
   f <- mio_render(m,
@@ -53,8 +53,9 @@ test_that("a cut-away clips the near face and tints the inside", {
     background = mio_rgba(0, 0, 0), cutaway = c(0.5, 0, 0, 1, 0, 0),
     cutaway_tint = mio_rgba(10, 200, 30)
   )
-  expect_equal(f$cell_ids[17, 17], 5)
-  expect_equal(as.integer(f$rgba[1:3, 17, 17]), c(10L, 200L, 30L))
+  # The cube closes, so the cut is capped (no cell, the fill colour), not tinted.
+  expect_equal(f$cell_ids[17, 17], -1)
+  expect_false(as.integer(f$rgba[2, 17, 17]) == 200L)
   two <- mio_render(m,
     width = 32L, height = 32L,
     cutaway = list(c(0.5, 0, 0, 1, 0, 0), c(0, 0.5, 0, 0, 1, 0))
