@@ -23,6 +23,7 @@
 
 #include <gtest/gtest.h>
 
+#include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -52,7 +53,8 @@ Mesh ut_hex_box(int N) {
 }
 
 Mesh ut_move(const Mesh& rMesh, std::size_t Node, double X, double Y, double Z) {
-    Mesh m = rMesh;
+    // KRATOS meshes are not copy-constructible: clone through the uniform API.
+    Mesh m = detail::clone_mesh(rMesh);
     NDArray p(DType::Float64, {m.NumPoints(), std::size_t{3}});
     std::copy(rMesh.Points().As<double>(), rMesh.Points().As<double>() + 3 * m.NumPoints(),
               p.As<double>());
