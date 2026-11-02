@@ -1687,6 +1687,28 @@ struct _CSobolevReport
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_untangle_opts`."""
+struct _CUntangleOpts
+    frozen::Ptr{UInt8}
+    num_frozen::Int64
+    rings::Int64
+    max_sweeps::Int64
+    fix_boundary::Int32
+    smooth::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_untangle_report`."""
+struct _CUntangleReport
+    num_inverted_before::Int64
+    num_inverted_after::Int64
+    min_quality_before::Cdouble
+    min_quality_after::Cdouble
+    sweeps::Int64
+    moves::Int64
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_morph_opts`."""
 struct _CMorphOpts
     array::Cstring
@@ -2110,6 +2132,10 @@ function _check_abi_layout()
         error("meshio++: mio_shrinkwrap_opts layout mismatch ($(sizeof(_CShrinkwrapOpts)) bytes)")
     sizeof(_CShrinkwrapReport) == 136 ||
         error("meshio++: mio_shrinkwrap_report layout mismatch ($(sizeof(_CShrinkwrapReport)) bytes)")
+    sizeof(_CUntangleOpts) == 72 ||
+        error("meshio++: mio_untangle_opts layout mismatch ($(sizeof(_CUntangleOpts)) bytes)")
+    sizeof(_CUntangleReport) == 80 ||
+        error("meshio++: mio_untangle_report layout mismatch ($(sizeof(_CUntangleReport)) bytes)")
     sizeof(_CMorphOpts) == 104 ||
         error("meshio++: mio_morph_opts layout mismatch ($(sizeof(_CMorphOpts)) bytes)")
     sizeof(_CMorphReport) == 80 ||

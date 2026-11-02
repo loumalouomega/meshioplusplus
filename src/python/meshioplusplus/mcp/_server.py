@@ -3656,6 +3656,39 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def untangle(
+        input_path: str,
+        output_path: str,
+        fix_boundary: bool = True,
+        frozen: Optional[str] = None,
+        rings: int = 2,
+        smooth: bool = False,
+        max_sweeps: int = 100,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Repair inverted tetrahedra and hexahedra by moving nodes (Escobar
+        et al.'s untangling functional), keeping the connectivity -- after a
+        large morph, or in a result file from an explicit run. By default
+        only nodes within `rings` edge rings of an inverted cell move and the
+        boundary stays fixed; smooth=true untangles and smooths everything.
+        `frozen` names a point_set or point-data mask of nodes to keep.
+        Reports num_inverted_before/after, min_quality_before/after (least
+        corner scaled Jacobian), sweeps, moves."""
+        return _guard(
+            _tools.tool_untangle,
+            input_path=input_path,
+            output_path=output_path,
+            fix_boundary=fix_boundary,
+            frozen=frozen,
+            rings=rings,
+            smooth=smooth,
+            max_sweeps=max_sweeps,
+            input_format=input_format,
+            output_format=output_format,
+        )
+
+    @server.tool()
     def morph(
         input_path: str,
         output_path: str,

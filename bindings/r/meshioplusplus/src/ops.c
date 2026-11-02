@@ -1245,6 +1245,30 @@ SEXP R_mio_sobolev_deform(SEXP mesh, SEXP array, SEXP length_scale, SEXP fixed_p
     return res;
 }
 
+SEXP R_mio_untangle(SEXP mesh, SEXP fix_boundary, SEXP rings, SEXP smooth, SEXP max_sweeps) {
+    mio_untangle_opts opts;
+    mio_untangle_opts_init(&opts);
+    opts.fix_boundary = mio_r_bool(fix_boundary, "fix_boundary") ? 1 : 0;
+    opts.rings = (int64_t)Rf_asReal(rings);
+    opts.smooth = mio_r_bool(smooth, "smooth") ? 1 : 0;
+    opts.max_sweeps = (int64_t)Rf_asReal(max_sweeps);
+    mio_untangle_report rep;
+    mio_mesh *out = mio_untangle(mio_r_mesh(mesh), &opts, &rep);
+    if (out == NULL) mio_r_fail("untangle");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP a = PROTECT(Rf_ScalarReal((double)rep.num_inverted_before));
+    SEXP b = PROTECT(Rf_ScalarReal((double)rep.num_inverted_after));
+    SEXP c = PROTECT(Rf_ScalarReal(rep.min_quality_before));
+    SEXP d = PROTECT(Rf_ScalarReal(rep.min_quality_after));
+    SEXP e = PROTECT(Rf_ScalarReal((double)rep.sweeps));
+    const char *keys[] = {"mesh", "num_inverted_before", "num_inverted_after",
+                          "min_quality_before", "min_quality_after", "sweeps"};
+    SEXP values[] = {mo, a, b, c, d, e};
+    SEXP res = PROTECT(mio_r_named_list(6, keys, values));
+    UNPROTECT(7);
+    return res;
+}
+
 SEXP R_mio_morph(SEXP mesh, SEXP array, SEXP fix_boundary, SEXP constrained_array,
                  SEXP stiffening, SEXP steps, SEXP allow_inverted) {
     mio_morph_opts opts;

@@ -38962,6 +38962,90 @@ MESHIOPLUSPLUS_API UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& r
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/undo_green.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/untangle.hpp =====
+/**
+ * @file operations/untangle.hpp
+ * @brief Untangling inverted linear volume cells (roadmap 7.4.2): move nodes
+ * until every tetrahedron and every hexahedron corner has a positive signed
+ * volume, keeping the connectivity. Meshes come out tangled from large
+ * morphs, from explicit dynamics result files, and from hand edits;
+ * `smooth`'s inversion guard only keeps a valid mesh valid.
+ *
+ * `untangle(mesh, options)` minimises, node by node, the untangling and
+ * smoothing functional of J. M. Escobar, E. Rodriguez, R. Montenegro, G.
+ * Montero and J. M. Gonzalez-Yuste ("Simultaneous untangling and smoothing of
+ * tetrahedral meshes", Comput. Methods Appl. Mech. Engrg. 192, 2003): every
+ * corner simplex `c` (a tetrahedron itself; each of a hexahedron's eight
+ * corners with its three edges, P. M. Knupp's corner Jacobians) contributes
+ * `|S|^2 / (3 h(det S)^(2/3))`, `S` the corner's edge matrix against the ideal
+ * one (a regular tetrahedron, a cube corner) in units of the mesh's mean edge
+ * length, and `h(s) = (s + sqrt(s^2 + 4 delta^2)) / 2` a regularised signed
+ * volume that stays positive while `s` is negative (`delta` from the most
+ * negative corner of the sweep, 0 once none is), so the functional is finite
+ * across inversions and pushes every corner positive. A sweep visits the free
+ * nodes in ascending order (Gauss-Seidel), each taking up to four steps of
+ * steepest descent (a central-difference gradient, a backtracking line search
+ * that accepts only a decrease).
+ *
+ * By default only the nodes within `mRings` edge rings of an inverted cell
+ * move (recomputed each sweep), and it stops once no cell is inverted;
+ * `mSmooth` moves every free node until the functional settles, smoothing as
+ * it untangles. The boundary nodes (of faces used by one cell) are fixed by
+ * default, `mFrozen` pins more, and so are the nodes of any other volume
+ * cell (`wedge`, `pyramid`, higher order), which it does not measure. Points
+ * move; connectivity, data and regions pass through. Serial, so the result is
+ * the same on every backend.
+ */
+
+// System includes
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// How `untangle` moves the nodes.
+struct UntangleOptions {
+    /// Keep the boundary nodes fixed.
+    bool mFixBoundary = true;
+    /// More nodes to keep fixed: empty, or one entry per point (nonzero pins).
+    std::vector<std::uint8_t> mFrozen;
+    /// Edge rings around the inverted cells whose nodes may move.
+    std::int64_t mRings = 2;
+    /// Move every free node until the functional settles (untangle and smooth).
+    bool mSmooth = false;
+    /// Sweeps at most; at least 1.
+    std::int64_t mMaxSweeps = 100;
+};
+
+/// What `untangle` did.
+struct UntangleResult {
+    /// The mesh with its nodes moved.
+    Mesh mMesh;
+    /// Tetrahedra and hexahedra with a corner of non-positive volume, before
+    /// and after.
+    std::int64_t mNumInvertedBefore = 0;
+    std::int64_t mNumInvertedAfter = 0;
+    /// The smallest corner scaled Jacobian (determinant over the edge
+    /// lengths' product), before and after.
+    double mMinQualityBefore = 0.0;
+    double mMinQualityAfter = 0.0;
+    /// Sweeps run, and node moves kept.
+    std::int64_t mSweeps = 0;
+    std::int64_t mMoves = 0;
+};
+
+/**
+ * @brief Untangle a mesh's tetrahedra and hexahedra (see the file comment).
+ * @throws std::invalid_argument on a mesh with no tetrahedron or hexahedron,
+ *         a `mFrozen` mask of the wrong length, `mMaxSweeps` below 1 or a
+ *         negative `mRings`.
+ */
+MESHIOPLUSPLUS_API UntangleResult untangle(const Mesh& rMesh, const UntangleOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/untangle.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/parallel.hpp =====
 /**
  * @file parallel.hpp
@@ -244321,6 +244405,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Delaunay2D", {}},
         {"EstimateNormals", {"K", "Orientation", "Viewpoint", "RecordVariation"}},
         {"LaplacianEigenmodes", {"NumModes", "Tolerance", "MaxIterations"}},
+        {"Untangle", {"FixBoundary", "Rings", "Smooth", "MaxSweeps"}},
         {"Morph",
          {"Array", "FixBoundary", "ConstrainedArray", "Stiffening", "Steps", "AllowInverted",
           "Tolerance", "MaxIterations"}},
@@ -246168,6 +246253,28 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"Area", hr.mArea},
                         {"Volume", hr.mVolume}});
         return std::move(hr.mMesh);
+    }
+    if (op == "Untangle") {
+        UntangleOptions opts;
+        opts.mFixBoundary = pipe_flag(rStep, "FixBoundary", true);
+        opts.mSmooth = pipe_flag(rStep, "Smooth", false);
+        const double rings = pipe_number(rStep, "Rings", 2.0);
+        const double sweeps = pipe_number(rStep, "MaxSweeps", 100.0);
+        opts.mRings = static_cast<std::int64_t>(rings);
+        opts.mMaxSweeps = static_cast<std::int64_t>(sweeps);
+        if (static_cast<double>(opts.mRings) != rings ||
+            static_cast<double>(opts.mMaxSweeps) != sweeps)
+            throw std::invalid_argument(
+                pipe_err(rStep, "'Rings' and 'MaxSweeps' must be integers"));
+        UntangleResult ur = untangle(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumInvertedBefore", static_cast<double>(ur.mNumInvertedBefore)},
+                        {"NumInvertedAfter", static_cast<double>(ur.mNumInvertedAfter)},
+                        {"MinQualityAfter", ur.mMinQualityAfter},
+                        {"Sweeps", static_cast<double>(ur.mSweeps)}});
+        if (ur.mNumInvertedAfter > 0)
+            rReport.mWarnings.push_back("untangle: cells are still inverted after MaxSweeps");
+        return std::move(ur.mMesh);
     }
     if (op == "Morph") {
         MorphOptions opts;
@@ -274473,6 +274580,365 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/undo_green.cpp =====
+// ===== begin src/cpp/src/operations/untangle.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+using UtgVec = std::array<double, 3>;
+
+/// A corner simplex: the corner node, its three edge ends (right-handed for a
+/// valid cell), and whether it is a tetrahedron (ideal: regular) or a
+/// hexahedron corner (ideal: a cube corner).
+struct UtgCorner {
+    std::array<std::int64_t, 4> mNodes;
+    bool mTet;
+};
+
+// Knupp's hexahedron corners: corner c, then its three edge neighbours.
+constexpr int kUtgHexCorner[8][4] = {{0, 1, 3, 4}, {1, 2, 0, 5}, {2, 3, 1, 6}, {3, 0, 2, 7},
+                                     {4, 7, 5, 0}, {5, 4, 6, 1}, {6, 5, 7, 2}, {7, 6, 4, 3}};
+
+// The inverse of the regular tetrahedron's edge matrix (columns: its three
+// edges from corner 0, unit length), row-major.
+const double kUtgTetWinv[3][3] = {{1.0, -0.57735026918962573, -0.40824829046386302},
+                                  {0.0, 1.1547005383792515, -0.40824829046386302},
+                                  {0.0, 0.0, 1.2247448713915890}};
+
+struct UtgMeasure {
+    double mDet;    ///< det S
+    double mFrob2;  ///< |S|_F^2
+};
+
+UtgMeasure utg_measure(const std::vector<UtgVec>& rX, const UtgCorner& rC, double InvScale) {
+    const UtgVec& p0 = rX[static_cast<std::size_t>(rC.mNodes[0])];
+    double a[3][3];  // columns: the three edges, scaled
+    for (int k = 0; k < 3; ++k) {
+        const UtgVec& p = rX[static_cast<std::size_t>(rC.mNodes[k + 1])];
+        for (int r = 0; r < 3; ++r)
+            a[r][k] = (p[r] - p0[r]) * InvScale;
+    }
+    double s[3][3];
+    if (rC.mTet) {
+        for (int r = 0; r < 3; ++r)
+            for (int c = 0; c < 3; ++c) {
+                double v = 0.0;
+                for (int k = 0; k < 3; ++k)
+                    v += a[r][k] * kUtgTetWinv[k][c];
+                s[r][c] = v;
+            }
+    } else {
+        for (int r = 0; r < 3; ++r)
+            for (int c = 0; c < 3; ++c)
+                s[r][c] = a[r][c];
+    }
+    UtgMeasure m{};
+    m.mDet = s[0][0] * (s[1][1] * s[2][2] - s[1][2] * s[2][1]) -
+             s[0][1] * (s[1][0] * s[2][2] - s[1][2] * s[2][0]) +
+             s[0][2] * (s[1][0] * s[2][1] - s[1][1] * s[2][0]);
+    m.mFrob2 = 0.0;
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 3; ++c)
+            m.mFrob2 += s[r][c] * s[r][c];
+    return m;
+}
+
+/// The corner's scaled Jacobian: det of the edges over their lengths' product.
+double utg_scaled_jacobian(const std::vector<UtgVec>& rX, const UtgCorner& rC) {
+    const UtgVec& p0 = rX[static_cast<std::size_t>(rC.mNodes[0])];
+    UtgVec e[3];
+    double len = 1.0;
+    for (int k = 0; k < 3; ++k) {
+        const UtgVec& p = rX[static_cast<std::size_t>(rC.mNodes[k + 1])];
+        e[k] = {p[0] - p0[0], p[1] - p0[1], p[2] - p0[2]};
+        len *= std::sqrt(e[k][0] * e[k][0] + e[k][1] * e[k][1] + e[k][2] * e[k][2]);
+    }
+    if (!(len > 0.0))
+        return -1.0;
+    const double det = e[0][0] * (e[1][1] * e[2][2] - e[1][2] * e[2][1]) -
+                       e[1][0] * (e[0][1] * e[2][2] - e[0][2] * e[2][1]) +
+                       e[2][0] * (e[0][1] * e[1][2] - e[0][2] * e[1][1]);
+    return det / len;
+}
+
+double utg_term(const UtgMeasure& rM, double Delta) {
+    const double h = 0.5 * (rM.mDet + std::sqrt(rM.mDet * rM.mDet + 4.0 * Delta * Delta));
+    if (!(h > 0.0))
+        return std::numeric_limits<double>::infinity();
+    return rM.mFrob2 / (3.0 * std::cbrt(h * h));
+}
+
+}  // namespace
+
+UntangleResult untangle(const Mesh& rMesh, const UntangleOptions& rOptions) {
+    if (rOptions.mMaxSweeps < 1)
+        throw std::invalid_argument("untangle: max_sweeps must be at least 1");
+    if (rOptions.mRings < 0)
+        throw std::invalid_argument("untangle: rings must not be negative");
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+    if (!rOptions.mFrozen.empty() && rOptions.mFrozen.size() != n)
+        throw std::invalid_argument("untangle: the frozen mask must have one entry per point");
+
+    // Cells, their corners, and the nodes no measure covers.
+    std::vector<UtgCorner> corners;
+    std::vector<std::int64_t> cell_first;  // per measured cell, its first corner
+    std::vector<std::vector<std::int64_t>> node_cells(n);
+    std::vector<char> pinned(n, 0);
+    std::vector<std::array<std::int64_t, 4>> face_keys;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::string& type = cb.Type();
+        const bool tet = type == "tetra", hex = type == "hexahedron";
+        const int d = cb.IsRagged() ? (cb.IsPolyhedron() ? 3 : 2)
+                                    : cell_type_dimension(cell_type_from_name(type));
+        if (d < 3)
+            continue;
+        const std::size_t npc = cb.IsRagged() ? 0 : cb.NodesPerCell();
+        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+            if (!tet && !hex) {
+                // Not measured: its nodes stay where they are.
+                if (cb.IsRagged()) {
+                    for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
+                        const auto face = cb.Face(c, f);
+                        for (std::size_t k = 0; k < face.second; ++k)
+                            pinned[static_cast<std::size_t>(face.first[k])] = 1;
+                    }
+                } else {
+                    for (std::size_t k = 0; k < npc; ++k)
+                        pinned[static_cast<std::size_t>(detail::read_int(cb.Conn(), c * npc + k))] =
+                            1;
+                }
+                continue;
+            }
+            std::array<std::int64_t, 8> v{};
+            for (std::size_t k = 0; k < npc; ++k)
+                v[k] = detail::read_int(cb.Conn(), c * npc + k);
+            const auto id = static_cast<std::int64_t>(cell_first.size());
+            cell_first.push_back(static_cast<std::int64_t>(corners.size()));
+            if (tet) {
+                corners.push_back({{v[0], v[1], v[2], v[3]}, true});
+            } else {
+                for (const auto& row : kUtgHexCorner)
+                    corners.push_back(
+                        {{v[static_cast<std::size_t>(row[0])], v[static_cast<std::size_t>(row[1])],
+                          v[static_cast<std::size_t>(row[2])], v[static_cast<std::size_t>(row[3])]},
+                         false});
+            }
+            for (std::size_t k = 0; k < npc; ++k)
+                node_cells[static_cast<std::size_t>(v[k])].push_back(id);
+            for (const auto& f : detail::cell_faces(cell_type_from_name(type))) {
+                std::array<std::int64_t, 4> key{-1, -1, -1, -1};
+                for (std::size_t k = 0; k < f.mNumCorners; ++k)
+                    key[k] = v[f.mNodes[k]];
+                std::sort(key.begin(), key.begin() + f.mNumCorners);
+                face_keys.push_back(key);
+            }
+        }
+    }
+    cell_first.push_back(static_cast<std::int64_t>(corners.size()));
+    const std::size_t num_cells = cell_first.size() - 1;
+    if (num_cells == 0)
+        throw std::invalid_argument("untangle: the mesh has no tetrahedron or hexahedron");
+    for (auto& cells : node_cells) {
+        std::sort(cells.begin(), cells.end());
+        cells.erase(std::unique(cells.begin(), cells.end()), cells.end());
+    }
+    if (rOptions.mFixBoundary) {
+        std::sort(face_keys.begin(), face_keys.end());
+        for (std::size_t i = 0; i < face_keys.size();) {
+            std::size_t j = i;
+            while (j < face_keys.size() && face_keys[j] == face_keys[i])
+                ++j;
+            if (j - i == 1)
+                for (const std::int64_t v : face_keys[i])
+                    if (v >= 0)
+                        pinned[static_cast<std::size_t>(v)] = 1;
+            i = j;
+        }
+    }
+    for (std::size_t i = 0; i < n; ++i)
+        if ((!rOptions.mFrozen.empty() && rOptions.mFrozen[i]) || node_cells[i].empty())
+            pinned[i] = 1;
+
+    std::vector<UtgVec> x(n, UtgVec{0.0, 0.0, 0.0});
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t k = 0; k < dim && k < 3; ++k)
+            x[i][k] = detail::read_double(rMesh.Points(), i * dim + k);
+    // The length unit: the mean edge of the corners.
+    double edge_sum = 0.0;
+    std::size_t edge_count = 0;
+    for (const UtgCorner& c : corners)
+        for (int k = 1; k < 4; ++k) {
+            const UtgVec& a = x[static_cast<std::size_t>(c.mNodes[0])];
+            const UtgVec& b = x[static_cast<std::size_t>(c.mNodes[k])];
+            edge_sum += std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) +
+                                  (a[2] - b[2]) * (a[2] - b[2]));
+            ++edge_count;
+        }
+    const double unit = edge_sum / static_cast<double>(std::max<std::size_t>(edge_count, 1));
+    if (!(unit > 0.0))
+        throw std::invalid_argument("untangle: every edge has zero length");
+    const double inv_unit = 1.0 / unit;
+
+    const auto cell_inverted = [&](std::size_t Cell) {
+        for (auto c = cell_first[Cell]; c < cell_first[Cell + 1]; ++c)
+            if (!(utg_measure(x, corners[static_cast<std::size_t>(c)], inv_unit).mDet > 0.0))
+                return true;
+        return false;
+    };
+    const auto count_and_quality = [&](std::int64_t& rInverted, double& rMinQ) {
+        rInverted = 0;
+        rMinQ = std::numeric_limits<double>::infinity();
+        for (std::size_t cell = 0; cell < num_cells; ++cell) {
+            if (cell_inverted(cell))
+                ++rInverted;
+            for (auto c = cell_first[cell]; c < cell_first[cell + 1]; ++c)
+                rMinQ =
+                    std::min(rMinQ, utg_scaled_jacobian(x, corners[static_cast<std::size_t>(c)]));
+        }
+    };
+    UntangleResult result;
+    count_and_quality(result.mNumInvertedBefore, result.mMinQualityBefore);
+
+    // Each node's objective: the terms of every corner of its cells.
+    const auto node_objective = [&](std::size_t V, double Delta) {
+        double f = 0.0;
+        for (const std::int64_t cell : node_cells[V])
+            for (auto c = cell_first[static_cast<std::size_t>(cell)];
+                 c < cell_first[static_cast<std::size_t>(cell) + 1]; ++c)
+                f +=
+                    utg_term(utg_measure(x, corners[static_cast<std::size_t>(c)], inv_unit), Delta);
+        return f;
+    };
+    // The nodes of each cell, for the rings.
+    const auto cell_nodes = [&](std::size_t Cell, std::vector<std::int64_t>& rOut) {
+        rOut.clear();
+        for (auto c = cell_first[Cell]; c < cell_first[Cell + 1]; ++c)
+            for (const std::int64_t v : corners[static_cast<std::size_t>(c)].mNodes)
+                rOut.push_back(v);
+    };
+
+    double previous_total = std::numeric_limits<double>::infinity();
+    std::vector<std::int64_t> nodes;
+    for (std::int64_t sweep = 1; sweep <= rOptions.mMaxSweeps; ++sweep) {
+        // delta from the most negative corner (Escobar et al.'s rule).
+        double min_det = std::numeric_limits<double>::infinity();
+        for (const UtgCorner& c : corners)
+            min_det = std::min(min_det, utg_measure(x, c, inv_unit).mDet);
+        const double eps = 1e-3;
+        const double delta = min_det < eps ? std::sqrt(eps * (eps - min_det)) : 0.0;
+        // Which nodes move this sweep.
+        std::vector<char> active(n, 0);
+        if (rOptions.mSmooth) {
+            std::fill(active.begin(), active.end(), 1);
+        } else {
+            for (std::size_t cell = 0; cell < num_cells; ++cell)
+                if (cell_inverted(cell)) {
+                    cell_nodes(cell, nodes);
+                    for (const std::int64_t v : nodes)
+                        active[static_cast<std::size_t>(v)] = 1;
+                }
+            for (std::int64_t ring = 0; ring < rOptions.mRings; ++ring) {
+                std::vector<char> grown = active;
+                for (std::size_t v = 0; v < n; ++v)
+                    if (active[v])
+                        for (const std::int64_t cell : node_cells[v]) {
+                            cell_nodes(static_cast<std::size_t>(cell), nodes);
+                            for (const std::int64_t q : nodes)
+                                grown[static_cast<std::size_t>(q)] = 1;
+                        }
+                active.swap(grown);
+            }
+        }
+        bool any = false;
+        for (std::size_t v = 0; v < n; ++v)
+            any = any || (active[v] && !pinned[v]);
+        if (!any)
+            break;
+        result.mSweeps = sweep;
+        for (std::size_t v = 0; v < n; ++v) {
+            if (!active[v] || pinned[v])
+                continue;
+            const double h = 1e-6 * unit;
+            for (int step = 0; step < 4; ++step) {
+                const double f0 = node_objective(v, delta);
+                UtgVec g{0.0, 0.0, 0.0};
+                bool finite = std::isfinite(f0);
+                for (std::size_t k = 0; k < 3 && finite; ++k) {
+                    const double keep = x[v][k];
+                    x[v][k] = keep + h;
+                    const double fp = node_objective(v, delta);
+                    x[v][k] = keep - h;
+                    const double fm = node_objective(v, delta);
+                    x[v][k] = keep;
+                    g[k] = (fp - fm) / (2.0 * h);
+                    finite = std::isfinite(g[k]);
+                }
+                const double gn = std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
+                if (!finite || !(gn > 0.0))
+                    break;
+                // Backtracking from a step of half the length unit.
+                const UtgVec keep = x[v];
+                double alpha = 0.5 * unit / gn;
+                bool moved = false;
+                for (int tries = 0; tries < 30; ++tries, alpha *= 0.5) {
+                    for (std::size_t k = 0; k < 3; ++k)
+                        x[v][k] = keep[k] - alpha * g[k];
+                    if (node_objective(v, delta) < f0) {
+                        moved = true;
+                        break;
+                    }
+                }
+                if (!moved) {
+                    x[v] = keep;
+                    break;
+                }
+                ++result.mMoves;
+            }
+        }
+        std::int64_t inverted = 0;
+        for (std::size_t cell = 0; cell < num_cells && inverted == 0; ++cell)
+            if (cell_inverted(cell))
+                ++inverted;
+        if (inverted == 0) {
+            if (!rOptions.mSmooth)
+                break;
+            double total = 0.0;
+            for (const UtgCorner& c : corners)
+                total += utg_term(utg_measure(x, c, inv_unit), 0.0);
+            if (std::isfinite(previous_total) &&
+                previous_total - total <= 1e-6 * std::abs(previous_total))
+                break;
+            previous_total = total;
+        }
+    }
+    count_and_quality(result.mNumInvertedAfter, result.mMinQualityAfter);
+
+    NDArray pts(DType::Float64, {n, dim});
+    double* pp = pts.As<double>();
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t k = 0; k < dim; ++k)
+            pp[i * dim + k] = k < 3 ? x[i][k] : detail::read_double(rMesh.Points(), i * dim + k);
+    result.mMesh = detail::clone_mesh(rMesh);
+    result.mMesh.AssignPoints(std::move(pts));
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/untangle.cpp =====
 // ===== begin src/cpp/src/operations/voxelize.cpp =====
 #include <algorithm>
 #include <array>

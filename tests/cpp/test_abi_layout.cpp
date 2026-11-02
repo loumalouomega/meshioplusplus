@@ -141,6 +141,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/morph.hpp"
+#include "meshioplusplus/operations/untangle.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/tet_poly.hpp"
@@ -727,6 +728,7 @@ MIO_ABI_LAYOUT(meshioplusplus::RegistrationOptions, 160, 8);
 MIO_ABI_LAYOUT(meshioplusplus::RegistrationResult, 168, 8);
 MIO_ABI_LAYOUT(meshioplusplus::EigenmodeOptions, 24, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MorphOptions, 136, 8);
+MIO_ABI_LAYOUT(meshioplusplus::UntangleOptions, 56, 8);
 static_assert(sizeof(meshioplusplus::AdjacencyKind) == 4 &&
                   sizeof(meshioplusplus::GraphFormat) == 4,
               "meshio++ ABI: adjacency enum underlying width changed (Tier A, doc/abi.md)");

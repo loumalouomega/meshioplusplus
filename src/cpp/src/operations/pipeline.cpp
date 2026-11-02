@@ -83,6 +83,7 @@
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
+#include "meshioplusplus/operations/untangle.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
 #include "meshioplusplus/operations/crop.hpp"
@@ -448,6 +449,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Delaunay2D", {}},
         {"EstimateNormals", {"K", "Orientation", "Viewpoint", "RecordVariation"}},
         {"LaplacianEigenmodes", {"NumModes", "Tolerance", "MaxIterations"}},
+        {"Untangle", {"FixBoundary", "Rings", "Smooth", "MaxSweeps"}},
         {"Morph",
          {"Array", "FixBoundary", "ConstrainedArray", "Stiffening", "Steps", "AllowInverted",
           "Tolerance", "MaxIterations"}},
@@ -2295,6 +2297,28 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"Area", hr.mArea},
                         {"Volume", hr.mVolume}});
         return std::move(hr.mMesh);
+    }
+    if (op == "Untangle") {
+        UntangleOptions opts;
+        opts.mFixBoundary = pipe_flag(rStep, "FixBoundary", true);
+        opts.mSmooth = pipe_flag(rStep, "Smooth", false);
+        const double rings = pipe_number(rStep, "Rings", 2.0);
+        const double sweeps = pipe_number(rStep, "MaxSweeps", 100.0);
+        opts.mRings = static_cast<std::int64_t>(rings);
+        opts.mMaxSweeps = static_cast<std::int64_t>(sweeps);
+        if (static_cast<double>(opts.mRings) != rings ||
+            static_cast<double>(opts.mMaxSweeps) != sweeps)
+            throw std::invalid_argument(
+                pipe_err(rStep, "'Rings' and 'MaxSweeps' must be integers"));
+        UntangleResult ur = untangle(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumInvertedBefore", static_cast<double>(ur.mNumInvertedBefore)},
+                        {"NumInvertedAfter", static_cast<double>(ur.mNumInvertedAfter)},
+                        {"MinQualityAfter", ur.mMinQualityAfter},
+                        {"Sweeps", static_cast<double>(ur.mSweeps)}});
+        if (ur.mNumInvertedAfter > 0)
+            rReport.mWarnings.push_back("untangle: cells are still inverted after MaxSweeps");
+        return std::move(ur.mMesh);
     }
     if (op == "Morph") {
         MorphOptions opts;

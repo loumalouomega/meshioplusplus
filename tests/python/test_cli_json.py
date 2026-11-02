@@ -229,6 +229,12 @@ def files(tmp_path_factory):
     cube.point_data["d"] = lift
     paths["morphable"] = str(d / "morphable.vtu")
     mio.write(paths["morphable"], cube)
+    # the same cube with its centre node pushed through a face, for untangle
+    tangled = cube.points.copy()
+    centre = int(np.argmin(np.linalg.norm(tangled - 0.5, axis=1)))
+    tangled[centre] = [0.5, 0.5, 0.92]
+    paths["tangled"] = str(d / "tangled.vtu")
+    mio.write(paths["tangled"], mio.Mesh(tangled, cube.cells))
     mio.write(paths["moved"], moved)
     mio.write(paths["tagged"], tagged)
     mio.write(paths["parts"], parts)
@@ -616,6 +622,10 @@ WRITING = [
             "nearest",
             "--json",
         ],
+    ),
+    (
+        "untangle",
+        lambda f, out: ["untangle", f["tangled"], out + ".vtu", "--json"],
     ),
     (
         "morph",

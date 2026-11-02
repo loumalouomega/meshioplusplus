@@ -3910,6 +3910,29 @@ function sobolev_deform(m::Mesh, array::AbstractString, length_scale::Real;
 end
 
 """
+    untangle(m; fix_boundary=true, rings=2, smooth=false, max_sweeps=100)
+        -> (; mesh, num_inverted_before, num_inverted_after, min_quality_before,
+              min_quality_after, sweeps, moves)
+
+Untangle tetrahedra and hexahedra: move nodes until every corner has a positive
+signed volume (Escobar et al.'s functional). See `doc/untangle.md`.
+"""
+function untangle(m::Mesh; fix_boundary::Bool=true, rings::Integer=2, smooth::Bool=false,
+                  max_sweeps::Integer=100)
+    opts = _CUntangleOpts(Ptr{UInt8}(C_NULL), Int64(0), Int64(rings), Int64(max_sweeps),
+                          fix_boundary ? Int32(1) : Int32(0), smooth ? Int32(1) : Int32(0),
+                          ntuple(_ -> Int64(0), 4))
+    rep = Ref{_CUntangleReport}()
+    ptr = ccall(_sym(:mio_untangle), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CUntangleOpts}, Ref{_CUntangleReport}), _handle(m), Ref(opts), rep)
+    r = _check_ptr(ptr)
+    h = rep[]
+    (mesh=Mesh(r), num_inverted_before=Int(h.num_inverted_before),
+     num_inverted_after=Int(h.num_inverted_after), min_quality_before=h.min_quality_before,
+     min_quality_after=h.min_quality_after, sweeps=Int(h.sweeps), moves=Int(h.moves))
+end
+
+"""
     morph(m, array; fix_boundary=true, constrained_array="", stiffening=1.0, steps=1,
           allow_inverted=false, tolerance=1e-10, max_iterations=0)
         -> (; mesh, num_constrained, num_free, num_inverted, iterations, max_displacement, converged)

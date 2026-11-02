@@ -194,6 +194,7 @@ from .. import (
     transform,
     tube,
     undo_green,
+    untangle,
     uv_sphere,
     voxelize,
     write,
@@ -4054,6 +4055,31 @@ def tool_convert_coordinates(
     )
 
 
+def tool_untangle(
+    input_path,
+    output_path,
+    fix_boundary=True,
+    frozen=None,
+    rings=2,
+    smooth=False,
+    max_sweeps=100,
+    input_format=None,
+    output_format=None,
+):
+    """Move nodes until no tetrahedron or hexahedron corner is inverted."""
+    mesh = _load(input_path, input_format)
+    out, report = untangle(
+        mesh,
+        fix_boundary=bool(fix_boundary),
+        frozen=frozen or None,
+        rings=int(rings),
+        smooth=bool(smooth),
+        max_sweeps=int(max_sweeps),
+        return_report=True,
+    )
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
 def tool_morph(
     input_path,
     output_path,
@@ -7022,6 +7048,14 @@ TOOL_REGISTRY = OrderedDict(
         (
             "sobolev_deform",
             {"fn": tool_sobolev_deform, "wraps": ("sobolev_deform",), "gated": None},
+        ),
+        (
+            "untangle",
+            {
+                "fn": tool_untangle,
+                "wraps": ("untangle",),
+                "gated": None,
+            },
         ),
         (
             "morph",

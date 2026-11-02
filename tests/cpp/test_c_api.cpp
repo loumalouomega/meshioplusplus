@@ -7059,6 +7059,33 @@ TEST(CApi, ConvertCoordinates) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, Untangle) {
+    // One tetrahedron is valid; flipping its last node through the opposite
+    // face (with the other three pinned) is undone only if the node may move.
+    const std::vector<double> pts = {0, 0, 0, 1, 0, 0, 0, 1, 0, 0.2, 0.2, -0.5};
+    const std::vector<std::int64_t> tet = {0, 1, 2, 3};
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 4, 3, pts.data()), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "tetra", 1, 4, MIO_INT64, tet.data()), MIO_OK);
+    mio_untangle_opts opts;
+    mio_untangle_opts_init(&opts);
+    EXPECT_EQ(opts.rings, 2);
+    opts.fix_boundary = 0;  // every face of a lone tetrahedron is boundary
+    const std::vector<std::uint8_t> frozen = {1, 1, 1, 0};
+    opts.frozen = frozen.data();
+    opts.num_frozen = 4;
+    mio_untangle_report rep;
+    mio_mesh* out = mio_untangle(m, &opts, &rep);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(rep.num_inverted_before, 1);
+    EXPECT_EQ(rep.num_inverted_after, 0);
+    EXPECT_GT(rep.min_quality_after, 0.0);
+    mio_mesh_free(out);
+    opts.num_frozen = 3;
+    EXPECT_EQ(mio_untangle(m, &opts, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, Morph) {
     mio_mesh* m = capi_cube_surface();
     // A closed surface has no boundary: the mask constrains every point.

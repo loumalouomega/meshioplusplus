@@ -92,6 +92,7 @@ from . import (
     _transform,
     _tui,
     _undo_green,
+    _untangle,
     _view,
     _voxelize,
 )
@@ -293,6 +294,12 @@ def build_parser():
     )
     _coordinates.add_args(parser)
     parser.set_defaults(func=_coordinates.coordinates_cmd)
+
+    parser = subparsers.add_parser(
+        "untangle", help="Move nodes until no tetrahedron or hexahedron is inverted"
+    )
+    _untangle.add_args(parser)
+    parser.set_defaults(func=_untangle.untangle_cmd)
 
     parser = subparsers.add_parser(
         "morph", help="Move the boundary by a displacement, carried into the mesh"

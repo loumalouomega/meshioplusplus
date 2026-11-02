@@ -4083,6 +4083,31 @@ export interface MeshioPlusPlusModule {
   };
 
   /**
+   * Untangle tetrahedra and hexahedra: move nodes until every corner has a
+   * positive signed volume (Escobar et al.'s functional), keeping the
+   * connectivity. See doc/untangle.md.
+   * @throws {Error} on a mesh with no tetrahedron or hexahedron.
+   */
+  untangle(
+    mesh: Mesh,
+    options?: {
+      fixBoundary?: boolean;
+      frozen?: ArrayLike<number>;
+      rings?: number;
+      smooth?: boolean;
+      maxSweeps?: number;
+    },
+  ): {
+    mesh: Mesh;
+    numInvertedBefore: number;
+    numInvertedAfter: number;
+    minQualityBefore: number;
+    minQualityAfter: number;
+    sweeps: number;
+    moves: number;
+  };
+
+  /**
    * Boundary-driven morphing: the constrained points (the boundary unless
    * `fixBoundary` is false, and those `constrainedArray` / `constrained`
    * mark) move by the point-data displacement `array`; every other point by

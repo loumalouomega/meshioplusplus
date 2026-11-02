@@ -308,6 +308,7 @@ if TYPE_CHECKING:
     from ._transform import transform
     from ._tui import tui
     from ._undo_green import undo_green
+    from ._untangle import untangle
     from ._viewer import has_viewer, screenshot, view
     from ._voxelize import voxelize
 
@@ -356,6 +357,7 @@ _LAZY_ATTRS = {
     "delaunay_2d": "_hull",
     "estimate_normals": "_point_normals",
     "morph": "_morph",
+    "untangle": "_untangle",
     "register_rigid": "_registration",
     "convert_coordinates": "_coordinates",
     "write_graph": "_adjacency",
@@ -719,6 +721,7 @@ __all__ = [
     "delaunay_2d",
     "estimate_normals",
     "morph",
+    "untangle",
     "register_rigid",
     "convert_coordinates",
     "refine",

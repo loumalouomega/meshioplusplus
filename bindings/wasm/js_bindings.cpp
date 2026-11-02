@@ -137,6 +137,7 @@
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
+#include "meshioplusplus/operations/untangle.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
@@ -7098,6 +7099,43 @@ val sobolev_deform_js(const val& rMeshObj, const std::string& rArray, double len
 }
 
 /**
+ * @brief Untangle tetrahedra and hexahedra. @p rOptions is `{fixBoundary,
+ * frozen (a 0/1 array), rings, smooth, maxSweeps}`, every key optional. See
+ * operations/untangle.hpp.
+ */
+val untangle_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::UntangleOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("fixBoundary"))
+                options.mFixBoundary = rOptions["fixBoundary"].as<bool>();
+            if (rOptions.hasOwnProperty("frozen")) {
+                const std::vector<double> m =
+                    emscripten::vecFromJSArray<double>(rOptions["frozen"]);
+                for (const double v : m)
+                    options.mFrozen.push_back(v != 0.0 ? 1 : 0);
+            }
+            if (rOptions.hasOwnProperty("rings"))
+                options.mRings = static_cast<std::int64_t>(rOptions["rings"].as<double>());
+            if (rOptions.hasOwnProperty("smooth"))
+                options.mSmooth = rOptions["smooth"].as<bool>();
+            if (rOptions.hasOwnProperty("maxSweeps"))
+                options.mMaxSweeps = static_cast<std::int64_t>(rOptions["maxSweeps"].as<double>());
+        }
+        meshioplusplus::UntangleResult r = meshioplusplus::untangle(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numInvertedBefore", static_cast<double>(r.mNumInvertedBefore));
+        out.set("numInvertedAfter", static_cast<double>(r.mNumInvertedAfter));
+        out.set("minQualityBefore", r.mMinQualityBefore);
+        out.set("minQualityAfter", r.mMinQualityAfter);
+        out.set("sweeps", static_cast<double>(r.mSweeps));
+        out.set("moves", static_cast<double>(r.mMoves));
+        return out;
+    });
+}
+
+/**
  * @brief Boundary-driven morphing. @p rOptions is `{array (required),
  * fixBoundary, constrainedArray, constrained (a 0/1 array), stiffening, steps,
  * allowInverted, tolerance, maxIterations}`. See operations/morph.hpp.
@@ -9604,6 +9642,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("sobolevDeform", &sobolev_deform_js);
     emscripten::function("geodesicDistance", &geodesic_distance_js);
     emscripten::function("convertCoordinates", &convert_coordinates_js);
+    emscripten::function("untangle", &untangle_js);
     emscripten::function("morph", &morph_js);
     emscripten::function("laplacianEigenmodes", &laplacian_eigenmodes_js);
     emscripten::function("registerRigid", &register_rigid_js);

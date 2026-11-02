@@ -142,6 +142,7 @@
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
+#include "meshioplusplus/operations/untangle.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
@@ -465,6 +466,7 @@ void print_usage(std::ostream& os) {
           "  register                Rigid registration of one mesh onto another (ICP)\n"
           "  eigenmodes              Lowest eigenpairs of a surface's Laplace-Beltrami operator\n"
           "  morph                   Move the boundary by a displacement, carried into the mesh\n"
+          "  untangle                Move nodes until no tetrahedron or hexahedron is inverted\n"
           "  delaunay                Delaunay triangulation of the points in the x, y plane\n"
           "  geodesic                Surface distance from source points (heat method)\n"
           "  graph                   Write a mesh's node or cell graph as a METIS or Scotch file\n"
@@ -3864,6 +3866,51 @@ std::vector<double> cli_numbers(const std::string& rText, std::size_t Count, con
                                  std::to_string(Count) + " numbers, got " +
                                  std::to_string(out.size()));
     return out;
+}
+
+// untangle: move nodes until no tetrahedron or hexahedron corner is inverted.
+// See operations/untangle.hpp.
+int cmd_untangle(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"no-fix-boundary", {}, false},
+                                  {"rings", {}, true},
+                                  {"smooth", {}, false},
+                                  {"max-sweeps", {}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("untangle requires INFILE OUTFILE");
+    meshioplusplus::UntangleOptions o;
+    o.mFixBoundary = !has_flag(p, "no-fix-boundary");
+    o.mSmooth = has_flag(p, "smooth");
+    if (has_opt(p, "rings"))
+        o.mRings = std::stoll(opt_value(p, "rings"));
+    if (has_opt(p, "max-sweeps"))
+        o.mMaxSweeps = std::stoll(opt_value(p, "max-sweeps"));
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::UntangleResult r = meshioplusplus::untangle(mesh, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Field("num_inverted_before", r.mNumInvertedBefore);
+        json.Field("num_inverted_after", r.mNumInvertedAfter);
+        json.Field("min_quality_before", r.mMinQualityBefore);
+        json.Field("min_quality_after", r.mMinQualityAfter);
+        json.Field("sweeps", r.mSweeps);
+        json.Field("moves", r.mMoves);
+        json.EndObject();
+        return 0;
+    }
+    char buf[96];
+    meshioplusplus::detail::snprintf_c(buf, sizeof(buf), "%.4g -> %.4g", r.mMinQualityBefore,
+                                       r.mMinQualityAfter);
+    std::cout << "inverted cells " << r.mNumInvertedBefore << " -> " << r.mNumInvertedAfter
+              << "; least corner scaled Jacobian " << buf << " (" << r.mSweeps << " sweep(s))\n";
+    return 0;
 }
 
 // morph: move the boundary (or chosen points) by a displacement, harmonically
@@ -9039,6 +9086,8 @@ int cli_run_verb(const std::string& cmd, const std::vector<std::string>& rest) {
         return cmd_split_interface(rest);
     if (cmd == "hausdorff")
         return cmd_hausdorff(rest);
+    if (cmd == "untangle")
+        return cmd_untangle(rest);
     if (cmd == "morph")
         return cmd_morph(rest);
     if (cmd == "eigenmodes")

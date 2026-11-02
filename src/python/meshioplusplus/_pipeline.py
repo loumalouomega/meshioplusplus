@@ -398,6 +398,7 @@ _OP_TABLE = {
     "Delaunay2D": (),
     "EstimateNormals": ("K", "Orientation", "Viewpoint", "RecordVariation"),
     "LaplacianEigenmodes": ("NumModes", "Tolerance", "MaxIterations"),
+    "Untangle": ("FixBoundary", "Rings", "Smooth", "MaxSweeps"),
     "Morph": (
         "Array",
         "FixBoundary",
@@ -2476,6 +2477,29 @@ def _apply_step(mesh, step, steps, warnings):
         entry["NumFacets"] = float(report["num_facets"])
         entry["Area"] = float(report["area"])
         entry["Volume"] = float(report["volume"])
+    elif op == "Untangle":
+        from ._untangle import untangle
+
+        rings = _number(step, "Rings", 2.0)
+        sweeps = _number(step, "MaxSweeps", 100.0)
+        if float(int(rings)) != rings or float(int(sweeps)) != sweeps:
+            raise ValueError(
+                "meshio++: pipeline: Untangle: 'Rings' and 'MaxSweeps' must be integers"
+            )
+        mesh, report = untangle(
+            mesh,
+            fix_boundary=_flag(step, "FixBoundary", True),
+            rings=int(rings),
+            smooth=_flag(step, "Smooth", False),
+            max_sweeps=int(sweeps),
+            return_report=True,
+        )
+        entry["NumInvertedBefore"] = float(report["num_inverted_before"])
+        entry["NumInvertedAfter"] = float(report["num_inverted_after"])
+        entry["MinQualityAfter"] = float(report["min_quality_after"])
+        entry["Sweeps"] = float(report["sweeps"])
+        if report["num_inverted_after"]:
+            warnings.append("untangle: cells are still inverted after MaxSweeps")
     elif op == "Morph":
         from ._morph import morph
 

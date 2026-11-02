@@ -716,6 +716,28 @@ mio_match_periodic_nodes <- function(mesh, slave, master, matrix = NULL, transla
   )
 }
 
+#' Untangle inverted tetrahedra and hexahedra
+#'
+#' Move nodes until every tetrahedron and hexahedron corner has a positive
+#' signed volume (Escobar et al.'s untangling functional), keeping the
+#' connectivity. See `doc/untangle.md`.
+#'
+#' @param mesh A `mio_mesh` with tetrahedra or hexahedra.
+#' @param fix_boundary Keep the boundary nodes fixed.
+#' @param rings Edge rings around the inverted cells whose nodes may move.
+#' @param smooth Untangle and smooth the whole mesh.
+#' @param max_sweeps Sweeps at most.
+#' @return A list of `mesh`, `num_inverted_before`, `num_inverted_after`,
+#'   `min_quality_before`, `min_quality_after` and `sweeps`.
+#' @export
+mio_untangle <- function(mesh, fix_boundary = TRUE, rings = 2, smooth = FALSE,
+                         max_sweeps = 100) {
+  .Call(
+    R_mio_untangle, mesh, isTRUE(fix_boundary), as.numeric(rings), isTRUE(smooth),
+    as.numeric(max_sweeps)
+  )
+}
+
 #' Boundary-driven mesh morphing
 #'
 #' The constrained points (the boundary unless `fix_boundary = FALSE`, and the

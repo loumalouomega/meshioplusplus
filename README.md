@@ -187,6 +187,7 @@ meshioplusplus graph      in.vtu part.graph --kind cell     # dual graph as a ME
 meshioplusplus geodesic   skin.stl dist.vtu --source 0     # surface distance from a point (heat method)
 meshioplusplus eigenmodes skin.stl modes.vtu -k 16         # lowest Laplace-Beltrami eigenpairs
 meshioplusplus morph      duct.vtu moved.vtu --array d     # move the boundary, carry it into the mesh
+meshioplusplus untangle   deformed.vtu fixed.vtu          # repair inverted tetrahedra and hexahedra
 meshioplusplus coordinates rotor.vtu cyl.vtu --arrays U     # vectors/tensors in cylindrical components
 meshioplusplus hull       scan.xyz hull.stl                 # convex hull of a point cloud (--dimension 2: outline)
 meshioplusplus point-normals scan.ply scan.pcd             # normals of a point cloud (plane fits, oriented)
@@ -652,6 +653,16 @@ Pieces keep the input's block structure 1:1, so they recombine into the input: e
 ```python
 out = meshioplusplus.geodesic_distance(skin, "inlet")   # the points of a region
 d = out.point_data["geodesic:distance"]
+```
+
+#### Untangling
+
+**`meshioplusplus.untangle(mesh)`** repairs inverted tetrahedra and hexahedra by moving nodes until every corner has a positive signed volume (Escobar et al.'s untangling functional), keeping the connectivity and, by default, the boundary, and moving only the nodes near the tangles. See [untangling](doc/untangle.md).
+
+<!--pytest-codeblocks:skip-->
+
+```python
+fixed = meshioplusplus.untangle(meshioplusplus.read("deformed.vtu"))
 ```
 
 #### Mesh morphing

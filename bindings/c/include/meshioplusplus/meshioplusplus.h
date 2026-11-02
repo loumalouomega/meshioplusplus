@@ -3932,6 +3932,44 @@ MIO_API mio_mesh* mio_convert_coordinates(const mio_mesh* mesh, const mio_coordi
                                           int64_t* num_arrays, int64_t* num_singular);
 
 /**
+ * Options for mio_untangle. Initialize through mio_untangle_opts_init():
+ * boundary fixed, two rings, no smoothing, 100 sweeps.
+ */
+typedef struct mio_untangle_opts {
+    const uint8_t* frozen; /**< a mask, one entry per point (nonzero pins), or NULL */
+    int64_t num_frozen;    /**< entries of `frozen`: 0 or the point count */
+    int64_t rings;         /**< edge rings around inverted cells that may move */
+    int64_t max_sweeps;    /**< sweeps at most, at least 1 */
+    int32_t fix_boundary;  /**< nonzero keeps the boundary nodes fixed */
+    int32_t smooth;        /**< nonzero moves every free node until it settles */
+    int64_t reserved[4];   /**< must be zero; room for additive growth */
+} mio_untangle_opts;
+
+/** What mio_untangle did. */
+typedef struct mio_untangle_report {
+    int64_t num_inverted_before; /**< cells with a non-positive corner, before */
+    int64_t num_inverted_after;  /**< and after */
+    double min_quality_before;   /**< least corner scaled Jacobian, before */
+    double min_quality_after;    /**< and after */
+    int64_t sweeps;              /**< sweeps run */
+    int64_t moves;               /**< node moves kept */
+    int64_t reserved[4];         /**< zero; room for additive growth */
+} mio_untangle_report;
+
+/** Initialize untangle options (see mio_untangle_opts). */
+MIO_API void mio_untangle_opts_init(mio_untangle_opts* opts);
+
+/**
+ * Untangle a mesh's tetrahedra and hexahedra: move nodes until every corner
+ * has a positive signed volume (Escobar et al.'s functional). See
+ * doc/untangle.md. `opts` NULL uses the defaults; `report` may be NULL.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_untangle(const mio_mesh* mesh, const mio_untangle_opts* opts,
+                               mio_untangle_report* report);
+
+/**
  * Options for mio_morph. Initialize through mio_morph_opts_init(): boundary
  * constrained, stiffening 1, one step, inversions refused.
  */

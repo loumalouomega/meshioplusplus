@@ -2157,6 +2157,18 @@ def test_convert_coordinates_tool(tmp_path):
     )
 
 
+def test_untangle_tool(tmp_path):
+    tets = meshioplusplus.convert_cells(
+        meshioplusplus.box(dims=(4, 4, 4)), mode="simplexify"
+    )
+    p = tets.points.copy()
+    p[(1 * 5 + 1) * 5 + 1] = [0.62, 0.58, 0.6]
+    src = str(tmp_path / "t.vtu")
+    meshioplusplus.write(src, meshioplusplus.Mesh(p, tets.cells))
+    out = _dump(_tools.tool_untangle(src, str(tmp_path / "u.vtu")))
+    assert out["num_inverted_before"] > 0 and out["num_inverted_after"] == 0
+
+
 def test_morph_tool(tmp_path):
     box = meshioplusplus.convert_cells(
         meshioplusplus.box(dims=(3, 3, 3)), mode="simplexify"

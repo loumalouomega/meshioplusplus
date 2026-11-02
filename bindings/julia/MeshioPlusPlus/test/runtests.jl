@@ -2039,6 +2039,7 @@ end
     close(gd.mesh)
     @test_throws MeshioError geodesic_distance(cube, Int[])
     @test_throws MeshioError morph(cube, "missing")
+    @test_throws MeshioError untangle(cube)  # a surface: no volume cell
     ee = laplacian_eigenmodes(cube; num_modes=4)
     @test ee.converged && ee.num_degenerate == 0
     close(ee.mesh)

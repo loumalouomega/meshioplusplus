@@ -1681,6 +1681,7 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
   expect_lt(gd$max_distance, 2.6)
   expect_error(mio_geodesic_distance(m), "source")
   expect_error(mio_morph(m, "missing"))
+  expect_error(mio_untangle(m))
   ee <- mio_laplacian_eigenmodes(m, num_modes = 4)
   on.exit(mio_release(ee$mesh), add = TRUE)
   expect_true(ee$converged)

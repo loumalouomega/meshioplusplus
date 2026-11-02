@@ -114,7 +114,7 @@ The first word completes to a verb (or an alias such as `c`), the next to the su
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `eigenmodes`, `morph`, `coordinates`, `hull`, `delaunay`, `point-normals`, `register`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `eigenmodes`, `morph`, `untangle`, `coordinates`, `hull`, `delaunay`, `point-normals`, `register`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -147,6 +147,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `geodesic` | `output`, `num_sources`, `num_unreached`, `num_degenerate`, `max_distance`, `time_step`, `heat_iterations`, `poisson_iterations`, `converged` |
 | `eigenmodes` | `output`, `eigenvalues`, `iterations`, `max_residual`, `converged`, `num_degenerate` |
 | `morph` | `output`, `num_constrained`, `num_free`, `num_inverted`, `iterations`, `max_displacement`, `converged` |
+| `untangle` | `output`, `num_inverted_before`, `num_inverted_after`, `min_quality_before`, `min_quality_after`, `sweeps`, `moves` |
 | `coordinates` | `output`, `system`, `num_arrays`, `num_singular` |
 | `hull` | `output`, `dimension`, `num_vertices`, `num_facets`, `area`, `volume`, `perimeter` |
 | `point-normals` | `output`, `num_degenerate`, `num_components` |
@@ -1868,6 +1869,32 @@ The points do not move. Both CLIs print the same JSON.
 ```sh
 meshioplusplus coordinates rotor.vtu rotor_cyl.vtu --arrays U,stress
 meshioplusplus coordinates vessel.vtu out.vtu --system spherical --origin 0,0,1.5 --arrays sigma --json
+```
+
+---
+
+## meshioplusplus untangle
+
+Move nodes until no tetrahedron or hexahedron corner is inverted, keeping the connectivity (see [untangling](/untangle)).
+
+```
+meshioplusplus untangle [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--no-fix-boundary` | Let the boundary nodes move |
+| `--rings N` | Edge rings around the inverted cells whose nodes may move (default `2`) |
+| `--smooth` | Untangle and smooth the whole mesh |
+| `--max-sweeps N` | Sweeps at most (default `100`) |
+| `--json` | Emit the report: `output`, `num_inverted_before`, `num_inverted_after`, `min_quality_before`, `min_quality_after`, `sweeps`, `moves` |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Both CLIs print the same JSON.
+
+```sh
+meshioplusplus untangle deformed.vtu fixed.vtu
+meshioplusplus untangle deformed.vtu fixed.vtu --no-fix-boundary --rings 3 --json
 ```
 
 ---

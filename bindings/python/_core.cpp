@@ -166,6 +166,7 @@
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
+#include "meshioplusplus/operations/untangle.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/decimate_volume.hpp"
 #include "meshioplusplus/operations/data_calc.hpp"
@@ -6212,6 +6213,37 @@ PYBIND11_MODULE(_core, m) {
         py::arg("reference") = std::array<double, 3>{1.0, 0.0, 0.0},
         py::arg("arrays") = std::vector<std::string>{}, py::arg("inverse") = false,
         py::arg("record_coordinates") = true);
+
+    // Untangling inverted tetrahedra and hexahedra. {mesh, counters}. See
+    // operations/untangle.hpp.
+    m.def(
+        "untangle",
+        [](py::object pymesh, bool fix_boundary, std::vector<std::uint8_t> frozen,
+           std::int64_t rings, bool smooth, std::int64_t max_sweeps) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::UntangleOptions options;
+            options.mFixBoundary = fix_boundary;
+            options.mFrozen = std::move(frozen);
+            options.mRings = rings;
+            options.mSmooth = smooth;
+            options.mMaxSweeps = max_sweeps;
+            meshioplusplus::UntangleResult r =
+                core_nogil([&] { return meshioplusplus::untangle(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_inverted_before"] = r.mNumInvertedBefore;
+            out["num_inverted_after"] = r.mNumInvertedAfter;
+            out["min_quality_before"] = r.mMinQualityBefore;
+            out["min_quality_after"] = r.mMinQualityAfter;
+            out["sweeps"] = r.mSweeps;
+            out["moves"] = r.mMoves;
+            return out;
+        },
+        py::arg("mesh"), py::arg("fix_boundary") = true,
+        py::arg("frozen") = std::vector<std::uint8_t>{}, py::arg("rings") = 2,
+        py::arg("smooth") = false, py::arg("max_sweeps") = 100);
 
     // Boundary-driven morphing by harmonic extension. {mesh, counters}. See
     // operations/morph.hpp.

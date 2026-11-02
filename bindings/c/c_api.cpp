@@ -80,6 +80,7 @@
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
+#include "meshioplusplus/operations/untangle.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
@@ -7186,6 +7187,53 @@ mio_mesh* mio_sobolev_deform(const mio_mesh* mesh, const mio_sobolev_opts* opts,
             report->residual = r.mResidual;
             report->max_displacement = r.mMaxDisplacement;
             report->converged = r.mConverged ? 1 : 0;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+// --- untangling (roadmap 7.4.2) -------------------------------------------------
+
+static_assert(sizeof(mio_untangle_opts) == 72, "mio_untangle_opts grew outside its reserved tail");
+static_assert(sizeof(mio_untangle_report) == 80,
+              "mio_untangle_report grew outside its reserved tail");
+
+void mio_untangle_opts_init(mio_untangle_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_untangle_opts{};
+    opts->rings = 2;
+    opts->max_sweeps = 100;
+    opts->fix_boundary = 1;
+}
+
+mio_mesh* mio_untangle(const mio_mesh* mesh, const mio_untangle_opts* opts,
+                       mio_untangle_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        mio_untangle_opts o;
+        mio_untangle_opts_init(&o);
+        if (opts)
+            o = *opts;
+        if (o.num_frozen < 0 || (o.num_frozen > 0 && !o.frozen))
+            throw std::invalid_argument(
+                "meshio++: untangle: frozen is NULL or num_frozen negative");
+        meshioplusplus::UntangleOptions options;
+        options.mFrozen.assign(o.frozen, o.frozen + static_cast<std::size_t>(o.num_frozen));
+        options.mRings = o.rings;
+        options.mMaxSweeps = o.max_sweeps;
+        options.mFixBoundary = o.fix_boundary != 0;
+        options.mSmooth = o.smooth != 0;
+        meshioplusplus::UntangleResult r = meshioplusplus::untangle(mesh->mMesh, options);
+        if (report) {
+            *report = mio_untangle_report{};
+            report->num_inverted_before = r.mNumInvertedBefore;
+            report->num_inverted_after = r.mNumInvertedAfter;
+            report->min_quality_before = r.mMinQualityBefore;
+            report->min_quality_after = r.mMinQualityAfter;
+            report->sweeps = r.mSweeps;
+            report->moves = r.mMoves;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });

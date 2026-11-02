@@ -1225,6 +1225,28 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
+    !> Interop mirror of C `mio_untangle_opts`. Field order/types are ABI.
+    type, bind(c) :: mio_untangle_opts_t
+        type(c_ptr) :: frozen = c_null_ptr
+        integer(c_int64_t) :: num_frozen = 0
+        integer(c_int64_t) :: rings = 2
+        integer(c_int64_t) :: max_sweeps = 100
+        integer(c_int32_t) :: fix_boundary = 1
+        integer(c_int32_t) :: smooth = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_untangle_report`. Field order/types are ABI.
+    type, bind(c) :: mio_untangle_report_t
+        integer(c_int64_t) :: num_inverted_before = 0
+        integer(c_int64_t) :: num_inverted_after = 0
+        real(c_double) :: min_quality_before = 0.0_c_double
+        real(c_double) :: min_quality_after = 0.0_c_double
+        integer(c_int64_t) :: sweeps = 0
+        integer(c_int64_t) :: moves = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
     !> Interop mirror of C `mio_morph_opts`. Field order/types are ABI.
     type, bind(c) :: mio_morph_opts_t
         type(c_ptr) :: array = c_null_ptr
@@ -2126,6 +2148,7 @@ module meshioplusplus
         procedure :: register_rigid => mesh_register_rigid
         procedure :: laplacian_eigenmodes => mesh_laplacian_eigenmodes
         procedure :: morph => mesh_morph
+        procedure :: untangle => mesh_untangle
         procedure :: convex_hull => mesh_convex_hull
         procedure :: delaunay_2d => mesh_delaunay_2d
         procedure :: remesh_volume => mesh_remesh_volume
@@ -3679,6 +3702,14 @@ module meshioplusplus
             type(c_ptr), value :: h, target
             type(mio_shrinkwrap_opts_t), intent(in) :: opts
             type(mio_shrinkwrap_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_untangle(h, opts, report) bind(c, name="mio_untangle") result(r)
+            import :: c_ptr, mio_untangle_opts_t, mio_untangle_report_t
+            type(c_ptr), value :: h
+            type(mio_untangle_opts_t), intent(in) :: opts
+            type(mio_untangle_report_t), intent(out) :: report
             type(c_ptr) :: r
         end function
 
@@ -9543,6 +9574,39 @@ contains
             inconsistent_pairs_after = int(report%quality_after%inconsistent_pairs, int64)
         if (present(boundary_edges_after)) &
             boundary_edges_after = int(report%quality_after%boundary_edges, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Untangle tetrahedra and hexahedra: move nodes until every corner has a
+    !> positive signed volume. See doc/untangle.md.
+    function mesh_untangle(self, fix_boundary, rings, smooth, max_sweeps, &
+                           num_inverted_after, min_quality_after, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        logical, intent(in), optional :: fix_boundary, smooth
+        integer, intent(in), optional :: rings, max_sweeps
+        integer(int64), intent(out), optional :: num_inverted_after
+        real(real64), intent(out), optional :: min_quality_after
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_untangle_opts_t) :: opts
+        type(mio_untangle_report_t) :: rep
+
+        if (present(fix_boundary)) then
+            if (.not. fix_boundary) opts%fix_boundary = 0
+        end if
+        if (present(smooth)) then
+            if (smooth) opts%smooth = 1
+        end if
+        if (present(rings)) opts%rings = int(rings, c_int64_t)
+        if (present(max_sweeps)) opts%max_sweeps = int(max_sweeps, c_int64_t)
+        out%handle = c_mio_untangle(self%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('untangle', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_inverted_after)) num_inverted_after = int(rep%num_inverted_after, int64)
+        if (present(min_quality_after)) min_quality_after = real(rep%min_quality_after, real64)
         call clear_status(stat, errmsg)
     end function
 

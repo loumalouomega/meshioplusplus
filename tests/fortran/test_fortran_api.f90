@@ -3018,6 +3018,9 @@ contains
         call dist%free()
         dist = square%geodesic_distance(stat=ierr)
         call check(ierr /= 0, 'geodesic_distance needs a source')
+        ! Untangle of the square: it has no tetrahedron or hexahedron.
+        dist = square%untangle(stat=ierr)
+        call check(ierr /= 0, 'untangle refuses a mesh with no volume cell')
         ! Morph of the square: a missing displacement array is refused.
         dist = square%morph('missing', stat=ierr)
         call check(ierr /= 0, 'morph refuses a missing displacement array')
