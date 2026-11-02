@@ -988,7 +988,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
             continue;
 
         // Write.
-        StepStream st(rPath, "meshio++ B-rep");
+        StepStream st(rPath, "meshio++ B-rep", rOptions.mLengthUnit);
         std::map<std::int64_t, std::int64_t> vertex_id;
         auto vertex = [&](std::int64_t V) {
             auto it = vertex_id.find(V);

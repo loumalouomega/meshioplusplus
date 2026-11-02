@@ -86,6 +86,9 @@ Since v9.9.0, `point_data` and `cell_data` round-trip through `FlowSolution_t` n
 | `cell_data` | `FlowSolutionCells` (`FlowSolution_t`), `GridLocation` = `CellCenter` |
 | `field_data` | `FieldData` (`UserDefinedData_t`), one `DataArray_t` per array in its own shape (`I4`/`I8`/`R4`/`R8`) |
 | point and cell regions | `ZoneSubRegion_t`, see [Regions](#regions) |
+| `field_data["meshio:length_unit"]` | the base's `DimensionalUnits` (`DimensionalUnits_t`, `C1` data of 5 × 32 characters: `Null`, the length unit, `Null`, `Null`, `Null`), see [length units](../formats.md#length-units) |
+
+A length unit of 1, 0.01, 0.001, 0.3048 or 0.0254 metres is written as `Meter`, `Centimeter`, `Millimeter`, `Foot` or `Inch` and not again in `FieldData`; any other stays in `FieldData` with a warning. On read the base's `LengthUnits` is taken, a zone's own `DimensionalUnits` overrides it, and `Null` or `UserDefined` sets nothing.
 
 Each array becomes one `DataArray_t` child, `R8`, with one value per vertex or per zone cell. On read, `GridLocation` is honoured (absent ⇒ `Vertex`, the SIDS default) and an array whose length disagrees with `NVertex`/`NCell` is a `ReadError` naming it.
 
@@ -170,7 +173,7 @@ meshio++'s own Windows CI leg builds every native path off and exercises the Pyt
 - Multiple `Unstructured` zones under one base are concatenated (points offset, blocks stay per-zone-per-section); a `Structured` zone raises `ReadError` rather than being silently dropped (the exact failure mode this rewrite otherwise removes); more than one `CGNSBase_t` node reads the first and `log::warn`s about the rest.
 - `CGNSLibraryVersion` is written as `3.1` — a judgement call, not a spec requirement: cgnslib rejects a file whose declared version exceeds the reading library's, so writing a low, self-consistent number (3.1 is when HDF5 became CGNS's default storage and `" hdf5version"` replaced the older `" version"` root dataset) is the compatible direction.
 - `" hdf5version"` records the **linked** HDF5 library's own version string (`H5get_libversion`) — this is why a byte-for-byte comparison between the C++ and h5py writers' output must exclude that one dataset (they routinely link different HDF5 builds); every other node is asserted byte-identical.
-- This remains a subset of full CGNS/SIDS: `FlowSolution_t` covers `Vertex` and `CellCenter` only (no `IFaceCenter`/`EdgeCenter`, no `Rind` planes, no `DataClass_t`/`DimensionalUnits_t` metadata), and there is no `BC_t` (boundary conditions), no structured zones, no `ZoneGridConnectivity_t`, no `Family_t`. What SIDS-compliance buys is that what this format *does* write is genuinely readable by other tools, not that the format is feature-complete.
+- This remains a subset of full CGNS/SIDS: `FlowSolution_t` covers `Vertex` and `CellCenter` only (no `IFaceCenter`/`EdgeCenter`, no `Rind` planes, no `DataClass_t`; of `DimensionalUnits_t` only the length unit is kept), and there is no `BC_t` (boundary conditions), no structured zones, no `ZoneGridConnectivity_t`, no `Family_t`. What SIDS-compliance buys is that what this format *does* write is genuinely readable by other tools, not that the format is feature-complete.
 
 ## Notes
 

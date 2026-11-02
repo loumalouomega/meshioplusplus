@@ -242,8 +242,11 @@ A mesh whose file states its length unit carries it as `field_data["meshio:lengt
 | [UNV](./formats/unv.md) | dataset 164's length factor (both engines) | dataset 164: the file's own system when it agrees, else code 1, 5 or 9 (both engines) |
 | [Radioss](./formats/radioss.md) | `/BEGIN`'s work length unit (both engines) | `/BEGIN`'s input and work length unit (both engines) |
 | [USD](./formats/usd.md) | an authored `metersPerUnit` | `metersPerUnit` (when the call does not give one) |
+| [CGNS](./formats/cgns.md) | `DimensionalUnits_t`'s `LengthUnits` of the base, or of the zone, which overrides it (both engines, and the cgnslib reader) | the base's `DimensionalUnits_t` when the unit is `Meter`, `Centimeter`, `Millimeter`, `Foot` or `Inch`; any other unit stays field data, with a warning (both engines) |
+| [MED](./formats/med.md) | `UNI` when every axis names the same `m`, `cm`, `mm`, `um`/`µm`, `km`, `in` or `ft` (both engines) | `UNI`, that name per axis, when `unit_coords` is empty (both engines) |
+| [STEP](./formats/step.md) | not yet: OpenCASCADE returns millimetres, and the read does not say so | the length unit: an `SI_UNIT` of the metre (no prefix, `CENTI`, `MILLI`, `MICRO`, `KILO`), or a `CONVERSION_BASED_UNIT` on the millimetre (`INCH`, `FOOT`, else `LENGTH UNIT`); millimetres without one (both engines) |
 
-[`transform`](./transform.md)'s `scale_units` (the pipeline's `ScaleUnits`, both CLIs' `--scale-units`) divides the stated unit by the factor: millimetres scaled by `0.001` state metres. Every other operation carries the key as field data, and every format that writes field data keeps it. The key is `meshioplusplus._units.LENGTH_UNIT_KEY` in Python and `detail::kLengthUnitName` (`detail/length_unit.hpp`) in C++. CGNS's `DimensionalUnits`, MED's coordinate units and the STEP writer's length unit are not connected yet ([roadmap 7.1.4](./roadmap.md#new-capabilities)).
+[`transform`](./transform.md)'s `scale_units` (the pipeline's `ScaleUnits`, both CLIs' `--scale-units`) divides the stated unit by the factor: millimetres scaled by `0.001` state metres. Every other operation carries the key as field data, and every format that writes field data keeps it. The key is `meshioplusplus._units.LENGTH_UNIT_KEY` in Python and `detail::kLengthUnitName` (`detail/length_unit.hpp`) in C++.
 
 ---
 

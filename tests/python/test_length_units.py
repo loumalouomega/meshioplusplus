@@ -1,6 +1,7 @@
 """Length units as metadata (roadmap 7.1.4): ``field_data["meshio:length_unit"]``
-(metres per unit) filled by the UNV, Radioss and USD readers, honoured by their
-writers, and updated by ``transform``'s ``scale_units`` -- in both engines."""
+(metres per unit) filled by the UNV, Radioss, USD, CGNS and MED readers,
+honoured by their writers and the STEP writer, and updated by ``transform``'s
+``scale_units`` -- in both engines."""
 
 import importlib.util
 import json
@@ -12,7 +13,10 @@ import pytest
 
 import meshioplusplus as mp
 from meshioplusplus import _core, _units
+from meshioplusplus.cgns import _cgns
+from meshioplusplus.med import _med
 from meshioplusplus.radioss import _radioss
+from meshioplusplus.step import _step
 from meshioplusplus.unv import _unv
 
 from . import helpers
@@ -199,3 +203,173 @@ def test_a_millimetre_unv_converts_to_usd_in_millimetres(tmp_path):
     assert UsdGeom.GetStageMetersPerUnit(Usd.Stage.Open(str(explicit))) == 1.0
     mp.write(str(plain), _tets())
     assert UsdGeom.GetStageMetersPerUnit(Usd.Stage.Open(str(plain))) == 1.0
+
+
+# --------------------------------------------------------------------------- #
+# CGNS: a DimensionalUnits_t node under the base                             #
+# --------------------------------------------------------------------------- #
+HAS_HDF5 = hasattr(_core, "cgns_write")
+needs_hdf5 = pytest.mark.skipif(not HAS_HDF5, reason="needs the HDF5-enabled core")
+
+
+def _cgns_units(path):
+    """The five SIDS unit names of the base, or None without the node."""
+    import h5py
+
+    with h5py.File(path, "r") as f:
+        base = f["Base"]
+        if "DimensionalUnits" not in base:
+            return None
+        node = base["DimensionalUnits"]
+        assert bytes(node.attrs["label"]).rstrip(b"\0") == b"DimensionalUnits_t"
+        assert bytes(node.attrs["type"]).rstrip(b"\0") == b"C1"
+        data = node[" data"][()]
+        assert data.shape == (5, 32)
+        return [bytes(row).decode().rstrip() for row in data]
+
+
+@needs_hdf5
+@pytest.mark.parametrize(
+    "unit,name",
+    [(1.0, "Meter"), (0.01, "Centimeter"), (1e-3, "Millimeter"), (0.0254, "Inch")],
+)
+def test_cgns_writes_and_reads_dimensional_units_in_both_engines(tmp_path, unit, name):
+    mesh = _tets(unit)
+    core, py = tmp_path / "core.cgns", tmp_path / "py.cgns"
+    _core.cgns_write(str(core), mesh, -1)
+    _cgns.write(py, mesh, compression=None)
+    for path in (core, py):
+        assert _cgns_units(path) == ["Null", name, "Null", "Null", "Null"]
+        for back in (_core.cgns_read(str(path)), _cgns.read(path)):
+            assert _unit(back) == pytest.approx(unit, rel=1e-15)
+        # The unit lives in the node, not again in the zone's FieldData.
+        import h5py
+
+        with h5py.File(path, "r") as f:
+            assert KEY not in f["Base/Zone1"].get("FieldData", {})
+
+
+@needs_hdf5
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_cgns_unnamed_unit_stays_field_data(tmp_path, engine):
+    path = tmp_path / "x.cgns"
+    if engine == "core":
+        _core.cgns_write(str(path), _tets(0.5), -1)
+    else:
+        with pytest.warns(UserWarning, match="DimensionalUnits name"):
+            _cgns.write(path, _tets(0.5), compression=None)
+    assert _cgns_units(path) is None
+    assert _unit(mp.read(str(path))) == pytest.approx(0.5)
+
+
+@needs_hdf5
+def test_cgns_zone_units_override_the_base(tmp_path):
+    import h5py
+
+    path = tmp_path / "zone.cgns"
+    _cgns.write(path, _tets(1.0), compression=None)
+    with h5py.File(path, "r+") as f:
+        f.copy(f["Base/DimensionalUnits"], f["Base/Zone1"], "DimensionalUnits")
+        row = np.frombuffer(b"Millimeter".ljust(32), dtype="i1")
+        f["Base/Zone1/DimensionalUnits/ data"][1] = row
+    for back in (_core.cgns_read(str(path)), _cgns.read(path)):
+        assert _unit(back) == pytest.approx(1e-3)
+
+
+# --------------------------------------------------------------------------- #
+# MED: the coordinate units (UNI)                                             #
+# --------------------------------------------------------------------------- #
+def _med_write(engine, path, mesh):
+    if engine == "core":
+        _core.med_write(
+            str(path),
+            mesh,
+            {},
+            {},
+            [],
+            "mesh",
+            "",
+            "",
+            getattr(mesh, "unit_coords", ""),
+            {},
+            {},
+            "4.1.0",
+        )
+    else:
+        _med.write(str(path), mesh)
+
+
+@needs_hdf5
+@pytest.mark.parametrize("engine", ["core", "python"])
+@pytest.mark.parametrize(
+    "unit,name", [(1.0, "m"), (1e-3, "mm"), (1e-6, "um"), (0.3048, "ft")]
+)
+def test_med_writes_and_reads_its_coordinate_units(tmp_path, engine, unit, name):
+    path = tmp_path / "x.med"
+    _med_write(engine, path, _tets(unit))
+    for back in (_core.med_read(str(path)), _med.read(str(path))):
+        assert back.unit_coords.split() == [name] * 3
+        assert _unit(back) == pytest.approx(unit, rel=1e-15)
+
+
+@needs_hdf5
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_med_explicit_unit_coords_win(tmp_path, engine):
+    mesh = _tets(1e-3)
+    mesh.unit_coords = "cm".ljust(16) * 3
+    path = tmp_path / "x.med"
+    _med_write(engine, path, mesh)
+    back = mp.read(str(path))
+    assert _unit(back) == pytest.approx(0.01)
+    # Other tools spell micrometres with the Latin-1 micro sign.
+    mesh.unit_coords = "\u00b5m".ljust(16) * 3
+    _med_write(engine, path, mesh)
+    back = _core.med_read(str(path)) if engine == "core" else _med.read(str(path))
+    assert _unit(back) == pytest.approx(1e-6)
+    # Mixed or unknown axis units set no length unit.
+    mesh = _tets()
+    mesh.unit_coords = "m".ljust(16) + "mm".ljust(16) + "m".ljust(16)
+    mp.write(str(path), mesh)
+    assert _unit(mp.read(str(path))) is None
+
+
+# --------------------------------------------------------------------------- #
+# STEP: the writer declares the unit                                          #
+# --------------------------------------------------------------------------- #
+def _tet_surface(unit=None):
+    tris = np.array([[0, 2, 1], [0, 1, 3], [1, 2, 3], [0, 3, 2]])
+    pts = np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]])
+    mesh = mp.Mesh(pts, [("triangle", tris)])
+    if unit is not None:
+        _units.set_length_unit(mesh, unit)
+    return mesh
+
+
+@pytest.mark.parametrize(
+    "unit,entity",
+    [
+        (None, "SI_UNIT(.MILLI.,.METRE.)"),
+        (1.0, "SI_UNIT($,.METRE.)"),
+        (0.01, "SI_UNIT(.CENTI.,.METRE.)"),
+        (1e-6, "SI_UNIT(.MICRO.,.METRE.)"),
+        (0.0254, "CONVERSION_BASED_UNIT('INCH',"),
+        (0.3048, "CONVERSION_BASED_UNIT('FOOT',"),
+        (0.5, "CONVERSION_BASED_UNIT('LENGTH UNIT',"),
+    ],
+)
+def test_step_declares_the_length_unit_in_both_engines(tmp_path, unit, entity):
+    mesh = _tet_surface(unit)
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    core, py = tmp_path / "a" / "x.step", tmp_path / "b" / "x.step"
+    _step.write(str(py), mesh)
+    text = py.read_text()
+    assert entity in text
+    if unit == 0.0254:
+        assert float(text.split("LENGTH_MEASURE(")[1].split(")")[0]) == 25.4
+    if hasattr(_core, "step_write"):
+        _core.step_write(str(core), mesh, "facet", 0.0)
+        assert core.read_bytes() == py.read_bytes()
+        # The B-rep writers declare it too.
+        _core.step_write(str(core), mesh, "planar", 0.0)
+        assert entity in core.read_text()

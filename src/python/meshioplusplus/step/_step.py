@@ -14,6 +14,7 @@ import numpy as np
 
 from .._exceptions import WriteError
 from .._files import is_buffer
+from .._units import length_unit
 
 _PREFIX = "meshio++: step: "
 
@@ -164,7 +165,41 @@ def _pieces(rings):
     return piece, len(index)
 
 
-def _render(name, pts, rings):
+_SI_PREFIXES = (
+    (1.0, "$"),
+    (0.01, ".CENTI."),
+    (0.001, ".MILLI."),
+    (1e-6, ".MICRO."),
+    (1000.0, ".KILO."),
+)
+
+
+def _length_unit_entities(ent, unit):
+    """The length unit entity for ``unit`` metres per unit (``None``:
+    millimetres), as ``StepStream`` writes it; returns its id."""
+    prefix = ".MILLI." if unit is None else None
+    for v, p in _SI_PREFIXES:
+        if unit is not None and abs(v - unit) <= 1e-12 * v:
+            prefix = p
+    if prefix is not None:
+        return ent(f"(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT({prefix},.METRE.))")
+    if abs(unit - 0.0254) <= 1e-12 * 0.0254:
+        name = "INCH"
+    elif abs(unit - 0.3048) <= 1e-12 * 0.3048:
+        name = "FOOT"
+    else:
+        name = "LENGTH UNIT"
+    mm = ent("(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.))")
+    dims = ent("DIMENSIONAL_EXPONENTS(1.,0.,0.,0.,0.,0.,0.)")
+    measure = ent(
+        f"LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE({_real(unit * 1000.0)}),#{mm})"
+    )
+    return ent(
+        f"(CONVERSION_BASED_UNIT('{name}',#{measure})LENGTH_UNIT()NAMED_UNIT(#{dims}))"
+    )
+
+
+def _render(name, pts, rings, unit=None):
     from .. import _provenance
     from .._common import warn
 
@@ -233,7 +268,7 @@ def _render(name, pts, rings):
     form = ent(f"PRODUCT_DEFINITION_FORMATION('','',#{prod})")
     pdef = ent(f"PRODUCT_DEFINITION('design','',#{form},#{pdctx})")
     pshape = ent(f"PRODUCT_DEFINITION_SHAPE('','',#{pdef})")
-    len_unit = ent("(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.))")
+    len_unit = _length_unit_entities(ent, unit)
     ang_unit = ent("(NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.))")
     sol_unit = ent("(NAMED_UNIT(*)SI_UNIT($,.STERADIAN.)SOLID_ANGLE_UNIT())")
     unc = ent(
@@ -319,7 +354,7 @@ def write(filename, mesh):
     _check_closed(xyz, rings)
     buffer = is_buffer(filename, "w")
     name = _string(_basename(getattr(filename, "name", "") if buffer else filename))
-    text = _render(name, pts, rings).encode("ascii")
+    text = _render(name, pts, rings, length_unit(mesh)).encode("ascii")
     if buffer:
         try:
             filename.write(text)

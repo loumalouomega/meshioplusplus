@@ -49004,6 +49004,9 @@ struct StepBrepOptions {
     /// Also build the solid as trimmed NURBS faces (`StepBrepResult::mBrep`,
     /// `detail/brep_nurbs`), the file unchanged.
     bool mBrep = false;
+    /// The length unit the file declares, metres per unit; at most 0 is
+    /// millimetres (`StepStream`).
+    double mLengthUnit = -1.0;
 };
 
 /// What the B-rep writer wrote.
@@ -49105,8 +49108,13 @@ public:
      * product named after @p rPath's basename, millimetres and radians, and
      * the world placement.
      * @param rDescription the `FILE_DESCRIPTION` text.
+     * @param LengthUnit the length unit the file declares, metres per unit
+     *        (`meshio:length_unit`): an SI prefix of the metre when it is one
+     *        (1, 0.01, 0.001, 1e-6, 1000), else a `CONVERSION_BASED_UNIT` on
+     *        the millimetre ('INCH', 'FOOT', or 'LENGTH UNIT'); at most 0 is
+     *        millimetres, as before units were connected.
      */
-    StepStream(const std::string& rPath, const std::string& rDescription);
+    StepStream(const std::string& rPath, const std::string& rDescription, double LengthUnit = -1.0);
 
     /// Add an entity; returns its id.
     std::int64_t Ent(const std::string& rBody);
@@ -101237,7 +101245,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
             continue;
 
         // Write.
-        StepStream st(rPath, "meshio++ B-rep");
+        StepStream st(rPath, "meshio++ B-rep", rOptions.mLengthUnit);
         std::map<std::int64_t, std::int64_t> vertex_id;
         auto vertex = [&](std::int64_t V) {
             auto it = vertex_id.find(V);
@@ -101994,7 +102002,8 @@ std::string step_string(const std::string& rText) {
     return out;
 }
 
-StepStream::StepStream(const std::string& rPath, const std::string& rDescription) : mPath(rPath) {
+StepStream::StepStream(const std::string& rPath, const std::string& rDescription, double LengthUnit)
+    : mPath(rPath) {
     const std::string name = step_string(ss_basename(rPath));
     mOut += "ISO-10303-21;\n/*\n";
     for (std::string line : provenance_lines(SlotTier::Block)) {
@@ -102021,7 +102030,28 @@ StepStream::StepStream(const std::string& rPath, const std::string& rDescription
     const std::int64_t pdef =
         Ent("PRODUCT_DEFINITION('design',''," + Ref(form) + "," + Ref(pdctx) + ")");
     mShape = Ent("PRODUCT_DEFINITION_SHAPE('',''," + Ref(pdef) + ")");
-    const std::int64_t len_unit = Ent("(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.))");
+    // The length unit: an SI prefix of the metre, or a conversion from the
+    // millimetre (roadmap 7.1.4).
+    const char* prefix = LengthUnit > 0.0 ? nullptr : ".MILLI.";
+    constexpr std::pair<double, const char*> kPrefixes[] = {
+        {1.0, "$"}, {0.01, ".CENTI."}, {0.001, ".MILLI."}, {1e-6, ".MICRO."}, {1000.0, ".KILO."}};
+    for (const auto& [v, p] : kPrefixes)
+        if (LengthUnit > 0.0 && std::abs(v - LengthUnit) <= 1e-12 * v)
+            prefix = p;
+    std::int64_t len_unit = 0;
+    if (prefix) {
+        len_unit = Ent(std::string("(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(") + prefix + ",.METRE.))");
+    } else {
+        const char* unit_name = std::abs(LengthUnit - 0.0254) <= 1e-12 * 0.0254   ? "INCH"
+                                : std::abs(LengthUnit - 0.3048) <= 1e-12 * 0.3048 ? "FOOT"
+                                                                                  : "LENGTH UNIT";
+        const std::int64_t mm = Ent("(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.))");
+        const std::int64_t dims = Ent("DIMENSIONAL_EXPONENTS(1.,0.,0.,0.,0.,0.,0.)");
+        const std::int64_t measure = Ent("LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(" +
+                                         step_real(LengthUnit * 1000.0) + ")," + Ref(mm) + ")");
+        len_unit = Ent(std::string("(CONVERSION_BASED_UNIT('") + unit_name + "'," + Ref(measure) +
+                       ")LENGTH_UNIT()NAMED_UNIT(" + Ref(dims) + "))");
+    }
     const std::int64_t ang_unit = Ent("(NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.))");
     const std::int64_t sol_unit = Ent("(NAMED_UNIT(*)SI_UNIT($,.STERADIAN.)SOLID_ANGLE_UNIT())");
     const std::int64_t unc =
@@ -119359,11 +119389,77 @@ std::string cgns_read_c1(hid_t node) {
     return end == std::string::npos ? std::string() : out.substr(0, end + 1);
 }
 
+// --- DimensionalUnits_t: the length unit (roadmap 7.1.4) ----------------------
+
+bool cgns_find_child_by_label(hid_t loc, const std::string& rLabel, std::string& rName);
+
+/// SIDS length unit names, metres per unit.
+constexpr std::pair<const char*, double> kCgnsLengthUnits[] = {{"Meter", 1.0},
+                                                               {"Centimeter", 0.01},
+                                                               {"Millimeter", 0.001},
+                                                               {"Foot", 0.3048},
+                                                               {"Inch", 0.0254}};
+constexpr std::size_t kCgnsUnitWidth = 32;
+
+/// The mesh's length unit as the base's `DimensionalUnits_t` (C1 [5][32]: Mass,
+/// Length, Time, Temperature, Angle; the others `Null`); false when it has
+/// none CGNS can name.
+bool cgns_write_dimensional_units(hid_t base, const Mesh& rMesh) {
+    const double unit = detail::mesh_length_unit(rMesh);
+    if (!(unit > 0.0))
+        return false;
+    const char* name = nullptr;
+    for (const auto& [n, v] : kCgnsLengthUnits)
+        if (std::abs(v - unit) <= 1e-12 * v)
+            name = n;
+    if (!name) {
+        log::warn(
+            "CGNS: a length unit of {} m has no DimensionalUnits name (Meter, Centimeter, "
+            "Millimeter, Foot, Inch); kept as field data only.",
+            unit);
+        return false;
+    }
+    const std::string rows[5] = {"Null", name, "Null", "Null", "Null"};
+    NDArray data(DType::Int8, {std::size_t{5}, kCgnsUnitWidth});
+    std::int8_t* p = data.As<std::int8_t>();
+    std::memset(p, ' ', 5 * kCgnsUnitWidth);
+    for (std::size_t r = 0; r < 5; ++r)
+        std::memcpy(p + r * kCgnsUnitWidth, rows[r].data(), rows[r].size());
+    h5::Hid node = cgns_create_group(base, "DimensionalUnits");
+    cgns_write_node_attrs(node, "DimensionalUnits", "DimensionalUnits_t", "C1");
+    h5::write_dataset(node, " data", data);
+    return true;
+}
+
+/// The metres per unit a node's `DimensionalUnits_t` child names, or 0.
+double cgns_read_dimensional_units(hid_t loc) {
+    std::string child;
+    if (!cgns_find_child_by_label(loc, "DimensionalUnits_t", child))
+        return 0.0;
+    h5::Hid node = h5::open_group(loc, child);
+    if (!h5::exists(node, " data"))
+        return 0.0;
+    const NDArray raw = h5::read_dataset(node, " data");
+    if (raw.Size() < 2 * kCgnsUnitWidth)
+        return 0.0;
+    std::string text(kCgnsUnitWidth, '\0');
+    for (std::size_t i = 0; i < kCgnsUnitWidth; ++i)
+        text[i] = static_cast<char>(detail::read_int(raw, kCgnsUnitWidth + i));
+    const std::size_t end = text.find_last_not_of(std::string("\0 ", 2));
+    text = end == std::string::npos ? std::string() : text.substr(0, end + 1);
+    for (const auto& [n, v] : kCgnsLengthUnits)
+        if (text == n)
+            return v;
+    return 0.0;
+}
+
 /// `field_data` as `DataArray_t` children of a `UserDefinedData_t` node; the arrays keep their
-/// shape and are stored as I4/I8/R4/R8.
-void cgns_write_field_data(hid_t zone, const Mesh& rMesh) {
+/// shape and are stored as I4/I8/R4/R8. `pSkip`, when set, names an array left out.
+void cgns_write_field_data(hid_t zone, const Mesh& rMesh, const char* pSkip = nullptr) {
     std::vector<std::pair<std::string, NDArray>> arrays;
     for (const std::string& name : rMesh.FieldDataNames()) {
+        if (pSkip && name == pSkip)
+            continue;
         const NDArray& a = rMesh.FieldData(name);
         DType target;
         switch (a.Dtype()) {
@@ -119727,6 +119823,7 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
         basedata.As<std::int32_t>()[1] = phys_dim;
         h5::write_dataset(base, " data", basedata);
     }
+    const bool units_written = cgns_write_dimensional_units(base, rMesh);
 
     const std::size_t n_points = rMesh.NumPoints();
     const bool wide = n_points > static_cast<std::size_t>(INT32_MAX) ||
@@ -120036,7 +120133,7 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
         }
     }
 
-    cgns_write_field_data(zone, rMesh);
+    cgns_write_field_data(zone, rMesh, units_written ? detail::kLengthUnitName : nullptr);
     cgns_write_regions(zone, rMesh, region_starts, region_firsts, n_points);
 }
 
@@ -120142,6 +120239,7 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
                   base_name);
 
     h5::Hid base = h5::open_group(f, base_name);
+    double length_unit = cgns_read_dimensional_units(base);
 
     Mesh mesh;
     NDArray points;  // accumulated across zones
@@ -120168,6 +120266,8 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
         h5::Hid zone = h5::open_group(base, zname);
         if (!(h5::has_attr(zone, "label") && h5::read_attr_string(zone, "label") == "Zone_t"))
             continue;
+        if (const double zone_unit = cgns_read_dimensional_units(zone); zone_unit > 0.0)
+            length_unit = zone_unit;
 
         if (h5::exists(zone, "ZoneType")) {
             h5::Hid zt = h5::open_group(zone, "ZoneType");
@@ -120656,6 +120756,8 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
         }
         mesh.AssignPoints(std::move(all));
     }
+    if (length_unit > 0.0)
+        detail::set_mesh_length_unit(mesh, length_unit);
     return mesh;
 }
 
@@ -121083,6 +121185,32 @@ struct CgnsMllIterativeData {
     std::vector<std::string> mFlowSolutionPointers;
 };
 
+/// The metres per unit of the `DimensionalUnits_t` under whatever node
+/// `cg_goto` last selected; -1 when it has none or its length is not named.
+double cgns_mll_length_unit() {
+    CGNS_ENUMT(MassUnits_t) mass;
+    CGNS_ENUMT(LengthUnits_t) length;
+    CGNS_ENUMT(TimeUnits_t) time;
+    CGNS_ENUMT(TemperatureUnits_t) temperature;
+    CGNS_ENUMT(AngleUnits_t) angle;
+    if (cg_units_read(&mass, &length, &time, &temperature, &angle) != CG_OK)
+        return -1.0;
+    switch (length) {
+        case CGNS_ENUMV(Meter):
+            return 1.0;
+        case CGNS_ENUMV(Centimeter):
+            return 0.01;
+        case CGNS_ENUMV(Millimeter):
+            return 0.001;
+        case CGNS_ENUMV(Foot):
+            return 0.3048;
+        case CGNS_ENUMV(Inch):
+            return 0.0254;
+        default:
+            return -1.0;
+    }
+}
+
 /// Read one named `DataArray_t` under whatever node `cg_goto` last selected,
 /// as `RealDouble` -- used for `TimeValues`, whose file dtype is always real.
 bool cgns_mll_read_double_array(const std::string& rWantedName, std::vector<double>& rOut) {
@@ -121478,6 +121606,18 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
     } else {
         cgns_mll_read_solutions(fn, B, Z, npoints, mesh, rPath, nullptr);
     }
+
+    // DimensionalUnits_t: the zone's overrides the base's.
+    double length_unit = -1.0;
+    if (cg_goto(fn, B, "end") == CG_OK)
+        length_unit = cgns_mll_length_unit();
+    if (cg_goto(fn, B, "Zone_t", Z, "end") == CG_OK) {
+        const double zone_unit = cgns_mll_length_unit();
+        if (zone_unit > 0.0)
+            length_unit = zone_unit;
+    }
+    if (length_unit > 0.0)
+        detail::set_mesh_length_unit(mesh, length_unit);
 
     return mesh;
 }
@@ -155073,6 +155213,53 @@ void read_cha_fields(hid_t file, hid_t cha, const std::string& rMeshName, Mesh& 
 // default-constructed reproduces the historical strict behaviour exactly,
 // which is what let the options overload land without touching any caller.
 namespace {
+// --- coordinate units <-> meshio:length_unit (roadmap 7.1.4) ------------------
+
+/// MED coordinate unit names recognised as lengths, metres per unit; the first
+/// of a value is the one written.
+// Micrometres are `um`, or the micro sign in Latin-1 (other MED tools, the
+// Python writer) or in UTF-8 (a Python str passed to this writer).
+constexpr std::pair<const char*, double> kMedLengthUnits[] = {
+    {"m", 1.0},          {"cm", 0.01},   {"mm", 0.001},  {"um", 1e-6},  {"\xb5m", 1e-6},
+    {"\xc2\xb5m", 1e-6}, {"km", 1000.0}, {"in", 0.0254}, {"ft", 0.3048}};
+
+/// The metres per unit a `UNI` string names (one known name for every axis),
+/// or 0.
+double med_length_unit_of(const std::string& rUnits) {
+    auto in = detail::make_classic_istringstream(rUnits);
+    std::string word, only;
+    while (in >> word) {
+        word.erase(std::remove(word.begin(), word.end(), '\0'), word.end());
+        if (word.empty())
+            continue;
+        if (!only.empty() && word != only)
+            return 0.0;
+        only = word;
+    }
+    for (const auto& [n, v] : kMedLengthUnits)
+        if (only == n)
+            return v;
+    return 0.0;
+}
+
+/// The `UNI` string for the mesh's length unit (its name padded to 16
+/// characters per axis), or empty.
+std::string med_unit_coords_of(const Mesh& rMesh, std::size_t Dim) {
+    const double unit = detail::mesh_length_unit(rMesh);
+    if (!(unit > 0.0))
+        return std::string();
+    for (const auto& [n, v] : kMedLengthUnits)
+        if (std::abs(v - unit) <= 1e-12 * v) {
+            std::string name(n);
+            name.resize(16, ' ');
+            std::string out;
+            for (std::size_t c = 0; c < Dim; ++c)
+                out += name;
+            return out;
+        }
+    return std::string();
+}
+
 Mesh med_read_impl(const std::string& rPath, MedInfo& rInfo, const ReadOptions& rOptions,
                    const std::string* pName = nullptr) {
     h5::SilenceErrors silence;
@@ -155382,6 +155569,8 @@ Mesh med_read_impl(const std::string& rPath, MedInfo& rInfo, const ReadOptions& 
         read_cha_fields(f, cha, mesh_name, mesh, rOptions.mLenient, rOptions, &rInfo,
                         pName != nullptr);
     }
+    if (const double unit = med_length_unit_of(rInfo.mUnitCoords); unit > 0.0)
+        detail::set_mesh_length_unit(mesh, unit);
 
     return mesh;
 }
@@ -155636,7 +155825,9 @@ void med_write_mesh(hid_t f, const Mesh& rMesh, const MedInfo& rInfo,
     h5::write_attr_int(med_mesh, "ESP", static_cast<std::int64_t>(dim));
     h5::write_attr_int(med_mesh, "REP", 0);
     write_attr_bytes(med_mesh, "UNT", rInfo.mUnitTime);
-    write_attr_bytes(med_mesh, "UNI", rInfo.mUnitCoords);
+    write_attr_bytes(
+        med_mesh, "UNI",
+        rInfo.mUnitCoords.empty() ? med_unit_coords_of(rMesh, dim) : rInfo.mUnitCoords);
     h5::write_attr_int(med_mesh, "SRT", 1);
     {
         const char* names[3] = {"X", "Y", "Z"};
@@ -188070,6 +188261,7 @@ void detail::write_step_report(const std::string& rPath, const Mesh& rMesh,
         brep.mFreeform = pFreeform;
         brep.mEdgeCurves = pEdgeCurves;
         brep.mBrep = BuildBrep;
+        brep.mLengthUnit = detail::mesh_length_unit(rMesh);
         detail::StepBrepResult r = detail::step_brep_write(rPath, surface, shell, brep);
         if (pReport != nullptr)
             *pReport = std::move(r);
@@ -188157,7 +188349,7 @@ void detail::write_step_report(const std::string& rPath, const Mesh& rMesh,
     std::sort(used.begin(), used.end());
     used.erase(std::unique(used.begin(), used.end()), used.end());
 
-    detail::StepStream st(rPath, "meshio++ faceted B-rep");
+    detail::StepStream st(rPath, "meshio++ faceted B-rep", detail::mesh_length_unit(rMesh));
     auto ent = [&](const std::string& rBody) { return st.Ent(rBody); };
     auto ref = [](std::int64_t Id) { return detail::StepStream::Ref(Id); };
     auto triple = [](const double* pV) { return detail::StepStream::Triple(pV); };

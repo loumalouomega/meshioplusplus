@@ -41,6 +41,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/hdf5_util.hpp"
+#include "meshioplusplus/detail/length_unit.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
@@ -1184,6 +1185,53 @@ void read_cha_fields(hid_t file, hid_t cha, const std::string& rMeshName, Mesh& 
 // default-constructed reproduces the historical strict behaviour exactly,
 // which is what let the options overload land without touching any caller.
 namespace {
+// --- coordinate units <-> meshio:length_unit (roadmap 7.1.4) ------------------
+
+/// MED coordinate unit names recognised as lengths, metres per unit; the first
+/// of a value is the one written.
+// Micrometres are `um`, or the micro sign in Latin-1 (other MED tools, the
+// Python writer) or in UTF-8 (a Python str passed to this writer).
+constexpr std::pair<const char*, double> kMedLengthUnits[] = {
+    {"m", 1.0},          {"cm", 0.01},   {"mm", 0.001},  {"um", 1e-6},  {"\xb5m", 1e-6},
+    {"\xc2\xb5m", 1e-6}, {"km", 1000.0}, {"in", 0.0254}, {"ft", 0.3048}};
+
+/// The metres per unit a `UNI` string names (one known name for every axis),
+/// or 0.
+double med_length_unit_of(const std::string& rUnits) {
+    auto in = detail::make_classic_istringstream(rUnits);
+    std::string word, only;
+    while (in >> word) {
+        word.erase(std::remove(word.begin(), word.end(), '\0'), word.end());
+        if (word.empty())
+            continue;
+        if (!only.empty() && word != only)
+            return 0.0;
+        only = word;
+    }
+    for (const auto& [n, v] : kMedLengthUnits)
+        if (only == n)
+            return v;
+    return 0.0;
+}
+
+/// The `UNI` string for the mesh's length unit (its name padded to 16
+/// characters per axis), or empty.
+std::string med_unit_coords_of(const Mesh& rMesh, std::size_t Dim) {
+    const double unit = detail::mesh_length_unit(rMesh);
+    if (!(unit > 0.0))
+        return std::string();
+    for (const auto& [n, v] : kMedLengthUnits)
+        if (std::abs(v - unit) <= 1e-12 * v) {
+            std::string name(n);
+            name.resize(16, ' ');
+            std::string out;
+            for (std::size_t c = 0; c < Dim; ++c)
+                out += name;
+            return out;
+        }
+    return std::string();
+}
+
 Mesh med_read_impl(const std::string& rPath, MedInfo& rInfo, const ReadOptions& rOptions,
                    const std::string* pName = nullptr) {
     h5::SilenceErrors silence;
@@ -1493,6 +1541,8 @@ Mesh med_read_impl(const std::string& rPath, MedInfo& rInfo, const ReadOptions& 
         read_cha_fields(f, cha, mesh_name, mesh, rOptions.mLenient, rOptions, &rInfo,
                         pName != nullptr);
     }
+    if (const double unit = med_length_unit_of(rInfo.mUnitCoords); unit > 0.0)
+        detail::set_mesh_length_unit(mesh, unit);
 
     return mesh;
 }
@@ -1747,7 +1797,9 @@ void med_write_mesh(hid_t f, const Mesh& rMesh, const MedInfo& rInfo,
     h5::write_attr_int(med_mesh, "ESP", static_cast<std::int64_t>(dim));
     h5::write_attr_int(med_mesh, "REP", 0);
     write_attr_bytes(med_mesh, "UNT", rInfo.mUnitTime);
-    write_attr_bytes(med_mesh, "UNI", rInfo.mUnitCoords);
+    write_attr_bytes(
+        med_mesh, "UNI",
+        rInfo.mUnitCoords.empty() ? med_unit_coords_of(rMesh, dim) : rInfo.mUnitCoords);
     h5::write_attr_int(med_mesh, "SRT", 1);
     {
         const char* names[3] = {"X", "Y", "Z"};

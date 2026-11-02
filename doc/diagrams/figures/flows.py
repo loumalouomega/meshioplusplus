@@ -1087,7 +1087,7 @@ def roadmap_map():
         (
             "§7 new capabilities",
             [
-                ("length units as metadata", "S"),
+                ("length units: CAD reads", "S"),
                 ("UV parameterization", "M"),
                 ("point-cloud surfaces", "L"),
                 ("providers: heal, mesh, quads", "L"),
