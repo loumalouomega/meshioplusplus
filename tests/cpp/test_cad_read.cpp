@@ -27,12 +27,14 @@
 #include <gtest/gtest.h>
 
 // System includes
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <string>
 
 // Project includes
 #include "mesh_fixtures.hpp"
+#include "meshioplusplus/detail/length_unit.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/cad_json.hpp"
 #include "meshioplusplus/formats/iges.hpp"
@@ -111,6 +113,8 @@ TEST(CadRead, StepCubeReadsAsSixFaces) {
     EXPECT_EQ(mesh.Cells(0).Type(), "triangle");
     EXPECT_GE(mesh.Cells(0).NumCells(), 12u);
     ASSERT_TRUE(mesh.HasCellData("cad:id"));
+    // The file is in millimetres (no unit stated), and the mesh says so.
+    EXPECT_DOUBLE_EQ(meshioplusplus::detail::mesh_length_unit(mesh), 1e-3);
     // Every triangulated point lies on the cube.
     const auto* p = mesh.Points().As<double>();
     for (std::size_t i = 0; i < mesh.NumPoints(); ++i)
@@ -132,6 +136,24 @@ TEST(CadRead, StepCubeReadsAsSixFaces) {
             EXPECT_GE(q[i * 3 + static_cast<std::size_t>(d)], -1e-9);
             EXPECT_LE(q[i * 3 + static_cast<std::size_t>(d)], 1.0 + 1e-9);
         }
+}
+
+TEST(CadRead, ReadsAreInMillimetresWhateverTheFileUnit) {
+    // A cube of 1 m, of 1 inch and of 1 mm: OpenCASCADE converts each to
+    // millimetres and the mesh states 0.001, so the physical size survives.
+    for (const double unit : {1.0, 0.0254, 1e-3}) {
+        Mesh cube = unit_cube();
+        meshioplusplus::detail::set_mesh_length_unit(cube, unit);
+        const std::string path = mt::temp_path(".step");
+        meshioplusplus::write_step(path, cube);
+        const Mesh mesh = meshioplusplus::read_step(path);
+        EXPECT_DOUBLE_EQ(meshioplusplus::detail::mesh_length_unit(mesh), 1e-3) << unit;
+        double hi = 0.0;
+        const auto* p = mesh.Points().As<double>();
+        for (std::size_t i = 0; i < mesh.NumPoints() * 3; ++i)
+            hi = std::max(hi, p[i]);
+        EXPECT_NEAR(hi, unit * 1000.0, 1e-6 * unit * 1000.0) << unit;
+    }
 }
 
 TEST(CadRead, MalformedFilesAreReadErrors) {

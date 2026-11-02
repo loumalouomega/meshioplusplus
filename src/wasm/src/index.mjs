@@ -364,9 +364,23 @@ export class MeshioPlusPlusLoadError extends Error {
  *   findInterface: (meshA: Mesh, regionA: string | object, regionB: string | object, options?: {meshB?: Mesh, mode?: 'conforming'|'proximity', master?: 'a'|'b', gapTolerance?: number, angleTolerance?: number, overlapTolerance?: number}) => {mesh: Mesh, report: object},
  *   contactPairs: (slaveMesh: Mesh, slavePoints: string | object, masterCells: string | object, options?: {masterMesh?: Mesh, tolerance?: number, requireComplete?: boolean}) => object,
  *   splitInterface: (mesh: Mesh, side: string | object, options?: {addCohesive?: boolean}) => {mesh: Mesh, report: object},
+ *   adjacency: (mesh: Mesh, kind?: 'node'|'clique'|'cell') => {indptr: Int32Array, indices: Int32Array},
+ *   writeGraph: (mesh: Mesh, path: string, kind?: 'node'|'clique'|'cell', format?: 'metis'|'scotch') => {format: string, numVertices: number, numEdges: number, maxDegree: number},
  *   matchPeriodicNodes: (mesh: Mesh, slave: string | {name: string, kind?: string, dim?: number, tag?: number}, master: string | {name: string, kind?: string, dim?: number, tag?: number}, matrix: ArrayLike<number>, atol?: number, requireComplete?: boolean) => {slave: Int32Array, master: Int32Array, unmatched: Int32Array, numFixed: number, maxResidual: number},
  *   repair: (mesh: Mesh, fixOrientation?: boolean, orientOutward?: boolean, fillHoles?: boolean, splitNonManifold?: boolean, maxHoleEdges?: number, weldTolerance?: number, recordProvenance?: boolean) => {mesh: Mesh, qualityBefore: object, qualityAfter: object, numFlipped: number, numComponents: number, largestComponent: number, numOrientedOutward: number, numUnorientable: number, numVerticesSplit: number, numHolesDetected: number, numHolesFilled: number, numHolesSkipped: number, numFacesAdded: number, numPointsAdded: number, pointsWelded: number},
  *   shrinkwrap: (mesh: Mesh, target: Mesh, offset?: number, maxDistance?: number, weights?: string, targetRegion?: string, normalWeight?: string, recordDistance?: boolean, recordClosestCell?: boolean) => {mesh: Mesh, quality: object, numProjected: number, numMissed: number, numSkipped: number, maxDisplacement: number},
+ *   prepareMetric: (mesh: Mesh, options: {arrays: string[], output?: string, targetVertices?: number, norm?: number, hmin?: number, hmax?: number, gradation?: number, maxSweeps?: number}) => {mesh: Mesh, complexityBefore: number, complexityAfter: number, numGraded: number, sweeps: number},
+ *   untangle: (mesh: Mesh, options?: {fixBoundary?: boolean, frozen?: ArrayLike<number>, rings?: number, smooth?: boolean, maxSweeps?: number}) => {mesh: Mesh, numInvertedBefore: number, numInvertedAfter: number, minQualityBefore: number, minQualityAfter: number, sweeps: number, moves: number},
+ *   morph: (mesh: Mesh, options: {array: string, fixBoundary?: boolean, constrainedArray?: string, constrained?: ArrayLike<number>, stiffening?: number, steps?: number, allowInverted?: boolean, tolerance?: number, maxIterations?: number}) => {mesh: Mesh, numConstrained: number, numFree: number, numInverted: number, iterations: number, maxDisplacement: number, converged: boolean},
+ *   laplacianEigenmodes: (mesh: Mesh, options?: {numModes?: number, tolerance?: number, maxIterations?: number}) => {mesh: Mesh, eigenvalues: number[], iterations: number, maxResidual: number, converged: boolean},
+ *   registerRigid: (source: Mesh, target: Mesh, options?: {method?: 'point_to_point'|'point_to_plane', maxIterations?: number, tolerance?: number, maxDistance?: number, initial?: ArrayLike<number>}) => {matrix: number[], initialRms: number, rms: number, iterations: number, numPairs: number, converged: boolean},
+ *   estimateNormals: (mesh: Mesh, options?: {k?: number, orientation?: 'consistent'|'viewpoint'|'none', viewpoint?: ArrayLike<number>, recordVariation?: boolean}) => {mesh: Mesh, numDegenerate: number, numComponents: number},
+ *   reconstructSurface: (mesh: Mesh, options?: {normals?: string, k?: number, cellSize?: number, resolution?: number, maxDistance?: number, estimateNormals?: boolean, normalsK?: number, maxCells?: number}) => {mesh: Mesh, numSamples: number, spacing: number, cellSize: number, maxDistance: number, numLatticePoints: number, numUndefined: number, numTriangles: number, numComponents: number, estimatedNormals: boolean},
+ *   convexHull: (mesh: Mesh, options?: {dimension?: 0|2|3}) => {mesh: Mesh, dimension: number, numVertices: number, numFacets: number, area: number, volume: number, perimeter: number},
+ *   delaunay2d: (mesh: Mesh) => {mesh: Mesh, numTriangles: number, numDuplicates: number, numBoundary: number},
+ *   convertCoordinates: (mesh: Mesh, options?: {system?: 'cylindrical'|'spherical', axis?: ArrayLike<number>, origin?: ArrayLike<number>, reference?: ArrayLike<number>, arrays?: string[], inverse?: boolean, recordCoordinates?: boolean}) => {mesh: Mesh, numArrays: number, numSingular: number},
+ *   geodesicDistance: (mesh: Mesh, sources: ArrayLike<number> | number, options?: {sourceRegion?: string, timeFactor?: number, tolerance?: number, maxIterations?: number}) => {mesh: Mesh, numSources: number, numUnreached: number, numDegenerate: number, maxDistance: number, timeStep: number, heatIterations: number, poissonIterations: number, converged: boolean},
+ *   parameterize: (mesh: Mesh, options?: {padding?: number, maxDepth?: number, maxStretch?: number}) => {mesh: Mesh, numCharts: number, numFlipped: number, stretch: number, packingEfficiency: number, numSeamPoints: number},
  *   sobolevDeform: (mesh: Mesh, array: string, lengthScale: number, fixedPointsArray?: string, fixBoundary?: boolean, recordFiltered?: boolean, maxIterations?: number, tolerance?: number) => {mesh: Mesh, numIterations: number, residual: number, converged: boolean, numFixed: number, numIsolated: number, maxDisplacement: number},
  *   split: (mesh: Mesh, by: string, tagName?: string, returnMaps?: boolean) => {key: string, mesh: Mesh, pointMap?: Int32Array, cellMaps?: Int32Array[]}[],
  *   convertCells: (mesh: Mesh, mode?: string, recordParentIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
@@ -1219,6 +1233,9 @@ export async function loadMeshioPlusPlus(
         contactPairs: (slaveMesh, slavePoints, masterCells, options = {}) =>
             Module.contactPairs(slaveMesh, slavePoints, masterCells, options),
         splitInterface: (mesh, side, options = {}) => Module.splitInterface(mesh, side, options),
+        adjacency: (mesh, kind = 'node') => Module.adjacency(mesh, kind),
+        writeGraph: (mesh, path, kind = 'node', format = '') =>
+            Module.writeGraph(mesh, path, kind, format ?? ''),
         matchPeriodicNodes: (mesh, slave, master, matrix, atol = 1e-8, requireComplete = true) =>
             Module.matchPeriodicNodes(mesh, slave, master, Array.from(matrix), atol,
                 requireComplete),
@@ -1247,6 +1264,44 @@ export async function loadMeshioPlusPlus(
         ) =>
             Module.shrinkwrap(mesh, target, offset, maxDistance, weights, targetRegion,
                 normalWeight, recordDistance, recordClosestCell),
+        prepareMetric: (mesh, options = {}) => Module.prepareMetric(mesh, options),
+        untangle: (mesh, options = {}) => {
+            const o = { ...options };
+            if (o.frozen !== undefined) o.frozen = Array.from(o.frozen, Number);
+            return Module.untangle(mesh, o);
+        },
+        morph: (mesh, options = {}) => {
+            const o = { ...options };
+            if (o.constrained !== undefined) o.constrained = Array.from(o.constrained, Number);
+            return Module.morph(mesh, o);
+        },
+        laplacianEigenmodes: (mesh, options = {}) => Module.laplacianEigenmodes(mesh, options),
+        registerRigid: (source, target, options = {}) => {
+            const o = { ...options };
+            if (o.initial !== undefined) o.initial = Array.from(o.initial);
+            return Module.registerRigid(source, target, o);
+        },
+        estimateNormals: (mesh, options = {}) => {
+            const o = { ...options };
+            if (o.viewpoint !== undefined) o.viewpoint = Array.from(o.viewpoint);
+            return Module.estimateNormals(mesh, o);
+        },
+        reconstructSurface: (mesh, options = {}) => Module.reconstructSurface(mesh, options),
+        convexHull: (mesh, options = {}) => Module.convexHull(mesh, options),
+        delaunay2d: (mesh) => Module.delaunay2d(mesh),
+        convertCoordinates: (mesh, options = {}) => {
+            const o = { ...options };
+            for (const key of ['axis', 'origin', 'reference'])
+                if (o[key] !== undefined) o[key] = Array.from(o[key]);
+            return Module.convertCoordinates(mesh, o);
+        },
+        geodesicDistance: (mesh, sources = [], options = {}) =>
+            Module.geodesicDistance(
+                mesh,
+                typeof sources === 'number' ? [sources] : Array.from(sources),
+                options,
+            ),
+        parameterize: (mesh, options = {}) => Module.parameterize(mesh, options),
         sobolevDeform: (
             mesh,
             array,

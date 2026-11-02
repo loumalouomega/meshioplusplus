@@ -41,6 +41,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/detail/format_compat.hpp"
+#include "meshioplusplus/detail/length_unit.hpp"
 #include "meshioplusplus/detail/node_order.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
@@ -292,6 +293,32 @@ struct CgnsMllIterativeData {
     std::vector<double> mTimeValues;
     std::vector<std::string> mFlowSolutionPointers;
 };
+
+/// The metres per unit of the `DimensionalUnits_t` under whatever node
+/// `cg_goto` last selected; -1 when it has none or its length is not named.
+double cgns_mll_length_unit() {
+    CGNS_ENUMT(MassUnits_t) mass;
+    CGNS_ENUMT(LengthUnits_t) length;
+    CGNS_ENUMT(TimeUnits_t) time;
+    CGNS_ENUMT(TemperatureUnits_t) temperature;
+    CGNS_ENUMT(AngleUnits_t) angle;
+    if (cg_units_read(&mass, &length, &time, &temperature, &angle) != CG_OK)
+        return -1.0;
+    switch (length) {
+        case CGNS_ENUMV(Meter):
+            return 1.0;
+        case CGNS_ENUMV(Centimeter):
+            return 0.01;
+        case CGNS_ENUMV(Millimeter):
+            return 0.001;
+        case CGNS_ENUMV(Foot):
+            return 0.3048;
+        case CGNS_ENUMV(Inch):
+            return 0.0254;
+        default:
+            return -1.0;
+    }
+}
 
 /// Read one named `DataArray_t` under whatever node `cg_goto` last selected,
 /// as `RealDouble` -- used for `TimeValues`, whose file dtype is always real.
@@ -688,6 +715,18 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
     } else {
         cgns_mll_read_solutions(fn, B, Z, npoints, mesh, rPath, nullptr);
     }
+
+    // DimensionalUnits_t: the zone's overrides the base's.
+    double length_unit = -1.0;
+    if (cg_goto(fn, B, "end") == CG_OK)
+        length_unit = cgns_mll_length_unit();
+    if (cg_goto(fn, B, "Zone_t", Z, "end") == CG_OK) {
+        const double zone_unit = cgns_mll_length_unit();
+        if (zone_unit > 0.0)
+            length_unit = zone_unit;
+    }
+    if (length_unit > 0.0)
+        detail::set_mesh_length_unit(mesh, length_unit);
 
     return mesh;
 }

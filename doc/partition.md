@@ -65,6 +65,8 @@ pieces = meshioplusplus.partition(mesh, 16, method="kahip",
                                   imbalance=0.03, mode="eco", seed=0)
 ```
 
+The graph KaHIP cuts is [`adjacency(mesh, "cell")`](adjacency.md); `write_graph("mesh.graph", mesh, "cell")` writes it for an external METIS, Scotch or KaHIP run, and the labels it returns are in the same block-major cell order `partition_labels` uses.
+
 - `imbalance` — allowed part-size imbalance fraction, in (0, 1); default 0.03.
 - `mode` — `"fast"`, `"eco"` (default) or `"strong"`. From the benchmarks of the Kratos KaHIPApplication this port derives from ([KratosMultiphysics/Kratos#14453](https://github.com/KratosMultiphysics/Kratos/pull/14453)): `fast` is not dramatically better than Metis — **`eco`/`strong` are where the edge-cut wins are**, at the price of runtime.
 - `seed` — `kaffpa` is deterministic per seed, but the assignment may change between KaHIP versions; treat exact labels as unstable, balance/coverage as the contract.

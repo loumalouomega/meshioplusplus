@@ -906,12 +906,39 @@ GltfRendered gltf_render(const Mesh& rMesh, const GltfWriteOptions& rOpt, bool B
             throw std::invalid_argument(std::string(kGltfPrefix) + "vmin must not exceed vmax");
     }
 
+    // Texture coordinates: `uv`, two finite values per used point, become
+    // TEXCOORD_0 on the triangles, v flipped (glTF's origin is the image's
+    // top left, `uv`'s the bottom left).
+    std::vector<float> texcoord;
+    if (rMesh.HasPointData("uv")) {
+        const NDArray& arr = rMesh.PointData("uv");
+        const std::vector<std::size_t>& shape = arr.Shape();
+        if (n > 0 && shape.size() == 2 && shape[0] == n && shape[1] == 2) {
+            const detail::DoubleView values(arr);
+            texcoord.resize(2 * n);
+            bool finite = true;
+            for (std::size_t p = 0; p < n; ++p) {
+                texcoord[2 * p] = static_cast<float>(values[2 * p]);
+                texcoord[2 * p + 1] = static_cast<float>(1.0 - values[2 * p + 1]);
+                if (used[p] &&
+                    !(std::isfinite(texcoord[2 * p]) && std::isfinite(texcoord[2 * p + 1])))
+                    finite = false;
+            }
+            if (!finite) {
+                log::warn(
+                    "gltf: point_data 'uv' has non-finite values on the exported "
+                    "points; TEXCOORD_0 omitted.");
+                texcoord.clear();
+            }
+        }
+    }
+
     // Raw fields: every one-to-four component point_data array, as float32.
     std::vector<GltfField> fields;
     if (rOpt.mFields) {
         std::vector<std::string> taken;
         for (const std::string& name : rMesh.PointDataNames()) {
-            if (name == "normals")
+            if (name == "normals" || (name == "uv" && !texcoord.empty()))
                 continue;
             const NDArray& arr = rMesh.PointData(name);
             const std::vector<std::size_t>& shape = arr.Shape();
@@ -1070,6 +1097,15 @@ GltfRendered gltf_render(const Mesh& rMesh, const GltfWriteOptions& rOpt, bool B
                 }
             }
 
+            if (pb->mMode == kGltfModeTriangles && !texcoord.empty()) {
+                std::vector<float> st(nv * 2);
+                for (std::size_t v = 0; v < nv; ++v) {
+                    const std::size_t p = static_cast<std::size_t>(pb->mVertices[v].mPoint);
+                    st[v * 2] = texcoord[2 * p];
+                    st[v * 2 + 1] = texcoord[2 * p + 1];
+                }
+                po.mAttrs.emplace_back("TEXCOORD_0", add_floats(st, 2, false, ""));
+            }
             if (color.mActive) {
                 std::vector<float> rgb(nv * 3);
                 for (std::size_t v = 0; v < nv; ++v) {

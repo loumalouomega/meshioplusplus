@@ -3428,6 +3428,34 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def graph(
+        input_path: str,
+        output_path: str,
+        kind: str = "node",
+        input_format: Optional[str] = None,
+        file_format: Optional[str] = None,
+    ) -> dict:
+        """Write a mesh's graph as a METIS or Scotch graph file, for an
+        external partitioner or a sparse-matrix preallocation.
+
+        kind "node" joins nodes that share a cell edge; "clique" joins nodes
+        that share any cell (the sparsity pattern of an assembled FEM matrix);
+        "cell" joins cells that share a facet (a face in 3-D, an edge in 2-D),
+        numbered block-major: the dual graph partitioners cut. file_format is
+        "metis" (.graph: a header "n m", then each vertex's 1-based
+        neighbours) or "scotch" (.grf, 0-based), inferred from the extension
+        (.graph/.metis, .grf) when omitted. Reports output_path, kind, format,
+        num_vertices, num_edges (undirected) and max_degree."""
+        return _guard(
+            _tools.tool_graph,
+            input_path=input_path,
+            output_path=output_path,
+            kind=kind,
+            input_format=input_format,
+            file_format=file_format,
+        )
+
+    @server.tool()
     def periodic(
         input_path: str,
         slave: str,
@@ -3586,6 +3614,416 @@ def _register_operations(server: FastMCP) -> None:
             normal_weight=normal_weight,
             record_distance=record_distance,
             record_closest_cell=record_closest_cell,
+        )
+
+    @server.tool()
+    def convert_coordinates(
+        input_path: str,
+        output_path: str,
+        system: str = "cylindrical",
+        axis: Optional[List[float]] = None,
+        origin: Optional[List[float]] = None,
+        reference: Optional[List[float]] = None,
+        arrays: Optional[List[str]] = None,
+        inverse: bool = False,
+        record_coordinates: bool = True,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Cylindrical or spherical components about an axis, for rotating
+        machinery and pressure vessels. The points stay put;
+        record_coordinates attaches coords:cylindrical (r, theta, z) or
+        coords:spherical (r, theta polar from the axis, phi) point data, and
+        each array in `arrays` -- point or cell data, a vector (n, 3) or a
+        tensor (n, 9)/(n, 3, 3) -- is rewritten in the local basis of its point
+        (a cell's at its centroid); inverse=true converts local components back
+        to Cartesian. The axis (default +z) passes through origin; angles are
+        measured from reference projected off the axis. Reports num_arrays and
+        num_singular (points on the axis)."""
+        return _guard(
+            _tools.tool_convert_coordinates,
+            input_path=input_path,
+            output_path=output_path,
+            system=system,
+            axis=axis or (0.0, 0.0, 1.0),
+            origin=origin or (0.0, 0.0, 0.0),
+            reference=reference or (1.0, 0.0, 0.0),
+            arrays=arrays,
+            inverse=inverse,
+            record_coordinates=record_coordinates,
+            input_format=input_format,
+            output_format=output_format,
+        )
+
+    @server.tool()
+    def prepare_metric(
+        input_path: str,
+        output_path: str,
+        arrays: List[str],
+        output: str = "metric",
+        target_vertices: float = 0.0,
+        norm: float = 2.0,
+        hmin: float = 0.0,
+        hmax: float = 0.0,
+        gradation: float = 0.0,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """The metric toolbox, no MMG needed: intersect several anisotropic
+        metric fields (point data, 6 components in 3-D or 3 in 2-D, as
+        metric_from_hessian writes) so one mesh resolves every field,
+        normalise to target_vertices (L^p, norm = p, 0 = infinity), clamp
+        sizes to [hmin, hmax] and grade (gradation = largest size growth per
+        unit length, > 1). Writes point data `output` for adapt. Reports
+        complexity_before/after (about the vertex count), num_graded,
+        sweeps."""
+        return _guard(
+            _tools.tool_prepare_metric,
+            input_path=input_path,
+            output_path=output_path,
+            arrays=arrays,
+            output=output,
+            target_vertices=target_vertices,
+            norm=norm,
+            hmin=hmin,
+            hmax=hmax,
+            gradation=gradation,
+            input_format=input_format,
+            output_format=output_format,
+        )
+
+    @server.tool()
+    def untangle(
+        input_path: str,
+        output_path: str,
+        fix_boundary: bool = True,
+        frozen: Optional[str] = None,
+        rings: int = 2,
+        smooth: bool = False,
+        max_sweeps: int = 100,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Repair inverted tetrahedra and hexahedra by moving nodes (Escobar
+        et al.'s untangling functional), keeping the connectivity -- after a
+        large morph, or in a result file from an explicit run. By default
+        only nodes within `rings` edge rings of an inverted cell move and the
+        boundary stays fixed; smooth=true untangles and smooths everything.
+        `frozen` names a point_set or point-data mask of nodes to keep.
+        Reports num_inverted_before/after, min_quality_before/after (least
+        corner scaled Jacobian), sweeps, moves."""
+        return _guard(
+            _tools.tool_untangle,
+            input_path=input_path,
+            output_path=output_path,
+            fix_boundary=fix_boundary,
+            frozen=frozen,
+            rings=rings,
+            smooth=smooth,
+            max_sweeps=max_sweeps,
+            input_format=input_format,
+            output_format=output_format,
+        )
+
+    @server.tool()
+    def morph(
+        input_path: str,
+        output_path: str,
+        array: str,
+        fix_boundary: bool = True,
+        constrained: Optional[str] = None,
+        stiffening: float = 1.0,
+        steps: int = 1,
+        allow_inverted: bool = False,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Boundary-driven mesh morphing (shape optimisation, fluid-structure
+        mesh motion): the constrained points -- the boundary unless
+        fix_boundary is false, plus the point_set or nonzero point-data array
+        named by `constrained` -- move by the point-data displacement `array`
+        exactly; every other point moves by its harmonic extension with
+        Jacobian-based stiffening (small cells move nearly rigidly). Give
+        boundary points that stay put a zero displacement. Larger motions:
+        more `steps`. A result with inverted cells fails unless
+        allow_inverted. Reports num_constrained, num_free, num_inverted,
+        max_displacement, converged."""
+        return _guard(
+            _tools.tool_morph,
+            input_path=input_path,
+            output_path=output_path,
+            array=array,
+            fix_boundary=fix_boundary,
+            constrained=constrained,
+            stiffening=stiffening,
+            steps=steps,
+            allow_inverted=allow_inverted,
+            input_format=input_format,
+            output_format=output_format,
+        )
+
+    @server.tool()
+    def laplacian_eigenmodes(
+        input_path: str,
+        output_path: str,
+        num_modes: int = 10,
+        tolerance: float = 1e-8,
+        max_iterations: int = 0,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """The lowest eigenpairs of a triangle surface's Laplace-Beltrami
+        operator (cotangent stiffness against lumped mass, Neumann on a
+        boundary): writes point data laplacian:modes (n, num_modes),
+        M-orthonormal, and field data laplacian:eigenvalues, ascending -- a
+        spectral positional encoding for graph networks, or a shape
+        descriptor. Quads and polygons are refused naming convert_cells
+        simplexify, volumes naming extract_surface. Reports eigenvalues,
+        iterations, max_residual, converged."""
+        return _guard(
+            _tools.tool_laplacian_eigenmodes,
+            input_path=input_path,
+            output_path=output_path,
+            num_modes=num_modes,
+            tolerance=tolerance,
+            max_iterations=max_iterations,
+            input_format=input_format,
+            output_format=output_format,
+        )
+
+    @server.tool()
+    def register_rigid(
+        source_path: str,
+        target_path: str,
+        output_path: Optional[str] = None,
+        method: str = "point_to_point",
+        max_iterations: int = 50,
+        tolerance: float = 1e-10,
+        max_distance: float = 0.0,
+        rotate_data: bool = False,
+        source_format: Optional[str] = None,
+        target_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Rigid registration by iterative closest points: the 4x4 matrix
+        (rows) laying the source's points onto the target -- its surface when
+        it has surface cells, else its points -- e.g. a scan onto its design.
+        method "point_to_point" or "point_to_plane" (tangent planes, fewer
+        iterations; a point-cloud target needs normals point data, see
+        estimate_normals). max_distance > 0 drops pairs farther apart
+        (outliers). ICP finds the nearest optimum, so the two should start
+        roughly aligned. With output_path the moved source is written too.
+        Reports matrix, initial_rms, rms, iterations, num_pairs, converged."""
+        return _guard(
+            _tools.tool_register_rigid,
+            source_path=source_path,
+            target_path=target_path,
+            output_path=output_path,
+            method=method,
+            max_iterations=max_iterations,
+            tolerance=tolerance,
+            max_distance=max_distance,
+            rotate_data=rotate_data,
+            source_format=source_format,
+            target_format=target_format,
+            output_format=output_format,
+        )
+
+    @server.tool()
+    def estimate_normals(
+        input_path: str,
+        output_path: str,
+        k: int = 16,
+        orientation: str = "consistent",
+        viewpoint: Optional[List[float]] = None,
+        record_variation: bool = False,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Normals of a point cloud (a PLY, PCD or XYZ scan, or any mesh's
+        points): a plane fitted to each point and its k nearest neighbours,
+        written as `normals` point data (the columns the PCD and XYZ writers
+        emit). orientation: "consistent" (propagated along a spanning tree of
+        the neighbour graph, then each piece turned outward; a flat patch
+        faces +z), "viewpoint" (towards `viewpoint`, the scanner) or "none".
+        record_variation adds normals:variation (0 on a plane). Points with
+        no plane in their neighbourhood get NaN. Reports num_degenerate and
+        num_components."""
+        return _guard(
+            _tools.tool_estimate_normals,
+            input_path=input_path,
+            output_path=output_path,
+            k=k,
+            orientation=orientation,
+            viewpoint=viewpoint or (0.0, 0.0, 0.0),
+            record_variation=record_variation,
+            input_format=input_format,
+            output_format=output_format,
+        )
+
+    @server.tool()
+    def reconstruct_surface(
+        input_path: str,
+        output_path: str,
+        normals: str = "normals",
+        k: int = 8,
+        cell_size: float = 0.0,
+        resolution: int = 0,
+        max_distance: float = 0.0,
+        estimate_normals: bool = True,
+        normals_k: int = 16,
+        max_cells: int = 20_000_000,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """A triangle surface through an oriented point cloud (a PLY, PCD or
+        XYZ scan): the zero level set of the signed distance to the samples'
+        tangent planes (Hoppe et al. 1992), cut by marching tetrahedra on a
+        band of lattice cells about the samples. `normals` names the point
+        data (estimated when absent unless estimate_normals is false, with
+        normals_k neighbours); k tangent planes are blended per lattice node
+        (1 is Hoppe's field). cell_size 0 takes the extent over `resolution`
+        when given, else the sample spacing; max_distance 0 trims at twice
+        the larger of spacing and cell size, which keeps an open scan open.
+        Reports num_samples, spacing, cell_size, max_distance,
+        num_lattice_points, num_undefined, num_triangles, num_components and
+        estimated_normals."""
+        return _guard(
+            _tools.tool_reconstruct_surface,
+            input_path=input_path,
+            output_path=output_path,
+            normals=normals,
+            k=k,
+            cell_size=cell_size,
+            resolution=resolution,
+            max_distance=max_distance,
+            estimate_normals=estimate_normals,
+            normals_k=normals_k,
+            max_cells=max_cells,
+            input_format=input_format,
+            output_format=output_format,
+        )
+
+    @server.tool()
+    def convex_hull(
+        input_path: str,
+        output_path: str,
+        dimension: int = 0,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """The convex hull of a file's points (a scan, a point cloud, or any
+        mesh: its cells are ignored). 3-D: a closed triangle surface wound
+        outward; 2-D (the x, y footprint): a counter-clockwise line loop.
+        dimension is 2, 3, or 0 to decide from the points. Only extreme
+        points are vertices; each carries hull:point_id (its 0-based input
+        point). Exact predicates, so coplanar points are handled without a
+        tolerance. Reports dimension, num_vertices, num_facets, area (enclosed
+        in 2-D, surface in 3-D), volume and perimeter."""
+        return _guard(
+            _tools.tool_convex_hull,
+            input_path=input_path,
+            output_path=output_path,
+            dimension=dimension,
+            input_format=input_format,
+            output_format=output_format,
+        )
+
+    @server.tool()
+    def delaunay_2d(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """The Delaunay triangulation of a file's points in the x, y plane:
+        scattered xyz/pcd points turned into a terrain (each point keeps its
+        z and point data). One counter-clockwise triangle block covering the
+        convex hull; a point coinciding in x, y with an earlier one is left
+        out. Reports num_triangles, num_duplicates and num_boundary."""
+        return _guard(
+            _tools.tool_delaunay_2d,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+        )
+
+    @server.tool()
+    def geodesic_distance(
+        input_path: str,
+        output_path: str,
+        sources: Optional[List[int]] = None,
+        source_region: str = "",
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        time_factor: float = 1.0,
+        tolerance: float = 1e-10,
+        max_iterations: int = 0,
+    ) -> dict:
+        """Geodesic distance on a triangle surface: the distance along the
+        surface from the source points to every point, written as point_data
+        geodesic:distance, by the heat method (Crane et al. 2013) -- a short
+        heat flow from the sources (time time_factor * h^2, h the mean edge
+        length), its normalised gradient, and a Poisson solve.
+
+        Sources are point ids (0-based) and/or the points of a region
+        (source_region). The surface is the mesh's triangle blocks; a volume,
+        quad, polygon or higher-order cell is refused naming the operation that
+        makes triangles. A point in no triangle, or in a piece with no source,
+        gets NaN (num_unreached). The method is first-order accurate (about 1%
+        on a sphere at h = 0.03); a larger time_factor smooths it. Reports
+        num_sources, num_unreached, num_degenerate, max_distance, time_step,
+        heat_iterations, poisson_iterations and converged."""
+        return _guard(
+            _tools.tool_geodesic_distance,
+            input_path=input_path,
+            output_path=output_path,
+            sources=sources,
+            source_region=source_region,
+            input_format=input_format,
+            output_format=output_format,
+            time_factor=time_factor,
+            tolerance=tolerance,
+            max_iterations=max_iterations,
+        )
+
+    @server.tool()
+    def parameterize(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        padding: float = 0.02,
+        max_depth: int = 8,
+        max_stretch: float = 2.0,
+    ) -> dict:
+        """A UV atlas of a triangle surface: point_data uv, two texture
+        coordinates per point in the unit square, which the OBJ (vt), glTF
+        (TEXCOORD_0) and USD (primvars:st) writers turn into texture
+        coordinates.
+
+        Each edge-connected piece that is a disc is one chart; a closed or holed
+        piece is cut into discs, and one that folds or whose L2 stretch exceeds
+        max_stretch is halved (up to max_depth times). Charts are flattened by
+        least-squares conformal maps (else mean-value coordinates) with no
+        flipped triangle, keep their area, and are shelf-packed padding *
+        sqrt(area) apart. Points on seams are split (point_data
+        parameterize:parent_point names the input point; the first copy keeps
+        its index); cell_data parameterize:chart gives each triangle's chart.
+        The surface is the mesh's triangle blocks; a volume, quad, polygon or
+        higher-order cell is refused naming the operation that makes triangles.
+        Reports num_charts, num_flipped, stretch (1 keeps lengths),
+        packing_efficiency and num_seam_points."""
+        return _guard(
+            _tools.tool_parameterize,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            padding=padding,
+            max_depth=max_depth,
+            max_stretch=max_stretch,
         )
 
     @server.tool()

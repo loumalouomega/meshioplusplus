@@ -10,11 +10,13 @@ from . import (
     _check,
     _check_conformity,
     _clean,
+    _completion,
     _compress,
     _conservative_interpolate,
     _contact_pairs,
     _convert,
     _convert_cells,
+    _coordinates,
     _crop,
     _curvature,
     _data,
@@ -23,6 +25,7 @@ from . import (
     _decimate_volume,
     _decompress,
     _diff,
+    _eigenmodes,
     _extract_surface,
     _extrude,
     _feature_edges,
@@ -30,33 +33,42 @@ from . import (
     _find_intersections,
     _fit_primitives,
     _generate,
+    _geodesic,
+    _graph,
     _grid_transfer,
     _guard,
     _hausdorff,
+    _hull,
     _iga,
     _info,
     _interpolate,
     _isosurface,
     _merge,
     _mesh_cad,
+    _metric,
     _mirror,
     _mmg,
+    _morph,
     _normals,
     _octree,
     _octree_mesh,
     _optimize_volume,
+    _parameterize,
     _partition,
     _periodic,
     _pipeline,
     _point_budget,
+    _point_normals,
     _predict,
     _project_to_cad,
     _proximity,
     _quality,
+    _reconstruct,
     _refine,
     _refine_patches,
     _region_adjacency,
     _regions,
+    _register,
     _remesh,
     _remesh_volume,
     _reorder,
@@ -83,12 +95,15 @@ from . import (
     _transform,
     _tui,
     _undo_green,
+    _untangle,
     _view,
     _voxelize,
 )
 
 
-def main(argv=None):
+def build_parser():
+    """The whole CLI's argparse parser; shell completions are generated from it
+    (the ``completion`` verb), so they follow the verbs as they change."""
     parent_parser = argparse.ArgumentParser(
         description="Mesh input/output tools.",
         formatter_class=argparse.RawTextHelpFormatter,
@@ -275,6 +290,89 @@ def main(argv=None):
     )
     _hausdorff.add_args(parser)
     parser.set_defaults(func=_hausdorff.hausdorff_cmd)
+
+    parser = subparsers.add_parser(
+        "coordinates",
+        help="Positions, vector and tensor fields in cylindrical/spherical components",
+    )
+    _coordinates.add_args(parser)
+    parser.set_defaults(func=_coordinates.coordinates_cmd)
+
+    parser = subparsers.add_parser(
+        "metric", help="Intersect, normalise, clamp and grade metric fields"
+    )
+    _metric.add_args(parser)
+    parser.set_defaults(func=_metric.metric_cmd)
+
+    parser = subparsers.add_parser(
+        "untangle", help="Move nodes until no tetrahedron or hexahedron is inverted"
+    )
+    _untangle.add_args(parser)
+    parser.set_defaults(func=_untangle.untangle_cmd)
+
+    parser = subparsers.add_parser(
+        "morph", help="Move the boundary by a displacement, carried into the mesh"
+    )
+    _morph.add_args(parser)
+    parser.set_defaults(func=_morph.morph_cmd)
+
+    parser = subparsers.add_parser(
+        "eigenmodes",
+        help="Lowest eigenpairs of a surface's Laplace-Beltrami operator",
+    )
+    _eigenmodes.add_args(parser)
+    parser.set_defaults(func=_eigenmodes.eigenmodes_cmd)
+
+    parser = subparsers.add_parser(
+        "register", help="Rigid registration of one mesh onto another (ICP)"
+    )
+    _register.add_args(parser)
+    parser.set_defaults(func=_register.register_cmd)
+
+    parser = subparsers.add_parser(
+        "point-normals", help="Normals of a point cloud by local plane fits"
+    )
+    _point_normals.add_args(parser)
+    parser.set_defaults(func=_point_normals.point_normals_cmd)
+
+    parser = subparsers.add_parser(
+        "reconstruct", help="A triangle surface through an oriented point cloud"
+    )
+    _reconstruct.add_args(parser)
+    parser.set_defaults(func=_reconstruct.reconstruct_cmd)
+
+    parser = subparsers.add_parser(
+        "hull", help="Convex hull of the points (3-D surface or 2-D loop)"
+    )
+    _hull.add_hull_args(parser)
+    parser.set_defaults(func=_hull.hull_cmd)
+
+    parser = subparsers.add_parser(
+        "delaunay", help="Delaunay triangulation of the points in the x, y plane"
+    )
+    _hull.add_delaunay_args(parser)
+    parser.set_defaults(func=_hull.delaunay_cmd)
+
+    parser = subparsers.add_parser(
+        "geodesic",
+        help="Surface distance from source points (heat method)",
+    )
+    _geodesic.add_args(parser)
+    parser.set_defaults(func=_geodesic.geodesic_cmd)
+
+    parser = subparsers.add_parser(
+        "parameterize",
+        help="A UV atlas of a triangle surface (texture coordinates)",
+    )
+    _parameterize.add_args(parser)
+    parser.set_defaults(func=_parameterize.parameterize_cmd)
+
+    parser = subparsers.add_parser(
+        "graph",
+        help="Write a mesh's node or cell graph as a METIS or Scotch graph file",
+    )
+    _graph.add_args(parser)
+    parser.set_defaults(func=_graph.graph_cmd)
 
     parser = subparsers.add_parser(
         "periodic",
@@ -775,8 +873,20 @@ def main(argv=None):
     _dataset.add_args(parser)
     parser.set_defaults(func=_dataset.dataset_cmd)
 
-    args = parent_parser.parse_args(argv)
+    parser = subparsers.add_parser(
+        "completion",
+        help="Print a bash, zsh or fish completion script for this CLI",
+    )
+    _completion.add_args(parser)
+    parser.set_defaults(
+        func=lambda args: _completion.completion_cmd(args, parent_parser)
+    )
 
+    return parent_parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
     return args.func(args)
 
 

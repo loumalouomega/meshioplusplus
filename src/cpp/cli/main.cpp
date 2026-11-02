@@ -134,6 +134,19 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/normals.hpp"
+#include "meshioplusplus/detail/length_unit.hpp"
+#include "meshioplusplus/operations/adjacency.hpp"
+#include "meshioplusplus/operations/coordinates.hpp"
+#include "meshioplusplus/operations/hull.hpp"
+#include "meshioplusplus/operations/point_normals.hpp"
+#include "meshioplusplus/operations/reconstruct_surface.hpp"
+#include "meshioplusplus/operations/registration.hpp"
+#include "meshioplusplus/operations/eigenmodes.hpp"
+#include "meshioplusplus/operations/morph.hpp"
+#include "meshioplusplus/operations/untangle.hpp"
+#include "meshioplusplus/operations/metric.hpp"
+#include "meshioplusplus/operations/geodesic.hpp"
+#include "meshioplusplus/operations/parameterize.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
@@ -449,6 +462,20 @@ void print_usage(std::ostream& os) {
           "  split-interface        Split point fans along a Side region\n"
           "  hausdorff               Hausdorff distance between two surfaces\n"
           "                            (--max D: nonzero exit when it is exceeded)\n"
+          "  completion              Print a bash, zsh or fish completion script\n"
+          "  coordinates             Fields in cylindrical/spherical components about an axis\n"
+          "  hull                    Convex hull of the points (3-D surface or 2-D loop)\n"
+          "  point-normals           Normals of a point cloud by local plane fits\n"
+          "  reconstruct             A triangle surface through an oriented point cloud\n"
+          "  register                Rigid registration of one mesh onto another (ICP)\n"
+          "  eigenmodes              Lowest eigenpairs of a surface's Laplace-Beltrami operator\n"
+          "  morph                   Move the boundary by a displacement, carried into the mesh\n"
+          "  untangle                Move nodes until no tetrahedron or hexahedron is inverted\n"
+          "  metric                  Intersect, normalise, clamp and grade metric fields\n"
+          "  delaunay                Delaunay triangulation of the points in the x, y plane\n"
+          "  geodesic                Surface distance from source points (heat method)\n"
+          "  parameterize            A UV atlas of a triangle surface (texture coordinates)\n"
+          "  graph                   Write a mesh's node or cell graph as a METIS or Scotch file\n"
           "  periodic                Match the nodes of two regions a transform maps together\n"
           "  repair                  Fix a surface's orientation, holes and bowties\n"
           "  shrinkwrap              Project a mesh's points onto a target surface\n"
@@ -3847,6 +3874,679 @@ std::vector<double> cli_numbers(const std::string& rText, std::size_t Count, con
     return out;
 }
 
+// metric: intersect, normalise, clamp and grade metric fields. See
+// operations/metric.hpp.
+int cmd_metric(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"arrays", {}, true},
+                                  {"output", {}, true},
+                                  {"target-vertices", {}, true},
+                                  {"norm", {}, true},
+                                  {"hmin", {}, true},
+                                  {"hmax", {}, true},
+                                  {"gradation", {}, true},
+                                  {"max-sweeps", {}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("metric requires INFILE OUTFILE");
+    meshioplusplus::PrepareMetricOptions o;
+    {
+        auto in = meshioplusplus::detail::make_classic_istringstream(opt_value(p, "arrays"));
+        std::string name;
+        while (std::getline(in, name, ','))
+            if (!name.empty())
+                o.mArrays.push_back(name);
+    }
+    if (has_opt(p, "output"))
+        o.mOutput = opt_value(p, "output");
+    const auto number = [&](const char* pName, double& rOut) {
+        if (has_opt(p, pName))
+            rOut = meshioplusplus::detail::stod_c(opt_value(p, pName));
+    };
+    number("target-vertices", o.mTargetVertices);
+    number("norm", o.mNorm);
+    number("hmin", o.mHmin);
+    number("hmax", o.mHmax);
+    number("gradation", o.mGradation);
+    if (has_opt(p, "max-sweeps"))
+        o.mMaxSweeps = std::stoll(opt_value(p, "max-sweeps"));
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::PrepareMetricResult r = meshioplusplus::prepare_metric(mesh, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Field("complexity_before", r.mComplexityBefore);
+        json.Field("complexity_after", r.mComplexityAfter);
+        json.Field("num_graded", r.mNumGraded);
+        json.Field("sweeps", r.mSweeps);
+        json.EndObject();
+        return 0;
+    }
+    char buf[96];
+    meshioplusplus::detail::snprintf_c(buf, sizeof(buf), "%.6g -> %.6g", r.mComplexityBefore,
+                                       r.mComplexityAfter);
+    std::cout << "metric complexity " << buf << "; " << r.mNumGraded << " point(s) graded\n";
+    return 0;
+}
+
+// untangle: move nodes until no tetrahedron or hexahedron corner is inverted.
+// See operations/untangle.hpp.
+int cmd_untangle(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"no-fix-boundary", {}, false},
+                                  {"rings", {}, true},
+                                  {"smooth", {}, false},
+                                  {"max-sweeps", {}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("untangle requires INFILE OUTFILE");
+    meshioplusplus::UntangleOptions o;
+    o.mFixBoundary = !has_flag(p, "no-fix-boundary");
+    o.mSmooth = has_flag(p, "smooth");
+    if (has_opt(p, "rings"))
+        o.mRings = std::stoll(opt_value(p, "rings"));
+    if (has_opt(p, "max-sweeps"))
+        o.mMaxSweeps = std::stoll(opt_value(p, "max-sweeps"));
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::UntangleResult r = meshioplusplus::untangle(mesh, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Field("num_inverted_before", r.mNumInvertedBefore);
+        json.Field("num_inverted_after", r.mNumInvertedAfter);
+        json.Field("min_quality_before", r.mMinQualityBefore);
+        json.Field("min_quality_after", r.mMinQualityAfter);
+        json.Field("sweeps", r.mSweeps);
+        json.Field("moves", r.mMoves);
+        json.EndObject();
+        return 0;
+    }
+    char buf[96];
+    meshioplusplus::detail::snprintf_c(buf, sizeof(buf), "%.4g -> %.4g", r.mMinQualityBefore,
+                                       r.mMinQualityAfter);
+    std::cout << "inverted cells " << r.mNumInvertedBefore << " -> " << r.mNumInvertedAfter
+              << "; least corner scaled Jacobian " << buf << " (" << r.mSweeps << " sweep(s))\n";
+    return 0;
+}
+
+// morph: move the boundary (or chosen points) by a displacement, harmonically
+// extended into the mesh. See operations/morph.hpp.
+int cmd_morph(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"array", {}, true},
+                                  {"no-fix-boundary", {}, false},
+                                  {"constrained-array", {}, true},
+                                  {"stiffening", {}, true},
+                                  {"steps", {}, true},
+                                  {"allow-inverted", {}, false},
+                                  {"tolerance", {}, true},
+                                  {"max-iterations", {}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("morph requires INFILE OUTFILE");
+    meshioplusplus::MorphOptions o;
+    o.mArray = opt_value(p, "array");
+    o.mFixBoundary = !has_flag(p, "no-fix-boundary");
+    o.mConstrainedArray = opt_value(p, "constrained-array");
+    if (has_opt(p, "stiffening"))
+        o.mStiffening = meshioplusplus::detail::stod_c(opt_value(p, "stiffening"));
+    if (has_opt(p, "steps"))
+        o.mSteps = std::stoll(opt_value(p, "steps"));
+    o.mAllowInverted = has_flag(p, "allow-inverted");
+    if (has_opt(p, "tolerance"))
+        o.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    if (has_opt(p, "max-iterations"))
+        o.mMaxIterations = std::stoll(opt_value(p, "max-iterations"));
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::MorphResult r = meshioplusplus::morph(mesh, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Field("num_constrained", r.mNumConstrained);
+        json.Field("num_free", r.mNumFree);
+        json.Field("num_inverted", r.mNumInverted);
+        json.Field("iterations", r.mIterations);
+        json.Field("max_displacement", r.mMaxDisplacement);
+        json.Field("converged", r.mConverged);
+        json.EndObject();
+        return 0;
+    }
+    char buf[64];
+    meshioplusplus::detail::snprintf_c(buf, sizeof(buf), "%.9g", r.mMaxDisplacement);
+    std::cout << "morphed: " << r.mNumConstrained << " constrained, " << r.mNumFree
+              << " free point(s); largest displacement " << buf;
+    if (r.mNumInverted > 0)
+        std::cout << "; " << r.mNumInverted << " inverted cell(s)";
+    std::cout << "\n";
+    return 0;
+}
+
+// eigenmodes: the lowest eigenpairs of a surface's Laplace-Beltrami operator.
+// See operations/eigenmodes.hpp.
+int cmd_eigenmodes(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"num-modes", {"-k"}, true},
+                                  {"tolerance", {}, true},
+                                  {"max-iterations", {}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("eigenmodes requires INFILE OUTFILE");
+    meshioplusplus::EigenmodeOptions o;
+    if (has_opt(p, "num-modes"))
+        o.mNumModes = std::stoll(opt_value(p, "num-modes"));
+    if (has_opt(p, "tolerance"))
+        o.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    if (has_opt(p, "max-iterations"))
+        o.mMaxIterations = std::stoll(opt_value(p, "max-iterations"));
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::EigenmodeResult r = meshioplusplus::laplacian_eigenmodes(mesh, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Key("eigenvalues");
+        json.BeginArray();
+        for (const double v : r.mEigenvalues)
+            json.Number(v);
+        json.EndArray();
+        json.Field("iterations", r.mIterations);
+        json.Field("max_residual", r.mMaxResidual);
+        json.Field("converged", r.mConverged);
+        json.Field("num_degenerate", r.mNumDegenerate);
+        json.EndObject();
+        return 0;
+    }
+    std::cout << "eigenvalues:";
+    char buf[32];
+    for (const double v : r.mEigenvalues) {
+        meshioplusplus::detail::snprintf_c(buf, sizeof(buf), " %.9g", v);
+        std::cout << buf;
+    }
+    std::cout << "\n"
+              << r.mIterations << " iteration(s)" << (r.mConverged ? "" : ", not converged")
+              << "\n";
+    return 0;
+}
+
+// register: the rigid motion laying SOURCE onto TARGET, by iterative closest
+// points. See operations/registration.hpp.
+int cmd_register(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format-source", {}, true},
+                                  {"input-format-target", {}, true},
+                                  {"output", {}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"method", {}, true},
+                                  {"max-iterations", {}, true},
+                                  {"tolerance", {}, true},
+                                  {"max-distance", {}, true},
+                                  {"rotate-data", {}, false},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("register requires SOURCE TARGET");
+    meshioplusplus::RegistrationOptions o;
+    if (has_opt(p, "method"))
+        o.mMethod = meshioplusplus::registration_method_from_name(opt_value(p, "method"));
+    if (has_opt(p, "max-iterations"))
+        o.mMaxIterations = std::stoll(opt_value(p, "max-iterations"));
+    if (has_opt(p, "tolerance"))
+        o.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    if (has_opt(p, "max-distance"))
+        o.mMaxDistance = meshioplusplus::detail::stod_c(opt_value(p, "max-distance"));
+    Mesh source = read_mesh_cli(p.positionals[0], opt_value(p, "input-format-source"));
+    Mesh target = read_mesh_cli(p.positionals[1], opt_value(p, "input-format-target"));
+    const meshioplusplus::RegistrationResult r = meshioplusplus::register_rigid(source, target, o);
+    const std::string output = opt_value(p, "output");
+    if (!output.empty())
+        write_mesh_cli(output,
+                       meshioplusplus::transform(
+                           source, meshioplusplus::transform_from_matrix(r.mMatrix.data()),
+                           has_flag(p, "rotate-data")),
+                       opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        if (!output.empty())
+            json.Field("output", output);
+        json.Key("matrix");
+        json.BeginArray();
+        for (int row = 0; row < 4; ++row) {
+            json.BeginArray();
+            for (int col = 0; col < 4; ++col)
+                json.Number(r.mMatrix[static_cast<std::size_t>(4 * row + col)]);
+            json.EndArray();
+        }
+        json.EndArray();
+        json.Field("initial_rms", r.mInitialRms);
+        json.Field("rms", r.mRms);
+        json.Field("iterations", r.mIterations);
+        json.Field("num_pairs", r.mNumPairs);
+        json.Field("converged", r.mConverged);
+        json.EndObject();
+        return 0;
+    }
+    char line[160];
+    for (int row = 0; row < 4; ++row) {
+        meshioplusplus::detail::snprintf_c(line, sizeof(line), "%14.9g %14.9g %14.9g %14.9g\n",
+                                           r.mMatrix[4 * row], r.mMatrix[4 * row + 1],
+                                           r.mMatrix[4 * row + 2], r.mMatrix[4 * row + 3]);
+        std::cout << line;
+    }
+    meshioplusplus::detail::snprintf_c(line, sizeof(line),
+                                       "rms %.9g (from %.9g) after %lld iteration(s)%s\n", r.mRms,
+                                       r.mInitialRms, static_cast<long long>(r.mIterations),
+                                       r.mConverged ? "" : ", not converged");
+    std::cout << line;
+    return 0;
+}
+
+// point-normals: normals of a point cloud by local plane fits. See
+// operations/point_normals.hpp.
+int cmd_point_normals(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"k", {}, true},
+                                  {"orientation", {}, true},
+                                  {"viewpoint", {}, true},
+                                  {"variation", {}, false},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("point-normals requires INFILE OUTFILE");
+    meshioplusplus::PointNormalsOptions o;
+    if (has_opt(p, "k"))
+        o.mK = std::stoll(opt_value(p, "k"));
+    if (has_opt(p, "orientation"))
+        o.mOrientation = meshioplusplus::normal_orientation_from_name(opt_value(p, "orientation"));
+    if (has_opt(p, "viewpoint")) {
+        std::vector<double> v;
+        auto in = meshioplusplus::detail::make_classic_istringstream(opt_value(p, "viewpoint"));
+        std::string item;
+        while (std::getline(in, item, ','))
+            v.push_back(meshioplusplus::detail::stod_c(item));
+        if (v.size() != 3)
+            throw std::runtime_error("point-normals: --viewpoint expects three numbers");
+        o.mViewpoint = {v[0], v[1], v[2]};
+    }
+    o.mRecordVariation = has_flag(p, "variation");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::PointNormalsResult r = meshioplusplus::estimate_normals(mesh, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Field("num_degenerate", r.mNumDegenerate);
+        json.Field("num_components", r.mNumComponents);
+        json.EndObject();
+        return 0;
+    }
+    std::cout << "normals of " << mesh.NumPoints() << " points";
+    if (r.mNumComponents > 0)
+        std::cout << " in " << r.mNumComponents << " piece(s)";
+    if (r.mNumDegenerate > 0)
+        std::cout << ", " << r.mNumDegenerate << " degenerate (NaN)";
+    std::cout << "\n";
+    return 0;
+}
+
+// reconstruct: a triangle surface through an oriented point cloud. See
+// operations/reconstruct_surface.hpp.
+int cmd_reconstruct(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"normals", {}, true},
+                                  {"k", {}, true},
+                                  {"cell-size", {}, true},
+                                  {"resolution", {}, true},
+                                  {"max-distance", {}, true},
+                                  {"no-estimate", {}, false},
+                                  {"normals-k", {}, true},
+                                  {"max-cells", {}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("reconstruct requires INFILE OUTFILE");
+    meshioplusplus::ReconstructSurfaceOptions o;
+    if (has_opt(p, "normals"))
+        o.mNormalsName = opt_value(p, "normals");
+    if (has_opt(p, "k"))
+        o.mK = std::stoll(opt_value(p, "k"));
+    if (has_opt(p, "cell-size"))
+        o.mCellSize = meshioplusplus::detail::stod_c(opt_value(p, "cell-size"));
+    if (has_opt(p, "resolution"))
+        o.mResolution = std::stoll(opt_value(p, "resolution"));
+    if (has_opt(p, "max-distance"))
+        o.mMaxDistance = meshioplusplus::detail::stod_c(opt_value(p, "max-distance"));
+    o.mEstimateNormals = !has_flag(p, "no-estimate");
+    if (has_opt(p, "normals-k"))
+        o.mNormalsK = std::stoll(opt_value(p, "normals-k"));
+    if (has_opt(p, "max-cells"))
+        o.mMaxCells = std::stoll(opt_value(p, "max-cells"));
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::ReconstructSurfaceResult r = meshioplusplus::reconstruct_surface(mesh, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Field("num_samples", r.mNumSamples);
+        json.Field("spacing", r.mSpacing);
+        json.Field("cell_size", r.mCellSize);
+        json.Field("max_distance", r.mMaxDistance);
+        json.Field("num_lattice_points", r.mNumLatticePoints);
+        json.Field("num_undefined", r.mNumUndefined);
+        json.Field("num_triangles", r.mNumTriangles);
+        json.Field("num_components", r.mNumComponents);
+        json.Field("estimated_normals", r.mEstimatedNormals);
+        json.EndObject();
+        return 0;
+    }
+    std::cout << r.mNumTriangles << " triangles in " << r.mNumComponents << " piece(s) through "
+              << r.mNumSamples << " samples" << (r.mEstimatedNormals ? " (normals estimated)" : "")
+              << "\n";
+    return 0;
+}
+
+// hull: the convex hull of a mesh's points. See operations/hull.hpp.
+int cmd_hull(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"dimension", {}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("hull requires INFILE OUTFILE");
+    meshioplusplus::ConvexHullOptions o;
+    if (has_opt(p, "dimension")) {
+        const std::string d = opt_value(p, "dimension");
+        if (d != "0" && d != "2" && d != "3")
+            throw std::runtime_error("hull: --dimension must be 0, 2 or 3");
+        o.mDimension = d[0] - '0';
+    }
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::ConvexHullResult r = meshioplusplus::convex_hull(mesh, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Field("dimension", static_cast<std::int64_t>(r.mDimension));
+        json.Field("num_vertices", r.mNumVertices);
+        json.Field("num_facets", r.mNumFacets);
+        json.Field("area", r.mArea);
+        json.Field("volume", r.mVolume);
+        json.Field("perimeter", r.mPerimeter);
+        json.EndObject();
+        return 0;
+    }
+    std::cout << r.mDimension << "-D hull: " << r.mNumVertices << " vertices, " << r.mNumFacets
+              << (r.mDimension == 3 ? " triangles" : " edges") << "\n";
+    return 0;
+}
+
+// delaunay: the Delaunay triangulation of a mesh's points in the x, y plane.
+// See operations/hull.hpp.
+int cmd_delaunay(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("delaunay requires INFILE OUTFILE");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::Delaunay2dResult r = meshioplusplus::delaunay_2d(mesh);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Field("num_triangles", r.mNumTriangles);
+        json.Field("num_duplicates", r.mNumDuplicates);
+        json.Field("num_boundary", r.mNumBoundary);
+        json.EndObject();
+        return 0;
+    }
+    std::cout << "Delaunay triangulation: " << r.mNumTriangles << " triangles";
+    if (r.mNumDuplicates > 0)
+        std::cout << ", " << r.mNumDuplicates << " duplicate point(s) left out";
+    std::cout << "\n";
+    return 0;
+}
+
+// coordinates: positions, vector and tensor fields in cylindrical or spherical
+// components about an axis. See operations/coordinates.hpp.
+int cmd_coordinates(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"system", {}, true},
+                                  {"axis", {}, true},
+                                  {"origin", {}, true},
+                                  {"reference", {}, true},
+                                  {"arrays", {}, true},
+                                  {"inverse", {}, false},
+                                  {"no-record", {}, false},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("coordinates requires INFILE OUTFILE");
+    meshioplusplus::CoordinateOptions o;
+    const std::string system = has_opt(p, "system") ? opt_value(p, "system") : "cylindrical";
+    o.mSystem = meshioplusplus::coordinate_system_from_name(system);
+    const auto vec3 = [&](const char* pName, std::array<double, 3>& rOut) {
+        if (!has_opt(p, pName))
+            return;
+        std::vector<double> v;
+        auto in = meshioplusplus::detail::make_classic_istringstream(opt_value(p, pName));
+        std::string item;
+        while (std::getline(in, item, ','))
+            v.push_back(meshioplusplus::detail::stod_c(item));
+        if (v.size() != 3)
+            throw std::runtime_error(std::string("coordinates: --") + pName +
+                                     " expects three numbers");
+        rOut = {v[0], v[1], v[2]};
+    };
+    vec3("axis", o.mAxis);
+    vec3("origin", o.mOrigin);
+    vec3("reference", o.mReference);
+    if (has_opt(p, "arrays")) {
+        auto in = meshioplusplus::detail::make_classic_istringstream(opt_value(p, "arrays"));
+        std::string name;
+        while (std::getline(in, name, ','))
+            if (!name.empty())
+                o.mArrays.push_back(name);
+    }
+    o.mInverse = has_flag(p, "inverse");
+    o.mRecordCoordinates = !has_flag(p, "no-record");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::CoordinateResult r = meshioplusplus::convert_coordinates(mesh, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Field("system", system);
+        json.Field("num_arrays", r.mNumArrays);
+        json.Field("num_singular", r.mNumSingular);
+        json.EndObject();
+        return 0;
+    }
+    std::cout << system << " components: " << r.mNumArrays << " array(s) rewritten, "
+              << r.mNumSingular << " point(s) on the axis\n";
+    return 0;
+}
+
+// geodesic: the surface distance from source points by the heat method. See
+// operations/geodesic.hpp and doc/geodesic.md.
+int cmd_geodesic(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"source", {}, true},
+                                  {"source-region", {}, true},
+                                  {"time-factor", {}, true},
+                                  {"tolerance", {}, true},
+                                  {"max-iterations", {}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("geodesic requires INFILE OUTFILE");
+    meshioplusplus::GeodesicOptions o;
+    if (has_opt(p, "source")) {
+        const std::string text = opt_value(p, "source");
+        std::size_t at = 0;
+        while (at <= text.size()) {
+            const std::size_t comma = std::min(text.find(',', at), text.size());
+            const std::string item = text.substr(at, comma - at);
+            if (item.find_first_not_of(" \t") != std::string::npos) {
+                try {
+                    o.mSources.push_back(std::stoll(item));
+                } catch (const std::exception&) {
+                    throw std::runtime_error("geodesic: --source expects comma-separated integers");
+                }
+            }
+            at = comma + 1;
+        }
+    }
+    o.mSourceRegion = opt_value(p, "source-region");
+    if (has_opt(p, "time-factor"))
+        o.mTimeFactor = meshioplusplus::detail::stod_c(opt_value(p, "time-factor"));
+    if (has_opt(p, "tolerance"))
+        o.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    if (has_opt(p, "max-iterations"))
+        o.mMaxIterations = std::stoll(opt_value(p, "max-iterations"));
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::GeodesicResult r = meshioplusplus::geodesic_distance(mesh, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Field("num_sources", r.mNumSources);
+        json.Field("num_unreached", r.mNumUnreached);
+        json.Field("num_degenerate", r.mNumDegenerate);
+        json.Field("max_distance", r.mMaxDistance);
+        json.Field("time_step", r.mTimeStep);
+        json.Field("heat_iterations", r.mHeatIterations);
+        json.Field("poisson_iterations", r.mPoissonIterations);
+        json.Field("converged", r.mConverged);
+        json.EndObject();
+        return 0;
+    }
+    char buf[64];
+    meshioplusplus::detail::snprintf_c(buf, sizeof(buf), "%.6g", r.mMaxDistance);
+    std::cout << "geodesic distance from " << r.mNumSources << " source(s): max " << buf << ", "
+              << r.mNumUnreached << " unreached point(s)\n";
+    return 0;
+}
+
+// parameterize: a UV atlas of a triangle surface. See operations/parameterize.hpp
+// and doc/parameterize.md.
+int cmd_parameterize(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"padding", {}, true},
+                                  {"max-depth", {}, true},
+                                  {"max-stretch", {}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("parameterize requires INFILE OUTFILE");
+    meshioplusplus::ParameterizeOptions o;
+    if (has_opt(p, "padding"))
+        o.mPadding = meshioplusplus::detail::stod_c(opt_value(p, "padding"));
+    if (has_opt(p, "max-depth"))
+        o.mMaxDepth = std::stoll(opt_value(p, "max-depth"));
+    if (has_opt(p, "max-stretch"))
+        o.mMaxStretch = meshioplusplus::detail::stod_c(opt_value(p, "max-stretch"));
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::ParameterizeResult r = meshioplusplus::parameterize(mesh, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Field("num_charts", r.mNumCharts);
+        json.Field("num_flipped", r.mNumFlipped);
+        json.Field("stretch", r.mStretch);
+        json.Field("packing_efficiency", r.mPackingEfficiency);
+        json.Field("num_seam_points", r.mNumSeamPoints);
+        json.EndObject();
+        return 0;
+    }
+    char stretch[64], packing[64];
+    meshioplusplus::detail::snprintf_c(stretch, sizeof(stretch), "%.6g", r.mStretch);
+    meshioplusplus::detail::snprintf_c(packing, sizeof(packing), "%.3g", r.mPackingEfficiency);
+    std::cout << r.mNumCharts << " chart(s), " << r.mNumFlipped << " flipped triangle(s), stretch "
+              << stretch << ", packing " << packing << ", " << r.mNumSeamPoints
+              << " seam point(s)\n";
+    return 0;
+}
+
+// graph: the node / clique / cell graph as a METIS or Scotch graph file. See
+// operations/adjacency.hpp and doc/adjacency.md.
+int cmd_graph(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"kind", {}, true},
+                                  {"format", {}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("graph requires INFILE OUTFILE");
+    const std::string kind = has_opt(p, "kind") ? opt_value(p, "kind") : "node";
+    const meshioplusplus::AdjacencyKind k = meshioplusplus::adjacency_kind_from_name(kind);
+    const std::string& out_path = p.positionals[1];
+    const meshioplusplus::GraphFormat f =
+        has_opt(p, "format") ? meshioplusplus::graph_format_from_name(opt_value(p, "format"))
+                             : meshioplusplus::graph_format_for_path(out_path);
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    const meshioplusplus::GraphSummary s =
+        meshioplusplus::write_graph(out_path, meshioplusplus::adjacency(mesh, k), f);
+    const char* format_name = f == meshioplusplus::GraphFormat::Metis ? "metis" : "scotch";
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", out_path);
+        json.Field("kind", kind);
+        json.Field("format", std::string(format_name));
+        json.Field("num_vertices", s.mNumVertices);
+        json.Field("num_edges", s.mNumEdges);
+        json.Field("max_degree", s.mMaxDegree);
+        json.EndObject();
+        return 0;
+    }
+    std::cout << kind << " graph -> " << out_path << " (" << format_name << "): " << s.mNumVertices
+              << " vertices, " << s.mNumEdges << " edges, max degree " << s.mMaxDegree << "\n";
+    return 0;
+}
+
 int cmd_periodic(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -4220,9 +4920,10 @@ int cmd_transform(const std::vector<std::string>& rArgs) {
         xf = meshioplusplus::transform_from_matrix(v.data());
         ++given;
     }
+    double unit_scale = 0.0;
     if (p.values.count("scale-units")) {
-        xf = meshioplusplus::transform_units(
-            meshioplusplus::detail::stod_c(opt_value(p, "scale-units")));
+        unit_scale = meshioplusplus::detail::stod_c(opt_value(p, "scale-units"));
+        xf = meshioplusplus::transform_units(unit_scale);
         ++given;
     }
     if (given != 1)
@@ -4231,6 +4932,9 @@ int cmd_transform(const std::vector<std::string>& rArgs) {
             "--translate/--scale/--rotate/--matrix/--scale-units");
 
     Mesh out = meshioplusplus::transform(mesh, xf, has_flag(p, "rotate-data"));
+    // A unit conversion changes the unit a mesh states it is in (roadmap 7.1.4).
+    if (unit_scale > 0.0)
+        meshioplusplus::detail::rescale_mesh_length_unit(out, unit_scale);
     write_mesh_cli(p.positionals[1], out, opt_value(p, "output-format"));
     return 0;
 }
@@ -8486,6 +9190,411 @@ int cmd_merge(const std::vector<std::string>& rArgs) {
 
 }  // namespace
 
+// The verb dispatch: `kUnknownVerb` when @p rCmd names no verb.
+constexpr int kUnknownVerb = -0x7fff;
+int cmd_completion(const std::vector<std::string>& rArgs);
+
+int cli_run_verb(const std::string& cmd, const std::vector<std::string>& rest) {
+    if (cmd == "completion")
+        return cmd_completion(rest);
+    if (cmd == "convert" || cmd == "c")
+        return cmd_convert(rest);
+    if (cmd == "info" || cmd == "i")
+        return cmd_info(rest);
+    if (cmd == "ascii" || cmd == "a")
+        return cmd_ascii_binary(rest, /*binary=*/false);
+    if (cmd == "binary" || cmd == "b")
+        return cmd_ascii_binary(rest, /*binary=*/true);
+    if (cmd == "compress")
+        return cmd_compress(rest);
+    if (cmd == "decompress")
+        return cmd_decompress(rest);
+    if (cmd == "quality" || cmd == "q")
+        return cmd_quality(rest);
+    if (cmd == "repair")
+        return cmd_repair(rest);
+    if (cmd == "shrinkwrap")
+        return cmd_shrinkwrap(rest);
+    if (cmd == "sobolev-deform")
+        return cmd_sobolev_deform(rest);
+    if (cmd == "curvature")
+        return cmd_curvature(rest);
+    if (cmd == "normals")
+        return cmd_normals(rest);
+    if (cmd == "check-conformity")
+        return cmd_check_conformity(rest);
+    if (cmd == "find-intersections")
+        return cmd_find_intersections(rest);
+    if (cmd == "thickness")
+        return cmd_thickness(rest);
+    if (cmd == "check")
+        return cmd_check(rest);
+    if (cmd == "feature-edges")
+        return cmd_feature_edges(rest);
+    if (cmd == "segment")
+        return cmd_segment(rest);
+    if (cmd == "refine-patches")
+        return cmd_refine_patches(rest);
+    if (cmd == "fit-primitives")
+        return cmd_fit_primitives(rest);
+    if (cmd == "iga-refine")
+        return cmd_iga_refine(rest);
+    if (cmd == "iga-sample")
+        return cmd_iga_sample(rest);
+    if (cmd == "iga-evaluate")
+        return cmd_iga_evaluate(rest);
+    if (cmd == "to-cad")
+        return cmd_to_cad(rest);
+    if (cmd == "region-adjacency")
+        return cmd_region_adjacency(rest);
+    if (cmd == "find-interface")
+        return cmd_find_interface(rest);
+    if (cmd == "contact-pairs")
+        return cmd_contact_pairs(rest);
+    if (cmd == "split-interface")
+        return cmd_split_interface(rest);
+    if (cmd == "hausdorff")
+        return cmd_hausdorff(rest);
+    if (cmd == "metric")
+        return cmd_metric(rest);
+    if (cmd == "untangle")
+        return cmd_untangle(rest);
+    if (cmd == "morph")
+        return cmd_morph(rest);
+    if (cmd == "eigenmodes")
+        return cmd_eigenmodes(rest);
+    if (cmd == "register")
+        return cmd_register(rest);
+    if (cmd == "point-normals")
+        return cmd_point_normals(rest);
+    if (cmd == "reconstruct")
+        return cmd_reconstruct(rest);
+    if (cmd == "hull")
+        return cmd_hull(rest);
+    if (cmd == "delaunay")
+        return cmd_delaunay(rest);
+    if (cmd == "coordinates")
+        return cmd_coordinates(rest);
+    if (cmd == "geodesic")
+        return cmd_geodesic(rest);
+    if (cmd == "parameterize")
+        return cmd_parameterize(rest);
+    if (cmd == "graph")
+        return cmd_graph(rest);
+    if (cmd == "periodic")
+        return cmd_periodic(rest);
+    if (cmd == "extract-surface" || cmd == "surface")
+        return cmd_extract_surface(rest);
+    if (cmd == "reorder")
+        return cmd_reorder(rest);
+    if (cmd == "diff")
+        return cmd_diff(rest);
+    if (cmd == "merge")
+        return cmd_merge(rest);
+    if (cmd == "transform")
+        return cmd_transform(rest);
+    if (cmd == "clean")
+        return cmd_clean(rest);
+    if (cmd == "crop")
+        return cmd_crop(rest);
+    if (cmd == "select")
+        return cmd_select(rest);
+    if (cmd == "slice")
+        return cmd_slice(rest);
+    if (cmd == "isosurface")
+        return cmd_isosurface(rest);
+    if (cmd == "voxelize")
+        return cmd_voxelize(rest);
+    if (cmd == "generate")
+        return cmd_generate(rest);
+    if (cmd == "octree")
+        return cmd_octree(rest);
+    if (cmd == "octree-mesh")
+        return cmd_octree_mesh(rest);
+    if (cmd == "mesh-cad-surface")
+        return cmd_mesh_cad_surface(rest);
+    if (cmd == "project-to-cad")
+        return cmd_project_to_cad(rest);
+    if (cmd == "boundary-layer")
+        return cmd_boundary_layer(rest);
+    if (cmd == "extrude")
+        return cmd_extrude(rest);
+    if (cmd == "revolve")
+        return cmd_revolve(rest);
+    if (cmd == "mirror")
+        return cmd_mirror(rest);
+    if (cmd == "tetrahedralize")
+        return cmd_tetrahedralize(rest);
+    if (cmd == "sdf")
+        return cmd_sdf(rest);
+    if (cmd == "split")
+        return cmd_split(rest);
+    if (cmd == "regions")
+        return cmd_regions(rest);
+    if (cmd == "convert-cells")
+        return cmd_convert_cells(rest);
+    if (cmd == "tessellate")
+        return cmd_tessellate(rest);
+    if (cmd == "subdivide")
+        return cmd_subdivide(rest);
+    if (cmd == "agglomerate")
+        return cmd_agglomerate(rest);
+    if (cmd == "tet-to-poly")
+        return cmd_tet_to_poly(rest);
+    if (cmd == "poly-to-tet")
+        return cmd_poly_to_tet(rest);
+    if (cmd == "resample")
+        return cmd_resample(rest);
+    if (cmd == "refine")
+        return cmd_refine(rest);
+    if (cmd == "undo-green")
+        return cmd_undo_green(rest);
+    if (cmd == "decimate")
+        return cmd_decimate(rest);
+    if (cmd == "decimate-volume")
+        return cmd_decimate_volume(rest);
+    if (cmd == "adapt")
+        return cmd_adapt(rest);
+    if (cmd == "discretize-levelset")
+        return cmd_discretize_levelset(rest);
+    if (cmd == "mesh-2d")
+        return cmd_mesh_2d(rest);
+    if (cmd == "move")
+        return cmd_move(rest);
+    if (cmd == "remesh")
+        return cmd_remesh(rest);
+    if (cmd == "remesh-volume")
+        return cmd_remesh_volume(rest);
+    if (cmd == "optimize-volume")
+        return cmd_optimize_volume(rest);
+    if (cmd == "smooth")
+        return cmd_smooth(rest);
+    if (cmd == "interpolate")
+        return cmd_interpolate(rest);
+    if (cmd == "conservative-interpolate")
+        return cmd_conservative_interpolate(rest);
+    if (cmd == "partition")
+        return cmd_partition(rest);
+    if (cmd == "data")
+        return cmd_data(rest);
+    if (cmd == "pipeline")
+        return cmd_pipeline(rest);
+    if (cmd == "stats")
+        return cmd_stats(rest);
+    if (cmd == "view")
+        return cmd_view(rest);
+    if (cmd == "snapshot")
+        return cmd_snapshot(rest);
+    if (cmd == "tui")
+        return cmd_tui(rest);
+    if (cmd == "screenshot")
+        return cmd_screenshot(rest);
+    return kUnknownVerb;
+}
+
+// --- shell completions (roadmap 7.6.2) ----------------------------------------
+
+struct CompletionVerb {
+    std::string mName;
+    std::vector<std::string> mAliases;
+    std::vector<std::string> mOptions;
+    std::vector<std::string> mSubverbs;
+};
+
+// The verbs a usage text lists under @p rSection: lines "  name (alias)   ...".
+std::vector<std::pair<std::string, std::string>> completion_listed(const std::string& rText,
+                                                                   const std::string& rSection) {
+    std::vector<std::pair<std::string, std::string>> out;
+    auto in = meshioplusplus::detail::make_classic_istringstream(rText);
+    std::string line;
+    bool inside = false;
+    while (std::getline(in, line)) {
+        if (line == rSection) {
+            inside = true;
+            continue;
+        }
+        if (!inside)
+            continue;
+        if (!line.empty() && line[0] != ' ')
+            break;
+        if (line.size() < 3 || line[0] != ' ' || line[1] != ' ' ||
+            !std::islower(static_cast<unsigned char>(line[2])))
+            continue;
+        std::size_t end = 2;
+        while (end < line.size() &&
+               (std::islower(static_cast<unsigned char>(line[end])) ||
+                std::isdigit(static_cast<unsigned char>(line[end])) || line[end] == '-'))
+            ++end;
+        std::string alias;
+        if (line.compare(end, 2, " (") == 0) {
+            const std::size_t close = line.find(')', end);
+            if (close != std::string::npos)
+                alias = line.substr(end + 2, close - end - 2);
+        }
+        out.emplace_back(line.substr(2, end - 2), alias);
+    }
+    return out;
+}
+
+// The options of @p rCmd (with @p rArgs, for a group's sub-verb), from the
+// table its own `cli_parse` call holds.
+std::vector<std::string> completion_options(const std::string& rCmd,
+                                            const std::vector<std::string>& rArgs) {
+    std::vector<std::string> out;
+    meshioplusplus::cli::set_cli_describe(true);
+    try {
+        cli_run_verb(rCmd, rArgs);
+    } catch (const meshioplusplus::cli::cli_describe_request& r) {
+        for (const cli_opt_spec& spec : r.specs) {
+            out.push_back("--" + spec.canonical);
+            for (const std::string& alias : spec.aliases)
+                out.push_back(alias);
+        }
+    } catch (...) {
+        // A verb that fails before parsing (a group without its sub-verb) has
+        // no options of its own to offer.
+    }
+    meshioplusplus::cli::set_cli_describe(false);
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+
+std::vector<CompletionVerb> completion_verbs() {
+    auto usage = meshioplusplus::detail::make_classic_ostringstream();
+    print_usage(usage);
+    std::vector<CompletionVerb> verbs;
+    for (const auto& [name, alias] : completion_listed(usage.str(), "commands:")) {
+        if (name == "completion")
+            continue;  // its shells are written out by cmd_completion itself
+        CompletionVerb v;
+        v.mName = name;
+        if (!alias.empty())
+            v.mAliases.push_back(alias);
+        if (name == "data") {
+            auto sub = meshioplusplus::detail::make_classic_ostringstream();
+            print_data_usage(sub);
+            for (const auto& entry : completion_listed(sub.str(), "subcommands:")) {
+                v.mSubverbs.push_back(entry.first);
+                for (const std::string& o : completion_options("data", {entry.first}))
+                    v.mOptions.push_back(o);
+            }
+            std::sort(v.mOptions.begin(), v.mOptions.end());
+            v.mOptions.erase(std::unique(v.mOptions.begin(), v.mOptions.end()), v.mOptions.end());
+        } else {
+            v.mOptions = completion_options(name, {});
+        }
+        verbs.push_back(std::move(v));
+    }
+    return verbs;
+}
+
+std::string completion_join(const std::vector<std::string>& rItems) {
+    std::string out;
+    for (const std::string& item : rItems)
+        out += (out.empty() ? "" : " ") + item;
+    return out;
+}
+
+// `meshioplusplus completion bash|zsh|fish`: a script the shell sources.
+int cmd_completion(const std::vector<std::string>& rArgs) {
+    if (rArgs.size() != 1 || (rArgs[0] != "bash" && rArgs[0] != "zsh" && rArgs[0] != "fish"))
+        throw std::runtime_error("completion requires one of: bash, zsh, fish");
+    const std::string& shell = rArgs[0];
+    const std::vector<CompletionVerb> verbs = completion_verbs();
+    std::vector<std::string> names;
+    for (const CompletionVerb& v : verbs) {
+        names.push_back(v.mName);
+        names.insert(names.end(), v.mAliases.begin(), v.mAliases.end());
+    }
+    names.push_back("completion");
+    std::ostream& o = std::cout;
+    const std::string prog = "meshioplusplus";
+    if (shell == "bash") {
+        o << "# bash completion for " << prog << " (meshioplusplus completion bash)\n"
+          << "_meshioplusplus() {\n"
+          << "    local cur=\"${COMP_WORDS[COMP_CWORD]}\" opts=\"\" subs=\"\"\n"
+          << "    if [ \"$COMP_CWORD\" -eq 1 ]; then\n"
+          << "        COMPREPLY=($(compgen -W \"" << completion_join(names) << "\" -- \"$cur\"))\n"
+          << "        return\n"
+          << "    fi\n"
+          << "    case \"${COMP_WORDS[1]}\" in\n";
+        for (const CompletionVerb& v : verbs) {
+            std::string pattern = v.mName;
+            for (const std::string& a : v.mAliases)
+                pattern += "|" + a;
+            o << "        " << pattern << ") opts=\"" << completion_join(v.mOptions) << "\" subs=\""
+              << completion_join(v.mSubverbs) << "\";;\n";
+        }
+        o << "        completion) subs=\"bash zsh fish\";;\n"
+          << "    esac\n"
+          << "    if [ \"$COMP_CWORD\" -eq 2 ] && [ -n \"$subs\" ]; then\n"
+          << "        COMPREPLY=($(compgen -W \"$subs\" -- \"$cur\"))\n"
+          << "    elif [[ \"$cur\" == -* ]]; then\n"
+          << "        COMPREPLY=($(compgen -W \"$opts\" -- \"$cur\"))\n"
+          << "    else\n"
+          << "        COMPREPLY=($(compgen -f -- \"$cur\"))\n"
+          << "    fi\n"
+          << "}\n"
+          << "complete -o filenames -F _meshioplusplus " << prog << "\n";
+    } else if (shell == "zsh") {
+        o << "#compdef " << prog << "\n"
+          << "# zsh completion for " << prog << " (meshioplusplus completion zsh)\n"
+          << "_meshioplusplus() {\n"
+          << "    local -a opts subs\n"
+          << "    if (( CURRENT == 2 )); then\n"
+          << "        compadd -- " << completion_join(names) << "\n"
+          << "        return\n"
+          << "    fi\n"
+          << "    case $words[2] in\n";
+        for (const CompletionVerb& v : verbs) {
+            std::string pattern = v.mName;
+            for (const std::string& a : v.mAliases)
+                pattern += "|" + a;
+            o << "        " << pattern << ") opts=(" << completion_join(v.mOptions) << ") subs=("
+              << completion_join(v.mSubverbs) << ");;\n";
+        }
+        o << "        completion) subs=(bash zsh fish);;\n"
+          << "    esac\n"
+          << "    if (( CURRENT == 3 )) && (( ${#subs} )); then\n"
+          << "        compadd -- $subs\n"
+          << "    elif [[ $PREFIX == -* ]]; then\n"
+          << "        compadd -- $opts\n"
+          << "    else\n"
+          << "        _files\n"
+          << "    fi\n"
+          << "}\n"
+          << "compdef _meshioplusplus " << prog << "\n";
+    } else {
+        o << "# fish completion for " << prog << " (meshioplusplus completion fish)\n"
+          << "complete -c " << prog << " -f\n"
+          << "complete -c " << prog << " -n __fish_use_subcommand -a '" << completion_join(names)
+          << "'\n";
+        for (const CompletionVerb& v : verbs) {
+            std::string seen = v.mName;
+            for (const std::string& a : v.mAliases)
+                seen += " " + a;
+            if (!v.mSubverbs.empty())
+                o << "complete -c " << prog << " -n '__fish_seen_subcommand_from " << seen
+                  << "' -a '" << completion_join(v.mSubverbs) << "'\n";
+            for (const std::string& opt : v.mOptions) {
+                o << "complete -c " << prog << " -n '__fish_seen_subcommand_from " << seen << "' ";
+                if (opt.rfind("--", 0) == 0)
+                    o << "-l " << opt.substr(2);
+                else if (opt.size() == 2)
+                    o << "-s " << opt.substr(1);
+                else
+                    o << "-o " << opt.substr(1);
+                o << "\n";
+            }
+            o << "complete -c " << prog << " -n '__fish_seen_subcommand_from " << seen << "' -F\n";
+        }
+        o << "complete -c " << prog
+          << " -n '__fish_seen_subcommand_from completion' -a 'bash zsh fish'\n";
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     std::vector<std::string> args(argv + (argc > 0 ? 1 : 0), argv + argc);
 
@@ -8512,172 +9621,9 @@ int main(int argc, char** argv) {
     }
 
     try {
-        if (cmd == "convert" || cmd == "c")
-            return cmd_convert(rest);
-        if (cmd == "info" || cmd == "i")
-            return cmd_info(rest);
-        if (cmd == "ascii" || cmd == "a")
-            return cmd_ascii_binary(rest, /*binary=*/false);
-        if (cmd == "binary" || cmd == "b")
-            return cmd_ascii_binary(rest, /*binary=*/true);
-        if (cmd == "compress")
-            return cmd_compress(rest);
-        if (cmd == "decompress")
-            return cmd_decompress(rest);
-        if (cmd == "quality" || cmd == "q")
-            return cmd_quality(rest);
-        if (cmd == "repair")
-            return cmd_repair(rest);
-        if (cmd == "shrinkwrap")
-            return cmd_shrinkwrap(rest);
-        if (cmd == "sobolev-deform")
-            return cmd_sobolev_deform(rest);
-        if (cmd == "curvature")
-            return cmd_curvature(rest);
-        if (cmd == "normals")
-            return cmd_normals(rest);
-        if (cmd == "check-conformity")
-            return cmd_check_conformity(rest);
-        if (cmd == "find-intersections")
-            return cmd_find_intersections(rest);
-        if (cmd == "thickness")
-            return cmd_thickness(rest);
-        if (cmd == "check")
-            return cmd_check(rest);
-        if (cmd == "feature-edges")
-            return cmd_feature_edges(rest);
-        if (cmd == "segment")
-            return cmd_segment(rest);
-        if (cmd == "refine-patches")
-            return cmd_refine_patches(rest);
-        if (cmd == "fit-primitives")
-            return cmd_fit_primitives(rest);
-        if (cmd == "iga-refine")
-            return cmd_iga_refine(rest);
-        if (cmd == "iga-sample")
-            return cmd_iga_sample(rest);
-        if (cmd == "iga-evaluate")
-            return cmd_iga_evaluate(rest);
-        if (cmd == "to-cad")
-            return cmd_to_cad(rest);
-        if (cmd == "region-adjacency")
-            return cmd_region_adjacency(rest);
-        if (cmd == "find-interface")
-            return cmd_find_interface(rest);
-        if (cmd == "contact-pairs")
-            return cmd_contact_pairs(rest);
-        if (cmd == "split-interface")
-            return cmd_split_interface(rest);
-        if (cmd == "hausdorff")
-            return cmd_hausdorff(rest);
-        if (cmd == "periodic")
-            return cmd_periodic(rest);
-        if (cmd == "extract-surface" || cmd == "surface")
-            return cmd_extract_surface(rest);
-        if (cmd == "reorder")
-            return cmd_reorder(rest);
-        if (cmd == "diff")
-            return cmd_diff(rest);
-        if (cmd == "merge")
-            return cmd_merge(rest);
-        if (cmd == "transform")
-            return cmd_transform(rest);
-        if (cmd == "clean")
-            return cmd_clean(rest);
-        if (cmd == "crop")
-            return cmd_crop(rest);
-        if (cmd == "select")
-            return cmd_select(rest);
-        if (cmd == "slice")
-            return cmd_slice(rest);
-        if (cmd == "isosurface")
-            return cmd_isosurface(rest);
-        if (cmd == "voxelize")
-            return cmd_voxelize(rest);
-        if (cmd == "generate")
-            return cmd_generate(rest);
-        if (cmd == "octree")
-            return cmd_octree(rest);
-        if (cmd == "octree-mesh")
-            return cmd_octree_mesh(rest);
-        if (cmd == "mesh-cad-surface")
-            return cmd_mesh_cad_surface(rest);
-        if (cmd == "project-to-cad")
-            return cmd_project_to_cad(rest);
-        if (cmd == "boundary-layer")
-            return cmd_boundary_layer(rest);
-        if (cmd == "extrude")
-            return cmd_extrude(rest);
-        if (cmd == "revolve")
-            return cmd_revolve(rest);
-        if (cmd == "mirror")
-            return cmd_mirror(rest);
-        if (cmd == "tetrahedralize")
-            return cmd_tetrahedralize(rest);
-        if (cmd == "sdf")
-            return cmd_sdf(rest);
-        if (cmd == "split")
-            return cmd_split(rest);
-        if (cmd == "regions")
-            return cmd_regions(rest);
-        if (cmd == "convert-cells")
-            return cmd_convert_cells(rest);
-        if (cmd == "tessellate")
-            return cmd_tessellate(rest);
-        if (cmd == "subdivide")
-            return cmd_subdivide(rest);
-        if (cmd == "agglomerate")
-            return cmd_agglomerate(rest);
-        if (cmd == "tet-to-poly")
-            return cmd_tet_to_poly(rest);
-        if (cmd == "poly-to-tet")
-            return cmd_poly_to_tet(rest);
-        if (cmd == "resample")
-            return cmd_resample(rest);
-        if (cmd == "refine")
-            return cmd_refine(rest);
-        if (cmd == "undo-green")
-            return cmd_undo_green(rest);
-        if (cmd == "decimate")
-            return cmd_decimate(rest);
-        if (cmd == "decimate-volume")
-            return cmd_decimate_volume(rest);
-        if (cmd == "adapt")
-            return cmd_adapt(rest);
-        if (cmd == "discretize-levelset")
-            return cmd_discretize_levelset(rest);
-        if (cmd == "mesh-2d")
-            return cmd_mesh_2d(rest);
-        if (cmd == "move")
-            return cmd_move(rest);
-        if (cmd == "remesh")
-            return cmd_remesh(rest);
-        if (cmd == "remesh-volume")
-            return cmd_remesh_volume(rest);
-        if (cmd == "optimize-volume")
-            return cmd_optimize_volume(rest);
-        if (cmd == "smooth")
-            return cmd_smooth(rest);
-        if (cmd == "interpolate")
-            return cmd_interpolate(rest);
-        if (cmd == "conservative-interpolate")
-            return cmd_conservative_interpolate(rest);
-        if (cmd == "partition")
-            return cmd_partition(rest);
-        if (cmd == "data")
-            return cmd_data(rest);
-        if (cmd == "pipeline")
-            return cmd_pipeline(rest);
-        if (cmd == "stats")
-            return cmd_stats(rest);
-        if (cmd == "view")
-            return cmd_view(rest);
-        if (cmd == "snapshot")
-            return cmd_snapshot(rest);
-        if (cmd == "tui")
-            return cmd_tui(rest);
-        if (cmd == "screenshot")
-            return cmd_screenshot(rest);
+        const int rc = cli_run_verb(cmd, rest);
+        if (rc != kUnknownVerb)
+            return rc;
     } catch (const std::exception& e) {
         std::cerr << "error: " << e.what() << "\n";
         return 1;

@@ -2032,6 +2032,66 @@ end
     @test p.num_fixed == 0
     @test_throws MeshioError match_periodic_nodes(cube, "bottom", "top"; translate=(0, 0, 0.5))
 
+    # Geodesic distance from one cube corner: the far one is about 2.24 away.
+    gd = geodesic_distance(cube, [1])
+    @test gd.converged && gd.num_sources == 1 && gd.num_unreached == 0
+    @test 1.8 < gd.max_distance < 2.6
+    close(gd.mesh)
+    @test_throws MeshioError geodesic_distance(cube, Int[])
+
+    # A UV atlas of the closed cube: several charts, nothing flipped.
+    pa = parameterize(cube)
+    @test pa.num_charts >= 2 && pa.num_flipped == 0 && pa.num_seam_points > 0
+    @test pa.stretch >= 1.0 - 1e-9
+    close(pa.mesh)
+    @test_throws MeshioError parameterize(cube; max_stretch=0.5)
+    @test_throws MeshioError morph(cube, "missing")
+    @test_throws MeshioError untangle(cube)  # a surface: no volume cell
+    @test_throws MeshioError prepare_metric(cube, ["missing"])
+    ee = laplacian_eigenmodes(cube; num_modes=4)
+    @test ee.converged && ee.num_degenerate == 0
+    close(ee.mesh)
+    @test_throws MeshioError laplacian_eigenmodes(cube; num_modes=9)
+    rr = register_rigid(cube, cube)
+    @test rr.converged && rr.rms < 1e-12
+    @test isapprox(rr.matrix, [1.0 0 0 0; 0 1 0 0; 0 0 1 0; 0 0 0 1]; atol=1e-12)
+    @test_throws ArgumentError register_rigid(cube, cube; method="affine")
+    nn = estimate_normals(cube; k=3)
+    @test nn.num_degenerate == 0 && nn.num_components == 1
+    close(nn.mesh)
+    @test_throws ArgumentError estimate_normals(cube; orientation="inward")
+    cloud = sphere_points(; n=800)
+    rs = reconstruct_surface(cloud)
+    @test rs.estimated_normals && rs.num_components == 1 && rs.num_triangles > 0
+    close(rs.mesh)
+    @test_throws MeshioError reconstruct_surface(cloud; k=0)
+    @test_throws MeshioError reconstruct_surface(cloud; estimate_normals=false)
+    close(cloud)
+    hh = convex_hull(cube)
+    @test hh.dimension == 3 && hh.num_vertices == 8 && hh.num_facets == 12
+    @test isapprox(hh.volume, 1.0)
+    close(hh.mesh)
+    dd = delaunay_2d(cube)
+    @test dd.num_triangles == 2 && dd.num_duplicates == 4
+    close(dd.mesh)
+    cc = convert_coordinates(cube; system="spherical", origin=(0.5, 0.5, 0.5))
+    @test cc.num_arrays == 0 && cc.num_singular == 0
+    close(cc.mesh)
+    @test_throws ArgumentError convert_coordinates(cube; system="polar")
+
+    # A triangulated cube surface: 12 edges and 6 face diagonals, 1-based CSR.
+    g = adjacency(cube)
+    @test length(g.indptr) == 9
+    @test g.indptr[1] == 1 && g.indptr[end] == 2 * 18 + 1
+    @test extrema(g.indices) == (1, 8)
+    @test length(adjacency(cube; kind="cell").indptr) == 12 + 1
+    @test_throws MeshioError adjacency(cube; kind="edge")
+    gpath = joinpath(mktempdir(), "cube.graph")
+    gs = write_graph(gpath, cube)
+    @test (gs.num_vertices, gs.num_edges) == (8, 18)
+    @test startswith(read(gpath, String), "8 18\n")
+    @test_throws MeshioError write_graph(joinpath(mktempdir(), "cube.txt"), cube)
+
     q = check_quality(cube; require="min_angle >= 30")
     @test q.passed
     @test q.num_checks == 3
@@ -2238,13 +2298,13 @@ end
     @test read(path)[1:4] == UInt8[0x89, 0x50, 0x4e, 0x47]
     @test_throws MeshioError write_snapshot(joinpath(dirname(path), "frame.vtu"), cube)
 
-    # A cut-away: the camera sits on -x and a plane keeps x >= 0.5, so the far face
-    # (cell 5) shows from inside, in the tint.
+    # A cut-away: the camera sits on -x and a plane keeps x >= 0.5. The cube closes,
+    # so the cut is capped (no cell, the fill colour), not the far face in the tint.
     cut = render(cube; width=32, height=32, view="-x", shading="none",
                  background=rgba(0, 0, 0), cutaway=[0.5, 0, 0, 1, 0, 0],
                  cutaway_tint=rgba(10, 200, 30))
-    @test cut.cell_ids[17, 17] == 5
-    @test cut.rgba[1:3, 17, 17] == UInt8[10, 200, 30]
+    @test cut.cell_ids[17, 17] == -1
+    @test cut.rgba[2, 17, 17] != 0xc8
     two = render(cube; width=32, height=32,
                  cutaway=[[0.5, 0, 0, 1, 0, 0], [0, 0.5, 0, 0, 1, 0]])
     @test two isa Frame

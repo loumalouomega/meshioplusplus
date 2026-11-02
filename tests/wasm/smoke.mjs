@@ -5626,14 +5626,16 @@ step('render, renderText, renderPng', () => {
     assert.ok(png instanceof Uint8Array);
     assert.deepEqual(Array.from(png.slice(0, 8)), [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-    // A cut-away: the camera sits on -x and a plane keeps x >= 0.5, so what was the
-    // near face is gone and the centre is the far face, in the tint.
+    // A cut-away: the camera sits on -x and a plane keeps x >= 0.5, so the near face
+    // is gone. The cube closes, so the cut is capped (no cell, the fill colour)
+    // rather than showing the far face from inside, in the tint.
     const side = { width: 32, height: 32, view: '-x', shading: 'none', background: [0, 0, 0, 255] };
     const whole = m.render(cubeSurface, side);
     const cut = m.render(cubeSurface, { ...side, cutaway: [0.5, 0, 0, 1, 0, 0], cutawayTint: [10, 200, 30, 255] });
     const centre = 16 * 32 + 16;
     assert.notEqual(cut.cellIds[centre], whole.cellIds[centre]);
-    assert.deepEqual(Array.from(cut.rgba.slice(centre * 4, centre * 4 + 4)), [10, 200, 30, 255]);
+    assert.equal(cut.cellIds[centre], -1);
+    assert.notEqual(cut.rgba[centre * 4 + 1], 200);
     assert.ok(m.render(cubeSurface, { ...side, cutaway: [[0.5, 0, 0, 1, 0, 0], [0, 0.5, 0, 0, 1, 0]] }));
     assert.throws(() => m.render(cubeSurface, { cutaway: [1, 2, 3] }), /six numbers/);
     assert.throws(() => m.render(cubeSurface, { cutaway: [0, 0, 0, 0, 0, 0] }), /normal/);
@@ -5718,6 +5720,105 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.equal(p.numFixed, 0);
     shift[11] = 0.5;
     assert.throws(() => m.matchPeriodicNodes(tagged, 'bottom', 'top', shift));
+});
+
+step('prepareMetric refuses a missing field', () => {
+    assert.throws(() => m.prepareMetric(cubeSurface, { arrays: ['missing'] }));
+});
+
+step('untangle refuses a surface', () => {
+    assert.throws(() => m.untangle(cubeSurface));
+});
+
+step('morph refuses a missing displacement', () => {
+    assert.throws(() => m.morph(cubeSurface, { array: 'missing' }));
+});
+
+step('laplacianEigenmodes of the cube surface', () => {
+    const r = m.laplacianEigenmodes(cubeSurface, { numModes: 4 });
+    assert.ok(r.converged);
+    assert.equal(r.eigenvalues.length, 4);
+    assert.equal(r.eigenvalues[0], 0);
+    assert.ok('laplacian:modes' in r.mesh.point_data);
+    assert.throws(() => m.laplacianEigenmodes(cubeSurface, { numModes: 9 }));
+});
+
+step('registerRigid of the cube onto itself', () => {
+    const r = m.registerRigid(cubeSurface, cubeSurface);
+    assert.ok(r.converged);
+    assert.equal(r.matrix.length, 16);
+    assert.ok(Math.abs(r.matrix[0] - 1) < 1e-12 && Math.abs(r.matrix[3]) < 1e-12);
+    assert.throws(() => m.registerRigid(cubeSurface, cubeSurface, { method: 'affine' }));
+});
+
+step('estimateNormals of the cube corners', () => {
+    const r = m.estimateNormals(cubeSurface, { k: 3 });
+    assert.equal(r.numDegenerate, 0);
+    assert.equal(r.numComponents, 1);
+    assert.ok('normals' in r.mesh.point_data);
+    assert.throws(() => m.estimateNormals(cubeSurface, { orientation: 'inward' }));
+});
+
+step('reconstructSurface of a sphere cloud', () => {
+    const cloud = m.spherePoints(800);
+    const r = m.reconstructSurface(cloud);
+    assert.ok(r.estimatedNormals);
+    assert.equal(r.numComponents, 1);
+    assert.ok(r.numTriangles > 0);
+    assert.equal(r.mesh.cells[0].type, 'triangle');
+    assert.throws(() => m.reconstructSurface(cloud, { k: 0 }));
+    assert.throws(() => m.reconstructSurface(cloud, { estimateNormals: false }));
+});
+
+step('convexHull and delaunay2d of the cube corners', () => {
+    const h = m.convexHull(cubeSurface);
+    assert.equal(h.numVertices, 8);
+    assert.equal(h.numFacets, 12);
+    assert.ok(Math.abs(h.volume - 1) < 1e-12);
+    assert.equal(m.convexHull(cubeSurface, { dimension: 2 }).numVertices, 4);
+    assert.equal(m.delaunay2d(cubeSurface).numTriangles, 2);
+    assert.throws(() => m.convexHull(cubeSurface, { dimension: 5 }));
+});
+
+step('convertCoordinates about the cube centre', () => {
+    const r = m.convertCoordinates(cubeSurface, { system: 'spherical', origin: [0.5, 0.5, 0.5] });
+    assert.equal(r.numSingular, 0);
+    assert.ok('coords:spherical' in r.mesh.point_data);
+    assert.throws(() => m.convertCoordinates(cubeSurface, { axis: [0, 0, 0] }));
+});
+
+step('geodesicDistance from a cube corner', () => {
+    const r = m.geodesicDistance(cubeSurface, 0);
+    assert.equal(r.numSources, 1);
+    assert.equal(r.numUnreached, 0);
+    assert.ok(r.converged);
+    assert.ok(r.maxDistance > 1.8 && r.maxDistance < 2.6);
+    assert.ok('geodesic:distance' in r.mesh.point_data);
+    assert.throws(() => m.geodesicDistance(cubeSurface, []));
+});
+
+step('parameterize a closed cube', () => {
+    const r = m.parameterize(cubeSurface);
+    assert.ok(r.numCharts >= 2);
+    assert.equal(r.numFlipped, 0);
+    assert.ok(r.numSeamPoints > 0);
+    assert.ok('uv' in r.mesh.point_data);
+    assert.throws(() => m.parameterize(cubeSurface, { maxStretch: 0.5 }));
+});
+
+step('adjacency and writeGraph', () => {
+    const g = m.adjacency(cubeSurface);
+    assert.equal(g.indptr.length, 9);
+    assert.equal(g.indptr[8], 2 * 18); // 12 edges + 6 face diagonals
+    assert.equal(m.adjacency(cubeSurface, 'cell').indptr.length, 12 + 1);
+    assert.throws(() => m.adjacency(cubeSurface, 'edge'));
+    const s = m.writeGraph(cubeSurface, '/cube.graph');
+    assert.equal(s.format, 'metis');
+    assert.equal(s.numEdges, 18);
+    const text = new TextDecoder().decode(m.FS.readFile('/cube.graph'));
+    assert.ok(text.startsWith('8 18\n'));
+    assert.equal(m.writeGraph(cubeSurface, '/cube.grf').format, 'scotch');
+    assert.throws(() => m.writeGraph(cubeSurface, '/cube.txt'));
 });
 
 step('tessellate: curved tetra10 + quad9, pass-through line', () => {

@@ -59,6 +59,7 @@
 #include <Message_Messenger.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <IGESControl_Reader.hxx>
+#include <Interface_Static.hxx>
 #include <Poly_Triangulation.hxx>
 #include <STEPControl_Reader.hxx>
 #include <Standard_Failure.hxx>
@@ -460,12 +461,17 @@ TopoDS_Shape occt_read_cad_file(const std::string& rPath, bool Iges, const char*
         TopoDS_Shape shape;
         if (Iges) {
             IGESControl_Reader reader;
+            // The reader's constructor registers the static; the core states
+            // the mesh in millimetres (cad_read), so pin the target unit
+            // rather than rely on its default.
+            Interface_Static::SetCVal("xstep.cad.unit", "MM");
             if (reader.ReadFile(rPath.c_str()) != IFSelect_RetDone)
                 throw ReadError(prefix + "OpenCASCADE cannot read '" + rPath + "'");
             reader.TransferRoots();
             shape = reader.OneShape();
         } else {
             STEPControl_Reader reader;
+            Interface_Static::SetCVal("xstep.cad.unit", "MM");
             if (reader.ReadFile(rPath.c_str()) != IFSelect_RetDone)
                 throw ReadError(prefix + "OpenCASCADE cannot read '" + rPath + "'");
             reader.TransferRoots();

@@ -2119,6 +2119,224 @@ def test_edit_regions_and_periodic(tmp_path):
         _tools.tool_periodic(src, "bottom", "top", translate=[0, 0, 0.5])
 
 
+def test_tools_never_fetch_urls(tmp_path):
+    """A URL given as a tool path is resolved as a path inside the sandbox,
+    never fetched (no server-side request forgery through the MCP server),
+    even though `read` itself reads URLs through fsspec (roadmap 7.1.2)."""
+    fsspec = pytest.importorskip("fsspec")
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float)
+    local = tmp_path / "tri.vtu"
+    meshioplusplus.write(
+        str(local), meshioplusplus.Mesh(pts, [("triangle", np.array([[0, 1, 2]]))])
+    )
+    fsspec.filesystem("memory").pipe("/mcp/tri.vtu", local.read_bytes())
+    try:
+        with pytest.raises(ValueError, match="not found"):
+            _tools.tool_graph("memory://mcp/tri.vtu", str(tmp_path / "g.graph"))
+    finally:
+        fsspec.filesystem("memory").rm("/mcp/tri.vtu")
+
+
+def test_convert_coordinates_tool(tmp_path):
+    src = str(tmp_path / "s.vtu")
+    sphere = meshioplusplus.icosa_sphere(subdivisions=1)
+    sphere.point_data["n"] = (
+        sphere.points / np.linalg.norm(sphere.points, axis=1)[:, None]
+    )
+    meshioplusplus.write(src, sphere)
+    out = _dump(
+        _tools.tool_convert_coordinates(
+            src, str(tmp_path / "c.vtu"), system="spherical", arrays=["n"]
+        )
+    )
+    assert out["num_arrays"] == 1 and out["system"] == "spherical"
+    back = meshioplusplus.read(str(tmp_path / "c.vtu"))
+    # The outward normal of a sphere is (1, 0, 0) in spherical components.
+    np.testing.assert_allclose(
+        back.point_data["n"], [[1.0, 0.0, 0.0]] * len(sphere.points), atol=1e-12
+    )
+
+
+def test_prepare_metric_tool(tmp_path):
+    sq = meshioplusplus.convert_cells(
+        meshioplusplus.rectangle(dims=(4, 4)), mode="simplexify"
+    )
+    sq.point_data["a"] = np.tile([100.0, 0.0, 1.0], (len(sq.points), 1))
+    sq.point_data["b"] = np.tile([1.0, 0.0, 100.0], (len(sq.points), 1))
+    src = str(tmp_path / "m.vtu")
+    meshioplusplus.write(src, sq)
+    out = _dump(
+        _tools.tool_prepare_metric(
+            src, str(tmp_path / "o.vtu"), ["a", "b"], target_vertices=500
+        )
+    )
+    assert out["complexity_before"] == pytest.approx(100.0)
+    assert out["complexity_after"] == pytest.approx(500.0)
+    back = meshioplusplus.read(str(tmp_path / "o.vtu"))
+    np.testing.assert_allclose(back.point_data["metric"][:, 0], 500.0)
+
+
+def test_untangle_tool(tmp_path):
+    tets = meshioplusplus.convert_cells(
+        meshioplusplus.box(dims=(4, 4, 4)), mode="simplexify"
+    )
+    p = tets.points.copy()
+    p[(1 * 5 + 1) * 5 + 1] = [0.62, 0.58, 0.6]
+    src = str(tmp_path / "t.vtu")
+    meshioplusplus.write(src, meshioplusplus.Mesh(p, tets.cells))
+    out = _dump(_tools.tool_untangle(src, str(tmp_path / "u.vtu")))
+    assert out["num_inverted_before"] > 0 and out["num_inverted_after"] == 0
+
+
+def test_morph_tool(tmp_path):
+    box = meshioplusplus.convert_cells(
+        meshioplusplus.box(dims=(3, 3, 3)), mode="simplexify"
+    )
+    lift = np.zeros((len(box.points), 3))
+    top = box.points[:, 2] == box.points[:, 2].max()
+    lift[top, 2] = 0.05
+    box.point_data["d"] = lift
+    src = str(tmp_path / "box.vtu")
+    meshioplusplus.write(src, box)
+    out = _dump(_tools.tool_morph(src, str(tmp_path / "m.vtu"), "d"))
+    assert out["num_inverted"] == 0 and out["converged"]
+    assert out["max_displacement"] == pytest.approx(0.05)
+    with pytest.raises(ValueError, match="no point data"):
+        _tools.tool_morph(src, str(tmp_path / "x.vtu"), "missing")
+
+
+def test_laplacian_eigenmodes_tool(tmp_path):
+    src = str(tmp_path / "s.vtu")
+    meshioplusplus.write(src, meshioplusplus.icosa_sphere(subdivisions=2))
+    out = _dump(
+        _tools.tool_laplacian_eigenmodes(src, str(tmp_path / "e.vtu"), num_modes=4)
+    )
+    assert out["converged"] and len(out["eigenvalues"]) == 4
+    assert out["eigenvalues"][0] == 0.0
+    back = meshioplusplus.read(str(tmp_path / "e.vtu"))
+    assert back.point_data["laplacian:modes"].shape == (len(back.points), 4)
+
+
+def test_register_rigid_tool(tmp_path):
+    target = meshioplusplus.icosa_sphere(subdivisions=3)
+    target = meshioplusplus.Mesh(
+        target.points * [1.5, 1.0, 0.7], target.cells
+    )  # an ellipsoid: no rotational symmetry to settle into
+    src = str(tmp_path / "src.vtu")
+    tgt = str(tmp_path / "tgt.vtu")
+    # Uncompressed: the build may have no zlib.
+    meshioplusplus.write(
+        src,
+        meshioplusplus.Mesh(target.points + [0.02, -0.01, 0.03], []),
+        compression=None,
+    )
+    meshioplusplus.write(tgt, target, compression=None)
+    # Legacy VTK: the tool writes it uncompressed, and the build may have no zlib.
+    out = _dump(
+        _tools.tool_register_rigid(
+            src, tgt, str(tmp_path / "moved.vtk"), method="point_to_plane"
+        )
+    )
+    assert out["converged"] and out["rms"] < 1e-8
+    np.testing.assert_allclose(
+        np.asarray(out["matrix"])[:3, 3], [-0.02, 0.01, -0.03], atol=1e-8
+    )
+    moved = meshioplusplus.read(str(tmp_path / "moved.vtk"))
+    np.testing.assert_allclose(moved.points, target.points, atol=1e-8)
+
+
+def test_estimate_normals_tool(tmp_path):
+    src = str(tmp_path / "s.vtu")
+    meshioplusplus.write(src, meshioplusplus.icosa_sphere(subdivisions=2))
+    out = _dump(_tools.tool_estimate_normals(src, str(tmp_path / "n.vtu"), k=8))
+    assert out["num_degenerate"] == 0 and out["num_components"] == 1
+    back = meshioplusplus.read(str(tmp_path / "n.vtu"))
+    radial = back.points / np.linalg.norm(back.points, axis=1)[:, None]
+    assert np.all(np.einsum("ij,ij->i", back.point_data["normals"], radial) > 0.95)
+
+
+def test_reconstruct_surface_tool(tmp_path):
+    src = str(tmp_path / "cloud.vtu")
+    pts = meshioplusplus.sphere_points(1500).points
+    meshioplusplus.write(
+        src,
+        meshioplusplus.Mesh(
+            pts,
+            [("vertex", np.arange(len(pts))[:, None])],
+            point_data={"normals": pts.copy()},
+        ),
+    )
+    out = _dump(_tools.tool_reconstruct_surface(src, str(tmp_path / "s.vtu")))
+    assert out["num_samples"] == 1500 and not out["estimated_normals"]
+    assert out["num_components"] == 1 and out["num_triangles"] > 0
+    back = meshioplusplus.read(str(tmp_path / "s.vtu"))
+    assert back.cells[0].type == "triangle"
+    assert np.abs(np.linalg.norm(back.points, axis=1) - 1.0).max() < out["spacing"]
+
+
+def test_convex_hull_and_delaunay_tools(tmp_path):
+    src = str(tmp_path / "cloud.vtu")
+    rng = np.random.default_rng(0)
+    pts = rng.random((200, 3))
+    meshioplusplus.write(
+        src, meshioplusplus.Mesh(pts, [("vertex", np.arange(200)[:, None])])
+    )
+    hull = _dump(_tools.tool_convex_hull(src, str(tmp_path / "h.vtu")))
+    assert hull["dimension"] == 3 and hull["num_facets"] == 2 * hull["num_vertices"] - 4
+    assert 0 < hull["volume"] < 1
+    flat = _dump(_tools.tool_convex_hull(src, str(tmp_path / "f.vtu"), dimension=2))
+    assert flat["dimension"] == 2 and flat["perimeter"] > 0
+    tri = _dump(_tools.tool_delaunay_2d(src, str(tmp_path / "t.vtu")))
+    assert tri["num_triangles"] == 2 * 200 - tri["num_boundary"] - 2
+    back = meshioplusplus.read(str(tmp_path / "t.vtu"))
+    np.testing.assert_allclose(back.points, pts)
+
+
+def test_geodesic_distance_tool(tmp_path):
+    src = str(tmp_path / "s.vtu")
+    meshioplusplus.write(src, meshioplusplus.icosa_sphere(subdivisions=2))
+    out = _dump(
+        _tools.tool_geodesic_distance(src, str(tmp_path / "d.vtu"), sources=[0, 1])
+    )
+    assert out["num_sources"] == 2 and out["converged"] and out["num_unreached"] == 0
+    back = meshioplusplus.read(str(tmp_path / "d.vtu"))
+    assert "geodesic:distance" in back.point_data
+    with pytest.raises(ValueError, match="at least one source"):
+        _tools.tool_geodesic_distance(src, str(tmp_path / "e.vtu"))
+
+
+def test_parameterize_tool(tmp_path):
+    src = str(tmp_path / "s.vtu")
+    meshioplusplus.write(src, meshioplusplus.icosa_sphere(subdivisions=2))
+    out = _dump(_tools.tool_parameterize(src, str(tmp_path / "s.obj")))
+    assert out["num_charts"] >= 2 and out["num_flipped"] == 0
+    assert out["stretch"] >= 1.0 and 0.0 < out["packing_efficiency"] <= 1.0
+    back = meshioplusplus.read(str(tmp_path / "s.obj"))
+    assert back.point_data["uv"].shape == (len(back.points), 2)
+    with pytest.raises(ValueError, match="max_stretch"):
+        _tools.tool_parameterize(src, str(tmp_path / "e.obj"), max_stretch=0.5)
+
+
+def test_graph_tool(tmp_path):
+    src = str(tmp_path / "in.vtu")
+    pts = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], dtype=float)
+    meshioplusplus.write(
+        src, meshioplusplus.Mesh(pts, [("triangle", np.array([[0, 1, 2], [0, 2, 3]]))])
+    )
+    out = _dump(_tools.tool_graph(src, str(tmp_path / "g.graph")))
+    assert out["format"] == "metis" and out["kind"] == "node"
+    assert (out["num_vertices"], out["num_edges"], out["max_degree"]) == (4, 5, 3)
+    assert (tmp_path / "g.graph").read_text() == "4 5\n2 3 4\n1 3\n1 2 4\n1 3\n"
+    cells = _dump(
+        _tools.tool_graph(
+            src, str(tmp_path / "c.txt"), kind="cell", file_format="scotch"
+        )
+    )
+    assert (cells["num_vertices"], cells["num_edges"]) == (2, 1)
+    with pytest.raises(ValueError, match="cannot infer the format"):
+        _tools.tool_graph(src, str(tmp_path / "g.txt"))
+
+
 def test_export_gltf(tmp_path):
     src = str(tmp_path / "in.vtu")
     meshioplusplus.write(
@@ -2195,6 +2413,7 @@ _NOT_TOOLS = {
     "register_format",
     "deregister_format",
     "partition_labels",  # in-memory variant of partition
+    "apply_operations",  # in-memory variant of the pipeline tool
     # A generator of (time, Mesh) pairs: the meshes never touch the filesystem,
     # so there is no path-in/path-out form. The `sequence` tool covers every
     # file-level use (fan-in, fan-out, N->N).
@@ -2227,6 +2446,7 @@ _NOT_TOOLS = {
     "has_open3d",
     "has_dolfinx",
     "edge_index",  # in-memory (2, E) array; no path-based form
+    "adjacency",  # in-memory CSR arrays; the graph tool writes them (write_graph)
     # Its input is polygons as in-memory (n, 2) arrays, not a file; the
     # mesh_cad_surface tool covers meshing a CAD file.
     "triangulate_polygon_2d",

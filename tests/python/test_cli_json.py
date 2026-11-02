@@ -198,6 +198,53 @@ def files(tmp_path_factory):
     paths["curved"] = str(d / "curved.vtu")
     mio.write(paths["curved"], curved)
     mio.write(paths["grid"], grid)
+    # a tetrahedral cube whose top face is displaced, for morph
+    cube = mio.convert_cells(
+        mio.Mesh(
+            np.array(
+                [
+                    [i, j, k]
+                    for k in (0, 0.5, 1)
+                    for j in (0, 0.5, 1)
+                    for i in (0, 0.5, 1)
+                ],
+                dtype=float,
+            ),
+            [
+                (
+                    "hexahedron",
+                    np.array(
+                        [
+                            [a, a + 1, a + 4, a + 3, a + 9, a + 10, a + 13, a + 12]
+                            for a in (0, 1, 3, 4, 9, 10, 12, 13)
+                        ]
+                    ),
+                )
+            ],
+        ),
+        mode="simplexify",
+    )
+    lift = np.zeros((len(cube.points), 3))
+    lift[cube.points[:, 2] == 1.0, 2] = 0.1
+    cube.point_data["d"] = lift
+    paths["morphable"] = str(d / "morphable.vtu")
+    mio.write(paths["morphable"], cube)
+    # the same cube with its centre node pushed through a face, for untangle
+    tangled = cube.points.copy()
+    centre = int(np.argmin(np.linalg.norm(tangled - 0.5, axis=1)))
+    tangled[centre] = [0.5, 0.5, 0.92]
+    paths["tangled"] = str(d / "tangled.vtu")
+    # a triangulated square carrying two crossed 2-D metrics, for metric
+    sq = mio.convert_cells(mio.rectangle(dims=(6, 6)), mode="simplexify")
+    m2 = np.zeros((len(sq.points), 3))
+    m2[:, 0] = 1.0 + 900.0 * np.exp(-((sq.points[:, 0] - 0.5) ** 2) / 0.01)
+    m2[:, 2] = 1.0
+    m3 = m2[:, [2, 1, 0]].copy()
+    sq.point_data["a"] = m2
+    sq.point_data["b"] = m3
+    paths["metrics"] = str(d / "metrics.vtu")
+    mio.write(paths["metrics"], sq)
+    mio.write(paths["tangled"], mio.Mesh(tangled, cube.cells))
     mio.write(paths["moved"], moved)
     mio.write(paths["tagged"], tagged)
     mio.write(paths["parts"], parts)
@@ -264,6 +311,10 @@ CASES = [
     (
         "hausdorff",
         lambda f: ["hausdorff", f["grid"], f["moved"], "--max", "0.1", "--json"],
+    ),
+    (
+        "register",
+        lambda f: ["register", f["moved"], f["grid"], "--json"],
     ),
     (
         "find_intersections_clean",
@@ -583,6 +634,146 @@ WRITING = [
         ],
     ),
     (
+        "metric",
+        lambda f, out: [
+            "metric",
+            f["metrics"],
+            out + ".vtu",
+            "--arrays",
+            "a,b",
+            "--target-vertices",
+            "200",
+            "--hmin",
+            "0.01",
+            "--hmax",
+            "0.5",
+            "--gradation",
+            "1.5",
+            "--json",
+        ],
+    ),
+    (
+        "untangle",
+        lambda f, out: ["untangle", f["tangled"], out + ".vtu", "--json"],
+    ),
+    (
+        "morph",
+        lambda f, out: [
+            "morph",
+            f["morphable"],
+            out + ".vtu",
+            "--array",
+            "d",
+            "--steps",
+            "2",
+            "--json",
+        ],
+    ),
+    (
+        "eigenmodes",
+        lambda f, out: ["eigenmodes", f["sphere_a"], out + ".vtu", "-k", "4", "--json"],
+    ),
+    (
+        "point-normals",
+        lambda f, out: [
+            "point-normals",
+            f["sphere_a"],
+            out + ".vtu",
+            "--k",
+            "8",
+            "--json",
+        ],
+    ),
+    (
+        "reconstruct",
+        lambda f, out: [
+            "reconstruct",
+            f["sphere_a"],
+            out + ".vtu",
+            "--resolution",
+            "16",
+            "--json",
+        ],
+    ),
+    (
+        "hull",
+        lambda f, out: ["hull", f["sphere_a"], out + ".vtu", "--json"],
+    ),
+    (
+        "hull-2d",
+        lambda f, out: [
+            "hull",
+            f["sphere_a"],
+            out + ".vtu",
+            "--dimension",
+            "2",
+            "--json",
+        ],
+    ),
+    (
+        "delaunay",
+        lambda f, out: ["delaunay", f["sphere_a"], out + ".vtu", "--json"],
+    ),
+    (
+        "coordinates",
+        lambda f, out: [
+            "coordinates",
+            f["sphere_a"],
+            out + ".vtu",
+            "--system",
+            "spherical",
+            "--axis",
+            "1,0,0",
+            "--json",
+        ],
+    ),
+    (
+        "geodesic",
+        lambda f, out: [
+            "geodesic",
+            f["sphere_a"],
+            out + ".vtu",
+            "--source",
+            "0,3",
+            "--json",
+        ],
+    ),
+    (
+        "parameterize",
+        lambda f, out: [
+            "parameterize",
+            f["sphere_a"],
+            out + ".obj",
+            "--padding",
+            "0.05",
+            "--json",
+        ],
+    ),
+    (
+        "graph_cell",
+        lambda f, out: [
+            "graph",
+            f["hexes"],
+            out + ".graph",
+            "--kind",
+            "cell",
+            "--json",
+        ],
+    ),
+    (
+        "graph_clique_scotch",
+        lambda f, out: [
+            "graph",
+            f["hexes"],
+            out + ".txt",
+            "--kind",
+            "clique",
+            "--format",
+            "scotch",
+            "--json",
+        ],
+    ),
+    (
         "regions_edit",
         lambda f, out: [
             "regions",
@@ -644,6 +835,20 @@ def test_json_output_of_writing_verbs_agrees(files, name, build):
         if isinstance(doc, dict) and "output" in doc:
             doc["output"] = "<out>"
     _same(doc_py, doc_n)
+
+
+@pytest.mark.parametrize("kind", ["node", "clique", "cell"])
+@pytest.mark.parametrize("ext", [".graph", ".grf"])
+def test_graph_files_agree(files, kind, ext):
+    base = os.path.join(files["dir"], f"graph_{kind}")
+    py_out, native_out = base + "_py" + ext, base + "_native" + ext
+    code, _ = _python(["graph", files["hexes"], py_out, "--kind", kind])
+    assert code == 0
+    if NATIVE is None:
+        pytest.skip("no native CLI binary built; checked the Python output only")
+    assert _native(["graph", files["hexes"], native_out, "--kind", kind])[0] == 0
+    with open(py_out, "rb") as a, open(native_out, "rb") as b:
+        assert a.read() == b.read()
 
 
 def test_json_is_strict_even_with_nan(files, capsys):

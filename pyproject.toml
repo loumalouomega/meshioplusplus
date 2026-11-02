@@ -49,6 +49,10 @@ dependencies = [
 # Pure-Python readers/writers for the optional VTK XML block codecs. Not a
 # default dependency: a build with the C++ codecs needs neither.
 codecs = ["lz4", "zstandard"]
+# fsspec, for reading meshes from URLs (`read("https://.../cube.vtu")`, s3://,
+# gs://; roadmap 7.1.2). The object stores need their own filesystem package
+# on top (s3fs, gcsfs, adlfs); plain HTTP(S) needs aiohttp. Python-only and lazy.
+remote = ["fsspec", "aiohttp"]
 # The KaHIP Python wheel (MIT): gives the pure-Python fallback the quality
 # partition path when the C++ core was built without MESHIOPLUSPLUS_WITH_KAHIP.
 kahip = ["kahip"]

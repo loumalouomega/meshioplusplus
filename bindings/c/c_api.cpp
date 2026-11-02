@@ -72,6 +72,19 @@
 #include "meshioplusplus/formats/exodus.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/providers.hpp"
+#include "meshioplusplus/detail/compressed_input.hpp"
+#include "meshioplusplus/operations/adjacency.hpp"
+#include "meshioplusplus/operations/coordinates.hpp"
+#include "meshioplusplus/operations/hull.hpp"
+#include "meshioplusplus/operations/point_normals.hpp"
+#include "meshioplusplus/operations/reconstruct_surface.hpp"
+#include "meshioplusplus/operations/registration.hpp"
+#include "meshioplusplus/operations/eigenmodes.hpp"
+#include "meshioplusplus/operations/morph.hpp"
+#include "meshioplusplus/operations/untangle.hpp"
+#include "meshioplusplus/operations/metric.hpp"
+#include "meshioplusplus/operations/geodesic.hpp"
+#include "meshioplusplus/operations/parameterize.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
@@ -170,6 +183,10 @@ struct mio_regions {
 
 struct mio_periodic_pairs {
     meshioplusplus::PeriodicPairs mPairs;
+};
+
+struct mio_adjacency {
+    meshioplusplus::Adjacency mGraph;
 };
 
 struct mio_find_interface_result {
@@ -1233,6 +1250,19 @@ mio_mesh* mio_read_with_info(const char* path, const char* format, const mio_rea
         if (!path || !info)
             throw std::invalid_argument("meshio++: path/info is NULL");
         const std::string fmt = capi_resolve_read_format(path, format);
+        // The info readers below are called directly, not through the
+        // registry, so a compressed file is decompressed here (registry_read
+        // at the end decompresses its own). A compound extension a format owns
+        // (`.vol.gz`) never reaches these branches.
+        std::unique_ptr<meshioplusplus::detail::DecompressedFile> plain;
+        const meshioplusplus::detail::Compression kind =
+            meshioplusplus::detail::compression_from_suffix(path);
+        if (kind != meshioplusplus::detail::Compression::None &&
+            (fmt == "gmsh" || fmt == "mfem" || fmt == "cad_json" || fmt == "step" ||
+             fmt == "iges" || fmt == "mdpa")) {
+            plain = std::make_unique<meshioplusplus::detail::DecompressedFile>(path, kind);
+            path = plain->Path().c_str();
+        }
         if (fmt == "gmsh") {
             auto handle = std::make_unique<mio_format_info>();
             handle->mFormat = fmt;
@@ -7165,6 +7195,543 @@ mio_mesh* mio_sobolev_deform(const mio_mesh* mesh, const mio_sobolev_opts* opts,
     });
 }
 
+// --- the metric toolbox (roadmap 7.4.3) ---------------------------------------
+
+static_assert(sizeof(mio_metric_opts) == 104, "mio_metric_opts grew outside its reserved tail");
+static_assert(sizeof(mio_metric_report) == 64, "mio_metric_report grew outside its reserved tail");
+
+void mio_metric_opts_init(mio_metric_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_metric_opts{};
+    opts->norm = 2.0;
+    opts->max_sweeps = 100;
+}
+
+mio_mesh* mio_prepare_metric(const mio_mesh* mesh, const mio_metric_opts* opts,
+                             mio_metric_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        if (!opts)
+            throw std::invalid_argument("meshio++: prepare_metric: opts is NULL");
+        if (opts->num_arrays < 0 || (opts->num_arrays > 0 && !opts->arrays))
+            throw std::invalid_argument(
+                "meshio++: prepare_metric: arrays is NULL or num_arrays negative");
+        meshioplusplus::PrepareMetricOptions options;
+        for (int64_t i = 0; i < opts->num_arrays; ++i) {
+            if (!opts->arrays[i])
+                throw std::invalid_argument("meshio++: prepare_metric: an array name is NULL");
+            options.mArrays.emplace_back(opts->arrays[i]);
+        }
+        if (opts->output)
+            options.mOutput = opts->output;
+        options.mTargetVertices = opts->target_vertices;
+        options.mNorm = opts->norm;
+        options.mHmin = opts->hmin;
+        options.mHmax = opts->hmax;
+        options.mGradation = opts->gradation;
+        options.mMaxSweeps = opts->max_sweeps;
+        meshioplusplus::PrepareMetricResult r =
+            meshioplusplus::prepare_metric(mesh->mMesh, options);
+        if (report) {
+            *report = mio_metric_report{};
+            report->complexity_before = r.mComplexityBefore;
+            report->complexity_after = r.mComplexityAfter;
+            report->num_graded = r.mNumGraded;
+            report->sweeps = r.mSweeps;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+// --- untangling (roadmap 7.4.2) -------------------------------------------------
+
+static_assert(sizeof(mio_untangle_opts) == 72, "mio_untangle_opts grew outside its reserved tail");
+static_assert(sizeof(mio_untangle_report) == 80,
+              "mio_untangle_report grew outside its reserved tail");
+
+void mio_untangle_opts_init(mio_untangle_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_untangle_opts{};
+    opts->rings = 2;
+    opts->max_sweeps = 100;
+    opts->fix_boundary = 1;
+}
+
+mio_mesh* mio_untangle(const mio_mesh* mesh, const mio_untangle_opts* opts,
+                       mio_untangle_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        mio_untangle_opts o;
+        mio_untangle_opts_init(&o);
+        if (opts)
+            o = *opts;
+        if (o.num_frozen < 0 || (o.num_frozen > 0 && !o.frozen))
+            throw std::invalid_argument(
+                "meshio++: untangle: frozen is NULL or num_frozen negative");
+        meshioplusplus::UntangleOptions options;
+        options.mFrozen.assign(o.frozen, o.frozen + static_cast<std::size_t>(o.num_frozen));
+        options.mRings = o.rings;
+        options.mMaxSweeps = o.max_sweeps;
+        options.mFixBoundary = o.fix_boundary != 0;
+        options.mSmooth = o.smooth != 0;
+        meshioplusplus::UntangleResult r = meshioplusplus::untangle(mesh->mMesh, options);
+        if (report) {
+            *report = mio_untangle_report{};
+            report->num_inverted_before = r.mNumInvertedBefore;
+            report->num_inverted_after = r.mNumInvertedAfter;
+            report->min_quality_before = r.mMinQualityBefore;
+            report->min_quality_after = r.mMinQualityAfter;
+            report->sweeps = r.mSweeps;
+            report->moves = r.mMoves;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+// --- boundary-driven morphing (roadmap 7.4.1) ----------------------------------
+
+static_assert(sizeof(mio_morph_opts) == 104, "mio_morph_opts grew outside its reserved tail");
+static_assert(sizeof(mio_morph_report) == 80, "mio_morph_report grew outside its reserved tail");
+
+void mio_morph_opts_init(mio_morph_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_morph_opts{};
+    opts->stiffening = 1.0;
+    opts->steps = 1;
+    opts->tolerance = 1e-10;
+    opts->fix_boundary = 1;
+}
+
+mio_mesh* mio_morph(const mio_mesh* mesh, const mio_morph_opts* opts, mio_morph_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        if (!opts || !opts->array)
+            throw std::invalid_argument("meshio++: morph: opts->array is NULL");
+        meshioplusplus::MorphOptions options;
+        options.mArray = opts->array;
+        if (opts->constrained_array)
+            options.mConstrainedArray = opts->constrained_array;
+        if (opts->num_constrained < 0 || (opts->num_constrained > 0 && !opts->constrained))
+            throw std::invalid_argument(
+                "meshio++: morph: constrained is NULL or num_constrained negative");
+        options.mConstrained.assign(
+            opts->constrained, opts->constrained + static_cast<std::size_t>(opts->num_constrained));
+        options.mStiffening = opts->stiffening;
+        options.mSteps = opts->steps;
+        options.mTolerance = opts->tolerance;
+        options.mMaxIterations = opts->max_iterations;
+        options.mFixBoundary = opts->fix_boundary != 0;
+        options.mAllowInverted = opts->allow_inverted != 0;
+        meshioplusplus::MorphResult r = meshioplusplus::morph(mesh->mMesh, options);
+        if (report) {
+            *report = mio_morph_report{};
+            report->num_constrained = r.mNumConstrained;
+            report->num_free = r.mNumFree;
+            report->num_inverted = r.mNumInverted;
+            report->iterations = r.mIterations;
+            report->max_displacement = r.mMaxDisplacement;
+            report->converged = r.mConverged ? 1 : 0;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+// --- Laplacian eigenmodes (roadmap 7.3.2) --------------------------------------
+
+static_assert(sizeof(mio_eigenmode_opts) == 56,
+              "mio_eigenmode_opts grew outside its reserved tail");
+static_assert(sizeof(mio_eigenmode_report) == 64,
+              "mio_eigenmode_report grew outside its reserved tail");
+
+void mio_eigenmode_opts_init(mio_eigenmode_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_eigenmode_opts{};
+    opts->num_modes = 10;
+    opts->tolerance = 1e-8;
+}
+
+mio_mesh* mio_laplacian_eigenmodes(const mio_mesh* mesh, const mio_eigenmode_opts* opts,
+                                   mio_eigenmode_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        mio_eigenmode_opts o;
+        mio_eigenmode_opts_init(&o);
+        if (opts)
+            o = *opts;
+        meshioplusplus::EigenmodeOptions options;
+        options.mNumModes = o.num_modes;
+        options.mTolerance = o.tolerance;
+        options.mMaxIterations = o.max_iterations;
+        meshioplusplus::EigenmodeResult r =
+            meshioplusplus::laplacian_eigenmodes(mesh->mMesh, options);
+        if (report) {
+            *report = mio_eigenmode_report{};
+            report->iterations = r.mIterations;
+            report->max_residual = r.mMaxResidual;
+            report->converged = r.mConverged ? 1 : 0;
+            report->num_degenerate = r.mNumDegenerate;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+// --- rigid registration (roadmap 7.5.3) ----------------------------------------
+
+static_assert(sizeof(mio_registration_opts) == 192,
+              "mio_registration_opts grew outside its reserved tail");
+static_assert(sizeof(mio_registration_report) == 200,
+              "mio_registration_report grew outside its reserved tail");
+
+void mio_registration_opts_init(mio_registration_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_registration_opts{};
+    opts->method = MIO_REGISTER_POINT_TO_POINT;
+    opts->max_iterations = 50;
+    opts->tolerance = 1e-10;
+    for (int k = 0; k < 4; ++k)
+        opts->initial[5 * k] = 1.0;
+}
+
+mio_status mio_register_rigid(const mio_mesh* source, const mio_mesh* target,
+                              const mio_registration_opts* opts, mio_registration_report* report) {
+    return guarded([&]() -> mio_status {
+        if (!source || !target || !report)
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: register_rigid: source/target/report is NULL");
+        mio_registration_opts o;
+        mio_registration_opts_init(&o);
+        if (opts)
+            o = *opts;
+        meshioplusplus::RegistrationOptions options;
+        if (o.method == MIO_REGISTER_POINT_TO_POINT)
+            options.mMethod = meshioplusplus::RegistrationMethod::PointToPoint;
+        else if (o.method == MIO_REGISTER_POINT_TO_PLANE)
+            options.mMethod = meshioplusplus::RegistrationMethod::PointToPlane;
+        else
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: register_rigid: method must be MIO_REGISTER_POINT_TO_POINT or "
+                        "MIO_REGISTER_POINT_TO_PLANE");
+        options.mMaxIterations = o.max_iterations;
+        options.mTolerance = o.tolerance;
+        options.mMaxDistance = o.max_distance;
+        for (std::size_t k = 0; k < 16; ++k)
+            options.mInitial[k] = o.initial[k];
+        const meshioplusplus::RegistrationResult r =
+            meshioplusplus::register_rigid(source->mMesh, target->mMesh, options);
+        *report = mio_registration_report{};
+        for (std::size_t k = 0; k < 16; ++k)
+            report->matrix[k] = r.mMatrix[k];
+        report->initial_rms = r.mInitialRms;
+        report->rms = r.mRms;
+        report->iterations = r.mIterations;
+        report->num_pairs = r.mNumPairs;
+        report->converged = r.mConverged ? 1 : 0;
+        return MIO_OK;
+    });
+}
+
+// --- point-cloud normals (roadmap 7.5.2) ---------------------------------------
+
+static_assert(sizeof(mio_point_normals_opts) == 72,
+              "mio_point_normals_opts grew outside its reserved tail");
+
+void mio_point_normals_opts_init(mio_point_normals_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_point_normals_opts{};
+    opts->k = 16;
+    opts->orientation = MIO_NORMALS_CONSISTENT;
+}
+
+mio_mesh* mio_estimate_normals(const mio_mesh* mesh, const mio_point_normals_opts* opts,
+                               int64_t* num_degenerate, int64_t* num_components) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        mio_point_normals_opts o;
+        mio_point_normals_opts_init(&o);
+        if (opts)
+            o = *opts;
+        meshioplusplus::PointNormalsOptions options;
+        options.mK = o.k;
+        switch (o.orientation) {
+            case MIO_NORMALS_CONSISTENT:
+                options.mOrientation = meshioplusplus::NormalOrientation::Consistent;
+                break;
+            case MIO_NORMALS_VIEWPOINT:
+                options.mOrientation = meshioplusplus::NormalOrientation::Viewpoint;
+                break;
+            case MIO_NORMALS_NONE:
+                options.mOrientation = meshioplusplus::NormalOrientation::None;
+                break;
+            default:
+                throw std::invalid_argument(
+                    "meshio++: estimate_normals: orientation must be MIO_NORMALS_CONSISTENT, "
+                    "MIO_NORMALS_VIEWPOINT or MIO_NORMALS_NONE");
+        }
+        for (int a = 0; a < 3; ++a)
+            options.mViewpoint[a] = o.viewpoint[a];
+        options.mRecordVariation = o.record_variation != 0;
+        meshioplusplus::PointNormalsResult r =
+            meshioplusplus::estimate_normals(mesh->mMesh, options);
+        if (num_degenerate)
+            *num_degenerate = r.mNumDegenerate;
+        if (num_components)
+            *num_components = r.mNumComponents;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+// --- surface reconstruction (roadmap 7.5.2) -----------------------------------
+
+static_assert(sizeof(mio_reconstruct_surface_opts) == 96,
+              "mio_reconstruct_surface_opts grew outside its reserved tail");
+static_assert(sizeof(mio_reconstruct_surface_report) == 104,
+              "mio_reconstruct_surface_report grew outside its reserved tail");
+
+void mio_reconstruct_surface_opts_init(mio_reconstruct_surface_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_reconstruct_surface_opts{};
+    const meshioplusplus::ReconstructSurfaceOptions d;
+    opts->k = d.mK;
+    opts->estimate_normals = d.mEstimateNormals ? 1 : 0;
+    opts->normals_k = d.mNormalsK;
+    opts->max_cells = d.mMaxCells;
+}
+
+mio_mesh* mio_reconstruct_surface(const mio_mesh* mesh, const mio_reconstruct_surface_opts* opts,
+                                  mio_reconstruct_surface_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        mio_reconstruct_surface_opts o;
+        mio_reconstruct_surface_opts_init(&o);
+        if (opts)
+            o = *opts;
+        meshioplusplus::ReconstructSurfaceOptions options;
+        if (o.normals)
+            options.mNormalsName = o.normals;
+        options.mK = o.k;
+        options.mCellSize = o.cell_size;
+        options.mResolution = o.resolution;
+        options.mMaxDistance = o.max_distance;
+        options.mEstimateNormals = o.estimate_normals != 0;
+        options.mNormalsK = o.normals_k;
+        options.mMaxCells = o.max_cells;
+        meshioplusplus::ReconstructSurfaceResult r =
+            meshioplusplus::reconstruct_surface(mesh->mMesh, options);
+        if (report) {
+            *report = mio_reconstruct_surface_report{};
+            report->num_samples = r.mNumSamples;
+            report->spacing = r.mSpacing;
+            report->cell_size = r.mCellSize;
+            report->max_distance = r.mMaxDistance;
+            report->num_lattice_points = r.mNumLatticePoints;
+            report->num_undefined = r.mNumUndefined;
+            report->num_triangles = r.mNumTriangles;
+            report->num_components = r.mNumComponents;
+            report->estimated_normals = r.mEstimatedNormals ? 1 : 0;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+// --- convex hull and planar Delaunay (roadmap 7.5.1) --------------------------
+
+static_assert(sizeof(mio_hull_report) == 80, "mio_hull_report grew outside its reserved tail");
+
+mio_mesh* mio_convex_hull(const mio_mesh* mesh, int32_t dimension, mio_hull_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::ConvexHullOptions options;
+        options.mDimension = dimension;
+        meshioplusplus::ConvexHullResult r = meshioplusplus::convex_hull(mesh->mMesh, options);
+        if (report) {
+            *report = mio_hull_report{};
+            report->dimension = r.mDimension;
+            report->num_vertices = r.mNumVertices;
+            report->num_facets = r.mNumFacets;
+            report->area = r.mArea;
+            report->volume = r.mVolume;
+            report->perimeter = r.mPerimeter;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+mio_mesh* mio_delaunay_2d(const mio_mesh* mesh, int64_t* num_triangles, int64_t* num_duplicates,
+                          int64_t* num_boundary) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        meshioplusplus::Delaunay2dResult r = meshioplusplus::delaunay_2d(mesh->mMesh);
+        if (num_triangles)
+            *num_triangles = r.mNumTriangles;
+        if (num_duplicates)
+            *num_duplicates = r.mNumDuplicates;
+        if (num_boundary)
+            *num_boundary = r.mNumBoundary;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+// --- cylindrical / spherical components (roadmap 7.6.1) ----------------------
+
+static_assert(sizeof(mio_coordinate_opts) == 136,
+              "mio_coordinate_opts grew outside its reserved tail");
+
+void mio_coordinate_opts_init(mio_coordinate_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_coordinate_opts{};
+    opts->system = MIO_COORDS_CYLINDRICAL;
+    opts->axis[2] = 1.0;
+    opts->reference[0] = 1.0;
+    opts->record_coordinates = 1;
+}
+
+mio_mesh* mio_convert_coordinates(const mio_mesh* mesh, const mio_coordinate_opts* opts,
+                                  int64_t* num_arrays, int64_t* num_singular) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        if (!opts)
+            throw std::invalid_argument("meshio++: convert_coordinates: opts is NULL");
+        if (opts->system != MIO_COORDS_CYLINDRICAL && opts->system != MIO_COORDS_SPHERICAL)
+            throw std::invalid_argument(
+                "meshio++: convert_coordinates: system must be MIO_COORDS_CYLINDRICAL or "
+                "MIO_COORDS_SPHERICAL");
+        if (opts->num_arrays < 0 || (opts->num_arrays > 0 && !opts->arrays))
+            throw std::invalid_argument(
+                "meshio++: convert_coordinates: arrays is NULL or num_arrays negative");
+        meshioplusplus::CoordinateOptions options;
+        options.mSystem = opts->system == MIO_COORDS_SPHERICAL
+                              ? meshioplusplus::CoordinateSystem::Spherical
+                              : meshioplusplus::CoordinateSystem::Cylindrical;
+        for (int k = 0; k < 3; ++k) {
+            options.mAxis[k] = opts->axis[k];
+            options.mOrigin[k] = opts->origin[k];
+            options.mReference[k] = opts->reference[k];
+        }
+        for (int64_t i = 0; i < opts->num_arrays; ++i) {
+            if (!opts->arrays[i])
+                throw std::invalid_argument("meshio++: convert_coordinates: an array name is NULL");
+            options.mArrays.emplace_back(opts->arrays[i]);
+        }
+        options.mInverse = opts->inverse != 0;
+        options.mRecordCoordinates = opts->record_coordinates != 0;
+        meshioplusplus::CoordinateResult r =
+            meshioplusplus::convert_coordinates(mesh->mMesh, options);
+        if (num_arrays)
+            *num_arrays = r.mNumArrays;
+        if (num_singular)
+            *num_singular = r.mNumSingular;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+// --- geodesic distance (roadmap 7.3.1) ---------------------------------------
+
+static_assert(sizeof(mio_geodesic_opts) == 96, "mio_geodesic_opts grew outside its reserved tail");
+static_assert(sizeof(mio_geodesic_report) == 96,
+              "mio_geodesic_report grew outside its reserved tail");
+
+void mio_geodesic_opts_init(mio_geodesic_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_geodesic_opts{};
+    opts->time_factor = 1.0;
+    opts->tolerance = 1e-10;
+}
+
+mio_mesh* mio_geodesic_distance(const mio_mesh* mesh, const mio_geodesic_opts* opts,
+                                mio_geodesic_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        if (!opts)
+            throw std::invalid_argument("meshio++: geodesic_distance: opts is NULL");
+        if (opts->num_sources < 0 || (opts->num_sources > 0 && !opts->sources))
+            throw std::invalid_argument(
+                "meshio++: geodesic_distance: sources is NULL or num_sources negative");
+        meshioplusplus::GeodesicOptions options;
+        if (opts->num_sources > 0)
+            options.mSources.assign(opts->sources, opts->sources + opts->num_sources);
+        if (opts->source_region)
+            options.mSourceRegion = opts->source_region;
+        options.mTimeFactor = opts->time_factor;
+        options.mTolerance = opts->tolerance;
+        options.mMaxIterations = opts->max_iterations;
+        meshioplusplus::GeodesicResult r = meshioplusplus::geodesic_distance(mesh->mMesh, options);
+        if (report) {
+            *report = mio_geodesic_report{};
+            report->num_sources = r.mNumSources;
+            report->num_unreached = r.mNumUnreached;
+            report->num_degenerate = r.mNumDegenerate;
+            report->heat_iterations = r.mHeatIterations;
+            report->poisson_iterations = r.mPoissonIterations;
+            report->max_distance = r.mMaxDistance;
+            report->time_step = r.mTimeStep;
+            report->converged = r.mConverged ? 1 : 0;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+// --- parameterize (roadmap 7.3.3) ---------------------------------------------
+
+static_assert(sizeof(mio_parameterize_opts) == 64,
+              "mio_parameterize_opts grew outside its reserved tail");
+static_assert(sizeof(mio_parameterize_report) == 64,
+              "mio_parameterize_report grew outside its reserved tail");
+
+void mio_parameterize_opts_init(mio_parameterize_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_parameterize_opts{};
+    opts->padding = 0.02;
+    opts->max_depth = 8;
+    opts->max_stretch = 2.0;
+}
+
+mio_mesh* mio_parameterize(const mio_mesh* mesh, const mio_parameterize_opts* opts,
+                           mio_parameterize_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        if (!opts)
+            throw std::invalid_argument("meshio++: parameterize: opts is NULL");
+        for (const int64_t word : opts->reserved)
+            if (word != 0)
+                throw std::invalid_argument("meshio++: parameterize: reserved must be zero");
+        meshioplusplus::ParameterizeOptions options;
+        options.mPadding = opts->padding;
+        options.mMaxDepth = opts->max_depth;
+        options.mMaxStretch = opts->max_stretch;
+        meshioplusplus::ParameterizeResult r = meshioplusplus::parameterize(mesh->mMesh, options);
+        if (report) {
+            *report = mio_parameterize_report{};
+            report->num_charts = r.mNumCharts;
+            report->num_flipped = r.mNumFlipped;
+            report->num_seam_points = r.mNumSeamPoints;
+            report->stretch = r.mStretch;
+            report->packing_efficiency = r.mPackingEfficiency;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
 int32_t mio_pipeline_has_json(void) {
     return meshioplusplus::pipeline_has_json() ? 1 : 0;
 }
@@ -9614,6 +10181,67 @@ const int64_t* mio_periodic_pairs_unmatched(const mio_periodic_pairs* pairs, int
 
 void mio_periodic_pairs_free(mio_periodic_pairs* pairs) {
     delete pairs;
+}
+
+// --- adjacency graphs (roadmap 7.2.2) ----------------------------------------
+
+mio_adjacency* mio_adjacency_create(const mio_mesh* mesh, const char* kind) {
+    return guarded_ptr(static_cast<mio_adjacency*>(nullptr), [&]() -> mio_adjacency* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        const meshioplusplus::AdjacencyKind k =
+            meshioplusplus::adjacency_kind_from_name(kind && *kind ? kind : "node");
+        return new mio_adjacency{meshioplusplus::adjacency(mesh->mMesh, k)};
+    });
+}
+
+const int64_t* mio_adjacency_indptr(const mio_adjacency* graph, int64_t* count) {
+    if (count)
+        *count = 0;
+    return graph ? capi_periodic_ids(graph->mGraph.mIndptr, count) : nullptr;
+}
+
+const int64_t* mio_adjacency_indices(const mio_adjacency* graph, int64_t* count) {
+    if (count)
+        *count = 0;
+    return graph ? capi_periodic_ids(graph->mGraph.mIndices, count) : nullptr;
+}
+
+void mio_adjacency_free(mio_adjacency* graph) {
+    delete graph;
+}
+
+mio_status mio_write_graph(const mio_mesh* mesh, const char* kind, const char* path,
+                           const char* format, int64_t* num_vertices, int64_t* num_edges,
+                           int64_t* max_degree) {
+    return guarded([&]() -> mio_status {
+        if (!mesh)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh is NULL");
+        if (!path || !*path)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: path is NULL or empty");
+        meshioplusplus::GraphSummary s;
+        try {
+            const meshioplusplus::AdjacencyKind k =
+                meshioplusplus::adjacency_kind_from_name(kind && *kind ? kind : "node");
+            const meshioplusplus::GraphFormat f =
+                format && *format ? meshioplusplus::graph_format_from_name(format)
+                                  : meshioplusplus::graph_format_for_path(path);
+            s = meshioplusplus::write_graph(path, meshioplusplus::adjacency(mesh->mMesh, k), f);
+        } catch (const std::invalid_argument& e) {
+            // An unknown kind or format, or an extension naming neither.
+            return fail(MIO_ERR_INVALID_ARG, e.what());
+        } catch (const std::runtime_error& e) {
+            // The file could not be opened or written.
+            return fail(MIO_ERR_WRITE, e.what());
+        }
+        if (num_vertices)
+            *num_vertices = s.mNumVertices;
+        if (num_edges)
+            *num_edges = s.mNumEdges;
+        if (max_degree)
+            *max_degree = s.mMaxDegree;
+        return MIO_OK;
+    });
 }
 
 // --- quality gate (v16.24.0) -------------------------------------------------

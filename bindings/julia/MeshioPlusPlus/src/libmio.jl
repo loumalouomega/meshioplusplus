@@ -1687,6 +1687,226 @@ struct _CSobolevReport
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_metric_opts`."""
+struct _CMetricOpts
+    arrays::Ptr{Cstring}
+    num_arrays::Int64
+    output::Cstring
+    target_vertices::Cdouble
+    norm::Cdouble
+    hmin::Cdouble
+    hmax::Cdouble
+    gradation::Cdouble
+    max_sweeps::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_metric_report`."""
+struct _CMetricReport
+    complexity_before::Cdouble
+    complexity_after::Cdouble
+    num_graded::Int64
+    sweeps::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_untangle_opts`."""
+struct _CUntangleOpts
+    frozen::Ptr{UInt8}
+    num_frozen::Int64
+    rings::Int64
+    max_sweeps::Int64
+    fix_boundary::Int32
+    smooth::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_untangle_report`."""
+struct _CUntangleReport
+    num_inverted_before::Int64
+    num_inverted_after::Int64
+    min_quality_before::Cdouble
+    min_quality_after::Cdouble
+    sweeps::Int64
+    moves::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_morph_opts`."""
+struct _CMorphOpts
+    array::Cstring
+    constrained_array::Cstring
+    constrained::Ptr{UInt8}
+    num_constrained::Int64
+    stiffening::Cdouble
+    steps::Int64
+    tolerance::Cdouble
+    max_iterations::Int64
+    fix_boundary::Int32
+    allow_inverted::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_morph_report`."""
+struct _CMorphReport
+    num_constrained::Int64
+    num_free::Int64
+    num_inverted::Int64
+    iterations::Int64
+    max_displacement::Cdouble
+    converged::Int32
+    reserved_pad::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_eigenmode_opts`."""
+struct _CEigenmodeOpts
+    num_modes::Int64
+    tolerance::Cdouble
+    max_iterations::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_eigenmode_report`."""
+struct _CEigenmodeReport
+    iterations::Int64
+    max_residual::Cdouble
+    converged::Int32
+    reserved_pad::Int32
+    num_degenerate::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_registration_opts`."""
+struct _CRegistrationOpts
+    method::Int32
+    reserved_pad::Int32
+    max_iterations::Int64
+    tolerance::Cdouble
+    max_distance::Cdouble
+    initial::NTuple{16,Cdouble}
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_registration_report`."""
+struct _CRegistrationReport
+    matrix::NTuple{16,Cdouble}
+    initial_rms::Cdouble
+    rms::Cdouble
+    iterations::Int64
+    num_pairs::Int64
+    converged::Int32
+    reserved_pad::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_point_normals_opts`."""
+struct _CPointNormalsOpts
+    k::Int64
+    orientation::Int32
+    record_variation::Int32
+    viewpoint::NTuple{3,Cdouble}
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_reconstruct_surface_opts`."""
+struct _CReconstructSurfaceOpts
+    normals::Cstring
+    k::Int64
+    cell_size::Cdouble
+    resolution::Int64
+    max_distance::Cdouble
+    estimate_normals::Int32
+    reserved_pad::Int32
+    normals_k::Int64
+    max_cells::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_reconstruct_surface_report`."""
+struct _CReconstructSurfaceReport
+    num_samples::Int64
+    spacing::Cdouble
+    cell_size::Cdouble
+    max_distance::Cdouble
+    num_lattice_points::Int64
+    num_undefined::Int64
+    num_triangles::Int64
+    num_components::Int64
+    estimated_normals::Int32
+    reserved_pad::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_hull_report`."""
+struct _CHullReport
+    dimension::Int32
+    reserved_pad::Int32
+    num_vertices::Int64
+    num_facets::Int64
+    area::Cdouble
+    volume::Cdouble
+    perimeter::Cdouble
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_coordinate_opts`."""
+struct _CCoordinateOpts
+    system::Int32
+    inverse::Int32
+    axis::NTuple{3,Cdouble}
+    origin::NTuple{3,Cdouble}
+    reference::NTuple{3,Cdouble}
+    arrays::Ptr{Cstring}
+    num_arrays::Int64
+    record_coordinates::Int32
+    reserved_pad::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_geodesic_opts`."""
+struct _CGeodesicOpts
+    sources::Ptr{Int64}
+    num_sources::Int64
+    source_region::Cstring
+    time_factor::Cdouble
+    tolerance::Cdouble
+    max_iterations::Int64
+    reserved::NTuple{6,Int64}
+end
+
+"""Mirror of C `mio_geodesic_report`."""
+struct _CGeodesicReport
+    num_sources::Int64
+    num_unreached::Int64
+    num_degenerate::Int64
+    heat_iterations::Int64
+    poisson_iterations::Int64
+    max_distance::Cdouble
+    time_step::Cdouble
+    converged::Int32
+    reserved_pad::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_parameterize_opts`."""
+struct _CParameterizeOpts
+    padding::Cdouble
+    max_depth::Int64
+    max_stretch::Cdouble
+    reserved::NTuple{5,Int64}
+end
+
+"""Mirror of C `mio_parameterize_report`."""
+struct _CParameterizeReport
+    num_charts::Int64
+    num_flipped::Int64
+    num_seam_points::Int64
+    stretch::Cdouble
+    packing_efficiency::Cdouble
+    reserved::NTuple{3,Int64}
+end
+
 """Mirror of C `mio_remesh_report`."""
 struct _CRemeshReport
     num_clusters::Int64
@@ -1982,6 +2202,44 @@ function _check_abi_layout()
         error("meshio++: mio_shrinkwrap_opts layout mismatch ($(sizeof(_CShrinkwrapOpts)) bytes)")
     sizeof(_CShrinkwrapReport) == 136 ||
         error("meshio++: mio_shrinkwrap_report layout mismatch ($(sizeof(_CShrinkwrapReport)) bytes)")
+    sizeof(_CMetricOpts) == 104 ||
+        error("meshio++: mio_metric_opts layout mismatch ($(sizeof(_CMetricOpts)) bytes)")
+    sizeof(_CMetricReport) == 64 ||
+        error("meshio++: mio_metric_report layout mismatch ($(sizeof(_CMetricReport)) bytes)")
+    sizeof(_CUntangleOpts) == 72 ||
+        error("meshio++: mio_untangle_opts layout mismatch ($(sizeof(_CUntangleOpts)) bytes)")
+    sizeof(_CUntangleReport) == 80 ||
+        error("meshio++: mio_untangle_report layout mismatch ($(sizeof(_CUntangleReport)) bytes)")
+    sizeof(_CMorphOpts) == 104 ||
+        error("meshio++: mio_morph_opts layout mismatch ($(sizeof(_CMorphOpts)) bytes)")
+    sizeof(_CMorphReport) == 80 ||
+        error("meshio++: mio_morph_report layout mismatch ($(sizeof(_CMorphReport)) bytes)")
+    sizeof(_CEigenmodeOpts) == 56 ||
+        error("meshio++: mio_eigenmode_opts layout mismatch ($(sizeof(_CEigenmodeOpts)) bytes)")
+    sizeof(_CEigenmodeReport) == 64 ||
+        error("meshio++: mio_eigenmode_report layout mismatch ($(sizeof(_CEigenmodeReport)) bytes)")
+    sizeof(_CRegistrationOpts) == 192 ||
+        error("meshio++: mio_registration_opts layout mismatch ($(sizeof(_CRegistrationOpts)) bytes)")
+    sizeof(_CRegistrationReport) == 200 ||
+        error("meshio++: mio_registration_report layout mismatch ($(sizeof(_CRegistrationReport)) bytes)")
+    sizeof(_CPointNormalsOpts) == 72 ||
+        error("meshio++: mio_point_normals_opts layout mismatch ($(sizeof(_CPointNormalsOpts)) bytes)")
+    sizeof(_CReconstructSurfaceOpts) == 96 ||
+        error("meshio++: mio_reconstruct_surface_opts layout mismatch ($(sizeof(_CReconstructSurfaceOpts)) bytes)")
+    sizeof(_CReconstructSurfaceReport) == 104 ||
+        error("meshio++: mio_reconstruct_surface_report layout mismatch ($(sizeof(_CReconstructSurfaceReport)) bytes)")
+    sizeof(_CHullReport) == 80 ||
+        error("meshio++: mio_hull_report layout mismatch ($(sizeof(_CHullReport)) bytes)")
+    sizeof(_CCoordinateOpts) == 136 ||
+        error("meshio++: mio_coordinate_opts layout mismatch ($(sizeof(_CCoordinateOpts)) bytes)")
+    sizeof(_CGeodesicOpts) == 96 ||
+        error("meshio++: mio_geodesic_opts layout mismatch ($(sizeof(_CGeodesicOpts)) bytes)")
+    sizeof(_CGeodesicReport) == 96 ||
+        error("meshio++: mio_geodesic_report layout mismatch ($(sizeof(_CGeodesicReport)) bytes)")
+    sizeof(_CParameterizeOpts) == 64 ||
+        error("meshio++: mio_parameterize_opts layout mismatch ($(sizeof(_CParameterizeOpts)) bytes)")
+    sizeof(_CParameterizeReport) == 64 ||
+        error("meshio++: mio_parameterize_report layout mismatch ($(sizeof(_CParameterizeReport)) bytes)")
     sizeof(_CSobolevOpts) == 88 ||
         error("meshio++: mio_sobolev_opts layout mismatch ($(sizeof(_CSobolevOpts)) bytes)")
     sizeof(_CSobolevReport) == 80 ||

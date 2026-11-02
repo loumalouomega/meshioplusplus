@@ -37,6 +37,7 @@
 #include "meshioplusplus/detail/face_mesh.hpp"
 #include "meshioplusplus/detail/format_compat.hpp"
 #include "meshioplusplus/detail/hdf5_util.hpp"
+#include "meshioplusplus/detail/length_unit.hpp"
 #include "meshioplusplus/detail/node_order.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -645,11 +646,77 @@ std::string cgns_read_c1(hid_t node) {
     return end == std::string::npos ? std::string() : out.substr(0, end + 1);
 }
 
+// --- DimensionalUnits_t: the length unit (roadmap 7.1.4) ----------------------
+
+bool cgns_find_child_by_label(hid_t loc, const std::string& rLabel, std::string& rName);
+
+/// SIDS length unit names, metres per unit.
+constexpr std::pair<const char*, double> kCgnsLengthUnits[] = {{"Meter", 1.0},
+                                                               {"Centimeter", 0.01},
+                                                               {"Millimeter", 0.001},
+                                                               {"Foot", 0.3048},
+                                                               {"Inch", 0.0254}};
+constexpr std::size_t kCgnsUnitWidth = 32;
+
+/// The mesh's length unit as the base's `DimensionalUnits_t` (C1 [5][32]: Mass,
+/// Length, Time, Temperature, Angle; the others `Null`); false when it has
+/// none CGNS can name.
+bool cgns_write_dimensional_units(hid_t base, const Mesh& rMesh) {
+    const double unit = detail::mesh_length_unit(rMesh);
+    if (!(unit > 0.0))
+        return false;
+    const char* name = nullptr;
+    for (const auto& [n, v] : kCgnsLengthUnits)
+        if (std::abs(v - unit) <= 1e-12 * v)
+            name = n;
+    if (!name) {
+        log::warn(
+            "CGNS: a length unit of {} m has no DimensionalUnits name (Meter, Centimeter, "
+            "Millimeter, Foot, Inch); kept as field data only.",
+            unit);
+        return false;
+    }
+    const std::string rows[5] = {"Null", name, "Null", "Null", "Null"};
+    NDArray data(DType::Int8, {std::size_t{5}, kCgnsUnitWidth});
+    std::int8_t* p = data.As<std::int8_t>();
+    std::memset(p, ' ', 5 * kCgnsUnitWidth);
+    for (std::size_t r = 0; r < 5; ++r)
+        std::memcpy(p + r * kCgnsUnitWidth, rows[r].data(), rows[r].size());
+    h5::Hid node = cgns_create_group(base, "DimensionalUnits");
+    cgns_write_node_attrs(node, "DimensionalUnits", "DimensionalUnits_t", "C1");
+    h5::write_dataset(node, " data", data);
+    return true;
+}
+
+/// The metres per unit a node's `DimensionalUnits_t` child names, or 0.
+double cgns_read_dimensional_units(hid_t loc) {
+    std::string child;
+    if (!cgns_find_child_by_label(loc, "DimensionalUnits_t", child))
+        return 0.0;
+    h5::Hid node = h5::open_group(loc, child);
+    if (!h5::exists(node, " data"))
+        return 0.0;
+    const NDArray raw = h5::read_dataset(node, " data");
+    if (raw.Size() < 2 * kCgnsUnitWidth)
+        return 0.0;
+    std::string text(kCgnsUnitWidth, '\0');
+    for (std::size_t i = 0; i < kCgnsUnitWidth; ++i)
+        text[i] = static_cast<char>(detail::read_int(raw, kCgnsUnitWidth + i));
+    const std::size_t end = text.find_last_not_of(std::string("\0 ", 2));
+    text = end == std::string::npos ? std::string() : text.substr(0, end + 1);
+    for (const auto& [n, v] : kCgnsLengthUnits)
+        if (text == n)
+            return v;
+    return 0.0;
+}
+
 /// `field_data` as `DataArray_t` children of a `UserDefinedData_t` node; the arrays keep their
-/// shape and are stored as I4/I8/R4/R8.
-void cgns_write_field_data(hid_t zone, const Mesh& rMesh) {
+/// shape and are stored as I4/I8/R4/R8. `pSkip`, when set, names an array left out.
+void cgns_write_field_data(hid_t zone, const Mesh& rMesh, const char* pSkip = nullptr) {
     std::vector<std::pair<std::string, NDArray>> arrays;
     for (const std::string& name : rMesh.FieldDataNames()) {
+        if (pSkip && name == pSkip)
+            continue;
         const NDArray& a = rMesh.FieldData(name);
         DType target;
         switch (a.Dtype()) {
@@ -1013,6 +1080,7 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
         basedata.As<std::int32_t>()[1] = phys_dim;
         h5::write_dataset(base, " data", basedata);
     }
+    const bool units_written = cgns_write_dimensional_units(base, rMesh);
 
     const std::size_t n_points = rMesh.NumPoints();
     const bool wide = n_points > static_cast<std::size_t>(INT32_MAX) ||
@@ -1322,7 +1390,7 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
         }
     }
 
-    cgns_write_field_data(zone, rMesh);
+    cgns_write_field_data(zone, rMesh, units_written ? detail::kLengthUnitName : nullptr);
     cgns_write_regions(zone, rMesh, region_starts, region_firsts, n_points);
 }
 
@@ -1428,6 +1496,7 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
                   base_name);
 
     h5::Hid base = h5::open_group(f, base_name);
+    double length_unit = cgns_read_dimensional_units(base);
 
     Mesh mesh;
     NDArray points;  // accumulated across zones
@@ -1454,6 +1523,8 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
         h5::Hid zone = h5::open_group(base, zname);
         if (!(h5::has_attr(zone, "label") && h5::read_attr_string(zone, "label") == "Zone_t"))
             continue;
+        if (const double zone_unit = cgns_read_dimensional_units(zone); zone_unit > 0.0)
+            length_unit = zone_unit;
 
         if (h5::exists(zone, "ZoneType")) {
             h5::Hid zt = h5::open_group(zone, "ZoneType");
@@ -1942,6 +2013,8 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
         }
         mesh.AssignPoints(std::move(all));
     }
+    if (length_unit > 0.0)
+        detail::set_mesh_length_unit(mesh, length_unit);
     return mesh;
 }
 

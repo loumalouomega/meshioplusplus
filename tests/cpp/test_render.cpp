@@ -948,19 +948,83 @@ std::size_t covered(const Frame& rFrame, std::int64_t Id) {
 
 }  // namespace
 
-TEST(RenderCutaway, ACutThroughACubeShowsTheTintedInsideOfTheFarFace) {
+TEST(RenderCutaway, ACutThroughAClosedCubeIsCappedInTheFillColour) {
     const Mesh m = cube_quads();
     RenderOptions o = side_view("-x");  // the camera sits on the -x side
     EXPECT_EQ(centre_id(render(m, o)), 4);  // the x = 0 face, uncut
     o.mCutaways = {keep_beyond(0, 0.5)};
     o.mCutawayTint = {10, 200, 30, 255};
     const Frame cut = render(m, o);
-    EXPECT_EQ(centre_id(cut), 5);  // now the x = 1 face, seen from inside
-    EXPECT_EQ(centre_rgba(cut), (RenderColor{10, 200, 30, 255}));
+    // The cube closes, so the cut is filled: a cap of no cell, in the fill
+    // colour, hides the inside of the far face.
+    EXPECT_EQ(centre_id(cut), -1);
+    EXPECT_EQ(centre_rgba(cut), (RenderColor{200, 197, 189, 255}));
     EXPECT_EQ(covered(cut, 4), 0u);  // the near face is gone
+    EXPECT_EQ(covered(cut, 5), 0u);  // and the far one is behind the cap
     EXPECT_TRUE(std::any_of(cut.mNotes.begin(), cut.mNotes.end(), [](const std::string& s) {
-        return s.rfind("cutaway: 1 plane", 0) == 0;
+        return s.rfind("cutaway: 1 plane, capped", 0) == 0;
     }));
+}
+
+TEST(RenderCutaway, ACutThroughAnOpenSurfaceShowsTheTintedInsideOfTheFarFace) {
+    // The cube without its z = 1 face: a cut through it has nothing to cap.
+    const Mesh m = make_mesh(
+        {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}},
+        "quad", {{0, 3, 2, 1}, {0, 1, 5, 4}, {3, 7, 6, 2}, {0, 4, 7, 3}, {1, 2, 6, 5}});
+    RenderOptions o = side_view("-x");
+    o.mCutaways = {keep_beyond(0, 0.5)};
+    o.mCutawayTint = {10, 200, 30, 255};
+    const Frame cut = render(m, o);
+    EXPECT_EQ(centre_id(cut), 4);  // the x = 1 face, seen from inside
+    EXPECT_EQ(centre_rgba(cut), (RenderColor{10, 200, 30, 255}));
+    EXPECT_EQ(covered(cut, 3), 0u);  // the near face is gone
+    EXPECT_TRUE(std::any_of(cut.mNotes.begin(), cut.mNotes.end(), [](const std::string& s) {
+        return s.rfind("cutaway: 1 plane, inside in", 0) == 0;
+    }));
+}
+
+TEST(RenderCutaway, AVolumeIsCappedInTheColourOfTheCellsItCuts) {
+    // Two hexahedra side by side along y, x coloured by point data.
+    Mesh m = make_mesh({{0, 0, 0},
+                        {1, 0, 0},
+                        {1, 1, 0},
+                        {0, 1, 0},
+                        {0, 0, 1},
+                        {1, 0, 1},
+                        {1, 1, 1},
+                        {0, 1, 1},
+                        {0, 2, 0},
+                        {1, 2, 0},
+                        {1, 2, 1},
+                        {0, 2, 1}},
+                       "hexahedron", {{0, 1, 2, 3, 4, 5, 6, 7}, {3, 2, 9, 8, 7, 6, 10, 11}});
+    std::vector<std::vector<double>> xs;
+    for (int i = 0; i < 12; ++i)
+        xs.push_back({i == 1 || i == 2 || i == 5 || i == 6 || i == 9 || i == 10 ? 1.0 : 0.0});
+    m.AddPointData("x", mt::points_from(xs));
+    RenderOptions o = side_view("-x");
+    o.mColorBy = "x";
+    o.mCutaways = {keep_beyond(0, 0.5)};
+    o.mCutawayTint = {10, 200, 30, 255};
+    const Frame cut = render(m, o);
+    // Every pixel the cut shows is a cap of one of the two cells, in the
+    // colour of its value (0.5, the middle of the range): none is the tint.
+    EXPECT_GT(covered(cut, 0), 0u);
+    EXPECT_GT(covered(cut, 1), 0u);
+    const RenderColor mid = centre_rgba(cut);
+    EXPECT_NE(mid, (RenderColor{10, 200, 30, 255}));
+    for (std::size_t i = 0; i < cut.mCellIds.size(); ++i)
+        if (cut.mCellIds[i] >= 0) {
+            const RenderColor c = {cut.mRgba[4 * i], cut.mRgba[4 * i + 1], cut.mRgba[4 * i + 2],
+                                   cut.mRgba[4 * i + 3]};
+            EXPECT_EQ(c, mid);
+        }
+    // A second plane cuts the cap as well: only the y >= 1 cell is left.
+    o.mCutaways = {keep_beyond(0, 0.5), keep_beyond(1, 1.0)};
+    const Frame two = render(m, o);
+    EXPECT_EQ(covered(two, 0), 0u);
+    EXPECT_GT(covered(two, 1), 0u);
+    EXPECT_LT(covered(two, 1), covered(cut, 1) + covered(cut, 0));
 }
 
 TEST(RenderCutaway, FrontFacesAreNotTinted) {
@@ -978,7 +1042,7 @@ TEST(RenderCutaway, TheKeptSideIsTheOneTheNormalPointsTo) {
     o.mCutaways = {keep_beyond(0, 0.5, -1.0)};  // keeps x <= 0.5: the x = 1 face is gone
     const Frame cut = render(m, o);
     EXPECT_EQ(covered(cut, 5), 0u);
-    EXPECT_EQ(centre_id(cut), 4);  // the x = 0 face, from inside, tinted
+    EXPECT_EQ(centre_id(cut), -1);  // the cap, in front of the x = 0 face
 }
 
 TEST(RenderCutaway, TwoPlanesLeaveAQuarter) {

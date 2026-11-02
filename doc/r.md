@@ -38,6 +38,8 @@ Every exported function is prefixed `mio_`, which keeps the package clear of bas
 
 `mio_read(path, format = "gmsh")` reads non-periodic Gmsh 2.2, 4.0 and 4.1 through the native library. The 4.0 path accepts ASCII and binary with 4- or 8-byte producer counts. Periodic files use `mio_read_with_info` / `mio_write_with_info`; output remains 4.1 (`gmsh`) or 2.2 (`gmsh22`). Info-less reads refuse `$Periodic` rather than lose it. See [Gmsh](formats/gmsh.md).
 
+`mio_read` reads compressed files transparently (`mio_read("cube.msh.gz")`: `.gz`, `.bz2`, `.xz`, `.zst` or a single-member `.zip`), through the codecs the native library links. See [compressed files](formats.md#compressed-files).
+
 The package is MIT-licensed like the rest of meshio++. (The sibling [Julia](/julia) binding is deliberately not — see its page.)
 
 ## Building and installing
@@ -243,7 +245,7 @@ png <- mio_render_png(mesh, width = 800L, height = 600L)   # a raw vector
 mio_write_snapshot("part.png", mesh)                       # .png .txt .ansi .html .cast
 ```
 
-**Cut-aways (v16.36.0).** `cutaway = c(px, py, pz, nx, ny, nz)` (a point and the normal of the side kept), or a list of up to two such vectors, with `cutaway_tint = mio_rgba(...)`, clips the geometry away and tints the back faces now in view: `mio_render(mesh, view = "-x", cutaway = c(0.5, 0, 0, 1, 0, 0))`.
+**Cut-aways (v16.36.0).** `cutaway = c(px, py, pz, nx, ny, nz)` (a point and the normal of the side kept), or a list of up to two such vectors, with `cutaway_tint = mio_rgba(...)`, clips the geometry away, caps the cut through a volume or a closed surface, and tints the back faces of an open one now in view: `mio_render(mesh, view = "-x", cutaway = c(0.5, 0, 0, 1, 0, 0))`.
 
 **Streamlines (v16.37.0).** `streamlines = "velocity"` follows a vector point array over the mesh's cells, with `stream_seeds` (default 40), `stream_length` (model diagonals each way, default 0.5) and `stream_color = mio_rgba(...)`: `mio_render(m, streamlines = "velocity", stream_seeds = 60L)`. An unknown array or a seed count outside 1 to 10000 is an error naming it.
 
@@ -274,6 +276,18 @@ Colours are numbers `0xRRGGBBAA` (`mio_rgba(r, g, b, a)`) or `c(r, g, b[, a])`; 
 - `mio_hausdorff_distance(a, b, face_samples = 0, region_a = "", region_b = "")` — a list of `distance`, the one-sided maxima with means and RMS, the sample counts and the worst points. See [Hausdorff distance](/hausdorff).
 - `mio_edit_regions(mesh, op, inputs, output = "", kind = NULL, dim = NULL, tag = NULL, keep_inputs = TRUE)` and `mio_remove_region(mesh, index)` (1-based). See [editing regions](/regions#editing-regions).
 - `mio_match_periodic_nodes(mesh, slave, master, matrix = NULL, translate = NULL, atol = 1e-8, require_complete = TRUE)` — a list of 1-based `slave` / `master` ids, `unmatched`, `num_fixed` and `max_residual`; `matrix` is an R 4x4 (`M %*% c(p, 1)`). See [periodic node pairs](/periodic).
+- `mio_geodesic_distance(mesh, sources = integer(0), source_region = NULL, time_factor = 1, tolerance = 1e-10, max_iterations = 0)` — a list of `mesh` (with `geodesic:distance` point data), `num_sources`, `num_unreached`, `max_distance`, `time_step` and `converged`; 1-based sources. See [geodesic distance](/geodesic).
+- `mio_parameterize(mesh, padding = 0.02, max_depth = 8, max_stretch = 2)` — a list of `mesh` (with `uv` point data, split at the seams), `num_charts`, `num_flipped`, `stretch`, `packing_efficiency` and `num_seam_points`. See [parameterize](/parameterize).
+- `mio_laplacian_eigenmodes(mesh, num_modes = 10, tolerance = 1e-8, max_iterations = 0)` — a list of `mesh` (with `laplacian:modes` point data and `laplacian:eigenvalues` field data), `iterations`, `max_residual` and `converged`. See [eigenmodes](/eigenmodes).
+- `mio_morph(mesh, array, fix_boundary = TRUE, constrained_array = NULL, stiffening = 1, steps = 1, allow_inverted = FALSE)` — a list of `mesh` (moved), `num_constrained`, `num_free`, `num_inverted`, `max_displacement` and `converged`: boundary-driven morphing by harmonic extension. See [morphing](/morph).
+- `mio_untangle(mesh, fix_boundary = TRUE, rings = 2, smooth = FALSE, max_sweeps = 100)` — a list of `mesh`, `num_inverted_before`, `num_inverted_after`, `min_quality_before`, `min_quality_after` and `sweeps`: repair inverted tetrahedra and hexahedra. See [untangling](/untangle).
+- `mio_prepare_metric(mesh, arrays, output = "metric", target_vertices = 0, norm = 2, hmin = 0, hmax = 0, gradation = 0)` — a list of `mesh`, `complexity_before`, `complexity_after` and `num_graded`: intersect, normalise, clamp and grade metric fields. See [metric toolbox](/metric).
+- `mio_convert_coordinates(mesh, system = "cylindrical", axis = c(0, 0, 1), origin = c(0, 0, 0), reference = c(1, 0, 0), arrays = character(0), inverse = FALSE, record_coordinates = TRUE)` — a list of `mesh` (with `coords:<system>` point data and the named arrays in local components), `num_arrays` and `num_singular`. See [coordinates](/coordinates).
+- `mio_convex_hull(mesh, dimension = 0)` and `mio_delaunay_2d(mesh)` — lists of `mesh` and the counts (`dimension`, `num_vertices`, `num_facets`, `area`, `volume`, `perimeter`; `num_triangles`, `num_duplicates`, `num_boundary`): the convex hull of the points (extreme points with `hull:point_id`, 0-based) and their Delaunay triangulation in `x, y`. See [hull](/hull).
+- `mio_estimate_normals(mesh, k = 16, orientation = "consistent", viewpoint = c(0, 0, 0), record_variation = FALSE)` — a list of `mesh` (with `normals` point data from local plane fits), `num_degenerate` and `num_components`. See [point-cloud normals](/point_normals).
+- `mio_reconstruct_surface(mesh, normals = "normals", k = 8, cell_size = 0, resolution = 0, max_distance = 0, estimate_normals = TRUE, normals_k = 16, max_cells = 2e7)` — a list of `mesh` (a triangle surface through the oriented point cloud), `num_samples`, `spacing`, `cell_size`, `max_distance`, `num_lattice_points`, `num_undefined`, `num_triangles`, `num_components` and `estimated_normals`. See [surface reconstruction](/reconstruct_surface).
+- `mio_register_rigid(source, target, method = "point_to_point", max_iterations = 50, tolerance = 1e-10, max_distance = 0, initial = NULL)` — a list of `matrix` (4 × 4), `initial_rms`, `rms`, `iterations`, `num_pairs` and `converged`: rigid registration by iterative closest points. See [rigid registration](/registration).
+- `mio_adjacency(mesh, kind = "node")` — a list of **1-based** `indptr` and `indices`, the node (`"node"`), FEM-sparsity (`"clique"`) or facet-sharing cell (`"cell"`) graph in CSR form; `mio_write_graph(mesh, path, kind = "node", format = NULL)` writes it as a METIS `.graph` or Scotch `.grf` file and returns `num_vertices`, `num_edges` and `max_degree`. See [adjacency graphs](/adjacency).
 
 ## v10.9.0 additions
 

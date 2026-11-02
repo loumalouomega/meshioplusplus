@@ -3893,6 +3893,447 @@ typedef struct mio_sobolev_report {
 MIO_API mio_mesh* mio_sobolev_deform(const mio_mesh* mesh, const mio_sobolev_opts* opts,
                                      mio_sobolev_report* report);
 
+/** mio_coordinate_opts.system: cylindrical (r, theta, z) components. */
+#define MIO_COORDS_CYLINDRICAL 0
+/** mio_coordinate_opts.system: spherical (r, theta polar, phi) components. */
+#define MIO_COORDS_SPHERICAL 1
+
+/**
+ * Options for mio_convert_coordinates. Initialize through
+ * mio_coordinate_opts_init(): cylindrical about +z through the origin, angle 0
+ * along +x, coordinates recorded, no arrays.
+ */
+typedef struct mio_coordinate_opts {
+    int32_t system;             /**< MIO_COORDS_CYLINDRICAL or MIO_COORDS_SPHERICAL */
+    int32_t inverse;            /**< nonzero reads the arrays as local components */
+    double axis[3];             /**< the axis direction (nonzero) */
+    double origin[3];           /**< a point on the axis (the spherical centre) */
+    double reference[3];        /**< the direction of angle 0, projected off the axis */
+    const char* const* arrays;  /**< vector/tensor point or cell data to rewrite (borrowed) */
+    int64_t num_arrays;         /**< entries of `arrays` */
+    int32_t record_coordinates; /**< nonzero attaches coords:cylindrical / coords:spherical */
+    int32_t reserved_pad;       /**< must be zero */
+    int64_t reserved[4];        /**< must be zero; room for additive growth */
+} mio_coordinate_opts;
+
+/** Initialize coordinate options (see mio_coordinate_opts). */
+MIO_API void mio_coordinate_opts_init(mio_coordinate_opts* opts);
+
+/**
+ * Cylindrical or spherical components about an axis: the points stay put, their
+ * coordinates are recorded as point data, and each named vector (n,3) or tensor
+ * (n,9)/(n,3,3) array (point or cell data) is rewritten in the local basis of
+ * its point (a cell's at its centroid), or back to Cartesian with `inverse`.
+ * See doc/coordinates.md. Either count may be NULL.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_convert_coordinates(const mio_mesh* mesh, const mio_coordinate_opts* opts,
+                                          int64_t* num_arrays, int64_t* num_singular);
+
+/**
+ * Options for mio_prepare_metric. Initialize through mio_metric_opts_init():
+ * output "metric", norm 2, no normalisation, clamping or gradation.
+ */
+typedef struct mio_metric_opts {
+    const char* const* arrays; /**< the metric fields' point-data names (borrowed) */
+    int64_t num_arrays;        /**< entries of `arrays`, at least 1 */
+    const char* output;        /**< the result's name, or NULL for "metric" */
+    double target_vertices;    /**< the vertex count to normalise to; 0 skips */
+    double norm;               /**< the L^p norm, at least 1; 0 is infinity */
+    double hmin;               /**< the smallest size asked; 0 open */
+    double hmax;               /**< the largest; 0 open */
+    double gradation;          /**< the largest growth per unit length (> 1); 0 skips */
+    int64_t max_sweeps;        /**< gradation sweeps at most */
+    int64_t reserved[4];       /**< must be zero; room for additive growth */
+} mio_metric_opts;
+
+/** What mio_prepare_metric did. */
+typedef struct mio_metric_report {
+    double complexity_before; /**< integral of sqrt(det M), of the intersection */
+    double complexity_after;  /**< and of the result */
+    int64_t num_graded;       /**< points the gradation changed */
+    int64_t sweeps;           /**< gradation sweeps */
+    int64_t reserved[4];      /**< zero; room for additive growth */
+} mio_metric_report;
+
+/** Initialize metric options (see mio_metric_opts). */
+MIO_API void mio_metric_opts_init(mio_metric_opts* opts);
+
+/**
+ * The metric toolbox: intersect the metric fields `arrays`, normalise to
+ * `target_vertices`, clamp to [hmin, hmax] and grade, writing point data
+ * `output`. See doc/metric.md. `report` may be NULL.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_prepare_metric(const mio_mesh* mesh, const mio_metric_opts* opts,
+                                     mio_metric_report* report);
+
+/**
+ * Options for mio_untangle. Initialize through mio_untangle_opts_init():
+ * boundary fixed, two rings, no smoothing, 100 sweeps.
+ */
+typedef struct mio_untangle_opts {
+    const uint8_t* frozen; /**< a mask, one entry per point (nonzero pins), or NULL */
+    int64_t num_frozen;    /**< entries of `frozen`: 0 or the point count */
+    int64_t rings;         /**< edge rings around inverted cells that may move */
+    int64_t max_sweeps;    /**< sweeps at most, at least 1 */
+    int32_t fix_boundary;  /**< nonzero keeps the boundary nodes fixed */
+    int32_t smooth;        /**< nonzero moves every free node until it settles */
+    int64_t reserved[4];   /**< must be zero; room for additive growth */
+} mio_untangle_opts;
+
+/** What mio_untangle did. */
+typedef struct mio_untangle_report {
+    int64_t num_inverted_before; /**< cells with a non-positive corner, before */
+    int64_t num_inverted_after;  /**< and after */
+    double min_quality_before;   /**< least corner scaled Jacobian, before */
+    double min_quality_after;    /**< and after */
+    int64_t sweeps;              /**< sweeps run */
+    int64_t moves;               /**< node moves kept */
+    int64_t reserved[4];         /**< zero; room for additive growth */
+} mio_untangle_report;
+
+/** Initialize untangle options (see mio_untangle_opts). */
+MIO_API void mio_untangle_opts_init(mio_untangle_opts* opts);
+
+/**
+ * Untangle a mesh's tetrahedra and hexahedra: move nodes until every corner
+ * has a positive signed volume (Escobar et al.'s functional). See
+ * doc/untangle.md. `opts` NULL uses the defaults; `report` may be NULL.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_untangle(const mio_mesh* mesh, const mio_untangle_opts* opts,
+                               mio_untangle_report* report);
+
+/**
+ * Options for mio_morph. Initialize through mio_morph_opts_init(): boundary
+ * constrained, stiffening 1, one step, inversions refused.
+ */
+typedef struct mio_morph_opts {
+    const char* array;             /**< point data: the displacement (required, borrowed) */
+    const char* constrained_array; /**< point data whose nonzero entries pin, or NULL */
+    const uint8_t* constrained;    /**< a mask, one entry per point (nonzero pins), or NULL */
+    int64_t num_constrained;       /**< entries of `constrained`: 0 or the point count */
+    double stiffening;             /**< stiffness scaled by (mean / measure)^stiffening */
+    int64_t steps;                 /**< increments, at least 1 */
+    double tolerance;              /**< relative residual of each solve */
+    int64_t max_iterations;        /**< each solve's cap; 0 picks one */
+    int32_t fix_boundary;          /**< nonzero constrains the boundary points */
+    int32_t allow_inverted;        /**< nonzero returns a mesh with inverted cells */
+    int64_t reserved[4];           /**< must be zero; room for additive growth */
+} mio_morph_opts;
+
+/** What mio_morph did. */
+typedef struct mio_morph_report {
+    int64_t num_constrained; /**< points that took the prescribed displacement */
+    int64_t num_free;        /**< points solved for */
+    int64_t num_inverted;    /**< cells turned inside out (0 unless allowed) */
+    int64_t iterations;      /**< conjugate-gradient iterations, all solves */
+    double max_displacement; /**< the largest point displacement */
+    int32_t converged;       /**< zero when a solve hit its cap */
+    int32_t reserved_pad;    /**< zero */
+    int64_t reserved[4];     /**< zero; room for additive growth */
+} mio_morph_report;
+
+/** Initialize morph options (see mio_morph_opts). */
+MIO_API void mio_morph_opts_init(mio_morph_opts* opts);
+
+/**
+ * Boundary-driven morphing: the constrained points (boundary, masks) move by
+ * the `array` displacement, the rest by its harmonic extension with
+ * Jacobian-based stiffening; a result with inverted cells fails unless
+ * `allow_inverted`. See doc/morph.md. `report` may be NULL.
+ *
+ * @return the moved mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_morph(const mio_mesh* mesh, const mio_morph_opts* opts,
+                            mio_morph_report* report);
+
+/**
+ * Options for mio_laplacian_eigenmodes. Initialize through
+ * mio_eigenmode_opts_init(): 10 modes, tolerance 1e-8, automatic cap.
+ */
+typedef struct mio_eigenmode_opts {
+    int64_t num_modes;      /**< eigenpairs wanted, the smallest (at least 1) */
+    double tolerance;       /**< the relative residual every pair must reach */
+    int64_t max_iterations; /**< block iterations at most; 0 takes 300 */
+    int64_t reserved[4];    /**< must be zero; room for additive growth */
+} mio_eigenmode_opts;
+
+/** What mio_laplacian_eigenmodes found (the eigenvalues are field data). */
+typedef struct mio_eigenmode_report {
+    int64_t iterations;     /**< block iterations run */
+    double max_residual;    /**< the largest relative residual of the pairs */
+    int32_t converged;      /**< nonzero unless max_iterations ran out first */
+    int32_t reserved_pad;   /**< zero */
+    int64_t num_degenerate; /**< triangles left out for zero area */
+    int64_t reserved[4];    /**< zero; room for additive growth */
+} mio_eigenmode_report;
+
+/** Initialize eigenmode options (see mio_eigenmode_opts). */
+MIO_API void mio_eigenmode_opts_init(mio_eigenmode_opts* opts);
+
+/**
+ * The lowest eigenpairs of a triangle surface's Laplace-Beltrami operator
+ * (cotangent stiffness against lumped mass): the mesh with point data
+ * `laplacian:modes` (Float64 (n, num_modes), M-orthonormal) and field data
+ * `laplacian:eigenvalues` (ascending). See doc/eigenmodes.md. `opts` NULL uses
+ * the defaults; `report` may be NULL.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_laplacian_eigenmodes(const mio_mesh* mesh, const mio_eigenmode_opts* opts,
+                                           mio_eigenmode_report* report);
+
+/** mio_registration_opts.method: summed squared point distances. */
+#define MIO_REGISTER_POINT_TO_POINT 0
+/** mio_registration_opts.method: summed squared distances to the target's tangent planes. */
+#define MIO_REGISTER_POINT_TO_PLANE 1
+
+/**
+ * Options for mio_register_rigid. Initialize through
+ * mio_registration_opts_init(): point-to-point, 50 iterations, tolerance 1e-10,
+ * every pair kept, the identity as the start.
+ */
+typedef struct mio_registration_opts {
+    int32_t method;         /**< MIO_REGISTER_POINT_TO_POINT or _POINT_TO_PLANE */
+    int32_t reserved_pad;   /**< must be zero */
+    int64_t max_iterations; /**< the iteration cap, at least 1 */
+    double tolerance;       /**< stop below this rotation (rad) and relative move */
+    double max_distance;    /**< drop pairs farther apart; 0 keeps all */
+    double initial[16];     /**< the starting rigid transform, row-major 4x4 */
+    int64_t reserved[4];    /**< must be zero; room for additive growth */
+} mio_registration_opts;
+
+/** What mio_register_rigid found. */
+typedef struct mio_registration_report {
+    double matrix[16];    /**< row-major 4x4: source coordinates onto the target's */
+    double initial_rms;   /**< RMS pair distance under `initial` */
+    double rms;           /**< RMS pair distance at the end */
+    int64_t iterations;   /**< iterations run */
+    int64_t num_pairs;    /**< pairs kept at the end */
+    int32_t converged;    /**< nonzero unless max_iterations ran out first */
+    int32_t reserved_pad; /**< zero */
+    int64_t reserved[4];  /**< zero; room for additive growth */
+} mio_registration_report;
+
+/** Initialize registration options (see mio_registration_opts). */
+MIO_API void mio_registration_opts_init(mio_registration_opts* opts);
+
+/**
+ * Rigid registration by iterative closest points: the rotation and
+ * translation laying `source`'s points onto `target` (its surface when it has
+ * surface cells, else its points; point-to-plane on a cloud needs its `normals`
+ * point data). Apply `report->matrix` with mio_transform. See
+ * doc/registration.md. `opts` NULL uses the defaults.
+ *
+ * @return MIO_OK, or an error status (MIO_ERR_INVALID_ARG for bad input).
+ */
+MIO_API mio_status mio_register_rigid(const mio_mesh* source, const mio_mesh* target,
+                                      const mio_registration_opts* opts,
+                                      mio_registration_report* report);
+
+/** mio_point_normals_opts.orientation: propagate along a spanning tree, then outward. */
+#define MIO_NORMALS_CONSISTENT 0
+/** mio_point_normals_opts.orientation: towards `viewpoint`. */
+#define MIO_NORMALS_VIEWPOINT 1
+/** mio_point_normals_opts.orientation: each normal's largest component positive. */
+#define MIO_NORMALS_NONE 2
+
+/**
+ * Options for mio_estimate_normals. Initialize through
+ * mio_point_normals_opts_init(): k = 16, MIO_NORMALS_CONSISTENT, no variation.
+ */
+typedef struct mio_point_normals_opts {
+    int64_t k;                /**< neighbours per plane fit (at least 2) */
+    int32_t orientation;      /**< MIO_NORMALS_CONSISTENT, _VIEWPOINT or _NONE */
+    int32_t record_variation; /**< nonzero also attaches normals:variation */
+    double viewpoint[3];      /**< the point normals face, for MIO_NORMALS_VIEWPOINT */
+    int64_t reserved[4];      /**< must be zero; room for additive growth */
+} mio_point_normals_opts;
+
+/** Initialize point-normal options (see mio_point_normals_opts). */
+MIO_API void mio_point_normals_opts_init(mio_point_normals_opts* opts);
+
+/**
+ * Normals of a point cloud: a plane fitted to each point and its k nearest
+ * neighbours, oriented per `opts->orientation`, as `normals` point data (unit
+ * Float64 (n, 3); NaN where the neighbourhood spans no plane). Points, cells
+ * and other arrays pass through. See doc/point_normals.md. `opts` NULL uses
+ * the defaults; either count may be NULL.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_estimate_normals(const mio_mesh* mesh, const mio_point_normals_opts* opts,
+                                       int64_t* num_degenerate, int64_t* num_components);
+
+/**
+ * Options for mio_reconstruct_surface. Initialize through
+ * mio_reconstruct_surface_opts_init(): normals "normals", k = 8, automatic
+ * cell size and trim distance, normals estimated when absent (16 neighbours),
+ * at most 20,000,000 band cells.
+ */
+typedef struct mio_reconstruct_surface_opts {
+    const char* normals;      /**< the normals' point data, or NULL for "normals" (borrowed) */
+    int64_t k;                /**< tangent planes blended per lattice node (at least 1) */
+    double cell_size;         /**< the lattice cell size, or 0 for automatic */
+    int64_t resolution;       /**< cells along the longest axis when cell_size is 0; 0: spacing */
+    double max_distance;      /**< Hoppe's trim distance, or 0 for automatic */
+    int32_t estimate_normals; /**< nonzero estimates the normals when the array is absent */
+    int32_t reserved_pad;     /**< must be zero */
+    int64_t normals_k;        /**< neighbours per normal fit, when estimated */
+    int64_t max_cells;        /**< the most lattice cells the band may hold */
+    int64_t reserved[4];      /**< must be zero; room for additive growth */
+} mio_reconstruct_surface_opts;
+
+/** Initialize surface-reconstruction options (see mio_reconstruct_surface_opts). */
+MIO_API void mio_reconstruct_surface_opts_init(mio_reconstruct_surface_opts* opts);
+
+/** What mio_reconstruct_surface built. */
+typedef struct mio_reconstruct_surface_report {
+    int64_t num_samples;        /**< points with a finite, non-zero normal */
+    double spacing;             /**< median distance to the 4th-nearest sample */
+    double cell_size;           /**< the lattice cell size used */
+    double max_distance;        /**< the trim distance used */
+    int64_t num_lattice_points; /**< lattice nodes evaluated (the band's) */
+    int64_t num_undefined;      /**< of which undefined (trimmed) */
+    int64_t num_triangles;      /**< triangles in the surface */
+    int64_t num_components;     /**< their edge-connected pieces */
+    int32_t estimated_normals;  /**< 1 when the normals were estimated */
+    int32_t reserved_pad;       /**< zero */
+    int64_t reserved[4];        /**< zero; room for additive growth */
+} mio_reconstruct_surface_report;
+
+/**
+ * A triangle surface through an oriented point cloud: the zero level set of
+ * the signed distance to the samples' tangent planes (Hoppe et al. 1992), cut
+ * by marching tetrahedra on a band of lattice cells about the samples. The
+ * result holds points and one `triangle` block, wound the way the normals
+ * point. See doc/reconstruct_surface.md. `opts` NULL uses the defaults;
+ * `report` may be NULL.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_reconstruct_surface(const mio_mesh* mesh,
+                                          const mio_reconstruct_surface_opts* opts,
+                                          mio_reconstruct_surface_report* report);
+
+/** What mio_convex_hull built. */
+typedef struct mio_hull_report {
+    int32_t dimension;    /**< the dimension used, 2 or 3 */
+    int32_t reserved_pad; /**< zero */
+    int64_t num_vertices; /**< hull vertices (extreme points) */
+    int64_t num_facets;   /**< triangles (3-D) or edges (2-D) */
+    double area;          /**< 2-D: enclosed area; 3-D: surface area */
+    double volume;        /**< 3-D: enclosed volume; 2-D: 0 */
+    double perimeter;     /**< 2-D: perimeter; 3-D: 0 */
+    int64_t reserved[4];  /**< zero; room for additive growth */
+} mio_hull_report;
+
+/**
+ * The convex hull of a mesh's points (its cells are ignored): a closed
+ * outward-wound `triangle` surface in 3-D, a counter-clockwise `line` loop of
+ * the x, y coordinates in 2-D. The output holds the extreme points alone with
+ * their point data and `hull:point_id` (Int64, the 0-based input point).
+ * `dimension` is 2, 3, or 0 to decide from the points. See doc/hull.md.
+ * `report` may be NULL.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure
+ *         (MIO_ERR_INVALID_ARG for collinear/coplanar points).
+ */
+MIO_API mio_mesh* mio_convex_hull(const mio_mesh* mesh, int32_t dimension, mio_hull_report* report);
+
+/**
+ * The Delaunay triangulation of a mesh's points in the x, y plane: every input
+ * point kept (with its z and point data), one counter-clockwise `triangle`
+ * block. A point coinciding in x, y with an earlier one is in no triangle.
+ * See doc/hull.md. Any count may be NULL.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_delaunay_2d(const mio_mesh* mesh, int64_t* num_triangles,
+                                  int64_t* num_duplicates, int64_t* num_boundary);
+
+/**
+ * Options for mio_geodesic_distance. Initialize through
+ * mio_geodesic_opts_init(); give `sources`, `source_region` or both.
+ */
+typedef struct mio_geodesic_opts {
+    const int64_t* sources;    /**< source point ids, 0-based (borrowed); may be NULL */
+    int64_t num_sources;       /**< entries of `sources` */
+    const char* source_region; /**< a region whose points are sources too; NULL or "" for none */
+    double time_factor;        /**< heat time = time_factor * h^2, h the mean edge (default 1) */
+    double tolerance;          /**< relative tolerance of both solves (default 1e-10) */
+    int64_t max_iterations;    /**< iteration cap of each solve; 0 picks one (default) */
+    int64_t reserved[6];       /**< must be zero; room for additive growth */
+} mio_geodesic_opts;
+
+/** Initialize geodesic options: no source, time factor 1, tolerance 1e-10. */
+MIO_API void mio_geodesic_opts_init(mio_geodesic_opts* opts);
+
+/** What mio_geodesic_distance did. */
+typedef struct mio_geodesic_report {
+    int64_t num_sources;        /**< distinct source points */
+    int64_t num_unreached;      /**< points given NaN: in no triangle, or a sourceless piece */
+    int64_t num_degenerate;     /**< zero-area triangles left out */
+    int64_t heat_iterations;    /**< sweeps of the heat solve */
+    int64_t poisson_iterations; /**< conjugate-gradient iterations of the Poisson solve */
+    double max_distance;        /**< the largest finite distance */
+    double time_step;           /**< the heat time used */
+    int32_t converged;          /**< zero when a solve hit its cap */
+    int32_t reserved_pad;       /**< must be zero */
+    int64_t reserved[4];        /**< must be zero; room for additive growth */
+} mio_geodesic_report;
+
+/**
+ * Geodesic distance on a triangle surface by the heat method: the mesh with
+ * point_data "geodesic:distance", the distance along the surface to the
+ * nearest source (NaN for a point in no triangle or a piece with no source).
+ * The surface is the mesh's triangle blocks; a volume, quad, polygon or
+ * higher-order cell is refused. See doc/geodesic.md.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_geodesic_distance(const mio_mesh* mesh, const mio_geodesic_opts* opts,
+                                        mio_geodesic_report* report);
+
+/** Options for mio_parameterize. Initialize through mio_parameterize_opts_init(). */
+typedef struct mio_parameterize_opts {
+    double padding;      /**< gap between charts, a fraction of sqrt(area) (default 0.02) */
+    int64_t max_depth;   /**< how many times a piece that does not flatten may be halved (8) */
+    double max_stretch;  /**< a chart stretched more is halved again (default 2; >= 1) */
+    int64_t reserved[5]; /**< must be zero; room for additive growth */
+} mio_parameterize_opts;
+
+/** Initialize parameterize options: padding 0.02, depth 8, stretch 2. */
+MIO_API void mio_parameterize_opts_init(mio_parameterize_opts* opts);
+
+/** What mio_parameterize did. */
+typedef struct mio_parameterize_report {
+    int64_t num_charts;  /**< charts in the atlas */
+    int64_t num_flipped; /**< triangles flipped in the plane (0 unless a piece folded at the cap) */
+    int64_t num_seam_points;   /**< points added on seams */
+    double stretch;            /**< area-weighted L2 stretch (1 keeps lengths) */
+    double packing_efficiency; /**< fraction of the unit square the triangles cover */
+    int64_t reserved[3];       /**< must be zero; room for additive growth */
+} mio_parameterize_report;
+
+/**
+ * A UV atlas of a triangle surface: the mesh with point_data "uv" (two texture
+ * coordinates per point in the unit square), split at the seams
+ * ("parameterize:parent_point" names each point's input point; the first copy
+ * keeps its index), and cell_data "parameterize:chart". The surface is the
+ * mesh's triangle blocks; a volume, quad, polygon or higher-order cell is
+ * refused. See doc/parameterize.md.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_parameterize(const mio_mesh* mesh, const mio_parameterize_opts* opts,
+                                   mio_parameterize_report* report);
+
 /* ------------------------------------------------------------------------- */
 /* Data operations                                                           */
 /*                                                                           */
@@ -7097,6 +7538,44 @@ MIO_API const int64_t* mio_periodic_pairs_unmatched(const mio_periodic_pairs* pa
 
 /** Destroy a pairs handle. Safe to call with NULL. */
 MIO_API void mio_periodic_pairs_free(mio_periodic_pairs* pairs);
+
+/* ------------------------------------------------------------------ */
+/* Adjacency graphs and graph files (doc/adjacency.md)                 */
+/* ------------------------------------------------------------------ */
+
+/** Opaque CSR graph. Destroy with mio_adjacency_free(). */
+typedef struct mio_adjacency mio_adjacency;
+
+/**
+ * The `kind` graph of `mesh` in compressed-sparse-row form: `"node"` (nodes
+ * joined by a cell edge; NULL means this), `"clique"` (nodes sharing a cell:
+ * the FEM sparsity pattern) or `"cell"` (cells sharing a facet, numbered
+ * block-major). Rows are ascending, without duplicates or self-loops, and
+ * each undirected edge is stored both ways. Indices are 0-based.
+ * @return the graph (free with mio_adjacency_free), or NULL on failure.
+ */
+MIO_API mio_adjacency* mio_adjacency_create(const mio_mesh* mesh, const char* kind);
+
+/** Borrow the row offsets (`n + 1` entries), valid until mio_adjacency_free(). */
+MIO_API const int64_t* mio_adjacency_indptr(const mio_adjacency* graph, int64_t* count);
+
+/** Borrow the neighbour ids (`indptr[n]` entries), valid until mio_adjacency_free(). */
+MIO_API const int64_t* mio_adjacency_indices(const mio_adjacency* graph, int64_t* count);
+
+/** Destroy a graph handle. Safe to call with NULL. */
+MIO_API void mio_adjacency_free(mio_adjacency* graph);
+
+/**
+ * Write the `kind` graph of `mesh` (as mio_adjacency_create) to `path` as a
+ * METIS (`"metis"`, 1-based) or Scotch (`"scotch"`, 0-based) graph file;
+ * `format` NULL or empty infers it from the extension (`.graph`/`.metis`,
+ * `.grf`). Any out pointer may be NULL.
+ * @return MIO_ERR_INVALID_ARG for an unknown kind or format, or an extension
+ *         naming neither; MIO_ERR_WRITE when the file cannot be written.
+ */
+MIO_API mio_status mio_write_graph(const mio_mesh* mesh, const char* kind, const char* path,
+                                   const char* format, int64_t* num_vertices,
+                                   int64_t* num_edges, int64_t* max_degree);
 
 /* --------------------------------------------------------------------------
  * Software rendering (v16.33.0 core, v16.34.0 field rendering): a

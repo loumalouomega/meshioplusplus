@@ -12,8 +12,18 @@ namespace meshioplusplus::cli {
 
 /// Parse `args` against `specs`. Throws std::runtime_error on an unknown option
 /// or a value-option missing its argument. `--` stops option parsing.
+namespace {
+bool g_cli_describe = false;
+}  // namespace
+
+void set_cli_describe(bool On) {
+    g_cli_describe = On;
+}
+
 cli_parsed cli_parse(const std::vector<std::string>& rArgs,
                      const std::vector<cli_opt_spec>& rSpecs) {
+    if (g_cli_describe)
+        throw cli_describe_request{rSpecs};
     cli_parsed out;
     bool positional_only = false;
     for (std::size_t i = 0; i < rArgs.size(); ++i) {

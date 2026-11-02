@@ -12,6 +12,7 @@ from .._common import num_nodes_per_cell, warn
 from .._exceptions import ReadError, WriteError
 from .._mesh import Mesh
 from .._node_order import from_meshio, node_order, node_order_keys, to_meshio
+from .._units import med_length_unit, med_unit_coords, set_length_unit
 from ._med41 import FieldBitmaskWriter
 
 # https://docs.salome-platform.org/5/med/dev/med__outils_8hxx.html
@@ -543,6 +544,9 @@ def read(filename):
     mesh.description = mesh_description
     mesh.unit_time = mesh_unit_time
     mesh.unit_coords = mesh_unit_coords
+    unit = med_length_unit(mesh_unit_coords)
+    if unit is not None:
+        set_length_unit(mesh, unit)
     mesh.point_tag_groups = point_tag_groups
     mesh.cell_tag_groups = cell_tag_groups
     return mesh
@@ -766,7 +770,9 @@ def write(filename, mesh, med_version="4.1.0", **kwargs):
     med_mesh.attrs.create("ESP", mesh.points.shape[1])  # spatial dimension
     med_mesh.attrs.create("REP", 0)  # cartesian coordinate system (repère in French)
     unt = getattr(mesh, "unit_time", "")
-    uni = getattr(mesh, "unit_coords", "")
+    uni = getattr(mesh, "unit_coords", "") or med_unit_coords(
+        mesh, mesh.points.shape[1]
+    )
     desc = getattr(mesh, "description", None)
     if not desc:
         desc = "Mesh created with meshio++"

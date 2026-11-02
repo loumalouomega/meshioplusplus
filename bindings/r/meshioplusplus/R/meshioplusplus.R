@@ -716,6 +716,330 @@ mio_match_periodic_nodes <- function(mesh, slave, master, matrix = NULL, transla
   )
 }
 
+#' The metric toolbox: intersect, normalise, clamp and grade metric fields
+#'
+#' Intersects the metric fields `arrays` (point data, 6 components in 3-D or
+#' 3 in 2-D), normalises to `target_vertices`, clamps every size to
+#' `[hmin, hmax]` and grades, into point data `output`. See `doc/metric.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param arrays The metric fields' names.
+#' @param output The result's name.
+#' @param target_vertices The vertex count to normalise to (0: skip).
+#' @param norm The L^p norm (at least 1; 0: infinity).
+#' @param hmin,hmax The size range (0: that side open).
+#' @param gradation The largest size growth per unit length (> 1; 0: skip).
+#' @return A list of `mesh`, `complexity_before`, `complexity_after` and
+#'   `num_graded`.
+#' @export
+mio_prepare_metric <- function(mesh, arrays, output = "metric", target_vertices = 0,
+                               norm = 2, hmin = 0, hmax = 0, gradation = 0) {
+  .Call(
+    R_mio_prepare_metric, mesh, as.character(arrays), as.character(output),
+    as.numeric(target_vertices), as.numeric(norm), as.numeric(hmin), as.numeric(hmax),
+    as.numeric(gradation)
+  )
+}
+
+#' Untangle inverted tetrahedra and hexahedra
+#'
+#' Move nodes until every tetrahedron and hexahedron corner has a positive
+#' signed volume (Escobar et al.'s untangling functional), keeping the
+#' connectivity. See `doc/untangle.md`.
+#'
+#' @param mesh A `mio_mesh` with tetrahedra or hexahedra.
+#' @param fix_boundary Keep the boundary nodes fixed.
+#' @param rings Edge rings around the inverted cells whose nodes may move.
+#' @param smooth Untangle and smooth the whole mesh.
+#' @param max_sweeps Sweeps at most.
+#' @return A list of `mesh`, `num_inverted_before`, `num_inverted_after`,
+#'   `min_quality_before`, `min_quality_after` and `sweeps`.
+#' @export
+mio_untangle <- function(mesh, fix_boundary = TRUE, rings = 2, smooth = FALSE,
+                         max_sweeps = 100) {
+  .Call(
+    R_mio_untangle, mesh, isTRUE(fix_boundary), as.numeric(rings), isTRUE(smooth),
+    as.numeric(max_sweeps)
+  )
+}
+
+#' Boundary-driven mesh morphing
+#'
+#' The constrained points (the boundary unless `fix_boundary = FALSE`, and the
+#' nonzero entries of point data `constrained_array`) move by point data
+#' `array`; every other point moves by its harmonic extension with
+#' Jacobian-based stiffening. A result with inverted cells is an error unless
+#' `allow_inverted = TRUE`. See `doc/morph.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param array Point data: the displacement.
+#' @param fix_boundary Constrain the boundary points.
+#' @param constrained_array Point data whose nonzero entries constrain too.
+#' @param stiffening The stiffening exponent (0: plain Laplace).
+#' @param steps Increments the displacement is applied in.
+#' @param allow_inverted Return a mesh with inverted cells instead of failing.
+#' @return A list of `mesh`, `num_constrained`, `num_free`, `num_inverted`,
+#'   `max_displacement` and `converged`.
+#' @export
+mio_morph <- function(mesh, array, fix_boundary = TRUE, constrained_array = NULL,
+                      stiffening = 1, steps = 1, allow_inverted = FALSE) {
+  .Call(
+    R_mio_morph, mesh, as.character(array), isTRUE(fix_boundary),
+    if (is.null(constrained_array)) NULL else as.character(constrained_array),
+    as.numeric(stiffening), as.numeric(steps), isTRUE(allow_inverted)
+  )
+}
+
+#' Laplace-Beltrami eigenmodes of a triangle surface
+#'
+#' The lowest eigenpairs of the cotangent Laplacian against the lumped mass:
+#' the mesh carries point data `laplacian:modes` (n x num_modes,
+#' M-orthonormal) and field data `laplacian:eigenvalues` (ascending). See
+#' `doc/eigenmodes.md`.
+#'
+#' @param mesh A `mio_mesh` of triangles.
+#' @param num_modes Eigenpairs wanted, the smallest.
+#' @param tolerance The relative residual every pair must reach.
+#' @param max_iterations Block iterations at most; 0 takes 300.
+#' @return A list of `mesh`, `iterations`, `max_residual` and `converged`.
+#' @export
+mio_laplacian_eigenmodes <- function(mesh, num_modes = 10, tolerance = 1e-8,
+                                     max_iterations = 0) {
+  .Call(
+    R_mio_laplacian_eigenmodes, mesh, as.numeric(num_modes), as.numeric(tolerance),
+    as.numeric(max_iterations)
+  )
+}
+
+#' Rigid registration by iterative closest points
+#'
+#' The rotation and translation laying `source`'s points onto `target` (its
+#' surface when it has surface cells, else its points), as a 4 x 4 matrix to
+#' apply with `mio_transform()`. See `doc/registration.md`.
+#'
+#' @param source,target `mio_mesh` objects.
+#' @param method `"point_to_point"` or `"point_to_plane"` (a point-cloud
+#'   target then needs `normals` point data, see `mio_estimate_normals()`).
+#' @param max_iterations The iteration cap.
+#' @param tolerance Stop below this rotation (radians) and relative motion.
+#' @param max_distance Drop pairs farther apart than this; 0 keeps all.
+#' @param initial A starting 4 x 4 matrix, or `NULL` for the identity.
+#' @return A list of `matrix`, `initial_rms`, `rms`, `iterations`,
+#'   `num_pairs` and `converged`.
+#' @export
+mio_register_rigid <- function(source, target, method = "point_to_point",
+                               max_iterations = 50, tolerance = 1e-10,
+                               max_distance = 0, initial = NULL) {
+  .Call(
+    R_mio_register_rigid, source, target, as.character(method),
+    as.numeric(max_iterations), as.numeric(tolerance), as.numeric(max_distance),
+    if (is.null(initial)) NULL else as.numeric(initial)
+  )
+}
+
+#' Normals of a point cloud by local plane fits
+#'
+#' A plane is fitted to each point and its `k` nearest neighbours; the result
+#' is `normals` point data, oriented `"consistent"` (a spanning tree over the
+#' neighbour graph, then each piece outward), `"viewpoint"` (towards
+#' `viewpoint`) or `"none"`. A point whose neighbourhood spans no plane gets
+#' `NaN`. See `doc/point_normals.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param k Neighbours per fit (at least 2).
+#' @param orientation `"consistent"`, `"viewpoint"` or `"none"`.
+#' @param viewpoint The point normals face, with `orientation = "viewpoint"`.
+#' @param record_variation Also attach `normals:variation`.
+#' @return A list of `mesh`, `num_degenerate` and `num_components`.
+#' @export
+mio_estimate_normals <- function(mesh, k = 16, orientation = "consistent",
+                                 viewpoint = c(0, 0, 0), record_variation = FALSE) {
+  .Call(
+    R_mio_estimate_normals, mesh, as.numeric(k), as.character(orientation),
+    as.numeric(viewpoint), isTRUE(record_variation)
+  )
+}
+
+#' A triangle surface through an oriented point cloud
+#'
+#' The zero level set of the signed distance to the samples' tangent planes
+#' (Hoppe et al. 1992), cut by marching tetrahedra on a band of lattice cells
+#' about the samples; `k = 1` is Hoppe's field exactly, larger `k` blends that
+#' many planes. A lattice node whose projection onto its nearest sample's
+#' plane lies farther than `max_distance` from that sample is undefined, which
+#' keeps an open scan open. See `doc/reconstruct_surface.md`.
+#'
+#' @param mesh A `mio_mesh` (its points; cells are ignored).
+#' @param normals The normals' point data; estimated when absent unless
+#'   `estimate_normals = FALSE`.
+#' @param k Tangent planes blended per lattice node (at least 1).
+#' @param cell_size The lattice cell size; 0 for `resolution`, or the sample
+#'   spacing.
+#' @param resolution Cells along the longest axis when `cell_size` is 0.
+#' @param max_distance The trim distance; 0 for twice the larger of the
+#'   spacing and the cell size.
+#' @param estimate_normals Estimate missing normals (16 neighbours, consistent
+#'   orientation).
+#' @param normals_k Neighbours per normal fit, when estimated.
+#' @param max_cells The most lattice cells the band may hold.
+#' @return A list of `mesh`, `num_samples`, `spacing`, `cell_size`,
+#'   `max_distance`, `num_lattice_points`, `num_undefined`, `num_triangles`,
+#'   `num_components` and `estimated_normals`.
+#' @export
+mio_reconstruct_surface <- function(mesh, normals = "normals", k = 8, cell_size = 0,
+                                    resolution = 0, max_distance = 0,
+                                    estimate_normals = TRUE, normals_k = 16,
+                                    max_cells = 2e7) {
+  .Call(
+    R_mio_reconstruct_surface, mesh, as.character(normals), as.numeric(k),
+    as.numeric(cell_size), as.numeric(resolution), as.numeric(max_distance),
+    isTRUE(estimate_normals), as.numeric(normals_k), as.numeric(max_cells)
+  )
+}
+
+#' Convex hull of a mesh's points
+#'
+#' The mesh's cells are ignored. In 3-D the hull is a closed `triangle` surface
+#' wound outward; in 2-D (the x, y coordinates) a counter-clockwise `line`
+#' loop. Only the extreme points are vertices, each with `hull:point_id` (its
+#' 0-based input point). See `doc/hull.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param dimension 2, 3, or 0 to decide from the points.
+#' @return A list of `mesh`, `dimension`, `num_vertices`, `num_facets`, `area`
+#'   (enclosed in 2-D, surface in 3-D), `volume` and `perimeter`.
+#' @export
+mio_convex_hull <- function(mesh, dimension = 0L) {
+  .Call(R_mio_convex_hull, mesh, as.integer(dimension))
+}
+
+#' Delaunay triangulation of a mesh's points in the x, y plane
+#'
+#' Every point is kept (with its z and point data) under one counter-clockwise
+#' `triangle` block; a point coinciding in x, y with an earlier one is in no
+#' triangle. See `doc/hull.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @return A list of `mesh`, `num_triangles`, `num_duplicates` and
+#'   `num_boundary`.
+#' @export
+mio_delaunay_2d <- function(mesh) {
+  .Call(R_mio_delaunay_2d, mesh)
+}
+
+#' Cylindrical or spherical components about an axis
+#'
+#' The points stay put; their coordinates are recorded as point data
+#' (`coords:cylindrical` = `(r, theta, z)`, `coords:spherical` =
+#' `(r, theta, phi)`), and each named vector or tensor array (point or cell
+#' data) is rewritten in the local basis of its point, or back to Cartesian with
+#' `inverse = TRUE`. See `doc/coordinates.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param system `"cylindrical"` or `"spherical"`.
+#' @param axis,origin,reference The axis direction, a point on it, and the
+#'   direction of angle 0.
+#' @param arrays Names of vector or tensor arrays to rewrite.
+#' @param inverse Read the arrays as local components.
+#' @param record_coordinates Attach the coordinates as point data.
+#' @return A list of `mesh`, `num_arrays` and `num_singular`.
+#' @export
+mio_convert_coordinates <- function(mesh, system = "cylindrical", axis = c(0, 0, 1),
+                                    origin = c(0, 0, 0), reference = c(1, 0, 0),
+                                    arrays = character(0), inverse = FALSE,
+                                    record_coordinates = TRUE) {
+  .Call(
+    R_mio_convert_coordinates, mesh, as.character(system), as.numeric(axis),
+    as.numeric(origin), as.numeric(reference), as.character(arrays), isTRUE(inverse),
+    isTRUE(record_coordinates)
+  )
+}
+
+#' Geodesic distance on a triangle surface
+#'
+#' The distance along the surface from the source points to every point, by the
+#' heat method: a short heat flow from the sources, its normalised gradient and
+#' a Poisson solve. The mesh's triangle blocks are the surface; a volume, quad,
+#' polygon or higher-order cell is refused. A point in no triangle, or in a
+#' piece with no source, gets `NaN`. See `doc/geodesic.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param sources 1-based source point ids.
+#' @param source_region A region whose points are sources too, or `NULL`.
+#' @param time_factor The heat time is `time_factor * h^2`, `h` the mean edge.
+#' @param tolerance Relative tolerance of both solves.
+#' @param max_iterations Iteration cap of each solve; 0 picks one.
+#' @return A list of `mesh` (with point data `geodesic:distance`),
+#'   `num_sources`, `num_unreached`, `max_distance`, `time_step` and
+#'   `converged`.
+#' @export
+mio_geodesic_distance <- function(mesh, sources = integer(0), source_region = NULL,
+                                  time_factor = 1, tolerance = 1e-10, max_iterations = 0) {
+  .Call(
+    R_mio_geodesic_distance, mesh, as.numeric(sources),
+    if (is.null(source_region)) NULL else as.character(source_region),
+    as.numeric(time_factor), as.numeric(tolerance), as.numeric(max_iterations)
+  )
+}
+
+#' A UV atlas of a triangle surface
+#'
+#' Cuts the surface into charts, flattens each without flipping a triangle
+#' (least-squares conformal maps, else mean-value coordinates) and packs them
+#' into the unit square. The result is split at the seams: point data
+#' `parameterize:parent_point` names each point's input point (0-based) and
+#' cell data `parameterize:chart` each triangle's chart. The mesh's triangle
+#' blocks are the surface; a volume, quad, polygon or higher-order cell is
+#' refused. See `doc/parameterize.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param padding The gap between charts, a fraction of the square root of the
+#'   surface's area.
+#' @param max_depth How many times a piece that does not flatten may be halved.
+#' @param max_stretch A chart whose L2 stretch exceeds this is halved again.
+#' @return A list of `mesh` (with point data `uv`), `num_charts`,
+#'   `num_flipped`, `stretch`, `packing_efficiency` and `num_seam_points`.
+#' @export
+mio_parameterize <- function(mesh, padding = 0.02, max_depth = 8, max_stretch = 2) {
+  .Call(
+    R_mio_parameterize, mesh, as.numeric(padding), as.numeric(max_depth),
+    as.numeric(max_stretch)
+  )
+}
+
+#' Mesh graphs in compressed-sparse-row form
+#'
+#' `mio_adjacency()` returns the mesh's graph as **1-based** `indptr` and
+#' `indices` (the neighbours of vertex `i` are
+#' `indices[indptr[i]:(indptr[i + 1] - 1)]`, ascending, each undirected edge
+#' stored both ways). `kind` is `"node"` (nodes joined by a cell edge),
+#' `"clique"` (nodes sharing a cell: the FEM sparsity pattern) or `"cell"`
+#' (cells sharing a facet, numbered block-major). `mio_write_graph()` writes
+#' that graph as a METIS (`"metis"`, `.graph`) or Scotch (`"scotch"`, `.grf`)
+#' graph file; `format = NULL` infers it from the extension. See
+#' `doc/adjacency.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param kind `"node"`, `"clique"` or `"cell"`.
+#' @param path The graph file to write.
+#' @param format `"metis"`, `"scotch"` or `NULL` (from the extension).
+#' @return `mio_adjacency()` returns a list of `indptr` and `indices`;
+#'   `mio_write_graph()` returns a list of `num_vertices`, `num_edges` and
+#'   `max_degree`.
+#' @export
+mio_adjacency <- function(mesh, kind = "node") {
+  .Call(R_mio_adjacency, mesh, as.character(kind))
+}
+
+#' @rdname mio_adjacency
+#' @export
+mio_write_graph <- function(mesh, path, kind = "node", format = NULL) {
+  .Call(
+    R_mio_write_graph, mesh, path.expand(as.character(path)), as.character(kind),
+    if (is.null(format)) NULL else as.character(format)
+  )
+}
+
 # --- operations ---------------------------------------------------------------
 
 #' Mesh operations

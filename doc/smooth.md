@@ -82,6 +82,8 @@ A node never moves if it is:
 
 ## The inversion guard
 
+The guard keeps a valid mesh valid; to repair a mesh that is already tangled, use [`untangle`](/untangle).
+
 Smoothing can in principle push a node through a neighbouring face. With `guard_inversion=True` (the default), a node's candidate position is committed only if no incident cell's signed measure would change from valid to inverted; otherwise the node holds still **for that pass** and the event is counted in `num_skipped_inversion`.
 
 The rule is **"do no harm", not "preserve the sign"**:

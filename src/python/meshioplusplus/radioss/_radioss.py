@@ -23,6 +23,7 @@ from .._facets import FacetIndex, facet_nodes
 from .._mesh import Mesh, topological_dimension
 from .._node_order import node_order
 from .._regions import Region
+from .._units import LENGTH_UNIT_KEY, length_unit
 from ..lsdyna._cards import format_real_fit, format_real_short
 from ..lsdyna._lsdyna import _collapse_solid, _expand_solid
 
@@ -197,6 +198,22 @@ def _length_unit(unit):
         return 0.0
 
 
+def _length_name(mesh):
+    """The /BEGIN name of the length unit ``mesh`` states: an SI prefix and
+    "m", an imperial name, or a number of metres (14 digits, so it fits the
+    20-column field); "m" when it states none."""
+    length = length_unit(mesh)
+    if length is None:
+        return _WRITE_UNITS[1]
+    for prefix, factor in _SI_PREFIXES.items():
+        if factor == length:
+            return prefix + "m"
+    for name, factor in _IMPERIAL.items():
+        if factor == length:
+            return name
+    return format(length, ".14g")
+
+
 def _slice(line, at, width, comma_field):
     """A fixed-width slice of a line (the comma field when the line has commas)."""
     if "," in line:
@@ -365,6 +382,7 @@ def read(filename):
     ellipsoid_skew = {}
     length_scale = 1.0
     work_length = 0.0  # the work length unit in metres, 0 if /BEGIN names none
+    stated_length = 0.0  # the unit the coordinates end up in, 0 if unknown
     # /UNIT/<id>: the local length units in metres, read first (a keyword can
     # name a unit defined further down).
     unit_length = {}
@@ -468,6 +486,9 @@ def read(filename):
                 lw = work[1] if len(work) > 1 and work[1] else li
                 fi, fw = _length_unit(li), _length_unit(lw)
                 work_length = fw
+                # Converted to the work unit when both are known; read as
+                # written, so in the input unit, when only that one is.
+                stated_length = fw if fi > 0.0 and fw > 0.0 else max(fi, 0.0)
                 if li and (fi <= 0.0 or fw <= 0.0):
                     warn(
                         f"Radioss: unknown length unit '{li if fi <= 0.0 else lw}' in "
@@ -841,6 +862,8 @@ def read(filename):
     mesh.field_data["radioss:version"] = np.array(version, dtype=np.int64)
     if length_scale != 1.0:
         mesh.field_data["radioss:length_scale"] = np.array(length_scale)
+    if stated_length > 0.0:
+        mesh.field_data[LENGTH_UNIT_KEY] = np.array([stated_length])
     if cells:
         mesh.cell_data["radioss:part"] = part_blocks
         mesh.cell_data["radioss:property"] = prop_blocks
@@ -1561,7 +1584,7 @@ def write(filename, mesh, stubs=False):
         if name not in ("radioss:part", "radioss:property", "radioss:material")
     )
     for name, value in mesh.field_data.items():
-        if name in ("radioss:version", "radioss:length_scale"):
+        if name in ("radioss:version", "radioss:length_scale", LENGTH_UNIT_KEY):
             continue
         if name.startswith("radioss:surf_plane:"):
             v = np.asarray(value, dtype=np.float64).reshape(-1)
@@ -1590,7 +1613,10 @@ def write(filename, mesh, stubs=False):
     out += ["# " + line for line in _provenance.lines(_provenance.SlotTier.BLOCK)]
     # The same input and work units, so the starter converts nothing and the
     # reader reads the coordinates as written.
-    units = "".join(f"{u:>20}" for u in _WRITE_UNITS)
+    # The length unit is the mesh's own when it states one (roadmap 7.1.4).
+    units = "".join(
+        f"{u:>20}" for u in (_WRITE_UNITS[0], _length_name(mesh), _WRITE_UNITS[2])
+    )
     out += ["/BEGIN", _title(run or "meshio")[:80], _i10(version, 0), units, units]
 
     if stubs:

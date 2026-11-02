@@ -29,6 +29,7 @@
 
 // Project includes
 #include "meshioplusplus/detail/colormap.hpp"
+#include "meshioplusplus/detail/compressed_input.hpp"
 #include "meshioplusplus/detail/nastran_model.hpp"
 #include "meshioplusplus/detail/node_order.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
@@ -157,6 +158,18 @@
 #include "meshioplusplus/operations/sobolev_deform.hpp"
 #include "meshioplusplus/operations/crop.hpp"
 #include "meshioplusplus/operations/data_average.hpp"
+#include "meshioplusplus/operations/adjacency.hpp"
+#include "meshioplusplus/operations/coordinates.hpp"
+#include "meshioplusplus/operations/geodesic.hpp"
+#include "meshioplusplus/operations/parameterize.hpp"
+#include "meshioplusplus/operations/hull.hpp"
+#include "meshioplusplus/operations/point_normals.hpp"
+#include "meshioplusplus/operations/reconstruct_surface.hpp"
+#include "meshioplusplus/operations/registration.hpp"
+#include "meshioplusplus/operations/eigenmodes.hpp"
+#include "meshioplusplus/operations/morph.hpp"
+#include "meshioplusplus/operations/untangle.hpp"
+#include "meshioplusplus/operations/metric.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/decimate_volume.hpp"
 #include "meshioplusplus/operations/data_calc.hpp"
@@ -2245,6 +2258,30 @@ PYBIND11_MODULE(_core, m) {
             return core_nogil([&] { return meshioplusplus::sniff_format(path); });
         },
         py::arg("path"));
+
+    // The native decompression a registry read of `cube.msh.gz` goes through,
+    // for the Python twin's codecs the standard library lacks (zstd before
+    // Python 3.14). See detail/compressed_input.hpp.
+    m.def(
+        "decompress",
+        [](const std::string& suffix, const py::bytes& data) {
+            const meshioplusplus::detail::Compression kind =
+                meshioplusplus::detail::compression_from_suffix("x" + suffix);
+            if (kind == meshioplusplus::detail::Compression::None)
+                throw std::invalid_argument("meshio++: decompress: unknown suffix '" + suffix +
+                                            "' (expected .gz, .bz2, .xz, .zst or .zip)");
+            const std::string in = data;
+            std::string out =
+                core_nogil([&] { return meshioplusplus::detail::decompress_bytes(kind, in); });
+            return py::bytes(out);
+        },
+        py::arg("suffix"), py::arg("data"));
+    m.def("compression_available", [](const std::string& suffix) {
+        const meshioplusplus::detail::Compression kind =
+            meshioplusplus::detail::compression_from_suffix("x" + suffix);
+        return kind != meshioplusplus::detail::Compression::None &&
+               meshioplusplus::detail::compression_available(kind);
+    });
 
     // Lightweight file summary: counts, cell-block shapes and data-array names
     // without materializing the heavy arrays. Formats lacking a native metadata
@@ -5953,6 +5990,47 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("slave"), py::arg("master"), py::arg("matrix"),
         py::arg("atol") = 1e-8, py::arg("require_complete") = true);
 
+    // The node / clique / cell graph in CSR form, and the METIS / Scotch
+    // graph files written from one. See operations/adjacency.hpp.
+    m.def(
+        "adjacency",
+        [](py::object pymesh, const std::string& kind) {
+            const meshioplusplus::AdjacencyKind k = meshioplusplus::adjacency_kind_from_name(kind);
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus::Adjacency g =
+                core_nogil([&] { return meshioplusplus::adjacency(cpp, k); });
+            return py::make_tuple(meshioplusplus_py::numpy_from_ndarray(std::move(g.mIndptr)),
+                                  meshioplusplus_py::numpy_from_ndarray(std::move(g.mIndices)));
+        },
+        py::arg("mesh"), py::arg("kind") = "node");
+    m.def(
+        "write_graph",
+        [](const std::string& path,
+           py::array_t<std::int64_t, py::array::c_style | py::array::forcecast> indptr,
+           py::array_t<std::int64_t, py::array::c_style | py::array::forcecast> indices,
+           const std::string& format) {
+            const meshioplusplus::GraphFormat f =
+                format.empty() ? meshioplusplus::graph_format_for_path(path)
+                               : meshioplusplus::graph_format_from_name(format);
+            if (indptr.ndim() != 1 || indices.ndim() != 1)
+                throw std::invalid_argument(
+                    "meshio++: write_graph: indptr and indices must be 1-D arrays");
+            meshioplusplus::Adjacency g;
+            g.mIndptr = meshioplusplus_py::view_from_numpy(indptr);
+            g.mIndices = meshioplusplus_py::view_from_numpy(indices);
+            const meshioplusplus::GraphSummary s =
+                core_nogil([&] { return meshioplusplus::write_graph(path, g, f); });
+            py::dict out;
+            out["format"] = f == meshioplusplus::GraphFormat::Metis ? "metis" : "scotch";
+            out["num_vertices"] = s.mNumVertices;
+            out["num_edges"] = s.mNumEdges;
+            out["max_degree"] = s.mMaxDegree;
+            return out;
+        },
+        py::arg("path"), py::arg("indptr"), py::arg("indices"), py::arg("format") = "");
+
     // Surface repair: orientation, holes, bowties. {mesh, point_map, cell_maps,
     // counters, quality_before, quality_after}. See operations/repair.hpp.
     m.def(
@@ -6105,6 +6183,366 @@ PYBIND11_MODULE(_core, m) {
         py::arg("fixed_points") = py::none(), py::arg("fixed_points_array") = "",
         py::arg("fix_boundary") = false, py::arg("record_filtered") = false,
         py::arg("max_iterations") = 128, py::arg("tolerance") = 1e-10);
+
+    // Cylindrical / spherical components about an axis. {mesh, num_arrays,
+    // num_singular}. See operations/coordinates.hpp.
+    m.def(
+        "convert_coordinates",
+        [](py::object pymesh, const std::string& system, std::array<double, 3> axis,
+           std::array<double, 3> origin, std::array<double, 3> reference,
+           std::vector<std::string> arrays, bool inverse, bool record_coordinates) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::CoordinateOptions options;
+            options.mSystem = meshioplusplus::coordinate_system_from_name(system);
+            options.mAxis = axis;
+            options.mOrigin = origin;
+            options.mReference = reference;
+            options.mArrays = std::move(arrays);
+            options.mInverse = inverse;
+            options.mRecordCoordinates = record_coordinates;
+            meshioplusplus::CoordinateResult r =
+                core_nogil([&] { return meshioplusplus::convert_coordinates(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_arrays"] = r.mNumArrays;
+            out["num_singular"] = r.mNumSingular;
+            return out;
+        },
+        py::arg("mesh"), py::arg("system") = "cylindrical",
+        py::arg("axis") = std::array<double, 3>{0.0, 0.0, 1.0},
+        py::arg("origin") = std::array<double, 3>{0.0, 0.0, 0.0},
+        py::arg("reference") = std::array<double, 3>{1.0, 0.0, 0.0},
+        py::arg("arrays") = std::vector<std::string>{}, py::arg("inverse") = false,
+        py::arg("record_coordinates") = true);
+
+    // The metric toolbox: intersect, normalise, clamp, grade. {mesh, counters}.
+    // See operations/metric.hpp.
+    m.def(
+        "prepare_metric",
+        [](py::object pymesh, std::vector<std::string> arrays, const std::string& output,
+           double target_vertices, double norm, double hmin, double hmax, double gradation,
+           std::int64_t max_sweeps) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::PrepareMetricOptions options;
+            options.mArrays = std::move(arrays);
+            options.mOutput = output;
+            options.mTargetVertices = target_vertices;
+            options.mNorm = norm;
+            options.mHmin = hmin;
+            options.mHmax = hmax;
+            options.mGradation = gradation;
+            options.mMaxSweeps = max_sweeps;
+            meshioplusplus::PrepareMetricResult r =
+                core_nogil([&] { return meshioplusplus::prepare_metric(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["complexity_before"] = r.mComplexityBefore;
+            out["complexity_after"] = r.mComplexityAfter;
+            out["num_graded"] = r.mNumGraded;
+            out["sweeps"] = r.mSweeps;
+            return out;
+        },
+        py::arg("mesh"), py::arg("arrays"), py::arg("output") = "metric",
+        py::arg("target_vertices") = 0.0, py::arg("norm") = 2.0, py::arg("hmin") = 0.0,
+        py::arg("hmax") = 0.0, py::arg("gradation") = 0.0, py::arg("max_sweeps") = 100);
+
+    // Untangling inverted tetrahedra and hexahedra. {mesh, counters}. See
+    // operations/untangle.hpp.
+    m.def(
+        "untangle",
+        [](py::object pymesh, bool fix_boundary, std::vector<std::uint8_t> frozen,
+           std::int64_t rings, bool smooth, std::int64_t max_sweeps) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::UntangleOptions options;
+            options.mFixBoundary = fix_boundary;
+            options.mFrozen = std::move(frozen);
+            options.mRings = rings;
+            options.mSmooth = smooth;
+            options.mMaxSweeps = max_sweeps;
+            meshioplusplus::UntangleResult r =
+                core_nogil([&] { return meshioplusplus::untangle(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_inverted_before"] = r.mNumInvertedBefore;
+            out["num_inverted_after"] = r.mNumInvertedAfter;
+            out["min_quality_before"] = r.mMinQualityBefore;
+            out["min_quality_after"] = r.mMinQualityAfter;
+            out["sweeps"] = r.mSweeps;
+            out["moves"] = r.mMoves;
+            return out;
+        },
+        py::arg("mesh"), py::arg("fix_boundary") = true,
+        py::arg("frozen") = std::vector<std::uint8_t>{}, py::arg("rings") = 2,
+        py::arg("smooth") = false, py::arg("max_sweeps") = 100);
+
+    // Boundary-driven morphing by harmonic extension. {mesh, counters}. See
+    // operations/morph.hpp.
+    m.def(
+        "morph",
+        [](py::object pymesh, const std::string& array, bool fix_boundary,
+           std::vector<std::uint8_t> constrained, const std::string& constrained_array,
+           double stiffening, std::int64_t steps, bool allow_inverted, double tolerance,
+           std::int64_t max_iterations) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::MorphOptions options;
+            options.mArray = array;
+            options.mFixBoundary = fix_boundary;
+            options.mConstrained = std::move(constrained);
+            options.mConstrainedArray = constrained_array;
+            options.mStiffening = stiffening;
+            options.mSteps = steps;
+            options.mAllowInverted = allow_inverted;
+            options.mTolerance = tolerance;
+            options.mMaxIterations = max_iterations;
+            meshioplusplus::MorphResult r =
+                core_nogil([&] { return meshioplusplus::morph(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_constrained"] = r.mNumConstrained;
+            out["num_free"] = r.mNumFree;
+            out["num_inverted"] = r.mNumInverted;
+            out["iterations"] = r.mIterations;
+            out["max_displacement"] = r.mMaxDisplacement;
+            out["converged"] = r.mConverged;
+            return out;
+        },
+        py::arg("mesh"), py::arg("array"), py::arg("fix_boundary") = true,
+        py::arg("constrained") = std::vector<std::uint8_t>{}, py::arg("constrained_array") = "",
+        py::arg("stiffening") = 1.0, py::arg("steps") = 1, py::arg("allow_inverted") = false,
+        py::arg("tolerance") = 1e-10, py::arg("max_iterations") = 0);
+
+    // Laplace-Beltrami eigenmodes of a triangle surface. {mesh, counters}. See
+    // operations/eigenmodes.hpp.
+    m.def(
+        "laplacian_eigenmodes",
+        [](py::object pymesh, std::int64_t num_modes, double tolerance,
+           std::int64_t max_iterations) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::EigenmodeOptions options;
+            options.mNumModes = num_modes;
+            options.mTolerance = tolerance;
+            options.mMaxIterations = max_iterations;
+            meshioplusplus::EigenmodeResult r =
+                core_nogil([&] { return meshioplusplus::laplacian_eigenmodes(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["eigenvalues"] = r.mEigenvalues;
+            out["iterations"] = r.mIterations;
+            out["max_residual"] = r.mMaxResidual;
+            out["converged"] = r.mConverged;
+            out["num_degenerate"] = r.mNumDegenerate;
+            return out;
+        },
+        py::arg("mesh"), py::arg("num_modes") = 10, py::arg("tolerance") = 1e-8,
+        py::arg("max_iterations") = 0);
+
+    // Rigid registration by iterative closest points. {matrix (16, row-major),
+    // counters}. See operations/registration.hpp.
+    m.def(
+        "register_rigid",
+        [](py::object pysource, py::object pytarget, const std::string& method,
+           std::int64_t max_iterations, double tolerance, double max_distance,
+           std::array<double, 16> initial) {
+            meshioplusplus_py::PyMeshRefs refs_s, refs_t;
+            meshioplusplus::Mesh source = meshioplusplus_py::py_to_mesh(
+                pysource, refs_s, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::Mesh target = meshioplusplus_py::py_to_mesh(
+                pytarget, refs_t, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::RegistrationOptions options;
+            options.mMethod = meshioplusplus::registration_method_from_name(method);
+            options.mMaxIterations = max_iterations;
+            options.mTolerance = tolerance;
+            options.mMaxDistance = max_distance;
+            options.mInitial = initial;
+            const meshioplusplus::RegistrationResult r =
+                core_nogil([&] { return meshioplusplus::register_rigid(source, target, options); });
+            py::dict out;
+            out["matrix"] = std::vector<double>(r.mMatrix.begin(), r.mMatrix.end());
+            out["initial_rms"] = r.mInitialRms;
+            out["rms"] = r.mRms;
+            out["iterations"] = r.mIterations;
+            out["num_pairs"] = r.mNumPairs;
+            out["converged"] = r.mConverged;
+            return out;
+        },
+        py::arg("source"), py::arg("target"), py::arg("method") = "point_to_point",
+        py::arg("max_iterations") = 50, py::arg("tolerance") = 1e-10, py::arg("max_distance") = 0.0,
+        py::arg("initial") =
+            std::array<double, 16>{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1});
+
+    // Point-cloud normals by local plane fits. {mesh, counters}. See
+    // operations/point_normals.hpp.
+    m.def(
+        "estimate_normals",
+        [](py::object pymesh, std::int64_t k, const std::string& orientation,
+           std::array<double, 3> viewpoint, bool record_variation) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::PointNormalsOptions options;
+            options.mK = k;
+            options.mOrientation = meshioplusplus::normal_orientation_from_name(orientation);
+            options.mViewpoint = viewpoint;
+            options.mRecordVariation = record_variation;
+            meshioplusplus::PointNormalsResult r =
+                core_nogil([&] { return meshioplusplus::estimate_normals(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_degenerate"] = r.mNumDegenerate;
+            out["num_components"] = r.mNumComponents;
+            return out;
+        },
+        py::arg("mesh"), py::arg("k") = 16, py::arg("orientation") = "consistent",
+        py::arg("viewpoint") = std::array<double, 3>{0.0, 0.0, 0.0},
+        py::arg("record_variation") = false);
+
+    // A triangle surface from an oriented point cloud. {mesh, counters}. See
+    // operations/reconstruct_surface.hpp.
+    m.def(
+        "reconstruct_surface",
+        [](py::object pymesh, const std::string& normals, std::int64_t k, double cell_size,
+           std::int64_t resolution, double max_distance, bool estimate_normals,
+           std::int64_t normals_k, std::int64_t max_cells) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::ReconstructSurfaceOptions options;
+            options.mNormalsName = normals;
+            options.mK = k;
+            options.mCellSize = cell_size;
+            options.mResolution = resolution;
+            options.mMaxDistance = max_distance;
+            options.mEstimateNormals = estimate_normals;
+            options.mNormalsK = normals_k;
+            options.mMaxCells = max_cells;
+            meshioplusplus::ReconstructSurfaceResult r =
+                core_nogil([&] { return meshioplusplus::reconstruct_surface(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_samples"] = r.mNumSamples;
+            out["spacing"] = r.mSpacing;
+            out["cell_size"] = r.mCellSize;
+            out["max_distance"] = r.mMaxDistance;
+            out["num_lattice_points"] = r.mNumLatticePoints;
+            out["num_undefined"] = r.mNumUndefined;
+            out["num_triangles"] = r.mNumTriangles;
+            out["num_components"] = r.mNumComponents;
+            out["estimated_normals"] = r.mEstimatedNormals;
+            return out;
+        },
+        py::arg("mesh"), py::arg("normals") = "normals", py::arg("k") = 8,
+        py::arg("cell_size") = 0.0, py::arg("resolution") = 0, py::arg("max_distance") = 0.0,
+        py::arg("estimate_normals") = true, py::arg("normals_k") = 16,
+        py::arg("max_cells") = 20000000);
+
+    // Convex hull and planar Delaunay triangulation of the points. {mesh,
+    // counters}. See operations/hull.hpp.
+    m.def(
+        "convex_hull",
+        [](py::object pymesh, std::int32_t dimension) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::ConvexHullOptions options;
+            options.mDimension = dimension;
+            meshioplusplus::ConvexHullResult r =
+                core_nogil([&] { return meshioplusplus::convex_hull(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["dimension"] = r.mDimension;
+            out["num_vertices"] = r.mNumVertices;
+            out["num_facets"] = r.mNumFacets;
+            out["area"] = r.mArea;
+            out["volume"] = r.mVolume;
+            out["perimeter"] = r.mPerimeter;
+            return out;
+        },
+        py::arg("mesh"), py::arg("dimension") = 0);
+    m.def(
+        "delaunay_2d",
+        [](py::object pymesh) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::Delaunay2dResult r =
+                core_nogil([&] { return meshioplusplus::delaunay_2d(cpp); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_triangles"] = r.mNumTriangles;
+            out["num_duplicates"] = r.mNumDuplicates;
+            out["num_boundary"] = r.mNumBoundary;
+            return out;
+        },
+        py::arg("mesh"));
+
+    // Geodesic distance by the heat method. {mesh, counters}. See
+    // operations/geodesic.hpp.
+    m.def(
+        "geodesic_distance",
+        [](py::object pymesh, std::vector<std::int64_t> sources, const std::string& source_region,
+           double time_factor, double tolerance, std::int64_t max_iterations) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::GeodesicOptions options;
+            options.mSources = std::move(sources);
+            options.mSourceRegion = source_region;
+            options.mTimeFactor = time_factor;
+            options.mTolerance = tolerance;
+            options.mMaxIterations = max_iterations;
+            meshioplusplus::GeodesicResult r =
+                core_nogil([&] { return meshioplusplus::geodesic_distance(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_sources"] = r.mNumSources;
+            out["num_unreached"] = r.mNumUnreached;
+            out["num_degenerate"] = r.mNumDegenerate;
+            out["max_distance"] = r.mMaxDistance;
+            out["time_step"] = r.mTimeStep;
+            out["heat_iterations"] = r.mHeatIterations;
+            out["poisson_iterations"] = r.mPoissonIterations;
+            out["converged"] = r.mConverged;
+            return out;
+        },
+        py::arg("mesh"), py::arg("sources") = std::vector<std::int64_t>{},
+        py::arg("source_region") = "", py::arg("time_factor") = 1.0, py::arg("tolerance") = 1e-10,
+        py::arg("max_iterations") = 0);
+
+    // A UV atlas of a triangle surface. {mesh, counters}. See
+    // operations/parameterize.hpp.
+    m.def(
+        "parameterize",
+        [](py::object pymesh, double padding, std::int64_t max_depth, double max_stretch) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::ParameterizeOptions options;
+            options.mPadding = padding;
+            options.mMaxDepth = max_depth;
+            options.mMaxStretch = max_stretch;
+            meshioplusplus::ParameterizeResult r =
+                core_nogil([&] { return meshioplusplus::parameterize(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_charts"] = r.mNumCharts;
+            out["num_flipped"] = r.mNumFlipped;
+            out["stretch"] = r.mStretch;
+            out["packing_efficiency"] = r.mPackingEfficiency;
+            out["num_seam_points"] = r.mNumSeamPoints;
+            return out;
+        },
+        py::arg("mesh"), py::arg("padding") = 0.02, py::arg("max_depth") = 8,
+        py::arg("max_stretch") = 2.0);
 
     m.def(
         "hessian",

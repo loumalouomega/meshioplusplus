@@ -39,6 +39,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/pipeline.hpp"
+#include "meshioplusplus/detail/length_unit.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -76,6 +77,17 @@
 #include "meshioplusplus/operations/thickness.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/repair.hpp"
+#include "meshioplusplus/operations/coordinates.hpp"
+#include "meshioplusplus/operations/hull.hpp"
+#include "meshioplusplus/operations/point_normals.hpp"
+#include "meshioplusplus/operations/reconstruct_surface.hpp"
+#include "meshioplusplus/operations/registration.hpp"
+#include "meshioplusplus/operations/eigenmodes.hpp"
+#include "meshioplusplus/operations/morph.hpp"
+#include "meshioplusplus/operations/untangle.hpp"
+#include "meshioplusplus/operations/metric.hpp"
+#include "meshioplusplus/operations/geodesic.hpp"
+#include "meshioplusplus/operations/parameterize.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
 #include "meshioplusplus/operations/crop.hpp"
 #include "meshioplusplus/operations/data_average.hpp"
@@ -351,10 +363,10 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Segment",
          {"FeatureAngle", "NormalTolerance", "CurvatureTolerance", "MinPatchCells", "Region",
           "Prefix", "Method", "Tolerance"}},
-        {"Select",
-         {"Name", "Kind", "Tag", "Mode", "BoundaryOnly", "Bbox", "Point", "Normal", "Center",
-          "Radius", "Where", "Compare", "Value", "Quality", "QualityCompare", "QualityValue",
-          "Component", "Seed", "FeatureAngle", "NormalTolerance"}},
+        {"Select", {"Name",         "Kind",      "Tag",    "Mode",         "BoundaryOnly",
+                    "Bbox",         "Point",     "Normal", "Center",       "Radius",
+                    "Where",        "Compare",   "Value",  "Quality",      "QualityCompare",
+                    "QualityValue", "Component", "Seed",   "FeatureAngle", "NormalTolerance"}},
         {"FitPrimitives",
          {"PatchData", "Tolerance", "Relative", "MinInlierFraction", "Types", "MaxIterations"}},
         {"FitCad",
@@ -436,6 +448,26 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"SobolevDeform",
          {"Array", "LengthScale", "FixedPointsArray", "FixBoundary", "RecordFiltered",
           "MaxIterations", "Tolerance"}},
+        {"ConvexHull", {"Dimension"}},
+        {"Delaunay2D", {}},
+        {"EstimateNormals", {"K", "Orientation", "Viewpoint", "RecordVariation"}},
+        {"ReconstructSurface",
+         {"Normals", "K", "CellSize", "Resolution", "MaxDistance", "EstimateNormals", "NormalsK",
+          "MaxCells"}},
+        {"LaplacianEigenmodes", {"NumModes", "Tolerance", "MaxIterations"}},
+        {"Untangle", {"FixBoundary", "Rings", "Smooth", "MaxSweeps"}},
+        {"PrepareMetric",
+         {"Arrays", "Output", "TargetVertices", "Norm", "Hmin", "Hmax", "Gradation", "MaxSweeps"}},
+        {"Morph",
+         {"Array", "FixBoundary", "ConstrainedArray", "Stiffening", "Steps", "AllowInverted",
+          "Tolerance", "MaxIterations"}},
+        {"RegisterRigid",
+         {"Target", "Method", "MaxIterations", "Tolerance", "MaxDistance", "RotateData"}},
+        {"ConvertCoordinates",
+         {"System", "Axis", "Origin", "Reference", "Arrays", "Inverse", "RecordCoordinates"}},
+        {"GeodesicDistance",
+         {"Sources", "SourceRegion", "TimeFactor", "Tolerance", "MaxIterations"}},
+        {"Parameterize", {"Padding", "MaxDepth", "MaxStretch"}},
         {"EstimateError", {"Array", "Method", "Marking", "MarkingValue", "Output", "Marked"}},
         {"ErrorSize", {"Array", "TargetError", "Order", "MinSize", "MaxSize", "Output"}},
         {"Adapt",
@@ -784,7 +816,8 @@ Mesh pipe_apply_transform(Mesh mesh, const PipelineStep& rStep, PipelineReport& 
         xf = transform_from_matrix(v.data());
         ++given;
     }
-    if (pipe_find(rStep, "ScaleUnits")) {
+    const bool units = pipe_find(rStep, "ScaleUnits");
+    if (units) {
         xf = transform_units(pipe_number(rStep, "ScaleUnits", 1.0));
         ++given;
     }
@@ -794,6 +827,9 @@ Mesh pipe_apply_transform(Mesh mesh, const PipelineStep& rStep, PipelineReport& 
                      "give exactly one of 'Translate'/'Scale'/'RotateAxis'+'RotateDegrees'/"
                      "'Matrix'/'ScaleUnits'"));
     Mesh out = transform(mesh, xf, pipe_flag(rStep, "RotateData", false));
+    // A unit conversion changes the unit a mesh states it is in (roadmap 7.1.4).
+    if (units)
+        detail::rescale_mesh_length_unit(out, pipe_number(rStep, "ScaleUnits", 1.0));
     pipe_push_step(rReport, rStep);
     return out;
 }
@@ -2255,6 +2291,244 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                                         std::to_string(sr.mNumIterations) +
                                         " iteration(s); the last iterate is returned");
         return std::move(sr.mMesh);
+    }
+    if (op == "ConvexHull") {
+        ConvexHullOptions opts;
+        const double dimension = pipe_number(rStep, "Dimension", 0.0);
+        opts.mDimension = static_cast<std::int32_t>(dimension);
+        if (static_cast<double>(opts.mDimension) != dimension)
+            throw std::invalid_argument("pipeline: ConvexHull: Dimension must be 0, 2 or 3");
+        ConvexHullResult hr = convex_hull(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"Dimension", static_cast<double>(hr.mDimension)},
+                        {"NumVertices", static_cast<double>(hr.mNumVertices)},
+                        {"NumFacets", static_cast<double>(hr.mNumFacets)},
+                        {"Area", hr.mArea},
+                        {"Volume", hr.mVolume}});
+        return std::move(hr.mMesh);
+    }
+    if (op == "PrepareMetric") {
+        PrepareMetricOptions opts;
+        opts.mArrays = pipe_svec(rStep, "Arrays");
+        opts.mOutput = pipe_text(rStep, "Output", "metric");
+        opts.mTargetVertices = pipe_number(rStep, "TargetVertices", 0.0);
+        opts.mNorm = pipe_number(rStep, "Norm", 2.0);
+        opts.mHmin = pipe_number(rStep, "Hmin", 0.0);
+        opts.mHmax = pipe_number(rStep, "Hmax", 0.0);
+        opts.mGradation = pipe_number(rStep, "Gradation", 0.0);
+        const double sweeps = pipe_number(rStep, "MaxSweeps", 100.0);
+        opts.mMaxSweeps = static_cast<std::int64_t>(sweeps);
+        if (static_cast<double>(opts.mMaxSweeps) != sweeps)
+            throw std::invalid_argument(pipe_err(rStep, "'MaxSweeps' must be an integer"));
+        PrepareMetricResult pr = prepare_metric(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"ComplexityBefore", pr.mComplexityBefore},
+                        {"ComplexityAfter", pr.mComplexityAfter},
+                        {"NumGraded", static_cast<double>(pr.mNumGraded)}});
+        return std::move(pr.mMesh);
+    }
+    if (op == "Untangle") {
+        UntangleOptions opts;
+        opts.mFixBoundary = pipe_flag(rStep, "FixBoundary", true);
+        opts.mSmooth = pipe_flag(rStep, "Smooth", false);
+        const double rings = pipe_number(rStep, "Rings", 2.0);
+        const double sweeps = pipe_number(rStep, "MaxSweeps", 100.0);
+        opts.mRings = static_cast<std::int64_t>(rings);
+        opts.mMaxSweeps = static_cast<std::int64_t>(sweeps);
+        if (static_cast<double>(opts.mRings) != rings ||
+            static_cast<double>(opts.mMaxSweeps) != sweeps)
+            throw std::invalid_argument(
+                pipe_err(rStep, "'Rings' and 'MaxSweeps' must be integers"));
+        UntangleResult ur = untangle(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumInvertedBefore", static_cast<double>(ur.mNumInvertedBefore)},
+                        {"NumInvertedAfter", static_cast<double>(ur.mNumInvertedAfter)},
+                        {"MinQualityAfter", ur.mMinQualityAfter},
+                        {"Sweeps", static_cast<double>(ur.mSweeps)}});
+        if (ur.mNumInvertedAfter > 0)
+            rReport.mWarnings.push_back("untangle: cells are still inverted after MaxSweeps");
+        return std::move(ur.mMesh);
+    }
+    if (op == "Morph") {
+        MorphOptions opts;
+        opts.mArray = pipe_text(rStep, "Array", "");
+        opts.mFixBoundary = pipe_flag(rStep, "FixBoundary", true);
+        opts.mConstrainedArray = pipe_text(rStep, "ConstrainedArray", "");
+        opts.mStiffening = pipe_number(rStep, "Stiffening", 1.0);
+        const double steps = pipe_number(rStep, "Steps", 1.0);
+        const double iters = pipe_number(rStep, "MaxIterations", 0.0);
+        opts.mSteps = static_cast<std::int64_t>(steps);
+        opts.mMaxIterations = static_cast<std::int64_t>(iters);
+        if (static_cast<double>(opts.mSteps) != steps ||
+            static_cast<double>(opts.mMaxIterations) != iters)
+            throw std::invalid_argument(
+                pipe_err(rStep, "'Steps' and 'MaxIterations' must be integers"));
+        opts.mAllowInverted = pipe_flag(rStep, "AllowInverted", false);
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 1e-10);
+        MorphResult mr = morph(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumConstrained", static_cast<double>(mr.mNumConstrained)},
+                        {"NumInverted", static_cast<double>(mr.mNumInverted)},
+                        {"MaxDisplacement", mr.mMaxDisplacement},
+                        {"Converged", mr.mConverged ? 1.0 : 0.0}});
+        if (!mr.mConverged)
+            rReport.mWarnings.push_back(
+                "morph: a solve hit its iteration cap; the motion is "
+                "approximate");
+        return std::move(mr.mMesh);
+    }
+    if (op == "LaplacianEigenmodes") {
+        EigenmodeOptions opts;
+        const double modes = pipe_number(rStep, "NumModes", 10.0);
+        const double iters = pipe_number(rStep, "MaxIterations", 0.0);
+        opts.mNumModes = static_cast<std::int64_t>(modes);
+        opts.mMaxIterations = static_cast<std::int64_t>(iters);
+        if (static_cast<double>(opts.mNumModes) != modes ||
+            static_cast<double>(opts.mMaxIterations) != iters)
+            throw std::invalid_argument(
+                pipe_err(rStep, "'NumModes' and 'MaxIterations' must be integers"));
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 1e-8);
+        EigenmodeResult er = laplacian_eigenmodes(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"Iterations", static_cast<double>(er.mIterations)},
+                        {"MaxResidual", er.mMaxResidual},
+                        {"Converged", er.mConverged ? 1.0 : 0.0}});
+        if (!er.mConverged)
+            rReport.mWarnings.push_back(
+                "laplacian_eigenmodes: no convergence within MaxIterations; the modes are the "
+                "last iterate");
+        return std::move(er.mMesh);
+    }
+    if (op == "RegisterRigid") {
+        const std::string target = pipe_text(rStep, "Target", "");
+        if (target.empty())
+            throw std::invalid_argument(
+                pipe_err(rStep, "needs 'Target', the mesh to register onto"));
+        RegistrationOptions opts;
+        opts.mMethod = registration_method_from_name(pipe_text(rStep, "Method", "point_to_point"));
+        const double iters = pipe_number(rStep, "MaxIterations", 50.0);
+        opts.mMaxIterations = static_cast<std::int64_t>(iters);
+        if (static_cast<double>(opts.mMaxIterations) != iters)
+            throw std::invalid_argument(pipe_err(rStep, "'MaxIterations' must be an integer"));
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 1e-10);
+        opts.mMaxDistance = pipe_number(rStep, "MaxDistance", 0.0);
+        const RegistrationResult rr = register_rigid(mesh, pipe_read_extra(target), opts);
+        if (!rr.mConverged)
+            rReport.mWarnings.push_back(
+                "register_rigid: no convergence within MaxIterations; the transform is the last "
+                "iterate");
+        Mesh moved = transform(mesh, transform_from_matrix(rr.mMatrix.data()),
+                               pipe_flag(rStep, "RotateData", false));
+        pipe_push_step(rReport, rStep,
+                       {{"InitialRms", rr.mInitialRms},
+                        {"Rms", rr.mRms},
+                        {"Iterations", static_cast<double>(rr.mIterations)},
+                        {"Converged", rr.mConverged ? 1.0 : 0.0}});
+        return moved;
+    }
+    if (op == "EstimateNormals") {
+        PointNormalsOptions opts;
+        const double k = pipe_number(rStep, "K", 16.0);
+        opts.mK = static_cast<std::int64_t>(k);
+        if (static_cast<double>(opts.mK) != k)
+            throw std::invalid_argument("pipeline: EstimateNormals: K must be an integer");
+        opts.mOrientation =
+            normal_orientation_from_name(pipe_text(rStep, "Orientation", "consistent"));
+        if (pipe_find(rStep, "Viewpoint"))
+            pipe_vec3(rStep, "Viewpoint", opts.mViewpoint.data());
+        opts.mRecordVariation = pipe_flag(rStep, "RecordVariation", false);
+        PointNormalsResult nr = estimate_normals(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumDegenerate", static_cast<double>(nr.mNumDegenerate)},
+                        {"NumComponents", static_cast<double>(nr.mNumComponents)}});
+        return std::move(nr.mMesh);
+    }
+    if (op == "ReconstructSurface") {
+        ReconstructSurfaceOptions opts;
+        const auto integer = [&](const char* pKey, std::int64_t Fallback) {
+            const double v = pipe_number(rStep, pKey, static_cast<double>(Fallback));
+            const auto i = static_cast<std::int64_t>(v);
+            if (static_cast<double>(i) != v)
+                throw std::invalid_argument(std::string("pipeline: ReconstructSurface: ") + pKey +
+                                            " must be an integer");
+            return i;
+        };
+        opts.mNormalsName = pipe_text(rStep, "Normals", "normals");
+        opts.mK = integer("K", opts.mK);
+        opts.mCellSize = pipe_number(rStep, "CellSize", 0.0);
+        opts.mResolution = integer("Resolution", 0);
+        opts.mMaxDistance = pipe_number(rStep, "MaxDistance", 0.0);
+        opts.mEstimateNormals = pipe_flag(rStep, "EstimateNormals", true);
+        opts.mNormalsK = integer("NormalsK", opts.mNormalsK);
+        opts.mMaxCells = integer("MaxCells", opts.mMaxCells);
+        ReconstructSurfaceResult rr = reconstruct_surface(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumSamples", static_cast<double>(rr.mNumSamples)},
+                        {"Spacing", rr.mSpacing},
+                        {"CellSize", rr.mCellSize},
+                        {"MaxDistance", rr.mMaxDistance},
+                        {"NumLatticePoints", static_cast<double>(rr.mNumLatticePoints)},
+                        {"NumUndefined", static_cast<double>(rr.mNumUndefined)},
+                        {"NumTriangles", static_cast<double>(rr.mNumTriangles)},
+                        {"NumComponents", static_cast<double>(rr.mNumComponents)},
+                        {"EstimatedNormals", rr.mEstimatedNormals ? 1.0 : 0.0}});
+        return std::move(rr.mMesh);
+    }
+    if (op == "Delaunay2D") {
+        Delaunay2dResult dr = delaunay_2d(mesh);
+        pipe_push_step(rReport, rStep,
+                       {{"NumTriangles", static_cast<double>(dr.mNumTriangles)},
+                        {"NumDuplicates", static_cast<double>(dr.mNumDuplicates)}});
+        return std::move(dr.mMesh);
+    }
+    if (op == "ConvertCoordinates") {
+        CoordinateOptions opts;
+        opts.mSystem = coordinate_system_from_name(pipe_text(rStep, "System", "cylindrical"));
+        if (pipe_find(rStep, "Axis"))
+            pipe_vec3(rStep, "Axis", opts.mAxis.data());
+        if (pipe_find(rStep, "Origin"))
+            pipe_vec3(rStep, "Origin", opts.mOrigin.data());
+        if (pipe_find(rStep, "Reference"))
+            pipe_vec3(rStep, "Reference", opts.mReference.data());
+        opts.mArrays = pipe_svec(rStep, "Arrays");
+        opts.mInverse = pipe_flag(rStep, "Inverse", false);
+        opts.mRecordCoordinates = pipe_flag(rStep, "RecordCoordinates", true);
+        CoordinateResult cr = convert_coordinates(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumArrays", static_cast<double>(cr.mNumArrays)},
+                        {"NumSingular", static_cast<double>(cr.mNumSingular)}});
+        return std::move(cr.mMesh);
+    }
+    if (op == "GeodesicDistance") {
+        GeodesicOptions opts;
+        opts.mSources = pipe_ivec(rStep, "Sources");
+        opts.mSourceRegion = pipe_text(rStep, "SourceRegion", "");
+        opts.mTimeFactor = pipe_number(rStep, "TimeFactor", 1.0);
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 1e-10);
+        opts.mMaxIterations = static_cast<std::int64_t>(pipe_number(rStep, "MaxIterations", 0));
+        GeodesicResult gr = geodesic_distance(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumSources", static_cast<double>(gr.mNumSources)},
+                        {"NumUnreached", static_cast<double>(gr.mNumUnreached)},
+                        {"MaxDistance", gr.mMaxDistance},
+                        {"Converged", gr.mConverged ? 1.0 : 0.0}});
+        if (!gr.mConverged)
+            rReport.mWarnings.push_back(
+                "geodesic_distance: a solve hit its iteration cap; the distance is approximate");
+        return std::move(gr.mMesh);
+    }
+    if (op == "Parameterize") {
+        ParameterizeOptions opts;
+        opts.mPadding = pipe_number(rStep, "Padding", 0.02);
+        opts.mMaxDepth = static_cast<std::int64_t>(pipe_number(rStep, "MaxDepth", 8));
+        opts.mMaxStretch = pipe_number(rStep, "MaxStretch", 2.0);
+        ParameterizeResult pr = parameterize(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumCharts", static_cast<double>(pr.mNumCharts)},
+                        {"NumFlipped", static_cast<double>(pr.mNumFlipped)},
+                        {"Stretch", pr.mStretch},
+                        {"PackingEfficiency", pr.mPackingEfficiency}});
+        return std::move(pr.mMesh);
     }
     if (op == "EstimateError") {
         // A pure data step: geometry is untouched, so the pipeline carries the

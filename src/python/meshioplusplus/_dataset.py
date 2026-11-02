@@ -152,7 +152,9 @@ def _validate_metadata(value, where):
 
 
 def _resolve_source_path(path, base_dir):
-    if base_dir and not os.path.isabs(path):
+    from ._remote import is_url
+
+    if base_dir and not os.path.isabs(path) and not is_url(path):
         # Stored paths are "/"-separated (see portable_relpath); split them so
         # that a Windows path comes out with backslashes throughout.
         return os.path.join(base_dir, *os.fspath(path).split("/"))

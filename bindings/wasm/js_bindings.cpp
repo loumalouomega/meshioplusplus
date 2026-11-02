@@ -130,6 +130,18 @@
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/normals.hpp"
+#include "meshioplusplus/operations/adjacency.hpp"
+#include "meshioplusplus/operations/coordinates.hpp"
+#include "meshioplusplus/operations/hull.hpp"
+#include "meshioplusplus/operations/point_normals.hpp"
+#include "meshioplusplus/operations/reconstruct_surface.hpp"
+#include "meshioplusplus/operations/registration.hpp"
+#include "meshioplusplus/operations/eigenmodes.hpp"
+#include "meshioplusplus/operations/morph.hpp"
+#include "meshioplusplus/operations/untangle.hpp"
+#include "meshioplusplus/operations/metric.hpp"
+#include "meshioplusplus/operations/geodesic.hpp"
+#include "meshioplusplus/operations/parameterize.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
@@ -6952,6 +6964,46 @@ val match_periodic_nodes_js(const val& rMeshObj, const val& rSlave, const val& r
 }
 
 /**
+ * @brief The node / clique / cell graph in CSR form (0-based, Int32Array --
+ * throws past 2^31 entries). See operations/adjacency.hpp.
+ */
+val adjacency_js(const val& rMeshObj, const std::string& rKind) {
+    return with_js_errors([&]() -> val {
+        const meshioplusplus::AdjacencyKind kind =
+            meshioplusplus::adjacency_kind_from_name(rKind.empty() ? "node" : rKind);
+        const meshioplusplus::Adjacency g = meshioplusplus::adjacency(val_to_mesh(rMeshObj), kind);
+        val out = val::object();
+        out.set("indptr", ndarray_to_int32_array(g.mIndptr));
+        out.set("indices", ndarray_to_int32_array(g.mIndices));
+        return out;
+    });
+}
+
+/**
+ * @brief Writes the mesh's graph to @p rPath (in MEMFS) as a METIS or Scotch
+ * graph file; an empty @p rFormat infers it from the extension.
+ */
+val write_graph_js(const val& rMeshObj, const std::string& rPath, const std::string& rKind,
+                   const std::string& rFormat) {
+    return with_js_errors([&]() -> val {
+        const meshioplusplus::AdjacencyKind kind =
+            meshioplusplus::adjacency_kind_from_name(rKind.empty() ? "node" : rKind);
+        const meshioplusplus::GraphFormat format =
+            rFormat.empty() ? meshioplusplus::graph_format_for_path(rPath)
+                            : meshioplusplus::graph_format_from_name(rFormat);
+        const meshioplusplus::GraphSummary s = meshioplusplus::write_graph(
+            rPath, meshioplusplus::adjacency(val_to_mesh(rMeshObj), kind), format);
+        val out = val::object();
+        out.set("format",
+                std::string(format == meshioplusplus::GraphFormat::Metis ? "metis" : "scotch"));
+        out.set("numVertices", static_cast<double>(s.mNumVertices));
+        out.set("numEdges", static_cast<double>(s.mNumEdges));
+        out.set("maxDegree", static_cast<double>(s.mMaxDegree));
+        return out;
+    });
+}
+
+/**
  * @brief Surface repair: orientation by the topological half-edge rule,
  * fan-filled holes wound to agree with the surrounding surface, and bowtie
  * splitting. See operations/repair.hpp.
@@ -7045,6 +7097,423 @@ val sobolev_deform_js(const val& rMeshObj, const std::string& rArray, double len
         out.set("numFixed", static_cast<double>(r.mNumFixed));
         out.set("numIsolated", static_cast<double>(r.mNumIsolated));
         out.set("maxDisplacement", r.mMaxDisplacement);
+        return out;
+    });
+}
+
+/**
+ * @brief The metric toolbox. @p rOptions is `{arrays (required), output,
+ * targetVertices, norm, hmin, hmax, gradation, maxSweeps}`. See
+ * operations/metric.hpp.
+ */
+val prepare_metric_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::PrepareMetricOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("arrays"))
+                options.mArrays = emscripten::vecFromJSArray<std::string>(rOptions["arrays"]);
+            if (rOptions.hasOwnProperty("output"))
+                options.mOutput = rOptions["output"].as<std::string>();
+            const auto number = [&](const char* pKey, double& rOut) {
+                if (rOptions.hasOwnProperty(pKey))
+                    rOut = rOptions[pKey].as<double>();
+            };
+            number("targetVertices", options.mTargetVertices);
+            number("norm", options.mNorm);
+            number("hmin", options.mHmin);
+            number("hmax", options.mHmax);
+            number("gradation", options.mGradation);
+            if (rOptions.hasOwnProperty("maxSweeps"))
+                options.mMaxSweeps = static_cast<std::int64_t>(rOptions["maxSweeps"].as<double>());
+        }
+        meshioplusplus::PrepareMetricResult r =
+            meshioplusplus::prepare_metric(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("complexityBefore", r.mComplexityBefore);
+        out.set("complexityAfter", r.mComplexityAfter);
+        out.set("numGraded", static_cast<double>(r.mNumGraded));
+        out.set("sweeps", static_cast<double>(r.mSweeps));
+        return out;
+    });
+}
+
+/**
+ * @brief Untangle tetrahedra and hexahedra. @p rOptions is `{fixBoundary,
+ * frozen (a 0/1 array), rings, smooth, maxSweeps}`, every key optional. See
+ * operations/untangle.hpp.
+ */
+val untangle_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::UntangleOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("fixBoundary"))
+                options.mFixBoundary = rOptions["fixBoundary"].as<bool>();
+            if (rOptions.hasOwnProperty("frozen")) {
+                const std::vector<double> m =
+                    emscripten::vecFromJSArray<double>(rOptions["frozen"]);
+                for (const double v : m)
+                    options.mFrozen.push_back(v != 0.0 ? 1 : 0);
+            }
+            if (rOptions.hasOwnProperty("rings"))
+                options.mRings = static_cast<std::int64_t>(rOptions["rings"].as<double>());
+            if (rOptions.hasOwnProperty("smooth"))
+                options.mSmooth = rOptions["smooth"].as<bool>();
+            if (rOptions.hasOwnProperty("maxSweeps"))
+                options.mMaxSweeps = static_cast<std::int64_t>(rOptions["maxSweeps"].as<double>());
+        }
+        meshioplusplus::UntangleResult r = meshioplusplus::untangle(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numInvertedBefore", static_cast<double>(r.mNumInvertedBefore));
+        out.set("numInvertedAfter", static_cast<double>(r.mNumInvertedAfter));
+        out.set("minQualityBefore", r.mMinQualityBefore);
+        out.set("minQualityAfter", r.mMinQualityAfter);
+        out.set("sweeps", static_cast<double>(r.mSweeps));
+        out.set("moves", static_cast<double>(r.mMoves));
+        return out;
+    });
+}
+
+/**
+ * @brief Boundary-driven morphing. @p rOptions is `{array (required),
+ * fixBoundary, constrainedArray, constrained (a 0/1 array), stiffening, steps,
+ * allowInverted, tolerance, maxIterations}`. See operations/morph.hpp.
+ */
+val morph_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::MorphOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("array"))
+                options.mArray = rOptions["array"].as<std::string>();
+            if (rOptions.hasOwnProperty("fixBoundary"))
+                options.mFixBoundary = rOptions["fixBoundary"].as<bool>();
+            if (rOptions.hasOwnProperty("constrainedArray"))
+                options.mConstrainedArray = rOptions["constrainedArray"].as<std::string>();
+            if (rOptions.hasOwnProperty("constrained")) {
+                const std::vector<double> m =
+                    emscripten::vecFromJSArray<double>(rOptions["constrained"]);
+                options.mConstrained.reserve(m.size());
+                for (const double v : m)
+                    options.mConstrained.push_back(v != 0.0 ? 1 : 0);
+            }
+            if (rOptions.hasOwnProperty("stiffening"))
+                options.mStiffening = rOptions["stiffening"].as<double>();
+            if (rOptions.hasOwnProperty("steps"))
+                options.mSteps = static_cast<std::int64_t>(rOptions["steps"].as<double>());
+            if (rOptions.hasOwnProperty("allowInverted"))
+                options.mAllowInverted = rOptions["allowInverted"].as<bool>();
+            if (rOptions.hasOwnProperty("tolerance"))
+                options.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("maxIterations"))
+                options.mMaxIterations =
+                    static_cast<std::int64_t>(rOptions["maxIterations"].as<double>());
+        }
+        meshioplusplus::MorphResult r = meshioplusplus::morph(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numConstrained", static_cast<double>(r.mNumConstrained));
+        out.set("numFree", static_cast<double>(r.mNumFree));
+        out.set("numInverted", static_cast<double>(r.mNumInverted));
+        out.set("iterations", static_cast<double>(r.mIterations));
+        out.set("maxDisplacement", r.mMaxDisplacement);
+        out.set("converged", r.mConverged);
+        return out;
+    });
+}
+
+/**
+ * @brief The lowest eigenpairs of a surface's Laplace-Beltrami operator.
+ * @p rOptions is `{numModes, tolerance, maxIterations}`, every key optional.
+ * See operations/eigenmodes.hpp.
+ */
+val laplacian_eigenmodes_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::EigenmodeOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("numModes"))
+                options.mNumModes = static_cast<std::int64_t>(rOptions["numModes"].as<double>());
+            if (rOptions.hasOwnProperty("tolerance"))
+                options.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("maxIterations"))
+                options.mMaxIterations =
+                    static_cast<std::int64_t>(rOptions["maxIterations"].as<double>());
+        }
+        meshioplusplus::EigenmodeResult r =
+            meshioplusplus::laplacian_eigenmodes(val_to_mesh(rMeshObj), options);
+        val values = val::array();
+        for (const double v : r.mEigenvalues)
+            values.call<void>("push", v);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("eigenvalues", values);
+        out.set("iterations", static_cast<double>(r.mIterations));
+        out.set("maxResidual", r.mMaxResidual);
+        out.set("converged", r.mConverged);
+        return out;
+    });
+}
+
+/**
+ * @brief Rigid registration by iterative closest points. @p rOptions is
+ * `{method, maxIterations, tolerance, maxDistance, initial}`, every key
+ * optional (`initial` 16 numbers, row-major). See operations/registration.hpp.
+ */
+val register_rigid_js(const val& rSource, const val& rTarget, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::RegistrationOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("method"))
+                options.mMethod = meshioplusplus::registration_method_from_name(
+                    rOptions["method"].as<std::string>());
+            if (rOptions.hasOwnProperty("maxIterations"))
+                options.mMaxIterations =
+                    static_cast<std::int64_t>(rOptions["maxIterations"].as<double>());
+            if (rOptions.hasOwnProperty("tolerance"))
+                options.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("maxDistance"))
+                options.mMaxDistance = rOptions["maxDistance"].as<double>();
+            if (rOptions.hasOwnProperty("initial")) {
+                const std::vector<double> m =
+                    emscripten::vecFromJSArray<double>(rOptions["initial"]);
+                if (m.size() != 16)
+                    throw std::invalid_argument("registerRigid: initial takes 16 numbers");
+                std::copy(m.begin(), m.end(), options.mInitial.begin());
+            }
+        }
+        const meshioplusplus::RegistrationResult r =
+            meshioplusplus::register_rigid(val_to_mesh(rSource), val_to_mesh(rTarget), options);
+        val matrix = val::array();
+        for (std::size_t k = 0; k < 16; ++k)
+            matrix.call<void>("push", r.mMatrix[k]);
+        val out = val::object();
+        out.set("matrix", matrix);
+        out.set("initialRms", r.mInitialRms);
+        out.set("rms", r.mRms);
+        out.set("iterations", static_cast<double>(r.mIterations));
+        out.set("numPairs", static_cast<double>(r.mNumPairs));
+        out.set("converged", r.mConverged);
+        return out;
+    });
+}
+
+/**
+ * @brief Normals of a point cloud by local plane fits. @p rOptions is
+ * `{k, orientation, viewpoint, recordVariation}`, every key optional. See
+ * operations/point_normals.hpp.
+ */
+val estimate_normals_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::PointNormalsOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("k"))
+                options.mK = static_cast<std::int64_t>(rOptions["k"].as<double>());
+            if (rOptions.hasOwnProperty("orientation"))
+                options.mOrientation = meshioplusplus::normal_orientation_from_name(
+                    rOptions["orientation"].as<std::string>());
+            if (rOptions.hasOwnProperty("viewpoint")) {
+                const std::vector<double> v =
+                    emscripten::vecFromJSArray<double>(rOptions["viewpoint"]);
+                if (v.size() != 3)
+                    throw std::invalid_argument("estimateNormals: viewpoint takes three numbers");
+                options.mViewpoint = {v[0], v[1], v[2]};
+            }
+            if (rOptions.hasOwnProperty("recordVariation"))
+                options.mRecordVariation = rOptions["recordVariation"].as<bool>();
+        }
+        meshioplusplus::PointNormalsResult r =
+            meshioplusplus::estimate_normals(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numDegenerate", static_cast<double>(r.mNumDegenerate));
+        out.set("numComponents", static_cast<double>(r.mNumComponents));
+        return out;
+    });
+}
+
+/**
+ * @brief A triangle surface through an oriented point cloud. @p rOptions is
+ * `{normals, k, cellSize, resolution, maxDistance, estimateNormals, normalsK,
+ * maxCells}`, every key optional. See operations/reconstruct_surface.hpp.
+ */
+val reconstruct_surface_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ReconstructSurfaceOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            const auto integer = [&](const char* pKey, std::int64_t& rOut) {
+                if (rOptions.hasOwnProperty(pKey))
+                    rOut = static_cast<std::int64_t>(rOptions[pKey].as<double>());
+            };
+            const auto number = [&](const char* pKey, double& rOut) {
+                if (rOptions.hasOwnProperty(pKey))
+                    rOut = rOptions[pKey].as<double>();
+            };
+            if (rOptions.hasOwnProperty("normals"))
+                options.mNormalsName = rOptions["normals"].as<std::string>();
+            integer("k", options.mK);
+            number("cellSize", options.mCellSize);
+            integer("resolution", options.mResolution);
+            number("maxDistance", options.mMaxDistance);
+            if (rOptions.hasOwnProperty("estimateNormals"))
+                options.mEstimateNormals = rOptions["estimateNormals"].as<bool>();
+            integer("normalsK", options.mNormalsK);
+            integer("maxCells", options.mMaxCells);
+        }
+        meshioplusplus::ReconstructSurfaceResult r =
+            meshioplusplus::reconstruct_surface(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numSamples", static_cast<double>(r.mNumSamples));
+        out.set("spacing", r.mSpacing);
+        out.set("cellSize", r.mCellSize);
+        out.set("maxDistance", r.mMaxDistance);
+        out.set("numLatticePoints", static_cast<double>(r.mNumLatticePoints));
+        out.set("numUndefined", static_cast<double>(r.mNumUndefined));
+        out.set("numTriangles", static_cast<double>(r.mNumTriangles));
+        out.set("numComponents", static_cast<double>(r.mNumComponents));
+        out.set("estimatedNormals", r.mEstimatedNormals);
+        return out;
+    });
+}
+
+/**
+ * @brief The convex hull of a mesh's points. @p rOptions is `{dimension}`
+ * (optional: 2, 3, or 0 to decide). See operations/hull.hpp.
+ */
+val convex_hull_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ConvexHullOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull() && rOptions.hasOwnProperty("dimension"))
+            options.mDimension = rOptions["dimension"].as<int>();
+        meshioplusplus::ConvexHullResult r =
+            meshioplusplus::convex_hull(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("dimension", r.mDimension);
+        out.set("numVertices", static_cast<double>(r.mNumVertices));
+        out.set("numFacets", static_cast<double>(r.mNumFacets));
+        out.set("area", r.mArea);
+        out.set("volume", r.mVolume);
+        out.set("perimeter", r.mPerimeter);
+        return out;
+    });
+}
+
+/// The Delaunay triangulation of a mesh's points in the x, y plane.
+val delaunay_2d_js(const val& rMeshObj) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::Delaunay2dResult r = meshioplusplus::delaunay_2d(val_to_mesh(rMeshObj));
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numTriangles", static_cast<double>(r.mNumTriangles));
+        out.set("numDuplicates", static_cast<double>(r.mNumDuplicates));
+        out.set("numBoundary", static_cast<double>(r.mNumBoundary));
+        return out;
+    });
+}
+
+/**
+ * @brief Cylindrical / spherical components about an axis. @p rOptions is
+ * `{system, axis, origin, reference, arrays, inverse, recordCoordinates}`,
+ * every key optional. See operations/coordinates.hpp.
+ */
+val convert_coordinates_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::CoordinateOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("system"))
+                options.mSystem = meshioplusplus::coordinate_system_from_name(
+                    rOptions["system"].as<std::string>());
+            const auto vec3 = [&](const char* pKey, std::array<double, 3>& rOut) {
+                if (!rOptions.hasOwnProperty(pKey))
+                    return;
+                const std::vector<double> v = emscripten::vecFromJSArray<double>(rOptions[pKey]);
+                if (v.size() != 3)
+                    throw std::invalid_argument(std::string("convertCoordinates: ") + pKey +
+                                                " takes three numbers");
+                rOut = {v[0], v[1], v[2]};
+            };
+            vec3("axis", options.mAxis);
+            vec3("origin", options.mOrigin);
+            vec3("reference", options.mReference);
+            if (rOptions.hasOwnProperty("arrays"))
+                options.mArrays = emscripten::vecFromJSArray<std::string>(rOptions["arrays"]);
+            if (rOptions.hasOwnProperty("inverse"))
+                options.mInverse = rOptions["inverse"].as<bool>();
+            if (rOptions.hasOwnProperty("recordCoordinates"))
+                options.mRecordCoordinates = rOptions["recordCoordinates"].as<bool>();
+        }
+        meshioplusplus::CoordinateResult r =
+            meshioplusplus::convert_coordinates(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numArrays", static_cast<double>(r.mNumArrays));
+        out.set("numSingular", static_cast<double>(r.mNumSingular));
+        return out;
+    });
+}
+
+/**
+ * @brief Geodesic distance by the heat method. @p rOptions is `{sourceRegion,
+ * timeFactor, tolerance, maxIterations}`, every key optional. See
+ * operations/geodesic.hpp.
+ */
+val geodesic_distance_js(const val& rMeshObj, const val& rSources, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::GeodesicOptions options;
+        for (const double id : emscripten::vecFromJSArray<double>(rSources))
+            options.mSources.push_back(static_cast<std::int64_t>(id));
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("sourceRegion"))
+                options.mSourceRegion = rOptions["sourceRegion"].as<std::string>();
+            if (rOptions.hasOwnProperty("timeFactor"))
+                options.mTimeFactor = rOptions["timeFactor"].as<double>();
+            if (rOptions.hasOwnProperty("tolerance"))
+                options.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("maxIterations"))
+                options.mMaxIterations =
+                    static_cast<std::int64_t>(rOptions["maxIterations"].as<double>());
+        }
+        meshioplusplus::GeodesicResult r =
+            meshioplusplus::geodesic_distance(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numSources", static_cast<double>(r.mNumSources));
+        out.set("numUnreached", static_cast<double>(r.mNumUnreached));
+        out.set("numDegenerate", static_cast<double>(r.mNumDegenerate));
+        out.set("maxDistance", r.mMaxDistance);
+        out.set("timeStep", r.mTimeStep);
+        out.set("heatIterations", static_cast<double>(r.mHeatIterations));
+        out.set("poissonIterations", static_cast<double>(r.mPoissonIterations));
+        out.set("converged", r.mConverged);
+        return out;
+    });
+}
+
+/**
+ * @brief A UV atlas of a triangle surface. @p rOptions is `{padding, maxDepth,
+ * maxStretch}`, every key optional. See operations/parameterize.hpp.
+ */
+val parameterize_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ParameterizeOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("padding"))
+                options.mPadding = rOptions["padding"].as<double>();
+            if (rOptions.hasOwnProperty("maxDepth"))
+                options.mMaxDepth = static_cast<std::int64_t>(rOptions["maxDepth"].as<double>());
+            if (rOptions.hasOwnProperty("maxStretch"))
+                options.mMaxStretch = rOptions["maxStretch"].as<double>();
+        }
+        meshioplusplus::ParameterizeResult r =
+            meshioplusplus::parameterize(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numCharts", static_cast<double>(r.mNumCharts));
+        out.set("numFlipped", static_cast<double>(r.mNumFlipped));
+        out.set("stretch", r.mStretch);
+        out.set("packingEfficiency", r.mPackingEfficiency);
+        out.set("numSeamPoints", static_cast<double>(r.mNumSeamPoints));
         return out;
     });
 }
@@ -9279,9 +9748,23 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("contactPairs", &contact_pairs_js);
     emscripten::function("splitInterface", &split_interface_js);
     emscripten::function("matchPeriodicNodes", &match_periodic_nodes_js);
+    emscripten::function("adjacency", &adjacency_js);
+    emscripten::function("writeGraph", &write_graph_js);
     emscripten::function("repair", &repair_js);
     emscripten::function("shrinkwrap", &shrinkwrap_js);
     emscripten::function("sobolevDeform", &sobolev_deform_js);
+    emscripten::function("geodesicDistance", &geodesic_distance_js);
+    emscripten::function("parameterize", &parameterize_js);
+    emscripten::function("convertCoordinates", &convert_coordinates_js);
+    emscripten::function("prepareMetric", &prepare_metric_js);
+    emscripten::function("untangle", &untangle_js);
+    emscripten::function("morph", &morph_js);
+    emscripten::function("laplacianEigenmodes", &laplacian_eigenmodes_js);
+    emscripten::function("registerRigid", &register_rigid_js);
+    emscripten::function("estimateNormals", &estimate_normals_js);
+    emscripten::function("reconstructSurface", &reconstruct_surface_js);
+    emscripten::function("convexHull", &convex_hull_js);
+    emscripten::function("delaunay2d", &delaunay_2d_js);
     emscripten::function("cropBbox", &crop_bbox_js);
     emscripten::function("cropPlane", &crop_plane_js);
     emscripten::function("cropPredicate", &crop_predicate_js);

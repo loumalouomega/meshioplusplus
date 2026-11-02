@@ -101,7 +101,7 @@ export cell_data_num_blocks
 export set_points!, add_cell_block!, add_point_data!, append_cell_data!, add_field_data!
 export add_polygon_block!, add_polyhedron_block!
 export regions, add_region!, remove_region!, edit_regions, region_adjacency, find_interface
-export contact_pairs, split_interface, match_periodic_nodes
+export contact_pairs, split_interface, match_periodic_nodes, adjacency, write_graph
 
 # Operations
 export extract_surface, extract_skin, attach_quality, quality_counts
@@ -121,7 +121,9 @@ export capsule, box_surface, platonic, ball, spherical_shell, pipe, fichera, sol
 export sample_distance, distance_to_surface, surface_watertight_check, compute_sdf
 export compute_curvature, compute_normals, feature_edges, hausdorff_distance, check_quality
 export segment, select_region, fit_primitives, refine_patches, fit_cad, has_occt
-export repair, shrinkwrap, sobolev_deform
+export repair, shrinkwrap, sobolev_deform, geodesic_distance, parameterize, convert_coordinates,
+       convex_hull, delaunay_2d, estimate_normals, reconstruct_surface, register_rigid, laplacian_eigenmodes, morph,
+       untangle, prepare_metric
 export interpolate, conservative_interpolate, meshes_equal, stats, compute_bandwidth
 export reorder, convert_cells, subdivide, agglomerate, tet_to_poly, poly_to_tet, refine, undo_green, decimate, partition, partition_labels
 export boundary_layer

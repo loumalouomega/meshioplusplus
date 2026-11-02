@@ -68,7 +68,8 @@ std::string step_string(const std::string& rText) {
     return out;
 }
 
-StepStream::StepStream(const std::string& rPath, const std::string& rDescription) : mPath(rPath) {
+StepStream::StepStream(const std::string& rPath, const std::string& rDescription, double LengthUnit)
+    : mPath(rPath) {
     const std::string name = step_string(ss_basename(rPath));
     mOut += "ISO-10303-21;\n/*\n";
     for (std::string line : provenance_lines(SlotTier::Block)) {
@@ -95,7 +96,28 @@ StepStream::StepStream(const std::string& rPath, const std::string& rDescription
     const std::int64_t pdef =
         Ent("PRODUCT_DEFINITION('design',''," + Ref(form) + "," + Ref(pdctx) + ")");
     mShape = Ent("PRODUCT_DEFINITION_SHAPE('',''," + Ref(pdef) + ")");
-    const std::int64_t len_unit = Ent("(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.))");
+    // The length unit: an SI prefix of the metre, or a conversion from the
+    // millimetre (roadmap 7.1.4).
+    const char* prefix = LengthUnit > 0.0 ? nullptr : ".MILLI.";
+    constexpr std::pair<double, const char*> kPrefixes[] = {
+        {1.0, "$"}, {0.01, ".CENTI."}, {0.001, ".MILLI."}, {1e-6, ".MICRO."}, {1000.0, ".KILO."}};
+    for (const auto& [v, p] : kPrefixes)
+        if (LengthUnit > 0.0 && std::abs(v - LengthUnit) <= 1e-12 * v)
+            prefix = p;
+    std::int64_t len_unit = 0;
+    if (prefix) {
+        len_unit = Ent(std::string("(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(") + prefix + ",.METRE.))");
+    } else {
+        const char* unit_name = std::abs(LengthUnit - 0.0254) <= 1e-12 * 0.0254   ? "INCH"
+                                : std::abs(LengthUnit - 0.3048) <= 1e-12 * 0.3048 ? "FOOT"
+                                                                                  : "LENGTH UNIT";
+        const std::int64_t mm = Ent("(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.))");
+        const std::int64_t dims = Ent("DIMENSIONAL_EXPONENTS(1.,0.,0.,0.,0.,0.,0.)");
+        const std::int64_t measure = Ent("LENGTH_MEASURE_WITH_UNIT(LENGTH_MEASURE(" +
+                                         step_real(LengthUnit * 1000.0) + ")," + Ref(mm) + ")");
+        len_unit = Ent(std::string("(CONVERSION_BASED_UNIT('") + unit_name + "'," + Ref(measure) +
+                       ")LENGTH_UNIT()NAMED_UNIT(" + Ref(dims) + "))");
+    }
     const std::int64_t ang_unit = Ent("(NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.))");
     const std::int64_t sol_unit = Ent("(NAMED_UNIT(*)SI_UNIT($,.STERADIAN.)SOLID_ANGLE_UNIT())");
     const std::int64_t unc =
