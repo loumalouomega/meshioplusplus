@@ -1095,7 +1095,7 @@ def roadmap_map():
                 ("ICP · coordinates · completions", "M"),
                 ("providers: heal, mesh, quads", "L"),
                 ("surface booleans (spike first)", "XL"),
-                ("v19 defaults · TUI · hex materials", "M"),
+                ("v19 defaults · TUI · hexahedra", "L"),
             ],
             [],
         ),
